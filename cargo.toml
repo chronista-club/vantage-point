@@ -1,0 +1,58 @@
+# File: Cargo.toml (root)
+[workspace]
+members = [
+    "vantage-core",
+    "vantage-uniffi",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+authors = ["Vantage Contributors"]
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/yourusername/vantage"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1.38", features = ["full"] }
+futures = "0.3"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# HTTP client
+reqwest = { version = "0.12", features = ["json", "stream"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+# Code parsing
+tree-sitter = "0.22"
+tree-sitter-rust = "0.21"
+tree-sitter-python = "0.21"
+tree-sitter-javascript = "0.21"
+tree-sitter-typescript = "0.21"
+tree-sitter-swift = "0.4"
+
+# QUIC support
+quinn = "0.11"
+
+# Concurrency
+dashmap = "6.0"
+crossbeam-channel = "0.5"
+
+# FFI
+uniffi = "0.27"
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true
+codegen-units = 1
