@@ -82,8 +82,10 @@ actor Renderer {
         let device = self.device
         if device.supports32BitMSAA && device.supportsTextureSampleCount(4) {
             rasterSampleCount = 4
+            globalConsole.info("MSAA 4xが有効です", category: "Renderer")
         } else {
             rasterSampleCount = 1
+            globalConsole.warning("MSAAが無効です", category: "Renderer")
         }
 
         let uniformBufferSize = alignedUniformsSize * maxBuffersInFlight
@@ -121,18 +123,24 @@ actor Renderer {
 
         do {
             colorMap = try Renderer.loadTexture(device: device, textureName: "ColorMap")
+            globalConsole.info("テクスチャ 'ColorMap' を読み込みました", category: "Renderer")
         } catch {
+            globalConsole.error("テクスチャの読み込みに失敗しました: \(error)", category: "Renderer")
             fatalError("Unable to load texture. Error info: \(error)")
         }
 
         worldTracking = WorldTrackingProvider()
         arSession = ARKitSession()
+        globalConsole.info("レンダラーの初期化が完了しました", category: "Renderer")
     }
 
     private func startARSession() async {
         do {
+            globalConsole.info("ARKitセッションを開始しています...", category: "ARKit")
             try await arSession.run([worldTracking])
+            globalConsole.info("ARKitセッションが正常に開始されました", category: "ARKit")
         } catch {
+            globalConsole.error("ARKitセッションの開始に失敗しました: \(error)", category: "ARKit")
             fatalError("Failed to initialize ARSession")
         }
     }
@@ -436,14 +444,16 @@ actor Renderer {
     }
 
     func renderLoop() {
+        var frameCount = 0
         while true {
             if layerRenderer.state == .invalidated {
-                print("Layer is invalidated")
+                globalConsole.warning("レイヤーが無効化されました", category: "Renderer")
                 Task { @MainActor in
                     appModel.immersiveSpaceState = .closed
                 }
                 return
             } else if layerRenderer.state == .paused {
+                globalConsole.info("レンダリングが一時停止されました", category: "Renderer")
                 Task { @MainActor in
                     appModel.immersiveSpaceState = .inTransition
                 }
@@ -453,10 +463,15 @@ actor Renderer {
                 Task { @MainActor in
                     if appModel.immersiveSpaceState != .open {
                         appModel.immersiveSpaceState = .open
+                        globalConsole.info("イマーシブスペースがオープンしました", category: "Renderer")
                     }
                 }
                 autoreleasepool {
                     self.renderFrame()
+                    frameCount += 1
+                    if frameCount % 300 == 0 { // 約5秒ごとにFPS情報をログ
+                        globalConsole.debug("レンダリング中: \(frameCount)フレーム処理済み", category: "Performance")
+                    }
                 }
             }
         }

@@ -10,17 +10,57 @@ import RealityKit
 import RealityKitContent
 
 struct ContentView: View {
+    @State private var showConsole = false
+    @State private var consoleViewModel = ConsoleViewModel()
 
     var body: some View {
         VStack {
-            Model3D(named: "Scene", bundle: realityKitContentBundle)
-                .padding(.bottom, 50)
+            // メインコンテンツ
+            VStack {
+                Model3D(named: "Scene", bundle: realityKitContentBundle)
+                    .padding(.bottom, 50)
 
-            Text("Hello, world!")
+                Text("Hello, world!")
 
-            ToggleImmersiveSpaceButton()
+                HStack(spacing: 20) {
+                    ToggleImmersiveSpaceButton()
+                    
+                    Button(action: { showConsole.toggle() }) {
+                        Label(showConsole ? "Hide Console" : "Show Console", 
+                              systemImage: showConsole ? "terminal.fill" : "terminal")
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+                
+                // テストボタン
+                HStack(spacing: 10) {
+                    Button("Log Info") {
+                        consoleViewModel.info("テスト情報メッセージ", category: "User")
+                    }
+                    
+                    Button("Log Warning") {
+                        consoleViewModel.warning("テスト警告メッセージ", category: "User")
+                    }
+                    
+                    Button("Log Error") {
+                        consoleViewModel.error("テストエラーメッセージ", category: "User")
+                    }
+                }
+                .buttonStyle(.bordered)
+                .padding(.top, 10)
+            }
+            .padding()
+            
+            // コンソール表示
+            if showConsole {
+                ConsoleView()
+                    .environment(consoleViewModel)
+                    .frame(height: 300)
+                    .padding()
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
         }
-        .padding()
+        .animation(.easeInOut(duration: 0.3), value: showConsole)
     }
 }
 
