@@ -6,3 +6,9 @@
 DerivedData/
 *.xcscmblueprint
 *.xccheckout
+
+# macOS
+.DS_Store
+
+# 移行中のファイル（ルートディレクトリのみ）
+/ClaudeTestApp/
