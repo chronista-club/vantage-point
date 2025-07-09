@@ -33,6 +33,14 @@ struct VantageTestApp: App {
             ContentView()
                 .environment(appModel)
         }
+        
+        WindowGroup(id: "AIAssistant") {
+            AIAssistantView(model: appModel.aiAssistant)
+                .frame(width: 600, height: 800)
+                .glassBackgroundEffect()
+        }
+        .windowStyle(.volumetric)
+        .defaultSize(width: 600, height: 800, depth: 50)
 
         ImmersiveSpace(id: appModel.immersiveSpaceID) {
             CompositorLayer(configuration: ContentStageConfiguration()) { @MainActor layerRenderer in

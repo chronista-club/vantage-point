@@ -12,6 +12,9 @@ import RealityKitContent
 struct ContentView: View {
     @State private var showConsole = false
     @State private var consoleViewModel = ConsoleViewModel()
+    @Environment(AppModel.self) private var appModel
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismissWindow) private var dismissWindow
 
     var body: some View {
         VStack {
@@ -30,6 +33,17 @@ struct ContentView: View {
                               systemImage: showConsole ? "terminal.fill" : "terminal")
                     }
                     .buttonStyle(.borderedProminent)
+                    
+                    Button(action: { 
+                        // 環境値をAppModelに設定
+                        appModel.openWindow = openWindow
+                        appModel.dismissWindow = dismissWindow
+                        appModel.toggleAIAssistant() 
+                    }) {
+                        Label("AI Assistant", systemImage: "cpu")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.blue)
                 }
                 
                 // テストボタン
