@@ -14,6 +14,12 @@ public actor ClaudeClient {
     /// JSON デコーダー
     private let decoder = JSONDecoder()
     
+    /// ロギングデリゲート
+    public weak var loggingDelegate: LoggingDelegate?
+    
+    /// リクエストロガー
+    private var logger = RequestLogger()
+    
     /// クライアントを初期化
     public init(configuration: APIConfiguration) {
         self.configuration = configuration
@@ -87,6 +93,12 @@ public actor ClaudeClient {
         return response.text
     }
     
+    /// ロギングデリゲートを設定
+    public func setLoggingDelegate(_ delegate: LoggingDelegate?) {
+        self.loggingDelegate = delegate
+        self.logger.delegate = delegate
+    }
+    
     // MARK: - Private Methods
     
     /// リクエストを実行
@@ -105,41 +117,73 @@ public actor ClaudeClient {
             throw ClaudeAPIError.decodingError(error)
         }
         
+        // リクエストをログ
+        let startTime = Date()
+        logger.delegate = loggingDelegate
+        logger.logRequest(
+            url: urlRequest.url!,
+            method: urlRequest.httpMethod!,
+            headers: logger.maskSensitiveHeaders(urlRequest.allHTTPHeaderFields),
+            body: urlRequest.httpBody
+        )
+        
         let (data, response) = try await session.data(for: urlRequest)
+        let duration = Date().timeIntervalSince(startTime)
         
         guard let httpResponse = response as? HTTPURLResponse else {
             throw ClaudeAPIError.invalidResponse
         }
         
         if httpResponse.statusCode.isSuccessHTTPCode {
+            // 成功レスポンスをログ
+            logger.logResponse(
+                statusCode: httpResponse.statusCode,
+                headers: httpResponse.allHeaderFields as? [String: String],
+                body: data,
+                duration: duration
+            )
+            
             do {
                 return try decoder.decode(ClaudeResponse.self, from: data)
             } catch {
                 throw ClaudeAPIError.decodingError(error)
             }
         } else {
+            // エラーレスポンスをログ
+            logger.logResponse(
+                statusCode: httpResponse.statusCode,
+                headers: httpResponse.allHeaderFields as? [String: String],
+                body: data,
+                duration: duration
+            )
+            
             // エラーレスポンスの処理
             if let error = try? decoder.decode(ClaudeError.self, from: data) {
+                let apiError: ClaudeAPIError
                 switch httpResponse.statusCode {
                 case 429:
                     let retryAfter = httpResponse.value(forHTTPHeaderField: "Retry-After")
                         .flatMap { Double($0) }
-                    throw ClaudeAPIError.rateLimited(retryAfter: retryAfter)
+                    apiError = ClaudeAPIError.rateLimited(retryAfter: retryAfter)
                 case 400:
-                    throw ClaudeAPIError.invalidRequest(error.message)
+                    apiError = ClaudeAPIError.invalidRequest(error.message)
                 case 500...599:
-                    throw ClaudeAPIError.serverError(error.message)
+                    apiError = ClaudeAPIError.serverError(error.message)
                 default:
-                    throw ClaudeAPIError.httpError(
+                    apiError = ClaudeAPIError.httpError(
                         statusCode: httpResponse.statusCode,
                         message: error.message
                     )
                 }
+                logger.logError(apiError, duration: duration)
+                throw apiError
             } else {
-                throw ClaudeAPIError.httpError(
+                let apiError = ClaudeAPIError.httpError(
                     statusCode: httpResponse.statusCode,
                     message: String(data: data, encoding: .utf8)
                 )
+                logger.logError(apiError, duration: duration)
+                throw apiError
             }
         }
     }

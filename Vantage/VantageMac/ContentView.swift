@@ -91,7 +91,7 @@ struct ContentView: View {
     
     private var headerView: some View {
         HStack {
-            Text("Claude API Test Client")
+            Text("Vantage Mac")
                 .font(.headline)
             
             Spacer()

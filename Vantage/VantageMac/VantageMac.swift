@@ -1,10 +1,10 @@
 import SwiftUI
 
 @main
-struct ClaudeTestApp: App {
+struct VantageMac: App {
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            ContentViewWithConsole()
         }
         .windowResizability(.contentSize)
     }
