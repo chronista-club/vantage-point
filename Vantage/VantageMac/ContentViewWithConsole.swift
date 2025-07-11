@@ -93,20 +93,32 @@ struct ContentViewWithConsole: View {
             // 入力欄にフォーカス
             isInputFocused = true
         }
-        .keyboardShortcut("/", modifiers: .command) {
-            withAnimation {
-                showConsole.toggle()
+        .background(
+            Group {
+                Button("") {
+                    withAnimation {
+                        showConsole.toggle()
+                    }
+                }
+                .keyboardShortcut("/", modifiers: .command)
+                .hidden()
+                
+                Button("") {
+                    viewModel.clearMessages()
+                    messageText = ""
+                    messageHistoryIndex = -1
+                }
+                .keyboardShortcut("n", modifiers: .command)
+                .hidden()
+                
+                Button("") {
+                    showingSessionList = true
+                }
+                .keyboardShortcut("h", modifiers: [.command, .shift])
+                .hidden()
             }
-        }
-        .keyboardShortcut("n", modifiers: .command) {
-            viewModel.clearMessages()
-            messageText = ""
-            messageHistoryIndex = -1
-        }
-        .keyboardShortcut("h", modifiers: [.command, .shift]) {
-            showingSessionList = true
-        }
-        .onChange(of: viewModel.lastError) { _, newError in
+        )
+        .onChange(of: viewModel.lastError) { newError in
             if let error = newError {
                 withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
                     currentError = error
@@ -227,47 +239,57 @@ struct ContentViewWithConsole: View {
     
     private var inputView: some View {
         HStack(alignment: .bottom, spacing: 12) {
-            ZStack(alignment: .topLeading) {
-                TextEditor(text: $messageText)
-                    .font(.body)
-                    .focused($isInputFocused)
-                    .frame(minHeight: 36, maxHeight: 120)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(4)
-                    .background(Color(NSColor.textBackgroundColor))
-                    .cornerRadius(6)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 6)
-                            .stroke(Color(NSColor.separatorColor), lineWidth: 1)
-                    )
-                    .onKeyPress(.return, modifiers: .command) {
-                        sendMessage()
-                        return .handled
-                    }
-                    .onKeyPress(.k, modifiers: .command) {
-                        messageText = ""
-                        return .handled
-                    }
-                    .onKeyPress(.upArrow, modifiers: .command) {
-                        navigateMessageHistory(direction: .up)
-                        return .handled
-                    }
-                    .onKeyPress(.downArrow, modifiers: .command) {
-                        navigateMessageHistory(direction: .down)
-                        return .handled
-                    }
-                
-                if messageText.isEmpty {
-                    Text("メッセージを入力... (Cmd+Enterで送信)")
-                        .foregroundColor(.secondary)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 12)
-                        .allowsHitTesting(false)
+            inputField
+            sendButton
+        }
+        .padding()
+        .background(Color(NSColor.windowBackgroundColor))
+    }
+    
+    private var inputField: some View {
+        ZStack(alignment: .topLeading) {
+            TextEditor(text: $messageText)
+                .font(.body)
+                .focused($isInputFocused)
+                .frame(minHeight: 36, maxHeight: 120)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(4)
+                .background(Color(NSColor.textBackgroundColor))
+                .cornerRadius(6)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(Color(NSColor.separatorColor), lineWidth: 1)
+                )
+                .onKeyPress(.return, modifiers: .command) {
+                    sendMessage()
+                    return .handled
                 }
-            }
-            .disabled(viewModel.isLoading || !viewModel.hasAPIKey)
+                .onKeyPress(.k, modifiers: .command) {
+                    messageText = ""
+                    return .handled
+                }
+                .onKeyPress(.upArrow, modifiers: .command) {
+                    navigateMessageHistory(direction: .up)
+                    return .handled
+                }
+                .onKeyPress(.downArrow, modifiers: .command) {
+                    navigateMessageHistory(direction: .down)
+                    return .handled
+                }
             
-            // 送信/中断ボタン
+            if messageText.isEmpty {
+                Text("メッセージを入力... (Cmd+Enterで送信)")
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 12)
+                    .allowsHitTesting(false)
+            }
+        }
+        .disabled(viewModel.isLoading || !viewModel.hasAPIKey)
+    }
+    
+    private var sendButton: some View {
+        Group {
             if viewModel.isLoading && viewModel.streamingMessageId != nil {
                 Button(action: {
                     viewModel.cancelStreaming()
@@ -285,28 +307,6 @@ struct ContentViewWithConsole: View {
                 .disabled(messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || viewModel.isLoading || !viewModel.hasAPIKey)
             }
         }
-        .padding()
-        .background(Color(NSColor.controlBackgroundColor))
-        .overlay(
-            // 入力ステータス表示とトークンカウンター
-            HStack {
-                InputStatusView(text: messageText, isLoading: viewModel.isLoading)
-                
-                Spacer()
-                
-                if viewModel.estimatedInputTokens > 0 || viewModel.estimatedOutputTokens > 0 {
-                    TokenCounterView(
-                        model: viewModel.selectedModel,
-                        inputTokens: viewModel.estimatedInputTokens,
-                        outputTokens: viewModel.estimatedOutputTokens,
-                        isStreaming: viewModel.streamingMessageId != nil
-                    )
-                }
-            }
-            .padding(.horizontal)
-            .padding(.bottom, 4),
-            alignment: .bottom
-        )
     }
     
     private func sendMessage() {
@@ -344,10 +344,10 @@ struct ContentViewWithConsole: View {
             }
         }
     }
-    
-    enum NavigationDirection {
-        case up, down
-    }
+}
+
+enum NavigationDirection {
+    case up, down
 }
 
 // コンソールビュー

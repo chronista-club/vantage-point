@@ -106,4 +106,20 @@ public enum ClaudeModel: String, CaseIterable, Sendable {
             return 4096
         }
     }
+    
+    /// コンテキストウィンドウサイズ
+    public var contextWindow: Int {
+        switch self {
+        case .claude3Opus:
+            return 200000
+        case .claude3Sonnet:
+            return 200000
+        case .claude3Haiku:
+            return 200000
+        case .claude35Sonnet:
+            return 200000
+        case .claude35Haiku:
+            return 200000
+        }
+    }
 }

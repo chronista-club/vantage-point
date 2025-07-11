@@ -54,7 +54,7 @@ struct InputStatusView: View {
             if text.isEmpty && !isLoading {
                 Text("Cmd+Enter で送信")
                     .font(.caption2)
-                    .foregroundColor(.tertiary)
+                    .foregroundColor(Color.secondary.opacity(0.6))
             }
         }
         .animation(.easeInOut(duration: 0.2), value: text.isEmpty)

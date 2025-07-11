@@ -15,7 +15,7 @@ class ChatViewModel: ObservableObject {
     @Published var retryManager = RetryManager()
     @Published var messageHistory: [String] = []
     @Published var streamingMessageId: UUID?
-    @Published var currentStreamTask: Task<Void, Never>?
+    @Published var currentStreamTask: Task<Void, Error>?
     @Published var estimatedInputTokens = 0
     @Published var estimatedOutputTokens = 0
     @Published var sessionManager = SessionManager()
@@ -157,7 +157,7 @@ class ChatViewModel: ObservableObject {
             addLog(level: .debug, message: "レスポンスのストリーミングを開始")
             
             // ストリームを処理するタスクを作成
-            currentStreamTask = Task { @MainActor in
+            currentStreamTask = Task {
                 var tokenCount = 0
                 let startTime = Date()
                 
@@ -196,7 +196,7 @@ class ChatViewModel: ObservableObject {
                 }
             }
             
-            await currentStreamTask?.value
+            try? await currentStreamTask?.value
             
         } catch let error as ClaudeAPIError {
             // ClaudeAPIErrorの場合
@@ -284,7 +284,7 @@ class ChatViewModel: ObservableObject {
             try await retryManager.performWithRetry(
                 operation: { [weak self] in
                     guard let self = self else { return }
-                    await self.sendMessageWithoutRetry(lastMessage)
+                    try await self.sendMessageWithoutRetry(lastMessage)
                 },
                 onError: { [weak self] error, retryCount in
                     self?.addLog(level: .info, message: "リトライ \(retryCount)回目: \(error.localizedDescription)")
@@ -326,7 +326,7 @@ class ChatViewModel: ObservableObject {
         )
         
         // アシスタントメッセージを作成
-        var assistantMessage = ChatMessage(content: "", isUser: false)
+        let assistantMessage = ChatMessage(content: "", isUser: false)
         messages.append(assistantMessage)
         let messageIndex = messages.count - 1
         let messageId = messages[messageIndex].id
