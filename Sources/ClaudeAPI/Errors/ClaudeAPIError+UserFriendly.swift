@@ -46,6 +46,9 @@ public extension ClaudeAPIError {
             
         case .invalidResponse:
             return "サーバーからの応答が無効です。しばらく待ってから再試行してください。"
+            
+        case .streamingError(let message):
+            return "ストリーミングエラー: \(message)"
         }
     }
     
