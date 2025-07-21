@@ -37,10 +37,10 @@ xcodebuild clean -scheme Vantage
 ## アーキテクチャ
 
 ### コア構造
-- **VantageApp.swift** - アプリのエントリーポイント。ImmersiveSpaceを設定し、AppModelを環境オブジェクトとして提供
-- **AppModel.swift** - アプリケーション状態管理。immersiveSpaceStateとARKitセッションを管理
-- **ContentView.swift** - メインUI。3Dモデル表示とToggleImmersiveSpaceButtonを含む
-- **Renderer.swift** - Metal/CompositorServicesを使用したカスタムレンダリングパイプライン実装
+- **Vantage Vision/VantageApp.swift** - アプリのエントリーポイント。ImmersiveSpaceを設定し、AppModelを環境オブジェクトとして提供
+- **Vantage Vision/AppModel.swift** - アプリケーション状態管理。immersiveSpaceStateとARKitセッションを管理
+- **Vantage Vision/ContentView.swift** - メインUI。3Dモデル表示とToggleImmersiveSpaceButtonを含む
+- **Vantage Vision/Renderer.swift** - Metal/CompositorServicesを使用したカスタムレンダリングパイプライン実装
 
 ### レンダリングパイプライン
 1. **CompositorServices** - 低レベルレンダリングフレームワーク
@@ -49,8 +49,8 @@ xcodebuild clean -scheme Vantage
 4. **RealityKit** - 3Dコンテンツとアセット管理
 
 ### 重要な型定義
-- **ShaderTypes.h** - SwiftとMetal間で共有される型（Uniforms、InstanceData等）
-- **Shaders.metal** - 頂点・フラグメントシェーダー実装
+- **Vantage Vision/ShaderTypes.h** - SwiftとMetal間で共有される型（Uniforms、InstanceData等）
+- **Vantage Vision/Shaders.metal** - 頂点・フラグメントシェーダー実装
 
 ### RealityKitContentパッケージ
 - **Package.swift** - visionOS 2.0+、macOS 15+、iOS 18+をサポート
