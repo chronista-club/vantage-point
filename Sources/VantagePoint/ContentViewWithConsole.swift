@@ -16,6 +16,69 @@ struct ContentViewWithConsole: View {
     @FocusState private var isInputFocused: Bool
     
     var body: some View {
+        mainView
+            .frame(width: 900, height: 700)
+            .onAppear {
+                // APIキーがない場合はアラートを表示
+                if !viewModel.hasAPIKey {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                        showingAPIKeyAlert = true
+                    }
+                }
+                // 入力欄にフォーカス
+                isInputFocused = true
+            }
+            .background(shortcutButtons)
+            .onReceive(viewModel.$lastError) { newError in
+                if let error = newError {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                        currentError = error
+                        showErrorBanner = true
+                    }
+                }
+            }
+            .alert("APIキーを入力", isPresented: $showingAPIKeyAlert) {
+                SecureField("Claude API Key", text: $apiKey)
+                Button("設定") {
+                    viewModel.setAPIKey(apiKey)
+                    showingAPIKeyAlert = false
+                }
+                .disabled(apiKey.isEmpty)
+                Button("キャンセル") {
+                    showingAPIKeyAlert = false
+                }
+            } message: {
+                Text("Claude APIを使用するにはAPIキーが必要です")
+            }
+            .toolbar {
+                toolbarContent
+            }
+            .sheet(isPresented: $showingShortcutHelp) {
+                ShortcutHelpView()
+            }
+            .sheet(isPresented: $showingSessionList) {
+                SessionListView(
+                    sessionManager: viewModel.sessionManager,
+                    showingSessionList: $showingSessionList,
+                    onSessionSelected: { sessionId in
+                        viewModel.sessionManager.switchToSession(sessionId)
+                        if let session = viewModel.sessionManager.currentSession {
+                            viewModel.messages = session.messages
+                            viewModel.selectedModel = ClaudeModel.allCases.first { $0.rawValue == session.model } ?? .claude35Sonnet
+                            messageText = ""
+                            messageHistoryIndex = -1
+                        }
+                    },
+                    onNewSession: {
+                        viewModel.clearMessages()
+                        messageText = ""
+                        messageHistoryIndex = -1
+                    }
+                )
+            }
+    }
+    
+    private var mainView: some View {
         VSplitView {
             // メインチャットビュー
             VStack(spacing: 0) {
@@ -46,27 +109,7 @@ struct ContentViewWithConsole: View {
                 Divider()
                 
                 // チャット履歴
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 12) {
-                            ForEach(viewModel.messages) { message in
-                                StreamingMessageView(
-                                    message: message,
-                                    isStreaming: viewModel.streamingMessageId == message.id
-                                )
-                                .id(message.id)
-                            }
-                        }
-                        .padding()
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(Color(NSColor.controlBackgroundColor))
-                    .onChange(of: viewModel.messages.count) { _, _ in
-                        withAnimation {
-                            proxy.scrollTo(viewModel.messages.last?.id, anchor: .bottom)
-                        }
-                    }
-                }
+                chatHistory
                 
                 Divider()
                 
@@ -82,132 +125,104 @@ struct ContentViewWithConsole: View {
                     .frame(minHeight: 100, maxHeight: 400)
             }
         }
-        .frame(width: 900, height: 700)
-        .onAppear {
-            // APIキーがない場合はアラートを表示
-            if !viewModel.hasAPIKey {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                    showingAPIKeyAlert = true
-                }
-            }
-            // 入力欄にフォーカス
-            isInputFocused = true
-        }
-        .background(
-            Group {
-                Button("") {
-                    withAnimation {
-                        showConsole.toggle()
+    }
+    
+    private var chatHistory: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 12) {
+                    ForEach(viewModel.messages) { message in
+                        StreamingMessageView(
+                            message: message,
+                            isStreaming: viewModel.streamingMessageId == message.id
+                        )
+                        .id(message.id)
                     }
                 }
-                .keyboardShortcut("/", modifiers: .command)
-                .hidden()
-                
-                Button("") {
-                    viewModel.clearMessages()
-                    messageText = ""
-                    messageHistoryIndex = -1
-                }
-                .keyboardShortcut("n", modifiers: .command)
-                .hidden()
-                
-                Button("") {
-                    showingSessionList = true
-                }
-                .keyboardShortcut("h", modifiers: [.command, .shift])
-                .hidden()
+                .padding()
             }
-        )
-        .onChange(of: viewModel.lastError) { newError in
-            if let error = newError {
-                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                    currentError = error
-                    showErrorBanner = true
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color(NSColor.controlBackgroundColor))
+            .onChange(of: viewModel.messages.count) { _, _ in
+                withAnimation {
+                    proxy.scrollTo(viewModel.messages.last?.id, anchor: .bottom)
                 }
             }
         }
-        .alert("APIキーを入力", isPresented: $showingAPIKeyAlert) {
-            SecureField("Claude API Key", text: $apiKey)
-            Button("設定") {
-                viewModel.setAPIKey(apiKey)
-                showingAPIKeyAlert = false
-            }
-            .disabled(apiKey.isEmpty)
-            Button("キャンセル") {
-                showingAPIKeyAlert = false
-            }
-        } message: {
-            Text("Claude APIを使用するにはAPIキーが必要です")
-        }
-        .toolbar {
-            ToolbarItem(placement: .automatic) {
-                Button {
-                    showingSessionList = true
-                } label: {
-                    Label("履歴", systemImage: "clock.arrow.circlepath")
+    }
+    
+    private var shortcutButtons: some View {
+        Group {
+            Button("") {
+                withAnimation {
+                    showConsole.toggle()
                 }
             }
+            .keyboardShortcut("/", modifiers: .command)
+            .hidden()
             
-            ToolbarItem(placement: .automatic) {
-                Button {
-                    withAnimation {
-                        showConsole.toggle()
+            Button("") {
+                viewModel.clearMessages()
+                messageText = ""
+                messageHistoryIndex = -1
+            }
+            .keyboardShortcut("n", modifiers: .command)
+            .hidden()
+            
+            Button("") {
+                showingSessionList = true
+            }
+            .keyboardShortcut("h", modifiers: [.command, .shift])
+            .hidden()
+        }
+    }
+    
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .automatic) {
+            Button {
+                showingSessionList = true
+            } label: {
+                Label("履歴", systemImage: "clock.arrow.circlepath")
+            }
+        }
+        
+        ToolbarItem(placement: .automatic) {
+            Button {
+                withAnimation {
+                    showConsole.toggle()
+                }
+            } label: {
+                Label("コンソール", systemImage: showConsole ? "terminal.fill" : "terminal")
+            }
+        }
+        
+        ToolbarItem(placement: .automatic) {
+            Menu {
+                ForEach(ClaudeModel.allCases, id: \.self) { model in
+                    Button(model.displayName) {
+                        viewModel.selectedModel = model
                     }
-                } label: {
-                    Label("コンソール", systemImage: showConsole ? "terminal.fill" : "terminal")
                 }
-            }
-            
-            ToolbarItem(placement: .automatic) {
-                Menu {
-                    ForEach(ClaudeModel.allCases, id: \.self) { model in
-                        Button(model.displayName) {
-                            viewModel.selectedModel = model
-                        }
-                    }
-                } label: {
-                    Label(viewModel.selectedModel.displayName, systemImage: "cpu")
-                }
-            }
-            
-            ToolbarItem(placement: .automatic) {
-                Button {
-                    showingAPIKeyAlert = true
-                } label: {
-                    Label("APIキー設定", systemImage: "key")
-                }
-            }
-            
-            ToolbarItem(placement: .automatic) {
-                Button {
-                    showingShortcutHelp = true
-                } label: {
-                    Label("ショートカット", systemImage: "keyboard")
-                }
+            } label: {
+                Label(viewModel.selectedModel.displayName, systemImage: "cpu")
             }
         }
-        .sheet(isPresented: $showingShortcutHelp) {
-            ShortcutHelpView()
+        
+        ToolbarItem(placement: .automatic) {
+            Button {
+                showingAPIKeyAlert = true
+            } label: {
+                Label("APIキー設定", systemImage: "key")
+            }
         }
-        .sheet(isPresented: $showingSessionList) {
-            SessionListView(
-                sessionManager: viewModel.sessionManager,
-                showingSessionList: $showingSessionList,
-                onSessionSelected: { sessionId in
-                    viewModel.sessionManager.switchToSession(sessionId)
-                    if let session = viewModel.sessionManager.currentSession {
-                        viewModel.messages = session.messages
-                        viewModel.selectedModel = ClaudeModel.allCases.first { $0.rawValue == session.model } ?? .claude35Sonnet
-                        messageText = ""
-                        messageHistoryIndex = -1
-                    }
-                },
-                onNewSession: {
-                    viewModel.clearMessages()
-                    messageText = ""
-                    messageHistoryIndex = -1
-                }
-            )
+        
+        ToolbarItem(placement: .automatic) {
+            Button {
+                showingShortcutHelp = true
+            } label: {
+                Label("ショートカット", systemImage: "keyboard")
+            }
         }
     }
     
@@ -247,43 +262,57 @@ struct ContentViewWithConsole: View {
     }
     
     private var inputField: some View {
-        ZStack(alignment: .topLeading) {
-            TextEditor(text: $messageText)
-                .font(.body)
-                .focused($isInputFocused)
-                .frame(minHeight: 36, maxHeight: 120)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(4)
-                .background(Color(NSColor.textBackgroundColor))
-                .cornerRadius(6)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6)
-                        .stroke(Color(NSColor.separatorColor), lineWidth: 1)
-                )
-                .onKeyPress(.return, modifiers: .command) {
-                    sendMessage()
-                    return .handled
+        VStack {
+            ZStack(alignment: .topLeading) {
+                TextEditor(text: $messageText)
+                    .font(.body)
+                    .focused($isInputFocused)
+                    .frame(minHeight: 36, maxHeight: 120)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(4)
+                    .background(Color(NSColor.textBackgroundColor))
+                    .cornerRadius(6)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(Color(NSColor.separatorColor), lineWidth: 1)
+                    )
+                
+                if messageText.isEmpty {
+                    Text("メッセージを入力... (Cmd+Enterで送信)")
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 12)
+                        .allowsHitTesting(false)
                 }
-                .onKeyPress(.k, modifiers: .command) {
-                    messageText = ""
-                    return .handled
-                }
-                .onKeyPress(.upArrow, modifiers: .command) {
-                    navigateMessageHistory(direction: .up)
-                    return .handled
-                }
-                .onKeyPress(.downArrow, modifiers: .command) {
-                    navigateMessageHistory(direction: .down)
-                    return .handled
-                }
-            
-            if messageText.isEmpty {
-                Text("メッセージを入力... (Cmd+Enterで送信)")
-                    .foregroundColor(.secondary)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 12)
-                    .allowsHitTesting(false)
             }
+        }
+        .onKeyPress(.return, phases: .down) { _ in
+            if NSEvent.modifierFlags.contains(.command) {
+                sendMessage()
+                return .handled
+            }
+            return .ignored
+        }
+        .onKeyPress("k", phases: .down) { _ in
+            if NSEvent.modifierFlags.contains(.command) {
+                messageText = ""
+                return .handled
+            }
+            return .ignored
+        }
+        .onKeyPress(.upArrow, phases: .down) { _ in
+            if NSEvent.modifierFlags.contains(.command) {
+                navigateMessageHistory(direction: .up)
+                return .handled
+            }
+            return .ignored
+        }
+        .onKeyPress(.downArrow, phases: .down) { _ in
+            if NSEvent.modifierFlags.contains(.command) {
+                navigateMessageHistory(direction: .down)
+                return .handled
+            }
+            return .ignored
         }
         .disabled(viewModel.isLoading || !viewModel.hasAPIKey)
     }
