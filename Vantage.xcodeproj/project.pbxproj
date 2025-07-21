@@ -305,7 +305,7 @@
 			mainGroup = 0E9842662E161A4000928FD2;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				461443CE2E2DE9E50048F5E7 /* XCLocalSwiftPackageReference "../Vantage" */,
+				461443CE2E2DE9E50048F5E7 /* XCLocalSwiftPackageReference "." */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 0E9842702E161A4000928FD2 /* Products */;
@@ -388,7 +388,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
-				CODE_SIGN_ENTITLEMENTS = "Sources/VantagePoint/Vantage_Mac.entitlements";
+				CODE_SIGN_ENTITLEMENTS = "Vantage Point/Vantage_Mac.entitlements";
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "-";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
@@ -421,7 +421,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
-				CODE_SIGN_ENTITLEMENTS = "Sources/VantagePoint/Vantage_Mac.entitlements";
+				CODE_SIGN_ENTITLEMENTS = "Vantage Point/Vantage_Mac.entitlements";
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "-";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
@@ -705,9 +705,9 @@
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
-		461443CE2E2DE9E50048F5E7 /* XCLocalSwiftPackageReference "../Vantage" */ = {
+		461443CE2E2DE9E50048F5E7 /* XCLocalSwiftPackageReference "." */ = {
 			isa = XCLocalSwiftPackageReference;
-			relativePath = ../Vantage;
+			relativePath = .;
 		};
 /* End XCLocalSwiftPackageReference section */
 
