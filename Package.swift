@@ -4,29 +4,29 @@
 import PackageDescription
 
 let package = Package(
-    name: "ClaudeAPI",
+    name: "ClaudeIntegration",
     platforms: [
         .macOS(.v14),
         .iOS(.v17),
-        .visionOS(.v2)
+        .visionOS(.v2),
     ],
     products: [
         .library(
-            name: "ClaudeAPI",
-            targets: ["ClaudeAPI"]
-        ),
+            name: "ClaudeIntegration",
+            targets: ["ClaudeIntegration"]
+        )
     ],
     dependencies: [],
     targets: [
         .target(
-            name: "ClaudeAPI",
+            name: "ClaudeIntegration",
             dependencies: [],
-            path: "Sources/ClaudeAPI"
+            path: "Sources/ClaudeIntegration"
         ),
         .testTarget(
-            name: "ClaudeAPITests",
-            dependencies: ["ClaudeAPI"],
-            path: "Tests/ClaudeAPITests"
+            name: "ClaudeIntegrationTests",
+            dependencies: ["ClaudeIntegration"],
+            path: "Tests/ClaudeIntegrationTests"
         ),
     ]
 )

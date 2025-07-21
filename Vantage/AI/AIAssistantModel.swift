@@ -1,6 +1,6 @@
 import SwiftUI
 import Observation
-import ClaudeAPI
+import ClaudeIntegration
 
 /// AIアシスタントの状態を管理するモデル
 @Observable
