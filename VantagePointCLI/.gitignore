@@ -1,20 +1,21 @@
-# Swift Package Manager
+# Swift build artifacts
 .build/
 .swiftpm/
-Package.resolved
-
-# Xcode
-xcuserdata/
-*.xcodeproj/
 DerivedData/
+
+# SPM dependencies
+Package.resolved
 
 # macOS
 .DS_Store
 
-# IDE
-.vscode/
-.idea/
+# Xcode
+xcuserdata/
+*.xcscmblueprint
+*.xccheckout
 
-# Test Coverage
-.coverage/
-*.lcov
+# Build artifacts
+*.o
+*.dylib
+*.exe
+EOF < /dev/null
