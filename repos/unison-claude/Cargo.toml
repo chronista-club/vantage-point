@@ -1,17 +1,17 @@
 [package]
-name = "claude-integration"
+name = "unison-claude"
 version = "0.1.0"
 edition = "2024"
 authors = ["chronista-club"]
-description = "Claude AI integration library for Rust applications"
-repository = "https://github.com/chronista-club/claude-integration"
+description = "Claude AI integration for Unison - High-performance communication library"
+repository = "https://github.com/chronista-club/unison-claude"
 license = "MIT"
 keywords = ["claude", "ai", "anthropic", "integration", "async"]
 categories = ["api-bindings", "asynchronous"]
 
 [dependencies]
 # Anthropic SDK
-anthropic-ai = "0.1"
+# anthropic-ai = "0.1"  # TODO: 公式SDKリリース後に有効化
 
 # 非同期ランタイム
 tokio = { version = "1.45", features = ["full"] }
@@ -77,22 +77,22 @@ markdown = ["dep:pulldown-cmark"]
 unison = ["dep:unison-core"]
 full = ["markdown", "unison"]
 
-[[example]]
-name = "basic_chat"
-required-features = []
+# [[example]]
+# name = "basic_chat"
+# required-features = []
 
-[[example]]
-name = "streaming"
-required-features = []
+# [[example]]
+# name = "streaming"
+# required-features = []
 
-[[example]]
-name = "function_calling"
-required-features = []
+# [[example]]
+# name = "function_calling"
+# required-features = []
 
-[[example]]
-name = "vision"
-required-features = []
+# [[example]]
+# name = "vision"
+# required-features = []
 
-[[bench]]
-name = "response_time"
-harness = false
+# [[bench]]
+# name = "response_time"
+# harness = false
