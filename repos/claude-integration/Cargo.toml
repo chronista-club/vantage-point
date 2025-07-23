@@ -1,0 +1,98 @@
+[package]
+name = "claude-integration"
+version = "0.1.0"
+edition = "2024"
+authors = ["chronista-club"]
+description = "Claude AI integration library for Rust applications"
+repository = "https://github.com/chronista-club/claude-integration"
+license = "MIT"
+keywords = ["claude", "ai", "anthropic", "integration", "async"]
+categories = ["api-bindings", "asynchronous"]
+
+[dependencies]
+# Anthropic SDK
+anthropic-ai = "0.1"
+
+# 非同期ランタイム
+tokio = { version = "1.45", features = ["full"] }
+async-trait = "0.1"
+
+# エラーハンドリング
+thiserror = "2.0"
+anyhow = "1.0"
+
+# シリアライゼーション
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# HTTPクライアント
+reqwest = { version = "0.12", features = ["json", "stream"] }
+
+# ストリーミング
+tokio-stream = "0.1"
+futures = "0.3"
+pin-project = "1.1"
+
+# ログ・トレース
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# 設定管理
+config = "0.14"
+dotenvy = "0.15"
+
+# ユーティリティ
+once_cell = "1.20"
+parking_lot = "0.12"
+bytes = "1.9"
+
+# 設定ファイル用
+serde_yaml = "0.9"
+toml = "0.8"
+dirs = "5.0"
+
+# レート制限
+governor = "0.8"
+nonzero_ext = "0.3"
+
+# Markdown処理（オプション）
+pulldown-cmark = { version = "0.12", optional = true }
+
+# unison-core統合（オプション）
+unison-core = { path = "../unison-core", optional = true }
+
+[dev-dependencies]
+# テスト用
+tokio-test = "0.4"
+mockito = "1.6"
+wiremock = "0.6"
+pretty_assertions = "1.4"
+
+# ベンチマーク
+criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
+
+[features]
+default = ["markdown"]
+markdown = ["dep:pulldown-cmark"]
+unison = ["dep:unison-core"]
+full = ["markdown", "unison"]
+
+[[example]]
+name = "basic_chat"
+required-features = []
+
+[[example]]
+name = "streaming"
+required-features = []
+
+[[example]]
+name = "function_calling"
+required-features = []
+
+[[example]]
+name = "vision"
+required-features = []
+
+[[bench]]
+name = "response_time"
+harness = false
