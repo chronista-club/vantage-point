@@ -104,7 +104,7 @@ public actor ClaudeCodeService: ClaudeServiceProtocol {
 private actor ClaudeCodeProcessManager {
     
     private let claudeCodeBundleIdentifier = "com.anthropic.claudecode"
-    private let claudeCLIPath = "/usr/local/bin/claude"
+    private let claudeCLIPath = "/Users/mito/.local/share/mise/installs/node/20.19.4/bin/claude"
     private var currentProcess: Process?
     
     /// Claude Codeが実行中かチェック
