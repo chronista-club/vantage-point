@@ -85,7 +85,7 @@ public actor ClaudeAPIService: ClaudeServiceProtocol {
         let testMessage = Message(role: .user, content: "Hi")
         _ = try await client.sendMessage(
             [testMessage],
-            model: .claude3_haiku,  // 最も安価なモデルでテスト
+            model: .claude3Haiku,  // 最も安価なモデルでテスト
             maxTokens: 10
         )
     }

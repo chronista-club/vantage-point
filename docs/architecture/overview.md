@@ -10,14 +10,17 @@ Vantageは、Apple Vision Pro向けの没入型開発環境として設計され
 
 **Metal + CompositorServices**を基盤とした高性能レンダリングパイプライン
 
-```
-┌─────────────────────────────────────┐
-│         CompositorServices          │
-├─────────────────────────────────────┤
-│            Metal API                │
-├─────────────────────────────────────┤
-│         Custom Shaders              │
-└─────────────────────────────────────┘
+```mermaid
+graph TD
+    A[CompositorServices] --> B[Metal API]
+    B --> C[Custom Shaders]
+    C --> D[Renderer.swift]
+    C --> E[Shaders.metal]
+    C --> F[ShaderTypes.h]
+    
+    style A fill:#ff9999
+    style B fill:#66b3ff
+    style C fill:#99ff99
 ```
 
 - **Renderer.swift**: カスタムレンダリングループの実装
@@ -36,16 +39,29 @@ Vantageは、Apple Vision Pro向けの没入型開発環境として設計され
 
 プラットフォーム適応型のClaude AI統合
 
-```swift
-protocol ClaudeServiceProtocol {
-    // プラットフォーム共通インターフェース
-}
-
-// macOS: Claude Codeとの連携
-class ClaudeCodeService: ClaudeServiceProtocol
-
-// visionOS: API直接呼び出し
-class ClaudeAPIService: ClaudeServiceProtocol
+```mermaid
+classDiagram
+    class ClaudeServiceProtocol {
+        <<interface>>
+        +sendMessage()
+        +streamMessage()
+        +setWorkingDirectory()
+    }
+    
+    class ClaudeCodeService {
+        +macOS専用
+        +XPC通信
+        +ファイル操作
+    }
+    
+    class ClaudeAPIService {
+        +visionOS対応
+        +HTTP通信
+        +軽量実装
+    }
+    
+    ClaudeServiceProtocol <|-- ClaudeCodeService
+    ClaudeServiceProtocol <|-- ClaudeAPIService
 ```
 
 ## アプリケーション構造
@@ -58,36 +74,60 @@ class ClaudeAPIService: ClaudeServiceProtocol
 
 ### モジュール構成
 
-```
-Vantage/
-├── Vantage Vision/      # visionOSアプリ本体
-├── Vantage Point/       # macOS開発支援ツール
-├── VantagePointCLI/     # コマンドラインインターフェース
-└── ClaudeIntegration/   # AI連携モジュール
+```mermaid
+graph LR
+    subgraph "Vantage Platform"
+        VV[Vantage Vision<br/>visionOSアプリ]
+        VP[Vantage Point<br/>macOS開発ツール]
+        CLI[VantagePointCLI<br/>コマンドライン]
+        CI[ClaudeIntegration<br/>AI連携モジュール]
+    end
+    
+    VV --> CI
+    VP --> CI
+    CLI --> CI
+    
+    style VV fill:#ff6b6b
+    style VP fill:#4ecdc4
+    style CLI fill:#45b7d1
+    style CI fill:#96ceb4
 ```
 
 ## データフロー
 
-### 1. ユーザー入力
-```
-ユーザージェスチャー/音声
-    ↓
-ARKit/RealityKit
-    ↓
-AppModel (状態更新)
-    ↓
-View更新/レンダリング
+### 1. ユーザー入力データフロー
+
+```mermaid
+flowchart TD
+    A[ユーザージェスチャー/音声] --> B[ARKit/RealityKit]
+    B --> C[AppModel<br/>状態更新]
+    C --> D[View更新/レンダリング]
+    
+    style A fill:#ffeb3b
+    style B fill:#ff9800
+    style C fill:#2196f3
+    style D fill:#4caf50
 ```
 
 ### 2. AI処理フロー
-```
-ユーザーリクエスト
-    ↓
-ClaudeServiceFactory (プラットフォーム判定)
-    ↓
-適切なService実装
-    ↓
-レスポンス処理/UI更新
+
+```mermaid
+flowchart TD
+    A[ユーザーリクエスト] --> B[ClaudeServiceFactory]
+    B --> C{プラットフォーム判定}
+    C -->|macOS| D[ClaudeCodeService]
+    C -->|visionOS| E[ClaudeAPIService]
+    D --> F[レスポンス処理]
+    E --> F
+    F --> G[UI更新]
+    
+    style A fill:#ffeb3b
+    style B fill:#ff9800
+    style C fill:#9c27b0
+    style D fill:#2196f3
+    style E fill:#4caf50
+    style F fill:#ff5722
+    style G fill:#795548
 ```
 
 ## セキュリティ設計

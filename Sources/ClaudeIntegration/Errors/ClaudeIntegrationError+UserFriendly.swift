@@ -49,6 +49,12 @@ public extension ClaudeIntegrationError {
             
         case .streamingError(let message):
             return "ストリーミングエラー: \(message)"
+            
+        case .customError(let message):
+            return "エラー: \(message)"
+            
+        case .serviceUnavailable(let message):
+            return "サービスが利用できません: \(message)"
         }
     }
     

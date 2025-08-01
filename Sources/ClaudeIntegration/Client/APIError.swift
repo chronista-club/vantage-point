@@ -32,6 +32,9 @@ public enum ClaudeIntegrationError: Error, LocalizedError, Sendable {
     /// カスタムエラー
     case customError(String)
     
+    /// サービスが利用不可
+    case serviceUnavailable(String)
+    
     public var errorDescription: String? {
         switch self {
         case .networkError(let error):
@@ -58,6 +61,8 @@ public enum ClaudeIntegrationError: Error, LocalizedError, Sendable {
             return "ストリーミングエラー: \(message)"
         case .customError(let message):
             return message
+        case .serviceUnavailable(let message):
+            return "サービスが利用できません: \(message)"
         }
     }
 }

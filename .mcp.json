@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "xcodeproj": {
+      "command": "nerdctl",
+      "args": [
+        "run",
+        "--rm",
+        "-i",
+        "-v",
+        "./:/workspace",
+        "ghcr.io/giginet/xcodeproj-mcp-server",
+        "/workspace"
+      ]
+    }
+  }
+}

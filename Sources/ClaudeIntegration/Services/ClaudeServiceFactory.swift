@@ -53,17 +53,18 @@ public enum ClaudeServiceFactory {
         } else {
             // Keychainから取得
             let keychain = KeychainManager()
-            guard let storedKey = try await keychain.loadAPIKey() else {
+            do {
+                apiKey = try await keychain.loadAPIKey()
+            } catch {
                 throw ClaudeIntegrationError.missingAPIKey
             }
-            apiKey = storedKey
         }
         
         // API設定を作成
         let apiConfiguration = APIConfiguration(
             apiKey: apiKey,
-            defaultModel: configuration.defaultModel,
-            timeoutInterval: configuration.timeoutInterval
+            timeoutInterval: configuration.timeoutInterval,
+            defaultModel: configuration.defaultModel
         )
         
         // APIサービスを返す
@@ -90,9 +91,3 @@ public enum ClaudeServiceFactory {
     #endif
 }
 
-/// カスタムエラー
-extension ClaudeIntegrationError {
-    public static func serviceUnavailable(_ reason: String) -> ClaudeIntegrationError {
-        return .customError(reason)
-    }
-}

@@ -98,12 +98,12 @@ public extension ClaudeServiceConfiguration {
         #if os(macOS)
         return ClaudeServiceConfiguration(
             connectionType: .claudeCode,
-            defaultModel: .claude3_sonnet  // TODO: .claude3_5_sonnet に変更
+            defaultModel: .claude35Sonnet
         )
         #else
         return ClaudeServiceConfiguration(
             connectionType: .api,
-            defaultModel: .claude3_sonnet,
+            defaultModel: .claude35Sonnet,
             apiKey: nil  // Keychainから読み込む
         )
         #endif
