@@ -13,11 +13,14 @@ struct ContentViewWithConsole: View {
     @State private var messageHistoryIndex = -1
     @State private var showingShortcutHelp = false
     @State private var showingSessionList = false
+    @State private var showWorkingDirectory = true
+    @State private var showFileBrowser = true
+    @State private var sidebarWidth: CGFloat = 300
     @FocusState private var isInputFocused: Bool
     
     var body: some View {
         mainView
-            .frame(width: 900, height: 700)
+            .frame(width: 1200, height: 700)
             .onAppear {
                 // APIキーがない場合はアラートを表示
                 if !viewModel.hasAPIKey {
@@ -79,9 +82,32 @@ struct ContentViewWithConsole: View {
     }
     
     private var mainView: some View {
-        VSplitView {
-            // メインチャットビュー
-            VStack(spacing: 0) {
+        HSplitView {
+            // 左サイドバー（作業ディレクトリとファイルブラウザ）
+            if showWorkingDirectory || showFileBrowser {
+                VStack(spacing: 0) {
+                    if showWorkingDirectory {
+                        WorkingDirectoryView(viewModel: viewModel)
+                            .padding()
+                    }
+                    
+                    if showWorkingDirectory && showFileBrowser {
+                        Divider()
+                    }
+                    
+                    if showFileBrowser {
+                        FileBrowserView(viewModel: viewModel)
+                            .frame(maxHeight: .infinity)
+                    }
+                }
+                .frame(width: sidebarWidth)
+                .background(Color(NSColor.windowBackgroundColor))
+            }
+            
+            // メインコンテンツ
+            VSplitView {
+                // メインチャットビュー
+                VStack(spacing: 0) {
                 // ヘッダー
                 headerView
                 
@@ -125,6 +151,7 @@ struct ContentViewWithConsole: View {
                     .frame(minHeight: 100, maxHeight: 400)
             }
         }
+    }
     }
     
     private var chatHistory: some View {
@@ -179,6 +206,26 @@ struct ContentViewWithConsole: View {
     
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .automatic) {
+            Button {
+                withAnimation {
+                    showWorkingDirectory.toggle()
+                }
+            } label: {
+                Label("作業ディレクトリ", systemImage: showWorkingDirectory ? "folder.fill" : "folder")
+            }
+        }
+        
+        ToolbarItem(placement: .automatic) {
+            Button {
+                withAnimation {
+                    showFileBrowser.toggle()
+                }
+            } label: {
+                Label("ファイル", systemImage: showFileBrowser ? "doc.text.fill" : "doc.text")
+            }
+        }
+        
         ToolbarItem(placement: .automatic) {
             Button {
                 showingSessionList = true

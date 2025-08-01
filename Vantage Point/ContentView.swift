@@ -6,6 +6,8 @@ struct ContentView: View {
     @State private var messageText = ""
     @State private var apiKey = ""
     @State private var showingAPIKeyAlert = false
+    @State private var showingWorkingDirectoryPicker = false
+    @State private var selectedWorkingDirectory: URL?
     @FocusState private var isInputFocused: Bool
     
     var body: some View {
@@ -66,6 +68,21 @@ struct ContentView: View {
         } message: {
             Text("Claude APIを使用するにはAPIキーが必要です")
         }
+        .fileImporter(
+            isPresented: $showingWorkingDirectoryPicker,
+            allowedContentTypes: [.folder],
+            allowsMultipleSelection: false
+        ) { result in
+            switch result {
+            case .success(let urls):
+                if let url = urls.first {
+                    selectedWorkingDirectory = url
+                    viewModel.setWorkingDirectory(url)
+                }
+            case .failure(let error):
+                print("Error selecting directory: \(error)")
+            }
+        }
         .toolbar {
             ToolbarItem(placement: .automatic) {
                 Menu {
@@ -85,6 +102,19 @@ struct ContentView: View {
                 } label: {
                     Label("APIキー設定", systemImage: "key")
                 }
+            }
+            
+            ToolbarItem(placement: .automatic) {
+                Button {
+                    showingWorkingDirectoryPicker = true
+                } label: {
+                    if let directory = selectedWorkingDirectory {
+                        Label(directory.lastPathComponent, systemImage: "folder.fill")
+                    } else {
+                        Label("作業ディレクトリ", systemImage: "folder")
+                    }
+                }
+                .help(selectedWorkingDirectory?.path ?? "作業ディレクトリを選択")
             }
         }
     }
