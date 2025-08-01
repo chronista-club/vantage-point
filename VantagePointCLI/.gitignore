@@ -1,0 +1,21 @@
+# Swift build artifacts
+.build/
+.swiftpm/
+DerivedData/
+
+# SPM dependencies
+Package.resolved
+
+# macOS
+.DS_Store
+
+# Xcode
+xcuserdata/
+*.xcscmblueprint
+*.xccheckout
+
+# Build artifacts
+*.o
+*.dylib
+*.exe
+EOF < /dev/null

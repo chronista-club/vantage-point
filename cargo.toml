@@ -1,17 +1,14 @@
 # File: Cargo.toml (root)
 [workspace]
-members = [
-    "vantage-core",
-    "vantage-uniffi",
-]
+members = ["repos/unison-claude"]
 resolver = "2"
 
 [workspace.package]
 version = "0.1.0"
-authors = ["Vantage Contributors"]
-edition = "2021"
+authors = ["Chronista Club"]
+edition = "2024"
 license = "MIT"
-repository = "https://github.com/yourusername/vantage"
+repository = "https://github.com/chronista-club/vantage"
 
 [workspace.dependencies]
 # Async runtime

@@ -1,0 +1,165 @@
+# Vantage Project mise Configuration
+# https://mise.jdx.dev/
+
+[tools]
+# Define tool versions
+rust = "1.88.0"
+node = "20"
+kubectl = "1.32"
+kubectx = "latest"
+kubens = "latest"
+rg = "latest"
+lsd = "latest"
+
+[env]
+# Environment variables
+VANTAGE_PROJECT_LABEL = "app=vantage"
+VANTAGE_NAMESPACES = "vantage-local,vantage-tools"
+VANTAGE_ROOT = "{{config_root}}"
+
+[tasks.wt]
+description = "Manage git worktrees and switch working directory"
+script = """
+#!/usr/bin/env lua
+
+local function execute(cmd)
+    local handle = io.popen(cmd)
+    local result = handle:read("*a")
+    local success = handle:close()
+    return result, success
+end
+
+local function file_exists(path)
+    local f = io.open(path, "r")
+    if f then
+        f:close()
+        return true
+    end
+    return false
+end
+
+local function dir_exists(path)
+    local ok, err, code = os.rename(path, path)
+    if not ok then
+        if code == 13 then
+            -- Permission denied, but it exists
+            return true
+        end
+    end
+    return ok
+end
+
+local working_dir = os.getenv("VANTAGE_ROOT") .. "/working"
+local command = arg[1] or "help"
+
+if command == "list" or command == "ls" then
+    print("📁 Available worktrees:")
+    local result = execute("git worktree list")
+    for line in result:gmatch("[^\r\n]+") do
+        print("  " .. line)
+    end
+    
+elseif command == "add" or command == "create" then
+    local name = arg[2]
+    local branch = arg[3] or name
+    
+    if not name then
+        print("❌ Usage: mise wt add <name> [branch]")
+        print("   Example: mise wt add unison-core feature/node-comm")
+        os.exit(1)
+    end
+    
+    local worktree_path = working_dir .. "/" .. name
+    
+    -- Check if branch exists
+    local branch_check = execute("git show-ref --verify --quiet refs/heads/" .. branch)
+    if branch_check == "" then
+        print("🌿 Creating new branch: " .. branch)
+        execute("git worktree add -b " .. branch .. " " .. worktree_path)
+    else
+        print("🔗 Using existing branch: " .. branch)
+        execute("git worktree add " .. worktree_path .. " " .. branch)
+    end
+    
+    print("✅ Worktree created at: " .. worktree_path)
+    print("💡 To switch to it: mise wt cd " .. name)
+    
+elseif command == "cd" or command == "switch" then
+    local name = arg[2]
+    
+    if not name then
+        print("❌ Usage: mise wt cd <name>")
+        print("   Available worktrees:")
+        local handle = io.popen("ls -1 " .. working_dir .. " 2>/dev/null")
+        if handle then
+            for file in handle:lines() do
+                if file ~= "README.md" and file ~= ".gitkeep" then
+                    print("     - " .. file)
+                end
+            end
+            handle:close()
+        else
+            print("     (none)")
+        end
+        os.exit(1)
+    end
+    
+    local worktree_path = working_dir .. "/" .. name
+    
+    if not dir_exists(worktree_path) then
+        print("❌ Worktree '" .. name .. "' not found in " .. working_dir)
+        print("   Create it first: mise wt add " .. name)
+        os.exit(1)
+    end
+    
+    print("📂 Switching to worktree: " .. name)
+    print("cd '" .. worktree_path .. "'")
+    
+elseif command == "remove" or command == "rm" then
+    local name = arg[2]
+    
+    if not name then
+        print("❌ Usage: mise wt remove <name>")
+        os.exit(1)
+    end
+    
+    local worktree_path = working_dir .. "/" .. name
+    
+    if not dir_exists(worktree_path) then
+        print("❌ Worktree '" .. name .. "' not found")
+        os.exit(1)
+    end
+    
+    print("🗑️  Removing worktree: " .. name)
+    execute("git worktree remove " .. worktree_path)
+    print("✅ Worktree removed")
+    
+else
+    print("🌳 Git Worktree Manager")
+    print("")
+    print("Commands:")
+    print("  mise wt list              - List all worktrees")
+    print("  mise wt add <name> [branch] - Create new worktree")
+    print("  mise wt cd <name>         - Switch to worktree directory")
+    print("  mise wt remove <name>     - Remove worktree")
+    print("")
+    print("Examples:")
+    print("  mise wt add unison-core feature/node-comm")
+    print("  mise wt cd unison-core")
+    print("  mise wt remove unison-core")
+end
+"""
+
+[tasks.wt-unison-core]
+description = "Create and switch to unison-core worktree"
+run = """
+mise wt add unison-core feature/unison-core-node-communication || true
+eval $(mise wt cd unison-core)
+"""
+
+[tasks.wt-unison-claude]
+description = "Create and switch to unison-claude worktree"
+run = """
+mise wt add unison-claude feature/unison-claude-integration || true
+eval $(mise wt cd unison-claude)
+"""

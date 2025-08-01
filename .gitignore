@@ -12,3 +12,6 @@ DerivedData/
 
 # 移行中のファイル（ルートディレクトリのみ）
 /ClaudeTestApp/
+
+# Working directory (for temporary files and experiments)
+/working/
