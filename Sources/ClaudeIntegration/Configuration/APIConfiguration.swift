@@ -25,9 +25,9 @@ public struct APIConfiguration: Sendable {
         apiKey: "",
         baseURL: URL(string: "https://api.anthropic.com")!,
         apiVersion: "2023-06-01",
-        timeoutInterval: 30,
+        defaultModel: .claude35Haiku,
         maxRetries: 3,
-        defaultModel: .claude35Haiku
+        timeoutInterval: 30
     )
     
     /// カスタム設定を作成
@@ -35,9 +35,9 @@ public struct APIConfiguration: Sendable {
         apiKey: String,
         baseURL: URL = URL(string: "https://api.anthropic.com")!,
         apiVersion: String = "2023-06-01",
-        timeoutInterval: TimeInterval = 30,
+        defaultModel: ClaudeModel = .claude35Haiku,
         maxRetries: Int = 3,
-        defaultModel: ClaudeModel = .claude35Haiku
+        timeoutInterval: TimeInterval = 30
     ) {
         self.apiKey = apiKey
         self.baseURL = baseURL

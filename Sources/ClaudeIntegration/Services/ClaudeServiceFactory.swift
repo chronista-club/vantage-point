@@ -63,7 +63,6 @@ public enum ClaudeServiceFactory {
         // API設定を作成
         let apiConfiguration = APIConfiguration(
             apiKey: apiKey,
-            timeoutInterval: configuration.timeoutInterval,
             defaultModel: configuration.defaultModel
         )
         
