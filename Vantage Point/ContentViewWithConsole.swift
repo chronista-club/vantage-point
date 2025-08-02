@@ -419,9 +419,7 @@ struct ConsoleView: View {
                 
                 // クリアボタン
                 Button {
-                    if let viewModel = ConsoleLog.sharedViewModel {
-                        viewModel.clearLogs()
-                    }
+                    viewModel.clearLogs()
                 } label: {
                     Image(systemName: "trash")
                         .foregroundColor(.secondary)
