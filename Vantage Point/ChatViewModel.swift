@@ -19,6 +19,8 @@ class ChatViewModel: ObservableObject {
     @Published var estimatedInputTokens = 0
     @Published var estimatedOutputTokens = 0
     @Published var sessionManager = SessionManager()
+    @Published var workingDirectory: URL?
+    @Published var workingDirectoryManager = WorkingDirectoryManager()
     
     private var client: ClaudeClient?
     private let keychainManager = KeychainManager.shared
@@ -110,6 +112,7 @@ class ChatViewModel: ObservableObject {
             return
         }
         
+        
         // 前のストリーミングをキャンセル
         currentStreamTask?.cancel()
         
@@ -140,12 +143,18 @@ class ChatViewModel: ObservableObject {
             let inputText = apiMessages.map { $0.content }.joined(separator: " ")
             estimatedInputTokens = inputText.count / 4
             
+            // システムプロンプトに作業ディレクトリ情報を追加
+            var systemPrompt = "あなたは親切で役立つAIアシスタントです。日本語で応答してください。"
+            if let workingDir = workingDirectory {
+                systemPrompt += "\n\n現在の作業ディレクトリ: \(workingDir.path)"
+            }
+            
             // ストリーミングレスポンスを取得
             addLog(level: .info, message: "Claude API (\(selectedModel.displayName)) にリクエストを送信中...")
             let stream = try await client.streamMessage(
                 apiMessages,
                 model: selectedModel,
-                system: "あなたは親切で役立つAIアシスタントです。日本語で応答してください。"
+                system: systemPrompt
             )
             
             // アシスタントメッセージを作成
@@ -400,6 +409,46 @@ class ChatViewModel: ObservableObject {
             addLog(level: .info, message: "ストリーミングを中断しました（\(lastMessage.content.count)文字受信済み）")
         } else {
             addLog(level: .info, message: "ストリーミングを中断しました")
+        }
+    }
+    
+    // 作業ディレクトリの設定
+    func setWorkingDirectory(_ url: URL) {
+        // WorkingDirectoryManagerを使用してディレクトリを設定
+        if workingDirectoryManager.setDirectory(url) {
+            workingDirectory = url
+            addLog(level: .info, message: "作業ディレクトリを設定: \(url.path)")
+        } else {
+            addLog(level: .error, message: "ディレクトリへのアクセス権限を取得できませんでした")
+        }
+    }
+    
+    // 保存されたディレクトリから復元
+    func restoreWorkingDirectory(from bookmark: BookmarkedDirectory) {
+        if let url = workingDirectoryManager.restoreDirectory(from: bookmark) {
+            workingDirectory = url
+            addLog(level: .info, message: "作業ディレクトリを復元: \(url.path)")
+        } else {
+            addLog(level: .error, message: "ディレクトリの復元に失敗しました")
+        }
+    }
+    
+    // ファイルの内容を読み込んでメッセージとして送信
+    func sendFileContent(path: String, fileName: String) async {
+        do {
+            let content = try String(contentsOfFile: path, encoding: .utf8)
+            let message = """
+            ファイル: \(fileName)
+            パス: \(path)
+            
+            ```
+            \(content)
+            ```
+            """
+            
+            await sendMessage(message)
+        } catch {
+            addLog(level: .error, message: "ファイルの読み込みに失敗: \(error.localizedDescription)")
         }
     }
 }
