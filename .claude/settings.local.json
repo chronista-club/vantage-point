@@ -13,7 +13,8 @@
       "mcp__github__create_issue",
       "Bash(git mv:*)",
       "Bash(git add:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(awk:*)"
     ],
     "deny": [],
     "ask": []
