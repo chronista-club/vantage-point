@@ -7,22 +7,85 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		0E10569B2E9ACCA4007EE69B /* Info-iPad.plist in Resources */ = {isa = PBXBuildFile; fileRef = 0E1056952E9ACCA4007EE69B /* Info-iPad.plist */; };
+		0E10569C2E9ACCA4007EE69B /* RefactoringPlan.md in Resources */ = {isa = PBXBuildFile; fileRef = 0E1056732E9ACCA4007EE69B /* RefactoringPlan.md */; };
+		0E10569D2E9ACCA4007EE69B /* Info.plist in Resources */ = {isa = PBXBuildFile; fileRef = 0E1056942E9ACCA4007EE69B /* Info.plist */; };
+		0E10569E2E9ACCA4007EE69B /* ShortcutHelpView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E1056892E9ACCA4007EE69B /* ShortcutHelpView.swift */; };
+		0E10569F2E9ACCA4007EE69B /* ClaudeAPIService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E10567B2E9ACCA4007EE69B /* ClaudeAPIService.swift */; };
+		0E1056A02E9ACCA4007EE69B /* ErrorBannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E1056852E9ACCA4007EE69B /* ErrorBannerView.swift */; };
+		0E1056A12E9ACCA4007EE69B /* VantageMac.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E1056992E9ACCA4007EE69B /* VantageMac.swift */; };
+		0E1056A22E9ACCA4007EE69B /* StreamingMessageView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E10568A2E9ACCA4007EE69B /* StreamingMessageView.swift */; };
+		0E1056A32E9ACCA4007EE69B /* SessionListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E1056882E9ACCA4007EE69B /* SessionListView.swift */; };
+		0E1056A52E9ACCA4007EE69B /* LoggingService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E10567F2E9ACCA4007EE69B /* LoggingService.swift */; };
+		0E1056A62E9ACCA4007EE69B /* WorkingDirectoryManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E1056792E9ACCA4007EE69B /* WorkingDirectoryManager.swift */; };
+		0E1056A72E9ACCA4007EE69B /* ContentViewWithConsole.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E1056932E9ACCA4007EE69B /* ContentViewWithConsole.swift */; };
+		0E1056A82E9ACCA4007EE69B /* SessionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E1056812E9ACCA4007EE69B /* SessionService.swift */; };
+		0E1056A92E9ACCA4007EE69B /* InputStatusView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E1056872E9ACCA4007EE69B /* InputStatusView.swift */; };
+		0E1056AA2E9ACCA4007EE69B /* MessageService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E10567D2E9ACCA4007EE69B /* MessageService.swift */; };
+		0E1056AB2E9ACCA4007EE69B /* ChatSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E1056782E9ACCA4007EE69B /* ChatSession.swift */; };
+		0E1056AC2E9ACCA4007EE69B /* WorkingDirectoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E10568C2E9ACCA4007EE69B /* WorkingDirectoryView.swift */; };
+		0E1056AD2E9ACCA4007EE69B /* TokenCounterView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E10568B2E9ACCA4007EE69B /* TokenCounterView.swift */; };
+		0E1056AE2E9ACCA4007EE69B /* RetryManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E1056832E9ACCA4007EE69B /* RetryManager.swift */; };
+		0E1056AF2E9ACCA4007EE69B /* FileBrowserView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E1056862E9ACCA4007EE69B /* FileBrowserView.swift */; };
+		0E1056B02E9ACCA4007EE69B /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E1056922E9ACCA4007EE69B /* ContentView.swift */; };
+		0E1056B12E9ACCA4007EE69B /* VantageIPad.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E1056982E9ACCA4007EE69B /* VantageIPad.swift */; };
+		0E1056B32E9ACCA4007EE69B /* ChatViewModelMigration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E1056912E9ACCA4007EE69B /* ChatViewModelMigration.swift */; };
+		0E1056B42E9ACCA4007EE69B /* ChatViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E10568F2E9ACCA4007EE69B /* ChatViewModel.swift */; };
+		0E1056B52E9ACCA4007EE69B /* SendMessageUseCase.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E1056752E9ACCA4007EE69B /* SendMessageUseCase.swift */; };
+		0E7AD0632E1F81BF005AD02E /* ClaudeIntegration in Frameworks */ = {isa = PBXBuildFile; productRef = 0E7AD0632E1F81BF005AD02D /* ClaudeIntegration */; };
 		0E9842752E161A4000928FD2 /* RealityKitContent in Frameworks */ = {isa = PBXBuildFile; productRef = 0E9842742E161A4000928FD2 /* RealityKitContent */; };
-		4605F7EF2E2DF0AD0008BC01 /* ClaudeIntegration in Frameworks */ = {isa = PBXBuildFile; productRef = 4605F7EE2E2DF0AD0008BC01 /* ClaudeIntegration */; };
-		461443712E2DE8B30048F5E7 /* (null) in Frameworks */ = {isa = PBXBuildFile; };
-		461443D02E2DE9E50048F5E7 /* ClaudeIntegration in Frameworks */ = {isa = PBXBuildFile; productRef = 461443CF2E2DE9E50048F5E7 /* ClaudeIntegration */; };
+		2B4E877894326FFBE1224E27 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C9EFABC5E50914B4521DE1D /* ContentView.swift */; };
+		3BA11150742B2FB1615C5D7E /* ShaderTypes.h in Headers */ = {isa = PBXBuildFile; fileRef = 50CDA1B24AC987A1F77DF251 /* ShaderTypes.h */; };
 		461443D32E2DEBEC0048F5E7 /* ClaudeIntegration in Frameworks */ = {isa = PBXBuildFile; productRef = 461443D22E2DEBEC0048F5E7 /* ClaudeIntegration */; };
-		E8B6C3A12E3A1D4700ABCDEF /* VantageIPad.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7A3B4E62E3A1C5600789ABC /* VantageIPad.swift */; };
+		694049BA24ECAD1B397E502C /* VantageApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 76154490EF01219707965A2B /* VantageApp.swift */; };
+		84998C65F078C4DD514E90A1 /* Shaders.metal in Resources */ = {isa = PBXBuildFile; fileRef = 5CD9F07B319472023C423B13 /* Shaders.metal */; };
+		95B0792114EB04C66766DFFF /* Renderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0BEACCDB4D839064460187A /* Renderer.swift */; };
+		A07C7B2A5BF9CC8B285F85BC /* ToggleImmersiveSpaceButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8560795FF64D8B9772521046 /* ToggleImmersiveSpaceButton.swift */; };
+		CDFBB15AC6E82C567F22DC4B /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 612D2F0226BAC73852092C51 /* AppModel.swift */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
+		0E1056732E9ACCA4007EE69B /* RefactoringPlan.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = RefactoringPlan.md; sourceTree = "<group>"; };
+		0E1056752E9ACCA4007EE69B /* SendMessageUseCase.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SendMessageUseCase.swift; sourceTree = "<group>"; };
+		0E1056782E9ACCA4007EE69B /* ChatSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatSession.swift; sourceTree = "<group>"; };
+		0E1056792E9ACCA4007EE69B /* WorkingDirectoryManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkingDirectoryManager.swift; sourceTree = "<group>"; };
+		0E10567B2E9ACCA4007EE69B /* ClaudeAPIService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClaudeAPIService.swift; sourceTree = "<group>"; };
+		0E10567D2E9ACCA4007EE69B /* MessageService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageService.swift; sourceTree = "<group>"; };
+		0E10567F2E9ACCA4007EE69B /* LoggingService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoggingService.swift; sourceTree = "<group>"; };
+		0E1056812E9ACCA4007EE69B /* SessionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionService.swift; sourceTree = "<group>"; };
+		0E1056832E9ACCA4007EE69B /* RetryManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RetryManager.swift; sourceTree = "<group>"; };
+		0E1056852E9ACCA4007EE69B /* ErrorBannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErrorBannerView.swift; sourceTree = "<group>"; };
+		0E1056862E9ACCA4007EE69B /* FileBrowserView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileBrowserView.swift; sourceTree = "<group>"; };
+		0E1056872E9ACCA4007EE69B /* InputStatusView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InputStatusView.swift; sourceTree = "<group>"; };
+		0E1056882E9ACCA4007EE69B /* SessionListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionListView.swift; sourceTree = "<group>"; };
+		0E1056892E9ACCA4007EE69B /* ShortcutHelpView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShortcutHelpView.swift; sourceTree = "<group>"; };
+		0E10568A2E9ACCA4007EE69B /* StreamingMessageView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamingMessageView.swift; sourceTree = "<group>"; };
+		0E10568B2E9ACCA4007EE69B /* TokenCounterView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TokenCounterView.swift; sourceTree = "<group>"; };
+		0E10568C2E9ACCA4007EE69B /* WorkingDirectoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkingDirectoryView.swift; sourceTree = "<group>"; };
+		0E10568F2E9ACCA4007EE69B /* ChatViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatViewModel.swift; sourceTree = "<group>"; };
+		0E1056912E9ACCA4007EE69B /* ChatViewModelMigration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatViewModelMigration.swift; sourceTree = "<group>"; };
+		0E1056922E9ACCA4007EE69B /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		0E1056932E9ACCA4007EE69B /* ContentViewWithConsole.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentViewWithConsole.swift; sourceTree = "<group>"; };
+		0E1056942E9ACCA4007EE69B /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		0E1056952E9ACCA4007EE69B /* Info-iPad.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "Info-iPad.plist"; sourceTree = "<group>"; };
+		0E1056962E9ACCA4007EE69B /* Vantage_iPad.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Vantage_iPad.entitlements; sourceTree = "<group>"; };
+		0E1056972E9ACCA4007EE69B /* Vantage_Mac.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Vantage_Mac.entitlements; sourceTree = "<group>"; };
+		0E1056982E9ACCA4007EE69B /* VantageIPad.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VantageIPad.swift; sourceTree = "<group>"; };
+		0E1056992E9ACCA4007EE69B /* VantageMac.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VantageMac.swift; sourceTree = "<group>"; };
 		0E7AD0572E1F81BC005AD02D /* Vantage Point for Mac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Vantage Point for Mac.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		0E98426F2E161A4000928FD2 /* Vantage Vision.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Vantage Vision.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		0E9842732E161A4000928FD2 /* RealityKitContent */ = {isa = PBXFileReference; lastKnownFileType = wrapper; path = RealityKitContent; sourceTree = "<group>"; };
-		4605F7E72E2DF0A10008BC01 /* ClaudeIntegrationTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ClaudeIntegrationTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		C68B2F9D2E3A1B4D00456789 /* Vantage Point for iPad.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Vantage Point for iPad.app"; sourceTree = BUILT_PRODUCTS_DIR; };
-		D7A3B4E62E3A1C5600789ABC /* VantageIPad.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VantageIPad.swift; sourceTree = "<group>"; };
-		D7A3B4E72E3A1C5600789ABD /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		0EDC41542E91B3E500B83939 /* RealityKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = RealityKit.framework; path = Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.0.sdk/System/Library/Frameworks/RealityKit.framework; sourceTree = DEVELOPER_DIR; };
+		50CDA1B24AC987A1F77DF251 /* ShaderTypes.h */ = {isa = PBXFileReference; name = ShaderTypes.h; path = apps/visionos/ShaderTypes.h; sourceTree = "<group>"; };
+		5CD9F07B319472023C423B13 /* Shaders.metal */ = {isa = PBXFileReference; name = Shaders.metal; path = apps/visionos/Shaders.metal; sourceTree = "<group>"; };
+		612D2F0226BAC73852092C51 /* AppModel.swift */ = {isa = PBXFileReference; name = AppModel.swift; path = apps/visionos/AppModel.swift; sourceTree = "<group>"; };
+		76154490EF01219707965A2B /* VantageApp.swift */ = {isa = PBXFileReference; name = VantageApp.swift; path = apps/visionos/VantageApp.swift; sourceTree = "<group>"; };
+		8560795FF64D8B9772521046 /* ToggleImmersiveSpaceButton.swift */ = {isa = PBXFileReference; name = ToggleImmersiveSpaceButton.swift; path = apps/visionos/ToggleImmersiveSpaceButton.swift; sourceTree = "<group>"; };
+		9C9EFABC5E50914B4521DE1D /* ContentView.swift */ = {isa = PBXFileReference; name = ContentView.swift; path = apps/visionos/ContentView.swift; sourceTree = "<group>"; };
+		D0BEACCDB4D839064460187A /* Renderer.swift */ = {isa = PBXFileReference; name = Renderer.swift; path = apps/visionos/Renderer.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -30,8 +93,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				461443712E2DE8B30048F5E7 /* (null) in Frameworks */,
-				461443D02E2DE9E50048F5E7 /* ClaudeIntegration in Frameworks */,
+				0E7AD0632E1F81BF005AD02E /* ClaudeIntegration in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -44,31 +106,137 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		4605F7E42E2DF0A10008BC01 /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				4605F7EF2E2DF0AD0008BC01 /* ClaudeIntegration in Frameworks */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		5EA3279BDDC10F17665F7423 /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		0E1056742E9ACCA4007EE69B /* Documentation */ = {
+			isa = PBXGroup;
+			children = (
+				0E1056732E9ACCA4007EE69B /* RefactoringPlan.md */,
+			);
+			path = Documentation;
+			sourceTree = "<group>";
+		};
+		0E1056762E9ACCA4007EE69B /* UseCases */ = {
+			isa = PBXGroup;
+			children = (
+				0E1056752E9ACCA4007EE69B /* SendMessageUseCase.swift */,
+			);
+			path = UseCases;
+			sourceTree = "<group>";
+		};
+		0E1056772E9ACCA4007EE69B /* Domain */ = {
+			isa = PBXGroup;
+			children = (
+				0E1056762E9ACCA4007EE69B /* UseCases */,
+			);
+			path = Domain;
+			sourceTree = "<group>";
+		};
+		0E10567A2E9ACCA4007EE69B /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				0E1056782E9ACCA4007EE69B /* ChatSession.swift */,
+				0E1056792E9ACCA4007EE69B /* WorkingDirectoryManager.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		0E10567C2E9ACCA4007EE69B /* API */ = {
+			isa = PBXGroup;
+			children = (
+				0E10567B2E9ACCA4007EE69B /* ClaudeAPIService.swift */,
+			);
+			path = API;
+			sourceTree = "<group>";
+		};
+		0E10567E2E9ACCA4007EE69B /* Chat */ = {
+			isa = PBXGroup;
+			children = (
+				0E10567D2E9ACCA4007EE69B /* MessageService.swift */,
+			);
+			path = Chat;
+			sourceTree = "<group>";
+		};
+		0E1056802E9ACCA4007EE69B /* Logging */ = {
+			isa = PBXGroup;
+			children = (
+				0E10567F2E9ACCA4007EE69B /* LoggingService.swift */,
+			);
+			path = Logging;
+			sourceTree = "<group>";
+		};
+		0E1056822E9ACCA4007EE69B /* Session */ = {
+			isa = PBXGroup;
+			children = (
+				0E1056812E9ACCA4007EE69B /* SessionService.swift */,
+			);
+			path = Session;
+			sourceTree = "<group>";
+		};
+		0E1056842E9ACCA4007EE69B /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				0E10567C2E9ACCA4007EE69B /* API */,
+				0E10567E2E9ACCA4007EE69B /* Chat */,
+				0E1056802E9ACCA4007EE69B /* Logging */,
+				0E1056822E9ACCA4007EE69B /* Session */,
+				0E1056832E9ACCA4007EE69B /* RetryManager.swift */,
+			);
+			path = Services;
+			sourceTree = "<group>";
+		};
+		0E10568D2E9ACCA4007EE69B /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				0E1056852E9ACCA4007EE69B /* ErrorBannerView.swift */,
+				0E1056862E9ACCA4007EE69B /* FileBrowserView.swift */,
+				0E1056872E9ACCA4007EE69B /* InputStatusView.swift */,
+				0E1056882E9ACCA4007EE69B /* SessionListView.swift */,
+				0E1056892E9ACCA4007EE69B /* ShortcutHelpView.swift */,
+				0E10568A2E9ACCA4007EE69B /* StreamingMessageView.swift */,
+				0E10568B2E9ACCA4007EE69B /* TokenCounterView.swift */,
+				0E10568C2E9ACCA4007EE69B /* WorkingDirectoryView.swift */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		0E10569A2E9ACCA4007EE69B /* macos */ = {
+			isa = PBXGroup;
+			children = (
+				0E1056742E9ACCA4007EE69B /* Documentation */,
+				0E1056772E9ACCA4007EE69B /* Domain */,
+				0E10567A2E9ACCA4007EE69B /* Models */,
+				0E1056842E9ACCA4007EE69B /* Services */,
+				0E10568D2E9ACCA4007EE69B /* Views */,
+				0E10568F2E9ACCA4007EE69B /* ChatViewModel.swift */,
+				0E1056912E9ACCA4007EE69B /* ChatViewModelMigration.swift */,
+				0E1056922E9ACCA4007EE69B /* ContentView.swift */,
+				0E1056932E9ACCA4007EE69B /* ContentViewWithConsole.swift */,
+				0E1056942E9ACCA4007EE69B /* Info.plist */,
+				0E1056952E9ACCA4007EE69B /* Info-iPad.plist */,
+				0E1056962E9ACCA4007EE69B /* Vantage_iPad.entitlements */,
+				0E1056972E9ACCA4007EE69B /* Vantage_Mac.entitlements */,
+				0E1056982E9ACCA4007EE69B /* VantageIPad.swift */,
+				0E1056992E9ACCA4007EE69B /* VantageMac.swift */,
+			);
+			path = macos;
+			sourceTree = "<group>";
+		};
 		0E9842662E161A4000928FD2 = {
 			isa = PBXGroup;
 			children = (
+				0E10569A2E9ACCA4007EE69B /* macos */,
 				0E9842722E161A4000928FD2 /* Packages */,
 				461443D12E2DEBEC0048F5E7 /* Frameworks */,
 				0E9842702E161A4000928FD2 /* Products */,
-				4EF41361EC831BFB48AAAEDD /* Vantage Point for iPad */,
+				76154490EF01219707965A2B /* VantageApp.swift */,
+				612D2F0226BAC73852092C51 /* AppModel.swift */,
+				9C9EFABC5E50914B4521DE1D /* ContentView.swift */,
+				D0BEACCDB4D839064460187A /* Renderer.swift */,
+				8560795FF64D8B9772521046 /* ToggleImmersiveSpaceButton.swift */,
+				5CD9F07B319472023C423B13 /* Shaders.metal */,
+				50CDA1B24AC987A1F77DF251 /* ShaderTypes.h */,
 			);
 			sourceTree = "<group>";
 		};
@@ -77,8 +245,6 @@
 			children = (
 				0E98426F2E161A4000928FD2 /* Vantage Vision.app */,
 				0E7AD0572E1F81BC005AD02D /* Vantage Point for Mac.app */,
-				4605F7E72E2DF0A10008BC01 /* ClaudeIntegrationTests.xctest */,
-				C68B2F9D2E3A1B4D00456789 /* Vantage Point for iPad.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -94,20 +260,23 @@
 		461443D12E2DEBEC0048F5E7 /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
+				0EDC41542E91B3E500B83939 /* RealityKit.framework */,
 			);
 			name = Frameworks;
 			sourceTree = "<group>";
 		};
-		4EF41361EC831BFB48AAAEDD /* Vantage Point for iPad */ = {
-			isa = PBXGroup;
-			children = (
-				D7A3B4E62E3A1C5600789ABC /* VantageIPad.swift */,
-				D7A3B4E72E3A1C5600789ABD /* Info.plist */,
-			);
-			path = "Vantage Point for iPad";
-			sourceTree = "<group>";
-		};
 /* End PBXGroup section */
+
+/* Begin PBXHeadersBuildPhase section */
+		54723947501C48F8C94FC5E7 /* Headers */ = {
+			isa = PBXHeadersBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				3BA11150742B2FB1615C5D7E /* ShaderTypes.h in Headers */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXHeadersBuildPhase section */
 
 /* Begin PBXNativeTarget section */
 		0E7AD0562E1F81BC005AD02D /* Vantage Point for Mac */ = {
@@ -124,7 +293,7 @@
 			);
 			name = "Vantage Point for Mac";
 			packageProductDependencies = (
-				461443CF2E2DE9E50048F5E7 /* ClaudeIntegration */,
+				0E7AD0632E1F81BF005AD02D /* ClaudeIntegration */,
 			);
 			productName = "Vantage Mac";
 			productReference = 0E7AD0572E1F81BC005AD02D /* Vantage Point for Mac.app */;
@@ -137,6 +306,7 @@
 				0E98426B2E161A4000928FD2 /* Sources */,
 				0E98426C2E161A4000928FD2 /* Frameworks */,
 				0E98426D2E161A4000928FD2 /* Resources */,
+				54723947501C48F8C94FC5E7 /* Headers */,
 			);
 			buildRules = (
 			);
@@ -150,45 +320,6 @@
 			productName = Vantage;
 			productReference = 0E98426F2E161A4000928FD2 /* Vantage Vision.app */;
 			productType = "com.apple.product-type.application";
-		};
-		226CF13B41D830D5FFB8C8F9 /* Vantage Point for iPad */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = 1ED405043710D239885180FB /* Build configuration list for PBXNativeTarget "Vantage Point for iPad" */;
-			buildPhases = (
-				B6F2EF7B37C1CE0D9FD44B3A /* Sources */,
-				5EA3279BDDC10F17665F7423 /* Frameworks */,
-				DF40A7C61BBB1C3D27A7BB59 /* Resources */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-			);
-			name = "Vantage Point for iPad";
-			packageProductDependencies = (
-			);
-			productName = "Vantage Point for iPad";
-			productReference = C68B2F9D2E3A1B4D00456789 /* Vantage Point for iPad.app */;
-			productType = "com.apple.product-type.application";
-		};
-		4605F7E62E2DF0A10008BC01 /* ClaudeIntegrationTests */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = 4605F7EB2E2DF0A20008BC01 /* Build configuration list for PBXNativeTarget "ClaudeIntegrationTests" */;
-			buildPhases = (
-				4605F7E32E2DF0A10008BC01 /* Sources */,
-				4605F7E42E2DF0A10008BC01 /* Frameworks */,
-				4605F7E52E2DF0A10008BC01 /* Resources */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-			);
-			name = ClaudeIntegrationTests;
-			packageProductDependencies = (
-				4605F7EE2E2DF0AD0008BC01 /* ClaudeIntegration */,
-			);
-			productName = ClaudeIntegrationTests;
-			productReference = 4605F7E72E2DF0A10008BC01 /* ClaudeIntegrationTests.xctest */;
-			productType = "com.apple.product-type.bundle.unit-test";
 		};
 /* End PBXNativeTarget section */
 
@@ -206,9 +337,6 @@
 					0E98426E2E161A4000928FD2 = {
 						CreatedOnToolsVersion = 16.4;
 					};
-					4605F7E62E2DF0A10008BC01 = {
-						CreatedOnToolsVersion = 16.4;
-					};
 				};
 			};
 			buildConfigurationList = 0E98426A2E161A4000928FD2 /* Build configuration list for PBXProject "Vantage" */;
@@ -222,7 +350,8 @@
 			mainGroup = 0E9842662E161A4000928FD2;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				465BA7432E3D5B0400BC6286 /* XCLocalSwiftPackageReference "../UNI-121-ipad-target" */,
+				0EDC414E2E91B31200B83939 /* XCLocalSwiftPackageReference "Packages/claude-integration" */,
+				0E9842732E161A4000928FD3 /* XCLocalSwiftPackageReference "Packages/reality-kit-content" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 0E9842702E161A4000928FD2 /* Products */;
@@ -231,8 +360,6 @@
 			targets = (
 				0E98426E2E161A4000928FD2 /* Vantage Vision */,
 				0E7AD0562E1F81BC005AD02D /* Vantage Point for Mac */,
-				4605F7E62E2DF0A10008BC01 /* ClaudeIntegrationTests */,
-				226CF13B41D830D5FFB8C8F9 /* Vantage Point for iPad */,
 			);
 		};
 /* End PBXProject section */
@@ -242,6 +369,9 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				0E10569B2E9ACCA4007EE69B /* Info-iPad.plist in Resources */,
+				0E10569C2E9ACCA4007EE69B /* RefactoringPlan.md in Resources */,
+				0E10569D2E9ACCA4007EE69B /* Info.plist in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -249,20 +379,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		4605F7E52E2DF0A10008BC01 /* Resources */ = {
-			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		DF40A7C61BBB1C3D27A7BB59 /* Resources */ = {
-			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
+				84998C65F078C4DD514E90A1 /* Shaders.metal in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -273,6 +390,28 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				0E10569E2E9ACCA4007EE69B /* ShortcutHelpView.swift in Sources */,
+				0E10569F2E9ACCA4007EE69B /* ClaudeAPIService.swift in Sources */,
+				0E1056A02E9ACCA4007EE69B /* ErrorBannerView.swift in Sources */,
+				0E1056A12E9ACCA4007EE69B /* VantageMac.swift in Sources */,
+				0E1056A22E9ACCA4007EE69B /* StreamingMessageView.swift in Sources */,
+				0E1056A32E9ACCA4007EE69B /* SessionListView.swift in Sources */,
+				0E1056A52E9ACCA4007EE69B /* LoggingService.swift in Sources */,
+				0E1056A62E9ACCA4007EE69B /* WorkingDirectoryManager.swift in Sources */,
+				0E1056A72E9ACCA4007EE69B /* ContentViewWithConsole.swift in Sources */,
+				0E1056A82E9ACCA4007EE69B /* SessionService.swift in Sources */,
+				0E1056A92E9ACCA4007EE69B /* InputStatusView.swift in Sources */,
+				0E1056AA2E9ACCA4007EE69B /* MessageService.swift in Sources */,
+				0E1056AB2E9ACCA4007EE69B /* ChatSession.swift in Sources */,
+				0E1056AC2E9ACCA4007EE69B /* WorkingDirectoryView.swift in Sources */,
+				0E1056AD2E9ACCA4007EE69B /* TokenCounterView.swift in Sources */,
+				0E1056AE2E9ACCA4007EE69B /* RetryManager.swift in Sources */,
+				0E1056AF2E9ACCA4007EE69B /* FileBrowserView.swift in Sources */,
+				0E1056B02E9ACCA4007EE69B /* ContentView.swift in Sources */,
+				0E1056B12E9ACCA4007EE69B /* VantageIPad.swift in Sources */,
+				0E1056B32E9ACCA4007EE69B /* ChatViewModelMigration.swift in Sources */,
+				0E1056B42E9ACCA4007EE69B /* ChatViewModel.swift in Sources */,
+				0E1056B52E9ACCA4007EE69B /* SendMessageUseCase.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -280,25 +419,18 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		4605F7E32E2DF0A10008BC01 /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		B6F2EF7B37C1CE0D9FD44B3A /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				E8B6C3A12E3A1D4700ABCDEF /* VantageIPad.swift in Sources */,
+				694049BA24ECAD1B397E502C /* VantageApp.swift in Sources */,
+				CDFBB15AC6E82C567F22DC4B /* AppModel.swift in Sources */,
+				2B4E877894326FFBE1224E27 /* ContentView.swift in Sources */,
+				95B0792114EB04C66766DFFF /* Renderer.swift in Sources */,
+				A07C7B2A5BF9CC8B285F85BC /* ToggleImmersiveSpaceButton.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		0E7AD0612E1F81BE005AD02D /* Debug */ = {
@@ -307,7 +439,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
-				CODE_SIGN_ENTITLEMENTS = "Vantage Point/Vantage_Mac.entitlements";
+				CODE_SIGN_ENTITLEMENTS = apps/macos/Vantage_Mac.entitlements;
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "-";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
@@ -323,7 +455,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "club.chronista.Vantage-Point-For-Mac";
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -340,7 +472,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
-				CODE_SIGN_ENTITLEMENTS = "Vantage Point/Vantage_Mac.entitlements";
+				CODE_SIGN_ENTITLEMENTS = apps/macos/Vantage_Mac.entitlements;
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "-";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
@@ -356,7 +488,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "club.chronista.Vantage-Point-For-Mac";
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -377,7 +509,7 @@
 				DEVELOPMENT_TEAM = 3EQKG4B352;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = "$(TARGET_NAME)/Info.plist";
+				INFOPLIST_FILE = apps/visionos/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -387,7 +519,7 @@
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "xros xrsimulator";
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_OBJC_BRIDGING_HEADER = "$(TARGET_NAME)/ShaderTypes.h";
+				SWIFT_OBJC_BRIDGING_HEADER = apps/visionos/ShaderTypes.h;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = 7;
 			};
@@ -403,7 +535,7 @@
 				DEVELOPMENT_TEAM = 3EQKG4B352;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = "$(TARGET_NAME)/Info.plist";
+				INFOPLIST_FILE = apps/visionos/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -413,7 +545,7 @@
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "xros xrsimulator";
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_OBJC_BRIDGING_HEADER = "$(TARGET_NAME)/ShaderTypes.h";
+				SWIFT_OBJC_BRIDGING_HEADER = apps/visionos/ShaderTypes.h;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = 7;
 			};
@@ -542,102 +674,6 @@
 			};
 			name = Release;
 		};
-		4605F7EC2E2DF0A20008BC01 /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = 3EQKG4B352;
-				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
-				MACOSX_DEPLOYMENT_TARGET = 15.5;
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = club.chronista.ClaudeIntegrationTests;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SDKROOT = auto;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
-				SWIFT_EMIT_LOC_STRINGS = NO;
-				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2,7";
-				XROS_DEPLOYMENT_TARGET = 2.5;
-			};
-			name = Debug;
-		};
-		4605F7ED2E2DF0A20008BC01 /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = 3EQKG4B352;
-				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
-				MACOSX_DEPLOYMENT_TARGET = 15.5;
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = club.chronista.ClaudeIntegrationTests;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SDKROOT = auto;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
-				SWIFT_EMIT_LOC_STRINGS = NO;
-				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2,7";
-				XROS_DEPLOYMENT_TARGET = 2.5;
-			};
-			name = Release;
-		};
-		757A5D06E8B524630A66D12B /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				BUNDLE_IDENTIFIER = "club.chronista.Vantage-Point-For-iPad";
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = J627YTC8NE;
-				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = "Vantage Point for iPad/Info.plist";
-				INFOPLIST_KEY_CFBundleDisplayName = "Vantage Point for iPad";
-				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
-				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-				);
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = "club.chronista.Vantage-Point-For-iPad";
-				PRODUCT_NAME = "Vantage Point for iPad";
-				SDKROOT = iphoneos;
-				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_VERSION = 6.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
-			};
-			name = Release;
-		};
-		7F9C825E6EF0793F4533D0E3 /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				BUNDLE_IDENTIFIER = "club.chronista.Vantage-Point-For-iPad";
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = J627YTC8NE;
-				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = "Vantage Point for iPad/Info.plist";
-				INFOPLIST_KEY_CFBundleDisplayName = "Vantage Point for iPad";
-				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
-				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-				);
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = "club.chronista.Vantage-Point-For-iPad";
-				PRODUCT_NAME = "Vantage Point for iPad";
-				SDKROOT = iphoneos;
-				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_VERSION = 6.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
-			};
-			name = Debug;
-		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -668,45 +704,27 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		1ED405043710D239885180FB /* Build configuration list for PBXNativeTarget "Vantage Point for iPad" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				7F9C825E6EF0793F4533D0E3 /* Debug */,
-				757A5D06E8B524630A66D12B /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
-		};
-		4605F7EB2E2DF0A20008BC01 /* Build configuration list for PBXNativeTarget "ClaudeIntegrationTests" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				4605F7EC2E2DF0A20008BC01 /* Debug */,
-				4605F7ED2E2DF0A20008BC01 /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
-		};
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
-		465BA7432E3D5B0400BC6286 /* XCLocalSwiftPackageReference "../UNI-121-ipad-target" */ = {
+		0E9842732E161A4000928FD3 /* XCLocalSwiftPackageReference "Packages/reality-kit-content" */ = {
 			isa = XCLocalSwiftPackageReference;
-			relativePath = "../UNI-121-ipad-target";
+			relativePath = "Packages/reality-kit-content";
+		};
+		0EDC414E2E91B31200B83939 /* XCLocalSwiftPackageReference "Packages/claude-integration" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = "Packages/claude-integration";
 		};
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		0E7AD0632E1F81BF005AD02D /* ClaudeIntegration */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = ClaudeIntegration;
+		};
 		0E9842742E161A4000928FD2 /* RealityKitContent */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = RealityKitContent;
-		};
-		4605F7EE2E2DF0AD0008BC01 /* ClaudeIntegration */ = {
-			isa = XCSwiftPackageProductDependency;
-			productName = ClaudeIntegration;
-		};
-		461443CF2E2DE9E50048F5E7 /* ClaudeIntegration */ = {
-			isa = XCSwiftPackageProductDependency;
-			productName = ClaudeIntegration;
 		};
 		461443D22E2DEBEC0048F5E7 /* ClaudeIntegration */ = {
 			isa = XCSwiftPackageProductDependency;

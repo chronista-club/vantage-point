@@ -4,4 +4,19 @@
    <FileRef
       location = "self:">
    </FileRef>
+   <FileRef
+      location = "group:App.swift">
+   </FileRef>
+   <FileRef
+      location = "group:ContentView.swift">
+   </FileRef>
+   <FileRef
+      location = "group:Package.swift">
+   </FileRef>
+   <FileRef
+      location = "group:SourcesMacAppApp.swift">
+   </FileRef>
+   <FileRef
+      location = "group:SourcesMacAppContentView.swift">
+   </FileRef>
 </Workspace>
