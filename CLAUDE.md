@@ -34,13 +34,38 @@ xcodebuild test -scheme Vantage -destination 'platform=visionOS Simulator,name=A
 xcodebuild clean -scheme Vantage
 ```
 
+## プロジェクト構造（モノレポ）
+
+```
+vantage/
+├── apps/                       # アプリケーション
+│   ├── visionos/              # Vantage Vision (Vision Pro)
+│   ├── macos/                 # Vantage Point (Mac & iPad)
+│   └── cli/                   # CLI ツール
+├── packages/                   # 共有パッケージ
+│   ├── claude-integration/    # Claude API統合
+│   └── reality-kit-content/   # RealityKitアセット
+├── tests/                      # テスト
+│   ├── vantage/              # Vantageアプリのテスト
+│   └── claude-integration/    # Claude統合テスト
+├── docs/                       # ドキュメント
+├── tools/                      # 開発ツール
+└── working/                    # 作業用ディレクトリ
+```
+
 ## アーキテクチャ
 
-### コア構造
-- **Vantage Vision/VantageApp.swift** - アプリのエントリーポイント。ImmersiveSpaceを設定し、AppModelを環境オブジェクトとして提供
-- **Vantage Vision/AppModel.swift** - アプリケーション状態管理。immersiveSpaceStateとARKitセッションを管理
-- **Vantage Vision/ContentView.swift** - メインUI。3Dモデル表示とToggleImmersiveSpaceButtonを含む
-- **Vantage Vision/Renderer.swift** - Metal/CompositorServicesを使用したカスタムレンダリングパイプライン実装
+### コア構造 (visionOS)
+- **apps/visionos/VantageApp.swift** - アプリのエントリーポイント。ImmersiveSpaceを設定し、AppModelを環境オブジェクトとして提供
+- **apps/visionos/AppModel.swift** - アプリケーション状態管理。immersiveSpaceStateとARKitセッションを管理
+- **apps/visionos/ContentView.swift** - メインUI。3Dモデル表示とToggleImmersiveSpaceButtonを含む
+- **apps/visionos/Renderer.swift** - Metal/CompositorServicesを使用したカスタムレンダリングパイプライン実装
+
+### macOS アプリ構造
+- **apps/macos/VantageMac.swift** - macOSアプリのエントリーポイント
+- **apps/macos/ChatViewModel.swift** - チャット機能のビューモデル
+- **apps/macos/Services/** - 各種サービス層（API、セッション、ログ等）
+- **apps/macos/Views/** - SwiftUI ビューコンポーネント
 
 ### レンダリングパイプライン
 1. **CompositorServices** - 低レベルレンダリングフレームワーク
@@ -49,13 +74,19 @@ xcodebuild clean -scheme Vantage
 4. **RealityKit** - 3Dコンテンツとアセット管理
 
 ### 重要な型定義
-- **Vantage Vision/ShaderTypes.h** - SwiftとMetal間で共有される型（Uniforms、InstanceData等）
-- **Vantage Vision/Shaders.metal** - 頂点・フラグメントシェーダー実装
+- **apps/visionos/ShaderTypes.h** - SwiftとMetal間で共有される型（Uniforms、InstanceData等）
+- **apps/visionos/Shaders.metal** - 頂点・フラグメントシェーダー実装
 
 ### RealityKitContentパッケージ
-- **Package.swift** - visionOS 2.0+、macOS 15+、iOS 18+をサポート
-- **Sources/RealityKitContent/** - RealityKitアセットとシーン
-- **Immersive.usda** - メインの没入型シーン定義
+- **packages/reality-kit-content/Package.swift** - visionOS 2.0+、macOS 15+、iOS 18+をサポート
+- **packages/reality-kit-content/Sources/RealityKitContent/** - RealityKitアセットとシーン
+- **packages/reality-kit-content/Sources/RealityKitContent/RealityKitContent.rkassets/Immersive.usda** - メインの没入型シーン定義
+
+### Claude統合パッケージ
+- **packages/claude-integration/** - プラットフォーム非依存のClaude API統合
+  - **Services/** - ClaudeAPIService, ClaudeCodeService
+  - **Protocols/** - ClaudeServiceProtocol
+  - **Security/** - KeychainManager
 
 ## 開発時の注意点
 

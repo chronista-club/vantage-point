@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git checkout:*)",
+      "Bash(git merge:*)",
+      "Bash(git push:*)",
+      "Bash(git branch:*)",
+      "Bash(gh repo edit:*)",
+      "WebFetch(domain:www.git-tower.com)",
+      "Bash(git flow:*)",
+      "Bash(gh repo view:*)",
+      "mcp__github__list_issues",
+      "mcp__github__create_issue",
+      "Bash(git mv:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(awk:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
