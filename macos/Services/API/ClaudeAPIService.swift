@@ -3,7 +3,7 @@ import ClaudeIntegration
 
 // MARK: - Protocol
 
-protocol ClaudeAPIServiceProtocol {
+protocol ClaudeAPIServiceProtocol: Sendable {
     func setAPIKey(_ key: String) async throws
     func streamMessage(_ messages: [Message], model: ClaudeModel, system: String?) async throws -> AsyncThrowingStream<StreamEvent, Error>
     func validateAPIKey() async throws -> Bool

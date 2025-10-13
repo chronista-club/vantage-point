@@ -51,6 +51,12 @@ final class ChatViewModel: ObservableObject {
     // MARK: - Private Properties
 
     private var cancellables = Set<AnyCancellable>()
+    private var _currentStreamTask: Task<Void, Error>?
+
+    var currentStreamTask: Task<Void, Error>? {
+        get { _currentStreamTask }
+        set { _currentStreamTask = newValue }
+    }
     
     // MARK: - Computed Properties
     

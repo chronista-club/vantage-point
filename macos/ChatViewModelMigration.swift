@@ -19,12 +19,7 @@ extension ChatViewModel {
     var retryManager: RetryManager {
         RetryManager()
     }
-    
-    var currentStreamTask: Task<Void, Error>? {
-        get { nil }
-        set { }
-    }
-    
+
     // MARK: - Legacy Methods
     
     func addLog(level: ConsoleLog.LogLevel, message: String) {

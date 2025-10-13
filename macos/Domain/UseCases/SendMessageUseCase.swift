@@ -33,7 +33,8 @@ struct TokenMetrics {
 
 // MARK: - Implementation
 
-final class SendMessageUseCase: SendMessageUseCaseProtocol, @unchecked Sendable {
+@MainActor
+final class SendMessageUseCase: SendMessageUseCaseProtocol {
     private let apiService: ClaudeAPIServiceProtocol
     private let messageService: MessageServiceProtocol
     private let loggingService: LoggingServiceProtocol
@@ -57,38 +58,28 @@ final class SendMessageUseCase: SendMessageUseCaseProtocol, @unchecked Sendable 
         systemPrompt: String,
         onStreamUpdate: @escaping @Sendable (String) -> Void
     ) async throws -> MessageSendResult {
-        
-        // ユーザーメッセージを追加
-        let userMessage = await MainActor.run {
-            messageService.addUserMessage(text)
-        }
 
-        await MainActor.run {
-            loggingService.info("メッセージを送信: \(text.prefix(50))\(text.count > 50 ? "..." : "")")
-        }
-        
+        // ユーザーメッセージを追加
+        let userMessage = messageService.addUserMessage(text)
+
+        loggingService.info("メッセージを送信: \(text.prefix(50))\(text.count > 50 ? "..." : "")")
+
         // API用のメッセージを取得
-        let apiMessages = await MainActor.run {
-            messageService.getAPIMessages()
-        }
+        let apiMessages = messageService.getAPIMessages()
         
         // 入力トークンの推定（簡易計算：4文字≒1トークン）
         let inputText = apiMessages.map { $0.content }.joined(separator: " ")
         let estimatedInputTokens = inputText.count / 4
         
         // アシスタントメッセージを作成
-        let assistantMessage = await MainActor.run {
-            messageService.addAssistantMessage()
-        }
-        
+        let assistantMessage = messageService.addAssistantMessage()
+
         // ストリーミング処理
         let startTime = Date()
         var totalCharacters = 0
-        
+
         do {
-            await MainActor.run {
-                loggingService.info("Claude API (\(model.displayName)) にリクエストを送信中...")
-            }
+            loggingService.info("Claude API (\(model.displayName)) にリクエストを送信中...")
 
             let stream = try await retryManager.performWithRetry(
                 operation: {
@@ -105,32 +96,24 @@ final class SendMessageUseCase: SendMessageUseCaseProtocol, @unchecked Sendable 
                 }
             )
 
-            await MainActor.run {
-                loggingService.debug("レスポンスのストリーミングを開始")
-            }
+            loggingService.debug("レスポンスのストリーミングを開始")
             
             for try await event in stream {
                 switch event {
                 case .contentBlockDelta(let delta):
                     if let text = delta.delta.text {
                         totalCharacters += text.count
-                        await MainActor.run {
-                            self.messageService.appendToMessage(id: assistantMessage.id, content: text)
-                        }
+                        messageService.appendToMessage(id: assistantMessage.id, content: text)
                         onStreamUpdate(text)
                     }
-                    
+
                 case .messageStop:
-                    await MainActor.run {
-                        self.messageService.updateMessageTimestamp(id: assistantMessage.id)
-                    }
-                    
+                    messageService.updateMessageTimestamp(id: assistantMessage.id)
+
                 case .error(let error):
-                    await MainActor.run {
-                        loggingService.error("ストリーミングエラー: \(error.message)")
-                    }
+                    loggingService.error("ストリーミングエラー: \(error.message)")
                     throw ClaudeIntegrationError.serverError(error.message)
-                    
+
                 default:
                     break
                 }
@@ -146,18 +129,14 @@ final class SendMessageUseCase: SendMessageUseCaseProtocol, @unchecked Sendable 
                 duration: duration
             )
 
-            await MainActor.run {
-                loggingService.info(
-                    "レスポンスを受信完了 (約\(totalCharacters)文字, " +
-                    "\(String(format: "%.1f", metrics.charactersPerSecond))文字/秒, " +
-                    "推定\(metrics.inputTokens + metrics.outputTokens)トークン)"
-                )
-            }
-            
+            loggingService.info(
+                "レスポンスを受信完了 (約\(totalCharacters)文字, " +
+                "\(String(format: "%.1f", metrics.charactersPerSecond))文字/秒, " +
+                "推定\(metrics.inputTokens + metrics.outputTokens)トークン)"
+            )
+
             // 最終的なメッセージを取得
-            let finalAssistantMessage = await MainActor.run {
-                messageService.messages.first { $0.id == assistantMessage.id } ?? assistantMessage
-            }
+            let finalAssistantMessage = messageService.messages.first { $0.id == assistantMessage.id } ?? assistantMessage
             
             return MessageSendResult(
                 userMessage: userMessage,
@@ -167,25 +146,19 @@ final class SendMessageUseCase: SendMessageUseCaseProtocol, @unchecked Sendable 
             
         } catch {
             // エラー時は空のアシスタントメッセージを削除
-            await MainActor.run {
-                self.messageService.removeLastMessageIfEmpty()
-            }
-            
-            if let claudeError = error as? ClaudeIntegrationError {
-                await MainActor.run {
-                    let logLevel: ConsoleLog.LogLevel = claudeError.severity == .critical || claudeError.severity == .error ? .error : .warning
-                    loggingService.log(logLevel, "APIエラー: \(claudeError.localizedDescription)")
+            messageService.removeLastMessageIfEmpty()
 
-                    if let suggestion = claudeError.suggestedAction {
-                        loggingService.info("対処法: \(suggestion)")
-                    }
+            if let claudeError = error as? ClaudeIntegrationError {
+                let logLevel: ConsoleLog.LogLevel = claudeError.severity == .critical || claudeError.severity == .error ? .error : .warning
+                loggingService.log(logLevel, "APIエラー: \(claudeError.localizedDescription)")
+
+                if let suggestion = claudeError.suggestedAction {
+                    loggingService.info("対処法: \(suggestion)")
                 }
 
                 throw claudeError
             } else {
-                await MainActor.run {
-                    loggingService.error("予期しないエラー: \(error.localizedDescription)")
-                }
+                loggingService.error("予期しないエラー: \(error.localizedDescription)")
                 throw error
             }
         }
