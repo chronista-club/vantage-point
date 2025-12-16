@@ -348,10 +348,50 @@ fn ui(f: &mut Frame, app: &App) {
                 "error" => "❌ ",
                 _ => "",
             };
-            ListItem::new(Line::from(vec![
-                Span::styled(prefix, style.add_modifier(Modifier::BOLD)),
-                Span::styled(&m.content, style),
-            ]))
+            // Split content by newlines and wrap long lines
+            let width = f.area().width.saturating_sub(4) as usize; // Account for borders
+            let mut lines: Vec<Line> = Vec::new();
+
+            for (i, line) in m.content.lines().enumerate() {
+                // Wrap each line to fit width
+                let mut remaining = line;
+                let mut is_first = i == 0;
+
+                while !remaining.is_empty() {
+                    let (chunk, rest) = if remaining.chars().count() > width {
+                        let byte_idx = remaining
+                            .char_indices()
+                            .nth(width)
+                            .map(|(i, _)| i)
+                            .unwrap_or(remaining.len());
+                        (&remaining[..byte_idx], &remaining[byte_idx..])
+                    } else {
+                        (remaining, "")
+                    };
+
+                    if is_first {
+                        lines.push(Line::from(vec![
+                            Span::styled(prefix, style.add_modifier(Modifier::BOLD)),
+                            Span::styled(chunk.to_string(), style),
+                        ]));
+                        is_first = false;
+                    } else {
+                        lines.push(Line::from(vec![
+                            Span::styled("  ", style), // Indent continuation
+                            Span::styled(chunk.to_string(), style),
+                        ]));
+                    }
+                    remaining = rest;
+                }
+            }
+
+            if lines.is_empty() {
+                lines.push(Line::from(vec![
+                    Span::styled(prefix, style.add_modifier(Modifier::BOLD)),
+                ]));
+            }
+
+            ListItem::new(lines)
         })
         .collect();
 
