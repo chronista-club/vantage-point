@@ -14,9 +14,29 @@
       "Bash(git mv:*)",
       "Bash(git add:*)",
       "Bash(git commit:*)",
-      "Bash(awk:*)"
+      "Bash(awk:*)",
+      "Bash(swift test)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:crates.io)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:yazi-rs.github.io)",
+      "mcp__creo-memories__get_user",
+      "Skill(openskills)",
+      "Bash(openskills read:*)",
+      "Bash(mkdir:*)",
+      "Bash(git rm:*)",
+      "Bash(ls:*)",
+      "Bash(find:*)",
+      "Bash(tree:*)"
     ],
     "deny": [],
     "ask": []
-  }
+  },
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": [
+    "serena",
+    "SurrealDB",
+    "xcodeproj",
+    "vantage-mcp"
+  ]
 }

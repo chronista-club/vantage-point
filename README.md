@@ -1,105 +1,112 @@
-# Vantage
+# Vantage Point
 
-Apple Vision Pro向けの没入型複合現実アプリケーション。カスタムMetalレンダリングとClaude AI統合を特徴とする空間コンピューティング体験を提供します。
+> 開発行為を拡張する
 
-## 機能
+AIと協働しながら、デバイス・場所に縛られずシームレスに開発を継続できるプラットフォーム。
 
-- 🥽 **visionOS対応** - Apple Vision Pro向けに最適化された空間UI
-- 🤖 **AIアシスタント** - Claude APIを使用したインテリジェントなコーディング支援
-- 🎨 **カスタムレンダリング** - Metal/CompositorServicesによる高度な視覚表現
-- 🌐 **空間トラッキング** - ARKitによるワールドトラッキング
+## コンセプト
 
-## プロジェクト構成（モノレポ）
+### AI主導の選択肢UI
+
+従来のチャットUIではなく、AIが選択肢を提示してユーザーが選ぶスタイル。
+移動中でもタップだけで開発を継続できる。
 
 ```
-vantage/
-├── apps/                          # アプリケーション
-│   ├── visionos/                 # Vantage Vision (Vision Pro)
-│   │   ├── VantageApp.swift      # アプリエントリーポイント
-│   │   ├── Renderer.swift        # Metalレンダリング
-│   │   ├── Shaders.metal         # Metalシェーダー
-│   │   └── AI/                   # AIアシスタント機能
-│   ├── macos/                    # Vantage Point (Mac & iPad)
-│   │   ├── VantageMac.swift      # macOSアプリ
-│   │   ├── Services/             # サービス層
-│   │   └── Views/                # SwiftUIビュー
-│   └── cli/                      # CLIツール
-│       └── Sources/              # CLIソースコード
-├── packages/                      # 共有パッケージ
-│   ├── claude-integration/       # Claude API統合
-│   │   ├── Services/             # APIサービス
-│   │   └── Security/             # Keychain管理
-│   └── reality-kit-content/      # RealityKitアセット
-│       └── Sources/              # アセット定義
-├── tests/                         # テスト
-│   ├── vantage/                  # アプリテスト
-│   └── claude-integration/       # 統合テスト
-├── docs/                          # ドキュメント
-│   ├── api/                      # APIドキュメント
-│   ├── architecture/             # アーキテクチャ設計
-│   └── development/              # 開発ガイド
-└── tools/                         # 開発ツール
-    └── unison-claude/            # Rust版Claude統合
+AI: 次のステップはどうしますか？
+    [A] テストを書く
+    [B] リファクタリング
+    [C] 次の機能へ
 ```
 
-## セットアップ
+### 協調モード
 
-### 1. ClaudeIntegrationパッケージの追加
+| モード | 説明 |
+|--------|------|
+| **協調** | ユーザーと一緒に進める |
+| **委任** | 任せて、途中経過・結果を確認 |
+| **自律** | 完全に任せる |
 
-1. Xcodeで`Vantage.xcodeproj`を開く
-2. File → Add Package Dependencies...
-3. "Add Local..."をクリック
-4. 現在のディレクトリ（Vantageフォルダ）を選択
-5. "Add Package"をクリック
+### シームレスな継続
 
-### 2. Claude APIキーの設定
-
-アプリ初回起動時にAPIキー入力画面が表示されます。[Anthropic Console](https://console.anthropic.com/)で取得したAPIキーを入力してください。
-
-### 3. ビルドと実行
-
-```bash
-# デバッグビルド
-xcodebuild -scheme Vantage -configuration Debug
-
-# Vision Proシミュレータで実行
-xcodebuild test -scheme Vantage -destination 'platform=visionOS Simulator,name=Apple Vision Pro'
+```
+起床 → MIDIパッド → Mac → Vision Pro → 移動中(iPhone) → カフェ(iPad) → 帰宅(Mac)
 ```
 
-## 開発
+すべて一つのワークスペース上で継続。デバイス間でP2P同期。
 
-### AI アシスタント
+## アーキテクチャ
 
-VantageにはClaude APIを使用したAIアシスタントが統合されています：
-
-- **空間UI** - ガラスモーフィズム効果を持つ3Dウィンドウ
-- **ストリーミング** - リアルタイムレスポンス表示
-- **セキュア** - Keychainによる安全なAPIキー管理
-
-### テスト環境
-
-`Vantage Point`はmacOS上でClaude APIの動作を確認するためのテストアプリです。
-
-#### Vantage Pointターゲットの追加方法
-
-1. Xcodeで`Vantage.xcodeproj`を開く
-2. File → New → Target...
-3. macOS → App を選択
-4. 以下の設定で作成：
-   - Product Name: Vantage Point
-   - Interface: SwiftUI
-   - Language: Swift
-5. 作成後、`Vantage Point/`内のファイルをターゲットに追加
-6. Build Phases → Link Binary With Libraries で ClaudeIntegration を追加
+```
+┌─────────────────────────────────────────┐
+│           P2P Network (Loro/CRDT)       │
+│   Mac ←→ Vision Pro ←→ iPad/iPhone     │
+└─────────────────────────────────────────┘
+                    ↓
+┌─────────────────────────────────────────┐
+│   Agent Server (Rust + WASM)            │
+│   - Claude Agent SDK                    │
+│   - MCP Tools                           │
+│   - Unison Protocol (QUIC/KDL)          │
+└─────────────────────────────────────────┘
+                    ↓
+┌─────────────────────────────────────────┐
+│   SurrealDB (Single Source of Truth)    │
+└─────────────────────────────────────────┘
+```
 
 ## 技術スタック
 
-- **visionOS 2.0+** - Apple Vision Pro SDK
-- **Swift 6.0** - 厳格な並行性チェック
-- **Metal** - カスタムGPUレンダリング
-- **RealityKit** - 3Dコンテンツ管理
-- **Claude API** - AI言語モデル統合
+| レイヤー | 技術 |
+|---------|------|
+| Frontend (Web) | SolidJS |
+| Frontend (Native) | Swift (Vision Pro) |
+| Backend (Core) | Rust |
+| Backend (Agent) | TypeScript → WASM |
+| Data | SurrealDB |
+| 通信 | Unison Protocol |
+| P2P同期 | Loro (CRDT) |
+
+## 開発フェーズ
+
+| Phase | 内容 | Frontend |
+|-------|------|----------|
+| **Phase 1** | コア機能・対話スタイル確立 | SolidJS (Web) |
+| **Phase 2** | Vision Pro空間体験最適化 | Swift Native |
+
+## ドキュメント
+
+| ドキュメント | 内容 |
+|-------------|------|
+| [docs/spec/01-core-concept.md](docs/spec/01-core-concept.md) | コアコンセプト |
+| [docs/spec/02-user-journey.md](docs/spec/02-user-journey.md) | ユーザージャーニー |
+| [docs/design/01-architecture.md](docs/design/01-architecture.md) | アーキテクチャ設計 |
+
+## リポジトリ構成
+
+このリポジトリ (`vantage-point`) はプロジェクト全体の**母艦**。
+
+```
+vantage-point/          ← このリポジトリ（母艦）
+├── docs/               # 仕様・設計・ガイド
+└── working/            # Git Worktree用
+
+# 将来的に分離予定
+vantage-server/         # Rust + WASM (Backend)
+vantage-web/            # SolidJS (Frontend)
+vantage-native/         # Swift (Vision Pro)
+```
+
+言語・プラットフォームごとに分離する可能性あり。
+仕様・設計ドキュメントは母艦に集約。
+
+## 関連リポジトリ
+
+- [chronista-club/unison-protocol](https://github.com/chronista-club/unison-protocol) - QUIC/KDL通信プロトコル
+
+## ステータス
+
+🚧 **設計フェーズ完了、実装準備中**
 
 ## ライセンス
 
-[ライセンス情報を追加]
+Private

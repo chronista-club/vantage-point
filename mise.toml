@@ -1,0 +1,24 @@
+# Vantage Point - mise設定
+
+[env]
+_.file = ".env"
+
+[tools]
+bun = "latest"
+node = "22"
+
+[tasks.agent]
+description = "Start Vantage Agent CLI (TypeScript)"
+run = "bun run packages/agent/index.ts"
+
+[tasks.tui]
+description = "Start Vantage TUI (Rust/Ratatui)"
+run = "cargo run -p vantage-tui"
+
+[tasks.build]
+description = "Build Rust crates"
+run = "cargo build"
+
+[tasks.test]
+description = "Run tests"
+run = "cargo test"

@@ -15,3 +15,7 @@ DerivedData/
 
 # Working directory (for temporary files and experiments)
 /working/
+
+# Personal notes (not tracked in git)
+/.notes/
+.env

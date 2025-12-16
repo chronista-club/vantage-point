@@ -1,15 +1,10 @@
-# Vantage Project mise Configuration
+# Vantage Point - mise Configuration
 # https://mise.jdx.dev/
 
 [tools]
-# Define tool versions
 rust = "1.90.0"
 node = "22"
-rg = "latest"
-lsd = "latest"
+bun = "latest"
 
 [env]
-# Environment variables
-VANTAGE_PROJECT_LABEL = "app=vantage"
-VANTAGE_NAMESPACES = "vantage-local,vantage-tools"
 VANTAGE_ROOT = "{{config_root}}"

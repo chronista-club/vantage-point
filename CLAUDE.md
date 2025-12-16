@@ -4,93 +4,112 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## プロジェクト概要
 
-VantageはApple Vision Pro向けのvisionOSアプリケーションで、カスタムMetalレンダリングを使用した没入型複合現実体験を提供します。
+Vantage Pointは「開発行為を拡張する」プラットフォーム。
+AIと協働しながら、デバイス・場所に縛られずシームレスに開発を継続できる環境を提供する。
 
-## 開発コマンド
+### コアコンセプト
 
-### ビルド
-```bash
-# デバッグビルド
-xcodebuild -scheme Vantage -configuration Debug
+- **AI主導の選択肢UI**: AIが選択肢を提示 → ユーザーが選ぶ
+- **協調モード**: 協調 / 委任 / 自律 の3段階
+- **P2P同期**: どのデバイスもサーバー/クライアント両方になれる
 
-# リリースビルド
-xcodebuild -scheme Vantage -configuration Release
-
-# 特定のデバイス向けビルド（Vision Pro Simulator）
-xcodebuild -scheme Vantage -destination 'platform=visionOS Simulator,name=Apple Vision Pro'
-```
-
-### テスト
-```bash
-# 全テストの実行
-xcodebuild test -scheme Vantage -destination 'platform=visionOS Simulator,name=Apple Vision Pro'
-
-# 特定のテストクラスの実行
-xcodebuild test -scheme Vantage -destination 'platform=visionOS Simulator,name=Apple Vision Pro' -only-testing:VantageTests/VantageTests
-```
-
-### クリーン
-```bash
-xcodebuild clean -scheme Vantage
-```
-
-## プロジェクト構造（モノレポ）
-
-```
-vantage/
-├── apps/                       # アプリケーション
-│   ├── visionos/              # Vantage Vision (Vision Pro)
-│   ├── macos/                 # Vantage Point (Mac & iPad)
-│   └── cli/                   # CLI ツール
-├── packages/                   # 共有パッケージ
-│   ├── claude-integration/    # Claude API統合
-│   └── reality-kit-content/   # RealityKitアセット
-├── tests/                      # テスト
-│   ├── vantage/              # Vantageアプリのテスト
-│   └── claude-integration/    # Claude統合テスト
-├── docs/                       # ドキュメント
-├── tools/                      # 開発ツール
-└── working/                    # 作業用ディレクトリ
-```
+詳細: [docs/spec/01-core-concept.md](docs/spec/01-core-concept.md)
 
 ## アーキテクチャ
 
-### コア構造 (visionOS)
-- **apps/visionos/VantageApp.swift** - アプリのエントリーポイント。ImmersiveSpaceを設定し、AppModelを環境オブジェクトとして提供
-- **apps/visionos/AppModel.swift** - アプリケーション状態管理。immersiveSpaceStateとARKitセッションを管理
-- **apps/visionos/ContentView.swift** - メインUI。3Dモデル表示とToggleImmersiveSpaceButtonを含む
-- **apps/visionos/Renderer.swift** - Metal/CompositorServicesを使用したカスタムレンダリングパイプライン実装
+### 技術スタック
 
-### macOS アプリ構造
-- **apps/macos/VantageMac.swift** - macOSアプリのエントリーポイント
-- **apps/macos/ChatViewModel.swift** - チャット機能のビューモデル
-- **apps/macos/Services/** - 各種サービス層（API、セッション、ログ等）
-- **apps/macos/Views/** - SwiftUI ビューコンポーネント
+| レイヤー | 技術 |
+|---------|------|
+| Frontend (Web) | SolidJS |
+| Frontend (Native) | Swift (Phase 2: Vision Pro) |
+| Backend (Core) | Rust |
+| Backend (Agent) | TypeScript → WASM |
+| Data | SurrealDB (namespace: vantage) |
+| 通信 | Unison Protocol (QUIC/KDL) |
+| P2P同期 | Loro (CRDT) |
 
-### レンダリングパイプライン
-1. **CompositorServices** - 低レベルレンダリングフレームワーク
-2. **Metal** - GPU計算とシェーダー処理
-3. **ARKit** - WorldTrackingProviderを通じた空間トラッキング
-4. **RealityKit** - 3Dコンテンツとアセット管理
+### システム構成
 
-### 重要な型定義
-- **apps/visionos/ShaderTypes.h** - SwiftとMetal間で共有される型（Uniforms、InstanceData等）
-- **apps/visionos/Shaders.metal** - 頂点・フラグメントシェーダー実装
+```
+┌─────────────────────────────────────────────────────┐
+│                   P2P Network                        │
+│   Mac ←→ Vision Pro ←→ iPad/iPhone                  │
+│   (CRDT)    (CRDT)       (CRDT)                     │
+│              ↓                                       │
+│         Loro同期                                    │
+│              ↓                                       │
+│       Unison Protocol                               │
+└─────────────────────────────────────────────────────┘
+                    ↓
+┌─────────────────────────────────────────────────────┐
+│                Agent Server                         │
+│   ┌────────┐  ┌────────────────────┐               │
+│   │  Rust  │──│  Agent層 (WASM)    │               │
+│   │  Core  │  │  TypeScript/MCP    │               │
+│   └────────┘  └────────────────────┘               │
+│              ↓                                       │
+│   ┌─────────────────────────────────┐              │
+│   │    SurrealDB (SSoT)             │              │
+│   │    Live Query / namespace       │              │
+│   └─────────────────────────────────┘              │
+└─────────────────────────────────────────────────────┘
+```
 
-### RealityKitContentパッケージ
-- **packages/reality-kit-content/Package.swift** - visionOS 2.0+、macOS 15+、iOS 18+をサポート
-- **packages/reality-kit-content/Sources/RealityKitContent/** - RealityKitアセットとシーン
-- **packages/reality-kit-content/Sources/RealityKitContent/RealityKitContent.rkassets/Immersive.usda** - メインの没入型シーン定義
+詳細: [docs/design/01-architecture.md](docs/design/01-architecture.md)
 
-### Claude統合パッケージ
-- **packages/claude-integration/** - プラットフォーム非依存のClaude API統合
-  - **Services/** - ClaudeAPIService, ClaudeCodeService
-  - **Protocols/** - ClaudeServiceProtocol
-  - **Security/** - KeychainManager
+## プロジェクト構造
+
+```
+vantage-point/          # このリポジトリ（母艦）
+├── docs/
+│   ├── spec/           # 仕様書 (SDG: Spec)
+│   ├── design/         # 設計書 (SDG: Design)
+│   └── development/    # 開発ガイド
+├── working/            # Git Worktree用
+└── .claude/            # Claude Code設定
+```
+
+> **Note**: 言語・プラットフォームごとに別リポジトリに分離予定。
+> 仕様・設計ドキュメントは母艦に集約。
+
+## 開発フェーズ
+
+| Phase | 内容 | Frontend |
+|-------|------|----------|
+| Phase 1 | コア機能・対話スタイル確立 | SolidJS (Web) |
+| Phase 2 | Vision Pro空間体験最適化 | Swift Native |
+
+## 関連リポジトリ
+
+| リポジトリ | 役割 |
+|-----------|------|
+| [chronista-club/unison-protocol](https://github.com/chronista-club/unison-protocol) | QUIC/KDL通信プロトコル |
+| creo-memories | 同構成の姉妹プロジェクト |
+
+## 開発コマンド（準備中）
+
+```bash
+# Rustバックエンド
+cargo build
+cargo test
+
+# SolidJSフロントエンド
+bun install
+bun dev
+```
 
 ## 開発時の注意点
 
-1. **プラットフォーム要件**: visionOS 2.0以上が必要
-2. **Swift 6.0**: 厳格な並行性チェックが有効
-3. **Metal Performance**: レンダリングループは高頻度で実行されるため、パフォーマンスに注意
-4. **ARKit Session**: デバイストラッキングにはARKit権限が必要
+1. **設計優先**: 実装前に docs/spec/, docs/design/ を確認
+2. **P2P/CRDT**: 状態管理はLoroを通じて行う
+3. **Unison Protocol**: 通信はKDLスキーマで型定義
+4. **Agent SDK**: Claude Agent SDKとMCPを活用
+
+## ドキュメント構成 (SDG)
+
+本プロジェクトはSDG（Spec-Design-Guide）方式でドキュメント管理:
+
+- **Spec** (`docs/spec/`): 何を作るか - 要件・コンセプト
+- **Design** (`docs/design/`): どう作るか - アーキテクチャ・技術設計
+- **Guide** (`docs/development/`): どう使うか - 開発ガイド

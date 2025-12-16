@@ -1,0 +1,33 @@
+[package]
+name = "vantage-tui"
+version = "0.1.0"
+edition = "2021"
+description = "Vantage Point TUI - Agent Chat Interface"
+
+[[bin]]
+name = "vantage"
+path = "src/main.rs"
+
+[dependencies]
+vantage-core = { path = "../vantage-core" }
+
+# TUI
+ratatui = "0.29"
+crossterm = "0.28"
+
+# Async
+tokio = { workspace = true }
+
+# HTTP client for Anthropic API
+reqwest = { workspace = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Error handling
+anyhow = "1"
+
+# Environment
+dotenvy = "0.15"
+
+# Session storage
+dirs = "5"
