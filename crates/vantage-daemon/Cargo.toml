@@ -49,3 +49,7 @@ tao = "0.34"
 
 # Open URLs in system browser
 open = "5"
+
+# Configuration
+toml = "0.8"
+dirs = "6"

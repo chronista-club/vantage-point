@@ -34,6 +34,8 @@ struct AppState {
     debug_mode: DebugMode,
     /// Shutdown signal token
     shutdown_token: CancellationToken,
+    /// Project directory for Claude agent
+    project_dir: String,
 }
 
 impl AppState {
@@ -76,7 +78,7 @@ impl AppState {
 }
 
 /// Run the daemon server
-pub async fn run(port: u16, auto_open_browser: bool, debug_mode: DebugMode) -> Result<()> {
+pub async fn run(port: u16, auto_open_browser: bool, debug_mode: DebugMode, project_dir: String) -> Result<()> {
     // Shutdown signal
     let shutdown_token = CancellationToken::new();
     let shutdown_token_clone = shutdown_token.clone();
@@ -87,6 +89,7 @@ pub async fn run(port: u16, auto_open_browser: bool, debug_mode: DebugMode) -> R
         cancel_token: Arc::new(RwLock::new(CancellationToken::new())),
         debug_mode,
         shutdown_token: shutdown_token.clone(),
+        project_dir,
     });
 
     let app = Router::new()
@@ -145,13 +148,15 @@ pub struct HealthResponse {
     pub status: &'static str,
     pub version: &'static str,
     pub pid: u32,
+    pub project_dir: String,
 }
 
-async fn health_handler() -> Json<HealthResponse> {
+async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "ok",
         version: env!("CARGO_PKG_VERSION"),
         pid: std::process::id(),
+        project_dir: state.project_dir.clone(),
     })
 }
 

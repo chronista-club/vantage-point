@@ -7,16 +7,21 @@
 //!
 //! Environment variables:
 //!   VANTAGE_DEBUG=none|simple|detail  # Debug display mode
+//!   VANTAGE_PROJECT_DIR=/path/to/project  # Default project directory
+//!
+//! Config file: ~/.config/vantage/config.toml
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 
 mod agent;
+mod config;
 mod daemon;
 mod mcp;
 mod protocol;
 mod webview;
 
+use config::Config;
 use protocol::DebugMode;
 
 /// Health response from daemon
@@ -25,6 +30,8 @@ struct HealthResponse {
     status: String,
     version: String,
     pid: u32,
+    #[serde(default)]
+    project_dir: Option<String>,
 }
 
 /// Check if daemon is running on the specified port
@@ -43,6 +50,9 @@ async fn check_status(port: u16) -> Result<()> {
                         println!("✓ vantaged is running on port {}", port);
                         println!("  Version: {}", health.version);
                         println!("  PID: {}", health.pid);
+                        if let Some(ref dir) = health.project_dir {
+                            println!("  Project: {}", dir);
+                        }
                         println!("  Status: {}", health.status);
                     }
                     Err(_) => {
@@ -164,6 +174,7 @@ struct Instance {
     port: u16,
     pid: u32,
     version: String,
+    project_dir: Option<String>,
 }
 
 /// Scan for running vantaged instances
@@ -184,6 +195,7 @@ async fn scan_instances() -> Vec<Instance> {
                         port,
                         pid: health.pid,
                         version: health.version,
+                        project_dir: health.project_dir,
                     });
                 }
             }
@@ -205,10 +217,17 @@ async fn list_instances() -> Result<()> {
     }
 
     println!();
-    println!("  #  PORT   PID     VERSION");
+    println!("  #  PORT   PID     PROJECT");
     println!("  ─  ────   ───     ───────");
     for (i, inst) in instances.iter().enumerate() {
-        println!("  {}  {}  {:>5}   {}", i, inst.port, inst.pid, inst.version);
+        let project = inst.project_dir.as_deref().unwrap_or("-");
+        // Shorten long paths
+        let project_display = if project.len() > 40 {
+            format!("...{}", &project[project.len()-37..])
+        } else {
+            project.to_string()
+        };
+        println!("  {}  {}  {:>5}   {}", i, inst.port, inst.pid, project_display);
     }
     println!();
     println!("Use `vantaged open <#>` to open WebUI");
@@ -289,9 +308,13 @@ struct Cli {
 enum Commands {
     /// Start the daemon (HTTP server + WebSocket hub) [default]
     Start {
+        /// Project index from config (use `vantaged config` to list)
+        #[arg()]
+        project_index: Option<usize>,
+
         /// Port to listen on
-        #[arg(short, long, default_value = "33000")]
-        port: u16,
+        #[arg(short, long)]
+        port: Option<u16>,
 
         /// Don't open any viewer (headless mode)
         #[arg(long)]
@@ -304,7 +327,13 @@ enum Commands {
         /// Debug display mode (overrides VANTAGE_DEBUG env var)
         #[arg(long, short = 'd', value_enum)]
         debug: Option<DebugModeArg>,
+
+        /// Project directory for Claude agent (overrides project_index)
+        #[arg(long, short = 'C')]
+        project_dir: Option<String>,
     },
+    /// Show configuration and registered projects
+    Config,
     /// Start as MCP server (stdio JSON-RPC)
     Mcp,
     /// Check if daemon is running
@@ -342,16 +371,46 @@ fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
+    // Load config
+    let config = Config::load().unwrap_or_default();
+
     // Default to Start if no command given
     let command = cli.command.unwrap_or(Commands::Start {
-        port: 33000,
+        project_index: None,
+        port: None,
         headless: false,
         browser: false,
         debug: None,
+        project_dir: None,
     });
 
     match command {
-        Commands::Start { port, headless, browser, debug } => {
+        Commands::Start { project_index, port, headless, browser, debug, project_dir } => {
+            // Resolve project directory
+            let resolved_project_dir = if let Some(ref dir) = project_dir {
+                // Explicit --project-dir takes precedence
+                dir.clone()
+            } else if let Some(idx) = project_index {
+                // Project index from config
+                if idx >= config.projects.len() {
+                    eprintln!("✗ Invalid project index {}. Use `vantaged config` to list projects.", idx);
+                    std::process::exit(1);
+                }
+                let project = &config.projects[idx];
+                println!("📁 Project: {} ({})", project.name, project.path);
+                project.path.clone()
+            } else {
+                // Default: cwd
+                Config::resolve_project_dir(None, &config)
+            };
+
+            // Resolve port: CLI > project config > default config > 33000
+            let resolved_port = port
+                .or_else(|| {
+                    project_index.and_then(|idx| config.projects.get(idx).and_then(|p| p.port))
+                })
+                .unwrap_or(config.default_port);
+
             // Determine debug mode: CLI flag > env var > default
             let debug_mode = debug
                 .map(DebugMode::from)
@@ -362,19 +421,22 @@ fn main() -> Result<()> {
                 tracing::info!("Debug mode: {:?}", debug_mode);
             }
 
+            tracing::info!("Project dir: {}", resolved_project_dir);
+
             if headless || browser {
                 // Headless or browser mode - use tokio runtime
                 let rt = tokio::runtime::Runtime::new()?;
                 rt.block_on(async {
                     // Start HTTP server in background
+                    let project_dir = resolved_project_dir.clone();
                     let server_handle = tokio::spawn(async move {
-                        daemon::run(port, false, debug_mode).await
+                        daemon::run(resolved_port, false, debug_mode, project_dir).await
                     });
 
                     if browser {
                         // Wait for server to start, then open browser
                         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                        let url = format!("http://localhost:{}", port);
+                        let url = format!("http://localhost:{}", resolved_port);
                         tracing::info!("Opening in browser: {}", url);
                         let _ = open::that(&url);
                     }
@@ -383,10 +445,11 @@ fn main() -> Result<()> {
                 })
             } else {
                 // WebView mode - run server in background thread, WebView on main thread
+                let project_dir = resolved_project_dir.clone();
                 let server_thread = std::thread::spawn(move || {
                     let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime");
                     rt.block_on(async {
-                        daemon::run(port, false, debug_mode).await
+                        daemon::run(resolved_port, false, debug_mode, project_dir).await
                     })
                 });
 
@@ -394,7 +457,7 @@ fn main() -> Result<()> {
                 std::thread::sleep(std::time::Duration::from_millis(300));
 
                 // Run WebView on main thread (required by macOS)
-                let webview_result = webview::run_webview(port);
+                let webview_result = webview::run_webview(resolved_port);
 
                 match webview_result {
                     Ok(()) => {
@@ -409,6 +472,38 @@ fn main() -> Result<()> {
                 drop(server_thread);
                 Ok(())
             }
+        }
+        Commands::Config => {
+            // Show configuration
+            println!("Config file: {}", Config::config_path().display());
+            println!();
+
+            if config.projects.is_empty() {
+                println!("No projects registered.");
+                println!();
+                println!("Add projects to your config file:");
+                println!("  [[projects]]");
+                println!("  name = \"my-project\"");
+                println!("  path = \"/path/to/project\"");
+            } else {
+                println!("Registered projects:");
+                println!("  #  NAME                PORT    PATH");
+                println!("  ─  ────                ────    ────");
+                for (i, project) in config.projects.iter().enumerate() {
+                    let port_str = project.port.map(|p| p.to_string()).unwrap_or_else(|| "-".to_string());
+                    // Shorten long paths
+                    let path_display = if project.path.len() > 40 {
+                        format!("...{}", &project.path[project.path.len()-37..])
+                    } else {
+                        project.path.clone()
+                    };
+                    println!("  {}  {:18}  {:>5}   {}", i, project.name, port_str, path_display);
+                }
+                println!();
+                println!("Usage: vantaged start <#> or vantaged start -C /path/to/project");
+            }
+
+            Ok(())
         }
         Commands::Mcp => {
             // MCP mode: stdio JSON-RPC server
