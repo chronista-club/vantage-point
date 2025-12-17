@@ -13,13 +13,12 @@ use ratatui::{
     Frame, Terminal,
 };
 use std::io;
-use std::sync::{Arc, Mutex};
+use std::sync::mpsc::Receiver;
 
-mod api;
+mod claude_cli;
 mod session;
-mod tools;
 
-use api::{AnthropicClient, ToolEvent};
+use claude_cli::{ClaudeCli, ClaudeEvent};
 use session::{Session, SessionStore};
 
 #[derive(Debug, Clone)]
@@ -28,49 +27,65 @@ struct Message {
     content: String,
 }
 
+/// バックエンドモード
+#[derive(Debug, Clone)]
+enum BackendMode {
+    ClaudeCli { model: String, tools_count: usize, mcp_count: usize },
+    Initializing,
+}
+
 struct App {
     input: String,
     input_cursor: usize,
-    messages: Arc<Mutex<Vec<Message>>>,
-    client: AnthropicClient,
+    messages: Vec<Message>,
+    claude: ClaudeCli,
+    backend_mode: BackendMode,
     is_loading: bool,
     scroll: u16,
     session: Session,
     session_store: SessionStore,
+    event_rx: Option<Receiver<ClaudeEvent>>,
+    project_dir: String,
 }
 
 impl App {
     fn new() -> Result<Self> {
         dotenvy::dotenv().ok();
-        let api_key = std::env::var("ANTHROPIC_API_KEY")
-            .expect("ANTHROPIC_API_KEY must be set");
 
         let session_store = SessionStore::new();
         let session = Session::new();
 
+        // Get project directory from current directory or env
+        let project_dir = std::env::current_dir()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| ".".to_string());
+
         Ok(Self {
             input: String::new(),
             input_cursor: 0,
-            messages: Arc::new(Mutex::new(vec![Message {
+            messages: vec![Message {
                 role: "system".to_string(),
-                content: format!("Vantage Point Agent へようこそ！\nセッション: {}", session.id),
-            }])),
-            client: AnthropicClient::new(api_key),
+                content: format!(
+                    "🎯 Vantage Point Agent\n📁 Project: {}\n⏳ Claude CLI 初期化中...",
+                    project_dir
+                ),
+            }],
+            claude: ClaudeCli::new(),
+            backend_mode: BackendMode::Initializing,
             is_loading: false,
             scroll: 0,
             session,
             session_store,
+            event_rx: None,
+            project_dir,
         })
     }
 
     fn save_session(&mut self) -> Result<String> {
         // Sync messages to session
-        if let Ok(messages) = self.messages.lock() {
-            for msg in messages.iter() {
-                // Only add if not already in session
-                if !self.session.messages.iter().any(|m| m.content == msg.content) {
-                    self.session.add_message(&msg.role, &msg.content);
-                }
+        for msg in self.messages.iter() {
+            if !self.session.messages.iter().any(|m| m.content == msg.content) {
+                self.session.add_message(&msg.role, &msg.content);
             }
         }
         let path = self.session_store.save(&self.session)?;
@@ -80,34 +95,26 @@ impl App {
     fn resume_latest(&mut self) -> Result<()> {
         if let Some(session) = self.session_store.get_latest() {
             self.session = session.clone();
-            if let Ok(mut messages) = self.messages.lock() {
-                messages.clear();
-                messages.push(Message {
-                    role: "system".to_string(),
-                    content: format!("セッション再開: {}", session.id),
+            self.messages.clear();
+            self.messages.push(Message {
+                role: "system".to_string(),
+                content: format!("セッション再開: {}", session.id),
+            });
+            for msg in &session.messages {
+                self.messages.push(Message {
+                    role: msg.role.clone(),
+                    content: msg.content.clone(),
                 });
-                for msg in &session.messages {
-                    messages.push(Message {
-                        role: msg.role.clone(),
-                        content: msg.content.clone(),
-                    });
-                }
             }
         }
         Ok(())
     }
 
-    fn add_message(&self, role: &str, content: &str) {
-        if let Ok(mut messages) = self.messages.lock() {
-            messages.push(Message {
-                role: role.to_string(),
-                content: content.to_string(),
-            });
-        }
-    }
-
-    fn get_messages(&self) -> Vec<Message> {
-        self.messages.lock().map(|m| m.clone()).unwrap_or_default()
+    fn add_message(&mut self, role: &str, content: &str) {
+        self.messages.push(Message {
+            role: role.to_string(),
+            content: content.to_string(),
+        });
     }
 
     fn move_cursor_left(&mut self) {
@@ -154,7 +161,7 @@ impl App {
         self.input_cursor = 0;
     }
 
-    async fn submit_message(&mut self) {
+    fn submit_message(&mut self) {
         if self.input.is_empty() || self.is_loading {
             return;
         }
@@ -165,39 +172,80 @@ impl App {
         self.reset_cursor();
         self.is_loading = true;
 
-        let messages = self.messages.clone();
-
-        // Call API with tool event callback
-        let result = self.client.chat(&user_message, |event| {
-            match event {
-                ToolEvent::Executing(tool_name) => {
-                    if let Ok(mut msgs) = messages.lock() {
-                        msgs.push(Message {
-                            role: "tool".to_string(),
-                            content: format!("🔧 {} を実行中...", tool_name),
-                        });
-                    }
-                }
-                ToolEvent::Result(tool_name, preview) => {
-                    if let Ok(mut msgs) = messages.lock() {
-                        msgs.push(Message {
-                            role: "tool".to_string(),
-                            content: format!("✓ {}: {}", tool_name, preview),
-                        });
-                    }
-                }
-            }
-        }).await;
-
-        match result {
-            Ok(response) => {
-                self.add_message("assistant", &response);
+        // Send prompt to Claude CLI
+        match self.claude.send_prompt(&user_message, Some(&self.project_dir)) {
+            Ok(rx) => {
+                self.event_rx = Some(rx);
             }
             Err(e) => {
-                self.add_message("error", &format!("エラー: {}", e));
+                self.add_message("error", &format!("Claude CLI エラー: {}", e));
+                self.is_loading = false;
             }
         }
-        self.is_loading = false;
+    }
+
+    /// Check for events from Claude CLI
+    fn poll_events(&mut self) {
+        // Collect events first to avoid borrow issues
+        let events: Vec<ClaudeEvent> = if let Some(ref rx) = self.event_rx {
+            let mut collected = Vec::new();
+            while let Ok(event) = rx.try_recv() {
+                collected.push(event);
+            }
+            collected
+        } else {
+            Vec::new()
+        };
+
+        // Process collected events
+        let mut should_clear_rx = false;
+        for event in events {
+            match event {
+                ClaudeEvent::Init { model, tools, mcp_servers } => {
+                    self.backend_mode = BackendMode::ClaudeCli {
+                        model: model.clone(),
+                        tools_count: tools.len(),
+                        mcp_count: mcp_servers.len(),
+                    };
+                    self.add_message("system", &format!(
+                        "✓ Claude CLI 接続\nModel: {}\nTools: {} / MCP: {}",
+                        model, tools.len(), mcp_servers.len()
+                    ));
+                }
+                ClaudeEvent::Text(text) => {
+                    // Update or append assistant message
+                    if let Some(last) = self.messages.last_mut() {
+                        if last.role == "assistant" {
+                            last.content = text;
+                        } else {
+                            self.add_message("assistant", &text);
+                        }
+                    } else {
+                        self.add_message("assistant", &text);
+                    }
+                }
+                ClaudeEvent::ToolExecuting { name } => {
+                    self.add_message("tool", &format!("🔧 {} を実行中...", name));
+                }
+                ClaudeEvent::ToolResult { name, preview } => {
+                    self.add_message("tool", &format!("✓ {}: {}", name, preview));
+                }
+                ClaudeEvent::Done { result: _, cost } => {
+                    self.add_message("system", &format!("💰 ${:.4}", cost));
+                    self.is_loading = false;
+                    should_clear_rx = true;
+                }
+                ClaudeEvent::Error(e) => {
+                    self.add_message("error", &format!("エラー: {}", e));
+                    self.is_loading = false;
+                    should_clear_rx = true;
+                }
+            }
+        }
+
+        if should_clear_rx {
+            self.event_rx = None;
+        }
     }
 
     fn scroll_up(&mut self) {
@@ -222,7 +270,7 @@ async fn main() -> Result<()> {
     let mut app = App::new()?;
 
     // Run app
-    let res = run_app(&mut terminal, &mut app).await;
+    let res = run_app(&mut terminal, &mut app);
 
     // Restore terminal
     disable_raw_mode()?;
@@ -240,14 +288,17 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn run_app<B: ratatui::backend::Backend>(
+fn run_app<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
 ) -> Result<()> {
     loop {
+        // Poll for Claude CLI events
+        app.poll_events();
+
         terminal.draw(|f| ui(f, app))?;
 
-        if event::poll(std::time::Duration::from_millis(100))? {
+        if event::poll(std::time::Duration::from_millis(50))? {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
                     // Ctrl+S: Save session
@@ -282,7 +333,7 @@ async fn run_app<B: ratatui::backend::Backend>(
                             return Ok(());
                         }
                         KeyCode::Enter => {
-                            app.submit_message().await;
+                            app.submit_message();
                         }
                         KeyCode::Char(c) => {
                             app.enter_char(c);
@@ -321,15 +372,22 @@ fn ui(f: &mut Frame, app: &App) {
         ])
         .split(f.area());
 
-    // Header
-    let header = Paragraph::new("🎯 Vantage Point Agent (Phase 0)")
+    // Header with backend info
+    let header_text = match &app.backend_mode {
+        BackendMode::ClaudeCli { model, tools_count, mcp_count } => {
+            format!("🎯 Vantage Point Agent | {} | Tools: {} | MCP: {}", model, tools_count, mcp_count)
+        }
+        BackendMode::Initializing => {
+            "🎯 Vantage Point Agent | ⏳ 初期化中...".to_string()
+        }
+    };
+    let header = Paragraph::new(header_text)
         .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
         .block(Block::default().borders(Borders::ALL));
     f.render_widget(header, chunks[0]);
 
     // Messages
-    let all_messages = app.get_messages();
-    let messages: Vec<ListItem> = all_messages
+    let messages: Vec<ListItem> = app.messages
         .iter()
         .map(|m| {
             let style = match m.role.as_str() {
@@ -349,11 +407,10 @@ fn ui(f: &mut Frame, app: &App) {
                 _ => "",
             };
             // Split content by newlines and wrap long lines
-            let width = f.area().width.saturating_sub(4) as usize; // Account for borders
+            let width = f.area().width.saturating_sub(4) as usize;
             let mut lines: Vec<Line> = Vec::new();
 
             for (i, line) in m.content.lines().enumerate() {
-                // Wrap each line to fit width
                 let mut remaining = line;
                 let mut is_first = i == 0;
 
@@ -377,7 +434,7 @@ fn ui(f: &mut Frame, app: &App) {
                         is_first = false;
                     } else {
                         lines.push(Line::from(vec![
-                            Span::styled("  ", style), // Indent continuation
+                            Span::styled("  ", style),
                             Span::styled(chunk.to_string(), style),
                         ]));
                     }
@@ -422,8 +479,8 @@ fn ui(f: &mut Frame, app: &App) {
     // Status bar
     let session_id = &app.session.id[8..].chars().take(12).collect::<String>();
     let status = Paragraph::new(format!(
-        "Session: {} | Ctrl+S: 保存 | Ctrl+R: 再開 | Esc: 終了",
-        session_id
+        "Session: {} | 📁 {} | Ctrl+S: 保存 | Ctrl+R: 再開 | Esc: 終了",
+        session_id, app.project_dir
     ))
     .style(Style::default().fg(Color::DarkGray));
     f.render_widget(status, chunks[3]);

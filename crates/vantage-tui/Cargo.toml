@@ -9,17 +9,14 @@ name = "vantage"
 path = "src/main.rs"
 
 [dependencies]
-vantage-core = { path = "../vantage-core" }
-
 # TUI
 ratatui = "0.29"
 crossterm = "0.28"
 
-# Async
+# Async (for tokio::main)
 tokio = { workspace = true }
 
-# HTTP client for Anthropic API
-reqwest = { workspace = true }
+# JSON parsing for Claude CLI output
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
