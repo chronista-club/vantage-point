@@ -561,7 +561,7 @@ fn main() -> Result<()> {
             config.note_actions.insert(38, midi::MidiAction::ResetSession);
 
             let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(midi::run_midi(port, config, daemon_port))
+            rt.block_on(midi::run_midi_interactive(port, config, daemon_port))
         }
     }
 }

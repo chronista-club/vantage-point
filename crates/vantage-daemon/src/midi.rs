@@ -361,3 +361,77 @@ pub fn print_ports() {
         }
     }
 }
+
+/// Start MIDI monitoring with console output
+pub async fn run_midi_interactive(
+    port_index: Option<usize>,
+    config: MidiConfig,
+    daemon_port: u16,
+) -> Result<()> {
+    let midi_in = midir::MidiInput::new("vantaged-midi")?;
+    let ports = midi_in.ports();
+
+    if ports.is_empty() {
+        println!("No MIDI input ports found.");
+        return Ok(());
+    }
+
+    // Find port by pattern or index
+    let port_idx = if let Some(pattern) = &config.port_pattern {
+        ports.iter().position(|p| {
+            midi_in.port_name(p)
+                .map(|name| name.contains(pattern))
+                .unwrap_or(false)
+        }).unwrap_or(port_index.unwrap_or(0))
+    } else {
+        port_index.unwrap_or(0)
+    };
+
+    let port = ports.get(port_idx)
+        .ok_or_else(|| anyhow::anyhow!("MIDI port {} not found", port_idx))?;
+
+    let port_name = midi_in.port_name(port).unwrap_or_else(|_| "Unknown".to_string());
+
+    println!("Connecting to MIDI port: {}", port_name);
+    println!("Daemon port: {}", daemon_port);
+    println!("Press Ctrl+C to stop.\n");
+    println!("Waiting for MIDI events...");
+
+    let (tx, mut rx) = broadcast::channel::<MidiEvent>(100);
+    let handler = Arc::new(MidiHandler::new(config, daemon_port));
+
+    // Spawn event handler task
+    let handler_clone = handler.clone();
+    tokio::spawn(async move {
+        while let Ok(event) = rx.recv().await {
+            // Print event to console
+            println!("  {:?}", event.message);
+            handler_clone.handle_event(&event).await;
+        }
+    });
+
+    // Connect to MIDI port
+    let port_name_clone = port_name.clone();
+    let _connection = midi_in.connect(
+        port,
+        "vantaged-midi-connection",
+        move |_timestamp, message, _| {
+            if let Some(midi_msg) = parse_midi_message(message) {
+                let event = MidiEvent {
+                    port_name: port_name_clone.clone(),
+                    message: midi_msg,
+                    timestamp: std::time::Instant::now(),
+                };
+                let _ = tx.send(event);
+            }
+        },
+        (),
+    )?;
+
+    println!("Connected! Monitoring: {}\n", port_name);
+
+    // Keep connection alive
+    loop {
+        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    }
+}
