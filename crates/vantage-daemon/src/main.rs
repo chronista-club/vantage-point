@@ -154,6 +154,95 @@ fn force_kill(pid: u32) {
 #[cfg(not(unix))]
 fn force_kill(_pid: u32) {}
 
+/// Default port range to scan for instances
+const PORT_RANGE_START: u16 = 33000;
+const PORT_RANGE_END: u16 = 33010;
+
+/// Running instance info
+#[derive(Clone)]
+struct Instance {
+    port: u16,
+    pid: u32,
+    version: String,
+}
+
+/// Scan for running vantaged instances
+async fn scan_instances() -> Vec<Instance> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(500))
+        .build()
+        .unwrap();
+
+    let mut instances = Vec::new();
+
+    for port in PORT_RANGE_START..=PORT_RANGE_END {
+        let url = format!("http://localhost:{}/api/health", port);
+        if let Ok(response) = client.get(&url).send().await {
+            if response.status().is_success() {
+                if let Ok(health) = response.json::<HealthResponse>().await {
+                    instances.push(Instance {
+                        port,
+                        pid: health.pid,
+                        version: health.version,
+                    });
+                }
+            }
+        }
+    }
+
+    instances
+}
+
+/// List all running vantaged instances
+async fn list_instances() -> Result<()> {
+    println!("Scanning ports {}–{}...", PORT_RANGE_START, PORT_RANGE_END);
+
+    let instances = scan_instances().await;
+
+    if instances.is_empty() {
+        println!("No running vantaged instances found.");
+        return Ok(());
+    }
+
+    println!();
+    println!("  #  PORT   PID     VERSION");
+    println!("  ─  ────   ───     ───────");
+    for (i, inst) in instances.iter().enumerate() {
+        println!("  {}  {}  {:>5}   {}", i, inst.port, inst.pid, inst.version);
+    }
+    println!();
+    println!("Use `vantaged open <#>` to open WebUI");
+
+    Ok(())
+}
+
+/// Open WebUI for a specific instance
+async fn open_instance(index: usize) -> Result<()> {
+    let instances = scan_instances().await;
+
+    if instances.is_empty() {
+        println!("No running vantaged instances found.");
+        return Ok(());
+    }
+
+    if index >= instances.len() {
+        println!("✗ Invalid index {}. Available: 0–{}", index, instances.len() - 1);
+        return Ok(());
+    }
+
+    let inst = &instances[index];
+    let url = format!("http://localhost:{}", inst.port);
+    println!("Opening {} (PID: {})...", url, inst.pid);
+
+    if let Err(e) = open::that(&url) {
+        println!("✗ Failed to open browser: {}", e);
+    } else {
+        println!("✓ Opened in browser");
+    }
+
+    Ok(())
+}
+
 /// CLI-compatible debug mode enum
 #[derive(Debug, Clone, Copy, Default, ValueEnum)]
 pub enum DebugModeArg {
@@ -229,6 +318,15 @@ enum Commands {
         /// Port of the daemon to stop
         #[arg(short, long, default_value = "33000")]
         port: u16,
+    },
+    /// List running vantaged instances
+    #[command(alias = "list")]
+    Ps,
+    /// Open WebUI for a running instance
+    Open {
+        /// Index of the instance (from `vantaged ps`)
+        #[arg(default_value = "0")]
+        index: usize,
     },
 }
 
@@ -324,6 +422,14 @@ fn main() -> Result<()> {
         Commands::Stop { port } => {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(stop_daemon(port))
+        }
+        Commands::Ps => {
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(list_instances())
+        }
+        Commands::Open { index } => {
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(open_instance(index))
         }
     }
 }
