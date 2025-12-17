@@ -18,6 +18,7 @@ mod agent;
 mod config;
 mod daemon;
 mod mcp;
+mod midi;
 mod protocol;
 mod tray;
 mod webview;
@@ -360,6 +361,17 @@ enum Commands {
     },
     /// Run as menu bar icon (system tray)
     Tray,
+    /// List available MIDI input ports
+    MidiPorts,
+    /// Start MIDI input monitoring
+    Midi {
+        /// MIDI port index to connect to
+        #[arg(short, long)]
+        port: Option<usize>,
+        /// Daemon port to send actions to
+        #[arg(short = 'P', long, default_value = "33000")]
+        daemon_port: u16,
+    },
 }
 
 fn main() -> Result<()> {
@@ -531,6 +543,25 @@ fn main() -> Result<()> {
         }
         Commands::Tray => {
             tray::run_tray()
+        }
+        Commands::MidiPorts => {
+            midi::print_ports();
+            Ok(())
+        }
+        Commands::Midi { port, daemon_port } => {
+            // Default MIDI config with example mappings
+            let mut config = midi::MidiConfig::default();
+
+            // Example: LPD8 pad mappings (notes 36-43)
+            // Pad 1 (note 36) -> Open WebUI
+            config.note_actions.insert(36, midi::MidiAction::OpenWebUI { port: None });
+            // Pad 2 (note 37) -> Cancel chat
+            config.note_actions.insert(37, midi::MidiAction::CancelChat);
+            // Pad 3 (note 38) -> Reset session
+            config.note_actions.insert(38, midi::MidiAction::ResetSession);
+
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(midi::run_midi(port, config, daemon_port))
         }
     }
 }

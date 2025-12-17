@@ -59,3 +59,6 @@ muda = "0.17"
 
 # System tray icon
 tray-icon = "0.21"
+
+# MIDI input
+midir = "0.10"
