@@ -34,3 +34,10 @@ anyhow = { workspace = true }
 
 # Async utilities
 futures = { workspace = true }
+
+# HTTP client (for MCP to communicate with daemon)
+reqwest = { workspace = true }
+
+# MCP (Model Context Protocol)
+rmcp = { version = "0.11", features = ["server", "transport-io"] }
+schemars = "1"

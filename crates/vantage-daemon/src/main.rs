@@ -9,6 +9,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 mod daemon;
+mod mcp;
 mod protocol;
 
 #[derive(Parser)]
@@ -63,9 +64,9 @@ async fn main() -> Result<()> {
             daemon::run(port, !no_browser).await
         }
         Commands::Mcp => {
-            // TODO: MCP stdio server
-            tracing::info!("MCP mode not yet implemented");
-            Ok(())
+            // MCP mode: stdio JSON-RPC server
+            // Note: tracing goes to stderr, which MCP clients ignore
+            mcp::run_mcp_server(33000).await
         }
         Commands::Status => {
             // TODO: Check daemon status via health endpoint
