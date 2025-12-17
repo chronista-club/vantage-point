@@ -50,7 +50,12 @@
       "Bash(vp --help:*)",
       "Bash(cargo test:*)",
       "Bash(cargo fmt:*)",
-      "Bash(cargo clippy:*)"
+      "Bash(cargo clippy:*)",
+      "Bash(gh pr create --title \"feat: v0.2.0 - vantage-point リネーム & ドキュメント整理\" --body \"$(cat <<''EOF''\n## Summary\n\n- vantage-daemon → vantage-point にリネーム\n- vpa → vp (CLIコマンド名)\n- プロジェクトインデックスベースのポート管理追加\n- CI/CDワークフロー追加\n- テスト追加\n- 不要なドキュメント削除・整理\n\n## Changes\n\n### Breaking Changes\n- CLIコマンドが `vpa` から `vp` に変更\n\n### New Features\n- ポート自動割り当て: project 0 → 33000, project 1 → 33001\n- GitHub Actions CI: lint, format, clippy, test\n\n### Removed\n- vantage-tui クレート（未使用）\n- 古いドキュメント (docs/cli, docs/api, docs/architecture)\n\n## Test plan\n\n- [x] `cargo test --workspace` 全テストパス\n- [x] `cargo fmt --all -- --check` フォーマットOK\n- [x] `cargo clippy` 警告なし（dead_code除く）\n- [x] `cargo install --path crates/vantage-point` 正常インストール\n- [x] `vp --help` 正常表示\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\nEOF\n)\" --base main)",
+      "Bash(git pull:*)",
+      "Bash(git fetch:*)",
+      "Bash(git tag:*)",
+      "Bash(gh release create:*)"
     ],
     "deny": [],
     "ask": []

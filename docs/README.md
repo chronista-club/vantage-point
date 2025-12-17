@@ -26,6 +26,7 @@
 |-------------|------|
 | [setup.md](./development/setup.md) | 環境構築 |
 | [gitflow-next.md](./development/gitflow-next.md) | ブランチ戦略 |
+| [release-flow.md](./development/release-flow.md) | リリースフロー |
 
 ## 技術スタック
 
