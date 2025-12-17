@@ -13,9 +13,10 @@ use ratatui::{
     Frame, Terminal,
 };
 use std::io;
-use std::sync::mpsc::Receiver;
+use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 mod claude_cli;
+mod daemon;
 mod session;
 
 use claude_cli::{ClaudeCli, ClaudeEvent};
@@ -34,6 +35,14 @@ enum BackendMode {
     Initializing,
 }
 
+/// デバッグモード (Off → Simple → Detail → Off)
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum DebugMode {
+    Off,
+    Simple,  // 基本情報のみ
+    Detail,  // コスト、ツール詳細など
+}
+
 struct App {
     input: String,
     input_cursor: usize,
@@ -44,8 +53,10 @@ struct App {
     scroll: u16,
     session: Session,
     session_store: SessionStore,
-    event_rx: Option<Receiver<ClaudeEvent>>,
     project_dir: String,
+    pending_prompt: Option<String>,
+    debug_mode: DebugMode,
+    daemon_process: Option<std::process::Child>,
 }
 
 impl App {
@@ -66,7 +77,7 @@ impl App {
             messages: vec![Message {
                 role: "system".to_string(),
                 content: format!(
-                    "🎯 Vantage Point Agent\n📁 Project: {}\n⏳ Claude CLI 初期化中...",
+                    "🎯 Vantage Point Agent\n📁 Project: {}\n⏳ 準備完了",
                     project_dir
                 ),
             }],
@@ -76,8 +87,10 @@ impl App {
             scroll: 0,
             session,
             session_store,
-            event_rx: None,
             project_dir,
+            pending_prompt: None,
+            debug_mode: DebugMode::Detail, // 開発中はDetail
+            daemon_process: None,
         })
     }
 
@@ -171,34 +184,20 @@ impl App {
         self.input.clear();
         self.reset_cursor();
         self.is_loading = true;
-
-        // Send prompt to Claude CLI
-        match self.claude.send_prompt(&user_message, Some(&self.project_dir)) {
-            Ok(rx) => {
-                self.event_rx = Some(rx);
-            }
-            Err(e) => {
-                self.add_message("error", &format!("Claude CLI エラー: {}", e));
-                self.is_loading = false;
-            }
-        }
+        self.pending_prompt = Some(user_message);
     }
 
     /// Check for events from Claude CLI
     fn poll_events(&mut self) {
-        // Collect events first to avoid borrow issues
-        let events: Vec<ClaudeEvent> = if let Some(ref rx) = self.event_rx {
-            let mut collected = Vec::new();
-            while let Ok(event) = rx.try_recv() {
-                collected.push(event);
-            }
-            collected
-        } else {
-            Vec::new()
-        };
+        let events = self.claude.collect_events();
+
+        // Debug: log received events count
+        if !events.is_empty() {
+            claude_cli::log_to_file(&format!("TUI RECEIVED {} events", events.len()));
+        }
 
         // Process collected events
-        let mut should_clear_rx = false;
+        let mut should_clear = false;
         for event in events {
             match event {
                 ClaudeEvent::Init { model, tools, mcp_servers } => {
@@ -213,16 +212,23 @@ impl App {
                     ));
                 }
                 ClaudeEvent::Text(text) => {
+                    // Safe substring for logging (handle multi-byte chars)
+                    let preview: String = text.chars().take(100).collect();
+                    claude_cli::log_to_file(&format!("TUI TEXT EVENT: {}", preview));
                     // Update or append assistant message
                     if let Some(last) = self.messages.last_mut() {
                         if last.role == "assistant" {
+                            claude_cli::log_to_file("TUI: updating existing assistant message");
                             last.content = text;
                         } else {
+                            claude_cli::log_to_file("TUI: adding new assistant message");
                             self.add_message("assistant", &text);
                         }
                     } else {
+                        claude_cli::log_to_file("TUI: adding first assistant message");
                         self.add_message("assistant", &text);
                     }
+                    claude_cli::log_to_file(&format!("TUI: messages count = {}", self.messages.len()));
                 }
                 ClaudeEvent::ToolExecuting { name } => {
                     self.add_message("tool", &format!("🔧 {} を実行中...", name));
@@ -231,20 +237,25 @@ impl App {
                     self.add_message("tool", &format!("✓ {}: {}", name, preview));
                 }
                 ClaudeEvent::Done { result: _, cost } => {
-                    self.add_message("system", &format!("💰 ${:.4}", cost));
+                    if self.debug_mode == DebugMode::Detail {
+                        self.add_message("system", &format!("✓ 完了 (${:.4})", cost));
+                    }
                     self.is_loading = false;
-                    should_clear_rx = true;
+                    should_clear = true;
                 }
                 ClaudeEvent::Error(e) => {
-                    self.add_message("error", &format!("エラー: {}", e));
-                    self.is_loading = false;
-                    should_clear_rx = true;
+                    // stderrからのメッセージは致命的エラーではないので、クリアしない
+                    if !e.starts_with("stderr:") {
+                        self.add_message("error", &format!("エラー: {}", e));
+                        self.is_loading = false;
+                        should_clear = true;
+                    }
                 }
             }
         }
 
-        if should_clear_rx {
-            self.event_rx = None;
+        if should_clear {
+            self.claude.clear_channel();
         }
     }
 
@@ -259,6 +270,23 @@ impl App {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Initialize tracing - output to file for TUI compatibility
+    let log_dir = dirs::cache_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("vantage");
+    std::fs::create_dir_all(&log_dir).ok();
+    let log_file = std::fs::File::create(log_dir.join("vantage-tui.log")).ok();
+
+    if let Some(file) = log_file {
+        tracing_subscriber::registry()
+            .with(EnvFilter::from_default_env().add_directive("vantage_tui=info".parse().unwrap()))
+            .with(fmt::layer().with_writer(std::sync::Mutex::new(file)).with_ansi(false))
+            .init();
+    }
+
+    // Start daemon if not running
+    let daemon_process = daemon::ensure_running().await.ok().flatten();
+
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -268,9 +296,10 @@ async fn main() -> Result<()> {
 
     // Create app
     let mut app = App::new()?;
+    app.daemon_process = daemon_process;
 
     // Run app
-    let res = run_app(&mut terminal, &mut app);
+    let res = run_app(&mut terminal, &mut app).await;
 
     // Restore terminal
     disable_raw_mode()?;
@@ -288,11 +317,19 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn run_app<B: ratatui::backend::Backend>(
+async fn run_app<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
 ) -> Result<()> {
     loop {
+        // Handle pending prompt (async send)
+        if let Some(prompt) = app.pending_prompt.take() {
+            if let Err(e) = app.claude.send_prompt(&prompt, Some(&app.project_dir)).await {
+                app.add_message("error", &format!("Claude CLI エラー: {}", e));
+                app.is_loading = false;
+            }
+        }
+
         // Poll for Claude CLI events
         app.poll_events();
 
@@ -323,6 +360,24 @@ fn run_app<B: ratatui::backend::Backend>(
                         if let Err(e) = app.resume_latest() {
                             app.add_message("error", &format!("再開エラー: {}", e));
                         }
+                        continue;
+                    }
+
+                    // Ctrl+D: Toggle debug mode (Off → Simple → Detail → Off)
+                    if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL)
+                        && key.code == KeyCode::Char('d')
+                    {
+                        app.debug_mode = match app.debug_mode {
+                            DebugMode::Off => DebugMode::Simple,
+                            DebugMode::Simple => DebugMode::Detail,
+                            DebugMode::Detail => DebugMode::Off,
+                        };
+                        let mode_str = match app.debug_mode {
+                            DebugMode::Off => "OFF",
+                            DebugMode::Simple => "Simple",
+                            DebugMode::Detail => "Detail",
+                        };
+                        app.add_message("system", &format!("🔧 Debug: {}", mode_str));
                         continue;
                     }
 
@@ -378,7 +433,7 @@ fn ui(f: &mut Frame, app: &App) {
             format!("🎯 Vantage Point Agent | {} | Tools: {} | MCP: {}", model, tools_count, mcp_count)
         }
         BackendMode::Initializing => {
-            "🎯 Vantage Point Agent | ⏳ 初期化中...".to_string()
+            "🎯 Vantage Point Agent | ⏳ 準備完了".to_string()
         }
     };
     let header = Paragraph::new(header_text)
@@ -478,9 +533,14 @@ fn ui(f: &mut Frame, app: &App) {
 
     // Status bar
     let session_id = &app.session.id[8..].chars().take(12).collect::<String>();
+    let debug_indicator = match app.debug_mode {
+        DebugMode::Off => "",
+        DebugMode::Simple => " [DBG]",
+        DebugMode::Detail => " [DBG:detail]",
+    };
     let status = Paragraph::new(format!(
-        "Session: {} | 📁 {} | Ctrl+S: 保存 | Ctrl+R: 再開 | Esc: 終了",
-        session_id, app.project_dir
+        "Session: {}{} | Ctrl+D: Debug | Esc: 終了",
+        session_id, debug_indicator
     ))
     .style(Style::default().fg(Color::DarkGray));
     f.render_widget(status, chunks[3]);

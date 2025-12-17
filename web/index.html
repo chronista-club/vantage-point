@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vantage Point</title>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            min-height: 100vh;
+        }
+        .header {
+            background: #16213e;
+            padding: 12px 20px;
+            border-bottom: 1px solid #0f3460;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .header h1 {
+            font-size: 16px;
+            font-weight: 500;
+        }
+        .status {
+            font-size: 12px;
+            color: #888;
+        }
+        .status.connected {
+            color: #4ade80;
+        }
+        .status.disconnected {
+            color: #f87171;
+        }
+        .container {
+            display: grid;
+            grid-template-columns: 1fr;
+            height: calc(100vh - 50px);
+        }
+        .pane {
+            padding: 20px;
+            overflow: auto;
+            background: #1a1a2e;
+        }
+        .pane-content {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        /* Markdown styles */
+        .pane-content h1, .pane-content h2, .pane-content h3 {
+            margin: 1em 0 0.5em;
+            color: #fff;
+        }
+        .pane-content p {
+            margin: 0.5em 0;
+            line-height: 1.6;
+        }
+        .pane-content code {
+            background: #0f3460;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .pane-content pre {
+            background: #0f3460;
+            padding: 16px;
+            border-radius: 8px;
+            overflow-x: auto;
+            margin: 1em 0;
+        }
+        .pane-content pre code {
+            background: none;
+            padding: 0;
+        }
+        .pane-content img {
+            max-width: 100%;
+            border-radius: 8px;
+        }
+        .pane-content ul, .pane-content ol {
+            margin: 0.5em 0;
+            padding-left: 1.5em;
+        }
+        .log-entry {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 13px;
+            padding: 4px 0;
+            border-bottom: 1px solid #0f3460;
+        }
+        .welcome {
+            text-align: center;
+            padding: 60px 20px;
+            color: #666;
+        }
+        .welcome h2 {
+            font-size: 24px;
+            margin-bottom: 12px;
+            color: #888;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Vantage Point</h1>
+        <span id="status" class="status disconnected">Disconnected</span>
+    </div>
+    <div class="container">
+        <div id="pane-main" class="pane">
+            <div class="pane-content">
+                <div class="welcome">
+                    <h2>Vantage Point</h2>
+                    <p>Waiting for content from daemon...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const WS_URL = `ws://${location.host}/ws`;
+        let ws = null;
+        let reconnectTimer = null;
+
+        function connect() {
+            ws = new WebSocket(WS_URL);
+
+            ws.onopen = () => {
+                console.log('Connected to vantaged');
+                document.getElementById('status').textContent = 'Connected';
+                document.getElementById('status').className = 'status connected';
+                ws.send(JSON.stringify({ type: 'ready' }));
+            };
+
+            ws.onclose = () => {
+                console.log('Disconnected from vantaged');
+                document.getElementById('status').textContent = 'Disconnected';
+                document.getElementById('status').className = 'status disconnected';
+                // Auto reconnect
+                reconnectTimer = setTimeout(connect, 2000);
+            };
+
+            ws.onerror = (err) => {
+                console.error('WebSocket error:', err);
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    const msg = JSON.parse(event.data);
+                    handleMessage(msg);
+                } catch (e) {
+                    console.error('Failed to parse message:', e);
+                }
+            };
+        }
+
+        function handleMessage(msg) {
+            console.log('Received:', msg);
+
+            switch (msg.type) {
+                case 'show':
+                    showContent(msg.pane_id || 'main', msg.content, msg.append);
+                    break;
+                case 'clear':
+                    clearPane(msg.pane_id || 'main');
+                    break;
+                case 'ping':
+                    ws.send(JSON.stringify({ type: 'pong' }));
+                    break;
+            }
+        }
+
+        function getPane(paneId) {
+            let pane = document.getElementById(`pane-${paneId}`);
+            if (!pane) {
+                // Create new pane if doesn't exist
+                pane = document.createElement('div');
+                pane.id = `pane-${paneId}`;
+                pane.className = 'pane';
+                pane.innerHTML = '<div class="pane-content"></div>';
+                document.querySelector('.container').appendChild(pane);
+            }
+            return pane.querySelector('.pane-content');
+        }
+
+        function showContent(paneId, content, append) {
+            const paneContent = getPane(paneId);
+            let html = '';
+
+            if (content.log) {
+                html = `<div class="log-entry">${escapeHtml(content.log)}</div>`;
+            } else if (content.markdown) {
+                html = marked.parse(content.markdown);
+            } else if (content.image_base64) {
+                html = `<img src="data:${content.image_base64.mime_type};base64,${content.image_base64.data}" alt="Image">`;
+            } else if (content.html) {
+                html = content.html;
+            }
+
+            if (append) {
+                paneContent.innerHTML += html;
+            } else {
+                paneContent.innerHTML = html;
+            }
+
+            // Scroll to bottom
+            paneContent.parentElement.scrollTop = paneContent.parentElement.scrollHeight;
+        }
+
+        function clearPane(paneId) {
+            const paneContent = getPane(paneId);
+            paneContent.innerHTML = '';
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Start connection
+        connect();
+    </script>
+</body>
+</html>

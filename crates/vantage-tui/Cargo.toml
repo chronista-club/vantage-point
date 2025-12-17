@@ -13,7 +13,7 @@ path = "src/main.rs"
 ratatui = "0.29"
 crossterm = "0.28"
 
-# Async (for tokio::main)
+# Async runtime
 tokio = { workspace = true }
 
 # JSON parsing for Claude CLI output
@@ -23,8 +23,15 @@ serde_json = "1"
 # Error handling
 anyhow = "1"
 
+# Logging
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
 # Environment
 dotenvy = "0.15"
 
 # Session storage
 dirs = "5"
+
+# HTTP client for daemon communication
+reqwest = { workspace = true }

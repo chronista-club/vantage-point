@@ -1,0 +1,36 @@
+[package]
+name = "vantage-daemon"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Background daemon for browser-based rich content display"
+
+[[bin]]
+name = "vantaged"
+path = "src/main.rs"
+
+[dependencies]
+# Async runtime
+tokio = { workspace = true }
+
+# Web server
+axum = { workspace = true, features = ["ws"] }
+tower-http = { workspace = true, features = ["fs", "cors"] }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# CLI
+clap = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }
+
+# Async utilities
+futures = { workspace = true }
