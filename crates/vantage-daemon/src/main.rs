@@ -19,6 +19,7 @@ mod config;
 mod daemon;
 mod mcp;
 mod protocol;
+mod tray;
 mod webview;
 
 use config::Config;
@@ -357,6 +358,8 @@ enum Commands {
         #[arg(default_value = "0")]
         index: usize,
     },
+    /// Run as menu bar icon (system tray)
+    Tray,
 }
 
 fn main() -> Result<()> {
@@ -525,6 +528,9 @@ fn main() -> Result<()> {
         Commands::Open { index } => {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(open_instance(index))
+        }
+        Commands::Tray => {
+            tray::run_tray()
         }
     }
 }

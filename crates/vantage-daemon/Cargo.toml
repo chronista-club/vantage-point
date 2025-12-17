@@ -53,3 +53,9 @@ open = "5"
 # Configuration
 toml = "0.8"
 dirs = "6"
+
+# Menu (for native menu bar on macOS)
+muda = "0.17"
+
+# System tray icon
+tray-icon = "0.21"

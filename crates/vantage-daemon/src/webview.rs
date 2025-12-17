@@ -4,6 +4,7 @@
 //!
 //! DevTools: Press Cmd+Option+I (macOS) or F12 to open
 
+use muda::{Menu, PredefinedMenuItem, Submenu};
 use tao::{
     dpi::LogicalSize,
     event::{Event, WindowEvent},
@@ -13,6 +14,32 @@ use tao::{
 };
 use wry::WebViewBuilder;
 
+/// Create the application menu bar with Edit menu for copy/paste support
+fn create_menu_bar() -> Menu {
+    let menu = Menu::new();
+
+    // Edit menu (required for Cmd+C/V to work on macOS)
+    let edit_menu = Submenu::with_items(
+        "Edit",
+        true,
+        &[
+            &PredefinedMenuItem::undo(None),
+            &PredefinedMenuItem::redo(None),
+            &PredefinedMenuItem::separator(),
+            &PredefinedMenuItem::cut(None),
+            &PredefinedMenuItem::copy(None),
+            &PredefinedMenuItem::paste(None),
+            &PredefinedMenuItem::separator(),
+            &PredefinedMenuItem::select_all(None),
+        ],
+    )
+    .expect("Failed to create Edit menu");
+
+    menu.append(&edit_menu).expect("Failed to append Edit menu");
+
+    menu
+}
+
 /// Run the WebView window pointing to the daemon's HTTP server
 pub fn run_webview(port: u16) -> anyhow::Result<()> {
     let event_loop = EventLoop::new();
@@ -21,6 +48,11 @@ pub fn run_webview(port: u16) -> anyhow::Result<()> {
         .with_title("Vantage Point")
         .with_inner_size(LogicalSize::new(1200.0, 800.0))
         .build(&event_loop)?;
+
+    // Initialize menu bar for macOS
+    let menu = create_menu_bar();
+    #[cfg(target_os = "macos")]
+    menu.init_for_nsapp();
 
     let url = format!("http://localhost:{}", port);
 
