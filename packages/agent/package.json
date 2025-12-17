@@ -1,10 +1,14 @@
 {
   "name": "@vantage/agent",
-  "module": "index.ts",
+  "version": "0.1.0",
+  "module": "src/index.ts",
   "type": "module",
   "private": true,
   "scripts": {
-    "start": "bun run index.ts"
+    "start": "bun run src/index.ts",
+    "server": "bun run src/server.ts",
+    "cli": "bun run src/cli.ts",
+    "tui": "bun run src/tui.ts"
   },
   "devDependencies": {
     "@types/bun": "latest"
@@ -13,8 +17,9 @@
     "typescript": "^5"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.71.2",
+    "@anthropic-ai/claude-code": "^1.0.20",
     "chalk": "^5.6.2",
-    "prompts": "^2.4.2"
+    "ws": "^8.18.0",
+    "zod": "^3.24.3"
   }
 }

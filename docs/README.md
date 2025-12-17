@@ -4,7 +4,7 @@
 
 ## ドキュメント構成 (SDG)
 
-### 📋 [Spec](./spec/) - 仕様書
+### Spec - 仕様書
 何を作るか - 要件・コンセプト
 
 | ドキュメント | 内容 |
@@ -12,46 +12,73 @@
 | [01-core-concept.md](./spec/01-core-concept.md) | コアコンセプト・ビジョン |
 | [02-user-journey.md](./spec/02-user-journey.md) | ユーザージャーニー |
 
-### 🏗️ [Design](./design/) - 設計書
+### Design - 設計書
 どう作るか - アーキテクチャ・技術設計
 
 | ドキュメント | 内容 |
 |-------------|------|
 | [01-architecture.md](./design/01-architecture.md) | システムアーキテクチャ |
 
-### 📘 [Development](./development/) - 開発ガイド
-どう使うか - 開発者向けガイド（準備中）
+### Development - 開発ガイド
+どう使うか - 開発者向けガイド
+
+| ドキュメント | 内容 |
+|-------------|------|
+| [setup.md](./development/setup.md) | 環境構築 |
+| [gitflow-next.md](./development/gitflow-next.md) | ブランチ戦略 |
 
 ## 技術スタック
 
 | レイヤー | 技術 |
 |---------|------|
-| Frontend (Web) | SolidJS |
-| Frontend (Native) | Swift (Vision Pro) |
-| Backend (Core) | Rust |
-| Backend (Agent) | TypeScript → WASM |
-| Data | SurrealDB |
-| 通信 | Unison Protocol (QUIC/KDL) |
-| P2P同期 | Loro (CRDT) |
+| CLI / Daemon | Rust (Tokio, Axum, Clap) |
+| WebView | wry + tao |
+| Frontend | HTML/JS (WebSocket) |
+| Agent | Claude CLI + MCP |
+| MIDI | midir |
 
-## クイックスタート（準備中）
+## クイックスタート
 
 ```bash
-# Rustバックエンド
-cargo build
-cargo test
+# ビルド＆インストール
+cargo install --path crates/vantage-point
 
-# SolidJSフロントエンド
-bun install
-bun dev
+# デーモン起動
+vp start
+
+# 設定確認
+vp config
+
+# 稼働中インスタンス一覧
+vp ps
 ```
+
+## CLIコマンド
+
+| コマンド | 説明 |
+|---------|------|
+| `vp start [N]` | プロジェクトN番のデーモンを起動 |
+| `vp start -d simple` | デバッグモードで起動 |
+| `vp ps` | 稼働中インスタンス一覧 |
+| `vp open [N]` | WebUIを開く |
+| `vp config` | 設定と登録プロジェクト表示 |
+| `vp status` | 接続状態確認 |
+| `vp stop` | デーモン停止 |
+| `vp mcp` | MCPサーバーモード（stdio） |
+| `vp tray` | システムトレイモード |
+| `vp midi` | MIDI入力監視 |
 
 ## プロジェクト情報
 
 - **リポジトリ**: [chronista-club/vantage-point](https://github.com/chronista-club/vantage-point)
-- **Issue管理**: GitHub Projects
-- **関連**: [chronista-club/unison-protocol](https://github.com/chronista-club/unison-protocol)
+- **バージョン**: 0.2.0
+- **ライセンス**: MIT
 
 ## ステータス
 
-🚧 **設計フェーズ完了、実装準備中**
+✅ **v0.2.0 - Rust CLI実装完了**
+
+- Agent Service（Claude CLI連携）
+- MIDI Service（MIDIコントローラー入力）
+- WebView / HTTP Server
+- セッション管理

@@ -5,217 +5,159 @@
 ### 基本要件
 
 - **macOS**: 14.0 (Sonoma) 以上
-- **Xcode**: 15.0 以上
+- **Rust**: 1.82 以上（Edition 2024）
 - **Git**: 2.39 以上
-- **mise**: 最新版（ランタイムバージョン管理）
+- **Claude CLI**: 最新版
 
 ### 推奨環境
 
-- **macOS**: 15.0 (Sequoia) 
-- **Xcode**: 16.0
+- **macOS**: 15.0 (Sequoia)
 - **メモリ**: 16GB RAM 以上
-- **ストレージ**: 50GB 以上の空き容量
+- **ストレージ**: 10GB 以上の空き容量
 
 ## セットアップ手順
 
 ### 1. リポジトリのクローン
 
 ```bash
-# メインリポジトリをクローン
-git clone git@github.com:chronista-club/vantage.git ~/Documents/GitHub/vantage
-cd ~/Documents/GitHub/vantage
+git clone git@github.com:chronista-club/vantage-point.git
+cd vantage-point
 ```
 
-### 2. miseのインストールと設定
+### 2. Rustツールチェーンのインストール
 
 ```bash
-# miseのインストール（Homebrew使用）
-brew install mise
+# rustupのインストール
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
-# miseの初期化
-mise install
-
-# 環境変数の設定
-eval "$(mise env)"
+# 必要なコンポーネント
+rustup component add rustfmt clippy
 ```
 
-### 3. ワークスペースの準備
+### 3. ビルドとインストール
 
 ```bash
-# VANTAGEワークスペースディレクトリを作成
-mkdir -p ~/Workspaces/VANTAGE/worktrees
+# ビルド
+cargo build --release
 
-# ワークスペースに移動
-cd ~/Workspaces/VANTAGE
-
-# vantage-spaceリポジトリをクローン（オプション）
-git clone git@github.com:chronista-club/vantage-space.git .
+# ローカルにインストール
+cargo install --path crates/vantage-point
 ```
 
-### 4. Xcodeプロジェクトの設定
+### 4. Claude CLIのセットアップ
 
 ```bash
-# Xcodeでプロジェクトを開く
-open ~/Documents/GitHub/vantage/Vantage.xcodeproj
+# Claude CLIのインストール（npm）
+npm install -g @anthropic-ai/claude-code
+
+# 認証
+claude auth
 ```
 
-Xcodeで以下を確認：
-1. **Team ID**が正しく設定されている
-2. **Bundle Identifier**が適切に設定されている
-3. **Signing & Capabilities**でエラーがない
-
-### 5. APIキーの設定（Claude API使用時）
-
-#### Keychainに保存（推奨）
+### 5. 設定ファイルの作成
 
 ```bash
-# macOSテストアプリで設定画面から入力
-# または、プログラムで設定
+# ディレクトリ作成
+mkdir -p ~/.config/vantage
+
+# 設定ファイル作成
+cat > ~/.config/vantage/config.toml << 'EOF'
+default_port = 33000
+
+[[projects]]
+name = "vantage-point"
+path = "/path/to/vantage-point"
+EOF
 ```
 
-#### 環境変数で設定（開発時）
+## 開発コマンド
+
+### ビルド
 
 ```bash
-# ~/.zshrcまたは~/.bashrcに追加
-export CLAUDE_API_KEY="your-api-key-here"
+# デバッグビルド
+cargo build
+
+# リリースビルド
+cargo build --release
+
+# 特定クレートのみ
+cargo build -p vantage-point
 ```
 
-### 6. 開発ツールの設定
-
-#### SwiftLint（コード品質）
+### テスト
 
 ```bash
-brew install swiftlint
+# 全テスト実行
+cargo test --workspace
 
-# プロジェクトルートに.swiftlint.ymlを作成
+# 特定テストのみ
+cargo test test_name
 ```
 
-#### SwiftFormat（コードフォーマット）
+### Lint
 
 ```bash
-brew install swiftformat
+# フォーマットチェック
+cargo fmt --all -- --check
+
+# Clippy
+cargo clippy --workspace --all-targets
 ```
 
-## ビルドとテスト
-
-### デバッグビルド
+### 実行
 
 ```bash
-# macOSアプリ
-xcodebuild -scheme "Vantage Point" -configuration Debug
+# 開発時（ビルド後すぐ実行）
+cargo run -p vantage-point -- start
 
-# visionOSアプリ
-xcodebuild -scheme "Vantage Vision" -destination 'platform=visionOS Simulator,name=Apple Vision Pro'
+# デバッグモード
+cargo run -p vantage-point -- start -d simple
 ```
 
-### テストの実行
+## MIDIコントローラー設定（オプション）
+
+AKAI LPD8等のMIDIコントローラーを使用する場合：
 
 ```bash
-# 全テストを実行
-xcodebuild test -scheme Vantage -destination 'platform=macOS'
+# 利用可能なMIDIポート確認
+vp midi-ports
 
-# 特定のテストを実行
-xcodebuild test -scheme Vantage -only-testing:ClaudeIntegrationTests
-```
-
-### リリースビルド
-
-```bash
-xcodebuild -scheme Vantage -configuration Release archive
-```
-
-## 開発ワークフロー
-
-### 1. 新しいIssueの作業開始
-
-```bash
-# 1. LinearでIssueを確認（例：UNI-123）
-
-# 2. worktreeを作成
-cd ~/Documents/GitHub/vantage
-git worktree add ~/Workspaces/VANTAGE/worktrees/UNI-123-feature -b mito/uni-123-feature
-
-# 3. worktreeに移動して開発
-cd ~/Workspaces/VANTAGE/worktrees/UNI-123-feature
-```
-
-### 2. コミットとプッシュ
-
-```bash
-# 変更をステージング
-git add .
-
-# コミット（Conventional Commits形式）
-git commit -m "feat: 新機能の実装 (UNI-123)"
-
-# リモートにプッシュ
-git push -u origin mito/uni-123-feature
-```
-
-### 3. Pull Requestの作成
-
-```bash
-# GitHub CLIを使用
-gh pr create --title "feat: 新機能の実装 (UNI-123)" --body "説明..."
+# MIDI入力監視（ポート0）
+vp midi 0
 ```
 
 ## トラブルシューティング
 
-### Xcodeビルドエラー
-
-1. **Clean Build Folder**: `Cmd + Shift + K`
-2. **Derived Data削除**: 
-   ```bash
-   rm -rf ~/Library/Developer/Xcode/DerivedData
-   ```
-3. **Package依存関係の更新**: `File > Packages > Update to Latest Package Versions`
-
-### mise関連のエラー
+### ビルドエラー
 
 ```bash
-# miseのバージョン確認
-mise --version
+# クリーンビルド
+cargo clean && cargo build
 
-# 設定の再読み込み
-mise trust .mise.toml
-mise install --force
+# ロックファイル更新
+cargo update
 ```
 
-### Git worktreeのエラー
+### ポート使用中エラー
 
 ```bash
-# worktreeの状態確認
-git worktree list
+# 稼働中インスタンス確認
+vp ps
 
-# 不整合の修正
-git worktree prune
+# 全インスタンス停止
+pkill -f vp
 ```
 
-## 便利な設定
-
-### Xcodeカスタムビヘイビア
-
-1. **Preferences > Behaviors**で設定
-2. 「Build Succeeds」→ 「Play Sound」
-3. 「Build Fails」→ 「Show Navigator」→ 「Issue Navigator」
-
-### エディタ設定
+### Claude CLI認証エラー
 
 ```bash
-# .editorconfig をプロジェクトルートに配置
-root = true
-
-[*.swift]
-indent_style = space
-indent_size = 4
-end_of_line = lf
-charset = utf-8
-trim_trailing_whitespace = true
-insert_final_newline = true
+# 再認証
+claude auth logout
+claude auth
 ```
 
 ## 関連ドキュメント
 
-- [Worktree管理ガイド](./worktree-management.md)
-- [ビルドとテストガイド](./build-and-test.md)
-- [アーキテクチャ概要](../architecture/overview.md)
+- [アーキテクチャ](../design/01-architecture.md)
+- [ブランチ戦略](./gitflow-next.md)

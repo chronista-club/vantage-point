@@ -2,15 +2,21 @@
   "mcpServers": {
     "gemini-cli": {
       "command": "bunx",
-      "args": ["@choplin/mcp-gemini-cli"]
+      "args": [
+        "@choplin/mcp-gemini-cli"
+      ]
     },
-    "creo-memories": {
-      "type": "http",
-      "url": "https://mcp.creo-memories.in"
+    "drawio": {
+      "command": "bunx",
+      "args": [
+        "drawio-mcp-server"
+      ]
     },
     "surrealdb": {
       "command": "bunx",
-      "args": ["surrealdb-mcp-server"],
+      "args": [
+        "surrealdb-mcp-server"
+      ],
       "env": {
         "SURREALDB_URL": "ws://localhost:12000/rpc",
         "SURREALDB_NS": "creo",

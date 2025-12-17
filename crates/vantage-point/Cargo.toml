@@ -1,0 +1,64 @@
+[package]
+name = "vantage-point"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "AI-powered development platform with Agent and MIDI services"
+
+[[bin]]
+name = "vp"
+path = "src/main.rs"
+
+[dependencies]
+# Async runtime
+tokio = { workspace = true }
+
+# Web server
+axum = { workspace = true, features = ["ws"] }
+tower-http = { workspace = true, features = ["fs", "cors"] }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# CLI
+clap = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }
+
+# Async utilities
+futures = { workspace = true }
+tokio-util = "0.7"
+
+# HTTP client (for MCP to communicate with daemon)
+reqwest = { workspace = true }
+
+# MCP (Model Context Protocol)
+rmcp = { version = "0.11", features = ["server", "transport-io"] }
+schemars = "1"
+
+# Native WebView
+wry = { version = "0.53", features = ["devtools"] }
+tao = "0.34"
+
+# Open URLs in system browser
+open = "5"
+
+# Configuration
+toml = "0.8"
+dirs = "6"
+
+# Menu (for native menu bar on macOS)
+muda = "0.17"
+
+# System tray icon
+tray-icon = "0.21"
+
+# MIDI input
+midir = "0.10"
