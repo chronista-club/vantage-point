@@ -2,6 +2,19 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Debug display mode
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DebugMode {
+    /// No debug information
+    #[default]
+    None,
+    /// Simple debug info (session ID, timing)
+    Simple,
+    /// Detailed debug info (full JSON, all events)
+    Detail,
+}
+
 /// Content types that can be displayed in the viewer
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -38,6 +51,20 @@ pub enum DaemonMessage {
     Close { pane_id: String },
     /// Ping for keepalive
     Ping,
+    /// Chat message to display
+    ChatMessage { message: ChatMessage },
+    /// Chat streaming chunk (for real-time display)
+    ChatChunk { content: String, done: bool },
+    /// Debug information
+    DebugInfo {
+        level: DebugMode,
+        category: String,
+        message: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        data: Option<serde_json::Value>,
+    },
+    /// Notify debug mode change
+    DebugModeChanged { mode: DebugMode },
 }
 
 /// Split direction
@@ -58,6 +85,28 @@ pub enum BrowserMessage {
     Pong,
     /// User action (future)
     Action { pane_id: String, action: String },
+    /// Chat message from user
+    Chat { message: String },
+    /// Cancel current chat request
+    CancelChat,
+    /// Reset session (start new conversation)
+    ResetSession,
+}
+
+/// Chat message for display
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatMessage {
+    pub role: ChatRole,
+    pub content: String,
+}
+
+/// Chat message role
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatRole {
+    User,
+    Assistant,
+    System,
 }
 
 /// Internal message for IPC (Unix Socket or internal channel)

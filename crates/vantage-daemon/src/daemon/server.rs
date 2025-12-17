@@ -123,9 +123,20 @@ async fn index_handler() -> Html<&'static str> {
     Html(include_str!("../../../../web/index.html"))
 }
 
-/// Health check
-async fn health_handler() -> &'static str {
-    "ok"
+/// Health check response
+#[derive(serde::Serialize)]
+pub struct HealthResponse {
+    pub status: &'static str,
+    pub version: &'static str,
+    pub pid: u32,
+}
+
+async fn health_handler() -> Json<HealthResponse> {
+    Json(HealthResponse {
+        status: "ok",
+        version: env!("CARGO_PKG_VERSION"),
+        pid: std::process::id(),
+    })
 }
 
 /// POST /api/show - Show content in browser

@@ -7,6 +7,7 @@ use tokio::sync::{broadcast, RwLock};
 use crate::protocol::DaemonMessage;
 
 /// WebSocket hub for managing connections and broadcasting messages
+#[derive(Clone)]
 pub struct Hub {
     /// Broadcast sender for messages to all connected clients
     tx: broadcast::Sender<DaemonMessage>,

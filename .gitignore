@@ -1,3 +1,6 @@
+# Rust
+/target/
+
 # Xcode
 .build/
 .swiftpm/

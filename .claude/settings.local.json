@@ -27,7 +27,11 @@
       "Bash(git rm:*)",
       "Bash(ls:*)",
       "Bash(find:*)",
-      "Bash(tree:*)"
+      "Bash(tree:*)",
+      "Bash(claude -p:*)",
+      "Bash(cargo build:*)",
+      "Bash(cargo install:*)",
+      "Bash(git reset:*)"
     ],
     "deny": [],
     "ask": []
