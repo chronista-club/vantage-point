@@ -32,6 +32,8 @@ struct AppState {
     cancel_token: Arc<RwLock<CancellationToken>>,
     /// Debug display mode
     debug_mode: DebugMode,
+    /// Shutdown signal token
+    shutdown_token: CancellationToken,
 }
 
 impl AppState {
@@ -75,11 +77,16 @@ impl AppState {
 
 /// Run the daemon server
 pub async fn run(port: u16, auto_open_browser: bool, debug_mode: DebugMode) -> Result<()> {
+    // Shutdown signal
+    let shutdown_token = CancellationToken::new();
+    let shutdown_token_clone = shutdown_token.clone();
+
     let state = Arc::new(AppState {
         hub: Hub::new(),
         session_id: Arc::new(RwLock::new(None)),
         cancel_token: Arc::new(RwLock::new(CancellationToken::new())),
         debug_mode,
+        shutdown_token: shutdown_token.clone(),
     });
 
     let app = Router::new()
@@ -87,6 +94,7 @@ pub async fn run(port: u16, auto_open_browser: bool, debug_mode: DebugMode) -> R
         .route("/ws", get(ws_handler))
         .route("/api/show", post(show_handler))
         .route("/api/health", get(health_handler))
+        .route("/api/shutdown", post(shutdown_handler))
         .layer(CorsLayer::permissive())
         .with_state(state.clone());
 
@@ -105,8 +113,16 @@ pub async fn run(port: u16, auto_open_browser: bool, debug_mode: DebugMode) -> R
     }
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
 
+    // Serve with graceful shutdown
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
+            shutdown_token_clone.cancelled().await;
+            tracing::info!("Graceful shutdown initiated");
+        })
+        .await?;
+
+    tracing::info!("Server stopped");
     Ok(())
 }
 
@@ -146,6 +162,15 @@ async fn show_handler(
 ) -> impl IntoResponse {
     state.hub.broadcast(msg);
     Json(serde_json::json!({"status": "ok"}))
+}
+
+/// POST /api/shutdown - Graceful shutdown
+async fn shutdown_handler(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    tracing::info!("Shutdown requested via API");
+    state.shutdown_token.cancel();
+    Json(serde_json::json!({"status": "shutting_down"}))
 }
 
 /// WebSocket handler

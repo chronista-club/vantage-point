@@ -68,6 +68,92 @@ async fn check_status(port: u16) -> Result<()> {
     Ok(())
 }
 
+/// Stop the daemon running on the specified port
+async fn stop_daemon(port: u16) -> Result<()> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build()?;
+
+    // First, get the PID via health endpoint
+    let health_url = format!("http://localhost:{}/api/health", port);
+    let pid = match client.get(&health_url).send().await {
+        Ok(response) if response.status().is_success() => {
+            match response.json::<HealthResponse>().await {
+                Ok(health) => Some(health.pid),
+                Err(_) => None,
+            }
+        }
+        Ok(_) => None,
+        Err(e) => {
+            if e.is_connect() {
+                println!("✗ vantaged is not running on port {}", port);
+                return Ok(());
+            }
+            None
+        }
+    };
+
+    let Some(pid) = pid else {
+        println!("✗ Could not get daemon PID");
+        return Ok(());
+    };
+
+    println!("Stopping vantaged (PID: {})...", pid);
+
+    // Request graceful shutdown via API
+    let shutdown_url = format!("http://localhost:{}/api/shutdown", port);
+    let _ = client.post(&shutdown_url).send().await;
+
+    // Wait up to 10 seconds for graceful shutdown
+    let start = std::time::Instant::now();
+    let timeout = std::time::Duration::from_secs(10);
+
+    loop {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        // Check if process is still running
+        if !is_process_running(pid) {
+            println!("✓ vantaged stopped gracefully");
+            return Ok(());
+        }
+
+        if start.elapsed() > timeout {
+            println!("⚠ Graceful shutdown timed out, forcing kill...");
+            force_kill(pid);
+            println!("✓ vantaged force killed");
+            return Ok(());
+        }
+    }
+}
+
+/// Check if a process is still running
+#[cfg(unix)]
+fn is_process_running(pid: u32) -> bool {
+    use std::process::Command;
+    Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_process_running(_pid: u32) -> bool {
+    false
+}
+
+/// Force kill a process
+#[cfg(unix)]
+fn force_kill(pid: u32) {
+    use std::process::Command;
+    let _ = Command::new("kill")
+        .args(["-9", &pid.to_string()])
+        .status();
+}
+
+#[cfg(not(unix))]
+fn force_kill(_pid: u32) {}
+
 /// CLI-compatible debug mode enum
 #[derive(Debug, Clone, Copy, Default, ValueEnum)]
 pub enum DebugModeArg {
@@ -139,7 +225,11 @@ enum Commands {
         port: u16,
     },
     /// Stop the running daemon
-    Stop,
+    Stop {
+        /// Port of the daemon to stop
+        #[arg(short, long, default_value = "33000")]
+        port: u16,
+    },
 }
 
 fn main() -> Result<()> {
@@ -231,10 +321,9 @@ fn main() -> Result<()> {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(check_status(port))
         }
-        Commands::Stop => {
-            // TODO: Send stop signal to daemon
-            tracing::info!("Stop not yet implemented");
-            Ok(())
+        Commands::Stop { port } => {
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(stop_daemon(port))
         }
     }
 }
