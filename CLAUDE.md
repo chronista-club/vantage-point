@@ -4,14 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## プロジェクト概要
 
-Vantage Pointは「開発行為を拡張する」プラットフォーム。
-AIと協働しながら、デバイス・場所に縛られずシームレスに開発を継続できる環境を提供する。
+Vantage Point（`vp`）は Rust製のAI協働開発プラットフォーム。
+Claude CLIをバックエンドとして、WebView UIとMIDI入力を統合した開発体験を提供する。
 
 ### コアコンセプト
 
 - **AI主導の選択肢UI**: AIが選択肢を提示 → ユーザーが選ぶ
 - **協調モード**: 協調 / 委任 / 自律 の3段階
-- **P2P同期**: どのデバイスもサーバー/クライアント両方になれる
+- **CLI-First**: Rust CLIをコアとして段階的に拡張
 
 詳細: [docs/spec/01-core-concept.md](docs/spec/01-core-concept.md)
 
@@ -21,38 +21,25 @@ AIと協働しながら、デバイス・場所に縛られずシームレスに
 
 | レイヤー | 技術 |
 |---------|------|
-| Frontend (Web) | SolidJS |
-| Frontend (Native) | Swift (Phase 2: Vision Pro) |
-| Backend (Core) | Rust |
-| Backend (Agent) | TypeScript → WASM |
-| Data | SurrealDB (namespace: vantage) |
-| 通信 | Unison Protocol (QUIC/KDL) |
-| P2P同期 | Loro (CRDT) |
+| CLI / Daemon | Rust (Tokio, Axum, Clap) |
+| WebView | wry + tao |
+| Frontend | HTML/JS (WebSocket) |
+| Agent | Claude CLI + MCP |
+| MIDI | midir |
 
 ### システム構成
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│                   P2P Network                        │
-│   Mac ←→ Vision Pro ←→ iPad/iPhone                  │
-│   (CRDT)    (CRDT)       (CRDT)                     │
-│              ↓                                       │
-│         Loro同期                                    │
-│              ↓                                       │
-│       Unison Protocol                               │
-└─────────────────────────────────────────────────────┘
-                    ↓
-┌─────────────────────────────────────────────────────┐
-│                Agent Server                         │
-│   ┌────────┐  ┌────────────────────┐               │
-│   │  Rust  │──│  Agent層 (WASM)    │               │
-│   │  Core  │  │  TypeScript/MCP    │               │
-│   └────────┘  └────────────────────┘               │
-│              ↓                                       │
-│   ┌─────────────────────────────────┐              │
-│   │    SurrealDB (SSoT)             │              │
-│   │    Live Query / namespace       │              │
-│   └─────────────────────────────────┘              │
+│                    VP CLI (vp)                       │
+├─────────────────────────────────────────────────────┤
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐ │
+│  │   Agent     │  │    MIDI     │  │   WebView   │ │
+│  │  Service    │  │   Service   │  │   Server    │ │
+│  │ Claude CLI  │  │   midir     │  │ Axum + wry  │ │
+│  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘ │
+│         └────────────────┼────────────────┘         │
+│                   Session Manager                    │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -61,55 +48,72 @@ AIと協働しながら、デバイス・場所に縛られずシームレスに
 ## プロジェクト構造
 
 ```
-vantage-point/          # このリポジトリ（母艦）
+vantage-point/
+├── crates/
+│   ├── vantage-point/   # メインCLI (vp)
+│   └── vantage-core/    # 共通ライブラリ
+├── web/                 # WebView HTML/JS
 ├── docs/
-│   ├── spec/           # 仕様書 (SDG: Spec)
-│   ├── design/         # 設計書 (SDG: Design)
-│   └── development/    # 開発ガイド
-├── working/            # Git Worktree用
-└── .claude/            # Claude Code設定
+│   ├── spec/            # 仕様書 (SDG: Spec)
+│   ├── design/          # 設計書 (SDG: Design)
+│   └── development/     # 開発ガイド
+└── .claude/             # Claude Code設定
 ```
 
-> **Note**: 言語・プラットフォームごとに別リポジトリに分離予定。
-> 仕様・設計ドキュメントは母艦に集約。
-
-## 開発フェーズ
-
-| Phase | 内容 | Frontend |
-|-------|------|----------|
-| Phase 1 | コア機能・対話スタイル確立 | SolidJS (Web) |
-| Phase 2 | Vision Pro空間体験最適化 | Swift Native |
-
-## 関連リポジトリ
-
-| リポジトリ | 役割 |
-|-----------|------|
-| [chronista-club/unison-protocol](https://github.com/chronista-club/unison-protocol) | QUIC/KDL通信プロトコル |
-| creo-memories | 同構成の姉妹プロジェクト |
-
-## 開発コマンド（準備中）
+## CLIコマンド
 
 ```bash
-# Rustバックエンド
-cargo build
-cargo test
-
-# SolidJSフロントエンド
-bun install
-bun dev
+vp start [N]      # プロジェクトN番のデーモンを起動
+vp start -d simple # デバッグモードで起動
+vp ps             # 稼働中インスタンス一覧
+vp open [N]       # WebUIを開く
+vp config         # 設定と登録プロジェクト表示
+vp status         # 接続状態確認
+vp stop           # デーモン停止
+vp mcp            # MCPサーバーモード（stdio）
+vp tray           # システムトレイモード
+vp midi [N]       # MIDI入力監視
 ```
 
-## 開発時の注意点
+## 開発コマンド
 
-1. **設計優先**: 実装前に docs/spec/, docs/design/ を確認
-2. **P2P/CRDT**: 状態管理はLoroを通じて行う
-3. **Unison Protocol**: 通信はKDLスキーマで型定義
-4. **Agent SDK**: Claude Agent SDKとMCPを活用
+```bash
+# ビルド
+cargo build --release -p vantage-point
+
+# テスト
+cargo test --workspace
+
+# インストール
+cargo install --path crates/vantage-point
+
+# Lint
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets
+```
+
+## 設定ファイル
+
+**場所**: `~/.config/vantage/config.toml`
+
+```toml
+[[projects]]
+name = "vantage-point"
+path = "/path/to/vantage-point"
+
+[[projects]]
+name = "creo-memories"
+path = "/path/to/creo-memories"
+```
+
+## ポート管理
+
+- Project 0 → Port 33000
+- Project 1 → Port 33001
+- `vp ps` で 33000-33010 をスキャン
 
 ## ドキュメント構成 (SDG)
 
-本プロジェクトはSDG（Spec-Design-Guide）方式でドキュメント管理:
-
-- **Spec** (`docs/spec/`): 何を作るか - 要件・コンセプト
-- **Design** (`docs/design/`): どう作るか - アーキテクチャ・技術設計
-- **Guide** (`docs/development/`): どう使うか - 開発ガイド
+- **Spec** (`docs/spec/`): 何を作るか
+- **Design** (`docs/design/`): どう作るか
+- **Guide** (`docs/development/`): どう使うか

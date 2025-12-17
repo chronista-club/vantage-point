@@ -1,8 +1,7 @@
 //! WebSocket connection hub
 
-use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{RwLock, broadcast};
 
 use crate::protocol::DaemonMessage;
 

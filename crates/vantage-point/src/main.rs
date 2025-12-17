@@ -1,13 +1,13 @@
-//! Vantage Daemon - Background service for browser-based rich content display
+//! Vantage Point Agent - AI協働開発プラットフォーム
 //!
 //! Usage:
-//!   vantaged start    # Start the daemon (HTTP + WebSocket)
-//!   vantaged mcp      # Start as MCP server (stdio)
-//!   vantaged status   # Check if daemon is running
+//!   vp start    # デーモンを起動（HTTP + WebSocket）
+//!   vp mcp      # MCPサーバーとして起動（stdio）
+//!   vp status   # デーモンの稼働状態を確認
 //!
 //! Environment variables:
-//!   VANTAGE_DEBUG=none|simple|detail  # Debug display mode
-//!   VANTAGE_PROJECT_DIR=/path/to/project  # Default project directory
+//!   VANTAGE_DEBUG=none|simple|detail  # デバッグ表示モード
+//!   VANTAGE_PROJECT_DIR=/path/to/project  # デフォルトプロジェクトディレクトリ
 //!
 //! Config file: ~/.config/vantage/config.toml
 
@@ -49,7 +49,7 @@ async fn check_status(port: u16) -> Result<()> {
             if response.status().is_success() {
                 match response.json::<HealthResponse>().await {
                     Ok(health) => {
-                        println!("✓ vantaged is running on port {}", port);
+                        println!("✓ vp is running on port {}", port);
                         println!("  Version: {}", health.version);
                         println!("  PID: {}", health.pid);
                         if let Some(ref dir) = health.project_dir {
@@ -59,18 +59,18 @@ async fn check_status(port: u16) -> Result<()> {
                     }
                     Err(_) => {
                         // Old version returning plain text
-                        println!("✓ vantaged is running on port {}", port);
+                        println!("✓ vp is running on port {}", port);
                     }
                 }
             } else {
-                println!("✗ vantaged returned error: {}", response.status());
+                println!("✗ vp returned error: {}", response.status());
             }
         }
         Err(e) => {
             if e.is_connect() {
-                println!("✗ vantaged is not running on port {}", port);
+                println!("✗ vp is not running on port {}", port);
             } else if e.is_timeout() {
-                println!("✗ vantaged is not responding (timeout)");
+                println!("✗ vp is not responding (timeout)");
             } else {
                 println!("✗ Failed to connect: {}", e);
             }
@@ -98,7 +98,7 @@ async fn stop_daemon(port: u16) -> Result<()> {
         Ok(_) => None,
         Err(e) => {
             if e.is_connect() {
-                println!("✗ vantaged is not running on port {}", port);
+                println!("✗ vp is not running on port {}", port);
                 return Ok(());
             }
             None
@@ -110,7 +110,7 @@ async fn stop_daemon(port: u16) -> Result<()> {
         return Ok(());
     };
 
-    println!("Stopping vantaged (PID: {})...", pid);
+    println!("Stopping vp (PID: {})...", pid);
 
     // Request graceful shutdown via API
     let shutdown_url = format!("http://localhost:{}/api/shutdown", port);
@@ -125,14 +125,14 @@ async fn stop_daemon(port: u16) -> Result<()> {
 
         // Check if process is still running
         if !is_process_running(pid) {
-            println!("✓ vantaged stopped gracefully");
+            println!("✓ vp stopped gracefully");
             return Ok(());
         }
 
         if start.elapsed() > timeout {
             println!("⚠ Graceful shutdown timed out, forcing kill...");
             force_kill(pid);
-            println!("✓ vantaged force killed");
+            println!("✓ vp force killed");
             return Ok(());
         }
     }
@@ -158,9 +158,7 @@ fn is_process_running(_pid: u32) -> bool {
 #[cfg(unix)]
 fn force_kill(pid: u32) {
     use std::process::Command;
-    let _ = Command::new("kill")
-        .args(["-9", &pid.to_string()])
-        .status();
+    let _ = Command::new("kill").args(["-9", &pid.to_string()]).status();
 }
 
 #[cfg(not(unix))]
@@ -179,7 +177,7 @@ struct Instance {
     project_dir: Option<String>,
 }
 
-/// Scan for running vantaged instances
+/// Scan for running vp instances
 async fn scan_instances() -> Vec<Instance> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_millis(500))
@@ -190,9 +188,9 @@ async fn scan_instances() -> Vec<Instance> {
 
     for port in PORT_RANGE_START..=PORT_RANGE_END {
         let url = format!("http://localhost:{}/api/health", port);
-        if let Ok(response) = client.get(&url).send().await {
-            if response.status().is_success() {
-                if let Ok(health) = response.json::<HealthResponse>().await {
+        if let Ok(response) = client.get(&url).send().await
+            && response.status().is_success()
+                && let Ok(health) = response.json::<HealthResponse>().await {
                     instances.push(Instance {
                         port,
                         pid: health.pid,
@@ -200,21 +198,32 @@ async fn scan_instances() -> Vec<Instance> {
                         project_dir: health.project_dir,
                     });
                 }
-            }
-        }
     }
 
     instances
 }
 
-/// List all running vantaged instances
+/// Find the first available port in the range
+async fn find_available_port() -> Option<u16> {
+    let used_ports: std::collections::HashSet<u16> =
+        scan_instances().await.into_iter().map(|i| i.port).collect();
+
+    for port in PORT_RANGE_START..=PORT_RANGE_END {
+        if !used_ports.contains(&port) {
+            return Some(port);
+        }
+    }
+    None
+}
+
+/// List all running vp instances
 async fn list_instances() -> Result<()> {
     println!("Scanning ports {}–{}...", PORT_RANGE_START, PORT_RANGE_END);
 
     let instances = scan_instances().await;
 
     if instances.is_empty() {
-        println!("No running vantaged instances found.");
+        println!("No running vp instances found.");
         return Ok(());
     }
 
@@ -225,14 +234,17 @@ async fn list_instances() -> Result<()> {
         let project = inst.project_dir.as_deref().unwrap_or("-");
         // Shorten long paths
         let project_display = if project.len() > 40 {
-            format!("...{}", &project[project.len()-37..])
+            format!("...{}", &project[project.len() - 37..])
         } else {
             project.to_string()
         };
-        println!("  {}  {}  {:>5}   {}", i, inst.port, inst.pid, project_display);
+        println!(
+            "  {}  {}  {:>5}   {}",
+            i, inst.port, inst.pid, project_display
+        );
     }
     println!();
-    println!("Use `vantaged open <#>` to open WebUI");
+    println!("Use `vp open <#>` to open WebUI");
 
     Ok(())
 }
@@ -242,12 +254,16 @@ async fn open_instance(index: usize) -> Result<()> {
     let instances = scan_instances().await;
 
     if instances.is_empty() {
-        println!("No running vantaged instances found.");
+        println!("No running vp instances found.");
         return Ok(());
     }
 
     if index >= instances.len() {
-        println!("✗ Invalid index {}. Available: 0–{}", index, instances.len() - 1);
+        println!(
+            "✗ Invalid index {}. Available: 0–{}",
+            index,
+            instances.len() - 1
+        );
         return Ok(());
     }
 
@@ -288,19 +304,19 @@ impl From<DebugModeArg> for DebugMode {
 
 /// Parse debug mode from environment variable
 fn parse_debug_env() -> Option<DebugMode> {
-    std::env::var("VANTAGE_DEBUG").ok().and_then(|v| {
-        match v.to_lowercase().as_str() {
+    std::env::var("VANTAGE_DEBUG")
+        .ok()
+        .and_then(|v| match v.to_lowercase().as_str() {
             "none" | "off" | "0" | "false" => Some(DebugMode::None),
             "simple" | "1" | "true" => Some(DebugMode::Simple),
             "detail" | "detailed" | "2" | "verbose" => Some(DebugMode::Detail),
             _ => None,
-        }
-    })
+        })
 }
 
 #[derive(Parser)]
-#[command(name = "vantaged")]
-#[command(about = "ブラウザベースのリッチコンテンツ表示デーモン")]
+#[command(name = "vp")]
+#[command(about = "Vantage Point Agent - AI協働開発プラットフォーム")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -310,7 +326,7 @@ struct Cli {
 enum Commands {
     /// デーモンを起動（HTTPサーバー + WebSocketハブ）[デフォルト]
     Start {
-        /// プロジェクト番号（`vantaged config`で確認）
+        /// プロジェクト番号（`vp config`で確認）
         #[arg()]
         project_index: Option<usize>,
 
@@ -359,7 +375,7 @@ enum Commands {
     Ps,
     /// 指定インスタンスのWebUIを開く
     Open {
-        /// インスタンス番号（`vantaged ps`で確認）
+        /// インスタンス番号（`vp ps`で確認）
         #[arg(default_value = "0")]
         index: usize,
     },
@@ -393,7 +409,7 @@ fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("vantage_daemon=info".parse()?)
+                .add_directive("vantage_daemon=info".parse()?),
         )
         .with_target(false)
         .init();
@@ -415,7 +431,15 @@ fn main() -> Result<()> {
     });
 
     match command {
-        Commands::Start { project_index, port, headless, browser, debug, project_dir, midi } => {
+        Commands::Start {
+            project_index,
+            port,
+            headless,
+            browser,
+            debug,
+            project_dir,
+            midi,
+        } => {
             // Resolve project directory
             let resolved_project_dir = if let Some(ref dir) = project_dir {
                 // Explicit --project-dir takes precedence
@@ -423,7 +447,10 @@ fn main() -> Result<()> {
             } else if let Some(idx) = project_index {
                 // Project index from config
                 if idx >= config.projects.len() {
-                    eprintln!("✗ Invalid project index {}. Use `vantaged config` to list projects.", idx);
+                    eprintln!(
+                        "✗ Invalid project index {}. Use `vp config` to list projects.",
+                        idx
+                    );
                     std::process::exit(1);
                 }
                 let project = &config.projects[idx];
@@ -434,12 +461,25 @@ fn main() -> Result<()> {
                 Config::resolve_project_dir(None, &config)
             };
 
-            // Resolve port: CLI > project config > default config > 33000
-            let resolved_port = port
-                .or_else(|| {
-                    project_index.and_then(|idx| config.projects.get(idx).and_then(|p| p.port))
-                })
-                .unwrap_or(config.default_port);
+            // Resolve port: CLI explicit > project index based (33000 + index)
+            let resolved_port = if let Some(p) = port {
+                // Explicit CLI port
+                p
+            } else {
+                // Port based on project index: project 0 → 33000, project 1 → 33001, etc.
+                let idx = project_index.unwrap_or(0) as u16;
+                let p = PORT_RANGE_START + idx;
+                if p > PORT_RANGE_END {
+                    eprintln!(
+                        "✗ Project index {} exceeds port range. Max {} projects supported.",
+                        idx,
+                        PORT_RANGE_END - PORT_RANGE_START + 1
+                    );
+                    std::process::exit(1);
+                }
+                println!("🔌 Using port {}", p);
+                p
+            };
 
             // Determine debug mode: CLI flag > env var > default
             let debug_mode = debug
@@ -457,9 +497,13 @@ fn main() -> Result<()> {
             let midi_config = midi.as_ref().map(|midi_arg| {
                 let mut config = midi::MidiConfig::default();
                 // LPD8 pad mappings (notes 36-43)
-                config.note_actions.insert(36, midi::MidiAction::OpenWebUI { port: None });
+                config
+                    .note_actions
+                    .insert(36, midi::MidiAction::OpenWebUI { port: None });
                 config.note_actions.insert(37, midi::MidiAction::CancelChat);
-                config.note_actions.insert(38, midi::MidiAction::ResetSession);
+                config
+                    .note_actions
+                    .insert(38, midi::MidiAction::ResetSession);
 
                 // Set port pattern if provided as string, or port index if numeric
                 if let Ok(idx) = midi_arg.parse::<usize>() {
@@ -512,7 +556,8 @@ fn main() -> Result<()> {
                         if let Some((port_idx, config)) = midi_config_clone {
                             let daemon_port = resolved_port;
                             tokio::spawn(async move {
-                                if let Err(e) = midi::run_midi(port_idx, config, daemon_port).await {
+                                if let Err(e) = midi::run_midi(port_idx, config, daemon_port).await
+                                {
                                     tracing::error!("MIDI error: {}", e);
                                 }
                             });
@@ -560,17 +605,23 @@ fn main() -> Result<()> {
                 println!("  #  NAME                PORT    PATH");
                 println!("  ─  ────                ────    ────");
                 for (i, project) in config.projects.iter().enumerate() {
-                    let port_str = project.port.map(|p| p.to_string()).unwrap_or_else(|| "-".to_string());
+                    let port_str = project
+                        .port
+                        .map(|p| p.to_string())
+                        .unwrap_or_else(|| "-".to_string());
                     // Shorten long paths
                     let path_display = if project.path.len() > 40 {
-                        format!("...{}", &project.path[project.path.len()-37..])
+                        format!("...{}", &project.path[project.path.len() - 37..])
                     } else {
                         project.path.clone()
                     };
-                    println!("  {}  {:18}  {:>5}   {}", i, project.name, port_str, path_display);
+                    println!(
+                        "  {}  {:18}  {:>5}   {}",
+                        i, project.name, port_str, path_display
+                    );
                 }
                 println!();
-                println!("Usage: vantaged start <#> or vantaged start -C /path/to/project");
+                println!("Usage: vp start <#> or vp start -C /path/to/project");
             }
 
             Ok(())
@@ -600,9 +651,13 @@ fn main() -> Result<()> {
             // Start MIDI in background thread if enabled
             if let Some(ref midi_arg) = midi {
                 let mut config = midi::MidiConfig::default();
-                config.note_actions.insert(36, midi::MidiAction::OpenWebUI { port: None });
+                config
+                    .note_actions
+                    .insert(36, midi::MidiAction::OpenWebUI { port: None });
                 config.note_actions.insert(37, midi::MidiAction::CancelChat);
-                config.note_actions.insert(38, midi::MidiAction::ResetSession);
+                config
+                    .note_actions
+                    .insert(38, midi::MidiAction::ResetSession);
 
                 let (port_idx, config) = if let Ok(idx) = midi_arg.parse::<usize>() {
                     (Some(idx), config)
@@ -639,11 +694,15 @@ fn main() -> Result<()> {
 
             // Example: LPD8 pad mappings (notes 36-43)
             // Pad 1 (note 36) -> Open WebUI
-            config.note_actions.insert(36, midi::MidiAction::OpenWebUI { port: None });
+            config
+                .note_actions
+                .insert(36, midi::MidiAction::OpenWebUI { port: None });
             // Pad 2 (note 37) -> Cancel chat
             config.note_actions.insert(37, midi::MidiAction::CancelChat);
             // Pad 3 (note 38) -> Reset session
-            config.note_actions.insert(38, midi::MidiAction::ResetSession);
+            config
+                .note_actions
+                .insert(38, midi::MidiAction::ResetSession);
 
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(midi::run_midi_interactive(port, config, daemon_port))

@@ -11,12 +11,21 @@ use tokio::sync::mpsc;
 /// Message types for agent communication
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
-    /// Session initialized with session_id
-    SessionInit { session_id: String },
+    /// Session initialized with full info
+    SessionInit {
+        session_id: String,
+        model: Option<String>,
+        tools: Vec<String>,
+        mcp_servers: Vec<String>,
+    },
     /// A chunk of text content
     TextChunk(String),
+    /// Tool execution started
+    ToolExecuting { name: String },
+    /// Tool execution completed
+    ToolResult { name: String, preview: String },
     /// Stream completed with final result
-    Done { result: String },
+    Done { result: String, cost: Option<f64> },
     /// Error occurred
     Error(String),
 }
@@ -28,12 +37,16 @@ pub struct AgentConfig {
     pub working_dir: Option<String>,
     /// Session ID to resume (if continuing conversation)
     pub session_id: Option<String>,
+    /// Use --continue flag (resume most recent session)
+    pub use_continue: bool,
     /// Model to use (e.g., "sonnet", "opus", "haiku")
     pub model: Option<String>,
     /// System prompt
     pub system_prompt: Option<String>,
     /// Allowed tools (empty = default tools)
     pub allowed_tools: Vec<String>,
+    /// MCP config file path (uses Claude's default if not set)
+    pub mcp_config: Option<String>,
 }
 
 /// Agent that communicates with Claude CLI
@@ -103,17 +116,34 @@ enum ClaudeMessage {
         session_id: String,
         #[serde(default)]
         subtype: Option<String>,
+        #[serde(default)]
+        model: Option<String>,
+        #[serde(default)]
+        tools: Option<Vec<String>>,
+        #[serde(default)]
+        mcp_servers: Option<Vec<McpServerInfo>>,
     },
     Assistant {
         message: AssistantMessage,
         session_id: String,
     },
     Result {
-        result: String,
+        #[serde(default)]
+        result: Option<String>,
         session_id: String,
         #[serde(default)]
         is_error: bool,
+        #[serde(default)]
+        total_cost_usd: Option<f64>,
     },
+}
+
+/// MCP server info from Claude CLI
+#[derive(Debug, serde::Deserialize)]
+struct McpServerInfo {
+    name: String,
+    #[serde(default)]
+    status: String,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -125,7 +155,16 @@ struct AssistantMessage {
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
 enum ContentBlock {
-    Text { text: String },
+    Text {
+        text: String,
+    },
+    ToolUse {
+        id: String,
+        name: String,
+    },
+    ToolResult {
+        tool_use_id: String,
+    },
     #[serde(other)]
     Other,
 }
@@ -144,8 +183,10 @@ async fn run_claude_cli(
         .arg("stream-json")
         .arg("--verbose");
 
-    // Resume session if provided
-    if let Some(ref session_id) = config.session_id {
+    // Resume session: --continue for most recent, --resume <id> for specific
+    if config.use_continue {
+        cmd.arg("--continue");
+    } else if let Some(ref session_id) = config.session_id {
         cmd.arg("--resume").arg(session_id);
     }
 
@@ -161,8 +202,13 @@ async fn run_claude_cli(
 
     // Set allowed tools if specified
     if !config.allowed_tools.is_empty() {
-        cmd.arg("--allowed-tools")
-            .arg(config.allowed_tools.join(" "));
+        cmd.arg("--allowedTools")
+            .arg(config.allowed_tools.join(","));
+    }
+
+    // Set MCP config file if specified
+    if let Some(ref mcp_config) = config.mcp_config {
+        cmd.arg("--mcp-config").arg(mcp_config);
     }
 
     // Add the prompt
@@ -178,8 +224,9 @@ async fn run_claude_cli(
     cmd.stderr(Stdio::piped());
 
     tracing::info!(
-        "Starting Claude CLI (session: {:?})",
-        config.session_id.as_deref().unwrap_or("new")
+        "Starting Claude CLI (session: {:?}, mcp_config: {:?})",
+        config.session_id.as_deref().unwrap_or("new"),
+        config.mcp_config.as_deref().unwrap_or("default")
     );
 
     let mut child = cmd.spawn().map_err(|e| {
@@ -209,39 +256,87 @@ async fn run_claude_cli(
 
             match serde_json::from_str::<ClaudeMessage>(&line) {
                 Ok(msg) => match msg {
-                    ClaudeMessage::System { session_id, .. } => {
-                        if !session_id_sent {
+                    ClaudeMessage::System {
+                        session_id,
+                        subtype,
+                        model,
+                        tools,
+                        mcp_servers,
+                    } => {
+                        // Only send init event once, for the "init" subtype
+                        if !session_id_sent && subtype.as_deref() == Some("init") {
+                            let mcp_names: Vec<String> = mcp_servers
+                                .unwrap_or_default()
+                                .into_iter()
+                                .filter(|s| s.status == "connected")
+                                .map(|s| s.name)
+                                .collect();
+
+                            let tools_list = tools.unwrap_or_default();
+                            tracing::info!(
+                                "Claude CLI init: session={}, model={:?}, tools={}, mcp_servers={}",
+                                session_id,
+                                model,
+                                tools_list.len(),
+                                mcp_names.len()
+                            );
+
                             let _ = tx_stdout
                                 .send(AgentEvent::SessionInit {
                                     session_id: session_id.clone(),
+                                    model,
+                                    tools: tools_list,
+                                    mcp_servers: mcp_names,
                                 })
                                 .await;
                             session_id_sent = true;
                         }
                     }
                     ClaudeMessage::Assistant { message, .. } => {
-                        // Extract text from content blocks
+                        // Extract text and tool events from content blocks
                         for block in message.content {
-                            if let ContentBlock::Text { text } = block {
-                                // Send incremental text (new content only)
-                                if text.len() > last_text.len() && text.starts_with(&last_text) {
-                                    let new_text = &text[last_text.len()..];
-                                    let _ =
-                                        tx_stdout.send(AgentEvent::TextChunk(new_text.to_string())).await;
-                                } else if text != last_text {
-                                    // Text changed completely, send all
-                                    let _ =
-                                        tx_stdout.send(AgentEvent::TextChunk(text.clone())).await;
+                            match block {
+                                ContentBlock::Text { text } => {
+                                    // Send incremental text (new content only)
+                                    if text.len() > last_text.len() && text.starts_with(&last_text)
+                                    {
+                                        let new_text = &text[last_text.len()..];
+                                        let _ = tx_stdout
+                                            .send(AgentEvent::TextChunk(new_text.to_string()))
+                                            .await;
+                                    } else if text != last_text {
+                                        // Text changed completely, send all
+                                        let _ = tx_stdout
+                                            .send(AgentEvent::TextChunk(text.clone()))
+                                            .await;
+                                    }
+                                    last_text = text;
                                 }
-                                last_text = text;
+                                ContentBlock::ToolUse { name, .. } => {
+                                    let _ =
+                                        tx_stdout.send(AgentEvent::ToolExecuting { name }).await;
+                                }
+                                ContentBlock::ToolResult { .. } | ContentBlock::Other => {}
                             }
                         }
                     }
-                    ClaudeMessage::Result { result, is_error, .. } => {
+                    ClaudeMessage::Result {
+                        result,
+                        is_error,
+                        total_cost_usd,
+                        ..
+                    } => {
                         if is_error {
-                            let _ = tx_stdout.send(AgentEvent::Error(result)).await;
+                            let _ = tx_stdout
+                                .send(AgentEvent::Error(result.unwrap_or_default()))
+                                .await;
                         } else {
-                            let _ = tx_stdout.send(AgentEvent::Done { result }).await;
+                            let _ = tx_stdout
+                                .send(AgentEvent::Done {
+                                    result: result.unwrap_or_default(),
+                                    cost: total_cost_usd,
+                                })
+                                .await;
                         }
                     }
                 },
@@ -293,18 +388,36 @@ mod tests {
 
         let mut session_id = None;
         let mut output = String::new();
+        let mut tools_count = 0;
+        let mut mcp_count = 0;
 
         while let Some(event) = rx.recv().await {
             match event {
-                AgentEvent::SessionInit { session_id: sid } => {
+                AgentEvent::SessionInit {
+                    session_id: sid,
+                    model,
+                    tools,
+                    mcp_servers,
+                } => {
                     println!("Session ID: {}", sid);
+                    println!("Model: {:?}", model);
+                    println!("Tools: {} ({:?})", tools.len(), tools);
+                    println!("MCP Servers: {} ({:?})", mcp_servers.len(), mcp_servers);
                     session_id = Some(sid);
+                    tools_count = tools.len();
+                    mcp_count = mcp_servers.len();
                 }
                 AgentEvent::TextChunk(chunk) => {
                     output.push_str(&chunk);
                 }
-                AgentEvent::Done { result } => {
-                    println!("Done! Result: {}", result);
+                AgentEvent::ToolExecuting { name } => {
+                    println!("Tool executing: {}", name);
+                }
+                AgentEvent::ToolResult { name, preview } => {
+                    println!("Tool result: {} - {}", name, preview);
+                }
+                AgentEvent::Done { result, cost } => {
+                    println!("Done! Result: {}, Cost: {:?}", result, cost);
                     break;
                 }
                 AgentEvent::Error(e) => {
@@ -315,5 +428,6 @@ mod tests {
 
         assert!(session_id.is_some());
         println!("Output: {}", output);
+        println!("Tools: {}, MCP: {}", tools_count, mcp_count);
     }
 }

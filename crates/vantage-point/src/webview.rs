@@ -42,8 +42,8 @@ fn create_menu_bar() -> Menu {
 
 /// Launch WebView in a detached process
 pub fn run_webview_detached(port: u16) -> anyhow::Result<()> {
-    // Launch vantaged webview command as a separate process
-    std::process::Command::new("vantaged")
+    // Launch vp webview command as a separate process
+    std::process::Command::new("vp")
         .args(["webview", "-p", &port.to_string()])
         .spawn()?;
     Ok(())

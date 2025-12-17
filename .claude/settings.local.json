@@ -39,16 +39,21 @@
       "Bash(vantaged --help:*)",
       "Bash(vantaged midi-ports)",
       "Bash(RUST_LOG=info timeout 3 vantaged midi:*)",
-      "Bash(vantaged start --help:*)"
+      "Bash(vantaged start --help:*)",
+      "Bash(vpa --help:*)",
+      "Bash(vpa start --help:*)",
+      "Bash(cat:*)",
+      "Bash(pgrep:*)",
+      "Bash(lsof:*)",
+      "Bash(kill:*)",
+      "Bash(vpa ps:*)",
+      "Bash(vp --help:*)",
+      "Bash(cargo test:*)",
+      "Bash(cargo fmt:*)",
+      "Bash(cargo clippy:*)"
     ],
     "deny": [],
     "ask": []
   },
-  "enableAllProjectMcpServers": true,
-  "enabledMcpjsonServers": [
-    "serena",
-    "SurrealDB",
-    "xcodeproj",
-    "vantage-mcp"
-  ]
+  "enableAllProjectMcpServers": true
 }

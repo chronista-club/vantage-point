@@ -65,6 +65,33 @@ pub enum DaemonMessage {
     },
     /// Notify debug mode change
     DebugModeChanged { mode: DebugMode },
+    /// Session list response
+    SessionList {
+        sessions: Vec<SessionInfo>,
+        active_id: Option<String>,
+    },
+    /// Session switched notification
+    SessionSwitched { session_id: String, name: String },
+    /// Session created notification
+    SessionCreated { session: SessionInfo },
+    /// Session closed notification
+    SessionClosed { session_id: String },
+}
+
+/// Session information for UI
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionInfo {
+    /// Claude CLI session ID
+    pub id: String,
+    /// Display name (user-defined or auto-generated)
+    pub name: String,
+    /// Whether this is the active session
+    pub is_active: bool,
+    /// Number of messages in session (approximate)
+    pub message_count: usize,
+    /// Model used in this session
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 /// Split direction
@@ -91,6 +118,16 @@ pub enum BrowserMessage {
     CancelChat,
     /// Reset session (start new conversation)
     ResetSession,
+    /// List all sessions
+    ListSessions,
+    /// Switch to a different session
+    SwitchSession { session_id: String },
+    /// Create a new session
+    NewSession,
+    /// Rename a session
+    RenameSession { session_id: String, name: String },
+    /// Close/delete a session
+    CloseSession { session_id: String },
 }
 
 /// Chat message for display
@@ -114,4 +151,62 @@ pub enum ChatRole {
 pub struct IpcMessage {
     pub id: Option<String>,
     pub payload: DaemonMessage,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_debug_mode_default() {
+        assert_eq!(DebugMode::default(), DebugMode::None);
+    }
+
+    #[test]
+    fn test_debug_mode_from_str() {
+        let simple: DebugMode = serde_json::from_str(r#""simple""#).unwrap();
+        assert_eq!(simple, DebugMode::Simple);
+
+        let detail: DebugMode = serde_json::from_str(r#""detail""#).unwrap();
+        assert_eq!(detail, DebugMode::Detail);
+    }
+
+    #[test]
+    fn test_daemon_message_serialization() {
+        let msg = DaemonMessage::ChatChunk {
+            content: "Hello".to_string(),
+            done: false,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains(r#""type":"chat_chunk""#));
+        assert!(json.contains(r#""content":"Hello""#));
+    }
+
+    #[test]
+    fn test_browser_message_deserialization() {
+        let json = r#"{"type":"chat","message":"Hello, Claude!"}"#;
+        let msg: BrowserMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            BrowserMessage::Chat { message } => {
+                assert_eq!(message, "Hello, Claude!");
+            }
+            _ => panic!("Expected Chat message"),
+        }
+    }
+
+    #[test]
+    fn test_session_info() {
+        let session = SessionInfo {
+            id: "abc123".to_string(),
+            name: "Test Session".to_string(),
+            is_active: true,
+            message_count: 5,
+            model: Some("claude-opus-4-5-20251101".to_string()),
+        };
+        let json = serde_json::to_string(&session).unwrap();
+        let parsed: SessionInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.id, "abc123");
+        assert_eq!(parsed.name, "Test Session");
+        assert!(parsed.is_active);
+    }
 }

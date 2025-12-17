@@ -33,7 +33,7 @@ pub struct Config {
     #[serde(default)]
     pub default_project_dir: Option<String>,
 
-    /// Default port for vantaged
+    /// Default port for vp
     #[serde(default = "default_port")]
     pub default_port: u16,
 
@@ -92,10 +92,7 @@ impl Config {
 
     /// Resolve project directory from various sources
     /// Priority: CLI flag > env var > config default > cwd
-    pub fn resolve_project_dir(
-        cli_project_dir: Option<&str>,
-        config: &Config,
-    ) -> String {
+    pub fn resolve_project_dir(cli_project_dir: Option<&str>, config: &Config) -> String {
         // 1. CLI flag
         if let Some(dir) = cli_project_dir {
             return dir.to_string();
@@ -123,8 +120,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_default_config() {
-        let config = Config::default();
+    fn test_default_config_from_toml() {
+        // serde default uses default_port() function
+        let config: Config = toml::from_str("").unwrap();
         assert_eq!(config.default_port, 33000);
         assert!(config.default_project_dir.is_none());
         assert!(config.projects.is_empty());
@@ -135,13 +133,11 @@ mod tests {
         let config = Config {
             default_project_dir: Some("/home/user/projects/main".to_string()),
             default_port: 33001,
-            projects: vec![
-                ProjectConfig {
-                    name: "vantage-point".to_string(),
-                    path: "/Users/makoto/repos/vantage-point".to_string(),
-                    port: Some(33000),
-                },
-            ],
+            projects: vec![ProjectConfig {
+                name: "vantage-point".to_string(),
+                path: "/Users/makoto/repos/vantage-point".to_string(),
+                port: Some(33000),
+            }],
         };
 
         let toml = toml::to_string_pretty(&config).unwrap();

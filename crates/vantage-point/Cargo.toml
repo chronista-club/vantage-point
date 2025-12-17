@@ -1,13 +1,13 @@
 [package]
-name = "vantage-daemon"
+name = "vantage-point"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "Background daemon for browser-based rich content display"
+description = "AI-powered development platform with Agent and MIDI services"
 
 [[bin]]
-name = "vantaged"
+name = "vp"
 path = "src/main.rs"
 
 [dependencies]

@@ -1,11 +1,11 @@
-//! System tray icon for vantaged
+//! System tray icon for vp
 //!
 //! Provides a menu bar icon that shows running instances and allows control.
 
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tray_icon::{
-    menu::{MenuEvent, MenuId},
     TrayIconBuilder,
+    menu::{MenuEvent, MenuId},
 };
 
 /// Menu item IDs
@@ -22,7 +22,7 @@ struct Instance {
     project_dir: Option<String>,
 }
 
-/// Scan for running vantaged instances
+/// Scan for running vp instances
 async fn scan_instances() -> Vec<Instance> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_millis(500))
@@ -33,23 +33,21 @@ async fn scan_instances() -> Vec<Instance> {
 
     for port in 33000..=33010 {
         let url = format!("http://localhost:{}/api/health", port);
-        if let Ok(response) = client.get(&url).send().await {
-            if response.status().is_success() {
-                if let Ok(health) = response.json::<serde_json::Value>().await {
+        if let Ok(response) = client.get(&url).send().await
+            && response.status().is_success()
+                && let Ok(health) = response.json::<serde_json::Value>().await {
                     instances.push(Instance {
                         port,
                         pid: health["pid"].as_u64().unwrap_or(0) as u32,
                         project_dir: health["project_dir"].as_str().map(String::from),
                     });
                 }
-            }
-        }
     }
 
     instances
 }
 
-/// Stop a vantaged instance
+/// Stop a vp instance
 async fn stop_instance(port: u16) {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(2))
@@ -76,19 +74,17 @@ fn create_tray_menu(instances: &[Instance]) -> tray_icon::menu::Menu {
                 .unwrap_or("unknown");
 
             // Submenu for each instance
-            let instance_menu = tray_icon::menu::Submenu::new(
-                format!("{} (:{}) ", project_name, inst.port),
-                true,
-            );
+            let instance_menu =
+                tray_icon::menu::Submenu::new(format!("{} (:{}) ", project_name, inst.port), true);
 
             let open_item = tray_icon::menu::MenuItem::with_id(
-                MenuId::new(&format!("{}{}", OPEN_WEBUI_PREFIX, inst.port)),
+                MenuId::new(format!("{}{}", OPEN_WEBUI_PREFIX, inst.port)),
                 "Open WebUI",
                 true,
                 None,
             );
             let stop_item = tray_icon::menu::MenuItem::with_id(
-                MenuId::new(&format!("{}{}", STOP_PREFIX, inst.port)),
+                MenuId::new(format!("{}{}", STOP_PREFIX, inst.port)),
                 "Stop",
                 true,
                 None,
@@ -100,24 +96,17 @@ fn create_tray_menu(instances: &[Instance]) -> tray_icon::menu::Menu {
         }
     }
 
-    menu.append(&tray_icon::menu::PredefinedMenuItem::separator()).ok();
+    menu.append(&tray_icon::menu::PredefinedMenuItem::separator())
+        .ok();
 
-    let refresh_item = tray_icon::menu::MenuItem::with_id(
-        MenuId::new(REFRESH_ID),
-        "Refresh",
-        true,
-        None,
-    );
+    let refresh_item =
+        tray_icon::menu::MenuItem::with_id(MenuId::new(REFRESH_ID), "Refresh", true, None);
     menu.append(&refresh_item).ok();
 
-    menu.append(&tray_icon::menu::PredefinedMenuItem::separator()).ok();
+    menu.append(&tray_icon::menu::PredefinedMenuItem::separator())
+        .ok();
 
-    let quit_item = tray_icon::menu::MenuItem::with_id(
-        MenuId::new(QUIT_ID),
-        "Quit",
-        true,
-        None,
-    );
+    let quit_item = tray_icon::menu::MenuItem::with_id(MenuId::new(QUIT_ID), "Quit", true, None);
     menu.append(&quit_item).ok();
 
     menu
@@ -137,7 +126,7 @@ fn create_icon() -> tray_icon::Icon {
             // Simple gradient for visibility
             let in_v = (x as i32 - 11).abs() < (y as i32 / 2 + 2) && y > 4 && y < 18;
             if in_v {
-                rgba[idx] = 100;     // R
+                rgba[idx] = 100; // R
                 rgba[idx + 1] = 149; // G
                 rgba[idx + 2] = 237; // B - Cornflower blue
                 rgba[idx + 3] = 255; // A
@@ -191,13 +180,12 @@ pub fn run_tray() -> anyhow::Result<()> {
                         let _ = open::that(&url);
                     }
                 }
-            } else if let Some(port_str) = id.strip_prefix(STOP_PREFIX) {
-                if let Ok(port) = port_str.parse::<u16>() {
+            } else if let Some(port_str) = id.strip_prefix(STOP_PREFIX)
+                && let Ok(port) = port_str.parse::<u16>() {
                     tracing::info!("Stopping instance on port {}...", port);
                     let rt = tokio::runtime::Runtime::new().unwrap();
                     rt.block_on(stop_instance(port));
                 }
-            }
         }
     });
 }

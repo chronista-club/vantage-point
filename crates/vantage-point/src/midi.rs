@@ -1,4 +1,4 @@
-//! MIDI input handling for vantaged
+//! MIDI input handling for vp
 //!
 //! Monitors MIDI input devices and triggers actions based on MIDI events.
 //! Used for physical controller integration (e.g., LPD8, Launch Control, etc.)
@@ -50,7 +50,7 @@ pub struct MidiEvent {
 
 /// List available MIDI input ports
 pub fn list_ports() -> Result<Vec<String>> {
-    let midi_in = midir::MidiInput::new("vantaged-midi")?;
+    let midi_in = midir::MidiInput::new("vp-midi")?;
     let ports = midi_in.ports();
 
     let mut port_names = Vec::new();
@@ -162,7 +162,11 @@ pub enum MidiAction {
     /// Reset session
     ResetSession,
     /// Custom HTTP request to daemon API
-    ApiCall { endpoint: String, method: String, body: Option<String> },
+    ApiCall {
+        endpoint: String,
+        method: String,
+        body: Option<String>,
+    },
 }
 
 /// MIDI mapping configuration
@@ -186,7 +190,10 @@ pub struct MidiHandler {
 
 impl MidiHandler {
     pub fn new(config: MidiConfig, daemon_port: u16) -> Self {
-        Self { config, daemon_port }
+        Self {
+            config,
+            daemon_port,
+        }
     }
 
     /// Handle incoming MIDI event
@@ -198,14 +205,15 @@ impl MidiHandler {
                     self.execute_action(action).await;
                 }
             }
-            MidiMessage::ControlChange { controller, value, .. } => {
+            MidiMessage::ControlChange {
+                controller, value, ..
+            } => {
                 // Only trigger on value > 64 (like a button press)
-                if *value > 64 {
-                    if let Some(action) = self.config.cc_actions.get(controller) {
+                if *value > 64
+                    && let Some(action) = self.config.cc_actions.get(controller) {
                         tracing::info!("MIDI CC {} -> {:?}", controller, action);
                         self.execute_action(action).await;
                     }
-                }
             }
             MidiMessage::ProgramChange { program, .. } => {
                 if let Some(action) = self.config.program_actions.get(program) {
@@ -242,7 +250,11 @@ impl MidiHandler {
                 // Would need WebSocket connection or API endpoint
                 tracing::info!("Reset session requested (not yet implemented)");
             }
-            MidiAction::ApiCall { endpoint, method, body } => {
+            MidiAction::ApiCall {
+                endpoint,
+                method,
+                body,
+            } => {
                 let url = format!("{}{}", base_url, endpoint);
                 let request = match method.to_uppercase().as_str() {
                     "POST" => client.post(&url),
@@ -256,7 +268,9 @@ impl MidiHandler {
                 };
 
                 let request = if let Some(body) = body {
-                    request.header("Content-Type", "application/json").body(body.clone())
+                    request
+                        .header("Content-Type", "application/json")
+                        .body(body.clone())
                 } else {
                     request
                 };
@@ -282,7 +296,7 @@ pub async fn run_midi(
     config: MidiConfig,
     daemon_port: u16,
 ) -> Result<()> {
-    let midi_in = midir::MidiInput::new("vantaged-midi")?;
+    let midi_in = midir::MidiInput::new("vp-midi")?;
     let ports = midi_in.ports();
 
     if ports.is_empty() {
@@ -291,19 +305,26 @@ pub async fn run_midi(
 
     // Find port by pattern or index
     let port_idx = if let Some(pattern) = &config.port_pattern {
-        ports.iter().position(|p| {
-            midi_in.port_name(p)
-                .map(|name| name.contains(pattern))
-                .unwrap_or(false)
-        }).unwrap_or(port_index.unwrap_or(0))
+        ports
+            .iter()
+            .position(|p| {
+                midi_in
+                    .port_name(p)
+                    .map(|name| name.contains(pattern))
+                    .unwrap_or(false)
+            })
+            .unwrap_or(port_index.unwrap_or(0))
     } else {
         port_index.unwrap_or(0)
     };
 
-    let port = ports.get(port_idx)
+    let port = ports
+        .get(port_idx)
         .ok_or_else(|| anyhow::anyhow!("MIDI port {} not found", port_idx))?;
 
-    let port_name = midi_in.port_name(port).unwrap_or_else(|_| "Unknown".to_string());
+    let port_name = midi_in
+        .port_name(port)
+        .unwrap_or_else(|_| "Unknown".to_string());
     tracing::info!("Connecting to MIDI port: {}", port_name);
 
     let (tx, mut rx) = broadcast::channel::<MidiEvent>(100);
@@ -321,7 +342,7 @@ pub async fn run_midi(
     let port_name_clone = port_name.clone();
     let _connection = midi_in.connect(
         port,
-        "vantaged-midi-connection",
+        "vp-midi-connection",
         move |_timestamp, message, _| {
             if let Some(midi_msg) = parse_midi_message(message) {
                 let event = MidiEvent {
@@ -368,7 +389,7 @@ pub async fn run_midi_interactive(
     config: MidiConfig,
     daemon_port: u16,
 ) -> Result<()> {
-    let midi_in = midir::MidiInput::new("vantaged-midi")?;
+    let midi_in = midir::MidiInput::new("vp-midi")?;
     let ports = midi_in.ports();
 
     if ports.is_empty() {
@@ -378,19 +399,26 @@ pub async fn run_midi_interactive(
 
     // Find port by pattern or index
     let port_idx = if let Some(pattern) = &config.port_pattern {
-        ports.iter().position(|p| {
-            midi_in.port_name(p)
-                .map(|name| name.contains(pattern))
-                .unwrap_or(false)
-        }).unwrap_or(port_index.unwrap_or(0))
+        ports
+            .iter()
+            .position(|p| {
+                midi_in
+                    .port_name(p)
+                    .map(|name| name.contains(pattern))
+                    .unwrap_or(false)
+            })
+            .unwrap_or(port_index.unwrap_or(0))
     } else {
         port_index.unwrap_or(0)
     };
 
-    let port = ports.get(port_idx)
+    let port = ports
+        .get(port_idx)
         .ok_or_else(|| anyhow::anyhow!("MIDI port {} not found", port_idx))?;
 
-    let port_name = midi_in.port_name(port).unwrap_or_else(|_| "Unknown".to_string());
+    let port_name = midi_in
+        .port_name(port)
+        .unwrap_or_else(|_| "Unknown".to_string());
 
     println!("Connecting to MIDI port: {}", port_name);
     println!("Daemon port: {}", daemon_port);
@@ -414,7 +442,7 @@ pub async fn run_midi_interactive(
     let port_name_clone = port_name.clone();
     let _connection = midi_in.connect(
         port,
-        "vantaged-midi-connection",
+        "vp-midi-connection",
         move |_timestamp, message, _| {
             if let Some(midi_msg) = parse_midi_message(message) {
                 let event = MidiEvent {

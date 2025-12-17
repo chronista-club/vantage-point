@@ -1,6 +1,6 @@
 //! Daemon module - HTTP server + WebSocket hub
 
-mod server;
 mod hub;
+mod server;
 
 pub use server::run;

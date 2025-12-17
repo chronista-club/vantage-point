@@ -39,15 +39,40 @@
         .status.disconnected {
             color: #f87171;
         }
+        .project-name {
+            font-size: 14px;
+            color: #667eea;
+            font-weight: 500;
+            padding: 4px 10px;
+            background: rgba(102, 126, 234, 0.15);
+            border-radius: 4px;
+            display: none;
+        }
+        .project-name.visible {
+            display: inline-block;
+        }
         .container {
-            display: grid;
-            grid-template-columns: 1fr 400px;
+            display: flex;
             height: calc(100vh - 50px);
         }
         .pane {
+            flex: 1;
             padding: 20px;
             overflow: auto;
             background: #1a1a2e;
+            min-width: 200px;
+        }
+        /* Resize Handle */
+        .resize-handle {
+            width: 6px;
+            background: #0f3460;
+            cursor: col-resize;
+            transition: background 0.2s;
+            flex-shrink: 0;
+        }
+        .resize-handle:hover,
+        .resize-handle.dragging {
+            background: #667eea;
         }
         .pane-content {
             max-width: 800px;
@@ -108,8 +133,11 @@
         .chat-panel {
             display: flex;
             flex-direction: column;
-            border-left: 1px solid #0f3460;
             background: #16213e;
+            width: 400px;
+            min-width: 280px;
+            max-width: 800px;
+            flex-shrink: 0;
         }
         .chat-header {
             padding: 12px 16px;
@@ -387,22 +415,113 @@
             color: black;
         }
 
+        /* Session Tabs */
+        .session-tabs {
+            display: flex;
+            gap: 2px;
+            padding: 8px 12px 0;
+            background: #0d1117;
+            border-bottom: 1px solid #0f3460;
+            overflow-x: auto;
+            scrollbar-width: thin;
+        }
+        .session-tabs::-webkit-scrollbar {
+            height: 4px;
+        }
+        .session-tabs::-webkit-scrollbar-thumb {
+            background: #0f3460;
+            border-radius: 2px;
+        }
+        .session-tab {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            background: transparent;
+            border: none;
+            border-radius: 6px 6px 0 0;
+            color: #888;
+            font-size: 12px;
+            cursor: pointer;
+            white-space: nowrap;
+            transition: all 0.15s;
+        }
+        .session-tab:hover {
+            background: rgba(102, 126, 234, 0.1);
+            color: #bbb;
+        }
+        .session-tab.active {
+            background: #16213e;
+            color: #eee;
+        }
+        .session-tab .tab-name {
+            max-width: 120px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .session-tab .tab-close {
+            display: none;
+            width: 14px;
+            height: 14px;
+            border-radius: 3px;
+            background: transparent;
+            border: none;
+            color: #666;
+            cursor: pointer;
+            font-size: 10px;
+            line-height: 1;
+            padding: 0;
+        }
+        .session-tab:hover .tab-close,
+        .session-tab.active .tab-close {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .session-tab .tab-close:hover {
+            background: #dc2626;
+            color: white;
+        }
+        .session-tab-new {
+            padding: 6px 10px;
+            background: transparent;
+            border: 1px dashed #0f3460;
+            border-radius: 6px 6px 0 0;
+            color: #666;
+            font-size: 14px;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .session-tab-new:hover {
+            border-color: #667eea;
+            color: #667eea;
+        }
+
         /* Responsive */
         @media (max-width: 900px) {
             .container {
-                grid-template-columns: 1fr;
-                grid-template-rows: 1fr 300px;
+                flex-direction: column;
+            }
+            .resize-handle {
+                display: none;
             }
             .chat-panel {
-                border-left: none;
+                width: 100% !important;
+                max-width: none;
+                min-width: 0;
+                height: 300px;
                 border-top: 1px solid #0f3460;
+            }
+            .pane {
+                min-width: 0;
             }
         }
     </style>
 </head>
 <body>
     <div class="header">
-        <h1>Vantage Point</h1>
+        <h1 id="header-title">Vantage Point</h1>
+        <span id="project-name" class="project-name"></span>
         <span id="status" class="status disconnected">Disconnected</span>
         <span id="debug-indicator" class="debug-indicator" style="display: none;"></span>
     </div>
@@ -415,16 +534,19 @@
                 </div>
             </div>
         </div>
-        <div class="chat-panel">
+        <div id="resize-handle" class="resize-handle"></div>
+        <div id="chat-panel" class="chat-panel">
             <div class="chat-header">
                 <div class="chat-header-left">
                     <div class="chat-header-icon"></div>
                     <span>Agent Chat</span>
                 </div>
                 <div class="chat-header-actions">
-                    <button id="reset-btn" class="header-btn danger" title="Reset Session">Reset</button>
                     <button id="debug-toggle-btn" class="header-btn" title="Toggle Debug Panel">Debug</button>
                 </div>
+            </div>
+            <div id="session-tabs" class="session-tabs">
+                <button id="new-session-btn" class="session-tab-new" title="New Session">+</button>
             </div>
             <div id="chat-messages" class="chat-messages">
                 <div class="chat-message system">
@@ -470,34 +592,54 @@
         let debugMode = 'none';
         let isComposing = false; // IME変換中フラグ
         let justFinishedComposing = false; // IME確定直後フラグ
+        let sessions = []; // Session list
+        let activeSessionId = null;
 
         // Chat elements
         const chatMessages = document.getElementById('chat-messages');
         const chatInput = document.getElementById('chat-input');
         const chatSendBtn = document.getElementById('chat-send-btn');
         const chatCancelBtn = document.getElementById('chat-cancel-btn');
-        const resetBtn = document.getElementById('reset-btn');
         const debugToggleBtn = document.getElementById('debug-toggle-btn');
         const debugPanel = document.getElementById('debug-panel');
         const debugEntries = document.getElementById('debug-entries');
         const debugClearBtn = document.getElementById('debug-clear-btn');
         const debugIndicator = document.getElementById('debug-indicator');
+        const sessionTabs = document.getElementById('session-tabs');
+        const newSessionBtn = document.getElementById('new-session-btn');
 
         function connect() {
             ws = new WebSocket(WS_URL);
 
-            ws.onopen = () => {
-                console.log('Connected to vantaged');
+            ws.onopen = async () => {
+                console.log('Connected to vpa');
                 document.getElementById('status').textContent = 'Connected';
                 document.getElementById('status').className = 'status connected';
                 chatSendBtn.disabled = false;
                 ws.send(JSON.stringify({ type: 'ready' }));
+
+                // Fetch project info from health endpoint
+                try {
+                    const response = await fetch('/api/health');
+                    const health = await response.json();
+                    if (health.project_dir) {
+                        const projectName = health.project_dir.split('/').pop();
+                        const projectNameEl = document.getElementById('project-name');
+                        projectNameEl.textContent = projectName;
+                        projectNameEl.classList.add('visible');
+                        document.title = `${projectName} - Vantage Point`;
+                    }
+                } catch (e) {
+                    console.log('Could not fetch project info:', e);
+                }
             };
 
             ws.onclose = () => {
-                console.log('Disconnected from vantaged');
+                console.log('Disconnected from vpa');
                 document.getElementById('status').textContent = 'Disconnected';
                 document.getElementById('status').className = 'status disconnected';
+                document.getElementById('project-name').classList.remove('visible');
+                document.title = 'Vantage Point';
                 chatSendBtn.disabled = true;
                 // Auto reconnect
                 reconnectTimer = setTimeout(connect, 2000);
@@ -541,6 +683,15 @@
                     break;
                 case 'debug_mode_changed':
                     setDebugMode(msg.mode);
+                    break;
+                case 'session_list':
+                    updateSessionTabs(msg.sessions, msg.active_id);
+                    break;
+                case 'session_switched':
+                    handleSessionSwitched(msg.session_id, msg.name);
+                    break;
+                case 'session_closed':
+                    // Session list will be updated via session_list message
                     break;
             }
         }
@@ -767,11 +918,91 @@
             }
         }
 
-        function resetSession() {
-            if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        // Session management functions
+        function updateSessionTabs(newSessions, newActiveId) {
+            sessions = newSessions;
+            activeSessionId = newActiveId;
 
-            if (confirm('Reset session? This will start a new conversation.')) {
-                ws.send(JSON.stringify({ type: 'reset_session' }));
+            // Clear existing tabs (except new button)
+            const existingTabs = sessionTabs.querySelectorAll('.session-tab');
+            existingTabs.forEach(tab => tab.remove());
+
+            // Create tabs for each session
+            sessions.forEach(session => {
+                const tab = document.createElement('button');
+                tab.className = `session-tab ${session.id === activeSessionId ? 'active' : ''}`;
+                tab.dataset.sessionId = session.id;
+
+                const nameSpan = document.createElement('span');
+                nameSpan.className = 'tab-name';
+                nameSpan.textContent = session.name;
+                nameSpan.title = `${session.name} (${session.message_count} msgs)`;
+
+                const closeBtn = document.createElement('button');
+                closeBtn.className = 'tab-close';
+                closeBtn.innerHTML = '×';
+                closeBtn.title = 'Close session';
+                closeBtn.onclick = (e) => {
+                    e.stopPropagation();
+                    closeSession(session.id);
+                };
+
+                tab.appendChild(nameSpan);
+                tab.appendChild(closeBtn);
+
+                tab.onclick = () => switchSession(session.id);
+
+                // Double-click to rename
+                tab.ondblclick = () => renameSession(session.id, session.name);
+
+                sessionTabs.insertBefore(tab, newSessionBtn);
+            });
+        }
+
+        function switchSession(sessionId) {
+            if (!ws || ws.readyState !== WebSocket.OPEN) return;
+            if (sessionId === activeSessionId) return;
+
+            ws.send(JSON.stringify({
+                type: 'switch_session',
+                session_id: sessionId
+            }));
+        }
+
+        function handleSessionSwitched(sessionId, name) {
+            activeSessionId = sessionId;
+            // Update tab UI
+            document.querySelectorAll('.session-tab').forEach(tab => {
+                tab.classList.toggle('active', tab.dataset.sessionId === sessionId);
+            });
+            addChatMessage('system', `Switched to: ${name}`);
+        }
+
+        function createNewSession() {
+            if (!ws || ws.readyState !== WebSocket.OPEN) return;
+            ws.send(JSON.stringify({ type: 'new_session' }));
+        }
+
+        function closeSession(sessionId) {
+            if (!ws || ws.readyState !== WebSocket.OPEN) return;
+            if (sessions.length <= 1) {
+                // Don't close the last session
+                return;
+            }
+            ws.send(JSON.stringify({
+                type: 'close_session',
+                session_id: sessionId
+            }));
+        }
+
+        function renameSession(sessionId, currentName) {
+            const newName = prompt('Rename session:', currentName);
+            if (newName && newName !== currentName) {
+                ws.send(JSON.stringify({
+                    type: 'rename_session',
+                    session_id: sessionId,
+                    name: newName
+                }));
             }
         }
 
@@ -834,7 +1065,7 @@
 
         chatSendBtn.addEventListener('click', sendChatMessage);
         chatCancelBtn.addEventListener('click', cancelChatRequest);
-        resetBtn.addEventListener('click', resetSession);
+        newSessionBtn.addEventListener('click', createNewSession);
 
         debugToggleBtn.addEventListener('click', () => {
             debugPanel.classList.toggle('visible');
@@ -843,6 +1074,48 @@
         debugClearBtn.addEventListener('click', () => {
             debugEntries.innerHTML = '';
         });
+
+        // Resize handle functionality
+        const resizeHandle = document.getElementById('resize-handle');
+        const chatPanel = document.getElementById('chat-panel');
+        let isResizing = false;
+
+        resizeHandle.addEventListener('mousedown', (e) => {
+            isResizing = true;
+            resizeHandle.classList.add('dragging');
+            document.body.style.cursor = 'col-resize';
+            document.body.style.userSelect = 'none';
+            e.preventDefault();
+        });
+
+        document.addEventListener('mousemove', (e) => {
+            if (!isResizing) return;
+
+            const containerRect = document.querySelector('.container').getBoundingClientRect();
+            const newWidth = containerRect.right - e.clientX;
+
+            // Clamp width between min and max
+            const clampedWidth = Math.max(280, Math.min(800, newWidth));
+            chatPanel.style.width = clampedWidth + 'px';
+
+            // Save to localStorage
+            localStorage.setItem('chatPanelWidth', clampedWidth);
+        });
+
+        document.addEventListener('mouseup', () => {
+            if (isResizing) {
+                isResizing = false;
+                resizeHandle.classList.remove('dragging');
+                document.body.style.cursor = '';
+                document.body.style.userSelect = '';
+            }
+        });
+
+        // Restore saved width on load
+        const savedWidth = localStorage.getItem('chatPanelWidth');
+        if (savedWidth) {
+            chatPanel.style.width = savedWidth + 'px';
+        }
 
         // Start connection
         connect();

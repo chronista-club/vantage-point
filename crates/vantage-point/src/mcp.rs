@@ -5,13 +5,8 @@
 //! - clear: Clear a pane
 
 use rmcp::{
-    handler::server::tool::ToolRouter,
-    model::*,
-    tool, tool_handler, tool_router,
-    transport::stdio,
-    ErrorData as McpError,
-    ServiceExt,
-    schemars::JsonSchema,
+    ErrorData as McpError, ServiceExt, handler::server::tool::ToolRouter, model::*,
+    schemars::JsonSchema, tool, tool_handler, tool_router, transport::stdio,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -66,13 +61,17 @@ impl VantageMcp {
     }
 
     /// Show content in the browser viewer
-    #[tool(description = "Display content in the Vantage Point browser viewer. Supports markdown, html, and log formats.")]
+    #[tool(
+        description = "Display content in the Vantage Point browser viewer. Supports markdown, html, and log formats."
+    )]
     async fn show(
         &self,
         rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<ShowParams>,
     ) -> Result<CallToolResult, McpError> {
         let pane_id = params.pane_id.unwrap_or_else(|| "main".to_string());
-        let content_type = params.content_type.unwrap_or_else(|| "markdown".to_string());
+        let content_type = params
+            .content_type
+            .unwrap_or_else(|| "markdown".to_string());
         let append = params.append.unwrap_or(false);
 
         let content_enum = match content_type.as_str() {
@@ -88,7 +87,8 @@ impl VantageMcp {
         };
 
         let url = self.daemon_url.lock().await;
-        let result = self.client
+        let result = self
+            .client
             .post(format!("{}/api/show", *url))
             .json(&message)
             .send()
@@ -96,9 +96,10 @@ impl VantageMcp {
 
         match result {
             Ok(resp) if resp.status().is_success() => {
-                Ok(CallToolResult::success(vec![Content::text(
-                    format!("Content displayed in pane '{}'", pane_id)
-                )]))
+                Ok(CallToolResult::success(vec![Content::text(format!(
+                    "Content displayed in pane '{}'",
+                    pane_id
+                ))]))
             }
             Ok(resp) => {
                 let status = resp.status();
@@ -107,12 +108,10 @@ impl VantageMcp {
                     None,
                 ))
             }
-            Err(e) => {
-                Err(McpError::internal_error(
-                    format!("Failed to connect to daemon: {}. Is vantaged running?", e),
-                    None,
-                ))
-            }
+            Err(e) => Err(McpError::internal_error(
+                format!("Failed to connect to daemon: {}. Is vp running?", e),
+                None,
+            )),
         }
     }
 
@@ -129,7 +128,8 @@ impl VantageMcp {
         };
 
         let url = self.daemon_url.lock().await;
-        let result = self.client
+        let result = self
+            .client
             .post(format!("{}/api/show", *url))
             .json(&message)
             .send()
@@ -137,9 +137,10 @@ impl VantageMcp {
 
         match result {
             Ok(resp) if resp.status().is_success() => {
-                Ok(CallToolResult::success(vec![Content::text(
-                    format!("Pane '{}' cleared", pane_id)
-                )]))
+                Ok(CallToolResult::success(vec![Content::text(format!(
+                    "Pane '{}' cleared",
+                    pane_id
+                ))]))
             }
             Ok(resp) => {
                 let status = resp.status();
@@ -148,12 +149,10 @@ impl VantageMcp {
                     None,
                 ))
             }
-            Err(e) => {
-                Err(McpError::internal_error(
-                    format!("Failed to connect to daemon: {}", e),
-                    None,
-                ))
-            }
+            Err(e) => Err(McpError::internal_error(
+                format!("Failed to connect to daemon: {}", e),
+                None,
+            )),
         }
     }
 }
