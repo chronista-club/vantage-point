@@ -41,3 +41,10 @@ reqwest = { workspace = true }
 # MCP (Model Context Protocol)
 rmcp = { version = "0.11", features = ["server", "transport-io"] }
 schemars = "1"
+
+# Native WebView
+wry = "0.53"
+tao = "0.34"
+
+# Open URLs in system browser
+open = "5"

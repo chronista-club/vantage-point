@@ -11,6 +11,7 @@ use clap::{Parser, Subcommand};
 mod daemon;
 mod mcp;
 mod protocol;
+mod webview;
 
 #[derive(Parser)]
 #[command(name = "vantaged")]
@@ -28,9 +29,13 @@ enum Commands {
         #[arg(short, long, default_value = "33000")]
         port: u16,
 
-        /// Don't auto-open browser
+        /// Don't open any viewer (headless mode)
         #[arg(long)]
-        no_browser: bool,
+        headless: bool,
+
+        /// Use system browser instead of native WebView
+        #[arg(long)]
+        browser: bool,
     },
     /// Start as MCP server (stdio JSON-RPC)
     Mcp,
@@ -40,8 +45,7 @@ enum Commands {
     Stop,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     // Initialize tracing
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -56,17 +60,64 @@ async fn main() -> Result<()> {
     // Default to Start if no command given
     let command = cli.command.unwrap_or(Commands::Start {
         port: 33000,
-        no_browser: false,
+        headless: false,
+        browser: false,
     });
 
     match command {
-        Commands::Start { port, no_browser } => {
-            daemon::run(port, !no_browser).await
+        Commands::Start { port, headless, browser } => {
+            if headless || browser {
+                // Headless or browser mode - use tokio runtime
+                let rt = tokio::runtime::Runtime::new()?;
+                rt.block_on(async {
+                    // Start HTTP server in background
+                    let server_handle = tokio::spawn(async move {
+                        daemon::run(port, false).await
+                    });
+
+                    if browser {
+                        // Wait for server to start, then open browser
+                        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                        let url = format!("http://localhost:{}", port);
+                        tracing::info!("Opening in browser: {}", url);
+                        let _ = open::that(&url);
+                    }
+
+                    server_handle.await?
+                })
+            } else {
+                // WebView mode - run server in background thread, WebView on main thread
+                let server_thread = std::thread::spawn(move || {
+                    let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime");
+                    rt.block_on(async {
+                        daemon::run(port, false).await
+                    })
+                });
+
+                // Wait a bit for server to start
+                std::thread::sleep(std::time::Duration::from_millis(300));
+
+                // Run WebView on main thread (required by macOS)
+                let webview_result = webview::run_webview(port);
+
+                match webview_result {
+                    Ok(()) => {
+                        tracing::info!("WebView closed");
+                    }
+                    Err(e) => {
+                        tracing::error!("WebView error: {}", e);
+                    }
+                }
+
+                // Server thread will be terminated when main exits
+                drop(server_thread);
+                Ok(())
+            }
         }
         Commands::Mcp => {
             // MCP mode: stdio JSON-RPC server
-            // Note: tracing goes to stderr, which MCP clients ignore
-            mcp::run_mcp_server(33000).await
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(mcp::run_mcp_server(33000))
         }
         Commands::Status => {
             // TODO: Check daemon status via health endpoint
