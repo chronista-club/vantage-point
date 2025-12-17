@@ -38,7 +38,8 @@
       "Bash(mcp__creo-memories__remember_context '{\n  \"\"content\"\": \"\"## wry WebViewでのペースト・AquaVoice対応調査\\n\\n### 問題\\nvantaged WebViewアプリでAquaVoice（音声入力ツール）からのペーストが効かない。ブラウザモード(--browser)では動作する。\\n\\n### 根本原因\\nmacOSではEditメニュー（ネイティブメニュー）がないとCmd+C/V等のショートカットがシステムにルーティングされない。wryのWebViewBuilderにはAccessibility専用APIは存在しない。\\n\\n### 解決策\\ntaoのMenuBarを使用してEditメニューを追加:\\n\\n```rust\\nuse tao::menu::{MenuBar, Menu, MenuItem};\\n\\nlet edit_menu = Menu::new()\\n    .add_native_item(MenuItem::Undo)\\n    .add_native_item(MenuItem::Redo)\\n    .add_native_item(MenuItem::Separator)\\n    .add_native_item(MenuItem::Cut)\\n    .add_native_item(MenuItem::Copy)\\n    .add_native_item(MenuItem::Paste)\\n    .add_native_item(MenuItem::SelectAll);\\n\\nlet menu_bar = MenuBar::new()\\n    .add_submenu(\\\"\"Edit\\\"\", true, edit_menu);\\n\\nlet window = WindowBuilder::new()\\n    .with_menu(menu_bar)  // <- これを追加\\n    .build(&event_loop)?;\\n```\\n\\n### 関連情報\\n- wry 0.53、tao 0.34使用中\\n- AquaVoiceはmacOS Accessibility APIを使用\\n- WKWebViewはmacOS text services integrationを継承\\n- Multiwebview環境でのショートカット問題は未解決（wry側で保留中）\\n\\n### 参考Issue\\n- tauri-apps/tauri#2397 - Copy/Paste shortcuts not working on macOS\\n- tauri-apps/tauri#8676 - Command shortcuts on macOS webview\\n- tauri-apps/wry#1177 - Multiwebview shortcuts\"\",\n  \"\"category\"\": \"\"debug\"\",\n  \"\"tags\"\": [\"\"wry\"\", \"\"tao\"\", \"\"macos\"\", \"\"accessibility\"\", \"\"aquavoice\"\", \"\"paste\"\", \"\"webview\"\", \"\"menu\"\"]\n}')",
       "Bash(vantaged --help:*)",
       "Bash(vantaged midi-ports)",
-      "Bash(RUST_LOG=info timeout 3 vantaged midi:*)"
+      "Bash(RUST_LOG=info timeout 3 vantaged midi:*)",
+      "Bash(vantaged start --help:*)"
     ],
     "deny": [],
     "ask": []

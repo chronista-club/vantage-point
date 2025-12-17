@@ -40,6 +40,15 @@ fn create_menu_bar() -> Menu {
     menu
 }
 
+/// Launch WebView in a detached process
+pub fn run_webview_detached(port: u16) -> anyhow::Result<()> {
+    // Launch vantaged webview command as a separate process
+    std::process::Command::new("vantaged")
+        .args(["webview", "-p", &port.to_string()])
+        .spawn()?;
+    Ok(())
+}
+
 /// Run the WebView window pointing to the daemon's HTTP server
 pub fn run_webview(port: u16) -> anyhow::Result<()> {
     let event_loop = EventLoop::new();

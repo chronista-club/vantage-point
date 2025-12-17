@@ -264,15 +264,15 @@ async fn open_instance(index: usize) -> Result<()> {
     Ok(())
 }
 
-/// CLI-compatible debug mode enum
+/// CLIデバッグモード
 #[derive(Debug, Clone, Copy, Default, ValueEnum)]
 pub enum DebugModeArg {
-    /// No debug information
+    /// デバッグ情報なし
     #[default]
     None,
-    /// Simple debug info (session ID, timing)
+    /// 簡易デバッグ（セッションID、タイミング）
     Simple,
-    /// Detailed debug info (full JSON, all events)
+    /// 詳細デバッグ（JSON全体、全イベント）
     Detail,
 }
 
@@ -300,7 +300,7 @@ fn parse_debug_env() -> Option<DebugMode> {
 
 #[derive(Parser)]
 #[command(name = "vantaged")]
-#[command(about = "Background daemon for browser-based rich content display")]
+#[command(about = "ブラウザベースのリッチコンテンツ表示デーモン")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -308,67 +308,81 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Start the daemon (HTTP server + WebSocket hub) [default]
+    /// デーモンを起動（HTTPサーバー + WebSocketハブ）[デフォルト]
     Start {
-        /// Project index from config (use `vantaged config` to list)
+        /// プロジェクト番号（`vantaged config`で確認）
         #[arg()]
         project_index: Option<usize>,
 
-        /// Port to listen on
+        /// 待ち受けポート番号
         #[arg(short, long)]
         port: Option<u16>,
 
-        /// Don't open any viewer (headless mode)
+        /// ビューアを開かない（ヘッドレスモード）
         #[arg(long)]
         headless: bool,
 
-        /// Use system browser instead of native WebView
+        /// ネイティブWebViewの代わりにシステムブラウザを使用
         #[arg(long)]
         browser: bool,
 
-        /// Debug display mode (overrides VANTAGE_DEBUG env var)
+        /// デバッグ表示モード（VANTAGE_DEBUG環境変数より優先）
         #[arg(long, short = 'd', value_enum)]
         debug: Option<DebugModeArg>,
 
-        /// Project directory for Claude agent (overrides project_index)
+        /// プロジェクトディレクトリ（project_indexより優先）
         #[arg(long, short = 'C')]
         project_dir: Option<String>,
+
+        /// MIDI入力を有効化（ポート番号または名前パターン）
+        #[arg(long, short = 'm')]
+        midi: Option<String>,
     },
-    /// Show configuration and registered projects
+    /// 設定と登録済みプロジェクトを表示
     Config,
-    /// Start as MCP server (stdio JSON-RPC)
+    /// MCPサーバーとして起動（stdio JSON-RPC）
     Mcp,
-    /// Check if daemon is running
+    /// デーモンの稼働状態を確認
     Status {
-        /// Port to check
+        /// 確認するポート番号
         #[arg(short, long, default_value = "33000")]
         port: u16,
     },
-    /// Stop the running daemon
+    /// デーモンを停止
     Stop {
-        /// Port of the daemon to stop
+        /// 停止するデーモンのポート番号
         #[arg(short, long, default_value = "33000")]
         port: u16,
     },
-    /// List running vantaged instances
+    /// 稼働中のインスタンス一覧
     #[command(alias = "list")]
     Ps,
-    /// Open WebUI for a running instance
+    /// 指定インスタンスのWebUIを開く
     Open {
-        /// Index of the instance (from `vantaged ps`)
+        /// インスタンス番号（`vantaged ps`で確認）
         #[arg(default_value = "0")]
         index: usize,
     },
-    /// Run as menu bar icon (system tray)
-    Tray,
-    /// List available MIDI input ports
+    /// メニューバーアイコンとして起動（システムトレイ）
+    Tray {
+        /// MIDI入力を有効化（ポート番号または名前パターン）
+        #[arg(long, short = 'm')]
+        midi: Option<String>,
+    },
+    /// WebViewウィンドウのみを開く（デーモンは別途起動済み）
+    Webview {
+        /// 接続先ポート番号
+        #[arg(short, long, default_value = "33000")]
+        port: u16,
+    },
+    /// 利用可能なMIDI入力ポート一覧
     MidiPorts,
-    /// Start MIDI input monitoring
+    /// MIDI入力の監視を開始
     Midi {
-        /// MIDI port index to connect to
+        /// 接続するMIDIポート番号
         #[arg(short, long)]
         port: Option<usize>,
-        /// Daemon port to send actions to
+        /// アクション送信先のデーモンポート
         #[arg(short = 'P', long, default_value = "33000")]
         daemon_port: u16,
     },
@@ -397,10 +411,11 @@ fn main() -> Result<()> {
         browser: false,
         debug: None,
         project_dir: None,
+        midi: None,
     });
 
     match command {
-        Commands::Start { project_index, port, headless, browser, debug, project_dir } => {
+        Commands::Start { project_index, port, headless, browser, debug, project_dir, midi } => {
             // Resolve project directory
             let resolved_project_dir = if let Some(ref dir) = project_dir {
                 // Explicit --project-dir takes precedence
@@ -438,6 +453,23 @@ fn main() -> Result<()> {
 
             tracing::info!("Project dir: {}", resolved_project_dir);
 
+            // Setup MIDI config if enabled
+            let midi_config = midi.as_ref().map(|midi_arg| {
+                let mut config = midi::MidiConfig::default();
+                // LPD8 pad mappings (notes 36-43)
+                config.note_actions.insert(36, midi::MidiAction::OpenWebUI { port: None });
+                config.note_actions.insert(37, midi::MidiAction::CancelChat);
+                config.note_actions.insert(38, midi::MidiAction::ResetSession);
+
+                // Set port pattern if provided as string, or port index if numeric
+                if let Ok(idx) = midi_arg.parse::<usize>() {
+                    (Some(idx), config)
+                } else {
+                    config.port_pattern = Some(midi_arg.clone());
+                    (None, config)
+                }
+            });
+
             if headless || browser {
                 // Headless or browser mode - use tokio runtime
                 let rt = tokio::runtime::Runtime::new()?;
@@ -447,6 +479,17 @@ fn main() -> Result<()> {
                     let server_handle = tokio::spawn(async move {
                         daemon::run(resolved_port, false, debug_mode, project_dir).await
                     });
+
+                    // Start MIDI monitoring if enabled
+                    if let Some((port_idx, config)) = midi_config {
+                        let daemon_port = resolved_port;
+                        tokio::spawn(async move {
+                            if let Err(e) = midi::run_midi(port_idx, config, daemon_port).await {
+                                tracing::error!("MIDI error: {}", e);
+                            }
+                        });
+                        tracing::info!("MIDI monitoring enabled");
+                    }
 
                     if browser {
                         // Wait for server to start, then open browser
@@ -461,9 +504,21 @@ fn main() -> Result<()> {
             } else {
                 // WebView mode - run server in background thread, WebView on main thread
                 let project_dir = resolved_project_dir.clone();
+                let midi_config_clone = midi_config.clone();
                 let server_thread = std::thread::spawn(move || {
                     let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime");
                     rt.block_on(async {
+                        // Start MIDI monitoring if enabled
+                        if let Some((port_idx, config)) = midi_config_clone {
+                            let daemon_port = resolved_port;
+                            tokio::spawn(async move {
+                                if let Err(e) = midi::run_midi(port_idx, config, daemon_port).await {
+                                    tracing::error!("MIDI error: {}", e);
+                                }
+                            });
+                            tracing::info!("MIDI monitoring enabled");
+                        }
+
                         daemon::run(resolved_port, false, debug_mode, project_dir).await
                     })
                 });
@@ -541,8 +596,38 @@ fn main() -> Result<()> {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(open_instance(index))
         }
-        Commands::Tray => {
+        Commands::Tray { midi } => {
+            // Start MIDI in background thread if enabled
+            if let Some(ref midi_arg) = midi {
+                let mut config = midi::MidiConfig::default();
+                config.note_actions.insert(36, midi::MidiAction::OpenWebUI { port: None });
+                config.note_actions.insert(37, midi::MidiAction::CancelChat);
+                config.note_actions.insert(38, midi::MidiAction::ResetSession);
+
+                let (port_idx, config) = if let Ok(idx) = midi_arg.parse::<usize>() {
+                    (Some(idx), config)
+                } else {
+                    let mut c = config;
+                    c.port_pattern = Some(midi_arg.clone());
+                    (None, c)
+                };
+
+                std::thread::spawn(move || {
+                    let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime");
+                    rt.block_on(async {
+                        if let Err(e) = midi::run_midi(port_idx, config, 33000).await {
+                            tracing::error!("MIDI error: {}", e);
+                        }
+                    });
+                });
+                tracing::info!("MIDI monitoring enabled");
+            }
+
             tray::run_tray()
+        }
+        Commands::Webview { port } => {
+            // Just run WebView window pointing to existing daemon
+            webview::run_webview(port)
         }
         Commands::MidiPorts => {
             midi::print_ports();

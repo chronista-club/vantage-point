@@ -183,8 +183,13 @@ pub fn run_tray() -> anyhow::Result<()> {
                 // Note: In a real implementation, we'd update the menu here
             } else if let Some(port_str) = id.strip_prefix(OPEN_WEBUI_PREFIX) {
                 if let Ok(port) = port_str.parse::<u16>() {
-                    let url = format!("http://localhost:{}", port);
-                    let _ = open::that(&url);
+                    // Open WebView window for existing daemon instance
+                    if let Err(e) = crate::webview::run_webview_detached(port) {
+                        tracing::error!("Failed to open WebView: {}", e);
+                        // Fallback to browser
+                        let url = format!("http://localhost:{}", port);
+                        let _ = open::that(&url);
+                    }
                 }
             } else if let Some(port_str) = id.strip_prefix(STOP_PREFIX) {
                 if let Ok(port) = port_str.parse::<u16>() {
