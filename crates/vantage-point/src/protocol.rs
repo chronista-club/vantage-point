@@ -29,6 +29,14 @@ pub enum Content {
     Html(String),
 }
 
+/// Stored chat message for history
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistoryMessage {
+    pub role: String,
+    pub content: String,
+    pub timestamp: u64,
+}
+
 /// Message from daemon to browser (WebSocket)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -76,6 +84,11 @@ pub enum DaemonMessage {
     SessionCreated { session: SessionInfo },
     /// Session closed notification
     SessionClosed { session_id: String },
+    /// Session history (for restoring chat on session switch)
+    SessionHistory {
+        session_id: String,
+        messages: Vec<HistoryMessage>,
+    },
 }
 
 /// Session information for UI
@@ -92,6 +105,9 @@ pub struct SessionInfo {
     /// Model used in this session
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Session creation timestamp (Unix millis)
+    #[serde(default)]
+    pub created_at: u64,
 }
 
 /// Split direction

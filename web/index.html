@@ -587,6 +587,8 @@
         const WS_URL = `ws://${location.host}/ws`;
         let ws = null;
         let reconnectTimer = null;
+        let reconnectAttempts = 0;
+        const MAX_RECONNECT_DELAY = 30000; // 30 seconds max
         let isTyping = false;
         let currentStreamContent = '';
         let debugMode = 'none';
@@ -613,10 +615,13 @@
 
             ws.onopen = async () => {
                 console.log('Connected to vpa');
+                reconnectAttempts = 0; // Reset on successful connection
                 document.getElementById('status').textContent = 'Connected';
                 document.getElementById('status').className = 'status connected';
                 chatSendBtn.disabled = false;
                 ws.send(JSON.stringify({ type: 'ready' }));
+                // Request session list on connect
+                ws.send(JSON.stringify({ type: 'list_sessions' }));
 
                 // Fetch project info from health endpoint
                 try {
@@ -636,13 +641,17 @@
 
             ws.onclose = () => {
                 console.log('Disconnected from vpa');
-                document.getElementById('status').textContent = 'Disconnected';
                 document.getElementById('status').className = 'status disconnected';
-                document.getElementById('project-name').classList.remove('visible');
-                document.title = 'Vantage Point';
                 chatSendBtn.disabled = true;
-                // Auto reconnect
-                reconnectTimer = setTimeout(connect, 2000);
+
+                // Exponential backoff for reconnection
+                reconnectAttempts++;
+                const delay = Math.min(1000 * Math.pow(2, reconnectAttempts - 1), MAX_RECONNECT_DELAY);
+                document.getElementById('status').textContent = `Reconnecting in ${Math.round(delay/1000)}s...`;
+
+                console.log(`Reconnecting in ${delay}ms (attempt ${reconnectAttempts})`);
+                if (reconnectTimer) clearTimeout(reconnectTimer);
+                reconnectTimer = setTimeout(connect, delay);
             };
 
             ws.onerror = (err) => {
@@ -689,6 +698,9 @@
                     break;
                 case 'session_switched':
                     handleSessionSwitched(msg.session_id, msg.name);
+                    break;
+                case 'session_history':
+                    handleSessionHistory(msg.session_id, msg.messages);
                     break;
                 case 'session_closed':
                     // Session list will be updated via session_list message
@@ -919,6 +931,21 @@
         }
 
         // Session management functions
+        function formatTimeAgo(timestamp) {
+            if (!timestamp) return '';
+            const now = Date.now();
+            const diff = now - timestamp;
+            const seconds = Math.floor(diff / 1000);
+            const minutes = Math.floor(seconds / 60);
+            const hours = Math.floor(minutes / 60);
+            const days = Math.floor(hours / 24);
+
+            if (days > 0) return `${days}d`;
+            if (hours > 0) return `${hours}h`;
+            if (minutes > 0) return `${minutes}m`;
+            return 'now';
+        }
+
         function updateSessionTabs(newSessions, newActiveId) {
             sessions = newSessions;
             activeSessionId = newActiveId;
@@ -935,8 +962,9 @@
 
                 const nameSpan = document.createElement('span');
                 nameSpan.className = 'tab-name';
-                nameSpan.textContent = session.name;
-                nameSpan.title = `${session.name} (${session.message_count} msgs)`;
+                const timeAgo = formatTimeAgo(session.created_at);
+                nameSpan.textContent = timeAgo ? `${session.name} (${timeAgo})` : session.name;
+                nameSpan.title = `${session.name}\n${session.message_count} messages\nCreated: ${session.created_at ? new Date(session.created_at).toLocaleString() : 'Unknown'}`;
 
                 const closeBtn = document.createElement('button');
                 closeBtn.className = 'tab-close';
@@ -975,7 +1003,26 @@
             document.querySelectorAll('.session-tab').forEach(tab => {
                 tab.classList.toggle('active', tab.dataset.sessionId === sessionId);
             });
+            // Clear chat and show switch message
+            clearChatMessages();
             addChatMessage('system', `Switched to: ${name}`);
+        }
+
+        function handleSessionHistory(sessionId, messages) {
+            // Only restore if this is the current session
+            if (sessionId !== activeSessionId) return;
+
+            // Restore messages from history
+            messages.forEach(msg => {
+                addChatMessage(msg.role, msg.content);
+            });
+
+            scrollChatToBottom();
+        }
+
+        function clearChatMessages() {
+            // Remove all messages except keep a welcome system message
+            chatMessages.innerHTML = '';
         }
 
         function createNewSession() {
