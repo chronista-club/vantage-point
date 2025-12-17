@@ -240,11 +240,11 @@ async fn list_instances() -> Result<()> {
         };
         println!(
             "  {}  {}  {:>5}   {}",
-            i, inst.port, inst.pid, project_display
+            i + 1, inst.port, inst.pid, project_display
         );
     }
     println!();
-    println!("Use `vp open <#>` to open WebUI");
+    println!("Use `vp open <#>` to open WebUI (# starts from 1)");
 
     Ok(())
 }
@@ -258,16 +258,17 @@ async fn open_instance(index: usize) -> Result<()> {
         return Ok(());
     }
 
-    if index >= instances.len() {
+    // Convert 1-based to 0-based
+    if index == 0 || index > instances.len() {
         println!(
-            "✗ Invalid index {}. Available: 0–{}",
+            "✗ Invalid index {}. Available: 1–{}",
             index,
-            instances.len() - 1
+            instances.len()
         );
         return Ok(());
     }
 
-    let inst = &instances[index];
+    let inst = &instances[index - 1];
     let url = format!("http://localhost:{}", inst.port);
     println!("Opening {} (PID: {})...", url, inst.pid);
 
@@ -326,7 +327,7 @@ struct Cli {
 enum Commands {
     /// デーモンを起動（HTTPサーバー + WebSocketハブ）[デフォルト]
     Start {
-        /// プロジェクト番号（`vp config`で確認）
+        /// プロジェクト番号（`vp config`で確認、1始まり）
         #[arg()]
         project_index: Option<usize>,
 
@@ -389,8 +390,8 @@ enum Commands {
     Ps,
     /// 指定インスタンスのWebUIを開く
     Open {
-        /// インスタンス番号（`vp ps`で確認）
-        #[arg(default_value = "0")]
+        /// インスタンス番号（`vp ps`で確認、1始まり）
+        #[arg(default_value = "1")]
         index: usize,
     },
     /// メニューバーアイコンとして起動（システムトレイ）
@@ -459,15 +460,16 @@ fn main() -> Result<()> {
                 // Explicit --project-dir takes precedence
                 dir.clone()
             } else if let Some(idx) = project_index {
-                // Project index from config
-                if idx >= config.projects.len() {
+                // Project index from config (convert 1-based to 0-based)
+                if idx == 0 || idx > config.projects.len() {
                     eprintln!(
-                        "✗ Invalid project index {}. Use `vp config` to list projects.",
-                        idx
+                        "✗ Invalid project index {}. Use `vp config` to list projects (1–{}).",
+                        idx,
+                        config.projects.len()
                     );
                     std::process::exit(1);
                 }
-                let project = &config.projects[idx];
+                let project = &config.projects[idx - 1];
                 println!("📁 Project: {} ({})", project.name, project.path);
                 project.path.clone()
             } else {
@@ -480,8 +482,8 @@ fn main() -> Result<()> {
                 // Explicit CLI port
                 p
             } else {
-                // Port based on project index: project 0 → 33000, project 1 → 33001, etc.
-                let idx = project_index.unwrap_or(0) as u16;
+                // Port based on project index: project 1 → 33000, project 2 → 33001, etc.
+                let idx = project_index.map(|i| i.saturating_sub(1)).unwrap_or(0) as u16;
                 let p = PORT_RANGE_START + idx;
                 if p > PORT_RANGE_END {
                     eprintln!(
@@ -631,11 +633,11 @@ fn main() -> Result<()> {
                     };
                     println!(
                         "  {}  {:18}  {:>5}   {}",
-                        i, project.name, port_str, path_display
+                        i + 1, project.name, port_str, path_display
                     );
                 }
                 println!();
-                println!("Usage: vp start <#> or vp start -C /path/to/project");
+                println!("Usage: vp start <#> or vp start -C /path/to/project (# starts from 1)");
             }
 
             Ok(())
