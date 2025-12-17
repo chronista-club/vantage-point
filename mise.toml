@@ -8,8 +8,16 @@ bun = "latest"
 node = "22"
 
 [tasks.agent]
-description = "Start Vantage Agent CLI (TypeScript)"
-run = "bun run packages/agent/index.ts"
+description = "Start Vantage Agent TUI (TypeScript + Claude SDK)"
+run = "bun run packages/agent/src/tui.ts ."
+
+[tasks."agent:cli"]
+description = "Start Vantage Agent CLI (simple mode)"
+run = "bun run packages/agent/src/cli.ts"
+
+[tasks."agent:server"]
+description = "Start Vantage Agent stdio server (for Rust TUI)"
+run = "bun run packages/agent/src/server.ts"
 
 [tasks.tui]
 description = "Start Vantage TUI (Rust/Ratatui)"
