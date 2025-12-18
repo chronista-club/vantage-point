@@ -1,6 +1,7 @@
 //! HTTP server with WebSocket support
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -15,24 +16,61 @@ use axum::{
     routing::{get, post},
 };
 use futures::{SinkExt, StreamExt};
+use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use tower_http::cors::CorsLayer;
 
 use super::hub::Hub;
 use crate::agent::{AgentConfig, AgentEvent, ClaudeAgent};
+use crate::mcp::PermissionResponse;
 use crate::protocol::{
-    BrowserMessage, ChatMessage, ChatRole, DaemonMessage, DebugMode, SessionInfo,
+    BrowserMessage, ChatComponent, ChatMessage, ChatRole, ComponentAction, DaemonMessage,
+    DebugMode, HistoryMessage, SessionInfo,
 };
 use std::collections::HashMap;
 
+/// Chat message for storage
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StoredMessage {
+    role: String,
+    content: String,
+    timestamp: u64,
+}
+
 /// Session entry with metadata
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct SessionEntry {
     id: String,
     name: String,
     message_count: usize,
     model: Option<String>,
+    /// Session creation timestamp (Unix millis)
+    #[serde(default = "default_created_at")]
+    created_at: u64,
+    /// Chat history for this session
+    #[serde(default)]
+    messages: Vec<StoredMessage>,
+}
+
+fn default_created_at() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Persisted state for hot reload
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistedState {
+    /// Active session ID
+    active_id: Option<String>,
+    /// All known sessions
+    sessions: HashMap<String, SessionEntry>,
+    /// Counter for generating session names
+    session_counter: usize,
+    /// Project directory
+    project_dir: String,
 }
 
 /// Session manager for multiple Claude sessions
@@ -44,11 +82,84 @@ struct SessionManager {
     sessions: HashMap<String, SessionEntry>,
     /// Counter for generating session names
     session_counter: usize,
+    /// Port number for state file path
+    port: u16,
+    /// Project directory
+    project_dir: String,
 }
 
 impl SessionManager {
     fn new() -> Self {
         Self::default()
+    }
+
+    /// Create with port and project_dir, attempting to restore from saved state
+    fn with_config(port: u16, project_dir: String) -> Self {
+        let state_path = Self::state_path(port);
+
+        // Try to load existing state
+        if let Ok(data) = std::fs::read_to_string(&state_path) {
+            if let Ok(state) = serde_json::from_str::<PersistedState>(&data) {
+                // Only restore if same project directory
+                if state.project_dir == project_dir {
+                    tracing::info!("Restored session state from {:?}", state_path);
+                    return Self {
+                        active_id: state.active_id,
+                        sessions: state.sessions,
+                        session_counter: state.session_counter,
+                        port,
+                        project_dir,
+                    };
+                } else {
+                    tracing::info!("Project dir changed, starting fresh session");
+                }
+            }
+        }
+
+        Self {
+            port,
+            project_dir,
+            ..Default::default()
+        }
+    }
+
+    /// Get state file path for a port
+    fn state_path(port: u16) -> PathBuf {
+        let config_dir = dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("vantage")
+            .join("state");
+        config_dir.join(format!("{}.json", port))
+    }
+
+    /// Save state to file
+    fn save(&self) {
+        let state = PersistedState {
+            active_id: self.active_id.clone(),
+            sessions: self.sessions.clone(),
+            session_counter: self.session_counter,
+            project_dir: self.project_dir.clone(),
+        };
+
+        let state_path = Self::state_path(self.port);
+
+        // Ensure directory exists
+        if let Some(parent) = state_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+
+        match serde_json::to_string_pretty(&state) {
+            Ok(json) => {
+                if let Err(e) = std::fs::write(&state_path, json) {
+                    tracing::warn!("Failed to save session state: {}", e);
+                } else {
+                    tracing::debug!("Saved session state to {:?}", state_path);
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to serialize session state: {}", e);
+            }
+        }
     }
 
     /// Get or create active session for chat
@@ -67,6 +178,10 @@ impl SessionManager {
         if !self.sessions.contains_key(&id) {
             self.session_counter += 1;
             let name = format!("Session {}", self.session_counter);
+            let created_at = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
             self.sessions.insert(
                 id.clone(),
                 SessionEntry {
@@ -74,10 +189,39 @@ impl SessionManager {
                     name,
                     message_count: 0,
                     model,
+                    created_at,
+                    messages: Vec::new(),
                 },
             );
         }
         self.active_id = Some(id);
+        self.save();
+    }
+
+    /// Add a message to the active session
+    fn add_message(&mut self, role: &str, content: String) {
+        if let Some(ref id) = self.active_id {
+            if let Some(entry) = self.sessions.get_mut(id) {
+                let timestamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0);
+                entry.messages.push(StoredMessage {
+                    role: role.to_string(),
+                    content,
+                    timestamp,
+                });
+                self.save();
+            }
+        }
+    }
+
+    /// Get messages for a session
+    fn get_messages(&self, session_id: &str) -> Vec<StoredMessage> {
+        self.sessions
+            .get(session_id)
+            .map(|e| e.messages.clone())
+            .unwrap_or_default()
     }
 
     /// Increment message count for active session
@@ -85,6 +229,7 @@ impl SessionManager {
         if let Some(ref id) = self.active_id
             && let Some(entry) = self.sessions.get_mut(id) {
                 entry.message_count += 1;
+                self.save();
             }
     }
 
@@ -92,6 +237,7 @@ impl SessionManager {
     fn switch_to(&mut self, session_id: &str) -> Option<&SessionEntry> {
         if self.sessions.contains_key(session_id) {
             self.active_id = Some(session_id.to_string());
+            self.save();
             self.sessions.get(session_id)
         } else {
             None
@@ -101,12 +247,14 @@ impl SessionManager {
     /// Create a new session (will be registered when Claude CLI responds)
     fn prepare_new_session(&mut self) {
         self.active_id = None;
+        self.save();
     }
 
     /// Rename a session
     fn rename(&mut self, session_id: &str, new_name: String) -> bool {
         if let Some(entry) = self.sessions.get_mut(session_id) {
             entry.name = new_name;
+            self.save();
             true
         } else {
             false
@@ -120,6 +268,7 @@ impl SessionManager {
                 // Switch to another session or none
                 self.active_id = self.sessions.keys().next().cloned();
             }
+            self.save();
             true
         } else {
             false
@@ -128,7 +277,8 @@ impl SessionManager {
 
     /// Get all sessions as SessionInfo for UI
     fn list(&self) -> Vec<SessionInfo> {
-        self.sessions
+        let mut sessions: Vec<_> = self
+            .sessions
             .values()
             .map(|e| SessionInfo {
                 id: e.id.clone(),
@@ -136,9 +286,19 @@ impl SessionManager {
                 is_active: self.active_id.as_deref() == Some(&e.id),
                 message_count: e.message_count,
                 model: e.model.clone(),
+                created_at: e.created_at,
             })
-            .collect()
+            .collect();
+        // Sort by created_at descending (newest first)
+        sessions.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        sessions
     }
+}
+
+/// Pending permission request entry
+struct PendingPermission {
+    /// Response once user has responded (None = still waiting)
+    response: Option<PermissionResponse>,
 }
 
 /// Application state
@@ -154,6 +314,8 @@ struct AppState {
     shutdown_token: CancellationToken,
     /// Project directory for Claude agent
     project_dir: String,
+    /// Pending permission requests: request_id -> response channel
+    pending_permissions: Arc<RwLock<HashMap<String, PendingPermission>>>,
 }
 
 impl AppState {
@@ -206,13 +368,21 @@ pub async fn run(
     let shutdown_token = CancellationToken::new();
     let shutdown_token_clone = shutdown_token.clone();
 
+    // Create session manager with state restoration
+    let sessions = SessionManager::with_config(port, project_dir.clone());
+    tracing::info!(
+        "Session manager initialized with {} sessions",
+        sessions.sessions.len()
+    );
+
     let state = Arc::new(AppState {
         hub: Hub::new(),
-        sessions: Arc::new(RwLock::new(SessionManager::new())),
+        sessions: Arc::new(RwLock::new(sessions)),
         cancel_token: Arc::new(RwLock::new(CancellationToken::new())),
         debug_mode,
         shutdown_token: shutdown_token.clone(),
         project_dir,
+        pending_permissions: Arc::new(RwLock::new(HashMap::new())),
     });
 
     let app = Router::new()
@@ -221,6 +391,8 @@ pub async fn run(
         .route("/api/show", post(show_handler))
         .route("/api/health", get(health_handler))
         .route("/api/shutdown", post(shutdown_handler))
+        .route("/api/permission", post(permission_request_handler))
+        .route("/api/permission/{request_id}", get(permission_poll_handler))
         .layer(CorsLayer::permissive())
         .with_state(state.clone());
 
@@ -295,6 +467,123 @@ async fn shutdown_handler(State(state): State<Arc<AppState>>) -> impl IntoRespon
     tracing::info!("Shutdown requested via API");
     state.shutdown_token.cancel();
     Json(serde_json::json!({"status": "shutting_down"}))
+}
+
+/// POST /api/permission - Receive permission request from MCP tool
+async fn permission_request_handler(
+    State(state): State<Arc<AppState>>,
+    Json(msg): Json<DaemonMessage>,
+) -> impl IntoResponse {
+    // Extract request_id from the ChatComponent
+    let request_id = match &msg {
+        DaemonMessage::ChatComponent {
+            component: ChatComponent::PermissionRequest { request_id, .. },
+            ..
+        } => request_id.clone(),
+        _ => {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Expected ChatComponent with PermissionRequest"})),
+            );
+        }
+    };
+
+    tracing::info!("Permission request received: {}", request_id);
+
+    // Store the pending request (no response yet)
+    state.pending_permissions.write().await.insert(
+        request_id.clone(),
+        PendingPermission { response: None },
+    );
+
+    // Broadcast to WebSocket clients
+    state.hub.broadcast(msg);
+
+    state.send_debug(
+        "permission",
+        &format!("Permission request: {}", request_id),
+        None,
+    );
+
+    // Return accepted and let MCP poll for response
+    (
+        axum::http::StatusCode::ACCEPTED,
+        Json(serde_json::json!({"status": "pending", "request_id": request_id})),
+    )
+}
+
+/// GET /api/permission/{request_id} - Poll for permission response
+async fn permission_poll_handler(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(request_id): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    let mut pending = state.pending_permissions.write().await;
+
+    if let Some(entry) = pending.get(&request_id) {
+        if let Some(ref response) = entry.response {
+            // Response is ready - return it and remove from pending
+            let response_clone = response.clone();
+            pending.remove(&request_id);
+            return (
+                axum::http::StatusCode::OK,
+                Json(serde_json::to_value(&response_clone).unwrap_or_default()),
+            );
+        } else {
+            // Still waiting for user response
+            return (
+                axum::http::StatusCode::ACCEPTED,
+                Json(serde_json::json!({"status": "pending"})),
+            );
+        }
+    }
+
+    // Request not found
+    (
+        axum::http::StatusCode::NOT_FOUND,
+        Json(serde_json::json!({"error": "Request not found"})),
+    )
+}
+
+/// Handle a permission response from WebSocket (called from WebSocket handler)
+async fn handle_permission_response(
+    state: &Arc<AppState>,
+    request_id: String,
+    approved: bool,
+    updated_input: Option<serde_json::Value>,
+    message: Option<String>,
+) {
+    let mut pending = state.pending_permissions.write().await;
+
+    if let Some(entry) = pending.get_mut(&request_id) {
+        let response = if approved {
+            PermissionResponse {
+                behavior: "allow".to_string(),
+                updated_input,
+                message: None,
+            }
+        } else {
+            PermissionResponse {
+                behavior: "deny".to_string(),
+                updated_input: None,
+                message,
+            }
+        };
+
+        // Store the response (will be retrieved by next poll)
+        entry.response = Some(response);
+
+        tracing::info!("Permission {} -> {}", request_id, if approved { "allow" } else { "deny" });
+
+        // Broadcast component dismissed
+        state.hub.broadcast(DaemonMessage::ComponentDismissed {
+            request_id: request_id.clone(),
+        });
+    } else {
+        tracing::warn!(
+            "Permission response for unknown request: {}",
+            request_id
+        );
+    }
 }
 
 /// WebSocket handler
@@ -418,12 +707,33 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                             BrowserMessage::SwitchSession { session_id } => {
                                 tracing::info!("Switch session to: {}", session_id);
                                 let mut mgr = sessions.write().await;
+
+                                // Get messages before switching (to avoid borrow issues)
+                                let messages: Vec<HistoryMessage> = mgr
+                                    .get_messages(&session_id)
+                                    .into_iter()
+                                    .map(|m| HistoryMessage {
+                                        role: m.role,
+                                        content: m.content,
+                                        timestamp: m.timestamp,
+                                    })
+                                    .collect();
+
                                 if let Some(entry) = mgr.switch_to(&session_id) {
                                     let name = entry.name.clone();
+
+                                    // Send session switched notification
                                     hub.broadcast(DaemonMessage::SessionSwitched {
                                         session_id: session_id.clone(),
                                         name,
                                     });
+
+                                    // Send session history for UI restoration
+                                    hub.broadcast(DaemonMessage::SessionHistory {
+                                        session_id: session_id.clone(),
+                                        messages,
+                                    });
+
                                     state_clone.send_debug(
                                         "session",
                                         &format!("Switched to {}", session_id),
@@ -464,6 +774,45 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                                     });
                                 }
                             }
+                            BrowserMessage::ComponentAction { action } => {
+                                tracing::info!("Component action: {:?}", action);
+                                state_clone.send_debug(
+                                    "component",
+                                    &format!("Received component action: {:?}", action),
+                                    None,
+                                );
+
+                                // Handle permission responses
+                                match action {
+                                    ComponentAction::PermissionApprove {
+                                        request_id,
+                                        updated_input,
+                                    } => {
+                                        handle_permission_response(
+                                            &state_clone,
+                                            request_id,
+                                            true,
+                                            updated_input,
+                                            None,
+                                        )
+                                        .await;
+                                    }
+                                    ComponentAction::PermissionDeny { request_id, message } => {
+                                        handle_permission_response(
+                                            &state_clone,
+                                            request_id,
+                                            false,
+                                            None,
+                                            message,
+                                        )
+                                        .await;
+                                    }
+                                    // TODO: Handle other component actions
+                                    _ => {
+                                        tracing::debug!("Unhandled component action: {:?}", action);
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -492,6 +841,9 @@ async fn handle_chat_message(
     message: String,
 ) {
     let start_time = Instant::now();
+
+    // Save user message to history
+    sessions.write().await.add_message("user", message.clone());
 
     // Get session info from manager
     let (session_id, use_continue) = sessions.read().await.get_active_session();
@@ -545,6 +897,7 @@ async fn handle_chat_message(
     let cancel_token = cancel_token.clone();
     let mut first_chunk = true;
     let mut chunk_count = 0;
+    let mut response_buffer = String::new();
 
     loop {
         tokio::select! {
@@ -629,6 +982,9 @@ async fn handle_chat_message(
                     Some(AgentEvent::TextChunk(chunk)) => {
                         chunk_count += 1;
 
+                        // Accumulate response for history
+                        response_buffer.push_str(&chunk);
+
                         // Send streaming chunk
                         hub.broadcast(DaemonMessage::ChatChunk {
                             content: chunk.clone(),
@@ -669,6 +1025,14 @@ async fn handle_chat_message(
                     Some(AgentEvent::Done { result: _, cost }) => {
                         let elapsed = start_time.elapsed();
                         tracing::info!("Claude CLI response complete, cost: {:?}", cost);
+
+                        // Save assistant response to history
+                        if !response_buffer.is_empty() {
+                            sessions
+                                .write()
+                                .await
+                                .add_message("assistant", response_buffer.clone());
+                        }
 
                         // Send final done signal
                         hub.broadcast(DaemonMessage::ChatChunk {

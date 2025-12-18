@@ -62,3 +62,6 @@ tray-icon = "0.21"
 
 # MIDI input
 midir = "0.10"
+
+# UUID generation
+uuid = { version = "1", features = ["v4"] }

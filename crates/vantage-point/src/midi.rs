@@ -149,7 +149,7 @@ fn parse_midi_message(message: &[u8]) -> Option<MidiMessage> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum MidiAction {
-    /// Switch to a project by index
+    /// Switch to a project by index (1-based, opens WebUI for that project)
     SwitchProject { index: usize },
     /// Open WebUI for current/specified instance
     OpenWebUI { port: Option<u16> },
@@ -157,10 +157,10 @@ pub enum MidiAction {
     StopInstance { port: u16 },
     /// Send chat message
     SendChat { message: String },
-    /// Cancel current chat
-    CancelChat,
-    /// Reset session
-    ResetSession,
+    /// Cancel current chat (sends to active daemon)
+    CancelChat { port: Option<u16> },
+    /// Reset session (sends to active daemon)
+    ResetSession { port: Option<u16> },
     /// Custom HTTP request to daemon API
     ApiCall {
         endpoint: String,
@@ -242,13 +242,15 @@ impl MidiHandler {
                 let _ = client.post(&url).send().await;
                 tracing::info!("Sent shutdown to port {}", port);
             }
-            MidiAction::CancelChat => {
-                // Would need WebSocket connection or API endpoint
-                tracing::info!("Cancel chat requested (not yet implemented)");
+            MidiAction::CancelChat { port } => {
+                let target_port = port.unwrap_or(self.daemon_port);
+                // TODO: Implement cancel via WebSocket or API
+                tracing::info!("Cancel chat on port {} (not yet implemented)", target_port);
             }
-            MidiAction::ResetSession => {
-                // Would need WebSocket connection or API endpoint
-                tracing::info!("Reset session requested (not yet implemented)");
+            MidiAction::ResetSession { port } => {
+                let target_port = port.unwrap_or(self.daemon_port);
+                // TODO: Implement reset via WebSocket or API
+                tracing::info!("Reset session on port {} (not yet implemented)", target_port);
             }
             MidiAction::ApiCall {
                 endpoint,
@@ -379,6 +381,345 @@ pub fn print_ports() {
         }
         Err(e) => {
             println!("Error listing MIDI ports: {}", e);
+        }
+    }
+}
+
+// =============================================================================
+// LPD8 SysEx Protocol
+// =============================================================================
+
+/// LPD8 SysEx constants
+pub mod lpd8 {
+    /// Akai Manufacturer ID
+    pub const MANUFACTURER_ID: u8 = 0x47;
+    /// LPD8 Model ID bytes
+    pub const MODEL_ID: [u8; 2] = [0x7F, 0x75];
+
+    /// SysEx commands
+    pub mod cmd {
+        /// Get program data from device
+        pub const GET_PROGRAM: u8 = 0x63;
+        /// Send program data to device
+        pub const SEND_PROGRAM: u8 = 0x61;
+        /// Get active program number
+        pub const GET_ACTIVE: u8 = 0x64;
+        /// Set active program number
+        pub const SET_ACTIVE: u8 = 0x62;
+    }
+
+    /// Pad toggle mode
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[repr(u8)]
+    pub enum PadToggle {
+        Momentary = 0,
+        Toggle = 1,
+    }
+
+    /// Pad configuration (11 bytes per pad)
+    #[derive(Debug, Clone)]
+    pub struct PadConfig {
+        pub note: u8,
+        pub pc: u8,           // Program Change number
+        pub cc: u8,           // Control Change number
+        pub toggle: PadToggle,
+        pub pad_off_color: u8, // Mk2 only: LED off color (0-3)
+        pub pad_on_color: u8,  // Mk2 only: LED on color (0-3)
+    }
+
+    impl Default for PadConfig {
+        fn default() -> Self {
+            Self {
+                note: 36,
+                pc: 0,
+                cc: 1,
+                toggle: PadToggle::Momentary,
+                pad_off_color: 0,
+                pad_on_color: 3, // Red
+            }
+        }
+    }
+
+    impl PadConfig {
+        /// Convert to 11-byte SysEx format
+        pub fn to_bytes(&self) -> [u8; 11] {
+            [
+                self.note,
+                self.pc,
+                self.cc,
+                self.toggle as u8,
+                0, 0, 0, 0, 0, // Reserved
+                self.pad_off_color,
+                self.pad_on_color,
+            ]
+        }
+
+        /// Parse from 11-byte SysEx format
+        pub fn from_bytes(data: &[u8]) -> Option<Self> {
+            if data.len() < 11 {
+                return None;
+            }
+            Some(Self {
+                note: data[0],
+                pc: data[1],
+                cc: data[2],
+                toggle: if data[3] == 1 { PadToggle::Toggle } else { PadToggle::Momentary },
+                pad_off_color: data[9],
+                pad_on_color: data[10],
+            })
+        }
+    }
+
+    /// Knob configuration (5 bytes per knob)
+    #[derive(Debug, Clone)]
+    pub struct KnobConfig {
+        pub cc: u8,
+        pub low: u8,
+        pub high: u8,
+    }
+
+    impl Default for KnobConfig {
+        fn default() -> Self {
+            Self {
+                cc: 1,
+                low: 0,
+                high: 127,
+            }
+        }
+    }
+
+    impl KnobConfig {
+        /// Convert to 5-byte SysEx format
+        pub fn to_bytes(&self) -> [u8; 5] {
+            [self.cc, self.low, self.high, 0, 0]
+        }
+
+        /// Parse from 5-byte SysEx format
+        pub fn from_bytes(data: &[u8]) -> Option<Self> {
+            if data.len() < 5 {
+                return None;
+            }
+            Some(Self {
+                cc: data[0],
+                low: data[1],
+                high: data[2],
+            })
+        }
+    }
+
+    /// Full LPD8 program configuration
+    #[derive(Debug, Clone)]
+    pub struct Program {
+        pub channel: u8, // 1-16
+        pub pads: [PadConfig; 8],
+        pub knobs: [KnobConfig; 8],
+    }
+
+    impl Default for Program {
+        fn default() -> Self {
+            Self {
+                channel: 1,
+                pads: std::array::from_fn(|i| PadConfig {
+                    note: 36 + i as u8,
+                    ..Default::default()
+                }),
+                knobs: std::array::from_fn(|i| KnobConfig {
+                    cc: 1 + i as u8,
+                    ..Default::default()
+                }),
+            }
+        }
+    }
+
+    impl Program {
+        /// Build SysEx message to send this program to device
+        pub fn to_sysex(&self, program_num: u8) -> Vec<u8> {
+            let mut msg = vec![
+                0xF0, // SysEx start
+                MANUFACTURER_ID,
+                MODEL_ID[0],
+                MODEL_ID[1],
+                cmd::SEND_PROGRAM,
+                program_num,
+                self.channel.saturating_sub(1), // 0-indexed in protocol
+            ];
+
+            // 8 pads × 11 bytes
+            for pad in &self.pads {
+                msg.extend_from_slice(&pad.to_bytes());
+            }
+
+            // 8 knobs × 5 bytes
+            for knob in &self.knobs {
+                msg.extend_from_slice(&knob.to_bytes());
+            }
+
+            msg.push(0xF7); // SysEx end
+            msg
+        }
+
+        /// Parse program from SysEx response
+        pub fn from_sysex(data: &[u8]) -> Option<Self> {
+            // Expected: F0 47 7F 75 63 <prog> <chan> <88 pad bytes> <40 knob bytes> F7
+            if data.len() < 136 || data[0] != 0xF0 || data[data.len()-1] != 0xF7 {
+                return None;
+            }
+
+            let channel = data[6] + 1; // Convert to 1-indexed
+            let pad_data = &data[7..95]; // 88 bytes for 8 pads
+            let knob_data = &data[95..135]; // 40 bytes for 8 knobs
+
+            let mut pads: [PadConfig; 8] = std::array::from_fn(|_| PadConfig::default());
+            let mut knobs: [KnobConfig; 8] = std::array::from_fn(|_| KnobConfig::default());
+
+            for i in 0..8 {
+                pads[i] = PadConfig::from_bytes(&pad_data[i*11..(i+1)*11])?;
+            }
+            for i in 0..8 {
+                knobs[i] = KnobConfig::from_bytes(&knob_data[i*5..(i+1)*5])?;
+            }
+
+            Some(Self { channel, pads, knobs })
+        }
+
+        /// Create VP default program (PAD 1-4: Notes 36-39, PAD 5-8: Notes 40-43)
+        pub fn vp_default() -> Self {
+            Self {
+                channel: 1,
+                pads: std::array::from_fn(|i| PadConfig {
+                    note: 36 + i as u8,
+                    pc: i as u8,
+                    cc: 1 + i as u8,
+                    toggle: PadToggle::Momentary,
+                    pad_off_color: 0,
+                    pad_on_color: match i {
+                        0..=3 => 1, // Projects: Green
+                        4 => 3,     // Cancel: Red
+                        5 => 2,     // Reset: Yellow/Orange
+                        _ => 0,     // Unassigned: Off
+                    },
+                }),
+                knobs: std::array::from_fn(|i| KnobConfig {
+                    cc: 70 + i as u8, // CC 70-77 for knobs
+                    low: 0,
+                    high: 127,
+                }),
+            }
+        }
+    }
+
+    /// Build SysEx to request program data
+    pub fn request_program(program_num: u8) -> Vec<u8> {
+        vec![
+            0xF0,
+            MANUFACTURER_ID,
+            MODEL_ID[0],
+            MODEL_ID[1],
+            cmd::GET_PROGRAM,
+            program_num,
+            0xF7,
+        ]
+    }
+
+    /// Build SysEx to get active program number
+    pub fn request_active_program() -> Vec<u8> {
+        vec![
+            0xF0,
+            MANUFACTURER_ID,
+            MODEL_ID[0],
+            MODEL_ID[1],
+            cmd::GET_ACTIVE,
+            0xF7,
+        ]
+    }
+
+    /// Build SysEx to set active program
+    pub fn set_active_program(program_num: u8) -> Vec<u8> {
+        vec![
+            0xF0,
+            MANUFACTURER_ID,
+            MODEL_ID[0],
+            MODEL_ID[1],
+            cmd::SET_ACTIVE,
+            program_num,
+            0xF7,
+        ]
+    }
+}
+
+/// List available MIDI output ports
+pub fn list_output_ports() -> Result<Vec<String>> {
+    let midi_out = midir::MidiOutput::new("vp-midi-out")?;
+    let ports = midi_out.ports();
+
+    let mut port_names = Vec::new();
+    for port in ports.iter() {
+        if let Ok(name) = midi_out.port_name(port) {
+            port_names.push(name);
+        }
+    }
+
+    Ok(port_names)
+}
+
+/// Send SysEx message to LPD8
+pub fn send_sysex(port_pattern: Option<&str>, data: &[u8]) -> Result<()> {
+    let midi_out = midir::MidiOutput::new("vp-midi-out")?;
+    let ports = midi_out.ports();
+
+    if ports.is_empty() {
+        anyhow::bail!("No MIDI output ports found");
+    }
+
+    // Find port by pattern
+    let port_idx = if let Some(pattern) = port_pattern {
+        ports
+            .iter()
+            .position(|p| {
+                midi_out
+                    .port_name(p)
+                    .map(|name| name.contains(pattern))
+                    .unwrap_or(false)
+            })
+            .ok_or_else(|| anyhow::anyhow!("No MIDI port matching '{}'", pattern))?
+    } else {
+        0
+    };
+
+    let port = &ports[port_idx];
+    let port_name = midi_out.port_name(port).unwrap_or_else(|_| "Unknown".to_string());
+
+    let mut conn = midi_out.connect(port, "vp-midi-sysex")?;
+    conn.send(data)?;
+
+    tracing::info!("Sent {} bytes SysEx to {}", data.len(), port_name);
+    Ok(())
+}
+
+/// Write VP default config to LPD8 Program 1
+pub fn write_vp_config_to_lpd8(port_pattern: Option<&str>) -> Result<()> {
+    let program = lpd8::Program::vp_default();
+    let sysex = program.to_sysex(0); // Program 1 = index 0
+    send_sysex(port_pattern, &sysex)?;
+    println!("VP config written to LPD8 Program 1");
+    Ok(())
+}
+
+/// Print MIDI output ports
+pub fn print_output_ports() {
+    match list_output_ports() {
+        Ok(ports) => {
+            if ports.is_empty() {
+                println!("No MIDI output ports found.");
+            } else {
+                println!("Available MIDI output ports:");
+                for (i, name) in ports.iter().enumerate() {
+                    println!("  {}: {}", i, name);
+                }
+            }
+        }
+        Err(e) => {
+            println!("Error listing MIDI output ports: {}", e);
         }
     }
 }

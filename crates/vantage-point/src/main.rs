@@ -240,11 +240,11 @@ async fn list_instances() -> Result<()> {
         };
         println!(
             "  {}  {}  {:>5}   {}",
-            i, inst.port, inst.pid, project_display
+            i + 1, inst.port, inst.pid, project_display
         );
     }
     println!();
-    println!("Use `vp open <#>` to open WebUI");
+    println!("Use `vp open <#>` to open WebUI (# starts from 1)");
 
     Ok(())
 }
@@ -258,16 +258,17 @@ async fn open_instance(index: usize) -> Result<()> {
         return Ok(());
     }
 
-    if index >= instances.len() {
+    // Convert 1-based to 0-based
+    if index == 0 || index > instances.len() {
         println!(
-            "✗ Invalid index {}. Available: 0–{}",
+            "✗ Invalid index {}. Available: 1–{}",
             index,
-            instances.len() - 1
+            instances.len()
         );
         return Ok(());
     }
 
-    let inst = &instances[index];
+    let inst = &instances[index - 1];
     let url = format!("http://localhost:{}", inst.port);
     println!("Opening {} (PID: {})...", url, inst.pid);
 
@@ -326,7 +327,7 @@ struct Cli {
 enum Commands {
     /// デーモンを起動（HTTPサーバー + WebSocketハブ）[デフォルト]
     Start {
-        /// プロジェクト番号（`vp config`で確認）
+        /// プロジェクト番号（`vp config`で確認、1始まり）
         #[arg()]
         project_index: Option<usize>,
 
@@ -370,13 +371,27 @@ enum Commands {
         #[arg(short, long, default_value = "33000")]
         port: u16,
     },
+    /// デーモンを再起動（セッション状態を保持）
+    Restart {
+        /// 再起動するデーモンのポート番号
+        #[arg(short, long, default_value = "33000")]
+        port: u16,
+
+        /// ネイティブWebViewの代わりにシステムブラウザを使用
+        #[arg(long)]
+        browser: bool,
+
+        /// ビューアを開かない（ヘッドレスモード）
+        #[arg(long)]
+        headless: bool,
+    },
     /// 稼働中のインスタンス一覧
     #[command(alias = "list")]
     Ps,
     /// 指定インスタンスのWebUIを開く
     Open {
-        /// インスタンス番号（`vp ps`で確認）
-        #[arg(default_value = "0")]
+        /// インスタンス番号（`vp ps`で確認、1始まり）
+        #[arg(default_value = "1")]
         index: usize,
     },
     /// メニューバーアイコンとして起動（システムトレイ）
@@ -402,6 +417,42 @@ enum Commands {
         #[arg(short = 'P', long, default_value = "33000")]
         daemon_port: u16,
     },
+    /// LPD8コントローラー設定
+    #[command(subcommand)]
+    Lpd8(Lpd8Commands),
+}
+
+/// LPD8サブコマンド
+#[derive(Subcommand)]
+enum Lpd8Commands {
+    /// VP用設定をLPD8 Program 1に書き込む
+    Write {
+        /// MIDIポート名のパターン（部分一致）
+        #[arg(long, default_value = "LPD8")]
+        port: String,
+        /// 書き込み先プログラム番号（1-4）
+        #[arg(short, long, default_value = "1")]
+        program: u8,
+    },
+    /// LPD8から現在の設定を読み取る
+    Read {
+        /// MIDIポート名のパターン
+        #[arg(long, default_value = "LPD8")]
+        port: String,
+        /// 読み取り元プログラム番号（1-4）
+        #[arg(short, long, default_value = "1")]
+        program: u8,
+    },
+    /// アクティブプログラムを切り替える
+    Switch {
+        /// プログラム番号（1-4）
+        program: u8,
+        /// MIDIポート名のパターン
+        #[arg(long, default_value = "LPD8")]
+        port: String,
+    },
+    /// 利用可能なMIDI出力ポート一覧
+    Ports,
 }
 
 fn main() -> Result<()> {
@@ -445,15 +496,16 @@ fn main() -> Result<()> {
                 // Explicit --project-dir takes precedence
                 dir.clone()
             } else if let Some(idx) = project_index {
-                // Project index from config
-                if idx >= config.projects.len() {
+                // Project index from config (convert 1-based to 0-based)
+                if idx == 0 || idx > config.projects.len() {
                     eprintln!(
-                        "✗ Invalid project index {}. Use `vp config` to list projects.",
-                        idx
+                        "✗ Invalid project index {}. Use `vp config` to list projects (1–{}).",
+                        idx,
+                        config.projects.len()
                     );
                     std::process::exit(1);
                 }
-                let project = &config.projects[idx];
+                let project = &config.projects[idx - 1];
                 println!("📁 Project: {} ({})", project.name, project.path);
                 project.path.clone()
             } else {
@@ -466,8 +518,8 @@ fn main() -> Result<()> {
                 // Explicit CLI port
                 p
             } else {
-                // Port based on project index: project 0 → 33000, project 1 → 33001, etc.
-                let idx = project_index.unwrap_or(0) as u16;
+                // Port based on project index: project 1 → 33000, project 2 → 33001, etc.
+                let idx = project_index.map(|i| i.saturating_sub(1)).unwrap_or(0) as u16;
                 let p = PORT_RANGE_START + idx;
                 if p > PORT_RANGE_END {
                     eprintln!(
@@ -500,10 +552,12 @@ fn main() -> Result<()> {
                 config
                     .note_actions
                     .insert(36, midi::MidiAction::OpenWebUI { port: None });
-                config.note_actions.insert(37, midi::MidiAction::CancelChat);
                 config
                     .note_actions
-                    .insert(38, midi::MidiAction::ResetSession);
+                    .insert(37, midi::MidiAction::CancelChat { port: None });
+                config
+                    .note_actions
+                    .insert(38, midi::MidiAction::ResetSession { port: None });
 
                 // Set port pattern if provided as string, or port index if numeric
                 if let Ok(idx) = midi_arg.parse::<usize>() {
@@ -617,11 +671,11 @@ fn main() -> Result<()> {
                     };
                     println!(
                         "  {}  {:18}  {:>5}   {}",
-                        i, project.name, port_str, path_display
+                        i + 1, project.name, port_str, path_display
                     );
                 }
                 println!();
-                println!("Usage: vp start <#> or vp start -C /path/to/project");
+                println!("Usage: vp start <#> or vp start -C /path/to/project (# starts from 1)");
             }
 
             Ok(())
@@ -639,6 +693,110 @@ fn main() -> Result<()> {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(stop_daemon(port))
         }
+        Commands::Restart {
+            port,
+            browser,
+            headless,
+        } => {
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(async {
+                // Get current instance info before stopping
+                let instances = scan_instances().await;
+                let instance = instances.iter().find(|i| i.port == port);
+
+                let project_dir = match instance {
+                    Some(inst) => {
+                        inst.project_dir.clone().unwrap_or_else(|| {
+                            std::env::current_dir()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                                .to_string()
+                        })
+                    }
+                    None => {
+                        println!("✗ No daemon running on port {}. Use `vp start` instead.", port);
+                        return Ok(());
+                    }
+                };
+
+                println!("🔄 Restarting vp on port {}...", port);
+                println!("   Project: {}", project_dir);
+
+                // Stop the daemon
+                stop_daemon(port).await?;
+
+                // Wait a moment for port to be released
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+                println!("🚀 Starting daemon...");
+                Ok::<(), anyhow::Error>(())
+            })?;
+
+            // Get project_dir for starting (need to get it again outside async block)
+            let rt2 = tokio::runtime::Runtime::new()?;
+            let project_dir = rt2.block_on(async {
+                // Read from persisted state file
+                let state_path = dirs::config_dir()
+                    .unwrap_or_default()
+                    .join("vantage")
+                    .join("state")
+                    .join(format!("{}.json", port));
+
+                if let Ok(data) = std::fs::read_to_string(&state_path) {
+                    if let Ok(state) = serde_json::from_str::<serde_json::Value>(&data) {
+                        if let Some(dir) = state.get("project_dir").and_then(|v| v.as_str()) {
+                            return dir.to_string();
+                        }
+                    }
+                }
+
+                std::env::current_dir()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string()
+            });
+
+            // Determine debug mode from env
+            let debug_mode = parse_debug_env().unwrap_or_default();
+
+            if headless || browser {
+                let rt = tokio::runtime::Runtime::new()?;
+                rt.block_on(async {
+                    let project_dir_clone = project_dir.clone();
+                    let server_handle = tokio::spawn(async move {
+                        daemon::run(port, false, debug_mode, project_dir_clone).await
+                    });
+
+                    if browser {
+                        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                        let url = format!("http://localhost:{}", port);
+                        tracing::info!("Opening in browser: {}", url);
+                        let _ = open::that(&url);
+                    }
+
+                    server_handle.await?
+                })
+            } else {
+                // WebView mode
+                let project_dir_clone = project_dir.clone();
+                let server_thread = std::thread::spawn(move || {
+                    let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime");
+                    rt.block_on(async { daemon::run(port, false, debug_mode, project_dir_clone).await })
+                });
+
+                std::thread::sleep(std::time::Duration::from_millis(300));
+
+                let webview_result = webview::run_webview(port);
+
+                match webview_result {
+                    Ok(()) => tracing::info!("WebView closed"),
+                    Err(e) => tracing::error!("WebView error: {}", e),
+                }
+
+                drop(server_thread);
+                Ok(())
+            }
+        }
         Commands::Ps => {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(list_instances())
@@ -654,10 +812,12 @@ fn main() -> Result<()> {
                 config
                     .note_actions
                     .insert(36, midi::MidiAction::OpenWebUI { port: None });
-                config.note_actions.insert(37, midi::MidiAction::CancelChat);
                 config
                     .note_actions
-                    .insert(38, midi::MidiAction::ResetSession);
+                    .insert(37, midi::MidiAction::CancelChat { port: None });
+                config
+                    .note_actions
+                    .insert(38, midi::MidiAction::ResetSession { port: None });
 
                 let (port_idx, config) = if let Ok(idx) = midi_arg.parse::<usize>() {
                     (Some(idx), config)
@@ -698,14 +858,78 @@ fn main() -> Result<()> {
                 .note_actions
                 .insert(36, midi::MidiAction::OpenWebUI { port: None });
             // Pad 2 (note 37) -> Cancel chat
-            config.note_actions.insert(37, midi::MidiAction::CancelChat);
+            config
+                .note_actions
+                .insert(37, midi::MidiAction::CancelChat { port: None });
             // Pad 3 (note 38) -> Reset session
             config
                 .note_actions
-                .insert(38, midi::MidiAction::ResetSession);
+                .insert(38, midi::MidiAction::ResetSession { port: None });
 
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(midi::run_midi_interactive(port, config, daemon_port))
         }
+        Commands::Lpd8(lpd8_cmd) => match lpd8_cmd {
+            Lpd8Commands::Write { port, program } => {
+                if program < 1 || program > 4 {
+                    eprintln!("✗ プログラム番号は1-4の範囲で指定してください");
+                    std::process::exit(1);
+                }
+                println!("LPD8 Program {} にVP設定を書き込み中...", program);
+                let vp_program = midi::lpd8::Program::vp_default();
+                let sysex = vp_program.to_sysex(program - 1); // 0-indexed
+
+                match midi::send_sysex(Some(&port), &sysex) {
+                    Ok(()) => {
+                        println!("✓ VP設定をLPD8 Program {} に書き込みました", program);
+                        println!();
+                        println!("PAD設定:");
+                        println!("  PAD 1-4 (Note 36-39): プロジェクト切り替え (緑LED)");
+                        println!("  PAD 5   (Note 40):    チャットキャンセル (赤LED)");
+                        println!("  PAD 6   (Note 41):    セッションリセット (橙LED)");
+                        println!("  PAD 7-8 (Note 42-43): 未割当");
+                        Ok(())
+                    }
+                    Err(e) => {
+                        eprintln!("✗ 書き込みエラー: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+            }
+            Lpd8Commands::Read { port, program } => {
+                if program < 1 || program > 4 {
+                    eprintln!("✗ プログラム番号は1-4の範囲で指定してください");
+                    std::process::exit(1);
+                }
+                println!("LPD8 Program {} の読み取りは未実装です", program);
+                println!("(SysExリクエスト送信後の応答受信が必要)");
+                // TODO: Send request and wait for response via MidiInput
+                let _ = port; // suppress warning
+                Ok(())
+            }
+            Lpd8Commands::Switch { program, port } => {
+                if program < 1 || program > 4 {
+                    eprintln!("✗ プログラム番号は1-4の範囲で指定してください");
+                    std::process::exit(1);
+                }
+                println!("LPD8をProgram {} に切り替え中...", program);
+                let sysex = midi::lpd8::set_active_program(program - 1);
+
+                match midi::send_sysex(Some(&port), &sysex) {
+                    Ok(()) => {
+                        println!("✓ LPD8をProgram {} に切り替えました", program);
+                        Ok(())
+                    }
+                    Err(e) => {
+                        eprintln!("✗ 切り替えエラー: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+            }
+            Lpd8Commands::Ports => {
+                midi::print_output_ports();
+                Ok(())
+            }
+        },
     }
 }

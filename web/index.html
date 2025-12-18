@@ -497,6 +497,196 @@
             color: #667eea;
         }
 
+        /* Chat Components - Permission Dialog */
+        .chat-component {
+            margin: 8px 0;
+            border-radius: 12px;
+            background: #1e293b;
+            border: 1px solid #334155;
+            overflow: hidden;
+            max-width: 90%;
+        }
+        .chat-component.permission-request {
+            border-color: #f59e0b;
+        }
+        .chat-component-header {
+            padding: 12px 16px;
+            background: rgba(245, 158, 11, 0.1);
+            border-bottom: 1px solid #334155;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .chat-component-header .icon {
+            font-size: 18px;
+        }
+        .chat-component-header .title {
+            font-weight: 500;
+            color: #f59e0b;
+        }
+        .chat-component-header .tool-name {
+            color: #94a3b8;
+            font-size: 12px;
+            margin-left: auto;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .chat-component-body {
+            padding: 16px;
+        }
+        .chat-component-body .input-preview {
+            background: #0f172a;
+            border-radius: 6px;
+            padding: 12px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+            max-height: 200px;
+            overflow: auto;
+            margin-bottom: 16px;
+            color: #94a3b8;
+        }
+        .chat-component-body .input-preview pre {
+            margin: 0;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+        .chat-component-actions {
+            display: flex;
+            gap: 12px;
+            justify-content: flex-end;
+        }
+        .chat-component-btn {
+            padding: 8px 20px;
+            border-radius: 6px;
+            border: none;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .chat-component-btn.approve {
+            background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%);
+            color: white;
+        }
+        .chat-component-btn.approve:hover {
+            filter: brightness(1.1);
+        }
+        .chat-component-btn.deny {
+            background: transparent;
+            border: 1px solid #475569;
+            color: #94a3b8;
+        }
+        .chat-component-btn.deny:hover {
+            background: #dc2626;
+            border-color: #dc2626;
+            color: white;
+        }
+        .chat-component-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .chat-component-timeout {
+            font-size: 11px;
+            color: #64748b;
+            text-align: center;
+            margin-top: 12px;
+        }
+        .chat-component.resolved {
+            opacity: 0.6;
+            pointer-events: none;
+        }
+        .chat-component.resolved .chat-component-actions {
+            display: none;
+        }
+        .chat-component.resolved::after {
+            content: attr(data-resolution);
+            display: block;
+            text-align: center;
+            padding: 8px;
+            font-size: 12px;
+            color: #64748b;
+            background: rgba(0,0,0,0.2);
+        }
+
+        /* Todo List Component */
+        .chat-component.todo-list {
+            border-color: #3b82f6;
+        }
+        .chat-component.todo-list .chat-component-header {
+            background: rgba(59, 130, 246, 0.1);
+        }
+        .chat-component.todo-list .chat-component-header .title {
+            color: #3b82f6;
+        }
+        .todo-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 8px 0;
+            border-bottom: 1px solid #1e293b;
+        }
+        .todo-item:last-child {
+            border-bottom: none;
+        }
+        .todo-item .status-icon {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            flex-shrink: 0;
+        }
+        .todo-item.pending .status-icon {
+            border: 2px solid #475569;
+        }
+        .todo-item.in_progress .status-icon {
+            background: #3b82f6;
+            animation: pulse 1.5s infinite;
+        }
+        .todo-item.completed .status-icon {
+            background: #22c55e;
+        }
+        .todo-item .content {
+            flex: 1;
+            color: #e2e8f0;
+        }
+        .todo-item.completed .content {
+            text-decoration: line-through;
+            color: #64748b;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        /* Progress Component */
+        .chat-component.progress {
+            border-color: #8b5cf6;
+        }
+        .chat-component.progress .chat-component-header {
+            background: rgba(139, 92, 246, 0.1);
+        }
+        .chat-component.progress .chat-component-header .title {
+            color: #8b5cf6;
+        }
+        .progress-bar-container {
+            background: #1e293b;
+            border-radius: 4px;
+            height: 8px;
+            overflow: hidden;
+        }
+        .progress-bar {
+            height: 100%;
+            background: linear-gradient(90deg, #8b5cf6, #a78bfa);
+            transition: width 0.3s ease;
+        }
+        .progress-label {
+            margin-top: 8px;
+            font-size: 12px;
+            color: #94a3b8;
+        }
+
         /* Responsive */
         @media (max-width: 900px) {
             .container {
@@ -587,6 +777,8 @@
         const WS_URL = `ws://${location.host}/ws`;
         let ws = null;
         let reconnectTimer = null;
+        let reconnectAttempts = 0;
+        const MAX_RECONNECT_DELAY = 30000; // 30 seconds max
         let isTyping = false;
         let currentStreamContent = '';
         let debugMode = 'none';
@@ -613,10 +805,13 @@
 
             ws.onopen = async () => {
                 console.log('Connected to vpa');
+                reconnectAttempts = 0; // Reset on successful connection
                 document.getElementById('status').textContent = 'Connected';
                 document.getElementById('status').className = 'status connected';
                 chatSendBtn.disabled = false;
                 ws.send(JSON.stringify({ type: 'ready' }));
+                // Request session list on connect
+                ws.send(JSON.stringify({ type: 'list_sessions' }));
 
                 // Fetch project info from health endpoint
                 try {
@@ -636,13 +831,17 @@
 
             ws.onclose = () => {
                 console.log('Disconnected from vpa');
-                document.getElementById('status').textContent = 'Disconnected';
                 document.getElementById('status').className = 'status disconnected';
-                document.getElementById('project-name').classList.remove('visible');
-                document.title = 'Vantage Point';
                 chatSendBtn.disabled = true;
-                // Auto reconnect
-                reconnectTimer = setTimeout(connect, 2000);
+
+                // Exponential backoff for reconnection
+                reconnectAttempts++;
+                const delay = Math.min(1000 * Math.pow(2, reconnectAttempts - 1), MAX_RECONNECT_DELAY);
+                document.getElementById('status').textContent = `Reconnecting in ${Math.round(delay/1000)}s...`;
+
+                console.log(`Reconnecting in ${delay}ms (attempt ${reconnectAttempts})`);
+                if (reconnectTimer) clearTimeout(reconnectTimer);
+                reconnectTimer = setTimeout(connect, delay);
             };
 
             ws.onerror = (err) => {
@@ -690,9 +889,269 @@
                 case 'session_switched':
                     handleSessionSwitched(msg.session_id, msg.name);
                     break;
+                case 'session_history':
+                    handleSessionHistory(msg.session_id, msg.messages);
+                    break;
                 case 'session_closed':
                     // Session list will be updated via session_list message
                     break;
+                case 'chat_component':
+                    renderChatComponent(msg.component, msg.interactive);
+                    break;
+                case 'component_dismissed':
+                    dismissComponent(msg.request_id);
+                    break;
+            }
+        }
+
+        // Chat Component Rendering
+        function renderChatComponent(component, interactive) {
+            console.log('Rendering component:', component);
+
+            switch (component.component) {
+                case 'permission_request':
+                    renderPermissionRequest(component, interactive);
+                    break;
+                case 'todo_list':
+                    renderTodoList(component);
+                    break;
+                case 'progress':
+                    renderProgress(component);
+                    break;
+                case 'choice_buttons':
+                    renderChoiceButtons(component, interactive);
+                    break;
+                default:
+                    console.log('Unknown component type:', component.component);
+            }
+
+            scrollChatToBottom();
+        }
+
+        function renderPermissionRequest(data, interactive) {
+            const { request_id, tool_name, description, input, timeout_seconds } = data;
+
+            const componentEl = document.createElement('div');
+            componentEl.className = 'chat-component permission-request';
+            componentEl.id = `component-${request_id}`;
+            componentEl.dataset.requestId = request_id;
+
+            const inputStr = typeof input === 'object' ? JSON.stringify(input, null, 2) : String(input);
+
+            componentEl.innerHTML = `
+                <div class="chat-component-header">
+                    <span class="icon">🔐</span>
+                    <span class="title">Permission Request</span>
+                    <span class="tool-name">${escapeHtml(tool_name)}</span>
+                </div>
+                <div class="chat-component-body">
+                    ${description ? `<p style="margin-bottom: 12px; color: #94a3b8;">${escapeHtml(description)}</p>` : ''}
+                    <div class="input-preview">
+                        <pre>${escapeHtml(inputStr)}</pre>
+                    </div>
+                    ${interactive ? `
+                    <div class="chat-component-actions">
+                        <button class="chat-component-btn deny" onclick="handlePermissionDeny('${request_id}')">Deny</button>
+                        <button class="chat-component-btn approve" onclick="handlePermissionApprove('${request_id}')">Allow</button>
+                    </div>
+                    <div class="chat-component-timeout">Timeout in ${timeout_seconds}s</div>
+                    ` : ''}
+                </div>
+            `;
+
+            chatMessages.appendChild(componentEl);
+
+            // Start timeout countdown if interactive
+            if (interactive && timeout_seconds > 0) {
+                startTimeoutCountdown(request_id, timeout_seconds);
+            }
+        }
+
+        function renderTodoList(data) {
+            const { items, title } = data;
+
+            // Update existing todo list if it exists
+            let componentEl = document.querySelector('.chat-component.todo-list');
+            if (!componentEl) {
+                componentEl = document.createElement('div');
+                componentEl.className = 'chat-component todo-list';
+                chatMessages.appendChild(componentEl);
+            }
+
+            const itemsHtml = items.map(item => `
+                <div class="todo-item ${item.status}">
+                    <div class="status-icon">${item.status === 'completed' ? '✓' : item.status === 'in_progress' ? '●' : ''}</div>
+                    <span class="content">${escapeHtml(item.status === 'in_progress' && item.active_form ? item.active_form : item.content)}</span>
+                </div>
+            `).join('');
+
+            componentEl.innerHTML = `
+                <div class="chat-component-header">
+                    <span class="icon">📋</span>
+                    <span class="title">${title || 'Tasks'}</span>
+                </div>
+                <div class="chat-component-body">
+                    ${itemsHtml}
+                </div>
+            `;
+        }
+
+        function renderProgress(data) {
+            const { label, current, total, status } = data;
+            const percentage = total ? Math.round((current / total) * 100) : 0;
+
+            // Update existing progress if it exists
+            let componentEl = document.querySelector('.chat-component.progress');
+            if (!componentEl) {
+                componentEl = document.createElement('div');
+                componentEl.className = 'chat-component progress';
+                chatMessages.appendChild(componentEl);
+            }
+
+            const statusIcon = status === 'completed' ? '✓' : status === 'error' ? '✗' : '⏳';
+
+            componentEl.innerHTML = `
+                <div class="chat-component-header">
+                    <span class="icon">${statusIcon}</span>
+                    <span class="title">${escapeHtml(label)}</span>
+                </div>
+                <div class="chat-component-body">
+                    <div class="progress-bar-container">
+                        <div class="progress-bar" style="width: ${percentage}%"></div>
+                    </div>
+                    ${total ? `<div class="progress-label">${current} / ${total} (${percentage}%)</div>` : ''}
+                </div>
+            `;
+        }
+
+        function renderChoiceButtons(data, interactive) {
+            const { request_id, prompt, choices, allow_multiple } = data;
+
+            const componentEl = document.createElement('div');
+            componentEl.className = 'chat-component choice-buttons';
+            componentEl.id = `component-${request_id}`;
+            componentEl.dataset.requestId = request_id;
+
+            const choicesHtml = choices.map(choice => `
+                <button class="chat-component-btn" data-choice-id="${choice.id}" onclick="handleChoiceSelect('${request_id}', '${choice.id}')">
+                    ${escapeHtml(choice.label)}
+                    ${choice.description ? `<br><small style="opacity: 0.7;">${escapeHtml(choice.description)}</small>` : ''}
+                </button>
+            `).join('');
+
+            componentEl.innerHTML = `
+                <div class="chat-component-header">
+                    <span class="icon">❓</span>
+                    <span class="title">Choose an option</span>
+                </div>
+                <div class="chat-component-body">
+                    <p style="margin-bottom: 12px; color: #e2e8f0;">${escapeHtml(prompt)}</p>
+                    <div class="chat-component-actions" style="flex-wrap: wrap; justify-content: flex-start;">
+                        ${choicesHtml}
+                    </div>
+                </div>
+            `;
+
+            chatMessages.appendChild(componentEl);
+        }
+
+        function startTimeoutCountdown(requestId, timeoutSeconds) {
+            let remaining = timeoutSeconds;
+            const componentEl = document.getElementById(`component-${requestId}`);
+            if (!componentEl) return;
+
+            const timeoutEl = componentEl.querySelector('.chat-component-timeout');
+            if (!timeoutEl) return;
+
+            const interval = setInterval(() => {
+                remaining--;
+                if (remaining <= 0) {
+                    clearInterval(interval);
+                    timeoutEl.textContent = 'Timed out';
+                    // Auto-deny on timeout
+                    handlePermissionDeny(requestId);
+                } else {
+                    timeoutEl.textContent = `Timeout in ${remaining}s`;
+                }
+            }, 1000);
+
+            // Store interval ID for cleanup
+            componentEl.dataset.intervalId = interval;
+        }
+
+        function handlePermissionApprove(requestId) {
+            if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+            ws.send(JSON.stringify({
+                type: 'component_action',
+                action: {
+                    action: 'permission_approve',
+                    request_id: requestId
+                }
+            }));
+
+            // Mark component as resolved
+            const componentEl = document.getElementById(`component-${requestId}`);
+            if (componentEl) {
+                componentEl.classList.add('resolved');
+                componentEl.dataset.resolution = '✓ Allowed';
+                clearComponentInterval(componentEl);
+            }
+        }
+
+        function handlePermissionDeny(requestId) {
+            if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+            ws.send(JSON.stringify({
+                type: 'component_action',
+                action: {
+                    action: 'permission_deny',
+                    request_id: requestId,
+                    message: 'User denied permission'
+                }
+            }));
+
+            // Mark component as resolved
+            const componentEl = document.getElementById(`component-${requestId}`);
+            if (componentEl) {
+                componentEl.classList.add('resolved');
+                componentEl.dataset.resolution = '✗ Denied';
+                clearComponentInterval(componentEl);
+            }
+        }
+
+        function handleChoiceSelect(requestId, choiceId) {
+            if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+            ws.send(JSON.stringify({
+                type: 'component_action',
+                action: {
+                    action: 'choice_select',
+                    request_id: requestId,
+                    selected_ids: [choiceId]
+                }
+            }));
+
+            // Mark component as resolved
+            const componentEl = document.getElementById(`component-${requestId}`);
+            if (componentEl) {
+                componentEl.classList.add('resolved');
+                componentEl.dataset.resolution = `Selected: ${choiceId}`;
+            }
+        }
+
+        function dismissComponent(requestId) {
+            const componentEl = document.getElementById(`component-${requestId}`);
+            if (componentEl) {
+                componentEl.classList.add('resolved');
+                clearComponentInterval(componentEl);
+            }
+        }
+
+        function clearComponentInterval(componentEl) {
+            const intervalId = componentEl.dataset.intervalId;
+            if (intervalId) {
+                clearInterval(parseInt(intervalId));
             }
         }
 
@@ -919,6 +1378,21 @@
         }
 
         // Session management functions
+        function formatTimeAgo(timestamp) {
+            if (!timestamp) return '';
+            const now = Date.now();
+            const diff = now - timestamp;
+            const seconds = Math.floor(diff / 1000);
+            const minutes = Math.floor(seconds / 60);
+            const hours = Math.floor(minutes / 60);
+            const days = Math.floor(hours / 24);
+
+            if (days > 0) return `${days}d`;
+            if (hours > 0) return `${hours}h`;
+            if (minutes > 0) return `${minutes}m`;
+            return 'now';
+        }
+
         function updateSessionTabs(newSessions, newActiveId) {
             sessions = newSessions;
             activeSessionId = newActiveId;
@@ -935,8 +1409,9 @@
 
                 const nameSpan = document.createElement('span');
                 nameSpan.className = 'tab-name';
-                nameSpan.textContent = session.name;
-                nameSpan.title = `${session.name} (${session.message_count} msgs)`;
+                const timeAgo = formatTimeAgo(session.created_at);
+                nameSpan.textContent = timeAgo ? `${session.name} (${timeAgo})` : session.name;
+                nameSpan.title = `${session.name}\n${session.message_count} messages\nCreated: ${session.created_at ? new Date(session.created_at).toLocaleString() : 'Unknown'}`;
 
                 const closeBtn = document.createElement('button');
                 closeBtn.className = 'tab-close';
@@ -975,7 +1450,26 @@
             document.querySelectorAll('.session-tab').forEach(tab => {
                 tab.classList.toggle('active', tab.dataset.sessionId === sessionId);
             });
+            // Clear chat and show switch message
+            clearChatMessages();
             addChatMessage('system', `Switched to: ${name}`);
+        }
+
+        function handleSessionHistory(sessionId, messages) {
+            // Only restore if this is the current session
+            if (sessionId !== activeSessionId) return;
+
+            // Restore messages from history
+            messages.forEach(msg => {
+                addChatMessage(msg.role, msg.content);
+            });
+
+            scrollChatToBottom();
+        }
+
+        function clearChatMessages() {
+            // Remove all messages except keep a welcome system message
+            chatMessages.innerHTML = '';
         }
 
         function createNewSession() {
