@@ -718,9 +718,7 @@ fn main() -> Result<()> {
             let rt2 = tokio::runtime::Runtime::new()?;
             let project_dir = rt2.block_on(async {
                 // Read from persisted state file
-                let state_path = dirs::config_dir()
-                    .unwrap_or_default()
-                    .join("vantage")
+                let state_path = config::config_dir()
                     .join("state")
                     .join(format!("{}.json", port));
 

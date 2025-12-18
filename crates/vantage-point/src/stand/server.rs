@@ -127,11 +127,9 @@ impl SessionManager {
 
     /// Get state file path for a port
     fn state_path(port: u16) -> PathBuf {
-        let config_dir = dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("vantage")
-            .join("state");
-        config_dir.join(format!("{}.json", port))
+        crate::config::config_dir()
+            .join("state")
+            .join(format!("{}.json", port))
     }
 
     /// Save state to file

@@ -1,24 +1,29 @@
-//! Configuration management using XDG Base Directory specification
+//! Configuration management
 //!
-//! Config file location: $XDG_CONFIG_HOME/vantage/config.toml
-//! Default: ~/.config/vantage/config.toml
+//! Config file location: ~/.config/vp/config.toml
+//! 全プラットフォームで ~/.config/vp/ を使用（XDG準拠）
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// XDG config directory for vantage
-fn config_dir() -> PathBuf {
-    dirs::config_dir()
+/// Config directory for vp (~/.config/vp/)
+/// 全プラットフォームで統一（macOS/Linux）
+pub fn config_dir() -> PathBuf {
+    dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("vantage")
+        .join(".config")
+        .join("vp")
 }
 
-/// XDG data directory for vantage (for runtime data)
+/// Data directory for vp (same as config_dir for simplicity)
 pub fn data_dir() -> PathBuf {
-    dirs::data_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("vantage")
+    config_dir()
+}
+
+/// Scripts directory for Lua scripts
+pub fn scripts_dir() -> PathBuf {
+    config_dir().join("scripts")
 }
 
 /// Config file path

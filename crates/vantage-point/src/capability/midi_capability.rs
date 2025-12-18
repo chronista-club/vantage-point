@@ -7,16 +7,19 @@
 //! - REQ-CAP-001: Capabilityトレイト実装
 //! - REQ-CAP-003: EventBus連携
 //! - REQ-PROTO-003: Vantage拡張イベント生成
+//! - REQ-EVO-001: Evolution System統合
 
 use crate::capability::core::{
     Capability, CapabilityContext, CapabilityError, CapabilityEvent, CapabilityInfo,
     CapabilityResult, CapabilityState,
 };
 use crate::capability::eventbus::EventBus;
+use crate::capability::evolution::{EvolutionCondition, EvolutionLevel, EvolutionState};
 use crate::capability::params::MIDI_CAPABILITY_PARAMS;
 use crate::midi::{list_ports, parse_midi_message, MidiConfig, MidiEvent, MidiMessage};
 use async_trait::async_trait;
 use std::any::Any;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 
@@ -55,6 +58,7 @@ impl Default for MidiConnectionState {
 /// MIDI Capability
 ///
 /// MIDI入力を監視し、EventBusにイベントを配信する能力。
+/// Evolution Systemにより、使用状況に応じて段階的に成長する。
 pub struct MidiCapability {
     /// 能力状態
     state: CapabilityState,
@@ -68,6 +72,10 @@ pub struct MidiCapability {
     monitor_task: Option<tokio::task::JoinHandle<()>>,
     /// キャンセル用チャンネル
     cancel_tx: Option<mpsc::Sender<()>>,
+    /// 進化状態（ACTレベル、使用統計）
+    evolution: Arc<RwLock<EvolutionState>>,
+    /// レベルアップ条件
+    evolution_conditions: HashMap<EvolutionLevel, EvolutionCondition>,
 }
 
 impl MidiCapability {
@@ -80,6 +88,8 @@ impl MidiCapability {
             event_bus: None,
             monitor_task: None,
             cancel_tx: None,
+            evolution: Arc::new(RwLock::new(EvolutionState::default())),
+            evolution_conditions: Self::default_evolution_conditions(),
         }
     }
 
@@ -92,7 +102,52 @@ impl MidiCapability {
             event_bus: None,
             monitor_task: None,
             cancel_tx: None,
+            evolution: Arc::new(RwLock::new(EvolutionState::default())),
+            evolution_conditions: Self::default_evolution_conditions(),
         }
+    }
+
+    /// デフォルトの進化条件を生成
+    fn default_evolution_conditions() -> HashMap<EvolutionLevel, EvolutionCondition> {
+        let mut conditions = HashMap::new();
+
+        // ACT1 → ACT2: MIDI出力とLED制御を習得
+        conditions.insert(
+            EvolutionLevel::ACT2,
+            EvolutionCondition {
+                min_uses: 50,
+                min_success_rate: 0.7,
+                min_days: Some(1),
+                min_training_score: None,
+                custom: HashMap::new(),
+            },
+        );
+
+        // ACT2 → ACT3: SysEx制御を習得
+        conditions.insert(
+            EvolutionLevel::ACT3,
+            EvolutionCondition {
+                min_uses: 200,
+                min_success_rate: 0.8,
+                min_days: Some(3),
+                min_training_score: Some(0.6),
+                custom: HashMap::new(),
+            },
+        );
+
+        // ACT3 → ACT4: 複数デバイス同時制御
+        conditions.insert(
+            EvolutionLevel::ACT4,
+            EvolutionCondition {
+                min_uses: 500,
+                min_success_rate: 0.9,
+                min_days: Some(7),
+                min_training_score: Some(0.8),
+                custom: HashMap::new(),
+            },
+        );
+
+        conditions
     }
 
     /// ポートパターンを設定
@@ -114,6 +169,16 @@ impl MidiCapability {
     /// 設定を取得
     pub fn config(&self) -> &MidiConfig {
         &self.config
+    }
+
+    /// 進化状態を取得
+    pub async fn evolution_state(&self) -> EvolutionState {
+        self.evolution.read().await.clone()
+    }
+
+    /// 現在のACTレベルを取得
+    pub async fn current_level(&self) -> EvolutionLevel {
+        self.evolution.read().await.level
     }
 
     /// 利用可能なポートを更新
@@ -200,6 +265,8 @@ impl MidiCapability {
         // イベント処理タスク
         let event_bus = self.event_bus.clone();
         let connection_state = self.connection_state.clone();
+        let evolution = self.evolution.clone();
+        let evolution_conditions = self.evolution_conditions.clone();
 
         let task = tokio::spawn(async move {
             // 接続を保持（dropすると切断される）
@@ -215,6 +282,50 @@ impl MidiCapability {
                                     let mut state = connection_state.write().await;
                                     state.last_event_time = Some(midi_event.timestamp);
                                     state.event_count += 1;
+                                }
+
+                                // Evolution: 使用記録を追加
+                                let level_up = {
+                                    let mut evo = evolution.write().await;
+                                    evo.record_use(true); // MIDIイベント受信は成功とみなす
+
+                                    // レベルアップ条件をチェック
+                                    let current_level = evo.level;
+                                    if let Some(next_level) = current_level.next() {
+                                        if let Some(condition) = evolution_conditions.get(&next_level) {
+                                            if evo.try_level_up(condition) {
+                                                Some((current_level, next_level))
+                                            } else {
+                                                None
+                                            }
+                                        } else {
+                                            None
+                                        }
+                                    } else {
+                                        None
+                                    }
+                                };
+
+                                // レベルアップした場合はイベント発行
+                                if let Some((from, to)) = level_up {
+                                    tracing::info!(
+                                        "🎉 MidiCapability evolved: {} → {}",
+                                        from.display_name(),
+                                        to.display_name()
+                                    );
+                                    if let Some(ref bus) = event_bus {
+                                        let evo_event = CapabilityEvent::new(
+                                            "evolution.level_up",
+                                            "midi-capability",
+                                        )
+                                        .with_payload(&serde_json::json!({
+                                            "from": from.0,
+                                            "to": to.0,
+                                            "from_name": from.display_name(),
+                                            "to_name": to.display_name(),
+                                        }));
+                                        bus.emit(evo_event).await;
+                                    }
                                 }
 
                                 // CapabilityEventに変換してEventBusに配信
