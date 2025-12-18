@@ -901,7 +901,99 @@
                 case 'component_dismissed':
                     dismissComponent(msg.request_id);
                     break;
+                case 'ag_ui':
+                    handleAgUiEvent(msg.event);
+                    break;
             }
+        }
+
+        // AG-UI Event Handler (REQ-AGUI-040)
+        let currentAgUiRun = null;
+
+        function handleAgUiEvent(event) {
+            console.log('AG-UI Event:', event.type, event);
+
+            switch (event.type) {
+                case 'RUN_STARTED':
+                    currentAgUiRun = {
+                        run_id: event.run_id,
+                        thread_id: event.thread_id,
+                        started_at: event.timestamp
+                    };
+                    updateAgUiStatus('running');
+                    break;
+
+                case 'RUN_FINISHED':
+                    if (currentAgUiRun?.run_id === event.run_id) {
+                        currentAgUiRun = null;
+                        updateAgUiStatus('idle');
+                    }
+                    break;
+
+                case 'RUN_ERROR':
+                    if (currentAgUiRun?.run_id === event.run_id) {
+                        console.warn('AG-UI Run Error:', event.error);
+                        currentAgUiRun = null;
+                        updateAgUiStatus('error', event.error?.message);
+                    }
+                    break;
+
+                case 'TEXT_MESSAGE_START':
+                    // Could be used for more granular message tracking
+                    break;
+
+                case 'TEXT_MESSAGE_CONTENT':
+                    // Already handled by chat_chunk
+                    break;
+
+                case 'TEXT_MESSAGE_END':
+                    // Message complete
+                    break;
+
+                case 'TOOL_CALL_START':
+                    showToolActivity(event.tool_name, 'running');
+                    break;
+
+                case 'TOOL_CALL_END':
+                    showToolActivity(event.tool_call_id, 'completed', event.result);
+                    break;
+
+                case 'PERMISSION_REQUEST':
+                    // Already handled by chat_component
+                    break;
+
+                case 'ACTIVITY_SNAPSHOT':
+                    updateActivityList(event.activities);
+                    break;
+
+                case 'ACTIVITY_DELTA':
+                    updateActivityDelta(event.upsert, event.remove);
+                    break;
+
+                default:
+                    console.log('Unhandled AG-UI event type:', event.type);
+            }
+        }
+
+        function updateAgUiStatus(status, message) {
+            // Could update UI to show agent status
+            const statusEl = document.querySelector('.status');
+            if (statusEl && currentAgUiRun) {
+                // Keep existing connection status, but could add run indicator
+            }
+        }
+
+        function showToolActivity(toolName, status, result) {
+            // Tool activity could be shown in debug panel or activity indicator
+            console.log(`Tool ${toolName}: ${status}`, result);
+        }
+
+        function updateActivityList(activities) {
+            // Future: render activity list component
+        }
+
+        function updateActivityDelta(upsert, remove) {
+            // Future: update activity list incrementally
         }
 
         // Chat Component Rendering
