@@ -3,13 +3,13 @@
 use std::sync::Arc;
 use tokio::sync::{RwLock, broadcast};
 
-use crate::protocol::DaemonMessage;
+use crate::protocol::StandMessage;
 
 /// WebSocket hub for managing connections and broadcasting messages
 #[derive(Clone)]
 pub struct Hub {
     /// Broadcast sender for messages to all connected clients
-    tx: broadcast::Sender<DaemonMessage>,
+    tx: broadcast::Sender<StandMessage>,
     /// Connected client count
     client_count: Arc<RwLock<usize>>,
 }
@@ -24,12 +24,12 @@ impl Hub {
     }
 
     /// Subscribe to messages
-    pub fn subscribe(&self) -> broadcast::Receiver<DaemonMessage> {
+    pub fn subscribe(&self) -> broadcast::Receiver<StandMessage> {
         self.tx.subscribe()
     }
 
     /// Broadcast a message to all connected clients
-    pub fn broadcast(&self, msg: DaemonMessage) {
+    pub fn broadcast(&self, msg: StandMessage) {
         // Ignore send errors (no receivers)
         let _ = self.tx.send(msg);
     }

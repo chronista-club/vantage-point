@@ -32,7 +32,7 @@
 
 | レイヤー | 技術 |
 |---------|------|
-| CLI / Daemon | Rust (Tokio, Axum, Clap) |
+| CLI / Stand | Rust (Tokio, Axum, Clap) |
 | WebView | wry + tao |
 | Frontend | HTML/JS (WebSocket) |
 | Agent | Claude CLI + MCP |
@@ -44,7 +44,7 @@
 # ビルド＆インストール
 cargo install --path crates/vantage-point
 
-# デーモン起動
+# Stand起動
 vp start
 
 # 設定確認

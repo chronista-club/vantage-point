@@ -5,7 +5,7 @@
 //!
 //! ## Requirements Coverage
 //! - REQ-AGUI-041: Event type definitions (this module)
-//! - REQ-AGUI-040: WebSocket transport (integration with daemon/server.rs)
+//! - REQ-AGUI-040: WebSocket transport (integration with stand/server.rs)
 
 use serde::{Deserialize, Serialize};
 

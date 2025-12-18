@@ -36,7 +36,7 @@ anyhow = { workspace = true }
 futures = { workspace = true }
 tokio-util = "0.7"
 
-# HTTP client (for MCP to communicate with daemon)
+# HTTP client (for MCP to communicate with Stand)
 reqwest = { workspace = true }
 
 # MCP (Model Context Protocol)

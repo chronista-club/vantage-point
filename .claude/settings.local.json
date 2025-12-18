@@ -70,7 +70,22 @@
       "Bash(gh issue close:*)",
       "Bash(vp ps:*)",
       "Bash(vp restart --help:*)",
-      "Bash(curl:*)"
+      "Bash(curl:*)",
+      "WebFetch(domain:docs.ag-ui.com)",
+      "WebFetch(domain:agentcommunicationprotocol.dev)",
+      "Bash(gh issue create --title \"feat: AG-UIプロトコル基盤実装\" --body \"$(cat <<''EOF''\n## 概要\nAG-UI（Agent-User Interaction Protocol）をVantage Pointに導入し、WebUIとClaude Codeの架け橋を構築する。\n\n## 背景\n- MCPは Agent↔Tools の接続\n- AG-UIは Agent↔User の接続\n- 現状のPermissionRequest等はMCP経由のポーリングで回りくどい\n\n## タスク\n- [ ] AG-UIイベント型定義（Rust構造体）\n- [ ] AG-UIクライアント実装（vp daemon内）\n- [ ] WebSocket経由のイベントストリーミング\n- [ ] イベントカテゴリ対応（Lifecycle, Message, ToolCall, State）\n\n## 参考\n- https://docs.ag-ui.com\n- https://github.com/ag-ui-protocol/ag-ui\nEOF\n)\" --label \"enhancement,next\")",
+      "Bash(gh label create:*)",
+      "Bash(gh issue create:*)",
+      "mcp__creo-memories__remember_context",
+      "mcp__creo-memories__recall_relevant",
+      "mcp__creo-memories__search_memories",
+      "Bash(git push)",
+      "Bash(vp stop --help:*)",
+      "Bash(vp stop:*)",
+      "Bash(vp config:*)",
+      "Bash(vp mcp --help:*)",
+      "Bash(claude mcp add:*)",
+      "Bash(claude mcp list:*)"
     ],
     "deny": [],
     "ask": []

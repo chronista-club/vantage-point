@@ -49,7 +49,7 @@ pub fn run_webview_detached(port: u16) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Run the WebView window pointing to the daemon's HTTP server
+/// Run the WebView window pointing to the Stand's HTTP server
 pub fn run_webview(port: u16) -> anyhow::Result<()> {
     let event_loop = EventLoop::new();
 

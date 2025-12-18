@@ -39,10 +39,12 @@ pub struct HistoryMessage {
     pub timestamp: u64,
 }
 
-/// Message from daemon to browser (WebSocket)
+/// Message from Stand to browser (WebSocket)
+///
+/// Stand: AI Agent server that wields capabilities on behalf of the user.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum DaemonMessage {
+pub enum StandMessage {
     /// Show content in a pane
     Show {
         pane_id: String,
@@ -131,7 +133,7 @@ pub enum SplitDirection {
     Vertical,
 }
 
-/// Message from browser to daemon (WebSocket)
+/// Message from browser to Stand (WebSocket)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum BrowserMessage {
@@ -181,7 +183,7 @@ pub enum ChatRole {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IpcMessage {
     pub id: Option<String>,
-    pub payload: DaemonMessage,
+    pub payload: StandMessage,
 }
 
 // =============================================================================
@@ -329,8 +331,8 @@ mod tests {
     }
 
     #[test]
-    fn test_daemon_message_serialization() {
-        let msg = DaemonMessage::ChatChunk {
+    fn test_stand_message_serialization() {
+        let msg = StandMessage::ChatChunk {
             content: "Hello".to_string(),
             done: false,
         };

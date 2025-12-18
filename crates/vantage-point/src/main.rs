@@ -17,7 +17,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 mod agent;
 mod agui;
 mod config;
-mod daemon;
+mod stand;
 mod mcp;
 mod midi;
 mod protocol;
@@ -27,7 +27,7 @@ mod webview;
 use config::Config;
 use protocol::DebugMode;
 
-/// Health response from daemon
+/// Health response from Stand
 #[derive(serde::Deserialize)]
 struct HealthResponse {
     status: String,
@@ -37,7 +37,7 @@ struct HealthResponse {
     project_dir: Option<String>,
 }
 
-/// Check if daemon is running on the specified port
+/// Check if Stand is running on the specified port
 async fn check_status(port: u16) -> Result<()> {
     let url = format!("http://localhost:{}/api/health", port);
 
@@ -81,8 +81,8 @@ async fn check_status(port: u16) -> Result<()> {
     Ok(())
 }
 
-/// Stop the daemon running on the specified port
-async fn stop_daemon(port: u16) -> Result<()> {
+/// Stop the Stand running on the specified port
+async fn stop_stand(port: u16) -> Result<()> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(2))
         .build()?;
@@ -107,7 +107,7 @@ async fn stop_daemon(port: u16) -> Result<()> {
     };
 
     let Some(pid) = pid else {
-        println!("✗ Could not get daemon PID");
+        println!("✗ Could not get Stand PID");
         return Ok(());
     };
 
@@ -327,7 +327,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// デーモンを起動（HTTPサーバー + WebSocketハブ）[デフォルト]
+    /// Standを起動（HTTPサーバー + WebSocketハブ）[デフォルト]
     Start {
         /// プロジェクト番号（`vp config`で確認、1始まり）
         #[arg()]
@@ -361,21 +361,21 @@ enum Commands {
     Config,
     /// MCPサーバーとして起動（stdio JSON-RPC）
     Mcp,
-    /// デーモンの稼働状態を確認
+    /// Standの稼働状態を確認
     Status {
         /// 確認するポート番号
         #[arg(short, long, default_value = "33000")]
         port: u16,
     },
-    /// デーモンを停止
+    /// Standを停止
     Stop {
-        /// 停止するデーモンのポート番号
+        /// 停止するStandのポート番号
         #[arg(short, long, default_value = "33000")]
         port: u16,
     },
-    /// デーモンを再起動（セッション状態を保持）
+    /// Standを再起動（セッション状態を保持）
     Restart {
-        /// 再起動するデーモンのポート番号
+        /// 再起動するStandのポート番号
         #[arg(short, long, default_value = "33000")]
         port: u16,
 
@@ -402,7 +402,7 @@ enum Commands {
         #[arg(long, short = 'm')]
         midi: Option<String>,
     },
-    /// WebViewウィンドウのみを開く（デーモンは別途起動済み）
+    /// WebViewウィンドウのみを開く（Standは別途起動済み）
     Webview {
         /// 接続先ポート番号
         #[arg(short, long, default_value = "33000")]
@@ -417,7 +417,7 @@ enum Commands {
         port: Option<usize>,
         /// アクション送信先のデーモンポート
         #[arg(short = 'P', long, default_value = "33000")]
-        daemon_port: u16,
+        stand_port: u16,
     },
     /// LPD8コントローラー設定
     #[command(subcommand)]
@@ -462,7 +462,7 @@ fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("vantage_daemon=info".parse()?),
+                .add_directive("vantage_stand=info".parse()?),
         )
         .with_target(false)
         .init();
@@ -577,14 +577,14 @@ fn main() -> Result<()> {
                     // Start HTTP server in background
                     let project_dir = resolved_project_dir.clone();
                     let server_handle = tokio::spawn(async move {
-                        daemon::run(resolved_port, false, debug_mode, project_dir).await
+                        stand::run(resolved_port, false, debug_mode, project_dir).await
                     });
 
                     // Start MIDI monitoring if enabled
                     if let Some((port_idx, config)) = midi_config {
-                        let daemon_port = resolved_port;
+                        let stand_port = resolved_port;
                         tokio::spawn(async move {
-                            if let Err(e) = midi::run_midi(port_idx, config, daemon_port).await {
+                            if let Err(e) = midi::run_midi(port_idx, config, stand_port).await {
                                 tracing::error!("MIDI error: {}", e);
                             }
                         });
@@ -610,9 +610,9 @@ fn main() -> Result<()> {
                     rt.block_on(async {
                         // Start MIDI monitoring if enabled
                         if let Some((port_idx, config)) = midi_config_clone {
-                            let daemon_port = resolved_port;
+                            let stand_port = resolved_port;
                             tokio::spawn(async move {
-                                if let Err(e) = midi::run_midi(port_idx, config, daemon_port).await
+                                if let Err(e) = midi::run_midi(port_idx, config, stand_port).await
                                 {
                                     tracing::error!("MIDI error: {}", e);
                                 }
@@ -620,7 +620,7 @@ fn main() -> Result<()> {
                             tracing::info!("MIDI monitoring enabled");
                         }
 
-                        daemon::run(resolved_port, false, debug_mode, project_dir).await
+                        stand::run(resolved_port, false, debug_mode, project_dir).await
                     })
                 });
 
@@ -693,7 +693,7 @@ fn main() -> Result<()> {
         }
         Commands::Stop { port } => {
             let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(stop_daemon(port))
+            rt.block_on(stop_stand(port))
         }
         Commands::Restart {
             port,
@@ -716,7 +716,7 @@ fn main() -> Result<()> {
                         })
                     }
                     None => {
-                        println!("✗ No daemon running on port {}. Use `vp start` instead.", port);
+                        println!("✗ No Stand running on port {}. Use `vp start` instead.", port);
                         return Ok(());
                     }
                 };
@@ -724,13 +724,13 @@ fn main() -> Result<()> {
                 println!("🔄 Restarting vp on port {}...", port);
                 println!("   Project: {}", project_dir);
 
-                // Stop the daemon
-                stop_daemon(port).await?;
+                // Stop the Stand
+                stop_stand(port).await?;
 
                 // Wait a moment for port to be released
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-                println!("🚀 Starting daemon...");
+                println!("🚀 Starting Stand...");
                 Ok::<(), anyhow::Error>(())
             })?;
 
@@ -766,7 +766,7 @@ fn main() -> Result<()> {
                 rt.block_on(async {
                     let project_dir_clone = project_dir.clone();
                     let server_handle = tokio::spawn(async move {
-                        daemon::run(port, false, debug_mode, project_dir_clone).await
+                        stand::run(port, false, debug_mode, project_dir_clone).await
                     });
 
                     if browser {
@@ -783,7 +783,7 @@ fn main() -> Result<()> {
                 let project_dir_clone = project_dir.clone();
                 let server_thread = std::thread::spawn(move || {
                     let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime");
-                    rt.block_on(async { daemon::run(port, false, debug_mode, project_dir_clone).await })
+                    rt.block_on(async { stand::run(port, false, debug_mode, project_dir_clone).await })
                 });
 
                 std::thread::sleep(std::time::Duration::from_millis(300));
@@ -843,14 +843,14 @@ fn main() -> Result<()> {
             tray::run_tray()
         }
         Commands::Webview { port } => {
-            // Just run WebView window pointing to existing daemon
+            // Just run WebView window pointing to existing Stand
             webview::run_webview(port)
         }
         Commands::MidiPorts => {
             midi::print_ports();
             Ok(())
         }
-        Commands::Midi { port, daemon_port } => {
+        Commands::Midi { port, stand_port } => {
             // Default MIDI config with example mappings
             let mut config = midi::MidiConfig::default();
 
@@ -869,7 +869,7 @@ fn main() -> Result<()> {
                 .insert(38, midi::MidiAction::ResetSession { port: None });
 
             let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(midi::run_midi_interactive(port, config, daemon_port))
+            rt.block_on(midi::run_midi_interactive(port, config, stand_port))
         }
         Commands::Lpd8(lpd8_cmd) => match lpd8_cmd {
             Lpd8Commands::Write { port, program } => {

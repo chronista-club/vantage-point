@@ -157,11 +157,11 @@ pub enum MidiAction {
     StopInstance { port: u16 },
     /// Send chat message
     SendChat { message: String },
-    /// Cancel current chat (sends to active daemon)
+    /// Cancel current chat (sends to active Stand)
     CancelChat { port: Option<u16> },
-    /// Reset session (sends to active daemon)
+    /// Reset session (sends to active Stand)
     ResetSession { port: Option<u16> },
-    /// Custom HTTP request to daemon API
+    /// Custom HTTP request to Stand API
     ApiCall {
         endpoint: String,
         method: String,
@@ -185,14 +185,14 @@ pub struct MidiConfig {
 /// MIDI event handler that executes actions
 pub struct MidiHandler {
     config: MidiConfig,
-    daemon_port: u16,
+    stand_port: u16,
 }
 
 impl MidiHandler {
-    pub fn new(config: MidiConfig, daemon_port: u16) -> Self {
+    pub fn new(config: MidiConfig, stand_port: u16) -> Self {
         Self {
             config,
-            daemon_port,
+            stand_port,
         }
     }
 
@@ -228,11 +228,11 @@ impl MidiHandler {
     /// Execute a MIDI action
     async fn execute_action(&self, action: &MidiAction) {
         let client = reqwest::Client::new();
-        let base_url = format!("http://localhost:{}", self.daemon_port);
+        let base_url = format!("http://localhost:{}", self.stand_port);
 
         match action {
             MidiAction::OpenWebUI { port } => {
-                let url = format!("http://localhost:{}", port.unwrap_or(self.daemon_port));
+                let url = format!("http://localhost:{}", port.unwrap_or(self.stand_port));
                 if let Err(e) = open::that(&url) {
                     tracing::error!("Failed to open browser: {}", e);
                 }
@@ -243,12 +243,12 @@ impl MidiHandler {
                 tracing::info!("Sent shutdown to port {}", port);
             }
             MidiAction::CancelChat { port } => {
-                let target_port = port.unwrap_or(self.daemon_port);
+                let target_port = port.unwrap_or(self.stand_port);
                 // TODO: Implement cancel via WebSocket or API
                 tracing::info!("Cancel chat on port {} (not yet implemented)", target_port);
             }
             MidiAction::ResetSession { port } => {
-                let target_port = port.unwrap_or(self.daemon_port);
+                let target_port = port.unwrap_or(self.stand_port);
                 // TODO: Implement reset via WebSocket or API
                 tracing::info!("Reset session on port {} (not yet implemented)", target_port);
             }
@@ -296,7 +296,7 @@ impl MidiHandler {
 pub async fn run_midi(
     port_index: Option<usize>,
     config: MidiConfig,
-    daemon_port: u16,
+    stand_port: u16,
 ) -> Result<()> {
     let midi_in = midir::MidiInput::new("vp-midi")?;
     let ports = midi_in.ports();
@@ -330,7 +330,7 @@ pub async fn run_midi(
     tracing::info!("Connecting to MIDI port: {}", port_name);
 
     let (tx, mut rx) = broadcast::channel::<MidiEvent>(100);
-    let handler = Arc::new(MidiHandler::new(config, daemon_port));
+    let handler = Arc::new(MidiHandler::new(config, stand_port));
 
     // Spawn event handler task
     let handler_clone = handler.clone();
@@ -728,7 +728,7 @@ pub fn print_output_ports() {
 pub async fn run_midi_interactive(
     port_index: Option<usize>,
     config: MidiConfig,
-    daemon_port: u16,
+    stand_port: u16,
 ) -> Result<()> {
     let midi_in = midir::MidiInput::new("vp-midi")?;
     let ports = midi_in.ports();
@@ -762,12 +762,12 @@ pub async fn run_midi_interactive(
         .unwrap_or_else(|_| "Unknown".to_string());
 
     println!("Connecting to MIDI port: {}", port_name);
-    println!("Daemon port: {}", daemon_port);
+    println!("Stand port: {}", stand_port);
     println!("Press Ctrl+C to stop.\n");
     println!("Waiting for MIDI events...");
 
     let (tx, mut rx) = broadcast::channel::<MidiEvent>(100);
-    let handler = Arc::new(MidiHandler::new(config, daemon_port));
+    let handler = Arc::new(MidiHandler::new(config, stand_port));
 
     // Spawn event handler task
     let handler_clone = handler.clone();

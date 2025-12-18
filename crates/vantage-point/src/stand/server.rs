@@ -26,7 +26,7 @@ use crate::agent::{AgentConfig, AgentEvent, ClaudeAgent};
 use crate::agui::{AgUiEvent, MessageRole};
 use crate::mcp::PermissionResponse;
 use crate::protocol::{
-    BrowserMessage, ChatComponent, ChatMessage, ChatRole, ComponentAction, DaemonMessage,
+    BrowserMessage, ChatComponent, ChatMessage, ChatRole, ComponentAction, StandMessage,
     DebugMode, HistoryMessage, SessionInfo,
 };
 use std::collections::HashMap;
@@ -329,14 +329,14 @@ impl AppState {
         // For simple mode, skip detail-level messages
         if self.debug_mode == DebugMode::Simple && data.is_some() {
             // Still send but without detailed data
-            self.hub.broadcast(DaemonMessage::DebugInfo {
+            self.hub.broadcast(StandMessage::DebugInfo {
                 level: DebugMode::Simple,
                 category: category.to_string(),
                 message: message.to_string(),
                 data: None,
             });
         } else {
-            self.hub.broadcast(DaemonMessage::DebugInfo {
+            self.hub.broadcast(StandMessage::DebugInfo {
                 level: self.debug_mode,
                 category: category.to_string(),
                 message: message.to_string(),
@@ -348,7 +348,7 @@ impl AppState {
     /// Send debug info only in detail mode
     fn send_debug_detail(&self, category: &str, message: &str, data: serde_json::Value) {
         if self.debug_mode == DebugMode::Detail {
-            self.hub.broadcast(DaemonMessage::DebugInfo {
+            self.hub.broadcast(StandMessage::DebugInfo {
                 level: DebugMode::Detail,
                 category: category.to_string(),
                 message: message.to_string(),
@@ -359,11 +359,11 @@ impl AppState {
 
     /// Send AG-UI event to connected clients (REQ-AGUI-040)
     pub fn send_agui_event(&self, event: AgUiEvent) {
-        self.hub.broadcast(DaemonMessage::AgUi { event });
+        self.hub.broadcast(StandMessage::AgUi { event });
     }
 }
 
-/// Run the daemon server
+/// Run the Stand server
 pub async fn run(
     port: u16,
     auto_open_browser: bool,
@@ -462,7 +462,7 @@ async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRespon
 /// POST /api/show - Show content in browser
 async fn show_handler(
     State(state): State<Arc<AppState>>,
-    Json(msg): Json<DaemonMessage>,
+    Json(msg): Json<StandMessage>,
 ) -> impl IntoResponse {
     state.hub.broadcast(msg);
     Json(serde_json::json!({"status": "ok"}))
@@ -478,11 +478,11 @@ async fn shutdown_handler(State(state): State<Arc<AppState>>) -> impl IntoRespon
 /// POST /api/permission - Receive permission request from MCP tool
 async fn permission_request_handler(
     State(state): State<Arc<AppState>>,
-    Json(msg): Json<DaemonMessage>,
+    Json(msg): Json<StandMessage>,
 ) -> impl IntoResponse {
     // Extract request_id from the ChatComponent
     let request_id = match &msg {
-        DaemonMessage::ChatComponent {
+        StandMessage::ChatComponent {
             component: ChatComponent::PermissionRequest { request_id, .. },
             ..
         } => request_id.clone(),
@@ -581,7 +581,7 @@ async fn handle_permission_response(
         tracing::info!("Permission {} -> {}", request_id, if approved { "allow" } else { "deny" });
 
         // Broadcast component dismissed
-        state.hub.broadcast(DaemonMessage::ComponentDismissed {
+        state.hub.broadcast(StandMessage::ComponentDismissed {
             request_id: request_id.clone(),
         });
     } else {
@@ -605,7 +605,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
 
     // Send debug mode info on connection
     if state.debug_mode != DebugMode::None {
-        let mode_msg = DaemonMessage::DebugModeChanged {
+        let mode_msg = StandMessage::DebugModeChanged {
             mode: state.debug_mode,
         };
         let text = serde_json::to_string(&mode_msg).unwrap_or_default();
@@ -645,7 +645,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
 
                                 // Send current session list on connect
                                 let mgr = sessions.read().await;
-                                hub.broadcast(DaemonMessage::SessionList {
+                                hub.broadcast(StandMessage::SessionList {
                                     sessions: mgr.list(),
                                     active_id: mgr.active_id.clone(),
                                 });
@@ -680,7 +680,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                                 state_clone.send_debug("chat", "Request cancelled by user", None);
 
                                 // Send done signal to clear typing indicator
-                                hub.broadcast(DaemonMessage::ChatChunk {
+                                hub.broadcast(StandMessage::ChatChunk {
                                     content: String::new(),
                                     done: true,
                                 });
@@ -695,7 +695,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                                 );
 
                                 // Notify browser
-                                hub.broadcast(DaemonMessage::ChatMessage {
+                                hub.broadcast(StandMessage::ChatMessage {
                                     message: ChatMessage {
                                         role: ChatRole::System,
                                         content: "New session. Starting fresh conversation."
@@ -705,7 +705,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                             }
                             BrowserMessage::ListSessions => {
                                 let mgr = sessions.read().await;
-                                hub.broadcast(DaemonMessage::SessionList {
+                                hub.broadcast(StandMessage::SessionList {
                                     sessions: mgr.list(),
                                     active_id: mgr.active_id.clone(),
                                 });
@@ -729,13 +729,13 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                                     let name = entry.name.clone();
 
                                     // Send session switched notification
-                                    hub.broadcast(DaemonMessage::SessionSwitched {
+                                    hub.broadcast(StandMessage::SessionSwitched {
                                         session_id: session_id.clone(),
                                         name,
                                     });
 
                                     // Send session history for UI restoration
-                                    hub.broadcast(DaemonMessage::SessionHistory {
+                                    hub.broadcast(StandMessage::SessionHistory {
                                         session_id: session_id.clone(),
                                         messages,
                                     });
@@ -750,7 +750,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                             BrowserMessage::NewSession => {
                                 tracing::info!("New session requested");
                                 sessions.write().await.prepare_new_session();
-                                hub.broadcast(DaemonMessage::ChatMessage {
+                                hub.broadcast(StandMessage::ChatMessage {
                                     message: ChatMessage {
                                         role: ChatRole::System,
                                         content: "New session created.".to_string(),
@@ -762,7 +762,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                                 let mut mgr = sessions.write().await;
                                 if mgr.rename(&session_id, name.clone()) {
                                     // Send updated list
-                                    hub.broadcast(DaemonMessage::SessionList {
+                                    hub.broadcast(StandMessage::SessionList {
                                         sessions: mgr.list(),
                                         active_id: mgr.active_id.clone(),
                                     });
@@ -772,9 +772,9 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                                 tracing::info!("Close session {}", session_id);
                                 let mut mgr = sessions.write().await;
                                 if mgr.close(&session_id) {
-                                    hub.broadcast(DaemonMessage::SessionClosed { session_id });
+                                    hub.broadcast(StandMessage::SessionClosed { session_id });
                                     // Send updated list
-                                    hub.broadcast(DaemonMessage::SessionList {
+                                    hub.broadcast(StandMessage::SessionList {
                                         sessions: mgr.list(),
                                         active_id: mgr.active_id.clone(),
                                     });
@@ -853,7 +853,7 @@ async fn handle_chat_message(
     let message_id = format!("msg-{}", uuid::Uuid::new_v4());
 
     // AG-UI: Emit RunStarted event
-    hub.broadcast(DaemonMessage::AgUi {
+    hub.broadcast(StandMessage::AgUi {
         event: AgUiEvent::run_started(&run_id),
     });
 
@@ -874,7 +874,7 @@ async fn handle_chat_message(
     if let Some(ref sid) = session_id {
         tracing::info!("Resuming session: {}", sid);
         if debug_mode != DebugMode::None {
-            hub.broadcast(DaemonMessage::DebugInfo {
+            hub.broadcast(StandMessage::DebugInfo {
                 level: debug_mode,
                 category: "session".to_string(),
                 message: format!("Resuming session: {}", sid),
@@ -885,7 +885,7 @@ async fn handle_chat_message(
     } else if use_continue {
         tracing::info!("Using --continue (most recent session)");
         if debug_mode != DebugMode::None {
-            hub.broadcast(DaemonMessage::DebugInfo {
+            hub.broadcast(StandMessage::DebugInfo {
                 level: debug_mode,
                 category: "session".to_string(),
                 message: "Using --continue (most recent session)".to_string(),
@@ -895,7 +895,7 @@ async fn handle_chat_message(
     } else {
         tracing::info!("Starting new session");
         if debug_mode != DebugMode::None {
-            hub.broadcast(DaemonMessage::DebugInfo {
+            hub.broadcast(StandMessage::DebugInfo {
                 level: debug_mode,
                 category: "session".to_string(),
                 message: "Starting new session".to_string(),
@@ -920,12 +920,12 @@ async fn handle_chat_message(
                 tracing::info!("Chat request cancelled");
 
                 // AG-UI: Emit RunError for cancellation (REQ-AGUI-040)
-                hub.broadcast(DaemonMessage::AgUi {
+                hub.broadcast(StandMessage::AgUi {
                     event: AgUiEvent::run_error(&run_id, "CANCELLED", "Request cancelled by user"),
                 });
 
                 if debug_mode != DebugMode::None {
-                    hub.broadcast(DaemonMessage::DebugInfo {
+                    hub.broadcast(StandMessage::DebugInfo {
                         level: debug_mode,
                         category: "chat".to_string(),
                         message: "Request cancelled".to_string(),
@@ -948,14 +948,14 @@ async fn handle_chat_message(
                         mgr.increment_message_count();
 
                         // Send updated session list to browser
-                        hub.broadcast(DaemonMessage::SessionList {
+                        hub.broadcast(StandMessage::SessionList {
                             sessions: mgr.list(),
                             active_id: mgr.active_id.clone(),
                         });
                         drop(mgr);
 
                         if debug_mode != DebugMode::None {
-                            hub.broadcast(DaemonMessage::DebugInfo {
+                            hub.broadcast(StandMessage::DebugInfo {
                                 level: debug_mode,
                                 category: "session".to_string(),
                                 message: format!(
@@ -983,12 +983,12 @@ async fn handle_chat_message(
 
                         // AG-UI: Emit ToolCallStart (REQ-AGUI-040)
                         let tool_call_id = format!("tool-{}", uuid::Uuid::new_v4());
-                        hub.broadcast(DaemonMessage::AgUi {
+                        hub.broadcast(StandMessage::AgUi {
                             event: AgUiEvent::tool_call_start(&run_id, &tool_call_id, &name),
                         });
 
                         if debug_mode != DebugMode::None {
-                            hub.broadcast(DaemonMessage::DebugInfo {
+                            hub.broadcast(StandMessage::DebugInfo {
                                 level: debug_mode,
                                 category: "tool".to_string(),
                                 message: format!("🔧 {} を実行中...", name),
@@ -1001,7 +1001,7 @@ async fn handle_chat_message(
 
                         // AG-UI: Emit ToolCallEnd (simplified - no tool_call_id tracking yet)
                         // TODO: Proper tool_call_id tracking across ToolExecuting and ToolResult
-                        hub.broadcast(DaemonMessage::AgUi {
+                        hub.broadcast(StandMessage::AgUi {
                             event: AgUiEvent::ToolCallEnd {
                                 run_id: run_id.clone(),
                                 tool_call_id: format!("tool-{}", name), // Simplified ID
@@ -1015,7 +1015,7 @@ async fn handle_chat_message(
                         });
 
                         if debug_mode == DebugMode::Detail {
-                            hub.broadcast(DaemonMessage::DebugInfo {
+                            hub.broadcast(StandMessage::DebugInfo {
                                 level: DebugMode::Detail,
                                 category: "tool".to_string(),
                                 message: format!("✓ {}: {}", name, preview),
@@ -1030,7 +1030,7 @@ async fn handle_chat_message(
                         response_buffer.push_str(&chunk);
 
                         // Send streaming chunk
-                        hub.broadcast(DaemonMessage::ChatChunk {
+                        hub.broadcast(StandMessage::ChatChunk {
                             content: chunk.clone(),
                             done: false,
                         });
@@ -1039,13 +1039,13 @@ async fn handle_chat_message(
                             tracing::info!("Started receiving response from Claude CLI");
 
                             // AG-UI: Emit TextMessageStart on first chunk (REQ-AGUI-040)
-                            hub.broadcast(DaemonMessage::AgUi {
+                            hub.broadcast(StandMessage::AgUi {
                                 event: AgUiEvent::text_message_start(&run_id, &message_id, MessageRole::Assistant),
                             });
 
                             if debug_mode != DebugMode::None {
                                 let elapsed = start_time.elapsed();
-                                hub.broadcast(DaemonMessage::DebugInfo {
+                                hub.broadcast(StandMessage::DebugInfo {
                                     level: debug_mode,
                                     category: "timing".to_string(),
                                     message: format!("First chunk in {:?}", elapsed),
@@ -1056,13 +1056,13 @@ async fn handle_chat_message(
                         }
 
                         // AG-UI: Emit TextMessageContent for each chunk (REQ-AGUI-040)
-                        hub.broadcast(DaemonMessage::AgUi {
+                        hub.broadcast(StandMessage::AgUi {
                             event: AgUiEvent::text_message_content(&run_id, &message_id, &chunk),
                         });
 
                         // Detailed debug: show each chunk
                         if debug_mode == DebugMode::Detail {
-                            hub.broadcast(DaemonMessage::DebugInfo {
+                            hub.broadcast(StandMessage::DebugInfo {
                                 level: DebugMode::Detail,
                                 category: "chunk".to_string(),
                                 message: format!("Chunk #{}", chunk_count),
@@ -1092,18 +1092,18 @@ async fn handle_chat_message(
                         // AG-UI: Emit TextMessageEnd (REQ-AGUI-040)
                         if !first_chunk {
                             // Only emit if we actually started a message
-                            hub.broadcast(DaemonMessage::AgUi {
+                            hub.broadcast(StandMessage::AgUi {
                                 event: AgUiEvent::text_message_end(&run_id, &message_id),
                             });
                         }
 
                         // AG-UI: Emit RunFinished (REQ-AGUI-040)
-                        hub.broadcast(DaemonMessage::AgUi {
+                        hub.broadcast(StandMessage::AgUi {
                             event: AgUiEvent::run_finished(&run_id),
                         });
 
                         // Send final done signal
-                        hub.broadcast(DaemonMessage::ChatChunk {
+                        hub.broadcast(StandMessage::ChatChunk {
                             content: String::new(),
                             done: true,
                         });
@@ -1112,7 +1112,7 @@ async fn handle_chat_message(
                             let cost_str = cost
                                 .map(|c| format!(" | ${:.4}", c))
                                 .unwrap_or_default();
-                            hub.broadcast(DaemonMessage::DebugInfo {
+                            hub.broadcast(StandMessage::DebugInfo {
                                 level: debug_mode,
                                 category: "timing".to_string(),
                                 message: format!("Complete in {:?} ({} chunks){}", elapsed, chunk_count, cost_str),
@@ -1125,7 +1125,7 @@ async fn handle_chat_message(
                         tracing::error!("Claude CLI error: {}", e);
 
                         // AG-UI: Emit RunError (REQ-AGUI-040)
-                        hub.broadcast(DaemonMessage::AgUi {
+                        hub.broadcast(StandMessage::AgUi {
                             event: AgUiEvent::run_error(&run_id, "AGENT_ERROR", &e),
                         });
 
@@ -1134,10 +1134,10 @@ async fn handle_chat_message(
                             role: ChatRole::System,
                             content: format!("Error: {}", e),
                         };
-                        hub.broadcast(DaemonMessage::ChatMessage { message: error_msg });
+                        hub.broadcast(StandMessage::ChatMessage { message: error_msg });
 
                         if debug_mode != DebugMode::None {
-                            hub.broadcast(DaemonMessage::DebugInfo {
+                            hub.broadcast(StandMessage::DebugInfo {
                                 level: debug_mode,
                                 category: "error".to_string(),
                                 message: e.clone(),

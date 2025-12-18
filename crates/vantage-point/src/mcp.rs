@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 
-use crate::protocol::{ChatComponent, Content as DaemonContent, DaemonMessage};
+use crate::protocol::{ChatComponent, Content as StandContent, StandMessage};
 
 /// Parameters for the show tool
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -77,7 +77,7 @@ pub struct PermissionResponse {
     pub message: Option<String>,
 }
 
-/// Permission request sent to daemon
+/// Permission request sent to Stand
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PermissionRequestPayload {
     pub request_id: String,
@@ -86,20 +86,20 @@ pub struct PermissionRequestPayload {
     pub timeout_seconds: u32,
 }
 
-/// HTTP client for communicating with the daemon's HTTP server
+/// HTTP client for communicating with the Stand's HTTP server
 #[derive(Clone)]
 pub struct VantageMcp {
     client: reqwest::Client,
-    daemon_url: Arc<Mutex<String>>,
+    stand_url: Arc<Mutex<String>>,
     tool_router: ToolRouter<Self>,
 }
 
 #[tool_router]
 impl VantageMcp {
-    pub fn new(daemon_port: u16) -> Self {
+    pub fn new(stand_port: u16) -> Self {
         Self {
             client: reqwest::Client::new(),
-            daemon_url: Arc::new(Mutex::new(format!("http://localhost:{}", daemon_port))),
+            stand_url: Arc::new(Mutex::new(format!("http://localhost:{}", stand_port))),
             tool_router: Self::tool_router(),
         }
     }
@@ -119,18 +119,18 @@ impl VantageMcp {
         let append = params.append.unwrap_or(false);
 
         let content_enum = match content_type.as_str() {
-            "html" => DaemonContent::Html(params.content),
-            "log" => DaemonContent::Log(params.content),
-            _ => DaemonContent::Markdown(params.content),
+            "html" => StandContent::Html(params.content),
+            "log" => StandContent::Log(params.content),
+            _ => StandContent::Markdown(params.content),
         };
 
-        let message = DaemonMessage::Show {
+        let message = StandMessage::Show {
             pane_id: pane_id.clone(),
             content: content_enum,
             append,
         };
 
-        let url = self.daemon_url.lock().await;
+        let url = self.stand_url.lock().await;
         let result = self
             .client
             .post(format!("{}/api/show", *url))
@@ -148,12 +148,12 @@ impl VantageMcp {
             Ok(resp) => {
                 let status = resp.status();
                 Err(McpError::internal_error(
-                    format!("Daemon returned error: {}", status),
+                    format!("Stand returned error: {}", status),
                     None,
                 ))
             }
             Err(e) => Err(McpError::internal_error(
-                format!("Failed to connect to daemon: {}. Is vp running?", e),
+                format!("Failed to connect to Stand: {}. Is vp running?", e),
                 None,
             )),
         }
@@ -167,11 +167,11 @@ impl VantageMcp {
     ) -> Result<CallToolResult, McpError> {
         let pane_id = params.pane_id.unwrap_or_else(|| "main".to_string());
 
-        let message = DaemonMessage::Clear {
+        let message = StandMessage::Clear {
             pane_id: pane_id.clone(),
         };
 
-        let url = self.daemon_url.lock().await;
+        let url = self.stand_url.lock().await;
         let result = self
             .client
             .post(format!("{}/api/show", *url))
@@ -189,12 +189,12 @@ impl VantageMcp {
             Ok(resp) => {
                 let status = resp.status();
                 Err(McpError::internal_error(
-                    format!("Daemon returned error: {}", status),
+                    format!("Stand returned error: {}", status),
                     None,
                 ))
             }
             Err(e) => Err(McpError::internal_error(
-                format!("Failed to connect to daemon: {}", e),
+                format!("Failed to connect to Stand: {}", e),
                 None,
             )),
         }
@@ -223,15 +223,15 @@ impl VantageMcp {
             timeout_seconds,
         };
 
-        // Create the DaemonMessage
-        let message = DaemonMessage::ChatComponent {
+        // Create the StandMessage
+        let message = StandMessage::ChatComponent {
             component,
             interactive: true,
         };
 
-        let url = self.daemon_url.lock().await;
+        let url = self.stand_url.lock().await;
 
-        // First, send the permission request to the daemon
+        // First, send the permission request to the Stand
         let send_result = self
             .client
             .post(format!("{}/api/permission", *url))
@@ -241,7 +241,7 @@ impl VantageMcp {
 
         if let Err(e) = send_result {
             return Err(McpError::internal_error(
-                format!("Failed to send permission request to daemon: {}. Is vp running?", e),
+                format!("Failed to send permission request to Stand: {}. Is vp running?", e),
                 None,
             ));
         }
@@ -249,7 +249,7 @@ impl VantageMcp {
         let send_resp = send_result.unwrap();
         if !send_resp.status().is_success() {
             return Err(McpError::internal_error(
-                format!("Daemon returned error on permission request: {}", send_resp.status()),
+                format!("Stand returned error on permission request: {}", send_resp.status()),
                 None,
             ));
         }
@@ -301,7 +301,7 @@ impl VantageMcp {
                 }
                 Ok(resp) => {
                     return Err(McpError::internal_error(
-                        format!("Unexpected response from daemon: {}", resp.status()),
+                        format!("Unexpected response from Stand: {}", resp.status()),
                         None,
                     ));
                 }
@@ -317,18 +317,18 @@ impl VantageMcp {
         }
     }
 
-    /// Restart the Vantage Point daemon
+    /// Restart the Vantage Point Stand
     ///
-    /// This tool restarts the daemon process while preserving session state.
+    /// This tool restarts the Stand process while preserving session state.
     /// Useful after rebuilding the binary.
     #[tool(
-        description = "Restart the Vantage Point daemon. Session state is preserved. Returns when daemon is ready."
+        description = "Restart the Vantage Point Stand. Session state is preserved. Returns when Stand is ready."
     )]
     async fn restart(
         &self,
         rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<RestartParams>,
     ) -> Result<CallToolResult, McpError> {
-        let url = self.daemon_url.lock().await;
+        let url = self.stand_url.lock().await;
         let base_url = url.clone();
         drop(url);
 
@@ -339,10 +339,10 @@ impl VantageMcp {
             .and_then(|s| s.parse().ok())
             .unwrap_or(33000);
 
-        // 1. Get current daemon info (project_dir)
+        // 1. Get current Stand info (project_dir)
         let health_url = format!("{}/api/health", base_url);
         let health_resp = self.client.get(&health_url).send().await.map_err(|e| {
-            McpError::internal_error(format!("Failed to get daemon health: {}", e), None)
+            McpError::internal_error(format!("Failed to get Stand health: {}", e), None)
         })?;
 
         let health: serde_json::Value = health_resp.json().await.map_err(|e| {
@@ -359,7 +359,7 @@ impl VantageMcp {
         let shutdown_url = format!("{}/api/shutdown", base_url);
         let _ = self.client.post(&shutdown_url).send().await;
 
-        // 3. Wait for daemon to stop (poll health endpoint)
+        // 3. Wait for Stand to stop (poll health endpoint)
         let stop_timeout = Duration::from_secs(10);
         let poll_interval = Duration::from_millis(200);
         let start = std::time::Instant::now();
@@ -367,7 +367,7 @@ impl VantageMcp {
         loop {
             if start.elapsed() > stop_timeout {
                 return Err(McpError::internal_error(
-                    "Timeout waiting for daemon to stop".to_string(),
+                    "Timeout waiting for Stand to stop".to_string(),
                     None,
                 ));
             }
@@ -378,13 +378,13 @@ impl VantageMcp {
                     tokio::time::sleep(poll_interval).await;
                 }
                 _ => {
-                    // Daemon is down
+                    // Stand is down
                     break;
                 }
             }
         }
 
-        // 4. Start new daemon process
+        // 4. Start new Stand process
         let open_viewer = params.open_viewer.unwrap_or(false);
         let mut cmd = std::process::Command::new("vp");
         cmd.arg("start")
@@ -403,17 +403,17 @@ impl VantageMcp {
             .stderr(std::process::Stdio::null());
 
         cmd.spawn().map_err(|e| {
-            McpError::internal_error(format!("Failed to spawn new daemon: {}", e), None)
+            McpError::internal_error(format!("Failed to spawn new Stand: {}", e), None)
         })?;
 
-        // 5. Wait for new daemon to be ready
+        // 5. Wait for new Stand to be ready
         let start_timeout = Duration::from_secs(15);
         let start = std::time::Instant::now();
 
         loop {
             if start.elapsed() > start_timeout {
                 return Err(McpError::internal_error(
-                    "Timeout waiting for daemon to start".to_string(),
+                    "Timeout waiting for Stand to start".to_string(),
                     None,
                 ));
             }
@@ -422,9 +422,9 @@ impl VantageMcp {
 
             match self.client.get(&health_url).send().await {
                 Ok(resp) if resp.status().is_success() => {
-                    // Daemon is up
+                    // Stand is up
                     return Ok(CallToolResult::success(vec![Content::text(format!(
-                        "Daemon restarted successfully on port {}. Project: {}",
+                        "Stand restarted successfully on port {}. Project: {}",
                         port, project_dir
                     ))]));
                 }
@@ -441,9 +441,9 @@ impl rmcp::ServerHandler for VantageMcp {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
             instructions: Some(
-                "Vantage Point daemon - Display rich content (markdown, HTML, images) in a browser viewer. \
+                "Vantage Point Stand - Display rich content (markdown, HTML, images) in a browser viewer. \
                  Use 'show' to display content, 'clear' to clear panes, 'permission' to request user approval, \
-                 and 'restart' to restart the daemon (useful after rebuilding the binary).".into()
+                 and 'restart' to restart the Stand (useful after rebuilding the binary).".into()
             ),
             capabilities: ServerCapabilities::builder().enable_tools().build(),
             ..Default::default()
@@ -452,10 +452,10 @@ impl rmcp::ServerHandler for VantageMcp {
 }
 
 /// Run the MCP server over stdio
-pub async fn run_mcp_server(daemon_port: u16) -> anyhow::Result<()> {
+pub async fn run_mcp_server(stand_port: u16) -> anyhow::Result<()> {
     // Note: In MCP mode, we should not use tracing to stdout
     // as it interferes with JSON-RPC communication
-    let service = VantageMcp::new(daemon_port)
+    let service = VantageMcp::new(stand_port)
         .serve(stdio())
         .await
         .map_err(|e| anyhow::anyhow!("Failed to start MCP server: {}", e))?;

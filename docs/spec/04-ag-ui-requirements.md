@@ -148,7 +148,7 @@
 
 **概要**: AG-UIイベントをWebSocket経由で配信する
 
-**背景**: 既存のvp daemonのWebSocket基盤を活用する
+**背景**: 既存のvp StandのWebSocket基盤を活用する
 
 **受け入れ条件**:
 - [ ] 既存のWebSocket接続でAG-UIイベントを送受信できる

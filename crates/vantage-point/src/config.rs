@@ -26,7 +26,7 @@ fn config_file_path() -> PathBuf {
     config_dir().join("config.toml")
 }
 
-/// Vantage daemon configuration
+/// Vantage Stand configuration
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
     /// Default project directory for Claude agent
