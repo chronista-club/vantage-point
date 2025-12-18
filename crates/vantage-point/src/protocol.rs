@@ -355,6 +355,7 @@ mod tests {
             is_active: true,
             message_count: 5,
             model: Some("claude-opus-4-5-20251101".to_string()),
+            created_at: 0,
         };
         let json = serde_json::to_string(&session).unwrap();
         let parsed: SessionInfo = serde_json::from_str(&json).unwrap();

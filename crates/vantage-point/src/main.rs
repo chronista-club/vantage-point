@@ -15,6 +15,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 
 mod agent;
+mod agui;
 mod config;
 mod daemon;
 mod mcp;
