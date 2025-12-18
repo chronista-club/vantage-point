@@ -4,6 +4,66 @@
 
 AIと協働しながら、デバイス・場所に縛られずシームレスに開発を継続できるプラットフォーム。
 
+## クイックスタート
+
+### 必要条件
+
+- macOS 13.0 (Ventura) 以降
+- [Claude CLI](https://docs.anthropic.com/en/docs/build-with-claude/claude-code) がインストール済み
+
+### インストール
+
+```bash
+# 1. vpコマンドをインストール
+curl -L https://github.com/chronista-club/vantage-point/releases/latest/download/vp-aarch64-apple-darwin -o /usr/local/bin/vp
+chmod +x /usr/local/bin/vp
+
+# 2. 設定ファイルを作成
+mkdir -p ~/.config/vantage
+cat > ~/.config/vantage/config.toml << 'EOF'
+[[projects]]
+name = "my-project"
+path = "/path/to/your/project"
+EOF
+
+# 3. Standを起動
+vp start
+
+# 4. WebUIを開く
+vp open
+```
+
+### VantagePoint.app（メニューバーアプリ）
+
+Standをメニューバーから操作できるMacアプリ。
+
+1. [VantagePoint.app.zip](https://github.com/chronista-club/vantage-point-mac/releases/latest/download/VantagePoint.app.zip) をダウンロード
+2. 解凍して `/Applications` フォルダに移動
+3. アプリを起動
+
+メニューバーのアイコンから Stand の起動・停止が可能。
+
+### アップデート
+
+vpとVantagePoint.appは自動で更新をチェックします。
+
+手動アップデート:
+```bash
+# 最新版をダウンロードして上書き
+curl -L https://github.com/chronista-club/vantage-point/releases/latest/download/vp-aarch64-apple-darwin -o /usr/local/bin/vp
+```
+
+## コマンド一覧
+
+```bash
+vp start [N]      # プロジェクトN番のStandを起動
+vp ps             # 稼働中Stand一覧
+vp open [N]       # WebUIを開く
+vp stop           # Stand停止
+vp config         # 設定確認
+vp conductor      # Conductorモードで起動（VantagePoint.app用）
+```
+
 ## コンセプト
 
 ### AI主導の選択肢UI
@@ -38,19 +98,23 @@ AI: 次のステップはどうしますか？
 
 ```
 ┌─────────────────────────────────────────┐
-│           P2P Network (Loro/CRDT)       │
-│   Mac ←→ Vision Pro ←→ iPad/iPhone     │
+│   VantagePoint.app (Menu Bar)           │
+│   メニューバーからStandを操作             │
 └─────────────────────────────────────────┘
                     ↓
 ┌─────────────────────────────────────────┐
-│   Agent Server (Rust + WASM)            │
+│   Conductor Stand (vp conductor)        │
+│   - VantagePoint.appと通信              │
+│   - 複数プロジェクトを管理               │
+│   - オートアップデート                   │
+└─────────────────────────────────────────┘
+                    ↓
+┌─────────────────────────────────────────┐
+│   Project Stand (vp start)              │
 │   - Claude Agent SDK                    │
 │   - MCP Tools                           │
-│   - Unison Protocol (QUIC/KDL)          │
-└─────────────────────────────────────────┘
-                    ↓
-┌─────────────────────────────────────────┐
-│   SurrealDB (Single Source of Truth)    │
+│   - WebView UI                          │
+│   - MIDI入力                            │
 └─────────────────────────────────────────┘
 ```
 
@@ -58,20 +122,11 @@ AI: 次のステップはどうしますか？
 
 | レイヤー | 技術 |
 |---------|------|
-| Frontend (Web) | SolidJS |
-| Frontend (Native) | Swift (Vision Pro) |
-| Backend (Core) | Rust |
-| Backend (Agent) | TypeScript → WASM |
-| Data | SurrealDB |
-| 通信 | Unison Protocol |
-| P2P同期 | Loro (CRDT) |
-
-## 開発フェーズ
-
-| Phase | 内容 | Frontend |
-|-------|------|----------|
-| **Phase 1** | コア機能・対話スタイル確立 | SolidJS (Web) |
-| **Phase 2** | Vision Pro空間体験最適化 | Swift Native |
+| CLI / Stand | Rust (Tokio, Axum, Clap) |
+| Menu Bar App | Swift (AppKit) |
+| WebView | wry + tao |
+| Agent | Claude CLI + MCP |
+| MIDI | midir |
 
 ## ドキュメント
 
@@ -83,29 +138,25 @@ AI: 次のステップはどうしますか？
 
 ## リポジトリ構成
 
-このリポジトリ (`vantage-point`) はプロジェクト全体の**母艦**。
-
 ```
-vantage-point/          ← このリポジトリ（母艦）
-├── docs/               # 仕様・設計・ガイド
-└── working/            # Git Worktree用
+vantage-point/              # このリポジトリ（vp CLI）
+├── crates/
+│   ├── vantage-point/      # メインCLI
+│   └── vantage-core/       # 共通ライブラリ
+├── web/                    # WebView HTML/JS
+└── docs/                   # 仕様・設計
 
-# 将来的に分離予定
-vantage-server/         # Rust + WASM (Backend)
-vantage-web/            # SolidJS (Frontend)
-vantage-native/         # Swift (Vision Pro)
+vantage-point-mac/          # メニューバーアプリ
+└── VantagePoint/           # Swift Package
 ```
-
-言語・プラットフォームごとに分離する可能性あり。
-仕様・設計ドキュメントは母艦に集約。
 
 ## 関連リポジトリ
 
-- [chronista-club/unison-protocol](https://github.com/chronista-club/unison-protocol) - QUIC/KDL通信プロトコル
+- [chronista-club/vantage-point-mac](https://github.com/chronista-club/vantage-point-mac) - メニューバーアプリ
 
 ## ステータス
 
-🚧 **設計フェーズ完了、実装準備中**
+🚧 **アルファ版 - 開発中**
 
 ## ライセンス
 
