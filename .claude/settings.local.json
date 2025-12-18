@@ -115,7 +115,8 @@
       "Bash(swift build:*)",
       "Bash(cargo info:*)",
       "WebFetch(domain:docs.rs)",
-      "mcp__serena__find_symbol"
+      "mcp__serena__find_symbol",
+      "Bash(vp start:*)"
     ],
     "deny": [],
     "ask": []

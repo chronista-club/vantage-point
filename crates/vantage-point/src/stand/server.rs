@@ -24,6 +24,7 @@ use tower_http::cors::CorsLayer;
 use super::capabilities::{CapabilityConfig, StandCapabilities};
 use super::hub::Hub;
 use crate::agent::{AgentConfig, AgentEvent, ClaudeAgent};
+use crate::capability::{ConductorCapability, ProjectInfo, RunningStand, StandStatus};
 use crate::agui::{AgUiEvent, MessageRole};
 use crate::mcp::PermissionResponse;
 use crate::protocol::{
@@ -318,6 +319,8 @@ struct AppState {
     pending_permissions: Arc<RwLock<HashMap<String, PendingPermission>>>,
     /// Capability system (Agent, MIDI, Protocol)
     capabilities: Arc<StandCapabilities>,
+    /// Conductor capability for managing multiple stands (optional, only for conductor mode)
+    conductor: Option<Arc<RwLock<ConductorCapability>>>,
 }
 
 impl AppState {
@@ -407,6 +410,7 @@ pub async fn run(
         project_dir,
         pending_permissions: Arc::new(RwLock::new(HashMap::new())),
         capabilities,
+        conductor: None, // Conductor mode is set via run_conductor()
     });
 
     let app = Router::new()
@@ -417,6 +421,13 @@ pub async fn run(
         .route("/api/shutdown", post(shutdown_handler))
         .route("/api/permission", post(permission_request_handler))
         .route("/api/permission/{request_id}", get(permission_poll_handler))
+        // Conductor API routes
+        .route("/api/conductor/projects", get(conductor_list_projects))
+        .route("/api/conductor/stands", get(conductor_list_stands))
+        .route("/api/conductor/stands/{project_name}/start", post(conductor_start_stand))
+        .route("/api/conductor/stands/{project_name}/stop", post(conductor_stop_stand))
+        .route("/api/conductor/stands/{project_name}/pointview", post(conductor_open_pointview))
+        .route("/api/conductor/refresh", post(conductor_refresh))
         .layer(CorsLayer::permissive())
         .with_state(state.clone());
 
@@ -1178,4 +1189,236 @@ async fn handle_chat_message(
             }
         }
     }
+}
+
+// =============================================================================
+// Conductor API Handlers
+// =============================================================================
+
+/// Conductor projects response
+#[derive(serde::Serialize)]
+struct ConductorProjectsResponse {
+    projects: Vec<ProjectInfo>,
+}
+
+/// Conductor stands response
+#[derive(serde::Serialize)]
+struct ConductorStandsResponse {
+    stands: Vec<RunningStand>,
+}
+
+/// GET /api/conductor/projects - List all registered projects
+async fn conductor_list_projects(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let Some(conductor) = &state.conductor else {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "Conductor not available"})),
+        );
+    };
+
+    let conductor = conductor.read().await;
+    let projects = conductor.list_projects().await;
+
+    (
+        axum::http::StatusCode::OK,
+        Json(serde_json::json!(ConductorProjectsResponse { projects })),
+    )
+}
+
+/// GET /api/conductor/stands - List all running stands
+async fn conductor_list_stands(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let Some(conductor) = &state.conductor else {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "Conductor not available"})),
+        );
+    };
+
+    let conductor = conductor.read().await;
+    let stands = conductor.list_running_stands().await;
+
+    (
+        axum::http::StatusCode::OK,
+        Json(serde_json::json!(ConductorStandsResponse { stands })),
+    )
+}
+
+/// POST /api/conductor/stands/{project_name}/start - Start a stand for project
+async fn conductor_start_stand(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(project_name): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    let Some(conductor) = &state.conductor else {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "Conductor not available"})),
+        );
+    };
+
+    let conductor = conductor.read().await;
+    match conductor.start_stand(&project_name).await {
+        Ok(stand) => (
+            axum::http::StatusCode::OK,
+            Json(serde_json::to_value(&stand).unwrap_or_default()),
+        ),
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        ),
+    }
+}
+
+/// POST /api/conductor/stands/{project_name}/stop - Stop a stand for project
+async fn conductor_stop_stand(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(project_name): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    let Some(conductor) = &state.conductor else {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "Conductor not available"})),
+        );
+    };
+
+    let conductor = conductor.read().await;
+    match conductor.stop_stand(&project_name).await {
+        Ok(()) => (
+            axum::http::StatusCode::OK,
+            Json(serde_json::json!({"status": "stopped", "project": project_name})),
+        ),
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        ),
+    }
+}
+
+/// POST /api/conductor/stands/{project_name}/pointview - Open PointView for project
+async fn conductor_open_pointview(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(project_name): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    let Some(conductor) = &state.conductor else {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "Conductor not available"})),
+        );
+    };
+
+    let conductor = conductor.read().await;
+    match conductor.open_pointview(&project_name).await {
+        Ok(()) => (
+            axum::http::StatusCode::OK,
+            Json(serde_json::json!({"status": "opened", "project": project_name})),
+        ),
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        ),
+    }
+}
+
+/// POST /api/conductor/refresh - Refresh stand status
+async fn conductor_refresh(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let Some(conductor) = &state.conductor else {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "Conductor not available"})),
+        );
+    };
+
+    let conductor = conductor.read().await;
+    match conductor.refresh_stand_status().await {
+        Ok(()) => (
+            axum::http::StatusCode::OK,
+            Json(serde_json::json!({"status": "refreshed"})),
+        ),
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        ),
+    }
+}
+
+/// Conductorモードでスタンドサーバーを起動
+/// 複数のProject Standを管理するための専用モード
+pub async fn run_conductor(port: u16) -> Result<()> {
+    use crate::capability::core::{Capability, CapabilityContext};
+
+    // Shutdown signal
+    let shutdown_token = CancellationToken::new();
+    let shutdown_token_clone = shutdown_token.clone();
+
+    // Initialize Conductor Capability
+    let mut conductor = ConductorCapability::new();
+    let ctx = CapabilityContext::new();
+
+    if let Err(e) = conductor.initialize(&ctx).await {
+        tracing::error!("Failed to initialize ConductorCapability: {}", e);
+        return Err(anyhow::anyhow!("ConductorCapability initialization failed: {}", e));
+    }
+
+    let conductor = Arc::new(RwLock::new(conductor));
+    let hub = Hub::new();
+
+    // Create minimal state for conductor mode
+    let state = Arc::new(AppState {
+        hub,
+        sessions: Arc::new(RwLock::new(SessionManager::new())),
+        cancel_token: Arc::new(RwLock::new(CancellationToken::new())),
+        debug_mode: DebugMode::None,
+        shutdown_token: shutdown_token.clone(),
+        project_dir: String::new(),
+        pending_permissions: Arc::new(RwLock::new(HashMap::new())),
+        capabilities: Arc::new(StandCapabilities::new(CapabilityConfig {
+            project_dir: String::new(),
+            midi_config: None,
+            bonjour_port: None,
+        }).await),
+        conductor: Some(conductor.clone()),
+    });
+
+    let app = Router::new()
+        .route("/api/health", get(health_handler))
+        .route("/api/shutdown", post(shutdown_handler))
+        // Conductor API routes
+        .route("/api/conductor/projects", get(conductor_list_projects))
+        .route("/api/conductor/stands", get(conductor_list_stands))
+        .route("/api/conductor/stands/{project_name}/start", post(conductor_start_stand))
+        .route("/api/conductor/stands/{project_name}/stop", post(conductor_stop_stand))
+        .route("/api/conductor/stands/{project_name}/pointview", post(conductor_open_pointview))
+        .route("/api/conductor/refresh", post(conductor_refresh))
+        .layer(CorsLayer::permissive())
+        .with_state(state);
+
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    tracing::info!("Starting Conductor Stand on http://{}", addr);
+
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+
+    // Clone conductor for shutdown
+    let conductor_for_shutdown = conductor.clone();
+
+    // Serve with graceful shutdown
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
+            shutdown_token_clone.cancelled().await;
+            tracing::info!("Conductor graceful shutdown initiated");
+        })
+        .await?;
+
+    // Shutdown conductor capability
+    tracing::info!("Shutting down Conductor...");
+    if let Err(e) = conductor_for_shutdown.write().await.shutdown().await {
+        tracing::warn!("Error during conductor shutdown: {}", e);
+    }
+
+    tracing::info!("Conductor stopped");
+    Ok(())
 }

@@ -17,6 +17,7 @@
 
 pub mod agent_capability;
 pub mod bonjour_capability;
+pub mod conductor_capability;
 pub mod core;
 pub mod eventbus;
 pub mod evolution;
@@ -50,3 +51,4 @@ pub use protocol_capability::{ProtocolCapability, ProtocolRouter};
 pub use agent_capability::{AgentCapability, AgentRunState};
 pub use midi_capability::{MidiCapability, MidiConnectionState};
 pub use bonjour_capability::BonjourCapability;
+pub use conductor_capability::{ConductorCapability, ProjectInfo, RunningStand, StandStatus};
