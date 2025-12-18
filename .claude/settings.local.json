@@ -55,7 +55,22 @@
       "Bash(git pull:*)",
       "Bash(git fetch:*)",
       "Bash(git tag:*)",
-      "Bash(gh release create:*)"
+      "Bash(gh release create:*)",
+      "Bash(git stash:*)",
+      "Bash(git commit -m \"$(cat <<''EOF''\nchore: レガシーコード・設定ファイルを削除\n\n削除対象:\n- Packages/ (Swift packages: agent, claude-integration, reality-kit-content)\n- packages/ (Bun/TypeScript agent)\n- apps/ (macOS, visionOS, CLI Swift apps)\n- tests/ (Swift test code)\n- tools/ (unison-claude)\n- working/ (作業ファイル)\n- Vantage.xcodeproj (Xcodeプロジェクト)\n- .claude/rules.md (旧多言語ルール)\n\nRust CLIアーキテクチャへの移行に伴い、不要になったSwift/visionOS/TypeScript関連ファイルを削除。\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n)\")",
+      "Bash(git commit -m \"$(cat <<''EOF''\nfeat(cli): プロジェクト/インスタンス番号を1始まりに変更\n\n変更内容:\n- `vp start [N]` - プロジェクト番号を1始まり（内部で0基準に変換）\n- `vp open [N]` - インスタンス番号を1始まり、デフォルト値を1に\n- `vp ps` - 一覧表示で#を1始まりに\n- `vp config` - プロジェクト一覧で#を1始まりに\n\n修正:\n- cargo.toml（小文字）を削除、Cargo.toml（大文字）に統一\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n)\")",
+      "Bash(vp --version:*)",
+      "Bash(vp lpd8 --help:*)",
+      "Bash(vp lpd8 write --help:*)",
+      "Bash(vp lpd8:*)",
+      "Bash(zed:*)",
+      "Bash(gh issue view:*)",
+      "Bash(gh issue list:*)",
+      "Bash(gh issue comment:*)",
+      "Bash(gh issue close:*)",
+      "Bash(vp ps:*)",
+      "Bash(vp restart --help:*)",
+      "Bash(curl:*)"
     ],
     "deny": [],
     "ask": []

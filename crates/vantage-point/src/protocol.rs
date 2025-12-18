@@ -89,6 +89,15 @@ pub enum DaemonMessage {
         session_id: String,
         messages: Vec<HistoryMessage>,
     },
+    /// Interactive component (AG-UI style)
+    ChatComponent {
+        component: ChatComponent,
+        /// If true, this component requires user interaction
+        #[serde(default)]
+        interactive: bool,
+    },
+    /// Component dismissed/resolved
+    ComponentDismissed { request_id: String },
 }
 
 /// Session information for UI
@@ -144,6 +153,8 @@ pub enum BrowserMessage {
     RenameSession { session_id: String, name: String },
     /// Close/delete a session
     CloseSession { session_id: String },
+    /// Response to an interactive component
+    ComponentAction { action: ComponentAction },
 }
 
 /// Chat message for display
@@ -167,6 +178,132 @@ pub enum ChatRole {
 pub struct IpcMessage {
     pub id: Option<String>,
     pub payload: DaemonMessage,
+}
+
+// =============================================================================
+// Chat Components (AG-UI inspired Generative UI)
+// =============================================================================
+
+/// Interactive chat component types
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "component", rename_all = "snake_case")]
+pub enum ChatComponent {
+    /// Permission request dialog (for --permission-prompt-tool)
+    PermissionRequest {
+        request_id: String,
+        tool_name: String,
+        #[serde(default)]
+        description: Option<String>,
+        /// Tool input parameters (JSON)
+        input: serde_json::Value,
+        /// Timeout in seconds (default: 30)
+        #[serde(default = "default_timeout")]
+        timeout_seconds: u32,
+    },
+    /// Todo list display
+    TodoList {
+        items: Vec<TodoItem>,
+        #[serde(default)]
+        title: Option<String>,
+    },
+    /// Progress indicator
+    Progress {
+        label: String,
+        #[serde(default)]
+        current: Option<u32>,
+        #[serde(default)]
+        total: Option<u32>,
+        status: ProgressStatus,
+    },
+    /// Choice buttons for user selection
+    ChoiceButtons {
+        request_id: String,
+        prompt: String,
+        choices: Vec<Choice>,
+        #[serde(default)]
+        allow_multiple: bool,
+    },
+    /// Code diff preview
+    CodeDiff {
+        request_id: String,
+        file_path: String,
+        before: String,
+        after: String,
+        #[serde(default)]
+        language: Option<String>,
+    },
+}
+
+fn default_timeout() -> u32 {
+    30
+}
+
+/// Todo item for TodoList component
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TodoItem {
+    pub id: String,
+    pub content: String,
+    pub status: TodoStatus,
+    #[serde(default)]
+    pub active_form: Option<String>,
+}
+
+/// Todo item status
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TodoStatus {
+    Pending,
+    InProgress,
+    Completed,
+}
+
+/// Progress status
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProgressStatus {
+    Running,
+    Completed,
+    Error,
+}
+
+/// Choice option for ChoiceButtons
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Choice {
+    pub id: String,
+    pub label: String,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+/// Response to a component interaction
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum ComponentAction {
+    /// Permission approved
+    PermissionApprove {
+        request_id: String,
+        #[serde(default)]
+        updated_input: Option<serde_json::Value>,
+    },
+    /// Permission denied
+    PermissionDeny {
+        request_id: String,
+        #[serde(default)]
+        message: Option<String>,
+    },
+    /// Choice selected
+    ChoiceSelect {
+        request_id: String,
+        selected_ids: Vec<String>,
+    },
+    /// Code diff approved
+    DiffApprove { request_id: String },
+    /// Code diff rejected
+    DiffReject {
+        request_id: String,
+        #[serde(default)]
+        reason: Option<String>,
+    },
 }
 
 #[cfg(test)]
