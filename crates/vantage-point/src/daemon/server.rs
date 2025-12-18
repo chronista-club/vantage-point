@@ -23,6 +23,7 @@ use tower_http::cors::CorsLayer;
 
 use super::hub::Hub;
 use crate::agent::{AgentConfig, AgentEvent, ClaudeAgent};
+use crate::agui::{AgUiEvent, MessageRole};
 use crate::mcp::PermissionResponse;
 use crate::protocol::{
     BrowserMessage, ChatComponent, ChatMessage, ChatRole, ComponentAction, DaemonMessage,
@@ -354,6 +355,11 @@ impl AppState {
                 data: Some(data),
             });
         }
+    }
+
+    /// Send AG-UI event to connected clients (REQ-AGUI-040)
+    pub fn send_agui_event(&self, event: AgUiEvent) {
+        self.hub.broadcast(DaemonMessage::AgUi { event });
     }
 }
 
@@ -842,6 +848,15 @@ async fn handle_chat_message(
 ) {
     let start_time = Instant::now();
 
+    // AG-UI: Generate run_id for this chat request (REQ-AGUI-040)
+    let run_id = format!("run-{}", uuid::Uuid::new_v4());
+    let message_id = format!("msg-{}", uuid::Uuid::new_v4());
+
+    // AG-UI: Emit RunStarted event
+    hub.broadcast(DaemonMessage::AgUi {
+        event: AgUiEvent::run_started(&run_id),
+    });
+
     // Save user message to history
     sessions.write().await.add_message("user", message.clone());
 
@@ -903,6 +918,12 @@ async fn handle_chat_message(
         tokio::select! {
             _ = cancel_token.cancelled() => {
                 tracing::info!("Chat request cancelled");
+
+                // AG-UI: Emit RunError for cancellation (REQ-AGUI-040)
+                hub.broadcast(DaemonMessage::AgUi {
+                    event: AgUiEvent::run_error(&run_id, "CANCELLED", "Request cancelled by user"),
+                });
+
                 if debug_mode != DebugMode::None {
                     hub.broadcast(DaemonMessage::DebugInfo {
                         level: debug_mode,
@@ -959,6 +980,13 @@ async fn handle_chat_message(
                     }
                     Some(AgentEvent::ToolExecuting { name }) => {
                         tracing::info!("Tool executing: {}", name);
+
+                        // AG-UI: Emit ToolCallStart (REQ-AGUI-040)
+                        let tool_call_id = format!("tool-{}", uuid::Uuid::new_v4());
+                        hub.broadcast(DaemonMessage::AgUi {
+                            event: AgUiEvent::tool_call_start(&run_id, &tool_call_id, &name),
+                        });
+
                         if debug_mode != DebugMode::None {
                             hub.broadcast(DaemonMessage::DebugInfo {
                                 level: debug_mode,
@@ -970,6 +998,22 @@ async fn handle_chat_message(
                     }
                     Some(AgentEvent::ToolResult { name, preview }) => {
                         tracing::info!("Tool result: {} - {}", name, preview);
+
+                        // AG-UI: Emit ToolCallEnd (simplified - no tool_call_id tracking yet)
+                        // TODO: Proper tool_call_id tracking across ToolExecuting and ToolResult
+                        hub.broadcast(DaemonMessage::AgUi {
+                            event: AgUiEvent::ToolCallEnd {
+                                run_id: run_id.clone(),
+                                tool_call_id: format!("tool-{}", name), // Simplified ID
+                                result: Some(serde_json::json!({ "preview": preview })),
+                                error: None,
+                                timestamp: std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_millis() as u64,
+                            },
+                        });
+
                         if debug_mode == DebugMode::Detail {
                             hub.broadcast(DaemonMessage::DebugInfo {
                                 level: DebugMode::Detail,
@@ -993,6 +1037,12 @@ async fn handle_chat_message(
 
                         if first_chunk {
                             tracing::info!("Started receiving response from Claude CLI");
+
+                            // AG-UI: Emit TextMessageStart on first chunk (REQ-AGUI-040)
+                            hub.broadcast(DaemonMessage::AgUi {
+                                event: AgUiEvent::text_message_start(&run_id, &message_id, MessageRole::Assistant),
+                            });
+
                             if debug_mode != DebugMode::None {
                                 let elapsed = start_time.elapsed();
                                 hub.broadcast(DaemonMessage::DebugInfo {
@@ -1004,6 +1054,11 @@ async fn handle_chat_message(
                             }
                             first_chunk = false;
                         }
+
+                        // AG-UI: Emit TextMessageContent for each chunk (REQ-AGUI-040)
+                        hub.broadcast(DaemonMessage::AgUi {
+                            event: AgUiEvent::text_message_content(&run_id, &message_id, &chunk),
+                        });
 
                         // Detailed debug: show each chunk
                         if debug_mode == DebugMode::Detail {
@@ -1034,6 +1089,19 @@ async fn handle_chat_message(
                                 .add_message("assistant", response_buffer.clone());
                         }
 
+                        // AG-UI: Emit TextMessageEnd (REQ-AGUI-040)
+                        if !first_chunk {
+                            // Only emit if we actually started a message
+                            hub.broadcast(DaemonMessage::AgUi {
+                                event: AgUiEvent::text_message_end(&run_id, &message_id),
+                            });
+                        }
+
+                        // AG-UI: Emit RunFinished (REQ-AGUI-040)
+                        hub.broadcast(DaemonMessage::AgUi {
+                            event: AgUiEvent::run_finished(&run_id),
+                        });
+
                         // Send final done signal
                         hub.broadcast(DaemonMessage::ChatChunk {
                             content: String::new(),
@@ -1055,6 +1123,12 @@ async fn handle_chat_message(
                     }
                     Some(AgentEvent::Error(e)) => {
                         tracing::error!("Claude CLI error: {}", e);
+
+                        // AG-UI: Emit RunError (REQ-AGUI-040)
+                        hub.broadcast(DaemonMessage::AgUi {
+                            event: AgUiEvent::run_error(&run_id, "AGENT_ERROR", &e),
+                        });
+
                         // Send error as a chat message
                         let error_msg = ChatMessage {
                             role: ChatRole::System,
