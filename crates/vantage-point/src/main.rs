@@ -575,6 +575,7 @@ fn main() -> Result<()> {
             let cap_config = stand::CapabilityConfig {
                 project_dir: resolved_project_dir.clone(),
                 midi_config,
+                bonjour_port: Some(resolved_port), // Bonjour広告を有効化
             };
 
             if headless || browser {
@@ -743,6 +744,7 @@ fn main() -> Result<()> {
             let cap_config = stand::CapabilityConfig {
                 project_dir,
                 midi_config: None,
+                bonjour_port: Some(port), // Bonjour広告を有効化
             };
 
             if headless || browser {

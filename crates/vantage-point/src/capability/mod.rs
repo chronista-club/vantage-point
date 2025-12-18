@@ -16,6 +16,7 @@
 //! - [docs/spec/05-stand-capability.md](../../../docs/spec/05-stand-capability.md)
 
 pub mod agent_capability;
+pub mod bonjour_capability;
 pub mod core;
 pub mod eventbus;
 pub mod evolution;
@@ -48,3 +49,4 @@ pub use types::{
 pub use protocol_capability::{ProtocolCapability, ProtocolRouter};
 pub use agent_capability::{AgentCapability, AgentRunState};
 pub use midi_capability::{MidiCapability, MidiConnectionState};
+pub use bonjour_capability::BonjourCapability;

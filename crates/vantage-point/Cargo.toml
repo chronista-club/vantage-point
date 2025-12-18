@@ -67,3 +67,9 @@ midir = "0.10"
 
 # UUID generation
 uuid = { version = "1", features = ["v4"] }
+
+# mDNS Service Discovery (Bonjour)
+mdns-sd = "0.17"
+
+# Hostname
+hostname = "0.4"
