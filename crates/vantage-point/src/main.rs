@@ -317,6 +317,7 @@ fn parse_debug_env() -> Option<DebugMode> {
 
 #[derive(Parser)]
 #[command(name = "vp")]
+#[command(version)]
 #[command(about = "Vantage Point Agent - AI協働開発プラットフォーム")]
 struct Cli {
     #[command(subcommand)]
