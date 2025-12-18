@@ -27,6 +27,7 @@ pub mod protocol_capability;
 pub mod registry;
 pub mod synergy;
 pub mod types;
+pub mod update_capability;
 
 pub use core::{
     Capability, CapabilityContext, CapabilityError, CapabilityEvent, CapabilityInfo,
@@ -52,3 +53,4 @@ pub use agent_capability::{AgentCapability, AgentRunState};
 pub use midi_capability::{MidiCapability, MidiConnectionState};
 pub use bonjour_capability::BonjourCapability;
 pub use conductor_capability::{ConductorCapability, ProjectInfo, RunningStand, StandStatus};
+pub use update_capability::{UpdateCapability, UpdateCheckResult, ReleaseInfo, AssetInfo};

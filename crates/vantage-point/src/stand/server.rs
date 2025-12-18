@@ -24,7 +24,7 @@ use tower_http::cors::CorsLayer;
 use super::capabilities::{CapabilityConfig, StandCapabilities};
 use super::hub::Hub;
 use crate::agent::{AgentConfig, AgentEvent, ClaudeAgent};
-use crate::capability::{ConductorCapability, ProjectInfo, RunningStand, StandStatus};
+use crate::capability::{ConductorCapability, ProjectInfo, RunningStand, StandStatus, UpdateCapability, UpdateCheckResult};
 use crate::agui::{AgUiEvent, MessageRole};
 use crate::mcp::PermissionResponse;
 use crate::protocol::{
@@ -321,6 +321,8 @@ struct AppState {
     capabilities: Arc<StandCapabilities>,
     /// Conductor capability for managing multiple stands (optional, only for conductor mode)
     conductor: Option<Arc<RwLock<ConductorCapability>>>,
+    /// Update capability for version checking (optional, only for conductor mode)
+    update: Option<Arc<RwLock<UpdateCapability>>>,
 }
 
 impl AppState {
@@ -411,6 +413,7 @@ pub async fn run(
         pending_permissions: Arc::new(RwLock::new(HashMap::new())),
         capabilities,
         conductor: None, // Conductor mode is set via run_conductor()
+        update: None,    // Update capability is only for conductor mode
     });
 
     let app = Router::new()
@@ -1346,6 +1349,34 @@ async fn conductor_refresh(
     }
 }
 
+// ============================================================================
+// Update API Handlers
+// ============================================================================
+
+/// GET /api/update/check - 更新をチェック
+async fn update_check(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let Some(update) = &state.update else {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "Update capability not available"})),
+        );
+    };
+
+    let mut update = update.write().await;
+    match update.check_update().await {
+        Ok(result) => (
+            axum::http::StatusCode::OK,
+            Json(serde_json::to_value(result).unwrap_or_default()),
+        ),
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        ),
+    }
+}
+
 /// Conductorモードでスタンドサーバーを起動
 /// 複数のProject Standを管理するための専用モード
 pub async fn run_conductor(port: u16) -> Result<()> {
@@ -1364,7 +1395,14 @@ pub async fn run_conductor(port: u16) -> Result<()> {
         return Err(anyhow::anyhow!("ConductorCapability initialization failed: {}", e));
     }
 
+    // Initialize Update Capability
+    let mut update = UpdateCapability::new();
+    if let Err(e) = update.initialize(&ctx).await {
+        tracing::warn!("Failed to initialize UpdateCapability: {}", e);
+    }
+
     let conductor = Arc::new(RwLock::new(conductor));
+    let update = Arc::new(RwLock::new(update));
     let hub = Hub::new();
 
     // Create minimal state for conductor mode
@@ -1382,6 +1420,7 @@ pub async fn run_conductor(port: u16) -> Result<()> {
             bonjour_port: None,
         }).await),
         conductor: Some(conductor.clone()),
+        update: Some(update.clone()),
     });
 
     let app = Router::new()
@@ -1394,6 +1433,8 @@ pub async fn run_conductor(port: u16) -> Result<()> {
         .route("/api/conductor/stands/{project_name}/stop", post(conductor_stop_stand))
         .route("/api/conductor/stands/{project_name}/pointview", post(conductor_open_pointview))
         .route("/api/conductor/refresh", post(conductor_refresh))
+        // Update API routes
+        .route("/api/update/check", get(update_check))
         .layer(CorsLayer::permissive())
         .with_state(state);
 
