@@ -116,7 +116,10 @@
       "Bash(cargo info:*)",
       "WebFetch(domain:docs.rs)",
       "mcp__serena__find_symbol",
-      "Bash(vp start:*)"
+      "Bash(vp start:*)",
+      "Bash(pkill:*)",
+      "WebFetch(domain:www.donnywals.com)",
+      "Bash(cargo add:*)"
     ],
     "deny": [],
     "ask": []

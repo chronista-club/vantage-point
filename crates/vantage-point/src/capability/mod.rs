@@ -53,4 +53,7 @@ pub use agent_capability::{AgentCapability, AgentRunState};
 pub use midi_capability::{MidiCapability, MidiConnectionState};
 pub use bonjour_capability::BonjourCapability;
 pub use conductor_capability::{ConductorCapability, ProjectInfo, RunningStand, StandStatus};
-pub use update_capability::{UpdateCapability, UpdateCheckResult, ReleaseInfo, AssetInfo};
+pub use update_capability::{
+    UpdateCapability, UpdateCheckResult, UpdateApplyResult, ReleaseInfo, AssetInfo,
+    MacAppUpdateCheckResult, MacAppUpdateApplyResult,
+};
