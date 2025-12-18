@@ -5,6 +5,7 @@
 //! - clear: Clear a pane
 //! - permission: Handle permission requests for tool execution
 
+use crate::config::RunningStands;
 use rmcp::{
     ErrorData as McpError, ServiceExt, handler::server::tool::ToolRouter, model::*,
     schemars::JsonSchema, tool, tool_handler, tool_router, transport::stdio,
@@ -451,11 +452,35 @@ impl rmcp::ServerHandler for VantageMcp {
     }
 }
 
+/// Resolve Stand port for MCP communication
+///
+/// Priority:
+/// 1. Explicit port argument (if provided and != 33000)
+/// 2. running.json lookup by current working directory
+/// 3. Default port (33000)
+fn resolve_stand_port(explicit_port: u16) -> u16 {
+    // If an explicit port was provided (not the default), use it
+    if explicit_port != 33000 {
+        return explicit_port;
+    }
+
+    // Try to find a running Stand for the current directory
+    if let Some(stand_info) = RunningStands::find_for_cwd() {
+        return stand_info.port;
+    }
+
+    // Fall back to default
+    33000
+}
+
 /// Run the MCP server over stdio
 pub async fn run_mcp_server(stand_port: u16) -> anyhow::Result<()> {
+    // Resolve the actual port to use
+    let resolved_port = resolve_stand_port(stand_port);
+
     // Note: In MCP mode, we should not use tracing to stdout
     // as it interferes with JSON-RPC communication
-    let service = VantageMcp::new(stand_port)
+    let service = VantageMcp::new(resolved_port)
         .serve(stdio())
         .await
         .map_err(|e| anyhow::anyhow!("Failed to start MCP server: {}", e))?;

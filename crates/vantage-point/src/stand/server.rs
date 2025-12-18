@@ -24,6 +24,7 @@ use tower_http::cors::CorsLayer;
 use super::capabilities::{CapabilityConfig, StandCapabilities};
 use super::hub::Hub;
 use crate::agent::{AgentConfig, AgentEvent, ClaudeAgent};
+use crate::config::RunningStands;
 use crate::capability::{ConductorCapability, ProjectInfo, RunningStand, StandStatus, UpdateCapability, UpdateCheckResult};
 use crate::agui::{AgUiEvent, MessageRole};
 use crate::mcp::PermissionResponse;
@@ -505,6 +506,14 @@ pub async fn run(
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
+    // Register this Stand in running.json
+    let pid = std::process::id();
+    if let Err(e) = RunningStands::register(port, &state.project_dir, pid) {
+        tracing::warn!("Failed to register Stand in running.json: {}", e);
+    } else {
+        tracing::info!("Registered Stand in running.json (port={}, pid={})", port, pid);
+    }
+
     // Clone capabilities for shutdown
     let capabilities_for_shutdown = state.capabilities.clone();
 
@@ -515,6 +524,13 @@ pub async fn run(
             tracing::info!("Graceful shutdown initiated");
         })
         .await?;
+
+    // Unregister from running.json
+    if let Err(e) = RunningStands::unregister_by_port(port) {
+        tracing::warn!("Failed to unregister Stand from running.json: {}", e);
+    } else {
+        tracing::info!("Unregistered Stand from running.json (port={})", port);
+    }
 
     // Shutdown all capabilities
     tracing::info!("Shutting down capabilities...");
