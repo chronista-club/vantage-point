@@ -163,6 +163,49 @@ pub enum AgUiEvent {
     },
 
     // -------------------------------------------------------------------------
+    // User Prompt Events (REQ-PROMPT-001 to REQ-PROMPT-005)
+    // -------------------------------------------------------------------------
+    /// Request user input (confirm, text input, selection)
+    UserPrompt {
+        run_id: String,
+        request_id: String,
+        /// Prompt type: confirm, input, select, multi_select
+        prompt_type: UserPromptType,
+        /// Title displayed to user
+        title: String,
+        /// Optional detailed description
+        #[serde(skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+        /// Options for select/multi_select types
+        #[serde(skip_serializing_if = "Option::is_none")]
+        options: Option<Vec<PromptOption>>,
+        /// Default value for input type
+        #[serde(skip_serializing_if = "Option::is_none")]
+        default_value: Option<String>,
+        /// Timeout in seconds (default: 300)
+        #[serde(default = "default_prompt_timeout")]
+        timeout_seconds: u32,
+        #[serde(default = "now_millis")]
+        timestamp: u64,
+    },
+
+    /// User's response to a prompt
+    UserPromptResponse {
+        run_id: String,
+        request_id: String,
+        /// Response outcome
+        outcome: UserPromptOutcome,
+        /// Text response (for input type or optional comment)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+        /// Selected option IDs (for select/multi_select)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        selected_options: Option<Vec<String>>,
+        #[serde(default = "now_millis")]
+        timestamp: u64,
+    },
+
+    // -------------------------------------------------------------------------
     // State Sync Events (REQ-AGUI-030, REQ-AGUI-031)
     // -------------------------------------------------------------------------
     /// Full state snapshot
@@ -295,6 +338,50 @@ pub struct Progress {
 }
 
 // =============================================================================
+// User Prompt Types (REQ-PROMPT-001)
+// =============================================================================
+
+/// User prompt type
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UserPromptType {
+    /// Yes/No confirmation
+    Confirm,
+    /// Text input
+    Input,
+    /// Single selection
+    Select,
+    /// Multiple selection
+    MultiSelect,
+}
+
+/// User prompt response outcome
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UserPromptOutcome {
+    /// User approved/confirmed
+    Approved,
+    /// User rejected/declined
+    Rejected,
+    /// User cancelled
+    Cancelled,
+    /// Request timed out
+    Timeout,
+}
+
+/// Prompt option for select/multi_select
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptOption {
+    /// Unique option identifier
+    pub id: String,
+    /// Display label
+    pub label: String,
+    /// Optional description
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+// =============================================================================
 // Helper Functions
 // =============================================================================
 
@@ -307,6 +394,10 @@ fn now_millis() -> u64 {
 
 fn default_timeout() -> u32 {
     30
+}
+
+fn default_prompt_timeout() -> u32 {
+    300 // 5 minutes for user prompts
 }
 
 // =============================================================================
@@ -417,12 +508,103 @@ impl AgUiEvent {
             | Self::ToolCallEnd { run_id, .. }
             | Self::PermissionRequest { run_id, .. }
             | Self::PermissionResponse { run_id, .. }
+            | Self::UserPrompt { run_id, .. }
+            | Self::UserPromptResponse { run_id, .. }
             | Self::StateSnapshot { run_id, .. }
             | Self::StateDelta { run_id, .. }
             | Self::ActivitySnapshot { run_id, .. }
             | Self::ActivityDelta { run_id, .. }
             | Self::Raw { run_id, .. }
             | Self::Custom { run_id, .. } => run_id,
+        }
+    }
+
+    /// Create a UserPrompt event (REQ-PROMPT-001)
+    pub fn user_prompt(
+        run_id: impl Into<String>,
+        request_id: impl Into<String>,
+        prompt_type: UserPromptType,
+        title: impl Into<String>,
+    ) -> Self {
+        Self::UserPrompt {
+            run_id: run_id.into(),
+            request_id: request_id.into(),
+            prompt_type,
+            title: title.into(),
+            description: None,
+            options: None,
+            default_value: None,
+            timeout_seconds: default_prompt_timeout(),
+            timestamp: now_millis(),
+        }
+    }
+
+    /// Create a confirm prompt
+    pub fn confirm_prompt(
+        run_id: impl Into<String>,
+        request_id: impl Into<String>,
+        title: impl Into<String>,
+    ) -> Self {
+        Self::user_prompt(run_id, request_id, UserPromptType::Confirm, title)
+    }
+
+    /// Create a text input prompt
+    pub fn input_prompt(
+        run_id: impl Into<String>,
+        request_id: impl Into<String>,
+        title: impl Into<String>,
+        default_value: Option<String>,
+    ) -> Self {
+        Self::UserPrompt {
+            run_id: run_id.into(),
+            request_id: request_id.into(),
+            prompt_type: UserPromptType::Input,
+            title: title.into(),
+            description: None,
+            options: None,
+            default_value,
+            timeout_seconds: default_prompt_timeout(),
+            timestamp: now_millis(),
+        }
+    }
+
+    /// Create a select prompt
+    pub fn select_prompt(
+        run_id: impl Into<String>,
+        request_id: impl Into<String>,
+        title: impl Into<String>,
+        options: Vec<PromptOption>,
+    ) -> Self {
+        Self::UserPrompt {
+            run_id: run_id.into(),
+            request_id: request_id.into(),
+            prompt_type: UserPromptType::Select,
+            title: title.into(),
+            description: None,
+            options: Some(options),
+            default_value: None,
+            timeout_seconds: default_prompt_timeout(),
+            timestamp: now_millis(),
+        }
+    }
+
+    /// Create a multi-select prompt
+    pub fn multi_select_prompt(
+        run_id: impl Into<String>,
+        request_id: impl Into<String>,
+        title: impl Into<String>,
+        options: Vec<PromptOption>,
+    ) -> Self {
+        Self::UserPrompt {
+            run_id: run_id.into(),
+            request_id: request_id.into(),
+            prompt_type: UserPromptType::MultiSelect,
+            title: title.into(),
+            description: None,
+            options: Some(options),
+            default_value: None,
+            timeout_seconds: default_prompt_timeout(),
+            timestamp: now_millis(),
         }
     }
 }
@@ -493,5 +675,95 @@ mod tests {
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains(r#""op":"add""#));
         assert!(json.contains(r#""path":"/foo""#));
+    }
+
+    /// REQ-PROMPT-001: Confirm prompt
+    #[test]
+    fn test_confirm_prompt() {
+        let event = AgUiEvent::confirm_prompt("run-1", "prompt-1", "Continue?");
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains(r#""type":"USER_PROMPT""#));
+        assert!(json.contains(r#""prompt_type":"confirm""#));
+        assert!(json.contains(r#""title":"Continue?""#));
+    }
+
+    /// REQ-PROMPT-001: Select prompt
+    #[test]
+    fn test_select_prompt() {
+        let options = vec![
+            PromptOption {
+                id: "a".to_string(),
+                label: "Option A".to_string(),
+                description: None,
+            },
+            PromptOption {
+                id: "b".to_string(),
+                label: "Option B".to_string(),
+                description: Some("Description B".to_string()),
+            },
+        ];
+        let event = AgUiEvent::select_prompt("run-1", "prompt-2", "Choose:", options);
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains(r#""type":"USER_PROMPT""#));
+        assert!(json.contains(r#""prompt_type":"select""#));
+        assert!(json.contains(r#""id":"a""#));
+        assert!(json.contains(r#""label":"Option B""#));
+    }
+
+    /// REQ-PROMPT-001: Input prompt
+    #[test]
+    fn test_input_prompt() {
+        let event = AgUiEvent::input_prompt("run-1", "prompt-3", "Enter API key:", Some("default".to_string()));
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains(r#""type":"USER_PROMPT""#));
+        assert!(json.contains(r#""prompt_type":"input""#));
+        assert!(json.contains(r#""default_value":"default""#));
+    }
+
+    /// REQ-PROMPT-005: Response outcome
+    #[test]
+    fn test_user_prompt_response() {
+        let event = AgUiEvent::UserPromptResponse {
+            run_id: "run-1".to_string(),
+            request_id: "prompt-1".to_string(),
+            outcome: UserPromptOutcome::Approved,
+            message: Some("OK".to_string()),
+            selected_options: None,
+            timestamp: 0,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains(r#""type":"USER_PROMPT_RESPONSE""#));
+        assert!(json.contains(r#""outcome":"approved""#));
+    }
+
+    /// REQ-PROMPT-001: Multi-select prompt
+    #[test]
+    fn test_multi_select_prompt() {
+        let options = vec![
+            PromptOption {
+                id: "feature1".to_string(),
+                label: "Feature 1".to_string(),
+                description: None,
+            },
+            PromptOption {
+                id: "feature2".to_string(),
+                label: "Feature 2".to_string(),
+                description: None,
+            },
+        ];
+        let event = AgUiEvent::multi_select_prompt("run-1", "prompt-4", "Select features:", options);
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains(r#""prompt_type":"multi_select""#));
+    }
+
+    /// REQ-PROMPT-004: Timeout setting
+    #[test]
+    fn test_prompt_timeout() {
+        let event = AgUiEvent::confirm_prompt("run-1", "prompt-5", "Test");
+        if let AgUiEvent::UserPrompt { timeout_seconds, .. } = event {
+            assert_eq!(timeout_seconds, 300); // 5 minutes default
+        } else {
+            panic!("Expected UserPrompt event");
+        }
     }
 }

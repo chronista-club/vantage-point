@@ -687,6 +687,106 @@
             color: #94a3b8;
         }
 
+        /* User Prompt Component (REQ-PROMPT) */
+        .chat-component.user-prompt {
+            border-color: #6366f1;
+        }
+        .chat-component.user-prompt .chat-component-header {
+            background: rgba(99, 102, 241, 0.1);
+        }
+        .chat-component.user-prompt .chat-component-header .title {
+            color: #6366f1;
+        }
+        .prompt-description {
+            color: #94a3b8;
+            font-size: 14px;
+            margin-bottom: 16px;
+            line-height: 1.5;
+        }
+        .prompt-input {
+            width: 100%;
+            background: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 6px;
+            padding: 12px;
+            font-size: 14px;
+            color: #e2e8f0;
+            margin-bottom: 16px;
+            resize: vertical;
+            min-height: 60px;
+            font-family: inherit;
+        }
+        .prompt-input:focus {
+            outline: none;
+            border-color: #6366f1;
+        }
+        .prompt-input::placeholder {
+            color: #64748b;
+        }
+        .prompt-options {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            margin-bottom: 16px;
+        }
+        .prompt-option {
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+            padding: 12px;
+            background: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .prompt-option:hover {
+            border-color: #6366f1;
+            background: rgba(99, 102, 241, 0.05);
+        }
+        .prompt-option.selected {
+            border-color: #6366f1;
+            background: rgba(99, 102, 241, 0.1);
+        }
+        .prompt-option input[type="radio"],
+        .prompt-option input[type="checkbox"] {
+            margin-top: 2px;
+            accent-color: #6366f1;
+        }
+        .prompt-option-content {
+            flex: 1;
+        }
+        .prompt-option-label {
+            font-weight: 500;
+            color: #e2e8f0;
+            margin-bottom: 4px;
+        }
+        .prompt-option-description {
+            font-size: 12px;
+            color: #64748b;
+        }
+        .prompt-checkbox-label {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+        }
+        .chat-component-btn.submit {
+            background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
+            color: white;
+        }
+        .chat-component-btn.submit:hover {
+            filter: brightness(1.1);
+        }
+        .chat-component-btn.cancel {
+            background: transparent;
+            border: 1px solid #475569;
+            color: #94a3b8;
+        }
+        .chat-component-btn.cancel:hover {
+            background: #334155;
+        }
+
         /* Responsive */
         @media (max-width: 900px) {
             .container {
@@ -962,6 +1062,15 @@
                     // Already handled by chat_component
                     break;
 
+                case 'USER_PROMPT':
+                    // REQ-PROMPT-001: Handle user prompt from CC
+                    renderUserPrompt(event, true);
+                    break;
+
+                case 'USER_PROMPT_RESPONSE':
+                    // Response confirmation - could update UI if needed
+                    break;
+
                 case 'ACTIVITY_SNAPSHOT':
                     updateActivityList(event.activities);
                     break;
@@ -1145,6 +1254,187 @@
             `;
 
             chatMessages.appendChild(componentEl);
+        }
+
+        // =================================================================
+        // User Prompt UI (REQ-PROMPT-001 to REQ-PROMPT-005)
+        // =================================================================
+
+        function renderUserPrompt(event, interactive) {
+            const { request_id, prompt_type, title, description, options, default_value, timeout_seconds } = event;
+
+            const componentEl = document.createElement('div');
+            componentEl.className = `chat-component user-prompt prompt-${prompt_type}`;
+            componentEl.id = `component-${request_id}`;
+            componentEl.dataset.requestId = request_id;
+            componentEl.dataset.promptType = prompt_type;
+
+            // Get icon based on prompt type
+            const icon = {
+                'confirm': '❓',
+                'input': '✏️',
+                'select': '📋',
+                'multi_select': '☑️'
+            }[prompt_type] || '💬';
+
+            // Build body content based on prompt type
+            let bodyContent = '';
+            if (description) {
+                bodyContent += `<p class="prompt-description">${escapeHtml(description)}</p>`;
+            }
+
+            switch (prompt_type) {
+                case 'confirm':
+                    bodyContent += `
+                        <div class="chat-component-actions">
+                            <button class="chat-component-btn deny" onclick="handleUserPromptResponse('${request_id}', 'rejected')">No</button>
+                            <button class="chat-component-btn approve" onclick="handleUserPromptResponse('${request_id}', 'approved')">Yes</button>
+                        </div>
+                    `;
+                    break;
+
+                case 'input':
+                    bodyContent += `
+                        <div class="prompt-input-container">
+                            <input type="text" id="prompt-input-${request_id}"
+                                   class="prompt-input"
+                                   placeholder="Type your response..."
+                                   value="${default_value ? escapeHtml(default_value) : ''}"
+                                   onkeydown="if(event.key==='Enter') handleUserPromptInputSubmit('${request_id}')">
+                            <button class="chat-component-btn approve" onclick="handleUserPromptInputSubmit('${request_id}')">Submit</button>
+                        </div>
+                    `;
+                    break;
+
+                case 'select':
+                    if (options && options.length > 0) {
+                        const optionsHtml = options.map(opt => `
+                            <button class="chat-component-btn option-btn" data-option-id="${opt.id}"
+                                    onclick="handleUserPromptSelect('${request_id}', '${opt.id}')">
+                                ${escapeHtml(opt.label)}
+                                ${opt.description ? `<br><small>${escapeHtml(opt.description)}</small>` : ''}
+                            </button>
+                        `).join('');
+                        bodyContent += `<div class="prompt-options">${optionsHtml}</div>`;
+                    }
+                    break;
+
+                case 'multi_select':
+                    if (options && options.length > 0) {
+                        const checkboxesHtml = options.map(opt => `
+                            <label class="prompt-checkbox-label">
+                                <input type="checkbox" class="prompt-checkbox" value="${opt.id}">
+                                <span>${escapeHtml(opt.label)}</span>
+                                ${opt.description ? `<small>${escapeHtml(opt.description)}</small>` : ''}
+                            </label>
+                        `).join('');
+                        bodyContent += `
+                            <div class="prompt-checkboxes" id="checkboxes-${request_id}">
+                                ${checkboxesHtml}
+                            </div>
+                            <div class="chat-component-actions">
+                                <button class="chat-component-btn approve" onclick="handleUserPromptMultiSelect('${request_id}')">Submit</button>
+                            </div>
+                        `;
+                    }
+                    break;
+            }
+
+            componentEl.innerHTML = `
+                <div class="chat-component-header">
+                    <span class="icon">${icon}</span>
+                    <span class="title">${escapeHtml(title)}</span>
+                </div>
+                <div class="chat-component-body">
+                    ${bodyContent}
+                    ${interactive ? `<div class="chat-component-timeout">Timeout in ${timeout_seconds || 300}s</div>` : ''}
+                </div>
+            `;
+
+            chatMessages.appendChild(componentEl);
+            scrollChatToBottom();
+
+            // Start timeout countdown if interactive
+            if (interactive && timeout_seconds > 0) {
+                startPromptTimeoutCountdown(request_id, timeout_seconds);
+            }
+
+            // Focus input if it's an input prompt
+            if (prompt_type === 'input') {
+                const inputEl = document.getElementById(`prompt-input-${request_id}`);
+                if (inputEl) inputEl.focus();
+            }
+        }
+
+        function handleUserPromptResponse(requestId, outcome, message, selectedOptions) {
+            if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+            ws.send(JSON.stringify({
+                type: 'component_action',
+                action: {
+                    action: 'user_prompt_submit',
+                    request_id: requestId,
+                    outcome: outcome,
+                    message: message || null,
+                    selected_options: selectedOptions || null
+                }
+            }));
+
+            // Mark component as resolved
+            const componentEl = document.getElementById(`component-${requestId}`);
+            if (componentEl) {
+                componentEl.classList.add('resolved');
+                componentEl.dataset.resolution = outcome === 'approved' ? '✓ Submitted' : '✗ Cancelled';
+                clearComponentInterval(componentEl);
+            }
+        }
+
+        function handleUserPromptInputSubmit(requestId) {
+            const inputEl = document.getElementById(`prompt-input-${requestId}`);
+            const message = inputEl ? inputEl.value.trim() : '';
+            handleUserPromptResponse(requestId, 'approved', message, null);
+        }
+
+        function handleUserPromptSelect(requestId, optionId) {
+            handleUserPromptResponse(requestId, 'approved', null, [optionId]);
+        }
+
+        function handleUserPromptMultiSelect(requestId) {
+            const container = document.getElementById(`checkboxes-${requestId}`);
+            if (!container) return;
+
+            const checkboxes = container.querySelectorAll('.prompt-checkbox:checked');
+            const selectedOptions = Array.from(checkboxes).map(cb => cb.value);
+
+            if (selectedOptions.length === 0) {
+                // Could show a warning, but for now just submit empty
+            }
+
+            handleUserPromptResponse(requestId, 'approved', null, selectedOptions);
+        }
+
+        function startPromptTimeoutCountdown(requestId, timeoutSeconds) {
+            let remaining = timeoutSeconds;
+            const componentEl = document.getElementById(`component-${requestId}`);
+            if (!componentEl) return;
+
+            const timeoutEl = componentEl.querySelector('.chat-component-timeout');
+            if (!timeoutEl) return;
+
+            const interval = setInterval(() => {
+                remaining--;
+                if (remaining <= 0) {
+                    clearInterval(interval);
+                    timeoutEl.textContent = 'Timed out';
+                    // Auto-timeout response
+                    handleUserPromptResponse(requestId, 'timeout', null, null);
+                } else {
+                    timeoutEl.textContent = `Timeout in ${remaining}s`;
+                }
+            }, 1000);
+
+            // Store interval ID for cleanup
+            componentEl.dataset.intervalId = interval;
         }
 
         function startTimeoutCountdown(requestId, timeoutSeconds) {

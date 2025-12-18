@@ -310,6 +310,18 @@ pub enum ComponentAction {
         #[serde(default)]
         reason: Option<String>,
     },
+    /// User prompt response (REQ-PROMPT-005)
+    UserPromptSubmit {
+        request_id: String,
+        /// Response outcome: "approved", "rejected", "cancelled"
+        outcome: String,
+        /// Text response (for input type or optional comment)
+        #[serde(default)]
+        message: Option<String>,
+        /// Selected option IDs (for select/multi_select)
+        #[serde(default)]
+        selected_options: Option<Vec<String>>,
+    },
 }
 
 #[cfg(test)]
