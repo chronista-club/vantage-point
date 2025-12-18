@@ -423,6 +423,21 @@ enum Commands {
     /// LPD8コントローラー設定
     #[command(subcommand)]
     Lpd8(Lpd8Commands),
+    /// Stand Conductorを起動（複数Standを管理）
+    Conductor {
+        /// 待ち受けポート番号
+        #[arg(short, long, default_value = "32900")]
+        port: u16,
+    },
+    /// VantagePoint.app を起動（Conductor Standも自動起動）
+    App {
+        /// Conductorポート番号
+        #[arg(short, long, default_value = "32900")]
+        port: u16,
+        /// Conductor起動をスキップ（既に起動している場合）
+        #[arg(long)]
+        no_conductor: bool,
+    },
 }
 
 /// LPD8サブコマンド
@@ -917,5 +932,128 @@ fn main() -> Result<()> {
                 Ok(())
             }
         },
+        Commands::Conductor { port } => {
+            // Stand Conductorモードで起動
+            println!("🎭 Starting Stand Conductor on port {}...", port);
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(stand::run_conductor(port))
+        }
+        Commands::App { port, no_conductor } => {
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(async {
+                // Conductor Standが稼働しているか確認
+                if !no_conductor {
+                    let conductor_url = format!("http://localhost:{}/api/health", port);
+                    let client = reqwest::Client::builder()
+                        .timeout(std::time::Duration::from_secs(2))
+                        .build()?;
+
+                    let conductor_running = client.get(&conductor_url).send().await
+                        .map(|r| r.status().is_success())
+                        .unwrap_or(false);
+
+                    if !conductor_running {
+                        println!("🎭 Starting Conductor Stand on port {}...", port);
+                        // バックグラウンドでConductorを起動
+                        let vp_path = which_vp().ok_or_else(|| {
+                            anyhow::anyhow!("vp binary not found")
+                        })?;
+
+                        std::process::Command::new(&vp_path)
+                            .args(["conductor", "-p", &port.to_string()])
+                            .spawn()
+                            .map_err(|e| anyhow::anyhow!("Failed to start conductor: {}", e))?;
+
+                        // 起動を待つ
+                        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                    }
+                }
+
+                // VantagePoint.app を起動
+                let app_path = find_vantage_point_app();
+                match app_path {
+                    Some(path) => {
+                        println!("🚀 Opening VantagePoint.app...");
+                        std::process::Command::new("open")
+                            .arg(&path)
+                            .spawn()
+                            .map_err(|e| anyhow::anyhow!("Failed to open app: {}", e))?;
+                        println!("✓ VantagePoint.app started");
+                        Ok(())
+                    }
+                    None => {
+                        eprintln!("✗ VantagePoint.app not found");
+                        eprintln!("  Expected locations:");
+                        eprintln!("    - /Applications/VantagePoint.app");
+                        eprintln!("    - ~/Applications/VantagePoint.app");
+                        std::process::exit(1);
+                    }
+                }
+            })
+        }
     }
+}
+
+/// vpバイナリのパスを取得
+fn which_vp() -> Option<std::path::PathBuf> {
+    // 1. ~/.cargo/bin/vp
+    if let Some(home) = dirs::home_dir() {
+        let cargo_path = home.join(".cargo/bin/vp");
+        if cargo_path.exists() {
+            return Some(cargo_path);
+        }
+    }
+
+    // 2. /usr/local/bin/vp
+    let usr_local = std::path::PathBuf::from("/usr/local/bin/vp");
+    if usr_local.exists() {
+        return Some(usr_local);
+    }
+
+    // 3. PATH経由
+    if let Ok(output) = std::process::Command::new("which").arg("vp").output() {
+        if output.status.success() {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path.is_empty() {
+                return Some(std::path::PathBuf::from(path));
+            }
+        }
+    }
+
+    None
+}
+
+/// VantagePoint.app のパスを検索
+fn find_vantage_point_app() -> Option<std::path::PathBuf> {
+    // 1. /Applications
+    let system_app = std::path::PathBuf::from("/Applications/VantagePoint.app");
+    if system_app.exists() {
+        return Some(system_app);
+    }
+
+    // 2. ~/Applications
+    if let Some(home) = dirs::home_dir() {
+        let user_app = home.join("Applications/VantagePoint.app");
+        if user_app.exists() {
+            return Some(user_app);
+        }
+    }
+
+    // 3. ビルドディレクトリ（開発用）
+    if let Some(home) = dirs::home_dir() {
+        let dev_app = home.join("Library/Developer/Xcode/DerivedData")
+            .read_dir()
+            .ok()?
+            .filter_map(|e| e.ok())
+            .find(|e| e.file_name().to_string_lossy().starts_with("VantagePoint-"))
+            .map(|e| e.path().join("Build/Products/Debug/VantagePoint.app"));
+
+        if let Some(path) = dev_app {
+            if path.exists() {
+                return Some(path);
+            }
+        }
+    }
+
+    None
 }
