@@ -12,6 +12,7 @@ repository = "https://github.com/chronista-club/vantage-point"
 [workspace.dependencies]
 # Async runtime
 tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
 
 # CLI
 clap = { version = "4", features = ["derive"] }

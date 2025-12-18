@@ -64,7 +64,7 @@ pub fn list_ports() -> Result<Vec<String>> {
 }
 
 /// Parse raw MIDI bytes into MidiMessage
-fn parse_midi_message(message: &[u8]) -> Option<MidiMessage> {
+pub fn parse_midi_message(message: &[u8]) -> Option<MidiMessage> {
     if message.is_empty() {
         return None;
     }
@@ -172,6 +172,8 @@ pub enum MidiAction {
 /// MIDI mapping configuration
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MidiConfig {
+    /// Port index to connect to (0-based)
+    pub port_index: Option<usize>,
     /// Port name pattern to connect to (substring match)
     pub port_pattern: Option<String>,
     /// Note mappings: note number -> action

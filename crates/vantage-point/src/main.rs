@@ -16,6 +16,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 mod agent;
 mod agui;
+mod capability;
 mod config;
 mod stand;
 mod mcp;
@@ -563,33 +564,26 @@ fn main() -> Result<()> {
 
                 // Set port pattern if provided as string, or port index if numeric
                 if let Ok(idx) = midi_arg.parse::<usize>() {
-                    (Some(idx), config)
+                    config.port_index = Some(idx);
                 } else {
                     config.port_pattern = Some(midi_arg.clone());
-                    (None, config)
                 }
+                config
             });
+
+            // Create CapabilityConfig
+            let cap_config = stand::CapabilityConfig {
+                project_dir: resolved_project_dir.clone(),
+                midi_config,
+            };
 
             if headless || browser {
                 // Headless or browser mode - use tokio runtime
                 let rt = tokio::runtime::Runtime::new()?;
                 rt.block_on(async {
-                    // Start HTTP server in background
-                    let project_dir = resolved_project_dir.clone();
                     let server_handle = tokio::spawn(async move {
-                        stand::run(resolved_port, false, debug_mode, project_dir).await
+                        stand::run(resolved_port, false, debug_mode, cap_config).await
                     });
-
-                    // Start MIDI monitoring if enabled
-                    if let Some((port_idx, config)) = midi_config {
-                        let stand_port = resolved_port;
-                        tokio::spawn(async move {
-                            if let Err(e) = midi::run_midi(port_idx, config, stand_port).await {
-                                tracing::error!("MIDI error: {}", e);
-                            }
-                        });
-                        tracing::info!("MIDI monitoring enabled");
-                    }
 
                     if browser {
                         // Wait for server to start, then open browser
@@ -603,24 +597,10 @@ fn main() -> Result<()> {
                 })
             } else {
                 // WebView mode - run server in background thread, WebView on main thread
-                let project_dir = resolved_project_dir.clone();
-                let midi_config_clone = midi_config.clone();
                 let server_thread = std::thread::spawn(move || {
                     let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime");
                     rt.block_on(async {
-                        // Start MIDI monitoring if enabled
-                        if let Some((port_idx, config)) = midi_config_clone {
-                            let stand_port = resolved_port;
-                            tokio::spawn(async move {
-                                if let Err(e) = midi::run_midi(port_idx, config, stand_port).await
-                                {
-                                    tracing::error!("MIDI error: {}", e);
-                                }
-                            });
-                            tracing::info!("MIDI monitoring enabled");
-                        }
-
-                        stand::run(resolved_port, false, debug_mode, project_dir).await
+                        stand::run(resolved_port, false, debug_mode, cap_config).await
                     })
                 });
 
@@ -761,12 +741,17 @@ fn main() -> Result<()> {
             // Determine debug mode from env
             let debug_mode = parse_debug_env().unwrap_or_default();
 
+            // Create CapabilityConfig (no MIDI on restart)
+            let cap_config = stand::CapabilityConfig {
+                project_dir,
+                midi_config: None,
+            };
+
             if headless || browser {
                 let rt = tokio::runtime::Runtime::new()?;
                 rt.block_on(async {
-                    let project_dir_clone = project_dir.clone();
                     let server_handle = tokio::spawn(async move {
-                        stand::run(port, false, debug_mode, project_dir_clone).await
+                        stand::run(port, false, debug_mode, cap_config).await
                     });
 
                     if browser {
@@ -780,10 +765,9 @@ fn main() -> Result<()> {
                 })
             } else {
                 // WebView mode
-                let project_dir_clone = project_dir.clone();
                 let server_thread = std::thread::spawn(move || {
                     let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime");
-                    rt.block_on(async { stand::run(port, false, debug_mode, project_dir_clone).await })
+                    rt.block_on(async { stand::run(port, false, debug_mode, cap_config).await })
                 });
 
                 std::thread::sleep(std::time::Duration::from_millis(300));

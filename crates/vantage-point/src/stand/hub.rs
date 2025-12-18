@@ -57,6 +57,11 @@ impl Hub {
     pub async fn has_clients(&self) -> bool {
         *self.client_count.read().await > 0
     }
+
+    /// Get the broadcast sender (for capability event bridge)
+    pub fn sender(&self) -> broadcast::Sender<StandMessage> {
+        self.tx.clone()
+    }
 }
 
 impl Default for Hub {

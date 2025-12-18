@@ -21,6 +21,7 @@ use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use tower_http::cors::CorsLayer;
 
+use super::capabilities::{CapabilityConfig, StandCapabilities};
 use super::hub::Hub;
 use crate::agent::{AgentConfig, AgentEvent, ClaudeAgent};
 use crate::agui::{AgUiEvent, MessageRole};
@@ -317,6 +318,8 @@ struct AppState {
     project_dir: String,
     /// Pending permission requests: request_id -> response channel
     pending_permissions: Arc<RwLock<HashMap<String, PendingPermission>>>,
+    /// Capability system (Agent, MIDI, Protocol)
+    capabilities: Arc<StandCapabilities>,
 }
 
 impl AppState {
@@ -368,8 +371,10 @@ pub async fn run(
     port: u16,
     auto_open_browser: bool,
     debug_mode: DebugMode,
-    project_dir: String,
+    cap_config: CapabilityConfig,
 ) -> Result<()> {
+    let project_dir = cap_config.project_dir.clone();
+
     // Shutdown signal
     let shutdown_token = CancellationToken::new();
     let shutdown_token_clone = shutdown_token.clone();
@@ -381,14 +386,29 @@ pub async fn run(
         sessions.sessions.len()
     );
 
+    // Initialize Capability system
+    let capabilities = Arc::new(StandCapabilities::new(cap_config).await);
+
+    // Initialize all capabilities
+    if let Err(e) = capabilities.initialize().await {
+        tracing::warn!("Failed to initialize capabilities: {}", e);
+    }
+
+    let hub = Hub::new();
+
+    // Start event bridge: EventBus -> Hub
+    let _event_bridge = capabilities.start_event_bridge(hub.sender());
+    tracing::info!("Capability event bridge started");
+
     let state = Arc::new(AppState {
-        hub: Hub::new(),
+        hub,
         sessions: Arc::new(RwLock::new(sessions)),
         cancel_token: Arc::new(RwLock::new(CancellationToken::new())),
         debug_mode,
         shutdown_token: shutdown_token.clone(),
         project_dir,
         pending_permissions: Arc::new(RwLock::new(HashMap::new())),
+        capabilities,
     });
 
     let app = Router::new()
@@ -418,6 +438,9 @@ pub async fn run(
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
+    // Clone capabilities for shutdown
+    let capabilities_for_shutdown = state.capabilities.clone();
+
     // Serve with graceful shutdown
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
@@ -425,6 +448,12 @@ pub async fn run(
             tracing::info!("Graceful shutdown initiated");
         })
         .await?;
+
+    // Shutdown all capabilities
+    tracing::info!("Shutting down capabilities...");
+    if let Err(e) = capabilities_for_shutdown.shutdown().await {
+        tracing::warn!("Error during capability shutdown: {}", e);
+    }
 
     tracing::info!("Server stopped");
     Ok(())
