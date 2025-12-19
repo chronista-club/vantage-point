@@ -120,3 +120,39 @@ path = "/path/to/creo-memories"
 - **Spec** (`docs/spec/`): 何を作るか
 - **Design** (`docs/design/`): どう作るか
 - **Guide** (`docs/development/`): どう使うか
+
+## Agent モジュール
+
+Claude CLI統合の実装。3つの実行モードを提供:
+
+### 実行モード
+
+| モード | CLI形式 | 用途 |
+|--------|---------|------|
+| **OneShot** | `claude -p "prompt"` | 単発プロンプト → 応答 |
+| **Interactive** | `claude -p --input-format stream-json` | 持続プロセス、複数ターン（Stream-JSON I/O） |
+| **PTY** | `claude` (対話モード) | PTY経由の真の対話モード、Multiplexer Orchestration用 |
+
+### Stream-JSON 入力フォーマット
+
+`--input-format stream-json` 使用時のJSONL形式:
+
+```json
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"メッセージ"}]}}
+```
+
+### PTYモード
+
+`pty-process` クレートを使用してPTY（疑似端末）経由でClaude CLIを起動。
+tmuxのようなMultiplexer Orchestrationに対応:
+
+- `PtyClaudeAgent::start()` - PTY付きでClaude CLI起動
+- `PtyClaudeAgent::send()` - テキスト入力送信
+- `PtyClaudeAgent::send_raw()` - 制御シーケンス送信（Ctrl+C等）
+- `PtyClaudeAgent::resize()` - ターミナルサイズ変更
+- `PtyClaudeAgent::events()` - 出力イベント受信
+
+### コーディング規約
+
+- **コメントは日本語で記述する**
+- 設計思想に従い、data / calculations / actions を明確に分離
