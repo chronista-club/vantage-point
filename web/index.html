@@ -921,6 +921,11 @@
                         projectNameEl.textContent = projectName;
                         projectNameEl.classList.add('visible');
                         document.title = `${projectName} - Vantage Point`;
+
+                        // Update Stand name in UI elements
+                        document.getElementById('typing-indicator').textContent = `${projectName} is thinking`;
+                        document.querySelector('.history-area .system-message').textContent = `Connected to ${projectName}`;
+                        document.getElementById('chat-input').placeholder = `Message ${projectName}...`;
                     }
                 } catch (e) {
                     console.log('Could not fetch project info:', e);
