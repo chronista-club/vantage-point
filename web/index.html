@@ -203,7 +203,7 @@
             padding: 0 16px;
         }
 
-        /* Response Area - 入力欄の上 */
+        /* Context Area - 入力欄の上（自動切替） */
         .response-area {
             flex: 1;
             display: flex;
@@ -212,6 +212,77 @@
             overflow: hidden;
             padding: 16px 0;
             min-height: 100px;
+            position: relative;
+        }
+
+        /* Context Mode Indicator */
+        .context-mode-bar {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 12px;
+            background: rgba(22, 33, 62, 0.8);
+            border-radius: 6px;
+            margin-bottom: 8px;
+            font-size: 12px;
+            color: #8b949e;
+            opacity: 0;
+            transform: translateY(-10px);
+            transition: opacity 0.2s, transform 0.2s;
+        }
+        .context-mode-bar.visible {
+            opacity: 1;
+            transform: translateY(0);
+        }
+        .context-mode-indicator {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #8b949e;
+            animation: pulse-soft 2s infinite;
+        }
+        .context-mode-indicator.thinking { background: #3b82f6; }
+        .context-mode-indicator.responding { background: #22c55e; }
+        .context-mode-indicator.permission { background: #f59e0b; }
+        .context-mode-indicator.prompt { background: #6366f1; }
+        .context-mode-indicator.todo { background: #06b6d4; }
+        .context-mode-indicator.idle { background: #64748b; animation: none; }
+
+        .context-mode-label {
+            font-weight: 500;
+        }
+        .context-mode-detail {
+            color: #64748b;
+            margin-left: auto;
+        }
+
+        @keyframes pulse-soft {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        /* Context Content Stack */
+        .context-stack {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            flex: 1;
+            overflow: hidden;
+            justify-content: flex-end;
+        }
+        .context-item {
+            animation: contextSlideIn 0.25s ease-out;
+        }
+        .context-item.exiting {
+            animation: contextSlideOut 0.2s ease-in forwards;
+        }
+        @keyframes contextSlideIn {
+            from { opacity: 0; transform: translateY(-15px) scale(0.98); }
+            to { opacity: 1; transform: translateY(0) scale(1); }
+        }
+        @keyframes contextSlideOut {
+            from { opacity: 1; transform: translateY(0) scale(1); }
+            to { opacity: 0; transform: translateY(10px) scale(0.98); }
         }
         .current-response {
             background: #1e293b;
@@ -822,13 +893,22 @@
         <!-- Center Panel - Chat -->
         <div class="center-panel">
             <div id="chat-container" class="chat-container">
-                <!-- Response Area - AIの現在の返答 -->
+                <!-- Context Area - 自動切替コンテキスト表示 -->
                 <div id="response-area" class="response-area drop-zone" data-position="0">
-                    <div id="current-response" class="current-response empty">
-                        <div class="content"></div>
+                    <!-- Mode Indicator Bar -->
+                    <div id="context-mode-bar" class="context-mode-bar">
+                        <div id="context-mode-indicator" class="context-mode-indicator idle"></div>
+                        <span id="context-mode-label" class="context-mode-label">待機中</span>
+                        <span id="context-mode-detail" class="context-mode-detail"></span>
                     </div>
-                    <div id="typing-indicator" class="typing-indicator" style="display: none;">
-                        Stand is thinking
+                    <!-- Context Stack -->
+                    <div id="context-stack" class="context-stack">
+                        <div id="current-response" class="current-response empty context-item">
+                            <div class="content"></div>
+                        </div>
+                        <div id="typing-indicator" class="typing-indicator context-item" style="display: none;">
+                            Stand is thinking
+                        </div>
                     </div>
                 </div>
 
@@ -907,6 +987,13 @@
         const resizeLeft = document.getElementById('resize-left');
         const resizeRight = document.getElementById('resize-right');
 
+        // Context Mode Elements
+        const contextModeBar = document.getElementById('context-mode-bar');
+        const contextModeIndicator = document.getElementById('context-mode-indicator');
+        const contextModeLabel = document.getElementById('context-mode-label');
+        const contextModeDetail = document.getElementById('context-mode-detail');
+        const contextStack = document.getElementById('context-stack');
+
         // Panel Toggle Functions
         function toggleLeftPanel() {
             leftPanel.classList.toggle('collapsed');
@@ -922,6 +1009,106 @@
 
         toggleLeftBtn.addEventListener('click', toggleLeftPanel);
         toggleRightBtn.addEventListener('click', toggleRightPanel);
+
+        // ===== Context Mode Management =====
+        // モード定義（優先度順: 高い数字 = 高優先度）
+        const CONTEXT_MODES = {
+            idle: { priority: 0, label: '待機中', color: 'idle' },
+            thinking: { priority: 10, label: '考え中', color: 'thinking' },
+            responding: { priority: 20, label: '返答中', color: 'responding' },
+            todo: { priority: 30, label: 'タスク進行中', color: 'todo' },
+            prompt: { priority: 40, label: '入力待ち', color: 'prompt' },
+            permission: { priority: 50, label: '許可待ち', color: 'permission' }
+        };
+
+        let currentContextMode = 'idle';
+        let activeContextItems = new Set(); // 現在アクティブなコンテキストアイテムのID
+
+        function setContextMode(mode, detail = '') {
+            const modeConfig = CONTEXT_MODES[mode] || CONTEXT_MODES.idle;
+            currentContextMode = mode;
+
+            // Update indicator
+            contextModeIndicator.className = `context-mode-indicator ${modeConfig.color}`;
+            contextModeLabel.textContent = modeConfig.label;
+            contextModeDetail.textContent = detail;
+
+            // Show/hide mode bar
+            if (mode === 'idle' && activeContextItems.size === 0) {
+                contextModeBar.classList.remove('visible');
+            } else {
+                contextModeBar.classList.add('visible');
+            }
+        }
+
+        function updateContextModeFromState() {
+            // 優先度に基づいてモードを決定
+            let highestPriority = 0;
+            let selectedMode = 'idle';
+            let detail = '';
+
+            // Permission request check
+            const pendingPermission = document.querySelector('.chat-component.permission-request:not(.resolved)');
+            if (pendingPermission) {
+                const toolName = pendingPermission.querySelector('.tool-name')?.textContent || '';
+                setContextMode('permission', toolName);
+                return;
+            }
+
+            // User prompt check
+            const pendingPrompt = document.querySelector('.chat-component.user-prompt:not(.resolved)');
+            if (pendingPrompt) {
+                const title = pendingPrompt.querySelector('.title')?.textContent || '';
+                setContextMode('prompt', title);
+                return;
+            }
+
+            // Todo list check
+            const todoList = document.querySelector('.chat-component.todo-list');
+            if (todoList) {
+                const inProgress = todoList.querySelectorAll('.todo-item.in_progress').length;
+                if (inProgress > 0) {
+                    setContextMode('todo', `${inProgress}件実行中`);
+                    return;
+                }
+            }
+
+            // Streaming/Responding check
+            if (isStreaming) {
+                setContextMode('responding');
+                return;
+            }
+
+            // Thinking check
+            if (typingIndicator.style.display !== 'none') {
+                setContextMode('thinking');
+                return;
+            }
+
+            // Default to idle
+            setContextMode('idle');
+        }
+
+        // コンテキストアイテムの追加（アニメーション付き）
+        function addContextItem(element, id) {
+            if (id) activeContextItems.add(id);
+            element.classList.add('context-item');
+            element.classList.remove('exiting');
+            updateContextModeFromState();
+        }
+
+        // コンテキストアイテムの削除（アニメーション付き）
+        function removeContextItem(element, id) {
+            if (id) activeContextItems.delete(id);
+            element.classList.add('exiting');
+            setTimeout(() => {
+                if (element.classList.contains('exiting')) {
+                    element.style.display = 'none';
+                    element.classList.remove('exiting');
+                }
+                updateContextModeFromState();
+            }, 200);
+        }
 
         // Resize functionality
         let isResizing = null;
@@ -1135,26 +1322,27 @@
                     ` : ''}
                 </div>
             `;
-            // Show in response area (above input)
-            currentResponse.classList.remove('empty');
-            currentResponse.innerHTML = '';
-            currentResponse.appendChild(componentEl);
+            // Show in context stack (above input)
+            componentEl.classList.add('context-item');
+            contextStack.appendChild(componentEl);
+            currentResponse.classList.add('empty'); // Hide default response area
+            addContextItem(componentEl, request_id);
 
             if (interactive && timeout_seconds > 0) {
                 startTimeoutCountdown(request_id, timeout_seconds);
             }
+            updateContextModeFromState();
         }
 
         function renderTodoList(data) {
             const { items, title } = data;
             let componentEl = document.querySelector('.chat-component.todo-list');
+            const isNew = !componentEl;
             if (!componentEl) {
                 componentEl = document.createElement('div');
-                componentEl.className = 'chat-component todo-list';
-                // Show in response area
-                currentResponse.classList.remove('empty');
-                currentResponse.innerHTML = '';
-                currentResponse.appendChild(componentEl);
+                componentEl.className = 'chat-component todo-list context-item';
+                // Show in context stack
+                contextStack.appendChild(componentEl);
             }
             const itemsHtml = items.map(item => `
                 <div class="todo-item ${item.status}">
@@ -1169,6 +1357,8 @@
                 </div>
                 <div class="chat-component-body">${itemsHtml}</div>
             `;
+            if (isNew) addContextItem(componentEl, 'todo-list');
+            updateContextModeFromState();
         }
 
         function renderUserPrompt(event, interactive) {
@@ -1218,10 +1408,10 @@
                     ${interactive ? `<div class="chat-component-timeout">Timeout in ${timeout_seconds || 300}s</div>` : ''}
                 </div>
             `;
-            // Show in response area
-            currentResponse.classList.remove('empty');
-            currentResponse.innerHTML = '';
-            currentResponse.appendChild(componentEl);
+            // コンテキストスタックに追加
+            contextStack.insertBefore(componentEl, contextStack.firstChild);
+            addContextItem(componentEl, `prompt-${request_id}`);
+            updateContextModeFromState();
         }
 
         function handleUserPromptResponse(requestId, outcome, message, selectedOptions) {
@@ -1234,6 +1424,11 @@
             if (componentEl) {
                 componentEl.classList.add('resolved');
                 componentEl.dataset.resolution = outcome === 'approved' ? '✓ Submitted' : '✗ Cancelled';
+                // コンテキストスタックから削除（アニメーション付き）
+                setTimeout(() => {
+                    removeContextItem(componentEl, `prompt-${requestId}`);
+                    setTimeout(() => componentEl.remove(), 300);
+                }, 500);
             }
         }
 
@@ -1273,12 +1468,12 @@
                 componentEl.classList.add('resolved');
                 componentEl.dataset.resolution = '✓ Allowed';
                 clearComponentInterval(componentEl);
+                // コンテキストスタックから削除（アニメーション付き）
+                setTimeout(() => {
+                    removeContextItem(componentEl, requestId);
+                    setTimeout(() => componentEl.remove(), 300);
+                }, 500);
             }
-            // Clear response area after a short delay
-            setTimeout(() => {
-                currentResponse.classList.add('empty');
-                currentResponse.innerHTML = '<div class="content"></div>';
-            }, 500);
         }
 
         function handlePermissionDeny(requestId) {
@@ -1289,11 +1484,12 @@
                 componentEl.classList.add('resolved');
                 componentEl.dataset.resolution = '✗ Denied';
                 clearComponentInterval(componentEl);
+                // コンテキストスタックから削除（アニメーション付き）
+                setTimeout(() => {
+                    removeContextItem(componentEl, requestId);
+                    setTimeout(() => componentEl.remove(), 300);
+                }, 500);
             }
-            setTimeout(() => {
-                currentResponse.classList.add('empty');
-                currentResponse.innerHTML = '<div class="content"></div>';
-            }, 500);
         }
 
         function dismissComponent(requestId) {
@@ -1420,6 +1616,7 @@
                 currentStreamContent = '';
                 chatCancelBtn.classList.add('visible');
                 currentResponse.classList.remove('empty');
+                updateContextModeFromState();
             }
 
             if (content) {
@@ -1433,13 +1630,18 @@
                     addToHistory('assistant', currentStreamContent);
                 }
 
-                // Clear response area
-                currentResponse.classList.add('empty');
-                currentResponseContent.innerHTML = '';
+                // Clear response area with animation
+                currentResponse.classList.add('exiting');
+                setTimeout(() => {
+                    currentResponse.classList.add('empty');
+                    currentResponse.classList.remove('exiting');
+                    currentResponseContent.innerHTML = '';
+                }, 200);
 
                 isStreaming = false;
                 currentStreamContent = '';
                 chatCancelBtn.classList.remove('visible');
+                updateContextModeFromState();
             }
         }
 
@@ -1467,10 +1669,12 @@
 
         function showTypingIndicator() {
             typingIndicator.style.display = 'block';
+            updateContextModeFromState();
         }
 
         function hideTypingIndicator() {
             typingIndicator.style.display = 'none';
+            updateContextModeFromState();
         }
 
         function sendChatMessage() {
