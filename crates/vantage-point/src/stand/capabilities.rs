@@ -234,6 +234,7 @@ fn capability_event_to_stand_message(
                 category: "error".to_string(),
                 message: error,
                 data: Some(event.payload.clone()),
+                tags: vec!["agent".to_string(), "error".to_string()],
             }
         }
 
@@ -245,6 +246,7 @@ fn capability_event_to_stand_message(
                 category: "midi".to_string(),
                 message: event.event_type.clone(),
                 data: Some(event.payload.clone()),
+                tags: vec!["midi".to_string(), "capability".to_string()],
             }
         }
 
@@ -254,6 +256,7 @@ fn capability_event_to_stand_message(
             category: "capability".to_string(),
             message: format!("{}: {}", event.source, event.event_type),
             data: Some(event.payload.clone()),
+            tags: vec!["capability".to_string(), "state".to_string()],
         },
 
         // その他のイベント
@@ -262,6 +265,7 @@ fn capability_event_to_stand_message(
             category: "event".to_string(),
             message: event.event_type.clone(),
             data: Some(event.payload.clone()),
+            tags: vec!["event".to_string()],
         },
     }
 }

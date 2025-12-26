@@ -156,3 +156,44 @@ tmuxのようなMultiplexer Orchestrationに対応:
 
 - **コメントは日本語で記述する**
 - 設計思想に従い、data / calculations / actions を明確に分離
+
+## デバッグモード開発方針
+
+開発時は常にデバッグモード（`simple` または `detail`）を使用し、適切なログを配置しながら実装を進める。
+
+### デバッグモードの種類
+
+| モード | 用途 | 起動方法 |
+|--------|------|----------|
+| `none` | 本番運用 | `vp start` |
+| `simple` | 基本的なイベントログ | `vp start -d simple` |
+| `detail` | 詳細なデータ・タイミング情報 | `vp start -d detail` |
+
+### ログ出力方針
+
+サーバー側（Rust）では `state.send_debug()` を使用:
+
+```rust
+// Simple: 基本イベント
+state.send_debug("category", "メッセージ", None);
+
+// Detail: 詳細データ付き
+state.send_debug_detail("category", "メッセージ", serde_json::json!({
+    "key": "value"
+}));
+```
+
+**カテゴリ例**:
+- `connection`: WebSocket接続関連
+- `pty`: PTYイベント
+- `permission`: パーミッションリクエスト
+- `agent`: エージェント動作
+- `timing`: 処理時間計測
+- `tool`: ツール実行
+
+### 問題調査時のフロー
+
+1. `vp start -d detail` でStandを起動
+2. WebUIのデバッグパネル（右パネル）でログを確認
+3. ブラウザコンソールで `Received:` ログを確認
+4. 必要に応じてコードにログを追加して再ビルド

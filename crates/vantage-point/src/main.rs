@@ -18,12 +18,14 @@ mod agent;
 mod agui;
 mod capability;
 mod config;
-mod stand;
 mod mcp;
 mod midi;
+mod park;
 mod protocol;
+mod stand;
 mod tray;
 mod webview;
+mod world;
 
 use config::Config;
 use protocol::DebugMode;
@@ -192,14 +194,15 @@ async fn scan_instances() -> Vec<Instance> {
         let url = format!("http://localhost:{}/api/health", port);
         if let Ok(response) = client.get(&url).send().await
             && response.status().is_success()
-                && let Ok(health) = response.json::<HealthResponse>().await {
-                    instances.push(Instance {
-                        port,
-                        pid: health.pid,
-                        version: health.version,
-                        project_dir: health.project_dir,
-                    });
-                }
+            && let Ok(health) = response.json::<HealthResponse>().await
+        {
+            instances.push(Instance {
+                port,
+                pid: health.pid,
+                version: health.version,
+                project_dir: health.project_dir,
+            });
+        }
     }
 
     instances
@@ -242,7 +245,10 @@ async fn list_instances() -> Result<()> {
         };
         println!(
             "  {}  {}  {:>5}   {}",
-            i + 1, inst.port, inst.pid, project_display
+            i + 1,
+            inst.port,
+            inst.pid,
+            project_display
         );
     }
     println!();
@@ -315,6 +321,38 @@ fn parse_debug_env() -> Option<DebugMode> {
             "detail" | "detailed" | "2" | "verbose" => Some(DebugMode::Detail),
             _ => None,
         })
+}
+
+/// Initialize tracing with VP_LOG support
+/// VP_LOG環境変数またはDebugModeに基づいてログレベルを設定
+/// - VP_LOG=debug|info|warn|error が優先
+/// - 未設定の場合、debug_modeに基づいて設定:
+///   - None -> warn
+///   - Simple -> info
+///   - Detail -> debug
+fn init_tracing(debug_mode: DebugMode) {
+    // VP_LOGが設定されていない場合、debug_modeに基づいてRUST_LOGを設定
+    // SAFETY: main()開始直後、他スレッド起動前に呼ばれるため安全
+    if std::env::var("VP_LOG").is_err() && std::env::var("RUST_LOG").is_err() {
+        let log_level = match debug_mode {
+            DebugMode::None => "warn",
+            DebugMode::Simple => "info",
+            DebugMode::Detail => "debug",
+        };
+        unsafe {
+            std::env::set_var("RUST_LOG", format!("vantage_point={}", log_level));
+        }
+    } else if let Ok(vp_log) = std::env::var("VP_LOG") {
+        // VP_LOG -> RUST_LOG に変換
+        unsafe {
+            std::env::set_var("RUST_LOG", format!("vantage_point={}", vp_log));
+        }
+    }
+
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_target(false)
+        .init();
 }
 
 #[derive(Parser)]
@@ -438,6 +476,144 @@ enum Commands {
         #[arg(long)]
         no_conductor: bool,
     },
+    /// The World 管理（常駐コアプロセス）
+    #[command(subcommand)]
+    World(WorldCommands),
+    /// Paisley Park 管理（プロジェクト単位 Agent）
+    #[command(subcommand)]
+    Park(ParkCommands),
+    /// Gold Experience（創造・回復）
+    #[command(subcommand)]
+    Ge(GeCommands),
+}
+
+/// The World サブコマンド（JoJo Part 3 DIO のスタンド）
+#[derive(Subcommand)]
+enum WorldCommands {
+    /// The World を起動「時よ止まれ」
+    #[command(alias = "start")]
+    Up {
+        /// デバッグモード
+        #[arg(long, short)]
+        debug: bool,
+        /// 静的ファイルディレクトリ（ViewPoint 用）
+        #[arg(long, short = 's')]
+        static_dir: Option<std::path::PathBuf>,
+        /// MIDI 入力を有効化（ポートパターンで検索）
+        #[arg(long, short = 'm')]
+        midi: Option<String>,
+        /// Requiem モード（GER: 自動防御強化）「真実にはたどり着けない」
+        #[arg(long, short = 'r')]
+        requiem: bool,
+    },
+    /// The World を停止「そして時は動き出す」
+    #[command(alias = "stop")]
+    Down,
+    /// The World のステータス確認
+    Status,
+    /// ViewPoint を WebView で開く
+    Open,
+    /// MCP Server として起動（Claude CLI 連携）
+    Mcp,
+    /// スナップショット作成「時を止める」
+    Snapshot {
+        /// スナップショット名
+        name: String,
+        /// 説明（オプション）
+        #[arg(long, short)]
+        description: Option<String>,
+    },
+    /// スナップショットから復元「ゼロに戻す」
+    Restore {
+        /// スナップショット名
+        name: String,
+    },
+    /// スナップショット一覧
+    Snapshots,
+    /// Guardian（自動防御）管理
+    #[command(subcommand)]
+    Guardian(GuardianCommands),
+}
+
+/// Paisley Park サブコマンド（JoJo Part 8 広瀬康穂のスタンド）
+#[derive(Subcommand)]
+enum ParkCommands {
+    /// Paisley Park を起動「情報を収集します」
+    #[command(alias = "start")]
+    Up {
+        /// プロジェクトディレクトリ
+        #[arg(short = 'C', long)]
+        project_dir: Option<String>,
+        /// 使用するポート番号
+        #[arg(short, long)]
+        port: Option<u16>,
+    },
+    /// Paisley Park を停止
+    #[command(alias = "stop")]
+    Down {
+        /// プロジェクトID
+        project_id: Option<String>,
+    },
+    /// 登録済み Paisley Park 一覧
+    List,
+}
+
+/// Guardian サブコマンド（GER の自動防御機能）
+#[derive(Subcommand)]
+enum GuardianCommands {
+    /// Guardian のステータス確認
+    Status,
+    /// Guardian を有効化
+    Enable,
+    /// Guardian を無効化
+    Disable,
+    /// 保護ルール一覧
+    Rules,
+    /// 保護ルールを追加
+    AddRule {
+        /// ルール名
+        name: String,
+        /// ルールパターン（glob形式）
+        pattern: String,
+    },
+}
+
+/// Gold Experience サブコマンド（JoJo Part 5 ジョルノのスタンド）
+#[derive(Subcommand)]
+enum GeCommands {
+    /// プロジェクト/コード生成「生命を与える」
+    Scaffold {
+        /// テンプレート名
+        template: String,
+        /// 出力先ディレクトリ
+        #[arg(short, long, default_value = ".")]
+        output: std::path::PathBuf,
+        /// プロジェクト/モジュール名
+        #[arg(short, long)]
+        name: Option<String>,
+        /// 説明
+        #[arg(short, long)]
+        description: Option<String>,
+    },
+    /// コード修復「回復」
+    Heal {
+        /// 修復対象ディレクトリ
+        #[arg(short = 'C', long, default_value = ".")]
+        dir: std::path::PathBuf,
+        /// 修復アクション (format, lint-fix, all)
+        #[arg(short, long, default_value = "all")]
+        action: String,
+    },
+    /// テンプレート一覧
+    Templates,
+    /// プロジェクト検出
+    Detect {
+        /// 検出対象ディレクトリ
+        #[arg(default_value = ".")]
+        dir: std::path::PathBuf,
+    },
+    /// 成長統計
+    Stats,
 }
 
 /// LPD8サブコマンド
@@ -474,15 +650,7 @@ enum Lpd8Commands {
 }
 
 fn main() -> Result<()> {
-    // Initialize tracing
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("vantage_stand=info".parse()?),
-        )
-        .with_target(false)
-        .init();
-
+    // CLIパース（tracingより先に）
     let cli = Cli::parse();
 
     // Load config
@@ -498,6 +666,19 @@ fn main() -> Result<()> {
         project_dir: None,
         midi: None,
     });
+
+    // Initialize tracing
+    // Startコマンドの場合はdebugフラグを取得、その他はデフォルト
+    let debug_mode_for_tracing = match &command {
+        Commands::Start { debug, .. } => debug
+            .as_ref()
+            .map(|d| DebugMode::from(d.clone()))
+            .or_else(parse_debug_env)
+            .unwrap_or_default(),
+        Commands::Restart { .. } => parse_debug_env().unwrap_or_default(),
+        _ => parse_debug_env().unwrap_or_default(),
+    };
+    init_tracing(debug_mode_for_tracing);
 
     match command {
         Commands::Start {
@@ -669,7 +850,10 @@ fn main() -> Result<()> {
                     };
                     println!(
                         "  {}  {:18}  {:>5}   {}",
-                        i + 1, project.name, port_str, path_display
+                        i + 1,
+                        project.name,
+                        port_str,
+                        path_display
                     );
                 }
                 println!();
@@ -703,16 +887,17 @@ fn main() -> Result<()> {
                 let instance = instances.iter().find(|i| i.port == port);
 
                 let project_dir = match instance {
-                    Some(inst) => {
-                        inst.project_dir.clone().unwrap_or_else(|| {
-                            std::env::current_dir()
-                                .unwrap_or_default()
-                                .to_string_lossy()
-                                .to_string()
-                        })
-                    }
+                    Some(inst) => inst.project_dir.clone().unwrap_or_else(|| {
+                        std::env::current_dir()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .to_string()
+                    }),
                     None => {
-                        println!("✗ No Stand running on port {}. Use `vp start` instead.", port);
+                        println!(
+                            "✗ No Stand running on port {}. Use `vp start` instead.",
+                            port
+                        );
                         return Ok(());
                     }
                 };
@@ -948,16 +1133,18 @@ fn main() -> Result<()> {
                         .timeout(std::time::Duration::from_secs(2))
                         .build()?;
 
-                    let conductor_running = client.get(&conductor_url).send().await
+                    let conductor_running = client
+                        .get(&conductor_url)
+                        .send()
+                        .await
                         .map(|r| r.status().is_success())
                         .unwrap_or(false);
 
                     if !conductor_running {
                         println!("🎭 Starting Conductor Stand on port {}...", port);
                         // バックグラウンドでConductorを起動
-                        let vp_path = which_vp().ok_or_else(|| {
-                            anyhow::anyhow!("vp binary not found")
-                        })?;
+                        let vp_path =
+                            which_vp().ok_or_else(|| anyhow::anyhow!("vp binary not found"))?;
 
                         std::process::Command::new(&vp_path)
                             .args(["conductor", "-p", &port.to_string()])
@@ -991,7 +1178,463 @@ fn main() -> Result<()> {
                 }
             })
         }
+        Commands::World(cmd) => {
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(async {
+                match cmd {
+                    WorldCommands::Up {
+                        debug,
+                        static_dir,
+                        midi,
+                        requiem,
+                    } => {
+                        if requiem {
+                            println!(
+                                "🌍 The World 起動中... 「真実にはたどり着けない」(Requiem Mode)"
+                            );
+                        } else {
+                            println!("🌍 The World 起動中... 「時よ止まれ」");
+                        }
+                        if let Some(ref pattern) = midi {
+                            println!(
+                                "🎹 MIDI 有効: {}",
+                                if pattern.is_empty() {
+                                    "(全ポート)"
+                                } else {
+                                    pattern
+                                }
+                            );
+                        }
+                        let config = world::WorldConfig {
+                            debug,
+                            static_dir,
+                            midi_port_pattern: midi,
+                            requiem_mode: requiem,
+                            ..Default::default()
+                        };
+                        world::run(config).await
+                    }
+                    WorldCommands::Down => {
+                        println!("🌍 The World 停止中... 「そして時は動き出す」");
+                        // TODO: HTTP POST /api/shutdown を送信
+                        let client = reqwest::Client::builder()
+                            .timeout(std::time::Duration::from_secs(2))
+                            .build()?;
+                        let url = format!("http://localhost:{}/api/shutdown", world::WORLD_PORT);
+                        match client.post(&url).send().await {
+                            Ok(_) => {
+                                println!("✓ The World 停止完了");
+                                Ok(())
+                            }
+                            Err(e) => {
+                                if e.is_connect() {
+                                    println!("✗ The World は稼働していません");
+                                } else {
+                                    println!("✗ 停止エラー: {}", e);
+                                }
+                                Ok(())
+                            }
+                        }
+                    }
+                    WorldCommands::Status => {
+                        let client = reqwest::Client::builder()
+                            .timeout(std::time::Duration::from_secs(2))
+                            .build()?;
+                        let url = format!("http://localhost:{}/health", world::WORLD_PORT);
+                        match client.get(&url).send().await {
+                            Ok(response) if response.status().is_success() => {
+                                let body = response.text().await.unwrap_or_default();
+                                println!("✓ The World 稼働中 (port {})", world::WORLD_PORT);
+                                println!("{}", body);
+                            }
+                            Ok(_) => {
+                                println!("✗ The World がエラー応答");
+                            }
+                            Err(e) => {
+                                if e.is_connect() {
+                                    println!("✗ The World は稼働していません");
+                                } else {
+                                    println!("✗ 接続エラー: {}", e);
+                                }
+                            }
+                        }
+                        Ok(())
+                    }
+                    WorldCommands::Open => {
+                        println!("🌍 ViewPoint を開いています...");
+                        // The World が稼働しているか確認
+                        let client = reqwest::Client::builder()
+                            .timeout(std::time::Duration::from_secs(2))
+                            .build()?;
+                        let url = format!("http://localhost:{}/health", world::WORLD_PORT);
+                        match client.get(&url).send().await {
+                            Ok(response) if response.status().is_success() => {
+                                // WebView を起動
+                                drop(client); // クライアントを解放
+                                webview::run_webview(world::WORLD_PORT)?;
+                            }
+                            Ok(_) => {
+                                println!("✗ The World がエラー応答");
+                            }
+                            Err(e) => {
+                                if e.is_connect() {
+                                    println!("✗ The World が稼働していません");
+                                    println!("  先に `vp world up -s ./web` で起動してください");
+                                } else {
+                                    println!("✗ 接続エラー: {}", e);
+                                }
+                            }
+                        }
+                        Ok(())
+                    }
+                    WorldCommands::Mcp => {
+                        // MCP Server として起動（stdio JSON-RPC）
+                        tracing::info!("The World MCP Server 起動");
+                        world::mcp::run_mcp_server().await
+                    }
+                    WorldCommands::Snapshot { name, description } => {
+                        println!("📸 スナップショット作成中... 「時を止める」");
+
+                        // 現在のディレクトリをスナップショット対象とする
+                        let target_dir = std::env::current_dir().unwrap_or_default();
+
+                        // ローカルで GER を使用してスナップショット作成
+                        let ger = world::GoldExperienceRequiem::default();
+                        match ger
+                            .create_snapshot(&name, description.as_deref(), &target_dir)
+                            .await
+                        {
+                            Ok(snapshot) => {
+                                println!("✓ スナップショット '{}' を作成しました", snapshot.name);
+                                println!("  場所: {}", snapshot.path.display());
+                                println!(
+                                    "  作成: {}",
+                                    snapshot.created_at.format("%Y-%m-%d %H:%M:%S")
+                                );
+                                Ok(())
+                            }
+                            Err(e) => {
+                                println!("✗ スナップショット作成エラー: {}", e);
+                                Ok(())
+                            }
+                        }
+                    }
+                    WorldCommands::Restore { name } => {
+                        println!("⏪ スナップショット復元中... 「ゼロに戻す」");
+
+                        let ger = world::GoldExperienceRequiem::default();
+                        // まず既存のスナップショットを読み込む
+                        if let Err(e) = ger.load_snapshots().await {
+                            println!("✗ スナップショット読み込みエラー: {}", e);
+                            return Ok(());
+                        }
+
+                        match ger.restore_snapshot(&name).await {
+                            Ok(()) => {
+                                println!("✓ スナップショット '{}' から復元しました", name);
+                                Ok(())
+                            }
+                            Err(e) => {
+                                println!("✗ 復元エラー: {}", e);
+                                Ok(())
+                            }
+                        }
+                    }
+                    WorldCommands::Snapshots => {
+                        println!("📸 スナップショット一覧:");
+
+                        let ger = world::GoldExperienceRequiem::default();
+                        if let Err(e) = ger.load_snapshots().await {
+                            println!("✗ スナップショット読み込みエラー: {}", e);
+                            return Ok(());
+                        }
+
+                        let snapshots = ger.list_snapshots().await;
+                        if snapshots.is_empty() {
+                            println!("  (スナップショットなし)");
+                        } else {
+                            println!("  NAME                CREATED              DESCRIPTION");
+                            println!("  ────                ───────              ───────────");
+                            for snap in snapshots {
+                                let desc = snap.description.as_deref().unwrap_or("-");
+                                let desc_display = if desc.len() > 30 {
+                                    format!("{}...", &desc[..27])
+                                } else {
+                                    desc.to_string()
+                                };
+                                println!(
+                                    "  {:18}  {}  {}",
+                                    snap.name,
+                                    snap.created_at.format("%Y-%m-%d %H:%M"),
+                                    desc_display
+                                );
+                            }
+                        }
+                        Ok(())
+                    }
+                    WorldCommands::Guardian(guardian_cmd) => {
+                        let ger = world::GoldExperienceRequiem::default();
+
+                        match guardian_cmd {
+                            GuardianCommands::Status => {
+                                let status = ger.guardian_status().await;
+                                println!("🛡️ Guardian ステータス:");
+                                println!(
+                                    "  状態: {}",
+                                    if status.enabled {
+                                        "有効 ✓"
+                                    } else {
+                                        "無効"
+                                    }
+                                );
+                                println!("  ルール数: {}", status.rule_count);
+                                println!("  ブロック回数: {}", status.block_count);
+                                if let Some(last) = status.last_check {
+                                    println!(
+                                        "  最終チェック: {}",
+                                        last.format("%Y-%m-%d %H:%M:%S")
+                                    );
+                                }
+                                Ok(())
+                            }
+                            GuardianCommands::Enable => {
+                                ger.enable_guardian().await;
+                                println!("✓ Guardian を有効化しました「自動防御発動」");
+                                Ok(())
+                            }
+                            GuardianCommands::Disable => {
+                                ger.disable_guardian().await;
+                                println!("✓ Guardian を無効化しました");
+                                Ok(())
+                            }
+                            GuardianCommands::Rules => {
+                                let rules = ger.list_rules().await;
+                                println!("🛡️ Guardian ルール一覧:");
+                                if rules.is_empty() {
+                                    println!("  (ルールなし)");
+                                } else {
+                                    println!("  NAME                PATTERN              ACTION");
+                                    println!("  ────                ───────              ──────");
+                                    for rule in rules {
+                                        let action = format!("{:?}", rule.action).to_lowercase();
+                                        let status = if rule.enabled { "" } else { " (無効)" };
+                                        println!(
+                                            "  {:18}  {:20}  {}{}",
+                                            rule.name, rule.pattern, action, status
+                                        );
+                                    }
+                                }
+                                Ok(())
+                            }
+                            GuardianCommands::AddRule { name, pattern } => {
+                                match ger
+                                    .add_rule(&name, &pattern, world::GuardianAction::Block)
+                                    .await
+                                {
+                                    Ok(()) => {
+                                        println!(
+                                            "✓ ルール '{}' を追加しました (pattern: {})",
+                                            name, pattern
+                                        );
+                                        Ok(())
+                                    }
+                                    Err(e) => {
+                                        println!("✗ ルール追加エラー: {}", e);
+                                        Ok(())
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            })
+        }
+        Commands::Park(cmd) => {
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(async {
+                match cmd {
+                    ParkCommands::Up { project_dir, port } => {
+                        let project_path = project_dir
+                            .map(std::path::PathBuf::from)
+                            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+                        let project_id = project_path
+                            .file_name()
+                            .map(|s| s.to_string_lossy().to_string())
+                            .unwrap_or_else(|| "unknown".to_string());
+                        let port = port.unwrap_or(33100); // デフォルトポート
+
+                        println!("🌸 Paisley Park 起動中... 「情報を収集します」");
+                        println!("   Project: {} ({})", project_id, project_path.display());
+
+                        let config = park::ParkConfig {
+                            project_id,
+                            project_path,
+                            world_url: format!("http://localhost:{}", world::WORLD_PORT),
+                            ..Default::default()
+                        };
+
+                        let park = park::PaisleyPark::new(config);
+                        park.start(port).await?;
+
+                        println!("✓ The World に登録完了");
+
+                        // 終了シグナルを待つ
+                        tokio::signal::ctrl_c().await?;
+                        println!("\n🌸 シャットダウン中...");
+                        park.stop().await?;
+                        Ok(())
+                    }
+                    ParkCommands::Down { project_id: _ } => {
+                        println!("🌸 Paisley Park 停止");
+                        // TODO: The World 経由で特定の Park を停止
+                        Ok(())
+                    }
+                    ParkCommands::List => {
+                        let client = reqwest::Client::builder()
+                            .timeout(std::time::Duration::from_secs(2))
+                            .build()?;
+                        let url = format!("http://localhost:{}/api/parks", world::WORLD_PORT);
+                        match client.get(&url).send().await {
+                            Ok(response) if response.status().is_success() => {
+                                let body = response.text().await.unwrap_or_default();
+                                println!("登録済み Paisley Park:");
+                                println!("{}", body);
+                            }
+                            Ok(_) => {
+                                println!("✗ The World からエラー応答");
+                            }
+                            Err(e) => {
+                                if e.is_connect() {
+                                    println!("✗ The World が稼働していません");
+                                    println!("  先に `vp world up` で起動してください");
+                                } else {
+                                    println!("✗ 接続エラー: {}", e);
+                                }
+                            }
+                        }
+                        Ok(())
+                    }
+                }
+            })
+        }
+        Commands::Ge(cmd) => {
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(async {
+                let ge = world::GoldExperience::default();
+
+                match cmd {
+                    GeCommands::Scaffold {
+                        template,
+                        output,
+                        name,
+                        description,
+                    } => {
+                        println!("🌟 Gold Experience 発動... 「生命を与える」");
+
+                        let project_name = name.unwrap_or_else(|| {
+                            output
+                                .file_name()
+                                .map(|s| s.to_string_lossy().to_string())
+                                .unwrap_or_else(|| "new-project".to_string())
+                        });
+
+                        let mut variables = std::collections::HashMap::new();
+                        variables.insert("name".to_string(), project_name.clone());
+                        variables.insert("Name".to_string(), to_pascal_case(&project_name));
+                        variables.insert(
+                            "description".to_string(),
+                            description.unwrap_or_else(|| format!("{} project", project_name)),
+                        );
+
+                        match ge.scaffold(&template, &output, variables).await {
+                            Ok(result) => {
+                                println!("✓ スキャフォールド完了");
+                                println!("  テンプレート: {}", template);
+                                println!("  出力先: {}", result.output_dir.display());
+                                println!("  生成ファイル:");
+                                for file in result.files {
+                                    println!("    - {}", file.display());
+                                }
+                                Ok(())
+                            }
+                            Err(e) => {
+                                println!("✗ スキャフォールドエラー: {}", e);
+                                Ok(())
+                            }
+                        }
+                    }
+                    GeCommands::Heal { dir, action } => {
+                        println!("💚 Gold Experience 発動... 「回復」");
+
+                        let heal_action = match action.as_str() {
+                            "format" => world::HealAction::Format,
+                            "lint-fix" | "lint" => world::HealAction::LintFix,
+                            "deps" | "fix-deps" => world::HealAction::FixDependencies,
+                            "imports" | "organize-imports" => world::HealAction::OrganizeImports,
+                            _ => world::HealAction::All,
+                        };
+
+                        match ge.heal(&dir, heal_action).await {
+                            Ok(result) => {
+                                let status = if result.success { "✓" } else { "⚠" };
+                                println!("{} 修復完了: {}", status, result.action);
+                                println!("  {}", result.summary);
+                                Ok(())
+                            }
+                            Err(e) => {
+                                println!("✗ 修復エラー: {}", e);
+                                Ok(())
+                            }
+                        }
+                    }
+                    GeCommands::Templates => {
+                        println!("🌟 Gold Experience テンプレート一覧:");
+                        let templates = ge.list_templates().await;
+                        if templates.is_empty() {
+                            println!("  (テンプレートなし)");
+                        } else {
+                            for template in templates {
+                                println!("  - {}", template);
+                            }
+                        }
+                        Ok(())
+                    }
+                    GeCommands::Detect { dir } => {
+                        let project = world::GoldExperience::detect_project(&dir);
+                        println!("🔍 プロジェクト検出結果:");
+                        println!("  種類: {}", project.kind);
+                        println!("  ルート: {}", project.root.display());
+                        if let Some(pm) = project.package_manager {
+                            println!("  パッケージマネージャ: {}", pm);
+                        }
+                        Ok(())
+                    }
+                    GeCommands::Stats => {
+                        let stats = ge.growth_stats().await;
+                        println!("🌱 Gold Experience 成長統計:");
+                        println!("  スキャフォールド実行: {} 回", stats.total_scaffolds);
+                        println!("  修復実行: {} 回", stats.total_heals);
+                        println!("  修復成功率: {:.1}%", stats.heal_success_rate);
+                        println!("  学習パターン: {} 件", stats.patterns_learned);
+                        Ok(())
+                    }
+                }
+            })
+        }
     }
+}
+
+/// snake_case を PascalCase に変換
+fn to_pascal_case(s: &str) -> String {
+    s.split(|c| c == '_' || c == '-')
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                None => String::new(),
+                Some(first) => first.to_uppercase().chain(chars).collect(),
+            }
+        })
+        .collect()
 }
 
 /// vpバイナリのパスを取得
@@ -1041,7 +1684,8 @@ fn find_vantage_point_app() -> Option<std::path::PathBuf> {
 
     // 3. ビルドディレクトリ（開発用）
     if let Some(home) = dirs::home_dir() {
-        let dev_app = home.join("Library/Developer/Xcode/DerivedData")
+        let dev_app = home
+            .join("Library/Developer/Xcode/DerivedData")
             .read_dir()
             .ok()?
             .filter_map(|e| e.ok())

@@ -61,6 +61,13 @@ pub enum StandMessage {
     },
     /// Close a pane
     Close { pane_id: String },
+    /// Toggle side panel visibility
+    TogglePane {
+        pane_id: String,
+        /// Optional explicit state: true = show, false = hide, None = toggle
+        #[serde(default)]
+        visible: Option<bool>,
+    },
     /// Ping for keepalive
     Ping,
     /// Chat message to display
@@ -74,6 +81,9 @@ pub enum StandMessage {
         message: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         data: Option<serde_json::Value>,
+        /// 複数タグによるフィルタリング用（例: ["pty", "permission", "broadcast"]）
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        tags: Vec<String>,
     },
     /// Notify debug mode change
     DebugModeChanged { mode: DebugMode },
@@ -237,6 +247,13 @@ pub enum ChatComponent {
         after: String,
         #[serde(default)]
         language: Option<String>,
+    },
+    /// Tool execution status indicator
+    ToolExecution {
+        tool_name: String,
+        status: String, // "running", "completed", "failed"
+        #[serde(default)]
+        result: Option<String>,
     },
 }
 

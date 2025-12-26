@@ -1,0 +1,619 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ViewPoint - The World</title>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0d1117;
+            color: #c9d1d9;
+            min-height: 100vh;
+        }
+
+        /* Header */
+        .header {
+            background: #161b22;
+            border-bottom: 1px solid #30363d;
+            padding: 12px 20px;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+        .header h1 {
+            font-size: 18px;
+            font-weight: 600;
+            color: #58a6ff;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .header h1 .icon {
+            font-size: 24px;
+        }
+        .status-badge {
+            font-size: 12px;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-weight: 500;
+        }
+        .status-badge.connected {
+            background: rgba(35, 134, 54, 0.2);
+            color: #3fb950;
+        }
+        .status-badge.disconnected {
+            background: rgba(218, 54, 51, 0.2);
+            color: #f85149;
+        }
+        .workspace-tabs {
+            display: flex;
+            gap: 4px;
+            margin-left: auto;
+        }
+        .workspace-tab {
+            padding: 6px 14px;
+            background: transparent;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            color: #8b949e;
+            font-size: 13px;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .workspace-tab:hover {
+            background: #21262d;
+            color: #c9d1d9;
+        }
+        .workspace-tab.active {
+            background: #238636;
+            border-color: #238636;
+            color: white;
+        }
+
+        /* Main Layout */
+        .main {
+            display: flex;
+            height: calc(100vh - 56px);
+        }
+
+        /* Sidebar */
+        .sidebar {
+            width: 280px;
+            background: #161b22;
+            border-right: 1px solid #30363d;
+            display: flex;
+            flex-direction: column;
+        }
+        .sidebar-section {
+            padding: 16px;
+            border-bottom: 1px solid #30363d;
+        }
+        .sidebar-title {
+            font-size: 12px;
+            font-weight: 600;
+            color: #8b949e;
+            text-transform: uppercase;
+            margin-bottom: 12px;
+        }
+        .park-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .park-item {
+            padding: 10px 12px;
+            background: #21262d;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .park-item:hover {
+            background: #30363d;
+        }
+        .park-item.active {
+            background: #1f6feb;
+        }
+        .park-name {
+            font-size: 14px;
+            font-weight: 500;
+            margin-bottom: 4px;
+        }
+        .park-meta {
+            font-size: 11px;
+            color: #8b949e;
+            display: flex;
+            gap: 8px;
+        }
+        .park-status {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+        }
+        .park-status::before {
+            content: '';
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: #8b949e;
+        }
+        .park-status.idle::before { background: #3fb950; }
+        .park-status.busy::before { background: #d29922; }
+        .park-status.error::before { background: #f85149; }
+
+        /* Content Area */
+        .content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        /* Tile Container */
+        .tile-container {
+            flex: 1;
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 1px;
+            background: #30363d;
+            overflow: hidden;
+        }
+        .tile-container.split-h {
+            grid-template-columns: 1fr 1fr;
+        }
+        .tile-container.split-v {
+            grid-template-rows: 1fr 1fr;
+        }
+
+        /* Tile */
+        .tile {
+            background: #0d1117;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .tile-header {
+            padding: 8px 12px;
+            background: #161b22;
+            border-bottom: 1px solid #30363d;
+            font-size: 12px;
+            color: #8b949e;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .tile-content {
+            flex: 1;
+            padding: 16px;
+            overflow: auto;
+        }
+        .tile-content.markdown h1 { font-size: 24px; margin: 1em 0 0.5em; color: #c9d1d9; }
+        .tile-content.markdown h2 { font-size: 20px; margin: 1em 0 0.5em; color: #c9d1d9; }
+        .tile-content.markdown h3 { font-size: 16px; margin: 1em 0 0.5em; color: #c9d1d9; }
+        .tile-content.markdown p { margin: 0.5em 0; line-height: 1.6; }
+        .tile-content.markdown code {
+            background: #21262d;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 13px;
+        }
+        .tile-content.markdown pre {
+            background: #161b22;
+            padding: 16px;
+            border-radius: 8px;
+            overflow-x: auto;
+            margin: 1em 0;
+        }
+        .tile-content.markdown pre code {
+            background: none;
+            padding: 0;
+        }
+        .tile-content.markdown img {
+            max-width: 100%;
+            border-radius: 8px;
+        }
+
+        /* Empty State */
+        .empty-state {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            color: #484f58;
+            text-align: center;
+        }
+        .empty-state .icon {
+            font-size: 48px;
+            margin-bottom: 16px;
+        }
+        .empty-state h2 {
+            font-size: 18px;
+            font-weight: 500;
+            margin-bottom: 8px;
+        }
+        .empty-state p {
+            font-size: 14px;
+        }
+
+        /* Log Panel */
+        .log-panel {
+            height: 200px;
+            background: #161b22;
+            border-top: 1px solid #30363d;
+            display: flex;
+            flex-direction: column;
+        }
+        .log-header {
+            padding: 8px 16px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 12px;
+            color: #8b949e;
+            border-bottom: 1px solid #30363d;
+        }
+        .log-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 8px 16px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+        }
+        .log-entry {
+            padding: 4px 0;
+            display: flex;
+            gap: 8px;
+        }
+        .log-entry .time { color: #484f58; }
+        .log-entry .type { color: #58a6ff; }
+        .log-entry .msg { color: #c9d1d9; }
+        .log-entry.error .type { color: #f85149; }
+        .log-entry.warn .type { color: #d29922; }
+
+        /* Buttons */
+        .btn {
+            padding: 4px 10px;
+            background: #21262d;
+            border: 1px solid #30363d;
+            border-radius: 4px;
+            color: #8b949e;
+            font-size: 11px;
+            cursor: pointer;
+        }
+        .btn:hover {
+            background: #30363d;
+            color: #c9d1d9;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>
+            <span class="icon">🌍</span>
+            ViewPoint
+        </h1>
+        <span id="status" class="status-badge disconnected">Disconnected</span>
+        <div class="workspace-tabs">
+            <button class="workspace-tab active" data-ws="1">Workspace 1</button>
+            <button class="workspace-tab" data-ws="2">Workspace 2</button>
+            <button class="workspace-tab" data-ws="3">Workspace 3</button>
+            <button class="workspace-tab" data-ws="4">Workspace 4</button>
+        </div>
+    </div>
+
+    <div class="main">
+        <div class="sidebar">
+            <div class="sidebar-section">
+                <div class="sidebar-title">Paisley Parks</div>
+                <div id="park-list" class="park-list">
+                    <div class="empty-state" style="padding: 20px; font-size: 12px;">
+                        No parks registered
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="content">
+            <div id="tile-container" class="tile-container">
+                <div class="tile" id="tile-main">
+                    <div class="tile-header">
+                        <span>Main</span>
+                        <div>
+                            <button class="btn" onclick="splitTile('main', 'horizontal')">Split H</button>
+                            <button class="btn" onclick="splitTile('main', 'vertical')">Split V</button>
+                        </div>
+                    </div>
+                    <div class="tile-content markdown" id="pane-main">
+                        <div class="empty-state">
+                            <div class="icon">📺</div>
+                            <h2>ViewPoint</h2>
+                            <p>Waiting for content from The World...</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="log-panel">
+                <div class="log-header">
+                    <span>Activity Log</span>
+                    <button class="btn" onclick="clearLogs()">Clear</button>
+                </div>
+                <div id="log-content" class="log-content"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Configuration
+        const WORLD_URL = 'ws://[::1]:33000/ws';
+        let ws = null;
+        let reconnectTimer = null;
+        let parks = [];
+        let currentWorkspace = '1';
+
+        // Elements
+        const statusEl = document.getElementById('status');
+        const parkListEl = document.getElementById('park-list');
+        const tileContainer = document.getElementById('tile-container');
+        const logContent = document.getElementById('log-content');
+
+        // Connect to The World
+        function connect() {
+            ws = new WebSocket(WORLD_URL);
+
+            ws.onopen = () => {
+                log('info', 'Connected to The World');
+                statusEl.textContent = 'Connected';
+                statusEl.className = 'status-badge connected';
+            };
+
+            ws.onclose = () => {
+                log('warn', 'Disconnected from The World');
+                statusEl.textContent = 'Disconnected';
+                statusEl.className = 'status-badge disconnected';
+
+                // Reconnect after 3 seconds
+                if (reconnectTimer) clearTimeout(reconnectTimer);
+                reconnectTimer = setTimeout(connect, 3000);
+            };
+
+            ws.onerror = (err) => {
+                log('error', 'WebSocket error');
+                console.error(err);
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    const msg = JSON.parse(event.data);
+                    handleMessage(msg);
+                } catch (e) {
+                    log('error', 'Failed to parse message');
+                }
+            };
+        }
+
+        // Handle messages from The World
+        function handleMessage(msg) {
+            log('info', `Received: ${msg.type}`);
+            console.log('Message:', msg);
+
+            switch (msg.type) {
+                case 'welcome':
+                    log('info', `The World v${msg.version}`);
+                    break;
+
+                case 'show':
+                    showContent(msg.pane_id, msg.content_type, msg.content, msg.append);
+                    break;
+
+                case 'clear':
+                    clearPane(msg.pane_id);
+                    break;
+
+                case 'workspace_update':
+                    updateWorkspace(msg.workspace_id, msg.name);
+                    break;
+
+                case 'park_status':
+                    updateParkStatus(msg.park_id, msg.project_id, msg.status);
+                    break;
+
+                case 'pong':
+                    // Heartbeat response
+                    break;
+            }
+        }
+
+        // Show content in a pane
+        function showContent(paneId, contentType, content, append) {
+            let pane = document.getElementById(`pane-${paneId}`);
+            if (!pane) {
+                pane = createPane(paneId);
+            }
+
+            let html = '';
+            switch (contentType) {
+                case 'markdown':
+                    html = marked.parse(content);
+                    pane.classList.add('markdown');
+                    break;
+                case 'html':
+                    html = content;
+                    break;
+                case 'log':
+                    html = `<pre>${escapeHtml(content)}</pre>`;
+                    break;
+                default:
+                    html = `<p>${escapeHtml(content)}</p>`;
+            }
+
+            if (append) {
+                pane.innerHTML += html;
+            } else {
+                pane.innerHTML = html;
+            }
+
+            log('info', `Content shown in ${paneId}`);
+        }
+
+        // Clear a pane
+        function clearPane(paneId) {
+            const pane = document.getElementById(`pane-${paneId}`);
+            if (pane) {
+                pane.innerHTML = '';
+                log('info', `Cleared ${paneId}`);
+            }
+        }
+
+        // Create a new pane
+        function createPane(paneId) {
+            const tile = document.createElement('div');
+            tile.className = 'tile';
+            tile.id = `tile-${paneId}`;
+            tile.innerHTML = `
+                <div class="tile-header">
+                    <span>${paneId}</span>
+                    <button class="btn" onclick="closeTile('${paneId}')">Close</button>
+                </div>
+                <div class="tile-content markdown" id="pane-${paneId}"></div>
+            `;
+            tileContainer.appendChild(tile);
+            return tile.querySelector('.tile-content');
+        }
+
+        // Split tile
+        function splitTile(paneId, direction) {
+            if (direction === 'horizontal') {
+                tileContainer.classList.add('split-h');
+            } else {
+                tileContainer.classList.add('split-v');
+            }
+            const newId = `pane-${Date.now()}`;
+            createPane(newId);
+
+            // Send to server
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: 'tile_split',
+                    pane_id: paneId,
+                    direction: direction
+                }));
+            }
+        }
+
+        // Close tile
+        function closeTile(paneId) {
+            const tile = document.getElementById(`tile-${paneId}`);
+            if (tile) {
+                tile.remove();
+                tileContainer.classList.remove('split-h', 'split-v');
+            }
+        }
+
+        // Update workspace
+        function updateWorkspace(workspaceId, name) {
+            currentWorkspace = workspaceId;
+            document.querySelectorAll('.workspace-tab').forEach(tab => {
+                tab.classList.toggle('active', tab.dataset.ws === workspaceId);
+            });
+            log('info', `Switched to ${name}`);
+        }
+
+        // Update park status
+        function updateParkStatus(parkId, projectId, status) {
+            // Update or add park in the list
+            const existingPark = parks.find(p => p.id === parkId);
+            if (existingPark) {
+                existingPark.status = status;
+            } else {
+                parks.push({ id: parkId, project_id: projectId, status: status });
+            }
+            renderParks();
+        }
+
+        // Render park list
+        function renderParks() {
+            if (parks.length === 0) {
+                parkListEl.innerHTML = `
+                    <div class="empty-state" style="padding: 20px; font-size: 12px;">
+                        No parks registered
+                    </div>
+                `;
+                return;
+            }
+
+            parkListEl.innerHTML = parks.map(park => `
+                <div class="park-item" onclick="selectPark('${park.id}')">
+                    <div class="park-name">${park.project_id}</div>
+                    <div class="park-meta">
+                        <span class="park-status ${park.status.toLowerCase()}">${park.status}</span>
+                        <span>Port ${park.port || '?'}</span>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        // Select park
+        function selectPark(parkId) {
+            log('info', `Selected park: ${parkId}`);
+        }
+
+        // Log entry
+        function log(type, message) {
+            const time = new Date().toLocaleTimeString('ja-JP', {
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit'
+            });
+            const entry = document.createElement('div');
+            entry.className = `log-entry ${type}`;
+            entry.innerHTML = `
+                <span class="time">${time}</span>
+                <span class="type">[${type}]</span>
+                <span class="msg">${escapeHtml(message)}</span>
+            `;
+            logContent.appendChild(entry);
+            logContent.scrollTop = logContent.scrollHeight;
+        }
+
+        // Clear logs
+        function clearLogs() {
+            logContent.innerHTML = '';
+        }
+
+        // Escape HTML
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Workspace tab click
+        document.querySelectorAll('.workspace-tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                const wsId = tab.dataset.ws;
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                        type: 'workspace_switch',
+                        workspace_id: wsId
+                    }));
+                }
+            });
+        });
+
+        // Ping every 30 seconds
+        setInterval(() => {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'ping' }));
+            }
+        }, 30000);
+
+        // Start
+        connect();
+    </script>
+</body>
+</html>
