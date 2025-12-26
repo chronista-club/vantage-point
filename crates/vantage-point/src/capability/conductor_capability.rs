@@ -22,9 +22,7 @@
 //! conductor.start_stand("my-project").await?;
 //! ```
 
-use crate::capability::core::{
-    Capability, CapabilityContext, CapabilityError, CapabilityResult,
-};
+use crate::capability::core::{Capability, CapabilityContext, CapabilityError, CapabilityResult};
 use crate::capability::{CapabilityEvent, CapabilityInfo, CapabilityState};
 use crate::config::Config;
 use async_trait::async_trait;
@@ -148,9 +146,7 @@ impl ConductorCapability {
         // 3. PATH経由
         if let Ok(output) = std::process::Command::new("which").arg("vp").output() {
             if output.status.success() {
-                let path = String::from_utf8_lossy(&output.stdout)
-                    .trim()
-                    .to_string();
+                let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
                 if !path.is_empty() {
                     return Some(PathBuf::from(path));
                 }
@@ -213,9 +209,9 @@ impl ConductorCapability {
         cmd.current_dir(&project.path);
 
         // バックグラウンドで起動
-        let child = cmd.spawn().map_err(|e| {
-            CapabilityError::Other(format!("Failed to start vp: {}", e))
-        })?;
+        let child = cmd
+            .spawn()
+            .map_err(|e| CapabilityError::Other(format!("Failed to start vp: {}", e)))?;
 
         let pid = child.id().unwrap_or(0);
 
@@ -471,10 +467,7 @@ impl Capability for ConductorCapability {
         self.state = CapabilityState::Idle;
 
         let project_count = self.projects.read().await.len();
-        tracing::info!(
-            projects = project_count,
-            "ConductorCapability initialized"
-        );
+        tracing::info!(projects = project_count, "ConductorCapability initialized");
 
         Ok(())
     }

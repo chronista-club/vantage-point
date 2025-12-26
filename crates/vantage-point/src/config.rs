@@ -185,7 +185,9 @@ impl RunningStands {
             .unwrap_or_else(|_| project_dir.to_string());
 
         // Remove any existing entry for this port or project
-        stands.stands.retain(|s| s.port != port && s.project_dir != canonical_dir);
+        stands
+            .stands
+            .retain(|s| s.port != port && s.project_dir != canonical_dir);
 
         // Add new entry
         stands.stands.push(RunningStandInfo {
@@ -228,7 +230,10 @@ impl RunningStands {
             .map(|p| p.display().to_string())
             .unwrap_or_else(|_| project_dir.to_string());
 
-        stands.stands.into_iter().find(|s| s.project_dir == canonical_dir)
+        stands
+            .stands
+            .into_iter()
+            .find(|s| s.project_dir == canonical_dir)
     }
 
     /// Find a running Stand for the current working directory

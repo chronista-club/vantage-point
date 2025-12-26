@@ -299,12 +299,29 @@ pub struct AgUiError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "lowercase")]
 pub enum JsonPatchOp {
-    Add { path: String, value: serde_json::Value },
-    Remove { path: String },
-    Replace { path: String, value: serde_json::Value },
-    Move { from: String, path: String },
-    Copy { from: String, path: String },
-    Test { path: String, value: serde_json::Value },
+    Add {
+        path: String,
+        value: serde_json::Value,
+    },
+    Remove {
+        path: String,
+    },
+    Replace {
+        path: String,
+        value: serde_json::Value,
+    },
+    Move {
+        from: String,
+        path: String,
+    },
+    Copy {
+        from: String,
+        path: String,
+    },
+    Test {
+        path: String,
+        value: serde_json::Value,
+    },
 }
 
 /// Activity/progress item
@@ -423,7 +440,11 @@ impl AgUiEvent {
     }
 
     /// Create a RunError event
-    pub fn run_error(run_id: impl Into<String>, code: impl Into<String>, message: impl Into<String>) -> Self {
+    pub fn run_error(
+        run_id: impl Into<String>,
+        code: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
         Self::RunError {
             run_id: run_id.into(),
             error: AgUiError {
@@ -436,7 +457,11 @@ impl AgUiEvent {
     }
 
     /// Create a TextMessageStart event
-    pub fn text_message_start(run_id: impl Into<String>, message_id: impl Into<String>, role: MessageRole) -> Self {
+    pub fn text_message_start(
+        run_id: impl Into<String>,
+        message_id: impl Into<String>,
+        role: MessageRole,
+    ) -> Self {
         Self::TextMessageStart {
             run_id: run_id.into(),
             message_id: message_id.into(),
@@ -446,7 +471,11 @@ impl AgUiEvent {
     }
 
     /// Create a TextMessageContent event
-    pub fn text_message_content(run_id: impl Into<String>, message_id: impl Into<String>, delta: impl Into<String>) -> Self {
+    pub fn text_message_content(
+        run_id: impl Into<String>,
+        message_id: impl Into<String>,
+        delta: impl Into<String>,
+    ) -> Self {
         Self::TextMessageContent {
             run_id: run_id.into(),
             message_id: message_id.into(),
@@ -464,7 +493,11 @@ impl AgUiEvent {
     }
 
     /// Create a ToolCallStart event
-    pub fn tool_call_start(run_id: impl Into<String>, tool_call_id: impl Into<String>, tool_name: impl Into<String>) -> Self {
+    pub fn tool_call_start(
+        run_id: impl Into<String>,
+        tool_call_id: impl Into<String>,
+        tool_name: impl Into<String>,
+    ) -> Self {
         Self::ToolCallStart {
             run_id: run_id.into(),
             tool_call_id: tool_call_id.into(),
@@ -664,12 +697,10 @@ mod tests {
     fn test_state_delta() {
         let event = AgUiEvent::StateDelta {
             run_id: "run-1".to_string(),
-            delta: vec![
-                JsonPatchOp::Add {
-                    path: "/foo".to_string(),
-                    value: serde_json::json!("bar"),
-                },
-            ],
+            delta: vec![JsonPatchOp::Add {
+                path: "/foo".to_string(),
+                value: serde_json::json!("bar"),
+            }],
             timestamp: 0,
         };
         let json = serde_json::to_string(&event).unwrap();
@@ -713,7 +744,12 @@ mod tests {
     /// REQ-PROMPT-001: Input prompt
     #[test]
     fn test_input_prompt() {
-        let event = AgUiEvent::input_prompt("run-1", "prompt-3", "Enter API key:", Some("default".to_string()));
+        let event = AgUiEvent::input_prompt(
+            "run-1",
+            "prompt-3",
+            "Enter API key:",
+            Some("default".to_string()),
+        );
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains(r#""type":"USER_PROMPT""#));
         assert!(json.contains(r#""prompt_type":"input""#));
@@ -751,7 +787,8 @@ mod tests {
                 description: None,
             },
         ];
-        let event = AgUiEvent::multi_select_prompt("run-1", "prompt-4", "Select features:", options);
+        let event =
+            AgUiEvent::multi_select_prompt("run-1", "prompt-4", "Select features:", options);
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains(r#""prompt_type":"multi_select""#));
     }
@@ -760,7 +797,10 @@ mod tests {
     #[test]
     fn test_prompt_timeout() {
         let event = AgUiEvent::confirm_prompt("run-1", "prompt-5", "Test");
-        if let AgUiEvent::UserPrompt { timeout_seconds, .. } = event {
+        if let AgUiEvent::UserPrompt {
+            timeout_seconds, ..
+        } = event
+        {
             assert_eq!(timeout_seconds, 300); // 5 minutes default
         } else {
             panic!("Expected UserPrompt event");

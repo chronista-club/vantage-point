@@ -128,15 +128,17 @@ impl ToAgUi for crate::capability::CapabilityEvent {
                 ))
             }
             // テキストメッセージ
-            "message.text" => {
-                self.payload.get("content").and_then(|c| c.as_str()).map(|content| {
+            "message.text" => self
+                .payload
+                .get("content")
+                .and_then(|c| c.as_str())
+                .map(|content| {
                     AgUiEvent::text_message_content(
                         run_id,
                         &format!("msg-{}", uuid::Uuid::new_v4()),
                         content,
                     )
-                })
-            }
+                }),
             // その他は変換しない
             _ => None,
         }
@@ -164,17 +166,20 @@ impl ToAcp for crate::capability::CapabilityEvent {
             }
             // メッセージチャンク
             "message.chunk" => {
-                self.payload.get("content").and_then(|c| c.as_str()).map(|content| {
-                    AcpMessage::notification(
-                        acp::notifications::SESSION_UPDATE,
-                        Some(serde_json::json!({
-                            "sessionId": session_id,
-                            "sessionUpdate": "message_chunk",
-                            "messageId": format!("msg-{}", uuid::Uuid::new_v4()),
-                            "content": [{"type": "text", "text": content}]
-                        })),
-                    )
-                })
+                self.payload
+                    .get("content")
+                    .and_then(|c| c.as_str())
+                    .map(|content| {
+                        AcpMessage::notification(
+                            acp::notifications::SESSION_UPDATE,
+                            Some(serde_json::json!({
+                                "sessionId": session_id,
+                                "sessionUpdate": "message_chunk",
+                                "messageId": format!("msg-{}", uuid::Uuid::new_v4()),
+                                "content": [{"type": "text", "text": content}]
+                            })),
+                        )
+                    })
             }
             _ => None,
         }

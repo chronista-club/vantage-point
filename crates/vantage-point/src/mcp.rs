@@ -65,8 +65,23 @@ pub struct RestartParams {
     pub open_viewer: Option<bool>,
 }
 
+/// Parameters for the toggle_pane tool
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct TogglePaneParams {
+    /// Pane ID to toggle ("left" or "right")
+    #[schemars(description = "Pane ID to toggle: 'left' for left panel, 'right' for right panel")]
+    pub pane_id: String,
+
+    /// Explicit visibility state
+    #[schemars(
+        description = "Set explicit visibility: true = show, false = hide. If not provided, toggles current state."
+    )]
+    pub visible: Option<bool>,
+}
+
 /// Response format for permission tool
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PermissionResponse {
     /// Behavior: "allow" or "deny"
     pub behavior: String,
@@ -140,7 +155,7 @@ impl VantageMcp {
             .await;
 
         match result {
-            Ok(resp) if resp.status().is_success() => {
+            Ok(resp) if resp.status() == reqwest::StatusCode::OK => {
                 Ok(CallToolResult::success(vec![Content::text(format!(
                     "Content displayed in pane '{}'",
                     pane_id
@@ -181,10 +196,54 @@ impl VantageMcp {
             .await;
 
         match result {
-            Ok(resp) if resp.status().is_success() => {
+            Ok(resp) if resp.status() == reqwest::StatusCode::OK => Ok(CallToolResult::success(
+                vec![Content::text(format!("Pane '{}' cleared", pane_id))],
+            )),
+            Ok(resp) => {
+                let status = resp.status();
+                Err(McpError::internal_error(
+                    format!("Stand returned error: {}", status),
+                    None,
+                ))
+            }
+            Err(e) => Err(McpError::internal_error(
+                format!("Failed to connect to Stand: {}", e),
+                None,
+            )),
+        }
+    }
+
+    /// Toggle side panel visibility
+    #[tool(
+        description = "Toggle side panel visibility in the Vantage Point browser viewer. Use pane_id 'left' or 'right'."
+    )]
+    async fn toggle_pane(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<TogglePaneParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let message = StandMessage::TogglePane {
+            pane_id: params.pane_id.clone(),
+            visible: params.visible,
+        };
+
+        let url = self.stand_url.lock().await;
+        let result = self
+            .client
+            .post(format!("{}/api/toggle-pane", *url))
+            .json(&message)
+            .send()
+            .await;
+
+        match result {
+            Ok(resp) if resp.status() == reqwest::StatusCode::OK => {
+                let state_desc = match params.visible {
+                    Some(true) => "shown",
+                    Some(false) => "hidden",
+                    None => "toggled",
+                };
                 Ok(CallToolResult::success(vec![Content::text(format!(
-                    "Pane '{}' cleared",
-                    pane_id
+                    "Pane '{}' {}",
+                    params.pane_id, state_desc
                 ))]))
             }
             Ok(resp) => {
@@ -242,7 +301,10 @@ impl VantageMcp {
 
         if let Err(e) = send_result {
             return Err(McpError::internal_error(
-                format!("Failed to send permission request to Stand: {}. Is vp running?", e),
+                format!(
+                    "Failed to send permission request to Stand: {}. Is vp running?",
+                    e
+                ),
                 None,
             ));
         }
@@ -250,7 +312,10 @@ impl VantageMcp {
         let send_resp = send_result.unwrap();
         if !send_resp.status().is_success() {
             return Err(McpError::internal_error(
-                format!("Stand returned error on permission request: {}", send_resp.status()),
+                format!(
+                    "Stand returned error on permission request: {}",
+                    send_resp.status()
+                ),
                 None,
             ));
         }
@@ -278,7 +343,7 @@ impl VantageMcp {
             let poll_result = self.client.get(&poll_url).send().await;
 
             match poll_result {
-                Ok(resp) if resp.status().is_success() => {
+                Ok(resp) if resp.status() == reqwest::StatusCode::OK => {
                     // Got a response
                     match resp.json::<PermissionResponse>().await {
                         Ok(permission_resp) => {
@@ -374,7 +439,7 @@ impl VantageMcp {
             }
 
             match self.client.get(&health_url).send().await {
-                Ok(resp) if resp.status().is_success() => {
+                Ok(resp) if resp.status() == reqwest::StatusCode::OK => {
                     // Still running, wait
                     tokio::time::sleep(poll_interval).await;
                 }
@@ -422,7 +487,7 @@ impl VantageMcp {
             tokio::time::sleep(poll_interval).await;
 
             match self.client.get(&health_url).send().await {
-                Ok(resp) if resp.status().is_success() => {
+                Ok(resp) if resp.status() == reqwest::StatusCode::OK => {
                     // Stand is up
                     return Ok(CallToolResult::success(vec![Content::text(format!(
                         "Stand restarted successfully on port {}. Project: {}",

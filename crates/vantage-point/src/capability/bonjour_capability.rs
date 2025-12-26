@@ -75,8 +75,9 @@ impl BonjourCapability {
     /// Start advertising the service
     fn start_advertising(&mut self) -> CapabilityResult<()> {
         // Create service daemon
-        let daemon = ServiceDaemon::new()
-            .map_err(|e| CapabilityError::InitializationFailed(format!("Failed to create mDNS daemon: {}", e)))?;
+        let daemon = ServiceDaemon::new().map_err(|e| {
+            CapabilityError::InitializationFailed(format!("Failed to create mDNS daemon: {}", e))
+        })?;
 
         // Get local hostname for the service
         let host_name = format!("{}.local.", self.instance_name);
@@ -95,12 +96,14 @@ impl BonjourCapability {
             self.port,
             &properties[..],
         )
-        .map_err(|e| CapabilityError::InitializationFailed(format!("Failed to create service info: {}", e)))?;
+        .map_err(|e| {
+            CapabilityError::InitializationFailed(format!("Failed to create service info: {}", e))
+        })?;
 
         // Register the service
-        daemon
-            .register(service_info)
-            .map_err(|e| CapabilityError::InitializationFailed(format!("Failed to register service: {}", e)))?;
+        daemon.register(service_info).map_err(|e| {
+            CapabilityError::InitializationFailed(format!("Failed to register service: {}", e))
+        })?;
 
         self.daemon = Some(daemon);
 
@@ -113,13 +116,14 @@ impl BonjourCapability {
         );
 
         self.emit_event(
-            CapabilityEvent::new("bonjour.advertised", "bonjour-capability")
-                .with_payload(&serde_json::json!({
+            CapabilityEvent::new("bonjour.advertised", "bonjour-capability").with_payload(
+                &serde_json::json!({
                     "service_type": SERVICE_TYPE,
                     "port": self.port,
                     "project": self.project_name,
                     "instance": self.instance_name,
-                })),
+                }),
+            ),
         );
 
         Ok(())
@@ -133,10 +137,11 @@ impl BonjourCapability {
             tracing::info!("Bonjour service unregistered");
 
             self.emit_event(
-                CapabilityEvent::new("bonjour.unregistered", "bonjour-capability")
-                    .with_payload(&serde_json::json!({
+                CapabilityEvent::new("bonjour.unregistered", "bonjour-capability").with_payload(
+                    &serde_json::json!({
                         "port": self.port,
-                    })),
+                    }),
+                ),
             );
         }
     }

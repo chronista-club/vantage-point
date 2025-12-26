@@ -334,8 +334,7 @@ impl CapabilityRegistry {
         F: FnOnce(&mut dyn Capability) -> R,
     {
         let mut caps = self.capabilities.write().await;
-        caps.get_mut(name)
-            .map(|entry| f(entry.capability.as_mut()))
+        caps.get_mut(name).map(|entry| f(entry.capability.as_mut()))
     }
 
     /// 能力に読み取りアクセスして操作を実行

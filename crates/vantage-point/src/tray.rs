@@ -35,13 +35,14 @@ async fn scan_instances() -> Vec<Instance> {
         let url = format!("http://localhost:{}/api/health", port);
         if let Ok(response) = client.get(&url).send().await
             && response.status().is_success()
-                && let Ok(health) = response.json::<serde_json::Value>().await {
-                    instances.push(Instance {
-                        port,
-                        pid: health["pid"].as_u64().unwrap_or(0) as u32,
-                        project_dir: health["project_dir"].as_str().map(String::from),
-                    });
-                }
+            && let Ok(health) = response.json::<serde_json::Value>().await
+        {
+            instances.push(Instance {
+                port,
+                pid: health["pid"].as_u64().unwrap_or(0) as u32,
+                project_dir: health["project_dir"].as_str().map(String::from),
+            });
+        }
     }
 
     instances
@@ -181,11 +182,12 @@ pub fn run_tray() -> anyhow::Result<()> {
                     }
                 }
             } else if let Some(port_str) = id.strip_prefix(STOP_PREFIX)
-                && let Ok(port) = port_str.parse::<u16>() {
-                    tracing::info!("Stopping instance on port {}...", port);
-                    let rt = tokio::runtime::Runtime::new().unwrap();
-                    rt.block_on(stop_instance(port));
-                }
+                && let Ok(port) = port_str.parse::<u16>()
+            {
+                tracing::info!("Stopping instance on port {}...", port);
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(stop_instance(port));
+            }
         }
     });
 }

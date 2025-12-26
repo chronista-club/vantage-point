@@ -192,10 +192,7 @@ pub struct MidiHandler {
 
 impl MidiHandler {
     pub fn new(config: MidiConfig, stand_port: u16) -> Self {
-        Self {
-            config,
-            stand_port,
-        }
+        Self { config, stand_port }
     }
 
     /// Handle incoming MIDI event
@@ -212,10 +209,11 @@ impl MidiHandler {
             } => {
                 // Only trigger on value > 64 (like a button press)
                 if *value > 64
-                    && let Some(action) = self.config.cc_actions.get(controller) {
-                        tracing::info!("MIDI CC {} -> {:?}", controller, action);
-                        self.execute_action(action).await;
-                    }
+                    && let Some(action) = self.config.cc_actions.get(controller)
+                {
+                    tracing::info!("MIDI CC {} -> {:?}", controller, action);
+                    self.execute_action(action).await;
+                }
             }
             MidiMessage::ProgramChange { program, .. } => {
                 if let Some(action) = self.config.program_actions.get(program) {
@@ -252,7 +250,10 @@ impl MidiHandler {
             MidiAction::ResetSession { port } => {
                 let target_port = port.unwrap_or(self.stand_port);
                 // TODO: Implement reset via WebSocket or API
-                tracing::info!("Reset session on port {} (not yet implemented)", target_port);
+                tracing::info!(
+                    "Reset session on port {} (not yet implemented)",
+                    target_port
+                );
             }
             MidiAction::ApiCall {
                 endpoint,
@@ -422,8 +423,8 @@ pub mod lpd8 {
     #[derive(Debug, Clone)]
     pub struct PadConfig {
         pub note: u8,
-        pub pc: u8,           // Program Change number
-        pub cc: u8,           // Control Change number
+        pub pc: u8, // Program Change number
+        pub cc: u8, // Control Change number
         pub toggle: PadToggle,
         pub pad_off_color: u8, // Mk2 only: LED off color (0-3)
         pub pad_on_color: u8,  // Mk2 only: LED on color (0-3)
@@ -450,7 +451,11 @@ pub mod lpd8 {
                 self.pc,
                 self.cc,
                 self.toggle as u8,
-                0, 0, 0, 0, 0, // Reserved
+                0,
+                0,
+                0,
+                0,
+                0, // Reserved
                 self.pad_off_color,
                 self.pad_on_color,
             ]
@@ -465,7 +470,11 @@ pub mod lpd8 {
                 note: data[0],
                 pc: data[1],
                 cc: data[2],
-                toggle: if data[3] == 1 { PadToggle::Toggle } else { PadToggle::Momentary },
+                toggle: if data[3] == 1 {
+                    PadToggle::Toggle
+                } else {
+                    PadToggle::Momentary
+                },
                 pad_off_color: data[9],
                 pad_on_color: data[10],
             })
@@ -563,7 +572,7 @@ pub mod lpd8 {
         /// Parse program from SysEx response
         pub fn from_sysex(data: &[u8]) -> Option<Self> {
             // Expected: F0 47 7F 75 63 <prog> <chan> <88 pad bytes> <40 knob bytes> F7
-            if data.len() < 136 || data[0] != 0xF0 || data[data.len()-1] != 0xF7 {
+            if data.len() < 136 || data[0] != 0xF0 || data[data.len() - 1] != 0xF7 {
                 return None;
             }
 
@@ -575,13 +584,17 @@ pub mod lpd8 {
             let mut knobs: [KnobConfig; 8] = std::array::from_fn(|_| KnobConfig::default());
 
             for i in 0..8 {
-                pads[i] = PadConfig::from_bytes(&pad_data[i*11..(i+1)*11])?;
+                pads[i] = PadConfig::from_bytes(&pad_data[i * 11..(i + 1) * 11])?;
             }
             for i in 0..8 {
-                knobs[i] = KnobConfig::from_bytes(&knob_data[i*5..(i+1)*5])?;
+                knobs[i] = KnobConfig::from_bytes(&knob_data[i * 5..(i + 1) * 5])?;
             }
 
-            Some(Self { channel, pads, knobs })
+            Some(Self {
+                channel,
+                pads,
+                knobs,
+            })
         }
 
         /// Create VP default program (PAD 1-4: Notes 36-39, PAD 5-8: Notes 40-43)
@@ -689,7 +702,9 @@ pub fn send_sysex(port_pattern: Option<&str>, data: &[u8]) -> Result<()> {
     };
 
     let port = &ports[port_idx];
-    let port_name = midi_out.port_name(port).unwrap_or_else(|_| "Unknown".to_string());
+    let port_name = midi_out
+        .port_name(port)
+        .unwrap_or_else(|_| "Unknown".to_string());
 
     let mut conn = midi_out.connect(port, "vp-midi-sysex")?;
     conn.send(data)?;

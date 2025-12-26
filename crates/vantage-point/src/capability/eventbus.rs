@@ -13,7 +13,7 @@
 use crate::capability::core::CapabilityEvent;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{broadcast, mpsc, RwLock};
+use tokio::sync::{RwLock, broadcast, mpsc};
 
 // =============================================================================
 // Subscription (購読)
@@ -232,7 +232,9 @@ pub struct FilteredSubscription {
 impl FilteredSubscription {
     /// 購読からフィルタ付き購読を作成
     pub fn new(subscription: Subscription) -> Self {
-        Self { inner: subscription }
+        Self {
+            inner: subscription,
+        }
     }
 
     /// 次のマッチするイベントを受信

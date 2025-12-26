@@ -16,7 +16,7 @@ use crate::protocol::{AcpMessage, ProtocolMessage, ToAcp, ToAgUi, VantageEvent};
 use async_trait::async_trait;
 use std::any::Any;
 use std::sync::Arc;
-use tokio::sync::{broadcast, mpsc, RwLock};
+use tokio::sync::{RwLock, broadcast, mpsc};
 
 // =============================================================================
 // Protocol Capability
@@ -109,7 +109,11 @@ impl ProtocolCapability {
                     .payload
                     .get("data")
                     .and_then(|v| v.as_array())
-                    .map(|arr| arr.iter().filter_map(|v| v.as_u64().map(|n| n as u8)).collect())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_u64().map(|n| n as u8))
+                            .collect()
+                    })
                     .unwrap_or_default();
 
                 let event_type = match event.event_type.as_str() {
@@ -146,7 +150,10 @@ impl ProtocolCapability {
                     _ => crate::protocol::CapabilityStateInfo::Idle,
                 };
 
-                Some(VantageEvent::capability_state_changed(&capability_id, state))
+                Some(VantageEvent::capability_state_changed(
+                    &capability_id,
+                    state,
+                ))
             }
 
             // Synergy発動
@@ -356,11 +363,12 @@ mod tests {
 
     #[test]
     fn test_to_vantage_midi() {
-        let event = CapabilityEvent::new("midi.note_on", "midi-capability")
-            .with_payload(&serde_json::json!({
+        let event = CapabilityEvent::new("midi.note_on", "midi-capability").with_payload(
+            &serde_json::json!({
                 "channel": 0,
                 "data": [144, 60, 100]
-            }));
+            }),
+        );
 
         let vantage = ProtocolCapability::to_vantage(&event);
         assert!(vantage.is_some());
@@ -390,7 +398,10 @@ mod tests {
 
         match vantage.unwrap() {
             VantageEvent::CapabilityStateChanged { state, .. } => {
-                assert!(matches!(state, crate::protocol::CapabilityStateInfo::Active));
+                assert!(matches!(
+                    state,
+                    crate::protocol::CapabilityStateInfo::Active
+                ));
             }
             _ => panic!("Expected CapabilityStateChanged event"),
         }
@@ -398,11 +409,12 @@ mod tests {
 
     #[test]
     fn test_to_vantage_synergy() {
-        let event = CapabilityEvent::new("synergy.activated", "synergy-engine")
-            .with_payload(&serde_json::json!({
+        let event = CapabilityEvent::new("synergy.activated", "synergy-engine").with_payload(
+            &serde_json::json!({
                 "synergy_id": "midi-agent",
                 "capabilities": ["midi", "agent"]
-            }));
+            }),
+        );
 
         let vantage = ProtocolCapability::to_vantage(&event);
         assert!(vantage.is_some());

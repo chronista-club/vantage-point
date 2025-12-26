@@ -15,19 +15,51 @@
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             background: #1a1a2e;
             color: #eee;
-            min-height: 100vh;
+            height: 100vh;
+            overflow: hidden;
         }
+
+        /* ===== Header ===== */
         .header {
             background: #16213e;
-            padding: 12px 20px;
+            padding: 8px 16px;
             border-bottom: 1px solid #0f3460;
             display: flex;
             align-items: center;
             gap: 12px;
+            height: 44px;
         }
         .header h1 {
+            display: flex;
+            align-items: center;
             font-size: 16px;
             font-weight: 500;
+            color: #e94560;
+            cursor: pointer;
+        }
+        .header h1:hover {
+            color: #ff6b6b;
+        }
+        .header h1 svg {
+            width: 24px;
+            height: 24px;
+        }
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .header-center {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+        .header-right {
+            display: flex;
+            align-items: center;
+            gap: 8px;
         }
         .status {
             font-size: 12px;
@@ -51,21 +83,95 @@
         .project-name.visible {
             display: inline-block;
         }
-        .container {
+        .debug-indicator {
+            font-size: 10px;
+            padding: 2px 6px;
+            border-radius: 3px;
+            display: none;
+        }
+        .debug-indicator.visible {
+            display: inline-block;
+        }
+        .debug-indicator.simple {
+            background: #3b82f6;
+            color: white;
+        }
+
+        /* Panel Toggle Buttons */
+        .panel-toggle {
+            background: transparent;
+            border: 1px solid #0f3460;
+            color: #888;
+            width: 32px;
+            height: 32px;
+            border-radius: 6px;
+            cursor: pointer;
             display: flex;
-            height: calc(100vh - 50px);
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s;
         }
-        .pane {
-            flex: 1;
-            padding: 20px;
-            overflow: auto;
-            background: #1a1a2e;
+        .panel-toggle:hover {
+            background: #0f3460;
+            color: #eee;
+        }
+        .panel-toggle.active {
+            background: #667eea;
+            border-color: #667eea;
+            color: white;
+        }
+        .panel-toggle svg {
+            width: 16px;
+            height: 16px;
+        }
+
+        /* ===== Main Container ===== */
+        .main-container {
+            display: flex;
+            height: calc(100vh - 44px);
+        }
+
+        /* ===== Side Panels ===== */
+        .side-panel {
+            width: 300px;
             min-width: 200px;
+            max-width: 500px;
+            background: #16213e;
+            border-right: 1px solid #0f3460;
+            display: flex;
+            flex-direction: column;
+            transition: width 0.2s, margin 0.2s;
+            overflow: hidden;
         }
+        .side-panel.right {
+            border-right: none;
+            border-left: 1px solid #0f3460;
+        }
+        .side-panel.collapsed {
+            width: 0;
+            min-width: 0;
+            border: none;
+        }
+        .side-panel-header {
+            padding: 12px 16px;
+            border-bottom: 1px solid #0f3460;
+            font-weight: 500;
+            font-size: 13px;
+            color: #888;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .side-panel-content {
+            flex: 1;
+            overflow: auto;
+            padding: 12px;
+        }
+
         /* Resize Handle */
         .resize-handle {
-            width: 6px;
-            background: #0f3460;
+            width: 4px;
+            background: transparent;
             cursor: col-resize;
             transition: background 0.2s;
             flex-shrink: 0;
@@ -74,187 +180,103 @@
         .resize-handle.dragging {
             background: #667eea;
         }
-        .pane-content {
-            max-width: 800px;
-            margin: 0 auto;
-        }
-        /* Markdown styles */
-        .pane-content h1, .pane-content h2, .pane-content h3 {
-            margin: 1em 0 0.5em;
-            color: #fff;
-        }
-        .pane-content p {
-            margin: 0.5em 0;
-            line-height: 1.6;
-        }
-        .pane-content code {
-            background: #0f3460;
-            padding: 2px 6px;
-            border-radius: 4px;
-            font-family: 'JetBrains Mono', monospace;
-        }
-        .pane-content pre {
-            background: #0f3460;
-            padding: 16px;
-            border-radius: 8px;
-            overflow-x: auto;
-            margin: 1em 0;
-        }
-        .pane-content pre code {
-            background: none;
-            padding: 0;
-        }
-        .pane-content img {
-            max-width: 100%;
-            border-radius: 8px;
-        }
-        .pane-content ul, .pane-content ol {
-            margin: 0.5em 0;
-            padding-left: 1.5em;
-        }
-        .log-entry {
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 13px;
-            padding: 4px 0;
-            border-bottom: 1px solid #0f3460;
-        }
-        .welcome {
-            text-align: center;
-            padding: 60px 20px;
-            color: #666;
-        }
-        .welcome h2 {
-            font-size: 24px;
-            margin-bottom: 12px;
-            color: #888;
+
+        /* ===== Center Panel (Chat) ===== */
+        .center-panel {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            min-width: 400px;
+            background: #1a1a2e;
+            overflow: hidden;
         }
 
-        /* Chat Panel Styles */
-        .chat-panel {
-            display: flex;
-            flex-direction: column;
-            background: #16213e;
-            width: 400px;
-            min-width: 280px;
-            max-width: 800px;
-            flex-shrink: 0;
-        }
-        .chat-header {
-            padding: 12px 16px;
-            border-bottom: 1px solid #0f3460;
-            font-weight: 500;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-        }
-        .chat-header-left {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-        .chat-header-icon {
-            width: 20px;
-            height: 20px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            border-radius: 50%;
-        }
-        .chat-header-actions {
-            display: flex;
-            gap: 8px;
-        }
-        .header-btn {
-            background: transparent;
-            border: 1px solid #0f3460;
-            color: #888;
-            padding: 4px 8px;
-            border-radius: 4px;
-            font-size: 11px;
-            cursor: pointer;
-            transition: all 0.2s;
-        }
-        .header-btn:hover {
-            background: #0f3460;
-            color: #eee;
-        }
-        .header-btn.danger:hover {
-            background: #dc2626;
-            border-color: #dc2626;
-            color: #fff;
-        }
-        .chat-messages {
+        /* ===== New Chat Layout ===== */
+        .chat-container {
             flex: 1;
-            overflow-y: auto;
-            padding: 16px;
             display: flex;
             flex-direction: column;
-            gap: 12px;
+            overflow: hidden;
+            max-width: 800px;
+            margin: 0 auto;
+            width: 100%;
+            padding: 0 16px;
         }
-        .chat-message {
-            max-width: 90%;
-            padding: 10px 14px;
+
+        /* Response Area - 入力欄の上 */
+        .response-area {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-end;
+            overflow: hidden;
+            padding: 16px 0;
+            min-height: 100px;
+        }
+        .current-response {
+            background: #1e293b;
+            border: 1px solid #334155;
             border-radius: 12px;
-            line-height: 1.5;
+            padding: 16px;
+            animation: slideDown 0.3s ease-out;
+            max-height: 100%;
+            overflow-y: auto;
+        }
+        .current-response.empty {
+            display: none;
+        }
+        .current-response .content {
+            line-height: 1.6;
             font-size: 14px;
         }
-        .chat-message.user {
-            align-self: flex-end;
-            background: #0f3460;
-            color: #fff;
-        }
-        .chat-message.assistant {
-            align-self: flex-start;
-            background: #1a1a2e;
-            color: #eee;
-            border: 1px solid #0f3460;
-        }
-        .chat-message.system {
-            align-self: center;
-            background: transparent;
-            color: #888;
-            font-size: 12px;
-            padding: 4px 8px;
-        }
-        .chat-message.assistant .content {
-            white-space: pre-wrap;
-        }
-        .chat-message.assistant .content p {
+        .current-response .content p {
             margin: 0.3em 0;
         }
-        .chat-message.assistant .content code {
+        .current-response .content code {
             background: #0f3460;
             padding: 1px 4px;
             border-radius: 3px;
             font-size: 13px;
         }
-        .chat-message.assistant .content pre {
+        .current-response .content pre {
             background: #0f3460;
             padding: 10px;
             border-radius: 6px;
             overflow-x: auto;
             margin: 0.5em 0;
         }
-        .chat-message.assistant .content pre code {
+        .current-response .content pre code {
             background: none;
             padding: 0;
         }
-        .chat-typing {
-            align-self: flex-start;
-            padding: 10px 14px;
-            color: #888;
-            font-size: 14px;
+        @keyframes slideDown {
+            from {
+                opacity: 0;
+                transform: translateY(-20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
         }
-        .chat-typing::after {
-            content: '';
-            animation: dots 1.5s infinite;
+
+        /* System message in response area */
+        .system-message {
+            text-align: center;
+            color: #666;
+            font-size: 13px;
+            padding: 8px;
         }
-        @keyframes dots {
-            0%, 20% { content: '.'; }
-            40% { content: '..'; }
-            60%, 100% { content: '...'; }
-        }
-        .chat-input-container {
-            padding: 12px;
+
+        /* Input Area - 中央 */
+        .input-area {
+            padding: 16px 0;
             border-top: 1px solid #0f3460;
+            border-bottom: 1px solid #0f3460;
+            background: #16213e;
+            margin: 0 -16px;
+            padding-left: 16px;
+            padding-right: 16px;
         }
         .chat-input-wrapper {
             display: flex;
@@ -317,10 +339,6 @@
             display: none;
             align-items: center;
             justify-content: center;
-            transition: opacity 0.2s;
-        }
-        .chat-cancel-btn:hover {
-            opacity: 0.9;
         }
         .chat-cancel-btn.visible {
             display: flex;
@@ -330,181 +348,69 @@
             height: 16px;
         }
 
-        /* Debug Panel Styles */
-        .debug-panel {
-            background: #0d1117;
-            border-top: 1px solid #0f3460;
-            max-height: 200px;
+        /* History Area - 入力欄の下 */
+        .history-area {
+            flex: 1;
             overflow-y: auto;
-            font-family: 'JetBrains Mono', 'Fira Code', monospace;
-            font-size: 11px;
-            display: none;
-        }
-        .debug-panel.visible {
-            display: block;
-        }
-        .debug-header {
-            position: sticky;
-            top: 0;
-            background: #0d1117;
-            padding: 6px 12px;
-            border-bottom: 1px solid #21262d;
+            padding: 16px 0;
             display: flex;
-            justify-content: space-between;
-            align-items: center;
-            color: #8b949e;
+            flex-direction: column;
+            gap: 12px;
         }
-        .debug-header span {
-            font-weight: 500;
+        .history-message {
+            padding: 12px 16px;
+            border-radius: 12px;
+            line-height: 1.5;
+            font-size: 14px;
+            animation: fadeIn 0.3s ease-out;
         }
-        .debug-clear-btn {
-            background: transparent;
-            border: none;
-            color: #8b949e;
-            cursor: pointer;
-            font-size: 10px;
-        }
-        .debug-clear-btn:hover {
-            color: #c9d1d9;
-        }
-        .debug-entries {
-            padding: 8px 12px;
-        }
-        .debug-entry {
-            padding: 2px 0;
-            color: #8b949e;
-            display: flex;
-            gap: 8px;
-        }
-        .debug-entry .timestamp {
-            color: #6e7681;
-            min-width: 80px;
-        }
-        .debug-entry .category {
-            color: #58a6ff;
-            min-width: 70px;
-        }
-        .debug-entry .message {
-            color: #c9d1d9;
-        }
-        .debug-entry.error .category {
-            color: #f85149;
-        }
-        .debug-entry.error .message {
-            color: #f85149;
-        }
-        .debug-entry .data {
-            color: #7ee787;
-            margin-left: 158px;
-            word-break: break-all;
-        }
-
-        /* Debug mode indicator */
-        .debug-indicator {
-            font-size: 10px;
-            padding: 2px 6px;
-            border-radius: 3px;
-            margin-left: 8px;
-        }
-        .debug-indicator.simple {
-            background: #3b82f6;
-            color: white;
-        }
-        .debug-indicator.detail {
-            background: #f59e0b;
-            color: black;
-        }
-
-        /* Session Tabs */
-        .session-tabs {
-            display: flex;
-            gap: 2px;
-            padding: 8px 12px 0;
-            background: #0d1117;
-            border-bottom: 1px solid #0f3460;
-            overflow-x: auto;
-            scrollbar-width: thin;
-        }
-        .session-tabs::-webkit-scrollbar {
-            height: 4px;
-        }
-        .session-tabs::-webkit-scrollbar-thumb {
+        .history-message.user {
+            align-self: flex-end;
             background: #0f3460;
-            border-radius: 2px;
+            color: #fff;
+            max-width: 85%;
         }
-        .session-tab {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            padding: 6px 12px;
-            background: transparent;
-            border: none;
-            border-radius: 6px 6px 0 0;
-            color: #888;
-            font-size: 12px;
-            cursor: pointer;
-            white-space: nowrap;
-            transition: all 0.15s;
+        .history-message.assistant {
+            background: #1e293b;
+            color: #e0e0e0;
+            border: 1px solid #334155;
+            opacity: 0.85;
         }
-        .session-tab:hover {
-            background: rgba(102, 126, 234, 0.1);
-            color: #bbb;
+        .history-message.assistant .content {
+            line-height: 1.6;
         }
-        .session-tab.active {
-            background: #16213e;
-            color: #eee;
+        .history-message.assistant .content p {
+            margin: 0.3em 0;
         }
-        .session-tab .tab-name {
-            max-width: 120px;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-        .session-tab .tab-close {
-            display: none;
-            width: 14px;
-            height: 14px;
+        .history-message.assistant .content code {
+            background: #0f3460;
+            padding: 1px 4px;
             border-radius: 3px;
-            background: transparent;
-            border: none;
-            color: #666;
-            cursor: pointer;
-            font-size: 10px;
-            line-height: 1;
+            font-size: 13px;
+        }
+        .history-message.assistant .content pre {
+            background: #0f3460;
+            padding: 10px;
+            border-radius: 6px;
+            overflow-x: auto;
+            margin: 0.5em 0;
+        }
+        .history-message.assistant .content pre code {
+            background: none;
             padding: 0;
         }
-        .session-tab:hover .tab-close,
-        .session-tab.active .tab-close {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-        .session-tab .tab-close:hover {
-            background: #dc2626;
-            color: white;
-        }
-        .session-tab-new {
-            padding: 6px 10px;
-            background: transparent;
-            border: 1px dashed #0f3460;
-            border-radius: 6px 6px 0 0;
-            color: #666;
-            font-size: 14px;
-            cursor: pointer;
-            transition: all 0.15s;
-        }
-        .session-tab-new:hover {
-            border-color: #667eea;
-            color: #667eea;
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 0.85; }
         }
 
-        /* Chat Components - Permission Dialog */
+        /* ===== Chat Components ===== */
         .chat-component {
             margin: 8px 0;
             border-radius: 12px;
             background: #1e293b;
             border: 1px solid #334155;
             overflow: hidden;
-            max-width: 90%;
         }
         .chat-component.permission-request {
             border-color: #f59e0b;
@@ -660,34 +566,7 @@
             50% { opacity: 0.5; }
         }
 
-        /* Progress Component */
-        .chat-component.progress {
-            border-color: #8b5cf6;
-        }
-        .chat-component.progress .chat-component-header {
-            background: rgba(139, 92, 246, 0.1);
-        }
-        .chat-component.progress .chat-component-header .title {
-            color: #8b5cf6;
-        }
-        .progress-bar-container {
-            background: #1e293b;
-            border-radius: 4px;
-            height: 8px;
-            overflow: hidden;
-        }
-        .progress-bar {
-            height: 100%;
-            background: linear-gradient(90deg, #8b5cf6, #a78bfa);
-            transition: width 0.3s ease;
-        }
-        .progress-label {
-            margin-top: 8px;
-            font-size: 12px;
-            color: #94a3b8;
-        }
-
-        /* User Prompt Component (REQ-PROMPT) */
+        /* User Prompt Component */
         .chat-component.user-prompt {
             border-color: #6366f1;
         }
@@ -701,7 +580,6 @@
             color: #94a3b8;
             font-size: 14px;
             margin-bottom: 16px;
-            line-height: 1.5;
         }
         .prompt-input {
             width: 100%;
@@ -712,163 +590,235 @@
             font-size: 14px;
             color: #e2e8f0;
             margin-bottom: 16px;
-            resize: vertical;
-            min-height: 60px;
-            font-family: inherit;
         }
         .prompt-input:focus {
             outline: none;
             border-color: #6366f1;
         }
-        .prompt-input::placeholder {
-            color: #64748b;
-        }
-        .prompt-options {
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-            margin-bottom: 16px;
-        }
-        .prompt-option {
-            display: flex;
-            align-items: flex-start;
-            gap: 12px;
-            padding: 12px;
-            background: #0f172a;
-            border: 1px solid #334155;
-            border-radius: 6px;
-            cursor: pointer;
-            transition: all 0.15s;
-        }
-        .prompt-option:hover {
-            border-color: #6366f1;
-            background: rgba(99, 102, 241, 0.05);
-        }
-        .prompt-option.selected {
-            border-color: #6366f1;
-            background: rgba(99, 102, 241, 0.1);
-        }
-        .prompt-option input[type="radio"],
-        .prompt-option input[type="checkbox"] {
-            margin-top: 2px;
-            accent-color: #6366f1;
-        }
-        .prompt-option-content {
-            flex: 1;
-        }
-        .prompt-option-label {
-            font-weight: 500;
-            color: #e2e8f0;
-            margin-bottom: 4px;
-        }
-        .prompt-option-description {
-            font-size: 12px;
-            color: #64748b;
-        }
-        .prompt-checkbox-label {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            cursor: pointer;
-        }
         .chat-component-btn.submit {
             background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
             color: white;
         }
-        .chat-component-btn.submit:hover {
-            filter: brightness(1.1);
+
+        /* ===== Right Panel - Debug/Activity ===== */
+        .debug-content {
+            font-family: 'JetBrains Mono', 'Fira Code', monospace;
+            font-size: 11px;
         }
-        .chat-component-btn.cancel {
-            background: transparent;
-            border: 1px solid #475569;
-            color: #94a3b8;
+        .debug-entry {
+            padding: 4px 0;
+            color: #8b949e;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            border-bottom: 1px solid #21262d;
         }
-        .chat-component-btn.cancel:hover {
-            background: #334155;
+        .debug-entry .meta {
+            display: flex;
+            gap: 8px;
+        }
+        .debug-entry .timestamp {
+            color: #6e7681;
+        }
+        .debug-entry .category {
+            color: #58a6ff;
+        }
+        .debug-entry .message {
+            color: #c9d1d9;
+        }
+        .debug-entry.error .category {
+            color: #f85149;
+        }
+        .debug-entry .data {
+            color: #7ee787;
+            word-break: break-all;
+            font-size: 10px;
         }
 
-        /* Responsive */
+        /* ===== Left Panel - Content/Show ===== */
+        .content-pane {
+            padding: 16px;
+        }
+        .content-pane .welcome {
+            text-align: center;
+            padding: 40px 20px;
+            color: #666;
+        }
+        .content-pane .welcome h2 {
+            font-size: 18px;
+            margin-bottom: 8px;
+            color: #888;
+        }
+        .pane-content h1, .pane-content h2, .pane-content h3 {
+            margin: 1em 0 0.5em;
+            color: #fff;
+        }
+        .pane-content p {
+            margin: 0.5em 0;
+            line-height: 1.6;
+        }
+        .pane-content code {
+            background: #0f3460;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .pane-content pre {
+            background: #0f3460;
+            padding: 16px;
+            border-radius: 8px;
+            overflow-x: auto;
+            margin: 1em 0;
+        }
+        .pane-content pre code {
+            background: none;
+            padding: 0;
+        }
+        .pane-content img {
+            max-width: 100%;
+            border-radius: 8px;
+        }
+
+        /* Typing indicator */
+        .typing-indicator {
+            color: #888;
+            font-size: 14px;
+            padding: 8px 0;
+        }
+        .typing-indicator::after {
+            content: '';
+            animation: dots 1.5s infinite;
+        }
+        @keyframes dots {
+            0%, 20% { content: '.'; }
+            40% { content: '..'; }
+            60%, 100% { content: '...'; }
+        }
+
+        /* ===== Responsive ===== */
         @media (max-width: 900px) {
-            .container {
-                flex-direction: column;
+            .side-panel {
+                position: absolute;
+                z-index: 100;
+                height: calc(100vh - 44px);
             }
-            .resize-handle {
-                display: none;
+            .side-panel.left {
+                left: 0;
             }
-            .chat-panel {
-                width: 100% !important;
-                max-width: none;
-                min-width: 0;
-                height: 300px;
-                border-top: 1px solid #0f3460;
+            .side-panel.right {
+                right: 0;
             }
-            .pane {
-                min-width: 0;
+            .chat-container {
+                padding: 0 12px;
             }
         }
     </style>
 </head>
 <body>
     <div class="header">
-        <h1 id="header-title">Vantage Point</h1>
-        <span id="project-name" class="project-name"></span>
-        <span id="status" class="status disconnected">Disconnected</span>
-        <span id="debug-indicator" class="debug-indicator" style="display: none;"></span>
+        <div class="header-left">
+            <button id="toggle-left-panel" class="panel-toggle" title="Toggle Left Panel">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="3" y="3" width="18" height="18" rx="2"/>
+                    <line x1="9" y1="3" x2="9" y2="21"/>
+                </svg>
+            </button>
+            <h1 id="header-title" title="Vantage Point">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M12 2L2 22H22L12 2Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M12 2L8 10L12 8L16 10L12 2Z" fill="currentColor" opacity="0.3"/>
+                    <circle cx="12" cy="6" r="2" fill="currentColor"/>
+                </svg>
+            </h1>
+            <span id="project-name" class="project-name"></span>
+            <span id="status" class="status disconnected">Disconnected</span>
+            <span id="debug-indicator" class="debug-indicator"></span>
+        </div>
+        <div class="header-center">
+        </div>
+        <div class="header-right">
+            <button id="toggle-right-panel" class="panel-toggle" title="Toggle Debug Panel">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="3" y="3" width="18" height="18" rx="2"/>
+                    <line x1="15" y1="3" x2="15" y2="21"/>
+                </svg>
+            </button>
+        </div>
     </div>
-    <div class="container">
-        <div id="pane-main" class="pane">
-            <div class="pane-content">
-                <div class="welcome">
-                    <h2>Vantage Point</h2>
-                    <p>Waiting for content from daemon...</p>
+
+    <div class="main-container">
+        <!-- Left Panel - Content/Show -->
+        <div id="left-panel" class="side-panel left collapsed">
+            <div class="side-panel-header">
+                <span>Content</span>
+            </div>
+            <div class="side-panel-content">
+                <div id="pane-main" class="content-pane">
+                    <div class="pane-content">
+                        <div class="welcome">
+                            <h2>Vantage Point</h2>
+                            <p>Waiting for content...</p>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
-        <div id="resize-handle" class="resize-handle"></div>
-        <div id="chat-panel" class="chat-panel">
-            <div class="chat-header">
-                <div class="chat-header-left">
-                    <div class="chat-header-icon"></div>
-                    <span>Agent Chat</span>
+
+        <div id="resize-left" class="resize-handle" style="display: none;"></div>
+
+        <!-- Center Panel - Chat -->
+        <div class="center-panel">
+            <div class="chat-container">
+                <!-- Response Area - AIの現在の返答 (入力欄の上) -->
+                <div class="response-area">
+                    <div id="current-response" class="current-response empty">
+                        <div class="content"></div>
+                    </div>
+                    <div id="typing-indicator" class="typing-indicator" style="display: none;">
+                        Agent is thinking
+                    </div>
                 </div>
-                <div class="chat-header-actions">
-                    <button id="debug-toggle-btn" class="header-btn" title="Toggle Debug Panel">Debug</button>
+
+                <!-- Input Area - 中央固定 -->
+                <div class="input-area">
+                    <div class="chat-input-wrapper">
+                        <textarea
+                            id="chat-input"
+                            class="chat-input"
+                            placeholder="Message the agent..."
+                            rows="1"
+                            autofocus
+                        ></textarea>
+                        <button id="chat-cancel-btn" class="chat-cancel-btn" title="Cancel Request">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M6 6l12 12M6 18L18 6"/>
+                            </svg>
+                        </button>
+                        <button id="chat-send-btn" class="chat-send-btn" disabled>
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- History Area - 過去のメッセージ (入力欄の下) -->
+                <div id="history-area" class="history-area">
+                    <div class="system-message">Connected to Vantage Point Agent</div>
                 </div>
             </div>
-            <div id="session-tabs" class="session-tabs">
-                <button id="new-session-btn" class="session-tab-new" title="New Session">+</button>
+        </div>
+
+        <div id="resize-right" class="resize-handle" style="display: none;"></div>
+
+        <!-- Right Panel - Debug/Activity -->
+        <div id="right-panel" class="side-panel right collapsed">
+            <div class="side-panel-header">
+                <span>Debug Log</span>
+                <button id="debug-clear-btn" class="header-btn" style="margin-left: auto;">Clear</button>
             </div>
-            <div id="chat-messages" class="chat-messages">
-                <div class="chat-message system">
-                    Connected to Vantage Point Agent
-                </div>
-            </div>
-            <div id="debug-panel" class="debug-panel">
-                <div class="debug-header">
-                    <span>Debug Log</span>
-                    <button id="debug-clear-btn" class="debug-clear-btn">Clear</button>
-                </div>
-                <div id="debug-entries" class="debug-entries"></div>
-            </div>
-            <div class="chat-input-container">
-                <div class="chat-input-wrapper">
-                    <textarea
-                        id="chat-input"
-                        class="chat-input"
-                        placeholder="Message the agent..."
-                        rows="1"
-                    ></textarea>
-                    <button id="chat-cancel-btn" class="chat-cancel-btn" title="Cancel Request">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M6 6l12 12M6 18L18 6"/>
-                        </svg>
-                    </button>
-                    <button id="chat-send-btn" class="chat-send-btn" disabled>
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/>
-                        </svg>
-                    </button>
-                </div>
+            <div class="side-panel-content debug-content">
+                <div id="debug-entries"></div>
             </div>
         </div>
     </div>
@@ -878,42 +828,90 @@
         let ws = null;
         let reconnectTimer = null;
         let reconnectAttempts = 0;
-        const MAX_RECONNECT_DELAY = 30000; // 30 seconds max
-        let isTyping = false;
+        const MAX_RECONNECT_DELAY = 30000;
+        let isStreaming = false;
         let currentStreamContent = '';
         let debugMode = 'none';
-        let isComposing = false; // IME変換中フラグ
-        let justFinishedComposing = false; // IME確定直後フラグ
-        let sessions = []; // Session list
-        let activeSessionId = null;
+        let isComposing = false;
+        let justFinishedComposing = false;
 
-        // Chat elements
-        const chatMessages = document.getElementById('chat-messages');
+        // Elements
+        const currentResponse = document.getElementById('current-response');
+        const currentResponseContent = currentResponse.querySelector('.content');
+        const typingIndicator = document.getElementById('typing-indicator');
+        const historyArea = document.getElementById('history-area');
         const chatInput = document.getElementById('chat-input');
         const chatSendBtn = document.getElementById('chat-send-btn');
         const chatCancelBtn = document.getElementById('chat-cancel-btn');
-        const debugToggleBtn = document.getElementById('debug-toggle-btn');
-        const debugPanel = document.getElementById('debug-panel');
         const debugEntries = document.getElementById('debug-entries');
         const debugClearBtn = document.getElementById('debug-clear-btn');
         const debugIndicator = document.getElementById('debug-indicator');
-        const sessionTabs = document.getElementById('session-tabs');
-        const newSessionBtn = document.getElementById('new-session-btn');
+        const leftPanel = document.getElementById('left-panel');
+        const rightPanel = document.getElementById('right-panel');
+        const toggleLeftBtn = document.getElementById('toggle-left-panel');
+        const toggleRightBtn = document.getElementById('toggle-right-panel');
+        const resizeLeft = document.getElementById('resize-left');
+        const resizeRight = document.getElementById('resize-right');
+
+        // Panel Toggle Functions
+        function toggleLeftPanel() {
+            leftPanel.classList.toggle('collapsed');
+            toggleLeftBtn.classList.toggle('active');
+            resizeLeft.style.display = leftPanel.classList.contains('collapsed') ? 'none' : 'block';
+        }
+
+        function toggleRightPanel() {
+            rightPanel.classList.toggle('collapsed');
+            toggleRightBtn.classList.toggle('active');
+            resizeRight.style.display = rightPanel.classList.contains('collapsed') ? 'none' : 'block';
+        }
+
+        toggleLeftBtn.addEventListener('click', toggleLeftPanel);
+        toggleRightBtn.addEventListener('click', toggleRightPanel);
+
+        // Resize functionality
+        let isResizing = null;
+
+        function startResize(panel, handle, e) {
+            isResizing = { panel, handle, startX: e.clientX, startWidth: panel.offsetWidth };
+            handle.classList.add('dragging');
+            document.body.style.cursor = 'col-resize';
+            document.body.style.userSelect = 'none';
+            e.preventDefault();
+        }
+
+        resizeLeft.addEventListener('mousedown', (e) => startResize(leftPanel, resizeLeft, e));
+        resizeRight.addEventListener('mousedown', (e) => startResize(rightPanel, resizeRight, e));
+
+        document.addEventListener('mousemove', (e) => {
+            if (!isResizing) return;
+            const { panel, startX, startWidth } = isResizing;
+            const isLeft = panel === leftPanel;
+            const delta = isLeft ? (e.clientX - startX) : (startX - e.clientX);
+            const newWidth = Math.max(200, Math.min(500, startWidth + delta));
+            panel.style.width = newWidth + 'px';
+        });
+
+        document.addEventListener('mouseup', () => {
+            if (isResizing) {
+                isResizing.handle.classList.remove('dragging');
+                isResizing = null;
+                document.body.style.cursor = '';
+                document.body.style.userSelect = '';
+            }
+        });
 
         function connect() {
             ws = new WebSocket(WS_URL);
 
             ws.onopen = async () => {
                 console.log('Connected to vpa');
-                reconnectAttempts = 0; // Reset on successful connection
+                reconnectAttempts = 0;
                 document.getElementById('status').textContent = 'Connected';
                 document.getElementById('status').className = 'status connected';
                 chatSendBtn.disabled = false;
                 ws.send(JSON.stringify({ type: 'ready' }));
-                // Request session list on connect
-                ws.send(JSON.stringify({ type: 'list_sessions' }));
 
-                // Fetch project info from health endpoint
                 try {
                     const response = await fetch('/api/health');
                     const health = await response.json();
@@ -927,6 +925,9 @@
                 } catch (e) {
                     console.log('Could not fetch project info:', e);
                 }
+
+                // Auto focus input
+                chatInput.focus();
             };
 
             ws.onclose = () => {
@@ -934,12 +935,10 @@
                 document.getElementById('status').className = 'status disconnected';
                 chatSendBtn.disabled = true;
 
-                // Exponential backoff for reconnection
                 reconnectAttempts++;
                 const delay = Math.min(1000 * Math.pow(2, reconnectAttempts - 1), MAX_RECONNECT_DELAY);
                 document.getElementById('status').textContent = `Reconnecting in ${Math.round(delay/1000)}s...`;
 
-                console.log(`Reconnecting in ${delay}ms (attempt ${reconnectAttempts})`);
                 if (reconnectTimer) clearTimeout(reconnectTimer);
                 reconnectTimer = setTimeout(connect, delay);
             };
@@ -964,9 +963,15 @@
             switch (msg.type) {
                 case 'show':
                     showContent(msg.pane_id || 'main', msg.content, msg.append);
+                    if (leftPanel.classList.contains('collapsed')) {
+                        toggleLeftPanel();
+                    }
                     break;
                 case 'clear':
                     clearPane(msg.pane_id || 'main');
+                    break;
+                case 'toggle_pane':
+                    handleTogglePane(msg.pane_id, msg.visible);
                     break;
                 case 'ping':
                     ws.send(JSON.stringify({ type: 'pong' }));
@@ -983,18 +988,6 @@
                 case 'debug_mode_changed':
                     setDebugMode(msg.mode);
                     break;
-                case 'session_list':
-                    updateSessionTabs(msg.sessions, msg.active_id);
-                    break;
-                case 'session_switched':
-                    handleSessionSwitched(msg.session_id, msg.name);
-                    break;
-                case 'session_history':
-                    handleSessionHistory(msg.session_id, msg.messages);
-                    break;
-                case 'session_closed':
-                    // Session list will be updated via session_list message
-                    break;
                 case 'chat_component':
                     renderChatComponent(msg.component, msg.interactive);
                     break;
@@ -1007,108 +1000,42 @@
             }
         }
 
-        // AG-UI Event Handler (REQ-AGUI-040)
-        let currentAgUiRun = null;
-
+        // AG-UI Event Handler
         function handleAgUiEvent(event) {
             console.log('AG-UI Event:', event.type, event);
-
             switch (event.type) {
-                case 'RUN_STARTED':
-                    currentAgUiRun = {
-                        run_id: event.run_id,
-                        thread_id: event.thread_id,
-                        started_at: event.timestamp
-                    };
-                    updateAgUiStatus('running');
-                    break;
-
-                case 'RUN_FINISHED':
-                    if (currentAgUiRun?.run_id === event.run_id) {
-                        currentAgUiRun = null;
-                        updateAgUiStatus('idle');
-                    }
-                    break;
-
-                case 'RUN_ERROR':
-                    if (currentAgUiRun?.run_id === event.run_id) {
-                        console.warn('AG-UI Run Error:', event.error);
-                        currentAgUiRun = null;
-                        updateAgUiStatus('error', event.error?.message);
-                    }
-                    break;
-
-                case 'TEXT_MESSAGE_START':
-                    // Could be used for more granular message tracking
-                    break;
-
-                case 'TEXT_MESSAGE_CONTENT':
-                    // Already handled by chat_chunk
-                    break;
-
-                case 'TEXT_MESSAGE_END':
-                    // Message complete
-                    break;
-
-                case 'TOOL_CALL_START':
-                    showToolActivity(event.tool_name, 'running');
-                    break;
-
-                case 'TOOL_CALL_END':
-                    showToolActivity(event.tool_call_id, 'completed', event.result);
-                    break;
-
-                case 'PERMISSION_REQUEST':
-                    // Already handled by chat_component
-                    break;
-
                 case 'USER_PROMPT':
-                    // REQ-PROMPT-001: Handle user prompt from CC
                     renderUserPrompt(event, true);
                     break;
-
-                case 'USER_PROMPT_RESPONSE':
-                    // Response confirmation - could update UI if needed
+                case 'TOOL_CALL_START':
+                    addDebugEntry('tool', `Tool: ${event.tool_name}`, 'running');
                     break;
-
-                case 'ACTIVITY_SNAPSHOT':
-                    updateActivityList(event.activities);
+                case 'TOOL_CALL_END':
+                    addDebugEntry('tool', `Tool completed: ${event.tool_call_id}`, 'done');
                     break;
-
-                case 'ACTIVITY_DELTA':
-                    updateActivityDelta(event.upsert, event.remove);
-                    break;
-
-                default:
-                    console.log('Unhandled AG-UI event type:', event.type);
             }
         }
 
-        function updateAgUiStatus(status, message) {
-            // Could update UI to show agent status
-            const statusEl = document.querySelector('.status');
-            if (statusEl && currentAgUiRun) {
-                // Keep existing connection status, but could add run indicator
-            }
+        function addDebugEntry(category, message, status) {
+            const entry = document.createElement('div');
+            entry.className = 'debug-entry';
+            const timestamp = new Date().toLocaleTimeString('ja-JP', {
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit'
+            });
+            entry.innerHTML = `
+                <div class="meta">
+                    <span class="timestamp">${timestamp}</span>
+                    <span class="category">[${category}]</span>
+                    <span class="message">${escapeHtml(message)}</span>
+                </div>
+            `;
+            debugEntries.appendChild(entry);
+            debugEntries.scrollTop = debugEntries.scrollHeight;
         }
 
-        function showToolActivity(toolName, status, result) {
-            // Tool activity could be shown in debug panel or activity indicator
-            console.log(`Tool ${toolName}: ${status}`, result);
-        }
-
-        function updateActivityList(activities) {
-            // Future: render activity list component
-        }
-
-        function updateActivityDelta(upsert, remove) {
-            // Future: update activity list incrementally
-        }
-
-        // Chat Component Rendering
         function renderChatComponent(component, interactive) {
-            console.log('Rendering component:', component);
-
             switch (component.component) {
                 case 'permission_request':
                     renderPermissionRequest(component, interactive);
@@ -1116,29 +1043,19 @@
                 case 'todo_list':
                     renderTodoList(component);
                     break;
-                case 'progress':
-                    renderProgress(component);
+                case 'tool_execution':
+                    addDebugEntry('tool', `Executing: ${component.tool_name || 'unknown'}`, 'running');
                     break;
-                case 'choice_buttons':
-                    renderChoiceButtons(component, interactive);
-                    break;
-                default:
-                    console.log('Unknown component type:', component.component);
             }
-
-            scrollChatToBottom();
         }
 
         function renderPermissionRequest(data, interactive) {
             const { request_id, tool_name, description, input, timeout_seconds } = data;
-
             const componentEl = document.createElement('div');
             componentEl.className = 'chat-component permission-request';
             componentEl.id = `component-${request_id}`;
             componentEl.dataset.requestId = request_id;
-
             const inputStr = typeof input === 'object' ? JSON.stringify(input, null, 2) : String(input);
-
             componentEl.innerHTML = `
                 <div class="chat-component-header">
                     <span class="icon">🔐</span>
@@ -1159,10 +1076,11 @@
                     ` : ''}
                 </div>
             `;
+            // Show in response area (above input)
+            currentResponse.classList.remove('empty');
+            currentResponse.innerHTML = '';
+            currentResponse.appendChild(componentEl);
 
-            chatMessages.appendChild(componentEl);
-
-            // Start timeout countdown if interactive
             if (interactive && timeout_seconds > 0) {
                 startTimeoutCountdown(request_id, timeout_seconds);
             }
@@ -1170,118 +1088,38 @@
 
         function renderTodoList(data) {
             const { items, title } = data;
-
-            // Update existing todo list if it exists
             let componentEl = document.querySelector('.chat-component.todo-list');
             if (!componentEl) {
                 componentEl = document.createElement('div');
                 componentEl.className = 'chat-component todo-list';
-                chatMessages.appendChild(componentEl);
+                // Show in response area
+                currentResponse.classList.remove('empty');
+                currentResponse.innerHTML = '';
+                currentResponse.appendChild(componentEl);
             }
-
             const itemsHtml = items.map(item => `
                 <div class="todo-item ${item.status}">
                     <div class="status-icon">${item.status === 'completed' ? '✓' : item.status === 'in_progress' ? '●' : ''}</div>
                     <span class="content">${escapeHtml(item.status === 'in_progress' && item.active_form ? item.active_form : item.content)}</span>
                 </div>
             `).join('');
-
             componentEl.innerHTML = `
                 <div class="chat-component-header">
                     <span class="icon">📋</span>
                     <span class="title">${title || 'Tasks'}</span>
                 </div>
-                <div class="chat-component-body">
-                    ${itemsHtml}
-                </div>
+                <div class="chat-component-body">${itemsHtml}</div>
             `;
         }
-
-        function renderProgress(data) {
-            const { label, current, total, status } = data;
-            const percentage = total ? Math.round((current / total) * 100) : 0;
-
-            // Update existing progress if it exists
-            let componentEl = document.querySelector('.chat-component.progress');
-            if (!componentEl) {
-                componentEl = document.createElement('div');
-                componentEl.className = 'chat-component progress';
-                chatMessages.appendChild(componentEl);
-            }
-
-            const statusIcon = status === 'completed' ? '✓' : status === 'error' ? '✗' : '⏳';
-
-            componentEl.innerHTML = `
-                <div class="chat-component-header">
-                    <span class="icon">${statusIcon}</span>
-                    <span class="title">${escapeHtml(label)}</span>
-                </div>
-                <div class="chat-component-body">
-                    <div class="progress-bar-container">
-                        <div class="progress-bar" style="width: ${percentage}%"></div>
-                    </div>
-                    ${total ? `<div class="progress-label">${current} / ${total} (${percentage}%)</div>` : ''}
-                </div>
-            `;
-        }
-
-        function renderChoiceButtons(data, interactive) {
-            const { request_id, prompt, choices, allow_multiple } = data;
-
-            const componentEl = document.createElement('div');
-            componentEl.className = 'chat-component choice-buttons';
-            componentEl.id = `component-${request_id}`;
-            componentEl.dataset.requestId = request_id;
-
-            const choicesHtml = choices.map(choice => `
-                <button class="chat-component-btn" data-choice-id="${choice.id}" onclick="handleChoiceSelect('${request_id}', '${choice.id}')">
-                    ${escapeHtml(choice.label)}
-                    ${choice.description ? `<br><small style="opacity: 0.7;">${escapeHtml(choice.description)}</small>` : ''}
-                </button>
-            `).join('');
-
-            componentEl.innerHTML = `
-                <div class="chat-component-header">
-                    <span class="icon">❓</span>
-                    <span class="title">Choose an option</span>
-                </div>
-                <div class="chat-component-body">
-                    <p style="margin-bottom: 12px; color: #e2e8f0;">${escapeHtml(prompt)}</p>
-                    <div class="chat-component-actions" style="flex-wrap: wrap; justify-content: flex-start;">
-                        ${choicesHtml}
-                    </div>
-                </div>
-            `;
-
-            chatMessages.appendChild(componentEl);
-        }
-
-        // =================================================================
-        // User Prompt UI (REQ-PROMPT-001 to REQ-PROMPT-005)
-        // =================================================================
 
         function renderUserPrompt(event, interactive) {
             const { request_id, prompt_type, title, description, options, default_value, timeout_seconds } = event;
-
             const componentEl = document.createElement('div');
             componentEl.className = `chat-component user-prompt prompt-${prompt_type}`;
             componentEl.id = `component-${request_id}`;
             componentEl.dataset.requestId = request_id;
-            componentEl.dataset.promptType = prompt_type;
-
-            // Get icon based on prompt type
-            const icon = {
-                'confirm': '❓',
-                'input': '✏️',
-                'select': '📋',
-                'multi_select': '☑️'
-            }[prompt_type] || '💬';
-
-            // Build body content based on prompt type
-            let bodyContent = '';
-            if (description) {
-                bodyContent += `<p class="prompt-description">${escapeHtml(description)}</p>`;
-            }
+            const icon = { 'confirm': '❓', 'input': '✏️', 'select': '📋', 'multi_select': '☑️' }[prompt_type] || '💬';
+            let bodyContent = description ? `<p class="prompt-description">${escapeHtml(description)}</p>` : '';
 
             switch (prompt_type) {
                 case 'confirm':
@@ -1292,50 +1130,21 @@
                         </div>
                     `;
                     break;
-
                 case 'input':
                     bodyContent += `
-                        <div class="prompt-input-container">
-                            <input type="text" id="prompt-input-${request_id}"
-                                   class="prompt-input"
-                                   placeholder="Type your response..."
-                                   value="${default_value ? escapeHtml(default_value) : ''}"
-                                   onkeydown="if(event.key==='Enter') handleUserPromptInputSubmit('${request_id}')">
-                            <button class="chat-component-btn approve" onclick="handleUserPromptInputSubmit('${request_id}')">Submit</button>
+                        <input type="text" id="prompt-input-${request_id}" class="prompt-input" placeholder="Type your response..." value="${default_value || ''}" onkeydown="if(event.key==='Enter') handleUserPromptInputSubmit('${request_id}')">
+                        <div class="chat-component-actions">
+                            <button class="chat-component-btn submit" onclick="handleUserPromptInputSubmit('${request_id}')">Submit</button>
                         </div>
                     `;
                     break;
-
                 case 'select':
                     if (options && options.length > 0) {
-                        const optionsHtml = options.map(opt => `
-                            <button class="chat-component-btn option-btn" data-option-id="${opt.id}"
-                                    onclick="handleUserPromptSelect('${request_id}', '${opt.id}')">
+                        bodyContent += options.map(opt => `
+                            <button class="chat-component-btn" style="margin: 4px;" onclick="handleUserPromptSelect('${request_id}', '${opt.id}')">
                                 ${escapeHtml(opt.label)}
-                                ${opt.description ? `<br><small>${escapeHtml(opt.description)}</small>` : ''}
                             </button>
                         `).join('');
-                        bodyContent += `<div class="prompt-options">${optionsHtml}</div>`;
-                    }
-                    break;
-
-                case 'multi_select':
-                    if (options && options.length > 0) {
-                        const checkboxesHtml = options.map(opt => `
-                            <label class="prompt-checkbox-label">
-                                <input type="checkbox" class="prompt-checkbox" value="${opt.id}">
-                                <span>${escapeHtml(opt.label)}</span>
-                                ${opt.description ? `<small>${escapeHtml(opt.description)}</small>` : ''}
-                            </label>
-                        `).join('');
-                        bodyContent += `
-                            <div class="prompt-checkboxes" id="checkboxes-${request_id}">
-                                ${checkboxesHtml}
-                            </div>
-                            <div class="chat-component-actions">
-                                <button class="chat-component-btn approve" onclick="handleUserPromptMultiSelect('${request_id}')">Submit</button>
-                            </div>
-                        `;
                     }
                     break;
             }
@@ -1350,176 +1159,82 @@
                     ${interactive ? `<div class="chat-component-timeout">Timeout in ${timeout_seconds || 300}s</div>` : ''}
                 </div>
             `;
-
-            chatMessages.appendChild(componentEl);
-            scrollChatToBottom();
-
-            // Start timeout countdown if interactive
-            if (interactive && timeout_seconds > 0) {
-                startPromptTimeoutCountdown(request_id, timeout_seconds);
-            }
-
-            // Focus input if it's an input prompt
-            if (prompt_type === 'input') {
-                const inputEl = document.getElementById(`prompt-input-${request_id}`);
-                if (inputEl) inputEl.focus();
-            }
+            // Show in response area
+            currentResponse.classList.remove('empty');
+            currentResponse.innerHTML = '';
+            currentResponse.appendChild(componentEl);
         }
 
         function handleUserPromptResponse(requestId, outcome, message, selectedOptions) {
             if (!ws || ws.readyState !== WebSocket.OPEN) return;
-
             ws.send(JSON.stringify({
                 type: 'component_action',
-                action: {
-                    action: 'user_prompt_submit',
-                    request_id: requestId,
-                    outcome: outcome,
-                    message: message || null,
-                    selected_options: selectedOptions || null
-                }
+                action: { action: 'user_prompt_submit', request_id: requestId, outcome, message: message || null, selected_options: selectedOptions || null }
             }));
-
-            // Mark component as resolved
             const componentEl = document.getElementById(`component-${requestId}`);
             if (componentEl) {
                 componentEl.classList.add('resolved');
                 componentEl.dataset.resolution = outcome === 'approved' ? '✓ Submitted' : '✗ Cancelled';
-                clearComponentInterval(componentEl);
             }
         }
 
         function handleUserPromptInputSubmit(requestId) {
             const inputEl = document.getElementById(`prompt-input-${requestId}`);
-            const message = inputEl ? inputEl.value.trim() : '';
-            handleUserPromptResponse(requestId, 'approved', message, null);
+            handleUserPromptResponse(requestId, 'approved', inputEl ? inputEl.value.trim() : '', null);
         }
 
         function handleUserPromptSelect(requestId, optionId) {
             handleUserPromptResponse(requestId, 'approved', null, [optionId]);
         }
 
-        function handleUserPromptMultiSelect(requestId) {
-            const container = document.getElementById(`checkboxes-${requestId}`);
-            if (!container) return;
-
-            const checkboxes = container.querySelectorAll('.prompt-checkbox:checked');
-            const selectedOptions = Array.from(checkboxes).map(cb => cb.value);
-
-            if (selectedOptions.length === 0) {
-                // Could show a warning, but for now just submit empty
-            }
-
-            handleUserPromptResponse(requestId, 'approved', null, selectedOptions);
-        }
-
-        function startPromptTimeoutCountdown(requestId, timeoutSeconds) {
-            let remaining = timeoutSeconds;
-            const componentEl = document.getElementById(`component-${requestId}`);
-            if (!componentEl) return;
-
-            const timeoutEl = componentEl.querySelector('.chat-component-timeout');
-            if (!timeoutEl) return;
-
-            const interval = setInterval(() => {
-                remaining--;
-                if (remaining <= 0) {
-                    clearInterval(interval);
-                    timeoutEl.textContent = 'Timed out';
-                    // Auto-timeout response
-                    handleUserPromptResponse(requestId, 'timeout', null, null);
-                } else {
-                    timeoutEl.textContent = `Timeout in ${remaining}s`;
-                }
-            }, 1000);
-
-            // Store interval ID for cleanup
-            componentEl.dataset.intervalId = interval;
-        }
-
         function startTimeoutCountdown(requestId, timeoutSeconds) {
             let remaining = timeoutSeconds;
             const componentEl = document.getElementById(`component-${requestId}`);
             if (!componentEl) return;
-
             const timeoutEl = componentEl.querySelector('.chat-component-timeout');
             if (!timeoutEl) return;
-
             const interval = setInterval(() => {
                 remaining--;
                 if (remaining <= 0) {
                     clearInterval(interval);
                     timeoutEl.textContent = 'Timed out';
-                    // Auto-deny on timeout
                     handlePermissionDeny(requestId);
                 } else {
                     timeoutEl.textContent = `Timeout in ${remaining}s`;
                 }
             }, 1000);
-
-            // Store interval ID for cleanup
             componentEl.dataset.intervalId = interval;
         }
 
         function handlePermissionApprove(requestId) {
             if (!ws || ws.readyState !== WebSocket.OPEN) return;
-
-            ws.send(JSON.stringify({
-                type: 'component_action',
-                action: {
-                    action: 'permission_approve',
-                    request_id: requestId
-                }
-            }));
-
-            // Mark component as resolved
+            ws.send(JSON.stringify({ type: 'component_action', action: { action: 'permission_approve', request_id: requestId } }));
             const componentEl = document.getElementById(`component-${requestId}`);
             if (componentEl) {
                 componentEl.classList.add('resolved');
                 componentEl.dataset.resolution = '✓ Allowed';
                 clearComponentInterval(componentEl);
             }
+            // Clear response area after a short delay
+            setTimeout(() => {
+                currentResponse.classList.add('empty');
+                currentResponse.innerHTML = '<div class="content"></div>';
+            }, 500);
         }
 
         function handlePermissionDeny(requestId) {
             if (!ws || ws.readyState !== WebSocket.OPEN) return;
-
-            ws.send(JSON.stringify({
-                type: 'component_action',
-                action: {
-                    action: 'permission_deny',
-                    request_id: requestId,
-                    message: 'User denied permission'
-                }
-            }));
-
-            // Mark component as resolved
+            ws.send(JSON.stringify({ type: 'component_action', action: { action: 'permission_deny', request_id: requestId, message: 'User denied permission' } }));
             const componentEl = document.getElementById(`component-${requestId}`);
             if (componentEl) {
                 componentEl.classList.add('resolved');
                 componentEl.dataset.resolution = '✗ Denied';
                 clearComponentInterval(componentEl);
             }
-        }
-
-        function handleChoiceSelect(requestId, choiceId) {
-            if (!ws || ws.readyState !== WebSocket.OPEN) return;
-
-            ws.send(JSON.stringify({
-                type: 'component_action',
-                action: {
-                    action: 'choice_select',
-                    request_id: requestId,
-                    selected_ids: [choiceId]
-                }
-            }));
-
-            // Mark component as resolved
-            const componentEl = document.getElementById(`component-${requestId}`);
-            if (componentEl) {
-                componentEl.classList.add('resolved');
-                componentEl.dataset.resolution = `Selected: ${choiceId}`;
-            }
+            setTimeout(() => {
+                currentResponse.classList.add('empty');
+                currentResponse.innerHTML = '<div class="content"></div>';
+            }, 500);
         }
 
         function dismissComponent(requestId) {
@@ -1532,49 +1247,32 @@
 
         function clearComponentInterval(componentEl) {
             const intervalId = componentEl.dataset.intervalId;
-            if (intervalId) {
-                clearInterval(parseInt(intervalId));
-            }
+            if (intervalId) clearInterval(parseInt(intervalId));
         }
 
         function setDebugMode(mode) {
             debugMode = mode;
             if (mode === 'none') {
-                debugIndicator.style.display = 'none';
-                debugPanel.classList.remove('visible');
+                debugIndicator.classList.remove('visible');
             } else {
-                debugIndicator.style.display = 'inline';
+                debugIndicator.classList.add('visible');
                 debugIndicator.textContent = mode === 'simple' ? 'DEBUG' : 'DEBUG (detail)';
-                debugIndicator.className = `debug-indicator ${mode}`;
-                debugPanel.classList.add('visible');
+                debugIndicator.className = `debug-indicator visible ${mode}`;
             }
         }
 
         function handleDebugInfo(msg) {
-            if (debugMode === 'none') return;
-
             const entry = document.createElement('div');
             entry.className = `debug-entry ${msg.category === 'error' ? 'error' : ''}`;
-
-            const timestamp = new Date().toLocaleTimeString('ja-JP', {
-                hour: '2-digit',
-                minute: '2-digit',
-                second: '2-digit'
-            });
-
+            const timestamp = new Date().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
             entry.innerHTML = `
-                <span class="timestamp">${timestamp}</span>
-                <span class="category">[${msg.category}]</span>
-                <span class="message">${escapeHtml(msg.message)}</span>
+                <div class="meta">
+                    <span class="timestamp">${timestamp}</span>
+                    <span class="category">[${msg.category}]</span>
+                    <span class="message">${escapeHtml(msg.message)}</span>
+                </div>
+                ${msg.data && debugMode === 'detail' ? `<div class="data">${JSON.stringify(msg.data, null, 2)}</div>` : ''}
             `;
-
-            if (msg.data && debugMode === 'detail') {
-                const dataEl = document.createElement('div');
-                dataEl.className = 'data';
-                dataEl.textContent = JSON.stringify(msg.data, null, 2);
-                entry.appendChild(dataEl);
-            }
-
             debugEntries.appendChild(entry);
             debugEntries.scrollTop = debugEntries.scrollHeight;
         }
@@ -1582,12 +1280,11 @@
         function getPane(paneId) {
             let pane = document.getElementById(`pane-${paneId}`);
             if (!pane) {
-                // Create new pane if doesn't exist
                 pane = document.createElement('div');
                 pane.id = `pane-${paneId}`;
-                pane.className = 'pane';
+                pane.className = 'content-pane';
                 pane.innerHTML = '<div class="pane-content"></div>';
-                document.querySelector('.container').appendChild(pane);
+                document.querySelector('#left-panel .side-panel-content').appendChild(pane);
             }
             return pane.querySelector('.pane-content');
         }
@@ -1595,7 +1292,6 @@
         function showContent(paneId, content, append) {
             const paneContent = getPane(paneId);
             let html = '';
-
             if (content.log) {
                 html = `<div class="log-entry">${escapeHtml(content.log)}</div>`;
             } else if (content.markdown) {
@@ -1605,20 +1301,36 @@
             } else if (content.html) {
                 html = content.html;
             }
-
             if (append) {
                 paneContent.innerHTML += html;
             } else {
                 paneContent.innerHTML = html;
             }
-
-            // Scroll to bottom
-            paneContent.parentElement.scrollTop = paneContent.parentElement.scrollHeight;
         }
 
         function clearPane(paneId) {
             const paneContent = getPane(paneId);
             paneContent.innerHTML = '';
+        }
+
+        function handleTogglePane(paneId, visible) {
+            if (paneId === 'left') {
+                if (visible === true && leftPanel.classList.contains('collapsed')) {
+                    toggleLeftPanel();
+                } else if (visible === false && !leftPanel.classList.contains('collapsed')) {
+                    toggleLeftPanel();
+                } else if (visible === undefined || visible === null) {
+                    toggleLeftPanel();
+                }
+            } else if (paneId === 'right') {
+                if (visible === true && rightPanel.classList.contains('collapsed')) {
+                    toggleRightPanel();
+                } else if (visible === false && !rightPanel.classList.contains('collapsed')) {
+                    toggleRightPanel();
+                } else if (visible === undefined || visible === null) {
+                    toggleRightPanel();
+                }
+            }
         }
 
         function escapeHtml(text) {
@@ -1627,13 +1339,54 @@
             return div.innerHTML;
         }
 
-        // Chat functions
+        // Chat functions - New Flow Layout
         function addChatMessage(role, content) {
-            // Remove typing indicator if present
-            removeTypingIndicator();
+            hideTypingIndicator();
 
+            if (role === 'assistant') {
+                // Show in response area first
+                currentResponse.classList.remove('empty');
+                currentResponseContent.innerHTML = marked.parse(content);
+            } else if (role === 'user') {
+                // User messages go directly to history
+                addToHistory('user', content);
+            }
+        }
+
+        function handleChatChunk(content, done) {
+            hideTypingIndicator();
+
+            if (!isStreaming && content) {
+                isStreaming = true;
+                currentStreamContent = '';
+                chatCancelBtn.classList.add('visible');
+                currentResponse.classList.remove('empty');
+            }
+
+            if (content) {
+                currentStreamContent += content;
+                currentResponseContent.innerHTML = marked.parse(currentStreamContent);
+            }
+
+            if (done) {
+                // Move completed response to history
+                if (currentStreamContent) {
+                    addToHistory('assistant', currentStreamContent);
+                }
+
+                // Clear response area
+                currentResponse.classList.add('empty');
+                currentResponseContent.innerHTML = '';
+
+                isStreaming = false;
+                currentStreamContent = '';
+                chatCancelBtn.classList.remove('visible');
+            }
+        }
+
+        function addToHistory(role, content) {
             const messageEl = document.createElement('div');
-            messageEl.className = `chat-message ${role}`;
+            messageEl.className = `history-message ${role}`;
 
             if (role === 'assistant') {
                 const contentEl = document.createElement('div');
@@ -1644,241 +1397,52 @@
                 messageEl.textContent = content;
             }
 
-            chatMessages.appendChild(messageEl);
-            scrollChatToBottom();
-        }
-
-        function handleChatChunk(content, done) {
-            // Remove typing indicator when first chunk arrives
-            removeTypingIndicator();
-
-            if (!isTyping && content) {
-                // Start new streaming message
-                isTyping = true;
-                currentStreamContent = '';
-                chatCancelBtn.classList.add('visible');
-
-                const messageEl = document.createElement('div');
-                messageEl.className = 'chat-message assistant';
-                messageEl.id = 'streaming-message';
-
-                const contentEl = document.createElement('div');
-                contentEl.className = 'content';
-                messageEl.appendChild(contentEl);
-
-                chatMessages.appendChild(messageEl);
-            }
-
-            if (content) {
-                currentStreamContent += content;
-
-                const streamingEl = document.getElementById('streaming-message');
-                if (streamingEl) {
-                    const contentEl = streamingEl.querySelector('.content');
-                    contentEl.innerHTML = marked.parse(currentStreamContent);
-                }
-
-                scrollChatToBottom();
-            }
-
-            if (done) {
-                isTyping = false;
-                currentStreamContent = '';
-                chatCancelBtn.classList.remove('visible');
-                const streamingEl = document.getElementById('streaming-message');
-                if (streamingEl) {
-                    streamingEl.removeAttribute('id');
-                }
+            // Insert at the top of history (newest first)
+            const firstChild = historyArea.firstChild;
+            if (firstChild) {
+                historyArea.insertBefore(messageEl, firstChild);
+            } else {
+                historyArea.appendChild(messageEl);
             }
         }
 
         function showTypingIndicator() {
-            if (!document.getElementById('typing-indicator')) {
-                const typingEl = document.createElement('div');
-                typingEl.id = 'typing-indicator';
-                typingEl.className = 'chat-typing';
-                typingEl.textContent = 'Agent is thinking';
-                chatMessages.appendChild(typingEl);
-                scrollChatToBottom();
-            }
+            typingIndicator.style.display = 'block';
         }
 
-        function removeTypingIndicator() {
-            const typingEl = document.getElementById('typing-indicator');
-            if (typingEl) {
-                typingEl.remove();
-            }
-        }
-
-        function scrollChatToBottom() {
-            chatMessages.scrollTop = chatMessages.scrollHeight;
+        function hideTypingIndicator() {
+            typingIndicator.style.display = 'none';
         }
 
         function sendChatMessage() {
             const message = chatInput.value.trim();
             if (!message || !ws || ws.readyState !== WebSocket.OPEN) return;
 
-            // Add user message to chat
-            addChatMessage('user', message);
+            // Add user message to history
+            addToHistory('user', message);
 
-            // Send to daemon
-            ws.send(JSON.stringify({
-                type: 'chat',
-                message: message
-            }));
-
-            // Clear input
+            ws.send(JSON.stringify({ type: 'chat', message: message }));
             chatInput.value = '';
             autoResizeTextarea();
-
-            // Show typing indicator
             showTypingIndicator();
             chatCancelBtn.classList.add('visible');
         }
 
         function cancelChatRequest() {
             if (!ws || ws.readyState !== WebSocket.OPEN) return;
-
             ws.send(JSON.stringify({ type: 'cancel_chat' }));
-            removeTypingIndicator();
+            hideTypingIndicator();
             chatCancelBtn.classList.remove('visible');
 
-            // If streaming, mark it as done
-            if (isTyping) {
-                isTyping = false;
-                currentStreamContent = '';
-                const streamingEl = document.getElementById('streaming-message');
-                if (streamingEl) {
-                    streamingEl.removeAttribute('id');
-                    // Add cancelled indicator
-                    const contentEl = streamingEl.querySelector('.content');
-                    if (contentEl) {
-                        contentEl.innerHTML += '<div style="color: #888; font-size: 12px; margin-top: 8px;">[Cancelled]</div>';
-                    }
+            if (isStreaming) {
+                // Move incomplete response to history with [Cancelled] marker
+                if (currentStreamContent) {
+                    addToHistory('assistant', currentStreamContent + '\n\n[Cancelled]');
                 }
-            }
-        }
-
-        // Session management functions
-        function formatTimeAgo(timestamp) {
-            if (!timestamp) return '';
-            const now = Date.now();
-            const diff = now - timestamp;
-            const seconds = Math.floor(diff / 1000);
-            const minutes = Math.floor(seconds / 60);
-            const hours = Math.floor(minutes / 60);
-            const days = Math.floor(hours / 24);
-
-            if (days > 0) return `${days}d`;
-            if (hours > 0) return `${hours}h`;
-            if (minutes > 0) return `${minutes}m`;
-            return 'now';
-        }
-
-        function updateSessionTabs(newSessions, newActiveId) {
-            sessions = newSessions;
-            activeSessionId = newActiveId;
-
-            // Clear existing tabs (except new button)
-            const existingTabs = sessionTabs.querySelectorAll('.session-tab');
-            existingTabs.forEach(tab => tab.remove());
-
-            // Create tabs for each session
-            sessions.forEach(session => {
-                const tab = document.createElement('button');
-                tab.className = `session-tab ${session.id === activeSessionId ? 'active' : ''}`;
-                tab.dataset.sessionId = session.id;
-
-                const nameSpan = document.createElement('span');
-                nameSpan.className = 'tab-name';
-                const timeAgo = formatTimeAgo(session.created_at);
-                nameSpan.textContent = timeAgo ? `${session.name} (${timeAgo})` : session.name;
-                nameSpan.title = `${session.name}\n${session.message_count} messages\nCreated: ${session.created_at ? new Date(session.created_at).toLocaleString() : 'Unknown'}`;
-
-                const closeBtn = document.createElement('button');
-                closeBtn.className = 'tab-close';
-                closeBtn.innerHTML = '×';
-                closeBtn.title = 'Close session';
-                closeBtn.onclick = (e) => {
-                    e.stopPropagation();
-                    closeSession(session.id);
-                };
-
-                tab.appendChild(nameSpan);
-                tab.appendChild(closeBtn);
-
-                tab.onclick = () => switchSession(session.id);
-
-                // Double-click to rename
-                tab.ondblclick = () => renameSession(session.id, session.name);
-
-                sessionTabs.insertBefore(tab, newSessionBtn);
-            });
-        }
-
-        function switchSession(sessionId) {
-            if (!ws || ws.readyState !== WebSocket.OPEN) return;
-            if (sessionId === activeSessionId) return;
-
-            ws.send(JSON.stringify({
-                type: 'switch_session',
-                session_id: sessionId
-            }));
-        }
-
-        function handleSessionSwitched(sessionId, name) {
-            activeSessionId = sessionId;
-            // Update tab UI
-            document.querySelectorAll('.session-tab').forEach(tab => {
-                tab.classList.toggle('active', tab.dataset.sessionId === sessionId);
-            });
-            // Clear chat and show switch message
-            clearChatMessages();
-            addChatMessage('system', `Switched to: ${name}`);
-        }
-
-        function handleSessionHistory(sessionId, messages) {
-            // Only restore if this is the current session
-            if (sessionId !== activeSessionId) return;
-
-            // Restore messages from history
-            messages.forEach(msg => {
-                addChatMessage(msg.role, msg.content);
-            });
-
-            scrollChatToBottom();
-        }
-
-        function clearChatMessages() {
-            // Remove all messages except keep a welcome system message
-            chatMessages.innerHTML = '';
-        }
-
-        function createNewSession() {
-            if (!ws || ws.readyState !== WebSocket.OPEN) return;
-            ws.send(JSON.stringify({ type: 'new_session' }));
-        }
-
-        function closeSession(sessionId) {
-            if (!ws || ws.readyState !== WebSocket.OPEN) return;
-            if (sessions.length <= 1) {
-                // Don't close the last session
-                return;
-            }
-            ws.send(JSON.stringify({
-                type: 'close_session',
-                session_id: sessionId
-            }));
-        }
-
-        function renameSession(sessionId, currentName) {
-            const newName = prompt('Rename session:', currentName);
-            if (newName && newName !== currentName) {
-                ws.send(JSON.stringify({
-                    type: 'rename_session',
-                    session_id: sessionId,
-                    name: newName
-                }));
+                currentResponse.classList.add('empty');
+                currentResponseContent.innerHTML = '';
+                isStreaming = false;
+                currentStreamContent = '';
             }
         }
 
@@ -1888,52 +1452,21 @@
         }
 
         // Event listeners
-        chatInput.addEventListener('input', autoResizeTextarea);
-
-        // IME変換中の追跡
-        chatInput.addEventListener('compositionstart', (e) => {
-            console.log('[IME] compositionstart', { data: e.data });
-            isComposing = true;
+        chatInput.addEventListener('input', () => {
+            autoResizeTextarea();
+            chatSendBtn.disabled = !chatInput.value.trim();
         });
 
-        chatInput.addEventListener('compositionupdate', (e) => {
-            console.log('[IME] compositionupdate', { data: e.data, isComposing });
-        });
-
-        chatInput.addEventListener('compositionend', (e) => {
-            console.log('[IME] compositionend', { data: e.data });
+        chatInput.addEventListener('compositionstart', () => { isComposing = true; });
+        chatInput.addEventListener('compositionend', () => {
             isComposing = false;
-            // IME確定直後のEnterを無視するためのフラグ
             justFinishedComposing = true;
-            // 少し遅延してフラグをリセット（確定のEnterキーイベントが先に来るため）
-            setTimeout(() => {
-                console.log('[IME] Resetting justFinishedComposing flag');
-                justFinishedComposing = false;
-            }, 100);
+            setTimeout(() => { justFinishedComposing = false; }, 100);
         });
 
         chatInput.addEventListener('keydown', (e) => {
-            console.log('[KEY] keydown', {
-                key: e.key,
-                code: e.code,
-                isComposing: e.isComposing,
-                isComposingFlag: isComposing,
-                justFinishedComposing: justFinishedComposing,
-                keyCode: e.keyCode,
-                shiftKey: e.shiftKey
-            });
-
-            // IME変換中または確定直後はEnterを無視
-            // e.isComposing: ブラウザネイティブのIME状態チェック
-            // isComposing: フォールバック用のフラグ
-            // justFinishedComposing: IME確定直後（compositionend直後）のEnterを無視
-            // keyCode 229: IME処理中を示す特殊なキーコード
             if (e.key === 'Enter' && !e.shiftKey) {
-                if (e.isComposing || isComposing || justFinishedComposing || e.keyCode === 229) {
-                    console.log('[KEY] Ignoring Enter (IME or just finished)');
-                    return; // デフォルト動作を許可（IME確定）
-                }
-                console.log('[KEY] Sending message!');
+                if (e.isComposing || isComposing || justFinishedComposing || e.keyCode === 229) return;
                 e.preventDefault();
                 sendChatMessage();
             }
@@ -1941,57 +1474,17 @@
 
         chatSendBtn.addEventListener('click', sendChatMessage);
         chatCancelBtn.addEventListener('click', cancelChatRequest);
-        newSessionBtn.addEventListener('click', createNewSession);
+        debugClearBtn.addEventListener('click', () => { debugEntries.innerHTML = ''; });
 
-        debugToggleBtn.addEventListener('click', () => {
-            debugPanel.classList.toggle('visible');
-        });
-
-        debugClearBtn.addEventListener('click', () => {
-            debugEntries.innerHTML = '';
-        });
-
-        // Resize handle functionality
-        const resizeHandle = document.getElementById('resize-handle');
-        const chatPanel = document.getElementById('chat-panel');
-        let isResizing = false;
-
-        resizeHandle.addEventListener('mousedown', (e) => {
-            isResizing = true;
-            resizeHandle.classList.add('dragging');
-            document.body.style.cursor = 'col-resize';
-            document.body.style.userSelect = 'none';
-            e.preventDefault();
-        });
-
-        document.addEventListener('mousemove', (e) => {
-            if (!isResizing) return;
-
-            const containerRect = document.querySelector('.container').getBoundingClientRect();
-            const newWidth = containerRect.right - e.clientX;
-
-            // Clamp width between min and max
-            const clampedWidth = Math.max(280, Math.min(800, newWidth));
-            chatPanel.style.width = clampedWidth + 'px';
-
-            // Save to localStorage
-            localStorage.setItem('chatPanelWidth', clampedWidth);
-        });
-
-        document.addEventListener('mouseup', () => {
-            if (isResizing) {
-                isResizing = false;
-                resizeHandle.classList.remove('dragging');
-                document.body.style.cursor = '';
-                document.body.style.userSelect = '';
+        // Keep input focused
+        document.addEventListener('keydown', (e) => {
+            // If not typing in an input field, focus the chat input
+            if (document.activeElement.tagName !== 'INPUT' &&
+                document.activeElement.tagName !== 'TEXTAREA' &&
+                !e.metaKey && !e.ctrlKey && !e.altKey) {
+                chatInput.focus();
             }
         });
-
-        // Restore saved width on load
-        const savedWidth = localStorage.getItem('chatPanelWidth');
-        if (savedWidth) {
-            chatPanel.style.width = savedWidth + 'px';
-        }
 
         // Start connection
         connect();

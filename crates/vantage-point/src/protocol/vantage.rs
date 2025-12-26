@@ -316,7 +316,10 @@ mod tests {
     #[test]
     fn test_midi_event_type_from_status() {
         assert_eq!(MidiEventType::from_status_byte(0x90), MidiEventType::NoteOn);
-        assert_eq!(MidiEventType::from_status_byte(0x80), MidiEventType::NoteOff);
+        assert_eq!(
+            MidiEventType::from_status_byte(0x80),
+            MidiEventType::NoteOff
+        );
         assert_eq!(
             MidiEventType::from_status_byte(0xB0),
             MidiEventType::ControlChange
@@ -355,10 +358,7 @@ mod tests {
 
     #[test]
     fn test_custom_event() {
-        let event = VantageEvent::custom(
-            "my_custom_event",
-            serde_json::json!({"key": "value"}),
-        );
+        let event = VantageEvent::custom("my_custom_event", serde_json::json!({"key": "value"}));
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("\"type\":\"CUSTOM\""));
         assert!(json.contains("\"name\":\"my_custom_event\""));

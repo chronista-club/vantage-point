@@ -16,12 +16,12 @@ use crate::capability::core::{
 use crate::capability::eventbus::EventBus;
 use crate::capability::evolution::{EvolutionCondition, EvolutionLevel, EvolutionState};
 use crate::capability::params::MIDI_CAPABILITY_PARAMS;
-use crate::midi::{list_ports, parse_midi_message, MidiConfig, MidiEvent, MidiMessage};
+use crate::midi::{MidiConfig, MidiEvent, MidiMessage, list_ports, parse_midi_message};
 use async_trait::async_trait;
 use std::any::Any;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{RwLock, mpsc};
 
 // =============================================================================
 // MIDI Capability State
@@ -223,9 +223,9 @@ impl MidiCapability {
             port_index.unwrap_or(0)
         };
 
-        let port = ports
-            .get(port_idx)
-            .ok_or_else(|| CapabilityError::ResourceError(format!("Port {} not found", port_idx)))?;
+        let port = ports.get(port_idx).ok_or_else(|| {
+            CapabilityError::ResourceError(format!("Port {} not found", port_idx))
+        })?;
 
         let port_name = midi_in
             .port_name(port)

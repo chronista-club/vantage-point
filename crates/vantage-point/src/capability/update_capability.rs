@@ -23,9 +23,7 @@
 //! }
 //! ```
 
-use crate::capability::core::{
-    Capability, CapabilityContext, CapabilityError, CapabilityResult,
-};
+use crate::capability::core::{Capability, CapabilityContext, CapabilityError, CapabilityResult};
 use crate::capability::{CapabilityEvent, CapabilityInfo, CapabilityState};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -240,7 +238,11 @@ impl UpdateCapability {
                     current_version: CURRENT_VERSION.to_string(),
                     latest_version: release.version.clone(),
                     update_available,
-                    release: if update_available { Some(release.clone()) } else { None },
+                    release: if update_available {
+                        Some(release.clone())
+                    } else {
+                        None
+                    },
                 });
             }
         }
@@ -257,7 +259,11 @@ impl UpdateCapability {
             current_version: CURRENT_VERSION.to_string(),
             latest_version: release.version.clone(),
             update_available,
-            release: if update_available { Some(release) } else { None },
+            release: if update_available {
+                Some(release)
+            } else {
+                None
+            },
         })
     }
 
@@ -330,7 +336,10 @@ impl UpdateCapability {
     /// 現在のプラットフォーム用のアセットを検索
     pub fn find_platform_asset<'a>(&self, release: &'a ReleaseInfo) -> Option<&'a AssetInfo> {
         let target = current_platform_target();
-        release.assets.iter().find(move |a| a.name.contains(&target))
+        release
+            .assets
+            .iter()
+            .find(move |a| a.name.contains(&target))
     }
 
     /// 更新を適用（ダウンロード→バックアップ→置換）
@@ -362,9 +371,7 @@ impl UpdateCapability {
         if binary_path.exists() {
             tokio::fs::copy(&binary_path, &backup_path)
                 .await
-                .map_err(|e| {
-                    CapabilityError::Other(format!("Failed to create backup: {}", e))
-                })?;
+                .map_err(|e| CapabilityError::Other(format!("Failed to create backup: {}", e)))?;
             tracing::info!(backup = %backup_path.display(), "Created backup");
         }
 
@@ -478,9 +485,7 @@ impl UpdateCapability {
             let perms = std::fs::Permissions::from_mode(0o755);
             tokio::fs::set_permissions(dest, perms)
                 .await
-                .map_err(|e| {
-                    CapabilityError::Other(format!("Failed to set permissions: {}", e))
-                })?;
+                .map_err(|e| CapabilityError::Other(format!("Failed to set permissions: {}", e)))?;
         }
 
         Ok(())
@@ -490,9 +495,7 @@ impl UpdateCapability {
     pub async fn rollback(&self, backup_path: &str) -> CapabilityResult<()> {
         let backup = PathBuf::from(backup_path);
         if !backup.exists() {
-            return Err(CapabilityError::Other(
-                "Backup file not found".to_string(),
-            ));
+            return Err(CapabilityError::Other("Backup file not found".to_string()));
         }
 
         let binary_path = find_current_binary()?;
@@ -508,9 +511,7 @@ impl UpdateCapability {
             let perms = std::fs::Permissions::from_mode(0o755);
             tokio::fs::set_permissions(&binary_path, perms)
                 .await
-                .map_err(|e| {
-                    CapabilityError::Other(format!("Failed to set permissions: {}", e))
-                })?;
+                .map_err(|e| CapabilityError::Other(format!("Failed to set permissions: {}", e)))?;
         }
 
         tracing::info!(
@@ -572,10 +573,14 @@ impl UpdateCapability {
             }
         }
 
-        cmd.spawn()
-            .map_err(|e| CapabilityError::Other(format!("Failed to spawn restart script: {}", e)))?;
+        cmd.spawn().map_err(|e| {
+            CapabilityError::Other(format!("Failed to spawn restart script: {}", e))
+        })?;
 
-        tracing::info!("Restart script spawned, app will restart in {} seconds", delay);
+        tracing::info!(
+            "Restart script spawned, app will restart in {} seconds",
+            delay
+        );
 
         Ok(())
     }
@@ -696,9 +701,8 @@ impl UpdateCapability {
         // アプリパスを決定
         let app_path = match app_path {
             Some(p) => PathBuf::from(p),
-            None => find_mac_app_path().ok_or_else(|| {
-                CapabilityError::Other("VantagePoint.app not found".to_string())
-            })?,
+            None => find_mac_app_path()
+                .ok_or_else(|| CapabilityError::Other("VantagePoint.app not found".to_string()))?,
         };
 
         // .zipアセットを検索
@@ -719,10 +723,11 @@ impl UpdateCapability {
         );
 
         // 一時ディレクトリを準備
-        let temp_dir = std::env::temp_dir().join(format!("vantage-point-mac-update-{}", std::process::id()));
-        tokio::fs::create_dir_all(&temp_dir).await.map_err(|e| {
-            CapabilityError::Other(format!("Failed to create temp dir: {}", e))
-        })?;
+        let temp_dir =
+            std::env::temp_dir().join(format!("vantage-point-mac-update-{}", std::process::id()));
+        tokio::fs::create_dir_all(&temp_dir)
+            .await
+            .map_err(|e| CapabilityError::Other(format!("Failed to create temp dir: {}", e)))?;
 
         let zip_path = temp_dir.join(&zip_asset.name);
         let extract_dir = temp_dir.join("extracted");
@@ -753,14 +758,14 @@ impl UpdateCapability {
         );
 
         // 現在のアプリをバックアップ
-        Self::copy_dir_recursive(&app_path, &backup_path).await.map_err(|e| {
-            CapabilityError::Other(format!("Failed to backup app: {}", e))
-        })?;
+        Self::copy_dir_recursive(&app_path, &backup_path)
+            .await
+            .map_err(|e| CapabilityError::Other(format!("Failed to backup app: {}", e)))?;
 
         // 現在のアプリを削除
-        tokio::fs::remove_dir_all(&app_path).await.map_err(|e| {
-            CapabilityError::Other(format!("Failed to remove current app: {}", e))
-        })?;
+        tokio::fs::remove_dir_all(&app_path)
+            .await
+            .map_err(|e| CapabilityError::Other(format!("Failed to remove current app: {}", e)))?;
 
         // 新しいアプリをコピー
         tracing::info!(
@@ -769,13 +774,15 @@ impl UpdateCapability {
             "Installing new app"
         );
 
-        Self::copy_dir_recursive(&new_app_path, &app_path).await.map_err(|e| {
-            // ロールバック
-            tracing::error!(error = %e, "Failed to install new app, rolling back");
-            let _ = std::fs::remove_dir_all(&app_path);
-            let _ = Self::copy_dir_sync(&backup_path, &app_path);
-            CapabilityError::Other(format!("Failed to install app (rolled back): {}", e))
-        })?;
+        Self::copy_dir_recursive(&new_app_path, &app_path)
+            .await
+            .map_err(|e| {
+                // ロールバック
+                tracing::error!(error = %e, "Failed to install new app, rolling back");
+                let _ = std::fs::remove_dir_all(&app_path);
+                let _ = Self::copy_dir_sync(&backup_path, &app_path);
+                CapabilityError::Other(format!("Failed to install app (rolled back): {}", e))
+            })?;
 
         // 一時ファイルを削除
         let _ = tokio::fs::remove_dir_all(&temp_dir).await;
@@ -802,9 +809,9 @@ impl UpdateCapability {
 
     /// ZIPファイルを展開
     async fn extract_zip(&self, zip_path: &PathBuf, dest: &PathBuf) -> CapabilityResult<()> {
-        tokio::fs::create_dir_all(dest).await.map_err(|e| {
-            CapabilityError::Other(format!("Failed to create extract dir: {}", e))
-        })?;
+        tokio::fs::create_dir_all(dest)
+            .await
+            .map_err(|e| CapabilityError::Other(format!("Failed to create extract dir: {}", e)))?;
 
         // unzipコマンドを使用（macOSに標準搭載）
         let output = tokio::process::Command::new("unzip")
@@ -819,10 +826,7 @@ impl UpdateCapability {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(CapabilityError::Other(format!(
-                "unzip failed: {}",
-                stderr
-            )));
+            return Err(CapabilityError::Other(format!("unzip failed: {}", stderr)));
         }
 
         tracing::debug!(
@@ -873,7 +877,11 @@ impl UpdateCapability {
     }
 
     /// Macアプリのロールバック
-    pub async fn rollback_mac_app(&self, backup_path: &str, app_path: &str) -> CapabilityResult<()> {
+    pub async fn rollback_mac_app(
+        &self,
+        backup_path: &str,
+        app_path: &str,
+    ) -> CapabilityResult<()> {
         let backup = PathBuf::from(backup_path);
         let app = PathBuf::from(app_path);
 
@@ -889,9 +897,9 @@ impl UpdateCapability {
         }
 
         // バックアップから復元
-        Self::copy_dir_recursive(&backup, &app).await.map_err(|e| {
-            CapabilityError::Other(format!("Failed to restore backup: {}", e))
-        })?;
+        Self::copy_dir_recursive(&backup, &app)
+            .await
+            .map_err(|e| CapabilityError::Other(format!("Failed to restore backup: {}", e)))?;
 
         tracing::info!(
             backup = backup_path,
@@ -972,10 +980,7 @@ impl Capability for UpdateCapability {
         self.state = CapabilityState::Initializing;
 
         // 起動時にバージョンチェック（バックグラウンドで）
-        tracing::info!(
-            version = CURRENT_VERSION,
-            "UpdateCapability initialized"
-        );
+        tracing::info!(version = CURRENT_VERSION, "UpdateCapability initialized");
 
         self.state = CapabilityState::Idle;
         Ok(())
@@ -1026,11 +1031,7 @@ fn is_newer_version(latest: &str, current: &str) -> bool {
                 parts[2].split('-').next()?.parse().ok()?,
             ))
         } else if parts.len() == 2 {
-            Some((
-                parts[0].parse().ok()?,
-                parts[1].parse().ok()?,
-                0,
-            ))
+            Some((parts[0].parse().ok()?, parts[1].parse().ok()?, 0))
         } else {
             None
         }

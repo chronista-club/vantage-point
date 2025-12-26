@@ -29,31 +29,29 @@ pub mod synergy;
 pub mod types;
 pub mod update_capability;
 
+pub use agent_capability::{AgentCapability, AgentRunState};
+pub use bonjour_capability::BonjourCapability;
+pub use conductor_capability::{ConductorCapability, ProjectInfo, RunningStand, StandStatus};
 pub use core::{
     Capability, CapabilityContext, CapabilityError, CapabilityEvent, CapabilityInfo,
     CapabilityResult, CapabilityState,
 };
 pub use eventbus::{EventBus, EventDispatcher, FilteredSubscription, Subscription};
-pub use registry::CapabilityRegistry;
 pub use evolution::{
     AwakeningKind, AwakeningState, EvolutionCondition, EvolutionLevel, EvolutionPath,
     EvolutionState, RequiemTrigger, RequiemType, TrainingCategory, TrainingParameters,
     UsageMetrics,
 };
-pub use params::{CapabilityParams, Rank, MIDI_CAPABILITY_PARAMS};
-pub use synergy::{
-    CapabilityMetadata, CapabilityTag, SynergyAnalysis, SynergyEngine, SynergyType,
-};
+pub use midi_capability::{MidiCapability, MidiConnectionState};
+pub use params::{CapabilityParams, MIDI_CAPABILITY_PARAMS, Rank};
+pub use protocol_capability::{ProtocolCapability, ProtocolRouter};
+pub use registry::CapabilityRegistry;
+pub use synergy::{CapabilityMetadata, CapabilityTag, SynergyAnalysis, SynergyEngine, SynergyType};
 pub use types::{
     AutonomyLevel, CapabilityType, DataFlowDirection, ExecutionModel, IntegrationMode,
     OperationalRange,
 };
-pub use protocol_capability::{ProtocolCapability, ProtocolRouter};
-pub use agent_capability::{AgentCapability, AgentRunState};
-pub use midi_capability::{MidiCapability, MidiConnectionState};
-pub use bonjour_capability::BonjourCapability;
-pub use conductor_capability::{ConductorCapability, ProjectInfo, RunningStand, StandStatus};
 pub use update_capability::{
-    UpdateCapability, UpdateCheckResult, UpdateApplyResult, ReleaseInfo, AssetInfo,
-    MacAppUpdateCheckResult, MacAppUpdateApplyResult,
+    AssetInfo, MacAppUpdateApplyResult, MacAppUpdateCheckResult, ReleaseInfo, UpdateApplyResult,
+    UpdateCapability, UpdateCheckResult,
 };

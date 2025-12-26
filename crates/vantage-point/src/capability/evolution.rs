@@ -446,7 +446,9 @@ pub struct EvolutionPath {
 impl EvolutionPath {
     /// 次のレベルへの条件を取得
     pub fn next_level_condition(&self, current: EvolutionLevel) -> Option<&EvolutionCondition> {
-        current.next().and_then(|next| self.level_conditions.get(&next))
+        current
+            .next()
+            .and_then(|next| self.level_conditions.get(&next))
     }
 }
 

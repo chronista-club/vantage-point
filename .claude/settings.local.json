@@ -1,11 +1,14 @@
 {
   "permissions": {
     "allow": [
+      "Edit(path:/Users/makoto/repos/vantage-point/**)",
+      "Bash(cat /tmp/claude/-Users-makoto-repos-*)",
       "Bash(git checkout:*)",
       "Bash(git merge:*)",
       "Bash(git push:*)",
       "Bash(git branch:*)",
       "Bash(gh repo edit:*)",
+      "mcp__vantage-point__*",
       "WebFetch(domain:www.git-tower.com)",
       "Bash(git flow:*)",
       "Bash(gh repo view:*)",
@@ -119,7 +122,18 @@
       "Bash(vp start:*)",
       "Bash(pkill:*)",
       "WebFetch(domain:www.donnywals.com)",
-      "Bash(cargo add:*)"
+      "Bash(cargo add:*)",
+      "Bash(/Users/makoto/repos*)",
+      "mcp__vantage-point__permission",
+      "Bash(claude mcp remove:*)",
+      "Bash(vp open:*)",
+      "mcp__serena__activate_project",
+      "mcp__creo-memories__list_recent_memories",
+      "mcp__creo-memories__start_session",
+      "Bash(timeout 3 cargo run:*)",
+      "Bash(./target/debug/vp:*)",
+      "mcp__creo-memories__remember",
+      "mcp__creo-memories__recall"
     ],
     "deny": [],
     "ask": []

@@ -346,8 +346,8 @@ impl SynergyEngine {
         cap_b: &CapabilityMetadata,
     ) -> SynergyAnalysis {
         // 禁忌チェック
-        let is_forbidden = cap_a.forbidden_with.contains(&cap_b.id)
-            || cap_b.forbidden_with.contains(&cap_a.id);
+        let is_forbidden =
+            cap_a.forbidden_with.contains(&cap_b.id) || cap_b.forbidden_with.contains(&cap_a.id);
 
         if is_forbidden {
             return SynergyAnalysis {
@@ -532,9 +532,7 @@ pub fn webview_capability() -> CapabilityMetadata {
             CapabilityTag::VisualFeedback,
             CapabilityTag::Notification,
         ])
-        .requires(vec![
-            CapabilityTag::WebSocket,
-        ])
+        .requires(vec![CapabilityTag::WebSocket])
         .synergizes_with(vec![
             CapabilityTag::AiAgent,
             CapabilityTag::SessionManagement,
@@ -546,15 +544,9 @@ pub fn webview_capability() -> CapabilityMetadata {
 pub fn websocket_capability() -> CapabilityMetadata {
     CapabilityMetadata::new("websocket_comm", "WebSocket Communication")
         .with_description("リアルタイムな双方向通信")
-        .provides(vec![
-            CapabilityTag::WebSocket,
-            CapabilityTag::Ipc,
-        ])
+        .provides(vec![CapabilityTag::WebSocket, CapabilityTag::Ipc])
         .requires(vec![])
-        .synergizes_with(vec![
-            CapabilityTag::WebViewUi,
-            CapabilityTag::AiAgent,
-        ])
+        .synergizes_with(vec![CapabilityTag::WebViewUi, CapabilityTag::AiAgent])
         .conflicts_with(vec![])
 }
 
@@ -567,9 +559,7 @@ pub fn session_management_capability() -> CapabilityMetadata {
             CapabilityTag::PersistentStorage,
             CapabilityTag::DevelopmentHistory,
         ])
-        .requires(vec![
-            CapabilityTag::AiAgent,
-        ])
+        .requires(vec![CapabilityTag::AiAgent])
         .synergizes_with(vec![
             CapabilityTag::ProjectContext,
             CapabilityTag::WebViewUi,

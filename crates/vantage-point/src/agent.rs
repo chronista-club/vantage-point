@@ -46,7 +46,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 
 /// エージェント通信用メッセージ型
 #[derive(Debug, Clone)]
@@ -152,6 +152,10 @@ pub struct AgentConfig {
     /// 全パーミッションチェックをバイパス (--dangerously-skip-permissions)
     /// 注意: trueの場合、permission_modeは無視される
     pub skip_permissions: bool,
+    /// パーミッションプロンプトツール (--permission-prompt-tool)
+    /// MCPツールを使用してパーミッション承認を処理
+    /// 例: "vantage-point__permission"
+    pub permission_prompt_tool: Option<String>,
 
     // === 予算 & 制限 ===
     /// APIコール最大金額 (--max-budget-usd, printモードのみ)
@@ -308,6 +312,11 @@ fn apply_cli_args(cmd: &mut Command, config: &AgentConfig) {
         cmd.arg("--permission-mode").arg(mode);
     }
 
+    // パーミッションプロンプトツール
+    if let Some(ref tool) = config.permission_prompt_tool {
+        cmd.arg("--permission-prompt-tool").arg(tool);
+    }
+
     // === セッション制御 ===
     if config.use_continue {
         cmd.arg("--continue");
@@ -371,9 +380,7 @@ async fn run_claude_cli(
     let mut cmd = Command::new("claude");
 
     // printモードでstream-json出力を使用
-    cmd.arg("-p")
-        .arg("--output-format")
-        .arg("stream-json");
+    cmd.arg("-p").arg("--output-format").arg("stream-json");
 
     // stream-jsonにはverboseが必須
     cmd.arg("--verbose");
@@ -720,9 +727,8 @@ impl InteractiveClaudeAgent {
                                                 .send(AgentEvent::TextChunk(new_text.to_string()))
                                                 .await;
                                         } else if text != last_text {
-                                            let _ = tx
-                                                .send(AgentEvent::TextChunk(text.clone()))
-                                                .await;
+                                            let _ =
+                                                tx.send(AgentEvent::TextChunk(text.clone())).await;
                                         }
                                         last_text = text;
                                     }
@@ -743,9 +749,8 @@ impl InteractiveClaudeAgent {
                             last_text.clear();
 
                             if is_error {
-                                let _ = tx
-                                    .send(AgentEvent::Error(result.unwrap_or_default()))
-                                    .await;
+                                let _ =
+                                    tx.send(AgentEvent::Error(result.unwrap_or_default())).await;
                             } else {
                                 let _ = tx
                                     .send(AgentEvent::Done {
@@ -757,11 +762,7 @@ impl InteractiveClaudeAgent {
                         }
                     },
                     Err(e) => {
-                        tracing::debug!(
-                            "Claudeメッセージ解析失敗: {} - line: {}",
-                            e,
-                            line
-                        );
+                        tracing::debug!("Claudeメッセージ解析失敗: {} - line: {}", e, line);
                     }
                 }
             }
@@ -827,11 +828,165 @@ impl InteractiveClaudeAgent {
 
 use tokio::io::AsyncReadExt;
 
-/// PTYモード用イベント型
+/// PTYパーミッションプロンプト検出情報
 #[derive(Debug, Clone)]
+pub struct PtyPermissionPrompt {
+    /// ツール名（例: "Bash", "Edit"）
+    pub tool_name: String,
+    /// 説明/コマンド内容
+    pub description: String,
+    /// 生のプロンプトテキスト
+    pub raw_prompt: String,
+}
+
+impl PtyPermissionPrompt {
+    /// PTY出力からパーミッションプロンプトを検出
+    ///
+    /// Claude CLIのパーミッションプロンプトパターンを検出:
+    /// - "Allow once (y)" パターン
+    /// - "Allow for this session (a)" パターン
+    /// - "Reject (n)" パターン
+    ///
+    /// 注意: 誤検出を防ぐため、厳格なパターンマッチングを使用
+    pub fn detect(output: &str) -> Option<Self> {
+        // ANSIエスケープシーケンスを除去して検出しやすくする
+        let clean = strip_ansi_escapes(output);
+
+        // 厳格なパターン: Claude CLIパーミッションプロンプトの特徴的な選択肢
+        // 実際のプロンプト例:
+        // ╭─────────────────────────────────────────────────────────────╮
+        // │ Claude wants to run: Bash(...)                              │
+        // ├─────────────────────────────────────────────────────────────┤
+        // │ Allow once (y)                                              │
+        // │ Allow for this session (a)                                  │
+        // │ Reject (n)                                                  │
+        // ╰─────────────────────────────────────────────────────────────╯
+
+        // パターン1: "Allow once" と "(y)" を含む（最も確実なパターン）
+        if clean.contains("Allow once") && clean.contains("(y)") {
+            let (tool, desc) = extract_tool_info(&clean);
+            return Some(Self {
+                tool_name: tool,
+                description: desc,
+                raw_prompt: output.to_string(),
+            });
+        }
+
+        // パターン2: "Allow for this session" と "(a)" を含む
+        if clean.contains("Allow for this session") && clean.contains("(a)") {
+            let (tool, desc) = extract_tool_info(&clean);
+            return Some(Self {
+                tool_name: tool,
+                description: desc,
+                raw_prompt: output.to_string(),
+            });
+        }
+
+        // パターン3: "Reject (n)" と "Allow" の両方を含む
+        if clean.contains("Reject (n)") && clean.contains("Allow") {
+            let (tool, desc) = extract_tool_info(&clean);
+            return Some(Self {
+                tool_name: tool,
+                description: desc,
+                raw_prompt: output.to_string(),
+            });
+        }
+
+        // パターン4: 3つの選択肢 (y), (a), (n) がすべて含まれる
+        if clean.contains("(y)") && clean.contains("(a)") && clean.contains("(n)") {
+            let (tool, desc) = extract_tool_info(&clean);
+            return Some(Self {
+                tool_name: tool,
+                description: desc,
+                raw_prompt: output.to_string(),
+            });
+        }
+
+        None
+    }
+}
+
+/// ANSIエスケープシーケンスを除去
+fn strip_ansi_escapes(s: &str) -> String {
+    // 簡易的なANSIシーケンス除去（\x1b[...m パターン）
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            // エスケープシーケンスをスキップ
+            if chars.peek() == Some(&'[') {
+                chars.next(); // '['を消費
+                while let Some(&ch) = chars.peek() {
+                    chars.next();
+                    if ch.is_alphabetic() {
+                        break; // 終端文字に到達
+                    }
+                }
+            }
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
+
+/// ツール名と説明を抽出（ヒューリスティック）
+fn extract_tool_info(text: &str) -> (String, String) {
+    // "execute" や "run" の後のワードをツール名として抽出
+    let tool_patterns = [
+        ("execute", " "),
+        ("run", " "),
+        ("Bash", ":"),
+        ("Edit", ":"),
+        ("Read", ":"),
+        ("Write", ":"),
+    ];
+
+    let mut tool_name = "Unknown".to_string();
+    let mut description = text.to_string();
+
+    for (pattern, delim) in tool_patterns {
+        if let Some(pos) = text.find(pattern) {
+            // パターンの後の部分を取得
+            let after = &text[pos..];
+            if let Some(end) = after.find(delim) {
+                let extracted = after[..end].trim().to_string();
+                if !extracted.is_empty() && extracted.len() < 50 {
+                    tool_name = extracted;
+                    break;
+                }
+            } else {
+                // デリミタが見つからない場合、最初の50文字まで
+                tool_name = after
+                    .chars()
+                    .take(50)
+                    .collect::<String>()
+                    .trim()
+                    .to_string();
+                break;
+            }
+        }
+    }
+
+    // 説明として"Command:"や"Arguments:"の後の内容を抽出
+    if let Some(cmd_pos) = text.find("Command:") {
+        let cmd_text = &text[cmd_pos + 8..];
+        if let Some(end) = cmd_text.find('\n') {
+            description = cmd_text[..end].trim().to_string();
+        } else {
+            description = cmd_text.trim().to_string();
+        }
+    }
+
+    (tool_name, description)
+}
+
 pub enum PtyEvent {
     /// PTYからの生出力（端末データ）
     Output(String),
+    /// パーミッションプロンプト検出
+    PermissionPrompt(PtyPermissionPrompt),
     /// プロセス終了
     Exited(i32),
     /// エラー発生
@@ -855,6 +1010,8 @@ pub struct PtyClaudeAgent {
     event_rx: Arc<Mutex<mpsc::Receiver<PtyEvent>>>,
     /// 子プロセス（tokio::process::Child）
     child: Arc<Mutex<Option<tokio::process::Child>>>,
+    /// PTY出力のログファイルパス（tee方式で出力を記録）
+    log_path: Option<std::path::PathBuf>,
 }
 
 impl PtyClaudeAgent {
@@ -868,6 +1025,21 @@ impl PtyClaudeAgent {
             event_tx: tx,
             event_rx: Arc::new(Mutex::new(rx)),
             child: Arc::new(Mutex::new(None)),
+            log_path: None,
+        }
+    }
+
+    /// ログファイルパスを指定してPTYエージェントを作成
+    pub fn with_log_path(mut config: AgentConfig, log_path: std::path::PathBuf) -> Self {
+        config.mode = AgentMode::Pty;
+        let (tx, rx) = mpsc::channel(100);
+        Self {
+            config,
+            pty_writer: Arc::new(Mutex::new(None)),
+            event_tx: tx,
+            event_rx: Arc::new(Mutex::new(rx)),
+            child: Arc::new(Mutex::new(None)),
+            log_path: Some(log_path),
         }
     }
 
@@ -924,11 +1096,37 @@ impl PtyClaudeAgent {
         // PTYを読み取り/書き込みに分割
         let (pty_read, pty_write) = pty.into_split();
 
-        // PTYからの読み取りタスクを開始
+        // PTYからの読み取りタスクを開始（ログ付きtee方式）
         let tx = self.event_tx.clone();
+        let log_path = self.log_path.clone();
         tokio::spawn(async move {
             let mut pty_reader = pty_read;
             let mut buf = [0u8; 4096];
+
+            // ログファイルを開く（指定されている場合）
+            let mut log_file = if let Some(ref path) = log_path {
+                // 親ディレクトリを作成
+                if let Some(parent) = path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                match tokio::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                    .await
+                {
+                    Ok(f) => {
+                        tracing::info!("PTYログファイル: {:?}", path);
+                        Some(f)
+                    }
+                    Err(e) => {
+                        tracing::warn!("PTYログファイル作成失敗: {} - {:?}", e, path);
+                        None
+                    }
+                }
+            } else {
+                None
+            };
 
             loop {
                 match pty_reader.read(&mut buf).await {
@@ -939,6 +1137,23 @@ impl PtyClaudeAgent {
                     Ok(n) => {
                         // 文字列に変換（UTF-8を適切に処理）
                         let output = String::from_utf8_lossy(&buf[..n]).to_string();
+
+                        // ログファイルに書き込み（tee方式）
+                        if let Some(ref mut file) = log_file {
+                            let _ = file.write_all(buf[..n].as_ref()).await;
+                            let _ = file.flush().await;
+                        }
+
+                        // パーミッションプロンプトを検出
+                        if let Some(prompt) = PtyPermissionPrompt::detect(&output) {
+                            tracing::info!("Permission prompt detected: {:?}", prompt.tool_name);
+                            // パーミッションイベントを先に送信
+                            if tx.send(PtyEvent::PermissionPrompt(prompt)).await.is_err() {
+                                break;
+                            }
+                        }
+
+                        // 生出力も常に送信
                         if tx.send(PtyEvent::Output(output)).await.is_err() {
                             break;
                         }
@@ -1184,7 +1399,8 @@ mod tests {
             .await
             .expect("Failed to send second message");
 
-        let mut rx = agent.events().lock().await;
+        let events = agent.events();
+        let mut rx = events.lock().await;
         while let Some(event) = rx.recv().await {
             match event {
                 AgentEvent::TextChunk(chunk) => {

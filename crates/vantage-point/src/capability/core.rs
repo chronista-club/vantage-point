@@ -10,10 +10,7 @@
 //! - **非同期**: 全ての操作はasyncで実行可能
 //! - **イベント駆動**: EventBusを通じて能力間で通信
 
-use crate::capability::{
-    params::CapabilityParams,
-    types::CapabilityType,
-};
+use crate::capability::{params::CapabilityParams, types::CapabilityType};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::any::Any;
@@ -578,12 +575,13 @@ mod tests {
 
     #[test]
     fn test_capability_event() {
-        let event = CapabilityEvent::new("midi.note_on", "midi-capability")
-            .with_payload(&serde_json::json!({
+        let event = CapabilityEvent::new("midi.note_on", "midi-capability").with_payload(
+            &serde_json::json!({
                 "channel": 0,
                 "note": 60,
                 "velocity": 100
-            }));
+            }),
+        );
 
         assert_eq!(event.event_type, "midi.note_on");
         assert_eq!(event.source, "midi-capability");

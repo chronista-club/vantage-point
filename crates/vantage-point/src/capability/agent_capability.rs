@@ -17,7 +17,7 @@ use crate::capability::eventbus::EventBus;
 use async_trait::async_trait;
 use std::any::Any;
 use std::sync::Arc;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{RwLock, mpsc};
 
 // =============================================================================
 // Agent Capability
@@ -154,11 +154,12 @@ impl AgentCapability {
         // run_started イベントを発行
         if let Some(ref bus) = event_bus {
             let run_id = run_state.read().await.run_id.clone();
-            let event = CapabilityEvent::new("agent.run_started", "agent-capability")
-                .with_payload(&serde_json::json!({
+            let event = CapabilityEvent::new("agent.run_started", "agent-capability").with_payload(
+                &serde_json::json!({
                     "run_id": run_id,
                     "message": message,
-                }));
+                }),
+            );
             bus.emit(event).await;
         }
 
@@ -276,14 +277,11 @@ fn agent_event_to_capability_event(event: &AgentEvent, run_id: &str) -> Capabili
             }),
         ),
 
-        AgentEvent::TextChunk(text) => {
-            CapabilityEvent::new("agent.text_chunk", "agent-capability").with_payload(
-                &serde_json::json!({
-                    "run_id": run_id,
-                    "content": text,
-                }),
-            )
-        }
+        AgentEvent::TextChunk(text) => CapabilityEvent::new("agent.text_chunk", "agent-capability")
+            .with_payload(&serde_json::json!({
+                "run_id": run_id,
+                "content": text,
+            })),
 
         AgentEvent::ToolExecuting { name } => {
             CapabilityEvent::new("agent.tool_executing", "agent-capability").with_payload(
@@ -305,24 +303,18 @@ fn agent_event_to_capability_event(event: &AgentEvent, run_id: &str) -> Capabili
             )
         }
 
-        AgentEvent::Done { result, cost } => {
-            CapabilityEvent::new("agent.done", "agent-capability").with_payload(
-                &serde_json::json!({
-                    "run_id": run_id,
-                    "result": result,
-                    "cost": cost,
-                }),
-            )
-        }
+        AgentEvent::Done { result, cost } => CapabilityEvent::new("agent.done", "agent-capability")
+            .with_payload(&serde_json::json!({
+                "run_id": run_id,
+                "result": result,
+                "cost": cost,
+            })),
 
-        AgentEvent::Error(msg) => {
-            CapabilityEvent::new("agent.error", "agent-capability").with_payload(
-                &serde_json::json!({
-                    "run_id": run_id,
-                    "error": msg,
-                }),
-            )
-        }
+        AgentEvent::Error(msg) => CapabilityEvent::new("agent.error", "agent-capability")
+            .with_payload(&serde_json::json!({
+                "run_id": run_id,
+                "error": msg,
+            })),
     }
 }
 
