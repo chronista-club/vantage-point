@@ -268,7 +268,7 @@
             padding: 8px;
         }
 
-        /* Input Area - 中央 */
+        /* Input Area - ドラッグ可能 */
         .input-area {
             padding: 16px 0;
             border-top: 1px solid #0f3460;
@@ -277,6 +277,59 @@
             margin: 0 -16px;
             padding-left: 16px;
             padding-right: 16px;
+            position: relative;
+            transition: transform 0.15s ease, box-shadow 0.15s ease;
+        }
+        .input-area.dragging {
+            opacity: 0.9;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+            z-index: 100;
+        }
+        .drag-handle {
+            position: absolute;
+            top: 0;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 40px;
+            height: 12px;
+            cursor: grab;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0.4;
+            transition: opacity 0.2s;
+        }
+        .drag-handle:hover {
+            opacity: 0.8;
+        }
+        .drag-handle:active {
+            cursor: grabbing;
+        }
+        .drag-handle::before {
+            content: '';
+            width: 30px;
+            height: 4px;
+            background: #667eea;
+            border-radius: 2px;
+        }
+        .drop-zone {
+            position: relative;
+        }
+        .drop-zone.drag-over::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: #667eea;
+            border-radius: 2px;
+            z-index: 10;
+        }
+        .drop-zone.drag-over-top::before {
+            top: 0;
+        }
+        .drop-zone.drag-over-bottom::before {
+            bottom: 0;
         }
         .chat-input-wrapper {
             display: flex;
@@ -768,9 +821,9 @@
 
         <!-- Center Panel - Chat -->
         <div class="center-panel">
-            <div class="chat-container">
-                <!-- Response Area - AIの現在の返答 (入力欄の上) -->
-                <div class="response-area">
+            <div id="chat-container" class="chat-container">
+                <!-- Response Area - AIの現在の返答 -->
+                <div id="response-area" class="response-area drop-zone" data-position="0">
                     <div id="current-response" class="current-response empty">
                         <div class="content"></div>
                     </div>
@@ -779,8 +832,9 @@
                     </div>
                 </div>
 
-                <!-- Input Area - 中央固定 -->
-                <div class="input-area">
+                <!-- Input Area - ドラッグ可能 -->
+                <div id="input-area" class="input-area" draggable="true" data-position="1">
+                    <div class="drag-handle" title="Drag to reorder"></div>
                     <div class="chat-input-wrapper">
                         <textarea
                             id="chat-input"
@@ -802,8 +856,8 @@
                     </div>
                 </div>
 
-                <!-- History Area - 過去のメッセージ (入力欄の下) -->
-                <div id="history-area" class="history-area">
+                <!-- History Area - 過去のメッセージ -->
+                <div id="history-area" class="history-area drop-zone" data-position="2">
                     <div class="system-message">Connected to Stand</div>
                 </div>
             </div>
@@ -1490,6 +1544,117 @@
                 chatInput.focus();
             }
         });
+
+        // ===== Input Area Drag & Drop =====
+        const chatContainer = document.getElementById('chat-container');
+        const inputArea = document.getElementById('input-area');
+        const responseArea = document.getElementById('response-area');
+        const dragHandle = inputArea.querySelector('.drag-handle');
+        let isDraggingInput = false;
+
+        // ドラッグ開始（ハンドルからのみ）
+        inputArea.addEventListener('dragstart', (e) => {
+            // ハンドル以外からのドラッグは無効
+            if (!e.target.classList.contains('drag-handle') && !dragHandle.contains(e.target)) {
+                // テキスト選択などは許可
+                const isFromHandle = e.offsetY < 20; // 上部20pxはハンドル領域
+                if (!isFromHandle) {
+                    e.preventDefault();
+                    return;
+                }
+            }
+            isDraggingInput = true;
+            inputArea.classList.add('dragging');
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/plain', 'input-area');
+        });
+
+        inputArea.addEventListener('dragend', () => {
+            isDraggingInput = false;
+            inputArea.classList.remove('dragging');
+            clearDropIndicators();
+        });
+
+        // ドロップゾーンの設定
+        const dropZones = document.querySelectorAll('.drop-zone');
+        dropZones.forEach(zone => {
+            zone.addEventListener('dragover', (e) => {
+                if (!isDraggingInput) return;
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'move';
+
+                const rect = zone.getBoundingClientRect();
+                const midY = rect.top + rect.height / 2;
+
+                clearDropIndicators();
+                zone.classList.add('drag-over');
+                if (e.clientY < midY) {
+                    zone.classList.add('drag-over-top');
+                } else {
+                    zone.classList.add('drag-over-bottom');
+                }
+            });
+
+            zone.addEventListener('dragleave', (e) => {
+                // 子要素への移動は無視
+                if (zone.contains(e.relatedTarget)) return;
+                zone.classList.remove('drag-over', 'drag-over-top', 'drag-over-bottom');
+            });
+
+            zone.addEventListener('drop', (e) => {
+                if (!isDraggingInput) return;
+                e.preventDefault();
+
+                const rect = zone.getBoundingClientRect();
+                const midY = rect.top + rect.height / 2;
+                const insertBefore = e.clientY < midY;
+
+                if (insertBefore) {
+                    chatContainer.insertBefore(inputArea, zone);
+                } else {
+                    chatContainer.insertBefore(inputArea, zone.nextSibling);
+                }
+
+                clearDropIndicators();
+                saveInputPosition();
+            });
+        });
+
+        function clearDropIndicators() {
+            dropZones.forEach(z => {
+                z.classList.remove('drag-over', 'drag-over-top', 'drag-over-bottom');
+            });
+        }
+
+        // 位置の保存と復元
+        function saveInputPosition() {
+            const children = Array.from(chatContainer.children);
+            const position = children.indexOf(inputArea);
+            localStorage.setItem('vp-input-position', position);
+        }
+
+        function restoreInputPosition() {
+            const savedPosition = localStorage.getItem('vp-input-position');
+            if (savedPosition !== null) {
+                const position = parseInt(savedPosition, 10);
+                const children = Array.from(chatContainer.children);
+                if (position >= 0 && position < children.length) {
+                    const targetElement = children[position];
+                    if (targetElement !== inputArea) {
+                        if (position === 0) {
+                            chatContainer.insertBefore(inputArea, chatContainer.firstChild);
+                        } else if (position >= children.length - 1) {
+                            chatContainer.appendChild(inputArea);
+                        } else {
+                            chatContainer.insertBefore(inputArea, children[position + 1]);
+                        }
+                    }
+                }
+            }
+        }
+
+        // 初期化時に位置を復元
+        restoreInputPosition();
 
         // Start connection
         connect();
