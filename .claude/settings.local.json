@@ -133,7 +133,10 @@
       "Bash(timeout 3 cargo run:*)",
       "Bash(./target/debug/vp:*)",
       "mcp__creo-memories__remember",
-      "mcp__creo-memories__recall"
+      "mcp__creo-memories__recall",
+      "Bash(./target/release/vp ps:*)",
+      "Bash(git log:*)",
+      "Bash(vp app:*)"
     ],
     "deny": [],
     "ask": []

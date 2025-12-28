@@ -1173,6 +1173,7 @@ fn main() -> Result<()> {
                         eprintln!("  Expected locations:");
                         eprintln!("    - /Applications/VantagePoint.app");
                         eprintln!("    - ~/Applications/VantagePoint.app");
+                        eprintln!("    - ~/repos/vantage-point-mac/VantagePoint/VantagePoint.app (dev)");
                         std::process::exit(1);
                     }
                 }
@@ -1682,7 +1683,15 @@ fn find_vantage_point_app() -> Option<std::path::PathBuf> {
         }
     }
 
-    // 3. ビルドディレクトリ（開発用）
+    // 3. 開発リポジトリ（~/repos/vantage-point-mac/）
+    if let Some(home) = dirs::home_dir() {
+        let dev_repo_app = home.join("repos/vantage-point-mac/VantagePoint/VantagePoint.app");
+        if dev_repo_app.exists() {
+            return Some(dev_repo_app);
+        }
+    }
+
+    // 4. Xcode DerivedData（開発用）
     if let Some(home) = dirs::home_dir() {
         let dev_app = home
             .join("Library/Developer/Xcode/DerivedData")
