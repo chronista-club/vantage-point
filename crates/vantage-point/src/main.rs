@@ -1683,28 +1683,26 @@ fn find_vantage_point_app() -> Option<std::path::PathBuf> {
         }
     }
 
-    // 3. 開発リポジトリ（~/repos/vantage-point-mac/）
+    // 3. Xcode DerivedData（Xcodeビルド優先）
+    if let Some(home) = dirs::home_dir() {
+        let derived_data = home.join("Library/Developer/Xcode/DerivedData");
+        if let Ok(entries) = derived_data.read_dir() {
+            for entry in entries.filter_map(|e| e.ok()) {
+                if entry.file_name().to_string_lossy().starts_with("VantagePoint-") {
+                    let app_path = entry.path().join("Build/Products/Debug/VantagePoint.app");
+                    if app_path.exists() {
+                        return Some(app_path);
+                    }
+                }
+            }
+        }
+    }
+
+    // 4. 開発リポジトリ（~/repos/vantage-point-mac/）
     if let Some(home) = dirs::home_dir() {
         let dev_repo_app = home.join("repos/vantage-point-mac/VantagePoint/VantagePoint.app");
         if dev_repo_app.exists() {
             return Some(dev_repo_app);
-        }
-    }
-
-    // 4. Xcode DerivedData（開発用）
-    if let Some(home) = dirs::home_dir() {
-        let dev_app = home
-            .join("Library/Developer/Xcode/DerivedData")
-            .read_dir()
-            .ok()?
-            .filter_map(|e| e.ok())
-            .find(|e| e.file_name().to_string_lossy().starts_with("VantagePoint-"))
-            .map(|e| e.path().join("Build/Products/Debug/VantagePoint.app"));
-
-        if let Some(path) = dev_app {
-            if path.exists() {
-                return Some(path);
-            }
         }
     }
 
