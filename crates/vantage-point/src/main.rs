@@ -1173,7 +1173,9 @@ fn main() -> Result<()> {
                         eprintln!("  Expected locations:");
                         eprintln!("    - /Applications/VantagePoint.app");
                         eprintln!("    - ~/Applications/VantagePoint.app");
-                        eprintln!("    - ~/repos/vantage-point-mac/VantagePoint/VantagePoint.app (dev)");
+                        eprintln!(
+                            "    - ~/repos/vantage-point-mac/VantagePoint/VantagePoint.app (dev)"
+                        );
                         std::process::exit(1);
                     }
                 }
@@ -1688,7 +1690,11 @@ fn find_vantage_point_app() -> Option<std::path::PathBuf> {
         let derived_data = home.join("Library/Developer/Xcode/DerivedData");
         if let Ok(entries) = derived_data.read_dir() {
             for entry in entries.filter_map(|e| e.ok()) {
-                if entry.file_name().to_string_lossy().starts_with("VantagePoint-") {
+                if entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("VantagePoint-")
+                {
                     let app_path = entry.path().join("Build/Products/Debug/VantagePoint.app");
                     if app_path.exists() {
                         return Some(app_path);

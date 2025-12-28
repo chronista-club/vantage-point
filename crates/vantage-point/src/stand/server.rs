@@ -410,7 +410,7 @@ impl AppState {
                 category: category.to_string(),
                 message: message.to_string(),
                 data: None,
-                        tags: vec![],
+                tags: vec![],
             });
         } else {
             self.hub.broadcast(StandMessage::DebugInfo {
@@ -645,7 +645,10 @@ async fn permission_request_handler(
     // Extract request_id and input from the ChatComponent
     let (request_id, original_input) = match &msg {
         StandMessage::ChatComponent {
-            component: ChatComponent::PermissionRequest { request_id, input, .. },
+            component:
+                ChatComponent::PermissionRequest {
+                    request_id, input, ..
+                },
             ..
         } => (request_id.clone(), input.clone()),
         _ => {
@@ -659,17 +662,13 @@ async fn permission_request_handler(
     tracing::info!("Permission request received: {}", request_id);
 
     // Store the pending request with original input (needed for "allow" response)
-    state
-        .pending_permissions
-        .write()
-        .await
-        .insert(
-            request_id.clone(),
-            PendingPermission {
-                original_input,
-                response: None,
-            },
-        );
+    state.pending_permissions.write().await.insert(
+        request_id.clone(),
+        PendingPermission {
+            original_input,
+            response: None,
+        },
+    );
 
     // Broadcast to WebSocket clients
     state.hub.broadcast(msg);
@@ -776,7 +775,10 @@ async fn handle_permission_response(
             tracing::info!(">>> PTY permission request detected, sending response to PTY");
             let pty_response = if approved { "y" } else { "n" };
             let agent_guard = state.pty_agent.read().await;
-            tracing::debug!("PTY agent guard acquired, agent exists: {}", agent_guard.is_some());
+            tracing::debug!(
+                "PTY agent guard acquired, agent exists: {}",
+                agent_guard.is_some()
+            );
             if let Some(ref agent) = *agent_guard {
                 tracing::info!(">>> Sending '{}' to PTY agent...", pty_response);
                 match agent.send(pty_response).await {
@@ -1380,7 +1382,7 @@ async fn handle_chat_message_pty(
                     category: "pty".to_string(),
                     message: "PTY Claude agent started".to_string(),
                     data: None,
-                        tags: vec![],
+                    tags: vec![],
                 });
             }
 
@@ -1673,7 +1675,7 @@ async fn handle_chat_message_interactive(
                     category: "agent".to_string(),
                     message: "Interactive Claude agent started (stream-json mode)".to_string(),
                     data: None,
-                        tags: vec![],
+                    tags: vec![],
                 });
             }
 
@@ -1892,7 +1894,7 @@ async fn handle_chat_message(
                 category: "session".to_string(),
                 message: format!("Resuming session: {}", sid),
                 data: None,
-                        tags: vec![],
+                tags: vec![],
             });
         }
         config.session_id = Some(sid.clone());
@@ -1904,7 +1906,7 @@ async fn handle_chat_message(
                 category: "session".to_string(),
                 message: "Using --continue (most recent session)".to_string(),
                 data: None,
-                        tags: vec![],
+                tags: vec![],
             });
         }
     } else {
@@ -1915,7 +1917,7 @@ async fn handle_chat_message(
                 category: "session".to_string(),
                 message: "Starting new session".to_string(),
                 data: None,
-                        tags: vec![],
+                tags: vec![],
             });
         }
     }
