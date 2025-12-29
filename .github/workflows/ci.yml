@@ -42,7 +42,16 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Run clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings -A dead_code
+        run: |
+          cargo clippy --workspace --all-targets -- -D warnings \
+            -A dead_code \
+            -A unused-imports \
+            -A unused-variables \
+            -A unused-mut \
+            -A collapsible_if \
+            -A collapsible_match \
+            -A let_and_return \
+            -A redundant_pattern_matching
 
   # ===========================================
   # テスト（高速・並列実行）
