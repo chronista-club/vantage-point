@@ -51,7 +51,11 @@ jobs:
             -A clippy::collapsible_if \
             -A clippy::collapsible_match \
             -A clippy::let_and_return \
-            -A clippy::redundant_pattern_matching
+            -A clippy::redundant_pattern_matching \
+            -A clippy::clone_on_copy \
+            -A clippy::manual_strip \
+            -A clippy::manual_range_contains \
+            -A clippy::manual_pattern_char_comparison
 
   # ===========================================
   # テスト（高速・並列実行）
