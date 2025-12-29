@@ -48,10 +48,10 @@ jobs:
             -A unused-imports \
             -A unused-variables \
             -A unused-mut \
-            -A collapsible_if \
-            -A collapsible_match \
-            -A let_and_return \
-            -A redundant_pattern_matching
+            -A clippy::collapsible_if \
+            -A clippy::collapsible_match \
+            -A clippy::let_and_return \
+            -A clippy::redundant_pattern_matching
 
   # ===========================================
   # テスト（高速・並列実行）
