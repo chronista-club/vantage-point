@@ -48,6 +48,25 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, mpsc};
 
+/// Claude CLIのパスを取得（設定値 or デフォルトパス）
+fn get_claude_cli_path(config_path: Option<&str>) -> String {
+    // 設定で指定されていればそれを使用
+    if let Some(path) = config_path {
+        return path.to_string();
+    }
+
+    // ~/.local/bin/claude を優先チェック（npm -g インストール先）
+    if let Ok(home) = std::env::var("HOME") {
+        let local_bin = format!("{}/.local/bin/claude", home);
+        if std::path::Path::new(&local_bin).exists() {
+            return local_bin;
+        }
+    }
+
+    // デフォルトはPATHから検索
+    "claude".to_string()
+}
+
 /// エージェント通信用メッセージ型
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
@@ -166,6 +185,11 @@ pub struct AgentConfig {
     pub verbose: bool,
     /// デバッグモード有効化、オプションでフィルタ指定 (--debug)
     pub debug: Option<String>,
+
+    // === CLI パス ===
+    /// Claude CLIのフルパス（mise/asdf等のGUI非対応環境用）
+    /// 未指定の場合は"claude"でPATHから検索
+    pub claude_cli_path: Option<String>,
 }
 
 /// Claude CLIと通信するエージェント
@@ -377,7 +401,11 @@ async fn run_claude_cli(
     config: &AgentConfig,
     tx: mpsc::Sender<AgentEvent>,
 ) -> anyhow::Result<()> {
-    let mut cmd = Command::new("claude");
+    // Claude CLIパスを取得（設定 or デフォルト）
+    let claude_path = get_claude_cli_path(config.claude_cli_path.as_deref());
+    let mut cmd = Command::new(&claude_path);
+    // 親プロセスの環境変数を引き継ぐ（mise/asdf等のPATHを含む）
+    cmd.envs(std::env::vars());
 
     // printモードでstream-json出力を使用
     cmd.arg("-p").arg("--output-format").arg("stream-json");
@@ -630,7 +658,11 @@ impl InteractiveClaudeAgent {
             return Ok(()); // 既に実行中
         }
 
-        let mut cmd = Command::new("claude");
+        // Claude CLIパスを取得（設定 or デフォルト）
+        let claude_path = get_claude_cli_path(self.config.claude_cli_path.as_deref());
+        let mut cmd = Command::new(&claude_path);
+        // 親プロセスの環境変数を引き継ぐ（mise/asdf等のPATHを含む）
+        cmd.envs(std::env::vars());
 
         // 双方向stream-jsonでprintモードを使用
         cmd.arg("-p")
@@ -1058,8 +1090,11 @@ impl PtyClaudeAgent {
         pty.resize(pty_process::Size::new(24, 120))
             .map_err(|e| anyhow::anyhow!("PTYリサイズ失敗: {}", e))?;
 
+        // Claude CLIパスを取得（設定 or デフォルト）
+        let claude_path = get_claude_cli_path(self.config.claude_cli_path.as_deref());
         // コマンドを構築（pty_process::Commandはselfを消費するので再代入が必要）
-        let mut cmd = pty_process::Command::new("claude");
+        // 親プロセスの環境変数を引き継ぐ（mise/asdf等のPATHを含む）
+        let mut cmd = pty_process::Command::new(&claude_path).envs(std::env::vars());
 
         // CLIオプションを適用（-pはPTYモードでは使用しない）
         // PTYモードでは意味のあるフラグのサブセットのみを適用

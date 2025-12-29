@@ -42,6 +42,11 @@ pub struct Config {
     #[serde(default = "default_port")]
     pub default_port: u16,
 
+    /// Claude CLIのフルパス（mise/asdf等のGUI非対応環境用）
+    /// 例: "/Users/user/.local/share/mise/installs/node/22.21.1/bin/claude"
+    #[serde(default)]
+    pub claude_cli_path: Option<String>,
+
     /// Projects configuration
     #[serde(default)]
     pub projects: Vec<ProjectConfig>,

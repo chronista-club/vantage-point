@@ -643,6 +643,216 @@ impl AgUiEvent {
 }
 
 // =============================================================================
+// Event Bridge - AgentEvent → AgUiEvent 変換
+// =============================================================================
+
+use crate::agent::AgentEvent;
+use std::collections::HashMap;
+
+/// AgentEvent から AgUiEvent への変換ブリッジ
+///
+/// エージェントの内部イベントをAG-UIプロトコル準拠のイベントに変換する。
+/// ツール呼び出しIDの追跡やメッセージ状態の管理も行う。
+///
+/// ## 使用例
+/// ```ignore
+/// let mut bridge = AgUiEventBridge::new("run-123");
+/// for agent_event in agent_events {
+///     let agui_events = bridge.convert(agent_event);
+///     for event in agui_events {
+///         hub.broadcast(StandMessage::AgUi { event });
+///     }
+/// }
+/// ```
+#[derive(Debug)]
+pub struct AgUiEventBridge {
+    /// 現在の run_id
+    run_id: String,
+    /// 現在のメッセージID
+    message_id: String,
+    /// ツール名 → tool_call_id のマッピング（進行中のツール呼び出し追跡）
+    active_tool_calls: HashMap<String, String>,
+    /// メッセージストリーム開始済みフラグ
+    message_started: bool,
+    /// テキストバッファ（累積レスポンス）
+    text_buffer: String,
+    /// tool_call_id カウンター
+    tool_call_counter: u64,
+}
+
+impl AgUiEventBridge {
+    /// 新しいブリッジを作成
+    pub fn new(run_id: impl Into<String>) -> Self {
+        let run_id = run_id.into();
+        let message_id = format!("msg-{}", uuid::Uuid::new_v4());
+        Self {
+            run_id,
+            message_id,
+            active_tool_calls: HashMap::new(),
+            message_started: false,
+            text_buffer: String::new(),
+            tool_call_counter: 0,
+        }
+    }
+
+    /// run_id を取得
+    pub fn run_id(&self) -> &str {
+        &self.run_id
+    }
+
+    /// message_id を取得
+    pub fn message_id(&self) -> &str {
+        &self.message_id
+    }
+
+    /// 累積テキストを取得
+    pub fn text_buffer(&self) -> &str {
+        &self.text_buffer
+    }
+
+    /// メッセージが開始されたかどうか
+    pub fn is_message_started(&self) -> bool {
+        self.message_started
+    }
+
+    /// RunStarted イベントを生成
+    pub fn run_started(&self) -> AgUiEvent {
+        AgUiEvent::run_started(&self.run_id)
+    }
+
+    /// AgentEvent を AgUiEvent のリストに変換
+    ///
+    /// 1つの AgentEvent が複数の AgUiEvent を生成する場合がある
+    /// （例: 最初のTextChunkは TextMessageStart + TextMessageContent を生成）
+    pub fn convert(&mut self, event: AgentEvent) -> Vec<AgUiEvent> {
+        match event {
+            AgentEvent::SessionInit { .. } => {
+                // セッション初期化は AG-UI イベントを生成しない
+                // （セッション管理は別レイヤーで処理）
+                vec![]
+            }
+
+            AgentEvent::TextChunk(chunk) => {
+                self.text_buffer.push_str(&chunk);
+                let mut events = Vec::new();
+
+                // 最初のチャンクでメッセージ開始イベントを発行
+                if !self.message_started {
+                    events.push(AgUiEvent::text_message_start(
+                        &self.run_id,
+                        &self.message_id,
+                        MessageRole::Assistant,
+                    ));
+                    self.message_started = true;
+                }
+
+                // コンテンツイベント
+                events.push(AgUiEvent::text_message_content(
+                    &self.run_id,
+                    &self.message_id,
+                    &chunk,
+                ));
+
+                events
+            }
+
+            AgentEvent::ToolExecuting { name } => {
+                // 新しいtool_call_idを生成
+                self.tool_call_counter += 1;
+                let tool_call_id = format!("tool-{}-{}", self.tool_call_counter, uuid::Uuid::new_v4());
+                self.active_tool_calls.insert(name.clone(), tool_call_id.clone());
+
+                vec![AgUiEvent::tool_call_start(
+                    &self.run_id,
+                    &tool_call_id,
+                    &name,
+                )]
+            }
+
+            AgentEvent::ToolResult { name, preview } => {
+                // 対応するtool_call_idを取得（なければ生成）
+                let tool_call_id = self
+                    .active_tool_calls
+                    .remove(&name)
+                    .unwrap_or_else(|| format!("tool-orphan-{}", name));
+
+                vec![AgUiEvent::ToolCallEnd {
+                    run_id: self.run_id.clone(),
+                    tool_call_id,
+                    result: Some(serde_json::json!({ "preview": preview })),
+                    error: None,
+                    timestamp: now_millis(),
+                }]
+            }
+
+            AgentEvent::Done { result: _, cost: _ } => {
+                let mut events = Vec::new();
+
+                // メッセージが開始されていれば終了イベントを発行
+                if self.message_started {
+                    events.push(AgUiEvent::text_message_end(
+                        &self.run_id,
+                        &self.message_id,
+                    ));
+                }
+
+                // Run終了イベント
+                events.push(AgUiEvent::run_finished(&self.run_id));
+
+                events
+            }
+
+            AgentEvent::Error(error) => {
+                let mut events = Vec::new();
+
+                // メッセージが開始されていれば終了イベントを発行
+                if self.message_started {
+                    events.push(AgUiEvent::text_message_end(
+                        &self.run_id,
+                        &self.message_id,
+                    ));
+                }
+
+                // エラーイベント
+                events.push(AgUiEvent::run_error(&self.run_id, "AGENT_ERROR", &error));
+
+                events
+            }
+        }
+    }
+
+    /// キャンセル時のイベントを生成
+    pub fn cancelled(&mut self) -> Vec<AgUiEvent> {
+        let mut events = Vec::new();
+
+        // メッセージが開始されていれば終了イベントを発行
+        if self.message_started {
+            events.push(AgUiEvent::text_message_end(
+                &self.run_id,
+                &self.message_id,
+            ));
+            self.message_started = false;
+        }
+
+        // キャンセルエラーイベント
+        events.push(AgUiEvent::run_error(
+            &self.run_id,
+            "CANCELLED",
+            "Request cancelled by user",
+        ));
+
+        events
+    }
+
+    /// 新しいメッセージを開始（会話継続時）
+    pub fn start_new_message(&mut self) {
+        self.message_id = format!("msg-{}", uuid::Uuid::new_v4());
+        self.message_started = false;
+        self.text_buffer.clear();
+    }
+}
+
+// =============================================================================
 // Tests
 // =============================================================================
 
