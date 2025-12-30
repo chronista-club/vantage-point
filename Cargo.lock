@@ -2575,16 +2575,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pty-process"
-version = "0.5.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "71cec9e2670207c5ebb9e477763c74436af3b9091dd550b9fb3c1bec7f3ea266"
-dependencies = [
- "rustix",
- "tokio",
-]
-
-[[package]]
 name = "quote"
 version = "1.0.42"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3975,7 +3965,6 @@ dependencies = [
  "midir",
  "muda",
  "open",
- "pty-process",
  "reqwest",
  "rmcp",
  "schemars",

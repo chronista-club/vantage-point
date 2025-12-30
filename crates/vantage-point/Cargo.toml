@@ -77,4 +77,3 @@ mdns-sd = "0.17"
 # Hostname
 hostname = "0.4"
 libc = "0.2.178"
-pty-process = { version = "0.5.3", features = ["async"] }

@@ -23,10 +23,7 @@ use tower_http::cors::CorsLayer;
 
 use super::capabilities::{CapabilityConfig, StandCapabilities};
 use super::hub::Hub;
-use crate::agent::{
-    AgentConfig, AgentEvent, ClaudeAgent, InteractiveClaudeAgent, PtyClaudeAgent, PtyEvent,
-    PtyPermissionPrompt,
-};
+use crate::agent::{AgentConfig, AgentEvent, ClaudeAgent, InteractiveClaudeAgent};
 use crate::agui::{AgUiEvent, AgUiEventBridge, MessageRole};
 use crate::capability::{
     ConductorCapability, ProjectInfo, RunningStand, StandStatus, UpdateCapability,
@@ -389,8 +386,6 @@ struct AppState {
     conductor: Option<Arc<RwLock<ConductorCapability>>>,
     /// Update capability for version checking (optional, only for conductor mode)
     update: Option<Arc<RwLock<UpdateCapability>>>,
-    /// PTY-based Claude agent (persistent process for terminal mode)
-    pty_agent: Arc<RwLock<Option<PtyClaudeAgent>>>,
     /// Interactive Claude agent (stream-json mode for structured communication)
     interactive_agent: Arc<RwLock<Option<InteractiveClaudeAgent>>>,
 }
@@ -488,7 +483,6 @@ pub async fn run(
         capabilities,
         conductor: None, // Conductor mode is set via run_conductor()
         update: None,    // Update capability is only for conductor mode
-        pty_agent: Arc::new(RwLock::new(None)), // PTY agent (legacy)
         interactive_agent: Arc::new(RwLock::new(None)), // Interactive agent (stream-json mode)
     });
 
@@ -769,35 +763,6 @@ async fn handle_permission_response(
             request_id,
             if approved { "allow" } else { "deny" }
         );
-
-        // PTYモードのパーミッションリクエストの場合、PTYに応答を送信
-        if request_id.starts_with("pty-perm-") {
-            tracing::info!(">>> PTY permission request detected, sending response to PTY");
-            let pty_response = if approved { "y" } else { "n" };
-            let agent_guard = state.pty_agent.read().await;
-            tracing::debug!(
-                "PTY agent guard acquired, agent exists: {}",
-                agent_guard.is_some()
-            );
-            if let Some(ref agent) = *agent_guard {
-                tracing::info!(">>> Sending '{}' to PTY agent...", pty_response);
-                match agent.send(pty_response).await {
-                    Ok(_) => {
-                        tracing::info!(
-                            ">>> PTY permission response sent successfully: {}",
-                            pty_response
-                        );
-                    }
-                    Err(e) => {
-                        tracing::error!(">>> Failed to send PTY permission response: {}", e);
-                    }
-                }
-            } else {
-                tracing::warn!(">>> PTY agent not available for permission response");
-            }
-        } else {
-            tracing::debug!("Non-PTY permission request: {}", request_id);
-        }
 
         // Broadcast component dismissed
         state.hub.broadcast(StandMessage::ComponentDismissed {
@@ -1339,271 +1304,6 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
     }
 
     state.hub.client_disconnected().await;
-}
-
-/// Handle incoming chat message using PTY mode
-/// PTYモードでは永続的なClaudeプロセスを維持し、端末I/Oで対話
-async fn handle_chat_message_pty(
-    hub: &Hub,
-    sessions: &Arc<RwLock<SessionManager>>,
-    cancel_token: &CancellationToken,
-    debug_mode: DebugMode,
-    project_dir: &str,
-    pty_agent: &Arc<RwLock<Option<PtyClaudeAgent>>>,
-    pending_permissions: &Arc<RwLock<HashMap<String, PendingPermission>>>,
-    message: String,
-) {
-    let start_time = Instant::now();
-
-    // AG-UI: Generate run_id for this chat request
-    let run_id = format!("run-{}", uuid::Uuid::new_v4());
-    let _message_id = format!("msg-{}", uuid::Uuid::new_v4());
-
-    // AG-UI: Emit RunStarted event
-    hub.broadcast(StandMessage::AgUi {
-        event: AgUiEvent::run_started(&run_id),
-    });
-
-    // Save user message to history
-    sessions.write().await.add_message("user", message.clone());
-
-    // Get session info from manager
-    let (session_id, use_continue) = sessions.read().await.get_active_session();
-
-    // Initialize PTY agent if not already running
-    {
-        let mut agent_guard = pty_agent.write().await;
-        if agent_guard.is_none() {
-            tracing::info!("Initializing PTY Claude agent...");
-
-            let mut config = AgentConfig {
-                working_dir: Some(project_dir.to_string()),
-                use_continue,
-                ..Default::default()
-            };
-
-            if let Some(ref sid) = session_id {
-                config.session_id = Some(sid.clone());
-            }
-
-            let agent = PtyClaudeAgent::new(config);
-            if let Err(e) = agent.start().await {
-                tracing::error!("Failed to start PTY agent: {}", e);
-                hub.broadcast(StandMessage::ChatChunk {
-                    content: format!("Error: Failed to start Claude CLI: {}", e),
-                    done: true,
-                });
-                hub.broadcast(StandMessage::AgUi {
-                    event: AgUiEvent::run_error(&run_id, "PTY_START_FAILED", &e.to_string()),
-                });
-                return;
-            }
-
-            tracing::info!("PTY Claude agent started successfully");
-            if debug_mode != DebugMode::None {
-                hub.broadcast(StandMessage::DebugInfo {
-                    level: debug_mode,
-                    category: "pty".to_string(),
-                    message: "PTY Claude agent started".to_string(),
-                    data: None,
-                    tags: vec![],
-                });
-            }
-
-            *agent_guard = Some(agent);
-        }
-    }
-
-    // Send message to PTY agent
-    {
-        let agent_guard = pty_agent.read().await;
-        if let Some(ref agent) = *agent_guard {
-            if let Err(e) = agent.send(&message).await {
-                tracing::error!("Failed to send message to PTY: {}", e);
-                hub.broadcast(StandMessage::ChatChunk {
-                    content: format!("Error: {}", e),
-                    done: true,
-                });
-                return;
-            }
-            tracing::info!("Message sent to PTY agent");
-        }
-    }
-
-    // Start PTY output listener task
-    let hub_clone = hub.clone();
-    let pty_agent_clone = pty_agent.clone();
-    let pending_permissions_clone = pending_permissions.clone();
-    let sessions_clone = sessions.clone();
-    let run_id_clone = run_id.clone();
-    let cancel_token_clone = cancel_token.clone();
-    let debug_mode_clone = debug_mode;
-
-    tokio::spawn(async move {
-        let agent_guard = pty_agent_clone.read().await;
-        if let Some(ref agent) = *agent_guard {
-            let events_rx = agent.events();
-            let mut events = events_rx.lock().await;
-            let mut response_buffer = String::new();
-            let mut first_chunk = true;
-            let message_id = format!("msg-{}", uuid::Uuid::new_v4());
-
-            loop {
-                tokio::select! {
-                    _ = cancel_token_clone.cancelled() => {
-                        tracing::info!("PTY chat cancelled");
-                        break;
-                    }
-                    event = events.recv() => {
-                        match event {
-                            Some(PtyEvent::Output(output)) => {
-                                // Log PTY output via tracing (for log-collector)
-                                tracing::debug!(target: "pty_output", "{}", output);
-
-                                // Accumulate response
-                                response_buffer.push_str(&output);
-
-                                // Send to WebSocket
-                                hub_clone.broadcast(StandMessage::ChatChunk {
-                                    content: output.clone(),
-                                    done: false,
-                                });
-
-                                if first_chunk {
-                                    hub_clone.broadcast(StandMessage::AgUi {
-                                        event: AgUiEvent::text_message_start(
-                                            &run_id_clone,
-                                            &message_id,
-                                            MessageRole::Assistant,
-                                        ),
-                                    });
-                                    first_chunk = false;
-                                }
-
-                                hub_clone.broadcast(StandMessage::AgUi {
-                                    event: AgUiEvent::text_message_content(
-                                        &run_id_clone,
-                                        &message_id,
-                                        &output,
-                                    ),
-                                });
-                            }
-                            Some(PtyEvent::PermissionPrompt(prompt)) => {
-                                // PTY出力からパーミッションプロンプトを検出
-                                tracing::info!(
-                                    "PTY permission prompt detected: tool={}, desc={}",
-                                    prompt.tool_name,
-                                    prompt.description
-                                );
-
-                                // リクエストIDを生成
-                                let request_id = format!("pty-perm-{}", uuid::Uuid::new_v4());
-
-                                // PTYモードのinputを作成
-                                let pty_input = serde_json::json!({
-                                    "raw_prompt": prompt.raw_prompt,
-                                    "source": "pty"
-                                });
-
-                                // デバッグログ: パーミッションリクエスト検出
-                                if debug_mode_clone != DebugMode::None {
-                                    hub_clone.broadcast(StandMessage::DebugInfo {
-                                        level: debug_mode_clone,
-                                        category: "permission".to_string(),
-                                        message: format!(
-                                            "PTY permission detected: {} (id={})",
-                                            prompt.tool_name, request_id
-                                        ),
-                                        data: if debug_mode_clone == DebugMode::Detail {
-                                            Some(serde_json::json!({
-                                                "request_id": &request_id,
-                                                "tool_name": &prompt.tool_name,
-                                                "description": &prompt.description,
-                                            }))
-                                        } else {
-                                            None
-                                        },
-                                        tags: vec!["pty".to_string(), "permission".to_string(), "broadcast".to_string()],
-                                    });
-                                }
-
-                                // pending_permissionsに登録（original_inputを保存）
-                                pending_permissions_clone.write().await.insert(
-                                    request_id.clone(),
-                                    PendingPermission {
-                                        original_input: pty_input.clone(),
-                                        response: None,
-                                    },
-                                );
-
-                                // WebSocketにパーミッションリクエストを送信
-                                tracing::info!(">>> Broadcasting permission request to WebSocket: {}", request_id);
-                                hub_clone.broadcast(StandMessage::ChatComponent {
-                                    component: ChatComponent::PermissionRequest {
-                                        request_id: request_id.clone(),
-                                        tool_name: prompt.tool_name.clone(),
-                                        description: Some(prompt.description.clone()),
-                                        input: pty_input,
-                                        timeout_seconds: 60, // PTYモードでは長めに
-                                    },
-                                    interactive: true, // ユーザーの応答が必要
-                                });
-                                tracing::info!("<<< Broadcast completed: {}", request_id);
-
-                                // AG-UIイベントも送信
-                                hub_clone.broadcast(StandMessage::AgUi {
-                                    event: AgUiEvent::permission_request(
-                                        &run_id_clone,
-                                        &request_id,
-                                        "pty_permission",
-                                        serde_json::json!({
-                                            "source": "pty",
-                                            "description": "PTY permission request"
-                                        }),
-                                    ),
-                                });
-                            }
-                            Some(PtyEvent::Exited(code)) => {
-                                tracing::info!("PTY process exited with code: {}", code);
-
-                                // Save response to history
-                                if !response_buffer.is_empty() {
-                                    sessions_clone
-                                        .write()
-                                        .await
-                                        .add_message("assistant", response_buffer);
-                                }
-
-                                hub_clone.broadcast(StandMessage::ChatChunk {
-                                    content: String::new(),
-                                    done: true,
-                                });
-                                hub_clone.broadcast(StandMessage::AgUi {
-                                    event: AgUiEvent::run_finished(&run_id_clone),
-                                });
-                                break;
-                            }
-                            Some(PtyEvent::Error(err)) => {
-                                tracing::error!("PTY error: {}", err);
-                                hub_clone.broadcast(StandMessage::ChatChunk {
-                                    content: format!("\n[PTY Error: {}]", err),
-                                    done: true,
-                                });
-                                break;
-                            }
-                            None => {
-                                tracing::info!("PTY event channel closed");
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    });
-
-    let elapsed = start_time.elapsed();
-    tracing::info!("PTY message handling initiated in {:?}", elapsed);
 }
 
 /// Handle incoming chat message using Interactive mode (stream-json)
@@ -2797,7 +2497,6 @@ pub async fn run_conductor(port: u16) -> Result<()> {
         ),
         conductor: Some(conductor.clone()),
         update: Some(update.clone()),
-        pty_agent: Arc::new(RwLock::new(None)),
         interactive_agent: Arc::new(RwLock::new(None)),
     });
 

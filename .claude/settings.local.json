@@ -124,7 +124,9 @@
       "Bash(gtimeout 30 claude:*)",
       "Bash(# teeでstdout/stderrをキャプチャ\n\\(echo \"\"hello\"\"; sleep 2; echo \"\"/exit\"\"\\))",
       "mcp__serena__activate_project",
-      "mcp__serena__write_memory"
+      "mcp__serena__write_memory",
+      "mcp__creo-memories__remember",
+      "Bash(xargs -I {} sh -c 'lsof -p {} 2>/dev/null | grep -E \"\"txt|cwd\"\" | head -5')"
     ],
     "deny": [],
     "ask": []
