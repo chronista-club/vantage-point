@@ -691,11 +691,13 @@ fn main() -> Result<()> {
             midi,
         } => {
             // Resolve project directory
+            // Priority: --project-dir > project_index > cwd > config default
+            // 相対パスは絶対パスに変換される
             let resolved_project_dir = if let Some(ref dir) = project_dir {
-                // Explicit --project-dir takes precedence
-                dir.clone()
+                // 1. Explicit --project-dir takes precedence
+                Config::normalize_path(std::path::Path::new(dir))
             } else if let Some(idx) = project_index {
-                // Project index from config (convert 1-based to 0-based)
+                // 2. Project index from config (convert 1-based to 0-based)
                 if idx == 0 || idx > config.projects.len() {
                     eprintln!(
                         "✗ Invalid project index {}. Use `vp config` to list projects (1–{}).",
@@ -706,9 +708,9 @@ fn main() -> Result<()> {
                 }
                 let project = &config.projects[idx - 1];
                 println!("📁 Project: {} ({})", project.name, project.path);
-                project.path.clone()
+                Config::normalize_path(std::path::Path::new(&project.path))
             } else {
-                // Default: cwd
+                // 3. cwd > config default
                 Config::resolve_project_dir(None, &config)
             };
 

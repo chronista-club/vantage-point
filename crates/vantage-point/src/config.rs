@@ -96,27 +96,43 @@ impl Config {
     }
 
     /// Resolve project directory from various sources
-    /// Priority: CLI flag > env var > config default > cwd
+    /// Priority: CLI flag > cwd > config default
+    /// 相対パスは絶対パスに変換される
     pub fn resolve_project_dir(cli_project_dir: Option<&str>, config: &Config) -> String {
-        // 1. CLI flag
-        if let Some(dir) = cli_project_dir {
-            return dir.to_string();
-        }
+        let path = if let Some(dir) = cli_project_dir {
+            // 1. CLI flag (--project-dir)
+            std::path::PathBuf::from(dir)
+        } else if let Ok(cwd) = std::env::current_dir() {
+            // 2. Current working directory
+            cwd
+        } else if let Some(ref dir) = config.default_project_dir {
+            // 3. Config default（最終フォールバック）
+            std::path::PathBuf::from(dir)
+        } else {
+            // 4. どれも使えない場合は "."
+            std::path::PathBuf::from(".")
+        };
 
-        // 2. Environment variable
-        if let Ok(dir) = std::env::var("VANTAGE_PROJECT_DIR") {
-            return dir;
-        }
+        // 相対パスを絶対パスに変換
+        Self::normalize_path(&path)
+    }
 
-        // 3. Config default
-        if let Some(ref dir) = config.default_project_dir {
-            return dir.clone();
+    /// パスを正規化（相対パス→絶対パス変換）
+    pub fn normalize_path(path: &std::path::Path) -> String {
+        if path.is_absolute() {
+            // 絶対パスはそのまま正規化を試みる
+            path.canonicalize()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| path.display().to_string())
+        } else {
+            // 相対パスをcwdからの絶対パスに変換
+            std::env::current_dir()
+                .ok()
+                .map(|cwd| cwd.join(path))
+                .and_then(|p| p.canonicalize().ok())
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| path.display().to_string())
         }
-
-        // 4. Current working directory
-        std::env::current_dir()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|_| ".".to_string())
     }
 }
 

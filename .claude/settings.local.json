@@ -136,7 +136,15 @@
       "mcp__creo-memories__recall",
       "Bash(./target/release/vp ps:*)",
       "Bash(git log:*)",
-      "Bash(vp app:*)"
+      "Bash(vp app:*)",
+      "mcp__mermaid-validator__validateMermaid",
+      "mcp__creo-memories__list",
+      "mcp__creo-memories__forget",
+      "Bash(git check-ignore:*)",
+      "Bash(echo:*)",
+      "Bash(gh run list:*)",
+      "Bash(gh run view:*)",
+      "WebFetch(domain:developers.googleblog.com)"
     ],
     "deny": [],
     "ask": []
