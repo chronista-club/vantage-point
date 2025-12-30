@@ -35,8 +35,8 @@ use crate::capability::{
 use crate::config::RunningStands;
 use crate::mcp::PermissionResponse;
 use crate::protocol::{
-    BrowserMessage, ChatComponent, ChatMessage, ChatRole, ComponentAction, DebugMode,
-    HistoryMessage, SessionInfo, StandMessage,
+    BrowserMessage, ChatComponent, ChatMessage, ChatRole, ClaudeAgUiAdapter, ComponentAction,
+    DebugMode, HistoryMessage, SessionInfo, StandMessage,
 };
 use std::collections::HashMap;
 
@@ -1863,9 +1863,9 @@ async fn handle_chat_message(
 ) {
     let start_time = Instant::now();
 
-    // AG-UI: Generate run_id for this chat request (REQ-AGUI-040)
+    // AG-UI: アダプターでイベント変換を管理 (REQ-AGUI-040)
     let run_id = format!("run-{}", uuid::Uuid::new_v4());
-    let message_id = format!("msg-{}", uuid::Uuid::new_v4());
+    let mut agui_adapter = ClaudeAgUiAdapter::with_run_id(&run_id);
 
     // AG-UI: Emit RunStarted event
     hub.broadcast(StandMessage::AgUi {
@@ -2001,11 +2001,10 @@ async fn handle_chat_message(
                     Some(AgentEvent::ToolExecuting { name }) => {
                         tracing::info!("Tool executing: {}", name);
 
-                        // AG-UI: Emit ToolCallStart (REQ-AGUI-040)
-                        let tool_call_id = format!("tool-{}", uuid::Uuid::new_v4());
-                        hub.broadcast(StandMessage::AgUi {
-                            event: AgUiEvent::tool_call_start(&run_id, &tool_call_id, &name),
-                        });
+                        // AG-UI: アダプターでToolCallStart変換 (tool_call_id自動追跡)
+                        for agui_event in agui_adapter.convert(AgentEvent::ToolExecuting { name: name.clone() }) {
+                            hub.broadcast(StandMessage::AgUi { event: agui_event });
+                        }
 
                         if debug_mode != DebugMode::None {
                             hub.broadcast(StandMessage::DebugInfo {
@@ -2013,27 +2012,17 @@ async fn handle_chat_message(
                                 category: "tool".to_string(),
                                 message: format!("🔧 {} を実行中...", name),
                                 data: None,
-                        tags: vec![],
+                                tags: vec![],
                             });
                         }
                     }
                     Some(AgentEvent::ToolResult { name, preview }) => {
                         tracing::info!("Tool result: {} - {}", name, preview);
 
-                        // AG-UI: Emit ToolCallEnd (simplified - no tool_call_id tracking yet)
-                        // TODO: Proper tool_call_id tracking across ToolExecuting and ToolResult
-                        hub.broadcast(StandMessage::AgUi {
-                            event: AgUiEvent::ToolCallEnd {
-                                run_id: run_id.clone(),
-                                tool_call_id: format!("tool-{}", name), // Simplified ID
-                                result: Some(serde_json::json!({ "preview": preview })),
-                                error: None,
-                                timestamp: std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .unwrap_or_default()
-                                    .as_millis() as u64,
-                            },
-                        });
+                        // AG-UI: アダプターでToolCallEnd変換 (tool_call_id自動追跡)
+                        for agui_event in agui_adapter.convert(AgentEvent::ToolResult { name: name.clone(), preview: preview.clone() }) {
+                            hub.broadcast(StandMessage::AgUi { event: agui_event });
+                        }
 
                         if debug_mode == DebugMode::Detail {
                             hub.broadcast(StandMessage::DebugInfo {
@@ -2041,7 +2030,7 @@ async fn handle_chat_message(
                                 category: "tool".to_string(),
                                 message: format!("✓ {}: {}", name, preview),
                                 data: None,
-                        tags: vec![],
+                                tags: vec![],
                             });
                         }
                     }
@@ -2051,20 +2040,15 @@ async fn handle_chat_message(
                         // Accumulate response for history
                         response_buffer.push_str(&chunk);
 
-                        // Send streaming chunk
+                        // Send streaming chunk (legacy UI)
                         hub.broadcast(StandMessage::ChatChunk {
                             content: chunk.clone(),
                             done: false,
                         });
 
+                        // Debug: first chunk timing
                         if first_chunk {
                             tracing::info!("Started receiving response from Claude CLI");
-
-                            // AG-UI: Emit TextMessageStart on first chunk (REQ-AGUI-040)
-                            hub.broadcast(StandMessage::AgUi {
-                                event: AgUiEvent::text_message_start(&run_id, &message_id, MessageRole::Assistant),
-                            });
-
                             if debug_mode != DebugMode::None {
                                 let elapsed = start_time.elapsed();
                                 hub.broadcast(StandMessage::DebugInfo {
@@ -2072,16 +2056,16 @@ async fn handle_chat_message(
                                     category: "timing".to_string(),
                                     message: format!("First chunk in {:?}", elapsed),
                                     data: None,
-                        tags: vec![],
+                                    tags: vec![],
                                 });
                             }
                             first_chunk = false;
                         }
 
-                        // AG-UI: Emit TextMessageContent for each chunk (REQ-AGUI-040)
-                        hub.broadcast(StandMessage::AgUi {
-                            event: AgUiEvent::text_message_content(&run_id, &message_id, &chunk),
-                        });
+                        // AG-UI: アダプターでTextMessageStart/Content変換
+                        for agui_event in agui_adapter.convert(AgentEvent::TextChunk(chunk.clone())) {
+                            hub.broadcast(StandMessage::AgUi { event: agui_event });
+                        }
 
                         // Detailed debug: show each chunk
                         if debug_mode == DebugMode::Detail {
@@ -2101,7 +2085,7 @@ async fn handle_chat_message(
                             });
                         }
                     }
-                    Some(AgentEvent::Done { result: _, cost }) => {
+                    Some(AgentEvent::Done { result, cost }) => {
                         let elapsed = start_time.elapsed();
                         tracing::info!("Claude CLI response complete, cost: {:?}", cost);
 
@@ -2113,20 +2097,12 @@ async fn handle_chat_message(
                                 .add_message("assistant", response_buffer.clone());
                         }
 
-                        // AG-UI: Emit TextMessageEnd (REQ-AGUI-040)
-                        if !first_chunk {
-                            // Only emit if we actually started a message
-                            hub.broadcast(StandMessage::AgUi {
-                                event: AgUiEvent::text_message_end(&run_id, &message_id),
-                            });
+                        // AG-UI: アダプターでTextMessageEnd + RunFinished変換
+                        for agui_event in agui_adapter.convert(AgentEvent::Done { result, cost }) {
+                            hub.broadcast(StandMessage::AgUi { event: agui_event });
                         }
 
-                        // AG-UI: Emit RunFinished (REQ-AGUI-040)
-                        hub.broadcast(StandMessage::AgUi {
-                            event: AgUiEvent::run_finished(&run_id),
-                        });
-
-                        // Send final done signal
+                        // Send final done signal (legacy UI)
                         hub.broadcast(StandMessage::ChatChunk {
                             content: String::new(),
                             done: true,
@@ -2141,7 +2117,7 @@ async fn handle_chat_message(
                                 category: "timing".to_string(),
                                 message: format!("Complete in {:?} ({} chunks){}", elapsed, chunk_count, cost_str),
                                 data: None,
-                        tags: vec![],
+                                tags: vec![],
                             });
                         }
                         break;
@@ -2149,12 +2125,12 @@ async fn handle_chat_message(
                     Some(AgentEvent::Error(e)) => {
                         tracing::error!("Claude CLI error: {}", e);
 
-                        // AG-UI: Emit RunError (REQ-AGUI-040)
-                        hub.broadcast(StandMessage::AgUi {
-                            event: AgUiEvent::run_error(&run_id, "AGENT_ERROR", &e),
-                        });
+                        // AG-UI: アダプターでRunError変換
+                        for agui_event in agui_adapter.convert(AgentEvent::Error(e.clone())) {
+                            hub.broadcast(StandMessage::AgUi { event: agui_event });
+                        }
 
-                        // Send error as a chat message
+                        // Send error as a chat message (legacy UI)
                         let error_msg = ChatMessage {
                             role: ChatRole::System,
                             content: format!("Error: {}", e),
@@ -2167,7 +2143,7 @@ async fn handle_chat_message(
                                 category: "error".to_string(),
                                 message: e.clone(),
                                 data: None,
-                        tags: vec![],
+                                tags: vec![],
                             });
                         }
                         break;

@@ -15,6 +15,7 @@
 //! - REQ-PROTO-004: EventBus連携
 
 pub mod acp;
+pub mod agui_adapter;
 pub mod messages;
 pub mod vantage;
 
@@ -37,6 +38,8 @@ pub use messages::{
 pub use vantage::{
     CapabilityStateInfo, MidiControlChange, MidiEventType, MidiNote, SynergyTypeInfo, VantageEvent,
 };
+
+pub use agui_adapter::ClaudeAgUiAdapter;
 
 use crate::agui::AgUiEvent;
 use serde::{Deserialize, Serialize};
