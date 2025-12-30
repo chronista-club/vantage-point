@@ -42,6 +42,7 @@
 //! - <https://code.claude.com/docs/en/headless.md>
 //! - <https://code.claude.com/docs/en/cli-reference.md>
 
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -64,10 +65,30 @@ pub enum AgentEvent {
     ToolExecuting { name: String },
     /// ツール実行完了
     ToolResult { name: String, preview: String },
+    /// ユーザー入力リクエスト（AskUserQuestion等）
+    /// UIでユーザーに質問を表示し、回答をAgentに返す必要がある
+    UserInputRequest {
+        /// リクエストID（レスポンス時に使用）
+        request_id: String,
+        /// リクエストタイプ
+        request_type: Option<String>,
+        /// 質問内容
+        prompt: Option<String>,
+        /// 選択肢
+        options: Vec<UserInputOptionInfo>,
+    },
     /// ストリーム完了（最終結果付き）
     Done { result: String, cost: Option<f64> },
     /// エラー発生
     Error(String),
+}
+
+/// ユーザー入力の選択肢情報
+#[derive(Debug, Clone)]
+pub struct UserInputOptionInfo {
+    pub value: String,
+    pub label: Option<String>,
+    pub description: Option<String>,
 }
 
 /// エージェント実行モード
@@ -160,6 +181,24 @@ pub struct AgentConfig {
     // === 予算 & 制限 ===
     /// APIコール最大金額 (--max-budget-usd, printモードのみ)
     pub max_budget_usd: Option<f64>,
+
+    // === 入出力フォーマット ===
+    /// 入力フォーマット (--input-format): "stream-json" で双方向通信
+    /// AskUserQuestionなどのインタラクティブツールに対応するために使用
+    pub input_format: Option<String>,
+    /// 部分メッセージを含める (--include-partial-messages)
+    /// ストリーミング中の部分的な応答も受信
+    pub include_partial_messages: bool,
+
+    // === モデル設定 ===
+    /// フォールバックモデル (--fallback-model)
+    /// 主モデルが利用不可の場合に使用
+    pub fallback_model: Option<String>,
+
+    // === 追加ディレクトリ ===
+    /// 追加読み取りディレクトリ (--add-dir)
+    /// 複数指定可能
+    pub add_dirs: Vec<String>,
 
     // === 出力制御 ===
     /// 詳細出力を有効化 (--verbose)
@@ -255,6 +294,35 @@ enum ClaudeMessage {
         #[serde(default)]
         total_cost_usd: Option<f64>,
     },
+    /// ユーザー入力リクエスト（AskUserQuestion等）
+    /// --input-format stream-json 使用時にClaudeが入力を求める
+    #[serde(rename = "user_input_request")]
+    UserInputRequest {
+        /// リクエストID（レスポンス時に使用）
+        request_id: String,
+        /// リクエストタイプ（"question", "confirmation" 等）
+        #[serde(default)]
+        request_type: Option<String>,
+        /// 質問/プロンプト内容
+        #[serde(default)]
+        prompt: Option<String>,
+        /// 選択肢（選択式の場合）
+        #[serde(default)]
+        options: Option<Vec<UserInputOption>>,
+    },
+}
+
+/// ユーザー入力リクエストの選択肢
+#[derive(Debug, serde::Deserialize)]
+pub struct UserInputOption {
+    /// 選択肢のID/値
+    pub value: String,
+    /// 表示ラベル
+    #[serde(default)]
+    pub label: Option<String>,
+    /// 説明
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
 /// Claude CLIからのMCPサーバー情報
@@ -365,13 +433,102 @@ fn apply_cli_args(cmd: &mut Command, config: &AgentConfig) {
         cmd.arg("--max-budget-usd").arg(budget.to_string());
     }
 
+    // === 入出力フォーマット ===
+    if let Some(ref format) = config.input_format {
+        cmd.arg("--input-format").arg(format);
+    }
+
+    if config.include_partial_messages {
+        cmd.arg("--include-partial-messages");
+    }
+
+    // === フォールバックモデル ===
+    if let Some(ref model) = config.fallback_model {
+        cmd.arg("--fallback-model").arg(model);
+    }
+
+    // === 追加ディレクトリ ===
+    for dir in &config.add_dirs {
+        cmd.arg("--add-dir").arg(dir);
+    }
+
     // === 作業ディレクトリ ===
     if let Some(ref dir) = config.working_dir {
         cmd.current_dir(dir);
     }
 }
 
+// =============================================================================
+// セッションID取得
+// =============================================================================
+
+/// ~/.claude.json からプロジェクトのセッションIDを取得
+///
+/// Claude CLIは各プロジェクトのセッションIDを ~/.claude.json に保存する。
+/// この関数はプロジェクトパスに対応するセッションIDを検索する。
+///
+/// # 戻り値
+/// - `Some(session_id)` - セッションが見つかった場合
+/// - `None` - セッションが見つからない、またはファイルが存在しない場合
+pub fn get_session_id_for_project(project_path: impl AsRef<Path>) -> Option<String> {
+    let claude_config_path = get_claude_config_path()?;
+    let project_path = project_path.as_ref();
+
+    // ~/.claude.json を読み込み
+    let content = std::fs::read_to_string(&claude_config_path).ok()?;
+    let config: serde_json::Value = serde_json::from_str(&content).ok()?;
+
+    // projects配列からプロジェクトパスに一致するエントリを検索
+    let projects = config.get("projects")?.as_array()?;
+
+    for project in projects {
+        let path = project.get("path")?.as_str()?;
+
+        // パスが一致するか確認（正規化して比較）
+        let config_path = PathBuf::from(path);
+        if paths_match(&config_path, project_path) {
+            // セッションIDを取得
+            if let Some(session_id) = project.get("sessionId").and_then(|s| s.as_str()) {
+                if !session_id.is_empty() {
+                    tracing::debug!(
+                        "プロジェクト {:?} のセッションID発見: {}",
+                        project_path,
+                        session_id
+                    );
+                    return Some(session_id.to_string());
+                }
+            }
+        }
+    }
+
+    tracing::debug!(
+        "プロジェクト {:?} のセッションIDが見つかりません",
+        project_path
+    );
+    None
+}
+
+/// ~/.claude.json のパスを取得
+fn get_claude_config_path() -> Option<PathBuf> {
+    dirs::home_dir().map(|h| h.join(".claude.json"))
+}
+
+/// 2つのパスが同じディレクトリを指すか確認
+fn paths_match(path1: &Path, path2: &Path) -> bool {
+    // 両方を正規化して比較
+    match (path1.canonicalize(), path2.canonicalize()) {
+        (Ok(p1), Ok(p2)) => p1 == p2,
+        _ => {
+            // 正規化に失敗した場合は文字列比較
+            path1.to_string_lossy() == path2.to_string_lossy()
+        }
+    }
+}
+
 /// claude CLIをstream-json出力で実行しレスポンスを解析 (OneShotモード)
+///
+/// `config.input_format` が "stream-json" の場合、双方向通信モードで動作。
+/// AskUserQuestion などのインタラクティブツールに対応可能。
 async fn run_claude_cli(
     prompt: &str,
     config: &AgentConfig,
@@ -385,13 +542,19 @@ async fn run_claude_cli(
     // stream-jsonにはverboseが必須
     cmd.arg("--verbose");
 
-    // 共通CLIオプションを適用
+    // 共通CLIオプションを適用（input-format含む）
     apply_cli_args(&mut cmd, config);
 
     // プロンプトを追加（最後の位置引数である必要あり）
     cmd.arg(prompt);
 
+    // 双方向通信モードかどうか
+    let bidirectional = config.input_format.as_deref() == Some("stream-json");
+
     // stdioを設定
+    if bidirectional {
+        cmd.stdin(Stdio::piped());
+    }
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
 
@@ -491,6 +654,36 @@ async fn run_claude_cli(
                                 ContentBlock::ToolResult { .. } | ContentBlock::Other => {}
                             }
                         }
+                    }
+                    ClaudeMessage::UserInputRequest {
+                        request_id,
+                        request_type,
+                        prompt,
+                        options,
+                    } => {
+                        // ユーザー入力リクエストをイベントとして送信
+                        tracing::info!(
+                            "ユーザー入力リクエスト: request_id={}, type={:?}",
+                            request_id,
+                            request_type
+                        );
+                        let options_info = options
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|o| UserInputOptionInfo {
+                                value: o.value,
+                                label: o.label,
+                                description: o.description,
+                            })
+                            .collect();
+                        let _ = tx_stdout
+                            .send(AgentEvent::UserInputRequest {
+                                request_id,
+                                request_type,
+                                prompt,
+                                options: options_info,
+                            })
+                            .await;
                     }
                     ClaudeMessage::Result {
                         result,
@@ -738,6 +931,31 @@ impl InteractiveClaudeAgent {
                                     ContentBlock::ToolResult { .. } | ContentBlock::Other => {}
                                 }
                             }
+                        }
+                        ClaudeMessage::UserInputRequest {
+                            request_id,
+                            request_type,
+                            prompt,
+                            options,
+                        } => {
+                            // ユーザー入力リクエストを転送
+                            let options_info = options
+                                .unwrap_or_default()
+                                .into_iter()
+                                .map(|o| UserInputOptionInfo {
+                                    value: o.value,
+                                    label: o.label,
+                                    description: o.description,
+                                })
+                                .collect();
+                            let _ = tx
+                                .send(AgentEvent::UserInputRequest {
+                                    request_id,
+                                    request_type,
+                                    prompt,
+                                    options: options_info,
+                                })
+                                .await;
                         }
                         ClaudeMessage::Result {
                             result,

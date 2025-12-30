@@ -1575,6 +1575,62 @@ async fn handle_chat_message(
                         }
                         break;
                     }
+                    Some(AgentEvent::UserInputRequest { request_id, request_type, prompt, options }) => {
+                        // ユーザー入力リクエストをUIコンポーネントとして送信
+                        tracing::info!(
+                            "User input request: request_id={}, type={:?}",
+                            request_id, request_type
+                        );
+
+                        // AG-UI: UserInputRequestイベントを変換
+                        for agui_event in agui_adapter.convert(AgentEvent::UserInputRequest {
+                            request_id: request_id.clone(),
+                            request_type: request_type.clone(),
+                            prompt: prompt.clone(),
+                            options: options.clone(),
+                        }) {
+                            hub.broadcast(StandMessage::AgUi { event: agui_event });
+                        }
+
+                        // UIコンポーネントとしても送信（選択式の場合）
+                        let choices: Vec<crate::protocol::Choice> = options.iter().map(|o| {
+                            crate::protocol::Choice {
+                                id: o.value.clone(),
+                                label: o.label.clone().unwrap_or_else(|| o.value.clone()),
+                                description: o.description.clone(),
+                            }
+                        }).collect();
+
+                        // デバッグ用にpromptを事前にclone
+                        let prompt_for_debug = prompt.clone();
+                        let prompt_text = prompt.unwrap_or_else(|| "Please select an option".to_string());
+
+                        if !choices.is_empty() {
+                            hub.broadcast(StandMessage::ChatComponent {
+                                component: crate::protocol::ChatComponent::ChoiceButtons {
+                                    request_id: request_id.clone(),
+                                    prompt: prompt_text,
+                                    choices,
+                                    allow_multiple: false,
+                                },
+                                interactive: true,
+                            });
+                        }
+
+                        if debug_mode != DebugMode::None {
+                            hub.broadcast(StandMessage::DebugInfo {
+                                level: debug_mode,
+                                category: "input_request".to_string(),
+                                message: format!("User input requested: {:?}", request_type),
+                                data: Some(serde_json::json!({
+                                    "request_id": request_id,
+                                    "request_type": request_type,
+                                    "prompt": prompt_for_debug,
+                                })),
+                                tags: vec!["interactive".to_string()],
+                            });
+                        }
+                    }
                     None => break,
                 }
             }

@@ -89,7 +89,43 @@ impl ClaudeAgUiAdapter {
             AgentEvent::Done { result: _, cost: _ } => self.handle_done(),
 
             AgentEvent::Error(message) => self.handle_error(message),
+
+            AgentEvent::UserInputRequest {
+                request_id,
+                request_type,
+                prompt,
+                options,
+            } => self.handle_user_input_request(request_id, request_type, prompt, options),
         }
+    }
+
+    /// ユーザー入力リクエストを処理
+    fn handle_user_input_request(
+        &mut self,
+        request_id: String,
+        request_type: Option<String>,
+        prompt: Option<String>,
+        options: Vec<crate::agent::UserInputOptionInfo>,
+    ) -> Vec<AgUiEvent> {
+        let run_id = self.run_id.clone().unwrap_or_else(|| "unknown".to_string());
+
+        // AG-UIには直接対応するイベントがないため、カスタムイベントとして送信
+        // 将来的にはAG-UI仕様にuser_input_requestが追加される可能性あり
+        vec![AgUiEvent::Custom {
+            run_id,
+            name: "user_input_request".to_string(),
+            data: serde_json::json!({
+                "request_id": request_id,
+                "request_type": request_type,
+                "prompt": prompt,
+                "options": options.iter().map(|o| serde_json::json!({
+                    "value": o.value,
+                    "label": o.label,
+                    "description": o.description,
+                })).collect::<Vec<_>>(),
+            }),
+            timestamp: now_millis(),
+        }]
     }
 
     /// セッション初期化を処理

@@ -315,6 +315,25 @@ fn agent_event_to_capability_event(event: &AgentEvent, run_id: &str) -> Capabili
                 "run_id": run_id,
                 "error": msg,
             })),
+
+        AgentEvent::UserInputRequest {
+            request_id,
+            request_type,
+            prompt,
+            options,
+        } => CapabilityEvent::new("agent.user_input_request", "agent-capability").with_payload(
+            &serde_json::json!({
+                "run_id": run_id,
+                "request_id": request_id,
+                "request_type": request_type,
+                "prompt": prompt,
+                "options": options.iter().map(|o| serde_json::json!({
+                    "value": o.value,
+                    "label": o.label,
+                    "description": o.description,
+                })).collect::<Vec<_>>(),
+            }),
+        ),
     }
 }
 
