@@ -814,6 +814,63 @@ impl StreamInputMessage {
     }
 }
 
+/// stream-json入力用 user_input_result メッセージ
+///
+/// Claude CLI がパーミッション確認などで user_input_request を送信した際の応答
+/// 形式: `{"type":"user_input_result","request_id":"...","result":{"type":"confirmation","confirmed":true}}`
+#[derive(Debug, serde::Serialize)]
+struct UserInputResultMessage {
+    #[serde(rename = "type")]
+    msg_type: String,
+    request_id: String,
+    result: UserInputResultPayload,
+}
+
+/// user_input_result のペイロード
+#[derive(Debug, serde::Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum UserInputResultPayload {
+    /// 確認ダイアログへの応答
+    Confirmation { confirmed: bool },
+    /// テキスト入力への応答
+    Text { value: String },
+    /// 選択への応答
+    Selection { selected: Vec<String> },
+}
+
+impl UserInputResultMessage {
+    /// 確認応答（許可/拒否）を作成
+    fn confirmation(request_id: &str, confirmed: bool) -> Self {
+        Self {
+            msg_type: "user_input_result".to_string(),
+            request_id: request_id.to_string(),
+            result: UserInputResultPayload::Confirmation { confirmed },
+        }
+    }
+
+    /// テキスト入力応答を作成
+    #[allow(dead_code)]
+    fn text(request_id: &str, value: &str) -> Self {
+        Self {
+            msg_type: "user_input_result".to_string(),
+            request_id: request_id.to_string(),
+            result: UserInputResultPayload::Text {
+                value: value.to_string(),
+            },
+        }
+    }
+
+    /// 選択応答を作成
+    #[allow(dead_code)]
+    fn selection(request_id: &str, selected: Vec<String>) -> Self {
+        Self {
+            msg_type: "user_input_result".to_string(),
+            request_id: request_id.to_string(),
+            result: UserInputResultPayload::Selection { selected },
+        }
+    }
+}
+
 /// インタラクティブプロセスの内部状態
 struct InteractiveProcess {
     child: Child,
@@ -1068,6 +1125,33 @@ impl InteractiveClaudeAgent {
         if let Some(mut process) = process_guard.take() {
             process.child.kill().await?;
         }
+        Ok(())
+    }
+
+    /// ユーザー入力リクエストへの確認応答を送信
+    ///
+    /// Claude CLIが `user_input_request` で確認を求めた場合に使用。
+    /// `confirmed: true` で許可、`false` で拒否。
+    pub async fn send_user_input_result(
+        &self,
+        request_id: &str,
+        confirmed: bool,
+    ) -> anyhow::Result<()> {
+        let mut process_guard = self.process.lock().await;
+        let process = process_guard
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("プロセス未起動。先にstart()を呼び出してください。"))?;
+
+        let input = UserInputResultMessage::confirmation(request_id, confirmed);
+        let json = serde_json::to_string(&input)?;
+
+        tracing::info!("user_input_result送信: {} -> confirmed={}", request_id, confirmed);
+        tracing::debug!("JSON: {}", json);
+
+        process.stdin.write_all(json.as_bytes()).await?;
+        process.stdin.write_all(b"\n").await?;
+        process.stdin.flush().await?;
+
         Ok(())
     }
 }

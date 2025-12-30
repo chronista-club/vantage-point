@@ -1013,11 +1013,14 @@ async fn handle_user_prompt_response(
             _ => crate::agui::UserPromptOutcome::Timeout,
         };
 
+        // Clone request_id before moving it
+        let request_id_for_agent = request_id.clone();
+
         state.hub.broadcast(StandMessage::AgUi {
             event: AgUiEvent::UserPromptResponse {
                 run_id: String::new(), // Will be set by the client
                 request_id,
-                outcome: agui_outcome,
+                outcome: agui_outcome.clone(),
                 message: entry.response.as_ref().and_then(|r| r.message.clone()),
                 selected_options: entry
                     .response
@@ -1029,6 +1032,26 @@ async fn handle_user_prompt_response(
                     .as_millis() as u64,
             },
         });
+
+        // Release pending lock before sending to agent
+        drop(pending);
+
+        // Send user_input_result to Interactive Claude agent
+        let confirmed = matches!(agui_outcome, crate::agui::UserPromptOutcome::Approved);
+        let agent_guard = state.interactive_agent.read().await;
+        if let Some(ref agent) = *agent_guard {
+            if let Err(e) = agent.send_user_input_result(&request_id_for_agent, confirmed).await {
+                tracing::error!("Failed to send user_input_result to agent: {}", e);
+            } else {
+                tracing::info!(
+                    "user_input_result sent: {} -> {}",
+                    request_id_for_agent,
+                    if confirmed { "approved" } else { "rejected" }
+                );
+            }
+        } else {
+            tracing::warn!("No Interactive agent running, cannot send user_input_result");
+        }
     } else {
         tracing::warn!("User prompt response for unknown request: {}", request_id);
     }
@@ -1122,13 +1145,15 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                                 let new_token = CancellationToken::new();
                                 *cancel_token.write().await = new_token.clone();
 
-                                // Use OneShot mode (claude -p) for chat
-                                handle_chat_message(
+                                // Use Interactive mode (stream-json) for bidirectional communication
+                                // これにより user_input_result を送信可能
+                                handle_chat_message_interactive(
                                     &hub,
                                     &sessions,
                                     &new_token,
                                     debug_mode,
                                     &state_clone.project_dir,
+                                    &state_clone.interactive_agent,
                                     message,
                                 )
                                 .await;
@@ -1919,9 +1944,11 @@ async fn handle_chat_message(
     let (session_id, use_continue) = sessions.read().await.get_active_session();
 
     // Create agent config with project directory
+    // input_format: stream-json で双方向通信を有効化し、user_input_result を送信可能に
     let mut config = AgentConfig {
         working_dir: Some(project_dir.to_string()),
         use_continue,
+        input_format: Some("stream-json".to_string()),
         ..Default::default()
     };
 
