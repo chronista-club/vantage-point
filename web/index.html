@@ -965,6 +965,11 @@
         const MAX_RECONNECT_DELAY = 30000;
         let isStreaming = false;
         let currentStreamContent = '';
+
+        // AG-UI state tracking
+        let agUiMessages = new Map(); // message_id → { role, content }
+        let agUiCurrentRunId = null;
+        let agUiActivities = new Map(); // activity_id → activity
         let debugMode = 'none';
         let isComposing = false;
         let justFinishedComposing = false;
@@ -1250,16 +1255,148 @@
         function handleAgUiEvent(event) {
             console.log('AG-UI Event:', event.type, event);
             switch (event.type) {
-                case 'USER_PROMPT':
-                    renderUserPrompt(event, true);
+                // === Lifecycle Events ===
+                case 'RUN_STARTED':
+                    agUiCurrentRunId = event.run_id;
+                    addDebugEntry('lifecycle', `Run started: ${event.run_id}`, 'running');
+                    showTypingIndicator();
                     break;
+
+                case 'RUN_FINISHED':
+                    addDebugEntry('lifecycle', `Run finished: ${event.run_id}`, 'done');
+                    hideTypingIndicator();
+                    agUiCurrentRunId = null;
+                    agUiMessages.clear();
+                    break;
+
+                case 'RUN_ERROR':
+                    addDebugEntry('lifecycle', `Run error: ${event.error?.message || 'Unknown error'}`, 'error');
+                    hideTypingIndicator();
+                    if (event.error?.message) {
+                        addToHistory('assistant', `⚠️ Error: ${event.error.message}`);
+                    }
+                    agUiCurrentRunId = null;
+                    break;
+
+                // === Text Message Events ===
+                case 'TEXT_MESSAGE_START':
+                    agUiMessages.set(event.message_id, { role: event.role, content: '' });
+                    if (event.role === 'assistant') {
+                        // Start streaming display
+                        if (!isStreaming) {
+                            isStreaming = true;
+                            currentStreamContent = '';
+                            chatCancelBtn.classList.add('visible');
+                            currentResponse.classList.remove('empty');
+                            updateContextModeFromState();
+                        }
+                    }
+                    addDebugEntry('message', `Message start: ${event.message_id} (${event.role})`, 'running');
+                    break;
+
+                case 'TEXT_MESSAGE_CONTENT':
+                    const msg = agUiMessages.get(event.message_id);
+                    if (msg) {
+                        msg.content += event.delta;
+                        if (msg.role === 'assistant') {
+                            currentStreamContent += event.delta;
+                            currentResponseContent.innerHTML = marked.parse(currentStreamContent);
+                        }
+                    }
+                    break;
+
+                case 'TEXT_MESSAGE_END':
+                    const endMsg = agUiMessages.get(event.message_id);
+                    if (endMsg && endMsg.role === 'assistant' && currentStreamContent) {
+                        // Move to history
+                        addToHistory('assistant', currentStreamContent);
+                        // Clear response area
+                        currentResponse.classList.add('exiting');
+                        setTimeout(() => {
+                            currentResponse.classList.add('empty');
+                            currentResponse.classList.remove('exiting');
+                            currentResponseContent.innerHTML = '';
+                        }, 200);
+                        isStreaming = false;
+                        currentStreamContent = '';
+                        chatCancelBtn.classList.remove('visible');
+                        updateContextModeFromState();
+                    }
+                    agUiMessages.delete(event.message_id);
+                    addDebugEntry('message', `Message end: ${event.message_id}`, 'done');
+                    break;
+
+                // === Tool Call Events ===
                 case 'TOOL_CALL_START':
                     addDebugEntry('tool', `Tool: ${event.tool_name}`, 'running');
                     break;
+
                 case 'TOOL_CALL_END':
-                    addDebugEntry('tool', `Tool completed: ${event.tool_call_id}`, 'done');
+                    const status = event.error ? 'error' : 'done';
+                    const result = event.error || (event.result ? JSON.stringify(event.result).substring(0, 100) : 'OK');
+                    addDebugEntry('tool', `Tool ${event.tool_call_id}: ${result}`, status);
                     break;
+
+                // === User Prompt Events ===
+                case 'USER_PROMPT':
+                    renderUserPrompt(event, true);
+                    break;
+
+                // === Activity Events ===
+                case 'ACTIVITY_SNAPSHOT':
+                    agUiActivities.clear();
+                    if (event.activities) {
+                        event.activities.forEach(a => agUiActivities.set(a.id, a));
+                    }
+                    renderActivities();
+                    break;
+
+                case 'ACTIVITY_DELTA':
+                    if (event.upsert) {
+                        event.upsert.forEach(a => agUiActivities.set(a.id, a));
+                    }
+                    if (event.remove) {
+                        event.remove.forEach(id => agUiActivities.delete(id));
+                    }
+                    renderActivities();
+                    break;
+
+                // === State Sync Events ===
+                case 'STATE_SNAPSHOT':
+                    addDebugEntry('state', 'State snapshot received', 'info');
+                    break;
+
+                case 'STATE_DELTA':
+                    addDebugEntry('state', `State delta: ${event.delta?.length || 0} ops`, 'info');
+                    break;
+
+                // === Custom Events ===
+                case 'CUSTOM':
+                    addDebugEntry('custom', `${event.name}: ${JSON.stringify(event.data).substring(0, 50)}`, 'info');
+                    break;
+
+                default:
+                    addDebugEntry('agui', `Unknown event: ${event.type}`, 'info');
             }
+        }
+
+        // Render activity list in debug panel
+        function renderActivities() {
+            if (agUiActivities.size === 0) return;
+
+            const activities = Array.from(agUiActivities.values());
+            activities.forEach(a => {
+                const statusEmoji = {
+                    'pending': '⏳',
+                    'running': '🔄',
+                    'completed': '✅',
+                    'error': '❌',
+                    'cancelled': '🚫'
+                }[a.status] || '❓';
+
+                const progress = a.progress ? ` (${a.progress.current}/${a.progress.total})` : '';
+                addDebugEntry('activity', `${statusEmoji} ${a.label}${progress}`, a.status);
+            });
         }
 
         function addDebugEntry(category, message, status) {
