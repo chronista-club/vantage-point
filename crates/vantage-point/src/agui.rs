@@ -402,7 +402,8 @@ pub struct PromptOption {
 // Helper Functions
 // =============================================================================
 
-fn now_millis() -> u64 {
+/// Get current timestamp in milliseconds
+pub fn now_millis() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -413,7 +414,8 @@ fn default_timeout() -> u32 {
     30
 }
 
-fn default_prompt_timeout() -> u32 {
+/// Default timeout for user prompts (5 minutes)
+pub fn default_prompt_timeout() -> u32 {
     300 // 5 minutes for user prompts
 }
 
@@ -817,6 +819,48 @@ impl AgUiEventBridge {
                 events.push(AgUiEvent::run_error(&self.run_id, "AGENT_ERROR", &error));
 
                 events
+            }
+
+            AgentEvent::UserInputRequest {
+                request_id,
+                request_type,
+                prompt,
+                options,
+            } => {
+                // UserInputRequest → UserPrompt 変換
+                // prompt_typeをrequest_typeから決定
+                let prompt_type = match request_type.as_deref() {
+                    Some("confirmation") | Some("confirm") => UserPromptType::Confirm,
+                    Some("select") | Some("choice") => UserPromptType::Select,
+                    Some("multi_select") => UserPromptType::MultiSelect,
+                    _ => UserPromptType::Input, // デフォルトは入力
+                };
+
+                // 選択肢を変換（value→id, label→label）
+                let ui_options: Vec<PromptOption> = options
+                    .into_iter()
+                    .map(|o| PromptOption {
+                        id: o.value,
+                        label: o.label.unwrap_or_default(),
+                        description: o.description,
+                    })
+                    .collect();
+
+                vec![AgUiEvent::UserPrompt {
+                    run_id: self.run_id.clone(),
+                    request_id,
+                    prompt_type,
+                    title: prompt.unwrap_or_default(),
+                    description: None,
+                    options: if ui_options.is_empty() {
+                        None
+                    } else {
+                        Some(ui_options)
+                    },
+                    default_value: None,
+                    timeout_seconds: default_prompt_timeout(),
+                    timestamp: now_millis(),
+                }]
             }
         }
     }

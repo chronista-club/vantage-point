@@ -1834,6 +1834,47 @@ async fn handle_chat_message_interactive(
                                 });
                                 break;
                             }
+                            Some(AgentEvent::UserInputRequest {
+                                request_id,
+                                request_type,
+                                prompt,
+                                options,
+                            }) => {
+                                tracing::info!("User input request: id={}, type={:?}", request_id, request_type);
+
+                                // Determine prompt type from request_type
+                                let prompt_type = match request_type.as_deref() {
+                                    Some("confirmation") | Some("confirm") => crate::agui::UserPromptType::Confirm,
+                                    Some("select") | Some("choice") => crate::agui::UserPromptType::Select,
+                                    Some("multi_select") => crate::agui::UserPromptType::MultiSelect,
+                                    _ => crate::agui::UserPromptType::Input,
+                                };
+
+                                // Convert options
+                                let ui_options: Vec<crate::agui::PromptOption> = options
+                                    .iter()
+                                    .map(|o| crate::agui::PromptOption {
+                                        id: o.value.clone(),
+                                        label: o.label.clone().unwrap_or_default(),
+                                        description: o.description.clone(),
+                                    })
+                                    .collect();
+
+                                // AG-UI: Emit UserPrompt event
+                                hub_clone.broadcast(StandMessage::AgUi {
+                                    event: AgUiEvent::UserPrompt {
+                                        run_id: run_id_clone.clone(),
+                                        request_id,
+                                        prompt_type,
+                                        title: prompt.unwrap_or_else(|| "確認してください".to_string()),
+                                        description: None,
+                                        options: if ui_options.is_empty() { None } else { Some(ui_options) },
+                                        default_value: None,
+                                        timeout_seconds: crate::agui::default_prompt_timeout(),
+                                        timestamp: crate::agui::now_millis(),
+                                    },
+                                });
+                            }
                             None => {
                                 // Channel closed
                                 tracing::warn!("Interactive agent event channel closed");
@@ -2145,6 +2186,45 @@ async fn handle_chat_message(
                             });
                         }
                         break;
+                    }
+                    Some(AgentEvent::UserInputRequest {
+                        ref request_id,
+                        ref request_type,
+                        ref prompt,
+                        ref options,
+                    }) => {
+                        tracing::info!("User input request: id={}, type={:?}", request_id, request_type);
+
+                        // AG-UI: Emit UserPrompt via bridge
+                        for event in bridge.convert(AgentEvent::UserInputRequest {
+                            request_id: request_id.clone(),
+                            request_type: request_type.clone(),
+                            prompt: prompt.clone(),
+                            options: options.clone(),
+                        }) {
+                            hub.broadcast(StandMessage::AgUi { event });
+                        }
+
+                        if debug_mode != DebugMode::None {
+                            hub.broadcast(StandMessage::DebugInfo {
+                                level: debug_mode,
+                                category: "permission".to_string(),
+                                message: format!(
+                                    "⏳ ユーザー入力待ち: {}",
+                                    prompt.as_deref().unwrap_or("確認してください")
+                                ),
+                                data: if debug_mode == DebugMode::Detail {
+                                    Some(serde_json::json!({
+                                        "request_id": request_id,
+                                        "request_type": request_type,
+                                        "options_count": options.len(),
+                                    }))
+                                } else {
+                                    None
+                                },
+                                tags: vec!["interactive".to_string(), "permission".to_string()],
+                            });
+                        }
                     }
                     None => break,
                 }
