@@ -23,8 +23,11 @@ use tower_http::cors::CorsLayer;
 
 use super::capabilities::{CapabilityConfig, StandCapabilities};
 use super::hub::Hub;
-use crate::agent::{AgentConfig, AgentEvent, ClaudeAgent};
-use crate::agui::{AgUiEvent, MessageRole};
+use crate::agent::{
+    AgentConfig, AgentEvent, ClaudeAgent, InteractiveClaudeAgent, PtyClaudeAgent, PtyEvent,
+    PtyPermissionPrompt,
+};
+use crate::agui::{AgUiEvent, AgUiEventBridge, MessageRole};
 use crate::capability::{
     ConductorCapability, ProjectInfo, RunningStand, StandStatus, UpdateCapability,
     UpdateCheckResult,
@@ -32,8 +35,8 @@ use crate::capability::{
 use crate::config::RunningStands;
 use crate::mcp::PermissionResponse;
 use crate::protocol::{
-    BrowserMessage, ChatComponent, ChatMessage, ChatRole, ClaudeAgUiAdapter, ComponentAction,
-    DebugMode, HistoryMessage, SessionInfo, StandMessage,
+    BrowserMessage, ChatComponent, ChatMessage, ChatRole, ComponentAction, DebugMode,
+    HistoryMessage, SessionInfo, StandMessage,
 };
 use std::collections::HashMap;
 
@@ -386,6 +389,10 @@ struct AppState {
     conductor: Option<Arc<RwLock<ConductorCapability>>>,
     /// Update capability for version checking (optional, only for conductor mode)
     update: Option<Arc<RwLock<UpdateCapability>>>,
+    /// PTY-based Claude agent (persistent process for terminal mode)
+    pty_agent: Arc<RwLock<Option<PtyClaudeAgent>>>,
+    /// Interactive Claude agent (stream-json mode for structured communication)
+    interactive_agent: Arc<RwLock<Option<InteractiveClaudeAgent>>>,
 }
 
 impl AppState {
@@ -481,6 +488,8 @@ pub async fn run(
         capabilities,
         conductor: None, // Conductor mode is set via run_conductor()
         update: None,    // Update capability is only for conductor mode
+        pty_agent: Arc::new(RwLock::new(None)), // PTY agent (legacy)
+        interactive_agent: Arc::new(RwLock::new(None)), // Interactive agent (stream-json mode)
     });
 
     let app = Router::new()
@@ -760,6 +769,35 @@ async fn handle_permission_response(
             request_id,
             if approved { "allow" } else { "deny" }
         );
+
+        // PTYモードのパーミッションリクエストの場合、PTYに応答を送信
+        if request_id.starts_with("pty-perm-") {
+            tracing::info!(">>> PTY permission request detected, sending response to PTY");
+            let pty_response = if approved { "y" } else { "n" };
+            let agent_guard = state.pty_agent.read().await;
+            tracing::debug!(
+                "PTY agent guard acquired, agent exists: {}",
+                agent_guard.is_some()
+            );
+            if let Some(ref agent) = *agent_guard {
+                tracing::info!(">>> Sending '{}' to PTY agent...", pty_response);
+                match agent.send(pty_response).await {
+                    Ok(_) => {
+                        tracing::info!(
+                            ">>> PTY permission response sent successfully: {}",
+                            pty_response
+                        );
+                    }
+                    Err(e) => {
+                        tracing::error!(">>> Failed to send PTY permission response: {}", e);
+                    }
+                }
+            } else {
+                tracing::warn!(">>> PTY agent not available for permission response");
+            }
+        } else {
+            tracing::debug!("Non-PTY permission request: {}", request_id);
+        }
 
         // Broadcast component dismissed
         state.hub.broadcast(StandMessage::ComponentDismissed {
@@ -1084,7 +1122,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                                 let new_token = CancellationToken::new();
                                 *cancel_token.write().await = new_token.clone();
 
-                                // OneShot mode for chat
+                                // Use OneShot mode (claude -p) for chat
                                 handle_chat_message(
                                     &hub,
                                     &sessions,
@@ -1278,21 +1316,23 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
     state.hub.client_disconnected().await;
 }
 
-/// Handle incoming chat message from browser (OneShot mode)
-/// AG-UIアダプターでイベント変換を管理
-async fn handle_chat_message(
+/// Handle incoming chat message using PTY mode
+/// PTYモードでは永続的なClaudeプロセスを維持し、端末I/Oで対話
+async fn handle_chat_message_pty(
     hub: &Hub,
     sessions: &Arc<RwLock<SessionManager>>,
     cancel_token: &CancellationToken,
     debug_mode: DebugMode,
     project_dir: &str,
+    pty_agent: &Arc<RwLock<Option<PtyClaudeAgent>>>,
+    pending_permissions: &Arc<RwLock<HashMap<String, PendingPermission>>>,
     message: String,
 ) {
     let start_time = Instant::now();
 
-    // AG-UI: アダプターでイベント変換を管理 (REQ-AGUI-040)
+    // AG-UI: Generate run_id for this chat request
     let run_id = format!("run-{}", uuid::Uuid::new_v4());
-    let mut agui_adapter = ClaudeAgUiAdapter::with_run_id(&run_id);
+    let _message_id = format!("msg-{}", uuid::Uuid::new_v4());
 
     // AG-UI: Emit RunStarted event
     hub.broadcast(StandMessage::AgUi {
@@ -1305,15 +1345,542 @@ async fn handle_chat_message(
     // Get session info from manager
     let (session_id, use_continue) = sessions.read().await.get_active_session();
 
+    // Initialize PTY agent if not already running
+    {
+        let mut agent_guard = pty_agent.write().await;
+        if agent_guard.is_none() {
+            tracing::info!("Initializing PTY Claude agent...");
+
+            let mut config = AgentConfig {
+                working_dir: Some(project_dir.to_string()),
+                use_continue,
+                ..Default::default()
+            };
+
+            if let Some(ref sid) = session_id {
+                config.session_id = Some(sid.clone());
+            }
+
+            let agent = PtyClaudeAgent::new(config);
+            if let Err(e) = agent.start().await {
+                tracing::error!("Failed to start PTY agent: {}", e);
+                hub.broadcast(StandMessage::ChatChunk {
+                    content: format!("Error: Failed to start Claude CLI: {}", e),
+                    done: true,
+                });
+                hub.broadcast(StandMessage::AgUi {
+                    event: AgUiEvent::run_error(&run_id, "PTY_START_FAILED", &e.to_string()),
+                });
+                return;
+            }
+
+            tracing::info!("PTY Claude agent started successfully");
+            if debug_mode != DebugMode::None {
+                hub.broadcast(StandMessage::DebugInfo {
+                    level: debug_mode,
+                    category: "pty".to_string(),
+                    message: "PTY Claude agent started".to_string(),
+                    data: None,
+                    tags: vec![],
+                });
+            }
+
+            *agent_guard = Some(agent);
+        }
+    }
+
+    // Send message to PTY agent
+    {
+        let agent_guard = pty_agent.read().await;
+        if let Some(ref agent) = *agent_guard {
+            if let Err(e) = agent.send(&message).await {
+                tracing::error!("Failed to send message to PTY: {}", e);
+                hub.broadcast(StandMessage::ChatChunk {
+                    content: format!("Error: {}", e),
+                    done: true,
+                });
+                return;
+            }
+            tracing::info!("Message sent to PTY agent");
+        }
+    }
+
+    // Start PTY output listener task
+    let hub_clone = hub.clone();
+    let pty_agent_clone = pty_agent.clone();
+    let pending_permissions_clone = pending_permissions.clone();
+    let sessions_clone = sessions.clone();
+    let run_id_clone = run_id.clone();
+    let cancel_token_clone = cancel_token.clone();
+    let debug_mode_clone = debug_mode;
+
+    tokio::spawn(async move {
+        let agent_guard = pty_agent_clone.read().await;
+        if let Some(ref agent) = *agent_guard {
+            let events_rx = agent.events();
+            let mut events = events_rx.lock().await;
+            let mut response_buffer = String::new();
+            let mut first_chunk = true;
+            let message_id = format!("msg-{}", uuid::Uuid::new_v4());
+
+            loop {
+                tokio::select! {
+                    _ = cancel_token_clone.cancelled() => {
+                        tracing::info!("PTY chat cancelled");
+                        break;
+                    }
+                    event = events.recv() => {
+                        match event {
+                            Some(PtyEvent::Output(output)) => {
+                                // Log PTY output via tracing (for log-collector)
+                                tracing::debug!(target: "pty_output", "{}", output);
+
+                                // Accumulate response
+                                response_buffer.push_str(&output);
+
+                                // Send to WebSocket
+                                hub_clone.broadcast(StandMessage::ChatChunk {
+                                    content: output.clone(),
+                                    done: false,
+                                });
+
+                                if first_chunk {
+                                    hub_clone.broadcast(StandMessage::AgUi {
+                                        event: AgUiEvent::text_message_start(
+                                            &run_id_clone,
+                                            &message_id,
+                                            MessageRole::Assistant,
+                                        ),
+                                    });
+                                    first_chunk = false;
+                                }
+
+                                hub_clone.broadcast(StandMessage::AgUi {
+                                    event: AgUiEvent::text_message_content(
+                                        &run_id_clone,
+                                        &message_id,
+                                        &output,
+                                    ),
+                                });
+                            }
+                            Some(PtyEvent::PermissionPrompt(prompt)) => {
+                                // PTY出力からパーミッションプロンプトを検出
+                                tracing::info!(
+                                    "PTY permission prompt detected: tool={}, desc={}",
+                                    prompt.tool_name,
+                                    prompt.description
+                                );
+
+                                // リクエストIDを生成
+                                let request_id = format!("pty-perm-{}", uuid::Uuid::new_v4());
+
+                                // PTYモードのinputを作成
+                                let pty_input = serde_json::json!({
+                                    "raw_prompt": prompt.raw_prompt,
+                                    "source": "pty"
+                                });
+
+                                // デバッグログ: パーミッションリクエスト検出
+                                if debug_mode_clone != DebugMode::None {
+                                    hub_clone.broadcast(StandMessage::DebugInfo {
+                                        level: debug_mode_clone,
+                                        category: "permission".to_string(),
+                                        message: format!(
+                                            "PTY permission detected: {} (id={})",
+                                            prompt.tool_name, request_id
+                                        ),
+                                        data: if debug_mode_clone == DebugMode::Detail {
+                                            Some(serde_json::json!({
+                                                "request_id": &request_id,
+                                                "tool_name": &prompt.tool_name,
+                                                "description": &prompt.description,
+                                            }))
+                                        } else {
+                                            None
+                                        },
+                                        tags: vec!["pty".to_string(), "permission".to_string(), "broadcast".to_string()],
+                                    });
+                                }
+
+                                // pending_permissionsに登録（original_inputを保存）
+                                pending_permissions_clone.write().await.insert(
+                                    request_id.clone(),
+                                    PendingPermission {
+                                        original_input: pty_input.clone(),
+                                        response: None,
+                                    },
+                                );
+
+                                // WebSocketにパーミッションリクエストを送信
+                                tracing::info!(">>> Broadcasting permission request to WebSocket: {}", request_id);
+                                hub_clone.broadcast(StandMessage::ChatComponent {
+                                    component: ChatComponent::PermissionRequest {
+                                        request_id: request_id.clone(),
+                                        tool_name: prompt.tool_name.clone(),
+                                        description: Some(prompt.description.clone()),
+                                        input: pty_input,
+                                        timeout_seconds: 60, // PTYモードでは長めに
+                                    },
+                                    interactive: true, // ユーザーの応答が必要
+                                });
+                                tracing::info!("<<< Broadcast completed: {}", request_id);
+
+                                // AG-UIイベントも送信
+                                hub_clone.broadcast(StandMessage::AgUi {
+                                    event: AgUiEvent::permission_request(
+                                        &run_id_clone,
+                                        &request_id,
+                                        "pty_permission",
+                                        serde_json::json!({
+                                            "source": "pty",
+                                            "description": "PTY permission request"
+                                        }),
+                                    ),
+                                });
+                            }
+                            Some(PtyEvent::Exited(code)) => {
+                                tracing::info!("PTY process exited with code: {}", code);
+
+                                // Save response to history
+                                if !response_buffer.is_empty() {
+                                    sessions_clone
+                                        .write()
+                                        .await
+                                        .add_message("assistant", response_buffer);
+                                }
+
+                                hub_clone.broadcast(StandMessage::ChatChunk {
+                                    content: String::new(),
+                                    done: true,
+                                });
+                                hub_clone.broadcast(StandMessage::AgUi {
+                                    event: AgUiEvent::run_finished(&run_id_clone),
+                                });
+                                break;
+                            }
+                            Some(PtyEvent::Error(err)) => {
+                                tracing::error!("PTY error: {}", err);
+                                hub_clone.broadcast(StandMessage::ChatChunk {
+                                    content: format!("\n[PTY Error: {}]", err),
+                                    done: true,
+                                });
+                                break;
+                            }
+                            None => {
+                                tracing::info!("PTY event channel closed");
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    let elapsed = start_time.elapsed();
+    tracing::info!("PTY message handling initiated in {:?}", elapsed);
+}
+
+/// Handle incoming chat message using Interactive mode (stream-json)
+/// Stream-JSONモードでは構造化されたJSON通信で対話
+/// パーミッションは--permission-prompt-toolでMCPツール経由で処理
+async fn handle_chat_message_interactive(
+    hub: &Hub,
+    sessions: &Arc<RwLock<SessionManager>>,
+    cancel_token: &CancellationToken,
+    debug_mode: DebugMode,
+    project_dir: &str,
+    interactive_agent: &Arc<RwLock<Option<InteractiveClaudeAgent>>>,
+    message: String,
+) {
+    let start_time = Instant::now();
+
+    // AG-UI: Generate run_id for this chat request
+    let run_id = format!("run-{}", uuid::Uuid::new_v4());
+    let message_id = format!("msg-{}", uuid::Uuid::new_v4());
+
+    // AG-UI: Emit RunStarted event
+    hub.broadcast(StandMessage::AgUi {
+        event: AgUiEvent::run_started(&run_id),
+    });
+
+    // Save user message to history
+    sessions.write().await.add_message("user", message.clone());
+
+    // Get session info from manager
+    let (session_id, use_continue) = sessions.read().await.get_active_session();
+
+    // Initialize Interactive agent if not already running
+    {
+        let mut agent_guard = interactive_agent.write().await;
+        if agent_guard.is_none() {
+            tracing::info!("Initializing Interactive Claude agent...");
+
+            // ホームディレクトリを取得
+            let home_dir = std::env::var("HOME").unwrap_or_else(|_| "/Users/makoto".to_string());
+            let repos_path = format!("{}/repos", home_dir);
+
+            let mut config = AgentConfig {
+                working_dir: Some(project_dir.to_string()),
+                use_continue,
+                // パーミッションプロンプトをMCPツール経由で処理
+                permission_prompt_tool: Some("mcp__vantage-point__permission".to_string()),
+                // ~/repos/ 以下のみアクセス可能に制限
+                allowed_tools: vec![
+                    // ファイル操作は ~/repos/ 以下に制限
+                    format!("Edit(path:{}/**)", repos_path),
+                    format!("Read(path:{}/**)", repos_path),
+                    format!("Write(path:{}/**)", repos_path),
+                    // Bash は git, cargo, bun 等の開発コマンドを許可
+                    "Bash(git:*)".to_string(),
+                    "Bash(cargo:*)".to_string(),
+                    "Bash(bun:*)".to_string(),
+                    "Bash(bunx:*)".to_string(),
+                    "Bash(ls:*)".to_string(),
+                    "Bash(cat:*)".to_string(),
+                    "Bash(mkdir:*)".to_string(),
+                    // MCP ツールを許可 (vantage-point, creo-memories)
+                    "mcp__vantage-point__*".to_string(),
+                    "mcp__creo-memories__*".to_string(),
+                ],
+                ..Default::default()
+            };
+
+            if let Some(ref sid) = session_id {
+                config.session_id = Some(sid.clone());
+            }
+
+            let agent = InteractiveClaudeAgent::new(config);
+            if let Err(e) = agent.start().await {
+                tracing::error!("Failed to start Interactive agent: {}", e);
+                hub.broadcast(StandMessage::ChatChunk {
+                    content: format!("Error: Failed to start Claude CLI: {}", e),
+                    done: true,
+                });
+                hub.broadcast(StandMessage::AgUi {
+                    event: AgUiEvent::run_error(
+                        &run_id,
+                        "INTERACTIVE_START_FAILED",
+                        &e.to_string(),
+                    ),
+                });
+                return;
+            }
+
+            tracing::info!("Interactive Claude agent started successfully");
+            if debug_mode != DebugMode::None {
+                hub.broadcast(StandMessage::DebugInfo {
+                    level: debug_mode,
+                    category: "agent".to_string(),
+                    message: "Interactive Claude agent started (stream-json mode)".to_string(),
+                    data: None,
+                    tags: vec![],
+                });
+            }
+
+            *agent_guard = Some(agent);
+        }
+    }
+
+    // Send message to Interactive agent
+    {
+        let agent_guard = interactive_agent.read().await;
+        if let Some(ref agent) = *agent_guard {
+            if let Err(e) = agent.send(&message).await {
+                tracing::error!("Failed to send message to Interactive agent: {}", e);
+                hub.broadcast(StandMessage::ChatChunk {
+                    content: format!("Error: {}", e),
+                    done: true,
+                });
+                return;
+            }
+            tracing::info!("Message sent to Interactive agent");
+        }
+    }
+
+    // Start Interactive output listener task
+    let hub_clone = hub.clone();
+    let interactive_agent_clone = interactive_agent.clone();
+    let sessions_clone = sessions.clone();
+    let run_id_clone = run_id.clone();
+    let message_id_clone = message_id.clone();
+    let cancel_token_clone = cancel_token.clone();
+    let debug_mode_clone = debug_mode;
+
+    tokio::spawn(async move {
+        let agent_guard = interactive_agent_clone.read().await;
+        if let Some(ref agent) = *agent_guard {
+            let events_rx = agent.events();
+            let mut events = events_rx.lock().await;
+            let mut response_buffer = String::new();
+            let mut first_chunk = true;
+
+            loop {
+                tokio::select! {
+                    _ = cancel_token_clone.cancelled() => {
+                        tracing::info!("Interactive chat cancelled");
+                        break;
+                    }
+                    event = events.recv() => {
+                        match event {
+                            Some(AgentEvent::TextChunk(text)) => {
+                                // Accumulate response
+                                response_buffer.push_str(&text);
+
+                                // Send to WebSocket
+                                hub_clone.broadcast(StandMessage::ChatChunk {
+                                    content: text.clone(),
+                                    done: false,
+                                });
+
+                                if first_chunk {
+                                    hub_clone.broadcast(StandMessage::AgUi {
+                                        event: AgUiEvent::text_message_start(
+                                            &run_id_clone,
+                                            &message_id_clone,
+                                            MessageRole::Assistant,
+                                        ),
+                                    });
+                                    first_chunk = false;
+                                }
+
+                                hub_clone.broadcast(StandMessage::AgUi {
+                                    event: AgUiEvent::text_message_content(
+                                        &run_id_clone,
+                                        &message_id_clone,
+                                        &text,
+                                    ),
+                                });
+                            }
+                            Some(AgentEvent::SessionInit { session_id, model, tools, mcp_servers }) => {
+                                tracing::info!(
+                                    "Session initialized: id={}, model={:?}, tools={}, mcp={}",
+                                    session_id, model, tools.len(), mcp_servers.len()
+                                );
+                                // Update session manager with the new session ID
+                                sessions_clone.write().await.set_active_session(session_id.clone());
+
+                                if debug_mode_clone != DebugMode::None {
+                                    hub_clone.broadcast(StandMessage::DebugInfo {
+                                        level: debug_mode_clone,
+                                        category: "session".to_string(),
+                                        message: format!("Session: {}", session_id),
+                                        data: Some(serde_json::json!({
+                                            "model": model,
+                                            "tools_count": tools.len(),
+                                            "mcp_servers": mcp_servers
+                                        })),
+                                        tags: vec!["interactive".to_string(), "session".to_string()],
+                                    });
+                                }
+                            }
+                            Some(AgentEvent::ToolExecuting { name }) => {
+                                tracing::info!("Tool executing: {}", name);
+                                hub_clone.broadcast(StandMessage::ChatComponent {
+                                    component: ChatComponent::ToolExecution {
+                                        tool_name: name.clone(),
+                                        status: "running".to_string(),
+                                        result: None,
+                                    },
+                                    interactive: false,
+                                });
+                            }
+                            Some(AgentEvent::ToolResult { name, preview }) => {
+                                tracing::info!("Tool result: {} -> {}", name, preview);
+                                hub_clone.broadcast(StandMessage::ChatComponent {
+                                    component: ChatComponent::ToolExecution {
+                                        tool_name: name.clone(),
+                                        status: "completed".to_string(),
+                                        result: Some(preview),
+                                    },
+                                    interactive: false,
+                                });
+                            }
+                            Some(AgentEvent::Done { result, cost }) => {
+                                tracing::info!("Interactive response complete (cost: {:?})", cost);
+
+                                // Save assistant response to history
+                                if !response_buffer.is_empty() {
+                                    sessions_clone.write().await.add_message("assistant", response_buffer.clone());
+                                }
+
+                                // Send done signal
+                                hub_clone.broadcast(StandMessage::ChatChunk {
+                                    content: String::new(),
+                                    done: true,
+                                });
+
+                                // AG-UI: Emit message end and run finished
+                                if !first_chunk {
+                                    hub_clone.broadcast(StandMessage::AgUi {
+                                        event: AgUiEvent::text_message_end(&run_id_clone, &message_id_clone),
+                                    });
+                                }
+
+                                hub_clone.broadcast(StandMessage::AgUi {
+                                    event: AgUiEvent::run_finished(&run_id_clone),
+                                });
+
+                                break;
+                            }
+                            Some(AgentEvent::Error(err)) => {
+                                tracing::error!("Interactive agent error: {}", err);
+                                hub_clone.broadcast(StandMessage::ChatChunk {
+                                    content: format!("\n\nError: {}", err),
+                                    done: true,
+                                });
+                                hub_clone.broadcast(StandMessage::AgUi {
+                                    event: AgUiEvent::run_error(&run_id_clone, "AGENT_ERROR", &err),
+                                });
+                                break;
+                            }
+                            None => {
+                                // Channel closed
+                                tracing::warn!("Interactive agent event channel closed");
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    let elapsed = start_time.elapsed();
+    tracing::info!("Interactive message handling initiated in {:?}", elapsed);
+}
+
+/// Handle incoming chat message from browser (OneShot mode - legacy)
+#[allow(dead_code)]
+async fn handle_chat_message(
+    hub: &Hub,
+    sessions: &Arc<RwLock<SessionManager>>,
+    cancel_token: &CancellationToken,
+    debug_mode: DebugMode,
+    project_dir: &str,
+    message: String,
+) {
+    let start_time = Instant::now();
+
+    // AG-UI: Create event bridge for this run (REQ-AGUI-040)
+    let run_id = format!("run-{}", uuid::Uuid::new_v4());
+    let mut bridge = AgUiEventBridge::new(&run_id);
+
+    // AG-UI: Emit RunStarted event
+    hub.broadcast(StandMessage::AgUi {
+        event: bridge.run_started(),
+    });
+
+    // Save user message to history
+    sessions.write().await.add_message("user", message.clone());
+
+    // Get session info from manager
+    let (session_id, use_continue) = sessions.read().await.get_active_session();
+
     // Create agent config with project directory
-    // Q&A最適値: input_format=stream-json（双方向通信）、include_partial_messages=true
     let mut config = AgentConfig {
         working_dir: Some(project_dir.to_string()),
         use_continue,
-        // 双方向通信を有効化（UserInputRequest応答用）
-        input_format: Some("stream-json".to_string()),
-        // 部分メッセージを含める（ストリーミング品質向上）
-        include_partial_messages: true,
         ..Default::default()
     };
 
@@ -1360,19 +1927,17 @@ async fn handle_chat_message(
     let hub = hub.clone();
     let sessions = sessions.clone();
     let cancel_token = cancel_token.clone();
-    let mut first_chunk = true;
     let mut chunk_count = 0;
-    let mut response_buffer = String::new();
 
     loop {
         tokio::select! {
             _ = cancel_token.cancelled() => {
                 tracing::info!("Chat request cancelled");
 
-                // AG-UI: Emit RunError for cancellation (REQ-AGUI-040)
-                hub.broadcast(StandMessage::AgUi {
-                    event: AgUiEvent::run_error(&run_id, "CANCELLED", "Request cancelled by user"),
-                });
+                // AG-UI: Emit cancellation events via bridge (REQ-AGUI-040)
+                for event in bridge.cancelled() {
+                    hub.broadcast(StandMessage::AgUi { event });
+                }
 
                 if debug_mode != DebugMode::None {
                     hub.broadcast(StandMessage::DebugInfo {
@@ -1430,12 +1995,12 @@ async fn handle_chat_message(
                             });
                         }
                     }
-                    Some(AgentEvent::ToolExecuting { name }) => {
+                    Some(AgentEvent::ToolExecuting { ref name }) => {
                         tracing::info!("Tool executing: {}", name);
 
-                        // AG-UI: アダプターでToolCallStart変換 (tool_call_id自動追跡)
-                        for agui_event in agui_adapter.convert(AgentEvent::ToolExecuting { name: name.clone() }) {
-                            hub.broadcast(StandMessage::AgUi { event: agui_event });
+                        // AG-UI: Emit ToolCallStart via bridge (REQ-AGUI-040)
+                        for event in bridge.convert(AgentEvent::ToolExecuting { name: name.clone() }) {
+                            hub.broadcast(StandMessage::AgUi { event });
                         }
 
                         if debug_mode != DebugMode::None {
@@ -1448,12 +2013,15 @@ async fn handle_chat_message(
                             });
                         }
                     }
-                    Some(AgentEvent::ToolResult { name, preview }) => {
+                    Some(AgentEvent::ToolResult { ref name, ref preview }) => {
                         tracing::info!("Tool result: {} - {}", name, preview);
 
-                        // AG-UI: アダプターでToolCallEnd変換 (tool_call_id自動追跡)
-                        for agui_event in agui_adapter.convert(AgentEvent::ToolResult { name: name.clone(), preview: preview.clone() }) {
-                            hub.broadcast(StandMessage::AgUi { event: agui_event });
+                        // AG-UI: Emit ToolCallEnd via bridge (proper tool_call_id tracking)
+                        for event in bridge.convert(AgentEvent::ToolResult {
+                            name: name.clone(),
+                            preview: preview.clone(),
+                        }) {
+                            hub.broadcast(StandMessage::AgUi { event });
                         }
 
                         if debug_mode == DebugMode::Detail {
@@ -1466,21 +2034,24 @@ async fn handle_chat_message(
                             });
                         }
                     }
-                    Some(AgentEvent::TextChunk(chunk)) => {
+                    Some(AgentEvent::TextChunk(ref chunk)) => {
                         chunk_count += 1;
+                        let is_first = !bridge.is_message_started();
 
-                        // Accumulate response for history
-                        response_buffer.push_str(&chunk);
-
-                        // Send streaming chunk (legacy UI)
+                        // Send streaming chunk (legacy WebSocket)
                         hub.broadcast(StandMessage::ChatChunk {
                             content: chunk.clone(),
                             done: false,
                         });
 
-                        // Debug: first chunk timing
-                        if first_chunk {
+                        // AG-UI: Emit TextMessageStart + TextMessageContent via bridge (REQ-AGUI-040)
+                        for event in bridge.convert(AgentEvent::TextChunk(chunk.clone())) {
+                            hub.broadcast(StandMessage::AgUi { event });
+                        }
+
+                        if is_first {
                             tracing::info!("Started receiving response from Claude CLI");
+
                             if debug_mode != DebugMode::None {
                                 let elapsed = start_time.elapsed();
                                 hub.broadcast(StandMessage::DebugInfo {
@@ -1491,12 +2062,6 @@ async fn handle_chat_message(
                                     tags: vec![],
                                 });
                             }
-                            first_chunk = false;
-                        }
-
-                        // AG-UI: アダプターでTextMessageStart/Content変換
-                        for agui_event in agui_adapter.convert(AgentEvent::TextChunk(chunk.clone())) {
-                            hub.broadcast(StandMessage::AgUi { event: agui_event });
                         }
 
                         // Detailed debug: show each chunk
@@ -1510,7 +2075,7 @@ async fn handle_chat_message(
                                     "content": if chunk.chars().count() > 100 {
                                         format!("{}...", chunk.chars().take(100).collect::<String>())
                                     } else {
-                                        chunk
+                                        chunk.clone()
                                     }
                                 })),
                                 tags: vec!["interactive".to_string(), "chunk".to_string()],
@@ -1521,20 +2086,21 @@ async fn handle_chat_message(
                         let elapsed = start_time.elapsed();
                         tracing::info!("Claude CLI response complete, cost: {:?}", cost);
 
-                        // Save assistant response to history
-                        if !response_buffer.is_empty() {
+                        // Save assistant response to history (using bridge's buffer)
+                        let response_text = bridge.text_buffer().to_string();
+                        if !response_text.is_empty() {
                             sessions
                                 .write()
                                 .await
-                                .add_message("assistant", response_buffer.clone());
+                                .add_message("assistant", response_text);
                         }
 
-                        // AG-UI: アダプターでTextMessageEnd + RunFinished変換
-                        for agui_event in agui_adapter.convert(AgentEvent::Done { result, cost }) {
-                            hub.broadcast(StandMessage::AgUi { event: agui_event });
+                        // AG-UI: Emit TextMessageEnd + RunFinished via bridge (REQ-AGUI-040)
+                        for event in bridge.convert(AgentEvent::Done { result, cost }) {
+                            hub.broadcast(StandMessage::AgUi { event });
                         }
 
-                        // Send final done signal (legacy UI)
+                        // Send final done signal (legacy WebSocket)
                         hub.broadcast(StandMessage::ChatChunk {
                             content: String::new(),
                             done: true,
@@ -1554,15 +2120,15 @@ async fn handle_chat_message(
                         }
                         break;
                     }
-                    Some(AgentEvent::Error(e)) => {
+                    Some(AgentEvent::Error(ref e)) => {
                         tracing::error!("Claude CLI error: {}", e);
 
-                        // AG-UI: アダプターでRunError変換
-                        for agui_event in agui_adapter.convert(AgentEvent::Error(e.clone())) {
-                            hub.broadcast(StandMessage::AgUi { event: agui_event });
+                        // AG-UI: Emit TextMessageEnd (if started) + RunError via bridge (REQ-AGUI-040)
+                        for event in bridge.convert(AgentEvent::Error(e.clone())) {
+                            hub.broadcast(StandMessage::AgUi { event });
                         }
 
-                        // Send error as a chat message (legacy UI)
+                        // Send error as a chat message
                         let error_msg = ChatMessage {
                             role: ChatRole::System,
                             content: format!("Error: {}", e),
@@ -1579,62 +2145,6 @@ async fn handle_chat_message(
                             });
                         }
                         break;
-                    }
-                    Some(AgentEvent::UserInputRequest { request_id, request_type, prompt, options }) => {
-                        // ユーザー入力リクエストをUIコンポーネントとして送信
-                        tracing::info!(
-                            "User input request: request_id={}, type={:?}",
-                            request_id, request_type
-                        );
-
-                        // AG-UI: UserInputRequestイベントを変換
-                        for agui_event in agui_adapter.convert(AgentEvent::UserInputRequest {
-                            request_id: request_id.clone(),
-                            request_type: request_type.clone(),
-                            prompt: prompt.clone(),
-                            options: options.clone(),
-                        }) {
-                            hub.broadcast(StandMessage::AgUi { event: agui_event });
-                        }
-
-                        // UIコンポーネントとしても送信（選択式の場合）
-                        let choices: Vec<crate::protocol::Choice> = options.iter().map(|o| {
-                            crate::protocol::Choice {
-                                id: o.value.clone(),
-                                label: o.label.clone().unwrap_or_else(|| o.value.clone()),
-                                description: o.description.clone(),
-                            }
-                        }).collect();
-
-                        // デバッグ用にpromptを事前にclone
-                        let prompt_for_debug = prompt.clone();
-                        let prompt_text = prompt.unwrap_or_else(|| "Please select an option".to_string());
-
-                        if !choices.is_empty() {
-                            hub.broadcast(StandMessage::ChatComponent {
-                                component: crate::protocol::ChatComponent::ChoiceButtons {
-                                    request_id: request_id.clone(),
-                                    prompt: prompt_text,
-                                    choices,
-                                    allow_multiple: false,
-                                },
-                                interactive: true,
-                            });
-                        }
-
-                        if debug_mode != DebugMode::None {
-                            hub.broadcast(StandMessage::DebugInfo {
-                                level: debug_mode,
-                                category: "input_request".to_string(),
-                                message: format!("User input requested: {:?}", request_type),
-                                data: Some(serde_json::json!({
-                                    "request_id": request_id,
-                                    "request_type": request_type,
-                                    "prompt": prompt_for_debug,
-                                })),
-                                tags: vec!["interactive".to_string()],
-                            });
-                        }
                     }
                     None => break,
                 }
@@ -2180,6 +2690,8 @@ pub async fn run_conductor(port: u16) -> Result<()> {
         ),
         conductor: Some(conductor.clone()),
         update: Some(update.clone()),
+        pty_agent: Arc::new(RwLock::new(None)),
+        interactive_agent: Arc::new(RwLock::new(None)),
     });
 
     let app = Router::new()
