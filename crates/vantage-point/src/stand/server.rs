@@ -1306,9 +1306,14 @@ async fn handle_chat_message(
     let (session_id, use_continue) = sessions.read().await.get_active_session();
 
     // Create agent config with project directory
+    // Q&A最適値: input_format=stream-json（双方向通信）、include_partial_messages=true
     let mut config = AgentConfig {
         working_dir: Some(project_dir.to_string()),
         use_continue,
+        // 双方向通信を有効化（UserInputRequest応答用）
+        input_format: Some("stream-json".to_string()),
+        // 部分メッセージを含める（ストリーミング品質向上）
+        include_partial_messages: true,
         ..Default::default()
     };
 
