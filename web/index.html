@@ -1347,18 +1347,15 @@
                 case 'TEXT_MESSAGE_END':
                     const endMsg = agUiMessages.get(event.message_id);
                     if (endMsg && endMsg.role === 'assistant' && currentStreamContent) {
-                        // Move to history
-                        addToHistory('assistant', currentStreamContent);
-                        // Clear response area
-                        currentResponse.classList.add('exiting');
-                        setTimeout(() => {
-                            currentResponse.classList.add('empty');
-                            currentResponse.classList.remove('exiting');
-                            currentResponseContent.innerHTML = '';
-                        }, 200);
+                        // 先にcurrent-responseをクリアしてから履歴に追加（二重表示防止）
+                        const contentToAdd = currentStreamContent;
+                        currentResponse.classList.add('empty');
+                        currentResponseContent.innerHTML = '';
                         isStreaming = false;
                         currentStreamContent = '';
                         chatCancelBtn.classList.remove('visible');
+                        // 履歴に追加
+                        addToHistory('assistant', contentToAdd);
                         updateContextModeFromState();
                     }
                     agUiMessages.delete(event.message_id);
@@ -1785,6 +1782,11 @@
         }
 
         function handleChatChunk(content, done) {
+            // AG-UIモード中はchat_chunkを無視（重複防止）
+            if (agUiCurrentRunId) {
+                return;
+            }
+
             hideTypingIndicator();
 
             if (!isStreaming && content) {
@@ -1803,22 +1805,18 @@
             }
 
             if (done) {
-                // Move completed response to history
-                if (currentStreamContent) {
-                    addToHistory('assistant', currentStreamContent);
-                }
-
-                // Clear response area with animation
-                currentResponse.classList.add('exiting');
-                setTimeout(() => {
-                    currentResponse.classList.add('empty');
-                    currentResponse.classList.remove('exiting');
-                    currentResponseContent.innerHTML = '';
-                }, 200);
-
+                // 先にcurrent-responseをクリアしてから履歴に追加（二重表示防止）
+                const contentToAdd = currentStreamContent;
+                currentResponse.classList.add('empty');
+                currentResponseContent.innerHTML = '';
                 isStreaming = false;
                 currentStreamContent = '';
                 chatCancelBtn.classList.remove('visible');
+
+                // 履歴に追加
+                if (contentToAdd) {
+                    addToHistory('assistant', contentToAdd);
+                }
                 updateContextModeFromState();
             }
         }
