@@ -5,7 +5,53 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Vantage Point</title>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <!-- Tabler Icons -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/tabler-icons.min.css">
     <style>
+        /* ===== Chronista Design System ===== */
+        /* OKLCH tokens fused from shadcn/ui + Tabler benchmarks */
+        :root {
+            /* Background hierarchy (dark mode) */
+            --color-bg-deep: oklch(0.13 0.01 260);
+            --color-bg-base: oklch(0.18 0.01 260);
+            --color-bg-elevated: oklch(0.22 0.01 260);
+            --color-bg-surface: oklch(0.26 0.01 260);
+
+            /* Text hierarchy */
+            --color-text-primary: oklch(0.95 0 0);
+            --color-text-secondary: oklch(0.72 0.01 260);
+            --color-text-muted: oklch(0.55 0.01 260);
+            --color-text-placeholder: oklch(0.45 0.01 260);
+
+            /* Border hierarchy */
+            --color-border-subtle: oklch(0.28 0.01 260);
+            --color-border-default: oklch(0.32 0.01 260);
+            --color-border-accent: oklch(0.50 0.12 260);
+
+            /* Accent colors (Tabler-inspired OKLCH) */
+            --color-accent-primary: oklch(0.65 0.18 260);
+            --color-accent-hover: oklch(0.70 0.20 260);
+            --color-brand: oklch(0.65 0.22 15);
+
+            /* Semantic colors (Tabler palette in OKLCH) */
+            --color-success: oklch(0.72 0.19 145);
+            --color-warning: oklch(0.82 0.18 70);
+            --color-error: oklch(0.62 0.22 25);
+            --color-info: oklch(0.65 0.15 240);
+
+            /* Component tokens */
+            --radius-sm: 4px;
+            --radius-md: 8px;
+            --radius-lg: 12px;
+            --shadow-sm: 0 1px 2px oklch(0 0 0 / 0.1);
+            --shadow-md: 0 4px 12px oklch(0 0 0 / 0.15);
+
+            /* Transitions */
+            --transition-fast: 0.15s ease;
+            --transition-normal: 0.2s ease;
+            --transition-slow: 0.3s ease-out;
+        }
+
         * {
             box-sizing: border-box;
             margin: 0;
@@ -13,17 +59,17 @@
         }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: #1a1a2e;
-            color: #eee;
+            background: var(--color-bg-base);
+            color: var(--color-text-primary);
             height: 100vh;
             overflow: hidden;
         }
 
         /* ===== Header ===== */
         .header {
-            background: #16213e;
+            background: var(--color-bg-elevated);
             padding: 8px 16px;
-            border-bottom: 1px solid #0f3460;
+            border-bottom: 1px solid var(--color-border-default);
             display: flex;
             align-items: center;
             gap: 12px;
@@ -34,11 +80,11 @@
             align-items: center;
             font-size: 16px;
             font-weight: 500;
-            color: #e94560;
+            color: var(--color-brand);
             cursor: pointer;
         }
         .header h1:hover {
-            color: #ff6b6b;
+            color: var(--color-error);
         }
         .header h1 svg {
             width: 24px;
@@ -63,21 +109,21 @@
         }
         .status {
             font-size: 12px;
-            color: #888;
+            color: var(--color-text-muted);
         }
         .status.connected {
-            color: #4ade80;
+            color: var(--color-success);
         }
         .status.disconnected {
-            color: #f87171;
+            color: var(--color-error);
         }
         .project-name {
             font-size: 14px;
-            color: #667eea;
+            color: var(--color-accent-primary);
             font-weight: 500;
             padding: 4px 10px;
-            background: rgba(102, 126, 234, 0.15);
-            border-radius: 4px;
+            background: oklch(0.65 0.18 260 / 0.15);
+            border-radius: var(--radius-sm);
             display: none;
         }
         .project-name.visible {
@@ -86,25 +132,25 @@
         .debug-indicator {
             font-size: 10px;
             padding: 2px 6px;
-            border-radius: 3px;
+            border-radius: var(--radius-sm);
             display: none;
         }
         .debug-indicator.visible {
             display: inline-block;
         }
         .debug-indicator.simple {
-            background: #3b82f6;
+            background: var(--color-info);
             color: white;
         }
 
         /* Panel Toggle Buttons */
         .panel-toggle {
             background: transparent;
-            border: 1px solid #0f3460;
-            color: #888;
+            border: 1px solid var(--color-border-default);
+            color: var(--color-text-muted);
             width: 32px;
             height: 32px;
-            border-radius: 6px;
+            border-radius: var(--radius-md);
             cursor: pointer;
             display: flex;
             align-items: center;
@@ -112,17 +158,20 @@
             transition: all 0.2s;
         }
         .panel-toggle:hover {
-            background: #0f3460;
-            color: #eee;
+            background: var(--color-bg-surface);
+            color: var(--color-text-primary);
         }
         .panel-toggle.active {
-            background: #667eea;
-            border-color: #667eea;
+            background: var(--color-accent-primary);
+            border-color: var(--color-accent-primary);
             color: white;
         }
         .panel-toggle svg {
             width: 16px;
             height: 16px;
+        }
+        .panel-toggle i {
+            font-size: 18px;
         }
 
         /* ===== Main Container ===== */
@@ -136,8 +185,8 @@
             width: 300px;
             min-width: 200px;
             max-width: 500px;
-            background: #16213e;
-            border-right: 1px solid #0f3460;
+            background: var(--color-bg-elevated);
+            border-right: 1px solid var(--color-border-default);
             display: flex;
             flex-direction: column;
             transition: width 0.2s, margin 0.2s;
@@ -145,7 +194,7 @@
         }
         .side-panel.right {
             border-right: none;
-            border-left: 1px solid #0f3460;
+            border-left: 1px solid var(--color-border-default);
         }
         .side-panel.collapsed {
             width: 0;
@@ -154,13 +203,38 @@
         }
         .side-panel-header {
             padding: 12px 16px;
-            border-bottom: 1px solid #0f3460;
+            border-bottom: 1px solid var(--color-border-default);
             font-weight: 500;
             font-size: 13px;
-            color: #888;
+            color: var(--color-text-muted);
             display: flex;
             align-items: center;
             gap: 8px;
+        }
+        .side-panel-header i {
+            font-size: 16px;
+            color: var(--color-text-secondary);
+        }
+        .header-btn {
+            background: transparent;
+            border: 1px solid var(--color-border-subtle);
+            color: var(--color-text-muted);
+            padding: 4px 8px;
+            border-radius: var(--radius-sm);
+            cursor: pointer;
+            font-size: 11px;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            transition: all var(--transition-fast);
+        }
+        .header-btn:hover {
+            background: var(--color-bg-surface);
+            color: var(--color-text-primary);
+            border-color: var(--color-border-default);
+        }
+        .header-btn i {
+            font-size: 14px;
         }
         .side-panel-content {
             flex: 1;
@@ -178,7 +252,7 @@
         }
         .resize-handle:hover,
         .resize-handle.dragging {
-            background: #667eea;
+            background: var(--color-accent-primary);
         }
 
         /* ===== Center Panel (Chat) ===== */
@@ -187,32 +261,34 @@
             display: flex;
             flex-direction: column;
             min-width: 400px;
-            background: #1a1a2e;
+            background: var(--color-bg-base);
             overflow: hidden;
+            position: relative;
         }
 
         /* ===== New Chat Layout ===== */
         .chat-container {
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-            overflow: hidden;
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
             max-width: 800px;
             margin: 0 auto;
             width: 100%;
             padding: 0 16px;
         }
 
-        /* Context Area - 入力欄の上（自動切替） */
-        .response-area {
-            flex: 1;
+        /* Chat Area - メッセージ表示エリア */
+        .chat-area {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 80px; /* 入力エリアの高さ分 */
             display: flex;
             flex-direction: column;
-            justify-content: flex-end;
             overflow: hidden;
-            padding: 16px 0;
-            min-height: 100px;
-            position: relative;
         }
 
         /* Context Mode Indicator */
@@ -221,11 +297,11 @@
             align-items: center;
             gap: 8px;
             padding: 6px 12px;
-            background: rgba(22, 33, 62, 0.8);
-            border-radius: 6px;
+            background: oklch(0.22 0.01 260 / 0.8);
+            border-radius: var(--radius-md);
             margin-bottom: 8px;
             font-size: 12px;
-            color: #8b949e;
+            color: var(--color-text-secondary);
             opacity: 0;
             transform: translateY(-10px);
             transition: opacity 0.2s, transform 0.2s;
@@ -238,21 +314,21 @@
             width: 8px;
             height: 8px;
             border-radius: 50%;
-            background: #8b949e;
+            background: var(--color-text-muted);
             animation: pulse-soft 2s infinite;
         }
-        .context-mode-indicator.thinking { background: #3b82f6; }
-        .context-mode-indicator.responding { background: #22c55e; }
-        .context-mode-indicator.permission { background: #f59e0b; }
-        .context-mode-indicator.prompt { background: #6366f1; }
-        .context-mode-indicator.todo { background: #06b6d4; }
-        .context-mode-indicator.idle { background: #64748b; animation: none; }
+        .context-mode-indicator.thinking { background: var(--color-info); }
+        .context-mode-indicator.responding { background: var(--color-success); }
+        .context-mode-indicator.permission { background: var(--color-warning); }
+        .context-mode-indicator.prompt { background: var(--color-accent-primary); }
+        .context-mode-indicator.todo { background: var(--color-info); }
+        .context-mode-indicator.idle { background: var(--color-text-muted); animation: none; }
 
         .context-mode-label {
             font-weight: 500;
         }
         .context-mode-detail {
-            color: #64748b;
+            color: var(--color-text-muted);
             margin-left: auto;
         }
 
@@ -261,14 +337,12 @@
             50% { opacity: 0.5; }
         }
 
-        /* Context Content Stack */
+        /* Context Content Stack - ストリーミング応答・コンポーネント表示 */
         .context-stack {
             display: flex;
             flex-direction: column;
             gap: 8px;
-            flex: 1;
-            overflow: hidden;
-            justify-content: flex-end;
+            flex-shrink: 0;
         }
         .context-item {
             animation: contextSlideIn 0.25s ease-out;
@@ -285,9 +359,9 @@
             to { opacity: 0; transform: translateY(10px) scale(0.98); }
         }
         .current-response {
-            background: #1e293b;
-            border: 1px solid #334155;
-            border-radius: 12px;
+            background: var(--color-bg-surface);
+            border: 1px solid var(--color-border-default);
+            border-radius: var(--radius-lg);
             padding: 16px;
             animation: slideDown 0.3s ease-out;
             max-height: 100%;
@@ -304,15 +378,15 @@
             margin: 0.3em 0;
         }
         .current-response .content code {
-            background: #0f3460;
+            background: var(--color-bg-deep);
             padding: 1px 4px;
-            border-radius: 3px;
+            border-radius: var(--radius-sm);
             font-size: 13px;
         }
         .current-response .content pre {
-            background: #0f3460;
+            background: var(--color-bg-deep);
             padding: 10px;
-            border-radius: 6px;
+            border-radius: var(--radius-md);
             overflow-x: auto;
             margin: 0.5em 0;
         }
@@ -334,90 +408,38 @@
         /* System message in response area */
         .system-message {
             text-align: center;
-            color: #666;
+            color: var(--color-text-muted);
             font-size: 13px;
             padding: 8px;
         }
 
-        /* Input Area - ドラッグ可能 */
+        /* Input Area - 下部固定 */
         .input-area {
-            padding: 16px 0;
-            border-top: 1px solid #0f3460;
-            border-bottom: 1px solid #0f3460;
-            background: #16213e;
-            margin: 0 -16px;
-            padding-left: 16px;
-            padding-right: 16px;
-            position: relative;
-            transition: transform 0.15s ease, box-shadow 0.15s ease;
-        }
-        .input-area.dragging {
-            opacity: 0.9;
-            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
-            z-index: 100;
-        }
-        .drag-handle {
-            position: absolute;
-            top: 0;
-            left: 50%;
-            transform: translateX(-50%);
-            width: 40px;
-            height: 12px;
-            cursor: grab;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            opacity: 0.4;
-            transition: opacity 0.2s;
-        }
-        .drag-handle:hover {
-            opacity: 0.8;
-        }
-        .drag-handle:active {
-            cursor: grabbing;
-        }
-        .drag-handle::before {
-            content: '';
-            width: 30px;
-            height: 4px;
-            background: #667eea;
-            border-radius: 2px;
-        }
-        .drop-zone {
-            position: relative;
-        }
-        .drop-zone.drag-over::before {
-            content: '';
             position: absolute;
             left: 0;
             right: 0;
-            height: 3px;
-            background: #667eea;
-            border-radius: 2px;
-            z-index: 10;
-        }
-        .drop-zone.drag-over-top::before {
-            top: 0;
-        }
-        .drop-zone.drag-over-bottom::before {
             bottom: 0;
+            z-index: 10;
+            padding: 12px 16px;
+            border-top: 1px solid var(--color-border-default);
+            background: var(--color-bg-elevated);
         }
         .chat-input-wrapper {
             display: flex;
             gap: 8px;
-            background: #1a1a2e;
-            border-radius: 8px;
+            background: var(--color-bg-base);
+            border-radius: var(--radius-md);
             padding: 8px 12px;
-            border: 1px solid #0f3460;
+            border: 1px solid var(--color-border-default);
         }
         .chat-input-wrapper:focus-within {
-            border-color: #667eea;
+            border-color: var(--color-accent-primary);
         }
         .chat-input {
             flex: 1;
             background: transparent;
             border: none;
-            color: #eee;
+            color: var(--color-text-primary);
             font-size: 14px;
             outline: none;
             resize: none;
@@ -426,15 +448,15 @@
             font-family: inherit;
         }
         .chat-input::placeholder {
-            color: #666;
+            color: var(--color-text-placeholder);
         }
         .chat-send-btn {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(135deg, var(--color-accent-primary) 0%, var(--color-brand) 100%);
             border: none;
             color: white;
             width: 32px;
             height: 32px;
-            border-radius: 6px;
+            border-radius: var(--radius-md);
             cursor: pointer;
             display: flex;
             align-items: center;
@@ -452,13 +474,17 @@
             width: 16px;
             height: 16px;
         }
+        .chat-send-btn i,
+        .chat-cancel-btn i {
+            font-size: 16px;
+        }
         .chat-cancel-btn {
-            background: #dc2626;
+            background: var(--color-error);
             border: none;
             color: white;
             width: 32px;
             height: 32px;
-            border-radius: 6px;
+            border-radius: var(--radius-md);
             cursor: pointer;
             display: none;
             align-items: center;
@@ -472,32 +498,38 @@
             height: 16px;
         }
 
-        /* History Area - 入力欄の下 */
+        /* History Area - チャット履歴（下から積み上げ） */
         .history-area {
             flex: 1;
             overflow-y: auto;
             padding: 16px 0;
             display: flex;
             flex-direction: column;
+            justify-content: flex-end;
+            gap: 12px;
+        }
+        .history-area .history-content {
+            display: flex;
+            flex-direction: column;
             gap: 12px;
         }
         .history-message {
             padding: 12px 16px;
-            border-radius: 12px;
+            border-radius: var(--radius-lg);
             line-height: 1.5;
             font-size: 14px;
             animation: fadeIn 0.3s ease-out;
         }
         .history-message.user {
             align-self: flex-end;
-            background: #0f3460;
+            background: var(--color-accent-primary);
             color: #fff;
             max-width: 85%;
         }
         .history-message.assistant {
-            background: #1e293b;
-            color: #e0e0e0;
-            border: 1px solid #334155;
+            background: var(--color-bg-surface);
+            color: var(--color-text-primary);
+            border: 1px solid var(--color-border-default);
             opacity: 0.85;
         }
         .history-message.assistant .content {
@@ -507,15 +539,15 @@
             margin: 0.3em 0;
         }
         .history-message.assistant .content code {
-            background: #0f3460;
+            background: var(--color-bg-deep);
             padding: 1px 4px;
-            border-radius: 3px;
+            border-radius: var(--radius-sm);
             font-size: 13px;
         }
         .history-message.assistant .content pre {
-            background: #0f3460;
+            background: var(--color-bg-deep);
             padding: 10px;
-            border-radius: 6px;
+            border-radius: var(--radius-md);
             overflow-x: auto;
             margin: 0.5em 0;
         }
@@ -531,18 +563,18 @@
         /* ===== Chat Components ===== */
         .chat-component {
             margin: 8px 0;
-            border-radius: 12px;
-            background: #1e293b;
-            border: 1px solid #334155;
+            border-radius: var(--radius-lg);
+            background: var(--color-bg-surface);
+            border: 1px solid var(--color-border-default);
             overflow: hidden;
         }
         .chat-component.permission-request {
-            border-color: #f59e0b;
+            border-color: var(--color-warning);
         }
         .chat-component-header {
             padding: 12px 16px;
-            background: rgba(245, 158, 11, 0.1);
-            border-bottom: 1px solid #334155;
+            background: oklch(0.82 0.18 70 / 0.1);
+            border-bottom: 1px solid var(--color-border-default);
             display: flex;
             align-items: center;
             gap: 8px;
@@ -552,10 +584,10 @@
         }
         .chat-component-header .title {
             font-weight: 500;
-            color: #f59e0b;
+            color: var(--color-warning);
         }
         .chat-component-header .tool-name {
-            color: #94a3b8;
+            color: var(--color-text-secondary);
             font-size: 12px;
             margin-left: auto;
             font-family: 'JetBrains Mono', monospace;
@@ -564,15 +596,15 @@
             padding: 16px;
         }
         .chat-component-body .input-preview {
-            background: #0f172a;
-            border-radius: 6px;
+            background: var(--color-bg-deep);
+            border-radius: var(--radius-md);
             padding: 12px;
             font-family: 'JetBrains Mono', monospace;
             font-size: 12px;
             max-height: 200px;
             overflow: auto;
             margin-bottom: 16px;
-            color: #94a3b8;
+            color: var(--color-text-secondary);
         }
         .chat-component-body .input-preview pre {
             margin: 0;
@@ -594,7 +626,7 @@
             transition: all 0.15s;
         }
         .chat-component-btn.approve {
-            background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%);
+            background: linear-gradient(135deg, var(--color-success) 0%, oklch(0.60 0.19 145) 100%);
             color: white;
         }
         .chat-component-btn.approve:hover {
@@ -602,12 +634,12 @@
         }
         .chat-component-btn.deny {
             background: transparent;
-            border: 1px solid #475569;
-            color: #94a3b8;
+            border: 1px solid var(--color-border-default);
+            color: var(--color-text-secondary);
         }
         .chat-component-btn.deny:hover {
-            background: #dc2626;
-            border-color: #dc2626;
+            background: var(--color-error);
+            border-color: var(--color-error);
             color: white;
         }
         .chat-component-btn:disabled {
@@ -616,7 +648,7 @@
         }
         .chat-component-timeout {
             font-size: 11px;
-            color: #64748b;
+            color: var(--color-text-muted);
             text-align: center;
             margin-top: 12px;
         }
@@ -633,26 +665,26 @@
             text-align: center;
             padding: 8px;
             font-size: 12px;
-            color: #64748b;
-            background: rgba(0,0,0,0.2);
+            color: var(--color-text-muted);
+            background: oklch(0 0 0 / 0.2);
         }
 
         /* Todo List Component */
         .chat-component.todo-list {
-            border-color: #3b82f6;
+            border-color: var(--color-info);
         }
         .chat-component.todo-list .chat-component-header {
-            background: rgba(59, 130, 246, 0.1);
+            background: oklch(0.65 0.15 240 / 0.1);
         }
         .chat-component.todo-list .chat-component-header .title {
-            color: #3b82f6;
+            color: var(--color-info);
         }
         .todo-item {
             display: flex;
             align-items: center;
             gap: 12px;
             padding: 8px 0;
-            border-bottom: 1px solid #1e293b;
+            border-bottom: 1px solid var(--color-bg-surface);
         }
         .todo-item:last-child {
             border-bottom: none;
@@ -668,22 +700,22 @@
             flex-shrink: 0;
         }
         .todo-item.pending .status-icon {
-            border: 2px solid #475569;
+            border: 2px solid var(--color-border-default);
         }
         .todo-item.in_progress .status-icon {
-            background: #3b82f6;
+            background: var(--color-info);
             animation: pulse 1.5s infinite;
         }
         .todo-item.completed .status-icon {
-            background: #22c55e;
+            background: var(--color-success);
         }
         .todo-item .content {
             flex: 1;
-            color: #e2e8f0;
+            color: var(--color-text-primary);
         }
         .todo-item.completed .content {
             text-decoration: line-through;
-            color: #64748b;
+            color: var(--color-text-muted);
         }
         @keyframes pulse {
             0%, 100% { opacity: 1; }
@@ -692,35 +724,35 @@
 
         /* User Prompt Component */
         .chat-component.user-prompt {
-            border-color: #6366f1;
+            border-color: var(--color-accent-primary);
         }
         .chat-component.user-prompt .chat-component-header {
-            background: rgba(99, 102, 241, 0.1);
+            background: oklch(0.65 0.18 260 / 0.1);
         }
         .chat-component.user-prompt .chat-component-header .title {
-            color: #6366f1;
+            color: var(--color-accent-primary);
         }
         .prompt-description {
-            color: #94a3b8;
+            color: var(--color-text-secondary);
             font-size: 14px;
             margin-bottom: 16px;
         }
         .prompt-input {
             width: 100%;
-            background: #0f172a;
-            border: 1px solid #334155;
-            border-radius: 6px;
+            background: var(--color-bg-deep);
+            border: 1px solid var(--color-border-default);
+            border-radius: var(--radius-md);
             padding: 12px;
             font-size: 14px;
-            color: #e2e8f0;
+            color: var(--color-text-primary);
             margin-bottom: 16px;
         }
         .prompt-input:focus {
             outline: none;
-            border-color: #6366f1;
+            border-color: var(--color-accent-primary);
         }
         .chat-component-btn.submit {
-            background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
+            background: linear-gradient(135deg, var(--color-accent-primary) 0%, oklch(0.55 0.20 260) 100%);
             color: white;
         }
 
@@ -731,30 +763,30 @@
         }
         .debug-entry {
             padding: 4px 0;
-            color: #8b949e;
+            color: var(--color-text-secondary);
             display: flex;
             flex-direction: column;
             gap: 2px;
-            border-bottom: 1px solid #21262d;
+            border-bottom: 1px solid var(--color-border-subtle);
         }
         .debug-entry .meta {
             display: flex;
             gap: 8px;
         }
         .debug-entry .timestamp {
-            color: #6e7681;
+            color: var(--color-text-muted);
         }
         .debug-entry .category {
-            color: #58a6ff;
+            color: var(--color-info);
         }
         .debug-entry .message {
-            color: #c9d1d9;
+            color: var(--color-text-primary);
         }
         .debug-entry.error .category {
-            color: #f85149;
+            color: var(--color-error);
         }
         .debug-entry .data {
-            color: #7ee787;
+            color: var(--color-success);
             word-break: break-all;
             font-size: 10px;
         }
@@ -766,31 +798,31 @@
         .content-pane .welcome {
             text-align: center;
             padding: 40px 20px;
-            color: #666;
+            color: var(--color-text-muted);
         }
         .content-pane .welcome h2 {
             font-size: 18px;
             margin-bottom: 8px;
-            color: #888;
+            color: var(--color-text-secondary);
         }
         .pane-content h1, .pane-content h2, .pane-content h3 {
             margin: 1em 0 0.5em;
-            color: #fff;
+            color: var(--color-text-primary);
         }
         .pane-content p {
             margin: 0.5em 0;
             line-height: 1.6;
         }
         .pane-content code {
-            background: #0f3460;
+            background: var(--color-bg-deep);
             padding: 2px 6px;
-            border-radius: 4px;
+            border-radius: var(--radius-sm);
             font-family: 'JetBrains Mono', monospace;
         }
         .pane-content pre {
-            background: #0f3460;
+            background: var(--color-bg-deep);
             padding: 16px;
-            border-radius: 8px;
+            border-radius: var(--radius-md);
             overflow-x: auto;
             margin: 1em 0;
         }
@@ -800,12 +832,12 @@
         }
         .pane-content img {
             max-width: 100%;
-            border-radius: 8px;
+            border-radius: var(--radius-md);
         }
 
         /* Typing indicator */
         .typing-indicator {
-            color: #888;
+            color: var(--color-text-muted);
             font-size: 14px;
             padding: 8px 0;
         }
@@ -842,10 +874,7 @@
     <div class="header">
         <div class="header-left">
             <button id="toggle-left-panel" class="panel-toggle" title="Toggle Left Panel">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <rect x="3" y="3" width="18" height="18" rx="2"/>
-                    <line x1="9" y1="3" x2="9" y2="21"/>
-                </svg>
+                <i class="ti ti-layout-sidebar-left-collapse"></i>
             </button>
             <h1 id="header-title" title="Vantage Point">
                 <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -862,10 +891,7 @@
         </div>
         <div class="header-right">
             <button id="toggle-right-panel" class="panel-toggle" title="Toggle Debug Panel">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <rect x="3" y="3" width="18" height="18" rx="2"/>
-                    <line x1="15" y1="3" x2="15" y2="21"/>
-                </svg>
+                <i class="ti ti-layout-sidebar-right-collapse"></i>
             </button>
         </div>
     </div>
@@ -874,6 +900,7 @@
         <!-- Left Panel - Content/Show -->
         <div id="left-panel" class="side-panel left collapsed">
             <div class="side-panel-header">
+                <i class="ti ti-file-text"></i>
                 <span>Content</span>
             </div>
             <div class="side-panel-content">
@@ -893,28 +920,33 @@
         <!-- Center Panel - Chat -->
         <div class="center-panel">
             <div id="chat-container" class="chat-container">
-                <!-- Context Area - 自動切替コンテキスト表示 -->
-                <div id="response-area" class="response-area drop-zone" data-position="0">
+                <!-- Chat Area - メッセージ表示エリア -->
+                <div id="chat-area" class="chat-area">
                     <!-- Mode Indicator Bar -->
                     <div id="context-mode-bar" class="context-mode-bar">
                         <div id="context-mode-indicator" class="context-mode-indicator idle"></div>
                         <span id="context-mode-label" class="context-mode-label">待機中</span>
                         <span id="context-mode-detail" class="context-mode-detail"></span>
                     </div>
-                    <!-- Context Stack -->
-                    <div id="context-stack" class="context-stack">
-                        <div id="current-response" class="current-response empty context-item">
-                            <div class="content"></div>
+                    <!-- History Area - チャット履歴 -->
+                    <div id="history-area" class="history-area">
+                        <div id="history-content" class="history-content">
+                            <div class="system-message">Connected to Stand</div>
                         </div>
-                        <div id="typing-indicator" class="typing-indicator context-item" style="display: none;">
-                            Stand is thinking
+                        <!-- コンポーネント・応答表示エリア -->
+                        <div id="context-stack" class="context-stack">
+                            <div id="current-response" class="current-response empty">
+                                <div class="content"></div>
+                            </div>
+                            <div id="typing-indicator" class="typing-indicator" style="display: none;">
+                                Stand is thinking
+                            </div>
                         </div>
                     </div>
                 </div>
 
-                <!-- Input Area - ドラッグ可能 -->
-                <div id="input-area" class="input-area" draggable="true" data-position="1">
-                    <div class="drag-handle" title="Drag to reorder"></div>
+                <!-- Input Area - 下部固定 -->
+                <div id="input-area" class="input-area">
                     <div class="chat-input-wrapper">
                         <textarea
                             id="chat-input"
@@ -924,21 +956,12 @@
                             autofocus
                         ></textarea>
                         <button id="chat-cancel-btn" class="chat-cancel-btn" title="Cancel Request">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <path d="M6 6l12 12M6 18L18 6"/>
-                            </svg>
+                            <i class="ti ti-x"></i>
                         </button>
                         <button id="chat-send-btn" class="chat-send-btn" disabled>
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/>
-                            </svg>
+                            <i class="ti ti-send"></i>
                         </button>
                     </div>
-                </div>
-
-                <!-- History Area - 過去のメッセージ -->
-                <div id="history-area" class="history-area drop-zone" data-position="2">
-                    <div class="system-message">Connected to Stand</div>
                 </div>
             </div>
         </div>
@@ -948,8 +971,11 @@
         <!-- Right Panel - Debug/Activity -->
         <div id="right-panel" class="side-panel right collapsed">
             <div class="side-panel-header">
+                <i class="ti ti-bug"></i>
                 <span>Debug Log</span>
-                <button id="debug-clear-btn" class="header-btn" style="margin-left: auto;">Clear</button>
+                <button id="debug-clear-btn" class="header-btn" style="margin-left: auto;">
+                    <i class="ti ti-trash"></i>
+                </button>
             </div>
             <div class="side-panel-content debug-content">
                 <div id="debug-entries"></div>
@@ -979,6 +1005,7 @@
         const currentResponseContent = currentResponse.querySelector('.content');
         const typingIndicator = document.getElementById('typing-indicator');
         const historyArea = document.getElementById('history-area');
+        const historyContent = document.getElementById('history-content');
         const chatInput = document.getElementById('chat-input');
         const chatSendBtn = document.getElementById('chat-send-btn');
         const chatCancelBtn = document.getElementById('chat-cancel-btn');
@@ -1100,6 +1127,14 @@
             element.classList.add('context-item');
             element.classList.remove('exiting');
             updateContextModeFromState();
+            scrollToBottom();
+        }
+
+        // 自動スクロール（scrollToBottomは後で定義されるので関数参照で呼び出し）
+        function scrollToBottom() {
+            if (historyArea) {
+                historyArea.scrollTop = historyArea.scrollHeight;
+            }
         }
 
         // コンテキストアイテムの削除（アニメーション付き）
@@ -1240,7 +1275,10 @@
                     setDebugMode(msg.mode);
                     break;
                 case 'chat_component':
-                    renderChatComponent(msg.component, msg.interactive);
+                    // interactive のデフォルトを true に（permission request は通常インタラクティブ）
+                    const isInteractive = msg.interactive !== false; // undefined or true -> true
+                    console.log('chat_component interactive:', msg.interactive, '->', isInteractive);
+                    renderChatComponent(msg.component, isInteractive);
                     break;
                 case 'component_dismissed':
                     dismissComponent(msg.request_id);
@@ -1301,6 +1339,7 @@
                         if (msg.role === 'assistant') {
                             currentStreamContent += event.delta;
                             currentResponseContent.innerHTML = marked.parse(currentStreamContent);
+                            scrollToBottom();
                         }
                     }
                     break;
@@ -1754,11 +1793,13 @@
                 chatCancelBtn.classList.add('visible');
                 currentResponse.classList.remove('empty');
                 updateContextModeFromState();
+                scrollToBottom();
             }
 
             if (content) {
                 currentStreamContent += content;
                 currentResponseContent.innerHTML = marked.parse(currentStreamContent);
+                scrollToBottom(); // ストリーミング中も自動スクロール
             }
 
             if (done) {
@@ -1795,18 +1836,17 @@
                 messageEl.textContent = content;
             }
 
-            // Insert at the top of history (newest first)
-            const firstChild = historyArea.firstChild;
-            if (firstChild) {
-                historyArea.insertBefore(messageEl, firstChild);
-            } else {
-                historyArea.appendChild(messageEl);
-            }
+            // Append to end of history (oldest at top, newest at bottom)
+            historyContent.appendChild(messageEl);
+
+            // Auto-scroll to bottom
+            scrollToBottom();
         }
 
         function showTypingIndicator() {
             typingIndicator.style.display = 'block';
             updateContextModeFromState();
+            scrollToBottom();
         }
 
         function hideTypingIndicator() {
@@ -1885,117 +1925,6 @@
                 chatInput.focus();
             }
         });
-
-        // ===== Input Area Drag & Drop =====
-        const chatContainer = document.getElementById('chat-container');
-        const inputArea = document.getElementById('input-area');
-        const responseArea = document.getElementById('response-area');
-        const dragHandle = inputArea.querySelector('.drag-handle');
-        let isDraggingInput = false;
-
-        // ドラッグ開始（ハンドルからのみ）
-        inputArea.addEventListener('dragstart', (e) => {
-            // ハンドル以外からのドラッグは無効
-            if (!e.target.classList.contains('drag-handle') && !dragHandle.contains(e.target)) {
-                // テキスト選択などは許可
-                const isFromHandle = e.offsetY < 20; // 上部20pxはハンドル領域
-                if (!isFromHandle) {
-                    e.preventDefault();
-                    return;
-                }
-            }
-            isDraggingInput = true;
-            inputArea.classList.add('dragging');
-            e.dataTransfer.effectAllowed = 'move';
-            e.dataTransfer.setData('text/plain', 'input-area');
-        });
-
-        inputArea.addEventListener('dragend', () => {
-            isDraggingInput = false;
-            inputArea.classList.remove('dragging');
-            clearDropIndicators();
-        });
-
-        // ドロップゾーンの設定
-        const dropZones = document.querySelectorAll('.drop-zone');
-        dropZones.forEach(zone => {
-            zone.addEventListener('dragover', (e) => {
-                if (!isDraggingInput) return;
-                e.preventDefault();
-                e.dataTransfer.dropEffect = 'move';
-
-                const rect = zone.getBoundingClientRect();
-                const midY = rect.top + rect.height / 2;
-
-                clearDropIndicators();
-                zone.classList.add('drag-over');
-                if (e.clientY < midY) {
-                    zone.classList.add('drag-over-top');
-                } else {
-                    zone.classList.add('drag-over-bottom');
-                }
-            });
-
-            zone.addEventListener('dragleave', (e) => {
-                // 子要素への移動は無視
-                if (zone.contains(e.relatedTarget)) return;
-                zone.classList.remove('drag-over', 'drag-over-top', 'drag-over-bottom');
-            });
-
-            zone.addEventListener('drop', (e) => {
-                if (!isDraggingInput) return;
-                e.preventDefault();
-
-                const rect = zone.getBoundingClientRect();
-                const midY = rect.top + rect.height / 2;
-                const insertBefore = e.clientY < midY;
-
-                if (insertBefore) {
-                    chatContainer.insertBefore(inputArea, zone);
-                } else {
-                    chatContainer.insertBefore(inputArea, zone.nextSibling);
-                }
-
-                clearDropIndicators();
-                saveInputPosition();
-            });
-        });
-
-        function clearDropIndicators() {
-            dropZones.forEach(z => {
-                z.classList.remove('drag-over', 'drag-over-top', 'drag-over-bottom');
-            });
-        }
-
-        // 位置の保存と復元
-        function saveInputPosition() {
-            const children = Array.from(chatContainer.children);
-            const position = children.indexOf(inputArea);
-            localStorage.setItem('vp-input-position', position);
-        }
-
-        function restoreInputPosition() {
-            const savedPosition = localStorage.getItem('vp-input-position');
-            if (savedPosition !== null) {
-                const position = parseInt(savedPosition, 10);
-                const children = Array.from(chatContainer.children);
-                if (position >= 0 && position < children.length) {
-                    const targetElement = children[position];
-                    if (targetElement !== inputArea) {
-                        if (position === 0) {
-                            chatContainer.insertBefore(inputArea, chatContainer.firstChild);
-                        } else if (position >= children.length - 1) {
-                            chatContainer.appendChild(inputArea);
-                        } else {
-                            chatContainer.insertBefore(inputArea, children[position + 1]);
-                        }
-                    }
-                }
-            }
-        }
-
-        // 初期化時に位置を復元
-        restoreInputPosition();
 
         // Start connection
         connect();
