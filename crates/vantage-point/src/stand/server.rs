@@ -23,6 +23,7 @@ use tower_http::cors::CorsLayer;
 
 use super::capabilities::{CapabilityConfig, StandCapabilities};
 use super::hub::Hub;
+use super::pty::PtyManager;
 use crate::agent::{AgentConfig, AgentEvent, ClaudeAgent, InteractiveClaudeAgent};
 use crate::agui::{AgUiEvent, AgUiEventBridge, MessageRole};
 use crate::capability::{ConductorCapability, ProjectInfo, RunningStand, UpdateCapability};
@@ -385,6 +386,8 @@ struct AppState {
     update: Option<Arc<RwLock<UpdateCapability>>>,
     /// Interactive Claude agent (stream-json mode for structured communication)
     interactive_agent: Arc<RwLock<Option<InteractiveClaudeAgent>>>,
+    /// PTYセッションマネージャー（ターミナル機能）
+    pty_manager: Arc<tokio::sync::Mutex<PtyManager>>,
 }
 
 impl AppState {
@@ -481,6 +484,7 @@ pub async fn run(
         conductor: None, // Conductor mode is set via run_conductor()
         update: None,    // Update capability is only for conductor mode
         interactive_agent: Arc::new(RwLock::new(None)), // Interactive agent (stream-json mode)
+        pty_manager: Arc::new(tokio::sync::Mutex::new(PtyManager::new())),
     });
 
     let app = Router::new()
@@ -1096,6 +1100,30 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                                     sessions: mgr.list(),
                                     active_id: mgr.active_id.clone(),
                                 });
+
+                                // PTYセッションを開始（まだ未起動の場合）
+                                let mut pty_mgr = state_clone.pty_manager.lock().await;
+                                if !pty_mgr.is_active() {
+                                    if let Err(e) = pty_mgr.start(
+                                        &state_clone.project_dir,
+                                        80,
+                                        24,
+                                        state_clone.hub.sender(),
+                                    ) {
+                                        tracing::warn!("Failed to start PTY session: {}", e);
+                                        state_clone.send_debug(
+                                            "terminal",
+                                            &format!("PTY起動失敗: {}", e),
+                                            None,
+                                        );
+                                    } else {
+                                        state_clone.send_debug(
+                                            "terminal",
+                                            "PTYセッション開始",
+                                            None,
+                                        );
+                                    }
+                                }
                             }
                             BrowserMessage::Pong => {
                                 // Keepalive response
@@ -1286,6 +1314,28 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                                     _ => {
                                         tracing::debug!("Unhandled component action: {:?}", action);
                                     }
+                                }
+                            }
+                            BrowserMessage::TerminalInput { data } => {
+                                // base64デコードしてPTYに書き込み
+                                use base64::Engine;
+                                let engine = base64::engine::general_purpose::STANDARD;
+                                match engine.decode(&data) {
+                                    Ok(bytes) => {
+                                        let mut pty_mgr = state_clone.pty_manager.lock().await;
+                                        if let Err(e) = pty_mgr.write(&bytes) {
+                                            tracing::warn!("PTY write error: {}", e);
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!("Terminal input base64 decode error: {}", e);
+                                    }
+                                }
+                            }
+                            BrowserMessage::TerminalResize { cols, rows } => {
+                                let pty_mgr = state_clone.pty_manager.lock().await;
+                                if let Err(e) = pty_mgr.resize(cols, rows) {
+                                    tracing::warn!("PTY resize error: {}", e);
                                 }
                             }
                         }
@@ -2494,6 +2544,7 @@ pub async fn run_conductor(port: u16) -> Result<()> {
         conductor: Some(conductor.clone()),
         update: Some(update.clone()),
         interactive_agent: Arc::new(RwLock::new(None)),
+        pty_manager: Arc::new(tokio::sync::Mutex::new(PtyManager::new())),
     });
 
     let app = Router::new()
