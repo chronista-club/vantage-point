@@ -6,10 +6,8 @@
 //! ## モジュール構成
 //!
 //! - `core`: Capabilityトレイトとライフサイクル管理（REQ-CAP-001）
-//! - `types`: 能力の分類体系（実行モデル、自律性、データフロー等）
 //! - `params`: 能力のパラメータ評価（A〜Eランク、6パラメータ）
 //! - `evolution`: 能力の成長・進化システム（ACT進化、レクイエム、覚醒）
-//! - `synergy`: 能力間の連携システム（相性分析、依存関係、協調動作）
 //!
 //! ## 関連ドキュメント
 //!
@@ -25,8 +23,6 @@ pub mod midi_capability;
 pub mod params;
 pub mod protocol_capability;
 pub mod registry;
-pub mod synergy;
-pub mod types;
 pub mod update_capability;
 
 pub use agent_capability::AgentCapability;
