@@ -12,6 +12,7 @@ pub mod capabilities;
 mod hub;
 pub mod pty;
 mod server;
+mod session;
 
 pub use capabilities::CapabilityConfig;
 pub use server::{run, run_conductor};

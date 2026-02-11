@@ -1,13 +1,22 @@
 {
-  "enabledMcpjsonServers": [
-    "gemini-cli",
-    "drawio",
-    "surrealdb",
-    "serena"
-  ],
   "permissions": {
     "allow": [
-      "Bash(but push:*)"
+      "Bash(but:*)",
+      "Bash(du:*)",
+      "Bash(find:*)",
+      "Bash(__NEW_LINE_44df6368ade9602a__ grep -n \"pub async fn run\" /Users/makoto/repos/vantage-point/crates/vantage-point/src/world/*.rs)",
+      "Bash(cargo test:*)",
+      "Bash(cargo build:*)"
     ]
-  }
+  },
+  "enabledMcpjsonServers": [
+    "drawio",
+    "surrealdb",
+    "gemini-cli",
+    "serena"
+  ],
+  "disabledMcpjsonServers": [
+    "gemini-cli",
+    "serena"
+  ]
 }
