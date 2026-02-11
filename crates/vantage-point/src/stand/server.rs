@@ -17,7 +17,7 @@ use axum::{
 };
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, broadcast};
 use tokio_util::sync::CancellationToken;
 use tower_http::cors::CorsLayer;
 
@@ -1068,10 +1068,23 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
 
     // Task: Send broadcast messages to this client
     let send_task = tokio::spawn(async move {
-        while let Ok(msg) = rx.recv().await {
-            let text = serde_json::to_string(&msg).unwrap_or_default();
-            if sender.send(Message::Text(text.into())).await.is_err() {
-                break;
+        loop {
+            match rx.recv().await {
+                Ok(msg) => {
+                    let text = serde_json::to_string(&msg).unwrap_or_default();
+                    if sender.send(Message::Text(text.into())).await.is_err() {
+                        break;
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(count)) => {
+                    // バッファオーバーフローでメッセージがスキップされた
+                    tracing::warn!("WebSocket broadcast lagged: {} messages dropped", count);
+                    // 継続して受信を試みる
+                    continue;
+                }
+                Err(broadcast::error::RecvError::Closed) => {
+                    break;
+                }
             }
         }
     });
@@ -1101,29 +1114,9 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                                     active_id: mgr.active_id.clone(),
                                 });
 
-                                // PTYセッションを開始（まだ未起動の場合）
-                                let mut pty_mgr = state_clone.pty_manager.lock().await;
-                                if !pty_mgr.is_active() {
-                                    if let Err(e) = pty_mgr.start(
-                                        &state_clone.project_dir,
-                                        80,
-                                        24,
-                                        state_clone.hub.sender(),
-                                    ) {
-                                        tracing::warn!("Failed to start PTY session: {}", e);
-                                        state_clone.send_debug(
-                                            "terminal",
-                                            &format!("PTY起動失敗: {}", e),
-                                            None,
-                                        );
-                                    } else {
-                                        state_clone.send_debug(
-                                            "terminal",
-                                            "PTYセッション開始",
-                                            None,
-                                        );
-                                    }
-                                }
+                                // PTY起動はTerminalResizeメッセージ受信時に遅延
+                                // ブラウザが正しいターミナルサイズを送信してから起動することで
+                                // 初期出力のサイズ不整合を防ぐ
                             }
                             BrowserMessage::Pong => {
                                 // Keepalive response
@@ -1333,9 +1326,33 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                                 }
                             }
                             BrowserMessage::TerminalResize { cols, rows } => {
-                                let pty_mgr = state_clone.pty_manager.lock().await;
-                                if let Err(e) = pty_mgr.resize(cols, rows) {
-                                    tracing::warn!("PTY resize error: {}", e);
+                                let mut pty_mgr = state_clone.pty_manager.lock().await;
+                                if !pty_mgr.is_active() {
+                                    // 初回TerminalResize: ブラウザの実サイズでPTYを起動
+                                    if let Err(e) = pty_mgr.start(
+                                        &state_clone.project_dir,
+                                        cols,
+                                        rows,
+                                        state_clone.hub.sender(),
+                                    ) {
+                                        tracing::warn!("Failed to start PTY session: {}", e);
+                                        state_clone.send_debug(
+                                            "terminal",
+                                            &format!("PTY起動失敗: {}", e),
+                                            None,
+                                        );
+                                    } else {
+                                        state_clone.send_debug(
+                                            "terminal",
+                                            &format!("PTYセッション開始 ({}x{})", cols, rows),
+                                            None,
+                                        );
+                                    }
+                                } else {
+                                    // 既にアクティブ: リサイズのみ
+                                    if let Err(e) = pty_mgr.resize(cols, rows) {
+                                        tracing::warn!("PTY resize error: {}", e);
+                                    }
                                 }
                             }
                         }
