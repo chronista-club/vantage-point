@@ -421,13 +421,6 @@
                     }
                 }, true);
 
-                // WKWebView マウスホイール ワークアラウンド:
-                // WKWebViewがwheelイベントをページスクロールとして消費し、
-                // ghostty-webのマウスレポーティングに届かない問題を回避
-                container.addEventListener('wheel', (e) => {
-                    e.preventDefault();
-                }, { passive: false, capture: true });
-
                 // PTY出力受信コールバックを登録
                 window.terminalWriteCallback = (bytes) => {
                     if (ghosttyTerm) {
