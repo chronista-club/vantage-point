@@ -184,7 +184,7 @@
         .side-panel {
             width: 300px;
             min-width: 200px;
-            max-width: 500px;
+            max-width: 70%;
             background: var(--color-bg-elevated);
             border-right: 1px solid var(--color-border-default);
             display: flex;
@@ -756,39 +756,18 @@
             color: white;
         }
 
-        /* ===== Right Panel - Debug/Activity ===== */
-        .debug-content {
-            font-family: 'JetBrains Mono', 'Fira Code', monospace;
-            font-size: 11px;
+        /* Debug panel CSS removed */
+
+        /* ===== Terminal Container (Main) ===== */
+        #terminal-container {
+            flex: 1;
+            width: 100%;
+            height: 100%;
+            background: oklch(0.13 0.01 260);
+            overflow: hidden;
         }
-        .debug-entry {
-            padding: 4px 0;
-            color: var(--color-text-secondary);
-            display: flex;
-            flex-direction: column;
-            gap: 2px;
-            border-bottom: 1px solid var(--color-border-subtle);
-        }
-        .debug-entry .meta {
-            display: flex;
-            gap: 8px;
-        }
-        .debug-entry .timestamp {
-            color: var(--color-text-muted);
-        }
-        .debug-entry .category {
-            color: var(--color-info);
-        }
-        .debug-entry .message {
-            color: var(--color-text-primary);
-        }
-        .debug-entry.error .category {
-            color: var(--color-error);
-        }
-        .debug-entry .data {
-            color: var(--color-success);
-            word-break: break-all;
-            font-size: 10px;
+        #terminal-container canvas {
+            display: block;
         }
 
         /* ===== Left Panel - Content/Show ===== */
@@ -873,9 +852,6 @@
 <body>
     <div class="header">
         <div class="header-left">
-            <button id="toggle-left-panel" class="panel-toggle" title="Toggle Left Panel">
-                <i class="ti ti-layout-sidebar-left-collapse"></i>
-            </button>
             <h1 id="header-title" title="Vantage Point">
                 <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                     <path d="M12 2L2 22H22L12 2Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
@@ -885,312 +861,32 @@
             </h1>
             <span id="project-name" class="project-name"></span>
             <span id="status" class="status disconnected">Disconnected</span>
-            <span id="debug-indicator" class="debug-indicator"></span>
-        </div>
-        <div class="header-center">
         </div>
         <div class="header-right">
-            <button id="toggle-right-panel" class="panel-toggle" title="Toggle Debug Panel">
-                <i class="ti ti-layout-sidebar-right-collapse"></i>
-            </button>
         </div>
     </div>
 
     <div class="main-container">
-        <!-- Left Panel - Content/Show -->
-        <div id="left-panel" class="side-panel left collapsed">
-            <div class="side-panel-header">
-                <i class="ti ti-file-text"></i>
-                <span>Content</span>
-            </div>
-            <div class="side-panel-content">
-                <div id="pane-main" class="content-pane">
-                    <div class="pane-content">
-                        <div class="welcome">
-                            <h2>Vantage Point</h2>
-                            <p>Waiting for content...</p>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <div id="resize-left" class="resize-handle" style="display: none;"></div>
-
-        <!-- Center Panel - Chat -->
-        <div class="center-panel">
-            <div id="chat-container" class="chat-container">
-                <!-- Chat Area - メッセージ表示エリア -->
-                <div id="chat-area" class="chat-area">
-                    <!-- Mode Indicator Bar -->
-                    <div id="context-mode-bar" class="context-mode-bar">
-                        <div id="context-mode-indicator" class="context-mode-indicator idle"></div>
-                        <span id="context-mode-label" class="context-mode-label">待機中</span>
-                        <span id="context-mode-detail" class="context-mode-detail"></span>
-                    </div>
-                    <!-- History Area - チャット履歴 -->
-                    <div id="history-area" class="history-area">
-                        <div id="history-content" class="history-content">
-                            <div class="system-message">Connected to Stand</div>
-                        </div>
-                        <!-- コンポーネント・応答表示エリア -->
-                        <div id="context-stack" class="context-stack">
-                            <div id="current-response" class="current-response empty">
-                                <div class="content"></div>
-                            </div>
-                            <div id="typing-indicator" class="typing-indicator" style="display: none;">
-                                Stand is thinking
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Input Area - 下部固定 -->
-                <div id="input-area" class="input-area">
-                    <div class="chat-input-wrapper">
-                        <textarea
-                            id="chat-input"
-                            class="chat-input"
-                            placeholder="Message the Stand..."
-                            rows="1"
-                            autofocus
-                        ></textarea>
-                        <button id="chat-cancel-btn" class="chat-cancel-btn" title="Cancel Request">
-                            <i class="ti ti-x"></i>
-                        </button>
-                        <button id="chat-send-btn" class="chat-send-btn" disabled>
-                            <i class="ti ti-send"></i>
-                        </button>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <div id="resize-right" class="resize-handle" style="display: none;"></div>
-
-        <!-- Right Panel - Debug/Activity -->
-        <div id="right-panel" class="side-panel right collapsed">
-            <div class="side-panel-header">
-                <i class="ti ti-bug"></i>
-                <span>Debug Log</span>
-                <button id="debug-clear-btn" class="header-btn" style="margin-left: auto;">
-                    <i class="ti ti-trash"></i>
-                </button>
-            </div>
-            <div class="side-panel-content debug-content">
-                <div id="debug-entries"></div>
-            </div>
-        </div>
+        <!-- Main Terminal -->
+        <div id="terminal-container"></div>
     </div>
 
     <script>
+        // ===== WebSocket + Terminal I/O =====
         const WS_URL = `ws://${location.host}/ws`;
         let ws = null;
         let reconnectTimer = null;
         let reconnectAttempts = 0;
         const MAX_RECONNECT_DELAY = 30000;
-        let isStreaming = false;
-        let currentStreamContent = '';
-
-        // AG-UI state tracking
-        let agUiMessages = new Map(); // message_id → { role, content }
-        let agUiCurrentRunId = null;
-        let agUiActivities = new Map(); // activity_id → activity
-        let debugMode = 'none';
-        let isComposing = false;
-        let justFinishedComposing = false;
-
-        // Elements
-        const currentResponse = document.getElementById('current-response');
-        const currentResponseContent = currentResponse.querySelector('.content');
-        const typingIndicator = document.getElementById('typing-indicator');
-        const historyArea = document.getElementById('history-area');
-        const historyContent = document.getElementById('history-content');
-        const chatInput = document.getElementById('chat-input');
-        const chatSendBtn = document.getElementById('chat-send-btn');
-        const chatCancelBtn = document.getElementById('chat-cancel-btn');
-        const debugEntries = document.getElementById('debug-entries');
-        const debugClearBtn = document.getElementById('debug-clear-btn');
-        const debugIndicator = document.getElementById('debug-indicator');
-        const leftPanel = document.getElementById('left-panel');
-        const rightPanel = document.getElementById('right-panel');
-        const toggleLeftBtn = document.getElementById('toggle-left-panel');
-        const toggleRightBtn = document.getElementById('toggle-right-panel');
-        const resizeLeft = document.getElementById('resize-left');
-        const resizeRight = document.getElementById('resize-right');
-
-        // Context Mode Elements
-        const contextModeBar = document.getElementById('context-mode-bar');
-        const contextModeIndicator = document.getElementById('context-mode-indicator');
-        const contextModeLabel = document.getElementById('context-mode-label');
-        const contextModeDetail = document.getElementById('context-mode-detail');
-        const contextStack = document.getElementById('context-stack');
-
-        // Panel Toggle Functions
-        function toggleLeftPanel() {
-            leftPanel.classList.toggle('collapsed');
-            toggleLeftBtn.classList.toggle('active');
-            resizeLeft.style.display = leftPanel.classList.contains('collapsed') ? 'none' : 'block';
-        }
-
-        function toggleRightPanel() {
-            rightPanel.classList.toggle('collapsed');
-            toggleRightBtn.classList.toggle('active');
-            resizeRight.style.display = rightPanel.classList.contains('collapsed') ? 'none' : 'block';
-        }
-
-        toggleLeftBtn.addEventListener('click', toggleLeftPanel);
-        toggleRightBtn.addEventListener('click', toggleRightPanel);
-
-        // ===== Context Mode Management =====
-        // モード定義（優先度順: 高い数字 = 高優先度）
-        const CONTEXT_MODES = {
-            idle: { priority: 0, label: '待機中', color: 'idle' },
-            thinking: { priority: 10, label: '考え中', color: 'thinking' },
-            responding: { priority: 20, label: '返答中', color: 'responding' },
-            todo: { priority: 30, label: 'タスク進行中', color: 'todo' },
-            prompt: { priority: 40, label: '入力待ち', color: 'prompt' },
-            permission: { priority: 50, label: '許可待ち', color: 'permission' }
-        };
-
-        let currentContextMode = 'idle';
-        let activeContextItems = new Set(); // 現在アクティブなコンテキストアイテムのID
-
-        function setContextMode(mode, detail = '') {
-            const modeConfig = CONTEXT_MODES[mode] || CONTEXT_MODES.idle;
-            currentContextMode = mode;
-
-            // Update indicator
-            contextModeIndicator.className = `context-mode-indicator ${modeConfig.color}`;
-            contextModeLabel.textContent = modeConfig.label;
-            contextModeDetail.textContent = detail;
-
-            // Show/hide mode bar
-            if (mode === 'idle' && activeContextItems.size === 0) {
-                contextModeBar.classList.remove('visible');
-            } else {
-                contextModeBar.classList.add('visible');
-            }
-        }
-
-        function updateContextModeFromState() {
-            // 優先度に基づいてモードを決定
-            let highestPriority = 0;
-            let selectedMode = 'idle';
-            let detail = '';
-
-            // Permission request check
-            const pendingPermission = document.querySelector('.chat-component.permission-request:not(.resolved)');
-            if (pendingPermission) {
-                const toolName = pendingPermission.querySelector('.tool-name')?.textContent || '';
-                setContextMode('permission', toolName);
-                return;
-            }
-
-            // User prompt check
-            const pendingPrompt = document.querySelector('.chat-component.user-prompt:not(.resolved)');
-            if (pendingPrompt) {
-                const title = pendingPrompt.querySelector('.title')?.textContent || '';
-                setContextMode('prompt', title);
-                return;
-            }
-
-            // Todo list check
-            const todoList = document.querySelector('.chat-component.todo-list');
-            if (todoList) {
-                const inProgress = todoList.querySelectorAll('.todo-item.in_progress').length;
-                if (inProgress > 0) {
-                    setContextMode('todo', `${inProgress}件実行中`);
-                    return;
-                }
-            }
-
-            // Streaming/Responding check
-            if (isStreaming) {
-                setContextMode('responding');
-                return;
-            }
-
-            // Thinking check
-            if (typingIndicator.style.display !== 'none') {
-                setContextMode('thinking');
-                return;
-            }
-
-            // Default to idle
-            setContextMode('idle');
-        }
-
-        // コンテキストアイテムの追加（アニメーション付き）
-        function addContextItem(element, id) {
-            if (id) activeContextItems.add(id);
-            element.classList.add('context-item');
-            element.classList.remove('exiting');
-            updateContextModeFromState();
-            scrollToBottom();
-        }
-
-        // 自動スクロール（scrollToBottomは後で定義されるので関数参照で呼び出し）
-        function scrollToBottom() {
-            if (historyArea) {
-                historyArea.scrollTop = historyArea.scrollHeight;
-            }
-        }
-
-        // コンテキストアイテムの削除（アニメーション付き）
-        function removeContextItem(element, id) {
-            if (id) activeContextItems.delete(id);
-            element.classList.add('exiting');
-            setTimeout(() => {
-                if (element.classList.contains('exiting')) {
-                    element.style.display = 'none';
-                    element.classList.remove('exiting');
-                }
-                updateContextModeFromState();
-            }, 200);
-        }
-
-        // Resize functionality
-        let isResizing = null;
-
-        function startResize(panel, handle, e) {
-            isResizing = { panel, handle, startX: e.clientX, startWidth: panel.offsetWidth };
-            handle.classList.add('dragging');
-            document.body.style.cursor = 'col-resize';
-            document.body.style.userSelect = 'none';
-            e.preventDefault();
-        }
-
-        resizeLeft.addEventListener('mousedown', (e) => startResize(leftPanel, resizeLeft, e));
-        resizeRight.addEventListener('mousedown', (e) => startResize(rightPanel, resizeRight, e));
-
-        document.addEventListener('mousemove', (e) => {
-            if (!isResizing) return;
-            const { panel, startX, startWidth } = isResizing;
-            const isLeft = panel === leftPanel;
-            const delta = isLeft ? (e.clientX - startX) : (startX - e.clientX);
-            const newWidth = Math.max(200, Math.min(500, startWidth + delta));
-            panel.style.width = newWidth + 'px';
-        });
-
-        document.addEventListener('mouseup', () => {
-            if (isResizing) {
-                isResizing.handle.classList.remove('dragging');
-                isResizing = null;
-                document.body.style.cursor = '';
-                document.body.style.userSelect = '';
-            }
-        });
 
         function connect() {
             ws = new WebSocket(WS_URL);
 
             ws.onopen = async () => {
-                console.log('Connected to vpa');
+                console.log('Connected to Stand');
                 reconnectAttempts = 0;
                 document.getElementById('status').textContent = 'Connected';
                 document.getElementById('status').className = 'status connected';
-                chatSendBtn.disabled = false;
                 ws.send(JSON.stringify({ type: 'ready' }));
 
                 try {
@@ -1202,29 +898,17 @@
                         projectNameEl.textContent = projectName;
                         projectNameEl.classList.add('visible');
                         document.title = `${projectName} - Vantage Point`;
-
-                        // Update Stand name in UI elements
-                        document.getElementById('typing-indicator').textContent = `${projectName} is thinking`;
-                        document.querySelector('.history-area .system-message').textContent = `Connected to ${projectName}`;
-                        document.getElementById('chat-input').placeholder = `Message ${projectName}...`;
                     }
                 } catch (e) {
                     console.log('Could not fetch project info:', e);
                 }
-
-                // Auto focus input
-                chatInput.focus();
             };
 
             ws.onclose = () => {
-                console.log('Disconnected from vpa');
                 document.getElementById('status').className = 'status disconnected';
-                chatSendBtn.disabled = true;
-
                 reconnectAttempts++;
                 const delay = Math.min(1000 * Math.pow(2, reconnectAttempts - 1), MAX_RECONNECT_DELAY);
                 document.getElementById('status').textContent = `Reconnecting in ${Math.round(delay/1000)}s...`;
-
                 if (reconnectTimer) clearTimeout(reconnectTimer);
                 reconnectTimer = setTimeout(connect, delay);
             };
@@ -1244,688 +928,133 @@
         }
 
         function handleMessage(msg) {
-            console.log('Received:', msg);
-
             switch (msg.type) {
-                case 'show':
-                    showContent(msg.pane_id || 'main', msg.content, msg.append);
-                    if (leftPanel.classList.contains('collapsed')) {
-                        toggleLeftPanel();
-                    }
-                    break;
-                case 'clear':
-                    clearPane(msg.pane_id || 'main');
-                    break;
-                case 'toggle_pane':
-                    handleTogglePane(msg.pane_id, msg.visible);
-                    break;
                 case 'ping':
                     ws.send(JSON.stringify({ type: 'pong' }));
                     break;
-                case 'chat_message':
-                    addChatMessage(msg.message.role, msg.message.content);
-                    break;
-                case 'chat_chunk':
-                    handleChatChunk(msg.content, msg.done);
-                    break;
-                case 'debug_info':
-                    handleDebugInfo(msg);
-                    break;
-                case 'debug_mode_changed':
-                    setDebugMode(msg.mode);
-                    break;
-                case 'chat_component':
-                    // interactive のデフォルトを true に（permission request は通常インタラクティブ）
-                    const isInteractive = msg.interactive !== false; // undefined or true -> true
-                    console.log('chat_component interactive:', msg.interactive, '->', isInteractive);
-                    renderChatComponent(msg.component, isInteractive);
-                    break;
-                case 'component_dismissed':
-                    dismissComponent(msg.request_id);
-                    break;
-                case 'ag_ui':
-                    handleAgUiEvent(msg.event);
-                    break;
-            }
-        }
-
-        // AG-UI Event Handler
-        function handleAgUiEvent(event) {
-            console.log('AG-UI Event:', event.type, event);
-            switch (event.type) {
-                // === Lifecycle Events ===
-                case 'RUN_STARTED':
-                    agUiCurrentRunId = event.run_id;
-                    addDebugEntry('lifecycle', `Run started: ${event.run_id}`, 'running');
-                    showTypingIndicator();
-                    break;
-
-                case 'RUN_FINISHED':
-                    addDebugEntry('lifecycle', `Run finished: ${event.run_id}`, 'done');
-                    hideTypingIndicator();
-                    agUiCurrentRunId = null;
-                    agUiMessages.clear();
-                    break;
-
-                case 'RUN_ERROR':
-                    addDebugEntry('lifecycle', `Run error: ${event.error?.message || 'Unknown error'}`, 'error');
-                    hideTypingIndicator();
-                    if (event.error?.message) {
-                        addToHistory('assistant', `⚠️ Error: ${event.error.message}`);
-                    }
-                    agUiCurrentRunId = null;
-                    break;
-
-                // === Text Message Events ===
-                case 'TEXT_MESSAGE_START':
-                    agUiMessages.set(event.message_id, { role: event.role, content: '' });
-                    if (event.role === 'assistant') {
-                        // Start streaming display
-                        if (!isStreaming) {
-                            isStreaming = true;
-                            currentStreamContent = '';
-                            chatCancelBtn.classList.add('visible');
-                            currentResponse.classList.remove('empty');
-                            updateContextModeFromState();
-                        }
-                    }
-                    addDebugEntry('message', `Message start: ${event.message_id} (${event.role})`, 'running');
-                    break;
-
-                case 'TEXT_MESSAGE_CONTENT':
-                    const msg = agUiMessages.get(event.message_id);
-                    if (msg) {
-                        msg.content += event.delta;
-                        if (msg.role === 'assistant') {
-                            currentStreamContent += event.delta;
-                            currentResponseContent.innerHTML = marked.parse(currentStreamContent);
-                            scrollToBottom();
+                case 'terminal_output':
+                    if (window.terminalWriteCallback && msg.data) {
+                        try {
+                            const binaryStr = atob(msg.data);
+                            const bytes = new Uint8Array(binaryStr.length);
+                            for (let i = 0; i < binaryStr.length; i++) {
+                                bytes[i] = binaryStr.charCodeAt(i);
+                            }
+                            window.terminalWriteCallback(bytes);
+                        } catch (e) {
+                            console.error('Terminal output decode error:', e);
                         }
                     }
                     break;
-
-                case 'TEXT_MESSAGE_END':
-                    const endMsg = agUiMessages.get(event.message_id);
-                    if (endMsg && endMsg.role === 'assistant' && currentStreamContent) {
-                        // 先にcurrent-responseをクリアしてから履歴に追加（二重表示防止）
-                        const contentToAdd = currentStreamContent;
-                        currentResponse.classList.add('empty');
-                        currentResponseContent.innerHTML = '';
-                        isStreaming = false;
-                        currentStreamContent = '';
-                        chatCancelBtn.classList.remove('visible');
-                        // 履歴に追加
-                        addToHistory('assistant', contentToAdd);
-                        updateContextModeFromState();
-                    }
-                    agUiMessages.delete(event.message_id);
-                    addDebugEntry('message', `Message end: ${event.message_id}`, 'done');
+                case 'terminal_ready':
+                    console.log('Terminal PTY session ready');
                     break;
-
-                // === Tool Call Events ===
-                case 'TOOL_CALL_START':
-                    addDebugEntry('tool', `Tool: ${event.tool_name}`, 'running');
-                    break;
-
-                case 'TOOL_CALL_END':
-                    const status = event.error ? 'error' : 'done';
-                    const result = event.error || (event.result ? JSON.stringify(event.result).substring(0, 100) : 'OK');
-                    addDebugEntry('tool', `Tool ${event.tool_call_id}: ${result}`, status);
-                    break;
-
-                // === User Prompt Events ===
-                case 'USER_PROMPT':
-                    renderUserPrompt(event, true);
-                    break;
-
-                // === Activity Events ===
-                case 'ACTIVITY_SNAPSHOT':
-                    agUiActivities.clear();
-                    if (event.activities) {
-                        event.activities.forEach(a => agUiActivities.set(a.id, a));
-                    }
-                    renderActivities();
-                    break;
-
-                case 'ACTIVITY_DELTA':
-                    if (event.upsert) {
-                        event.upsert.forEach(a => agUiActivities.set(a.id, a));
-                    }
-                    if (event.remove) {
-                        event.remove.forEach(id => agUiActivities.delete(id));
-                    }
-                    renderActivities();
-                    break;
-
-                // === State Sync Events ===
-                case 'STATE_SNAPSHOT':
-                    addDebugEntry('state', 'State snapshot received', 'info');
-                    break;
-
-                case 'STATE_DELTA':
-                    addDebugEntry('state', `State delta: ${event.delta?.length || 0} ops`, 'info');
-                    break;
-
-                // === Custom Events ===
-                case 'CUSTOM':
-                    addDebugEntry('custom', `${event.name}: ${JSON.stringify(event.data).substring(0, 50)}`, 'info');
-                    break;
-
                 default:
-                    addDebugEntry('agui', `Unknown event: ${event.type}`, 'info');
-            }
-        }
-
-        // Render activity list in debug panel
-        function renderActivities() {
-            if (agUiActivities.size === 0) return;
-
-            const activities = Array.from(agUiActivities.values());
-            activities.forEach(a => {
-                const statusEmoji = {
-                    'pending': '⏳',
-                    'running': '🔄',
-                    'completed': '✅',
-                    'error': '❌',
-                    'cancelled': '🚫'
-                }[a.status] || '❓';
-
-                const progress = a.progress ? ` (${a.progress.current}/${a.progress.total})` : '';
-                addDebugEntry('activity', `${statusEmoji} ${a.label}${progress}`, a.status);
-            });
-        }
-
-        function addDebugEntry(category, message, status) {
-            const entry = document.createElement('div');
-            entry.className = 'debug-entry';
-            const timestamp = new Date().toLocaleTimeString('ja-JP', {
-                hour: '2-digit',
-                minute: '2-digit',
-                second: '2-digit'
-            });
-            entry.innerHTML = `
-                <div class="meta">
-                    <span class="timestamp">${timestamp}</span>
-                    <span class="category">[${category}]</span>
-                    <span class="message">${escapeHtml(message)}</span>
-                </div>
-            `;
-            debugEntries.appendChild(entry);
-            debugEntries.scrollTop = debugEntries.scrollHeight;
-        }
-
-        function renderChatComponent(component, interactive) {
-            switch (component.component) {
-                case 'permission_request':
-                    renderPermissionRequest(component, interactive);
-                    break;
-                case 'todo_list':
-                    renderTodoList(component);
-                    break;
-                case 'tool_execution':
-                    addDebugEntry('tool', `Executing: ${component.tool_name || 'unknown'}`, 'running');
+                    // その他のメッセージはconsoleに記録
+                    console.debug('WS:', msg.type, msg);
                     break;
             }
         }
 
-        function renderPermissionRequest(data, interactive) {
-            const { request_id, tool_name, description, input, timeout_seconds } = data;
-            const componentEl = document.createElement('div');
-            componentEl.className = 'chat-component permission-request';
-            componentEl.id = `component-${request_id}`;
-            componentEl.dataset.requestId = request_id;
-            const inputStr = typeof input === 'object' ? JSON.stringify(input, null, 2) : String(input);
-            componentEl.innerHTML = `
-                <div class="chat-component-header">
-                    <span class="icon">🔐</span>
-                    <span class="title">Permission Request</span>
-                    <span class="tool-name">${escapeHtml(tool_name)}</span>
-                </div>
-                <div class="chat-component-body">
-                    ${description ? `<p style="margin-bottom: 12px; color: #94a3b8;">${escapeHtml(description)}</p>` : ''}
-                    <div class="input-preview">
-                        <pre>${escapeHtml(inputStr)}</pre>
-                    </div>
-                    ${interactive ? `
-                    <div class="chat-component-actions">
-                        <button class="chat-component-btn deny" onclick="handlePermissionDeny('${request_id}')">Deny</button>
-                        <button class="chat-component-btn approve" onclick="handlePermissionApprove('${request_id}')">Allow</button>
-                    </div>
-                    <div class="chat-component-timeout">Timeout in ${timeout_seconds}s</div>
-                    ` : ''}
-                </div>
-            `;
-            // Show in context stack (above input)
-            componentEl.classList.add('context-item');
-            contextStack.appendChild(componentEl);
-            currentResponse.classList.add('empty'); // Hide default response area
-            addContextItem(componentEl, request_id);
-
-            if (interactive && timeout_seconds > 0) {
-                startTimeoutCountdown(request_id, timeout_seconds);
+        // ターミナルI/O用グローバル関数
+        window.sendTerminalResize = function(cols, rows) {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'terminal_resize', cols, rows }));
             }
-            updateContextModeFromState();
-        }
+        };
 
-        function renderTodoList(data) {
-            const { items, title } = data;
-            let componentEl = document.querySelector('.chat-component.todo-list');
-            const isNew = !componentEl;
-            if (!componentEl) {
-                componentEl = document.createElement('div');
-                componentEl.className = 'chat-component todo-list context-item';
-                // Show in context stack
-                contextStack.appendChild(componentEl);
+        window.sendTerminalInput = function(data) {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                const encoder = new TextEncoder();
+                const bytes = encoder.encode(data);
+                const base64 = btoa(String.fromCharCode(...bytes));
+                ws.send(JSON.stringify({ type: 'terminal_input', data: base64 }));
             }
-            const itemsHtml = items.map(item => `
-                <div class="todo-item ${item.status}">
-                    <div class="status-icon">${item.status === 'completed' ? '✓' : item.status === 'in_progress' ? '●' : ''}</div>
-                    <span class="content">${escapeHtml(item.status === 'in_progress' && item.active_form ? item.active_form : item.content)}</span>
-                </div>
-            `).join('');
-            componentEl.innerHTML = `
-                <div class="chat-component-header">
-                    <span class="icon">📋</span>
-                    <span class="title">${title || 'Tasks'}</span>
-                </div>
-                <div class="chat-component-body">${itemsHtml}</div>
-            `;
-            if (isNew) addContextItem(componentEl, 'todo-list');
-            updateContextModeFromState();
-        }
+        };
 
-        function renderUserPrompt(event, interactive) {
-            const { request_id, prompt_type, title, description, options, default_value, timeout_seconds } = event;
-            const componentEl = document.createElement('div');
-            componentEl.className = `chat-component user-prompt prompt-${prompt_type}`;
-            componentEl.id = `component-${request_id}`;
-            componentEl.dataset.requestId = request_id;
-            const icon = { 'confirm': '❓', 'input': '✏️', 'select': '📋', 'multi_select': '☑️' }[prompt_type] || '💬';
-            let bodyContent = description ? `<p class="prompt-description">${escapeHtml(description)}</p>` : '';
+        window.terminalWriteCallback = null;
 
-            switch (prompt_type) {
-                case 'confirm':
-                    bodyContent += `
-                        <div class="chat-component-actions">
-                            <button class="chat-component-btn deny" onclick="handleUserPromptResponse('${request_id}', 'rejected')">No</button>
-                            <button class="chat-component-btn approve" onclick="handleUserPromptResponse('${request_id}', 'approved')">Yes</button>
-                        </div>
-                    `;
-                    break;
-                case 'input':
-                    bodyContent += `
-                        <input type="text" id="prompt-input-${request_id}" class="prompt-input" placeholder="Type your response..." value="${default_value || ''}" onkeydown="if(event.key==='Enter') handleUserPromptInputSubmit('${request_id}')">
-                        <div class="chat-component-actions">
-                            <button class="chat-component-btn submit" onclick="handleUserPromptInputSubmit('${request_id}')">Submit</button>
-                        </div>
-                    `;
-                    break;
-                case 'select':
-                    if (options && options.length > 0) {
-                        bodyContent += options.map(opt => `
-                            <button class="chat-component-btn" style="margin: 4px;" onclick="handleUserPromptSelect('${request_id}', '${opt.id}')">
-                                ${escapeHtml(opt.label)}
-                            </button>
-                        `).join('');
-                    }
-                    break;
-            }
-
-            componentEl.innerHTML = `
-                <div class="chat-component-header">
-                    <span class="icon">${icon}</span>
-                    <span class="title">${escapeHtml(title)}</span>
-                </div>
-                <div class="chat-component-body">
-                    ${bodyContent}
-                    ${interactive ? `<div class="chat-component-timeout">Timeout in ${timeout_seconds || 300}s</div>` : ''}
-                </div>
-            `;
-            // コンテキストスタックに追加
-            contextStack.insertBefore(componentEl, contextStack.firstChild);
-            addContextItem(componentEl, `prompt-${request_id}`);
-            updateContextModeFromState();
-        }
-
-        function handleUserPromptResponse(requestId, outcome, message, selectedOptions) {
-            if (!ws || ws.readyState !== WebSocket.OPEN) return;
-            ws.send(JSON.stringify({
-                type: 'component_action',
-                action: { action: 'user_prompt_submit', request_id: requestId, outcome, message: message || null, selected_options: selectedOptions || null }
-            }));
-            const componentEl = document.getElementById(`component-${requestId}`);
-            if (componentEl) {
-                componentEl.classList.add('resolved');
-                componentEl.dataset.resolution = outcome === 'approved' ? '✓ Submitted' : '✗ Cancelled';
-                // コンテキストスタックから削除（アニメーション付き）
-                setTimeout(() => {
-                    removeContextItem(componentEl, `prompt-${requestId}`);
-                    setTimeout(() => componentEl.remove(), 300);
-                }, 500);
-            }
-        }
-
-        function handleUserPromptInputSubmit(requestId) {
-            const inputEl = document.getElementById(`prompt-input-${requestId}`);
-            handleUserPromptResponse(requestId, 'approved', inputEl ? inputEl.value.trim() : '', null);
-        }
-
-        function handleUserPromptSelect(requestId, optionId) {
-            handleUserPromptResponse(requestId, 'approved', null, [optionId]);
-        }
-
-        function startTimeoutCountdown(requestId, timeoutSeconds) {
-            let remaining = timeoutSeconds;
-            const componentEl = document.getElementById(`component-${requestId}`);
-            if (!componentEl) return;
-            const timeoutEl = componentEl.querySelector('.chat-component-timeout');
-            if (!timeoutEl) return;
-            const interval = setInterval(() => {
-                remaining--;
-                if (remaining <= 0) {
-                    clearInterval(interval);
-                    timeoutEl.textContent = 'Timed out';
-                    handlePermissionDeny(requestId);
-                } else {
-                    timeoutEl.textContent = `Timeout in ${remaining}s`;
-                }
-            }, 1000);
-            componentEl.dataset.intervalId = interval;
-        }
-
-        function handlePermissionApprove(requestId) {
-            if (!ws || ws.readyState !== WebSocket.OPEN) return;
-            ws.send(JSON.stringify({ type: 'component_action', action: { action: 'permission_approve', request_id: requestId } }));
-            const componentEl = document.getElementById(`component-${requestId}`);
-            if (componentEl) {
-                componentEl.classList.add('resolved');
-                componentEl.dataset.resolution = '✓ Allowed';
-                clearComponentInterval(componentEl);
-                // コンテキストスタックから削除（アニメーション付き）
-                setTimeout(() => {
-                    removeContextItem(componentEl, requestId);
-                    setTimeout(() => componentEl.remove(), 300);
-                }, 500);
-            }
-        }
-
-        function handlePermissionDeny(requestId) {
-            if (!ws || ws.readyState !== WebSocket.OPEN) return;
-            ws.send(JSON.stringify({ type: 'component_action', action: { action: 'permission_deny', request_id: requestId, message: 'User denied permission' } }));
-            const componentEl = document.getElementById(`component-${requestId}`);
-            if (componentEl) {
-                componentEl.classList.add('resolved');
-                componentEl.dataset.resolution = '✗ Denied';
-                clearComponentInterval(componentEl);
-                // コンテキストスタックから削除（アニメーション付き）
-                setTimeout(() => {
-                    removeContextItem(componentEl, requestId);
-                    setTimeout(() => componentEl.remove(), 300);
-                }, 500);
-            }
-        }
-
-        function dismissComponent(requestId) {
-            const componentEl = document.getElementById(`component-${requestId}`);
-            if (componentEl) {
-                componentEl.classList.add('resolved');
-                clearComponentInterval(componentEl);
-            }
-        }
-
-        function clearComponentInterval(componentEl) {
-            const intervalId = componentEl.dataset.intervalId;
-            if (intervalId) clearInterval(parseInt(intervalId));
-        }
-
-        function setDebugMode(mode) {
-            debugMode = mode;
-            if (mode === 'none') {
-                debugIndicator.classList.remove('visible');
-            } else {
-                debugIndicator.classList.add('visible');
-                debugIndicator.textContent = mode === 'simple' ? 'DEBUG' : 'DEBUG (detail)';
-                debugIndicator.className = `debug-indicator visible ${mode}`;
-            }
-        }
-
-        function handleDebugInfo(msg) {
-            const entry = document.createElement('div');
-            entry.className = `debug-entry ${msg.category === 'error' ? 'error' : ''}`;
-            const timestamp = new Date().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-            entry.innerHTML = `
-                <div class="meta">
-                    <span class="timestamp">${timestamp}</span>
-                    <span class="category">[${msg.category}]</span>
-                    <span class="message">${escapeHtml(msg.message)}</span>
-                </div>
-                ${msg.data && debugMode === 'detail' ? `<div class="data">${JSON.stringify(msg.data, null, 2)}</div>` : ''}
-            `;
-            debugEntries.appendChild(entry);
-            debugEntries.scrollTop = debugEntries.scrollHeight;
-        }
-
-        function getPane(paneId) {
-            let pane = document.getElementById(`pane-${paneId}`);
-            if (!pane) {
-                pane = document.createElement('div');
-                pane.id = `pane-${paneId}`;
-                pane.className = 'content-pane';
-                pane.innerHTML = '<div class="pane-content"></div>';
-                document.querySelector('#left-panel .side-panel-content').appendChild(pane);
-            }
-            return pane.querySelector('.pane-content');
-        }
-
-        function showContent(paneId, content, append) {
-            const paneContent = getPane(paneId);
-            let html = '';
-            if (content.log) {
-                html = `<div class="log-entry">${escapeHtml(content.log)}</div>`;
-            } else if (content.markdown) {
-                html = marked.parse(content.markdown);
-            } else if (content.image_base64) {
-                html = `<img src="data:${content.image_base64.mime_type};base64,${content.image_base64.data}" alt="Image">`;
-            } else if (content.html) {
-                html = content.html;
-            }
-            if (append) {
-                paneContent.innerHTML += html;
-            } else {
-                paneContent.innerHTML = html;
-            }
-        }
-
-        function clearPane(paneId) {
-            const paneContent = getPane(paneId);
-            paneContent.innerHTML = '';
-        }
-
-        function handleTogglePane(paneId, visible) {
-            if (paneId === 'left') {
-                if (visible === true && leftPanel.classList.contains('collapsed')) {
-                    toggleLeftPanel();
-                } else if (visible === false && !leftPanel.classList.contains('collapsed')) {
-                    toggleLeftPanel();
-                } else if (visible === undefined || visible === null) {
-                    toggleLeftPanel();
-                }
-            } else if (paneId === 'right') {
-                if (visible === true && rightPanel.classList.contains('collapsed')) {
-                    toggleRightPanel();
-                } else if (visible === false && !rightPanel.classList.contains('collapsed')) {
-                    toggleRightPanel();
-                } else if (visible === undefined || visible === null) {
-                    toggleRightPanel();
-                }
-            }
-        }
-
-        function escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
-        }
-
-        // Chat functions - New Flow Layout
-        function addChatMessage(role, content) {
-            hideTypingIndicator();
-
-            if (role === 'assistant') {
-                // Show in response area first
-                currentResponse.classList.remove('empty');
-                currentResponseContent.innerHTML = marked.parse(content);
-            } else if (role === 'user') {
-                // User messages go directly to history
-                addToHistory('user', content);
-            }
-        }
-
-        function handleChatChunk(content, done) {
-            // AG-UIモード中はchat_chunkを無視（重複防止）
-            if (agUiCurrentRunId) {
-                return;
-            }
-
-            hideTypingIndicator();
-
-            if (!isStreaming && content) {
-                isStreaming = true;
-                currentStreamContent = '';
-                chatCancelBtn.classList.add('visible');
-                currentResponse.classList.remove('empty');
-                updateContextModeFromState();
-                scrollToBottom();
-            }
-
-            if (content) {
-                currentStreamContent += content;
-                currentResponseContent.innerHTML = marked.parse(currentStreamContent);
-                scrollToBottom(); // ストリーミング中も自動スクロール
-            }
-
-            if (done) {
-                // 先にcurrent-responseをクリアしてから履歴に追加（二重表示防止）
-                const contentToAdd = currentStreamContent;
-                currentResponse.classList.add('empty');
-                currentResponseContent.innerHTML = '';
-                isStreaming = false;
-                currentStreamContent = '';
-                chatCancelBtn.classList.remove('visible');
-
-                // 履歴に追加
-                if (contentToAdd) {
-                    addToHistory('assistant', contentToAdd);
-                }
-                updateContextModeFromState();
-            }
-        }
-
-        function addToHistory(role, content) {
-            const messageEl = document.createElement('div');
-            messageEl.className = `history-message ${role}`;
-
-            if (role === 'assistant') {
-                const contentEl = document.createElement('div');
-                contentEl.className = 'content';
-                contentEl.innerHTML = marked.parse(content);
-                messageEl.appendChild(contentEl);
-            } else {
-                messageEl.textContent = content;
-            }
-
-            // Append to end of history (oldest at top, newest at bottom)
-            historyContent.appendChild(messageEl);
-
-            // Auto-scroll to bottom
-            scrollToBottom();
-        }
-
-        function showTypingIndicator() {
-            typingIndicator.style.display = 'block';
-            updateContextModeFromState();
-            scrollToBottom();
-        }
-
-        function hideTypingIndicator() {
-            typingIndicator.style.display = 'none';
-            updateContextModeFromState();
-        }
-
-        function sendChatMessage() {
-            const message = chatInput.value.trim();
-            if (!message || !ws || ws.readyState !== WebSocket.OPEN) return;
-
-            // Add user message to history
-            addToHistory('user', message);
-
-            ws.send(JSON.stringify({ type: 'chat', message: message }));
-            chatInput.value = '';
-            autoResizeTextarea();
-            showTypingIndicator();
-            chatCancelBtn.classList.add('visible');
-        }
-
-        function cancelChatRequest() {
-            if (!ws || ws.readyState !== WebSocket.OPEN) return;
-            ws.send(JSON.stringify({ type: 'cancel_chat' }));
-            hideTypingIndicator();
-            chatCancelBtn.classList.remove('visible');
-
-            if (isStreaming) {
-                // Move incomplete response to history with [Cancelled] marker
-                if (currentStreamContent) {
-                    addToHistory('assistant', currentStreamContent + '\n\n[Cancelled]');
-                }
-                currentResponse.classList.add('empty');
-                currentResponseContent.innerHTML = '';
-                isStreaming = false;
-                currentStreamContent = '';
-            }
-        }
-
-        function autoResizeTextarea() {
-            chatInput.style.height = 'auto';
-            chatInput.style.height = Math.min(chatInput.scrollHeight, 120) + 'px';
-        }
-
-        // Event listeners
-        chatInput.addEventListener('input', () => {
-            autoResizeTextarea();
-            chatSendBtn.disabled = !chatInput.value.trim();
-        });
-
-        chatInput.addEventListener('compositionstart', () => { isComposing = true; });
-        chatInput.addEventListener('compositionend', () => {
-            isComposing = false;
-            justFinishedComposing = true;
-            setTimeout(() => { justFinishedComposing = false; }, 100);
-        });
-
-        chatInput.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-                if (e.isComposing || isComposing || justFinishedComposing || e.keyCode === 229) return;
-                e.preventDefault();
-                sendChatMessage();
-            }
-        });
-
-        chatSendBtn.addEventListener('click', sendChatMessage);
-        chatCancelBtn.addEventListener('click', cancelChatRequest);
-        debugClearBtn.addEventListener('click', () => { debugEntries.innerHTML = ''; });
-
-        // Keep input focused
-        document.addEventListener('keydown', (e) => {
-            // If not typing in an input field, focus the chat input
-            if (document.activeElement.tagName !== 'INPUT' &&
-                document.activeElement.tagName !== 'TEXTAREA' &&
-                !e.metaKey && !e.ctrlKey && !e.altKey) {
-                chatInput.focus();
-            }
-        });
-
-        // Start connection
+        // 接続開始
         connect();
+    </script>
+
+    <!-- ghostty-web ターミナル初期化（ESモジュール） -->
+    <script type="module">
+        import { init, Terminal, FitAddon } from 'https://cdn.jsdelivr.net/npm/ghostty-web@0.4.0/dist/ghostty-web.js';
+
+        let ghosttyTerm = null;
+        let fitAddon = null;
+
+        async function initTerminal() {
+            try {
+                await init();
+                console.log('ghostty-web WASM initialized');
+
+                ghosttyTerm = new Terminal({
+                    fontSize: 14,
+                    fontFamily: "'JetBrains Mono', 'Fira Code', 'SF Mono', monospace",
+                    theme: {
+                        background: '#1e1f2e',
+                        foreground: '#a9b1d6',
+                        cursor: '#c0caf5',
+                        selectionBackground: '#33467c',
+                    },
+                });
+
+                const container = document.getElementById('terminal-container');
+                ghosttyTerm.open(container);
+
+                // FitAddon でコンテナに合わせてリサイズ
+                fitAddon = new FitAddon();
+                ghosttyTerm.loadAddon(fitAddon);
+
+                // 初回フィット
+                requestAnimationFrame(() => {
+                    fitAddon.fit();
+                    const dims = fitAddon.proposeDimensions();
+                    if (dims) {
+                        window.sendTerminalResize(dims.cols, dims.rows);
+                    }
+                });
+
+                // キー入力 → WebSocket送信
+                ghosttyTerm.onData((data) => {
+                    window.sendTerminalInput(data);
+                });
+
+                // PTY出力受信コールバックを登録
+                window.terminalWriteCallback = (bytes) => {
+                    if (ghosttyTerm) {
+                        ghosttyTerm.write(bytes);
+                    }
+                };
+
+                // ResizeObserver でパネルリサイズ追従
+                const resizeObserver = new ResizeObserver(() => {
+                    if (fitAddon && ghosttyTerm) {
+                        fitAddon.fit();
+                        const dims = fitAddon.proposeDimensions();
+                        if (dims) {
+                            window.sendTerminalResize(dims.cols, dims.rows);
+                        }
+                    }
+                });
+                resizeObserver.observe(container);
+
+                console.log('Terminal initialized successfully');
+            } catch (e) {
+                console.error('Failed to initialize ghostty-web terminal:', e);
+                // フォールバック: コンテナにエラーメッセージ表示
+                const container = document.getElementById('terminal-container');
+                container.innerHTML = `<div style="padding: 20px; color: var(--color-text-muted);">
+                    <p>Terminal initialization failed</p>
+                    <p style="font-size: 12px; margin-top: 8px;">${e.message || e}</p>
+                </div>`;
+            }
+        }
+
+        // ターミナル初期化開始
+        initTerminal();
     </script>
 </body>
 </html>

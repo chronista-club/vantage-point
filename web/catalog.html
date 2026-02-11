@@ -1,0 +1,2821 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vantage Point UI Catalog</title>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+    <!-- Lucide Icons (SVG Symbols) -->
+    <svg style="display: none;">
+        <symbol id="icon-shield" viewBox="0 0 24 24">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+        </symbol>
+        <symbol id="icon-check" viewBox="0 0 24 24">
+            <polyline points="20 6 9 17 4 12"/>
+        </symbol>
+        <symbol id="icon-x" viewBox="0 0 24 24">
+            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+        </symbol>
+        <symbol id="icon-list-todo" viewBox="0 0 24 24">
+            <rect x="3" y="5" width="6" height="6" rx="1"/><path d="m3 17 2 2 4-4"/>
+            <line x1="13" y1="6" x2="21" y2="6"/><line x1="13" y1="12" x2="21" y2="12"/><line x1="13" y1="18" x2="21" y2="18"/>
+        </symbol>
+        <symbol id="icon-circle-help" viewBox="0 0 24 24">
+            <circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/>
+            <line x1="12" y1="17" x2="12.01" y2="17"/>
+        </symbol>
+        <symbol id="icon-pencil" viewBox="0 0 24 24">
+            <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>
+        </symbol>
+        <symbol id="icon-folder" viewBox="0 0 24 24">
+            <path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/>
+        </symbol>
+        <symbol id="icon-send" viewBox="0 0 24 24">
+            <path d="M22 2 11 13M22 2l-7 20-4-9-9-4 20-7z"/>
+        </symbol>
+        <symbol id="icon-circle" viewBox="0 0 24 24">
+            <circle cx="12" cy="12" r="10"/>
+        </symbol>
+        <symbol id="icon-circle-dot" viewBox="0 0 24 24">
+            <circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="1"/>
+        </symbol>
+        <symbol id="icon-check-circle" viewBox="0 0 24 24">
+            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+            <polyline points="22 4 12 14.01 9 11.01"/>
+        </symbol>
+        <symbol id="icon-message-square" viewBox="0 0 24 24">
+            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+        </symbol>
+        <symbol id="icon-loader" viewBox="0 0 24 24">
+            <line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/>
+            <line x1="4.93" y1="4.93" x2="7.76" y2="7.76"/><line x1="16.24" y1="16.24" x2="19.07" y2="19.07"/>
+            <line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/>
+            <line x1="4.93" y1="19.07" x2="7.76" y2="16.24"/><line x1="16.24" y1="7.76" x2="19.07" y2="4.93"/>
+        </symbol>
+        <symbol id="icon-clock" viewBox="0 0 24 24">
+            <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+        </symbol>
+        <symbol id="icon-git-branch" viewBox="0 0 24 24">
+            <line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/>
+            <circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>
+        </symbol>
+        <symbol id="icon-terminal" viewBox="0 0 24 24">
+            <polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>
+        </symbol>
+        <!-- Additional Lucide icons for comparison -->
+        <symbol id="lucide-settings" viewBox="0 0 24 24">
+            <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/>
+            <circle cx="12" cy="12" r="3"/>
+        </symbol>
+        <symbol id="lucide-user" viewBox="0 0 24 24">
+            <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>
+        </symbol>
+        <symbol id="lucide-search" viewBox="0 0 24 24">
+            <circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>
+        </symbol>
+        <symbol id="lucide-home" viewBox="0 0 24 24">
+            <path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/>
+        </symbol>
+        <symbol id="lucide-bell" viewBox="0 0 24 24">
+            <path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>
+        </symbol>
+        <symbol id="lucide-file" viewBox="0 0 24 24">
+            <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/>
+        </symbol>
+        <symbol id="lucide-mail" viewBox="0 0 24 24">
+            <rect width="20" height="16" x="2" y="4" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/>
+        </symbol>
+        <symbol id="lucide-trash" viewBox="0 0 24 24">
+            <path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
+        </symbol>
+        <symbol id="lucide-download" viewBox="0 0 24 24">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/>
+        </symbol>
+        <symbol id="lucide-plus" viewBox="0 0 24 24">
+            <path d="M5 12h14"/><path d="M12 5v14"/>
+        </symbol>
+    </svg>
+
+    <!-- Tabler Icons (SVG Symbols) -->
+    <svg style="display: none;">
+        <symbol id="tabler-shield" viewBox="0 0 24 24" stroke-width="2">
+            <path d="M12 3a12 12 0 0 0 8.5 3a12 12 0 0 1 -8.5 15a12 12 0 0 1 -8.5 -15a12 12 0 0 0 8.5 -3"/>
+        </symbol>
+        <symbol id="tabler-check" viewBox="0 0 24 24" stroke-width="2">
+            <path d="M5 12l5 5l10 -10"/>
+        </symbol>
+        <symbol id="tabler-list" viewBox="0 0 24 24" stroke-width="2">
+            <path d="M9 6l11 0"/><path d="M9 12l11 0"/><path d="M9 18l11 0"/>
+            <path d="M5 6l0 .01"/><path d="M5 12l0 .01"/><path d="M5 18l0 .01"/>
+        </symbol>
+        <symbol id="tabler-help" viewBox="0 0 24 24" stroke-width="2">
+            <path d="M12 12m-9 0a9 9 0 1 0 18 0a9 9 0 1 0 -18 0"/>
+            <path d="M12 17l0 .01"/><path d="M12 13.5a1.5 1.5 0 0 1 1 -1.5a2.6 2.6 0 1 0 -3 -4"/>
+        </symbol>
+        <symbol id="tabler-settings" viewBox="0 0 24 24" stroke-width="2">
+            <path d="M10.325 4.317c.426 -1.756 2.924 -1.756 3.35 0a1.724 1.724 0 0 0 2.573 1.066c1.543 -.94 3.31 .826 2.37 2.37a1.724 1.724 0 0 0 1.065 2.572c1.756 .426 1.756 2.924 0 3.35a1.724 1.724 0 0 0 -1.066 2.573c.94 1.543 -.826 3.31 -2.37 2.37a1.724 1.724 0 0 0 -2.572 1.065c-.426 1.756 -2.924 1.756 -3.35 0a1.724 1.724 0 0 0 -2.573 -1.066c-1.543 .94 -3.31 -.826 -2.37 -2.37a1.724 1.724 0 0 0 -1.065 -2.572c-1.756 -.426 -1.756 -2.924 0 -3.35a1.724 1.724 0 0 0 1.066 -2.573c-.94 -1.543 .826 -3.31 2.37 -2.37c1 .608 2.296 .07 2.572 -1.065z"/>
+            <path d="M9 12a3 3 0 1 0 6 0a3 3 0 0 0 -6 0"/>
+        </symbol>
+        <symbol id="tabler-user" viewBox="0 0 24 24" stroke-width="2">
+            <path d="M8 7a4 4 0 1 0 8 0a4 4 0 0 0 -8 0"/><path d="M6 21v-2a4 4 0 0 1 4 -4h4a4 4 0 0 1 4 4v2"/>
+        </symbol>
+        <symbol id="tabler-search" viewBox="0 0 24 24" stroke-width="2">
+            <path d="M10 10m-7 0a7 7 0 1 0 14 0a7 7 0 1 0 -14 0"/><path d="M21 21l-6 -6"/>
+        </symbol>
+        <symbol id="tabler-home" viewBox="0 0 24 24" stroke-width="2">
+            <path d="M5 12l-2 0l9 -9l9 9l-2 0"/><path d="M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2 -2v-7"/>
+            <path d="M9 21v-6a2 2 0 0 1 2 -2h2a2 2 0 0 1 2 2v6"/>
+        </symbol>
+        <symbol id="tabler-bell" viewBox="0 0 24 24" stroke-width="2">
+            <path d="M10 5a2 2 0 1 1 4 0a7 7 0 0 1 4 6v3a4 4 0 0 0 2 3h-16a4 4 0 0 0 2 -3v-3a7 7 0 0 1 4 -6"/>
+            <path d="M9 17v1a3 3 0 0 0 6 0v-1"/>
+        </symbol>
+        <symbol id="tabler-file" viewBox="0 0 24 24" stroke-width="2">
+            <path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M17 21h-10a2 2 0 0 1 -2 -2v-14a2 2 0 0 1 2 -2h7l5 5v11a2 2 0 0 1 -2 2z"/>
+        </symbol>
+        <symbol id="tabler-mail" viewBox="0 0 24 24" stroke-width="2">
+            <path d="M3 7a2 2 0 0 1 2 -2h14a2 2 0 0 1 2 2v10a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-10z"/>
+            <path d="M3 7l9 6l9 -6"/>
+        </symbol>
+        <symbol id="tabler-trash" viewBox="0 0 24 24" stroke-width="2">
+            <path d="M4 7l16 0"/><path d="M10 11l0 6"/><path d="M14 11l0 6"/>
+            <path d="M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2 -2l1 -12"/><path d="M9 7v-3a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v3"/>
+        </symbol>
+        <symbol id="tabler-download" viewBox="0 0 24 24" stroke-width="2">
+            <path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/>
+        </symbol>
+        <symbol id="tabler-plus" viewBox="0 0 24 24" stroke-width="2">
+            <path d="M12 5l0 14"/><path d="M5 12l14 0"/>
+        </symbol>
+        <symbol id="tabler-folder" viewBox="0 0 24 24" stroke-width="2">
+            <path d="M5 4h4l3 3h7a2 2 0 0 1 2 2v8a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-11a2 2 0 0 1 2 -2"/>
+        </symbol>
+        <symbol id="tabler-pencil" viewBox="0 0 24 24" stroke-width="2">
+            <path d="M4 20h4l10.5 -10.5a1.5 1.5 0 0 0 -4 -4l-10.5 10.5v4"/><path d="M13.5 6.5l4 4"/>
+        </symbol>
+        <symbol id="tabler-x" viewBox="0 0 24 24" stroke-width="2">
+            <path d="M18 6l-12 12"/><path d="M6 6l12 12"/>
+        </symbol>
+        <symbol id="tabler-circle-check" viewBox="0 0 24 24" stroke-width="2">
+            <path d="M12 12m-9 0a9 9 0 1 0 18 0a9 9 0 1 0 -18 0"/><path d="M9 12l2 2l4 -4"/>
+        </symbol>
+        <symbol id="tabler-list-check" viewBox="0 0 24 24" stroke-width="2">
+            <path d="M3.5 5.5l1.5 1.5l2.5 -2.5"/><path d="M3.5 11.5l1.5 1.5l2.5 -2.5"/><path d="M3.5 17.5l1.5 1.5l2.5 -2.5"/>
+            <path d="M11 6l9 0"/><path d="M11 12l9 0"/><path d="M11 18l9 0"/>
+        </symbol>
+        <symbol id="tabler-send" viewBox="0 0 24 24" stroke-width="2">
+            <path d="M10 14l11 -11"/><path d="M21 3l-6.5 18a.55 .55 0 0 1 -1 0l-3.5 -7l-7 -3.5a.55 .55 0 0 1 0 -1l18 -6.5"/>
+        </symbol>
+    </svg>
+
+    <style>
+        /* ===== OKLCH Color System ===== */
+        :root {
+            /* Base colors */
+            --color-bg-deep: oklch(0.13 0.02 270);      /* 最深背景 */
+            --color-bg-base: oklch(0.18 0.025 270);     /* ベース背景 */
+            --color-bg-elevated: oklch(0.22 0.03 250);  /* 浮き上がり背景 */
+            --color-bg-surface: oklch(0.26 0.025 240);  /* サーフェス */
+
+            /* Text colors */
+            --color-text-primary: oklch(0.95 0.01 270);   /* 主要テキスト */
+            --color-text-secondary: oklch(0.65 0.02 260); /* 副次テキスト */
+            --color-text-muted: oklch(0.50 0.02 260);     /* 控えめテキスト */
+
+            /* Accent colors */
+            --color-accent-primary: oklch(0.65 0.18 270);   /* メインアクセント(紫) */
+            --color-accent-secondary: oklch(0.60 0.20 250); /* セカンダリ(青紫) */
+            --color-accent-brand: oklch(0.55 0.22 10);      /* ブランド(赤) */
+
+            /* Semantic colors */
+            --color-success: oklch(0.70 0.18 145);   /* 成功(緑) */
+            --color-warning: oklch(0.75 0.18 70);    /* 警告(オレンジ) */
+            --color-error: oklch(0.60 0.22 25);      /* エラー(赤) */
+            --color-info: oklch(0.65 0.15 240);      /* 情報(青) */
+
+            /* Border colors */
+            --color-border-subtle: oklch(0.30 0.03 250);
+            --color-border-default: oklch(0.35 0.04 250);
+            --color-border-accent: oklch(0.50 0.12 270);
+
+            /* Icon size */
+            --icon-sm: 16px;
+            --icon-md: 20px;
+            --icon-lg: 24px;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--color-bg-deep);
+            color: var(--color-text-primary);
+            min-height: 100vh;
+        }
+
+        /* ===== Tabler Icon Base ===== */
+        .icon {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: var(--icon-md);
+            height: var(--icon-md);
+            flex-shrink: 0;
+        }
+        .icon svg {
+            width: 100%;
+            height: 100%;
+            stroke: currentColor;
+            stroke-width: 2;
+            stroke-linecap: round;
+            stroke-linejoin: round;
+            fill: none;
+        }
+        .icon.sm { width: var(--icon-sm); height: var(--icon-sm); }
+        .icon.lg { width: var(--icon-lg); height: var(--icon-lg); }
+
+        /* ===== Catalog Layout ===== */
+        .catalog-header {
+            background: #16213e;
+            padding: 16px 24px;
+            border-bottom: 1px solid #0f3460;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+        .catalog-header h1 {
+            font-size: 20px;
+            font-weight: 600;
+            color: #e94560;
+        }
+        .catalog-header .subtitle {
+            color: #666;
+            font-size: 14px;
+        }
+
+        .catalog-nav {
+            display: flex;
+            gap: 8px;
+            margin-left: auto;
+        }
+        .catalog-nav a {
+            padding: 6px 12px;
+            background: #1a1a2e;
+            border: 1px solid #0f3460;
+            border-radius: 6px;
+            color: #888;
+            text-decoration: none;
+            font-size: 13px;
+            transition: all 0.2s;
+        }
+        .catalog-nav a:hover {
+            background: #0f3460;
+            color: #eee;
+        }
+        .catalog-nav a.active {
+            background: #667eea;
+            border-color: #667eea;
+            color: white;
+        }
+
+        /* View mode toggle */
+        .view-toggle {
+            display: flex;
+            gap: 4px;
+            background: #1a1a2e;
+            padding: 4px;
+            border-radius: 8px;
+            margin-left: 16px;
+        }
+        .view-toggle button {
+            padding: 6px 12px;
+            background: transparent;
+            border: none;
+            border-radius: 6px;
+            color: #888;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .view-toggle button:hover {
+            color: #eee;
+        }
+        .view-toggle button.active {
+            background: #667eea;
+            color: white;
+        }
+
+        .catalog-container {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 24px;
+            transition: max-width 0.3s;
+        }
+
+        /* Chat Panel View Mode */
+        body.chat-panel-mode .catalog-container {
+            max-width: 800px;
+            background: #1a1a2e;
+            min-height: calc(100vh - 60px);
+            border-left: 1px solid #0f3460;
+            border-right: 1px solid #0f3460;
+        }
+        body.chat-panel-mode .component-preview {
+            background: transparent;
+            border: none;
+            padding: 0;
+        }
+        body.chat-panel-mode .catalog-section h2,
+        body.chat-panel-mode .catalog-section h3,
+        body.chat-panel-mode .component-preview .label {
+            display: none;
+        }
+        body.chat-panel-mode .catalog-section {
+            margin-bottom: 16px;
+        }
+
+        /* ===== Simple Chat Layout ===== */
+        .simple-chat {
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+            background: #1a1a2e;
+        }
+
+        .simple-chat-history {
+            flex: 1;
+            overflow-y: auto;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .simple-message {
+            display: flex;
+            max-width: 85%;
+        }
+        .simple-message.user {
+            align-self: flex-end;
+        }
+        .simple-message.assistant {
+            align-self: flex-start;
+        }
+
+        .simple-message-content {
+            padding: 10px 14px;
+            border-radius: 12px;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+        .simple-message.user .simple-message-content {
+            background: #0f3460;
+            color: #fff;
+            border-bottom-right-radius: 4px;
+        }
+        .simple-message.assistant .simple-message-content {
+            background: #1e293b;
+            color: #e0e0e0;
+            border: 1px solid #334155;
+            border-bottom-left-radius: 4px;
+        }
+        .simple-message-content p {
+            margin: 0.4em 0;
+        }
+        .simple-message-content p:first-child {
+            margin-top: 0;
+        }
+        .simple-message-content p:last-child {
+            margin-bottom: 0;
+        }
+        .simple-message-content code {
+            background: #0f3460;
+            padding: 1px 4px;
+            border-radius: 3px;
+            font-size: 13px;
+        }
+        .simple-message-content pre {
+            background: #0f3460;
+            padding: 10px;
+            border-radius: 6px;
+            overflow-x: auto;
+            margin: 0.5em 0;
+        }
+        .simple-message-content pre code {
+            background: none;
+            padding: 0;
+        }
+        .simple-message-content ul {
+            margin: 0.5em 0;
+            padding-left: 20px;
+        }
+
+        .simple-chat-input {
+            padding: 12px 16px;
+            border-top: 1px solid #0f3460;
+            background: #16213e;
+        }
+        .simple-input-wrapper {
+            display: flex;
+            gap: 8px;
+            background: #1a1a2e;
+            border-radius: 8px;
+            padding: 8px 12px;
+            border: 1px solid #0f3460;
+        }
+        .simple-input-wrapper:focus-within {
+            border-color: #667eea;
+        }
+        .simple-input-wrapper textarea {
+            flex: 1;
+            background: transparent;
+            border: none;
+            color: #eee;
+            font-size: 14px;
+            outline: none;
+            resize: none;
+            min-height: 24px;
+            font-family: inherit;
+        }
+        .simple-input-wrapper textarea::placeholder {
+            color: #666;
+        }
+        .simple-send-btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border: none;
+            color: white;
+            width: 32px;
+            height: 32px;
+            border-radius: 6px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+        .simple-send-btn svg {
+            width: 16px;
+            height: 16px;
+        }
+
+        .catalog-section {
+            margin-bottom: 48px;
+        }
+        .catalog-section h2 {
+            font-size: 16px;
+            color: #667eea;
+            margin-bottom: 16px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid #0f3460;
+        }
+        .catalog-section h3 {
+            font-size: 13px;
+            color: #888;
+            margin: 16px 0 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .component-preview {
+            background: #1a1a2e;
+            border: 1px solid #0f3460;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 16px;
+        }
+        .component-preview .label {
+            font-size: 11px;
+            color: #666;
+            margin-bottom: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        /* ===== Chat Components (from index.html) ===== */
+
+        /* History Messages */
+        .history-message {
+            padding: 12px 16px;
+            border-radius: 12px;
+            line-height: 1.5;
+            font-size: 14px;
+            margin-bottom: 8px;
+        }
+        .history-message.user {
+            align-self: flex-end;
+            background: #0f3460;
+            color: #fff;
+            max-width: 85%;
+            margin-left: auto;
+        }
+        .history-message.assistant {
+            background: #1e293b;
+            color: #e0e0e0;
+            border: 1px solid #334155;
+        }
+        .history-message.assistant .content {
+            line-height: 1.6;
+        }
+        .history-message.assistant .content p {
+            margin: 0.3em 0;
+        }
+        .history-message.assistant .content code {
+            background: #0f3460;
+            padding: 1px 4px;
+            border-radius: 3px;
+            font-size: 13px;
+        }
+        .history-message.assistant .content pre {
+            background: #0f3460;
+            padding: 10px;
+            border-radius: 6px;
+            overflow-x: auto;
+            margin: 0.5em 0;
+        }
+        .history-message.assistant .content pre code {
+            background: none;
+            padding: 0;
+        }
+
+        /* Current Response (streaming) */
+        .current-response {
+            background: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 12px;
+            padding: 16px;
+            max-height: 100%;
+            overflow-y: auto;
+        }
+        .current-response .content {
+            line-height: 1.6;
+            font-size: 14px;
+        }
+        .current-response .content p {
+            margin: 0.3em 0;
+        }
+        .current-response .content code {
+            background: #0f3460;
+            padding: 1px 4px;
+            border-radius: 3px;
+            font-size: 13px;
+        }
+
+        /* Context Mode Bar */
+        .context-mode-bar {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 12px;
+            background: rgba(22, 33, 62, 0.8);
+            border-radius: 6px;
+            margin-bottom: 8px;
+            font-size: 12px;
+            color: #8b949e;
+        }
+        .context-mode-indicator {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #8b949e;
+            animation: pulse-soft 2s infinite;
+        }
+        .context-mode-indicator.thinking { background: #3b82f6; }
+        .context-mode-indicator.responding { background: #22c55e; }
+        .context-mode-indicator.permission { background: #f59e0b; }
+        .context-mode-indicator.prompt { background: #6366f1; }
+        .context-mode-indicator.todo { background: #06b6d4; }
+        .context-mode-indicator.idle { background: #64748b; animation: none; }
+
+        .context-mode-label {
+            font-weight: 500;
+        }
+        .context-mode-detail {
+            color: #64748b;
+            margin-left: auto;
+        }
+
+        @keyframes pulse-soft {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        /* Chat Components */
+        .chat-component {
+            margin: 8px 0;
+            border-radius: 12px;
+            background: #1e293b;
+            border: 1px solid #334155;
+            overflow: hidden;
+        }
+        .chat-component.permission-request {
+            border-color: #f59e0b;
+        }
+        .chat-component-header {
+            padding: 12px 16px;
+            background: rgba(245, 158, 11, 0.1);
+            border-bottom: 1px solid #334155;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .chat-component-header .icon {
+            font-size: 18px;
+        }
+        .chat-component-header .title {
+            font-weight: 500;
+            color: #f59e0b;
+        }
+        .chat-component-header .tool-name {
+            color: #94a3b8;
+            font-size: 12px;
+            margin-left: auto;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .chat-component-body {
+            padding: 16px;
+        }
+        .chat-component-body .input-preview {
+            background: #0f172a;
+            border-radius: 6px;
+            padding: 12px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+            max-height: 200px;
+            overflow: auto;
+            margin-bottom: 16px;
+            color: #94a3b8;
+        }
+        .chat-component-body .input-preview pre {
+            margin: 0;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+        .chat-component-actions {
+            display: flex;
+            gap: 12px;
+            justify-content: flex-end;
+        }
+        .chat-component-btn {
+            padding: 8px 20px;
+            border-radius: 6px;
+            border: none;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .chat-component-btn.approve {
+            background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%);
+            color: white;
+        }
+        .chat-component-btn.approve:hover {
+            filter: brightness(1.1);
+        }
+        .chat-component-btn.deny {
+            background: transparent;
+            border: 1px solid #475569;
+            color: #94a3b8;
+        }
+        .chat-component-btn.deny:hover {
+            background: #dc2626;
+            border-color: #dc2626;
+            color: white;
+        }
+        .chat-component-timeout {
+            font-size: 11px;
+            color: #64748b;
+            text-align: center;
+            margin-top: 12px;
+        }
+        .chat-component.resolved {
+            opacity: 0.6;
+        }
+        .chat-component.resolved .chat-component-actions {
+            display: none;
+        }
+        .chat-component.resolved::after {
+            content: attr(data-resolution);
+            display: block;
+            text-align: center;
+            padding: 8px;
+            font-size: 12px;
+            color: #64748b;
+            background: rgba(0,0,0,0.2);
+        }
+
+        /* Todo List Component */
+        .chat-component.todo-list {
+            border-color: #3b82f6;
+        }
+        .chat-component.todo-list .chat-component-header {
+            background: rgba(59, 130, 246, 0.1);
+        }
+        .chat-component.todo-list .chat-component-header .title {
+            color: #3b82f6;
+        }
+        .todo-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 8px 0;
+            border-bottom: 1px solid #1e293b;
+        }
+        .todo-item:last-child {
+            border-bottom: none;
+        }
+        .todo-item .status-icon {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            flex-shrink: 0;
+        }
+        .todo-item.pending .status-icon {
+            border: 2px solid #475569;
+        }
+        .todo-item.in_progress .status-icon {
+            background: #3b82f6;
+            animation: pulse 1.5s infinite;
+        }
+        .todo-item.completed .status-icon {
+            background: #22c55e;
+        }
+        .todo-item .content {
+            flex: 1;
+            color: #e2e8f0;
+        }
+        .todo-item.completed .content {
+            text-decoration: line-through;
+            color: #64748b;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        /* User Prompt Component */
+        .chat-component.user-prompt {
+            border-color: #6366f1;
+        }
+        .chat-component.user-prompt .chat-component-header {
+            background: rgba(99, 102, 241, 0.1);
+        }
+        .chat-component.user-prompt .chat-component-header .title {
+            color: #6366f1;
+        }
+        .prompt-description {
+            color: #94a3b8;
+            font-size: 14px;
+            margin-bottom: 16px;
+        }
+        .prompt-input {
+            width: 100%;
+            background: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 6px;
+            padding: 12px;
+            font-size: 14px;
+            color: #e2e8f0;
+            margin-bottom: 16px;
+        }
+        .prompt-input:focus {
+            outline: none;
+            border-color: #6366f1;
+        }
+        .chat-component-btn.submit {
+            background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
+            color: white;
+        }
+
+        /* Input Area */
+        .input-area {
+            padding: 16px;
+            border: 1px solid #0f3460;
+            background: #16213e;
+            border-radius: 8px;
+        }
+        .chat-input-wrapper {
+            display: flex;
+            gap: 8px;
+            background: #1a1a2e;
+            border-radius: 8px;
+            padding: 8px 12px;
+            border: 1px solid #0f3460;
+        }
+        .chat-input-wrapper:focus-within {
+            border-color: #667eea;
+        }
+        .chat-input {
+            flex: 1;
+            background: transparent;
+            border: none;
+            color: #eee;
+            font-size: 14px;
+            outline: none;
+            resize: none;
+            min-height: 24px;
+            font-family: inherit;
+        }
+        .chat-input::placeholder {
+            color: #666;
+        }
+        .chat-send-btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border: none;
+            color: white;
+            width: 32px;
+            height: 32px;
+            border-radius: 6px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .chat-send-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .chat-send-btn svg {
+            width: 16px;
+            height: 16px;
+        }
+        .chat-cancel-btn {
+            background: #dc2626;
+            border: none;
+            color: white;
+            width: 32px;
+            height: 32px;
+            border-radius: 6px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .chat-cancel-btn svg {
+            width: 16px;
+            height: 16px;
+        }
+
+        /* Typing indicator */
+        .typing-indicator {
+            color: #888;
+            font-size: 14px;
+            padding: 8px 0;
+        }
+        .typing-indicator::after {
+            content: '';
+            animation: dots 1.5s infinite;
+        }
+        @keyframes dots {
+            0%, 20% { content: '.'; }
+            40% { content: '..'; }
+            60%, 100% { content: '...'; }
+        }
+
+        /* Status badge */
+        .status {
+            font-size: 12px;
+            padding: 4px 8px;
+            border-radius: 4px;
+        }
+        .status.connected {
+            color: #4ade80;
+            background: rgba(74, 222, 128, 0.1);
+        }
+        .status.disconnected {
+            color: #f87171;
+            background: rgba(248, 113, 113, 0.1);
+        }
+
+        /* Variations display */
+        .variations {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 16px;
+        }
+        .variation {
+            flex: 1;
+            min-width: 250px;
+        }
+        .variation-label {
+            font-size: 11px;
+            color: #666;
+            margin-bottom: 8px;
+        }
+
+        /* ===== 3D Effects ===== */
+
+        /* 3D Container - provides perspective for children */
+        .perspective-container {
+            perspective: 1000px;
+            perspective-origin: center center;
+        }
+
+        /* Group Panel - children float above */
+        .group-panel-3d {
+            background: rgba(15, 52, 96, 0.3);
+            border: 1px solid rgba(102, 126, 234, 0.2);
+            border-radius: 16px;
+            padding: 20px;
+            transform-style: preserve-3d;
+            perspective: 800px;
+        }
+        .group-panel-3d > .floating-child {
+            transform: translateZ(40px);
+            background: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 12px;
+            padding: 16px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.3);
+            transition: transform 0.3s, box-shadow 0.3s;
+        }
+        .group-panel-3d > .floating-child:hover {
+            transform: translateZ(60px);
+            box-shadow: 0 30px 60px rgba(0,0,0,0.4);
+        }
+
+        /* Context Layers - stacked depth */
+        .context-layers {
+            position: relative;
+            transform-style: preserve-3d;
+            perspective: 1200px;
+            height: 300px;
+        }
+        .context-layer {
+            position: absolute;
+            border-radius: 12px;
+            padding: 16px;
+            transition: all 0.4s ease;
+        }
+        .context-layer.back {
+            transform: translateZ(-80px) scale(1.1);
+            background: rgba(102, 126, 234, 0.15);
+            border: 1px solid rgba(102, 126, 234, 0.3);
+            inset: 0;
+            filter: blur(1px);
+        }
+        .context-layer.middle {
+            transform: translateZ(-40px) scale(1.05);
+            background: rgba(59, 130, 246, 0.2);
+            border: 1px solid rgba(59, 130, 246, 0.4);
+            inset: 20px;
+        }
+        .context-layer.front {
+            transform: translateZ(0);
+            background: #1e293b;
+            border: 1px solid #334155;
+            inset: 40px;
+            box-shadow: 0 25px 50px rgba(0,0,0,0.4);
+        }
+        .context-layers:hover .context-layer.back {
+            transform: translateZ(-120px) scale(1.15);
+        }
+        .context-layers:hover .context-layer.middle {
+            transform: translateZ(-60px) scale(1.08);
+        }
+        .context-layers:hover .context-layer.front {
+            transform: translateZ(20px);
+        }
+
+        /* Relation Cards - parent/child depth */
+        .relation-container {
+            display: flex;
+            gap: 16px;
+            transform-style: preserve-3d;
+            perspective: 1000px;
+        }
+        .relation-parent {
+            transform: translateZ(-30px) scale(1.02);
+            background: rgba(102, 126, 234, 0.1);
+            border: 1px dashed rgba(102, 126, 234, 0.4);
+            border-radius: 12px;
+            padding: 20px;
+            opacity: 0.8;
+        }
+        .relation-children {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            transform: translateZ(20px);
+        }
+        .relation-child {
+            background: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 8px;
+            padding: 12px 16px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+            transition: transform 0.2s;
+        }
+        .relation-child:hover {
+            transform: translateZ(10px) translateX(5px);
+        }
+
+        /* Timeline Depth - older messages recede */
+        .timeline-depth {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            transform-style: preserve-3d;
+            perspective: 800px;
+        }
+        .timeline-item {
+            background: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 12px;
+            padding: 12px 16px;
+            transition: all 0.3s;
+        }
+        .timeline-item:nth-child(1) {
+            transform: translateZ(0);
+            opacity: 1;
+        }
+        .timeline-item:nth-child(2) {
+            transform: translateZ(-20px) scale(0.98);
+            opacity: 0.9;
+        }
+        .timeline-item:nth-child(3) {
+            transform: translateZ(-40px) scale(0.96);
+            opacity: 0.8;
+        }
+        .timeline-item:nth-child(4) {
+            transform: translateZ(-60px) scale(0.94);
+            opacity: 0.7;
+        }
+        .timeline-depth:hover .timeline-item:nth-child(1) {
+            transform: translateZ(20px);
+        }
+
+        /* Permission with Context */
+        .permission-context-3d {
+            transform-style: preserve-3d;
+            perspective: 1000px;
+            position: relative;
+            padding: 30px 20px 20px;
+        }
+        .permission-context-3d .context-info {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            transform: translateZ(-50px) translateY(-10px);
+            background: rgba(102, 126, 234, 0.1);
+            border: 1px solid rgba(102, 126, 234, 0.3);
+            border-radius: 8px;
+            padding: 8px 12px;
+            font-size: 12px;
+            color: #667eea;
+        }
+        .permission-context-3d .permission-main {
+            transform: translateZ(30px);
+            position: relative;
+        }
+    </style>
+</head>
+<body>
+    <div class="catalog-header">
+        <h1>Vantage Point UI Catalog</h1>
+        <span class="subtitle">Component Preview</span>
+        <div class="view-toggle">
+            <button id="view-catalog" class="active" onclick="setViewMode('catalog')">Catalog</button>
+            <button id="view-panel" onclick="setViewMode('panel')">Chat Panel</button>
+        </div>
+        <nav class="catalog-nav">
+            <a href="#ui-stack" class="active">UI Stack</a>
+            <a href="#benchmarks">Chronista</a>
+            <a href="#icons">Icons</a>
+            <a href="#3d-effects">3D Effects</a>
+            <a href="#scenes">Scenes</a>
+            <a href="#messages">Messages</a>
+            <a href="#components">Components</a>
+            <a href="#input">Input</a>
+            <a href="#status">Status</a>
+        </nav>
+    </div>
+
+    <script>
+        function setViewMode(mode) {
+            if (mode === 'panel') {
+                document.body.classList.add('chat-panel-mode');
+                document.getElementById('view-panel').classList.add('active');
+                document.getElementById('view-catalog').classList.remove('active');
+            } else {
+                document.body.classList.remove('chat-panel-mode');
+                document.getElementById('view-catalog').classList.add('active');
+                document.getElementById('view-panel').classList.remove('active');
+            }
+        }
+    </script>
+
+    <div class="catalog-container">
+        <!-- UI Stack Overview Section -->
+        <section id="ui-stack" class="catalog-section">
+            <h2>Vantage UI Stack</h2>
+            <p style="color: var(--color-text-secondary); margin-bottom: 24px;">
+                Tabler Icons + Kobalte + corvu による最適な組み合わせ
+            </p>
+
+            <style>
+                .stack-grid {
+                    display: grid;
+                    grid-template-columns: repeat(3, 1fr);
+                    gap: 16px;
+                    margin-bottom: 24px;
+                }
+                @media (max-width: 768px) {
+                    .stack-grid { grid-template-columns: 1fr; }
+                }
+                .stack-card {
+                    background: var(--color-bg-elevated);
+                    border: 1px solid var(--color-border-default);
+                    border-radius: 12px;
+                    padding: 20px;
+                }
+                .stack-card:hover {
+                    border-color: var(--color-border-accent);
+                }
+                .stack-card-header {
+                    display: flex;
+                    align-items: center;
+                    gap: 12px;
+                    margin-bottom: 12px;
+                }
+                .stack-card-header .badge {
+                    font-size: 10px;
+                    padding: 2px 8px;
+                    border-radius: 4px;
+                    text-transform: uppercase;
+                    font-weight: 600;
+                }
+                .stack-card-header .badge.icons { background: var(--color-warning); color: #000; }
+                .stack-card-header .badge.primitives { background: var(--color-info); color: #fff; }
+                .stack-card-header .badge.extra { background: var(--color-accent-primary); color: #fff; }
+                .stack-card h3 {
+                    font-size: 18px;
+                    margin: 0;
+                    color: var(--color-text-primary);
+                }
+                .stack-card .description {
+                    font-size: 13px;
+                    color: var(--color-text-secondary);
+                    margin-bottom: 16px;
+                    line-height: 1.5;
+                }
+                .stack-card .features {
+                    list-style: none;
+                    padding: 0;
+                    margin: 0;
+                }
+                .stack-card .features li {
+                    display: flex;
+                    align-items: center;
+                    gap: 8px;
+                    padding: 6px 0;
+                    font-size: 13px;
+                    color: var(--color-text-secondary);
+                    border-bottom: 1px solid var(--color-border-subtle);
+                }
+                .stack-card .features li:last-child {
+                    border-bottom: none;
+                }
+                .stack-card .features li svg {
+                    width: 14px;
+                    height: 14px;
+                    stroke: var(--color-success);
+                    stroke-width: 2;
+                    fill: none;
+                    flex-shrink: 0;
+                }
+
+                .usage-matrix {
+                    background: var(--color-bg-elevated);
+                    border: 1px solid var(--color-border-default);
+                    border-radius: 12px;
+                    overflow: hidden;
+                }
+                .usage-matrix table {
+                    width: 100%;
+                    border-collapse: collapse;
+                }
+                .usage-matrix th, .usage-matrix td {
+                    padding: 12px 16px;
+                    text-align: left;
+                    border-bottom: 1px solid var(--color-border-subtle);
+                    font-size: 13px;
+                }
+                .usage-matrix th {
+                    background: var(--color-bg-surface);
+                    color: var(--color-text-secondary);
+                    font-weight: 600;
+                    text-transform: uppercase;
+                    font-size: 11px;
+                }
+                .usage-matrix tr:last-child td {
+                    border-bottom: none;
+                }
+                .usage-matrix .component-name {
+                    color: var(--color-text-primary);
+                    font-weight: 500;
+                }
+                .usage-matrix .source-badge {
+                    font-size: 11px;
+                    padding: 2px 8px;
+                    border-radius: 4px;
+                    font-weight: 500;
+                }
+                .usage-matrix .source-badge.tabler { background: rgba(245, 158, 11, 0.2); color: var(--color-warning); }
+                .usage-matrix .source-badge.kobalte { background: rgba(59, 130, 246, 0.2); color: var(--color-info); }
+                .usage-matrix .source-badge.corvu { background: rgba(102, 126, 234, 0.2); color: var(--color-accent-primary); }
+                .usage-matrix .source-badge.custom { background: rgba(100, 116, 139, 0.2); color: var(--color-text-muted); }
+            </style>
+
+            <h3>Stack Overview</h3>
+            <div class="stack-grid">
+                <!-- Tabler Icons -->
+                <div class="stack-card">
+                    <div class="stack-card-header">
+                        <span class="badge icons">Icons</span>
+                        <h3>Tabler Icons</h3>
+                    </div>
+                    <p class="description">
+                        5,000+ のオープンソースアイコン。シャープでモダンなデザイン。
+                    </p>
+                    <ul class="features">
+                        <li><svg><use href="#tabler-check"/></svg> 5,000+ アイコン</li>
+                        <li><svg><use href="#tabler-check"/></svg> Solid.js 対応</li>
+                        <li><svg><use href="#tabler-check"/></svg> SVG / stroke-based</li>
+                        <li><svg><use href="#tabler-check"/></svg> tree-shakeable</li>
+                    </ul>
+                </div>
+
+                <!-- Kobalte -->
+                <div class="stack-card">
+                    <div class="stack-card-header">
+                        <span class="badge primitives">Primitives</span>
+                        <h3>Kobalte</h3>
+                    </div>
+                    <p class="description">
+                        Solid.js用のアクセシブルなUIプリミティブ。WAI-ARIA準拠。
+                    </p>
+                    <ul class="features">
+                        <li><svg><use href="#tabler-check"/></svg> 35+ コンポーネント</li>
+                        <li><svg><use href="#tabler-check"/></svg> WAI-ARIA 準拠</li>
+                        <li><svg><use href="#tabler-check"/></svg> スタイル非依存</li>
+                        <li><svg><use href="#tabler-check"/></svg> カスタマイズ自由</li>
+                    </ul>
+                </div>
+
+                <!-- corvu -->
+                <div class="stack-card">
+                    <div class="stack-card-header">
+                        <span class="badge extra">Extra</span>
+                        <h3>corvu</h3>
+                    </div>
+                    <p class="description">
+                        Kobalteを補完する専門コンポーネント。DX重視。
+                    </p>
+                    <ul class="features">
+                        <li><svg><use href="#tabler-check"/></svg> Drawer (モバイル対応)</li>
+                        <li><svg><use href="#tabler-check"/></svg> Resizable パネル</li>
+                        <li><svg><use href="#tabler-check"/></svg> Calendar / DatePicker</li>
+                        <li><svg><use href="#tabler-check"/></svg> Kobalte互換API</li>
+                    </ul>
+                </div>
+            </div>
+
+            <h3>コンポーネント使い分けマトリクス</h3>
+            <div class="component-preview" style="padding: 0;">
+                <div class="usage-matrix">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>コンポーネント</th>
+                                <th>ソース</th>
+                                <th>用途</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td class="component-name">Icon</td>
+                                <td><span class="source-badge tabler">Tabler</span></td>
+                                <td>全てのアイコン表示</td>
+                            </tr>
+                            <tr>
+                                <td class="component-name">Button</td>
+                                <td><span class="source-badge kobalte">Kobalte</span></td>
+                                <td>ボタン、トグル</td>
+                            </tr>
+                            <tr>
+                                <td class="component-name">Dialog / Modal</td>
+                                <td><span class="source-badge kobalte">Kobalte</span></td>
+                                <td>Permission Request, User Prompt</td>
+                            </tr>
+                            <tr>
+                                <td class="component-name">Tabs</td>
+                                <td><span class="source-badge kobalte">Kobalte</span></td>
+                                <td>セッション切り替え</td>
+                            </tr>
+                            <tr>
+                                <td class="component-name">Select / Dropdown</td>
+                                <td><span class="source-badge kobalte">Kobalte</span></td>
+                                <td>選択肢UI</td>
+                            </tr>
+                            <tr>
+                                <td class="component-name">Toast</td>
+                                <td><span class="source-badge kobalte">Kobalte</span></td>
+                                <td>通知、エラー表示</td>
+                            </tr>
+                            <tr>
+                                <td class="component-name">Tooltip</td>
+                                <td><span class="source-badge kobalte">Kobalte</span></td>
+                                <td>ヘルプ、ヒント</td>
+                            </tr>
+                            <tr>
+                                <td class="component-name">Progress</td>
+                                <td><span class="source-badge kobalte">Kobalte</span></td>
+                                <td>進捗表示</td>
+                            </tr>
+                            <tr>
+                                <td class="component-name">Drawer</td>
+                                <td><span class="source-badge corvu">corvu</span></td>
+                                <td>サイドパネル（モバイル）</td>
+                            </tr>
+                            <tr>
+                                <td class="component-name">Resizable</td>
+                                <td><span class="source-badge corvu">corvu</span></td>
+                                <td>パネル分割、リサイズ</td>
+                            </tr>
+                            <tr>
+                                <td class="component-name">Chat UI</td>
+                                <td><span class="source-badge custom">Custom</span></td>
+                                <td>メッセージ表示、入力エリア</td>
+                            </tr>
+                            <tr>
+                                <td class="component-name">Todo List</td>
+                                <td><span class="source-badge custom">Custom</span></td>
+                                <td>タスク進捗表示</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <h3>カラーシステム: OKLCH</h3>
+            <div class="component-preview">
+                <p class="label">perceptually uniform な色空間で一貫したカラーパレットを実現</p>
+                <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; margin-top: 12px;">
+                    <div style="padding: 12px; background: var(--color-bg-deep); border-radius: 6px; text-align: center;">
+                        <div style="font-size: 11px; color: var(--color-text-muted);">bg-deep</div>
+                        <div style="font-size: 10px; color: var(--color-text-muted); opacity: 0.7;">L: 0.13</div>
+                    </div>
+                    <div style="padding: 12px; background: var(--color-bg-base); border-radius: 6px; text-align: center;">
+                        <div style="font-size: 11px; color: var(--color-text-muted);">bg-base</div>
+                        <div style="font-size: 10px; color: var(--color-text-muted); opacity: 0.7;">L: 0.18</div>
+                    </div>
+                    <div style="padding: 12px; background: var(--color-bg-elevated); border-radius: 6px; text-align: center;">
+                        <div style="font-size: 11px; color: var(--color-text-muted);">bg-elevated</div>
+                        <div style="font-size: 10px; color: var(--color-text-muted); opacity: 0.7;">L: 0.22</div>
+                    </div>
+                    <div style="padding: 12px; background: var(--color-bg-surface); border-radius: 6px; text-align: center;">
+                        <div style="font-size: 11px; color: var(--color-text-muted);">bg-surface</div>
+                        <div style="font-size: 10px; color: var(--color-text-muted); opacity: 0.7;">L: 0.26</div>
+                    </div>
+                    <div style="padding: 12px; background: var(--color-success); border-radius: 6px; text-align: center;">
+                        <div style="font-size: 11px; color: #000;">success</div>
+                        <div style="font-size: 10px; color: #000; opacity: 0.7;">H: 145</div>
+                    </div>
+                    <div style="padding: 12px; background: var(--color-warning); border-radius: 6px; text-align: center;">
+                        <div style="font-size: 11px; color: #000;">warning</div>
+                        <div style="font-size: 10px; color: #000; opacity: 0.7;">H: 70</div>
+                    </div>
+                    <div style="padding: 12px; background: var(--color-error); border-radius: 6px; text-align: center;">
+                        <div style="font-size: 11px; color: #fff;">error</div>
+                        <div style="font-size: 10px; color: #fff; opacity: 0.7;">H: 25</div>
+                    </div>
+                    <div style="padding: 12px; background: var(--color-info); border-radius: 6px; text-align: center;">
+                        <div style="font-size: 11px; color: #fff;">info</div>
+                        <div style="font-size: 10px; color: #fff; opacity: 0.7;">H: 240</div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Chronista Theme Section -->
+        <section id="benchmarks" class="catalog-section">
+            <h2>Chronista Theme</h2>
+            <p style="color: var(--color-text-secondary); margin-bottom: 24px;">
+                <strong>shadcn/ui</strong> と <strong>Tabler UI</strong> をビジュアルのベンチマークとして融合。
+                両者の優れた要素を OKLCH で再定義した Vantage Point 統一テーマ。
+            </p>
+
+            <style>
+                .benchmark-container {
+                    display: grid;
+                    grid-template-columns: repeat(2, 1fr);
+                    gap: 24px;
+                    margin-bottom: 32px;
+                }
+                @media (max-width: 900px) {
+                    .benchmark-container { grid-template-columns: 1fr; }
+                }
+                .benchmark-panel {
+                    background: var(--color-bg-elevated);
+                    border: 1px solid var(--color-border-default);
+                    border-radius: 12px;
+                    overflow: hidden;
+                }
+                .benchmark-panel-header {
+                    padding: 16px 20px;
+                    background: var(--color-bg-surface);
+                    border-bottom: 1px solid var(--color-border-subtle);
+                    display: flex;
+                    align-items: center;
+                    gap: 12px;
+                }
+                .benchmark-panel-header h3 {
+                    margin: 0;
+                    font-size: 16px;
+                    color: var(--color-text-primary);
+                }
+                .benchmark-panel-header .badge {
+                    font-size: 10px;
+                    padding: 2px 8px;
+                    border-radius: 4px;
+                    text-transform: uppercase;
+                    font-weight: 600;
+                }
+                .benchmark-panel-header .badge.shadcn { background: #18181b; color: #fafafa; }
+                .benchmark-panel-header .badge.tabler { background: #066fd1; color: #fff; }
+                .benchmark-panel-body {
+                    padding: 20px;
+                }
+                .color-token-grid {
+                    display: grid;
+                    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+                    gap: 8px;
+                }
+                .color-token {
+                    background: var(--color-bg-base);
+                    border-radius: 8px;
+                    padding: 10px;
+                    display: flex;
+                    flex-direction: column;
+                    gap: 6px;
+                }
+                .color-token-swatch {
+                    width: 100%;
+                    height: 32px;
+                    border-radius: 4px;
+                    border: 1px solid var(--color-border-subtle);
+                }
+                .color-token-name {
+                    font-size: 11px;
+                    font-weight: 500;
+                    color: var(--color-text-primary);
+                }
+                .color-token-value {
+                    font-size: 9px;
+                    font-family: 'SF Mono', 'Monaco', monospace;
+                    color: var(--color-text-muted);
+                }
+                .design-token-table {
+                    width: 100%;
+                    border-collapse: collapse;
+                    font-size: 13px;
+                }
+                .design-token-table th, .design-token-table td {
+                    padding: 10px 12px;
+                    text-align: left;
+                    border-bottom: 1px solid var(--color-border-subtle);
+                }
+                .design-token-table th {
+                    color: var(--color-text-secondary);
+                    font-weight: 600;
+                    font-size: 11px;
+                    text-transform: uppercase;
+                }
+                .design-token-table td:first-child {
+                    font-weight: 500;
+                    color: var(--color-text-primary);
+                }
+                .design-token-table code {
+                    font-size: 11px;
+                    background: var(--color-bg-base);
+                    padding: 2px 6px;
+                    border-radius: 4px;
+                    font-family: 'SF Mono', 'Monaco', monospace;
+                }
+                .vantage-mapping {
+                    background: var(--color-bg-elevated);
+                    border: 1px solid var(--color-border-default);
+                    border-radius: 12px;
+                    padding: 20px;
+                    margin-top: 24px;
+                }
+                .vantage-mapping h4 {
+                    margin: 0 0 16px 0;
+                    font-size: 14px;
+                    color: var(--color-text-primary);
+                    display: flex;
+                    align-items: center;
+                    gap: 8px;
+                }
+                .vantage-mapping h4::before {
+                    content: "→";
+                    color: var(--color-accent-primary);
+                }
+            </style>
+
+            <div class="benchmark-container">
+                <!-- shadcn/ui Panel -->
+                <div class="benchmark-panel">
+                    <div class="benchmark-panel-header">
+                        <span class="badge shadcn">Benchmark</span>
+                        <h3>shadcn/ui</h3>
+                    </div>
+                    <div class="benchmark-panel-body">
+                        <p style="font-size: 12px; color: var(--color-text-secondary); margin: 0 0 16px 0;">
+                            Tailwind v4 + OKLCH。ミニマルでニュートラル。
+                        </p>
+                        <div class="color-token-grid">
+                            <div class="color-token">
+                                <div class="color-token-swatch" style="background: oklch(1 0 0);"></div>
+                                <span class="color-token-name">background</span>
+                                <span class="color-token-value">oklch(1 0 0)</span>
+                            </div>
+                            <div class="color-token">
+                                <div class="color-token-swatch" style="background: oklch(0.145 0 0);"></div>
+                                <span class="color-token-name">foreground</span>
+                                <span class="color-token-value">oklch(0.145 0 0)</span>
+                            </div>
+                            <div class="color-token">
+                                <div class="color-token-swatch" style="background: oklch(0.205 0 0);"></div>
+                                <span class="color-token-name">primary</span>
+                                <span class="color-token-value">oklch(0.205 0 0)</span>
+                            </div>
+                            <div class="color-token">
+                                <div class="color-token-swatch" style="background: oklch(0.97 0 0);"></div>
+                                <span class="color-token-name">secondary</span>
+                                <span class="color-token-value">oklch(0.97 0 0)</span>
+                            </div>
+                            <div class="color-token">
+                                <div class="color-token-swatch" style="background: oklch(0.556 0 0);"></div>
+                                <span class="color-token-name">muted-fg</span>
+                                <span class="color-token-value">oklch(0.556 0 0)</span>
+                            </div>
+                            <div class="color-token">
+                                <div class="color-token-swatch" style="background: oklch(0.577 0.245 27.325);"></div>
+                                <span class="color-token-name">destructive</span>
+                                <span class="color-token-value">oklch(0.577 0.245 27)</span>
+                            </div>
+                            <div class="color-token">
+                                <div class="color-token-swatch" style="background: oklch(0.922 0 0);"></div>
+                                <span class="color-token-name">border</span>
+                                <span class="color-token-value">oklch(0.922 0 0)</span>
+                            </div>
+                            <div class="color-token">
+                                <div class="color-token-swatch" style="background: oklch(0.985 0 0);"></div>
+                                <span class="color-token-name">sidebar</span>
+                                <span class="color-token-value">oklch(0.985 0 0)</span>
+                            </div>
+                        </div>
+                        <table class="design-token-table" style="margin-top: 16px;">
+                            <tr><th>Token</th><th>Value</th></tr>
+                            <tr><td>radius</td><td><code>0.625rem</code> (10px)</td></tr>
+                            <tr><td>特徴</td><td>ニュートラル、彩度0の階調</td></tr>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Tabler Panel -->
+                <div class="benchmark-panel">
+                    <div class="benchmark-panel-header">
+                        <span class="badge tabler">Benchmark</span>
+                        <h3>Tabler UI</h3>
+                    </div>
+                    <div class="benchmark-panel-body">
+                        <p style="font-size: 12px; color: var(--color-text-secondary); margin: 0 0 16px 0;">
+                            Bootstrap 5ベース。明確なセマンティックカラー。
+                        </p>
+                        <div class="color-token-grid">
+                            <div class="color-token">
+                                <div class="color-token-swatch" style="background: #066fd1;"></div>
+                                <span class="color-token-name">blue (primary)</span>
+                                <span class="color-token-value">#066fd1</span>
+                            </div>
+                            <div class="color-token">
+                                <div class="color-token-swatch" style="background: #4299e1;"></div>
+                                <span class="color-token-name">azure</span>
+                                <span class="color-token-value">#4299e1</span>
+                            </div>
+                            <div class="color-token">
+                                <div class="color-token-swatch" style="background: #2fb344;"></div>
+                                <span class="color-token-name">green (success)</span>
+                                <span class="color-token-value">#2fb344</span>
+                            </div>
+                            <div class="color-token">
+                                <div class="color-token-swatch" style="background: #f59f00;"></div>
+                                <span class="color-token-name">yellow (warning)</span>
+                                <span class="color-token-value">#f59f00</span>
+                            </div>
+                            <div class="color-token">
+                                <div class="color-token-swatch" style="background: #d63939;"></div>
+                                <span class="color-token-name">red (danger)</span>
+                                <span class="color-token-value">#d63939</span>
+                            </div>
+                            <div class="color-token">
+                                <div class="color-token-swatch" style="background: #17a2b8;"></div>
+                                <span class="color-token-name">cyan (info)</span>
+                                <span class="color-token-value">#17a2b8</span>
+                            </div>
+                            <div class="color-token">
+                                <div class="color-token-swatch" style="background: #4263eb;"></div>
+                                <span class="color-token-name">indigo</span>
+                                <span class="color-token-value">#4263eb</span>
+                            </div>
+                            <div class="color-token">
+                                <div class="color-token-swatch" style="background: #ae3ec9;"></div>
+                                <span class="color-token-name">purple</span>
+                                <span class="color-token-value">#ae3ec9</span>
+                            </div>
+                        </div>
+                        <table class="design-token-table" style="margin-top: 16px;">
+                            <tr><th>Token</th><th>Value</th></tr>
+                            <tr><td>border-radius</td><td><code>4px</code> (card: 8px)</td></tr>
+                            <tr><td>特徴</td><td>彩度高め、明確なセマンティック</td></tr>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <div class="vantage-mapping">
+                <h4>Vantage Point: 両者の融合（OKLCH）</h4>
+                <table class="design-token-table">
+                    <thead>
+                        <tr>
+                            <th>Role</th>
+                            <th>Vantage OKLCH</th>
+                            <th>参照元</th>
+                            <th>備考</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>bg-base</td>
+                            <td><code>oklch(0.18 0.01 260)</code></td>
+                            <td>shadcn</td>
+                            <td>ダークモード基調</td>
+                        </tr>
+                        <tr>
+                            <td>accent-primary</td>
+                            <td><code>oklch(0.65 0.18 260)</code></td>
+                            <td>Tabler indigo</td>
+                            <td>アクセントカラー</td>
+                        </tr>
+                        <tr>
+                            <td>success</td>
+                            <td><code>oklch(0.72 0.19 145)</code></td>
+                            <td>Tabler green</td>
+                            <td>完了・成功</td>
+                        </tr>
+                        <tr>
+                            <td>warning</td>
+                            <td><code>oklch(0.82 0.18 70)</code></td>
+                            <td>Tabler yellow</td>
+                            <td>注意・警告</td>
+                        </tr>
+                        <tr>
+                            <td>error</td>
+                            <td><code>oklch(0.62 0.22 25)</code></td>
+                            <td>shadcn destructive</td>
+                            <td>エラー・危険</td>
+                        </tr>
+                        <tr>
+                            <td>info</td>
+                            <td><code>oklch(0.65 0.15 240)</code></td>
+                            <td>Tabler azure</td>
+                            <td>情報・リンク</td>
+                        </tr>
+                        <tr>
+                            <td>text-muted</td>
+                            <td><code>oklch(0.55 0.01 260)</code></td>
+                            <td>shadcn muted</td>
+                            <td>補助テキスト</td>
+                        </tr>
+                        <tr>
+                            <td>border-radius</td>
+                            <td><code>8px</code></td>
+                            <td>両者の中間</td>
+                            <td>shadcn(10px) + Tabler(4px)</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- Icon Comparison Section -->
+        <section id="icons" class="catalog-section">
+            <h2>Tabler Icons (採用)</h2>
+            <p style="color: var(--color-text-secondary); margin-bottom: 24px;">
+                Lucideとの比較参考用。Tablerを採用。
+            </p>
+
+            <style>
+                .icon-comparison-grid {
+                    display: grid;
+                    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+                    gap: 16px;
+                }
+                .icon-compare-card {
+                    background: var(--color-bg-elevated);
+                    border: 1px solid var(--color-border-default);
+                    border-radius: 12px;
+                    padding: 16px;
+                    display: flex;
+                    flex-direction: column;
+                    align-items: center;
+                    gap: 12px;
+                }
+                .icon-compare-card:hover {
+                    border-color: var(--color-border-accent);
+                }
+                .icon-compare-row {
+                    display: flex;
+                    align-items: center;
+                    gap: 24px;
+                }
+                .icon-compare-item {
+                    display: flex;
+                    flex-direction: column;
+                    align-items: center;
+                    gap: 4px;
+                }
+                .icon-compare-item .icon-label {
+                    font-size: 10px;
+                    color: var(--color-text-muted);
+                    text-transform: uppercase;
+                }
+                .icon-compare-item .icon-box {
+                    width: 48px;
+                    height: 48px;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    background: var(--color-bg-surface);
+                    border-radius: 8px;
+                    color: var(--color-text-primary);
+                }
+                .icon-compare-item .icon-box svg {
+                    width: 28px;
+                    height: 28px;
+                    stroke: currentColor;
+                    stroke-width: 2;
+                    stroke-linecap: round;
+                    stroke-linejoin: round;
+                    fill: none;
+                }
+                .icon-compare-card .icon-name {
+                    font-size: 12px;
+                    color: var(--color-text-secondary);
+                    text-align: center;
+                }
+
+                /* Size variations */
+                .icon-size-demo {
+                    display: flex;
+                    align-items: flex-end;
+                    gap: 16px;
+                    padding: 16px;
+                    background: var(--color-bg-elevated);
+                    border-radius: 8px;
+                    margin-top: 12px;
+                }
+                .icon-size-demo .icon-wrapper {
+                    display: flex;
+                    flex-direction: column;
+                    align-items: center;
+                    gap: 8px;
+                }
+                .icon-size-demo .icon-wrapper svg {
+                    stroke: currentColor;
+                    stroke-width: 2;
+                    stroke-linecap: round;
+                    stroke-linejoin: round;
+                    fill: none;
+                }
+                .icon-size-demo .icon-wrapper span {
+                    font-size: 10px;
+                    color: var(--color-text-muted);
+                }
+
+                /* Color demo */
+                .icon-color-demo {
+                    display: flex;
+                    gap: 12px;
+                    flex-wrap: wrap;
+                    padding: 16px;
+                    background: var(--color-bg-elevated);
+                    border-radius: 8px;
+                    margin-top: 12px;
+                }
+                .icon-color-item {
+                    display: flex;
+                    align-items: center;
+                    gap: 8px;
+                    padding: 8px 12px;
+                    background: var(--color-bg-surface);
+                    border-radius: 6px;
+                }
+                .icon-color-item svg {
+                    width: 20px;
+                    height: 20px;
+                    stroke: currentColor;
+                    stroke-width: 2;
+                    stroke-linecap: round;
+                    stroke-linejoin: round;
+                    fill: none;
+                }
+                .icon-color-item span {
+                    font-size: 12px;
+                    color: var(--color-text-secondary);
+                }
+            </style>
+
+            <h3>Side-by-Side Comparison</h3>
+            <div class="component-preview">
+                <div class="icon-comparison-grid">
+                    <!-- Settings -->
+                    <div class="icon-compare-card">
+                        <div class="icon-compare-row">
+                            <div class="icon-compare-item">
+                                <span class="icon-label">Lucide</span>
+                                <div class="icon-box">
+                                    <svg><use href="#tabler-settings"/></svg>
+                                </div>
+                            </div>
+                            <div class="icon-compare-item">
+                                <span class="icon-label">Tabler</span>
+                                <div class="icon-box">
+                                    <svg><use href="#tabler-settings"/></svg>
+                                </div>
+                            </div>
+                        </div>
+                        <span class="icon-name">Settings</span>
+                    </div>
+
+                    <!-- User -->
+                    <div class="icon-compare-card">
+                        <div class="icon-compare-row">
+                            <div class="icon-compare-item">
+                                <span class="icon-label">Lucide</span>
+                                <div class="icon-box">
+                                    <svg><use href="#tabler-user"/></svg>
+                                </div>
+                            </div>
+                            <div class="icon-compare-item">
+                                <span class="icon-label">Tabler</span>
+                                <div class="icon-box">
+                                    <svg><use href="#tabler-user"/></svg>
+                                </div>
+                            </div>
+                        </div>
+                        <span class="icon-name">User</span>
+                    </div>
+
+                    <!-- Search -->
+                    <div class="icon-compare-card">
+                        <div class="icon-compare-row">
+                            <div class="icon-compare-item">
+                                <span class="icon-label">Lucide</span>
+                                <div class="icon-box">
+                                    <svg><use href="#lucide-search"/></svg>
+                                </div>
+                            </div>
+                            <div class="icon-compare-item">
+                                <span class="icon-label">Tabler</span>
+                                <div class="icon-box">
+                                    <svg><use href="#tabler-search"/></svg>
+                                </div>
+                            </div>
+                        </div>
+                        <span class="icon-name">Search</span>
+                    </div>
+
+                    <!-- Home -->
+                    <div class="icon-compare-card">
+                        <div class="icon-compare-row">
+                            <div class="icon-compare-item">
+                                <span class="icon-label">Lucide</span>
+                                <div class="icon-box">
+                                    <svg><use href="#lucide-home"/></svg>
+                                </div>
+                            </div>
+                            <div class="icon-compare-item">
+                                <span class="icon-label">Tabler</span>
+                                <div class="icon-box">
+                                    <svg><use href="#tabler-home"/></svg>
+                                </div>
+                            </div>
+                        </div>
+                        <span class="icon-name">Home</span>
+                    </div>
+
+                    <!-- Bell -->
+                    <div class="icon-compare-card">
+                        <div class="icon-compare-row">
+                            <div class="icon-compare-item">
+                                <span class="icon-label">Lucide</span>
+                                <div class="icon-box">
+                                    <svg><use href="#lucide-bell"/></svg>
+                                </div>
+                            </div>
+                            <div class="icon-compare-item">
+                                <span class="icon-label">Tabler</span>
+                                <div class="icon-box">
+                                    <svg><use href="#tabler-bell"/></svg>
+                                </div>
+                            </div>
+                        </div>
+                        <span class="icon-name">Bell / Notification</span>
+                    </div>
+
+                    <!-- File -->
+                    <div class="icon-compare-card">
+                        <div class="icon-compare-row">
+                            <div class="icon-compare-item">
+                                <span class="icon-label">Lucide</span>
+                                <div class="icon-box">
+                                    <svg><use href="#lucide-file"/></svg>
+                                </div>
+                            </div>
+                            <div class="icon-compare-item">
+                                <span class="icon-label">Tabler</span>
+                                <div class="icon-box">
+                                    <svg><use href="#tabler-file"/></svg>
+                                </div>
+                            </div>
+                        </div>
+                        <span class="icon-name">File</span>
+                    </div>
+
+                    <!-- Folder -->
+                    <div class="icon-compare-card">
+                        <div class="icon-compare-row">
+                            <div class="icon-compare-item">
+                                <span class="icon-label">Lucide</span>
+                                <div class="icon-box">
+                                    <svg><use href="#icon-folder"/></svg>
+                                </div>
+                            </div>
+                            <div class="icon-compare-item">
+                                <span class="icon-label">Tabler</span>
+                                <div class="icon-box">
+                                    <svg><use href="#tabler-folder"/></svg>
+                                </div>
+                            </div>
+                        </div>
+                        <span class="icon-name">Folder</span>
+                    </div>
+
+                    <!-- Mail -->
+                    <div class="icon-compare-card">
+                        <div class="icon-compare-row">
+                            <div class="icon-compare-item">
+                                <span class="icon-label">Lucide</span>
+                                <div class="icon-box">
+                                    <svg><use href="#lucide-mail"/></svg>
+                                </div>
+                            </div>
+                            <div class="icon-compare-item">
+                                <span class="icon-label">Tabler</span>
+                                <div class="icon-box">
+                                    <svg><use href="#tabler-mail"/></svg>
+                                </div>
+                            </div>
+                        </div>
+                        <span class="icon-name">Mail</span>
+                    </div>
+
+                    <!-- Trash -->
+                    <div class="icon-compare-card">
+                        <div class="icon-compare-row">
+                            <div class="icon-compare-item">
+                                <span class="icon-label">Lucide</span>
+                                <div class="icon-box">
+                                    <svg><use href="#tabler-trash"/></svg>
+                                </div>
+                            </div>
+                            <div class="icon-compare-item">
+                                <span class="icon-label">Tabler</span>
+                                <div class="icon-box">
+                                    <svg><use href="#tabler-trash"/></svg>
+                                </div>
+                            </div>
+                        </div>
+                        <span class="icon-name">Trash</span>
+                    </div>
+
+                    <!-- Download -->
+                    <div class="icon-compare-card">
+                        <div class="icon-compare-row">
+                            <div class="icon-compare-item">
+                                <span class="icon-label">Lucide</span>
+                                <div class="icon-box">
+                                    <svg><use href="#lucide-download"/></svg>
+                                </div>
+                            </div>
+                            <div class="icon-compare-item">
+                                <span class="icon-label">Tabler</span>
+                                <div class="icon-box">
+                                    <svg><use href="#tabler-download"/></svg>
+                                </div>
+                            </div>
+                        </div>
+                        <span class="icon-name">Download</span>
+                    </div>
+
+                    <!-- Plus -->
+                    <div class="icon-compare-card">
+                        <div class="icon-compare-row">
+                            <div class="icon-compare-item">
+                                <span class="icon-label">Lucide</span>
+                                <div class="icon-box">
+                                    <svg><use href="#tabler-plus"/></svg>
+                                </div>
+                            </div>
+                            <div class="icon-compare-item">
+                                <span class="icon-label">Tabler</span>
+                                <div class="icon-box">
+                                    <svg><use href="#tabler-plus"/></svg>
+                                </div>
+                            </div>
+                        </div>
+                        <span class="icon-name">Plus / Add</span>
+                    </div>
+
+                    <!-- Pencil / Edit -->
+                    <div class="icon-compare-card">
+                        <div class="icon-compare-row">
+                            <div class="icon-compare-item">
+                                <span class="icon-label">Lucide</span>
+                                <div class="icon-box">
+                                    <svg><use href="#icon-pencil"/></svg>
+                                </div>
+                            </div>
+                            <div class="icon-compare-item">
+                                <span class="icon-label">Tabler</span>
+                                <div class="icon-box">
+                                    <svg><use href="#tabler-pencil"/></svg>
+                                </div>
+                            </div>
+                        </div>
+                        <span class="icon-name">Pencil / Edit</span>
+                    </div>
+                </div>
+            </div>
+
+            <h3>Size Variations (OKLCH)</h3>
+            <div class="component-preview">
+                <p class="label">アイコンサイズ: 16px (sm), 20px (md), 24px (lg), 32px, 48px</p>
+                <div class="icon-size-demo" style="color: var(--color-accent-primary);">
+                    <div class="icon-wrapper">
+                        <svg style="width: 16px; height: 16px;"><use href="#tabler-settings"/></svg>
+                        <span>16px</span>
+                    </div>
+                    <div class="icon-wrapper">
+                        <svg style="width: 20px; height: 20px;"><use href="#tabler-settings"/></svg>
+                        <span>20px</span>
+                    </div>
+                    <div class="icon-wrapper">
+                        <svg style="width: 24px; height: 24px;"><use href="#tabler-settings"/></svg>
+                        <span>24px</span>
+                    </div>
+                    <div class="icon-wrapper">
+                        <svg style="width: 32px; height: 32px;"><use href="#tabler-settings"/></svg>
+                        <span>32px</span>
+                    </div>
+                    <div class="icon-wrapper">
+                        <svg style="width: 48px; height: 48px;"><use href="#tabler-settings"/></svg>
+                        <span>48px</span>
+                    </div>
+                </div>
+            </div>
+
+            <h3>Semantic Colors (OKLCH)</h3>
+            <div class="component-preview">
+                <p class="label">OKLCHカラースペースによる意味的な色分け</p>
+                <div class="icon-color-demo">
+                    <div class="icon-color-item" style="color: var(--color-success);">
+                        <svg><use href="#tabler-check"/></svg>
+                        <span>Success</span>
+                    </div>
+                    <div class="icon-color-item" style="color: var(--color-warning);">
+                        <svg><use href="#tabler-shield"/></svg>
+                        <span>Warning</span>
+                    </div>
+                    <div class="icon-color-item" style="color: var(--color-error);">
+                        <svg><use href="#tabler-x"/></svg>
+                        <span>Error</span>
+                    </div>
+                    <div class="icon-color-item" style="color: var(--color-info);">
+                        <svg><use href="#tabler-help"/></svg>
+                        <span>Info</span>
+                    </div>
+                    <div class="icon-color-item" style="color: var(--color-accent-primary);">
+                        <svg><use href="#tabler-settings"/></svg>
+                        <span>Primary</span>
+                    </div>
+                    <div class="icon-color-item" style="color: var(--color-text-muted);">
+                        <svg><use href="#tabler-user"/></svg>
+                        <span>Muted</span>
+                    </div>
+                </div>
+            </div>
+
+            <h3>Usage in Components</h3>
+            <div class="component-preview">
+                <p class="label">実際のコンポーネントでの使用例</p>
+                <div style="display: flex; flex-direction: column; gap: 12px; margin-top: 12px;">
+                    <!-- Permission Header with icon -->
+                    <div style="display: flex; align-items: center; gap: 8px; padding: 12px 16px; background: rgba(245, 158, 11, 0.1); border-radius: 8px; border: 1px solid var(--color-warning);">
+                        <span class="icon" style="color: var(--color-warning);"><svg><use href="#tabler-shield"/></svg></span>
+                        <span style="font-weight: 500; color: var(--color-warning);">Permission Request</span>
+                        <span style="margin-left: auto; font-size: 12px; color: var(--color-text-muted);">Bash</span>
+                    </div>
+
+                    <!-- Todo Header with icon -->
+                    <div style="display: flex; align-items: center; gap: 8px; padding: 12px 16px; background: rgba(59, 130, 246, 0.1); border-radius: 8px; border: 1px solid var(--color-info);">
+                        <span class="icon" style="color: var(--color-info);"><svg><use href="#tabler-list"/></svg></span>
+                        <span style="font-weight: 500; color: var(--color-info);">Tasks</span>
+                        <span style="margin-left: auto; font-size: 12px; color: var(--color-text-muted);">3 items</span>
+                    </div>
+
+                    <!-- Button with icon -->
+                    <div style="display: flex; gap: 8px;">
+                        <button style="display: flex; align-items: center; gap: 6px; padding: 8px 16px; background: var(--color-accent-primary); border: none; border-radius: 6px; color: white; cursor: pointer;">
+                            <svg style="width: 16px; height: 16px; stroke: currentColor; stroke-width: 2; fill: none;"><use href="#tabler-plus"/></svg>
+                            Add New
+                        </button>
+                        <button style="display: flex; align-items: center; gap: 6px; padding: 8px 16px; background: transparent; border: 1px solid var(--color-border-default); border-radius: 6px; color: var(--color-text-secondary); cursor: pointer;">
+                            <svg style="width: 16px; height: 16px; stroke: currentColor; stroke-width: 2; fill: none;"><use href="#tabler-settings"/></svg>
+                            Settings
+                        </button>
+                        <button style="display: flex; align-items: center; gap: 6px; padding: 8px 16px; background: var(--color-error); border: none; border-radius: 6px; color: white; cursor: pointer;">
+                            <svg style="width: 16px; height: 16px; stroke: currentColor; stroke-width: 2; fill: none;"><use href="#tabler-trash"/></svg>
+                            Delete
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 3D Effects Section -->
+        <section id="3d-effects" class="catalog-section">
+            <h2>3D Effects (Relation & Grouping)</h2>
+
+            <h3>1. Group Panel（子要素が浮く）</h3>
+            <div class="component-preview">
+                <p class="label">グループの親パネルが背景に沈み、子要素が手前に浮く</p>
+                <div class="group-panel-3d">
+                    <div style="color: #667eea; font-size: 12px; margin-bottom: 12px;">📁 Session: vantage-point</div>
+                    <div style="display: flex; gap: 12px;">
+                        <div class="floating-child" style="flex: 1;">
+                            <div style="font-weight: 500; margin-bottom: 8px;">Todo List</div>
+                            <div style="font-size: 13px; color: #94a3b8;">3 tasks in progress</div>
+                        </div>
+                        <div class="floating-child" style="flex: 1;">
+                            <div style="font-weight: 500; margin-bottom: 8px;">Chat</div>
+                            <div style="font-size: 13px; color: #94a3b8;">Active conversation</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <h3>2. Context Layers（階層的な奥行き）</h3>
+            <div class="component-preview">
+                <p class="label">ホバーで奥行きが強調される。背景=コンテキスト、前面=操作対象</p>
+                <div class="context-layers">
+                    <div class="context-layer back">
+                        <div style="color: #667eea; font-size: 11px;">CONTEXT</div>
+                        <div style="margin-top: 8px; font-size: 13px;">Project: vantage-point</div>
+                    </div>
+                    <div class="context-layer middle">
+                        <div style="color: #3b82f6; font-size: 11px;">TASK</div>
+                        <div style="margin-top: 8px; font-size: 13px;">Implementing chat UI</div>
+                    </div>
+                    <div class="context-layer front">
+                        <div style="font-weight: 500; margin-bottom: 8px;">Permission Request</div>
+                        <div style="font-size: 13px; color: #94a3b8;">Edit: src/components/Chat.tsx</div>
+                        <div style="margin-top: 12px; display: flex; gap: 8px; justify-content: flex-end;">
+                            <button class="chat-component-btn deny">Deny</button>
+                            <button class="chat-component-btn approve">Allow</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <h3>3. Relation Cards（親子関係）</h3>
+            <div class="component-preview">
+                <p class="label">親が背面に、子が前面に。関係性を視覚的に表現</p>
+                <div class="relation-container">
+                    <div class="relation-parent">
+                        <div style="color: #667eea; font-size: 11px; margin-bottom: 8px;">PARENT TASK</div>
+                        <div style="font-weight: 500;">Refactor authentication</div>
+                        <div style="font-size: 12px; color: #64748b; margin-top: 4px;">3 subtasks</div>
+                    </div>
+                    <div class="relation-children">
+                        <div class="relation-child">
+                            <span style="color: #22c55e;">●</span> Update login flow
+                        </div>
+                        <div class="relation-child">
+                            <span style="color: #3b82f6;">●</span> Add JWT validation
+                        </div>
+                        <div class="relation-child">
+                            <span style="color: #64748b;">○</span> Write tests
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <h3>4. Timeline Depth（時間的な前後）</h3>
+            <div class="component-preview">
+                <p class="label">新しいものが手前、古いものが奥へ。ホバーで最新が浮き上がる</p>
+                <div class="timeline-depth">
+                    <div class="timeline-item">
+                        <div style="font-size: 11px; color: #667eea; margin-bottom: 4px;">NOW</div>
+                        <div>Permission request: Edit file</div>
+                    </div>
+                    <div class="timeline-item">
+                        <div style="font-size: 11px; color: #64748b; margin-bottom: 4px;">2 min ago</div>
+                        <div>Completed: Analyze codebase</div>
+                    </div>
+                    <div class="timeline-item">
+                        <div style="font-size: 11px; color: #64748b; margin-bottom: 4px;">5 min ago</div>
+                        <div>User: Fix the authentication bug</div>
+                    </div>
+                    <div class="timeline-item">
+                        <div style="font-size: 11px; color: #64748b; margin-bottom: 4px;">10 min ago</div>
+                        <div>Session started</div>
+                    </div>
+                </div>
+            </div>
+
+            <h3>5. Permission with Context（許可UI + コンテキスト）</h3>
+            <div class="component-preview">
+                <p class="label">操作対象のコンテキストが背面に、許可UIが前面に</p>
+                <div class="permission-context-3d">
+                    <div class="context-info">
+                        📁 src/components/Chat.tsx • Modified 2 min ago • 145 lines
+                    </div>
+                    <div class="permission-main">
+                        <div class="chat-component permission-request">
+                            <div class="chat-component-header">
+                                <span class="icon" style="color: var(--color-warning);"><svg><use href="#tabler-shield"/></svg></span>
+                                <span class="title">Permission Request</span>
+                                <span class="tool-name">Edit</span>
+                            </div>
+                            <div class="chat-component-body">
+                                <div class="input-preview">
+                                    <pre>- const [messages, setMessages]
++ const [messages, setMessages] = useState([])</pre>
+                                </div>
+                                <div class="chat-component-actions">
+                                    <button class="chat-component-btn deny">Deny</button>
+                                    <button class="chat-component-btn approve">Allow</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Scenes Section - Combined Components -->
+        <section id="scenes" class="catalog-section">
+            <h2>Scenes (Combined Views)</h2>
+
+            <h3>NEW: Simple Chat Layout</h3>
+            <div class="component-preview" style="padding: 0; height: 500px;">
+                <div class="simple-chat">
+                    <!-- Chat History (scrollable) -->
+                    <div class="simple-chat-history">
+                        <div class="simple-message assistant">
+                            <div class="simple-message-content">こんにちは！何かお手伝いできることはありますか？</div>
+                        </div>
+                        <div class="simple-message user">
+                            <div class="simple-message-content">ファイルのバグを修正して</div>
+                        </div>
+                        <div class="simple-message assistant">
+                            <div class="simple-message-content">
+                                <p>承知しました。まずバグの原因を調査します。</p>
+                                <p><code>useState</code>の初期値が設定されていないようです。修正を適用しますか？</p>
+                            </div>
+                        </div>
+                        <div class="simple-message user">
+                            <div class="simple-message-content">お願いします</div>
+                        </div>
+                        <div class="simple-message assistant">
+                            <div class="simple-message-content">
+                                <p>修正が完了しました。変更点:</p>
+                                <ul>
+                                    <li><code>useState</code>に初期値を追加</li>
+                                    <li>型定義を修正</li>
+                                </ul>
+                                <p>テストも全て通過しています。✅</p>
+                            </div>
+                        </div>
+                        <div class="simple-message user">
+                            <div class="simple-message-content">ありがとう！次はテストを追加して</div>
+                        </div>
+                        <div class="simple-message assistant">
+                            <div class="simple-message-content">
+                                <p>テストを追加します。以下のテストケースを作成しました:</p>
+                                <pre><code>describe('Chat component', () => {
+  it('should initialize with empty messages', () => {
+    // ...
+  });
+});</code></pre>
+                            </div>
+                        </div>
+                    </div>
+                    <!-- Input Area (fixed bottom) -->
+                    <div class="simple-chat-input">
+                        <div class="simple-input-wrapper">
+                            <textarea placeholder="メッセージを入力..." rows="1"></textarea>
+                            <button class="simple-send-btn">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/>
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <h3>Scene 1: Permission Request Active</h3>
+            <div class="component-preview scene-preview">
+                <!-- Context Mode Bar -->
+                <div class="context-mode-bar">
+                    <div class="context-mode-indicator permission"></div>
+                    <span class="context-mode-label">許可待ち</span>
+                    <span class="context-mode-detail">Edit</span>
+                </div>
+
+                <!-- Permission Request -->
+                <div class="chat-component permission-request">
+                    <div class="chat-component-header">
+                        <span class="icon" style="color: var(--color-warning);"><svg><use href="#tabler-shield"/></svg></span>
+                        <span class="title">Permission Request</span>
+                        <span class="tool-name">Edit</span>
+                    </div>
+                    <div class="chat-component-body">
+                        <p style="margin-bottom: 12px; color: #94a3b8;">ファイルを編集します</p>
+                        <div class="input-preview">
+                            <pre>{
+  "file_path": "/src/components/Chat.tsx",
+  "old_string": "const [messages, setMessages]",
+  "new_string": "const [messages, setMessages] = useState([])"
+}</pre>
+                        </div>
+                        <div class="chat-component-actions">
+                            <button class="chat-component-btn deny">Deny</button>
+                            <button class="chat-component-btn approve">Allow</button>
+                        </div>
+                        <div class="chat-component-timeout">Timeout in 58s</div>
+                    </div>
+                </div>
+
+                <!-- Input Area (disabled during permission) -->
+                <div class="input-area" style="margin-top: 16px; opacity: 0.6;">
+                    <div class="chat-input-wrapper">
+                        <textarea class="chat-input" placeholder="Message the Stand..." rows="1" disabled></textarea>
+                        <button class="chat-send-btn" disabled>
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- History -->
+                <div style="margin-top: 16px;">
+                    <div class="history-message user">ファイルのバグを修正して</div>
+                </div>
+            </div>
+
+            <h3>Scene 2: Todo Progress + Streaming Response</h3>
+            <div class="component-preview scene-preview">
+                <!-- Context Mode Bar -->
+                <div class="context-mode-bar">
+                    <div class="context-mode-indicator todo"></div>
+                    <span class="context-mode-label">タスク進行中</span>
+                    <span class="context-mode-detail">1件実行中</span>
+                </div>
+
+                <!-- Todo List -->
+                <div class="chat-component todo-list">
+                    <div class="chat-component-header">
+                        <span class="icon" style="color: var(--color-info);"><svg><use href="#tabler-list"/></svg></span>
+                        <span class="title">Tasks</span>
+                    </div>
+                    <div class="chat-component-body">
+                        <div class="todo-item completed">
+                            <div class="status-icon">✓</div>
+                            <span class="content">バグの原因を調査</span>
+                        </div>
+                        <div class="todo-item in_progress">
+                            <div class="status-icon">●</div>
+                            <span class="content">修正を実装中</span>
+                        </div>
+                        <div class="todo-item pending">
+                            <div class="status-icon"></div>
+                            <span class="content">テストを実行</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Streaming Response -->
+                <div class="current-response" style="margin-top: 12px;">
+                    <div class="content">
+                        <p>バグの原因を特定しました。<code>useState</code>の初期値が設定されていないため、undefinedになっていました。</p>
+                        <p>修正を適用します...</p>
+                    </div>
+                </div>
+
+                <!-- Input Area -->
+                <div class="input-area" style="margin-top: 16px;">
+                    <div class="chat-input-wrapper">
+                        <textarea class="chat-input" placeholder="Message the Stand..." rows="1"></textarea>
+                        <button class="chat-cancel-btn">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M6 6l12 12M6 18L18 6"/>
+                            </svg>
+                        </button>
+                        <button class="chat-send-btn" disabled>
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <h3>Scene 3: User Prompt (Question)</h3>
+            <div class="component-preview scene-preview">
+                <!-- Context Mode Bar -->
+                <div class="context-mode-bar">
+                    <div class="context-mode-indicator prompt"></div>
+                    <span class="context-mode-label">入力待ち</span>
+                </div>
+
+                <!-- User Prompt -->
+                <div class="chat-component user-prompt">
+                    <div class="chat-component-header">
+                        <span class="icon" style="color: var(--color-accent-primary);"><svg><use href="#tabler-help"/></svg></span>
+                        <span class="title">どちらのアプローチを使いますか?</span>
+                    </div>
+                    <div class="chat-component-body">
+                        <p class="prompt-description">認証方式を選択してください:</p>
+                        <div style="display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px;">
+                            <button class="chat-component-btn" style="text-align: left; padding: 12px 16px;">
+                                <strong>JWT Token</strong><br>
+                                <span style="font-size: 12px; color: #64748b;">ステートレス、スケーラブル</span>
+                            </button>
+                            <button class="chat-component-btn" style="text-align: left; padding: 12px 16px;">
+                                <strong>Session Cookie</strong><br>
+                                <span style="font-size: 12px; color: #64748b;">シンプル、サーバー管理</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Input Area -->
+                <div class="input-area" style="margin-top: 16px;">
+                    <div class="chat-input-wrapper">
+                        <textarea class="chat-input" placeholder="Message the Stand..." rows="1"></textarea>
+                        <button class="chat-send-btn">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- History -->
+                <div style="margin-top: 16px;">
+                    <div class="history-message user">認証機能を追加して</div>
+                </div>
+            </div>
+
+            <h3>Scene 4: Conversation Flow</h3>
+            <div class="component-preview scene-preview">
+                <!-- Context Mode Bar -->
+                <div class="context-mode-bar">
+                    <div class="context-mode-indicator idle"></div>
+                    <span class="context-mode-label">待機中</span>
+                </div>
+
+                <!-- Input Area -->
+                <div class="input-area">
+                    <div class="chat-input-wrapper" style="border-color: #667eea;">
+                        <textarea class="chat-input" rows="1">次のステップに進んで</textarea>
+                        <button class="chat-send-btn">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- History -->
+                <div style="margin-top: 16px; display: flex; flex-direction: column; gap: 12px;">
+                    <div class="history-message assistant">
+                        <div class="content">
+                            <p>修正が完了しました。変更点:</p>
+                            <ul style="margin: 8px 0; padding-left: 20px;">
+                                <li><code>useState</code>に初期値を追加</li>
+                                <li>型定義を修正</li>
+                            </ul>
+                            <p>テストも全て通過しています。✅</p>
+                        </div>
+                    </div>
+                    <div class="history-message user">ファイルのバグを修正して</div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Messages Section -->
+        <section id="messages" class="catalog-section">
+            <h2>Chat Messages</h2>
+
+            <h3>User Message</h3>
+            <div class="component-preview">
+                <div class="history-message user">
+                    チャットビューのデザインを考えたい。チャットビューだけデザインしたり確認したいんだけど、いい方法ないかな?
+                </div>
+            </div>
+
+            <h3>Assistant Message</h3>
+            <div class="component-preview">
+                <div class="history-message assistant">
+                    <div class="content">
+                        <p>いくつかアプローチがある:</p>
+                        <p><strong>1. 静的HTMLモックアップ</strong><br>
+                        <code>web/catalog.html</code> のような単独ファイルを作成。モックデータでチャットUIを表示。</p>
+                        <p><strong>2. Standにデモモード追加</strong></p>
+                        <pre><code>vp start --demo  # Claude CLIを起動せず、モックデータを返す</code></pre>
+                    </div>
+                </div>
+            </div>
+
+            <h3>Streaming Response (Current)</h3>
+            <div class="component-preview">
+                <div class="current-response">
+                    <div class="content">
+                        <p>現在のUIを把握した。主なチャットコンポーネント:</p>
+                        <p>1. <strong>メッセージ</strong>: user / assistant<br>
+                        2. <strong>Permission Request</strong>: ツール許可ダイアログ</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Context Mode Section -->
+        <section id="status" class="catalog-section">
+            <h2>Context Mode Indicators</h2>
+
+            <div class="component-preview">
+                <div class="variations">
+                    <div class="variation">
+                        <div class="variation-label">Idle</div>
+                        <div class="context-mode-bar">
+                            <div class="context-mode-indicator idle"></div>
+                            <span class="context-mode-label">待機中</span>
+                        </div>
+                    </div>
+                    <div class="variation">
+                        <div class="variation-label">Thinking</div>
+                        <div class="context-mode-bar">
+                            <div class="context-mode-indicator thinking"></div>
+                            <span class="context-mode-label">考え中</span>
+                        </div>
+                    </div>
+                    <div class="variation">
+                        <div class="variation-label">Responding</div>
+                        <div class="context-mode-bar">
+                            <div class="context-mode-indicator responding"></div>
+                            <span class="context-mode-label">返答中</span>
+                        </div>
+                    </div>
+                    <div class="variation">
+                        <div class="variation-label">Permission</div>
+                        <div class="context-mode-bar">
+                            <div class="context-mode-indicator permission"></div>
+                            <span class="context-mode-label">許可待ち</span>
+                            <span class="context-mode-detail">Bash</span>
+                        </div>
+                    </div>
+                    <div class="variation">
+                        <div class="variation-label">Prompt</div>
+                        <div class="context-mode-bar">
+                            <div class="context-mode-indicator prompt"></div>
+                            <span class="context-mode-label">入力待ち</span>
+                        </div>
+                    </div>
+                    <div class="variation">
+                        <div class="variation-label">Todo</div>
+                        <div class="context-mode-bar">
+                            <div class="context-mode-indicator todo"></div>
+                            <span class="context-mode-label">タスク進行中</span>
+                            <span class="context-mode-detail">2件実行中</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <h3>Connection Status</h3>
+            <div class="component-preview">
+                <div class="variations">
+                    <div class="variation">
+                        <span class="status connected">Connected</span>
+                    </div>
+                    <div class="variation">
+                        <span class="status disconnected">Disconnected</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Components Section -->
+        <section id="components" class="catalog-section">
+            <h2>Interactive Components</h2>
+
+            <h3>Permission Request</h3>
+            <div class="component-preview">
+                <div class="chat-component permission-request">
+                    <div class="chat-component-header">
+                        <span class="icon" style="color: var(--color-warning);"><svg><use href="#tabler-shield"/></svg></span>
+                        <span class="title">Permission Request</span>
+                        <span class="tool-name">Bash</span>
+                    </div>
+                    <div class="chat-component-body">
+                        <p style="margin-bottom: 12px; color: #94a3b8;">Execute shell command</p>
+                        <div class="input-preview">
+                            <pre>cargo build --release -p vantage-point</pre>
+                        </div>
+                        <div class="chat-component-actions">
+                            <button class="chat-component-btn deny">Deny</button>
+                            <button class="chat-component-btn approve">Allow</button>
+                        </div>
+                        <div class="chat-component-timeout">Timeout in 120s</div>
+                    </div>
+                </div>
+            </div>
+
+            <h3>Permission Request (Resolved)</h3>
+            <div class="component-preview">
+                <div class="chat-component permission-request resolved" data-resolution="✓ Allowed">
+                    <div class="chat-component-header">
+                        <span class="icon" style="color: var(--color-warning);"><svg><use href="#tabler-shield"/></svg></span>
+                        <span class="title">Permission Request</span>
+                        <span class="tool-name">Bash</span>
+                    </div>
+                    <div class="chat-component-body">
+                        <div class="input-preview">
+                            <pre>git status</pre>
+                        </div>
+                        <div class="chat-component-actions">
+                            <button class="chat-component-btn deny">Deny</button>
+                            <button class="chat-component-btn approve">Allow</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <h3>Todo List</h3>
+            <div class="component-preview">
+                <div class="chat-component todo-list">
+                    <div class="chat-component-header">
+                        <span class="icon" style="color: var(--color-info);"><svg><use href="#tabler-list"/></svg></span>
+                        <span class="title">Tasks</span>
+                    </div>
+                    <div class="chat-component-body">
+                        <div class="todo-item completed">
+                            <div class="status-icon">✓</div>
+                            <span class="content">現在のUIコンポーネントを確認</span>
+                        </div>
+                        <div class="todo-item in_progress">
+                            <div class="status-icon">●</div>
+                            <span class="content">UIカタログを作成中</span>
+                        </div>
+                        <div class="todo-item pending">
+                            <div class="status-icon"></div>
+                            <span class="content">デザイン調整</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <h3>User Prompt (Confirm)</h3>
+            <div class="component-preview">
+                <div class="chat-component user-prompt">
+                    <div class="chat-component-header">
+                        <span class="icon" style="color: var(--color-accent-primary);"><svg><use href="#tabler-help"/></svg></span>
+                        <span class="title">Confirm Action</span>
+                    </div>
+                    <div class="chat-component-body">
+                        <p class="prompt-description">このファイルを削除してもよろしいですか?</p>
+                        <div class="chat-component-actions">
+                            <button class="chat-component-btn deny">No</button>
+                            <button class="chat-component-btn approve">Yes</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <h3>User Prompt (Input)</h3>
+            <div class="component-preview">
+                <div class="chat-component user-prompt">
+                    <div class="chat-component-header">
+                        <span class="icon" style="color: var(--color-accent-primary);"><svg><use href="#tabler-pencil"/></svg></span>
+                        <span class="title">Enter Value</span>
+                    </div>
+                    <div class="chat-component-body">
+                        <p class="prompt-description">新しいファイル名を入力してください:</p>
+                        <input type="text" class="prompt-input" placeholder="filename.txt" value="">
+                        <div class="chat-component-actions">
+                            <button class="chat-component-btn submit">Submit</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Input Section -->
+        <section id="input" class="catalog-section">
+            <h2>Input Area</h2>
+
+            <h3>Default State</h3>
+            <div class="component-preview">
+                <div class="input-area">
+                    <div class="chat-input-wrapper">
+                        <textarea class="chat-input" placeholder="Message the Stand..." rows="1"></textarea>
+                        <button class="chat-send-btn" disabled>
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <h3>With Text (Ready to Send)</h3>
+            <div class="component-preview">
+                <div class="input-area">
+                    <div class="chat-input-wrapper" style="border-color: #667eea;">
+                        <textarea class="chat-input" rows="1">このタスクを実行して</textarea>
+                        <button class="chat-send-btn">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <h3>Processing (With Cancel Button)</h3>
+            <div class="component-preview">
+                <div class="input-area">
+                    <div class="chat-input-wrapper">
+                        <textarea class="chat-input" placeholder="Message the Stand..." rows="1" disabled></textarea>
+                        <button class="chat-cancel-btn">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M6 6l12 12M6 18L18 6"/>
+                            </svg>
+                        </button>
+                        <button class="chat-send-btn" disabled>
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <h3>Typing Indicator</h3>
+            <div class="component-preview">
+                <div class="typing-indicator">vantage-point is thinking</div>
+            </div>
+        </section>
+    </div>
+</body>
+</html>
