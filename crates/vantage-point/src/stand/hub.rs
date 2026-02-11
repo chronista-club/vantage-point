@@ -16,7 +16,10 @@ pub struct Hub {
 
 impl Hub {
     pub fn new() -> Self {
-        let (tx, _) = broadcast::channel(100);
+        // PTY出力は高速（4096バイト/回 × base64）なので十分なバッファが必要。
+        // 容量不足でメッセージがドロップされるとANSIシーケンスが壊れ、
+        // ターミナル表示が崩壊する。
+        let (tx, _) = broadcast::channel(10000);
         Self {
             tx,
             client_count: Arc::new(RwLock::new(0)),

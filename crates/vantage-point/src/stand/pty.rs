@@ -96,7 +96,13 @@ pub fn start_pty_reader_task(
                 }
                 Ok(n) => {
                     let encoded = engine.encode(&buf[..n]);
-                    let _ = tx.send(StandMessage::TerminalOutput { data: encoded });
+                    match tx.send(StandMessage::TerminalOutput { data: encoded }) {
+                        Ok(_) => {}
+                        Err(broadcast::error::SendError(_)) => {
+                            // 受信者がいない場合（正常：クライアント未接続時）
+                            tracing::debug!("PTY broadcast: no receivers");
+                        }
+                    }
                 }
                 Err(e) => {
                     tracing::warn!("PTY reader error: {}", e);
