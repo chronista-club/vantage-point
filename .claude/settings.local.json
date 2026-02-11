@@ -1,0 +1,8 @@
+{
+  "enabledMcpjsonServers": [
+    "gemini-cli",
+    "drawio",
+    "surrealdb",
+    "serena"
+  ]
+}
