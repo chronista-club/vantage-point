@@ -1,0 +1,155 @@
+//! Conductor APIルートハンドラー
+//!
+//! Stand process管理（プロジェクト一覧、Stand起動/停止など）
+
+use std::sync::Arc;
+
+use axum::{Json, extract::State, response::IntoResponse};
+
+use super::super::state::AppState;
+use crate::capability::{ProjectInfo, RunningStand};
+
+/// Conductor projects response
+#[derive(serde::Serialize)]
+struct ConductorProjectsResponse {
+    projects: Vec<ProjectInfo>,
+}
+
+/// Conductor stands response
+#[derive(serde::Serialize)]
+struct ConductorStandsResponse {
+    stands: Vec<RunningStand>,
+}
+
+/// GET /api/conductor/projects - List all registered projects
+pub async fn conductor_list_projects(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let Some(conductor) = &state.conductor else {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "Conductor not available"})),
+        );
+    };
+
+    let conductor = conductor.read().await;
+    let projects = conductor.list_projects().await;
+
+    (
+        axum::http::StatusCode::OK,
+        Json(serde_json::json!(ConductorProjectsResponse { projects })),
+    )
+}
+
+/// GET /api/conductor/stands - List all running stands
+pub async fn conductor_list_stands(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let Some(conductor) = &state.conductor else {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "Conductor not available"})),
+        );
+    };
+
+    let conductor = conductor.read().await;
+    let stands = conductor.list_running_stands().await;
+
+    (
+        axum::http::StatusCode::OK,
+        Json(serde_json::json!(ConductorStandsResponse { stands })),
+    )
+}
+
+/// POST /api/conductor/stands/{project_name}/start - Start a stand for project
+pub async fn conductor_start_stand(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(project_name): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    let Some(conductor) = &state.conductor else {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "Conductor not available"})),
+        );
+    };
+
+    let conductor = conductor.read().await;
+    match conductor.start_stand(&project_name).await {
+        Ok(stand) => (
+            axum::http::StatusCode::OK,
+            Json(serde_json::to_value(&stand).unwrap_or_default()),
+        ),
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        ),
+    }
+}
+
+/// POST /api/conductor/stands/{project_name}/stop - Stop a stand for project
+pub async fn conductor_stop_stand(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(project_name): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    let Some(conductor) = &state.conductor else {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "Conductor not available"})),
+        );
+    };
+
+    let conductor = conductor.read().await;
+    match conductor.stop_stand(&project_name).await {
+        Ok(()) => (
+            axum::http::StatusCode::OK,
+            Json(serde_json::json!({"status": "stopped", "project": project_name})),
+        ),
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        ),
+    }
+}
+
+/// POST /api/conductor/stands/{project_name}/pointview - Open PointView for project
+pub async fn conductor_open_pointview(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(project_name): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    let Some(conductor) = &state.conductor else {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "Conductor not available"})),
+        );
+    };
+
+    let conductor = conductor.read().await;
+    match conductor.open_pointview(&project_name).await {
+        Ok(()) => (
+            axum::http::StatusCode::OK,
+            Json(serde_json::json!({"status": "opened", "project": project_name})),
+        ),
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        ),
+    }
+}
+
+/// POST /api/conductor/refresh - Refresh stand status
+pub async fn conductor_refresh(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let Some(conductor) = &state.conductor else {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "Conductor not available"})),
+        );
+    };
+
+    let conductor = conductor.read().await;
+    match conductor.refresh_stand_status().await {
+        Ok(()) => (
+            axum::http::StatusCode::OK,
+            Json(serde_json::json!({"status": "refreshed"})),
+        ),
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        ),
+    }
+}

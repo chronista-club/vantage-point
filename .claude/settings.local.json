@@ -6,7 +6,13 @@
       "Bash(find:*)",
       "Bash(__NEW_LINE_44df6368ade9602a__ grep -n \"pub async fn run\" /Users/makoto/repos/vantage-point/crates/vantage-point/src/world/*.rs)",
       "Bash(cargo test:*)",
-      "Bash(cargo build:*)"
+      "Bash(cargo build:*)",
+      "Bash(wc:*)",
+      "Bash(cargo clippy:*)",
+      "Bash(cargo run:*)",
+      "Bash(gh pr create:*)",
+      "Bash(gh pr checks:*)",
+      "Bash(gh run view:*)"
     ]
   },
   "enabledMcpjsonServers": [

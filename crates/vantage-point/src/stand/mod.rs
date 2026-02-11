@@ -11,6 +11,7 @@
 pub mod capabilities;
 mod hub;
 pub mod pty;
+mod routes;
 mod server;
 mod session;
 pub(crate) mod state;
