@@ -399,10 +399,23 @@
                     window.sendTerminalInput(data);
                 });
 
-                // WKWebView + macOS日本語IMEワークアラウンド:
-                // 英字モードでも全キーがkeyCode:229で報告され、
-                // ghostty-webが「IME処理中」と判断して無視する問題を回避
+                // WKWebView キー入力ワークアラウンド (capturing phase):
+                // 1. macOS日本語IME: 英字モードでもkeyCode:229で報告される問題
+                // 2. Tab/Shift+Tab: WKWebViewがフォーカスナビゲーション用に横取りする問題
                 container.addEventListener('keydown', (e) => {
+                    // Tab / Shift+Tab → WKWebViewのフォーカス移動を阻止してPTYに送信
+                    if (e.key === 'Tab') {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        if (e.shiftKey) {
+                            // Shift+Tab = Back Tab (CSI Z)
+                            window.sendTerminalInput('\x1b[Z');
+                        } else {
+                            window.sendTerminalInput('\t');
+                        }
+                        return;
+                    }
+                    // IMEワークアラウンド: keyCode:229で非composing時は直接送信
                     if (e.keyCode === 229 && !e.isComposing && e.key && e.key.length === 1) {
                         window.sendTerminalInput(e.key);
                     }
