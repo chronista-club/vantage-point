@@ -1,6 +1,10 @@
-//! Conductor APIルートハンドラー
+//! Conductor APIルートハンドラー - Stand プロセス管理
 //!
-//! Stand process管理（プロジェクト一覧、Stand起動/停止など）
+//! Conductor Stand（メニューバーアプリ連携）から呼び出される REST API。
+//! Project Stand の起動・停止・監視を行う。
+//!
+//! **注意**: `world::conductor` は Paisley Park（プロジェクトAgent）の管理を担当。
+//! こちらは Stand プロセス自体のライフサイクル管理を担当する。
 
 use std::sync::Arc;
 

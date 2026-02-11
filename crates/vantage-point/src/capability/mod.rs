@@ -15,7 +15,6 @@
 
 pub mod agent_capability;
 pub mod bonjour_capability;
-pub mod conductor_capability;
 pub mod core;
 pub mod eventbus;
 pub mod evolution;
@@ -23,14 +22,15 @@ pub mod midi_capability;
 pub mod params;
 pub mod protocol_capability;
 pub mod registry;
+pub mod stand_manager_capability;
 pub mod update_capability;
 
 pub use agent_capability::AgentCapability;
 pub use bonjour_capability::BonjourCapability;
-pub use conductor_capability::{ConductorCapability, ProjectInfo, RunningStand};
 pub use core::{CapabilityContext, CapabilityEvent, CapabilityInfo, CapabilityState};
 pub use eventbus::EventBus;
 pub use midi_capability::MidiCapability;
 pub use protocol_capability::ProtocolCapability;
 pub use registry::CapabilityRegistry;
+pub use stand_manager_capability::{ProjectInfo, RunningStand, StandManagerCapability};
 pub use update_capability::UpdateCapability;

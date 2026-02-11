@@ -20,7 +20,7 @@ use super::pty::PtyManager;
 use super::routes::{conductor, health, permission, prompt, update, ws};
 use super::session::SessionManager;
 use super::state::AppState;
-use crate::capability::{ConductorCapability, UpdateCapability};
+use crate::capability::{StandManagerCapability, UpdateCapability};
 use crate::config::RunningStands;
 use crate::protocol::DebugMode;
 
@@ -190,13 +190,13 @@ pub async fn run_conductor(port: u16) -> Result<()> {
     let shutdown_token_clone = shutdown_token.clone();
 
     // Initialize Conductor Capability
-    let mut conductor_cap = ConductorCapability::new();
+    let mut conductor_cap = StandManagerCapability::new();
     let ctx = CapabilityContext::new();
 
     if let Err(e) = conductor_cap.initialize(&ctx).await {
-        tracing::error!("Failed to initialize ConductorCapability: {}", e);
+        tracing::error!("Failed to initialize StandManagerCapability: {}", e);
         return Err(anyhow::anyhow!(
-            "ConductorCapability initialization failed: {}",
+            "StandManagerCapability initialization failed: {}",
             e
         ));
     }

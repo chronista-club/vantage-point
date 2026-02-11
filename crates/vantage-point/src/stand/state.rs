@@ -15,7 +15,7 @@ use super::pty::PtyManager;
 use super::session::SessionManager;
 use crate::agent::InteractiveClaudeAgent;
 use crate::agui::AgUiEvent;
-use crate::capability::{ConductorCapability, UpdateCapability};
+use crate::capability::{StandManagerCapability, UpdateCapability};
 use crate::mcp::PermissionResponse;
 use crate::protocol::{DebugMode, StandMessage};
 
@@ -95,7 +95,7 @@ pub(crate) struct AppState {
     /// Capability system (Agent, MIDI, Protocol)
     pub capabilities: Arc<StandCapabilities>,
     /// Conductor capability for managing multiple stands (optional, only for conductor mode)
-    pub conductor: Option<Arc<RwLock<ConductorCapability>>>,
+    pub conductor: Option<Arc<RwLock<StandManagerCapability>>>,
     /// Update capability for version checking (optional, only for conductor mode)
     pub update: Option<Arc<RwLock<UpdateCapability>>>,
     /// Interactive Claude agent (stream-json mode for structured communication)
