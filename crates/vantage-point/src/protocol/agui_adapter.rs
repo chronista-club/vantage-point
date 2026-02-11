@@ -369,7 +369,9 @@ mod tests {
         let events = adapter.convert(AgentEvent::TextChunk("Hello".to_string()));
         assert_eq!(events.len(), 2);
         assert!(matches!(&events[0], AgUiEvent::TextMessageStart { .. }));
-        assert!(matches!(&events[1], AgUiEvent::TextMessageContent { delta, .. } if delta == "Hello"));
+        assert!(
+            matches!(&events[1], AgUiEvent::TextMessageContent { delta, .. } if delta == "Hello")
+        );
 
         // 2回目のテキストチャンクは TextMessageContent のみ
         let events = adapter.convert(AgentEvent::TextChunk(" World".to_string()));

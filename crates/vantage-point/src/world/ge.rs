@@ -457,16 +457,16 @@ Cargo.lock
         };
 
         // 成長データに記録
-        if self.config.growth_mode {
-            if let Ok(ref heal_result) = result {
-                let mut growth = self.growth_data.write().await;
-                growth.heal_history.push(HealRecord {
-                    timestamp: chrono::Utc::now(),
-                    action,
-                    project_kind: project.kind,
-                    success: heal_result.success,
-                });
-            }
+        if self.config.growth_mode
+            && let Ok(ref heal_result) = result
+        {
+            let mut growth = self.growth_data.write().await;
+            growth.heal_history.push(HealRecord {
+                timestamp: chrono::Utc::now(),
+                action,
+                project_kind: project.kind,
+                success: heal_result.success,
+            });
         }
 
         result

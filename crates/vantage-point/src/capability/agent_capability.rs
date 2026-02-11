@@ -353,10 +353,8 @@ async fn update_run_state(run_state: &Arc<RwLock<AgentRunState>>, event: &AgentE
             state.tools = tools.clone();
             state.mcp_servers = mcp_servers.clone();
         }
-        AgentEvent::Done { cost, .. } => {
-            if let Some(c) = cost {
-                state.total_cost += c;
-            }
+        AgentEvent::Done { cost: Some(c), .. } => {
+            state.total_cost += c;
         }
         _ => {}
     }
@@ -385,12 +383,11 @@ impl Capability for AgentCapability {
         tracing::info!("AgentCapability initializing");
 
         // ワーキングディレクトリを設定から取得
-        if self.config.working_dir.is_none() {
-            if let Some(cwd) = ctx.config().get("working_dir") {
-                if let Some(dir) = cwd.as_str() {
-                    self.config.working_dir = Some(dir.to_string());
-                }
-            }
+        if self.config.working_dir.is_none()
+            && let Some(cwd) = ctx.config().get("working_dir")
+            && let Some(dir) = cwd.as_str()
+        {
+            self.config.working_dir = Some(dir.to_string());
         }
 
         self.state = CapabilityState::Idle;

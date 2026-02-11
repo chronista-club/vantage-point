@@ -28,7 +28,7 @@ use tokio::sync::{RwLock, mpsc};
 // =============================================================================
 
 /// MIDIの接続状態
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct MidiConnectionState {
     /// 接続中のポート名
     pub connected_port: Option<String>,
@@ -38,17 +38,6 @@ pub struct MidiConnectionState {
     pub last_event_time: Option<std::time::Instant>,
     /// 受信イベント数
     pub event_count: u64,
-}
-
-impl Default for MidiConnectionState {
-    fn default() -> Self {
-        Self {
-            connected_port: None,
-            available_ports: Vec::new(),
-            last_event_time: None,
-            event_count: 0,
-        }
-    }
 }
 
 // =============================================================================
@@ -374,18 +363,18 @@ impl MidiCapability {
         // 切断イベントを発行
         let port_name = {
             let mut state = self.connection_state.write().await;
-            let name = state.connected_port.take();
-            name
+
+            state.connected_port.take()
         };
 
-        if let Some(ref bus) = self.event_bus {
-            if let Some(name) = port_name {
-                let event = CapabilityEvent::new("midi.device_disconnected", "midi-capability")
-                    .with_payload(&serde_json::json!({
-                        "port_name": name,
-                    }));
-                bus.emit(event).await;
-            }
+        if let Some(ref bus) = self.event_bus
+            && let Some(name) = port_name
+        {
+            let event = CapabilityEvent::new("midi.device_disconnected", "midi-capability")
+                .with_payload(&serde_json::json!({
+                    "port_name": name,
+                }));
+            bus.emit(event).await;
         }
 
         self.state = CapabilityState::Idle;
@@ -500,12 +489,11 @@ impl Capability for MidiCapability {
         tracing::info!("MidiCapability initializing");
 
         // ポートパターンを設定から取得
-        if self.config.port_pattern.is_none() {
-            if let Some(pattern) = ctx.config().get("port_pattern") {
-                if let Some(p) = pattern.as_str() {
-                    self.config.port_pattern = Some(p.to_string());
-                }
-            }
+        if self.config.port_pattern.is_none()
+            && let Some(pattern) = ctx.config().get("port_pattern")
+            && let Some(p) = pattern.as_str()
+        {
+            self.config.port_pattern = Some(p.to_string());
         }
 
         // 利用可能なポートを取得

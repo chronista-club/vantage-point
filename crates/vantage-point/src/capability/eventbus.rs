@@ -203,8 +203,7 @@ impl EventBus {
             return event_type.starts_with(prefix);
         }
 
-        if pattern.ends_with('*') {
-            let prefix = &pattern[..pattern.len() - 1];
+        if let Some(prefix) = pattern.strip_suffix('*') {
             return event_type.starts_with(prefix);
         }
 

@@ -188,7 +188,7 @@ impl VantageDb {
         for entry in std::fs::read_dir(&projects_dir)? {
             let entry = entry?;
             let path = entry.path();
-            if path.extension().map_or(false, |ext| ext == "json") {
+            if path.extension().is_some_and(|ext| ext == "json") {
                 let json = std::fs::read_to_string(&path)?;
                 if let Ok(project) = serde_json::from_str::<ProjectRecord>(&json) {
                     projects.push(project);
@@ -266,7 +266,7 @@ impl VantageDb {
         for entry in std::fs::read_dir(&sessions_dir)? {
             let entry = entry?;
             let path = entry.path();
-            if path.extension().map_or(false, |ext| ext == "json") {
+            if path.extension().is_some_and(|ext| ext == "json") {
                 let json = std::fs::read_to_string(&path)?;
                 if let Ok(session) = serde_json::from_str::<SessionRecord>(&json) {
                     sessions.push(session);
@@ -317,7 +317,7 @@ impl VantageDb {
         for entry in std::fs::read_dir(&conv_dir)? {
             let entry = entry?;
             let path = entry.path();
-            if path.extension().map_or(false, |ext| ext == "json") {
+            if path.extension().is_some_and(|ext| ext == "json") {
                 let json = std::fs::read_to_string(&path)?;
                 if let Ok(conv) = serde_json::from_str::<ConversationRecord>(&json) {
                     conversations.push(conv);

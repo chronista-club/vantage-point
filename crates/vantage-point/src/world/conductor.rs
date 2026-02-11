@@ -209,10 +209,10 @@ impl Conductor {
         self.parks
             .iter()
             .filter_map(|(id, info)| {
-                if let Some(last) = info.last_heartbeat {
-                    if now.duration_since(last) > self.heartbeat_timeout {
-                        return Some(id.clone());
-                    }
+                if let Some(last) = info.last_heartbeat
+                    && now.duration_since(last) > self.heartbeat_timeout
+                {
+                    return Some(id.clone());
                 }
                 None
             })

@@ -45,7 +45,6 @@ use anyhow::Result;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
-pub use agent::{AgentSession, ParkAgent};
 pub use client::WorldClient;
 
 /// Paisley Park 設定

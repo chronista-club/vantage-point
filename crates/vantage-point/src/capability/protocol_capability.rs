@@ -8,11 +8,11 @@
 //! - REQ-PROTO-005: Transport抽象化
 
 use crate::capability::core::{
-    Capability, CapabilityContext, CapabilityError, CapabilityEvent, CapabilityInfo,
-    CapabilityResult, CapabilityState,
+    Capability, CapabilityContext, CapabilityEvent, CapabilityInfo, CapabilityResult,
+    CapabilityState,
 };
-use crate::capability::eventbus::{EventBus, FilteredSubscription};
-use crate::protocol::{AcpMessage, ProtocolMessage, ToAcp, ToAgUi, VantageEvent};
+use crate::capability::eventbus::FilteredSubscription;
+use crate::protocol::{ProtocolMessage, ToAcp, ToAgUi, VantageEvent};
 use async_trait::async_trait;
 use std::any::Any;
 use std::sync::Arc;

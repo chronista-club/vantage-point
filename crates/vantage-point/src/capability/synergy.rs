@@ -326,10 +326,11 @@ impl SynergyEngine {
                 continue;
             }
 
-            if let Some(analysis) = self.analyze(base_capability, &id) {
-                if analysis.compatibility > 50 && !analysis.is_forbidden {
-                    results.push(analysis);
-                }
+            if let Some(analysis) = self.analyze(base_capability, &id)
+                && analysis.compatibility > 50
+                && !analysis.is_forbidden
+            {
+                results.push(analysis);
             }
         }
 

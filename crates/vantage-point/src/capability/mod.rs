@@ -29,29 +29,12 @@ pub mod synergy;
 pub mod types;
 pub mod update_capability;
 
-pub use agent_capability::{AgentCapability, AgentRunState};
+pub use agent_capability::AgentCapability;
 pub use bonjour_capability::BonjourCapability;
-pub use conductor_capability::{ConductorCapability, ProjectInfo, RunningStand, StandStatus};
-pub use core::{
-    Capability, CapabilityContext, CapabilityError, CapabilityEvent, CapabilityInfo,
-    CapabilityResult, CapabilityState,
-};
-pub use eventbus::{EventBus, EventDispatcher, FilteredSubscription, Subscription};
-pub use evolution::{
-    AwakeningKind, AwakeningState, EvolutionCondition, EvolutionLevel, EvolutionPath,
-    EvolutionState, RequiemTrigger, RequiemType, TrainingCategory, TrainingParameters,
-    UsageMetrics,
-};
-pub use midi_capability::{MidiCapability, MidiConnectionState};
-pub use params::{CapabilityParams, MIDI_CAPABILITY_PARAMS, Rank};
-pub use protocol_capability::{ProtocolCapability, ProtocolRouter};
+pub use conductor_capability::{ConductorCapability, ProjectInfo, RunningStand};
+pub use core::{CapabilityContext, CapabilityEvent, CapabilityInfo, CapabilityState};
+pub use eventbus::EventBus;
+pub use midi_capability::MidiCapability;
+pub use protocol_capability::ProtocolCapability;
 pub use registry::CapabilityRegistry;
-pub use synergy::{CapabilityMetadata, CapabilityTag, SynergyAnalysis, SynergyEngine, SynergyType};
-pub use types::{
-    AutonomyLevel, CapabilityType, DataFlowDirection, ExecutionModel, IntegrationMode,
-    OperationalRange,
-};
-pub use update_capability::{
-    AssetInfo, MacAppUpdateApplyResult, MacAppUpdateCheckResult, ReleaseInfo, UpdateApplyResult,
-    UpdateCapability, UpdateCheckResult,
-};
+pub use update_capability::UpdateCapability;

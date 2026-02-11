@@ -21,7 +21,6 @@
 //! - `tile_split` - タイル分割
 //! - `show` - コンテンツ表示
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -379,11 +378,10 @@ async fn handle_ws(socket: WebSocket, state: WorldState) {
                         };
 
                         // 応答を送信
-                        if let Ok(json) = serde_json::to_string(&response) {
-                            if sender.send(Message::Text(json.into())).await.is_err() {
+                        if let Ok(json) = serde_json::to_string(&response)
+                            && sender.send(Message::Text(json.into())).await.is_err() {
                                 break;
                             }
-                        }
                     }
                     Some(Ok(Message::Close(_))) => {
                         tracing::info!("ViewPoint 切断");
@@ -401,11 +399,10 @@ async fn handle_ws(socket: WebSocket, state: WorldState) {
             broadcast = broadcast_rx.recv() => {
                 match broadcast {
                     Ok(msg) => {
-                        if let Ok(json) = serde_json::to_string(&msg) {
-                            if sender.send(Message::Text(json.into())).await.is_err() {
+                        if let Ok(json) = serde_json::to_string(&msg)
+                            && sender.send(Message::Text(json.into())).await.is_err() {
                                 break;
                             }
-                        }
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
                         tracing::warn!("Broadcast lagged: {} messages dropped", n);
@@ -418,7 +415,7 @@ async fn handle_ws(socket: WebSocket, state: WorldState) {
 }
 
 /// View メッセージを処理
-async fn handle_view_message(msg: ViewMessage, state: &WorldState) -> BroadcastMessage {
+async fn handle_view_message(msg: ViewMessage, _state: &WorldState) -> BroadcastMessage {
     match msg {
         ViewMessage::WorkspaceSwitch { workspace_id } => {
             tracing::info!("ワークスペース切り替え: {}", workspace_id);

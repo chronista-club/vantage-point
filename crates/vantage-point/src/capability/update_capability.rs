@@ -201,22 +201,21 @@ impl UpdateCapability {
     /// GitHub Tokenを取得
     fn get_github_token() -> Option<String> {
         // 1. 環境変数から
-        if let Ok(token) = std::env::var("GITHUB_TOKEN") {
-            if !token.is_empty() {
-                return Some(token);
-            }
+        if let Ok(token) = std::env::var("GITHUB_TOKEN")
+            && !token.is_empty()
+        {
+            return Some(token);
         }
 
         // 2. gh auth token から
         if let Ok(output) = std::process::Command::new("gh")
             .args(["auth", "token"])
             .output()
+            && output.status.success()
         {
-            if output.status.success() {
-                let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                if !token.is_empty() {
-                    return Some(token);
-                }
+            let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !token.is_empty() {
+                return Some(token);
             }
         }
 
@@ -231,20 +230,20 @@ impl UpdateCapability {
     /// 更新をチェック
     pub async fn check_update(&mut self) -> CapabilityResult<UpdateCheckResult> {
         // キャッシュが5分以内なら再利用
-        if let (Some(release), Some(last_check)) = (&self.cached_release, &self.last_check) {
-            if last_check.elapsed() < std::time::Duration::from_secs(300) {
-                let update_available = is_newer_version(&release.version, CURRENT_VERSION);
-                return Ok(UpdateCheckResult {
-                    current_version: CURRENT_VERSION.to_string(),
-                    latest_version: release.version.clone(),
-                    update_available,
-                    release: if update_available {
-                        Some(release.clone())
-                    } else {
-                        None
-                    },
-                });
-            }
+        if let (Some(release), Some(last_check)) = (&self.cached_release, &self.last_check)
+            && last_check.elapsed() < std::time::Duration::from_secs(300)
+        {
+            let update_available = is_newer_version(&release.version, CURRENT_VERSION);
+            return Ok(UpdateCheckResult {
+                current_version: CURRENT_VERSION.to_string(),
+                latest_version: release.version.clone(),
+                update_available,
+                release: if update_available {
+                    Some(release.clone())
+                } else {
+                    None
+                },
+            });
         }
 
         // GitHub Releases APIを呼び出し
@@ -563,7 +562,6 @@ impl UpdateCapability {
         // プロセスを切り離して実行（親プロセス終了後も継続）
         #[cfg(unix)]
         {
-            use std::os::unix::process::CommandExt;
             unsafe {
                 cmd.pre_exec(|| {
                     // 新しいセッションを作成（親プロセスから独立）
@@ -1080,12 +1078,12 @@ fn find_current_binary() -> CapabilityResult<PathBuf> {
     }
 
     // 2. which vp で探す
-    if let Ok(output) = std::process::Command::new("which").arg("vp").output() {
-        if output.status.success() {
-            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !path.is_empty() {
-                return Ok(PathBuf::from(path));
-            }
+    if let Ok(output) = std::process::Command::new("which").arg("vp").output()
+        && output.status.success()
+    {
+        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !path.is_empty() {
+            return Ok(PathBuf::from(path));
         }
     }
 
