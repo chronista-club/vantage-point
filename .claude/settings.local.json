@@ -4,16 +4,10 @@
     "drawio",
     "surrealdb",
     "serena"
-  ]
+  ],
+  "permissions": {
+    "allow": [
+      "Bash(but push:*)"
+    ]
+  }
 }
-||||||| ancestor
-=======
-{
-  "enabledMcpjsonServers": [
-    "gemini-cli",
-    "drawio",
-    "surrealdb",
-    "serena"
-  ]
-}
->>>>>>> theirs
