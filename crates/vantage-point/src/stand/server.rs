@@ -1078,9 +1078,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                 }
                 Err(broadcast::error::RecvError::Lagged(count)) => {
                     // バッファオーバーフローでメッセージがスキップされた
-                    tracing::warn!(
-                        "WebSocket broadcast lagged: {} messages dropped", count
-                    );
+                    tracing::warn!("WebSocket broadcast lagged: {} messages dropped", count);
                     // 継続して受信を試みる
                     continue;
                 }

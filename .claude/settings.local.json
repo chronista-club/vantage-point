@@ -174,7 +174,9 @@
       "Bash(gh pr merge:*)",
       "Bash(git log:*)",
       "mcp__plugin_serena_serena__activate_project",
-      "mcp__plugin_serena_serena__write_memory"
+      "mcp__plugin_serena_serena__write_memory",
+      "Bash(gh pr checks:*)",
+      "Bash(gh run view:*)"
     ],
     "deny": [],
     "ask": []
