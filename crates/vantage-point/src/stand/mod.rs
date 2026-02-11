@@ -13,6 +13,7 @@ mod hub;
 pub mod pty;
 mod server;
 mod session;
+pub(crate) mod state;
 
 pub use capabilities::CapabilityConfig;
 pub use server::{run, run_conductor};

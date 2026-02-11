@@ -15,7 +15,7 @@ use axum::{
     routing::{get, post},
 };
 use futures::{SinkExt, StreamExt};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use tokio::sync::{RwLock, broadcast};
 use tokio_util::sync::CancellationToken;
 use tower_http::cors::CorsLayer;
@@ -35,138 +35,10 @@ use crate::protocol::{
 use std::collections::HashMap;
 
 use super::session::SessionManager;
-
-/// Pending permission request entry
-struct PendingPermission {
-    /// Original input from the permission request (needed for "allow" response)
-    original_input: serde_json::Value,
-    /// Response once user has responded (None = still waiting)
-    response: Option<PermissionResponse>,
-}
-
-/// Pending user prompt request entry (REQ-PROMPT-001 to REQ-PROMPT-005)
-#[derive(Debug, Clone, Serialize)]
-struct PendingPrompt {
-    /// The prompt request data
-    request: PendingPromptRequest,
-    /// Response once user has responded (None = still waiting)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    response: Option<UserPromptResponseData>,
-}
-
-/// User prompt request data stored in pending prompts
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct PendingPromptRequest {
-    request_id: String,
-    prompt_type: String,
-    title: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    description: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    options: Option<Vec<PromptOption>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    default_value: Option<String>,
-    timeout_seconds: u32,
-    created_at: u64,
-}
-
-/// Prompt option for select/multi_select
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct PromptOption {
-    id: String,
-    label: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    description: Option<String>,
-}
-
-/// User prompt response data
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct UserPromptResponseData {
-    /// Response outcome: approved, rejected, cancelled, timeout
-    outcome: String,
-    /// Text response (for input type or optional comment)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    message: Option<String>,
-    /// Selected option IDs (for select/multi_select)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    selected_options: Option<Vec<String>>,
-}
-
-/// Application state
-struct AppState {
-    hub: Hub,
-    /// Session manager for multiple Claude sessions
-    sessions: Arc<RwLock<SessionManager>>,
-    /// Cancellation token for current chat request
-    cancel_token: Arc<RwLock<CancellationToken>>,
-    /// Debug display mode
-    debug_mode: DebugMode,
-    /// Shutdown signal token
-    shutdown_token: CancellationToken,
-    /// Project directory for Claude agent
-    project_dir: String,
-    /// Pending permission requests: request_id -> response channel
-    pending_permissions: Arc<RwLock<HashMap<String, PendingPermission>>>,
-    /// Pending user prompts: request_id -> response (REQ-PROMPT-001)
-    pending_prompts: Arc<RwLock<HashMap<String, PendingPrompt>>>,
-    /// Capability system (Agent, MIDI, Protocol)
-    capabilities: Arc<StandCapabilities>,
-    /// Conductor capability for managing multiple stands (optional, only for conductor mode)
-    conductor: Option<Arc<RwLock<ConductorCapability>>>,
-    /// Update capability for version checking (optional, only for conductor mode)
-    update: Option<Arc<RwLock<UpdateCapability>>>,
-    /// Interactive Claude agent (stream-json mode for structured communication)
-    interactive_agent: Arc<RwLock<Option<InteractiveClaudeAgent>>>,
-    /// PTYセッションマネージャー（ターミナル機能）
-    pty_manager: Arc<tokio::sync::Mutex<PtyManager>>,
-}
-
-impl AppState {
-    /// Send debug info to connected clients
-    fn send_debug(&self, category: &str, message: &str, data: Option<serde_json::Value>) {
-        if self.debug_mode == DebugMode::None {
-            return;
-        }
-
-        // For simple mode, skip detail-level messages
-        if self.debug_mode == DebugMode::Simple && data.is_some() {
-            // Still send but without detailed data
-            self.hub.broadcast(StandMessage::DebugInfo {
-                level: DebugMode::Simple,
-                category: category.to_string(),
-                message: message.to_string(),
-                data: None,
-                tags: vec![],
-            });
-        } else {
-            self.hub.broadcast(StandMessage::DebugInfo {
-                level: self.debug_mode,
-                category: category.to_string(),
-                message: message.to_string(),
-                data,
-                tags: vec![],
-            });
-        }
-    }
-
-    /// Send debug info only in detail mode
-    fn send_debug_detail(&self, category: &str, message: &str, data: serde_json::Value) {
-        if self.debug_mode == DebugMode::Detail {
-            self.hub.broadcast(StandMessage::DebugInfo {
-                level: DebugMode::Detail,
-                category: category.to_string(),
-                message: message.to_string(),
-                data: Some(data),
-                tags: vec![],
-            });
-        }
-    }
-
-    /// Send AG-UI event to connected clients (REQ-AGUI-040)
-    pub fn send_agui_event(&self, event: AgUiEvent) {
-        self.hub.broadcast(StandMessage::AgUi { event });
-    }
-}
+use super::state::{
+    AppState, PendingPermission, PendingPrompt, PendingPromptRequest, PromptOption,
+    UserPromptResponseData,
+};
 
 /// Run the Stand server
 pub async fn run(
