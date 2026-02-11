@@ -44,5 +44,3 @@ tokio-stream = "0.1"
 # Database (future)
 # surrealdb = "2"
 
-# Internal crates
-vantage-core = { path = "crates/vantage-core" }
