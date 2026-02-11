@@ -144,12 +144,12 @@ impl ConductorCapability {
         }
 
         // 3. PATH経由
-        if let Ok(output) = std::process::Command::new("which").arg("vp").output() {
-            if output.status.success() {
-                let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                if !path.is_empty() {
-                    return Some(PathBuf::from(path));
-                }
+        if let Ok(output) = std::process::Command::new("which").arg("vp").output()
+            && output.status.success()
+        {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path.is_empty() {
+                return Some(PathBuf::from(path));
             }
         }
 
@@ -338,16 +338,13 @@ impl ConductorCapability {
 
         for port in 33000..=33010 {
             let url = format!("http://localhost:{}/api/health", port);
-            if let Ok(resp) = client.get(&url).send().await {
-                if resp.status().is_success() {
-                    if let Ok(json) = resp.json::<serde_json::Value>().await {
-                        if let Some(dir) = json.get("project_dir").and_then(|v| v.as_str()) {
-                            if PathBuf::from(dir) == *project_path {
-                                return Some(port);
-                            }
-                        }
-                    }
-                }
+            if let Ok(resp) = client.get(&url).send().await
+                && resp.status().is_success()
+                && let Ok(json) = resp.json::<serde_json::Value>().await
+                && let Some(dir) = json.get("project_dir").and_then(|v| v.as_str())
+                && PathBuf::from(dir) == *project_path
+            {
+                return Some(port);
             }
         }
 
@@ -366,33 +363,32 @@ impl ConductorCapability {
         // ポートスキャン
         for port in 33000..=33010 {
             let url = format!("http://localhost:{}/api/health", port);
-            if let Ok(resp) = client.get(&url).send().await {
-                if resp.status().is_success() {
-                    if let Ok(json) = resp.json::<serde_json::Value>().await {
-                        let project_dir = json
-                            .get("project_dir")
-                            .and_then(|v| v.as_str())
-                            .map(PathBuf::from);
-                        let pid = json.get("pid").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            if let Ok(resp) = client.get(&url).send().await
+                && resp.status().is_success()
+                && let Ok(json) = resp.json::<serde_json::Value>().await
+            {
+                let project_dir = json
+                    .get("project_dir")
+                    .and_then(|v| v.as_str())
+                    .map(PathBuf::from);
+                let pid = json.get("pid").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
 
-                        if let Some(project_path) = project_dir {
-                            // プロジェクト名を探す
-                            let projects = self.projects.read().await;
-                            for (name, info) in projects.iter() {
-                                if info.path == project_path {
-                                    discovered.insert(
-                                        name.clone(),
-                                        RunningStand {
-                                            project_name: name.clone(),
-                                            port,
-                                            pid,
-                                            project_path: project_path.clone(),
-                                            discovered_via_bonjour: false,
-                                        },
-                                    );
-                                    break;
-                                }
-                            }
+                if let Some(project_path) = project_dir {
+                    // プロジェクト名を探す
+                    let projects = self.projects.read().await;
+                    for (name, info) in projects.iter() {
+                        if info.path == project_path {
+                            discovered.insert(
+                                name.clone(),
+                                RunningStand {
+                                    project_name: name.clone(),
+                                    port,
+                                    pid,
+                                    project_path: project_path.clone(),
+                                    discovered_via_bonjour: false,
+                                },
+                            );
+                            break;
                         }
                     }
                 }

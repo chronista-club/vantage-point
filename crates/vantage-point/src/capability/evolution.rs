@@ -252,17 +252,17 @@ impl EvolutionCondition {
         }
 
         // 使用期間チェック
-        if let Some(required_days) = self.min_days {
-            if metrics.usage_days().unwrap_or(0) < required_days {
-                return false;
-            }
+        if let Some(required_days) = self.min_days
+            && metrics.usage_days().unwrap_or(0) < required_days
+        {
+            return false;
         }
 
         // 訓練スコアチェック
-        if let Some(required_score) = self.min_training_score {
-            if training.overall_score() < required_score {
-                return false;
-            }
+        if let Some(required_score) = self.min_training_score
+            && training.overall_score() < required_score
+        {
+            return false;
         }
 
         true
@@ -394,10 +394,10 @@ impl EvolutionState {
 
     /// 現在の実効ブースト倍率
     pub fn current_boost(&self) -> f64 {
-        if let Some(awakening) = &self.awakening {
-            if awakening.is_active() {
-                return awakening.boost_multiplier;
-            }
+        if let Some(awakening) = &self.awakening
+            && awakening.is_active()
+        {
+            return awakening.boost_multiplier;
         }
         1.0
     }

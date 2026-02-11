@@ -11,6 +11,9 @@
 //!
 //! Config file: ~/.config/vantage/config.toml
 
+// 開発中のスキャフォールドコードが多いため一時的に抑制
+#![allow(dead_code)]
+
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 
@@ -672,7 +675,7 @@ fn main() -> Result<()> {
     let debug_mode_for_tracing = match &command {
         Commands::Start { debug, .. } => debug
             .as_ref()
-            .map(|d| DebugMode::from(d.clone()))
+            .map(|d| DebugMode::from(*d))
             .or_else(parse_debug_env)
             .unwrap_or_default(),
         Commands::Restart { .. } => parse_debug_env().unwrap_or_default(),
@@ -925,12 +928,11 @@ fn main() -> Result<()> {
                     .join("state")
                     .join(format!("{}.json", port));
 
-                if let Ok(data) = std::fs::read_to_string(&state_path) {
-                    if let Ok(state) = serde_json::from_str::<serde_json::Value>(&data) {
-                        if let Some(dir) = state.get("project_dir").and_then(|v| v.as_str()) {
-                            return dir.to_string();
-                        }
-                    }
+                if let Ok(data) = std::fs::read_to_string(&state_path)
+                    && let Ok(state) = serde_json::from_str::<serde_json::Value>(&data)
+                    && let Some(dir) = state.get("project_dir").and_then(|v| v.as_str())
+                {
+                    return dir.to_string();
                 }
 
                 std::env::current_dir()
@@ -1059,7 +1061,7 @@ fn main() -> Result<()> {
         }
         Commands::Lpd8(lpd8_cmd) => match lpd8_cmd {
             Lpd8Commands::Write { port, program } => {
-                if program < 1 || program > 4 {
+                if !(1..=4).contains(&program) {
                     eprintln!("✗ プログラム番号は1-4の範囲で指定してください");
                     std::process::exit(1);
                 }
@@ -1085,7 +1087,7 @@ fn main() -> Result<()> {
                 }
             }
             Lpd8Commands::Read { port, program } => {
-                if program < 1 || program > 4 {
+                if !(1..=4).contains(&program) {
                     eprintln!("✗ プログラム番号は1-4の範囲で指定してください");
                     std::process::exit(1);
                 }
@@ -1096,7 +1098,7 @@ fn main() -> Result<()> {
                 Ok(())
             }
             Lpd8Commands::Switch { program, port } => {
-                if program < 1 || program > 4 {
+                if !(1..=4).contains(&program) {
                     eprintln!("✗ プログラム番号は1-4の範囲で指定してください");
                     std::process::exit(1);
                 }
@@ -1631,7 +1633,7 @@ fn main() -> Result<()> {
 
 /// snake_case を PascalCase に変換
 fn to_pascal_case(s: &str) -> String {
-    s.split(|c| c == '_' || c == '-')
+    s.split(['_', '-'])
         .map(|word| {
             let mut chars = word.chars();
             match chars.next() {
@@ -1659,12 +1661,12 @@ fn which_vp() -> Option<std::path::PathBuf> {
     }
 
     // 3. PATH経由
-    if let Ok(output) = std::process::Command::new("which").arg("vp").output() {
-        if output.status.success() {
-            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !path.is_empty() {
-                return Some(std::path::PathBuf::from(path));
-            }
+    if let Ok(output) = std::process::Command::new("which").arg("vp").output()
+        && output.status.success()
+    {
+        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !path.is_empty() {
+            return Some(std::path::PathBuf::from(path));
         }
     }
 

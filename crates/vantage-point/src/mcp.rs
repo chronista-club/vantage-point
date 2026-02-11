@@ -401,7 +401,7 @@ impl VantageMcp {
         // Extract port from URL
         let port: u16 = base_url
             .split(':')
-            .last()
+            .next_back()
             .and_then(|s| s.parse().ok())
             .unwrap_or(33000);
 

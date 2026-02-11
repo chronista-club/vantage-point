@@ -509,15 +509,15 @@ pub fn get_session_id_for_project(project_path: impl AsRef<Path>) -> Option<Stri
         let config_path = PathBuf::from(path);
         if paths_match(&config_path, project_path) {
             // セッションIDを取得
-            if let Some(session_id) = project.get("sessionId").and_then(|s| s.as_str()) {
-                if !session_id.is_empty() {
-                    tracing::debug!(
-                        "プロジェクト {:?} のセッションID発見: {}",
-                        project_path,
-                        session_id
-                    );
-                    return Some(session_id.to_string());
-                }
+            if let Some(session_id) = project.get("sessionId").and_then(|s| s.as_str())
+                && !session_id.is_empty()
+            {
+                tracing::debug!(
+                    "プロジェクト {:?} のセッションID発見: {}",
+                    project_path,
+                    session_id
+                );
+                return Some(session_id.to_string());
             }
         }
     }
@@ -1142,7 +1142,11 @@ impl InteractiveClaudeAgent {
         let input = UserInputResultMessage::confirmation(request_id, confirmed);
         let json = serde_json::to_string(&input)?;
 
-        tracing::info!("user_input_result送信: {} -> confirmed={}", request_id, confirmed);
+        tracing::info!(
+            "user_input_result送信: {} -> confirmed={}",
+            request_id,
+            confirmed
+        );
         tracing::debug!("JSON: {}", json);
 
         process.stdin.write_all(json.as_bytes()).await?;
@@ -1199,6 +1203,9 @@ mod tests {
                 }
                 AgentEvent::Error(e) => {
                     panic!("Error: {}", e);
+                }
+                AgentEvent::UserInputRequest { .. } => {
+                    // テストではユーザー入力リクエストは無視
                 }
             }
         }

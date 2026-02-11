@@ -761,8 +761,10 @@ impl AgUiEventBridge {
             AgentEvent::ToolExecuting { name } => {
                 // 新しいtool_call_idを生成
                 self.tool_call_counter += 1;
-                let tool_call_id = format!("tool-{}-{}", self.tool_call_counter, uuid::Uuid::new_v4());
-                self.active_tool_calls.insert(name.clone(), tool_call_id.clone());
+                let tool_call_id =
+                    format!("tool-{}-{}", self.tool_call_counter, uuid::Uuid::new_v4());
+                self.active_tool_calls
+                    .insert(name.clone(), tool_call_id.clone());
 
                 vec![AgUiEvent::tool_call_start(
                     &self.run_id,
@@ -792,10 +794,7 @@ impl AgUiEventBridge {
 
                 // メッセージが開始されていれば終了イベントを発行
                 if self.message_started {
-                    events.push(AgUiEvent::text_message_end(
-                        &self.run_id,
-                        &self.message_id,
-                    ));
+                    events.push(AgUiEvent::text_message_end(&self.run_id, &self.message_id));
                 }
 
                 // Run終了イベント
@@ -809,10 +808,7 @@ impl AgUiEventBridge {
 
                 // メッセージが開始されていれば終了イベントを発行
                 if self.message_started {
-                    events.push(AgUiEvent::text_message_end(
-                        &self.run_id,
-                        &self.message_id,
-                    ));
+                    events.push(AgUiEvent::text_message_end(&self.run_id, &self.message_id));
                 }
 
                 // エラーイベント
@@ -871,10 +867,7 @@ impl AgUiEventBridge {
 
         // メッセージが開始されていれば終了イベントを発行
         if self.message_started {
-            events.push(AgUiEvent::text_message_end(
-                &self.run_id,
-                &self.message_id,
-            ));
+            events.push(AgUiEvent::text_message_end(&self.run_id, &self.message_id));
             self.message_started = false;
         }
 

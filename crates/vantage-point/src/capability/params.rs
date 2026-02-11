@@ -50,7 +50,7 @@ pub enum Rank {
 
 impl Rank {
     /// ランクを数値化 (E=1, D=2, C=3, B=4, A=5, ?=0, None=0)
-    pub fn to_score(&self) -> u8 {
+    pub fn to_score(self) -> u8 {
         match self {
             Self::E => 1,
             Self::D => 2,

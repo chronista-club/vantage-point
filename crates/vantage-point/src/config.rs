@@ -335,6 +335,7 @@ mod tests {
         let config = Config {
             default_project_dir: Some("/home/user/projects/main".to_string()),
             default_port: 33001,
+            claude_cli_path: None,
             projects: vec![ProjectConfig {
                 name: "vantage-point".to_string(),
                 path: "/Users/makoto/repos/vantage-point".to_string(),

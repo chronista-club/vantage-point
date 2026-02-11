@@ -3936,7 +3936,7 @@ checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 
 [[package]]
 name = "vantage-core"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "futures",
  "reqwest",
@@ -3950,7 +3950,7 @@ dependencies = [
 
 [[package]]
 name = "vantage-point"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "async-trait",

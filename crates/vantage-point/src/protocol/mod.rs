@@ -20,26 +20,14 @@ pub mod messages;
 pub mod vantage;
 
 // Re-export main types
-pub use acp::{
-    AcpMessage, AcpNotification, AcpRequest, AcpResponse, AgentCapabilities, AgentInfo,
-    ClientCapabilities, ClientInfo, ContentBlock, InitializeParams, InitializeResult, Location,
-    PermissionKind, PermissionOption, PermissionOutcome, PermissionRequest as AcpPermissionRequest,
-    PermissionResponse as AcpPermissionResponse, PlanStep, RequestId, ResourceContent, RpcError,
-    SessionNewParams, SessionNewResult, SessionPromptParams, SessionPromptResult, SessionUpdate,
-    SessionUpdateKind, StopReason, ToolCall, ToolCallKind, ToolCallStatus,
-};
+pub use acp::AcpMessage;
 
 pub use messages::{
-    BrowserMessage, ChatComponent, ChatMessage, ChatRole, Choice, ComponentAction, Content,
-    DebugMode, HistoryMessage, IpcMessage, ProgressStatus, SessionInfo, SplitDirection,
-    StandMessage, TodoItem, TodoStatus,
+    BrowserMessage, ChatComponent, ChatMessage, ChatRole, ComponentAction, Content, DebugMode,
+    HistoryMessage, SessionInfo, StandMessage,
 };
 
-pub use vantage::{
-    CapabilityStateInfo, MidiControlChange, MidiEventType, MidiNote, SynergyTypeInfo, VantageEvent,
-};
-
-pub use agui_adapter::ClaudeAgUiAdapter;
+pub use vantage::{CapabilityStateInfo, MidiEventType, SynergyTypeInfo, VantageEvent};
 
 use crate::agui::AgUiEvent;
 use serde::{Deserialize, Serialize};
@@ -126,7 +114,7 @@ impl ToAgUi for crate::capability::CapabilityEvent {
                 let tool_name = t.strip_prefix("tool.").unwrap_or(t);
                 Some(AgUiEvent::tool_call_start(
                     run_id,
-                    &format!("tool-{}", uuid::Uuid::new_v4()),
+                    format!("tool-{}", uuid::Uuid::new_v4()),
                     tool_name,
                 ))
             }
@@ -138,7 +126,7 @@ impl ToAgUi for crate::capability::CapabilityEvent {
                 .map(|content| {
                     AgUiEvent::text_message_content(
                         run_id,
-                        &format!("msg-{}", uuid::Uuid::new_v4()),
+                        format!("msg-{}", uuid::Uuid::new_v4()),
                         content,
                     )
                 }),

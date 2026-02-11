@@ -224,12 +224,11 @@ impl GoldExperienceRequiem {
 
         while let Some(entry) = entries.next_entry().await? {
             let meta_path = entry.path().join("snapshot.json");
-            if meta_path.exists() {
-                if let Ok(content) = tokio::fs::read_to_string(&meta_path).await {
-                    if let Ok(snapshot) = serde_json::from_str::<Snapshot>(&content) {
-                        snapshots.insert(snapshot.name.clone(), snapshot);
-                    }
-                }
+            if meta_path.exists()
+                && let Ok(content) = tokio::fs::read_to_string(&meta_path).await
+                && let Ok(snapshot) = serde_json::from_str::<Snapshot>(&content)
+            {
+                snapshots.insert(snapshot.name.clone(), snapshot);
             }
         }
 
@@ -359,12 +358,10 @@ impl GoldExperienceRequiem {
             let middle = &pattern[1..pattern.len() - 1];
             return target.contains(middle);
         }
-        if pattern.starts_with('*') {
-            let suffix = &pattern[1..];
+        if let Some(suffix) = pattern.strip_prefix('*') {
             return target.ends_with(suffix);
         }
-        if pattern.ends_with('*') {
-            let prefix = &pattern[..pattern.len() - 1];
+        if let Some(prefix) = pattern.strip_suffix('*') {
             return target.starts_with(prefix);
         }
         target == pattern

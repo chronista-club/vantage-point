@@ -25,10 +25,7 @@ use super::capabilities::{CapabilityConfig, StandCapabilities};
 use super::hub::Hub;
 use crate::agent::{AgentConfig, AgentEvent, ClaudeAgent, InteractiveClaudeAgent};
 use crate::agui::{AgUiEvent, AgUiEventBridge, MessageRole};
-use crate::capability::{
-    ConductorCapability, ProjectInfo, RunningStand, StandStatus, UpdateCapability,
-    UpdateCheckResult,
-};
+use crate::capability::{ConductorCapability, ProjectInfo, RunningStand, UpdateCapability};
 use crate::config::RunningStands;
 use crate::mcp::PermissionResponse;
 use crate::protocol::{
@@ -105,21 +102,21 @@ impl SessionManager {
         let state_path = Self::state_path(port);
 
         // Try to load existing state
-        if let Ok(data) = std::fs::read_to_string(&state_path) {
-            if let Ok(state) = serde_json::from_str::<PersistedState>(&data) {
-                // Only restore if same project directory
-                if state.project_dir == project_dir {
-                    tracing::info!("Restored session state from {:?}", state_path);
-                    return Self {
-                        active_id: state.active_id,
-                        sessions: state.sessions,
-                        session_counter: state.session_counter,
-                        port,
-                        project_dir,
-                    };
-                } else {
-                    tracing::info!("Project dir changed, starting fresh session");
-                }
+        if let Ok(data) = std::fs::read_to_string(&state_path)
+            && let Ok(state) = serde_json::from_str::<PersistedState>(&data)
+        {
+            // Only restore if same project directory
+            if state.project_dir == project_dir {
+                tracing::info!("Restored session state from {:?}", state_path);
+                return Self {
+                    active_id: state.active_id,
+                    sessions: state.sessions,
+                    session_counter: state.session_counter,
+                    port,
+                    project_dir,
+                };
+            } else {
+                tracing::info!("Project dir changed, starting fresh session");
             }
         }
 
@@ -211,19 +208,19 @@ impl SessionManager {
 
     /// Add a message to the active session
     fn add_message(&mut self, role: &str, content: String) {
-        if let Some(ref id) = self.active_id {
-            if let Some(entry) = self.sessions.get_mut(id) {
-                let timestamp = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as u64)
-                    .unwrap_or(0);
-                entry.messages.push(StoredMessage {
-                    role: role.to_string(),
-                    content,
-                    timestamp,
-                });
-                self.save();
-            }
+        if let Some(ref id) = self.active_id
+            && let Some(entry) = self.sessions.get_mut(id)
+        {
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            entry.messages.push(StoredMessage {
+                role: role.to_string(),
+                content,
+                timestamp,
+            });
+            self.save();
         }
     }
 
@@ -985,7 +982,7 @@ async fn handle_user_prompt_response(
             event: AgUiEvent::UserPromptResponse {
                 run_id: String::new(), // Will be set by the client
                 request_id,
-                outcome: agui_outcome.clone(),
+                outcome: agui_outcome,
                 message: entry.response.as_ref().and_then(|r| r.message.clone()),
                 selected_options: entry
                     .response
@@ -1005,7 +1002,10 @@ async fn handle_user_prompt_response(
         let confirmed = matches!(agui_outcome, crate::agui::UserPromptOutcome::Approved);
         let agent_guard = state.interactive_agent.read().await;
         if let Some(ref agent) = *agent_guard {
-            if let Err(e) = agent.send_user_input_result(&request_id_for_agent, confirmed).await {
+            if let Err(e) = agent
+                .send_user_input_result(&request_id_for_agent, confirmed)
+                .await
+            {
                 tracing::error!("Failed to send user_input_result to agent: {}", e);
             } else {
                 tracing::info!(
@@ -1383,11 +1383,7 @@ async fn handle_chat_message_interactive(
                     done: true,
                 });
                 hub.broadcast(StandMessage::AgUi {
-                    event: AgUiEvent::run_error(
-                        &run_id,
-                        "INTERACTIVE_START_FAILED",
-                        &e.to_string(),
-                    ),
+                    event: AgUiEvent::run_error(&run_id, "INTERACTIVE_START_FAILED", e.to_string()),
                 });
                 return;
             }
@@ -1521,7 +1517,7 @@ async fn handle_chat_message_interactive(
                                     interactive: false,
                                 });
                             }
-                            Some(AgentEvent::Done { result, cost }) => {
+                            Some(AgentEvent::Done { result: _result, cost }) => {
                                 tracing::info!("Interactive response complete (cost: {:?})", cost);
 
                                 // Save assistant response to history

@@ -12,5 +12,5 @@ pub mod capabilities;
 mod hub;
 mod server;
 
-pub use capabilities::{CapabilityConfig, StandCapabilities};
+pub use capabilities::CapabilityConfig;
 pub use server::{run, run_conductor};
