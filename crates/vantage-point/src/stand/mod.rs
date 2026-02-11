@@ -10,6 +10,7 @@
 
 pub mod capabilities;
 mod hub;
+pub mod pty;
 mod server;
 
 pub use capabilities::{CapabilityConfig, StandCapabilities};

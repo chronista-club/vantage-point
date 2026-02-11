@@ -77,3 +77,9 @@ mdns-sd = "0.17"
 # Hostname
 hostname = "0.4"
 libc = "0.2.178"
+
+# PTY (pseudo-terminal) for shell sessions
+portable-pty = "0.9"
+
+# Base64 encoding (for PTY binary I/O over WebSocket)
+base64 = "0.22"

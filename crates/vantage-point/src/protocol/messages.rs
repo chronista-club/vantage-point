@@ -114,6 +114,10 @@ pub enum StandMessage {
     ComponentDismissed { request_id: String },
     /// AG-UI protocol event (REQ-AGUI-040)
     AgUi { event: AgUiEvent },
+    /// ターミナルPTY出力（base64エンコード）
+    TerminalOutput { data: String },
+    /// ターミナルPTYセッション開始通知
+    TerminalReady,
 }
 
 /// Session information for UI
@@ -171,6 +175,10 @@ pub enum BrowserMessage {
     CloseSession { session_id: String },
     /// Response to an interactive component
     ComponentAction { action: ComponentAction },
+    /// ターミナル入力（base64エンコード）
+    TerminalInput { data: String },
+    /// ターミナルリサイズ
+    TerminalResize { cols: u16, rows: u16 },
 }
 
 /// Chat message for display
