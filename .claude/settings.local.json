@@ -6,3 +6,14 @@
     "serena"
   ]
 }
+||||||| ancestor
+=======
+{
+  "enabledMcpjsonServers": [
+    "gemini-cli",
+    "drawio",
+    "surrealdb",
+    "serena"
+  ]
+}
+>>>>>>> theirs
