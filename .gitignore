@@ -22,3 +22,6 @@ DerivedData/
 # Personal notes (not tracked in git)
 /.notes/
 .env
+
+# Local settings (per-user, not tracked)
+*.local.*
