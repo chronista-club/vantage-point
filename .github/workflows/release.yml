@@ -9,22 +9,11 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
-    name: Build (${{ matrix.target }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        include:
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            suffix: ""
-          - os: macos-15
-            target: x86_64-apple-darwin
-            suffix: ""
-          # Linux builds (future)
-          # - os: ubuntu-latest
-          #   target: x86_64-unknown-linux-gnu
-          #   suffix: ""
+  build-and-release:
+    name: Build & Release
+    runs-on: macos-latest
+    permissions:
+      contents: write
 
     steps:
       - uses: actions/checkout@v4
@@ -32,40 +21,15 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: aarch64-apple-darwin
 
-      - name: Build
-        run: cargo build --release --target ${{ matrix.target }} -p vantage-point
-
-      - name: Rename binary
-        run: |
-          cp target/${{ matrix.target }}/release/vp vp-${{ matrix.target }}${{ matrix.suffix }}
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: vp-${{ matrix.target }}
-          path: vp-${{ matrix.target }}${{ matrix.suffix }}
-
-  release:
-    name: Create Release
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
+      - name: Build (aarch64-apple-darwin)
+        run: cargo build --release --target aarch64-apple-darwin -p vantage-point
 
       - name: Prepare release assets
         run: |
           mkdir -p release
-          find artifacts -type f -name 'vp-*' -exec cp {} release/ \;
+          cp target/aarch64-apple-darwin/release/vp release/vp-aarch64-apple-darwin
           ls -la release/
 
       - name: Create Release
