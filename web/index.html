@@ -634,7 +634,9 @@
                     };
                     // 非IMEのキー入力 → ターミナルに送信してフォーカスを戻す
                     imeInput.addEventListener('keydown', (e) => {
-                        if (e.isComposing || e.keyCode === 229) return;
+                        // isComposing のみで判定（keyCode:229 は WKWebView の IME有効時に
+                        // 組成外でも発火するため、Enterが効かなくなる）
+                        if (e.isComposing) return;
                         e.preventDefault();
                         if (e.key === 'Enter') {
                             window.sendTerminalInput('\r');
