@@ -1,6 +1,6 @@
-//! Conductor Capability - Stand Conductor
+//! Stand Manager Capability - Stand プロセス管理
 //!
-//! 複数のProject Standを指揮・管理するCapability。
+//! 複数のProject Standを管理するCapability。
 //! メニューバーアプリ（Swift）からREST API経由で操作される。
 //!
 //! ## 役割
@@ -12,8 +12,8 @@
 //! ## 使用例
 //!
 //! ```ignore
-//! let mut conductor = ConductorCapability::new();
-//! conductor.initialize(&ctx).await?;
+//! let mut manager = StandManagerCapability::new();
+//! manager.initialize(&ctx).await?;
 //!
 //! // プロジェクト一覧取得
 //! let projects = conductor.list_projects().await;
@@ -77,7 +77,7 @@ pub struct RunningStand {
 }
 
 /// Conductor Capability
-pub struct ConductorCapability {
+pub struct StandManagerCapability {
     /// 現在の状態
     state: CapabilityState,
     /// 登録プロジェクト一覧
@@ -90,8 +90,8 @@ pub struct ConductorCapability {
     vp_binary_path: Option<PathBuf>,
 }
 
-impl ConductorCapability {
-    /// 新しいConductorCapabilityを作成
+impl StandManagerCapability {
+    /// 新しいStandManagerCapabilityを作成
     pub fn new() -> Self {
         Self {
             state: CapabilityState::Uninitialized,
@@ -417,14 +417,14 @@ impl ConductorCapability {
     }
 }
 
-impl Default for ConductorCapability {
+impl Default for StandManagerCapability {
     fn default() -> Self {
         Self::new()
     }
 }
 
 #[async_trait]
-impl Capability for ConductorCapability {
+impl Capability for StandManagerCapability {
     fn info(&self) -> CapabilityInfo {
         CapabilityInfo::new(
             "conductor-capability",
@@ -463,14 +463,17 @@ impl Capability for ConductorCapability {
         self.state = CapabilityState::Idle;
 
         let project_count = self.projects.read().await.len();
-        tracing::info!(projects = project_count, "ConductorCapability initialized");
+        tracing::info!(
+            projects = project_count,
+            "StandManagerCapability initialized"
+        );
 
         Ok(())
     }
 
     async fn shutdown(&mut self) -> CapabilityResult<()> {
         self.state = CapabilityState::Stopped;
-        tracing::info!("ConductorCapability shutdown");
+        tracing::info!("StandManagerCapability shutdown");
         Ok(())
     }
 
@@ -507,7 +510,7 @@ mod tests {
 
     #[test]
     fn test_conductor_capability_new() {
-        let cap = ConductorCapability::new();
+        let cap = StandManagerCapability::new();
         assert_eq!(cap.state(), CapabilityState::Uninitialized);
     }
 
