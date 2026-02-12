@@ -69,11 +69,11 @@ jobs:
           ls -la release/
 
       - name: Create Release
-        uses: softprops/action-gh-release@v1
-        with:
-          files: release/*
-          generate_release_notes: true
-          draft: false
-          prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') }}
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          gh release create "$TAG" release/* \
+            --title "$TAG" \
+            --generate-notes \
+            --latest
