@@ -463,7 +463,10 @@ impl Capability for StandManagerCapability {
         self.state = CapabilityState::Idle;
 
         let project_count = self.projects.read().await.len();
-        tracing::info!(projects = project_count, "StandManagerCapability initialized");
+        tracing::info!(
+            projects = project_count,
+            "StandManagerCapability initialized"
+        );
 
         Ok(())
     }
