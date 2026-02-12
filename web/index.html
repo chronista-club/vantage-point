@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Vantage Point</title>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
     <!-- Tabler Icons -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/tabler-icons.min.css">
     <style>
@@ -146,22 +147,136 @@
         /* ===== Main Container ===== */
         .main-container {
             display: flex;
+            flex-direction: row;
             height: calc(100vh - 44px);
         }
 
-        /* Debug panel CSS removed */
+        /* ===== Terminal Area (左側: ターミナル+IME) ===== */
+        .terminal-area {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
+        }
 
-        /* ===== Terminal Container (Main) ===== */
+        /* ===== Terminal Container ===== */
         #terminal-container {
             flex: 1;
             width: 100%;
-            height: 100%;
             background: oklch(0.13 0.01 260);
             overflow: hidden;
             position: relative;
         }
         #terminal-container canvas {
             display: block;
+        }
+
+        /* ===== Side Panel (右側: コンテンツ表示) ===== */
+        #side-panel {
+            width: 0;
+            overflow: hidden;
+            background: var(--color-bg-base);
+            border-left: 1px solid var(--color-border-default);
+            display: flex;
+            flex-direction: column;
+            transition: width var(--transition-normal);
+        }
+        #side-panel.open {
+            width: 420px;
+        }
+        .side-panel-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 8px 12px;
+            background: var(--color-bg-elevated);
+            border-bottom: 1px solid var(--color-border-default);
+            min-height: 36px;
+            flex-shrink: 0;
+        }
+        .side-panel-header span {
+            font-size: 12px;
+            font-weight: 500;
+            color: var(--color-text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        .side-panel-close {
+            background: none;
+            border: none;
+            color: var(--color-text-muted);
+            cursor: pointer;
+            padding: 2px;
+            border-radius: var(--radius-sm);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: color var(--transition-fast), background var(--transition-fast);
+        }
+        .side-panel-close:hover {
+            color: var(--color-text-primary);
+            background: var(--color-bg-surface);
+        }
+        .side-panel-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 16px;
+        }
+        .side-panel-empty {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            color: var(--color-text-muted);
+            font-size: 13px;
+        }
+
+        /* ===== Header Toggle Button ===== */
+        .header-btn {
+            background: none;
+            border: 1px solid var(--color-border-subtle);
+            color: var(--color-text-muted);
+            cursor: pointer;
+            padding: 4px 8px;
+            border-radius: var(--radius-sm);
+            font-size: 16px;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            transition: color var(--transition-fast), border-color var(--transition-fast), background var(--transition-fast);
+        }
+        .header-btn:hover {
+            color: var(--color-text-primary);
+            border-color: var(--color-border-default);
+            background: var(--color-bg-surface);
+        }
+        .header-btn.active {
+            color: var(--color-accent-primary);
+            border-color: var(--color-accent-primary);
+        }
+
+        /* ===== IME入力セクション（DOMフロー下部） ===== */
+        section#ime-section {
+            height: 0;
+            overflow: hidden;
+            background: var(--color-bg-elevated);
+            border-top: 1px solid var(--color-border-default);
+            transition: height 0.1s ease;
+        }
+        section#ime-section.active {
+            height: 32px;
+        }
+        section#ime-section input {
+            width: 100%;
+            height: 100%;
+            background: transparent;
+            color: var(--color-text-primary);
+            border: none;
+            outline: none;
+            padding: 4px 12px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 14px;
+            caret-color: var(--color-text-primary);
         }
 
         /* ===== Left Panel - Content/Show ===== */
@@ -240,12 +355,32 @@
             <span id="status" class="status disconnected">Disconnected</span>
         </div>
         <div class="header-right">
+            <button id="toggle-panel-btn" class="header-btn" title="Toggle side panel (Ctrl+B)">
+                <i class="ti ti-layout-sidebar-right"></i>
+            </button>
         </div>
     </div>
 
     <div class="main-container">
-        <!-- Main Terminal -->
-        <div id="terminal-container"></div>
+        <!-- 左: ターミナル + IME -->
+        <div class="terminal-area">
+            <div id="terminal-container"></div>
+            <section id="ime-section">
+                <input id="ime-input" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+            </section>
+        </div>
+        <!-- 右: サイドパネル（MCP show/clear/toggle_paneで制御） -->
+        <div id="side-panel">
+            <div class="side-panel-header">
+                <span>Content</span>
+                <button class="side-panel-close" title="Close panel">
+                    <i class="ti ti-x" style="font-size: 16px;"></i>
+                </button>
+            </div>
+            <div class="side-panel-content pane-content" id="pane-main">
+                <div class="side-panel-empty">No content</div>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -304,6 +439,44 @@
             };
         }
 
+        // ===== サイドパネル制御 =====
+        function toggleSidePanel(forceState) {
+            const panel = document.getElementById('side-panel');
+            const btn = document.getElementById('toggle-panel-btn');
+            if (forceState === true) {
+                panel.classList.add('open');
+            } else if (forceState === false) {
+                panel.classList.remove('open');
+            } else {
+                panel.classList.toggle('open');
+            }
+            btn.classList.toggle('active', panel.classList.contains('open'));
+        }
+
+        function renderContent(paneEl, content, append) {
+            if (!append) {
+                paneEl.textContent = '';
+            }
+            const div = document.createElement('div');
+            if (content.markdown) {
+                div.innerHTML = DOMPurify.sanitize(marked.parse(content.markdown));
+            } else if (content.html) {
+                div.innerHTML = DOMPurify.sanitize(content.html);
+            } else if (content.log) {
+                const pre = document.createElement('pre');
+                pre.textContent = content.log;
+                pre.style.whiteSpace = 'pre-wrap';
+                pre.style.wordBreak = 'break-all';
+                div.appendChild(pre);
+            } else if (content.image_base64) {
+                const img = document.createElement('img');
+                img.src = `data:${DOMPurify.sanitize(content.image_base64.mime_type)};base64,${content.image_base64.data}`;
+                div.appendChild(img);
+            }
+            paneEl.appendChild(div);
+            paneEl.scrollTop = paneEl.scrollHeight;
+        }
+
         function handleMessage(msg) {
             switch (msg.type) {
                 case 'ping':
@@ -326,8 +499,34 @@
                 case 'terminal_ready':
                     console.log('Terminal PTY session ready');
                     break;
+                case 'show': {
+                    const paneEl = document.getElementById('pane-' + (msg.pane_id || 'main'));
+                    if (paneEl) {
+                        renderContent(paneEl, msg.content, msg.append || false);
+                        toggleSidePanel(true);
+                    }
+                    break;
+                }
+                case 'clear': {
+                    const paneEl = document.getElementById('pane-' + (msg.pane_id || 'main'));
+                    if (paneEl) {
+                        paneEl.textContent = '';
+                        const empty = document.createElement('div');
+                        empty.className = 'side-panel-empty';
+                        empty.textContent = 'No content';
+                        paneEl.appendChild(empty);
+                    }
+                    break;
+                }
+                case 'toggle_pane': {
+                    if (msg.visible === true || msg.visible === false) {
+                        toggleSidePanel(msg.visible);
+                    } else {
+                        toggleSidePanel();
+                    }
+                    break;
+                }
                 default:
-                    // その他のメッセージはconsoleに記録
                     console.debug('WS:', msg.type, msg);
                     break;
             }
@@ -351,6 +550,17 @@
 
         window.terminalWriteCallback = null;
 
+        // サイドパネル トグルボタン
+        document.getElementById('toggle-panel-btn').addEventListener('click', () => toggleSidePanel());
+        document.querySelector('.side-panel-close').addEventListener('click', () => toggleSidePanel(false));
+        // キーボードショートカット: Ctrl+B でパネル切り替え
+        document.addEventListener('keydown', (e) => {
+            if ((e.ctrlKey || e.metaKey) && e.key === 'b') {
+                e.preventDefault();
+                toggleSidePanel();
+            }
+        });
+
         // 接続開始
         connect();
     </script>
@@ -367,6 +577,9 @@
                 await init();
                 console.log('ghostty-web WASM initialized');
 
+                // 行間の倍率（ghostty-webはlineHeightオプション非対応のため後でパッチ）
+                const LINE_HEIGHT = 1.3;
+
                 ghosttyTerm = new Terminal({
                     fontSize: 14,
                     fontFamily: "'JetBrains Mono', 'Fira Code', 'SF Mono', monospace",
@@ -380,6 +593,70 @@
 
                 const container = document.getElementById('terminal-container');
                 ghosttyTerm.open(container);
+
+                // === IMEセクション: DOMフロー下部の自前input ===
+                // WKWebViewではCSS positionでIME位置を変えられないため、
+                // DOMフロー上で物理的にターミナル直下に配置したinputを使う
+                const imeSection = document.getElementById('ime-section');
+                const imeInput = document.getElementById('ime-input');
+                if (imeInput && imeSection) {
+                    // IME組成開始 → セクションを展開
+                    imeInput.addEventListener('compositionstart', () => {
+                        imeSection.classList.add('active');
+                    });
+                    // ターミナルtextareaでIME組成が始まった場合もIMEセクションに誘導
+                    if (ghosttyTerm.textarea) {
+                        ghosttyTerm.textarea.addEventListener('compositionstart', () => {
+                            imeSection.classList.add('active');
+                            imeInput.focus();
+                        });
+                    }
+                    // IME組成確定 → テキストをターミナルに送信してクリア
+                    imeInput.addEventListener('compositionend', (e) => {
+                        if (e.data) {
+                            window.sendTerminalInput(e.data);
+                        }
+                        imeInput.value = '';
+                        imeSection.classList.remove('active');
+                        // ターミナルにフォーカスを戻す
+                        if (ghosttyTerm.textarea) {
+                            ghosttyTerm.textarea.focus();
+                        }
+                    });
+                    // ターミナルにフォーカスを戻すヘルパー
+                    const returnToTerminal = () => {
+                        imeInput.value = '';
+                        imeSection.classList.remove('active');
+                        if (ghosttyTerm.textarea) {
+                            ghosttyTerm.textarea.focus();
+                        }
+                    };
+                    // 非IMEのキー入力 → ターミナルに送信してフォーカスを戻す
+                    imeInput.addEventListener('keydown', (e) => {
+                        if (e.isComposing || e.keyCode === 229) return;
+                        e.preventDefault();
+                        if (e.key === 'Enter') {
+                            window.sendTerminalInput('\r');
+                        } else if (e.key === 'Backspace') {
+                            window.sendTerminalInput('\x7f');
+                        } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey) {
+                            window.sendTerminalInput(e.key);
+                        }
+                        // 非IMEキー入力 → ターミナルに戻る
+                        returnToTerminal();
+                    });
+                }
+
+                // ghostty-webのセル高さをパッチして行間を広げる
+                if (ghosttyTerm.renderer && LINE_HEIGHT !== 1.0) {
+                    const origGetMetrics = ghosttyTerm.renderer.getMetrics.bind(ghosttyTerm.renderer);
+                    ghosttyTerm.renderer.getMetrics = () => {
+                        const m = origGetMetrics();
+                        return { ...m, height: Math.round(m.height * LINE_HEIGHT) };
+                    };
+                    // メトリクス変更を反映
+                    ghosttyTerm.renderer.setFontSize(14);
+                }
 
                 // FitAddon でコンテナに合わせてリサイズ
                 fitAddon = new FitAddon();
@@ -400,24 +677,33 @@
                 });
 
                 // WKWebView キー入力ワークアラウンド (capturing phase):
-                // 1. macOS日本語IME: 英字モードでもkeyCode:229で報告される問題
-                // 2. Tab/Shift+Tab: WKWebViewがフォーカスナビゲーション用に横取りする問題
+                // 1. Tab/Shift+Tab: WKWebViewがフォーカスナビゲーション用に横取りする問題
+                // 2. IME入力検出: keyCode:229でIMEセクションにフォーカス移動
                 container.addEventListener('keydown', (e) => {
                     // Tab / Shift+Tab → WKWebViewのフォーカス移動を阻止してPTYに送信
                     if (e.key === 'Tab') {
                         e.preventDefault();
                         e.stopPropagation();
                         if (e.shiftKey) {
-                            // Shift+Tab = Back Tab (CSI Z)
                             window.sendTerminalInput('\x1b[Z');
                         } else {
                             window.sendTerminalInput('\t');
                         }
                         return;
                     }
-                    // IMEワークアラウンド: keyCode:229で非composing時は直接送信
-                    if (e.keyCode === 229 && !e.isComposing && e.key && e.key.length === 1) {
-                        window.sendTerminalInput(e.key);
+                    // macOS日本語IME: keyCode:229は英字モードでも発火する
+                    if (e.keyCode === 229 && imeInput) {
+                        // 組成中 → IMEセクションにリダイレクト
+                        if (e.isComposing) {
+                            imeSection.classList.add('active');
+                            imeInput.focus();
+                            return;
+                        }
+                        // 非組成（英字モード等）→ 直接送信
+                        if (e.key && e.key.length === 1) {
+                            window.sendTerminalInput(e.key);
+                        }
+                        return;
                     }
                 }, true);
 
