@@ -12,7 +12,8 @@
       "Bash(cargo run:*)",
       "Bash(gh pr create:*)",
       "Bash(gh pr checks:*)",
-      "Bash(gh run view:*)"
+      "Bash(gh run view:*)",
+      "Bash(git ls-tree:*)"
     ]
   },
   "enabledMcpjsonServers": [
