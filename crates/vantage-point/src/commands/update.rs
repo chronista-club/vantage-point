@@ -45,7 +45,10 @@ pub fn execute(check: bool) -> Result<()> {
 
         match cap.apply_update(release).await {
             Ok(apply) => {
-                println!("更新完了: v{} → v{}", apply.previous_version, apply.new_version);
+                println!(
+                    "更新完了: v{} → v{}",
+                    apply.previous_version, apply.new_version
+                );
                 println!("  バイナリ: {}", apply.binary_path);
                 if let Some(ref backup) = apply.backup_path {
                     println!("  バックアップ: {}", backup);
