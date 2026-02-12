@@ -9,4 +9,5 @@ pub mod lpd8;
 pub mod park;
 pub mod restart;
 pub mod start;
+pub mod update;
 pub mod world;

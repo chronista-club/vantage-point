@@ -166,6 +166,12 @@ enum Commands {
     /// Gold Experience（創造・回復）
     #[command(subcommand)]
     Ge(GeCommands),
+    /// self-update: GitHub Releasesから最新バイナリに更新
+    Update {
+        /// チェックのみ（適用しない）
+        #[arg(long)]
+        check: bool,
+    },
 }
 
 /// The World サブコマンド（JoJo Part 3 DIO のスタンド）
@@ -471,5 +477,6 @@ fn main() -> Result<()> {
         Commands::World(cmd) => commands::world::execute(cmd),
         Commands::Park(cmd) => commands::park::execute(cmd),
         Commands::Ge(cmd) => commands::ge::execute(cmd),
+        Commands::Update { check } => commands::update::execute(check),
     }
 }
