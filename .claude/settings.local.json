@@ -15,7 +15,23 @@
       "Bash(gh run view:*)",
       "Bash(git ls-tree:*)",
       "Bash(python3:*)",
-      "Bash(cargo fmt:*)"
+      "Bash(cargo fmt:*)",
+      "Bash(cargo install:*)",
+      "Bash(gh pr list:*)",
+      "Bash(gh pr merge:*)",
+      "WebFetch(domain:cdn.jsdelivr.net)",
+      "WebFetch(domain:www.npmjs.com)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "mcp__vantage-point__restart",
+      "Bash(curl:*)",
+      "mcp__vantage-point__show",
+      "Bash(gh run list:*)",
+      "Bash(gh release view:*)",
+      "Bash(./target/debug/vp update:*)",
+      "Bash(./target/debug/vp:*)",
+      "Bash(git stash:*)"
     ]
   },
   "enabledMcpjsonServers": [
