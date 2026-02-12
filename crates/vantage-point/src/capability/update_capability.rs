@@ -69,7 +69,9 @@ pub struct ReleaseInfo {
 pub struct AssetInfo {
     /// ファイル名
     pub name: String,
-    /// ダウンロードURL
+    /// API経由のダウンロードURL（プライベートリポジトリ対応）
+    pub api_url: String,
+    /// ブラウザダウンロードURL（パブリックリポジトリ向け）
     pub browser_download_url: String,
     /// ファイルサイズ（バイト）
     pub size: u64,
@@ -158,6 +160,8 @@ struct GitHubRelease {
 #[derive(Debug, Deserialize)]
 struct GitHubAsset {
     name: String,
+    /// API経由のダウンロードURL（プライベートリポジトリ対応）
+    url: String,
     browser_download_url: String,
     size: u64,
     content_type: String,
@@ -324,6 +328,7 @@ impl UpdateCapability {
                 .into_iter()
                 .map(|a| AssetInfo {
                     name: a.name,
+                    api_url: a.url,
                     browser_download_url: a.browser_download_url,
                     size: a.size,
                     content_type: a.content_type,
@@ -417,12 +422,13 @@ impl UpdateCapability {
     }
 
     /// バイナリをダウンロード
+    /// プライベートリポジトリではAPI URL + Bearerトークンでダウンロードする
     async fn download_binary(&self, asset: &AssetInfo, dest: &PathBuf) -> CapabilityResult<()> {
-        tracing::debug!(url = %asset.browser_download_url, "Downloading binary");
+        tracing::debug!(url = %asset.api_url, "Downloading binary via API");
 
         let mut request = self
             .client
-            .get(&asset.browser_download_url)
+            .get(&asset.api_url)
             .header("Accept", "application/octet-stream");
 
         // GitHub Tokenがあれば認証ヘッダを追加
@@ -676,6 +682,7 @@ impl UpdateCapability {
                 .into_iter()
                 .map(|a| AssetInfo {
                     name: a.name,
+                    api_url: a.url,
                     browser_download_url: a.browser_download_url,
                     size: a.size,
                     content_type: a.content_type,
