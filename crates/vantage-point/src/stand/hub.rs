@@ -158,6 +158,7 @@ mod tests {
             pane_id: "main".to_string(),
             content: Content::Markdown("# Hello".to_string()),
             append: false,
+            title: None,
         };
         hub.broadcast(msg);
 

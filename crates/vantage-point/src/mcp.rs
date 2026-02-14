@@ -35,6 +35,10 @@ pub struct ShowParams {
     /// Append mode
     #[schemars(description = "Append to existing content instead of replacing")]
     pub append: Option<bool>,
+
+    /// Pane title (for tab display)
+    #[schemars(description = "Title for the pane tab. If not provided, the pane_id is used.")]
+    pub title: Option<String>,
 }
 
 /// Parameters for the clear tool
@@ -144,6 +148,7 @@ impl VantageMcp {
             pane_id: pane_id.clone(),
             content: content_enum,
             append,
+            title: params.title,
         };
 
         let url = self.stand_url.lock().await;

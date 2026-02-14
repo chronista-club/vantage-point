@@ -50,6 +50,9 @@ pub enum StandMessage {
         pane_id: String,
         content: Content,
         append: bool,
+        /// ペインのタイトル（タブ表示用）
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
     },
     /// Clear a pane
     Clear { pane_id: String },
