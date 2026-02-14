@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 
-use crate::protocol::{ChatComponent, Content as StandContent, StandMessage};
+use crate::protocol::{ChatComponent, Content as StandContent, SplitDirection, StandMessage};
 
 /// Parameters for the show tool
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -81,6 +81,26 @@ pub struct TogglePaneParams {
         description = "Set explicit visibility: true = show, false = hide. If not provided, toggles current state."
     )]
     pub visible: Option<bool>,
+}
+
+/// Parameters for the split_pane tool
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SplitPaneParams {
+    /// Split direction
+    #[schemars(description = "Split direction: 'horizontal' or 'vertical'")]
+    pub direction: String,
+
+    /// Source pane ID to split from
+    #[schemars(description = "Pane ID to split from. If not provided, splits the 'main' pane.")]
+    pub source_pane_id: Option<String>,
+}
+
+/// Parameters for the close_pane tool
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ClosePaneParams {
+    /// Pane ID to close
+    #[schemars(description = "ID of the pane to close")]
+    pub pane_id: String,
 }
 
 /// Response format for permission tool
@@ -251,6 +271,103 @@ impl VantageMcp {
                     params.pane_id, state_desc
                 ))]))
             }
+            Ok(resp) => {
+                let status = resp.status();
+                Err(McpError::internal_error(
+                    format!("Stand returned error: {}", status),
+                    None,
+                ))
+            }
+            Err(e) => Err(McpError::internal_error(
+                format!("Failed to connect to Stand: {}", e),
+                None,
+            )),
+        }
+    }
+
+    /// Split a pane into two
+    #[tool(
+        description = "Split a pane in the Vantage Point browser viewer. Creates a new pane by splitting an existing one horizontally or vertically."
+    )]
+    async fn split_pane(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<SplitPaneParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let source_pane_id = params.source_pane_id.unwrap_or_else(|| "main".to_string());
+
+        let direction = match params.direction.to_lowercase().as_str() {
+            "horizontal" | "h" => SplitDirection::Horizontal,
+            "vertical" | "v" => SplitDirection::Vertical,
+            _ => {
+                return Err(McpError::invalid_params(
+                    "direction must be 'horizontal' or 'vertical'",
+                    None,
+                ));
+            }
+        };
+
+        // UUIDの先頭セグメントでペインIDを生成
+        let new_pane_id = uuid::Uuid::new_v4().to_string();
+        let new_pane_id = new_pane_id.split('-').next().unwrap_or(&new_pane_id);
+        let new_pane_id = format!("pane-{}", new_pane_id);
+
+        let message = StandMessage::Split {
+            pane_id: source_pane_id.clone(),
+            direction,
+            new_pane_id: new_pane_id.clone(),
+        };
+
+        let url = self.stand_url.lock().await;
+        let result = self
+            .client
+            .post(format!("{}/api/split-pane", *url))
+            .json(&message)
+            .send()
+            .await;
+
+        match result {
+            Ok(resp) if resp.status() == reqwest::StatusCode::OK => {
+                Ok(CallToolResult::success(vec![Content::text(format!(
+                    "Pane '{}' split. New pane ID: '{}'",
+                    source_pane_id, new_pane_id
+                ))]))
+            }
+            Ok(resp) => {
+                let status = resp.status();
+                Err(McpError::internal_error(
+                    format!("Stand returned error: {}", status),
+                    None,
+                ))
+            }
+            Err(e) => Err(McpError::internal_error(
+                format!("Failed to connect to Stand: {}", e),
+                None,
+            )),
+        }
+    }
+
+    /// Close a pane
+    #[tool(description = "Close a pane in the Vantage Point browser viewer.")]
+    async fn close_pane(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<ClosePaneParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let message = StandMessage::Close {
+            pane_id: params.pane_id.clone(),
+        };
+
+        let url = self.stand_url.lock().await;
+        let result = self
+            .client
+            .post(format!("{}/api/close-pane", *url))
+            .json(&message)
+            .send()
+            .await;
+
+        match result {
+            Ok(resp) if resp.status() == reqwest::StatusCode::OK => Ok(CallToolResult::success(
+                vec![Content::text(format!("Pane '{}' closed", params.pane_id))],
+            )),
             Ok(resp) => {
                 let status = resp.status();
                 Err(McpError::internal_error(
@@ -513,8 +630,9 @@ impl rmcp::ServerHandler for VantageMcp {
         ServerInfo {
             instructions: Some(
                 "Vantage Point Stand - Display rich content (markdown, HTML, images) in a browser viewer. \
-                 Use 'show' to display content, 'clear' to clear panes, 'permission' to request user approval, \
-                 and 'restart' to restart the Stand (useful after rebuilding the binary).".into()
+                 Use 'show' to display content, 'clear' to clear panes, 'split_pane' to split a pane \
+                 horizontally or vertically, 'close_pane' to close a pane, 'toggle_pane' to toggle panel visibility, \
+                 'permission' to request user approval, and 'restart' to restart the Stand.".into()
             ),
             capabilities: ServerCapabilities::builder().enable_tools().build(),
             ..Default::default()
