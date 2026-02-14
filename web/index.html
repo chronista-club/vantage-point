@@ -157,13 +157,14 @@
             display: flex;
             flex-direction: column;
             min-width: 0;
+            background: #1e1f2e;
         }
 
         /* ===== Terminal Container ===== */
         #terminal-container {
             flex: 1;
             width: 100%;
-            background: oklch(0.13 0.01 260);
+            background: #1e1f2e;
             overflow: hidden;
             position: relative;
         }
@@ -217,11 +218,6 @@
             color: var(--color-text-primary);
             background: var(--color-bg-surface);
         }
-        .side-panel-content {
-            flex: 1;
-            overflow-y: auto;
-            padding: 16px;
-        }
         .side-panel-empty {
             display: flex;
             align-items: center;
@@ -274,8 +270,8 @@
             border: none;
             outline: none;
             padding: 4px 12px;
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 14px;
+            font-family: 'FiraCode Nerd Font', 'Fira Code', monospace;
+            font-size: 16px;
             caret-color: var(--color-text-primary);
         }
 
@@ -305,7 +301,7 @@
             background: var(--color-bg-deep);
             padding: 2px 6px;
             border-radius: var(--radius-sm);
-            font-family: 'JetBrains Mono', monospace;
+            font-family: 'FiraCode Nerd Font', 'Fira Code', monospace;
         }
         .pane-content pre {
             background: var(--color-bg-deep);
@@ -337,6 +333,95 @@
             0%, 20% { content: '.'; }
             40% { content: '..'; }
             60%, 100% { content: '...'; }
+        }
+
+        /* ===== Pane Tabs ===== */
+        .pane-tabs {
+            display: none;
+            flex-shrink: 0;
+            background: var(--color-bg-elevated);
+            border-bottom: 1px solid var(--color-border-default);
+            padding: 0 8px;
+            gap: 2px;
+            overflow-x: auto;
+            align-items: stretch;
+        }
+        .pane-tabs.visible {
+            display: flex;
+        }
+        .pane-tab {
+            background: none;
+            border: none;
+            color: var(--color-text-muted);
+            font-size: 12px;
+            padding: 6px 12px;
+            cursor: pointer;
+            border-bottom: 2px solid transparent;
+            white-space: nowrap;
+            transition: color var(--transition-fast), border-color var(--transition-fast);
+        }
+        .pane-tab:hover {
+            color: var(--color-text-secondary);
+        }
+        .pane-tab.active {
+            color: var(--color-accent-primary);
+            border-bottom-color: var(--color-accent-primary);
+        }
+        .pane-tab .tab-close {
+            margin-left: 6px;
+            opacity: 0;
+            font-size: 10px;
+            cursor: pointer;
+            transition: opacity var(--transition-fast);
+        }
+        .pane-tab:hover .tab-close {
+            opacity: 0.6;
+        }
+        .pane-tab .tab-close:hover {
+            opacity: 1;
+        }
+
+        /* ===== Pane Container ===== */
+        .pane-container {
+            flex: 1;
+            display: flex;
+            overflow: hidden;
+            position: relative;
+        }
+        .pane-container.split-horizontal {
+            flex-direction: row;
+        }
+        .pane-container.split-vertical {
+            flex-direction: column;
+        }
+        .pane-container > .pane-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 16px;
+            display: none;
+        }
+        .pane-container > .pane-content.active {
+            display: block;
+        }
+        .pane-container.split-horizontal > .pane-content,
+        .pane-container.split-vertical > .pane-content {
+            display: block;
+        }
+        .pane-split-handle {
+            flex-shrink: 0;
+            background: var(--color-border-default);
+            transition: background var(--transition-fast);
+        }
+        .pane-split-handle:hover {
+            background: var(--color-accent-primary);
+        }
+        .split-horizontal > .pane-split-handle {
+            width: 4px;
+            cursor: col-resize;
+        }
+        .split-vertical > .pane-split-handle {
+            height: 4px;
+            cursor: row-resize;
         }
 
     </style>
@@ -372,13 +457,16 @@
         <!-- 右: サイドパネル（MCP show/clear/toggle_paneで制御） -->
         <div id="side-panel">
             <div class="side-panel-header">
-                <span>Content</span>
+                <span id="side-panel-title">Content</span>
                 <button class="side-panel-close" title="Close panel">
                     <i class="ti ti-x" style="font-size: 16px;"></i>
                 </button>
             </div>
-            <div class="side-panel-content pane-content" id="pane-main">
-                <div class="side-panel-empty">No content</div>
+            <div class="pane-tabs" id="pane-tabs"></div>
+            <div class="pane-container" id="pane-container">
+                <div class="pane-content active" id="pane-main" data-pane-id="main">
+                    <div class="side-panel-empty">No content</div>
+                </div>
             </div>
         </div>
     </div>
@@ -453,6 +541,124 @@
             btn.classList.toggle('active', panel.classList.contains('open'));
         }
 
+        // ===== マルチペイン管理 =====
+        const paneState = {
+            panes: new Map(),
+            activePane: 'main',
+            splitMode: null,
+        };
+        paneState.panes.set('main', { title: 'Main' });
+
+        function createPane(paneId, title) {
+            if (paneState.panes.has(paneId)) return;
+            paneState.panes.set(paneId, { title: title || paneId });
+            const container = document.getElementById('pane-container');
+            const paneEl = document.createElement('div');
+            paneEl.className = 'pane-content';
+            paneEl.id = 'pane-' + paneId;
+            paneEl.dataset.paneId = paneId;
+            const empty = document.createElement('div');
+            empty.className = 'side-panel-empty';
+            empty.textContent = 'No content';
+            paneEl.appendChild(empty);
+            container.appendChild(paneEl);
+            updateTabs();
+            switchToPane(paneId);
+        }
+
+        function removePane(paneId) {
+            if (paneId === 'main' && paneState.panes.size <= 1) return;
+            if (!paneState.panes.has(paneId)) return;
+            if (paneState.splitMode && paneState.splitMode.panes.includes(paneId)) {
+                exitSplitMode();
+            }
+            const el = document.getElementById('pane-' + paneId);
+            if (el) el.remove();
+            paneState.panes.delete(paneId);
+            if (paneState.activePane === paneId) {
+                const firstId = paneState.panes.keys().next().value;
+                switchToPane(firstId);
+            }
+            updateTabs();
+        }
+
+        function switchToPane(paneId) {
+            if (!paneState.panes.has(paneId)) return;
+            if (paneState.splitMode) return;
+            paneState.activePane = paneId;
+            document.querySelectorAll('#pane-container > .pane-content').forEach(el => {
+                el.classList.toggle('active', el.dataset.paneId === paneId);
+            });
+            document.querySelectorAll('.pane-tab').forEach(tab => {
+                tab.classList.toggle('active', tab.dataset.paneId === paneId);
+            });
+            const info = paneState.panes.get(paneId);
+            if (info) {
+                document.getElementById('side-panel-title').textContent = info.title;
+            }
+        }
+
+        function updateTabs() {
+            const tabsEl = document.getElementById('pane-tabs');
+            tabsEl.textContent = '';
+            if (paneState.panes.size <= 1) {
+                tabsEl.classList.remove('visible');
+                return;
+            }
+            tabsEl.classList.add('visible');
+            for (const [id, info] of paneState.panes) {
+                const tab = document.createElement('button');
+                tab.className = 'pane-tab' + (id === paneState.activePane ? ' active' : '');
+                tab.dataset.paneId = id;
+                const label = document.createElement('span');
+                label.textContent = info.title;
+                tab.appendChild(label);
+                if (id !== 'main' || paneState.panes.size > 1) {
+                    const closeBtn = document.createElement('span');
+                    closeBtn.className = 'tab-close';
+                    closeBtn.textContent = '\u00d7';
+                    closeBtn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        removePane(id);
+                    });
+                    tab.appendChild(closeBtn);
+                }
+                tab.addEventListener('click', () => switchToPane(id));
+                tabsEl.appendChild(tab);
+            }
+        }
+
+        function enterSplitMode(direction, paneIds) {
+            paneState.splitMode = { direction, panes: paneIds };
+            const container = document.getElementById('pane-container');
+            container.querySelectorAll('.pane-content').forEach(el => {
+                el.classList.remove('active');
+                el.style.display = 'none';
+            });
+            container.className = 'pane-container split-' + direction;
+            paneIds.forEach(id => {
+                const el = document.getElementById('pane-' + id);
+                if (el) el.style.display = 'block';
+            });
+            const firstPane = document.getElementById('pane-' + paneIds[0]);
+            if (firstPane && !container.querySelector('.pane-split-handle')) {
+                const handle = document.createElement('div');
+                handle.className = 'pane-split-handle';
+                firstPane.after(handle);
+            }
+        }
+
+        function exitSplitMode() {
+            paneState.splitMode = null;
+            const container = document.getElementById('pane-container');
+            container.className = 'pane-container';
+            container.querySelectorAll('.pane-split-handle').forEach(h => h.remove());
+            container.querySelectorAll('.pane-content').forEach(el => {
+                el.style.display = '';
+            });
+            switchToPane(paneState.activePane);
+        }
+
         function renderContent(paneEl, content, append) {
             if (!append) {
                 paneEl.textContent = '';
@@ -500,7 +706,14 @@
                     console.log('Terminal PTY session ready');
                     break;
                 case 'show': {
-                    const paneEl = document.getElementById('pane-' + (msg.pane_id || 'main'));
+                    const paneId = msg.pane_id || 'main';
+                    if (!paneState.panes.has(paneId)) {
+                        createPane(paneId, msg.title);
+                    } else if (msg.title) {
+                        paneState.panes.get(paneId).title = msg.title;
+                        updateTabs();
+                    }
+                    const paneEl = document.getElementById('pane-' + paneId);
                     if (paneEl) {
                         renderContent(paneEl, msg.content, msg.append || false);
                         toggleSidePanel(true);
@@ -508,7 +721,8 @@
                     break;
                 }
                 case 'clear': {
-                    const paneEl = document.getElementById('pane-' + (msg.pane_id || 'main'));
+                    const paneId = msg.pane_id || 'main';
+                    const paneEl = document.getElementById('pane-' + paneId);
                     if (paneEl) {
                         paneEl.textContent = '';
                         const empty = document.createElement('div');
@@ -516,6 +730,21 @@
                         empty.textContent = 'No content';
                         paneEl.appendChild(empty);
                     }
+                    break;
+                }
+                case 'split': {
+                    const sourcePaneId = msg.pane_id || 'main';
+                    const newPaneId = msg.new_pane_id;
+                    const direction = msg.direction || 'horizontal';
+                    if (!paneState.panes.has(newPaneId)) {
+                        createPane(newPaneId, newPaneId);
+                    }
+                    enterSplitMode(direction, [sourcePaneId, newPaneId]);
+                    toggleSidePanel(true);
+                    break;
+                }
+                case 'close': {
+                    removePane(msg.pane_id);
                     break;
                 }
                 case 'toggle_pane': {
@@ -577,13 +806,9 @@
                 await init();
                 console.log('ghostty-web WASM initialized');
 
-                // 行間の倍率（ghostty-webはlineHeightオプション非対応のため後でパッチ）
-                const LINE_HEIGHT = 1.3;
-
                 ghosttyTerm = new Terminal({
-                    fontSize: 14,
-                    lineHeight: 1.3,
-                    fontFamily: "'JetBrains Mono', 'Fira Code', 'SF Mono', monospace",
+                    fontSize: 16,
+                    fontFamily: "'FiraCode Nerd Font', 'Fira Code', 'JetBrains Mono', monospace",
                     theme: {
                         background: '#1e1f2e',
                         foreground: '#a9b1d6',
@@ -595,37 +820,67 @@
                 const container = document.getElementById('terminal-container');
                 ghosttyTerm.open(container);
 
-                // === IMEセクション: DOMフロー下部の自前input ===
+                // === IME入力管理 ===
                 // WKWebViewではCSS positionでIME位置を変えられないため、
                 // DOMフロー上で物理的にターミナル直下に配置したinputを使う
                 const imeSection = document.getElementById('ime-section');
                 const imeInput = document.getElementById('ime-input');
+
+                // --- IME状態管理（container keydown handler と共有） ---
+                // e.isComposing はモード切替時に不整合になるため、明示的に追跡する
+                let isComposingExplicit = false;
+                // keyCode:229 の遅延送信キュー
+                // compositionstart が先に発火すればキャンセルされる
+                let deferredKeys = [];
+                let deferredTimer = null;
+
+                function flushDeferredKeys() {
+                    deferredTimer = null;
+                    for (const k of deferredKeys) {
+                        window.sendTerminalInput(k);
+                    }
+                    deferredKeys = [];
+                }
+
+                function cancelDeferredKeys() {
+                    if (deferredTimer) {
+                        clearTimeout(deferredTimer);
+                        deferredTimer = null;
+                    }
+                    deferredKeys = [];
+                }
+
                 if (imeInput && imeSection) {
-                    // IME組成開始 → セクションを展開
+                    // IME組成開始（imeInput上）→ セクションを展開
                     imeInput.addEventListener('compositionstart', () => {
+                        isComposingExplicit = true;
+                        cancelDeferredKeys();
                         imeSection.classList.add('active');
                     });
                     // ターミナルtextareaでIME組成が始まった場合もIMEセクションに誘導
                     if (ghosttyTerm.textarea) {
                         ghosttyTerm.textarea.addEventListener('compositionstart', () => {
+                            isComposingExplicit = true;
+                            cancelDeferredKeys();
                             imeSection.classList.add('active');
                             imeInput.focus();
                         });
                     }
                     // IME組成確定 → テキストをターミナルに送信してクリア
                     imeInput.addEventListener('compositionend', (e) => {
+                        isComposingExplicit = false;
                         if (e.data) {
                             window.sendTerminalInput(e.data);
                         }
                         imeInput.value = '';
                         imeSection.classList.remove('active');
-                        // ターミナルにフォーカスを戻す
                         if (ghosttyTerm.textarea) {
                             ghosttyTerm.textarea.focus();
                         }
                     });
                     // ターミナルにフォーカスを戻すヘルパー
                     const returnToTerminal = () => {
+                        isComposingExplicit = false;
                         imeInput.value = '';
                         imeSection.classList.remove('active');
                         if (ghosttyTerm.textarea) {
@@ -634,10 +889,13 @@
                     };
                     // 非IMEのキー入力 → ターミナルに送信してフォーカスを戻す
                     imeInput.addEventListener('keydown', (e) => {
-                        // isComposing のみで判定（keyCode:229 は WKWebView の IME有効時に
-                        // 組成外でも発火するため、Enterが効かなくなる）
-                        if (e.isComposing) return;
+                        // 明示的な組成状態 OR ブラウザ報告の組成中 → IMEに委ねる
+                        if (isComposingExplicit || e.isComposing) return;
                         e.preventDefault();
+                        if (e.key === 'Escape') {
+                            returnToTerminal();
+                            return;
+                        }
                         if (e.key === 'Enter') {
                             window.sendTerminalInput('\r');
                         } else if (e.key === 'Backspace') {
@@ -645,25 +903,17 @@
                         } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey) {
                             window.sendTerminalInput(e.key);
                         }
-                        // 非IMEキー入力 → ターミナルに戻る
                         returnToTerminal();
                     });
-                }
-
-                // ghostty-webのセル高さをパッチして行間を広げる
-                if (ghosttyTerm.renderer && LINE_HEIGHT !== 1.0) {
-                    const origGetMetrics = ghosttyTerm.renderer.getMetrics.bind(ghosttyTerm.renderer);
-                    ghosttyTerm.renderer.getMetrics = () => {
-                        const m = origGetMetrics();
-                        return { ...m, height: Math.round(m.height * LINE_HEIGHT) };
-                    };
-                    // メトリクス変更を反映
-                    ghosttyTerm.renderer.setFontSize(14);
                 }
 
                 // FitAddon でコンテナに合わせてリサイズ
                 fitAddon = new FitAddon();
                 ghosttyTerm.loadAddon(fitAddon);
+
+                // デバッグ用にグローバル公開
+                window._ghosttyTerm = ghosttyTerm;
+                window._fitAddon = fitAddon;
 
                 // 初回フィット
                 requestAnimationFrame(() => {
@@ -681,7 +931,7 @@
 
                 // WKWebView キー入力ワークアラウンド (capturing phase):
                 // 1. Tab/Shift+Tab: WKWebViewがフォーカスナビゲーション用に横取りする問題
-                // 2. IME入力検出: keyCode:229でIMEセクションにフォーカス移動
+                // 2. IME入力検出: keyCode:229で遅延判定 → 組成開始 or 直接送信
                 container.addEventListener('keydown', (e) => {
                     // Tab / Shift+Tab → WKWebViewのフォーカス移動を阻止してPTYに送信
                     if (e.key === 'Tab') {
@@ -695,16 +945,29 @@
                         return;
                     }
                     // macOS日本語IME: keyCode:229は英字モードでも発火する
+                    // ghostty-webはkeyCode:229をIMEイベントとして無視するため、ここで処理する
                     if (e.keyCode === 229 && imeInput) {
                         // 組成中 → IMEセクションにリダイレクト
-                        if (e.isComposing) {
+                        if (e.isComposing || isComposingExplicit) {
+                            cancelDeferredKeys();
                             imeSection.classList.add('active');
                             imeInput.focus();
                             return;
                         }
-                        // 非組成（英字モード等）→ 直接送信
-                        if (e.key && e.key.length === 1) {
-                            window.sendTerminalInput(e.key);
+                        // keyCode:229だが未組成
+                        // 即送信ではなく遅延キューに入れる（20ms）
+                        // この間に compositionstart が発火すればキューはキャンセルされ、
+                        // 文字は組成に含まれる（＝最初の1文字問題を解決）
+                        // 発火しなければ英字モード等 → PTYに直接送信
+                        let keyToSend = null;
+                        if (e.key === 'Enter') keyToSend = '\r';
+                        else if (e.key === 'Backspace') keyToSend = '\x7f';
+                        else if (e.key && e.key.length === 1 && !e.ctrlKey && !e.metaKey) keyToSend = e.key;
+
+                        if (keyToSend) {
+                            deferredKeys.push(keyToSend);
+                            if (deferredTimer) clearTimeout(deferredTimer);
+                            deferredTimer = setTimeout(flushDeferredKeys, 20);
                         }
                         return;
                     }
