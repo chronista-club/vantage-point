@@ -13,6 +13,7 @@ use super::capabilities::StandCapabilities;
 use super::hub::Hub;
 use super::pty::PtyManager;
 use super::session::SessionManager;
+use super::tmux::TmuxManager;
 use crate::agent::InteractiveClaudeAgent;
 use crate::agui::AgUiEvent;
 use crate::capability::{StandManagerCapability, UpdateCapability};
@@ -100,8 +101,12 @@ pub(crate) struct AppState {
     pub update: Option<Arc<RwLock<UpdateCapability>>>,
     /// Interactive Claude agent (stream-json mode for structured communication)
     pub interactive_agent: Arc<RwLock<Option<InteractiveClaudeAgent>>>,
-    /// PTYセッションマネージャー（ターミナル機能）
+    /// PTYセッションマネージャー（ターミナル機能）- レガシー、tmux未対応環境用
     pub pty_manager: Arc<tokio::sync::Mutex<PtyManager>>,
+    /// tmuxセッションマネージャー（tmux利用可能時に使用）
+    pub tmux_manager: Arc<tokio::sync::Mutex<TmuxManager>>,
+    /// tmuxを使用するかどうか
+    pub use_tmux: bool,
 }
 
 impl AppState {
