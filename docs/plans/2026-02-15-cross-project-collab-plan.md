@@ -21,8 +21,8 @@
 
 ```json
 "creo-memories": {
-  "type": "sse",
-  "url": "https://mcp.creo-memories.in/sse"
+  "type": "http",
+  "url": "https://mcp.creo-memories.in/"
 }
 ```
 

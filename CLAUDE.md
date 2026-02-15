@@ -197,3 +197,23 @@ state.send_debug_detail("category", "メッセージ", serde_json::json!({
 2. WebUIのデバッグパネル（右パネル）でログを確認
 3. ブラウザコンソールで `Received:` ログを確認
 4. 必要に応じてコードにログを追加して再ビルド
+
+## クロスプロジェクト協業（MARU × VP）
+
+本プロジェクトはMARU（ESP32-S3物理コントローラ）と連携開発を行っている。
+creo-memoriesを共有データベースとして、CC間でデータ共有・議論を行う。
+
+### セッション開始時
+
+- `recall("cross-project discussion")` で未読の議論を確認する
+
+### 記録規約
+
+- 他プロジェクトに関わる設計決定時: `remember()` で `category: "cross-project"` に記録
+- メタデータに `from: "vp"` を必ず付与
+- 議論は `type: proposal / question / answer / decision` で分類
+- タグ例: `wire-protocol`, `atlas`, `decision`, `discussion`
+
+### 参照
+
+- 設計ドキュメント: [docs/plans/2026-02-15-cross-project-collab-design.md](docs/plans/2026-02-15-cross-project-collab-design.md)

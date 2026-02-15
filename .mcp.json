@@ -25,6 +25,10 @@
         "SURREALDB_PASS": "root"
       }
     },
+    "creo-memories": {
+      "type": "http",
+      "url": "https://mcp.creo-memories.in/"
+    },
     "serena": {
       "command": "uvx",
       "args": [
