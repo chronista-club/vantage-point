@@ -31,10 +31,10 @@ pub fn execute(check: bool) -> Result<()> {
 
         if check {
             // --check: チェックのみで終了
-            if let Some(ref release) = result.release {
-                if let Some(ref notes) = release.body {
-                    println!("\nリリースノート:\n{}", notes);
-                }
+            if let Some(ref release) = result.release
+                && let Some(ref notes) = release.body
+            {
+                println!("\nリリースノート:\n{}", notes);
             }
             return Ok(());
         }

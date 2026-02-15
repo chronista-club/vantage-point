@@ -6,17 +6,30 @@ use crate::cli::{DebugModeArg, PORT_RANGE_END, PORT_RANGE_START, parse_debug_env
 use crate::config::Config;
 use crate::protocol::DebugMode;
 
+/// `vp start` の起動オプション
+pub struct StartOptions<'a> {
+    pub project_index: Option<usize>,
+    pub port: Option<u16>,
+    pub headless: bool,
+    pub browser: bool,
+    pub debug: Option<DebugModeArg>,
+    pub project_dir: Option<String>,
+    pub midi: Option<String>,
+    pub config: &'a Config,
+}
+
 /// `vp start` を実行
-pub fn execute(
-    project_index: Option<usize>,
-    port: Option<u16>,
-    headless: bool,
-    browser: bool,
-    debug: Option<DebugModeArg>,
-    project_dir: Option<String>,
-    midi: Option<String>,
-    config: &Config,
-) -> Result<()> {
+pub fn execute(opts: StartOptions) -> Result<()> {
+    let StartOptions {
+        project_index,
+        port,
+        headless,
+        browser,
+        debug,
+        project_dir,
+        midi,
+        config,
+    } = opts;
     // Resolve project directory
     // Priority: --project-dir > project_index > cwd > config default
     // 相対パスは絶対パスに変換される

@@ -376,7 +376,7 @@ fn main() -> Result<()> {
             debug,
             project_dir,
             midi,
-        } => commands::start::execute(
+        } => commands::start::execute(commands::start::StartOptions {
             project_index,
             port,
             headless,
@@ -384,8 +384,8 @@ fn main() -> Result<()> {
             debug,
             project_dir,
             midi,
-            &config,
-        ),
+            config: &config,
+        }),
         Commands::Config => commands::config::execute(&config),
         Commands::Mcp => {
             let rt = tokio::runtime::Runtime::new()?;
