@@ -2,9 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, feature/*]
-    tags:
-      - 'v*'
+    branches: [main, feat/*]
   pull_request:
     branches: [main]
 
@@ -18,7 +16,7 @@ jobs:
   # ===========================================
   lint:
     name: Lint
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -50,7 +48,7 @@ jobs:
   # ===========================================
   test:
     name: Test
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -76,7 +74,7 @@ jobs:
   # ===========================================
   build:
     name: Build
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -96,54 +94,3 @@ jobs:
 
       - name: Build (Release)
         run: cargo build --workspace --release
-
-  # ===========================================
-  # リリース（タグプッシュ時のみ実行）
-  # ===========================================
-  # 使い方:
-  #   git tag v0.2.1
-  #   git push origin v0.2.1
-  # ===========================================
-  release:
-    name: Release
-    runs-on: macos-latest
-    needs: [lint, test, build]
-    if: startsWith(github.ref, 'refs/tags/v')
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # 全履歴取得（リリースノート生成用）
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Get version from tag
-        id: version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
-
-      - name: Verify Cargo.toml version matches tag
-        run: |
-          CARGO_VERSION=$(grep '^version' crates/vantage-point/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
-          TAG_VERSION=${{ steps.version.outputs.VERSION }}
-          if [ "$CARGO_VERSION" != "$TAG_VERSION" ]; then
-            echo "❌ Version mismatch: Cargo.toml=$CARGO_VERSION, tag=$TAG_VERSION"
-            exit 1
-          fi
-          echo "✅ Version verified: $CARGO_VERSION"
-
-      - name: Build release binary
-        run: cargo build --release -p vantage-point
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v2
-        with:
-          name: v${{ steps.version.outputs.VERSION }}
-          files: |
-            target/release/vp
-          generate_release_notes: true
-          draft: false
-          prerelease: ${{ contains(steps.version.outputs.VERSION, '-') }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
