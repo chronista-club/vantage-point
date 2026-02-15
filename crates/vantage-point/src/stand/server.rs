@@ -79,6 +79,8 @@ pub async fn run(
         .route("/ws", get(ws::ws_handler))
         .route("/api/show", post(health::show_handler))
         .route("/api/toggle-pane", post(health::toggle_pane_handler))
+        .route("/api/split-pane", post(health::split_pane_handler))
+        .route("/api/close-pane", post(health::close_pane_handler))
         .route("/api/health", get(health::health_handler))
         .route("/api/shutdown", post(health::shutdown_handler))
         .route(

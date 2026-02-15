@@ -58,6 +58,24 @@ pub async fn toggle_pane_handler(
     Json(serde_json::json!({"status": "ok"}))
 }
 
+/// POST /api/split-pane - Split a pane
+pub async fn split_pane_handler(
+    State(state): State<Arc<AppState>>,
+    Json(msg): Json<StandMessage>,
+) -> impl IntoResponse {
+    state.hub.broadcast(msg);
+    Json(serde_json::json!({"status": "ok"}))
+}
+
+/// POST /api/close-pane - Close a pane
+pub async fn close_pane_handler(
+    State(state): State<Arc<AppState>>,
+    Json(msg): Json<StandMessage>,
+) -> impl IntoResponse {
+    state.hub.broadcast(msg);
+    Json(serde_json::json!({"status": "ok"}))
+}
+
 /// POST /api/shutdown - Graceful shutdown
 pub async fn shutdown_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     tracing::info!("Shutdown requested via API");

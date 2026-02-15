@@ -50,6 +50,9 @@ pub enum StandMessage {
         pane_id: String,
         content: Content,
         append: bool,
+        /// ペインのタイトル（タブ表示用）
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
     },
     /// Clear a pane
     Clear { pane_id: String },
@@ -388,6 +391,55 @@ mod tests {
             }
             _ => panic!("Expected Chat message"),
         }
+    }
+
+    #[test]
+    fn test_show_with_title_serialization() {
+        let msg = StandMessage::Show {
+            pane_id: "design".to_string(),
+            content: Content::Markdown("# Hello".to_string()),
+            append: false,
+            title: Some("設計書".to_string()),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains(r#""type":"show""#));
+        assert!(json.contains(r#""title":"設計書""#));
+        assert!(json.contains(r#""pane_id":"design""#));
+    }
+
+    #[test]
+    fn test_show_without_title_omits_field() {
+        let msg = StandMessage::Show {
+            pane_id: "main".to_string(),
+            content: Content::Markdown("# Hello".to_string()),
+            append: false,
+            title: None,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(!json.contains("title"));
+    }
+
+    #[test]
+    fn test_split_message_serialization() {
+        let msg = StandMessage::Split {
+            pane_id: "main".to_string(),
+            direction: SplitDirection::Horizontal,
+            new_pane_id: "pane-1".to_string(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains(r#""type":"split""#));
+        assert!(json.contains(r#""direction":"horizontal""#));
+        assert!(json.contains(r#""new_pane_id":"pane-1""#));
+    }
+
+    #[test]
+    fn test_close_message_serialization() {
+        let msg = StandMessage::Close {
+            pane_id: "pane-1".to_string(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains(r#""type":"close""#));
+        assert!(json.contains(r#""pane_id":"pane-1""#));
     }
 
     #[test]

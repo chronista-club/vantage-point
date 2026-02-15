@@ -24,7 +24,7 @@ pub use acp::AcpMessage;
 
 pub use messages::{
     BrowserMessage, ChatComponent, ChatMessage, ChatRole, ComponentAction, Content, DebugMode,
-    HistoryMessage, SessionInfo, StandMessage,
+    HistoryMessage, SessionInfo, SplitDirection, StandMessage,
 };
 
 pub use vantage::{CapabilityStateInfo, MidiEventType, SynergyTypeInfo, VantageEvent};
