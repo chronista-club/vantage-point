@@ -286,20 +286,12 @@ fn start_terminal_bridge(
         .expect("terminal-bridge スレッドの起動に失敗");
 }
 
-/// キーコードを端末バイトシーケンスに変換
-fn keycode_to_bytes(key: &KeyCode, text: Option<&str>) -> Option<Vec<u8>> {
-    // テキスト入力がある場合はそれを使用
-    if let Some(t) = text
-        && !t.is_empty()
-    {
-        return Some(t.as_bytes().to_vec());
-    }
-
-    // 特殊キーのマッピング
+/// 特殊キーを端末エスケープシーケンスに変換
+///
+/// テキスト入力（文字、Enter、Backspace、Tab）は ReceivedImeText で処理されるため、
+/// ここでは ReceivedImeText 経由で来ない制御キーのみを扱う。
+fn special_key_to_bytes(key: &KeyCode) -> Option<Vec<u8>> {
     match key {
-        KeyCode::Enter | KeyCode::NumpadEnter => Some(b"\r".to_vec()),
-        KeyCode::Backspace => Some(b"\x7f".to_vec()),
-        KeyCode::Tab => Some(b"\t".to_vec()),
         KeyCode::Escape => Some(b"\x1b".to_vec()),
         KeyCode::ArrowUp => Some(b"\x1b[A".to_vec()),
         KeyCode::ArrowDown => Some(b"\x1b[B".to_vec()),
@@ -435,6 +427,24 @@ pub fn run_webview(port: u16) -> anyhow::Result<()> {
                     terminal_view.request_redraw();
                 }
             }
+            // IME 確定テキスト（日本語入力、通常の文字入力を含む）
+            // macOS: insertText() 経由で配信される
+            Event::WindowEvent {
+                event: WindowEvent::ReceivedImeText(text),
+                ..
+            } => {
+                if !text.is_empty() {
+                    use base64::Engine;
+                    // \n → \r に変換（ターミナルの Enter）
+                    let bytes: Vec<u8> = text
+                        .bytes()
+                        .map(|b| if b == b'\n' { b'\r' } else { b })
+                        .collect();
+                    let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                    let _ = input_tx.send(WsBridgeCommand::Input(encoded));
+                }
+            }
+            // キーボード入力（特殊キー + IME非活性時のフォールバック）
             Event::WindowEvent {
                 event: WindowEvent::KeyboardInput { event, .. },
                 ..
@@ -450,9 +460,10 @@ pub fn run_webview(port: u16) -> anyhow::Result<()> {
                         return;
                     }
 
-                    // 端末入力を送信
-                    let text = event.text;
-                    if let Some(bytes) = keycode_to_bytes(&event.physical_key, text) {
+                    // 特殊キーのみ処理（テキスト入力は ReceivedImeText に委譲）
+                    // ReceivedImeText で処理済みのキー（Enter, 通常文字）は
+                    // text=None で到着するのでここでは送信しない
+                    if let Some(bytes) = special_key_to_bytes(&event.physical_key) {
                         use base64::Engine;
                         let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
                         let _ = input_tx.send(WsBridgeCommand::Input(encoded));
