@@ -28,6 +28,7 @@ mod midi;
 mod park;
 mod protocol;
 mod stand;
+mod terminal;
 mod tray;
 mod webview;
 mod world;

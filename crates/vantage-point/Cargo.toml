@@ -83,3 +83,41 @@ portable-pty = "0.9"
 
 # Base64 encoding (for PTY binary I/O over WebSocket)
 base64 = "0.22"
+
+# Terminal emulation (VT parser + grid state)
+alacritty_terminal = "0.25"
+vte = "0.15"
+
+# WebSocket client (sync, for native terminal bridge)
+tungstenite = "0.26"
+
+# macOS native APIs (split window, NSView for terminal pane)
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = [
+    "NSString",
+    "NSGeometry",
+    "NSAttributedString",
+    "NSDictionary",
+    "NSObject",
+] }
+objc2-app-kit = { version = "0.3", features = [
+    "NSResponder",
+    "NSView",
+    "NSColor",
+    "NSWindow",
+    "NSText",
+    "NSTextView",
+    "NSScrollView",
+    "NSClipView",
+    "NSFont",
+    "NSFontDescriptor",
+    "NSAttributedString",
+    "NSGraphics",
+    "NSGraphicsContext",
+    "NSStringDrawing",
+    "objc2-core-foundation",
+    "objc2-core-graphics",
+] }
+objc2-core-foundation = "0.3"
+objc2-core-graphics = { version = "0.3", features = ["CGColor", "CGContext"] }

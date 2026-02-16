@@ -20,6 +20,7 @@ use super::pty::PtyManager;
 use super::routes::{conductor, health, permission, prompt, update, ws};
 use super::session::SessionManager;
 use super::state::AppState;
+use super::tmux::TmuxManager;
 use crate::capability::{StandManagerCapability, UpdateCapability};
 use crate::config::RunningStands;
 use crate::protocol::DebugMode;
@@ -58,6 +59,14 @@ pub async fn run(
     let _event_bridge = capabilities.start_event_bridge(hub.sender());
     tracing::info!("Capability event bridge started");
 
+    // tmux利用可能チェック
+    let use_tmux = TmuxManager::is_available().await;
+    if use_tmux {
+        tracing::info!("tmux が利用可能 → tmux モードで起動");
+    } else {
+        tracing::info!("tmux が見つからない → portable-pty フォールバック");
+    }
+
     let state = Arc::new(AppState {
         hub,
         sessions: Arc::new(RwLock::new(sessions)),
@@ -72,6 +81,8 @@ pub async fn run(
         update: None,    // Update capability is only for conductor mode
         interactive_agent: Arc::new(RwLock::new(None)), // Interactive agent (stream-json mode)
         pty_manager: Arc::new(tokio::sync::Mutex::new(PtyManager::new())),
+        tmux_manager: Arc::new(tokio::sync::Mutex::new(TmuxManager::new())),
+        use_tmux,
     });
 
     let app = Router::new()
@@ -235,6 +246,8 @@ pub async fn run_conductor(port: u16) -> Result<()> {
         update: Some(update_cap.clone()),
         interactive_agent: Arc::new(RwLock::new(None)),
         pty_manager: Arc::new(tokio::sync::Mutex::new(PtyManager::new())),
+        tmux_manager: Arc::new(tokio::sync::Mutex::new(TmuxManager::new())),
+        use_tmux: false, // Conductor モードでは tmux 不要
     });
 
     let app = Router::new()
