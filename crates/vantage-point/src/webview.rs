@@ -292,6 +292,9 @@ fn start_terminal_bridge(
 /// ここでは ReceivedImeText 経由で来ない制御キーのみを扱う。
 fn special_key_to_bytes(key: &KeyCode) -> Option<Vec<u8>> {
     match key {
+        // Backspace/Tab は doCommandBySelector 経由のため ReceivedImeText に来ない
+        KeyCode::Backspace => Some(b"\x7f".to_vec()),
+        KeyCode::Tab => Some(b"\t".to_vec()),
         KeyCode::Escape => Some(b"\x1b".to_vec()),
         KeyCode::ArrowUp => Some(b"\x1b[A".to_vec()),
         KeyCode::ArrowDown => Some(b"\x1b[B".to_vec()),
