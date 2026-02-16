@@ -1,8 +1,8 @@
-//! Native split window: WebView Dashboard (left) + Terminal (right)
+//! Native split window: Terminal (left) + WebView Dashboard (right)
 //!
 //! Arctic/Nordic + Ocean ダークテーマの分割ウィンドウ。
-//! 左ペイン: wry WebView（既存のダッシュボード/ペインシステム）
-//! 右ペイン: TerminalView (alacritty_terminal + CoreText ネイティブレンダラー)
+//! 左ペイン: TerminalView (alacritty_terminal + CoreText ネイティブレンダラー)
+//! 右ペイン: wry WebView（ダッシュボード/ペインシステム）
 //!
 //! ## パイプライン
 //! ```text
@@ -22,17 +22,16 @@ use tao::{
     keyboard::KeyCode,
     window::WindowBuilder,
 };
-// WebView復活時に有効化
-// use wry::{
-//     Rect, WebViewBuilder,
-//     dpi::{LogicalPosition, LogicalSize as WryLogicalSize},
-// };
+use wry::{
+    Rect, WebViewBuilder,
+    dpi::{LogicalPosition as WryLogicalPosition, LogicalSize as WryLogicalSize},
+};
 
 #[cfg(target_os = "macos")]
 use crate::terminal::TerminalState;
 
-/// 左ペイン（端末）の幅比率（1.0 = フルスクリーン、WebViewなし）
-const TERMINAL_RATIO: f64 = 1.0;
+/// 左ペイン（端末）の幅比率
+const TERMINAL_RATIO: f64 = 0.55;
 
 /// tao EventLoop に送るカスタムイベント
 #[derive(Debug)]
@@ -83,10 +82,12 @@ pub fn run_webview_detached(port: u16) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// ウィンドウレイアウト計算
+/// 分割レイアウトの座標を計算
 struct SplitLayout {
-    /// 端末ペインの幅
+    /// 左ペイン（端末）の幅
     left_width: f64,
+    /// 右ペイン（WebView）の幅
+    right_width: f64,
     /// ウィンドウ全体の高さ
     height: f64,
 }
@@ -94,10 +95,23 @@ struct SplitLayout {
 impl SplitLayout {
     fn from_window_size(width: f64, height: f64) -> Self {
         let left_width = (width * TERMINAL_RATIO).floor();
-        Self { left_width, height }
+        let right_width = width - left_width;
+        Self {
+            left_width,
+            right_width,
+            height,
+        }
     }
 
-    /// TerminalView の NSRect
+    /// 右ペイン（WebView）の Rect
+    fn webview_bounds(&self) -> Rect {
+        Rect {
+            position: WryLogicalPosition::new(self.left_width, 0.0).into(),
+            size: WryLogicalSize::new(self.right_width, self.height).into(),
+        }
+    }
+
+    /// 左ペイン（TerminalView）の NSRect
     #[cfg(target_os = "macos")]
     fn terminal_frame(&self) -> objc2_foundation::NSRect {
         use objc2_core_foundation::{CGPoint, CGRect, CGSize};
@@ -349,12 +363,26 @@ pub fn run_webview(port: u16) -> anyhow::Result<()> {
     // Enter重複排除: ReceivedImeText と KeyboardInput の両方で処理しうるため
     let mut enter_handled_this_frame = false;
 
+    // 右ペイン: WebView ダッシュボード
+    let url = format!("http://localhost:{}", port);
+
+    let webview = WebViewBuilder::new()
+        .with_bounds(layout.webview_bounds())
+        .with_url(&url)
+        .with_devtools(true)
+        .build_as_child(&window)?;
+
     tracing::info!(
-        "Terminal-only window: {:.0}x{:.0}px (port={})",
+        "Split window: terminal={:.0}px | webview={:.0}px (port={})",
         layout.left_width,
-        layout.height,
+        layout.right_width,
         port
     );
+
+    #[cfg(debug_assertions)]
+    {
+        webview.open_devtools();
+    }
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
@@ -393,6 +421,10 @@ pub fn run_webview(port: u16) -> anyhow::Result<()> {
             } => {
                 let logical = new_size.to_logical::<f64>(window.scale_factor());
                 let new_layout = SplitLayout::from_window_size(logical.width, logical.height);
+
+                if let Err(e) = webview.set_bounds(new_layout.webview_bounds()) {
+                    tracing::warn!("WebView set_bounds error: {}", e);
+                }
 
                 #[cfg(target_os = "macos")]
                 {
@@ -490,5 +522,6 @@ pub fn run_webview(port: u16) -> anyhow::Result<()> {
 
         #[cfg(target_os = "macos")]
         let _ = &terminal_view;
+        let _ = &webview;
     });
 }
