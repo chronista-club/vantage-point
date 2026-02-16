@@ -4,8 +4,13 @@
 //! - show: Display markdown/html/log content
 //! - clear: Clear a pane
 //! - permission: Handle permission requests for tool execution
+//!
+//! ## 通信レイヤー
+//! - **Unison QUIC**: QUIC 通信（port + 1000）で Stand と接続
+//! - **HTTP**: `permission` / `restart` のみ（ポーリング・プロセス管理用）
 
 use crate::config::RunningStands;
+use crate::stand::unison_server::QUIC_PORT_OFFSET;
 use rmcp::{
     ErrorData as McpError, ServiceExt, handler::server::tool::ToolRouter, model::*,
     schemars::JsonSchema, tool, tool_handler, tool_router, transport::stdio,
@@ -14,8 +19,9 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
+use unison::{ProtocolClient, UnisonClient};
 
-use crate::protocol::{ChatComponent, Content as StandContent, SplitDirection, StandMessage};
+use crate::protocol::{ChatComponent, StandMessage};
 
 /// Parameters for the show tool
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -126,22 +132,120 @@ pub struct PermissionRequestPayload {
     pub timeout_seconds: u32,
 }
 
-/// HTTP client for communicating with the Stand's HTTP server
+/// MCP → Stand 通信クライアント
+///
+/// QUIC 専用ツール（show, clear, split_pane 等）は Unison QUIC で通信。
+/// `permission` / `restart` のみ HTTP を使用（ポーリング・プロセス管理用）。
 #[derive(Clone)]
 pub struct VantageMcp {
+    /// HTTP クライアント（permission / restart 用）
     client: reqwest::Client,
+    /// Stand の HTTP URL（permission / restart 用）
     stand_url: Arc<Mutex<String>>,
+    /// Unison QUIC クライアント（遅延初期化）
+    quic_client: Arc<Mutex<Option<ProtocolClient>>>,
+    /// QUIC サーバーアドレス（[::1]:port）
+    quic_addr: String,
     tool_router: ToolRouter<Self>,
 }
 
 #[tool_router]
 impl VantageMcp {
     pub fn new(stand_port: u16) -> Self {
+        let quic_port = stand_port + QUIC_PORT_OFFSET;
         Self {
             client: reqwest::Client::new(),
             stand_url: Arc::new(Mutex::new(format!("http://localhost:{}", stand_port))),
+            quic_client: Arc::new(Mutex::new(None)),
+            quic_addr: format!("[::1]:{}", quic_port),
             tool_router: Self::tool_router(),
         }
+    }
+
+    /// Unison QUIC 経由で RPC 呼び出し
+    ///
+    /// 接続が確立されていなければ遅延接続を試みる。
+    /// 失敗時は McpError を返す。
+    async fn quic_call(
+        &self,
+        method: &str,
+        payload: serde_json::Value,
+    ) -> Result<serde_json::Value, McpError> {
+        let mut guard = self.quic_client.lock().await;
+
+        // 遅延接続
+        if guard.is_none() {
+            match ProtocolClient::new_default() {
+                Ok(mut client) => {
+                    if let Err(e) = client.connect(&self.quic_addr).await {
+                        return Err(McpError::internal_error(
+                            format!(
+                                "Failed to connect to Stand via QUIC ({}): {}. Is vp running?",
+                                self.quic_addr, e
+                            ),
+                            None,
+                        ));
+                    }
+                    *guard = Some(client);
+                }
+                Err(e) => {
+                    return Err(McpError::internal_error(
+                        format!("Failed to create QUIC client: {}. Is vp running?", e),
+                        None,
+                    ));
+                }
+            }
+        }
+
+        // safe: 上で必ず Some にしている
+        let client = guard.as_mut().unwrap();
+        match client.call(method, payload).await {
+            Ok(resp) => Ok(resp),
+            Err(e) => {
+                // 接続断 → リセットして次回再接続
+                tracing::debug!("QUIC call '{}' failed: {}", method, e);
+                *guard = None;
+                Err(McpError::internal_error(
+                    format!(
+                        "QUIC call '{}' failed: {}. Stand may have restarted.",
+                        method, e
+                    ),
+                    None,
+                ))
+            }
+        }
+    }
+
+    /// Open the Canvas window (native WebView)
+    #[tool(
+        description = "Open the Vantage Point Canvas window. The canvas displays the same content as the browser viewer in a native window."
+    )]
+    async fn open_canvas(&self) -> Result<CallToolResult, McpError> {
+        let resp = self.quic_call("canvas.open", serde_json::json!({})).await?;
+        let status = resp
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("opened");
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Canvas {}",
+            status
+        ))]))
+    }
+
+    /// Close the Canvas window
+    #[tool(description = "Close the Vantage Point Canvas window.")]
+    async fn close_canvas(&self) -> Result<CallToolResult, McpError> {
+        let resp = self
+            .quic_call("canvas.close", serde_json::json!({}))
+            .await?;
+        let status = resp
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("closed");
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Canvas {}",
+            status
+        ))]))
     }
 
     /// Show content in the browser viewer
@@ -158,46 +262,19 @@ impl VantageMcp {
             .unwrap_or_else(|| "markdown".to_string());
         let append = params.append.unwrap_or(false);
 
-        let content_enum = match content_type.as_str() {
-            "html" => StandContent::Html(params.content),
-            "log" => StandContent::Log(params.content),
-            _ => StandContent::Markdown(params.content),
-        };
+        let payload = serde_json::json!({
+            "content": &params.content,
+            "content_type": &content_type,
+            "pane_id": &pane_id,
+            "append": append,
+            "title": &params.title,
+        });
 
-        let message = StandMessage::Show {
-            pane_id: pane_id.clone(),
-            content: content_enum,
-            append,
-            title: params.title,
-        };
-
-        let url = self.stand_url.lock().await;
-        let result = self
-            .client
-            .post(format!("{}/api/show", *url))
-            .json(&message)
-            .send()
-            .await;
-
-        match result {
-            Ok(resp) if resp.status() == reqwest::StatusCode::OK => {
-                Ok(CallToolResult::success(vec![Content::text(format!(
-                    "Content displayed in pane '{}'",
-                    pane_id
-                ))]))
-            }
-            Ok(resp) => {
-                let status = resp.status();
-                Err(McpError::internal_error(
-                    format!("Stand returned error: {}", status),
-                    None,
-                ))
-            }
-            Err(e) => Err(McpError::internal_error(
-                format!("Failed to connect to Stand: {}. Is vp running?", e),
-                None,
-            )),
-        }
+        self.quic_call("show", payload).await?;
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Content displayed in pane '{}'",
+            pane_id
+        ))]))
     }
 
     /// Clear content in a pane
@@ -208,34 +285,12 @@ impl VantageMcp {
     ) -> Result<CallToolResult, McpError> {
         let pane_id = params.pane_id.unwrap_or_else(|| "main".to_string());
 
-        let message = StandMessage::Clear {
-            pane_id: pane_id.clone(),
-        };
-
-        let url = self.stand_url.lock().await;
-        let result = self
-            .client
-            .post(format!("{}/api/show", *url))
-            .json(&message)
-            .send()
-            .await;
-
-        match result {
-            Ok(resp) if resp.status() == reqwest::StatusCode::OK => Ok(CallToolResult::success(
-                vec![Content::text(format!("Pane '{}' cleared", pane_id))],
-            )),
-            Ok(resp) => {
-                let status = resp.status();
-                Err(McpError::internal_error(
-                    format!("Stand returned error: {}", status),
-                    None,
-                ))
-            }
-            Err(e) => Err(McpError::internal_error(
-                format!("Failed to connect to Stand: {}", e),
-                None,
-            )),
-        }
+        self.quic_call("clear", serde_json::json!({"pane_id": &pane_id}))
+            .await?;
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Pane '{}' cleared",
+            pane_id
+        ))]))
     }
 
     /// Toggle side panel visibility
@@ -246,43 +301,25 @@ impl VantageMcp {
         &self,
         rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<TogglePaneParams>,
     ) -> Result<CallToolResult, McpError> {
-        let message = StandMessage::TogglePane {
-            pane_id: params.pane_id.clone(),
-            visible: params.visible,
+        let state_desc = match params.visible {
+            Some(true) => "shown",
+            Some(false) => "hidden",
+            None => "toggled",
         };
 
-        let url = self.stand_url.lock().await;
-        let result = self
-            .client
-            .post(format!("{}/api/toggle-pane", *url))
-            .json(&message)
-            .send()
-            .await;
+        self.quic_call(
+            "toggle_pane",
+            serde_json::json!({
+                "pane_id": &params.pane_id,
+                "visible": params.visible,
+            }),
+        )
+        .await?;
 
-        match result {
-            Ok(resp) if resp.status() == reqwest::StatusCode::OK => {
-                let state_desc = match params.visible {
-                    Some(true) => "shown",
-                    Some(false) => "hidden",
-                    None => "toggled",
-                };
-                Ok(CallToolResult::success(vec![Content::text(format!(
-                    "Pane '{}' {}",
-                    params.pane_id, state_desc
-                ))]))
-            }
-            Ok(resp) => {
-                let status = resp.status();
-                Err(McpError::internal_error(
-                    format!("Stand returned error: {}", status),
-                    None,
-                ))
-            }
-            Err(e) => Err(McpError::internal_error(
-                format!("Failed to connect to Stand: {}", e),
-                None,
-            )),
-        }
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Pane '{}' {}",
+            params.pane_id, state_desc
+        ))]))
     }
 
     /// Split a pane into two
@@ -295,9 +332,9 @@ impl VantageMcp {
     ) -> Result<CallToolResult, McpError> {
         let source_pane_id = params.source_pane_id.unwrap_or_else(|| "main".to_string());
 
-        let direction = match params.direction.to_lowercase().as_str() {
-            "horizontal" | "h" => SplitDirection::Horizontal,
-            "vertical" | "v" => SplitDirection::Vertical,
+        // direction の検証
+        match params.direction.to_lowercase().as_str() {
+            "horizontal" | "h" | "vertical" | "v" => {}
             _ => {
                 return Err(McpError::invalid_params(
                     "direction must be 'horizontal' or 'vertical'",
@@ -306,44 +343,25 @@ impl VantageMcp {
             }
         };
 
-        // UUIDの先頭セグメントでペインIDを生成
+        // UUID の先頭セグメントでペインIDを生成
         let new_pane_id = uuid::Uuid::new_v4().to_string();
         let new_pane_id = new_pane_id.split('-').next().unwrap_or(&new_pane_id);
         let new_pane_id = format!("pane-{}", new_pane_id);
 
-        let message = StandMessage::Split {
-            pane_id: source_pane_id.clone(),
-            direction,
-            new_pane_id: new_pane_id.clone(),
-        };
+        self.quic_call(
+            "split_pane",
+            serde_json::json!({
+                "direction": &params.direction,
+                "source_pane_id": &source_pane_id,
+                "new_pane_id": &new_pane_id,
+            }),
+        )
+        .await?;
 
-        let url = self.stand_url.lock().await;
-        let result = self
-            .client
-            .post(format!("{}/api/split-pane", *url))
-            .json(&message)
-            .send()
-            .await;
-
-        match result {
-            Ok(resp) if resp.status() == reqwest::StatusCode::OK => {
-                Ok(CallToolResult::success(vec![Content::text(format!(
-                    "Pane '{}' split. New pane ID: '{}'",
-                    source_pane_id, new_pane_id
-                ))]))
-            }
-            Ok(resp) => {
-                let status = resp.status();
-                Err(McpError::internal_error(
-                    format!("Stand returned error: {}", status),
-                    None,
-                ))
-            }
-            Err(e) => Err(McpError::internal_error(
-                format!("Failed to connect to Stand: {}", e),
-                None,
-            )),
-        }
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Pane '{}' split. New pane ID: '{}'",
+            source_pane_id, new_pane_id
+        ))]))
     }
 
     /// Close a pane
@@ -352,40 +370,23 @@ impl VantageMcp {
         &self,
         rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<ClosePaneParams>,
     ) -> Result<CallToolResult, McpError> {
-        let message = StandMessage::Close {
-            pane_id: params.pane_id.clone(),
-        };
+        self.quic_call(
+            "close_pane",
+            serde_json::json!({"pane_id": &params.pane_id}),
+        )
+        .await?;
 
-        let url = self.stand_url.lock().await;
-        let result = self
-            .client
-            .post(format!("{}/api/close-pane", *url))
-            .json(&message)
-            .send()
-            .await;
-
-        match result {
-            Ok(resp) if resp.status() == reqwest::StatusCode::OK => Ok(CallToolResult::success(
-                vec![Content::text(format!("Pane '{}' closed", params.pane_id))],
-            )),
-            Ok(resp) => {
-                let status = resp.status();
-                Err(McpError::internal_error(
-                    format!("Stand returned error: {}", status),
-                    None,
-                ))
-            }
-            Err(e) => Err(McpError::internal_error(
-                format!("Failed to connect to Stand: {}", e),
-                None,
-            )),
-        }
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Pane '{}' closed",
+            params.pane_id
+        ))]))
     }
 
     /// Request permission for tool execution from user
     ///
     /// This tool is called by Claude CLI via --permission-prompt-tool flag.
     /// It sends a permission request to the WebUI and waits for user response.
+    /// HTTP ポーリングベースのため QUIC 化は別タスク。
     #[tool(
         description = "Request permission for tool execution from user. Returns JSON with 'behavior' (allow/deny) and optional 'updatedInput' or 'message'."
     )]
@@ -509,6 +510,7 @@ impl VantageMcp {
     ///
     /// This tool restarts the Stand process while preserving session state.
     /// Useful after rebuilding the binary.
+    /// HTTP ベースのプロセス管理のため QUIC は使わない。
     #[tool(
         description = "Restart the Vantage Point Stand. Session state is preserved. Returns when Stand is ready."
     )]
@@ -630,7 +632,8 @@ impl rmcp::ServerHandler for VantageMcp {
         ServerInfo {
             instructions: Some(
                 "Vantage Point Stand - Display rich content (markdown, HTML, images) in a browser viewer. \
-                 Use 'show' to display content, 'clear' to clear panes, 'split_pane' to split a pane \
+                 Use 'open_canvas' to open the native Canvas window, 'close_canvas' to close it, \
+                 'show' to display content, 'clear' to clear panes, 'split_pane' to split a pane \
                  horizontally or vertically, 'close_pane' to close a pane, 'toggle_pane' to toggle panel visibility, \
                  'permission' to request user approval, and 'restart' to restart the Stand.".into()
             ),
