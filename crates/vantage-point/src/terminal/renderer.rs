@@ -33,6 +33,10 @@ struct RenderCell {
     fg: (CGFloat, CGFloat, CGFloat),
     bg: (CGFloat, CGFloat, CGFloat),
     bold: bool,
+    /// ワイドキャラクター（2セル幅の先頭）
+    wide: bool,
+    /// ワイドキャラクターのスペーサー（2セル目、描画スキップ）
+    wide_spacer: bool,
 }
 
 impl Default for RenderCell {
@@ -42,6 +46,8 @@ impl Default for RenderCell {
             fg: (0.847, 0.871, 0.914), // Arctic Foreground #D8DEE9
             bg: (0.043, 0.067, 0.125), // Arctic Background #0B1120
             bold: false,
+            wide: false,
+            wide_spacer: false,
         }
     }
 }
@@ -61,6 +67,8 @@ impl From<&CellSnapshot> for RenderCell {
                 cell.bg.2 as CGFloat / 255.0,
             ),
             bold: cell.bold,
+            wide: cell.wide,
+            wide_spacer: cell.wide_spacer,
         }
     }
 }
@@ -117,11 +125,20 @@ define_class!(
                     }
                     let cell = &cells[idx];
 
+                    // スペーサーセルは全スキップ
+                    // （ワイド文字が2セル分の背景を描画済み）
+                    if cell.wide_spacer {
+                        continue;
+                    }
+
                     // セル座標（isFlipped=true なので左上原点）
                     let x = col as CGFloat * cw;
                     let y = row as CGFloat * ch;
 
-                    let rect = CGRect::new(CGPoint::new(x, y), CGSize::new(cw, ch));
+                    // ワイドキャラクターは2セル幅、それ以外は1セル幅
+                    let cell_span = if cell.wide { 2.0 } else { 1.0 };
+                    let rect =
+                        CGRect::new(CGPoint::new(x, y), CGSize::new(cw * cell_span, ch));
 
                     // 背景矩形
                     CGContext::set_rgb_fill_color(
@@ -165,8 +182,8 @@ define_class!(
                         let s = cell.ch.encode_utf8(&mut buf);
                         let ns_str = NSString::from_str(s);
 
-                        // テキスト描画位置（セル左上 + わずかなオフセット）
-                        let text_point = CGPoint::new(x, y);
+                        // テキスト描画位置（セル内で垂直方向にセンタリング）
+                        let text_point = CGPoint::new(x, y + LINE_PADDING / 2.0);
                         unsafe {
                             ns_str.drawAtPoint_withAttributes(text_point, Some(&attrs));
                         }
@@ -186,11 +203,24 @@ define_class!(
 /// デフォルトのフォントサイズ
 const DEFAULT_FONT_SIZE: CGFloat = 14.0;
 
-/// デフォルトのセル幅（文字幅ベース）
-const DEFAULT_CELL_WIDTH: CGFloat = 8.4;
+/// 行間の余白ピクセル数
+const LINE_PADDING: CGFloat = 4.0;
 
-/// デフォルトのセル高さ（行高さベース）
-const DEFAULT_CELL_HEIGHT: CGFloat = 18.0;
+/// NSFont メトリクスからセルサイズを計算
+///
+/// cell_width: maximumAdvancement の幅（モノスペースフォントの文字幅）
+/// cell_height: ascender + |descender| + leading + LINE_PADDING
+fn measure_cell_size(font: &NSFont) -> (CGFloat, CGFloat) {
+    let adv = font.maximumAdvancement();
+    let cell_width = adv.width;
+
+    let ascent = font.ascender();
+    let descent = font.descender(); // 負の値
+    let leading = font.leading();
+    let cell_height = (ascent - descent + leading + LINE_PADDING).ceil();
+
+    (cell_width, cell_height)
+}
 
 impl TerminalView {
     /// 新しい TerminalView を生成
@@ -203,11 +233,17 @@ impl TerminalView {
             .or_else(|| NSFont::userFixedPitchFontOfSize(font_size));
         let bold_font = NSFont::fontWithName_size(ns_string!("Menlo-Bold"), font_size);
 
+        // フォントメトリクスからセルサイズを計算
+        let (cell_width, cell_height) = font
+            .as_ref()
+            .map(|f| measure_cell_size(f))
+            .unwrap_or((8.0, 18.0));
+
         let this = Self::alloc(mtm).set_ivars(TerminalViewIvars {
             cols: Cell::new(cols),
             rows: Cell::new(rows),
-            cell_width: Cell::new(DEFAULT_CELL_WIDTH),
-            cell_height: Cell::new(DEFAULT_CELL_HEIGHT),
+            cell_width: Cell::new(cell_width),
+            cell_height: Cell::new(cell_height),
             cells: RefCell::new(cells),
             font: RefCell::new(font),
             bold_font: RefCell::new(bold_font),
@@ -254,13 +290,15 @@ impl TerminalView {
             .or_else(|| NSFont::userFixedPitchFontOfSize(size));
         let bold_font = NSFont::fontWithName_size(ns_string!("Menlo-Bold"), size);
 
+        // フォントメトリクスからセルサイズを再計算
+        if let Some(f) = font.as_ref() {
+            let (cw, ch) = measure_cell_size(f);
+            ivars.cell_width.set(cw);
+            ivars.cell_height.set(ch);
+        }
+
         *ivars.font.borrow_mut() = font;
         *ivars.bold_font.borrow_mut() = bold_font;
-
-        // セルサイズも更新（フォントサイズに比例）
-        let ratio = size / DEFAULT_FONT_SIZE;
-        ivars.cell_width.set(DEFAULT_CELL_WIDTH * ratio);
-        ivars.cell_height.set(DEFAULT_CELL_HEIGHT * ratio);
     }
 
     /// セル幅を取得

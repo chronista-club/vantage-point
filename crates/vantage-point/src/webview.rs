@@ -1,8 +1,8 @@
-//! Native split window: Terminal (left) + WebView Dashboard (right)
+//! Native split window: WebView Dashboard (left) + Terminal (right)
 //!
 //! Arctic/Nordic + Ocean ダークテーマの分割ウィンドウ。
-//! 左ペイン: TerminalView (alacritty_terminal + CoreText ネイティブレンダラー)
-//! 右ペイン: wry WebView（既存のダッシュボード/ペインシステム）
+//! 左ペイン: wry WebView（既存のダッシュボード/ペインシステム）
+//! 右ペイン: TerminalView (alacritty_terminal + CoreText ネイティブレンダラー)
 //!
 //! ## パイプライン
 //! ```text
@@ -16,22 +16,23 @@ use std::sync::mpsc;
 
 use muda::{Menu, PredefinedMenuItem, Submenu};
 use tao::{
-    dpi::LogicalSize,
+    dpi::{LogicalPosition, LogicalSize},
     event::{Event, WindowEvent},
     event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy},
     keyboard::KeyCode,
     window::WindowBuilder,
 };
-use wry::{
-    Rect, WebViewBuilder,
-    dpi::{LogicalPosition, LogicalSize as WryLogicalSize},
-};
+// WebView復活時に有効化
+// use wry::{
+//     Rect, WebViewBuilder,
+//     dpi::{LogicalPosition, LogicalSize as WryLogicalSize},
+// };
 
 #[cfg(target_os = "macos")]
 use crate::terminal::TerminalState;
 
-/// 左ペイン（端末）の幅比率
-const TERMINAL_RATIO: f64 = 0.55;
+/// 左ペイン（端末）の幅比率（1.0 = フルスクリーン、WebViewなし）
+const TERMINAL_RATIO: f64 = 1.0;
 
 /// tao EventLoop に送るカスタムイベント
 #[derive(Debug)]
@@ -82,12 +83,10 @@ pub fn run_webview_detached(port: u16) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// 分割レイアウトの座標を計算
+/// ウィンドウレイアウト計算
 struct SplitLayout {
-    /// 左ペインの幅
+    /// 端末ペインの幅
     left_width: f64,
-    /// 右ペインの幅
-    right_width: f64,
     /// ウィンドウ全体の高さ
     height: f64,
 }
@@ -95,23 +94,10 @@ struct SplitLayout {
 impl SplitLayout {
     fn from_window_size(width: f64, height: f64) -> Self {
         let left_width = (width * TERMINAL_RATIO).floor();
-        let right_width = width - left_width;
-        Self {
-            left_width,
-            right_width,
-            height,
-        }
+        Self { left_width, height }
     }
 
-    /// 右ペイン（WebView）の Rect
-    fn webview_bounds(&self) -> Rect {
-        Rect {
-            position: LogicalPosition::new(self.left_width, 0.0).into(),
-            size: WryLogicalSize::new(self.right_width, self.height).into(),
-        }
-    }
-
-    /// 左ペイン（TerminalView）の NSRect
+    /// TerminalView の NSRect
     #[cfg(target_os = "macos")]
     fn terminal_frame(&self) -> objc2_foundation::NSRect {
         use objc2_core_foundation::{CGPoint, CGRect, CGSize};
@@ -226,16 +212,18 @@ fn start_terminal_bridge(
                 // WebSocket からの読み取り（タイムアウト付き）
                 match ws.read() {
                     Ok(tungstenite::Message::Text(text)) => {
+                        // StandMessage は serde(rename_all = "snake_case") なので
+                        // type フィールドは snake_case で判定する
                         if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&text) {
                             match msg.get("type").and_then(|t| t.as_str()) {
-                                Some("TerminalOutput") => {
+                                Some("terminal_output") => {
                                     if let Some(data) = msg.get("data").and_then(|d| d.as_str())
                                         && let Ok(bytes) = engine.decode(data)
                                     {
                                         let _ = proxy.send_event(TerminalEvent::Output(bytes));
                                     }
                                 }
-                                Some("TerminalReady") => {
+                                Some("terminal_ready") => {
                                     let _ = proxy.send_event(TerminalEvent::Ready);
                                 }
                                 _ => {}
@@ -264,13 +252,15 @@ fn start_terminal_bridge(
                 }
 
                 // 入力キューからメッセージを送信
+                // 注意: BrowserMessage は serde(rename_all = "snake_case") なので
+                // type フィールドは snake_case で指定する
                 while let Ok(cmd) = input_rx.try_recv() {
                     let json = match cmd {
                         WsBridgeCommand::Input(data) => {
-                            serde_json::json!({"type": "TerminalInput", "data": data})
+                            serde_json::json!({"type": "terminal_input", "data": data})
                         }
                         WsBridgeCommand::Resize { cols, rows } => {
-                            serde_json::json!({"type": "TerminalResize", "cols": cols, "rows": rows})
+                            serde_json::json!({"type": "terminal_resize", "cols": cols, "rows": rows})
                         }
                     };
                     if ws
@@ -351,26 +341,20 @@ pub fn run_webview(port: u16) -> anyhow::Result<()> {
     // 初期TerminalResizeを送信（tmuxセッション作成トリガー）
     let _ = input_tx.send(WsBridgeCommand::Resize { cols: 80, rows: 24 });
 
-    // 右ペイン: WebView ダッシュボード
-    let url = format!("http://localhost:{}", port);
-
-    let webview = WebViewBuilder::new()
-        .with_bounds(layout.webview_bounds())
-        .with_url(&url)
-        .with_devtools(true)
-        .build_as_child(&window)?;
+    // IME確定Enter抑制フラグ
+    // IME変換確定時、macOSは同一イベントバッチで (1)確定テキスト (2)"\n" を送信する。
+    // テキスト受信時にフラグを立て、同フレーム内の "\n" を抑制。
+    // MainEventsCleared でリセットし、次フレームの通常Enterは正しく送信する。
+    let mut suppress_next_enter = false;
+    // Enter重複排除: ReceivedImeText と KeyboardInput の両方で処理しうるため
+    let mut enter_handled_this_frame = false;
 
     tracing::info!(
-        "Split window: terminal={:.0}px | webview={:.0}px (port={})",
+        "Terminal-only window: {:.0}x{:.0}px (port={})",
         layout.left_width,
-        layout.right_width,
+        layout.height,
         port
     );
-
-    #[cfg(debug_assertions)]
-    {
-        webview.open_devtools();
-    }
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
@@ -384,6 +368,13 @@ pub fn run_webview(port: u16) -> anyhow::Result<()> {
                     let snap = term_state.snapshot();
                     terminal_view.update_cells(&snap.cells);
                     terminal_view.request_redraw();
+
+                    // IME変換ウィンドウをカーソル位置に追従させる
+                    let cw = terminal_view.cell_width();
+                    let ch = terminal_view.cell_height();
+                    let ime_x = snap.cursor.1 as f64 * cw;
+                    let ime_y = (snap.cursor.0 + 1) as f64 * ch; // カーソル行の下端
+                    window.set_ime_position(LogicalPosition::new(ime_x, ime_y));
                 }
             }
             Event::UserEvent(TerminalEvent::Ready) => {
@@ -402,10 +393,6 @@ pub fn run_webview(port: u16) -> anyhow::Result<()> {
             } => {
                 let logical = new_size.to_logical::<f64>(window.scale_factor());
                 let new_layout = SplitLayout::from_window_size(logical.width, logical.height);
-
-                if let Err(e) = webview.set_bounds(new_layout.webview_bounds()) {
-                    tracing::warn!("WebView set_bounds error: {}", e);
-                }
 
                 #[cfg(target_os = "macos")]
                 {
@@ -432,19 +419,39 @@ pub fn run_webview(port: u16) -> anyhow::Result<()> {
             }
             // IME 確定テキスト（日本語入力、通常の文字入力を含む）
             // macOS: insertText() 経由で配信される
+            //
+            // IME確定Enter抑制（フレームベース）:
+            // IME変換確定時、macOSは同一イベントバッチで (1)確定テキスト (2)"\n" を送信する。
+            // (1)で suppress_next_enter=true にし、(2)の"\n"を抑制する。
+            // MainEventsCleared でフラグをリセットするため、次フレームの通常Enterは通過する。
             Event::WindowEvent {
                 event: WindowEvent::ReceivedImeText(text),
                 ..
             } => {
                 if !text.is_empty() {
                     use base64::Engine;
-                    // \n → \r に変換（ターミナルの Enter）
-                    let bytes: Vec<u8> = text
-                        .bytes()
-                        .map(|b| if b == b'\n' { b'\r' } else { b })
-                        .collect();
-                    let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
-                    let _ = input_tx.send(WsBridgeCommand::Input(encoded));
+
+                    let is_newline = text == "\n" || text == "\r";
+
+                    if is_newline {
+                        if suppress_next_enter {
+                            // IME確定直後の "\n" → スキップ
+                            // suppress_next_enter は MainEventsCleared でリセット
+                        } else if !enter_handled_this_frame {
+                            // 通常のEnter → \r として送信
+                            let encoded =
+                                base64::engine::general_purpose::STANDARD.encode(b"\r");
+                            let _ = input_tx.send(WsBridgeCommand::Input(encoded));
+                            enter_handled_this_frame = true;
+                        }
+                    } else {
+                        // テキスト → そのまま送信し、同フレーム内の次の "\n" を抑制
+                        let bytes: Vec<u8> = text.bytes().collect();
+                        let encoded =
+                            base64::engine::general_purpose::STANDARD.encode(&bytes);
+                        let _ = input_tx.send(WsBridgeCommand::Input(encoded));
+                        suppress_next_enter = true;
+                    }
                 }
             }
             // キーボード入力（特殊キー + IME非活性時のフォールバック）
@@ -453,25 +460,30 @@ pub fn run_webview(port: u16) -> anyhow::Result<()> {
                 ..
             } => {
                 if event.state == tao::event::ElementState::Pressed {
-                    // DevTools トグル (F12)
-                    if event.physical_key == KeyCode::F12 {
-                        if webview.is_devtools_open() {
-                            webview.close_devtools();
-                        } else {
-                            webview.open_devtools();
-                        }
-                        return;
+                    // Enter: ReceivedImeText で処理されない場合のフォールバック
+                    // （IME有効時にEnterが KeyboardInput 経由で来るケース）
+                    if event.physical_key == KeyCode::Enter
+                        && !suppress_next_enter
+                        && !enter_handled_this_frame
+                    {
+                        use base64::Engine;
+                        let encoded =
+                            base64::engine::general_purpose::STANDARD.encode(b"\r");
+                        let _ = input_tx.send(WsBridgeCommand::Input(encoded));
+                        enter_handled_this_frame = true;
                     }
-
-                    // 特殊キーのみ処理（テキスト入力は ReceivedImeText に委譲）
-                    // ReceivedImeText で処理済みのキー（Enter, 通常文字）は
-                    // text=None で到着するのでここでは送信しない
-                    if let Some(bytes) = special_key_to_bytes(&event.physical_key) {
+                    // 特殊キー（矢印、Escape等）は ReceivedImeText に来ないため直接処理
+                    else if let Some(bytes) = special_key_to_bytes(&event.physical_key) {
                         use base64::Engine;
                         let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
                         let _ = input_tx.send(WsBridgeCommand::Input(encoded));
                     }
                 }
+            }
+            // フレーム終了 → IMEフラグをリセット
+            Event::MainEventsCleared => {
+                suppress_next_enter = false;
+                enter_handled_this_frame = false;
             }
             _ => {}
         }

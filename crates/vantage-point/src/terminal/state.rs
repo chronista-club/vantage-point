@@ -26,6 +26,10 @@ pub struct CellSnapshot {
     pub italic: bool,
     /// 下線
     pub underline: bool,
+    /// ワイドキャラクター（CJK等、2セル幅の先頭）
+    pub wide: bool,
+    /// ワイドキャラクターのスペーサー（2セル目）
+    pub wide_spacer: bool,
 }
 
 /// グリッド全体のスナップショット
@@ -33,6 +37,8 @@ pub struct GridSnapshot {
     pub cells: Vec<Vec<CellSnapshot>>,
     pub cols: usize,
     pub lines: usize,
+    /// カーソル位置（行, 列）
+    pub cursor: (usize, usize),
 }
 
 /// ターミナル状態（alacritty_terminal ラッパー）
@@ -202,16 +208,24 @@ impl TerminalState {
                     bold: cell.flags.contains(CellFlags::BOLD),
                     italic: cell.flags.contains(CellFlags::ITALIC),
                     underline: cell.flags.contains(CellFlags::UNDERLINE),
+                    wide: cell.flags.contains(CellFlags::WIDE_CHAR),
+                    wide_spacer: cell.flags.contains(CellFlags::WIDE_CHAR_SPACER),
                 });
             }
 
             cells.push(row);
         }
 
+        // カーソル位置
+        let cursor_point = grid.cursor.point;
+        let cursor_row = cursor_point.line.0 as usize;
+        let cursor_col = cursor_point.column.0;
+
         GridSnapshot {
             cells,
             cols: self.cols,
             lines: self.lines,
+            cursor: (cursor_row, cursor_col),
         }
     }
 
