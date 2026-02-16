@@ -122,6 +122,17 @@ impl Config {
         Self::normalize_path(&path)
     }
 
+    /// 指定パスに一致するプロジェクトの 0-based インデックスを返す
+    ///
+    /// CWD や --project-dir で解決されたパスが config 内のどのプロジェクトに
+    /// 対応するかを検索し、ポート割り当てに使用する。
+    pub fn find_project_index(&self, resolved_dir: &str) -> Option<usize> {
+        self.projects.iter().position(|p| {
+            let normalized = Self::normalize_path(std::path::Path::new(&p.path));
+            normalized == resolved_dir
+        })
+    }
+
     /// パスを正規化（相対パス→絶対パス変換）
     pub fn normalize_path(path: &std::path::Path) -> String {
         if path.is_absolute() {

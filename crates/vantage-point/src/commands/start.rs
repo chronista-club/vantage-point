@@ -30,12 +30,17 @@ pub fn execute(opts: StartOptions) -> Result<()> {
         midi,
         config,
     } = opts;
-    // Resolve project directory
+    // Resolve project directory and effective index
     // Priority: --project-dir > project_index > cwd > config default
     // 相対パスは絶対パスに変換される
-    let resolved_project_dir = if let Some(ref dir) = project_dir {
+    //
+    // resolved_index: ポート割り当てに使う 0-based インデックス
+    // CWD がconfig内プロジェクトに一致すれば、そのインデックスを使う
+    let (resolved_project_dir, resolved_index) = if let Some(ref dir) = project_dir {
         // 1. Explicit --project-dir takes precedence
-        Config::normalize_path(std::path::Path::new(dir))
+        let dir_normalized = Config::normalize_path(std::path::Path::new(dir));
+        let idx = config.find_project_index(&dir_normalized);
+        (dir_normalized, idx)
     } else if let Some(idx) = project_index {
         // 2. Project index from config (convert 1-based to 0-based)
         if idx == 0 || idx > config.projects.len() {
@@ -48,10 +53,21 @@ pub fn execute(opts: StartOptions) -> Result<()> {
         }
         let project = &config.projects[idx - 1];
         println!("📁 Project: {} ({})", project.name, project.path);
-        Config::normalize_path(std::path::Path::new(&project.path))
+        (
+            Config::normalize_path(std::path::Path::new(&project.path)),
+            Some(idx - 1),
+        )
     } else {
-        // 3. cwd > config default
-        Config::resolve_project_dir(None, config)
+        // 3. cwd > config default → CWD がconfig内プロジェクトに一致するか検索
+        let dir = Config::resolve_project_dir(None, config);
+        let idx = config.find_project_index(&dir);
+        if let Some(i) = idx {
+            println!(
+                "📁 Project: {} ({})",
+                config.projects[i].name, config.projects[i].path
+            );
+        }
+        (dir, idx)
     };
 
     // Resolve port: CLI explicit > project index based (33000 + index)
@@ -59,8 +75,8 @@ pub fn execute(opts: StartOptions) -> Result<()> {
         // Explicit CLI port
         p
     } else {
-        // Port based on project index: project 1 → 33000, project 2 → 33001, etc.
-        let idx = project_index.map(|i| i.saturating_sub(1)).unwrap_or(0) as u16;
+        // Port based on resolved index: project #1(idx=0) → 33000, #2(idx=1) → 33001, etc.
+        let idx = resolved_index.unwrap_or(0) as u16;
         let p = PORT_RANGE_START + idx;
         if p > PORT_RANGE_END {
             eprintln!(
