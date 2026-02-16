@@ -30,8 +30,8 @@ use wry::{
 #[cfg(target_os = "macos")]
 use crate::terminal::TerminalState;
 
-/// 左ペイン（端末）の幅比率
-const TERMINAL_RATIO: f64 = 0.55;
+/// 右ペイン（ダッシュボード）の固定幅（ピクセル）
+const DASHBOARD_WIDTH: f64 = 480.0;
 
 /// tao EventLoop に送るカスタムイベント
 #[derive(Debug)]
@@ -93,9 +93,19 @@ struct SplitLayout {
 }
 
 impl SplitLayout {
-    fn from_window_size(width: f64, height: f64) -> Self {
-        let left_width = (width * TERMINAL_RATIO).floor();
-        let right_width = width - left_width;
+    /// ターミナルフルスクリーン（WebView非表示時）
+    fn full_terminal(width: f64, height: f64) -> Self {
+        Self {
+            left_width: width,
+            right_width: 0.0,
+            height,
+        }
+    }
+
+    /// 分割レイアウト（右ペイン固定幅）
+    fn split(width: f64, height: f64) -> Self {
+        let right_width = DASHBOARD_WIDTH.min(width * 0.6); // 最大60%まで
+        let left_width = (width - right_width).max(0.0);
         Self {
             left_width,
             right_width,
@@ -332,7 +342,9 @@ pub fn run_webview(port: u16) -> anyhow::Result<()> {
     let size = window.inner_size();
     let scale = window.scale_factor();
     let logical = size.to_logical::<f64>(scale);
-    let layout = SplitLayout::from_window_size(logical.width, logical.height);
+    // WebView初期非表示 → Cmd+\ でトグル
+    let mut webview_visible = false;
+    let layout = SplitLayout::full_terminal(logical.width, logical.height);
 
     // 左ペイン: TerminalView をセットアップ
     #[cfg(target_os = "macos")]
@@ -369,20 +381,18 @@ pub fn run_webview(port: u16) -> anyhow::Result<()> {
     let webview = WebViewBuilder::new()
         .with_bounds(layout.webview_bounds())
         .with_url(&url)
+        .with_focused(false)
+        .with_visible(false)
         .with_devtools(true)
         .build_as_child(&window)?;
 
+    // モディファイアキー追跡（Cmd+\ トグル用）
+    let mut current_modifiers = tao::keyboard::ModifiersState::empty();
+
     tracing::info!(
-        "Split window: terminal={:.0}px | webview={:.0}px (port={})",
-        layout.left_width,
-        layout.right_width,
+        "Window started: terminal fullscreen (Cmd+\\ to toggle dashboard) port={}",
         port
     );
-
-    #[cfg(debug_assertions)]
-    {
-        webview.open_devtools();
-    }
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
@@ -420,10 +430,16 @@ pub fn run_webview(port: u16) -> anyhow::Result<()> {
                 ..
             } => {
                 let logical = new_size.to_logical::<f64>(window.scale_factor());
-                let new_layout = SplitLayout::from_window_size(logical.width, logical.height);
+                let new_layout = if webview_visible {
+                    SplitLayout::split(logical.width, logical.height)
+                } else {
+                    SplitLayout::full_terminal(logical.width, logical.height)
+                };
 
-                if let Err(e) = webview.set_bounds(new_layout.webview_bounds()) {
-                    tracing::warn!("WebView set_bounds error: {}", e);
+                if webview_visible {
+                    if let Err(e) = webview.set_bounds(new_layout.webview_bounds()) {
+                        tracing::warn!("WebView set_bounds error: {}", e);
+                    }
                 }
 
                 #[cfg(target_os = "macos")]
@@ -448,6 +464,13 @@ pub fn run_webview(port: u16) -> anyhow::Result<()> {
 
                     terminal_view.request_redraw();
                 }
+            }
+            // モディファイアキー状態を追跡
+            Event::WindowEvent {
+                event: WindowEvent::ModifiersChanged(modifiers),
+                ..
+            } => {
+                current_modifiers = modifiers;
             }
             // IME 確定テキスト（日本語入力、通常の文字入力を含む）
             // macOS: insertText() 経由で配信される
@@ -492,9 +515,53 @@ pub fn run_webview(port: u16) -> anyhow::Result<()> {
                 ..
             } => {
                 if event.state == tao::event::ElementState::Pressed {
+                    // Cmd+\ : WebViewダッシュボードの表示/非表示トグル
+                    if event.physical_key == KeyCode::Backslash
+                        && current_modifiers.super_key()
+                    {
+                        webview_visible = !webview_visible;
+                        let size = window.inner_size();
+                        let logical = size.to_logical::<f64>(window.scale_factor());
+                        let new_layout = if webview_visible {
+                            SplitLayout::split(logical.width, logical.height)
+                        } else {
+                            SplitLayout::full_terminal(logical.width, logical.height)
+                        };
+
+                        let _ = webview.set_visible(webview_visible);
+                        if webview_visible {
+                            let _ = webview.set_bounds(new_layout.webview_bounds());
+                        }
+
+                        #[cfg(target_os = "macos")]
+                        {
+                            terminal_view.setFrame(new_layout.terminal_frame());
+                            let cell_w = terminal_view.cell_width();
+                            let cell_h = terminal_view.cell_height();
+                            if cell_w > 0.0 && cell_h > 0.0 {
+                                let cols = (new_layout.left_width / cell_w) as u16;
+                                let rows = (new_layout.height / cell_h) as u16;
+                                if cols > 0 && rows > 0 {
+                                    term_state.resize(cols as usize, rows as usize);
+                                    terminal_view
+                                        .resize_grid(cols as usize, rows as usize);
+                                    let _ = input_tx.send(WsBridgeCommand::Resize {
+                                        cols,
+                                        rows,
+                                    });
+                                }
+                            }
+                            terminal_view.request_redraw();
+                        }
+
+                        tracing::info!(
+                            "Dashboard toggled: {}",
+                            if webview_visible { "visible" } else { "hidden" }
+                        );
+                    }
                     // Enter: ReceivedImeText で処理されない場合のフォールバック
                     // （IME有効時にEnterが KeyboardInput 経由で来るケース）
-                    if event.physical_key == KeyCode::Enter
+                    else if event.physical_key == KeyCode::Enter
                         && !suppress_next_enter
                         && !enter_handled_this_frame
                     {
