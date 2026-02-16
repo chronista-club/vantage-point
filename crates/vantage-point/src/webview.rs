@@ -384,13 +384,22 @@ pub fn run_webview(port: u16) -> anyhow::Result<()> {
         .with_focused(false)
         .with_visible(false)
         .with_devtools(true)
+        // WebViewがキーボードフォーカスを奪わないようにする（表示専用）
+        // mousedown の preventDefault でフォーカス取得を防止、スクロールは維持
+        .with_initialization_script(
+            "document.addEventListener('mousedown', function(e) { \
+                if (e.target.tagName !== 'INPUT' && e.target.tagName !== 'TEXTAREA') { \
+                    e.preventDefault(); \
+                } \
+            }, true);"
+        )
         .build_as_child(&window)?;
 
-    // モディファイアキー追跡（Cmd+\ トグル用）
+    // モディファイアキー追跡（Cmd+] トグル用）
     let mut current_modifiers = tao::keyboard::ModifiersState::empty();
 
     tracing::info!(
-        "Window started: terminal fullscreen (Cmd+\\ to toggle dashboard) port={}",
+        "Window started: terminal fullscreen (Cmd+] to toggle dashboard) port={}",
         port
     );
 
@@ -515,8 +524,8 @@ pub fn run_webview(port: u16) -> anyhow::Result<()> {
                 ..
             } => {
                 if event.state == tao::event::ElementState::Pressed {
-                    // Cmd+\ : WebViewダッシュボードの表示/非表示トグル
-                    if event.physical_key == KeyCode::Backslash
+                    // Cmd+] : WebViewダッシュボードの表示/非表示トグル
+                    if event.physical_key == KeyCode::BracketRight
                         && current_modifiers.super_key()
                     {
                         webview_visible = !webview_visible;
