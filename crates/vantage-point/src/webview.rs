@@ -1,16 +1,13 @@
-//! Native split window: Terminal (left) + WebView Dashboard (right)
+//! Native terminal window
 //!
-//! Arctic/Nordic + Ocean ダークテーマの分割ウィンドウ。
-//! 左ペイン: TerminalView (alacritty_terminal + CoreText ネイティブレンダラー)
-//! 右ペイン: wry WebView（ダッシュボード/ペインシステム）
+//! Arctic/Nordic + Ocean ダークテーマのターミナルウィンドウ。
+//! TerminalView (alacritty_terminal + CoreText ネイティブレンダラー) でフルスクリーン描画。
 //!
 //! ## パイプライン
 //! ```text
 //! tmux → Stand (pipe-pane) → WebSocket → TerminalState → TerminalView
 //! keyboard → WebSocket → Stand → tmux (send-keys)
 //! ```
-//!
-//! DevTools: Press Cmd+Option+I (macOS) or F12 to open
 
 use std::sync::mpsc;
 
@@ -22,16 +19,9 @@ use tao::{
     keyboard::KeyCode,
     window::WindowBuilder,
 };
-use wry::{
-    Rect, WebViewBuilder,
-    dpi::{LogicalPosition as WryLogicalPosition, LogicalSize as WryLogicalSize},
-};
 
 #[cfg(target_os = "macos")]
 use crate::terminal::TerminalState;
-
-/// 右ペイン（ダッシュボード）の固定幅（ピクセル）
-const DASHBOARD_WIDTH: f64 = 480.0;
 
 /// tao EventLoop に送るカスタムイベント
 #[derive(Debug)]
@@ -50,7 +40,7 @@ enum WsBridgeCommand {
     Resize { cols: u16, rows: u16 },
 }
 
-/// Create the application menu bar with Edit menu for copy/paste support
+/// メニューバー作成（Edit メニュー: コピー/ペースト対応）
 fn create_menu_bar() -> Menu {
     let menu = Menu::new();
 
@@ -82,73 +72,25 @@ pub fn run_webview_detached(port: u16) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// 分割レイアウトの座標を計算
-struct SplitLayout {
-    /// 左ペイン（端末）の幅
-    left_width: f64,
-    /// 右ペイン（WebView）の幅
-    right_width: f64,
-    /// ウィンドウ全体の高さ
-    height: f64,
-}
-
-impl SplitLayout {
-    /// ターミナルフルスクリーン（WebView非表示時）
-    fn full_terminal(width: f64, height: f64) -> Self {
-        Self {
-            left_width: width,
-            right_width: 0.0,
-            height,
-        }
-    }
-
-    /// 分割レイアウト（右ペイン固定幅）
-    fn split(width: f64, height: f64) -> Self {
-        let right_width = DASHBOARD_WIDTH.min(width * 0.6); // 最大60%まで
-        let left_width = (width - right_width).max(0.0);
-        Self {
-            left_width,
-            right_width,
-            height,
-        }
-    }
-
-    /// 右ペイン（WebView）の Rect
-    fn webview_bounds(&self) -> Rect {
-        Rect {
-            position: WryLogicalPosition::new(self.left_width, 0.0).into(),
-            size: WryLogicalSize::new(self.right_width, self.height).into(),
-        }
-    }
-
-    /// 左ペイン（TerminalView）の NSRect
-    #[cfg(target_os = "macos")]
-    fn terminal_frame(&self) -> objc2_foundation::NSRect {
-        use objc2_core_foundation::{CGPoint, CGRect, CGSize};
-        CGRect::new(
-            CGPoint::new(0.0, 0.0),
-            CGSize::new(self.left_width, self.height),
-        )
-    }
-}
-
 /// TerminalView を作成し、NSWindow の contentView に追加
 #[cfg(target_os = "macos")]
 fn setup_terminal_view(
     window: &tao::window::Window,
-    layout: &SplitLayout,
+    width: f64,
+    height: f64,
 ) -> objc2::rc::Retained<crate::terminal::renderer::TerminalView> {
     use objc2::MainThreadMarker;
     use objc2::rc::Retained;
     use objc2_app_kit::NSColor;
+    use objc2_core_foundation::{CGPoint, CGRect, CGSize};
     use tao::platform::macos::WindowExtMacOS;
 
     use crate::terminal::renderer::TerminalView;
 
     let mtm = MainThreadMarker::new().expect("メインスレッド上で実行する必要があります");
 
-    // 端末グリッドサイズ
-    let terminal_view = TerminalView::new(mtm, layout.terminal_frame(), 80, 24);
+    let frame = CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(width, height));
+    let terminal_view = TerminalView::new(mtm, frame, 80, 24);
 
     // NSWindow の contentView に TerminalView を追加
     unsafe {
@@ -174,8 +116,8 @@ fn setup_terminal_view(
         "TerminalView embedded: {}x{} cells in {:.0}x{:.0}px",
         80,
         24,
-        layout.left_width,
-        layout.height
+        width,
+        height
     );
 
     terminal_view
@@ -236,8 +178,6 @@ fn start_terminal_bridge(
                 // WebSocket からの読み取り（タイムアウト付き）
                 match ws.read() {
                     Ok(tungstenite::Message::Text(text)) => {
-                        // StandMessage は serde(rename_all = "snake_case") なので
-                        // type フィールドは snake_case で判定する
                         if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&text) {
                             match msg.get("type").and_then(|t| t.as_str()) {
                                 Some("terminal_output") => {
@@ -276,8 +216,6 @@ fn start_terminal_bridge(
                 }
 
                 // 入力キューからメッセージを送信
-                // 注意: BrowserMessage は serde(rename_all = "snake_case") なので
-                // type フィールドは snake_case で指定する
                 while let Ok(cmd) = input_rx.try_recv() {
                     let json = match cmd {
                         WsBridgeCommand::Input(data) => {
@@ -306,7 +244,6 @@ fn start_terminal_bridge(
 /// ここでは ReceivedImeText 経由で来ない制御キーのみを扱う。
 fn special_key_to_bytes(key: &KeyCode) -> Option<Vec<u8>> {
     match key {
-        // Backspace/Tab は doCommandBySelector 経由のため ReceivedImeText に来ない
         KeyCode::Backspace => Some(b"\x7f".to_vec()),
         KeyCode::Tab => Some(b"\t".to_vec()),
         KeyCode::Escape => Some(b"\x1b".to_vec()),
@@ -324,7 +261,7 @@ fn special_key_to_bytes(key: &KeyCode) -> Option<Vec<u8>> {
     }
 }
 
-/// Run the split window: Terminal (left) + WebView Dashboard (right)
+/// ターミナルフルスクリーンウィンドウを起動
 pub fn run_webview(port: u16) -> anyhow::Result<()> {
     let event_loop = EventLoopBuilder::<TerminalEvent>::with_user_event().build();
 
@@ -333,22 +270,19 @@ pub fn run_webview(port: u16) -> anyhow::Result<()> {
         .with_inner_size(LogicalSize::new(1400.0, 900.0))
         .build(&event_loop)?;
 
-    // Initialize menu bar for macOS
+    // メニューバー初期化
     let menu = create_menu_bar();
     #[cfg(target_os = "macos")]
     menu.init_for_nsapp();
 
-    // 初期レイアウト計算
+    // 初期レイアウト
     let size = window.inner_size();
     let scale = window.scale_factor();
     let logical = size.to_logical::<f64>(scale);
-    // WebView初期非表示 → Cmd+\ でトグル
-    let mut webview_visible = false;
-    let layout = SplitLayout::full_terminal(logical.width, logical.height);
 
-    // 左ペイン: TerminalView をセットアップ
+    // TerminalView をセットアップ
     #[cfg(target_os = "macos")]
-    let terminal_view = setup_terminal_view(&window, &layout);
+    let terminal_view = setup_terminal_view(&window, logical.width, logical.height);
 
     #[cfg(not(target_os = "macos"))]
     setup_window_background(&window);
@@ -368,40 +302,10 @@ pub fn run_webview(port: u16) -> anyhow::Result<()> {
     let _ = input_tx.send(WsBridgeCommand::Resize { cols: 80, rows: 24 });
 
     // IME確定Enter抑制フラグ
-    // IME変換確定時、macOSは同一イベントバッチで (1)確定テキスト (2)"\n" を送信する。
-    // テキスト受信時にフラグを立て、同フレーム内の "\n" を抑制。
-    // MainEventsCleared でリセットし、次フレームの通常Enterは正しく送信する。
     let mut suppress_next_enter = false;
-    // Enter重複排除: ReceivedImeText と KeyboardInput の両方で処理しうるため
     let mut enter_handled_this_frame = false;
 
-    // 右ペイン: WebView ダッシュボード
-    let url = format!("http://localhost:{}", port);
-
-    let webview = WebViewBuilder::new()
-        .with_bounds(layout.webview_bounds())
-        .with_url(&url)
-        .with_focused(false)
-        .with_visible(false)
-        .with_devtools(true)
-        // WebViewがキーボードフォーカスを奪わないようにする（表示専用）
-        // mousedown の preventDefault でフォーカス取得を防止、スクロールは維持
-        .with_initialization_script(
-            "document.addEventListener('mousedown', function(e) { \
-                if (e.target.tagName !== 'INPUT' && e.target.tagName !== 'TEXTAREA') { \
-                    e.preventDefault(); \
-                } \
-            }, true);"
-        )
-        .build_as_child(&window)?;
-
-    // モディファイアキー追跡（Cmd+] トグル用）
-    let mut current_modifiers = tao::keyboard::ModifiersState::empty();
-
-    tracing::info!(
-        "Window started: terminal fullscreen (Cmd+] to toggle dashboard) port={}",
-        port
-    );
+    tracing::info!("Terminal fullscreen window started (port={})", port);
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
@@ -420,7 +324,7 @@ pub fn run_webview(port: u16) -> anyhow::Result<()> {
                     let cw = terminal_view.cell_width();
                     let ch = terminal_view.cell_height();
                     let ime_x = snap.cursor.1 as f64 * cw;
-                    let ime_y = (snap.cursor.0 + 1) as f64 * ch; // カーソル行の下端
+                    let ime_y = (snap.cursor.0 + 1) as f64 * ch;
                     window.set_ime_position(LogicalPosition::new(ime_x, ime_y));
                 }
             }
@@ -439,28 +343,21 @@ pub fn run_webview(port: u16) -> anyhow::Result<()> {
                 ..
             } => {
                 let logical = new_size.to_logical::<f64>(window.scale_factor());
-                let new_layout = if webview_visible {
-                    SplitLayout::split(logical.width, logical.height)
-                } else {
-                    SplitLayout::full_terminal(logical.width, logical.height)
-                };
-
-                if webview_visible {
-                    if let Err(e) = webview.set_bounds(new_layout.webview_bounds()) {
-                        tracing::warn!("WebView set_bounds error: {}", e);
-                    }
-                }
 
                 #[cfg(target_os = "macos")]
                 {
-                    terminal_view.setFrame(new_layout.terminal_frame());
+                    use objc2_core_foundation::{CGPoint, CGRect, CGSize};
+                    let frame = CGRect::new(
+                        CGPoint::new(0.0, 0.0),
+                        CGSize::new(logical.width, logical.height),
+                    );
+                    terminal_view.setFrame(frame);
 
-                    // 左ペインのサイズからグリッドサイズを再計算
                     let cell_w = terminal_view.cell_width();
                     let cell_h = terminal_view.cell_height();
                     if cell_w > 0.0 && cell_h > 0.0 {
-                        let new_cols = (new_layout.left_width / cell_w) as u16;
-                        let new_rows = (new_layout.height / cell_h) as u16;
+                        let new_cols = (logical.width / cell_w) as u16;
+                        let new_rows = (logical.height / cell_h) as u16;
                         if new_cols > 0 && new_rows > 0 {
                             term_state.resize(new_cols as usize, new_rows as usize);
                             terminal_view.resize_grid(new_cols as usize, new_rows as usize);
@@ -474,20 +371,7 @@ pub fn run_webview(port: u16) -> anyhow::Result<()> {
                     terminal_view.request_redraw();
                 }
             }
-            // モディファイアキー状態を追跡
-            Event::WindowEvent {
-                event: WindowEvent::ModifiersChanged(modifiers),
-                ..
-            } => {
-                current_modifiers = modifiers;
-            }
             // IME 確定テキスト（日本語入力、通常の文字入力を含む）
-            // macOS: insertText() 経由で配信される
-            //
-            // IME確定Enter抑制（フレームベース）:
-            // IME変換確定時、macOSは同一イベントバッチで (1)確定テキスト (2)"\n" を送信する。
-            // (1)で suppress_next_enter=true にし、(2)の"\n"を抑制する。
-            // MainEventsCleared でフラグをリセットするため、次フレームの通常Enterは通過する。
             Event::WindowEvent {
                 event: WindowEvent::ReceivedImeText(text),
                 ..
@@ -500,16 +384,13 @@ pub fn run_webview(port: u16) -> anyhow::Result<()> {
                     if is_newline {
                         if suppress_next_enter {
                             // IME確定直後の "\n" → スキップ
-                            // suppress_next_enter は MainEventsCleared でリセット
                         } else if !enter_handled_this_frame {
-                            // 通常のEnter → \r として送信
                             let encoded =
                                 base64::engine::general_purpose::STANDARD.encode(b"\r");
                             let _ = input_tx.send(WsBridgeCommand::Input(encoded));
                             enter_handled_this_frame = true;
                         }
                     } else {
-                        // テキスト → そのまま送信し、同フレーム内の次の "\n" を抑制
                         let bytes: Vec<u8> = text.bytes().collect();
                         let encoded =
                             base64::engine::general_purpose::STANDARD.encode(&bytes);
@@ -524,53 +405,7 @@ pub fn run_webview(port: u16) -> anyhow::Result<()> {
                 ..
             } => {
                 if event.state == tao::event::ElementState::Pressed {
-                    // Cmd+] : WebViewダッシュボードの表示/非表示トグル
-                    if event.physical_key == KeyCode::BracketRight
-                        && current_modifiers.super_key()
-                    {
-                        webview_visible = !webview_visible;
-                        let size = window.inner_size();
-                        let logical = size.to_logical::<f64>(window.scale_factor());
-                        let new_layout = if webview_visible {
-                            SplitLayout::split(logical.width, logical.height)
-                        } else {
-                            SplitLayout::full_terminal(logical.width, logical.height)
-                        };
-
-                        let _ = webview.set_visible(webview_visible);
-                        if webview_visible {
-                            let _ = webview.set_bounds(new_layout.webview_bounds());
-                        }
-
-                        #[cfg(target_os = "macos")]
-                        {
-                            terminal_view.setFrame(new_layout.terminal_frame());
-                            let cell_w = terminal_view.cell_width();
-                            let cell_h = terminal_view.cell_height();
-                            if cell_w > 0.0 && cell_h > 0.0 {
-                                let cols = (new_layout.left_width / cell_w) as u16;
-                                let rows = (new_layout.height / cell_h) as u16;
-                                if cols > 0 && rows > 0 {
-                                    term_state.resize(cols as usize, rows as usize);
-                                    terminal_view
-                                        .resize_grid(cols as usize, rows as usize);
-                                    let _ = input_tx.send(WsBridgeCommand::Resize {
-                                        cols,
-                                        rows,
-                                    });
-                                }
-                            }
-                            terminal_view.request_redraw();
-                        }
-
-                        tracing::info!(
-                            "Dashboard toggled: {}",
-                            if webview_visible { "visible" } else { "hidden" }
-                        );
-                    }
-                    // Enter: ReceivedImeText で処理されない場合のフォールバック
-                    // （IME有効時にEnterが KeyboardInput 経由で来るケース）
-                    else if event.physical_key == KeyCode::Enter
+                    if event.physical_key == KeyCode::Enter
                         && !suppress_next_enter
                         && !enter_handled_this_frame
                     {
@@ -579,9 +414,7 @@ pub fn run_webview(port: u16) -> anyhow::Result<()> {
                             base64::engine::general_purpose::STANDARD.encode(b"\r");
                         let _ = input_tx.send(WsBridgeCommand::Input(encoded));
                         enter_handled_this_frame = true;
-                    }
-                    // 特殊キー（矢印、Escape等）は ReceivedImeText に来ないため直接処理
-                    else if let Some(bytes) = special_key_to_bytes(&event.physical_key) {
+                    } else if let Some(bytes) = special_key_to_bytes(&event.physical_key) {
                         use base64::Engine;
                         let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
                         let _ = input_tx.send(WsBridgeCommand::Input(encoded));
@@ -598,6 +431,6 @@ pub fn run_webview(port: u16) -> anyhow::Result<()> {
 
         #[cfg(target_os = "macos")]
         let _ = &terminal_view;
-        let _ = &webview;
+        let _ = &menu;
     });
 }
