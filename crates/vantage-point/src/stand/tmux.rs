@@ -238,7 +238,12 @@ impl TmuxManager {
 
         // pipe-pane: tmux の出力を named pipe に流す
         // -O: 出力のみ（入力は流さない）
-        let pipe_cmd = format!("cat > {}", pipe_path_str);
+        // 注意: `cat` はFIFO出力時にフルバッファリングを使うため、
+        // perlの $|=1 (autoflush) + sysread/print で即座にフラッシュする
+        let pipe_cmd = format!(
+            "perl -e '$|=1; while(sysread(STDIN,$buf,4096)){{print $buf}}' > {}",
+            pipe_path_str
+        );
         let status = tmux_cmd(&["pipe-pane", "-O", "-t", &self.session_name, &pipe_cmd])
             .await
             .context("tmux pipe-pane の実行に失敗")?;
