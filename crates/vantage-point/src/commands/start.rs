@@ -163,7 +163,7 @@ pub fn execute(opts: StartOptions) -> Result<()> {
         std::thread::sleep(std::time::Duration::from_millis(300));
 
         // Run WebView on main thread (required by macOS)
-        let webview_result = crate::webview::run_webview(resolved_port);
+        let webview_result = crate::terminal_window::run_terminal(resolved_port);
 
         match webview_result {
             Ok(()) => {

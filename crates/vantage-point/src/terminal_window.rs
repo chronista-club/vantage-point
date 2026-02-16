@@ -41,7 +41,7 @@ enum WsBridgeCommand {
 }
 
 /// メニューバー作成（Edit メニュー: コピー/ペースト対応）
-fn create_menu_bar() -> Menu {
+pub(crate) fn create_menu_bar() -> Menu {
     let menu = Menu::new();
 
     let edit_menu = Submenu::with_items(
@@ -62,14 +62,6 @@ fn create_menu_bar() -> Menu {
 
     menu.append(&edit_menu).expect("Failed to append Edit menu");
     menu
-}
-
-/// Launch WebView in a detached process
-pub fn run_webview_detached(port: u16) -> anyhow::Result<()> {
-    std::process::Command::new("vp")
-        .args(["webview", "-p", &port.to_string()])
-        .spawn()?;
-    Ok(())
 }
 
 /// TerminalView を作成し、NSWindow の contentView に追加
@@ -262,7 +254,7 @@ fn special_key_to_bytes(key: &KeyCode) -> Option<Vec<u8>> {
 }
 
 /// ターミナルフルスクリーンウィンドウを起動
-pub fn run_webview(port: u16) -> anyhow::Result<()> {
+pub fn run_terminal(port: u16) -> anyhow::Result<()> {
     let event_loop = EventLoopBuilder::<TerminalEvent>::with_user_event().build();
 
     let window = WindowBuilder::new()

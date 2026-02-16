@@ -97,7 +97,7 @@ pub fn execute(port: u16, browser: bool, headless: bool) -> Result<()> {
 
         std::thread::sleep(std::time::Duration::from_millis(300));
 
-        let webview_result = crate::webview::run_webview(port);
+        let webview_result = crate::terminal_window::run_terminal(port);
 
         match webview_result {
             Ok(()) => tracing::info!("WebView closed"),

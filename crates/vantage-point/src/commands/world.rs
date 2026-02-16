@@ -95,7 +95,7 @@ pub fn execute(cmd: WorldCommands) -> Result<()> {
                     Ok(response) if response.status().is_success() => {
                         // WebView を起動
                         drop(client); // クライアントを解放
-                        crate::webview::run_webview(crate::world::WORLD_PORT)?;
+                        crate::terminal_window::run_terminal(crate::world::WORLD_PORT)?;
                     }
                     Ok(_) => {
                         println!("✗ The World がエラー応答");

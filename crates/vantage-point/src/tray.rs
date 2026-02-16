@@ -174,7 +174,7 @@ pub fn run_tray() -> anyhow::Result<()> {
             } else if let Some(port_str) = id.strip_prefix(OPEN_WEBUI_PREFIX) {
                 if let Ok(port) = port_str.parse::<u16>() {
                     // Open WebView window for existing Stand instance
-                    if let Err(e) = crate::webview::run_webview_detached(port) {
+                    if let Err(e) = crate::canvas::run_canvas_detached(port) {
                         tracing::error!("Failed to open WebView: {}", e);
                         // Fallback to browser
                         let url = format!("http://localhost:{}", port);

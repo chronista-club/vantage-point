@@ -30,7 +30,8 @@ mod protocol;
 mod stand;
 mod terminal;
 mod tray;
-mod webview;
+mod canvas;
+mod terminal_window;
 mod world;
 
 use cli::{DebugModeArg, parse_debug_env};
@@ -448,7 +449,7 @@ fn main() -> Result<()> {
 
             tray::run_tray()
         }
-        Commands::Webview { port } => webview::run_webview(port),
+        Commands::Webview { port } => canvas::run_canvas(port),
         Commands::MidiPorts => {
             midi::print_ports();
             Ok(())
