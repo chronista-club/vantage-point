@@ -126,9 +126,14 @@ impl TmuxManager {
         self.start_pipe_pane().await?;
 
         // named pipe リーダータスクを起動
-        self.start_reader_task(tx);
+        self.start_reader_task(tx.clone());
 
         self.active = true;
+
+        // 現在のスクリーン内容を即座に送信
+        // pipe-pane は起動後の新規出力のみキャプチャするため、
+        // 既に表示されている内容（プロンプト等）を capture-pane で取得する
+        self.send_initial_screen(&tx).await;
 
         Ok(())
     }
@@ -231,6 +236,40 @@ impl TmuxManager {
     }
 
     // --- Private ---
+
+    /// 現在のスクリーン内容を capture-pane で取得しブロードキャスト
+    ///
+    /// pipe-pane は起動後の新規出力のみキャプチャするため、
+    /// 既存のプロンプトやコマンド出力を初期描画するために使用する。
+    /// `-e` フラグでANSIエスケープシーケンス（色情報）も含める。
+    async fn send_initial_screen(&self, tx: &broadcast::Sender<StandMessage>) {
+        use base64::Engine;
+        let engine = base64::engine::general_purpose::STANDARD;
+
+        let output = tokio::process::Command::new("tmux")
+            .args(["capture-pane", "-p", "-e", "-t", &self.session_name])
+            .output()
+            .await;
+
+        match output {
+            Ok(out) if out.status.success() && !out.stdout.is_empty() => {
+                let encoded = engine.encode(&out.stdout);
+                let _ = tx.send(StandMessage::TerminalOutput { data: encoded });
+                tracing::info!(
+                    "初期スクリーン送信: {} bytes (session: {})",
+                    out.stdout.len(),
+                    self.session_name
+                );
+            }
+            Ok(out) if !out.status.success() => {
+                tracing::warn!("capture-pane 失敗 (session: {})", self.session_name);
+            }
+            Err(e) => {
+                tracing::warn!("capture-pane 実行エラー: {}", e);
+            }
+            _ => {}
+        }
+    }
 
     /// pipe-pane を開始
     async fn start_pipe_pane(&self) -> Result<()> {
