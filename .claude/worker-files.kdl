@@ -1,0 +1,10 @@
+// Worker環境に配置するローカルファイル定義
+// symlink: 元ファイルと共有（secrets等の変更が即反映）
+// copy: 独立コピー（worker側で変更可能）
+
+symlink ".env"
+symlink ".mcp.json"
+symlink ".claude/settings.local.json"
+
+symlink-pattern "**/*.local.*"
+symlink-pattern "**/*.local"
