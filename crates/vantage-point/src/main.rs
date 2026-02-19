@@ -1,9 +1,11 @@
 //! Vantage Point Agent - AI協働開発プラットフォーム
 //!
 //! Usage:
-//!   vp start    # デーモンを起動（HTTP + WebSocket）
+//!   vp start    # Standを起動（HTTP + WebSocket）
+//!   vp ps       # 稼働中インスタンス一覧
 //!   vp mcp      # MCPサーバーとして起動（stdio）
-//!   vp status   # デーモンの稼働状態を確認
+//!   vp daemon   # デーモンプロセス管理
+//!   vp midi     # MIDIハードウェア操作
 //!
 //! Environment variables:
 //!   VANTAGE_DEBUG=none|simple|detail  # デバッグ表示モード
@@ -25,18 +27,19 @@ mod commands;
 mod config;
 mod mcp;
 mod midi;
-mod park;
 mod protocol;
 mod stand;
 mod terminal;
 mod tray;
 mod canvas;
 mod terminal_window;
-mod world;
 
 use cli::{DebugModeArg, parse_debug_env};
 use config::Config;
 use protocol::DebugMode;
+
+use commands::daemon::DaemonCommands;
+use commands::midi::MidiCommands;
 
 #[derive(Parser)]
 #[command(name = "vp")]
@@ -79,16 +82,6 @@ enum Commands {
         #[arg(long, short = 'm')]
         midi: Option<String>,
     },
-    /// 設定と登録済みプロジェクトを表示
-    Config,
-    /// MCPサーバーとして起動（stdio JSON-RPC）
-    Mcp,
-    /// Standの稼働状態を確認
-    Status {
-        /// 確認するポート番号
-        #[arg(short, long, default_value = "33000")]
-        port: u16,
-    },
     /// Standを停止
     Stop {
         /// 停止するStandのポート番号
@@ -118,224 +111,41 @@ enum Commands {
         #[arg(default_value = "1")]
         index: usize,
     },
-    /// メニューバーアイコンとして起動（システムトレイ）
-    Tray {
-        /// MIDI入力を有効化（ポート番号または名前パターン）
-        #[arg(long, short = 'm')]
-        midi: Option<String>,
-    },
-    /// WebViewウィンドウのみを開く（Standは別途起動済み）
-    Webview {
-        /// 接続先ポート番号
-        #[arg(short, long, default_value = "33000")]
-        port: u16,
-    },
-    /// 利用可能なMIDI入力ポート一覧
-    MidiPorts,
-    /// MIDI入力の監視を開始
-    Midi {
-        /// 接続するMIDIポート番号
-        #[arg(short, long)]
-        port: Option<usize>,
-        /// アクション送信先のデーモンポート
-        #[arg(short = 'P', long, default_value = "33000")]
-        stand_port: u16,
-    },
-    /// LPD8コントローラー設定
-    #[command(subcommand)]
-    Lpd8(Lpd8Commands),
-    /// Stand Conductorを起動（複数Standを管理）
-    Conductor {
-        /// 待ち受けポート番号
-        #[arg(short, long, default_value = "32900")]
-        port: u16,
-    },
-    /// VantagePoint.app を起動（Conductor Standも自動起動）
-    App {
-        /// Conductorポート番号
-        #[arg(short, long, default_value = "32900")]
-        port: u16,
-        /// Conductor起動をスキップ（既に起動している場合）
-        #[arg(long)]
-        no_conductor: bool,
-    },
-    /// The World 管理（常駐コアプロセス）
-    #[command(subcommand)]
-    World(WorldCommands),
-    /// Paisley Park 管理（プロジェクト単位 Agent）
-    #[command(subcommand)]
-    Park(ParkCommands),
-    /// Gold Experience（創造・回復）
-    #[command(subcommand)]
-    Ge(GeCommands),
+    /// 設定と登録済みプロジェクトを表示
+    Config,
+    /// MCPサーバーとして起動（stdio JSON-RPC）
+    Mcp,
     /// self-update: GitHub Releasesから最新バイナリに更新
     Update {
         /// チェックのみ（適用しない）
         #[arg(long)]
         check: bool,
     },
-}
 
-/// The World サブコマンド（JoJo Part 3 DIO のスタンド）
-#[derive(Subcommand)]
-pub(crate) enum WorldCommands {
-    /// The World を起動「時よ止まれ」
-    #[command(alias = "start")]
-    Up {
-        /// デバッグモード
-        #[arg(long, short)]
-        debug: bool,
-        /// 静的ファイルディレクトリ（ViewPoint 用）
-        #[arg(long, short = 's')]
-        static_dir: Option<std::path::PathBuf>,
-        /// MIDI 入力を有効化（ポートパターンで検索）
+    // --- App ---
+    /// VantagePoint.app を起動（Daemon も自動起動）
+    App {
+        /// Daemonポート番号
+        #[arg(short, long, default_value = "32900")]
+        port: u16,
+        /// Daemon起動をスキップ（既に起動している場合）
+        #[arg(long)]
+        no_daemon: bool,
+    },
+    /// メニューバーアイコンとして起動（システムトレイ）
+    Tray {
+        /// MIDI入力を有効化（ポート番号または名前パターン）
         #[arg(long, short = 'm')]
         midi: Option<String>,
-        /// Requiem モード（GER: 自動防御強化）「真実にはたどり着けない」
-        #[arg(long, short = 'r')]
-        requiem: bool,
     },
-    /// The World を停止「そして時は動き出す」
-    #[command(alias = "stop")]
-    Down,
-    /// The World のステータス確認
-    Status,
-    /// ViewPoint を WebView で開く
-    Open,
-    /// MCP Server として起動（Claude CLI 連携）
-    Mcp,
-    /// スナップショット作成「時を止める」
-    Snapshot {
-        /// スナップショット名
-        name: String,
-        /// 説明（オプション）
-        #[arg(long, short)]
-        description: Option<String>,
-    },
-    /// スナップショットから復元「ゼロに戻す」
-    Restore {
-        /// スナップショット名
-        name: String,
-    },
-    /// スナップショット一覧
-    Snapshots,
-    /// Guardian（自動防御）管理
+
+    // --- Groups ---
+    /// デーモンプロセス管理（Stand管理 + ヘルスチェック）
     #[command(subcommand)]
-    Guardian(GuardianCommands),
-}
-
-/// Paisley Park サブコマンド（JoJo Part 8 広瀬康穂のスタンド）
-#[derive(Subcommand)]
-pub(crate) enum ParkCommands {
-    /// Paisley Park を起動「情報を収集します」
-    #[command(alias = "start")]
-    Up {
-        /// プロジェクトディレクトリ
-        #[arg(short = 'C', long)]
-        project_dir: Option<String>,
-        /// 使用するポート番号
-        #[arg(short, long)]
-        port: Option<u16>,
-    },
-    /// Paisley Park を停止
-    #[command(alias = "stop")]
-    Down {
-        /// プロジェクトID
-        project_id: Option<String>,
-    },
-    /// 登録済み Paisley Park 一覧
-    List,
-}
-
-/// Guardian サブコマンド（GER の自動防御機能）
-#[derive(Subcommand)]
-pub(crate) enum GuardianCommands {
-    /// Guardian のステータス確認
-    Status,
-    /// Guardian を有効化
-    Enable,
-    /// Guardian を無効化
-    Disable,
-    /// 保護ルール一覧
-    Rules,
-    /// 保護ルールを追加
-    AddRule {
-        /// ルール名
-        name: String,
-        /// ルールパターン（glob形式）
-        pattern: String,
-    },
-}
-
-/// Gold Experience サブコマンド（JoJo Part 5 ジョルノのスタンド）
-#[derive(Subcommand)]
-pub(crate) enum GeCommands {
-    /// プロジェクト/コード生成「生命を与える」
-    Scaffold {
-        /// テンプレート名
-        template: String,
-        /// 出力先ディレクトリ
-        #[arg(short, long, default_value = ".")]
-        output: std::path::PathBuf,
-        /// プロジェクト/モジュール名
-        #[arg(short, long)]
-        name: Option<String>,
-        /// 説明
-        #[arg(short, long)]
-        description: Option<String>,
-    },
-    /// コード修復「回復」
-    Heal {
-        /// 修復対象ディレクトリ
-        #[arg(short = 'C', long, default_value = ".")]
-        dir: std::path::PathBuf,
-        /// 修復アクション (format, lint-fix, all)
-        #[arg(short, long, default_value = "all")]
-        action: String,
-    },
-    /// テンプレート一覧
-    Templates,
-    /// プロジェクト検出
-    Detect {
-        /// 検出対象ディレクトリ
-        #[arg(default_value = ".")]
-        dir: std::path::PathBuf,
-    },
-    /// 成長統計
-    Stats,
-}
-
-/// LPD8サブコマンド
-#[derive(Subcommand)]
-pub(crate) enum Lpd8Commands {
-    /// VP用設定をLPD8 Program 1に書き込む
-    Write {
-        /// MIDIポート名のパターン（部分一致）
-        #[arg(long, default_value = "LPD8")]
-        port: String,
-        /// 書き込み先プログラム番号（1-4）
-        #[arg(short, long, default_value = "1")]
-        program: u8,
-    },
-    /// LPD8から現在の設定を読み取る
-    Read {
-        /// MIDIポート名のパターン
-        #[arg(long, default_value = "LPD8")]
-        port: String,
-        /// 読み取り元プログラム番号（1-4）
-        #[arg(short, long, default_value = "1")]
-        program: u8,
-    },
-    /// アクティブプログラムを切り替える
-    Switch {
-        /// プログラム番号（1-4）
-        program: u8,
-        /// MIDIポート名のパターン
-        #[arg(long, default_value = "LPD8")]
-        port: String,
-    },
-    /// 利用可能なMIDI出力ポート一覧
-    Ports,
+    Daemon(DaemonCommands),
+    /// MIDIハードウェア操作
+    #[command(subcommand)]
+    Midi(MidiCommands),
 }
 
 fn main() -> Result<()> {
@@ -357,7 +167,6 @@ fn main() -> Result<()> {
     });
 
     // Initialize tracing
-    // Startコマンドの場合はdebugフラグを取得、その他はデフォルト
     let debug_mode_for_tracing = match &command {
         Commands::Start { debug, .. } => debug
             .as_ref()
@@ -370,6 +179,7 @@ fn main() -> Result<()> {
     cli::init_tracing(debug_mode_for_tracing);
 
     match command {
+        // Core
         Commands::Start {
             project_index,
             port,
@@ -388,15 +198,6 @@ fn main() -> Result<()> {
             midi,
             config: &config,
         }),
-        Commands::Config => commands::config::execute(&config),
-        Commands::Mcp => {
-            let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(mcp::run_mcp_server(33000))
-        }
-        Commands::Status { port } => {
-            let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(cli::check_status(port))
-        }
         Commands::Stop { port } => {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(cli::stop_stand(port))
@@ -414,8 +215,17 @@ fn main() -> Result<()> {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(cli::open_instance(index))
         }
+        Commands::Config => commands::config::execute(&config),
+        Commands::Mcp => {
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(mcp::run_mcp_server(33000))
+        }
+        Commands::Update { check } => commands::update::execute(check),
+
+        // App
+        Commands::App { port, no_daemon } => commands::app::execute(port, no_daemon),
         Commands::Tray { midi } => {
-            // Start MIDI in background thread if enabled
+            // MIDI をバックグラウンドスレッドで起動
             if let Some(ref midi_arg) = midi {
                 let mut config = midi::MidiConfig::default();
                 config
@@ -449,36 +259,9 @@ fn main() -> Result<()> {
 
             tray::run_tray()
         }
-        Commands::Webview { port } => canvas::run_canvas(port),
-        Commands::MidiPorts => {
-            midi::print_ports();
-            Ok(())
-        }
-        Commands::Midi { port, stand_port } => {
-            let mut config = midi::MidiConfig::default();
-            config
-                .note_actions
-                .insert(36, midi::MidiAction::OpenWebUI { port: None });
-            config
-                .note_actions
-                .insert(37, midi::MidiAction::CancelChat { port: None });
-            config
-                .note_actions
-                .insert(38, midi::MidiAction::ResetSession { port: None });
 
-            let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(midi::run_midi_interactive(port, config, stand_port))
-        }
-        Commands::Lpd8(cmd) => commands::lpd8::execute(cmd),
-        Commands::Conductor { port } => {
-            println!("🎭 Starting Stand Conductor on port {}...", port);
-            let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(stand::run_conductor(port))
-        }
-        Commands::App { port, no_conductor } => commands::app::execute(port, no_conductor),
-        Commands::World(cmd) => commands::world::execute(cmd),
-        Commands::Park(cmd) => commands::park::execute(cmd),
-        Commands::Ge(cmd) => commands::ge::execute(cmd),
-        Commands::Update { check } => commands::update::execute(check),
+        // Groups
+        Commands::Daemon(cmd) => commands::daemon::execute(cmd),
+        Commands::Midi(cmd) => commands::midi::execute(cmd),
     }
 }

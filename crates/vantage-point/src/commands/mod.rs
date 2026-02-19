@@ -4,10 +4,8 @@
 
 pub mod app;
 pub mod config;
-pub mod ge;
-pub mod lpd8;
-pub mod park;
+pub mod daemon;
+pub mod midi;
 pub mod restart;
 pub mod start;
 pub mod update;
-pub mod world;

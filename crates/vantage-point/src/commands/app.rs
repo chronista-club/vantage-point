@@ -5,32 +5,32 @@ use anyhow::Result;
 use crate::cli::{find_vantage_point_app, which_vp};
 
 /// `vp app` を実行
-pub fn execute(port: u16, no_conductor: bool) -> Result<()> {
+pub fn execute(port: u16, no_daemon: bool) -> Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
-        // Conductor Standが稼働しているか確認
-        if !no_conductor {
-            let conductor_url = format!("http://localhost:{}/api/health", port);
+        // Daemonが稼働しているか確認
+        if !no_daemon {
+            let daemon_url = format!("http://localhost:{}/api/health", port);
             let client = reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(2))
                 .build()?;
 
-            let conductor_running = client
-                .get(&conductor_url)
+            let daemon_running = client
+                .get(&daemon_url)
                 .send()
                 .await
                 .map(|r| r.status().is_success())
                 .unwrap_or(false);
 
-            if !conductor_running {
-                println!("🎭 Starting Conductor Stand on port {}...", port);
-                // バックグラウンドでConductorを起動
+            if !daemon_running {
+                println!("Starting Daemon on port {}...", port);
+                // バックグラウンドでDaemonを起動
                 let vp_path = which_vp().ok_or_else(|| anyhow::anyhow!("vp binary not found"))?;
 
                 std::process::Command::new(&vp_path)
-                    .args(["conductor", "-p", &port.to_string()])
+                    .args(["daemon", "start", "-p", &port.to_string()])
                     .spawn()
-                    .map_err(|e| anyhow::anyhow!("Failed to start conductor: {}", e))?;
+                    .map_err(|e| anyhow::anyhow!("Failed to start daemon: {}", e))?;
 
                 // 起動を待つ
                 tokio::time::sleep(std::time::Duration::from_millis(1500)).await;

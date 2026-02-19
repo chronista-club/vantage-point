@@ -66,16 +66,32 @@ vantage-point/
 ## CLIコマンド
 
 ```bash
-vp start [N]      # プロジェクトN番のStandを起動
-vp start -d simple # デバッグモードで起動
-vp ps             # 稼働中インスタンス一覧
-vp open [N]       # WebUIを開く
-vp config         # 設定と登録プロジェクト表示
-vp status         # 接続状態確認
-vp stop           # Stand停止
-vp mcp            # MCPサーバーモード（stdio）
-vp tray           # システムトレイモード
-vp midi [N]       # MIDI入力監視
+# Core（日常使い）
+vp start [N]           # プロジェクトN番のStandを起動（デフォルト）
+vp start -d simple     # デバッグモードで起動
+vp stop [--port]       # Stand停止
+vp restart [--port]    # Stand再起動
+vp ps                  # 稼働中インスタンス一覧
+vp open [N]            # WebUIを開く
+vp config              # 設定と登録プロジェクト表示
+vp mcp                 # MCPサーバーモード（stdio）
+vp update [--check]    # セルフアップデート
+
+# Daemon（常駐プロセス）
+vp daemon start        # デーモン起動（Stand管理 + ヘルスチェック）
+vp daemon stop         # デーモン停止
+vp daemon status       # デーモン状態確認
+
+# App（起動モード）
+vp app                 # VantagePoint.app起動（Daemon自動起動）
+vp tray                # システムトレイモード
+
+# MIDI（ハードウェア）
+vp midi monitor        # MIDI入力モニタリング
+vp midi ports          # 利用可能なMIDIポート一覧
+vp midi lpd8 write     # LPD8に設定書き込み
+vp midi lpd8 switch N  # LPD8プログラム切り替え
+vp midi lpd8 ports     # MIDI出力ポート一覧
 ```
 
 ## 開発コマンド
