@@ -85,9 +85,7 @@ pub async fn canvas_open_handler(State(state): State<Arc<AppState>>) -> impl Int
         // プロセスがまだ生きてるか確認
         let alive = unsafe { libc::kill(pid as i32, 0) == 0 };
         if alive {
-            return Json(
-                serde_json::json!({"status": "already_open", "pid": pid}),
-            );
+            return Json(serde_json::json!({"status": "already_open", "pid": pid}));
         }
     }
 

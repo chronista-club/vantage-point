@@ -377,15 +377,13 @@ pub fn run_terminal(port: u16) -> anyhow::Result<()> {
                         if suppress_next_enter {
                             // IME確定直後の "\n" → スキップ
                         } else if !enter_handled_this_frame {
-                            let encoded =
-                                base64::engine::general_purpose::STANDARD.encode(b"\r");
+                            let encoded = base64::engine::general_purpose::STANDARD.encode(b"\r");
                             let _ = input_tx.send(WsBridgeCommand::Input(encoded));
                             enter_handled_this_frame = true;
                         }
                     } else {
                         let bytes: Vec<u8> = text.bytes().collect();
-                        let encoded =
-                            base64::engine::general_purpose::STANDARD.encode(&bytes);
+                        let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
                         let _ = input_tx.send(WsBridgeCommand::Input(encoded));
                         suppress_next_enter = true;
                     }
@@ -402,8 +400,7 @@ pub fn run_terminal(port: u16) -> anyhow::Result<()> {
                         && !enter_handled_this_frame
                     {
                         use base64::Engine;
-                        let encoded =
-                            base64::engine::general_purpose::STANDARD.encode(b"\r");
+                        let encoded = base64::engine::general_purpose::STANDARD.encode(b"\r");
                         let _ = input_tx.send(WsBridgeCommand::Input(encoded));
                         enter_handled_this_frame = true;
                     } else if let Some(bytes) = special_key_to_bytes(&event.physical_key) {

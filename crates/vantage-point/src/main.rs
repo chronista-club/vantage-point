@@ -21,6 +21,7 @@ use clap::{Parser, Subcommand};
 
 mod agent;
 mod agui;
+mod canvas;
 mod capability;
 mod cli;
 mod commands;
@@ -30,9 +31,8 @@ mod midi;
 mod protocol;
 mod stand;
 mod terminal;
-mod tray;
-mod canvas;
 mod terminal_window;
+mod tray;
 
 use cli::{DebugModeArg, parse_debug_env};
 use config::Config;
