@@ -76,6 +76,58 @@ pub async fn close_pane_handler(
     Json(serde_json::json!({"status": "ok"}))
 }
 
+/// POST /api/canvas/open - Canvasウィンドウを起動
+pub async fn canvas_open_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let mut pid_guard = state.canvas_pid.lock().await;
+
+    // 既に起動中なら何もしない
+    if let Some(pid) = *pid_guard {
+        // プロセスがまだ生きてるか確認
+        let alive = unsafe { libc::kill(pid as i32, 0) == 0 };
+        if alive {
+            return Json(
+                serde_json::json!({"status": "already_open", "pid": pid}),
+            );
+        }
+    }
+
+    // vp webview -p <port> で起動
+    match std::process::Command::new("vp")
+        .args(["webview", "-p", &state.port.to_string()])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(child) => {
+            let pid = child.id();
+            *pid_guard = Some(pid);
+            tracing::info!("Canvas window opened (pid={})", pid);
+            Json(serde_json::json!({"status": "opened", "pid": pid}))
+        }
+        Err(e) => {
+            tracing::error!("Failed to open canvas: {}", e);
+            Json(serde_json::json!({"status": "error", "message": e.to_string()}))
+        }
+    }
+}
+
+/// POST /api/canvas/close - Canvasウィンドウを終了
+pub async fn canvas_close_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let mut pid_guard = state.canvas_pid.lock().await;
+
+    if let Some(pid) = pid_guard.take() {
+        // SIGTERMで終了
+        unsafe {
+            libc::kill(pid as i32, libc::SIGTERM);
+        }
+        tracing::info!("Canvas window closed (pid={})", pid);
+        Json(serde_json::json!({"status": "closed", "pid": pid}))
+    } else {
+        Json(serde_json::json!({"status": "not_open"}))
+    }
+}
+
 /// POST /api/shutdown - Graceful shutdown
 pub async fn shutdown_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     tracing::info!("Shutdown requested via API");

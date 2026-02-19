@@ -41,6 +41,9 @@ reqwest = { version = "0.12", features = ["json", "stream"] }
 futures = "0.3"
 tokio-stream = "0.1"
 
+# QUIC protocol (Unison)
+unison = { git = "https://github.com/chronista-club/unison.git" }
+
 # Database (future)
 # surrealdb = "2"
 

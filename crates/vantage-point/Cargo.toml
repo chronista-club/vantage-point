@@ -45,6 +45,9 @@ reqwest = { workspace = true }
 rmcp = { version = "0.11", features = ["server", "transport-io"] }
 schemars = "1"
 
+# QUIC protocol (Unison)
+unison = { workspace = true }
+
 # Native WebView
 wry = { version = "0.53", features = ["devtools"] }
 tao = "0.34"

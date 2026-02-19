@@ -272,7 +272,7 @@ impl SessionManager {
             .map(|e| SessionInfo {
                 id: e.id.clone(),
                 name: e.name.clone(),
-                is_active: self.active_id.as_deref() == Some(&e.id),
+                is_active: self.active_id.as_deref() == Some(e.id.as_str()),
                 message_count: e.message_count,
                 model: e.model.clone(),
                 created_at: e.created_at,

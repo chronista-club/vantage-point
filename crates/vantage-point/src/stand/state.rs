@@ -107,6 +107,10 @@ pub(crate) struct AppState {
     pub tmux_manager: Arc<tokio::sync::Mutex<TmuxManager>>,
     /// tmuxを使用するかどうか
     pub use_tmux: bool,
+    /// Canvasウィンドウのプロセス管理（PID）
+    pub canvas_pid: Arc<tokio::sync::Mutex<Option<u32>>>,
+    /// Standの待ち受けポート番号（Canvas起動時に使用）
+    pub port: u16,
 }
 
 impl AppState {

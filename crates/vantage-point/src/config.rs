@@ -161,6 +161,9 @@ impl Config {
 pub struct RunningStandInfo {
     /// Port number
     pub port: u16,
+    /// QUIC (Unison) ポート番号（HTTP port + 1000）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quic_port: Option<u16>,
     /// Project directory (canonical path)
     pub project_dir: String,
     /// Process ID
@@ -208,7 +211,7 @@ impl RunningStands {
     }
 
     /// Register a new running Stand
-    pub fn register(port: u16, project_dir: &str, pid: u32) -> Result<()> {
+    pub fn register(port: u16, project_dir: &str, pid: u32, quic_port: Option<u16>) -> Result<()> {
         let mut stands = Self::load().unwrap_or_default();
 
         // Canonicalize the project directory for consistent matching
@@ -224,6 +227,7 @@ impl RunningStands {
         // Add new entry
         stands.stands.push(RunningStandInfo {
             port,
+            quic_port,
             project_dir: canonical_dir,
             pid,
             started_at: std::time::SystemTime::now()

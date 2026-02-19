@@ -21,6 +21,7 @@ use super::routes::{conductor, health, permission, prompt, update, ws};
 use super::session::SessionManager;
 use super::state::AppState;
 use super::tmux::TmuxManager;
+use super::unison_server;
 use crate::capability::{StandManagerCapability, UpdateCapability};
 use crate::config::RunningStands;
 use crate::protocol::DebugMode;
@@ -83,6 +84,8 @@ pub async fn run(
         pty_manager: Arc::new(tokio::sync::Mutex::new(PtyManager::new())),
         tmux_manager: Arc::new(tokio::sync::Mutex::new(TmuxManager::new())),
         use_tmux,
+        canvas_pid: Arc::new(tokio::sync::Mutex::new(None)),
+        port,
     });
 
     let app = Router::new()
@@ -92,6 +95,8 @@ pub async fn run(
         .route("/api/toggle-pane", post(health::toggle_pane_handler))
         .route("/api/split-pane", post(health::split_pane_handler))
         .route("/api/close-pane", post(health::close_pane_handler))
+        .route("/api/canvas/open", post(health::canvas_open_handler))
+        .route("/api/canvas/close", post(health::canvas_close_handler))
         .route("/api/health", get(health::health_handler))
         .route("/api/shutdown", post(health::shutdown_handler))
         .route(
@@ -153,14 +158,24 @@ pub async fn run(
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
+    // Unison QUIC サーバーを並行起動
+    let quic_port = port + unison_server::QUIC_PORT_OFFSET;
+    {
+        let state_for_quic = state.clone();
+        tokio::spawn(async move {
+            unison_server::start_unison_server(state_for_quic, port).await;
+        });
+    }
+
     // Register this Stand in running.json
     let pid = std::process::id();
-    if let Err(e) = RunningStands::register(port, &state.project_dir, pid) {
+    if let Err(e) = RunningStands::register(port, &state.project_dir, pid, Some(quic_port)) {
         tracing::warn!("Failed to register Stand in running.json: {}", e);
     } else {
         tracing::info!(
-            "Registered Stand in running.json (port={}, pid={})",
+            "Registered Stand in running.json (port={}, quic={}, pid={})",
             port,
+            quic_port,
             pid
         );
     }
@@ -248,6 +263,8 @@ pub async fn run_conductor(port: u16) -> Result<()> {
         pty_manager: Arc::new(tokio::sync::Mutex::new(PtyManager::new())),
         tmux_manager: Arc::new(tokio::sync::Mutex::new(TmuxManager::new())),
         use_tmux: false, // Conductor モードでは tmux 不要
+        canvas_pid: Arc::new(tokio::sync::Mutex::new(None)),
+        port,
     });
 
     let app = Router::new()
