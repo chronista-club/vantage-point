@@ -16,7 +16,6 @@
 pub mod agent_capability;
 pub mod bonjour_capability;
 pub mod core;
-pub mod db_capability;
 pub mod eventbus;
 pub mod evolution;
 pub mod midi_capability;
@@ -29,7 +28,6 @@ pub mod update_capability;
 pub use agent_capability::AgentCapability;
 pub use bonjour_capability::BonjourCapability;
 pub use core::{CapabilityContext, CapabilityEvent, CapabilityInfo, CapabilityState};
-pub use db_capability::DbCapability;
 pub use eventbus::EventBus;
 pub use midi_capability::MidiCapability;
 pub use protocol_capability::ProtocolCapability;
