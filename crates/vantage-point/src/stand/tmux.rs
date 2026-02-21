@@ -17,6 +17,21 @@ use tokio::sync::broadcast;
 
 use crate::protocol::StandMessage;
 
+/// tmuxウィンドウ情報
+#[derive(Clone, Debug)]
+pub struct WindowInfo {
+    pub index: usize,
+    pub name: String,
+    pub is_active: bool,
+}
+
+/// ステータスバーに表示する情報
+#[derive(Clone, Debug, Default)]
+pub struct StatusBarInfo {
+    pub session_name: String,
+    pub windows: Vec<WindowInfo>,
+}
+
 /// tmuxセッションマネージャー
 pub struct TmuxManager {
     /// tmuxセッション名（"vp-{port}" or "vp-{project_name}"）
@@ -235,6 +250,57 @@ impl TmuxManager {
         &self.session_name
     }
 
+    /// tmux ウィンドウ一覧からステータスバー情報を取得
+    ///
+    /// `tmux list-windows` の出力をパースして `StatusBarInfo` を構築する。
+    /// tmux セッションが存在しない場合はデフォルト値を返す。
+    pub async fn get_status_info(&self) -> StatusBarInfo {
+        if !self.active || self.session_name.is_empty() {
+            return StatusBarInfo::default();
+        }
+
+        let output = tokio::process::Command::new("tmux")
+            .args([
+                "list-windows",
+                "-t",
+                &self.session_name,
+                "-F",
+                "#{window_index}|#{window_name}|#{window_active}",
+            ])
+            .output()
+            .await;
+
+        match output {
+            Ok(out) if out.status.success() => {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                let windows = stdout
+                    .lines()
+                    .filter_map(|line| {
+                        let parts: Vec<&str> = line.splitn(3, '|').collect();
+                        if parts.len() == 3 {
+                            Some(WindowInfo {
+                                index: parts[0].parse().unwrap_or(0),
+                                name: parts[1].to_string(),
+                                is_active: parts[2] == "1",
+                            })
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+
+                StatusBarInfo {
+                    session_name: self.session_name.clone(),
+                    windows,
+                }
+            }
+            _ => StatusBarInfo {
+                session_name: self.session_name.clone(),
+                windows: vec![],
+            },
+        }
+    }
+
     // --- Private ---
 
     /// 現在のスクリーン内容を capture-pane で取得しブロードキャスト
@@ -340,10 +406,16 @@ impl TmuxManager {
                     }
                     Ok(n) => {
                         let encoded = engine.encode(&buf[..n]);
+                        tracing::debug!("tmux pipe reader: {} bytes read", n);
                         match tx.send(StandMessage::TerminalOutput { data: encoded }) {
-                            Ok(_) => {}
+                            Ok(receivers) => {
+                                tracing::debug!(
+                                    "tmux pipe broadcast: sent to {} receivers",
+                                    receivers
+                                );
+                            }
                             Err(_) => {
-                                tracing::debug!("tmux pipe broadcast: 受信者なし");
+                                tracing::warn!("tmux pipe broadcast: 受信者なし");
                             }
                         }
                     }
@@ -408,5 +480,20 @@ mod tests {
         let mgr = TmuxManager::new();
         assert!(!mgr.is_active());
         assert!(mgr.session_name().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_get_status_info_inactive() {
+        let mgr = TmuxManager::new();
+        let info = mgr.get_status_info().await;
+        assert!(info.session_name.is_empty());
+        assert!(info.windows.is_empty());
+    }
+
+    #[test]
+    fn test_status_bar_info_default() {
+        let info = StatusBarInfo::default();
+        assert!(info.session_name.is_empty());
+        assert!(info.windows.is_empty());
     }
 }

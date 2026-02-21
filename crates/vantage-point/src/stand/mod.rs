@@ -15,8 +15,9 @@ mod routes;
 mod server;
 mod session;
 pub(crate) mod state;
+// TODO(daemon-migration): tmux モジュール全体を削除し、Daemon IPC に完全移行
 pub mod tmux;
 pub(crate) mod unison_server;
 
 pub use capabilities::CapabilityConfig;
-pub use server::{run, run_conductor};
+pub use server::run;

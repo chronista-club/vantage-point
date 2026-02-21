@@ -13,6 +13,7 @@ use super::capabilities::StandCapabilities;
 use super::hub::Hub;
 use super::pty::PtyManager;
 use super::session::SessionManager;
+// TODO(daemon-migration): TmuxManager を削除し、DaemonClient に置き換え
 use super::tmux::TmuxManager;
 use crate::agent::InteractiveClaudeAgent;
 use crate::agui::AgUiEvent;
@@ -103,8 +104,10 @@ pub(crate) struct AppState {
     pub interactive_agent: Arc<RwLock<Option<InteractiveClaudeAgent>>>,
     /// PTYセッションマネージャー（ターミナル機能）- レガシー、tmux未対応環境用
     pub pty_manager: Arc<tokio::sync::Mutex<PtyManager>>,
+    // TODO(daemon-migration): tmux_manager フィールドを削除（Daemon が PTY を所有する）
     /// tmuxセッションマネージャー（tmux利用可能時に使用）
     pub tmux_manager: Arc<tokio::sync::Mutex<TmuxManager>>,
+    // TODO(daemon-migration): use_tmux フラグを削除（Daemon モード一本化）
     /// tmuxを使用するかどうか
     pub use_tmux: bool,
     /// Canvasウィンドウのプロセス管理（PID）

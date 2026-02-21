@@ -290,6 +290,8 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                                     }
                                 }
                             }
+                            // TODO(daemon-migration): TerminalInput 全体を DaemonClient.write_input() に置き換え
+                            // tmux send-keys / pty write 分岐を削除し、Daemon IPC 一本化
                             BrowserMessage::TerminalInput { data } => {
                                 // base64デコードしてターミナルに書き込み
                                 use base64::Engine;
@@ -297,6 +299,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                                 match engine.decode(&data) {
                                     Ok(bytes) => {
                                         if state_clone.use_tmux {
+                                            // TODO(daemon-migration): tmux write → DaemonClient.write_input() に置き換え
                                             // tmux モード
                                             let tmux_mgr = state_clone.tmux_manager.lock().await;
                                             if let Err(e) = tmux_mgr.write(&bytes).await {
@@ -315,8 +318,13 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                                     }
                                 }
                             }
+                            // TODO(daemon-migration): TerminalResize 全体を DaemonClient.resize_pane() に置き換え
+                            // tmux セッション作成/リサイズ分岐を削除し、Daemon IPC 一本化
+                            // 初回セッション作成は vp start 時に DaemonClient.create_session() で行う
                             BrowserMessage::TerminalResize { cols, rows } => {
                                 if state_clone.use_tmux {
+                                    // TODO(daemon-migration): tmux セッション作成/リサイズ全体を削除
+                                    // → Daemon の session.create + terminal.create_pane + terminal.resize に置き換え
                                     // tmux モード
                                     let mut tmux_mgr = state_clone.tmux_manager.lock().await;
                                     if !tmux_mgr.is_active() {

@@ -20,6 +20,7 @@ use super::pty::PtyManager;
 use super::routes::{conductor, health, permission, prompt, update, ws};
 use super::session::SessionManager;
 use super::state::AppState;
+// TODO(daemon-migration): TmuxManager import を削除
 use super::tmux::TmuxManager;
 use super::unison_server;
 use crate::capability::{StandManagerCapability, UpdateCapability};
@@ -60,7 +61,8 @@ pub async fn run(
     let _event_bridge = capabilities.start_event_bridge(hub.sender());
     tracing::info!("Capability event bridge started");
 
-    // tmux利用可能チェック
+    // TODO(daemon-migration): tmux 利用可能チェックを削除（Daemon モード一本化）
+    // Daemon が PTY を直接所有するため、tmux / portable-pty の分岐は不要になる
     let use_tmux = TmuxManager::is_available().await;
     if use_tmux {
         tracing::info!("tmux が利用可能 → tmux モードで起動");
@@ -82,7 +84,9 @@ pub async fn run(
         update: None,    // Update capability is only for conductor mode
         interactive_agent: Arc::new(RwLock::new(None)), // Interactive agent (stream-json mode)
         pty_manager: Arc::new(tokio::sync::Mutex::new(PtyManager::new())),
+        // TODO(daemon-migration): tmux_manager 初期化を削除
         tmux_manager: Arc::new(tokio::sync::Mutex::new(TmuxManager::new())),
+        // TODO(daemon-migration): use_tmux を削除
         use_tmux,
         canvas_pid: Arc::new(tokio::sync::Mutex::new(None)),
         port,
@@ -261,6 +265,7 @@ pub async fn run_conductor(port: u16) -> Result<()> {
         update: Some(update_cap.clone()),
         interactive_agent: Arc::new(RwLock::new(None)),
         pty_manager: Arc::new(tokio::sync::Mutex::new(PtyManager::new())),
+        // TODO(daemon-migration): Conductor モードでも tmux_manager / use_tmux を削除
         tmux_manager: Arc::new(tokio::sync::Mutex::new(TmuxManager::new())),
         use_tmux: false, // Conductor モードでは tmux 不要
         canvas_pid: Arc::new(tokio::sync::Mutex::new(None)),
