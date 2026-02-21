@@ -517,16 +517,16 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     #[test]
     fn test_daemon_state_new() {
         let state = DaemonState::new();
-        // 初期状態の確認
-        let handle = tokio::runtime::Handle::try_current();
-        if handle.is_err() {
-            // テスト用ランタイムなしでも基本構造は確認できる
-            assert!(state.started_at.elapsed().as_secs() < 1);
-        }
+        // 起動時刻が現在に近いことを確認
+        assert!(
+            state.started_at.elapsed().as_secs() < 1,
+            "started_at が現在時刻から離れすぎている"
+        );
     }
 
     #[test]
@@ -560,5 +560,135 @@ mod tests {
         assert!(validate_shell_cmd("").is_err());
         assert!(validate_shell_cmd("/bin/bash; rm -rf /").is_err());
         assert!(validate_shell_cmd("zsh\nmalicious").is_err());
+    }
+
+    // =========================================================================
+    // read_output の take-restore パターンのテスト
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_read_output_take_restore_pattern() {
+        // take-restore パターンの基本動作:
+        // receiver を取り出し、データを受信し、元に戻す
+        let state = DaemonState::new();
+        let (tx, rx) = tokio::sync::broadcast::channel::<Vec<u8>>(16);
+        let key = ("test-session".to_string(), 0u32);
+
+        state.output_receivers.lock().await.insert(key.clone(), rx);
+
+        // 1. receiver を取り出す
+        let mut receivers = state.output_receivers.lock().await;
+        let rx = receivers.remove(&key);
+        drop(receivers); // ロック即解放
+
+        let mut rx = rx.expect("receiver が存在するはず");
+
+        // 2. ロック非保持の状態でデータ送受信
+        tx.send(b"hello".to_vec()).unwrap();
+        let data = rx.recv().await.unwrap();
+        assert_eq!(data, b"hello");
+
+        // 3. receiver を戻す
+        state.output_receivers.lock().await.insert(key.clone(), rx);
+
+        // 4. 戻った receiver がマップに存在することを確認
+        assert!(
+            state.output_receivers.lock().await.contains_key(&key),
+            "receiver が復元されていない"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_read_output_concurrent_different_panes() {
+        // 異なるペインへの同時 read_output がデッドロックしないことを検証
+        // 旧実装（Mutex保持のまま await）ではタスク2がタスク1のタイムアウト完了まで
+        // ブロックされていた。新実装では両方が独立に進行する。
+        let state = Arc::new(DaemonState::new());
+
+        let (tx1, rx1) = tokio::sync::broadcast::channel::<Vec<u8>>(16);
+        let (tx2, rx2) = tokio::sync::broadcast::channel::<Vec<u8>>(16);
+        let key1 = ("session".to_string(), 0u32);
+        let key2 = ("session".to_string(), 1u32);
+
+        {
+            let mut receivers = state.output_receivers.lock().await;
+            receivers.insert(key1.clone(), rx1);
+            receivers.insert(key2.clone(), rx2);
+        }
+
+        // ペイン1: 50ms後にデータ受信（100msタイムアウト）
+        let state1 = state.clone();
+        let key1c = key1.clone();
+        let task1 = tokio::spawn(async move {
+            let mut receivers = state1.output_receivers.lock().await;
+            let rx = receivers.remove(&key1c);
+            drop(receivers);
+
+            let mut rx = rx.unwrap();
+            let result = tokio::time::timeout(
+                std::time::Duration::from_millis(200),
+                rx.recv(),
+            )
+            .await;
+
+            let mut receivers = state1.output_receivers.lock().await;
+            receivers.insert(key1c, rx);
+            result.is_ok()
+        });
+
+        // ペイン2: 即座にデータ受信（ペイン1にブロックされないことを検証）
+        let state2 = state.clone();
+        let key2c = key2.clone();
+        let task2 = tokio::spawn(async move {
+            // 少し遅延してからtakeを試みる（task1がtakeした後）
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+            let mut receivers = state2.output_receivers.lock().await;
+            let rx = receivers.remove(&key2c);
+            drop(receivers);
+
+            let mut rx = rx.unwrap();
+            let result = tokio::time::timeout(
+                std::time::Duration::from_millis(200),
+                rx.recv(),
+            )
+            .await;
+
+            let mut receivers = state2.output_receivers.lock().await;
+            receivers.insert(key2c, rx);
+            result.is_ok()
+        });
+
+        // 両ペインにデータ送信
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        tx1.send(b"pane1".to_vec()).unwrap();
+        tx2.send(b"pane2".to_vec()).unwrap();
+
+        let (r1, r2) = tokio::join!(task1, task2);
+        assert!(r1.unwrap(), "ペイン1がデータを受信できなかった");
+        assert!(r2.unwrap(), "ペイン2がデータを受信できなかった（デッドロックの可能性）");
+    }
+
+    #[tokio::test]
+    async fn test_read_output_same_pane_second_reader_sees_missing() {
+        // 同一ペインへの同時アクセス:
+        // 1つ目の reader が receiver を take 中、2つ目は receiver が見つからない
+        let state = Arc::new(DaemonState::new());
+        let (_tx, rx) = tokio::sync::broadcast::channel::<Vec<u8>>(16);
+        let key = ("session".to_string(), 0u32);
+
+        state.output_receivers.lock().await.insert(key.clone(), rx);
+
+        // 1つ目: receiver を取り出す
+        let mut receivers = state.output_receivers.lock().await;
+        let _rx = receivers.remove(&key);
+        drop(receivers);
+
+        // 2つ目: 同じキーで取得を試みる → None（取り出し済み）
+        let receivers = state.output_receivers.lock().await;
+        assert!(
+            !receivers.contains_key(&key),
+            "take中のペインに receiver が残っている"
+        );
     }
 }

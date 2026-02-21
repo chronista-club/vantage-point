@@ -174,6 +174,9 @@ pub fn stop_daemon(pid: u32) -> Result<()> {
 mod tests {
     use super::*;
 
+    /// PIDファイルを共有するテスト間の競合を防ぐミューテックス
+    static PID_FILE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn test_daemon_dir_path() {
         let dir = daemon_dir();
@@ -190,55 +193,96 @@ mod tests {
     }
 
     #[test]
-    fn test_is_daemon_running_no_pid_file() {
-        // PIDファイルが存在しない状態での確認
-        // テスト環境ではPIDファイルが存在しない前提
-        // （CI等で /tmp/vantage-point/daemon.pid が残っている場合は
-        //  実際のDaemonが動いている可能性があるため、存在チェックのみ）
+    fn test_is_daemon_running_stale_pid_cleanup() {
+        let _lock = PID_FILE_LOCK.lock().unwrap();
+        // 存在しないPIDのPIDファイルが残っている場合、
+        // is_daemon_running は None を返し、ファイルを掃除するべき
+        let dir = daemon_dir();
+        let _ = std::fs::create_dir_all(&dir);
+        let path = pid_file();
+
+        // 既存のPIDファイルをバックアップ
+        let backup = std::fs::read_to_string(&path).ok();
+
+        // ほぼ確実に存在しないPIDを書き込む
+        std::fs::write(&path, "2147483647").unwrap(); // i32::MAX
+
         let result = is_daemon_running();
-        // PIDファイルがなければ None, あっても正しい動作
-        // ここではパスの正当性の確認が主目的
-        assert!(result.is_none() || result.is_some());
+        assert!(
+            result.is_none(),
+            "存在しないPIDなのに Some が返った"
+        );
+        // PIDファイルが掃除されていること
+        assert!(
+            !path.exists(),
+            "古いPIDファイルが削除されていない"
+        );
+
+        // バックアップを復元
+        if let Some(content) = backup {
+            let _ = std::fs::create_dir_all(&dir);
+            std::fs::write(&path, content).unwrap();
+        }
+    }
+
+    #[test]
+    fn test_is_daemon_running_overflow_pid() {
+        let _lock = PID_FILE_LOCK.lock().unwrap();
+        // i32::MAX を超えるPIDがPIDファイルに書かれた場合、
+        // is_daemon_running は安全に None を返すべき
+        let dir = daemon_dir();
+        let _ = std::fs::create_dir_all(&dir);
+        let path = pid_file();
+
+        let backup = std::fs::read_to_string(&path).ok();
+
+        // u32::MAX は i32::try_from で失敗する
+        std::fs::write(&path, u32::MAX.to_string()).unwrap();
+
+        let result = is_daemon_running();
+        assert!(
+            result.is_none(),
+            "オーバーフローPIDが Some を返した"
+        );
+
+        // バックアップを復元（PIDファイルが消えている場合に備え）
+        if let Some(content) = backup {
+            let _ = std::fs::create_dir_all(&dir);
+            std::fs::write(&path, content).unwrap();
+        } else {
+            // バックアップなし → ファイルを削除して元の状態に
+            let _ = std::fs::remove_file(&path);
+        }
     }
 
     #[test]
     fn test_write_and_remove_pid_file() {
-        // テスト用の一時ディレクトリを使うため、実際のPIDファイルには触れない
-        // write_pid_file / remove_pid_file の基本パスロジックを確認
         let dir = daemon_dir();
         let path = pid_file();
         assert!(path.starts_with(&dir));
     }
 
     #[test]
-    fn test_pid_cast_safety() {
-        // i32::MAX を超えるPIDの安全性テスト
-        // is_daemon_running 内の i32::try_from が正しく動作するか確認
-        let large_pid: u32 = i32::MAX as u32 + 1;
-        // try_from が失敗することを確認
-        assert!(i32::try_from(large_pid).is_err());
-
-        // 正常なPIDは変換できる
-        let normal_pid: u32 = 12345;
-        assert!(i32::try_from(normal_pid).is_ok());
-        assert_eq!(i32::try_from(normal_pid).unwrap(), 12345);
-    }
-
-    #[test]
-    fn test_stop_daemon_invalid_pid() {
-        // 存在しないPIDに対する stop_daemon（エラーにならず正常終了するべき）
-        // PID 999999999 はほぼ確実に存在しない
-        let result = stop_daemon(999999999);
+    fn test_stop_daemon_nonexistent_pid() {
+        let _lock = PID_FILE_LOCK.lock().unwrap();
+        // 存在しないPIDへの stop_daemon はエラーにならず正常終了すべき
         // SIGTERM送信失敗 → PIDファイル掃除 → Ok
-        assert!(result.is_ok());
+        let result = stop_daemon(2147483647); // i32::MAX — まず存在しない
+        assert!(
+            result.is_ok(),
+            "存在しないPIDへの stop_daemon がエラーを返した: {:?}",
+            result
+        );
     }
 
     #[test]
     fn test_stop_daemon_overflow_pid() {
-        // i32::MAX を超えるPIDに対する stop_daemon
+        // i32 に収まらないPIDへの stop_daemon はエラーを返すべき
         let overflow_pid = i32::MAX as u32 + 1;
         let result = stop_daemon(overflow_pid);
-        // i32::try_from 失敗 → エラー
-        assert!(result.is_err());
+        assert!(
+            result.is_err(),
+            "オーバーフローPIDの stop_daemon がエラーを返さなかった"
+        );
     }
 }

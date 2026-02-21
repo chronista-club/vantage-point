@@ -226,25 +226,41 @@ mod tests {
 
     #[tokio::test]
     async fn test_pty_drop_kills_child() {
+        // Drop 実装が子プロセスを確実に終了させることを検証
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
         let cwd = std::env::temp_dir().to_string_lossy().to_string();
 
         let slot = PtySlot::spawn(&cwd, &shell, 80, 24).expect("PTY spawn に失敗");
         let pid = slot.pid();
 
-        // PIDが有効であることを確認
-        if pid > 0 {
-            // プロセスが存在するか確認
-            let alive_before = unsafe { libc::kill(pid as i32, 0) == 0 };
-            assert!(alive_before, "子プロセスが起動していない");
+        // CI環境ではPIDが0の場合がある
+        if pid == 0 {
+            return;
+        }
 
-            // PtySlot を drop
-            drop(slot);
+        let pid_i32 = pid as i32;
 
-            // 少し待ってからプロセスが終了していることを確認
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            let alive_after = unsafe { libc::kill(pid as i32, 0) == 0 };
-            assert!(!alive_after, "Drop後も子プロセスが生存している");
+        // プロセスが起動していることを確認
+        let alive_before = unsafe { libc::kill(pid_i32, 0) == 0 };
+        assert!(alive_before, "子プロセスが起動していない (PID: {})", pid);
+
+        // PtySlot を drop → Drop impl が kill + wait を呼ぶ
+        drop(slot);
+
+        // リトライループで終了を確認（固定sleepより安定）
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let alive = unsafe { libc::kill(pid_i32, 0) == 0 };
+            if !alive {
+                break; // 成功: プロセスが終了した
+            }
+            if tokio::time::Instant::now() >= deadline {
+                panic!(
+                    "Drop後2秒経ってもプロセスが終了していない (PID: {})",
+                    pid
+                );
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
     }
 }
