@@ -47,6 +47,36 @@ impl DaemonState {
     }
 }
 
+/// 許可されたシェルコマンドのホワイトリスト
+const ALLOWED_SHELLS: &[&str] = &[
+    "/bin/bash",
+    "/bin/zsh",
+    "/bin/sh",
+    "/usr/bin/bash",
+    "/usr/bin/zsh",
+    "/usr/local/bin/bash",
+    "/usr/local/bin/zsh",
+    "/usr/local/bin/fish",
+    "/opt/homebrew/bin/bash",
+    "/opt/homebrew/bin/zsh",
+    "/opt/homebrew/bin/fish",
+    "bash",
+    "zsh",
+    "sh",
+    "fish",
+];
+
+/// シェルコマンドのバリデーション（コマンドインジェクション防止）
+fn validate_shell_cmd(shell_cmd: &str) -> Result<(), NetworkError> {
+    if !ALLOWED_SHELLS.contains(&shell_cmd) {
+        return Err(NetworkError::Protocol(format!(
+            "許可されていないシェルコマンド: {}",
+            shell_cmd
+        )));
+    }
+    Ok(())
+}
+
 /// Daemon の Unison QUIC サーバーを起動する
 ///
 /// session / terminal / system の各ハンドラを登録し、
@@ -191,30 +221,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                     .unwrap_or_else(|| "/tmp".to_string());
 
                 // シェルコマンドのバリデーション（コマンドインジェクション防止）
-                const ALLOWED_SHELLS: &[&str] = &[
-                    "/bin/bash",
-                    "/bin/zsh",
-                    "/bin/sh",
-                    "/usr/bin/bash",
-                    "/usr/bin/zsh",
-                    "/usr/local/bin/bash",
-                    "/usr/local/bin/zsh",
-                    "/usr/local/bin/fish",
-                    "/opt/homebrew/bin/bash",
-                    "/opt/homebrew/bin/zsh",
-                    "/opt/homebrew/bin/fish",
-                    "bash",
-                    "zsh",
-                    "sh",
-                    "fish",
-                ];
-
-                if !ALLOWED_SHELLS.contains(&req.shell_cmd.as_str()) {
-                    return Err(NetworkError::Protocol(format!(
-                        "許可されていないシェルコマンド: {}",
-                        req.shell_cmd
-                    )));
-                }
+                validate_shell_cmd(&req.shell_cmd)?;
 
                 // PTYスロット起動
                 let slot = PtySlot::spawn(&cwd, &req.shell_cmd, req.cols, req.rows)
@@ -504,5 +511,54 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
     tracing::info!("Daemon Unison QUIC サーバー起動: {}", addr);
     if let Err(e) = server.listen(&addr).await {
         tracing::error!("Daemon Unison サーバー起動失敗: {}", e);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_daemon_state_new() {
+        let state = DaemonState::new();
+        // 初期状態の確認
+        let handle = tokio::runtime::Handle::try_current();
+        if handle.is_err() {
+            // テスト用ランタイムなしでも基本構造は確認できる
+            assert!(state.started_at.elapsed().as_secs() < 1);
+        }
+    }
+
+    #[test]
+    fn test_validate_shell_cmd_allowed() {
+        // 許可されたシェル（絶対パス）
+        assert!(validate_shell_cmd("/bin/bash").is_ok());
+        assert!(validate_shell_cmd("/bin/zsh").is_ok());
+        assert!(validate_shell_cmd("/bin/sh").is_ok());
+        assert!(validate_shell_cmd("/usr/bin/bash").is_ok());
+        assert!(validate_shell_cmd("/usr/local/bin/fish").is_ok());
+        assert!(validate_shell_cmd("/opt/homebrew/bin/zsh").is_ok());
+    }
+
+    #[test]
+    fn test_validate_shell_cmd_allowed_bare() {
+        // 許可されたシェル（コマンド名のみ）
+        assert!(validate_shell_cmd("bash").is_ok());
+        assert!(validate_shell_cmd("zsh").is_ok());
+        assert!(validate_shell_cmd("sh").is_ok());
+        assert!(validate_shell_cmd("fish").is_ok());
+    }
+
+    #[test]
+    fn test_validate_shell_cmd_rejected() {
+        // 拒否されるべきコマンド
+        assert!(validate_shell_cmd("python").is_err());
+        assert!(validate_shell_cmd("node").is_err());
+        assert!(validate_shell_cmd("/usr/bin/python3").is_err());
+        assert!(validate_shell_cmd("rm -rf /").is_err());
+        assert!(validate_shell_cmd("bash -c 'malicious'").is_err());
+        assert!(validate_shell_cmd("").is_err());
+        assert!(validate_shell_cmd("/bin/bash; rm -rf /").is_err());
+        assert!(validate_shell_cmd("zsh\nmalicious").is_err());
     }
 }

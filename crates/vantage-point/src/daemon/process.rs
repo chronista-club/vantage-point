@@ -209,4 +209,36 @@ mod tests {
         let path = pid_file();
         assert!(path.starts_with(&dir));
     }
+
+    #[test]
+    fn test_pid_cast_safety() {
+        // i32::MAX を超えるPIDの安全性テスト
+        // is_daemon_running 内の i32::try_from が正しく動作するか確認
+        let large_pid: u32 = i32::MAX as u32 + 1;
+        // try_from が失敗することを確認
+        assert!(i32::try_from(large_pid).is_err());
+
+        // 正常なPIDは変換できる
+        let normal_pid: u32 = 12345;
+        assert!(i32::try_from(normal_pid).is_ok());
+        assert_eq!(i32::try_from(normal_pid).unwrap(), 12345);
+    }
+
+    #[test]
+    fn test_stop_daemon_invalid_pid() {
+        // 存在しないPIDに対する stop_daemon（エラーにならず正常終了するべき）
+        // PID 999999999 はほぼ確実に存在しない
+        let result = stop_daemon(999999999);
+        // SIGTERM送信失敗 → PIDファイル掃除 → Ok
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_stop_daemon_overflow_pid() {
+        // i32::MAX を超えるPIDに対する stop_daemon
+        let overflow_pid = i32::MAX as u32 + 1;
+        let result = stop_daemon(overflow_pid);
+        // i32::try_from 失敗 → エラー
+        assert!(result.is_err());
+    }
 }

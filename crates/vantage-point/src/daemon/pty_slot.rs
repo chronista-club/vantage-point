@@ -223,4 +223,28 @@ mod tests {
 
         assert!(found, "PTY 出力に HELLO_PTY_SLOT が含まれなかった");
     }
+
+    #[tokio::test]
+    async fn test_pty_drop_kills_child() {
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+        let cwd = std::env::temp_dir().to_string_lossy().to_string();
+
+        let slot = PtySlot::spawn(&cwd, &shell, 80, 24).expect("PTY spawn に失敗");
+        let pid = slot.pid();
+
+        // PIDが有効であることを確認
+        if pid > 0 {
+            // プロセスが存在するか確認
+            let alive_before = unsafe { libc::kill(pid as i32, 0) == 0 };
+            assert!(alive_before, "子プロセスが起動していない");
+
+            // PtySlot を drop
+            drop(slot);
+
+            // 少し待ってからプロセスが終了していることを確認
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            let alive_after = unsafe { libc::kill(pid as i32, 0) == 0 };
+            assert!(!alive_after, "Drop後も子プロセスが生存している");
+        }
+    }
 }
