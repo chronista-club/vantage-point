@@ -29,7 +29,9 @@ pub fn is_daemon_running() -> Option<u32> {
     let pid: u32 = pid_str.trim().parse().ok()?;
 
     // kill(pid, 0) でプロセスの存在を確認（シグナルは送信しない）
-    let alive = unsafe { libc::kill(pid as i32, 0) == 0 };
+    let alive = i32::try_from(pid).map_or(false, |pid_i32| {
+        unsafe { libc::kill(pid_i32, 0) == 0 }
+    });
     if alive {
         Some(pid)
     } else {
@@ -85,7 +87,8 @@ pub async fn run_daemon(port: u16) -> Result<()> {
     );
 
     // シグナルハンドラ: SIGTERM / SIGINT でグレースフルシャットダウン
-    let shutdown = tokio::signal::ctrl_c();
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .expect("SIGTERM ハンドラ登録失敗");
 
     // DaemonState を初期化し、Unison Server を起動
     let state = std::sync::Arc::new(super::server::DaemonState::new());
@@ -93,9 +96,13 @@ pub async fn run_daemon(port: u16) -> Result<()> {
 
     // シャットダウン待機
     tokio::select! {
-        _ = shutdown => {
-            tracing::info!("シャットダウンシグナル受信");
+        _ = tokio::signal::ctrl_c() => {
+            tracing::info!("SIGINT 受信、シャットダウン開始");
             println!("Shutting down VP Daemon...");
+        }
+        _ = sigterm.recv() => {
+            tracing::info!("SIGTERM 受信、シャットダウン開始");
+            println!("Shutting down VP Daemon (SIGTERM)...");
         }
         _ = server_handle => {
             tracing::warn!("Unison Server が予期せず終了");
@@ -135,16 +142,28 @@ pub fn ensure_daemon_running(port: u16) -> Result<u32> {
 /// PIDを指定してDaemonプロセスを停止する
 pub fn stop_daemon(pid: u32) -> Result<()> {
     tracing::info!("Daemon 停止要求 (PID: {})", pid);
-    unsafe {
-        libc::kill(pid as i32, libc::SIGTERM);
+
+    let pid_i32 = i32::try_from(pid)
+        .map_err(|_| anyhow::anyhow!("PIDがi32の範囲外: {}", pid))?;
+
+    // SIGTERM を送信
+    let ret = unsafe { libc::kill(pid_i32, libc::SIGTERM) };
+    if ret != 0 {
+        let err = std::io::Error::last_os_error();
+        tracing::warn!("SIGTERM送信失敗 (PID: {}): {}", pid, err);
+        // プロセスが既に死んでいる可能性がある
+        remove_pid_file();
+        return Ok(());
     }
+
     // PIDファイルはDaemon側のシャットダウン処理で削除される
     // ただし、Daemonが応答しなかった場合のフォールバック
     std::thread::sleep(std::time::Duration::from_millis(500));
     if is_daemon_running().is_some() {
         tracing::warn!("SIGTERM後もDaemonが生存、SIGKILLを送信");
-        unsafe {
-            libc::kill(pid as i32, libc::SIGKILL);
+        let ret = unsafe { libc::kill(pid_i32, libc::SIGKILL) };
+        if ret != 0 {
+            tracing::warn!("SIGKILL送信失敗 (PID: {}): {}", pid, std::io::Error::last_os_error());
         }
         remove_pid_file();
     }

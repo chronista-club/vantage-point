@@ -20,6 +20,8 @@ pub struct PtySlot {
     writer: Box<dyn Write + Send>,
     /// PTY ペア（リサイズ用に保持）
     pair: portable_pty::PtyPair,
+    /// 子プロセスハンドル（ゾンビプロセス防止のため保持）
+    child: Box<dyn portable_pty::Child + Send>,
     /// プロセスID
     pid: u32,
     /// シェルコマンド
@@ -50,7 +52,7 @@ impl PtySlot {
         // ログインシェルとして起動
         cmd.arg("-l");
 
-        // 子プロセスを起動
+        // 子プロセスを起動（ゾンビ防止のためハンドルを保持する）
         let child = pair.slave.spawn_command(cmd)?;
         let pid = child.process_id().unwrap_or(0);
 
@@ -67,6 +69,7 @@ impl PtySlot {
         Ok(Self {
             writer,
             pair,
+            child,
             pid,
             shell_cmd: shell_cmd.to_string(),
             output_tx,
@@ -105,6 +108,21 @@ impl PtySlot {
     /// シェルコマンド
     pub fn shell_cmd(&self) -> &str {
         &self.shell_cmd
+    }
+}
+
+impl Drop for PtySlot {
+    /// PtySlot 破棄時に子プロセスを確実に終了させる
+    ///
+    /// kill() で終了シグナルを送り、wait() で回収することで
+    /// ゾンビプロセスの発生を防ぐ。
+    fn drop(&mut self) {
+        if let Err(e) = self.child.kill() {
+            tracing::debug!("PtySlot drop: kill 失敗（既に終了済みの可能性）: {}", e);
+        }
+        if let Err(e) = self.child.wait() {
+            tracing::debug!("PtySlot drop: wait 失敗: {}", e);
+        }
     }
 }
 

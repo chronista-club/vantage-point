@@ -5,8 +5,8 @@
 
 use crate::capability::core::Capability;
 use crate::capability::{
-    AgentCapability, BonjourCapability, CapabilityContext, CapabilityRegistry, DbCapability,
-    EventBus, MidiCapability, ProtocolCapability,
+    AgentCapability, BonjourCapability, CapabilityContext, CapabilityRegistry, EventBus,
+    MidiCapability, ProtocolCapability,
 };
 use crate::midi::MidiConfig;
 use std::sync::Arc;
@@ -20,8 +20,6 @@ pub struct StandCapabilities {
     pub event_bus: Arc<EventBus>,
     /// Capability レジストリ
     pub registry: Arc<RwLock<CapabilityRegistry>>,
-    /// DB Capability（ローカル永続化 — 他Capabilityの基盤）
-    pub db: Arc<RwLock<DbCapability>>,
     /// Protocol Capability（WebSocket/stdio配信用）
     pub protocol: Arc<RwLock<ProtocolCapability>>,
     /// Agent Capability（Claude Agent統合）
@@ -53,9 +51,6 @@ impl StandCapabilities {
             "working_dir": config.project_dir,
         }));
         let registry = Arc::new(RwLock::new(CapabilityRegistry::with_context(ctx)));
-
-        // DB Capability（他Capabilityの基盤）
-        let db = Arc::new(RwLock::new(DbCapability::new()));
 
         // Protocol Capability
         let protocol = Arc::new(RwLock::new(ProtocolCapability::new()));
@@ -93,7 +88,6 @@ impl StandCapabilities {
         Self {
             event_bus,
             registry,
-            db,
             protocol,
             agent,
             midi,
@@ -104,12 +98,6 @@ impl StandCapabilities {
     /// 全 Capability を初期化
     pub async fn initialize(&self) -> anyhow::Result<()> {
         let ctx = CapabilityContext::new();
-
-        // DB Capability 初期化（最初 — 他Capabilityが依存する可能性）
-        {
-            let mut db = self.db.write().await;
-            db.initialize(&ctx).await?;
-        }
 
         // Protocol Capability 初期化
         {
@@ -170,12 +158,6 @@ impl StandCapabilities {
         {
             let mut protocol = self.protocol.write().await;
             let _ = protocol.shutdown().await;
-        }
-
-        // DB Capability シャットダウン（最後 — 他Capabilityが依存）
-        {
-            let mut db = self.db.write().await;
-            let _ = db.shutdown().await;
         }
 
         tracing::info!("All capabilities shut down");

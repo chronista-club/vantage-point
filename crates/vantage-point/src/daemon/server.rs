@@ -190,6 +190,32 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or_else(|| "/tmp".to_string());
 
+                // シェルコマンドのバリデーション（コマンドインジェクション防止）
+                const ALLOWED_SHELLS: &[&str] = &[
+                    "/bin/bash",
+                    "/bin/zsh",
+                    "/bin/sh",
+                    "/usr/bin/bash",
+                    "/usr/bin/zsh",
+                    "/usr/local/bin/bash",
+                    "/usr/local/bin/zsh",
+                    "/usr/local/bin/fish",
+                    "/opt/homebrew/bin/bash",
+                    "/opt/homebrew/bin/zsh",
+                    "/opt/homebrew/bin/fish",
+                    "bash",
+                    "zsh",
+                    "sh",
+                    "fish",
+                ];
+
+                if !ALLOWED_SHELLS.contains(&req.shell_cmd.as_str()) {
+                    return Err(NetworkError::Protocol(format!(
+                        "許可されていないシェルコマンド: {}",
+                        req.shell_cmd
+                    )));
+                }
+
                 // PTYスロット起動
                 let slot = PtySlot::spawn(&cwd, &req.shell_cmd, req.cols, req.rows)
                     .map_err(|e| NetworkError::Protocol(format!("PTY起動失敗: {}", e)))?;
@@ -325,18 +351,19 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
             handle.block_on(async {
                 let key = (req.session_id.clone(), req.pane_id);
 
-                // receiver を一時的に取り出す（recv が &mut self のため）
+                // 1. receiver をマップから取り出す（ロックを短時間で解放）
                 let mut receivers = state.output_receivers.lock().await;
-                let rx = receivers.get_mut(&key);
+                let rx = receivers.remove(&key);
+                drop(receivers); // ロックを即座に解放
 
-                let Some(rx) = rx else {
+                let Some(mut rx) = rx else {
                     return Err(NetworkError::Protocol(format!(
                         "出力 receiver が見つかりません: session={}, pane_id={}",
                         req.session_id, req.pane_id
                     )));
                 };
 
-                // タイムアウト付きで出力を読み取り（複数チャンクをバッチで返す）
+                // 2. ロックを保持せずにタイムアウト付きで出力を読み取り
                 let timeout = std::time::Duration::from_millis(req.timeout_ms);
                 let mut all_data: Vec<u8> = Vec::new();
 
@@ -362,6 +389,10 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                         // タイムアウト（出力なし）
                     }
                 }
+
+                // 3. receiver をマップに戻す（ロックを短時間で取得）
+                let mut receivers = state.output_receivers.lock().await;
+                receivers.insert(key, rx);
 
                 use base64::Engine;
                 let encoded = base64::engine::general_purpose::STANDARD.encode(&all_data);
@@ -450,8 +481,18 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
             // Daemon の tokio::select! がシグナルをキャッチしてクリーンアップする
             std::thread::spawn(|| {
                 std::thread::sleep(std::time::Duration::from_millis(100));
-                unsafe {
-                    libc::kill(std::process::id() as i32, libc::SIGTERM);
+                let pid = std::process::id();
+                if let Ok(pid_i32) = i32::try_from(pid) {
+                    unsafe {
+                        let ret = libc::kill(pid_i32, libc::SIGTERM);
+                        if ret != 0 {
+                            tracing::warn!("system.shutdown: kill が失敗しました（errno）");
+                            std::process::exit(1);
+                        }
+                    }
+                } else {
+                    tracing::error!("PIDがi32の範囲外: {}", pid);
+                    std::process::exit(1);
                 }
             });
 
