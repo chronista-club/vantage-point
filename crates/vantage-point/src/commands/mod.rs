@@ -3,6 +3,7 @@
 //! 各サブコマンドの実行ロジックを分離して管理する。
 
 pub mod app;
+pub mod canvas;
 pub mod config;
 pub mod daemon;
 pub mod midi;
