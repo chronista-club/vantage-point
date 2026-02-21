@@ -1,15 +1,14 @@
-//! Daemon への Unison クライアント
+//! Daemon への Unison チャネルクライアント
 //!
 //! Console (vp start) から Daemon に QUIC 接続し、
+//! 3つの永続チャネル（session / terminal / system）を通じて
 //! セッション操作・PTY I/O を行う。
 //!
-//! 接続は遅延初期化 + リトライ付き。
-//! 通信エラー時は自動リセットし、次回呼び出しで再接続を試みる。
+//! 接続時にチャネルをオープンし、以降は各チャネルの
+//! request() メソッドでリクエスト/レスポンスを行う。
 
 use anyhow::{Context, Result};
-use std::sync::Arc;
-use tokio::sync::Mutex;
-use unison::{ProtocolClient, UnisonClient};
+use unison::{ProtocolClient, UnisonChannel, UnisonClient};
 
 use super::protocol::*;
 #[allow(unused_imports)]
@@ -18,19 +17,28 @@ use super::registry::{PaneId, SessionInfo};
 /// Daemon QUIC ポート（設計書: [::1]:34000）
 pub const DAEMON_QUIC_PORT: u16 = 34000;
 
-/// Daemon への Unison クライアント
+/// Daemon への Unison チャネルクライアント
+///
+/// 3つの永続チャネルを保持し、用途別にリクエストをルーティングする:
+/// - session_ch: セッション作成・一覧・アタッチ・デタッチ
+/// - terminal_ch: ペイン作成・入出力・リサイズ・終了
+/// - system_ch: ヘルスチェック・シャットダウン
 pub struct DaemonClient {
-    /// QUIC クライアント（排他制御、call が &mut self のため）
-    client: Arc<Mutex<ProtocolClient>>,
-    /// 接続先アドレス（リトライ用に保持）
+    /// Session チャネル（セッション作成・一覧・アタッチ・デタッチ）
+    session_ch: UnisonChannel,
+    /// Terminal チャネル（ペイン作成・入出力・リサイズ・終了）
+    terminal_ch: UnisonChannel,
+    /// System チャネル（ヘルスチェック・シャットダウン）
+    system_ch: UnisonChannel,
+    /// 接続先アドレス（表示・デバッグ用に保持）
     addr: String,
 }
 
 impl DaemonClient {
-    /// Daemon に接続する（リトライ付き）
+    /// Daemon に接続し、3つのチャネルをオープンする（リトライ付き）
     ///
     /// 最大 `retries` 回、200ms 間隔で接続を試みる。
-    /// Daemon がまだ起動中の場合に対応するため。
+    /// 接続成功後、session / terminal / system チャネルをオープンする。
     pub async fn connect(port: u16, retries: u32) -> Result<Self> {
         let addr = format!("[::1]:{}", port);
         let mut client = ProtocolClient::new_default().context("QUIC クライアントの作成に失敗")?;
@@ -39,8 +47,25 @@ impl DaemonClient {
             match UnisonClient::connect(&mut client, &addr).await {
                 Ok(_) => {
                     tracing::info!("Daemon に接続 ({})", addr);
+
+                    // チャネルをオープン
+                    let session_ch = client
+                        .open_channel("session")
+                        .await
+                        .map_err(|e| anyhow::anyhow!("session チャネルオープン失敗: {}", e))?;
+                    let terminal_ch = client
+                        .open_channel("terminal")
+                        .await
+                        .map_err(|e| anyhow::anyhow!("terminal チャネルオープン失敗: {}", e))?;
+                    let system_ch = client
+                        .open_channel("system")
+                        .await
+                        .map_err(|e| anyhow::anyhow!("system チャネルオープン失敗: {}", e))?;
+
                     return Ok(Self {
-                        client: Arc::new(Mutex::new(client)),
+                        session_ch,
+                        terminal_ch,
+                        system_ch,
                         addr,
                     });
                 }
@@ -67,41 +92,30 @@ impl DaemonClient {
         anyhow::bail!("Daemon 接続失敗: {}", addr)
     }
 
-    /// 汎用 RPC 呼び出し
-    ///
-    /// メソッド名と JSON ペイロードで Daemon に RPC リクエストを送信する。
-    async fn rpc_call(
-        &self,
-        method: &str,
-        payload: serde_json::Value,
-    ) -> Result<serde_json::Value> {
-        let mut client = self.client.lock().await;
-        client
-            .call(method, payload)
-            .await
-            .map_err(|e| anyhow::anyhow!("RPC '{}' 失敗: {}", method, e))
-    }
-
     // =========================================================================
     // Session 操作
     // =========================================================================
 
     /// セッションを作成する
     pub async fn create_session(&self, id: &str) -> Result<SessionInfo> {
-        let req = CreateSessionRequest {
+        let payload = serde_json::to_value(&CreateSessionRequest {
             session_id: id.to_string(),
-        };
+        })?;
         let resp = self
-            .rpc_call("session.create", serde_json::to_value(&req)?)
-            .await?;
-        let info: SessionInfo =
-            serde_json::from_value(resp).context("session.create レスポンスのパースに失敗")?;
-        Ok(info)
+            .session_ch
+            .request("create", payload)
+            .await
+            .map_err(|e| anyhow::anyhow!("session.create 失敗: {}", e))?;
+        serde_json::from_value(resp).context("session.create レスポンスのパースに失敗")
     }
 
     /// セッション一覧を取得する
     pub async fn list_sessions(&self) -> Result<Vec<SessionInfo>> {
-        let resp = self.rpc_call("session.list", serde_json::json!({})).await?;
+        let resp = self
+            .session_ch
+            .request("list", serde_json::json!({}))
+            .await
+            .map_err(|e| anyhow::anyhow!("session.list 失敗: {}", e))?;
         let list: ListSessionsResponse =
             serde_json::from_value(resp).context("session.list レスポンスのパースに失敗")?;
         // SessionSummary → SessionInfo への変換
@@ -120,21 +134,25 @@ impl DaemonClient {
 
     /// セッションにアタッチする（PTY出力ストリーム開始）
     pub async fn attach(&self, session_id: &str) -> Result<()> {
-        let req = AttachRequest {
+        let payload = serde_json::to_value(&AttachRequest {
             session_id: session_id.to_string(),
-        };
-        self.rpc_call("session.attach", serde_json::to_value(&req)?)
-            .await?;
+        })?;
+        self.session_ch
+            .request("attach", payload)
+            .await
+            .map_err(|e| anyhow::anyhow!("session.attach 失敗: {}", e))?;
         Ok(())
     }
 
     /// セッションからデタッチする
     pub async fn detach(&self, session_id: &str) -> Result<()> {
-        let req = DetachRequest {
+        let payload = serde_json::to_value(&DetachRequest {
             session_id: session_id.to_string(),
-        };
-        self.rpc_call("session.detach", serde_json::to_value(&req)?)
-            .await?;
+        })?;
+        self.session_ch
+            .request("detach", payload)
+            .await
+            .map_err(|e| anyhow::anyhow!("session.detach 失敗: {}", e))?;
         Ok(())
     }
 
@@ -150,15 +168,17 @@ impl DaemonClient {
         cols: u16,
         rows: u16,
     ) -> Result<PaneId> {
-        let req = CreatePaneRequest {
+        let payload = serde_json::to_value(&CreatePaneRequest {
             session_id: session_id.to_string(),
             shell_cmd: shell.to_string(),
             cols,
             rows,
-        };
+        })?;
         let resp = self
-            .rpc_call("terminal.create_pane", serde_json::to_value(&req)?)
-            .await?;
+            .terminal_ch
+            .request("create_pane", payload)
+            .await
+            .map_err(|e| anyhow::anyhow!("terminal.create_pane 失敗: {}", e))?;
         let pane_resp: CreatePaneResponse = serde_json::from_value(resp)
             .context("terminal.create_pane レスポンスのパースに失敗")?;
         Ok(pane_resp.pane_id)
@@ -170,13 +190,15 @@ impl DaemonClient {
     pub async fn write_input(&self, session_id: &str, pane_id: PaneId, data: &[u8]) -> Result<()> {
         use base64::Engine;
         let encoded = base64::engine::general_purpose::STANDARD.encode(data);
-        let req = WriteRequest {
+        let payload = serde_json::to_value(&WriteRequest {
             session_id: session_id.to_string(),
             pane_id,
             data: encoded,
-        };
-        self.rpc_call("terminal.write", serde_json::to_value(&req)?)
-            .await?;
+        })?;
+        self.terminal_ch
+            .request("write", payload)
+            .await
+            .map_err(|e| anyhow::anyhow!("terminal.write 失敗: {}", e))?;
         Ok(())
     }
 
@@ -188,14 +210,16 @@ impl DaemonClient {
         cols: u16,
         rows: u16,
     ) -> Result<()> {
-        let req = ResizeRequest {
+        let payload = serde_json::to_value(&ResizeRequest {
             session_id: session_id.to_string(),
             pane_id,
             cols,
             rows,
-        };
-        self.rpc_call("terminal.resize", serde_json::to_value(&req)?)
-            .await?;
+        })?;
+        self.terminal_ch
+            .request("resize", payload)
+            .await
+            .map_err(|e| anyhow::anyhow!("terminal.resize 失敗: {}", e))?;
         Ok(())
     }
 
@@ -209,14 +233,16 @@ impl DaemonClient {
         pane_id: PaneId,
         timeout_ms: u64,
     ) -> Result<Vec<u8>> {
-        let req = ReadOutputRequest {
+        let payload = serde_json::to_value(&ReadOutputRequest {
             session_id: session_id.to_string(),
             pane_id,
             timeout_ms,
-        };
+        })?;
         let resp = self
-            .rpc_call("terminal.read_output", serde_json::to_value(&req)?)
-            .await?;
+            .terminal_ch
+            .request("read_output", payload)
+            .await
+            .map_err(|e| anyhow::anyhow!("terminal.read_output 失敗: {}", e))?;
 
         let output: ReadOutputResponse = serde_json::from_value(resp)
             .context("terminal.read_output レスポンスのパースに失敗")?;
@@ -235,12 +261,14 @@ impl DaemonClient {
 
     /// ペインを終了する
     pub async fn kill_pane(&self, session_id: &str, pane_id: PaneId) -> Result<()> {
-        let req = KillPaneRequest {
+        let payload = serde_json::to_value(&KillPaneRequest {
             session_id: session_id.to_string(),
             pane_id,
-        };
-        self.rpc_call("terminal.kill_pane", serde_json::to_value(&req)?)
-            .await?;
+        })?;
+        self.terminal_ch
+            .request("kill_pane", payload)
+            .await
+            .map_err(|e| anyhow::anyhow!("terminal.kill_pane 失敗: {}", e))?;
         Ok(())
     }
 
@@ -251,8 +279,10 @@ impl DaemonClient {
     /// Daemon のヘルスチェック
     pub async fn health(&self) -> Result<HealthResponse> {
         let resp = self
-            .rpc_call("system.health", serde_json::json!({}))
-            .await?;
+            .system_ch
+            .request("health", serde_json::json!({}))
+            .await
+            .map_err(|e| anyhow::anyhow!("system.health 失敗: {}", e))?;
         let health: HealthResponse =
             serde_json::from_value(resp).context("system.health レスポンスのパースに失敗")?;
         Ok(health)
@@ -260,8 +290,10 @@ impl DaemonClient {
 
     /// Daemon をシャットダウンする
     pub async fn shutdown(&self) -> Result<()> {
-        self.rpc_call("system.shutdown", serde_json::json!({}))
-            .await?;
+        self.system_ch
+            .request("shutdown", serde_json::json!({}))
+            .await
+            .map_err(|e| anyhow::anyhow!("system.shutdown 失敗: {}", e))?;
         Ok(())
     }
 

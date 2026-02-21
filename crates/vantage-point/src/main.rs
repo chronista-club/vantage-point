@@ -26,7 +26,7 @@ mod capability;
 mod cli;
 mod commands;
 mod config;
-mod daemon;
+pub(crate) mod daemon;
 mod mcp;
 mod midi;
 mod protocol;

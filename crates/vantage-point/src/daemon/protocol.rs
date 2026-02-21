@@ -6,6 +6,61 @@
 use serde::{Deserialize, Serialize};
 
 // =============================================================================
+// Unified Channel メッセージ
+// =============================================================================
+
+/// Unison Channel 通信用メッセージ型
+///
+/// Daemon ↔ Console、Stand ↔ MCP の双方で使用する共通エンベロープ。
+/// 1つのチャネル上で Request/Response/Error/Event を多重化する。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum ChannelMessage {
+    /// クライアント → サーバーのリクエスト
+    #[serde(rename = "request")]
+    Request {
+        id: u64,
+        method: String,
+        payload: serde_json::Value,
+    },
+    /// サーバー → クライアントのレスポンス
+    #[serde(rename = "response")]
+    Response { id: u64, payload: serde_json::Value },
+    /// サーバー → クライアントのエラーレスポンス
+    #[serde(rename = "error")]
+    Error { id: u64, message: String },
+    /// サーバー → クライアントの一方向イベント（PTY出力など）
+    #[serde(rename = "event")]
+    Event {
+        method: String,
+        payload: serde_json::Value,
+    },
+}
+
+impl ChannelMessage {
+    /// 成功レスポンスを作成
+    pub fn ok(id: u64, payload: serde_json::Value) -> Self {
+        Self::Response { id, payload }
+    }
+
+    /// エラーレスポンスを作成
+    pub fn err(id: u64, message: impl Into<String>) -> Self {
+        Self::Error {
+            id,
+            message: message.into(),
+        }
+    }
+
+    /// イベントを作成
+    pub fn event(method: impl Into<String>, payload: serde_json::Value) -> Self {
+        Self::Event {
+            method: method.into(),
+            payload,
+        }
+    }
+}
+
+// =============================================================================
 // Session Channel
 // =============================================================================
 

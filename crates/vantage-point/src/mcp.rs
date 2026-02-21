@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
+use unison::network::channel::UnisonChannel;
 use unison::{ProtocolClient, UnisonClient};
 
 use crate::protocol::{ChatComponent, StandMessage};
@@ -134,19 +135,35 @@ pub struct PermissionRequestPayload {
 
 /// MCP → Stand 通信クライアント
 ///
-/// QUIC 専用ツール（show, clear, split_pane 等）は Unison QUIC で通信。
+/// QUIC 専用ツール（show, clear, split_pane 等）は Unison Channel で通信。
+/// "stand" チャネル（show/clear/toggle_pane/split_pane/close_pane）と
+/// "canvas" チャネル（open/close）を遅延接続で管理する。
 /// `permission` / `restart` のみ HTTP を使用（ポーリング・プロセス管理用）。
-#[derive(Clone)]
 pub struct VantageMcp {
     /// HTTP クライアント（permission / restart 用）
     client: reqwest::Client,
     /// Stand の HTTP URL（permission / restart 用）
     stand_url: Arc<Mutex<String>>,
-    /// Unison QUIC クライアント（遅延初期化）
-    quic_client: Arc<Mutex<Option<ProtocolClient>>>,
+    /// Stand チャネル（show/clear/toggle_pane/split_pane/close_pane）
+    stand_ch: Arc<Mutex<Option<UnisonChannel>>>,
+    /// Canvas チャネル（open/close）
+    canvas_ch: Arc<Mutex<Option<UnisonChannel>>>,
     /// QUIC サーバーアドレス（[::1]:port）
     quic_addr: String,
     tool_router: ToolRouter<Self>,
+}
+
+impl Clone for VantageMcp {
+    fn clone(&self) -> Self {
+        Self {
+            client: self.client.clone(),
+            stand_url: self.stand_url.clone(),
+            stand_ch: self.stand_ch.clone(),
+            canvas_ch: self.canvas_ch.clone(),
+            quic_addr: self.quic_addr.clone(),
+            tool_router: Self::tool_router(),
+        }
+    }
 }
 
 #[tool_router]
@@ -156,58 +173,115 @@ impl VantageMcp {
         Self {
             client: reqwest::Client::new(),
             stand_url: Arc::new(Mutex::new(format!("http://localhost:{}", stand_port))),
-            quic_client: Arc::new(Mutex::new(None)),
+            stand_ch: Arc::new(Mutex::new(None)),
+            canvas_ch: Arc::new(Mutex::new(None)),
             quic_addr: format!("[::1]:{}", quic_port),
             tool_router: Self::tool_router(),
         }
     }
 
-    /// Unison QUIC 経由で RPC 呼び出し
+    /// Stand / Canvas チャネルの遅延接続
     ///
-    /// 接続が確立されていなければ遅延接続を試みる。
-    /// 失敗時は McpError を返す。
-    async fn quic_call(
+    /// 初回呼び出し時に QUIC 接続を確立し、"stand" と "canvas" の
+    /// 2チャネルをオープンする。2回目以降は何もしない。
+    async fn ensure_channels(&self) -> Result<(), McpError> {
+        let mut stand_guard = self.stand_ch.lock().await;
+        if stand_guard.is_some() {
+            return Ok(());
+        }
+
+        // 接続してチャネルをオープン
+        match ProtocolClient::new_default() {
+            Ok(mut client) => {
+                if let Err(e) = UnisonClient::connect(&mut client, &self.quic_addr).await {
+                    return Err(McpError::internal_error(
+                        format!(
+                            "Stand QUIC 接続失敗 ({}): {}. Is vp running?",
+                            self.quic_addr, e
+                        ),
+                        None,
+                    ));
+                }
+
+                let stand = client.open_channel("stand").await.map_err(|e| {
+                    McpError::internal_error(format!("stand チャネルオープン失敗: {}", e), None)
+                })?;
+                let canvas = client.open_channel("canvas").await.map_err(|e| {
+                    McpError::internal_error(format!("canvas チャネルオープン失敗: {}", e), None)
+                })?;
+
+                *stand_guard = Some(stand);
+                drop(stand_guard);
+
+                let mut canvas_guard = self.canvas_ch.lock().await;
+                *canvas_guard = Some(canvas);
+
+                Ok(())
+            }
+            Err(e) => Err(McpError::internal_error(
+                format!("QUIC クライアント作成失敗: {}. Is vp running?", e),
+                None,
+            )),
+        }
+    }
+
+    /// Stand チャネル経由で RPC 呼び出し
+    ///
+    /// UnisonChannel::request() が内部で message_id 生成・Response 待機を行う。
+    /// 失敗時はチャネルをリセットして次回再接続を試みる。
+    async fn stand_call(
         &self,
         method: &str,
         payload: serde_json::Value,
     ) -> Result<serde_json::Value, McpError> {
-        let mut guard = self.quic_client.lock().await;
+        self.ensure_channels().await?;
 
-        // 遅延接続
-        if guard.is_none() {
-            match ProtocolClient::new_default() {
-                Ok(mut client) => {
-                    if let Err(e) = client.connect(&self.quic_addr).await {
-                        return Err(McpError::internal_error(
-                            format!(
-                                "Failed to connect to Stand via QUIC ({}): {}. Is vp running?",
-                                self.quic_addr, e
-                            ),
-                            None,
-                        ));
-                    }
-                    *guard = Some(client);
-                }
-                Err(e) => {
-                    return Err(McpError::internal_error(
-                        format!("Failed to create QUIC client: {}. Is vp running?", e),
-                        None,
-                    ));
-                }
-            }
-        }
+        let guard = self.stand_ch.lock().await;
+        let ch = guard
+            .as_ref()
+            .ok_or_else(|| McpError::internal_error("Stand チャネル未接続", None))?;
 
-        // safe: 上で必ず Some にしている
-        let client = guard.as_mut().unwrap();
-        match client.call(method, payload).await {
+        match ch.request(method, payload).await {
             Ok(resp) => Ok(resp),
             Err(e) => {
                 // 接続断 → リセットして次回再接続
-                tracing::debug!("QUIC call '{}' failed: {}", method, e);
-                *guard = None;
+                tracing::debug!("stand チャネル '{}' 失敗: {}", method, e);
+                drop(guard);
+                *self.stand_ch.lock().await = None;
+                *self.canvas_ch.lock().await = None;
                 Err(McpError::internal_error(
                     format!(
-                        "QUIC call '{}' failed: {}. Stand may have restarted.",
+                        "stand チャネル '{}' 失敗: {}. Stand may have restarted.",
+                        method, e
+                    ),
+                    None,
+                ))
+            }
+        }
+    }
+
+    /// Canvas チャネル経由で RPC 呼び出し
+    ///
+    /// UnisonChannel::request() が内部で message_id 生成・Response 待機を行う。
+    /// 失敗時はチャネルをリセットして次回再接続を試みる。
+    async fn canvas_call(&self, method: &str) -> Result<serde_json::Value, McpError> {
+        self.ensure_channels().await?;
+
+        let guard = self.canvas_ch.lock().await;
+        let ch = guard
+            .as_ref()
+            .ok_or_else(|| McpError::internal_error("Canvas チャネル未接続", None))?;
+
+        match ch.request(method, serde_json::json!({})).await {
+            Ok(resp) => Ok(resp),
+            Err(e) => {
+                tracing::debug!("canvas チャネル '{}' 失敗: {}", method, e);
+                drop(guard);
+                *self.stand_ch.lock().await = None;
+                *self.canvas_ch.lock().await = None;
+                Err(McpError::internal_error(
+                    format!(
+                        "canvas チャネル '{}' 失敗: {}. Stand may have restarted.",
                         method, e
                     ),
                     None,
@@ -221,7 +295,7 @@ impl VantageMcp {
         description = "Open the Vantage Point Canvas window. The canvas displays the same content as the browser viewer in a native window."
     )]
     async fn open_canvas(&self) -> Result<CallToolResult, McpError> {
-        let resp = self.quic_call("canvas.open", serde_json::json!({})).await?;
+        let resp = self.canvas_call("open").await?;
         let status = resp
             .get("status")
             .and_then(|v| v.as_str())
@@ -235,9 +309,7 @@ impl VantageMcp {
     /// Close the Canvas window
     #[tool(description = "Close the Vantage Point Canvas window.")]
     async fn close_canvas(&self) -> Result<CallToolResult, McpError> {
-        let resp = self
-            .quic_call("canvas.close", serde_json::json!({}))
-            .await?;
+        let resp = self.canvas_call("close").await?;
         let status = resp
             .get("status")
             .and_then(|v| v.as_str())
@@ -270,7 +342,7 @@ impl VantageMcp {
             "title": &params.title,
         });
 
-        self.quic_call("show", payload).await?;
+        self.stand_call("show", payload).await?;
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Content displayed in pane '{}'",
             pane_id
@@ -285,7 +357,7 @@ impl VantageMcp {
     ) -> Result<CallToolResult, McpError> {
         let pane_id = params.pane_id.unwrap_or_else(|| "main".to_string());
 
-        self.quic_call("clear", serde_json::json!({"pane_id": &pane_id}))
+        self.stand_call("clear", serde_json::json!({"pane_id": &pane_id}))
             .await?;
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Pane '{}' cleared",
@@ -307,7 +379,7 @@ impl VantageMcp {
             None => "toggled",
         };
 
-        self.quic_call(
+        self.stand_call(
             "toggle_pane",
             serde_json::json!({
                 "pane_id": &params.pane_id,
@@ -348,7 +420,7 @@ impl VantageMcp {
         let new_pane_id = new_pane_id.split('-').next().unwrap_or(&new_pane_id);
         let new_pane_id = format!("pane-{}", new_pane_id);
 
-        self.quic_call(
+        self.stand_call(
             "split_pane",
             serde_json::json!({
                 "direction": &params.direction,
@@ -370,7 +442,7 @@ impl VantageMcp {
         &self,
         rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<ClosePaneParams>,
     ) -> Result<CallToolResult, McpError> {
-        self.quic_call(
+        self.stand_call(
             "close_pane",
             serde_json::json!({"pane_id": &params.pane_id}),
         )
