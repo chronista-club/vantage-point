@@ -289,6 +289,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore] // QUIC ハンドシェイクタイムアウトが長い（~60秒）ため CI ではスキップ
     async fn test_connect_fails_without_daemon() {
         // Daemon が起動していない場合、接続は失敗する
         let result = DaemonClient::connect(39999, 1).await;

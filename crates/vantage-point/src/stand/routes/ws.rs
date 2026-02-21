@@ -290,27 +290,15 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                                     }
                                 }
                             }
-                            // TODO(daemon-migration): TerminalInput 全体を DaemonClient.write_input() に置き換え
-                            // tmux send-keys / pty write 分岐を削除し、Daemon IPC 一本化
                             BrowserMessage::TerminalInput { data } => {
                                 // base64デコードしてターミナルに書き込み
                                 use base64::Engine;
                                 let engine = base64::engine::general_purpose::STANDARD;
                                 match engine.decode(&data) {
                                     Ok(bytes) => {
-                                        if state_clone.use_tmux {
-                                            // TODO(daemon-migration): tmux write → DaemonClient.write_input() に置き換え
-                                            // tmux モード
-                                            let tmux_mgr = state_clone.tmux_manager.lock().await;
-                                            if let Err(e) = tmux_mgr.write(&bytes).await {
-                                                tracing::warn!("tmux write error: {}", e);
-                                            }
-                                        } else {
-                                            // portable-pty フォールバック
-                                            let mut pty_mgr = state_clone.pty_manager.lock().await;
-                                            if let Err(e) = pty_mgr.write(&bytes) {
-                                                tracing::warn!("PTY write error: {}", e);
-                                            }
+                                        let mut pty_mgr = state_clone.pty_manager.lock().await;
+                                        if let Err(e) = pty_mgr.write(&bytes) {
+                                            tracing::warn!("PTY write error: {}", e);
                                         }
                                     }
                                     Err(e) => {
@@ -318,81 +306,30 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                                     }
                                 }
                             }
-                            // TODO(daemon-migration): TerminalResize 全体を DaemonClient.resize_pane() に置き換え
-                            // tmux セッション作成/リサイズ分岐を削除し、Daemon IPC 一本化
-                            // 初回セッション作成は vp start 時に DaemonClient.create_session() で行う
                             BrowserMessage::TerminalResize { cols, rows } => {
-                                if state_clone.use_tmux {
-                                    // TODO(daemon-migration): tmux セッション作成/リサイズ全体を削除
-                                    // → Daemon の session.create + terminal.create_pane + terminal.resize に置き換え
-                                    // tmux モード
-                                    let mut tmux_mgr = state_clone.tmux_manager.lock().await;
-                                    if !tmux_mgr.is_active() {
-                                        // 初回: tmuxセッション作成
-                                        // プロジェクトディレクトリ名からセッション名を生成
-                                        let session_name = format!(
-                                            "vp-{}",
-                                            state_clone
-                                                .project_dir
-                                                .rsplit('/')
-                                                .next()
-                                                .unwrap_or("default")
+                                let mut pty_mgr = state_clone.pty_manager.lock().await;
+                                if !pty_mgr.is_active() {
+                                    if let Err(e) = pty_mgr.start(
+                                        &state_clone.project_dir,
+                                        cols,
+                                        rows,
+                                        state_clone.hub.sender(),
+                                    ) {
+                                        tracing::warn!("PTYセッション起動失敗: {}", e);
+                                        state_clone.send_debug(
+                                            "terminal",
+                                            &format!("PTY起動失敗: {}", e),
+                                            None,
                                         );
-                                        if let Err(e) = tmux_mgr
-                                            .start(
-                                                &state_clone.project_dir,
-                                                &session_name,
-                                                cols,
-                                                rows,
-                                                state_clone.hub.sender(),
-                                            )
-                                            .await
-                                        {
-                                            tracing::warn!("tmuxセッション起動失敗: {}", e);
-                                            state_clone.send_debug(
-                                                "terminal",
-                                                &format!("tmux起動失敗: {}", e),
-                                                None,
-                                            );
-                                        } else {
-                                            state_clone.send_debug(
-                                                "terminal",
-                                                &format!("tmuxセッション開始 ({}x{})", cols, rows),
-                                                None,
-                                            );
-                                        }
                                     } else {
-                                        // 既にアクティブ: リサイズのみ
-                                        if let Err(e) = tmux_mgr.resize(cols, rows).await {
-                                            tracing::warn!("tmux resize error: {}", e);
-                                        }
+                                        state_clone.send_debug(
+                                            "terminal",
+                                            &format!("PTYセッション開始 ({}x{})", cols, rows),
+                                            None,
+                                        );
                                     }
-                                } else {
-                                    // portable-pty フォールバック
-                                    let mut pty_mgr = state_clone.pty_manager.lock().await;
-                                    if !pty_mgr.is_active() {
-                                        if let Err(e) = pty_mgr.start(
-                                            &state_clone.project_dir,
-                                            cols,
-                                            rows,
-                                            state_clone.hub.sender(),
-                                        ) {
-                                            tracing::warn!("PTYセッション起動失敗: {}", e);
-                                            state_clone.send_debug(
-                                                "terminal",
-                                                &format!("PTY起動失敗: {}", e),
-                                                None,
-                                            );
-                                        } else {
-                                            state_clone.send_debug(
-                                                "terminal",
-                                                &format!("PTYセッション開始 ({}x{})", cols, rows),
-                                                None,
-                                            );
-                                        }
-                                    } else if let Err(e) = pty_mgr.resize(cols, rows) {
-                                        tracing::warn!("PTY resize error: {}", e);
-                                    }
+                                } else if let Err(e) = pty_mgr.resize(cols, rows) {
+                                    tracing::warn!("PTY resize error: {}", e);
                                 }
                             }
                         }

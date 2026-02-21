@@ -24,7 +24,7 @@ use objc2_core_foundation::{CGFloat, CGPoint, CGRect, CGSize};
 use objc2_core_graphics::CGContext;
 use objc2_foundation::{NSAttributedStringKey, NSDictionary, NSRect, NSString, ns_string};
 
-use crate::stand::tmux::StatusBarInfo;
+use crate::terminal::StatusBarInfo;
 
 use super::state::CellSnapshot;
 
