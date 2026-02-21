@@ -147,14 +147,19 @@ pub async fn run(
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
-    // Unison QUIC サーバーを並行起動
+    // Unison QUIC サーバーを並行起動（readiness signal 付き）
     let quic_port = port + unison_server::QUIC_PORT_OFFSET;
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
     {
         let state_for_quic = state.clone();
         tokio::spawn(async move {
-            unison_server::start_unison_server(state_for_quic, port).await;
+            unison_server::start_unison_server(state_for_quic, port, ready_tx).await;
         });
     }
+
+    // QUIC サーバーのバインド完了を待つ
+    let _ = ready_rx.await;
+    tracing::info!("QUIC server ready on port {}", quic_port);
 
     // Register this Stand in running.json
     let pid = std::process::id();

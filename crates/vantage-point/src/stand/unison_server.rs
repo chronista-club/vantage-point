@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use unison::network::channel::UnisonChannel;
-use unison::network::{MessageType, ProtocolServer, UnisonServer};
+use unison::network::{MessageType, ProtocolServer};
 
 use super::state::AppState;
 use crate::protocol::{Content, SplitDirection, StandMessage};
@@ -235,7 +235,11 @@ async fn handle_canvas_close(state: &AppState) -> Result<serde_json::Value, Stri
 ///
 /// "stand" と "canvas" の2チャネルを登録し、各チャネル内で
 /// メソッド名ベースのディスパッチを行う。
-pub async fn start_unison_server(state: Arc<AppState>, http_port: u16) {
+pub async fn start_unison_server(
+    state: Arc<AppState>,
+    http_port: u16,
+    ready_tx: tokio::sync::oneshot::Sender<()>,
+) {
     let quic_port = http_port + QUIC_PORT_OFFSET;
     let addr = format!("[::1]:{}", quic_port);
 
@@ -342,10 +346,21 @@ pub async fn start_unison_server(state: Arc<AppState>, http_port: u16) {
         })
         .await;
 
-    // サーバー起動
+    // サーバー起動（spawn_listen でバックグラウンド起動）
     tracing::info!("Starting Unison QUIC server on {}", addr);
-    let mut server = server;
-    if let Err(e) = server.listen(&addr).await {
-        tracing::error!("Unison QUIC server failed to start: {}", e);
+    match server.spawn_listen(&addr).await {
+        Ok(handle) => {
+            let _ = ready_tx.send(()); // バインド完了通知
+            tracing::info!("Unison QUIC server listening on {}", handle.local_addr());
+            // Stand shutdown を待ってからグレースフルシャットダウン
+            state.shutdown_token.cancelled().await;
+            if let Err(e) = handle.shutdown().await {
+                tracing::error!("QUIC server shutdown error: {}", e);
+            }
+        }
+        Err(e) => {
+            tracing::error!("Unison QUIC server failed to start: {}", e);
+            let _ = ready_tx.send(()); // エラーでも通知（ブロック防止）
+        }
     }
 }
