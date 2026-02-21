@@ -122,6 +122,12 @@ enum Commands {
         #[arg(long)]
         check: bool,
     },
+    /// Canvas ウィンドウを起動（Stand が spawn する内部コマンド）
+    Canvas {
+        /// 接続先の Stand ポート番号
+        #[arg(short, long)]
+        port: u16,
+    },
 
     // --- App ---
     /// VantagePoint.app を起動（Daemon も自動起動）
@@ -222,6 +228,7 @@ fn main() -> Result<()> {
             rt.block_on(mcp::run_mcp_server(33000))
         }
         Commands::Update { check } => commands::update::execute(check),
+        Commands::Canvas { port } => commands::canvas::execute(port),
 
         // App
         Commands::App { port, no_daemon } => commands::app::execute(port, no_daemon),
