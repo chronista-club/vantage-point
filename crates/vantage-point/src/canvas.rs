@@ -10,7 +10,7 @@ use crate::terminal_window::create_menu_bar;
 /// 別プロセスで Canvas ウィンドウを起動
 pub fn run_canvas_detached(port: u16) -> anyhow::Result<()> {
     std::process::Command::new("vp")
-        .args(["webview", "-p", &port.to_string()])
+        .args(["canvas", "--port", &port.to_string()])
         .spawn()?;
     Ok(())
 }
