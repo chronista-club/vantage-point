@@ -74,6 +74,9 @@ uuid = { version = "1", features = ["v4"] }
 # Date/Time
 chrono = { version = "0.4", features = ["serde"] }
 
+# Database
+sqlx = { workspace = true }
+
 # mDNS Service Discovery (Bonjour)
 mdns-sd = "0.17"
 

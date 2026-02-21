@@ -132,6 +132,9 @@ pub fn execute(opts: StartOptions) -> Result<()> {
         bonjour_port: Some(resolved_port), // Bonjour広告を有効化
     };
 
+    // Daemon ポート（DaemonClient の定数を使用）
+    let daemon_port = crate::daemon::client::DAEMON_QUIC_PORT;
+
     if headless || browser {
         // Headless or browser mode - use tokio runtime
         let rt = tokio::runtime::Runtime::new()?;
@@ -151,7 +154,15 @@ pub fn execute(opts: StartOptions) -> Result<()> {
             server_handle.await?
         })
     } else {
-        // WebView mode - run server in background thread, WebView on main thread
+        // Daemon モード: Stand + Daemon 並行起動、ネイティブウィンドウは Daemon 経由
+
+        // 1. Daemon を自動起動（既に起動済みならスキップ）
+        match crate::daemon::process::ensure_daemon_running(daemon_port) {
+            Ok(pid) => tracing::info!("Daemon ready (PID: {})", pid),
+            Err(e) => tracing::warn!("Daemon 自動起動失敗（Stand のみで動作）: {}", e),
+        }
+
+        // 2. Stand サーバーをバックグラウンドスレッドで起動（MCP 互換性のため維持）
         let server_thread = std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime");
             rt.block_on(async {
@@ -159,18 +170,26 @@ pub fn execute(opts: StartOptions) -> Result<()> {
             })
         });
 
-        // Wait a bit for server to start
-        std::thread::sleep(std::time::Duration::from_millis(300));
+        // Stand + Daemon の起動を待つ
+        std::thread::sleep(std::time::Duration::from_millis(500));
 
-        // Run WebView on main thread (required by macOS)
-        let webview_result = crate::terminal_window::run_terminal(resolved_port);
+        // 3. プロジェクト名を取得（ディレクトリ名をセッションIDとして使用）
+        let project_name = std::path::Path::new(&resolved_project_dir)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("default")
+            .to_string();
+
+        // 4. Daemon 経由のネイティブウィンドウを起動（メインスレッド）
+        let webview_result =
+            crate::terminal_window::run_terminal_with_daemon(daemon_port, &project_name);
 
         match webview_result {
             Ok(()) => {
-                tracing::info!("WebView closed");
+                tracing::info!("Terminal window closed");
             }
             Err(e) => {
-                tracing::error!("WebView error: {}", e);
+                tracing::error!("Terminal window error: {}", e);
             }
         }
 

@@ -66,6 +66,7 @@ pub fn execute(port: u16, browser: bool, headless: bool) -> Result<()> {
     let debug_mode = parse_debug_env().unwrap_or_default();
 
     // Create CapabilityConfig (no MIDI on restart)
+    let project_dir_for_name = project_dir.clone();
     let cap_config = crate::stand::CapabilityConfig {
         project_dir,
         midi_config: None,
@@ -89,19 +90,33 @@ pub fn execute(port: u16, browser: bool, headless: bool) -> Result<()> {
             server_handle.await?
         })
     } else {
-        // WebView mode
+        // Daemon + ネイティブターミナルモード
+        let daemon_port = crate::daemon::client::DAEMON_QUIC_PORT;
+        match crate::daemon::process::ensure_daemon_running(daemon_port) {
+            Ok(pid) => tracing::info!("Daemon ready (PID: {})", pid),
+            Err(e) => tracing::warn!("Daemon 自動起動失敗: {}", e),
+        }
+
         let server_thread = std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime");
             rt.block_on(async { crate::stand::run(port, false, debug_mode, cap_config).await })
         });
 
-        std::thread::sleep(std::time::Duration::from_millis(300));
+        std::thread::sleep(std::time::Duration::from_millis(500));
 
-        let webview_result = crate::terminal_window::run_terminal(port);
+        // プロジェクト名を取得
+        let project_name = std::path::Path::new(&project_dir_for_name)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("default")
+            .to_string();
+
+        let webview_result =
+            crate::terminal_window::run_terminal_with_daemon(daemon_port, &project_name);
 
         match webview_result {
-            Ok(()) => tracing::info!("WebView closed"),
-            Err(e) => tracing::error!("WebView error: {}", e),
+            Ok(()) => tracing::info!("Terminal window closed"),
+            Err(e) => tracing::error!("Terminal window error: {}", e),
         }
 
         drop(server_thread);

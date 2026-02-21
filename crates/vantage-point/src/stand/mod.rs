@@ -15,8 +15,7 @@ mod routes;
 mod server;
 mod session;
 pub(crate) mod state;
-pub mod tmux;
 pub(crate) mod unison_server;
 
 pub use capabilities::CapabilityConfig;
-pub use server::{run, run_conductor};
+pub use server::run;

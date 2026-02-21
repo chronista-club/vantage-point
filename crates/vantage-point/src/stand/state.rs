@@ -13,7 +13,6 @@ use super::capabilities::StandCapabilities;
 use super::hub::Hub;
 use super::pty::PtyManager;
 use super::session::SessionManager;
-use super::tmux::TmuxManager;
 use crate::agent::InteractiveClaudeAgent;
 use crate::agui::AgUiEvent;
 use crate::capability::{StandManagerCapability, UpdateCapability};
@@ -103,10 +102,6 @@ pub(crate) struct AppState {
     pub interactive_agent: Arc<RwLock<Option<InteractiveClaudeAgent>>>,
     /// PTYセッションマネージャー（ターミナル機能）- レガシー、tmux未対応環境用
     pub pty_manager: Arc<tokio::sync::Mutex<PtyManager>>,
-    /// tmuxセッションマネージャー（tmux利用可能時に使用）
-    pub tmux_manager: Arc<tokio::sync::Mutex<TmuxManager>>,
-    /// tmuxを使用するかどうか
-    pub use_tmux: bool,
     /// Canvasウィンドウのプロセス管理（PID）
     pub canvas_pid: Arc<tokio::sync::Mutex<Option<u32>>>,
     /// Standの待ち受けポート番号（Canvas起動時に使用）

@@ -26,6 +26,7 @@ mod capability;
 mod cli;
 mod commands;
 mod config;
+mod daemon;
 mod mcp;
 mod midi;
 mod protocol;

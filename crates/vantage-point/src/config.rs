@@ -156,6 +156,11 @@ impl Config {
 // Running Stands Management
 // =============================================================================
 
+/// プロセスが生存しているか確認（kill -0）
+fn is_process_alive(pid: u32) -> bool {
+    unsafe { libc::kill(pid as i32, 0) == 0 }
+}
+
 /// Running Stand information
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunningStandInfo {
@@ -282,22 +287,35 @@ impl RunningStands {
 
         let stands = Self::load().ok()?;
 
+        // プロセス生存確認フィルタ
+        let alive_stands: Vec<_> = stands
+            .stands
+            .into_iter()
+            .filter(|s| is_process_alive(s.pid))
+            .collect();
+
         // First try exact match
-        if let Some(stand) = stands.stands.iter().find(|s| s.project_dir == cwd_str) {
+        if let Some(stand) = alive_stands.iter().find(|s| s.project_dir == cwd_str) {
             return Some(stand.clone());
         }
 
         // Then try to find a Stand whose project is an ancestor of cwd
-        stands
-            .stands
+        alive_stands
             .into_iter()
             .filter(|s| cwd_str.starts_with(&s.project_dir))
             .max_by_key(|s| s.project_dir.len()) // Most specific match
     }
 
-    /// Get all running Stands
+    /// Get all running Stands（プロセス生存確認済み）
     pub fn list() -> Vec<RunningStandInfo> {
-        Self::load().map(|s| s.stands).unwrap_or_default()
+        Self::load()
+            .map(|s| {
+                s.stands
+                    .into_iter()
+                    .filter(|s| is_process_alive(s.pid))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Clean up stale entries (processes that are no longer running)
