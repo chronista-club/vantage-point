@@ -255,10 +255,7 @@ mod tests {
                 break; // 成功: プロセスが終了した
             }
             if tokio::time::Instant::now() >= deadline {
-                panic!(
-                    "Drop後2秒経ってもプロセスが終了していない (PID: {})",
-                    pid
-                );
+                panic!("Drop後2秒経ってもプロセスが終了していない (PID: {})", pid);
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }

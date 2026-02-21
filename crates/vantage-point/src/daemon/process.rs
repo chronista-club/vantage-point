@@ -29,9 +29,7 @@ pub fn is_daemon_running() -> Option<u32> {
     let pid: u32 = pid_str.trim().parse().ok()?;
 
     // kill(pid, 0) でプロセスの存在を確認（シグナルは送信しない）
-    let alive = i32::try_from(pid).map_or(false, |pid_i32| {
-        unsafe { libc::kill(pid_i32, 0) == 0 }
-    });
+    let alive = i32::try_from(pid).map_or(false, |pid_i32| unsafe { libc::kill(pid_i32, 0) == 0 });
     if alive {
         Some(pid)
     } else {
@@ -143,8 +141,7 @@ pub fn ensure_daemon_running(port: u16) -> Result<u32> {
 pub fn stop_daemon(pid: u32) -> Result<()> {
     tracing::info!("Daemon 停止要求 (PID: {})", pid);
 
-    let pid_i32 = i32::try_from(pid)
-        .map_err(|_| anyhow::anyhow!("PIDがi32の範囲外: {}", pid))?;
+    let pid_i32 = i32::try_from(pid).map_err(|_| anyhow::anyhow!("PIDがi32の範囲外: {}", pid))?;
 
     // SIGTERM を送信
     let ret = unsafe { libc::kill(pid_i32, libc::SIGTERM) };
@@ -163,7 +160,11 @@ pub fn stop_daemon(pid: u32) -> Result<()> {
         tracing::warn!("SIGTERM後もDaemonが生存、SIGKILLを送信");
         let ret = unsafe { libc::kill(pid_i32, libc::SIGKILL) };
         if ret != 0 {
-            tracing::warn!("SIGKILL送信失敗 (PID: {}): {}", pid, std::io::Error::last_os_error());
+            tracing::warn!(
+                "SIGKILL送信失敗 (PID: {}): {}",
+                pid,
+                std::io::Error::last_os_error()
+            );
         }
         remove_pid_file();
     }
@@ -208,15 +209,9 @@ mod tests {
         std::fs::write(&path, "2147483647").unwrap(); // i32::MAX
 
         let result = is_daemon_running();
-        assert!(
-            result.is_none(),
-            "存在しないPIDなのに Some が返った"
-        );
+        assert!(result.is_none(), "存在しないPIDなのに Some が返った");
         // PIDファイルが掃除されていること
-        assert!(
-            !path.exists(),
-            "古いPIDファイルが削除されていない"
-        );
+        assert!(!path.exists(), "古いPIDファイルが削除されていない");
 
         // バックアップを復元
         if let Some(content) = backup {
@@ -240,10 +235,7 @@ mod tests {
         std::fs::write(&path, u32::MAX.to_string()).unwrap();
 
         let result = is_daemon_running();
-        assert!(
-            result.is_none(),
-            "オーバーフローPIDが Some を返した"
-        );
+        assert!(result.is_none(), "オーバーフローPIDが Some を返した");
 
         // バックアップを復元（PIDファイルが消えている場合に備え）
         if let Some(content) = backup {

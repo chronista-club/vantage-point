@@ -625,11 +625,8 @@ mod tests {
             drop(receivers);
 
             let mut rx = rx.unwrap();
-            let result = tokio::time::timeout(
-                std::time::Duration::from_millis(200),
-                rx.recv(),
-            )
-            .await;
+            let result =
+                tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv()).await;
 
             let mut receivers = state1.output_receivers.lock().await;
             receivers.insert(key1c, rx);
@@ -648,11 +645,8 @@ mod tests {
             drop(receivers);
 
             let mut rx = rx.unwrap();
-            let result = tokio::time::timeout(
-                std::time::Duration::from_millis(200),
-                rx.recv(),
-            )
-            .await;
+            let result =
+                tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv()).await;
 
             let mut receivers = state2.output_receivers.lock().await;
             receivers.insert(key2c, rx);
@@ -666,7 +660,10 @@ mod tests {
 
         let (r1, r2) = tokio::join!(task1, task2);
         assert!(r1.unwrap(), "ペイン1がデータを受信できなかった");
-        assert!(r2.unwrap(), "ペイン2がデータを受信できなかった（デッドロックの可能性）");
+        assert!(
+            r2.unwrap(),
+            "ペイン2がデータを受信できなかった（デッドロックの可能性）"
+        );
     }
 
     #[tokio::test]
