@@ -1,121 +1,136 @@
 # Vantage Point
 
-> 開発行為を拡張する
+Claude Code のためのリッチ表示サーバー。Markdown、HTML、ログをブラウザに表示する。
 
-AIと協働しながら、デバイス・場所に縛られずシームレスに開発を継続できるプラットフォーム。
-
-## クイックスタート
-
-### 必要条件
-
-- macOS 13.0 (Ventura) 以降
-- [Claude CLI](https://docs.anthropic.com/en/docs/build-with-claude/claude-code) がインストール済み
-
-### インストール
+## インストール・更新
 
 ```bash
-# 1. vpコマンドをインストール
+# インストール
 curl -L https://github.com/chronista-club/vantage-point/releases/latest/download/vp-aarch64-apple-darwin -o /usr/local/bin/vp
 chmod +x /usr/local/bin/vp
 
-# 2. 設定ファイルを作成
-mkdir -p ~/.config/vantage
-cat > ~/.config/vantage/config.toml << 'EOF'
+# 更新
+vp update
+```
+
+macOS 13.0 (Ventura) 以降、[Claude CLI](https://docs.anthropic.com/en/docs/build-with-claude/claude-code) が必要。
+
+---
+
+## vp start すると何が起こるか
+
+```mermaid
+sequenceDiagram
+    participant U as ユーザー
+    participant VP as vp start
+    participant CC as Claude Code
+    participant B as ブラウザ
+
+    U->>VP: vp start
+    VP->>B: WebView ウィンドウを開く
+    VP->>VP: HTTP + WebSocket サーバー起動<br/>（ポート 33000〜）
+    U->>CC: claude mcp add vp -- vp mcp
+    CC->>VP: MCP ツール呼び出し<br/>show / split_pane / clear
+    VP->>B: WebSocket でコンテンツ配信
+```
+
+1. `vp start` で Stand（HTTP + WebSocket サーバー）が起動し、WebView ウィンドウが開く
+2. Claude Code に MCP サーバーとして登録する
+3. Claude Code がセッション中に `show` ツールを呼ぶと、ブラウザにコンテンツが表示される
+
+ターミナルでは表示しきれないもの — Mermaid 図、HTML、長いログ — をブラウザ側に出力できる。
+
+---
+
+## Claude Code に登録する
+
+```bash
+claude mcp add vp -- vp mcp
+```
+
+登録後、Claude Code のセッション中に以下の MCP ツールが使える:
+
+| ツール | 説明 |
+|--------|------|
+| `show` | Markdown / HTML / ログをペインに表示 |
+| `split_pane` | ペインを水平・垂直に分割 |
+| `close_pane` | ペインを閉じる |
+| `toggle_pane` | 左右パネルの表示切替 |
+| `clear` | ペインをクリア |
+| `open_canvas` | Canvas ウィンドウを開く |
+| `close_canvas` | Canvas ウィンドウを閉じる |
+| `permission` | ツール実行の承認リクエスト |
+| `restart` | Stand を再起動 |
+
+---
+
+## コマンド
+
+```bash
+vp start [N]          # Stand を起動（N はプロジェクト番号）
+vp start --headless   # WebView なしで起動
+vp start --browser    # ネイティブ WebView の代わりにブラウザで開く
+vp stop               # Stand を停止
+vp restart            # 再起動（セッション状態を保持）
+vp ps                 # 稼働中 Stand の一覧
+vp open [N]           # WebUI を開く
+vp config             # 設定と登録プロジェクトを表示
+vp update             # 最新版に更新
+vp mcp                # MCP サーバーとして起動（Claude Code 用）
+```
+
+### MIDI
+
+```bash
+vp start --midi 0     # MIDI ポート 0 を有効化
+```
+
+### 設定ファイル
+
+`~/.config/vantage/config.toml` にプロジェクトを登録する:
+
+```toml
 [[projects]]
 name = "my-project"
 path = "/path/to/your/project"
-EOF
-
-# 3. Standを起動
-vp start
-
-# 4. WebUIを開く
-vp open
 ```
 
-### VantagePoint.app（メニューバーアプリ）
+---
 
-Standをメニューバーから操作できるMacアプリ。
+## VantagePoint.app（メニューバーアプリ）
+
+Stand をメニューバーから操作できる Mac アプリ。
 
 1. [VantagePoint.app.zip](https://github.com/chronista-club/vantage-point-mac/releases/latest/download/VantagePoint.app.zip) をダウンロード
-2. 解凍して `/Applications` フォルダに移動
-3. アプリを起動
-
-メニューバーのアイコンから Stand の起動・停止が可能。
-
-### アップデート
-
-vpとVantagePoint.appは自動で更新をチェックします。
-
-手動アップデート:
-```bash
-# 最新版をダウンロードして上書き
-curl -L https://github.com/chronista-club/vantage-point/releases/latest/download/vp-aarch64-apple-darwin -o /usr/local/bin/vp
-```
-
-## コマンド一覧
-
-```bash
-vp start [N]      # プロジェクトN番のStandを起動
-vp ps             # 稼働中Stand一覧
-vp open [N]       # WebUIを開く
-vp stop           # Stand停止
-vp config         # 設定確認
-vp conductor      # Conductorモードで起動（VantagePoint.app用）
-```
-
-## コンセプト
-
-### AI主導の選択肢UI
-
-従来のチャットUIではなく、AIが選択肢を提示してユーザーが選ぶスタイル。
-移動中でもタップだけで開発を継続できる。
+2. `/Applications` に移動して起動
 
 ```
-AI: 次のステップはどうしますか？
-    [A] テストを書く
-    [B] リファクタリング
-    [C] 次の機能へ
+VantagePoint.app (メニューバー)
+    ↓ Conductor Stand を管理
+vp conductor
+    ↓ プロジェクト Stand を管理
+vp start (プロジェクトごと)
 ```
 
-### 協調モード
+---
 
-| モード | 説明 |
-|--------|------|
-| **協調** | ユーザーと一緒に進める |
-| **委任** | 任せて、途中経過・結果を確認 |
-| **自律** | 完全に任せる |
-
-### シームレスな継続
+## プロジェクト構成
 
 ```
-起床 → MIDIパッド → Mac → Vision Pro → 移動中(iPhone) → カフェ(iPad) → 帰宅(Mac)
-```
+vantage-point/
+├── crates/vantage-point/   # CLI + Stand (Rust)
+│   └── src/
+│       ├── stand/          # HTTP + WebSocket サーバー
+│       ├── mcp.rs          # MCP ツール実装
+│       ├── canvas.rs       # Canvas ウィンドウ
+│       ├── terminal/       # ネイティブターミナル
+│       ├── daemon/         # デーモンプロセス管理
+│       └── midi.rs         # MIDI 入力
+├── web/                    # WebView HTML/JS
+└── docs/                   # 仕様・設計
 
-すべて一つのワークスペース上で継続。デバイス間でP2P同期。
-
-## アーキテクチャ
-
-```
-┌─────────────────────────────────────────┐
-│   VantagePoint.app (Menu Bar)           │
-│   メニューバーからStandを操作             │
-└─────────────────────────────────────────┘
-                    ↓
-┌─────────────────────────────────────────┐
-│   Conductor Stand (vp conductor)        │
-│   - VantagePoint.appと通信              │
-│   - 複数プロジェクトを管理               │
-│   - オートアップデート                   │
-└─────────────────────────────────────────┘
-                    ↓
-┌─────────────────────────────────────────┐
-│   Project Stand (vp start)              │
-│   - Claude Agent SDK                    │
-│   - MCP Tools                           │
-│   - WebView UI                          │
-│   - MIDI入力                            │
-└─────────────────────────────────────────┘
+# 関連リポジトリ
+# https://github.com/chronista-club/vantage-point-mac (Swift メニューバーアプリ)
 ```
 
 ## 技術スタック
@@ -123,40 +138,10 @@ AI: 次のステップはどうしますか？
 | レイヤー | 技術 |
 |---------|------|
 | CLI / Stand | Rust (Tokio, Axum, Clap) |
-| Menu Bar App | Swift (AppKit) |
 | WebView | wry + tao |
-| Agent | Claude CLI + MCP |
+| MCP | rmcp (stdio) |
+| Menu Bar App | Swift (AppKit) |
 | MIDI | midir |
-
-## ドキュメント
-
-| ドキュメント | 内容 |
-|-------------|------|
-| [docs/spec/01-core-concept.md](docs/spec/01-core-concept.md) | コアコンセプト |
-| [docs/spec/02-user-journey.md](docs/spec/02-user-journey.md) | ユーザージャーニー |
-| [docs/design/01-architecture.md](docs/design/01-architecture.md) | アーキテクチャ設計 |
-
-## リポジトリ構成
-
-```
-vantage-point/              # このリポジトリ（vp CLI）
-├── crates/
-│   ├── vantage-point/      # メインCLI
-│   └── vantage-core/       # 共通ライブラリ
-├── web/                    # WebView HTML/JS
-└── docs/                   # 仕様・設計
-
-vantage-point-mac/          # メニューバーアプリ
-└── VantagePoint/           # Swift Package
-```
-
-## 関連リポジトリ
-
-- [chronista-club/vantage-point-mac](https://github.com/chronista-club/vantage-point-mac) - メニューバーアプリ
-
-## ステータス
-
-🚧 **アルファ版 - 開発中**
 
 ## ライセンス
 
