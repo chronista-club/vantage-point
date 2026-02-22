@@ -94,9 +94,10 @@ pub fn new_trace_id() -> String {
 ///
 /// ディレクトリが存在しない場合は自動作成する。
 /// パス: `~/.config/vantage/logs/debug.log`
+/// （macOS でも `~/.config` を使用し、VP の設定パスと統一する）
 pub fn log_file_path() -> Option<PathBuf> {
-    let config_dir = dirs::config_dir()?;
-    let log_dir = config_dir.join("vantage").join("logs");
+    let home = dirs::home_dir()?;
+    let log_dir = home.join(".config").join("vantage").join("logs");
 
     // ディレクトリがなければ作成
     if !log_dir.exists() {
