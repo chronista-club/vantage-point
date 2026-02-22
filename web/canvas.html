@@ -194,6 +194,336 @@
             opacity: 0.4;
             letter-spacing: 0.05em;
         }
+
+        /* ===== ログビュワーパネル ===== */
+
+        /* ログパネルトグルボタン（右下固定） */
+        .log-toggle-btn {
+            position: fixed;
+            bottom: 12px;
+            right: 16px;
+            z-index: 100;
+            font-family: 'FiraCode Nerd Font', 'Fira Code', monospace;
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--color-text-muted);
+            background: oklch(0.14 0.02 228 / 0.85);
+            backdrop-filter: blur(8px);
+            border: 1px solid var(--color-border-subtle);
+            border-radius: var(--radius-sm);
+            padding: 4px 10px;
+            cursor: pointer;
+            transition: color 0.2s, border-color 0.2s, background 0.2s;
+            letter-spacing: 0.05em;
+        }
+        .log-toggle-btn:hover {
+            color: var(--color-text-primary);
+            border-color: var(--color-accent-primary);
+        }
+        .log-toggle-btn.active {
+            color: var(--color-accent-primary);
+            border-color: var(--color-accent-primary);
+            background: oklch(0.14 0.04 210 / 0.9);
+        }
+        /* ログ件数バッジ */
+        .log-toggle-badge {
+            display: inline-block;
+            margin-left: 6px;
+            font-size: 9px;
+            font-weight: 700;
+            color: var(--color-text-primary);
+            background: var(--color-accent-primary);
+            border-radius: 8px;
+            padding: 1px 5px;
+            min-width: 16px;
+            text-align: center;
+            vertical-align: middle;
+        }
+
+        /* ログパネル本体 */
+        .log-panel {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 40vh;
+            z-index: 50;
+            background: oklch(0.10 0.02 228 / 0.92);
+            backdrop-filter: blur(12px);
+            border-top: 1px solid var(--color-border-subtle);
+            display: flex;
+            flex-direction: column;
+            transform: translateY(100%);
+            transition: transform 0.25s ease;
+        }
+        .log-panel.open {
+            transform: translateY(0);
+        }
+
+        /* ログパネルが開いているときコンテンツ領域を縮小 */
+        body.log-panel-open .canvas-content {
+            height: 60vh;
+        }
+        body.log-panel-open .log-toggle-btn {
+            bottom: calc(40vh + 12px);
+        }
+
+        /* フィルターバー */
+        .log-filter-bar {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            border-bottom: 1px solid var(--color-border-subtle);
+            flex-shrink: 0;
+            flex-wrap: wrap;
+        }
+        .log-filter-bar label {
+            font-size: 10px;
+            font-weight: 600;
+            color: var(--color-text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            margin-right: 2px;
+        }
+        .log-filter-input {
+            font-family: 'FiraCode Nerd Font', 'Fira Code', monospace;
+            font-size: 11px;
+            background: oklch(0.08 0.02 230);
+            border: 1px solid var(--color-border-subtle);
+            border-radius: var(--radius-sm);
+            color: var(--color-text-primary);
+            padding: 3px 8px;
+            width: 120px;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+        .log-filter-input:focus {
+            border-color: var(--color-accent-primary);
+        }
+        .log-filter-input::placeholder {
+            color: var(--color-text-muted);
+            opacity: 0.6;
+        }
+        /* フィルターボタングループ */
+        .log-filter-group {
+            display: flex;
+            gap: 2px;
+        }
+        .log-filter-btn {
+            font-family: 'FiraCode Nerd Font', 'Fira Code', monospace;
+            font-size: 10px;
+            font-weight: 500;
+            color: var(--color-text-muted);
+            background: transparent;
+            border: 1px solid var(--color-border-subtle);
+            border-radius: var(--radius-sm);
+            padding: 2px 8px;
+            cursor: pointer;
+            transition: color 0.15s, background 0.15s, border-color 0.15s;
+        }
+        .log-filter-btn:hover {
+            color: var(--color-text-secondary);
+            border-color: var(--color-text-muted);
+        }
+        .log-filter-btn.active {
+            color: var(--color-text-primary);
+            background: oklch(0.22 0.03 225);
+            border-color: var(--color-accent-primary);
+        }
+        /* フィルターセパレータ */
+        .log-filter-sep {
+            width: 1px;
+            height: 16px;
+            background: var(--color-border-subtle);
+            margin: 0 4px;
+        }
+        /* クリアボタン */
+        .log-clear-btn {
+            font-family: 'FiraCode Nerd Font', 'Fira Code', monospace;
+            font-size: 10px;
+            color: var(--color-text-muted);
+            background: transparent;
+            border: 1px solid transparent;
+            border-radius: var(--radius-sm);
+            padding: 2px 8px;
+            cursor: pointer;
+            margin-left: auto;
+            transition: color 0.15s, border-color 0.15s;
+        }
+        .log-clear-btn:hover {
+            color: var(--color-error);
+            border-color: var(--color-error);
+        }
+
+        /* ログエントリリスト */
+        .log-entries {
+            flex: 1;
+            overflow-y: auto;
+            overflow-x: hidden;
+            padding: 4px 0;
+        }
+        /* スクロール一時停止インジケータ */
+        .log-scroll-paused {
+            position: absolute;
+            bottom: 8px;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 10px;
+            color: var(--color-text-muted);
+            background: oklch(0.14 0.02 228 / 0.95);
+            border: 1px solid var(--color-border-subtle);
+            border-radius: var(--radius-sm);
+            padding: 3px 10px;
+            cursor: pointer;
+            display: none;
+            z-index: 51;
+            transition: opacity 0.2s;
+        }
+        .log-scroll-paused:hover {
+            color: var(--color-text-secondary);
+            border-color: var(--color-accent-primary);
+        }
+
+        /* 個別ログエントリ */
+        .log-entry {
+            display: flex;
+            align-items: baseline;
+            gap: 8px;
+            padding: 3px 12px 3px 12px;
+            font-family: 'FiraCode Nerd Font', 'Fira Code', monospace;
+            font-size: 12px;
+            line-height: 1.5;
+            border-left: 3px solid transparent;
+            cursor: default;
+            transition: background 0.1s;
+        }
+        .log-entry:hover {
+            background: oklch(0.14 0.02 225 / 0.5);
+        }
+        /* ログエントリにdataがある場合はクリック可能 */
+        .log-entry.has-data {
+            cursor: pointer;
+        }
+        /* プロセス別左ボーダー色 */
+        .log-entry.process-mcp {
+            border-left-color: var(--color-accent-primary);
+        }
+        .log-entry.process-stand {
+            border-left-color: var(--color-success);
+        }
+        /* レベル別テキスト色 */
+        .log-entry.level-warn .log-entry-msg {
+            color: oklch(0.78 0.14 75);
+        }
+        .log-entry.level-error .log-entry-msg {
+            color: var(--color-error);
+        }
+        .log-entry.level-error {
+            background: oklch(0.12 0.03 15 / 0.3);
+        }
+
+        /* エントリ内のフィールド */
+        .log-entry-time {
+            color: var(--color-text-muted);
+            font-size: 10px;
+            flex-shrink: 0;
+            width: 80px;
+        }
+        .log-entry-process {
+            font-size: 10px;
+            font-weight: 600;
+            flex-shrink: 0;
+            width: 40px;
+            text-transform: uppercase;
+        }
+        .log-entry-process.mcp { color: var(--color-accent-primary); }
+        .log-entry-process.stand { color: var(--color-success); }
+
+        .log-entry-trace {
+            color: var(--color-text-muted);
+            font-size: 10px;
+            flex-shrink: 0;
+            width: 52px;
+        }
+        .log-entry-step {
+            color: var(--color-text-secondary);
+            font-size: 10px;
+            flex-shrink: 0;
+            width: 72px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .log-entry-level {
+            font-size: 9px;
+            font-weight: 700;
+            flex-shrink: 0;
+            width: 38px;
+            text-align: center;
+            border-radius: 2px;
+            padding: 0 3px;
+        }
+        .log-entry-level.debug { color: var(--color-text-muted); }
+        .log-entry-level.info { color: var(--color-accent-primary); }
+        .log-entry-level.warn { color: oklch(0.78 0.14 75); }
+        .log-entry-level.error { color: var(--color-error); }
+
+        .log-entry-msg {
+            color: var(--color-text-secondary);
+            flex: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .log-entry-elapsed {
+            color: var(--color-text-muted);
+            font-size: 10px;
+            flex-shrink: 0;
+            text-align: right;
+            width: 48px;
+        }
+        /* data展開アイコン */
+        .log-entry-expand {
+            color: var(--color-text-muted);
+            font-size: 10px;
+            flex-shrink: 0;
+            width: 12px;
+            text-align: center;
+            transition: transform 0.15s;
+        }
+        .log-entry.expanded .log-entry-expand {
+            transform: rotate(90deg);
+        }
+
+        /* JSON展開エリア */
+        .log-entry-data {
+            display: none;
+            padding: 6px 12px 8px 18px;
+            margin: 0;
+            font-family: 'FiraCode Nerd Font', 'Fira Code', monospace;
+            font-size: 11px;
+            line-height: 1.4;
+            color: var(--color-text-muted);
+            background: oklch(0.08 0.02 230 / 0.6);
+            border-left: 3px solid var(--color-border-subtle);
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+        .log-entry-data.open {
+            display: block;
+        }
+
+        /* ログパネル空状態 */
+        .log-empty {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            font-size: 11px;
+            color: var(--color-text-muted);
+            opacity: 0.5;
+        }
     </style>
 </head>
 <body>
@@ -209,6 +539,53 @@
     </div>
 
     <div class="canvas-content" id="canvas-content"></div>
+
+    <!-- ログビュワートグルボタン -->
+    <button class="log-toggle-btn" id="log-toggle" type="button">
+        Log
+    </button>
+
+    <!-- ログビュワーパネル -->
+    <div class="log-panel" id="log-panel">
+        <!-- フィルターバー -->
+        <div class="log-filter-bar">
+            <label for="log-filter-trace">Trace</label>
+            <input class="log-filter-input" id="log-filter-trace"
+                   type="text" placeholder="trace_id...">
+
+            <div class="log-filter-sep"></div>
+
+            <label>Process</label>
+            <div class="log-filter-group" id="log-filter-process">
+                <button class="log-filter-btn active" data-value="all" type="button">All</button>
+                <button class="log-filter-btn" data-value="mcp" type="button">mcp</button>
+                <button class="log-filter-btn" data-value="stand" type="button">stand</button>
+            </div>
+
+            <div class="log-filter-sep"></div>
+
+            <label>Level</label>
+            <div class="log-filter-group" id="log-filter-level">
+                <button class="log-filter-btn active" data-value="all" type="button">All</button>
+                <button class="log-filter-btn" data-value="DEBUG" type="button">DEBUG</button>
+                <button class="log-filter-btn" data-value="INFO" type="button">INFO</button>
+                <button class="log-filter-btn" data-value="WARN" type="button">WARN</button>
+                <button class="log-filter-btn" data-value="ERROR" type="button">ERROR</button>
+            </div>
+
+            <button class="log-clear-btn" id="log-clear" type="button">Clear</button>
+        </div>
+
+        <!-- ログエントリリスト -->
+        <div class="log-entries" id="log-entries">
+            <div class="log-empty" id="log-empty">トレースログを待機中...</div>
+        </div>
+
+        <!-- スクロール一時停止インジケータ -->
+        <div class="log-scroll-paused" id="log-scroll-resume">
+            ↓ 新しいログがあります — クリックで最新へ
+        </div>
+    </div>
 
     <script>
         // ===== ペイン管理 =====
@@ -268,6 +645,301 @@
             }
             bodyEl.appendChild(div);
         }
+
+        // ===== ログビュワー =====
+
+        /** ログエントリの保持上限 */
+        const LOG_MAX_ENTRIES = 2000;
+
+        /** 全ログエントリ（フィルタ用に保持） */
+        const logStore = [];
+
+        /** 現在のフィルタ状態 */
+        const logFilter = {
+            traceId: '',
+            process: 'all',
+            level: 'all',
+        };
+
+        /** オートスクロール状態 */
+        let logAutoScroll = true;
+
+        /** パネル開閉状態 */
+        let logPanelOpen = false;
+
+        // DOM参照キャッシュ
+        const logPanel = document.getElementById('log-panel');
+        const logToggleBtn = document.getElementById('log-toggle');
+        const logEntries = document.getElementById('log-entries');
+        const logEmpty = document.getElementById('log-empty');
+        const logScrollResume = document.getElementById('log-scroll-resume');
+        const logFilterTrace = document.getElementById('log-filter-trace');
+        const logClearBtn = document.getElementById('log-clear');
+
+        /** ログパネルの開閉 */
+        function toggleLogPanel() {
+            logPanelOpen = !logPanelOpen;
+            logPanel.classList.toggle('open', logPanelOpen);
+            logToggleBtn.classList.toggle('active', logPanelOpen);
+            document.body.classList.toggle('log-panel-open', logPanelOpen);
+            if (logPanelOpen && logAutoScroll) {
+                scrollLogToBottom();
+            }
+        }
+
+        logToggleBtn.addEventListener('click', toggleLogPanel);
+
+        /** タイムスタンプを HH:MM:SS.mmm 形式に変換 */
+        function formatLogTime(ts) {
+            try {
+                const d = new Date(ts);
+                const hh = String(d.getHours()).padStart(2, '0');
+                const mm = String(d.getMinutes()).padStart(2, '0');
+                const ss = String(d.getSeconds()).padStart(2, '0');
+                const ms = String(d.getMilliseconds()).padStart(3, '0');
+                return `${hh}:${mm}:${ss}.${ms}`;
+            } catch {
+                return ts || '--:--:--';
+            }
+        }
+
+        /** フィルタ条件にマッチするか判定 */
+        function matchesFilter(entry) {
+            if (logFilter.traceId && !entry.trace_id.includes(logFilter.traceId)) {
+                return false;
+            }
+            if (logFilter.process !== 'all' && entry.process !== logFilter.process) {
+                return false;
+            }
+            if (logFilter.level !== 'all' && entry.level !== logFilter.level) {
+                return false;
+            }
+            return true;
+        }
+
+        /** ログエントリのDOM要素を生成（textContentのみ使用） */
+        function createLogEntryEl(entry) {
+            // メイン行
+            const row = document.createElement('div');
+            row.className = 'log-entry';
+            row.classList.add(`process-${entry.process}`);
+            row.classList.add(`level-${entry.level.toLowerCase()}`);
+            if (entry.data) row.classList.add('has-data');
+
+            // 時刻
+            const timeEl = document.createElement('span');
+            timeEl.className = 'log-entry-time';
+            timeEl.textContent = formatLogTime(entry.ts);
+            row.appendChild(timeEl);
+
+            // プロセス
+            const procEl = document.createElement('span');
+            procEl.className = `log-entry-process ${entry.process}`;
+            procEl.textContent = entry.process;
+            row.appendChild(procEl);
+
+            // trace_id
+            const traceEl = document.createElement('span');
+            traceEl.className = 'log-entry-trace';
+            traceEl.textContent = entry.trace_id;
+            row.appendChild(traceEl);
+
+            // ステップ
+            const stepEl = document.createElement('span');
+            stepEl.className = 'log-entry-step';
+            stepEl.textContent = entry.step;
+            stepEl.title = entry.step;
+            row.appendChild(stepEl);
+
+            // レベル
+            const levelEl = document.createElement('span');
+            levelEl.className = `log-entry-level ${entry.level.toLowerCase()}`;
+            levelEl.textContent = entry.level;
+            row.appendChild(levelEl);
+
+            // メッセージ
+            const msgEl = document.createElement('span');
+            msgEl.className = 'log-entry-msg';
+            msgEl.textContent = entry.msg;
+            msgEl.title = entry.msg;
+            row.appendChild(msgEl);
+
+            // 経過時間
+            const elapsedEl = document.createElement('span');
+            elapsedEl.className = 'log-entry-elapsed';
+            elapsedEl.textContent = entry.elapsed_ms != null ? `${entry.elapsed_ms}ms` : '';
+            row.appendChild(elapsedEl);
+
+            // data展開アイコン
+            const expandEl = document.createElement('span');
+            expandEl.className = 'log-entry-expand';
+            expandEl.textContent = entry.data ? '\u25B6' : '';
+            row.appendChild(expandEl);
+
+            // data展開エリア（クリックで開閉）
+            let dataEl = null;
+            if (entry.data) {
+                dataEl = document.createElement('pre');
+                dataEl.className = 'log-entry-data';
+                dataEl.textContent = JSON.stringify(entry.data, null, 2);
+
+                row.addEventListener('click', () => {
+                    const isOpen = dataEl.classList.toggle('open');
+                    row.classList.toggle('expanded', isOpen);
+                });
+            }
+
+            // Fragment にまとめて返す
+            const frag = document.createDocumentFragment();
+            frag.appendChild(row);
+            if (dataEl) frag.appendChild(dataEl);
+            return frag;
+        }
+
+        /** ログリストの最下部へスクロール */
+        function scrollLogToBottom() {
+            logEntries.scrollTop = logEntries.scrollHeight;
+        }
+
+        /** ログエントリを追加 */
+        function addLogEntry(entry) {
+            logStore.push(entry);
+
+            // 上限超過時に古いエントリを削除
+            if (logStore.length > LOG_MAX_ENTRIES) {
+                const removed = logStore.splice(0, logStore.length - LOG_MAX_ENTRIES);
+                // 表示済みDOM も先頭から削除（フィルタ適用中は全リビルド）
+                if (logFilter.traceId || logFilter.process !== 'all' || logFilter.level !== 'all') {
+                    rebuildLogEntries();
+                    return;
+                }
+                // フィルタ無しの場合、削除分だけDOMから先頭を除去
+                for (let i = 0; i < removed.length; i++) {
+                    // logEmpty の次の兄弟要素から .log-entry を探して削除
+                    const first = logEmpty.nextElementSibling;
+                    if (first && first.classList.contains('log-entry')) {
+                        // data展開 pre があればそれも先に除去
+                        const next = first.nextElementSibling;
+                        if (next && next.classList.contains('log-entry-data')) {
+                            next.remove();
+                        }
+                        first.remove();
+                    }
+                }
+            }
+
+            // 空状態メッセージを消す
+            if (logEmpty.style.display !== 'none') {
+                logEmpty.style.display = 'none';
+            }
+
+            if (!matchesFilter(entry)) return;
+
+            const el = createLogEntryEl(entry);
+            logEntries.appendChild(el);
+
+            // オートスクロール
+            if (logAutoScroll) {
+                scrollLogToBottom();
+            }
+
+            // トグルボタンのバッジ更新（パネル閉じているときだけ）
+            updateLogBadge();
+        }
+
+        /** ログエントリ DOM を全削除（logEmpty は残す） */
+        function clearLogDom() {
+            const children = Array.from(logEntries.children);
+            for (const child of children) {
+                if (child !== logEmpty) child.remove();
+            }
+        }
+
+        /** フィルタ変更時にログリストを再構築 */
+        function rebuildLogEntries() {
+            clearLogDom();
+            let hasVisible = false;
+            for (const entry of logStore) {
+                if (matchesFilter(entry)) {
+                    logEntries.appendChild(createLogEntryEl(entry));
+                    hasVisible = true;
+                }
+            }
+            logEmpty.style.display = hasVisible ? 'none' : '';
+            logEmpty.textContent = hasVisible ? '' : 'フィルタに一致するログがありません';
+            if (logAutoScroll) scrollLogToBottom();
+        }
+
+        /** ログをクリア */
+        function clearLog() {
+            logStore.length = 0;
+            clearLogDom();
+            logEmpty.style.display = '';
+            logEmpty.textContent = 'トレースログを待機中...';
+            updateLogBadge();
+        }
+
+        /** バッジ更新 */
+        function updateLogBadge() {
+            let badge = logToggleBtn.querySelector('.log-toggle-badge');
+            if (logPanelOpen || logStore.length === 0) {
+                if (badge) badge.remove();
+                return;
+            }
+            if (!badge) {
+                badge = document.createElement('span');
+                badge.className = 'log-toggle-badge';
+                logToggleBtn.appendChild(badge);
+            }
+            badge.textContent = logStore.length > 999 ? '999+' : String(logStore.length);
+        }
+
+        // --- フィルターバーのイベント ---
+
+        // trace_id テキスト入力
+        logFilterTrace.addEventListener('input', () => {
+            logFilter.traceId = logFilterTrace.value.trim();
+            rebuildLogEntries();
+        });
+
+        // プロセスフィルタボタン
+        document.getElementById('log-filter-process').addEventListener('click', (e) => {
+            const btn = e.target.closest('.log-filter-btn');
+            if (!btn) return;
+            // 同グループ内のactiveを切り替え
+            btn.parentElement.querySelectorAll('.log-filter-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            logFilter.process = btn.dataset.value;
+            rebuildLogEntries();
+        });
+
+        // レベルフィルタボタン
+        document.getElementById('log-filter-level').addEventListener('click', (e) => {
+            const btn = e.target.closest('.log-filter-btn');
+            if (!btn) return;
+            btn.parentElement.querySelectorAll('.log-filter-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            logFilter.level = btn.dataset.value;
+            rebuildLogEntries();
+        });
+
+        // クリアボタン
+        logClearBtn.addEventListener('click', clearLog);
+
+        // --- オートスクロール制御 ---
+        logEntries.addEventListener('scroll', () => {
+            const { scrollTop, scrollHeight, clientHeight } = logEntries;
+            // 下端から20px以内ならオートスクロール復帰
+            const atBottom = scrollHeight - scrollTop - clientHeight < 20;
+            logAutoScroll = atBottom;
+            logScrollResume.style.display = atBottom ? 'none' : 'block';
+        });
+
+        logScrollResume.addEventListener('click', () => {
+            logAutoScroll = true;
+            scrollLogToBottom();
+            logScrollResume.style.display = 'none';
+        });
 
         // ===== WebSocket =====
         const WS_URL = `ws://${location.host}/ws`;
@@ -340,6 +1012,11 @@
                     }
                     break;
                 }
+
+                // トレースログ → ログビュワーに追加
+                case 'trace_log':
+                    addLogEntry(msg);
+                    break;
 
                 // ターミナル系メッセージは無視
                 case 'terminal_output':
