@@ -114,15 +114,16 @@ pub fn log_file_path() -> Option<PathBuf> {
 /// `write_trace()` 内でも遅延初期化されるが、プロセス起動直後に
 /// 呼び出すことで初期化タイミングを明示的に制御できる。
 pub fn init_log_file() {
-    let _ = ensure_log_file();
+    ensure_log_file();
 }
 
 /// ログファイルを初期化（append モード）
 ///
 /// OnceLock により、プロセス内で1回だけ実行される。
+/// パス取得失敗時は None を返す。
 fn ensure_log_file() -> Option<&'static Mutex<File>> {
+    let path = log_file_path()?;
     Some(LOG_FILE.get_or_init(|| {
-        let path = log_file_path().expect("ログファイルパス取得失敗");
         let file = OpenOptions::new()
             .create(true)
             .append(true)

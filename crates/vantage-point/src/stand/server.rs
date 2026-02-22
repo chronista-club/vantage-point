@@ -34,6 +34,9 @@ pub async fn run(
 ) -> Result<()> {
     let project_dir = cap_config.project_dir.clone();
 
+    // トレースログファイルを早期初期化
+    crate::trace_log::init_log_file();
+
     // Shutdown signal
     let shutdown_token = CancellationToken::new();
     let shutdown_token_clone = shutdown_token.clone();
