@@ -221,14 +221,8 @@ pub async fn watch_and_broadcast(hub: crate::stand::hub::Hub) {
                         Ok(val) => {
                             let msg = StandMessage::TraceLog {
                                 ts: val["ts"].as_str().unwrap_or_default().to_string(),
-                                process: val["process"]
-                                    .as_str()
-                                    .unwrap_or_default()
-                                    .to_string(),
-                                trace_id: val["trace_id"]
-                                    .as_str()
-                                    .unwrap_or_default()
-                                    .to_string(),
+                                process: val["process"].as_str().unwrap_or_default().to_string(),
+                                trace_id: val["trace_id"].as_str().unwrap_or_default().to_string(),
                                 step: val["step"].as_str().unwrap_or_default().to_string(),
                                 level: val["level"].as_str().unwrap_or_default().to_string(),
                                 msg: val["msg"].as_str().unwrap_or_default().to_string(),

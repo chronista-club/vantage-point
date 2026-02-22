@@ -253,7 +253,7 @@ pub async fn start_unison_server(
             move |_ctx, stream| {
                 let state = state.clone();
                 async move {
-                    use crate::trace_log::{write_trace, new_trace_id, TraceEntry};
+                    use crate::trace_log::{TraceEntry, new_trace_id, write_trace};
 
                     let channel = UnisonChannel::new(stream);
 
@@ -274,10 +274,16 @@ pub async fn start_unison_server(
                         // リクエスト受信ログ
                         let tid = new_trace_id();
                         let start = std::time::Instant::now();
-                        write_trace(&TraceEntry::new(
-                            "stand", &tid, "receive", "INFO",
-                            format!("stand.{}", method),
-                        ).with_data(payload.clone()));
+                        write_trace(
+                            &TraceEntry::new(
+                                "stand",
+                                &tid,
+                                "receive",
+                                "INFO",
+                                format!("stand.{}", method),
+                            )
+                            .with_data(payload.clone()),
+                        );
 
                         let result = match method.as_str() {
                             "show" => handle_show(&state, payload),
@@ -291,18 +297,30 @@ pub async fn start_unison_server(
                         let response = match &result {
                             Ok(payload) => {
                                 // 処理成功ログ
-                                write_trace(&TraceEntry::new(
-                                    "stand", &tid, "respond", "INFO",
-                                    format!("stand.{} OK", method),
-                                ).with_elapsed(start.elapsed().as_millis() as u64));
+                                write_trace(
+                                    &TraceEntry::new(
+                                        "stand",
+                                        &tid,
+                                        "respond",
+                                        "INFO",
+                                        format!("stand.{} OK", method),
+                                    )
+                                    .with_elapsed(start.elapsed().as_millis() as u64),
+                                );
                                 payload.clone()
                             }
                             Err(e) => {
                                 // 処理失敗ログ
-                                write_trace(&TraceEntry::new(
-                                    "stand", &tid, "respond", "ERROR",
-                                    format!("stand.{} 失敗: {}", method, e),
-                                ).with_elapsed(start.elapsed().as_millis() as u64));
+                                write_trace(
+                                    &TraceEntry::new(
+                                        "stand",
+                                        &tid,
+                                        "respond",
+                                        "ERROR",
+                                        format!("stand.{} 失敗: {}", method, e),
+                                    )
+                                    .with_elapsed(start.elapsed().as_millis() as u64),
+                                );
                                 serde_json::json!({"error": e})
                             }
                         };
@@ -329,7 +347,7 @@ pub async fn start_unison_server(
             move |_ctx, stream| {
                 let state = state.clone();
                 async move {
-                    use crate::trace_log::{write_trace, new_trace_id, TraceEntry};
+                    use crate::trace_log::{TraceEntry, new_trace_id, write_trace};
 
                     let channel = UnisonChannel::new(stream);
 
@@ -350,7 +368,10 @@ pub async fn start_unison_server(
                         let tid = new_trace_id();
                         let start = std::time::Instant::now();
                         write_trace(&TraceEntry::new(
-                            "stand", &tid, "receive", "INFO",
+                            "stand",
+                            &tid,
+                            "receive",
+                            "INFO",
                             format!("canvas.{}", method),
                         ));
 
@@ -363,18 +384,30 @@ pub async fn start_unison_server(
                         let response = match &result {
                             Ok(payload) => {
                                 // 処理成功ログ
-                                write_trace(&TraceEntry::new(
-                                    "stand", &tid, "respond", "INFO",
-                                    format!("canvas.{} OK", method),
-                                ).with_elapsed(start.elapsed().as_millis() as u64));
+                                write_trace(
+                                    &TraceEntry::new(
+                                        "stand",
+                                        &tid,
+                                        "respond",
+                                        "INFO",
+                                        format!("canvas.{} OK", method),
+                                    )
+                                    .with_elapsed(start.elapsed().as_millis() as u64),
+                                );
                                 payload.clone()
                             }
                             Err(e) => {
                                 // 処理失敗ログ
-                                write_trace(&TraceEntry::new(
-                                    "stand", &tid, "respond", "ERROR",
-                                    format!("canvas.{} 失敗: {}", method, e),
-                                ).with_elapsed(start.elapsed().as_millis() as u64));
+                                write_trace(
+                                    &TraceEntry::new(
+                                        "stand",
+                                        &tid,
+                                        "respond",
+                                        "ERROR",
+                                        format!("canvas.{} 失敗: {}", method, e),
+                                    )
+                                    .with_elapsed(start.elapsed().as_millis() as u64),
+                                );
                                 serde_json::json!({"error": e})
                             }
                         };
@@ -397,9 +430,12 @@ pub async fn start_unison_server(
     // サーバー起動（spawn_listen でバックグラウンド起動）
     tracing::info!("Starting Unison QUIC server on {}", addr);
     {
-        use crate::trace_log::{write_trace, TraceEntry};
+        use crate::trace_log::{TraceEntry, write_trace};
         write_trace(&TraceEntry::new(
-            "stand", "server", "start", "INFO",
+            "stand",
+            "server",
+            "start",
+            "INFO",
             format!("QUIC server starting on {}", addr),
         ));
     }
