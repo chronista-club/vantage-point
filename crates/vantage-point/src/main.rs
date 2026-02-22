@@ -33,6 +33,7 @@ mod protocol;
 mod stand;
 mod terminal;
 mod terminal_window;
+pub(crate) mod trace_log;
 mod tray;
 
 use cli::{DebugModeArg, parse_debug_env};
