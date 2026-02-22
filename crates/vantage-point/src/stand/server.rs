@@ -23,6 +23,7 @@ use super::state::AppState;
 use super::unison_server;
 use crate::capability::{StandManagerCapability, UpdateCapability};
 use crate::config::RunningStands;
+use crate::file_watcher::FileWatcherManager;
 use crate::protocol::DebugMode;
 
 /// Run the Stand server
@@ -78,6 +79,7 @@ pub async fn run(
         pty_manager: Arc::new(tokio::sync::Mutex::new(PtyManager::new())),
         canvas_pid: Arc::new(tokio::sync::Mutex::new(None)),
         port,
+        file_watchers: Arc::new(tokio::sync::Mutex::new(FileWatcherManager::new())),
     });
 
     let app = Router::new()
@@ -88,6 +90,8 @@ pub async fn run(
         .route("/api/toggle-pane", post(health::toggle_pane_handler))
         .route("/api/split-pane", post(health::split_pane_handler))
         .route("/api/close-pane", post(health::close_pane_handler))
+        .route("/api/watch-file", post(health::watch_file_handler))
+        .route("/api/unwatch-file", post(health::unwatch_file_handler))
         .route("/api/canvas/open", post(health::canvas_open_handler))
         .route("/api/canvas/close", post(health::canvas_close_handler))
         .route("/api/health", get(health::health_handler))
@@ -186,8 +190,9 @@ pub async fn run(
         );
     }
 
-    // Clone capabilities for shutdown
+    // Clone for shutdown
     let capabilities_for_shutdown = state.capabilities.clone();
+    let file_watchers_for_shutdown = state.file_watchers.clone();
 
     // Serve with graceful shutdown
     axum::serve(listener, app)
@@ -203,6 +208,9 @@ pub async fn run(
     } else {
         tracing::info!("Unregistered Stand from running.json (port={})", port);
     }
+
+    // ファイル監視を全停止
+    file_watchers_for_shutdown.lock().await.stop_all();
 
     // Shutdown all capabilities
     tracing::info!("Shutting down capabilities...");
@@ -269,6 +277,7 @@ pub async fn run_conductor(port: u16) -> Result<()> {
         pty_manager: Arc::new(tokio::sync::Mutex::new(PtyManager::new())),
         canvas_pid: Arc::new(tokio::sync::Mutex::new(None)),
         port,
+        file_watchers: Arc::new(tokio::sync::Mutex::new(FileWatcherManager::new())),
     });
 
     let app = Router::new()

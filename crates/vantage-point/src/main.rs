@@ -27,6 +27,7 @@ mod cli;
 mod commands;
 mod config;
 pub(crate) mod daemon;
+mod file_watcher;
 mod mcp;
 mod midi;
 mod protocol;
