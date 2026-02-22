@@ -37,7 +37,12 @@ impl PtySlot {
     ///
     /// 指定したシェルコマンドを PTY 上で起動し、
     /// 出力を broadcast channel に配信する reader task を開始する。
-    pub fn spawn(cwd: &str, shell_cmd: &str, cols: u16, rows: u16) -> Result<Self> {
+    pub fn spawn(
+        cwd: &str,
+        shell_cmd: &str,
+        cols: u16,
+        rows: u16,
+    ) -> Result<(Self, broadcast::Receiver<Vec<u8>>)> {
         let pty_system = NativePtySystem::default();
 
         let pair = pty_system.openpty(PtySize {
@@ -61,20 +66,25 @@ impl PtySlot {
         let writer = pair.master.take_writer()?;
 
         // broadcast channel（バッファ 256）
-        let (output_tx, _) = broadcast::channel(256);
+        // initial_rx を保持し、reader_task 開始前に subscriber を確保する。
+        // これにより PTY からの最初のバイト（シェルプロンプト等）を取りこぼさない。
+        let (output_tx, initial_rx) = broadcast::channel(256);
 
         // reader task 開始
         let reader_handle = start_reader_task(reader, output_tx.clone());
 
-        Ok(Self {
-            writer,
-            pair,
-            child,
-            pid,
-            shell_cmd: shell_cmd.to_string(),
-            output_tx,
-            _reader_handle: reader_handle,
-        })
+        Ok((
+            Self {
+                writer,
+                pair,
+                child,
+                pid,
+                shell_cmd: shell_cmd.to_string(),
+                output_tx,
+                _reader_handle: reader_handle,
+            },
+            initial_rx,
+        ))
     }
 
     /// PTY に入力を書き込む
@@ -166,7 +176,7 @@ mod tests {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
         let cwd = std::env::temp_dir().to_string_lossy().to_string();
 
-        let slot = PtySlot::spawn(&cwd, &shell, 80, 24).expect("PTY spawn に失敗");
+        let (slot, mut rx) = PtySlot::spawn(&cwd, &shell, 80, 24).expect("PTY spawn に失敗");
 
         // PIDが取得できること
         assert!(slot.pid() > 0 || slot.pid() == 0); // CI環境では0の可能性
@@ -174,10 +184,7 @@ mod tests {
         // シェルコマンドが正しいこと
         assert_eq!(slot.shell_cmd(), shell);
 
-        // 出力を購読
-        let mut rx = slot.subscribe_output();
-
-        // シェルのプロンプトなど何らかの出力が来ることを確認
+        // 初期 receiver でシェルのプロンプトなど何らかの出力が来ることを確認
         let result = tokio::time::timeout(std::time::Duration::from_secs(3), rx.recv()).await;
         assert!(
             result.is_ok(),
@@ -190,13 +197,12 @@ mod tests {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
         let cwd = std::env::temp_dir().to_string_lossy().to_string();
 
-        let mut slot = PtySlot::spawn(&cwd, &shell, 80, 24).expect("PTY spawn に失敗");
-        let mut rx = slot.subscribe_output();
+        let (mut slot, mut rx) = PtySlot::spawn(&cwd, &shell, 80, 24).expect("PTY spawn に失敗");
 
         // 少し待ってからコマンドを送信
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-        // rx の既存メッセージをフラッシュ
+        // 初期 receiver の既存メッセージをフラッシュ
         while rx.try_recv().is_ok() {}
 
         // echo コマンドを送信
@@ -230,7 +236,7 @@ mod tests {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
         let cwd = std::env::temp_dir().to_string_lossy().to_string();
 
-        let slot = PtySlot::spawn(&cwd, &shell, 80, 24).expect("PTY spawn に失敗");
+        let (slot, _rx) = PtySlot::spawn(&cwd, &shell, 80, 24).expect("PTY spawn に失敗");
         let pid = slot.pid();
 
         // CI環境ではPIDが0の場合がある

@@ -8,9 +8,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use tokio::sync::{Mutex, RwLock};
-use unison::network::{
-    MessageType, NetworkError, ProtocolServer, channel::UnisonChannel,
-};
+use unison::network::{MessageType, NetworkError, ProtocolServer, channel::UnisonChannel};
 
 use super::protocol::{
     AttachRequest, ChannelMessage, CreatePaneRequest, CreateSessionRequest, DetachRequest,
@@ -221,8 +219,8 @@ async fn handle_terminal_create_pane(
         return ChannelMessage::err(id, format!("{}", e));
     }
 
-    // PTYスロット起動
-    let slot = match PtySlot::spawn(&cwd, &req.shell_cmd, req.cols, req.rows) {
+    // PTYスロット起動（初期 receiver を取得し、シェルプロンプト等の初期出力をロストしない）
+    let (slot, output_rx) = match PtySlot::spawn(&cwd, &req.shell_cmd, req.cols, req.rows) {
         Ok(s) => s,
         Err(e) => return ChannelMessage::err(id, format!("PTY起動失敗: {}", e)),
     };
@@ -249,10 +247,7 @@ async fn handle_terminal_create_pane(
         }
     };
 
-    // PTY出力の receiver を作成して保存
-    let output_rx = slot.subscribe_output();
-
-    // PTYスロットを保存
+    // PTYスロットを保存（output_rx は spawn 時点から全出力を受信済み）
     let mut slots = state.pty_slots.lock().await;
     slots.insert((req.session_id.clone(), pane_id), slot);
     drop(slots);
