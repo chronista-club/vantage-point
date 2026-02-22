@@ -374,12 +374,8 @@ pub fn run_terminal_with_daemon(daemon_port: u16, project_name: &str) -> anyhow:
 
     // Daemon ブリッジ開始
     let proxy = event_loop.create_proxy();
-    start_daemon_bridge(
-        daemon_port,
-        project_name.to_string(),
-        proxy.clone(),
-        input_rx,
-    );
+    let project_name = project_name.to_string();
+    start_daemon_bridge(daemon_port, project_name.clone(), proxy.clone(), input_rx);
 
     // 初期リサイズを送信
     let _ = input_tx.send(DaemonInputCommand::Resize { cols: 80, rows: 24 });
@@ -424,6 +420,14 @@ pub fn run_terminal_with_daemon(daemon_port: u16, project_name: &str) -> anyhow:
             }
             Event::UserEvent(TerminalEvent::Ready) => {
                 tracing::info!("Daemon terminal session ready");
+                #[cfg(target_os = "macos")]
+                {
+                    terminal_view.update_status_bar(StatusBarInfo {
+                        session_name: project_name.clone(),
+                        ..Default::default()
+                    });
+                    terminal_view.request_redraw();
+                }
             }
             // ステータスバー更新（Daemon ベース）
             Event::UserEvent(TerminalEvent::StatusUpdate(info)) => {
