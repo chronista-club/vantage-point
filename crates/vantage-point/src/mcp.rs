@@ -486,10 +486,7 @@ impl VantageMcp {
         self.http_post("/api/watch-file", &config).await?;
 
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-            format!(
-                "Now watching '{}' → pane '{}'",
-                params.path, params.pane_id
-            ),
+            format!("Now watching '{}' → pane '{}'", params.path, params.pane_id),
         )]))
     }
 

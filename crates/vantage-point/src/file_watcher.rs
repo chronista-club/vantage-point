@@ -150,6 +150,11 @@ fn validate_watch_path(path: &str) -> Result<(), String> {
         return Err("絶対パスのみ許可されます".to_string());
     }
 
+    // 存在するパスはシンボリックリンクを解決してから検証
+    let resolved = std::fs::canonicalize(p)
+        .map(|c| c.to_string_lossy().to_string())
+        .unwrap_or_else(|_| path.to_string()); // 未作成ファイルは元パスで検証
+
     // 機密パターンの拒否
     let forbidden_patterns = [
         "/.ssh/",
@@ -161,7 +166,7 @@ fn validate_watch_path(path: &str) -> Result<(), String> {
         "/credentials",
         "/.env",
     ];
-    let path_str = path.to_lowercase();
+    let path_str = resolved.to_lowercase();
     for pattern in &forbidden_patterns {
         if path_str.contains(pattern) {
             return Err(format!("機密ファイルへのアクセスは拒否されます: {}", path));
@@ -319,8 +324,15 @@ fn html_escape(s: &str) -> String {
 async fn watch_file_task(config: WatchConfig, hub: Hub) {
     let path = std::path::PathBuf::from(&config.path);
 
-    // レベルフィルタの正規表現をコンパイル
+    // レベルフィルタの正規表現をコンパイル（長さ 256 まで）
     let level_filter: Option<Regex> = config.filter.as_ref().and_then(|f| {
+        if f.len() > 256 {
+            tracing::warn!(
+                "レベルフィルタが長すぎます（最大 256 文字）: {}文字",
+                f.len()
+            );
+            return None;
+        }
         Regex::new(f)
             .map_err(|e| tracing::warn!("レベルフィルタ正規表現が無効: {}: {}", f, e))
             .ok()
@@ -360,7 +372,8 @@ async fn watch_file_task(config: WatchConfig, hub: Hub) {
     });
 
     // 3. notify ウォッチャーを起動（sync → async ブリッジ）
-    let (tx, mut rx) = mpsc::channel::<()>(16);
+    // 通知は合体可能なので容量 1 で十分（同一ファイルへの複数書き込みは1回の読み取りで処理）
+    let (tx, mut rx) = mpsc::channel::<()>(1);
 
     let watch_path = path.clone();
     let mut watcher = match notify::recommended_watcher(move |res: Result<notify::Event, _>| {
@@ -401,10 +414,7 @@ async fn watch_file_task(config: WatchConfig, hub: Hub) {
                     if let Ok(metadata) = std::fs::metadata(&path) {
                         let current_pos = reader.stream_position().unwrap_or(0);
                         if metadata.len() < current_pos {
-                            tracing::info!(
-                                "ログローテーション検知（ファイル縮小）: {:?}",
-                                path
-                            );
+                            tracing::info!("ログローテーション検知（ファイル縮小）: {:?}", path);
                             match File::open(&path) {
                                 Ok(new_file) => {
                                     reader = BufReader::new(new_file);
@@ -417,6 +427,7 @@ async fn watch_file_task(config: WatchConfig, hub: Hub) {
                                         path,
                                         e
                                     );
+                                    return;
                                 }
                             }
                         }
@@ -434,12 +445,15 @@ async fn watch_file_task(config: WatchConfig, hub: Hub) {
                         WatchFormat::JsonLines => {
                             match parse_json_line(trimmed) {
                                 Some(entry) => {
-                                    // レベルフィルタ
-                                    if let Some(ref filter) = level_filter
-                                        && let Some(ref level) = entry.level
-                                        && !filter.is_match(level)
-                                    {
-                                        continue;
+                                    // レベルフィルタ（level フィールドなし行は通す）
+                                    // 意図的に分離: level=None の行はフィルタ対象外
+                                    #[allow(clippy::collapsible_if)]
+                                    if let Some(ref filter) = level_filter {
+                                        if let Some(ref level) = entry.level
+                                            && !filter.is_match(level)
+                                        {
+                                            continue;
+                                        }
                                     }
 
                                     // target 除外
