@@ -185,6 +185,8 @@ impl VantageMcp {
     /// 初回呼び出し時に QUIC 接続を確立し、"stand" と "canvas" の
     /// 2チャネルをオープンする。2回目以降は何もしない。
     async fn ensure_channels(&self) -> Result<(), McpError> {
+        use crate::trace_log::{write_trace, TraceEntry};
+
         let mut stand_guard = self.stand_ch.lock().await;
         if stand_guard.is_some() {
             return Ok(());
@@ -193,7 +195,17 @@ impl VantageMcp {
         // 接続してチャネルをオープン
         match ProtocolClient::new_default() {
             Ok(mut client) => {
+                // QUIC 接続開始
+                write_trace(&TraceEntry::new(
+                    "mcp", "conn", "connect", "INFO",
+                    format!("QUIC connecting to {}", self.quic_addr),
+                ));
+
                 if let Err(e) = UnisonClient::connect(&mut client, &self.quic_addr).await {
+                    write_trace(&TraceEntry::new(
+                        "mcp", "conn", "connect", "ERROR",
+                        format!("QUIC 接続失敗 ({}): {}", self.quic_addr, e),
+                    ));
                     return Err(McpError::internal_error(
                         format!(
                             "Stand QUIC 接続失敗 ({}): {}. Is vp running?",
@@ -203,12 +215,53 @@ impl VantageMcp {
                     ));
                 }
 
-                let stand = client.open_channel("stand").await.map_err(|e| {
-                    McpError::internal_error(format!("stand チャネルオープン失敗: {}", e), None)
-                })?;
-                let canvas = client.open_channel("canvas").await.map_err(|e| {
-                    McpError::internal_error(format!("canvas チャネルオープン失敗: {}", e), None)
-                })?;
+                // QUIC 接続成功
+                write_trace(&TraceEntry::new(
+                    "mcp", "conn", "connect", "INFO",
+                    "QUIC connected",
+                ));
+
+                // stand チャネルオープン
+                let stand = match client.open_channel("stand").await {
+                    Ok(ch) => {
+                        write_trace(&TraceEntry::new(
+                            "mcp", "conn", "open_channel", "INFO",
+                            "stand channel opened",
+                        ));
+                        ch
+                    }
+                    Err(e) => {
+                        write_trace(&TraceEntry::new(
+                            "mcp", "conn", "open_channel", "ERROR",
+                            format!("stand チャネルオープン失敗: {}", e),
+                        ));
+                        return Err(McpError::internal_error(
+                            format!("stand チャネルオープン失敗: {}", e),
+                            None,
+                        ));
+                    }
+                };
+
+                // canvas チャネルオープン
+                let canvas = match client.open_channel("canvas").await {
+                    Ok(ch) => {
+                        write_trace(&TraceEntry::new(
+                            "mcp", "conn", "open_channel", "INFO",
+                            "canvas channel opened",
+                        ));
+                        ch
+                    }
+                    Err(e) => {
+                        write_trace(&TraceEntry::new(
+                            "mcp", "conn", "open_channel", "ERROR",
+                            format!("canvas チャネルオープン失敗: {}", e),
+                        ));
+                        return Err(McpError::internal_error(
+                            format!("canvas チャネルオープン失敗: {}", e),
+                            None,
+                        ));
+                    }
+                };
 
                 *stand_guard = Some(stand);
                 drop(stand_guard);
@@ -234,6 +287,17 @@ impl VantageMcp {
         method: &str,
         payload: serde_json::Value,
     ) -> Result<serde_json::Value, McpError> {
+        use crate::trace_log::{write_trace, new_trace_id, TraceEntry};
+
+        let tid = new_trace_id();
+        let start = std::time::Instant::now();
+
+        // リクエスト送信前ログ
+        write_trace(&TraceEntry::new(
+            "mcp", &tid, "request", "INFO",
+            format!("stand.{}", method),
+        ).with_data(payload.clone()));
+
         self.ensure_channels().await?;
 
         let guard = self.stand_ch.lock().await;
@@ -242,8 +306,20 @@ impl VantageMcp {
             .ok_or_else(|| McpError::internal_error("Stand チャネル未接続", None))?;
 
         match ch.request(method, payload).await {
-            Ok(resp) => Ok(resp),
+            Ok(resp) => {
+                // レスポンス成功ログ
+                write_trace(&TraceEntry::new(
+                    "mcp", &tid, "response", "INFO",
+                    format!("stand.{} OK", method),
+                ).with_elapsed(start.elapsed().as_millis() as u64));
+                Ok(resp)
+            }
             Err(e) => {
+                // エラーログ
+                write_trace(&TraceEntry::new(
+                    "mcp", &tid, "error", "ERROR",
+                    format!("stand.{} 失敗: {}", method, e),
+                ).with_elapsed(start.elapsed().as_millis() as u64));
                 // 接続断 → リセットして次回再接続
                 tracing::debug!("stand チャネル '{}' 失敗: {}", method, e);
                 drop(guard);
@@ -265,6 +341,17 @@ impl VantageMcp {
     /// UnisonChannel::request() が内部で message_id 生成・Response 待機を行う。
     /// 失敗時はチャネルをリセットして次回再接続を試みる。
     async fn canvas_call(&self, method: &str) -> Result<serde_json::Value, McpError> {
+        use crate::trace_log::{write_trace, new_trace_id, TraceEntry};
+
+        let tid = new_trace_id();
+        let start = std::time::Instant::now();
+
+        // リクエスト送信前ログ
+        write_trace(&TraceEntry::new(
+            "mcp", &tid, "request", "INFO",
+            format!("canvas.{}", method),
+        ));
+
         self.ensure_channels().await?;
 
         let guard = self.canvas_ch.lock().await;
@@ -273,8 +360,20 @@ impl VantageMcp {
             .ok_or_else(|| McpError::internal_error("Canvas チャネル未接続", None))?;
 
         match ch.request(method, serde_json::json!({})).await {
-            Ok(resp) => Ok(resp),
+            Ok(resp) => {
+                // レスポンス成功ログ
+                write_trace(&TraceEntry::new(
+                    "mcp", &tid, "response", "INFO",
+                    format!("canvas.{} OK", method),
+                ).with_elapsed(start.elapsed().as_millis() as u64));
+                Ok(resp)
+            }
             Err(e) => {
+                // エラーログ
+                write_trace(&TraceEntry::new(
+                    "mcp", &tid, "error", "ERROR",
+                    format!("canvas.{} 失敗: {}", method, e),
+                ).with_elapsed(start.elapsed().as_millis() as u64));
                 tracing::debug!("canvas チャネル '{}' 失敗: {}", method, e);
                 drop(guard);
                 *self.stand_ch.lock().await = None;
@@ -738,6 +837,9 @@ fn resolve_stand_port(explicit_port: u16) -> u16 {
 
 /// Run the MCP server over stdio
 pub async fn run_mcp_server(stand_port: u16) -> anyhow::Result<()> {
+    // トレースログファイルを早期初期化
+    crate::trace_log::init_log_file();
+
     // Resolve the actual port to use
     let resolved_port = resolve_stand_port(stand_port);
 

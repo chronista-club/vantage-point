@@ -109,10 +109,18 @@ pub fn log_file_path() -> Option<PathBuf> {
     Some(log_dir.join("debug.log"))
 }
 
+/// ログファイルを早期に初期化する（プロセス起動時呼び出し用）
+///
+/// `write_trace()` 内でも遅延初期化されるが、プロセス起動直後に
+/// 呼び出すことで初期化タイミングを明示的に制御できる。
+pub fn init_log_file() {
+    let _ = ensure_log_file();
+}
+
 /// ログファイルを初期化（append モード）
 ///
 /// OnceLock により、プロセス内で1回だけ実行される。
-fn init_log_file() -> Option<&'static Mutex<File>> {
+fn ensure_log_file() -> Option<&'static Mutex<File>> {
     Some(LOG_FILE.get_or_init(|| {
         let path = log_file_path().expect("ログファイルパス取得失敗");
         let file = OpenOptions::new()
@@ -130,7 +138,7 @@ fn init_log_file() -> Option<&'static Mutex<File>> {
 /// エラー時は stderr に出力するが、呼び出し元には伝播しない
 /// （ログ書き込み失敗でアプリを止めない設計）。
 pub fn write_trace(entry: &TraceEntry) {
-    let Some(file_mutex) = init_log_file() else {
+    let Some(file_mutex) = ensure_log_file() else {
         return;
     };
 
