@@ -173,6 +173,11 @@ pub fn execute(opts: StartOptions) -> Result<()> {
         // Stand + Daemon の起動を待つ
         std::thread::sleep(std::time::Duration::from_millis(500));
 
+        // Canvas ウィンドウを自動起動（別プロセス）
+        if let Err(e) = crate::canvas::run_canvas_detached(resolved_port) {
+            tracing::warn!("Canvas 自動起動失敗: {}", e);
+        }
+
         // 3. プロジェクト名を取得（ディレクトリ名をセッションIDとして使用）
         let project_name = std::path::Path::new(&resolved_project_dir)
             .file_name()

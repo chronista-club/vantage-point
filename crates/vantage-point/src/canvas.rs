@@ -39,7 +39,7 @@ pub fn run_canvas(port: u16) -> anyhow::Result<()> {
     #[cfg(target_os = "macos")]
     menu.init_for_nsapp();
 
-    let url = format!("http://localhost:{}", port);
+    let url = format!("http://localhost:{}/canvas", port);
 
     let _webview = WebViewBuilder::new()
         .with_url(&url)

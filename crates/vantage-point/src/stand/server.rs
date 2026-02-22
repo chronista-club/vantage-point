@@ -79,6 +79,7 @@ pub async fn run(
 
     let app = Router::new()
         .route("/", get(health::index_handler))
+        .route("/canvas", get(health::canvas_handler))
         .route("/ws", get(ws::ws_handler))
         .route("/api/show", post(health::show_handler))
         .route("/api/toggle-pane", post(health::toggle_pane_handler))

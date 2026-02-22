@@ -22,6 +22,11 @@ pub async fn index_handler() -> Html<&'static str> {
     Html(include_str!("../../../../../web/index.html"))
 }
 
+/// Canvas page handler
+pub async fn canvas_handler() -> Html<&'static str> {
+    Html(include_str!("../../../../../web/canvas.html"))
+}
+
 /// Health check response
 #[derive(serde::Serialize)]
 pub struct HealthResponse {
@@ -89,9 +94,9 @@ pub async fn canvas_open_handler(State(state): State<Arc<AppState>>) -> impl Int
         }
     }
 
-    // vp webview -p <port> で起動
+    // vp canvas --port <port> で起動
     match std::process::Command::new("vp")
-        .args(["webview", "-p", &state.port.to_string()])
+        .args(["canvas", "--port", &state.port.to_string()])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

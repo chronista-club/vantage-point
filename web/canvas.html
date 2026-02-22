@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vantage Point Canvas</title>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
+    <style>
+        :root {
+            --canvas-bg: oklch(0.10 0.02 230);
+            --grid-line: oklch(0.18 0.02 225);
+            --grid-size: 32px;
+
+            --color-text-primary: oklch(0.93 0.01 220);
+            --color-text-secondary: oklch(0.70 0.03 220);
+            --color-text-muted: oklch(0.52 0.03 225);
+            --color-bg-elevated: oklch(0.16 0.02 225);
+            --color-bg-surface: oklch(0.20 0.02 225);
+            --color-border-subtle: oklch(0.25 0.03 225);
+            --color-accent-primary: oklch(0.68 0.14 210);
+            --color-success: oklch(0.72 0.17 160);
+            --color-error: oklch(0.62 0.20 15);
+            --radius-sm: 4px;
+            --radius-md: 8px;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--canvas-bg);
+            color: var(--color-text-primary);
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        /* グリッド背景 */
+        .canvas-grid {
+            position: fixed;
+            inset: 0;
+            background-image:
+                linear-gradient(var(--grid-line) 1px, transparent 1px),
+                linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+            background-size: var(--grid-size) var(--grid-size);
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        /* グリッド交点のドット */
+        .canvas-grid::after {
+            content: '';
+            position: fixed;
+            inset: 0;
+            background-image: radial-gradient(circle, oklch(0.30 0.03 225) 1px, transparent 1px);
+            background-size: var(--grid-size) var(--grid-size);
+            pointer-events: none;
+        }
+
+        /* コンテンツ領域 */
+        .canvas-content {
+            position: relative;
+            z-index: 1;
+            height: 100vh;
+            overflow-y: auto;
+            padding: 32px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        /* 接続ステータス（左上に小さく表示） */
+        .canvas-status {
+            position: fixed;
+            top: 12px;
+            left: 16px;
+            z-index: 10;
+            font-size: 11px;
+            color: var(--color-text-muted);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            opacity: 0.6;
+            transition: opacity 0.3s ease;
+        }
+        .canvas-status:hover { opacity: 1; }
+        .canvas-status .dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: var(--color-error);
+        }
+        .canvas-status.connected .dot {
+            background: var(--color-success);
+        }
+
+        /* ペインカード */
+        .pane-card {
+            background: oklch(0.14 0.02 228 / 0.85);
+            backdrop-filter: blur(8px);
+            border: 1px solid var(--color-border-subtle);
+            border-radius: var(--radius-md);
+            padding: 20px 24px;
+            max-width: 900px;
+            width: 100%;
+            margin: 0 auto;
+            animation: card-in 0.3s ease-out;
+        }
+        @keyframes card-in {
+            from { opacity: 0; transform: translateY(8px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* ペインタイトル */
+        .pane-card-title {
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--color-accent-primary);
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            margin-bottom: 12px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid var(--color-border-subtle);
+        }
+
+        /* Markdownコンテンツ表示 */
+        .pane-card h1, .pane-card h2, .pane-card h3 {
+            margin: 0.8em 0 0.4em;
+            color: var(--color-text-primary);
+        }
+        .pane-card h1 { font-size: 1.4em; }
+        .pane-card h2 { font-size: 1.2em; }
+        .pane-card h3 { font-size: 1.05em; }
+        .pane-card p {
+            margin: 0.4em 0;
+            line-height: 1.7;
+            color: var(--color-text-secondary);
+        }
+        .pane-card code {
+            background: oklch(0.08 0.02 230);
+            padding: 2px 6px;
+            border-radius: var(--radius-sm);
+            font-family: 'FiraCode Nerd Font', 'Fira Code', monospace;
+            font-size: 0.9em;
+        }
+        .pane-card pre {
+            background: oklch(0.08 0.02 230);
+            padding: 16px;
+            border-radius: var(--radius-md);
+            overflow-x: auto;
+            margin: 0.8em 0;
+        }
+        .pane-card pre code { background: none; padding: 0; }
+        .pane-card img {
+            max-width: 100%;
+            border-radius: var(--radius-md);
+        }
+        .pane-card ul, .pane-card ol {
+            margin: 0.4em 0;
+            padding-left: 1.5em;
+            color: var(--color-text-secondary);
+            line-height: 1.7;
+        }
+        .pane-card table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 0.8em 0;
+        }
+        .pane-card th, .pane-card td {
+            padding: 8px 12px;
+            border: 1px solid var(--color-border-subtle);
+            text-align: left;
+            color: var(--color-text-secondary);
+        }
+        .pane-card th {
+            background: oklch(0.12 0.02 228);
+            color: var(--color-text-primary);
+            font-weight: 600;
+        }
+
+        /* 空状態 */
+        .canvas-empty {
+            position: fixed;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1;
+            pointer-events: none;
+        }
+        .canvas-empty-label {
+            font-size: 13px;
+            color: var(--color-text-muted);
+            opacity: 0.4;
+            letter-spacing: 0.05em;
+        }
+    </style>
+</head>
+<body>
+    <div class="canvas-grid"></div>
+
+    <div class="canvas-status" id="status">
+        <span class="dot"></span>
+        <span id="status-text">Connecting...</span>
+    </div>
+
+    <div class="canvas-empty" id="empty-state">
+        <span class="canvas-empty-label">VANTAGE POINT</span>
+    </div>
+
+    <div class="canvas-content" id="canvas-content"></div>
+
+    <script>
+        // ===== ペイン管理 =====
+        const panes = new Map();
+
+        function getOrCreatePane(paneId, title) {
+            if (panes.has(paneId)) {
+                const card = panes.get(paneId);
+                if (title) {
+                    const titleEl = card.querySelector('.pane-card-title');
+                    if (titleEl) titleEl.textContent = title;
+                }
+                return card;
+            }
+            const card = document.createElement('div');
+            card.className = 'pane-card';
+            card.dataset.paneId = paneId;
+
+            const titleEl = document.createElement('div');
+            titleEl.className = 'pane-card-title';
+            titleEl.textContent = title || paneId;
+            card.appendChild(titleEl);
+
+            const body = document.createElement('div');
+            body.className = 'pane-card-body';
+            card.appendChild(body);
+
+            document.getElementById('canvas-content').appendChild(card);
+            panes.set(paneId, card);
+
+            // 空状態を非表示
+            document.getElementById('empty-state').style.display = 'none';
+            return card;
+        }
+
+        function renderContent(bodyEl, content, append) {
+            if (!append) bodyEl.textContent = '';
+            const div = document.createElement('div');
+            if (content.markdown) {
+                // DOMPurifyでサニタイズ済みのHTMLを設定
+                const sanitized = DOMPurify.sanitize(marked.parse(content.markdown));
+                div.insertAdjacentHTML('beforeend', sanitized);
+            } else if (content.html) {
+                const sanitized = DOMPurify.sanitize(content.html);
+                div.insertAdjacentHTML('beforeend', sanitized);
+            } else if (content.log) {
+                const pre = document.createElement('pre');
+                pre.textContent = content.log;
+                pre.style.whiteSpace = 'pre-wrap';
+                pre.style.wordBreak = 'break-all';
+                div.appendChild(pre);
+            } else if (content.image_base64) {
+                const img = document.createElement('img');
+                const mimeType = DOMPurify.sanitize(content.image_base64.mime_type);
+                img.src = `data:${mimeType};base64,${content.image_base64.data}`;
+                div.appendChild(img);
+            }
+            bodyEl.appendChild(div);
+        }
+
+        // ===== WebSocket =====
+        const WS_URL = `ws://${location.host}/ws`;
+        let ws = null;
+        let reconnectTimer = null;
+        let reconnectAttempts = 0;
+
+        function connect() {
+            ws = new WebSocket(WS_URL);
+
+            ws.onopen = () => {
+                reconnectAttempts = 0;
+                document.getElementById('status').classList.add('connected');
+                document.getElementById('status-text').textContent = 'Connected';
+                ws.send(JSON.stringify({ type: 'ready' }));
+            };
+
+            ws.onclose = () => {
+                document.getElementById('status').classList.remove('connected');
+                reconnectAttempts++;
+                const delay = Math.min(1000 * Math.pow(2, reconnectAttempts - 1), 30000);
+                document.getElementById('status-text').textContent = 'Reconnecting...';
+                if (reconnectTimer) clearTimeout(reconnectTimer);
+                reconnectTimer = setTimeout(connect, delay);
+            };
+
+            ws.onerror = (err) => console.error('WebSocket error:', err);
+
+            ws.onmessage = (event) => {
+                try {
+                    handleMessage(JSON.parse(event.data));
+                } catch (e) {
+                    console.error('Parse error:', e);
+                }
+            };
+        }
+
+        function handleMessage(msg) {
+            switch (msg.type) {
+                case 'ping':
+                    ws.send(JSON.stringify({ type: 'pong' }));
+                    break;
+
+                case 'show': {
+                    const paneId = msg.pane_id || 'main';
+                    const card = getOrCreatePane(paneId, msg.title);
+                    const body = card.querySelector('.pane-card-body');
+                    if (body) renderContent(body, msg.content, msg.append || false);
+                    break;
+                }
+
+                case 'clear': {
+                    const paneId = msg.pane_id || 'main';
+                    const card = panes.get(paneId);
+                    if (card) {
+                        const body = card.querySelector('.pane-card-body');
+                        if (body) body.textContent = '';
+                    }
+                    break;
+                }
+
+                case 'close': {
+                    const card = panes.get(msg.pane_id);
+                    if (card) {
+                        card.remove();
+                        panes.delete(msg.pane_id);
+                    }
+                    if (panes.size === 0) {
+                        document.getElementById('empty-state').style.display = '';
+                    }
+                    break;
+                }
+
+                // ターミナル系メッセージは無視
+                case 'terminal_output':
+                case 'terminal_ready':
+                    break;
+
+                default:
+                    console.debug('Canvas WS:', msg.type, msg);
+                    break;
+            }
+        }
+
+        connect();
+    </script>
+</body>
+</html>
