@@ -93,6 +93,9 @@ base64 = "0.22"
 # File system watcher (for trace log → WebSocket broadcast)
 notify = "7"
 
+# Regex (for log level filtering in file watcher)
+regex = "1"
+
 # Terminal emulation (VT parser + grid state)
 alacritty_terminal = "0.25"
 vte = "0.15"

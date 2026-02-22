@@ -131,6 +131,44 @@ pub async fn canvas_close_handler(State(state): State<Arc<AppState>>) -> impl In
     }
 }
 
+/// POST /api/watch-file - ファイル監視を開始
+pub async fn watch_file_handler(
+    State(state): State<Arc<AppState>>,
+    Json(config): Json<crate::file_watcher::WatchConfig>,
+) -> impl IntoResponse {
+    let pane_id = config.pane_id.clone();
+    match state
+        .file_watchers
+        .lock()
+        .await
+        .start_watch(config, state.hub.clone())
+    {
+        Ok(()) => (
+            axum::http::StatusCode::OK,
+            Json(serde_json::json!({"status": "ok", "pane_id": pane_id})),
+        ),
+        Err(e) => (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"status": "error", "error": e})),
+        ),
+    }
+}
+
+/// UnwatchFile リクエストのペイロード
+#[derive(Debug, serde::Deserialize)]
+pub struct UnwatchFileBody {
+    pub pane_id: String,
+}
+
+/// POST /api/unwatch-file - ファイル監視を停止
+pub async fn unwatch_file_handler(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<UnwatchFileBody>,
+) -> impl IntoResponse {
+    state.file_watchers.lock().await.stop_watch(&body.pane_id);
+    Json(serde_json::json!({"status": "ok", "pane_id": body.pane_id}))
+}
+
 /// POST /api/shutdown - Graceful shutdown
 pub async fn shutdown_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     tracing::info!("Shutdown requested via API");

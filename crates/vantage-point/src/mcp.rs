@@ -106,6 +106,46 @@ pub struct ClosePaneParams {
     pub pane_id: String,
 }
 
+/// Parameters for the watch_file tool
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct WatchFileParams {
+    /// File path to watch
+    #[schemars(description = "Absolute path to the log file to watch")]
+    pub path: String,
+
+    /// Pane ID to display logs in
+    #[schemars(description = "Pane ID to display watched logs in")]
+    pub pane_id: String,
+
+    /// Log format
+    #[schemars(description = "Log format: 'json_lines' (default) or 'plain'")]
+    pub format: Option<String>,
+
+    /// Level filter regex
+    #[schemars(description = "Regex to filter log levels, e.g. 'INFO|WARN|ERROR'")]
+    pub filter: Option<String>,
+
+    /// Targets to exclude
+    #[schemars(description = "List of target names to exclude from display")]
+    pub exclude_targets: Option<Vec<String>>,
+
+    /// Pane title
+    #[schemars(description = "Title for the pane tab")]
+    pub title: Option<String>,
+
+    /// Display style
+    #[schemars(description = "Display style: 'terminal' (default) or 'plain'")]
+    pub style: Option<String>,
+}
+
+/// Parameters for the unwatch_file tool
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct UnwatchFileParams {
+    /// Pane ID to stop watching
+    #[schemars(description = "Pane ID to stop file watching for")]
+    pub pane_id: String,
+}
+
 /// Response format for permission tool
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -413,6 +453,60 @@ impl VantageMcp {
         )]))
     }
 
+    /// Watch a log file and display it in real-time in a pane
+    #[tool(
+        description = "Watch a log file and display new lines in real-time in a Vantage Point pane. Supports JSON Lines and plain text formats with level filtering and target exclusion."
+    )]
+    async fn watch_file(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<WatchFileParams>,
+    ) -> Result<CallToolResult, McpError> {
+        use crate::file_watcher::{WatchConfig, WatchFormat, WatchStyle};
+
+        let format = match params.format.as_deref() {
+            Some("plain") => WatchFormat::Plain,
+            _ => WatchFormat::JsonLines,
+        };
+
+        let style = match params.style.as_deref() {
+            Some("plain") => WatchStyle::Plain,
+            _ => WatchStyle::Terminal,
+        };
+
+        let config = WatchConfig {
+            path: params.path.clone(),
+            pane_id: params.pane_id.clone(),
+            format,
+            filter: params.filter,
+            exclude_targets: params.exclude_targets.unwrap_or_default(),
+            title: params.title,
+            style,
+        };
+
+        self.http_post("/api/watch-file", &config).await?;
+
+        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+            format!("Now watching '{}' → pane '{}'", params.path, params.pane_id),
+        )]))
+    }
+
+    /// Stop watching a file
+    #[tool(description = "Stop watching a file for a specific pane.")]
+    async fn unwatch_file(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<UnwatchFileParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.http_post(
+            "/api/unwatch-file",
+            &serde_json::json!({"pane_id": params.pane_id}),
+        )
+        .await?;
+
+        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+            format!("Stopped watching pane '{}'", params.pane_id),
+        )]))
+    }
+
     /// Request permission for tool execution from user
     ///
     /// This tool is called by Claude CLI via --permission-prompt-tool flag.
@@ -668,7 +762,8 @@ impl rmcp::ServerHandler for VantageMcp {
                  Use 'open_canvas' to open the native Canvas window, 'close_canvas' to close it, \
                  'show' to display content, 'clear' to clear panes, 'split_pane' to split a pane \
                  horizontally or vertically, 'close_pane' to close a pane, 'toggle_pane' to toggle panel visibility, \
-                 'permission' to request user approval, and 'restart' to restart the Stand.".into()
+                 'permission' to request user approval, 'restart' to restart the Stand, \
+                 'watch_file' to monitor a log file in real-time, and 'unwatch_file' to stop monitoring.".into()
             ),
             capabilities: ServerCapabilities::builder().enable_tools().build(),
             ..Default::default()

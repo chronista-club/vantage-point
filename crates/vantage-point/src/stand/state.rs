@@ -16,6 +16,7 @@ use super::session::SessionManager;
 use crate::agent::InteractiveClaudeAgent;
 use crate::agui::AgUiEvent;
 use crate::capability::{StandManagerCapability, UpdateCapability};
+use crate::file_watcher::FileWatcherManager;
 use crate::mcp::PermissionResponse;
 use crate::protocol::{DebugMode, StandMessage};
 
@@ -106,6 +107,8 @@ pub(crate) struct AppState {
     pub canvas_pid: Arc<tokio::sync::Mutex<Option<u32>>>,
     /// Standの待ち受けポート番号（Canvas起動時に使用）
     pub port: u16,
+    /// ファイル監視マネージャー
+    pub file_watchers: Arc<tokio::sync::Mutex<FileWatcherManager>>,
 }
 
 impl AppState {

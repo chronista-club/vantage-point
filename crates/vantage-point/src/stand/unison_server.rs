@@ -66,6 +66,12 @@ struct ClosePaneRequest {
     pane_id: String,
 }
 
+/// UnwatchFile リクエストのペイロード
+#[derive(Debug, Serialize, Deserialize)]
+struct UnwatchFileRequest {
+    pane_id: String,
+}
+
 fn default_content_type() -> String {
     "markdown".to_string()
 }
@@ -171,6 +177,39 @@ fn handle_close_pane(
         pane_id: req.pane_id.clone(),
     };
     state.hub.broadcast(msg);
+
+    Ok(serde_json::json!({"status": "ok", "pane_id": req.pane_id}))
+}
+
+/// watch_file メソッドのハンドラー
+async fn handle_watch_file(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let config: crate::file_watcher::WatchConfig = serde_json::from_value(payload)
+        .map_err(|e| format!("Invalid watch_file payload: {}", e))?;
+
+    let pane_id = config.pane_id.clone();
+
+    state
+        .file_watchers
+        .lock()
+        .await
+        .start_watch(config, state.hub.clone())
+        .map_err(|e| format!("watch_file 開始失敗: {}", e))?;
+
+    Ok(serde_json::json!({"status": "ok", "pane_id": pane_id}))
+}
+
+/// unwatch_file メソッドのハンドラー
+async fn handle_unwatch_file(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let req: UnwatchFileRequest = serde_json::from_value(payload)
+        .map_err(|e| format!("Invalid unwatch_file payload: {}", e))?;
+
+    state.file_watchers.lock().await.stop_watch(&req.pane_id);
 
     Ok(serde_json::json!({"status": "ok", "pane_id": req.pane_id}))
 }
@@ -291,6 +330,8 @@ pub async fn start_unison_server(
                             "toggle_pane" => handle_toggle_pane(&state, payload),
                             "split_pane" => handle_split_pane(&state, payload),
                             "close_pane" => handle_close_pane(&state, payload),
+                            "watch_file" => handle_watch_file(&state, payload).await,
+                            "unwatch_file" => handle_unwatch_file(&state, payload).await,
                             _ => Err(format!("不明なメソッド: stand.{}", method)),
                         };
 
