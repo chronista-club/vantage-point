@@ -9,7 +9,7 @@ use std::time::Instant;
 
 use tokio::sync::{Mutex, RwLock};
 use unison::network::{
-    MessageType, NetworkError, ProtocolServer, UnisonServer, channel::UnisonChannel,
+    MessageType, NetworkError, ProtocolServer, channel::UnisonChannel,
 };
 
 use super::protocol::{
@@ -560,7 +560,7 @@ async fn send_channel_response(
 /// 指定ポートで QUIC 接続を待ち受ける。
 pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
     let addr = format!("[::1]:{}", port);
-    let mut server =
+    let server =
         ProtocolServer::with_identity("vp-daemon", env!("CARGO_PKG_VERSION"), "vantage-point");
 
     // =========================================================================

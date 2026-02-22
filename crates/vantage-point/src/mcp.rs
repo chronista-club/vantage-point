@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 use unison::network::channel::UnisonChannel;
-use unison::{ProtocolClient, UnisonClient};
+use unison::ProtocolClient;
 
 use crate::protocol::{ChatComponent, StandMessage};
 
@@ -194,14 +194,14 @@ impl VantageMcp {
 
         // 接続してチャネルをオープン
         match ProtocolClient::new_default() {
-            Ok(mut client) => {
+            Ok(client) => {
                 // QUIC 接続開始
                 write_trace(&TraceEntry::new(
                     "mcp", "conn", "connect", "INFO",
                     format!("QUIC connecting to {}", self.quic_addr),
                 ));
 
-                if let Err(e) = UnisonClient::connect(&mut client, &self.quic_addr).await {
+                if let Err(e) = client.connect(&self.quic_addr).await {
                     write_trace(&TraceEntry::new(
                         "mcp", "conn", "connect", "ERROR",
                         format!("QUIC 接続失敗 ({}): {}", self.quic_addr, e),

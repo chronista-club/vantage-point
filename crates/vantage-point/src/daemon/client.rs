@@ -8,7 +8,7 @@
 //! request() メソッドでリクエスト/レスポンスを行う。
 
 use anyhow::{Context, Result};
-use unison::{ProtocolClient, UnisonChannel, UnisonClient};
+use unison::{ProtocolClient, UnisonChannel};
 
 use super::protocol::*;
 #[allow(unused_imports)]
@@ -41,10 +41,10 @@ impl DaemonClient {
     /// 接続成功後、session / terminal / system チャネルをオープンする。
     pub async fn connect(port: u16, retries: u32) -> Result<Self> {
         let addr = format!("[::1]:{}", port);
-        let mut client = ProtocolClient::new_default().context("QUIC クライアントの作成に失敗")?;
+        let client = ProtocolClient::new_default().context("QUIC クライアントの作成に失敗")?;
 
         for attempt in 0..retries {
-            match UnisonClient::connect(&mut client, &addr).await {
+            match client.connect(&addr).await {
                 Ok(_) => {
                     tracing::info!("Daemon に接続 ({})", addr);
 
