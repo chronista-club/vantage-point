@@ -121,6 +121,19 @@ pub enum StandMessage {
     TerminalOutput { data: String },
     /// ターミナルPTYセッション開始通知
     TerminalReady,
+    /// トレースログエントリ（debug.log ファイルからの配信）
+    TraceLog {
+        ts: String,
+        process: String,
+        trace_id: String,
+        step: String,
+        level: String,
+        msg: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        data: Option<serde_json::Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        elapsed_ms: Option<u64>,
+    },
 }
 
 /// Session information for UI

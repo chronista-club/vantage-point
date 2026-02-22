@@ -165,6 +165,14 @@ pub async fn run(
     let _ = ready_rx.await;
     tracing::info!("QUIC server ready on port {}", quic_port);
 
+    // デバッグモード時のみトレースログ監視を起動
+    if debug_mode != DebugMode::None {
+        let hub_for_log = state.hub.clone();
+        tokio::spawn(async move {
+            crate::trace_log::watch_and_broadcast(hub_for_log).await;
+        });
+    }
+
     // Register this Stand in running.json
     let pid = std::process::id();
     if let Err(e) = RunningStands::register(port, &state.project_dir, pid, Some(quic_port)) {

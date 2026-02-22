@@ -90,6 +90,9 @@ portable-pty = "0.9"
 # Base64 encoding (for PTY binary I/O over WebSocket)
 base64 = "0.22"
 
+# File system watcher (for trace log → WebSocket broadcast)
+notify = "7"
+
 # Terminal emulation (VT parser + grid state)
 alacritty_terminal = "0.25"
 vte = "0.15"

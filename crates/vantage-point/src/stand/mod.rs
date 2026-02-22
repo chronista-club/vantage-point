@@ -9,7 +9,7 @@
 //! - **Capability**: Stand が持つ能力（Agent, MIDI, Protocol等）
 
 pub mod capabilities;
-mod hub;
+pub(crate) mod hub;
 pub mod pty;
 mod routes;
 mod server;

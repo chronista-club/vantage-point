@@ -133,6 +133,125 @@ fn ensure_log_file() -> Option<&'static Mutex<File>> {
     }))
 }
 
+/// ログファイルを監視し、新しいエントリを Hub 経由で WebSocket にブロードキャストする
+///
+/// `notify` クレートでファイル変更を検知し、追記された JSON Lines を
+/// `StandMessage::TraceLog` として配信する。
+/// 既存のエントリはスキップし、監視開始後の新規行のみ配信する。
+pub async fn watch_and_broadcast(hub: crate::stand::hub::Hub) {
+    use std::io::{BufRead, BufReader, Seek, SeekFrom};
+
+    use notify::{EventKind, RecursiveMode, Watcher};
+
+    use crate::protocol::StandMessage;
+
+    let Some(path) = log_file_path() else {
+        tracing::warn!("トレースログファイルパスが取得できません");
+        return;
+    };
+
+    // ファイルが存在しない場合は作成を待つ
+    if !path.exists() {
+        tracing::info!("トレースログファイルが未作成、作成を待機: {:?}", path);
+        loop {
+            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+            if path.exists() {
+                break;
+            }
+        }
+    }
+
+    // ファイルを開いて末尾へシーク（既存エントリをスキップ）
+    let file = match File::open(&path) {
+        Ok(f) => f,
+        Err(e) => {
+            tracing::error!("トレースログファイルを開けません: {e}");
+            return;
+        }
+    };
+    let mut reader = BufReader::new(file);
+    if let Err(e) = reader.seek(SeekFrom::End(0)) {
+        tracing::error!("トレースログファイルのシーク失敗: {e}");
+        return;
+    }
+
+    // notify の同期コールバックから async へブリッジするチャネル
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<()>(16);
+
+    // ファイル変更ウォッチャーを起動
+    let mut watcher = match notify::recommended_watcher(move |res: Result<notify::Event, _>| {
+        if let Ok(event) = res
+            && matches!(event.kind, EventKind::Modify(_))
+        {
+            // バッファに空きがなければドロップ（次回検知で読み取れる）
+            let _ = tx.try_send(());
+        }
+    }) {
+        Ok(w) => w,
+        Err(e) => {
+            tracing::error!("ファイルウォッチャーの作成に失敗: {e}");
+            return;
+        }
+    };
+
+    if let Err(e) = watcher.watch(&path, RecursiveMode::NonRecursive) {
+        tracing::error!("トレースログファイルの監視開始に失敗: {e}");
+        return;
+    }
+
+    tracing::info!("トレースログ監視を開始: {:?}", path);
+
+    let mut line_buf = String::new();
+
+    // 変更通知を受け取るたびに新規行を読み取ってブロードキャスト
+    while rx.recv().await.is_some() {
+        loop {
+            line_buf.clear();
+            match reader.read_line(&mut line_buf) {
+                Ok(0) => break, // 新しい行がない
+                Ok(_) => {
+                    let trimmed = line_buf.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+
+                    // JSON パースして StandMessage::TraceLog に変換
+                    match serde_json::from_str::<serde_json::Value>(trimmed) {
+                        Ok(val) => {
+                            let msg = StandMessage::TraceLog {
+                                ts: val["ts"].as_str().unwrap_or_default().to_string(),
+                                process: val["process"]
+                                    .as_str()
+                                    .unwrap_or_default()
+                                    .to_string(),
+                                trace_id: val["trace_id"]
+                                    .as_str()
+                                    .unwrap_or_default()
+                                    .to_string(),
+                                step: val["step"].as_str().unwrap_or_default().to_string(),
+                                level: val["level"].as_str().unwrap_or_default().to_string(),
+                                msg: val["msg"].as_str().unwrap_or_default().to_string(),
+                                data: val.get("data").cloned(),
+                                elapsed_ms: val["elapsed_ms"].as_u64(),
+                            };
+                            hub.broadcast(msg);
+                        }
+                        Err(e) => {
+                            tracing::debug!("トレースログ行のJSONパース失敗: {e}");
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("トレースログファイルの読み取りエラー: {e}");
+                    break;
+                }
+            }
+        }
+    }
+
+    tracing::info!("トレースログ監視を終了");
+}
+
 /// トレースエントリを JSON 1行としてファイルに書き出す
 ///
 /// 書き出し後に flush を実行し、クラッシュ時のデータ損失を最小化する。
