@@ -264,6 +264,8 @@ impl RunningStands {
     }
 
     /// Find a running Stand by project directory
+    ///
+    /// プロセス生存確認済みのエントリのみ返す。
     pub fn find_by_project(project_dir: &str) -> Option<RunningStandInfo> {
         let stands = Self::load().ok()?;
 
@@ -274,7 +276,7 @@ impl RunningStands {
         stands
             .stands
             .into_iter()
-            .find(|s| s.project_dir == canonical_dir)
+            .find(|s| s.project_dir == canonical_dir && is_process_alive(s.pid))
     }
 
     /// Find a running Stand for the current working directory

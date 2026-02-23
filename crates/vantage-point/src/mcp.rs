@@ -255,16 +255,37 @@ impl VantageMcp {
                                 None,
                             )
                         })?
+                } else if let Some(auto_url) = self.auto_start_stand(endpoint).await {
+                    // running.json にも見つからない → Stand を自動起動
+                    write_trace(&TraceEntry::new(
+                        "mcp",
+                        &tid,
+                        "auto_start",
+                        "INFO",
+                        format!("Stand 自動起動後リトライ: {}", auto_url),
+                    ));
+                    self.client
+                        .post(&auto_url)
+                        .json(body)
+                        .timeout(Duration::from_secs(10))
+                        .send()
+                        .await
+                        .map_err(|e2| {
+                            McpError::internal_error(
+                                format!("Stand 通信失敗 ({}): {}. Stand auto-start succeeded but request failed.", endpoint, e2),
+                                None,
+                            )
+                        })?
                 } else {
                     write_trace(&TraceEntry::new(
                         "mcp",
                         &tid,
                         "error",
                         "ERROR",
-                        format!("POST {} 失敗: {}", endpoint, e),
+                        format!("POST {} 失敗（自動起動も失敗）: {}", endpoint, e),
                     ));
                     return Err(McpError::internal_error(
-                        format!("Stand 通信失敗 ({}): {}. Is vp running?", endpoint, e),
+                        format!("Stand 通信失敗 ({}): {}. Auto-start failed. Run `vp start` manually.", endpoint, e),
                         None,
                     ));
                 }
@@ -332,6 +353,103 @@ impl VantageMcp {
         } else {
             None
         }
+    }
+
+    /// Stand が見つからない場合に自動起動する
+    ///
+    /// `vp start --headless` をバックグラウンドで spawn し、
+    /// health check ポーリングで起動完了を待つ。
+    /// 成功したら `stand_url` を更新し、新しい URL を返す。
+    async fn auto_start_stand(&self, endpoint: &str) -> Option<String> {
+        use crate::trace_log::{TraceEntry, new_trace_id, write_trace};
+
+        let tid = new_trace_id();
+        let cwd = std::env::current_dir().ok()?;
+        let cwd_str = cwd.display().to_string();
+
+        write_trace(&TraceEntry::new(
+            "mcp",
+            &tid,
+            "auto_start",
+            "INFO",
+            format!("Stand 自動起動: project_dir={}", cwd_str),
+        ));
+
+        // vp start --headless をデタッチ実行
+        let spawn_result = std::process::Command::new("vp")
+            .arg("start")
+            .arg("--headless")
+            .arg("-C")
+            .arg(&cwd_str)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+
+        if let Err(e) = spawn_result {
+            write_trace(&TraceEntry::new(
+                "mcp",
+                &tid,
+                "auto_start",
+                "ERROR",
+                format!("vp start spawn 失敗: {}", e),
+            ));
+            return None;
+        }
+
+        // running.json からポートを取得し、health check で起動完了を確認
+        // 最大 5 秒（200ms × 25回）
+        let poll_interval = Duration::from_millis(200);
+        let max_attempts = 25;
+
+        for _ in 0..max_attempts {
+            tokio::time::sleep(poll_interval).await;
+
+            // running.json から新しい Stand を検索
+            let stand_info = match RunningStands::find_for_cwd() {
+                Some(info) => info,
+                None => continue,
+            };
+
+            let new_base = format!("http://localhost:{}", stand_info.port);
+            let health_url = format!("{}/api/health", new_base);
+
+            // health check
+            match self
+                .client
+                .get(&health_url)
+                .timeout(Duration::from_secs(2))
+                .send()
+                .await
+            {
+                Ok(resp) if resp.status().is_success() => {
+                    // 起動完了 — stand_url を更新
+                    let mut current = self.stand_url.lock().await;
+                    *current = new_base.clone();
+
+                    write_trace(&TraceEntry::new(
+                        "mcp",
+                        &tid,
+                        "auto_start",
+                        "INFO",
+                        format!("Stand 自動起動成功: port={}", stand_info.port),
+                    ));
+
+                    return Some(format!("{}{}", new_base, endpoint));
+                }
+                _ => continue,
+            }
+        }
+
+        write_trace(&TraceEntry::new(
+            "mcp",
+            &tid,
+            "auto_start",
+            "ERROR",
+            "Stand 自動起動タイムアウト（5秒）".to_string(),
+        ));
+
+        None
     }
 
     /// Stand に StandMessage を送信（show/clear/toggle_pane/split_pane/close_pane）
