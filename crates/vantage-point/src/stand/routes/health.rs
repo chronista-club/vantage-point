@@ -101,9 +101,9 @@ pub async fn canvas_open_handler(State(state): State<Arc<AppState>>) -> impl Int
         }
     }
 
-    // vp canvas --port <port> で起動
+    // vp canvas internal --port <port> で起動
     match std::process::Command::new("vp")
-        .args(["canvas", "--port", &state.port.to_string()])
+        .args(["canvas", "internal", "--port", &state.port.to_string()])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -200,7 +200,7 @@ pub async fn canvas_capture_handler(
     // Canvas 未起動なら自動起動 + WebSocket 接続待ち
     if !canvas_alive {
         match std::process::Command::new("vp")
-            .args(["canvas", "--port", &state.port.to_string()])
+            .args(["canvas", "internal", "--port", &state.port.to_string()])
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
