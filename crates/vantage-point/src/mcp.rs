@@ -205,6 +205,8 @@ impl VantageMcp {
     ///
     /// `endpoint` は `/api/show` 等の API パス。
     /// `body` は JSON シリアライズ可能なペイロード。
+    ///
+    /// 接続失敗時は Stand ポートを再解決してリトライする（lazy reconnect）。
     async fn http_post(
         &self,
         endpoint: &str,
@@ -221,14 +223,53 @@ impl VantageMcp {
                 .with_data(serde_json::to_value(body).unwrap_or_default()),
         );
 
-        let resp = self
+        let resp = match self
             .client
             .post(&url)
             .json(body)
             .timeout(Duration::from_secs(10))
             .send()
             .await
-            .map_err(|e| {
+        {
+            Ok(r) => r,
+            Err(e) if e.is_connect() => {
+                // 接続失敗 → ポートを再解決してリトライ
+                let new_url = self.try_reconnect(endpoint).await;
+                if let Some(retry_url) = new_url {
+                    write_trace(&TraceEntry::new(
+                        "mcp",
+                        &tid,
+                        "reconnect",
+                        "INFO",
+                        format!("Stand 再検出: {}", retry_url),
+                    ));
+                    self.client
+                        .post(&retry_url)
+                        .json(body)
+                        .timeout(Duration::from_secs(10))
+                        .send()
+                        .await
+                        .map_err(|e2| {
+                            McpError::internal_error(
+                                format!("Stand 通信失敗 ({}): {}. Is vp running?", endpoint, e2),
+                                None,
+                            )
+                        })?
+                } else {
+                    write_trace(&TraceEntry::new(
+                        "mcp",
+                        &tid,
+                        "error",
+                        "ERROR",
+                        format!("POST {} 失敗: {}", endpoint, e),
+                    ));
+                    return Err(McpError::internal_error(
+                        format!("Stand 通信失敗 ({}): {}. Is vp running?", endpoint, e),
+                        None,
+                    ));
+                }
+            }
+            Err(e) => {
                 write_trace(&TraceEntry::new(
                     "mcp",
                     &tid,
@@ -236,11 +277,12 @@ impl VantageMcp {
                     "ERROR",
                     format!("POST {} 失敗: {}", endpoint, e),
                 ));
-                McpError::internal_error(
+                return Err(McpError::internal_error(
                     format!("Stand 通信失敗 ({}): {}. Is vp running?", endpoint, e),
                     None,
-                )
-            })?;
+                ));
+            }
+        };
 
         if !resp.status().is_success() {
             let status = resp.status();
@@ -273,6 +315,23 @@ impl VantageMcp {
         );
 
         Ok(json)
+    }
+
+    /// Stand ポートを再解決し、変わっていれば URL を更新してリトライ用 URL を返す
+    ///
+    /// 接続失敗時に呼ばれる。`running.json` から cwd に一致する
+    /// Stand を検索し、現在の URL と異なる場合のみリトライ URL を返す。
+    async fn try_reconnect(&self, endpoint: &str) -> Option<String> {
+        let stand_info = RunningStands::find_for_cwd()?;
+        let new_base = format!("http://localhost:{}", stand_info.port);
+
+        let mut current = self.stand_url.lock().await;
+        if *current != new_base {
+            *current = new_base.clone();
+            Some(format!("{}{}", new_base, endpoint))
+        } else {
+            None
+        }
     }
 
     /// Stand に StandMessage を送信（show/clear/toggle_pane/split_pane/close_pane）
