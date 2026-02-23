@@ -6,6 +6,7 @@
     <title>Vantage Point Canvas</title>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
     <style>
         :root {
             --canvas-bg: oklch(0.10 0.02 230);
@@ -621,12 +622,55 @@
             return card;
         }
 
+        // Mermaid 初期化（ダークテーマ） — CDN 読み込み失敗時もクラッシュしない
+        const mermaidAvailable = typeof mermaid !== 'undefined';
+        if (mermaidAvailable) {
+            mermaid.initialize({
+                startOnLoad: false,
+                theme: 'dark',
+                themeVariables: {
+                    darkMode: true,
+                    background: 'oklch(0.14 0.02 230)',
+                    primaryColor: 'oklch(0.35 0.08 210)',
+                    primaryTextColor: 'oklch(0.93 0.01 220)',
+                    primaryBorderColor: 'oklch(0.40 0.06 220)',
+                    lineColor: 'oklch(0.50 0.04 220)',
+                    secondaryColor: 'oklch(0.25 0.05 260)',
+                    tertiaryColor: 'oklch(0.20 0.03 230)',
+                }
+            });
+        }
+
+        // Mermaid ブロックをレンダリング
+        async function renderMermaidBlocks(container) {
+            const codeBlocks = container.querySelectorAll('code.language-mermaid');
+            for (const code of codeBlocks) {
+                const pre = code.parentElement;
+                if (!pre || pre.tagName !== 'PRE') continue;
+                const mermaidDiv = document.createElement('div');
+                mermaidDiv.className = 'mermaid';
+                mermaidDiv.textContent = code.textContent;
+                pre.replaceWith(mermaidDiv);
+            }
+            if (mermaidAvailable && container.querySelectorAll('.mermaid').length > 0) {
+                try {
+                    await mermaid.run({ nodes: container.querySelectorAll('.mermaid') });
+                } catch (e) {
+                    const errDiv = document.createElement('div');
+                    errDiv.style.cssText = 'background:#a00;color:#fff;padding:6px 10px;margin:4px 0;border-radius:4px;font-size:11px';
+                    errDiv.textContent = `[MERMAID ERROR] ${e.message}`;
+                    container.prepend(errDiv);
+                }
+            }
+        }
+
+        // NOTE: insertAdjacentHTML は DOMPurify.sanitize() でサニタイズ済みのコンテンツのみ使用
         function renderContent(bodyEl, content, append) {
             if (!append) bodyEl.textContent = '';
             const div = document.createElement('div');
             if (content.markdown) {
-                // DOMPurifyでサニタイズ済みのHTMLを設定
-                const sanitized = DOMPurify.sanitize(marked.parse(content.markdown));
+                const raw = marked.parse(content.markdown);
+                const sanitized = DOMPurify.sanitize(raw);
                 div.insertAdjacentHTML('beforeend', sanitized);
             } else if (content.html) {
                 const sanitized = DOMPurify.sanitize(content.html);
@@ -644,6 +688,9 @@
                 div.appendChild(img);
             }
             bodyEl.appendChild(div);
+
+            // Mermaid ブロックを非同期でレンダリング
+            renderMermaidBlocks(div);
         }
 
         // ===== ログビュワー =====
@@ -941,8 +988,13 @@
             logScrollResume.style.display = 'none';
         });
 
-        // ===== WebSocket =====
-        const WS_URL = `ws://${location.host}/ws`;
+    </script>
+    <script>
+        // ===== WebSocket（独立スクリプトブロック） =====
+        // vp:// protocol 時: __VP_WS_HOST__ が canvas.rs で実際の host:port に置換される
+        // HTTP 時: __VP_WS_HOST__ がそのまま残るので location.host を使用
+        const wsHost = '__VP_WS_HOST__'.startsWith('__') ? location.host : '__VP_WS_HOST__';
+        const WS_URL = `ws://${wsHost}/ws`;
         let ws = null;
         let reconnectTimer = null;
         let reconnectAttempts = 0;

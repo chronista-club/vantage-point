@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ViewPoint - The World</title>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
@@ -348,6 +349,28 @@
     </div>
 
     <script>
+        // Mermaid 初期化（ダークテーマ）
+        mermaid.initialize({
+            startOnLoad: false,
+            theme: 'dark',
+        });
+
+        // Mermaid ブロックをレンダリング
+        async function renderMermaidBlocks(container) {
+            const codeBlocks = container.querySelectorAll('code.language-mermaid');
+            for (const code of codeBlocks) {
+                const pre = code.parentElement;
+                if (!pre || pre.tagName !== 'PRE') continue;
+                const mermaidDiv = document.createElement('div');
+                mermaidDiv.className = 'mermaid';
+                mermaidDiv.textContent = code.textContent;
+                pre.replaceWith(mermaidDiv);
+            }
+            if (container.querySelectorAll('.mermaid').length > 0) {
+                await mermaid.run({ nodes: container.querySelectorAll('.mermaid') });
+            }
+        }
+
         // Configuration
         const WORLD_URL = 'ws://[::1]:33000/ws';
         let ws = null;
@@ -452,10 +475,13 @@
             }
 
             if (append) {
-                pane.innerHTML += html;
+                pane.insertAdjacentHTML('beforeend', html);
             } else {
-                pane.innerHTML = html;
+                pane.textContent = '';
+                pane.insertAdjacentHTML('beforeend', html);
             }
+            // Mermaid ブロックを非同期でレンダリング
+            renderMermaidBlocks(pane);
 
             log('info', `Content shown in ${paneId}`);
         }

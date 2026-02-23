@@ -5,6 +5,7 @@ use std::sync::Arc;
 use axum::{
     Json,
     extract::State,
+    http::header,
     response::{Html, IntoResponse},
 };
 
@@ -17,14 +18,20 @@ pub fn open_browser(url: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Index page handler
-pub async fn index_handler() -> Html<&'static str> {
-    Html(include_str!("../../../../../web/index.html"))
+/// Index page handler（キャッシュ無効化ヘッダー付き）
+pub async fn index_handler() -> impl IntoResponse {
+    (
+        [(header::CACHE_CONTROL, "no-store, no-cache, must-revalidate")],
+        Html(include_str!("../../../../../web/index.html")),
+    )
 }
 
-/// Canvas page handler
-pub async fn canvas_handler() -> Html<&'static str> {
-    Html(include_str!("../../../../../web/canvas.html"))
+/// Canvas page handler（キャッシュ無効化ヘッダー付き）
+pub async fn canvas_handler() -> impl IntoResponse {
+    (
+        [(header::CACHE_CONTROL, "no-store, no-cache, must-revalidate")],
+        Html(include_str!("../../../../../web/canvas.html")),
+    )
 }
 
 /// Health check response
