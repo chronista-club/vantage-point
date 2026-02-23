@@ -681,6 +681,13 @@
                 pre.style.whiteSpace = 'pre-wrap';
                 pre.style.wordBreak = 'break-all';
                 div.appendChild(pre);
+            } else if (content.url) {
+                const iframe = document.createElement('iframe');
+                iframe.src = content.url;
+                iframe.style.cssText = 'width:100%;height:100%;border:none;';
+                iframe.sandbox = 'allow-scripts allow-same-origin allow-forms allow-popups';
+                div.style.cssText = 'min-height:600px;height:100%;';
+                div.appendChild(iframe);
             } else if (content.image_base64) {
                 const img = document.createElement('img');
                 const mimeType = DOMPurify.sanitize(content.image_base64.mime_type);

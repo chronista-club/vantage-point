@@ -16,7 +16,7 @@ pub enum PaneCommands {
     Show {
         /// 表示するコンテンツ
         content: String,
-        /// コンテンツ形式: markdown（デフォルト）, html, log
+        /// コンテンツ形式: markdown（デフォルト）, html, log, url
         #[arg(long, short, default_value = "markdown")]
         format: String,
         /// 表示先ペインID（デフォルト: main）
@@ -107,6 +107,7 @@ pub fn execute(cmd: PaneCommands, config: &Config) -> Result<()> {
             let content_enum = match format.as_str() {
                 "html" => Content::Html(content),
                 "log" => Content::Log(content),
+                "url" => Content::Url(content),
                 _ => Content::Markdown(content),
             };
 
