@@ -146,6 +146,18 @@ pub struct UnwatchFileParams {
     pub pane_id: String,
 }
 
+/// Parameters for the capture_canvas tool
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct CaptureCanvasParams {
+    /// Save path
+    #[schemars(description = "Save path for the PNG screenshot (default: /tmp/vp-canvas-{timestamp}.png)")]
+    pub path: Option<String>,
+
+    /// Capture specific pane only
+    #[schemars(description = "Capture only a specific pane by its pane_id")]
+    pub pane_id: Option<String>,
+}
+
 /// Response format for permission tool
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -684,6 +696,64 @@ impl VantageMcp {
         )]))
     }
 
+    /// Capture the Canvas window as a PNG screenshot
+    ///
+    /// html2canvas で Canvas の DOM をキャプチャし、PNG ファイルとして保存する。
+    /// 保存されたファイルは Claude の Read ツールで画像として確認可能。
+    #[tool(
+        description = "Capture the Canvas window as a PNG screenshot. The saved file can be viewed with the Read tool."
+    )]
+    async fn capture_canvas(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<CaptureCanvasParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let body = serde_json::json!({
+            "path": params.path,
+            "pane_id": params.pane_id,
+        });
+
+        // タイムアウトを長めに設定（Canvas 自動起動 + キャプチャ待ち）
+        let url = format!("{}/api/canvas/capture", self.stand_url.lock().await);
+        let resp = self
+            .client
+            .post(&url)
+            .json(&body)
+            .timeout(Duration::from_secs(20))
+            .send()
+            .await
+            .map_err(|e| {
+                McpError::internal_error(
+                    format!("Canvas capture 通信失敗: {}. Is vp running?", e),
+                    None,
+                )
+            })?;
+
+        let json: serde_json::Value = resp.json().await.map_err(|e| {
+            McpError::internal_error(format!("Canvas capture レスポンスパース失敗: {}", e), None)
+        })?;
+
+        let status = json.get("status").and_then(|v| v.as_str()).unwrap_or("error");
+        if status != "ok" {
+            let msg = json.get("message").and_then(|v| v.as_str()).unwrap_or("Unknown error");
+            return Err(McpError::internal_error(
+                format!("Canvas capture 失敗: {}", msg),
+                None,
+            ));
+        }
+
+        let saved_path = json.get("path").and_then(|v| v.as_str()).unwrap_or("unknown");
+        let width = json.get("width").and_then(|v| v.as_u64()).unwrap_or(0);
+        let height = json.get("height").and_then(|v| v.as_u64()).unwrap_or(0);
+        let size_bytes = json.get("size_bytes").and_then(|v| v.as_u64()).unwrap_or(0);
+
+        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+            format!(
+                "Screenshot saved: {}\nSize: {}x{} ({} bytes)\nUse the Read tool to view this image.",
+                saved_path, width, height, size_bytes
+            ),
+        )]))
+    }
+
     /// Request permission for tool execution from user
     ///
     /// This tool is called by Claude CLI via --permission-prompt-tool flag.
@@ -937,6 +1007,7 @@ impl rmcp::ServerHandler for VantageMcp {
             instructions: Some(
                 "Vantage Point Stand - Display rich content (markdown, HTML, images) in a browser viewer. \
                  Use 'open_canvas' to open the native Canvas window, 'close_canvas' to close it, \
+                 'capture_canvas' to take a PNG screenshot of the Canvas (viewable with Read tool), \
                  'show' to display content, 'clear' to clear panes, 'split_pane' to split a pane \
                  horizontally or vertically, 'close_pane' to close a pane, 'toggle_pane' to toggle panel visibility, \
                  'permission' to request user approval, 'restart' to restart the Stand, \

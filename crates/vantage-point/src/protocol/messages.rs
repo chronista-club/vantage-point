@@ -134,6 +134,12 @@ pub enum StandMessage {
         #[serde(skip_serializing_if = "Option::is_none")]
         elapsed_ms: Option<u64>,
     },
+    /// Canvas スクリーンショット要求
+    ScreenshotRequest {
+        request_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pane_id: Option<String>,
+    },
 }
 
 /// Session information for UI
@@ -195,6 +201,13 @@ pub enum BrowserMessage {
     TerminalInput { data: String },
     /// ターミナルリサイズ
     TerminalResize { cols: u16, rows: u16 },
+    /// Canvas スクリーンショット応答（base64 PNG）
+    ScreenshotResponse {
+        request_id: String,
+        data: String,
+        width: u32,
+        height: u32,
+    },
 }
 
 /// Chat message for display

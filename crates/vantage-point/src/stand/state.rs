@@ -76,6 +76,13 @@ pub(crate) struct UserPromptResponseData {
     pub selected_options: Option<Vec<String>>,
 }
 
+/// スクリーンショットキャプチャの応答データ
+pub(crate) struct ScreenshotData {
+    pub data: String,
+    pub width: u32,
+    pub height: u32,
+}
+
 /// Application state
 pub(crate) struct AppState {
     pub hub: Hub,
@@ -109,6 +116,10 @@ pub(crate) struct AppState {
     pub port: u16,
     /// ファイル監視マネージャー
     pub file_watchers: Arc<tokio::sync::Mutex<FileWatcherManager>>,
+    /// スクリーンショット応答待ち: request_id → oneshot sender
+    pub screenshot_waiters: Arc<tokio::sync::Mutex<
+        HashMap<String, tokio::sync::oneshot::Sender<ScreenshotData>>
+    >>,
 }
 
 impl AppState {

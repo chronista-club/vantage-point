@@ -176,6 +176,176 @@ pub async fn unwatch_file_handler(
     Json(serde_json::json!({"status": "ok", "pane_id": body.pane_id}))
 }
 
+/// Canvas キャプチャリクエストのパラメータ
+#[derive(Debug, serde::Deserialize)]
+pub struct CaptureParams {
+    /// 保存先パス（省略時: /tmp/vp-canvas-{timestamp}.png）
+    pub path: Option<String>,
+    /// 特定ペインのみキャプチャ
+    pub pane_id: Option<String>,
+}
+
+/// POST /api/canvas/capture - Canvas のスクリーンショットを取得
+pub async fn canvas_capture_handler(
+    State(state): State<Arc<AppState>>,
+    Json(params): Json<CaptureParams>,
+) -> impl IntoResponse {
+    // 1. Canvas プロセスの生存確認
+    let mut pid_guard = state.canvas_pid.lock().await;
+    let canvas_alive = match *pid_guard {
+        Some(pid) => unsafe { libc::kill(pid as i32, 0) == 0 },
+        None => false,
+    };
+
+    // Canvas 未起動なら自動起動 + WebSocket 接続待ち
+    if !canvas_alive {
+        match std::process::Command::new("vp")
+            .args(["canvas", "--port", &state.port.to_string()])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            Ok(child) => {
+                let pid = child.id();
+                *pid_guard = Some(pid);
+                tracing::info!("Canvas auto-started for capture (pid={})", pid);
+            }
+            Err(e) => {
+                return (
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({
+                        "status": "error",
+                        "message": format!("Canvas 起動失敗: {}", e)
+                    })),
+                );
+            }
+        }
+        // Canvas の WebSocket 接続を待つ（最大 5 秒）
+        drop(pid_guard);
+        let mut connected = false;
+        for _ in 0..50 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            if state.hub.client_count().await > 0 {
+                connected = true;
+                break;
+            }
+        }
+        if !connected {
+            return (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "status": "error",
+                    "message": "Canvas 起動後の WebSocket 接続がタイムアウト"
+                })),
+            );
+        }
+    } else {
+        drop(pid_guard);
+    }
+
+    // 2. request_id 生成、oneshot channel 作成
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+
+    {
+        let mut waiters = state.screenshot_waiters.lock().await;
+        waiters.insert(request_id.clone(), tx);
+    }
+
+    // 3. ScreenshotRequest を Canvas に broadcast
+    state.hub.broadcast(crate::protocol::StandMessage::ScreenshotRequest {
+        request_id: request_id.clone(),
+        pane_id: params.pane_id,
+    });
+
+    // 4. タイムアウト付きで応答を待つ
+    let result = tokio::time::timeout(
+        tokio::time::Duration::from_secs(10),
+        rx,
+    ).await;
+
+    match result {
+        Ok(Ok(screenshot)) => {
+            // width=0 はキャプチャ失敗を示す（JSからのエラー応答、data にエラーメッセージ）
+            if screenshot.width == 0 {
+                return (
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({
+                        "status": "error",
+                        "message": format!("Canvas側でスクリーンショット取得に失敗: {}", screenshot.data)
+                    })),
+                );
+            }
+
+            // 5. base64 デコード → ファイル書き込み
+            use base64::Engine;
+            let engine = base64::engine::general_purpose::STANDARD;
+
+            let bytes = match engine.decode(&screenshot.data) {
+                Ok(b) => b,
+                Err(e) => {
+                    return (
+                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({
+                            "status": "error",
+                            "message": format!("base64 デコード失敗: {}", e)
+                        })),
+                    );
+                }
+            };
+
+            let save_path = params.path.unwrap_or_else(|| {
+                let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+                format!("/tmp/vp-canvas-{}.png", ts)
+            });
+
+            if let Err(e) = std::fs::write(&save_path, &bytes) {
+                return (
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({
+                        "status": "error",
+                        "message": format!("ファイル書き込み失敗: {}", e)
+                    })),
+                );
+            }
+
+            (
+                axum::http::StatusCode::OK,
+                Json(serde_json::json!({
+                    "status": "ok",
+                    "path": save_path,
+                    "width": screenshot.width,
+                    "height": screenshot.height,
+                    "size_bytes": bytes.len(),
+                })),
+            )
+        }
+        Ok(Err(_)) => {
+            // oneshot sender が drop された（キャンセル）
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "status": "error",
+                    "message": "スクリーンショット応答チャネルが切断"
+                })),
+            )
+        }
+        Err(_) => {
+            // タイムアウト — waiter をクリーンアップ
+            let mut waiters = state.screenshot_waiters.lock().await;
+            waiters.remove(&request_id);
+            (
+                axum::http::StatusCode::GATEWAY_TIMEOUT,
+                Json(serde_json::json!({
+                    "status": "error",
+                    "message": "スクリーンショット取得タイムアウト（10秒）"
+                })),
+            )
+        }
+    }
+}
+
 /// POST /api/shutdown - Graceful shutdown
 pub async fn shutdown_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     tracing::info!("Shutdown requested via API");

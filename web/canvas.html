@@ -1065,6 +1065,102 @@
                     break;
                 }
 
+                // スクリーンショットリクエスト（SVG foreignObject 方式）
+                case 'screenshot_request':
+                    (async () => {
+                        const sendError = (errMsg) => {
+                            ws.send(JSON.stringify({
+                                type: 'screenshot_response',
+                                request_id: msg.request_id,
+                                data: '',
+                                width: 0,
+                                height: 0,
+                            }));
+                            console.error('Screenshot failed:', errMsg);
+                        };
+                        try {
+                            const target = msg.pane_id
+                                ? document.querySelector(`[data-pane-id="${msg.pane_id}"] .pane-card-body`)
+                                : document.body;
+                            if (!target) {
+                                sendError('Screenshot target not found: ' + msg.pane_id);
+                                return;
+                            }
+
+                            const rect = target.getBoundingClientRect();
+                            const scale = 2;
+                            const w = Math.ceil(rect.width);
+                            const h = Math.ceil(rect.height);
+
+                            // DOM clone + computed style 焼き付け
+                            const clone = target.cloneNode(true);
+                            function inlineStyles(src, dst) {
+                                const cs = window.getComputedStyle(src);
+                                for (const prop of cs) {
+                                    try { dst.style.setProperty(prop, cs.getPropertyValue(prop)); } catch {}
+                                }
+                                for (let i = 0; i < src.children.length && i < dst.children.length; i++) {
+                                    inlineStyles(src.children[i], dst.children[i]);
+                                }
+                            }
+                            inlineStyles(target, clone);
+
+                            // SVG foreignObject でキャプチャ
+                            const svgNs = 'http://www.w3.org/2000/svg';
+                            const xhtmlNs = 'http://www.w3.org/1999/xhtml';
+                            const svg = document.createElementNS(svgNs, 'svg');
+                            svg.setAttribute('width', w);
+                            svg.setAttribute('height', h);
+                            svg.setAttribute('xmlns', svgNs);
+                            const fo = document.createElementNS(svgNs, 'foreignObject');
+                            fo.setAttribute('width', '100%');
+                            fo.setAttribute('height', '100%');
+                            const wrapper = document.createElementNS(xhtmlNs, 'div');
+                            wrapper.setAttribute('xmlns', xhtmlNs);
+                            wrapper.style.width = w + 'px';
+                            wrapper.style.height = h + 'px';
+                            wrapper.style.overflow = 'hidden';
+                            wrapper.appendChild(clone);
+                            fo.appendChild(wrapper);
+                            svg.appendChild(fo);
+
+                            const svgData = new XMLSerializer().serializeToString(svg);
+                            // data URI を使用（blob URL は WKWebView で onload が発火しない）
+                            const dataUrl = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgData);
+
+                            // Promise でラップして img.onload/onerror を待つ
+                            const result = await new Promise((resolve, reject) => {
+                                const img = new Image();
+                                img.onload = () => {
+                                    const c = document.createElement('canvas');
+                                    c.width = w * scale;
+                                    c.height = h * scale;
+                                    const ctx = c.getContext('2d');
+                                    ctx.scale(scale, scale);
+                                    ctx.drawImage(img, 0, 0);
+                                    resolve({
+                                        data: c.toDataURL('image/png').split(',')[1],
+                                        width: c.width,
+                                        height: c.height,
+                                    });
+                                };
+                                img.onerror = (e) => {
+                                    reject(new Error('SVG image rendering failed: ' + (e.message || 'unknown')));
+                                };
+                                img.src = dataUrl;
+                            });
+
+                            ws.send(JSON.stringify({
+                                type: 'screenshot_response',
+                                request_id: msg.request_id,
+                                ...result,
+                            }));
+                        } catch (e) {
+                            sendError(String(e));
+                        }
+                    })();
+                    break;
+
                 // トレースログ → ログビュワーに追加
                 case 'trace_log':
                     addLogEntry(msg);
