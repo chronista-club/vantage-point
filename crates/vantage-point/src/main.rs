@@ -42,8 +42,11 @@ use cli::{DebugModeArg, parse_debug_env};
 use config::Config;
 use protocol::DebugMode;
 
+use commands::canvas_cmd::CanvasCommands;
 use commands::daemon::DaemonCommands;
+use commands::file_cmd::FileCommands;
 use commands::midi::MidiCommands;
+use commands::pane::PaneCommands;
 
 #[derive(Parser)]
 #[command(name = "vp")]
@@ -66,9 +69,9 @@ enum Commands {
         #[arg(short, long)]
         port: Option<u16>,
 
-        /// ビューアを開かない（ヘッドレスモード）
+        /// ネイティブWebViewを開く（デフォルトはヘッドレス）
         #[arg(long)]
-        headless: bool,
+        gui: bool,
 
         /// ネイティブWebViewの代わりにシステムブラウザを使用
         #[arg(long)]
@@ -102,9 +105,9 @@ enum Commands {
         #[arg(long)]
         browser: bool,
 
-        /// ビューアを開かない（ヘッドレスモード）
+        /// ネイティブWebViewを開く（デフォルトはヘッドレス）
         #[arg(long)]
-        headless: bool,
+        gui: bool,
     },
     /// 稼働中のインスタンス一覧
     #[command(alias = "list")]
@@ -125,12 +128,15 @@ enum Commands {
         #[arg(long)]
         check: bool,
     },
-    /// Canvas ウィンドウを起動（Stand が spawn する内部コマンド）
-    Canvas {
-        /// 接続先の Stand ポート番号
-        #[arg(short, long)]
-        port: u16,
-    },
+    /// Canvas ウィンドウ操作
+    #[command(subcommand)]
+    Canvas(CanvasCommands),
+    /// ペイン操作（コンテンツ表示・レイアウト）
+    #[command(subcommand)]
+    Pane(PaneCommands),
+    /// ファイル監視
+    #[command(subcommand)]
+    File(FileCommands),
 
     // --- App ---
     /// VantagePoint.app を起動（Daemon も自動起動）
@@ -169,7 +175,7 @@ fn main() -> Result<()> {
     let command = cli.command.unwrap_or(Commands::Start {
         target: None,
         port: None,
-        headless: false,
+        gui: false,
         browser: false,
         debug: None,
         project_dir: None,
@@ -193,7 +199,7 @@ fn main() -> Result<()> {
         Commands::Start {
             target,
             port,
-            headless,
+            gui,
             browser,
             debug,
             project_dir,
@@ -201,7 +207,7 @@ fn main() -> Result<()> {
         } => commands::start::execute(commands::start::StartOptions {
             target,
             port,
-            headless,
+            headless: !gui,
             browser,
             debug,
             project_dir,
@@ -212,8 +218,8 @@ fn main() -> Result<()> {
         Commands::Restart {
             target,
             browser,
-            headless,
-        } => commands::restart::execute(target.as_deref(), browser, headless, &config),
+            gui,
+        } => commands::restart::execute(target.as_deref(), browser, !gui, &config),
         Commands::Ps => cli::list_instances(&config),
         Commands::Open { target } => cli::open_by_target(target.as_deref(), &config),
         Commands::Config => commands::config::execute(&config),
@@ -222,7 +228,9 @@ fn main() -> Result<()> {
             rt.block_on(mcp::run_mcp_server(33000))
         }
         Commands::Update { check } => commands::update::execute(check),
-        Commands::Canvas { port } => commands::canvas::execute(port),
+        Commands::Canvas(cmd) => commands::canvas_cmd::execute(cmd, &config),
+        Commands::Pane(cmd) => commands::pane::execute(cmd, &config),
+        Commands::File(cmd) => commands::file_cmd::execute(cmd, &config),
 
         // App
         Commands::App { port, no_daemon } => commands::app::execute(port, no_daemon),

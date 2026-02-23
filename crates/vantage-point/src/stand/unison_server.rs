@@ -230,9 +230,9 @@ async fn handle_canvas_open(state: &AppState) -> Result<serde_json::Value, Strin
         }
     }
 
-    // vp canvas --port <port> で起動
+    // vp canvas internal --port <port> で起動
     match std::process::Command::new("vp")
-        .args(["canvas", "--port", &state.port.to_string()])
+        .args(["canvas", "internal", "--port", &state.port.to_string()])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
