@@ -31,6 +31,7 @@ mod file_watcher;
 mod mcp;
 mod midi;
 mod protocol;
+mod resolve;
 mod stand;
 mod terminal;
 mod terminal_window;
@@ -57,9 +58,9 @@ struct Cli {
 enum Commands {
     /// Standを起動（HTTPサーバー + WebSocketハブ）[デフォルト]
     Start {
-        /// プロジェクト番号（`vp config`で確認、1始まり）
+        /// プロジェクト名またはインデックス（省略時はcwd自動検出）
         #[arg()]
-        project_index: Option<usize>,
+        target: Option<String>,
 
         /// 待ち受けポート番号
         #[arg(short, long)]
@@ -77,7 +78,7 @@ enum Commands {
         #[arg(long, short = 'd', value_enum)]
         debug: Option<DebugModeArg>,
 
-        /// プロジェクトディレクトリ（project_indexより優先）
+        /// プロジェクトディレクトリ（targetより優先）
         #[arg(long, short = 'C')]
         project_dir: Option<String>,
 
@@ -87,15 +88,15 @@ enum Commands {
     },
     /// Standを停止
     Stop {
-        /// 停止するStandのポート番号
-        #[arg(short, long, default_value = "33000")]
-        port: u16,
+        /// プロジェクト名またはインデックス（省略時はcwd自動検出）
+        #[arg()]
+        target: Option<String>,
     },
     /// Standを再起動（セッション状態を保持）
     Restart {
-        /// 再起動するStandのポート番号
-        #[arg(short, long, default_value = "33000")]
-        port: u16,
+        /// プロジェクト名またはインデックス（省略時はcwd自動検出）
+        #[arg()]
+        target: Option<String>,
 
         /// ネイティブWebViewの代わりにシステムブラウザを使用
         #[arg(long)]
@@ -110,9 +111,9 @@ enum Commands {
     Ps,
     /// 指定インスタンスのWebUIを開く
     Open {
-        /// インスタンス番号（`vp ps`で確認、1始まり）
-        #[arg(default_value = "1")]
-        index: usize,
+        /// プロジェクト名またはインデックス（省略時はcwd自動検出）
+        #[arg()]
+        target: Option<String>,
     },
     /// 設定と登録済みプロジェクトを表示
     Config,
@@ -166,7 +167,7 @@ fn main() -> Result<()> {
 
     // Default to Start if no command given
     let command = cli.command.unwrap_or(Commands::Start {
-        project_index: None,
+        target: None,
         port: None,
         headless: false,
         browser: false,
@@ -190,7 +191,7 @@ fn main() -> Result<()> {
     match command {
         // Core
         Commands::Start {
-            project_index,
+            target,
             port,
             headless,
             browser,
@@ -198,7 +199,7 @@ fn main() -> Result<()> {
             project_dir,
             midi,
         } => commands::start::execute(commands::start::StartOptions {
-            project_index,
+            target,
             port,
             headless,
             browser,
@@ -207,23 +208,14 @@ fn main() -> Result<()> {
             midi,
             config: &config,
         }),
-        Commands::Stop { port } => {
-            let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(cli::stop_stand(port))
-        }
+        Commands::Stop { target } => cli::stop_by_target(target.as_deref(), &config),
         Commands::Restart {
-            port,
+            target,
             browser,
             headless,
-        } => commands::restart::execute(port, browser, headless),
-        Commands::Ps => {
-            let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(cli::list_instances())
-        }
-        Commands::Open { index } => {
-            let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(cli::open_instance(index))
-        }
+        } => commands::restart::execute(target.as_deref(), browser, headless, &config),
+        Commands::Ps => cli::list_instances(&config),
+        Commands::Open { target } => cli::open_by_target(target.as_deref(), &config),
         Commands::Config => commands::config::execute(&config),
         Commands::Mcp => {
             let rt = tokio::runtime::Runtime::new()?;

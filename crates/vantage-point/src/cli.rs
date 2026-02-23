@@ -198,72 +198,115 @@ pub(crate) async fn find_available_port() -> Option<u16> {
     None
 }
 
-/// List all running vp instances
-pub(crate) async fn list_instances() -> Result<()> {
-    println!("Scanning ports {}–{}...", PORT_RANGE_START, PORT_RANGE_END);
+/// 稼働中インスタンスをプロジェクト名ベースで一覧表示
+pub(crate) fn list_instances(config: &crate::config::Config) -> Result<()> {
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(async {
+        let instances = scan_instances().await;
 
-    let instances = scan_instances().await;
+        if instances.is_empty() {
+            println!("No running vp instances found.");
+            return Ok(());
+        }
 
-    if instances.is_empty() {
-        println!("No running vp instances found.");
-        return Ok(());
-    }
+        // cwd を取得して一致チェック
+        let cwd = std::env::current_dir()
+            .ok()
+            .and_then(|p| std::fs::canonicalize(&p).ok())
+            .map(|p| p.display().to_string());
 
-    println!();
-    println!("  #  PORT   PID     PROJECT");
-    println!("  ─  ────   ───     ───────");
-    for (i, inst) in instances.iter().enumerate() {
-        let project = inst.project_dir.as_deref().unwrap_or("-");
-        // Shorten long paths
-        let project_display = if project.len() > 40 {
-            format!("...{}", &project[project.len() - 37..])
-        } else {
-            project.to_string()
-        };
+        println!();
+        println!("  {:<18} {:<7} {:<7} STATUS", "PROJECT", "PORT", "PID");
         println!(
-            "  {}  {}  {:>5}   {}",
-            i + 1,
-            inst.port,
-            inst.pid,
-            project_display
+            "  {:<18} {:<7} {:<7} \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}",
+            "\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}",
+            "\u{2500}\u{2500}\u{2500}\u{2500}",
+            "\u{2500}\u{2500}\u{2500}"
         );
+
+        for inst in &instances {
+            let name = crate::resolve::project_name_from_path(
+                inst.project_dir.as_deref().unwrap_or("-"),
+                config,
+            );
+
+            // cwd 一致チェック（プロジェクトディレクトリまたはそのサブディレクトリ）
+            let is_cwd = if let (Some(cwd_str), Some(proj_dir)) = (&cwd, &inst.project_dir) {
+                let canonical_proj = std::fs::canonicalize(proj_dir)
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|_| proj_dir.clone());
+                cwd_str == &canonical_proj || cwd_str.starts_with(&format!("{}/", canonical_proj))
+            } else {
+                false
+            };
+
+            let marker = if is_cwd { "  \u{2190} cwd" } else { "" };
+
+            println!(
+                "  {:<18} {:<7} {:<7} running{}",
+                name, inst.port, inst.pid, marker
+            );
+        }
+        println!();
+        println!("Use: vp open <project-name>");
+
+        Ok(())
+    })
+}
+
+/// ターゲット指定で WebUI を開く
+pub(crate) fn open_by_target(target: Option<&str>, config: &crate::config::Config) -> Result<()> {
+    use crate::resolve::{self, ResolvedTarget};
+
+    let resolved = resolve::resolve_target(target, config)?;
+
+    match resolved {
+        ResolvedTarget::Running { port, name, .. } => {
+            let url = format!("http://localhost:{}", port);
+            println!("Opening {} ({})...", name, url);
+
+            if let Err(e) = open::that(&url) {
+                println!("\u{2717} Failed to open browser: {}", e);
+            } else {
+                println!("\u{2713} Opened in browser");
+            }
+        }
+        ResolvedTarget::Configured { name, .. } => {
+            println!(
+                "\u{2717} '{}' is not running. Use `vp start {}` first.",
+                name, name
+            );
+        }
+        ResolvedTarget::Cwd { .. } => {
+            println!("\u{2717} No running Stand found for current directory.");
+            println!("  Use `vp start` to start a new Stand.");
+        }
     }
-    println!();
-    println!("Use `vp open <#>` to open WebUI (# starts from 1)");
 
     Ok(())
 }
 
-/// Open WebUI for a specific instance
-pub(crate) async fn open_instance(index: usize) -> Result<()> {
-    let instances = scan_instances().await;
+/// ターゲット指定で Stand を停止
+pub(crate) fn stop_by_target(target: Option<&str>, config: &crate::config::Config) -> Result<()> {
+    use crate::resolve::{self, ResolvedTarget};
 
-    if instances.is_empty() {
-        println!("No running vp instances found.");
-        return Ok(());
+    let resolved = resolve::resolve_target(target, config)?;
+
+    match resolved {
+        ResolvedTarget::Running { port, name, .. } => {
+            println!("Stopping: {} (port {})", name, port);
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(stop_stand(port))
+        }
+        ResolvedTarget::Configured { name, .. } => {
+            println!("\u{2717} '{}' is not running.", name);
+            Ok(())
+        }
+        ResolvedTarget::Cwd { .. } => {
+            println!("\u{2717} No running Stand found for current directory.");
+            Ok(())
+        }
     }
-
-    // Convert 1-based to 0-based
-    if index == 0 || index > instances.len() {
-        println!(
-            "✗ Invalid index {}. Available: 1–{}",
-            index,
-            instances.len()
-        );
-        return Ok(());
-    }
-
-    let inst = &instances[index - 1];
-    let url = format!("http://localhost:{}", inst.port);
-    println!("Opening {} (PID: {})...", url, inst.pid);
-
-    if let Err(e) = open::that(&url) {
-        println!("✗ Failed to open browser: {}", e);
-    } else {
-        println!("✓ Opened in browser");
-    }
-
-    Ok(())
 }
 
 /// CLIデバッグモード

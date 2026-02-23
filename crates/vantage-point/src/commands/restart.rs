@@ -2,75 +2,55 @@
 
 use anyhow::Result;
 
-use crate::cli::{parse_debug_env, scan_instances, stop_stand};
+use crate::cli::{parse_debug_env, stop_stand};
+use crate::config::Config;
+use crate::resolve::{self, ResolvedTarget};
 
 /// `vp restart` を実行
-pub fn execute(port: u16, browser: bool, headless: bool) -> Result<()> {
+pub fn execute(target: Option<&str>, browser: bool, headless: bool, config: &Config) -> Result<()> {
+    // ターゲット解決 — 実行中の Stand を探す
+    let resolved = resolve::resolve_target(target, config)?;
+
+    let (port, project_dir) = match resolved {
+        ResolvedTarget::Running {
+            port,
+            name,
+            project_dir,
+        } => {
+            println!("\u{1f504} Restarting: {} (port {})", name, port);
+            (port, project_dir)
+        }
+        ResolvedTarget::Configured { name, .. } => {
+            println!(
+                "\u{2717} '{}' is not running. Use `vp start {}` instead.",
+                name, name
+            );
+            return Ok(());
+        }
+        ResolvedTarget::Cwd { .. } => {
+            println!("\u{2717} No running Stand found for current directory.");
+            println!("  Use `vp start` to start a new Stand.");
+            return Ok(());
+        }
+    };
+
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
-        // Get current instance info before stopping
-        let instances = scan_instances().await;
-        let instance = instances.iter().find(|i| i.port == port);
-
-        let _project_dir = match instance {
-            Some(inst) => inst.project_dir.clone().unwrap_or_else(|| {
-                std::env::current_dir()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string()
-            }),
-            None => {
-                println!(
-                    "✗ No Stand running on port {}. Use `vp start` instead.",
-                    port
-                );
-                return Ok(());
-            }
-        };
-
-        println!("🔄 Restarting vp on port {}...", port);
-        println!("   Project: {}", _project_dir);
-
-        // Stop the Stand
         stop_stand(port).await?;
-
-        // Wait a moment for port to be released
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-
-        println!("🚀 Starting Stand...");
+        println!("\u{1f680} Starting Stand...");
         Ok::<(), anyhow::Error>(())
     })?;
 
-    // Get project_dir for starting (need to get it again outside async block)
-    let rt2 = tokio::runtime::Runtime::new()?;
-    let project_dir = rt2.block_on(async {
-        // Read from persisted state file
-        let state_path = crate::config::config_dir()
-            .join("state")
-            .join(format!("{}.json", port));
-
-        if let Ok(data) = std::fs::read_to_string(&state_path)
-            && let Ok(state) = serde_json::from_str::<serde_json::Value>(&data)
-            && let Some(dir) = state.get("project_dir").and_then(|v| v.as_str())
-        {
-            return dir.to_string();
-        }
-
-        std::env::current_dir()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string()
-    });
-
-    // Determine debug mode from env
+    // デバッグモード
     let debug_mode = parse_debug_env().unwrap_or_default();
 
-    // Create CapabilityConfig (no MIDI on restart)
+    // CapabilityConfig（再起動時は MIDI なし）
     let project_dir_for_name = project_dir.clone();
     let cap_config = crate::stand::CapabilityConfig {
         project_dir,
         midi_config: None,
-        bonjour_port: Some(port), // Bonjour広告を有効化
+        bonjour_port: Some(port),
     };
 
     if headless || browser {
@@ -104,7 +84,6 @@ pub fn execute(port: u16, browser: bool, headless: bool) -> Result<()> {
 
         std::thread::sleep(std::time::Duration::from_millis(500));
 
-        // プロジェクト名を取得
         let project_name = std::path::Path::new(&project_dir_for_name)
             .file_name()
             .and_then(|n| n.to_str())
