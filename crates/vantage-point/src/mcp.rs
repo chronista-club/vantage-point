@@ -27,8 +27,8 @@ pub struct ShowParams {
     #[schemars(description = "Content to display (markdown, html, or plain text)")]
     pub content: String,
 
-    /// Content type (markdown, html, log)
-    #[schemars(description = "Content type: 'markdown' (default), 'html', or 'log'")]
+    /// Content type (markdown, html, log, url)
+    #[schemars(description = "Content type: 'markdown' (default), 'html', 'log', or 'url' (display a web page in an iframe)")]
     pub content_type: Option<String>,
 
     /// Pane ID
@@ -515,7 +515,7 @@ impl VantageMcp {
 
     /// Show content in the browser viewer
     #[tool(
-        description = "Display content in the Vantage Point browser viewer. Supports markdown, html, and log formats."
+        description = "Display content in the Vantage Point browser viewer. Supports markdown, html, log, and url formats. Use content_type='url' to embed a web page in an iframe."
     )]
     async fn show(
         &self,
@@ -531,6 +531,7 @@ impl VantageMcp {
         let content = match content_type.as_str() {
             "html" => crate::protocol::Content::Html(params.content),
             "log" => crate::protocol::Content::Log(params.content),
+            "url" => crate::protocol::Content::Url(params.content),
             _ => crate::protocol::Content::Markdown(params.content),
         };
 

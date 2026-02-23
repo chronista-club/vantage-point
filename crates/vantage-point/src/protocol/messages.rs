@@ -29,6 +29,8 @@ pub enum Content {
     ImageBase64 { data: String, mime_type: String },
     /// Raw HTML
     Html(String),
+    /// 外部URLをiframeで表示
+    Url(String),
 }
 
 /// Stored chat message for history
