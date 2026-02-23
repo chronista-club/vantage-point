@@ -150,7 +150,9 @@ pub struct UnwatchFileParams {
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct CaptureCanvasParams {
     /// Save path
-    #[schemars(description = "Save path for the PNG screenshot (default: /tmp/vp-canvas-{timestamp}.png)")]
+    #[schemars(
+        description = "Save path for the PNG screenshot (default: /tmp/vp-canvas-{timestamp}.png)"
+    )]
     pub path: Option<String>,
 
     /// Capture specific pane only
@@ -297,7 +299,10 @@ impl VantageMcp {
                         format!("POST {} 失敗（自動起動も失敗）: {}", endpoint, e),
                     ));
                     return Err(McpError::internal_error(
-                        format!("Stand 通信失敗 ({}): {}. Auto-start failed. Run `vp start` manually.", endpoint, e),
+                        format!(
+                            "Stand 通信失敗 ({}): {}. Auto-start failed. Run `vp start` manually.",
+                            endpoint, e
+                        ),
                         None,
                     ));
                 }
@@ -732,16 +737,25 @@ impl VantageMcp {
             McpError::internal_error(format!("Canvas capture レスポンスパース失敗: {}", e), None)
         })?;
 
-        let status = json.get("status").and_then(|v| v.as_str()).unwrap_or("error");
+        let status = json
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("error");
         if status != "ok" {
-            let msg = json.get("message").and_then(|v| v.as_str()).unwrap_or("Unknown error");
+            let msg = json
+                .get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Unknown error");
             return Err(McpError::internal_error(
                 format!("Canvas capture 失敗: {}", msg),
                 None,
             ));
         }
 
-        let saved_path = json.get("path").and_then(|v| v.as_str()).unwrap_or("unknown");
+        let saved_path = json
+            .get("path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
         let width = json.get("width").and_then(|v| v.as_u64()).unwrap_or(0);
         let height = json.get("height").and_then(|v| v.as_u64()).unwrap_or(0);
         let size_bytes = json.get("size_bytes").and_then(|v| v.as_u64()).unwrap_or(0);

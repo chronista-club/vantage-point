@@ -254,16 +254,15 @@ pub async fn canvas_capture_handler(
     }
 
     // 3. ScreenshotRequest を Canvas に broadcast
-    state.hub.broadcast(crate::protocol::StandMessage::ScreenshotRequest {
-        request_id: request_id.clone(),
-        pane_id: params.pane_id,
-    });
+    state
+        .hub
+        .broadcast(crate::protocol::StandMessage::ScreenshotRequest {
+            request_id: request_id.clone(),
+            pane_id: params.pane_id,
+        });
 
     // 4. タイムアウト付きで応答を待つ
-    let result = tokio::time::timeout(
-        tokio::time::Duration::from_secs(10),
-        rx,
-    ).await;
+    let result = tokio::time::timeout(tokio::time::Duration::from_secs(10), rx).await;
 
     match result {
         Ok(Ok(screenshot)) => {

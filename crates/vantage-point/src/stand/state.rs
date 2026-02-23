@@ -117,9 +117,8 @@ pub(crate) struct AppState {
     /// ファイル監視マネージャー
     pub file_watchers: Arc<tokio::sync::Mutex<FileWatcherManager>>,
     /// スクリーンショット応答待ち: request_id → oneshot sender
-    pub screenshot_waiters: Arc<tokio::sync::Mutex<
-        HashMap<String, tokio::sync::oneshot::Sender<ScreenshotData>>
-    >>,
+    pub screenshot_waiters:
+        Arc<tokio::sync::Mutex<HashMap<String, tokio::sync::oneshot::Sender<ScreenshotData>>>>,
 }
 
 impl AppState {

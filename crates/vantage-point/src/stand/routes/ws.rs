@@ -306,7 +306,12 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                                     }
                                 }
                             }
-                            BrowserMessage::ScreenshotResponse { request_id, data, width, height } => {
+                            BrowserMessage::ScreenshotResponse {
+                                request_id,
+                                data,
+                                width,
+                                height,
+                            } => {
                                 // screenshot_waiters から対応する sender を取り出して送信
                                 let mut waiters = state_clone.screenshot_waiters.lock().await;
                                 if let Some(tx) = waiters.remove(&request_id) {
@@ -315,7 +320,10 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                                         width,
                                         height,
                                     });
-                                    tracing::debug!("Screenshot response delivered: {}", request_id);
+                                    tracing::debug!(
+                                        "Screenshot response delivered: {}",
+                                        request_id
+                                    );
                                 } else {
                                     tracing::warn!("Screenshot waiter not found: {}", request_id);
                                 }
