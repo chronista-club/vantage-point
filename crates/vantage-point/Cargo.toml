@@ -42,14 +42,14 @@ tokio-util = "0.7"
 reqwest = { workspace = true }
 
 # MCP (Model Context Protocol)
-rmcp = { version = "0.11", features = ["server", "transport-io"] }
+rmcp = { version = "0.16", features = ["server", "transport-io"] }
 schemars = "1"
 
 # QUIC protocol (Unison)
 unison = { workspace = true }
 
 # Native WebView
-wry = { version = "0.53", features = ["devtools"] }
+wry = { version = "0.54", features = ["devtools"] }
 tao = "0.34"
 
 # Open URLs in system browser
@@ -78,7 +78,7 @@ chrono = { version = "0.4", features = ["serde"] }
 sqlx = { workspace = true }
 
 # mDNS Service Discovery (Bonjour)
-mdns-sd = "0.17"
+mdns-sd = "0.18"
 
 # Hostname
 hostname = "0.4"
@@ -91,7 +91,7 @@ portable-pty = "0.9"
 base64 = "0.22"
 
 # File system watcher (for trace log → WebSocket broadcast)
-notify = "7"
+notify = "8"
 
 # Regex (for log level filtering in file watcher)
 regex = "1"
@@ -101,7 +101,7 @@ alacritty_terminal = "0.25"
 vte = "0.15"
 
 # WebSocket client (sync, for native terminal bridge)
-tungstenite = "0.26"
+tungstenite = "0.28"
 
 # macOS native APIs (split window, NSView for terminal pane)
 [target.'cfg(target_os = "macos")'.dependencies]

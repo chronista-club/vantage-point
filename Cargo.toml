@@ -35,14 +35,14 @@ thiserror = "2"
 anyhow = "1"
 
 # HTTP client
-reqwest = { version = "0.12", features = ["json", "stream", "blocking"] }
+reqwest = { version = "0.13", features = ["json", "stream", "blocking"] }
 
 # Async streams
 futures = "0.3"
 tokio-stream = "0.1"
 
 # QUIC protocol (Unison)
-unison = { git = "https://github.com/chronista-club/unison.git", rev = "b406ad1" }
+unison = { git = "https://github.com/chronista-club/unison.git", tag = "v0.3.2" }
 
 # Database
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
