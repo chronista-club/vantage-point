@@ -36,6 +36,7 @@
 | [release-flow.md](./development/release-flow.md) | リリースフロー |
 | [testing-strategy.md](./development/testing-strategy.md) | テスト戦略 |
 | [stand-capability-params-guide.md](./development/stand-capability-params-guide.md) | Capabilityパラメータガイド |
+| [worktree-management.md](./development/worktree-management.md) | Worktree運用ガイド |
 
 ## 技術スタック
 
@@ -52,6 +53,7 @@
 ```bash
 # Core
 vp start [N]           # プロジェクトN番のStandを起動
+vp start -d simple     # デバッグモードで起動
 vp stop [--port]       # Stand停止
 vp restart [--port]    # Stand再起動
 vp ps                  # 稼働中インスタンス一覧

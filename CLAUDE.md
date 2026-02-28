@@ -158,4 +158,4 @@ state.send_debug_detail("category", "メッセージ", serde_json::json!({"key":
 
 MARU（ESP32-S3物理コントローラ）との連携開発。creo-memoriesで `category: "cross-project"` + `from: "vp"` で記録。
 
-設計ドキュメント: [docs/plans/2026-02-15-cross-project-collab-design.md](docs/plans/2026-02-15-cross-project-collab-design.md)
+設計ドキュメント: [docs/plans/archive/2026-02-15-cross-project-collab-design.md](docs/plans/archive/2026-02-15-cross-project-collab-design.md)
