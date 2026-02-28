@@ -11,6 +11,11 @@
 |-------------|------|
 | [01-core-concept.md](./spec/01-core-concept.md) | コアコンセプト・ビジョン |
 | [02-user-journey.md](./spec/02-user-journey.md) | ユーザージャーニー |
+| [03-lpd8-integration.md](./spec/03-lpd8-integration.md) | LPD8 MIDI統合 |
+| [04-ag-ui-requirements.md](./spec/04-ag-ui-requirements.md) | AG-UI要件 |
+| [05-stand-capability.md](./spec/05-stand-capability.md) | Stand Capability仕様 |
+| [06-auto-update.md](./spec/06-auto-update.md) | セルフアップデート |
+| [06-user-prompt.md](./spec/06-user-prompt.md) | ユーザープロンプト |
 
 ### Design - 設計書
 どう作るか - アーキテクチャ・技術設計
@@ -18,6 +23,8 @@
 | ドキュメント | 内容 |
 |-------------|------|
 | [01-architecture.md](./design/01-architecture.md) | システムアーキテクチャ |
+| [02-stand-capability-evolution.md](./design/02-stand-capability-evolution.md) | Capability進化システム |
+| [03-agent-protocol-unification.md](./design/03-agent-protocol-unification.md) | エージェントプロトコル統一 |
 
 ### Development - 開発ガイド
 どう使うか - 開発者向けガイド
@@ -27,6 +34,8 @@
 | [setup.md](./development/setup.md) | 環境構築 |
 | [gitflow-next.md](./development/gitflow-next.md) | ブランチ戦略 |
 | [release-flow.md](./development/release-flow.md) | リリースフロー |
+| [testing-strategy.md](./development/testing-strategy.md) | テスト戦略 |
+| [stand-capability-params-guide.md](./development/stand-capability-params-guide.md) | Capabilityパラメータガイド |
 
 ## 技術スタック
 
@@ -38,48 +47,36 @@
 | Agent | Claude CLI + MCP |
 | MIDI | midir |
 
-## クイックスタート
-
-```bash
-# ビルド＆インストール
-cargo install --path crates/vantage-point
-
-# Stand起動
-vp start
-
-# 設定確認
-vp config
-
-# 稼働中インスタンス一覧
-vp ps
-```
-
 ## CLIコマンド
 
-| コマンド | 説明 |
-|---------|------|
-| `vp start [N]` | プロジェクトN番のデーモンを起動 |
-| `vp start -d simple` | デバッグモードで起動 |
-| `vp ps` | 稼働中インスタンス一覧 |
-| `vp open [N]` | WebUIを開く |
-| `vp config` | 設定と登録プロジェクト表示 |
-| `vp status` | 接続状態確認 |
-| `vp stop` | デーモン停止 |
-| `vp mcp` | MCPサーバーモード（stdio） |
-| `vp tray` | システムトレイモード |
-| `vp midi` | MIDI入力監視 |
+```bash
+# Core
+vp start [N]           # プロジェクトN番のStandを起動
+vp stop [--port]       # Stand停止
+vp restart [--port]    # Stand再起動
+vp ps                  # 稼働中インスタンス一覧
+vp open [N]            # WebUIを開く
+vp config              # 設定と登録プロジェクト表示
+vp mcp                 # MCPサーバーモード（stdio）
+vp update [--check]    # セルフアップデート
+
+# Canvas
+vp canvas open|close|capture
+
+# Pane
+vp pane split|close|toggle|show|clear
+
+# File
+vp file watch|unwatch
+
+# Daemon
+vp daemon start|stop|status
+
+# MIDI
+vp midi monitor|ports
+```
 
 ## プロジェクト情報
 
-- **リポジトリ**: [chronista-club/vantage-point](https://github.com/chronista-club/vantage-point)
-- **バージョン**: 0.2.0
-- **ライセンス**: MIT
-
-## ステータス
-
-✅ **v0.2.0 - Rust CLI実装完了**
-
-- Agent Service（Claude CLI連携）
-- MIDI Service（MIDIコントローラー入力）
-- WebView / HTTP Server
-- セッション管理
+- **バージョン**: 0.7.0
+- **ライセンス**: Proprietary
