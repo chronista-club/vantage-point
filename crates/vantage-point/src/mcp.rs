@@ -28,7 +28,9 @@ pub struct ShowParams {
     pub content: String,
 
     /// Content type (markdown, html, log, url)
-    #[schemars(description = "Content type: 'markdown' (default), 'html', 'log', or 'url' (display a web page in an iframe)")]
+    #[schemars(
+        description = "Content type: 'markdown' (default), 'html', 'log', or 'url' (display a web page in an iframe)"
+    )]
     pub content_type: Option<String>,
 
     /// Pane ID

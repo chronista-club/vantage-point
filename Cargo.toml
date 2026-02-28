@@ -6,7 +6,7 @@ members = ["crates/*"]
 version = "0.7.0"
 edition = "2024"
 authors = ["Makoto"]
-license = "MIT"
+license = "LicenseRef-Proprietary"
 repository = "https://github.com/chronista-club/vantage-point"
 
 [workspace.dependencies]
