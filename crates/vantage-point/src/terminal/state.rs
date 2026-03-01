@@ -237,6 +237,24 @@ impl TerminalState {
         self.term.resize(dims);
     }
 
+    /// Application Cursor Keys モード（DECCKM）
+    ///
+    /// TUIアプリ（cc, vim等）がこのモードを有効にすると、
+    /// 矢印キーのエスケープシーケンスが `\x1b[A` → `\x1bOA` に変わる。
+    pub fn app_cursor_mode(&self) -> bool {
+        use alacritty_terminal::term::TermMode;
+        self.term.mode().contains(TermMode::APP_CURSOR)
+    }
+
+    /// Bracketed Paste モード
+    ///
+    /// 有効時、ペースト内容を `\x1b[200~` ... `\x1b[201~` で囲んで送信する。
+    /// これによりTUIアプリがペーストとキー入力を区別できる。
+    pub fn bracketed_paste_mode(&self) -> bool {
+        use alacritty_terminal::term::TermMode;
+        self.term.mode().contains(TermMode::BRACKETED_PASTE)
+    }
+
     /// カラム数
     pub fn cols(&self) -> usize {
         self.cols

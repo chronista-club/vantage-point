@@ -46,9 +46,8 @@ pub fn execute(target: Option<&str>, browser: bool, headless: bool, config: &Con
     let debug_mode = parse_debug_env().unwrap_or_default();
 
     // CapabilityConfig（再起動時は MIDI なし）
-    let project_dir_for_name = project_dir.clone();
     let cap_config = crate::stand::CapabilityConfig {
-        project_dir,
+        project_dir: project_dir.clone(),
         midi_config: None,
         bonjour_port: Some(port),
     };
@@ -70,13 +69,7 @@ pub fn execute(target: Option<&str>, browser: bool, headless: bool, config: &Con
             server_handle.await?
         })
     } else {
-        // Daemon + ネイティブターミナルモード
-        let daemon_port = crate::daemon::client::DAEMON_QUIC_PORT;
-        match crate::daemon::process::ensure_daemon_running(daemon_port) {
-            Ok(pid) => tracing::info!("Daemon ready (PID: {})", pid),
-            Err(e) => tracing::warn!("Daemon 自動起動失敗: {}", e),
-        }
-
+        // ネイティブターミナルモード（直接PTY）
         let server_thread = std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime");
             rt.block_on(async { crate::stand::run(port, false, debug_mode, cap_config).await })
@@ -84,16 +77,9 @@ pub fn execute(target: Option<&str>, browser: bool, headless: bool, config: &Con
 
         std::thread::sleep(std::time::Duration::from_millis(500));
 
-        let project_name = std::path::Path::new(&project_dir_for_name)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("default")
-            .to_string();
+        let result = crate::terminal_window::run_terminal_direct(&project_dir);
 
-        let webview_result =
-            crate::terminal_window::run_terminal_with_daemon(daemon_port, &project_name);
-
-        match webview_result {
+        match result {
             Ok(()) => tracing::info!("Terminal window closed"),
             Err(e) => tracing::error!("Terminal window error: {}", e),
         }

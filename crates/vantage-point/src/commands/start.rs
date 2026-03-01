@@ -134,9 +134,6 @@ pub fn execute(opts: StartOptions) -> Result<()> {
         bonjour_port: Some(resolved_port),
     };
 
-    // Daemon ポート
-    let daemon_port = crate::daemon::client::DAEMON_QUIC_PORT;
-
     if headless || browser {
         let rt = tokio::runtime::Runtime::new()?;
         rt.block_on(async {
@@ -154,12 +151,7 @@ pub fn execute(opts: StartOptions) -> Result<()> {
             server_handle.await?
         })
     } else {
-        // Daemon モード
-        match crate::daemon::process::ensure_daemon_running(daemon_port) {
-            Ok(pid) => tracing::info!("Daemon ready (PID: {})", pid),
-            Err(e) => tracing::warn!("Daemon 自動起動失敗（Stand のみで動作）: {}", e),
-        }
-
+        // ネイティブターミナルモード（直接PTY）
         let server_thread = std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime");
             rt.block_on(async {
@@ -174,18 +166,10 @@ pub fn execute(opts: StartOptions) -> Result<()> {
             tracing::warn!("Canvas 自動起動失敗: {}", e);
         }
 
-        // プロジェクト名をディレクトリ名から取得
-        let project_name = std::path::Path::new(&resolved_project_dir)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("default")
-            .to_string();
+        // 直接PTYモードのネイティブウィンドウ
+        let result = crate::terminal_window::run_terminal_direct(&resolved_project_dir);
 
-        // Daemon 経由のネイティブウィンドウ
-        let webview_result =
-            crate::terminal_window::run_terminal_with_daemon(daemon_port, &project_name);
-
-        match webview_result {
+        match result {
             Ok(()) => tracing::info!("Terminal window closed"),
             Err(e) => tracing::error!("Terminal window error: {}", e),
         }
