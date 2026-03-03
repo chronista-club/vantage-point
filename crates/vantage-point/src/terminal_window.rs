@@ -1,12 +1,12 @@
-//! Native terminal window — 直接PTYモード
+//! Native terminal window — Unison (QUIC) ブリッジモード
 //!
 //! Arctic/Nordic + Ocean ダークテーマのターミナルウィンドウ。
-//! Daemon不要。PtySession → std::thread → EventLoop で完結するシンプルな構成。
+//! Stand サーバーの PTY に Unison QUIC チャネルで接続し、ウィンドウを閉じても PTY は生存する。
 //!
 //! ## パイプライン
 //! ```text
-//! PtySession (reader) → pty-reader thread → EventLoopProxy → TerminalState → TerminalView
-//! keyboard (main thread) → mpsc → pty-bridge thread → PtySession (writer)
+//! Stand Server (QUIC "terminal") ─── UnisonChannel ───► EventLoopProxy → TerminalState → TerminalView
+//! keyboard (main thread) → mpsc → input-bridge → unison-bridge → UnisonChannel → Stand Server
 //! ```
 
 use std::sync::mpsc;
@@ -23,7 +23,6 @@ use tao::{
 #[cfg(target_os = "macos")]
 use crate::terminal::TerminalState;
 
-use crate::stand::pty::PtySession;
 use crate::terminal::StatusBarInfo;
 
 /// tao EventLoop に送るカスタムイベント
@@ -274,88 +273,110 @@ fn copy_to_clipboard(text: &str) -> std::io::Result<()> {
 }
 
 // =============================================================================
-// 直接PTYモード
+// Unison (QUIC) ブリッジモード
 // =============================================================================
 
-/// PTYブリッジスレッドを起動（Daemon不要）
+/// Unison ブリッジスレッドを起動
 ///
-/// PtySession を直接生成し、reader/writer を別スレッドで中継する。
-/// tokio 不要 — std::thread + std::sync::mpsc で完結。
-fn start_pty_bridge(
-    project_dir: &str,
+/// Stand サーバーの QUIC "terminal" チャネルに接続し、
+/// PTY 出力を EventLoop へ、キーボード入力を Stand へ中継する。
+/// raw frame でバイナリ直送（base64 不要）。
+fn start_unison_bridge(
+    port: u16, // HTTP ポート（QUIC = port + QUIC_PORT_OFFSET）
     proxy: EventLoopProxy<TerminalEvent>,
     input_rx: mpsc::Receiver<PtyInputCommand>,
 ) {
-    let project_dir = project_dir.to_string();
-
     std::thread::Builder::new()
-        .name("pty-bridge".into())
+        .name("unison-bridge".into())
         .spawn(move || {
-            let (mut session, reader) = match PtySession::spawn(&project_dir, 80, 24) {
-                Ok(v) => v,
-                Err(e) => {
-                    tracing::error!("PTY spawn 失敗: {}", e);
+            let rt = tokio::runtime::Runtime::new()
+                .expect("Failed to create tokio runtime");
+            rt.block_on(async move {
+                let quic_port = port + crate::stand::unison_server::QUIC_PORT_OFFSET;
+                let addr = format!("[::1]:{}", quic_port);
+
+                let client = match unison::ProtocolClient::new_default() {
+                    Ok(c) => c,
+                    Err(e) => {
+                        tracing::error!("ProtocolClient 作成失敗: {}", e);
+                        return;
+                    }
+                };
+                if let Err(e) = client.connect(&addr).await {
+                    tracing::error!("Unison 接続失敗 ({}): {}", addr, e);
                     return;
                 }
-            };
+                let channel = match client.open_channel("terminal").await {
+                    Ok(ch) => ch,
+                    Err(e) => {
+                        tracing::error!("terminal チャネル開設失敗: {}", e);
+                        return;
+                    }
+                };
 
-            tracing::info!("PTY spawned (cwd={})", project_dir);
+                tracing::info!("Unison connected to Stand (port={})", quic_port);
 
-            // Reader スレッド: PTY出力 → EventLoop
-            std::thread::Builder::new()
-                .name("pty-reader".into())
-                .spawn(move || {
-                    use std::io::Read;
-                    let mut reader = reader;
-                    let mut buf = [0u8; 4096];
-                    loop {
-                        match reader.read(&mut buf) {
-                            Ok(0) => break,
-                            Ok(n) => {
-                                if proxy
-                                    .send_event(TerminalEvent::Output(buf[..n].to_vec()))
-                                    .is_err()
-                                {
-                                    break;
-                                }
-                            }
-                            Err(e) => {
-                                tracing::debug!("PTY reader: {}", e);
+                // sync mpsc → tokio mpsc ブリッジ
+                let (bridge_tx, mut bridge_rx) =
+                    tokio::sync::mpsc::channel::<PtyInputCommand>(256);
+                std::thread::Builder::new()
+                    .name("input-bridge".into())
+                    .spawn(move || {
+                        while let Ok(cmd) = input_rx.recv() {
+                            if bridge_tx.blocking_send(cmd).is_err() {
                                 break;
                             }
                         }
-                    }
-                })
-                .expect("pty-reader スレッドの起動に失敗");
+                    })
+                    .expect("input-bridge spawn failed");
 
-            // Input ループ: mpsc → PTY writer
-            loop {
-                match input_rx.recv() {
-                    Ok(PtyInputCommand::Input(data)) => {
-                        if let Err(e) = session.write(&data) {
-                            tracing::warn!("PTY 入力送信失敗: {}", e);
-                            break;
+                // メインループ: select で双方向処理
+                loop {
+                    tokio::select! {
+                        // PTY output from Stand
+                        data = channel.recv_raw() => {
+                            match data {
+                                Ok(bytes) => {
+                                    if proxy.send_event(
+                                        TerminalEvent::Output(bytes)
+                                    ).is_err() {
+                                        break;
+                                    }
+                                }
+                                Err(_) => break,
+                            }
                         }
-                    }
-                    Ok(PtyInputCommand::Resize { cols, rows }) => {
-                        if let Err(e) = session.resize(cols, rows) {
-                            tracing::warn!("PTY リサイズ失敗: {}", e);
+                        // Keyboard input → Stand
+                        cmd = bridge_rx.recv() => {
+                            match cmd {
+                                Some(PtyInputCommand::Input(data)) => {
+                                    if channel.send_raw(&data).await.is_err() {
+                                        break;
+                                    }
+                                }
+                                Some(PtyInputCommand::Resize { cols, rows }) => {
+                                    let _ = channel.request(
+                                        "resize",
+                                        serde_json::json!({
+                                            "cols": cols, "rows": rows
+                                        }),
+                                    ).await;
+                                }
+                                None => break,
+                            }
                         }
-                    }
-                    Err(_) => {
-                        tracing::info!("pty-bridge: 入力チャネル閉鎖、終了");
-                        break;
                     }
                 }
-            }
+            });
         })
-        .expect("pty-bridge スレッドの起動に失敗");
+        .expect("unison-bridge スレッドの起動に失敗");
 }
 
-/// 直接PTYモードのターミナルウィンドウを起動
+/// Unison ブリッジモードのターミナルウィンドウを起動
 ///
-/// Daemon不要。PtySession を直接生成し、ネイティブウィンドウで描画する。
-pub fn run_terminal_direct(project_dir: &str) -> anyhow::Result<()> {
+/// Stand サーバーの QUIC "terminal" チャネルに接続し、ネイティブウィンドウで描画する。
+/// ウィンドウを閉じても Stand 側の PTY は生存し、再度接続で re-attach できる。
+pub fn run_terminal_unison(port: u16) -> anyhow::Result<()> {
     let event_loop = EventLoopBuilder::<TerminalEvent>::with_user_event().build();
 
     let window = WindowBuilder::new()
@@ -387,24 +408,20 @@ pub fn run_terminal_direct(project_dir: &str) -> anyhow::Result<()> {
     // 入力チャネル（メインスレッド → PTYブリッジ）
     let (input_tx, input_rx) = mpsc::channel::<PtyInputCommand>();
 
-    // PTYブリッジ開始
+    // Unison ブリッジ開始
     let proxy = event_loop.create_proxy();
-    start_pty_bridge(project_dir, proxy, input_rx);
+    start_unison_bridge(port, proxy, input_rx);
 
     // 初期リサイズを送信
     let _ = input_tx.send(PtyInputCommand::Resize { cols: 80, rows: 24 });
 
-    // ステータスバーにプロジェクト名を表示
-    let project_name = std::path::Path::new(project_dir)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("terminal")
-        .to_string();
+    // ステータスバーにポート番号を表示
+    let session_name = format!("Stand:{}", port);
 
     #[cfg(target_os = "macos")]
     {
         terminal_view.update_status_bar(StatusBarInfo {
-            session_name: project_name.clone(),
+            session_name: session_name.clone(),
             ..Default::default()
         });
     }
@@ -420,7 +437,7 @@ pub fn run_terminal_direct(project_dir: &str) -> anyhow::Result<()> {
     // 修飾キー状態（ModifiersChanged で一括追跡）
     let mut modifiers = ModifiersState::empty();
 
-    tracing::info!("Terminal direct PTY mode started (project={})", project_name);
+    tracing::info!("Terminal Unison bridge mode started (port={})", port);
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
@@ -433,6 +450,11 @@ pub fn run_terminal_direct(project_dir: &str) -> anyhow::Result<()> {
                     term_state.feed_bytes(&bytes);
                     let snap = term_state.snapshot();
                     terminal_view.update_cells(&snap.cells);
+                    terminal_view.update_cursor(
+                        snap.cursor.0,
+                        snap.cursor.1,
+                        snap.cursor_visible,
+                    );
                     terminal_view.request_redraw();
 
                     // IME変換ウィンドウをカーソル位置に追従

@@ -69,18 +69,21 @@ pub fn execute(target: Option<&str>, browser: bool, headless: bool, config: &Con
             server_handle.await?
         })
     } else {
-        // ネイティブターミナルモード（直接PTY）
+        // ネイティブターミナルモード（Unison ブリッジ）
+        // Stand を起動（restart 後なので必ず新規起動）
         let server_thread = std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime");
             rt.block_on(async { crate::stand::run(port, false, debug_mode, cap_config).await })
         });
 
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        // Stand の HTTP サーバーが ready になるまで待機
+        crate::commands::start::wait_for_stand_ready(port)?;
 
-        let result = crate::terminal_window::run_terminal_direct(&project_dir);
+        // Unison ブリッジモードのネイティブウィンドウ
+        let result = crate::terminal_window::run_terminal_unison(port);
 
         match result {
-            Ok(()) => tracing::info!("Terminal window closed"),
+            Ok(()) => tracing::info!("Terminal window closed (Stand is still running)"),
             Err(e) => tracing::error!("Terminal window error: {}", e),
         }
 

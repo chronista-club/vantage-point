@@ -35,6 +35,9 @@ pub async fn run(
 ) -> Result<()> {
     let project_dir = cap_config.project_dir.clone();
 
+    // rustls 0.23+ は CryptoProvider の明示的な設定が必要
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
     // トレースログファイルを早期初期化
     crate::trace_log::init_log_file();
 

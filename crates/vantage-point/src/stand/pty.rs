@@ -43,6 +43,9 @@ impl PtySession {
         cmd.cwd(cwd);
         // ログインシェルとして起動
         cmd.arg("-l");
+        // ターミナルエミュレータとしてクリーンな環境を提供
+        // CLAUDECODE が残ると cc がネスト検出で起動拒否する
+        cmd.env_remove("CLAUDECODE");
 
         // 子プロセスを起動
         let _child = pair.slave.spawn_command(cmd)?;

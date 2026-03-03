@@ -109,6 +109,10 @@ pub struct TerminalViewIvars {
     click_regions: RefCell<Vec<ClickRegion>>,
     /// テキスト選択状態
     selection: Cell<Selection>,
+    /// カーソル位置 (row, col)
+    cursor_pos: Cell<(usize, usize)>,
+    /// カーソル表示フラグ（DECTCEM）
+    cursor_visible: Cell<bool>,
 }
 
 // SAFETY:
@@ -242,6 +246,28 @@ define_class!(
                             ns_str.drawAtPoint_withAttributes(text_point, Some(&attrs));
                         }
                     }
+                }
+            }
+
+            // --- カーソル描画 ---
+            if ivars.cursor_visible.get() {
+                let (crow, ccol) = ivars.cursor_pos.get();
+                if crow < rows && ccol < cols {
+                    let cx = ccol as CGFloat * cw;
+                    let cy = crow as CGFloat * ch;
+                    let cursor_rect = CGRect::new(
+                        CGPoint::new(cx, cy),
+                        CGSize::new(cw, ch),
+                    );
+                    // Arctic Cyan 半透明ブロックカーソル
+                    CGContext::set_rgb_fill_color(
+                        Some(&ctx),
+                        CURSOR_COLOR.0,
+                        CURSOR_COLOR.1,
+                        CURSOR_COLOR.2,
+                        0.7,
+                    );
+                    CGContext::fill_rect(Some(&ctx), cursor_rect);
                 }
             }
 
@@ -417,6 +443,8 @@ const STATUS_INACTIVE: (CGFloat, CGFloat, CGFloat) = (132.0 / 255.0, 140.0 / 255
 const STATUS_SEPARATOR: (CGFloat, CGFloat, CGFloat) = (76.0 / 255.0, 86.0 / 255.0, 106.0 / 255.0);
 /// テキスト選択ハイライト: Arctic Frost #5E81AC
 const SELECTION_BG: (CGFloat, CGFloat, CGFloat) = (94.0 / 255.0, 129.0 / 255.0, 172.0 / 255.0);
+/// カーソル: Arctic Cyan #88C0D0（NamedColor::Cursor と同色）
+const CURSOR_COLOR: (CGFloat, CGFloat, CGFloat) = (136.0 / 255.0, 192.0 / 255.0, 208.0 / 255.0);
 
 /// NSFont メトリクスからセルサイズを計算
 ///
@@ -462,6 +490,8 @@ impl TerminalView {
             status_info: RefCell::new(StatusBarInfo::default()),
             click_regions: RefCell::new(Vec::new()),
             selection: Cell::new(Selection::default()),
+            cursor_pos: Cell::new((0, 0)),
+            cursor_visible: Cell::new(true),
         });
 
         // NSView の initWithFrame: を呼ぶ
@@ -482,6 +512,13 @@ impl TerminalView {
                 }
             }
         }
+    }
+
+    /// カーソル位置と可視状態を更新
+    pub fn update_cursor(&self, row: usize, col: usize, visible: bool) {
+        let ivars = self.ivars();
+        ivars.cursor_pos.set((row, col));
+        ivars.cursor_visible.set(visible);
     }
 
     /// グリッドサイズ変更
