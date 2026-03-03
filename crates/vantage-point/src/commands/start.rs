@@ -78,7 +78,10 @@ pub fn execute(opts: StartOptions) -> Result<()> {
                     return Ok(());
                 }
                 // ターミナルモード: 既存 Stand に re-attach
-                println!("\u{1f517} Re-attaching to: {} (port {})", name, running_port);
+                println!(
+                    "\u{1f517} Re-attaching to: {} (port {})",
+                    name, running_port
+                );
                 (proj_dir, running_port)
             }
             ResolvedTarget::Configured { name, path, index } => {

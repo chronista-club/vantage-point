@@ -195,7 +195,7 @@ fn ctrl_key_byte(key: &KeyCode) -> Option<u8> {
         KeyCode::KeyX => Some(0x18),
         KeyCode::KeyY => Some(0x19),
         KeyCode::KeyZ => Some(0x1A),
-        KeyCode::BracketLeft => Some(0x1B),  // Ctrl+[ = ESC
+        KeyCode::BracketLeft => Some(0x1B), // Ctrl+[ = ESC
         KeyCode::Backslash => Some(0x1C),
         KeyCode::BracketRight => Some(0x1D),
         _ => None,
@@ -289,8 +289,7 @@ fn start_unison_bridge(
     std::thread::Builder::new()
         .name("unison-bridge".into())
         .spawn(move || {
-            let rt = tokio::runtime::Runtime::new()
-                .expect("Failed to create tokio runtime");
+            let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
             rt.block_on(async move {
                 let quic_port = port + crate::stand::unison_server::QUIC_PORT_OFFSET;
                 let addr = format!("[::1]:{}", quic_port);
@@ -317,8 +316,7 @@ fn start_unison_bridge(
                 tracing::info!("Unison connected to Stand (port={})", quic_port);
 
                 // sync mpsc → tokio mpsc ブリッジ
-                let (bridge_tx, mut bridge_rx) =
-                    tokio::sync::mpsc::channel::<PtyInputCommand>(256);
+                let (bridge_tx, mut bridge_rx) = tokio::sync::mpsc::channel::<PtyInputCommand>(256);
                 std::thread::Builder::new()
                     .name("input-bridge".into())
                     .spawn(move || {
@@ -450,11 +448,7 @@ pub fn run_terminal_unison(port: u16) -> anyhow::Result<()> {
                     term_state.feed_bytes(&bytes);
                     let snap = term_state.snapshot();
                     terminal_view.update_cells(&snap.cells);
-                    terminal_view.update_cursor(
-                        snap.cursor.0,
-                        snap.cursor.1,
-                        snap.cursor_visible,
-                    );
+                    terminal_view.update_cursor(snap.cursor.0, snap.cursor.1, snap.cursor_visible);
                     terminal_view.request_redraw();
 
                     // IME変換ウィンドウをカーソル位置に追従
