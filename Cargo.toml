@@ -42,7 +42,7 @@ futures = "0.3"
 tokio-stream = "0.1"
 
 # QUIC protocol (Unison)
-unison = { git = "https://github.com/chronista-club/unison.git", tag = "v0.3.2" }
+unison = { git = "https://github.com/chronista-club/unison.git", tag = "v0.3.3" }
 
 # Database
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }

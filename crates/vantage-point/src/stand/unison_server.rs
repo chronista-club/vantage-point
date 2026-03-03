@@ -16,6 +16,8 @@ use serde::{Deserialize, Serialize};
 use unison::network::channel::UnisonChannel;
 use unison::network::{MessageType, ProtocolServer};
 
+use tokio::sync::broadcast;
+
 use super::state::AppState;
 use crate::protocol::{Content, SplitDirection, StandMessage};
 
@@ -459,6 +461,114 @@ pub async fn start_unison_server(
                             .is_err()
                         {
                             break;
+                        }
+                    }
+
+                    Ok(())
+                }
+            }
+        })
+        .await;
+
+    // --- "terminal" チャネル: raw PTY I/O + resize ---
+    server
+        .register_channel("terminal", {
+            let state = state.clone();
+            move |_ctx, stream| {
+                let state = state.clone();
+                async move {
+                    let channel = UnisonChannel::new(stream);
+
+                    // Hub を subscribe して PTY 出力を受信
+                    let mut hub_rx = state.hub.subscribe();
+
+                    use base64::Engine;
+                    let engine = base64::engine::general_purpose::STANDARD;
+
+                    loop {
+                        tokio::select! {
+                            // PTY output → raw frame to client
+                            msg = hub_rx.recv() => {
+                                match msg {
+                                    Ok(StandMessage::TerminalOutput { data }) => {
+                                        match engine.decode(&data) {
+                                            Ok(bytes) if !bytes.is_empty() => {
+                                                if channel.send_raw(&bytes).await.is_err() {
+                                                    break;
+                                                }
+                                            }
+                                            Ok(_) => {} // 空データはスキップ
+                                            Err(e) => {
+                                                tracing::warn!("TerminalOutput base64 decode error: {}", e);
+                                            }
+                                        }
+                                    }
+                                    Ok(StandMessage::TerminalReady) => {
+                                        // TerminalReady を protocol event として通知
+                                        let _ = channel.send_event(
+                                            "terminal_ready",
+                                            serde_json::json!({}),
+                                        ).await;
+                                    }
+                                    Err(broadcast::error::RecvError::Closed) => break,
+                                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                                        tracing::warn!("terminal broadcast lagged: {} messages dropped", n);
+                                    }
+                                    _ => {} // 他メッセージは無視
+                                }
+                            }
+                            // Client → PTY (raw input)
+                            data = channel.recv_raw() => {
+                                match data {
+                                    Ok(bytes) => {
+                                        let mut pty = state.pty_manager.lock().await;
+                                        if let Err(e) = pty.write(&bytes) {
+                                            tracing::warn!("PTY write error: {}", e);
+                                        }
+                                    }
+                                    Err(_) => break,
+                                }
+                            }
+                            // Client → control (resize)
+                            msg = channel.recv() => {
+                                match msg {
+                                    Ok(msg) if msg.method == "resize" => {
+                                        let payload = msg.payload_as_value().unwrap_or_default();
+                                        let cols = payload["cols"].as_u64().unwrap_or(80) as u16;
+                                        let rows = payload["rows"].as_u64().unwrap_or(24) as u16;
+
+                                        // サイズバリデーション
+                                        if cols == 0 || rows == 0 || cols > 1000 || rows > 1000 {
+                                            tracing::warn!("Invalid resize: {}x{}", cols, rows);
+                                            let _ = channel.send_response(
+                                                msg.id, "resize",
+                                                serde_json::json!({"error": "invalid dimensions"}),
+                                            ).await;
+                                            continue;
+                                        }
+
+                                        let mut pty = state.pty_manager.lock().await;
+                                        if !pty.is_active() {
+                                            // 初回 resize で PTY 起動
+                                            if let Err(e) = pty.start(
+                                                &state.project_dir, cols, rows,
+                                                state.hub.sender(),
+                                            ) {
+                                                tracing::warn!("PTY起動失敗: {}", e);
+                                            }
+                                        } else {
+                                            let _ = pty.resize(cols, rows);
+                                        }
+
+                                        let _ = channel.send_response(
+                                            msg.id, "resize",
+                                            serde_json::json!({"status": "ok"}),
+                                        ).await;
+                                    }
+                                    Err(_) => break,
+                                    _ => {}
+                                }
+                            }
                         }
                     }
 

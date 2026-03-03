@@ -84,6 +84,9 @@ mdns-sd = "0.18"
 hostname = "0.4"
 libc = "0.2.178"
 
+# TLS (QUIC サーバーの CryptoProvider 初期化用)
+rustls = { version = "0.23", features = ["aws-lc-rs"] }
+
 # PTY (pseudo-terminal) for shell sessions
 portable-pty = "0.9"
 
@@ -99,9 +102,6 @@ regex = "1"
 # Terminal emulation (VT parser + grid state)
 alacritty_terminal = "0.25"
 vte = "0.15"
-
-# WebSocket client (sync, for native terminal bridge)
-tungstenite = "0.28"
 
 # macOS native APIs (split window, NSView for terminal pane)
 [target.'cfg(target_os = "macos")'.dependencies]

@@ -39,6 +39,8 @@ pub struct GridSnapshot {
     pub lines: usize,
     /// カーソル位置（行, 列）
     pub cursor: (usize, usize),
+    /// カーソル可視状態（DECTCEM）
+    pub cursor_visible: bool,
 }
 
 /// ターミナル状態（alacritty_terminal ラッパー）
@@ -226,6 +228,7 @@ impl TerminalState {
             cols: self.cols,
             lines: self.lines,
             cursor: (cursor_row, cursor_col),
+            cursor_visible: self.cursor_visible(),
         }
     }
 
@@ -235,6 +238,32 @@ impl TerminalState {
         self.cols = cols;
         self.lines = lines;
         self.term.resize(dims);
+    }
+
+    /// Application Cursor Keys モード（DECCKM）
+    ///
+    /// TUIアプリ（cc, vim等）がこのモードを有効にすると、
+    /// 矢印キーのエスケープシーケンスが `\x1b[A` → `\x1bOA` に変わる。
+    pub fn app_cursor_mode(&self) -> bool {
+        use alacritty_terminal::term::TermMode;
+        self.term.mode().contains(TermMode::APP_CURSOR)
+    }
+
+    /// Bracketed Paste モード
+    ///
+    /// 有効時、ペースト内容を `\x1b[200~` ... `\x1b[201~` で囲んで送信する。
+    /// これによりTUIアプリがペーストとキー入力を区別できる。
+    pub fn bracketed_paste_mode(&self) -> bool {
+        use alacritty_terminal::term::TermMode;
+        self.term.mode().contains(TermMode::BRACKETED_PASTE)
+    }
+
+    /// カーソル可視状態（DECTCEM: DEC Text Cursor Enable Mode）
+    ///
+    /// TUIアプリが `ESC[?25l` でカーソルを隠し、`ESC[?25h` で再表示する。
+    pub fn cursor_visible(&self) -> bool {
+        use alacritty_terminal::term::TermMode;
+        self.term.mode().contains(TermMode::SHOW_CURSOR)
     }
 
     /// カラム数
@@ -315,6 +344,28 @@ mod tests {
         let snap = state.snapshot();
         let default_fg = arctic_colors::named_to_rgb(&NamedColor::Foreground);
         assert_eq!(snap.cells[0][0].fg, default_fg);
+    }
+
+    #[test]
+    fn test_snapshot_cursor_visible() {
+        let state = TerminalState::new(80, 24);
+        let snap = state.snapshot();
+        // デフォルトはカーソル表示
+        assert!(snap.cursor_visible);
+    }
+
+    #[test]
+    fn test_cursor_hidden_by_dectcem() {
+        let mut state = TerminalState::new(80, 24);
+        // ESC[?25l = カーソル非表示（DECTCEM off）
+        state.feed_bytes(b"\x1b[?25l");
+        let snap = state.snapshot();
+        assert!(!snap.cursor_visible);
+
+        // ESC[?25h = カーソル再表示
+        state.feed_bytes(b"\x1b[?25h");
+        let snap = state.snapshot();
+        assert!(snap.cursor_visible);
     }
 
     #[test]

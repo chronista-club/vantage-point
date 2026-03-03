@@ -24,6 +24,9 @@ DerivedData/
 
 # Personal notes (not tracked in git)
 /.notes/
+
+# Serena memories (per-user, not tracked)
+.serena/
 .env
 
 # Local settings (per-user, not tracked)

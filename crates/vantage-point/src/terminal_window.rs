@@ -1,12 +1,12 @@
-//! Native terminal window
+//! Native terminal window — Unison (QUIC) ブリッジモード
 //!
 //! Arctic/Nordic + Ocean ダークテーマのターミナルウィンドウ。
-//! TerminalView (alacritty_terminal + CoreText ネイティブレンダラー) でフルスクリーン描画。
+//! Stand サーバーの PTY に Unison QUIC チャネルで接続し、ウィンドウを閉じても PTY は生存する。
 //!
-//! ## パイプライン（Daemon モード）
+//! ## パイプライン
 //! ```text
-//! PtySlot → Daemon (broadcast) → DaemonClient → TerminalState → TerminalView
-//! keyboard → DaemonClient → Daemon → PtySlot
+//! Stand Server (QUIC "terminal") ─── UnisonChannel ───► EventLoopProxy → TerminalState → TerminalView
+//! keyboard (main thread) → mpsc → input-bridge → unison-bridge → UnisonChannel → Stand Server
 //! ```
 
 use std::sync::mpsc;
@@ -16,14 +16,13 @@ use tao::{
     dpi::{LogicalPosition, LogicalSize},
     event::{ElementState, Event, MouseButton, WindowEvent},
     event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy},
-    keyboard::KeyCode,
+    keyboard::{KeyCode, ModifiersState},
     window::WindowBuilder,
 };
 
 #[cfg(target_os = "macos")]
 use crate::terminal::TerminalState;
 
-use crate::daemon::client::DaemonClient;
 use crate::terminal::StatusBarInfo;
 
 /// tao EventLoop に送るカスタムイベント
@@ -31,10 +30,14 @@ use crate::terminal::StatusBarInfo;
 enum TerminalEvent {
     /// 端末出力データ（VTバイトストリーム）
     Output(Vec<u8>),
-    /// 端末セッション開始
-    Ready,
-    /// ステータスバー更新
-    StatusUpdate(StatusBarInfo),
+}
+
+/// PTYブリッジに送るコマンド
+enum PtyInputCommand {
+    /// PTY 入力データ（生バイト列）
+    Input(Vec<u8>),
+    /// PTY リサイズ
+    Resize { cols: u16, rows: u16 },
 }
 
 /// メニューバー作成（Edit メニュー: コピー/ペースト対応）
@@ -116,25 +119,142 @@ fn setup_window_background(window: &tao::window::Window) {
     let _ = window;
 }
 
-/// 特殊キーを端末エスケープシーケンスに変換
+// =============================================================================
+// キーボード → PTY 変換
+// =============================================================================
+
+/// 特殊キー → エスケープシーケンス変換
 ///
-/// テキスト入力（文字、Enter、Backspace、Tab）は ReceivedImeText で処理されるため、
-/// ここでは ReceivedImeText 経由で来ない制御キーのみを扱う。
-fn special_key_to_bytes(key: &KeyCode) -> Option<Vec<u8>> {
+/// Application Cursor Keys モード（DECCKM）対応。
+/// TUIアプリ有効時は矢印キーが SS3 形式（`\x1bOx`）になる。
+fn key_to_pty_bytes(key: &KeyCode, app_cursor: bool, shift: bool) -> Option<Vec<u8>> {
     match key {
         KeyCode::Backspace => Some(b"\x7f".to_vec()),
-        KeyCode::Tab => Some(b"\t".to_vec()),
+        KeyCode::Tab => {
+            if shift {
+                Some(b"\x1b[Z".to_vec()) // Shift+Tab (reverse tab)
+            } else {
+                Some(b"\t".to_vec())
+            }
+        }
         KeyCode::Escape => Some(b"\x1b".to_vec()),
-        KeyCode::ArrowUp => Some(b"\x1b[A".to_vec()),
-        KeyCode::ArrowDown => Some(b"\x1b[B".to_vec()),
-        KeyCode::ArrowRight => Some(b"\x1b[C".to_vec()),
-        KeyCode::ArrowLeft => Some(b"\x1b[D".to_vec()),
-        KeyCode::Home => Some(b"\x1b[H".to_vec()),
-        KeyCode::End => Some(b"\x1b[F".to_vec()),
+        // 矢印キー: app_cursor_mode で形式が変わる
+        KeyCode::ArrowUp => Some(if app_cursor { b"\x1bOA" } else { b"\x1b[A" }.to_vec()),
+        KeyCode::ArrowDown => Some(if app_cursor { b"\x1bOB" } else { b"\x1b[B" }.to_vec()),
+        KeyCode::ArrowRight => Some(if app_cursor { b"\x1bOC" } else { b"\x1b[C" }.to_vec()),
+        KeyCode::ArrowLeft => Some(if app_cursor { b"\x1bOD" } else { b"\x1b[D" }.to_vec()),
+        KeyCode::Home => Some(if app_cursor { b"\x1bOH" } else { b"\x1b[H" }.to_vec()),
+        KeyCode::End => Some(if app_cursor { b"\x1bOF" } else { b"\x1b[F" }.to_vec()),
         KeyCode::PageUp => Some(b"\x1b[5~".to_vec()),
         KeyCode::PageDown => Some(b"\x1b[6~".to_vec()),
         KeyCode::Insert => Some(b"\x1b[2~".to_vec()),
         KeyCode::Delete => Some(b"\x1b[3~".to_vec()),
+        // F1-F12
+        KeyCode::F1 => Some(b"\x1bOP".to_vec()),
+        KeyCode::F2 => Some(b"\x1bOQ".to_vec()),
+        KeyCode::F3 => Some(b"\x1bOR".to_vec()),
+        KeyCode::F4 => Some(b"\x1bOS".to_vec()),
+        KeyCode::F5 => Some(b"\x1b[15~".to_vec()),
+        KeyCode::F6 => Some(b"\x1b[17~".to_vec()),
+        KeyCode::F7 => Some(b"\x1b[18~".to_vec()),
+        KeyCode::F8 => Some(b"\x1b[19~".to_vec()),
+        KeyCode::F9 => Some(b"\x1b[20~".to_vec()),
+        KeyCode::F10 => Some(b"\x1b[21~".to_vec()),
+        KeyCode::F11 => Some(b"\x1b[23~".to_vec()),
+        KeyCode::F12 => Some(b"\x1b[24~".to_vec()),
+        _ => None,
+    }
+}
+
+/// Ctrl+物理キー → 制御コード（ASCII 0x01-0x1D）
+fn ctrl_key_byte(key: &KeyCode) -> Option<u8> {
+    match key {
+        KeyCode::KeyA => Some(0x01),
+        KeyCode::KeyB => Some(0x02),
+        KeyCode::KeyC => Some(0x03),
+        KeyCode::KeyD => Some(0x04),
+        KeyCode::KeyE => Some(0x05),
+        KeyCode::KeyF => Some(0x06),
+        KeyCode::KeyG => Some(0x07),
+        KeyCode::KeyH => Some(0x08),
+        KeyCode::KeyI => Some(0x09), // Tab
+        KeyCode::KeyJ => Some(0x0A), // LF
+        KeyCode::KeyK => Some(0x0B),
+        KeyCode::KeyL => Some(0x0C),
+        KeyCode::KeyM => Some(0x0D), // CR
+        KeyCode::KeyN => Some(0x0E),
+        KeyCode::KeyO => Some(0x0F),
+        KeyCode::KeyP => Some(0x10),
+        KeyCode::KeyQ => Some(0x11),
+        KeyCode::KeyR => Some(0x12),
+        KeyCode::KeyS => Some(0x13),
+        KeyCode::KeyT => Some(0x14),
+        KeyCode::KeyU => Some(0x15),
+        KeyCode::KeyV => Some(0x16),
+        KeyCode::KeyW => Some(0x17),
+        KeyCode::KeyX => Some(0x18),
+        KeyCode::KeyY => Some(0x19),
+        KeyCode::KeyZ => Some(0x1A),
+        KeyCode::BracketLeft => Some(0x1B), // Ctrl+[ = ESC
+        KeyCode::Backslash => Some(0x1C),
+        KeyCode::BracketRight => Some(0x1D),
+        _ => None,
+    }
+}
+
+/// 物理キー → 基本ASCII文字（Alt+key 用）
+///
+/// macOS では Alt(Option)+key が特殊文字を生成するため、
+/// 物理キーから基本文字を直接取得する。
+fn keycode_to_base_char(key: &KeyCode) -> Option<u8> {
+    match key {
+        KeyCode::KeyA => Some(b'a'),
+        KeyCode::KeyB => Some(b'b'),
+        KeyCode::KeyC => Some(b'c'),
+        KeyCode::KeyD => Some(b'd'),
+        KeyCode::KeyE => Some(b'e'),
+        KeyCode::KeyF => Some(b'f'),
+        KeyCode::KeyG => Some(b'g'),
+        KeyCode::KeyH => Some(b'h'),
+        KeyCode::KeyI => Some(b'i'),
+        KeyCode::KeyJ => Some(b'j'),
+        KeyCode::KeyK => Some(b'k'),
+        KeyCode::KeyL => Some(b'l'),
+        KeyCode::KeyM => Some(b'm'),
+        KeyCode::KeyN => Some(b'n'),
+        KeyCode::KeyO => Some(b'o'),
+        KeyCode::KeyP => Some(b'p'),
+        KeyCode::KeyQ => Some(b'q'),
+        KeyCode::KeyR => Some(b'r'),
+        KeyCode::KeyS => Some(b's'),
+        KeyCode::KeyT => Some(b't'),
+        KeyCode::KeyU => Some(b'u'),
+        KeyCode::KeyV => Some(b'v'),
+        KeyCode::KeyW => Some(b'w'),
+        KeyCode::KeyX => Some(b'x'),
+        KeyCode::KeyY => Some(b'y'),
+        KeyCode::KeyZ => Some(b'z'),
+        KeyCode::Digit0 => Some(b'0'),
+        KeyCode::Digit1 => Some(b'1'),
+        KeyCode::Digit2 => Some(b'2'),
+        KeyCode::Digit3 => Some(b'3'),
+        KeyCode::Digit4 => Some(b'4'),
+        KeyCode::Digit5 => Some(b'5'),
+        KeyCode::Digit6 => Some(b'6'),
+        KeyCode::Digit7 => Some(b'7'),
+        KeyCode::Digit8 => Some(b'8'),
+        KeyCode::Digit9 => Some(b'9'),
+        KeyCode::Minus => Some(b'-'),
+        KeyCode::Equal => Some(b'='),
+        KeyCode::BracketLeft => Some(b'['),
+        KeyCode::BracketRight => Some(b']'),
+        KeyCode::Backslash => Some(b'\\'),
+        KeyCode::Semicolon => Some(b';'),
+        KeyCode::Quote => Some(b'\''),
+        KeyCode::Comma => Some(b','),
+        KeyCode::Period => Some(b'.'),
+        KeyCode::Slash => Some(b'/'),
+        KeyCode::Backquote => Some(b'`'),
         _ => None,
     }
 }
@@ -153,194 +273,108 @@ fn copy_to_clipboard(text: &str) -> std::io::Result<()> {
 }
 
 // =============================================================================
-// Daemon モード（tmux 非依存）
+// Unison (QUIC) ブリッジモード
 // =============================================================================
 
-/// Daemon ブリッジに送るコマンド
+/// Unison ブリッジスレッドを起動
 ///
-/// Daemon 経由で PTY を直接操作する。base64 エンコードは DaemonClient が行う。
-enum DaemonInputCommand {
-    /// PTY 入力データ（生バイト列）
-    Input(Vec<u8>),
-    /// PTY リサイズ
-    Resize { cols: u16, rows: u16 },
-    /// 新規ペイン作成（Cmd+T）
-    CreatePane,
-    /// アクティブペイン終了（Cmd+W）
-    KillPane,
-}
-
-/// Daemon ブリッジスレッドを起動
-///
-/// Daemon に QUIC 接続し、セッション・ペインを作成して PTY I/O を中継する。
-/// 入力コマンドは mpsc channel で受信し、PTY 出力は EventLoop にプッシュする。
-fn start_daemon_bridge(
-    daemon_port: u16,
-    project_name: String,
+/// Stand サーバーの QUIC "terminal" チャネルに接続し、
+/// PTY 出力を EventLoop へ、キーボード入力を Stand へ中継する。
+/// raw frame でバイナリ直送（base64 不要）。
+fn start_unison_bridge(
+    port: u16, // HTTP ポート（QUIC = port + QUIC_PORT_OFFSET）
     proxy: EventLoopProxy<TerminalEvent>,
-    input_rx: mpsc::Receiver<DaemonInputCommand>,
+    input_rx: mpsc::Receiver<PtyInputCommand>,
 ) {
     std::thread::Builder::new()
-        .name("daemon-bridge".into())
+        .name("unison-bridge".into())
         .spawn(move || {
-            let rt = tokio::runtime::Runtime::new().expect("tokio runtime の作成に失敗");
+            let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+            rt.block_on(async move {
+                let quic_port = port + crate::stand::unison_server::QUIC_PORT_OFFSET;
+                let addr = format!("[::1]:{}", quic_port);
 
-            // Daemon に接続してセッション・ペインを作成
-            let setup = rt.block_on(async {
-                let client = DaemonClient::connect(daemon_port, 30).await?;
-                tracing::info!("Daemon 接続完了: {}", client.addr());
-
-                // セッション作成（既に存在していてもOK）
-                let session_id = project_name.clone();
-                match client.create_session(&session_id).await {
-                    Ok(_) => tracing::info!("セッション作成: {}", session_id),
+                let client = match unison::ProtocolClient::new_default() {
+                    Ok(c) => c,
                     Err(e) => {
-                        // 既存セッションの場合はアタッチ
-                        tracing::debug!("セッション作成スキップ（既存の可能性）: {}", e);
+                        tracing::error!("ProtocolClient 作成失敗: {}", e);
+                        return;
                     }
-                }
-
-                // デフォルトシェルでペイン作成
-                let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
-                let pane_id = client.create_pane(&session_id, &shell, 80, 24).await?;
-                tracing::info!(
-                    "ペイン作成: session={}, pane_id={}, shell={}",
-                    session_id,
-                    pane_id,
-                    shell
-                );
-
-                // アタッチ
-                client.attach(&session_id).await?;
-
-                // セッション準備完了を通知
-                let _ = proxy.send_event(TerminalEvent::Ready);
-
-                Ok::<_, anyhow::Error>((client, session_id, pane_id))
-            });
-
-            let (client, session_id, mut active_pane_id) = match setup {
-                Ok(v) => v,
-                Err(e) => {
-                    tracing::error!("Daemon ブリッジ初期化失敗: {}", e);
+                };
+                if let Err(e) = client.connect(&addr).await {
+                    tracing::error!("Unison 接続失敗 ({}): {}", addr, e);
                     return;
                 }
-            };
-
-            // PTY 出力ポーリングスレッドを起動
-            // Daemon の terminal.read_output RPC を繰り返し呼び、
-            // 出力があれば EventLoop に送信する
-            let output_client = std::sync::Arc::new(client);
-            let input_client = output_client.clone();
-            let output_session = session_id.clone();
-            let output_proxy = proxy.clone();
-
-            std::thread::Builder::new()
-                .name("daemon-output".into())
-                .spawn(move || {
-                    let rt = tokio::runtime::Runtime::new().expect("tokio runtime の作成に失敗");
-                    let mut consecutive_errors = 0u32;
-
-                    loop {
-                        match rt.block_on(output_client.read_output(
-                            &output_session,
-                            active_pane_id,
-                            50, // 50ms タイムアウト
-                        )) {
-                            Ok(data) if !data.is_empty() => {
-                                consecutive_errors = 0;
-                                if output_proxy
-                                    .send_event(TerminalEvent::Output(data))
-                                    .is_err()
-                                {
-                                    // EventLoop が閉じた
-                                    break;
-                                }
-                            }
-                            Ok(_) => {
-                                // タイムアウト（出力なし）— 正常
-                                consecutive_errors = 0;
-                            }
-                            Err(e) => {
-                                consecutive_errors += 1;
-                                if consecutive_errors > 10 {
-                                    tracing::error!(
-                                        "PTY 出力読み取りで連続エラー ({}): {}",
-                                        consecutive_errors,
-                                        e
-                                    );
-                                    break;
-                                }
-                                tracing::debug!("PTY 出力読み取りエラー: {}", e);
-                                std::thread::sleep(std::time::Duration::from_millis(100));
-                            }
-                        }
-                    }
-                })
-                .expect("daemon-output スレッドの起動に失敗");
-
-            // 入力コマンドのハンドリングループ
-            loop {
-                let cmd = match input_rx.recv() {
-                    Ok(cmd) => cmd,
-                    Err(_) => {
-                        tracing::info!("daemon-bridge: 入力チャネル閉鎖、終了");
-                        break;
+                let channel = match client.open_channel("terminal").await {
+                    Ok(ch) => ch,
+                    Err(e) => {
+                        tracing::error!("terminal チャネル開設失敗: {}", e);
+                        return;
                     }
                 };
 
-                match cmd {
-                    DaemonInputCommand::Input(data) => {
-                        if let Err(e) = rt.block_on(input_client.write_input(
-                            &session_id,
-                            active_pane_id,
-                            &data,
-                        )) {
-                            tracing::warn!("PTY 入力送信失敗: {}", e);
-                        }
-                    }
-                    DaemonInputCommand::Resize { cols, rows } => {
-                        if let Err(e) = rt.block_on(input_client.resize_pane(
-                            &session_id,
-                            active_pane_id,
-                            cols,
-                            rows,
-                        )) {
-                            tracing::warn!("リサイズ送信失敗: {}", e);
-                        }
-                    }
-                    DaemonInputCommand::CreatePane => {
-                        let shell =
-                            std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
-                        match rt.block_on(input_client.create_pane(&session_id, &shell, 80, 24)) {
-                            Ok(new_pane_id) => {
-                                tracing::info!("新規ペイン作成: pane_id={}", new_pane_id);
-                                active_pane_id = new_pane_id;
-                            }
-                            Err(e) => {
-                                tracing::warn!("新規ペイン作成失敗: {}", e);
+                tracing::info!("Unison connected to Stand (port={})", quic_port);
+
+                // sync mpsc → tokio mpsc ブリッジ
+                let (bridge_tx, mut bridge_rx) = tokio::sync::mpsc::channel::<PtyInputCommand>(256);
+                std::thread::Builder::new()
+                    .name("input-bridge".into())
+                    .spawn(move || {
+                        while let Ok(cmd) = input_rx.recv() {
+                            if bridge_tx.blocking_send(cmd).is_err() {
+                                break;
                             }
                         }
-                    }
-                    DaemonInputCommand::KillPane => {
-                        if let Err(e) =
-                            rt.block_on(input_client.kill_pane(&session_id, active_pane_id))
-                        {
-                            tracing::warn!("ペイン終了失敗: {}", e);
+                    })
+                    .expect("input-bridge spawn failed");
+
+                // メインループ: select で双方向処理
+                loop {
+                    tokio::select! {
+                        // PTY output from Stand
+                        data = channel.recv_raw() => {
+                            match data {
+                                Ok(bytes) => {
+                                    if proxy.send_event(
+                                        TerminalEvent::Output(bytes)
+                                    ).is_err() {
+                                        break;
+                                    }
+                                }
+                                Err(_) => break,
+                            }
+                        }
+                        // Keyboard input → Stand
+                        cmd = bridge_rx.recv() => {
+                            match cmd {
+                                Some(PtyInputCommand::Input(data)) => {
+                                    if channel.send_raw(&data).await.is_err() {
+                                        break;
+                                    }
+                                }
+                                Some(PtyInputCommand::Resize { cols, rows }) => {
+                                    let _ = channel.request(
+                                        "resize",
+                                        serde_json::json!({
+                                            "cols": cols, "rows": rows
+                                        }),
+                                    ).await;
+                                }
+                                None => break,
+                            }
                         }
                     }
                 }
-            }
+            });
         })
-        .expect("daemon-bridge スレッドの起動に失敗");
+        .expect("unison-bridge スレッドの起動に失敗");
 }
 
-/// Daemon 経由のターミナルウィンドウを起動
+/// Unison ブリッジモードのターミナルウィンドウを起動
 ///
-/// Daemon の PTY 直接管理で動作する。
-/// 入力は DaemonClient.write_input()（base64 は client 内部で処理）、
-/// 出力は Daemon の terminal.read_output RPC でポーリング受信。
-pub fn run_terminal_with_daemon(daemon_port: u16, project_name: &str) -> anyhow::Result<()> {
+/// Stand サーバーの QUIC "terminal" チャネルに接続し、ネイティブウィンドウで描画する。
+/// ウィンドウを閉じても Stand 側の PTY は生存し、再度接続で re-attach できる。
+pub fn run_terminal_unison(port: u16) -> anyhow::Result<()> {
     let event_loop = EventLoopBuilder::<TerminalEvent>::with_user_event().build();
 
     let window = WindowBuilder::new()
@@ -369,16 +403,26 @@ pub fn run_terminal_with_daemon(daemon_port: u16, project_name: &str) -> anyhow:
     #[cfg(target_os = "macos")]
     let mut term_state = TerminalState::new(80, 24);
 
-    // 入力チャネル（メインスレッド → Daemon ブリッジ）
-    let (input_tx, input_rx) = mpsc::channel::<DaemonInputCommand>();
+    // 入力チャネル（メインスレッド → PTYブリッジ）
+    let (input_tx, input_rx) = mpsc::channel::<PtyInputCommand>();
 
-    // Daemon ブリッジ開始
+    // Unison ブリッジ開始
     let proxy = event_loop.create_proxy();
-    let project_name = project_name.to_string();
-    start_daemon_bridge(daemon_port, project_name.clone(), proxy.clone(), input_rx);
+    start_unison_bridge(port, proxy, input_rx);
 
     // 初期リサイズを送信
-    let _ = input_tx.send(DaemonInputCommand::Resize { cols: 80, rows: 24 });
+    let _ = input_tx.send(PtyInputCommand::Resize { cols: 80, rows: 24 });
+
+    // ステータスバーにポート番号を表示
+    let session_name = format!("Stand:{}", port);
+
+    #[cfg(target_os = "macos")]
+    {
+        terminal_view.update_status_bar(StatusBarInfo {
+            session_name: session_name.clone(),
+            ..Default::default()
+        });
+    }
 
     // IME確定Enter抑制フラグ
     let mut suppress_next_enter = false;
@@ -388,26 +432,23 @@ pub fn run_terminal_with_daemon(daemon_port: u16, project_name: &str) -> anyhow:
     let mut cursor_pos: LogicalPosition<f64> = LogicalPosition::new(0.0, 0.0);
     let mut mouse_dragging = false;
 
-    // 修飾キー追跡（Cmd+数字キー用）
-    let mut logo_pressed = false;
+    // 修飾キー状態（ModifiersChanged で一括追跡）
+    let mut modifiers = ModifiersState::empty();
 
-    tracing::info!(
-        "Terminal fullscreen window started (daemon_port={}, project={})",
-        daemon_port,
-        project_name
-    );
+    tracing::info!("Terminal Unison bridge mode started (port={})", port);
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
 
         match event {
-            // 端末出力イベント（Daemon ブリッジから）
+            // 端末出力イベント（PTYブリッジから）
             Event::UserEvent(TerminalEvent::Output(bytes)) => {
                 #[cfg(target_os = "macos")]
                 {
                     term_state.feed_bytes(&bytes);
                     let snap = term_state.snapshot();
                     terminal_view.update_cells(&snap.cells);
+                    terminal_view.update_cursor(snap.cursor.0, snap.cursor.1, snap.cursor_visible);
                     terminal_view.request_redraw();
 
                     // IME変換ウィンドウをカーソル位置に追従
@@ -416,24 +457,6 @@ pub fn run_terminal_with_daemon(daemon_port: u16, project_name: &str) -> anyhow:
                     let ime_x = snap.cursor.1 as f64 * cw;
                     let ime_y = (snap.cursor.0 + 1) as f64 * ch;
                     window.set_ime_position(LogicalPosition::new(ime_x, ime_y));
-                }
-            }
-            Event::UserEvent(TerminalEvent::Ready) => {
-                tracing::info!("Daemon terminal session ready");
-                #[cfg(target_os = "macos")]
-                {
-                    terminal_view.update_status_bar(StatusBarInfo {
-                        session_name: project_name.clone(),
-                        ..Default::default()
-                    });
-                    terminal_view.request_redraw();
-                }
-            }
-            // ステータスバー更新（Daemon ベース）
-            Event::UserEvent(TerminalEvent::StatusUpdate(info)) => {
-                #[cfg(target_os = "macos")]
-                {
-                    terminal_view.update_status_bar(info);
                 }
             }
             Event::WindowEvent {
@@ -466,7 +489,7 @@ pub fn run_terminal_with_daemon(daemon_port: u16, project_name: &str) -> anyhow:
                         if new_cols > 0 && new_rows > 0 {
                             term_state.resize(new_cols as usize, new_rows as usize);
                             terminal_view.resize_grid(new_cols as usize, new_rows as usize);
-                            let _ = input_tx.send(DaemonInputCommand::Resize {
+                            let _ = input_tx.send(PtyInputCommand::Resize {
                                 cols: new_cols,
                                 rows: new_rows,
                             });
@@ -476,12 +499,23 @@ pub fn run_terminal_with_daemon(daemon_port: u16, project_name: &str) -> anyhow:
                     terminal_view.request_redraw();
                 }
             }
+            // 修飾キー状態の一括追跡
+            Event::WindowEvent {
+                event: WindowEvent::ModifiersChanged(mods),
+                ..
+            } => {
+                modifiers = mods;
+            }
             // IME 確定テキスト
             Event::WindowEvent {
                 event: WindowEvent::ReceivedImeText(text),
                 ..
             } => {
-                tracing::info!("IME text received: {:?}", text);
+                // Ctrl/Alt 押下中はスキップ（KeyboardInput で処理済み）
+                if modifiers.intersects(ModifiersState::CONTROL | ModifiersState::ALT) {
+                    return;
+                }
+
                 if !text.is_empty() {
                     let is_newline = text == "\n" || text == "\r";
 
@@ -489,12 +523,12 @@ pub fn run_terminal_with_daemon(daemon_port: u16, project_name: &str) -> anyhow:
                         if suppress_next_enter {
                             // IME確定直後の "\n" → スキップ
                         } else if !enter_handled_this_frame {
-                            let _ = input_tx.send(DaemonInputCommand::Input(b"\r".to_vec()));
+                            let _ = input_tx.send(PtyInputCommand::Input(b"\r".to_vec()));
                             enter_handled_this_frame = true;
                         }
                     } else {
                         let bytes: Vec<u8> = text.bytes().collect();
-                        let _ = input_tx.send(DaemonInputCommand::Input(bytes));
+                        let _ = input_tx.send(PtyInputCommand::Input(bytes));
                         suppress_next_enter = true;
                     }
                 }
@@ -504,87 +538,90 @@ pub fn run_terminal_with_daemon(daemon_port: u16, project_name: &str) -> anyhow:
                 event: WindowEvent::KeyboardInput { event, .. },
                 ..
             } => {
-                tracing::debug!(
-                    "KeyboardInput: {:?} state={:?}",
-                    event.physical_key,
-                    event.state
-                );
-                if event.state == ElementState::Pressed {
-                    // Cmd+キーでウィンドウ操作
-                    #[cfg(target_os = "macos")]
-                    if logo_pressed {
-                        // Cmd+数字: タブ切替（TODO: Daemon ペイン切替）
-                        let _win_idx = match event.physical_key {
-                            KeyCode::Digit1 => Some(0usize),
-                            KeyCode::Digit2 => Some(1),
-                            KeyCode::Digit3 => Some(2),
-                            KeyCode::Digit4 => Some(3),
-                            KeyCode::Digit5 => Some(4),
-                            KeyCode::Digit6 => Some(5),
-                            KeyCode::Digit7 => Some(6),
-                            KeyCode::Digit8 => Some(7),
-                            KeyCode::Digit9 => Some(8),
-                            _ => None,
-                        };
-                        // TODO: Daemon セッション内のペイン切替
-                        // 現状は単一ペインのみ対応
+                if event.state != ElementState::Pressed {
+                    return;
+                }
 
-                        // Cmd+V: ペースト（クリップボード → Daemon PTY）
-                        if event.physical_key == KeyCode::KeyV {
-                            if let Ok(output) = std::process::Command::new("pbpaste").output()
-                                && output.status.success()
-                                && !output.stdout.is_empty()
-                            {
-                                let _ = input_tx.send(DaemonInputCommand::Input(output.stdout));
-                            }
-                            return;
+                // Cmd+key: ウィンドウ操作
+                #[cfg(target_os = "macos")]
+                if modifiers.contains(ModifiersState::SUPER) {
+                    // Cmd+V: ペースト（Bracketed Paste 対応）
+                    if event.physical_key == KeyCode::KeyV {
+                        if let Ok(output) = std::process::Command::new("pbpaste").output()
+                            && output.status.success()
+                            && !output.stdout.is_empty()
+                        {
+                            let data = if term_state.bracketed_paste_mode() {
+                                let mut d = b"\x1b[200~".to_vec();
+                                d.extend(&output.stdout);
+                                d.extend(b"\x1b[201~");
+                                d
+                            } else {
+                                output.stdout
+                            };
+                            let _ = input_tx.send(PtyInputCommand::Input(data));
                         }
-
-                        // Cmd+C: コピー（選択テキスト → クリップボード）
-                        if event.physical_key == KeyCode::KeyC {
-                            if let Some(text) = terminal_view.selected_text() {
-                                let _ = copy_to_clipboard(&text);
-                                terminal_view.clear_selection();
-                            }
-                            return;
-                        }
-
-                        // Cmd+T: 新規ペイン
-                        if event.physical_key == KeyCode::KeyT {
-                            let _ = input_tx.send(DaemonInputCommand::CreatePane);
-                            return;
-                        }
-
-                        // Cmd+W: ペイン終了
-                        if event.physical_key == KeyCode::KeyW {
-                            let _ = input_tx.send(DaemonInputCommand::KillPane);
-                            return;
-                        }
-                    }
-
-                    // Escape: テキスト選択解除
-                    #[cfg(target_os = "macos")]
-                    if event.physical_key == KeyCode::Escape && terminal_view.has_selection() {
-                        terminal_view.clear_selection();
                         return;
                     }
 
-                    if event.physical_key == KeyCode::Enter
-                        && !suppress_next_enter
-                        && !enter_handled_this_frame
-                    {
-                        let _ = input_tx.send(DaemonInputCommand::Input(b"\r".to_vec()));
-                        enter_handled_this_frame = true;
-                    } else if let Some(bytes) = special_key_to_bytes(&event.physical_key) {
-                        let _ = input_tx.send(DaemonInputCommand::Input(bytes));
+                    // Cmd+C: コピー（選択テキスト → クリップボード）
+                    if event.physical_key == KeyCode::KeyC {
+                        if let Some(text) = terminal_view.selected_text() {
+                            let _ = copy_to_clipboard(&text);
+                            terminal_view.clear_selection();
+                        }
+                        return;
+                    }
+
+                    // その他の Cmd+key はシステムに委譲
+                    return;
+                }
+
+                // Escape: テキスト選択解除
+                #[cfg(target_os = "macos")]
+                if event.physical_key == KeyCode::Escape && terminal_view.has_selection() {
+                    terminal_view.clear_selection();
+                    return;
+                }
+
+                // Ctrl+key: 制御コード
+                if modifiers.contains(ModifiersState::CONTROL) {
+                    if let Some(byte) = ctrl_key_byte(&event.physical_key) {
+                        let _ = input_tx.send(PtyInputCommand::Input(vec![byte]));
+                        return;
                     }
                 }
 
-                // ロゴキー（Cmd）の状態を追跡
-                if event.physical_key == KeyCode::SuperLeft
-                    || event.physical_key == KeyCode::SuperRight
+                // Alt+key: ESC + 基本文字
+                if modifiers.contains(ModifiersState::ALT) {
+                    if let Some(ch) = keycode_to_base_char(&event.physical_key) {
+                        let _ = input_tx.send(PtyInputCommand::Input(vec![0x1b, ch]));
+                        return;
+                    }
+                }
+
+                // 特殊キー（矢印、F1-F12等）
+                #[cfg(target_os = "macos")]
+                let app_cursor = term_state.app_cursor_mode();
+                #[cfg(not(target_os = "macos"))]
+                let app_cursor = false;
+
+                if let Some(bytes) = key_to_pty_bytes(
+                    &event.physical_key,
+                    app_cursor,
+                    modifiers.contains(ModifiersState::SHIFT),
+                ) {
+                    let _ = input_tx.send(PtyInputCommand::Input(bytes));
+                    return;
+                }
+
+                // Enter（IME未処理分）
+                if event.physical_key == KeyCode::Enter
+                    && !suppress_next_enter
+                    && !enter_handled_this_frame
                 {
-                    logo_pressed = event.state == ElementState::Pressed;
+                    let _ = input_tx.send(PtyInputCommand::Input(b"\r".to_vec()));
+                    enter_handled_this_frame = true;
                 }
             }
             // マウスカーソル位置追跡 + ドラッグ中のテキスト選択拡張
@@ -612,8 +649,6 @@ pub fn run_terminal_with_daemon(daemon_port: u16, project_name: &str) -> anyhow:
             } => {
                 #[cfg(target_os = "macos")]
                 {
-                    // TODO: ステータスバーのタブクリック → Daemon ペイン切替
-                    // グリッド領域: テキスト選択開始
                     let (row, col) = terminal_view.point_to_cell(cursor_pos.x, cursor_pos.y);
                     terminal_view.start_selection(row, col);
                     mouse_dragging = true;
