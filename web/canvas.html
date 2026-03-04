@@ -987,6 +987,13 @@
         document.addEventListener('mousemove', (e) => {
             if (!dragState) return;
             const { container, direction, firstEl, secondEl, node } = dragState;
+            // DOM から切り離されていたらドラッグを中断
+            if (!container.isConnected) {
+                dragState.handle.classList.remove('dragging');
+                document.body.classList.remove('split-dragging');
+                dragState = null;
+                return;
+            }
             const rect = container.getBoundingClientRect();
             let ratio;
             if (direction === 'horizontal') {
