@@ -525,10 +525,52 @@
             color: var(--color-text-muted);
             opacity: 0.5;
         }
+
+        /* ===== タブバー ===== */
+        .canvas-tab-bar {
+            position: fixed; top: 0; left: 0; right: 0; z-index: 10;
+            display: none; align-items: center;
+            gap: 2px; padding: 4px 8px;
+            background: oklch(0.12 0.02 230);
+            border-bottom: 1px solid var(--color-border-subtle);
+        }
+        .canvas-tab-bar.visible { display: flex; }
+
+        .canvas-tab {
+            display: flex; align-items: center; gap: 6px;
+            padding: 6px 12px;
+            font-size: 13px; color: var(--color-text-secondary);
+            background: transparent; border: none; border-radius: var(--radius-sm);
+            cursor: pointer; transition: background 0.15s, color 0.15s;
+            white-space: nowrap;
+        }
+        .canvas-tab:hover { background: oklch(0.20 0.02 225); color: var(--color-text-primary); }
+        .canvas-tab.active { background: oklch(0.22 0.03 220); color: var(--color-text-primary); }
+
+        .canvas-tab-close {
+            display: inline-flex; width: 16px; height: 16px;
+            align-items: center; justify-content: center;
+            font-size: 14px; color: var(--color-text-muted);
+            background: none; border: none; border-radius: 2px; cursor: pointer;
+            opacity: 0; transition: opacity 0.1s;
+        }
+        .canvas-tab:hover .canvas-tab-close { opacity: 1; }
+        .canvas-tab-close:hover { background: oklch(0.30 0.03 225); color: var(--color-error); }
+
+        /* タブバー表示時のコンテンツ余白 */
+        :root { --tab-bar-height: 44px; }
+        body.has-tabs .canvas-content { padding-top: var(--tab-bar-height); }
+        body.has-tabs .canvas-status { top: var(--tab-bar-height); }
+
+        .tab-container { display: none; }
+        .tab-container.active {
+            display: flex; flex-direction: column; gap: 16px;
+        }
     </style>
 </head>
 <body>
     <div class="canvas-grid"></div>
+    <div class="canvas-tab-bar" id="canvas-tab-bar"></div>
 
     <div class="canvas-status" id="status">
         <span class="dot"></span>
@@ -589,18 +631,147 @@
     </div>
 
     <script>
-        // ===== ペイン管理 =====
-        const panes = new Map();
+        // ===== タブ・ペイン管理 =====
+        const tabState = {
+            tabs: new Map(),      // tabId → { id, title, panes: Map, container: HTMLElement }
+            activeTab: null,      // 現在のタブ ID
+        };
 
-        function getOrCreatePane(paneId, title) {
-            if (panes.has(paneId)) {
-                const card = panes.get(paneId);
+        const tabBar = document.getElementById('canvas-tab-bar');
+        const canvasContent = document.getElementById('canvas-content');
+        const emptyState = document.getElementById('empty-state');
+
+        // --- タブ管理関数 ---
+
+        function createTab(tabId, title) {
+            if (tabState.tabs.has(tabId)) return;
+
+            const container = document.createElement('div');
+            container.className = 'tab-container';
+            container.dataset.tabId = tabId;
+            canvasContent.appendChild(container);
+
+            tabState.tabs.set(tabId, {
+                id: tabId,
+                title: title || tabId,
+                panes: new Map(),
+                container,
+            });
+
+            switchToTab(tabId);
+            // switchToTab 内で updateTabBar() が呼ばれるため、ここでは不要
+        }
+
+        function switchToTab(tabId) {
+            const tab = tabState.tabs.get(tabId);
+            if (!tab) return;
+
+            // 全タブを非アクティブ化
+            for (const t of tabState.tabs.values()) {
+                t.container.classList.remove('active');
+            }
+            tab.container.classList.add('active');
+            tabState.activeTab = tabId;
+
+            // 空状態: 対象タブにペインがなければ表示
+            emptyState.style.display = tab.panes.size === 0 ? '' : 'none';
+
+            updateTabBar();
+        }
+
+        function closeTab(tabId) {
+            // _default タブは閉じない
+            if (tabId === '_default') return;
+
+            const tab = tabState.tabs.get(tabId);
+            if (!tab) return;
+
+            tab.container.remove();
+            tabState.tabs.delete(tabId);
+
+            if (tabState.tabs.size > 0) {
+                // 残タブの先頭に切り替え（switchToTab 内で updateTabBar 呼び出し済み）
+                const firstTab = tabState.tabs.keys().next().value;
+                switchToTab(firstTab);
+            } else {
+                tabState.activeTab = null;
+                emptyState.style.display = '';
+                updateTabBar();
+            }
+        }
+
+        function removePaneFromTab(tab, paneId) {
+            const card = tab.panes.get(paneId);
+            if (!card) return;
+            card.remove();
+            tab.panes.delete(paneId);
+            // タブ内ペインが空になったら空状態表示
+            if (tab.id === tabState.activeTab && tab.panes.size === 0) {
+                emptyState.style.display = '';
+            }
+        }
+
+        function updateTabBar() {
+            tabBar.replaceChildren();
+
+            for (const tab of tabState.tabs.values()) {
+                const btn = document.createElement('button');
+                btn.className = 'canvas-tab';
+                btn.type = 'button';
+                if (tab.id === tabState.activeTab) btn.classList.add('active');
+
+                const label = document.createElement('span');
+                label.textContent = tab.title;
+                btn.appendChild(label);
+
+                // _default 以外は閉じるボタン
+                if (tab.id !== '_default') {
+                    const closeBtn = document.createElement('button');
+                    closeBtn.className = 'canvas-tab-close';
+                    closeBtn.type = 'button';
+                    closeBtn.textContent = '\u00d7';
+                    closeBtn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        closeTab(tab.id);
+                    });
+                    btn.appendChild(closeBtn);
+                }
+
+                btn.addEventListener('click', () => switchToTab(tab.id));
+                tabBar.appendChild(btn);
+            }
+
+            // タブが2つ以上でバー表示
+            if (tabState.tabs.size >= 2) {
+                tabBar.classList.add('visible');
+                document.body.classList.add('has-tabs');
+            } else {
+                tabBar.classList.remove('visible');
+                document.body.classList.remove('has-tabs');
+            }
+        }
+
+        // --- ペイン管理 ---
+
+        function getOrCreatePane(paneId, title, tabId) {
+            tabId = tabId || '_default';
+            let tab = tabState.tabs.get(tabId);
+            if (!tab) {
+                createTab(tabId, tabId);
+                tab = tabState.tabs.get(tabId);
+            }
+
+            if (tab.panes.has(paneId)) {
+                const card = tab.panes.get(paneId);
                 if (title) {
                     const titleEl = card.querySelector('.pane-card-title');
                     if (titleEl) titleEl.textContent = title;
                 }
                 return card;
             }
+
+            emptyState.style.display = 'none';
+
             const card = document.createElement('div');
             card.className = 'pane-card';
             card.dataset.paneId = paneId;
@@ -614,13 +785,13 @@
             body.className = 'pane-card-body';
             card.appendChild(body);
 
-            document.getElementById('canvas-content').appendChild(card);
-            panes.set(paneId, card);
-
-            // 空状態を非表示
-            document.getElementById('empty-state').style.display = 'none';
+            tab.container.appendChild(card);
+            tab.panes.set(paneId, card);
             return card;
         }
+
+        // _default タブを初期作成
+        createTab('_default', 'Canvas');
 
         // Mermaid 初期化（ダークテーマ） — CDN 読み込み失敗時もクラッシュしない
         const mermaidAvailable = typeof mermaid !== 'undefined';
@@ -1043,31 +1214,59 @@
                     break;
 
                 case 'show': {
+                    const tabId = msg.tab_id || '_default';
                     const paneId = msg.pane_id || 'main';
-                    const card = getOrCreatePane(paneId, msg.title);
+
+                    // タブが存在しなければ作成
+                    if (!tabState.tabs.has(tabId)) {
+                        createTab(tabId, msg.tab_title || tabId);
+                    } else if (msg.tab_title) {
+                        // タイトル更新
+                        tabState.tabs.get(tabId).title = msg.tab_title;
+                        updateTabBar();
+                    }
+
+                    // ペイン作成 → タブ切替の順（empty-state フラッシュ防止）
+                    const card = getOrCreatePane(paneId, msg.title, tabId);
+                    switchToTab(tabId);
+
                     const body = card.querySelector('.pane-card-body');
                     if (body) renderContent(body, msg.content, msg.append || false);
                     break;
                 }
 
                 case 'clear': {
+                    const tabId = msg.tab_id || '_default';
                     const paneId = msg.pane_id || 'main';
-                    const card = panes.get(paneId);
-                    if (card) {
-                        const body = card.querySelector('.pane-card-body');
-                        if (body) body.textContent = '';
+                    const tab = tabState.tabs.get(tabId);
+                    if (tab) {
+                        const card = tab.panes.get(paneId);
+                        if (card) {
+                            const body = card.querySelector('.pane-card-body');
+                            if (body) body.textContent = '';
+                        }
                     }
                     break;
                 }
 
                 case 'close': {
-                    const card = panes.get(msg.pane_id);
-                    if (card) {
-                        card.remove();
-                        panes.delete(msg.pane_id);
-                    }
-                    if (panes.size === 0) {
-                        document.getElementById('empty-state').style.display = '';
+                    if (msg.tab_id && !msg.pane_id) {
+                        // タブごと close
+                        closeTab(msg.tab_id);
+                    } else if (msg.pane_id) {
+                        // ペイン close（tab_id 指定 or 全タブ検索）
+                        if (msg.tab_id) {
+                            const tab = tabState.tabs.get(msg.tab_id);
+                            if (tab) removePaneFromTab(tab, msg.pane_id);
+                        } else {
+                            // 後方互換: 全タブから検索
+                            for (const tab of tabState.tabs.values()) {
+                                if (tab.panes.has(msg.pane_id)) {
+                                    removePaneFromTab(tab, msg.pane_id);
+                                    break;
+                                }
+                            }
+                        }
                     }
                     break;
                 }
@@ -1086,9 +1285,28 @@
                             console.error('Screenshot failed:', errMsg);
                         };
                         try {
-                            const target = msg.pane_id
-                                ? document.querySelector(`[data-pane-id="${msg.pane_id}"] .pane-card-body`)
-                                : document.body;
+                            // tab_id + pane_id → 特定タブの特定ペイン
+                            // pane_id のみ → 全タブから検索（後方互換）
+                            // 両方なし → アクティブタブ全体
+                            let target;
+                            if (msg.pane_id) {
+                                if (msg.tab_id) {
+                                    const tab = tabState.tabs.get(msg.tab_id);
+                                    target = tab?.panes.get(msg.pane_id)?.querySelector('.pane-card-body');
+                                } else {
+                                    // 全タブから Map 検索（セレクタインジェクション防止）
+                                    for (const tab of tabState.tabs.values()) {
+                                        const card = tab.panes.get(msg.pane_id);
+                                        if (card) {
+                                            target = card.querySelector('.pane-card-body');
+                                            break;
+                                        }
+                                    }
+                                }
+                            } else {
+                                const activeTab = tabState.tabs.get(tabState.activeTab);
+                                target = activeTab?.container || document.body;
+                            }
                             if (!target) {
                                 sendError('Screenshot target not found: ' + msg.pane_id);
                                 return;
