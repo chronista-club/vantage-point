@@ -566,6 +566,54 @@
         .tab-container.active {
             display: flex; flex-direction: column; gap: 16px;
         }
+        .tab-container.active.has-split {
+            flex: 1;
+            min-height: 0;
+            gap: 0;
+        }
+
+        /* ===== Split Pane ===== */
+        .split-container {
+            display: flex;
+            flex: 1;
+            min-height: 0;
+            min-width: 0;
+        }
+        .split-container.horizontal { flex-direction: row; }
+        .split-container.vertical { flex-direction: column; }
+
+        .split-handle {
+            flex-shrink: 0;
+            background: var(--color-border-subtle);
+            transition: background 0.15s;
+            z-index: 1;
+        }
+        .split-handle:hover, .split-handle.dragging {
+            background: var(--color-accent-primary);
+        }
+        .split-container.horizontal > .split-handle {
+            width: 4px;
+            cursor: col-resize;
+        }
+        .split-container.vertical > .split-handle {
+            height: 4px;
+            cursor: row-resize;
+        }
+
+        /* split 内の pane-card はフレックス子要素として伸縮 */
+        .split-container > .pane-card {
+            max-width: none;
+            margin: 0;
+            overflow-y: auto;
+            min-height: 0;
+            min-width: 0;
+        }
+
+        /* ドラッグ中は iframe 等のポインターイベントを無効化 */
+        body.split-dragging iframe,
+        body.split-dragging .pane-card-body {
+            pointer-events: none;
+        }
     </style>
 </head>
 <body>
@@ -656,6 +704,7 @@
                 title: title || tabId,
                 panes: new Map(),
                 container,
+                root: null,  // PaneNode ツリー: { type:'leaf', paneId } | { type:'split', direction, first, second, ratio }
             });
 
             switchToTab(tabId);
@@ -703,9 +752,17 @@
         function removePaneFromTab(tab, paneId) {
             const card = tab.panes.get(paneId);
             if (!card) return;
-            card.remove();
+
             tab.panes.delete(paneId);
-            // タブ内ペインが空になったら空状態表示
+
+            // ツリーからも削除（兄弟が昇格）
+            if (tab.root) {
+                tab.root = removePaneFromTree(tab.root, paneId);
+            }
+
+            // renderTabLayout が container を再構築するため card.remove() は不要
+            renderTabLayout(tab);
+
             if (tab.id === tabState.activeTab && tab.panes.size === 0) {
                 emptyState.style.display = '';
             }
@@ -753,25 +810,7 @@
 
         // --- ペイン管理 ---
 
-        function getOrCreatePane(paneId, title, tabId) {
-            tabId = tabId || '_default';
-            let tab = tabState.tabs.get(tabId);
-            if (!tab) {
-                createTab(tabId, tabId);
-                tab = tabState.tabs.get(tabId);
-            }
-
-            if (tab.panes.has(paneId)) {
-                const card = tab.panes.get(paneId);
-                if (title) {
-                    const titleEl = card.querySelector('.pane-card-title');
-                    if (titleEl) titleEl.textContent = title;
-                }
-                return card;
-            }
-
-            emptyState.style.display = 'none';
-
+        function createPaneCard(paneId, title) {
             const card = document.createElement('div');
             card.className = 'pane-card';
             card.dataset.paneId = paneId;
@@ -785,10 +824,195 @@
             body.className = 'pane-card-body';
             card.appendChild(body);
 
-            tab.container.appendChild(card);
-            tab.panes.set(paneId, card);
             return card;
         }
+
+        function getOrCreatePane(paneId, title, tabId) {
+            tabId = tabId || '_default';
+            let tab = tabState.tabs.get(tabId);
+            if (!tab) {
+                createTab(tabId, tabId);
+                tab = tabState.tabs.get(tabId);
+            }
+
+            // 既存ペイン → タイトル更新のみ
+            if (tab.panes.has(paneId)) {
+                const card = tab.panes.get(paneId);
+                if (title) {
+                    const titleEl = card.querySelector('.pane-card-title');
+                    if (titleEl) titleEl.textContent = title;
+                }
+                return card;
+            }
+
+            emptyState.style.display = 'none';
+
+            const card = createPaneCard(paneId, title);
+            tab.panes.set(paneId, card);
+
+            // ツリーに含まれていなければ直接 container に append（Phase 1 互換）
+            if (!isInTree(tab.root, paneId)) {
+                tab.container.appendChild(card);
+            }
+            return card;
+        }
+
+        // --- Split Pane ツリー操作 ---
+
+        /** ツリー内にペインが含まれるか判定 */
+        function isInTree(node, paneId) {
+            if (!node) return false;
+            if (node.type === 'leaf') return node.paneId === paneId;
+            return isInTree(node.first, paneId) || isInTree(node.second, paneId);
+        }
+
+        /** ツリー内の全ペインIDを収集 */
+        function collectTreePaneIds(node) {
+            if (!node) return new Set();
+            if (node.type === 'leaf') return new Set([node.paneId]);
+            const set = collectTreePaneIds(node.first);
+            for (const id of collectTreePaneIds(node.second)) set.add(id);
+            return set;
+        }
+
+        /** ソースペインの leaf を split ノードに置換 */
+        function replaceLeafWithSplit(node, targetPaneId, direction, newPaneId) {
+            if (node.type === 'leaf') {
+                if (node.paneId === targetPaneId) {
+                    return {
+                        type: 'split',
+                        direction,
+                        first: { type: 'leaf', paneId: targetPaneId },
+                        second: { type: 'leaf', paneId: newPaneId },
+                        ratio: 0.5,
+                    };
+                }
+                return node;
+            }
+            // split ノード → 再帰
+            return {
+                ...node,
+                first: replaceLeafWithSplit(node.first, targetPaneId, direction, newPaneId),
+                second: replaceLeafWithSplit(node.second, targetPaneId, direction, newPaneId),
+            };
+        }
+
+        /** ペインをツリーから削除（兄弟が昇格） */
+        function removePaneFromTree(node, targetPaneId) {
+            if (!node) return null;
+            if (node.type === 'leaf') {
+                return node.paneId === targetPaneId ? null : node;
+            }
+            // 再帰的に削除し、片方が null なら残った側を昇格
+            const newFirst = removePaneFromTree(node.first, targetPaneId);
+            const newSecond = removePaneFromTree(node.second, targetPaneId);
+            if (newFirst === null) return newSecond;
+            if (newSecond === null) return newFirst;
+            return { ...node, first: newFirst, second: newSecond };
+        }
+
+        /** PaneNode ツリーから DOM を構築 */
+        function buildDomFromTree(tab, node) {
+            if (!node) return null;
+            if (node.type === 'leaf') {
+                return tab.panes.get(node.paneId) || null;
+            }
+
+            const container = document.createElement('div');
+            container.className = `split-container ${node.direction}`;
+
+            const firstEl = buildDomFromTree(tab, node.first);
+            const secondEl = buildDomFromTree(tab, node.second);
+
+            if (firstEl) {
+                firstEl.style.flex = `${node.ratio}`;
+                container.appendChild(firstEl);
+            }
+
+            // 両側が揃っている場合のみハンドルを挿入
+            if (firstEl && secondEl) {
+                const handle = document.createElement('div');
+                handle.className = 'split-handle';
+                container.appendChild(handle);
+
+                secondEl.style.flex = `${1 - node.ratio}`;
+                container.appendChild(secondEl);
+
+                initSplitHandleDrag(handle, container, node.direction, firstEl, secondEl, node);
+            } else if (secondEl) {
+                secondEl.style.flex = '1';
+                container.appendChild(secondEl);
+            }
+
+            return container;
+        }
+
+        /** タブのレイアウトをツリーから再構築 */
+        function renderTabLayout(tab) {
+            // 全子要素をデタッチ（DOM から外すが参照は panes Map に残る）
+            while (tab.container.firstChild) {
+                tab.container.removeChild(tab.container.firstChild);
+            }
+
+            const treeIds = collectTreePaneIds(tab.root);
+            const hasSplit = tab.root && tab.root.type === 'split';
+            tab.container.classList.toggle('has-split', hasSplit);
+
+            // ツリーから DOM を構築して配置
+            if (tab.root) {
+                const treeDom = buildDomFromTree(tab, tab.root);
+                if (treeDom) tab.container.appendChild(treeDom);
+            }
+
+            // ツリーに含まれないペインを直接 append（Phase 1 互換）
+            for (const [paneId, card] of tab.panes) {
+                if (!treeIds.has(paneId)) {
+                    tab.container.appendChild(card);
+                }
+            }
+        }
+
+        // --- ドラッグリサイズ ---
+        let dragState = null;
+
+        function initSplitHandleDrag(handle, container, direction, firstEl, secondEl, node) {
+            handle.addEventListener('mousedown', (e) => {
+                e.preventDefault();
+                dragState = { handle, container, direction, firstEl, secondEl, node };
+                handle.classList.add('dragging');
+                document.body.classList.add('split-dragging');
+            });
+        }
+
+        document.addEventListener('mousemove', (e) => {
+            if (!dragState) return;
+            const { container, direction, firstEl, secondEl, node } = dragState;
+            // DOM から切り離されていたらドラッグを中断
+            if (!container.isConnected) {
+                dragState.handle.classList.remove('dragging');
+                document.body.classList.remove('split-dragging');
+                dragState = null;
+                return;
+            }
+            const rect = container.getBoundingClientRect();
+            let ratio;
+            if (direction === 'horizontal') {
+                ratio = (e.clientX - rect.left) / rect.width;
+            } else {
+                ratio = (e.clientY - rect.top) / rect.height;
+            }
+            ratio = Math.max(0.1, Math.min(0.9, ratio));
+            node.ratio = ratio;
+            firstEl.style.flex = `${ratio}`;
+            secondEl.style.flex = `${1 - ratio}`;
+        });
+
+        document.addEventListener('mouseup', () => {
+            if (!dragState) return;
+            dragState.handle.classList.remove('dragging');
+            document.body.classList.remove('split-dragging');
+            dragState = null;
+        });
 
         // _default タブを初期作成
         createTab('_default', 'Canvas');
@@ -1268,6 +1492,56 @@
                             }
                         }
                     }
+                    break;
+                }
+
+                case 'split': {
+                    const tabId = msg.tab_id || tabState.activeTab || '_default';
+                    let tab = tabState.tabs.get(tabId);
+                    if (!tab) {
+                        createTab(tabId, tabId);
+                        tab = tabState.tabs.get(tabId);
+                    }
+
+                    const sourcePaneId = msg.pane_id;
+                    const direction = msg.direction;
+                    const newPaneId = msg.new_pane_id;
+
+                    if (!sourcePaneId || !newPaneId || !['horizontal', 'vertical'].includes(direction)) {
+                        console.warn('split: 必須フィールドが不正です', msg);
+                        break;
+                    }
+
+                    // ソースペインがまだなければ作成
+                    if (!tab.panes.has(sourcePaneId)) {
+                        const card = createPaneCard(sourcePaneId, sourcePaneId);
+                        tab.panes.set(sourcePaneId, card);
+                    }
+
+                    // 新ペインカード作成
+                    if (!tab.panes.has(newPaneId)) {
+                        const card = createPaneCard(newPaneId, newPaneId);
+                        tab.panes.set(newPaneId, card);
+                    }
+
+                    emptyState.style.display = 'none';
+
+                    // ツリーにソースペインを組み込み、split ノードに置換
+                    const sourceLeaf = { type: 'leaf', paneId: sourcePaneId };
+                    const newLeaf = { type: 'leaf', paneId: newPaneId };
+
+                    if (!tab.root) {
+                        // ルートがない → split コンテナをルートに
+                        tab.root = { type: 'split', direction, first: sourceLeaf, second: newLeaf, ratio: 0.5 };
+                    } else if (!isInTree(tab.root, sourcePaneId)) {
+                        // ソースがツリーにない → ルートを wrap
+                        tab.root = { type: 'split', direction, first: tab.root, second: newLeaf, ratio: 0.5 };
+                    } else {
+                        // ソースがツリー内 → 該当 leaf を split に置換
+                        tab.root = replaceLeafWithSplit(tab.root, sourcePaneId, direction, newPaneId);
+                    }
+
+                    renderTabLayout(tab);
                     break;
                 }
 
