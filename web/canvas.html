@@ -97,6 +97,7 @@
 
         /* ペインカード */
         .pane-card {
+            position: relative;
             background: oklch(0.14 0.02 228 / 0.85);
             backdrop-filter: blur(8px);
             border: 1px solid var(--color-border-subtle);
@@ -107,6 +108,19 @@
             margin: 0 auto;
             animation: card-in 0.3s ease-out;
         }
+        .pane-card-close {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            z-index: 1;
+            width: 20px; height: 20px;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 14px; color: var(--color-text-muted);
+            background: none; border: none; border-radius: 2px;
+            cursor: pointer; opacity: 0; transition: opacity 0.15s;
+        }
+        .pane-card:hover .pane-card-close { opacity: 1; }
+        .pane-card-close:hover { background: oklch(0.30 0.03 225); color: var(--color-error); }
         @keyframes card-in {
             from { opacity: 0; transform: translateY(8px); }
             to { opacity: 1; transform: translateY(0); }
@@ -604,9 +618,16 @@
         .split-container > .pane-card {
             max-width: none;
             margin: 0;
-            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            overflow-y: hidden;
             min-height: 0;
             min-width: 0;
+        }
+        .split-container > .pane-card > .pane-card-body {
+            overflow-y: auto;
+            flex: 1;
+            min-height: 0;
         }
 
         /* ドラッグ中は iframe 等のポインターイベントを無効化 */
@@ -820,6 +841,22 @@
             titleEl.textContent = title || paneId;
             card.appendChild(titleEl);
 
+            // ペイン close ボタン（ホバーで表示）
+            const closeBtn = document.createElement('button');
+            closeBtn.className = 'pane-card-close';
+            closeBtn.type = 'button';
+            closeBtn.textContent = '\u00d7';
+            closeBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                for (const tab of tabState.tabs.values()) {
+                    if (tab.panes.has(paneId)) {
+                        removePaneFromTab(tab, paneId);
+                        break;
+                    }
+                }
+            });
+            card.appendChild(closeBtn);
+
             const body = document.createElement('div');
             body.className = 'pane-card-body';
             card.appendChild(body);
@@ -915,7 +952,9 @@
         function buildDomFromTree(tab, node) {
             if (!node) return null;
             if (node.type === 'leaf') {
-                return tab.panes.get(node.paneId) || null;
+                const el = tab.panes.get(node.paneId) || null;
+                // display:none のペインはツリー構築から除外（toggle_pane 対応）
+                return (el && el.style.display !== 'none') ? el : null;
             }
 
             const container = document.createElement('div');
@@ -942,6 +981,12 @@
             } else if (secondEl) {
                 secondEl.style.flex = '1';
                 container.appendChild(secondEl);
+            } else if (firstEl) {
+                // firstEl のみ → 全幅に（toggle_pane で片側非表示時）
+                firstEl.style.flex = '1';
+            } else {
+                // 両側とも非表示 → コンテナごと省略
+                return null;
             }
 
             return container;
@@ -966,7 +1011,7 @@
 
             // ツリーに含まれないペインを直接 append（Phase 1 互換）
             for (const [paneId, card] of tab.panes) {
-                if (!treeIds.has(paneId)) {
+                if (!treeIds.has(paneId) && card.style.display !== 'none') {
                     tab.container.appendChild(card);
                 }
             }
@@ -1659,6 +1704,37 @@
                         }
                     })();
                     break;
+
+                // ペイン表示/非表示トグル
+                case 'toggle_pane': {
+                    const paneId = msg.pane_id;
+                    if (!paneId) break;
+
+                    let targetTab = null;
+                    if (msg.tab_id) {
+                        targetTab = tabState.tabs.get(msg.tab_id);
+                    } else {
+                        // 後方互換: 全タブから検索
+                        for (const tab of tabState.tabs.values()) {
+                            if (tab.panes.has(paneId)) { targetTab = tab; break; }
+                        }
+                    }
+
+                    if (!targetTab) break;
+                    const card = targetTab.panes.get(paneId);
+                    if (!card) break;
+
+                    const shouldShow = msg.visible === undefined || msg.visible === null
+                        ? card.style.display === 'none'
+                        : msg.visible;
+                    card.style.display = shouldShow ? '' : 'none';
+
+                    // スプリットレイアウト内の場合は DOM を再構築してハンドルを整合させる
+                    if (targetTab.root && isInTree(targetTab.root, paneId)) {
+                        renderTabLayout(targetTab);
+                    }
+                    break;
+                }
 
                 // トレースログ → ログビュワーに追加
                 case 'trace_log':
