@@ -760,7 +760,7 @@
                 tab.root = removePaneFromTree(tab.root, paneId);
             }
 
-            card.remove();
+            // renderTabLayout が container を再構築するため card.remove() は不要
             renderTabLayout(tab);
 
             if (tab.id === tabState.activeTab && tab.panes.size === 0) {
@@ -903,19 +903,12 @@
             if (node.type === 'leaf') {
                 return node.paneId === targetPaneId ? null : node;
             }
-            // split ノード: 直接の子が対象なら兄弟を昇格
-            if (node.first.type === 'leaf' && node.first.paneId === targetPaneId) {
-                return node.second;
-            }
-            if (node.second.type === 'leaf' && node.second.paneId === targetPaneId) {
-                return node.first;
-            }
-            // 再帰
-            return {
-                ...node,
-                first: removePaneFromTree(node.first, targetPaneId),
-                second: removePaneFromTree(node.second, targetPaneId),
-            };
+            // 再帰的に削除し、片方が null なら残った側を昇格
+            const newFirst = removePaneFromTree(node.first, targetPaneId);
+            const newSecond = removePaneFromTree(node.second, targetPaneId);
+            if (newFirst === null) return newSecond;
+            if (newSecond === null) return newFirst;
+            return { ...node, first: newFirst, second: newSecond };
         }
 
         /** PaneNode ツリーから DOM を構築 */
@@ -936,19 +929,19 @@
                 container.appendChild(firstEl);
             }
 
-            // スプリットハンドル
-            const handle = document.createElement('div');
-            handle.className = 'split-handle';
-            container.appendChild(handle);
+            // 両側が揃っている場合のみハンドルを挿入
+            if (firstEl && secondEl) {
+                const handle = document.createElement('div');
+                handle.className = 'split-handle';
+                container.appendChild(handle);
 
-            if (secondEl) {
                 secondEl.style.flex = `${1 - node.ratio}`;
                 container.appendChild(secondEl);
-            }
 
-            // ハンドルのドラッグリサイズを初期化
-            if (firstEl && secondEl) {
                 initSplitHandleDrag(handle, container, node.direction, firstEl, secondEl, node);
+            } else if (secondEl) {
+                secondEl.style.flex = '1';
+                container.appendChild(secondEl);
             }
 
             return container;
@@ -1504,8 +1497,13 @@
                     }
 
                     const sourcePaneId = msg.pane_id;
-                    const direction = msg.direction;      // 'horizontal' | 'vertical'
+                    const direction = msg.direction;
                     const newPaneId = msg.new_pane_id;
+
+                    if (!sourcePaneId || !newPaneId || !['horizontal', 'vertical'].includes(direction)) {
+                        console.warn('split: 必須フィールドが不正です', msg);
+                        break;
+                    }
 
                     // ソースペインがまだなければ作成
                     if (!tab.panes.has(sourcePaneId)) {
