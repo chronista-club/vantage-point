@@ -12,6 +12,7 @@ use tokio_util::sync::CancellationToken;
 use super::capabilities::StandCapabilities;
 use super::hub::Hub;
 use super::pty::PtyManager;
+use super::ruby_vm::RubyRegistry;
 use super::session::SessionManager;
 use crate::agent::InteractiveClaudeAgent;
 use crate::agui::AgUiEvent;
@@ -117,6 +118,8 @@ pub(crate) struct AppState {
     /// ファイル監視マネージャー
     pub file_watchers: Arc<tokio::sync::Mutex<FileWatcherManager>>,
     /// スクリーンショット応答待ち: request_id → oneshot sender
+    /// Ruby VM プロセスレジストリ
+    pub ruby_registry: Arc<tokio::sync::Mutex<RubyRegistry>>,
     pub screenshot_waiters:
         Arc<tokio::sync::Mutex<HashMap<String, tokio::sync::oneshot::Sender<ScreenshotData>>>>,
 }

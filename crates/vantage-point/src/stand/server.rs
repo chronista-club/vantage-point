@@ -83,6 +83,9 @@ pub async fn run(
         canvas_pid: Arc::new(tokio::sync::Mutex::new(None)),
         port,
         file_watchers: Arc::new(tokio::sync::Mutex::new(FileWatcherManager::new())),
+        ruby_registry: Arc::new(tokio::sync::Mutex::new(
+            crate::stand::ruby_vm::RubyRegistry::new(),
+        )),
         screenshot_waiters: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
     });
 
@@ -99,6 +102,10 @@ pub async fn run(
         .route("/api/canvas/open", post(health::canvas_open_handler))
         .route("/api/canvas/close", post(health::canvas_close_handler))
         .route("/api/canvas/capture", post(health::canvas_capture_handler))
+        .route("/api/ruby/eval", post(health::ruby_eval_handler))
+        .route("/api/ruby/run", post(health::ruby_run_handler))
+        .route("/api/ruby/stop", post(health::ruby_stop_handler))
+        .route("/api/ruby/list", get(health::ruby_list_handler))
         .route("/api/health", get(health::health_handler))
         .route("/api/shutdown", post(health::shutdown_handler))
         .route(
@@ -283,6 +290,9 @@ pub async fn run_conductor(port: u16) -> Result<()> {
         canvas_pid: Arc::new(tokio::sync::Mutex::new(None)),
         port,
         file_watchers: Arc::new(tokio::sync::Mutex::new(FileWatcherManager::new())),
+        ruby_registry: Arc::new(tokio::sync::Mutex::new(
+            crate::stand::ruby_vm::RubyRegistry::new(),
+        )),
         screenshot_waiters: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
     });
 

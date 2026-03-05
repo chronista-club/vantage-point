@@ -2,6 +2,8 @@
 
 use std::sync::Arc;
 
+use serde::Deserialize;
+
 use axum::{
     Json,
     extract::State,
@@ -350,4 +352,116 @@ pub async fn shutdown_handler(State(state): State<Arc<AppState>>) -> impl IntoRe
     tracing::info!("Shutdown requested via API");
     state.shutdown_token.cancel();
     Json(serde_json::json!({"status": "shutting_down"}))
+}
+
+// ===== Ruby VM ハンドラー =====
+
+/// Ruby eval パラメータ
+#[derive(Deserialize)]
+pub struct RubyEvalParams {
+    pub code: Option<String>,
+    pub file: Option<String>,
+    pub pane_id: Option<String>,
+}
+
+/// POST /api/ruby/eval - Ruby コードを即座に実行
+pub async fn ruby_eval_handler(
+    State(state): State<Arc<AppState>>,
+    Json(params): Json<RubyEvalParams>,
+) -> impl IntoResponse {
+    let pane_id = params.pane_id.unwrap_or_else(|| "main".to_string());
+
+    let result = crate::stand::ruby_vm::ruby_eval(
+        params.code.as_deref(),
+        params.file.as_deref(),
+        &pane_id,
+        &state.project_dir,
+        &state.hub,
+    )
+    .await;
+
+    match result {
+        Ok(r) => Json(serde_json::json!({
+            "status": "ok",
+            "stdout": r.stdout,
+            "stderr": r.stderr,
+            "exit_code": r.exit_code,
+            "elapsed_ms": r.elapsed_ms,
+        })),
+        Err(e) => Json(serde_json::json!({
+            "status": "error",
+            "message": e,
+        })),
+    }
+}
+
+/// Ruby run パラメータ
+#[derive(Deserialize)]
+pub struct RubyRunParams {
+    pub code: Option<String>,
+    pub file: Option<String>,
+    pub name: Option<String>,
+    pub pane_id: Option<String>,
+}
+
+/// POST /api/ruby/run - Ruby デーモンプロセスを起動
+pub async fn ruby_run_handler(
+    State(state): State<Arc<AppState>>,
+    Json(params): Json<RubyRunParams>,
+) -> impl IntoResponse {
+    let pane_id = params.pane_id.unwrap_or_else(|| "main".to_string());
+
+    let result = crate::stand::ruby_vm::ruby_run(
+        &state.ruby_registry,
+        params.code.as_deref(),
+        params.file.as_deref(),
+        params.name.as_deref(),
+        &pane_id,
+        &state.project_dir,
+        &state.hub,
+    )
+    .await;
+
+    match result {
+        Ok(process_id) => Json(serde_json::json!({
+            "status": "ok",
+            "process_id": process_id,
+        })),
+        Err(e) => Json(serde_json::json!({
+            "status": "error",
+            "message": e,
+        })),
+    }
+}
+
+/// Ruby stop パラメータ
+#[derive(Deserialize)]
+pub struct RubyStopParams {
+    pub process_id: String,
+}
+
+/// POST /api/ruby/stop - Ruby プロセスを停止
+pub async fn ruby_stop_handler(
+    State(state): State<Arc<AppState>>,
+    Json(params): Json<RubyStopParams>,
+) -> impl IntoResponse {
+    match crate::stand::ruby_vm::ruby_stop(&state.ruby_registry, &params.process_id).await {
+        Ok(()) => Json(serde_json::json!({
+            "status": "ok",
+            "message": format!("プロセス {} に停止シグナルを送信しました", params.process_id),
+        })),
+        Err(e) => Json(serde_json::json!({
+            "status": "error",
+            "message": e,
+        })),
+    }
+}
+
+/// GET /api/ruby/list - 実行中の Ruby プロセス一覧
+pub async fn ruby_list_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let processes = state.ruby_registry.lock().await.list();
+    Json(serde_json::json!({
+        "status": "ok",
+        "processes": processes,
+    }))
 }

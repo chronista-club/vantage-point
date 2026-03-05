@@ -148,6 +148,58 @@ pub struct UnwatchFileParams {
     pub pane_id: String,
 }
 
+/// Parameters for the eval_ruby tool
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct EvalRubyParams {
+    /// Ruby code to execute
+    #[schemars(description = "Ruby code to execute (mutually exclusive with 'file')")]
+    pub code: Option<String>,
+
+    /// Ruby file path to execute (relative to project dir)
+    #[schemars(
+        description = "Ruby file path to execute, relative to project directory (mutually exclusive with 'code')"
+    )]
+    pub file: Option<String>,
+
+    /// Pane ID to display results in
+    #[schemars(description = "Pane ID to display results in (default: 'main')")]
+    pub pane_id: Option<String>,
+}
+
+/// Parameters for the run_ruby tool
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct RunRubyParams {
+    /// Ruby code to run as daemon
+    #[schemars(
+        description = "Ruby code to run as a long-running daemon process (mutually exclusive with 'file')"
+    )]
+    pub code: Option<String>,
+
+    /// Ruby file path to run as daemon (relative to project dir)
+    #[schemars(
+        description = "Ruby file path to run as daemon, relative to project directory (mutually exclusive with 'code')"
+    )]
+    pub file: Option<String>,
+
+    /// Process display name
+    #[schemars(description = "Display name for the process (default: filename or 'daemon')")]
+    pub name: Option<String>,
+
+    /// Pane ID to stream output to
+    #[schemars(description = "Pane ID to stream output to (default: 'main')")]
+    pub pane_id: Option<String>,
+}
+
+/// Parameters for the stop_ruby tool
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct StopRubyParams {
+    /// Process ID to stop
+    #[schemars(
+        description = "Ruby process ID to stop (e.g. 'rb-0001'). Use list_ruby to see running processes."
+    )]
+    pub process_id: String,
+}
+
 /// Parameters for the capture_canvas tool
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct CaptureCanvasParams {
@@ -768,6 +820,146 @@ impl VantageMcp {
                 "Screenshot saved: {}\nSize: {}x{} ({} bytes)\nUse the Read tool to view this image.",
                 saved_path, width, height, size_bytes
             ),
+        )]))
+    }
+
+    /// Execute Ruby code and display results in a pane
+    #[tool(
+        description = "Execute Ruby code or a Ruby file and display the results in a Canvas pane. For short-lived execution (scripts, data processing). Use run_ruby for long-running daemon processes."
+    )]
+    async fn eval_ruby(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<EvalRubyParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let pane_id = params.pane_id.unwrap_or_else(|| "main".to_string());
+
+        let body = serde_json::json!({
+            "code": params.code,
+            "file": params.file,
+            "pane_id": pane_id,
+        });
+
+        let resp = self.http_post("/api/ruby/eval", &body).await?;
+
+        let stdout = resp.get("stdout").and_then(|v| v.as_str()).unwrap_or("");
+        let stderr = resp.get("stderr").and_then(|v| v.as_str()).unwrap_or("");
+        let exit_code = resp.get("exit_code").and_then(|v| v.as_i64());
+        let elapsed = resp.get("elapsed_ms").and_then(|v| v.as_u64()).unwrap_or(0);
+
+        let mut result = format!("Ruby eval completed in {}ms", elapsed);
+        if let Some(code) = exit_code {
+            if code != 0 {
+                result.push_str(&format!(" (exit code: {})", code));
+            }
+        }
+        if !stdout.is_empty() {
+            result.push_str(&format!("\n\nstdout:\n{}", stdout));
+        }
+        if !stderr.is_empty() {
+            result.push_str(&format!("\n\nstderr:\n{}", stderr));
+        }
+
+        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+            result,
+        )]))
+    }
+
+    /// Run Ruby code as a long-running daemon process
+    #[tool(
+        description = "Run Ruby code or a Ruby file as a long-running daemon process. Output is streamed to a Canvas pane in real-time. Use stop_ruby to gracefully stop the process. Use list_ruby to see running processes."
+    )]
+    async fn run_ruby(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<RunRubyParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let pane_id = params.pane_id.unwrap_or_else(|| "main".to_string());
+
+        let body = serde_json::json!({
+            "code": params.code,
+            "file": params.file,
+            "name": params.name,
+            "pane_id": pane_id,
+        });
+
+        let resp = self.http_post("/api/ruby/run", &body).await?;
+
+        let process_id = resp
+            .get("process_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+
+        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+            format!(
+                "Ruby daemon started: {} (streaming to pane '{}'). Use stop_ruby with process_id='{}' to stop.",
+                process_id, pane_id, process_id
+            ),
+        )]))
+    }
+
+    /// Stop a running Ruby daemon process
+    #[tool(
+        description = "Gracefully stop a running Ruby daemon process. Sends a shutdown signal and waits for the process to exit."
+    )]
+    async fn stop_ruby(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<StopRubyParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let body = serde_json::json!({
+            "process_id": params.process_id,
+        });
+
+        self.http_post("/api/ruby/stop", &body).await?;
+
+        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+            format!("Ruby process '{}' stop signal sent", params.process_id),
+        )]))
+    }
+
+    /// List running Ruby daemon processes
+    #[tool(
+        description = "List all running Ruby daemon processes with their IDs, names, pane IDs, and status."
+    )]
+    async fn list_ruby(&self) -> Result<CallToolResult, McpError> {
+        let url = format!("{}/api/ruby/list", self.stand_url.lock().await);
+        let resp = self
+            .client
+            .get(&url)
+            .timeout(Duration::from_secs(10))
+            .send()
+            .await
+            .map_err(|e| {
+                McpError::internal_error(format!("Ruby list 通信失敗: {}. Is vp running?", e), None)
+            })?;
+
+        let json: serde_json::Value = resp.json().await.map_err(|e| {
+            McpError::internal_error(format!("Ruby list レスポンスパース失敗: {}", e), None)
+        })?;
+
+        let processes = json.get("processes").and_then(|v| v.as_array());
+        let result = match processes {
+            Some(procs) if procs.is_empty() => "No running Ruby processes.".to_string(),
+            Some(procs) => {
+                let mut lines = vec!["Running Ruby processes:".to_string()];
+                for p in procs {
+                    let id = p.get("process_id").and_then(|v| v.as_str()).unwrap_or("?");
+                    let name = p.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                    let pane = p.get("pane_id").and_then(|v| v.as_str()).unwrap_or("?");
+                    let status = p
+                        .get("status")
+                        .map(|v| format!("{}", v))
+                        .unwrap_or_else(|| "?".to_string());
+                    lines.push(format!(
+                        "  {} - {} (pane: {}, status: {})",
+                        id, name, pane, status
+                    ));
+                }
+                lines.join("\n")
+            }
+            None => "No running Ruby processes.".to_string(),
+        };
+
+        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+            result,
         )]))
     }
 
