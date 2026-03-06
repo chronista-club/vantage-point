@@ -190,9 +190,6 @@ pub fn execute(opts: StartOptions) -> Result<()> {
         }
 
         let project_name = resolve::project_name_from_path(&resolved_project_dir, config);
-        if let Err(e) = crate::canvas::run_canvas_detached(resolved_port, &project_name) {
-            tracing::warn!("Canvas 自動起動失敗: {}", e);
-        }
 
         let result = crate::terminal_window::run_terminal_unison(resolved_port, &project_name);
 
@@ -215,12 +212,7 @@ pub fn execute(opts: StartOptions) -> Result<()> {
             return Err(e);
         }
 
-        // Canvas 自動起動
-        if let Err(e) = crate::canvas::run_canvas_detached(resolved_port, &project_name) {
-            tracing::warn!("Canvas 自動起動失敗: {}", e);
-        }
-
-        // TUI 起動
+        // TUI 起動（Canvas は Ctrl+O で随時 toggle）
         crate::tui::run_tui(&resolved_project_dir, &project_name)
     }
 }
@@ -231,20 +223,14 @@ pub fn execute(opts: StartOptions) -> Result<()> {
 /// 見つからなければ自プロセスを `vp start --headless` で再起動してデタッチ。
 pub fn ensure_process_running(
     port: u16,
-    project_dir: &str,
+    _project_dir: &str,
     debug_mode: DebugMode,
     cap_config: CapabilityConfig,
 ) -> Result<()> {
-    // running.json で既に起動済みか確認
-    if let Some(running) = RunningProcesses::find_by_project(project_dir) {
-        if running.port == port {
-            tracing::info!(
-                "Process already running (port={}, pid={})",
-                port,
-                running.pid
-            );
-            return Ok(());
-        }
+    // HTTP サーバーが実際に応答するか確認（PID だけでは TUI プロセスと区別できない）
+    if is_server_responding(port) {
+        tracing::info!("Process already running and responding (port={})", port);
+        return Ok(());
     }
 
     // headless で Process を起動（in-process スレッド）
@@ -289,4 +275,13 @@ pub fn wait_for_process_ready(port: u16) -> Result<()> {
     tracing::warn!("Process readiness check timed out, proceeding anyway");
     let _ = url;
     Ok(())
+}
+
+/// Process サーバーが実際に HTTP 応答するかチェック（TCP 接続のみ）
+fn is_server_responding(port: u16) -> bool {
+    std::net::TcpStream::connect_timeout(
+        &format!("127.0.0.1:{}", port).parse().unwrap(),
+        std::time::Duration::from_millis(200),
+    )
+    .is_ok()
 }

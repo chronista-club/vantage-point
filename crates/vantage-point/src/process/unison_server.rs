@@ -103,6 +103,7 @@ fn handle_show(state: &AppState, payload: serde_json::Value) -> Result<serde_jso
         append: req.append,
         title: req.title,
     };
+    state.cache_pane_message(&msg);
     state.hub.broadcast(msg);
 
     Ok(serde_json::json!({"status": "ok", "pane_id": req.pane_id}))
@@ -116,6 +117,7 @@ fn handle_clear(state: &AppState, payload: serde_json::Value) -> Result<serde_js
     let msg = ProcessMessage::Clear {
         pane_id: req.pane_id.clone(),
     };
+    state.cache_pane_message(&msg);
     state.hub.broadcast(msg);
 
     Ok(serde_json::json!({"status": "ok", "pane_id": req.pane_id}))

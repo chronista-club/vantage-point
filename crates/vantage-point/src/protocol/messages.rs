@@ -33,6 +33,21 @@ pub enum Content {
     Url(String),
 }
 
+impl Content {
+    /// 既存コンテンツに新しいコンテンツを追記
+    pub fn append_with(&self, other: &Content) -> Content {
+        match (self, other) {
+            (Content::Log(a), Content::Log(b)) => Content::Log(format!("{}{}", a, b)),
+            (Content::Html(a), Content::Html(b)) => Content::Html(format!("{}{}", a, b)),
+            (Content::Markdown(a), Content::Markdown(b)) => {
+                Content::Markdown(format!("{}{}", a, b))
+            }
+            // 型が異なる場合は新しいコンテンツで上書き
+            (_, other) => other.clone(),
+        }
+    }
+}
+
 /// Stored chat message for history
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HistoryMessage {

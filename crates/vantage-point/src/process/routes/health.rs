@@ -59,6 +59,8 @@ pub async fn show_handler(
     State(state): State<Arc<AppState>>,
     Json(msg): Json<ProcessMessage>,
 ) -> impl IntoResponse {
+    // ペインコンテンツをキャッシュ（Canvas 再接続時の状態復元用）
+    state.cache_pane_message(&msg);
     state.hub.broadcast(msg);
     Json(serde_json::json!({"status": "ok"}))
 }

@@ -87,6 +87,7 @@ pub async fn run(
             crate::process::ruby_vm::RubyRegistry::new(),
         )),
         screenshot_waiters: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+        pane_contents: Arc::new(std::sync::Mutex::new(HashMap::new())),
     });
 
     let app = Router::new()
@@ -295,6 +296,7 @@ pub async fn run_conductor(port: u16) -> Result<()> {
             crate::process::ruby_vm::RubyRegistry::new(),
         )),
         screenshot_waiters: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+        pane_contents: Arc::new(std::sync::Mutex::new(HashMap::new())),
     });
 
     let app = Router::new()

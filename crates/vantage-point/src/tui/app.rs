@@ -85,7 +85,16 @@ fn run_tui_inner(resolved: Option<(String, String)>) -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     let result = if let Some((dir, name)) = resolved {
-        run_claude_session(&mut terminal, &dir, &name)
+        // ポート解決: running.json から取得、なければ config index ベース
+        let config = Config::load()?;
+        let port = if let Some(running) = crate::config::RunningProcesses::find_by_project(&dir) {
+            running.port
+        } else if let Some(idx) = config.find_project_index(&dir) {
+            crate::resolve::port_for_configured(idx, &config)?
+        } else {
+            33000 // フォールバック
+        };
+        run_claude_session(&mut terminal, &dir, &name, port)
     } else {
         run_project_select(&mut terminal)
     };
@@ -139,8 +148,12 @@ fn run_project_select(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> 
                             // Process サーバー + Canvas 起動
                             start_background_services(&dir, &config, idx, &name).ok();
 
+                            // ポート取得
+                            let port = crate::resolve::port_for_configured(idx, &config)
+                                .unwrap_or(33000 + idx as u16);
+
                             // Claude セッション開始
-                            return run_claude_session(terminal, &dir, &name);
+                            return run_claude_session(terminal, &dir, &name, port);
                         }
                     }
                     // カーソル移動
@@ -248,12 +261,12 @@ fn draw_project_select(
     );
 }
 
-/// バックグラウンドサービス起動（Process サーバー + Canvas）
+/// バックグラウンドサービス起動（Process サーバーのみ、Canvas は Ctrl+O でオンデマンド起動）
 fn start_background_services(
     project_dir: &str,
     config: &Config,
     project_index: usize,
-    project_name: &str,
+    _project_name: &str,
 ) -> Result<()> {
     let port = crate::resolve::port_for_configured(project_index, config)?;
 
@@ -276,10 +289,6 @@ fn start_background_services(
         cap_config,
     )?;
 
-    if let Err(e) = crate::canvas::run_canvas_detached(port, project_name) {
-        tracing::warn!("Canvas 自動起動失敗: {}", e);
-    }
-
     Ok(())
 }
 
@@ -287,16 +296,47 @@ fn start_background_services(
 // Claude CLI セッション
 // =============================================================================
 
+/// Canvas の表示/非表示をトグル（HTTP API 経由）
+fn toggle_canvas(port: u16, canvas_open: &mut bool) {
+    let action = if *canvas_open { "close" } else { "open" };
+    let url = format!("/api/canvas/{}", action);
+    let addr = format!("localhost:{}", port);
+
+    // ブロッキング HTTP POST（別スレッドで実行して TUI をブロックしない）
+    let result = std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        use std::net::TcpStream;
+        let request = format!(
+            "POST {} HTTP/1.1\r\nHost: {}\r\nContent-Length: 2\r\nContent-Type: application/json\r\n\r\n{{}}",
+            url, addr
+        );
+        if let Ok(mut stream) = TcpStream::connect(&addr) {
+            let _ = stream.write_all(request.as_bytes());
+            let mut buf = [0u8; 512];
+            let _ = stream.read(&mut buf);
+            true
+        } else {
+            false
+        }
+    })
+    .join();
+
+    if let Ok(true) = result {
+        *canvas_open = !*canvas_open;
+    }
+}
+
 /// Claude CLI PTY セッション
 fn run_claude_session(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     project_dir: &str,
     project_name: &str,
+    port: u16,
 ) -> Result<()> {
     let size = terminal.size()?;
-    // 枠線（左右各1セル）+ ステータスバー（1行）+ 枠線（上下各1セル）
+    // 枠線（左右各1セル）+ ヘッダ（1行）+ フッター（1行）+ 枠線（上下各1セル）
     let pty_cols = (size.width.saturating_sub(2) as usize).max(1);
-    let pty_lines = (size.height.saturating_sub(3) as usize).max(1);
+    let pty_lines = (size.height.saturating_sub(4) as usize).max(1);
 
     // VT パーサー
     let term_state = Arc::new(Mutex::new(TerminalState::new(pty_cols, pty_lines)));
@@ -344,6 +384,9 @@ fn run_claude_session(
 
     let mut writer = pair.master.take_writer()?;
 
+    // Canvas 状態トラッキング（Ctrl+O でオンデマンド起動）
+    let mut canvas_open = false;
+
     // メインループ
     loop {
         if let Ok(Some(_status)) = child.try_wait() {
@@ -361,17 +404,18 @@ fn run_claude_session(
                 let chunks = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints([
+                        Constraint::Length(1), // ヘッダバー
                         Constraint::Min(1),    // ターミナル pane
-                        Constraint::Length(1), // ステータスバー
+                        Constraint::Length(1), // フッターバー
                     ])
                     .split(frame.area());
 
-                // Pane 枠線 + タイトル
-                let focus_icon = "\u{1F7E2}"; // 🟢
-                let pane_title = format!(" {} Claude CLI ", focus_icon);
+                // ヘッダバー
+                draw_header_bar(frame, chunks[0], project_name, port, canvas_open);
 
+                // Pane 枠線 + タイトル
                 let mut block = Block::default()
-                    .title(pane_title)
+                    .title(" Claude CLI ")
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(NORD_CYAN));
 
@@ -383,8 +427,8 @@ fn run_claude_session(
                     );
                 }
 
-                let inner = block.inner(chunks[0]);
-                frame.render_widget(block, chunks[0]);
+                let inner = block.inner(chunks[1]);
+                frame.render_widget(block, chunks[1]);
                 frame.render_widget(TerminalView::new(&snapshot), inner);
 
                 // ハードウェアカーソルを PTY のカーソル位置に配置
@@ -395,7 +439,7 @@ fn run_claude_session(
                     frame.set_cursor_position(ratatui::layout::Position::new(cx, cy));
                 }
 
-                draw_status_bar(frame, chunks[1], project_name);
+                draw_footer_bar(frame, chunks[2]);
             })?;
         }
 
@@ -413,6 +457,14 @@ fn run_claude_session(
                         && key.modifiers.contains(KeyModifiers::CONTROL)
                     {
                         break;
+                    }
+
+                    // Ctrl+O: Canvas 表示/非表示トグル
+                    if key.code == KeyCode::Char('o')
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                    {
+                        toggle_canvas(port, &mut canvas_open);
+                        continue;
                     }
 
                     // PageUp/PageDown: TUI スクロールバック
@@ -453,9 +505,9 @@ fn run_claude_session(
                     _ => {}
                 },
                 Event::Resize(cols, rows) => {
-                    // 枠線 + ステータスバー分を引く
+                    // 枠線 + ヘッダ + フッター分を引く
                     let new_cols = (cols.saturating_sub(2) as usize).max(1);
-                    let new_lines = (rows.saturating_sub(3) as usize).max(1);
+                    let new_lines = (rows.saturating_sub(4) as usize).max(1);
                     let mut state = term_state.lock().unwrap();
                     state.resize(new_cols, new_lines);
                     pair.master
@@ -481,26 +533,59 @@ fn run_claude_session(
     Ok(())
 }
 
-/// ステータスバー描画
-fn draw_status_bar(frame: &mut ratatui::Frame, area: Rect, project_name: &str) {
-    let status = Line::from(vec![
+/// ヘッダバー描画
+fn draw_header_bar(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    project_name: &str,
+    port: u16,
+    canvas_open: bool,
+) {
+    let canvas_indicator = if canvas_open {
+        Span::styled(" Canvas:ON ", Style::default().fg(NORD_GREEN).bg(NORD_POLAR))
+    } else {
         Span::styled(
-            format!(" {} ", project_name),
+            " Canvas:OFF ",
+            Style::default().fg(NORD_COMMENT).bg(NORD_POLAR),
+        )
+    };
+
+    let header = Line::from(vec![
+        Span::styled(
+            " VP ",
             Style::default()
                 .fg(NORD_BG)
                 .bg(NORD_CYAN)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" Claude CLI ", Style::default().fg(NORD_FG).bg(NORD_POLAR)),
         Span::styled(
-            " --continue ",
-            Style::default().fg(NORD_GREEN).bg(NORD_POLAR),
+            format!(" {} ", project_name),
+            Style::default()
+                .fg(NORD_FG)
+                .bg(NORD_POLAR)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            " Ctrl+Q: quit ",
+            format!(" :{} ", port),
             Style::default().fg(NORD_COMMENT).bg(NORD_POLAR),
         ),
+        Span::styled("│", Style::default().fg(NORD_COMMENT).bg(NORD_POLAR)),
+        canvas_indicator,
     ]);
-    let bar = Paragraph::new(status).style(Style::default().bg(NORD_POLAR));
+    let bar = Paragraph::new(header).style(Style::default().bg(NORD_POLAR));
+    frame.render_widget(bar, area);
+}
+
+/// フッターバー描画（ショートカットのみ）
+fn draw_footer_bar(frame: &mut ratatui::Frame, area: Rect) {
+    let footer = Line::from(vec![
+        Span::styled(" C-o", Style::default().fg(NORD_CYAN).bg(NORD_POLAR)),
+        Span::styled(" canvas ", Style::default().fg(NORD_COMMENT).bg(NORD_POLAR)),
+        Span::styled(" C-q", Style::default().fg(NORD_CYAN).bg(NORD_POLAR)),
+        Span::styled(" quit ", Style::default().fg(NORD_COMMENT).bg(NORD_POLAR)),
+        Span::styled(" PgUp/Dn", Style::default().fg(NORD_CYAN).bg(NORD_POLAR)),
+        Span::styled(" scroll ", Style::default().fg(NORD_COMMENT).bg(NORD_POLAR)),
+    ]);
+    let bar = Paragraph::new(footer).style(Style::default().bg(NORD_POLAR));
     frame.render_widget(bar, area);
 }

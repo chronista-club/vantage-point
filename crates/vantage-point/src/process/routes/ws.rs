@@ -96,6 +96,11 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                                     active_id: mgr.active_id.clone(),
                                 });
 
+                                // キャッシュ済みペインコンテンツを再送（Canvas 状態復元）
+                                for msg in state_clone.get_pane_snapshot() {
+                                    hub.broadcast(msg);
+                                }
+
                                 // PTY起動はTerminalResizeメッセージ受信時に遅延
                                 // ブラウザが正しいターミナルサイズを送信してから起動することで
                                 // 初期出力のサイズ不整合を防ぐ
