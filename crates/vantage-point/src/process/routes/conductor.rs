@@ -74,7 +74,7 @@ pub async fn conductor_start_process(
     };
 
     let conductor = conductor.read().await;
-    match conductor.start_stand(&project_name).await {
+    match conductor.start_process(&project_name).await {
         Ok(process) => (
             axum::http::StatusCode::OK,
             Json(serde_json::to_value(&process).unwrap_or_default()),

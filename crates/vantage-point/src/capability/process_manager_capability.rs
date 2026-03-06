@@ -1,12 +1,12 @@
-//\! Process Manager Capability - Process プロセス管理
+//! Process Manager Capability - Process プロセス管理
 //!
-//! 複数のProject Standを管理するCapability。
+//! 複数のProject Processを管理するCapability。
 //! メニューバーアプリ（Swift）からREST API経由で操作される。
 //!
 //! ## 役割
 //!
-//! - Project Standのライフサイクル管理（起動・停止・監視）
-//! - Bonjour経由でのStand発見
+//! - Project Processのライフサイクル管理（起動・停止・監視）
+//! - Bonjour経由でのProcess発見
 //! - REST API提供
 //!
 //! ## 使用例
@@ -18,8 +18,8 @@
 //! // プロジェクト一覧取得
 //! let projects = conductor.list_projects().await;
 //!
-//! // Stand起動
-//! conductor.start_stand("my-project").await?;
+//! // Process起動
+//! conductor.start_process("my-project").await?;
 //! ```
 
 use crate::capability::core::{Capability, CapabilityContext, CapabilityError, CapabilityResult};
@@ -41,11 +41,11 @@ pub struct ProjectInfo {
     pub name: String,
     /// プロジェクトパス
     pub path: PathBuf,
-    /// Stand状態
+    /// Process状態
     pub process_status: ProcessStatus,
 }
 
-/// Stand状態
+/// Process状態
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProcessStatus {
@@ -61,7 +61,7 @@ pub enum ProcessStatus {
     Error,
 }
 
-/// 稼働中Stand情報
+/// 稼働中Process情報
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunningProcess {
     /// プロジェクト名
@@ -82,7 +82,7 @@ pub struct ProcessManagerCapability {
     state: CapabilityState,
     /// 登録プロジェクト一覧
     projects: Arc<RwLock<HashMap<String, ProjectInfo>>>,
-    /// 稼働中Stand一覧
+    /// 稼働中Process一覧
     running_processes: Arc<RwLock<HashMap<String, RunningProcess>>>,
     /// 設定
     config: Option<Config>,
@@ -162,14 +162,14 @@ impl ProcessManagerCapability {
         projects.values().cloned().collect()
     }
 
-    /// 稼働中Stand一覧を取得
+    /// 稼働中Process一覧を取得
     pub async fn list_running_processes(&self) -> Vec<RunningProcess> {
-        let stands = self.running_processes.read().await;
-        stands.values().cloned().collect()
+        let procs = self.running_processes.read().await;
+        procs.values().cloned().collect()
     }
 
-    /// Standを起動
-    pub async fn start_stand(&self, project_name: &str) -> CapabilityResult<RunningProcess> {
+    /// Processを起動
+    pub async fn start_process(&self, project_name: &str) -> CapabilityResult<RunningProcess> {
         let vp_path = self.vp_binary_path.clone().ok_or_else(|| {
             CapabilityError::InitializationFailed("vp binary not found".to_string())
         })?;
@@ -186,8 +186,8 @@ impl ProcessManagerCapability {
 
         // 既に起動中かチェック
         {
-            let stands = self.running_processes.read().await;
-            if stands.contains_key(project_name) {
+            let procs = self.running_processes.read().await;
+            if procs.contains_key(project_name) {
                 return Err(CapabilityError::Other(format!(
                     "Process already running for project: {}",
                     project_name
@@ -223,7 +223,7 @@ impl ProcessManagerCapability {
             CapabilityError::Other("Failed to find Process port after startup".to_string())
         })?;
 
-        let running_stand = RunningProcess {
+        let running_process = RunningProcess {
             project_name: project_name.to_string(),
             port,
             pid,
@@ -240,8 +240,8 @@ impl ProcessManagerCapability {
         }
 
         {
-            let mut stands = self.running_processes.write().await;
-            stands.insert(project_name.to_string(), running_stand.clone());
+            let mut procs = self.running_processes.write().await;
+            procs.insert(project_name.to_string(), running_process.clone());
         }
 
         tracing::info!(
@@ -251,14 +251,14 @@ impl ProcessManagerCapability {
             "Process started"
         );
 
-        Ok(running_stand)
+        Ok(running_process)
     }
 
-    /// Standを停止
+    /// Processを停止
     pub async fn stop_process(&self, project_name: &str) -> CapabilityResult<()> {
         let running = {
-            let stands = self.running_processes.read().await;
-            stands.get(project_name).cloned()
+            let procs = self.running_processes.read().await;
+            procs.get(project_name).cloned()
         };
 
         let running = running.ok_or_else(|| {
@@ -285,8 +285,8 @@ impl ProcessManagerCapability {
 
         // 稼働中リストから削除
         {
-            let mut stands = self.running_processes.write().await;
-            stands.remove(project_name);
+            let mut procs = self.running_processes.write().await;
+            procs.remove(project_name);
         }
 
         // 状態を更新
@@ -304,15 +304,15 @@ impl ProcessManagerCapability {
 
     /// PointViewを開く
     pub async fn open_pointview(&self, project_name: &str) -> CapabilityResult<()> {
-        // Standが起動していなければ起動
+        // Processが起動していなければ起動
         let running = {
-            let stands = self.running_processes.read().await;
-            stands.get(project_name).cloned()
+            let procs = self.running_processes.read().await;
+            procs.get(project_name).cloned()
         };
 
         let running = match running {
             Some(s) => s,
-            None => self.start_stand(project_name).await?,
+            None => self.start_process(project_name).await?,
         };
 
         // POST /api/pointview を送信（将来的にはWebSocketで）
@@ -329,7 +329,7 @@ impl ProcessManagerCapability {
         Ok(())
     }
 
-    /// ポートスキャンでStandを見つける
+    /// ポートスキャンでProcessを見つける
     async fn find_process_port(&self, project_path: &PathBuf) -> Option<u16> {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_millis(500))
@@ -351,7 +351,7 @@ impl ProcessManagerCapability {
         None
     }
 
-    /// 全Standの状態を更新（ヘルスチェック）
+    /// 全Processの状態を更新（ヘルスチェック）
     pub async fn refresh_process_status(&self) -> CapabilityResult<()> {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_millis(500))
@@ -397,8 +397,8 @@ impl ProcessManagerCapability {
 
         // 稼働中リストを更新
         {
-            let mut stands = self.running_processes.write().await;
-            *stands = discovered.clone();
+            let mut procs = self.running_processes.write().await;
+            *procs = discovered.clone();
         }
 
         // プロジェクト状態を更新
@@ -429,7 +429,7 @@ impl Capability for ProcessManagerCapability {
         CapabilityInfo::new(
             "conductor-capability",
             env!("CARGO_PKG_VERSION"),
-            "Process Conductor - 複数のProject Standを指揮・管理",
+            "Process Conductor - 複数のProject Processを指揮・管理",
         )
     }
 
@@ -488,7 +488,7 @@ impl Capability for ProcessManagerCapability {
     ) -> CapabilityResult<()> {
         // Bonjour発見イベントを処理
         if event.event_type == "bonjour.advertised" {
-            // 新しいStandが発見されたら状態を更新
+            // 新しいProcessが発見されたら状態を更新
             let _ = self.refresh_process_status().await;
         }
 

@@ -1,6 +1,6 @@
 //! HTTP server with WebSocket support
 //!
-//\! Process サーバーのエントリーポイント。`run()` と `run_conductor()` でサーバーを起動する。
+//! Process サーバーのエントリーポイント。`run()` と `run_conductor()` でサーバーを起動する。
 //! ルートハンドラーは `routes/` モジュールに分離されている。
 
 use std::collections::HashMap;
@@ -234,7 +234,7 @@ pub async fn run(
     Ok(())
 }
 
-/// Conductorモードでスタンドサーバーを起動
+/// ConductorモードでProcessサーバーを起動
 /// 複数のProject Processを管理するための専用モード
 pub async fn run_conductor(port: u16) -> Result<()> {
     use crate::capability::core::{Capability, CapabilityContext};

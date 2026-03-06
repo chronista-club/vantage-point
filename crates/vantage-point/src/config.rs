@@ -153,7 +153,7 @@ impl Config {
 }
 
 // =============================================================================
-// Running Stands Management
+// Running Processes Management
 // =============================================================================
 
 /// プロセスが生存しているか確認（kill -0）
@@ -185,7 +185,7 @@ pub struct RunningProcesses {
 }
 
 impl RunningProcesses {
-    /// Load running stands from file
+    /// Load running processes from file
     pub fn load() -> Result<Self> {
         let path = Self::file_path();
         if !path.exists() {
@@ -193,11 +193,11 @@ impl RunningProcesses {
         }
 
         let content = std::fs::read_to_string(&path)?;
-        let stands: RunningProcesses = serde_json::from_str(&content)?;
-        Ok(stands)
+        let procs: RunningProcesses = serde_json::from_str(&content)?;
+        Ok(procs)
     }
 
-    /// Save running stands to file
+    /// Save running processes to file
     pub fn save(&self) -> Result<()> {
         let path = Self::file_path();
 
@@ -218,7 +218,7 @@ impl RunningProcesses {
 
     /// Register a new running Process
     pub fn register(port: u16, project_dir: &str, pid: u32, quic_port: Option<u16>) -> Result<()> {
-        let mut stands = Self::load().unwrap_or_default();
+        let mut procs = Self::load().unwrap_or_default();
 
         // Canonicalize the project directory for consistent matching
         let canonical_dir = std::fs::canonicalize(project_dir)
@@ -226,12 +226,12 @@ impl RunningProcesses {
             .unwrap_or_else(|_| project_dir.to_string());
 
         // Remove any existing entry for this port or project
-        stands
+        procs
             .processes
             .retain(|s| s.port != port && s.project_dir != canonical_dir);
 
         // Add new entry
-        stands.processes.push(RunningProcessInfo {
+        procs.processes.push(RunningProcessInfo {
             port,
             quic_port,
             project_dir: canonical_dir,
@@ -242,39 +242,39 @@ impl RunningProcesses {
                 .as_secs(),
         });
 
-        stands.save()
+        procs.save()
     }
 
     /// Unregister a Process by port
     pub fn unregister_by_port(port: u16) -> Result<()> {
-        let mut stands = Self::load().unwrap_or_default();
-        stands.processes.retain(|s| s.port != port);
-        stands.save()
+        let mut procs = Self::load().unwrap_or_default();
+        procs.processes.retain(|s| s.port != port);
+        procs.save()
     }
 
     /// Unregister a Process by project directory
     pub fn unregister_by_project(project_dir: &str) -> Result<()> {
-        let mut stands = Self::load().unwrap_or_default();
+        let mut procs = Self::load().unwrap_or_default();
 
         let canonical_dir = std::fs::canonicalize(project_dir)
             .map(|p| p.display().to_string())
             .unwrap_or_else(|_| project_dir.to_string());
 
-        stands.processes.retain(|s| s.project_dir != canonical_dir);
-        stands.save()
+        procs.processes.retain(|s| s.project_dir != canonical_dir);
+        procs.save()
     }
 
     /// Find a running Process by project directory
     ///
     /// プロセス生存確認済みのエントリのみ返す。
     pub fn find_by_project(project_dir: &str) -> Option<RunningProcessInfo> {
-        let stands = Self::load().ok()?;
+        let procs = Self::load().ok()?;
 
         let canonical_dir = std::fs::canonicalize(project_dir)
             .map(|p| p.display().to_string())
             .unwrap_or_else(|_| project_dir.to_string());
 
-        stands
+        procs
             .processes
             .into_iter()
             .find(|s| s.project_dir == canonical_dir && is_process_alive(s.pid))
@@ -288,10 +288,10 @@ impl RunningProcesses {
             .map(|p| p.display().to_string())
             .unwrap_or_else(|_| cwd.display().to_string());
 
-        let stands = Self::load().ok()?;
+        let procs = Self::load().ok()?;
 
         // プロセス生存確認フィルタ
-        let alive_processes: Vec<_> = stands
+        let alive_processes: Vec<_> = procs
             .processes
             .into_iter()
             .filter(|s| is_process_alive(s.pid))
@@ -323,10 +323,10 @@ impl RunningProcesses {
 
     /// Clean up stale entries (processes that are no longer running)
     pub fn cleanup_stale() -> Result<()> {
-        let mut stands = Self::load().unwrap_or_default();
-        let original_count = stands.processes.len();
+        let mut procs = Self::load().unwrap_or_default();
+        let original_count = procs.processes.len();
 
-        stands.processes.retain(|s| {
+        procs.processes.retain(|s| {
             // Check if process is still running
             // On Unix, we can use kill with signal 0 to check
             #[cfg(unix)]
@@ -345,8 +345,8 @@ impl RunningProcesses {
             }
         });
 
-        if stands.processes.len() != original_count {
-            stands.save()?;
+        if procs.processes.len() != original_count {
+            procs.save()?;
         }
 
         Ok(())

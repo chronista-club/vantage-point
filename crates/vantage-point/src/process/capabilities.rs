@@ -1,4 +1,4 @@
-//\! Process Capability Integration
+//! Process Capability Integration
 //!
 //! Capability システムを Process に統合するモジュール。
 //! EventBus、Registry、各Capabilityの初期化と連携を担当。

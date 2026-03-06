@@ -1,4 +1,4 @@
-//\! Process Capability Parameters (スタンドパラメータ)
+//! Stand Capability Parameters (スタンドパラメータ)
 //!
 //! JoJo's Bizarre Adventureのスタンド能力パラメータシステムを参考に、
 //! AIエージェント能力を定量的に評価するための6パラメータシステム。

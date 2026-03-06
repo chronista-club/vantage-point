@@ -1,6 +1,6 @@
 //! Ruby VM プロセス管理
 //!
-//\! Process が ruby コマンドを子プロセスとして spawn し、
+//! Process が ruby コマンドを子プロセスとして spawn し、
 //! stdout/stderr を Canvas にストリーミングする。
 
 use std::collections::HashMap;

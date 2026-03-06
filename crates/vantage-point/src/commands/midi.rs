@@ -13,7 +13,7 @@ pub enum MidiCommands {
         /// 接続するMIDIポート番号
         #[arg(short, long)]
         port: Option<usize>,
-        /// アクション送信先のStandポート
+        /// アクション送信先のProcessポート
         #[arg(short = 'P', long, default_value = "33000")]
         process_port: u16,
     },

@@ -120,7 +120,7 @@ vp start (プロジェクトごと)
 vantage-point/
 ├── crates/vantage-point/   # CLI + Process (Rust)
 │   └── src/
-│       ├── stand/          # HTTP + WebSocket サーバー
+│       ├── process/        # HTTP + WebSocket サーバー
 │       ├── mcp.rs          # MCP ツール実装
 │       ├── canvas.rs       # Canvas ウィンドウ
 │       ├── terminal/       # ネイティブターミナル

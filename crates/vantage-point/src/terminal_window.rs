@@ -1,11 +1,11 @@
 //! Native terminal window — Unison (QUIC) ブリッジモード
 //!
 //! Arctic/Nordic + Ocean ダークテーマのターミナルウィンドウ。
-//\! Process サーバーの PTY に Unison QUIC チャネルで接続し、ウィンドウを閉じても PTY は生存する。
+//! Process サーバーの PTY に Unison QUIC チャネルで接続し、ウィンドウを閉じても PTY は生存する。
 //!
 //! ## パイプライン
 //! ```text
-//\! Process Server (QUIC "terminal") ─── UnisonChannel ───► EventLoopProxy → TerminalState → TerminalView
+//! Process Server (QUIC "terminal") ─── UnisonChannel ───► EventLoopProxy → TerminalState → TerminalView
 //! keyboard (main thread) → mpsc → input-bridge → unison-bridge → UnisonChannel → Process Server
 //! ```
 

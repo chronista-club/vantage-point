@@ -1,6 +1,6 @@
 //! アプリケーション状態モジュール
 //!
-//\! Process サーバーの共有状態と関連型を定義する。
+//! Process サーバーの共有状態と関連型を定義する。
 
 use std::collections::HashMap;
 use std::sync::Arc;

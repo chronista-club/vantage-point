@@ -1,7 +1,7 @@
 //! DB Capability - ローカル永続化
 //!
 //! SQLite（sqlx）によるローカルデータベース。
-//\! Process 履歴・設定・汎用 KV ストアの3機能を提供する。
+//! Process 履歴・設定・汎用 KV ストアの3機能を提供する。
 //!
 //! DB ファイル: `~/.config/vp/vantage.db`
 
@@ -107,7 +107,7 @@ impl DbCapability {
     // =========================================================================
 
     /// Process イベントを記録
-    pub async fn record_stand_event(
+    pub async fn record_process_event(
         &self,
         port: i64,
         event_type: &str,
@@ -412,12 +412,12 @@ mod tests {
 
         // イベント記録
         let id = db
-            .record_stand_event(33000, "start", Some("my-project"), Some("debug=simple"))
+            .record_process_event(33000, "start", Some("my-project"), Some("debug=simple"))
             .await
             .unwrap();
         assert!(id > 0);
 
-        db.record_stand_event(33000, "stop", Some("my-project"), None)
+        db.record_process_event(33000, "stop", Some("my-project"), None)
             .await
             .unwrap();
 

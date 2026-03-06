@@ -1,7 +1,7 @@
-//\! Process HTTP クライアント（CLI 用同期版）
+//! Process HTTP クライアント（CLI 用同期版）
 //!
 //! MCP の `http_post()` に対応する CLI 版。
-//\! Process の HTTP API を同期的に呼び出す。
+//! Process の HTTP API を同期的に呼び出す。
 
 use anyhow::{Result, bail};
 use serde::Serialize;
