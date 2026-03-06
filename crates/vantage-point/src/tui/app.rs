@@ -384,6 +384,14 @@ fn run_claude_session(
                 frame.render_widget(block, chunks[0]);
                 frame.render_widget(TerminalView::new(&snapshot), inner);
 
+                // ハードウェアカーソルを PTY のカーソル位置に配置
+                let (crow, ccol) = snapshot.cursor;
+                let cx = inner.x + ccol as u16;
+                let cy = inner.y + crow as u16;
+                if cx < inner.right() && cy < inner.bottom() {
+                    frame.set_cursor_position(ratatui::layout::Position::new(cx, cy));
+                }
+
                 draw_status_bar(frame, chunks[1], project_name);
             })?;
         }

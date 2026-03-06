@@ -70,18 +70,18 @@ impl Widget for TerminalView<'_> {
             }
         }
 
-        // カーソル描画（反転色）
-        if snap.cursor_visible {
-            let (crow, ccol) = snap.cursor;
-            let cx = area.x + ccol as u16;
-            let cy = area.y + crow as u16;
-            if cx < area.right() && cy < area.bottom() {
-                let buf_cell = &mut buf[(cx, cy)];
-                let current_fg = buf_cell.fg;
-                let current_bg = buf_cell.bg;
-                buf_cell.set_fg(current_bg);
-                buf_cell.set_bg(current_fg);
-            }
+        // カーソル描画（反転色ブロック）
+        // Claude CLI 等の TUI アプリは DECTCEM でカーソルを非表示にするが、
+        // PTY パススルーでは常にカーソル位置を可視化する
+        let (crow, ccol) = snap.cursor;
+        let cx = area.x + ccol as u16;
+        let cy = area.y + crow as u16;
+        if cx < area.right() && cy < area.bottom() {
+            let buf_cell = &mut buf[(cx, cy)];
+            let current_fg = buf_cell.fg;
+            let current_bg = buf_cell.bg;
+            buf_cell.set_fg(current_bg);
+            buf_cell.set_bg(current_fg);
         }
     }
 }
