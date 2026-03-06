@@ -17,6 +17,7 @@ pub struct StartOptions<'a> {
     pub debug: Option<DebugModeArg>,
     pub project_dir: Option<String>,
     pub midi: Option<String>,
+    pub tui: bool,
     pub config: &'a Config,
 }
 
@@ -30,6 +31,7 @@ pub fn execute(opts: StartOptions) -> Result<()> {
         debug,
         project_dir,
         midi,
+        tui,
         config,
     } = opts;
 
@@ -146,6 +148,23 @@ pub fn execute(opts: StartOptions) -> Result<()> {
         midi_config,
         bonjour_port: Some(resolved_port),
     };
+
+    if tui {
+        // TUI モード: ratatui ベースの対話コンソール
+        let project_name =
+            resolve::project_name_from_path(&resolved_project_dir, config).to_string();
+
+        // Process サーバーを headless で起動（Canvas / API 用）
+        ensure_process_running(resolved_port, &resolved_project_dir, debug_mode, cap_config)?;
+
+        // Canvas 自動起動
+        if let Err(e) = crate::canvas::run_canvas_detached(resolved_port) {
+            tracing::warn!("Canvas 自動起動失敗: {}", e);
+        }
+
+        // TUI 起動
+        return crate::tui::run_tui(&resolved_project_dir, &project_name);
+    }
 
     if headless || browser {
         let rt = tokio::runtime::Runtime::new()?;

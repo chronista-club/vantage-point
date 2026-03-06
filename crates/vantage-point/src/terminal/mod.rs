@@ -8,7 +8,7 @@
 //! PTY output (bytes) → VT parser → Grid<Cell> → renderer
 //! ```
 
-mod state;
+pub(crate) mod state;
 
 #[cfg(target_os = "macos")]
 pub mod renderer;

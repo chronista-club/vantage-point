@@ -103,6 +103,10 @@ regex = "1"
 alacritty_terminal = "0.25"
 vte = "0.15"
 
+# TUI framework
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+
 # macOS native APIs (split window, NSView for terminal pane)
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"

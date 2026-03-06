@@ -37,6 +37,7 @@ mod terminal;
 mod terminal_window;
 pub(crate) mod trace_log;
 mod tray;
+mod tui;
 
 use cli::{DebugModeArg, parse_debug_env};
 use config::Config;
@@ -88,6 +89,10 @@ enum Commands {
         /// MIDI入力を有効化（ポート番号または名前パターン）
         #[arg(long, short = 'm')]
         midi: Option<String>,
+
+        /// TUI モード（ratatui ベースの対話コンソール）
+        #[arg(long)]
+        tui: bool,
     },
     /// Processを停止
     Stop {
@@ -180,6 +185,7 @@ fn main() -> Result<()> {
         debug: None,
         project_dir: None,
         midi: None,
+        tui: false,
     });
 
     // Initialize tracing
@@ -204,6 +210,7 @@ fn main() -> Result<()> {
             debug,
             project_dir,
             midi,
+            tui,
         } => commands::start::execute(commands::start::StartOptions {
             target,
             port,
@@ -212,6 +219,7 @@ fn main() -> Result<()> {
             debug,
             project_dir,
             midi,
+            tui,
             config: &config,
         }),
         Commands::Stop { target } => cli::stop_by_target(target.as_deref(), &config),
