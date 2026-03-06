@@ -192,7 +192,10 @@ pub struct MidiHandler {
 
 impl MidiHandler {
     pub fn new(config: MidiConfig, process_port: u16) -> Self {
-        Self { config, process_port }
+        Self {
+            config,
+            process_port,
+        }
     }
 
     /// Handle incoming MIDI event

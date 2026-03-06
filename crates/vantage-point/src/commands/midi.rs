@@ -64,7 +64,11 @@ pub fn execute(cmd: MidiCommands) -> Result<()> {
                 .insert(38, crate::midi::MidiAction::ResetSession { port: None });
 
             let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(crate::midi::run_midi_interactive(port, config, process_port))
+            rt.block_on(crate::midi::run_midi_interactive(
+                port,
+                config,
+                process_port,
+            ))
         }
         MidiCommands::Ports => {
             crate::midi::print_ports();
