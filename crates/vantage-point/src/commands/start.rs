@@ -109,6 +109,14 @@ pub fn execute(opts: StartOptions) -> Result<()> {
 
     println!("\u{1f50c} Using port {}", resolved_port);
 
+    // ポート予約: Process サーバー起動前に running.json へ仮登録
+    // （2つ目の vp start が同じポートを選ばないようにする）
+    let my_pid = std::process::id();
+    if let Err(e) = RunningProcesses::register(resolved_port, &resolved_project_dir, my_pid, None)
+    {
+        tracing::warn!("Failed to pre-register port in running.json: {}", e);
+    }
+
     // デバッグモード: CLI > env > default
     let debug_mode = debug
         .map(DebugMode::from)
@@ -168,7 +176,12 @@ pub fn execute(opts: StartOptions) -> Result<()> {
         })
     } else if gui {
         // GUI モード: ネイティブウィンドウ（Unison ブリッジ）
-        ensure_process_running(resolved_port, &resolved_project_dir, debug_mode, cap_config)?;
+        if let Err(e) =
+            ensure_process_running(resolved_port, &resolved_project_dir, debug_mode, cap_config)
+        {
+            let _ = RunningProcesses::unregister_by_port(resolved_port);
+            return Err(e);
+        }
 
         if let Err(e) = crate::canvas::run_canvas_detached(resolved_port) {
             tracing::warn!("Canvas 自動起動失敗: {}", e);
@@ -188,7 +201,12 @@ pub fn execute(opts: StartOptions) -> Result<()> {
             resolve::project_name_from_path(&resolved_project_dir, config).to_string();
 
         // Process サーバーを headless で起動（Canvas / API 用）
-        ensure_process_running(resolved_port, &resolved_project_dir, debug_mode, cap_config)?;
+        if let Err(e) =
+            ensure_process_running(resolved_port, &resolved_project_dir, debug_mode, cap_config)
+        {
+            let _ = RunningProcesses::unregister_by_port(resolved_port);
+            return Err(e);
+        }
 
         // Canvas 自動起動
         if let Err(e) = crate::canvas::run_canvas_detached(resolved_port) {

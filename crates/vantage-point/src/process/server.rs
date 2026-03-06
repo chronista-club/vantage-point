@@ -189,13 +189,14 @@ pub async fn run(
         });
     }
 
-    // Register this Process in running.json
+    // running.json の pid と quic_port を更新
+    // （start.rs で仮登録済み。ここでサーバー起動後の正確な情報に更新する）
     let pid = std::process::id();
-    if let Err(e) = RunningProcesses::register(port, &state.project_dir, pid, Some(quic_port)) {
-        tracing::warn!("Failed to register Process in running.json: {}", e);
+    if let Err(e) = RunningProcesses::update_pid_and_quic(port, pid, quic_port) {
+        tracing::warn!("Failed to update Process in running.json: {}", e);
     } else {
         tracing::info!(
-            "Registered Process in running.json (port={}, quic={}, pid={})",
+            "Updated Process in running.json (port={}, quic={}, pid={})",
             port,
             quic_port,
             pid

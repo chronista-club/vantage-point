@@ -220,10 +220,8 @@ impl RunningProcesses {
     pub fn register(port: u16, project_dir: &str, pid: u32, quic_port: Option<u16>) -> Result<()> {
         let mut procs = Self::load().unwrap_or_default();
 
-        // Canonicalize the project directory for consistent matching
-        let canonical_dir = std::fs::canonicalize(project_dir)
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|_| project_dir.to_string());
+        // パス正規化を Config::normalize_path() に統一
+        let canonical_dir = Config::normalize_path(std::path::Path::new(project_dir));
 
         // Remove any existing entry for this port or project
         procs
@@ -245,6 +243,32 @@ impl RunningProcesses {
         procs.save()
     }
 
+    /// 既存エントリの pid と quic_port を更新する
+    ///
+    /// start.rs で仮登録した後、server.rs でサーバー起動後に正確な値で更新する。
+    pub fn update_pid_and_quic(port: u16, pid: u32, quic_port: u16) -> Result<()> {
+        let mut procs = Self::load().unwrap_or_default();
+
+        if let Some(entry) = procs.processes.iter_mut().find(|p| p.port == port) {
+            entry.pid = pid;
+            entry.quic_port = Some(quic_port);
+            procs.save()
+        } else {
+            // 仮登録が見つからない場合はフル登録にフォールバック
+            tracing::warn!(
+                "Pre-registered entry not found for port={}, performing full registration",
+                port
+            );
+            drop(procs);
+            // project_dir が不明なので呼び出し元で対処すべきだが、
+            // ここではエラーを返す
+            Err(anyhow::anyhow!(
+                "No pre-registered entry found for port {}",
+                port
+            ))
+        }
+    }
+
     /// Unregister a Process by port
     pub fn unregister_by_port(port: u16) -> Result<()> {
         let mut procs = Self::load().unwrap_or_default();
@@ -256,9 +280,7 @@ impl RunningProcesses {
     pub fn unregister_by_project(project_dir: &str) -> Result<()> {
         let mut procs = Self::load().unwrap_or_default();
 
-        let canonical_dir = std::fs::canonicalize(project_dir)
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|_| project_dir.to_string());
+        let canonical_dir = Config::normalize_path(std::path::Path::new(project_dir));
 
         procs.processes.retain(|s| s.project_dir != canonical_dir);
         procs.save()
@@ -270,9 +292,7 @@ impl RunningProcesses {
     pub fn find_by_project(project_dir: &str) -> Option<RunningProcessInfo> {
         let procs = Self::load().ok()?;
 
-        let canonical_dir = std::fs::canonicalize(project_dir)
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|_| project_dir.to_string());
+        let canonical_dir = Config::normalize_path(std::path::Path::new(project_dir));
 
         procs
             .processes
@@ -284,9 +304,7 @@ impl RunningProcesses {
     /// Returns the Process that best matches the current directory
     pub fn find_for_cwd() -> Option<RunningProcessInfo> {
         let cwd = std::env::current_dir().ok()?;
-        let cwd_str = std::fs::canonicalize(&cwd)
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|_| cwd.display().to_string());
+        let cwd_str = Config::normalize_path(&cwd);
 
         let procs = Self::load().ok()?;
 
