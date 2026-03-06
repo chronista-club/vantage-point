@@ -59,9 +59,7 @@ pub fn key_to_pty_bytes(key: KeyEvent, app_cursor: bool) -> Vec<u8> {
         KeyCode::Home => b"\x1b[H".to_vec(),
         KeyCode::End => b"\x1b[F".to_vec(),
 
-        // Page Up / Down
-        KeyCode::PageUp => b"\x1b[5~".to_vec(),
-        KeyCode::PageDown => b"\x1b[6~".to_vec(),
+        // PageUp/PageDown は TUI スクロールバックで処理（app.rs）
 
         // Insert / Delete
         KeyCode::Insert => b"\x1b[2~".to_vec(),

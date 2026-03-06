@@ -80,7 +80,8 @@ pub fn execute(target: Option<&str>, browser: bool, headless: bool, config: &Con
         crate::commands::start::wait_for_process_ready(port)?;
 
         // Unison ブリッジモードのネイティブウィンドウ
-        let result = crate::terminal_window::run_terminal_unison(port);
+        let project_name = resolve::project_name_from_path(&project_dir, config);
+        let result = crate::terminal_window::run_terminal_unison(port, &project_name);
 
         match result {
             Ok(()) => tracing::info!("Terminal window closed (Process is still running)"),

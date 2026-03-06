@@ -8,9 +8,16 @@ use tao::dpi::LogicalSize;
 use crate::terminal_window::create_menu_bar;
 
 /// 別プロセスで Canvas ウィンドウを起動
-pub fn run_canvas_detached(port: u16) -> anyhow::Result<()> {
+pub fn run_canvas_detached(port: u16, project_name: &str) -> anyhow::Result<()> {
     std::process::Command::new("vp")
-        .args(["canvas", "--port", &port.to_string()])
+        .args([
+            "canvas",
+            "internal",
+            "--port",
+            &port.to_string(),
+            "--name",
+            project_name,
+        ])
         .spawn()?;
     Ok(())
 }
@@ -19,7 +26,7 @@ pub fn run_canvas_detached(port: u16) -> anyhow::Result<()> {
 ///
 /// Processの Web UIをスタンドアロンウィンドウで表示。
 /// ターミナルとは独立したウィンドウで、フォーカス干渉なし。
-pub fn run_canvas(port: u16) -> anyhow::Result<()> {
+pub fn run_canvas(port: u16, project_name: &str) -> anyhow::Result<()> {
     use tao::{
         event::{Event, WindowEvent},
         event_loop::{ControlFlow, EventLoop},
@@ -30,7 +37,7 @@ pub fn run_canvas(port: u16) -> anyhow::Result<()> {
     let event_loop = EventLoop::new();
 
     let window = WindowBuilder::new()
-        .with_title("Vantage Point Canvas")
+        .with_title(&format!("VP: {} — Canvas", project_name))
         .with_inner_size(LogicalSize::new(800.0, 900.0))
         .build(&event_loop)?;
 

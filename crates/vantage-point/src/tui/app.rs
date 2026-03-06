@@ -6,8 +6,9 @@ use std::io;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use alacritty_terminal::grid::Scroll;
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyModifiers, MouseEventKind};
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
@@ -26,13 +27,13 @@ use super::input::key_to_pty_bytes;
 use super::terminal_widget::TerminalView;
 
 // Arctic Nord カラー定数
-const NORD_BG: Color = Color::Rgb(11, 17, 32);       // #0B1120
-const NORD_FG: Color = Color::Rgb(216, 222, 233);     // #D8DEE9
-const NORD_CYAN: Color = Color::Rgb(136, 192, 208);   // #88C0D0
-const NORD_BLUE: Color = Color::Rgb(129, 161, 193);   // #81A1C1
-const NORD_POLAR: Color = Color::Rgb(46, 52, 64);     // #2E3440
-const NORD_COMMENT: Color = Color::Rgb(76, 86, 106);  // #4C566A
-const NORD_GREEN: Color = Color::Rgb(163, 190, 140);  // #A3BE8C
+const NORD_BG: Color = Color::Rgb(11, 17, 32); // #0B1120
+const NORD_FG: Color = Color::Rgb(216, 222, 233); // #D8DEE9
+const NORD_CYAN: Color = Color::Rgb(136, 192, 208); // #88C0D0
+const NORD_BLUE: Color = Color::Rgb(129, 161, 193); // #81A1C1
+const NORD_POLAR: Color = Color::Rgb(46, 52, 64); // #2E3440
+const NORD_COMMENT: Color = Color::Rgb(76, 86, 106); // #4C566A
+const NORD_GREEN: Color = Color::Rgb(163, 190, 140); // #A3BE8C
 
 /// TUI メインエントリー（プロジェクト指定あり）
 ///
@@ -56,11 +57,29 @@ pub fn run_tui_select(config: &Config) -> Result<()> {
     run_tui_inner(None)
 }
 
+/// OSC シーケンスでターミナルウィンドウタイトルを設定
+fn set_terminal_title(title: &str) {
+    use std::io::Write;
+    let _ = write!(io::stdout(), "\x1b]0;{}\x07", title);
+    let _ = io::stdout().flush();
+}
+
 /// 内部エントリー
 fn run_tui_inner(resolved: Option<(String, String)>) -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    crossterm::execute!(stdout, EnterAlternateScreen)?;
+    crossterm::execute!(
+        stdout,
+        crossterm::event::EnableMouseCapture,
+        EnterAlternateScreen
+    )?;
+
+    // ターミナルタイトル設定
+    if let Some((_, ref name)) = resolved {
+        set_terminal_title(&format!("VP: {}", name));
+    } else {
+        set_terminal_title("Vantage Point");
+    }
 
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
@@ -73,7 +92,11 @@ fn run_tui_inner(resolved: Option<(String, String)>) -> Result<()> {
 
     // 終了処理（必ず実行）
     disable_raw_mode()?;
-    crossterm::execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    crossterm::execute!(
+        terminal.backend_mut(),
+        crossterm::event::DisableMouseCapture,
+        LeaveAlternateScreen
+    )?;
     terminal.show_cursor()?;
 
     result
@@ -110,8 +133,11 @@ fn run_project_select(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> 
                             let dir = Config::normalize_path(std::path::Path::new(&project.path));
                             let name = project.name.clone();
 
+                            // ターミナルタイトル更新
+                            set_terminal_title(&format!("VP: {}", name));
+
                             // Process サーバー + Canvas 起動
-                            start_background_services(&dir, &config, idx).ok();
+                            start_background_services(&dir, &config, idx, &name).ok();
 
                             // Claude セッション開始
                             return run_claude_session(terminal, &dir, &name);
@@ -147,16 +173,13 @@ fn draw_project_select(
     let area = frame.area();
 
     // 背景
-    frame.render_widget(
-        Block::default().style(Style::default().bg(NORD_BG)),
-        area,
-    );
+    frame.render_widget(Block::default().style(Style::default().bg(NORD_BG)), area);
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3), // タイトル
-            Constraint::Min(1),   // プロジェクトリスト
+            Constraint::Min(1),    // プロジェクトリスト
             Constraint::Length(1), // ヘルプ
         ])
         .margin(1)
@@ -166,13 +189,15 @@ fn draw_project_select(
     let title = Paragraph::new(Line::from(vec![
         Span::styled(
             " Vantage Point ",
-            Style::default()
-                .fg(NORD_CYAN)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(NORD_CYAN).add_modifier(Modifier::BOLD),
         ),
         Span::styled(" — プロジェクト選択", Style::default().fg(NORD_FG)),
     ]))
-    .block(Block::default().borders(Borders::BOTTOM).border_style(Style::default().fg(NORD_COMMENT)));
+    .block(
+        Block::default()
+            .borders(Borders::BOTTOM)
+            .border_style(Style::default().fg(NORD_COMMENT)),
+    );
     frame.render_widget(title, chunks[0]);
 
     // プロジェクトリスト
@@ -190,16 +215,10 @@ fn draw_project_select(
             };
 
             ListItem::new(Line::from(vec![
-                Span::styled(
-                    format!(" {} ", i + 1),
-                    Style::default().fg(NORD_COMMENT),
-                ),
+                Span::styled(format!(" {} ", i + 1), Style::default().fg(NORD_COMMENT)),
                 Span::styled(&p.name, Style::default().fg(NORD_FG)),
                 status,
-                Span::styled(
-                    format!("  {}", p.path),
-                    Style::default().fg(NORD_COMMENT),
-                ),
+                Span::styled(format!("  {}", p.path), Style::default().fg(NORD_COMMENT)),
             ]))
         })
         .collect();
@@ -230,7 +249,12 @@ fn draw_project_select(
 }
 
 /// バックグラウンドサービス起動（Process サーバー + Canvas）
-fn start_background_services(project_dir: &str, config: &Config, project_index: usize) -> Result<()> {
+fn start_background_services(
+    project_dir: &str,
+    config: &Config,
+    project_index: usize,
+    project_name: &str,
+) -> Result<()> {
     let port = crate::resolve::port_for_configured(project_index, config)?;
 
     let cap_config = crate::process::CapabilityConfig {
@@ -246,7 +270,7 @@ fn start_background_services(project_dir: &str, config: &Config, project_index: 
         cap_config,
     )?;
 
-    if let Err(e) = crate::canvas::run_canvas_detached(port) {
+    if let Err(e) = crate::canvas::run_canvas_detached(port, project_name) {
         tracing::warn!("Canvas 自動起動失敗: {}", e);
     }
 
@@ -264,8 +288,9 @@ fn run_claude_session(
     project_name: &str,
 ) -> Result<()> {
     let size = terminal.size()?;
-    let pty_cols = size.width as usize;
-    let pty_lines = (size.height.saturating_sub(1)) as usize;
+    // 枠線（左右各1セル）+ ステータスバー（1行）+ 枠線（上下各1セル）
+    let pty_cols = (size.width.saturating_sub(2) as usize).max(1);
+    let pty_lines = (size.height.saturating_sub(3) as usize).max(1);
 
     // VT パーサー
     let term_state = Arc::new(Mutex::new(TerminalState::new(pty_cols, pty_lines)));
@@ -316,56 +341,116 @@ fn run_claude_session(
             break;
         }
 
+        // 描画
         {
             let state = term_state.lock().unwrap();
             let snapshot = state.snapshot();
-            let app_cursor = state.app_cursor_mode();
+            let display_offset = state.display_offset();
+            drop(state);
 
             terminal.draw(|frame| {
                 let chunks = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints([
-                        Constraint::Min(1),
-                        Constraint::Length(1),
+                        Constraint::Min(1),    // ターミナル pane
+                        Constraint::Length(1), // ステータスバー
                     ])
                     .split(frame.area());
 
-                frame.render_widget(TerminalView::new(&snapshot), chunks[0]);
+                // Pane 枠線 + タイトル
+                let focus_icon = "\u{1F7E2}"; // 🟢
+                let pane_title = format!(" {} Claude CLI ", focus_icon);
+
+                let mut block = Block::default()
+                    .title(pane_title)
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(NORD_CYAN));
+
+                // スクロール中はオフセットインジケータ表示（右上）
+                if display_offset > 0 {
+                    block = block.title_top(
+                        ratatui::text::Line::from(format!(" \u{2191}{} ", display_offset))
+                            .alignment(ratatui::layout::Alignment::Right),
+                    );
+                }
+
+                let inner = block.inner(chunks[0]);
+                frame.render_widget(block, chunks[0]);
+                frame.render_widget(TerminalView::new(&snapshot), inner);
+
                 draw_status_bar(frame, chunks[1], project_name);
             })?;
+        }
 
-            drop(state);
+        // イベント処理
+        if event::poll(Duration::from_millis(16))? {
+            let app_cursor = {
+                let state = term_state.lock().unwrap();
+                state.app_cursor_mode()
+            };
 
-            if event::poll(Duration::from_millis(16))? {
-                match event::read()? {
-                    Event::Key(key) => {
-                        if key.code == KeyCode::Char('q')
-                            && key.modifiers.contains(KeyModifiers::CONTROL)
-                        {
-                            break;
+            match event::read()? {
+                Event::Key(key) => {
+                    // Ctrl+Q: 終了
+                    if key.code == KeyCode::Char('q')
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                    {
+                        break;
+                    }
+
+                    // PageUp/PageDown: TUI スクロールバック
+                    match key.code {
+                        KeyCode::PageUp => {
+                            let mut state = term_state.lock().unwrap();
+                            state.scroll_display(Scroll::PageUp);
                         }
-
-                        let bytes = key_to_pty_bytes(key, app_cursor);
-                        if !bytes.is_empty() {
-                            let _ = std::io::Write::write_all(&mut writer, &bytes);
+                        KeyCode::PageDown => {
+                            let mut state = term_state.lock().unwrap();
+                            state.scroll_display(Scroll::PageDown);
+                        }
+                        _ => {
+                            // その他のキー: PTY に転送 + スクロール位置を底に戻す
+                            let bytes = key_to_pty_bytes(key, app_cursor);
+                            if !bytes.is_empty() {
+                                {
+                                    let mut state = term_state.lock().unwrap();
+                                    if state.display_offset() > 0 {
+                                        state.scroll_display(Scroll::Bottom);
+                                    }
+                                }
+                                let _ = std::io::Write::write_all(&mut writer, &bytes);
+                            }
                         }
                     }
-                    Event::Resize(cols, rows) => {
-                        let new_lines = rows.saturating_sub(1) as usize;
-                        let new_cols = cols as usize;
+                }
+                // マウスホイール → TUI スクロールバック制御
+                Event::Mouse(mouse) => match mouse.kind {
+                    MouseEventKind::ScrollUp => {
                         let mut state = term_state.lock().unwrap();
-                        state.resize(new_cols, new_lines);
-                        pair.master
-                            .resize(PtySize {
-                                rows: new_lines as u16,
-                                cols: new_cols as u16,
-                                pixel_width: 0,
-                                pixel_height: 0,
-                            })
-                            .ok();
+                        state.scroll_display(Scroll::Delta(3));
+                    }
+                    MouseEventKind::ScrollDown => {
+                        let mut state = term_state.lock().unwrap();
+                        state.scroll_display(Scroll::Delta(-3));
                     }
                     _ => {}
+                },
+                Event::Resize(cols, rows) => {
+                    // 枠線 + ステータスバー分を引く
+                    let new_cols = (cols.saturating_sub(2) as usize).max(1);
+                    let new_lines = (rows.saturating_sub(3) as usize).max(1);
+                    let mut state = term_state.lock().unwrap();
+                    state.resize(new_cols, new_lines);
+                    pair.master
+                        .resize(PtySize {
+                            rows: new_lines as u16,
+                            cols: new_cols as u16,
+                            pixel_width: 0,
+                            pixel_height: 0,
+                        })
+                        .ok();
                 }
+                _ => {}
             }
         }
     }
@@ -384,10 +469,7 @@ fn draw_status_bar(frame: &mut ratatui::Frame, area: Rect, project_name: &str) {
                 .bg(NORD_CYAN)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(
-            " Claude CLI ",
-            Style::default().fg(NORD_FG).bg(NORD_POLAR),
-        ),
+        Span::styled(" Claude CLI ", Style::default().fg(NORD_FG).bg(NORD_POLAR)),
         Span::styled(
             " --continue ",
             Style::default().fg(NORD_GREEN).bg(NORD_POLAR),

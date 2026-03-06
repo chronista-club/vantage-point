@@ -112,8 +112,7 @@ pub fn execute(opts: StartOptions) -> Result<()> {
     // ポート予約: Process サーバー起動前に running.json へ仮登録
     // （2つ目の vp start が同じポートを選ばないようにする）
     let my_pid = std::process::id();
-    if let Err(e) = RunningProcesses::register(resolved_port, &resolved_project_dir, my_pid, None)
-    {
+    if let Err(e) = RunningProcesses::register(resolved_port, &resolved_project_dir, my_pid, None) {
         tracing::warn!("Failed to pre-register port in running.json: {}", e);
     }
 
@@ -183,11 +182,12 @@ pub fn execute(opts: StartOptions) -> Result<()> {
             return Err(e);
         }
 
-        if let Err(e) = crate::canvas::run_canvas_detached(resolved_port) {
+        let project_name = resolve::project_name_from_path(&resolved_project_dir, config);
+        if let Err(e) = crate::canvas::run_canvas_detached(resolved_port, &project_name) {
             tracing::warn!("Canvas 自動起動失敗: {}", e);
         }
 
-        let result = crate::terminal_window::run_terminal_unison(resolved_port);
+        let result = crate::terminal_window::run_terminal_unison(resolved_port, &project_name);
 
         match result {
             Ok(()) => tracing::info!("Terminal window closed (Process is still running)"),
@@ -209,7 +209,7 @@ pub fn execute(opts: StartOptions) -> Result<()> {
         }
 
         // Canvas 自動起動
-        if let Err(e) = crate::canvas::run_canvas_detached(resolved_port) {
+        if let Err(e) = crate::canvas::run_canvas_detached(resolved_port, &project_name) {
             tracing::warn!("Canvas 自動起動失敗: {}", e);
         }
 
