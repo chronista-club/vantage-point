@@ -41,12 +41,12 @@ pub struct HistoryMessage {
     pub timestamp: u64,
 }
 
-/// Message from Stand to browser (WebSocket)
+/// Message from Process to browser (WebSocket)
 ///
-/// Stand: AI Agent server that wields capabilities on behalf of the user.
+/// Process: AI Agent server that wields capabilities on behalf of the user.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum StandMessage {
+pub enum ProcessMessage {
     /// Show content in a pane
     Show {
         pane_id: String,
@@ -171,7 +171,7 @@ pub enum SplitDirection {
     Vertical,
 }
 
-/// Message from browser to Stand (WebSocket)
+/// Message from browser to Process (WebSocket)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum BrowserMessage {
@@ -232,7 +232,7 @@ pub enum ChatRole {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IpcMessage {
     pub id: Option<String>,
-    pub payload: StandMessage,
+    pub payload: ProcessMessage,
 }
 
 // =============================================================================
@@ -399,8 +399,8 @@ mod tests {
     }
 
     #[test]
-    fn test_stand_message_serialization() {
-        let msg = StandMessage::ChatChunk {
+    fn test_process_message_serialization() {
+        let msg = ProcessMessage::ChatChunk {
             content: "Hello".to_string(),
             done: false,
         };
@@ -423,7 +423,7 @@ mod tests {
 
     #[test]
     fn test_show_with_title_serialization() {
-        let msg = StandMessage::Show {
+        let msg = ProcessMessage::Show {
             pane_id: "design".to_string(),
             content: Content::Markdown("# Hello".to_string()),
             append: false,
@@ -437,7 +437,7 @@ mod tests {
 
     #[test]
     fn test_show_without_title_omits_field() {
-        let msg = StandMessage::Show {
+        let msg = ProcessMessage::Show {
             pane_id: "main".to_string(),
             content: Content::Markdown("# Hello".to_string()),
             append: false,
@@ -449,7 +449,7 @@ mod tests {
 
     #[test]
     fn test_split_message_serialization() {
-        let msg = StandMessage::Split {
+        let msg = ProcessMessage::Split {
             pane_id: "main".to_string(),
             direction: SplitDirection::Horizontal,
             new_pane_id: "pane-1".to_string(),
@@ -462,7 +462,7 @@ mod tests {
 
     #[test]
     fn test_close_message_serialization() {
-        let msg = StandMessage::Close {
+        let msg = ProcessMessage::Close {
             pane_id: "pane-1".to_string(),
         };
         let json = serde_json::to_string(&msg).unwrap();

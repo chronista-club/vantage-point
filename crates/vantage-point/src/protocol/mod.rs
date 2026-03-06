@@ -24,7 +24,7 @@ pub use acp::AcpMessage;
 
 pub use messages::{
     BrowserMessage, ChatComponent, ChatMessage, ChatRole, ComponentAction, Content, DebugMode,
-    HistoryMessage, SessionInfo, SplitDirection, StandMessage,
+    HistoryMessage, ProcessMessage, SessionInfo, SplitDirection,
 };
 
 pub use vantage::{CapabilityStateInfo, MidiEventType, SynergyTypeInfo, VantageEvent};
@@ -61,10 +61,10 @@ pub enum ProtocolMessage {
         event: VantageEvent,
     },
 
-    /// Stand内部メッセージ（WebSocket用、既存互換）
-    Stand {
+    /// Process内部メッセージ（WebSocket用、既存互換）
+    Process {
         #[serde(flatten)]
-        message: StandMessage,
+        message: ProcessMessage,
     },
 }
 
@@ -84,9 +84,9 @@ impl ProtocolMessage {
         Self::Vantage { event }
     }
 
-    /// Standメッセージを作成
-    pub fn stand(message: StandMessage) -> Self {
-        Self::Stand { message }
+    /// Processメッセージを作成
+    pub fn process(message: ProcessMessage) -> Self {
+        Self::Process { message }
     }
 }
 
@@ -234,14 +234,14 @@ mod tests {
     }
 
     #[test]
-    fn test_protocol_message_stand() {
-        let stand_msg = StandMessage::ChatChunk {
+    fn test_protocol_message_process() {
+        let process_msg = ProcessMessage::ChatChunk {
             content: "Hello".to_string(),
             done: false,
         };
-        let msg = ProtocolMessage::stand(stand_msg);
+        let msg = ProtocolMessage::process(process_msg);
 
         let json = serde_json::to_string(&msg).unwrap();
-        assert!(json.contains("\"protocol\":\"stand\""));
+        assert!(json.contains("\"protocol\":\"process\""));
     }
 }

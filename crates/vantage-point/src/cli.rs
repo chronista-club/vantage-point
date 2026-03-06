@@ -7,7 +7,7 @@ use clap::ValueEnum;
 
 use crate::protocol::DebugMode;
 
-/// Health response from Stand
+/// Health response from Process
 #[derive(serde::Deserialize)]
 pub(crate) struct HealthResponse {
     pub status: String,
@@ -17,7 +17,7 @@ pub(crate) struct HealthResponse {
     pub project_dir: Option<String>,
 }
 
-/// Check if Stand is running on the specified port
+/// Check if Process is running on the specified port
 pub(crate) async fn check_status(port: u16) -> Result<()> {
     let url = format!("http://localhost:{}/api/health", port);
 
@@ -61,8 +61,8 @@ pub(crate) async fn check_status(port: u16) -> Result<()> {
     Ok(())
 }
 
-/// Stop the Stand running on the specified port
-pub(crate) async fn stop_stand(port: u16) -> Result<()> {
+/// Stop the Process running on the specified port
+pub(crate) async fn stop_process(port: u16) -> Result<()> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(2))
         .build()?;
@@ -87,7 +87,7 @@ pub(crate) async fn stop_stand(port: u16) -> Result<()> {
     };
 
     let Some(pid) = pid else {
-        println!("✗ Could not get Stand PID");
+        println!("✗ Could not get Process PID");
         return Ok(());
     };
 
@@ -278,15 +278,15 @@ pub(crate) fn open_by_target(target: Option<&str>, config: &crate::config::Confi
             );
         }
         ResolvedTarget::Cwd { .. } => {
-            println!("\u{2717} No running Stand found for current directory.");
-            println!("  Use `vp start` to start a new Stand.");
+            println!("\u{2717} No running Process found for current directory.");
+            println!("  Use `vp start` to start a new Process.");
         }
     }
 
     Ok(())
 }
 
-/// ターゲット指定で Stand を停止
+/// ターゲット指定で Process を停止
 pub(crate) fn stop_by_target(target: Option<&str>, config: &crate::config::Config) -> Result<()> {
     use crate::resolve::{self, ResolvedTarget};
 
@@ -296,14 +296,14 @@ pub(crate) fn stop_by_target(target: Option<&str>, config: &crate::config::Confi
         ResolvedTarget::Running { port, name, .. } => {
             println!("Stopping: {} (port {})", name, port);
             let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(stop_stand(port))
+            rt.block_on(stop_process(port))
         }
         ResolvedTarget::Configured { name, .. } => {
             println!("\u{2717} '{}' is not running.", name);
             Ok(())
         }
         ResolvedTarget::Cwd { .. } => {
-            println!("\u{2717} No running Stand found for current directory.");
+            println!("\u{2717} No running Process found for current directory.");
             Ok(())
         }
     }

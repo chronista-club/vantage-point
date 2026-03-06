@@ -1,7 +1,7 @@
 //! Capability Core Trait (REQ-CAP-001)
 //!
 //! 全ての能力が実装する共通インターフェース。
-//! JoJoスタンドの「能力」を表現し、Stand全体として協調動作する。
+//! JoJoスタンドの「能力」を表現し、Process全体として協調動作する。
 //!
 //! ## 設計思想
 //!
@@ -328,7 +328,7 @@ impl fmt::Debug for CapabilityContext {
 // Capability Trait (REQ-CAP-001)
 // =============================================================================
 
-/// Stand Capability トレイト
+/// Process Capability トレイト
 ///
 /// 全ての能力が実装する共通インターフェース。
 ///

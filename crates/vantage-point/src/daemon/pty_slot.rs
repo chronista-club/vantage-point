@@ -2,7 +2,7 @@
 //!
 //! portable-pty で PTY を作成し、master fd からの出力を
 //! broadcast channel 経由で配信する。
-//! 既存の `stand/pty.rs` の PtySession を基に、Daemon用に再設計。
+//! 既存の `process/pty.rs` の PtySession を基に、Daemon用に再設計。
 //! base64エンコードはしない（IPC層の責務）。
 
 use std::io::{Read, Write};

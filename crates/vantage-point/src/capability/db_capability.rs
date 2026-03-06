@@ -1,7 +1,7 @@
 //! DB Capability - ローカル永続化
 //!
 //! SQLite（sqlx）によるローカルデータベース。
-//! Stand 履歴・設定・汎用 KV ストアの3機能を提供する。
+//! Process 履歴・設定・汎用 KV ストアの3機能を提供する。
 //!
 //! DB ファイル: `~/.config/vp/vantage.db`
 
@@ -22,9 +22,9 @@ use std::str::FromStr;
 // 型定義
 // =============================================================================
 
-/// Stand イベントレコード
+/// Process イベントレコード
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct StandEvent {
+pub struct ProcessEvent {
     pub id: i64,
     pub port: i64,
     pub event_type: String,
@@ -33,9 +33,9 @@ pub struct StandEvent {
     pub created_at: String,
 }
 
-/// Stand 履歴クエリフィルター
+/// Process 履歴クエリフィルター
 #[derive(Debug, Default)]
-pub struct StandEventFilter {
+pub struct ProcessEventFilter {
     /// ポート番号で絞り込み
     pub port: Option<i64>,
     /// イベントタイプで絞り込み
@@ -106,8 +106,8 @@ impl DbCapability {
     // Events API
     // =========================================================================
 
-    /// Stand イベントを記録
-    pub async fn record_stand_event(
+    /// Process イベントを記録
+    pub async fn record_process_event(
         &self,
         port: i64,
         event_type: &str,
@@ -130,11 +130,11 @@ impl DbCapability {
         Ok(result.last_insert_rowid())
     }
 
-    /// Stand 履歴をクエリ
-    pub async fn query_stand_history(
+    /// Process 履歴をクエリ
+    pub async fn query_process_history(
         &self,
-        filter: StandEventFilter,
-    ) -> CapabilityResult<Vec<StandEvent>> {
+        filter: ProcessEventFilter,
+    ) -> CapabilityResult<Vec<ProcessEvent>> {
         let pool = self.pool()?;
         let limit = filter.limit.unwrap_or(100);
 
@@ -156,7 +156,7 @@ impl DbCapability {
         }
         sql.push_str(" ORDER BY created_at DESC LIMIT ?");
 
-        let mut query = sqlx::query_as::<_, StandEvent>(&sql);
+        let mut query = sqlx::query_as::<_, ProcessEvent>(&sql);
         if let Some(port) = filter.port {
             query = query.bind(port);
         }
@@ -407,30 +407,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_stand_events() {
+    async fn test_process_events() {
         let mut db = setup_test_db().await;
 
         // イベント記録
         let id = db
-            .record_stand_event(33000, "start", Some("my-project"), Some("debug=simple"))
+            .record_process_event(33000, "start", Some("my-project"), Some("debug=simple"))
             .await
             .unwrap();
         assert!(id > 0);
 
-        db.record_stand_event(33000, "stop", Some("my-project"), None)
+        db.record_process_event(33000, "stop", Some("my-project"), None)
             .await
             .unwrap();
 
         // 全件クエリ
         let events = db
-            .query_stand_history(StandEventFilter::default())
+            .query_process_history(ProcessEventFilter::default())
             .await
             .unwrap();
         assert_eq!(events.len(), 2);
 
         // ポートフィルター
         let events = db
-            .query_stand_history(StandEventFilter {
+            .query_process_history(ProcessEventFilter {
                 port: Some(33000),
                 ..Default::default()
             })
@@ -440,7 +440,7 @@ mod tests {
 
         // タイプフィルター
         let events = db
-            .query_stand_history(StandEventFilter {
+            .query_process_history(ProcessEventFilter {
                 event_type: Some("start".to_string()),
                 ..Default::default()
             })

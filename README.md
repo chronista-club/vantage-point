@@ -34,7 +34,7 @@ sequenceDiagram
     VP->>B: WebSocket でコンテンツ配信
 ```
 
-1. `vp start` で Stand（HTTP + WebSocket サーバー）が起動し、WebView ウィンドウが開く
+1. `vp start` で Process（HTTP + WebSocket サーバー）が起動し、WebView ウィンドウが開く
 2. Claude Code に MCP サーバーとして登録する
 3. Claude Code がセッション中に `show` ツールを呼ぶと、ブラウザにコンテンツが表示される
 
@@ -60,19 +60,19 @@ claude mcp add vp -- vp mcp
 | `open_canvas` | Canvas ウィンドウを開く |
 | `close_canvas` | Canvas ウィンドウを閉じる |
 | `permission` | ツール実行の承認リクエスト |
-| `restart` | Stand を再起動 |
+| `restart` | Process を再起動 |
 
 ---
 
 ## コマンド
 
 ```bash
-vp start [N]          # Stand を起動（N はプロジェクト番号）
+vp start [N]          # Process を起動（N はプロジェクト番号）
 vp start --headless   # WebView なしで起動
 vp start --browser    # ネイティブ WebView の代わりにブラウザで開く
-vp stop               # Stand を停止
+vp stop               # Process を停止
 vp restart            # 再起動（セッション状態を保持）
-vp ps                 # 稼働中 Stand の一覧
+vp ps                 # 稼働中 Process の一覧
 vp open [N]           # WebUI を開く
 vp config             # 設定と登録プロジェクトを表示
 vp update             # 最新版に更新
@@ -99,16 +99,16 @@ path = "/path/to/your/project"
 
 ## VantagePoint.app（メニューバーアプリ）
 
-Stand をメニューバーから操作できる Mac アプリ。
+Process をメニューバーから操作できる Mac アプリ。
 
 1. [VantagePoint.app.zip](https://github.com/chronista-club/vantage-point-mac/releases/latest/download/VantagePoint.app.zip) をダウンロード
 2. `/Applications` に移動して起動
 
 ```
 VantagePoint.app (メニューバー)
-    ↓ Conductor Stand を管理
+    ↓ Conductor Process を管理
 vp conductor
-    ↓ プロジェクト Stand を管理
+    ↓ Project Process を管理
 vp start (プロジェクトごと)
 ```
 
@@ -118,9 +118,9 @@ vp start (プロジェクトごと)
 
 ```
 vantage-point/
-├── crates/vantage-point/   # CLI + Stand (Rust)
+├── crates/vantage-point/   # CLI + Process (Rust)
 │   └── src/
-│       ├── stand/          # HTTP + WebSocket サーバー
+│       ├── process/        # HTTP + WebSocket サーバー
 │       ├── mcp.rs          # MCP ツール実装
 │       ├── canvas.rs       # Canvas ウィンドウ
 │       ├── terminal/       # ネイティブターミナル
@@ -137,7 +137,7 @@ vantage-point/
 
 | レイヤー | 技術 |
 |---------|------|
-| CLI / Stand | Rust (Tokio, Axum, Clap) |
+| CLI / Process | Rust (Tokio, Axum, Clap) |
 | WebView | wry + tao |
 | MCP | rmcp (stdio) |
 | Menu Bar App | Swift (AppKit) |

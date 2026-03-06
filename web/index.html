@@ -484,7 +484,7 @@
             ws = new WebSocket(WS_URL);
 
             ws.onopen = async () => {
-                console.log('Connected to Stand');
+                console.log('Connected to Process');
                 reconnectAttempts = 0;
                 document.getElementById('status').textContent = 'Connected';
                 document.getElementById('status').className = 'status connected';

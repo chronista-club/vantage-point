@@ -6,9 +6,9 @@
 //! - permission: Handle permission requests for tool execution
 //!
 //! ## 通信レイヤー
-//! すべて HTTP で Stand と通信する。
+//! すべて HTTP で Process と通信する。
 
-use crate::config::RunningStands;
+use crate::config::RunningProcesses;
 use rmcp::{
     ErrorData as McpError, ServiceExt, handler::server::tool::ToolRouter, model::*,
     schemars::JsonSchema, tool, tool_handler, tool_router, transport::stdio,
@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 
-use crate::protocol::{ChatComponent, StandMessage};
+use crate::protocol::{ChatComponent, ProcessMessage};
 
 /// Parameters for the show tool
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -228,7 +228,7 @@ pub struct PermissionResponse {
     pub message: Option<String>,
 }
 
-/// Permission request sent to Stand
+/// Permission request sent to Process
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PermissionRequestPayload {
     pub request_id: String,
@@ -237,15 +237,15 @@ pub struct PermissionRequestPayload {
     pub timeout_seconds: u32,
 }
 
-/// MCP → Stand 通信クライアント
+/// MCP → Process 通信クライアント
 ///
-/// すべての操作を HTTP 経由で Stand に委譲する。
+/// すべての操作を HTTP 経由で Process に委譲する。
 /// ステートレス設計 — QUIC 接続やチャネル状態を持たない。
 pub struct VantageMcp {
     /// HTTP クライアント
     client: reqwest::Client,
-    /// Stand の HTTP ベース URL
-    stand_url: Arc<Mutex<String>>,
+    /// Process の HTTP ベース URL
+    process_url: Arc<Mutex<String>>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -253,7 +253,7 @@ impl Clone for VantageMcp {
     fn clone(&self) -> Self {
         Self {
             client: self.client.clone(),
-            stand_url: self.stand_url.clone(),
+            process_url: self.process_url.clone(),
             tool_router: Self::tool_router(),
         }
     }
@@ -261,20 +261,20 @@ impl Clone for VantageMcp {
 
 #[tool_router]
 impl VantageMcp {
-    pub fn new(stand_port: u16) -> Self {
+    pub fn new(process_port: u16) -> Self {
         Self {
             client: reqwest::Client::new(),
-            stand_url: Arc::new(Mutex::new(format!("http://localhost:{}", stand_port))),
+            process_url: Arc::new(Mutex::new(format!("http://localhost:{}", process_port))),
             tool_router: Self::tool_router(),
         }
     }
 
-    /// Stand に HTTP POST でメッセージを送信
+    /// Process に HTTP POST でメッセージを送信
     ///
     /// `endpoint` は `/api/show` 等の API パス。
     /// `body` は JSON シリアライズ可能なペイロード。
     ///
-    /// 接続失敗時は Stand ポートを再解決してリトライする（lazy reconnect）。
+    /// 接続失敗時は Process ポートを再解決してリトライする（lazy reconnect）。
     async fn http_post(
         &self,
         endpoint: &str,
@@ -284,7 +284,7 @@ impl VantageMcp {
 
         let tid = new_trace_id();
         let start = std::time::Instant::now();
-        let url = format!("{}{}", self.stand_url.lock().await, endpoint);
+        let url = format!("{}{}", self.process_url.lock().await, endpoint);
 
         write_trace(
             &TraceEntry::new("mcp", &tid, "request", "INFO", format!("POST {}", endpoint))
@@ -309,7 +309,7 @@ impl VantageMcp {
                         &tid,
                         "reconnect",
                         "INFO",
-                        format!("Stand 再検出: {}", retry_url),
+                        format!("Process 再検出: {}", retry_url),
                     ));
                     self.client
                         .post(&retry_url)
@@ -319,18 +319,18 @@ impl VantageMcp {
                         .await
                         .map_err(|e2| {
                             McpError::internal_error(
-                                format!("Stand 通信失敗 ({}): {}. Is vp running?", endpoint, e2),
+                                format!("Process 通信失敗 ({}): {}. Is vp running?", endpoint, e2),
                                 None,
                             )
                         })?
-                } else if let Some(auto_url) = self.auto_start_stand(endpoint).await {
-                    // running.json にも見つからない → Stand を自動起動
+                } else if let Some(auto_url) = self.auto_start_process(endpoint).await {
+                    // running.json にも見つからない → Process を自動起動
                     write_trace(&TraceEntry::new(
                         "mcp",
                         &tid,
                         "auto_start",
                         "INFO",
-                        format!("Stand 自動起動後リトライ: {}", auto_url),
+                        format!("Process 自動起動後リトライ: {}", auto_url),
                     ));
                     self.client
                         .post(&auto_url)
@@ -340,7 +340,7 @@ impl VantageMcp {
                         .await
                         .map_err(|e2| {
                             McpError::internal_error(
-                                format!("Stand 通信失敗 ({}): {}. Stand auto-start succeeded but request failed.", endpoint, e2),
+                                format!("Process 通信失敗 ({}): {}. Process auto-start succeeded but request failed.", endpoint, e2),
                                 None,
                             )
                         })?
@@ -354,7 +354,7 @@ impl VantageMcp {
                     ));
                     return Err(McpError::internal_error(
                         format!(
-                            "Stand 通信失敗 ({}): {}. Auto-start failed. Run `vp start` manually.",
+                            "Process 通信失敗 ({}): {}. Auto-start failed. Run `vp start` manually.",
                             endpoint, e
                         ),
                         None,
@@ -370,7 +370,7 @@ impl VantageMcp {
                     format!("POST {} 失敗: {}", endpoint, e),
                 ));
                 return Err(McpError::internal_error(
-                    format!("Stand 通信失敗 ({}): {}. Is vp running?", endpoint, e),
+                    format!("Process 通信失敗 ({}): {}. Is vp running?", endpoint, e),
                     None,
                 ));
             }
@@ -386,7 +386,7 @@ impl VantageMcp {
                 format!("POST {} HTTP {}", endpoint, status),
             ));
             return Err(McpError::internal_error(
-                format!("Stand returned HTTP {}: {}", status, endpoint),
+                format!("Process returned HTTP {}: {}", status, endpoint),
                 None,
             ));
         }
@@ -409,15 +409,15 @@ impl VantageMcp {
         Ok(json)
     }
 
-    /// Stand ポートを再解決し、変わっていれば URL を更新してリトライ用 URL を返す
+    /// Process ポートを再解決し、変わっていれば URL を更新してリトライ用 URL を返す
     ///
     /// 接続失敗時に呼ばれる。`running.json` から cwd に一致する
-    /// Stand を検索し、現在の URL と異なる場合のみリトライ URL を返す。
+    /// Process を検索し、現在の URL と異なる場合のみリトライ URL を返す。
     async fn try_reconnect(&self, endpoint: &str) -> Option<String> {
-        let stand_info = RunningStands::find_for_cwd()?;
-        let new_base = format!("http://localhost:{}", stand_info.port);
+        let process_info = RunningProcesses::find_for_cwd()?;
+        let new_base = format!("http://localhost:{}", process_info.port);
 
-        let mut current = self.stand_url.lock().await;
+        let mut current = self.process_url.lock().await;
         if *current != new_base {
             *current = new_base.clone();
             Some(format!("{}{}", new_base, endpoint))
@@ -426,12 +426,12 @@ impl VantageMcp {
         }
     }
 
-    /// Stand が見つからない場合に自動起動する
+    /// Process が見つからない場合に自動起動する
     ///
     /// `vp start --headless` をバックグラウンドで spawn し、
     /// health check ポーリングで起動完了を待つ。
-    /// 成功したら `stand_url` を更新し、新しい URL を返す。
-    async fn auto_start_stand(&self, endpoint: &str) -> Option<String> {
+    /// 成功したら `process_url` を更新し、新しい URL を返す。
+    async fn auto_start_process(&self, endpoint: &str) -> Option<String> {
         use crate::trace_log::{TraceEntry, new_trace_id, write_trace};
 
         let tid = new_trace_id();
@@ -443,7 +443,7 @@ impl VantageMcp {
             &tid,
             "auto_start",
             "INFO",
-            format!("Stand 自動起動: project_dir={}", cwd_str),
+            format!("Process 自動起動: project_dir={}", cwd_str),
         ));
 
         // vp start --headless をデタッチ実行
@@ -476,13 +476,13 @@ impl VantageMcp {
         for _ in 0..max_attempts {
             tokio::time::sleep(poll_interval).await;
 
-            // running.json から新しい Stand を検索
-            let stand_info = match RunningStands::find_for_cwd() {
+            // running.json から新しい Process を検索
+            let process_info = match RunningProcesses::find_for_cwd() {
                 Some(info) => info,
                 None => continue,
             };
 
-            let new_base = format!("http://localhost:{}", stand_info.port);
+            let new_base = format!("http://localhost:{}", process_info.port);
             let health_url = format!("{}/api/health", new_base);
 
             // health check
@@ -494,8 +494,8 @@ impl VantageMcp {
                 .await
             {
                 Ok(resp) if resp.status().is_success() => {
-                    // 起動完了 — stand_url を更新
-                    let mut current = self.stand_url.lock().await;
+                    // 起動完了 — process_url を更新
+                    let mut current = self.process_url.lock().await;
                     *current = new_base.clone();
 
                     write_trace(&TraceEntry::new(
@@ -503,7 +503,7 @@ impl VantageMcp {
                         &tid,
                         "auto_start",
                         "INFO",
-                        format!("Stand 自動起動成功: port={}", stand_info.port),
+                        format!("Process 自動起動成功: port={}", process_info.port),
                     ));
 
                     return Some(format!("{}{}", new_base, endpoint));
@@ -517,17 +517,17 @@ impl VantageMcp {
             &tid,
             "auto_start",
             "ERROR",
-            "Stand 自動起動タイムアウト（5秒）".to_string(),
+            "Process 自動起動タイムアウト（5秒）".to_string(),
         ));
 
         None
     }
 
-    /// Stand に StandMessage を送信（show/clear/toggle_pane/split_pane/close_pane）
-    async fn stand_call(
+    /// Process に ProcessMessage を送信（show/clear/toggle_pane/split_pane/close_pane）
+    async fn process_call(
         &self,
         endpoint: &str,
-        msg: &StandMessage,
+        msg: &ProcessMessage,
     ) -> Result<serde_json::Value, McpError> {
         self.http_post(endpoint, msg).await
     }
@@ -589,14 +589,14 @@ impl VantageMcp {
             _ => crate::protocol::Content::Markdown(params.content),
         };
 
-        let msg = StandMessage::Show {
+        let msg = ProcessMessage::Show {
             pane_id: pane_id.clone(),
             content,
             append,
             title: params.title,
         };
 
-        self.stand_call("/api/show", &msg).await?;
+        self.process_call("/api/show", &msg).await?;
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
             format!("Content displayed in pane '{}'", pane_id),
         )]))
@@ -610,10 +610,10 @@ impl VantageMcp {
     ) -> Result<CallToolResult, McpError> {
         let pane_id = params.pane_id.unwrap_or_else(|| "main".to_string());
 
-        let msg = StandMessage::Clear {
+        let msg = ProcessMessage::Clear {
             pane_id: pane_id.clone(),
         };
-        self.stand_call("/api/show", &msg).await?;
+        self.process_call("/api/show", &msg).await?;
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
             format!("Pane '{}' cleared", pane_id),
         )]))
@@ -633,11 +633,11 @@ impl VantageMcp {
             None => "toggled",
         };
 
-        let msg = StandMessage::TogglePane {
+        let msg = ProcessMessage::TogglePane {
             pane_id: params.pane_id.clone(),
             visible: params.visible,
         };
-        self.stand_call("/api/toggle-pane", &msg).await?;
+        self.process_call("/api/toggle-pane", &msg).await?;
 
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
             format!("Pane '{}' {}", params.pane_id, state_desc),
@@ -671,12 +671,12 @@ impl VantageMcp {
         let new_pane_id = new_pane_id.split('-').next().unwrap_or(&new_pane_id);
         let new_pane_id = format!("pane-{}", new_pane_id);
 
-        let msg = StandMessage::Split {
+        let msg = ProcessMessage::Split {
             pane_id: source_pane_id.clone(),
             direction,
             new_pane_id: new_pane_id.clone(),
         };
-        self.stand_call("/api/split-pane", &msg).await?;
+        self.process_call("/api/split-pane", &msg).await?;
 
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
             format!(
@@ -692,10 +692,10 @@ impl VantageMcp {
         &self,
         rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<ClosePaneParams>,
     ) -> Result<CallToolResult, McpError> {
-        let msg = StandMessage::Close {
+        let msg = ProcessMessage::Close {
             pane_id: params.pane_id.clone(),
         };
-        self.stand_call("/api/close-pane", &msg).await?;
+        self.process_call("/api/close-pane", &msg).await?;
 
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
             format!("Pane '{}' closed", params.pane_id),
@@ -773,7 +773,7 @@ impl VantageMcp {
         });
 
         // タイムアウトを長めに設定（Canvas 自動起動 + キャプチャ待ち）
-        let url = format!("{}/api/canvas/capture", self.stand_url.lock().await);
+        let url = format!("{}/api/canvas/capture", self.process_url.lock().await);
         let resp = self
             .client
             .post(&url)
@@ -920,7 +920,7 @@ impl VantageMcp {
         description = "List all running Ruby daemon processes with their IDs, names, pane IDs, and status."
     )]
     async fn list_ruby(&self) -> Result<CallToolResult, McpError> {
-        let url = format!("{}/api/ruby/list", self.stand_url.lock().await);
+        let url = format!("{}/api/ruby/list", self.process_url.lock().await);
         let resp = self
             .client
             .get(&url)
@@ -987,15 +987,15 @@ impl VantageMcp {
             timeout_seconds,
         };
 
-        // Create the StandMessage
-        let message = StandMessage::ChatComponent {
+        // Create the ProcessMessage
+        let message = ProcessMessage::ChatComponent {
             component,
             interactive: true,
         };
 
-        let url = self.stand_url.lock().await;
+        let url = self.process_url.lock().await;
 
-        // First, send the permission request to the Stand
+        // First, send the permission request to the Process
         let send_result = self
             .client
             .post(format!("{}/api/permission", *url))
@@ -1006,7 +1006,7 @@ impl VantageMcp {
         if let Err(e) = send_result {
             return Err(McpError::internal_error(
                 format!(
-                    "Failed to send permission request to Stand: {}. Is vp running?",
+                    "Failed to send permission request to Process: {}. Is vp running?",
                     e
                 ),
                 None,
@@ -1017,7 +1017,7 @@ impl VantageMcp {
         if !send_resp.status().is_success() {
             return Err(McpError::internal_error(
                 format!(
-                    "Stand returned error on permission request: {}",
+                    "Process returned error on permission request: {}",
                     send_resp.status()
                 ),
                 None,
@@ -1071,7 +1071,7 @@ impl VantageMcp {
                 }
                 Ok(resp) => {
                     return Err(McpError::internal_error(
-                        format!("Unexpected response from Stand: {}", resp.status()),
+                        format!("Unexpected response from Process: {}", resp.status()),
                         None,
                     ));
                 }
@@ -1087,19 +1087,19 @@ impl VantageMcp {
         }
     }
 
-    /// Restart the Vantage Point Stand
+    /// Restart the Vantage Point Process
     ///
-    /// This tool restarts the Stand process while preserving session state.
+    /// This tool restarts the Process process while preserving session state.
     /// Useful after rebuilding the binary.
     /// HTTP ベースのプロセス管理のため QUIC は使わない。
     #[tool(
-        description = "Restart the Vantage Point Stand. Session state is preserved. Returns when Stand is ready."
+        description = "Restart the Vantage Point Process. Session state is preserved. Returns when Process is ready."
     )]
     async fn restart(
         &self,
         rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<RestartParams>,
     ) -> Result<CallToolResult, McpError> {
-        let url = self.stand_url.lock().await;
+        let url = self.process_url.lock().await;
         let base_url = url.clone();
         drop(url);
 
@@ -1110,10 +1110,10 @@ impl VantageMcp {
             .and_then(|s| s.parse().ok())
             .unwrap_or(33000);
 
-        // 1. Get current Stand info (project_dir)
+        // 1. Get current Process info (project_dir)
         let health_url = format!("{}/api/health", base_url);
         let health_resp = self.client.get(&health_url).send().await.map_err(|e| {
-            McpError::internal_error(format!("Failed to get Stand health: {}", e), None)
+            McpError::internal_error(format!("Failed to get Process health: {}", e), None)
         })?;
 
         let health: serde_json::Value = health_resp.json().await.map_err(|e| {
@@ -1130,7 +1130,7 @@ impl VantageMcp {
         let shutdown_url = format!("{}/api/shutdown", base_url);
         let _ = self.client.post(&shutdown_url).send().await;
 
-        // 3. Wait for Stand to stop (poll health endpoint)
+        // 3. Wait for Process to stop (poll health endpoint)
         let stop_timeout = Duration::from_secs(10);
         let poll_interval = Duration::from_millis(200);
         let start = std::time::Instant::now();
@@ -1138,7 +1138,7 @@ impl VantageMcp {
         loop {
             if start.elapsed() > stop_timeout {
                 return Err(McpError::internal_error(
-                    "Timeout waiting for Stand to stop".to_string(),
+                    "Timeout waiting for Process to stop".to_string(),
                     None,
                 ));
             }
@@ -1149,13 +1149,13 @@ impl VantageMcp {
                     tokio::time::sleep(poll_interval).await;
                 }
                 _ => {
-                    // Stand is down
+                    // Process is down
                     break;
                 }
             }
         }
 
-        // 4. Start new Stand process
+        // 4. Start new Process process
         let open_viewer = params.open_viewer.unwrap_or(false);
         let mut cmd = std::process::Command::new("vp");
         cmd.arg("start")
@@ -1174,17 +1174,17 @@ impl VantageMcp {
             .stderr(std::process::Stdio::null());
 
         cmd.spawn().map_err(|e| {
-            McpError::internal_error(format!("Failed to spawn new Stand: {}", e), None)
+            McpError::internal_error(format!("Failed to spawn new Process: {}", e), None)
         })?;
 
-        // 5. Wait for new Stand to be ready
+        // 5. Wait for new Process to be ready
         let start_timeout = Duration::from_secs(15);
         let start = std::time::Instant::now();
 
         loop {
             if start.elapsed() > start_timeout {
                 return Err(McpError::internal_error(
-                    "Timeout waiting for Stand to start".to_string(),
+                    "Timeout waiting for Process to start".to_string(),
                     None,
                 ));
             }
@@ -1193,10 +1193,10 @@ impl VantageMcp {
 
             match self.client.get(&health_url).send().await {
                 Ok(resp) if resp.status() == reqwest::StatusCode::OK => {
-                    // Stand is up
+                    // Process is up
                     return Ok(CallToolResult::success(vec![rmcp::model::Content::text(
                         format!(
-                            "Stand restarted successfully on port {}. Project: {}",
+                            "Process restarted successfully on port {}. Project: {}",
                             port, project_dir
                         ),
                     )]));
@@ -1214,12 +1214,12 @@ impl rmcp::ServerHandler for VantageMcp {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
             instructions: Some(
-                "Vantage Point Stand - Display rich content (markdown, HTML, images) in a browser viewer. \
+                "Vantage Point Process - Display rich content (markdown, HTML, images) in a browser viewer. \
                  Use 'open_canvas' to open the native Canvas window, 'close_canvas' to close it, \
                  'capture_canvas' to take a PNG screenshot of the Canvas (viewable with Read tool), \
                  'show' to display content, 'clear' to clear panes, 'split_pane' to split a pane \
                  horizontally or vertically, 'close_pane' to close a pane, 'toggle_pane' to toggle panel visibility, \
-                 'permission' to request user approval, 'restart' to restart the Stand, \
+                 'permission' to request user approval, 'restart' to restart the Process, \
                  'watch_file' to monitor a log file in real-time, and 'unwatch_file' to stop monitoring.".into()
             ),
             capabilities: ServerCapabilities::builder().enable_tools().build(),
@@ -1228,21 +1228,21 @@ impl rmcp::ServerHandler for VantageMcp {
     }
 }
 
-/// Resolve Stand port for MCP communication
+/// Resolve Process port for MCP communication
 ///
 /// Priority:
 /// 1. Explicit port argument (if provided and != 33000)
 /// 2. running.json lookup by current working directory
 /// 3. Default port (33000)
-fn resolve_stand_port(explicit_port: u16) -> u16 {
+fn resolve_process_port(explicit_port: u16) -> u16 {
     // If an explicit port was provided (not the default), use it
     if explicit_port != 33000 {
         return explicit_port;
     }
 
-    // Try to find a running Stand for the current directory
-    if let Some(stand_info) = RunningStands::find_for_cwd() {
-        return stand_info.port;
+    // Try to find a running Process for the current directory
+    if let Some(process_info) = RunningProcesses::find_for_cwd() {
+        return process_info.port;
     }
 
     // Fall back to default
@@ -1250,12 +1250,12 @@ fn resolve_stand_port(explicit_port: u16) -> u16 {
 }
 
 /// Run the MCP server over stdio
-pub async fn run_mcp_server(stand_port: u16) -> anyhow::Result<()> {
+pub async fn run_mcp_server(process_port: u16) -> anyhow::Result<()> {
     // トレースログファイルを早期初期化
     crate::trace_log::init_log_file();
 
     // Resolve the actual port to use
-    let resolved_port = resolve_stand_port(stand_port);
+    let resolved_port = resolve_process_port(process_port);
 
     // Note: In MCP mode, we should not use tracing to stdout
     // as it interferes with JSON-RPC communication

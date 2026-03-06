@@ -2,27 +2,48 @@
 
 ## プロジェクト概要
 
-Vantage Point（`vp`）は Rust製のAI協働開発プラットフォーム。
-Claude CLIをバックエンドとして、WebView UIとMIDI入力を統合した開発体験を提供する。
+Vantage Point（`vp`）は Rust製の **AI ネイティブ開発環境**。
+Claude CLI をエンジンとして、TUI コンソール・Canvas（WebView）・外部コントロールを統合した開発体験を提供する。
+Mac App Store で配布予定（有料 + Free プランの可能性あり）。
+
+### プロジェクト方針
+
+**VP は焦らず、使用感を確かめながら、熟慮・議論を重ねて進化させるプロジェクト。**
+Creo Memories（サービス）とは異なり、「自分のような開発フロー」のためのアプリ。
+dogfooding を通じて体験を磨き、納得できる完成度でリリースする。
 
 ### コアコンセプト
 
-- **AI主導の選択肢UI**: AIが選択肢を提示 → ユーザーが選ぶ
-- **協調モード**: 協調 / 委任 / 自律 の3段階
-- **CLI-First**: Rust CLIをコアとして段階的に拡張
+- **AI ネイティブ開発環境**: VP が主、Claude Code はそのエンジン
+- **プロジェクト起点**: プロジェクト選択 → TUI コンソール → Claude との対話が 1st ビュー
+- **Canvas + TUI**: TUI で操る、Canvas で視る。両者が並列に動く
+- **セッション永続化**: 前回の続きから再開できる開発環境
+
+### アーキテクチャ命名体系（JoJo メタファー）
+
+外向けは普通の用語メイン + JoJo 名を小さく併記（機能イメージを伝える目的）。
+
+```
+Process（プロジェクトの開発プロセス = 本体 / スタンド使い）
+  ├── Star Platinum（AI エージェント能力）
+  ├── Paisley Park（Canvas 表示能力）
+  ├── Heaven's Door（コード実行能力 / Ruby VM）
+  └── Hermit Purple（外部コントロール能力 / MIDI 等）
+```
+
+- **TheWorld**: 常駐デーモン
 
 ## 技術スタック
 
 | レイヤー | 技術 |
 |---------|------|
-| CLI / Stand | Rust (Tokio, Axum, Clap) |
+| CLI / Process | Rust (Tokio, Axum, Clap) |
 | WebView | wry + tao |
 | Frontend | HTML/JS (WebSocket) |
 | Agent | Claude CLI + MCP |
 | MIDI | midir |
 
-> **Stand**: JoJoの奇妙な冒険のスタンドにちなんだ命名。
-> AIエージェントが動作するサーバーの総称で、ユーザーの「傍らに立ち」能力を発揮する存在。
+> **Process**: プロジェクトの開発プロセスを表す本体。JoJo の Stand（能力）を保持し、ユーザーの開発を支援する。
 
 ### システム構成
 
@@ -59,10 +80,10 @@ vantage-point/
 
 ```bash
 # Core
-vp start [N]           # プロジェクトN番のStandを起動
+vp start [N]           # プロジェクトN番のProcessを起動
 vp start -d simple     # デバッグモードで起動
-vp stop [--port]       # Stand停止
-vp restart [--port]    # Stand再起動
+vp stop [--port]       # Process停止
+vp restart [--port]    # Process再起動
 vp ps                  # 稼働中インスタンス一覧
 vp open [N]            # WebUIを開く
 vp config              # 設定と登録プロジェクト表示

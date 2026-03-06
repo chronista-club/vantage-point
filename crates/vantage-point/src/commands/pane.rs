@@ -5,9 +5,9 @@
 use anyhow::Result;
 use clap::Subcommand;
 
-use crate::commands::stand_client::StandClient;
+use crate::commands::process_client::ProcessClient;
 use crate::config::Config;
-use crate::protocol::{Content, SplitDirection, StandMessage};
+use crate::protocol::{Content, ProcessMessage, SplitDirection};
 
 /// Pane サブコマンド
 #[derive(Subcommand)]
@@ -101,7 +101,7 @@ pub fn execute(cmd: PaneCommands, config: &Config) -> Result<()> {
             target,
             port,
         } => {
-            let client = StandClient::connect(target.as_deref(), port, config)?;
+            let client = ProcessClient::connect(target.as_deref(), port, config)?;
             let pane_id = pane_id.unwrap_or_else(|| "main".to_string());
 
             let content_enum = match format.as_str() {
@@ -111,7 +111,7 @@ pub fn execute(cmd: PaneCommands, config: &Config) -> Result<()> {
                 _ => Content::Markdown(content),
             };
 
-            let msg = StandMessage::Show {
+            let msg = ProcessMessage::Show {
                 pane_id: pane_id.clone(),
                 content: content_enum,
                 append,
@@ -126,10 +126,10 @@ pub fn execute(cmd: PaneCommands, config: &Config) -> Result<()> {
             target,
             port,
         } => {
-            let client = StandClient::connect(target.as_deref(), port, config)?;
+            let client = ProcessClient::connect(target.as_deref(), port, config)?;
             let pane_id = pane_id.unwrap_or_else(|| "main".to_string());
 
-            let msg = StandMessage::Clear {
+            let msg = ProcessMessage::Clear {
                 pane_id: pane_id.clone(),
             };
             client.post("/api/show", &msg)?;
@@ -142,7 +142,7 @@ pub fn execute(cmd: PaneCommands, config: &Config) -> Result<()> {
             target,
             port,
         } => {
-            let client = StandClient::connect(target.as_deref(), port, config)?;
+            let client = ProcessClient::connect(target.as_deref(), port, config)?;
             let source_pane_id = source.unwrap_or_else(|| "main".to_string());
 
             let dir = match direction.to_lowercase().as_str() {
@@ -154,7 +154,7 @@ pub fn execute(cmd: PaneCommands, config: &Config) -> Result<()> {
             let new_pane_id = new_pane_id.split('-').next().unwrap_or(&new_pane_id);
             let new_pane_id = format!("pane-{}", new_pane_id);
 
-            let msg = StandMessage::Split {
+            let msg = ProcessMessage::Split {
                 pane_id: source_pane_id.clone(),
                 direction: dir,
                 new_pane_id: new_pane_id.clone(),
@@ -171,8 +171,8 @@ pub fn execute(cmd: PaneCommands, config: &Config) -> Result<()> {
             target,
             port,
         } => {
-            let client = StandClient::connect(target.as_deref(), port, config)?;
-            let msg = StandMessage::Close {
+            let client = ProcessClient::connect(target.as_deref(), port, config)?;
+            let msg = ProcessMessage::Close {
                 pane_id: pane_id.clone(),
             };
             client.post("/api/close-pane", &msg)?;
@@ -185,8 +185,8 @@ pub fn execute(cmd: PaneCommands, config: &Config) -> Result<()> {
             target,
             port,
         } => {
-            let client = StandClient::connect(target.as_deref(), port, config)?;
-            let msg = StandMessage::TogglePane {
+            let client = ProcessClient::connect(target.as_deref(), port, config)?;
+            let msg = ProcessMessage::TogglePane {
                 pane_id: pane_id.clone(),
                 visible,
             };

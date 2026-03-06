@@ -68,9 +68,9 @@ mod tests {
 
 ```rust
 #[test]
-fn test_stand_message_serialization() {
+fn test_process_message_serialization() {
     // Arrange
-    let msg = StandMessage::ChatChunk {
+    let msg = ProcessMessage::ChatChunk {
         content: "Hello".to_string(),
         done: false,
     };
@@ -117,7 +117,7 @@ cargo test --workspace
 cargo test protocol::
 
 # 特定テストのみ
-cargo test test_stand_message
+cargo test test_process_message
 
 # 出力表示
 cargo test -- --nocapture
@@ -168,7 +168,7 @@ async fn test_async_capability() {
 ─────────────────────────────────────
 protocol/                    ~30
 capability/                  ~50
-stand/                       ~15
+process/                       ~15
 world/                       ~10
 その他                        ~10
 ─────────────────────────────────────

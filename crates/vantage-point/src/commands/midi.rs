@@ -13,9 +13,9 @@ pub enum MidiCommands {
         /// 接続するMIDIポート番号
         #[arg(short, long)]
         port: Option<usize>,
-        /// アクション送信先のStandポート
+        /// アクション送信先のProcessポート
         #[arg(short = 'P', long, default_value = "33000")]
-        stand_port: u16,
+        process_port: u16,
     },
     /// 利用可能なMIDI入力ポート一覧
     Ports,
@@ -51,7 +51,7 @@ pub enum Lpd8Commands {
 /// `vp midi` を実行
 pub fn execute(cmd: MidiCommands) -> Result<()> {
     match cmd {
-        MidiCommands::Monitor { port, stand_port } => {
+        MidiCommands::Monitor { port, process_port } => {
             let mut config = crate::midi::MidiConfig::default();
             config
                 .note_actions
@@ -64,7 +64,11 @@ pub fn execute(cmd: MidiCommands) -> Result<()> {
                 .insert(38, crate::midi::MidiAction::ResetSession { port: None });
 
             let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(crate::midi::run_midi_interactive(port, config, stand_port))
+            rt.block_on(crate::midi::run_midi_interactive(
+                port,
+                config,
+                process_port,
+            ))
         }
         MidiCommands::Ports => {
             crate::midi::print_ports();

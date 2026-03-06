@@ -31,7 +31,7 @@ fn config_file_path() -> PathBuf {
     config_dir().join("config.toml")
 }
 
-/// Vantage Stand configuration
+/// Vantage Process configuration
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
     /// Default project directory for Claude agent
@@ -153,7 +153,7 @@ impl Config {
 }
 
 // =============================================================================
-// Running Stands Management
+// Running Processes Management
 // =============================================================================
 
 /// プロセスが生存しているか確認（kill -0）
@@ -161,9 +161,9 @@ fn is_process_alive(pid: u32) -> bool {
     unsafe { libc::kill(pid as i32, 0) == 0 }
 }
 
-/// Running Stand information
+/// Running Process information
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RunningStandInfo {
+pub struct RunningProcessInfo {
     /// Port number
     pub port: u16,
     /// QUIC (Unison) ポート番号（HTTP port + 1000）
@@ -177,14 +177,15 @@ pub struct RunningStandInfo {
     pub started_at: u64,
 }
 
-/// Running Stands registry
+/// Running Processes registry
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct RunningStands {
-    pub stands: Vec<RunningStandInfo>,
+pub struct RunningProcesses {
+    #[serde(alias = "stands")]
+    pub processes: Vec<RunningProcessInfo>,
 }
 
-impl RunningStands {
-    /// Load running stands from file
+impl RunningProcesses {
+    /// Load running processes from file
     pub fn load() -> Result<Self> {
         let path = Self::file_path();
         if !path.exists() {
@@ -192,11 +193,11 @@ impl RunningStands {
         }
 
         let content = std::fs::read_to_string(&path)?;
-        let stands: RunningStands = serde_json::from_str(&content)?;
-        Ok(stands)
+        let procs: RunningProcesses = serde_json::from_str(&content)?;
+        Ok(procs)
     }
 
-    /// Save running stands to file
+    /// Save running processes to file
     pub fn save(&self) -> Result<()> {
         let path = Self::file_path();
 
@@ -215,9 +216,9 @@ impl RunningStands {
         config_dir().join("running.json")
     }
 
-    /// Register a new running Stand
+    /// Register a new running Process
     pub fn register(port: u16, project_dir: &str, pid: u32, quic_port: Option<u16>) -> Result<()> {
-        let mut stands = Self::load().unwrap_or_default();
+        let mut procs = Self::load().unwrap_or_default();
 
         // Canonicalize the project directory for consistent matching
         let canonical_dir = std::fs::canonicalize(project_dir)
@@ -225,12 +226,12 @@ impl RunningStands {
             .unwrap_or_else(|_| project_dir.to_string());
 
         // Remove any existing entry for this port or project
-        stands
-            .stands
+        procs
+            .processes
             .retain(|s| s.port != port && s.project_dir != canonical_dir);
 
         // Add new entry
-        stands.stands.push(RunningStandInfo {
+        procs.processes.push(RunningProcessInfo {
             port,
             quic_port,
             project_dir: canonical_dir,
@@ -241,78 +242,78 @@ impl RunningStands {
                 .as_secs(),
         });
 
-        stands.save()
+        procs.save()
     }
 
-    /// Unregister a Stand by port
+    /// Unregister a Process by port
     pub fn unregister_by_port(port: u16) -> Result<()> {
-        let mut stands = Self::load().unwrap_or_default();
-        stands.stands.retain(|s| s.port != port);
-        stands.save()
+        let mut procs = Self::load().unwrap_or_default();
+        procs.processes.retain(|s| s.port != port);
+        procs.save()
     }
 
-    /// Unregister a Stand by project directory
+    /// Unregister a Process by project directory
     pub fn unregister_by_project(project_dir: &str) -> Result<()> {
-        let mut stands = Self::load().unwrap_or_default();
+        let mut procs = Self::load().unwrap_or_default();
 
         let canonical_dir = std::fs::canonicalize(project_dir)
             .map(|p| p.display().to_string())
             .unwrap_or_else(|_| project_dir.to_string());
 
-        stands.stands.retain(|s| s.project_dir != canonical_dir);
-        stands.save()
+        procs.processes.retain(|s| s.project_dir != canonical_dir);
+        procs.save()
     }
 
-    /// Find a running Stand by project directory
+    /// Find a running Process by project directory
     ///
     /// プロセス生存確認済みのエントリのみ返す。
-    pub fn find_by_project(project_dir: &str) -> Option<RunningStandInfo> {
-        let stands = Self::load().ok()?;
+    pub fn find_by_project(project_dir: &str) -> Option<RunningProcessInfo> {
+        let procs = Self::load().ok()?;
 
         let canonical_dir = std::fs::canonicalize(project_dir)
             .map(|p| p.display().to_string())
             .unwrap_or_else(|_| project_dir.to_string());
 
-        stands
-            .stands
+        procs
+            .processes
             .into_iter()
             .find(|s| s.project_dir == canonical_dir && is_process_alive(s.pid))
     }
 
-    /// Find a running Stand for the current working directory
-    /// Returns the Stand that best matches the current directory
-    pub fn find_for_cwd() -> Option<RunningStandInfo> {
+    /// Find a running Process for the current working directory
+    /// Returns the Process that best matches the current directory
+    pub fn find_for_cwd() -> Option<RunningProcessInfo> {
         let cwd = std::env::current_dir().ok()?;
         let cwd_str = std::fs::canonicalize(&cwd)
             .map(|p| p.display().to_string())
             .unwrap_or_else(|_| cwd.display().to_string());
 
-        let stands = Self::load().ok()?;
+        let procs = Self::load().ok()?;
 
         // プロセス生存確認フィルタ
-        let alive_stands: Vec<_> = stands
-            .stands
+        let alive_processes: Vec<_> = procs
+            .processes
             .into_iter()
             .filter(|s| is_process_alive(s.pid))
             .collect();
 
         // First try exact match
-        if let Some(stand) = alive_stands.iter().find(|s| s.project_dir == cwd_str) {
-            return Some(stand.clone());
+        if let Some(found) = alive_processes.iter().find(|s| s.project_dir == cwd_str) {
+            return Some(found.clone());
         }
 
-        // Then try to find a Stand whose project is an ancestor of cwd
-        alive_stands
+        // Then try to find a Process whose project is an ancestor of cwd
+        alive_processes
             .into_iter()
             .filter(|s| cwd_str.starts_with(&s.project_dir))
             .max_by_key(|s| s.project_dir.len()) // Most specific match
     }
 
-    /// Get all running Stands（プロセス生存確認済み）
-    pub fn list() -> Vec<RunningStandInfo> {
+    /// Get all running Processes（プロセス生存確認済み）
+    pub fn list() -> Vec<RunningProcessInfo> {
         Self::load()
             .map(|s| {
-                s.stands
+                s.processes
                     .into_iter()
                     .filter(|s| is_process_alive(s.pid))
                     .collect()
@@ -322,10 +323,10 @@ impl RunningStands {
 
     /// Clean up stale entries (processes that are no longer running)
     pub fn cleanup_stale() -> Result<()> {
-        let mut stands = Self::load().unwrap_or_default();
-        let original_count = stands.stands.len();
+        let mut procs = Self::load().unwrap_or_default();
+        let original_count = procs.processes.len();
 
-        stands.stands.retain(|s| {
+        procs.processes.retain(|s| {
             // Check if process is still running
             // On Unix, we can use kill with signal 0 to check
             #[cfg(unix)]
@@ -344,8 +345,8 @@ impl RunningStands {
             }
         });
 
-        if stands.stands.len() != original_count {
-            stands.save()?;
+        if procs.processes.len() != original_count {
+            procs.save()?;
         }
 
         Ok(())

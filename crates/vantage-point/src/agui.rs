@@ -5,7 +5,7 @@
 //!
 //! ## Requirements Coverage
 //! - REQ-AGUI-041: Event type definitions (this module)
-//! - REQ-AGUI-040: WebSocket transport (integration with stand/server.rs)
+//! - REQ-AGUI-040: WebSocket transport (integration with process/server.rs)
 
 use serde::{Deserialize, Serialize};
 
@@ -662,7 +662,7 @@ use std::collections::HashMap;
 /// for agent_event in agent_events {
 ///     let agui_events = bridge.convert(agent_event);
 ///     for event in agui_events {
-///         hub.broadcast(StandMessage::AgUi { event });
+///         hub.broadcast(ProcessMessage::AgUi { event });
 ///     }
 /// }
 /// ```

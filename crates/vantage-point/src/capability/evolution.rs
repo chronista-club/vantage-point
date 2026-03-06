@@ -1,6 +1,6 @@
 //! Capability Evolution System - Stand能力の成長と進化
 //!
-//! JoJoスタンドのACT進化システムを参考に、Stand Capabilityが段階的に成長する仕組みを実装。
+//! JoJoスタンドのACT進化システムを参考に、Capabilityが段階的に成長する仕組みを実装。
 //!
 //! ## 成長の種類
 //!

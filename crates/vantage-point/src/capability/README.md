@@ -262,8 +262,8 @@ efficiency = 0.85
 
 ## 関連ドキュメント
 
-- [docs/spec/05-stand-capability.md](../../../../docs/spec/05-stand-capability.md) - Capability仕様
-- [docs/design/02-stand-capability-evolution.md](../../../../docs/design/02-stand-capability-evolution.md) - Evolution設計書
+- [docs/spec/05-capability.md](../../../../docs/spec/05-capability.md) - Capability仕様
+- [docs/design/02-capability-evolution.md](../../../../docs/design/02-capability-evolution.md) - Evolution設計書
 
 ## テスト
 

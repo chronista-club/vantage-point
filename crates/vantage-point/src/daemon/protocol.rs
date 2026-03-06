@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 /// Unison Channel 通信用メッセージ型
 ///
-/// Daemon ↔ Console、Stand ↔ MCP の双方で使用する共通エンベロープ。
+/// Daemon ↔ Console、Process ↔ MCP の双方で使用する共通エンベロープ。
 /// 1つのチャネル上で Request/Response/Error/Event を多重化する。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]

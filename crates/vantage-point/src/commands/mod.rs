@@ -10,7 +10,7 @@ pub mod daemon;
 pub mod file_cmd;
 pub mod midi;
 pub mod pane;
+pub mod process_client;
 pub mod restart;
-pub mod stand_client;
 pub mod start;
 pub mod update;

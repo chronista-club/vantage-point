@@ -1,7 +1,7 @@
 //! Vantage Point Agent - AI協働開発プラットフォーム
 //!
 //! Usage:
-//!   vp start    # Standを起動（HTTP + WebSocket）
+//!   vp start    # Processを起動（HTTP + WebSocket）
 //!   vp ps       # 稼働中インスタンス一覧
 //!   vp mcp      # MCPサーバーとして起動（stdio）
 //!   vp daemon   # デーモンプロセス管理
@@ -30,9 +30,9 @@ pub(crate) mod daemon;
 mod file_watcher;
 mod mcp;
 mod midi;
+mod process;
 mod protocol;
 mod resolve;
-mod stand;
 mod terminal;
 mod terminal_window;
 pub(crate) mod trace_log;
@@ -59,7 +59,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Standを起動（HTTPサーバー + WebSocketハブ）[デフォルト]
+    /// Processを起動（HTTPサーバー + WebSocketハブ）[デフォルト]
     Start {
         /// プロジェクト名またはインデックス（省略時はcwd自動検出）
         #[arg()]
@@ -89,13 +89,13 @@ enum Commands {
         #[arg(long, short = 'm')]
         midi: Option<String>,
     },
-    /// Standを停止
+    /// Processを停止
     Stop {
         /// プロジェクト名またはインデックス（省略時はcwd自動検出）
         #[arg()]
         target: Option<String>,
     },
-    /// Standを再起動（セッション状態を保持）
+    /// Processを再起動（セッション状態を保持）
     Restart {
         /// プロジェクト名またはインデックス（省略時はcwd自動検出）
         #[arg()]
@@ -156,7 +156,7 @@ enum Commands {
     },
 
     // --- Groups ---
-    /// デーモンプロセス管理（Stand管理 + ヘルスチェック）
+    /// デーモンプロセス管理（Process管理 + ヘルスチェック）
     #[command(subcommand)]
     Daemon(DaemonCommands),
     /// MIDIハードウェア操作

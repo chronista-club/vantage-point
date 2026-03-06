@@ -227,4 +227,4 @@ pub enum StopReason {
 
 - [AG-UI Protocol](https://docs.ag-ui.com)
 - [Agent Client Protocol](https://agentclientprotocol.com)
-- [05-stand-capability.md](../spec/05-stand-capability.md)
+- [05-capability.md](../spec/05-capability.md)
