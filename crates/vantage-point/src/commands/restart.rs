@@ -45,6 +45,12 @@ pub fn execute(target: Option<&str>, browser: bool, headless: bool, config: &Con
     // デバッグモード
     let debug_mode = parse_debug_env().unwrap_or_default();
 
+    // ポート予約: Process サーバー起動前に running.json へ仮登録
+    let my_pid = std::process::id();
+    if let Err(e) = crate::config::RunningProcesses::register(port, &project_dir, my_pid, None) {
+        tracing::warn!("Failed to pre-register port in running.json: {}", e);
+    }
+
     // CapabilityConfig（再起動時は MIDI なし）
     let cap_config = crate::process::CapabilityConfig {
         project_dir: project_dir.clone(),

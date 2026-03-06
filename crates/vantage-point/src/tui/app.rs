@@ -257,6 +257,12 @@ fn start_background_services(
 ) -> Result<()> {
     let port = crate::resolve::port_for_configured(project_index, config)?;
 
+    // ポート予約: Process サーバー起動前に running.json へ仮登録
+    let my_pid = std::process::id();
+    if let Err(e) = crate::config::RunningProcesses::register(port, project_dir, my_pid, None) {
+        tracing::warn!("Failed to pre-register port in running.json: {}", e);
+    }
+
     let cap_config = crate::process::CapabilityConfig {
         project_dir: project_dir.to_string(),
         midi_config: None,
@@ -455,6 +461,11 @@ fn run_claude_session(
         }
     }
 
+    // PTY クリーンアップ: master fd を閉じて reader スレッドに EOF を通知
+    drop(writer);
+    drop(pair.master);
+    child.kill().ok();
+    child.wait().ok();
     let _ = reader_handle.join();
     Ok(())
 }
