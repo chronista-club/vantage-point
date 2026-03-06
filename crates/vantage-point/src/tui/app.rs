@@ -315,6 +315,9 @@ fn run_claude_session(
     cmd.cwd(project_dir);
     cmd.env("TERM", "xterm-256color");
 
+    // VP が権限管理を担うため、Claude CLI 側の権限確認をスキップ
+    cmd.arg("--dangerously-skip-permissions");
+
     // セッション復帰: --continue で前回セッションを自動復帰
     cmd.arg("--continue");
 
