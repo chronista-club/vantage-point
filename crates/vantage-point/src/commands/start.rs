@@ -12,12 +12,12 @@ use crate::resolve::{self, ResolvedTarget};
 pub struct StartOptions<'a> {
     pub target: Option<String>,
     pub port: Option<u16>,
+    pub gui: bool,
     pub headless: bool,
     pub browser: bool,
     pub debug: Option<DebugModeArg>,
     pub project_dir: Option<String>,
     pub midi: Option<String>,
-    pub tui: bool,
     pub config: &'a Config,
 }
 
@@ -26,12 +26,12 @@ pub fn execute(opts: StartOptions) -> Result<()> {
     let StartOptions {
         target,
         port,
+        gui,
         headless,
         browser,
         debug,
         project_dir,
         midi,
-        tui,
         config,
     } = opts;
 
@@ -149,24 +149,8 @@ pub fn execute(opts: StartOptions) -> Result<()> {
         bonjour_port: Some(resolved_port),
     };
 
-    if tui {
-        // TUI モード: ratatui ベースの対話コンソール
-        let project_name =
-            resolve::project_name_from_path(&resolved_project_dir, config).to_string();
-
-        // Process サーバーを headless で起動（Canvas / API 用）
-        ensure_process_running(resolved_port, &resolved_project_dir, debug_mode, cap_config)?;
-
-        // Canvas 自動起動
-        if let Err(e) = crate::canvas::run_canvas_detached(resolved_port) {
-            tracing::warn!("Canvas 自動起動失敗: {}", e);
-        }
-
-        // TUI 起動
-        return crate::tui::run_tui(&resolved_project_dir, &project_name);
-    }
-
     if headless || browser {
+        // Headless / Browser モード: HTTP サーバーのみ
         let rt = tokio::runtime::Runtime::new()?;
         rt.block_on(async {
             let server_handle = tokio::spawn(async move {
@@ -182,17 +166,14 @@ pub fn execute(opts: StartOptions) -> Result<()> {
 
             server_handle.await?
         })
-    } else {
-        // ネイティブターミナルモード（Unison ブリッジ）
-        // Process が起動していなければ headless で起動
+    } else if gui {
+        // GUI モード: ネイティブウィンドウ（Unison ブリッジ）
         ensure_process_running(resolved_port, &resolved_project_dir, debug_mode, cap_config)?;
 
-        // Canvas 自動起動
         if let Err(e) = crate::canvas::run_canvas_detached(resolved_port) {
             tracing::warn!("Canvas 自動起動失敗: {}", e);
         }
 
-        // Unison ブリッジモードのネイティブウィンドウ
         let result = crate::terminal_window::run_terminal_unison(resolved_port);
 
         match result {
@@ -201,6 +182,21 @@ pub fn execute(opts: StartOptions) -> Result<()> {
         }
 
         Ok(())
+    } else {
+        // デフォルト: TUI モード（ratatui ベースの対話コンソール）
+        let project_name =
+            resolve::project_name_from_path(&resolved_project_dir, config).to_string();
+
+        // Process サーバーを headless で起動（Canvas / API 用）
+        ensure_process_running(resolved_port, &resolved_project_dir, debug_mode, cap_config)?;
+
+        // Canvas 自動起動
+        if let Err(e) = crate::canvas::run_canvas_detached(resolved_port) {
+            tracing::warn!("Canvas 自動起動失敗: {}", e);
+        }
+
+        // TUI 起動
+        crate::tui::run_tui(&resolved_project_dir, &project_name)
     }
 }
 
@@ -208,7 +204,7 @@ pub fn execute(opts: StartOptions) -> Result<()> {
 ///
 /// running.json + PID チェックで既存 Process を探し、
 /// 見つからなければ自プロセスを `vp start --headless` で再起動してデタッチ。
-fn ensure_process_running(
+pub fn ensure_process_running(
     port: u16,
     project_dir: &str,
     debug_mode: DebugMode,

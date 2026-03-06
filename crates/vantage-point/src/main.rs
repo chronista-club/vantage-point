@@ -70,11 +70,15 @@ enum Commands {
         #[arg(short, long)]
         port: Option<u16>,
 
-        /// ネイティブWebViewを開く（デフォルトはヘッドレス）
+        /// ネイティブウィンドウモード（Unison ブリッジ）
         #[arg(long)]
         gui: bool,
 
-        /// ネイティブWebViewの代わりにシステムブラウザを使用
+        /// ヘッドレスモード（HTTPサーバーのみ）
+        #[arg(long)]
+        headless: bool,
+
+        /// システムブラウザでWebUIを開く
         #[arg(long)]
         browser: bool,
 
@@ -89,10 +93,6 @@ enum Commands {
         /// MIDI入力を有効化（ポート番号または名前パターン）
         #[arg(long, short = 'm')]
         midi: Option<String>,
-
-        /// TUI モード（ratatui ベースの対話コンソール）
-        #[arg(long)]
-        tui: bool,
     },
     /// Processを停止
     Stop {
@@ -181,11 +181,11 @@ fn main() -> Result<()> {
         target: None,
         port: None,
         gui: false,
+        headless: false,
         browser: false,
         debug: None,
         project_dir: None,
         midi: None,
-        tui: false,
     });
 
     // Initialize tracing
@@ -206,20 +206,20 @@ fn main() -> Result<()> {
             target,
             port,
             gui,
+            headless,
             browser,
             debug,
             project_dir,
             midi,
-            tui,
         } => commands::start::execute(commands::start::StartOptions {
             target,
             port,
-            headless: !gui,
+            gui,
+            headless,
             browser,
             debug,
             project_dir,
             midi,
-            tui,
             config: &config,
         }),
         Commands::Stop { target } => cli::stop_by_target(target.as_deref(), &config),
