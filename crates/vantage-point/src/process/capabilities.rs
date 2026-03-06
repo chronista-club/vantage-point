@@ -177,10 +177,10 @@ impl ProcessCapabilities {
 
             while let Some(event) = subscription.recv().await {
                 // CapabilityEvent を ProcessMessage に変換
-                let stand_msg = capability_event_to_process_message(&event);
+                let process_msg = capability_event_to_process_message(&event);
 
                 // Hub にブロードキャスト
-                let _ = hub_sender.send(stand_msg);
+                let _ = hub_sender.send(process_msg);
             }
         })
     }

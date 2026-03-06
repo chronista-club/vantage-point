@@ -103,7 +103,7 @@ pub(crate) struct AppState {
     pub pending_prompts: Arc<RwLock<HashMap<String, PendingPrompt>>>,
     /// Capability system (Agent, MIDI, Protocol)
     pub capabilities: Arc<ProcessCapabilities>,
-    /// Conductor capability for managing multiple stands (optional, only for conductor mode)
+    /// Conductor capability for managing multiple processes (optional, only for conductor mode)
     pub conductor: Option<Arc<RwLock<ProcessManagerCapability>>>,
     /// Update capability for version checking (optional, only for conductor mode)
     pub update: Option<Arc<RwLock<UpdateCapability>>>,
@@ -113,7 +113,7 @@ pub(crate) struct AppState {
     pub pty_manager: Arc<tokio::sync::Mutex<PtyManager>>,
     /// Canvasウィンドウのプロセス管理（PID）
     pub canvas_pid: Arc<tokio::sync::Mutex<Option<u32>>>,
-    /// Standの待ち受けポート番号（Canvas起動時に使用）
+    /// Processの待ち受けポート番号（Canvas起動時に使用）
     pub port: u16,
     /// ファイル監視マネージャー
     pub file_watchers: Arc<tokio::sync::Mutex<FileWatcherManager>>,

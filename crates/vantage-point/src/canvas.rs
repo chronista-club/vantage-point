@@ -1,6 +1,6 @@
 //! Canvas ウィンドウ（WebViewのみ）
 //!
-//! StandのWeb UIをスタンドアロンウィンドウで表示。
+//! ProcessのWeb UIをスタンドアロンウィンドウで表示。
 //! ターミナルとは独立したウィンドウで、フォーカス干渉なし。
 
 use tao::dpi::LogicalSize;
@@ -17,7 +17,7 @@ pub fn run_canvas_detached(port: u16) -> anyhow::Result<()> {
 
 /// キャンバスウィンドウ（WebViewのみ、ターミナルなし）
 ///
-/// Standの Web UIをスタンドアロンウィンドウで表示。
+/// Processの Web UIをスタンドアロンウィンドウで表示。
 /// ターミナルとは独立したウィンドウで、フォーカス干渉なし。
 pub fn run_canvas(port: u16) -> anyhow::Result<()> {
     use tao::{

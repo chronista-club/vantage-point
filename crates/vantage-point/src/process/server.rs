@@ -133,11 +133,11 @@ pub async fn run(
         )
         .route(
             "/api/conductor/processes",
-            get(conductor::conductor_list_stands),
+            get(conductor::conductor_list_processes),
         )
         .route(
             "/api/conductor/processes/{project_name}/start",
-            post(conductor::conductor_start_stand),
+            post(conductor::conductor_start_process),
         )
         .route(
             "/api/conductor/processes/{project_name}/stop",
@@ -235,7 +235,7 @@ pub async fn run(
 }
 
 /// Conductorモードでスタンドサーバーを起動
-/// 複数のProject Standを管理するための専用モード
+/// 複数のProject Processを管理するための専用モード
 pub async fn run_conductor(port: u16) -> Result<()> {
     use crate::capability::core::{Capability, CapabilityContext};
 
@@ -306,11 +306,11 @@ pub async fn run_conductor(port: u16) -> Result<()> {
         )
         .route(
             "/api/conductor/processes",
-            get(conductor::conductor_list_stands),
+            get(conductor::conductor_list_processes),
         )
         .route(
             "/api/conductor/processes/{project_name}/start",
-            post(conductor::conductor_start_stand),
+            post(conductor::conductor_start_process),
         )
         .route(
             "/api/conductor/processes/{project_name}/stop",

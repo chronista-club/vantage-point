@@ -19,10 +19,10 @@ struct ConductorProjectsResponse {
     projects: Vec<ProjectInfo>,
 }
 
-/// Conductor stands response
+/// Conductor processes response
 #[derive(serde::Serialize)]
-struct ConductorStandsResponse {
-    stands: Vec<RunningProcess>,
+struct ConductorProcessesResponse {
+    processes: Vec<RunningProcess>,
 }
 
 /// GET /api/conductor/projects - List all registered projects
@@ -43,8 +43,8 @@ pub async fn conductor_list_projects(State(state): State<Arc<AppState>>) -> impl
     )
 }
 
-/// GET /api/conductor/processes - List all running stands
-pub async fn conductor_list_stands(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+/// GET /api/conductor/processes - List all running processes
+pub async fn conductor_list_processes(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let Some(conductor) = &state.conductor else {
         return (
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
@@ -53,16 +53,16 @@ pub async fn conductor_list_stands(State(state): State<Arc<AppState>>) -> impl I
     };
 
     let conductor = conductor.read().await;
-    let stands = conductor.list_running_processes().await;
+    let processes = conductor.list_running_processes().await;
 
     (
         axum::http::StatusCode::OK,
-        Json(serde_json::json!(ConductorStandsResponse { stands })),
+        Json(serde_json::json!(ConductorProcessesResponse { processes })),
     )
 }
 
 /// POST /api/conductor/processes/{project_name}/start - Start a process for project
-pub async fn conductor_start_stand(
+pub async fn conductor_start_process(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(project_name): axum::extract::Path<String>,
 ) -> impl IntoResponse {

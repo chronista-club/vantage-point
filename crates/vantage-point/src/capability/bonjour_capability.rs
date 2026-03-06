@@ -1,6 +1,6 @@
 //! Bonjour Capability - mDNS/DNS-SD Service Advertisement
 //!
-//! Standをローカルネットワーク上で発見可能にするCapability。
+//! Processをローカルネットワーク上で発見可能にするCapability。
 //! `_vantage-point._tcp` サービスとして広告し、macOSアプリやその他の
 //! Bonjour対応クライアントから自動発見を可能にする。
 //!
@@ -9,7 +9,7 @@
 //! ```ignore
 //! let mut bonjour = BonjourCapability::new(33000, "my-project");
 //! bonjour.initialize(&ctx).await?;
-//! // Stand終了時
+//! // Process終了時
 //! bonjour.shutdown().await?;
 //! ```
 

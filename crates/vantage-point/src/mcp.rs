@@ -261,10 +261,10 @@ impl Clone for VantageMcp {
 
 #[tool_router]
 impl VantageMcp {
-    pub fn new(stand_port: u16) -> Self {
+    pub fn new(process_port: u16) -> Self {
         Self {
             client: reqwest::Client::new(),
-            process_url: Arc::new(Mutex::new(format!("http://localhost:{}", stand_port))),
+            process_url: Arc::new(Mutex::new(format!("http://localhost:{}", process_port))),
             tool_router: Self::tool_router(),
         }
     }
@@ -414,8 +414,8 @@ impl VantageMcp {
     /// 接続失敗時に呼ばれる。`running.json` から cwd に一致する
     /// Process を検索し、現在の URL と異なる場合のみリトライ URL を返す。
     async fn try_reconnect(&self, endpoint: &str) -> Option<String> {
-        let stand_info = RunningProcesses::find_for_cwd()?;
-        let new_base = format!("http://localhost:{}", stand_info.port);
+        let process_info = RunningProcesses::find_for_cwd()?;
+        let new_base = format!("http://localhost:{}", process_info.port);
 
         let mut current = self.process_url.lock().await;
         if *current != new_base {
@@ -477,12 +477,12 @@ impl VantageMcp {
             tokio::time::sleep(poll_interval).await;
 
             // running.json から新しい Process を検索
-            let stand_info = match RunningProcesses::find_for_cwd() {
+            let process_info = match RunningProcesses::find_for_cwd() {
                 Some(info) => info,
                 None => continue,
             };
 
-            let new_base = format!("http://localhost:{}", stand_info.port);
+            let new_base = format!("http://localhost:{}", process_info.port);
             let health_url = format!("{}/api/health", new_base);
 
             // health check
@@ -503,7 +503,7 @@ impl VantageMcp {
                         &tid,
                         "auto_start",
                         "INFO",
-                        format!("Process 自動起動成功: port={}", stand_info.port),
+                        format!("Process 自動起動成功: port={}", process_info.port),
                     ));
 
                     return Some(format!("{}{}", new_base, endpoint));
@@ -1241,8 +1241,8 @@ fn resolve_process_port(explicit_port: u16) -> u16 {
     }
 
     // Try to find a running Process for the current directory
-    if let Some(stand_info) = RunningProcesses::find_for_cwd() {
-        return stand_info.port;
+    if let Some(process_info) = RunningProcesses::find_for_cwd() {
+        return process_info.port;
     }
 
     // Fall back to default
@@ -1250,12 +1250,12 @@ fn resolve_process_port(explicit_port: u16) -> u16 {
 }
 
 /// Run the MCP server over stdio
-pub async fn run_mcp_server(stand_port: u16) -> anyhow::Result<()> {
+pub async fn run_mcp_server(process_port: u16) -> anyhow::Result<()> {
     // トレースログファイルを早期初期化
     crate::trace_log::init_log_file();
 
     // Resolve the actual port to use
-    let resolved_port = resolve_process_port(stand_port);
+    let resolved_port = resolve_process_port(process_port);
 
     // Note: In MCP mode, we should not use tracing to stdout
     // as it interferes with JSON-RPC communication

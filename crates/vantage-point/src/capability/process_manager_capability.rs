@@ -219,7 +219,7 @@ impl ProcessManagerCapability {
         tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
 
         // ポートをスキャンして見つける
-        let port = self.find_stand_port(&project.path).await.ok_or_else(|| {
+        let port = self.find_process_port(&project.path).await.ok_or_else(|| {
             CapabilityError::Other("Failed to find Process port after startup".to_string())
         })?;
 
@@ -330,7 +330,7 @@ impl ProcessManagerCapability {
     }
 
     /// ポートスキャンでStandを見つける
-    async fn find_stand_port(&self, project_path: &PathBuf) -> Option<u16> {
+    async fn find_process_port(&self, project_path: &PathBuf) -> Option<u16> {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_millis(500))
             .build()

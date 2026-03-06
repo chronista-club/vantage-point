@@ -24,7 +24,7 @@ use std::str::FromStr;
 
 /// Process イベントレコード
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct StandEvent {
+pub struct ProcessEvent {
     pub id: i64,
     pub port: i64,
     pub event_type: String,
@@ -35,7 +35,7 @@ pub struct StandEvent {
 
 /// Process 履歴クエリフィルター
 #[derive(Debug, Default)]
-pub struct StandEventFilter {
+pub struct ProcessEventFilter {
     /// ポート番号で絞り込み
     pub port: Option<i64>,
     /// イベントタイプで絞り込み
@@ -131,10 +131,10 @@ impl DbCapability {
     }
 
     /// Process 履歴をクエリ
-    pub async fn query_stand_history(
+    pub async fn query_process_history(
         &self,
-        filter: StandEventFilter,
-    ) -> CapabilityResult<Vec<StandEvent>> {
+        filter: ProcessEventFilter,
+    ) -> CapabilityResult<Vec<ProcessEvent>> {
         let pool = self.pool()?;
         let limit = filter.limit.unwrap_or(100);
 
@@ -156,7 +156,7 @@ impl DbCapability {
         }
         sql.push_str(" ORDER BY created_at DESC LIMIT ?");
 
-        let mut query = sqlx::query_as::<_, StandEvent>(&sql);
+        let mut query = sqlx::query_as::<_, ProcessEvent>(&sql);
         if let Some(port) = filter.port {
             query = query.bind(port);
         }
@@ -423,14 +423,14 @@ mod tests {
 
         // 全件クエリ
         let events = db
-            .query_stand_history(StandEventFilter::default())
+            .query_process_history(ProcessEventFilter::default())
             .await
             .unwrap();
         assert_eq!(events.len(), 2);
 
         // ポートフィルター
         let events = db
-            .query_stand_history(StandEventFilter {
+            .query_process_history(ProcessEventFilter {
                 port: Some(33000),
                 ..Default::default()
             })
@@ -440,7 +440,7 @@ mod tests {
 
         // タイプフィルター
         let events = db
-            .query_stand_history(StandEventFilter {
+            .query_process_history(ProcessEventFilter {
                 event_type: Some("start".to_string()),
                 ..Default::default()
             })
