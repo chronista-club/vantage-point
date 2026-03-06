@@ -157,11 +157,11 @@ pub enum MidiAction {
     StopInstance { port: u16 },
     /// Send chat message
     SendChat { message: String },
-    /// Cancel current chat (sends to active Stand)
+    /// Cancel current chat (sends to active Process)
     CancelChat { port: Option<u16> },
-    /// Reset session (sends to active Stand)
+    /// Reset session (sends to active Process)
     ResetSession { port: Option<u16> },
-    /// Custom HTTP request to Stand API
+    /// Custom HTTP request to Process API
     ApiCall {
         endpoint: String,
         method: String,
@@ -779,7 +779,7 @@ pub async fn run_midi_interactive(
         .unwrap_or_else(|_| "Unknown".to_string());
 
     println!("Connecting to MIDI port: {}", port_name);
-    println!("Stand port: {}", stand_port);
+    println!("Process port: {}", stand_port);
     println!("Press Ctrl+C to stop.\n");
     println!("Waiting for MIDI events...");
 

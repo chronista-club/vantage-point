@@ -1,7 +1,7 @@
 //! DB Capability - ローカル永続化
 //!
 //! SQLite（sqlx）によるローカルデータベース。
-//! Stand 履歴・設定・汎用 KV ストアの3機能を提供する。
+//\! Process 履歴・設定・汎用 KV ストアの3機能を提供する。
 //!
 //! DB ファイル: `~/.config/vp/vantage.db`
 
@@ -22,7 +22,7 @@ use std::str::FromStr;
 // 型定義
 // =============================================================================
 
-/// Stand イベントレコード
+/// Process イベントレコード
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct StandEvent {
     pub id: i64,
@@ -33,7 +33,7 @@ pub struct StandEvent {
     pub created_at: String,
 }
 
-/// Stand 履歴クエリフィルター
+/// Process 履歴クエリフィルター
 #[derive(Debug, Default)]
 pub struct StandEventFilter {
     /// ポート番号で絞り込み
@@ -106,7 +106,7 @@ impl DbCapability {
     // Events API
     // =========================================================================
 
-    /// Stand イベントを記録
+    /// Process イベントを記録
     pub async fn record_stand_event(
         &self,
         port: i64,
@@ -130,7 +130,7 @@ impl DbCapability {
         Ok(result.last_insert_rowid())
     }
 
-    /// Stand 履歴をクエリ
+    /// Process 履歴をクエリ
     pub async fn query_stand_history(
         &self,
         filter: StandEventFilter,
@@ -407,7 +407,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_stand_events() {
+    async fn test_process_events() {
         let mut db = setup_test_db().await;
 
         // イベント記録

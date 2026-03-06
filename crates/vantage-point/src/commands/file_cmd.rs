@@ -5,7 +5,7 @@
 use anyhow::Result;
 use clap::Subcommand;
 
-use crate::commands::stand_client::StandClient;
+use crate::commands::process_client::ProcessClient;
 use crate::config::Config;
 use crate::file_watcher::{WatchConfig, WatchFormat, WatchStyle};
 
@@ -59,7 +59,7 @@ pub fn execute(cmd: FileCommands, config: &Config) -> Result<()> {
             target,
             port,
         } => {
-            let client = StandClient::connect(target.as_deref(), port, config)?;
+            let client = ProcessClient::connect(target.as_deref(), port, config)?;
 
             let watch_format = match format.as_deref() {
                 Some("plain") => WatchFormat::Plain,
@@ -85,7 +85,7 @@ pub fn execute(cmd: FileCommands, config: &Config) -> Result<()> {
             target,
             port,
         } => {
-            let client = StandClient::connect(target.as_deref(), port, config)?;
+            let client = ProcessClient::connect(target.as_deref(), port, config)?;
             client.post(
                 "/api/unwatch-file",
                 &serde_json::json!({"pane_id": pane_id}),

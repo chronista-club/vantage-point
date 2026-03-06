@@ -328,7 +328,7 @@ impl fmt::Debug for CapabilityContext {
 // Capability Trait (REQ-CAP-001)
 // =============================================================================
 
-/// Stand Capability トレイト
+/// Process Capability トレイト
 ///
 /// 全ての能力が実装する共通インターフェース。
 ///

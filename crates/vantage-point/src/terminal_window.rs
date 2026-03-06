@@ -1,12 +1,12 @@
 //! Native terminal window — Unison (QUIC) ブリッジモード
 //!
 //! Arctic/Nordic + Ocean ダークテーマのターミナルウィンドウ。
-//! Stand サーバーの PTY に Unison QUIC チャネルで接続し、ウィンドウを閉じても PTY は生存する。
+//\! Process サーバーの PTY に Unison QUIC チャネルで接続し、ウィンドウを閉じても PTY は生存する。
 //!
 //! ## パイプライン
 //! ```text
-//! Stand Server (QUIC "terminal") ─── UnisonChannel ───► EventLoopProxy → TerminalState → TerminalView
-//! keyboard (main thread) → mpsc → input-bridge → unison-bridge → UnisonChannel → Stand Server
+//\! Process Server (QUIC "terminal") ─── UnisonChannel ───► EventLoopProxy → TerminalState → TerminalView
+//! keyboard (main thread) → mpsc → input-bridge → unison-bridge → UnisonChannel → Process Server
 //! ```
 
 use std::sync::mpsc;
@@ -278,8 +278,8 @@ fn copy_to_clipboard(text: &str) -> std::io::Result<()> {
 
 /// Unison ブリッジスレッドを起動
 ///
-/// Stand サーバーの QUIC "terminal" チャネルに接続し、
-/// PTY 出力を EventLoop へ、キーボード入力を Stand へ中継する。
+/// Process サーバーの QUIC "terminal" チャネルに接続し、
+/// PTY 出力を EventLoop へ、キーボード入力を Process へ中継する。
 /// raw frame でバイナリ直送（base64 不要）。
 fn start_unison_bridge(
     port: u16, // HTTP ポート（QUIC = port + QUIC_PORT_OFFSET）
@@ -291,7 +291,7 @@ fn start_unison_bridge(
         .spawn(move || {
             let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
             rt.block_on(async move {
-                let quic_port = port + crate::stand::unison_server::QUIC_PORT_OFFSET;
+                let quic_port = port + crate::process::unison_server::QUIC_PORT_OFFSET;
                 let addr = format!("[::1]:{}", quic_port);
 
                 let client = match unison::ProtocolClient::new_default() {
@@ -313,7 +313,7 @@ fn start_unison_bridge(
                     }
                 };
 
-                tracing::info!("Unison connected to Stand (port={})", quic_port);
+                tracing::info!("Unison connected to Process (port={})", quic_port);
 
                 // sync mpsc → tokio mpsc ブリッジ
                 let (bridge_tx, mut bridge_rx) = tokio::sync::mpsc::channel::<PtyInputCommand>(256);
@@ -331,7 +331,7 @@ fn start_unison_bridge(
                 // メインループ: select で双方向処理
                 loop {
                     tokio::select! {
-                        // PTY output from Stand
+                        // PTY output from Process
                         data = channel.recv_raw() => {
                             match data {
                                 Ok(bytes) => {
@@ -344,7 +344,7 @@ fn start_unison_bridge(
                                 Err(_) => break,
                             }
                         }
-                        // Keyboard input → Stand
+                        // Keyboard input → Process
                         cmd = bridge_rx.recv() => {
                             match cmd {
                                 Some(PtyInputCommand::Input(data)) => {
@@ -372,8 +372,8 @@ fn start_unison_bridge(
 
 /// Unison ブリッジモードのターミナルウィンドウを起動
 ///
-/// Stand サーバーの QUIC "terminal" チャネルに接続し、ネイティブウィンドウで描画する。
-/// ウィンドウを閉じても Stand 側の PTY は生存し、再度接続で re-attach できる。
+/// Process サーバーの QUIC "terminal" チャネルに接続し、ネイティブウィンドウで描画する。
+/// ウィンドウを閉じても Process 側の PTY は生存し、再度接続で re-attach できる。
 pub fn run_terminal_unison(port: u16) -> anyhow::Result<()> {
     let event_loop = EventLoopBuilder::<TerminalEvent>::with_user_event().build();
 
@@ -414,7 +414,7 @@ pub fn run_terminal_unison(port: u16) -> anyhow::Result<()> {
     let _ = input_tx.send(PtyInputCommand::Resize { cols: 80, rows: 24 });
 
     // ステータスバーにポート番号を表示
-    let session_name = format!("Stand:{}", port);
+    let session_name = format!("Process:{}", port);
 
     #[cfg(target_os = "macos")]
     {

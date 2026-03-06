@@ -5,7 +5,7 @@
 use anyhow::Result;
 use clap::Subcommand;
 
-use crate::commands::stand_client::StandClient;
+use crate::commands::process_client::ProcessClient;
 use crate::config::Config;
 
 /// Canvas サブコマンド
@@ -44,10 +44,10 @@ pub enum CanvasCommands {
         #[arg(long)]
         port: Option<u16>,
     },
-    /// Stand が内部的に spawn する Canvas プロセス（非表示）
+    /// Process が内部的に spawn する Canvas プロセス（非表示）
     #[command(hide = true)]
     Internal {
-        /// 接続先の Stand ポート番号
+        /// 接続先の Process ポート番号
         #[arg(short, long)]
         port: u16,
     },
@@ -57,13 +57,13 @@ pub enum CanvasCommands {
 pub fn execute(cmd: CanvasCommands, config: &Config) -> Result<()> {
     match cmd {
         CanvasCommands::Open { target, port } => {
-            let client = StandClient::connect(target.as_deref(), port, config)?;
+            let client = ProcessClient::connect(target.as_deref(), port, config)?;
             client.post("/api/canvas/open", &serde_json::json!({}))?;
             println!("Canvas opened (port {})", client.port());
             Ok(())
         }
         CanvasCommands::Close { target, port } => {
-            let client = StandClient::connect(target.as_deref(), port, config)?;
+            let client = ProcessClient::connect(target.as_deref(), port, config)?;
             client.post("/api/canvas/close", &serde_json::json!({}))?;
             println!("Canvas closed");
             Ok(())
@@ -74,7 +74,7 @@ pub fn execute(cmd: CanvasCommands, config: &Config) -> Result<()> {
             target,
             port,
         } => {
-            let client = StandClient::connect(target.as_deref(), port, config)?;
+            let client = ProcessClient::connect(target.as_deref(), port, config)?;
             let resp = client.post(
                 "/api/canvas/capture",
                 &serde_json::json!({

@@ -1,6 +1,6 @@
 //! 構造化トレースログ基盤
 //!
-//! MCP プロセスと Stand プロセスの両方から同一ファイルに
+//! MCP プロセスと Process プロセスの両方から同一ファイルに
 //! JSON Lines 形式でログを書き出す。
 //!
 //! ログファイル: `~/.config/vantage/logs/debug.log`
@@ -27,7 +27,7 @@ static LOG_FILE: OnceLock<Mutex<File>> = OnceLock::new();
 pub struct TraceEntry {
     /// タイムスタンプ（RFC3339 ミリ秒精度 UTC）
     pub ts: String,
-    /// プロセス種別（"mcp" or "stand"）
+    /// プロセス種別（"mcp" or "process"）
     pub process: &'static str,
     /// トレース ID（`t-0001` 形式）
     pub trace_id: String,
@@ -137,14 +137,14 @@ fn ensure_log_file() -> Option<&'static Mutex<File>> {
 /// ログファイルを監視し、新しいエントリを Hub 経由で WebSocket にブロードキャストする
 ///
 /// `notify` クレートでファイル変更を検知し、追記された JSON Lines を
-/// `StandMessage::TraceLog` として配信する。
+/// `ProcessMessage::TraceLog` として配信する。
 /// 既存のエントリはスキップし、監視開始後の新規行のみ配信する。
-pub async fn watch_and_broadcast(hub: crate::stand::hub::Hub) {
+pub async fn watch_and_broadcast(hub: crate::process::hub::Hub) {
     use std::io::{BufRead, BufReader, Seek, SeekFrom};
 
     use notify::{EventKind, RecursiveMode, Watcher};
 
-    use crate::protocol::StandMessage;
+    use crate::protocol::ProcessMessage;
 
     let Some(path) = log_file_path() else {
         tracing::warn!("トレースログファイルパスが取得できません");
@@ -216,10 +216,10 @@ pub async fn watch_and_broadcast(hub: crate::stand::hub::Hub) {
                         continue;
                     }
 
-                    // JSON パースして StandMessage::TraceLog に変換
+                    // JSON パースして ProcessMessage::TraceLog に変換
                     match serde_json::from_str::<serde_json::Value>(trimmed) {
                         Ok(val) => {
-                            let msg = StandMessage::TraceLog {
+                            let msg = ProcessMessage::TraceLog {
                                 ts: val["ts"].as_str().unwrap_or_default().to_string(),
                                 process: val["process"].as_str().unwrap_or_default().to_string(),
                                 trace_id: val["trace_id"].as_str().unwrap_or_default().to_string(),

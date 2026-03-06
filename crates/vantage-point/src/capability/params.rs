@@ -1,4 +1,4 @@
-//! Stand Capability Parameters (スタンドパラメータ)
+//\! Process Capability Parameters (スタンドパラメータ)
 //!
 //! JoJo's Bizarre Adventureのスタンド能力パラメータシステムを参考に、
 //! AIエージェント能力を定量的に評価するための6パラメータシステム。
@@ -93,7 +93,7 @@ impl fmt::Display for Rank {
 // Stand Capability Parameters (6パラメータ)
 // =============================================================================
 
-/// Stand Capability の6パラメータ
+/// Process Capability の6パラメータ
 ///
 /// JoJoスタンドの6パラメータをAIエージェント能力向けに再定義。
 ///
@@ -268,7 +268,7 @@ impl CapabilityParams {
 
 impl fmt::Display for CapabilityParams {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "Stand Capability Parameters:")?;
+        writeln!(f, "Process Capability Parameters:")?;
         writeln!(f, "  Power:     {} (破壊力)", self.power)?;
         writeln!(f, "  Speed:     {} (スピード)", self.speed)?;
         writeln!(f, "  Range:     {} (射程距離)", self.range)?;

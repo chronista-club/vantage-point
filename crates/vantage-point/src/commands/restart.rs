@@ -2,13 +2,13 @@
 
 use anyhow::Result;
 
-use crate::cli::{parse_debug_env, stop_stand};
+use crate::cli::{parse_debug_env, stop_process};
 use crate::config::Config;
 use crate::resolve::{self, ResolvedTarget};
 
 /// `vp restart` を実行
 pub fn execute(target: Option<&str>, browser: bool, headless: bool, config: &Config) -> Result<()> {
-    // ターゲット解決 — 実行中の Stand を探す
+    // ターゲット解決 — 実行中の Process を探す
     let resolved = resolve::resolve_target(target, config)?;
 
     let (port, project_dir) = match resolved {
@@ -28,17 +28,17 @@ pub fn execute(target: Option<&str>, browser: bool, headless: bool, config: &Con
             return Ok(());
         }
         ResolvedTarget::Cwd { .. } => {
-            println!("\u{2717} No running Stand found for current directory.");
-            println!("  Use `vp start` to start a new Stand.");
+            println!("\u{2717} No running Process found for current directory.");
+            println!("  Use `vp start` to start a new Process.");
             return Ok(());
         }
     };
 
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
-        stop_stand(port).await?;
+        stop_process(port).await?;
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        println!("\u{1f680} Starting Stand...");
+        println!("\u{1f680} Starting Process...");
         Ok::<(), anyhow::Error>(())
     })?;
 
@@ -46,7 +46,7 @@ pub fn execute(target: Option<&str>, browser: bool, headless: bool, config: &Con
     let debug_mode = parse_debug_env().unwrap_or_default();
 
     // CapabilityConfig（再起動時は MIDI なし）
-    let cap_config = crate::stand::CapabilityConfig {
+    let cap_config = crate::process::CapabilityConfig {
         project_dir: project_dir.clone(),
         midi_config: None,
         bonjour_port: Some(port),
@@ -56,7 +56,7 @@ pub fn execute(target: Option<&str>, browser: bool, headless: bool, config: &Con
         let rt = tokio::runtime::Runtime::new()?;
         rt.block_on(async {
             let server_handle = tokio::spawn(async move {
-                crate::stand::run(port, false, debug_mode, cap_config).await
+                crate::process::run(port, false, debug_mode, cap_config).await
             });
 
             if browser {
@@ -70,20 +70,20 @@ pub fn execute(target: Option<&str>, browser: bool, headless: bool, config: &Con
         })
     } else {
         // ネイティブターミナルモード（Unison ブリッジ）
-        // Stand を起動（restart 後なので必ず新規起動）
+        // Process を起動（restart 後なので必ず新規起動）
         let server_thread = std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime");
-            rt.block_on(async { crate::stand::run(port, false, debug_mode, cap_config).await })
+            rt.block_on(async { crate::process::run(port, false, debug_mode, cap_config).await })
         });
 
-        // Stand の HTTP サーバーが ready になるまで待機
-        crate::commands::start::wait_for_stand_ready(port)?;
+        // Process の HTTP サーバーが ready になるまで待機
+        crate::commands::start::wait_for_process_ready(port)?;
 
         // Unison ブリッジモードのネイティブウィンドウ
         let result = crate::terminal_window::run_terminal_unison(port);
 
         match result {
-            Ok(()) => tracing::info!("Terminal window closed (Stand is still running)"),
+            Ok(()) => tracing::info!("Terminal window closed (Process is still running)"),
             Err(e) => tracing::error!("Terminal window error: {}", e),
         }
 

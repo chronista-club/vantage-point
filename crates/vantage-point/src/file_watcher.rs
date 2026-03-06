@@ -14,8 +14,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use crate::protocol::{Content, StandMessage};
-use crate::stand::hub::Hub;
+use crate::process::hub::Hub;
+use crate::protocol::{Content, ProcessMessage};
 
 /// ログフォーマット
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -320,7 +320,7 @@ fn html_escape(s: &str) -> String {
 /// ファイル監視タスク本体
 ///
 /// notify でファイル変更を検知し、新行を読み取り → パース → フィルタ → HTML 変換
-/// → hub.broadcast(StandMessage::Show { append: true }) で WebView に配信する。
+/// → hub.broadcast(ProcessMessage::Show { append: true }) で WebView に配信する。
 async fn watch_file_task(config: WatchConfig, hub: Hub) {
     let path = std::path::PathBuf::from(&config.path);
 
@@ -364,7 +364,7 @@ async fn watch_file_task(config: WatchConfig, hub: Hub) {
     }
 
     // 初回 Show（append: false）で CSS プリアンブルを送信
-    hub.broadcast(StandMessage::Show {
+    hub.broadcast(ProcessMessage::Show {
         pane_id: config.pane_id.clone(),
         content: Content::Html(css_preamble()),
         append: false,
@@ -476,7 +476,7 @@ async fn watch_file_task(config: WatchConfig, hub: Hub) {
                     };
 
                     // HTML を append: true で追記
-                    hub.broadcast(StandMessage::Show {
+                    hub.broadcast(ProcessMessage::Show {
                         pane_id: config.pane_id.clone(),
                         content: Content::Html(html),
                         append: true,

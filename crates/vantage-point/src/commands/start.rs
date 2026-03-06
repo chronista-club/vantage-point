@@ -3,10 +3,10 @@
 use anyhow::Result;
 
 use crate::cli::{DebugModeArg, parse_debug_env};
-use crate::config::{Config, RunningStands};
+use crate::config::{Config, RunningProcesses};
+use crate::process::CapabilityConfig;
 use crate::protocol::DebugMode;
 use crate::resolve::{self, ResolvedTarget};
-use crate::stand::CapabilityConfig;
 
 /// `vp start` の起動オプション
 pub struct StartOptions<'a> {
@@ -38,17 +38,17 @@ pub fn execute(opts: StartOptions) -> Result<()> {
         let dir_normalized = Config::normalize_path(std::path::Path::new(dir));
 
         // 既に実行中かチェック
-        if let Some(stand) = RunningStands::find_by_project(&dir_normalized) {
+        if let Some(running) = RunningProcesses::find_by_project(&dir_normalized) {
             if headless || browser {
-                let name = resolve::project_name_from_path(&stand.project_dir, config);
+                let name = resolve::project_name_from_path(&running.project_dir, config);
                 println!(
                     "Already running: {} (port {}). Use `vp stop` first.",
-                    name, stand.port
+                    name, running.port
                 );
                 return Ok(());
             }
-            // ターミナルモード: 既存 Stand に re-attach
-            (dir_normalized, stand.port)
+            // ターミナルモード: 既存 Process に re-attach
+            (dir_normalized, running.port)
         } else {
             let idx = config.find_project_index(&dir_normalized);
             let p = if let Some(explicit) = port {
@@ -77,7 +77,7 @@ pub fn execute(opts: StartOptions) -> Result<()> {
                     );
                     return Ok(());
                 }
-                // ターミナルモード: 既存 Stand に re-attach
+                // ターミナルモード: 既存 Process に re-attach
                 println!(
                     "\u{1f517} Re-attaching to: {} (port {})",
                     name, running_port
@@ -141,7 +141,7 @@ pub fn execute(opts: StartOptions) -> Result<()> {
     });
 
     // CapabilityConfig
-    let cap_config = crate::stand::CapabilityConfig {
+    let cap_config = crate::process::CapabilityConfig {
         project_dir: resolved_project_dir.clone(),
         midi_config,
         bonjour_port: Some(resolved_port),
@@ -151,7 +151,7 @@ pub fn execute(opts: StartOptions) -> Result<()> {
         let rt = tokio::runtime::Runtime::new()?;
         rt.block_on(async {
             let server_handle = tokio::spawn(async move {
-                crate::stand::run(resolved_port, false, debug_mode, cap_config).await
+                crate::process::run(resolved_port, false, debug_mode, cap_config).await
             });
 
             if browser {
@@ -165,8 +165,8 @@ pub fn execute(opts: StartOptions) -> Result<()> {
         })
     } else {
         // ネイティブターミナルモード（Unison ブリッジ）
-        // Stand が起動していなければ headless で起動
-        ensure_stand_running(resolved_port, &resolved_project_dir, debug_mode, cap_config)?;
+        // Process が起動していなければ headless で起動
+        ensure_process_running(resolved_port, &resolved_project_dir, debug_mode, cap_config)?;
 
         // Canvas 自動起動
         if let Err(e) = crate::canvas::run_canvas_detached(resolved_port) {
@@ -177,7 +177,7 @@ pub fn execute(opts: StartOptions) -> Result<()> {
         let result = crate::terminal_window::run_terminal_unison(resolved_port);
 
         match result {
-            Ok(()) => tracing::info!("Terminal window closed (Stand is still running)"),
+            Ok(()) => tracing::info!("Terminal window closed (Process is still running)"),
             Err(e) => tracing::error!("Terminal window error: {}", e),
         }
 
@@ -185,44 +185,48 @@ pub fn execute(opts: StartOptions) -> Result<()> {
     }
 }
 
-/// Stand が起動していなければ headless で起動する
+/// Process が起動していなければ headless で起動する
 ///
-/// running.json + PID チェックで既存 Stand を探し、
+/// running.json + PID チェックで既存 Process を探し、
 /// 見つからなければ自プロセスを `vp start --headless` で再起動してデタッチ。
-fn ensure_stand_running(
+fn ensure_process_running(
     port: u16,
     project_dir: &str,
     debug_mode: DebugMode,
     cap_config: CapabilityConfig,
 ) -> Result<()> {
     // running.json で既に起動済みか確認
-    if let Some(stand) = RunningStands::find_by_project(project_dir) {
-        if stand.port == port {
-            tracing::info!("Stand already running (port={}, pid={})", port, stand.pid);
+    if let Some(running) = RunningProcesses::find_by_project(project_dir) {
+        if running.port == port {
+            tracing::info!(
+                "Process already running (port={}, pid={})",
+                port,
+                running.pid
+            );
             return Ok(());
         }
     }
 
-    // headless で Stand を起動（in-process スレッド）
-    tracing::info!("Starting Stand server (port={})...", port);
+    // headless で Process を起動（in-process スレッド）
+    tracing::info!("Starting Process server (port={})...", port);
 
     std::thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime");
         rt.block_on(async {
-            if let Err(e) = crate::stand::run(port, false, debug_mode, cap_config).await {
-                tracing::error!("Stand server error: {}", e);
+            if let Err(e) = crate::process::run(port, false, debug_mode, cap_config).await {
+                tracing::error!("Process server error: {}", e);
             }
         })
     });
 
-    // Stand の HTTP サーバーが ready になるまでポーリング
-    wait_for_stand_ready(port)?;
+    // Process の HTTP サーバーが ready になるまでポーリング
+    wait_for_process_ready(port)?;
 
     Ok(())
 }
 
-/// Stand の HTTP サーバーが応答するまでポーリング（最大5秒）
-pub fn wait_for_stand_ready(port: u16) -> Result<()> {
+/// Process の HTTP サーバーが応答するまでポーリング（最大5秒）
+pub fn wait_for_process_ready(port: u16) -> Result<()> {
     let url = format!("http://127.0.0.1:{}/health", port);
     let max_attempts = 50; // 100ms × 50 = 5秒
 
@@ -232,7 +236,7 @@ pub fn wait_for_stand_ready(port: u16) -> Result<()> {
             std::time::Duration::from_millis(100),
         ) {
             Ok(_) => {
-                tracing::info!("Stand ready (attempt {})", i + 1);
+                tracing::info!("Process ready (attempt {})", i + 1);
                 return Ok(());
             }
             Err(_) => {
@@ -242,7 +246,7 @@ pub fn wait_for_stand_ready(port: u16) -> Result<()> {
     }
 
     // TCP 接続できなくてもタイムアウトで続行（WS 接続時にリトライするため）
-    tracing::warn!("Stand readiness check timed out, proceeding anyway");
+    tracing::warn!("Process readiness check timed out, proceeding anyway");
     let _ = url;
     Ok(())
 }

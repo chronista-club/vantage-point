@@ -173,7 +173,7 @@ pub fn run_tray() -> anyhow::Result<()> {
                 // Note: In a real implementation, we'd update the menu here
             } else if let Some(port_str) = id.strip_prefix(OPEN_WEBUI_PREFIX) {
                 if let Ok(port) = port_str.parse::<u16>() {
-                    // Open WebView window for existing Stand instance
+                    // Open WebView window for existing Process instance
                     if let Err(e) = crate::canvas::run_canvas_detached(port) {
                         tracing::error!("Failed to open WebView: {}", e);
                         // Fallback to browser

@@ -168,7 +168,7 @@ async fn test_async_capability() {
 ─────────────────────────────────────
 protocol/                    ~30
 capability/                  ~50
-stand/                       ~15
+process/                       ~15
 world/                       ~10
 その他                        ~10
 ─────────────────────────────────────
