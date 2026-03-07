@@ -204,6 +204,9 @@ pub async fn run(
         );
     }
 
+    // メニューバーアプリに起動完了を通知
+    crate::notify::post_process_changed(port, "started");
+
     // Clone for shutdown
     let capabilities_for_shutdown = state.capabilities.clone();
     let file_watchers_for_shutdown = state.file_watchers.clone();
@@ -222,6 +225,9 @@ pub async fn run(
     } else {
         tracing::info!("Unregistered Process from running.json (port={})", port);
     }
+
+    // メニューバーアプリに停止を通知
+    crate::notify::post_process_changed(port, "stopped");
 
     // ファイル監視を全停止
     file_watchers_for_shutdown.lock().await.stop_all();
