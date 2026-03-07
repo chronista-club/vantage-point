@@ -297,14 +297,17 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                                 }
                             }
                             BrowserMessage::TerminalInput { data } => {
-                                // base64デコードしてターミナルに書き込み
+                                // base64デコードしてターミナルに書き込み（レガシー: 最初のセッションに送信）
                                 use base64::Engine;
                                 let engine = base64::engine::general_purpose::STANDARD;
                                 match engine.decode(&data) {
                                     Ok(bytes) => {
                                         let mut pty_mgr = state_clone.pty_manager.lock().await;
-                                        if let Err(e) = pty_mgr.write(&bytes) {
-                                            tracing::warn!("PTY write error: {}", e);
+                                        if let Some(info) = pty_mgr.list_sessions().first() {
+                                            let sid = info.id.clone();
+                                            if let Err(e) = pty_mgr.write(&sid, &bytes) {
+                                                tracing::warn!("PTY write error: {}", e);
+                                            }
                                         }
                                     }
                                     Err(e) => {
@@ -335,29 +338,32 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                                 }
                             }
                             BrowserMessage::TerminalResize { cols, rows } => {
+                                // レガシー WS パス: セッションがなければ作成、あればリサイズ
                                 let mut pty_mgr = state_clone.pty_manager.lock().await;
                                 if !pty_mgr.is_active() {
-                                    if let Err(e) = pty_mgr.start(
-                                        &state_clone.project_dir,
-                                        cols,
-                                        rows,
-                                        state_clone.hub.sender(),
-                                    ) {
-                                        tracing::warn!("PTYセッション起動失敗: {}", e);
-                                        state_clone.send_debug(
-                                            "terminal",
-                                            &format!("PTY起動失敗: {}", e),
-                                            None,
-                                        );
-                                    } else {
-                                        state_clone.send_debug(
-                                            "terminal",
-                                            &format!("PTYセッション開始 ({}x{})", cols, rows),
-                                            None,
-                                        );
+                                    pty_mgr.set_project_dir(&state_clone.project_dir);
+                                    match pty_mgr.create_session(cols, rows, None) {
+                                        Ok((sid, _)) => {
+                                            state_clone.send_debug(
+                                                "terminal",
+                                                &format!("PTYセッション開始: {} ({}x{})", sid, cols, rows),
+                                                None,
+                                            );
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!("PTYセッション起動失敗: {}", e);
+                                            state_clone.send_debug(
+                                                "terminal",
+                                                &format!("PTY起動失敗: {}", e),
+                                                None,
+                                            );
+                                        }
                                     }
-                                } else if let Err(e) = pty_mgr.resize(cols, rows) {
-                                    tracing::warn!("PTY resize error: {}", e);
+                                } else if let Some(info) = pty_mgr.list_sessions().first() {
+                                    let sid = info.id.clone();
+                                    if let Err(e) = pty_mgr.resize(&sid, cols, rows) {
+                                        tracing::warn!("PTY resize error: {}", e);
+                                    }
                                 }
                             }
                         }
