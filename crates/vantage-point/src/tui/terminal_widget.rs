@@ -71,8 +71,8 @@ impl Widget for TerminalView<'_> {
         }
 
         // カーソル描画（反転色ブロック）
-        // Claude CLI 等の TUI アプリは DECTCEM でカーソルを非表示にするが、
         // PTY パススルーでは常にカーソル位置を可視化する
+        // （Claude CLI は DECTCEM でカーソルを非表示にするが、入力位置の視覚的手がかりとして表示）
         let (crow, ccol) = snap.cursor;
         let cx = area.x + ccol as u16;
         let cy = area.y + crow as u16;

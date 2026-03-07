@@ -231,7 +231,6 @@ fn run_tui_inner(resolved: Option<(String, String)>) -> Result<()> {
     let mut stdout = io::stdout();
     crossterm::execute!(
         stdout,
-        crossterm::event::EnableMouseCapture,
         EnterAlternateScreen
     )?;
 
@@ -264,7 +263,6 @@ fn run_tui_inner(resolved: Option<(String, String)>) -> Result<()> {
     disable_raw_mode()?;
     crossterm::execute!(
         terminal.backend_mut(),
-        crossterm::event::DisableMouseCapture,
         LeaveAlternateScreen
     )?;
     terminal.show_cursor()?;
@@ -979,6 +977,7 @@ fn run_claude_session(
             let state = term_state.lock().unwrap();
             let snapshot = state.snapshot();
             let display_offset = state.display_offset();
+            let cursor_visible = snapshot.cursor_visible;
             drop(state);
 
             let session_count = sessions.len();
@@ -1034,11 +1033,13 @@ fn run_claude_session(
                 frame.render_widget(pty_block, pty_area);
                 frame.render_widget(TerminalView::new(&snapshot), pty_inner);
 
-                let (crow, ccol) = snapshot.cursor;
-                let cx = pty_inner.x + ccol as u16;
-                let cy = pty_inner.y + crow as u16;
-                if cx < pty_inner.right() && cy < pty_inner.bottom() {
-                    frame.set_cursor_position(ratatui::layout::Position::new(cx, cy));
+                if cursor_visible {
+                    let (crow, ccol) = snapshot.cursor;
+                    let cx = pty_inner.x + ccol as u16;
+                    let cy = pty_inner.y + crow as u16;
+                    if cx < pty_inner.right() && cy < pty_inner.bottom() {
+                        frame.set_cursor_position(ratatui::layout::Position::new(cx, cy));
+                    }
                 }
 
                 // Canvas ペイン
