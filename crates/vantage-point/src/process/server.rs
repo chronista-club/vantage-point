@@ -152,7 +152,7 @@ pub async fn run(
         .layer(CorsLayer::permissive())
         .with_state(state.clone());
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    let addr: SocketAddr = format!("[::1]:{}", port).parse().unwrap();
     tracing::info!("Starting vp on http://{}", addr);
 
     // Auto-open browser
@@ -339,7 +339,7 @@ pub async fn run_conductor(port: u16) -> Result<()> {
         .layer(CorsLayer::permissive())
         .with_state(state);
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    let addr: SocketAddr = format!("[::1]:{}", port).parse().unwrap();
     tracing::info!("Starting Conductor Process on http://{}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;

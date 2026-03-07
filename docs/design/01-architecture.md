@@ -134,6 +134,18 @@ Project 2 → Port 33002
 - `vp start 1` → 33001
 - `vp ps` → 33000-33010をスキャン
 
+## ネットワークバインド
+
+全サーバーは IPv6 loopback `[::1]` にバインドし、localhost 限定で動作する。
+
+| プロトコル | バインドアドレス | 用途 |
+|-----------|-----------------|------|
+| HTTP (Axum) | `[::1]:{port}` | REST API / WebSocket / 静的ファイル |
+| QUIC (Unison) | `[::1]:{port+1000}` | MCP / TUI → Process 通信 |
+
+- クライアント側は `http://localhost:{port}` で接続（macOS は localhost → `::1` 優先解決）
+- リモートアクセスが必要な場合は将来 `--bind` オプションで明示指定する方式を検討
+
 ## 設定ファイル
 
 **場所**: `~/.config/vantage/config.toml`
