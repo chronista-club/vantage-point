@@ -374,11 +374,11 @@ fn start_unison_bridge(
 ///
 /// Process サーバーの QUIC "terminal" チャネルに接続し、ネイティブウィンドウで描画する。
 /// ウィンドウを閉じても Process 側の PTY は生存し、再度接続で re-attach できる。
-pub fn run_terminal_unison(port: u16) -> anyhow::Result<()> {
+pub fn run_terminal_unison(port: u16, project_name: &str) -> anyhow::Result<()> {
     let event_loop = EventLoopBuilder::<TerminalEvent>::with_user_event().build();
 
     let window = WindowBuilder::new()
-        .with_title("Vantage Point")
+        .with_title(&format!("VP: {}", project_name))
         .with_inner_size(LogicalSize::new(1400.0, 900.0))
         .build(&event_loop)?;
 

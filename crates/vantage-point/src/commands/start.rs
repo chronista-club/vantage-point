@@ -12,6 +12,7 @@ use crate::resolve::{self, ResolvedTarget};
 pub struct StartOptions<'a> {
     pub target: Option<String>,
     pub port: Option<u16>,
+    pub gui: bool,
     pub headless: bool,
     pub browser: bool,
     pub debug: Option<DebugModeArg>,
@@ -25,6 +26,7 @@ pub fn execute(opts: StartOptions) -> Result<()> {
     let StartOptions {
         target,
         port,
+        gui,
         headless,
         browser,
         debug,
@@ -34,7 +36,9 @@ pub fn execute(opts: StartOptions) -> Result<()> {
     } = opts;
 
     // --project-dir が指定されていればそれを最優先
-    let (resolved_project_dir, resolved_port) = if let Some(ref dir) = project_dir {
+    // already_running: 既存 Process に re-attach する場合 true（pre-registration をスキップ）
+    let (resolved_project_dir, resolved_port, already_running) = if let Some(ref dir) = project_dir
+    {
         let dir_normalized = Config::normalize_path(std::path::Path::new(dir));
 
         // 既に実行中かチェック
@@ -48,7 +52,7 @@ pub fn execute(opts: StartOptions) -> Result<()> {
                 return Ok(());
             }
             // ターミナルモード: 既存 Process に re-attach
-            (dir_normalized, running.port)
+            (dir_normalized, running.port, true)
         } else {
             let idx = config.find_project_index(&dir_normalized);
             let p = if let Some(explicit) = port {
@@ -59,7 +63,7 @@ pub fn execute(opts: StartOptions) -> Result<()> {
                 resolve::find_available_port()
                     .ok_or_else(|| anyhow::anyhow!("No available ports in range"))?
             };
-            (dir_normalized, p)
+            (dir_normalized, p, false)
         }
     } else {
         // target ベースの解決
@@ -82,7 +86,7 @@ pub fn execute(opts: StartOptions) -> Result<()> {
                     "\u{1f517} Re-attaching to: {} (port {})",
                     name, running_port
                 );
-                (proj_dir, running_port)
+                (proj_dir, running_port, true)
             }
             ResolvedTarget::Configured { name, path, index } => {
                 println!("\u{1f4c1} Project: {}", name);
@@ -91,7 +95,7 @@ pub fn execute(opts: StartOptions) -> Result<()> {
                 } else {
                     resolve::port_for_configured(index, config)?
                 };
-                (path, p)
+                (path, p, false)
             }
             ResolvedTarget::Cwd { path } => {
                 let p = if let Some(explicit) = port {
@@ -100,12 +104,24 @@ pub fn execute(opts: StartOptions) -> Result<()> {
                     resolve::find_available_port()
                         .ok_or_else(|| anyhow::anyhow!("No available ports in range"))?
                 };
-                (path, p)
+                (path, p, false)
             }
         }
     };
 
     println!("\u{1f50c} Using port {}", resolved_port);
+
+    // ポート予約: Process サーバー起動前に running.json へ仮登録
+    // （2つ目の vp start が同じポートを選ばないようにする）
+    // re-attach 時は既存エントリを上書きしないようスキップ
+    if !already_running {
+        let my_pid = std::process::id();
+        if let Err(e) =
+            RunningProcesses::register(resolved_port, &resolved_project_dir, my_pid, None)
+        {
+            tracing::warn!("Failed to pre-register port in running.json: {}", e);
+        }
+    }
 
     // デバッグモード: CLI > env > default
     let debug_mode = debug
@@ -148,6 +164,7 @@ pub fn execute(opts: StartOptions) -> Result<()> {
     };
 
     if headless || browser {
+        // Headless / Browser モード: HTTP サーバーのみ
         let rt = tokio::runtime::Runtime::new()?;
         rt.block_on(async {
             let server_handle = tokio::spawn(async move {
@@ -163,18 +180,18 @@ pub fn execute(opts: StartOptions) -> Result<()> {
 
             server_handle.await?
         })
-    } else {
-        // ネイティブターミナルモード（Unison ブリッジ）
-        // Process が起動していなければ headless で起動
-        ensure_process_running(resolved_port, &resolved_project_dir, debug_mode, cap_config)?;
-
-        // Canvas 自動起動
-        if let Err(e) = crate::canvas::run_canvas_detached(resolved_port) {
-            tracing::warn!("Canvas 自動起動失敗: {}", e);
+    } else if gui {
+        // GUI モード: ネイティブウィンドウ（Unison ブリッジ）
+        if let Err(e) =
+            ensure_process_running(resolved_port, &resolved_project_dir, debug_mode, cap_config)
+        {
+            let _ = RunningProcesses::unregister_by_port(resolved_port);
+            return Err(e);
         }
 
-        // Unison ブリッジモードのネイティブウィンドウ
-        let result = crate::terminal_window::run_terminal_unison(resolved_port);
+        let project_name = resolve::project_name_from_path(&resolved_project_dir, config);
+
+        let result = crate::terminal_window::run_terminal_unison(resolved_port, &project_name);
 
         match result {
             Ok(()) => tracing::info!("Terminal window closed (Process is still running)"),
@@ -182,6 +199,21 @@ pub fn execute(opts: StartOptions) -> Result<()> {
         }
 
         Ok(())
+    } else {
+        // デフォルト: TUI モード（ratatui ベースの対話コンソール）
+        let project_name =
+            resolve::project_name_from_path(&resolved_project_dir, config).to_string();
+
+        // Process サーバーを headless で起動（Canvas / API 用）
+        if let Err(e) =
+            ensure_process_running(resolved_port, &resolved_project_dir, debug_mode, cap_config)
+        {
+            let _ = RunningProcesses::unregister_by_port(resolved_port);
+            return Err(e);
+        }
+
+        // TUI 起動（Canvas は Ctrl+O で随時 toggle）
+        crate::tui::run_tui(&resolved_project_dir, &project_name)
     }
 }
 
@@ -189,22 +221,16 @@ pub fn execute(opts: StartOptions) -> Result<()> {
 ///
 /// running.json + PID チェックで既存 Process を探し、
 /// 見つからなければ自プロセスを `vp start --headless` で再起動してデタッチ。
-fn ensure_process_running(
+pub fn ensure_process_running(
     port: u16,
-    project_dir: &str,
+    _project_dir: &str,
     debug_mode: DebugMode,
     cap_config: CapabilityConfig,
 ) -> Result<()> {
-    // running.json で既に起動済みか確認
-    if let Some(running) = RunningProcesses::find_by_project(project_dir) {
-        if running.port == port {
-            tracing::info!(
-                "Process already running (port={}, pid={})",
-                port,
-                running.pid
-            );
-            return Ok(());
-        }
+    // HTTP サーバーが実際に応答するか確認（PID だけでは TUI プロセスと区別できない）
+    if is_server_responding(port) {
+        tracing::info!("Process already running and responding (port={})", port);
+        return Ok(());
     }
 
     // headless で Process を起動（in-process スレッド）
@@ -249,4 +275,13 @@ pub fn wait_for_process_ready(port: u16) -> Result<()> {
     tracing::warn!("Process readiness check timed out, proceeding anyway");
     let _ = url;
     Ok(())
+}
+
+/// Process サーバーが実際に HTTP 応答するかチェック（TCP 接続のみ）
+fn is_server_responding(port: u16) -> bool {
+    std::net::TcpStream::connect_timeout(
+        &format!("127.0.0.1:{}", port).parse().unwrap(),
+        std::time::Duration::from_millis(200),
+    )
+    .is_ok()
 }

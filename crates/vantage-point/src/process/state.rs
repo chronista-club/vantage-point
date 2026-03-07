@@ -19,7 +19,14 @@ use crate::agui::AgUiEvent;
 use crate::capability::{ProcessManagerCapability, UpdateCapability};
 use crate::file_watcher::FileWatcherManager;
 use crate::mcp::PermissionResponse;
-use crate::protocol::{DebugMode, ProcessMessage};
+use crate::protocol::{Content, DebugMode, ProcessMessage};
+
+/// ペインの最新コンテンツ（Canvas 再接続時の状態復元用）
+#[derive(Debug, Clone)]
+pub(crate) struct PaneState {
+    pub content: Content,
+    pub title: Option<String>,
+}
 
 /// Pending permission request entry
 pub(crate) struct PendingPermission {
@@ -117,6 +124,9 @@ pub(crate) struct AppState {
     pub port: u16,
     /// ファイル監視マネージャー
     pub file_watchers: Arc<tokio::sync::Mutex<FileWatcherManager>>,
+    /// Canvas ペインの最新コンテンツ（再接続時の状態復元用）
+    /// sync Mutex を使用（async / sync 両方のコンテキストから安全にアクセス可能）
+    pub pane_contents: Arc<std::sync::Mutex<HashMap<String, PaneState>>>,
     /// スクリーンショット応答待ち: request_id → oneshot sender
     /// Ruby VM プロセスレジストリ
     pub ruby_registry: Arc<tokio::sync::Mutex<RubyRegistry>>,
@@ -125,6 +135,63 @@ pub(crate) struct AppState {
 }
 
 impl AppState {
+    /// ペインメッセージをキャッシュ（Show / Clear）
+    pub fn cache_pane_message(&self, msg: &ProcessMessage) {
+        match msg {
+            ProcessMessage::Show {
+                pane_id,
+                content,
+                append,
+                title,
+            } => {
+                let mut panes = self.pane_contents.lock().unwrap();
+                if *append {
+                    if let Some(existing) = panes.get_mut(pane_id) {
+                        existing.content = existing.content.append_with(content);
+                        if title.is_some() {
+                            existing.title.clone_from(title);
+                        }
+                    } else {
+                        panes.insert(
+                            pane_id.clone(),
+                            PaneState {
+                                content: content.clone(),
+                                title: title.clone(),
+                            },
+                        );
+                    }
+                } else {
+                    panes.insert(
+                        pane_id.clone(),
+                        PaneState {
+                            content: content.clone(),
+                            title: title.clone(),
+                        },
+                    );
+                }
+            }
+            ProcessMessage::Clear { pane_id } => {
+                let mut panes = self.pane_contents.lock().unwrap();
+                panes.remove(pane_id);
+            }
+            _ => {}
+        }
+    }
+
+    /// キャッシュ済みペイン状態を全て返す（Canvas 再接続用）
+    pub fn get_pane_snapshot(&self) -> Vec<ProcessMessage> {
+        let panes = self.pane_contents.lock().unwrap();
+        panes
+            .iter()
+            .map(|(pane_id, state)| ProcessMessage::Show {
+                pane_id: pane_id.clone(),
+                content: state.content.clone(),
+                append: false,
+                title: state.title.clone(),
+            })
+            .collect()
+    }
+
     /// Send debug info to connected clients
     pub fn send_debug(&self, category: &str, message: &str, data: Option<serde_json::Value>) {
         if self.debug_mode == DebugMode::None {

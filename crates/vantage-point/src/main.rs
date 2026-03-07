@@ -37,6 +37,7 @@ mod terminal;
 mod terminal_window;
 pub(crate) mod trace_log;
 mod tray;
+mod tui;
 
 use cli::{DebugModeArg, parse_debug_env};
 use config::Config;
@@ -69,11 +70,15 @@ enum Commands {
         #[arg(short, long)]
         port: Option<u16>,
 
-        /// ネイティブWebViewを開く（デフォルトはヘッドレス）
+        /// ネイティブウィンドウモード（Unison ブリッジ）
         #[arg(long)]
         gui: bool,
 
-        /// ネイティブWebViewの代わりにシステムブラウザを使用
+        /// ヘッドレスモード（HTTPサーバーのみ）
+        #[arg(long)]
+        headless: bool,
+
+        /// システムブラウザでWebUIを開く
         #[arg(long)]
         browser: bool,
 
@@ -176,6 +181,7 @@ fn main() -> Result<()> {
         target: None,
         port: None,
         gui: false,
+        headless: false,
         browser: false,
         debug: None,
         project_dir: None,
@@ -200,6 +206,7 @@ fn main() -> Result<()> {
             target,
             port,
             gui,
+            headless,
             browser,
             debug,
             project_dir,
@@ -207,7 +214,8 @@ fn main() -> Result<()> {
         } => commands::start::execute(commands::start::StartOptions {
             target,
             port,
-            headless: !gui,
+            gui,
+            headless,
             browser,
             debug,
             project_dir,

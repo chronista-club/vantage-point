@@ -45,6 +45,12 @@ pub fn execute(target: Option<&str>, browser: bool, headless: bool, config: &Con
     // デバッグモード
     let debug_mode = parse_debug_env().unwrap_or_default();
 
+    // ポート予約: Process サーバー起動前に running.json へ仮登録
+    let my_pid = std::process::id();
+    if let Err(e) = crate::config::RunningProcesses::register(port, &project_dir, my_pid, None) {
+        tracing::warn!("Failed to pre-register port in running.json: {}", e);
+    }
+
     // CapabilityConfig（再起動時は MIDI なし）
     let cap_config = crate::process::CapabilityConfig {
         project_dir: project_dir.clone(),
@@ -80,7 +86,8 @@ pub fn execute(target: Option<&str>, browser: bool, headless: bool, config: &Con
         crate::commands::start::wait_for_process_ready(port)?;
 
         // Unison ブリッジモードのネイティブウィンドウ
-        let result = crate::terminal_window::run_terminal_unison(port);
+        let project_name = resolve::project_name_from_path(&project_dir, config);
+        let result = crate::terminal_window::run_terminal_unison(port, &project_name);
 
         match result {
             Ok(()) => tracing::info!("Terminal window closed (Process is still running)"),

@@ -50,6 +50,9 @@ pub enum CanvasCommands {
         /// 接続先の Process ポート番号
         #[arg(short, long)]
         port: u16,
+        /// プロジェクト名（ウィンドウタイトル用）
+        #[arg(short, long, default_value = "Vantage Point")]
+        name: String,
     },
 }
 
@@ -97,6 +100,6 @@ pub fn execute(cmd: CanvasCommands, config: &Config) -> Result<()> {
             );
             Ok(())
         }
-        CanvasCommands::Internal { port } => crate::commands::canvas::execute(port),
+        CanvasCommands::Internal { port, name } => crate::commands::canvas::execute(port, &name),
     }
 }

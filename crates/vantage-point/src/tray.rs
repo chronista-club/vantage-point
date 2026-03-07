@@ -174,7 +174,17 @@ pub fn run_tray() -> anyhow::Result<()> {
             } else if let Some(port_str) = id.strip_prefix(OPEN_WEBUI_PREFIX) {
                 if let Ok(port) = port_str.parse::<u16>() {
                     // Open WebView window for existing Process instance
-                    if let Err(e) = crate::canvas::run_canvas_detached(port) {
+                    let project_name = crate::config::RunningProcesses::load()
+                        .unwrap_or_default()
+                        .processes
+                        .iter()
+                        .find(|i| i.port == port)
+                        .map(|i| {
+                            let config = crate::config::Config::load().unwrap_or_default();
+                            crate::resolve::project_name_from_path(&i.project_dir, &config)
+                        })
+                        .unwrap_or_else(|| "Vantage Point".to_string());
+                    if let Err(e) = crate::canvas::run_canvas_detached(port, &project_name) {
                         tracing::error!("Failed to open WebView: {}", e);
                         // Fallback to browser
                         let url = format!("http://localhost:{}", port);

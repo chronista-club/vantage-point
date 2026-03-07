@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.7.0"
+version = "0.8.0"
 edition = "2024"
 authors = ["Makoto"]
 license = "LicenseRef-Proprietary"
@@ -43,6 +43,10 @@ tokio-stream = "0.1"
 
 # QUIC protocol (Unison)
 unison = { git = "https://github.com/chronista-club/unison.git", tag = "v0.3.3" }
+
+# TUI
+ratatui = "0.29"
+crossterm = "0.28"
 
 # Database
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }

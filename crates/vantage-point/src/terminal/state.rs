@@ -4,7 +4,7 @@
 //! VTバイトストリームからグリッド状態を管理する。
 
 use alacritty_terminal::event::EventListener;
-use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::cell::Flags as CellFlags;
 use alacritty_terminal::term::{Config as TermConfig, Term};
@@ -60,6 +60,9 @@ impl EventListener for EventProxy {
     }
 }
 
+/// スクロールバック履歴行数
+const SCROLLBACK_LINES: usize = 10_000;
+
 /// Dimensions トレイト実装
 struct TermDimensions {
     cols: usize,
@@ -74,7 +77,7 @@ impl Dimensions for TermDimensions {
         self.lines
     }
     fn total_lines(&self) -> usize {
-        self.lines
+        self.lines + SCROLLBACK_LINES
     }
 }
 
@@ -190,15 +193,24 @@ impl TerminalState {
     }
 
     /// 現在のグリッド状態をスナップショットとして取得
+    ///
+    /// `display_offset` を反映し、スクロールバック領域の行も正しく読み取る。
+    /// alacritty_terminal の Grid では:
+    /// - `Line(0)` ~ `Line(N-1)` = 現在の表示領域（display area）
+    /// - `Line(-1)`, `Line(-2)`, ... = スクロールバック（履歴）領域
+    /// - `display_offset` が N のとき、表示行 i は `Line(i - N)` に対応
     pub fn snapshot(&self) -> GridSnapshot {
         let grid = self.term.grid();
+        let display_offset = grid.display_offset();
         let mut cells = Vec::with_capacity(self.lines);
 
         for line_idx in 0..self.lines {
+            // display_offset > 0 のとき、表示開始行を scrollback 領域にシフト
+            let line = Line(line_idx as i32 - display_offset as i32);
             let mut row = Vec::with_capacity(self.cols);
 
             for col_idx in 0..self.cols {
-                let cell = &grid[Line(line_idx as i32)][Column(col_idx)];
+                let cell = &grid[line][Column(col_idx)];
 
                 let fg = resolve_color(&cell.fg);
                 let bg = resolve_color(&cell.bg);
@@ -223,12 +235,19 @@ impl TerminalState {
         let cursor_row = cursor_point.line.0 as usize;
         let cursor_col = cursor_point.column.0;
 
+        // スクロール中はカーソルが表示領域外にあるため非表示にする
+        let cursor_visible = if display_offset > 0 {
+            false
+        } else {
+            self.cursor_visible()
+        };
+
         GridSnapshot {
             cells,
             cols: self.cols,
             lines: self.lines,
             cursor: (cursor_row, cursor_col),
-            cursor_visible: self.cursor_visible(),
+            cursor_visible,
         }
     }
 
@@ -264,6 +283,16 @@ impl TerminalState {
     pub fn cursor_visible(&self) -> bool {
         use alacritty_terminal::term::TermMode;
         self.term.mode().contains(TermMode::SHOW_CURSOR)
+    }
+
+    /// スクロール表示位置を変更
+    pub fn scroll_display(&mut self, scroll: Scroll) {
+        self.term.scroll_display(scroll);
+    }
+
+    /// 現在のスクロールオフセット（0 = 最下部）
+    pub fn display_offset(&self) -> usize {
+        self.term.grid().display_offset()
     }
 
     /// カラム数
