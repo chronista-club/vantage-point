@@ -24,13 +24,13 @@ use crate::config::{Config, ProjectConfig};
 use crate::terminal::state::TerminalState;
 
 use super::input::key_to_pty_bytes;
+use super::session::{ClaudeSession, SessionMode, list_sessions};
 use super::terminal_widget::TerminalView;
 
 // Arctic Nord カラー定数
 const NORD_BG: Color = Color::Rgb(11, 17, 32); // #0B1120
 const NORD_FG: Color = Color::Rgb(216, 222, 233); // #D8DEE9
 const NORD_CYAN: Color = Color::Rgb(136, 192, 208); // #88C0D0
-const NORD_BLUE: Color = Color::Rgb(129, 161, 193); // #81A1C1
 const NORD_POLAR: Color = Color::Rgb(46, 52, 64); // #2E3440
 const NORD_COMMENT: Color = Color::Rgb(76, 86, 106); // #4C566A
 const NORD_GREEN: Color = Color::Rgb(163, 190, 140); // #A3BE8C
@@ -293,31 +293,222 @@ fn start_background_services(
 }
 
 // =============================================================================
+// セッション選択画面
+// =============================================================================
+
+/// セッション選択画面（前回の続き / 新規 / 一覧から選択）
+fn run_session_select(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    project_dir: &str,
+) -> Result<SessionMode> {
+    let sessions = list_sessions(project_dir);
+
+    // セッションが 0 件なら新規で開始
+    if sessions.is_empty() {
+        return Ok(SessionMode::New);
+    }
+
+    // 選択肢を構築: [続き] + [新規] + 過去セッション一覧
+    let mut list_state = ListState::default();
+    list_state.select(Some(0)); // デフォルトは「前回の続き」
+
+    loop {
+        let sessions_ref = &sessions;
+        terminal.draw(|frame| {
+            draw_session_select(frame, sessions_ref, &mut list_state);
+        })?;
+
+        if event::poll(Duration::from_millis(50))? {
+            match event::read()? {
+                Event::Key(key) => match key.code {
+                    KeyCode::Enter => {
+                        let idx = list_state.selected().unwrap_or(0);
+                        return Ok(match idx {
+                            0 => SessionMode::Continue,
+                            1 => SessionMode::New,
+                            n => SessionMode::Resume(sessions[n - 2].id.clone()),
+                        });
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        let i = list_state.selected().unwrap_or(0);
+                        let total = sessions.len() + 2; // +2 for Continue & New
+                        let new = if i == 0 { total - 1 } else { i - 1 };
+                        list_state.select(Some(new));
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        let i = list_state.selected().unwrap_or(0);
+                        let total = sessions.len() + 2;
+                        let new = if i >= total - 1 { 0 } else { i + 1 };
+                        list_state.select(Some(new));
+                    }
+                    // Esc: 前回の続き（デフォルト動作）
+                    KeyCode::Esc => return Ok(SessionMode::Continue),
+                    // Ctrl+Q: 終了
+                    KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        anyhow::bail!("User quit from session select");
+                    }
+                    _ => {}
+                },
+                _ => {}
+            }
+        }
+    }
+}
+
+/// セッション選択画面の描画
+fn draw_session_select(
+    frame: &mut ratatui::Frame,
+    sessions: &[ClaudeSession],
+    list_state: &mut ListState,
+) {
+    let area = frame.area();
+
+    frame.render_widget(Block::default().style(Style::default().bg(NORD_BG)), area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // タイトル
+            Constraint::Min(1),    // セッションリスト
+            Constraint::Length(1), // ヘルプ
+        ])
+        .margin(1)
+        .split(area);
+
+    // タイトル
+    let title = Paragraph::new(Line::from(vec![
+        Span::styled(
+            " Vantage Point ",
+            Style::default().fg(NORD_CYAN).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" — セッション選択", Style::default().fg(NORD_FG)),
+    ]))
+    .block(
+        Block::default()
+            .borders(Borders::BOTTOM)
+            .border_style(Style::default().fg(NORD_COMMENT)),
+    );
+    frame.render_widget(title, chunks[0]);
+
+    // セッションリスト構築
+    let mut items: Vec<ListItem> = Vec::new();
+
+    // [0] 前回の続き
+    items.push(ListItem::new(Line::from(vec![
+        Span::styled(" ▶ ", Style::default().fg(NORD_GREEN)),
+        Span::styled(
+            "前回の続き",
+            Style::default().fg(NORD_FG).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" (--continue)", Style::default().fg(NORD_COMMENT)),
+    ])));
+
+    // [1] 新規セッション
+    items.push(ListItem::new(Line::from(vec![
+        Span::styled(" + ", Style::default().fg(NORD_CYAN)),
+        Span::styled("新規セッション", Style::default().fg(NORD_FG)),
+    ])));
+
+    // [2..] 過去セッション
+    for session in sessions.iter().take(20) {
+        let elapsed = session
+            .modified
+            .elapsed()
+            .map(format_elapsed)
+            .unwrap_or_else(|_| "?".to_string());
+
+        let summary_text = if session.summary.is_empty() {
+            "(no messages)".to_string()
+        } else {
+            session.summary.clone()
+        };
+
+        items.push(ListItem::new(Line::from(vec![
+            Span::styled(format!(" {} ", elapsed), Style::default().fg(NORD_COMMENT)),
+            Span::styled(summary_text, Style::default().fg(NORD_FG)),
+            Span::styled(
+                format!("  ~{}msgs", session.message_count),
+                Style::default().fg(NORD_COMMENT),
+            ),
+        ])));
+    }
+
+    let list = List::new(items)
+        .highlight_style(
+            Style::default()
+                .bg(NORD_POLAR)
+                .fg(NORD_CYAN)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("▸ ");
+    frame.render_stateful_widget(list, chunks[1], list_state);
+
+    // ヘルプバー
+    let help = Line::from(vec![
+        Span::styled(" Enter", Style::default().fg(NORD_CYAN)),
+        Span::styled(": 選択  ", Style::default().fg(NORD_COMMENT)),
+        Span::styled("j/k", Style::default().fg(NORD_CYAN)),
+        Span::styled(": 移動  ", Style::default().fg(NORD_COMMENT)),
+        Span::styled("Esc", Style::default().fg(NORD_CYAN)),
+        Span::styled(": 前回の続き", Style::default().fg(NORD_COMMENT)),
+    ]);
+    frame.render_widget(
+        Paragraph::new(help).style(Style::default().bg(NORD_POLAR)),
+        chunks[2],
+    );
+}
+
+/// 経過時間を人間に読みやすい形式で表示
+fn format_elapsed(duration: Duration) -> String {
+    let secs = duration.as_secs();
+    if secs < 60 {
+        "just now".to_string()
+    } else if secs < 3600 {
+        format!("{}m ago", secs / 60)
+    } else if secs < 86400 {
+        format!("{}h ago", secs / 3600)
+    } else {
+        format!("{}d ago", secs / 86400)
+    }
+}
+
+// =============================================================================
 // Claude CLI セッション
 // =============================================================================
 
-/// Canvas の表示/非表示をトグル（HTTP API 経由）
+/// Canvas の表示/非表示をトグル（Unison QUIC 経由）
 fn toggle_canvas(port: u16, canvas_open: &mut bool) {
-    let action = if *canvas_open { "close" } else { "open" };
-    let url = format!("/api/canvas/{}", action);
-    let addr = format!("localhost:{}", port);
+    let method = if *canvas_open {
+        "close_canvas"
+    } else {
+        "open_canvas"
+    };
 
-    // ブロッキング HTTP POST（別スレッドで実行して TUI をブロックしない）
-    let result = std::thread::spawn(move || {
-        use std::io::{Read, Write};
-        use std::net::TcpStream;
-        let request = format!(
-            "POST {} HTTP/1.1\r\nHost: {}\r\nContent-Length: 2\r\nContent-Type: application/json\r\n\r\n{{}}",
-            url, addr
-        );
-        if let Ok(mut stream) = TcpStream::connect(&addr) {
-            let _ = stream.write_all(request.as_bytes());
-            let mut buf = [0u8; 512];
-            let _ = stream.read(&mut buf);
-            true
-        } else {
-            false
-        }
+    // 別スレッド + mini runtime で QUIC リクエスト（TUI をブロックしない）
+    let method = method.to_string();
+    let result = std::thread::spawn(move || -> bool {
+        let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        else {
+            return false;
+        };
+        rt.block_on(async {
+            let quic_port = port + crate::process::unison_server::QUIC_PORT_OFFSET;
+            let addr = format!("[::1]:{}", quic_port);
+
+            let Ok(client) = unison::ProtocolClient::new_default() else {
+                return false;
+            };
+            let ok = tokio::time::timeout(Duration::from_secs(2), async {
+                client.connect(&addr).await.ok()?;
+                let channel = client.open_channel("process").await.ok()?;
+                channel.request(&method, serde_json::json!({})).await.ok()?;
+                Some(())
+            })
+            .await;
+            matches!(ok, Ok(Some(())))
+        })
     })
     .join();
 
@@ -333,6 +524,9 @@ fn run_claude_session(
     project_name: &str,
     port: u16,
 ) -> Result<()> {
+    // セッション選択（PTY 起動前に行う — bail しても PTY リーク しない）
+    let session_mode = run_session_select(terminal, project_dir)?;
+
     let size = terminal.size()?;
     // 枠線（左右各1セル）+ ヘッダ（1行）+ フッター（1行）+ 枠線（上下各1セル）
     let pty_cols = (size.width.saturating_sub(2) as usize).max(1);
@@ -358,8 +552,19 @@ fn run_claude_session(
     // VP が権限管理を担うため、Claude CLI 側の権限確認をスキップ
     cmd.arg("--dangerously-skip-permissions");
 
-    // セッション復帰: --continue で前回セッションを自動復帰
-    cmd.arg("--continue");
+    // セッションモードに応じた引数
+    match &session_mode {
+        SessionMode::Continue => {
+            cmd.arg("--continue");
+        }
+        SessionMode::New => {
+            // 引数なし = 新規セッション
+        }
+        SessionMode::Resume(id) => {
+            cmd.arg("--resume");
+            cmd.arg(id);
+        }
+    }
 
     let mut child = pair.slave.spawn_command(cmd)?;
     drop(pair.slave);
@@ -542,7 +747,10 @@ fn draw_header_bar(
     canvas_open: bool,
 ) {
     let canvas_indicator = if canvas_open {
-        Span::styled(" Canvas:ON ", Style::default().fg(NORD_GREEN).bg(NORD_POLAR))
+        Span::styled(
+            " Canvas:ON ",
+            Style::default().fg(NORD_GREEN).bg(NORD_POLAR),
+        )
     } else {
         Span::styled(
             " Canvas:OFF ",

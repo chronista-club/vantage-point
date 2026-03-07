@@ -6,9 +6,10 @@
 //!
 //! ポート: HTTP port + 1000 (例: 33000 -> 34000)
 //!
-//! "process" と "canvas" の2チャネルを提供:
-//! - process: show / clear / toggle_pane / split_pane / close_pane
-//! - canvas: open / close
+//! "process" チャネルですべての操作を統一:
+//! - show / clear / toggle_pane / split_pane / close_pane
+//! - watch_file / unwatch_file
+//! - open_canvas / close_canvas
 
 use std::sync::Arc;
 
@@ -19,54 +20,10 @@ use unison::network::{MessageType, ProtocolServer};
 use tokio::sync::broadcast;
 
 use super::state::AppState;
-use crate::protocol::{Content, ProcessMessage, SplitDirection};
+use crate::protocol::ProcessMessage;
 
 /// QUIC ポートのオフセット（HTTP ポートからの差分）
 pub const QUIC_PORT_OFFSET: u16 = 1000;
-
-/// Show リクエストのペイロード
-#[derive(Debug, Serialize, Deserialize)]
-struct ShowRequest {
-    content: String,
-    #[serde(default = "default_content_type")]
-    content_type: String,
-    #[serde(default = "default_pane_id")]
-    pane_id: String,
-    #[serde(default)]
-    append: bool,
-    #[serde(default)]
-    title: Option<String>,
-}
-
-/// Clear リクエストのペイロード
-#[derive(Debug, Serialize, Deserialize)]
-struct ClearRequest {
-    #[serde(default = "default_pane_id")]
-    pane_id: String,
-}
-
-/// TogglePane リクエストのペイロード
-#[derive(Debug, Serialize, Deserialize)]
-struct TogglePaneRequest {
-    pane_id: String,
-    #[serde(default)]
-    visible: Option<bool>,
-}
-
-/// SplitPane リクエストのペイロード
-#[derive(Debug, Serialize, Deserialize)]
-struct SplitPaneRequest {
-    direction: String,
-    #[serde(default = "default_pane_id")]
-    source_pane_id: String,
-    new_pane_id: String,
-}
-
-/// ClosePane リクエストのペイロード
-#[derive(Debug, Serialize, Deserialize)]
-struct ClosePaneRequest {
-    pane_id: String,
-}
 
 /// UnwatchFile リクエストのペイロード
 #[derive(Debug, Serialize, Deserialize)]
@@ -74,115 +31,25 @@ struct UnwatchFileRequest {
     pane_id: String,
 }
 
-fn default_content_type() -> String {
-    "markdown".to_string()
-}
-
-fn default_pane_id() -> String {
-    "main".to_string()
-}
-
 // =============================================================================
 // Process チャネル ハンドラー
 // =============================================================================
 
-/// show メソッドのハンドラー
-fn handle_show(state: &AppState, payload: serde_json::Value) -> Result<serde_json::Value, String> {
-    let req: ShowRequest =
-        serde_json::from_value(payload).map_err(|e| format!("Invalid show payload: {}", e))?;
+/// ProcessMessage を受け取って broadcast する汎用ハンドラー
+///
+/// MCP → QUIC → ここ の経路では、MCP が ProcessMessage をそのままシリアライズして送る。
+/// HTTP ハンドラ（health.rs の show_handler 等）と同じ ProcessMessage 形式を受ける。
+fn handle_process_message(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let msg: ProcessMessage =
+        serde_json::from_value(payload).map_err(|e| format!("Invalid ProcessMessage: {}", e))?;
 
-    let content = match req.content_type.as_str() {
-        "html" => Content::Html(req.content),
-        "log" => Content::Log(req.content),
-        _ => Content::Markdown(req.content),
-    };
-
-    let msg = ProcessMessage::Show {
-        pane_id: req.pane_id.clone(),
-        content,
-        append: req.append,
-        title: req.title,
-    };
     state.cache_pane_message(&msg);
     state.hub.broadcast(msg);
 
-    Ok(serde_json::json!({"status": "ok", "pane_id": req.pane_id}))
-}
-
-/// clear メソッドのハンドラー
-fn handle_clear(state: &AppState, payload: serde_json::Value) -> Result<serde_json::Value, String> {
-    let req: ClearRequest =
-        serde_json::from_value(payload).map_err(|e| format!("Invalid clear payload: {}", e))?;
-
-    let msg = ProcessMessage::Clear {
-        pane_id: req.pane_id.clone(),
-    };
-    state.cache_pane_message(&msg);
-    state.hub.broadcast(msg);
-
-    Ok(serde_json::json!({"status": "ok", "pane_id": req.pane_id}))
-}
-
-/// toggle_pane メソッドのハンドラー
-fn handle_toggle_pane(
-    state: &AppState,
-    payload: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let req: TogglePaneRequest = serde_json::from_value(payload)
-        .map_err(|e| format!("Invalid toggle_pane payload: {}", e))?;
-
-    let msg = ProcessMessage::TogglePane {
-        pane_id: req.pane_id.clone(),
-        visible: req.visible,
-    };
-    state.hub.broadcast(msg);
-
-    Ok(serde_json::json!({"status": "ok", "pane_id": req.pane_id}))
-}
-
-/// split_pane メソッドのハンドラー
-fn handle_split_pane(
-    state: &AppState,
-    payload: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let req: SplitPaneRequest = serde_json::from_value(payload)
-        .map_err(|e| format!("Invalid split_pane payload: {}", e))?;
-
-    let direction = match req.direction.to_lowercase().as_str() {
-        "horizontal" | "h" => SplitDirection::Horizontal,
-        "vertical" | "v" => SplitDirection::Vertical,
-        other => {
-            return Err(format!(
-                "Invalid direction: '{}'. Use 'horizontal' or 'vertical'",
-                other
-            ));
-        }
-    };
-
-    let msg = ProcessMessage::Split {
-        pane_id: req.source_pane_id,
-        direction,
-        new_pane_id: req.new_pane_id.clone(),
-    };
-    state.hub.broadcast(msg);
-
-    Ok(serde_json::json!({"status": "ok", "new_pane_id": req.new_pane_id}))
-}
-
-/// close_pane メソッドのハンドラー
-fn handle_close_pane(
-    state: &AppState,
-    payload: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let req: ClosePaneRequest = serde_json::from_value(payload)
-        .map_err(|e| format!("Invalid close_pane payload: {}", e))?;
-
-    let msg = ProcessMessage::Close {
-        pane_id: req.pane_id.clone(),
-    };
-    state.hub.broadcast(msg);
-
-    Ok(serde_json::json!({"status": "ok", "pane_id": req.pane_id}))
+    Ok(serde_json::json!({"status": "ok"}))
 }
 
 /// watch_file メソッドのハンドラー
@@ -276,7 +143,7 @@ async fn handle_canvas_close(state: &AppState) -> Result<serde_json::Value, Stri
 /// Axum HTTP サーバーと並行して動作し、MCP クライアントからの
 /// QUIC リクエストを処理する。
 ///
-/// "process" と "canvas" の2チャネルを登録し、各チャネル内で
+/// "process" チャネルですべての操作を統一し、
 /// メソッド名ベースのディスパッチを行う。
 pub async fn start_unison_server(
     state: Arc<AppState>,
@@ -289,7 +156,7 @@ pub async fn start_unison_server(
     let server =
         ProtocolServer::with_identity("vp-process", env!("CARGO_PKG_VERSION"), "vantage-point");
 
-    // --- "process" チャネル: show / clear / toggle_pane / split_pane / close_pane ---
+    // --- "process" チャネル: 全操作を統一 ---
     server
         .register_channel("process", {
             let state = state.clone();
@@ -329,13 +196,13 @@ pub async fn start_unison_server(
                         );
 
                         let result = match method.as_str() {
-                            "show" => handle_show(&state, payload),
-                            "clear" => handle_clear(&state, payload),
-                            "toggle_pane" => handle_toggle_pane(&state, payload),
-                            "split_pane" => handle_split_pane(&state, payload),
-                            "close_pane" => handle_close_pane(&state, payload),
+                            "show" | "clear" | "toggle_pane" | "split_pane" | "close_pane" => {
+                                handle_process_message(&state, payload)
+                            }
                             "watch_file" => handle_watch_file(&state, payload).await,
                             "unwatch_file" => handle_unwatch_file(&state, payload).await,
+                            "open_canvas" => handle_canvas_open(&state).await,
+                            "close_canvas" => handle_canvas_close(&state).await,
                             _ => Err(format!("不明なメソッド: process.{}", method)),
                         };
 
@@ -363,93 +230,6 @@ pub async fn start_unison_server(
                                         "respond",
                                         "ERROR",
                                         format!("process.{} 失敗: {}", method, e),
-                                    )
-                                    .with_elapsed(start.elapsed().as_millis() as u64),
-                                );
-                                serde_json::json!({"error": e})
-                            }
-                        };
-
-                        if channel
-                            .send_response(request_id, &method, response)
-                            .await
-                            .is_err()
-                        {
-                            break;
-                        }
-                    }
-
-                    Ok(())
-                }
-            }
-        })
-        .await;
-
-    // --- "canvas" チャネル: open / close ---
-    server
-        .register_channel("canvas", {
-            let state = state.clone();
-            move |_ctx, stream| {
-                let state = state.clone();
-                async move {
-                    use crate::trace_log::{TraceEntry, new_trace_id, write_trace};
-
-                    let channel = UnisonChannel::new(stream);
-
-                    loop {
-                        let msg = match channel.recv().await {
-                            Ok(msg) => msg,
-                            Err(_) => break,
-                        };
-
-                        if msg.msg_type != MessageType::Request {
-                            continue;
-                        }
-
-                        let request_id = msg.id;
-                        let method = msg.method.clone();
-
-                        // リクエスト受信ログ
-                        let tid = new_trace_id();
-                        let start = std::time::Instant::now();
-                        write_trace(&TraceEntry::new(
-                            "process",
-                            &tid,
-                            "receive",
-                            "INFO",
-                            format!("canvas.{}", method),
-                        ));
-
-                        let result = match method.as_str() {
-                            "open" => handle_canvas_open(&state).await,
-                            "close" => handle_canvas_close(&state).await,
-                            _ => Err(format!("不明なメソッド: canvas.{}", method)),
-                        };
-
-                        let response = match &result {
-                            Ok(payload) => {
-                                // 処理成功ログ
-                                write_trace(
-                                    &TraceEntry::new(
-                                        "process",
-                                        &tid,
-                                        "respond",
-                                        "INFO",
-                                        format!("canvas.{} OK", method),
-                                    )
-                                    .with_elapsed(start.elapsed().as_millis() as u64),
-                                );
-                                payload.clone()
-                            }
-                            Err(e) => {
-                                // 処理失敗ログ
-                                write_trace(
-                                    &TraceEntry::new(
-                                        "process",
-                                        &tid,
-                                        "respond",
-                                        "ERROR",
-                                        format!("canvas.{} 失敗: {}", method, e),
                                     )
                                     .with_elapsed(start.elapsed().as_millis() as u64),
                                 );

@@ -5,6 +5,7 @@
 
 mod app;
 mod input;
+pub(crate) mod session;
 mod terminal_widget;
 
-pub use app::{run_tui, run_tui_select};
+pub use app::run_tui;

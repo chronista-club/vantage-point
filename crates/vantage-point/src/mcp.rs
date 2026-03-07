@@ -6,7 +6,8 @@
 //! - permission: Handle permission requests for tool execution
 //!
 //! ## 通信レイヤー
-//! すべて HTTP で Process と通信する。
+//! process / canvas チャネルは Unison QUIC で通信。
+//! Ruby VM / capture / permission 等の一部 API は HTTP フォールバック。
 
 use crate::config::RunningProcesses;
 use rmcp::{
@@ -239,13 +240,18 @@ pub struct PermissionRequestPayload {
 
 /// MCP → Process 通信クライアント
 ///
-/// すべての操作を HTTP 経由で Process に委譲する。
-/// ステートレス設計 — QUIC 接続やチャネル状態を持たない。
+/// Unison QUIC で Process と通信する。
+/// process / canvas チャネルは lazy 接続し、persistent に保持。
+/// Ruby / capture / permission 等の未対応メソッドは HTTP フォールバック。
 pub struct VantageMcp {
-    /// HTTP クライアント
+    /// HTTP クライアント（QUIC 未対応の API 用フォールバック）
     client: reqwest::Client,
     /// Process の HTTP ベース URL
     process_url: Arc<Mutex<String>>,
+    /// Process の HTTP ポート番号（QUIC = port + QUIC_PORT_OFFSET）
+    process_port: Arc<Mutex<u16>>,
+    /// Unison "process" チャネル（lazy 接続、canvas 操作も含む）
+    process_channel: Arc<Mutex<Option<Arc<unison::network::channel::UnisonChannel>>>>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -254,6 +260,8 @@ impl Clone for VantageMcp {
         Self {
             client: self.client.clone(),
             process_url: self.process_url.clone(),
+            process_port: self.process_port.clone(),
+            process_channel: self.process_channel.clone(),
             tool_router: Self::tool_router(),
         }
     }
@@ -265,6 +273,8 @@ impl VantageMcp {
         Self {
             client: reqwest::Client::new(),
             process_url: Arc::new(Mutex::new(format!("http://localhost:{}", process_port))),
+            process_port: Arc::new(Mutex::new(process_port)),
+            process_channel: Arc::new(Mutex::new(None)),
             tool_router: Self::tool_router(),
         }
     }
@@ -409,6 +419,101 @@ impl VantageMcp {
         Ok(json)
     }
 
+    /// Unison QUIC チャネルを取得（lazy 接続）
+    ///
+    /// チャネルが未接続または切断済みの場合、新規接続して返す。
+    async fn get_quic_channel(
+        &self,
+        channel_slot: &Arc<Mutex<Option<Arc<unison::network::channel::UnisonChannel>>>>,
+        channel_name: &str,
+    ) -> Result<Arc<unison::network::channel::UnisonChannel>, McpError> {
+        let mut guard = channel_slot.lock().await;
+
+        // 既存チャネルがあれば再利用
+        if let Some(ch) = guard.as_ref() {
+            return Ok(Arc::clone(ch));
+        }
+
+        // 新規接続
+        let port = *self.process_port.lock().await;
+        let quic_port = port + crate::process::unison_server::QUIC_PORT_OFFSET;
+        let addr = format!("[::1]:{}", quic_port);
+
+        let client = unison::ProtocolClient::new_default()
+            .map_err(|e| McpError::internal_error(format!("Unison client error: {}", e), None))?;
+        client.connect(&addr).await.map_err(|e| {
+            McpError::internal_error(format!("Unison connect error ({}): {}", addr, e), None)
+        })?;
+        let channel = Arc::new(client.open_channel(channel_name).await.map_err(|e| {
+            McpError::internal_error(
+                format!("Unison {} channel error: {}", channel_name, e),
+                None,
+            )
+        })?);
+
+        *guard = Some(Arc::clone(&channel));
+        Ok(channel)
+    }
+
+    /// Unison QUIC の "process" チャネルでメソッドを呼び出す
+    ///
+    /// 接続失敗時はチャネルをリセットして1回リトライする。
+    async fn quic_call(
+        &self,
+        method: &str,
+        payload: serde_json::Value,
+    ) -> Result<serde_json::Value, McpError> {
+        use crate::trace_log::{TraceEntry, new_trace_id, write_trace};
+
+        let tid = new_trace_id();
+        let start = std::time::Instant::now();
+        write_trace(
+            &TraceEntry::new(
+                "quic",
+                &tid,
+                "request",
+                "INFO",
+                format!("process.{}", method),
+            )
+            .with_data(payload.clone()),
+        );
+
+        let channel = self
+            .get_quic_channel(&self.process_channel, "process")
+            .await?;
+
+        match channel.request(method, payload.clone()).await {
+            Ok(resp) => {
+                write_trace(
+                    &TraceEntry::new(
+                        "quic",
+                        &tid,
+                        "response",
+                        "INFO",
+                        format!("process.{} OK", method),
+                    )
+                    .with_elapsed(start.elapsed().as_millis() as u64),
+                );
+                Ok(resp)
+            }
+            Err(e) => {
+                // チャネルをリセットしてリトライ
+                tracing::warn!("QUIC process.{} failed, retrying: {}", method, e);
+                *self.process_channel.lock().await = None;
+
+                let channel = self
+                    .get_quic_channel(&self.process_channel, "process")
+                    .await?;
+                channel.request(method, payload).await.map_err(|e| {
+                    McpError::internal_error(
+                        format!("QUIC process.{} retry failed: {}", method, e),
+                        None,
+                    )
+                })
+            }
+        }
+    }
+
     /// Process ポートを再解決し、変わっていれば URL を更新してリトライ用 URL を返す
     ///
     /// 接続失敗時に呼ばれる。`running.json` から cwd に一致する
@@ -420,6 +525,9 @@ impl VantageMcp {
         let mut current = self.process_url.lock().await;
         if *current != new_base {
             *current = new_base.clone();
+            *self.process_port.lock().await = process_info.port;
+            // ポートが変わったので QUIC チャネルもリセット
+            *self.process_channel.lock().await = None;
             Some(format!("{}{}", new_base, endpoint))
         } else {
             None
@@ -494,9 +602,11 @@ impl VantageMcp {
                 .await
             {
                 Ok(resp) if resp.status().is_success() => {
-                    // 起動完了 — process_url を更新
+                    // 起動完了 — process_url / process_port を更新、QUIC チャネルもリセット
                     let mut current = self.process_url.lock().await;
                     *current = new_base.clone();
+                    *self.process_port.lock().await = process_info.port;
+                    *self.process_channel.lock().await = None;
 
                     write_trace(&TraceEntry::new(
                         "mcp",
@@ -523,20 +633,21 @@ impl VantageMcp {
         None
     }
 
-    /// Process に ProcessMessage を送信（show/clear/toggle_pane/split_pane/close_pane）
+    /// Process に QUIC で ProcessMessage を送信（show/clear/toggle_pane/split_pane/close_pane）
     async fn process_call(
         &self,
-        endpoint: &str,
+        method: &str,
         msg: &ProcessMessage,
     ) -> Result<serde_json::Value, McpError> {
-        self.http_post(endpoint, msg).await
+        let payload = serde_json::to_value(msg)
+            .map_err(|e| McpError::internal_error(format!("Serialize error: {}", e), None))?;
+        self.quic_call(method, payload).await
     }
 
-    /// Canvas API を呼び出す（open/close）
+    /// Canvas API を呼び出す（open_canvas/close_canvas）— process チャネル経由
     async fn canvas_call(&self, action: &str) -> Result<serde_json::Value, McpError> {
-        let endpoint = format!("/api/canvas/{}", action);
-        // canvas/open, canvas/close はボディなし
-        self.http_post(&endpoint, &serde_json::json!({})).await
+        let method = format!("{}_canvas", action);
+        self.quic_call(&method, serde_json::json!({})).await
     }
 
     /// Open the Canvas window (native WebView)
@@ -596,7 +707,7 @@ impl VantageMcp {
             title: params.title,
         };
 
-        self.process_call("/api/show", &msg).await?;
+        self.process_call("show", &msg).await?;
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
             format!("Content displayed in pane '{}'", pane_id),
         )]))
@@ -613,7 +724,7 @@ impl VantageMcp {
         let msg = ProcessMessage::Clear {
             pane_id: pane_id.clone(),
         };
-        self.process_call("/api/show", &msg).await?;
+        self.process_call("clear", &msg).await?;
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
             format!("Pane '{}' cleared", pane_id),
         )]))
@@ -637,7 +748,7 @@ impl VantageMcp {
             pane_id: params.pane_id.clone(),
             visible: params.visible,
         };
-        self.process_call("/api/toggle-pane", &msg).await?;
+        self.process_call("toggle_pane", &msg).await?;
 
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
             format!("Pane '{}' {}", params.pane_id, state_desc),
@@ -676,7 +787,7 @@ impl VantageMcp {
             direction,
             new_pane_id: new_pane_id.clone(),
         };
-        self.process_call("/api/split-pane", &msg).await?;
+        self.process_call("split_pane", &msg).await?;
 
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
             format!(
@@ -695,7 +806,7 @@ impl VantageMcp {
         let msg = ProcessMessage::Close {
             pane_id: params.pane_id.clone(),
         };
-        self.process_call("/api/close-pane", &msg).await?;
+        self.process_call("close_pane", &msg).await?;
 
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
             format!("Pane '{}' closed", params.pane_id),
@@ -732,7 +843,9 @@ impl VantageMcp {
             style,
         };
 
-        self.http_post("/api/watch-file", &config).await?;
+        let payload = serde_json::to_value(&config)
+            .map_err(|e| McpError::internal_error(format!("Serialize error: {}", e), None))?;
+        self.quic_call("watch_file", payload).await?;
 
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
             format!("Now watching '{}' → pane '{}'", params.path, params.pane_id),
@@ -745,9 +858,9 @@ impl VantageMcp {
         &self,
         rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<UnwatchFileParams>,
     ) -> Result<CallToolResult, McpError> {
-        self.http_post(
-            "/api/unwatch-file",
-            &serde_json::json!({"pane_id": params.pane_id}),
+        self.quic_call(
+            "unwatch_file",
+            serde_json::json!({"pane_id": params.pane_id}),
         )
         .await?;
 
