@@ -186,6 +186,8 @@ pub struct RunningProcesses {
 
 impl RunningProcesses {
     /// Load running processes from file
+    ///
+    /// 読み込み時に PID liveness チェックを行い、死んだプロセスを自動除去する。
     pub fn load() -> Result<Self> {
         let path = Self::file_path();
         if !path.exists() {
@@ -193,7 +195,19 @@ impl RunningProcesses {
         }
 
         let content = std::fs::read_to_string(&path)?;
-        let procs: RunningProcesses = serde_json::from_str(&content)?;
+        let mut procs: RunningProcesses = serde_json::from_str(&content)?;
+
+        // ゴースト除去: 死んだプロセスをフィルタ
+        let before = procs.processes.len();
+        procs.processes.retain(|p| is_process_alive(p.pid));
+        let removed = before - procs.processes.len();
+
+        if removed > 0 {
+            tracing::debug!("Removed {} dead process(es) from running.json", removed);
+            // 除去結果を書き戻し
+            let _ = procs.save();
+        }
+
         Ok(procs)
     }
 
