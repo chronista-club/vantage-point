@@ -482,8 +482,15 @@ impl VantageMcp {
             .get_quic_channel(&self.process_channel, "process")
             .await?;
 
-        match channel.request(method, payload.clone()).await {
-            Ok(resp) => {
+        // タイムアウト付きリクエスト（Process 再起動時のハング防止）
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            channel.request(method, payload.clone()),
+        )
+        .await;
+
+        match result {
+            Ok(Ok(resp)) => {
                 write_trace(
                     &TraceEntry::new(
                         "quic",
@@ -496,15 +503,52 @@ impl VantageMcp {
                 );
                 Ok(resp)
             }
-            Err(e) => {
-                // チャネルをリセットしてリトライ
+            Ok(Err(e)) => {
+                // チャネルエラー: リセットしてリトライ
                 tracing::warn!("QUIC process.{} failed, retrying: {}", method, e);
                 *self.process_channel.lock().await = None;
 
                 let channel = self
                     .get_quic_channel(&self.process_channel, "process")
                     .await?;
-                channel.request(method, payload).await.map_err(|e| {
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    channel.request(method, payload),
+                )
+                .await
+                .map_err(|_| {
+                    McpError::internal_error(
+                        format!("QUIC process.{} retry timed out", method),
+                        None,
+                    )
+                })?
+                .map_err(|e| {
+                    McpError::internal_error(
+                        format!("QUIC process.{} retry failed: {}", method, e),
+                        None,
+                    )
+                })
+            }
+            Err(_) => {
+                // タイムアウト: 古い接続をリセットしてリトライ
+                tracing::warn!("QUIC process.{} timed out, resetting channel", method);
+                *self.process_channel.lock().await = None;
+
+                let channel = self
+                    .get_quic_channel(&self.process_channel, "process")
+                    .await?;
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    channel.request(method, payload),
+                )
+                .await
+                .map_err(|_| {
+                    McpError::internal_error(
+                        format!("QUIC process.{} retry timed out", method),
+                        None,
+                    )
+                })?
+                .map_err(|e| {
                     McpError::internal_error(
                         format!("QUIC process.{} retry failed: {}", method, e),
                         None,
@@ -644,10 +688,35 @@ impl VantageMcp {
         self.quic_call(method, payload).await
     }
 
-    /// Canvas API を呼び出す（open_canvas/close_canvas）— process チャネル経由
+    /// Canvas API を呼び出す（QUIC 優先、失敗時は HTTP フォールバック）
     async fn canvas_call(&self, action: &str) -> Result<serde_json::Value, McpError> {
         let method = format!("{}_canvas", action);
-        self.quic_call(&method, serde_json::json!({})).await
+        match self.quic_call(&method, serde_json::json!({})).await {
+            Ok(resp) => Ok(resp),
+            Err(_) => {
+                // HTTP フォールバック
+                let url = self.process_url.lock().await;
+                let api_url = format!("{}/api/canvas/{}", url, action);
+                drop(url);
+                let resp = self
+                    .client
+                    .post(&api_url)
+                    .send()
+                    .await
+                    .map_err(|e| {
+                        McpError::internal_error(
+                            format!("Canvas {} failed (HTTP fallback): {}", action, e),
+                            None,
+                        )
+                    })?;
+                resp.json().await.map_err(|e| {
+                    McpError::internal_error(
+                        format!("Canvas {} response parse error: {}", action, e),
+                        None,
+                    )
+                })
+            }
+        }
     }
 
     /// Open the Canvas window (native WebView)
@@ -1306,7 +1375,9 @@ impl VantageMcp {
 
             match self.client.get(&health_url).send().await {
                 Ok(resp) if resp.status() == reqwest::StatusCode::OK => {
-                    // Process is up
+                    // Process is up — QUIC チャネルをリセットして再接続を強制
+                    *self.process_channel.lock().await = None;
+
                     return Ok(CallToolResult::success(vec![rmcp::model::Content::text(
                         format!(
                             "Process restarted successfully on port {}. Project: {}",
@@ -1333,7 +1404,10 @@ impl rmcp::ServerHandler for VantageMcp {
                  'show' to display content, 'clear' to clear panes, 'split_pane' to split a pane \
                  horizontally or vertically, 'close_pane' to close a pane, 'toggle_pane' to toggle panel visibility, \
                  'permission' to request user approval, 'restart' to restart the Process, \
-                 'watch_file' to monitor a log file in real-time, and 'unwatch_file' to stop monitoring.".into()
+                 'watch_file' to monitor a log file in real-time, and 'unwatch_file' to stop monitoring.\n\n\
+                 When using 'show', prefer content_type='markdown' as the default format. \
+                 Markdown renders well in the Canvas and is easy to read. \
+                 Use content_type='html' only when you need precise visual layout (dashboards, diagrams with colors, interactive elements).".into()
             ),
             capabilities: ServerCapabilities::builder().enable_tools().build(),
             ..Default::default()
