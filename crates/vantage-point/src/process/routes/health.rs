@@ -106,7 +106,8 @@ pub async fn canvas_open_handler(State(state): State<Arc<AppState>>) -> impl Int
     }
 
     // vp canvas internal --port <port> で起動
-    match std::process::Command::new("vp")
+    let vp_bin = std::env::current_exe().unwrap_or_else(|_| "vp".into());
+    match std::process::Command::new(&vp_bin)
         .args(["canvas", "internal", "--port", &state.port.to_string()])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
