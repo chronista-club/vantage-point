@@ -25,6 +25,9 @@ use crate::protocol::ProcessMessage;
 /// QUIC ポートのオフセット（HTTP ポートからの差分）
 pub const QUIC_PORT_OFFSET: u16 = 1000;
 
+/// recv_raw の最大フレームサイズ（64 KiB）
+const MAX_RAW_FRAME_SIZE: usize = 64 * 1024;
+
 /// UnwatchFile リクエストのペイロード
 #[derive(Debug, Serialize, Deserialize)]
 struct UnwatchFileRequest {
@@ -132,6 +135,122 @@ async fn handle_canvas_close(state: &AppState) -> Result<serde_json::Value, Stri
         Ok(serde_json::json!({"status": "closed", "pid": pid}))
     } else {
         Ok(serde_json::json!({"status": "not_open"}))
+    }
+}
+
+// =============================================================================
+// Terminal チャネル制御メッセージハンドラー
+// =============================================================================
+
+/// Terminal チャネルの制御メッセージを処理
+///
+/// create_session / switch_session / list_sessions / close_session / resize
+async fn handle_terminal_control(
+    state: &AppState,
+    msg: &unison::network::ProtocolMessage,
+    _channel: &UnisonChannel,
+    current_session_id: &mut Option<String>,
+    terminal_rx: &mut Option<broadcast::Receiver<ProcessMessage>>,
+) -> Option<serde_json::Value> {
+    let payload = msg.payload_as_value().unwrap_or_default();
+
+    match msg.method.as_str() {
+        "create_session" => {
+            let cols = payload["cols"].as_u64().unwrap_or(80) as u16;
+            let rows = payload["rows"].as_u64().unwrap_or(24) as u16;
+
+            // コマンド指定（オプション、JSON 配列 ["claude", "--continue"] など）
+            let command_parts: Option<Vec<String>> = payload["command"]
+                .as_array()
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect()
+                });
+            let command_refs: Option<Vec<&str>> = command_parts
+                .as_ref()
+                .map(|v| v.iter().map(|s| s.as_str()).collect());
+
+            let mut pty = state.pty_manager.lock().await;
+            pty.set_project_dir(&state.project_dir);
+
+            match pty.create_session(cols, rows, command_refs.as_deref()) {
+                Ok((session_id, tx)) => {
+                    // 自動的に新セッションに切替
+                    *current_session_id = Some(session_id.clone());
+                    *terminal_rx = Some(tx.subscribe());
+                    tracing::info!("Terminal セッション作成: {}", session_id);
+                    Some(serde_json::json!({
+                        "status": "ok",
+                        "session_id": session_id,
+                    }))
+                }
+                Err(e) => Some(serde_json::json!({"error": format!("セッション作成失敗: {}", e)})),
+            }
+        }
+
+        "switch_session" => {
+            let session_id = payload["session_id"].as_str().unwrap_or("").to_string();
+            let pty = state.pty_manager.lock().await;
+
+            if let Some(tx) = pty.get_session_tx(&session_id) {
+                *current_session_id = Some(session_id.clone());
+                *terminal_rx = Some(tx.subscribe());
+                tracing::info!("Terminal セッション切替: {}", session_id);
+                Some(serde_json::json!({"status": "ok", "session_id": session_id}))
+            } else {
+                Some(serde_json::json!({"error": format!("セッション {} が見つかりません", session_id)}))
+            }
+        }
+
+        "list_sessions" => {
+            let pty = state.pty_manager.lock().await;
+            let sessions = pty.list_sessions();
+            Some(serde_json::json!({
+                "sessions": sessions,
+                "current": current_session_id,
+            }))
+        }
+
+        "close_session" => {
+            let session_id = payload["session_id"].as_str().unwrap_or("").to_string();
+            let mut pty = state.pty_manager.lock().await;
+
+            if pty.close_session(&session_id) {
+                // 現在のセッションが閉じられた場合
+                if current_session_id.as_deref() == Some(session_id.as_str()) {
+                    *current_session_id = None;
+                    *terminal_rx = None;
+                }
+                tracing::info!("Terminal セッション閉鎖: {}", session_id);
+                Some(serde_json::json!({"status": "ok"}))
+            } else {
+                Some(serde_json::json!({"error": format!("セッション {} が見つかりません", session_id)}))
+            }
+        }
+
+        "resize" => {
+            let cols = payload["cols"].as_u64().unwrap_or(80) as u16;
+            let rows = payload["rows"].as_u64().unwrap_or(24) as u16;
+
+            // サイズバリデーション
+            if cols == 0 || rows == 0 || cols > 1000 || rows > 1000 {
+                tracing::warn!("Invalid resize: {}x{}", cols, rows);
+                return Some(serde_json::json!({"error": "invalid dimensions"}));
+            }
+
+            if let Some(sid) = current_session_id.as_deref() {
+                let pty = state.pty_manager.lock().await;
+                let _ = pty.resize(sid, cols, rows);
+            }
+
+            Some(serde_json::json!({"status": "ok"}))
+        }
+
+        _ => {
+            tracing::warn!("不明な terminal コマンド: {}", msg.method);
+            None
+        }
     }
 }
 
@@ -253,7 +372,7 @@ pub async fn start_unison_server(
         })
         .await;
 
-    // --- "terminal" チャネル: raw PTY I/O + resize ---
+    // --- "terminal" チャネル: 複数セッション管理 + raw PTY I/O + resize ---
     server
         .register_channel("terminal", {
             let state = state.clone();
@@ -262,96 +381,188 @@ pub async fn start_unison_server(
                 async move {
                     let channel = UnisonChannel::new(stream);
 
-                    // Hub を subscribe して PTY 出力を受信
-                    let mut hub_rx = state.hub.subscribe();
+                    // 認証: 最初のメッセージでトークンを検証
+                    let auth_msg = match channel.recv().await {
+                        Ok(msg) => msg,
+                        Err(_) => return Ok(()),
+                    };
+                    let token = auth_msg
+                        .payload_as_value()
+                        .unwrap_or_default()["token"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_string();
+
+                    if token != state.terminal_token {
+                        tracing::warn!("Terminal 認証失敗: 無効なトークン");
+                        let _ = channel
+                            .send_response(
+                                auth_msg.id,
+                                "auth",
+                                serde_json::json!({"error": "invalid token"}),
+                            )
+                            .await;
+                        return Ok(());
+                    }
+
+                    // 認証成功 — セッション一覧を返す
+                    let sessions = state.pty_manager.lock().await.list_sessions();
+                    let _ = channel
+                        .send_response(
+                            auth_msg.id,
+                            "auth",
+                            serde_json::json!({
+                                "status": "ok",
+                                "sessions": sessions,
+                            }),
+                        )
+                        .await;
+                    tracing::info!("Terminal クライアント認証成功");
+
+                    // 現在購読中のセッション
+                    let mut current_session_id: Option<String> = None;
+                    // セッション出力の受信チャネル（switch 時に差し替え）
+                    let mut terminal_rx: Option<broadcast::Receiver<ProcessMessage>> = None;
 
                     use base64::Engine;
                     let engine = base64::engine::general_purpose::STANDARD;
 
                     loop {
-                        tokio::select! {
-                            // PTY output → raw frame to client
-                            msg = hub_rx.recv() => {
-                                match msg {
-                                    Ok(ProcessMessage::TerminalOutput { data }) => {
-                                        match engine.decode(&data) {
-                                            Ok(bytes) if !bytes.is_empty() => {
-                                                if channel.send_raw(&bytes).await.is_err() {
-                                                    break;
+                        // terminal_rx が None なら protocol メッセージのみ待つ
+                        if let Some(ref mut rx) = terminal_rx {
+                            tokio::select! {
+                                // PTY output → raw frame to client
+                                msg = rx.recv() => {
+                                    match msg {
+                                        Ok(ProcessMessage::TerminalOutput { data }) => {
+                                            match engine.decode(&data) {
+                                                Ok(bytes) if !bytes.is_empty() => {
+                                                    if channel.send_raw(&bytes).await.is_err() {
+                                                        break;
+                                                    }
+                                                }
+                                                Ok(_) => {}
+                                                Err(e) => {
+                                                    tracing::warn!("TerminalOutput base64 decode error: {}", e);
                                                 }
                                             }
-                                            Ok(_) => {} // 空データはスキップ
-                                            Err(e) => {
-                                                tracing::warn!("TerminalOutput base64 decode error: {}", e);
-                                            }
                                         }
-                                    }
-                                    Ok(ProcessMessage::TerminalReady) => {
-                                        // TerminalReady を protocol event として通知
-                                        let _ = channel.send_event(
-                                            "terminal_ready",
-                                            serde_json::json!({}),
-                                        ).await;
-                                    }
-                                    Err(broadcast::error::RecvError::Closed) => break,
-                                    Err(broadcast::error::RecvError::Lagged(n)) => {
-                                        tracing::warn!("terminal broadcast lagged: {} messages dropped", n);
-                                    }
-                                    _ => {} // 他メッセージは無視
-                                }
-                            }
-                            // Client → PTY (raw input)
-                            data = channel.recv_raw() => {
-                                match data {
-                                    Ok(bytes) => {
-                                        let mut pty = state.pty_manager.lock().await;
-                                        if let Err(e) = pty.write(&bytes) {
-                                            tracing::warn!("PTY write error: {}", e);
-                                        }
-                                    }
-                                    Err(_) => break,
-                                }
-                            }
-                            // Client → control (resize)
-                            msg = channel.recv() => {
-                                match msg {
-                                    Ok(msg) if msg.method == "resize" => {
-                                        let payload = msg.payload_as_value().unwrap_or_default();
-                                        let cols = payload["cols"].as_u64().unwrap_or(80) as u16;
-                                        let rows = payload["rows"].as_u64().unwrap_or(24) as u16;
-
-                                        // サイズバリデーション
-                                        if cols == 0 || rows == 0 || cols > 1000 || rows > 1000 {
-                                            tracing::warn!("Invalid resize: {}x{}", cols, rows);
-                                            let _ = channel.send_response(
-                                                msg.id, "resize",
-                                                serde_json::json!({"error": "invalid dimensions"}),
+                                        Ok(ProcessMessage::TerminalReady) => {
+                                            let _ = channel.send_event(
+                                                "terminal_ready",
+                                                serde_json::json!({}),
                                             ).await;
+                                        }
+                                        Err(broadcast::error::RecvError::Closed) => {
+                                            // セッションが終了
+                                            let _ = channel.send_event(
+                                                "session_ended",
+                                                serde_json::json!({"session_id": current_session_id}),
+                                            ).await;
+                                            current_session_id = None;
+                                            terminal_rx = None;
                                             continue;
                                         }
-
-                                        let mut pty = state.pty_manager.lock().await;
-                                        if !pty.is_active() {
-                                            // 初回 resize で PTY 起動
-                                            if let Err(e) = pty.start(
-                                                &state.project_dir, cols, rows,
-                                                state.hub.sender(),
-                                            ) {
-                                                tracing::warn!("PTY起動失敗: {}", e);
-                                            }
-                                        } else {
-                                            let _ = pty.resize(cols, rows);
+                                        Err(broadcast::error::RecvError::Lagged(n)) => {
+                                            tracing::warn!("terminal broadcast lagged: {} messages dropped", n);
                                         }
-
-                                        let _ = channel.send_response(
-                                            msg.id, "resize",
-                                            serde_json::json!({"status": "ok"}),
-                                        ).await;
+                                        _ => {}
                                     }
-                                    Err(_) => break,
-                                    _ => {}
+                                }
+                                // Client → PTY (raw input)
+                                data = channel.recv_raw() => {
+                                    match data {
+                                        Ok(bytes) if bytes.len() > MAX_RAW_FRAME_SIZE => {
+                                            tracing::warn!(
+                                                "recv_raw フレームサイズ超過: {} bytes (上限 {} bytes)、ドロップ",
+                                                bytes.len(), MAX_RAW_FRAME_SIZE
+                                            );
+                                        }
+                                        Ok(bytes) => {
+                                            if let Some(ref sid) = current_session_id {
+                                                let mut pty = state.pty_manager.lock().await;
+                                                if let Err(e) = pty.write(sid, &bytes) {
+                                                    tracing::warn!("PTY write error: {}", e);
+                                                }
+                                            }
+                                        }
+                                        Err(_) => break,
+                                    }
+                                }
+                                // Client → control messages
+                                msg = channel.recv() => {
+                                    match msg {
+                                        Ok(msg) => {
+                                            let resp = handle_terminal_control(
+                                                &state, &msg, &channel,
+                                                &mut current_session_id,
+                                                &mut terminal_rx,
+                                            ).await;
+                                            if let Some(r) = resp {
+                                                let _ = channel.send_response(msg.id, &msg.method, r).await;
+                                            }
+                                        }
+                                        Err(_) => break,
+                                    }
                                 }
                             }
+                        } else {
+                            // セッション未選択: protocol メッセージのみ待つ
+                            match channel.recv().await {
+                                Ok(msg) => {
+                                    let resp = handle_terminal_control(
+                                        &state, &msg, &channel,
+                                        &mut current_session_id,
+                                        &mut terminal_rx,
+                                    ).await;
+                                    if let Some(r) = resp {
+                                        let _ = channel.send_response(msg.id, &msg.method, r).await;
+                                    }
+                                }
+                                Err(_) => break,
+                            }
+                        }
+                    }
+
+                    Ok(())
+                }
+            }
+        })
+        .await;
+
+    // --- "canvas" チャネル: Hub の Show/Clear をリアルタイム push ---
+    server
+        .register_channel("canvas", {
+            let state = state.clone();
+            move |_ctx, stream| {
+                let state = state.clone();
+                async move {
+                    let channel = UnisonChannel::new(stream);
+
+                    // 初期状態: キャッシュ済みペインコンテンツを送信
+                    for msg in state.get_pane_snapshot() {
+                        let json = serde_json::to_value(&msg).unwrap_or_default();
+                        if channel.send_event("pane", json).await.is_err() {
+                            return Ok(());
+                        }
+                    }
+
+                    // Hub を subscribe して Show/Clear をリアルタイム push
+                    let mut hub_rx = state.hub.subscribe();
+                    loop {
+                        match hub_rx.recv().await {
+                            Ok(msg @ ProcessMessage::Show { .. })
+                            | Ok(msg @ ProcessMessage::Clear { .. }) => {
+                                let json = serde_json::to_value(&msg).unwrap_or_default();
+                                if channel.send_event("pane", json).await.is_err() {
+                                    break;
+                                }
+                            }
+                            Err(broadcast::error::RecvError::Closed) => break,
+                            Err(broadcast::error::RecvError::Lagged(n)) => {
+                                tracing::warn!("canvas broadcast lagged: {} messages dropped", n);
+                            }
+                            _ => {} // 他メッセージは無視
                         }
                     }
 

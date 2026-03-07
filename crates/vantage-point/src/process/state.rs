@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, broadcast};
 use tokio_util::sync::CancellationToken;
 
 use super::capabilities::ProcessCapabilities;
@@ -127,6 +127,10 @@ pub(crate) struct AppState {
     /// Canvas ペインの最新コンテンツ（再接続時の状態復元用）
     /// sync Mutex を使用（async / sync 両方のコンテキストから安全にアクセス可能）
     pub pane_contents: Arc<std::sync::Mutex<HashMap<String, PaneState>>>,
+    /// Terminal チャネル認証トークン
+    pub terminal_token: String,
+    /// PTY 出力専用 broadcast（Hub を経由せず terminal クライアントのみに配信）
+    pub terminal_tx: broadcast::Sender<ProcessMessage>,
     /// スクリーンショット応答待ち: request_id → oneshot sender
     /// Ruby VM プロセスレジストリ
     pub ruby_registry: Arc<tokio::sync::Mutex<RubyRegistry>>,

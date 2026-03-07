@@ -191,7 +191,17 @@ pub fn execute(opts: StartOptions) -> Result<()> {
 
         let project_name = resolve::project_name_from_path(&resolved_project_dir, config);
 
-        let result = crate::terminal_window::run_terminal_unison(resolved_port, &project_name);
+        // running.json から認証トークンを取得
+        let terminal_token = RunningProcesses::load()
+            .ok()
+            .and_then(|procs| {
+                procs.processes.iter()
+                    .find(|p| p.port == resolved_port)
+                    .and_then(|p| p.terminal_token.clone())
+            })
+            .unwrap_or_default();
+
+        let result = crate::terminal_window::run_terminal_unison(resolved_port, &terminal_token, &project_name);
 
         match result {
             Ok(()) => tracing::info!("Terminal window closed (Process is still running)"),

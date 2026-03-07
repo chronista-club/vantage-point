@@ -44,6 +44,14 @@ enum PtyInputCommand {
 pub(crate) fn create_menu_bar() -> Menu {
     let menu = Menu::new();
 
+    // File メニュー: Close Window (Cmd+W)
+    let file_menu = Submenu::with_items(
+        "File",
+        true,
+        &[&PredefinedMenuItem::close_window(None)],
+    )
+    .expect("Failed to create File menu");
+
     // Edit メニュー: Copy/Paste は KeyboardInput ハンドラで処理するため、
     // PredefinedMenuItem を使わない（macOS がショートカットを横取りするため）
     let edit_menu = Submenu::with_items(
@@ -58,6 +66,7 @@ pub(crate) fn create_menu_bar() -> Menu {
     )
     .expect("Failed to create Edit menu");
 
+    menu.append(&file_menu).expect("Failed to append File menu");
     menu.append(&edit_menu).expect("Failed to append Edit menu");
     menu
 }
@@ -281,8 +290,97 @@ fn copy_to_clipboard(text: &str) -> std::io::Result<()> {
 /// Process サーバーの QUIC "terminal" チャネルに接続し、
 /// PTY 出力を EventLoop へ、キーボード入力を Process へ中継する。
 /// raw frame でバイナリ直送（base64 不要）。
+/// 最大リコネクト回数
+const MAX_RECONNECT_ATTEMPTS: u32 = 10;
+
+/// QUIC 接続 + 認証を行い、UnisonChannel を返す
+async fn connect_and_auth(
+    addr: &str,
+    terminal_token: &str,
+) -> Option<unison::network::channel::UnisonChannel> {
+    let client = match unison::ProtocolClient::new_default() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!("ProtocolClient 作成失敗: {}", e);
+            return None;
+        }
+    };
+    if let Err(e) = client.connect(addr).await {
+        tracing::error!("Unison 接続失敗 ({}): {}", addr, e);
+        return None;
+    }
+    let channel = match client.open_channel("terminal").await {
+        Ok(ch) => ch,
+        Err(e) => {
+            tracing::error!("terminal チャネル開設失敗: {}", e);
+            return None;
+        }
+    };
+
+    // 認証: トークンを送信
+    match channel
+        .request("auth", serde_json::json!({"token": terminal_token}))
+        .await
+    {
+        Ok(resp) => {
+            if resp.get("error").is_some() {
+                tracing::error!("Terminal 認証失敗: {:?}", resp);
+                return None;
+            }
+        }
+        Err(e) => {
+            tracing::error!("Terminal 認証リクエスト失敗: {}", e);
+            return None;
+        }
+    }
+
+    Some(channel)
+}
+
+/// チャネルを使った双方向 I/O ループ。切断時に false を返す（リコネクト可）。
+/// EventLoop が閉じた場合は true を返す（終了）。
+async fn run_bridge_loop(
+    channel: &unison::network::channel::UnisonChannel,
+    bridge_rx: &mut tokio::sync::mpsc::Receiver<PtyInputCommand>,
+    proxy: &EventLoopProxy<TerminalEvent>,
+) -> bool {
+    loop {
+        tokio::select! {
+            // PTY output from Process
+            data = channel.recv_raw() => {
+                match data {
+                    Ok(bytes) => {
+                        if proxy.send_event(TerminalEvent::Output(bytes)).is_err() {
+                            return true; // EventLoop 終了
+                        }
+                    }
+                    Err(_) => return false, // 切断 → リコネクト
+                }
+            }
+            // Keyboard input → Process
+            cmd = bridge_rx.recv() => {
+                match cmd {
+                    Some(PtyInputCommand::Input(data)) => {
+                        if channel.send_raw(&data).await.is_err() {
+                            return false; // 切断 → リコネクト
+                        }
+                    }
+                    Some(PtyInputCommand::Resize { cols, rows }) => {
+                        let _ = channel.request(
+                            "resize",
+                            serde_json::json!({"cols": cols, "rows": rows}),
+                        ).await;
+                    }
+                    None => return true, // input チャネル終了
+                }
+            }
+        }
+    }
+}
+
 fn start_unison_bridge(
     port: u16, // HTTP ポート（QUIC = port + QUIC_PORT_OFFSET）
+    terminal_token: String,
     proxy: EventLoopProxy<TerminalEvent>,
     input_rx: mpsc::Receiver<PtyInputCommand>,
 ) {
@@ -293,27 +391,6 @@ fn start_unison_bridge(
             rt.block_on(async move {
                 let quic_port = port + crate::process::unison_server::QUIC_PORT_OFFSET;
                 let addr = format!("[::1]:{}", quic_port);
-
-                let client = match unison::ProtocolClient::new_default() {
-                    Ok(c) => c,
-                    Err(e) => {
-                        tracing::error!("ProtocolClient 作成失敗: {}", e);
-                        return;
-                    }
-                };
-                if let Err(e) = client.connect(&addr).await {
-                    tracing::error!("Unison 接続失敗 ({}): {}", addr, e);
-                    return;
-                }
-                let channel = match client.open_channel("terminal").await {
-                    Ok(ch) => ch,
-                    Err(e) => {
-                        tracing::error!("terminal チャネル開設失敗: {}", e);
-                        return;
-                    }
-                };
-
-                tracing::info!("Unison connected to Process (port={})", quic_port);
 
                 // sync mpsc → tokio mpsc ブリッジ
                 let (bridge_tx, mut bridge_rx) = tokio::sync::mpsc::channel::<PtyInputCommand>(256);
@@ -328,42 +405,55 @@ fn start_unison_bridge(
                     })
                     .expect("input-bridge spawn failed");
 
-                // メインループ: select で双方向処理
+                let mut attempt = 0u32;
+
                 loop {
-                    tokio::select! {
-                        // PTY output from Process
-                        data = channel.recv_raw() => {
-                            match data {
-                                Ok(bytes) => {
-                                    if proxy.send_event(
-                                        TerminalEvent::Output(bytes)
-                                    ).is_err() {
-                                        break;
-                                    }
-                                }
-                                Err(_) => break,
-                            }
+                    // 接続 + 認証
+                    let channel = match connect_and_auth(&addr, &terminal_token).await {
+                        Some(ch) => {
+                            attempt = 0; // 成功したらリセット
+                            tracing::info!("Unison connected to Process (port={})", quic_port);
+                            ch
                         }
-                        // Keyboard input → Process
-                        cmd = bridge_rx.recv() => {
-                            match cmd {
-                                Some(PtyInputCommand::Input(data)) => {
-                                    if channel.send_raw(&data).await.is_err() {
-                                        break;
-                                    }
-                                }
-                                Some(PtyInputCommand::Resize { cols, rows }) => {
-                                    let _ = channel.request(
-                                        "resize",
-                                        serde_json::json!({
-                                            "cols": cols, "rows": rows
-                                        }),
-                                    ).await;
-                                }
-                                None => break,
+                        None => {
+                            attempt += 1;
+                            if attempt > MAX_RECONNECT_ATTEMPTS {
+                                tracing::error!(
+                                    "リコネクト上限到達 ({} 回)、ブリッジ終了",
+                                    MAX_RECONNECT_ATTEMPTS
+                                );
+                                return;
                             }
+                            // Exponential backoff: 500ms, 1s, 2s, 4s, ... (最大 16s)
+                            let delay = std::time::Duration::from_millis(
+                                500 * 2u64.pow(attempt.min(5) - 1),
+                            );
+                            tracing::warn!(
+                                "Reconnecting... ({}/{}) in {:?}",
+                                attempt,
+                                MAX_RECONNECT_ATTEMPTS,
+                                delay
+                            );
+                            // "Reconnecting..." 表示
+                            let msg = format!("\x1b[33m[Reconnecting... {}/{}]\x1b[0m\r\n", attempt, MAX_RECONNECT_ATTEMPTS);
+                            let _ = proxy.send_event(TerminalEvent::Output(msg.into_bytes()));
+                            tokio::time::sleep(delay).await;
+                            continue;
                         }
+                    };
+
+                    // I/O ループ（切断時に false が返る）
+                    let should_exit =
+                        run_bridge_loop(&channel, &mut bridge_rx, &proxy).await;
+
+                    if should_exit {
+                        return;
                     }
+
+                    // 切断通知
+                    let msg = b"\x1b[33m[Connection lost, reconnecting...]\x1b[0m\r\n";
+                    let _ = proxy.send_event(TerminalEvent::Output(msg.to_vec()));
+                    tracing::warn!("Unison 切断、リコネクト開始");
                 }
             });
         })
@@ -374,7 +464,7 @@ fn start_unison_bridge(
 ///
 /// Process サーバーの QUIC "terminal" チャネルに接続し、ネイティブウィンドウで描画する。
 /// ウィンドウを閉じても Process 側の PTY は生存し、再度接続で re-attach できる。
-pub fn run_terminal_unison(port: u16, project_name: &str) -> anyhow::Result<()> {
+pub fn run_terminal_unison(port: u16, terminal_token: &str, project_name: &str) -> anyhow::Result<()> {
     let event_loop = EventLoopBuilder::<TerminalEvent>::with_user_event().build();
 
     let window = WindowBuilder::new()
@@ -408,7 +498,7 @@ pub fn run_terminal_unison(port: u16, project_name: &str) -> anyhow::Result<()> 
 
     // Unison ブリッジ開始
     let proxy = event_loop.create_proxy();
-    start_unison_bridge(port, proxy, input_rx);
+    start_unison_bridge(port, terminal_token.to_string(), proxy, input_rx);
 
     // 初期リサイズを送信
     let _ = input_tx.send(PtyInputCommand::Resize { cols: 80, rows: 24 });

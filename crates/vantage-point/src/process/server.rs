@@ -66,6 +66,12 @@ pub async fn run(
     let _event_bridge = capabilities.start_event_bridge(hub.sender());
     tracing::info!("Capability event bridge started");
 
+    // Terminal チャネル認証トークンを生成
+    let terminal_token = crate::config::RunningProcesses::generate_terminal_token();
+
+    // PTY 出力専用 broadcast（Hub とは分離）
+    let (terminal_tx, _) = tokio::sync::broadcast::channel(10000);
+
     let state = Arc::new(AppState {
         hub,
         sessions: Arc::new(RwLock::new(sessions)),
@@ -83,6 +89,8 @@ pub async fn run(
         canvas_pid: Arc::new(tokio::sync::Mutex::new(None)),
         port,
         file_watchers: Arc::new(tokio::sync::Mutex::new(FileWatcherManager::new())),
+        terminal_token: terminal_token.clone(),
+        terminal_tx,
         ruby_registry: Arc::new(tokio::sync::Mutex::new(
             crate::process::ruby_vm::RubyRegistry::new(),
         )),
@@ -193,7 +201,7 @@ pub async fn run(
     // running.json の pid と quic_port を更新
     // （start.rs で仮登録済み。ここでサーバー起動後の正確な情報に更新する）
     let pid = std::process::id();
-    if let Err(e) = RunningProcesses::update_pid_and_quic(port, pid, quic_port) {
+    if let Err(e) = RunningProcesses::update_pid_and_quic(port, pid, quic_port, &terminal_token) {
         tracing::warn!("Failed to update Process in running.json: {}", e);
     } else {
         tracing::info!(
@@ -298,6 +306,8 @@ pub async fn run_conductor(port: u16) -> Result<()> {
         canvas_pid: Arc::new(tokio::sync::Mutex::new(None)),
         port,
         file_watchers: Arc::new(tokio::sync::Mutex::new(FileWatcherManager::new())),
+        terminal_token: String::new(), // Conductor モードでは terminal 未使用
+        terminal_tx: tokio::sync::broadcast::channel(1).0,
         ruby_registry: Arc::new(tokio::sync::Mutex::new(
             crate::process::ruby_vm::RubyRegistry::new(),
         )),

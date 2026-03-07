@@ -175,6 +175,9 @@ pub struct RunningProcessInfo {
     pub pid: u32,
     /// Started timestamp (Unix epoch seconds)
     pub started_at: u64,
+    /// Terminal チャネル認証トークン（起動時にランダム生成）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_token: Option<String>,
 }
 
 /// Running Processes registry
@@ -230,6 +233,11 @@ impl RunningProcesses {
         config_dir().join("running.json")
     }
 
+    /// Terminal チャネル用の認証トークンを生成（UUID v4）
+    pub fn generate_terminal_token() -> String {
+        uuid::Uuid::new_v4().to_string()
+    }
+
     /// Register a new running Process
     pub fn register(port: u16, project_dir: &str, pid: u32, quic_port: Option<u16>) -> Result<()> {
         let mut procs = Self::load().unwrap_or_default();
@@ -252,20 +260,22 @@ impl RunningProcesses {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs(),
+            terminal_token: None,
         });
 
         procs.save()
     }
 
-    /// 既存エントリの pid と quic_port を更新する
+    /// 既存エントリの pid, quic_port, terminal_token を更新する
     ///
     /// start.rs で仮登録した後、server.rs でサーバー起動後に正確な値で更新する。
-    pub fn update_pid_and_quic(port: u16, pid: u32, quic_port: u16) -> Result<()> {
+    pub fn update_pid_and_quic(port: u16, pid: u32, quic_port: u16, terminal_token: &str) -> Result<()> {
         let mut procs = Self::load().unwrap_or_default();
 
         if let Some(entry) = procs.processes.iter_mut().find(|p| p.port == port) {
             entry.pid = pid;
             entry.quic_port = Some(quic_port);
+            entry.terminal_token = Some(terminal_token.to_string());
             procs.save()
         } else {
             // 仮登録が見つからない場合はフル登録にフォールバック

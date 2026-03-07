@@ -87,7 +87,18 @@ pub fn execute(target: Option<&str>, browser: bool, headless: bool, config: &Con
 
         // Unison ブリッジモードのネイティブウィンドウ
         let project_name = resolve::project_name_from_path(&project_dir, config);
-        let result = crate::terminal_window::run_terminal_unison(port, &project_name);
+
+        // running.json から認証トークンを取得
+        let terminal_token = crate::config::RunningProcesses::load()
+            .ok()
+            .and_then(|procs| {
+                procs.processes.iter()
+                    .find(|p| p.port == port)
+                    .and_then(|p| p.terminal_token.clone())
+            })
+            .unwrap_or_default();
+
+        let result = crate::terminal_window::run_terminal_unison(port, &terminal_token, &project_name);
 
         match result {
             Ok(()) => tracing::info!("Terminal window closed (Process is still running)"),
