@@ -205,7 +205,7 @@ impl ProcessManagerCapability {
 
         // vp start を実行
         let mut cmd = Command::new(&vp_path);
-        cmd.arg("start");
+        cmd.args(["start", "--headless"]);
         cmd.current_dir(&project.path);
 
         // バックグラウンドで起動
@@ -315,9 +315,9 @@ impl ProcessManagerCapability {
             None => self.start_process(project_name).await?,
         };
 
-        // POST /api/pointview を送信（将来的にはWebSocketで）
+        // POST /api/canvas/open を送信（将来的にはWebSocketで）
         let client = reqwest::Client::new();
-        let url = format!("http://localhost:{}/api/pointview", running.port);
+        let url = format!("http://localhost:{}/api/canvas/open", running.port);
 
         client
             .post(&url)

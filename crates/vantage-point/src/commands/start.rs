@@ -280,7 +280,7 @@ pub fn wait_for_process_ready(port: u16) -> Result<()> {
 /// Process サーバーが実際に HTTP 応答するかチェック（TCP 接続のみ）
 fn is_server_responding(port: u16) -> bool {
     std::net::TcpStream::connect_timeout(
-        &format!("127.0.0.1:{}", port).parse().unwrap(),
+        &format!("[::1]:{}", port).parse().unwrap(),
         std::time::Duration::from_millis(200),
     )
     .is_ok()

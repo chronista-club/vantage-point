@@ -11,7 +11,7 @@
 //!   VANTAGE_DEBUG=none|simple|detail  # デバッグ表示モード
 //!   VANTAGE_PROJECT_DIR=/path/to/project  # デフォルトプロジェクトディレクトリ
 //!
-//! Config file: ~/.config/vantage/config.toml
+//! Config file: ~/.config/vp/config.toml
 
 // 開発中のスキャフォールドコードが多いため一時的に抑制
 #![allow(dead_code)]
