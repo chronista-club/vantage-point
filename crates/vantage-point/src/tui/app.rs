@@ -195,6 +195,8 @@ const NORD_CYAN: Color = Color::Rgb(136, 192, 208); // #88C0D0
 const NORD_POLAR: Color = Color::Rgb(46, 52, 64); // #2E3440
 const NORD_COMMENT: Color = Color::Rgb(76, 86, 106); // #4C566A
 const NORD_GREEN: Color = Color::Rgb(163, 190, 140); // #A3BE8C
+const NORD_RED: Color = Color::Rgb(191, 97, 106); // #BF616A
+const NORD_YELLOW: Color = Color::Rgb(235, 203, 139); // #EBCB8B
 
 /// TUI メインエントリー（プロジェクト指定あり）
 ///
@@ -931,6 +933,7 @@ fn run_claude_session(
     // セッション追跡
     let mut sessions: Vec<String> = Vec::new();
     let mut current_session_idx: usize = 0;
+    let mut bridge_status: String = "接続中...".to_string();
 
     // Canvas 状態
     let canvas_state = Arc::new(Mutex::new(CanvasState::default()));
@@ -950,6 +953,7 @@ fn run_claude_session(
                     tracing::info!("TUI: セッション作成完了: {}", session_id);
                     sessions.push(session_id);
                     current_session_idx = sessions.len() - 1;
+                    bridge_status = "接続済み".to_string();
                 }
                 BridgeEvent::SessionSwitched { session_id } => {
                     tracing::info!("TUI: セッション切替完了: {}", session_id);
@@ -964,6 +968,7 @@ fn run_claude_session(
                 }
                 BridgeEvent::Error(e) => {
                     tracing::error!("TUI bridge error: {}", e);
+                    bridge_status = format!("エラー: {}", e);
                 }
                 BridgeEvent::Disconnected => {
                     tracing::warn!("TUI: Process 接続切断");
@@ -1055,7 +1060,7 @@ fn run_claude_session(
                     render_canvas(frame, canvas_inner, &mut cs);
                 }
 
-                draw_footer_bar(frame, chunks[2]);
+                draw_footer_bar(frame, chunks[2], &bridge_status);
             })?;
         }
 
@@ -1376,7 +1381,15 @@ fn draw_header_bar(
 }
 
 /// フッターバー描画（ショートカットのみ）
-fn draw_footer_bar(frame: &mut ratatui::Frame, area: Rect) {
+fn draw_footer_bar(frame: &mut ratatui::Frame, area: Rect, status: &str) {
+    let status_color = if status.starts_with("エラー") {
+        NORD_RED
+    } else if status == "接続済み" {
+        NORD_GREEN
+    } else {
+        NORD_YELLOW
+    };
+
     let footer = Line::from(vec![
         Span::styled(" Home", Style::default().fg(NORD_CYAN).bg(NORD_POLAR)),
         Span::styled(" canvas ", Style::default().fg(NORD_COMMENT).bg(NORD_POLAR)),
@@ -1384,6 +1397,10 @@ fn draw_footer_bar(frame: &mut ratatui::Frame, area: Rect) {
         Span::styled(" quit ", Style::default().fg(NORD_COMMENT).bg(NORD_POLAR)),
         Span::styled(" PgUp/Dn", Style::default().fg(NORD_CYAN).bg(NORD_POLAR)),
         Span::styled(" scroll ", Style::default().fg(NORD_COMMENT).bg(NORD_POLAR)),
+        Span::styled(
+            format!(" {} ", status),
+            Style::default().fg(status_color).bg(NORD_POLAR),
+        ),
     ]);
     let bar = Paragraph::new(footer).style(Style::default().bg(NORD_POLAR));
     frame.render_widget(bar, area);
