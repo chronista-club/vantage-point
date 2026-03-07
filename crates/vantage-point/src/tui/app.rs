@@ -233,7 +233,8 @@ fn run_tui_inner(resolved: Option<(String, String)>) -> Result<()> {
     let mut stdout = io::stdout();
     crossterm::execute!(
         stdout,
-        EnterAlternateScreen
+        EnterAlternateScreen,
+        crossterm::event::EnableBracketedPaste
     )?;
 
     // ターミナルタイトル設定
@@ -265,6 +266,7 @@ fn run_tui_inner(resolved: Option<(String, String)>) -> Result<()> {
     disable_raw_mode()?;
     crossterm::execute!(
         terminal.backend_mut(),
+        crossterm::event::DisableBracketedPaste,
         LeaveAlternateScreen
     )?;
     terminal.show_cursor()?;
@@ -941,6 +943,7 @@ fn run_claude_session(
     let mut canvas_open = false;
 
     // メインループ
+    let mut needs_redraw = true;
     loop {
         // ブリッジからのイベントを処理（ノンブロッキング）
         while let Ok(evt) = event_rx.try_recv() {
@@ -948,12 +951,14 @@ fn run_claude_session(
                 BridgeEvent::Output(bytes) => {
                     let mut state = term_state.lock().unwrap();
                     state.feed_bytes(&bytes);
+                    needs_redraw = true;
                 }
                 BridgeEvent::SessionCreated { session_id } => {
                     tracing::info!("TUI: セッション作成完了: {}", session_id);
                     sessions.push(session_id);
                     current_session_idx = sessions.len() - 1;
                     bridge_status = "接続済み".to_string();
+                    needs_redraw = true;
                 }
                 BridgeEvent::SessionSwitched { session_id } => {
                     tracing::info!("TUI: セッション切替完了: {}", session_id);
@@ -965,10 +970,12 @@ fn run_claude_session(
                     let cols = state.cols();
                     let rows = state.lines();
                     *state = TerminalState::new(cols, rows);
+                    needs_redraw = true;
                 }
                 BridgeEvent::Error(e) => {
                     tracing::error!("TUI bridge error: {}", e);
                     bridge_status = format!("エラー: {}", e);
+                    needs_redraw = true;
                 }
                 BridgeEvent::Disconnected => {
                     tracing::warn!("TUI: Process 接続切断");
@@ -977,8 +984,9 @@ fn run_claude_session(
             }
         }
 
-        // 描画
-        {
+        // 描画（変更があった場合のみ — IME プリエディット表示の安定化）
+        if needs_redraw {
+            needs_redraw = false;
             let state = term_state.lock().unwrap();
             let snapshot = state.snapshot();
             let display_offset = state.display_offset();
@@ -1129,6 +1137,7 @@ fn run_claude_session(
                             cols: new_cols as u16,
                             rows: new_lines as u16,
                         });
+                        needs_redraw = true;
                         continue;
                     }
 
@@ -1137,10 +1146,12 @@ fn run_claude_session(
                         KeyCode::PageUp => {
                             let mut state = term_state.lock().unwrap();
                             state.scroll_display(Scroll::PageUp);
+                            needs_redraw = true;
                         }
                         KeyCode::PageDown => {
                             let mut state = term_state.lock().unwrap();
                             state.scroll_display(Scroll::PageDown);
+                            needs_redraw = true;
                         }
                         _ => {
                             // その他のキー: PTY に転送
@@ -1155,6 +1166,31 @@ fn run_claude_session(
                                 let _ = cmd_tx.send(BridgeCommand::Input(bytes));
                             }
                         }
+                    }
+                }
+                Event::Paste(text) => {
+                    // IME 確定テキストやクリップボードペーストを PTY に転送
+                    // PTY が bracketed paste モードなら囲みシーケンスを付与
+                    let bracketed = {
+                        let state = term_state.lock().unwrap();
+                        state.bracketed_paste_mode()
+                    };
+                    let mut bytes = Vec::new();
+                    if bracketed {
+                        bytes.extend_from_slice(b"\x1b[200~");
+                    }
+                    bytes.extend_from_slice(text.as_bytes());
+                    if bracketed {
+                        bytes.extend_from_slice(b"\x1b[201~");
+                    }
+                    if !bytes.is_empty() {
+                        {
+                            let mut state = term_state.lock().unwrap();
+                            if state.display_offset() > 0 {
+                                state.scroll_display(Scroll::Bottom);
+                            }
+                        }
+                        let _ = cmd_tx.send(BridgeCommand::Input(bytes));
                     }
                 }
                 Event::Mouse(mouse) => match mouse.kind {
@@ -1176,6 +1212,7 @@ fn run_claude_session(
                         cols: new_cols as u16,
                         rows: new_lines as u16,
                     });
+                    needs_redraw = true;
                 }
                 _ => {}
             }
