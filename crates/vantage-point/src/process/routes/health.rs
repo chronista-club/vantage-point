@@ -20,11 +20,11 @@ pub fn open_browser(url: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Index page handler（キャッシュ無効化ヘッダー付き）
+/// Index page handler — Canvas を 1st ビューとして表示
 pub async fn index_handler() -> impl IntoResponse {
     (
         [(header::CACHE_CONTROL, "no-store, no-cache, must-revalidate")],
-        Html(include_str!("../../../../../web/index.html")),
+        Html(include_str!("../../../../../web/canvas.html")),
     )
 }
 
