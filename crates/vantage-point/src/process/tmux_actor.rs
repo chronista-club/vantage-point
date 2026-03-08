@@ -125,7 +125,10 @@ impl TmuxActor {
     /// Actor メインループ
     async fn run(mut self) {
         // 初期状態を tmux から取得
-        self.panes = Self::query_panes(&self.session_name);
+        let session = self.session_name.clone();
+        self.panes = tokio::task::spawn_blocking(move || Self::query_panes(&session))
+            .await
+            .unwrap_or_default();
         tracing::info!(
             "TmuxActor 起動: session={}, panes={}",
             self.session_name,
@@ -139,18 +142,51 @@ impl TmuxActor {
                     command,
                     reply,
                 } => {
-                    let result = self.handle_split(horizontal, command.as_deref());
+                    let session = self.session_name.clone();
+                    let result = tokio::task::spawn_blocking(move || {
+                        Self::do_split(&session, horizontal, command.as_deref())
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(format!("spawn_blocking panicked: {}", e)));
+
+                    if let Ok(ref pane) = result {
+                        tracing::info!(
+                            "tmux ペイン作成: {} (session={})",
+                            pane.id,
+                            self.session_name
+                        );
+                    }
+                    // 状態を更新
+                    let session = self.session_name.clone();
+                    self.panes = tokio::task::spawn_blocking(move || Self::query_panes(&session))
+                        .await
+                        .unwrap_or_default();
                     let _ = reply.send(result);
                 }
                 TmuxCommand::List { reply } => {
                     let _ = reply.send(self.panes.clone());
                 }
                 TmuxCommand::Close { pane_id, reply } => {
-                    let result = self.handle_close(&pane_id);
+                    let pid = pane_id.clone();
+                    let result = tokio::task::spawn_blocking(move || Self::do_close(&pid))
+                        .await
+                        .unwrap_or_else(|e| Err(format!("spawn_blocking panicked: {}", e)));
+
+                    if result.is_ok() {
+                        tracing::info!("tmux ペイン閉鎖: {}", pane_id);
+                    }
+                    // 状態を更新
+                    let session = self.session_name.clone();
+                    self.panes = tokio::task::spawn_blocking(move || Self::query_panes(&session))
+                        .await
+                        .unwrap_or_default();
                     let _ = reply.send(result);
                 }
                 TmuxCommand::Refresh { reply } => {
-                    self.panes = Self::query_panes(&self.session_name);
+                    let session = self.session_name.clone();
+                    self.panes = tokio::task::spawn_blocking(move || Self::query_panes(&session))
+                        .await
+                        .unwrap_or_default();
                     let _ = reply.send(self.panes.clone());
                 }
             }
@@ -159,15 +195,24 @@ impl TmuxActor {
         tracing::info!("TmuxActor 終了: session={}", self.session_name);
     }
 
-    /// ペイン分割を実行し、状態を更新
-    fn handle_split(
-        &mut self,
+    /// ペイン分割を実行（ブロッキング — spawn_blocking 内で呼ぶ）
+    fn do_split(
+        session_name: &str,
         horizontal: bool,
         command: Option<&str>,
     ) -> Result<TmuxPane, String> {
         let flag = if horizontal { "-v" } else { "-h" };
-        let mut args = vec!["split-window", flag, "-t", &self.session_name, "-P", "-F",
-            "#{pane_id}\t#{pane_active}\t#{pane_width}\t#{pane_height}\t#{pane_current_command}"];
+        let format_str =
+            "#{pane_id}\t#{pane_active}\t#{pane_width}\t#{pane_height}\t#{pane_current_command}";
+        let mut args = vec![
+            "split-window",
+            flag,
+            "-t",
+            session_name,
+            "-P",
+            "-F",
+            format_str,
+        ];
         if let Some(cmd) = command {
             args.push(cmd);
         }
@@ -182,20 +227,13 @@ impl TmuxActor {
             return Err(format!("tmux split-window エラー: {}", stderr.trim()));
         }
 
-        // -P -F で新しいペインの情報が stdout に出力される
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let new_pane = Self::parse_pane_line(stdout.trim())
-            .ok_or_else(|| "新しいペインの情報を解析できません".to_string())?;
-
-        // 状態を更新
-        self.panes = Self::query_panes(&self.session_name);
-
-        tracing::info!("tmux ペイン作成: {} (session={})", new_pane.id, self.session_name);
-        Ok(new_pane)
+        Self::parse_pane_line(stdout.trim())
+            .ok_or_else(|| "新しいペインの情報を解析できません".to_string())
     }
 
-    /// ペインを閉じて状態を更新
-    fn handle_close(&mut self, pane_id: &str) -> Result<(), String> {
+    /// ペインを閉じる（ブロッキング — spawn_blocking 内で呼ぶ）
+    fn do_close(pane_id: &str) -> Result<(), String> {
         let status = std::process::Command::new("tmux")
             .args(["kill-pane", "-t", pane_id])
             .status()
@@ -204,14 +242,10 @@ impl TmuxActor {
         if !status.success() {
             return Err(format!("tmux kill-pane エラー: pane_id={}", pane_id));
         }
-
-        // 状態を更新
-        self.panes = Self::query_panes(&self.session_name);
-        tracing::info!("tmux ペイン閉鎖: {}", pane_id);
         Ok(())
     }
 
-    /// tmux list-panes でペイン一覧を取得
+    /// tmux list-panes でペイン一覧を取得（ブロッキング — spawn_blocking 内で呼ぶ）
     fn query_panes(session_name: &str) -> Vec<TmuxPane> {
         let output = std::process::Command::new("tmux")
             .args([

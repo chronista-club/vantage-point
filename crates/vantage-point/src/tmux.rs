@@ -84,85 +84,6 @@ pub fn attach_and_exec(name: &str) -> ! {
     std::process::exit(1);
 }
 
-/// 現在のペインを水平分割して新しいペインを作成
-///
-/// `command` を指定するとそのコマンドで起動、None ならデフォルトシェル。
-/// tmux split-window は現在のセッション内で実行されるため、
-/// tmux 内でのみ呼び出すこと。
-pub fn split_window(horizontal: bool, command: Option<&str>) -> Result<(), std::io::Error> {
-    let mut args = vec!["split-window"];
-    if horizontal {
-        args.push("-v"); // 水平分割（上下）
-    } else {
-        args.push("-h"); // 垂直分割（左右）
-    }
-    if let Some(cmd) = command {
-        args.push(cmd);
-    }
-
-    let status = Command::new("tmux")
-        .args(&args)
-        .status()?;
-
-    if status.success() {
-        Ok(())
-    } else {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("tmux split-window failed with {}", status),
-        ))
-    }
-}
-
-/// ペイン一覧を取得（Phase C 以降で Canvas 連携に使用）
-pub fn list_panes() -> Result<Vec<PaneInfo>, std::io::Error> {
-    let output = Command::new("tmux")
-        .args([
-            "list-panes",
-            "-F",
-            "#{pane_id}\t#{pane_active}\t#{pane_width}\t#{pane_height}\t#{pane_current_command}",
-        ])
-        .output()?;
-
-    if !output.status.success() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "tmux list-panes failed",
-        ));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let panes = stdout
-        .lines()
-        .filter_map(|line| {
-            let parts: Vec<&str> = line.split('\t').collect();
-            if parts.len() >= 5 {
-                Some(PaneInfo {
-                    id: parts[0].to_string(),
-                    active: parts[1] == "1",
-                    width: parts[2].parse().unwrap_or(0),
-                    height: parts[3].parse().unwrap_or(0),
-                    command: parts[4].to_string(),
-                })
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    Ok(panes)
-}
-
-/// tmux ペイン情報
-#[derive(Debug, Clone)]
-pub struct PaneInfo {
-    pub id: String,
-    pub active: bool,
-    pub width: u32,
-    pub height: u32,
-    pub command: String,
-}
-
 /// Unix exec でプロセスを置き換える
 #[cfg(unix)]
 fn exec_command(program: &str, args: &[&str]) -> std::io::Error {
@@ -203,16 +124,4 @@ mod tests {
         let _ = result;
     }
 
-    #[test]
-    fn test_pane_info_debug() {
-        let pane = PaneInfo {
-            id: "%0".to_string(),
-            active: true,
-            width: 120,
-            height: 40,
-            command: "zsh".to_string(),
-        };
-        assert!(pane.active);
-        assert_eq!(pane.width, 120);
-    }
 }
