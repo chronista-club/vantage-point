@@ -1,0 +1,328 @@
+//! Canvas Lane 集約 WebSocket ハンドラー
+//!
+//! Conductor Process が各 Project Process の Hub を subscribe し、
+//! Canvas クライアントに Lane（プロジェクト単位）でラップして中継する。
+//!
+//! ## プロトコル
+//!
+//! ### サーバー → クライアント
+//! ```json
+//! // Lane 一覧（接続時 + 変更時）
+//! {"type": "lanes", "lanes": [{"name": "creo", "port": 33000, "status": "connected"}]}
+//!
+//! // Process メッセージ（Lane ラップ）
+//! {"type": "lane_message", "lane": "creo", "port": 33000, "message": { ...ProcessMessage... }}
+//! ```
+//!
+//! ### クライアント → サーバー
+//! ```json
+//! // Lane の追加/削除リクエスト（将来用）
+//! {"type": "refresh"}
+//! ```
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use axum::{
+    extract::{
+        State,
+        ws::{Message, WebSocket, WebSocketUpgrade},
+    },
+    response::IntoResponse,
+};
+use futures::{SinkExt, StreamExt};
+use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc;
+
+use super::super::state::AppState;
+
+/// Lane 情報
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LaneInfo {
+    /// プロジェクト名
+    pub name: String,
+    /// Process ポート番号
+    pub port: u16,
+    /// 接続状態
+    pub status: LaneStatus,
+}
+
+/// Lane 接続状態
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LaneStatus {
+    /// Process に接続中
+    Connected,
+    /// 接続試行中
+    Connecting,
+    /// 切断（Process 停止等）
+    Disconnected,
+}
+
+/// サーバー → Canvas クライアントへのメッセージ
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum LaneEvent {
+    /// Lane 一覧の更新
+    Lanes { lanes: Vec<LaneInfo> },
+    /// Process メッセージ（Lane ラップ）
+    LaneMessage {
+        lane: String,
+        port: u16,
+        message: serde_json::Value,
+    },
+    /// Lane 接続状態の変更
+    LaneStatusChanged {
+        lane: String,
+        port: u16,
+        status: LaneStatus,
+    },
+}
+
+/// Canvas クライアント → サーバーへのメッセージ
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum LaneCommand {
+    /// Process 一覧を再スキャン
+    Refresh,
+}
+
+/// Lane ブリッジ内部メッセージ
+enum BridgeMsg {
+    /// Process からのメッセージ
+    ProcessMessage {
+        lane: String,
+        port: u16,
+        message: serde_json::Value,
+    },
+    /// Lane 状態変更
+    StatusChanged {
+        lane: String,
+        port: u16,
+        status: LaneStatus,
+    },
+    /// Lane 一覧更新
+    LanesUpdated(Vec<LaneInfo>),
+}
+
+/// WebSocket ハンドラー: `/ws/lanes`
+pub async fn lanes_ws_handler(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| handle_lanes_socket(socket, state))
+}
+
+/// Canvas クライアントとの WebSocket 接続を管理
+async fn handle_lanes_socket(socket: WebSocket, state: Arc<AppState>) {
+    let (mut ws_sender, mut ws_receiver) = socket.split();
+
+    // ブリッジチャネル: 各 Process WS → 集約 → Canvas
+    let (bridge_tx, mut bridge_rx) = mpsc::channel::<BridgeMsg>(256);
+
+    // 初期スキャン: 稼働中 Process を発見して接続
+    let initial_lanes = discover_and_connect(&state, bridge_tx.clone()).await;
+
+    // 初期 Lane 一覧を送信
+    let lanes_event = LaneEvent::Lanes {
+        lanes: initial_lanes.clone(),
+    };
+    let text = serde_json::to_string(&lanes_event).unwrap_or_default();
+    if ws_sender.send(Message::Text(text.into())).await.is_err() {
+        return;
+    }
+
+    // 定期スキャンタスク（5秒ごとに Process 一覧を更新）
+    let scan_tx = bridge_tx.clone();
+    let state_for_scan = state.clone();
+    let scan_task = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(5));
+        loop {
+            interval.tick().await;
+            let lanes = discover_and_connect(&state_for_scan, scan_tx.clone()).await;
+            if scan_tx.send(BridgeMsg::LanesUpdated(lanes)).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    // ブリッジ → Canvas 送信タスク
+    let send_task = tokio::spawn(async move {
+        while let Some(msg) = bridge_rx.recv().await {
+            let event = match msg {
+                BridgeMsg::ProcessMessage {
+                    lane,
+                    port,
+                    message,
+                } => LaneEvent::LaneMessage {
+                    lane,
+                    port,
+                    message,
+                },
+                BridgeMsg::StatusChanged { lane, port, status } => {
+                    LaneEvent::LaneStatusChanged { lane, port, status }
+                }
+                BridgeMsg::LanesUpdated(lanes) => LaneEvent::Lanes { lanes },
+            };
+            let text = serde_json::to_string(&event).unwrap_or_default();
+            if ws_sender.send(Message::Text(text.into())).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    // Canvas → サーバー受信タスク
+    let recv_bridge_tx = bridge_tx.clone();
+    let state_for_recv = state.clone();
+    let recv_task = tokio::spawn(async move {
+        while let Some(Ok(msg)) = ws_receiver.next().await {
+            match msg {
+                Message::Text(text) => {
+                    if let Ok(cmd) = serde_json::from_str::<LaneCommand>(&text) {
+                        match cmd {
+                            LaneCommand::Refresh => {
+                                let lanes =
+                                    discover_and_connect(&state_for_recv, recv_bridge_tx.clone())
+                                        .await;
+                                let _ = recv_bridge_tx.send(BridgeMsg::LanesUpdated(lanes)).await;
+                            }
+                        }
+                    }
+                }
+                Message::Close(_) => break,
+                _ => {}
+            }
+        }
+    });
+
+    // いずれかのタスクが終了したら全て停止
+    tokio::select! {
+        _ = send_task => {},
+        _ = recv_task => {},
+    }
+    scan_task.abort();
+
+    tracing::info!("Canvas Lane WS 接続終了");
+}
+
+/// 稼働中 Process を発見し、未接続のものに WS クライアントを接続
+async fn discover_and_connect(
+    state: &Arc<AppState>,
+    bridge_tx: mpsc::Sender<BridgeMsg>,
+) -> Vec<LaneInfo> {
+    // Conductor が有効な場合、Conductor から Process 一覧を取得
+    let running_processes = if let Some(conductor) = &state.conductor {
+        let conductor = conductor.read().await;
+        conductor.list_running_processes().await
+    } else {
+        // Conductor なし — running.json から直接読む
+        match crate::config::RunningProcesses::load() {
+            Ok(procs) => procs
+                .processes
+                .into_iter()
+                .map(|p| crate::capability::RunningProcess {
+                    project_name: p
+                        .project_dir
+                        .rsplit('/')
+                        .next()
+                        .unwrap_or("unknown")
+                        .to_string(),
+                    port: p.port,
+                    pid: p.pid,
+                    project_path: p.project_dir.into(),
+                    discovered_via_bonjour: false,
+                })
+                .collect(),
+            Err(_) => vec![],
+        }
+    };
+
+    let mut lanes = Vec::new();
+
+    for proc in &running_processes {
+        // 自分自身（Conductor Process）はスキップ
+        if proc.port == state.port {
+            continue;
+        }
+
+        let lane_name = proc.project_name.clone();
+        let port = proc.port;
+
+        // WS クライアント接続を spawn（まだ接続していない場合）
+        let tx = bridge_tx.clone();
+        tokio::spawn(async move {
+            spawn_lane_bridge(lane_name.clone(), port, tx).await;
+        });
+
+        lanes.push(LaneInfo {
+            name: proc.project_name.clone(),
+            port: proc.port,
+            status: LaneStatus::Connecting,
+        });
+    }
+
+    lanes
+}
+
+/// 1つの Process に対する WS クライアント接続を確立し、メッセージを中継
+async fn spawn_lane_bridge(lane: String, port: u16, bridge_tx: mpsc::Sender<BridgeMsg>) {
+    let url = format!("ws://[::1]:{}/ws", port);
+
+    // WS クライアント接続
+    let ws_stream = match tokio_tungstenite::connect_async(&url).await {
+        Ok((stream, _)) => stream,
+        Err(e) => {
+            tracing::warn!("Lane {} (port {}) 接続失敗: {}", lane, port, e);
+            let _ = bridge_tx
+                .send(BridgeMsg::StatusChanged {
+                    lane,
+                    port,
+                    status: LaneStatus::Disconnected,
+                })
+                .await;
+            return;
+        }
+    };
+
+    tracing::info!("Lane {} (port {}) 接続成功", lane, port);
+
+    // 接続成功を通知
+    let _ = bridge_tx
+        .send(BridgeMsg::StatusChanged {
+            lane: lane.clone(),
+            port,
+            status: LaneStatus::Connected,
+        })
+        .await;
+
+    let (_, mut read) = ws_stream.split();
+
+    // Process からのメッセージを読み取り、Lane ラップして転送
+    while let Some(Ok(msg)) = read.next().await {
+        match msg {
+            tokio_tungstenite::tungstenite::Message::Text(text) => {
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
+                    let _ = bridge_tx
+                        .send(BridgeMsg::ProcessMessage {
+                            lane: lane.clone(),
+                            port,
+                            message: value,
+                        })
+                        .await;
+                }
+            }
+            tokio_tungstenite::tungstenite::Message::Close(_) => break,
+            _ => {}
+        }
+    }
+
+    // 切断を通知
+    tracing::info!("Lane {} (port {}) 切断", lane, port);
+    let _ = bridge_tx
+        .send(BridgeMsg::StatusChanged {
+            lane,
+            port,
+            status: LaneStatus::Disconnected,
+        })
+        .await;
+}

@@ -3,6 +3,7 @@
 pub mod chat;
 pub mod conductor;
 pub mod health;
+pub mod lanes;
 pub mod permission;
 pub mod prompt;
 pub mod update;

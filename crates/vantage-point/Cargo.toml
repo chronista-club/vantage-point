@@ -93,6 +93,9 @@ portable-pty = "0.9"
 # Base64 encoding (for PTY binary I/O over WebSocket)
 base64 = "0.22"
 
+# WebSocket client (for Canvas Lane bridge to other Processes)
+tokio-tungstenite = "0.26"
+
 # File system watcher (for trace log → WebSocket broadcast)
 notify = "8"
 

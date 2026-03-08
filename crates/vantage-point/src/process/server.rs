@@ -17,7 +17,7 @@ use tower_http::cors::CorsLayer;
 use super::capabilities::{CapabilityConfig, ProcessCapabilities};
 use super::hub::Hub;
 use super::pty::PtyManager;
-use super::routes::{conductor, health, permission, prompt, update, ws};
+use super::routes::{conductor, health, lanes, permission, prompt, update, ws};
 use super::session::SessionManager;
 use super::state::AppState;
 use super::unison_server;
@@ -98,6 +98,8 @@ pub async fn run(
         .route("/", get(health::index_handler))
         .route("/canvas", get(health::canvas_handler))
         .route("/ws", get(ws::ws_handler))
+        // Canvas Lane 集約 WebSocket（全 Process のメッセージを Lane でラップして中継）
+        .route("/ws/lanes", get(lanes::lanes_ws_handler))
         .route("/api/show", post(health::show_handler))
         .route("/api/toggle-pane", post(health::toggle_pane_handler))
         .route("/api/split-pane", post(health::split_pane_handler))
@@ -313,6 +315,8 @@ pub async fn run_conductor(port: u16) -> Result<()> {
     let app = Router::new()
         .route("/api/health", get(health::health_handler))
         .route("/api/shutdown", post(health::shutdown_handler))
+        // Canvas Lane 集約 WebSocket
+        .route("/ws/lanes", get(lanes::lanes_ws_handler))
         // Conductor API routes
         .route(
             "/api/conductor/projects",
