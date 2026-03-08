@@ -122,6 +122,28 @@ pub async fn canvas_close_handler(State(state): State<Arc<AppState>>) -> impl In
     }
 }
 
+/// GET /api/canvas/layout - Canvas レイアウト状態を復元
+pub async fn canvas_layout_get_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    match state.load_canvas_layout() {
+        Some(layout) => Json(serde_json::json!({"status": "ok", "layout": layout})),
+        None => Json(serde_json::json!({"status": "empty"})),
+    }
+}
+
+/// POST /api/canvas/layout - Canvas レイアウト状態を保存
+///
+/// フロントエンドから Lane/Tab/Pane の構造を JSON で受け取り、ディスクに保存。
+/// ペイン内容もこのタイミングで永続化する。
+pub async fn canvas_layout_save_handler(
+    State(state): State<Arc<AppState>>,
+    Json(layout): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    state.save_canvas_layout(&layout);
+    // ペイン内容も同時に保存
+    state.persist_pane_contents();
+    Json(serde_json::json!({"status": "saved"}))
+}
+
 /// POST /api/watch-file - ファイル監視を開始
 pub async fn watch_file_handler(
     State(state): State<Arc<AppState>>,

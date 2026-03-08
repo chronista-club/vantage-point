@@ -94,6 +94,9 @@ pub async fn run(
         pane_contents: Arc::new(std::sync::Mutex::new(HashMap::new())),
     });
 
+    // ペイン状態をディスクから復元（前回 Process 終了時の状態）
+    state.restore_pane_contents();
+
     let app = Router::new()
         .route("/", get(health::index_handler))
         .route("/canvas", get(health::canvas_handler))
@@ -109,6 +112,10 @@ pub async fn run(
         .route("/api/canvas/open", post(health::canvas_open_handler))
         .route("/api/canvas/close", post(health::canvas_close_handler))
         .route("/api/canvas/capture", post(health::canvas_capture_handler))
+        .route(
+            "/api/canvas/layout",
+            get(health::canvas_layout_get_handler).post(health::canvas_layout_save_handler),
+        )
         .route("/api/ruby/eval", post(health::ruby_eval_handler))
         .route("/api/ruby/run", post(health::ruby_run_handler))
         .route("/api/ruby/stop", post(health::ruby_stop_handler))
@@ -216,6 +223,7 @@ pub async fn run(
     // Clone for shutdown
     let capabilities_for_shutdown = state.capabilities.clone();
     let file_watchers_for_shutdown = state.file_watchers.clone();
+    let state_for_shutdown = state.clone();
 
     // Serve with graceful shutdown
     axum::serve(listener, app)
@@ -231,6 +239,9 @@ pub async fn run(
     } else {
         tracing::info!("Unregistered Process from running.json (port={})", port);
     }
+
+    // ペイン状態をディスクに保存（次回起動時に復元）
+    state_for_shutdown.persist_pane_contents();
 
     // メニューバーアプリに停止を通知
     crate::notify::post_process_changed(port, "stopped");

@@ -22,7 +22,7 @@ use crate::mcp::PermissionResponse;
 use crate::protocol::{Content, DebugMode, ProcessMessage};
 
 /// ペインの最新コンテンツ（Canvas 再接続時の状態復元用）
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct PaneState {
     pub content: Content,
     pub title: Option<String>,
@@ -237,5 +237,93 @@ impl AppState {
     /// Send AG-UI event to connected clients (REQ-AGUI-040)
     pub fn send_agui_event(&self, event: AgUiEvent) {
         self.hub.broadcast(ProcessMessage::AgUi { event });
+    }
+
+    // =========================================================================
+    // Canvas 状態永続化
+    // =========================================================================
+
+    /// ペイン状態のファイルパス
+    fn pane_state_path(&self) -> std::path::PathBuf {
+        crate::config::config_dir()
+            .join("state")
+            .join(format!("{}-panes.json", self.port))
+    }
+
+    /// Canvas レイアウト状態のファイルパス
+    fn canvas_layout_path(&self) -> std::path::PathBuf {
+        crate::config::config_dir()
+            .join("state")
+            .join(format!("{}-canvas-layout.json", self.port))
+    }
+
+    /// ペイン状態をディスクに保存
+    pub fn persist_pane_contents(&self) {
+        let panes = self.pane_contents.lock().unwrap();
+        if panes.is_empty() {
+            return;
+        }
+
+        let path = self.pane_state_path();
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+
+        match serde_json::to_string(&*panes) {
+            Ok(json) => {
+                if let Err(e) = std::fs::write(&path, json) {
+                    tracing::warn!("ペイン状態の保存に失敗: {}", e);
+                }
+            }
+            Err(e) => tracing::warn!("ペイン状態のシリアライズに失敗: {}", e),
+        }
+    }
+
+    /// ディスクからペイン状態を復元
+    pub fn restore_pane_contents(&self) {
+        let path = self.pane_state_path();
+        if !path.exists() {
+            return;
+        }
+
+        match std::fs::read_to_string(&path) {
+            Ok(json) => match serde_json::from_str::<HashMap<String, PaneState>>(&json) {
+                Ok(restored) => {
+                    let mut panes = self.pane_contents.lock().unwrap();
+                    *panes = restored;
+                    tracing::info!(
+                        "ペイン状態を復元: {} ペイン (port={})",
+                        panes.len(),
+                        self.port
+                    );
+                }
+                Err(e) => tracing::warn!("ペイン状態のデシリアライズに失敗: {}", e),
+            },
+            Err(e) => tracing::warn!("ペイン状態ファイルの読み込みに失敗: {}", e),
+        }
+    }
+
+    /// Canvas レイアウト状態を保存（フロントエンドからの JSON をそのまま保存）
+    pub fn save_canvas_layout(&self, layout: &serde_json::Value) {
+        let path = self.canvas_layout_path();
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+
+        match serde_json::to_string_pretty(layout) {
+            Ok(json) => {
+                if let Err(e) = std::fs::write(&path, json) {
+                    tracing::warn!("Canvas レイアウト保存に失敗: {}", e);
+                }
+            }
+            Err(e) => tracing::warn!("Canvas レイアウトのシリアライズに失敗: {}", e),
+        }
+    }
+
+    /// Canvas レイアウト状態を復元
+    pub fn load_canvas_layout(&self) -> Option<serde_json::Value> {
+        let path = self.canvas_layout_path();
+        let json = std::fs::read_to_string(&path).ok()?;
+        serde_json::from_str(&json).ok()
     }
 }

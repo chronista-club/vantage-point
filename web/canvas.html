@@ -773,6 +773,7 @@
                 root: null,  // PaneNode ツリー: { type:'leaf', paneId } | { type:'split', direction, first, second, ratio }
             });
 
+            markLayoutDirty();
             switchToTab(tabId);
             // switchToTab 内で updateTabBar() が呼ばれるため、ここでは不要
         }
@@ -1578,6 +1579,7 @@
                 emptyState.style.display = '';
             }
 
+            markLayoutDirty();
             renderLaneBar();
         }
 
@@ -1937,6 +1939,87 @@
                     break;
             }
         }
+
+        // ===== Canvas レイアウト永続化 =====
+        const LAYOUT_SAVE_INTERVAL = 10000; // 10秒間隔で自動保存
+        let layoutDirty = false;
+
+        // レイアウト変更をマーク（実際の保存は定期バッチ）
+        function markLayoutDirty() {
+            layoutDirty = true;
+        }
+
+        // レイアウト状態を収集
+        function collectLayoutState() {
+            const layout = {
+                activeLane: laneState.activeLane,
+                laneMode: LANE_MODE,
+                activeTab: tabState.activeTab,
+                tabs: [],
+            };
+
+            // タブ一覧（ペインIDと分割構造）
+            for (const [tabId, tab] of tabState.tabs) {
+                const paneIds = [];
+                for (const paneId of tab.panes.keys()) {
+                    paneIds.push(paneId);
+                }
+                layout.tabs.push({
+                    id: tabId,
+                    title: tab.title,
+                    paneIds,
+                });
+            }
+
+            // Lane ごとのタブ状態
+            if (LANE_MODE) {
+                layout.laneTabStates = {};
+                for (const [laneName, lts] of laneState.laneTabStates) {
+                    const tabIds = [];
+                    for (const [tid] of lts.tabs) {
+                        tabIds.push(tid);
+                    }
+                    layout.laneTabStates[laneName] = {
+                        activeTab: lts.activeTab,
+                        tabIds,
+                    };
+                }
+            }
+
+            return layout;
+        }
+
+        // レイアウト保存（POST /api/canvas/layout）
+        async function saveLayout() {
+            if (!layoutDirty) return;
+            layoutDirty = false;
+
+            try {
+                const layout = collectLayoutState();
+                await fetch(`http://localhost:${PORT}/api/canvas/layout`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(layout),
+                });
+            } catch (e) {
+                console.debug('Layout save failed:', e);
+            }
+        }
+
+        // 定期保存タイマー
+        setInterval(saveLayout, LAYOUT_SAVE_INTERVAL);
+
+        // ページ離脱時に最終保存
+        window.addEventListener('beforeunload', () => {
+            if (layoutDirty) {
+                const layout = collectLayoutState();
+                // sendBeacon で確実に送信
+                navigator.sendBeacon(
+                    `http://localhost:${PORT}/api/canvas/layout`,
+                    new Blob([JSON.stringify(layout)], { type: 'application/json' })
+                );
+            }
+        });
 
         connect();
     </script>
