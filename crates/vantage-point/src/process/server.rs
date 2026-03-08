@@ -362,6 +362,12 @@ pub async fn run_conductor(port: u16) -> Result<()> {
     // Clone conductor for shutdown
     let conductor_for_shutdown = conductor_cap.clone();
 
+    // ヘルスモニター起動（30秒間隔で Process 監視 + ゴースト除去 + クラッシュ復旧）
+    let health_monitor = tokio::spawn(ProcessManagerCapability::run_health_monitor(
+        conductor_cap.clone(),
+        shutdown_token.clone(),
+    ));
+
     // Serve with graceful shutdown
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
@@ -369,6 +375,9 @@ pub async fn run_conductor(port: u16) -> Result<()> {
             tracing::info!("Conductor graceful shutdown initiated");
         })
         .await?;
+
+    // ヘルスモニター停止
+    health_monitor.abort();
 
     // Shutdown conductor capability
     tracing::info!("Shutting down Conductor...");

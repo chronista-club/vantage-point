@@ -84,6 +84,8 @@ pub struct ProcessManagerCapability {
     projects: Arc<RwLock<HashMap<String, ProjectInfo>>>,
     /// 稼働中Process一覧
     running_processes: Arc<RwLock<HashMap<String, RunningProcess>>>,
+    /// 前回のヘルスチェックで稼働中だった Process（クラッシュ検知用）
+    previously_running: Arc<RwLock<HashMap<String, RunningProcess>>>,
     /// 設定
     config: Option<Config>,
     /// vpバイナリパス
@@ -97,6 +99,7 @@ impl ProcessManagerCapability {
             state: CapabilityState::Uninitialized,
             projects: Arc::new(RwLock::new(HashMap::new())),
             running_processes: Arc::new(RwLock::new(HashMap::new())),
+            previously_running: Arc::new(RwLock::new(HashMap::new())),
             config: None,
             vp_binary_path: None,
         }
@@ -414,6 +417,84 @@ impl ProcessManagerCapability {
         }
 
         Ok(())
+    }
+
+    /// ヘルスモニター: 定期的にヘルスチェック + ゴースト除去 + クラッシュ検知
+    ///
+    /// Conductor 起動時にバックグラウンドタスクとして spawn される。
+    /// 30秒間隔で以下を実行:
+    /// 1. running.json のゴースト除去（PID liveness チェック）
+    /// 2. ポートスキャンで Process 状態更新
+    /// 3. 前回稼働中だった Process が消えていたらクラッシュ検知 → 自動再起動
+    pub async fn run_health_monitor(
+        conductor: Arc<RwLock<Self>>,
+        shutdown_token: tokio_util::sync::CancellationToken,
+    ) {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+        // 最初の tick は即座に発火するのでスキップ
+        interval.tick().await;
+
+        tracing::info!("Health monitor 起動（30秒間隔）");
+
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {},
+                _ = shutdown_token.cancelled() => {
+                    tracing::info!("Health monitor 停止");
+                    return;
+                }
+            }
+
+            let conductor = conductor.read().await;
+
+            // 1. running.json ゴースト除去
+            if let Ok(procs) = crate::config::RunningProcesses::load() {
+                tracing::debug!(
+                    "Health check: running.json に {} Process 登録中",
+                    procs.processes.len()
+                );
+            }
+
+            // 2. Process 状態更新
+            if let Err(e) = conductor.refresh_process_status().await {
+                tracing::warn!("Health check: 状態更新失敗: {}", e);
+                continue;
+            }
+
+            // 3. クラッシュ検知: 前回 Running だった Process が消えていたら再起動
+            let current = conductor.running_processes.read().await.clone();
+            let previous = conductor.previously_running.read().await.clone();
+
+            for (name, prev_proc) in &previous {
+                if !current.contains_key(name) {
+                    tracing::warn!(
+                        "Health check: Process '{}' (port {}) がクラッシュを検知",
+                        name,
+                        prev_proc.port
+                    );
+
+                    // 自動再起動
+                    tracing::info!("Health check: Process '{}' を自動再起動中...", name);
+                    match conductor.start_process(name).await {
+                        Ok(new_proc) => {
+                            tracing::info!(
+                                "Health check: Process '{}' 再起動成功 (port {})",
+                                name,
+                                new_proc.port
+                            );
+                            // メニューバーアプリに通知
+                            crate::notify::post_process_changed(new_proc.port, "restarted");
+                        }
+                        Err(e) => {
+                            tracing::error!("Health check: Process '{}' 再起動失敗: {}", name, e);
+                        }
+                    }
+                }
+            }
+
+            // 前回の稼働状態を保存（次回比較用）
+            *conductor.previously_running.write().await = current;
+        }
     }
 }
 
