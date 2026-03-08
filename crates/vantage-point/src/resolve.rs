@@ -186,17 +186,22 @@ pub fn find_available_port() -> Option<u16> {
         .find(|port| !used_ports.contains(port) && is_port_available(*port))
 }
 
-/// ポートが利用可能かバインドして確認
+/// ポートが利用可能かバインドして確認（IPv6 + IPv4 両方チェック）
 fn is_port_available(port: u16) -> bool {
-    std::net::TcpListener::bind(("127.0.0.1", port)).is_ok()
+    use std::net::{Ipv6Addr, SocketAddrV6, TcpListener};
+    // サーバーは [::1] にバインドするため IPv6 を優先チェック
+    // 注: 文字列 "[::1]" は ToSocketAddrs でパース不可、SocketAddrV6 を使う
+    TcpListener::bind(SocketAddrV6::new(Ipv6Addr::LOCALHOST, port, 0, 0)).is_ok()
+        && TcpListener::bind(("127.0.0.1", port)).is_ok()
 }
 
 /// Configured ターゲットのポートを決定
 ///
 /// config にプロジェクト固有のポート設定があればそれを使い、
-/// なければ index ベースで割り当てる（33000 + index）
+/// なければ index ベースで割り当てる（33000 + index）。
+/// 割り当てポートが他プロセスに占有されている場合は空きポートにフォールバックする。
 pub fn port_for_configured(index: usize, config: &Config) -> Result<u16> {
-    // プロジェクト固有のポート設定を優先
+    // プロジェクト固有のポート設定を優先（明示指定は衝突チェックしない）
     if let Some(project) = config.projects.get(index)
         && let Some(port) = project.port
     {
@@ -211,5 +216,25 @@ pub fn port_for_configured(index: usize, config: &Config) -> Result<u16> {
             max_projects
         );
     }
-    Ok(PORT_RANGE_START + index as u16)
+
+    let preferred = PORT_RANGE_START + index as u16;
+
+    // 優先ポートが利用可能ならそのまま使う
+    if is_port_available(preferred) {
+        return Ok(preferred);
+    }
+
+    // 占有されている場合はレンジ内で空きポートを探す
+    tracing::info!(
+        "Port {} is occupied, searching for available port",
+        preferred
+    );
+    find_available_port().ok_or_else(|| {
+        anyhow::anyhow!(
+            "Port {} is in use and no other ports available in range {}-{}",
+            preferred,
+            PORT_RANGE_START,
+            PORT_RANGE_END
+        )
+    })
 }
