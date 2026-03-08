@@ -57,26 +57,26 @@ pub const WORLD: StandAlias = StandAlias {
     emoji: "👑",
 };
 
-// ─── プロジェクトレベル（PP）─────────────────────────
+// ─── プロジェクトレベル ──────────────────────────────
 
-/// プロジェクトの開発ナビゲーター（旧 Process）
-pub const PAISLEY_PARK: StandAlias = StandAlias {
-    id: "pp",
+/// プロジェクトの開発サーバー（旧 Process）
+pub const PROCESS: StandAlias = StandAlias {
+    id: "process",
     functional_name: "Project Server",
+    stand_name: "Process",
+    short: "PR",
+    emoji: "🔮",
+};
+
+// ─── Capability（Process にぶら下がるスタンド能力）───
+
+/// 表示能力 — Canvas WebView / TUI パネル（Paisley Park）
+pub const PAISLEY_PARK: StandAlias = StandAlias {
+    id: "canvas",
+    functional_name: "Display Engine",
     stand_name: "Paisley Park",
     short: "PP",
     emoji: "🧭",
-};
-
-// ─── Capability（PP にぶら下がるスタンド能力）────────
-
-/// 表示能力 — WebView / TUI パネル
-pub const CANVAS: StandAlias = StandAlias {
-    id: "canvas",
-    functional_name: "Display Engine",
-    stand_name: "Canvas",
-    short: "CV",
-    emoji: "🎨",
 };
 
 /// AI エージェント能力 — Claude CLI
@@ -109,8 +109,8 @@ pub const HERMIT_PURPLE: StandAlias = StandAlias {
 /// 全 Stand の一覧（イテレーション用）
 pub const ALL: &[&StandAlias] = &[
     &WORLD,
+    &PROCESS,
     &PAISLEY_PARK,
-    &CANVAS,
     &STAR_PLATINUM,
     &HEAVENS_DOOR,
     &HERMIT_PURPLE,
