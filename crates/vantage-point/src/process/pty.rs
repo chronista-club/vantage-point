@@ -207,7 +207,11 @@ impl PtyManager {
 
         self.sessions.insert(
             id.clone(),
-            ManagedSession { session, tx: tx.clone(), info },
+            ManagedSession {
+                session,
+                tx: tx.clone(),
+                info,
+            },
         );
 
         tracing::info!("PTY session created: {} ({}x{})", id, cols, rows);

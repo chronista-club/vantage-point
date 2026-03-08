@@ -160,13 +160,11 @@ async fn handle_terminal_control(
             let rows = payload["rows"].as_u64().unwrap_or(24) as u16;
 
             // コマンド指定（オプション、JSON 配列 ["claude", "--continue"] など）
-            let command_parts: Option<Vec<String>> = payload["command"]
-                .as_array()
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                        .collect()
-                });
+            let command_parts: Option<Vec<String>> = payload["command"].as_array().map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            });
             let command_refs: Option<Vec<&str>> = command_parts
                 .as_ref()
                 .map(|v| v.iter().map(|s| s.as_str()).collect());
@@ -199,7 +197,9 @@ async fn handle_terminal_control(
                 tracing::info!("Terminal セッション切替: {}", session_id);
                 Some(serde_json::json!({"status": "ok", "session_id": session_id}))
             } else {
-                Some(serde_json::json!({"error": format!("セッション {} が見つかりません", session_id)}))
+                Some(
+                    serde_json::json!({"error": format!("セッション {} が見つかりません", session_id)}),
+                )
             }
         }
 
@@ -225,7 +225,9 @@ async fn handle_terminal_control(
                 tracing::info!("Terminal セッション閉鎖: {}", session_id);
                 Some(serde_json::json!({"status": "ok"}))
             } else {
-                Some(serde_json::json!({"error": format!("セッション {} が見つかりません", session_id)}))
+                Some(
+                    serde_json::json!({"error": format!("セッション {} が見つかりません", session_id)}),
+                )
             }
         }
 

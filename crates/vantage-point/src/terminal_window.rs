@@ -45,12 +45,8 @@ pub(crate) fn create_menu_bar() -> Menu {
     let menu = Menu::new();
 
     // File メニュー: Close Window (Cmd+W)
-    let file_menu = Submenu::with_items(
-        "File",
-        true,
-        &[&PredefinedMenuItem::close_window(None)],
-    )
-    .expect("Failed to create File menu");
+    let file_menu = Submenu::with_items("File", true, &[&PredefinedMenuItem::close_window(None)])
+        .expect("Failed to create File menu");
 
     // Edit メニュー: Copy/Paste は KeyboardInput ハンドラで処理するため、
     // PredefinedMenuItem を使わない（macOS がショートカットを横取りするため）
@@ -435,7 +431,10 @@ fn start_unison_bridge(
                                 delay
                             );
                             // "Reconnecting..." 表示
-                            let msg = format!("\x1b[33m[Reconnecting... {}/{}]\x1b[0m\r\n", attempt, MAX_RECONNECT_ATTEMPTS);
+                            let msg = format!(
+                                "\x1b[33m[Reconnecting... {}/{}]\x1b[0m\r\n",
+                                attempt, MAX_RECONNECT_ATTEMPTS
+                            );
                             let _ = proxy.send_event(TerminalEvent::Output(msg.into_bytes()));
                             tokio::time::sleep(delay).await;
                             continue;
@@ -443,8 +442,7 @@ fn start_unison_bridge(
                     };
 
                     // I/O ループ（切断時に false が返る）
-                    let should_exit =
-                        run_bridge_loop(&channel, &mut bridge_rx, &proxy).await;
+                    let should_exit = run_bridge_loop(&channel, &mut bridge_rx, &proxy).await;
 
                     if should_exit {
                         return;
@@ -464,7 +462,11 @@ fn start_unison_bridge(
 ///
 /// Process サーバーの QUIC "terminal" チャネルに接続し、ネイティブウィンドウで描画する。
 /// ウィンドウを閉じても Process 側の PTY は生存し、再度接続で re-attach できる。
-pub fn run_terminal_unison(port: u16, terminal_token: &str, project_name: &str) -> anyhow::Result<()> {
+pub fn run_terminal_unison(
+    port: u16,
+    terminal_token: &str,
+    project_name: &str,
+) -> anyhow::Result<()> {
     let event_loop = EventLoopBuilder::<TerminalEvent>::with_user_event().build();
 
     let window = WindowBuilder::new()

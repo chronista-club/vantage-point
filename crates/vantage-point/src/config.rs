@@ -269,7 +269,12 @@ impl RunningProcesses {
     /// 既存エントリの pid, quic_port, terminal_token を更新する
     ///
     /// start.rs で仮登録した後、server.rs でサーバー起動後に正確な値で更新する。
-    pub fn update_pid_and_quic(port: u16, pid: u32, quic_port: u16, terminal_token: &str) -> Result<()> {
+    pub fn update_pid_and_quic(
+        port: u16,
+        pid: u32,
+        quic_port: u16,
+        terminal_token: &str,
+    ) -> Result<()> {
         let mut procs = Self::load().unwrap_or_default();
 
         if let Some(entry) = procs.processes.iter_mut().find(|p| p.port == port) {

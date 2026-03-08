@@ -346,7 +346,10 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                                         Ok((sid, _)) => {
                                             state_clone.send_debug(
                                                 "terminal",
-                                                &format!("PTYセッション開始: {} ({}x{})", sid, cols, rows),
+                                                &format!(
+                                                    "PTYセッション開始: {} ({}x{})",
+                                                    sid, cols, rows
+                                                ),
                                                 None,
                                             );
                                         }

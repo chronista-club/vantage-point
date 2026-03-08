@@ -698,17 +698,12 @@ impl VantageMcp {
                 let url = self.process_url.lock().await;
                 let api_url = format!("{}/api/canvas/{}", url, action);
                 drop(url);
-                let resp = self
-                    .client
-                    .post(&api_url)
-                    .send()
-                    .await
-                    .map_err(|e| {
-                        McpError::internal_error(
-                            format!("Canvas {} failed (HTTP fallback): {}", action, e),
-                            None,
-                        )
-                    })?;
+                let resp = self.client.post(&api_url).send().await.map_err(|e| {
+                    McpError::internal_error(
+                        format!("Canvas {} failed (HTTP fallback): {}", action, e),
+                        None,
+                    )
+                })?;
                 resp.json().await.map_err(|e| {
                     McpError::internal_error(
                         format!("Canvas {} response parse error: {}", action, e),

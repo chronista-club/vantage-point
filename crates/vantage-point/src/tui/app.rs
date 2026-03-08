@@ -23,9 +23,9 @@ use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 use crate::config::{Config, ProjectConfig};
 use crate::protocol::{Content, ProcessMessage};
 use crate::terminal::state::TerminalState;
+use ratatui_image::StatefulImage;
 use ratatui_image::picker::Picker;
 use ratatui_image::protocol::StatefulProtocol;
-use ratatui_image::StatefulImage;
 use tui_scrollview::{ScrollView, ScrollViewState};
 
 use super::input::key_to_pty_bytes;
@@ -173,9 +173,7 @@ fn spawn_canvas_receiver(
                 match channel.recv().await {
                     Ok(msg) => {
                         let payload = msg.payload_as_value().unwrap_or_default();
-                        if let Ok(process_msg) =
-                            serde_json::from_value::<ProcessMessage>(payload)
-                        {
+                        if let Ok(process_msg) = serde_json::from_value::<ProcessMessage>(payload) {
                             let mut state = canvas_state.lock().unwrap();
                             state.apply(&process_msg);
                         }
@@ -1014,10 +1012,7 @@ fn run_claude_session(
                 let (pty_area, canvas_area) = if canvas_open {
                     let panes = Layout::default()
                         .direction(Direction::Horizontal)
-                        .constraints([
-                            Constraint::Percentage(55),
-                            Constraint::Percentage(45),
-                        ])
+                        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
                         .split(main_area);
                     (panes[0], Some(panes[1]))
                 } else {
@@ -1097,7 +1092,10 @@ fn run_claude_session(
                         let _ = cmd_tx.send(BridgeCommand::CreateSession {
                             cols: cols as u16,
                             rows: rows as u16,
-                            command: vec!["claude".to_string(), "--dangerously-skip-permissions".to_string()],
+                            command: vec![
+                                "claude".to_string(),
+                                "--dangerously-skip-permissions".to_string(),
+                            ],
                         });
                         continue;
                     }
@@ -1106,13 +1104,11 @@ fn run_claude_session(
                     if key.modifiers.contains(KeyModifiers::CONTROL) && sessions.len() > 1 {
                         let switch_to = match key.code {
                             KeyCode::Right => Some((current_session_idx + 1) % sessions.len()),
-                            KeyCode::Left => Some(
-                                if current_session_idx == 0 {
-                                    sessions.len() - 1
-                                } else {
-                                    current_session_idx - 1
-                                },
-                            ),
+                            KeyCode::Left => Some(if current_session_idx == 0 {
+                                sessions.len() - 1
+                            } else {
+                                current_session_idx - 1
+                            }),
                             _ => None,
                         };
 
@@ -1283,10 +1279,7 @@ fn render_canvas(frame: &mut ratatui::Frame, area: Rect, state: &mut CanvasState
                     "─".repeat(content_width as usize),
                     Style::default().fg(NORD_COMMENT),
                 )));
-                scroll_view.render_widget(
-                    sep,
-                    Rect::new(0, y + 1, content_width, 1),
-                );
+                scroll_view.render_widget(sep, Rect::new(0, y + 1, content_width, 1));
                 y += 3;
             }
 
@@ -1294,9 +1287,7 @@ fn render_canvas(frame: &mut ratatui::Frame, area: Rect, state: &mut CanvasState
             let display_title = title.as_deref().unwrap_or(pane_id);
             let title_widget = Paragraph::new(Line::from(Span::styled(
                 format!("▎ {}", display_title),
-                Style::default()
-                    .fg(NORD_CYAN)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(NORD_CYAN).add_modifier(Modifier::BOLD),
             )));
             scroll_view.render_widget(title_widget, Rect::new(0, y, content_width, 1));
             y += 2;
