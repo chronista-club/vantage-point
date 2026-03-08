@@ -99,6 +99,8 @@ struct ProcessEntry {
     shutdown_tx: Option<mpsc::Sender<()>>,
     /// stdin 注入チャネル
     inject_tx: Option<mpsc::Sender<String>>,
+    /// 完了時刻（クリーンアップ判定用）
+    completed_at: Option<std::time::Instant>,
 }
 
 /// プロセスレジストリ
@@ -154,6 +156,7 @@ impl ProcessRegistry {
                 },
                 shutdown_tx: Some(shutdown_tx),
                 inject_tx: Some(inject_tx),
+                completed_at: None,
             },
         );
     }
@@ -161,10 +164,33 @@ impl ProcessRegistry {
     /// プロセス状態を更新
     pub fn update_status(&mut self, process_id: &str, status: ProcessStatus) {
         if let Some(entry) = self.processes.get_mut(process_id) {
+            // 完了・失敗への遷移時に完了時刻を記録
+            match &status {
+                ProcessStatus::Completed { .. } | ProcessStatus::Failed { .. } => {
+                    entry.completed_at = Some(std::time::Instant::now());
+                }
+                _ => {}
+            }
             entry.info.status = status;
             entry.shutdown_tx = None;
             entry.inject_tx = None;
         }
+    }
+
+    /// 完了済みエントリのうち、指定秒数以上経過したものを削除
+    pub fn cleanup_completed(&mut self, max_age_secs: u64) {
+        let now = std::time::Instant::now();
+        self.processes.retain(|_id, entry| {
+            match &entry.info.status {
+                ProcessStatus::Completed { .. } | ProcessStatus::Failed { .. } => {
+                    entry
+                        .completed_at
+                        .map(|t| now.duration_since(t).as_secs() < max_age_secs)
+                        .unwrap_or(true)
+                }
+                _ => true, // Running 等は常に残す
+            }
+        });
     }
 
     /// Graceful shutdown シグナルを送信
@@ -240,6 +266,9 @@ pub async fn process_run(
     project_dir: &str,
     hub: &Hub,
 ) -> Result<String, String> {
+    // 新プロセス起動前に完了済みエントリを掃除（5分経過分）
+    registry.lock().await.cleanup_completed(300);
+
     let pane_id = params.pane_id.as_deref().unwrap_or("main");
     let work_dir = params.working_dir.as_deref().unwrap_or(project_dir);
 
