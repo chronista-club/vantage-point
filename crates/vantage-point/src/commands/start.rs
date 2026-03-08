@@ -226,6 +226,24 @@ pub fn execute(opts: StartOptions) -> Result<()> {
         let project_name =
             resolve::project_name_from_path(&resolved_project_dir, config).to_string();
 
+        // tmux が利用可能で、まだ tmux 内でなければ、tmux session を作って再 exec
+        if crate::tmux::is_tmux_available() && !crate::tmux::is_inside_tmux() {
+            let session = crate::tmux::session_name(&project_name);
+            if crate::tmux::session_exists(&session) {
+                // 既存セッションにアタッチ（Process は既に動いている）
+                crate::tmux::attach_and_exec(&session); // never returns
+            } else {
+                // tmux new-session で自分自身を再実行
+                let vp_bin = std::env::current_exe()?;
+                crate::tmux::create_and_exec(
+                    &session,
+                    &vp_bin,
+                    &["start", "--project-dir", &resolved_project_dir],
+                ); // never returns
+            }
+        }
+
+        // tmux 内 or tmux なし: 従来通り TUI 起動
         // Process サーバーを headless で起動（Canvas / API 用）
         if let Err(e) =
             ensure_process_running(resolved_port, &resolved_project_dir, debug_mode, cap_config)

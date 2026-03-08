@@ -36,6 +36,7 @@ mod protocol;
 mod resolve;
 mod terminal;
 mod terminal_window;
+mod tmux;
 pub(crate) mod trace_log;
 mod tray;
 mod tui;

@@ -1089,20 +1089,29 @@ fn run_claude_session(
                         break;
                     }
 
-                    // Ctrl+N: 新規セッション
+                    // Ctrl+N: 新規ペイン（tmux 内なら split-window、それ以外は内部セッション）
                     if key.code == KeyCode::Char('n')
                         && key.modifiers.contains(KeyModifiers::CONTROL)
                     {
-                        let size = terminal.size()?;
-                        let (cols, rows) = calc_pty_size(size.width, size.height, canvas_open);
-                        let _ = cmd_tx.send(BridgeCommand::CreateSession {
-                            cols: cols as u16,
-                            rows: rows as u16,
-                            command: vec![
-                                "claude".to_string(),
-                                "--dangerously-skip-permissions".to_string(),
-                            ],
-                        });
+                        if crate::tmux::is_inside_tmux() {
+                            // tmux に委譲: 水平分割でデフォルトシェルを起動
+                            if let Err(e) = crate::tmux::split_window(true, None) {
+                                tracing::warn!("tmux split-window failed: {}", e);
+                            }
+                        } else {
+                            // 従来の内部 PTY セッション作成
+                            let size = terminal.size()?;
+                            let (cols, rows) =
+                                calc_pty_size(size.width, size.height, canvas_open);
+                            let _ = cmd_tx.send(BridgeCommand::CreateSession {
+                                cols: cols as u16,
+                                rows: rows as u16,
+                                command: vec![
+                                    "claude".to_string(),
+                                    "--dangerously-skip-permissions".to_string(),
+                                ],
+                            });
+                        }
                         continue;
                     }
 
