@@ -14,6 +14,7 @@ use super::hub::Hub;
 use super::pty::PtyManager;
 use super::ruby_vm::RubyRegistry;
 use super::session::SessionManager;
+use super::tmux_actor::TmuxHandle;
 use crate::agent::InteractiveClaudeAgent;
 use crate::agui::AgUiEvent;
 use crate::capability::{ProcessManagerCapability, UpdateCapability};
@@ -129,6 +130,8 @@ pub(crate) struct AppState {
     pub pane_contents: Arc<std::sync::Mutex<HashMap<String, PaneState>>>,
     /// Terminal チャネル認証トークン
     pub terminal_token: String,
+    /// tmux ペイン管理 Actor（tmux 環境下でのみ有効）
+    pub tmux: Option<TmuxHandle>,
     /// スクリーンショット応答待ち: request_id → oneshot sender
     /// Ruby VM プロセスレジストリ
     pub ruby_registry: Arc<tokio::sync::Mutex<RubyRegistry>>,

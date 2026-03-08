@@ -16,6 +16,7 @@ pub mod ruby_vm;
 mod server;
 mod session;
 pub(crate) mod state;
+pub(crate) mod tmux_actor;
 pub(crate) mod unison_server;
 
 pub use capabilities::CapabilityConfig;

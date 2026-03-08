@@ -111,10 +111,17 @@ pub fn execute(opts: StartOptions) -> Result<()> {
 
     println!("\u{1f50c} Using port {}", resolved_port);
 
+    // tmux exec 判定: TUI モードかつ tmux 外なら、この後 exec で tmux に置き換わる
+    // → pre-registration すると tmux の PID が登録されてしまうのでスキップ
+    let will_exec_tmux = !headless && !browser && !gui
+        && crate::tmux::is_tmux_available()
+        && !crate::tmux::is_inside_tmux();
+
     // ポート予約: Process サーバー起動前に running.json へ仮登録
     // （2つ目の vp start が同じポートを選ばないようにする）
     // re-attach 時は既存エントリを上書きしないようスキップ
-    if !already_running {
+    // tmux exec 時もスキップ（再 exec 後のプロセスが登録する）
+    if !already_running && !will_exec_tmux {
         let my_pid = std::process::id();
         if let Err(e) =
             RunningProcesses::register(resolved_port, &resolved_project_dir, my_pid, None)

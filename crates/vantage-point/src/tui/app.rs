@@ -692,6 +692,11 @@ enum BridgeCommand {
     },
     /// セッション切替
     SwitchSession(String),
+    /// tmux ペイン分割（Process の TmuxActor 経由）
+    TmuxSplit {
+        horizontal: bool,
+        command: Option<String>,
+    },
 }
 
 /// ブリッジスレッドからのイベント
@@ -855,6 +860,18 @@ fn spawn_terminal_bridge(
                                             let _ = event_tx.send(BridgeEvent::Error(
                                                 format!("セッション切替失敗: {}", e),
                                             ));
+                                        }
+                                    }
+                                }
+                                Some(BridgeCommand::TmuxSplit { horizontal, command }) => {
+                                    let payload = serde_json::json!({
+                                        "horizontal": horizontal,
+                                        "command": command,
+                                    });
+                                    match channel.request("tmux_split", payload).await {
+                                        Ok(_) => {}
+                                        Err(e) => {
+                                            tracing::warn!("tmux_split 失敗: {}", e);
                                         }
                                     }
                                 }
@@ -1089,15 +1106,16 @@ fn run_claude_session(
                         break;
                     }
 
-                    // Ctrl+N: 新規ペイン（tmux 内なら split-window、それ以外は内部セッション）
+                    // Ctrl+N: 新規ペイン（tmux Actor 経由 or 内部 PTY セッション）
                     if key.code == KeyCode::Char('n')
                         && key.modifiers.contains(KeyModifiers::CONTROL)
                     {
                         if crate::tmux::is_inside_tmux() {
-                            // tmux に委譲: 水平分割でデフォルトシェルを起動
-                            if let Err(e) = crate::tmux::split_window(true, None) {
-                                tracing::warn!("tmux split-window failed: {}", e);
-                            }
+                            // Unison 経由で Process の TmuxActor にペイン分割を依頼
+                            let _ = cmd_tx.send(BridgeCommand::TmuxSplit {
+                                horizontal: true,
+                                command: None,
+                            });
                         } else {
                             // 従来の内部 PTY セッション作成
                             let size = terminal.size()?;

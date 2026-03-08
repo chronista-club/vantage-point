@@ -69,6 +69,14 @@ pub async fn run(
     // Terminal チャネル認証トークンを生成
     let terminal_token = crate::config::RunningProcesses::generate_terminal_token();
 
+    // tmux Actor 起動（tmux 環境下でのみ有効）
+    let project_name = crate::resolve::project_name_from_path(
+        &project_dir,
+        &crate::config::Config::load().unwrap_or_default(),
+    )
+    .to_string();
+    let tmux_handle = super::tmux_actor::spawn(&crate::tmux::session_name(&project_name));
+
     let state = Arc::new(AppState {
         hub,
         sessions: Arc::new(RwLock::new(sessions)),
@@ -79,14 +87,15 @@ pub async fn run(
         pending_permissions: Arc::new(RwLock::new(HashMap::new())),
         pending_prompts: Arc::new(RwLock::new(HashMap::new())),
         capabilities,
-        conductor: None, // Conductor mode is set via run_conductor()
-        update: None,    // Update capability is only for conductor mode
-        interactive_agent: Arc::new(RwLock::new(None)), // Interactive agent (stream-json mode)
+        conductor: None,
+        update: None,
+        interactive_agent: Arc::new(RwLock::new(None)),
         pty_manager: Arc::new(tokio::sync::Mutex::new(PtyManager::new())),
         canvas_pid: Arc::new(tokio::sync::Mutex::new(None)),
         port,
         file_watchers: Arc::new(tokio::sync::Mutex::new(FileWatcherManager::new())),
         terminal_token: terminal_token.clone(),
+        tmux: tmux_handle,
         ruby_registry: Arc::new(tokio::sync::Mutex::new(
             crate::process::ruby_vm::RubyRegistry::new(),
         )),
@@ -316,6 +325,7 @@ pub async fn run_conductor(port: u16) -> Result<()> {
         port,
         file_watchers: Arc::new(tokio::sync::Mutex::new(FileWatcherManager::new())),
         terminal_token: "CONDUCTOR_DISABLED".to_string(),
+        tmux: None,
         ruby_registry: Arc::new(tokio::sync::Mutex::new(
             crate::process::ruby_vm::RubyRegistry::new(),
         )),

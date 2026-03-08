@@ -118,6 +118,51 @@ async fn handle_canvas_close(state: &AppState) -> Result<serde_json::Value, Stri
 }
 
 // =============================================================================
+// tmux Actor ハンドラー
+// =============================================================================
+
+/// tmux ペイン分割
+async fn handle_tmux_split(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let handle = state
+        .tmux
+        .as_ref()
+        .ok_or_else(|| "tmux 未使用環境です".to_string())?;
+    let horizontal = payload["horizontal"].as_bool().unwrap_or(true);
+    let command = payload["command"].as_str().map(|s| s.to_string());
+    let pane = handle.split(horizontal, command).await?;
+    Ok(serde_json::json!({"status": "ok", "pane": pane}))
+}
+
+/// tmux ペイン一覧
+async fn handle_tmux_list(state: &AppState) -> Result<serde_json::Value, String> {
+    let handle = state
+        .tmux
+        .as_ref()
+        .ok_or_else(|| "tmux 未使用環境です".to_string())?;
+    let panes = handle.list().await;
+    Ok(serde_json::json!({"panes": panes}))
+}
+
+/// tmux ペイン閉鎖
+async fn handle_tmux_close(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let handle = state
+        .tmux
+        .as_ref()
+        .ok_or_else(|| "tmux 未使用環境です".to_string())?;
+    let pane_id = payload["pane_id"]
+        .as_str()
+        .ok_or_else(|| "pane_id が必要です".to_string())?;
+    handle.close(pane_id).await?;
+    Ok(serde_json::json!({"status": "ok"}))
+}
+
+// =============================================================================
 // Terminal チャネル制御メッセージハンドラー
 // =============================================================================
 
@@ -304,6 +349,9 @@ pub async fn start_unison_server(
                             "unwatch_file" => handle_unwatch_file(&state, payload).await,
                             "open_canvas" => handle_canvas_open(&state).await,
                             "close_canvas" => handle_canvas_close(&state).await,
+                            "tmux_split" => handle_tmux_split(&state, payload).await,
+                            "tmux_list" => handle_tmux_list(&state).await,
+                            "tmux_close" => handle_tmux_close(&state, payload).await,
                             _ => Err(format!("不明なメソッド: process.{}", method)),
                         };
 
