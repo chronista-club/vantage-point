@@ -13,7 +13,6 @@ pub(crate) mod hub;
 pub mod process_runner;
 pub mod pty;
 mod routes;
-pub mod ruby_vm;
 mod server;
 mod session;
 pub(crate) mod state;
