@@ -242,7 +242,7 @@ async fn handle_terminal_control(
             }
 
             if let Some(sid) = current_session_id.as_deref() {
-                let pty = state.pty_manager.lock().await;
+                let mut pty = state.pty_manager.lock().await;
                 let _ = pty.resize(sid, cols, rows);
             }
 

@@ -915,7 +915,13 @@ fn run_claude_session(
                 .find(|p| p.port == port)
                 .and_then(|p| p.terminal_token.clone())
         })
-        .unwrap_or_default();
+        .filter(|t| !t.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Terminal token not found for port {}. Process may not be fully started.",
+                port
+            )
+        })?;
 
     // Unison ブリッジ起動
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<BridgeCommand>();

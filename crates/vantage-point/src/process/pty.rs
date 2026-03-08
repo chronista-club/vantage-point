@@ -237,10 +237,11 @@ impl PtyManager {
     }
 
     /// PTY をリサイズ
-    pub fn resize(&self, session_id: &str, cols: u16, rows: u16) -> Result<()> {
-        if let Some(managed) = self.sessions.get(session_id) {
+    pub fn resize(&mut self, session_id: &str, cols: u16, rows: u16) -> Result<()> {
+        if let Some(managed) = self.sessions.get_mut(session_id) {
             managed.session.resize(cols, rows)?;
-            // info を更新（&self なので不可。呼び出し元で対応）
+            managed.info.cols = cols;
+            managed.info.rows = rows;
         }
         Ok(())
     }

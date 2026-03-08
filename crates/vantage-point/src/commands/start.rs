@@ -201,7 +201,13 @@ pub fn execute(opts: StartOptions) -> Result<()> {
                     .find(|p| p.port == resolved_port)
                     .and_then(|p| p.terminal_token.clone())
             })
-            .unwrap_or_default();
+            .filter(|t| !t.is_empty())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Terminal token not found for port {}. Process may not be fully started.",
+                    resolved_port
+                )
+            })?;
 
         let result = crate::terminal_window::run_terminal_unison(
             resolved_port,

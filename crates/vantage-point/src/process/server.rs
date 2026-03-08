@@ -69,9 +69,6 @@ pub async fn run(
     // Terminal チャネル認証トークンを生成
     let terminal_token = crate::config::RunningProcesses::generate_terminal_token();
 
-    // PTY 出力専用 broadcast（Hub とは分離）
-    let (terminal_tx, _) = tokio::sync::broadcast::channel(10000);
-
     let state = Arc::new(AppState {
         hub,
         sessions: Arc::new(RwLock::new(sessions)),
@@ -90,7 +87,6 @@ pub async fn run(
         port,
         file_watchers: Arc::new(tokio::sync::Mutex::new(FileWatcherManager::new())),
         terminal_token: terminal_token.clone(),
-        terminal_tx,
         ruby_registry: Arc::new(tokio::sync::Mutex::new(
             crate::process::ruby_vm::RubyRegistry::new(),
         )),
@@ -306,8 +302,7 @@ pub async fn run_conductor(port: u16) -> Result<()> {
         canvas_pid: Arc::new(tokio::sync::Mutex::new(None)),
         port,
         file_watchers: Arc::new(tokio::sync::Mutex::new(FileWatcherManager::new())),
-        terminal_token: String::new(), // Conductor モードでは terminal 未使用
-        terminal_tx: tokio::sync::broadcast::channel(1).0,
+        terminal_token: "CONDUCTOR_DISABLED".to_string(),
         ruby_registry: Arc::new(tokio::sync::Mutex::new(
             crate::process::ruby_vm::RubyRegistry::new(),
         )),
