@@ -59,13 +59,13 @@ pub const WORLD: StandAlias = StandAlias {
 
 // ─── プロジェクトレベル ──────────────────────────────
 
-/// プロジェクトの開発サーバー（旧 Process）
-pub const PROCESS: StandAlias = StandAlias {
+/// プロジェクトの開発サーバー — TheWorld(DIO) と対を成す主人公格
+pub const STAR_PLATINUM: StandAlias = StandAlias {
     id: "process",
     functional_name: "Project Server",
-    stand_name: "Process",
-    short: "PR",
-    emoji: "🔮",
+    stand_name: "Star Platinum",
+    short: "SP",
+    emoji: "⭐",
 };
 
 // ─── Capability（Process にぶら下がるスタンド能力）───
@@ -79,13 +79,13 @@ pub const PAISLEY_PARK: StandAlias = StandAlias {
     emoji: "🧭",
 };
 
-/// AI エージェント能力 — Claude CLI
-pub const STAR_PLATINUM: StandAlias = StandAlias {
+/// AI エージェント能力 — Claude CLI オーケストレーター（DIO の息子ジョルノ）
+pub const GOLD_EXPERIENCE: StandAlias = StandAlias {
     id: "agent",
     functional_name: "AI Agent",
-    stand_name: "Star Platinum",
-    short: "SP",
-    emoji: "⭐",
+    stand_name: "Gold Experience",
+    short: "GE",
+    emoji: "🌿",
 };
 
 /// コード実行能力 — ProcessRunner
@@ -109,9 +109,9 @@ pub const HERMIT_PURPLE: StandAlias = StandAlias {
 /// 全 Stand の一覧（イテレーション用）
 pub const ALL: &[&StandAlias] = &[
     &WORLD,
-    &PROCESS,
-    &PAISLEY_PARK,
     &STAR_PLATINUM,
+    &GOLD_EXPERIENCE,
+    &PAISLEY_PARK,
     &HEAVENS_DOOR,
     &HERMIT_PURPLE,
 ];
