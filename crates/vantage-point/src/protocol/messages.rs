@@ -138,6 +138,8 @@ pub enum ProcessMessage {
     TerminalOutput { data: String },
     /// ターミナルPTYセッション開始通知
     TerminalReady,
+    /// ターミナルPTYセッション終了通知（子プロセス EOF）
+    TerminalExited,
     /// トレースログエントリ（debug.log ファイルからの配信）
     TraceLog {
         ts: String,

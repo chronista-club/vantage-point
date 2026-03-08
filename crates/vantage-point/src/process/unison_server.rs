@@ -537,14 +537,23 @@ pub async fn start_unison_server(
                                                 serde_json::json!({}),
                                             ).await;
                                         }
-                                        Err(broadcast::error::RecvError::Closed) => {
-                                            // セッションが終了 — クライアントに通知して接続終了
-                                            tracing::info!("Terminal セッション終了: {:?}", current_session_id);
+                                        Ok(ProcessMessage::TerminalExited) => {
+                                            // PTY 子プロセスが終了（EOF）
+                                            tracing::info!("Terminal セッション終了 (EOF): {:?}", current_session_id);
                                             let _ = channel.send_event(
                                                 "session_ended",
                                                 serde_json::json!({"session_id": current_session_id}),
                                             ).await;
-                                            // 短い待機後に接続を閉じる（イベント送信を確実にする）
+                                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                                            break;
+                                        }
+                                        Err(broadcast::error::RecvError::Closed) => {
+                                            // broadcast チャネル自体がクローズ
+                                            tracing::info!("Terminal broadcast closed: {:?}", current_session_id);
+                                            let _ = channel.send_event(
+                                                "session_ended",
+                                                serde_json::json!({"session_id": current_session_id}),
+                                            ).await;
                                             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                                             break;
                                         }

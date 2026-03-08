@@ -121,7 +121,9 @@ pub fn start_pty_reader_task(
         loop {
             match reader.read(&mut buf) {
                 Ok(0) => {
-                    tracing::info!("PTY reader: EOF");
+                    tracing::info!("PTY reader: EOF — 子プロセス終了");
+                    // 終了通知を送信（サーバー側で session_ended を発火させる）
+                    let _ = tx.send(ProcessMessage::TerminalExited);
                     break;
                 }
                 Ok(n) => {

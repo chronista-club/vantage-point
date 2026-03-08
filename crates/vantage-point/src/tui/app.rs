@@ -803,6 +803,23 @@ fn spawn_terminal_bridge(
                                 }
                             }
                         }
+                        // 構造化イベント（session_ended 等）を受信
+                        evt = channel.recv() => {
+                            match evt {
+                                Ok(msg) => {
+                                    if msg.method == "session_ended" {
+                                        tracing::info!("TUI bridge: session_ended 受信");
+                                        let _ = event_tx.send(BridgeEvent::Disconnected);
+                                        break;
+                                    }
+                                    // 他のイベントは無視
+                                }
+                                Err(_) => {
+                                    let _ = event_tx.send(BridgeEvent::Disconnected);
+                                    break;
+                                }
+                            }
+                        }
                         cmd = bridge_rx.recv() => {
                             match cmd {
                                 Some(BridgeCommand::Input(data)) => {
