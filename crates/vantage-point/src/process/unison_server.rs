@@ -454,14 +454,15 @@ pub async fn start_unison_server(
                                             ).await;
                                         }
                                         Err(broadcast::error::RecvError::Closed) => {
-                                            // セッションが終了
+                                            // セッションが終了 — クライアントに通知して接続終了
+                                            tracing::info!("Terminal セッション終了: {:?}", current_session_id);
                                             let _ = channel.send_event(
                                                 "session_ended",
                                                 serde_json::json!({"session_id": current_session_id}),
                                             ).await;
-                                            current_session_id = None;
-                                            terminal_rx = None;
-                                            continue;
+                                            // 短い待機後に接続を閉じる（イベント送信を確実にする）
+                                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                                            break;
                                         }
                                         Err(broadcast::error::RecvError::Lagged(n)) => {
                                             tracing::warn!("terminal broadcast lagged: {} messages dropped", n);
