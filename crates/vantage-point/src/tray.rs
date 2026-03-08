@@ -32,7 +32,7 @@ async fn scan_instances() -> Vec<Instance> {
     let mut instances = Vec::new();
 
     for port in 33000..=33010 {
-        let url = format!("http://localhost:{}/api/health", port);
+        let url = format!("http://[::1]:{}/api/health", port);
         if let Ok(response) = client.get(&url).send().await
             && response.status().is_success()
             && let Ok(health) = response.json::<serde_json::Value>().await
@@ -55,7 +55,7 @@ async fn stop_instance(port: u16) {
         .build()
         .unwrap();
 
-    let url = format!("http://localhost:{}/api/shutdown", port);
+    let url = format!("http://[::1]:{}/api/shutdown", port);
     let _ = client.post(&url).send().await;
 }
 

@@ -278,7 +278,7 @@ impl ProcessManagerCapability {
 
         // POST /api/shutdown を送信
         let client = reqwest::Client::new();
-        let url = format!("http://localhost:{}/api/shutdown", running.port);
+        let url = format!("http://[::1]:{}/api/shutdown", running.port);
 
         let _ = client
             .post(&url)
@@ -320,7 +320,7 @@ impl ProcessManagerCapability {
 
         // POST /api/canvas/open を送信（将来的にはWebSocketで）
         let client = reqwest::Client::new();
-        let url = format!("http://localhost:{}/api/canvas/open", running.port);
+        let url = format!("http://[::1]:{}/api/canvas/open", running.port);
 
         client
             .post(&url)
@@ -340,7 +340,7 @@ impl ProcessManagerCapability {
             .ok()?;
 
         for port in 33000..=33010 {
-            let url = format!("http://localhost:{}/api/health", port);
+            let url = format!("http://[::1]:{}/api/health", port);
             if let Ok(resp) = client.get(&url).send().await
                 && resp.status().is_success()
                 && let Ok(json) = resp.json::<serde_json::Value>().await
@@ -365,7 +365,7 @@ impl ProcessManagerCapability {
 
         // ポートスキャン
         for port in 33000..=33010 {
-            let url = format!("http://localhost:{}/api/health", port);
+            let url = format!("http://[::1]:{}/api/health", port);
             if let Ok(resp) = client.get(&url).send().await
                 && resp.status().is_success()
                 && let Ok(json) = resp.json::<serde_json::Value>().await

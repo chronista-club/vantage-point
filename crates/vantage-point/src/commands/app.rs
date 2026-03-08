@@ -10,7 +10,7 @@ pub fn execute(port: u16, no_daemon: bool) -> Result<()> {
     rt.block_on(async {
         // Daemonが稼働しているか確認
         if !no_daemon {
-            let daemon_url = format!("http://localhost:{}/api/health", port);
+            let daemon_url = format!("http://[::1]:{}/api/health", port);
             let client = reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(2))
                 .build()?;

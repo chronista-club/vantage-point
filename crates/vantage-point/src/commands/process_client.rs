@@ -26,7 +26,7 @@ impl ProcessClient {
         let client = reqwest::blocking::Client::new();
 
         // ヘルスチェックで Process 起動確認
-        let health_url = format!("http://localhost:{}/api/health", resolved_port);
+        let health_url = format!("http://[::1]:{}/api/health", resolved_port);
         match client
             .get(&health_url)
             .timeout(std::time::Duration::from_secs(3))
@@ -47,7 +47,7 @@ impl ProcessClient {
 
     /// JSON POST リクエストを Process に送信
     pub fn post<T: Serialize>(&self, path: &str, body: &T) -> Result<serde_json::Value> {
-        let url = format!("http://localhost:{}{}", self.port, path);
+        let url = format!("http://[::1]:{}{}", self.port, path);
         let resp = self
             .client
             .post(&url)

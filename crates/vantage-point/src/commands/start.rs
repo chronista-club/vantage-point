@@ -302,7 +302,7 @@ pub fn ensure_process_running(
 
 /// Process の HTTP サーバーが応答するまでポーリング（最大5秒）
 pub fn wait_for_process_ready(port: u16) -> Result<()> {
-    let url = format!("http://localhost:{}/health", port);
+    let url = format!("http://[::1]:{}/health", port);
     let max_attempts = 50; // 100ms × 50 = 5秒
 
     for i in 0..max_attempts {

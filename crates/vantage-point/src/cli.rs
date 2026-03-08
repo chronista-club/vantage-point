@@ -19,7 +19,7 @@ pub(crate) struct HealthResponse {
 
 /// Check if Process is running on the specified port
 pub(crate) async fn check_status(port: u16) -> Result<()> {
-    let url = format!("http://localhost:{}/api/health", port);
+    let url = format!("http://[::1]:{}/api/health", port);
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(2))
@@ -68,7 +68,7 @@ pub(crate) async fn stop_process(port: u16) -> Result<()> {
         .build()?;
 
     // First, get the PID via health endpoint
-    let health_url = format!("http://localhost:{}/api/health", port);
+    let health_url = format!("http://[::1]:{}/api/health", port);
     let pid = match client.get(&health_url).send().await {
         Ok(response) if response.status().is_success() => {
             match response.json::<HealthResponse>().await {
@@ -94,7 +94,7 @@ pub(crate) async fn stop_process(port: u16) -> Result<()> {
     println!("Stopping vp (PID: {})...", pid);
 
     // Request graceful shutdown via API
-    let shutdown_url = format!("http://localhost:{}/api/shutdown", port);
+    let shutdown_url = format!("http://[::1]:{}/api/shutdown", port);
     let _ = client.post(&shutdown_url).send().await;
 
     // Wait up to 10 seconds for graceful shutdown
@@ -168,7 +168,7 @@ pub(crate) async fn scan_instances() -> Vec<Instance> {
     let mut instances = Vec::new();
 
     for port in PORT_RANGE_START..=PORT_RANGE_END {
-        let url = format!("http://localhost:{}/api/health", port);
+        let url = format!("http://[::1]:{}/api/health", port);
         if let Ok(response) = client.get(&url).send().await
             && response.status().is_success()
             && let Ok(health) = response.json::<HealthResponse>().await

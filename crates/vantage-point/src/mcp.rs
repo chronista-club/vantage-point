@@ -272,7 +272,7 @@ impl VantageMcp {
     pub fn new(process_port: u16) -> Self {
         Self {
             client: reqwest::Client::new(),
-            process_url: Arc::new(Mutex::new(format!("http://localhost:{}", process_port))),
+            process_url: Arc::new(Mutex::new(format!("http://[::1]:{}", process_port))),
             process_port: Arc::new(Mutex::new(process_port)),
             process_channel: Arc::new(Mutex::new(None)),
             tool_router: Self::tool_router(),
@@ -564,7 +564,7 @@ impl VantageMcp {
     /// Process を検索し、現在の URL と異なる場合のみリトライ URL を返す。
     async fn try_reconnect(&self, endpoint: &str) -> Option<String> {
         let process_info = RunningProcesses::find_for_cwd()?;
-        let new_base = format!("http://localhost:{}", process_info.port);
+        let new_base = format!("http://[::1]:{}", process_info.port);
 
         let mut current = self.process_url.lock().await;
         if *current != new_base {
@@ -634,7 +634,7 @@ impl VantageMcp {
                 None => continue,
             };
 
-            let new_base = format!("http://localhost:{}", process_info.port);
+            let new_base = format!("http://[::1]:{}", process_info.port);
             let health_url = format!("{}/api/health", new_base);
 
             // health check

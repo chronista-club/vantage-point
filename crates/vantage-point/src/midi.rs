@@ -231,17 +231,17 @@ impl MidiHandler {
     /// Execute a MIDI action
     async fn execute_action(&self, action: &MidiAction) {
         let client = reqwest::Client::new();
-        let base_url = format!("http://localhost:{}", self.process_port);
+        let base_url = format!("http://[::1]:{}", self.process_port);
 
         match action {
             MidiAction::OpenWebUI { port } => {
-                let url = format!("http://localhost:{}", port.unwrap_or(self.process_port));
+                let url = format!("http://[::1]:{}", port.unwrap_or(self.process_port));
                 if let Err(e) = open::that(&url) {
                     tracing::error!("Failed to open browser: {}", e);
                 }
             }
             MidiAction::StopInstance { port } => {
-                let url = format!("http://localhost:{}/api/shutdown", port);
+                let url = format!("http://[::1]:{}/api/shutdown", port);
                 let _ = client.post(&url).send().await;
                 tracing::info!("Sent shutdown to port {}", port);
             }
