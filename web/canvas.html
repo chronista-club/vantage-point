@@ -540,6 +540,50 @@
             opacity: 0.5;
         }
 
+        /* ===== Lane バー ===== */
+        .canvas-lane-bar {
+            position: fixed; top: 0; left: 0; right: 0; z-index: 20;
+            display: none; align-items: center;
+            gap: 0; padding: 0 8px;
+            background: oklch(0.08 0.02 230);
+            border-bottom: 1px solid oklch(0.20 0.03 225);
+            height: 36px;
+        }
+        .canvas-lane-bar.visible { display: flex; }
+
+        .lane-btn {
+            display: flex; align-items: center; gap: 6px;
+            padding: 6px 14px; height: 36px;
+            font-size: 12px; font-weight: 500;
+            letter-spacing: 0.02em;
+            color: var(--color-text-muted);
+            background: transparent; border: none;
+            cursor: pointer; transition: color 0.15s, background 0.15s;
+            border-bottom: 2px solid transparent;
+            white-space: nowrap;
+        }
+        .lane-btn:hover { color: var(--color-text-secondary); background: oklch(0.12 0.02 225); }
+        .lane-btn.active {
+            color: var(--color-text-primary);
+            border-bottom-color: var(--color-accent-primary);
+        }
+
+        .lane-dot {
+            width: 6px; height: 6px; border-radius: 50%;
+            background: var(--color-text-muted);
+        }
+        .lane-dot.connected { background: var(--color-success); }
+        .lane-dot.connecting { background: oklch(0.72 0.15 80); }
+        .lane-dot.disconnected { background: var(--color-error); }
+
+        /* Lane バー表示時のコンテンツ余白 */
+        :root { --lane-bar-height: 36px; }
+        body.has-lanes .canvas-tab-bar { top: var(--lane-bar-height); }
+        body.has-lanes .canvas-content { padding-top: calc(var(--lane-bar-height) + var(--tab-bar-height)); }
+        body.has-lanes:not(.has-tabs) .canvas-content { padding-top: var(--lane-bar-height); }
+        body.has-lanes .canvas-status { top: var(--lane-bar-height); }
+        body.has-lanes.has-tabs .canvas-status { top: calc(var(--lane-bar-height) + var(--tab-bar-height)); }
+
         /* ===== タブバー ===== */
         .canvas-tab-bar {
             position: fixed; top: 0; left: 0; right: 0; z-index: 10;
@@ -639,6 +683,7 @@
 </head>
 <body>
     <div class="canvas-grid"></div>
+    <div class="canvas-lane-bar" id="canvas-lane-bar"></div>
     <div class="canvas-tab-bar" id="canvas-tab-bar"></div>
 
     <div class="canvas-status" id="status">
@@ -1441,19 +1486,112 @@
         // vp:// protocol 時: __VP_WS_HOST__ が canvas.rs で実際の host:port に置換される
         // HTTP 時: __VP_WS_HOST__ がそのまま残るので location.host を使用
         const wsHost = '__VP_WS_HOST__'.startsWith('__') ? location.host : '__VP_WS_HOST__';
-        const WS_URL = `ws://${wsHost}/ws`;
+
+        // Lane モード: ?lanes=1 パラメータで有効化
+        const urlParams = new URLSearchParams(window.location.search);
+        const LANE_MODE = urlParams.has('lanes');
+
+        const WS_URL = LANE_MODE
+            ? `ws://${wsHost}/ws/lanes`
+            : `ws://${wsHost}/ws`;
+
         let ws = null;
         let reconnectTimer = null;
         let reconnectAttempts = 0;
 
+        // ===== Lane 状態管理 =====
+        const laneState = {
+            lanes: new Map(),     // name → { name, port, status }
+            activeLane: null,     // 現在アクティブな Lane 名
+            // Lane 別のタブ状態を保持（Lane 切り替え時に tabState を入れ替え）
+            laneTabStates: new Map(), // name → { tabs: Map, activeTab: string }
+        };
+
+        const laneBar = document.getElementById('canvas-lane-bar');
+
+        function renderLaneBar() {
+            if (!LANE_MODE) return;
+            laneBar.replaceChildren();
+
+            if (laneState.lanes.size === 0) {
+                laneBar.classList.remove('visible');
+                document.body.classList.remove('has-lanes');
+                return;
+            }
+
+            laneBar.classList.add('visible');
+            document.body.classList.add('has-lanes');
+
+            for (const [name, info] of laneState.lanes) {
+                const btn = document.createElement('button');
+                btn.className = 'lane-btn' + (name === laneState.activeLane ? ' active' : '');
+                btn.type = 'button';
+
+                const dot = document.createElement('span');
+                dot.className = 'lane-dot ' + info.status;
+                btn.appendChild(dot);
+
+                const label = document.createElement('span');
+                label.textContent = name;
+                btn.appendChild(label);
+
+                btn.addEventListener('click', () => switchLane(name));
+                laneBar.appendChild(btn);
+            }
+        }
+
+        function switchLane(name) {
+            if (laneState.activeLane === name) return;
+
+            // 現在の Lane のタブ状態を保存
+            if (laneState.activeLane) {
+                laneState.laneTabStates.set(laneState.activeLane, {
+                    tabs: tabState.tabs,
+                    activeTab: tabState.activeTab,
+                });
+            }
+
+            // コンテンツをクリア（DOM API でクリーンに）
+            canvasContent.replaceChildren();
+            tabBar.replaceChildren();
+            tabBar.classList.remove('visible');
+            document.body.classList.remove('has-tabs');
+
+            laneState.activeLane = name;
+
+            // 新しい Lane のタブ状態を復元
+            const saved = laneState.laneTabStates.get(name);
+            if (saved) {
+                tabState.tabs = saved.tabs;
+                tabState.activeTab = saved.activeTab;
+                // DOM を再構築
+                for (const [tabId, tab] of tabState.tabs) {
+                    canvasContent.appendChild(tab.container);
+                }
+                if (tabState.activeTab) {
+                    updateTabBar();
+                    switchToTab(tabState.activeTab);
+                }
+            } else {
+                tabState.tabs = new Map();
+                tabState.activeTab = null;
+                emptyState.style.display = '';
+            }
+
+            renderLaneBar();
+        }
+
+        // ===== WebSocket 接続 =====
         function connect() {
             ws = new WebSocket(WS_URL);
 
             ws.onopen = () => {
                 reconnectAttempts = 0;
                 document.getElementById('status').classList.add('connected');
-                document.getElementById('status-text').textContent = 'Connected';
-                ws.send(JSON.stringify({ type: 'ready' }));
+                document.getElementById('status-text').textContent = LANE_MODE ? 'Lanes' : 'Connected';
+                if (!LANE_MODE) {
+                    ws.send(JSON.stringify({ type: 'ready' }));
+                }
             };
 
             ws.onclose = () => {
@@ -1469,11 +1607,59 @@
 
             ws.onmessage = (event) => {
                 try {
-                    handleMessage(JSON.parse(event.data));
+                    const data = JSON.parse(event.data);
+                    if (LANE_MODE) {
+                        handleLaneMessage(data);
+                    } else {
+                        handleMessage(data);
+                    }
                 } catch (e) {
                     console.error('Parse error:', e);
                 }
             };
+        }
+
+        // Lane モード用メッセージハンドラー
+        function handleLaneMessage(data) {
+            switch (data.type) {
+                case 'lanes': {
+                    // Lane 一覧の更新
+                    for (const lane of data.lanes) {
+                        laneState.lanes.set(lane.name, lane);
+                    }
+                    // 初回: 最初の Lane を自動選択
+                    if (!laneState.activeLane && data.lanes.length > 0) {
+                        switchLane(data.lanes[0].name);
+                    }
+                    renderLaneBar();
+                    break;
+                }
+                case 'lane_status_changed': {
+                    // Lane の接続状態変更
+                    const existing = laneState.lanes.get(data.lane);
+                    if (existing) {
+                        existing.status = data.status;
+                    } else {
+                        laneState.lanes.set(data.lane, {
+                            name: data.lane,
+                            port: data.port,
+                            status: data.status,
+                        });
+                    }
+                    renderLaneBar();
+                    break;
+                }
+                case 'lane_message': {
+                    // Process メッセージ: アクティブ Lane のみ描画
+                    if (data.lane === laneState.activeLane) {
+                        handleMessage(data.message);
+                    }
+                    // 非アクティブ Lane は無視（パフォーマンス優先）
+                    break;
+                }
+                default:
+                    console.debug('Lane WS:', data.type, data);
+            }
         }
 
         function handleMessage(msg) {
