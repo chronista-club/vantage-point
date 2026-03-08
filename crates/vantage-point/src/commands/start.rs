@@ -113,7 +113,9 @@ pub fn execute(opts: StartOptions) -> Result<()> {
 
     // tmux exec 判定: TUI モードかつ tmux 外なら、この後 exec で tmux に置き換わる
     // → pre-registration すると tmux の PID が登録されてしまうのでスキップ
-    let will_exec_tmux = !headless && !browser && !gui
+    let will_exec_tmux = !headless
+        && !browser
+        && !gui
         && crate::tmux::is_tmux_available()
         && !crate::tmux::is_inside_tmux();
 

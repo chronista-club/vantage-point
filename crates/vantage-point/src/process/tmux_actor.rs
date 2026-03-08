@@ -74,7 +74,8 @@ impl TmuxHandle {
             })
             .await
             .map_err(|_| "TmuxActor stopped".to_string())?;
-        rx.await.map_err(|_| "TmuxActor reply dropped".to_string())?
+        rx.await
+            .map_err(|_| "TmuxActor reply dropped".to_string())?
     }
 
     /// 現在のペイン一覧を返す（キャッシュ済み状態）
@@ -96,18 +97,14 @@ impl TmuxHandle {
             })
             .await
             .map_err(|_| "TmuxActor stopped".to_string())?;
-        rx.await.map_err(|_| "TmuxActor reply dropped".to_string())?
+        rx.await
+            .map_err(|_| "TmuxActor reply dropped".to_string())?
     }
 
     /// tmux から状態を再取得してキャッシュを更新
     pub async fn refresh(&self) -> Vec<TmuxPane> {
         let (reply, rx) = oneshot::channel();
-        if self
-            .tx
-            .send(TmuxCommand::Refresh { reply })
-            .await
-            .is_err()
-        {
+        if self.tx.send(TmuxCommand::Refresh { reply }).await.is_err() {
             return vec![];
         }
         rx.await.unwrap_or_default()
@@ -258,12 +255,10 @@ impl TmuxActor {
             .output();
 
         match output {
-            Ok(out) if out.status.success() => {
-                String::from_utf8_lossy(&out.stdout)
-                    .lines()
-                    .filter_map(Self::parse_pane_line)
-                    .collect()
-            }
+            Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .filter_map(Self::parse_pane_line)
+                .collect(),
             _ => vec![],
         }
     }

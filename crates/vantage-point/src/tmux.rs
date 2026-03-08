@@ -54,15 +54,9 @@ pub fn create_and_exec(name: &str, vp_bin: &Path, args: &[&str]) -> ! {
     cmd_parts.extend(args);
     let shell_command = cmd_parts.join(" ");
 
-    tracing::info!(
-        "tmux new-session -s {} で VP を再起動します",
-        name
-    );
+    tracing::info!("tmux new-session -s {} で VP を再起動します", name);
 
-    let err = exec_command(
-        "tmux",
-        &["new-session", "-s", name, &shell_command],
-    );
+    let err = exec_command("tmux", &["new-session", "-s", name, &shell_command]);
 
     // exec が失敗した場合（通常は到達しない）
     eprintln!("tmux exec に失敗しました: {}", err);
@@ -123,5 +117,4 @@ mod tests {
         let result = is_inside_tmux();
         let _ = result;
     }
-
 }

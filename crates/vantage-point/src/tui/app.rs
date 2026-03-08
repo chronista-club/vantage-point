@@ -1119,8 +1119,7 @@ fn run_claude_session(
                         } else {
                             // 従来の内部 PTY セッション作成
                             let size = terminal.size()?;
-                            let (cols, rows) =
-                                calc_pty_size(size.width, size.height, canvas_open);
+                            let (cols, rows) = calc_pty_size(size.width, size.height, canvas_open);
                             let _ = cmd_tx.send(BridgeCommand::CreateSession {
                                 cols: cols as u16,
                                 rows: rows as u16,
