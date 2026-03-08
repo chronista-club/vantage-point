@@ -19,6 +19,7 @@ mod session;
 pub(crate) mod state;
 pub(crate) mod tmux_actor;
 pub mod topic;
+pub(crate) mod topic_router;
 pub(crate) mod unison_server;
 
 pub use capabilities::CapabilityConfig;
