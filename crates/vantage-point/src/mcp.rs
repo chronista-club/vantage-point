@@ -215,6 +215,19 @@ pub struct CaptureCanvasParams {
     pub pane_id: Option<String>,
 }
 
+/// tmux ペイン分割のパラメータ
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct TmuxSplitParams {
+    /// 水平分割 (true) or 垂直分割 (false)。デフォルト: true
+    #[schemars(description = "Horizontal split (true, default) or vertical split (false)")]
+    pub horizontal: Option<bool>,
+    /// 新しいペインで実行するコマンド（省略するとデフォルトシェル）
+    #[schemars(
+        description = "Command to run in the new pane (e.g. 'claude --dangerously-skip-permissions'). Defaults to shell."
+    )]
+    pub command: Option<String>,
+}
+
 /// tmux ペインキャプチャのパラメータ
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct TmuxCaptureParams {
@@ -938,6 +951,36 @@ impl VantageMcp {
 
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
             format!("Stopped watching pane '{}'", params.pane_id),
+        )]))
+    }
+
+    /// Split the current tmux window to create a new pane.
+    ///
+    /// tmux split-window で新しいペインを作成する。
+    /// worker 起動や並列 CC セッション作成に使う。
+    #[tool(
+        description = "Split the current tmux window to create a new pane. Use this to spawn parallel workers (e.g. Claude Code sessions, shell commands). Returns the new pane ID."
+    )]
+    async fn tmux_split(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<TmuxSplitParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let horizontal = params.horizontal.unwrap_or(true);
+        let mut payload = serde_json::json!({"horizontal": horizontal});
+        if let Some(cmd) = &params.command {
+            payload["command"] = serde_json::Value::String(cmd.clone());
+        }
+        let resp = self.quic_call("tmux_split", payload).await?;
+        let pane_id = resp
+            .pointer("/pane/id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("?");
+        let cmd_display = resp
+            .pointer("/pane/command")
+            .and_then(|v| v.as_str())
+            .unwrap_or("shell");
+        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+            format!("New pane created: {} ({})", pane_id, cmd_display),
         )]))
     }
 
