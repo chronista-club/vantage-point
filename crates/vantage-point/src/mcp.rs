@@ -999,6 +999,81 @@ impl VantageMcp {
         }
     }
 
+    /// Show tmux pane dashboard on Canvas.
+    ///
+    /// 全 tmux ペインをキャプチャして Canvas に markdown ダッシュボードとして表示する。
+    #[tool(
+        description = "Show a tmux pane dashboard on Canvas. Captures all panes in the current tmux session and displays them as a markdown dashboard. Great for monitoring parallel workers."
+    )]
+    async fn tmux_dashboard(&self) -> Result<CallToolResult, McpError> {
+        // 全ペインキャプチャ
+        let resp = self
+            .quic_call("tmux_capture_all", serde_json::json!({}))
+            .await?;
+        let captures = resp
+            .get("captures")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        if captures.is_empty() {
+            return Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+                "No tmux panes found (tmux not active?)".to_string(),
+            )]));
+        }
+
+        // markdown ダッシュボードを構築
+        let mut md = String::from("# tmux Dashboard\n\n");
+        for cap in &captures {
+            let pane_id = cap
+                .pointer("/pane/id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            let cmd = cap
+                .pointer("/pane/command")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            let width = cap
+                .pointer("/pane/width")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let height = cap
+                .pointer("/pane/height")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let active = cap
+                .pointer("/pane/active")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let content = cap.get("content").and_then(|v| v.as_str()).unwrap_or("");
+
+            // 最後の数行だけ表示（ダッシュボード向け）
+            let tail_lines: Vec<&str> = content.lines().rev().take(15).collect();
+            let tail: String = tail_lines.into_iter().rev().collect::<Vec<_>>().join("\n");
+
+            let active_marker = if active { " *" } else { "" };
+            md.push_str(&format!(
+                "## {} `{}` ({}x{}){}\n\n```\n{}\n```\n\n",
+                pane_id, cmd, width, height, active_marker, tail
+            ));
+        }
+
+        // Canvas に表示
+        self.quic_call(
+            "show",
+            serde_json::json!({
+                "pane_id": "tmux-dashboard",
+                "content": {"Markdown": md},
+                "title": "tmux Dashboard",
+            }),
+        )
+        .await?;
+
+        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+            format!("Dashboard shown on Canvas ({} panes)", captures.len()),
+        )]))
+    }
+
     /// Capture the Canvas window as a PNG screenshot
     ///
     /// html2canvas で Canvas の DOM をキャプチャし、PNG ファイルとして保存する。
