@@ -565,10 +565,19 @@ pub async fn ruby_eval(
 
     if let Some(file) = file_path {
         let full_path = Path::new(project_dir).join(file);
-        if !full_path.exists() {
-            return Err(format!("ファイルが見つかりません: {}", file));
+        let canonical = full_path
+            .canonicalize()
+            .map_err(|e| format!("パス解決エラー: {}", e))?;
+        let project_canonical = Path::new(project_dir)
+            .canonicalize()
+            .map_err(|e| format!("プロジェクトディレクトリ解決エラー: {}", e))?;
+        if !canonical.starts_with(&project_canonical) {
+            return Err(format!(
+                "プロジェクトディレクトリ外のファイルにはアクセスできません: {}",
+                file
+            ));
         }
-        args.push(full_path.to_string_lossy().to_string());
+        args.push(canonical.to_string_lossy().to_string());
     } else if let Some(c) = code {
         args.push("-e".to_string());
         args.push(c.to_string());
@@ -601,12 +610,22 @@ pub async fn ruby_run(
 ) -> Result<String, String> {
     let ruby_code = if let Some(file) = file_path {
         let full_path = Path::new(project_dir).join(file);
-        if !full_path.exists() {
-            return Err(format!("ファイルが見つかりません: {}", file));
+        let canonical = full_path
+            .canonicalize()
+            .map_err(|e| format!("パス解決エラー: {}", e))?;
+        let project_canonical = Path::new(project_dir)
+            .canonicalize()
+            .map_err(|e| format!("プロジェクトディレクトリ解決エラー: {}", e))?;
+        if !canonical.starts_with(&project_canonical) {
+            return Err(format!(
+                "プロジェクトディレクトリ外のファイルにはアクセスできません: {}",
+                file
+            ));
         }
-        let content = tokio::fs::read_to_string(&full_path)
+        // TOCTOU 回避: exists() チェックせず直接読み込み
+        let content = tokio::fs::read_to_string(&canonical)
             .await
-            .map_err(|e| format!("ファイル読み込み失敗: {}", e))?;
+            .map_err(|e| format!("ファイル読み込みエラー: {} ({})", file, e))?;
         ruby_bootstrap(&content)
     } else if let Some(c) = code {
         ruby_bootstrap(c)
