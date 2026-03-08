@@ -53,6 +53,9 @@ pub enum CanvasCommands {
         /// プロジェクト名（ウィンドウタイトル用）
         #[arg(short, long, default_value = "Vantage Point")]
         name: String,
+        /// Lane モード（全 Process を Lane バーで切り替え表示）
+        #[arg(long, default_value_t = false)]
+        lanes: bool,
     },
 }
 
@@ -100,6 +103,8 @@ pub fn execute(cmd: CanvasCommands, config: &Config) -> Result<()> {
             );
             Ok(())
         }
-        CanvasCommands::Internal { port, name } => crate::commands::canvas::execute(port, &name),
+        CanvasCommands::Internal { port, name, lanes } => {
+            crate::commands::canvas::execute(port, &name, lanes)
+        }
     }
 }

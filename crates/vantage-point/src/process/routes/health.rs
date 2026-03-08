@@ -92,32 +92,17 @@ pub async fn close_pane_handler(
     Json(serde_json::json!({"status": "ok"}))
 }
 
-/// POST /api/canvas/open - Canvasウィンドウを起動
+/// POST /api/canvas/open - Canvas シングルトンウィンドウを起動
+///
+/// PID ファイルベースのシングルトン管理。既存 Canvas があればそれを再利用。
 pub async fn canvas_open_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let mut pid_guard = state.canvas_pid.lock().await;
+    // Conductor モードなら Lane モードで起動
+    let lanes = state.conductor.is_some();
 
-    // 既に起動中なら何もしない
-    if let Some(pid) = *pid_guard {
-        // プロセスがまだ生きてるか確認
-        let alive = unsafe { libc::kill(pid as i32, 0) == 0 };
-        if alive {
-            return Json(serde_json::json!({"status": "already_open", "pid": pid}));
-        }
-    }
-
-    // vp canvas internal --port <port> で起動
-    let vp_bin = std::env::current_exe().unwrap_or_else(|_| "vp".into());
-    match std::process::Command::new(&vp_bin)
-        .args(["canvas", "internal", "--port", &state.port.to_string()])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-    {
-        Ok(child) => {
-            let pid = child.id();
-            *pid_guard = Some(pid);
-            tracing::info!("Canvas window opened (pid={})", pid);
+    match crate::canvas::ensure_canvas_running(state.port, lanes) {
+        Ok(pid) => {
+            // AppState の canvas_pid も同期（後方互換）
+            *state.canvas_pid.lock().await = Some(pid);
             Json(serde_json::json!({"status": "opened", "pid": pid}))
         }
         Err(e) => {
@@ -127,16 +112,10 @@ pub async fn canvas_open_handler(State(state): State<Arc<AppState>>) -> impl Int
     }
 }
 
-/// POST /api/canvas/close - Canvasウィンドウを終了
+/// POST /api/canvas/close - Canvas シングルトンウィンドウを終了
 pub async fn canvas_close_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let mut pid_guard = state.canvas_pid.lock().await;
-
-    if let Some(pid) = pid_guard.take() {
-        // SIGTERMで終了
-        unsafe {
-            libc::kill(pid as i32, libc::SIGTERM);
-        }
-        tracing::info!("Canvas window closed (pid={})", pid);
+    if let Some(pid) = crate::canvas::stop_canvas() {
+        *state.canvas_pid.lock().await = None;
         Json(serde_json::json!({"status": "closed", "pid": pid}))
     } else {
         Json(serde_json::json!({"status": "not_open"}))

@@ -92,30 +92,13 @@ async fn handle_unwatch_file(
 // Canvas チャネル ハンドラー
 // =============================================================================
 
-/// canvas.open メソッドのハンドラー
+/// canvas.open メソッドのハンドラー（シングルトン管理）
 async fn handle_canvas_open(state: &AppState) -> Result<serde_json::Value, String> {
-    let mut pid_guard = state.canvas_pid.lock().await;
+    let lanes = state.conductor.is_some();
 
-    // 既に起動中なら何もしない
-    if let Some(pid) = *pid_guard {
-        let alive = unsafe { libc::kill(pid as i32, 0) == 0 };
-        if alive {
-            return Ok(serde_json::json!({"status": "already_open", "pid": pid}));
-        }
-    }
-
-    // vp canvas internal --port <port> で起動
-    let vp_bin = std::env::current_exe().unwrap_or_else(|_| "vp".into());
-    match std::process::Command::new(&vp_bin)
-        .args(["canvas", "internal", "--port", &state.port.to_string()])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-    {
-        Ok(child) => {
-            let pid = child.id();
-            *pid_guard = Some(pid);
+    match crate::canvas::ensure_canvas_running(state.port, lanes) {
+        Ok(pid) => {
+            *state.canvas_pid.lock().await = Some(pid);
             tracing::info!("Canvas window opened via QUIC (pid={})", pid);
             Ok(serde_json::json!({"status": "opened", "pid": pid}))
         }
@@ -123,14 +106,10 @@ async fn handle_canvas_open(state: &AppState) -> Result<serde_json::Value, Strin
     }
 }
 
-/// canvas.close メソッドのハンドラー
+/// canvas.close メソッドのハンドラー（シングルトン管理）
 async fn handle_canvas_close(state: &AppState) -> Result<serde_json::Value, String> {
-    let mut pid_guard = state.canvas_pid.lock().await;
-
-    if let Some(pid) = pid_guard.take() {
-        unsafe {
-            libc::kill(pid as i32, libc::SIGTERM);
-        }
+    if let Some(pid) = crate::canvas::stop_canvas() {
+        *state.canvas_pid.lock().await = None;
         tracing::info!("Canvas window closed via QUIC (pid={})", pid);
         Ok(serde_json::json!({"status": "closed", "pid": pid}))
     } else {
