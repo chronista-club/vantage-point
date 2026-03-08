@@ -99,7 +99,8 @@ pub fn stop_canvas() -> Option<u32> {
 
 /// 別プロセスで Canvas ウィンドウを起動（レガシー互換）
 pub fn run_canvas_detached(port: u16, project_name: &str) -> anyhow::Result<()> {
-    std::process::Command::new("vp")
+    let vp_bin = std::env::current_exe().unwrap_or_else(|_| "vp".into());
+    std::process::Command::new(&vp_bin)
         .args([
             "canvas",
             "internal",

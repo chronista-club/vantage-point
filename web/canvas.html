@@ -1579,6 +1579,13 @@
                 emptyState.style.display = '';
             }
 
+            // キューに溜まったメッセージをリプレイ
+            if (laneState.messageQueues && laneState.messageQueues[name]) {
+                const queue = laneState.messageQueues[name];
+                delete laneState.messageQueues[name];
+                queue.forEach(msg => handleMessage(msg));
+            }
+
             markLayoutDirty();
             renderLaneBar();
         }
@@ -1652,11 +1659,15 @@
                     break;
                 }
                 case 'lane_message': {
-                    // Process メッセージ: アクティブ Lane のみ描画
-                    if (data.lane === laneState.activeLane) {
+                    const laneName = data.lane;
+                    if (laneName === laneState.activeLane) {
                         handleMessage(data.message);
+                    } else {
+                        // 非アクティブ Lane のメッセージをキューに蓄積
+                        if (!laneState.messageQueues) laneState.messageQueues = {};
+                        if (!laneState.messageQueues[laneName]) laneState.messageQueues[laneName] = [];
+                        laneState.messageQueues[laneName].push(data.message);
                     }
-                    // 非アクティブ Lane は無視（パフォーマンス優先）
                     break;
                 }
                 default:
@@ -1996,7 +2007,7 @@
 
             try {
                 const layout = collectLayoutState();
-                await fetch(`http://localhost:${PORT}/api/canvas/layout`, {
+                await fetch(`/api/canvas/layout`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(layout),
@@ -2015,11 +2026,19 @@
                 const layout = collectLayoutState();
                 // sendBeacon で確実に送信
                 navigator.sendBeacon(
-                    `http://localhost:${PORT}/api/canvas/layout`,
+                    `/api/canvas/layout`,
                     new Blob([JSON.stringify(layout)], { type: 'application/json' })
                 );
             }
         });
+
+        // Lane モード時の初期ローディング表示
+        if (LANE_MODE) {
+            const loadingDiv = document.createElement('div');
+            loadingDiv.style.cssText = 'display:flex;align-items:center;justify-content:center;height:100%;color:#888;font-size:14px;';
+            loadingDiv.textContent = 'Connecting to processes...';
+            document.getElementById('canvas-content').appendChild(loadingDiv);
+        }
 
         connect();
     </script>
