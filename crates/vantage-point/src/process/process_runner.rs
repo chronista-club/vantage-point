@@ -619,7 +619,10 @@ pub async fn ruby_run(
         &RunParams {
             command: "ruby".to_string(),
             args: vec!["-e".to_string(), ruby_code],
-            name: Some(name.unwrap_or(file_path.unwrap_or("ruby-daemon")).to_string()),
+            name: Some(
+                name.unwrap_or(file_path.unwrap_or("ruby-daemon"))
+                    .to_string(),
+            ),
             pane_id: Some(pane_id.to_string()),
             working_dir: None,
             bootstrap: None,

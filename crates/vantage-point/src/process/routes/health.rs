@@ -449,7 +449,9 @@ pub async fn ruby_stop_handler(
     State(state): State<Arc<AppState>>,
     Json(params): Json<RubyStopParams>,
 ) -> impl IntoResponse {
-    match crate::process::process_runner::ruby_stop(&state.process_registry, &params.process_id).await {
+    match crate::process::process_runner::ruby_stop(&state.process_registry, &params.process_id)
+        .await
+    {
         Ok(()) => Json(serde_json::json!({
             "status": "ok",
             "message": format!("プロセス {} に停止シグナルを送信しました", params.process_id),
@@ -504,12 +506,9 @@ pub async fn process_run_eval_handler(
     State(state): State<Arc<AppState>>,
     Json(params): Json<crate::process::process_runner::RunEvalParams>,
 ) -> impl IntoResponse {
-    let result = crate::process::process_runner::process_run_eval(
-        &params,
-        &state.project_dir,
-        &state.hub,
-    )
-    .await;
+    let result =
+        crate::process::process_runner::process_run_eval(&params, &state.project_dir, &state.hub)
+            .await;
 
     match result {
         Ok(r) => Json(serde_json::json!({
@@ -531,11 +530,8 @@ pub async fn process_stop_handler(
     State(state): State<Arc<AppState>>,
     Json(params): Json<RubyStopParams>,
 ) -> impl IntoResponse {
-    match crate::process::process_runner::process_stop(
-        &state.process_registry,
-        &params.process_id,
-    )
-    .await
+    match crate::process::process_runner::process_stop(&state.process_registry, &params.process_id)
+        .await
     {
         Ok(()) => Json(serde_json::json!({
             "status": "ok",

@@ -11,8 +11,8 @@ use tokio_util::sync::CancellationToken;
 
 use super::capabilities::ProcessCapabilities;
 use super::hub::Hub;
-use super::pty::PtyManager;
 use super::process_runner::ProcessRegistry;
+use super::pty::PtyManager;
 use super::session::SessionManager;
 use super::tmux_actor::TmuxHandle;
 use crate::agent::InteractiveClaudeAgent;
