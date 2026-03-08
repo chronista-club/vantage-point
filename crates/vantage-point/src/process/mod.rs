@@ -12,11 +12,13 @@ pub mod capabilities;
 pub(crate) mod hub;
 pub mod process_runner;
 pub mod pty;
+pub(crate) mod retained;
 mod routes;
 mod server;
 mod session;
 pub(crate) mod state;
 pub(crate) mod tmux_actor;
+pub mod topic;
 pub(crate) mod unison_server;
 
 pub use capabilities::CapabilityConfig;

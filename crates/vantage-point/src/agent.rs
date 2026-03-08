@@ -49,22 +49,47 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, mpsc};
 
-/// Claude CLIのパスを取得（設定値 or デフォルトパス）
+/// Claude CLIの実行パスを解決
+///
+/// kitty等のGUIランチャーから起動した場合、シェルプロファイルが読まれず
+/// PATHに `~/.local/bin` が含まれないことがある。
+/// well-known locations へのフォールバックで確実にCLIを見つける。
 fn get_claude_cli_path(config_path: Option<&str>) -> String {
-    // 設定で指定されていればそれを使用
+    // 1. 設定で指定されていればそれを使用
     if let Some(path) = config_path {
         return path.to_string();
     }
 
-    // ~/.local/bin/claude を優先チェック（npm -g インストール先）
-    if let Ok(home) = std::env::var("HOME") {
-        let local_bin = format!("{}/.local/bin/claude", home);
-        if std::path::Path::new(&local_bin).exists() {
-            return local_bin;
+    // 2. 現在のPATHで見つかればそのまま使用
+    if let Ok(output) = std::process::Command::new("which")
+        .arg("claude")
+        .output()
+    {
+        if output.status.success() {
+            if let Ok(path) = String::from_utf8(output.stdout) {
+                let path = path.trim();
+                if !path.is_empty() {
+                    return path.to_string();
+                }
+            }
         }
     }
 
-    // デフォルトはPATHから検索
+    // 3. well-known locations をフォールバック
+    let home = std::env::var("HOME").unwrap_or_default();
+    let candidates = [
+        format!("{}/.local/bin/claude", home),
+        format!("{}/.claude/local/claude", home),
+        "/usr/local/bin/claude".to_string(),
+    ];
+
+    for path in &candidates {
+        if std::path::Path::new(path).exists() {
+            return path.clone();
+        }
+    }
+
+    // 4. 見つからなければデフォルト（PATHに委ねる）
     "claude".to_string()
 }
 
