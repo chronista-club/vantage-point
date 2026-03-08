@@ -382,7 +382,7 @@ pub async fn run_world(port: u16) -> Result<()> {
         .with_state(state);
 
     let addr: SocketAddr = format!("[::1]:{}", port).parse().unwrap();
-    tracing::info!("{} 起動 http://{}", crate::naming::stands::WORLD.display(), addr);
+    tracing::info!("{} 起動 http://{}", crate::stands::WORLD.display(), addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
 

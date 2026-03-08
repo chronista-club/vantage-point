@@ -30,7 +30,7 @@ pub(crate) mod daemon;
 mod file_watcher;
 mod mcp;
 mod midi;
-pub(crate) mod naming;
+pub(crate) mod stands;
 mod notify;
 mod process;
 mod protocol;
