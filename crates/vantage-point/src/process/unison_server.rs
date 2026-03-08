@@ -163,6 +163,56 @@ async fn handle_tmux_close(
 }
 
 // =============================================================================
+// ProcessRunner ハンドラー
+// =============================================================================
+
+/// プロセス起動
+async fn handle_process_run(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let params: crate::process::process_runner::RunParams =
+        serde_json::from_value(payload).map_err(|e| format!("パラメータ不正: {}", e))?;
+    let process_id = crate::process::process_runner::process_run(
+        &state.process_registry,
+        &params,
+        &state.project_dir,
+        &state.hub,
+    )
+    .await?;
+    Ok(serde_json::json!({"status": "ok", "process_id": process_id}))
+}
+
+/// プロセス停止
+async fn handle_process_stop(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let process_id = payload["process_id"]
+        .as_str()
+        .ok_or_else(|| "process_id が必要です".to_string())?;
+    crate::process::process_runner::process_stop(&state.process_registry, process_id).await?;
+    Ok(serde_json::json!({"status": "ok"}))
+}
+
+/// コード注入
+async fn handle_process_inject(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let params: crate::process::process_runner::InjectParams =
+        serde_json::from_value(payload).map_err(|e| format!("パラメータ不正: {}", e))?;
+    crate::process::process_runner::process_inject(&state.process_registry, &params).await?;
+    Ok(serde_json::json!({"status": "ok"}))
+}
+
+/// プロセス一覧
+async fn handle_process_list(state: &AppState) -> Result<serde_json::Value, String> {
+    let processes = state.process_registry.lock().await.list();
+    Ok(serde_json::json!({"status": "ok", "processes": processes}))
+}
+
+// =============================================================================
 // Terminal チャネル制御メッセージハンドラー
 // =============================================================================
 
@@ -352,6 +402,11 @@ pub async fn start_unison_server(
                             "tmux_split" => handle_tmux_split(&state, payload).await,
                             "tmux_list" => handle_tmux_list(&state).await,
                             "tmux_close" => handle_tmux_close(&state, payload).await,
+                            // ProcessRunner
+                            "process_run" => handle_process_run(&state, payload).await,
+                            "process_stop" => handle_process_stop(&state, payload).await,
+                            "process_inject" => handle_process_inject(&state, payload).await,
+                            "process_list" => handle_process_list(&state).await,
                             _ => Err(format!("不明なメソッド: process.{}", method)),
                         };
 

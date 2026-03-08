@@ -12,7 +12,7 @@ use tokio_util::sync::CancellationToken;
 use super::capabilities::ProcessCapabilities;
 use super::hub::Hub;
 use super::pty::PtyManager;
-use super::ruby_vm::RubyRegistry;
+use super::process_runner::ProcessRegistry;
 use super::session::SessionManager;
 use super::tmux_actor::TmuxHandle;
 use crate::agent::InteractiveClaudeAgent;
@@ -133,8 +133,8 @@ pub(crate) struct AppState {
     /// tmux ペイン管理 Actor（tmux 環境下でのみ有効）
     pub tmux: Option<TmuxHandle>,
     /// スクリーンショット応答待ち: request_id → oneshot sender
-    /// Ruby VM プロセスレジストリ
-    pub ruby_registry: Arc<tokio::sync::Mutex<RubyRegistry>>,
+    /// プロセスレジストリ（ProcessRunner）
+    pub process_registry: Arc<tokio::sync::Mutex<ProcessRegistry>>,
     pub screenshot_waiters:
         Arc<tokio::sync::Mutex<HashMap<String, tokio::sync::oneshot::Sender<ScreenshotData>>>>,
 }

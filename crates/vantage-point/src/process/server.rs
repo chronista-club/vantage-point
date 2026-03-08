@@ -96,8 +96,8 @@ pub async fn run(
         file_watchers: Arc::new(tokio::sync::Mutex::new(FileWatcherManager::new())),
         terminal_token: terminal_token.clone(),
         tmux: tmux_handle,
-        ruby_registry: Arc::new(tokio::sync::Mutex::new(
-            crate::process::ruby_vm::RubyRegistry::new(),
+        process_registry: Arc::new(tokio::sync::Mutex::new(
+            crate::process::process_runner::ProcessRegistry::new(),
         )),
         screenshot_waiters: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         pane_contents: Arc::new(std::sync::Mutex::new(HashMap::new())),
@@ -129,6 +129,12 @@ pub async fn run(
         .route("/api/ruby/run", post(health::ruby_run_handler))
         .route("/api/ruby/stop", post(health::ruby_stop_handler))
         .route("/api/ruby/list", get(health::ruby_list_handler))
+        // ProcessRunner 汎用 API
+        .route("/api/process/run", post(health::process_run_handler))
+        .route("/api/process/eval", post(health::process_run_eval_handler))
+        .route("/api/process/stop", post(health::process_stop_handler))
+        .route("/api/process/inject", post(health::process_inject_handler))
+        .route("/api/process/list", get(health::process_list_handler))
         .route("/api/health", get(health::health_handler))
         .route("/api/shutdown", post(health::shutdown_handler))
         .route(
@@ -326,8 +332,8 @@ pub async fn run_conductor(port: u16) -> Result<()> {
         file_watchers: Arc::new(tokio::sync::Mutex::new(FileWatcherManager::new())),
         terminal_token: "CONDUCTOR_DISABLED".to_string(),
         tmux: None,
-        ruby_registry: Arc::new(tokio::sync::Mutex::new(
-            crate::process::ruby_vm::RubyRegistry::new(),
+        process_registry: Arc::new(tokio::sync::Mutex::new(
+            crate::process::process_runner::ProcessRegistry::new(),
         )),
         screenshot_waiters: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         pane_contents: Arc::new(std::sync::Mutex::new(HashMap::new())),

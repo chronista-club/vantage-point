@@ -12,6 +12,7 @@ pub mod capabilities;
 pub(crate) mod hub;
 pub mod pty;
 mod routes;
+pub mod process_runner;
 pub mod ruby_vm;
 mod server;
 mod session;

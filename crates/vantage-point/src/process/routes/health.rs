@@ -375,7 +375,7 @@ pub async fn ruby_eval_handler(
 ) -> impl IntoResponse {
     let pane_id = params.pane_id.unwrap_or_else(|| "main".to_string());
 
-    let result = crate::process::ruby_vm::ruby_eval(
+    let result = crate::process::process_runner::ruby_eval(
         params.code.as_deref(),
         params.file.as_deref(),
         &pane_id,
@@ -415,8 +415,8 @@ pub async fn ruby_run_handler(
 ) -> impl IntoResponse {
     let pane_id = params.pane_id.unwrap_or_else(|| "main".to_string());
 
-    let result = crate::process::ruby_vm::ruby_run(
-        &state.ruby_registry,
+    let result = crate::process::process_runner::ruby_run(
+        &state.process_registry,
         params.code.as_deref(),
         params.file.as_deref(),
         params.name.as_deref(),
@@ -449,7 +449,7 @@ pub async fn ruby_stop_handler(
     State(state): State<Arc<AppState>>,
     Json(params): Json<RubyStopParams>,
 ) -> impl IntoResponse {
-    match crate::process::ruby_vm::ruby_stop(&state.ruby_registry, &params.process_id).await {
+    match crate::process::process_runner::ruby_stop(&state.process_registry, &params.process_id).await {
         Ok(()) => Json(serde_json::json!({
             "status": "ok",
             "message": format!("プロセス {} に停止シグナルを送信しました", params.process_id),
@@ -463,7 +463,111 @@ pub async fn ruby_stop_handler(
 
 /// GET /api/ruby/list - 実行中の Ruby プロセス一覧
 pub async fn ruby_list_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let processes = state.ruby_registry.lock().await.list();
+    let processes = state.process_registry.lock().await.list();
+    Json(serde_json::json!({
+        "status": "ok",
+        "processes": processes,
+    }))
+}
+
+// =========================================================================
+// ProcessRunner 汎用 API ハンドラー
+// =========================================================================
+
+/// POST /api/process/run — 任意コマンドを起動
+pub async fn process_run_handler(
+    State(state): State<Arc<AppState>>,
+    Json(params): Json<crate::process::process_runner::RunParams>,
+) -> impl IntoResponse {
+    let result = crate::process::process_runner::process_run(
+        &state.process_registry,
+        &params,
+        &state.project_dir,
+        &state.hub,
+    )
+    .await;
+
+    match result {
+        Ok(process_id) => Json(serde_json::json!({
+            "status": "ok",
+            "process_id": process_id,
+        })),
+        Err(e) => Json(serde_json::json!({
+            "status": "error",
+            "message": e,
+        })),
+    }
+}
+
+/// POST /api/process/run-eval — 短命実行
+pub async fn process_run_eval_handler(
+    State(state): State<Arc<AppState>>,
+    Json(params): Json<crate::process::process_runner::RunEvalParams>,
+) -> impl IntoResponse {
+    let result = crate::process::process_runner::process_run_eval(
+        &params,
+        &state.project_dir,
+        &state.hub,
+    )
+    .await;
+
+    match result {
+        Ok(r) => Json(serde_json::json!({
+            "status": "ok",
+            "stdout": r.stdout,
+            "stderr": r.stderr,
+            "exit_code": r.exit_code,
+            "elapsed_ms": r.elapsed_ms,
+        })),
+        Err(e) => Json(serde_json::json!({
+            "status": "error",
+            "message": e,
+        })),
+    }
+}
+
+/// POST /api/process/stop — プロセス停止
+pub async fn process_stop_handler(
+    State(state): State<Arc<AppState>>,
+    Json(params): Json<RubyStopParams>,
+) -> impl IntoResponse {
+    match crate::process::process_runner::process_stop(
+        &state.process_registry,
+        &params.process_id,
+    )
+    .await
+    {
+        Ok(()) => Json(serde_json::json!({
+            "status": "ok",
+            "message": format!("プロセス {} に停止シグナルを送信しました", params.process_id),
+        })),
+        Err(e) => Json(serde_json::json!({
+            "status": "error",
+            "message": e,
+        })),
+    }
+}
+
+/// POST /api/process/inject — コード注入
+pub async fn process_inject_handler(
+    State(state): State<Arc<AppState>>,
+    Json(params): Json<crate::process::process_runner::InjectParams>,
+) -> impl IntoResponse {
+    match crate::process::process_runner::process_inject(&state.process_registry, &params).await {
+        Ok(()) => Json(serde_json::json!({
+            "status": "ok",
+            "message": format!("プロセス {} にコードを注入しました", params.process_id),
+        })),
+        Err(e) => Json(serde_json::json!({
+            "status": "error",
+            "message": e,
+        })),
+    }
+}
+
+/// GET /api/process/list — プロセス一覧
+pub async fn process_list_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let processes = state.process_registry.lock().await.list();
     Json(serde_json::json!({
         "status": "ok",
         "processes": processes,
