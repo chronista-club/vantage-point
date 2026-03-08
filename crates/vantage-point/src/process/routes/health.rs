@@ -96,8 +96,8 @@ pub async fn close_pane_handler(
 ///
 /// PID ファイルベースのシングルトン管理。既存 Canvas があればそれを再利用。
 pub async fn canvas_open_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    // Conductor モードなら Lane モードで起動
-    let lanes = state.conductor.is_some();
+    // World モードなら Lane モードで起動
+    let lanes = state.world.is_some();
 
     match crate::canvas::ensure_canvas_running(state.port, lanes) {
         Ok(pid) => {

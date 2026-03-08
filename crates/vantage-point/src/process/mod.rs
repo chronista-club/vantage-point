@@ -21,4 +21,4 @@ pub(crate) mod tmux_actor;
 pub(crate) mod unison_server;
 
 pub use capabilities::CapabilityConfig;
-pub use server::{run, run_conductor};
+pub use server::{run, run_world};

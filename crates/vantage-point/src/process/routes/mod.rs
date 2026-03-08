@@ -1,7 +1,7 @@
 //! ルートハンドラーモジュール
 
 pub mod chat;
-pub mod conductor;
+pub mod world;
 pub mod health;
 pub mod lanes;
 pub mod permission;

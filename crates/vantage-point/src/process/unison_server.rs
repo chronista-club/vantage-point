@@ -94,7 +94,7 @@ async fn handle_unwatch_file(
 
 /// canvas.open メソッドのハンドラー（シングルトン管理）
 async fn handle_canvas_open(state: &AppState) -> Result<serde_json::Value, String> {
-    let lanes = state.conductor.is_some();
+    let lanes = state.world.is_some();
 
     match crate::canvas::ensure_canvas_running(state.port, lanes) {
         Ok(pid) => {

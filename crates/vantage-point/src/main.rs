@@ -146,8 +146,9 @@ enum Commands {
     File(FileCommands),
 
     // --- App ---
-    /// Conductor（TheWorld）を起動 — 全 Process を統括管理
-    Conductor {
+    /// World（TheWorld）を起動 — 全 Process を統括管理
+    #[command(alias = "conductor")]
+    World {
         /// 待ち受けポート番号
         #[arg(short, long, default_value = "32800")]
         port: u16,
@@ -249,9 +250,9 @@ fn main() -> Result<()> {
         Commands::File(cmd) => commands::file_cmd::execute(cmd, &config),
 
         // App
-        Commands::Conductor { port } => {
+        Commands::World { port } => {
             let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(process::run_conductor(port))
+            rt.block_on(process::run_world(port))
         }
         Commands::App { port, no_daemon } => commands::app::execute(port, no_daemon),
         Commands::Tray { midi } => {

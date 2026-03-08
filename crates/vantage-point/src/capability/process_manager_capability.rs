@@ -16,10 +16,10 @@
 //! manager.initialize(&ctx).await?;
 //!
 //! // プロジェクト一覧取得
-//! let projects = conductor.list_projects().await;
+//! let projects = world.list_projects().await;
 //!
 //! // Process起動
-//! conductor.start_process("my-project").await?;
+//! world.start_process("my-project").await?;
 //! ```
 
 use crate::capability::core::{Capability, CapabilityContext, CapabilityError, CapabilityResult};
@@ -427,7 +427,7 @@ impl ProcessManagerCapability {
     /// 2. ポートスキャンで Process 状態更新
     /// 3. 前回稼働中だった Process が消えていたらクラッシュ検知 → 自動再起動
     pub async fn run_health_monitor(
-        conductor: Arc<RwLock<Self>>,
+        world: Arc<RwLock<Self>>,
         shutdown_token: tokio_util::sync::CancellationToken,
     ) {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
@@ -445,7 +445,7 @@ impl ProcessManagerCapability {
                 }
             }
 
-            let conductor = conductor.read().await;
+            let world = world.read().await;
 
             // 1. running.json ゴースト除去
             if let Ok(procs) = crate::config::RunningProcesses::load() {
@@ -456,14 +456,14 @@ impl ProcessManagerCapability {
             }
 
             // 2. Process 状態更新
-            if let Err(e) = conductor.refresh_process_status().await {
+            if let Err(e) = world.refresh_process_status().await {
                 tracing::warn!("Health check: 状態更新失敗: {}", e);
                 continue;
             }
 
             // 3. クラッシュ検知: 前回 Running だった Process が消えていたら再起動
-            let current = conductor.running_processes.read().await.clone();
-            let previous = conductor.previously_running.read().await.clone();
+            let current = world.running_processes.read().await.clone();
+            let previous = world.previously_running.read().await.clone();
 
             for (name, prev_proc) in &previous {
                 if !current.contains_key(name) {
@@ -475,7 +475,7 @@ impl ProcessManagerCapability {
 
                     // 自動再起動
                     tracing::info!("Health check: Process '{}' を自動再起動中...", name);
-                    match conductor.start_process(name).await {
+                    match world.start_process(name).await {
                         Ok(new_proc) => {
                             tracing::info!(
                                 "Health check: Process '{}' 再起動成功 (port {})",
@@ -493,7 +493,7 @@ impl ProcessManagerCapability {
             }
 
             // 前回の稼働状態を保存（次回比較用）
-            *conductor.previously_running.write().await = current;
+            *world.previously_running.write().await = current;
         }
     }
 }
@@ -508,9 +508,9 @@ impl Default for ProcessManagerCapability {
 impl Capability for ProcessManagerCapability {
     fn info(&self) -> CapabilityInfo {
         CapabilityInfo::new(
-            "conductor-capability",
+            "world-capability",
             env!("CARGO_PKG_VERSION"),
-            "Process Conductor - 複数のProject Processを指揮・管理",
+            "Process World - 複数のProject Processを統括管理",
         )
     }
 
@@ -590,7 +590,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_conductor_capability_new() {
+    fn test_world_capability_new() {
         let cap = ProcessManagerCapability::new();
         assert_eq!(cap.state(), CapabilityState::Uninitialized);
     }

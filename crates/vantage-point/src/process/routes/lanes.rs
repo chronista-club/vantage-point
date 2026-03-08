@@ -1,6 +1,6 @@
 //! Canvas Lane 集約 WebSocket ハンドラー
 //!
-//! Conductor Process が各 Project Process の Hub を subscribe し、
+//! World Process が各 Project Process の Hub を subscribe し、
 //! Canvas クライアントに Lane（プロジェクト単位）でラップして中継する。
 //!
 //! ## プロトコル
@@ -236,12 +236,12 @@ async fn discover_and_connect(
     bridge_tx: mpsc::Sender<BridgeMsg>,
     connected_ports: &Arc<Mutex<HashSet<u16>>>,
 ) -> Vec<LaneInfo> {
-    // Conductor が有効な場合、Conductor から Process 一覧を取得
-    let running_processes = if let Some(conductor) = &state.conductor {
-        let conductor = conductor.read().await;
-        conductor.list_running_processes().await
+    // World が有効な場合、World から Process 一覧を取得
+    let running_processes = if let Some(world) = &state.world {
+        let world = world.read().await;
+        world.list_running_processes().await
     } else {
-        // Conductor なし — running.json から直接読む
+        // World なし — running.json から直接読む
         match crate::config::RunningProcesses::load() {
             Ok(procs) => procs
                 .processes
@@ -267,7 +267,7 @@ async fn discover_and_connect(
     let mut ports = connected_ports.lock().await;
 
     for proc in &running_processes {
-        // 自分自身（Conductor Process）はスキップ
+        // 自分自身（World Process）はスキップ
         if proc.port == state.port {
             continue;
         }

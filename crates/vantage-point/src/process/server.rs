@@ -1,6 +1,6 @@
 //! HTTP server with WebSocket support
 //!
-//! Process サーバーのエントリーポイント。`run()` と `run_conductor()` でサーバーを起動する。
+//! Process サーバーのエントリーポイント。`run()` と `run_world()` でサーバーを起動する。
 //! ルートハンドラーは `routes/` モジュールに分離されている。
 
 use std::collections::HashMap;
@@ -17,7 +17,7 @@ use tower_http::cors::CorsLayer;
 use super::capabilities::{CapabilityConfig, ProcessCapabilities};
 use super::hub::Hub;
 use super::pty::PtyManager;
-use super::routes::{conductor, health, lanes, permission, prompt, update, ws};
+use super::routes::{health, lanes, permission, prompt, update, world, ws};
 use super::session::SessionManager;
 use super::state::AppState;
 use super::unison_server;
@@ -87,7 +87,7 @@ pub async fn run(
         pending_permissions: Arc::new(RwLock::new(HashMap::new())),
         pending_prompts: Arc::new(RwLock::new(HashMap::new())),
         capabilities,
-        conductor: None,
+        world: None,
         update: None,
         interactive_agent: Arc::new(RwLock::new(None)),
         pty_manager: Arc::new(tokio::sync::Mutex::new(PtyManager::new())),
@@ -155,28 +155,28 @@ pub async fn run(
             "/api/prompts/pending",
             get(prompt::prompts_list_pending_handler),
         )
-        // Conductor API routes
+        // World API routes
         .route(
-            "/api/conductor/projects",
-            get(conductor::conductor_list_projects),
+            "/api/world/projects",
+            get(world::world_list_projects),
         )
         .route(
-            "/api/conductor/processes",
-            get(conductor::conductor_list_processes),
+            "/api/world/processes",
+            get(world::world_list_processes),
         )
         .route(
-            "/api/conductor/processes/{project_name}/start",
-            post(conductor::conductor_start_process),
+            "/api/world/processes/{project_name}/start",
+            post(world::world_start_process),
         )
         .route(
-            "/api/conductor/processes/{project_name}/stop",
-            post(conductor::conductor_stop_process),
+            "/api/world/processes/{project_name}/stop",
+            post(world::world_stop_process),
         )
         .route(
-            "/api/conductor/processes/{project_name}/pointview",
-            post(conductor::conductor_open_pointview),
+            "/api/world/processes/{project_name}/pointview",
+            post(world::world_open_pointview),
         )
-        .route("/api/conductor/refresh", post(conductor::conductor_refresh))
+        .route("/api/world/refresh", post(world::world_refresh))
         .layer(CorsLayer::permissive())
         .with_state(state.clone());
 
@@ -274,20 +274,20 @@ pub async fn run(
     Ok(())
 }
 
-/// ConductorモードでProcessサーバーを起動
+/// WorldモードでProcessサーバーを起動
 /// 複数のProject Processを管理するための専用モード
-pub async fn run_conductor(port: u16) -> Result<()> {
+pub async fn run_world(port: u16) -> Result<()> {
     use crate::capability::core::{Capability, CapabilityContext};
 
     // Shutdown signal
     let shutdown_token = CancellationToken::new();
     let shutdown_token_clone = shutdown_token.clone();
 
-    // Initialize Conductor Capability
-    let mut conductor_cap = ProcessManagerCapability::new();
+    // Initialize World Capability
+    let mut world_cap = ProcessManagerCapability::new();
     let ctx = CapabilityContext::new();
 
-    if let Err(e) = conductor_cap.initialize(&ctx).await {
+    if let Err(e) = world_cap.initialize(&ctx).await {
         tracing::error!("Failed to initialize ProcessManagerCapability: {}", e);
         return Err(anyhow::anyhow!(
             "ProcessManagerCapability initialization failed: {}",
@@ -301,11 +301,11 @@ pub async fn run_conductor(port: u16) -> Result<()> {
         tracing::warn!("Failed to initialize UpdateCapability: {}", e);
     }
 
-    let conductor_cap = Arc::new(RwLock::new(conductor_cap));
+    let world_cap = Arc::new(RwLock::new(world_cap));
     let update_cap = Arc::new(RwLock::new(update_cap));
     let hub = Hub::new();
 
-    // Create minimal state for conductor mode
+    // Create minimal state for world mode
     let state = Arc::new(AppState {
         hub,
         sessions: Arc::new(RwLock::new(SessionManager::new())),
@@ -323,14 +323,14 @@ pub async fn run_conductor(port: u16) -> Result<()> {
             })
             .await,
         ),
-        conductor: Some(conductor_cap.clone()),
+        world: Some(world_cap.clone()),
         update: Some(update_cap.clone()),
         interactive_agent: Arc::new(RwLock::new(None)),
         pty_manager: Arc::new(tokio::sync::Mutex::new(PtyManager::new())),
         canvas_pid: Arc::new(tokio::sync::Mutex::new(None)),
         port,
         file_watchers: Arc::new(tokio::sync::Mutex::new(FileWatcherManager::new())),
-        terminal_token: "CONDUCTOR_DISABLED".to_string(),
+        terminal_token: "WORLD_DISABLED".to_string(),
         tmux: None,
         process_registry: Arc::new(tokio::sync::Mutex::new(
             crate::process::process_runner::ProcessRegistry::new(),
@@ -344,28 +344,28 @@ pub async fn run_conductor(port: u16) -> Result<()> {
         .route("/api/shutdown", post(health::shutdown_handler))
         // Canvas Lane 集約 WebSocket
         .route("/ws/lanes", get(lanes::lanes_ws_handler))
-        // Conductor API routes
+        // World API routes
         .route(
-            "/api/conductor/projects",
-            get(conductor::conductor_list_projects),
+            "/api/world/projects",
+            get(world::world_list_projects),
         )
         .route(
-            "/api/conductor/processes",
-            get(conductor::conductor_list_processes),
+            "/api/world/processes",
+            get(world::world_list_processes),
         )
         .route(
-            "/api/conductor/processes/{project_name}/start",
-            post(conductor::conductor_start_process),
+            "/api/world/processes/{project_name}/start",
+            post(world::world_start_process),
         )
         .route(
-            "/api/conductor/processes/{project_name}/stop",
-            post(conductor::conductor_stop_process),
+            "/api/world/processes/{project_name}/stop",
+            post(world::world_stop_process),
         )
         .route(
-            "/api/conductor/processes/{project_name}/pointview",
-            post(conductor::conductor_open_pointview),
+            "/api/world/processes/{project_name}/pointview",
+            post(world::world_open_pointview),
         )
-        .route("/api/conductor/refresh", post(conductor::conductor_refresh))
+        .route("/api/world/refresh", post(world::world_refresh))
         // Update API routes (vp CLI)
         .route("/api/update/check", get(update::update_check))
         .route("/api/update/apply", post(update::update_apply))
@@ -382,16 +382,16 @@ pub async fn run_conductor(port: u16) -> Result<()> {
         .with_state(state);
 
     let addr: SocketAddr = format!("[::1]:{}", port).parse().unwrap();
-    tracing::info!("Starting Conductor Process on http://{}", addr);
+    tracing::info!("Starting World Process on http://{}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
-    // Clone conductor for shutdown
-    let conductor_for_shutdown = conductor_cap.clone();
+    // Clone world for shutdown
+    let world_for_shutdown = world_cap.clone();
 
     // ヘルスモニター起動（30秒間隔で Process 監視 + ゴースト除去 + クラッシュ復旧）
     let health_monitor = tokio::spawn(ProcessManagerCapability::run_health_monitor(
-        conductor_cap.clone(),
+        world_cap.clone(),
         shutdown_token.clone(),
     ));
 
@@ -399,19 +399,19 @@ pub async fn run_conductor(port: u16) -> Result<()> {
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
             shutdown_token_clone.cancelled().await;
-            tracing::info!("Conductor graceful shutdown initiated");
+            tracing::info!("World graceful shutdown initiated");
         })
         .await?;
 
     // ヘルスモニター停止
     health_monitor.abort();
 
-    // Shutdown conductor capability
-    tracing::info!("Shutting down Conductor...");
-    if let Err(e) = conductor_for_shutdown.write().await.shutdown().await {
-        tracing::warn!("Error during conductor shutdown: {}", e);
+    // Shutdown world capability
+    tracing::info!("Shutting down World...");
+    if let Err(e) = world_for_shutdown.write().await.shutdown().await {
+        tracing::warn!("Error during world shutdown: {}", e);
     }
 
-    tracing::info!("Conductor stopped");
+    tracing::info!("World stopped");
     Ok(())
 }
