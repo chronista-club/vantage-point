@@ -50,6 +50,22 @@ enum TmuxCommand {
     Refresh {
         reply: oneshot::Sender<Vec<TmuxPane>>,
     },
+    /// ペインの内容をキャプチャ
+    Capture {
+        pane_id: String,
+        reply: oneshot::Sender<Result<String, String>>,
+    },
+    /// 全ペインの内容をキャプチャ
+    CaptureAll {
+        reply: oneshot::Sender<Vec<PaneCapture>>,
+    },
+}
+
+/// ペインキャプチャ結果
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaneCapture {
+    pub pane: TmuxPane,
+    pub content: String,
 }
 
 /// Actor への外部インターフェース（Clone 可能）
@@ -105,6 +121,34 @@ impl TmuxHandle {
     pub async fn refresh(&self) -> Vec<TmuxPane> {
         let (reply, rx) = oneshot::channel();
         if self.tx.send(TmuxCommand::Refresh { reply }).await.is_err() {
+            return vec![];
+        }
+        rx.await.unwrap_or_default()
+    }
+
+    /// 指定ペインの内容をキャプチャ
+    pub async fn capture(&self, pane_id: &str) -> Result<String, String> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(TmuxCommand::Capture {
+                pane_id: pane_id.to_string(),
+                reply,
+            })
+            .await
+            .map_err(|_| "TmuxActor stopped".to_string())?;
+        rx.await
+            .map_err(|_| "TmuxActor reply dropped".to_string())?
+    }
+
+    /// 全ペインの内容をキャプチャ（ダッシュボード用）
+    pub async fn capture_all(&self) -> Vec<PaneCapture> {
+        let (reply, rx) = oneshot::channel();
+        if self
+            .tx
+            .send(TmuxCommand::CaptureAll { reply })
+            .await
+            .is_err()
+        {
             return vec![];
         }
         rx.await.unwrap_or_default()
@@ -186,6 +230,35 @@ impl TmuxActor {
                         .unwrap_or_default();
                     let _ = reply.send(self.panes.clone());
                 }
+                TmuxCommand::Capture { pane_id, reply } => {
+                    let pid = pane_id.clone();
+                    let result = tokio::task::spawn_blocking(move || Self::do_capture(&pid))
+                        .await
+                        .unwrap_or_else(|e| Err(format!("spawn_blocking panicked: {}", e)));
+                    let _ = reply.send(result);
+                }
+                TmuxCommand::CaptureAll { reply } => {
+                    // まず最新のペイン情報を取得
+                    let session = self.session_name.clone();
+                    self.panes = tokio::task::spawn_blocking(move || Self::query_panes(&session))
+                        .await
+                        .unwrap_or_default();
+
+                    // 全ペインをキャプチャ
+                    let panes = self.panes.clone();
+                    let captures = tokio::task::spawn_blocking(move || {
+                        panes
+                            .into_iter()
+                            .map(|pane| {
+                                let content = Self::do_capture(&pane.id).unwrap_or_default();
+                                PaneCapture { pane, content }
+                            })
+                            .collect()
+                    })
+                    .await
+                    .unwrap_or_default();
+                    let _ = reply.send(captures);
+                }
             }
         }
 
@@ -240,6 +313,23 @@ impl TmuxActor {
             return Err(format!("tmux kill-pane エラー: pane_id={}", pane_id));
         }
         Ok(())
+    }
+
+    /// ペインの内容をキャプチャ（ブロッキング — spawn_blocking 内で呼ぶ）
+    fn do_capture(pane_id: &str) -> Result<String, String> {
+        let output = std::process::Command::new("tmux")
+            .args(["capture-pane", "-t", pane_id, "-p"])
+            .output()
+            .map_err(|e| format!("tmux capture-pane 失敗: {}", e))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("tmux capture-pane エラー: {}", stderr.trim()));
+        }
+
+        // 末尾の空行をトリム
+        let content = String::from_utf8_lossy(&output.stdout);
+        Ok(content.trim_end().to_string())
     }
 
     /// tmux list-panes でペイン一覧を取得（ブロッキング — spawn_blocking 内で呼ぶ）

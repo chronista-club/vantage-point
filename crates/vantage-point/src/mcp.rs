@@ -215,6 +215,14 @@ pub struct CaptureCanvasParams {
     pub pane_id: Option<String>,
 }
 
+/// tmux ペインキャプチャのパラメータ
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct TmuxCaptureParams {
+    /// ペイン ID（例: %0）。省略すると全ペインをキャプチャ。
+    #[schemars(description = "Pane ID (e.g. %0). If omitted, captures all panes.")]
+    pub pane_id: Option<String>,
+}
+
 /// Response format for permission tool
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -931,6 +939,64 @@ impl VantageMcp {
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
             format!("Stopped watching pane '{}'", params.pane_id),
         )]))
+    }
+
+    /// Capture tmux pane content as text.
+    ///
+    /// tmux capture-pane で指定ペイン（または全ペイン）のターミナル出力をテキストとして取得する。
+    /// AI エージェントが他のペインの状態を把握するのに使う。
+    #[tool(
+        description = "Capture tmux pane content as text. If pane_id is omitted, captures all panes in the session. Useful for monitoring worker progress or reading terminal output from other panes."
+    )]
+    async fn tmux_capture(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<TmuxCaptureParams>,
+    ) -> Result<CallToolResult, McpError> {
+        if let Some(pane_id) = &params.pane_id {
+            // 単一ペインキャプチャ
+            let resp = self
+                .quic_call("tmux_capture", serde_json::json!({"pane_id": pane_id}))
+                .await?;
+            let content = resp.get("content").and_then(|v| v.as_str()).unwrap_or("");
+            Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+                format!("=== Pane {} ===\n{}", pane_id, content),
+            )]))
+        } else {
+            // 全ペインキャプチャ
+            let resp = self
+                .quic_call("tmux_capture_all", serde_json::json!({}))
+                .await?;
+            let captures = resp
+                .get("captures")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+
+            let mut output = String::new();
+            for cap in &captures {
+                let pane_id = cap
+                    .pointer("/pane/id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?");
+                let cmd = cap
+                    .pointer("/pane/command")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?");
+                let content = cap.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                output.push_str(&format!(
+                    "=== Pane {} ({}) ===\n{}\n\n",
+                    pane_id, cmd, content
+                ));
+            }
+
+            if output.is_empty() {
+                output = "No tmux panes found (tmux not active?)".to_string();
+            }
+
+            Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+                output.trim_end().to_string(),
+            )]))
+        }
     }
 
     /// Capture the Canvas window as a PNG screenshot
