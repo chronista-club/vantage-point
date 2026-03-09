@@ -102,26 +102,25 @@ Phase 3: プラグイン型
 
 ---
 
-### REQ-CAP-020: AG-UI連携
+### REQ-CAP-020: Canvas 連携
 
-**概要**: MIDIイベントをWebUI/AG-UIに配信
+**概要**: MIDI イベントを Canvas / TUI に配信
 
 **受け入れ条件**:
-- [ ] MIDIイベントがAG-UIイベントに変換される
-- [ ] WebSocketでリアルタイム配信される
-- [ ] UIでMIDI状態を表示できる
+- [ ] MIDI イベントが TopicRouter 経由で配信される
+- [ ] TUI / Canvas で MIDI 状態を表示できる
 
 ---
 
-### REQ-CAP-021: Claude Agent連携
+### REQ-CAP-021: Claude Agent 連携
 
-**概要**: MIDIでClaude Agentのアクションを発火
+**概要**: MIDI で Claude CLI（📖 Heaven's Door）のアクションを発火
 
 **受け入れ条件**:
-- [ ] MIDI入力でチャット送信ができる
-- [ ] MIDI入力でチャットキャンセルができる
-- [ ] MIDI入力でセッションリセットができる
-- [ ] LEDでAgent状態（思考中/待機/エラー）を表示できる
+- [ ] MIDI 入力で PTY にテキスト送信ができる
+- [ ] MIDI 入力でチャットキャンセルができる
+- [ ] MIDI 入力でセッションリセットができる
+- [ ] LED で Agent 状態（応答中/入力待ち/エラー）を表示できる
 
 ---
 

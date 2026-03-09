@@ -1,163 +1,98 @@
-# Git Worktree管理ガイド
+# Git Worktree 管理ガイド
 
 ## 概要
 
-Vantageプロジェクトでは、複数のIssueを並行して開発するためにGit worktreeを活用しています。これにより、ブランチの切り替えなしに、物理的に異なるディレクトリで複数の作業を同時に進められます。
+VP プロジェクトでは、複数の Issue を並行開発するために Git worktree を活用する。
+ブランチ切り替え不要で、物理的に異なるディレクトリで複数の作業を同時進行できる。
 
-## ディレクトリ構造
+> 現在は `cw` (Claude Worker) ツールが worktree 管理を自動化している。
+> 手動 worktree は `cw` が使えない場合のフォールバック。
 
-```
-$HOME/Workspaces/VANTAGE/
-└── worktrees/           # すべてのworktreeを格納（gitignore対象）
-    ├── UNI-118-workdir-support/   # Issue UNI-118の作業
-    ├── UNI-119-claude-platform/   # Issue UNI-119の作業
-    └── issue-456-bug-fix/         # GitHub Issue #456の修正
-```
-
-## 基本コマンド
-
-### worktreeの作成
+## cw によるワーカー管理（推奨）
 
 ```bash
-# 基本形式
-git worktree add worktrees/<issue-id>-<slug> -b <username>/<branch-name>
+# Issue ごとの隔離環境を作成
+cw new <name> <branch>
 
-# 例：Linear Issue用
-git worktree add worktrees/UNI-120-file-browser -b mito/uni-120-file-browser
+# ワーカー一覧
+cw ls
 
-# 例：GitHub Issue用
-git worktree add worktrees/issue-123-auth-fix -b mito/issue-123-auth-fix
+# マージ済みワーカーの削除
+cw cleanup
 ```
 
-### worktreeの一覧表示
+ワーカーは `~/.cache/cw/workers/` に配置される。
+
+## 手動 Worktree 管理
+
+### ディレクトリ構造
+
+```
+~/repos/vantage-point/           # メインリポジトリ
+└── .worktrees/                  # worktree 格納（gitignore 対象）
+    ├── issue-98-tui-header/     # Issue #98 の作業
+    └── issue-101-session-fix/   # Issue #101 の作業
+```
+
+### 基本コマンド
 
 ```bash
+# worktree 作成
+git worktree add .worktrees/issue-98-tui-header -b makoto/issue-98-tui-header
+
+# 一覧表示
 git worktree list
+
+# 削除
+git worktree remove .worktrees/issue-98-tui-header
 ```
 
-出力例：
-```
-/Users/mito/Documents/GitHub/vantage              d0275fa [edge]
-/Users/mito/Workspaces/VANTAGE/worktrees/UNI-118  1234567 [mito/uni-118-workdir-support]
-/Users/mito/Workspaces/VANTAGE/worktrees/UNI-119  abcdefg [mito/uni-119-claude-platform]
-```
+### 命名規則
 
-### worktreeの削除
-
-```bash
-# worktreeディレクトリに移動してから削除
-cd /Users/mito/Workspaces/VANTAGE
-git worktree remove worktrees/<issue-id>-<slug>
-```
-
-## 命名規則
-
-### worktreeディレクトリ名
-- **フォーマット**: `<Issue番号>-<説明slug>`
-- **Issue番号**: 
-  - Linear: `UNI-XXX`
-  - GitHub: `issue-XXX`
-- **説明slug**: 
-  - 英単語2〜4個
-  - ハイフン区切り
-  - 全て小文字
-
-### 例
-- `UNI-118-workdir-support` - 作業ディレクトリサポート
-- `UNI-119-claude-platform` - Claude連携プラットフォーム
-- `issue-123-auth-fix` - 認証バグ修正
+| 要素 | フォーマット | 例 |
+|------|------------|-----|
+| ディレクトリ | `issue-{番号}-{slug}` | `issue-98-tui-header` |
+| ブランチ | `makoto/issue-{番号}-{slug}` | `makoto/issue-98-tui-header` |
+| slug | 英単語 2〜4 個、ハイフン区切り | `tui-header`, `session-fix` |
 
 ## ワークフロー
 
-### 1. 新しいIssueの作業開始
+### 1. 新しい Issue の作業開始
 
 ```bash
-# 1. Linearで新しいIssueを確認（例：UNI-121）
-# 2. worktreeを作成
-cd $HOME/Documents/GitHub/vantage
-git worktree add $HOME/Workspaces/VANTAGE/worktrees/UNI-121-new-feature -b mito/uni-121-new-feature
+cd ~/repos/vantage-point
 
-# 3. worktreeに移動
-cd $HOME/Workspaces/VANTAGE/worktrees/UNI-121-new-feature
+# worktree 作成
+git worktree add .worktrees/issue-98-tui-header -b makoto/issue-98-tui-header
 
-# 4. 開発開始
+# 移動して開発開始
+cd .worktrees/issue-98-tui-header
 ```
 
-### 2. 複数Issueの並行作業
-
-各worktreeは独立しているため、自由に切り替えて作業できます：
+### 2. 作業完了後のクリーンアップ
 
 ```bash
-# Issue UNI-118の作業
-cd ~/Workspaces/VANTAGE/worktrees/UNI-118-workdir-support
-# ... 作業 ...
+# PR マージ後
+cd ~/repos/vantage-point
+git worktree remove .worktrees/issue-98-tui-header
 
-# Issue UNI-119に切り替え
-cd ~/Workspaces/VANTAGE/worktrees/UNI-119-claude-platform
-# ... 作業 ...
-```
-
-### 3. 作業完了後のクリーンアップ
-
-```bash
-# 1. PRがマージされたら
-# 2. worktreeを削除
-cd ~/Workspaces/VANTAGE
-git worktree remove worktrees/UNI-121-new-feature
-
-# 3. リモートブランチも削除（オプション）
-git push origin --delete mito/uni-121-new-feature
+# リモートブランチも削除
+git push origin --delete makoto/issue-98-tui-header
 ```
 
 ## ベストプラクティス
 
-### 1. 一つのworktree = 一つのIssue
-各worktreeは特定のIssueに対応させ、スコープを明確に保ちます。
-
-### 2. 定期的なクリーンアップ
-完了したIssueのworktreeは削除し、ディスク容量を節約します。
-
-### 3. ブランチ名の一貫性
-worktreeディレクトリ名とブランチ名を対応させることで、管理を簡単にします。
-
-### 4. メインリポジトリの更新
-定期的にメインリポジトリで`git fetch`を実行し、各worktreeで最新の変更を取り込みます：
-
-```bash
-# メインリポジトリで
-cd ~/Documents/GitHub/vantage
-git fetch origin
-
-# 各worktreeで
-cd ~/Workspaces/VANTAGE/worktrees/UNI-XXX
-git rebase origin/edge  # または merge
-```
+1. **1 worktree = 1 Issue** — スコープを明確に
+2. **定期的なクリーンアップ** — マージ済み worktree は即削除
+3. **main の最新を取り込む** — `git fetch origin && git rebase origin/main`
 
 ## トラブルシューティング
 
-### worktreeが削除できない場合
-
 ```bash
 # 強制削除
-git worktree remove --force worktrees/<issue-id>
+git worktree remove --force .worktrees/<issue-id>
 
 # それでも削除できない場合
-rm -rf worktrees/<issue-id>
+rm -rf .worktrees/<issue-id>
 git worktree prune
 ```
-
-### ブランチの不整合
-
-```bash
-# worktree一覧を更新
-git worktree prune
-
-# 詳細情報の確認
-git worktree list --verbose
-```
-
-## 関連リンク
-
-- [Git Worktree公式ドキュメント](https://git-scm.com/docs/git-worktree)
-- [Linear Issue管理ガイド](../../.claude/LINEAR.md)
-- [開発環境セットアップ](./setup.md)
