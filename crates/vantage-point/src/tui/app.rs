@@ -965,6 +965,11 @@ fn run_claude_session(
     let mut cursor_blink_timer = std::time::Instant::now();
     const CURSOR_BLINK_INTERVAL: Duration = Duration::from_millis(530);
 
+    // AI 状態検知: PTY 出力のアクティビティで「応答中」/「入力待ち」を推定
+    let mut last_pty_output = std::time::Instant::now();
+    let mut was_ai_busy = false;
+    const IDLE_THRESHOLD: Duration = Duration::from_millis(800);
+
     // メインループ
     let mut needs_redraw = true;
     loop {
@@ -974,12 +979,19 @@ fn run_claude_session(
             cursor_blink_timer = std::time::Instant::now();
             needs_redraw = true;
         }
+        // AI 状態遷移検知: busy → idle に変わった瞬間に再描画
+        let is_ai_busy = last_pty_output.elapsed() < IDLE_THRESHOLD;
+        if was_ai_busy != is_ai_busy {
+            was_ai_busy = is_ai_busy;
+            needs_redraw = true;
+        }
         // ブリッジからのイベントを処理（ノンブロッキング）
         while let Ok(evt) = event_rx.try_recv() {
             match evt {
                 BridgeEvent::Output(bytes) => {
                     let mut state = term_state.lock().unwrap();
                     state.feed_bytes(&bytes);
+                    last_pty_output = std::time::Instant::now();
                     needs_redraw = true;
                 }
                 BridgeEvent::SessionCreated { session_id } => {
@@ -1034,8 +1046,9 @@ fn run_claude_session(
                     ])
                     .split(frame.area());
 
-                // ヘッダバー
-                draw_header_bar(frame, chunks[0], project_name, port, canvas_open);
+                // ヘッダバー（AI 状態検知: PTY 出力の有無で判定）
+                let ai_busy = last_pty_output.elapsed() < IDLE_THRESHOLD;
+                draw_header_bar(frame, chunks[0], project_name, port, canvas_open, ai_busy);
 
                 // メインエリア: Canvas ON なら左右分割
                 let main_area = chunks[1];
@@ -1409,6 +1422,7 @@ fn draw_header_bar(
     project_name: &str,
     port: u16,
     canvas_open: bool,
+    ai_busy: bool,
 ) {
     let canvas_indicator = if canvas_open {
         Span::styled(
@@ -1419,6 +1433,19 @@ fn draw_header_bar(
         Span::styled(
             " Canvas:OFF ",
             Style::default().fg(NORD_COMMENT).bg(NORD_POLAR),
+        )
+    };
+
+    // AI 状態インジケータ
+    let ai_indicator = if ai_busy {
+        Span::styled(
+            " ● 応答中 ",
+            Style::default().fg(NORD_YELLOW).bg(NORD_POLAR),
+        )
+    } else {
+        Span::styled(
+            " ○ 入力待ち ",
+            Style::default().fg(NORD_GREEN).bg(NORD_POLAR),
         )
     };
 
@@ -1441,6 +1468,8 @@ fn draw_header_bar(
             format!(" :{} ", port),
             Style::default().fg(NORD_COMMENT).bg(NORD_POLAR),
         ),
+        Span::styled("│", Style::default().fg(NORD_COMMENT).bg(NORD_POLAR)),
+        ai_indicator,
         Span::styled("│", Style::default().fg(NORD_COMMENT).bg(NORD_POLAR)),
         canvas_indicator,
     ]);
