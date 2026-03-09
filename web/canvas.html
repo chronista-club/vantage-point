@@ -1670,6 +1670,11 @@
                     }
                     break;
                 }
+                // Canvas レベルのメッセージ（Lane ラップなし）は直接 handleMessage に委譲
+                case 'screenshot_request':
+                case 'ping':
+                    handleMessage(data);
+                    break;
                 default:
                     console.debug('Lane WS:', data.type, data);
             }

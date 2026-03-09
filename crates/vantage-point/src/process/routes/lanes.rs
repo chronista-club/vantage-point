@@ -36,6 +36,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, mpsc};
 
 use super::super::state::AppState;
+use crate::protocol::ProcessMessage;
 
 /// Lane 情報
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -96,6 +97,8 @@ enum BridgeMsg {
         port: u16,
         message: serde_json::Value,
     },
+    /// Canvas レベルの直接メッセージ（ScreenshotRequest 等）
+    DirectMessage(serde_json::Value),
     /// Lane 状態変更
     StatusChanged {
         lane: String,
@@ -136,6 +139,29 @@ async fn handle_lanes_socket(socket: WebSocket, state: Arc<AppState>) {
     if ws_sender.send(Message::Text(text.into())).await.is_err() {
         return;
     }
+
+    // ローカル Hub 購読: ScreenshotRequest 等の Canvas レベルメッセージを転送
+    let hub_bridge_tx = bridge_tx.clone();
+    let mut hub_rx = state.hub.subscribe();
+    let hub_task = tokio::spawn(async move {
+        loop {
+            match hub_rx.recv().await {
+                Ok(msg) => {
+                    // ScreenshotRequest のみ直接転送（Lane ラップ不要）
+                    if matches!(msg, ProcessMessage::ScreenshotRequest { .. }) {
+                        let json = serde_json::to_value(&msg).unwrap_or_default();
+                        let _ = hub_bridge_tx
+                            .send(BridgeMsg::DirectMessage(json))
+                            .await;
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::warn!("Lanes hub subscriber lagged: {} dropped", n);
+                }
+            }
+        }
+    });
 
     // 定期スキャンタスク（5秒ごとに Process 一覧を更新）
     let scan_tx = bridge_tx.clone();
@@ -183,6 +209,14 @@ async fn handle_lanes_socket(socket: WebSocket, state: Arc<AppState>) {
                         status: status.clone(),
                     }
                 }
+                BridgeMsg::DirectMessage(json) => {
+                    // Lane ラップせずに直接送信
+                    let text = serde_json::to_string(&json).unwrap_or_default();
+                    if ws_sender.send(Message::Text(text.into())).await.is_err() {
+                        break;
+                    }
+                    continue;
+                }
                 BridgeMsg::LanesUpdated(lanes) => LaneEvent::Lanes { lanes },
             };
             let text = serde_json::to_string(&event).unwrap_or_default();
@@ -200,6 +234,32 @@ async fn handle_lanes_socket(socket: WebSocket, state: Arc<AppState>) {
         while let Some(Ok(msg)) = ws_receiver.next().await {
             match msg {
                 Message::Text(text) => {
+                    // ScreenshotResponse を処理
+                    if let Ok(browser_msg) =
+                        serde_json::from_str::<crate::protocol::BrowserMessage>(&text)
+                    {
+                        if let crate::protocol::BrowserMessage::ScreenshotResponse {
+                            request_id,
+                            data,
+                            width,
+                            height,
+                        } = browser_msg
+                        {
+                            let mut waiters =
+                                state_for_recv.screenshot_waiters.lock().await;
+                            if let Some(tx) = waiters.remove(&request_id) {
+                                let _ = tx.send(
+                                    crate::process::state::ScreenshotData {
+                                        data,
+                                        width,
+                                        height,
+                                    },
+                                );
+                            }
+                            continue;
+                        }
+                    }
+                    // LaneCommand を処理
                     if let Ok(cmd) = serde_json::from_str::<LaneCommand>(&text) {
                         match cmd {
                             LaneCommand::Refresh => {
@@ -226,6 +286,7 @@ async fn handle_lanes_socket(socket: WebSocket, state: Arc<AppState>) {
         _ = recv_task => {},
     }
     scan_task.abort();
+    hub_task.abort();
 
     tracing::info!("Canvas Lane WS 接続終了");
 }
@@ -267,8 +328,41 @@ async fn discover_and_connect(
     let mut ports = connected_ports.lock().await;
 
     for proc in &running_processes {
-        // 自分自身（World Process）はスキップ
+        // 自分自身はローカル Hub 経由で接続（WS クライアント不要）
         if proc.port == state.port {
+            if !ports.contains(&proc.port) {
+                ports.insert(proc.port);
+                // ローカル Hub を購読してメッセージを Lane ラップで転送
+                let tx = bridge_tx.clone();
+                let lane_name = proc.project_name.clone();
+                let port = proc.port;
+                let mut hub_rx = state.hub.subscribe();
+                tokio::spawn(async move {
+                    loop {
+                        match hub_rx.recv().await {
+                            Ok(msg) => {
+                                let value = serde_json::to_value(&msg).unwrap_or_default();
+                                let _ = tx
+                                    .send(BridgeMsg::ProcessMessage {
+                                        lane: lane_name.clone(),
+                                        port,
+                                        message: value,
+                                    })
+                                    .await;
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                                tracing::warn!("Lane self hub lagged: {} dropped", n);
+                            }
+                        }
+                    }
+                });
+            }
+            lanes.push(LaneInfo {
+                name: proc.project_name.clone(),
+                port: proc.port,
+                status: LaneStatus::Connected,
+            });
             continue;
         }
 

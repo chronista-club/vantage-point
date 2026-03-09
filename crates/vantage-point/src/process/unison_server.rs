@@ -95,7 +95,9 @@ async fn handle_unwatch_file(
 
 /// canvas.open メソッドのハンドラー（シングルトン管理）
 async fn handle_canvas_open(state: &AppState) -> Result<serde_json::Value, String> {
-    let lanes = state.world.is_some();
+    // 複数プロジェクト稼働中なら Lane モードで開く（TheWorld デーモン有無に依存しない）
+    let lanes = state.world.is_some()
+        || crate::config::RunningProcesses::load().map_or(false, |r| r.processes.len() > 1);
 
     match crate::canvas::ensure_canvas_running(state.port, lanes) {
         Ok(pid) => {
