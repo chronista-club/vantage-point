@@ -1,0 +1,18 @@
+[package]
+name = "vp-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Vantage Point CLI — AI ネイティブ開発環境の CLI エントリーポイント"
+
+[[bin]]
+name = "vp"
+path = "src/main.rs"
+
+[dependencies]
+vantage-point = { path = "../vantage-point" }
+clap = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }

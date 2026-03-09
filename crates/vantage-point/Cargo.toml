@@ -10,10 +10,6 @@ description = "AI-powered development platform with Agent and MIDI services"
 name = "vantage_point"
 path = "src/lib.rs"
 
-[[bin]]
-name = "vp"
-path = "src/main.rs"
-
 [dependencies]
 # Async runtime
 tokio = { workspace = true }
