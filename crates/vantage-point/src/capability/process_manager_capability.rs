@@ -16,10 +16,10 @@
 //! manager.initialize(&ctx).await?;
 //!
 //! // プロジェクト一覧取得
-//! let projects = conductor.list_projects().await;
+//! let projects = world.list_projects().await;
 //!
 //! // Process起動
-//! conductor.start_process("my-project").await?;
+//! world.start_process("my-project").await?;
 //! ```
 
 use crate::capability::core::{Capability, CapabilityContext, CapabilityError, CapabilityResult};
@@ -132,7 +132,14 @@ impl ProcessManagerCapability {
 
     /// vpバイナリを検索
     fn find_vp_binary() -> Option<PathBuf> {
-        // 1. ~/.cargo/bin/vp
+        // 1. current_exe()（最も確実）
+        if let Ok(exe) = std::env::current_exe()
+            && exe.exists()
+        {
+            return Some(exe);
+        }
+
+        // 2. ~/.cargo/bin/vp
         if let Some(home) = dirs::home_dir() {
             let cargo_path = home.join(".cargo/bin/vp");
             if cargo_path.exists() {
@@ -140,13 +147,13 @@ impl ProcessManagerCapability {
             }
         }
 
-        // 2. /usr/local/bin/vp
+        // 3. /usr/local/bin/vp
         let usr_local = PathBuf::from("/usr/local/bin/vp");
         if usr_local.exists() {
             return Some(usr_local);
         }
 
-        // 3. PATH経由
+        // 4. PATH経由
         if let Ok(output) = std::process::Command::new("which").arg("vp").output()
             && output.status.success()
         {
@@ -332,20 +339,72 @@ impl ProcessManagerCapability {
         Ok(())
     }
 
+    /// 外部 Process の自己登録（Process 起動時に呼ばれる）
+    pub async fn register_external_process(&self, port: u16, project_dir: &str, pid: u32) {
+        let name = std::path::Path::new(project_dir)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        let process = RunningProcess {
+            project_name: name.clone(),
+            port,
+            pid,
+            project_path: project_dir.into(),
+            discovered_via_bonjour: false,
+        };
+
+        // プロジェクト状態を更新
+        {
+            let mut projects = self.projects.write().await;
+            if let Some(p) = projects.values_mut().find(|p| {
+                crate::config::Config::normalize_path(&p.path)
+                    == crate::config::Config::normalize_path(std::path::Path::new(project_dir))
+            }) {
+                p.process_status = ProcessStatus::Running;
+            }
+        }
+
+        let mut procs = self.running_processes.write().await;
+        procs.insert(name, process);
+        tracing::info!("Process 登録: port={}, dir={}", port, project_dir);
+    }
+
+    /// 外部 Process の登録解除（Process 停止時に呼ばれる）
+    pub async fn unregister_external_process(&self, port: u16) {
+        let mut procs = self.running_processes.write().await;
+        let key = procs
+            .iter()
+            .find(|(_, p)| p.port == port)
+            .map(|(k, _)| k.clone());
+
+        if let Some(key) = key {
+            procs.remove(&key);
+            tracing::info!("Process 登録解除: port={}, name={}", port, key);
+
+            // プロジェクト状態を更新
+            let mut projects = self.projects.write().await;
+            if let Some(p) = projects.get_mut(&key) {
+                p.process_status = ProcessStatus::Stopped;
+            }
+        }
+    }
+
     /// ポートスキャンでProcessを見つける
-    async fn find_process_port(&self, project_path: &PathBuf) -> Option<u16> {
+    async fn find_process_port(&self, project_path: &std::path::Path) -> Option<u16> {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_millis(500))
             .build()
             .ok()?;
 
-        for port in 33000..=33010 {
+        for port in crate::cli::PORT_RANGE_START..=crate::cli::PORT_RANGE_END {
             let url = format!("http://[::1]:{}/api/health", port);
             if let Ok(resp) = client.get(&url).send().await
                 && resp.status().is_success()
                 && let Ok(json) = resp.json::<serde_json::Value>().await
                 && let Some(dir) = json.get("project_dir").and_then(|v| v.as_str())
-                && PathBuf::from(dir) == *project_path
+                && std::path::Path::new(dir) == project_path
             {
                 return Some(port);
             }
@@ -364,7 +423,7 @@ impl ProcessManagerCapability {
         let mut discovered: HashMap<String, RunningProcess> = HashMap::new();
 
         // ポートスキャン
-        for port in 33000..=33010 {
+        for port in crate::cli::PORT_RANGE_START..=crate::cli::PORT_RANGE_END {
             let url = format!("http://[::1]:{}/api/health", port);
             if let Ok(resp) = client.get(&url).send().await
                 && resp.status().is_success()
@@ -427,12 +486,15 @@ impl ProcessManagerCapability {
     /// 2. ポートスキャンで Process 状態更新
     /// 3. 前回稼働中だった Process が消えていたらクラッシュ検知 → 自動再起動
     pub async fn run_health_monitor(
-        conductor: Arc<RwLock<Self>>,
+        world: Arc<RwLock<Self>>,
         shutdown_token: tokio_util::sync::CancellationToken,
     ) {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
         // 最初の tick は即座に発火するのでスキップ
         interval.tick().await;
+
+        // クラッシュ検知用: 連続して不在のカウント（1回の失敗では再起動しない）
+        let mut missing_count: HashMap<String, u32> = HashMap::new();
 
         tracing::info!("Health monitor 起動（30秒間隔）");
 
@@ -445,44 +507,53 @@ impl ProcessManagerCapability {
                 }
             }
 
-            let conductor = conductor.read().await;
+            let world = world.read().await;
 
-            // 1. running.json ゴースト除去
-            if let Ok(procs) = crate::config::RunningProcesses::load() {
-                tracing::debug!(
-                    "Health check: running.json に {} Process 登録中",
-                    procs.processes.len()
-                );
-            }
-
-            // 2. Process 状態更新
-            if let Err(e) = conductor.refresh_process_status().await {
+            // 1. Process 状態更新（HTTP スキャンで発見 — running.json 不使用）
+            if let Err(e) = world.refresh_process_status().await {
                 tracing::warn!("Health check: 状態更新失敗: {}", e);
                 continue;
             }
 
-            // 3. クラッシュ検知: 前回 Running だった Process が消えていたら再起動
-            let current = conductor.running_processes.read().await.clone();
-            let previous = conductor.previously_running.read().await.clone();
+            // 3. クラッシュ検知: 前回 Running だった Process が2回連続で不在なら再起動
+            let current = world.running_processes.read().await.clone();
+            let previous = world.previously_running.read().await.clone();
+
+            // 復帰した Process のカウントをリセット
+            for name in current.keys() {
+                missing_count.remove(name);
+            }
 
             for (name, prev_proc) in &previous {
                 if !current.contains_key(name) {
+                    let count = missing_count.entry(name.clone()).or_insert(0);
+                    *count += 1;
+
+                    if *count < 2 {
+                        tracing::debug!(
+                            "Health check: Process '{}' が不在（{}/2回目、次回再確認）",
+                            name,
+                            count
+                        );
+                        continue;
+                    }
+
                     tracing::warn!(
-                        "Health check: Process '{}' (port {}) がクラッシュを検知",
+                        "Health check: Process '{}' (port {}) がクラッシュを検知（2回連続不在）",
                         name,
                         prev_proc.port
                     );
 
                     // 自動再起動
                     tracing::info!("Health check: Process '{}' を自動再起動中...", name);
-                    match conductor.start_process(name).await {
+                    match world.start_process(name).await {
                         Ok(new_proc) => {
                             tracing::info!(
                                 "Health check: Process '{}' 再起動成功 (port {})",
                                 name,
                                 new_proc.port
                             );
-                            // メニューバーアプリに通知
+                            missing_count.remove(name);
                             crate::notify::post_process_changed(new_proc.port, "restarted");
                         }
                         Err(e) => {
@@ -493,7 +564,7 @@ impl ProcessManagerCapability {
             }
 
             // 前回の稼働状態を保存（次回比較用）
-            *conductor.previously_running.write().await = current;
+            *world.previously_running.write().await = current;
         }
     }
 }
@@ -508,9 +579,9 @@ impl Default for ProcessManagerCapability {
 impl Capability for ProcessManagerCapability {
     fn info(&self) -> CapabilityInfo {
         CapabilityInfo::new(
-            "conductor-capability",
+            "world-capability",
             env!("CARGO_PKG_VERSION"),
-            "Process Conductor - 複数のProject Processを指揮・管理",
+            "Process World - 複数のProject Processを統括管理",
         )
     }
 
@@ -590,7 +661,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_conductor_capability_new() {
+    fn test_world_capability_new() {
         let cap = ProcessManagerCapability::new();
         assert_eq!(cap.state(), CapabilityState::Uninitialized);
     }

@@ -9,7 +9,7 @@
 //! process / canvas チャネルは Unison QUIC で通信。
 //! Ruby VM / capture / permission 等の一部 API は HTTP フォールバック。
 
-use crate::config::RunningProcesses;
+// running.json 不使用 — discovery モジュール経由
 use rmcp::{
     ErrorData as McpError, ServiceExt, handler::server::tool::ToolRouter, model::*,
     schemars::JsonSchema, tool, tool_handler, tool_router, transport::stdio,
@@ -581,10 +581,10 @@ impl VantageMcp {
 
     /// Process ポートを再解決し、変わっていれば URL を更新してリトライ用 URL を返す
     ///
-    /// 接続失敗時に呼ばれる。`running.json` から cwd に一致する
+    /// 接続失敗時に呼ばれる。discovery で cwd に一致する
     /// Process を検索し、現在の URL と異なる場合のみリトライ URL を返す。
     async fn try_reconnect(&self, endpoint: &str) -> Option<String> {
-        let process_info = RunningProcesses::find_for_cwd()?;
+        let process_info = crate::discovery::find_for_cwd().await?;
         let new_base = format!("http://[::1]:{}", process_info.port);
 
         let mut current = self.process_url.lock().await;
@@ -620,7 +620,8 @@ impl VantageMcp {
         ));
 
         // vp start --headless をデタッチ実行
-        let spawn_result = std::process::Command::new("vp")
+        let vp_bin = std::env::current_exe().unwrap_or_else(|_| "vp".into());
+        let spawn_result = std::process::Command::new(&vp_bin)
             .arg("start")
             .arg("--headless")
             .arg("-C")
@@ -649,8 +650,8 @@ impl VantageMcp {
         for _ in 0..max_attempts {
             tokio::time::sleep(poll_interval).await;
 
-            // running.json から新しい Process を検索
-            let process_info = match RunningProcesses::find_for_cwd() {
+            // 稼働中 Process を検索（TheWorld API → HTTP スキャンフォールバック）
+            let process_info = match crate::discovery::find_for_cwd().await {
                 Some(info) => info,
                 None => continue,
             };
@@ -1208,10 +1209,10 @@ impl VantageMcp {
         let elapsed = resp.get("elapsed_ms").and_then(|v| v.as_u64()).unwrap_or(0);
 
         let mut result = format!("Ruby eval completed in {}ms", elapsed);
-        if let Some(code) = exit_code {
-            if code != 0 {
-                result.push_str(&format!(" (exit code: {})", code));
-            }
+        if let Some(code) = exit_code
+            && code != 0
+        {
+            result.push_str(&format!(" (exit code: {})", code));
         }
         if !stdout.is_empty() {
             result.push_str(&format!("\n\nstdout:\n{}", stdout));
@@ -1518,7 +1519,8 @@ impl VantageMcp {
 
         // 4. Start new Process process
         let open_viewer = params.open_viewer.unwrap_or(false);
-        let mut cmd = std::process::Command::new("vp");
+        let vp_bin = std::env::current_exe().unwrap_or_else(|_| "vp".into());
+        let mut cmd = std::process::Command::new(&vp_bin);
         cmd.arg("start")
             .arg("-C")
             .arg(&project_dir)
@@ -1600,14 +1602,14 @@ impl rmcp::ServerHandler for VantageMcp {
 /// 1. Explicit port argument (if provided and != 33000)
 /// 2. running.json lookup by current working directory
 /// 3. Default port (33000)
-fn resolve_process_port(explicit_port: u16) -> u16 {
+async fn resolve_process_port(explicit_port: u16) -> u16 {
     // If an explicit port was provided (not the default), use it
     if explicit_port != 33000 {
         return explicit_port;
     }
 
     // Try to find a running Process for the current directory
-    if let Some(process_info) = RunningProcesses::find_for_cwd() {
+    if let Some(process_info) = crate::discovery::find_for_cwd().await {
         return process_info.port;
     }
 
@@ -1617,11 +1619,14 @@ fn resolve_process_port(explicit_port: u16) -> u16 {
 
 /// Run the MCP server over stdio
 pub async fn run_mcp_server(process_port: u16) -> anyhow::Result<()> {
+    // rustls 0.23+ は CryptoProvider の明示的な設定が必要（QUIC 接続用）
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
     // トレースログファイルを早期初期化
     crate::trace_log::init_log_file();
 
     // Resolve the actual port to use
-    let resolved_port = resolve_process_port(process_port);
+    let resolved_port = resolve_process_port(process_port).await;
 
     // Note: In MCP mode, we should not use tracing to stdout
     // as it interferes with JSON-RPC communication

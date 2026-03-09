@@ -99,12 +99,20 @@ struct ProcessEntry {
     shutdown_tx: Option<mpsc::Sender<()>>,
     /// stdin 注入チャネル
     inject_tx: Option<mpsc::Sender<String>>,
+    /// 完了時刻（クリーンアップ判定用）
+    completed_at: Option<std::time::Instant>,
 }
 
 /// プロセスレジストリ
 pub struct ProcessRegistry {
     processes: HashMap<String, ProcessEntry>,
     counter: u32,
+}
+
+impl Default for ProcessRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ProcessRegistry {
@@ -154,6 +162,7 @@ impl ProcessRegistry {
                 },
                 shutdown_tx: Some(shutdown_tx),
                 inject_tx: Some(inject_tx),
+                completed_at: None,
             },
         );
     }
@@ -161,18 +170,39 @@ impl ProcessRegistry {
     /// プロセス状態を更新
     pub fn update_status(&mut self, process_id: &str, status: ProcessStatus) {
         if let Some(entry) = self.processes.get_mut(process_id) {
+            // 完了・失敗への遷移時に完了時刻を記録
+            match &status {
+                ProcessStatus::Completed { .. } | ProcessStatus::Failed { .. } => {
+                    entry.completed_at = Some(std::time::Instant::now());
+                }
+                _ => {}
+            }
             entry.info.status = status;
             entry.shutdown_tx = None;
             entry.inject_tx = None;
         }
     }
 
+    /// 完了済みエントリのうち、指定秒数以上経過したものを削除
+    pub fn cleanup_completed(&mut self, max_age_secs: u64) {
+        let now = std::time::Instant::now();
+        self.processes.retain(|_id, entry| {
+            match &entry.info.status {
+                ProcessStatus::Completed { .. } | ProcessStatus::Failed { .. } => entry
+                    .completed_at
+                    .map(|t| now.duration_since(t).as_secs() < max_age_secs)
+                    .unwrap_or(true),
+                _ => true, // Running 等は常に残す
+            }
+        });
+    }
+
     /// Graceful shutdown シグナルを送信
     pub async fn send_shutdown(&self, process_id: &str) -> bool {
-        if let Some(entry) = self.processes.get(process_id) {
-            if let Some(tx) = &entry.shutdown_tx {
-                return tx.send(()).await.is_ok();
-            }
+        if let Some(entry) = self.processes.get(process_id)
+            && let Some(tx) = &entry.shutdown_tx
+        {
+            return tx.send(()).await.is_ok();
         }
         false
     }
@@ -240,6 +270,9 @@ pub async fn process_run(
     project_dir: &str,
     hub: &Hub,
 ) -> Result<String, String> {
+    // 新プロセス起動前に完了済みエントリを掃除（5分経過分）
+    registry.lock().await.cleanup_completed(300);
+
     let pane_id = params.pane_id.as_deref().unwrap_or("main");
     let work_dir = params.working_dir.as_deref().unwrap_or(project_dir);
 
@@ -338,6 +371,7 @@ pub async fn process_inject(
 }
 
 /// プロセスの出力をストリーミング + inject 受信
+#[allow(clippy::too_many_arguments)]
 async fn stream_output(
     child: &mut tokio::process::Child,
     stdout: Option<tokio::process::ChildStdout>,
@@ -512,13 +546,13 @@ fn format_output_html(stdout: &str, stderr: &str, exit_code: Option<i32>) -> Str
         html.push_str("</pre>");
     }
 
-    if let Some(code) = exit_code {
-        if code != 0 {
-            html.push_str(&format!(
-                "<div style=\"color:#e06060;font-size:11px;margin-top:8px\">exit code: {}</div>",
-                code
-            ));
-        }
+    if let Some(code) = exit_code
+        && code != 0
+    {
+        html.push_str(&format!(
+            "<div style=\"color:#e06060;font-size:11px;margin-top:8px\">exit code: {}</div>",
+            code
+        ));
     }
 
     html.push_str("</div>");
@@ -565,10 +599,19 @@ pub async fn ruby_eval(
 
     if let Some(file) = file_path {
         let full_path = Path::new(project_dir).join(file);
-        if !full_path.exists() {
-            return Err(format!("ファイルが見つかりません: {}", file));
+        let canonical = full_path
+            .canonicalize()
+            .map_err(|e| format!("パス解決エラー: {}", e))?;
+        let project_canonical = Path::new(project_dir)
+            .canonicalize()
+            .map_err(|e| format!("プロジェクトディレクトリ解決エラー: {}", e))?;
+        if !canonical.starts_with(&project_canonical) {
+            return Err(format!(
+                "プロジェクトディレクトリ外のファイルにはアクセスできません: {}",
+                file
+            ));
         }
-        args.push(full_path.to_string_lossy().to_string());
+        args.push(canonical.to_string_lossy().to_string());
     } else if let Some(c) = code {
         args.push("-e".to_string());
         args.push(c.to_string());
@@ -601,12 +644,22 @@ pub async fn ruby_run(
 ) -> Result<String, String> {
     let ruby_code = if let Some(file) = file_path {
         let full_path = Path::new(project_dir).join(file);
-        if !full_path.exists() {
-            return Err(format!("ファイルが見つかりません: {}", file));
+        let canonical = full_path
+            .canonicalize()
+            .map_err(|e| format!("パス解決エラー: {}", e))?;
+        let project_canonical = Path::new(project_dir)
+            .canonicalize()
+            .map_err(|e| format!("プロジェクトディレクトリ解決エラー: {}", e))?;
+        if !canonical.starts_with(&project_canonical) {
+            return Err(format!(
+                "プロジェクトディレクトリ外のファイルにはアクセスできません: {}",
+                file
+            ));
         }
-        let content = tokio::fs::read_to_string(&full_path)
+        // TOCTOU 回避: exists() チェックせず直接読み込み
+        let content = tokio::fs::read_to_string(&canonical)
             .await
-            .map_err(|e| format!("ファイル読み込み失敗: {}", e))?;
+            .map_err(|e| format!("ファイル読み込みエラー: {} ({})", file, e))?;
         ruby_bootstrap(&content)
     } else if let Some(c) = code {
         ruby_bootstrap(c)

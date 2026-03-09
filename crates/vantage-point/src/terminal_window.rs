@@ -470,7 +470,7 @@ pub fn run_terminal_unison(
     let event_loop = EventLoopBuilder::<TerminalEvent>::with_user_event().build();
 
     let window = WindowBuilder::new()
-        .with_title(&format!("VP: {}", project_name))
+        .with_title(format!("VP: {}", project_name))
         .with_inner_size(LogicalSize::new(1400.0, 900.0))
         .build(&event_loop)?;
 
@@ -677,19 +677,19 @@ pub fn run_terminal_unison(
                 }
 
                 // Ctrl+key: 制御コード
-                if modifiers.contains(ModifiersState::CONTROL) {
-                    if let Some(byte) = ctrl_key_byte(&event.physical_key) {
-                        let _ = input_tx.send(PtyInputCommand::Input(vec![byte]));
-                        return;
-                    }
+                if modifiers.contains(ModifiersState::CONTROL)
+                    && let Some(byte) = ctrl_key_byte(&event.physical_key)
+                {
+                    let _ = input_tx.send(PtyInputCommand::Input(vec![byte]));
+                    return;
                 }
 
                 // Alt+key: ESC + 基本文字
-                if modifiers.contains(ModifiersState::ALT) {
-                    if let Some(ch) = keycode_to_base_char(&event.physical_key) {
-                        let _ = input_tx.send(PtyInputCommand::Input(vec![0x1b, ch]));
-                        return;
-                    }
+                if modifiers.contains(ModifiersState::ALT)
+                    && let Some(ch) = keycode_to_base_char(&event.physical_key)
+                {
+                    let _ = input_tx.send(PtyInputCommand::Input(vec![0x1b, ch]));
+                    return;
                 }
 
                 // 特殊キー（矢印、F1-F12等）

@@ -9,7 +9,7 @@ use crate::protocol::DebugMode;
 
 /// Health response from Process
 #[derive(serde::Deserialize)]
-pub(crate) struct HealthResponse {
+pub struct HealthResponse {
     pub status: String,
     pub version: String,
     pub pid: u32,
@@ -18,7 +18,7 @@ pub(crate) struct HealthResponse {
 }
 
 /// Check if Process is running on the specified port
-pub(crate) async fn check_status(port: u16) -> Result<()> {
+pub async fn check_status(port: u16) -> Result<()> {
     let url = format!("http://[::1]:{}/api/health", port);
 
     let client = reqwest::Client::builder()
@@ -62,7 +62,7 @@ pub(crate) async fn check_status(port: u16) -> Result<()> {
 }
 
 /// Stop the Process running on the specified port
-pub(crate) async fn stop_process(port: u16) -> Result<()> {
+pub async fn stop_process(port: u16) -> Result<()> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(2))
         .build()?;
@@ -121,7 +121,7 @@ pub(crate) async fn stop_process(port: u16) -> Result<()> {
 
 /// Check if a process is still running
 #[cfg(unix)]
-pub(crate) fn is_process_running(pid: u32) -> bool {
+pub fn is_process_running(pid: u32) -> bool {
     use std::process::Command;
     Command::new("kill")
         .args(["-0", &pid.to_string()])
@@ -131,27 +131,30 @@ pub(crate) fn is_process_running(pid: u32) -> bool {
 }
 
 #[cfg(not(unix))]
-pub(crate) fn is_process_running(_pid: u32) -> bool {
+pub fn is_process_running(_pid: u32) -> bool {
     false
 }
 
 /// Force kill a process
 #[cfg(unix)]
-pub(crate) fn force_kill(pid: u32) {
+pub fn force_kill(pid: u32) {
     use std::process::Command;
     let _ = Command::new("kill").args(["-9", &pid.to_string()]).status();
 }
 
 #[cfg(not(unix))]
-pub(crate) fn force_kill(_pid: u32) {}
+pub fn force_kill(_pid: u32) {}
 
 /// Default port range to scan for instances
-pub(crate) const PORT_RANGE_START: u16 = 33000;
-pub(crate) const PORT_RANGE_END: u16 = 33010;
+pub const PORT_RANGE_START: u16 = 33000;
+pub const PORT_RANGE_END: u16 = 33010;
+
+/// TheWorld（Daemon 統合）のデフォルトポート
+pub const WORLD_PORT: u16 = 32000;
 
 /// Running instance info
 #[derive(Clone)]
-pub(crate) struct Instance {
+pub struct Instance {
     pub port: u16,
     pub pid: u32,
     pub version: String,
@@ -159,7 +162,7 @@ pub(crate) struct Instance {
 }
 
 /// Scan for running vp instances
-pub(crate) async fn scan_instances() -> Vec<Instance> {
+pub async fn scan_instances() -> Vec<Instance> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_millis(500))
         .build()
@@ -185,21 +188,8 @@ pub(crate) async fn scan_instances() -> Vec<Instance> {
     instances
 }
 
-/// Find the first available port in the range
-pub(crate) async fn find_available_port() -> Option<u16> {
-    let used_ports: std::collections::HashSet<u16> =
-        scan_instances().await.into_iter().map(|i| i.port).collect();
-
-    for port in PORT_RANGE_START..=PORT_RANGE_END {
-        if !used_ports.contains(&port) {
-            return Some(port);
-        }
-    }
-    None
-}
-
 /// 稼働中インスタンスをプロジェクト名ベースで一覧表示
-pub(crate) fn list_instances(config: &crate::config::Config) -> Result<()> {
+pub fn list_instances(config: &crate::config::Config) -> Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
         let instances = scan_instances().await;
@@ -255,7 +245,7 @@ pub(crate) fn list_instances(config: &crate::config::Config) -> Result<()> {
 }
 
 /// ターゲット指定で WebUI を開く
-pub(crate) fn open_by_target(target: Option<&str>, config: &crate::config::Config) -> Result<()> {
+pub fn open_by_target(target: Option<&str>, config: &crate::config::Config) -> Result<()> {
     use crate::resolve::{self, ResolvedTarget};
 
     let resolved = resolve::resolve_target(target, config)?;
@@ -287,7 +277,7 @@ pub(crate) fn open_by_target(target: Option<&str>, config: &crate::config::Confi
 }
 
 /// ターゲット指定で Process を停止
-pub(crate) fn stop_by_target(target: Option<&str>, config: &crate::config::Config) -> Result<()> {
+pub fn stop_by_target(target: Option<&str>, config: &crate::config::Config) -> Result<()> {
     use crate::resolve::{self, ResolvedTarget};
 
     let resolved = resolve::resolve_target(target, config)?;
@@ -332,7 +322,7 @@ impl From<DebugModeArg> for DebugMode {
 }
 
 /// Parse debug mode from environment variable
-pub(crate) fn parse_debug_env() -> Option<DebugMode> {
+pub fn parse_debug_env() -> Option<DebugMode> {
     std::env::var("VANTAGE_DEBUG")
         .ok()
         .and_then(|v| match v.to_lowercase().as_str() {
@@ -350,7 +340,7 @@ pub(crate) fn parse_debug_env() -> Option<DebugMode> {
 ///   - None -> warn
 ///   - Simple -> info
 ///   - Detail -> debug
-pub(crate) fn init_tracing(debug_mode: DebugMode) {
+pub fn init_tracing(debug_mode: DebugMode) {
     // VP_LOGが設定されていない場合、debug_modeに基づいてRUST_LOGを設定
     // SAFETY: main()開始直後、他スレッド起動前に呼ばれるため安全
     if std::env::var("VP_LOG").is_err() && std::env::var("RUST_LOG").is_err() {
@@ -375,21 +365,8 @@ pub(crate) fn init_tracing(debug_mode: DebugMode) {
         .init();
 }
 
-/// snake_case を PascalCase に変換
-pub(crate) fn to_pascal_case(s: &str) -> String {
-    s.split(['_', '-'])
-        .map(|word| {
-            let mut chars = word.chars();
-            match chars.next() {
-                None => String::new(),
-                Some(first) => first.to_uppercase().chain(chars).collect(),
-            }
-        })
-        .collect()
-}
-
 /// vpバイナリのパスを取得
-pub(crate) fn which_vp() -> Option<std::path::PathBuf> {
+pub fn which_vp() -> Option<std::path::PathBuf> {
     // 1. ~/.cargo/bin/vp
     if let Some(home) = dirs::home_dir() {
         let cargo_path = home.join(".cargo/bin/vp");
@@ -418,7 +395,7 @@ pub(crate) fn which_vp() -> Option<std::path::PathBuf> {
 }
 
 /// VantagePoint.app のパスを検索
-pub(crate) fn find_vantage_point_app() -> Option<std::path::PathBuf> {
+pub fn find_vantage_point_app() -> Option<std::path::PathBuf> {
     // 1. /Applications
     let system_app = std::path::PathBuf::from("/Applications/VantagePoint.app");
     if system_app.exists() {

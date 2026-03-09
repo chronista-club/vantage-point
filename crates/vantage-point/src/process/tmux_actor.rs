@@ -265,12 +265,28 @@ impl TmuxActor {
         tracing::info!("TmuxActor 終了: session={}", self.session_name);
     }
 
+    /// tmux コマンド文字列のバリデーション（シェルメタ文字を拒否）
+    fn validate_tmux_command(cmd: &str) -> Result<(), String> {
+        let forbidden = [';', '|', '&', '$', '`', '\n', '\r'];
+        for ch in forbidden {
+            if cmd.contains(ch) {
+                return Err(format!("tmux コマンドに禁止文字 '{}' が含まれています", ch));
+            }
+        }
+        Ok(())
+    }
+
     /// ペイン分割を実行（ブロッキング — spawn_blocking 内で呼ぶ）
     fn do_split(
         session_name: &str,
         horizontal: bool,
         command: Option<&str>,
     ) -> Result<TmuxPane, String> {
+        // コマンドインジェクション対策: シェルメタ文字を拒否
+        if let Some(cmd) = command {
+            Self::validate_tmux_command(cmd)?;
+        }
+
         let flag = if horizontal { "-v" } else { "-h" };
         let format_str =
             "#{pane_id}\t#{pane_active}\t#{pane_width}\t#{pane_height}\t#{pane_current_command}";
@@ -419,5 +435,25 @@ mod tests {
         assert_eq!(pane.id, "%3");
         assert!(!pane.active);
         assert_eq!(pane.command, "claude");
+    }
+
+    #[test]
+    fn test_validate_tmux_command_ok() {
+        // 正常なコマンドは通過する
+        assert!(TmuxActor::validate_tmux_command("ruby script.rb").is_ok());
+        assert!(TmuxActor::validate_tmux_command("cargo test --workspace").is_ok());
+        assert!(TmuxActor::validate_tmux_command("zsh").is_ok());
+    }
+
+    #[test]
+    fn test_validate_tmux_command_forbidden_chars() {
+        // シェルメタ文字を含むコマンドは拒否される
+        assert!(TmuxActor::validate_tmux_command("cmd; rm -rf /").is_err());
+        assert!(TmuxActor::validate_tmux_command("cmd | cat").is_err());
+        assert!(TmuxActor::validate_tmux_command("cmd & bg").is_err());
+        assert!(TmuxActor::validate_tmux_command("echo $HOME").is_err());
+        assert!(TmuxActor::validate_tmux_command("echo `whoami`").is_err());
+        assert!(TmuxActor::validate_tmux_command("cmd\ninjected").is_err());
+        assert!(TmuxActor::validate_tmux_command("cmd\rinjected").is_err());
     }
 }

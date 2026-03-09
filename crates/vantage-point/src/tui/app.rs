@@ -101,11 +101,11 @@ impl CanvasState {
 
         use base64::Engine;
         let engine = base64::engine::general_purpose::STANDARD;
-        if let Ok(bytes) = engine.decode(data) {
-            if let Ok(img) = image::load_from_memory(&bytes) {
-                let protocol = picker.new_resize_protocol(img);
-                self.images.insert(pane_id.to_string(), protocol);
-            }
+        if let Ok(bytes) = engine.decode(data)
+            && let Ok(img) = image::load_from_memory(&bytes)
+        {
+            let protocol = picker.new_resize_protocol(img);
+            self.images.insert(pane_id.to_string(), protocol);
         }
     }
 
@@ -169,16 +169,11 @@ fn spawn_canvas_receiver(
             };
 
             // イベント受信ループ
-            loop {
-                match channel.recv().await {
-                    Ok(msg) => {
-                        let payload = msg.payload_as_value().unwrap_or_default();
-                        if let Ok(process_msg) = serde_json::from_value::<ProcessMessage>(payload) {
-                            let mut state = canvas_state.lock().unwrap();
-                            state.apply(&process_msg);
-                        }
-                    }
-                    Err(_) => break,
+            while let Ok(msg) = channel.recv().await {
+                let payload = msg.payload_as_value().unwrap_or_default();
+                if let Ok(process_msg) = serde_json::from_value::<ProcessMessage>(payload) {
+                    let mut state = canvas_state.lock().unwrap();
+                    state.apply(&process_msg);
                 }
             }
         });
@@ -248,7 +243,7 @@ fn run_tui_inner(resolved: Option<(String, String)>) -> Result<()> {
     let result = if let Some((dir, name)) = resolved {
         // ポート解決: running.json から取得、なければ config index ベース
         let config = Config::load()?;
-        let port = if let Some(running) = crate::config::RunningProcesses::find_by_project(&dir) {
+        let port = if let Some(running) = crate::discovery::find_by_project_blocking(&dir) {
             running.port
         } else if let Some(idx) = config.find_project_index(&dir) {
             crate::resolve::port_for_configured(idx, &config)?
@@ -293,45 +288,44 @@ fn run_project_select(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> 
             draw_project_select(frame, &projects, &mut list_state);
         })?;
 
-        if event::poll(Duration::from_millis(50))? {
-            match event::read()? {
-                Event::Key(key) => match key.code {
-                    // 選択決定
-                    KeyCode::Enter => {
-                        if let Some(idx) = list_state.selected() {
-                            let project = &projects[idx];
-                            let dir = Config::normalize_path(std::path::Path::new(&project.path));
-                            let name = project.name.clone();
+        if event::poll(Duration::from_millis(50))?
+            && let Event::Key(key) = event::read()?
+        {
+            match key.code {
+                // 選択決定
+                KeyCode::Enter => {
+                    if let Some(idx) = list_state.selected() {
+                        let project = &projects[idx];
+                        let dir = Config::normalize_path(std::path::Path::new(&project.path));
+                        let name = project.name.clone();
 
-                            // ターミナルタイトル更新
-                            set_terminal_title(&format!("VP: {}", name));
+                        // ターミナルタイトル更新
+                        set_terminal_title(&format!("VP: {}", name));
 
-                            // Process サーバー + Canvas 起動
-                            start_background_services(&dir, &config, idx, &name).ok();
+                        // Process サーバー + Canvas 起動
+                        start_background_services(&dir, &config, idx, &name).ok();
 
-                            // ポート取得
-                            let port = crate::resolve::port_for_configured(idx, &config)
-                                .unwrap_or(33000 + idx as u16);
+                        // ポート取得
+                        let port = crate::resolve::port_for_configured(idx, &config)
+                            .unwrap_or(33000 + idx as u16);
 
-                            // Claude セッション開始
-                            return run_claude_session(terminal, &dir, &name, port);
-                        }
+                        // Claude セッション開始
+                        return run_claude_session(terminal, &dir, &name, port);
                     }
-                    // カーソル移動
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        let i = list_state.selected().unwrap_or(0);
-                        let new = if i == 0 { projects.len() - 1 } else { i - 1 };
-                        list_state.select(Some(new));
-                    }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        let i = list_state.selected().unwrap_or(0);
-                        let new = if i >= projects.len() - 1 { 0 } else { i + 1 };
-                        list_state.select(Some(new));
-                    }
-                    // 終了
-                    KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
-                    _ => {}
-                },
+                }
+                // カーソル移動
+                KeyCode::Up | KeyCode::Char('k') => {
+                    let i = list_state.selected().unwrap_or(0);
+                    let new = if i == 0 { projects.len() - 1 } else { i - 1 };
+                    list_state.select(Some(new));
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    let i = list_state.selected().unwrap_or(0);
+                    let new = if i >= projects.len() - 1 { 0 } else { i + 1 };
+                    list_state.select(Some(new));
+                }
+                // 終了
+                KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
                 _ => {}
             }
         }
@@ -379,9 +373,9 @@ fn draw_project_select(
         .iter()
         .enumerate()
         .map(|(i, p)| {
-            let running = crate::config::RunningProcesses::find_by_project(
-                &Config::normalize_path(std::path::Path::new(&p.path)),
-            );
+            let running = crate::discovery::find_by_project_blocking(&Config::normalize_path(
+                std::path::Path::new(&p.path),
+            ));
             let status = if running.is_some() {
                 Span::styled(" [running] ", Style::default().fg(NORD_GREEN))
             } else {
@@ -431,11 +425,7 @@ fn start_background_services(
 ) -> Result<()> {
     let port = crate::resolve::port_for_configured(project_index, config)?;
 
-    // ポート予約: Process サーバー起動前に running.json へ仮登録
-    let my_pid = std::process::id();
-    if let Err(e) = crate::config::RunningProcesses::register(port, project_dir, my_pid, None) {
-        tracing::warn!("Failed to pre-register port in running.json: {}", e);
-    }
+    // ポート予約は不要 — server.rs が起動後に TheWorld に登録する
 
     let cap_config = crate::process::CapabilityConfig {
         project_dir: project_dir.to_string(),
@@ -479,37 +469,36 @@ fn run_session_select(
             draw_session_select(frame, sessions_ref, &mut list_state);
         })?;
 
-        if event::poll(Duration::from_millis(50))? {
-            match event::read()? {
-                Event::Key(key) => match key.code {
-                    KeyCode::Enter => {
-                        let idx = list_state.selected().unwrap_or(0);
-                        return Ok(match idx {
-                            0 => SessionMode::Continue,
-                            1 => SessionMode::New,
-                            n => SessionMode::Resume(sessions[n - 2].id.clone()),
-                        });
-                    }
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        let i = list_state.selected().unwrap_or(0);
-                        let total = sessions.len() + 2; // +2 for Continue & New
-                        let new = if i == 0 { total - 1 } else { i - 1 };
-                        list_state.select(Some(new));
-                    }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        let i = list_state.selected().unwrap_or(0);
-                        let total = sessions.len() + 2;
-                        let new = if i >= total - 1 { 0 } else { i + 1 };
-                        list_state.select(Some(new));
-                    }
-                    // Esc: 前回の続き（デフォルト動作）
-                    KeyCode::Esc => return Ok(SessionMode::Continue),
-                    // Ctrl+Q: 終了
-                    KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        anyhow::bail!("User quit from session select");
-                    }
-                    _ => {}
-                },
+        if event::poll(Duration::from_millis(50))?
+            && let Event::Key(key) = event::read()?
+        {
+            match key.code {
+                KeyCode::Enter => {
+                    let idx = list_state.selected().unwrap_or(0);
+                    return Ok(match idx {
+                        0 => SessionMode::Continue,
+                        1 => SessionMode::New,
+                        n => SessionMode::Resume(sessions[n - 2].id.clone()),
+                    });
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    let i = list_state.selected().unwrap_or(0);
+                    let total = sessions.len() + 2; // +2 for Continue & New
+                    let new = if i == 0 { total - 1 } else { i - 1 };
+                    list_state.select(Some(new));
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    let i = list_state.selected().unwrap_or(0);
+                    let total = sessions.len() + 2;
+                    let new = if i >= total - 1 { 0 } else { i + 1 };
+                    list_state.select(Some(new));
+                }
+                // Esc: 前回の続き（デフォルト動作）
+                KeyCode::Esc => return Ok(SessionMode::Continue),
+                // Ctrl+Q: 終了
+                KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    anyhow::bail!("User quit from session select");
+                }
                 _ => {}
             }
         }
@@ -939,18 +928,9 @@ fn run_claude_session(
     // VT パーサー
     let term_state = Arc::new(Mutex::new(TerminalState::new(pty_cols, pty_lines)));
 
-    // running.json から認証トークンを取得
-    let terminal_token = crate::config::RunningProcesses::load()
-        .ok()
-        .and_then(|procs| {
-            procs
-                .processes
-                .iter()
-                .find(|p| p.port == port)
-                .and_then(|p| p.terminal_token.clone())
-        })
-        .filter(|t| !t.is_empty())
-        .ok_or_else(|| {
+    // Health API から認証トークンを取得
+    let terminal_token =
+        crate::discovery::fetch_terminal_token_blocking(port).ok_or_else(|| {
             anyhow::anyhow!(
                 "Terminal token not found for port {}. Process may not be fully started.",
                 port
@@ -980,15 +960,38 @@ fn run_claude_session(
     let _canvas_handle = spawn_canvas_receiver(port, Arc::clone(&canvas_state));
     let mut canvas_open = false;
 
+    // カーソル点滅制御
+    let mut cursor_blink_on = true;
+    let mut cursor_blink_timer = std::time::Instant::now();
+    const CURSOR_BLINK_INTERVAL: Duration = Duration::from_millis(530);
+
+    // AI 状態検知: PTY 出力のアクティビティで「応答中」/「入力待ち」を推定
+    let mut last_pty_output = std::time::Instant::now();
+    let mut was_ai_busy = false;
+    const IDLE_THRESHOLD: Duration = Duration::from_millis(800);
+
     // メインループ
     let mut needs_redraw = true;
     loop {
+        // カーソル点滅タイマー
+        if cursor_blink_timer.elapsed() >= CURSOR_BLINK_INTERVAL {
+            cursor_blink_on = !cursor_blink_on;
+            cursor_blink_timer = std::time::Instant::now();
+            needs_redraw = true;
+        }
+        // AI 状態遷移検知: busy → idle に変わった瞬間に再描画
+        let is_ai_busy = last_pty_output.elapsed() < IDLE_THRESHOLD;
+        if was_ai_busy != is_ai_busy {
+            was_ai_busy = is_ai_busy;
+            needs_redraw = true;
+        }
         // ブリッジからのイベントを処理（ノンブロッキング）
         while let Ok(evt) = event_rx.try_recv() {
             match evt {
                 BridgeEvent::Output(bytes) => {
                     let mut state = term_state.lock().unwrap();
                     state.feed_bytes(&bytes);
+                    last_pty_output = std::time::Instant::now();
                     needs_redraw = true;
                 }
                 BridgeEvent::SessionCreated { session_id } => {
@@ -1028,7 +1031,6 @@ fn run_claude_session(
             let state = term_state.lock().unwrap();
             let snapshot = state.snapshot();
             let display_offset = state.display_offset();
-            let cursor_visible = snapshot.cursor_visible;
             drop(state);
 
             let session_count = sessions.len();
@@ -1044,8 +1046,9 @@ fn run_claude_session(
                     ])
                     .split(frame.area());
 
-                // ヘッダバー
-                draw_header_bar(frame, chunks[0], project_name, port, canvas_open);
+                // ヘッダバー（AI 状態検知: PTY 出力の有無で判定）
+                let ai_busy = last_pty_output.elapsed() < IDLE_THRESHOLD;
+                draw_header_bar(frame, chunks[0], project_name, port, canvas_open, ai_busy);
 
                 // メインエリア: Canvas ON なら左右分割
                 let main_area = chunks[1];
@@ -1079,16 +1082,13 @@ fn run_claude_session(
 
                 let pty_inner = pty_block.inner(pty_area);
                 frame.render_widget(pty_block, pty_area);
-                frame.render_widget(TerminalView::new(&snapshot), pty_inner);
+                frame.render_widget(
+                    TerminalView::new(&snapshot).cursor_blink(cursor_blink_on),
+                    pty_inner,
+                );
 
-                if cursor_visible {
-                    let (crow, ccol) = snapshot.cursor;
-                    let cx = pty_inner.x + ccol as u16;
-                    let cy = pty_inner.y + crow as u16;
-                    if cx < pty_inner.right() && cy < pty_inner.bottom() {
-                        frame.set_cursor_position(ratatui::layout::Position::new(cx, cy));
-                    }
-                }
+                // ハードウェアカーソルは使わない（ソフトウェアカーソルで点滅描画）
+                // cursor_visible (DECTCEM) は TerminalView 内のソフトウェアカーソルで処理
 
                 // Canvas ペイン
                 if let Some(canvas_area) = canvas_area {
@@ -1116,6 +1116,10 @@ fn run_claude_session(
 
             match event::read()? {
                 Event::Key(key) => {
+                    // キー入力時はカーソルを即座に表示にリセット
+                    cursor_blink_on = true;
+                    cursor_blink_timer = std::time::Instant::now();
+
                     // Ctrl+Q: 終了
                     if key.code == KeyCode::Char('q')
                         && key.modifiers.contains(KeyModifiers::CONTROL)
@@ -1418,6 +1422,7 @@ fn draw_header_bar(
     project_name: &str,
     port: u16,
     canvas_open: bool,
+    ai_busy: bool,
 ) {
     let canvas_indicator = if canvas_open {
         Span::styled(
@@ -1428,6 +1433,19 @@ fn draw_header_bar(
         Span::styled(
             " Canvas:OFF ",
             Style::default().fg(NORD_COMMENT).bg(NORD_POLAR),
+        )
+    };
+
+    // AI 状態インジケータ
+    let ai_indicator = if ai_busy {
+        Span::styled(
+            " ● 応答中 ",
+            Style::default().fg(NORD_YELLOW).bg(NORD_POLAR),
+        )
+    } else {
+        Span::styled(
+            " ○ 入力待ち ",
+            Style::default().fg(NORD_GREEN).bg(NORD_POLAR),
         )
     };
 
@@ -1450,6 +1468,8 @@ fn draw_header_bar(
             format!(" :{} ", port),
             Style::default().fg(NORD_COMMENT).bg(NORD_POLAR),
         ),
+        Span::styled("│", Style::default().fg(NORD_COMMENT).bg(NORD_POLAR)),
+        ai_indicator,
         Span::styled("│", Style::default().fg(NORD_COMMENT).bg(NORD_POLAR)),
         canvas_indicator,
     ]);

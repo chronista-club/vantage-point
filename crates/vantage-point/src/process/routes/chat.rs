@@ -321,6 +321,8 @@ pub async fn handle_chat_message_interactive(
 }
 
 /// Handle incoming chat message from browser (OneShot mode - legacy)
+///
+/// 現在は未使用。将来の OneShot モード（Echoes Act 1 的な単発実行）復活用に保持。
 #[allow(dead_code)]
 pub async fn handle_chat_message(
     hub: &Hub,

@@ -1,6 +1,6 @@
 //! HTTP server with WebSocket support
 //!
-//! Process サーバーのエントリーポイント。`run()` と `run_conductor()` でサーバーを起動する。
+//! Process サーバーのエントリーポイント。`run()` と `run_world()` でサーバーを起動する。
 //! ルートハンドラーは `routes/` モジュールに分離されている。
 
 use std::collections::HashMap;
@@ -17,12 +17,12 @@ use tower_http::cors::CorsLayer;
 use super::capabilities::{CapabilityConfig, ProcessCapabilities};
 use super::hub::Hub;
 use super::pty::PtyManager;
-use super::routes::{conductor, health, lanes, permission, prompt, update, ws};
+use super::routes::{health, lanes, permission, prompt, update, world, ws};
 use super::session::SessionManager;
 use super::state::AppState;
+use super::topic_router::TopicRouter;
 use super::unison_server;
 use crate::capability::{ProcessManagerCapability, UpdateCapability};
-use crate::config::RunningProcesses;
 use crate::file_watcher::FileWatcherManager;
 use crate::protocol::DebugMode;
 
@@ -67,7 +67,7 @@ pub async fn run(
     tracing::info!("Capability event bridge started");
 
     // Terminal チャネル認証トークンを生成
-    let terminal_token = crate::config::RunningProcesses::generate_terminal_token();
+    let terminal_token = crate::discovery::generate_terminal_token();
 
     // tmux Actor 起動（tmux 環境下でのみ有効）
     let project_name = crate::resolve::project_name_from_path(
@@ -76,6 +76,24 @@ pub async fn run(
     )
     .to_string();
     let tmux_handle = super::tmux_actor::spawn(&crate::tmux::session_name(&project_name));
+
+    // TopicRouter 初期化 + Hub → TopicRouter ブリッジ
+    let topic_router = Arc::new(TopicRouter::new());
+    {
+        let router_clone = topic_router.clone();
+        let mut hub_rx = hub.subscribe();
+        tokio::spawn(async move {
+            loop {
+                match hub_rx.recv().await {
+                    Ok(msg) => router_clone.route(msg).await,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!("TopicRouter lagged: {} messages dropped", n);
+                    }
+                }
+            }
+        });
+    }
 
     let state = Arc::new(AppState {
         hub,
@@ -87,7 +105,7 @@ pub async fn run(
         pending_permissions: Arc::new(RwLock::new(HashMap::new())),
         pending_prompts: Arc::new(RwLock::new(HashMap::new())),
         capabilities,
-        conductor: None,
+        world: None,
         update: None,
         interactive_agent: Arc::new(RwLock::new(None)),
         pty_manager: Arc::new(tokio::sync::Mutex::new(PtyManager::new())),
@@ -100,11 +118,11 @@ pub async fn run(
             crate::process::process_runner::ProcessRegistry::new(),
         )),
         screenshot_waiters: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
-        pane_contents: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        topic_router,
     });
 
-    // ペイン状態をディスクから復元（前回 Process 終了時の状態）
-    state.restore_pane_contents();
+    // ペイン状態をディスクから復元（前回 Process 終了時の状態 → RetainedStore）
+    state.restore_pane_contents().await;
 
     let app = Router::new()
         .route("/", get(health::index_handler))
@@ -155,32 +173,34 @@ pub async fn run(
             "/api/prompts/pending",
             get(prompt::prompts_list_pending_handler),
         )
-        // Conductor API routes
+        // World API routes
+        .route("/api/world/projects", get(world::world_list_projects))
+        .route("/api/world/processes", get(world::world_list_processes))
         .route(
-            "/api/conductor/projects",
-            get(conductor::conductor_list_projects),
+            "/api/world/processes/{project_name}/start",
+            post(world::world_start_process),
         )
         .route(
-            "/api/conductor/processes",
-            get(conductor::conductor_list_processes),
+            "/api/world/processes/{project_name}/stop",
+            post(world::world_stop_process),
         )
         .route(
-            "/api/conductor/processes/{project_name}/start",
-            post(conductor::conductor_start_process),
+            "/api/world/processes/{project_name}/pointview",
+            post(world::world_open_pointview),
+        )
+        .route("/api/world/refresh", post(world::world_refresh))
+        .route(
+            "/api/world/processes/register",
+            post(world::world_register_process),
         )
         .route(
-            "/api/conductor/processes/{project_name}/stop",
-            post(conductor::conductor_stop_process),
+            "/api/world/processes/unregister",
+            post(world::world_unregister_process),
         )
-        .route(
-            "/api/conductor/processes/{project_name}/pointview",
-            post(conductor::conductor_open_pointview),
-        )
-        .route("/api/conductor/refresh", post(conductor::conductor_refresh))
         .layer(CorsLayer::permissive())
         .with_state(state.clone());
 
-    let addr: SocketAddr = format!("[::1]:{}", port).parse().unwrap();
+    let addr: SocketAddr = format!("[::1]:{}", port).parse()?;
     tracing::info!("Starting vp on http://{}", addr);
 
     // Auto-open browser
@@ -218,19 +238,9 @@ pub async fn run(
         });
     }
 
-    // running.json の pid と quic_port を更新
-    // （start.rs で仮登録済み。ここでサーバー起動後の正確な情報に更新する）
+    // TheWorld に Process を登録（ベストエフォート — 失敗してもスキャンで発見される）
     let pid = std::process::id();
-    if let Err(e) = RunningProcesses::update_pid_and_quic(port, pid, quic_port, &terminal_token) {
-        tracing::warn!("Failed to update Process in running.json: {}", e);
-    } else {
-        tracing::info!(
-            "Updated Process in running.json (port={}, quic={}, pid={})",
-            port,
-            quic_port,
-            pid
-        );
-    }
+    crate::discovery::register(port, &state.project_dir, pid, &terminal_token).await;
 
     // メニューバーアプリに起動完了を通知
     crate::notify::post_process_changed(port, "started");
@@ -248,15 +258,11 @@ pub async fn run(
         })
         .await?;
 
-    // Unregister from running.json
-    if let Err(e) = RunningProcesses::unregister_by_port(port) {
-        tracing::warn!("Failed to unregister Process from running.json: {}", e);
-    } else {
-        tracing::info!("Unregistered Process from running.json (port={})", port);
-    }
+    // TheWorld から登録解除
+    crate::discovery::unregister(port).await;
 
-    // ペイン状態をディスクに保存（次回起動時に復元）
-    state_for_shutdown.persist_pane_contents();
+    // ペイン状態をディスクに保存（次回起動時に復元、RetainedStore から取得）
+    state_for_shutdown.persist_pane_contents().await;
 
     // メニューバーアプリに停止を通知
     crate::notify::post_process_changed(port, "stopped");
@@ -274,20 +280,25 @@ pub async fn run(
     Ok(())
 }
 
-/// ConductorモードでProcessサーバーを起動
+/// WorldモードでProcessサーバーを起動
 /// 複数のProject Processを管理するための専用モード
-pub async fn run_conductor(port: u16) -> Result<()> {
+/// Daemon（PTY管理 QUIC サーバー）も統合して起動する
+pub async fn run_world(port: u16) -> Result<()> {
     use crate::capability::core::{Capability, CapabilityContext};
+    use crate::daemon::process;
+
+    // PID ファイル書き出し（Daemon 統合）
+    process::write_pid_file()?;
 
     // Shutdown signal
     let shutdown_token = CancellationToken::new();
     let shutdown_token_clone = shutdown_token.clone();
 
-    // Initialize Conductor Capability
-    let mut conductor_cap = ProcessManagerCapability::new();
+    // Initialize World Capability
+    let mut world_cap = ProcessManagerCapability::new();
     let ctx = CapabilityContext::new();
 
-    if let Err(e) = conductor_cap.initialize(&ctx).await {
+    if let Err(e) = world_cap.initialize(&ctx).await {
         tracing::error!("Failed to initialize ProcessManagerCapability: {}", e);
         return Err(anyhow::anyhow!(
             "ProcessManagerCapability initialization failed: {}",
@@ -301,11 +312,14 @@ pub async fn run_conductor(port: u16) -> Result<()> {
         tracing::warn!("Failed to initialize UpdateCapability: {}", e);
     }
 
-    let conductor_cap = Arc::new(RwLock::new(conductor_cap));
+    let world_cap = Arc::new(RwLock::new(world_cap));
     let update_cap = Arc::new(RwLock::new(update_cap));
     let hub = Hub::new();
 
-    // Create minimal state for conductor mode
+    // TopicRouter（World モードでは Hub ブリッジ不要だが、AppState の必須フィールド）
+    let topic_router = Arc::new(TopicRouter::new());
+
+    // Create minimal state for world mode
     let state = Arc::new(AppState {
         hub,
         sessions: Arc::new(RwLock::new(SessionManager::new())),
@@ -323,20 +337,20 @@ pub async fn run_conductor(port: u16) -> Result<()> {
             })
             .await,
         ),
-        conductor: Some(conductor_cap.clone()),
+        world: Some(world_cap.clone()),
         update: Some(update_cap.clone()),
         interactive_agent: Arc::new(RwLock::new(None)),
         pty_manager: Arc::new(tokio::sync::Mutex::new(PtyManager::new())),
         canvas_pid: Arc::new(tokio::sync::Mutex::new(None)),
         port,
         file_watchers: Arc::new(tokio::sync::Mutex::new(FileWatcherManager::new())),
-        terminal_token: "CONDUCTOR_DISABLED".to_string(),
+        terminal_token: "WORLD_DISABLED".to_string(),
         tmux: None,
         process_registry: Arc::new(tokio::sync::Mutex::new(
             crate::process::process_runner::ProcessRegistry::new(),
         )),
         screenshot_waiters: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
-        pane_contents: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        topic_router,
     });
 
     let app = Router::new()
@@ -344,28 +358,30 @@ pub async fn run_conductor(port: u16) -> Result<()> {
         .route("/api/shutdown", post(health::shutdown_handler))
         // Canvas Lane 集約 WebSocket
         .route("/ws/lanes", get(lanes::lanes_ws_handler))
-        // Conductor API routes
+        // World API routes
+        .route("/api/world/projects", get(world::world_list_projects))
+        .route("/api/world/processes", get(world::world_list_processes))
         .route(
-            "/api/conductor/projects",
-            get(conductor::conductor_list_projects),
+            "/api/world/processes/{project_name}/start",
+            post(world::world_start_process),
         )
         .route(
-            "/api/conductor/processes",
-            get(conductor::conductor_list_processes),
+            "/api/world/processes/{project_name}/stop",
+            post(world::world_stop_process),
         )
         .route(
-            "/api/conductor/processes/{project_name}/start",
-            post(conductor::conductor_start_process),
+            "/api/world/processes/{project_name}/pointview",
+            post(world::world_open_pointview),
+        )
+        .route("/api/world/refresh", post(world::world_refresh))
+        .route(
+            "/api/world/processes/register",
+            post(world::world_register_process),
         )
         .route(
-            "/api/conductor/processes/{project_name}/stop",
-            post(conductor::conductor_stop_process),
+            "/api/world/processes/unregister",
+            post(world::world_unregister_process),
         )
-        .route(
-            "/api/conductor/processes/{project_name}/pointview",
-            post(conductor::conductor_open_pointview),
-        )
-        .route("/api/conductor/refresh", post(conductor::conductor_refresh))
         // Update API routes (vp CLI)
         .route("/api/update/check", get(update::update_check))
         .route("/api/update/apply", post(update::update_apply))
@@ -381,37 +397,72 @@ pub async fn run_conductor(port: u16) -> Result<()> {
         .layer(CorsLayer::permissive())
         .with_state(state);
 
-    let addr: SocketAddr = format!("[::1]:{}", port).parse().unwrap();
-    tracing::info!("Starting Conductor Process on http://{}", addr);
+    let addr: SocketAddr = format!("[::1]:{}", port).parse()?;
+    tracing::info!("{} 起動 http://{}", crate::stands::WORLD.display(), addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
-    // Clone conductor for shutdown
-    let conductor_for_shutdown = conductor_cap.clone();
+    // Clone world for shutdown
+    let world_for_shutdown = world_cap.clone();
+
+    // Daemon QUIC サーバー起動（PTY セッション管理、同一ポートで UDP/QUIC）
+    let daemon_state = std::sync::Arc::new(crate::daemon::server::DaemonState::new());
+    let daemon_handle = tokio::spawn(crate::daemon::server::start_daemon_server(
+        daemon_state,
+        port,
+    ));
+    tracing::info!("Daemon QUIC サーバー統合起動 (port: {})", port);
 
     // ヘルスモニター起動（30秒間隔で Process 監視 + ゴースト除去 + クラッシュ復旧）
     let health_monitor = tokio::spawn(ProcessManagerCapability::run_health_monitor(
-        conductor_cap.clone(),
+        world_cap.clone(),
         shutdown_token.clone(),
     ));
+
+    // シグナルハンドラ: SIGTERM でグレースフルシャットダウン
+    let shutdown_for_signal = shutdown_token.clone();
+    tokio::spawn(async move {
+        let sigterm_result =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate());
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                tracing::info!("SIGINT 受信、シャットダウン開始");
+            }
+            _ = async {
+                match sigterm_result {
+                    Ok(mut sigterm) => { sigterm.recv().await; }
+                    Err(e) => {
+                        tracing::warn!("SIGTERM ハンドラ登録失敗: {}, SIGINT のみで停止", e);
+                        std::future::pending::<()>().await;
+                    }
+                }
+            } => {
+                tracing::info!("SIGTERM 受信、シャットダウン開始");
+            }
+        }
+        shutdown_for_signal.cancel();
+    });
 
     // Serve with graceful shutdown
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
             shutdown_token_clone.cancelled().await;
-            tracing::info!("Conductor graceful shutdown initiated");
+            tracing::info!("World graceful shutdown initiated");
         })
         .await?;
 
-    // ヘルスモニター停止
+    // クリーンアップ
     health_monitor.abort();
+    daemon_handle.abort();
 
-    // Shutdown conductor capability
-    tracing::info!("Shutting down Conductor...");
-    if let Err(e) = conductor_for_shutdown.write().await.shutdown().await {
-        tracing::warn!("Error during conductor shutdown: {}", e);
+    // Shutdown world capability
+    tracing::info!("Shutting down World...");
+    if let Err(e) = world_for_shutdown.write().await.shutdown().await {
+        tracing::warn!("Error during world shutdown: {}", e);
     }
 
-    tracing::info!("Conductor stopped");
+    // PID ファイル削除
+    process::remove_pid_file();
+    tracing::info!("World stopped");
     Ok(())
 }

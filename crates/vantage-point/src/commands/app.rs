@@ -8,29 +8,29 @@ use crate::cli::{find_vantage_point_app, which_vp};
 pub fn execute(port: u16, no_daemon: bool) -> Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
-        // Daemonが稼働しているか確認
+        // TheWorld が稼働しているか確認
         if !no_daemon {
-            let daemon_url = format!("http://[::1]:{}/api/health", port);
+            let world_url = format!("http://[::1]:{}/api/health", port);
             let client = reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(2))
                 .build()?;
 
-            let daemon_running = client
-                .get(&daemon_url)
+            let world_running = client
+                .get(&world_url)
                 .send()
                 .await
                 .map(|r| r.status().is_success())
                 .unwrap_or(false);
 
-            if !daemon_running {
-                println!("Starting Daemon on port {}...", port);
-                // バックグラウンドでDaemonを起動
+            if !world_running {
+                println!("Starting TheWorld on port {}...", port);
+                // バックグラウンドで TheWorld を起動
                 let vp_path = which_vp().ok_or_else(|| anyhow::anyhow!("vp binary not found"))?;
 
                 std::process::Command::new(&vp_path)
-                    .args(["daemon", "start", "-p", &port.to_string()])
+                    .args(["world", "-p", &port.to_string()])
                     .spawn()
-                    .map_err(|e| anyhow::anyhow!("Failed to start daemon: {}", e))?;
+                    .map_err(|e| anyhow::anyhow!("Failed to start TheWorld: {}", e))?;
 
                 // 起動を待つ
                 tokio::time::sleep(std::time::Duration::from_millis(1500)).await;

@@ -31,6 +31,8 @@ struct ManagedSession {
     /// セッション固有の PTY 出力 broadcast
     tx: broadcast::Sender<ProcessMessage>,
     info: SessionInfo,
+    /// リーダータスクのハンドル（セッション終了時に abort する）
+    reader_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 /// PTYセッション
@@ -152,6 +154,12 @@ pub struct PtyManager {
     project_dir: String,
 }
 
+impl Default for PtyManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PtyManager {
     pub fn new() -> Self {
         Self {
@@ -197,8 +205,8 @@ impl PtyManager {
         // TerminalReady を通知
         let _ = tx.send(ProcessMessage::TerminalReady);
 
-        // リーダータスクを開始
-        start_pty_reader_task(reader, tx.clone());
+        // リーダータスクを開始（ハンドルを保持して close 時に abort する）
+        let reader_handle = start_pty_reader_task(reader, tx.clone());
 
         let info = SessionInfo {
             id: id.clone(),
@@ -213,6 +221,7 @@ impl PtyManager {
                 session,
                 tx: tx.clone(),
                 info,
+                reader_task: Some(reader_handle),
             },
         );
 
@@ -248,9 +257,17 @@ impl PtyManager {
         Ok(())
     }
 
-    /// セッションを閉じる
+    /// セッションを閉じる（リーダータスクも abort する）
     pub fn close_session(&mut self, session_id: &str) -> bool {
-        self.sessions.remove(session_id).is_some()
+        if let Some(mut managed) = self.sessions.remove(session_id) {
+            // リーダータスクを停止して孤立を防ぐ
+            if let Some(handle) = managed.reader_task.take() {
+                handle.abort();
+            }
+            true
+        } else {
+            false
+        }
     }
 
     /// セッションが存在するか

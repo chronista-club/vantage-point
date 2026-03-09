@@ -22,16 +22,16 @@ dogfooding を通じて体験を磨き、納得できる完成度でリリース
 ### アーキテクチャ命名体系（JoJo メタファー）
 
 外向けは普通の用語メイン + JoJo 名を小さく併記（機能イメージを伝える目的）。
+命名定義は `crates/vantage-point/src/stands.rs` に集約。
 
 ```
-Process（プロジェクトの開発プロセス = 本体 / スタンド使い）
-  ├── Star Platinum（AI エージェント能力）
-  ├── Paisley Park（Canvas 表示能力）
-  ├── Heaven's Door（コード実行能力 / Ruby VM）
-  └── Hermit Purple（外部コントロール能力 / MIDI 等）
+TheWorld 👑 (Process Manager / 常駐デーモン)
+  └── Star Platinum ⭐ (Project Server / 各プロジェクトの開発プロセス)
+        ├── Heaven's Door 📖 (AI Agent / Claude CLI オーケストレーター)
+        ├── Paisley Park 🧭 (Display Engine / Canvas WebView)
+        ├── Gold Experience 🌿 (Code Runner / 動的生命注入エンジン)
+        └── Hermit Purple 🍇 (External Control / MIDI・tmux・MCP)
 ```
-
-- **TheWorld**: 常駐デーモン
 
 ## 技術スタック
 
@@ -90,11 +90,12 @@ vp config              # 設定と登録プロジェクト表示
 vp mcp                 # MCPサーバーモード（stdio）
 vp update [--check]    # セルフアップデート
 
-# Daemon
-vp daemon start|stop|status
+# TheWorld（Daemon 統合）
+vp world               # TheWorld 起動（プロジェクト管理 + PTY管理）
+vp daemon start|stop|status  # 後方互換エイリアス
 
 # App
-vp app                 # VantagePoint.app起動（Daemon自動起動）
+vp app                 # VantagePoint.app起動（TheWorld自動起動）
 vp tray                # システムトレイモード
 
 # MIDI
@@ -115,7 +116,10 @@ cargo clippy --workspace --all-targets    # Lint
 ## 設定・ポート
 
 - 設定ファイル: `~/.config/vantage/config.toml`
-- ポート割り当て: Project 0 → 33000, Project 1 → 33001, ...
+- ポート割り当て:
+  - TheWorld: 32000 (HTTP + QUIC)
+  - Project: 33000〜33010 (HTTP + WS)
+  - Unison per Process: 33100〜33110 (QUIC, +100)
 - `vp ps` で 33000-33010 をスキャン
 
 ## Agent モジュール

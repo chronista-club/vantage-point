@@ -46,6 +46,7 @@ struct Session {
 }
 
 /// セッション・ペインの管理レジストリ
+#[derive(Default)]
 pub struct SessionRegistry {
     sessions: HashMap<SessionId, Session>,
     default_session: Option<SessionId>,
@@ -54,10 +55,7 @@ pub struct SessionRegistry {
 impl SessionRegistry {
     /// 新しいレジストリを作成
     pub fn new() -> Self {
-        Self {
-            sessions: HashMap::new(),
-            default_session: None,
-        }
+        Self::default()
     }
 
     /// セッションを作成
@@ -143,10 +141,11 @@ impl SessionRegistry {
         let removed = session.info.panes.len() < before_len;
 
         // アクティブペインが削除された場合、最初のペインをアクティブに
-        if removed && !session.info.panes.iter().any(|p| p.active) {
-            if let Some(first) = session.info.panes.first_mut() {
-                first.active = true;
-            }
+        if removed
+            && !session.info.panes.iter().any(|p| p.active)
+            && let Some(first) = session.info.panes.first_mut()
+        {
+            first.active = true;
         }
 
         removed

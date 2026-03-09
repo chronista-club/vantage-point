@@ -3,7 +3,7 @@
 use anyhow::Result;
 
 use crate::cli::{DebugModeArg, parse_debug_env};
-use crate::config::{Config, RunningProcesses};
+use crate::config::Config;
 use crate::process::CapabilityConfig;
 use crate::protocol::DebugMode;
 use crate::resolve::{self, ResolvedTarget};
@@ -37,12 +37,12 @@ pub fn execute(opts: StartOptions) -> Result<()> {
 
     // --project-dir が指定されていればそれを最優先
     // already_running: 既存 Process に re-attach する場合 true（pre-registration をスキップ）
-    let (resolved_project_dir, resolved_port, already_running) = if let Some(ref dir) = project_dir
+    let (resolved_project_dir, resolved_port, _already_running) = if let Some(ref dir) = project_dir
     {
         let dir_normalized = Config::normalize_path(std::path::Path::new(dir));
 
         // 既に実行中かチェック
-        if let Some(running) = RunningProcesses::find_by_project(&dir_normalized) {
+        if let Some(running) = crate::discovery::find_by_project_blocking(&dir_normalized) {
             if headless || browser {
                 let name = resolve::project_name_from_path(&running.project_dir, config);
                 println!(
@@ -113,24 +113,14 @@ pub fn execute(opts: StartOptions) -> Result<()> {
 
     // tmux exec 判定: TUI モードかつ tmux 外なら、この後 exec で tmux に置き換わる
     // → pre-registration すると tmux の PID が登録されてしまうのでスキップ
-    let will_exec_tmux = !headless
+    let _will_exec_tmux = !headless
         && !browser
         && !gui
         && crate::tmux::is_tmux_available()
         && !crate::tmux::is_inside_tmux();
 
-    // ポート予約: Process サーバー起動前に running.json へ仮登録
-    // （2つ目の vp start が同じポートを選ばないようにする）
-    // re-attach 時は既存エントリを上書きしないようスキップ
-    // tmux exec 時もスキップ（再 exec 後のプロセスが登録する）
-    if !already_running && !will_exec_tmux {
-        let my_pid = std::process::id();
-        if let Err(e) =
-            RunningProcesses::register(resolved_port, &resolved_project_dir, my_pid, None)
-        {
-            tracing::warn!("Failed to pre-register port in running.json: {}", e);
-        }
-    }
+    // ポート予約は不要 — server.rs が起動後に TheWorld に登録する。
+    // ポート衝突防止は is_port_available() のバインドテストで十分。
 
     // デバッグモード: CLI > env > default
     let debug_mode = debug
@@ -191,26 +181,12 @@ pub fn execute(opts: StartOptions) -> Result<()> {
         })
     } else if gui {
         // GUI モード: ネイティブウィンドウ（Unison ブリッジ）
-        if let Err(e) =
-            ensure_process_running(resolved_port, &resolved_project_dir, debug_mode, cap_config)
-        {
-            let _ = RunningProcesses::unregister_by_port(resolved_port);
-            return Err(e);
-        }
+        ensure_process_running(resolved_port, &resolved_project_dir, debug_mode, cap_config)?;
 
         let project_name = resolve::project_name_from_path(&resolved_project_dir, config);
 
-        // running.json から認証トークンを取得
-        let terminal_token = RunningProcesses::load()
-            .ok()
-            .and_then(|procs| {
-                procs
-                    .processes
-                    .iter()
-                    .find(|p| p.port == resolved_port)
-                    .and_then(|p| p.terminal_token.clone())
-            })
-            .filter(|t| !t.is_empty())
+        // Health API から認証トークンを取得
+        let terminal_token = crate::discovery::fetch_terminal_token_blocking(resolved_port)
             .ok_or_else(|| {
                 anyhow::anyhow!(
                     "Terminal token not found for port {}. Process may not be fully started.",
@@ -254,12 +230,7 @@ pub fn execute(opts: StartOptions) -> Result<()> {
 
         // tmux 内 or tmux なし: 従来通り TUI 起動
         // Process サーバーを headless で起動（Canvas / API 用）
-        if let Err(e) =
-            ensure_process_running(resolved_port, &resolved_project_dir, debug_mode, cap_config)
-        {
-            let _ = RunningProcesses::unregister_by_port(resolved_port);
-            return Err(e);
-        }
+        ensure_process_running(resolved_port, &resolved_project_dir, debug_mode, cap_config)?;
 
         // TUI 起動（Canvas は Ctrl+O で随時 toggle）
         crate::tui::run_tui(&resolved_project_dir, &project_name)

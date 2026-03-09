@@ -100,11 +100,11 @@ pub fn log_file_path() -> Option<PathBuf> {
     let log_dir = home.join(".config").join("vantage").join("logs");
 
     // ディレクトリがなければ作成
-    if !log_dir.exists() {
-        if let Err(e) = fs::create_dir_all(&log_dir) {
-            eprintln!("[trace_log] ログディレクトリ作成失敗: {e}");
-            return None;
-        }
+    if !log_dir.exists()
+        && let Err(e) = fs::create_dir_all(&log_dir)
+    {
+        eprintln!("[trace_log] ログディレクトリ作成失敗: {e}");
+        return None;
     }
 
     Some(log_dir.join("debug.log"))

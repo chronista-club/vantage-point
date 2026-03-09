@@ -1579,6 +1579,13 @@
                 emptyState.style.display = '';
             }
 
+            // キューに溜まったメッセージをリプレイ
+            if (laneState.messageQueues && laneState.messageQueues[name]) {
+                const queue = laneState.messageQueues[name];
+                delete laneState.messageQueues[name];
+                queue.forEach(msg => handleMessage(msg));
+            }
+
             markLayoutDirty();
             renderLaneBar();
         }
@@ -1652,13 +1659,22 @@
                     break;
                 }
                 case 'lane_message': {
-                    // Process メッセージ: アクティブ Lane のみ描画
-                    if (data.lane === laneState.activeLane) {
+                    const laneName = data.lane;
+                    if (laneName === laneState.activeLane) {
                         handleMessage(data.message);
+                    } else {
+                        // 非アクティブ Lane のメッセージをキューに蓄積
+                        if (!laneState.messageQueues) laneState.messageQueues = {};
+                        if (!laneState.messageQueues[laneName]) laneState.messageQueues[laneName] = [];
+                        laneState.messageQueues[laneName].push(data.message);
                     }
-                    // 非アクティブ Lane は無視（パフォーマンス優先）
                     break;
                 }
+                // Canvas レベルのメッセージ（Lane ラップなし）は直接 handleMessage に委譲
+                case 'screenshot_request':
+                case 'ping':
+                    handleMessage(data);
+                    break;
                 default:
                     console.debug('Lane WS:', data.type, data);
             }
@@ -1811,18 +1827,20 @@
                                     }
                                 }
                             } else {
-                                const activeTab = tabState.tabs.get(tabState.activeTab);
-                                target = activeTab?.container || document.body;
+                                // pane_id なし → ウィンドウ全体をキャプチャ
+                                target = document.body;
                             }
                             if (!target) {
                                 sendError('Screenshot target not found: ' + msg.pane_id);
                                 return;
                             }
 
+                            // pane_id なし（全体キャプチャ）は window サイズを使用
+                            const fullWindow = !msg.pane_id;
                             const rect = target.getBoundingClientRect();
                             const scale = 2;
-                            const w = Math.ceil(rect.width);
-                            const h = Math.ceil(rect.height);
+                            const w = fullWindow ? window.innerWidth : Math.ceil(rect.width);
+                            const h = fullWindow ? window.innerHeight : Math.ceil(rect.height);
 
                             // DOM clone + computed style 焼き付け
                             const clone = target.cloneNode(true);
@@ -1996,7 +2014,7 @@
 
             try {
                 const layout = collectLayoutState();
-                await fetch(`http://localhost:${PORT}/api/canvas/layout`, {
+                await fetch(`/api/canvas/layout`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(layout),
@@ -2015,11 +2033,19 @@
                 const layout = collectLayoutState();
                 // sendBeacon で確実に送信
                 navigator.sendBeacon(
-                    `http://localhost:${PORT}/api/canvas/layout`,
+                    `/api/canvas/layout`,
                     new Blob([JSON.stringify(layout)], { type: 'application/json' })
                 );
             }
         });
+
+        // Lane モード時の初期ローディング表示
+        if (LANE_MODE) {
+            const loadingDiv = document.createElement('div');
+            loadingDiv.style.cssText = 'display:flex;align-items:center;justify-content:center;height:100%;color:#888;font-size:14px;';
+            loadingDiv.textContent = 'Connecting to processes...';
+            document.getElementById('canvas-content').appendChild(loadingDiv);
+        }
 
         connect();
     </script>

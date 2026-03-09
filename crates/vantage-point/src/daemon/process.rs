@@ -29,7 +29,7 @@ pub fn is_daemon_running() -> Option<u32> {
     let pid: u32 = pid_str.trim().parse().ok()?;
 
     // kill(pid, 0) でプロセスの存在を確認（シグナルは送信しない）
-    let alive = i32::try_from(pid).map_or(false, |pid_i32| unsafe { libc::kill(pid_i32, 0) == 0 });
+    let alive = i32::try_from(pid).is_ok_and(|pid_i32| unsafe { libc::kill(pid_i32, 0) == 0 });
     if alive {
         Some(pid)
     } else {
@@ -113,27 +113,27 @@ pub async fn run_daemon(port: u16) -> Result<()> {
     Ok(())
 }
 
-/// Daemon がまだ起動していなければバックグラウンドで自動起動する
+/// TheWorld がまだ起動していなければバックグラウンドで自動起動する
 ///
 /// `vp start` から呼ばれる。既に起動済みならそのPIDを返す。
 pub fn ensure_daemon_running(port: u16) -> Result<u32> {
     if let Some(pid) = is_daemon_running() {
-        tracing::info!("Daemon は既に起動中 (PID: {})", pid);
+        tracing::info!("TheWorld は既に起動中 (PID: {})", pid);
         return Ok(pid);
     }
 
-    tracing::info!("Daemon を自動起動します (port: {})", port);
+    tracing::info!("TheWorld を自動起動します (port: {})", port);
 
-    // 自分自身の実行ファイルを `vp daemon start` として起動
+    // 自分自身の実行ファイルを `vp world` として起動
     let child = std::process::Command::new(std::env::current_exe()?)
-        .args(["daemon", "start", "--port", &port.to_string()])
+        .args(["world", "--port", &port.to_string()])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()?;
 
     let pid = child.id();
-    tracing::info!("Daemon 起動完了 (PID: {})", pid);
+    tracing::info!("TheWorld 起動完了 (PID: {})", pid);
     Ok(pid)
 }
 

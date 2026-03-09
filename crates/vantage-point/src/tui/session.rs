@@ -126,20 +126,19 @@ fn parse_session_summary(path: &PathBuf) -> (String, usize) {
 /// JSONL 行からユーザーメッセージテキストを抽出（軽量パース）
 fn extract_user_text(line: &str) -> String {
     // serde_json でパースして content[0].text を取得
-    if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
-        if let Some(content) = val.get("message").and_then(|m| m.get("content")) {
-            // content が文字列の場合
-            if let Some(s) = content.as_str() {
-                return truncate(s, 80);
-            }
-            // content が配列の場合（[{type: "text", text: "..."}]）
-            if let Some(arr) = content.as_array() {
-                if let Some(first) = arr.first() {
-                    if let Some(text) = first.get("text").and_then(|t| t.as_str()) {
-                        return truncate(text, 80);
-                    }
-                }
-            }
+    if let Ok(val) = serde_json::from_str::<serde_json::Value>(line)
+        && let Some(content) = val.get("message").and_then(|m| m.get("content"))
+    {
+        // content が文字列の場合
+        if let Some(s) = content.as_str() {
+            return truncate(s, 80);
+        }
+        // content が配列の場合（[{type: "text", text: "..."}]）
+        if let Some(arr) = content.as_array()
+            && let Some(first) = arr.first()
+            && let Some(text) = first.get("text").and_then(|t| t.as_str())
+        {
+            return truncate(text, 80);
         }
     }
     String::new()

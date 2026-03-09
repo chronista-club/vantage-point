@@ -4,7 +4,7 @@
 //! Axum HTTP サーバーと並行して起動し、同じ Hub.broadcast() パターンで
 //! WebSocket クライアントにメッセージを配信する。
 //!
-//! ポート: HTTP port + 1000 (例: 33000 -> 34000)
+//! ポート: HTTP port + 100 (例: 33000 -> 33100)
 //!
 //! "process" チャネルですべての操作を統一:
 //! - show / clear / toggle_pane / split_pane / close_pane
@@ -23,7 +23,8 @@ use super::state::AppState;
 use crate::protocol::ProcessMessage;
 
 /// QUIC ポートのオフセット（HTTP ポートからの差分）
-pub const QUIC_PORT_OFFSET: u16 = 1000;
+/// TCP (HTTP) と UDP (QUIC) は OS レベルで独立 → 同一ポートで共存可能
+pub const QUIC_PORT_OFFSET: u16 = 0;
 
 /// recv_raw の最大フレームサイズ（64 KiB）
 const MAX_RAW_FRAME_SIZE: usize = 64 * 1024;
@@ -49,7 +50,8 @@ fn handle_process_message(
     let msg: ProcessMessage =
         serde_json::from_value(payload).map_err(|e| format!("Invalid ProcessMessage: {}", e))?;
 
-    state.cache_pane_message(&msg);
+    // TopicRouter が Hub ブリッジ経由で自動的に retained に保存するため、
+    // 明示的なキャッシュは不要。Hub に broadcast するだけ。
     state.hub.broadcast(msg);
 
     Ok(serde_json::json!({"status": "ok"}))
@@ -94,7 +96,8 @@ async fn handle_unwatch_file(
 
 /// canvas.open メソッドのハンドラー（シングルトン管理）
 async fn handle_canvas_open(state: &AppState) -> Result<serde_json::Value, String> {
-    let lanes = state.conductor.is_some();
+    // 複数プロジェクト稼働中なら Lane モードで開く（TheWorld デーモン有無に依存しない）
+    let lanes = state.world.is_some() || crate::discovery::list().await.len() > 1;
 
     match crate::canvas::ensure_canvas_running(state.port, lanes) {
         Ok(pid) => {
@@ -652,7 +655,7 @@ pub async fn start_unison_server(
         })
         .await;
 
-    // --- "canvas" チャネル: Hub の Show/Clear をリアルタイム push ---
+    // --- "canvas" チャネル: TopicRouter 購読で Paisley Park メッセージを push ---
     server
         .register_channel("canvas", {
             let state = state.clone();
@@ -661,32 +664,20 @@ pub async fn start_unison_server(
                 async move {
                     let channel = UnisonChannel::new(stream);
 
-                    // 初期状態: キャッシュ済みペインコンテンツを送信
-                    for msg in state.get_pane_snapshot() {
+                    // TopicRouter で paisley-park 配下を購読
+                    // retained メッセージ（Show/Clear の最新値）が自動で初期配信される
+                    let (sub_id, mut rx) =
+                        state.topic_router.subscribe("process/paisley-park/#").await;
+
+                    while let Some((_topic, msg)) = rx.recv().await {
                         let json = serde_json::to_value(&msg).unwrap_or_default();
                         if channel.send_event("pane", json).await.is_err() {
-                            return Ok(());
+                            break;
                         }
                     }
 
-                    // Hub を subscribe して Show/Clear をリアルタイム push
-                    let mut hub_rx = state.hub.subscribe();
-                    loop {
-                        match hub_rx.recv().await {
-                            Ok(msg @ ProcessMessage::Show { .. })
-                            | Ok(msg @ ProcessMessage::Clear { .. }) => {
-                                let json = serde_json::to_value(&msg).unwrap_or_default();
-                                if channel.send_event("pane", json).await.is_err() {
-                                    break;
-                                }
-                            }
-                            Err(broadcast::error::RecvError::Closed) => break,
-                            Err(broadcast::error::RecvError::Lagged(n)) => {
-                                tracing::warn!("canvas broadcast lagged: {} messages dropped", n);
-                            }
-                            _ => {} // 他メッセージは無視
-                        }
-                    }
+                    // クリーンアップ: subscriber 登録を解除
+                    state.topic_router.unsubscribe(sub_id).await;
 
                     Ok(())
                 }
