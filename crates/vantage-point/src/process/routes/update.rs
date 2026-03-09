@@ -218,7 +218,7 @@ pub async fn update_mac_check(
     match update.check_mac_update(current_version).await {
         Ok(result) => (
             axum::http::StatusCode::OK,
-            Json(serde_json::to_value(result).unwrap()),
+            Json(serde_json::to_value(&result).unwrap_or_else(|_| serde_json::json!({"status": "ok"}))),
         ),
         Err(e) => (
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
@@ -288,7 +288,7 @@ pub async fn update_mac_apply(
     {
         Ok(result) => (
             axum::http::StatusCode::OK,
-            Json(serde_json::to_value(result).unwrap()),
+            Json(serde_json::to_value(&result).unwrap_or_else(|_| serde_json::json!({"status": "ok"}))),
         ),
         Err(e) => (
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
