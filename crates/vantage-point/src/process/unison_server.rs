@@ -4,7 +4,7 @@
 //! Axum HTTP サーバーと並行して起動し、同じ Hub.broadcast() パターンで
 //! WebSocket クライアントにメッセージを配信する。
 //!
-//! ポート: HTTP port + 1000 (例: 33000 -> 34000)
+//! ポート: HTTP port + 100 (例: 33000 -> 33100)
 //!
 //! "process" チャネルですべての操作を統一:
 //! - show / clear / toggle_pane / split_pane / close_pane
@@ -23,7 +23,7 @@ use super::state::AppState;
 use crate::protocol::ProcessMessage;
 
 /// QUIC ポートのオフセット（HTTP ポートからの差分）
-pub const QUIC_PORT_OFFSET: u16 = 1000;
+pub const QUIC_PORT_OFFSET: u16 = 100;
 
 /// recv_raw の最大フレームサイズ（64 KiB）
 const MAX_RAW_FRAME_SIZE: usize = 64 * 1024;

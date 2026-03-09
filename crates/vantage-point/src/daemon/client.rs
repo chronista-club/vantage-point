@@ -14,8 +14,8 @@ use super::protocol::*;
 #[allow(unused_imports)]
 use super::registry::{PaneId, SessionInfo};
 
-/// Daemon QUIC ポート（設計書: [::1]:34000）
-pub const DAEMON_QUIC_PORT: u16 = 34000;
+/// TheWorld QUIC ポート（Daemon 統合: [::1]:32000）
+pub const DAEMON_QUIC_PORT: u16 = 32000;
 
 /// Daemon への Unison チャネルクライアント
 ///
@@ -309,15 +309,15 @@ mod tests {
 
     #[test]
     fn test_daemon_quic_port() {
-        assert_eq!(DAEMON_QUIC_PORT, 34000);
+        assert_eq!(DAEMON_QUIC_PORT, 32000);
     }
 
     #[test]
     fn test_addr_format() {
         // 接続アドレスのフォーマット確認
-        let port: u16 = 34000;
+        let port: u16 = 32000;
         let addr = format!("[::1]:{}", port);
-        assert_eq!(addr, "[::1]:34000");
+        assert_eq!(addr, "[::1]:32000");
     }
 
     #[tokio::test]

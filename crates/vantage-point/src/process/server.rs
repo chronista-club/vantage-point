@@ -295,8 +295,13 @@ pub async fn run(
 
 /// WorldモードでProcessサーバーを起動
 /// 複数のProject Processを管理するための専用モード
+/// Daemon（PTY管理 QUIC サーバー）も統合して起動する
 pub async fn run_world(port: u16) -> Result<()> {
     use crate::capability::core::{Capability, CapabilityContext};
+    use crate::daemon::process;
+
+    // PID ファイル書き出し（Daemon 統合）
+    process::write_pid_file()?;
 
     // Shutdown signal
     let shutdown_token = CancellationToken::new();
@@ -411,11 +416,36 @@ pub async fn run_world(port: u16) -> Result<()> {
     // Clone world for shutdown
     let world_for_shutdown = world_cap.clone();
 
+    // Daemon QUIC サーバー起動（PTY セッション管理、同一ポートで UDP/QUIC）
+    let daemon_state = std::sync::Arc::new(crate::daemon::server::DaemonState::new());
+    let daemon_handle = tokio::spawn(crate::daemon::server::start_daemon_server(
+        daemon_state,
+        port,
+    ));
+    tracing::info!("Daemon QUIC サーバー統合起動 (port: {})", port);
+
     // ヘルスモニター起動（30秒間隔で Process 監視 + ゴースト除去 + クラッシュ復旧）
     let health_monitor = tokio::spawn(ProcessManagerCapability::run_health_monitor(
         world_cap.clone(),
         shutdown_token.clone(),
     ));
+
+    // シグナルハンドラ: SIGTERM でグレースフルシャットダウン
+    let shutdown_for_signal = shutdown_token.clone();
+    tokio::spawn(async move {
+        let mut sigterm =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("SIGTERM ハンドラ登録失敗");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                tracing::info!("SIGINT 受信、シャットダウン開始");
+            }
+            _ = sigterm.recv() => {
+                tracing::info!("SIGTERM 受信、シャットダウン開始");
+            }
+        }
+        shutdown_for_signal.cancel();
+    });
 
     // Serve with graceful shutdown
     axum::serve(listener, app)
@@ -425,8 +455,9 @@ pub async fn run_world(port: u16) -> Result<()> {
         })
         .await?;
 
-    // ヘルスモニター停止
+    // クリーンアップ
     health_monitor.abort();
+    daemon_handle.abort();
 
     // Shutdown world capability
     tracing::info!("Shutting down World...");
@@ -434,6 +465,8 @@ pub async fn run_world(port: u16) -> Result<()> {
         tracing::warn!("Error during world shutdown: {}", e);
     }
 
+    // PID ファイル削除
+    process::remove_pid_file();
     tracing::info!("World stopped");
     Ok(())
 }

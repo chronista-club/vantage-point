@@ -147,19 +147,19 @@ enum Commands {
     File(FileCommands),
 
     // --- App ---
-    /// World（TheWorld）を起動 — 全 Process を統括管理
+    /// World（TheWorld）を起動 — 全 Process を統括管理（Daemon 統合）
     #[command(alias = "conductor")]
     World {
         /// 待ち受けポート番号
-        #[arg(short, long, default_value = "32800")]
+        #[arg(short, long, default_value_t = cli::WORLD_PORT)]
         port: u16,
     },
-    /// VantagePoint.app を起動（Daemon も自動起動）
+    /// VantagePoint.app を起動（TheWorld も自動起動）
     App {
-        /// Daemonポート番号
-        #[arg(short, long, default_value = "32900")]
+        /// TheWorld ポート番号
+        #[arg(short, long, default_value_t = cli::WORLD_PORT)]
         port: u16,
-        /// Daemon起動をスキップ（既に起動している場合）
+        /// TheWorld 起動をスキップ（既に起動している場合）
         #[arg(long)]
         no_daemon: bool,
     },

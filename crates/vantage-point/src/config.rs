@@ -166,7 +166,7 @@ fn is_process_alive(pid: u32) -> bool {
 pub struct RunningProcessInfo {
     /// Port number
     pub port: u16,
-    /// QUIC (Unison) ポート番号（HTTP port + 1000）
+    /// QUIC (Unison) ポート番号（HTTP port + 100）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quic_port: Option<u16>,
     /// Project directory (canonical path)

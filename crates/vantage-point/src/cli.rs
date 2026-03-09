@@ -149,6 +149,9 @@ pub(crate) fn force_kill(_pid: u32) {}
 pub(crate) const PORT_RANGE_START: u16 = 33000;
 pub(crate) const PORT_RANGE_END: u16 = 33010;
 
+/// TheWorld（Daemon 統合）のデフォルトポート
+pub(crate) const WORLD_PORT: u16 = 32000;
+
 /// Running instance info
 #[derive(Clone)]
 pub(crate) struct Instance {

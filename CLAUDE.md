@@ -90,11 +90,12 @@ vp config              # 設定と登録プロジェクト表示
 vp mcp                 # MCPサーバーモード（stdio）
 vp update [--check]    # セルフアップデート
 
-# Daemon
-vp daemon start|stop|status
+# TheWorld（Daemon 統合）
+vp world               # TheWorld 起動（プロジェクト管理 + PTY管理）
+vp daemon start|stop|status  # 後方互換エイリアス
 
 # App
-vp app                 # VantagePoint.app起動（Daemon自動起動）
+vp app                 # VantagePoint.app起動（TheWorld自動起動）
 vp tray                # システムトレイモード
 
 # MIDI
@@ -115,7 +116,10 @@ cargo clippy --workspace --all-targets    # Lint
 ## 設定・ポート
 
 - 設定ファイル: `~/.config/vantage/config.toml`
-- ポート割り当て: Project 0 → 33000, Project 1 → 33001, ...
+- ポート割り当て:
+  - TheWorld: 32000 (HTTP + QUIC)
+  - Project: 33000〜33010 (HTTP + WS)
+  - Unison per Process: 33100〜33110 (QUIC, +100)
 - `vp ps` で 33000-33010 をスキャン
 
 ## Agent モジュール

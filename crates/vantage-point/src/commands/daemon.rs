@@ -1,6 +1,6 @@
 //! `vp daemon` コマンドの実行ロジック
 //!
-//! VP Daemon のプロセス管理を行う。
+//! 後方互換のため残存。実体は `vp world` に委譲。
 //! PIDファイルベースの生存確認とシグナルによるグレースフル停止。
 
 use anyhow::Result;
@@ -8,37 +8,37 @@ use clap::Subcommand;
 
 use crate::daemon::process;
 
-/// Daemon サブコマンド
+/// Daemon サブコマンド（`vp world` のエイリアス）
 #[derive(Subcommand)]
 pub enum DaemonCommands {
-    /// デーモンを起動（PTYプロセス管理 + Unison Server）
+    /// TheWorld を起動（`vp world` と同等）
     Start {
         /// 待ち受けポート番号
-        #[arg(short, long, default_value = "34000")]
+        #[arg(short, long, default_value_t = crate::cli::WORLD_PORT)]
         port: u16,
     },
-    /// デーモンを停止
+    /// TheWorld を停止
     Stop,
-    /// デーモンの状態確認
+    /// TheWorld の状態確認
     Status,
 }
 
-/// `vp daemon` を実行
+/// `vp daemon` を実行（`vp world` に委譲）
 pub fn execute(cmd: DaemonCommands) -> Result<()> {
+    eprintln!("Note: `vp daemon` is deprecated, use `vp world`");
     match cmd {
         DaemonCommands::Start { port } => {
-            println!("Starting VP Daemon on port {}...", port);
             let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(process::run_daemon(port))
+            rt.block_on(crate::process::run_world(port))
         }
         DaemonCommands::Stop => {
             match process::is_daemon_running() {
                 Some(pid) => {
                     process::stop_daemon(pid)?;
-                    println!("Daemon stopped (PID: {})", pid);
+                    println!("TheWorld stopped (PID: {})", pid);
                 }
                 None => {
-                    println!("Daemon is not running");
+                    println!("TheWorld is not running");
                 }
             }
             Ok(())
@@ -46,11 +46,11 @@ pub fn execute(cmd: DaemonCommands) -> Result<()> {
         DaemonCommands::Status => {
             match process::is_daemon_running() {
                 Some(pid) => {
-                    println!("Daemon is running (PID: {})", pid);
+                    println!("TheWorld is running (PID: {})", pid);
                     println!("  PID file: {}", process::pid_file().display());
                 }
                 None => {
-                    println!("Daemon is not running");
+                    println!("TheWorld is not running");
                 }
             }
             Ok(())
