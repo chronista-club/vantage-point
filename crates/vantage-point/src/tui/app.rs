@@ -248,7 +248,7 @@ fn run_tui_inner(resolved: Option<(String, String)>) -> Result<()> {
     let result = if let Some((dir, name)) = resolved {
         // ポート解決: running.json から取得、なければ config index ベース
         let config = Config::load()?;
-        let port = if let Some(running) = crate::config::RunningProcesses::find_by_project(&dir) {
+        let port = if let Some(running) = crate::discovery::find_by_project_blocking(&dir) {
             running.port
         } else if let Some(idx) = config.find_project_index(&dir) {
             crate::resolve::port_for_configured(idx, &config)?
@@ -379,7 +379,7 @@ fn draw_project_select(
         .iter()
         .enumerate()
         .map(|(i, p)| {
-            let running = crate::config::RunningProcesses::find_by_project(
+            let running = crate::discovery::find_by_project_blocking(
                 &Config::normalize_path(std::path::Path::new(&p.path)),
             );
             let status = if running.is_some() {
@@ -431,11 +431,7 @@ fn start_background_services(
 ) -> Result<()> {
     let port = crate::resolve::port_for_configured(project_index, config)?;
 
-    // ポート予約: Process サーバー起動前に running.json へ仮登録
-    let my_pid = std::process::id();
-    if let Err(e) = crate::config::RunningProcesses::register(port, project_dir, my_pid, None) {
-        tracing::warn!("Failed to pre-register port in running.json: {}", e);
-    }
+    // ポート予約は不要 — server.rs が起動後に TheWorld に登録する
 
     let cap_config = crate::process::CapabilityConfig {
         project_dir: project_dir.to_string(),
@@ -939,17 +935,8 @@ fn run_claude_session(
     // VT パーサー
     let term_state = Arc::new(Mutex::new(TerminalState::new(pty_cols, pty_lines)));
 
-    // running.json から認証トークンを取得
-    let terminal_token = crate::config::RunningProcesses::load()
-        .ok()
-        .and_then(|procs| {
-            procs
-                .processes
-                .iter()
-                .find(|p| p.port == port)
-                .and_then(|p| p.terminal_token.clone())
-        })
-        .filter(|t| !t.is_empty())
+    // Health API から認証トークンを取得
+    let terminal_token = crate::discovery::fetch_terminal_token_blocking(port)
         .ok_or_else(|| {
             anyhow::anyhow!(
                 "Terminal token not found for port {}. Process may not be fully started.",

@@ -45,11 +45,7 @@ pub fn execute(target: Option<&str>, browser: bool, headless: bool, config: &Con
     // デバッグモード
     let debug_mode = parse_debug_env().unwrap_or_default();
 
-    // ポート予約: Process サーバー起動前に running.json へ仮登録
-    let my_pid = std::process::id();
-    if let Err(e) = crate::config::RunningProcesses::register(port, &project_dir, my_pid, None) {
-        tracing::warn!("Failed to pre-register port in running.json: {}", e);
-    }
+    // ポート予約は不要 — server.rs が起動後に TheWorld に登録する
 
     // CapabilityConfig（再起動時は MIDI なし）
     let cap_config = crate::process::CapabilityConfig {
@@ -88,16 +84,8 @@ pub fn execute(target: Option<&str>, browser: bool, headless: bool, config: &Con
         // Unison ブリッジモードのネイティブウィンドウ
         let project_name = resolve::project_name_from_path(&project_dir, config);
 
-        // running.json から認証トークンを取得
-        let terminal_token = crate::config::RunningProcesses::load()
-            .ok()
-            .and_then(|procs| {
-                procs
-                    .processes
-                    .iter()
-                    .find(|p| p.port == port)
-                    .and_then(|p| p.terminal_token.clone())
-            })
+        // Health API から認証トークンを取得
+        let terminal_token = crate::discovery::fetch_terminal_token_blocking(port)
             .unwrap_or_default();
 
         let result =

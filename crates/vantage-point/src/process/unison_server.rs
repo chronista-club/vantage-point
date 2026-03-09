@@ -23,7 +23,8 @@ use super::state::AppState;
 use crate::protocol::ProcessMessage;
 
 /// QUIC ポートのオフセット（HTTP ポートからの差分）
-pub const QUIC_PORT_OFFSET: u16 = 100;
+/// TCP (HTTP) と UDP (QUIC) は OS レベルで独立 → 同一ポートで共存可能
+pub const QUIC_PORT_OFFSET: u16 = 0;
 
 /// recv_raw の最大フレームサイズ（64 KiB）
 const MAX_RAW_FRAME_SIZE: usize = 64 * 1024;
@@ -97,7 +98,7 @@ async fn handle_unwatch_file(
 async fn handle_canvas_open(state: &AppState) -> Result<serde_json::Value, String> {
     // 複数プロジェクト稼働中なら Lane モードで開く（TheWorld デーモン有無に依存しない）
     let lanes = state.world.is_some()
-        || crate::config::RunningProcesses::load().map_or(false, |r| r.processes.len() > 1);
+        || crate::discovery::list_blocking().len() > 1;
 
     match crate::canvas::ensure_canvas_running(state.port, lanes) {
         Ok(pid) => {

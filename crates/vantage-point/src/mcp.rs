@@ -9,7 +9,7 @@
 //! process / canvas チャネルは Unison QUIC で通信。
 //! Ruby VM / capture / permission 等の一部 API は HTTP フォールバック。
 
-use crate::config::RunningProcesses;
+// running.json 不使用 — discovery モジュール経由
 use rmcp::{
     ErrorData as McpError, ServiceExt, handler::server::tool::ToolRouter, model::*,
     schemars::JsonSchema, tool, tool_handler, tool_router, transport::stdio,
@@ -581,10 +581,10 @@ impl VantageMcp {
 
     /// Process ポートを再解決し、変わっていれば URL を更新してリトライ用 URL を返す
     ///
-    /// 接続失敗時に呼ばれる。`running.json` から cwd に一致する
+    /// 接続失敗時に呼ばれる。discovery で cwd に一致する
     /// Process を検索し、現在の URL と異なる場合のみリトライ URL を返す。
     async fn try_reconnect(&self, endpoint: &str) -> Option<String> {
-        let process_info = RunningProcesses::find_for_cwd()?;
+        let process_info = crate::discovery::find_for_cwd().await?;
         let new_base = format!("http://[::1]:{}", process_info.port);
 
         let mut current = self.process_url.lock().await;
@@ -650,8 +650,8 @@ impl VantageMcp {
         for _ in 0..max_attempts {
             tokio::time::sleep(poll_interval).await;
 
-            // running.json から新しい Process を検索
-            let process_info = match RunningProcesses::find_for_cwd() {
+            // 稼働中 Process を検索（TheWorld API → HTTP スキャンフォールバック）
+            let process_info = match crate::discovery::find_for_cwd().await {
                 Some(info) => info,
                 None => continue,
             };
@@ -1609,7 +1609,7 @@ fn resolve_process_port(explicit_port: u16) -> u16 {
     }
 
     // Try to find a running Process for the current directory
-    if let Some(process_info) = RunningProcesses::find_for_cwd() {
+    if let Some(process_info) = crate::discovery::find_for_cwd_blocking() {
         return process_info.port;
     }
 

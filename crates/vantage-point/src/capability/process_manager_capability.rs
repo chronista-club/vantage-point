@@ -339,6 +339,58 @@ impl ProcessManagerCapability {
         Ok(())
     }
 
+    /// 外部 Process の自己登録（Process 起動時に呼ばれる）
+    pub async fn register_external_process(&self, port: u16, project_dir: &str, pid: u32) {
+        let name = std::path::Path::new(project_dir)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        let process = RunningProcess {
+            project_name: name.clone(),
+            port,
+            pid,
+            project_path: project_dir.into(),
+            discovered_via_bonjour: false,
+        };
+
+        // プロジェクト状態を更新
+        {
+            let mut projects = self.projects.write().await;
+            if let Some(p) = projects.values_mut().find(|p| {
+                crate::config::Config::normalize_path(&p.path)
+                    == crate::config::Config::normalize_path(std::path::Path::new(project_dir))
+            }) {
+                p.process_status = ProcessStatus::Running;
+            }
+        }
+
+        let mut procs = self.running_processes.write().await;
+        procs.insert(name, process);
+        tracing::info!("Process 登録: port={}, dir={}", port, project_dir);
+    }
+
+    /// 外部 Process の登録解除（Process 停止時に呼ばれる）
+    pub async fn unregister_external_process(&self, port: u16) {
+        let mut procs = self.running_processes.write().await;
+        let key = procs
+            .iter()
+            .find(|(_, p)| p.port == port)
+            .map(|(k, _)| k.clone());
+
+        if let Some(key) = key {
+            procs.remove(&key);
+            tracing::info!("Process 登録解除: port={}, name={}", port, key);
+
+            // プロジェクト状態を更新
+            let mut projects = self.projects.write().await;
+            if let Some(p) = projects.get_mut(&key) {
+                p.process_status = ProcessStatus::Stopped;
+            }
+        }
+    }
+
     /// ポートスキャンでProcessを見つける
     async fn find_process_port(&self, project_path: &PathBuf) -> Option<u16> {
         let client = reqwest::Client::builder()
@@ -457,32 +509,7 @@ impl ProcessManagerCapability {
 
             let world = world.read().await;
 
-            // 1. running.json ゴースト除去（PID が死んでいるエントリを削除）
-            if let Ok(mut procs) = crate::config::RunningProcesses::load() {
-                let before = procs.processes.len();
-                procs.processes.retain(|p| {
-                    let alive = i32::try_from(p.pid)
-                        .map_or(false, |pid| unsafe { libc::kill(pid, 0) == 0 });
-                    if !alive {
-                        tracing::info!(
-                            "Health check: ゴースト除去 '{}' (port {}, PID {})",
-                            p.project_dir, p.port, p.pid
-                        );
-                    }
-                    alive
-                });
-                if procs.processes.len() < before {
-                    if let Err(e) = procs.save() {
-                        tracing::warn!("Health check: running.json 更新失敗: {}", e);
-                    }
-                }
-                tracing::debug!(
-                    "Health check: running.json に {} Process 登録中",
-                    procs.processes.len()
-                );
-            }
-
-            // 2. Process 状態更新
+            // 1. Process 状態更新（HTTP スキャンで発見 — running.json 不使用）
             if let Err(e) = world.refresh_process_status().await {
                 tracing::warn!("Health check: 状態更新失敗: {}", e);
                 continue;

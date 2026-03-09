@@ -23,7 +23,6 @@ use super::state::AppState;
 use super::topic_router::TopicRouter;
 use super::unison_server;
 use crate::capability::{ProcessManagerCapability, UpdateCapability};
-use crate::config::RunningProcesses;
 use crate::file_watcher::FileWatcherManager;
 use crate::protocol::DebugMode;
 
@@ -68,7 +67,7 @@ pub async fn run(
     tracing::info!("Capability event bridge started");
 
     // Terminal チャネル認証トークンを生成
-    let terminal_token = crate::config::RunningProcesses::generate_terminal_token();
+    let terminal_token = crate::discovery::generate_terminal_token();
 
     // tmux Actor 起動（tmux 環境下でのみ有効）
     let project_name = crate::resolve::project_name_from_path(
@@ -196,6 +195,14 @@ pub async fn run(
             post(world::world_open_pointview),
         )
         .route("/api/world/refresh", post(world::world_refresh))
+        .route(
+            "/api/world/processes/register",
+            post(world::world_register_process),
+        )
+        .route(
+            "/api/world/processes/unregister",
+            post(world::world_unregister_process),
+        )
         .layer(CorsLayer::permissive())
         .with_state(state.clone());
 
@@ -237,19 +244,9 @@ pub async fn run(
         });
     }
 
-    // running.json の pid と quic_port を更新
-    // （start.rs で仮登録済み。ここでサーバー起動後の正確な情報に更新する）
+    // TheWorld に Process を登録（ベストエフォート — 失敗してもスキャンで発見される）
     let pid = std::process::id();
-    if let Err(e) = RunningProcesses::update_pid_and_quic(port, pid, quic_port, &terminal_token) {
-        tracing::warn!("Failed to update Process in running.json: {}", e);
-    } else {
-        tracing::info!(
-            "Updated Process in running.json (port={}, quic={}, pid={})",
-            port,
-            quic_port,
-            pid
-        );
-    }
+    crate::discovery::register(port, &state.project_dir, pid, &terminal_token).await;
 
     // メニューバーアプリに起動完了を通知
     crate::notify::post_process_changed(port, "started");
@@ -267,12 +264,8 @@ pub async fn run(
         })
         .await?;
 
-    // Unregister from running.json
-    if let Err(e) = RunningProcesses::unregister_by_port(port) {
-        tracing::warn!("Failed to unregister Process from running.json: {}", e);
-    } else {
-        tracing::info!("Unregistered Process from running.json (port={})", port);
-    }
+    // TheWorld から登録解除
+    crate::discovery::unregister(port).await;
 
     // ペイン状態をディスクに保存（次回起動時に復元、RetainedStore から取得）
     state_for_shutdown.persist_pane_contents().await;
@@ -393,6 +386,14 @@ pub async fn run_world(port: u16) -> Result<()> {
             post(world::world_open_pointview),
         )
         .route("/api/world/refresh", post(world::world_refresh))
+        .route(
+            "/api/world/processes/register",
+            post(world::world_register_process),
+        )
+        .route(
+            "/api/world/processes/unregister",
+            post(world::world_unregister_process),
+        )
         // Update API routes (vp CLI)
         .route("/api/update/check", get(update::update_check))
         .route("/api/update/apply", post(update::update_apply))

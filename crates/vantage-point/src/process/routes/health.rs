@@ -43,14 +43,24 @@ pub struct HealthResponse {
     pub version: &'static str,
     pub pid: u32,
     pub project_dir: String,
+    /// Terminal チャネル認証トークン（TUI 接続用）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terminal_token: Option<String>,
 }
 
 pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthResponse> {
+    let token = if state.terminal_token == "WORLD_DISABLED" {
+        None
+    } else {
+        Some(state.terminal_token.clone())
+    };
+
     Json(HealthResponse {
         status: "ok",
         version: env!("CARGO_PKG_VERSION"),
         pid: std::process::id(),
         project_dir: state.project_dir.clone(),
+        terminal_token: token,
     })
 }
 
@@ -98,7 +108,7 @@ pub async fn close_pane_handler(
 pub async fn canvas_open_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     // 複数プロジェクト稼働中なら Lane モードで起動
     let lanes = state.world.is_some()
-        || crate::config::RunningProcesses::load().map_or(false, |r| r.processes.len() > 1);
+        || crate::discovery::list_blocking().len() > 1;
 
     match crate::canvas::ensure_canvas_running(state.port, lanes) {
         Ok(pid) => {

@@ -174,9 +174,7 @@ pub fn run_tray() -> anyhow::Result<()> {
             } else if let Some(port_str) = id.strip_prefix(OPEN_WEBUI_PREFIX) {
                 if let Ok(port) = port_str.parse::<u16>() {
                     // Open WebView window for existing Process instance
-                    let project_name = crate::config::RunningProcesses::load()
-                        .unwrap_or_default()
-                        .processes
+                    let project_name = crate::discovery::list_blocking()
                         .iter()
                         .find(|i| i.port == port)
                         .map(|i| {

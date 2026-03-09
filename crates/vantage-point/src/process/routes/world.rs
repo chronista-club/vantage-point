@@ -133,6 +133,66 @@ pub async fn world_open_pointview(
     }
 }
 
+/// Process 自己登録リクエスト
+#[derive(serde::Deserialize)]
+pub struct RegisterRequest {
+    pub port: u16,
+    pub project_dir: String,
+    pub pid: u32,
+    #[serde(default)]
+    pub terminal_token: Option<String>,
+}
+
+/// POST /api/world/processes/register - Process が自己登録
+pub async fn world_register_process(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<RegisterRequest>,
+) -> impl IntoResponse {
+    let Some(world) = &state.world else {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "World not available"})),
+        );
+    };
+
+    let world = world.read().await;
+    world
+        .register_external_process(req.port, &req.project_dir, req.pid)
+        .await;
+
+    (
+        axum::http::StatusCode::OK,
+        Json(serde_json::json!({"status": "registered", "port": req.port})),
+    )
+}
+
+/// Process 登録解除リクエスト
+#[derive(serde::Deserialize)]
+pub struct UnregisterRequest {
+    pub port: u16,
+}
+
+/// POST /api/world/processes/unregister - Process が自己登録解除
+pub async fn world_unregister_process(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<UnregisterRequest>,
+) -> impl IntoResponse {
+    let Some(world) = &state.world else {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "World not available"})),
+        );
+    };
+
+    let world = world.read().await;
+    world.unregister_external_process(req.port).await;
+
+    (
+        axum::http::StatusCode::OK,
+        Json(serde_json::json!({"status": "unregistered", "port": req.port})),
+    )
+}
+
 /// POST /api/world/refresh - Refresh process status
 pub async fn world_refresh(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let Some(world) = &state.world else {

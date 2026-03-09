@@ -302,26 +302,22 @@ async fn discover_and_connect(
         let world = world.read().await;
         world.list_running_processes().await
     } else {
-        // World なし — running.json から直接読む
-        match crate::config::RunningProcesses::load() {
-            Ok(procs) => procs
-                .processes
-                .into_iter()
-                .map(|p| crate::capability::RunningProcess {
-                    project_name: p
-                        .project_dir
-                        .rsplit('/')
-                        .next()
-                        .unwrap_or("unknown")
-                        .to_string(),
-                    port: p.port,
-                    pid: p.pid,
-                    project_path: p.project_dir.into(),
-                    discovered_via_bonjour: false,
-                })
-                .collect(),
-            Err(_) => vec![],
-        }
+        // World なし — discovery で稼働中 Process を発見
+        crate::discovery::list_blocking()
+            .into_iter()
+            .map(|p| crate::capability::RunningProcess {
+                project_name: p
+                    .project_dir
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or("unknown")
+                    .to_string(),
+                port: p.port,
+                pid: p.pid,
+                project_path: p.project_dir.into(),
+                discovered_via_bonjour: false,
+            })
+            .collect()
     };
 
     let mut lanes = Vec::new();

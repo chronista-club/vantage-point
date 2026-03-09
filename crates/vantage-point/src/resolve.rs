@@ -7,7 +7,7 @@
 use anyhow::{Result, bail};
 
 use crate::cli::{PORT_RANGE_END, PORT_RANGE_START};
-use crate::config::{Config, RunningProcesses};
+use crate::config::Config;
 
 /// ターゲット解決結果
 pub enum ResolvedTarget {
@@ -51,8 +51,8 @@ fn resolve_from_cwd(config: &Config) -> Result<ResolvedTarget> {
     let cwd = std::env::current_dir()?;
     let cwd_str = Config::normalize_path(&cwd);
 
-    // 1. running.json で実行中の Process を検索（サブディレクトリもマッチ）
-    if let Some(running) = RunningProcesses::find_for_cwd() {
+    // 1. 稼働中 Process を検索（TheWorld API → HTTP スキャンフォールバック）
+    if let Some(running) = crate::discovery::find_for_cwd_blocking() {
         let name = project_name_from_path(&running.project_dir, config);
         return Ok(ResolvedTarget::Running {
             port: running.port,
@@ -109,7 +109,7 @@ fn resolve_by_index(index: usize, config: &Config) -> Result<ResolvedTarget> {
     let path = Config::normalize_path(std::path::Path::new(&project.path));
 
     // 実行中かチェック
-    if let Some(running) = RunningProcesses::find_by_project(&path) {
+    if let Some(running) = crate::discovery::find_by_project_blocking(&path) {
         return Ok(ResolvedTarget::Running {
             port: running.port,
             name: project.name.clone(),
@@ -137,7 +137,7 @@ fn resolve_by_name(name: &str, config: &Config) -> Result<ResolvedTarget> {
             let path = Config::normalize_path(std::path::Path::new(&project.path));
 
             // 実行中かチェック
-            if let Some(running) = RunningProcesses::find_by_project(&path) {
+            if let Some(running) = crate::discovery::find_by_project_blocking(&path) {
                 return Ok(ResolvedTarget::Running {
                     port: running.port,
                     name: project.name.clone(),
@@ -175,22 +175,14 @@ pub fn project_name_from_path(project_dir: &str, config: &Config) -> String {
         .to_string()
 }
 
-/// 空きポートを同期的に検索（running.json + ポートバインド確認）
+/// 空きポートを検索（バインドテストのみ）
 pub fn find_available_port() -> Option<u16> {
-    let used_ports: std::collections::HashSet<u16> = RunningProcesses::list()
-        .into_iter()
-        .map(|s| s.port)
-        .collect();
-
-    (PORT_RANGE_START..=PORT_RANGE_END)
-        .find(|port| !used_ports.contains(port) && is_port_available(*port))
+    crate::discovery::find_available_port()
 }
 
-/// ポートが利用可能かバインドして確認（IPv6 + IPv4 両方チェック）
+/// ポートが利用可能かバインドして確認
 fn is_port_available(port: u16) -> bool {
     use std::net::{Ipv6Addr, SocketAddrV6, TcpListener};
-    // サーバーは [::1] にバインドするため IPv6 を優先チェック
-    // 注: 文字列 "[::1]" は ToSocketAddrs でパース不可、SocketAddrV6 を使う
     TcpListener::bind(SocketAddrV6::new(Ipv6Addr::LOCALHOST, port, 0, 0)).is_ok()
         && TcpListener::bind(("127.0.0.1", port)).is_ok()
 }
