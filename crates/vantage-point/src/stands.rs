@@ -5,8 +5,8 @@
 //!
 //! ## 使い方
 //!
-//! ```rust
-//! use crate::stands;
+//! ```rust,ignore
+//! use vantage_point::stands;
 //!
 //! tracing::info!("{} 起動 (port {})", stands::WORLD.display(), port);
 //! ```

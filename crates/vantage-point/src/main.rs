@@ -1,4 +1,4 @@
-//! Vantage Point Agent - AI協働開発プラットフォーム
+//! Vantage Point CLI — AI協働開発プラットフォーム
 //!
 //! Usage:
 //!   vp start    # Processを起動（HTTP + WebSocket）
@@ -13,38 +13,14 @@
 //!
 //! Config file: ~/.config/vp/config.toml
 
-// 開発中のスキャフォールドコードが多いため一時的に抑制
-#![allow(dead_code)]
-
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-mod agent;
-mod agui;
-mod canvas;
-mod capability;
-mod cli;
-mod commands;
-mod config;
-pub(crate) mod daemon;
-mod file_watcher;
-mod mcp;
-mod midi;
-pub(crate) mod stands;
-mod notify;
-mod process;
-mod protocol;
-mod resolve;
-mod terminal;
-mod terminal_window;
-mod tmux;
-pub(crate) mod trace_log;
-mod tray;
-mod tui;
-
-use cli::{DebugModeArg, parse_debug_env};
-use config::Config;
-use protocol::DebugMode;
+use vantage_point::cli::{self, DebugModeArg, parse_debug_env};
+use vantage_point::commands;
+use vantage_point::config::Config;
+use vantage_point::protocol::DebugMode;
+use vantage_point::{mcp, midi, process, tray};
 
 use commands::canvas_cmd::CanvasCommands;
 use commands::daemon::DaemonCommands;

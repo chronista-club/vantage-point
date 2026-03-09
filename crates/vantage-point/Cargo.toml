@@ -6,6 +6,10 @@ authors.workspace = true
 license.workspace = true
 description = "AI-powered development platform with Agent and MIDI services"
 
+[lib]
+name = "vantage_point"
+path = "src/lib.rs"
+
 [[bin]]
 name = "vp"
 path = "src/main.rs"
