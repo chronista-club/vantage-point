@@ -967,9 +967,20 @@ fn run_claude_session(
     let _canvas_handle = spawn_canvas_receiver(port, Arc::clone(&canvas_state));
     let mut canvas_open = false;
 
+    // カーソル点滅制御
+    let mut cursor_blink_on = true;
+    let mut cursor_blink_timer = std::time::Instant::now();
+    const CURSOR_BLINK_INTERVAL: Duration = Duration::from_millis(530);
+
     // メインループ
     let mut needs_redraw = true;
     loop {
+        // カーソル点滅タイマー
+        if cursor_blink_timer.elapsed() >= CURSOR_BLINK_INTERVAL {
+            cursor_blink_on = !cursor_blink_on;
+            cursor_blink_timer = std::time::Instant::now();
+            needs_redraw = true;
+        }
         // ブリッジからのイベントを処理（ノンブロッキング）
         while let Ok(evt) = event_rx.try_recv() {
             match evt {
@@ -1015,7 +1026,6 @@ fn run_claude_session(
             let state = term_state.lock().unwrap();
             let snapshot = state.snapshot();
             let display_offset = state.display_offset();
-            let cursor_visible = snapshot.cursor_visible;
             drop(state);
 
             let session_count = sessions.len();
@@ -1066,16 +1076,13 @@ fn run_claude_session(
 
                 let pty_inner = pty_block.inner(pty_area);
                 frame.render_widget(pty_block, pty_area);
-                frame.render_widget(TerminalView::new(&snapshot), pty_inner);
+                frame.render_widget(
+                    TerminalView::new(&snapshot).cursor_blink(cursor_blink_on),
+                    pty_inner,
+                );
 
-                if cursor_visible {
-                    let (crow, ccol) = snapshot.cursor;
-                    let cx = pty_inner.x + ccol as u16;
-                    let cy = pty_inner.y + crow as u16;
-                    if cx < pty_inner.right() && cy < pty_inner.bottom() {
-                        frame.set_cursor_position(ratatui::layout::Position::new(cx, cy));
-                    }
-                }
+                // ハードウェアカーソルは使わない（ソフトウェアカーソルで点滅描画）
+                // cursor_visible (DECTCEM) は TerminalView 内のソフトウェアカーソルで処理
 
                 // Canvas ペイン
                 if let Some(canvas_area) = canvas_area {
@@ -1103,6 +1110,10 @@ fn run_claude_session(
 
             match event::read()? {
                 Event::Key(key) => {
+                    // キー入力時はカーソルを即座に表示にリセット
+                    cursor_blink_on = true;
+                    cursor_blink_timer = std::time::Instant::now();
+
                     // Ctrl+Q: 終了
                     if key.code == KeyCode::Char('q')
                         && key.modifiers.contains(KeyModifiers::CONTROL)
