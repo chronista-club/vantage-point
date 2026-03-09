@@ -59,10 +59,10 @@ pub const WORLD: StandAlias = StandAlias {
 
 // ─── プロジェクトレベル ──────────────────────────────
 
-/// プロジェクトの開発サーバー — TheWorld(DIO) と対を成す主人公格
+/// プロジェクトの主人公 — TUI 統合ビュー + 各 Stand が同居する場
 pub const STAR_PLATINUM: StandAlias = StandAlias {
     id: "process",
-    functional_name: "Project Server",
+    functional_name: "Project Core",
     stand_name: "Star Platinum",
     short: "SP",
     emoji: "⭐",
@@ -70,19 +70,19 @@ pub const STAR_PLATINUM: StandAlias = StandAlias {
 
 // ─── Capability（Process にぶら下がるスタンド能力）───
 
-/// 表示能力 — Canvas WebView / TUI パネル（Paisley Park）
+/// 情報ナビゲーション能力 — ユーザーと AI に最適な情報を届ける（Paisley Park）
 pub const PAISLEY_PARK: StandAlias = StandAlias {
     id: "canvas",
-    functional_name: "Display Engine",
+    functional_name: "Information Navigator",
     stand_name: "Paisley Park",
     short: "PP",
     emoji: "🧭",
 };
 
-/// AI エージェント能力 — Claude CLI オーケストレーター（岸辺露伴の「読み書き」）
+/// コーディングアシスタント能力 — Claude CLI オーケストレーター（岸辺露伴の「読み書き」）
 pub const HEAVENS_DOOR: StandAlias = StandAlias {
     id: "agent",
-    functional_name: "AI Agent",
+    functional_name: "Coding Assistant",
     stand_name: "Heaven's Door",
     short: "HD",
     emoji: "📖",

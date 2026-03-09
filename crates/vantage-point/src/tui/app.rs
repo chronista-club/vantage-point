@@ -1046,9 +1046,17 @@ fn run_claude_session(
                     ])
                     .split(frame.area());
 
-                // ヘッダバー（AI 状態検知: PTY 出力の有無で判定）
+                // ヘッダバー（ステータス集約）
                 let ai_busy = last_pty_output.elapsed() < IDLE_THRESHOLD;
-                draw_header_bar(frame, chunks[0], project_name, port, canvas_open, ai_busy);
+                draw_header_bar(
+                    frame,
+                    chunks[0],
+                    project_name,
+                    port,
+                    canvas_open,
+                    ai_busy,
+                    &bridge_status,
+                );
 
                 // メインエリア: Canvas ON なら左右分割
                 let main_area = chunks[1];
@@ -1103,7 +1111,7 @@ fn run_claude_session(
                     render_canvas(frame, canvas_inner, &mut cs);
                 }
 
-                draw_footer_bar(frame, chunks[2], &bridge_status);
+                draw_footer_bar(frame, chunks[2], session_count);
             })?;
         }
 
@@ -1415,7 +1423,7 @@ fn calc_pty_size(term_width: u16, term_height: u16, canvas_open: bool) -> (usize
     (cols, lines)
 }
 
-/// ヘッダバー描画
+/// ヘッダバー描画（Stand ステータス — 右端に 📖 AI 状態）
 fn draw_header_bar(
     frame: &mut ratatui::Frame,
     area: Rect,
@@ -1423,82 +1431,90 @@ fn draw_header_bar(
     port: u16,
     canvas_open: bool,
     ai_busy: bool,
+    connection_status: &str,
 ) {
-    let canvas_indicator = if canvas_open {
-        Span::styled(
-            " Canvas:ON ",
-            Style::default().fg(NORD_GREEN).bg(NORD_POLAR),
-        )
+    // ⭐ Star Platinum — Process 接続状態
+    let (sp_text, sp_color) = if connection_status.starts_with("エラー") {
+        ("⭐✗", NORD_RED)
+    } else if connection_status == "接続済み" {
+        ("⭐", NORD_GREEN)
     } else {
-        Span::styled(
-            " Canvas:OFF ",
-            Style::default().fg(NORD_COMMENT).bg(NORD_POLAR),
-        )
+        ("⭐…", NORD_YELLOW)
     };
 
-    // AI 状態インジケータ
-    let ai_indicator = if ai_busy {
-        Span::styled(
-            " ● 応答中 ",
-            Style::default().fg(NORD_YELLOW).bg(NORD_POLAR),
-        )
+    // 🧭 Paisley Park — Canvas 状態
+    let (pp_text, pp_color) = if canvas_open {
+        ("🧭", NORD_GREEN)
     } else {
-        Span::styled(
-            " ○ 入力待ち ",
-            Style::default().fg(NORD_GREEN).bg(NORD_POLAR),
-        )
+        ("🧭", NORD_COMMENT)
     };
 
-    let header = Line::from(vec![
+    // 📖 Heaven's Door — AI 状態（右端固定幅）
+    let (hd_text, hd_color) = if ai_busy {
+        (" 📖応答中   ", NORD_YELLOW)
+    } else {
+        (" 📖入力待ち ", NORD_GREEN)
+    };
+
+    // 左側パーツ
+    let sep = Span::styled(" ", Style::default().bg(NORD_POLAR));
+    let left_spans = vec![
         Span::styled(
-            " VP ",
+            format!(" {} ", project_name),
             Style::default()
                 .fg(NORD_BG)
                 .bg(NORD_CYAN)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            format!(" {} ", project_name),
-            Style::default()
-                .fg(NORD_FG)
-                .bg(NORD_POLAR)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
             format!(" :{} ", port),
             Style::default().fg(NORD_COMMENT).bg(NORD_POLAR),
         ),
-        Span::styled("│", Style::default().fg(NORD_COMMENT).bg(NORD_POLAR)),
-        ai_indicator,
-        Span::styled("│", Style::default().fg(NORD_COMMENT).bg(NORD_POLAR)),
-        canvas_indicator,
-    ]);
-    let bar = Paragraph::new(header).style(Style::default().bg(NORD_POLAR));
+        sep.clone(),
+        Span::styled(sp_text, Style::default().fg(sp_color).bg(NORD_POLAR)),
+        sep.clone(),
+        Span::styled(pp_text, Style::default().fg(pp_color).bg(NORD_POLAR)),
+    ];
+
+    // 右端: 📖 Heaven's Door 状態（固定幅）
+    let left_width: usize = left_spans.iter().map(|s| s.width()).sum();
+    let hd_span = Span::styled(hd_text, Style::default().fg(hd_color).bg(NORD_POLAR));
+    let right_width = hd_span.width();
+    let gap = (area.width as usize).saturating_sub(left_width + right_width);
+
+    let mut spans = left_spans;
+    spans.push(Span::styled(
+        " ".repeat(gap),
+        Style::default().bg(NORD_POLAR),
+    ));
+    spans.push(hd_span);
+
+    let bar = Paragraph::new(Line::from(spans)).style(Style::default().bg(NORD_POLAR));
     frame.render_widget(bar, area);
 }
 
-/// フッターバー描画（ショートカットのみ）
-fn draw_footer_bar(frame: &mut ratatui::Frame, area: Rect, status: &str) {
-    let status_color = if status.starts_with("エラー") {
-        NORD_RED
-    } else if status == "接続済み" {
-        NORD_GREEN
-    } else {
-        NORD_YELLOW
-    };
+/// フッターバー描画（アクション専用）
+fn draw_footer_bar(frame: &mut ratatui::Frame, area: Rect, session_count: usize) {
+    let key_style = Style::default().fg(NORD_CYAN).bg(NORD_POLAR);
+    let desc_style = Style::default().fg(NORD_COMMENT).bg(NORD_POLAR);
 
-    let footer = Line::from(vec![
-        Span::styled(" Home", Style::default().fg(NORD_CYAN).bg(NORD_POLAR)),
-        Span::styled(" canvas ", Style::default().fg(NORD_COMMENT).bg(NORD_POLAR)),
-        Span::styled(" C-q", Style::default().fg(NORD_CYAN).bg(NORD_POLAR)),
-        Span::styled(" quit ", Style::default().fg(NORD_COMMENT).bg(NORD_POLAR)),
-        Span::styled(" PgUp/Dn", Style::default().fg(NORD_CYAN).bg(NORD_POLAR)),
-        Span::styled(" scroll ", Style::default().fg(NORD_COMMENT).bg(NORD_POLAR)),
-        Span::styled(
-            format!(" {} ", status),
-            Style::default().fg(status_color).bg(NORD_POLAR),
-        ),
-    ]);
-    let bar = Paragraph::new(footer).style(Style::default().bg(NORD_POLAR));
+    let mut spans = vec![
+        Span::styled(" Home", key_style),
+        Span::styled(" 🧭canvas ", desc_style),
+        Span::styled(" C-q", key_style),
+        Span::styled(" quit ", desc_style),
+        Span::styled(" PgUp/Dn", key_style),
+        Span::styled(" scroll ", desc_style),
+    ];
+
+    // マルチセッション時のみセッション操作を表示
+    if session_count > 1 {
+        spans.push(Span::styled(" C-←/→", key_style));
+        spans.push(Span::styled(" switch ", desc_style));
+    }
+    spans.push(Span::styled(" C-n", key_style));
+    spans.push(Span::styled(" new ", desc_style));
+
+    let bar = Paragraph::new(Line::from(spans)).style(Style::default().bg(NORD_POLAR));
     frame.render_widget(bar, area);
 }

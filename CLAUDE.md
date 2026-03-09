@@ -26,9 +26,9 @@ dogfooding を通じて体験を磨き、納得できる完成度でリリース
 
 ```
 TheWorld 👑 (Process Manager / 常駐デーモン)
-  └── Star Platinum ⭐ (Project Server / 各プロジェクトの開発プロセス)
-        ├── Heaven's Door 📖 (AI Agent / Claude CLI オーケストレーター)
-        ├── Paisley Park 🧭 (Display Engine / Canvas WebView)
+  └── Star Platinum ⭐ (Project Core / TUI 統合ビュー + 各 Stand が同居する場)
+        ├── Heaven's Door 📖 (Coding Assistant / Claude CLI オーケストレーター)
+        ├── Paisley Park 🧭 (Information Navigator / Canvas・情報提供)
         ├── Gold Experience 🌿 (Code Runner / 動的生命注入エンジン)
         └── Hermit Purple 🍇 (External Control / MIDI・tmux・MCP)
 ```
