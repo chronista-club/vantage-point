@@ -128,6 +128,16 @@ pub fn run_canvas(port: u16, project_name: &str, lanes: bool) -> anyhow::Result<
     // PID ファイルに自分を登録
     write_canvas_pid(std::process::id());
 
+    // macOS: バックグラウンドから spawn されてもウィンドウを表示するために
+    // ActivationPolicy を Regular に設定
+    #[cfg(target_os = "macos")]
+    let event_loop = {
+        use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS};
+        let mut event_loop = EventLoop::new();
+        event_loop.set_activation_policy(ActivationPolicy::Regular);
+        event_loop
+    };
+    #[cfg(not(target_os = "macos"))]
     let event_loop = EventLoop::new();
 
     let title = if lanes {
@@ -145,6 +155,9 @@ pub fn run_canvas(port: u16, project_name: &str, lanes: bool) -> anyhow::Result<
     let menu = create_menu_bar();
     #[cfg(target_os = "macos")]
     menu.init_for_nsapp();
+
+    // macOS: ウィンドウを前面に表示
+    window.set_focus();
 
     // HTTP URL で Canvas を提供（CDN スクリプトが正常に読み込まれるように）
     // キャッシュは canvas_handler の no-store ヘッダーで回避

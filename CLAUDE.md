@@ -22,16 +22,16 @@ dogfooding を通じて体験を磨き、納得できる完成度でリリース
 ### アーキテクチャ命名体系（JoJo メタファー）
 
 外向けは普通の用語メイン + JoJo 名を小さく併記（機能イメージを伝える目的）。
+命名定義は `crates/vantage-point/src/stands.rs` に集約。
 
 ```
-Process（プロジェクトの開発プロセス = 本体 / スタンド使い）
-  ├── Star Platinum（AI エージェント能力）
-  ├── Paisley Park（Canvas 表示能力）
-  ├── Heaven's Door（コード実行能力 / Ruby VM）
-  └── Hermit Purple（外部コントロール能力 / MIDI 等）
+TheWorld 👑 (Process Manager / 常駐デーモン)
+  └── Star Platinum ⭐ (Project Server / 各プロジェクトの開発プロセス)
+        ├── Gold Experience 🌿 (AI Agent / Claude CLI オーケストレーター)
+        ├── Paisley Park 🧭 (Display Engine / Canvas WebView)
+        ├── Heaven's Door 📖 (Code Runner / ProcessRunner)
+        └── Hermit Purple 🍇 (External Control / MIDI・tmux・MCP)
 ```
-
-- **TheWorld**: 常駐デーモン
 
 ## 技術スタック
 

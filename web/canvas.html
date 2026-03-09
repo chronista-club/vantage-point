@@ -1822,18 +1822,20 @@
                                     }
                                 }
                             } else {
-                                const activeTab = tabState.tabs.get(tabState.activeTab);
-                                target = activeTab?.container || document.body;
+                                // pane_id なし → ウィンドウ全体をキャプチャ
+                                target = document.body;
                             }
                             if (!target) {
                                 sendError('Screenshot target not found: ' + msg.pane_id);
                                 return;
                             }
 
+                            // pane_id なし（全体キャプチャ）は window サイズを使用
+                            const fullWindow = !msg.pane_id;
                             const rect = target.getBoundingClientRect();
                             const scale = 2;
-                            const w = Math.ceil(rect.width);
-                            const h = Math.ceil(rect.height);
+                            const w = fullWindow ? window.innerWidth : Math.ceil(rect.width);
+                            const h = fullWindow ? window.innerHeight : Math.ceil(rect.height);
 
                             // DOM clone + computed style 焼き付け
                             const clone = target.cloneNode(true);

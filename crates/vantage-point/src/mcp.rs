@@ -620,7 +620,8 @@ impl VantageMcp {
         ));
 
         // vp start --headless をデタッチ実行
-        let spawn_result = std::process::Command::new("vp")
+        let vp_bin = std::env::current_exe().unwrap_or_else(|_| "vp".into());
+        let spawn_result = std::process::Command::new(&vp_bin)
             .arg("start")
             .arg("--headless")
             .arg("-C")
@@ -1518,7 +1519,8 @@ impl VantageMcp {
 
         // 4. Start new Process process
         let open_viewer = params.open_viewer.unwrap_or(false);
-        let mut cmd = std::process::Command::new("vp");
+        let vp_bin = std::env::current_exe().unwrap_or_else(|_| "vp".into());
+        let mut cmd = std::process::Command::new(&vp_bin);
         cmd.arg("start")
             .arg("-C")
             .arg(&project_dir)

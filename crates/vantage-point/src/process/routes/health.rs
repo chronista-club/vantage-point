@@ -205,7 +205,8 @@ pub async fn canvas_capture_handler(
 
     // Canvas 未起動なら自動起動 + WebSocket 接続待ち
     if !canvas_alive {
-        match std::process::Command::new("vp")
+        let vp_bin = std::env::current_exe().unwrap_or_else(|_| "vp".into());
+        match std::process::Command::new(&vp_bin)
             .args(["canvas", "internal", "--port", &state.port.to_string()])
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
