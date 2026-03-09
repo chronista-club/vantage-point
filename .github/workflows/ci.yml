@@ -12,7 +12,6 @@ env:
 jobs:
   # ===========================================
   # フォーマットチェック（プラットフォーム非依存）
-  # macOS専用アプリのため、clippy/test/buildはローカルで実施
   # ===========================================
   fmt:
     name: Format
@@ -27,6 +26,28 @@ jobs:
 
       - name: Check formatting
         run: cargo fmt --all -- --check
+
+  # ===========================================
+  # Clippy + テスト（macOS — wry/tao が macOS API に依存）
+  # ===========================================
+  check:
+    name: Clippy + Test
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
 
   # ===========================================
   # セキュリティ監査（依存クレートの既知脆弱性チェック）

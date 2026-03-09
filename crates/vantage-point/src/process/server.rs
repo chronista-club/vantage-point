@@ -174,14 +174,8 @@ pub async fn run(
             get(prompt::prompts_list_pending_handler),
         )
         // World API routes
-        .route(
-            "/api/world/projects",
-            get(world::world_list_projects),
-        )
-        .route(
-            "/api/world/processes",
-            get(world::world_list_processes),
-        )
+        .route("/api/world/projects", get(world::world_list_projects))
+        .route("/api/world/processes", get(world::world_list_processes))
         .route(
             "/api/world/processes/{project_name}/start",
             post(world::world_start_process),
@@ -365,14 +359,8 @@ pub async fn run_world(port: u16) -> Result<()> {
         // Canvas Lane 集約 WebSocket
         .route("/ws/lanes", get(lanes::lanes_ws_handler))
         // World API routes
-        .route(
-            "/api/world/projects",
-            get(world::world_list_projects),
-        )
-        .route(
-            "/api/world/processes",
-            get(world::world_list_processes),
-        )
+        .route("/api/world/projects", get(world::world_list_projects))
+        .route("/api/world/processes", get(world::world_list_processes))
         .route(
             "/api/world/processes/{project_name}/start",
             post(world::world_start_process),

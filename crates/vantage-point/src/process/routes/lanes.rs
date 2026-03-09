@@ -128,8 +128,7 @@ async fn handle_lanes_socket(socket: WebSocket, state: Arc<AppState>) {
     let connected_ports: Arc<Mutex<HashSet<u16>>> = Arc::new(Mutex::new(HashSet::new()));
 
     // 初期スキャン: 稼働中 Process を発見して接続
-    let initial_lanes =
-        discover_and_connect(&state, bridge_tx.clone(), &connected_ports).await;
+    let initial_lanes = discover_and_connect(&state, bridge_tx.clone(), &connected_ports).await;
 
     // 初期 Lane 一覧を送信
     let lanes_event = LaneEvent::Lanes {
@@ -150,9 +149,7 @@ async fn handle_lanes_socket(socket: WebSocket, state: Arc<AppState>) {
                     // ScreenshotRequest のみ直接転送（Lane ラップ不要）
                     if matches!(msg, ProcessMessage::ScreenshotRequest { .. }) {
                         let json = serde_json::to_value(&msg).unwrap_or_default();
-                        let _ = hub_bridge_tx
-                            .send(BridgeMsg::DirectMessage(json))
-                            .await;
+                        let _ = hub_bridge_tx.send(BridgeMsg::DirectMessage(json)).await;
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
@@ -237,27 +234,22 @@ async fn handle_lanes_socket(socket: WebSocket, state: Arc<AppState>) {
                     // ScreenshotResponse を処理
                     if let Ok(browser_msg) =
                         serde_json::from_str::<crate::protocol::BrowserMessage>(&text)
-                    {
-                        if let crate::protocol::BrowserMessage::ScreenshotResponse {
+                        && let crate::protocol::BrowserMessage::ScreenshotResponse {
                             request_id,
                             data,
                             width,
                             height,
                         } = browser_msg
-                        {
-                            let mut waiters =
-                                state_for_recv.screenshot_waiters.lock().await;
-                            if let Some(tx) = waiters.remove(&request_id) {
-                                let _ = tx.send(
-                                    crate::process::state::ScreenshotData {
-                                        data,
-                                        width,
-                                        height,
-                                    },
-                                );
-                            }
-                            continue;
+                    {
+                        let mut waiters = state_for_recv.screenshot_waiters.lock().await;
+                        if let Some(tx) = waiters.remove(&request_id) {
+                            let _ = tx.send(crate::process::state::ScreenshotData {
+                                data,
+                                width,
+                                height,
+                            });
                         }
+                        continue;
                     }
                     // LaneCommand を処理
                     if let Ok(cmd) = serde_json::from_str::<LaneCommand>(&text) {
@@ -303,7 +295,8 @@ async fn discover_and_connect(
         world.list_running_processes().await
     } else {
         // World なし — discovery で稼働中 Process を発見
-        crate::discovery::list_blocking()
+        crate::discovery::list()
+            .await
             .into_iter()
             .map(|p| crate::capability::RunningProcess {
                 project_name: p

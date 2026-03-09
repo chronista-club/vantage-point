@@ -17,6 +17,12 @@ use super::protocol::{
 use super::pty_slot::PtySlot;
 use super::registry::{PaneKind, SessionRegistry};
 
+/// ペイン識別子: (session_id, pane_id)
+type PaneKey = (String, u32);
+
+/// PTY 出力の broadcast receiver マップ
+type OutputReceiverMap = HashMap<PaneKey, tokio::sync::broadcast::Receiver<Vec<u8>>>;
+
 /// Daemon の共有状態
 ///
 /// `pty_slots` は `Mutex` を使用する（`PtySlot` が `Sync` を実装しないため）。
@@ -26,24 +32,29 @@ pub struct DaemonState {
     pub registry: Arc<RwLock<SessionRegistry>>,
     /// PTYスロット: (session_id, pane_id) → PtySlot
     /// PtySlot は Send だが Sync ではないため Mutex を使用
-    pub pty_slots: Arc<Mutex<HashMap<(String, u32), PtySlot>>>,
+    pub pty_slots: Arc<Mutex<HashMap<PaneKey, PtySlot>>>,
     /// PTY出力の broadcast receiver: ペインごとに保持
     /// terminal.read_output で消費される
-    pub output_receivers:
-        Arc<Mutex<HashMap<(String, u32), tokio::sync::broadcast::Receiver<Vec<u8>>>>>,
+    pub output_receivers: Arc<Mutex<OutputReceiverMap>>,
     /// Daemon 起動時刻（uptime計算用）
     pub started_at: Instant,
+}
+
+impl Default for DaemonState {
+    fn default() -> Self {
+        Self {
+            registry: Arc::new(RwLock::new(SessionRegistry::default())),
+            pty_slots: Arc::new(Mutex::new(HashMap::new())),
+            output_receivers: Arc::new(Mutex::new(HashMap::new())),
+            started_at: Instant::now(),
+        }
+    }
 }
 
 impl DaemonState {
     /// 新しい DaemonState を作成
     pub fn new() -> Self {
-        Self {
-            registry: Arc::new(RwLock::new(SessionRegistry::new())),
-            pty_slots: Arc::new(Mutex::new(HashMap::new())),
-            output_receivers: Arc::new(Mutex::new(HashMap::new())),
-            started_at: Instant::now(),
-        }
+        Self::default()
     }
 }
 

@@ -1209,10 +1209,10 @@ impl VantageMcp {
         let elapsed = resp.get("elapsed_ms").and_then(|v| v.as_u64()).unwrap_or(0);
 
         let mut result = format!("Ruby eval completed in {}ms", elapsed);
-        if let Some(code) = exit_code {
-            if code != 0 {
-                result.push_str(&format!(" (exit code: {})", code));
-            }
+        if let Some(code) = exit_code
+            && code != 0
+        {
+            result.push_str(&format!(" (exit code: {})", code));
         }
         if !stdout.is_empty() {
             result.push_str(&format!("\n\nstdout:\n{}", stdout));
@@ -1602,14 +1602,14 @@ impl rmcp::ServerHandler for VantageMcp {
 /// 1. Explicit port argument (if provided and != 33000)
 /// 2. running.json lookup by current working directory
 /// 3. Default port (33000)
-fn resolve_process_port(explicit_port: u16) -> u16 {
+async fn resolve_process_port(explicit_port: u16) -> u16 {
     // If an explicit port was provided (not the default), use it
     if explicit_port != 33000 {
         return explicit_port;
     }
 
     // Try to find a running Process for the current directory
-    if let Some(process_info) = crate::discovery::find_for_cwd_blocking() {
+    if let Some(process_info) = crate::discovery::find_for_cwd().await {
         return process_info.port;
     }
 
@@ -1626,7 +1626,7 @@ pub async fn run_mcp_server(process_port: u16) -> anyhow::Result<()> {
     crate::trace_log::init_log_file();
 
     // Resolve the actual port to use
-    let resolved_port = resolve_process_port(process_port);
+    let resolved_port = resolve_process_port(process_port).await;
 
     // Note: In MCP mode, we should not use tracing to stdout
     // as it interferes with JSON-RPC communication

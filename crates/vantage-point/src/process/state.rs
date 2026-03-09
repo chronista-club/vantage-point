@@ -268,8 +268,7 @@ impl AppState {
                     let retained = self.topic_router.retained();
                     let mut store = retained.write().await;
                     for (pane_id, pane_state) in restored {
-                        let topic =
-                            format!("process/paisley-park/command/show/{}", pane_id);
+                        let topic = format!("process/paisley-park/command/show/{}", pane_id);
                         store.set(
                             &topic,
                             ProcessMessage::Show {
@@ -280,11 +279,7 @@ impl AppState {
                             },
                         );
                     }
-                    tracing::info!(
-                        "ペイン状態を復元: {} ペイン (port={})",
-                        count,
-                        self.port
-                    );
+                    tracing::info!("ペイン状態を復元: {} ペイン (port={})", count, self.port);
                 }
                 Err(e) => tracing::warn!("ペイン状態のデシリアライズに失敗: {}", e),
             },

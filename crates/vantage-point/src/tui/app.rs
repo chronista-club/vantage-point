@@ -101,11 +101,11 @@ impl CanvasState {
 
         use base64::Engine;
         let engine = base64::engine::general_purpose::STANDARD;
-        if let Ok(bytes) = engine.decode(data) {
-            if let Ok(img) = image::load_from_memory(&bytes) {
-                let protocol = picker.new_resize_protocol(img);
-                self.images.insert(pane_id.to_string(), protocol);
-            }
+        if let Ok(bytes) = engine.decode(data)
+            && let Ok(img) = image::load_from_memory(&bytes)
+        {
+            let protocol = picker.new_resize_protocol(img);
+            self.images.insert(pane_id.to_string(), protocol);
         }
     }
 
@@ -169,16 +169,11 @@ fn spawn_canvas_receiver(
             };
 
             // イベント受信ループ
-            loop {
-                match channel.recv().await {
-                    Ok(msg) => {
-                        let payload = msg.payload_as_value().unwrap_or_default();
-                        if let Ok(process_msg) = serde_json::from_value::<ProcessMessage>(payload) {
-                            let mut state = canvas_state.lock().unwrap();
-                            state.apply(&process_msg);
-                        }
-                    }
-                    Err(_) => break,
+            while let Ok(msg) = channel.recv().await {
+                let payload = msg.payload_as_value().unwrap_or_default();
+                if let Ok(process_msg) = serde_json::from_value::<ProcessMessage>(payload) {
+                    let mut state = canvas_state.lock().unwrap();
+                    state.apply(&process_msg);
                 }
             }
         });
@@ -293,45 +288,44 @@ fn run_project_select(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> 
             draw_project_select(frame, &projects, &mut list_state);
         })?;
 
-        if event::poll(Duration::from_millis(50))? {
-            match event::read()? {
-                Event::Key(key) => match key.code {
-                    // 選択決定
-                    KeyCode::Enter => {
-                        if let Some(idx) = list_state.selected() {
-                            let project = &projects[idx];
-                            let dir = Config::normalize_path(std::path::Path::new(&project.path));
-                            let name = project.name.clone();
+        if event::poll(Duration::from_millis(50))?
+            && let Event::Key(key) = event::read()?
+        {
+            match key.code {
+                // 選択決定
+                KeyCode::Enter => {
+                    if let Some(idx) = list_state.selected() {
+                        let project = &projects[idx];
+                        let dir = Config::normalize_path(std::path::Path::new(&project.path));
+                        let name = project.name.clone();
 
-                            // ターミナルタイトル更新
-                            set_terminal_title(&format!("VP: {}", name));
+                        // ターミナルタイトル更新
+                        set_terminal_title(&format!("VP: {}", name));
 
-                            // Process サーバー + Canvas 起動
-                            start_background_services(&dir, &config, idx, &name).ok();
+                        // Process サーバー + Canvas 起動
+                        start_background_services(&dir, &config, idx, &name).ok();
 
-                            // ポート取得
-                            let port = crate::resolve::port_for_configured(idx, &config)
-                                .unwrap_or(33000 + idx as u16);
+                        // ポート取得
+                        let port = crate::resolve::port_for_configured(idx, &config)
+                            .unwrap_or(33000 + idx as u16);
 
-                            // Claude セッション開始
-                            return run_claude_session(terminal, &dir, &name, port);
-                        }
+                        // Claude セッション開始
+                        return run_claude_session(terminal, &dir, &name, port);
                     }
-                    // カーソル移動
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        let i = list_state.selected().unwrap_or(0);
-                        let new = if i == 0 { projects.len() - 1 } else { i - 1 };
-                        list_state.select(Some(new));
-                    }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        let i = list_state.selected().unwrap_or(0);
-                        let new = if i >= projects.len() - 1 { 0 } else { i + 1 };
-                        list_state.select(Some(new));
-                    }
-                    // 終了
-                    KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
-                    _ => {}
-                },
+                }
+                // カーソル移動
+                KeyCode::Up | KeyCode::Char('k') => {
+                    let i = list_state.selected().unwrap_or(0);
+                    let new = if i == 0 { projects.len() - 1 } else { i - 1 };
+                    list_state.select(Some(new));
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    let i = list_state.selected().unwrap_or(0);
+                    let new = if i >= projects.len() - 1 { 0 } else { i + 1 };
+                    list_state.select(Some(new));
+                }
+                // 終了
+                KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
                 _ => {}
             }
         }
@@ -379,9 +373,9 @@ fn draw_project_select(
         .iter()
         .enumerate()
         .map(|(i, p)| {
-            let running = crate::discovery::find_by_project_blocking(
-                &Config::normalize_path(std::path::Path::new(&p.path)),
-            );
+            let running = crate::discovery::find_by_project_blocking(&Config::normalize_path(
+                std::path::Path::new(&p.path),
+            ));
             let status = if running.is_some() {
                 Span::styled(" [running] ", Style::default().fg(NORD_GREEN))
             } else {
@@ -475,37 +469,36 @@ fn run_session_select(
             draw_session_select(frame, sessions_ref, &mut list_state);
         })?;
 
-        if event::poll(Duration::from_millis(50))? {
-            match event::read()? {
-                Event::Key(key) => match key.code {
-                    KeyCode::Enter => {
-                        let idx = list_state.selected().unwrap_or(0);
-                        return Ok(match idx {
-                            0 => SessionMode::Continue,
-                            1 => SessionMode::New,
-                            n => SessionMode::Resume(sessions[n - 2].id.clone()),
-                        });
-                    }
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        let i = list_state.selected().unwrap_or(0);
-                        let total = sessions.len() + 2; // +2 for Continue & New
-                        let new = if i == 0 { total - 1 } else { i - 1 };
-                        list_state.select(Some(new));
-                    }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        let i = list_state.selected().unwrap_or(0);
-                        let total = sessions.len() + 2;
-                        let new = if i >= total - 1 { 0 } else { i + 1 };
-                        list_state.select(Some(new));
-                    }
-                    // Esc: 前回の続き（デフォルト動作）
-                    KeyCode::Esc => return Ok(SessionMode::Continue),
-                    // Ctrl+Q: 終了
-                    KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        anyhow::bail!("User quit from session select");
-                    }
-                    _ => {}
-                },
+        if event::poll(Duration::from_millis(50))?
+            && let Event::Key(key) = event::read()?
+        {
+            match key.code {
+                KeyCode::Enter => {
+                    let idx = list_state.selected().unwrap_or(0);
+                    return Ok(match idx {
+                        0 => SessionMode::Continue,
+                        1 => SessionMode::New,
+                        n => SessionMode::Resume(sessions[n - 2].id.clone()),
+                    });
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    let i = list_state.selected().unwrap_or(0);
+                    let total = sessions.len() + 2; // +2 for Continue & New
+                    let new = if i == 0 { total - 1 } else { i - 1 };
+                    list_state.select(Some(new));
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    let i = list_state.selected().unwrap_or(0);
+                    let total = sessions.len() + 2;
+                    let new = if i >= total - 1 { 0 } else { i + 1 };
+                    list_state.select(Some(new));
+                }
+                // Esc: 前回の続き（デフォルト動作）
+                KeyCode::Esc => return Ok(SessionMode::Continue),
+                // Ctrl+Q: 終了
+                KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    anyhow::bail!("User quit from session select");
+                }
                 _ => {}
             }
         }
@@ -936,8 +929,8 @@ fn run_claude_session(
     let term_state = Arc::new(Mutex::new(TerminalState::new(pty_cols, pty_lines)));
 
     // Health API から認証トークンを取得
-    let terminal_token = crate::discovery::fetch_terminal_token_blocking(port)
-        .ok_or_else(|| {
+    let terminal_token =
+        crate::discovery::fetch_terminal_token_blocking(port).ok_or_else(|| {
             anyhow::anyhow!(
                 "Terminal token not found for port {}. Process may not be fully started.",
                 port

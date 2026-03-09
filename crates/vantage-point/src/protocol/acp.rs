@@ -329,22 +329,19 @@ pub struct ResourceContent {
 /// ツールコール状態
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum ToolCallStatus {
+    #[default]
     Pending,
     InProgress,
     Completed,
     Failed,
 }
 
-impl Default for ToolCallStatus {
-    fn default() -> Self {
-        Self::Pending
-    }
-}
-
 /// ツールコール種別
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum ToolCallKind {
     Read,
     Edit,
@@ -354,13 +351,8 @@ pub enum ToolCallKind {
     Execute,
     Think,
     Fetch,
+    #[default]
     Other,
-}
-
-impl Default for ToolCallKind {
-    fn default() -> Self {
-        Self::Other
-    }
 }
 
 /// ツールコール情報

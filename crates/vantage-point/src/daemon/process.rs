@@ -29,7 +29,7 @@ pub fn is_daemon_running() -> Option<u32> {
     let pid: u32 = pid_str.trim().parse().ok()?;
 
     // kill(pid, 0) でプロセスの存在を確認（シグナルは送信しない）
-    let alive = i32::try_from(pid).map_or(false, |pid_i32| unsafe { libc::kill(pid_i32, 0) == 0 });
+    let alive = i32::try_from(pid).is_ok_and(|pid_i32| unsafe { libc::kill(pid_i32, 0) == 0 });
     if alive {
         Some(pid)
     } else {

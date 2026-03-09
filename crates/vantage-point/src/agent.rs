@@ -61,17 +61,13 @@ fn get_claude_cli_path(config_path: Option<&str>) -> String {
     }
 
     // 2. 現在のPATHで見つかればそのまま使用
-    if let Ok(output) = std::process::Command::new("which")
-        .arg("claude")
-        .output()
+    if let Ok(output) = std::process::Command::new("which").arg("claude").output()
+        && output.status.success()
+        && let Ok(path) = String::from_utf8(output.stdout)
     {
-        if output.status.success() {
-            if let Ok(path) = String::from_utf8(output.stdout) {
-                let path = path.trim();
-                if !path.is_empty() {
-                    return path.to_string();
-                }
-            }
+        let path = path.trim();
+        if !path.is_empty() {
+            return path.to_string();
         }
     }
 

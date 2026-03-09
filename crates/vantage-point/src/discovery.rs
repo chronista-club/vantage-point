@@ -75,7 +75,10 @@ pub async fn list() -> Vec<ProcessInfo> {
 /// プロジェクトディレクトリから Process を検索
 pub async fn find_by_project(project_dir: &str) -> Option<ProcessInfo> {
     let canonical = Config::normalize_path(std::path::Path::new(project_dir));
-    list().await.into_iter().find(|p| p.project_dir == canonical)
+    list()
+        .await
+        .into_iter()
+        .find(|p| p.project_dir == canonical)
 }
 
 /// 現在のワーキングディレクトリから Process を検索
@@ -137,10 +140,7 @@ pub async fn register(port: u16, project_dir: &str, pid: u32, terminal_token: &s
 /// TheWorld から Process を登録解除
 pub async fn unregister(port: u16) {
     let client = build_client(2000);
-    let url = format!(
-        "http://[::1]:{}/api/world/processes/unregister",
-        WORLD_PORT
-    );
+    let url = format!("http://[::1]:{}/api/world/processes/unregister", WORLD_PORT);
 
     let body = serde_json::json!({ "port": port });
 

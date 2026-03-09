@@ -97,8 +97,7 @@ async fn handle_unwatch_file(
 /// canvas.open メソッドのハンドラー（シングルトン管理）
 async fn handle_canvas_open(state: &AppState) -> Result<serde_json::Value, String> {
     // 複数プロジェクト稼働中なら Lane モードで開く（TheWorld デーモン有無に依存しない）
-    let lanes = state.world.is_some()
-        || crate::discovery::list_blocking().len() > 1;
+    let lanes = state.world.is_some() || crate::discovery::list().await.len() > 1;
 
     match crate::canvas::ensure_canvas_running(state.port, lanes) {
         Ok(pid) => {
@@ -667,20 +666,13 @@ pub async fn start_unison_server(
 
                     // TopicRouter で paisley-park 配下を購読
                     // retained メッセージ（Show/Clear の最新値）が自動で初期配信される
-                    let (sub_id, mut rx) = state
-                        .topic_router
-                        .subscribe("process/paisley-park/#")
-                        .await;
+                    let (sub_id, mut rx) =
+                        state.topic_router.subscribe("process/paisley-park/#").await;
 
-                    loop {
-                        match rx.recv().await {
-                            Some((_topic, msg)) => {
-                                let json = serde_json::to_value(&msg).unwrap_or_default();
-                                if channel.send_event("pane", json).await.is_err() {
-                                    break;
-                                }
-                            }
-                            None => break, // チャネル閉鎖
+                    while let Some((_topic, msg)) = rx.recv().await {
+                        let json = serde_json::to_value(&msg).unwrap_or_default();
+                        if channel.send_event("pane", json).await.is_err() {
+                            break;
                         }
                     }
 

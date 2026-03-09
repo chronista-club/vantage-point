@@ -109,6 +109,12 @@ pub struct ProcessRegistry {
     counter: u32,
 }
 
+impl Default for ProcessRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ProcessRegistry {
     pub fn new() -> Self {
         Self {
@@ -182,12 +188,10 @@ impl ProcessRegistry {
         let now = std::time::Instant::now();
         self.processes.retain(|_id, entry| {
             match &entry.info.status {
-                ProcessStatus::Completed { .. } | ProcessStatus::Failed { .. } => {
-                    entry
-                        .completed_at
-                        .map(|t| now.duration_since(t).as_secs() < max_age_secs)
-                        .unwrap_or(true)
-                }
+                ProcessStatus::Completed { .. } | ProcessStatus::Failed { .. } => entry
+                    .completed_at
+                    .map(|t| now.duration_since(t).as_secs() < max_age_secs)
+                    .unwrap_or(true),
                 _ => true, // Running 等は常に残す
             }
         });
@@ -195,10 +199,10 @@ impl ProcessRegistry {
 
     /// Graceful shutdown シグナルを送信
     pub async fn send_shutdown(&self, process_id: &str) -> bool {
-        if let Some(entry) = self.processes.get(process_id) {
-            if let Some(tx) = &entry.shutdown_tx {
-                return tx.send(()).await.is_ok();
-            }
+        if let Some(entry) = self.processes.get(process_id)
+            && let Some(tx) = &entry.shutdown_tx
+        {
+            return tx.send(()).await.is_ok();
         }
         false
     }
@@ -367,6 +371,7 @@ pub async fn process_inject(
 }
 
 /// プロセスの出力をストリーミング + inject 受信
+#[allow(clippy::too_many_arguments)]
 async fn stream_output(
     child: &mut tokio::process::Child,
     stdout: Option<tokio::process::ChildStdout>,
@@ -541,13 +546,13 @@ fn format_output_html(stdout: &str, stderr: &str, exit_code: Option<i32>) -> Str
         html.push_str("</pre>");
     }
 
-    if let Some(code) = exit_code {
-        if code != 0 {
-            html.push_str(&format!(
-                "<div style=\"color:#e06060;font-size:11px;margin-top:8px\">exit code: {}</div>",
-                code
-            ));
-        }
+    if let Some(code) = exit_code
+        && code != 0
+    {
+        html.push_str(&format!(
+            "<div style=\"color:#e06060;font-size:11px;margin-top:8px\">exit code: {}</div>",
+            code
+        ));
     }
 
     html.push_str("</div>");

@@ -180,7 +180,10 @@ mod tests {
             "process/terminal/state/ready",
             ProcessMessage::TerminalReady,
         );
-        store.set("process/paisley-park/command/show/main", make_show("main", "Hi"));
+        store.set(
+            "process/paisley-park/command/show/main",
+            make_show("main", "Hi"),
+        );
         assert_eq!(store.len(), 2);
 
         store.clear();
@@ -190,8 +193,14 @@ mod tests {
     #[test]
     fn test_get_matching_exact() {
         let mut store = RetainedStore::new();
-        store.set("process/paisley-park/command/show/main", make_show("main", "A"));
-        store.set("process/paisley-park/command/show/side", make_show("side", "B"));
+        store.set(
+            "process/paisley-park/command/show/main",
+            make_show("main", "A"),
+        );
+        store.set(
+            "process/paisley-park/command/show/side",
+            make_show("side", "B"),
+        );
         store.set(
             "process/terminal/state/ready",
             ProcessMessage::TerminalReady,
@@ -217,7 +226,10 @@ mod tests {
                 active_id: None,
             },
         );
-        store.set("process/paisley-park/command/show/main", make_show("main", "X"));
+        store.set(
+            "process/paisley-park/command/show/main",
+            make_show("main", "X"),
+        );
 
         // 全 capability の state を取得
         let pattern = TopicPattern::parse("process/+/state/#");

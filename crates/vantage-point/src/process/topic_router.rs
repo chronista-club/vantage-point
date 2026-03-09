@@ -95,9 +95,7 @@ impl TopicRouter {
             }
 
             // === Heaven's Door（AI Agent 能力）===
-            ProcessMessage::ChatChunk { .. } => {
-                "process/heavens-door/event/text-chunk".to_string()
-            }
+            ProcessMessage::ChatChunk { .. } => "process/heavens-door/event/text-chunk".to_string(),
             ProcessMessage::ChatMessage { .. } => {
                 "process/heavens-door/event/chat-message".to_string()
             }
@@ -107,9 +105,7 @@ impl TopicRouter {
             ProcessMessage::ComponentDismissed { .. } => {
                 "process/heavens-door/event/component-dismissed".to_string()
             }
-            ProcessMessage::AgUi { .. } => {
-                "process/heavens-door/event/ag-ui".to_string()
-            }
+            ProcessMessage::AgUi { .. } => "process/heavens-door/event/ag-ui".to_string(),
             ProcessMessage::SessionList { .. } => {
                 "process/heavens-door/state/session-list".to_string()
             }
@@ -127,31 +123,17 @@ impl TopicRouter {
             }
 
             // === Terminal（PTY 出力）===
-            ProcessMessage::TerminalOutput { .. } => {
-                "process/terminal/data/output".to_string()
-            }
-            ProcessMessage::TerminalReady => {
-                "process/terminal/state/ready".to_string()
-            }
-            ProcessMessage::TerminalExited => {
-                "process/terminal/state/exited".to_string()
-            }
+            ProcessMessage::TerminalOutput { .. } => "process/terminal/data/output".to_string(),
+            ProcessMessage::TerminalReady => "process/terminal/state/ready".to_string(),
+            ProcessMessage::TerminalExited => "process/terminal/state/exited".to_string(),
 
             // === Debug（デバッグ情報）===
-            ProcessMessage::DebugInfo { .. } => {
-                "process/debug/log".to_string()
-            }
-            ProcessMessage::DebugModeChanged { .. } => {
-                "process/debug/state/mode".to_string()
-            }
-            ProcessMessage::TraceLog { .. } => {
-                "process/debug/trace".to_string()
-            }
+            ProcessMessage::DebugInfo { .. } => "process/debug/log".to_string(),
+            ProcessMessage::DebugModeChanged { .. } => "process/debug/state/mode".to_string(),
+            ProcessMessage::TraceLog { .. } => "process/debug/trace".to_string(),
 
             // === Star Platinum（Process 管理）===
-            ProcessMessage::Ping => {
-                "process/star-platinum/event/ping".to_string()
-            }
+            ProcessMessage::Ping => "process/star-platinum/event/ping".to_string(),
         }
     }
 
@@ -159,7 +141,10 @@ impl TopicRouter {
     ///
     /// 登録時に retained ストアから初期値を配信する。
     /// 返り値の Receiver でメッセージを受信し、u64 で unsubscribe に使う。
-    pub async fn subscribe(&self, pattern: &str) -> (u64, mpsc::Receiver<(String, ProcessMessage)>) {
+    pub async fn subscribe(
+        &self,
+        pattern: &str,
+    ) -> (u64, mpsc::Receiver<(String, ProcessMessage)>) {
         let pattern = TopicPattern::parse(pattern);
         let (tx, rx) = mpsc::channel(256);
 

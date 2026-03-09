@@ -133,10 +133,10 @@ impl ProcessManagerCapability {
     /// vpバイナリを検索
     fn find_vp_binary() -> Option<PathBuf> {
         // 1. current_exe()（最も確実）
-        if let Ok(exe) = std::env::current_exe() {
-            if exe.exists() {
-                return Some(exe);
-            }
+        if let Ok(exe) = std::env::current_exe()
+            && exe.exists()
+        {
+            return Some(exe);
         }
 
         // 2. ~/.cargo/bin/vp
@@ -392,7 +392,7 @@ impl ProcessManagerCapability {
     }
 
     /// ポートスキャンでProcessを見つける
-    async fn find_process_port(&self, project_path: &PathBuf) -> Option<u16> {
+    async fn find_process_port(&self, project_path: &std::path::Path) -> Option<u16> {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_millis(500))
             .build()
@@ -404,7 +404,7 @@ impl ProcessManagerCapability {
                 && resp.status().is_success()
                 && let Ok(json) = resp.json::<serde_json::Value>().await
                 && let Some(dir) = json.get("project_dir").and_then(|v| v.as_str())
-                && PathBuf::from(dir) == *project_path
+                && std::path::Path::new(dir) == project_path
             {
                 return Some(port);
             }
@@ -532,7 +532,8 @@ impl ProcessManagerCapability {
                     if *count < 2 {
                         tracing::debug!(
                             "Health check: Process '{}' が不在（{}/2回目、次回再確認）",
-                            name, count
+                            name,
+                            count
                         );
                         continue;
                     }

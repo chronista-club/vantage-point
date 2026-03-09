@@ -181,11 +181,7 @@ pub fn execute(opts: StartOptions) -> Result<()> {
         })
     } else if gui {
         // GUI モード: ネイティブウィンドウ（Unison ブリッジ）
-        if let Err(e) =
-            ensure_process_running(resolved_port, &resolved_project_dir, debug_mode, cap_config)
-        {
-            return Err(e);
-        }
+        ensure_process_running(resolved_port, &resolved_project_dir, debug_mode, cap_config)?;
 
         let project_name = resolve::project_name_from_path(&resolved_project_dir, config);
 
@@ -234,11 +230,7 @@ pub fn execute(opts: StartOptions) -> Result<()> {
 
         // tmux 内 or tmux なし: 従来通り TUI 起動
         // Process サーバーを headless で起動（Canvas / API 用）
-        if let Err(e) =
-            ensure_process_running(resolved_port, &resolved_project_dir, debug_mode, cap_config)
-        {
-            return Err(e);
-        }
+        ensure_process_running(resolved_port, &resolved_project_dir, debug_mode, cap_config)?;
 
         // TUI 起動（Canvas は Ctrl+O で随時 toggle）
         crate::tui::run_tui(&resolved_project_dir, &project_name)

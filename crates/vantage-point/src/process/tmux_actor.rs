@@ -270,10 +270,7 @@ impl TmuxActor {
         let forbidden = [';', '|', '&', '$', '`', '\n', '\r'];
         for ch in forbidden {
             if cmd.contains(ch) {
-                return Err(format!(
-                    "tmux コマンドに禁止文字 '{}' が含まれています",
-                    ch
-                ));
+                return Err(format!("tmux コマンドに禁止文字 '{}' が含まれています", ch));
             }
         }
         Ok(())
