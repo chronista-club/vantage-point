@@ -211,7 +211,7 @@ mod tests {
             ProcessMessage::TerminalReady,
         );
         store.set(
-            "process/gold-experience/state/session-list",
+            "process/heavens-door/state/session-list",
             ProcessMessage::SessionList {
                 sessions: vec![],
                 active_id: None,

@@ -79,22 +79,22 @@ pub const PAISLEY_PARK: StandAlias = StandAlias {
     emoji: "🧭",
 };
 
-/// AI エージェント能力 — Claude CLI オーケストレーター（DIO の息子ジョルノ）
-pub const GOLD_EXPERIENCE: StandAlias = StandAlias {
+/// AI エージェント能力 — Claude CLI オーケストレーター（岸辺露伴の「読み書き」）
+pub const HEAVENS_DOOR: StandAlias = StandAlias {
     id: "agent",
     functional_name: "AI Agent",
-    stand_name: "Gold Experience",
-    short: "GE",
-    emoji: "🌿",
-};
-
-/// コード実行能力 — ProcessRunner
-pub const HEAVENS_DOOR: StandAlias = StandAlias {
-    id: "runner",
-    functional_name: "Code Runner",
     stand_name: "Heaven's Door",
     short: "HD",
     emoji: "📖",
+};
+
+/// コード実行能力 — 動的生命注入エンジン（Ruby VM / ProcessRunner）
+pub const GOLD_EXPERIENCE: StandAlias = StandAlias {
+    id: "runner",
+    functional_name: "Code Runner",
+    stand_name: "Gold Experience",
+    short: "GE",
+    emoji: "🌿",
 };
 
 /// 外部コントロール能力 — MIDI / MCP / tmux

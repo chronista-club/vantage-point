@@ -70,7 +70,7 @@ impl TopicRouter {
     ///
     /// 命名規則: `{scope}/{capability}/{category}/{detail}`
     /// - scope: "process"
-    /// - capability: paisley-park, gold-experience, terminal, debug, star-platinum
+    /// - capability: paisley-park, heavens-door, terminal, debug, star-platinum
     /// - category: command, event, state, data, log, trace
     fn message_to_topic(msg: &ProcessMessage) -> String {
         match msg {
@@ -94,36 +94,36 @@ impl TopicRouter {
                 "process/paisley-park/command/screenshot".to_string()
             }
 
-            // === Gold Experience（AI Agent 能力）===
+            // === Heaven's Door（AI Agent 能力）===
             ProcessMessage::ChatChunk { .. } => {
-                "process/gold-experience/event/text-chunk".to_string()
+                "process/heavens-door/event/text-chunk".to_string()
             }
             ProcessMessage::ChatMessage { .. } => {
-                "process/gold-experience/event/chat-message".to_string()
+                "process/heavens-door/event/chat-message".to_string()
             }
             ProcessMessage::ChatComponent { .. } => {
-                "process/gold-experience/event/component".to_string()
+                "process/heavens-door/event/component".to_string()
             }
             ProcessMessage::ComponentDismissed { .. } => {
-                "process/gold-experience/event/component-dismissed".to_string()
+                "process/heavens-door/event/component-dismissed".to_string()
             }
             ProcessMessage::AgUi { .. } => {
-                "process/gold-experience/event/ag-ui".to_string()
+                "process/heavens-door/event/ag-ui".to_string()
             }
             ProcessMessage::SessionList { .. } => {
-                "process/gold-experience/state/session-list".to_string()
+                "process/heavens-door/state/session-list".to_string()
             }
             ProcessMessage::SessionSwitched { .. } => {
-                "process/gold-experience/state/session".to_string()
+                "process/heavens-door/state/session".to_string()
             }
             ProcessMessage::SessionCreated { .. } => {
-                "process/gold-experience/event/session-created".to_string()
+                "process/heavens-door/event/session-created".to_string()
             }
             ProcessMessage::SessionClosed { .. } => {
-                "process/gold-experience/event/session-closed".to_string()
+                "process/heavens-door/event/session-closed".to_string()
             }
             ProcessMessage::SessionHistory { .. } => {
-                "process/gold-experience/event/session-history".to_string()
+                "process/heavens-door/event/session-history".to_string()
             }
 
             // === Terminal（PTY 出力）===
@@ -241,7 +241,7 @@ mod tests {
             done: false,
         };
         let topic = TopicRouter::message_to_topic(&msg);
-        assert_eq!(topic, "process/gold-experience/event/text-chunk");
+        assert_eq!(topic, "process/heavens-door/event/text-chunk");
     }
 
     #[test]
@@ -251,7 +251,7 @@ mod tests {
             active_id: None,
         };
         let topic = TopicRouter::message_to_topic(&msg);
-        assert_eq!(topic, "process/gold-experience/state/session-list");
+        assert_eq!(topic, "process/heavens-door/state/session-list");
     }
 
     #[test]
@@ -356,7 +356,7 @@ mod tests {
         let router = TopicRouter::new();
 
         // 先に subscribe
-        let (_id, mut rx) = router.subscribe("process/gold-experience/event/#").await;
+        let (_id, mut rx) = router.subscribe("process/heavens-door/event/#").await;
 
         // route でメッセージ配信
         let msg = ProcessMessage::ChatChunk {
@@ -366,7 +366,7 @@ mod tests {
         router.route(msg).await;
 
         let (topic, received) = rx.try_recv().expect("メッセージを受信できるはず");
-        assert_eq!(topic, "process/gold-experience/event/text-chunk");
+        assert_eq!(topic, "process/heavens-door/event/text-chunk");
         assert!(matches!(received, ProcessMessage::ChatChunk { .. }));
     }
 
@@ -435,7 +435,7 @@ mod tests {
         assert_eq!(t1, "process/terminal/state/ready");
 
         let (t2, _) = rx.try_recv().expect("SessionList を受信");
-        assert_eq!(t2, "process/gold-experience/state/session-list");
+        assert_eq!(t2, "process/heavens-door/state/session-list");
 
         // 3つ目はないはず
         assert!(rx.try_recv().is_err());

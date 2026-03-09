@@ -27,9 +27,9 @@ dogfooding を通じて体験を磨き、納得できる完成度でリリース
 ```
 TheWorld 👑 (Process Manager / 常駐デーモン)
   └── Star Platinum ⭐ (Project Server / 各プロジェクトの開発プロセス)
-        ├── Gold Experience 🌿 (AI Agent / Claude CLI オーケストレーター)
+        ├── Heaven's Door 📖 (AI Agent / Claude CLI オーケストレーター)
         ├── Paisley Park 🧭 (Display Engine / Canvas WebView)
-        ├── Heaven's Door 📖 (Code Runner / ProcessRunner)
+        ├── Gold Experience 🌿 (Code Runner / 動的生命注入エンジン)
         └── Hermit Purple 🍇 (External Control / MIDI・tmux・MCP)
 ```
 
