@@ -206,7 +206,7 @@ pub async fn run(
         .layer(CorsLayer::permissive())
         .with_state(state.clone());
 
-    let addr: SocketAddr = format!("[::1]:{}", port).parse().unwrap();
+    let addr: SocketAddr = format!("[::1]:{}", port).parse()?;
     tracing::info!("Starting vp on http://{}", addr);
 
     // Auto-open browser
@@ -409,7 +409,7 @@ pub async fn run_world(port: u16) -> Result<()> {
         .layer(CorsLayer::permissive())
         .with_state(state);
 
-    let addr: SocketAddr = format!("[::1]:{}", port).parse().unwrap();
+    let addr: SocketAddr = format!("[::1]:{}", port).parse()?;
     tracing::info!("{} 起動 http://{}", crate::stands::WORLD.display(), addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -434,14 +434,21 @@ pub async fn run_world(port: u16) -> Result<()> {
     // シグナルハンドラ: SIGTERM でグレースフルシャットダウン
     let shutdown_for_signal = shutdown_token.clone();
     tokio::spawn(async move {
-        let mut sigterm =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                .expect("SIGTERM ハンドラ登録失敗");
+        let sigterm_result =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate());
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
                 tracing::info!("SIGINT 受信、シャットダウン開始");
             }
-            _ = sigterm.recv() => {
+            _ = async {
+                match sigterm_result {
+                    Ok(mut sigterm) => { sigterm.recv().await; }
+                    Err(e) => {
+                        tracing::warn!("SIGTERM ハンドラ登録失敗: {}, SIGINT のみで停止", e);
+                        std::future::pending::<()>().await;
+                    }
+                }
+            } => {
                 tracing::info!("SIGTERM 受信、シャットダウン開始");
             }
         }

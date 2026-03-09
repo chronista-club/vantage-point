@@ -621,8 +621,14 @@ async fn run_claude_cli(
         )
     })?;
 
-    let stdout = child.stdout.take().expect("stdoutがキャプチャされていない");
-    let stderr = child.stderr.take().expect("stderrがキャプチャされていない");
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("stdoutのキャプチャに失敗"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("stderrのキャプチャに失敗"))?;
 
     // 重複を避けるため最後に送信したテキストを追跡
     let mut last_text = String::new();
@@ -967,9 +973,18 @@ impl InteractiveClaudeAgent {
             )
         })?;
 
-        let stdin = child.stdin.take().expect("stdinがキャプチャされていない");
-        let stdout = child.stdout.take().expect("stdoutがキャプチャされていない");
-        let stderr = child.stderr.take().expect("stderrがキャプチャされていない");
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("stdinのキャプチャに失敗"))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("stdoutのキャプチャに失敗"))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("stderrのキャプチャに失敗"))?;
 
         // stdout読み取りタスクを開始
         let tx = self.event_tx.clone();
