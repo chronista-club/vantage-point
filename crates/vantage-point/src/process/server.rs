@@ -119,12 +119,11 @@ pub async fn run(
             crate::process::process_runner::ProcessRegistry::new(),
         )),
         screenshot_waiters: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
-        pane_contents: Arc::new(std::sync::Mutex::new(HashMap::new())),
         topic_router,
     });
 
-    // ペイン状態をディスクから復元（前回 Process 終了時の状態）
-    state.restore_pane_contents();
+    // ペイン状態をディスクから復元（前回 Process 終了時の状態 → RetainedStore）
+    state.restore_pane_contents().await;
 
     let app = Router::new()
         .route("/", get(health::index_handler))
@@ -275,8 +274,8 @@ pub async fn run(
         tracing::info!("Unregistered Process from running.json (port={})", port);
     }
 
-    // ペイン状態をディスクに保存（次回起動時に復元）
-    state_for_shutdown.persist_pane_contents();
+    // ペイン状態をディスクに保存（次回起動時に復元、RetainedStore から取得）
+    state_for_shutdown.persist_pane_contents().await;
 
     // メニューバーアプリに停止を通知
     crate::notify::post_process_changed(port, "stopped");
@@ -359,7 +358,6 @@ pub async fn run_world(port: u16) -> Result<()> {
             crate::process::process_runner::ProcessRegistry::new(),
         )),
         screenshot_waiters: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
-        pane_contents: Arc::new(std::sync::Mutex::new(HashMap::new())),
         topic_router,
     });
 

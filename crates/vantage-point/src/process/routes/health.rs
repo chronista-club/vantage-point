@@ -59,8 +59,8 @@ pub async fn show_handler(
     State(state): State<Arc<AppState>>,
     Json(msg): Json<ProcessMessage>,
 ) -> impl IntoResponse {
-    // ペインコンテンツをキャッシュ（Canvas 再接続時の状態復元用）
-    state.cache_pane_message(&msg);
+    // TopicRouter が Hub ブリッジ経由で自動的に retained に保存するため、
+    // 明示的なキャッシュは不要。Hub に broadcast するだけ。
     state.hub.broadcast(msg);
     Json(serde_json::json!({"status": "ok"}))
 }
@@ -139,8 +139,8 @@ pub async fn canvas_layout_save_handler(
     Json(layout): Json<serde_json::Value>,
 ) -> impl IntoResponse {
     state.save_canvas_layout(&layout);
-    // ペイン内容も同時に保存
-    state.persist_pane_contents();
+    // ペイン内容も同時に保存（RetainedStore から取得）
+    state.persist_pane_contents().await;
     Json(serde_json::json!({"status": "saved"}))
 }
 

@@ -49,7 +49,8 @@ fn handle_process_message(
     let msg: ProcessMessage =
         serde_json::from_value(payload).map_err(|e| format!("Invalid ProcessMessage: {}", e))?;
 
-    state.cache_pane_message(&msg);
+    // TopicRouter が Hub ブリッジ経由で自動的に retained に保存するため、
+    // 明示的なキャッシュは不要。Hub に broadcast するだけ。
     state.hub.broadcast(msg);
 
     Ok(serde_json::json!({"status": "ok"}))

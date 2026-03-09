@@ -21,6 +21,7 @@ use crate::agui::AgUiEvent;
 use crate::capability::{ProcessManagerCapability, UpdateCapability};
 use crate::file_watcher::FileWatcherManager;
 use crate::mcp::PermissionResponse;
+use crate::process::topic::TopicPattern;
 use crate::protocol::{Content, DebugMode, ProcessMessage};
 
 /// ペインの最新コンテンツ（Canvas 再接続時の状態復元用）
@@ -126,9 +127,6 @@ pub(crate) struct AppState {
     pub port: u16,
     /// ファイル監視マネージャー
     pub file_watchers: Arc<tokio::sync::Mutex<FileWatcherManager>>,
-    /// Canvas ペインの最新コンテンツ（再接続時の状態復元用）
-    /// sync Mutex を使用（async / sync 両方のコンテキストから安全にアクセス可能）
-    pub pane_contents: Arc<std::sync::Mutex<HashMap<String, PaneState>>>,
     /// Terminal チャネル認証トークン
     pub terminal_token: String,
     /// tmux ペイン管理 Actor（tmux 環境下でのみ有効）
@@ -143,63 +141,6 @@ pub(crate) struct AppState {
 }
 
 impl AppState {
-    /// ペインメッセージをキャッシュ（Show / Clear）
-    pub fn cache_pane_message(&self, msg: &ProcessMessage) {
-        match msg {
-            ProcessMessage::Show {
-                pane_id,
-                content,
-                append,
-                title,
-            } => {
-                let mut panes = self.pane_contents.lock().unwrap();
-                if *append {
-                    if let Some(existing) = panes.get_mut(pane_id) {
-                        existing.content = existing.content.append_with(content);
-                        if title.is_some() {
-                            existing.title.clone_from(title);
-                        }
-                    } else {
-                        panes.insert(
-                            pane_id.clone(),
-                            PaneState {
-                                content: content.clone(),
-                                title: title.clone(),
-                            },
-                        );
-                    }
-                } else {
-                    panes.insert(
-                        pane_id.clone(),
-                        PaneState {
-                            content: content.clone(),
-                            title: title.clone(),
-                        },
-                    );
-                }
-            }
-            ProcessMessage::Clear { pane_id } => {
-                let mut panes = self.pane_contents.lock().unwrap();
-                panes.remove(pane_id);
-            }
-            _ => {}
-        }
-    }
-
-    /// キャッシュ済みペイン状態を全て返す（Canvas 再接続用）
-    pub fn get_pane_snapshot(&self) -> Vec<ProcessMessage> {
-        let panes = self.pane_contents.lock().unwrap();
-        panes
-            .iter()
-            .map(|(pane_id, state)| ProcessMessage::Show {
-                pane_id: pane_id.clone(),
-                content: state.content.clone(),
-                append: false,
-                title: state.title.clone(),
-            })
-            .collect()
-    }
-
     /// Send debug info to connected clients
     pub fn send_debug(&self, category: &str, message: &str, data: Option<serde_json::Value>) {
         if self.debug_mode == DebugMode::None {
@@ -263,9 +204,37 @@ impl AppState {
             .join(format!("{}-canvas-layout.json", self.port))
     }
 
-    /// ペイン状態をディスクに保存
-    pub fn persist_pane_contents(&self) {
-        let panes = self.pane_contents.lock().unwrap();
+    /// RetainedStore から Paisley Park のペイン状態を取得してディスクに保存
+    pub async fn persist_pane_contents(&self) {
+        let pattern = TopicPattern::parse("process/paisley-park/command/show/#");
+        let retained = self.topic_router.retained();
+        let store = retained.read().await;
+        let matching = store.get_matching(&pattern);
+
+        if matching.is_empty() {
+            return;
+        }
+
+        // RetainedStore の ProcessMessage::Show → PaneState に変換
+        let mut panes = HashMap::new();
+        for (_topic, msg) in &matching {
+            if let ProcessMessage::Show {
+                pane_id,
+                content,
+                title,
+                ..
+            } = msg
+            {
+                panes.insert(
+                    pane_id.clone(),
+                    PaneState {
+                        content: content.clone(),
+                        title: title.clone(),
+                    },
+                );
+            }
+        }
+
         if panes.is_empty() {
             return;
         }
@@ -275,7 +244,7 @@ impl AppState {
             let _ = std::fs::create_dir_all(parent);
         }
 
-        match serde_json::to_string(&*panes) {
+        match serde_json::to_string(&panes) {
             Ok(json) => {
                 if let Err(e) = std::fs::write(&path, json) {
                     tracing::warn!("ペイン状態の保存に失敗: {}", e);
@@ -285,8 +254,8 @@ impl AppState {
         }
     }
 
-    /// ディスクからペイン状態を復元
-    pub fn restore_pane_contents(&self) {
+    /// ディスクからペイン状態を復元し、RetainedStore にセットする
+    pub async fn restore_pane_contents(&self) {
         let path = self.pane_state_path();
         if !path.exists() {
             return;
@@ -295,11 +264,25 @@ impl AppState {
         match std::fs::read_to_string(&path) {
             Ok(json) => match serde_json::from_str::<HashMap<String, PaneState>>(&json) {
                 Ok(restored) => {
-                    let mut panes = self.pane_contents.lock().unwrap();
-                    *panes = restored;
+                    let count = restored.len();
+                    let retained = self.topic_router.retained();
+                    let mut store = retained.write().await;
+                    for (pane_id, pane_state) in restored {
+                        let topic =
+                            format!("process/paisley-park/command/show/{}", pane_id);
+                        store.set(
+                            &topic,
+                            ProcessMessage::Show {
+                                pane_id,
+                                content: pane_state.content,
+                                append: false,
+                                title: pane_state.title,
+                            },
+                        );
+                    }
                     tracing::info!(
                         "ペイン状態を復元: {} ペイン (port={})",
-                        panes.len(),
+                        count,
                         self.port
                     );
                 }

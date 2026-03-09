@@ -96,9 +96,16 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                                     active_id: mgr.active_id.clone(),
                                 });
 
-                                // キャッシュ済みペインコンテンツを再送（Canvas 状態復元）
-                                for msg in state_clone.get_pane_snapshot() {
-                                    hub.broadcast(msg);
+                                // RetainedStore からペインコンテンツを再送（Canvas 状態復元）
+                                {
+                                    let pattern = crate::process::topic::TopicPattern::parse(
+                                        "process/paisley-park/command/#",
+                                    );
+                                    let retained = state_clone.topic_router.retained();
+                                    let store = retained.read().await;
+                                    for (_, msg) in store.get_matching(&pattern) {
+                                        hub.broadcast(msg.clone());
+                                    }
                                 }
 
                                 // PTY起動はTerminalResizeメッセージ受信時に遅延
