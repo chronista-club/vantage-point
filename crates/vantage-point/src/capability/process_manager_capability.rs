@@ -132,7 +132,14 @@ impl ProcessManagerCapability {
 
     /// vpバイナリを検索
     fn find_vp_binary() -> Option<PathBuf> {
-        // 1. ~/.cargo/bin/vp
+        // 1. current_exe()（最も確実）
+        if let Ok(exe) = std::env::current_exe() {
+            if exe.exists() {
+                return Some(exe);
+            }
+        }
+
+        // 2. ~/.cargo/bin/vp
         if let Some(home) = dirs::home_dir() {
             let cargo_path = home.join(".cargo/bin/vp");
             if cargo_path.exists() {
@@ -140,13 +147,13 @@ impl ProcessManagerCapability {
             }
         }
 
-        // 2. /usr/local/bin/vp
+        // 3. /usr/local/bin/vp
         let usr_local = PathBuf::from("/usr/local/bin/vp");
         if usr_local.exists() {
             return Some(usr_local);
         }
 
-        // 3. PATH経由
+        // 4. PATH経由
         if let Ok(output) = std::process::Command::new("which").arg("vp").output()
             && output.status.success()
         {
@@ -339,7 +346,7 @@ impl ProcessManagerCapability {
             .build()
             .ok()?;
 
-        for port in 33000..=33010 {
+        for port in crate::cli::PORT_RANGE_START..=crate::cli::PORT_RANGE_END {
             let url = format!("http://[::1]:{}/api/health", port);
             if let Ok(resp) = client.get(&url).send().await
                 && resp.status().is_success()
@@ -364,7 +371,7 @@ impl ProcessManagerCapability {
         let mut discovered: HashMap<String, RunningProcess> = HashMap::new();
 
         // ポートスキャン
-        for port in 33000..=33010 {
+        for port in crate::cli::PORT_RANGE_START..=crate::cli::PORT_RANGE_END {
             let url = format!("http://[::1]:{}/api/health", port);
             if let Ok(resp) = client.get(&url).send().await
                 && resp.status().is_success()
@@ -434,6 +441,9 @@ impl ProcessManagerCapability {
         // 最初の tick は即座に発火するのでスキップ
         interval.tick().await;
 
+        // クラッシュ検知用: 連続して不在のカウント（1回の失敗では再起動しない）
+        let mut missing_count: HashMap<String, u32> = HashMap::new();
+
         tracing::info!("Health monitor 起動（30秒間隔）");
 
         loop {
@@ -447,8 +457,25 @@ impl ProcessManagerCapability {
 
             let world = world.read().await;
 
-            // 1. running.json ゴースト除去
-            if let Ok(procs) = crate::config::RunningProcesses::load() {
+            // 1. running.json ゴースト除去（PID が死んでいるエントリを削除）
+            if let Ok(mut procs) = crate::config::RunningProcesses::load() {
+                let before = procs.processes.len();
+                procs.processes.retain(|p| {
+                    let alive = i32::try_from(p.pid)
+                        .map_or(false, |pid| unsafe { libc::kill(pid, 0) == 0 });
+                    if !alive {
+                        tracing::info!(
+                            "Health check: ゴースト除去 '{}' (port {}, PID {})",
+                            p.project_dir, p.port, p.pid
+                        );
+                    }
+                    alive
+                });
+                if procs.processes.len() < before {
+                    if let Err(e) = procs.save() {
+                        tracing::warn!("Health check: running.json 更新失敗: {}", e);
+                    }
+                }
                 tracing::debug!(
                     "Health check: running.json に {} Process 登録中",
                     procs.processes.len()
@@ -461,14 +488,30 @@ impl ProcessManagerCapability {
                 continue;
             }
 
-            // 3. クラッシュ検知: 前回 Running だった Process が消えていたら再起動
+            // 3. クラッシュ検知: 前回 Running だった Process が2回連続で不在なら再起動
             let current = world.running_processes.read().await.clone();
             let previous = world.previously_running.read().await.clone();
 
+            // 復帰した Process のカウントをリセット
+            for name in current.keys() {
+                missing_count.remove(name);
+            }
+
             for (name, prev_proc) in &previous {
                 if !current.contains_key(name) {
+                    let count = missing_count.entry(name.clone()).or_insert(0);
+                    *count += 1;
+
+                    if *count < 2 {
+                        tracing::debug!(
+                            "Health check: Process '{}' が不在（{}/2回目、次回再確認）",
+                            name, count
+                        );
+                        continue;
+                    }
+
                     tracing::warn!(
-                        "Health check: Process '{}' (port {}) がクラッシュを検知",
+                        "Health check: Process '{}' (port {}) がクラッシュを検知（2回連続不在）",
                         name,
                         prev_proc.port
                     );
@@ -482,7 +525,7 @@ impl ProcessManagerCapability {
                                 name,
                                 new_proc.port
                             );
-                            // メニューバーアプリに通知
+                            missing_count.remove(name);
                             crate::notify::post_process_changed(new_proc.port, "restarted");
                         }
                         Err(e) => {
