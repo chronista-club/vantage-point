@@ -20,6 +20,7 @@ use super::pty::PtyManager;
 use super::routes::{health, lanes, permission, prompt, update, world, ws};
 use super::session::SessionManager;
 use super::state::AppState;
+use super::topic_router::TopicRouter;
 use super::unison_server;
 use crate::capability::{ProcessManagerCapability, UpdateCapability};
 use crate::config::RunningProcesses;
@@ -77,6 +78,24 @@ pub async fn run(
     .to_string();
     let tmux_handle = super::tmux_actor::spawn(&crate::tmux::session_name(&project_name));
 
+    // TopicRouter 初期化 + Hub → TopicRouter ブリッジ
+    let topic_router = Arc::new(TopicRouter::new());
+    {
+        let router_clone = topic_router.clone();
+        let mut hub_rx = hub.subscribe();
+        tokio::spawn(async move {
+            loop {
+                match hub_rx.recv().await {
+                    Ok(msg) => router_clone.route(msg).await,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!("TopicRouter lagged: {} messages dropped", n);
+                    }
+                }
+            }
+        });
+    }
+
     let state = Arc::new(AppState {
         hub,
         sessions: Arc::new(RwLock::new(sessions)),
@@ -101,6 +120,7 @@ pub async fn run(
         )),
         screenshot_waiters: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         pane_contents: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        topic_router,
     });
 
     // ペイン状態をディスクから復元（前回 Process 終了時の状態）
@@ -305,6 +325,9 @@ pub async fn run_world(port: u16) -> Result<()> {
     let update_cap = Arc::new(RwLock::new(update_cap));
     let hub = Hub::new();
 
+    // TopicRouter（World モードでは Hub ブリッジ不要だが、AppState の必須フィールド）
+    let topic_router = Arc::new(TopicRouter::new());
+
     // Create minimal state for world mode
     let state = Arc::new(AppState {
         hub,
@@ -337,6 +360,7 @@ pub async fn run_world(port: u16) -> Result<()> {
         )),
         screenshot_waiters: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         pane_contents: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        topic_router,
     });
 
     let app = Router::new()

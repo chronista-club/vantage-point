@@ -652,7 +652,7 @@ pub async fn start_unison_server(
         })
         .await;
 
-    // --- "canvas" チャネル: Hub の Show/Clear をリアルタイム push ---
+    // --- "canvas" チャネル: TopicRouter 購読で Paisley Park メッセージを push ---
     server
         .register_channel("canvas", {
             let state = state.clone();
@@ -661,32 +661,27 @@ pub async fn start_unison_server(
                 async move {
                     let channel = UnisonChannel::new(stream);
 
-                    // 初期状態: キャッシュ済みペインコンテンツを送信
-                    for msg in state.get_pane_snapshot() {
-                        let json = serde_json::to_value(&msg).unwrap_or_default();
-                        if channel.send_event("pane", json).await.is_err() {
-                            return Ok(());
-                        }
-                    }
+                    // TopicRouter で paisley-park 配下を購読
+                    // retained メッセージ（Show/Clear の最新値）が自動で初期配信される
+                    let (sub_id, mut rx) = state
+                        .topic_router
+                        .subscribe("process/paisley-park/#")
+                        .await;
 
-                    // Hub を subscribe して Show/Clear をリアルタイム push
-                    let mut hub_rx = state.hub.subscribe();
                     loop {
-                        match hub_rx.recv().await {
-                            Ok(msg @ ProcessMessage::Show { .. })
-                            | Ok(msg @ ProcessMessage::Clear { .. }) => {
+                        match rx.recv().await {
+                            Some((_topic, msg)) => {
                                 let json = serde_json::to_value(&msg).unwrap_or_default();
                                 if channel.send_event("pane", json).await.is_err() {
                                     break;
                                 }
                             }
-                            Err(broadcast::error::RecvError::Closed) => break,
-                            Err(broadcast::error::RecvError::Lagged(n)) => {
-                                tracing::warn!("canvas broadcast lagged: {} messages dropped", n);
-                            }
-                            _ => {} // 他メッセージは無視
+                            None => break, // チャネル閉鎖
                         }
                     }
+
+                    // クリーンアップ: subscriber 登録を解除
+                    state.topic_router.unsubscribe(sub_id).await;
 
                     Ok(())
                 }

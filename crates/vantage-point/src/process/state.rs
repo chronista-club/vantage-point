@@ -15,6 +15,7 @@ use super::process_runner::ProcessRegistry;
 use super::pty::PtyManager;
 use super::session::SessionManager;
 use super::tmux_actor::TmuxHandle;
+use super::topic_router::TopicRouter;
 use crate::agent::InteractiveClaudeAgent;
 use crate::agui::AgUiEvent;
 use crate::capability::{ProcessManagerCapability, UpdateCapability};
@@ -137,6 +138,8 @@ pub(crate) struct AppState {
     pub process_registry: Arc<tokio::sync::Mutex<ProcessRegistry>>,
     pub screenshot_waiters:
         Arc<tokio::sync::Mutex<HashMap<String, tokio::sync::oneshot::Sender<ScreenshotData>>>>,
+    /// Topic ベースのメッセージルーター（Hub → Topic 振り分け）
+    pub topic_router: Arc<TopicRouter>,
 }
 
 impl AppState {
