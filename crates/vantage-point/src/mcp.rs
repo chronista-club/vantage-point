@@ -1617,6 +1617,9 @@ fn resolve_process_port(explicit_port: u16) -> u16 {
 
 /// Run the MCP server over stdio
 pub async fn run_mcp_server(process_port: u16) -> anyhow::Result<()> {
+    // rustls 0.23+ は CryptoProvider の明示的な設定が必要（QUIC 接続用）
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
     // トレースログファイルを早期初期化
     crate::trace_log::init_log_file();
 
