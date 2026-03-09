@@ -324,7 +324,8 @@ path = "/Users/makoto/repos/vantage-point"
 
 ## References
 
-- `spec/01-core-concept.md` (VP-RFC-001) — 要件定義
+- `spec/01-core-concept.md` (VP-SPEC-001) — 要件定義
+- `spec/02-capability.md` (VP-SPEC-002) — Capability / MIDI 仕様
 - `crates/vantage-point/src/stands.rs` — Stand 命名定義
 - `crates/vantage-point/src/discovery.rs` — プロセス発見
 - `crates/vantage-point/src/process/topic_router.rs` — TopicRouter

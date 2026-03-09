@@ -266,37 +266,9 @@ impl MidiCapability {
 }
 ```
 
-## UI表示
+## UI 表示（Canvas / TUI）
 
-### 進化状態の表示
-
-```typescript
-// WebUI側での表示
-interface CapabilityStatus {
-  name: string;
-  level: string;  // "ACT 2"
-  requiem?: string;
-  awakened: boolean;
-  metrics: {
-    totalUses: number;
-    successRate: number;
-    usageDays: number;
-  };
-  training: {
-    accuracy: number;
-    speed: number;
-    stability: number;
-    efficiency: number;
-  };
-  nextLevelProgress: {
-    current: number;
-    required: number;
-    percentage: number;
-  };
-}
-```
-
-### AG-UIでの可視化
+進化状態の表示例:
 
 ```
 ┌─────────────────────────────────────┐

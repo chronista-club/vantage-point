@@ -140,7 +140,7 @@ cargo build --release -p vantage-point
 ### インストール
 
 \`\`\`bash
-cargo install --path crates/vantage-point
+cargo install --path crates/vp-cli
 \`\`\`
 
 ---

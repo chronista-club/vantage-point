@@ -174,19 +174,30 @@ TheWorld 👑 (Process Manager / 常駐デーモン)
 
 ---
 
+## Vision: 理想の開発体験
+
+```
+Mac に向かう → MIDI パッド → TUI 起動 → AI と協働 → Canvas で確認 → 成果物
+```
+
+- **ワンアクション起動**: LPD8 の Pad を叩く → TUI が前回セッションから再開
+- **AI + 可視化**: TUI で対話、Canvas に設計図・ログ・実行結果をリアルタイム表示
+- **マルチプロジェクト**: Pad 1〜4 で 4 プロジェクトを瞬時に切替、状態は独立保持
+
+---
+
 ## Open Questions
 
 - [ ] Free プランのスコープ（どこまで無料で使えるか）
 - [ ] セッション永続化の長期ストレージ戦略
-- [ ] Vision Pro 対応の可能性
 
 ---
 
 ## References
 
-- `design/01-architecture.md` — 技術アーキテクチャ設計
+- `design/01-architecture.md` (VP-DESIGN-001) — 技術アーキテクチャ設計
+- `spec/02-capability.md` (VP-SPEC-002) — Capability / MIDI 仕様
 - `crates/vantage-point/src/stands.rs` — Stand 命名定義
-- `CLAUDE.md` — 開発者向けプロジェクトガイド
 
 ---
 
