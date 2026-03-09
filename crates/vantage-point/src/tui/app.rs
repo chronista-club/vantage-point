@@ -227,7 +227,8 @@ fn run_tui_inner(resolved: Option<(String, String)>) -> Result<()> {
     crossterm::execute!(
         stdout,
         EnterAlternateScreen,
-        crossterm::event::EnableBracketedPaste
+        crossterm::event::EnableBracketedPaste,
+        crossterm::event::EnableMouseCapture
     )?;
 
     // ターミナルタイトル設定
@@ -259,6 +260,7 @@ fn run_tui_inner(resolved: Option<(String, String)>) -> Result<()> {
     disable_raw_mode()?;
     crossterm::execute!(
         terminal.backend_mut(),
+        crossterm::event::DisableMouseCapture,
         crossterm::event::DisableBracketedPaste,
         LeaveAlternateScreen
     )?;
@@ -1254,10 +1256,12 @@ fn run_claude_session(
                     MouseEventKind::ScrollUp => {
                         let mut state = term_state.lock().unwrap();
                         state.scroll_display(Scroll::Delta(3));
+                        needs_redraw = true;
                     }
                     MouseEventKind::ScrollDown => {
                         let mut state = term_state.lock().unwrap();
                         state.scroll_display(Scroll::Delta(-3));
+                        needs_redraw = true;
                     }
                     _ => {}
                 },
