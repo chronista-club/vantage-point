@@ -188,19 +188,6 @@ pub(crate) async fn scan_instances() -> Vec<Instance> {
     instances
 }
 
-/// Find the first available port in the range
-pub(crate) async fn find_available_port() -> Option<u16> {
-    let used_ports: std::collections::HashSet<u16> =
-        scan_instances().await.into_iter().map(|i| i.port).collect();
-
-    for port in PORT_RANGE_START..=PORT_RANGE_END {
-        if !used_ports.contains(&port) {
-            return Some(port);
-        }
-    }
-    None
-}
-
 /// 稼働中インスタンスをプロジェクト名ベースで一覧表示
 pub(crate) fn list_instances(config: &crate::config::Config) -> Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
@@ -376,19 +363,6 @@ pub(crate) fn init_tracing(debug_mode: DebugMode) {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_target(false)
         .init();
-}
-
-/// snake_case を PascalCase に変換
-pub(crate) fn to_pascal_case(s: &str) -> String {
-    s.split(['_', '-'])
-        .map(|word| {
-            let mut chars = word.chars();
-            match chars.next() {
-                None => String::new(),
-                Some(first) => first.to_uppercase().chain(chars).collect(),
-            }
-        })
-        .collect()
 }
 
 /// vpバイナリのパスを取得
