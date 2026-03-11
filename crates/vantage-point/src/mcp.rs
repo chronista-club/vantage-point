@@ -710,58 +710,42 @@ impl VantageMcp {
         self.quic_call(method, payload).await
     }
 
-    /// Canvas API を呼び出す（QUIC 優先、失敗時は HTTP フォールバック）
-    async fn canvas_call(&self, action: &str) -> Result<serde_json::Value, McpError> {
-        let method = format!("{}_canvas", action);
-        match self.quic_call(&method, serde_json::json!({})).await {
-            Ok(resp) => Ok(resp),
-            Err(_) => {
-                // HTTP フォールバック
-                let url = self.process_url.lock().await;
-                let api_url = format!("{}/api/canvas/{}", url, action);
-                drop(url);
-                let resp = self.client.post(&api_url).send().await.map_err(|e| {
-                    McpError::internal_error(
-                        format!("Canvas {} failed (HTTP fallback): {}", action, e),
-                        None,
-                    )
-                })?;
-                resp.json().await.map_err(|e| {
-                    McpError::internal_error(
-                        format!("Canvas {} response parse error: {}", action, e),
-                        None,
-                    )
-                })
-            }
+    /// PP Window が存在しなければ自動起動
+    ///
+    /// TheWorld 稼働中 → WORLD_PORT + Lane モード
+    /// 未稼働 → Process ポート + 単体モード
+    async fn ensure_pp_window(&self) {
+        if crate::canvas::find_running_canvas().is_none() {
+            let sp_port = *self.process_port.lock().await;
+            let (port, lanes) = crate::canvas::canvas_target(sp_port);
+            let _ = crate::canvas::ensure_canvas_running(port, lanes);
         }
     }
 
-    /// Open the Canvas window (native WebView)
+    /// PP Window（Paisley Park）を開く
     #[tool(
-        description = "Open the Vantage Point Canvas window. The canvas displays the same content as the browser viewer in a native window."
+        description = "Open the Paisley Park (PP) window. Displays all running projects as Lanes in a single window."
     )]
     async fn open_canvas(&self) -> Result<CallToolResult, McpError> {
-        let resp = self.canvas_call("open").await?;
-        let status = resp
-            .get("status")
-            .and_then(|v| v.as_str())
-            .unwrap_or("opened");
+        // PP Window は TheWorld + Lane モードで直接起動
+        self.ensure_pp_window().await;
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-            format!("Canvas {}", status),
+            "PP Window opened (Lane mode)".to_string(),
         )]))
     }
 
-    /// Close the Canvas window
-    #[tool(description = "Close the Vantage Point Canvas window.")]
+    /// PP Window を閉じる
+    #[tool(description = "Close the Paisley Park (PP) window.")]
     async fn close_canvas(&self) -> Result<CallToolResult, McpError> {
-        let resp = self.canvas_call("close").await?;
-        let status = resp
-            .get("status")
-            .and_then(|v| v.as_str())
-            .unwrap_or("closed");
-        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-            format!("Canvas {}", status),
-        )]))
+        if let Some(pid) = crate::canvas::stop_canvas() {
+            Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+                format!("PP Window closed (pid={})", pid),
+            )]))
+        } else {
+            Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+                "PP Window was not open".to_string(),
+            )]))
+        }
     }
 
     /// Show content in the browser viewer
@@ -792,6 +776,9 @@ impl VantageMcp {
             append,
             title: params.title,
         };
+
+        // PP Window がなければ自動生成（show 時に Canvas が見えるように）
+        self.ensure_pp_window().await;
 
         self.process_call("show", &msg).await?;
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(

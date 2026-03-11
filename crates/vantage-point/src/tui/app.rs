@@ -1,10 +1,9 @@
 //! TUI アプリケーションメインループ
 //!
-//! プロジェクト選択 → Claude CLI PTY セッション の画面遷移を管理する。
+//! マルチプロジェクト対応: 複数プロジェクトを動的に追加/切替しながら
+//! Claude CLI PTY セッションを管理する。
 
-use std::collections::HashMap;
 use std::io;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use alacritty_terminal::grid::Scroll;
@@ -15,185 +14,563 @@ use crossterm::terminal::{
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
+use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::style::Style;
+use ratatui::widgets::{Block, Borders, ListState};
 
 use crate::config::{Config, ProjectConfig};
-use crate::protocol::{Content, ProcessMessage};
-use crate::terminal::state::TerminalState;
-use ratatui_image::StatefulImage;
-use ratatui_image::picker::Picker;
-use ratatui_image::protocol::StatefulProtocol;
-use tui_scrollview::{ScrollView, ScrollViewState};
 
+use super::bridge::BridgeCommand;
+use super::draw::{
+    calc_pty_size, draw_footer_bar, draw_header_bar, draw_project_select, draw_session_select,
+};
 use super::input::key_to_pty_bytes;
-use super::session::{ClaudeSession, SessionMode, list_sessions};
+use super::overlay::{OverlayKind, draw_overlay};
+use super::project_context::ProjectContext;
+use super::session::{SessionMode, list_sessions};
 use super::terminal_widget::TerminalView;
+use super::theme::*;
 
-/// Canvas ペインの状態（Unison 経由でリアルタイム受信）
-struct CanvasState {
-    /// pane_id → (title, content)
-    panes: HashMap<String, (Option<String>, Content)>,
-    /// 画像プロトコル状態（pane_id → StatefulProtocol）
-    images: HashMap<String, StatefulProtocol>,
-    /// 画像プロトコル Picker（ターミナル検出結果をキャッシュ）
-    picker: Option<Picker>,
-    /// スクロール状態
-    scroll_state: ScrollViewState,
+// =============================================================================
+// MultiProjectApp — マルチプロジェクト TUI アプリ
+// =============================================================================
+
+/// マルチプロジェクト TUI アプリ
+struct MultiProjectApp {
+    projects: Vec<ProjectContext>,
+    active_idx: usize,
+    overlay: Option<OverlayKind>,
+    config: Config,
+    was_ai_busy: bool,
 }
 
-impl Default for CanvasState {
-    fn default() -> Self {
+impl MultiProjectApp {
+    fn new(config: Config) -> Self {
         Self {
-            panes: HashMap::new(),
-            images: HashMap::new(),
-            picker: Picker::from_query_stdio().ok(),
-            scroll_state: ScrollViewState::default(),
+            projects: Vec::new(),
+            active_idx: 0,
+            overlay: None,
+            config,
+            was_ai_busy: false,
         }
     }
-}
 
-impl CanvasState {
-    /// ProcessMessage を適用
-    fn apply(&mut self, msg: &ProcessMessage) {
-        match msg {
-            ProcessMessage::Show {
-                pane_id,
-                content,
-                append,
-                title,
-            } => {
-                if *append {
-                    if let Some((existing_title, existing_content)) = self.panes.get_mut(pane_id) {
-                        *existing_content = existing_content.append_with(content);
-                        if title.is_some() {
-                            *existing_title = title.clone();
-                        }
-                    } else {
-                        self.panes
-                            .insert(pane_id.clone(), (title.clone(), content.clone()));
+    /// プロジェクトを追加して起動する
+    fn add_project(
+        &mut self,
+        terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+        name: String,
+        dir: String,
+        port: u16,
+    ) -> Result<usize> {
+        let session_mode = run_session_select(terminal, &dir)?;
+        let size = terminal.size()?;
+        let (pty_cols, pty_lines) = calc_pty_size(size.width, size.height);
+
+        let ctx = ProjectContext::new(name, dir, port, session_mode, pty_cols, pty_lines)?;
+        self.projects.push(ctx);
+        Ok(self.projects.len() - 1)
+    }
+
+    /// アクティブプロジェクトを切り替える
+    fn switch_to(&mut self, idx: usize) {
+        if idx < self.projects.len() {
+            self.active_idx = idx;
+            self.projects[idx].notifications = 0;
+            set_terminal_title(&format!("VP: {}", self.projects[idx].name));
+        }
+    }
+
+    /// プロジェクトスイッチャーオーバーレイを開く
+    fn open_project_switcher(&mut self) {
+        let items: Vec<(ProjectConfig, bool)> = self
+            .config
+            .projects
+            .iter()
+            .map(|p| {
+                let dir = Config::normalize_path(std::path::Path::new(&p.path));
+                let active = self.projects.iter().any(|ctx| ctx.dir == dir);
+                (p.clone(), active)
+            })
+            .collect();
+
+        let mut list_state = ListState::default();
+        if let Some(active_ctx) = self.projects.get(self.active_idx) {
+            if let Some(pos) = items.iter().position(|(p, _)| {
+                Config::normalize_path(std::path::Path::new(&p.path)) == active_ctx.dir
+            }) {
+                list_state.select(Some(pos));
+            } else {
+                list_state.select(Some(0));
+            }
+        } else {
+            list_state.select(Some(0));
+        }
+
+        self.overlay = Some(OverlayKind::ProjectSwitcher { list_state, items });
+    }
+
+    // =========================================================================
+    // メインループ
+    // =========================================================================
+
+    fn run(&mut self, terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
+        let mut needs_redraw = true;
+
+        loop {
+            // 全プロジェクトのイベントをポーリング
+            for i in 0..self.projects.len() {
+                let changed = self.projects[i].poll_events();
+                if changed {
+                    if i != self.active_idx {
+                        self.projects[i].notifications += 1;
                     }
-                } else {
-                    self.panes
-                        .insert(pane_id.clone(), (title.clone(), content.clone()));
-                }
-
-                // 画像コンテンツの場合、プロトコル状態を更新
-                if let Content::ImageBase64 { data, .. } = content {
-                    self.update_image(pane_id, data);
+                    needs_redraw = true;
                 }
             }
-            ProcessMessage::Clear { pane_id } => {
-                self.panes.remove(pane_id);
-                self.images.remove(pane_id);
+
+            // 切断されたアクティブプロジェクトを除去
+            if let Some(ctx) = self.projects.get(self.active_idx) {
+                if ctx.disconnected {
+                    self.projects.remove(self.active_idx);
+                    if self.projects.is_empty() {
+                        return Ok(());
+                    }
+                    if self.active_idx >= self.projects.len() {
+                        self.active_idx = self.projects.len() - 1;
+                    }
+                    set_terminal_title(&format!("VP: {}", self.projects[self.active_idx].name));
+                    needs_redraw = true;
+                    continue;
+                }
+            } else {
+                return Ok(());
+            }
+
+            // AI 状態遷移検知
+            if let Some(ctx) = self.projects.get(self.active_idx) {
+                let is_ai_busy = ctx.is_ai_busy();
+                if self.was_ai_busy != is_ai_busy {
+                    self.was_ai_busy = is_ai_busy;
+                    needs_redraw = true;
+                }
+            }
+
+            // 描画
+            if needs_redraw {
+                needs_redraw = false;
+                self.draw(terminal)?;
+            }
+
+            // イベント処理
+            if event::poll(Duration::from_millis(16))? {
+                let handled = match event::read()? {
+                    Event::Key(key) => {
+                        needs_redraw = true;
+                        self.handle_key(key, terminal)?
+                    }
+                    Event::Paste(text) => {
+                        if self.overlay.is_none() {
+                            self.handle_paste(&text);
+                        }
+                        true
+                    }
+                    Event::Mouse(mouse) => {
+                        if self.overlay.is_none() {
+                            self.handle_mouse(mouse)
+                        } else {
+                            false
+                        }
+                    }
+                    Event::Resize(cols, rows) => {
+                        self.handle_resize(cols, rows);
+                        true
+                    }
+                    _ => false,
+                };
+                if handled {
+                    needs_redraw = true;
+                }
+            }
+        }
+    }
+
+    // =========================================================================
+    // キー入力
+    // =========================================================================
+
+    fn handle_key(
+        &mut self,
+        key: crossterm::event::KeyEvent,
+        terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    ) -> Result<bool> {
+        // オーバーレイが開いている場合
+        if self.overlay.is_some() {
+            return self.handle_overlay_key(key, terminal);
+        }
+
+        // Ctrl+Q: 終了
+        if key.code == KeyCode::Char('q') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            anyhow::bail!("quit");
+        }
+
+        // Ctrl+P: プロジェクトスイッチャー
+        if key.code == KeyCode::Char('p') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.open_project_switcher();
+            return Ok(true);
+        }
+
+        // Ctrl+1~9: プロジェクト直接切替
+        if key.modifiers.contains(KeyModifiers::CONTROL) {
+            if let KeyCode::Char(c) = key.code {
+                if let Some(digit) = c.to_digit(10) {
+                    if digit >= 1 && (digit as usize) <= self.projects.len() {
+                        self.switch_to((digit - 1) as usize);
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+
+        // Ctrl+←/→: プロジェクト切替
+        if key.modifiers.contains(KeyModifiers::CONTROL) && self.projects.len() > 1 {
+            let switch_to = match key.code {
+                KeyCode::Right => Some((self.active_idx + 1) % self.projects.len()),
+                KeyCode::Left => Some(if self.active_idx == 0 {
+                    self.projects.len() - 1
+                } else {
+                    self.active_idx - 1
+                }),
+                _ => None,
+            };
+            if let Some(idx) = switch_to {
+                self.switch_to(idx);
+                return Ok(true);
+            }
+        }
+
+        let Some(ctx) = self.projects.get_mut(self.active_idx) else {
+            return Ok(false);
+        };
+
+        // Ctrl+N: 新規ペイン
+        if key.code == KeyCode::Char('n') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            if crate::tmux::is_inside_tmux() {
+                let _ = ctx.cmd_tx.send(BridgeCommand::TmuxSplit {
+                    horizontal: true,
+                    command: None,
+                });
+            } else {
+                let size = terminal.size()?;
+                let (cols, rows) = calc_pty_size(size.width, size.height);
+                let _ = ctx.cmd_tx.send(BridgeCommand::CreateSession {
+                    cols: cols as u16,
+                    rows: rows as u16,
+                    command: vec![
+                        "claude".to_string(),
+                        "--dangerously-skip-permissions".to_string(),
+                    ],
+                });
+            }
+            return Ok(true);
+        }
+
+        // Ctrl+Shift+←/→: セッション切替（同一プロジェクト内）
+        if key.modifiers.contains(KeyModifiers::CONTROL | KeyModifiers::SHIFT)
+            && ctx.sessions.len() > 1
+        {
+            let switch_to = match key.code {
+                KeyCode::Right => Some((ctx.current_session_idx + 1) % ctx.sessions.len()),
+                KeyCode::Left => Some(if ctx.current_session_idx == 0 {
+                    ctx.sessions.len() - 1
+                } else {
+                    ctx.current_session_idx - 1
+                }),
+                _ => None,
+            };
+            if let Some(idx) = switch_to {
+                let sid = ctx.sessions[idx].clone();
+                let _ = ctx.cmd_tx.send(BridgeCommand::SwitchSession(sid));
+                return Ok(true);
+            }
+        }
+
+        // Home: PP window トグル（TheWorld フォールバック付き）
+        if key.code == KeyCode::Home {
+            toggle_pp_window(ctx.port);
+            return Ok(true);
+        }
+
+        // PageUp/PageDown: スクロールバック
+        match key.code {
+            KeyCode::PageUp => {
+                let mut state = ctx.term_state.lock().unwrap();
+                state.scroll_display(Scroll::PageUp);
+                return Ok(true);
+            }
+            KeyCode::PageDown => {
+                let mut state = ctx.term_state.lock().unwrap();
+                state.scroll_display(Scroll::PageDown);
+                return Ok(true);
             }
             _ => {}
         }
-    }
 
-    /// Base64 画像データからプロトコル状態を生成
-    fn update_image(&mut self, pane_id: &str, data: &str) {
-        let Some(picker) = &mut self.picker else {
-            return;
+        // その他: PTY に転送
+        let app_cursor = {
+            let state = ctx.term_state.lock().unwrap();
+            state.app_cursor_mode()
         };
-
-        use base64::Engine;
-        let engine = base64::engine::general_purpose::STANDARD;
-        if let Ok(bytes) = engine.decode(data)
-            && let Ok(img) = image::load_from_memory(&bytes)
-        {
-            let protocol = picker.new_resize_protocol(img);
-            self.images.insert(pane_id.to_string(), protocol);
+        let bytes = key_to_pty_bytes(key, app_cursor);
+        if !bytes.is_empty() {
+            {
+                let mut state = ctx.term_state.lock().unwrap();
+                if state.display_offset() > 0 {
+                    state.scroll_display(Scroll::Bottom);
+                }
+            }
+            let _ = ctx.cmd_tx.send(BridgeCommand::Input(bytes));
         }
+
+        Ok(true)
     }
 
-    /// スクロールアップ（3行分）
-    fn scroll_up(&mut self) {
-        for _ in 0..3 {
-            self.scroll_state.scroll_up();
-        }
-    }
+    /// オーバーレイ内のキー入力処理
+    fn handle_overlay_key(
+        &mut self,
+        key: crossterm::event::KeyEvent,
+        terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    ) -> Result<bool> {
+        let overlay = self.overlay.as_mut().unwrap();
+        match overlay {
+            OverlayKind::ProjectSwitcher {
+                list_state,
+                items,
+            } => match key.code {
+                KeyCode::Esc | KeyCode::Char('p')
+                    if key.code == KeyCode::Esc
+                        || key.modifiers.contains(KeyModifiers::CONTROL) =>
+                {
+                    self.overlay = None;
+                }
+                KeyCode::Up | KeyCode::Char('k') if !items.is_empty() => {
+                    let i = list_state.selected().unwrap_or(0);
+                    let new = if i == 0 { items.len() - 1 } else { i - 1 };
+                    list_state.select(Some(new));
+                }
+                KeyCode::Down | KeyCode::Char('j') if !items.is_empty() => {
+                    let i = list_state.selected().unwrap_or(0);
+                    let new = if i >= items.len() - 1 { 0 } else { i + 1 };
+                    list_state.select(Some(new));
+                }
+                KeyCode::Enter => {
+                    if let Some(idx) = list_state.selected() {
+                        let (project, already_active) = &items[idx];
+                        let dir = Config::normalize_path(std::path::Path::new(&project.path));
+                        let name = project.name.clone();
 
-    /// スクロールダウン（3行分）
-    fn scroll_down(&mut self) {
-        for _ in 0..3 {
-            self.scroll_state.scroll_down();
-        }
-    }
-}
+                        if *already_active {
+                            if let Some(pos) =
+                                self.projects.iter().position(|ctx| ctx.dir == dir)
+                            {
+                                self.overlay = None;
+                                self.switch_to(pos);
+                                return Ok(true);
+                            }
+                        } else {
+                            let config = self.config.clone();
+                            if let Some(project_idx) = config.find_project_index(&dir) {
+                                start_background_services(
+                                    &dir, &config, project_idx, &name,
+                                )
+                                .ok();
+                                let port =
+                                    crate::resolve::port_for_configured(project_idx, &config)
+                                        .unwrap_or(33000 + project_idx as u16);
 
-/// Unison QUIC で Process サーバーの "canvas" チャネルに接続し、
-/// Show/Clear イベントを受信するスレッドを起動
-fn spawn_canvas_receiver(
-    port: u16,
-    canvas_state: Arc<Mutex<CanvasState>>,
-) -> Option<std::thread::JoinHandle<()>> {
-    let handle = std::thread::spawn(move || {
-        let Ok(rt) = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-        else {
-            return;
-        };
+                                self.overlay = None;
 
-        rt.block_on(async {
-            let quic_port = port + crate::process::unison_server::QUIC_PORT_OFFSET;
-            let addr = format!("[::1]:{}", quic_port);
-
-            // 接続（リトライ付き）
-            let client = match unison::ProtocolClient::new_default() {
-                Ok(c) => c,
-                Err(_) => return,
-            };
-
-            let mut attempts = 0;
-            loop {
-                match client.connect(&addr).await {
-                    Ok(_) => break,
-                    Err(_) => {
-                        attempts += 1;
-                        if attempts >= 5 {
-                            return;
+                                match self.add_project(terminal, name, dir, port) {
+                                    Ok(new_idx) => {
+                                        self.switch_to(new_idx);
+                                    }
+                                    Err(e) => {
+                                        tracing::error!("プロジェクト追加失敗: {}", e);
+                                    }
+                                }
+                                return Ok(true);
+                            }
                         }
-                        tokio::time::sleep(Duration::from_millis(500)).await;
+                        self.overlay = None;
                     }
                 }
-            }
+                _ => {}
+            },
+        }
+        Ok(true)
+    }
 
-            // "canvas" チャネルを開く
-            let channel = match client.open_channel("canvas").await {
-                Ok(ch) => ch,
-                Err(_) => return,
-            };
+    // =========================================================================
+    // その他の入力
+    // =========================================================================
 
-            // イベント受信ループ
-            while let Ok(msg) = channel.recv().await {
-                let payload = msg.payload_as_value().unwrap_or_default();
-                if let Ok(process_msg) = serde_json::from_value::<ProcessMessage>(payload) {
-                    let mut state = canvas_state.lock().unwrap();
-                    state.apply(&process_msg);
+    fn handle_paste(&mut self, text: &str) {
+        let Some(ctx) = self.projects.get_mut(self.active_idx) else {
+            return;
+        };
+        let bracketed = {
+            let state = ctx.term_state.lock().unwrap();
+            state.bracketed_paste_mode()
+        };
+        let mut bytes = Vec::new();
+        if bracketed {
+            bytes.extend_from_slice(b"\x1b[200~");
+        }
+        bytes.extend_from_slice(text.as_bytes());
+        if bracketed {
+            bytes.extend_from_slice(b"\x1b[201~");
+        }
+        if !bytes.is_empty() {
+            {
+                let mut state = ctx.term_state.lock().unwrap();
+                if state.display_offset() > 0 {
+                    state.scroll_display(Scroll::Bottom);
                 }
             }
-        });
-    });
-    Some(handle)
+            let _ = ctx.cmd_tx.send(BridgeCommand::Input(bytes));
+        }
+    }
+
+    fn handle_mouse(&mut self, mouse: crossterm::event::MouseEvent) -> bool {
+        let Some(ctx) = self.projects.get_mut(self.active_idx) else {
+            return false;
+        };
+        match mouse.kind {
+            MouseEventKind::ScrollUp => {
+                let mut state = ctx.term_state.lock().unwrap();
+                state.scroll_display(Scroll::Delta(3));
+                true
+            }
+            MouseEventKind::ScrollDown => {
+                let mut state = ctx.term_state.lock().unwrap();
+                state.scroll_display(Scroll::Delta(-3));
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn handle_resize(&mut self, cols: u16, rows: u16) {
+        if let Some(ctx) = self.projects.get_mut(self.active_idx) {
+            let (new_cols, new_lines) = calc_pty_size(cols, rows);
+            ctx.resize(new_cols, new_lines);
+        }
+    }
+
+    // =========================================================================
+    // 描画
+    // =========================================================================
+
+    fn draw(&mut self, terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
+        let active_idx = self.active_idx;
+
+        let (snapshot, display_offset, session_count, session_idx, port, ai_busy, bridge_status) = {
+            let ctx = &self.projects[active_idx];
+            let state = ctx.term_state.lock().unwrap();
+            (
+                state.snapshot(),
+                state.display_offset(),
+                ctx.sessions.len(),
+                ctx.current_session_idx,
+                ctx.port,
+                ctx.is_ai_busy(),
+                ctx.bridge_status.clone(),
+            )
+        };
+
+        let tab_info: Vec<(String, bool, u32)> = self
+            .projects
+            .iter()
+            .enumerate()
+            .map(|(i, ctx)| (ctx.name.clone(), i == active_idx, ctx.notifications))
+            .collect();
+
+        let project_count = self.projects.len();
+        let overlay = &self.overlay;
+        terminal.draw(|frame| {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(1),
+                    Constraint::Min(1),
+                    Constraint::Length(1),
+                ])
+                .split(frame.area());
+
+            draw_header_bar(
+                frame, chunks[0], &tab_info, port, ai_busy, &bridge_status,
+            );
+
+            let main_area = chunks[1];
+            let pty_area = main_area;
+
+            // PTY ペイン
+            let session_label = if session_count > 1 {
+                format!(" Claude CLI [{}/{}] ", session_idx + 1, session_count)
+            } else {
+                " Claude CLI ".to_string()
+            };
+            let mut pty_block = Block::default()
+                .title(session_label)
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(NORD_CYAN));
+
+            if display_offset > 0 {
+                pty_block = pty_block.title_top(
+                    ratatui::text::Line::from(format!(" \u{2191}{} ", display_offset))
+                        .alignment(ratatui::layout::Alignment::Right),
+                );
+            }
+
+            let pty_inner = pty_block.inner(pty_area);
+            frame.render_widget(pty_block, pty_area);
+            frame.render_widget(TerminalView::new(&snapshot), pty_inner);
+
+            draw_footer_bar(frame, chunks[2], project_count, session_count);
+
+            // オーバーレイ
+            if let Some(overlay) = overlay {
+                draw_overlay(frame, main_area, overlay);
+            }
+        })?;
+
+        // IME 候補ウィンドウ用にカーソル位置を設定（非表示のまま）
+        // ratatui の draw 後に crossterm で直接操作することで、
+        // カーソルを見せずに IME に位置情報だけ伝える
+        if self.overlay.is_none() {
+            let ctx = &self.projects[active_idx];
+            let state = ctx.term_state.lock().unwrap();
+            let snap = state.snapshot();
+            let (crow, ccol) = snap.cursor;
+            // pty_inner 相当の座標計算（ヘッダー1行 + ボーダー1行）
+            let cx = 1 + ccol as u16;
+            let cy = 2 + crow as u16;
+            crossterm::execute!(
+                io::stdout(),
+                crossterm::cursor::MoveTo(cx, cy),
+                crossterm::cursor::Hide
+            )?;
+        }
+
+        Ok(())
+    }
 }
 
-// Arctic Nord カラー定数
-const NORD_BG: Color = Color::Rgb(11, 17, 32); // #0B1120
-const NORD_FG: Color = Color::Rgb(216, 222, 233); // #D8DEE9
-const NORD_CYAN: Color = Color::Rgb(136, 192, 208); // #88C0D0
-const NORD_POLAR: Color = Color::Rgb(46, 52, 64); // #2E3440
-const NORD_COMMENT: Color = Color::Rgb(76, 86, 106); // #4C566A
-const NORD_GREEN: Color = Color::Rgb(163, 190, 140); // #A3BE8C
-const NORD_RED: Color = Color::Rgb(191, 97, 106); // #BF616A
-const NORD_YELLOW: Color = Color::Rgb(235, 203, 139); // #EBCB8B
+// =============================================================================
+// パブリック API
+// =============================================================================
 
 /// TUI メインエントリー（プロジェクト指定あり）
-///
-/// プロジェクトが既に解決済みの場合、直接 Claude セッションを起動する。
 pub fn run_tui(project_dir: &str, project_name: &str) -> Result<()> {
     run_tui_inner(Some((project_dir.to_string(), project_name.to_string())))
 }
@@ -201,7 +578,6 @@ pub fn run_tui(project_dir: &str, project_name: &str) -> Result<()> {
 /// TUI メインエントリー（プロジェクト選択画面から開始）
 pub fn run_tui_select(config: &Config) -> Result<()> {
     if config.projects.is_empty() {
-        // プロジェクト未登録 → cwd で直接起動
         let cwd = std::env::current_dir()?;
         let name = cwd
             .file_name()
@@ -209,7 +585,6 @@ pub fn run_tui_select(config: &Config) -> Result<()> {
             .unwrap_or_else(|| "unknown".to_string());
         return run_tui(&cwd.display().to_string(), &name);
     }
-
     run_tui_inner(None)
 }
 
@@ -231,7 +606,6 @@ fn run_tui_inner(resolved: Option<(String, String)>) -> Result<()> {
         crossterm::event::EnableMouseCapture
     )?;
 
-    // ターミナルタイトル設定
     if let Some((_, ref name)) = resolved {
         set_terminal_title(&format!("VP: {}", name));
     } else {
@@ -241,22 +615,43 @@ fn run_tui_inner(resolved: Option<(String, String)>) -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
+    let config = Config::load()?;
+    let mut app = MultiProjectApp::new(config.clone());
+
     let result = if let Some((dir, name)) = resolved {
-        // ポート解決: running.json から取得、なければ config index ベース
-        let config = Config::load()?;
         let port = if let Some(running) = crate::discovery::find_by_project_blocking(&dir) {
             running.port
         } else if let Some(idx) = config.find_project_index(&dir) {
             crate::resolve::port_for_configured(idx, &config)?
         } else {
-            33000 // フォールバック
+            33000
         };
-        run_claude_session(&mut terminal, &dir, &name, port)
+
+        match app.add_project(&mut terminal, name, dir, port) {
+            Ok(idx) => {
+                app.switch_to(idx);
+                app.run(&mut terminal)
+            }
+            Err(e) => Err(e),
+        }
     } else {
-        run_project_select(&mut terminal)
+        match run_project_select_for_multi(&mut terminal, &config) {
+            Ok(Some((dir, name, port))) => {
+                set_terminal_title(&format!("VP: {}", name));
+                match app.add_project(&mut terminal, name, dir, port) {
+                    Ok(idx) => {
+                        app.switch_to(idx);
+                        app.run(&mut terminal)
+                    }
+                    Err(e) => Err(e),
+                }
+            }
+            Ok(None) => Ok(()),
+            Err(e) => Err(e),
+        }
     };
 
-    // 終了処理（必ず実行）
+    // 終了処理
     disable_raw_mode()?;
     crossterm::execute!(
         terminal.backend_mut(),
@@ -266,16 +661,20 @@ fn run_tui_inner(resolved: Option<(String, String)>) -> Result<()> {
     )?;
     terminal.show_cursor()?;
 
-    result
+    match result {
+        Err(e) if e.to_string() == "quit" => Ok(()),
+        other => other,
+    }
 }
 
 // =============================================================================
-// プロジェクト選択画面
+// 初回プロジェクト選択
 // =============================================================================
 
-/// プロジェクト選択画面
-fn run_project_select(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
-    let config = Config::load()?;
+fn run_project_select_for_multi(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    config: &Config,
+) -> Result<Option<(String, String, u16)>> {
     let projects = config.projects.clone();
 
     if projects.is_empty() {
@@ -294,28 +693,17 @@ fn run_project_select(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> 
             && let Event::Key(key) = event::read()?
         {
             match key.code {
-                // 選択決定
                 KeyCode::Enter => {
                     if let Some(idx) = list_state.selected() {
                         let project = &projects[idx];
                         let dir = Config::normalize_path(std::path::Path::new(&project.path));
                         let name = project.name.clone();
-
-                        // ターミナルタイトル更新
-                        set_terminal_title(&format!("VP: {}", name));
-
-                        // Process サーバー + Canvas 起動
-                        start_background_services(&dir, &config, idx, &name).ok();
-
-                        // ポート取得
-                        let port = crate::resolve::port_for_configured(idx, &config)
+                        start_background_services(&dir, config, idx, &name).ok();
+                        let port = crate::resolve::port_for_configured(idx, config)
                             .unwrap_or(33000 + idx as u16);
-
-                        // Claude セッション開始
-                        return run_claude_session(terminal, &dir, &name, port);
+                        return Ok(Some((dir, name, port)));
                     }
                 }
-                // カーソル移動
                 KeyCode::Up | KeyCode::Char('k') => {
                     let i = list_state.selected().unwrap_or(0);
                     let new = if i == 0 { projects.len() - 1 } else { i - 1 };
@@ -326,144 +714,29 @@ fn run_project_select(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> 
                     let new = if i >= projects.len() - 1 { 0 } else { i + 1 };
                     list_state.select(Some(new));
                 }
-                // 終了
-                KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
+                KeyCode::Char('q') | KeyCode::Esc => return Ok(None),
                 _ => {}
             }
         }
     }
 }
 
-/// プロジェクト選択画面の描画
-fn draw_project_select(
-    frame: &mut ratatui::Frame,
-    projects: &[ProjectConfig],
-    list_state: &mut ListState,
-) {
-    let area = frame.area();
-
-    // 背景
-    frame.render_widget(Block::default().style(Style::default().bg(NORD_BG)), area);
-
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3), // タイトル
-            Constraint::Min(1),    // プロジェクトリスト
-            Constraint::Length(1), // ヘルプ
-        ])
-        .margin(1)
-        .split(area);
-
-    // タイトル
-    let title = Paragraph::new(Line::from(vec![
-        Span::styled(
-            " Vantage Point ",
-            Style::default().fg(NORD_CYAN).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(" — プロジェクト選択", Style::default().fg(NORD_FG)),
-    ]))
-    .block(
-        Block::default()
-            .borders(Borders::BOTTOM)
-            .border_style(Style::default().fg(NORD_COMMENT)),
-    );
-    frame.render_widget(title, chunks[0]);
-
-    // プロジェクトリスト
-    let items: Vec<ListItem> = projects
-        .iter()
-        .enumerate()
-        .map(|(i, p)| {
-            let running = crate::discovery::find_by_project_blocking(&Config::normalize_path(
-                std::path::Path::new(&p.path),
-            ));
-            let status = if running.is_some() {
-                Span::styled(" [running] ", Style::default().fg(NORD_GREEN))
-            } else {
-                Span::raw("")
-            };
-
-            ListItem::new(Line::from(vec![
-                Span::styled(format!(" {} ", i + 1), Style::default().fg(NORD_COMMENT)),
-                Span::styled(&p.name, Style::default().fg(NORD_FG)),
-                status,
-                Span::styled(format!("  {}", p.path), Style::default().fg(NORD_COMMENT)),
-            ]))
-        })
-        .collect();
-
-    let list = List::new(items)
-        .highlight_style(
-            Style::default()
-                .bg(NORD_POLAR)
-                .fg(NORD_CYAN)
-                .add_modifier(Modifier::BOLD),
-        )
-        .highlight_symbol("▸ ");
-    frame.render_stateful_widget(list, chunks[1], list_state);
-
-    // ヘルプバー
-    let help = Line::from(vec![
-        Span::styled(" Enter", Style::default().fg(NORD_CYAN)),
-        Span::styled(": 選択  ", Style::default().fg(NORD_COMMENT)),
-        Span::styled("j/k", Style::default().fg(NORD_CYAN)),
-        Span::styled(": 移動  ", Style::default().fg(NORD_COMMENT)),
-        Span::styled("q", Style::default().fg(NORD_CYAN)),
-        Span::styled(": 終了", Style::default().fg(NORD_COMMENT)),
-    ]);
-    frame.render_widget(
-        Paragraph::new(help).style(Style::default().bg(NORD_POLAR)),
-        chunks[2],
-    );
-}
-
-/// バックグラウンドサービス起動（Process サーバーのみ、Canvas は Ctrl+O でオンデマンド起動）
-fn start_background_services(
-    project_dir: &str,
-    config: &Config,
-    project_index: usize,
-    _project_name: &str,
-) -> Result<()> {
-    let port = crate::resolve::port_for_configured(project_index, config)?;
-
-    // ポート予約は不要 — server.rs が起動後に TheWorld に登録する
-
-    let cap_config = crate::process::CapabilityConfig {
-        project_dir: project_dir.to_string(),
-        midi_config: None,
-        bonjour_port: Some(port),
-    };
-
-    crate::commands::start::ensure_process_running(
-        port,
-        project_dir,
-        crate::protocol::DebugMode::None,
-        cap_config,
-    )?;
-
-    Ok(())
-}
-
 // =============================================================================
-// セッション選択画面
+// セッション選択
 // =============================================================================
 
-/// セッション選択画面（前回の続き / 新規 / 一覧から選択）
 fn run_session_select(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     project_dir: &str,
 ) -> Result<SessionMode> {
     let sessions = list_sessions(project_dir);
 
-    // セッションが 0 件なら新規で開始
     if sessions.is_empty() {
         return Ok(SessionMode::New);
     }
 
-    // 選択肢を構築: [続き] + [新規] + 過去セッション一覧
     let mut list_state = ListState::default();
-    list_state.select(Some(0)); // デフォルトは「前回の続き」
+    list_state.select(Some(0));
 
     loop {
         let sessions_ref = &sessions;
@@ -485,7 +758,7 @@ fn run_session_select(
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
                     let i = list_state.selected().unwrap_or(0);
-                    let total = sessions.len() + 2; // +2 for Continue & New
+                    let total = sessions.len() + 2;
                     let new = if i == 0 { total - 1 } else { i - 1 };
                     list_state.select(Some(new));
                 }
@@ -495,9 +768,7 @@ fn run_session_select(
                     let new = if i >= total - 1 { 0 } else { i + 1 };
                     list_state.select(Some(new));
                 }
-                // Esc: 前回の続き（デフォルト動作）
                 KeyCode::Esc => return Ok(SessionMode::Continue),
-                // Ctrl+Q: 終了
                 KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     anyhow::bail!("User quit from session select");
                 }
@@ -507,1018 +778,40 @@ fn run_session_select(
     }
 }
 
-/// セッション選択画面の描画
-fn draw_session_select(
-    frame: &mut ratatui::Frame,
-    sessions: &[ClaudeSession],
-    list_state: &mut ListState,
-) {
-    let area = frame.area();
-
-    frame.render_widget(Block::default().style(Style::default().bg(NORD_BG)), area);
-
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3), // タイトル
-            Constraint::Min(1),    // セッションリスト
-            Constraint::Length(1), // ヘルプ
-        ])
-        .margin(1)
-        .split(area);
-
-    // タイトル
-    let title = Paragraph::new(Line::from(vec![
-        Span::styled(
-            " Vantage Point ",
-            Style::default().fg(NORD_CYAN).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(" — セッション選択", Style::default().fg(NORD_FG)),
-    ]))
-    .block(
-        Block::default()
-            .borders(Borders::BOTTOM)
-            .border_style(Style::default().fg(NORD_COMMENT)),
-    );
-    frame.render_widget(title, chunks[0]);
-
-    // セッションリスト構築
-    let mut items: Vec<ListItem> = Vec::new();
-
-    // [0] 前回の続き
-    items.push(ListItem::new(Line::from(vec![
-        Span::styled(" ▶ ", Style::default().fg(NORD_GREEN)),
-        Span::styled(
-            "前回の続き",
-            Style::default().fg(NORD_FG).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(" (--continue)", Style::default().fg(NORD_COMMENT)),
-    ])));
-
-    // [1] 新規セッション
-    items.push(ListItem::new(Line::from(vec![
-        Span::styled(" + ", Style::default().fg(NORD_CYAN)),
-        Span::styled("新規セッション", Style::default().fg(NORD_FG)),
-    ])));
-
-    // [2..] 過去セッション
-    for session in sessions.iter().take(20) {
-        let elapsed = session
-            .modified
-            .elapsed()
-            .map(format_elapsed)
-            .unwrap_or_else(|_| "?".to_string());
-
-        let summary_text = if session.summary.is_empty() {
-            "(no messages)".to_string()
-        } else {
-            session.summary.clone()
-        };
-
-        items.push(ListItem::new(Line::from(vec![
-            Span::styled(format!(" {} ", elapsed), Style::default().fg(NORD_COMMENT)),
-            Span::styled(summary_text, Style::default().fg(NORD_FG)),
-            Span::styled(
-                format!("  ~{}msgs", session.message_count),
-                Style::default().fg(NORD_COMMENT),
-            ),
-        ])));
-    }
-
-    let list = List::new(items)
-        .highlight_style(
-            Style::default()
-                .bg(NORD_POLAR)
-                .fg(NORD_CYAN)
-                .add_modifier(Modifier::BOLD),
-        )
-        .highlight_symbol("▸ ");
-    frame.render_stateful_widget(list, chunks[1], list_state);
-
-    // ヘルプバー
-    let help = Line::from(vec![
-        Span::styled(" Enter", Style::default().fg(NORD_CYAN)),
-        Span::styled(": 選択  ", Style::default().fg(NORD_COMMENT)),
-        Span::styled("j/k", Style::default().fg(NORD_CYAN)),
-        Span::styled(": 移動  ", Style::default().fg(NORD_COMMENT)),
-        Span::styled("Esc", Style::default().fg(NORD_CYAN)),
-        Span::styled(": 前回の続き", Style::default().fg(NORD_COMMENT)),
-    ]);
-    frame.render_widget(
-        Paragraph::new(help).style(Style::default().bg(NORD_POLAR)),
-        chunks[2],
-    );
-}
-
-/// 経過時間を人間に読みやすい形式で表示
-fn format_elapsed(duration: Duration) -> String {
-    let secs = duration.as_secs();
-    if secs < 60 {
-        "just now".to_string()
-    } else if secs < 3600 {
-        format!("{}m ago", secs / 60)
-    } else if secs < 86400 {
-        format!("{}h ago", secs / 3600)
-    } else {
-        format!("{}d ago", secs / 86400)
-    }
-}
-
 // =============================================================================
-// Claude CLI セッション
+// ヘルパー
 // =============================================================================
 
-/// Canvas の表示/非表示をトグル（Unison QUIC 経由）
-fn toggle_canvas(port: u16, canvas_open: &mut bool) {
-    let method = if *canvas_open {
-        "close_canvas"
-    } else {
-        "open_canvas"
-    };
-
-    // 別スレッド + mini runtime で QUIC リクエスト（TUI をブロックしない）
-    let method = method.to_string();
-    let result = std::thread::spawn(move || -> bool {
-        let Ok(rt) = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-        else {
-            return false;
-        };
-        rt.block_on(async {
-            let quic_port = port + crate::process::unison_server::QUIC_PORT_OFFSET;
-            let addr = format!("[::1]:{}", quic_port);
-
-            let Ok(client) = unison::ProtocolClient::new_default() else {
-                return false;
-            };
-            let ok = tokio::time::timeout(Duration::from_secs(2), async {
-                client.connect(&addr).await.ok()?;
-                let channel = client.open_channel("process").await.ok()?;
-                channel.request(&method, serde_json::json!({})).await.ok()?;
-                Some(())
-            })
-            .await;
-            matches!(ok, Ok(Some(())))
-        })
-    })
-    .join();
-
-    if let Ok(true) = result {
-        *canvas_open = !*canvas_open;
-    }
-}
-
-/// ブリッジスレッドへのコマンド
-enum BridgeCommand {
-    /// PTY への入力データ
-    Input(Vec<u8>),
-    /// PTY リサイズ
-    Resize { cols: u16, rows: u16 },
-    /// 新規セッション作成
-    CreateSession {
-        cols: u16,
-        rows: u16,
-        command: Vec<String>,
-    },
-    /// セッション切替
-    SwitchSession(String),
-    /// tmux ペイン分割（Process の TmuxActor 経由）
-    TmuxSplit {
-        horizontal: bool,
-        command: Option<String>,
-    },
-}
-
-/// ブリッジスレッドからのイベント
-enum BridgeEvent {
-    /// PTY 出力データ
-    Output(Vec<u8>),
-    /// セッション作成完了
-    SessionCreated { session_id: String },
-    /// セッション切替完了
-    SessionSwitched { session_id: String },
-    /// エラー
-    Error(String),
-    /// 接続切断
-    Disconnected,
-}
-
-/// Unison terminal ブリッジスレッドを起動
-fn spawn_terminal_bridge(
-    port: u16,
-    terminal_token: String,
-    cmd_rx: std::sync::mpsc::Receiver<BridgeCommand>,
-    event_tx: std::sync::mpsc::Sender<BridgeEvent>,
-) {
-    std::thread::Builder::new()
-        .name("tui-terminal-bridge".into())
-        .spawn(move || {
-            let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
-            rt.block_on(async move {
-                let quic_port = port + crate::process::unison_server::QUIC_PORT_OFFSET;
-                let addr = format!("[::1]:{}", quic_port);
-
-                // 接続（リトライ付き）
-                let client = match unison::ProtocolClient::new_default() {
-                    Ok(c) => c,
-                    Err(e) => {
-                        let _ = event_tx.send(BridgeEvent::Error(format!("QUIC client 作成失敗: {}", e)));
-                        return;
-                    }
-                };
-
-                let mut attempts = 0;
-                loop {
-                    match client.connect(&addr).await {
-                        Ok(_) => break,
-                        Err(_) => {
-                            attempts += 1;
-                            if attempts >= 10 {
-                                let _ = event_tx.send(BridgeEvent::Error("QUIC 接続失敗".to_string()));
-                                return;
-                            }
-                            tokio::time::sleep(Duration::from_millis(300)).await;
-                        }
-                    }
-                }
-
-                let channel = match client.open_channel("terminal").await {
-                    Ok(ch) => ch,
-                    Err(e) => {
-                        let _ = event_tx.send(BridgeEvent::Error(format!("terminal チャネル開設失敗: {}", e)));
-                        return;
-                    }
-                };
-
-                // 認証
-                match channel.request("auth", serde_json::json!({"token": terminal_token})).await {
-                    Ok(resp) => {
-                        if resp.get("error").is_some() {
-                            let _ = event_tx.send(BridgeEvent::Error(format!("認証失敗: {:?}", resp)));
-                            return;
-                        }
-                    }
-                    Err(e) => {
-                        let _ = event_tx.send(BridgeEvent::Error(format!("認証リクエスト失敗: {}", e)));
-                        return;
-                    }
-                }
-
-                // sync → tokio ブリッジ
-                let (bridge_tx, mut bridge_rx) = tokio::sync::mpsc::channel::<BridgeCommand>(256);
-                std::thread::Builder::new()
-                    .name("tui-cmd-bridge".into())
-                    .spawn(move || {
-                        while let Ok(cmd) = cmd_rx.recv() {
-                            if bridge_tx.blocking_send(cmd).is_err() {
-                                break;
-                            }
-                        }
-                    })
-                    .expect("tui-cmd-bridge spawn failed");
-
-                // メインループ
-                loop {
-                    tokio::select! {
-                        data = channel.recv_raw() => {
-                            match data {
-                                Ok(bytes) => {
-                                    if event_tx.send(BridgeEvent::Output(bytes)).is_err() {
-                                        break;
-                                    }
-                                }
-                                Err(_) => {
-                                    let _ = event_tx.send(BridgeEvent::Disconnected);
-                                    break;
-                                }
-                            }
-                        }
-                        // 構造化イベント（session_ended 等）を受信
-                        evt = channel.recv() => {
-                            match evt {
-                                Ok(msg) => {
-                                    if msg.method == "session_ended" {
-                                        tracing::info!("TUI bridge: session_ended 受信");
-                                        let _ = event_tx.send(BridgeEvent::Disconnected);
-                                        break;
-                                    }
-                                    // 他のイベントは無視
-                                }
-                                Err(_) => {
-                                    let _ = event_tx.send(BridgeEvent::Disconnected);
-                                    break;
-                                }
-                            }
-                        }
-                        cmd = bridge_rx.recv() => {
-                            match cmd {
-                                Some(BridgeCommand::Input(data)) => {
-                                    if channel.send_raw(&data).await.is_err() {
-                                        let _ = event_tx.send(BridgeEvent::Disconnected);
-                                        break;
-                                    }
-                                }
-                                Some(BridgeCommand::Resize { cols, rows }) => {
-                                    let _ = channel.request(
-                                        "resize",
-                                        serde_json::json!({"cols": cols, "rows": rows}),
-                                    ).await;
-                                }
-                                Some(BridgeCommand::CreateSession { cols, rows, command }) => {
-                                    match channel.request(
-                                        "create_session",
-                                        serde_json::json!({
-                                            "cols": cols,
-                                            "rows": rows,
-                                            "command": command,
-                                        }),
-                                    ).await {
-                                        Ok(resp) => {
-                                            if let Some(sid) = resp.get("session_id").and_then(|v| v.as_str()) {
-                                                let _ = event_tx.send(BridgeEvent::SessionCreated {
-                                                    session_id: sid.to_string(),
-                                                });
-                                            } else {
-                                                let _ = event_tx.send(BridgeEvent::Error(
-                                                    format!("セッション作成失敗: {:?}", resp),
-                                                ));
-                                            }
-                                        }
-                                        Err(e) => {
-                                            let _ = event_tx.send(BridgeEvent::Error(
-                                                format!("セッション作成リクエスト失敗: {}", e),
-                                            ));
-                                        }
-                                    }
-                                }
-                                Some(BridgeCommand::SwitchSession(session_id)) => {
-                                    match channel.request(
-                                        "switch_session",
-                                        serde_json::json!({"session_id": session_id}),
-                                    ).await {
-                                        Ok(resp) => {
-                                            if let Some(sid) = resp.get("session_id").and_then(|v| v.as_str()) {
-                                                let _ = event_tx.send(BridgeEvent::SessionSwitched {
-                                                    session_id: sid.to_string(),
-                                                });
-                                            }
-                                        }
-                                        Err(e) => {
-                                            let _ = event_tx.send(BridgeEvent::Error(
-                                                format!("セッション切替失敗: {}", e),
-                                            ));
-                                        }
-                                    }
-                                }
-                                Some(BridgeCommand::TmuxSplit { horizontal, command }) => {
-                                    let payload = serde_json::json!({
-                                        "horizontal": horizontal,
-                                        "command": command,
-                                    });
-                                    match channel.request("tmux_split", payload).await {
-                                        Ok(_) => {}
-                                        Err(e) => {
-                                            tracing::warn!("tmux_split 失敗: {}", e);
-                                        }
-                                    }
-                                }
-                                None => break,
-                            }
-                        }
-                    }
-                }
-            });
-        })
-        .expect("tui-terminal-bridge スレッドの起動に失敗");
-}
-
-/// Claude CLI コマンドを構築
-fn build_claude_command(session_mode: &SessionMode) -> Vec<String> {
-    let mut cmd = vec![
-        "claude".to_string(),
-        "--dangerously-skip-permissions".to_string(),
-    ];
-
-    match session_mode {
-        SessionMode::Continue => {
-            cmd.push("--continue".to_string());
-        }
-        SessionMode::New => {}
-        SessionMode::Resume(id) => {
-            cmd.push("--resume".to_string());
-            cmd.push(id.clone());
-        }
-    }
-
-    cmd
-}
-
-/// Claude CLI PTY セッション（Process サーバー経由）
-fn run_claude_session(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+fn start_background_services(
     project_dir: &str,
-    project_name: &str,
-    port: u16,
+    config: &Config,
+    project_index: usize,
+    _project_name: &str,
 ) -> Result<()> {
-    // セッション選択
-    let session_mode = run_session_select(terminal, project_dir)?;
-
-    let size = terminal.size()?;
-    let (pty_cols, pty_lines) = calc_pty_size(size.width, size.height, false);
-
-    // VT パーサー
-    let term_state = Arc::new(Mutex::new(TerminalState::new(pty_cols, pty_lines)));
-
-    // Health API から認証トークンを取得
-    let terminal_token =
-        crate::discovery::fetch_terminal_token_blocking(port).ok_or_else(|| {
-            anyhow::anyhow!(
-                "Terminal token not found for port {}. Process may not be fully started.",
-                port
-            )
-        })?;
-
-    // Unison ブリッジ起動
-    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<BridgeCommand>();
-    let (event_tx, event_rx) = std::sync::mpsc::channel::<BridgeEvent>();
-    spawn_terminal_bridge(port, terminal_token, cmd_rx, event_tx);
-
-    // セッション作成リクエスト
-    let claude_cmd = build_claude_command(&session_mode);
-    let _ = cmd_tx.send(BridgeCommand::CreateSession {
-        cols: pty_cols as u16,
-        rows: pty_lines as u16,
-        command: claude_cmd,
-    });
-
-    // セッション追跡
-    let mut sessions: Vec<String> = Vec::new();
-    let mut current_session_idx: usize = 0;
-    let mut bridge_status: String = "接続中...".to_string();
-
-    // Canvas 状態
-    let canvas_state = Arc::new(Mutex::new(CanvasState::default()));
-    let _canvas_handle = spawn_canvas_receiver(port, Arc::clone(&canvas_state));
-    let mut canvas_open = false;
-
-    // カーソル点滅制御
-    let mut cursor_blink_on = true;
-    let mut cursor_blink_timer = std::time::Instant::now();
-    const CURSOR_BLINK_INTERVAL: Duration = Duration::from_millis(530);
-
-    // AI 状態検知: PTY 出力のアクティビティで「応答中」/「入力待ち」を推定
-    let mut last_pty_output = std::time::Instant::now();
-    let mut was_ai_busy = false;
-    const IDLE_THRESHOLD: Duration = Duration::from_millis(800);
-
-    // メインループ
-    let mut needs_redraw = true;
-    loop {
-        // カーソル点滅タイマー
-        if cursor_blink_timer.elapsed() >= CURSOR_BLINK_INTERVAL {
-            cursor_blink_on = !cursor_blink_on;
-            cursor_blink_timer = std::time::Instant::now();
-            needs_redraw = true;
-        }
-        // AI 状態遷移検知: busy → idle に変わった瞬間に再描画
-        let is_ai_busy = last_pty_output.elapsed() < IDLE_THRESHOLD;
-        if was_ai_busy != is_ai_busy {
-            was_ai_busy = is_ai_busy;
-            needs_redraw = true;
-        }
-        // ブリッジからのイベントを処理（ノンブロッキング）
-        while let Ok(evt) = event_rx.try_recv() {
-            match evt {
-                BridgeEvent::Output(bytes) => {
-                    let mut state = term_state.lock().unwrap();
-                    state.feed_bytes(&bytes);
-                    last_pty_output = std::time::Instant::now();
-                    needs_redraw = true;
-                }
-                BridgeEvent::SessionCreated { session_id } => {
-                    tracing::info!("TUI: セッション作成完了: {}", session_id);
-                    sessions.push(session_id);
-                    current_session_idx = sessions.len() - 1;
-                    bridge_status = "接続済み".to_string();
-                    needs_redraw = true;
-                }
-                BridgeEvent::SessionSwitched { session_id } => {
-                    tracing::info!("TUI: セッション切替完了: {}", session_id);
-                    if let Some(idx) = sessions.iter().position(|s| s == &session_id) {
-                        current_session_idx = idx;
-                    }
-                    // 画面クリア（新セッションの出力で再描画される）
-                    let mut state = term_state.lock().unwrap();
-                    let cols = state.cols();
-                    let rows = state.lines();
-                    *state = TerminalState::new(cols, rows);
-                    needs_redraw = true;
-                }
-                BridgeEvent::Error(e) => {
-                    tracing::error!("TUI bridge error: {}", e);
-                    bridge_status = format!("エラー: {}", e);
-                    needs_redraw = true;
-                }
-                BridgeEvent::Disconnected => {
-                    tracing::warn!("TUI: Process 接続切断");
-                    return Ok(());
-                }
-            }
-        }
-
-        // 描画（変更があった場合のみ — IME プリエディット表示の安定化）
-        if needs_redraw {
-            needs_redraw = false;
-            let state = term_state.lock().unwrap();
-            let snapshot = state.snapshot();
-            let display_offset = state.display_offset();
-            drop(state);
-
-            let session_count = sessions.len();
-            let session_idx = current_session_idx;
-
-            terminal.draw(|frame| {
-                let chunks = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([
-                        Constraint::Length(1), // ヘッダバー
-                        Constraint::Min(1),    // メインエリア
-                        Constraint::Length(1), // フッターバー
-                    ])
-                    .split(frame.area());
-
-                // ヘッダバー（ステータス集約）
-                let ai_busy = last_pty_output.elapsed() < IDLE_THRESHOLD;
-                draw_header_bar(
-                    frame,
-                    chunks[0],
-                    project_name,
-                    port,
-                    canvas_open,
-                    ai_busy,
-                    &bridge_status,
-                );
-
-                // メインエリア: Canvas ON なら左右分割
-                let main_area = chunks[1];
-                let (pty_area, canvas_area) = if canvas_open {
-                    let panes = Layout::default()
-                        .direction(Direction::Horizontal)
-                        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
-                        .split(main_area);
-                    (panes[0], Some(panes[1]))
-                } else {
-                    (main_area, None)
-                };
-
-                // PTY ペイン（セッション情報付き）
-                let session_label = if session_count > 1 {
-                    format!(" Claude CLI [{}/{}] ", session_idx + 1, session_count)
-                } else {
-                    " Claude CLI ".to_string()
-                };
-                let mut pty_block = Block::default()
-                    .title(session_label)
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(NORD_CYAN));
-
-                if display_offset > 0 {
-                    pty_block = pty_block.title_top(
-                        ratatui::text::Line::from(format!(" \u{2191}{} ", display_offset))
-                            .alignment(ratatui::layout::Alignment::Right),
-                    );
-                }
-
-                let pty_inner = pty_block.inner(pty_area);
-                frame.render_widget(pty_block, pty_area);
-                frame.render_widget(
-                    TerminalView::new(&snapshot).cursor_blink(cursor_blink_on),
-                    pty_inner,
-                );
-
-                // ハードウェアカーソルは使わない（ソフトウェアカーソルで点滅描画）
-                // cursor_visible (DECTCEM) は TerminalView 内のソフトウェアカーソルで処理
-
-                // Canvas ペイン
-                if let Some(canvas_area) = canvas_area {
-                    let canvas_block = Block::default()
-                        .title(" Canvas ")
-                        .borders(Borders::ALL)
-                        .border_style(Style::default().fg(NORD_GREEN));
-                    let canvas_inner = canvas_block.inner(canvas_area);
-                    frame.render_widget(canvas_block, canvas_area);
-
-                    let mut cs = canvas_state.lock().unwrap();
-                    render_canvas(frame, canvas_inner, &mut cs);
-                }
-
-                draw_footer_bar(frame, chunks[2], session_count);
-            })?;
-        }
-
-        // イベント処理
-        if event::poll(Duration::from_millis(16))? {
-            let app_cursor = {
-                let state = term_state.lock().unwrap();
-                state.app_cursor_mode()
-            };
-
-            match event::read()? {
-                Event::Key(key) => {
-                    // キー入力時はカーソルを即座に表示にリセット
-                    cursor_blink_on = true;
-                    cursor_blink_timer = std::time::Instant::now();
-
-                    // Ctrl+Q: 終了
-                    if key.code == KeyCode::Char('q')
-                        && key.modifiers.contains(KeyModifiers::CONTROL)
-                    {
-                        break;
-                    }
-
-                    // Ctrl+N: 新規ペイン（tmux Actor 経由 or 内部 PTY セッション）
-                    if key.code == KeyCode::Char('n')
-                        && key.modifiers.contains(KeyModifiers::CONTROL)
-                    {
-                        if crate::tmux::is_inside_tmux() {
-                            // Unison 経由で Process の TmuxActor にペイン分割を依頼
-                            let _ = cmd_tx.send(BridgeCommand::TmuxSplit {
-                                horizontal: true,
-                                command: None,
-                            });
-                        } else {
-                            // 従来の内部 PTY セッション作成
-                            let size = terminal.size()?;
-                            let (cols, rows) = calc_pty_size(size.width, size.height, canvas_open);
-                            let _ = cmd_tx.send(BridgeCommand::CreateSession {
-                                cols: cols as u16,
-                                rows: rows as u16,
-                                command: vec![
-                                    "claude".to_string(),
-                                    "--dangerously-skip-permissions".to_string(),
-                                ],
-                            });
-                        }
-                        continue;
-                    }
-
-                    // Ctrl+Right / Ctrl+Left: セッション切替
-                    if key.modifiers.contains(KeyModifiers::CONTROL) && sessions.len() > 1 {
-                        let switch_to = match key.code {
-                            KeyCode::Right => Some((current_session_idx + 1) % sessions.len()),
-                            KeyCode::Left => Some(if current_session_idx == 0 {
-                                sessions.len() - 1
-                            } else {
-                                current_session_idx - 1
-                            }),
-                            _ => None,
-                        };
-
-                        if let Some(idx) = switch_to {
-                            let sid = sessions[idx].clone();
-                            let _ = cmd_tx.send(BridgeCommand::SwitchSession(sid));
-                            continue;
-                        }
-                    }
-
-                    // Home: Canvas 表示/非表示トグル
-                    if key.code == KeyCode::Home {
-                        toggle_canvas(port, &mut canvas_open);
-                        let term_size = terminal.size()?;
-                        let (new_cols, new_lines) =
-                            calc_pty_size(term_size.width, term_size.height, canvas_open);
-                        {
-                            let mut state = term_state.lock().unwrap();
-                            state.resize(new_cols, new_lines);
-                        }
-                        let _ = cmd_tx.send(BridgeCommand::Resize {
-                            cols: new_cols as u16,
-                            rows: new_lines as u16,
-                        });
-                        needs_redraw = true;
-                        continue;
-                    }
-
-                    // PageUp/PageDown: TUI スクロールバック
-                    match key.code {
-                        KeyCode::PageUp => {
-                            let mut state = term_state.lock().unwrap();
-                            state.scroll_display(Scroll::PageUp);
-                            needs_redraw = true;
-                        }
-                        KeyCode::PageDown => {
-                            let mut state = term_state.lock().unwrap();
-                            state.scroll_display(Scroll::PageDown);
-                            needs_redraw = true;
-                        }
-                        _ => {
-                            // その他のキー: PTY に転送
-                            let bytes = key_to_pty_bytes(key, app_cursor);
-                            if !bytes.is_empty() {
-                                {
-                                    let mut state = term_state.lock().unwrap();
-                                    if state.display_offset() > 0 {
-                                        state.scroll_display(Scroll::Bottom);
-                                    }
-                                }
-                                let _ = cmd_tx.send(BridgeCommand::Input(bytes));
-                            }
-                        }
-                    }
-                }
-                Event::Paste(text) => {
-                    // IME 確定テキストやクリップボードペーストを PTY に転送
-                    // PTY が bracketed paste モードなら囲みシーケンスを付与
-                    let bracketed = {
-                        let state = term_state.lock().unwrap();
-                        state.bracketed_paste_mode()
-                    };
-                    let mut bytes = Vec::new();
-                    if bracketed {
-                        bytes.extend_from_slice(b"\x1b[200~");
-                    }
-                    bytes.extend_from_slice(text.as_bytes());
-                    if bracketed {
-                        bytes.extend_from_slice(b"\x1b[201~");
-                    }
-                    if !bytes.is_empty() {
-                        {
-                            let mut state = term_state.lock().unwrap();
-                            if state.display_offset() > 0 {
-                                state.scroll_display(Scroll::Bottom);
-                            }
-                        }
-                        let _ = cmd_tx.send(BridgeCommand::Input(bytes));
-                    }
-                }
-                Event::Mouse(mouse) => match mouse.kind {
-                    MouseEventKind::ScrollUp => {
-                        let mut state = term_state.lock().unwrap();
-                        state.scroll_display(Scroll::Delta(3));
-                        needs_redraw = true;
-                    }
-                    MouseEventKind::ScrollDown => {
-                        let mut state = term_state.lock().unwrap();
-                        state.scroll_display(Scroll::Delta(-3));
-                        needs_redraw = true;
-                    }
-                    _ => {}
-                },
-                Event::Resize(cols, rows) => {
-                    let (new_cols, new_lines) = calc_pty_size(cols, rows, canvas_open);
-                    let mut state = term_state.lock().unwrap();
-                    state.resize(new_cols, new_lines);
-                    let _ = cmd_tx.send(BridgeCommand::Resize {
-                        cols: new_cols as u16,
-                        rows: new_lines as u16,
-                    });
-                    needs_redraw = true;
-                }
-                _ => {}
-            }
-        }
-    }
-
+    let port = crate::resolve::port_for_configured(project_index, config)?;
+    let cap_config = crate::process::CapabilityConfig {
+        project_dir: project_dir.to_string(),
+        midi_config: None,
+        bonjour_port: Some(port),
+    };
+    crate::commands::start::ensure_process_running(
+        port,
+        project_dir,
+        crate::protocol::DebugMode::None,
+        cap_config,
+    )?;
     Ok(())
 }
 
-/// Canvas ペインの描画（tui-markdown + scrollview + image）
-fn render_canvas(frame: &mut ratatui::Frame, area: Rect, state: &mut CanvasState) {
-    if state.panes.is_empty() {
-        // プレースホルダー
-        let placeholder = Paragraph::new(vec![
-            Line::from(Span::styled(
-                "Canvas ready",
-                Style::default().fg(NORD_COMMENT),
-            )),
-            Line::from(""),
-            Line::from(Span::styled(
-                "MCP show で内容が表示されます",
-                Style::default().fg(NORD_COMMENT),
-            )),
-        ]);
-        frame.render_widget(placeholder, area);
-        return;
-    }
-
-    // コンテンツ高さを計算
-    let content_width = area.width;
-    let mut total_height: u16 = 0;
-
-    // pane_id でソートして安定した表示順に
-    let mut pane_ids: Vec<_> = state.panes.keys().cloned().collect();
-    pane_ids.sort();
-
-    // まず総コンテンツ高を見積もり
-    for (i, pane_id) in pane_ids.iter().enumerate() {
-        if let Some((_, content)) = state.panes.get(pane_id) {
-            if i > 0 {
-                total_height += 3; // セパレータ
-            }
-            total_height += 2; // タイトル + 空行
-            match content {
-                Content::Markdown(text) | Content::Log(text) | Content::Html(text) => {
-                    let rendered = tui_markdown::from_str(text);
-                    total_height += rendered.height() as u16;
-                }
-                Content::ImageBase64 { .. } => {
-                    total_height += area.height.saturating_sub(4).max(8);
-                }
-                Content::Url(_) => {
-                    total_height += 1;
-                }
-            }
-        }
-    }
-
-    // ScrollView でスクロール可能にする
-    let content_size = ratatui::layout::Size::new(content_width, total_height.max(1));
-    let mut scroll_view = ScrollView::new(content_size);
-    let mut y: u16 = 0;
-
-    for (i, pane_id) in pane_ids.iter().enumerate() {
-        if let Some((title, content)) = state.panes.get(pane_id) {
-            if i > 0 {
-                let sep = Paragraph::new(Line::from(Span::styled(
-                    "─".repeat(content_width as usize),
-                    Style::default().fg(NORD_COMMENT),
-                )));
-                scroll_view.render_widget(sep, Rect::new(0, y + 1, content_width, 1));
-                y += 3;
-            }
-
-            // タイトル
-            let display_title = title.as_deref().unwrap_or(pane_id);
-            let title_widget = Paragraph::new(Line::from(Span::styled(
-                format!("▎ {}", display_title),
-                Style::default().fg(NORD_CYAN).add_modifier(Modifier::BOLD),
-            )));
-            scroll_view.render_widget(title_widget, Rect::new(0, y, content_width, 1));
-            y += 2;
-
-            // コンテンツ
-            match content {
-                Content::Markdown(text) => {
-                    let rendered = tui_markdown::from_str(text);
-                    let h = rendered.height() as u16;
-                    scroll_view.render_widget(
-                        Paragraph::new(rendered).wrap(ratatui::widgets::Wrap { trim: false }),
-                        Rect::new(0, y, content_width, h.max(1)),
-                    );
-                    y += h;
-                }
-                Content::Log(text) | Content::Html(text) => {
-                    let rendered = tui_markdown::from_str(text);
-                    let h = rendered.height() as u16;
-                    scroll_view.render_widget(
-                        Paragraph::new(rendered).wrap(ratatui::widgets::Wrap { trim: false }),
-                        Rect::new(0, y, content_width, h.max(1)),
-                    );
-                    y += h;
-                }
-                Content::ImageBase64 { .. } => {
-                    let img_height = area.height.saturating_sub(4).max(8);
-                    let img_rect = Rect::new(0, y, content_width, img_height);
-                    if let Some(protocol) = state.images.get_mut(pane_id) {
-                        let img_widget = StatefulImage::default();
-                        scroll_view.render_stateful_widget(img_widget, img_rect, protocol);
-                    } else {
-                        scroll_view.render_widget(
-                            Paragraph::new(Span::styled(
-                                "[Image loading...]",
-                                Style::default().fg(NORD_GREEN),
-                            )),
-                            img_rect,
-                        );
-                    }
-                    y += img_height;
-                }
-                Content::Url(url) => {
-                    scroll_view.render_widget(
-                        Paragraph::new(Span::styled(
-                            format!("→ {}", url),
-                            Style::default().fg(NORD_GREEN),
-                        )),
-                        Rect::new(0, y, content_width, 1),
-                    );
-                    y += 1;
-                }
-            }
-        }
-    }
-
-    frame.render_stateful_widget(scroll_view, area, &mut state.scroll_state);
-}
-
-/// PTY サイズ計算（Canvas ON なら 55% 幅）
-fn calc_pty_size(term_width: u16, term_height: u16, canvas_open: bool) -> (usize, usize) {
-    // ヘッダ（1行）+ フッター（1行）+ PTY ブロック枠上下（各1セル）
-    let lines = (term_height.saturating_sub(4) as usize).max(1);
-    // PTY ブロック枠左右（各1セル）
-    let full_cols = term_width.saturating_sub(2) as usize;
-    let cols = if canvas_open {
-        // 55% を PTY に割り当て、ブロック枠分(2)を引く
-        let pty_area_width = (term_width as usize * 55) / 100;
-        pty_area_width.saturating_sub(2).max(1)
+/// PP Window（Paisley Park）のトグル
+///
+/// TheWorld 稼働中 → Lane モード、未稼働 → 個別ポートで Canvas 起動。
+/// TUI インライン分割は廃止 — 常に外部ウィンドウ。
+fn toggle_pp_window(sp_port: u16) {
+    if crate::canvas::find_running_canvas().is_some() {
+        crate::canvas::stop_canvas();
     } else {
-        full_cols.max(1)
-    };
-    (cols, lines)
-}
-
-/// ヘッダバー描画（Stand ステータス — 右端に 📖 AI 状態）
-fn draw_header_bar(
-    frame: &mut ratatui::Frame,
-    area: Rect,
-    project_name: &str,
-    port: u16,
-    canvas_open: bool,
-    ai_busy: bool,
-    connection_status: &str,
-) {
-    // ⭐ Star Platinum — Process 接続状態
-    let (sp_text, sp_color) = if connection_status.starts_with("エラー") {
-        ("⭐✗", NORD_RED)
-    } else if connection_status == "接続済み" {
-        ("⭐", NORD_GREEN)
-    } else {
-        ("⭐…", NORD_YELLOW)
-    };
-
-    // 🧭 Paisley Park — Canvas 状態
-    let (pp_text, pp_color) = if canvas_open {
-        ("🧭", NORD_GREEN)
-    } else {
-        ("🧭", NORD_COMMENT)
-    };
-
-    // 📖 Heaven's Door — AI 状態（右端固定幅）
-    let (hd_text, hd_color) = if ai_busy {
-        (" 📖応答中   ", NORD_YELLOW)
-    } else {
-        (" 📖入力待ち ", NORD_GREEN)
-    };
-
-    // 左側パーツ
-    let sep = Span::styled(" ", Style::default().bg(NORD_POLAR));
-    let left_spans = vec![
-        Span::styled(
-            format!(" {} ", project_name),
-            Style::default()
-                .fg(NORD_BG)
-                .bg(NORD_CYAN)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            format!(" :{} ", port),
-            Style::default().fg(NORD_COMMENT).bg(NORD_POLAR),
-        ),
-        sep.clone(),
-        Span::styled(sp_text, Style::default().fg(sp_color).bg(NORD_POLAR)),
-        sep.clone(),
-        Span::styled(pp_text, Style::default().fg(pp_color).bg(NORD_POLAR)),
-    ];
-
-    // 右端: 📖 Heaven's Door 状態（固定幅）
-    let left_width: usize = left_spans.iter().map(|s| s.width()).sum();
-    let hd_span = Span::styled(hd_text, Style::default().fg(hd_color).bg(NORD_POLAR));
-    let right_width = hd_span.width();
-    let gap = (area.width as usize).saturating_sub(left_width + right_width);
-
-    let mut spans = left_spans;
-    spans.push(Span::styled(
-        " ".repeat(gap),
-        Style::default().bg(NORD_POLAR),
-    ));
-    spans.push(hd_span);
-
-    let bar = Paragraph::new(Line::from(spans)).style(Style::default().bg(NORD_POLAR));
-    frame.render_widget(bar, area);
-}
-
-/// フッターバー描画（アクション専用）
-fn draw_footer_bar(frame: &mut ratatui::Frame, area: Rect, session_count: usize) {
-    let key_style = Style::default().fg(NORD_CYAN).bg(NORD_POLAR);
-    let desc_style = Style::default().fg(NORD_COMMENT).bg(NORD_POLAR);
-
-    let mut spans = vec![
-        Span::styled(" Home", key_style),
-        Span::styled(" 🧭canvas ", desc_style),
-        Span::styled(" C-q", key_style),
-        Span::styled(" quit ", desc_style),
-        Span::styled(" PgUp/Dn", key_style),
-        Span::styled(" scroll ", desc_style),
-    ];
-
-    // マルチセッション時のみセッション操作を表示
-    if session_count > 1 {
-        spans.push(Span::styled(" C-←/→", key_style));
-        spans.push(Span::styled(" switch ", desc_style));
+        let (port, lanes) = crate::canvas::canvas_target(sp_port);
+        let _ = crate::canvas::ensure_canvas_running(port, lanes);
     }
-    spans.push(Span::styled(" C-n", key_style));
-    spans.push(Span::styled(" new ", desc_style));
-
-    let bar = Paragraph::new(Line::from(spans)).style(Style::default().bg(NORD_POLAR));
-    frame.render_widget(bar, area);
 }

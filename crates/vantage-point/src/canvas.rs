@@ -86,6 +86,18 @@ pub fn ensure_canvas_running(port: u16, lanes: bool) -> anyhow::Result<u32> {
     Ok(pid)
 }
 
+/// Canvas 接続先を決定（TheWorld フォールバック付き）
+///
+/// TheWorld 稼働中 → (WORLD_PORT, lanes=true)
+/// 未稼働 → (sp_port, lanes=false)
+pub fn canvas_target(sp_port: u16) -> (u16, bool) {
+    if crate::daemon::process::is_daemon_running().is_some() {
+        (crate::cli::WORLD_PORT, true)
+    } else {
+        (sp_port, false)
+    }
+}
+
 /// Canvas シングルトンを停止
 pub fn stop_canvas() -> Option<u32> {
     let pid = find_running_canvas()?;

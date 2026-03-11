@@ -106,10 +106,10 @@ pub async fn close_pane_handler(
 ///
 /// PID ファイルベースのシングルトン管理。既存 Canvas があればそれを再利用。
 pub async fn canvas_open_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    // 複数プロジェクト稼働中なら Lane モードで起動
-    let lanes = state.world.is_some() || crate::discovery::list().await.len() > 1;
+    // canvas_target で TheWorld フォールバック判定を統一
+    let (port, lanes) = crate::canvas::canvas_target(state.port);
 
-    match crate::canvas::ensure_canvas_running(state.port, lanes) {
+    match crate::canvas::ensure_canvas_running(port, lanes) {
         Ok(pid) => {
             // AppState の canvas_pid も同期（後方互換）
             *state.canvas_pid.lock().await = Some(pid);
