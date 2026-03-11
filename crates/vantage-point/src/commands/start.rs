@@ -1,4 +1,17 @@
 //! `vp start` コマンドの実行ロジック
+//!
+//! ## アーキテクチャ
+//!
+//! ```text
+//! execute()
+//!   ├── Step 1: resolve_project()   — ターゲット → (dir, port, name)
+//!   ├── Step 2: route by mode
+//!   │     ├── --headless  → run_headless()   SP サーバー本体（blocking）
+//!   │     ├── --browser   → run_browser()    SP 確保 → ブラウザ
+//!   │     ├── --gui       → run_gui()        SP 確保 → ネイティブウィンドウ
+//!   │     └── default     → run_tui_mode()   SP 確保 → tmux/TUI
+//!   └── 共通: ensure_sp_running()            SP 未起動なら in-process spawn
+//! ```
 
 use anyhow::Result;
 
@@ -21,6 +34,18 @@ pub struct StartOptions<'a> {
     pub config: &'a Config,
 }
 
+/// ターゲット解決の結果
+struct ResolvedProject {
+    dir: String,
+    port: u16,
+    name: String,
+    already_running: bool,
+}
+
+// =============================================================================
+// メインエントリー
+// =============================================================================
+
 /// `vp start` を実行
 pub fn execute(opts: StartOptions) -> Result<()> {
     let StartOptions {
@@ -35,92 +60,10 @@ pub fn execute(opts: StartOptions) -> Result<()> {
         config,
     } = opts;
 
-    // --project-dir が指定されていればそれを最優先
-    // already_running: 既存 Process に re-attach する場合 true（pre-registration をスキップ）
-    let (resolved_project_dir, resolved_port, _already_running) = if let Some(ref dir) = project_dir
-    {
-        let dir_normalized = Config::normalize_path(std::path::Path::new(dir));
+    // Step 1: ターゲット解決
+    let resolved = resolve_project(target, port, project_dir, headless || browser, config)?;
 
-        // 既に実行中かチェック
-        if let Some(running) = crate::discovery::find_by_project_blocking(&dir_normalized) {
-            if headless || browser {
-                let name = resolve::project_name_from_path(&running.project_dir, config);
-                println!(
-                    "Already running: {} (port {}). Use `vp stop` first.",
-                    name, running.port
-                );
-                return Ok(());
-            }
-            // ターミナルモード: 既存 Process に re-attach
-            (dir_normalized, running.port, true)
-        } else {
-            let idx = config.find_project_index(&dir_normalized);
-            let p = if let Some(explicit) = port {
-                explicit
-            } else if let Some(i) = idx {
-                resolve::port_for_configured(i, config)?
-            } else {
-                resolve::find_available_port()
-                    .ok_or_else(|| anyhow::anyhow!("No available ports in range"))?
-            };
-            (dir_normalized, p, false)
-        }
-    } else {
-        // target ベースの解決
-        let resolved = resolve::resolve_target(target.as_deref(), config)?;
-        match resolved {
-            ResolvedTarget::Running {
-                port: running_port,
-                name,
-                project_dir: proj_dir,
-            } => {
-                if headless || browser {
-                    println!(
-                        "Already running: {} (port {}). Use `vp stop` first.",
-                        name, running_port
-                    );
-                    return Ok(());
-                }
-                // ターミナルモード: 既存 Process に re-attach
-                println!(
-                    "\u{1f517} Re-attaching to: {} (port {})",
-                    name, running_port
-                );
-                (proj_dir, running_port, true)
-            }
-            ResolvedTarget::Configured { name, path, index } => {
-                println!("\u{1f4c1} Project: {}", name);
-                let p = if let Some(explicit) = port {
-                    explicit
-                } else {
-                    resolve::port_for_configured(index, config)?
-                };
-                (path, p, false)
-            }
-            ResolvedTarget::Cwd { path } => {
-                let p = if let Some(explicit) = port {
-                    explicit
-                } else {
-                    resolve::find_available_port()
-                        .ok_or_else(|| anyhow::anyhow!("No available ports in range"))?
-                };
-                (path, p, false)
-            }
-        }
-    };
-
-    println!("\u{1f50c} Using port {}", resolved_port);
-
-    // tmux exec 判定: TUI モードかつ tmux 外なら、この後 exec で tmux に置き換わる
-    // → pre-registration すると tmux の PID が登録されてしまうのでスキップ
-    let _will_exec_tmux = !headless
-        && !browser
-        && !gui
-        && crate::tmux::is_tmux_available()
-        && !crate::tmux::is_inside_tmux();
-
-    // ポート予約は不要 — server.rs が起動後に TheWorld に登録する。
-    // ポート衝突防止は is_port_available() のバインドテストで十分。
+    println!("\u{1f50c} Using port {}", resolved.port);
 
     // デバッグモード: CLI > env > default
     let debug_mode = debug
@@ -132,7 +75,7 @@ pub fn execute(opts: StartOptions) -> Result<()> {
         tracing::info!("Debug mode: {:?}", debug_mode);
     }
 
-    tracing::info!("Project dir: {}", resolved_project_dir);
+    tracing::info!("Project dir: {}", resolved.dir);
 
     // MIDI 設定
     let midi_config = midi.as_ref().map(|midi_arg| {
@@ -155,147 +98,334 @@ pub fn execute(opts: StartOptions) -> Result<()> {
         config
     });
 
-    // CapabilityConfig
-    let cap_config = crate::process::CapabilityConfig {
-        project_dir: resolved_project_dir.clone(),
+    let cap_config = CapabilityConfig {
+        project_dir: resolved.dir.clone(),
         midi_config,
-        bonjour_port: Some(resolved_port),
+        bonjour_port: Some(resolved.port),
     };
 
-    if headless || browser {
-        // Headless / Browser モード: HTTP サーバーのみ
-        let rt = tokio::runtime::Runtime::new()?;
-        rt.block_on(async {
-            let server_handle = tokio::spawn(async move {
-                crate::process::run(resolved_port, false, debug_mode, cap_config).await
-            });
-
-            if browser {
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                let url = format!("http://localhost:{}", resolved_port);
-                tracing::info!("Opening in browser: {}", url);
-                let _ = open::that(&url);
-            }
-
-            server_handle.await?
-        })
+    // Step 2: モード別ルーティング
+    if headless {
+        run_headless(resolved.port, debug_mode, cap_config)
+    } else if browser {
+        run_browser(resolved.port, debug_mode, cap_config)
     } else if gui {
-        // GUI モード: ネイティブウィンドウ（Unison ブリッジ）
-        ensure_process_running(resolved_port, &resolved_project_dir, debug_mode, cap_config)?;
-
-        let project_name = resolve::project_name_from_path(&resolved_project_dir, config);
-
-        // Health API から認証トークンを取得
-        let terminal_token = crate::discovery::fetch_terminal_token_blocking(resolved_port)
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Terminal token not found for port {}. Process may not be fully started.",
-                    resolved_port
-                )
-            })?;
-
-        let result = crate::terminal_window::run_terminal_unison(
-            resolved_port,
-            &terminal_token,
-            &project_name,
-        );
-
-        match result {
-            Ok(()) => tracing::info!("Terminal window closed (Process is still running)"),
-            Err(e) => tracing::error!("Terminal window error: {}", e),
-        }
-
-        Ok(())
+        run_gui(resolved.port, &resolved.dir, &resolved.name, debug_mode, cap_config, config)
     } else {
-        // デフォルト: TUI モード（ratatui ベースの対話コンソール）
-        let project_name =
-            resolve::project_name_from_path(&resolved_project_dir, config).to_string();
-
-        // tmux 統合: セッション管理
-        if crate::tmux::is_tmux_available() {
-            let session = crate::tmux::session_name(&project_name);
-            let in_own_session = crate::tmux::is_in_session(&session);
-
-            if crate::tmux::is_inside_tmux() && !in_own_session {
-                // tmux 内から別プロジェクトの start: switch-client で切り替え
-                if !crate::tmux::session_exists(&session) {
-                    let vp_bin = std::env::current_exe()?;
-                    crate::tmux::create_detached(
-                        &session,
-                        &vp_bin,
-                        &["start", "--project-dir", &resolved_project_dir],
-                    )?;
-                }
-                println!("\u{1f500} Switching to tmux session: {}", session);
-                crate::tmux::switch_client(&session);
-                return Ok(());
-            } else if !crate::tmux::is_inside_tmux() {
-                // tmux 外から
-                if crate::tmux::session_exists(&session) {
-                    crate::tmux::attach_and_exec(&session); // never returns
-                } else {
-                    let vp_bin = std::env::current_exe()?;
-                    crate::tmux::create_and_exec(
-                        &session,
-                        &vp_bin,
-                        &["start", "--project-dir", &resolved_project_dir],
-                    ); // never returns
-                }
-            }
-            // in_own_session == true: 自分のセッション内 → そのまま TUI 起動へ
-        }
-
-        // tmux 内（自セッション）or tmux なし: TUI 起動
-        // Process サーバーを headless で起動（Canvas / API 用）
-        ensure_process_running(resolved_port, &resolved_project_dir, debug_mode, cap_config)?;
-
-        // TUI 起動（Canvas は Ctrl+O で随時 toggle）
-        crate::tui::run_tui(&resolved_project_dir, &project_name)
+        run_tui_mode(resolved.port, &resolved.dir, &resolved.name, debug_mode, cap_config)
     }
 }
 
-/// Process が起動していなければ headless で起動する
+// =============================================================================
+// Step 1: ターゲット解決
+// =============================================================================
+
+/// CLI 引数からプロジェクト情報を解決する
 ///
-/// running.json + PID チェックで既存 Process を探し、
-/// 見つからなければ自プロセスを `vp start --headless` で再起動してデタッチ。
-pub fn ensure_process_running(
+/// --project-dir 指定 → 正規化して使用
+/// それ以外 → resolve_target() でプロジェクト名/インデックス/cwd から解決
+fn resolve_project(
+    target: Option<String>,
+    explicit_port: Option<u16>,
+    project_dir: Option<String>,
+    server_only: bool,
+    config: &Config,
+) -> Result<ResolvedProject> {
+    if let Some(ref dir) = project_dir {
+        resolve_from_dir(dir, explicit_port, server_only, config)
+    } else {
+        resolve_from_target(target, explicit_port, server_only, config)
+    }
+}
+
+/// --project-dir からの解決
+fn resolve_from_dir(
+    dir: &str,
+    explicit_port: Option<u16>,
+    server_only: bool,
+    config: &Config,
+) -> Result<ResolvedProject> {
+    let dir = Config::normalize_path(std::path::Path::new(dir));
+    let name = resolve::project_name_from_path(&dir, config).to_string();
+
+    // 既に実行中？
+    if let Some(running) = crate::discovery::find_by_project_blocking(&dir) {
+        if server_only {
+            println!(
+                "Already running: {} (port {}). Use `vp stop` first.",
+                name, running.port
+            );
+            std::process::exit(0);
+        }
+        return Ok(ResolvedProject {
+            dir,
+            port: running.port,
+            name,
+            already_running: true,
+        });
+    }
+
+    let port = resolve_port(explicit_port, config.find_project_index(&dir), config)?;
+    Ok(ResolvedProject {
+        dir,
+        port,
+        name,
+        already_running: false,
+    })
+}
+
+/// target（名前/インデックス）からの解決
+fn resolve_from_target(
+    target: Option<String>,
+    explicit_port: Option<u16>,
+    server_only: bool,
+    config: &Config,
+) -> Result<ResolvedProject> {
+    let resolved = resolve::resolve_target(target.as_deref(), config)?;
+
+    match resolved {
+        ResolvedTarget::Running {
+            port,
+            name,
+            project_dir,
+        } => {
+            if server_only {
+                println!(
+                    "Already running: {} (port {}). Use `vp stop` first.",
+                    name, port
+                );
+                std::process::exit(0);
+            }
+            println!("\u{1f517} Re-attaching to: {} (port {})", name, port);
+            Ok(ResolvedProject {
+                dir: project_dir,
+                port,
+                name: name.to_string(),
+                already_running: true,
+            })
+        }
+        ResolvedTarget::Configured { name, path, index } => {
+            println!("\u{1f4c1} Project: {}", name);
+            let port = resolve_port(explicit_port, Some(index), config)?;
+            Ok(ResolvedProject {
+                dir: path,
+                port,
+                name: name.to_string(),
+                already_running: false,
+            })
+        }
+        ResolvedTarget::Cwd { path } => {
+            let name = resolve::project_name_from_path(&path, config).to_string();
+            let port = resolve_port(explicit_port, None, config)?;
+            Ok(ResolvedProject {
+                dir: path,
+                port,
+                name,
+                already_running: false,
+            })
+        }
+    }
+}
+
+/// ポート番号を決定（明示指定 > config index > 自動検索）
+fn resolve_port(
+    explicit: Option<u16>,
+    config_index: Option<usize>,
+    config: &Config,
+) -> Result<u16> {
+    if let Some(p) = explicit {
+        return Ok(p);
+    }
+    if let Some(i) = config_index {
+        return resolve::port_for_configured(i, config);
+    }
+    resolve::find_available_port().ok_or_else(|| anyhow::anyhow!("No available ports in range"))
+}
+
+// =============================================================================
+// Step 2: モード別実行
+// =============================================================================
+
+/// Headless モード: SP サーバー本体として blocking 実行
+fn run_headless(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig) -> Result<()> {
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(async {
+        crate::process::run(port, false, debug_mode, cap_config).await
+    })
+}
+
+/// Browser モード: SP を確保してブラウザで開く
+fn run_browser(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig) -> Result<()> {
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(async {
+        let server_handle = tokio::spawn(async move {
+            crate::process::run(port, false, debug_mode, cap_config).await
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let url = format!("http://localhost:{}", port);
+        tracing::info!("Opening in browser: {}", url);
+        let _ = open::that(&url);
+
+        server_handle.await?
+    })
+}
+
+/// GUI モード: SP を確保してネイティブウィンドウ（Unison）を起動
+fn run_gui(
     port: u16,
     _project_dir: &str,
+    project_name: &str,
+    debug_mode: DebugMode,
+    cap_config: CapabilityConfig,
+    _config: &Config,
+) -> Result<()> {
+    ensure_sp_running(port, debug_mode, cap_config)?;
+
+    let terminal_token = crate::discovery::fetch_terminal_token_blocking(port).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Terminal token not found for port {}. Process may not be fully started.",
+            port
+        )
+    })?;
+
+    let result =
+        crate::terminal_window::run_terminal_unison(port, &terminal_token, project_name);
+
+    match result {
+        Ok(()) => tracing::info!("Terminal window closed (Process is still running)"),
+        Err(e) => tracing::error!("Terminal window error: {}", e),
+    }
+
+    Ok(())
+}
+
+/// TUI モード: SP を確保 → tmux セッション管理 → TUI 起動
+fn run_tui_mode(
+    port: u16,
+    project_dir: &str,
+    project_name: &str,
     debug_mode: DebugMode,
     cap_config: CapabilityConfig,
 ) -> Result<()> {
-    // TheWorld がまだ起動していなければ自動起動（Lane ビュー等に必要）
+    // tmux が使える場合はセッション管理を先に行う
+    // （tmux exec で自プロセスが置き換わる場合があるため、SP 起動より先）
+    if crate::tmux::is_tmux_available() {
+        match enter_tmux_session(project_name, project_dir)? {
+            TmuxAction::RunTuiHere => {
+                // 自セッション内 or tmux なし → SP 起動して TUI 実行
+            }
+            TmuxAction::Switched => {
+                // 別セッションに switch-client した → このプロセスは終了
+                return Ok(());
+            }
+            // ExecNeverReturns は型上到達しないが、! 型の代わりに明示
+        }
+    }
+
+    // SP サーバーを確保（未起動なら in-process thread で起動）
+    ensure_sp_running(port, debug_mode, cap_config)?;
+
+    // TUI 起動（Canvas は Ctrl+O で随時 toggle）
+    crate::tui::run_tui(project_dir, project_name)
+}
+
+// =============================================================================
+// tmux セッション管理
+// =============================================================================
+
+/// tmux セッション管理の結果
+enum TmuxAction {
+    /// 自セッション内にいる → このプロセスで TUI を起動
+    RunTuiHere,
+    /// 別セッションに切り替えた → このプロセスは終了してよい
+    Switched,
+    // Note: attach_and_exec / create_and_exec は exec() で戻らないため enum 不要
+}
+
+/// tmux セッションに入る
+///
+/// 3 パターンを処理:
+/// 1. tmux 外 → セッション作成 or アタッチ（exec で戻らない）
+/// 2. tmux 内 + 別セッション → switch-client
+/// 3. tmux 内 + 自セッション → RunTuiHere（TUI をここで起動）
+fn enter_tmux_session(project_name: &str, project_dir: &str) -> Result<TmuxAction> {
+    let session = crate::tmux::session_name(project_name);
+
+    if !crate::tmux::is_inside_tmux() {
+        // パターン 1: tmux 外 → exec でプロセス置換（戻らない）
+        if crate::tmux::session_exists(&session) {
+            crate::tmux::attach_and_exec(&session); // never returns
+        } else {
+            let vp_bin = std::env::current_exe()?;
+            crate::tmux::create_and_exec(
+                &session,
+                &vp_bin,
+                &["start", "--project-dir", project_dir],
+            ); // never returns
+        }
+    }
+
+    // tmux 内
+    if crate::tmux::is_in_session(&session) {
+        // パターン 3: 自セッション → TUI をここで起動
+        return Ok(TmuxAction::RunTuiHere);
+    }
+
+    // パターン 2: 別セッション内 → ターゲットセッションに切り替え
+    if !crate::tmux::session_exists(&session) {
+        let vp_bin = std::env::current_exe()?;
+        crate::tmux::create_detached(
+            &session,
+            &vp_bin,
+            &["start", "--project-dir", project_dir],
+        )?;
+    }
+    println!("\u{1f500} Switching to tmux session: {}", session);
+    crate::tmux::switch_client(&session);
+    Ok(TmuxAction::Switched)
+}
+
+// =============================================================================
+// SP（Star Platinum）サーバー管理
+// =============================================================================
+
+/// SP が起動していなければ in-process thread で起動する
+///
+/// TheWorld も自動起動（Lane ビュー等に必要）。
+pub fn ensure_sp_running(
+    port: u16,
+    debug_mode: DebugMode,
+    cap_config: CapabilityConfig,
+) -> Result<()> {
+    // TheWorld がまだ起動していなければ自動起動
     if let Err(e) = crate::daemon::process::ensure_daemon_running(crate::cli::WORLD_PORT) {
         tracing::warn!("TheWorld 自動起動失敗（Process は続行）: {}", e);
     }
 
-    // HTTP サーバーが実際に応答するか確認（PID だけでは TUI プロセスと区別できない）
+    // HTTP サーバーが実際に応答するか確認
     if is_server_responding(port) {
-        tracing::info!("Process already running and responding (port={})", port);
+        tracing::info!("SP already running (port={})", port);
         return Ok(());
     }
 
-    // headless で Process を起動（in-process スレッド）
-    tracing::info!("Starting Process server (port={})...", port);
+    // in-process thread で SP を起動
+    tracing::info!("Starting SP server (port={})...", port);
 
     std::thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime");
         rt.block_on(async {
             if let Err(e) = crate::process::run(port, false, debug_mode, cap_config).await {
-                tracing::error!("Process server error: {}", e);
+                tracing::error!("SP server error: {}", e);
             }
         })
     });
 
-    // Process の HTTP サーバーが ready になるまでポーリング
-    wait_for_process_ready(port)?;
-
-    Ok(())
+    wait_for_ready(port)
 }
 
-/// Process の HTTP サーバーが応答するまでポーリング（最大5秒）
-pub fn wait_for_process_ready(port: u16) -> Result<()> {
-    let url = format!("http://[::1]:{}/health", port);
+/// SP の HTTP サーバーが応答するまでポーリング（最大5秒）
+pub fn wait_for_ready(port: u16) -> Result<()> {
     let max_attempts = 50; // 100ms × 50 = 5秒
 
     for i in 0..max_attempts {
@@ -304,7 +434,7 @@ pub fn wait_for_process_ready(port: u16) -> Result<()> {
             std::time::Duration::from_millis(100),
         ) {
             Ok(_) => {
-                tracing::info!("Process ready (attempt {})", i + 1);
+                tracing::info!("SP ready (attempt {})", i + 1);
                 return Ok(());
             }
             Err(_) => {
@@ -313,13 +443,12 @@ pub fn wait_for_process_ready(port: u16) -> Result<()> {
         }
     }
 
-    // TCP 接続できなくてもタイムアウトで続行（WS 接続時にリトライするため）
-    tracing::warn!("Process readiness check timed out, proceeding anyway");
-    let _ = url;
+    // タイムアウトでも続行（WS 接続時にリトライするため）
+    tracing::warn!("SP readiness check timed out, proceeding anyway");
     Ok(())
 }
 
-/// Process サーバーが実際に HTTP 応答するかチェック（TCP 接続のみ）
+/// SP サーバーが応答するかチェック（TCP 接続テスト）
 fn is_server_responding(port: u16) -> bool {
     std::net::TcpStream::connect_timeout(
         &format!("[::1]:{}", port).parse().unwrap(),

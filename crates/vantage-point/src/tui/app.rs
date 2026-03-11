@@ -811,9 +811,8 @@ fn start_background_services(
         midi_config: None,
         bonjour_port: Some(port),
     };
-    crate::commands::start::ensure_process_running(
+    crate::commands::start::ensure_sp_running(
         port,
-        project_dir,
         crate::protocol::DebugMode::None,
         cap_config,
     )?;
