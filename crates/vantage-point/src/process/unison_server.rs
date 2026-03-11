@@ -94,18 +94,17 @@ async fn handle_unwatch_file(
 // Canvas チャネル ハンドラー
 // =============================================================================
 
-/// canvas.open メソッドのハンドラー（シングルトン管理）
+/// PP Window (Paisley Park) を開く（TheWorld フォールバック付き）
 async fn handle_canvas_open(state: &AppState) -> Result<serde_json::Value, String> {
-    // 複数プロジェクト稼働中なら Lane モードで開く（TheWorld デーモン有無に依存しない）
-    let lanes = state.world.is_some() || crate::discovery::list().await.len() > 1;
-
-    match crate::canvas::ensure_canvas_running(state.port, lanes) {
+    let (port, lanes) = crate::canvas::canvas_target(state.port);
+    let project_name = state.project_dir.rsplit('/').next();
+    match crate::canvas::ensure_canvas_running(port, lanes, project_name) {
         Ok(pid) => {
             *state.canvas_pid.lock().await = Some(pid);
-            tracing::info!("Canvas window opened via QUIC (pid={})", pid);
+            tracing::info!("PP Window opened (pid={}, port={}, lanes={})", pid, port, lanes);
             Ok(serde_json::json!({"status": "opened", "pid": pid}))
         }
-        Err(e) => Err(format!("Failed to open canvas: {}", e)),
+        Err(e) => Err(format!("Failed to open PP window: {}", e)),
     }
 }
 

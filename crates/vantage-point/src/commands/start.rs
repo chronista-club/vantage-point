@@ -247,6 +247,11 @@ pub fn ensure_process_running(
     debug_mode: DebugMode,
     cap_config: CapabilityConfig,
 ) -> Result<()> {
+    // TheWorld がまだ起動していなければ自動起動（Lane ビュー等に必要）
+    if let Err(e) = crate::daemon::process::ensure_daemon_running(crate::cli::WORLD_PORT) {
+        tracing::warn!("TheWorld 自動起動失敗（Process は続行）: {}", e);
+    }
+
     // HTTP サーバーが実際に応答するか確認（PID だけでは TUI プロセスと区別できない）
     if is_server_responding(port) {
         tracing::info!("Process already running and responding (port={})", port);

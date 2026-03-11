@@ -1,6 +1,8 @@
 //! GridSnapshot → ratatui Widget 変換
 //!
 //! TerminalState の VT パース結果を ratatui の Buffer に描画する。
+//! カーソル表示は PTY アプリ（Claude CLI 等）が SGR 7 (INVERSE) で自前描画するため、
+//! TerminalView ではセル属性の忠実な再現のみを責務とする。
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -12,22 +14,11 @@ use crate::terminal::state::GridSnapshot;
 /// PTY 出力を ratatui Widget として描画するウィジェット
 pub struct TerminalView<'a> {
     snapshot: &'a GridSnapshot,
-    /// カーソル点滅の現在状態（true = 表示）
-    cursor_blink_on: bool,
 }
 
 impl<'a> TerminalView<'a> {
     pub fn new(snapshot: &'a GridSnapshot) -> Self {
-        Self {
-            snapshot,
-            cursor_blink_on: true,
-        }
-    }
-
-    /// カーソル点滅状態を設定
-    pub fn cursor_blink(mut self, on: bool) -> Self {
-        self.cursor_blink_on = on;
-        self
+        Self { snapshot }
     }
 }
 
@@ -78,23 +69,6 @@ impl Widget for TerminalView<'_> {
                     buf_cell.set_char(cell.ch);
                     buf_cell.set_style(style);
                 }
-            }
-        }
-
-        // カーソル描画（反転色ブロック + 点滅制御）
-        // DECTCEM でカーソル非表示の場合はソフトウェアカーソルも描画しない
-        // （Claude CLI 等の TUI アプリは自前で画面を再描画するため、
-        //   PTY カーソル位置が実際の入力位置と一致しない）
-        if self.cursor_blink_on && snap.cursor_visible {
-            let (crow, ccol) = snap.cursor;
-            let cx = area.x + ccol as u16;
-            let cy = area.y + crow as u16;
-            if cx < area.right() && cy < area.bottom() {
-                let buf_cell = &mut buf[(cx, cy)];
-                let current_fg = buf_cell.fg;
-                let current_bg = buf_cell.bg;
-                buf_cell.set_fg(current_bg);
-                buf_cell.set_bg(current_fg);
             }
         }
     }

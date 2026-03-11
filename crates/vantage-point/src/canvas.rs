@@ -54,7 +54,7 @@ fn remove_canvas_pid() {
 /// Canvas シングルトンを起動（既存があればその PID を返す）
 ///
 /// Lane モード対応: port が指定されていれば 1:1 モード、なければ Lane モードで起動。
-pub fn ensure_canvas_running(port: u16, lanes: bool) -> anyhow::Result<u32> {
+pub fn ensure_canvas_running(port: u16, lanes: bool, project_name: Option<&str>) -> anyhow::Result<u32> {
     // 既存の Canvas が動いていればそれを使う
     if let Some(pid) = find_running_canvas() {
         tracing::info!("Canvas already running (pid={})", pid);
@@ -69,6 +69,10 @@ pub fn ensure_canvas_running(port: u16, lanes: bool) -> anyhow::Result<u32> {
         "--port".to_string(),
         port.to_string(),
     ];
+    if let Some(name) = project_name {
+        args.push("--name".to_string());
+        args.push(name.to_string());
+    }
     if lanes {
         args.push("--lanes".to_string());
     }
@@ -84,6 +88,18 @@ pub fn ensure_canvas_running(port: u16, lanes: bool) -> anyhow::Result<u32> {
     write_canvas_pid(pid);
     tracing::info!("Canvas launched (pid={}, lanes={})", pid, lanes);
     Ok(pid)
+}
+
+/// Canvas 接続先を決定（TheWorld フォールバック付き）
+///
+/// TheWorld 稼働中 → (WORLD_PORT, lanes=true)
+/// 未稼働 → (sp_port, lanes=false)
+pub fn canvas_target(sp_port: u16) -> (u16, bool) {
+    if crate::daemon::process::is_daemon_running().is_some() {
+        (crate::cli::WORLD_PORT, true)
+    } else {
+        (sp_port, false)
+    }
 }
 
 /// Canvas シングルトンを停止
@@ -162,9 +178,9 @@ pub fn run_canvas(port: u16, project_name: &str, lanes: bool) -> anyhow::Result<
     // HTTP URL で Canvas を提供（CDN スクリプトが正常に読み込まれるように）
     // キャッシュは canvas_handler の no-store ヘッダーで回避
     let canvas_url = if lanes {
-        format!("http://localhost:{}/canvas?lanes=1", port)
+        format!("http://localhost:{}/canvas?project={}", port, project_name)
     } else {
-        format!("http://localhost:{}/canvas", port)
+        format!("http://localhost:{}/canvas?direct", port)
     };
     let _webview = WebViewBuilder::new()
         .with_url(&canvas_url)

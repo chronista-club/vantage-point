@@ -6,7 +6,7 @@
     <title>Vantage Point Canvas</title>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+    <script src="/vendor/mermaid.min.js"></script>
     <style>
         :root {
             --canvas-bg: oklch(0.10 0.02 230);
@@ -679,6 +679,111 @@
         body.split-dragging .pane-card-body {
             pointer-events: none;
         }
+
+        /* ═══════════════════════════════════════════════
+           VP Nord — Mermaid SVG オーバーライド
+           ═══════════════════════════════════════════════ */
+
+        /* Mermaid コンテナ */
+        .mermaid {
+            background: transparent !important;
+            margin: 12px 0;
+            display: flex;
+            justify-content: center;
+        }
+        .mermaid svg {
+            max-width: 100%;
+            height: auto;
+        }
+
+        /* ノード: 角丸 + 微ドロップシャドウ */
+        .mermaid .node rect,
+        .mermaid .node circle,
+        .mermaid .node polygon {
+            rx: 8px;
+            ry: 8px;
+            filter: drop-shadow(0 2px 4px rgba(0,0,0,0.3));
+        }
+
+        /* ノードテキスト: 読みやすいサイズ + ウェイト */
+        .mermaid .node .nodeLabel,
+        .mermaid .node text {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+            font-size: 13px !important;
+            fill: #ECEFF4 !important;
+        }
+
+        /* エッジ（矢印）: なめらかな線 */
+        .mermaid .edge-pattern-solid,
+        .mermaid .flowchart-link {
+            stroke: #81A1C1 !important;
+            stroke-width: 1.5px !important;
+        }
+        .mermaid marker path {
+            fill: #81A1C1 !important;
+        }
+
+        /* エッジラベル */
+        .mermaid .edgeLabel {
+            background: #2E3440 !important;
+            color: #D8DEE9 !important;
+        }
+        .mermaid .edgeLabel rect {
+            fill: #2E3440 !important;
+            opacity: 0.9;
+        }
+
+        /* サブグラフ: 枠線 + 半透明背景 */
+        .mermaid .cluster rect {
+            rx: 6px !important;
+            ry: 6px !important;
+            stroke: #4C566A !important;
+            stroke-width: 1px !important;
+            fill: rgba(59, 66, 82, 0.5) !important;
+        }
+        .mermaid .cluster text {
+            fill: #81A1C1 !important;
+            font-weight: 600 !important;
+        }
+
+        /* シーケンス図のアクター */
+        .mermaid .actor {
+            fill: #3B4252 !important;
+            stroke: #5E81AC !important;
+        }
+        .mermaid .actor-line {
+            stroke: #4C566A !important;
+        }
+        .mermaid text.actor {
+            fill: #ECEFF4 !important;
+            font-weight: 500 !important;
+        }
+
+        /* シーケンス図のシグナル線 */
+        .mermaid .messageLine0,
+        .mermaid .messageLine1 {
+            stroke: #81A1C1 !important;
+        }
+        .mermaid .messageText {
+            fill: #D8DEE9 !important;
+        }
+
+        /* ノート */
+        .mermaid .note {
+            fill: #434C5E !important;
+            stroke: #4C566A !important;
+        }
+        .mermaid .noteText {
+            fill: #E5E9F0 !important;
+        }
+
+        /* ラベル全般 */
+        .mermaid .label {
+            color: #D8DEE9 !important;
+        }
+        .mermaid .label text {
+            fill: #D8DEE9 !important;
+        }
     </style>
 </head>
 <body>
@@ -1108,22 +1213,45 @@
         // _default タブを初期作成
         createTab('_default', 'Canvas');
 
-        // Mermaid 初期化（ダークテーマ） — CDN 読み込み失敗時もクラッシュしない
+        // Mermaid 初期化（VP Nord テーマ） — ローカルバンドル読み込み失敗時もクラッシュしない
         const mermaidAvailable = typeof mermaid !== 'undefined';
         if (mermaidAvailable) {
             mermaid.initialize({
                 startOnLoad: false,
-                theme: 'dark',
+                theme: 'base',
                 themeVariables: {
+                    // VP Nord カラーパレット
                     darkMode: true,
-                    background: 'oklch(0.14 0.02 230)',
-                    primaryColor: 'oklch(0.35 0.08 210)',
-                    primaryTextColor: 'oklch(0.93 0.01 220)',
-                    primaryBorderColor: 'oklch(0.40 0.06 220)',
-                    lineColor: 'oklch(0.50 0.04 220)',
-                    secondaryColor: 'oklch(0.25 0.05 260)',
-                    tertiaryColor: 'oklch(0.20 0.03 230)',
-                }
+                    background: '#2E3440',           // Nord 0 — ダイアグラム背景
+                    primaryColor: '#3B4252',          // Nord 1 — ノード塗り
+                    primaryTextColor: '#ECEFF4',      // Nord 6 — テキスト
+                    primaryBorderColor: '#5E81AC',    // Nord 10 — ノード枠線
+                    lineColor: '#81A1C1',             // Nord 9 — 矢印・線
+                    secondaryColor: '#434C5E',        // Nord 2 — サブグラフ背景
+                    tertiaryColor: '#3B4252',         // Nord 1 — 三次色
+                    // テキスト
+                    textColor: '#D8DEE9',             // Nord 4 — 汎用テキスト
+                    secondaryTextColor: '#81A1C1',    // Nord 9 — セカンダリテキスト
+                    // ノート・状態
+                    noteBkgColor: '#434C5E',          // Nord 2 — ノート背景
+                    noteTextColor: '#E5E9F0',         // Nord 5 — ノートテキスト
+                    noteBorderColor: '#4C566A',       // Nord 3 — ノート枠線
+                    // エッジラベル
+                    edgeLabelBackground: '#2E3440',   // Nord 0 — エッジラベル背景
+                    // フローチャート
+                    clusterBkg: '#3B4252',            // Nord 1 — サブグラフ背景
+                    clusterBorder: '#4C566A',         // Nord 3 — サブグラフ枠線
+                    // シーケンス図
+                    actorBkg: '#3B4252',              // Nord 1 — アクター背景
+                    actorBorder: '#5E81AC',           // Nord 10 — アクター枠線
+                    actorTextColor: '#ECEFF4',        // Nord 6 — アクターテキスト
+                    signalColor: '#81A1C1',           // Nord 9 — シグナル線
+                    activationBorderColor: '#88C0D0', // Nord 8 — アクティベーション
+                    activationBkgColor: '#434C5E',    // Nord 2 — アクティベーション背景
+                    // フォント
+                    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+                    fontSize: '14px',
+                },
             });
         }
 
@@ -1138,7 +1266,7 @@
                 mermaidDiv.textContent = code.textContent;
                 pre.replaceWith(mermaidDiv);
             }
-            if (mermaidAvailable && container.querySelectorAll('.mermaid').length > 0) {
+            if (typeof mermaid !== 'undefined' && container.querySelectorAll('.mermaid').length > 0) {
                 try {
                     await mermaid.run({ nodes: container.querySelectorAll('.mermaid') });
                 } catch (e) {
@@ -1156,7 +1284,7 @@
             const div = document.createElement('div');
             if (content.markdown) {
                 const raw = marked.parse(content.markdown);
-                const sanitized = DOMPurify.sanitize(raw);
+                const sanitized = DOMPurify.sanitize(raw, { ADD_ATTR: ['class'] });
                 div.insertAdjacentHTML('beforeend', sanitized);
             } else if (content.html) {
                 const sanitized = DOMPurify.sanitize(content.html);
@@ -1488,9 +1616,12 @@
         // HTTP 時: __VP_WS_HOST__ がそのまま残るので location.host を使用
         const wsHost = '__VP_WS_HOST__'.startsWith('__') ? location.host : '__VP_WS_HOST__';
 
-        // Lane モード: ?lanes=1 パラメータで有効化
+        // Lane モード: デフォルト有効。?direct で直接モードに切り替え
         const urlParams = new URLSearchParams(window.location.search);
-        const LANE_MODE = urlParams.has('lanes');
+        const LANE_MODE = !urlParams.has('direct');
+        // 起動元プロジェクトの優先選択（?project=xxx で指定）
+        const PREFERRED_LANE = urlParams.get('project');
+        let preferredLaneSwitched = false;
 
         const WS_URL = LANE_MODE
             ? `ws://${wsHost}/ws/lanes`
@@ -1636,7 +1767,17 @@
                     for (const lane of data.lanes) {
                         laneState.lanes.set(lane.name, lane);
                     }
-                    // 初回: 最初の Lane を自動選択
+                    // 起動元プロジェクトが後から現れた場合も切り替え
+                    if (!preferredLaneSwitched && PREFERRED_LANE) {
+                        const preferred = data.lanes.find(l => l.name === PREFERRED_LANE);
+                        if (preferred) {
+                            preferredLaneSwitched = true;
+                            switchLane(preferred.name);
+                            renderLaneBar();
+                            break;
+                        }
+                    }
+                    // 初回: まだ Lane が未選択なら最初の Lane を自動選択
                     if (!laneState.activeLane && data.lanes.length > 0) {
                         switchLane(data.lanes[0].name);
                     }
@@ -1683,7 +1824,9 @@
         function handleMessage(msg) {
             switch (msg.type) {
                 case 'ping':
-                    ws.send(JSON.stringify({ type: 'pong' }));
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({ type: 'pong' }));
+                    }
                     break;
 
                 case 'show': {

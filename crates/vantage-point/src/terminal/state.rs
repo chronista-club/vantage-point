@@ -212,8 +212,14 @@ impl TerminalState {
             for col_idx in 0..self.cols {
                 let cell = &grid[line][Column(col_idx)];
 
-                let fg = resolve_color(&cell.fg);
-                let bg = resolve_color(&cell.bg);
+                let mut fg = resolve_color(&cell.fg);
+                let mut bg = resolve_color(&cell.bg);
+
+                // SGR 7 (INVERSE) — fg と bg を入れ替え
+                // Claude CLI 等はカーソル位置のセルに INVERSE を使う
+                if cell.flags.contains(CellFlags::INVERSE) {
+                    std::mem::swap(&mut fg, &mut bg);
+                }
 
                 row.push(CellSnapshot {
                     ch: cell.c,
