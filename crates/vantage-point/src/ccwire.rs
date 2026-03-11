@@ -33,7 +33,7 @@ fn db_path() -> PathBuf {
 ///
 /// tmux セッション作成直後に呼ぶ。
 /// `session_name` は ccwire 上のセッション名（= tmux セッション名）。
-/// `tmux_target` は tmux のターゲットペイン（例: `vp-project:0.0`）。
+/// `tmux_target` は tmux のターゲットペイン（例: `project-vp:0.0`）。
 pub fn register(session_name: &str, tmux_target: &str) -> Result<()> {
     let db = db_path();
     if !db.exists() {

@@ -24,12 +24,16 @@ pub fn is_inside_tmux() -> bool {
     std::env::var("TMUX").is_ok()
 }
 
+/// tmux セッション名のサフィックス
+const TMUX_SUFFIX: &str = "-vp";
+
 /// プロジェクト名から tmux セッション名を生成
 ///
-/// tmux セッション名にドットは使えないのでハイフンに置換する
+/// tmux セッション名にドットは使えないのでハイフンに置換する。
+/// 形式: `{project}-vp`（プロジェクト名が先、タブ補完しやすい）
 pub fn session_name(project_name: &str) -> String {
     let sanitized = project_name.replace('.', "-");
-    format!("vp-{}", sanitized)
+    format!("{}{}", sanitized, TMUX_SUFFIX)
 }
 
 /// 指定名の tmux セッションが存在するか確認
@@ -114,7 +118,7 @@ pub fn create_detached(name: &str, vp_bin: &Path, args: &[&str]) -> std::io::Res
     }
 }
 
-/// `vp-` プレフィックスを持つ全 tmux セッション名を列挙
+/// `-vp` サフィックスを持つ全 tmux セッション名を列挙
 pub fn list_vp_sessions() -> Vec<String> {
     let output = Command::new("tmux")
         .args(["list-sessions", "-F", "#{session_name}"])
@@ -125,7 +129,7 @@ pub fn list_vp_sessions() -> Vec<String> {
     match output {
         Ok(out) => String::from_utf8_lossy(&out.stdout)
             .lines()
-            .filter(|s| s.starts_with("vp-"))
+            .filter(|s| s.ends_with(TMUX_SUFFIX))
             .map(|s| s.to_string())
             .collect(),
         Err(_) => vec![],
@@ -188,13 +192,13 @@ mod tests {
 
     #[test]
     fn test_session_name() {
-        assert_eq!(session_name("my-project"), "vp-my-project");
-        assert_eq!(session_name("vantage-point"), "vp-vantage-point");
+        assert_eq!(session_name("my-project"), "my-project-vp");
+        assert_eq!(session_name("vantage-point"), "vantage-point-vp");
     }
 
     #[test]
     fn test_session_name_sanitizes_dots() {
-        assert_eq!(session_name("com.example.app"), "vp-com-example-app");
+        assert_eq!(session_name("com.example.app"), "com-example-app-vp");
     }
 
     #[test]

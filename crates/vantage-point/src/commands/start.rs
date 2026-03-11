@@ -47,8 +47,6 @@ use crate::tui::input::key_to_pty_bytes;
 use crate::tui::terminal_widget::TerminalView;
 use crate::tui::theme::*;
 
-/// tmux セッション名のプレフィックス
-const TMUX_PREFIX: &str = "vp-";
 
 /// `vp start` の起動オプション
 pub struct StartOptions<'a> {
@@ -350,7 +348,7 @@ fn run_tui_mode(
     ensure_sp_running(port, debug_mode, cap_config)?;
 
     // tmux セッション管理
-    let session_name = format!("{}{}", TMUX_PREFIX, project_name);
+    let session_name = crate::tmux::session_name(project_name);
     let is_reconnect = tmux_session_exists(&session_name);
 
     if is_reconnect {
