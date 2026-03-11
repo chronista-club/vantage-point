@@ -132,6 +132,15 @@ pub fn list_vp_sessions() -> Vec<String> {
     }
 }
 
+/// tmux switch-client で現在のクライアントを別セッションに切り替える
+///
+/// tmux 内からプロジェクトを切り替える場合に使用。
+pub fn switch_client(target_session: &str) {
+    let _ = Command::new("tmux")
+        .args(["switch-client", "-t", target_session])
+        .status();
+}
+
 /// Unix exec でプロセスを置き換える
 #[cfg(unix)]
 fn exec_command(program: &str, args: &[&str]) -> std::io::Error {
