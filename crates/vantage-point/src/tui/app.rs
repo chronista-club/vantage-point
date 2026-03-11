@@ -42,6 +42,9 @@ struct MultiProjectApp {
     overlay: Option<OverlayKind>,
     config: Config,
     was_ai_busy: bool,
+    /// PP window 稼働状態キャッシュ（描画ループ内の I/O を排除）
+    pp_open: bool,
+    pp_check_timer: std::time::Instant,
 }
 
 impl MultiProjectApp {
@@ -52,6 +55,8 @@ impl MultiProjectApp {
             overlay: None,
             config,
             was_ai_busy: false,
+            pp_open: false,
+            pp_check_timer: std::time::Instant::now(),
         }
     }
 
@@ -118,6 +123,16 @@ impl MultiProjectApp {
         let mut needs_redraw = true;
 
         loop {
+            // PP window 状態を定期チェック（1秒間隔）
+            if self.pp_check_timer.elapsed() >= Duration::from_secs(1) {
+                let was_open = self.pp_open;
+                self.pp_open = crate::canvas::find_running_canvas().is_some();
+                if was_open != self.pp_open {
+                    needs_redraw = true;
+                }
+                self.pp_check_timer = std::time::Instant::now();
+            }
+
             // 全プロジェクトのイベントをポーリング
             for i in 0..self.projects.len() {
                 let changed = self.projects[i].poll_events();
@@ -129,22 +144,21 @@ impl MultiProjectApp {
                 }
             }
 
-            // 切断されたアクティブプロジェクトを除去
-            if let Some(ctx) = self.projects.get(self.active_idx) {
-                if ctx.disconnected {
-                    self.projects.remove(self.active_idx);
-                    if self.projects.is_empty() {
-                        return Ok(());
-                    }
-                    if self.active_idx >= self.projects.len() {
-                        self.active_idx = self.projects.len() - 1;
-                    }
-                    set_terminal_title(&format!("VP: {}", self.projects[self.active_idx].name));
-                    needs_redraw = true;
-                    continue;
+            // 切断されたプロジェクトを除去（アクティブ・非アクティブ問わず）
+            let had_disconnected = self.projects.iter().any(|ctx| ctx.disconnected);
+            if had_disconnected {
+                let active_name = self.projects.get(self.active_idx).map(|c| c.name.clone());
+                self.projects.retain(|ctx| !ctx.disconnected);
+                if self.projects.is_empty() {
+                    return Ok(());
                 }
-            } else {
-                return Ok(());
+                // アクティブプロジェクトのインデックスを再計算
+                self.active_idx = active_name
+                    .and_then(|name| self.projects.iter().position(|c| c.name == name))
+                    .unwrap_or(self.projects.len().saturating_sub(1));
+                set_terminal_title(&format!("VP: {}", self.projects[self.active_idx].name));
+                needs_redraw = true;
+                continue;
             }
 
             // AI 状態遷移検知
@@ -298,6 +312,7 @@ impl MultiProjectApp {
         // Home: PP window トグル（TheWorld フォールバック付き）
         if key.code == KeyCode::Home {
             toggle_pp_window(ctx.port);
+            self.pp_open = crate::canvas::find_running_canvas().is_some();
             return Ok(true);
         }
 
@@ -496,6 +511,7 @@ impl MultiProjectApp {
             .collect();
 
         let project_count = self.projects.len();
+        let pp_open = self.pp_open;
         let overlay = &self.overlay;
         terminal.draw(|frame| {
             let chunks = Layout::default()
@@ -508,7 +524,7 @@ impl MultiProjectApp {
                 .split(frame.area());
 
             draw_header_bar(
-                frame, chunks[0], &tab_info, port, ai_busy, &bridge_status,
+                frame, chunks[0], &tab_info, port, ai_busy, pp_open, &bridge_status,
             );
 
             let main_area = chunks[1];
@@ -729,7 +745,8 @@ fn run_session_select(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     project_dir: &str,
 ) -> Result<SessionMode> {
-    let sessions = list_sessions(project_dir);
+    // 表示上限 20 件に合わせてスライス（draw_session_select と一致させる）
+    let sessions: Vec<_> = list_sessions(project_dir).into_iter().take(20).collect();
 
     if sessions.is_empty() {
         return Ok(SessionMode::New);

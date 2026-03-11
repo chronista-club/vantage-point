@@ -356,6 +356,8 @@ pub async fn run_world(port: u16) -> Result<()> {
     let app = Router::new()
         .route("/api/health", get(health::health_handler))
         .route("/api/shutdown", post(health::shutdown_handler))
+        // Canvas HTML（PP window が TheWorld ポートから直接ロードするため必要）
+        .route("/canvas", get(health::canvas_handler))
         // Canvas Lane 集約 WebSocket
         .route("/ws/lanes", get(lanes::lanes_ws_handler))
         // World API routes

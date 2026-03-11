@@ -25,6 +25,7 @@ pub fn draw_header_bar(
     tabs: &[(String, bool, u32)], // (name, is_active, notifications)
     port: u16,
     ai_busy: bool,
+    pp_open: bool,
     connection_status: &str,
 ) {
     let mut spans: Vec<Span> = Vec::new();
@@ -79,8 +80,7 @@ pub fn draw_header_bar(
     ));
     spans.push(sep.clone());
 
-    // 🧭 Paisley Park — PP window は TheWorld 管理（TUI にはステータスなし）
-    let pp_open = crate::canvas::find_running_canvas().is_some();
+    // 🧭 Paisley Park — PP window 状態（呼び出し元からキャッシュ値を受け取る）
     let (pp_text, pp_color) = if pp_open {
         ("🧭", NORD_GREEN)
     } else {
