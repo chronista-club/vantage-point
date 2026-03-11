@@ -6,12 +6,12 @@
 mod app;
 mod bridge;
 mod canvas_state;
-mod draw;
-mod input;
+pub(crate) mod draw;
+pub(crate) mod input;
 mod overlay;
 mod project_context;
 pub(crate) mod session;
-mod terminal_widget;
+pub(crate) mod terminal_widget;
 pub(crate) mod theme;
 
 pub use app::{run_tui, run_tui_select};

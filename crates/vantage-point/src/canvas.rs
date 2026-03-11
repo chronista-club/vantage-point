@@ -90,16 +90,20 @@ pub fn ensure_canvas_running(port: u16, lanes: bool, project_name: Option<&str>)
     Ok(pid)
 }
 
-/// Canvas 接続先を決定（TheWorld フォールバック付き）
+/// Canvas 接続先を決定
 ///
-/// TheWorld 稼働中 → (WORLD_PORT, lanes=true)
-/// 未稼働 → (sp_port, lanes=false)
+/// TheWorld を自動起動し、WORLD_PORT で LANE モード接続。
+/// TheWorld 起動失敗時は sp_port にフォールバック。
+/// LANE モードは常に有効。
 pub fn canvas_target(sp_port: u16) -> (u16, bool) {
-    if crate::daemon::process::is_daemon_running().is_some() {
-        (crate::cli::WORLD_PORT, true)
-    } else {
-        (sp_port, false)
+    // TheWorld が未起動なら自動起動を試みる
+    if crate::daemon::process::is_daemon_running().is_none() {
+        if let Err(e) = crate::daemon::process::ensure_daemon_running(crate::cli::WORLD_PORT) {
+            tracing::warn!("TheWorld 自動起動失敗、SP にフォールバック: {}", e);
+            return (sp_port, true);
+        }
     }
+    (crate::cli::WORLD_PORT, true)
 }
 
 /// Canvas シングルトンを停止

@@ -9,17 +9,46 @@
 //!   │     ├── --headless  → run_headless()   SP サーバー本体（blocking）
 //!   │     ├── --browser   → run_browser()    SP 確保 → ブラウザ
 //!   │     ├── --gui       → run_gui()        SP 確保 → ネイティブウィンドウ
-//!   │     └── default     → run_tui_mode()   SP 確保 → tmux/TUI
+//!   │     └── default     → run_tui_mode()   SP 確保 → tmux + TUI
 //!   └── 共通: ensure_sp_running()            SP 未起動なら in-process spawn
 //! ```
+//!
+//! ## TUI アーキテクチャ（v2）
+//!
+//! TUI は tmux の**外**で直接 ratatui を起動する。
+//! tmux セッションは Claude CLI の永続化層として HD が管理。
+//! TUI 終了 = detach（Claude CLI は tmux 内で生き続ける）。
+//! TUI 再起動 = 既存 tmux セッションに再接続。
+
+use std::io::{self, Read, Write};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use anyhow::Result;
+use crossterm::event::{self, Event, KeyCode, KeyModifiers};
+use crossterm::terminal::{
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+};
+use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
+use ratatui::Terminal;
+use ratatui::backend::CrosstermBackend;
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::Paragraph;
 
 use crate::cli::{DebugModeArg, parse_debug_env};
 use crate::config::Config;
 use crate::process::CapabilityConfig;
 use crate::protocol::DebugMode;
 use crate::resolve::{self, ResolvedTarget};
+use crate::terminal::state::TerminalState;
+use crate::tui::input::key_to_pty_bytes;
+use crate::tui::terminal_widget::TerminalView;
+use crate::tui::theme::*;
+
+/// tmux セッション名のプレフィックス
+const TMUX_PREFIX: &str = "vp-";
 
 /// `vp start` の起動オプション
 pub struct StartOptions<'a> {
@@ -110,9 +139,20 @@ pub fn execute(opts: StartOptions) -> Result<()> {
     } else if browser {
         run_browser(resolved.port, debug_mode, cap_config)
     } else if gui {
-        run_gui(resolved.port, &resolved.dir, &resolved.name, debug_mode, cap_config, config)
+        run_gui(
+            resolved.port,
+            &resolved.name,
+            debug_mode,
+            cap_config,
+        )
     } else {
-        run_tui_mode(resolved.port, &resolved.dir, &resolved.name, debug_mode, cap_config)
+        run_tui_mode(
+            resolved.port,
+            &resolved.dir,
+            &resolved.name,
+            debug_mode,
+            cap_config,
+        )
     }
 }
 
@@ -121,9 +161,6 @@ pub fn execute(opts: StartOptions) -> Result<()> {
 // =============================================================================
 
 /// CLI 引数からプロジェクト情報を解決する
-///
-/// --project-dir 指定 → 正規化して使用
-/// それ以外 → resolve_target() でプロジェクト名/インデックス/cwd から解決
 fn resolve_project(
     target: Option<String>,
     explicit_port: Option<u16>,
@@ -148,7 +185,6 @@ fn resolve_from_dir(
     let dir = Config::normalize_path(std::path::Path::new(dir));
     let name = resolve::project_name_from_path(&dir, config).to_string();
 
-    // 既に実行中？
     if let Some(running) = crate::discovery::find_by_project_blocking(&dir) {
         if server_only {
             println!(
@@ -274,11 +310,9 @@ fn run_browser(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig) -
 /// GUI モード: SP を確保してネイティブウィンドウ（Unison）を起動
 fn run_gui(
     port: u16,
-    _project_dir: &str,
     project_name: &str,
     debug_mode: DebugMode,
     cap_config: CapabilityConfig,
-    _config: &Config,
 ) -> Result<()> {
     ensure_sp_running(port, debug_mode, cap_config)?;
 
@@ -300,7 +334,11 @@ fn run_gui(
     Ok(())
 }
 
-/// TUI モード: SP を確保 → tmux セッション管理 → TUI 起動
+/// TUI モード: SP を確保 → tmux セッション（Claude CLI）→ TUI 描画
+///
+/// TUI は tmux の外で直接 ratatui を起動する。
+/// tmux セッションは Claude CLI の永続化層。
+/// Ctrl+Q で detach（Claude CLI は生き続ける）。
 fn run_tui_mode(
     port: u16,
     project_dir: &str,
@@ -308,82 +346,367 @@ fn run_tui_mode(
     debug_mode: DebugMode,
     cap_config: CapabilityConfig,
 ) -> Result<()> {
-    // tmux が使える場合はセッション管理を先に行う
-    // （tmux exec で自プロセスが置き換わる場合があるため、SP 起動より先）
-    if crate::tmux::is_tmux_available() {
-        match enter_tmux_session(project_name, project_dir)? {
-            TmuxAction::RunTuiHere => {
-                // 自セッション内 or tmux なし → SP 起動して TUI 実行
-            }
-            TmuxAction::Switched => {
-                // 別セッションに switch-client した → このプロセスは終了
-                return Ok(());
-            }
-            // ExecNeverReturns は型上到達しないが、! 型の代わりに明示
-        }
-    }
-
-    // SP サーバーを確保（未起動なら in-process thread で起動）
+    // SP サーバーを確保
     ensure_sp_running(port, debug_mode, cap_config)?;
 
-    // TUI 起動（Canvas は Ctrl+O で随時 toggle）
-    crate::tui::run_tui(project_dir, project_name)
+    // tmux セッション管理
+    let session_name = format!("{}{}", TMUX_PREFIX, project_name);
+    let is_reconnect = tmux_session_exists(&session_name);
+
+    if is_reconnect {
+        println!("\u{1f504} 既存セッションに再接続: {}", session_name);
+    }
+
+    // TUI 起動（tmux の外で直接）
+    run_tui(&session_name, project_dir, project_name, port, is_reconnect)
 }
 
 // =============================================================================
-// tmux セッション管理
+// tmux 操作
 // =============================================================================
 
-/// tmux セッション管理の結果
-enum TmuxAction {
-    /// 自セッション内にいる → このプロセスで TUI を起動
-    RunTuiHere,
-    /// 別セッションに切り替えた → このプロセスは終了してよい
-    Switched,
-    // Note: attach_and_exec / create_and_exec は exec() で戻らないため enum 不要
+fn tmux_session_exists(name: &str) -> bool {
+    std::process::Command::new("tmux")
+        .args(["has-session", "-t", name])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
-/// tmux セッションに入る
-///
-/// 3 パターンを処理:
-/// 1. tmux 外 → セッション作成 or アタッチ（exec で戻らない）
-/// 2. tmux 内 + 別セッション → switch-client
-/// 3. tmux 内 + 自セッション → RunTuiHere（TUI をここで起動）
-fn enter_tmux_session(project_name: &str, project_dir: &str) -> Result<TmuxAction> {
-    let session = crate::tmux::session_name(project_name);
+/// tmux セッション作成（Claude CLI を中で起動、ステータスバー非表示）
+fn create_tmux_session(name: &str, project_dir: &str, cols: u16, rows: u16) -> Result<()> {
+    let status = std::process::Command::new("tmux")
+        .args([
+            "new-session",
+            "-d",
+            "-s",
+            name,
+            "-x",
+            &cols.to_string(),
+            "-y",
+            &rows.to_string(),
+            "-c",
+            project_dir,
+            "claude",
+            "--dangerously-skip-permissions",
+            "--continue",
+        ])
+        .status()?;
 
-    if !crate::tmux::is_inside_tmux() {
-        // パターン 1: tmux 外 → exec でプロセス置換（戻らない）
-        if crate::tmux::session_exists(&session) {
-            crate::tmux::attach_and_exec(&session); // never returns
-        } else {
-            let vp_bin = std::env::current_exe()?;
-            crate::tmux::create_and_exec(
-                &session,
-                &vp_bin,
-                &["start", "--project-dir", project_dir],
-            ); // never returns
+    if !status.success() {
+        anyhow::bail!("tmux セッション作成に失敗: {}", name);
+    }
+
+    // TUI が自前のヘッダー/フッターを持つため tmux ステータスバーを非表示
+    let _ = std::process::Command::new("tmux")
+        .args(["set-option", "-t", name, "status", "off"])
+        .status();
+
+    Ok(())
+}
+
+/// tmux セッションのリサイズ
+fn resize_tmux_session(name: &str, cols: u16, rows: u16) {
+    let _ = std::process::Command::new("tmux")
+        .args([
+            "resize-window",
+            "-t",
+            name,
+            "-x",
+            &cols.to_string(),
+            "-y",
+            &rows.to_string(),
+        ])
+        .status();
+}
+
+// =============================================================================
+// TUI メインループ
+// =============================================================================
+
+fn run_tui(
+    session_name: &str,
+    project_dir: &str,
+    project_name: &str,
+    port: u16,
+    is_reconnect: bool,
+) -> Result<()> {
+    // ターミナル初期化
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    crossterm::execute!(
+        stdout,
+        EnterAlternateScreen,
+        crossterm::event::EnableMouseCapture
+    )?;
+
+    // ウィンドウタイトル設定
+    {
+        use std::io::Write as _;
+        let _ = write!(io::stdout(), "\x1b]0;VP: {}\x07", project_name);
+        let _ = io::stdout().flush();
+    }
+
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+
+    let size = terminal.size()?;
+    // ヘッダー1行 + 区切り線1行 + フッター1行 + 区切り線1行 = 4行分
+    let pty_cols = size.width as usize;
+    let pty_lines = (size.height.saturating_sub(4)) as usize;
+
+    // tmux セッション確保
+    if !is_reconnect {
+        create_tmux_session(session_name, project_dir, pty_cols as u16, pty_lines as u16)?;
+    } else {
+        resize_tmux_session(session_name, pty_cols as u16, pty_lines as u16);
+        // 再接続時もステータスバーを非表示にする
+        let _ = std::process::Command::new("tmux")
+            .args(["set-option", "-t", session_name, "status", "off"])
+            .status();
+    }
+
+    // ローカル PTY で tmux にアタッチ
+    let pty_system = NativePtySystem::default();
+    let pair = pty_system.openpty(PtySize {
+        rows: pty_lines as u16,
+        cols: pty_cols as u16,
+        pixel_width: 0,
+        pixel_height: 0,
+    })?;
+
+    let mut cmd = CommandBuilder::new("tmux");
+    cmd.args(["attach", "-t", session_name]);
+    let _child = pair.slave.spawn_command(cmd)?;
+    drop(pair.slave);
+
+    let mut reader = pair.master.try_clone_reader()?;
+    let mut writer = pair.master.take_writer()?;
+
+    // ターミナルエミュレータ状態
+    let term_state = Arc::new(Mutex::new(TerminalState::new(pty_cols, pty_lines)));
+
+    // PTY リーダースレッド
+    let term_state_reader = Arc::clone(&term_state);
+    let _reader_handle = std::thread::Builder::new()
+        .name("tui-pty-reader".into())
+        .spawn(move || {
+            let mut buf = [0u8; 4096];
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        let mut state = term_state_reader.lock().unwrap();
+                        state.feed_bytes(&buf[..n]);
+                    }
+                    Err(_) => break,
+                }
+            }
+        })?;
+
+    // PP window 状態
+    let mut pp_open = crate::canvas::find_running_canvas().is_some();
+    let mut pp_check_timer = std::time::Instant::now();
+
+    // メインループ
+    let mut needs_redraw = true;
+    let result = loop {
+        // PP window 状態を定期チェック
+        if pp_check_timer.elapsed() >= Duration::from_secs(1) {
+            let was_open = pp_open;
+            pp_open = crate::canvas::find_running_canvas().is_some();
+            if was_open != pp_open {
+                needs_redraw = true;
+            }
+            pp_check_timer = std::time::Instant::now();
         }
+
+        // 描画
+        if needs_redraw {
+            let pp_open_val = pp_open;
+            terminal.draw(|frame| {
+                let chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Length(1), // ヘッダー
+                        Constraint::Length(1), // 上区切り線
+                        Constraint::Min(3),    // ターミナル
+                        Constraint::Length(1), // 下区切り線
+                        Constraint::Length(1), // フッター
+                    ])
+                    .split(frame.area());
+
+                draw_header(frame, chunks[0], project_name, port, is_reconnect, pp_open_val);
+                draw_separator(frame, chunks[1]);
+
+                let state = term_state.lock().unwrap();
+                let snap = state.snapshot();
+                let view = TerminalView::new(&snap);
+                frame.render_widget(view, chunks[2]);
+
+                draw_separator(frame, chunks[3]);
+                draw_footer(frame, chunks[4]);
+            })?;
+        }
+
+        needs_redraw = true;
+
+        // イベントポーリング
+        if event::poll(Duration::from_millis(16))? {
+            if let Event::Key(key) = event::read()? {
+                // Ctrl+Q: detach して終了（tmux セッションは生き続ける）
+                if key.code == KeyCode::Char('q')
+                    && key.modifiers.contains(KeyModifiers::CONTROL)
+                {
+                    break Ok(());
+                }
+
+                // Home: PP window トグル
+                if key.code == KeyCode::Home {
+                    let (canvas_port, lanes) = crate::canvas::canvas_target(port);
+                    if crate::canvas::find_running_canvas().is_some() {
+                        crate::canvas::stop_canvas();
+                    } else {
+                        let _ = crate::canvas::ensure_canvas_running(canvas_port, lanes, None);
+                    }
+                    pp_open = crate::canvas::find_running_canvas().is_some();
+                    continue;
+                }
+
+                // キー入力を PTY に送信
+                let bytes = key_to_pty_bytes(key, false);
+                if !bytes.is_empty() {
+                    if writer.write_all(&bytes).is_err() {
+                        break Ok(());
+                    }
+                    let _ = writer.flush();
+                }
+            }
+        }
+    };
+
+    // 終了処理（tmux セッションは殺さない — detach のみ）
+    disable_raw_mode()?;
+    crossterm::execute!(
+        terminal.backend_mut(),
+        crossterm::event::DisableMouseCapture,
+        LeaveAlternateScreen
+    )?;
+    terminal.show_cursor()?;
+
+    println!(
+        "\u{1f44b} TUI を終了しました。tmux セッション '{}' は継続中です。",
+        session_name
+    );
+    println!("   再接続: vp start");
+
+    result
+}
+
+// =============================================================================
+// ヘッダー / フッター描画（Nord テーマ）
+// =============================================================================
+
+/// ヘッダーバー — Nord テーマ + Stand アイコン
+fn draw_header(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    project_name: &str,
+    port: u16,
+    is_reconnect: bool,
+    pp_open: bool,
+) {
+    let mut spans: Vec<Span> = Vec::new();
+
+    // プロジェクト名（タブ風）
+    spans.push(Span::styled(
+        format!(" {} ", project_name),
+        Style::default()
+            .fg(NORD_BG)
+            .bg(NORD_CYAN)
+            .add_modifier(Modifier::BOLD),
+    ));
+
+    let sep = Span::styled(" ", Style::default().bg(NORD_POLAR));
+    spans.push(sep.clone());
+
+    // ⭐ Star Platinum（SP 接続）
+    spans.push(Span::styled(
+        "\u{2b50}",
+        Style::default().fg(NORD_GREEN).bg(NORD_POLAR),
+    ));
+    spans.push(sep.clone());
+
+    // 🧭 Paisley Park（Canvas）
+    let pp_color = if pp_open { NORD_GREEN } else { NORD_COMMENT };
+    spans.push(Span::styled(
+        "\u{1f9ed}",
+        Style::default().fg(pp_color).bg(NORD_POLAR),
+    ));
+    spans.push(sep.clone());
+
+    // 📖 Heaven's Door（Claude CLI）
+    spans.push(Span::styled(
+        "\u{1f4d6}",
+        Style::default().fg(NORD_GREEN).bg(NORD_POLAR),
+    ));
+
+    // 再接続マーカー
+    if is_reconnect {
+        spans.push(sep.clone());
+        spans.push(Span::styled(
+            "\u{1f504}再接続",
+            Style::default().fg(NORD_YELLOW).bg(NORD_POLAR),
+        ));
     }
 
-    // tmux 内
-    if crate::tmux::is_in_session(&session) {
-        // パターン 3: 自セッション → TUI をここで起動
-        return Ok(TmuxAction::RunTuiHere);
-    }
+    // 右端: ポート
+    let port_span = Span::styled(
+        format!(" :{} ", port),
+        Style::default().fg(NORD_COMMENT).bg(NORD_POLAR),
+    );
 
-    // パターン 2: 別セッション内 → ターゲットセッションに切り替え
-    if !crate::tmux::session_exists(&session) {
-        let vp_bin = std::env::current_exe()?;
-        crate::tmux::create_detached(
-            &session,
-            &vp_bin,
-            &["start", "--project-dir", project_dir],
-        )?;
-    }
-    println!("\u{1f500} Switching to tmux session: {}", session);
-    crate::tmux::switch_client(&session);
-    Ok(TmuxAction::Switched)
+    let left_width: usize = spans.iter().map(|s| s.width()).sum();
+    let right_width = port_span.width();
+    let gap = (area.width as usize).saturating_sub(left_width + right_width);
+    spans.push(Span::styled(
+        " ".repeat(gap),
+        Style::default().bg(NORD_POLAR),
+    ));
+    spans.push(port_span);
+
+    let bar = Paragraph::new(Line::from(spans)).style(Style::default().bg(NORD_POLAR));
+    frame.render_widget(bar, area);
+}
+
+/// フッターバー — キーバインドガイド
+fn draw_footer(frame: &mut ratatui::Frame, area: Rect) {
+    let key_style = Style::default().fg(NORD_CYAN).bg(NORD_POLAR);
+    let desc_style = Style::default().fg(NORD_COMMENT).bg(NORD_POLAR);
+
+    let spans = vec![
+        Span::styled(" Home", key_style),
+        Span::styled(" canvas ", desc_style),
+        Span::styled(" C-q", key_style),
+        Span::styled(" detach ", desc_style),
+        Span::styled(" PgUp/Dn", key_style),
+        Span::styled(" scroll ", desc_style),
+    ];
+
+    let bar = Paragraph::new(Line::from(spans)).style(Style::default().bg(NORD_POLAR));
+    frame.render_widget(bar, area);
+}
+
+/// 区切り線 — ヘッダー/ターミナル/フッター間の薄い水平線
+fn draw_separator(frame: &mut ratatui::Frame, area: Rect) {
+    let line = "─".repeat(area.width as usize);
+    let sep = Paragraph::new(Line::from(Span::styled(
+        line,
+        Style::default().fg(NORD_COMMENT),
+    )));
+    frame.render_widget(sep, area);
 }
 
 // =============================================================================
@@ -391,8 +714,6 @@ fn enter_tmux_session(project_name: &str, project_dir: &str) -> Result<TmuxActio
 // =============================================================================
 
 /// SP が起動していなければ in-process thread で起動する
-///
-/// TheWorld も自動起動（Lane ビュー等に必要）。
 pub fn ensure_sp_running(
     port: u16,
     debug_mode: DebugMode,
@@ -443,7 +764,6 @@ pub fn wait_for_ready(port: u16) -> Result<()> {
         }
     }
 
-    // タイムアウトでも続行（WS 接続時にリトライするため）
     tracing::warn!("SP readiness check timed out, proceeding anyway");
     Ok(())
 }
