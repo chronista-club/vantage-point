@@ -132,6 +132,29 @@ pub fn list_vp_sessions() -> Vec<String> {
     }
 }
 
+/// 現在のプロセスが指定セッション内で実行されているか確認
+///
+/// tmux new-session で自分自身を再実行した場合、自セッションかどうかを判定する。
+pub fn is_in_session(session_name: &str) -> bool {
+    if !is_inside_tmux() {
+        return false;
+    }
+    // tmux display-message で現在のセッション名を取得
+    let output = Command::new("tmux")
+        .args(["display-message", "-p", "#{session_name}"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output();
+
+    match output {
+        Ok(out) => {
+            let current = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            current == session_name
+        }
+        Err(_) => false,
+    }
+}
+
 /// tmux switch-client で現在のクライアントを別セッションに切り替える
 ///
 /// tmux 内からプロジェクトを切り替える場合に使用。

@@ -214,11 +214,11 @@ pub fn execute(opts: StartOptions) -> Result<()> {
         // tmux 統合: セッション管理
         if crate::tmux::is_tmux_available() {
             let session = crate::tmux::session_name(&project_name);
+            let in_own_session = crate::tmux::is_in_session(&session);
 
-            if crate::tmux::is_inside_tmux() {
-                // tmux 内から: switch-client で対象セッションに切り替え
+            if crate::tmux::is_inside_tmux() && !in_own_session {
+                // tmux 内から別プロジェクトの start: switch-client で切り替え
                 if !crate::tmux::session_exists(&session) {
-                    // セッションがなければ detached で作成
                     let vp_bin = std::env::current_exe()?;
                     crate::tmux::create_detached(
                         &session,
@@ -229,7 +229,7 @@ pub fn execute(opts: StartOptions) -> Result<()> {
                 println!("\u{1f500} Switching to tmux session: {}", session);
                 crate::tmux::switch_client(&session);
                 return Ok(());
-            } else {
+            } else if !crate::tmux::is_inside_tmux() {
                 // tmux 外から
                 if crate::tmux::session_exists(&session) {
                     crate::tmux::attach_and_exec(&session); // never returns
@@ -242,9 +242,10 @@ pub fn execute(opts: StartOptions) -> Result<()> {
                     ); // never returns
                 }
             }
+            // in_own_session == true: 自分のセッション内 → そのまま TUI 起動へ
         }
 
-        // tmux なし: 従来通り TUI 起動
+        // tmux 内（自セッション）or tmux なし: TUI 起動
         // Process サーバーを headless で起動（Canvas / API 用）
         ensure_process_running(resolved_port, &resolved_project_dir, debug_mode, cap_config)?;
 
