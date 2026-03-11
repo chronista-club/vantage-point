@@ -1,4 +1,14 @@
 //! ヘルスチェック・基本ルートハンドラー
+//!
+//! ## Dev モード (`VP_DEV=1`)
+//!
+//! Web アセット (canvas.html, mermaid.min.js) をファイルシステムから動的に読み込む。
+//! HTML/JS の変更がビルド不要、ブラウザリロードだけで反映される。
+//!
+//! ```bash
+//! VP_DEV=1 vp start   # ファイルシステムから読む
+//! vp start             # バイナリ埋め込みから読む（本番）
+//! ```
 
 use std::sync::Arc;
 
@@ -14,6 +24,65 @@ use axum::{
 use super::super::state::AppState;
 use crate::protocol::ProcessMessage;
 
+/// VP_DEV 環境変数が設定されているか判定
+fn is_dev_mode() -> bool {
+    std::env::var("VP_DEV").is_ok()
+}
+
+/// web/ ディレクトリのパスを解決する（dev モード用）
+///
+/// バイナリの場所から逆算して web/ を探す:
+/// 1. カレントディレクトリの `web/`
+/// 2. Cargo マニフェストディレクトリ（CARGO_MANIFEST_DIR コンパイル時）
+fn web_dir() -> std::path::PathBuf {
+    // カレントディレクトリの web/ を最優先
+    let cwd_web = std::path::PathBuf::from("web");
+    if cwd_web.exists() {
+        return cwd_web;
+    }
+    // フォールバック: コンパイル時のプロジェクトルート
+    let manifest = env!("CARGO_MANIFEST_DIR");
+    std::path::PathBuf::from(manifest).join("../../web")
+}
+
+/// canvas.html を返す（dev: ファイル読み込み / 本番: 埋め込み）
+fn load_canvas_html() -> String {
+    if is_dev_mode() {
+        let path = web_dir().join("canvas.html");
+        match std::fs::read_to_string(&path) {
+            Ok(html) => {
+                tracing::debug!("dev: canvas.html loaded from {}", path.display());
+                html
+            }
+            Err(e) => {
+                tracing::warn!("dev: canvas.html not found at {}: {}, falling back to embedded", path.display(), e);
+                include_str!("../../../../../web/canvas.html").to_string()
+            }
+        }
+    } else {
+        include_str!("../../../../../web/canvas.html").to_string()
+    }
+}
+
+/// mermaid.min.js を返す（dev: ファイル読み込み / 本番: 埋め込み）
+fn load_mermaid_js() -> Vec<u8> {
+    if is_dev_mode() {
+        let path = web_dir().join("vendor/mermaid.min.js");
+        match std::fs::read(&path) {
+            Ok(bytes) => {
+                tracing::debug!("dev: mermaid.min.js loaded from {}", path.display());
+                bytes
+            }
+            Err(e) => {
+                tracing::warn!("dev: mermaid.min.js not found at {}: {}, falling back to embedded", path.display(), e);
+                include_bytes!("../../../../../web/vendor/mermaid.min.js").to_vec()
+            }
+        }
+    } else {
+        include_bytes!("../../../../../web/vendor/mermaid.min.js").to_vec()
+    }
+}
+
 /// Open browser (macOS)
 pub fn open_browser(url: &str) -> anyhow::Result<()> {
     std::process::Command::new("open").arg(url).spawn()?;
@@ -24,7 +93,7 @@ pub fn open_browser(url: &str) -> anyhow::Result<()> {
 pub async fn index_handler() -> impl IntoResponse {
     (
         [(header::CACHE_CONTROL, "no-store, no-cache, must-revalidate")],
-        Html(include_str!("../../../../../web/canvas.html")),
+        Html(load_canvas_html()),
     )
 }
 
@@ -32,7 +101,7 @@ pub async fn index_handler() -> impl IntoResponse {
 pub async fn canvas_handler() -> impl IntoResponse {
     (
         [(header::CACHE_CONTROL, "no-store, no-cache, must-revalidate")],
-        Html(include_str!("../../../../../web/canvas.html")),
+        Html(load_canvas_html()),
     )
 }
 
@@ -366,13 +435,15 @@ pub async fn canvas_capture_handler(
 /// GET /vendor/mermaid.min.js — ローカルバンドルの Mermaid ライブラリ
 ///
 /// CDN 依存を排除し、wry WebView でも確実に読み込めるようにする。
+/// dev モードではファイルシステムから読み込む。
 pub async fn vendor_mermaid_handler() -> impl IntoResponse {
     (
         [
             (header::CONTENT_TYPE, "application/javascript; charset=utf-8"),
-            (header::CACHE_CONTROL, "public, max-age=86400"),
+            // dev モードではキャッシュ無効化
+            (header::CACHE_CONTROL, if is_dev_mode() { "no-store" } else { "public, max-age=86400" }),
         ],
-        include_bytes!("../../../../../web/vendor/mermaid.min.js").as_slice(),
+        load_mermaid_js(),
     )
 }
 

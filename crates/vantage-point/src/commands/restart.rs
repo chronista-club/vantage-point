@@ -1,24 +1,28 @@
 //! `vp restart` コマンドの実行ロジック
+//!
+//! Process + tmux セッションをセットで再起動する。
+//! tmux セッションが存在すれば kill → 再作成、なければ headless で再起動。
 
 use anyhow::Result;
 
-use crate::cli::{parse_debug_env, stop_process};
+use crate::cli::stop_process;
 use crate::config::Config;
 use crate::resolve::{self, ResolvedTarget};
+use crate::tmux;
 
 /// `vp restart` を実行
 pub fn execute(target: Option<&str>, browser: bool, headless: bool, config: &Config) -> Result<()> {
     // ターゲット解決 — 実行中の Process を探す
     let resolved = resolve::resolve_target(target, config)?;
 
-    let (port, project_dir) = match resolved {
+    let (port, project_dir, project_name) = match resolved {
         ResolvedTarget::Running {
             port,
             name,
             project_dir,
         } => {
             println!("\u{1f504} Restarting: {} (port {})", name, port);
-            (port, project_dir)
+            (port, project_dir, name.to_string())
         }
         ResolvedTarget::Configured { name, .. } => {
             println!(
@@ -34,69 +38,105 @@ pub fn execute(target: Option<&str>, browser: bool, headless: bool, config: &Con
         }
     };
 
+    // 1. Process を API 経由で停止
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
         stop_process(port).await?;
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        println!("\u{1f680} Starting Process...");
         Ok::<(), anyhow::Error>(())
     })?;
 
-    // デバッグモード
-    let debug_mode = parse_debug_env().unwrap_or_default();
-
-    // ポート予約は不要 — server.rs が起動後に TheWorld に登録する
-
-    // CapabilityConfig（再起動時は MIDI なし）
-    let cap_config = crate::process::CapabilityConfig {
-        project_dir: project_dir.clone(),
-        midi_config: None,
-        bonjour_port: Some(port),
+    // 2. tmux セッションを kill（存在する場合）
+    let session = tmux::session_name(&project_name);
+    let had_tmux = if tmux::is_tmux_available() && tmux::session_exists(&session) {
+        print!("  ⏹ tmux:{}... ", session);
+        if tmux::kill_session(&session) {
+            println!("ok");
+        } else {
+            println!("skip");
+        }
+        true
+    } else {
+        false
     };
 
+    // 3. 再起動
+    println!("\u{1f680} Starting Process...");
+    let vp_bin = std::env::current_exe().unwrap_or_else(|_| "vp".into());
+
     if headless || browser {
-        let rt = tokio::runtime::Runtime::new()?;
-        rt.block_on(async {
-            let server_handle = tokio::spawn(async move {
-                crate::process::run(port, false, debug_mode, cap_config).await
-            });
-
-            if browser {
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                let url = format!("http://localhost:{}", port);
-                tracing::info!("Opening in browser: {}", url);
-                let _ = open::that(&url);
-            }
-
-            server_handle.await?
-        })
-    } else {
-        // ネイティブターミナルモード（Unison ブリッジ）
-        // Process を起動（restart 後なので必ず新規起動）
-        let server_thread = std::thread::spawn(move || {
-            let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime");
-            rt.block_on(async { crate::process::run(port, false, debug_mode, cap_config).await })
-        });
-
-        // Process の HTTP サーバーが ready になるまで待機
-        crate::commands::start::wait_for_process_ready(port)?;
-
-        // Unison ブリッジモードのネイティブウィンドウ
-        let project_name = resolve::project_name_from_path(&project_dir, config);
-
-        // Health API から認証トークンを取得
-        let terminal_token =
-            crate::discovery::fetch_terminal_token_blocking(port).unwrap_or_default();
-
-        let result =
-            crate::terminal_window::run_terminal_unison(port, &terminal_token, &project_name);
-
-        match result {
-            Ok(()) => tracing::info!("Terminal window closed (Process is still running)"),
-            Err(e) => tracing::error!("Terminal window error: {}", e),
+        // headless / browser: 従来通り
+        let args = vec!["start", "--project-dir"];
+        let pd = project_dir.clone();
+        if headless {
+            spawn_headless(&vp_bin, &pd);
+        } else {
+            // browser モード
+            let _ = std::process::Command::new(&vp_bin)
+                .args(["start", "--browser", "--project-dir", &pd])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
         }
+        let _ = args; // suppress warning
 
-        drop(server_thread);
+        // Process ready 待ち
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        println!("  ✓ {} (port {}, headless)", project_name, port);
+        Ok(())
+    } else if had_tmux && tmux::is_tmux_available() {
+        // tmux セッションを再作成（detached）
+        match tmux::create_detached(
+            &session,
+            &vp_bin,
+            &["start", "--project-dir", &project_dir],
+        ) {
+            Ok(()) => {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                println!("  ✓ {} (port {}, tmux:{})", project_name, port, session);
+            }
+            Err(e) => {
+                println!("  ⚠ tmux 起動失敗: {}, headless にフォールバック", e);
+                spawn_headless(&vp_bin, &project_dir);
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                println!("  ✓ {} (port {}, headless)", project_name, port);
+            }
+        }
+        Ok(())
+    } else if tmux::is_tmux_available() {
+        // tmux はあるけどセッションがなかった → 新規作成
+        match tmux::create_detached(
+            &session,
+            &vp_bin,
+            &["start", "--project-dir", &project_dir],
+        ) {
+            Ok(()) => {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                println!("  ✓ {} (port {}, tmux:{})", project_name, port, session);
+            }
+            Err(e) => {
+                println!("  ⚠ tmux 起動失敗: {}, headless にフォールバック", e);
+                spawn_headless(&vp_bin, &project_dir);
+                std::thread::sleep(std::time::Duration::from_secs(2));
+            }
+        }
+        Ok(())
+    } else {
+        // tmux なし → headless
+        spawn_headless(&vp_bin, &project_dir);
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        println!("  ✓ {} (port {}, headless)", project_name, port);
         Ok(())
     }
+}
+
+/// headless で Process を起動
+fn spawn_headless(vp_bin: &std::path::Path, project_dir: &str) {
+    let _ = std::process::Command::new(vp_bin)
+        .args(["start", "--headless", "--project-dir", project_dir])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
 }

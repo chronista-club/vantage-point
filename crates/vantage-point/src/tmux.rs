@@ -78,6 +78,60 @@ pub fn attach_and_exec(name: &str) -> ! {
     std::process::exit(1);
 }
 
+/// tmux セッションを kill する（存在しなくてもエラーにしない）
+pub fn kill_session(name: &str) -> bool {
+    Command::new("tmux")
+        .args(["kill-session", "-t", name])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// tmux new-session をデタッチモードで作成（呼び出し元に制御を返す）
+///
+/// `vp restart-all` 等、バッチ的に複数セッションを起動する場合に使用。
+pub fn create_detached(name: &str, vp_bin: &Path, args: &[&str]) -> std::io::Result<()> {
+    let vp_bin_str = vp_bin.to_string_lossy();
+    let mut cmd_parts = vec![vp_bin_str.to_string()];
+    cmd_parts.extend(args.iter().map(|s| s.to_string()));
+    let shell_command = cmd_parts.join(" ");
+
+    let status = Command::new("tmux")
+        .args(["new-session", "-d", "-s", name, &shell_command])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!("tmux new-session -d -s {} failed", name),
+        ))
+    }
+}
+
+/// `vp-` プレフィックスを持つ全 tmux セッション名を列挙
+pub fn list_vp_sessions() -> Vec<String> {
+    let output = Command::new("tmux")
+        .args(["list-sessions", "-F", "#{session_name}"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output();
+
+    match output {
+        Ok(out) => String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter(|s| s.starts_with("vp-"))
+            .map(|s| s.to_string())
+            .collect(),
+        Err(_) => vec![],
+    }
+}
+
 /// Unix exec でプロセスを置き換える
 #[cfg(unix)]
 fn exec_command(program: &str, args: &[&str]) -> std::io::Error {

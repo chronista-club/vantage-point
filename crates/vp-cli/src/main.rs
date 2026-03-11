@@ -93,6 +93,9 @@ enum Commands {
         #[arg(long)]
         gui: bool,
     },
+    /// 全 Process + TheWorld + Canvas を一括再起動
+    #[command(alias = "ra")]
+    RestartAll,
     /// 稼働中のインスタンス一覧
     #[command(alias = "list")]
     Ps,
@@ -214,6 +217,7 @@ fn main() -> Result<()> {
             browser,
             gui,
         } => commands::restart::execute(target.as_deref(), browser, !gui, &config),
+        Commands::RestartAll => commands::restart_all::execute(),
         Commands::Ps => cli::list_instances(&config),
         Commands::Open { target } => cli::open_by_target(target.as_deref(), &config),
         Commands::Config => commands::config::execute(&config),

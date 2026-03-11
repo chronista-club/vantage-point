@@ -12,5 +12,6 @@ pub mod midi;
 pub mod pane;
 pub mod process_client;
 pub mod restart;
+pub mod restart_all;
 pub mod start;
 pub mod update;
