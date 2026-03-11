@@ -418,7 +418,16 @@ async fn spawn_lane_bridge(lane: String, port: u16, bridge_tx: mpsc::Sender<Brid
         })
         .await;
 
-    let (_, mut read) = ws_stream.split();
+    let (mut write, mut read) = ws_stream.split();
+
+    // ready メッセージを送信 → Process が RetainedStore から状態を再送してくれる
+    let ready_msg = serde_json::json!({"type": "ready"}).to_string();
+    if let Err(e) = write
+        .send(tokio_tungstenite::tungstenite::Message::Text(ready_msg.into()))
+        .await
+    {
+        tracing::warn!("Lane {} (port {}) ready 送信失敗: {}", lane, port, e);
+    }
 
     // Process からのメッセージを読み取り、Lane ラップして転送
     while let Some(Ok(msg)) = read.next().await {

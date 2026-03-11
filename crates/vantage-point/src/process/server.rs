@@ -127,6 +127,7 @@ pub async fn run(
     let app = Router::new()
         .route("/", get(health::index_handler))
         .route("/canvas", get(health::canvas_handler))
+        .route("/vendor/mermaid.min.js", get(health::vendor_mermaid_handler))
         .route("/ws", get(ws::ws_handler))
         // Canvas Lane 集約 WebSocket（全 Process のメッセージを Lane でラップして中継）
         .route("/ws/lanes", get(lanes::lanes_ws_handler))
@@ -358,6 +359,7 @@ pub async fn run_world(port: u16) -> Result<()> {
         .route("/api/shutdown", post(health::shutdown_handler))
         // Canvas HTML（PP window が TheWorld ポートから直接ロードするため必要）
         .route("/canvas", get(health::canvas_handler))
+        .route("/vendor/mermaid.min.js", get(health::vendor_mermaid_handler))
         // Canvas Lane 集約 WebSocket
         .route("/ws/lanes", get(lanes::lanes_ws_handler))
         // World API routes

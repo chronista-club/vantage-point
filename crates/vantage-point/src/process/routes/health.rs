@@ -109,7 +109,8 @@ pub async fn canvas_open_handler(State(state): State<Arc<AppState>>) -> impl Int
     // canvas_target で TheWorld フォールバック判定を統一
     let (port, lanes) = crate::canvas::canvas_target(state.port);
 
-    match crate::canvas::ensure_canvas_running(port, lanes) {
+    let project_name = state.project_dir.rsplit('/').next();
+    match crate::canvas::ensure_canvas_running(port, lanes, project_name) {
         Ok(pid) => {
             // AppState の canvas_pid も同期（後方互換）
             *state.canvas_pid.lock().await = Some(pid);
@@ -360,6 +361,19 @@ pub async fn canvas_capture_handler(
             )
         }
     }
+}
+
+/// GET /vendor/mermaid.min.js — ローカルバンドルの Mermaid ライブラリ
+///
+/// CDN 依存を排除し、wry WebView でも確実に読み込めるようにする。
+pub async fn vendor_mermaid_handler() -> impl IntoResponse {
+    (
+        [
+            (header::CONTENT_TYPE, "application/javascript; charset=utf-8"),
+            (header::CACHE_CONTROL, "public, max-age=86400"),
+        ],
+        include_bytes!("../../../../../web/vendor/mermaid.min.js").as_slice(),
+    )
 }
 
 /// POST /api/shutdown - Graceful shutdown

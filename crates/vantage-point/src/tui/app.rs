@@ -829,6 +829,6 @@ fn toggle_pp_window(sp_port: u16) {
         crate::canvas::stop_canvas();
     } else {
         let (port, lanes) = crate::canvas::canvas_target(sp_port);
-        let _ = crate::canvas::ensure_canvas_running(port, lanes);
+        let _ = crate::canvas::ensure_canvas_running(port, lanes, None);
     }
 }

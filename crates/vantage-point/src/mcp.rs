@@ -718,7 +718,7 @@ impl VantageMcp {
         if crate::canvas::find_running_canvas().is_none() {
             let sp_port = *self.process_port.lock().await;
             let (port, lanes) = crate::canvas::canvas_target(sp_port);
-            let _ = crate::canvas::ensure_canvas_running(port, lanes);
+            let _ = crate::canvas::ensure_canvas_running(port, lanes, None);
         }
     }
 

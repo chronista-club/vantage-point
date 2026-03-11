@@ -97,7 +97,8 @@ async fn handle_unwatch_file(
 /// PP Window (Paisley Park) を開く（TheWorld フォールバック付き）
 async fn handle_canvas_open(state: &AppState) -> Result<serde_json::Value, String> {
     let (port, lanes) = crate::canvas::canvas_target(state.port);
-    match crate::canvas::ensure_canvas_running(port, lanes) {
+    let project_name = state.project_dir.rsplit('/').next();
+    match crate::canvas::ensure_canvas_running(port, lanes, project_name) {
         Ok(pid) => {
             *state.canvas_pid.lock().await = Some(pid);
             tracing::info!("PP Window opened (pid={}, port={}, lanes={})", pid, port, lanes);
