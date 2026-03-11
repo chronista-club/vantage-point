@@ -50,4 +50,5 @@ crossterm = "0.28"
 
 # Database
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
+rusqlite = { version = "0.34", features = ["bundled"] }
 

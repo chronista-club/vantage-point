@@ -357,8 +357,21 @@ fn run_tui_mode(
         println!("\u{1f504} 既存セッションに再接続: {}", session_name);
     }
 
+    // ccwire 登録（tmux セッション作成前でも可だが、target 確定後がベスト）
+    let tmux_target = format!("{}:0.0", session_name);
+    if let Err(e) = crate::ccwire::register(&session_name, &tmux_target) {
+        tracing::warn!("ccwire 登録失敗（続行）: {}", e);
+    }
+
     // TUI 起動（tmux の外で直接）
-    run_tui(&session_name, project_dir, project_name, port, is_reconnect)
+    let result = run_tui(&session_name, project_dir, project_name, port, is_reconnect);
+
+    // ccwire 解除（TUI 終了時）
+    if let Err(e) = crate::ccwire::unregister(&session_name) {
+        tracing::warn!("ccwire 解除失敗: {}", e);
+    }
+
+    result
 }
 
 // =============================================================================
@@ -510,9 +523,18 @@ fn run_tui(
     let mut pp_open = crate::canvas::find_running_canvas().is_some();
     let mut pp_check_timer = std::time::Instant::now();
 
+    // ccwire heartbeat タイマー
+    let mut ccwire_heartbeat_timer = std::time::Instant::now();
+
     // メインループ
     let mut needs_redraw = true;
     let result = loop {
+        // ccwire heartbeat（3分間隔）
+        if ccwire_heartbeat_timer.elapsed() >= crate::ccwire::HEARTBEAT_INTERVAL {
+            let _ = crate::ccwire::heartbeat(session_name);
+            ccwire_heartbeat_timer = std::time::Instant::now();
+        }
+
         // PP window 状態を定期チェック
         if pp_check_timer.elapsed() >= Duration::from_secs(1) {
             let was_open = pp_open;

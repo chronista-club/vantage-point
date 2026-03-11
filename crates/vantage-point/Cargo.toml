@@ -99,6 +99,9 @@ notify = "8"
 # Regex (for log level filtering in file watcher)
 regex = "1"
 
+# ccwire (SQLite peer-to-peer messaging)
+rusqlite = { workspace = true }
+
 # Terminal emulation (VT parser + grid state)
 alacritty_terminal = "0.25"
 vte = "0.15"

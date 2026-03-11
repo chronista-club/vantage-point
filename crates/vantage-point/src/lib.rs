@@ -9,6 +9,7 @@
 pub mod agent;
 pub mod agui;
 pub mod canvas;
+pub mod ccwire;
 pub mod capability;
 pub mod cli;
 pub mod commands;
