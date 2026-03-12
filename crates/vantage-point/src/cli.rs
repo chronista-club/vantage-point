@@ -340,7 +340,10 @@ pub fn parse_debug_env() -> Option<DebugMode> {
 ///   - None -> warn
 ///   - Simple -> info
 ///   - Detail -> debug
-pub fn init_tracing(debug_mode: DebugMode) {
+///
+/// `tui_mode` が true の場合、ログ出力を stderr ではなくファイルにリダイレクト。
+/// TUI (ratatui) の alternate screen にサーバーログが漏れるのを防ぐ。
+pub fn init_tracing(debug_mode: DebugMode, tui_mode: bool) {
     // VP_LOGが設定されていない場合、debug_modeに基づいてRUST_LOGを設定
     // SAFETY: main()開始直後、他スレッド起動前に呼ばれるため安全
     if std::env::var("VP_LOG").is_err() && std::env::var("RUST_LOG").is_err() {
@@ -359,8 +362,36 @@ pub fn init_tracing(debug_mode: DebugMode) {
         }
     }
 
+    let env_filter = tracing_subscriber::EnvFilter::from_default_env();
+
+    if tui_mode {
+        // TUI モード: ファイルに出力（stderr 汚染を防止）
+        if let Some(path) = crate::trace_log::log_file_path() {
+            let tracing_path = path.with_file_name("tracing.log");
+            match std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&tracing_path)
+            {
+                Ok(file) => {
+                    tracing_subscriber::fmt()
+                        .with_env_filter(env_filter)
+                        .with_target(false)
+                        .with_ansi(false)
+                        .with_writer(file)
+                        .init();
+                    return;
+                }
+                Err(e) => {
+                    eprintln!("[vp] tracing ログファイル作成失敗: {e}, stderr にフォールバック");
+                }
+            }
+        }
+    }
+
+    // 通常モード: stderr に出力
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_env_filter(env_filter)
         .with_target(false)
         .init();
 }

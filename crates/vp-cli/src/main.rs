@@ -187,7 +187,9 @@ fn main() -> Result<()> {
         Commands::Restart { .. } => parse_debug_env().unwrap_or_default(),
         _ => parse_debug_env().unwrap_or_default(),
     };
-    cli::init_tracing(debug_mode_for_tracing);
+    // TUI モードでは tracing 出力をファイルにリダイレクト（stderr 漏れ防止）
+    let tui_mode = matches!(&command, Commands::Start { headless, gui, .. } if !headless && !gui);
+    cli::init_tracing(debug_mode_for_tracing, tui_mode);
 
     match command {
         // Core
