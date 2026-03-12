@@ -1,0 +1,24 @@
+[package]
+name = "vp-mdast"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "VP mdast パイプライン — Markdown AST 型定義 + パーサー"
+
+[lib]
+name = "vp_mdast"
+
+[dependencies]
+# Markdown パーサー (wooorm/markdown-rs)
+markdown = "1"
+
+# シリアライズ
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# TypeScript 型生成
+ts-rs = { version = "12", features = ["serde-compat"] }
+
+[dev-dependencies]
+pretty_assertions = "1"

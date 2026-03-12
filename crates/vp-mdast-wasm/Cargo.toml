@@ -1,0 +1,16 @@
+[package]
+name = "vp-mdast-wasm"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "VP mdast WASM バインディング — Canvas 内で Markdown パース"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+vp-mdast = { path = "../vp-mdast" }
+wasm-bindgen = "0.2"
+serde-wasm-bindgen = "0.6"
+serde_json = { workspace = true }
