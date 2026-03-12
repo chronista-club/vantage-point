@@ -57,7 +57,7 @@ pub enum MdNode {
     // --- 拡張（Phase 2） ---
     Frontmatter(Frontmatter),
     Admonition(Admonition),
-    // WikiLink(WikiLink),  // Phase 3
+    WikiLink(WikiLink),
 }
 
 // =============================================================================
@@ -269,6 +269,21 @@ pub struct Delete {
 pub struct Frontmatter {
     /// YAML 生テキスト（Canvas 側で js-yaml 等でパース）
     pub value: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub position: Option<Position>,
+}
+
+/// Wiki-link — `[[target]]` or `[[target|display]]` or `[[creo:id]]`
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export, export_to = "../../../web/src/mdast/types.ts")]
+pub struct WikiLink {
+    /// リンク先（ドキュメント名 or `creo:memory-id`）
+    pub target: String,
+    /// 表示テキスト（省略時は target を使用）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// リンク種別: "doc"（プロジェクト内）, "creo"（creo-memories）
+    pub link_type: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub position: Option<Position>,
 }

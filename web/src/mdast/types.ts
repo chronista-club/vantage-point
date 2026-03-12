@@ -61,7 +61,7 @@ export type ListItem = { children: Array<MdNode>, spread: boolean, checked: bool
 /**
  * mdast ノード（全ノードタイプの enum）
  */
-export type MdNode = { "type": "Root" } & Root | { "type": "Heading" } & Heading | { "type": "Paragraph" } & Paragraph | { "type": "BlockQuote" } & BlockQuote | { "type": "List" } & List | { "type": "ListItem" } & ListItem | { "type": "Code" } & Code | { "type": "ThematicBreak" } & ThematicBreak | { "type": "Table" } & Table | { "type": "TableRow" } & TableRow | { "type": "TableCell" } & TableCell | { "type": "Html" } & Html | { "type": "Text" } & Text | { "type": "Emphasis" } & Emphasis | { "type": "Strong" } & Strong | { "type": "InlineCode" } & InlineCode | { "type": "Link" } & Link | { "type": "Image" } & Image | { "type": "Break" } & Break | { "type": "Delete" } & Delete | { "type": "Frontmatter" } & Frontmatter | { "type": "Admonition" } & Admonition;
+export type MdNode = { "type": "Root" } & Root | { "type": "Heading" } & Heading | { "type": "Paragraph" } & Paragraph | { "type": "BlockQuote" } & BlockQuote | { "type": "List" } & List | { "type": "ListItem" } & ListItem | { "type": "Code" } & Code | { "type": "ThematicBreak" } & ThematicBreak | { "type": "Table" } & Table | { "type": "TableRow" } & TableRow | { "type": "TableCell" } & TableCell | { "type": "Html" } & Html | { "type": "Text" } & Text | { "type": "Emphasis" } & Emphasis | { "type": "Strong" } & Strong | { "type": "InlineCode" } & InlineCode | { "type": "Link" } & Link | { "type": "Image" } & Image | { "type": "Break" } & Break | { "type": "Delete" } & Delete | { "type": "Frontmatter" } & Frontmatter | { "type": "Admonition" } & Admonition | { "type": "WikiLink" } & WikiLink;
 
 export type Paragraph = { children: Array<MdNode>, position: Position | null, };
 
@@ -88,3 +88,20 @@ export type TableRow = { children: Array<MdNode>, position: Position | null, };
 export type Text = { value: string, position: Position | null, };
 
 export type ThematicBreak = { position: Position | null, };
+
+/**
+ * Wiki-link — `[[target]]` or `[[target|display]]` or `[[creo:id]]`
+ */
+export type WikiLink = { 
+/**
+ * リンク先（ドキュメント名 or `creo:memory-id`）
+ */
+target: string, 
+/**
+ * 表示テキスト（省略時は target を使用）
+ */
+label: string | null, 
+/**
+ * リンク種別: "doc"（プロジェクト内）, "creo"（creo-memories）
+ */
+link_type: string, position: Position | null, };

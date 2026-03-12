@@ -279,6 +279,40 @@
             border-color: oklch(0.68 0.14 210);
         }
         .pane-card .admonition-info .admonition-header { color: oklch(0.68 0.14 210); }
+
+        /* Wiki-link */
+        .pane-card .wikilink {
+            color: var(--color-accent-primary);
+            text-decoration: none;
+            border-bottom: 1px dashed oklch(0.68 0.14 210 / 0.5);
+            padding-bottom: 1px;
+            cursor: pointer;
+            transition: border-color 0.2s, color 0.2s;
+        }
+        .pane-card .wikilink:hover {
+            color: oklch(0.78 0.14 210);
+            border-bottom-color: oklch(0.78 0.14 210);
+        }
+        .pane-card .wikilink::before {
+            content: '[[';
+            font-size: 0.75em;
+            opacity: 0.4;
+            margin-right: 1px;
+        }
+        .pane-card .wikilink::after {
+            content: ']]';
+            font-size: 0.75em;
+            opacity: 0.4;
+            margin-left: 1px;
+        }
+        .pane-card .wikilink-creo {
+            color: oklch(0.72 0.17 160);
+            border-bottom-color: oklch(0.72 0.17 160 / 0.5);
+        }
+        .pane-card .wikilink-creo:hover {
+            color: oklch(0.82 0.17 160);
+            border-bottom-color: oklch(0.82 0.17 160);
+        }
         .pane-card img {
             max-width: 100%;
             border-radius: var(--radius-md);
@@ -1570,6 +1604,36 @@
                     div.appendChild(marker);
                     (node.children || []).forEach(c => div.appendChild(renderMdast(c)));
                     return div;
+                }
+                case 'WikiLink': {
+                    // Wiki-link — [[target]] or [[creo:id]]
+                    const a = document.createElement('a');
+                    a.className = `wikilink wikilink-${node.link_type || 'doc'}`;
+                    const label = node.label || node.target || '';
+                    if (node.link_type === 'creo') {
+                        // creo-memories リンク（将来: ホバープレビュー）
+                        a.href = '#';
+                        a.dataset.creoId = node.target || '';
+                        a.title = `creo-memories: ${node.target}`;
+                        a.textContent = label;
+                        a.addEventListener('click', (e) => {
+                            e.preventDefault();
+                            // TODO: creo-memories プレビューパネルを開く
+                            console.log('[VP] creo-memories link clicked:', node.target);
+                        });
+                    } else {
+                        // プロジェクト内ドキュメントリンク
+                        a.href = '#';
+                        a.dataset.docTarget = node.target || '';
+                        a.title = node.target || '';
+                        a.textContent = label;
+                        a.addEventListener('click', (e) => {
+                            e.preventDefault();
+                            // TODO: ドキュメントナビゲーション
+                            console.log('[VP] doc link clicked:', node.target);
+                        });
+                    }
+                    return a;
                 }
                 case 'Frontmatter': {
                     // YAML frontmatter → メタ情報カード

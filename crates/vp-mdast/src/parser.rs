@@ -17,8 +17,9 @@ pub fn parse(text: &str) -> Result<MdNode, String> {
     options.constructs.frontmatter = true;
     let tree = markdown::to_mdast(text, &options).map_err(|e| e.to_string())?;
     let mut node = convert_node(tree);
-    // 後処理: admonition ブロック変換
+    // 後処理: admonition ブロック変換 + wiki-link 展開
     transform_admonitions(&mut node);
+    transform_wikilinks(&mut node);
     Ok(node)
 }
 
@@ -301,6 +302,140 @@ fn extract_remaining_text(text: &str) -> String {
     }
 }
 
+// =============================================================================
+// Wiki-link 変換 — Text ノード内の [[...]] パターンを WikiLink ノードに展開
+// =============================================================================
+
+/// 全ノードを再帰的に走査し、Text ノード内の [[...]] を WikiLink に変換
+fn transform_wikilinks(node: &mut MdNode) {
+    match node {
+        MdNode::Root(root) => transform_wikilinks_in_children(&mut root.children),
+        MdNode::Paragraph(p) => transform_wikilinks_in_children(&mut p.children),
+        MdNode::Heading(h) => transform_wikilinks_in_children(&mut h.children),
+        MdNode::BlockQuote(bq) => {
+            for child in &mut bq.children {
+                transform_wikilinks(child);
+            }
+        }
+        MdNode::List(list) => {
+            for child in &mut list.children {
+                transform_wikilinks(child);
+            }
+        }
+        MdNode::ListItem(li) => {
+            for child in &mut li.children {
+                transform_wikilinks(child);
+            }
+        }
+        MdNode::Emphasis(em) => transform_wikilinks_in_children(&mut em.children),
+        MdNode::Strong(s) => transform_wikilinks_in_children(&mut s.children),
+        MdNode::Link(l) => transform_wikilinks_in_children(&mut l.children),
+        MdNode::Delete(d) => transform_wikilinks_in_children(&mut d.children),
+        MdNode::TableCell(tc) => transform_wikilinks_in_children(&mut tc.children),
+        MdNode::Admonition(a) => {
+            for child in &mut a.children {
+                transform_wikilinks(child);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// children 配列内の Text ノードを走査し、[[...]] を含む場合に分割
+fn transform_wikilinks_in_children(children: &mut Vec<MdNode>) {
+    // 先に子ノードを再帰処理
+    for child in children.iter_mut() {
+        transform_wikilinks(child);
+    }
+
+    // Text ノードを wiki-link で分割
+    let mut new_children = Vec::with_capacity(children.len());
+    for child in children.drain(..) {
+        if let MdNode::Text(ref text) = child {
+            let expanded = expand_wikilinks(&text.value);
+            if expanded.len() == 1 {
+                // wiki-link なし — そのまま
+                new_children.push(child);
+            } else {
+                new_children.extend(expanded);
+            }
+        } else {
+            new_children.push(child);
+        }
+    }
+    *children = new_children;
+}
+
+/// テキスト内の `[[...]]` パターンを Text + WikiLink のシーケンスに展開
+///
+/// サポートするパターン:
+/// - `[[doc-name]]` → doc リンク
+/// - `[[doc-name|Display Text]]` → doc リンク + カスタム表示
+/// - `[[creo:memory-id]]` → creo-memories リンク
+/// - `[[creo:memory-id|Display Text]]` → creo-memories リンク + カスタム表示
+fn expand_wikilinks(text: &str) -> Vec<MdNode> {
+    let mut result = Vec::new();
+    let mut remaining = text;
+
+    while let Some(start) = remaining.find("[[") {
+        if let Some(end) = remaining[start + 2..].find("]]") {
+            let end_abs = start + 2 + end;
+            // [[ より前のテキスト
+            if start > 0 {
+                result.push(MdNode::Text(Text {
+                    value: remaining[..start].to_string(),
+                    position: None,
+                }));
+            }
+
+            // [[ ... ]] の中身をパース
+            let inner = &remaining[start + 2..end_abs];
+            let (target, label) = if let Some(pipe) = inner.find('|') {
+                (inner[..pipe].trim().to_string(), Some(inner[pipe + 1..].trim().to_string()))
+            } else {
+                (inner.trim().to_string(), None)
+            };
+
+            // リンク種別判定
+            let (link_type, actual_target) = if let Some(stripped) = target.strip_prefix("creo:") {
+                ("creo".to_string(), stripped.to_string())
+            } else {
+                ("doc".to_string(), target)
+            };
+
+            result.push(MdNode::WikiLink(WikiLink {
+                target: actual_target,
+                label,
+                link_type,
+                position: None,
+            }));
+
+            remaining = &remaining[end_abs + 2..];
+        } else {
+            // 閉じ ]] がない — テキストとして残す
+            break;
+        }
+    }
+
+    // 残りのテキスト
+    if !remaining.is_empty() {
+        result.push(MdNode::Text(Text {
+            value: remaining.to_string(),
+            position: None,
+        }));
+    }
+
+    // wiki-link がなかった場合は元テキストを1要素で返す
+    if result.is_empty() {
+        result.push(MdNode::Text(Text {
+            value: text.to_string(),
+            position: None,
+        }));
+    }
+
+    result
+}
+
 fn convert_align(align: mdast::AlignKind) -> AlignKind {
     match align {
         mdast::AlignKind::Left => AlignKind::Left,
@@ -433,6 +568,84 @@ mod tests {
                     assert_eq!(a.title.as_deref(), Some("Be careful"));
                 }
                 other => panic!("Expected Admonition, got {:?}", other),
+            },
+            other => panic!("Expected Root, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_wikilink_doc() {
+        let md = "See [[design-doc]] for details.";
+        let ast = parse(md).unwrap();
+        match ast {
+            MdNode::Root(root) => match &root.children[0] {
+                MdNode::Paragraph(p) => {
+                    // Text("See ") + WikiLink + Text(" for details.")
+                    assert_eq!(p.children.len(), 3);
+                    match &p.children[1] {
+                        MdNode::WikiLink(wl) => {
+                            assert_eq!(wl.target, "design-doc");
+                            assert_eq!(wl.link_type, "doc");
+                            assert!(wl.label.is_none());
+                        }
+                        other => panic!("Expected WikiLink, got {:?}", other),
+                    }
+                }
+                other => panic!("Expected Paragraph, got {:?}", other),
+            },
+            other => panic!("Expected Root, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_wikilink_with_label() {
+        let md = "See [[design-doc|Design Document]] here.";
+        let ast = parse(md).unwrap();
+        match ast {
+            MdNode::Root(root) => match &root.children[0] {
+                MdNode::Paragraph(p) => match &p.children[1] {
+                    MdNode::WikiLink(wl) => {
+                        assert_eq!(wl.target, "design-doc");
+                        assert_eq!(wl.label.as_deref(), Some("Design Document"));
+                    }
+                    other => panic!("Expected WikiLink, got {:?}", other),
+                },
+                other => panic!("Expected Paragraph, got {:?}", other),
+            },
+            other => panic!("Expected Root, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_wikilink_creo() {
+        let md = "Refer to [[creo:mem_abc123]].";
+        let ast = parse(md).unwrap();
+        match ast {
+            MdNode::Root(root) => match &root.children[0] {
+                MdNode::Paragraph(p) => match &p.children[1] {
+                    MdNode::WikiLink(wl) => {
+                        assert_eq!(wl.target, "mem_abc123");
+                        assert_eq!(wl.link_type, "creo");
+                    }
+                    other => panic!("Expected WikiLink, got {:?}", other),
+                },
+                other => panic!("Expected Paragraph, got {:?}", other),
+            },
+            other => panic!("Expected Root, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_multiple_wikilinks() {
+        let md = "Link [[a]] and [[b|Beta]].";
+        let ast = parse(md).unwrap();
+        match ast {
+            MdNode::Root(root) => match &root.children[0] {
+                MdNode::Paragraph(p) => {
+                    // Text("Link ") + WikiLink(a) + Text(" and ") + WikiLink(b) + Text(".")
+                    assert_eq!(p.children.len(), 5);
+                }
+                other => panic!("Expected Paragraph, got {:?}", other),
             },
             other => panic!("Expected Root, got {:?}", other),
         }
