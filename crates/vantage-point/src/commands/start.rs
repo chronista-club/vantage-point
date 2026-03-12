@@ -25,7 +25,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyModifiers, MouseEventKind};
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
@@ -507,8 +507,12 @@ fn run_tui(
     // ターミナル初期化
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    // マウスは tmux に委譲（tmux mouse on 環境ではスクロール等は tmux が処理）
-    crossterm::execute!(stdout, EnterAlternateScreen)?;
+    // マウスキャプチャ有効化 — スクロールイベントを PTY(tmux) に転送するため
+    crossterm::execute!(
+        stdout,
+        EnterAlternateScreen,
+        crossterm::event::EnableMouseCapture
+    )?;
 
     // ウィンドウタイトル設定
     {
@@ -680,6 +684,55 @@ fn run_tui(
                         let _ = writer.flush();
                     }
                 }
+                Event::Mouse(mouse) => {
+                    // マウスイベントを SGR エスケープシーケンスで PTY(tmux) に転送
+                    // tmux の `mouse on` がスクロール・ペインクリック等を処理する
+                    // Block 枠分のオフセット: 上枠1行 + ヘッダー1行 = y+2, 左枠 = x+1
+                    let x = mouse.column.saturating_sub(1);
+                    let y = mouse.row.saturating_sub(2);
+                    let seq = match mouse.kind {
+                        MouseEventKind::ScrollUp => {
+                            format!("\x1b[<64;{};{}M", x + 1, y + 1)
+                        }
+                        MouseEventKind::ScrollDown => {
+                            format!("\x1b[<65;{};{}M", x + 1, y + 1)
+                        }
+                        MouseEventKind::Down(btn) => {
+                            let b = match btn {
+                                crossterm::event::MouseButton::Left => 0,
+                                crossterm::event::MouseButton::Right => 2,
+                                crossterm::event::MouseButton::Middle => 1,
+                            };
+                            format!("\x1b[<{};{};{}M", b, x + 1, y + 1)
+                        }
+                        MouseEventKind::Up(btn) => {
+                            let b = match btn {
+                                crossterm::event::MouseButton::Left => 0,
+                                crossterm::event::MouseButton::Right => 2,
+                                crossterm::event::MouseButton::Middle => 1,
+                            };
+                            format!("\x1b[<{};{};{}m", b, x + 1, y + 1)
+                        }
+                        MouseEventKind::Drag(btn) => {
+                            let b = match btn {
+                                crossterm::event::MouseButton::Left => 32,
+                                crossterm::event::MouseButton::Right => 34,
+                                crossterm::event::MouseButton::Middle => 33,
+                            };
+                            format!("\x1b[<{};{};{}M", b, x + 1, y + 1)
+                        }
+                        MouseEventKind::Moved => {
+                            format!("\x1b[<35;{};{}M", x + 1, y + 1)
+                        }
+                        _ => String::new(),
+                    };
+                    if !seq.is_empty() {
+                        if writer.write_all(seq.as_bytes()).is_err() {
+                            break Ok(());
+                        }
+                        let _ = writer.flush();
+                    }
+                }
                 Event::Resize(new_cols, new_rows) => {
                     // 親ウィンドウのリサイズに追従（Block 枠分を差し引き）
                     let new_pty_cols = (new_cols.saturating_sub(2)) as usize;
@@ -709,7 +762,11 @@ fn run_tui(
 
     // 終了処理（tmux セッションは殺さない — detach のみ）
     disable_raw_mode()?;
-    crossterm::execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    crossterm::execute!(
+        terminal.backend_mut(),
+        crossterm::event::DisableMouseCapture,
+        LeaveAlternateScreen
+    )?;
     terminal.show_cursor()?;
 
     println!(

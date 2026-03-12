@@ -16,7 +16,7 @@ use serde::Deserialize;
 
 use axum::{
     Json,
-    extract::State,
+    extract::{Path, State},
     http::header,
     response::{Html, IntoResponse},
 };
@@ -64,22 +64,34 @@ fn load_canvas_html() -> String {
     }
 }
 
-/// mermaid.min.js を返す（dev: ファイル読み込み / 本番: 埋め込み）
-fn load_mermaid_js() -> Vec<u8> {
+/// vendor ファイルを返す（dev: ファイル読み込み / 本番: 埋め込み）
+fn load_vendor_file(filename: &str) -> Option<Vec<u8>> {
     if is_dev_mode() {
-        let path = web_dir().join("vendor/mermaid.min.js");
+        let path = web_dir().join("vendor").join(filename);
         match std::fs::read(&path) {
             Ok(bytes) => {
-                tracing::debug!("dev: mermaid.min.js loaded from {}", path.display());
-                bytes
+                tracing::debug!("dev: vendor/{} loaded from {}", filename, path.display());
+                return Some(bytes);
             }
             Err(e) => {
-                tracing::warn!("dev: mermaid.min.js not found at {}: {}, falling back to embedded", path.display(), e);
-                include_bytes!("../../../../../web/vendor/mermaid.min.js").to_vec()
+                tracing::warn!(
+                    "dev: vendor/{} not found at {}: {}, trying embedded",
+                    filename,
+                    path.display(),
+                    e
+                );
             }
         }
-    } else {
-        include_bytes!("../../../../../web/vendor/mermaid.min.js").to_vec()
+    }
+
+    // 本番: コンパイル時に埋め込んだファイルを返す
+    match filename {
+        "mermaid.min.js" => Some(include_bytes!("../../../../../web/vendor/mermaid.min.js").to_vec()),
+        "shiki-vp.mjs" => Some(include_bytes!("../../../../../web/vendor/shiki-vp.mjs").to_vec()),
+        "shiki-onig.wasm" => {
+            Some(include_bytes!("../../../../../web/vendor/shiki-onig.wasm").to_vec())
+        }
+        _ => None,
     }
 }
 
@@ -432,19 +444,107 @@ pub async fn canvas_capture_handler(
     }
 }
 
-/// GET /vendor/mermaid.min.js — ローカルバンドルの Mermaid ライブラリ
+/// GET /vendor/{filename} — ローカルバンドルのベンダーライブラリ配信
 ///
 /// CDN 依存を排除し、wry WebView でも確実に読み込めるようにする。
-/// dev モードではファイルシステムから読み込む。
-pub async fn vendor_mermaid_handler() -> impl IntoResponse {
-    (
-        [
-            (header::CONTENT_TYPE, "application/javascript; charset=utf-8"),
-            // dev モードではキャッシュ無効化
-            (header::CACHE_CONTROL, if is_dev_mode() { "no-store" } else { "public, max-age=86400" }),
-        ],
-        load_mermaid_js(),
-    )
+/// dev モードではファイルシステムから読み込む。本番はバイナリ埋め込み。
+pub async fn vendor_handler(Path(filename): Path<String>) -> impl IntoResponse {
+    // パストラバーサル防止
+    if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
+        return (axum::http::StatusCode::NOT_FOUND, "Not found").into_response();
+    }
+
+    let content_type = if filename.ends_with(".js") || filename.ends_with(".mjs") {
+        "application/javascript; charset=utf-8"
+    } else if filename.ends_with(".wasm") {
+        "application/wasm"
+    } else if filename.ends_with(".css") {
+        "text/css; charset=utf-8"
+    } else {
+        "application/octet-stream"
+    };
+
+    let body = load_vendor_file(&filename);
+    match body {
+        Some(bytes) => (
+            [
+                (header::CONTENT_TYPE, content_type),
+                (
+                    header::CACHE_CONTROL,
+                    if is_dev_mode() {
+                        "no-store"
+                    } else {
+                        "public, max-age=86400"
+                    },
+                ),
+            ],
+            bytes,
+        )
+            .into_response(),
+        None => (axum::http::StatusCode::NOT_FOUND, "Vendor file not found").into_response(),
+    }
+}
+
+/// GET /wasm/{filename} — WASM モジュール配信
+///
+/// vp-mdast-wasm のビルド成果物を配信。
+/// dev モードではファイルシステムから読み込み、本番は埋め込み。
+pub async fn wasm_handler(Path(filename): Path<String>) -> impl IntoResponse {
+    let content_type = if filename.ends_with(".wasm") {
+        "application/wasm"
+    } else if filename.ends_with(".js") {
+        "application/javascript; charset=utf-8"
+    } else {
+        "application/octet-stream"
+    };
+
+    let body = load_wasm_file(&filename);
+    match body {
+        Some(bytes) => (
+            [
+                (header::CONTENT_TYPE, content_type),
+                (
+                    header::CACHE_CONTROL,
+                    if is_dev_mode() {
+                        "no-store"
+                    } else {
+                        "public, max-age=86400"
+                    },
+                ),
+            ],
+            bytes,
+        )
+            .into_response(),
+        None => (
+            axum::http::StatusCode::NOT_FOUND,
+            "WASM file not found",
+        )
+            .into_response(),
+    }
+}
+
+/// WASM ファイルを読み込む
+fn load_wasm_file(filename: &str) -> Option<Vec<u8>> {
+    // セキュリティ: パストラバーサル防止
+    if filename.contains("..") || filename.contains('/') {
+        return None;
+    }
+
+    if is_dev_mode() {
+        let path = web_dir().join("wasm").join(filename);
+        std::fs::read(&path).ok()
+    } else {
+        // 本番: 埋め込み
+        match filename {
+            "vp_mdast_wasm_bg.wasm" => {
+                Some(include_bytes!("../../../../../web/wasm/vp_mdast_wasm_bg.wasm").to_vec())
+            }
+            "vp_mdast_wasm.js" => {
+                Some(include_bytes!("../../../../../web/wasm/vp_mdast_wasm.js").to_vec())
+            }
+            _ => None,
+        }
+    }
 }
 
 /// POST /api/shutdown - Graceful shutdown

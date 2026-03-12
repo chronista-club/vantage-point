@@ -7,6 +7,29 @@
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
     <script src="/vendor/mermaid.min.js"></script>
+    <script type="module">
+        // VP mdast WASM パーサー初期化
+        import init, { parse as wasmParse } from '/wasm/vp_mdast_wasm.js';
+        try {
+            await init('/wasm/vp_mdast_wasm_bg.wasm');
+            window.__vpMdast = { parse: wasmParse, ready: true };
+            console.log('[VP] mdast WASM パーサー初期化完了');
+        } catch (e) {
+            window.__vpMdast = { ready: false };
+            console.warn('[VP] mdast WASM 初期化失敗、marked.js にフォールバック:', e);
+        }
+
+        // Shiki コードハイライター初期化（ローカルバンドル）
+        try {
+            const { createVpHighlighter } = await import('/vendor/shiki-vp.mjs');
+            const highlighter = await createVpHighlighter(fetch('/vendor/shiki-onig.wasm'));
+            window.__vpShiki = { highlighter, ready: true };
+            console.log('[VP] Shiki ハイライター初期化完了');
+        } catch (e) {
+            window.__vpShiki = { ready: false };
+            console.warn('[VP] Shiki 初期化失敗、プレーンコードブロックにフォールバック:', e);
+        }
+    </script>
     <style>
         :root {
             --canvas-bg: oklch(0.10 0.02 230);
@@ -1278,14 +1301,234 @@
             }
         }
 
+        // ===== mdast AST → DOM レンダラー =====
+
+        /**
+         * mdast ノードを DOM 要素に変換する
+         * WASM パーサーが返す AST を直接 DOM に変換。innerHTML 不使用。
+         */
+        function renderMdast(node) {
+            if (!node) return document.createTextNode('');
+
+            switch (node.type) {
+                case 'Root': {
+                    const frag = document.createDocumentFragment();
+                    (node.children || []).forEach(c => frag.appendChild(renderMdast(c)));
+                    return frag;
+                }
+                case 'Heading': {
+                    const el = document.createElement(`h${node.depth || 1}`);
+                    (node.children || []).forEach(c => el.appendChild(renderMdast(c)));
+                    return el;
+                }
+                case 'Paragraph': {
+                    const el = document.createElement('p');
+                    (node.children || []).forEach(c => el.appendChild(renderMdast(c)));
+                    return el;
+                }
+                case 'Text':
+                    return document.createTextNode(node.value || '');
+                case 'InlineCode': {
+                    const code = document.createElement('code');
+                    code.textContent = node.value || '';
+                    return code;
+                }
+                case 'Code': {
+                    // Mermaid ブロックは専用レンダラーにディスパッチ
+                    if (node.lang === 'mermaid') {
+                        const mermaidDiv = document.createElement('div');
+                        mermaidDiv.className = 'mermaid';
+                        mermaidDiv.textContent = node.value || '';
+                        return mermaidDiv;
+                    }
+                    // Shiki ハイライト（利用可能な場合）
+                    if (window.__vpShiki && window.__vpShiki.ready && node.lang) {
+                        try {
+                            const html = window.__vpShiki.highlighter.codeToHtml(
+                                node.value || '',
+                                { lang: node.lang, theme: 'nord' }
+                            );
+                            const wrapper = document.createElement('div');
+                            wrapper.className = 'shiki-wrapper';
+                            const sanitized = DOMPurify.sanitize(html, {
+                                ADD_ATTR: ['style'],
+                                ADD_TAGS: ['span'],
+                            });
+                            wrapper.insertAdjacentHTML('beforeend', sanitized);
+                            return wrapper;
+                        } catch (_) {
+                            // 未対応言語の場合はフォールバック
+                        }
+                    }
+                    // フォールバック: プレーンコードブロック
+                    const pre = document.createElement('pre');
+                    const code = document.createElement('code');
+                    if (node.lang) code.className = `language-${node.lang}`;
+                    code.textContent = node.value || '';
+                    pre.appendChild(code);
+                    return pre;
+                }
+                case 'Strong': {
+                    const el = document.createElement('strong');
+                    (node.children || []).forEach(c => el.appendChild(renderMdast(c)));
+                    return el;
+                }
+                case 'Emphasis': {
+                    const el = document.createElement('em');
+                    (node.children || []).forEach(c => el.appendChild(renderMdast(c)));
+                    return el;
+                }
+                case 'Delete': {
+                    const el = document.createElement('del');
+                    (node.children || []).forEach(c => el.appendChild(renderMdast(c)));
+                    return el;
+                }
+                case 'Link': {
+                    const a = document.createElement('a');
+                    a.href = DOMPurify.sanitize(node.url || '');
+                    if (node.title) a.title = node.title;
+                    a.target = '_blank';
+                    a.rel = 'noopener noreferrer';
+                    (node.children || []).forEach(c => a.appendChild(renderMdast(c)));
+                    return a;
+                }
+                case 'Image': {
+                    const img = document.createElement('img');
+                    img.src = DOMPurify.sanitize(node.url || '');
+                    img.alt = node.alt || '';
+                    if (node.title) img.title = node.title;
+                    return img;
+                }
+                case 'List': {
+                    const el = document.createElement(node.ordered ? 'ol' : 'ul');
+                    if (node.start != null && node.start !== 1) el.start = node.start;
+                    (node.children || []).forEach(c => el.appendChild(renderMdast(c)));
+                    return el;
+                }
+                case 'ListItem': {
+                    const li = document.createElement('li');
+                    // チェックボックスリスト対応
+                    if (node.checked != null) {
+                        const cb = document.createElement('input');
+                        cb.type = 'checkbox';
+                        cb.checked = node.checked;
+                        cb.disabled = true;
+                        cb.style.marginRight = '6px';
+                        li.appendChild(cb);
+                    }
+                    (node.children || []).forEach(c => li.appendChild(renderMdast(c)));
+                    return li;
+                }
+                case 'BlockQuote': {
+                    const bq = document.createElement('blockquote');
+                    (node.children || []).forEach(c => bq.appendChild(renderMdast(c)));
+                    return bq;
+                }
+                case 'ThematicBreak':
+                    return document.createElement('hr');
+                case 'Break':
+                    return document.createElement('br');
+                case 'Table': {
+                    const table = document.createElement('table');
+                    const rows = node.children || [];
+                    const aligns = node.align || [];
+                    if (rows.length > 0) {
+                        const thead = document.createElement('thead');
+                        thead.appendChild(renderTableRow(rows[0], aligns, true));
+                        table.appendChild(thead);
+                    }
+                    if (rows.length > 1) {
+                        const tbody = document.createElement('tbody');
+                        for (let i = 1; i < rows.length; i++) {
+                            tbody.appendChild(renderTableRow(rows[i], aligns, false));
+                        }
+                        table.appendChild(tbody);
+                    }
+                    return table;
+                }
+                case 'TableRow': {
+                    const tr = document.createElement('tr');
+                    (node.children || []).forEach(c => tr.appendChild(renderMdast(c)));
+                    return tr;
+                }
+                case 'TableCell': {
+                    const td = document.createElement('td');
+                    (node.children || []).forEach(c => td.appendChild(renderMdast(c)));
+                    return td;
+                }
+                case 'Html': {
+                    // DOMPurify でサニタイズしてから安全に挿入
+                    const span = document.createElement('span');
+                    const sanitized = DOMPurify.sanitize(node.value || '');
+                    span.insertAdjacentHTML('beforeend', sanitized);
+                    return span;
+                }
+                case 'FootnoteReference': {
+                    const sup = document.createElement('sup');
+                    const a = document.createElement('a');
+                    a.textContent = `[${node.identifier || ''}]`;
+                    a.href = `#fn-${node.identifier || ''}`;
+                    sup.appendChild(a);
+                    return sup;
+                }
+                case 'FootnoteDefinition': {
+                    const div = document.createElement('div');
+                    div.id = `fn-${node.identifier || ''}`;
+                    div.className = 'footnote';
+                    const marker = document.createElement('sup');
+                    marker.textContent = `[${node.identifier || ''}]`;
+                    div.appendChild(marker);
+                    (node.children || []).forEach(c => div.appendChild(renderMdast(c)));
+                    return div;
+                }
+                default: {
+                    // 未対応ノード: children があれば再帰、なければテキスト
+                    const span = document.createElement('span');
+                    if (node.children) {
+                        node.children.forEach(c => span.appendChild(renderMdast(c)));
+                    } else if (node.value) {
+                        span.textContent = node.value;
+                    }
+                    return span;
+                }
+            }
+        }
+
+        /** テーブル行レンダリング（thead/tbody 判定 + align 適用） */
+        function renderTableRow(rowNode, aligns, isHeader) {
+            const tr = document.createElement('tr');
+            (rowNode.children || []).forEach((cell, i) => {
+                const el = document.createElement(isHeader ? 'th' : 'td');
+                if (aligns[i] && aligns[i] !== 'None') {
+                    el.style.textAlign = aligns[i].toLowerCase();
+                }
+                (cell.children || []).forEach(c => el.appendChild(renderMdast(c)));
+                tr.appendChild(el);
+            });
+            return tr;
+        }
+
         // NOTE: insertAdjacentHTML は DOMPurify.sanitize() でサニタイズ済みのコンテンツのみ使用
         function renderContent(bodyEl, content, append) {
             if (!append) bodyEl.textContent = '';
             const div = document.createElement('div');
             if (content.markdown) {
-                const raw = marked.parse(content.markdown);
-                const sanitized = DOMPurify.sanitize(raw, { ADD_ATTR: ['class'] });
-                div.insertAdjacentHTML('beforeend', sanitized);
+                // WASM mdast パーサー優先、フォールバックは marked.js
+                if (window.__vpMdast && window.__vpMdast.ready) {
+                    try {
+                        const ast = window.__vpMdast.parse(content.markdown);
+                        div.appendChild(renderMdast(ast));
+                    } catch (e) {
+                        console.warn('[VP] mdast レンダリング失敗、marked.js にフォールバック:', e);
+                        const raw = marked.parse(content.markdown);
+                        const sanitized = DOMPurify.sanitize(raw, { ADD_ATTR: ['class'] });
+                        div.insertAdjacentHTML('beforeend', sanitized);
+                    }
+                } else {
+                    const raw = marked.parse(content.markdown);
+                    const sanitized = DOMPurify.sanitize(raw, { ADD_ATTR: ['class'] });
+                    div.insertAdjacentHTML('beforeend', sanitized);
+                }
             } else if (content.html) {
                 const sanitized = DOMPurify.sanitize(content.html);
                 div.insertAdjacentHTML('beforeend', sanitized);
