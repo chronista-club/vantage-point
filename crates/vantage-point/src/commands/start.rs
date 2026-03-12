@@ -25,7 +25,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyModifiers, MouseEventKind};
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
@@ -42,6 +42,7 @@ use crate::config::Config;
 use crate::process::CapabilityConfig;
 use crate::protocol::DebugMode;
 use crate::resolve::{self, ResolvedTarget};
+use alacritty_terminal::grid::Scroll;
 use crate::terminal::state::TerminalState;
 use crate::tui::input::key_to_pty_bytes;
 use crate::tui::terminal_widget::TerminalView;
@@ -630,6 +631,17 @@ fn run_tui(
                         state.resize(new_pty_cols, new_pty_lines);
                     }
                 }
+                Event::Mouse(mouse) => match mouse.kind {
+                    MouseEventKind::ScrollUp => {
+                        let mut state = term_state.lock().unwrap();
+                        state.scroll_display(Scroll::Delta(3));
+                    }
+                    MouseEventKind::ScrollDown => {
+                        let mut state = term_state.lock().unwrap();
+                        state.scroll_display(Scroll::Delta(-3));
+                    }
+                    _ => {}
+                },
                 _ => {}
             }
         }
