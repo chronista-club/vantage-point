@@ -161,9 +161,9 @@ pub fn run_canvas(port: u16, project_name: &str, lanes: bool) -> anyhow::Result<
     let event_loop = EventLoop::new();
 
     let title = if lanes {
-        "VP Canvas".to_string()
+        "PP Canvas".to_string()
     } else {
-        format!("VP: {} — Canvas", project_name)
+        format!("PP: {} — Canvas", project_name)
     };
 
     let window = WindowBuilder::new()
