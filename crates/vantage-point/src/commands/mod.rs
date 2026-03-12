@@ -15,3 +15,4 @@ pub mod restart;
 pub mod restart_all;
 pub mod start;
 pub mod update;
+pub mod world_cmd;

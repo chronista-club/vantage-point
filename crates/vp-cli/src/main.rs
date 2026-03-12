@@ -20,7 +20,7 @@ use vantage_point::cli::{self, DebugModeArg, parse_debug_env};
 use vantage_point::commands;
 use vantage_point::config::Config;
 use vantage_point::protocol::DebugMode;
-use vantage_point::{mcp, midi, process, tray};
+use vantage_point::{mcp, midi, tray};
 
 use commands::canvas_cmd::CanvasCommands;
 use commands::daemon::DaemonCommands;
@@ -126,13 +126,9 @@ enum Commands {
     File(FileCommands),
 
     // --- App ---
-    /// World（TheWorld）を起動 — 全 Process を統括管理（Daemon 統合）
-    #[command(alias = "conductor")]
-    World {
-        /// 待ち受けポート番号
-        #[arg(short, long, default_value_t = cli::WORLD_PORT)]
-        port: u16,
-    },
+    /// TheWorld 管理 — 全 Process を統括する常駐プロセス
+    #[command(subcommand, alias = "conductor")]
+    World(commands::world_cmd::WorldCommands),
     /// VantagePoint.app を起動（TheWorld も自動起動）
     App {
         /// TheWorld ポート番号
@@ -233,10 +229,7 @@ fn main() -> Result<()> {
         Commands::File(cmd) => commands::file_cmd::execute(cmd, &config),
 
         // App
-        Commands::World { port } => {
-            let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(process::run_world(port))
-        }
+        Commands::World(cmd) => commands::world_cmd::execute(cmd),
         Commands::App { port, no_daemon } => commands::app::execute(port, no_daemon),
         Commands::Tray { midi } => {
             // MIDI をバックグラウンドスレッドで起動
