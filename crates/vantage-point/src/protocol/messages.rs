@@ -159,6 +159,11 @@ pub enum ProcessMessage {
         #[serde(skip_serializing_if = "Option::is_none")]
         pane_id: Option<String>,
     },
+    /// Canvas Lane 切り替え指示
+    SwitchLane {
+        /// 切り替え先の Lane 名（プロジェクト名）
+        lane: String,
+    },
 }
 
 /// Session information for UI

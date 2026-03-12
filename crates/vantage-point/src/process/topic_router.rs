@@ -134,6 +134,9 @@ impl TopicRouter {
 
             // === Star Platinum（Process 管理）===
             ProcessMessage::Ping => "process/star-platinum/event/ping".to_string(),
+            ProcessMessage::SwitchLane { .. } => {
+                "process/paisley-park/command/switch-lane".to_string()
+            }
         }
     }
 

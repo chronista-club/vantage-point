@@ -138,6 +138,8 @@ pub(crate) struct AppState {
         Arc<tokio::sync::Mutex<HashMap<String, tokio::sync::oneshot::Sender<ScreenshotData>>>>,
     /// Topic ベースのメッセージルーター（Hub → Topic 振り分け）
     pub topic_router: Arc<TopicRouter>,
+    /// Canvas WS クライアントへの送信チャネル（HTTP API → lanes WS handler）
+    pub canvas_senders: Arc<tokio::sync::Mutex<Vec<tokio::sync::mpsc::Sender<serde_json::Value>>>>,
 }
 
 impl AppState {

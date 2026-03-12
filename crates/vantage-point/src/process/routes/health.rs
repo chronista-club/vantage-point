@@ -55,7 +55,11 @@ fn load_canvas_html() -> String {
                 html
             }
             Err(e) => {
-                tracing::warn!("dev: canvas.html not found at {}: {}, falling back to embedded", path.display(), e);
+                tracing::warn!(
+                    "dev: canvas.html not found at {}: {}, falling back to embedded",
+                    path.display(),
+                    e
+                );
                 include_str!("../../../../../web/canvas.html").to_string()
             }
         }
@@ -86,7 +90,9 @@ fn load_vendor_file(filename: &str) -> Option<Vec<u8>> {
 
     // 本番: コンパイル時に埋め込んだファイルを返す
     match filename {
-        "mermaid.min.js" => Some(include_bytes!("../../../../../web/vendor/mermaid.min.js").to_vec()),
+        "mermaid.min.js" => {
+            Some(include_bytes!("../../../../../web/vendor/mermaid.min.js").to_vec())
+        }
         "shiki-vp.mjs" => Some(include_bytes!("../../../../../web/vendor/shiki-vp.mjs").to_vec()),
         "shiki-onig.wasm" => {
             Some(include_bytes!("../../../../../web/vendor/shiki-onig.wasm").to_vec())
@@ -214,6 +220,40 @@ pub async fn canvas_close_handler(State(state): State<Arc<AppState>>) -> impl In
     }
 }
 
+/// POST /api/canvas/switch_lane - Canvas Lane 切り替え
+///
+/// canvas_senders 経由で接続中の全 Canvas WS クライアントに直接送信。
+pub async fn canvas_switch_lane_handler(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let lane = body
+        .get("lane")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    if lane.is_empty() {
+        return Json(serde_json::json!({"status": "error", "message": "lane is required"}));
+    }
+    let msg = serde_json::json!({"type": "switch_lane", "lane": lane});
+    let mut senders = state.canvas_senders.lock().await;
+    let mut sent = 0;
+    // 送信失敗（切断済み）のチャネルを除去
+    senders.retain(|tx| !tx.is_closed());
+    for tx in senders.iter() {
+        if tx.send(msg.clone()).await.is_ok() {
+            sent += 1;
+        }
+    }
+    tracing::info!(
+        "switch_lane({}): sent to {}/{} canvas client(s)",
+        lane,
+        sent,
+        senders.len()
+    );
+    Json(serde_json::json!({"status": "ok", "lane": lane, "clients": sent}))
+}
+
 /// GET /api/canvas/layout - Canvas レイアウト状態を復元
 pub async fn canvas_layout_get_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     match state.load_canvas_layout() {
@@ -288,11 +328,19 @@ pub async fn canvas_capture_handler(
     State(state): State<Arc<AppState>>,
     Json(params): Json<CaptureParams>,
 ) -> impl IntoResponse {
-    // 1. Canvas プロセスの生存確認
+    // 1. Canvas プロセスの生存確認（AppState → PID ファイル fallback）
     let mut pid_guard = state.canvas_pid.lock().await;
     let canvas_alive = match *pid_guard {
         Some(pid) => unsafe { libc::kill(pid as i32, 0) == 0 },
-        None => false,
+        None => {
+            // AppState に PID がなくても、PID ファイルから既存 Canvas を発見できる
+            if let Some(pid) = crate::canvas::find_running_canvas() {
+                *pid_guard = Some(pid);
+                true
+            } else {
+                false
+            }
+        }
     };
 
     // Canvas 未起動なら自動起動 + WebSocket 接続待ち
@@ -321,11 +369,14 @@ pub async fn canvas_capture_handler(
             }
         }
         // Canvas の WebSocket 接続を待つ（最大 5 秒）
+        // TheWorld では Hub ではなく /ws/lanes 経由で Canvas が接続するため、
+        // canvas_senders の登録で接続確認する
         drop(pid_guard);
         let mut connected = false;
         for _ in 0..50 {
             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-            if state.hub.client_count().await > 0 {
+            let senders = state.canvas_senders.lock().await;
+            if !senders.is_empty() {
                 connected = true;
                 break;
             }
@@ -515,11 +566,7 @@ pub async fn wasm_handler(Path(filename): Path<String>) -> impl IntoResponse {
             bytes,
         )
             .into_response(),
-        None => (
-            axum::http::StatusCode::NOT_FOUND,
-            "WASM file not found",
-        )
-            .into_response(),
+        None => (axum::http::StatusCode::NOT_FOUND, "WASM file not found").into_response(),
     }
 }
 

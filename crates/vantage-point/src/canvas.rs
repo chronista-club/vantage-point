@@ -54,7 +54,11 @@ fn remove_canvas_pid() {
 /// Canvas シングルトンを起動（既存があればその PID を返す）
 ///
 /// Lane モード対応: port が指定されていれば 1:1 モード、なければ Lane モードで起動。
-pub fn ensure_canvas_running(port: u16, lanes: bool, project_name: Option<&str>) -> anyhow::Result<u32> {
+pub fn ensure_canvas_running(
+    port: u16,
+    lanes: bool,
+    project_name: Option<&str>,
+) -> anyhow::Result<u32> {
     // 既存の Canvas が動いていればそれを使う
     if let Some(pid) = find_running_canvas() {
         tracing::info!("Canvas already running (pid={})", pid);
@@ -179,15 +183,33 @@ pub fn run_canvas(port: u16, project_name: &str, lanes: bool) -> anyhow::Result<
     // フォーカスは奪わない（TUI に留まる）
     // ユーザーがクリック or Cmd+Tab で切り替え
 
-    // HTTP URL で Canvas を提供（CDN スクリプトが正常に読み込まれるように）
-    // キャッシュは canvas_handler の no-store ヘッダーで回避
+    // HTML を HTTP で取得してから with_html で直接ロード
+    // wry (WebKit) は HTTP キャッシュを頑固に保持するため、
+    // with_url ではなく with_html で完全にバイパスする
     let canvas_url = if lanes {
         format!("http://localhost:{}/canvas?project={}", port, project_name)
     } else {
         format!("http://localhost:{}/canvas?direct", port)
     };
+    // HTML を取得（最大 5 秒待ち）
+    let html = {
+        let mut html = None;
+        for _ in 0..50 {
+            if let Ok(resp) = reqwest::blocking::get(&canvas_url) {
+                if let Ok(text) = resp.text() {
+                    // __VP_WS_HOST__ プレースホルダーを実際の host:port に置換
+                    // with_html では window.location.host が空になるため必須
+                    let text = text.replace("__VP_WS_HOST__", &format!("localhost:{}", port));
+                    html = Some(text);
+                    break;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        html.unwrap_or_else(|| include_str!("../../../web/canvas.html").to_string())
+    };
     let _webview = WebViewBuilder::new()
-        .with_url(&canvas_url)
+        .with_html(&html)
         .with_devtools(true)
         .build(&window)?;
 

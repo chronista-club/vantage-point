@@ -79,6 +79,8 @@ enum LaneEvent {
         port: u16,
         status: LaneStatus,
     },
+    /// Canvas Lane 切り替え指示
+    SwitchLane { lane: String },
 }
 
 /// Canvas クライアント → サーバーへのメッセージ
@@ -107,6 +109,8 @@ enum BridgeMsg {
     },
     /// Lane 一覧更新
     LanesUpdated(Vec<LaneInfo>),
+    /// Lane 切り替え指示
+    SwitchLane { lane: String },
 }
 
 /// WebSocket ハンドラー: `/ws/lanes`
@@ -146,7 +150,7 @@ async fn handle_lanes_socket(socket: WebSocket, state: Arc<AppState>) {
         loop {
             match hub_rx.recv().await {
                 Ok(msg) => {
-                    // ScreenshotRequest のみ直接転送（Lane ラップ不要）
+                    // ScreenshotRequest は Lane ラップせずに直接転送
                     if matches!(msg, ProcessMessage::ScreenshotRequest { .. }) {
                         let json = serde_json::to_value(&msg).unwrap_or_default();
                         let _ = hub_bridge_tx.send(BridgeMsg::DirectMessage(json)).await;
@@ -157,6 +161,29 @@ async fn handle_lanes_socket(socket: WebSocket, state: Arc<AppState>) {
                     tracing::warn!("Lanes hub subscriber lagged: {} dropped", n);
                 }
             }
+        }
+    });
+
+    // Canvas コマンドチャネル: HTTP API からの直接送信を受け取り Canvas WS に転送
+    let (cmd_tx, mut cmd_rx) = mpsc::channel::<serde_json::Value>(64);
+    // AppState に送信チャネルを登録
+    state.canvas_senders.lock().await.push(cmd_tx);
+
+    let cmd_bridge_tx = bridge_tx.clone();
+    let cmd_task = tokio::spawn(async move {
+        while let Some(json) = cmd_rx.recv().await {
+            // switch_lane は専用 BridgeMsg で送信（LaneEvent 正規パス）
+            if json.get("type").and_then(|v| v.as_str()) == Some("switch_lane") {
+                if let Some(lane) = json.get("lane").and_then(|v| v.as_str()) {
+                    let _ = cmd_bridge_tx
+                        .send(BridgeMsg::SwitchLane {
+                            lane: lane.to_string(),
+                        })
+                        .await;
+                    continue;
+                }
+            }
+            let _ = cmd_bridge_tx.send(BridgeMsg::DirectMessage(json)).await;
         }
     });
 
@@ -215,6 +242,7 @@ async fn handle_lanes_socket(socket: WebSocket, state: Arc<AppState>) {
                     continue;
                 }
                 BridgeMsg::LanesUpdated(lanes) => LaneEvent::Lanes { lanes },
+                BridgeMsg::SwitchLane { lane } => LaneEvent::SwitchLane { lane },
             };
             let text = serde_json::to_string(&event).unwrap_or_default();
             if ws_sender.send(Message::Text(text.into())).await.is_err() {
@@ -279,6 +307,7 @@ async fn handle_lanes_socket(socket: WebSocket, state: Arc<AppState>) {
     }
     scan_task.abort();
     hub_task.abort();
+    cmd_task.abort();
 
     tracing::info!("Canvas Lane WS 接続終了");
 }
@@ -423,7 +452,9 @@ async fn spawn_lane_bridge(lane: String, port: u16, bridge_tx: mpsc::Sender<Brid
     // ready メッセージを送信 → Process が RetainedStore から状態を再送してくれる
     let ready_msg = serde_json::json!({"type": "ready"}).to_string();
     if let Err(e) = write
-        .send(tokio_tungstenite::tungstenite::Message::Text(ready_msg.into()))
+        .send(tokio_tungstenite::tungstenite::Message::Text(
+            ready_msg.into(),
+        ))
         .await
     {
         tracing::warn!("Lane {} (port {}) ready 送信失敗: {}", lane, port, e);

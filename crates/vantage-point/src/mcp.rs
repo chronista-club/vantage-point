@@ -149,6 +149,16 @@ pub struct UnwatchFileParams {
     pub pane_id: String,
 }
 
+/// Parameters for the switch_lane tool
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SwitchLaneParams {
+    /// Lane name (project name) to switch to
+    #[schemars(
+        description = "Lane name (project name) to switch the Canvas to. e.g. 'vantage-point', 'creo-memories'"
+    )]
+    pub lane: String,
+}
+
 /// Parameters for the eval_ruby tool
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct EvalRubyParams {
@@ -748,6 +758,41 @@ impl VantageMcp {
         }
     }
 
+    /// Canvas の表示 Lane を切り替える
+    #[tool(
+        description = "Switch the active lane (project) in the PP Canvas window. The lane name is the project name shown in the lane bar."
+    )]
+    async fn switch_lane(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<SwitchLaneParams>,
+    ) -> Result<CallToolResult, McpError> {
+        // TheWorld の HTTP API 経由で Canvas に switch_lane を送信
+        let world_port = crate::cli::WORLD_PORT;
+        let url = format!("http://[::1]:{}/api/canvas/switch_lane", world_port);
+        let body = serde_json::json!({ "lane": params.lane });
+
+        let client = reqwest::Client::new();
+        match client.post(&url).json(&body).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+                    format!("Switched Canvas lane to '{}'", params.lane),
+                )]))
+            }
+            Ok(resp) => {
+                let status = resp.status();
+                let text = resp.text().await.unwrap_or_default();
+                Err(McpError::internal_error(
+                    format!("TheWorld API error: {} {}", status, text),
+                    None,
+                ))
+            }
+            Err(e) => Err(McpError::internal_error(
+                format!("Failed to reach TheWorld: {}", e),
+                None,
+            )),
+        }
+    }
+
     /// Show content in the browser viewer
     #[tool(
         description = "Display content in the Vantage Point browser viewer. Supports markdown, html, log, and url formats. Use content_type='url' to embed a web page in an iframe."
@@ -1121,8 +1166,9 @@ impl VantageMcp {
             "pane_id": params.pane_id,
         });
 
-        // タイムアウトを長めに設定（Canvas 自動起動 + キャプチャ待ち）
-        let url = format!("{}/api/canvas/capture", self.process_url.lock().await);
+        // TheWorld 経由で Canvas にキャプチャリクエスト（Canvas は常に TheWorld の WS に接続）
+        let world_port = crate::cli::WORLD_PORT;
+        let url = format!("http://[::1]:{}/api/canvas/capture", world_port);
         let resp = self
             .client
             .post(&url)

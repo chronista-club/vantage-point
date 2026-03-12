@@ -2258,6 +2258,16 @@
                     }
                     break;
                 }
+                // Canvas Lane 切り替え指示（MCP/API 経由）
+                case 'switch_lane': {
+                    if (data.lane && laneState.lanes.has(data.lane)) {
+                        switchLane(data.lane);
+                        renderLaneBar();
+                    } else {
+                        console.warn('switch_lane: unknown lane', data.lane, 'available:', [...laneState.lanes.keys()]);
+                    }
+                    break;
+                }
                 // Canvas レベルのメッセージ（Lane ラップなし）は直接 handleMessage に委譲
                 case 'screenshot_request':
                 case 'ping':

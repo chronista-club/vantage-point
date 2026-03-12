@@ -119,6 +119,7 @@ pub async fn run(
         )),
         screenshot_waiters: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         topic_router,
+        canvas_senders: Arc::new(tokio::sync::Mutex::new(Vec::new())),
     });
 
     // ペイン状態をディスクから復元（前回 Process 終了時の状態 → RetainedStore）
@@ -140,11 +141,6 @@ pub async fn run(
         .route("/api/unwatch-file", post(health::unwatch_file_handler))
         .route("/api/canvas/open", post(health::canvas_open_handler))
         .route("/api/canvas/close", post(health::canvas_close_handler))
-        .route("/api/canvas/capture", post(health::canvas_capture_handler))
-        .route(
-            "/api/canvas/layout",
-            get(health::canvas_layout_get_handler).post(health::canvas_layout_save_handler),
-        )
         .route("/api/ruby/eval", post(health::ruby_eval_handler))
         .route("/api/ruby/run", post(health::ruby_run_handler))
         .route("/api/ruby/stop", post(health::ruby_stop_handler))
@@ -353,6 +349,7 @@ pub async fn run_world(port: u16) -> Result<()> {
         )),
         screenshot_waiters: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         topic_router,
+        canvas_senders: Arc::new(tokio::sync::Mutex::new(Vec::new())),
     });
 
     let app = Router::new()
@@ -363,6 +360,16 @@ pub async fn run_world(port: u16) -> Result<()> {
         .route("/vendor/{filename}", get(health::vendor_handler))
         // Canvas Lane 集約 WebSocket
         .route("/ws/lanes", get(lanes::lanes_ws_handler))
+        // Canvas API（TheWorld 経由で Canvas WS に到達 — 一元管理）
+        .route("/api/canvas/capture", post(health::canvas_capture_handler))
+        .route(
+            "/api/canvas/switch_lane",
+            post(health::canvas_switch_lane_handler),
+        )
+        .route(
+            "/api/canvas/layout",
+            get(health::canvas_layout_get_handler).post(health::canvas_layout_save_handler),
+        )
         // World API routes
         .route("/api/world/projects", get(world::world_list_projects))
         .route("/api/world/processes", get(world::world_list_processes))
