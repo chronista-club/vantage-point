@@ -178,7 +178,10 @@ mod tests {
     #[test]
     fn build_claude_command_continue() {
         let cmd = build_claude_command(&SessionMode::Continue);
-        assert_eq!(cmd, vec!["claude", "--dangerously-skip-permissions", "--continue"]);
+        assert_eq!(
+            cmd,
+            vec!["claude", "--dangerously-skip-permissions", "--continue"]
+        );
     }
 
     #[test]
@@ -190,6 +193,14 @@ mod tests {
     #[test]
     fn build_claude_command_resume() {
         let cmd = build_claude_command(&SessionMode::Resume("abc-123".to_string()));
-        assert_eq!(cmd, vec!["claude", "--dangerously-skip-permissions", "--resume", "abc-123"]);
+        assert_eq!(
+            cmd,
+            vec![
+                "claude",
+                "--dangerously-skip-permissions",
+                "--resume",
+                "abc-123"
+            ]
+        );
     }
 }

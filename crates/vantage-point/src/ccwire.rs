@@ -64,7 +64,11 @@ pub fn register(session_name: &str, tmux_target: &str) -> Result<()> {
         rusqlite::params![session_name, tmux_target, pid, now, registered_at],
     )?;
 
-    tracing::info!("ccwire 登録完了: {} (target: {})", session_name, tmux_target);
+    tracing::info!(
+        "ccwire 登録完了: {} (target: {})",
+        session_name,
+        tmux_target
+    );
     Ok(())
 }
 

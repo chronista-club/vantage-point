@@ -391,7 +391,10 @@ fn expand_wikilinks(text: &str) -> Vec<MdNode> {
             // [[ ... ]] の中身をパース
             let inner = &remaining[start + 2..end_abs];
             let (target, label) = if let Some(pipe) = inner.find('|') {
-                (inner[..pipe].trim().to_string(), Some(inner[pipe + 1..].trim().to_string()))
+                (
+                    inner[..pipe].trim().to_string(),
+                    Some(inner[pipe + 1..].trim().to_string()),
+                )
             } else {
                 (inner.trim().to_string(), None)
             };

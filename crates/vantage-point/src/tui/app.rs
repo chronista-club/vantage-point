@@ -290,7 +290,9 @@ impl MultiProjectApp {
         }
 
         // Ctrl+Shift+←/→: セッション切替（同一プロジェクト内）
-        if key.modifiers.contains(KeyModifiers::CONTROL | KeyModifiers::SHIFT)
+        if key
+            .modifiers
+            .contains(KeyModifiers::CONTROL | KeyModifiers::SHIFT)
             && ctx.sessions.len() > 1
         {
             let switch_to = match key.code {
@@ -358,10 +360,7 @@ impl MultiProjectApp {
     ) -> Result<bool> {
         let overlay = self.overlay.as_mut().unwrap();
         match overlay {
-            OverlayKind::ProjectSwitcher {
-                list_state,
-                items,
-            } => match key.code {
+            OverlayKind::ProjectSwitcher { list_state, items } => match key.code {
                 KeyCode::Esc | KeyCode::Char('p')
                     if key.code == KeyCode::Esc
                         || key.modifiers.contains(KeyModifiers::CONTROL) =>
@@ -385,9 +384,7 @@ impl MultiProjectApp {
                         let name = project.name.clone();
 
                         if *already_active {
-                            if let Some(pos) =
-                                self.projects.iter().position(|ctx| ctx.dir == dir)
-                            {
+                            if let Some(pos) = self.projects.iter().position(|ctx| ctx.dir == dir) {
                                 self.overlay = None;
                                 self.switch_to(pos);
                                 return Ok(true);
@@ -395,10 +392,7 @@ impl MultiProjectApp {
                         } else {
                             let config = self.config.clone();
                             if let Some(project_idx) = config.find_project_index(&dir) {
-                                start_background_services(
-                                    &dir, &config, project_idx, &name,
-                                )
-                                .ok();
+                                start_background_services(&dir, &config, project_idx, &name).ok();
                                 let port =
                                     crate::resolve::port_for_configured(project_idx, &config)
                                         .unwrap_or(33000 + project_idx as u16);
@@ -524,7 +518,13 @@ impl MultiProjectApp {
                 .split(frame.area());
 
             draw_header_bar(
-                frame, chunks[0], &tab_info, port, ai_busy, pp_open, &bridge_status,
+                frame,
+                chunks[0],
+                &tab_info,
+                port,
+                ai_busy,
+                pp_open,
+                &bridge_status,
             );
 
             let main_area = chunks[1];
@@ -811,11 +811,7 @@ fn start_background_services(
         midi_config: None,
         bonjour_port: Some(port),
     };
-    crate::commands::start::ensure_sp_running(
-        port,
-        crate::protocol::DebugMode::None,
-        cap_config,
-    )?;
+    crate::commands::start::ensure_sp_running(port, crate::protocol::DebugMode::None, cap_config)?;
     Ok(())
 }
 

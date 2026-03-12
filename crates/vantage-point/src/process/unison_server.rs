@@ -101,7 +101,12 @@ async fn handle_canvas_open(state: &AppState) -> Result<serde_json::Value, Strin
     match crate::canvas::ensure_canvas_running(port, lanes, project_name) {
         Ok(pid) => {
             *state.canvas_pid.lock().await = Some(pid);
-            tracing::info!("PP Window opened (pid={}, port={}, lanes={})", pid, port, lanes);
+            tracing::info!(
+                "PP Window opened (pid={}, port={}, lanes={})",
+                pid,
+                port,
+                lanes
+            );
             Ok(serde_json::json!({"status": "opened", "pid": pid}))
         }
         Err(e) => Err(format!("Failed to open PP window: {}", e)),

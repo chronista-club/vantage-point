@@ -87,11 +87,7 @@ pub fn execute(target: Option<&str>, browser: bool, headless: bool, config: &Con
         Ok(())
     } else if had_tmux && tmux::is_tmux_available() {
         // tmux セッションを再作成（detached）
-        match tmux::create_detached(
-            &session,
-            &vp_bin,
-            &["start", "--project-dir", &project_dir],
-        ) {
+        match tmux::create_detached(&session, &vp_bin, &["start", "--project-dir", &project_dir]) {
             Ok(()) => {
                 std::thread::sleep(std::time::Duration::from_secs(2));
                 println!("  ✓ {} (port {}, tmux:{})", project_name, port, session);
@@ -106,11 +102,7 @@ pub fn execute(target: Option<&str>, browser: bool, headless: bool, config: &Con
         Ok(())
     } else if tmux::is_tmux_available() {
         // tmux はあるけどセッションがなかった → 新規作成
-        match tmux::create_detached(
-            &session,
-            &vp_bin,
-            &["start", "--project-dir", &project_dir],
-        ) {
+        match tmux::create_detached(&session, &vp_bin, &["start", "--project-dir", &project_dir]) {
             Ok(()) => {
                 std::thread::sleep(std::time::Duration::from_secs(2));
                 println!("  ✓ {} (port {}, tmux:{})", project_name, port, session);

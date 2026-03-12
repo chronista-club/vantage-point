@@ -47,7 +47,6 @@ use crate::tui::input::key_to_pty_bytes;
 use crate::tui::terminal_widget::TerminalView;
 use crate::tui::theme::*;
 
-
 /// `vp start` の起動オプション
 pub struct StartOptions<'a> {
     pub target: Option<String>,
@@ -137,12 +136,7 @@ pub fn execute(opts: StartOptions) -> Result<()> {
     } else if browser {
         run_browser(resolved.port, debug_mode, cap_config)
     } else if gui {
-        run_gui(
-            resolved.port,
-            &resolved.name,
-            debug_mode,
-            cap_config,
-        )
+        run_gui(resolved.port, &resolved.name, debug_mode, cap_config)
     } else {
         run_tui_mode(
             resolved.port,
@@ -283,18 +277,17 @@ fn resolve_port(
 /// Headless モード: SP サーバー本体として blocking 実行
 fn run_headless(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig) -> Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(async {
-        crate::process::run(port, false, debug_mode, cap_config).await
-    })
+    rt.block_on(async { crate::process::run(port, false, debug_mode, cap_config).await })
 }
 
 /// Browser モード: SP を確保してブラウザで開く
 fn run_browser(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig) -> Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
-        let server_handle = tokio::spawn(async move {
-            crate::process::run(port, false, debug_mode, cap_config).await
-        });
+        let server_handle =
+            tokio::spawn(
+                async move { crate::process::run(port, false, debug_mode, cap_config).await },
+            );
 
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         let url = format!("http://localhost:{}", port);
@@ -314,15 +307,15 @@ fn run_gui(
 ) -> Result<()> {
     ensure_sp_running(port, debug_mode, cap_config)?;
 
-    let terminal_token = crate::discovery::fetch_terminal_token_blocking(port).ok_or_else(|| {
-        anyhow::anyhow!(
-            "Terminal token not found for port {}. Process may not be fully started.",
-            port
-        )
-    })?;
+    let terminal_token =
+        crate::discovery::fetch_terminal_token_blocking(port).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Terminal token not found for port {}. Process may not be fully started.",
+                port
+            )
+        })?;
 
-    let result =
-        crate::terminal_window::run_terminal_unison(port, &terminal_token, project_name);
+    let result = crate::terminal_window::run_terminal_unison(port, &terminal_token, project_name);
 
     match result {
         Ok(()) => tracing::info!("Terminal window closed (Process is still running)"),
@@ -387,47 +380,29 @@ fn tmux_session_exists(name: &str) -> bool {
 }
 
 /// tmux セッション作成（Claude CLI を中で起動、ステータスバー非表示）
+///
+/// `--continue` 付きで起動し、即死した場合は `--continue` なしでフォールバック。
 fn create_tmux_session(name: &str, project_dir: &str, cols: u16, rows: u16) -> Result<()> {
-    // mise の環境変数を収集 → tmux セッションの環境に注入
     let mise_envs = collect_mise_env(project_dir);
 
-    // tmux new-session で Claude CLI を起動
-    let mut args = vec![
-        "new-session".to_string(),
-        "-d".to_string(),
-        "-s".to_string(),
-        name.to_string(),
-        "-x".to_string(),
-        cols.to_string(),
-        "-y".to_string(),
-        rows.to_string(),
-        "-c".to_string(),
-        project_dir.to_string(),
-    ];
-    // mise 環境変数を -e KEY=VALUE で注入（tmux 3.2+）
-    for (key, value) in &mise_envs {
-        args.push("-e".to_string());
-        args.push(format!("{}={}", key, value));
-    }
-    args.extend([
-        "claude".to_string(),
-        "--dangerously-skip-permissions".to_string(),
-        "--continue".to_string(),
-    ]);
-
-    let status = std::process::Command::new("tmux")
-        .args(&args)
-        .status()?;
-
-    if !status.success() {
+    // まず --continue 付きで試行
+    let created = try_create_tmux_claude(name, project_dir, cols, rows, &mise_envs, true)?;
+    if !created {
         anyhow::bail!("tmux セッション作成に失敗: {}", name);
     }
 
+    // セッションが即死していないか確認（claude --continue が壊れたセッションで落ちるケース）
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    if !tmux_session_exists(name) {
+        tracing::warn!("claude --continue が即死。--continue なしでフォールバック");
+        let created = try_create_tmux_claude(name, project_dir, cols, rows, &mise_envs, false)?;
+        if !created {
+            anyhow::bail!("tmux セッション作成に失敗（フォールバック）: {}", name);
+        }
+    }
+
     if !mise_envs.is_empty() {
-        tracing::info!(
-            "mise env: {} 変数を tmux セッションに注入",
-            mise_envs.len()
-        );
+        tracing::info!("mise env: {} 変数を tmux セッションに注入", mise_envs.len());
     }
 
     // TUI が自前のヘッダー/フッターを持つため tmux ステータスバーを非表示
@@ -443,6 +418,46 @@ fn create_tmux_session(name: &str, project_dir: &str, cols: u16, rows: u16) -> R
     }
 
     Ok(())
+}
+
+/// tmux new-session で Claude CLI を起動（成功なら true）
+fn try_create_tmux_claude(
+    name: &str,
+    project_dir: &str,
+    cols: u16,
+    rows: u16,
+    mise_envs: &[(String, String)],
+    with_continue: bool,
+) -> Result<bool> {
+    let mut args = vec![
+        "new-session".to_string(),
+        "-d".to_string(),
+        "-s".to_string(),
+        name.to_string(),
+        "-x".to_string(),
+        cols.to_string(),
+        "-y".to_string(),
+        rows.to_string(),
+        "-c".to_string(),
+        project_dir.to_string(),
+    ];
+    for (key, value) in mise_envs {
+        args.push("-e".to_string());
+        args.push(format!("{}={}", key, value));
+    }
+    // bash -c でラップ: tmux の直接 exec ではシェル初期化が走らず
+    // claude が依存する PATH/環境変数が不足して即死するケースを回避
+    let mut claude_cmd = "claude --dangerously-skip-permissions".to_string();
+    if with_continue {
+        claude_cmd.push_str(" --continue");
+    }
+    args.push("bash".to_string());
+    args.push("-lc".to_string());
+    args.push(claude_cmd);
+
+    let status = std::process::Command::new("tmux").args(&args).status()?;
+
+    Ok(status.success())
 }
 
 /// mise env を project_dir で評価し、環境変数の (key, value) ペアを返す
@@ -517,7 +532,7 @@ fn run_tui(
     // ウィンドウタイトル設定
     {
         use std::io::Write as _;
-        let _ = write!(io::stdout(), "\x1b]0;VP: {}\x07", project_name);
+        let _ = write!(io::stdout(), "\x1b]0;HD: {}\x07", project_name);
         let _ = io::stdout().flush();
     }
 
@@ -620,21 +635,22 @@ fn run_tui(
                     ])
                     .split(frame.area());
 
-                draw_header(frame, chunks[0], project_name, port, is_reconnect, pp_open_val);
+                draw_header(
+                    frame,
+                    chunks[0],
+                    project_name,
+                    port,
+                    is_reconnect,
+                    pp_open_val,
+                );
 
                 // ターミナルペイン — Block 枠 + タイトル
                 let pane_block = ratatui::widgets::Block::default()
                     .borders(ratatui::widgets::Borders::ALL)
                     .border_style(Style::default().fg(NORD_COMMENT))
                     .title(Line::from(vec![
-                        Span::styled(
-                            format!(" {} ", NF_BOOK),
-                            Style::default().fg(NORD_CYAN),
-                        ),
-                        Span::styled(
-                            format!("{} ", session_name),
-                            Style::default().fg(NORD_FG),
-                        ),
+                        Span::styled(format!(" {} ", NF_BOOK), Style::default().fg(NORD_CYAN)),
+                        Span::styled(format!("{} ", session_name), Style::default().fg(NORD_FG)),
                     ]))
                     .title_style(Style::default().fg(NORD_FG));
                 let inner = pane_block.inner(chunks[1]);
@@ -668,8 +684,7 @@ fn run_tui(
                         if crate::canvas::find_running_canvas().is_some() {
                             crate::canvas::stop_canvas();
                         } else {
-                            let _ =
-                                crate::canvas::ensure_canvas_running(canvas_port, lanes, None);
+                            let _ = crate::canvas::ensure_canvas_running(canvas_port, lanes, None);
                         }
                         pp_open = crate::canvas::find_running_canvas().is_some();
                         continue;
@@ -891,7 +906,6 @@ fn draw_footer(frame: &mut ratatui::Frame, area: Rect) {
     let bar = Paragraph::new(Line::from(spans)).style(Style::default().bg(NORD_POLAR));
     frame.render_widget(bar, area);
 }
-
 
 // =============================================================================
 // SP（Star Platinum）サーバー管理

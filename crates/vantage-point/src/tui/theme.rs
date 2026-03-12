@@ -35,7 +35,15 @@ mod tests {
     #[test]
     fn theme_colors_are_distinct() {
         // 主要色が互いに異なることを検証
-        let colors = [NORD_BG, NORD_FG, NORD_CYAN, NORD_POLAR, NORD_GREEN, NORD_RED, NORD_YELLOW];
+        let colors = [
+            NORD_BG,
+            NORD_FG,
+            NORD_CYAN,
+            NORD_POLAR,
+            NORD_GREEN,
+            NORD_RED,
+            NORD_YELLOW,
+        ];
         for (i, a) in colors.iter().enumerate() {
             for (j, b) in colors.iter().enumerate() {
                 if i != j {
