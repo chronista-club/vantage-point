@@ -12,9 +12,14 @@ use markdown::unist;
 
 /// Markdown テキストを VP mdast にパース
 pub fn parse(text: &str) -> Result<MdNode, String> {
-    let options = markdown::ParseOptions::gfm();
+    let mut options = markdown::ParseOptions::gfm();
+    // YAML frontmatter を有効化
+    options.constructs.frontmatter = true;
     let tree = markdown::to_mdast(text, &options).map_err(|e| e.to_string())?;
-    Ok(convert_node(tree))
+    let mut node = convert_node(tree);
+    // 後処理: admonition ブロック変換
+    transform_admonitions(&mut node);
+    Ok(node)
 }
 
 /// markdown-rs の Node → VP の MdNode に変換
@@ -62,6 +67,14 @@ fn convert_node(node: mdast::Node) -> MdNode {
             position: convert_position(n.position),
         }),
         mdast::Node::Html(n) => MdNode::Html(Html {
+            value: n.value,
+            position: convert_position(n.position),
+        }),
+        mdast::Node::Yaml(n) => MdNode::Frontmatter(Frontmatter {
+            value: n.value,
+            position: convert_position(n.position),
+        }),
+        mdast::Node::Toml(n) => MdNode::Frontmatter(Frontmatter {
             value: n.value,
             position: convert_position(n.position),
         }),
@@ -143,6 +156,151 @@ fn convert_position(pos: Option<unist::Position>) -> Option<Position> {
     })
 }
 
+/// Admonition 変換 — BlockQuote 内の `[!NOTE]` / `[!WARNING]` 等を Admonition ノードに変換
+///
+/// GitHub Flavored Markdown の alerts 記法に対応:
+/// > [!NOTE]
+/// > 本文
+///
+/// および `:::note` 記法（Paragraph テキスト先頭が `:::` で始まる場合）
+fn transform_admonitions(node: &mut MdNode) {
+    // 再帰的に子ノードを処理
+    match node {
+        MdNode::Root(root) => transform_admonition_children(&mut root.children),
+        MdNode::BlockQuote(bq) => transform_admonition_children(&mut bq.children),
+        MdNode::List(list) => transform_admonition_children(&mut list.children),
+        MdNode::ListItem(li) => transform_admonition_children(&mut li.children),
+        _ => {}
+    }
+}
+
+fn transform_admonition_children(children: &mut Vec<MdNode>) {
+    // 各子ノードを再帰処理
+    for child in children.iter_mut() {
+        transform_admonitions(child);
+    }
+
+    // BlockQuote → Admonition 変換
+    let mut i = 0;
+    while i < children.len() {
+        if let MdNode::BlockQuote(bq) = &children[i] {
+            if let Some(admonition) = try_convert_blockquote_to_admonition(bq) {
+                children[i] = MdNode::Admonition(admonition);
+            }
+        }
+        i += 1;
+    }
+}
+
+/// BlockQuote の最初の Paragraph が `[!TYPE]` パターンを含む場合に Admonition に変換
+fn try_convert_blockquote_to_admonition(bq: &BlockQuote) -> Option<Admonition> {
+    if bq.children.is_empty() {
+        return None;
+    }
+
+    // 最初の子が Paragraph で、その最初の Text が `[!TYPE]` パターン
+    if let MdNode::Paragraph(para) = &bq.children[0] {
+        if let Some(MdNode::Text(text)) = para.children.first() {
+            // GitHub alerts: [!NOTE], [!WARNING], [!TIP], [!IMPORTANT], [!CAUTION]
+            if let Some(kind) = extract_alert_kind(&text.value) {
+                let title = extract_alert_title(&text.value);
+                // 残りの子ノード（最初の Paragraph の残りテキスト + 後続ノード）
+                let mut admonition_children = Vec::new();
+
+                // 最初の Paragraph の残りインライン要素
+                let remaining_inline: Vec<MdNode> = para.children[1..].to_vec();
+                // タイトル行の後の残りテキスト（改行後）がある場合
+                let remaining_text = extract_remaining_text(&text.value);
+                if !remaining_text.is_empty() || !remaining_inline.is_empty() {
+                    let mut new_children = Vec::new();
+                    if !remaining_text.is_empty() {
+                        new_children.push(MdNode::Text(Text {
+                            value: remaining_text,
+                            position: None,
+                        }));
+                    }
+                    new_children.extend(remaining_inline);
+                    if !new_children.is_empty() {
+                        admonition_children.push(MdNode::Paragraph(Paragraph {
+                            children: new_children,
+                            position: None,
+                        }));
+                    }
+                }
+
+                // 後続のブロックノード
+                admonition_children.extend(bq.children[1..].iter().cloned());
+
+                return Some(Admonition {
+                    kind,
+                    title,
+                    children: admonition_children,
+                    position: bq.position.clone(),
+                });
+            }
+        }
+    }
+    None
+}
+
+/// `[!NOTE]` → "note", `[!WARNING]` → "warning" 等を抽出
+fn extract_alert_kind(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    if trimmed.starts_with("[!") {
+        if let Some(end) = trimmed.find(']') {
+            let kind = trimmed[2..end].to_lowercase();
+            match kind.as_str() {
+                "note" | "warning" | "tip" | "important" | "caution" | "danger" | "info" => {
+                    Some(kind)
+                }
+                _ => None,
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    }
+}
+
+/// `[!NOTE] Custom Title\nBody` → Some("Custom Title")
+/// `[!NOTE]\nBody` → None
+fn extract_alert_title(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    if let Some(end) = trimmed.find(']') {
+        let after = &trimmed[end + 1..];
+        // 改行までの部分がタイトル
+        let title_part = if let Some(nl) = after.find('\n') {
+            after[..nl].trim()
+        } else {
+            after.trim()
+        };
+        if title_part.is_empty() {
+            None
+        } else {
+            Some(title_part.to_string())
+        }
+    } else {
+        None
+    }
+}
+
+/// `[!NOTE]\nRemaining text` → "Remaining text"
+/// `[!NOTE] Title\nRemaining text` → "Remaining text"
+fn extract_remaining_text(text: &str) -> String {
+    let trimmed = text.trim();
+    if let Some(end) = trimmed.find(']') {
+        let after = &trimmed[end + 1..];
+        if let Some(newline_pos) = after.find('\n') {
+            after[newline_pos + 1..].trim_start().to_string()
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    }
+}
+
 fn convert_align(align: mdast::AlignKind) -> AlignKind {
     match align {
         mdast::AlignKind::Left => AlignKind::Left,
@@ -220,6 +378,61 @@ mod tests {
                     assert!(p.children.len() >= 5);
                 }
                 other => panic!("Expected Paragraph, got {:?}", other),
+            },
+            other => panic!("Expected Root, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_frontmatter() {
+        let md = "---\ntitle: Test\nstatus: Draft\n---\n\n# Hello";
+        let ast = parse(md).unwrap();
+        match ast {
+            MdNode::Root(root) => {
+                assert!(root.children.len() >= 2);
+                match &root.children[0] {
+                    MdNode::Frontmatter(fm) => {
+                        assert!(fm.value.contains("title: Test"));
+                        assert!(fm.value.contains("status: Draft"));
+                    }
+                    other => panic!("Expected Frontmatter, got {:?}", other),
+                }
+                match &root.children[1] {
+                    MdNode::Heading(h) => assert_eq!(h.depth, 1),
+                    other => panic!("Expected Heading, got {:?}", other),
+                }
+            }
+            other => panic!("Expected Root, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_admonition_note() {
+        let md = "> [!NOTE]\n> This is a note.";
+        let ast = parse(md).unwrap();
+        match ast {
+            MdNode::Root(root) => match &root.children[0] {
+                MdNode::Admonition(a) => {
+                    assert_eq!(a.kind, "note");
+                    assert!(a.title.is_none());
+                }
+                other => panic!("Expected Admonition, got {:?}", other),
+            },
+            other => panic!("Expected Root, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_admonition_warning_with_title() {
+        let md = "> [!WARNING] Be careful\n> This is dangerous.";
+        let ast = parse(md).unwrap();
+        match ast {
+            MdNode::Root(root) => match &root.children[0] {
+                MdNode::Admonition(a) => {
+                    assert_eq!(a.kind, "warning");
+                    assert_eq!(a.title.as_deref(), Some("Be careful"));
+                }
+                other => panic!("Expected Admonition, got {:?}", other),
             },
             other => panic!("Expected Root, got {:?}", other),
         }

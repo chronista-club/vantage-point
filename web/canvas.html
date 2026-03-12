@@ -189,6 +189,96 @@
             margin: 0.8em 0;
         }
         .pane-card pre code { background: none; padding: 0; }
+
+        /* Shiki ハイライト済みコードブロック */
+        .pane-card .shiki-wrapper pre {
+            margin: 0.8em 0;
+            border-radius: var(--radius-md);
+            overflow-x: auto;
+        }
+        .pane-card .shiki-wrapper .shiki {
+            padding: 16px;
+            border-radius: var(--radius-md);
+            font-family: 'FiraCode Nerd Font', 'Fira Code', monospace;
+            font-size: 0.9em;
+            line-height: 1.5;
+        }
+
+        /* Frontmatter メタ情報カード */
+        .pane-card .frontmatter-card {
+            background: oklch(0.14 0.03 225);
+            border: 1px solid oklch(0.25 0.04 210);
+            border-radius: var(--radius-md);
+            padding: 12px 16px;
+            margin-bottom: 1em;
+            font-size: 0.85em;
+        }
+        .pane-card .frontmatter-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        .pane-card .frontmatter-table th {
+            text-align: left;
+            color: var(--color-accent-primary);
+            padding: 4px 12px 4px 0;
+            font-weight: 600;
+            white-space: nowrap;
+            width: 1%;
+        }
+        .pane-card .frontmatter-table td {
+            color: var(--color-text-secondary);
+            padding: 4px 0;
+        }
+
+        /* Admonition ブロック */
+        .pane-card .admonition {
+            border-radius: var(--radius-md);
+            margin: 1em 0;
+            padding: 0;
+            border-left: 4px solid;
+            overflow: hidden;
+        }
+        .pane-card .admonition-header {
+            padding: 8px 14px;
+            font-weight: 600;
+            font-size: 0.9em;
+        }
+        .pane-card .admonition-body {
+            padding: 4px 14px 12px;
+        }
+        .pane-card .admonition-body p { margin: 0.3em 0; }
+        /* カラーバリエーション */
+        .pane-card .admonition-note {
+            background: oklch(0.14 0.03 225);
+            border-color: oklch(0.68 0.14 210);
+        }
+        .pane-card .admonition-note .admonition-header { color: oklch(0.68 0.14 210); }
+        .pane-card .admonition-tip {
+            background: oklch(0.14 0.03 150);
+            border-color: oklch(0.72 0.17 160);
+        }
+        .pane-card .admonition-tip .admonition-header { color: oklch(0.72 0.17 160); }
+        .pane-card .admonition-warning, .pane-card .admonition-caution {
+            background: oklch(0.14 0.03 70);
+            border-color: oklch(0.75 0.15 70);
+        }
+        .pane-card .admonition-warning .admonition-header,
+        .pane-card .admonition-caution .admonition-header { color: oklch(0.75 0.15 70); }
+        .pane-card .admonition-danger {
+            background: oklch(0.14 0.03 20);
+            border-color: oklch(0.62 0.20 15);
+        }
+        .pane-card .admonition-danger .admonition-header { color: oklch(0.62 0.20 15); }
+        .pane-card .admonition-important {
+            background: oklch(0.14 0.03 300);
+            border-color: oklch(0.65 0.18 300);
+        }
+        .pane-card .admonition-important .admonition-header { color: oklch(0.65 0.18 300); }
+        .pane-card .admonition-info {
+            background: oklch(0.14 0.03 225);
+            border-color: oklch(0.68 0.14 210);
+        }
+        .pane-card .admonition-info .admonition-header { color: oklch(0.68 0.14 210); }
         .pane-card img {
             max-width: 100%;
             border-radius: var(--radius-md);
@@ -1480,6 +1570,56 @@
                     div.appendChild(marker);
                     (node.children || []).forEach(c => div.appendChild(renderMdast(c)));
                     return div;
+                }
+                case 'Frontmatter': {
+                    // YAML frontmatter → メタ情報カード
+                    const card = document.createElement('div');
+                    card.className = 'frontmatter-card';
+                    const yaml = node.value || '';
+                    // YAML をキーバリューで表示
+                    const lines = yaml.split('\n').filter(l => l.trim());
+                    const table = document.createElement('table');
+                    table.className = 'frontmatter-table';
+                    for (const line of lines) {
+                        const colonIdx = line.indexOf(':');
+                        if (colonIdx === -1) continue;
+                        const key = line.substring(0, colonIdx).trim();
+                        const val = line.substring(colonIdx + 1).trim();
+                        const tr = document.createElement('tr');
+                        const th = document.createElement('th');
+                        th.textContent = key;
+                        const td = document.createElement('td');
+                        td.textContent = val;
+                        tr.appendChild(th);
+                        tr.appendChild(td);
+                        table.appendChild(tr);
+                    }
+                    card.appendChild(table);
+                    return card;
+                }
+                case 'Admonition': {
+                    // Admonition ブロック — kind に応じたカラーバリエーション
+                    const adm = document.createElement('div');
+                    const kind = (node.kind || 'note').toLowerCase();
+                    adm.className = `admonition admonition-${kind}`;
+                    // アイコン + タイトル
+                    const header = document.createElement('div');
+                    header.className = 'admonition-header';
+                    const icons = {
+                        note: '\u{1f4dd}', tip: '\u{1f4a1}', warning: '\u{26a0}\ufe0f',
+                        danger: '\u{1f6a8}', caution: '\u{26a0}\ufe0f', important: '\u{2757}',
+                        info: '\u{2139}\ufe0f',
+                    };
+                    const icon = icons[kind] || icons.note;
+                    const title = node.title || kind.charAt(0).toUpperCase() + kind.slice(1);
+                    header.textContent = `${icon} ${title}`;
+                    adm.appendChild(header);
+                    // 本文
+                    const body = document.createElement('div');
+                    body.className = 'admonition-body';
+                    (node.children || []).forEach(c => body.appendChild(renderMdast(c)));
+                    adm.appendChild(body);
+                    return adm;
                 }
                 default: {
                     // 未対応ノード: children があれば再帰、なければテキスト

@@ -55,9 +55,9 @@ pub enum MdNode {
     Delete(Delete),
 
     // --- 拡張（Phase 2） ---
-    // Frontmatter(Frontmatter),
-    // Admonition(Admonition),
-    // WikiLink(WikiLink),
+    Frontmatter(Frontmatter),
+    Admonition(Admonition),
+    // WikiLink(WikiLink),  // Phase 3
 }
 
 // =============================================================================
@@ -254,6 +254,35 @@ pub struct Break {
 #[derive(Debug, Clone, Serialize, TS)]
 #[ts(export, export_to = "../../../web/src/mdast/types.ts")]
 pub struct Delete {
+    pub children: Vec<MdNode>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub position: Option<Position>,
+}
+
+// =============================================================================
+// 拡張ノード（Phase 2）
+// =============================================================================
+
+/// YAML frontmatter — `---` で囲まれたメタデータブロック
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export, export_to = "../../../web/src/mdast/types.ts")]
+pub struct Frontmatter {
+    /// YAML 生テキスト（Canvas 側で js-yaml 等でパース）
+    pub value: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub position: Option<Position>,
+}
+
+/// Admonition ブロック — `:::note` `:::warning` `:::danger` `:::tip`
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export, export_to = "../../../web/src/mdast/types.ts")]
+pub struct Admonition {
+    /// タイプ: note, warning, danger, tip, info, caution
+    pub kind: String,
+    /// タイトル（省略可）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// 子ノード（本文）
     pub children: Vec<MdNode>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub position: Option<Position>,
