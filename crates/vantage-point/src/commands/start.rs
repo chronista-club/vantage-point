@@ -657,7 +657,7 @@ fn run_tui(
 // ヘッダー / フッター描画（Nord テーマ）
 // =============================================================================
 
-/// ヘッダーバー — Nord テーマ + Stand アイコン
+/// ヘッダーバー — Nerd Font + Powerline セパレータ
 fn draw_header(
     frame: &mut ratatui::Frame,
     area: Rect,
@@ -668,21 +668,26 @@ fn draw_header(
 ) {
     let mut spans: Vec<Span> = Vec::new();
 
-    // プロジェクト名（タブ風）
+    // VP ロゴ + プロジェクト名（Powerline スタイル）
     spans.push(Span::styled(
-        format!(" {} ", project_name),
+        format!(" {} {} ", NF_DIAMOND, project_name),
         Style::default()
             .fg(NORD_BG)
             .bg(NORD_CYAN)
             .add_modifier(Modifier::BOLD),
     ));
+    // Powerline セパレータ: CYAN → POLAR
+    spans.push(Span::styled(
+        NF_PL_RIGHT,
+        Style::default().fg(NORD_CYAN).bg(NORD_POLAR),
+    ));
 
+    // Stand アイコン群
     let sep = Span::styled(" ", Style::default().bg(NORD_POLAR));
-    spans.push(sep.clone());
 
     // ⭐ Star Platinum（SP 接続）
     spans.push(Span::styled(
-        "\u{2b50}",
+        format!(" {}", NF_STAR),
         Style::default().fg(NORD_GREEN).bg(NORD_POLAR),
     ));
     spans.push(sep.clone());
@@ -690,14 +695,14 @@ fn draw_header(
     // 🧭 Paisley Park（Canvas）
     let pp_color = if pp_open { NORD_GREEN } else { NORD_COMMENT };
     spans.push(Span::styled(
-        "\u{1f9ed}",
+        NF_COMPASS,
         Style::default().fg(pp_color).bg(NORD_POLAR),
     ));
     spans.push(sep.clone());
 
     // 📖 Heaven's Door（Claude CLI）
     spans.push(Span::styled(
-        "\u{1f4d6}",
+        NF_BOOK,
         Style::default().fg(NORD_GREEN).bg(NORD_POLAR),
     ));
 
@@ -705,19 +710,21 @@ fn draw_header(
     if is_reconnect {
         spans.push(sep.clone());
         spans.push(Span::styled(
-            "\u{1f504}再接続",
+            format!("{} 再接続", NF_REFRESH),
             Style::default().fg(NORD_YELLOW).bg(NORD_POLAR),
         ));
     }
 
-    // 右端: ポート
+    // 右端: ポート（Powerline 左向き）
+    let port_text = format!(" {} :{} ", NF_ETHERNET, port);
     let port_span = Span::styled(
-        format!(" :{} ", port),
+        port_text.clone(),
         Style::default().fg(NORD_COMMENT).bg(NORD_POLAR),
     );
 
     let left_width: usize = spans.iter().map(|s| s.width()).sum();
-    let right_width = port_span.width();
+    let right_sep_width = 1; // NF_PL_LEFT
+    let right_width = port_text.len() + right_sep_width;
     let gap = (area.width as usize).saturating_sub(left_width + right_width);
     spans.push(Span::styled(
         " ".repeat(gap),
@@ -729,17 +736,20 @@ fn draw_header(
     frame.render_widget(bar, area);
 }
 
-/// フッターバー — キーバインドガイド
+/// フッターバー — Nerd Font アイコン付きキーバインドガイド
 fn draw_footer(frame: &mut ratatui::Frame, area: Rect) {
     let key_style = Style::default().fg(NORD_CYAN).bg(NORD_POLAR);
     let desc_style = Style::default().fg(NORD_COMMENT).bg(NORD_POLAR);
+    let sep_style = Style::default().fg(NORD_COMMENT).bg(NORD_POLAR);
 
     let mut spans = vec![
-        Span::styled(" Home", key_style),
+        Span::styled(format!(" {} Home", NF_HOME), key_style),
         Span::styled(" canvas ", desc_style),
-        Span::styled(" C-q", key_style),
+        Span::styled("│", sep_style),
+        Span::styled(format!(" {} C-q", NF_SIGN_OUT), key_style),
         Span::styled(" detach ", desc_style),
-        Span::styled(" PgUp/Dn", key_style),
+        Span::styled("│", sep_style),
+        Span::styled(format!(" {} PgUp/Dn", NF_ARROWS_V), key_style),
         Span::styled(" scroll ", desc_style),
     ];
 
