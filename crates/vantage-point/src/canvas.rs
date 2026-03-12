@@ -176,8 +176,8 @@ pub fn run_canvas(port: u16, project_name: &str, lanes: bool) -> anyhow::Result<
     #[cfg(target_os = "macos")]
     menu.init_for_nsapp();
 
-    // macOS: ウィンドウを前面に表示
-    window.set_focus();
+    // フォーカスは奪わない（TUI に留まる）
+    // ユーザーがクリック or Cmd+Tab で切り替え
 
     // HTTP URL で Canvas を提供（CDN スクリプトが正常に読み込まれるように）
     // キャッシュは canvas_handler の no-store ヘッダーで回避

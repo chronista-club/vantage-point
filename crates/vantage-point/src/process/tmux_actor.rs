@@ -293,6 +293,7 @@ impl TmuxActor {
         let mut args = vec![
             "split-window",
             flag,
+            "-d", // フォーカスを元のペインに残す
             "-t",
             session_name,
             "-P",

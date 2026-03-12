@@ -25,7 +25,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyModifiers, MouseEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
@@ -42,7 +42,6 @@ use crate::config::Config;
 use crate::process::CapabilityConfig;
 use crate::protocol::DebugMode;
 use crate::resolve::{self, ResolvedTarget};
-use alacritty_terminal::grid::Scroll;
 use crate::terminal::state::TerminalState;
 use crate::tui::input::key_to_pty_bytes;
 use crate::tui::terminal_widget::TerminalView;
@@ -389,26 +388,46 @@ fn tmux_session_exists(name: &str) -> bool {
 
 /// tmux セッション作成（Claude CLI を中で起動、ステータスバー非表示）
 fn create_tmux_session(name: &str, project_dir: &str, cols: u16, rows: u16) -> Result<()> {
+    // mise の環境変数を収集 → tmux セッションの環境に注入
+    let mise_envs = collect_mise_env(project_dir);
+
+    // tmux new-session で Claude CLI を起動
+    let mut args = vec![
+        "new-session".to_string(),
+        "-d".to_string(),
+        "-s".to_string(),
+        name.to_string(),
+        "-x".to_string(),
+        cols.to_string(),
+        "-y".to_string(),
+        rows.to_string(),
+        "-c".to_string(),
+        project_dir.to_string(),
+    ];
+    // mise 環境変数を -e KEY=VALUE で注入（tmux 3.2+）
+    for (key, value) in &mise_envs {
+        args.push("-e".to_string());
+        args.push(format!("{}={}", key, value));
+    }
+    args.extend([
+        "claude".to_string(),
+        "--dangerously-skip-permissions".to_string(),
+        "--continue".to_string(),
+    ]);
+
     let status = std::process::Command::new("tmux")
-        .args([
-            "new-session",
-            "-d",
-            "-s",
-            name,
-            "-x",
-            &cols.to_string(),
-            "-y",
-            &rows.to_string(),
-            "-c",
-            project_dir,
-            "claude",
-            "--dangerously-skip-permissions",
-            "--continue",
-        ])
+        .args(&args)
         .status()?;
 
     if !status.success() {
         anyhow::bail!("tmux セッション作成に失敗: {}", name);
+    }
+
+    if !mise_envs.is_empty() {
+        tracing::info!(
+            "mise env: {} 変数を tmux セッションに注入",
+            mise_envs.len()
+        );
     }
 
     // TUI が自前のヘッダー/フッターを持つため tmux ステータスバーを非表示
@@ -416,7 +435,47 @@ fn create_tmux_session(name: &str, project_dir: &str, cols: u16, rows: u16) -> R
         .args(["set-option", "-t", name, "status", "off"])
         .status();
 
+    // mise 環境変数を tmux セッションにも set-environment（後続ペイン用）
+    for (key, value) in &mise_envs {
+        let _ = std::process::Command::new("tmux")
+            .args(["set-environment", "-t", name, key, value])
+            .status();
+    }
+
     Ok(())
+}
+
+/// mise env を project_dir で評価し、環境変数の (key, value) ペアを返す
+///
+/// mise が未インストール or .mise.toml がなければ空 Vec を返す（ベストエフォート）。
+fn collect_mise_env(project_dir: &str) -> Vec<(String, String)> {
+    let mise_bin = dirs::home_dir()
+        .map(|h| h.join(".local/bin/mise"))
+        .unwrap_or_else(|| "mise".into());
+
+    let output = std::process::Command::new(&mise_bin)
+        .args(["env", "--shell", "bash"])
+        .current_dir(project_dir)
+        .output();
+
+    let Ok(output) = output else {
+        return vec![];
+    };
+    if !output.status.success() {
+        return vec![];
+    }
+
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            // "export KEY=VALUE" → (KEY, VALUE)
+            let line = line.strip_prefix("export ")?;
+            let (key, value) = line.split_once('=')?;
+            // クォート除去
+            let value = value.trim_matches('\'').trim_matches('"');
+            Some((key.to_string(), value.to_string()))
+        })
+        .collect()
 }
 
 /// tmux セッションのリサイズ
@@ -448,11 +507,8 @@ fn run_tui(
     // ターミナル初期化
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    crossterm::execute!(
-        stdout,
-        EnterAlternateScreen,
-        crossterm::event::EnableMouseCapture
-    )?;
+    // マウスは tmux に委譲（tmux mouse on 環境ではスクロール等は tmux が処理）
+    crossterm::execute!(stdout, EnterAlternateScreen)?;
 
     // ウィンドウタイトル設定
     {
@@ -466,7 +522,8 @@ fn run_tui(
 
     let size = terminal.size()?;
     // ヘッダー1行 + 区切り線1行 + フッター1行 + 区切り線1行 = 4行分
-    let pty_cols = size.width as usize;
+    // Block 枠分を差し引き: ヘッダー1 + 枠上1 + 枠下1 + フッター1 = 4行, 枠左右 = 2列
+    let pty_cols = (size.width.saturating_sub(2)) as usize;
     let pty_lines = (size.height.saturating_sub(4)) as usize;
 
     // tmux セッション確保
@@ -554,23 +611,37 @@ fn run_tui(
                     .direction(Direction::Vertical)
                     .constraints([
                         Constraint::Length(1), // ヘッダー
-                        Constraint::Length(1), // 上区切り線
-                        Constraint::Min(3),    // ターミナル
-                        Constraint::Length(1), // 下区切り線
+                        Constraint::Min(3),    // ターミナル（枠付き）
                         Constraint::Length(1), // フッター
                     ])
                     .split(frame.area());
 
                 draw_header(frame, chunks[0], project_name, port, is_reconnect, pp_open_val);
-                draw_separator(frame, chunks[1]);
+
+                // ターミナルペイン — Block 枠 + タイトル
+                let pane_block = ratatui::widgets::Block::default()
+                    .borders(ratatui::widgets::Borders::ALL)
+                    .border_style(Style::default().fg(NORD_COMMENT))
+                    .title(Line::from(vec![
+                        Span::styled(
+                            format!(" {} ", NF_BOOK),
+                            Style::default().fg(NORD_CYAN),
+                        ),
+                        Span::styled(
+                            format!("{} ", session_name),
+                            Style::default().fg(NORD_FG),
+                        ),
+                    ]))
+                    .title_style(Style::default().fg(NORD_FG));
+                let inner = pane_block.inner(chunks[1]);
+                frame.render_widget(pane_block, chunks[1]);
 
                 let state = term_state.lock().unwrap();
                 let snap = state.snapshot();
                 let view = TerminalView::new(&snap);
-                frame.render_widget(view, chunks[2]);
+                frame.render_widget(view, inner);
 
-                draw_separator(frame, chunks[3]);
-                draw_footer(frame, chunks[4]);
+                draw_footer(frame, chunks[2]);
             })?;
         }
 
@@ -610,8 +681,8 @@ fn run_tui(
                     }
                 }
                 Event::Resize(new_cols, new_rows) => {
-                    // 親ウィンドウのリサイズに追従
-                    let new_pty_cols = new_cols as usize;
+                    // 親ウィンドウのリサイズに追従（Block 枠分を差し引き）
+                    let new_pty_cols = (new_cols.saturating_sub(2)) as usize;
                     let new_pty_lines = (new_rows.saturating_sub(4)) as usize;
 
                     // PTY リサイズ
@@ -631,17 +702,6 @@ fn run_tui(
                         state.resize(new_pty_cols, new_pty_lines);
                     }
                 }
-                Event::Mouse(mouse) => match mouse.kind {
-                    MouseEventKind::ScrollUp => {
-                        let mut state = term_state.lock().unwrap();
-                        state.scroll_display(Scroll::Delta(3));
-                    }
-                    MouseEventKind::ScrollDown => {
-                        let mut state = term_state.lock().unwrap();
-                        state.scroll_display(Scroll::Delta(-3));
-                    }
-                    _ => {}
-                },
                 _ => {}
             }
         }
@@ -649,11 +709,7 @@ fn run_tui(
 
     // 終了処理（tmux セッションは殺さない — detach のみ）
     disable_raw_mode()?;
-    crossterm::execute!(
-        terminal.backend_mut(),
-        crossterm::event::DisableMouseCapture,
-        LeaveAlternateScreen
-    )?;
+    crossterm::execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
 
     println!(
@@ -779,15 +835,6 @@ fn draw_footer(frame: &mut ratatui::Frame, area: Rect) {
     frame.render_widget(bar, area);
 }
 
-/// 区切り線 — ヘッダー/ターミナル/フッター間の薄い水平線
-fn draw_separator(frame: &mut ratatui::Frame, area: Rect) {
-    let line = "─".repeat(area.width as usize);
-    let sep = Paragraph::new(Line::from(Span::styled(
-        line,
-        Style::default().fg(NORD_COMMENT),
-    )));
-    frame.render_widget(sep, area);
-}
 
 // =============================================================================
 // SP（Star Platinum）サーバー管理
