@@ -495,6 +495,8 @@ fn run_tui(
 
     let mut reader = pair.master.try_clone_reader()?;
     let mut writer = pair.master.take_writer()?;
+    // PTY master を保持（リサイズ用）
+    let pty_master = pair.master;
 
     // ターミナルエミュレータ状態
     let term_state = Arc::new(Mutex::new(TerminalState::new(pty_cols, pty_lines)));
@@ -575,34 +577,60 @@ fn run_tui(
 
         // イベントポーリング
         if event::poll(Duration::from_millis(16))? {
-            if let Event::Key(key) = event::read()? {
-                // Ctrl+Q: detach して終了（tmux セッションは生き続ける）
-                if key.code == KeyCode::Char('q')
-                    && key.modifiers.contains(KeyModifiers::CONTROL)
-                {
-                    break Ok(());
-                }
-
-                // Home: PP window トグル
-                if key.code == KeyCode::Home {
-                    let (canvas_port, lanes) = crate::canvas::canvas_target(port);
-                    if crate::canvas::find_running_canvas().is_some() {
-                        crate::canvas::stop_canvas();
-                    } else {
-                        let _ = crate::canvas::ensure_canvas_running(canvas_port, lanes, None);
-                    }
-                    pp_open = crate::canvas::find_running_canvas().is_some();
-                    continue;
-                }
-
-                // キー入力を PTY に送信
-                let bytes = key_to_pty_bytes(key, false);
-                if !bytes.is_empty() {
-                    if writer.write_all(&bytes).is_err() {
+            match event::read()? {
+                Event::Key(key) => {
+                    // Ctrl+Q: detach して終了（tmux セッションは生き続ける）
+                    if key.code == KeyCode::Char('q')
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                    {
                         break Ok(());
                     }
-                    let _ = writer.flush();
+
+                    // Home: PP window トグル
+                    if key.code == KeyCode::Home {
+                        let (canvas_port, lanes) = crate::canvas::canvas_target(port);
+                        if crate::canvas::find_running_canvas().is_some() {
+                            crate::canvas::stop_canvas();
+                        } else {
+                            let _ =
+                                crate::canvas::ensure_canvas_running(canvas_port, lanes, None);
+                        }
+                        pp_open = crate::canvas::find_running_canvas().is_some();
+                        continue;
+                    }
+
+                    // キー入力を PTY に送信
+                    let bytes = key_to_pty_bytes(key, false);
+                    if !bytes.is_empty() {
+                        if writer.write_all(&bytes).is_err() {
+                            break Ok(());
+                        }
+                        let _ = writer.flush();
+                    }
                 }
+                Event::Resize(new_cols, new_rows) => {
+                    // 親ウィンドウのリサイズに追従
+                    let new_pty_cols = new_cols as usize;
+                    let new_pty_lines = (new_rows.saturating_sub(4)) as usize;
+
+                    // PTY リサイズ
+                    let _ = pty_master.resize(PtySize {
+                        rows: new_pty_lines as u16,
+                        cols: new_pty_cols as u16,
+                        pixel_width: 0,
+                        pixel_height: 0,
+                    });
+
+                    // tmux セッションもリサイズ
+                    resize_tmux_session(session_name, new_pty_cols as u16, new_pty_lines as u16);
+
+                    // ターミナルエミュレータ状態をリサイズ
+                    {
+                        let mut state = term_state.lock().unwrap();
+                        state.resize(new_pty_cols, new_pty_lines);
+                    }
+                }
+                _ => {}
             }
         }
     };
@@ -706,7 +734,7 @@ fn draw_footer(frame: &mut ratatui::Frame, area: Rect) {
     let key_style = Style::default().fg(NORD_CYAN).bg(NORD_POLAR);
     let desc_style = Style::default().fg(NORD_COMMENT).bg(NORD_POLAR);
 
-    let spans = vec![
+    let mut spans = vec![
         Span::styled(" Home", key_style),
         Span::styled(" canvas ", desc_style),
         Span::styled(" C-q", key_style),
@@ -714,6 +742,16 @@ fn draw_footer(frame: &mut ratatui::Frame, area: Rect) {
         Span::styled(" PgUp/Dn", key_style),
         Span::styled(" scroll ", desc_style),
     ];
+
+    // 右端まで背景色で埋める
+    let used: usize = spans.iter().map(|s| s.width()).sum();
+    let remaining = (area.width as usize).saturating_sub(used);
+    if remaining > 0 {
+        spans.push(Span::styled(
+            " ".repeat(remaining),
+            Style::default().bg(NORD_POLAR),
+        ));
+    }
 
     let bar = Paragraph::new(Line::from(spans)).style(Style::default().bg(NORD_POLAR));
     frame.render_widget(bar, area);

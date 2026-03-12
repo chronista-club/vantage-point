@@ -2,7 +2,7 @@
 # https://mise.jdx.dev/
 
 [tools]
-rust = "1.93.1"
+rust = "1.94.0"
 node = "22"
 bun = "latest"
 
