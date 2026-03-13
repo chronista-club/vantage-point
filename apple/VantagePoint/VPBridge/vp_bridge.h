@@ -116,6 +116,11 @@ bool vp_bridge_pty_is_running_session(uint32_t session_id);
 /// PTY を停止（セッション指定）
 void vp_bridge_pty_stop_session(uint32_t session_id);
 
+/// スクロールバック表示位置を変更（セッション指定）
+/// @param session_id 対象セッション ID
+/// @param delta > 0: 上（過去）, < 0: 下（現在）, INT32_MAX: ページアップ, INT32_MIN: ページダウン
+void vp_bridge_scroll_session(uint32_t session_id, int32_t delta);
+
 // =============================================================================
 // PTY 操作（後方互換 — セッション ID 1 を暗黙使用）
 // =============================================================================

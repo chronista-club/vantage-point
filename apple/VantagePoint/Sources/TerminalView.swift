@@ -312,16 +312,17 @@ class TerminalView: NSView {
         ctx.setFillColor(defaultBackground.cgColor)
         ctx.fill(bounds)
 
-        // ピクセルスナップ: 座標を整数ピクセルに丸め、セル幅/高さは
-        // 隣接セルとの座標差で計算することで隙間を完全に排除する
+        // Retina ピクセルスナップ: backing scale factor を使って
+        // 物理ピクセル境界に正確にアラインすることで行間の隙間を排除
+        let scale = window?.backingScaleFactor ?? 2.0
         let cols = Int(gridCols)
         let rows = Int(gridRows)
 
         // 各セルを描画
         for row in 0..<rows {
-            // Y 座標: 隣接行との座標差で高さを計算（隙間なし）
-            let y = round(bounds.height - CGFloat(row + 1) * cellHeight)
-            let yNext = round(bounds.height - CGFloat(row) * cellHeight)
+            // Y 座標: 物理ピクセル境界にスナップして隙間を完全排除
+            let y = floor((bounds.height - CGFloat(row + 1) * cellHeight) * scale) / scale
+            let yNext = floor((bounds.height - CGFloat(row) * cellHeight) * scale) / scale
             let rowHeight = yNext - y
 
             for col in 0..<cols {
@@ -329,9 +330,9 @@ class TerminalView: NSView {
                 guard idx < cellBuffer.count else { continue }
 
                 let cell = cellBuffer[idx]
-                // X 座標: 隣接列との座標差で幅を計算（隙間なし）
-                let x = round(CGFloat(col) * cellWidth)
-                let xNext = round(CGFloat(col + 1) * cellWidth)
+                // X 座標: 物理ピクセル境界にスナップ
+                let x = floor(CGFloat(col) * cellWidth * scale) / scale
+                let xNext = floor(CGFloat(col + 1) * cellWidth * scale) / scale
                 let colWidth = xNext - x
 
                 // 文字を取得（背景幅の計算にも必要）
@@ -349,6 +350,16 @@ class TerminalView: NSView {
                 }
 
                 guard !ch.isEmpty, ch != " " else { continue }
+
+                // Box-drawing 文字はフォントグリフではなく CGContext で直接描画
+                // lineHeightMultiplier でセルが膨らんでもセル境界にピッタリ合う
+                if let scalar = ch.unicodeScalars.first,
+                   drawBoxCharacter(scalar, in: ctx,
+                                    cellRect: CGRect(x: x, y: y, width: colWidth, height: rowHeight),
+                                    color: (cell.fg != 0 ? colorFromRGBA(cell.fg) : defaultForeground).cgColor,
+                                    isBold: (cell.flags & (1 << 0)) != 0) {
+                    continue
+                }
 
                 // フォント選択
                 let isBold = (cell.flags & (1 << 0)) != 0
@@ -599,6 +610,168 @@ class TerminalView: NSView {
         return false
     }
 
+    // MARK: - Box-drawing 文字のカスタム描画
+
+    /// Box-drawing 文字（U+2500〜U+257F）を CGContext で直接描画する
+    ///
+    /// フォントグリフは lineHeightMultiplier でセルが膨らむと隙間ができるため、
+    /// セル境界にピッタリ合うよう自前で線を引く。Alacritty / Ghostty と同じアプローチ。
+    /// - Returns: 描画した場合 true（呼び出し元で continue する）
+    @discardableResult
+    private func drawBoxCharacter(_ scalar: Unicode.Scalar, in ctx: CGContext,
+                                  cellRect: CGRect, color: CGColor, isBold: Bool) -> Bool {
+        let v = scalar.value
+        guard (0x2500...0x257F).contains(v) else { return false }
+
+        let x = cellRect.minX
+        let y = cellRect.minY
+        let w = cellRect.width
+        let h = cellRect.height
+        let mx = x + w / 2  // 中心 X
+        let my = y + h / 2  // 中心 Y
+        let lw: CGFloat = isBold ? 2.0 : 1.0
+
+        ctx.saveGState()
+        ctx.setStrokeColor(color)
+        ctx.setLineWidth(lw)
+        ctx.setLineCap(.square)
+
+        switch v {
+        // ─ 水平線
+        case 0x2500, 0x2501:
+            ctx.move(to: CGPoint(x: x, y: my))
+            ctx.addLine(to: CGPoint(x: x + w, y: my))
+
+        // │ 垂直線
+        case 0x2502, 0x2503:
+            ctx.move(to: CGPoint(x: mx, y: y))
+            ctx.addLine(to: CGPoint(x: mx, y: y + h))
+
+        // ┌ 左上角
+        case 0x250C, 0x250D, 0x250E, 0x250F:
+            ctx.move(to: CGPoint(x: mx, y: y))
+            ctx.addLine(to: CGPoint(x: mx, y: my))
+            ctx.addLine(to: CGPoint(x: x + w, y: my))
+
+        // ┐ 右上角
+        case 0x2510, 0x2511, 0x2512, 0x2513:
+            ctx.move(to: CGPoint(x: mx, y: y))
+            ctx.addLine(to: CGPoint(x: mx, y: my))
+            ctx.addLine(to: CGPoint(x: x, y: my))
+
+        // └ 左下角
+        case 0x2514, 0x2515, 0x2516, 0x2517:
+            ctx.move(to: CGPoint(x: mx, y: y + h))
+            ctx.addLine(to: CGPoint(x: mx, y: my))
+            ctx.addLine(to: CGPoint(x: x + w, y: my))
+
+        // ┘ 右下角
+        case 0x2518, 0x2519, 0x251A, 0x251B:
+            ctx.move(to: CGPoint(x: mx, y: y + h))
+            ctx.addLine(to: CGPoint(x: mx, y: my))
+            ctx.addLine(to: CGPoint(x: x, y: my))
+
+        // ├ 左 T 字
+        case 0x251C, 0x251D, 0x251E, 0x251F, 0x2520, 0x2521, 0x2522, 0x2523:
+            ctx.move(to: CGPoint(x: mx, y: y))
+            ctx.addLine(to: CGPoint(x: mx, y: y + h))
+            ctx.move(to: CGPoint(x: mx, y: my))
+            ctx.addLine(to: CGPoint(x: x + w, y: my))
+
+        // ┤ 右 T 字
+        case 0x2524, 0x2525, 0x2526, 0x2527, 0x2528, 0x2529, 0x252A, 0x252B:
+            ctx.move(to: CGPoint(x: mx, y: y))
+            ctx.addLine(to: CGPoint(x: mx, y: y + h))
+            ctx.move(to: CGPoint(x: mx, y: my))
+            ctx.addLine(to: CGPoint(x: x, y: my))
+
+        // ┬ 上 T 字
+        case 0x252C, 0x252D, 0x252E, 0x252F, 0x2530, 0x2531, 0x2532, 0x2533:
+            ctx.move(to: CGPoint(x: x, y: my))
+            ctx.addLine(to: CGPoint(x: x + w, y: my))
+            ctx.move(to: CGPoint(x: mx, y: my))
+            ctx.addLine(to: CGPoint(x: mx, y: y))
+
+        // ┴ 下 T 字
+        case 0x2534, 0x2535, 0x2536, 0x2537, 0x2538, 0x2539, 0x253A, 0x253B:
+            ctx.move(to: CGPoint(x: x, y: my))
+            ctx.addLine(to: CGPoint(x: x + w, y: my))
+            ctx.move(to: CGPoint(x: mx, y: my))
+            ctx.addLine(to: CGPoint(x: mx, y: y + h))
+
+        // ┼ 十字
+        case 0x253C, 0x253D, 0x253E, 0x253F, 0x2540, 0x2541, 0x2542, 0x2543,
+             0x2544, 0x2545, 0x2546, 0x2547, 0x2548, 0x2549, 0x254A, 0x254B:
+            ctx.move(to: CGPoint(x: x, y: my))
+            ctx.addLine(to: CGPoint(x: x + w, y: my))
+            ctx.move(to: CGPoint(x: mx, y: y))
+            ctx.addLine(to: CGPoint(x: mx, y: y + h))
+
+        // ═ 二重水平線
+        case 0x2550:
+            let gap: CGFloat = 2.0
+            ctx.move(to: CGPoint(x: x, y: my - gap))
+            ctx.addLine(to: CGPoint(x: x + w, y: my - gap))
+            ctx.move(to: CGPoint(x: x, y: my + gap))
+            ctx.addLine(to: CGPoint(x: x + w, y: my + gap))
+
+        // ║ 二重垂直線
+        case 0x2551:
+            let gap: CGFloat = 2.0
+            ctx.move(to: CGPoint(x: mx - gap, y: y))
+            ctx.addLine(to: CGPoint(x: mx - gap, y: y + h))
+            ctx.move(to: CGPoint(x: mx + gap, y: y))
+            ctx.addLine(to: CGPoint(x: mx + gap, y: y + h))
+
+        // ╭ 丸角 左上
+        case 0x256D:
+            ctx.move(to: CGPoint(x: mx, y: y))
+            ctx.addQuadCurve(to: CGPoint(x: x + w, y: my),
+                             control: CGPoint(x: mx, y: my))
+
+        // ╮ 丸角 右上
+        case 0x256E:
+            ctx.move(to: CGPoint(x: mx, y: y))
+            ctx.addQuadCurve(to: CGPoint(x: x, y: my),
+                             control: CGPoint(x: mx, y: my))
+
+        // ╰ 丸角 左下
+        case 0x2570:
+            ctx.move(to: CGPoint(x: mx, y: y + h))
+            ctx.addQuadCurve(to: CGPoint(x: x + w, y: my),
+                             control: CGPoint(x: mx, y: my))
+
+        // ╯ 丸角 右下
+        case 0x256F:
+            ctx.move(to: CGPoint(x: mx, y: y + h))
+            ctx.addQuadCurve(to: CGPoint(x: x, y: my),
+                             control: CGPoint(x: mx, y: my))
+
+        // ╴╵╶╷ 半分ライン
+        case 0x2574: // ╴ 左半分水平
+            ctx.move(to: CGPoint(x: x, y: my))
+            ctx.addLine(to: CGPoint(x: mx, y: my))
+        case 0x2575: // ╵ 上半分垂直
+            ctx.move(to: CGPoint(x: mx, y: my))
+            ctx.addLine(to: CGPoint(x: mx, y: y + h))
+        case 0x2576: // ╶ 右半分水平
+            ctx.move(to: CGPoint(x: mx, y: my))
+            ctx.addLine(to: CGPoint(x: x + w, y: my))
+        case 0x2577: // ╷ 下半分垂直
+            ctx.move(to: CGPoint(x: mx, y: y))
+            ctx.addLine(to: CGPoint(x: mx, y: my))
+
+        default:
+            // 未対応の box-drawing 文字はフォントグリフにフォールバック
+            ctx.restoreGState()
+            return false
+        }
+
+        ctx.strokePath()
+        ctx.restoreGState()
+        return true
+    }
+
     // MARK: - テストパターン
 
     func drawTestPattern() {
@@ -787,11 +960,11 @@ class TerminalView: NSView {
         case 126: return [0x1B, 0x5B, 0x41]        // ↑
         case 115: return [0x1B, 0x5B, 0x48]        // Home
         case 119: return [0x1B, 0x5B, 0x46]        // End
-        case 116: // Page Up — ページ幅−3行分上スクロール（3行オーバーラップ）
-            sendPageScroll(direction: .up)
+        case 116: // Page Up — スクロールバックを上に移動
+            vp_bridge_scroll_session(sessionId, Int32.max)
             return []
-        case 121: // Page Down — ページ幅−3行分下スクロール（3行オーバーラップ）
-            sendPageScroll(direction: .down)
+        case 121: // Page Down — スクロールバックを下に移動
+            vp_bridge_scroll_session(sessionId, Int32.min)
             return []
         default:  break
         }
@@ -899,30 +1072,6 @@ class TerminalView: NSView {
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(text, forType: .string)
-    }
-
-    // MARK: - ページスクロール
-
-    private enum ScrollDirection { case up, down }
-
-    /// PageUp/PageDown — 画面行数−3行分の矢印キーを送信
-    ///
-    /// 3行のオーバーラップを残すことで、スクロール前後の文脈が途切れない。
-    /// シェルやアプリが alternative screen mode でない場合でも確実にスクロールする。
-    private func sendPageScroll(direction: ScrollDirection) {
-        let overlapLines: Int = 3
-        let scrollLines = max(1, Int(gridRows) - overlapLines)
-
-        let arrow: [UInt8] = switch direction {
-        case .up:   [0x1B, 0x5B, 0x41]  // ↑
-        case .down: [0x1B, 0x5B, 0x42]  // ↓
-        }
-
-        for _ in 0..<scrollLines {
-            arrow.withUnsafeBufferPointer { ptr in
-                _ = vp_bridge_pty_write_session(sessionId, ptr.baseAddress!, UInt32(ptr.count))
-            }
-        }
     }
 
     // MARK: - マウススクロール

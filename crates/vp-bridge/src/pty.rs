@@ -424,6 +424,24 @@ impl BridgePty {
     pub fn is_running(&self) -> bool {
         self.running.load(Ordering::Relaxed)
     }
+
+    /// スクロールバック表示位置を変更
+    ///
+    /// delta > 0: 上にスクロール（過去を遡る）
+    /// delta < 0: 下にスクロール（現在に戻る）
+    /// delta == i32::MAX: ページアップ
+    /// delta == i32::MIN: ページダウン
+    pub fn scroll(&self, delta: i32) {
+        use alacritty_terminal::grid::Scroll;
+        let mut state = self.term_state.lock().unwrap();
+        // PageUp/PageDown: 3行オーバーラップで文脈を維持
+        let overlap_delta = (state.lines as i32 - 3).max(1);
+        match delta {
+            i32::MAX => state.term.scroll_display(Scroll::Delta(overlap_delta)),
+            i32::MIN => state.term.scroll_display(Scroll::Delta(-overlap_delta)),
+            d => state.term.scroll_display(Scroll::Delta(d)),
+        }
+    }
 }
 
 impl Drop for BridgePty {

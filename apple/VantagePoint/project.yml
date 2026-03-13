@@ -1,0 +1,51 @@
+name: VantagePoint
+options:
+  bundleIdPrefix: tech.anycreative
+  deploymentTarget:
+    macOS: "26.0"
+  xcodeVersion: "26.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: false
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MACOSX_DEPLOYMENT_TARGET: "26.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+
+targets:
+  VantagePoint:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources
+        type: group
+    resources:
+      - path: Resources/Info.plist
+        buildPhase: none
+      - path: Resources/Assets.xcassets
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: tech.anycreative.VantagePoint
+        PRODUCT_NAME: VantagePoint
+        INFOPLIST_FILE: Resources/Info.plist
+        GENERATE_INFOPLIST_FILE: false
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_IDENTITY: "Apple Development"
+        DEVELOPMENT_TEAM: 3EQKG4B352
+        ENABLE_APP_SANDBOX: false
+        SWIFT_EMIT_LOC_STRINGS: true
+        # vp-bridge リンク設定
+        LIBRARY_SEARCH_PATHS:
+          - "$(PROJECT_DIR)/../../target/release"
+        OTHER_LINKER_FLAGS:
+          - "-lvp_bridge"
+        # VPBridge モジュール（C ヘッダー）
+        SWIFT_INCLUDE_PATHS:
+          - "$(PROJECT_DIR)/VPBridge"
+        # Hardened Runtime（App Store 必須）
+        ENABLE_HARDENED_RUNTIME: true
+    entitlements:
+      path: Resources/VantagePoint.entitlements
+      properties:
+        com.apple.security.app-sandbox: false

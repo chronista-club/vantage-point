@@ -1,0 +1,611 @@
+#usda 1.0
+(
+    defaultPrim = "VantagePointScene"
+    metersPerUnit = 1
+    upAxis = "Y"
+    doc = """Vantage Point Vision — 山頂からの展望に向かう視点"""
+)
+
+def Xform "VantagePointScene" (
+    kind = "assembly"
+)
+{
+    # ========================================
+    # 照明
+    # ========================================
+    def DomeLight "Sky"
+    {
+        color3f inputs:color = (0.12, 0.10, 0.20)
+        float inputs:intensity = 800
+    }
+
+    def DistantLight "Moon"
+    {
+        color3f inputs:color = (0.75, 0.80, 1.0)
+        float inputs:intensity = 1200
+        float3 xformOp:rotateXYZ = (-40, 30, 0)
+        uniform token[] xformOpOrder = ["xformOp:rotateXYZ"]
+    }
+
+    # ========================================
+    # マテリアル定義
+    # ========================================
+    def Scope "Materials"
+    {
+        def Material "MountainDark"
+        {
+            token outputs:surface.connect = </VantagePointScene/Materials/MountainDark/Shader.outputs:surface>
+            def Shader "Shader"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.12, 0.10, 0.18)
+                float inputs:roughness = 0.9
+                float inputs:metallic = 0.0
+                token outputs:surface
+            }
+        }
+
+        def Material "MountainMid"
+        {
+            token outputs:surface.connect = </VantagePointScene/Materials/MountainMid/Shader.outputs:surface>
+            def Shader "Shader"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.18, 0.15, 0.26)
+                float inputs:roughness = 0.85
+                float inputs:metallic = 0.0
+                token outputs:surface
+            }
+        }
+
+        def Material "MountainLight"
+        {
+            token outputs:surface.connect = </VantagePointScene/Materials/MountainLight/Shader.outputs:surface>
+            def Shader "Shader"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.22, 0.20, 0.32)
+                float inputs:roughness = 0.8
+                float inputs:metallic = 0.0
+                token outputs:surface
+            }
+        }
+
+        def Material "Ground"
+        {
+            token outputs:surface.connect = </VantagePointScene/Materials/Ground/Shader.outputs:surface>
+            def Shader "Shader"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.05, 0.04, 0.08)
+                float inputs:roughness = 1.0
+                float inputs:metallic = 0.0
+                token outputs:surface
+            }
+        }
+
+        def Material "RouteGlow"
+        {
+            token outputs:surface.connect = </VantagePointScene/Materials/RouteGlow/Shader.outputs:surface>
+            def Shader "Shader"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.2, 0.5, 1.0)
+                color3f inputs:emissiveColor = (0.3, 0.6, 1.0)
+                float inputs:roughness = 0.3
+                float inputs:metallic = 0.6
+                token outputs:surface
+            }
+        }
+
+        def Material "WaypointGlow"
+        {
+            token outputs:surface.connect = </VantagePointScene/Materials/WaypointGlow/Shader.outputs:surface>
+            def Shader "Shader"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.4, 0.8, 1.0)
+                color3f inputs:emissiveColor = (0.5, 0.85, 1.0)
+                float inputs:roughness = 0.2
+                float inputs:metallic = 0.8
+                token outputs:surface
+            }
+        }
+
+        def Material "SummitBeacon"
+        {
+            token outputs:surface.connect = </VantagePointScene/Materials/SummitBeacon/Shader.outputs:surface>
+            def Shader "Shader"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.6, 0.9, 1.0)
+                color3f inputs:emissiveColor = (0.7, 0.95, 1.0)
+                float inputs:roughness = 0.1
+                float inputs:metallic = 1.0
+                token outputs:surface
+            }
+        }
+
+        def Material "StarPlatinumCore"
+        {
+            token outputs:surface.connect = </VantagePointScene/Materials/StarPlatinumCore/Shader.outputs:surface>
+            def Shader "Shader"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.85, 0.75, 1.0)
+                color3f inputs:emissiveColor = (0.9, 0.8, 1.0)
+                float inputs:roughness = 0.1
+                float inputs:metallic = 1.0
+                token outputs:surface
+            }
+        }
+
+        def Material "StarPlatinumOrbit"
+        {
+            token outputs:surface.connect = </VantagePointScene/Materials/StarPlatinumOrbit/Shader.outputs:surface>
+            def Shader "Shader"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.6, 0.5, 1.0)
+                color3f inputs:emissiveColor = (0.7, 0.6, 1.0)
+                float inputs:roughness = 0.2
+                float inputs:metallic = 0.9
+                token outputs:surface
+            }
+        }
+
+        def Material "HeavensDoor"
+        {
+            token outputs:surface.connect = </VantagePointScene/Materials/HeavensDoor/Shader.outputs:surface>
+            def Shader "Shader"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (1.0, 0.85, 0.4)
+                color3f inputs:emissiveColor = (1.0, 0.9, 0.5)
+                float inputs:roughness = 0.15
+                float inputs:metallic = 0.7
+                token outputs:surface
+            }
+        }
+
+        def Material "PaisleyPark"
+        {
+            token outputs:surface.connect = </VantagePointScene/Materials/PaisleyPark/Shader.outputs:surface>
+            def Shader "Shader"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.3, 1.0, 0.7)
+                color3f inputs:emissiveColor = (0.4, 1.0, 0.8)
+                float inputs:roughness = 0.2
+                float inputs:metallic = 0.8
+                token outputs:surface
+            }
+        }
+
+        def Material "GoldExperience"
+        {
+            token outputs:surface.connect = </VantagePointScene/Materials/GoldExperience/Shader.outputs:surface>
+            def Shader "Shader"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.3, 0.9, 0.4)
+                color3f inputs:emissiveColor = (0.4, 1.0, 0.5)
+                float inputs:roughness = 0.2
+                float inputs:metallic = 0.7
+                token outputs:surface
+            }
+        }
+
+        def Material "Observatory"
+        {
+            token outputs:surface.connect = </VantagePointScene/Materials/Observatory/Shader.outputs:surface>
+            def Shader "Shader"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.3, 0.28, 0.4)
+                float inputs:roughness = 0.4
+                float inputs:metallic = 0.5
+                token outputs:surface
+            }
+        }
+
+        def Material "ObservatoryRing"
+        {
+            token outputs:surface.connect = </VantagePointScene/Materials/ObservatoryRing/Shader.outputs:surface>
+            def Shader "Shader"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.3, 0.5, 0.85)
+                color3f inputs:emissiveColor = (0.35, 0.55, 0.9)
+                float inputs:roughness = 0.2
+                float inputs:metallic = 0.9
+                token outputs:surface
+            }
+        }
+
+        def Material "StarLight"
+        {
+            token outputs:surface.connect = </VantagePointScene/Materials/StarLight/Shader.outputs:surface>
+            def Shader "Shader"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.95, 0.95, 1.0)
+                color3f inputs:emissiveColor = (1.0, 1.0, 1.0)
+                float inputs:roughness = 0.0
+                float inputs:metallic = 1.0
+                token outputs:surface
+            }
+        }
+    }
+
+    # ========================================
+    # 地形
+    # ========================================
+    def Xform "Terrain"
+    {
+        # 主峰（ビジョン・目標）
+        def Mesh "MainPeak" (
+            prepend apiSchemas = ["MaterialBindingAPI"]
+        )
+        {
+            rel material:binding = </VantagePointScene/Materials/MountainDark>
+            int[] faceVertexCounts = [3, 3, 3, 3, 4]
+            int[] faceVertexIndices = [0,1,2, 0,2,3, 0,3,4, 0,4,1, 1,4,3,2]
+            point3f[] points = [
+                (0, 8.5, 0),
+                (-6, 0, -5),
+                (6, 0, -5),
+                (5, 0, 6),
+                (-5, 0, 6)
+            ]
+            float3 xformOp:translate = (0, 0, -3)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+        }
+
+        # 前峰（現在地）
+        def Mesh "FrontPeak" (
+            prepend apiSchemas = ["MaterialBindingAPI"]
+        )
+        {
+            rel material:binding = </VantagePointScene/Materials/MountainMid>
+            int[] faceVertexCounts = [3, 3, 3, 3, 4]
+            int[] faceVertexIndices = [0,1,2, 0,2,3, 0,3,4, 0,4,1, 1,4,3,2]
+            point3f[] points = [
+                (0, 5.0, 0),
+                (-4, 0, -3.5),
+                (4, 0, -3.5),
+                (3.5, 0, 4),
+                (-3.5, 0, 4)
+            ]
+            float3 xformOp:translate = (-5, 0, 3)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+        }
+
+        # 遠景の稜線
+        def Mesh "DistantRidge" (
+            prepend apiSchemas = ["MaterialBindingAPI"]
+        )
+        {
+            rel material:binding = </VantagePointScene/Materials/MountainLight>
+            int[] faceVertexCounts = [3, 3, 3, 3, 4]
+            int[] faceVertexIndices = [0,1,2, 0,2,3, 0,3,4, 0,4,1, 1,4,3,2]
+            point3f[] points = [
+                (0, 6.0, 0),
+                (-8, 0, -4),
+                (8, 0, -4),
+                (7, 0, 5),
+                (-7, 0, 5)
+            ]
+            float3 xformOp:translate = (8, 0, -10)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+        }
+
+        # 地面
+        def Mesh "Ground" (
+            prepend apiSchemas = ["MaterialBindingAPI"]
+        )
+        {
+            rel material:binding = </VantagePointScene/Materials/Ground>
+            int[] faceVertexCounts = [4]
+            int[] faceVertexIndices = [0, 1, 2, 3]
+            point3f[] points = [
+                (-30, 0, -30),
+                (30, 0, -30),
+                (30, 0, 30),
+                (-30, 0, 30)
+            ]
+        }
+    }
+
+    # ========================================
+    # ルートパス — 光る登山道
+    # ========================================
+    def Xform "RoutePath"
+    {
+        def Sphere "WP_Start" (
+            prepend apiSchemas = ["MaterialBindingAPI"]
+        )
+        {
+            rel material:binding = </VantagePointScene/Materials/WaypointGlow>
+            double radius = 0.2
+            float3 xformOp:translate = (3, 0.3, 5)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+        }
+
+        def Sphere "WP_01" (
+            prepend apiSchemas = ["MaterialBindingAPI"]
+        )
+        {
+            rel material:binding = </VantagePointScene/Materials/WaypointGlow>
+            double radius = 0.18
+            float3 xformOp:translate = (2.2, 1.8, 3.5)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+        }
+
+        def Sphere "WP_02" (
+            prepend apiSchemas = ["MaterialBindingAPI"]
+        )
+        {
+            rel material:binding = </VantagePointScene/Materials/WaypointGlow>
+            double radius = 0.18
+            float3 xformOp:translate = (1.0, 3.5, 1.5)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+        }
+
+        def Sphere "WP_03" (
+            prepend apiSchemas = ["MaterialBindingAPI"]
+        )
+        {
+            rel material:binding = </VantagePointScene/Materials/WaypointGlow>
+            double radius = 0.18
+            float3 xformOp:translate = (-0.3, 5.5, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+        }
+
+        def Sphere "WP_Summit" (
+            prepend apiSchemas = ["MaterialBindingAPI"]
+        )
+        {
+            rel material:binding = </VantagePointScene/Materials/SummitBeacon>
+            double radius = 0.35
+            float3 xformOp:translate = (0, 8.8, -3)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+        }
+
+        # ルートの細い光線（セグメント）
+        def Cylinder "Seg_01" (
+            prepend apiSchemas = ["MaterialBindingAPI"]
+        )
+        {
+            rel material:binding = </VantagePointScene/Materials/RouteGlow>
+            double height = 3.0
+            double radius = 0.06
+            float3 xformOp:translate = (2.6, 1.0, 4.25)
+            float3 xformOp:rotateXYZ = (20, 0, 15)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]
+        }
+
+        def Cylinder "Seg_02" (
+            prepend apiSchemas = ["MaterialBindingAPI"]
+        )
+        {
+            rel material:binding = </VantagePointScene/Materials/RouteGlow>
+            double height = 3.0
+            double radius = 0.06
+            float3 xformOp:translate = (1.6, 2.65, 2.5)
+            float3 xformOp:rotateXYZ = (15, 0, -12)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]
+        }
+
+        def Cylinder "Seg_03" (
+            prepend apiSchemas = ["MaterialBindingAPI"]
+        )
+        {
+            rel material:binding = </VantagePointScene/Materials/RouteGlow>
+            double height = 3.2
+            double radius = 0.06
+            float3 xformOp:translate = (0.35, 4.5, 0.75)
+            float3 xformOp:rotateXYZ = (10, 0, 15)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]
+        }
+
+        def Cylinder "Seg_04" (
+            prepend apiSchemas = ["MaterialBindingAPI"]
+        )
+        {
+            rel material:binding = </VantagePointScene/Materials/RouteGlow>
+            double height = 4.0
+            double radius = 0.06
+            float3 xformOp:translate = (-0.15, 7.15, -1.5)
+            float3 xformOp:rotateXYZ = (5, 0, -5)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]
+        }
+    }
+
+    # ========================================
+    # Stand 群 — AI の能力が山頂付近に集結
+    # ========================================
+
+    # Star Platinum ⭐ — Project Core（主光源、中心）
+    def Xform "StarPlatinum"
+    {
+        float3 xformOp:translate = (1.2, 9.8, -2.5)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Sphere "Core" (
+            prepend apiSchemas = ["MaterialBindingAPI"]
+        )
+        {
+            rel material:binding = </VantagePointScene/Materials/StarPlatinumCore>
+            double radius = 0.4
+        }
+
+        def Sphere "Orbit_01" (
+            prepend apiSchemas = ["MaterialBindingAPI"]
+        )
+        {
+            rel material:binding = </VantagePointScene/Materials/StarPlatinumOrbit>
+            double radius = 0.1
+            float3 xformOp:translate = (0.7, 0.3, 0.1)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+        }
+
+        def Sphere "Orbit_02" (
+            prepend apiSchemas = ["MaterialBindingAPI"]
+        )
+        {
+            rel material:binding = </VantagePointScene/Materials/StarPlatinumOrbit>
+            double radius = 0.08
+            float3 xformOp:translate = (-0.5, -0.2, 0.6)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+        }
+
+        def Sphere "Orbit_03" (
+            prepend apiSchemas = ["MaterialBindingAPI"]
+        )
+        {
+            rel material:binding = </VantagePointScene/Materials/StarPlatinumOrbit>
+            double radius = 0.09
+            float3 xformOp:translate = (0.2, 0.6, -0.5)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+        }
+    }
+
+    # Heaven's Door 📖 — Coding Assistant（金色の光）
+    def Sphere "HeavensDoor" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        rel material:binding = </VantagePointScene/Materials/HeavensDoor>
+        double radius = 0.25
+        float3 xformOp:translate = (-0.8, 9.2, -3.5)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    # Paisley Park 🧭 — Information Navigator（ターコイズの光）
+    def Sphere "PaisleyPark" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        rel material:binding = </VantagePointScene/Materials/PaisleyPark>
+        double radius = 0.2
+        float3 xformOp:translate = (2.0, 9.0, -1.8)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    # Gold Experience 🌿 — Code Runner（生命の緑の光、山麓付近）
+    def Sphere "GoldExperience" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        rel material:binding = </VantagePointScene/Materials/GoldExperience>
+        double radius = 0.22
+        float3 xformOp:translate = (2.5, 1.0, 4.0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    # ========================================
+    # 展望台 — Vantage Point
+    # ========================================
+    def Xform "Observatory"
+    {
+        float3 xformOp:translate = (0, 8.5, -3)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Cylinder "Platform" (
+            prepend apiSchemas = ["MaterialBindingAPI"]
+        )
+        {
+            rel material:binding = </VantagePointScene/Materials/Observatory>
+            double height = 0.15
+            double radius = 0.8
+        }
+
+        def Cylinder "ViewRing" (
+            prepend apiSchemas = ["MaterialBindingAPI"]
+        )
+        {
+            rel material:binding = </VantagePointScene/Materials/ObservatoryRing>
+            double height = 0.05
+            double radius = 1.0
+            float3 xformOp:translate = (0, 0.1, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+        }
+    }
+
+    # ========================================
+    # 星空
+    # ========================================
+    def Xform "Stars"
+    {
+        def Sphere "S1" (prepend apiSchemas = ["MaterialBindingAPI"]) {
+            rel material:binding = </VantagePointScene/Materials/StarLight>
+            double radius = 0.06
+            float3 xformOp:translate = (-10, 18, -15)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+        }
+        def Sphere "S2" (prepend apiSchemas = ["MaterialBindingAPI"]) {
+            rel material:binding = </VantagePointScene/Materials/StarLight>
+            double radius = 0.05
+            float3 xformOp:translate = (12, 22, -20)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+        }
+        def Sphere "S3" (prepend apiSchemas = ["MaterialBindingAPI"]) {
+            rel material:binding = </VantagePointScene/Materials/StarLight>
+            double radius = 0.07
+            float3 xformOp:translate = (-8, 25, -12)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+        }
+        def Sphere "S4" (prepend apiSchemas = ["MaterialBindingAPI"]) {
+            rel material:binding = </VantagePointScene/Materials/StarLight>
+            double radius = 0.04
+            float3 xformOp:translate = (15, 20, -18)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+        }
+        def Sphere "S5" (prepend apiSchemas = ["MaterialBindingAPI"]) {
+            rel material:binding = </VantagePointScene/Materials/StarLight>
+            double radius = 0.055
+            float3 xformOp:translate = (-15, 16, -22)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+        }
+        def Sphere "S6" (prepend apiSchemas = ["MaterialBindingAPI"]) {
+            rel material:binding = </VantagePointScene/Materials/StarLight>
+            double radius = 0.045
+            float3 xformOp:translate = (5, 28, -25)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+        }
+        def Sphere "S7" (prepend apiSchemas = ["MaterialBindingAPI"]) {
+            rel material:binding = </VantagePointScene/Materials/StarLight>
+            double radius = 0.065
+            float3 xformOp:translate = (-20, 24, -10)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+        }
+        def Sphere "S8" (prepend apiSchemas = ["MaterialBindingAPI"]) {
+            rel material:binding = </VantagePointScene/Materials/StarLight>
+            double radius = 0.05
+            float3 xformOp:translate = (18, 15, -20)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+        }
+    }
+
+    # ========================================
+    # カメラ
+    # ========================================
+    def Camera "MainCamera"
+    {
+        float focalLength = 35
+        float3 xformOp:translate = (12, 10, 15)
+        float3 xformOp:rotateXYZ = (-20, 35, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]
+    }
+
+    def Camera "SummitCamera" (
+        doc = "山頂からの Vantage Point"
+    )
+    {
+        float focalLength = 24
+        float3 xformOp:translate = (0, 10, -1)
+        float3 xformOp:rotateXYZ = (-10, 180, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]
+    }
+}

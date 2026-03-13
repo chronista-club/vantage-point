@@ -493,6 +493,22 @@ pub extern "C" fn vp_bridge_pty_stop() {
     vp_bridge_pty_stop_session(1);
 }
 
+/// スクロールバック表示位置を変更（セッション指定）
+///
+/// delta > 0: 上にスクロール（過去を遡る）
+/// delta < 0: 下にスクロール（現在に戻る）
+/// delta == i32::MAX: ページアップ（画面高さ分）
+/// delta == i32::MIN: ページダウン（画面高さ分）
+#[unsafe(no_mangle)]
+pub extern "C" fn vp_bridge_scroll_session(session_id: u32, delta: i32) {
+    let guard = ensure_sessions();
+    if let Some(session) = guard.as_ref().and_then(|m| m.get(&session_id)) {
+        if let Some(pty) = &session.pty {
+            pty.scroll(delta);
+        }
+    }
+}
+
 // =============================================================================
 // テスト・ユーティリティ FFI
 // =============================================================================
