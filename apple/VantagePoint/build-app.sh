@@ -37,7 +37,7 @@ xcodebuild -project VantagePoint.xcodeproj \
 
 # 4. ビルド成果物をコピー
 DERIVED_DATA="$HOME/Library/Developer/Xcode/DerivedData"
-APP_SRC=$(find "$DERIVED_DATA" -path "*/VantagePoint-*/Build/Products/$XCODE_CONFIG/VantagePoint.app" -maxdepth 6 2>/dev/null | head -1)
+APP_SRC=$(find "$DERIVED_DATA" -path "*/VantagePoint-*/Build/Products/$XCODE_CONFIG/VantagePoint.app" -maxdepth 8 2>/dev/null | grep -v Index.noindex | head -1)
 
 if [ -z "$APP_SRC" ]; then
     echo "❌ VantagePoint.app not found in DerivedData"

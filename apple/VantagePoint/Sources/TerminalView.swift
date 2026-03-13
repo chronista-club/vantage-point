@@ -960,12 +960,8 @@ class TerminalView: NSView {
         case 126: return [0x1B, 0x5B, 0x41]        // ↑
         case 115: return [0x1B, 0x5B, 0x48]        // Home
         case 119: return [0x1B, 0x5B, 0x46]        // End
-        case 116: // Page Up — スクロールバックを上に移動
-            vp_bridge_scroll_session(sessionId, Int32.max)
-            return []
-        case 121: // Page Down — スクロールバックを下に移動
-            vp_bridge_scroll_session(sessionId, Int32.min)
-            return []
+        case 116: return [0x1B, 0x5B, 0x35, 0x7E] // Page Up  → \e[5~
+        case 121: return [0x1B, 0x5B, 0x36, 0x7E] // Page Down → \e[6~
         default:  break
         }
 
@@ -1082,15 +1078,23 @@ class TerminalView: NSView {
         let lines = Int(round(event.scrollingDeltaY / 3.0))
         guard lines != 0 else { return }
 
-        let upArrow: [UInt8] = [0x1B, 0x5B, 0x41]
-        let downArrow: [UInt8] = [0x1B, 0x5B, 0x42]
-
-        let sequence = lines > 0 ? upArrow : downArrow
+        // SGR マウスホイールイベント: \e[<button;col;rowM
+        // button 64 = scroll up, 65 = scroll down
+        let pos = gridPosition(from: event.locationInWindow)
+        let col = pos.col + 1  // 1-based
+        let row = pos.row + 1  // 1-based
+        let button = lines > 0 ? 64 : 65
         let count = abs(lines)
 
         for _ in 0..<min(count, 10) {
-            sequence.withUnsafeBufferPointer { ptr in
-                _ = vp_bridge_pty_write_session(sessionId, ptr.baseAddress!, UInt32(ptr.count))
+            let seq = "\u{1B}[<\(button);\(col);\(row)M"
+            if let data = seq.data(using: .ascii) {
+                data.withUnsafeBytes { ptr in
+                    _ = vp_bridge_pty_write_session(
+                        sessionId,
+                        ptr.baseAddress!.assumingMemoryBound(to: UInt8.self),
+                        UInt32(ptr.count))
+                }
             }
         }
     }
