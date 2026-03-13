@@ -12,6 +12,8 @@ DerivedData/
 
 # macOS
 .DS_Store
+*.app
+*.app.zip
 
 # 移行中のファイル（ルートディレクトリのみ）
 /ClaudeTestApp/

@@ -16,6 +16,7 @@ use super::protocol::{
 };
 use super::pty_slot::PtySlot;
 use super::registry::{PaneKind, SessionRegistry};
+use crate::capability::RunningProcess;
 
 /// ペイン識別子: (session_id, pane_id)
 type PaneKey = (String, u32);
@@ -38,6 +39,11 @@ pub struct DaemonState {
     pub output_receivers: Arc<Mutex<OutputReceiverMap>>,
     /// Daemon 起動時刻（uptime計算用）
     pub started_at: Instant,
+    /// 稼働中 Process 一覧（Registry チャネル経由で SP が自己登録）
+    /// ProcessManagerCapability と共有される
+    pub running_processes: Option<Arc<RwLock<HashMap<String, RunningProcess>>>>,
+    /// プロジェクト情報（ProcessManagerCapability と共有、状態更新用）
+    pub projects: Option<Arc<RwLock<HashMap<String, crate::capability::ProjectInfo>>>>,
 }
 
 impl Default for DaemonState {
@@ -47,6 +53,8 @@ impl Default for DaemonState {
             pty_slots: Arc::new(Mutex::new(HashMap::new())),
             output_receivers: Arc::new(Mutex::new(HashMap::new())),
             started_at: Instant::now(),
+            running_processes: None,
+            projects: None,
         }
     }
 }
@@ -55,6 +63,17 @@ impl DaemonState {
     /// 新しい DaemonState を作成
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// ProcessManagerCapability の running_processes を共有する
+    pub fn with_running_processes(
+        mut self,
+        running_processes: Arc<RwLock<HashMap<String, RunningProcess>>>,
+        projects: Arc<RwLock<HashMap<String, crate::capability::ProjectInfo>>>,
+    ) -> Self {
+        self.running_processes = Some(running_processes);
+        self.projects = Some(projects);
+        self
     }
 }
 
@@ -716,6 +735,251 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
             }
         })
         .await;
+
+    // =========================================================================
+    // Registry Channel（SP 自己登録 — QUIC 永続接続による即時登録・即時死亡検出）
+    // =========================================================================
+    if let Some(ref running_processes) = state.running_processes {
+        let running_processes = running_processes.clone();
+        let projects = state.projects.clone();
+        server
+            .register_channel("registry", {
+                move |_ctx, stream| {
+                    let running_processes = running_processes.clone();
+                    let projects = projects.clone();
+                    async move {
+                        let channel = UnisonChannel::new(stream);
+                        let mut registered_name: Option<String> = None;
+                        let mut registered_port: Option<u16> = None;
+                        let mut registered_project_dir: Option<String> = None;
+
+                        loop {
+                            let msg = match channel.recv().await {
+                                Ok(msg) => msg,
+                                Err(_) => break, // 切断
+                            };
+
+                            if msg.msg_type != MessageType::Request {
+                                continue;
+                            }
+
+                            let payload = msg.payload_as_value().unwrap_or_default();
+                            let method = msg.method.clone();
+                            let request_id = msg.id;
+
+                            match method.as_str() {
+                                "register" => {
+                                    let project_name = payload["project_name"]
+                                        .as_str()
+                                        .unwrap_or("unknown")
+                                        .to_string();
+                                    let port =
+                                        payload["port"].as_u64().unwrap_or(0) as u16;
+                                    let pid =
+                                        payload["pid"].as_u64().unwrap_or(0) as u32;
+                                    let project_dir = payload["project_dir"]
+                                        .as_str()
+                                        .unwrap_or("")
+                                        .to_string();
+
+                                    let tmux_session = payload["tmux_session"]
+                                        .as_str()
+                                        .map(|s| s.to_string());
+
+                                    let process = RunningProcess {
+                                        project_name: project_name.clone(),
+                                        port,
+                                        pid,
+                                        project_path: project_dir.clone().into(),
+                                        tmux_session,
+                                    };
+
+                                    registered_name = Some(project_name.clone());
+                                    registered_port = Some(port);
+                                    registered_project_dir = Some(project_dir.clone());
+
+                                    // running_processes に挿入
+                                    running_processes
+                                        .write()
+                                        .await
+                                        .insert(project_name.clone(), process);
+
+                                    // プロジェクト状態を Running に更新
+                                    if let Some(ref projects) = projects {
+                                        let mut projs = projects.write().await;
+                                        // パスで一致するプロジェクトを検索
+                                        if let Some(p) = projs.values_mut().find(|p| {
+                                            crate::config::Config::normalize_path(&p.path)
+                                                == crate::config::Config::normalize_path(
+                                                    std::path::Path::new(&project_dir),
+                                                )
+                                        }) {
+                                            p.process_status =
+                                                crate::capability::ProcessStatus::Running;
+                                        }
+                                    }
+
+                                    tracing::info!(
+                                        "Registry: SP '{}' 登録 (port={}, pid={})",
+                                        project_name,
+                                        port,
+                                        pid
+                                    );
+
+                                    if channel
+                                        .send_response(
+                                            request_id,
+                                            "register",
+                                            serde_json::json!({"status": "ok"}),
+                                        )
+                                        .await
+                                        .is_err()
+                                    {
+                                        break;
+                                    }
+                                }
+                                "unregister" => {
+                                    if let Some(ref name) = registered_name {
+                                        running_processes.write().await.remove(name);
+
+                                        // プロジェクト状態を Stopped に更新（パスベースで検索）
+                                        if let Some(ref projects) = projects {
+                                            if let Some(ref dir) = registered_project_dir {
+                                                let mut projs = projects.write().await;
+                                                if let Some(p) =
+                                                    projs.values_mut().find(|p| {
+                                                        crate::config::Config::normalize_path(
+                                                            &p.path,
+                                                        ) == crate::config::Config::normalize_path(
+                                                            std::path::Path::new(dir),
+                                                        )
+                                                    })
+                                                {
+                                                    p.process_status =
+                                                        crate::capability::ProcessStatus::Stopped;
+                                                }
+                                            }
+                                        }
+
+                                        tracing::info!(
+                                            "Registry: SP '{}' 登録解除",
+                                            name
+                                        );
+                                    } else {
+                                        tracing::debug!(
+                                            "Registry: unregister 受信したが未登録"
+                                        );
+                                    }
+                                    let _ = channel
+                                        .send_response(
+                                            request_id,
+                                            "unregister",
+                                            serde_json::json!({"status": "ok"}),
+                                        )
+                                        .await;
+                                    break; // チャネル終了
+                                }
+                                "heartbeat" => {
+                                    if channel
+                                        .send_response(
+                                            request_id,
+                                            "heartbeat",
+                                            serde_json::json!({"status": "ok"}),
+                                        )
+                                        .await
+                                        .is_err()
+                                    {
+                                        break;
+                                    }
+                                }
+                                "list" => {
+                                    let procs = running_processes.read().await;
+                                    let list: Vec<_> = procs
+                                        .values()
+                                        .map(|p| {
+                                            serde_json::json!({
+                                                "project_name": p.project_name,
+                                                "port": p.port,
+                                                "pid": p.pid,
+                                                "project_path": p.project_path,
+                                            })
+                                        })
+                                        .collect();
+                                    if channel
+                                        .send_response(
+                                            request_id,
+                                            "list",
+                                            serde_json::json!({"processes": list}),
+                                        )
+                                        .await
+                                        .is_err()
+                                    {
+                                        break;
+                                    }
+                                }
+                                _ => {
+                                    let _ = channel
+                                        .send_response(
+                                            request_id,
+                                            &method,
+                                            serde_json::json!({
+                                                "error": format!("不明なメソッド: registry.{}", method)
+                                            }),
+                                        )
+                                        .await;
+                                }
+                            }
+                        }
+
+                        // 切断時に自動除去（unregister なしで切断された場合）
+                        // running_processes と projects のロックは分離して取得（デッドロック防止）
+                        if let Some(name) = registered_name {
+                            let removed = {
+                                let mut procs = running_processes.write().await;
+                                procs.remove(&name).is_some()
+                            };
+
+                            if removed {
+                                tracing::info!(
+                                    "Registry: SP '{}' 切断 → 自動除去",
+                                    name
+                                );
+
+                                // プロジェクト状態を Stopped に更新（パスベースで検索）
+                                if let Some(ref projects) = projects {
+                                    if let Some(ref dir) = registered_project_dir {
+                                        let mut projs = projects.write().await;
+                                        if let Some(p) =
+                                            projs.values_mut().find(|p| {
+                                                crate::config::Config::normalize_path(
+                                                    &p.path,
+                                                ) == crate::config::Config::normalize_path(
+                                                    std::path::Path::new(dir),
+                                                )
+                                            })
+                                        {
+                                            p.process_status =
+                                                crate::capability::ProcessStatus::Stopped;
+                                        }
+                                    }
+                                }
+
+                                // メニューバーアプリに通知
+                                if let Some(port) = registered_port {
+                                    crate::notify::post_process_changed(
+                                        port,
+                                        "stopped",
+                                    );
+                                }
+                            }
+                        }
+
+                        Ok(())
+                    }
+                }
+            })
+            .await;
+    }
 
     // サーバー起動
     tracing::info!("Daemon Unison QUIC サーバー起動: {}", addr);

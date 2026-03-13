@@ -10,6 +10,8 @@ use clap::Subcommand;
 use crate::daemon::process;
 
 /// TheWorld サブコマンド
+///
+/// サブコマンド省略時は `start` として扱う（後方互換: `vp world --port 32000`）
 #[derive(Subcommand)]
 pub enum WorldCommands {
     /// TheWorld を起動（フォアグラウンド）

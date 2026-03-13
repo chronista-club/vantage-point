@@ -337,7 +337,7 @@ async fn discover_and_connect(
                 port: p.port,
                 pid: p.pid,
                 project_path: p.project_dir.into(),
-                discovered_via_bonjour: false,
+                tmux_session: None,
             })
             .collect()
     };

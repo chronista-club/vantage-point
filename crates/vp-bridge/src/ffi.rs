@@ -2,11 +2,15 @@
 //!
 //! セッション ID ベースでマルチウィンドウ対応。
 //! 各セッションが独立した NativeBackend + BridgePty を保持する。
+//!
+//! FFI 関数は C ABI 境界のため raw pointer を受け取る。
+//! 呼び出し側（Swift）が有効なポインタを保証する前提。
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
 
 use std::collections::HashMap;
 use std::ffi::{CStr, c_char};
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 
 use ratatui::backend::Backend;
 use ratatui::style::Color;
@@ -45,7 +49,10 @@ fn with_session_backend<R>(session_id: u32, f: impl FnOnce(&NativeBackend) -> R)
 }
 
 /// Backend の可変参照で操作
-fn with_session_backend_mut<R>(session_id: u32, f: impl FnOnce(&mut NativeBackend) -> R) -> Option<R> {
+fn with_session_backend_mut<R>(
+    session_id: u32,
+    f: impl FnOnce(&mut NativeBackend) -> R,
+) -> Option<R> {
     let guard = ensure_sessions();
     guard.as_ref()?.get(&session_id).map(|s| {
         let mut be = s.backend.lock().unwrap();
@@ -124,12 +131,24 @@ fn cell_to_celldata(cell: &ratatui::buffer::Cell) -> CellData {
 
     let modifier = cell.modifier;
     let mut flags: u8 = 0;
-    if modifier.contains(ratatui::style::Modifier::BOLD) { flags |= 1 << 0; }
-    if modifier.contains(ratatui::style::Modifier::ITALIC) { flags |= 1 << 1; }
-    if modifier.contains(ratatui::style::Modifier::UNDERLINED) { flags |= 1 << 2; }
-    if modifier.contains(ratatui::style::Modifier::REVERSED) { flags |= 1 << 3; }
-    if modifier.contains(ratatui::style::Modifier::CROSSED_OUT) { flags |= 1 << 4; }
-    if modifier.contains(ratatui::style::Modifier::DIM) { flags |= 1 << 5; }
+    if modifier.contains(ratatui::style::Modifier::BOLD) {
+        flags |= 1 << 0;
+    }
+    if modifier.contains(ratatui::style::Modifier::ITALIC) {
+        flags |= 1 << 1;
+    }
+    if modifier.contains(ratatui::style::Modifier::UNDERLINED) {
+        flags |= 1 << 2;
+    }
+    if modifier.contains(ratatui::style::Modifier::REVERSED) {
+        flags |= 1 << 3;
+    }
+    if modifier.contains(ratatui::style::Modifier::CROSSED_OUT) {
+        flags |= 1 << 4;
+    }
+    if modifier.contains(ratatui::style::Modifier::DIM) {
+        flags |= 1 << 5;
+    }
 
     CellData {
         ch,
@@ -140,7 +159,12 @@ fn cell_to_celldata(cell: &ratatui::buffer::Cell) -> CellData {
 }
 
 fn empty_cell() -> CellData {
-    CellData { ch: [b' ', 0, 0, 0, 0], fg: 0, bg: 0, flags: 0 }
+    CellData {
+        ch: [b' ', 0, 0, 0, 0],
+        fg: 0,
+        bg: 0,
+        flags: 0,
+    }
 }
 
 // =============================================================================
@@ -152,7 +176,11 @@ fn empty_cell() -> CellData {
 /// 各ウィンドウごとに独立したセッション（Backend + PTY）を生成する。
 /// 戻り値: セッション ID (0 = 失敗)
 #[unsafe(no_mangle)]
-pub extern "C" fn vp_bridge_create(width: u16, height: u16, frame_callback: Option<FrameReadyCallback>) -> u32 {
+pub extern "C" fn vp_bridge_create(
+    width: u16,
+    height: u16,
+    frame_callback: Option<FrameReadyCallback>,
+) -> u32 {
     let mut backend = NativeBackend::new(width, height);
     if let Some(cb) = frame_callback {
         backend.set_frame_callback(cb);
@@ -184,7 +212,11 @@ pub extern "C" fn vp_bridge_destroy(session_id: u32) {
 
 /// 後方互換: 旧 API（セッション ID 1 を暗黙使用）
 #[unsafe(no_mangle)]
-pub extern "C" fn vp_bridge_init(width: u16, height: u16, frame_callback: Option<FrameReadyCallback>) {
+pub extern "C" fn vp_bridge_init(
+    width: u16,
+    height: u16,
+    frame_callback: Option<FrameReadyCallback>,
+) {
     // セッション 1 が既に存在する場合は何もしない
     let guard = ensure_sessions();
     if let Some(map) = guard.as_ref() {
@@ -270,7 +302,11 @@ pub extern "C" fn vp_bridge_get_cell(x: u16, y: u16) -> CellData {
 
 /// 現在のグリッドサイズを取得（セッション指定）
 #[unsafe(no_mangle)]
-pub extern "C" fn vp_bridge_get_size_session(session_id: u32, out_width: *mut u16, out_height: *mut u16) {
+pub extern "C" fn vp_bridge_get_size_session(
+    session_id: u32,
+    out_width: *mut u16,
+    out_height: *mut u16,
+) {
     if out_width.is_null() || out_height.is_null() {
         return;
     }
@@ -297,7 +333,11 @@ pub extern "C" fn vp_bridge_get_cursor_session(session_id: u32) -> CursorInfo {
         y: backend.cursor_position().y,
         visible: backend.is_cursor_visible(),
     })
-    .unwrap_or(CursorInfo { x: 0, y: 0, visible: false })
+    .unwrap_or(CursorInfo {
+        x: 0,
+        y: 0,
+        visible: false,
+    })
 }
 
 /// 後方互換
@@ -308,7 +348,11 @@ pub extern "C" fn vp_bridge_get_cursor() -> CursorInfo {
 
 /// バッファ全体を一括取得（セッション指定）
 #[unsafe(no_mangle)]
-pub extern "C" fn vp_bridge_get_buffer_session(session_id: u32, dst: *mut CellData, max_cells: u32) -> u32 {
+pub extern "C" fn vp_bridge_get_buffer_session(
+    session_id: u32,
+    dst: *mut CellData,
+    max_cells: u32,
+) -> u32 {
     if dst.is_null() || max_cells == 0 {
         return 0;
     }
@@ -342,7 +386,12 @@ pub extern "C" fn vp_bridge_get_buffer(dst: *mut CellData, max_cells: u32) -> u3
 
 /// PTY を起動（セッション指定）
 #[unsafe(no_mangle)]
-pub extern "C" fn vp_bridge_pty_start_session(session_id: u32, cwd: *const c_char, cols: u16, rows: u16) -> i32 {
+pub extern "C" fn vp_bridge_pty_start_session(
+    session_id: u32,
+    cwd: *const c_char,
+    cols: u16,
+    rows: u16,
+) -> i32 {
     let backend_arc = {
         let guard = ensure_sessions();
         match guard.as_ref().and_then(|m| m.get(&session_id)) {
@@ -358,9 +407,7 @@ pub extern "C" fn vp_bridge_pty_start_session(session_id: u32, cwd: *const c_cha
                 .unwrap_or_else(|_| "/".to_string())
         })
     } else {
-        unsafe { CStr::from_ptr(cwd) }
-            .to_string_lossy()
-            .to_string()
+        unsafe { CStr::from_ptr(cwd) }.to_string_lossy().to_string()
     };
 
     match BridgePty::spawn(&cwd_str, cols, rows, backend_arc) {
@@ -416,7 +463,8 @@ pub extern "C" fn vp_bridge_pty_write(data: *const u8, len: u32) -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn vp_bridge_pty_is_running_session(session_id: u32) -> bool {
     let guard = ensure_sessions();
-    guard.as_ref()
+    guard
+        .as_ref()
         .and_then(|m| m.get(&session_id))
         .and_then(|s| s.pty.as_ref().map(|p| p.is_running()))
         .unwrap_or(false)
@@ -459,23 +507,58 @@ pub extern "C" fn vp_bridge_draw_test_pattern() {
         let size = backend.size().unwrap_or(ratatui::layout::Size::new(0, 0));
         let w = size.width as usize;
         let h = size.height as usize;
-        if w == 0 || h == 0 { return; }
+        if w == 0 || h == 0 {
+            return;
+        }
 
         let lines: Vec<(&str, Style)> = vec![
             ("", Style::default()),
-            (" ⭐ Vantage Point — VP Bridge v0.2.0", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            (
+                " ⭐ Vantage Point — VP Bridge v0.2.0",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
             ("", Style::default()),
-            (" ratatui → NSView Bridge Test", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            (
+                " ratatui → NSView Bridge Test",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
             ("", Style::default()),
             (" Color Test:", Style::default().fg(Color::White)),
             ("", Style::default()),
             ("", Style::default()),
-            (" Bold", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
-            (" Italic", Style::default().fg(Color::White).add_modifier(Modifier::ITALIC)),
-            (" Underline", Style::default().fg(Color::White).add_modifier(Modifier::UNDERLINED)),
-            (" Dim", Style::default().fg(Color::White).add_modifier(Modifier::DIM)),
+            (
+                " Bold",
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            (
+                " Italic",
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::ITALIC),
+            ),
+            (
+                " Underline",
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::UNDERLINED),
+            ),
+            (
+                " Dim",
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::DIM),
+            ),
             ("", Style::default()),
-            (" 日本語: こんにちは世界 🌍", Style::default().fg(Color::Cyan)),
+            (
+                " 日本語: こんにちは世界 🌍",
+                Style::default().fg(Color::Cyan),
+            ),
             ("", Style::default()),
             ("      /\\      ", Style::default().fg(Color::LightBlue)),
             ("     /  \\     ", Style::default().fg(Color::LightBlue)),
@@ -483,39 +566,60 @@ pub extern "C" fn vp_bridge_draw_test_pattern() {
             ("   / VP   \\   ", Style::default().fg(Color::LightBlue)),
             ("  /________\\  ", Style::default().fg(Color::LightBlue)),
             ("", Style::default()),
-            (" ✅ Bridge is working!", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            (
+                " ✅ Bridge is working!",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
         ];
 
         let mut cells: Vec<(u16, u16, Cell)> = Vec::new();
         for (row, (text, style)) in lines.iter().enumerate() {
-            if row >= h { break; }
+            if row >= h {
+                break;
+            }
             let mut col = 0usize;
             for ch in text.chars() {
-                if col >= w { break; }
+                if col >= w {
+                    break;
+                }
                 let mut cell = Cell::default();
                 cell.set_char(ch);
                 cell.set_style(*style);
                 cells.push((col as u16, row as u16, cell));
                 col += 1;
-                if unicode_width_hint(ch) > 1 && col < w { col += 1; }
+                if unicode_width_hint(ch) > 1 && col < w {
+                    col += 1;
+                }
             }
         }
 
         // カラーバー行（row 6）
         if h > 6 {
-            let color_bar = [(" Red ", Color::Red), (" Green ", Color::Green), (" Yellow ", Color::Yellow),
-                (" Blue ", Color::Blue), (" Magenta ", Color::Magenta), (" Cyan ", Color::Cyan)];
+            let color_bar = [
+                (" Red ", Color::Red),
+                (" Green ", Color::Green),
+                (" Yellow ", Color::Yellow),
+                (" Blue ", Color::Blue),
+                (" Magenta ", Color::Magenta),
+                (" Cyan ", Color::Cyan),
+            ];
             let mut col = 1usize;
             for (label, bg) in &color_bar {
                 for ch in label.chars() {
-                    if col >= w { break; }
+                    if col >= w {
+                        break;
+                    }
                     let mut cell = Cell::default();
                     cell.set_char(ch);
                     cell.set_style(Style::default().fg(Color::Black).bg(*bg));
                     cells.push((col as u16, 6, cell));
                     col += 1;
                 }
-                if col < w { col += 1; }
+                if col < w {
+                    col += 1;
+                }
             }
         }
 
@@ -527,10 +631,16 @@ pub extern "C" fn vp_bridge_draw_test_pattern() {
 
 fn unicode_width_hint(ch: char) -> usize {
     let c = ch as u32;
-    if (0x3000..=0x9FFF).contains(&c) || (0xF900..=0xFAFF).contains(&c)
-        || (0xFE30..=0xFE4F).contains(&c) || (0xFF00..=0xFF60).contains(&c)
+    if (0x3000..=0x9FFF).contains(&c)
+        || (0xF900..=0xFAFF).contains(&c)
+        || (0xFE30..=0xFE4F).contains(&c)
+        || (0xFF00..=0xFF60).contains(&c)
         || (0x20000..=0x2FA1F).contains(&c)
-    { 2 } else { 1 }
+    {
+        2
+    } else {
+        1
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -605,7 +715,9 @@ mod tests {
                 .bg(Color::Black)
                 .add_modifier(ratatui::style::Modifier::BOLD),
         );
-        backend.draw(vec![(10u16, 5u16, &cell)].into_iter()).unwrap();
+        backend
+            .draw(vec![(10u16, 5u16, &cell)].into_iter())
+            .unwrap();
         let buf = backend.buffer();
         assert_eq!(buf[(10, 5)].symbol(), "W");
     }

@@ -6,7 +6,7 @@
 //! ## 役割
 //!
 //! - Project Processのライフサイクル管理（起動・停止・監視）
-//! - Bonjour経由でのProcess発見
+//! - QUIC Registry チャネル経由での Process 発見
 //! - REST API提供
 //!
 //! ## 使用例
@@ -33,6 +33,16 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::process::Command;
 use tokio::sync::RwLock;
+
+/// PID が生存しているか確認（kill(pid, 0) でシグナルを送らずチェック）
+fn is_pid_alive(pid: u32) -> bool {
+    if let Ok(pid_i32) = i32::try_from(pid) {
+        // SAFETY: signal 0 はプロセスに何もしない。存在確認のみ。
+        unsafe { libc::kill(pid_i32, 0) == 0 }
+    } else {
+        false
+    }
+}
 
 /// プロジェクト情報
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -72,8 +82,9 @@ pub struct RunningProcess {
     pub pid: u32,
     /// プロジェクトパス
     pub project_path: PathBuf,
-    /// Bonjour発見か
-    pub discovered_via_bonjour: bool,
+    /// tmux セッション名（`{project}-vp` 形式）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tmux_session: Option<String>,
 }
 
 /// Conductor Capability
@@ -103,6 +114,16 @@ impl ProcessManagerCapability {
             config: None,
             vp_binary_path: None,
         }
+    }
+
+    /// running_processes の共有参照を取得（DaemonState と共有するため）
+    pub fn running_processes_ref(&self) -> Arc<RwLock<HashMap<String, RunningProcess>>> {
+        self.running_processes.clone()
+    }
+
+    /// projects の共有参照を取得（DaemonState と共有するため）
+    pub fn projects_ref(&self) -> Arc<RwLock<HashMap<String, ProjectInfo>>> {
+        self.projects.clone()
     }
 
     /// 設定を読み込み
@@ -238,7 +259,7 @@ impl ProcessManagerCapability {
             port,
             pid,
             project_path: project.path.clone(),
-            discovered_via_bonjour: false,
+            tmux_session: None,
         };
 
         // 状態を更新
@@ -347,12 +368,12 @@ impl ProcessManagerCapability {
             .unwrap_or("unknown")
             .to_string();
 
-        let process = RunningProcess {
+        let mut process = RunningProcess {
             project_name: name.clone(),
             port,
             pid,
             project_path: project_dir.into(),
-            discovered_via_bonjour: false,
+            tmux_session: None,
         };
 
         // プロジェクト状態を更新
@@ -367,6 +388,12 @@ impl ProcessManagerCapability {
         }
 
         let mut procs = self.running_processes.write().await;
+        // 既存の tmux_session を保持（QUIC 登録済みのセッション名を HTTP で上書きしない）
+        if let Some(existing) = procs.get(&name) {
+            if process.tmux_session.is_none() {
+                process.tmux_session = existing.tmux_session.clone();
+            }
+        }
         procs.insert(name, process);
         tracing::info!("Process 登録: port={}, dir={}", port, project_dir);
     }
@@ -413,81 +440,48 @@ impl ProcessManagerCapability {
         None
     }
 
-    /// 全Processの状態を更新（ヘルスチェック）
+    /// 全 Process の状態を更新（PID liveness check）
+    ///
+    /// Registry チャネル（QUIC 永続接続）で SP が自己登録するため、
+    /// ポートスキャンは不要。PID が生存しているかだけを確認し、
+    /// QUIC 切断を検知できなかったゴーストを除去する安全弁。
     pub async fn refresh_process_status(&self) -> CapabilityResult<()> {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_millis(500))
-            .build()
-            .map_err(|e| CapabilityError::Other(e.to_string()))?;
+        let mut dead_names: Vec<String> = Vec::new();
 
-        let mut discovered: HashMap<String, RunningProcess> = HashMap::new();
-
-        // ポートスキャン
-        for port in crate::cli::PORT_RANGE_START..=crate::cli::PORT_RANGE_END {
-            let url = format!("http://[::1]:{}/api/health", port);
-            if let Ok(resp) = client.get(&url).send().await
-                && resp.status().is_success()
-                && let Ok(json) = resp.json::<serde_json::Value>().await
-            {
-                let project_dir = json
-                    .get("project_dir")
-                    .and_then(|v| v.as_str())
-                    .map(PathBuf::from);
-                let pid = json.get("pid").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-
-                if let Some(project_path) = project_dir {
-                    // config 登録プロジェクトから名前を探す
-                    let projects = self.projects.read().await;
-                    let mut matched = false;
-                    for (name, info) in projects.iter() {
-                        if info.path == project_path {
-                            discovered.insert(
-                                name.clone(),
-                                RunningProcess {
-                                    project_name: name.clone(),
-                                    port,
-                                    pid,
-                                    project_path: project_path.clone(),
-                                    discovered_via_bonjour: false,
-                                },
-                            );
-                            matched = true;
-                            break;
-                        }
-                    }
-                    // config 未登録プロジェクトもディレクトリ名で登録
-                    if !matched {
-                        let name = project_path
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or("unknown")
-                            .to_string();
-                        discovered.insert(
-                            name.clone(),
-                            RunningProcess {
-                                project_name: name,
-                                port,
-                                pid,
-                                project_path: project_path.clone(),
-                                discovered_via_bonjour: false,
-                            },
-                        );
-                    }
+        // PID liveness check: kill(pid, 0) でプロセス存在を確認
+        {
+            let procs = self.running_processes.read().await;
+            for (name, proc) in procs.iter() {
+                if proc.pid > 0 && !is_pid_alive(proc.pid) {
+                    dead_names.push(name.clone());
                 }
             }
         }
 
-        // 稼働中リストを更新
-        {
+        // 死亡プロセスを除去
+        if !dead_names.is_empty() {
             let mut procs = self.running_processes.write().await;
-            *procs = discovered.clone();
+            for name in &dead_names {
+                if let Some(removed) = procs.remove(name) {
+                    tracing::info!(
+                        "Health check: PID {} が死亡 → '{}' を除去 (port={})",
+                        removed.pid,
+                        name,
+                        removed.port
+                    );
+                }
+            }
         }
 
-        // プロジェクト状態を更新
+        // プロジェクト状態を更新（ロック順序デッドロック防止のため分離取得）
+        let running_names: std::collections::HashSet<String> = {
+            let running = self.running_processes.read().await;
+            running.keys().cloned().collect()
+        };
         {
             let mut projects = self.projects.write().await;
             for (name, info) in projects.iter_mut() {
-                info.process_status = if discovered.contains_key(name) {
+                info.process_status = if running_names.contains(name) {
                     ProcessStatus::Running
                 } else {
                     ProcessStatus::Stopped
@@ -498,13 +492,12 @@ impl ProcessManagerCapability {
         Ok(())
     }
 
-    /// ヘルスモニター: 定期的にヘルスチェック + ゴースト除去 + クラッシュ検知
+    /// ヘルスモニター: 定期的に PID 生存確認 + クラッシュ検知 + 自動再起動
     ///
-    /// Conductor 起動時にバックグラウンドタスクとして spawn される。
+    /// TheWorld 起動時にバックグラウンドタスクとして spawn される。
     /// 30秒間隔で以下を実行:
-    /// 1. running.json のゴースト除去（PID liveness チェック）
-    /// 2. ポートスキャンで Process 状態更新
-    /// 3. 前回稼働中だった Process が消えていたらクラッシュ検知 → 自動再起動
+    /// 1. PID liveness check（QUIC 切断漏れのゴースト除去）
+    /// 2. 前回稼働中だった Process が消えていたらクラッシュ検知 → 自動再起動
     pub async fn run_health_monitor(
         world: Arc<RwLock<Self>>,
         shutdown_token: tokio_util::sync::CancellationToken,
@@ -527,64 +520,77 @@ impl ProcessManagerCapability {
                 }
             }
 
-            let world = world.read().await;
+            // ── 読み取りフェーズ（ロックを短時間で解放）──
+            let (current, restart_targets) = {
+                let world = world.read().await;
 
-            // 1. Process 状態更新（HTTP スキャンで発見 — running.json 不使用）
-            if let Err(e) = world.refresh_process_status().await {
-                tracing::warn!("Health check: 状態更新失敗: {}", e);
-                continue;
-            }
+                // 1. PID liveness check（QUIC 切断漏れのゴースト除去）
+                if let Err(e) = world.refresh_process_status().await {
+                    tracing::warn!("Health check: 状態更新失敗: {}", e);
+                    continue;
+                }
 
-            // 3. クラッシュ検知: 前回 Running だった Process が2回連続で不在なら再起動
-            let current = world.running_processes.read().await.clone();
-            let previous = world.previously_running.read().await.clone();
+                // 2. クラッシュ検知判定
+                let current = world.running_processes.read().await.clone();
+                let previous = world.previously_running.read().await.clone();
 
-            // 復帰した Process のカウントをリセット
-            for name in current.keys() {
-                missing_count.remove(name);
-            }
+                // 復帰した Process のカウントをリセット
+                for name in current.keys() {
+                    missing_count.remove(name);
+                }
 
-            for (name, prev_proc) in &previous {
-                if !current.contains_key(name) {
-                    let count = missing_count.entry(name.clone()).or_insert(0);
-                    *count += 1;
+                let mut targets: Vec<(String, u16)> = Vec::new();
+                for (name, prev_proc) in &previous {
+                    if !current.contains_key(name) {
+                        let count = missing_count.entry(name.clone()).or_insert(0);
+                        *count += 1;
 
-                    if *count < 2 {
-                        tracing::debug!(
-                            "Health check: Process '{}' が不在（{}/2回目、次回再確認）",
-                            name,
-                            count
-                        );
-                        continue;
-                    }
-
-                    tracing::warn!(
-                        "Health check: Process '{}' (port {}) がクラッシュを検知（2回連続不在）",
-                        name,
-                        prev_proc.port
-                    );
-
-                    // 自動再起動
-                    tracing::info!("Health check: Process '{}' を自動再起動中...", name);
-                    match world.start_process(name).await {
-                        Ok(new_proc) => {
-                            tracing::info!(
-                                "Health check: Process '{}' 再起動成功 (port {})",
+                        if *count < 2 {
+                            tracing::debug!(
+                                "Health check: Process '{}' が不在（{}/2回目、次回再確認）",
                                 name,
-                                new_proc.port
+                                count
                             );
-                            missing_count.remove(name);
-                            crate::notify::post_process_changed(new_proc.port, "restarted");
+                            continue;
                         }
-                        Err(e) => {
-                            tracing::error!("Health check: Process '{}' 再起動失敗: {}", name, e);
-                        }
+
+                        tracing::warn!(
+                            "Health check: Process '{}' (port {}) がクラッシュを検知（2回連続不在）",
+                            name,
+                            prev_proc.port
+                        );
+                        targets.push((name.clone(), prev_proc.port));
+                    }
+                }
+
+                // previously_running を更新（まだ read ガード内）
+                *world.previously_running.write().await = current.clone();
+
+                (current, targets)
+            };
+            // ── ここで world の read ガードが解放される ──
+
+            // ── 書き込みフェーズ（再起動が必要な場合のみロック再取得）──
+            for (name, _port) in &restart_targets {
+                tracing::info!("Health check: Process '{}' を自動再起動中...", name);
+                let world = world.read().await;
+                match world.start_process(name).await {
+                    Ok(new_proc) => {
+                        tracing::info!(
+                            "Health check: Process '{}' 再起動成功 (port {})",
+                            name,
+                            new_proc.port
+                        );
+                        missing_count.remove(name);
+                        crate::notify::post_process_changed(new_proc.port, "restarted");
+                    }
+                    Err(e) => {
+                        tracing::error!("Health check: Process '{}' 再起動失敗: {}", name, e);
                     }
                 }
             }
 
-            // 前回の稼働状態を保存（次回比較用）
-            *world.previously_running.write().await = current;
+            let _ = &current; // current のライフタイムを明示（コンパイラ最適化防止用ではなく意図表示）
         }
     }
 }
@@ -627,7 +633,7 @@ impl Capability for ProcessManagerCapability {
             tracing::warn!("Failed to load config: {}", e);
         }
 
-        // 初期状態をスキャン
+        // 初期状態チェック（PID liveness — SP は QUIC registry で自己登録する）
         if let Err(e) = self.refresh_process_status().await {
             tracing::warn!("Failed to refresh process status: {}", e);
         }
@@ -650,20 +656,14 @@ impl Capability for ProcessManagerCapability {
     }
 
     fn subscriptions(&self) -> Vec<String> {
-        vec!["process.*".to_string(), "bonjour.*".to_string()]
+        vec!["process.*".to_string()]
     }
 
     async fn handle_event(
         &mut self,
-        event: &CapabilityEvent,
+        _event: &CapabilityEvent,
         _ctx: &CapabilityContext,
     ) -> CapabilityResult<()> {
-        // Bonjour発見イベントを処理
-        if event.event_type == "bonjour.advertised" {
-            // 新しいProcessが発見されたら状態を更新
-            let _ = self.refresh_process_status().await;
-        }
-
         Ok(())
     }
 

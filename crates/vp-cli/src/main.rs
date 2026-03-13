@@ -127,8 +127,15 @@ enum Commands {
 
     // --- App ---
     /// TheWorld 管理 — 全 Process を統括する常駐プロセス
-    #[command(subcommand, alias = "conductor")]
-    World(commands::world_cmd::WorldCommands),
+    #[command(alias = "conductor")]
+    World {
+        /// 待ち受けポート番号（サブコマンド省略時に使用）
+        #[arg(short, long, default_value_t = cli::WORLD_PORT)]
+        port: u16,
+        /// サブコマンド（省略時は start として動作、後方互換: `vp world --port 32000`）
+        #[command(subcommand)]
+        command: Option<commands::world_cmd::WorldCommands>,
+    },
     /// VantagePoint.app を起動（TheWorld も自動起動）
     App {
         /// TheWorld ポート番号
@@ -232,7 +239,11 @@ fn main() -> Result<()> {
         Commands::File(cmd) => commands::file_cmd::execute(cmd, &config),
 
         // App
-        Commands::World(cmd) => commands::world_cmd::execute(cmd),
+        Commands::World { port, command } => {
+            // サブコマンド省略時は start として動作（後方互換: `vp world --port 32000`）
+            let cmd = command.unwrap_or(commands::world_cmd::WorldCommands::Start { port });
+            commands::world_cmd::execute(cmd)
+        }
         Commands::App { port, no_daemon } => commands::app::execute(port, no_daemon),
         Commands::Tray { midi } => {
             // MIDI をバックグラウンドスレッドで起動

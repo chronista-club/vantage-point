@@ -30,7 +30,9 @@ pub use bonjour_capability::BonjourCapability;
 pub use core::{CapabilityContext, CapabilityEvent, CapabilityInfo, CapabilityState};
 pub use eventbus::EventBus;
 pub use midi_capability::MidiCapability;
-pub use process_manager_capability::{ProcessManagerCapability, ProjectInfo, RunningProcess};
+pub use process_manager_capability::{
+    ProcessManagerCapability, ProcessStatus, ProjectInfo, RunningProcess,
+};
 pub use protocol_capability::ProtocolCapability;
 pub use registry::CapabilityRegistry;
 pub use update_capability::UpdateCapability;

@@ -187,14 +187,6 @@ pub async fn run(
             post(world::world_open_pointview),
         )
         .route("/api/world/refresh", post(world::world_refresh))
-        .route(
-            "/api/world/processes/register",
-            post(world::world_register_process),
-        )
-        .route(
-            "/api/world/processes/unregister",
-            post(world::world_unregister_process),
-        )
         .layer(CorsLayer::permissive())
         .with_state(state.clone());
 
@@ -236,9 +228,16 @@ pub async fn run(
         });
     }
 
-    // TheWorld に Process を登録（ベストエフォート — 失敗してもスキャンで発見される）
+    // TheWorld に QUIC Registry 登録（永続接続 + heartbeat）
+    // 切断時に TheWorld が即時除去するため、HTTP 登録は不要
     let pid = std::process::id();
-    crate::discovery::register(port, &state.project_dir, pid, &terminal_token).await;
+    crate::discovery::spawn_registry_keepalive(
+        port,
+        &state.project_dir,
+        pid,
+        &terminal_token,
+        shutdown_token.clone(),
+    );
 
     // メニューバーアプリに起動完了を通知
     crate::notify::post_process_changed(port, "started");
@@ -256,8 +255,8 @@ pub async fn run(
         })
         .await?;
 
-    // TheWorld から登録解除
-    crate::discovery::unregister(port).await;
+    // QUIC Registry 切断で TheWorld が即時除去するため、明示的 unregister は不要
+    // （spawn_registry_keepalive の shutdown handler が unregister を送信済み）
 
     // ペイン状態をディスクに保存（次回起動時に復元、RetainedStore から取得）
     state_for_shutdown.persist_pane_contents().await;
@@ -386,6 +385,8 @@ pub async fn run_world(port: u16) -> Result<()> {
             post(world::world_open_pointview),
         )
         .route("/api/world/refresh", post(world::world_refresh))
+        // HTTP register/unregister: Swift メニューバーアプリの移行完了まで残す（後方互換）
+        // SP は QUIC registry チャネルで自己登録するため、これらは外部ツール用
         .route(
             "/api/world/processes/register",
             post(world::world_register_process),
@@ -417,13 +418,22 @@ pub async fn run_world(port: u16) -> Result<()> {
     // Clone world for shutdown
     let world_for_shutdown = world_cap.clone();
 
-    // Daemon QUIC サーバー起動（PTY セッション管理、同一ポートで UDP/QUIC）
-    let daemon_state = std::sync::Arc::new(crate::daemon::server::DaemonState::new());
+    // Daemon QUIC サーバー起動（PTY セッション管理 + Registry チャネル、同一ポートで UDP/QUIC）
+    // ProcessManagerCapability の running_processes を DaemonState と共有
+    let running_processes_ref = world_cap.read().await.running_processes_ref();
+    let projects_ref = world_cap.read().await.projects_ref();
+    let daemon_state = std::sync::Arc::new(
+        crate::daemon::server::DaemonState::new()
+            .with_running_processes(running_processes_ref, projects_ref),
+    );
     let daemon_handle = tokio::spawn(crate::daemon::server::start_daemon_server(
         daemon_state,
         port,
     ));
-    tracing::info!("Daemon QUIC サーバー統合起動 (port: {})", port);
+    tracing::info!(
+        "Daemon QUIC サーバー統合起動 (port: {}, registry チャネル有効)",
+        port
+    );
 
     // ヘルスモニター起動（30秒間隔で Process 監視 + ゴースト除去 + クラッシュ復旧）
     let health_monitor = tokio::spawn(ProcessManagerCapability::run_health_monitor(

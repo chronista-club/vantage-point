@@ -1,14 +1,19 @@
 //! プロセス発見モジュール
 //!
-//! TheWorld API を第一ソース、HTTP スキャンをフォールバックとして
-//! 稼働中 Process を発見する。running.json を使わない。
+//! TheWorld API（port 32000）を単一の真実源として稼働中 Process を発見する。
+//! SP は QUIC "registry" チャネルで自己登録し、切断時に即時除去される。
 //!
 //! ## データフロー
 //!
 //! ```text
-//! 問い合わせ → TheWorld API (port 32000) → 成功 → 返却
-//!                                        → 失敗 → HTTP スキャン (33000-33010) → 返却
+//! SP 起動 → QUIC "registry" チャネルで TheWorld に自己登録
+//! 問い合わせ → TheWorld HTTP API (port 32000) → 返却
+//! SP 停止/切断 → TheWorld が即時除去
 //! ```
+
+use std::time::Duration;
+
+use tokio_util::sync::CancellationToken;
 
 use crate::cli::{PORT_RANGE_END, PORT_RANGE_START, WORLD_PORT};
 use crate::config::Config;
@@ -60,16 +65,10 @@ fn build_client(timeout_ms: u64) -> reqwest::Client {
 
 /// 全稼働中 Process を取得
 ///
-/// 1. TheWorld API (port 32000) に問い合わせ
-/// 2. 失敗したら HTTP スキャン (33000-33010)
+/// TheWorld API (port 32000) に問い合わせ。
+/// SP は QUIC registry チャネルで自己登録するため、TheWorld が単一の真実源。
 pub async fn list() -> Vec<ProcessInfo> {
-    // 1. TheWorld API
-    if let Some(processes) = query_world().await {
-        return processes;
-    }
-
-    // 2. HTTP スキャンフォールバック
-    scan_ports().await
+    query_world().await.unwrap_or_default()
 }
 
 /// プロジェクトディレクトリから Process を検索
@@ -109,45 +108,6 @@ fn is_port_available(port: u16) -> bool {
         && TcpListener::bind(("127.0.0.1", port)).is_ok()
 }
 
-/// TheWorld に Process を登録
-pub async fn register(port: u16, project_dir: &str, pid: u32, terminal_token: &str) {
-    let client = build_client(2000);
-    let url = format!("http://[::1]:{}/api/world/processes/register", WORLD_PORT);
-
-    let body = serde_json::json!({
-        "port": port,
-        "project_dir": project_dir,
-        "pid": pid,
-        "terminal_token": terminal_token,
-    });
-
-    match client.post(&url).json(&body).send().await {
-        Ok(resp) if resp.status().is_success() => {
-            tracing::info!("TheWorld に Process 登録完了 (port={})", port);
-        }
-        Ok(resp) => {
-            tracing::debug!(
-                "TheWorld 登録失敗 (status={}): スキャンで発見される",
-                resp.status()
-            );
-        }
-        Err(_) => {
-            tracing::debug!("TheWorld 未起動: スキャンで発見される");
-        }
-    }
-}
-
-/// TheWorld から Process を登録解除
-pub async fn unregister(port: u16) {
-    let client = build_client(2000);
-    let url = format!("http://[::1]:{}/api/world/processes/unregister", WORLD_PORT);
-
-    let body = serde_json::json!({ "port": port });
-
-    // ベストエフォート — 失敗してもヘルスモニターが補完
-    let _ = client.post(&url).json(&body).send().await;
-}
-
 /// TheWorld API に問い合わせ
 async fn query_world() -> Option<Vec<ProcessInfo>> {
     let client = build_client(1000);
@@ -173,29 +133,6 @@ async fn query_world() -> Option<Vec<ProcessInfo>> {
     )
 }
 
-/// HTTP スキャンで Process を発見
-async fn scan_ports() -> Vec<ProcessInfo> {
-    let client = build_client(500);
-    let mut processes = Vec::new();
-
-    for port in PORT_RANGE_START..=PORT_RANGE_END {
-        let url = format!("http://[::1]:{}/api/health", port);
-        if let Ok(resp) = client.get(&url).send().await
-            && resp.status().is_success()
-            && let Ok(health) = resp.json::<HealthResponse>().await
-        {
-            processes.push(ProcessInfo {
-                port,
-                pid: health.pid,
-                project_dir: health.project_dir,
-                terminal_token: health.terminal_token,
-            });
-        }
-    }
-
-    processes
-}
-
 /// 特定ポートの Process から terminal_token を取得
 pub async fn fetch_terminal_token(port: u16) -> Option<String> {
     let client = build_client(1000);
@@ -215,7 +152,151 @@ pub fn generate_terminal_token() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
-// ─── 同期ラッパー（CLI コマンドから使用）───────────────────
+// ─── QUIC Registry 登録（TheWorld 永続接続）───────────────
+
+/// TheWorld に QUIC "registry" チャネルで接続し、自己登録 + heartbeat を維持する
+///
+/// 切断時は自動的に再接続を試みる。shutdown_token がキャンセルされるまでループ。
+/// TheWorld 側の registry チャネルハンドラが切断を検知 → running_processes から即時除去。
+pub fn spawn_registry_keepalive(
+    port: u16,
+    project_dir: &str,
+    pid: u32,
+    terminal_token: &str,
+    shutdown: CancellationToken,
+) {
+    let project_name = std::path::Path::new(project_dir)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("unknown")
+        .to_string();
+
+    // config からプロジェクト名を解決（ディレクトリ名がデフォルト）
+    let project_name = if let Ok(config) = Config::load() {
+        let normalized = Config::normalize_path(std::path::Path::new(project_dir));
+        config
+            .projects
+            .iter()
+            .find(|p| Config::normalize_path(std::path::Path::new(&p.path)) == normalized)
+            .map(|p| p.name.clone())
+            .unwrap_or(project_name)
+    } else {
+        project_name
+    };
+
+    // tmux セッション名を付与（tmux 環境下なら `{project}-vp` 形式）
+    let tmux_session = if crate::tmux::is_tmux_available() {
+        Some(crate::tmux::session_name(&project_name))
+    } else {
+        None
+    };
+
+    let agent_card = serde_json::json!({
+        "project_name": project_name,
+        "port": port,
+        "project_dir": project_dir,
+        "pid": pid,
+        "terminal_token": terminal_token,
+        "tmux_session": tmux_session,
+    });
+
+    tokio::spawn(async move {
+        loop {
+            // TheWorld に QUIC 接続
+            match connect_and_register(&agent_card).await {
+                Ok(conn) => {
+                    tracing::info!(
+                        "Registry: QUIC 登録成功 (project={}, port={})",
+                        project_name,
+                        port
+                    );
+
+                    // Heartbeat ループ（15秒間隔）
+                    // conn（ProtocolClient + UnisonChannel）はこのスコープで保持
+                    let mut interval = tokio::time::interval(Duration::from_secs(15));
+                    interval.tick().await; // 最初の tick をスキップ
+
+                    loop {
+                        tokio::select! {
+                            _ = interval.tick() => {
+                                if conn.channel
+                                    .request("heartbeat", serde_json::json!({}))
+                                    .await
+                                    .is_err()
+                                {
+                                    tracing::warn!(
+                                        "Registry: heartbeat 失敗 → 再接続"
+                                    );
+                                    break; // 外側ループで再接続
+                                }
+                            }
+                            _ = shutdown.cancelled() => {
+                                // グレースフル unregister
+                                let _ = conn.channel
+                                    .request("unregister", serde_json::json!({}))
+                                    .await;
+                                tracing::info!("Registry: QUIC 登録解除 (shutdown)");
+                                return;
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::debug!("Registry: TheWorld 接続失敗 ({}), 5秒後にリトライ", e);
+                    tokio::select! {
+                        _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+                        _ = shutdown.cancelled() => return,
+                    }
+                }
+            }
+        }
+    });
+}
+
+/// QUIC 接続の所有権を保持する構造体
+///
+/// `ProtocolClient` が drop されると QUIC 接続も切れるため、
+/// チャネルと一緒に保持する必要がある。
+struct RegistryConnection {
+    /// QUIC 接続の所有権（drop されないように保持）
+    _client: unison::ProtocolClient,
+    /// registry チャネル（heartbeat / unregister に使用）
+    channel: unison::UnisonChannel,
+}
+
+/// TheWorld の "registry" チャネルに接続し、register リクエストを送信する
+async fn connect_and_register(
+    agent_card: &serde_json::Value,
+) -> Result<RegistryConnection, String> {
+    let client = unison::ProtocolClient::new_default()
+        .map_err(|e| format!("QUIC client 作成失敗: {}", e))?;
+
+    let addr = format!("[::1]:{}", WORLD_PORT);
+    client
+        .connect(&addr)
+        .await
+        .map_err(|e| format!("TheWorld 接続失敗: {}", e))?;
+
+    let channel = client
+        .open_channel("registry")
+        .await
+        .map_err(|e| format!("registry チャネルオープン失敗: {}", e))?;
+
+    // register リクエスト送信
+    let resp = channel
+        .request("register", agent_card.clone())
+        .await
+        .map_err(|e| format!("register リクエスト失敗: {}", e))?;
+
+    if resp.get("error").is_some() {
+        return Err(format!("register 拒否: {}", resp));
+    }
+
+    Ok(RegistryConnection {
+        _client: client,
+        channel,
+    })
+}
 
 // ─── 同期ラッパー（CLI コマンドから使用）───────────────────
 //

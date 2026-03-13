@@ -68,6 +68,8 @@ vantage-point/
 ├── crates/
 │   ├── vantage-point/   # メインCLI (vp)
 │   └── vantage-core/    # 共通ライブラリ
+├── apple/               # macOS ネイティブアプリ (Swift)
+│   └── VantagePoint/    # メニューバーアプリ (SwiftUI)
 ├── web/                 # WebView HTML/JS
 ├── docs/
 │   ├── spec/            # 仕様書
