@@ -269,13 +269,22 @@ impl MultiProjectApp {
         }
 
         // Ctrl+Shift+T: 新規タブ追加
-        if key.code == KeyCode::Char('T') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        // crossterm はターミナルにより Char('T') or Char('t') + SHIFT で報告する
+        if matches!(key.code, KeyCode::Char('T') | KeyCode::Char('t'))
+            && key
+                .modifiers
+                .contains(KeyModifiers::CONTROL | KeyModifiers::SHIFT)
+        {
             self.open_project_adder();
             return Ok(true);
         }
 
         // Ctrl+Shift+W: アクティブタブを閉じる
-        if key.code == KeyCode::Char('W') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        if matches!(key.code, KeyCode::Char('W') | KeyCode::Char('w'))
+            && key
+                .modifiers
+                .contains(KeyModifiers::CONTROL | KeyModifiers::SHIFT)
+        {
             self.close_current_project();
             return Ok(true);
         }

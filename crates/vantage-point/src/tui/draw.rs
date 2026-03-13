@@ -165,11 +165,11 @@ pub fn draw_footer_bar(
     }
     spans.push(Span::styled(" C-n", key_style));
     spans.push(Span::styled(" new ", desc_style));
-    spans.push(Span::styled(" C-T", key_style));
+    spans.push(Span::styled(" ⌘T", key_style));
     spans.push(Span::styled(" add tab ", desc_style));
 
     if project_count > 1 {
-        spans.push(Span::styled(" C-W", key_style));
+        spans.push(Span::styled(" ⌘W", key_style));
         spans.push(Span::styled(" close tab ", desc_style));
     }
 

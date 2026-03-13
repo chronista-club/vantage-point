@@ -679,7 +679,27 @@ class TerminalView: NSView {
             return
         }
 
-        // その他の Cmd ショートカット（Cmd+`, Cmd+W, Cmd+Q 等）はシステムに委譲
+        // Cmd+T → Ctrl+Shift+T として PTY に送信（LANE タブ追加）
+        // Cmd+W → Ctrl+Shift+W として PTY に送信（LANE タブ閉じる）
+        // CSI u 形式: \x1b[{codepoint};{1+modifiers}u (Shift=1, Ctrl=4 → 6)
+        if event.modifierFlags.contains(.command),
+           let ch = event.charactersIgnoringModifiers,
+           (ch == "t" || ch == "w") {
+            let codepoint = ch == "t" ? 84 : 87  // 'T' = 84, 'W' = 87
+            let csiU = "\u{1b}[\(codepoint);6u"
+            if let data = csiU.data(using: .utf8) {
+                data.withUnsafeBytes { ptr in
+                    _ = vp_bridge_pty_write_session(
+                        sessionId,
+                        ptr.baseAddress!.assumingMemoryBound(to: UInt8.self),
+                        UInt32(ptr.count)
+                    )
+                }
+            }
+            return
+        }
+
+        // その他の Cmd ショートカット（Cmd+`, Cmd+Q 等）はシステムに委譲
         if event.modifierFlags.contains(.command) {
             super.keyDown(with: event)
             return
