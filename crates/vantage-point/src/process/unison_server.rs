@@ -195,6 +195,108 @@ async fn handle_tmux_capture_all(state: &AppState) -> Result<serde_json::Value, 
     Ok(serde_json::json!({"status": "ok", "captures": captures}))
 }
 
+/// エージェントメタデータ設定
+async fn handle_tmux_set_agent_meta(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let handle = state
+        .tmux
+        .as_ref()
+        .ok_or_else(|| "tmux 未使用環境です".to_string())?;
+    let pane_id = payload["pane_id"]
+        .as_str()
+        .ok_or_else(|| "pane_id が必要です".to_string())?;
+    let label = payload["label"]
+        .as_str()
+        .ok_or_else(|| "label が必要です".to_string())?;
+    let status = payload["status"]
+        .as_str()
+        .unwrap_or("running");
+    let task = payload["task"].as_str().map(|s| s.to_string());
+
+    let meta = crate::process::tmux_actor::AgentMeta {
+        label: label.to_string(),
+        status: status.to_string(),
+        task,
+    };
+    handle.set_agent_meta(pane_id, meta).await?;
+    Ok(serde_json::json!({"status": "ok"}))
+}
+
+/// エージェントステータス更新
+async fn handle_tmux_update_agent_status(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let handle = state
+        .tmux
+        .as_ref()
+        .ok_or_else(|| "tmux 未使用環境です".to_string())?;
+    let pane_id = payload["pane_id"]
+        .as_str()
+        .ok_or_else(|| "pane_id が必要です".to_string())?;
+    let status = payload["status"]
+        .as_str()
+        .ok_or_else(|| "status が必要です".to_string())?;
+    let task = payload["task"].as_str().map(|s| s.to_string());
+
+    // 既存メタデータから label/task を引き継ぎ（capture_all 不要）
+    let existing = handle.get_agent_meta(pane_id).await;
+    let existing_label = existing
+        .as_ref()
+        .map(|a| a.label.clone())
+        .unwrap_or_else(|| "unknown".to_string());
+    let existing_task = if task.is_none() {
+        existing.and_then(|a| a.task)
+    } else {
+        None
+    };
+
+    let meta = crate::process::tmux_actor::AgentMeta {
+        label: existing_label,
+        status: status.to_string(),
+        task: task.or(existing_task),
+    };
+    handle.set_agent_meta(pane_id, meta).await?;
+    Ok(serde_json::json!({"status": "ok"}))
+}
+
+/// エージェントメタデータクリア
+async fn handle_tmux_clear_agent_meta(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let handle = state
+        .tmux
+        .as_ref()
+        .ok_or_else(|| "tmux 未使用環境です".to_string())?;
+    let pane_id = payload["pane_id"]
+        .as_str()
+        .ok_or_else(|| "pane_id が必要です".to_string())?;
+    handle.clear_agent_meta(pane_id).await?;
+    Ok(serde_json::json!({"status": "ok"}))
+}
+
+/// tmux send-keys（ペインへのテキスト送信）
+async fn handle_tmux_send_keys(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let handle = state
+        .tmux
+        .as_ref()
+        .ok_or_else(|| "tmux 未使用環境です".to_string())?;
+    let pane_id = payload["pane_id"]
+        .as_str()
+        .ok_or_else(|| "pane_id が必要です".to_string())?;
+    let keys = payload["keys"]
+        .as_str()
+        .ok_or_else(|| "keys が必要です".to_string())?;
+    handle.send_keys(pane_id, keys).await?;
+    Ok(serde_json::json!({"status": "ok"}))
+}
+
 // =============================================================================
 // ProcessRunner ハンドラー
 // =============================================================================
@@ -437,6 +539,11 @@ pub async fn start_unison_server(
                             "tmux_close" => handle_tmux_close(&state, payload).await,
                             "tmux_capture" => handle_tmux_capture(&state, payload).await,
                             "tmux_capture_all" => handle_tmux_capture_all(&state).await,
+                            // エージェントメタデータ
+                            "tmux_set_agent_meta" => handle_tmux_set_agent_meta(&state, payload).await,
+                            "tmux_update_agent_status" => handle_tmux_update_agent_status(&state, payload).await,
+                            "tmux_clear_agent_meta" => handle_tmux_clear_agent_meta(&state, payload).await,
+                            "tmux_send_keys" => handle_tmux_send_keys(&state, payload).await,
                             // ProcessRunner
                             "process_run" => handle_process_run(&state, payload).await,
                             "process_stop" => handle_process_stop(&state, payload).await,

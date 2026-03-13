@@ -246,6 +246,48 @@ pub struct TmuxCaptureParams {
     pub pane_id: Option<String>,
 }
 
+/// エージェントデプロイのパラメータ
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct TmuxAgentDeployParams {
+    /// エージェント名（"Moody Blues", "Sticky Fingers" 等）
+    #[schemars(description = "Agent label (e.g. 'Moody Blues', 'Sticky Fingers')")]
+    pub label: String,
+    /// 新しいペインで実行するコマンド
+    #[schemars(description = "Command to run in the new pane (e.g. 'claude --dangerously-skip-permissions')")]
+    pub command: Option<String>,
+    /// 実行中タスクの説明
+    #[schemars(description = "Description of the task this agent is performing")]
+    pub task: Option<String>,
+    /// 水平分割 (true) or 垂直分割 (false)。デフォルト: true
+    #[schemars(description = "Horizontal split (true, default) or vertical split (false)")]
+    pub horizontal: Option<bool>,
+}
+
+/// エージェントステータス更新のパラメータ
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct TmuxAgentStatusParams {
+    /// ペイン ID
+    #[schemars(description = "Pane ID (e.g. %3)")]
+    pub pane_id: String,
+    /// ステータス（"running", "waiting", "done", "error"）
+    #[schemars(description = "Agent status: 'running', 'waiting', 'done', or 'error'")]
+    pub status: String,
+    /// タスク説明（更新する場合）
+    #[schemars(description = "Updated task description (optional)")]
+    pub task: Option<String>,
+}
+
+/// エージェントへのテキスト送信パラメータ
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct TmuxAgentSendParams {
+    /// ペイン ID
+    #[schemars(description = "Pane ID (e.g. %3)")]
+    pub pane_id: String,
+    /// 送信するテキスト（改行はそのまま送信される）
+    #[schemars(description = "Text to send to the pane (newlines are sent as-is)")]
+    pub text: String,
+}
+
 /// Response format for permission tool
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1098,8 +1140,46 @@ impl VantageMcp {
             )]));
         }
 
+        // エージェント情報を持つペインと通常ペインを分類
+        let mut agent_panes = Vec::new();
+        let mut normal_panes = Vec::new();
+        for cap in &captures {
+            if cap.get("agent").is_some() && !cap["agent"].is_null() {
+                agent_panes.push(cap);
+            } else {
+                normal_panes.push(cap);
+            }
+        }
+
         // markdown ダッシュボードを構築
         let mut md = String::from("# tmux Dashboard\n\n");
+
+        // エージェントパイプライン表示
+        if !agent_panes.is_empty() {
+            md.push_str("## Agent Pipeline\n\n");
+            md.push_str("| Pane | Agent | Status | Task |\n");
+            md.push_str("|------|-------|--------|------|\n");
+            for cap in &agent_panes {
+                let pane_id = cap.pointer("/pane/id").and_then(|v| v.as_str()).unwrap_or("?");
+                let label = cap.pointer("/agent/label").and_then(|v| v.as_str()).unwrap_or("?");
+                let status = cap.pointer("/agent/status").and_then(|v| v.as_str()).unwrap_or("?");
+                let task = cap.pointer("/agent/task").and_then(|v| v.as_str()).unwrap_or("-");
+                let status_icon = match status {
+                    "running" => "🟢",
+                    "waiting" => "⏳",
+                    "done" => "✅",
+                    "error" => "🔴",
+                    _ => "⚪",
+                };
+                md.push_str(&format!(
+                    "| {} | {} | {} {} | {} |\n",
+                    pane_id, label, status_icon, status, task
+                ));
+            }
+            md.push('\n');
+        }
+
+        // 全ペインの出力表示
         for cap in &captures {
             let pane_id = cap
                 .pointer("/pane/id")
@@ -1123,14 +1203,26 @@ impl VantageMcp {
                 .unwrap_or(false);
             let content = cap.get("content").and_then(|v| v.as_str()).unwrap_or("");
 
+            // エージェント名があれば表示
+            let agent_label = cap
+                .pointer("/agent/label")
+                .and_then(|v| v.as_str());
+            let agent_status = cap
+                .pointer("/agent/status")
+                .and_then(|v| v.as_str());
+
             // 最後の数行だけ表示（ダッシュボード向け）
             let tail_lines: Vec<&str> = content.lines().rev().take(15).collect();
             let tail: String = tail_lines.into_iter().rev().collect::<Vec<_>>().join("\n");
 
             let active_marker = if active { " *" } else { "" };
+            let agent_info = match (agent_label, agent_status) {
+                (Some(label), Some(status)) => format!(" — {} ({})", label, status),
+                _ => String::new(),
+            };
             md.push_str(&format!(
-                "## {} `{}` ({}x{}){}\n\n```\n{}\n```\n\n",
-                pane_id, cmd, width, height, active_marker, tail
+                "## {} `{}` ({}x{}){}{}\n\n```\n{}\n```\n\n",
+                pane_id, cmd, width, height, active_marker, agent_info, tail
             ));
         }
 
@@ -1147,6 +1239,104 @@ impl VantageMcp {
 
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
             format!("Dashboard shown on Canvas ({} panes)", captures.len()),
+        )]))
+    }
+
+    /// Deploy an agent to a new tmux pane.
+    ///
+    /// tmux split + エージェントメタデータ設定を1コールで実行。
+    /// team-bucciarati 等のパイプラインから呼ばれる想定。
+    #[tool(
+        description = "Deploy an agent to a new tmux pane. Creates a split pane, runs the command, and tags it with agent metadata (label, status, task). Returns the pane ID for subsequent status updates."
+    )]
+    async fn tmux_agent_deploy(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<TmuxAgentDeployParams>,
+    ) -> Result<CallToolResult, McpError> {
+        // 1. ペイン分割
+        let horizontal = params.horizontal.unwrap_or(true);
+        let mut split_payload = serde_json::json!({"horizontal": horizontal});
+        if let Some(cmd) = &params.command {
+            split_payload["command"] = serde_json::Value::String(cmd.clone());
+        }
+        let resp = self.quic_call("tmux_split", split_payload).await?;
+        let pane_id = resp
+            .pointer("/pane/id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("?")
+            .to_string();
+
+        // 2. エージェントメタデータ設定
+        self.quic_call(
+            "tmux_set_agent_meta",
+            serde_json::json!({
+                "pane_id": pane_id,
+                "label": params.label,
+                "status": "running",
+                "task": params.task,
+            }),
+        )
+        .await?;
+
+        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+            format!(
+                "Agent '{}' deployed to pane {} (status: running, task: {})",
+                params.label,
+                pane_id,
+                params.task.as_deref().unwrap_or("-")
+            ),
+        )]))
+    }
+
+    /// Update agent status on a tmux pane.
+    ///
+    /// エージェントの実行ステータスを更新する。ダッシュボードに反映される。
+    #[tool(
+        description = "Update the status of an agent running in a tmux pane. Status values: 'running', 'waiting', 'done', 'error'. Optionally update the task description."
+    )]
+    async fn tmux_agent_status(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<TmuxAgentStatusParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let mut payload = serde_json::json!({
+            "pane_id": params.pane_id,
+            "status": params.status,
+        });
+        if let Some(task) = &params.task {
+            payload["task"] = serde_json::Value::String(task.clone());
+        }
+        self.quic_call("tmux_update_agent_status", payload).await?;
+
+        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+            format!(
+                "Agent status updated: pane={}, status={}",
+                params.pane_id, params.status
+            ),
+        )]))
+    }
+
+    /// Send text input to a tmux pane (agent intervention).
+    ///
+    /// tmux send-keys でペインにテキストを送信する。
+    /// エージェントへの介入やユーザー入力の自動化に使う。
+    #[tool(
+        description = "Send text input to a tmux pane via send-keys. Use this to intervene in an agent's execution or provide input. Text is sent as-is (include '\\n' for Enter)."
+    )]
+    async fn tmux_agent_send(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<TmuxAgentSendParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.quic_call(
+            "tmux_send_keys",
+            serde_json::json!({
+                "pane_id": params.pane_id,
+                "keys": params.text,
+            }),
+        )
+        .await?;
+
+        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+            format!("Sent to pane {}: {:?}", params.pane_id, params.text),
         )]))
     }
 

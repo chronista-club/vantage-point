@@ -155,6 +155,9 @@ enum Commands {
 }
 
 fn main() -> Result<()> {
+    // rustls CryptoProvider を最初に初期化（reqwest/quinn が使う）
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
     // CLIパース（tracingより先に）
     let cli = Cli::parse();
 

@@ -16,6 +16,7 @@
 //! tmux CLI
 //! ```
 
+use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot};
 
@@ -59,6 +60,40 @@ enum TmuxCommand {
     CaptureAll {
         reply: oneshot::Sender<Vec<PaneCapture>>,
     },
+    /// エージェントメタデータを設定
+    SetAgentMeta {
+        pane_id: String,
+        meta: AgentMeta,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    /// エージェントメタデータをクリア
+    ClearAgentMeta {
+        pane_id: String,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    /// エージェントメタデータを取得
+    GetAgentMeta {
+        pane_id: String,
+        reply: oneshot::Sender<Option<AgentMeta>>,
+    },
+    /// ペインにキー入力を送信（tmux send-keys）
+    SendKeys {
+        pane_id: String,
+        keys: String,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+}
+
+/// エージェントメタデータ（tmux pane に紐づく論理情報）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentMeta {
+    /// エージェント名（"Moody Blues", "Sticky Fingers" 等）
+    pub label: String,
+    /// ステータス（"running", "waiting", "done", "error"）
+    pub status: String,
+    /// 実行中タスクの説明
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
 }
 
 /// ペインキャプチャ結果
@@ -66,6 +101,9 @@ enum TmuxCommand {
 pub struct PaneCapture {
     pub pane: TmuxPane,
     pub content: String,
+    /// エージェントメタデータ（設定されている場合）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<AgentMeta>,
 }
 
 /// Actor への外部インターフェース（Clone 可能）
@@ -153,12 +191,75 @@ impl TmuxHandle {
         }
         rx.await.unwrap_or_default()
     }
+
+    /// エージェントメタデータを設定
+    pub async fn set_agent_meta(
+        &self,
+        pane_id: &str,
+        meta: AgentMeta,
+    ) -> Result<(), String> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(TmuxCommand::SetAgentMeta {
+                pane_id: pane_id.to_string(),
+                meta,
+                reply,
+            })
+            .await
+            .map_err(|_| "TmuxActor stopped".to_string())?;
+        rx.await
+            .map_err(|_| "TmuxActor reply dropped".to_string())?
+    }
+
+    /// エージェントメタデータをクリア
+    pub async fn clear_agent_meta(&self, pane_id: &str) -> Result<(), String> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(TmuxCommand::ClearAgentMeta {
+                pane_id: pane_id.to_string(),
+                reply,
+            })
+            .await
+            .map_err(|_| "TmuxActor stopped".to_string())?;
+        rx.await
+            .map_err(|_| "TmuxActor reply dropped".to_string())?
+    }
+
+    /// エージェントメタデータを取得
+    pub async fn get_agent_meta(&self, pane_id: &str) -> Option<AgentMeta> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(TmuxCommand::GetAgentMeta {
+                pane_id: pane_id.to_string(),
+                reply,
+            })
+            .await
+            .ok()?;
+        rx.await.ok().flatten()
+    }
+
+    /// ペインにキー入力を送信
+    pub async fn send_keys(&self, pane_id: &str, keys: &str) -> Result<(), String> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(TmuxCommand::SendKeys {
+                pane_id: pane_id.to_string(),
+                keys: keys.to_string(),
+                reply,
+            })
+            .await
+            .map_err(|_| "TmuxActor stopped".to_string())?;
+        rx.await
+            .map_err(|_| "TmuxActor reply dropped".to_string())?
+    }
 }
 
 /// TmuxActor の内部状態
 struct TmuxActor {
     session_name: String,
     panes: Vec<TmuxPane>,
+    /// pane_id → エージェントメタデータ（tmux には保存せず VP インメモリ管理）
+    agent_metadata: HashMap<String, AgentMeta>,
     rx: mpsc::Receiver<TmuxCommand>,
 }
 
@@ -214,6 +315,8 @@ impl TmuxActor {
                         .unwrap_or_else(|e| Err(format!("spawn_blocking panicked: {}", e)));
 
                     if result.is_ok() {
+                        // ペイン閉鎖時にエージェントメタデータもクリーンアップ
+                        self.agent_metadata.remove(&pane_id);
                         tracing::info!("tmux ペイン閉鎖: {}", pane_id);
                     }
                     // 状態を更新
@@ -244,20 +347,51 @@ impl TmuxActor {
                         .await
                         .unwrap_or_default();
 
-                    // 全ペインをキャプチャ
+                    // 全ペインをキャプチャ（エージェントメタデータ付き）
                     let panes = self.panes.clone();
+                    let agent_meta = self.agent_metadata.clone();
                     let captures = tokio::task::spawn_blocking(move || {
                         panes
                             .into_iter()
                             .map(|pane| {
                                 let content = Self::do_capture(&pane.id).unwrap_or_default();
-                                PaneCapture { pane, content }
+                                let agent = agent_meta.get(&pane.id).cloned();
+                                PaneCapture { pane, content, agent }
                             })
                             .collect()
                     })
                     .await
                     .unwrap_or_default();
                     let _ = reply.send(captures);
+                }
+                TmuxCommand::SetAgentMeta { pane_id, meta, reply } => {
+                    tracing::info!(
+                        "エージェントメタデータ設定: pane={}, label={}",
+                        pane_id,
+                        meta.label
+                    );
+                    self.agent_metadata.insert(pane_id, meta);
+                    let _ = reply.send(Ok(()));
+                }
+                TmuxCommand::ClearAgentMeta { pane_id, reply } => {
+                    tracing::info!("エージェントメタデータクリア: pane={}", pane_id);
+                    self.agent_metadata.remove(&pane_id);
+                    let _ = reply.send(Ok(()));
+                }
+                TmuxCommand::GetAgentMeta { pane_id, reply } => {
+                    let meta = self.agent_metadata.get(&pane_id).cloned();
+                    let _ = reply.send(meta);
+                }
+                TmuxCommand::SendKeys { pane_id, keys, reply } => {
+                    let pid = pane_id.clone();
+                    let k = keys.clone();
+                    let result = tokio::task::spawn_blocking(move || Self::do_send_keys(&pid, &k))
+                        .await
+                        .unwrap_or_else(|e| Err(format!("spawn_blocking panicked: {}", e)));
+                    if result.is_ok() {
+                        tracing::info!("tmux send-keys: pane={}", pane_id);
+                    }
+                    let _ = reply.send(result);
                 }
             }
         }
@@ -370,6 +504,21 @@ impl TmuxActor {
         }
     }
 
+    /// ペインにキー入力を送信（ブロッキング — spawn_blocking 内で呼ぶ）
+    fn do_send_keys(pane_id: &str, keys: &str) -> Result<(), String> {
+        // pane_id のインジェクション防止
+        Self::validate_tmux_command(pane_id)?;
+        let status = std::process::Command::new("tmux")
+            .args(["send-keys", "-t", pane_id, keys])
+            .status()
+            .map_err(|e| format!("tmux send-keys 失敗: {}", e))?;
+
+        if !status.success() {
+            return Err(format!("tmux send-keys エラー: pane_id={}", pane_id));
+        }
+        Ok(())
+    }
+
     /// タブ区切りの1行をパース
     fn parse_pane_line(line: &str) -> Option<TmuxPane> {
         let parts: Vec<&str> = line.split('\t').collect();
@@ -400,6 +549,7 @@ pub fn spawn(session_name: &str) -> Option<TmuxHandle> {
     let actor = TmuxActor {
         session_name: session_name.to_string(),
         panes: vec![],
+        agent_metadata: HashMap::new(),
         rx,
     };
 
@@ -456,5 +606,70 @@ mod tests {
         assert!(TmuxActor::validate_tmux_command("echo `whoami`").is_err());
         assert!(TmuxActor::validate_tmux_command("cmd\ninjected").is_err());
         assert!(TmuxActor::validate_tmux_command("cmd\rinjected").is_err());
+    }
+
+    #[test]
+    fn test_agent_meta_serialization() {
+        let meta = AgentMeta {
+            label: "Moody Blues".to_string(),
+            status: "running".to_string(),
+            task: Some("Code review PR #42".to_string()),
+        };
+        let json = serde_json::to_string(&meta).unwrap();
+        assert!(json.contains("Moody Blues"));
+        assert!(json.contains("running"));
+        assert!(json.contains("Code review PR #42"));
+    }
+
+    #[test]
+    fn test_agent_meta_without_task() {
+        let meta = AgentMeta {
+            label: "Sticky Fingers".to_string(),
+            status: "waiting".to_string(),
+            task: None,
+        };
+        let json = serde_json::to_string(&meta).unwrap();
+        // task フィールドは skip_serializing_if = None で省略される
+        assert!(!json.contains("task"));
+    }
+
+    #[test]
+    fn test_pane_capture_with_agent() {
+        let capture = PaneCapture {
+            pane: TmuxPane {
+                id: "%3".to_string(),
+                active: false,
+                width: 80,
+                height: 24,
+                command: "claude".to_string(),
+            },
+            content: "reviewing...".to_string(),
+            agent: Some(AgentMeta {
+                label: "Moody Blues".to_string(),
+                status: "running".to_string(),
+                task: Some("Review".to_string()),
+            }),
+        };
+        let json = serde_json::to_string(&capture).unwrap();
+        assert!(json.contains("Moody Blues"));
+        assert!(json.contains("running"));
+    }
+
+    #[test]
+    fn test_pane_capture_without_agent() {
+        let capture = PaneCapture {
+            pane: TmuxPane {
+                id: "%0".to_string(),
+                active: true,
+                width: 120,
+                height: 40,
+                command: "zsh".to_string(),
+            },
+            content: "$ ls".to_string(),
+            agent: None,
+        };
+        let json = serde_json::to_string(&capture).unwrap();
+        // agent フィールドは省略される
+        assert!(!json.contains("agent"));
     }
 }

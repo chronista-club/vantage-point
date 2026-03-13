@@ -436,8 +436,9 @@ impl ProcessManagerCapability {
                 let pid = json.get("pid").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
 
                 if let Some(project_path) = project_dir {
-                    // プロジェクト名を探す
+                    // config 登録プロジェクトから名前を探す
                     let projects = self.projects.read().await;
+                    let mut matched = false;
                     for (name, info) in projects.iter() {
                         if info.path == project_path {
                             discovered.insert(
@@ -450,8 +451,27 @@ impl ProcessManagerCapability {
                                     discovered_via_bonjour: false,
                                 },
                             );
+                            matched = true;
                             break;
                         }
+                    }
+                    // config 未登録プロジェクトもディレクトリ名で登録
+                    if !matched {
+                        let name = project_path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("unknown")
+                            .to_string();
+                        discovered.insert(
+                            name.clone(),
+                            RunningProcess {
+                                project_name: name,
+                                port,
+                                pid,
+                                project_path: project_path.clone(),
+                                discovered_via_bonjour: false,
+                            },
+                        );
                     }
                 }
             }
