@@ -32,6 +32,10 @@ pub struct ProjectContext {
     pub last_pty_output: Instant,
     /// 非アクティブ時の未読通知数
     pub notifications: u32,
+    /// Claude 完了（入力待ち）フラグ（非アクティブタブ用）
+    pub completed: bool,
+    /// 直近の poll_events で ⏎ プロンプトを検出したか
+    pub last_poll_had_prompt: bool,
     /// 接続切断フラグ
     pub disconnected: bool,
 }
@@ -87,6 +91,8 @@ impl ProjectContext {
             bridge_status: "接続中...".to_string(),
             last_pty_output: Instant::now(),
             notifications: 0,
+            completed: false,
+            last_poll_had_prompt: false,
             disconnected: false,
         })
     }
@@ -94,10 +100,15 @@ impl ProjectContext {
     /// ブリッジイベントをポーリングして状態を更新。変更があれば true を返す。
     pub fn poll_events(&mut self) -> bool {
         let mut changed = false;
+        self.last_poll_had_prompt = false;
         while let Ok(evt) = self.event_rx.try_recv() {
             changed = true;
             match evt {
                 BridgeEvent::Output(bytes) => {
+                    // ⏎ (UTF-8: E2 8F 8E) を検出 — Claude CLI 入力待ちプロンプト
+                    if bytes.windows(3).any(|w| w == b"\xe2\x8f\x8e") {
+                        self.last_poll_had_prompt = true;
+                    }
                     let mut state = self.term_state.lock().unwrap();
                     state.feed_bytes(&bytes);
                     self.last_pty_output = Instant::now();

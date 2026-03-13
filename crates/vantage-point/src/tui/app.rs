@@ -82,22 +82,14 @@ impl MultiProjectApp {
         if idx < self.projects.len() {
             self.active_idx = idx;
             self.projects[idx].notifications = 0;
+            self.projects[idx].completed = false;
             set_terminal_title(&format!("VP: {}", self.projects[idx].name));
         }
     }
 
     /// プロジェクトスイッチャーオーバーレイを開く
     fn open_project_switcher(&mut self) {
-        let items: Vec<(ProjectConfig, bool)> = self
-            .config
-            .projects
-            .iter()
-            .map(|p| {
-                let dir = Config::normalize_path(std::path::Path::new(&p.path));
-                let active = self.projects.iter().any(|ctx| ctx.dir == dir);
-                (p.clone(), active)
-            })
-            .collect();
+        let items = self.build_project_overlay_items();
 
         let mut list_state = ListState::default();
         if let Some(active_ctx) = self.projects.get(self.active_idx) {
@@ -113,6 +105,40 @@ impl MultiProjectApp {
         }
 
         self.overlay = Some(OverlayKind::ProjectSwitcher { list_state, items });
+    }
+
+    /// 新規タブ追加オーバーレイを開く（Ctrl+Shift+T）
+    fn open_project_adder(&mut self) {
+        let items = self.build_project_overlay_items();
+        let mut list_state = ListState::default();
+        list_state.select(Some(0));
+        self.overlay = Some(OverlayKind::ProjectAdder { list_state, items });
+    }
+
+    /// アクティブタブを閉じる（最後の1つは閉じない）
+    fn close_current_project(&mut self) {
+        if self.projects.len() <= 1 {
+            return;
+        }
+        let removed_idx = self.active_idx;
+        self.projects.remove(removed_idx);
+        if self.active_idx >= self.projects.len() {
+            self.active_idx = self.projects.len() - 1;
+        }
+        set_terminal_title(&format!("VP: {}", self.projects[self.active_idx].name));
+    }
+
+    /// プロジェクトオーバーレイ用アイテムリストを構築
+    fn build_project_overlay_items(&self) -> Vec<(ProjectConfig, bool)> {
+        self.config
+            .projects
+            .iter()
+            .map(|p| {
+                let dir = Config::normalize_path(std::path::Path::new(&p.path));
+                let active = self.projects.iter().any(|ctx| ctx.dir == dir);
+                (p.clone(), active)
+            })
+            .collect()
     }
 
     // =========================================================================
@@ -139,6 +165,10 @@ impl MultiProjectApp {
                 if changed {
                     if i != self.active_idx {
                         self.projects[i].notifications += 1;
+                        // 非アクティブタブで Claude 完了（⏎ プロンプト）を検出
+                        if self.projects[i].last_poll_had_prompt {
+                            self.projects[i].completed = true;
+                        }
                     }
                     needs_redraw = true;
                 }
@@ -232,6 +262,18 @@ impl MultiProjectApp {
         // Ctrl+P: プロジェクトスイッチャー
         if key.code == KeyCode::Char('p') && key.modifiers.contains(KeyModifiers::CONTROL) {
             self.open_project_switcher();
+            return Ok(true);
+        }
+
+        // Ctrl+Shift+T: 新規タブ追加
+        if key.code == KeyCode::Char('T') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.open_project_adder();
+            return Ok(true);
+        }
+
+        // Ctrl+Shift+W: アクティブタブを閉じる
+        if key.code == KeyCode::Char('W') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.close_current_project();
             return Ok(true);
         }
 
@@ -416,6 +458,51 @@ impl MultiProjectApp {
                 }
                 _ => {}
             },
+            OverlayKind::ProjectAdder { list_state, items } => match key.code {
+                KeyCode::Esc => {
+                    self.overlay = None;
+                }
+                KeyCode::Up | KeyCode::Char('k') if !items.is_empty() => {
+                    let i = list_state.selected().unwrap_or(0);
+                    let new = if i == 0 { items.len() - 1 } else { i - 1 };
+                    list_state.select(Some(new));
+                }
+                KeyCode::Down | KeyCode::Char('j') if !items.is_empty() => {
+                    let i = list_state.selected().unwrap_or(0);
+                    let new = if i >= items.len() - 1 { 0 } else { i + 1 };
+                    list_state.select(Some(new));
+                }
+                KeyCode::Enter => {
+                    if let Some(idx) = list_state.selected() {
+                        let (project, _already_active) = &items[idx];
+                        let dir = Config::normalize_path(std::path::Path::new(&project.path));
+                        let name = project.name.clone();
+
+                        // 常に新タブとして追加（既存タブがあっても新規追加）
+                        let config = self.config.clone();
+                        if let Some(project_idx) = config.find_project_index(&dir) {
+                            start_background_services(&dir, &config, project_idx, &name).ok();
+                            let port =
+                                crate::resolve::port_for_configured(project_idx, &config)
+                                    .unwrap_or(33000 + project_idx as u16);
+
+                            self.overlay = None;
+
+                            match self.add_project(terminal, name, dir, port) {
+                                Ok(new_idx) => {
+                                    self.switch_to(new_idx);
+                                }
+                                Err(e) => {
+                                    tracing::error!("タブ追加失敗: {}", e);
+                                }
+                            }
+                            return Ok(true);
+                        }
+                        self.overlay = None;
+                    }
+                }
+                _ => {}
+            },
         }
         Ok(true)
     }
@@ -504,11 +591,11 @@ impl MultiProjectApp {
             )
         };
 
-        let tab_info: Vec<(String, bool, u32)> = self
+        let tab_info: Vec<(String, bool, u32, bool)> = self
             .projects
             .iter()
             .enumerate()
-            .map(|(i, ctx)| (ctx.name.clone(), i == active_idx, ctx.notifications))
+            .map(|(i, ctx)| (ctx.name.clone(), i == active_idx, ctx.notifications, ctx.completed))
             .collect();
 
         let project_count = self.projects.len();

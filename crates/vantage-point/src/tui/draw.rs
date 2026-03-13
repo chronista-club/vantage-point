@@ -22,7 +22,7 @@ use super::theme::*;
 pub fn draw_header_bar(
     frame: &mut ratatui::Frame,
     area: Rect,
-    tabs: &[(String, bool, u32)], // (name, is_active, notifications)
+    tabs: &[(String, bool, u32, bool)], // (name, is_active, notifications, completed)
     port: u16,
     ai_busy: bool,
     pp_open: bool,
@@ -31,7 +31,7 @@ pub fn draw_header_bar(
     let mut spans: Vec<Span> = Vec::new();
 
     // プロジェクトタブ
-    for (i, (name, is_active, notif)) in tabs.iter().enumerate() {
+    for (i, (name, is_active, notif, completed)) in tabs.iter().enumerate() {
         if i > 0 {
             spans.push(Span::styled(
                 "│",
@@ -39,11 +39,14 @@ pub fn draw_header_bar(
             ));
         }
 
-        let tab_text = if *notif > 0 {
-            format!(" {} ●{} ", name, notif)
-        } else {
-            format!(" {} ", name)
+        // タブテキスト構築: ★（完了）+ ●N（通知）
+        let badge = match (*completed, *notif > 0) {
+            (true, true) => format!(" ★●{}", notif),
+            (true, false) => " ★".to_string(),
+            (false, true) => format!(" ●{}", notif),
+            (false, false) => String::new(),
         };
+        let tab_text = format!(" {}{} ", name, badge);
 
         if *is_active {
             spans.push(Span::styled(
@@ -54,7 +57,13 @@ pub fn draw_header_bar(
                     .add_modifier(Modifier::BOLD),
             ));
         } else {
-            let fg = if *notif > 0 { NORD_YELLOW } else { NORD_FG };
+            let fg = if *completed {
+                NORD_GREEN
+            } else if *notif > 0 {
+                NORD_YELLOW
+            } else {
+                NORD_FG
+            };
             spans.push(Span::styled(
                 tab_text,
                 Style::default().fg(fg).bg(NORD_POLAR),
@@ -156,6 +165,13 @@ pub fn draw_footer_bar(
     }
     spans.push(Span::styled(" C-n", key_style));
     spans.push(Span::styled(" new ", desc_style));
+    spans.push(Span::styled(" C-T", key_style));
+    spans.push(Span::styled(" add tab ", desc_style));
+
+    if project_count > 1 {
+        spans.push(Span::styled(" C-W", key_style));
+        spans.push(Span::styled(" close tab ", desc_style));
+    }
 
     let bar = Paragraph::new(Line::from(spans)).style(Style::default().bg(NORD_POLAR));
     frame.render_widget(bar, area);

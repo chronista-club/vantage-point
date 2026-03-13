@@ -20,13 +20,22 @@ pub enum OverlayKind {
         /// config.projects のスナップショット（起動済みフラグ付き）
         items: Vec<(ProjectConfig, bool)>,
     },
+    /// 新規タブ追加オーバーレイ（Ctrl+Shift+T）
+    ProjectAdder {
+        list_state: ListState,
+        /// config.projects のスナップショット（起動済みフラグ付き）
+        items: Vec<(ProjectConfig, bool)>,
+    },
 }
 
 /// オーバーレイの描画ディスパッチ
 pub fn draw_overlay(frame: &mut ratatui::Frame, area: Rect, overlay: &OverlayKind) {
     match overlay {
         OverlayKind::ProjectSwitcher { list_state, items } => {
-            draw_project_switcher(frame, area, list_state, items);
+            draw_project_switcher(frame, area, list_state, items, " Projects (C-p) ");
+        }
+        OverlayKind::ProjectAdder { list_state, items } => {
+            draw_project_switcher(frame, area, list_state, items, " Add Tab (C-T) ");
         }
     }
 }
@@ -37,6 +46,7 @@ fn draw_project_switcher(
     area: Rect,
     list_state: &ListState,
     items: &[(ProjectConfig, bool)],
+    title: &str,
 ) {
     // オーバーレイサイズ計算（中央配置）
     let overlay_width = 50u16.min(area.width.saturating_sub(4));
@@ -49,7 +59,7 @@ fn draw_project_switcher(
     frame.render_widget(ratatui::widgets::Clear, overlay_area);
 
     let block = Block::default()
-        .title(" Projects (C-p) ")
+        .title(title)
         .borders(Borders::ALL)
         .border_style(Style::default().fg(NORD_CYAN))
         .style(Style::default().bg(NORD_BG));
