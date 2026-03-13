@@ -184,6 +184,7 @@ impl MultiProjectApp {
                         self.handle_key(key, terminal)?
                     }
                     Event::Paste(text) => {
+                        tracing::info!("Paste event received: {} bytes", text.len());
                         if self.overlay.is_none() {
                             self.handle_paste(&text);
                         }
@@ -431,6 +432,12 @@ impl MultiProjectApp {
             let state = ctx.term_state.lock().unwrap();
             state.bracketed_paste_mode()
         };
+        tracing::info!(
+            "handle_paste: text={:?} ({}bytes), bracketed={}",
+            &text[..text.len().min(50)],
+            text.len(),
+            bracketed
+        );
         let mut bytes = Vec::new();
         if bracketed {
             bytes.extend_from_slice(b"\x1b[200~");

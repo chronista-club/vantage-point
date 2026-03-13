@@ -16,8 +16,8 @@
 //! tmux CLI
 //! ```
 
-use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use tokio::sync::{mpsc, oneshot};
 
 /// tmux ペイン情報
@@ -193,11 +193,7 @@ impl TmuxHandle {
     }
 
     /// エージェントメタデータを設定
-    pub async fn set_agent_meta(
-        &self,
-        pane_id: &str,
-        meta: AgentMeta,
-    ) -> Result<(), String> {
+    pub async fn set_agent_meta(&self, pane_id: &str, meta: AgentMeta) -> Result<(), String> {
         let (reply, rx) = oneshot::channel();
         self.tx
             .send(TmuxCommand::SetAgentMeta {
@@ -356,7 +352,11 @@ impl TmuxActor {
                             .map(|pane| {
                                 let content = Self::do_capture(&pane.id).unwrap_or_default();
                                 let agent = agent_meta.get(&pane.id).cloned();
-                                PaneCapture { pane, content, agent }
+                                PaneCapture {
+                                    pane,
+                                    content,
+                                    agent,
+                                }
                             })
                             .collect()
                     })
@@ -364,7 +364,11 @@ impl TmuxActor {
                     .unwrap_or_default();
                     let _ = reply.send(captures);
                 }
-                TmuxCommand::SetAgentMeta { pane_id, meta, reply } => {
+                TmuxCommand::SetAgentMeta {
+                    pane_id,
+                    meta,
+                    reply,
+                } => {
                     tracing::info!(
                         "エージェントメタデータ設定: pane={}, label={}",
                         pane_id,
@@ -382,7 +386,11 @@ impl TmuxActor {
                     let meta = self.agent_metadata.get(&pane_id).cloned();
                     let _ = reply.send(meta);
                 }
-                TmuxCommand::SendKeys { pane_id, keys, reply } => {
+                TmuxCommand::SendKeys {
+                    pane_id,
+                    keys,
+                    reply,
+                } => {
                     let pid = pane_id.clone();
                     let k = keys.clone();
                     let result = tokio::task::spawn_blocking(move || Self::do_send_keys(&pid, &k))

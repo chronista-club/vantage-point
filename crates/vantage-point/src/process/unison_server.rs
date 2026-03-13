@@ -210,9 +210,7 @@ async fn handle_tmux_set_agent_meta(
     let label = payload["label"]
         .as_str()
         .ok_or_else(|| "label が必要です".to_string())?;
-    let status = payload["status"]
-        .as_str()
-        .unwrap_or("running");
+    let status = payload["status"].as_str().unwrap_or("running");
     let task = payload["task"].as_str().map(|s| s.to_string());
 
     let meta = crate::process::tmux_actor::AgentMeta {
@@ -540,9 +538,15 @@ pub async fn start_unison_server(
                             "tmux_capture" => handle_tmux_capture(&state, payload).await,
                             "tmux_capture_all" => handle_tmux_capture_all(&state).await,
                             // エージェントメタデータ
-                            "tmux_set_agent_meta" => handle_tmux_set_agent_meta(&state, payload).await,
-                            "tmux_update_agent_status" => handle_tmux_update_agent_status(&state, payload).await,
-                            "tmux_clear_agent_meta" => handle_tmux_clear_agent_meta(&state, payload).await,
+                            "tmux_set_agent_meta" => {
+                                handle_tmux_set_agent_meta(&state, payload).await
+                            }
+                            "tmux_update_agent_status" => {
+                                handle_tmux_update_agent_status(&state, payload).await
+                            }
+                            "tmux_clear_agent_meta" => {
+                                handle_tmux_clear_agent_meta(&state, payload).await
+                            }
                             "tmux_send_keys" => handle_tmux_send_keys(&state, payload).await,
                             // ProcessRunner
                             "process_run" => handle_process_run(&state, payload).await,

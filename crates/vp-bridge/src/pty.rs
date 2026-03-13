@@ -205,7 +205,9 @@ impl BridgePty {
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
         // HOME / USER / SHELL / LANG を親プロセスから引き継ぎ
-        for key in &["HOME", "USER", "SHELL", "LANG", "PATH", "LC_ALL", "LC_CTYPE"] {
+        for key in &[
+            "HOME", "USER", "SHELL", "LANG", "PATH", "LC_ALL", "LC_CTYPE",
+        ] {
             if let Ok(val) = std::env::var(key) {
                 cmd.env(key, &val);
             }
@@ -297,10 +299,7 @@ impl BridgePty {
     }
 
     /// VT グリッド → NativeBackend バッファ同期
-    fn sync_to_backend(
-        term_state: &Arc<Mutex<TermState>>,
-        backend: &Arc<Mutex<NativeBackend>>,
-    ) {
+    fn sync_to_backend(term_state: &Arc<Mutex<TermState>>, backend: &Arc<Mutex<NativeBackend>>) {
         let state = term_state.lock().unwrap();
         let grid = state.term.grid();
         let display_offset = grid.display_offset();

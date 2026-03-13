@@ -253,7 +253,9 @@ pub struct TmuxAgentDeployParams {
     #[schemars(description = "Agent label (e.g. 'Moody Blues', 'Sticky Fingers')")]
     pub label: String,
     /// 新しいペインで実行するコマンド
-    #[schemars(description = "Command to run in the new pane (e.g. 'claude --dangerously-skip-permissions')")]
+    #[schemars(
+        description = "Command to run in the new pane (e.g. 'claude --dangerously-skip-permissions')"
+    )]
     pub command: Option<String>,
     /// 実行中タスクの説明
     #[schemars(description = "Description of the task this agent is performing")]
@@ -1160,10 +1162,22 @@ impl VantageMcp {
             md.push_str("| Pane | Agent | Status | Task |\n");
             md.push_str("|------|-------|--------|------|\n");
             for cap in &agent_panes {
-                let pane_id = cap.pointer("/pane/id").and_then(|v| v.as_str()).unwrap_or("?");
-                let label = cap.pointer("/agent/label").and_then(|v| v.as_str()).unwrap_or("?");
-                let status = cap.pointer("/agent/status").and_then(|v| v.as_str()).unwrap_or("?");
-                let task = cap.pointer("/agent/task").and_then(|v| v.as_str()).unwrap_or("-");
+                let pane_id = cap
+                    .pointer("/pane/id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?");
+                let label = cap
+                    .pointer("/agent/label")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?");
+                let status = cap
+                    .pointer("/agent/status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?");
+                let task = cap
+                    .pointer("/agent/task")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("-");
                 let status_icon = match status {
                     "running" => "🟢",
                     "waiting" => "⏳",
@@ -1204,12 +1218,8 @@ impl VantageMcp {
             let content = cap.get("content").and_then(|v| v.as_str()).unwrap_or("");
 
             // エージェント名があれば表示
-            let agent_label = cap
-                .pointer("/agent/label")
-                .and_then(|v| v.as_str());
-            let agent_status = cap
-                .pointer("/agent/status")
-                .and_then(|v| v.as_str());
+            let agent_label = cap.pointer("/agent/label").and_then(|v| v.as_str());
+            let agent_status = cap.pointer("/agent/status").and_then(|v| v.as_str());
 
             // 最後の数行だけ表示（ダッシュボード向け）
             let tail_lines: Vec<&str> = content.lines().rev().take(15).collect();

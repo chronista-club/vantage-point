@@ -563,12 +563,15 @@ impl ProcessManagerCapability {
                     }
                 }
 
-                // previously_running を更新（まだ read ガード内）
-                *world.previously_running.write().await = current.clone();
-
                 (current, targets)
             };
             // ── ここで world の read ガードが解放される ──
+
+            // previously_running を更新（read ガード外で write ロック取得）
+            {
+                let world = world.read().await;
+                *world.previously_running.write().await = current.clone();
+            }
 
             // ── 書き込みフェーズ（再起動が必要な場合のみロック再取得）──
             for (name, _port) in &restart_targets {

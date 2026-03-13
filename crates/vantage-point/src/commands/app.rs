@@ -28,7 +28,7 @@ pub fn execute(port: u16, no_daemon: bool) -> Result<()> {
                 let vp_path = which_vp().ok_or_else(|| anyhow::anyhow!("vp binary not found"))?;
 
                 std::process::Command::new(&vp_path)
-                    .args(["world", "-p", &port.to_string()])
+                    .args(["world", "start", "--port", &port.to_string()])
                     .spawn()
                     .map_err(|e| anyhow::anyhow!("Failed to start TheWorld: {}", e))?;
 

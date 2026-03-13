@@ -175,10 +175,7 @@ mod tests {
         let mut backend = NativeBackend::new(80, 24);
 
         backend.set_cursor_position(Position::new(10, 5)).unwrap();
-        assert_eq!(
-            backend.get_cursor_position().unwrap(),
-            Position::new(10, 5)
-        );
+        assert_eq!(backend.get_cursor_position().unwrap(), Position::new(10, 5));
 
         backend.hide_cursor().unwrap();
         assert!(!backend.is_cursor_visible());

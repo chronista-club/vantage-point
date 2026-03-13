@@ -526,6 +526,7 @@ fn run_tui(
     crossterm::execute!(
         stdout,
         EnterAlternateScreen,
+        crossterm::event::EnableBracketedPaste,
         crossterm::event::EnableMouseCapture
     )?;
 
@@ -699,6 +700,17 @@ fn run_tui(
                         let _ = writer.flush();
                     }
                 }
+                Event::Paste(text) => {
+                    // ブラケットペースト: tmux にそのまま転送
+                    let mut bytes = Vec::new();
+                    bytes.extend_from_slice(b"\x1b[200~");
+                    bytes.extend_from_slice(text.as_bytes());
+                    bytes.extend_from_slice(b"\x1b[201~");
+                    if writer.write_all(&bytes).is_err() {
+                        break Ok(());
+                    }
+                    let _ = writer.flush();
+                }
                 Event::Mouse(mouse) => {
                     // マウスイベントを SGR エスケープシーケンスで PTY(tmux) に転送
                     // tmux の `mouse on` がスクロール・ペインクリック等を処理する
@@ -779,6 +791,7 @@ fn run_tui(
     disable_raw_mode()?;
     crossterm::execute!(
         terminal.backend_mut(),
+        crossterm::event::DisableBracketedPaste,
         crossterm::event::DisableMouseCapture,
         LeaveAlternateScreen
     )?;
