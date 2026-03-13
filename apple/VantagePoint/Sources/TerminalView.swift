@@ -766,7 +766,23 @@ class TerminalView: NSView {
         vp_bridge_pty_stop_session(sessionId)
     }
 
-    // MARK: - クリップボード
+    // MARK: - クリップボード（NSResponder copy:/paste: 対応）
+
+    /// メニュー Edit → Copy (Cmd+C) から呼ばれる — テキストコピー専用
+    /// 選択なしの Ctrl+C (SIGINT) は performKeyEquivalent で直接処理する
+    @objc func copy(_ sender: Any?) {
+        guard normalizedSelection() != nil else { return }
+        copySelectionToClipboard()
+        selectionStart = nil
+        selectionEnd = nil
+        needsDisplay = true
+    }
+
+    /// メニュー Edit → Paste (Cmd+V) から呼ばれる
+    @objc func paste(_ sender: Any?) {
+        guard vp_bridge_pty_is_running_session(sessionId) else { return }
+        pasteFromClipboard()
+    }
 
     /// クリップボードからテキスト/画像を PTY にペースト
     private func pasteFromClipboard() {
@@ -826,14 +842,23 @@ class TerminalView: NSView {
 
         switch ch {
         case "v":
-            // Cmd+V: ペースト
-            if vp_bridge_pty_is_running_session(sessionId) {
-                pasteFromClipboard()
-            }
-            return true
+            // Cmd+V: メニューの paste: アクションに委譲（TerminalView.paste(_:) が呼ばれる）
+            return false
         case "c":
-            // Cmd+C: コピー（選択テキストがあれば）
-            return true
+            // Cmd+C: 選択あり → メニューの copy: に委譲（コピー）
+            //         選択なし → Ctrl+C (SIGINT) を直接送信
+            // メニューの "Copy" はテキストコピー専用の意味論を維持する
+            if normalizedSelection() != nil {
+                return false // メニュー経由で copy(_:) が呼ばれる
+            } else if vp_bridge_pty_is_running_session(sessionId) {
+                let ctrlC: [UInt8] = [0x03]
+                ctrlC.withUnsafeBufferPointer { ptr in
+                    _ = vp_bridge_pty_write_session(sessionId, ptr.baseAddress!, 1)
+                }
+                return true
+            }
+            // セッション未起動 + 選択なし → システムに委譲
+            return super.performKeyEquivalent(with: event)
         case "S":
             // Cmd+Shift+S: スクリーンショット
             if let path = captureScreenshot() {

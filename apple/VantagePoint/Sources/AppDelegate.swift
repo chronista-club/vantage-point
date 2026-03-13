@@ -205,10 +205,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         mainMenu.addItem(viewMenuItem)
 
         // Edit メニュー（Cmd+C / Cmd+V / Cmd+A）
+        // copy:/paste:/selectAll: セレクタは first responder に送られる
+        // → TerminalView が first responder なら TerminalView の実装が呼ばれる
         let editMenu = NSMenu(title: "Edit")
-        editMenu.addItem(NSMenuItem(title: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c"))
-        editMenu.addItem(NSMenuItem(title: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v"))
-        editMenu.addItem(NSMenuItem(title: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a"))
+        editMenu.addItem(NSMenuItem(title: "Copy", action: Selector(("copy:")), keyEquivalent: "c"))
+        editMenu.addItem(NSMenuItem(title: "Paste", action: Selector(("paste:")), keyEquivalent: "v"))
+        editMenu.addItem(NSMenuItem(title: "Select All", action: Selector(("selectAll:")), keyEquivalent: "a"))
         let editMenuItem = NSMenuItem()
         editMenuItem.submenu = editMenu
         mainMenu.addItem(editMenuItem)
