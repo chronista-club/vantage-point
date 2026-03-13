@@ -315,18 +315,16 @@ impl ProcessManagerCapability {
             .send()
             .await;
 
-        // 稼働中リストから削除
-        {
-            let mut procs = self.running_processes.write().await;
-            procs.remove(project_name);
-        }
-
-        // 状態を更新
+        // ロック順序統一: projects → running_processes
         {
             let mut projects = self.projects.write().await;
             if let Some(p) = projects.get_mut(project_name) {
                 p.process_status = ProcessStatus::Stopped;
             }
+        }
+        {
+            let mut procs = self.running_processes.write().await;
+            procs.remove(project_name);
         }
 
         tracing::info!(project = project_name, "Process stopped");

@@ -27,7 +27,6 @@ vantage-point-mac/
 │       ├── ProjectSettingsView.swift # Project settings UI
 │       ├── ConfigManager.swift     # config.toml management
 │       ├── ProcessManager.swift    # Port-scan fallback (legacy)
-│       ├── BonjourBrowser.swift    # Bonjour discovery
 │       ├── UpdateService.swift     # Auto-update service
 │       ├── UpdateAlertView.swift   # Update alert UI
 │       └── UserPromptService.swift # User prompt handling

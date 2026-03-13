@@ -798,16 +798,10 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                     registered_port = Some(port);
                                     registered_project_dir = Some(project_dir.clone());
 
-                                    // running_processes に挿入
-                                    running_processes
-                                        .write()
-                                        .await
-                                        .insert(project_name.clone(), process);
-
+                                    // ロック順序統一: projects → running_processes
                                     // プロジェクト状態を Running に更新
                                     if let Some(ref projects) = projects {
                                         let mut projs = projects.write().await;
-                                        // パスで一致するプロジェクトを検索
                                         if let Some(p) = projs.values_mut().find(|p| {
                                             crate::config::Config::normalize_path(&p.path)
                                                 == crate::config::Config::normalize_path(
@@ -818,6 +812,12 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                                 crate::capability::ProcessStatus::Running;
                                         }
                                     }
+
+                                    // running_processes に挿入（projects の後）
+                                    running_processes
+                                        .write()
+                                        .await
+                                        .insert(project_name.clone(), process);
 
                                     tracing::info!(
                                         "Registry: SP '{}' 登録 (port={}, pid={})",
@@ -932,8 +932,28 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                         }
 
                         // 切断時に自動除去（unregister なしで切断された場合）
-                        // running_processes と projects のロックは分離して取得（デッドロック防止）
+                        // ロック順序統一: projects → running_processes
                         if let Some(name) = registered_name {
+                            // プロジェクト状態を Stopped に更新（projects 先）
+                            if let Some(ref projects) = projects {
+                                if let Some(ref dir) = registered_project_dir {
+                                    let mut projs = projects.write().await;
+                                    if let Some(p) =
+                                        projs.values_mut().find(|p| {
+                                            crate::config::Config::normalize_path(
+                                                &p.path,
+                                            ) == crate::config::Config::normalize_path(
+                                                std::path::Path::new(dir),
+                                            )
+                                        })
+                                    {
+                                        p.process_status =
+                                            crate::capability::ProcessStatus::Stopped;
+                                    }
+                                }
+                            }
+
+                            // running_processes から除去（projects の後）
                             let removed = {
                                 let mut procs = running_processes.write().await;
                                 procs.remove(&name).is_some()
@@ -944,25 +964,6 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                     "Registry: SP '{}' 切断 → 自動除去",
                                     name
                                 );
-
-                                // プロジェクト状態を Stopped に更新（パスベースで検索）
-                                if let Some(ref projects) = projects {
-                                    if let Some(ref dir) = registered_project_dir {
-                                        let mut projs = projects.write().await;
-                                        if let Some(p) =
-                                            projs.values_mut().find(|p| {
-                                                crate::config::Config::normalize_path(
-                                                    &p.path,
-                                                ) == crate::config::Config::normalize_path(
-                                                    std::path::Path::new(dir),
-                                                )
-                                            })
-                                        {
-                                            p.process_status =
-                                                crate::capability::ProcessStatus::Stopped;
-                                        }
-                                    }
-                                }
 
                                 // メニューバーアプリに通知
                                 if let Some(port) = registered_port {
