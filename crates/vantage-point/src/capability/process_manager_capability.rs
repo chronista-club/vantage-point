@@ -401,21 +401,28 @@ impl ProcessManagerCapability {
 
     /// 外部 Process の登録解除（Process 停止時に呼ばれる）
     pub async fn unregister_external_process(&self, port: u16) {
-        let mut procs = self.running_processes.write().await;
-        let key = procs
-            .iter()
-            .find(|(_, p)| p.port == port)
-            .map(|(k, _)| k.clone());
+        // Read-then-Act: まず read でキーを特定 → 解放 → 個別に write
+        let key = {
+            let procs = self.running_processes.read().await;
+            procs
+                .iter()
+                .find(|(_, p)| p.port == port)
+                .map(|(k, _)| k.clone())
+        };
 
         if let Some(key) = key {
-            procs.remove(&key);
-            tracing::info!("Process 登録解除: port={}, name={}", port, key);
-
-            // プロジェクト状態を更新
-            let mut projects = self.projects.write().await;
-            if let Some(p) = projects.get_mut(&key) {
-                p.process_status = ProcessStatus::Stopped;
+            // projects → running_processes の順で write（他の箇所と統一）
+            {
+                let mut projects = self.projects.write().await;
+                if let Some(p) = projects.get_mut(&key) {
+                    p.process_status = ProcessStatus::Stopped;
+                }
             }
+            {
+                let mut procs = self.running_processes.write().await;
+                procs.remove(&key);
+            }
+            tracing::info!("Process 登録解除: port={}, name={}", port, key);
         }
     }
 

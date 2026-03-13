@@ -125,8 +125,13 @@ pub async fn world_open_pointview(
         );
     };
 
-    let world = world.read().await;
-    match world.open_pointview(&project_name).await {
+    // open_pointview は内部で start_process を呼ぶ可能性があり、
+    // スリープ + ポートスキャンを含むため read ガードを即座に解放する
+    let world_cap = {
+        let w = world.read().await;
+        w.clone()
+    };
+    match world_cap.open_pointview(&project_name).await {
         Ok(()) => (
             axum::http::StatusCode::OK,
             Json(serde_json::json!({"status": "opened", "project": project_name})),

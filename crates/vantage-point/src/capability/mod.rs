@@ -14,7 +14,6 @@
 //! - [docs/spec/05-process-capability.md](../../../docs/spec/05-process-capability.md)
 
 pub mod agent_capability;
-pub mod bonjour_capability;
 pub mod core;
 pub mod eventbus;
 pub mod evolution;
@@ -26,7 +25,6 @@ pub mod registry;
 pub mod update_capability;
 
 pub use agent_capability::AgentCapability;
-pub use bonjour_capability::BonjourCapability;
 pub use core::{CapabilityContext, CapabilityEvent, CapabilityInfo, CapabilityState};
 pub use eventbus::EventBus;
 pub use midi_capability::MidiCapability;
