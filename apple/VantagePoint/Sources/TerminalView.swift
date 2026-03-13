@@ -126,11 +126,47 @@ class TerminalView: NSView {
         commonInit()
     }
 
+    /// PageUp/PageDown モニター（アプリレベルでインターセプト）
+    /// 書き込みは必ず MainActor 上 (commonInit) で行うこと。
+    /// nonisolated(unsafe) は deinit からのアクセスのために必要。
+    nonisolated(unsafe) private var keyMonitor: Any?
+
     private func commonInit() {
         wantsLayer = true
         layer?.backgroundColor = defaultBackground.cgColor
 
         updateFontMetrics()
+
+        // macOS は PageUp/PageDown を scrollPageUp:/scrollPageDown: NSResponder アクションに変換し、
+        // NSViewRepresentable 内の NSView の keyDown には到達させない。
+        // アプリレベルでキーイベントをモニターし、PageUp/PageDown を SGR マウスイベントとして PTY に送信する。
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self,
+                  event.keyCode == 116 || event.keyCode == 121,
+                  self.sessionId != 0,
+                  self.window?.firstResponder === self,
+                  vp_bridge_pty_is_running_session(self.sessionId) else {
+                return event
+            }
+            // CC は VT100 の \e[5~/\e[6~ に反応しないため、
+            // マウスホイールと同じ SGR マウスイベントで送信する（scrollWheel と同じプロトコル）
+            let button = event.keyCode == 116 ? 64 : 65  // 64=scroll up, 65=scroll down
+            let col = Int(self.gridCols) / 2 + 1  // 画面中央（1-based）
+            let row = Int(self.gridRows) / 2 + 1
+            let scrollLines = max(Int(self.gridRows) - 3, 1) // ページ分（3行オーバーラップ）
+            let singleSeq = "\u{1B}[<\(button);\(col);\(row)M"
+            let fullSeq = String(repeating: singleSeq, count: scrollLines)
+            if let data = fullSeq.data(using: .ascii) {
+                data.withUnsafeBytes { ptr in
+                    _ = vp_bridge_pty_write_session(
+                        self.sessionId,
+                        ptr.baseAddress!.assumingMemoryBound(to: UInt8.self),
+                        UInt32(ptr.count)
+                    )
+                }
+            }
+            return nil
+        }
     }
 
     /// ウィンドウに追加されたら自動的に first responder を取得
@@ -156,12 +192,17 @@ class TerminalView: NSView {
     /// キーウィンドウ外でもキー入力を受け取る
     override var needsPanelToBecomeKey: Bool { true }
 
+
     deinit {
-        if sessionId != 0 {
-            let sid = sessionId
-            // deinit は nonisolated — MainActor 外から呼ばれる可能性がある
-            // レジストリ解除を安全にディスパッチし、bridge 破棄はその後に実行
-            DispatchQueue.main.async {
+        // deinit は nonisolated — MainActor 外から呼ばれる可能性がある
+        // モニター解除もレジストリ解除も安全にディスパッチする
+        let monitor = keyMonitor
+        let sid = sessionId
+        DispatchQueue.main.async {
+            if let m = monitor {
+                NSEvent.removeMonitor(m)
+            }
+            if sid != 0 {
                 sessionRegistry.removeValue(forKey: sid)
                 vp_bridge_destroy(sid)
             }
@@ -960,8 +1001,7 @@ class TerminalView: NSView {
         case 126: return [0x1B, 0x5B, 0x41]        // ↑
         case 115: return [0x1B, 0x5B, 0x48]        // Home
         case 119: return [0x1B, 0x5B, 0x46]        // End
-        case 116: return [0x1B, 0x5B, 0x35, 0x7E] // Page Up  → \e[5~
-        case 121: return [0x1B, 0x5B, 0x36, 0x7E] // Page Down → \e[6~
+        // PageUp/PageDown は addLocalMonitorForEvents で SGR マウスイベントとして送信
         default:  break
         }
 
