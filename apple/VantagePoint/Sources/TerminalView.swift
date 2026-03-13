@@ -787,8 +787,12 @@ class TerminalView: NSView {
         case 126: return [0x1B, 0x5B, 0x41]        // ↑
         case 115: return [0x1B, 0x5B, 0x48]        // Home
         case 119: return [0x1B, 0x5B, 0x46]        // End
-        case 116: return [0x1B, 0x5B, 0x35, 0x7E] // Page Up
-        case 121: return [0x1B, 0x5B, 0x36, 0x7E] // Page Down
+        case 116: // Page Up — ページ幅−3行分上スクロール（3行オーバーラップ）
+            sendPageScroll(direction: .up)
+            return []
+        case 121: // Page Down — ページ幅−3行分下スクロール（3行オーバーラップ）
+            sendPageScroll(direction: .down)
+            return []
         default:  break
         }
 
@@ -895,6 +899,30 @@ class TerminalView: NSView {
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(text, forType: .string)
+    }
+
+    // MARK: - ページスクロール
+
+    private enum ScrollDirection { case up, down }
+
+    /// PageUp/PageDown — 画面行数−3行分の矢印キーを送信
+    ///
+    /// 3行のオーバーラップを残すことで、スクロール前後の文脈が途切れない。
+    /// シェルやアプリが alternative screen mode でない場合でも確実にスクロールする。
+    private func sendPageScroll(direction: ScrollDirection) {
+        let overlapLines: Int = 3
+        let scrollLines = max(1, Int(gridRows) - overlapLines)
+
+        let arrow: [UInt8] = switch direction {
+        case .up:   [0x1B, 0x5B, 0x41]  // ↑
+        case .down: [0x1B, 0x5B, 0x42]  // ↓
+        }
+
+        for _ in 0..<scrollLines {
+            arrow.withUnsafeBufferPointer { ptr in
+                _ = vp_bridge_pty_write_session(sessionId, ptr.baseAddress!, UInt32(ptr.count))
+            }
+        }
     }
 
     // MARK: - マウススクロール
