@@ -225,6 +225,16 @@ pub struct CaptureCanvasParams {
     pub pane_id: Option<String>,
 }
 
+/// capture_terminal ツールのパラメータ
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct CaptureTerminalParams {
+    /// 保存先パス
+    #[schemars(
+        description = "Save path for the PNG screenshot (default: /tmp/vp-terminal-{timestamp}.png)"
+    )]
+    pub path: Option<String>,
+}
+
 /// tmux ペイン分割のパラメータ
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct TmuxSplitParams {
@@ -1414,6 +1424,88 @@ impl VantageMcp {
             format!(
                 "Screenshot saved: {}\nSize: {}x{} ({} bytes)\nUse the Read tool to view this image.",
                 saved_path, width, height, size_bytes
+            ),
+        )]))
+    }
+
+    /// VantagePoint.app のターミナルウィンドウを PNG スクリーンショットとしてキャプチャ
+    ///
+    /// macOS の screencapture コマンドで VantagePoint ウィンドウをキャプチャする。
+    /// 保存されたファイルは Claude の Read ツールで画像として確認可能。
+    #[tool(
+        description = "Capture the VantagePoint.app terminal window as a PNG screenshot. The saved file can be viewed with the Read tool. Use this to inspect rendering issues, verify UI changes, or debug visual problems."
+    )]
+    async fn capture_terminal(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<CaptureTerminalParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let save_path = params
+            .path
+            .unwrap_or_else(|| format!("/tmp/vp-terminal-{}.png", ts));
+
+        // VantagePoint ウィンドウの CGWindowID を取得
+        // NOTE: System Events の `id of window` は AXWindowID であり CGWindowID とは別空間。
+        //       screencapture -l は CGWindowID を要求するため、CGWindowListCopyWindowInfo で取得する。
+        let jxa_script = r#"ObjC.import('CoreGraphics');var ws=$.CGWindowListCopyWindowInfo($.kCGWindowListOptionOnScreenOnly,0);for(var i=0;i<ws.count;i++){var w=ws.objectAtIndex(i);if(ObjC.unwrap(w.objectForKey('kCGWindowOwnerName'))==='VantagePoint'){ObjC.unwrap(w.objectForKey('kCGWindowNumber')).toString()}}"#;
+        let wid_output = tokio::process::Command::new("osascript")
+            .args(["-l", "JavaScript", "-e", jxa_script])
+            .output()
+            .await
+            .map_err(|e| McpError::internal_error(format!("osascript 実行失敗: {}", e), None))?;
+
+        let window_id = if wid_output.status.success() {
+            let id = String::from_utf8_lossy(&wid_output.stdout)
+                .trim()
+                .to_string();
+            if id.is_empty() {
+                return Err(McpError::internal_error(
+                    "VantagePoint ウィンドウが見つかりません。VantagePoint.app が起動しているか確認してください。".to_string(),
+                    None,
+                ));
+            }
+            id
+        } else {
+            let stderr = String::from_utf8_lossy(&wid_output.stderr);
+            return Err(McpError::internal_error(
+                format!(
+                    "VantagePoint ウィンドウ ID 取得失敗（VantagePoint.app が未起動の可能性）: {}",
+                    stderr.trim()
+                ),
+                None,
+            ));
+        };
+
+        let mut cmd = tokio::process::Command::new("screencapture");
+        cmd.args(["-x", "-o"]); // -x: サウンドなし, -o: 影なし
+        cmd.args(["-l", &window_id]); // -l: ウィンドウ ID 指定
+        cmd.arg(&save_path);
+
+        let output = cmd.output().await.map_err(|e| {
+            McpError::internal_error(format!("screencapture 実行失敗: {}", e), None)
+        })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(McpError::internal_error(
+                format!("screencapture 失敗: {}", stderr),
+                None,
+            ));
+        }
+
+        // ファイルサイズ取得
+        let metadata = tokio::fs::metadata(&save_path)
+            .await
+            .map_err(|e| McpError::internal_error(format!("保存ファイル確認失敗: {}", e), None))?;
+
+        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+            format!(
+                "Terminal screenshot saved: {}\nSize: {} bytes\nUse the Read tool to view this image.",
+                save_path,
+                metadata.len()
             ),
         )]))
     }

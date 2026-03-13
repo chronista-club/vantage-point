@@ -213,6 +213,10 @@ impl BridgePty {
             }
         }
 
+        // mise env を取得して環境変数に追加
+        // .app バンドルでは mise activate が走らないため、事前に注入する
+        inject_mise_env(&mut cmd, cwd);
+
         pair.slave.spawn_command(cmd)?;
 
         let reader = pair.master.try_clone_reader()?;
@@ -305,6 +309,8 @@ impl BridgePty {
         let display_offset = grid.display_offset();
 
         let mut cells: Vec<(u16, u16, Cell)> = Vec::new();
+        // ワイドキャラクター位置を記録（ratatui Cell にはこの情報がないため別途保持）
+        let mut wide_positions: Vec<(u16, u16)> = Vec::new();
 
         for line_idx in 0..state.lines {
             let line = Line(line_idx as i32 - display_offset as i32);
@@ -315,6 +321,11 @@ impl BridgePty {
                 // ワイドキャラクターのスペーサーはスキップ
                 if vte_cell.flags.contains(CellFlags::WIDE_CHAR_SPACER) {
                     continue;
+                }
+
+                let is_wide = vte_cell.flags.contains(CellFlags::WIDE_CHAR);
+                if is_wide {
+                    wide_positions.push((col_idx as u16, line_idx as u16));
                 }
 
                 let mut fg_rgb = resolve_color(&vte_cell.fg);
@@ -375,6 +386,11 @@ impl BridgePty {
         let mut be = backend.lock().unwrap();
         // まずクリア
         let _ = be.clear();
+        be.clear_wide_flags();
+        // ワイドフラグを設定（VT パーサーの判定結果をそのまま伝搬）
+        for &(x, y) in &wide_positions {
+            be.set_wide_flag(x, y, true);
+        }
         // セル書き込み
         let refs: Vec<(u16, u16, &Cell)> = cells.iter().map(|(x, y, c)| (*x, *y, c)).collect();
         let _ = be.draw(refs.into_iter());
@@ -441,6 +457,75 @@ impl BridgePty {
             i32::MIN => state.term.scroll_display(Scroll::Delta(-overlap_delta)),
             d => state.term.scroll_display(Scroll::Delta(d)),
         }
+    }
+}
+
+/// mise env --json を実行して環境変数を CommandBuilder に注入
+///
+/// mise が未インストールの場合やエラー時は何もしない（ベストエフォート）。
+/// cwd を作業ディレクトリに設定して実行するため、プロジェクトごとの .mise.toml が反映される。
+/// NOTE: FFI 経由でメインスレッドから同期的に呼ばれる。
+///       mise が応答しない場合、メインスレッドは最大 3 秒ブロックされる（SIGKILL で上限を設定）。
+fn inject_mise_env(cmd: &mut CommandBuilder, cwd: &str) {
+    use std::time::Duration;
+
+    // mise バイナリのパスを解決
+    // .app バンドルからは PATH が最小限のため、既知のパスを直接試す
+    let mise_path = if let Ok(home) = std::env::var("HOME") {
+        let local_bin = format!("{home}/.local/bin/mise");
+        if std::path::Path::new(&local_bin).exists() {
+            local_bin
+        } else {
+            // PATH 上を探す（ターミナルから起動した場合）
+            "mise".to_string()
+        }
+    } else {
+        "mise".to_string()
+    };
+
+    // spawn + タイマースレッドでメインスレッドのブロック時間を 3 秒に制限
+    let child = match std::process::Command::new(&mise_path)
+        .args(["env", "--json"])
+        .current_dir(cwd)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(_) => return, // mise 未インストール
+    };
+
+    // 3 秒後に kill するタイマースレッド（キャンセルフラグで PID 再利用レース防止）
+    let child_pid = child.id();
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let cancel_clone = cancel.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(3));
+        // child が既に終了していたら kill しない（PID 再利用による誤 kill 防止）
+        if !cancel_clone.load(std::sync::atomic::Ordering::Acquire) {
+            unsafe {
+                libc::kill(child_pid as i32, libc::SIGKILL);
+            }
+        }
+    });
+
+    let result = child.wait_with_output();
+    // wait 完了 → タイマースレッドのキャンセルを通知
+    cancel.store(true, std::sync::atomic::Ordering::Release);
+
+    let stdout = match result {
+        Ok(o) if o.status.success() => o.stdout,
+        _ => return, // エラー or タイムアウト kill
+    };
+
+    // JSON パース → 環境変数に設定
+    let Ok(env_map) = serde_json::from_slice::<std::collections::HashMap<String, String>>(&stdout)
+    else {
+        return;
+    };
+
+    for (key, value) in &env_map {
+        cmd.env(key, value);
     }
 }
 

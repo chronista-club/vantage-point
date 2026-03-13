@@ -65,6 +65,7 @@ fn with_session_backend_mut<R>(
 // =============================================================================
 
 /// Cell データ（C ABI 互換）
+#[derive(Clone)]
 #[repr(C)]
 pub struct CellData {
     pub ch: [u8; 5],
@@ -219,10 +220,10 @@ pub extern "C" fn vp_bridge_init(
 ) {
     // セッション 1 が既に存在する場合は何もしない
     let guard = ensure_sessions();
-    if let Some(map) = guard.as_ref() {
-        if map.contains_key(&1) {
-            return;
-        }
+    if let Some(map) = guard.as_ref()
+        && map.contains_key(&1)
+    {
+        return;
     }
     drop(guard);
 
@@ -255,12 +256,11 @@ pub extern "C" fn vp_bridge_resize_session(session_id: u32, width: u16, height: 
     // FFI はメインスレッドからのみ呼ばれる前提
     {
         let mut guard = ensure_sessions();
-        if let Some(map) = guard.as_mut() {
-            if let Some(session) = map.get_mut(&session_id) {
-                if let Some(ref mut pty) = session.pty {
-                    let _ = pty.resize(width, height);
-                }
-            }
+        if let Some(map) = guard.as_mut()
+            && let Some(session) = map.get_mut(&session_id)
+            && let Some(ref mut pty) = session.pty
+        {
+            let _ = pty.resize(width, height);
         }
     }
 
@@ -365,8 +365,13 @@ pub extern "C" fn vp_bridge_get_buffer_session(
         for i in 0..count {
             let x = (i % size.width as u32) as u16;
             let y = (i / size.width as u32) as u16;
+            let mut cd = cell_to_celldata(&buf[(x, y)]);
+            // bit 6: WIDE_CHAR（VT パーサー由来のワイドフラグ）
+            if backend.is_wide_char(x, y) {
+                cd.flags |= 1 << 6;
+            }
             unsafe {
-                *dst.add(i as usize) = cell_to_celldata(&buf[(x, y)]);
+                *dst.add(i as usize) = cd;
             }
         }
         count
@@ -392,6 +397,19 @@ pub extern "C" fn vp_bridge_pty_start_session(
     cols: u16,
     rows: u16,
 ) -> i32 {
+    vp_bridge_pty_start_command_session(session_id, cwd, std::ptr::null(), cols, rows)
+}
+
+/// コマンド指定で PTY を起動（セッション指定）
+/// command が NULL ならデフォルトシェル、それ以外なら指定コマンドを実行
+#[unsafe(no_mangle)]
+pub extern "C" fn vp_bridge_pty_start_command_session(
+    session_id: u32,
+    cwd: *const c_char,
+    command: *const c_char,
+    cols: u16,
+    rows: u16,
+) -> i32 {
     let backend_arc = {
         let guard = ensure_sessions();
         match guard.as_ref().and_then(|m| m.get(&session_id)) {
@@ -410,13 +428,35 @@ pub extern "C" fn vp_bridge_pty_start_session(
         unsafe { CStr::from_ptr(cwd) }.to_string_lossy().to_string()
     };
 
-    match BridgePty::spawn(&cwd_str, cols, rows, backend_arc) {
+    let cmd_args: Option<Vec<String>> = if command.is_null() {
+        None
+    } else {
+        let cmd_str = unsafe { CStr::from_ptr(command) }
+            .to_string_lossy()
+            .to_string();
+        // シェル経由で実行（パイプ・リダイレクト等に対応）
+        Some(vec![
+            std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string()),
+            "-l".to_string(),
+            "-c".to_string(),
+            cmd_str,
+        ])
+    };
+
+    let result = if let Some(args) = &cmd_args {
+        let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        BridgePty::spawn_command(&cwd_str, cols, rows, Some(&args_ref), backend_arc)
+    } else {
+        BridgePty::spawn(&cwd_str, cols, rows, backend_arc)
+    };
+
+    match result {
         Ok(pty) => {
             let mut guard = ensure_sessions();
-            if let Some(map) = guard.as_mut() {
-                if let Some(session) = map.get_mut(&session_id) {
-                    session.pty = Some(pty);
-                }
+            if let Some(map) = guard.as_mut()
+                && let Some(session) = map.get_mut(&session_id)
+            {
+                session.pty = Some(pty);
             }
             0
         }
@@ -440,15 +480,14 @@ pub extern "C" fn vp_bridge_pty_write_session(session_id: u32, data: *const u8, 
     let bytes = unsafe { std::slice::from_raw_parts(data, len as usize) };
 
     let mut guard = ensure_sessions();
-    if let Some(map) = guard.as_mut() {
-        if let Some(session) = map.get_mut(&session_id) {
-            if let Some(ref mut pty) = session.pty {
-                return match pty.write(bytes) {
-                    Ok(()) => 0,
-                    Err(_) => -1,
-                };
-            }
-        }
+    if let Some(map) = guard.as_mut()
+        && let Some(session) = map.get_mut(&session_id)
+        && let Some(ref mut pty) = session.pty
+    {
+        return match pty.write(bytes) {
+            Ok(()) => 0,
+            Err(_) => -1,
+        };
     }
     -1
 }
@@ -480,10 +519,10 @@ pub extern "C" fn vp_bridge_pty_is_running() -> bool {
 #[unsafe(no_mangle)]
 pub extern "C" fn vp_bridge_pty_stop_session(session_id: u32) {
     let mut guard = ensure_sessions();
-    if let Some(map) = guard.as_mut() {
-        if let Some(session) = map.get_mut(&session_id) {
-            session.pty = None;
-        }
+    if let Some(map) = guard.as_mut()
+        && let Some(session) = map.get_mut(&session_id)
+    {
+        session.pty = None;
     }
 }
 
@@ -502,10 +541,10 @@ pub extern "C" fn vp_bridge_pty_stop() {
 #[unsafe(no_mangle)]
 pub extern "C" fn vp_bridge_scroll_session(session_id: u32, delta: i32) {
     let guard = ensure_sessions();
-    if let Some(session) = guard.as_ref().and_then(|m| m.get(&session_id)) {
-        if let Some(pty) = &session.pty {
-            pty.scroll(delta);
-        }
+    if let Some(session) = guard.as_ref().and_then(|m| m.get(&session_id))
+        && let Some(pty) = &session.pty
+    {
+        pty.scroll(delta);
     }
 }
 
@@ -739,12 +778,211 @@ mod tests {
     }
 
     #[test]
-    fn test_cell_data_flags() {
-        let mut flags: u8 = 0;
-        flags |= 1 << 0;
-        flags |= 1 << 2;
-        assert_eq!(flags & (1 << 0), 1);
-        assert_eq!(flags & (1 << 1), 0);
-        assert_eq!(flags & (1 << 2), 4);
+    fn test_cell_to_celldata_flags() {
+        // cell_to_celldata が ratatui Modifier を正しく flags ビットに変換するか
+        let mut cell = ratatui::buffer::Cell::default();
+        cell.set_char('A');
+        cell.set_style(
+            ratatui::style::Style::default().add_modifier(
+                ratatui::style::Modifier::BOLD | ratatui::style::Modifier::UNDERLINED,
+            ),
+        );
+
+        let cd = cell_to_celldata(&cell);
+        assert_ne!(cd.flags & (1 << 0), 0, "bit 0 (bold) should be set");
+        assert_eq!(cd.flags & (1 << 1), 0, "bit 1 (italic) should NOT be set");
+        assert_ne!(cd.flags & (1 << 2), 0, "bit 2 (underline) should be set");
+        assert_eq!(cd.flags & (1 << 3), 0, "bit 3 (inverse) should NOT be set");
+        assert_eq!(cd.flags & (1 << 5), 0, "bit 5 (dim) should NOT be set");
+        assert_eq!(
+            cd.flags & (1 << 6),
+            0,
+            "bit 6 (wide) should NOT be set by cell_to_celldata"
+        );
+    }
+
+    #[test]
+    fn test_cell_to_celldata_all_modifiers() {
+        let mut cell = ratatui::buffer::Cell::default();
+        cell.set_char('Z');
+        cell.set_style(ratatui::style::Style::default().add_modifier(
+            ratatui::style::Modifier::BOLD
+                | ratatui::style::Modifier::ITALIC
+                | ratatui::style::Modifier::UNDERLINED
+                | ratatui::style::Modifier::REVERSED
+                | ratatui::style::Modifier::CROSSED_OUT
+                | ratatui::style::Modifier::DIM,
+        ));
+
+        let cd = cell_to_celldata(&cell);
+        assert_ne!(cd.flags & (1 << 0), 0, "bold");
+        assert_ne!(cd.flags & (1 << 1), 0, "italic");
+        assert_ne!(cd.flags & (1 << 2), 0, "underline");
+        assert_ne!(cd.flags & (1 << 3), 0, "inverse");
+        assert_ne!(cd.flags & (1 << 4), 0, "strikethrough");
+        assert_ne!(cd.flags & (1 << 5), 0, "dim");
+    }
+
+    // =========================================================================
+    // WIDE_CHAR bit 6 伝搬テスト
+    // =========================================================================
+
+    #[test]
+    fn test_wide_flag_bit6_in_buffer() {
+        // セッション作成
+        let id = vp_bridge_create(10, 5, None);
+        assert!(id > 0);
+
+        // Backend に wide フラグを設定
+        with_session_backend_mut(id, |backend| {
+            let mut cell = ratatui::buffer::Cell::default();
+            cell.set_char('漢');
+            backend.draw(vec![(3u16, 1u16, &cell)].into_iter()).unwrap();
+            backend.set_wide_flag(3, 1, true);
+        });
+
+        // バッファ取得して bit 6 を確認
+        let total = 10 * 5;
+        let mut buffer = vec![empty_cell(); total];
+        let count = vp_bridge_get_buffer_session(id, buffer.as_mut_ptr(), total as u32);
+        assert_eq!(count, total as u32);
+
+        // (3, 1) → index 13 のフラグに bit 6 が立っている
+        let idx = 10 + 3;
+        assert_ne!(
+            buffer[idx].flags & (1 << 6),
+            0,
+            "bit 6 should be set for wide char"
+        );
+
+        // 隣接セル (4, 1) は wide でない
+        let idx_next = 10 + 4;
+        assert_eq!(
+            buffer[idx_next].flags & (1 << 6),
+            0,
+            "bit 6 should NOT be set for non-wide"
+        );
+
+        vp_bridge_destroy(id);
+    }
+
+    #[test]
+    fn test_wide_flag_combined_with_bold() {
+        let id = vp_bridge_create(10, 5, None);
+
+        with_session_backend_mut(id, |backend| {
+            let mut cell = ratatui::buffer::Cell::default();
+            cell.set_char('あ');
+            cell.set_style(
+                ratatui::style::Style::default().add_modifier(ratatui::style::Modifier::BOLD),
+            );
+            backend.draw(vec![(0u16, 0u16, &cell)].into_iter()).unwrap();
+            backend.set_wide_flag(0, 0, true);
+        });
+
+        let mut buffer = vec![empty_cell(); 50];
+        vp_bridge_get_buffer_session(id, buffer.as_mut_ptr(), 50);
+
+        // bit 0 (bold) と bit 6 (wide) が両方立っている
+        assert_ne!(buffer[0].flags & (1 << 0), 0, "bit 0 (bold) should be set");
+        assert_ne!(buffer[0].flags & (1 << 6), 0, "bit 6 (wide) should be set");
+        // 他のビットは影響しない
+        assert_eq!(
+            buffer[0].flags & (1 << 1),
+            0,
+            "bit 1 (italic) should NOT be set"
+        );
+
+        vp_bridge_destroy(id);
+    }
+
+    #[test]
+    fn test_wide_flag_not_set_by_default() {
+        let id = vp_bridge_create(10, 5, None);
+
+        with_session_backend_mut(id, |backend| {
+            let mut cell = ratatui::buffer::Cell::default();
+            cell.set_char('X');
+            backend.draw(vec![(0u16, 0u16, &cell)].into_iter()).unwrap();
+            // wide_flag を設定しない
+        });
+
+        let mut buffer = vec![empty_cell(); 50];
+        vp_bridge_get_buffer_session(id, buffer.as_mut_ptr(), 50);
+
+        // bit 6 はデフォルトで 0
+        assert_eq!(
+            buffer[0].flags & (1 << 6),
+            0,
+            "bit 6 should NOT be set without explicit wide flag"
+        );
+
+        vp_bridge_destroy(id);
+    }
+
+    #[test]
+    fn test_get_buffer_null_dst() {
+        let id = vp_bridge_create(10, 5, None);
+        // null ポインタで 0 を返す（クラッシュしない）
+        let count = vp_bridge_get_buffer_session(id, std::ptr::null_mut(), 50);
+        assert_eq!(count, 0);
+        vp_bridge_destroy(id);
+    }
+
+    #[test]
+    fn test_get_buffer_zero_max_cells() {
+        let id = vp_bridge_create(10, 5, None);
+        let mut buffer = vec![empty_cell(); 50];
+        // max_cells = 0 で 0 を返す
+        let count = vp_bridge_get_buffer_session(id, buffer.as_mut_ptr(), 0);
+        assert_eq!(count, 0);
+        vp_bridge_destroy(id);
+    }
+
+    #[test]
+    fn test_get_buffer_invalid_session() {
+        let mut buffer = vec![empty_cell(); 50];
+        // 存在しないセッション ID で 0 を返す
+        let count = vp_bridge_get_buffer_session(99999, buffer.as_mut_ptr(), 50);
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_clear_wide_flags_between_frames() {
+        let id = vp_bridge_create(10, 5, None);
+
+        // フレーム 1: (3,1) を wide に
+        with_session_backend_mut(id, |backend| {
+            backend.set_wide_flag(3, 1, true);
+        });
+
+        let mut buf1 = vec![empty_cell(); 50];
+        vp_bridge_get_buffer_session(id, buf1.as_mut_ptr(), 50);
+        assert_ne!(buf1[13].flags & (1 << 6), 0);
+
+        // フレーム 2: clear_wide_flags → (3,1) は wide でなくなる
+        with_session_backend_mut(id, |backend| {
+            backend.clear_wide_flags();
+            // 別の位置を wide に
+            backend.set_wide_flag(5, 2, true);
+        });
+
+        let mut buf2 = vec![empty_cell(); 50];
+        vp_bridge_get_buffer_session(id, buf2.as_mut_ptr(), 50);
+        // (3,1) の bit 6 はクリアされている
+        assert_eq!(
+            buf2[13].flags & (1 << 6),
+            0,
+            "previous frame's wide flag should be cleared"
+        );
+        // (5,2) の bit 6 は立っている
+        let idx52 = 2 * 10 + 5;
+        assert_ne!(
+            buf2[idx52].flags & (1 << 6),
+            0,
+            "new frame's wide flag should be set"
+        );
+
+        vp_bridge_destroy(id);
     }
 }

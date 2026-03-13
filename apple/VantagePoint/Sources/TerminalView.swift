@@ -15,11 +15,11 @@ private var sessionRegistry: [UInt32: TerminalView] = [:]
 ///
 /// vp_bridge_create に渡す唯一のコールバック。
 /// 呼ばれたら全登録済み TerminalView を再描画する。
-/// NOTE: セッション固有コールバックが Rust 側で未対応のため、
-///       全ビューをインバリデートする（軽量: setNeedsDisplay は O(1)）
+/// NOTE: セッション固有コールバックが Rust 側で未対応のため全ビューをインバリデートする。
+///       非アクティブビューは draw() 内の isActive ガードで早期リターンするため描画コストは最小。
 private let sharedFrameCallback: VPFrameReadyCallback = {
     DispatchQueue.main.async {
-        for (_, view) in sessionRegistry {
+        for (_, view) in sessionRegistry where view.isActive {
             view.needsDisplay = true
         }
     }
@@ -38,17 +38,10 @@ class TerminalView: NSView {
 
     // MARK: - 設定
 
-    /// コンソールフォント名（等幅 — Nerd Font Mono）
-    var fontName: String = "Menlo" {
+    /// コンソールフォント名（FiraCode Nerd Font Mono 固定）
+    var fontName: String = "FiraCode Nerd Font Mono" {
         didSet { updateFontMetrics() }
     }
-
-    /// フォントフォールバックチェーン
-    private static let consoleFontChain = [
-        "FiraCode Nerd Font Mono",  // Primary: 等幅 Nerd Font
-        "FiraCode Nerd Font",       // Fallback: 非 Mono（アイコン本来幅）
-        "Menlo",                    // Last resort
-    ]
 
     /// フォントサイズ（コンソール用: 16pt）
     var fontSize: CGFloat = 16.0 {
@@ -86,12 +79,6 @@ class TerminalView: NSView {
     /// Bold Italic フォント
     private var boldItalicFont: CTFont!
 
-    /// CJK フォールバック（日本語用）
-    private var cjkFont: CTFont!
-    private var cjkBoldFont: CTFont!
-
-    /// 絵文字フォールバック
-    private var emojiFont: CTFont!
 
     /// セル幅（ピクセル）
     private var cellWidth: CGFloat = 0
@@ -113,6 +100,14 @@ class TerminalView: NSView {
 
     /// Bridge 初期化済みフラグ
     private var bridgeInitialized: Bool { sessionId != 0 }
+
+    /// 遅延 PTY 起動用: レイアウト確定後に自動起動するコマンド
+    var deferredPtyCommand: String?
+    /// 遅延 PTY 起動用: 作業ディレクトリ
+    var deferredPtyCwd: String?
+
+    /// アクティブ（表示中）フラグ — false のとき描画をスキップ
+    var isActive: Bool = true
 
     // MARK: - 初期化
 
@@ -236,15 +231,9 @@ class TerminalView: NSView {
     // MARK: - フォント
 
     private func updateFontMetrics() {
-        // フォールバックチェーンで最初に見つかるフォントを使用
-        var resolvedFont: NSFont?
-        for name in Self.consoleFontChain {
-            if let f = NSFont(name: name, size: fontSize) {
-                resolvedFont = f
-                break
-            }
-        }
-        let nsFont = resolvedFont ?? NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+        // Fira Code Nerd Font Mono 固定。未インストール時のみシステム等幅にフォールバック
+        let nsFont = NSFont(name: fontName, size: fontSize)
+            ?? NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
         font = nsFont as CTFont
 
         NSLog("[VP] Font resolved: %@ (size: %.1f)", nsFont.fontName, fontSize)
@@ -257,22 +246,6 @@ class TerminalView: NSView {
         boldFont = CTFontCreateCopyWithSymbolicTraits(font, fontSize, nil, boldTraits, boldTraits) ?? font
         italicFont = CTFontCreateCopyWithSymbolicTraits(font, fontSize, nil, italicTraits, italicTraits) ?? font
         boldItalicFont = CTFontCreateCopyWithSymbolicTraits(font, fontSize, nil, boldItalicTraits, boldItalicTraits) ?? font
-
-        // CJK フォールバック（日本語グリフ用）
-        let cjkFontNames = ["HiraginoSans-W3", "HiraKakuProN-W3"]
-        var cjkResolved: NSFont?
-        for name in cjkFontNames {
-            if let f = NSFont(name: name, size: fontSize) {
-                cjkResolved = f
-                break
-            }
-        }
-        cjkFont = (cjkResolved ?? NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)) as CTFont
-        cjkBoldFont = CTFontCreateCopyWithSymbolicTraits(cjkFont, fontSize, nil, boldTraits, boldTraits) ?? cjkFont
-        NSLog("[VP] CJK font: %@", CTFontCopyPostScriptName(cjkFont) as String)
-
-        // 絵文字フォールバック
-        emojiFont = (NSFont(name: "AppleColorEmoji", size: fontSize) ?? nsFont) as CTFont
 
         // セルサイズ計算 — 'M' グリフのアドバンスで計測（等幅フォントなら全 ASCII 同じ）
         var testChar: UniChar = 0x4D // 'M'
@@ -328,14 +301,24 @@ class TerminalView: NSView {
             let totalCells = Int(gridCols) * Int(gridRows)
             cellBuffer = [VPCellData](repeating: VPCellData(), count: totalCells)
         }
+
+        // 遅延 PTY 起動: レイアウトが確定して有効なグリッドサイズが得られたら起動
+        // 1 回だけ試行し、成否に関わらず deferred を消費（無限リトライ防止）
+        if let cwd = deferredPtyCwd, gridCols > 1 && gridRows > 1 {
+            let cmd = deferredPtyCommand
+            deferredPtyCommand = nil
+            deferredPtyCwd = nil
+            NSLog("[VP] Deferred PTY start: %dx%d cmd=%@", gridCols, gridRows, cmd ?? "(shell)")
+            startPty(cwd: cwd, command: cmd)
+        }
     }
 
     // MARK: - 描画
 
     override func draw(_ dirtyRect: NSRect) {
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
-        guard bridgeInitialized else {
-            // Bridge 未初期化時はデフォルト背景のみ
+        guard bridgeInitialized, isActive else {
+            // Bridge 未初期化 or 非アクティブ時はデフォルト背景のみ
             ctx.setFillColor(defaultBackground.cgColor)
             ctx.fill(bounds)
             return
@@ -379,8 +362,9 @@ class TerminalView: NSView {
                 // 文字を取得（背景幅の計算にも必要）
                 let ch = cellString(from: cell)
 
-                // 全角文字かどうか判定（背景を 2 セル幅で描画する）
-                let charIsFullWidth = ch.unicodeScalars.first.map { isFullWidth($0) } ?? false
+                // ワイド文字判定: VT パーサーの WIDE_CHAR フラグ（bit 6）を使用
+                // Unicode テーブルによる推測ではなく、VT パーサーが正確に判定した結果
+                let charIsFullWidth = (cell.flags & (1 << 6)) != 0
 
                 // 背景色（デフォルト以外の場合のみ描画）
                 let bgColor = colorFromRGBA(cell.bg)
@@ -442,71 +426,32 @@ class TerminalView: NSView {
                 var glyphs = [CGGlyph](repeating: 0, count: chars.count)
                 let found = CTFontGetGlyphsForCharacters(selectedFont, chars, &glyphs, chars.count)
 
-                // フォントフォールバックチェーン:
-                //   1. プライマリフォント（Nerd Font Mono）
-                //   2. 絵文字 → Apple Color Emoji
-                //   3. Nerd Font シンボル → CTFontCreateForString（システムフォールバック）
-                //   4. CJK 文字 → CJK フォールバックフォント
-                //   5. その他 → CTFontCreateForString（最終手段）
-                let drawFont: CTFont
-                let firstScalar = ch.unicodeScalars.first
-                let isNerd = firstScalar.map { isNerdFontSymbol($0) } ?? false
-                let isEmojiChar = firstScalar.map { isEmoji($0) } ?? false
-
-                if !found || glyphs.contains(0) {
-                    if isEmojiChar {
-                        // 絵文字 → Apple Color Emoji
-                        var fbGlyphs = [CGGlyph](repeating: 0, count: chars.count)
-                        if CTFontGetGlyphsForCharacters(emojiFont, chars, &fbGlyphs, chars.count) {
-                            glyphs = fbGlyphs
-                            drawFont = emojiFont
-                        } else {
-                            let ctFallback = CTFontCreateForString(selectedFont, ch as CFString,
-                                                                   CFRange(location: 0, length: ch.utf16.count))
-                            var ctGlyphs = [CGGlyph](repeating: 0, count: chars.count)
-                            if CTFontGetGlyphsForCharacters(ctFallback, chars, &ctGlyphs, chars.count) {
-                                glyphs = ctGlyphs
-                                drawFont = ctFallback
-                            } else {
-                                drawFont = selectedFont
-                            }
-                        }
-                    } else if isNerd {
-                        // Nerd Font シンボル → システムフォールバック（CJK に流さない）
-                        let ctFallback = CTFontCreateForString(selectedFont, ch as CFString,
-                                                               CFRange(location: 0, length: ch.utf16.count))
-                        var fbGlyphs = [CGGlyph](repeating: 0, count: chars.count)
-                        if CTFontGetGlyphsForCharacters(ctFallback, chars, &fbGlyphs, chars.count) {
-                            glyphs = fbGlyphs
-                            drawFont = ctFallback
-                        } else {
-                            drawFont = selectedFont
-                        }
-                    } else {
-                        // CJK / その他 → CJK フォールバック → システムフォールバック
-                        let fallback = isBold ? cjkBoldFont! : cjkFont!
-                        var fbGlyphs = [CGGlyph](repeating: 0, count: chars.count)
-                        if CTFontGetGlyphsForCharacters(fallback, chars, &fbGlyphs, chars.count) {
-                            glyphs = fbGlyphs
-                            drawFont = fallback
-                        } else {
-                            let ctFallback = CTFontCreateForString(selectedFont, ch as CFString,
-                                                                   CFRange(location: 0, length: ch.utf16.count))
-                            var ctGlyphs = [CGGlyph](repeating: 0, count: chars.count)
-                            if CTFontGetGlyphsForCharacters(ctFallback, chars, &ctGlyphs, chars.count) {
-                                glyphs = ctGlyphs
-                                drawFont = ctFallback
-                            } else {
-                                drawFont = selectedFont
-                            }
-                        }
-                    }
+                // グリフが見つからない場合はフォールバックフォントで描画
+                if found && !glyphs.contains(0) {
+                    // プライマリフォントにグリフあり → 高速パス
+                    var position = CGPoint(x: x, y: y + baselineOffset)
+                    CTFontDrawGlyphs(selectedFont, glyphs, &position, glyphs.count, ctx)
                 } else {
-                    drawFont = selectedFont
+                    // システムフォールバック（CJK・絵文字・記号すべて対応）
+                    let fallbackFont = CTFontCreateForString(selectedFont, ch as CFString,
+                                                              CFRange(location: 0, length: ch.utf16.count))
+                    var fbGlyphs = [CGGlyph](repeating: 0, count: chars.count)
+                    if CTFontGetGlyphsForCharacters(fallbackFont, chars, &fbGlyphs, chars.count) {
+                        // フォールバックフォントにグリフあり → 直接描画（高速）
+                        var position = CGPoint(x: x, y: y + baselineOffset)
+                        CTFontDrawGlyphs(fallbackFont, fbGlyphs, &position, fbGlyphs.count, ctx)
+                    } else {
+                        // 最終手段: CTLine（NSAttributedString 経由）
+                        let attrs: [CFString: Any] = [
+                            kCTFontAttributeName: fallbackFont,
+                            kCTForegroundColorAttributeName: fgColor.cgColor,
+                        ]
+                        let attrStr = CFAttributedStringCreate(nil, ch as CFString, attrs as CFDictionary)!
+                        let line = CTLineCreateWithAttributedString(attrStr)
+                        ctx.textPosition = CGPoint(x: x, y: y + baselineOffset)
+                        CTLineDraw(line, ctx)
+                    }
                 }
-
-                var position = CGPoint(x: x, y: y + baselineOffset)
-                CTFontDrawGlyphs(drawFont, glyphs, &position, glyphs.count, ctx)
 
                 // アンダーライン
                 if isUnderline {
@@ -539,14 +484,11 @@ class TerminalView: NSView {
             let cursorX = CGFloat(cursor.x) * cellWidth
             let cursorY = bounds.height - CGFloat(Int(cursor.y) + 1) * cellHeight
 
-            // カーソル位置の文字が全角かチェック
+            // カーソル位置の文字がワイドかチェック（bit 6: WIDE_CHAR）
             let idx = Int(cursor.y) * Int(gridCols) + Int(cursor.x)
             var cursorWidth = cellWidth
-            if idx < cellBuffer.count {
-                let ch = cellString(from: cellBuffer[idx])
-                if let scalar = ch.unicodeScalars.first, isFullWidth(scalar) {
-                    cursorWidth = cellWidth * 2
-                }
+            if idx < cellBuffer.count && (cellBuffer[idx].flags & (1 << 6)) != 0 {
+                cursorWidth = cellWidth * 2
             }
 
             ctx.setFillColor(NSColor.white.withAlphaComponent(0.5).cgColor)
@@ -572,83 +514,6 @@ class TerminalView: NSView {
         let b = CGFloat((rgba >> 8) & 0xFF) / 255.0
         let a = CGFloat(rgba & 0xFF) / 255.0
         return NSColor(red: r, green: g, blue: b, alpha: a)
-    }
-
-    // MARK: - Nerd Font v3 シンボル範囲
-
-    private static let nerdFontRanges: [ClosedRange<UInt32>] = [
-        // Powerline シンボル
-        0xE0A0...0xE0A3,   // Powerline
-        0xE0B0...0xE0D4,   // Powerline Extra
-        // Seti-UI + Custom
-        0xE5FA...0xE6AC,
-        // Devicons
-        0xE700...0xE7C5,
-        // Font Awesome
-        0xF000...0xF2E0,
-        // Font Awesome Extension
-        0xE200...0xE2A9,
-        // Octicons
-        0xF400...0xF532,
-        0x2665...0x2665,   // ♥
-        0x26A1...0x26A1,   // ⚡
-        // Material Design Icons
-        0xF0001...0xF1AF0,
-        // Weather Icons
-        0xE300...0xE3E3,
-        // Font Logos (formerly Font Linux)
-        0xF300...0xF375,
-        // Pomicons
-        0xE000...0xE00A,
-        // Codicons
-        0xEA60...0xEBEB,
-        // IEC Power Symbols
-        0x23FB...0x23FE,
-        0x2B58...0x2B58,
-    ]
-
-    private func isNerdFontSymbol(_ scalar: Unicode.Scalar) -> Bool {
-        let v = scalar.value
-        for range in Self.nerdFontRanges {
-            if range.contains(v) { return true }
-        }
-        return false
-    }
-
-    private func isFullWidth(_ scalar: Unicode.Scalar) -> Bool {
-        let v = scalar.value
-        if (0x4E00...0x9FFF).contains(v) { return true }
-        if (0x3400...0x4DBF).contains(v) { return true }
-        if (0x20000...0x2A6DF).contains(v) { return true }
-        if (0x3040...0x309F).contains(v) { return true }
-        if (0x30A0...0x30FF).contains(v) { return true }
-        if (0xFF01...0xFF60).contains(v) { return true }
-        if (0xFFE0...0xFFE6).contains(v) { return true }
-        if (0x3000...0x303F).contains(v) { return true }
-        if (0x3200...0x32FF).contains(v) { return true }
-        if (0x3300...0x33FF).contains(v) { return true }
-        if (0xF900...0xFAFF).contains(v) { return true }
-        if (0xAC00...0xD7AF).contains(v) { return true }
-        return false
-    }
-
-    private func isEmoji(_ scalar: Unicode.Scalar) -> Bool {
-        let v = scalar.value
-        if (0x1F600...0x1F64F).contains(v) { return true }
-        if (0x1F300...0x1F5FF).contains(v) { return true }
-        if (0x1F680...0x1F6FF).contains(v) { return true }
-        if (0x1F900...0x1F9FF).contains(v) { return true }
-        if (0x1FA00...0x1FA6F).contains(v) { return true }
-        if (0x1FA70...0x1FAFF).contains(v) { return true }
-        if (0x2600...0x26FF).contains(v) { return true }
-        if (0x2700...0x27BF).contains(v) { return true }
-        if (0xFE00...0xFE0F).contains(v) { return true }
-        if (0x200D...0x200D).contains(v) { return true }
-        if (0x2300...0x23FF).contains(v) { return true }
-        if (0x2B50...0x2B55).contains(v) { return true }
-        if (0x231A...0x231B).contains(v) { return true }
-        if (0x25AA...0x25FE).contains(v) { return true }
-        return false
     }
 
     // MARK: - Box-drawing 文字のカスタム描画
@@ -821,21 +686,73 @@ class TerminalView: NSView {
         needsDisplay = true
     }
 
+    // MARK: - スクリーンショット
+
+    /// ターミナルのレンダリング結果を PNG ファイルに保存
+    /// - Parameter path: 保存先パス（nil なら ~/Desktop/vp-screenshot-{timestamp}.png）
+    /// - Returns: 保存したファイルパス（失敗時は nil）
+    @discardableResult
+    func captureScreenshot(to path: String? = nil) -> String? {
+        let targetPath: String
+        if let path {
+            targetPath = path
+        } else {
+            let ts = Int(Date().timeIntervalSince1970)
+            targetPath = NSHomeDirectory() + "/Desktop/vp-screenshot-\(ts).png"
+        }
+
+        // ビューのレンダリングをビットマップにキャプチャ
+        guard let rep = bitmapImageRepForCachingDisplay(in: bounds) else {
+            NSLog("[VP] Screenshot failed: could not create bitmap rep")
+            return nil
+        }
+        cacheDisplay(in: bounds, to: rep)
+
+        guard let pngData = rep.representation(using: .png, properties: [:]) else {
+            NSLog("[VP] Screenshot failed: PNG encoding failed")
+            return nil
+        }
+
+        do {
+            try pngData.write(to: URL(fileURLWithPath: targetPath))
+            NSLog("[VP] Screenshot saved: %@", targetPath)
+            return targetPath
+        } catch {
+            NSLog("[VP] Screenshot failed: %@", error.localizedDescription)
+            return nil
+        }
+    }
+
     // MARK: - PTY
 
     /// PTY を起動
-    func startPty(cwd: String? = nil) {
+    /// - Parameters:
+    ///   - cwd: 作業ディレクトリ（nil ならデフォルト）
+    ///   - command: 実行コマンド（nil ならデフォルトシェル）
+    func startPty(cwd: String? = nil, command: String? = nil) {
         guard bridgeInitialized else { return }
 
-        let start = { (ptr: UnsafePointer<CChar>?) -> Int32 in
-            vp_bridge_pty_start_session(self.sessionId, ptr, self.gridCols, self.gridRows)
-        }
-
         let result: Int32
-        if let cwdPath = cwd {
-            result = cwdPath.withCString { start($0) }
+        if let cmd = command {
+            // コマンド指定あり → vp_bridge_pty_start_command_session
+            result = cmd.withCString { cmdPtr in
+                if let cwdPath = cwd {
+                    return cwdPath.withCString { cwdPtr in
+                        vp_bridge_pty_start_command_session(self.sessionId, cwdPtr, cmdPtr, self.gridCols, self.gridRows)
+                    }
+                } else {
+                    return vp_bridge_pty_start_command_session(self.sessionId, nil, cmdPtr, self.gridCols, self.gridRows)
+                }
+            }
         } else {
-            result = start(nil)
+            // コマンド指定なし → 従来通り
+            if let cwdPath = cwd {
+                result = cwdPath.withCString { ptr in
+                    vp_bridge_pty_start_session(self.sessionId, ptr, self.gridCols, self.gridRows)
+                }
+            } else {
+                result = vp_bridge_pty_start_session(self.sessionId, nil, self.gridCols, self.gridRows)
+            }
         }
 
         if result == 0 {
@@ -916,6 +833,15 @@ class TerminalView: NSView {
             return true
         case "c":
             // Cmd+C: コピー（選択テキストがあれば）
+            return true
+        case "S":
+            // Cmd+Shift+S: スクリーンショット
+            if let path = captureScreenshot() {
+                // クリップボードにパスをコピー
+                let pb = NSPasteboard.general
+                pb.clearContents()
+                pb.setString(path, forType: .string)
+            }
             return true
         default:
             return super.performKeyEquivalent(with: event)

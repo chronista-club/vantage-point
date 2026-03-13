@@ -15,13 +15,22 @@ struct TerminalRepresentable: NSViewRepresentable {
 
     func makeNSView(context: Context) -> TerminalView {
         let view = TerminalView(frame: .zero)
+        // Bridge は作成するが、PTY 起動はレイアウト確定後に遅延
+        // makeNSView 時点では bounds が .zero → 1x1 グリッドになりシェルが正常に動けない
         view.setupBridge()
-        let cwd = projectPath ?? NSHomeDirectory()
-        view.startPty(cwd: cwd)
+        view.deferredPtyCwd = projectPath ?? NSHomeDirectory()
         return view
     }
 
     func updateNSView(_ nsView: TerminalView, context: Context) {
+        let wasActive = nsView.isActive
+        nsView.isActive = isActive
+
+        // アクティブに切り替わった → 即座に再描画（フレームコールバック待ちの間の stale 表示を防ぐ）
+        if isActive && !wasActive {
+            nsView.needsDisplay = true
+        }
+
         // アクティブなターミナルのみフォーカスを取得
         // ZStack で非表示のビューがフォーカスを奪うのを防ぐ
         guard isActive else { return }

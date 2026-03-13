@@ -11,12 +11,20 @@ struct MainWindowView: View {
     @State private var projects: [SidebarProject] = []
     /// TheWorld 接続ステータス
     @State private var worldStatus: WorldStatus = .checking
+    /// Canvas（Paisley Park）表示フラグ
+    @State private var showCanvas: Bool = false
 
     /// 外部から指定されたプロジェクトパス（起動引数・URL スキーム経由）
     var initialProjectPath: String?
 
     /// TheWorld API クライアント（AppDelegate と共有）
     private let theWorldClient = TheWorldClient.shared
+
+    /// 選択中プロジェクトの SP ポート（Canvas 接続用）
+    private var selectedPort: UInt16? {
+        guard let path = selectedProjectPath else { return nil }
+        return projects.first(where: { $0.path == path })?.port
+    }
 
     var body: some View {
         NavigationSplitView {
@@ -29,24 +37,48 @@ struct MainWindowView: View {
                     }
                 }
         } detail: {
-            ZStack {
-                // 全プロジェクトのターミナルを常に保持（PTY セッション維持）
-                ForEach(projects) { project in
-                    let isActive = selectedProjectPath == project.path
-                    TerminalRepresentable(projectPath: project.path, isActive: isActive)
-                        .opacity(isActive ? 1 : 0)
-                        .allowsHitTesting(isActive)
+            // ターミナル + Canvas（Canvas は Cmd+O でトグル）
+            // HSplitView は子が1つだとレイアウト崩壊するため HStack で管理
+            HStack(spacing: 0) {
+                // ターミナル（左 — 常に表示）
+                ZStack {
+                    ForEach(projects) { project in
+                        let isActive = selectedProjectPath == project.path
+                        TerminalRepresentable(projectPath: project.path, isActive: isActive)
+                            .opacity(isActive ? 1 : 0)
+                            .allowsHitTesting(isActive)
+                    }
+
+                    if selectedProjectPath == nil {
+                        ContentUnavailableView(
+                            "Select a Project",
+                            systemImage: "mountain.2",
+                            description: Text("Choose a project from the sidebar to start")
+                        )
+                    }
                 }
 
-                // 未選択時のプレースホルダー
-                if selectedProjectPath == nil {
-                    ContentUnavailableView(
-                        "Select a Project",
-                        systemImage: "mountain.2",
-                        description: Text("Choose a project from the sidebar to start")
-                    )
+                // Canvas（右）— トグルで表示/非表示
+                if showCanvas {
+                    CanvasRepresentable(port: selectedPort)
+                        .frame(minWidth: 300, idealWidth: 500)
                 }
             }
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        withAnimation { showCanvas.toggle() }
+                    } label: {
+                        Label(
+                            showCanvas ? "Hide Canvas" : "Show Canvas",
+                            systemImage: showCanvas ? "sidebar.right" : "sidebar.squares.right"
+                        )
+                    }
+                    .help("Canvas (Paisley Park) の表示/非表示  ⌘O")
+                    .keyboardShortcut("o", modifiers: .command)
+                }
+            }
+            .toolbarBackground(.visible, for: .windowToolbar)
         }
         .onAppear {
             loadProjects()

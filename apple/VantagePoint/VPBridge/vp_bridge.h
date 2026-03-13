@@ -33,6 +33,7 @@ typedef struct {
     ///   bit 3: inverse
     ///   bit 4: strikethrough
     ///   bit 5: dim
+    ///   bit 6: wide char (VT parser WIDE_CHAR flag)
     uint8_t flags;
 } VPCellData;
 
@@ -106,6 +107,10 @@ uint32_t vp_bridge_get_buffer(VPCellData *dst, uint32_t max_cells);
 
 /// PTY を起動（セッション指定）
 int32_t vp_bridge_pty_start_session(uint32_t session_id, const char *cwd, uint16_t cols, uint16_t rows);
+
+/// コマンド指定で PTY を起動（セッション指定）
+/// @param command 実行コマンド文字列（NULL ならデフォルトシェル）
+int32_t vp_bridge_pty_start_command_session(uint32_t session_id, const char *cwd, const char *command, uint16_t cols, uint16_t rows);
 
 /// PTY にバイト列を送信（セッション指定）
 int32_t vp_bridge_pty_write_session(uint32_t session_id, const uint8_t *data, uint32_t len);
