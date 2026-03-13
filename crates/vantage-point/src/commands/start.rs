@@ -127,7 +127,6 @@ pub fn execute(opts: StartOptions) -> Result<()> {
     let cap_config = CapabilityConfig {
         project_dir: resolved.dir.clone(),
         midi_config,
-        bonjour_port: Some(resolved.port),
     };
 
     // Step 2: モード別ルーティング

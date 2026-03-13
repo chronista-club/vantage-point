@@ -70,8 +70,13 @@ pub async fn world_start_process(
         );
     };
 
-    let world = world.read().await;
-    match world.start_process(&project_name).await {
+    // start_process は内部でスリープ + ポートスキャンがあるため、
+    // read ガードを長時間保持しないよう clone して解放する
+    let world_cap = {
+        let w = world.read().await;
+        w.clone()
+    };
+    match world_cap.start_process(&project_name).await {
         Ok(process) => (
             axum::http::StatusCode::OK,
             Json(serde_json::to_value(&process).unwrap_or_default()),

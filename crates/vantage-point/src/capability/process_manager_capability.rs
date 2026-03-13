@@ -88,6 +88,7 @@ pub struct RunningProcess {
 }
 
 /// Conductor Capability
+#[derive(Clone)]
 pub struct ProcessManagerCapability {
     /// 現在の状態
     state: CapabilityState,
@@ -573,11 +574,16 @@ impl ProcessManagerCapability {
                 *world.previously_running.write().await = current.clone();
             }
 
-            // ── 書き込みフェーズ（再起動が必要な場合のみロック再取得）──
+            // ── 書き込みフェーズ（再起動が必要な場合のみ）──
+            // start_process は内部でスリープ + ポートスキャンがあるため、
+            // read ガードを長時間保持しないよう clone して解放する
             for (name, _port) in &restart_targets {
                 tracing::info!("Health check: Process '{}' を自動再起動中...", name);
-                let world = world.read().await;
-                match world.start_process(name).await {
+                let world_cap = {
+                    let w = world.read().await;
+                    w.clone()
+                };
+                match world_cap.start_process(name).await {
                     Ok(new_proc) => {
                         tracing::info!(
                             "Health check: Process '{}' 再起動成功 (port {})",

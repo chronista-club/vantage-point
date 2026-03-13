@@ -330,7 +330,6 @@ pub async fn run_world(port: u16) -> Result<()> {
             ProcessCapabilities::new(CapabilityConfig {
                 project_dir: String::new(),
                 midi_config: None,
-                bonjour_port: None,
             })
             .await,
         ),

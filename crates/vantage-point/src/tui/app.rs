@@ -816,7 +816,6 @@ fn start_background_services(
     let cap_config = crate::process::CapabilityConfig {
         project_dir: project_dir.to_string(),
         midi_config: None,
-        bonjour_port: Some(port),
     };
     crate::commands::start::ensure_sp_running(port, crate::protocol::DebugMode::None, cap_config)?;
     Ok(())

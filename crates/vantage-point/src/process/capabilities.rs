@@ -5,8 +5,8 @@
 
 use crate::capability::core::Capability;
 use crate::capability::{
-    AgentCapability, BonjourCapability, CapabilityContext, CapabilityRegistry, EventBus,
-    MidiCapability, ProtocolCapability,
+    AgentCapability, CapabilityContext, CapabilityRegistry, EventBus, MidiCapability,
+    ProtocolCapability,
 };
 use crate::midi::MidiConfig;
 use std::sync::Arc;
@@ -26,8 +26,6 @@ pub struct ProcessCapabilities {
     pub agent: Arc<RwLock<AgentCapability>>,
     /// MIDI Capability（オプション）
     pub midi: Option<Arc<RwLock<MidiCapability>>>,
-    /// Bonjour Capability（mDNS広告）
-    pub bonjour: Option<Arc<RwLock<BonjourCapability>>>,
 }
 
 /// Capability 初期化設定
@@ -36,8 +34,6 @@ pub struct CapabilityConfig {
     pub project_dir: String,
     /// MIDI設定（有効な場合）
     pub midi_config: Option<MidiConfig>,
-    /// Bonjour設定（ポート番号、Noneで無効）
-    pub bonjour_port: Option<u16>,
 }
 
 impl ProcessCapabilities {
@@ -69,29 +65,12 @@ impl ProcessCapabilities {
             None
         };
 
-        // Bonjour Capability（オプション）
-        let bonjour = if let Some(port) = config.bonjour_port {
-            // プロジェクト名をディレクトリから取得
-            let project_name = config
-                .project_dir
-                .rsplit('/')
-                .next()
-                .unwrap_or("vantage-point")
-                .to_string();
-            let mut bonjour_cap = BonjourCapability::new(port, project_name);
-            bonjour_cap.set_event_bus(event_bus.clone());
-            Some(Arc::new(RwLock::new(bonjour_cap)))
-        } else {
-            None
-        };
-
         Self {
             event_bus,
             registry,
             protocol,
             agent,
             midi,
-            bonjour,
         }
     }
 
@@ -122,26 +101,12 @@ impl ProcessCapabilities {
             }
         }
 
-        // Bonjour Capability 初期化（存在する場合）
-        if let Some(ref bonjour) = self.bonjour {
-            let mut bonjour = bonjour.write().await;
-            if let Err(e) = bonjour.initialize(&ctx).await {
-                tracing::warn!("Failed to initialize Bonjour: {}", e);
-            }
-        }
-
         tracing::info!("All capabilities initialized");
         Ok(())
     }
 
     /// 全 Capability をシャットダウン
     pub async fn shutdown(&self) -> anyhow::Result<()> {
-        // Bonjour Capability シャットダウン（広告停止）
-        if let Some(ref bonjour) = self.bonjour {
-            let mut bonjour = bonjour.write().await;
-            let _ = bonjour.shutdown().await;
-        }
-
         // MIDI Capability シャットダウン
         if let Some(ref midi) = self.midi {
             let mut midi = midi.write().await;
@@ -279,12 +244,10 @@ mod tests {
         let config = CapabilityConfig {
             project_dir: "/tmp/test".to_string(),
             midi_config: None,
-            bonjour_port: None,
         };
 
         let caps = ProcessCapabilities::new(config).await;
         assert!(caps.midi.is_none());
-        assert!(caps.bonjour.is_none());
     }
 
     #[tokio::test]
@@ -292,7 +255,6 @@ mod tests {
         let config = CapabilityConfig {
             project_dir: "/tmp/test".to_string(),
             midi_config: Some(MidiConfig::default()),
-            bonjour_port: None,
         };
 
         let caps = ProcessCapabilities::new(config).await;
@@ -300,23 +262,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_process_capabilities_with_bonjour() {
-        let config = CapabilityConfig {
-            project_dir: "/tmp/test".to_string(),
-            midi_config: None,
-            bonjour_port: Some(33000),
-        };
-
-        let caps = ProcessCapabilities::new(config).await;
-        assert!(caps.bonjour.is_some());
-    }
-
-    #[tokio::test]
     async fn test_process_capabilities_initialize() {
         let config = CapabilityConfig {
             project_dir: "/tmp/test".to_string(),
             midi_config: None,
-            bonjour_port: None,
         };
 
         let caps = ProcessCapabilities::new(config).await;
