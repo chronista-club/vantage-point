@@ -116,6 +116,9 @@ impl MultiProjectApp {
     }
 
     /// アクティブタブを閉じる（最後の1つは閉じない）
+    ///
+    /// ProjectContext の drop で cmd_tx が drop → ブリッジスレッドの
+    /// cmd_rx.recv() が Err を返して自然終了する。
     fn close_current_project(&mut self) {
         if self.projects.len() <= 1 {
             return;
@@ -479,14 +482,12 @@ impl MultiProjectApp {
                         let name = project.name.clone();
 
                         // 常に新タブとして追加（既存タブがあっても新規追加）
+                        self.overlay = None;
                         let config = self.config.clone();
                         if let Some(project_idx) = config.find_project_index(&dir) {
                             start_background_services(&dir, &config, project_idx, &name).ok();
-                            let port =
-                                crate::resolve::port_for_configured(project_idx, &config)
-                                    .unwrap_or(33000 + project_idx as u16);
-
-                            self.overlay = None;
+                            let port = crate::resolve::port_for_configured(project_idx, &config)
+                                .unwrap_or(33000 + project_idx as u16);
 
                             match self.add_project(terminal, name, dir, port) {
                                 Ok(new_idx) => {
@@ -498,7 +499,6 @@ impl MultiProjectApp {
                             }
                             return Ok(true);
                         }
-                        self.overlay = None;
                     }
                 }
                 _ => {}
@@ -595,7 +595,14 @@ impl MultiProjectApp {
             .projects
             .iter()
             .enumerate()
-            .map(|(i, ctx)| (ctx.name.clone(), i == active_idx, ctx.notifications, ctx.completed))
+            .map(|(i, ctx)| {
+                (
+                    ctx.name.clone(),
+                    i == active_idx,
+                    ctx.notifications,
+                    ctx.completed,
+                )
+            })
             .collect();
 
         let project_count = self.projects.len();
