@@ -140,6 +140,8 @@ pub(crate) struct AppState {
     pub topic_router: Arc<TopicRouter>,
     /// Canvas WS クライアントへの送信チャネル（HTTP API → lanes WS handler）
     pub canvas_senders: Arc<tokio::sync::Mutex<Vec<tokio::sync::mpsc::Sender<serde_json::Value>>>>,
+    /// プロセス起動時刻（ISO 8601）
+    pub started_at: String,
 }
 
 impl AppState {

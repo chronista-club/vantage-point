@@ -1,10 +1,10 @@
-// swift-tools-version: 5.9
+// swift-tools-version: 6.2
 import PackageDescription
 
 let package = Package(
     name: "VantagePoint",
     platforms: [
-        .macOS(.v13)
+        .macOS(.v26)
     ],
     products: [
         .executable(name: "VantagePoint", targets: ["VantagePoint"])

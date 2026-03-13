@@ -1,0 +1,134 @@
+import SwiftUI
+
+/// サイドバー: プロジェクト一覧（Liquid Glass 自動適用）
+///
+/// NavigationSplitView のサイドバーに配置される。
+/// macOS 26 では自動的に Liquid Glass マテリアルが適用される。
+struct SidebarView: View {
+    let projects: [SidebarProject]
+    @Binding var selection: String?
+    /// TheWorld 接続ステータス
+    let worldStatus: WorldStatus
+
+    var body: some View {
+        List(projects, selection: $selection) { project in
+            SidebarProjectRow(project: project)
+                .tag(project.id)
+        }
+        .navigationTitle("Projects")
+        .safeAreaInset(edge: .bottom) {
+            WorldStatusFooter(status: worldStatus)
+        }
+    }
+}
+
+// MARK: - プロジェクト行（カスタムビュー）
+
+/// サイドバーの各プロジェクト行
+///
+/// ステータスドット + プロジェクト名 + 開始時刻をコンパクトに表示。
+/// List の selection で選択状態のハイライトは自動適用される。
+struct SidebarProjectRow: View {
+    let project: SidebarProject
+
+    var body: some View {
+        HStack(spacing: 8) {
+            // ステータスドット
+            Circle()
+                .fill(project.statusColor)
+                .frame(width: 8, height: 8)
+
+            VStack(alignment: .leading, spacing: 1) {
+                // プロジェクト名
+                Text(project.name)
+                    .lineLimit(1)
+
+                // 稼働中: ポート + 経過時間
+                if project.isRunning {
+                    HStack(spacing: 4) {
+                        if let port = project.port {
+                            Text(":\(port)")
+                        }
+                        if let startedAt = project.startedAt {
+                            Text("· \(startedAt, style: .relative)")
+                        }
+                    }
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                }
+            }
+
+            Spacer()
+        }
+    }
+}
+
+/// サイドバー表示用のプロジェクトモデル
+struct SidebarProject: Identifiable, Equatable {
+    let id: String        // プロジェクトパス（一意キー）
+    let name: String
+    let path: String
+    let isRunning: Bool
+    /// プロセスのポート番号（稼働中のみ）
+    let port: UInt16?
+    /// プロセス開始時刻（稼働中のみ）
+    let startedAt: Date?
+
+    var statusColor: Color {
+        isRunning ? .green : .gray
+    }
+}
+
+// MARK: - TheWorld ステータス
+
+/// TheWorld の接続状態
+enum WorldStatus: Equatable {
+    case connected(version: String, startedAt: Date)
+    case disconnected
+    case checking
+}
+
+/// サイドバーフッター: TheWorld 接続ステータス
+struct WorldStatusFooter: View {
+    let status: WorldStatus
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(statusColor)
+                .frame(width: 6, height: 6)
+
+            switch status {
+            case .connected(let version, let startedAt):
+                Text("TheWorld v\(version)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(startedAt, style: .time)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            case .disconnected:
+                Text("TheWorld offline")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Spacer()
+            case .checking:
+                Text("Connecting...")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+    }
+
+    private var statusColor: Color {
+        switch status {
+        case .connected: .green
+        case .disconnected: .red
+        case .checking: .orange
+        }
+    }
+
+}

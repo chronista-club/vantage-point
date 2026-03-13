@@ -30,3 +30,22 @@ run = "cargo build"
 [tasks.test]
 description = "Run tests"
 run = "cargo test"
+
+[tasks.mac]
+description = "Build & run macOS native app (VantagePoint.app)"
+run = """
+echo "🔨 Building vp-bridge (staticlib)..."
+cargo build --release -p vp-bridge
+echo "🔨 Building VantagePoint (Swift)..."
+cd apple/VantagePoint && swift build -c release
+echo "🚀 Launching VantagePoint..."
+exec .build/release/VantagePoint
+"""
+
+[tasks."mac:build"]
+description = "Build macOS native app without launching"
+run = """
+cargo build --release -p vp-bridge
+cd apple/VantagePoint && swift build -c release
+echo "✅ Built: apple/VantagePoint/.build/release/VantagePoint"
+"""

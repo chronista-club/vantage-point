@@ -8,12 +8,6 @@ struct ProjectItem: Identifiable {
     let name: String
     let path: String
     var status: ProcessStatus
-    var port: UInt16?
-    var pid: UInt32?
-    var version: String?
-
-    /// 最終アクティビティからの経過表示
-    var lastActivity: String?
 
     enum ProcessStatus: String {
         case stopped
@@ -26,31 +20,25 @@ struct ProjectItem: Identifiable {
 
 /// TheWorld の接続状態
 enum TheWorldConnectionState {
-    /// 接続中（正常）
     case connected
-    /// 未起動（vp world が動いていない）
     case disconnected
-    /// 起動試行中
     case starting
 }
 
 /// Popover の状態管理
 @MainActor
 class PopoverViewModel: ObservableObject {
-    /// 全プロジェクト（登録済み + 稼働中）
     @Published var projects: [ProjectItem] = []
-
-    /// ローディング中
-    @Published var isLoading: Bool = false
-
-    /// エラーメッセージ
-    @Published var errorMessage: String?
-
-    /// TheWorld の接続状態
     @Published var theWorldState: TheWorldConnectionState = .disconnected
+    @Published var isRestartingAll: Bool = false
+    @Published var isRestartingTheWorld: Bool = false
+    @Published var errorMessage: String?
 
     private let theWorldClient: TheWorldClient
     private var refreshTimer: Timer?
+    /// deinit からアクセスするため nonisolated(unsafe)
+    /// セットアップは init（MainActor）、解除は deinit のみ — 競合なし
+    nonisolated(unsafe) private var processChangedObserver: NSObjectProtocol?
 
     /// DistributedNotification 通知名
     static let processChangedNotification = "club.chronista.vp.process.changed"
@@ -60,27 +48,32 @@ class PopoverViewModel: ObservableObject {
         setupDistributedNotificationObserver()
     }
 
-    /// VP プロセスからの DistributedNotification を監視
     private func setupDistributedNotificationObserver() {
-        DistributedNotificationCenter.default().addObserver(
+        processChangedObserver = DistributedNotificationCenter.default().addObserver(
             forName: NSNotification.Name(Self.processChangedNotification),
             object: nil,
             queue: .main
-        ) { [weak self] notification in
-            let event = notification.object as? String ?? "unknown"
-            NSLog("[VP] DistributedNotification received: %@", event)
+        ) { [weak self] _ in
             Task { @MainActor [weak self] in
                 await self?.refresh()
             }
         }
     }
 
-    /// データを取得・更新
-    func refresh() async {
-        isLoading = projects.isEmpty // 初回のみローディング表示
+    deinit {
+        // deinit は nonisolated — MainActor 外から呼ばれる可能性がある
+        let observer = processChangedObserver
+        DispatchQueue.main.async {
+            if let observer {
+                DistributedNotificationCenter.default().removeObserver(observer)
+            }
+        }
+    }
 
+    // MARK: - Refresh
+
+    func refresh() async {
         do {
-            // TheWorld 経由で全プロジェクト + 稼働中プロセスを取得
             async let projectsResult = theWorldClient.listProjects()
             async let processesResult = theWorldClient.listRunningProcesses()
 
@@ -89,12 +82,9 @@ class PopoverViewModel: ObservableObject {
 
             theWorldState = .connected
 
-            // マージ: 登録プロジェクトベースで、稼働中情報を重ねる
             var items: [ProjectItem] = []
 
             for project in registeredProjects {
-                let running = runningProcesses.first { $0.projectName == project.name }
-
                 let status: ProjectItem.ProcessStatus = switch project.processStatus {
                 case .running: .running
                 case .starting: .starting
@@ -107,22 +97,18 @@ class PopoverViewModel: ObservableObject {
                     id: project.name,
                     name: project.name,
                     path: project.path,
-                    status: status,
-                    port: running?.port,
-                    pid: running?.pid
+                    status: status
                 ))
             }
 
-            // 登録されてないが稼働中のプロセス（直接 vp start したもの）
+            // 登録されてないが稼働中のプロセス
             for process in runningProcesses
                 where !items.contains(where: { $0.name == process.projectName }) {
                 items.append(ProjectItem(
                     id: process.projectName,
                     name: process.projectName,
                     path: process.projectPath,
-                    status: .running,
-                    port: process.port,
-                    pid: process.pid
+                    status: .running
                 ))
             }
 
@@ -130,19 +116,111 @@ class PopoverViewModel: ObservableObject {
             errorMessage = nil
 
         } catch {
-            // TheWorld 未起動
             theWorldState = .disconnected
             projects = []
             errorMessage = nil
         }
-
-        isLoading = false
     }
 
-    // MARK: - TheWorld ライフサイクル
+    // MARK: - Restart Actions
 
-    /// TheWorld（vp world）を起動
-    func startTheWorld() async {
+    /// TheWorld + 全 Process を再起動
+    func restartAll() async {
+        isRestartingAll = true
+        defer { isRestartingAll = false }
+
+        await restartTheWorld()
+    }
+
+    /// TheWorld を再起動（全 Process も自動的に再起動される）
+    func restartTheWorld() async {
+        isRestartingTheWorld = true
+        defer { isRestartingTheWorld = false }
+
+        // PIDファイルから TheWorld を停止
+        let pidPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vantage-point/daemon.pid")
+
+        let pidContent = try? String(contentsOf: pidPath, encoding: .utf8)
+        if let pidString = pidContent?.trimmingCharacters(in: .whitespacesAndNewlines),
+           let pid = Int32(pidString) {
+            kill(pid, SIGTERM)
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+        }
+
+        theWorldState = .disconnected
+
+        // 再起動
+        await startTheWorld()
+    }
+
+    /// 個別 Process を再起動（stop → start）
+    func restartProcess(projectName: String) async {
+        guard let idx = projects.firstIndex(where: { $0.name == projectName }) else { return }
+
+        let wasRunning = projects[idx].status == .running
+
+        if wasRunning {
+            projects[idx].status = .stopping
+            do {
+                try await theWorldClient.stopProcess(projectName: projectName)
+            } catch {
+                errorMessage = error.localizedDescription
+                return
+            }
+            // 停止を待つ
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+        }
+
+        projects[idx].status = .starting
+        do {
+            _ = try await theWorldClient.startProcess(projectName: projectName)
+            projects[idx].status = .running
+        } catch {
+            projects[idx].status = .error
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    /// VP ウィンドウを開く（AppDelegate が設定するコールバック経由）
+    var onOpenMainWindow: ((String) -> Void)?
+
+    /// ウィンドウを開き、該当 Lane にフォーカス
+    func openWindow(projectName: String, projectPath: String) {
+        onOpenMainWindow?(projectPath)
+
+        // Canvas Lane 切り替え（ウィンドウ表示後に少し待ってから）
+        Task {
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            try? await theWorldClient.switchLane(projectName: projectName)
+        }
+    }
+
+    /// アプリ自体を再起動
+    func restartApp() {
+        let executablePath = ProcessInfo.processInfo.arguments[0]
+
+        // 新しいプロセスを起動
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executablePath)
+        process.arguments = Array(ProcessInfo.processInfo.arguments.dropFirst())
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+
+        do {
+            try process.run()
+        } catch {
+            NSLog("[VP] Failed to restart app: %@", error.localizedDescription)
+            return
+        }
+
+        // 現プロセスを終了
+        NSApp.terminate(nil)
+    }
+
+    // MARK: - TheWorld Lifecycle
+
+    private func startTheWorld() async {
         guard let vpPath = findVpBinary() else {
             errorMessage = "vp command not found"
             return
@@ -158,9 +236,8 @@ class PopoverViewModel: ObservableObject {
 
         do {
             try process.run()
-            // 起動を待つ（最大5秒）
             for _ in 0 ..< 50 {
-                try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
+                try? await Task.sleep(nanoseconds: 100_000_000)
                 let healthy = try? await theWorldClient.healthCheck()
                 if healthy == true {
                     theWorldState = .connected
@@ -168,130 +245,12 @@ class PopoverViewModel: ObservableObject {
                     return
                 }
             }
-            // タイムアウト
             theWorldState = .disconnected
             errorMessage = "TheWorld startup timed out"
         } catch {
             theWorldState = .disconnected
             errorMessage = "Failed to start TheWorld: \(error.localizedDescription)"
         }
-    }
-
-    /// TheWorld を再起動（停止 → 起動）
-    func restartTheWorld() async {
-        // PIDファイルからTheWorldのPIDを取得して停止
-        let pidPath = FileManager.default.temporaryDirectory
-            .appendingPathComponent("vantage-point/daemon.pid")
-
-        let pidContent = try? String(contentsOf: pidPath, encoding: .utf8)
-        if let pidString = pidContent?.trimmingCharacters(in: .whitespacesAndNewlines),
-           let pid = Int32(pidString) {
-            // SIGTERM 送信
-            kill(pid, SIGTERM)
-            // 停止を待つ
-            try? await Task.sleep(nanoseconds: 1_000_000_000) // 1秒
-        }
-
-        theWorldState = .disconnected
-
-        // 再起動
-        await startTheWorld()
-    }
-
-    // MARK: - Process Actions
-
-    /// Process を起動
-    func startProcess(projectName: String) async {
-        if let idx = projects.firstIndex(where: { $0.name == projectName }) {
-            projects[idx].status = .starting
-        }
-
-        do {
-            let result = try await theWorldClient.startProcess(projectName: projectName)
-            if let idx = projects.firstIndex(where: { $0.name == projectName }) {
-                projects[idx].status = .running
-                projects[idx].port = result.port
-                projects[idx].pid = result.pid
-            }
-        } catch {
-            if let idx = projects.firstIndex(where: { $0.name == projectName }) {
-                projects[idx].status = .error
-            }
-            errorMessage = error.localizedDescription
-        }
-    }
-
-    /// Process を停止
-    func stopProcess(projectName: String) async {
-        if let idx = projects.firstIndex(where: { $0.name == projectName }) {
-            projects[idx].status = .stopping
-        }
-
-        do {
-            try await theWorldClient.stopProcess(projectName: projectName)
-            if let idx = projects.firstIndex(where: { $0.name == projectName }) {
-                projects[idx].status = .stopped
-                projects[idx].port = nil
-                projects[idx].pid = nil
-            }
-        } catch {
-            errorMessage = error.localizedDescription
-        }
-    }
-
-    /// PP Window を開く（TheWorld 経由の PointView API）
-    func openPointView(projectName: String) async {
-        do {
-            try await theWorldClient.openPointView(projectName: projectName)
-        } catch {
-            errorMessage = "Failed to open Canvas: \(error.localizedDescription)"
-        }
-    }
-
-    /// WebUI をブラウザで開く
-    func openWebUI(port: UInt16) {
-        let url = URL(string: "http://localhost:\(String(port))")!
-        NSWorkspace.shared.open(url)
-    }
-
-    /// メインウィンドウ表示コールバック（AppDelegate が設定）
-    var onOpenMainWindow: ((String) -> Void)?
-
-    /// VP ネイティブウィンドウを開く
-    func openTUI(projectPath: String) {
-        if let handler = onOpenMainWindow {
-            handler(projectPath)
-        } else {
-            // フォールバック: 外部プロセス起動（旧動作）
-            guard let vpPath = findVpBinary() else {
-                errorMessage = "vp command not found"
-                return
-            }
-
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: vpPath)
-            process.arguments = ["start", "--gui", "-C", projectPath]
-            process.standardOutput = FileHandle.nullDevice
-            process.standardError = FileHandle.nullDevice
-
-            do {
-                try process.run()
-            } catch {
-                errorMessage = "Failed to open TUI: \(error.localizedDescription)"
-            }
-        }
-    }
-
-    // MARK: - Helpers
-
-    private func findVpBinary() -> String? {
-        let candidates = [
-            FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent(".cargo/bin/vp").path,
-            "/usr/local/bin/vp"
-        ]
-
-        return candidates.first { FileManager.default.fileExists(atPath: $0) }
     }
 
     // MARK: - Auto Refresh
@@ -308,5 +267,16 @@ class PopoverViewModel: ObservableObject {
     func stopAutoRefresh() {
         refreshTimer?.invalidate()
         refreshTimer = nil
+    }
+
+    // MARK: - Helpers
+
+    private func findVpBinary() -> String? {
+        let candidates = [
+            FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".cargo/bin/vp").path,
+            "/usr/local/bin/vp",
+        ]
+        return candidates.first { FileManager.default.fileExists(atPath: $0) }
     }
 }

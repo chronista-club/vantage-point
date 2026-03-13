@@ -261,6 +261,7 @@ class ProjectSettingsViewModel: ObservableObject {
 
 // MARK: - Settings Window Controller
 
+@MainActor
 class SettingsWindowController {
     private var window: NSWindow?
 

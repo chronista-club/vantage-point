@@ -296,6 +296,7 @@ struct UpdateAlertView: View {
 // MARK: - Window Controller
 
 /// 更新ダイアログウィンドウコントローラー - Liquid Glass スタイル
+@MainActor
 class UpdateWindowController {
     private var window: NSWindow?
     private var hostingController: NSHostingController<UpdateAlertView>?

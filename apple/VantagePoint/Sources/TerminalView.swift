@@ -133,14 +133,38 @@ class TerminalView: NSView {
         updateFontMetrics()
     }
 
+    /// ウィンドウに追加されたら自動的に first responder を取得
+    ///
+    /// NSViewRepresentable 経由で配置された場合、SwiftUI が first responder を
+    /// 制御するため、明示的に要求しないとキー入力を受け取れない。
+    /// SwiftUI のレイアウトパスがフォーカスを奪い返すため、複数回リトライする。
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard let window = self.window else { return }
+        // SwiftUI のレイアウトサイクル完了を待って複数回リトライ
+        for delay in [0.05, 0.1, 0.3, 0.5] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self, self.window != nil else { return }
+                window.makeFirstResponder(self)
+            }
+        }
+    }
+
+    /// NSView が first responder を受け入れ可能であることを明示
+    override var acceptsFirstResponder: Bool { true }
+
+    /// キーウィンドウ外でもキー入力を受け取る
+    override var needsPanelToBecomeKey: Bool { true }
+
     deinit {
         if sessionId != 0 {
             let sid = sessionId
-            // deinit は nonisolated → MainActor にディスパッチしてレジストリ解除
-            _ = MainActor.assumeIsolated {
+            // deinit は nonisolated — MainActor 外から呼ばれる可能性がある
+            // レジストリ解除を安全にディスパッチし、bridge 破棄はその後に実行
+            DispatchQueue.main.async {
                 sessionRegistry.removeValue(forKey: sid)
+                vp_bridge_destroy(sid)
             }
-            vp_bridge_destroy(sid)
         }
     }
 
@@ -653,12 +677,36 @@ class TerminalView: NSView {
 
     // MARK: - キーボード入力
 
-    override var acceptsFirstResponder: Bool { true }
-
     /// IME 変換中テキスト
     private var markedString: NSMutableAttributedString = NSMutableAttributedString()
     private var _markedRange: NSRange = NSRange(location: NSNotFound, length: 0)
     private var selectedRangeValue: NSRange = NSRange(location: 0, length: 0)
+
+    /// Cmd ショートカットを keyDown より先に捕捉
+    ///
+    /// macOS のイベント処理順: performKeyEquivalent → menu shortcuts → keyDown
+    /// NSViewRepresentable 内の NSView はメニューショートカットが効きにくいため、
+    /// ここで Cmd+V / Cmd+C を直接処理する。
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        guard event.modifierFlags.contains(.command),
+              let ch = event.charactersIgnoringModifiers else {
+            return super.performKeyEquivalent(with: event)
+        }
+
+        switch ch {
+        case "v":
+            // Cmd+V: ペースト
+            if vp_bridge_pty_is_running_session(sessionId) {
+                pasteFromClipboard()
+            }
+            return true
+        case "c":
+            // Cmd+C: コピー（選択テキストがあれば）
+            return true
+        default:
+            return super.performKeyEquivalent(with: event)
+        }
+    }
 
     override func keyDown(with event: NSEvent) {
         guard vp_bridge_pty_is_running_session(sessionId) else {
@@ -666,40 +714,8 @@ class TerminalView: NSView {
             return
         }
 
-        // Cmd+V: クリップボードからペースト
-        if event.modifierFlags.contains(.command),
-           event.charactersIgnoringModifiers == "v" {
-            pasteFromClipboard()
-            return
-        }
-
-        // Cmd+C: コピー（選択テキストがあればコピー）
-        if event.modifierFlags.contains(.command),
-           event.charactersIgnoringModifiers == "c" {
-            return
-        }
-
-        // Cmd+T → Ctrl+Shift+T として PTY に送信（LANE タブ追加）
-        // Cmd+W → Ctrl+Shift+W として PTY に送信（LANE タブ閉じる）
-        // CSI u 形式: \x1b[{codepoint};{1+modifiers}u (Shift=1, Ctrl=4 → 6)
-        if event.modifierFlags.contains(.command),
-           let ch = event.charactersIgnoringModifiers,
-           (ch == "t" || ch == "w") {
-            let codepoint = ch == "t" ? 84 : 87  // 'T' = 84, 'W' = 87
-            let csiU = "\u{1b}[\(codepoint);6u"
-            if let data = csiU.data(using: .utf8) {
-                data.withUnsafeBytes { ptr in
-                    _ = vp_bridge_pty_write_session(
-                        sessionId,
-                        ptr.baseAddress!.assumingMemoryBound(to: UInt8.self),
-                        UInt32(ptr.count)
-                    )
-                }
-            }
-            return
-        }
-
-        // その他の Cmd ショートカット（Cmd+`, Cmd+Q 等）はシステムに委譲
+        // Cmd ショートカットは performKeyEquivalent で処理済み
+        // ここに到達する Cmd イベントは未処理のもの（Cmd+`, Cmd+Q 等）
         if event.modifierFlags.contains(.command) {
             super.keyDown(with: event)
             return
@@ -822,6 +838,9 @@ class TerminalView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        // クリックで first responder を取得（SwiftUI サイドバーからフォーカスを奪う）
+        window?.makeFirstResponder(self)
+
         let pos = gridPosition(from: event.locationInWindow)
         selectionStart = pos
         selectionEnd = pos
@@ -912,7 +931,7 @@ class TerminalView: NSView {
 
 // MARK: - NSTextInputClient（IME 日本語入力対応）
 
-extension TerminalView: NSTextInputClient {
+extension TerminalView: @preconcurrency NSTextInputClient {
 
     @MainActor
     func insertText(_ string: Any, replacementRange: NSRange) {
@@ -1036,107 +1055,5 @@ extension TerminalView: NSTextInputClient {
     @MainActor
     func validAttributesForMarkedText() -> [NSAttributedString.Key] {
         [.font, .foregroundColor, .underlineStyle]
-    }
-}
-
-// MARK: - MainWindow
-
-/// メインウィンドウ（TerminalPane + CanvasPane）
-///
-/// 各ウィンドウが独立した TerminalView + PTY セッションを保持。
-/// AppDelegate がウィンドウコントローラーの辞書を管理する。
-@MainActor
-class MainWindowController: NSObject, NSWindowDelegate {
-
-    private(set) var window: NSWindow?
-    private var terminalView: TerminalView?
-
-    /// 現在のプロジェクトパス（このウィンドウの識別子）
-    private(set) var projectPath: String?
-
-    /// ウィンドウが閉じたときのコールバック
-    var onClose: ((MainWindowController) -> Void)?
-
-    /// タブグループ識別子（全 VP ウィンドウで共有）
-    private static let tabbingId = "club.chronista.vp.terminal"
-
-    /// 既存のタブグループウィンドウを探す（新規タブの追加先）
-    var tabGroupWindow: NSWindow? = nil
-
-    /// メインウィンドウを表示（タブとして追加）
-    func show(projectPath: String? = nil) {
-        if let existing = window {
-            if self.projectPath == projectPath {
-                existing.makeKeyAndOrderFront(nil)
-                NSApp.setActivationPolicy(.regular)
-                NSApp.activate(ignoringOtherApps: true)
-                return
-            }
-            cleanup()
-        }
-
-        self.projectPath = projectPath
-
-        let contentRect = NSRect(x: 0, y: 0, width: 1200, height: 800)
-        let styleMask: NSWindow.StyleMask = [.titled, .closable, .miniaturizable, .resizable]
-        let win = NSWindow(contentRect: contentRect, styleMask: styleMask, backing: .buffered, defer: false)
-
-        let projectName = projectPath.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "Vantage Point"
-        win.minSize = NSSize(width: 600, height: 400)
-        win.delegate = self
-
-        // タブグループ設定
-        win.tabbingMode = .preferred
-        win.tabbingIdentifier = Self.tabbingId
-
-        let terminal = TerminalView(frame: contentRect)
-        terminal.autoresizingMask = [.width, .height]
-        win.contentView = terminal
-        terminal.setupBridge()
-
-        // タブタイトル: プロジェクト名
-        win.title = projectName
-
-        let cwd = projectPath ?? NSHomeDirectory()
-        terminal.startPty(cwd: cwd)
-
-        win.makeFirstResponder(terminal)
-
-        self.window = win
-        self.terminalView = terminal
-
-        NSApp.setActivationPolicy(.regular)
-
-        // 既存ウィンドウがあればタブとして追加
-        if let existingWindow = tabGroupWindow, existingWindow.isVisible {
-            existingWindow.addTabbedWindow(win, ordered: .above)
-            win.makeKeyAndOrderFront(nil)
-        } else {
-            win.center()
-            win.makeKeyAndOrderFront(nil)
-        }
-
-        NSApp.activate(ignoringOtherApps: true)
-    }
-
-    func close() {
-        window?.close()
-        cleanup()
-    }
-
-    private func cleanup() {
-        terminalView?.stopPty()
-        terminalView = nil
-        window = nil
-        projectPath = nil
-        onClose?(self)
-    }
-
-    // MARK: - NSWindowDelegate
-
-    nonisolated func windowWillClose(_ notification: Notification) {
-        Task { @MainActor in
-            self.cleanup()
-        }
     }
 }

@@ -2,7 +2,7 @@ import Foundation
 
 /// VP config.toml の読み書き
 /// パス: ~/.config/vp/config.toml
-class ConfigManager {
+final class ConfigManager: Sendable {
     static let shared = ConfigManager()
 
     /// config.toml のパス

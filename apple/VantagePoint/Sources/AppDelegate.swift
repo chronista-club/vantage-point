@@ -8,8 +8,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var popover: NSPopover!
 
-    /// TheWorld API client
-    private let theWorldClient = TheWorldClient()
+    /// TheWorld API client（共有インスタンス）
+    private let theWorldClient = TheWorldClient.shared
 
     /// Popover ViewModel
     private lazy var popoverViewModel = PopoverViewModel(theWorldClient: theWorldClient)
@@ -32,57 +32,31 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// Settings window controller
     private var settingsWindowController = SettingsWindowController()
 
-    /// マルチウィンドウコントローラー（プロジェクトパス → コントローラー）
-    /// キー nil = プロジェクト未指定のデフォルトウィンドウ
-    private var windowControllers: [String: MainWindowController] = [:]
-
-    /// デフォルトウィンドウ用キー
-    private static let defaultKey = "__default__"
-
     /// イベントモニター（クリック外でポップオーバーを閉じる）
     private var eventMonitor: Any?
 
-    /// プロジェクトのウィンドウを開く（既に開いていれば前面に出す、新規はタブ追加）
-    private func openWindow(projectPath: String? = nil) {
-        let key = projectPath ?? Self.defaultKey
-
-        if let existing = windowControllers[key] {
-            existing.show(projectPath: projectPath)
-            return
-        }
-
-        let controller = MainWindowController()
-        controller.onClose = { [weak self] ctrl in
-            guard let self else { return }
-            let k = ctrl.projectPath ?? Self.defaultKey
-            self.windowControllers.removeValue(forKey: k)
-            // 全ウィンドウが閉じたら accessory モードに戻す
-            if self.windowControllers.isEmpty {
-                NSApp.setActivationPolicy(.accessory)
-            }
-        }
-
-        // 既存タブグループのウィンドウを探して渡す
-        let existingWindow = windowControllers.values.compactMap(\.window).first
-        controller.tabGroupWindow = existingWindow
-
-        windowControllers[key] = controller
-        controller.show(projectPath: projectPath)
-    }
+    /// プロジェクト選択通知（Popover → MainWindowView）
+    static let selectProjectNotification = Notification.Name("club.chronista.vp.selectProject")
 
     func applicationDidFinishLaunching(_: Notification) {
-        // Hide dock icon (agent app)
-        NSApp.setActivationPolicy(.accessory)
+        // Dock アイコン + メニューバーを有効化（Liquid Glass ウィンドウアプリ）
+        NSApp.setActivationPolicy(.regular)
 
+        setupMainMenu()
         setupStatusItem()
         setupPopover()
         setupUpdateObserver()
         setupEventMonitor()
 
-        // メインウィンドウ表示コールバック設定
+        // ポップオーバーからプロジェクト選択 → 通知でメインウィンドウに伝達
         popoverViewModel.onOpenMainWindow = { [weak self] projectPath in
             self?.closePopover()
-            self?.openWindow(projectPath: projectPath)
+            NotificationCenter.default.post(
+                name: AppDelegate.selectProjectNotification,
+                object: nil,
+                userInfo: ["path": projectPath]
+            )
+            NSApp.activate(ignoringOtherApps: true)
         }
 
         // 自動リフレッシュ開始
@@ -107,23 +81,28 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             await checkForUpdatesOnLaunch()
         }
 
-        // コマンドライン引数: --project /path/to/dir でウィンドウを開く
+        // コマンドライン引数: --project /path/to/dir → 通知でメインウィンドウに伝達
         handleLaunchArguments()
     }
 
     /// コマンドライン引数を処理
     ///
     /// 使い方: `open VantagePoint.app --args --project /path/to/dir`
-    /// または: `VantagePoint.app/Contents/MacOS/VantagePoint --project /path/to/dir`
     private func handleLaunchArguments() {
         let args = ProcessInfo.processInfo.arguments
         if let idx = args.firstIndex(of: "--project"), idx + 1 < args.count {
             let projectPath = args[idx + 1]
-            // パスの存在確認
-            if FileManager.default.fileExists(atPath: projectPath) {
-                openWindow(projectPath: projectPath)
-            } else {
+            guard FileManager.default.fileExists(atPath: projectPath) else {
                 NSLog("[VP] --project path does not exist: %@", projectPath)
+                return
+            }
+            // WindowGroup のウィンドウが表示されてから通知を送る
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                NotificationCenter.default.post(
+                    name: AppDelegate.selectProjectNotification,
+                    object: nil,
+                    userInfo: ["path": projectPath]
+                )
             }
         }
     }
@@ -137,25 +116,119 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             if let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
                let path = components.queryItems?.first(where: { $0.name == "path" })?.value {
                 if FileManager.default.fileExists(atPath: path) {
-                    openWindow(projectPath: path)
+                    NotificationCenter.default.post(
+                        name: AppDelegate.selectProjectNotification,
+                        object: nil,
+                        userInfo: ["path": path]
+                    )
+                    NSApp.activate(ignoringOtherApps: true)
                 }
             }
         }
     }
 
-    func applicationWillTerminate(_: Notification) {
-        // 全ウィンドウをクリーンアップ
-        for (_, controller) in windowControllers {
-            controller.close()
+    /// Dock アイコンクリック時 — ウィンドウが無ければ SwiftUI が新規作成
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag {
+            // SwiftUI WindowGroup が新しいウィンドウを自動作成
+            return true
         }
-        windowControllers.removeAll()
+        // 既存ウィンドウを前面に
+        NSApp.windows.first { $0.canBecomeMain && $0.isVisible }?.makeKeyAndOrderFront(nil)
+        return false
+    }
 
+    /// File > New Window: メインウィンドウを表示（なければ新規作成）
+    @objc func showMainWindow(_ sender: Any?) {
+        let mainWindows = NSApp.windows.filter { $0.canBecomeMain }
+        if let existing = mainWindows.first(where: { $0.isVisible }) {
+            existing.makeKeyAndOrderFront(nil)
+        } else {
+            // SwiftUI WindowGroup にウィンドウ作成を依頼
+            NSApp.sendAction(Selector(("newWindowForTab:")), to: nil, from: nil)
+        }
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func applicationWillTerminate(_: Notification) {
         userPromptService.stopPolling()
         popoverViewModel.stopAutoRefresh()
         iconTimer?.invalidate()
         if let monitor = eventMonitor {
             NSEvent.removeMonitor(monitor)
         }
+    }
+
+    // MARK: - メインメニュー（キーボードショートカット用）
+
+    /// メニューバーアプリでも Cmd+T / Cmd+W が効くよう、最小限のメニューを構築
+    private func setupMainMenu() {
+        let mainMenu = NSMenu()
+
+        // Application メニュー
+        let appMenu = NSMenu()
+        appMenu.addItem(NSMenuItem(title: "About Vantage Point", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: ""))
+        appMenu.addItem(.separator())
+        appMenu.addItem(NSMenuItem(title: "Settings…", action: #selector(openSettings(_:)), keyEquivalent: ","))
+        appMenu.addItem(.separator())
+        let hideItem = NSMenuItem(title: "Hide Vantage Point", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        appMenu.addItem(hideItem)
+        let hideOthersItem = NSMenuItem(title: "Hide Others", action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")
+        hideOthersItem.keyEquivalentModifierMask = [.command, .option]
+        appMenu.addItem(hideOthersItem)
+        appMenu.addItem(NSMenuItem(title: "Show All", action: #selector(NSApplication.unhideAllApplications(_:)), keyEquivalent: ""))
+        appMenu.addItem(.separator())
+        appMenu.addItem(NSMenuItem(title: "Quit Vantage Point", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        let appMenuItem = NSMenuItem()
+        appMenuItem.submenu = appMenu
+        mainMenu.addItem(appMenuItem)
+
+        // File メニュー
+        let fileMenu = NSMenu(title: "File")
+        fileMenu.addItem(NSMenuItem(title: "New Window", action: #selector(showMainWindow(_:)), keyEquivalent: "n"))
+        fileMenu.addItem(NSMenuItem(title: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w"))
+        let fileMenuItem = NSMenuItem()
+        fileMenuItem.submenu = fileMenu
+        mainMenu.addItem(fileMenuItem)
+
+        // View メニュー（サイドバートグル）
+        let viewMenu = NSMenu(title: "View")
+        let toggleSidebarItem = NSMenuItem(
+            title: "Toggle Sidebar",
+            action: #selector(NSSplitViewController.toggleSidebar(_:)),
+            keyEquivalent: "s"
+        )
+        toggleSidebarItem.keyEquivalentModifierMask = [.command, .option]
+        viewMenu.addItem(toggleSidebarItem)
+        let viewMenuItem = NSMenuItem()
+        viewMenuItem.submenu = viewMenu
+        mainMenu.addItem(viewMenuItem)
+
+        // Edit メニュー（Cmd+C / Cmd+V / Cmd+A）
+        let editMenu = NSMenu(title: "Edit")
+        editMenu.addItem(NSMenuItem(title: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c"))
+        editMenu.addItem(NSMenuItem(title: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v"))
+        editMenu.addItem(NSMenuItem(title: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a"))
+        let editMenuItem = NSMenuItem()
+        editMenuItem.submenu = editMenu
+        mainMenu.addItem(editMenuItem)
+
+        // Window メニュー
+        let windowMenu = NSMenu(title: "Window")
+        windowMenu.addItem(NSMenuItem(title: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m"))
+        windowMenu.addItem(NSMenuItem(title: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: ""))
+        windowMenu.addItem(.separator())
+        windowMenu.addItem(NSMenuItem(title: "Show All", action: #selector(NSApplication.arrangeInFront(_:)), keyEquivalent: ""))
+        let windowMenuItem = NSMenuItem()
+        windowMenuItem.submenu = windowMenu
+        mainMenu.addItem(windowMenuItem)
+        NSApp.windowsMenu = windowMenu
+
+        NSApp.mainMenu = mainMenu
+    }
+
+    @objc private func openSettings(_ sender: Any?) {
+        settingsWindowController.show()
     }
 
     // MARK: - Status Item
@@ -180,20 +253,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         let contentView = PopoverView(
             viewModel: popoverViewModel,
-            onCheckUpdates: { [weak self] in
-                self?.closePopover()
-                Task { [weak self] in
-                    await self?.updateService.checkForUpdates(force: true)
-                }
-            },
-            onSettings: { [weak self] in
-                self?.closePopover()
-                self?.settingsWindowController.show()
-            },
-            onOpenWindow: { [weak self] in
-                self?.closePopover()
-                self?.openWindow()
-            },
             onQuit: {
                 NSApp.terminate(nil)
             }
@@ -275,10 +334,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Prompt Service に稼働中ポートを通知
     private func updatePromptServiceProcesses() {
-        let ports = popoverViewModel.projects
-            .filter { $0.status == .running }
-            .compactMap(\.port)
-        userPromptService.updateActivePorts(ports: ports)
+        // TODO: TheWorld API から直接ポート取得に移行
+        // 現在は Popover のリフレッシュ時に取得済みプロセス情報を使えないため空配列
+        Task {
+            let ports: [UInt16] = (try? await theWorldClient.listRunningProcesses().map(\.port)) ?? []
+            userPromptService.updateActivePorts(ports: ports)
+        }
     }
 
     // MARK: - Updates

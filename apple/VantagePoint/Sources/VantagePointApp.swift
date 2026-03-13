@@ -1,14 +1,18 @@
 import AppKit
 import SwiftUI
 
+/// VP macOS アプリ — NavigationSplitView + Liquid Glass
+///
+/// SwiftUI WindowGroup がメインウィンドウを管理し、
+/// AppDelegate はステータスバーアイコン + ポップオーバーに専念する。
 @main
 struct VantagePointApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
     var body: some Scene {
-        // Menu bar only app - no window
-        Settings {
-            EmptyView()
+        WindowGroup {
+            MainWindowView()
         }
+        .defaultSize(width: 1200, height: 800)
     }
 }

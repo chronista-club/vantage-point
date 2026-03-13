@@ -120,6 +120,7 @@ pub async fn run(
         screenshot_waiters: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         topic_router,
         canvas_senders: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+        started_at: chrono::Utc::now().to_rfc3339(),
     });
 
     // ペイン状態をディスクから復元（前回 Process 終了時の状態 → RetainedStore）
@@ -348,6 +349,7 @@ pub async fn run_world(port: u16) -> Result<()> {
         screenshot_waiters: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         topic_router,
         canvas_senders: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+        started_at: chrono::Utc::now().to_rfc3339(),
     });
 
     let app = Router::new()

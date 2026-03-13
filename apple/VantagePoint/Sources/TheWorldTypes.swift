@@ -65,6 +65,19 @@ struct TWErrorResponse: Codable {
     let error: String
 }
 
+/// TheWorld ヘルス詳細レスポンス
+struct WorldHealthDetail: Codable {
+    let status: String
+    let version: String
+    let pid: UInt32
+    let startedAt: String
+
+    enum CodingKeys: String, CodingKey {
+        case status, version, pid
+        case startedAt = "started_at"
+    }
+}
+
 // MARK: - Update API Types
 
 /// リリースアセット情報

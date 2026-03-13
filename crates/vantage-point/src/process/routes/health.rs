@@ -133,6 +133,8 @@ pub struct HealthResponse {
     /// Terminal チャネル認証トークン（TUI 接続用）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub terminal_token: Option<String>,
+    /// プロセス起動時刻（ISO 8601）
+    pub started_at: String,
 }
 
 pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthResponse> {
@@ -148,6 +150,7 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
         pid: std::process::id(),
         project_dir: state.project_dir.clone(),
         terminal_token: token,
+        started_at: state.started_at.clone(),
     })
 }
 

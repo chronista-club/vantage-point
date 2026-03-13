@@ -14,6 +14,9 @@ actor TheWorldClient {
     /// TheWorld のデフォルトポート
     static let defaultPort: UInt16 = 32000
 
+    /// 共有インスタンス（TheWorld 接続用、AppDelegate + MainWindowView で共有）
+    static let shared = TheWorldClient()
+
     init(host: String = "[::1]", port: UInt16 = TheWorldClient.defaultPort) {
         baseURL = URL(string: "http://\(host):\(port)")!
 
@@ -63,6 +66,19 @@ actor TheWorldClient {
         )
     }
 
+    /// Canvas Lane を切り替え
+    func switchLane(projectName: String) async throws {
+        let url = baseURL.appendingPathComponent("/api/canvas/switch_lane")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let body = ["lane": projectName]
+        request.httpBody = try JSONEncoder().encode(body)
+
+        try await executeWithErrorHandling(request: request)
+    }
+
     /// Process状態をリフレッシュ
     func refreshStatus() async throws {
         try await postWithErrorHandling(path: "/api/world/refresh")
@@ -81,6 +97,12 @@ actor TheWorldClient {
         } catch {
             return false
         }
+    }
+
+    /// ヘルス詳細取得（バージョン・起動時刻含む）
+    func healthDetail() async throws -> WorldHealthDetail {
+        let url = baseURL.appendingPathComponent("/api/health")
+        return try await getAndDecode(url: url)
     }
 
     // MARK: - Update API Methods
