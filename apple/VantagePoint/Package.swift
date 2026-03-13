@@ -17,7 +17,7 @@ let package = Package(
             linkerSettings: [
                 // libvp_bridge.a をリンク（cargo build --release で生成）
                 .unsafeFlags([
-                    "-L../../vantage-point/target/release",
+                    "-L../../target/release",
                     "-lvp_bridge",
                 ]),
             ]

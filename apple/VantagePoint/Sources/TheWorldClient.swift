@@ -23,11 +23,6 @@ actor TheWorldClient {
         session = URLSession(configuration: config)
     }
 
-    /// ベースURLを更新（Bonjour発見時に使用）
-    func updateBaseURL(host: String, port: UInt16) {
-        baseURL = URL(string: "http://\(host):\(port)")!
-    }
-
     // MARK: - API Methods
 
     /// プロジェクト一覧を取得

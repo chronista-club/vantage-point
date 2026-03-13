@@ -36,7 +36,7 @@ struct RunningProcess: Codable, Identifiable {
     let port: UInt16
     let pid: UInt32
     let projectPath: String
-    let discoveredViaBonjour: Bool
+    let tmuxSession: String?
 
     var id: String {
         projectName
@@ -46,7 +46,7 @@ struct RunningProcess: Codable, Identifiable {
         case port, pid
         case projectName = "project_name"
         case projectPath = "project_path"
-        case discoveredViaBonjour = "discovered_via_bonjour"
+        case tmuxSession = "tmux_session"
     }
 }
 
