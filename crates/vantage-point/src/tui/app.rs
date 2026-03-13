@@ -477,7 +477,8 @@ impl MultiProjectApp {
                 }
                 KeyCode::Enter => {
                     if let Some(idx) = list_state.selected() {
-                        let (project, _already_active) = &items[idx];
+                        // already_active は無視 — 同一プロジェクトの重複タブを許容する
+                        let (project, _) = &items[idx];
                         let dir = Config::normalize_path(std::path::Path::new(&project.path));
                         let name = project.name.clone();
 
