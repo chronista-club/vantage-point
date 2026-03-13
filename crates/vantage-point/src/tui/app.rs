@@ -14,22 +14,17 @@ use crossterm::terminal::{
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout};
-use ratatui::style::Style;
-use ratatui::widgets::{Block, Borders, ListState};
+use ratatui::widgets::ListState;
 
 use crate::config::{Config, ProjectConfig};
 
 use super::bridge::BridgeCommand;
-use super::draw::{
-    calc_pty_size, draw_footer_bar, draw_header_bar, draw_project_select, draw_session_select,
-};
+use super::draw::{calc_pty_size, draw_project_select, draw_session_select};
 use super::input::key_to_pty_bytes;
 use super::overlay::{OverlayKind, draw_overlay};
 use super::project_context::ProjectContext;
 use super::session::{SessionMode, list_sessions};
 use super::terminal_widget::TerminalView;
-use super::theme::*;
 
 // =============================================================================
 // MultiProjectApp — マルチプロジェクト TUI アプリ
@@ -587,83 +582,19 @@ impl MultiProjectApp {
     fn draw(&mut self, terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
         let active_idx = self.active_idx;
 
-        let (snapshot, display_offset, session_count, session_idx, port, ai_busy, bridge_status) = {
+        let snapshot = {
             let ctx = &self.projects[active_idx];
             let state = ctx.term_state.lock().unwrap();
-            (
-                state.snapshot(),
-                state.display_offset(),
-                ctx.sessions.len(),
-                ctx.current_session_idx,
-                ctx.port,
-                ctx.is_ai_busy(),
-                ctx.bridge_status.clone(),
-            )
+            state.snapshot()
         };
 
-        let tab_info: Vec<(String, bool, u32, bool)> = self
-            .projects
-            .iter()
-            .enumerate()
-            .map(|(i, ctx)| {
-                (
-                    ctx.name.clone(),
-                    i == active_idx,
-                    ctx.notifications,
-                    ctx.completed,
-                )
-            })
-            .collect();
-
-        let project_count = self.projects.len();
-        let pp_open = self.pp_open;
         let overlay = &self.overlay;
         terminal.draw(|frame| {
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(1),
-                    Constraint::Min(1),
-                    Constraint::Length(1),
-                ])
-                .split(frame.area());
-
-            draw_header_bar(
-                frame,
-                chunks[0],
-                &tab_info,
-                port,
-                ai_busy,
-                pp_open,
-                &bridge_status,
-            );
-
-            let main_area = chunks[1];
+            let main_area = frame.area();
             let pty_area = main_area;
 
-            // PTY ペイン
-            let session_label = if session_count > 1 {
-                format!(" Claude CLI [{}/{}] ", session_idx + 1, session_count)
-            } else {
-                " Claude CLI ".to_string()
-            };
-            let mut pty_block = Block::default()
-                .title(session_label)
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(NORD_CYAN));
-
-            if display_offset > 0 {
-                pty_block = pty_block.title_top(
-                    ratatui::text::Line::from(format!(" \u{2191}{} ", display_offset))
-                        .alignment(ratatui::layout::Alignment::Right),
-                );
-            }
-
-            let pty_inner = pty_block.inner(pty_area);
-            frame.render_widget(pty_block, pty_area);
-            frame.render_widget(TerminalView::new(&snapshot), pty_inner);
-
-            draw_footer_bar(frame, chunks[2], project_count, session_count);
+            // PTY をフルスクリーンで描画（ヘッダ・フッタ・ボーダーなし）
+            frame.render_widget(TerminalView::new(&snapshot), pty_area);
 
             // オーバーレイ
             if let Some(overlay) = overlay {
@@ -679,9 +610,9 @@ impl MultiProjectApp {
             let state = ctx.term_state.lock().unwrap();
             let snap = state.snapshot();
             let (crow, ccol) = snap.cursor;
-            // pty_inner 相当の座標計算（ヘッダー1行 + ボーダー1行）
-            let cx = 1 + ccol as u16;
-            let cy = 2 + crow as u16;
+            // フルスクリーン: オフセットなし
+            let cx = ccol as u16;
+            let cy = crow as u16;
             crossterm::execute!(
                 io::stdout(),
                 crossterm::cursor::MoveTo(cx, cy),

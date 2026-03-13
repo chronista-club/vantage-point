@@ -32,10 +32,6 @@ use crossterm::terminal::{
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
 
 use crate::cli::{DebugModeArg, parse_debug_env};
 use crate::config::Config;
@@ -45,8 +41,6 @@ use crate::resolve::{self, ResolvedTarget};
 use crate::terminal::state::TerminalState;
 use crate::tui::input::key_to_pty_bytes;
 use crate::tui::terminal_widget::TerminalView;
-use crate::tui::theme::*;
-
 /// `vp start` の起動オプション
 pub struct StartOptions<'a> {
     pub target: Option<String>,
@@ -542,8 +536,8 @@ fn run_tui(
     let size = terminal.size()?;
     // ヘッダー1行 + 区切り線1行 + フッター1行 + 区切り線1行 = 4行分
     // Block 枠分を差し引き: ヘッダー1 + 枠上1 + 枠下1 + フッター1 = 4行, 枠左右 = 2列
-    let pty_cols = (size.width.saturating_sub(2)) as usize;
-    let pty_lines = (size.height.saturating_sub(4)) as usize;
+    let pty_cols = size.width as usize;
+    let pty_lines = size.height as usize;
 
     // tmux セッション確保
     if !is_reconnect {
@@ -624,44 +618,12 @@ fn run_tui(
 
         // 描画
         if needs_redraw {
-            let pp_open_val = pp_open;
             terminal.draw(|frame| {
-                let chunks = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([
-                        Constraint::Length(1), // ヘッダー
-                        Constraint::Min(3),    // ターミナル（枠付き）
-                        Constraint::Length(1), // フッター
-                    ])
-                    .split(frame.area());
-
-                draw_header(
-                    frame,
-                    chunks[0],
-                    project_name,
-                    port,
-                    is_reconnect,
-                    pp_open_val,
-                );
-
-                // ターミナルペイン — Block 枠 + タイトル
-                let pane_block = ratatui::widgets::Block::default()
-                    .borders(ratatui::widgets::Borders::ALL)
-                    .border_style(Style::default().fg(NORD_COMMENT))
-                    .title(Line::from(vec![
-                        Span::styled(format!(" {} ", NF_BOOK), Style::default().fg(NORD_CYAN)),
-                        Span::styled(format!("{} ", session_name), Style::default().fg(NORD_FG)),
-                    ]))
-                    .title_style(Style::default().fg(NORD_FG));
-                let inner = pane_block.inner(chunks[1]);
-                frame.render_widget(pane_block, chunks[1]);
-
+                // PTY をフルスクリーンで描画（ヘッダ・フッタ・ボーダーなし）
                 let state = term_state.lock().unwrap();
                 let snap = state.snapshot();
                 let view = TerminalView::new(&snap);
-                frame.render_widget(view, inner);
-
-                draw_footer(frame, chunks[2]);
+                frame.render_widget(view, frame.area());
             })?;
         }
 
@@ -761,8 +723,8 @@ fn run_tui(
                 }
                 Event::Resize(new_cols, new_rows) => {
                     // 親ウィンドウのリサイズに追従（Block 枠分を差し引き）
-                    let new_pty_cols = (new_cols.saturating_sub(2)) as usize;
-                    let new_pty_lines = (new_rows.saturating_sub(4)) as usize;
+                    let new_pty_cols = new_cols as usize;
+                    let new_pty_lines = new_rows as usize;
 
                     // PTY リサイズ
                     let _ = pty_master.resize(PtySize {
@@ -809,115 +771,6 @@ fn run_tui(
 // ヘッダー / フッター描画（Nord テーマ）
 // =============================================================================
 
-/// ヘッダーバー — Nerd Font + Powerline セパレータ
-fn draw_header(
-    frame: &mut ratatui::Frame,
-    area: Rect,
-    project_name: &str,
-    port: u16,
-    is_reconnect: bool,
-    pp_open: bool,
-) {
-    let mut spans: Vec<Span> = Vec::new();
-
-    // VP ロゴ + プロジェクト名（Powerline スタイル）
-    spans.push(Span::styled(
-        format!(" {} {} ", NF_DIAMOND, project_name),
-        Style::default()
-            .fg(NORD_BG)
-            .bg(NORD_CYAN)
-            .add_modifier(Modifier::BOLD),
-    ));
-    // Powerline セパレータ: CYAN → POLAR
-    spans.push(Span::styled(
-        NF_PL_RIGHT,
-        Style::default().fg(NORD_CYAN).bg(NORD_POLAR),
-    ));
-
-    // Stand アイコン群
-    let sep = Span::styled(" ", Style::default().bg(NORD_POLAR));
-
-    // ⭐ Star Platinum（SP 接続）
-    spans.push(Span::styled(
-        format!(" {}", NF_STAR),
-        Style::default().fg(NORD_GREEN).bg(NORD_POLAR),
-    ));
-    spans.push(sep.clone());
-
-    // 🧭 Paisley Park（Canvas）
-    let pp_color = if pp_open { NORD_GREEN } else { NORD_COMMENT };
-    spans.push(Span::styled(
-        NF_COMPASS,
-        Style::default().fg(pp_color).bg(NORD_POLAR),
-    ));
-    spans.push(sep.clone());
-
-    // 📖 Heaven's Door（Claude CLI）
-    spans.push(Span::styled(
-        NF_BOOK,
-        Style::default().fg(NORD_GREEN).bg(NORD_POLAR),
-    ));
-
-    // 再接続マーカー
-    if is_reconnect {
-        spans.push(sep.clone());
-        spans.push(Span::styled(
-            format!("{} 再接続", NF_REFRESH),
-            Style::default().fg(NORD_YELLOW).bg(NORD_POLAR),
-        ));
-    }
-
-    // 右端: ポート（Powerline 左向き）
-    let port_text = format!(" {} :{} ", NF_ETHERNET, port);
-    let port_span = Span::styled(
-        port_text.clone(),
-        Style::default().fg(NORD_COMMENT).bg(NORD_POLAR),
-    );
-
-    let left_width: usize = spans.iter().map(|s| s.width()).sum();
-    let right_sep_width = 1; // NF_PL_LEFT
-    let right_width = port_text.len() + right_sep_width;
-    let gap = (area.width as usize).saturating_sub(left_width + right_width);
-    spans.push(Span::styled(
-        " ".repeat(gap),
-        Style::default().bg(NORD_POLAR),
-    ));
-    spans.push(port_span);
-
-    let bar = Paragraph::new(Line::from(spans)).style(Style::default().bg(NORD_POLAR));
-    frame.render_widget(bar, area);
-}
-
-/// フッターバー — Nerd Font アイコン付きキーバインドガイド
-fn draw_footer(frame: &mut ratatui::Frame, area: Rect) {
-    let key_style = Style::default().fg(NORD_CYAN).bg(NORD_POLAR);
-    let desc_style = Style::default().fg(NORD_COMMENT).bg(NORD_POLAR);
-    let sep_style = Style::default().fg(NORD_COMMENT).bg(NORD_POLAR);
-
-    let mut spans = vec![
-        Span::styled(format!(" {} Home", NF_HOME), key_style),
-        Span::styled(" canvas ", desc_style),
-        Span::styled("│", sep_style),
-        Span::styled(format!(" {} C-q", NF_SIGN_OUT), key_style),
-        Span::styled(" detach ", desc_style),
-        Span::styled("│", sep_style),
-        Span::styled(format!(" {} PgUp/Dn", NF_ARROWS_V), key_style),
-        Span::styled(" scroll ", desc_style),
-    ];
-
-    // 右端まで背景色で埋める
-    let used: usize = spans.iter().map(|s| s.width()).sum();
-    let remaining = (area.width as usize).saturating_sub(used);
-    if remaining > 0 {
-        spans.push(Span::styled(
-            " ".repeat(remaining),
-            Style::default().bg(NORD_POLAR),
-        ));
-    }
-
-    let bar = Paragraph::new(Line::from(spans)).style(Style::default().bg(NORD_POLAR));
-    frame.render_widget(bar, area);
-}
 
 // =============================================================================
 // SP（Star Platinum）サーバー管理

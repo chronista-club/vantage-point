@@ -39,7 +39,7 @@ class TerminalView: NSView {
     // MARK: - 設定
 
     /// コンソールフォント名（等幅 — Nerd Font Mono）
-    var fontName: String = "FiraCode Nerd Font Mono" {
+    var fontName: String = "Menlo" {
         didSet { updateFontMetrics() }
     }
 
