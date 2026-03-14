@@ -60,11 +60,11 @@ struct PopoverView: View {
 
     private var globalActions: some View {
         VStack(spacing: 0) {
-            MenuRow(label: "Restart All", icon: "arrow.triangle.2.circlepath",
+            MenuRow(label: "Restart All Services", icon: "arrow.triangle.2.circlepath",
                     isLoading: viewModel.isRestartingAll) {
                 Task { await viewModel.restartAll() }
             }
-            MenuRow(label: "Restart TheWorld", icon: "globe",
+            MenuRow(label: "Restart Server", icon: "globe",
                     isLoading: viewModel.isRestartingTheWorld) {
                 Task { await viewModel.restartTheWorld() }
             }

@@ -199,9 +199,11 @@ struct MainWindowView: View {
                 }
             }
             .font(.caption)
+            .foregroundStyle(.white)
             .padding(.horizontal, 12)
-            .padding(.vertical, 4)
-            .background(.black.opacity(0.3))
+            .padding(.vertical, 5)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(white: 0.15))
         }
     }
 
@@ -215,10 +217,11 @@ struct MainWindowView: View {
                 shortcutHint("⌘D", "Split")
             }
             .font(.caption2)
-            .foregroundStyle(.tertiary)
+            .foregroundStyle(.gray)
             .padding(.horizontal, 12)
-            .padding(.vertical, 3)
-            .background(.black.opacity(0.3))
+            .padding(.vertical, 4)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(white: 0.15))
         }
     }
 
