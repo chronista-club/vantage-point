@@ -9,8 +9,10 @@ struct SidebarView: View {
     @Binding var selection: String?
     /// TheWorld 接続ステータス
     let worldStatus: WorldStatus
-    /// プロジェクト追加コールバック
+    /// プロジェクト追加コールバック（＋ボタン）
     var onAdd: (() -> Void)?
+    /// プロジェクト追加コールバック（ドラッグ＆ドロップ、URL 指定）
+    var onDropAdd: ((URL) -> Void)?
     /// プロジェクト削除コールバック
     var onDelete: ((String) -> Void)?
     /// プロジェクト名変更コールバック
@@ -53,27 +55,21 @@ struct SidebarView: View {
 
     /// フォルダのドラッグ＆ドロップ処理
     private func handleDrop(providers: [NSItemProvider]) -> Bool {
-        var handled = false
-        for provider in providers {
+        // 同期的にファイル URL を持つ provider があるか判定
+        let fileProviders = providers.filter {
+            $0.hasItemConformingToTypeIdentifier("public.file-url")
+        }
+        guard !fileProviders.isEmpty else { return false }
+
+        for provider in fileProviders {
             _ = provider.loadObject(ofClass: URL.self) { url, _ in
                 guard let url, url.hasDirectoryPath else { return }
-                DispatchQueue.main.async {
-                    let name = url.lastPathComponent
-                    let path = url.path
-                    // ConfigManager に追加
-                    var config = ConfigManager.shared.load()
-                    // 重複チェック
-                    guard !config.projects.contains(where: { $0.path == path }) else { return }
-                    config.projects.append(
-                        ConfigManager.ProjectEntry(name: name, path: path)
-                    )
-                    try? ConfigManager.shared.save(config)
-                    // リロードは pollStatus で自動反映
+                DispatchQueue.main.async { [onDropAdd] in
+                    onDropAdd?(url)
                 }
-                handled = true
             }
         }
-        return handled
+        return true
     }
 
     /// NSAlert で名前変更ダイアログを表示

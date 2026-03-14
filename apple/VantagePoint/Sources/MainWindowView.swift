@@ -33,6 +33,7 @@ struct MainWindowView: View {
                 selection: $selectedProjectPath,
                 worldStatus: worldStatus,
                 onAdd: addProject,
+                onDropAdd: dropAddProject,
                 onDelete: deleteProject,
                 onRename: renameProject
             )
@@ -152,6 +153,18 @@ struct MainWindowView: View {
         var config = ConfigManager.shared.load()
         let path = url.path
         // 重複チェック
+        guard !config.projects.contains(where: { $0.path == path }) else { return }
+        config.projects.append(
+            ConfigManager.ProjectEntry(name: url.lastPathComponent, path: path)
+        )
+        try? ConfigManager.shared.save(config)
+        loadProjects()
+    }
+
+    /// ドラッグ＆ドロップでプロジェクトを追加（URL 指定）
+    private func dropAddProject(url: URL) {
+        var config = ConfigManager.shared.load()
+        let path = url.path
         guard !config.projects.contains(where: { $0.path == path }) else { return }
         config.projects.append(
             ConfigManager.ProjectEntry(name: url.lastPathComponent, path: path)

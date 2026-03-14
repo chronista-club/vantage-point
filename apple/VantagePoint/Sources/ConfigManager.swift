@@ -147,19 +147,19 @@ final class ConfigManager: Sendable {
 
         // グローバル設定
         if let dir = config.defaultProjectDir {
-            lines.append("default_project_dir = \"\(dir)\"")
+            lines.append("default_project_dir = \"\(tomlEscape(dir))\"")
         }
         lines.append("default_port = \(config.defaultPort)")
         if let path = config.claudeCliPath {
-            lines.append("claude_cli_path = \"\(path)\"")
+            lines.append("claude_cli_path = \"\(tomlEscape(path))\"")
         }
 
         // プロジェクト
         for project in config.projects {
             lines.append("")
             lines.append("[[projects]]")
-            lines.append("name = \"\(project.name)\"")
-            lines.append("path = \"\(project.path)\"")
+            lines.append("name = \"\(tomlEscape(project.name))\"")
+            lines.append("path = \"\(tomlEscape(project.path))\"")
             if let port = project.port {
                 lines.append("port = \(port)")
             }
@@ -169,8 +169,16 @@ final class ConfigManager: Sendable {
         return lines.joined(separator: "\n")
     }
 
-    /// TOML 文字列のクオート除去
+    /// TOML 文字列のエスケープ（\ → \\, " → \"）
+    private func tomlEscape(_ value: String) -> String {
+        value.replacingOccurrences(of: "\\", with: "\\\\")
+             .replacingOccurrences(of: "\"", with: "\\\"")
+    }
+
+    /// TOML 文字列のアンエスケープ + クオート除去
     private func unquote(_ value: String) -> String {
-        value.trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+        let stripped = value.trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+        return stripped.replacingOccurrences(of: "\\\"", with: "\"")
+                       .replacingOccurrences(of: "\\\\", with: "\\")
     }
 }
