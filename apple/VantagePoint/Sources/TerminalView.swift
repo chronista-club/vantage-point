@@ -1048,10 +1048,17 @@ class TerminalView: NSView {
             let colEnd = (row == sel.end.row) ? sel.end.col : cols - 1
 
             var line = ""
+            var skipNext = false
             for col in colStart...colEnd {
+                if skipNext { skipNext = false; continue }
                 let idx = row * cols + col
                 guard idx < cellBuffer.count else { continue }
-                let ch = cellString(from: cellBuffer[idx])
+                let cell = cellBuffer[idx]
+                let ch = cellString(from: cell)
+                // WIDE_CHAR (bit 6) の場合、次のセル（スペーサー）をスキップ
+                if (cell.flags & (1 << 6)) != 0 {
+                    skipNext = true
+                }
                 line += ch.isEmpty ? " " : ch
             }
             text += line.replacingOccurrences(of: "\\s+$", with: "", options: .regularExpression)
