@@ -152,6 +152,13 @@ enum Commands {
         midi: Option<String>,
     },
 
+    /// TUI コンソール（ratatui ヘッダー/フッター + tmux パススルー）
+    Tui {
+        /// tmux セッション名（省略時は cwd から自動検出）
+        #[arg(long, short = 's')]
+        session: Option<String>,
+    },
+
     // --- Groups ---
     /// デーモンプロセス管理（Process管理 + ヘルスチェック）
     #[command(subcommand)]
@@ -280,6 +287,8 @@ fn main() -> Result<()> {
 
             tray::run_tray()
         }
+
+        Commands::Tui { session } => commands::tui_cmd::execute(session, &config),
 
         // Groups
         Commands::Daemon(cmd) => commands::daemon::execute(cmd),
