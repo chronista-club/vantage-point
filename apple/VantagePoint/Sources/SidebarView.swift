@@ -57,12 +57,16 @@ struct SidebarProjectRow: View {
                     .foregroundStyle(.secondary)
 
                     // Stand ステータス（disabled 以外を表示）
-                    if !project.stands.isEmpty {
-                        HStack(spacing: 3) {
-                            ForEach(project.stands.filter { $0.status != "disabled" }, id: \.key) { stand in
-                                Text("\(stand.icon)\(stand.shortName)")
-                                    .font(.caption2)
-                                    .foregroundStyle(stand.statusColor)
+                    let activeStands = project.stands.filter { $0.status != "disabled" }
+                    if !activeStands.isEmpty {
+                        HStack(spacing: 4) {
+                            ForEach(activeStands, id: \.key) { stand in
+                                HStack(spacing: 2) {
+                                    Image(systemName: stand.systemImage)
+                                    Text(stand.shortName)
+                                }
+                                .font(.caption2)
+                                .foregroundStyle(stand.statusColor)
                             }
                         }
                     }
@@ -80,14 +84,14 @@ struct SidebarStand: Equatable {
     let status: String  // "active", "idle", "connected", "disabled"
     let detail: [String: Int]?
 
-    /// Stand のアイコン（JoJo メタファー）
-    var icon: String {
+    /// Stand の SF Symbol 名（単色アイコン）
+    var systemImage: String {
         switch key {
-        case "heavens_door": "📖"
-        case "paisley_park": "🧭"
-        case "gold_experience": "🌿"
-        case "hermit_purple": "🍇"
-        default: "⭐"
+        case "heavens_door": "text.book.closed"
+        case "paisley_park": "compass.drawing"
+        case "gold_experience": "leaf"
+        case "hermit_purple": "cable.connector"
+        default: "star"
         }
     }
 

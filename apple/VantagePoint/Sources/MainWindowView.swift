@@ -29,13 +29,6 @@ struct MainWindowView: View {
     var body: some View {
         NavigationSplitView {
             SidebarView(projects: projects, selection: $selectedProjectPath, worldStatus: worldStatus)
-                .toolbar {
-                    ToolbarItem(placement: .primaryAction) {
-                        Button("Add", systemImage: "plus") {
-                            // Phase 2: プロジェクト追加
-                        }
-                    }
-                }
         } detail: {
             // ターミナル + Canvas（Canvas は Cmd+O でトグル）
             // HSplitView は子が1つだとレイアウト崩壊するため HStack で管理
@@ -67,7 +60,7 @@ struct MainWindowView: View {
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Button {
-                        withAnimation { showCanvas.toggle() }
+                        showCanvas.toggle()
                     } label: {
                         Label(
                             showCanvas ? "Hide Canvas" : "Show Canvas",
