@@ -1448,14 +1448,30 @@ impl VantageMcp {
             .unwrap_or_else(|| format!("/tmp/vp-terminal-{}.png", ts));
 
         // VantagePoint ウィンドウの CGWindowID を取得
-        // NOTE: System Events の `id of window` は AXWindowID であり CGWindowID とは別空間。
-        //       screencapture -l は CGWindowID を要求するため、CGWindowListCopyWindowInfo で取得する。
-        let jxa_script = r#"ObjC.import('CoreGraphics');var ws=$.CGWindowListCopyWindowInfo($.kCGWindowListOptionOnScreenOnly,0);for(var i=0;i<ws.count;i++){var w=ws.objectAtIndex(i);if(ObjC.unwrap(w.objectForKey('kCGWindowOwnerName'))==='VantagePoint'){ObjC.unwrap(w.objectForKey('kCGWindowNumber')).toString()}}"#;
-        let wid_output = tokio::process::Command::new("osascript")
-            .args(["-l", "JavaScript", "-e", jxa_script])
+        // NOTE: kCGWindowOwnerName はアプリの表示名（"Vantage Point"）であり
+        //       バイナリ名（"VantagePoint"）とは異なる。
+        //       JXA の ObjC bridge は権限制限で動作しないことがあるため swift -e を使用。
+        //       Layer=0 かつ Name 非空のウィンドウがメインウィンドウ。
+        let swift_script = r#"
+import CoreGraphics
+let windows = CGWindowListCopyWindowInfo(.optionAll, kCGNullWindowID) as? [[String: Any]] ?? []
+for w in windows {
+    let owner = w["kCGWindowOwnerName"] as? String ?? ""
+    if owner.contains("Vantage") || owner == "VantagePoint" {
+        let layer = w["kCGWindowLayer"] as? Int ?? -1
+        let name = w["kCGWindowName"] as? String ?? ""
+        if layer == 0 && !name.isEmpty {
+            print(w["kCGWindowNumber"] as? Int ?? 0)
+            break
+        }
+    }
+}
+"#;
+        let wid_output = tokio::process::Command::new("swift")
+            .args(["-e", swift_script])
             .output()
             .await
-            .map_err(|e| McpError::internal_error(format!("osascript 実行失敗: {}", e), None))?;
+            .map_err(|e| McpError::internal_error(format!("swift 実行失敗: {}", e), None))?;
 
         let window_id = if wid_output.status.success() {
             let id = String::from_utf8_lossy(&wid_output.stdout)

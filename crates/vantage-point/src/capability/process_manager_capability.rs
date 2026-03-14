@@ -87,14 +87,22 @@ pub struct RunningProcess {
     pub tmux_session: Option<String>,
 }
 
+/// 正規化パスキーを生成（HashMap のキーに使用）
+///
+/// ディレクトリパスを正規化した String を返す。
+/// `running_processes` / `projects` の一意キーとして使用。
+pub fn normalize_path_key(path: &std::path::Path) -> String {
+    Config::normalize_path(path)
+}
+
 /// Conductor Capability
 #[derive(Clone)]
 pub struct ProcessManagerCapability {
     /// 現在の状態
     state: CapabilityState,
-    /// 登録プロジェクト一覧
+    /// 登録プロジェクト一覧（キー: 正規化パス）
     projects: Arc<RwLock<HashMap<String, ProjectInfo>>>,
-    /// 稼働中Process一覧
+    /// 稼働中Process一覧（キー: 正規化パス）
     running_processes: Arc<RwLock<HashMap<String, RunningProcess>>>,
     /// 前回のヘルスチェックで稼働中だった Process（クラッシュ検知用）
     previously_running: Arc<RwLock<HashMap<String, RunningProcess>>>,
@@ -138,8 +146,9 @@ impl ProcessManagerCapability {
         projects.clear();
 
         for project in &config.projects {
+            let key = normalize_path_key(&PathBuf::from(&project.path));
             projects.insert(
-                project.name.clone(),
+                key,
                 ProjectInfo {
                     name: project.name.clone(),
                     path: project.path.clone().into(),
@@ -188,6 +197,18 @@ impl ProcessManagerCapability {
         None
     }
 
+    /// プロジェクト名から正規化パスキーを解決
+    ///
+    /// `projects` HashMap を検索して name が一致するエントリのキー（正規化パス）を返す。
+    /// 公開 API（start_process 等）が project_name を受け取り、内部キーに変換するために使用。
+    async fn resolve_key_by_name(&self, project_name: &str) -> Option<String> {
+        let projects = self.projects.read().await;
+        projects
+            .iter()
+            .find(|(_, info)| info.name == project_name)
+            .map(|(key, _)| key.clone())
+    }
+
     /// プロジェクト一覧を取得
     pub async fn list_projects(&self) -> Vec<ProjectInfo> {
         let projects = self.projects.read().await;
@@ -206,20 +227,23 @@ impl ProcessManagerCapability {
             CapabilityError::InitializationFailed("vp binary not found".to_string())
         })?;
 
-        // プロジェクト情報取得
+        // 名前→パスキー解決 + プロジェクト情報取得
+        let key = self.resolve_key_by_name(project_name).await.ok_or_else(|| {
+            CapabilityError::Other(format!("Project not found: {}", project_name))
+        })?;
+
         let project = {
             let projects = self.projects.read().await;
-            projects.get(project_name).cloned()
-        };
-
-        let project = project.ok_or_else(|| {
+            projects.get(&key).cloned()
+        }
+        .ok_or_else(|| {
             CapabilityError::Other(format!("Project not found: {}", project_name))
         })?;
 
         // 既に起動中かチェック
         {
             let procs = self.running_processes.read().await;
-            if procs.contains_key(project_name) {
+            if procs.contains_key(&key) {
                 return Err(CapabilityError::Other(format!(
                     "Process already running for project: {}",
                     project_name
@@ -230,7 +254,7 @@ impl ProcessManagerCapability {
         // 状態を更新
         {
             let mut projects = self.projects.write().await;
-            if let Some(p) = projects.get_mut(project_name) {
+            if let Some(p) = projects.get_mut(&key) {
                 p.process_status = ProcessStatus::Starting;
             }
         }
@@ -266,14 +290,14 @@ impl ProcessManagerCapability {
         // 状態を更新
         {
             let mut projects = self.projects.write().await;
-            if let Some(p) = projects.get_mut(project_name) {
+            if let Some(p) = projects.get_mut(&key) {
                 p.process_status = ProcessStatus::Running;
             }
         }
 
         {
             let mut procs = self.running_processes.write().await;
-            procs.insert(project_name.to_string(), running_process.clone());
+            procs.insert(key.clone(), running_process.clone());
         }
 
         tracing::info!(
@@ -288,9 +312,13 @@ impl ProcessManagerCapability {
 
     /// Processを停止
     pub async fn stop_process(&self, project_name: &str) -> CapabilityResult<()> {
+        let key = self.resolve_key_by_name(project_name).await.ok_or_else(|| {
+            CapabilityError::Other(format!("Project not found: {}", project_name))
+        })?;
+
         let running = {
             let procs = self.running_processes.read().await;
-            procs.get(project_name).cloned()
+            procs.get(&key).cloned()
         };
 
         let running = running.ok_or_else(|| {
@@ -300,7 +328,7 @@ impl ProcessManagerCapability {
         // 状態を更新
         {
             let mut projects = self.projects.write().await;
-            if let Some(p) = projects.get_mut(project_name) {
+            if let Some(p) = projects.get_mut(&key) {
                 p.process_status = ProcessStatus::Stopping;
             }
         }
@@ -318,13 +346,13 @@ impl ProcessManagerCapability {
         // ロック順序統一: projects → running_processes
         {
             let mut projects = self.projects.write().await;
-            if let Some(p) = projects.get_mut(project_name) {
+            if let Some(p) = projects.get_mut(&key) {
                 p.process_status = ProcessStatus::Stopped;
             }
         }
         {
             let mut procs = self.running_processes.write().await;
-            procs.remove(project_name);
+            procs.remove(&key);
         }
 
         tracing::info!(project = project_name, "Process stopped");
@@ -334,10 +362,14 @@ impl ProcessManagerCapability {
 
     /// PointViewを開く
     pub async fn open_pointview(&self, project_name: &str) -> CapabilityResult<()> {
+        let key = self.resolve_key_by_name(project_name).await;
+
         // Processが起動していなければ起動
-        let running = {
+        let running = if let Some(ref key) = key {
             let procs = self.running_processes.read().await;
-            procs.get(project_name).cloned()
+            procs.get(key).cloned()
+        } else {
+            None
         };
 
         let running = match running {
@@ -361,11 +393,20 @@ impl ProcessManagerCapability {
 
     /// 外部 Process の自己登録（Process 起動時に呼ばれる）
     pub async fn register_external_process(&self, port: u16, project_dir: &str, pid: u32) {
-        let name = std::path::Path::new(project_dir)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("unknown")
-            .to_string();
+        let key = normalize_path_key(std::path::Path::new(project_dir));
+        let name = {
+            let projects = self.projects.read().await;
+            projects
+                .get(&key)
+                .map(|p| p.name.clone())
+        }
+        .unwrap_or_else(|| {
+            std::path::Path::new(project_dir)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown")
+                .to_string()
+        });
 
         let mut process = RunningProcess {
             project_name: name.clone(),
@@ -378,23 +419,20 @@ impl ProcessManagerCapability {
         // プロジェクト状態を更新
         {
             let mut projects = self.projects.write().await;
-            if let Some(p) = projects.values_mut().find(|p| {
-                crate::config::Config::normalize_path(&p.path)
-                    == crate::config::Config::normalize_path(std::path::Path::new(project_dir))
-            }) {
+            if let Some(p) = projects.get_mut(&key) {
                 p.process_status = ProcessStatus::Running;
             }
         }
 
         let mut procs = self.running_processes.write().await;
         // 既存の tmux_session を保持（QUIC 登録済みのセッション名を HTTP で上書きしない）
-        if let Some(existing) = procs.get(&name) {
+        if let Some(existing) = procs.get(&key) {
             if process.tmux_session.is_none() {
                 process.tmux_session = existing.tmux_session.clone();
             }
         }
-        procs.insert(name, process);
-        tracing::info!("Process 登録: port={}, dir={}", port, project_dir);
+        procs.insert(key.clone(), process);
+        tracing::info!("Process 登録: port={}, dir={}, key={}", port, project_dir, key);
     }
 
     /// 外部 Process の登録解除（Process 停止時に呼ばれる）
@@ -420,7 +458,7 @@ impl ProcessManagerCapability {
                 let mut procs = self.running_processes.write().await;
                 procs.remove(&key);
             }
-            tracing::info!("Process 登録解除: port={}, name={}", port, key);
+            tracing::info!("Process 登録解除: port={}, key={}", port, key);
         }
     }
 
@@ -446,15 +484,17 @@ impl ProcessManagerCapability {
         None
     }
 
-    /// 全 Process の状態を更新（PID liveness check）
+    /// 全 Process の状態を更新（PID liveness check + ポートスキャン Reconciliation）
     ///
-    /// Registry チャネル（QUIC 永続接続）で SP が自己登録するため、
-    /// ポートスキャンは不要。PID が生存しているかだけを確認し、
-    /// QUIC 切断を検知できなかったゴーストを除去する安全弁。
+    /// 1. PID liveness check: 登録済み Process のゴースト除去
+    /// 2. ポートスキャン Reconciliation: 未登録 SP の自動追加
+    ///
+    /// Push（QUIC 自己登録）が主パス、Pull（ポートスキャン）が安全網。
+    /// どちらかが壊れてももう一方がカバーし、システムが正常状態に収束する。
     pub async fn refresh_process_status(&self) -> CapabilityResult<()> {
         let mut dead_names: Vec<String> = Vec::new();
 
-        // PID liveness check: kill(pid, 0) でプロセス存在を確認
+        // ── Phase 1: PID liveness check（ゴースト除去）──
         {
             let procs = self.running_processes.read().await;
             for (name, proc) in procs.iter() {
@@ -464,13 +504,12 @@ impl ProcessManagerCapability {
             }
         }
 
-        // 死亡プロセスを除去
         if !dead_names.is_empty() {
             let mut procs = self.running_processes.write().await;
             for name in &dead_names {
                 if let Some(removed) = procs.remove(name) {
                     tracing::info!(
-                        "Health check: PID {} が死亡 → '{}' を除去 (port={})",
+                        "Reconcile: PID {} 死亡 → '{}' 除去 (port={})",
                         removed.pid,
                         name,
                         removed.port
@@ -479,15 +518,119 @@ impl ProcessManagerCapability {
             }
         }
 
-        // プロジェクト状態を更新（ロック順序デッドロック防止のため分離取得）
-        let running_names: std::collections::HashSet<String> = {
+        // ── Phase 2: ポートスキャン Reconciliation（未登録 SP の自動追加 + ゴースト除去）──
+        //
+        // 1プロジェクト1プロセスが原則。同名プロジェクトが複数ポートで見つかったら
+        // 既に登録済みの方を優先し、ゴースト（古い方）は shutdown を送って停止する。
+        // ループ中に発見した SP も tracked に追加して、同パスの2つ目をゴースト判定する。
+        let mut tracked: HashMap<String, RunningProcess> = {
+            let procs = self.running_processes.read().await;
+            procs.clone()
+        };
+        let mut tracked_ports: std::collections::HashSet<u16> =
+            tracked.values().map(|p| p.port).collect();
+
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(500))
+            .build()
+            .unwrap_or_default();
+
+        for port in crate::cli::PORT_RANGE_START..=crate::cli::PORT_RANGE_END {
+            if tracked_ports.contains(&port) {
+                continue; // 既に登録済みポート
+            }
+
+            let url = format!("http://[::1]:{}/api/health", port);
+            if let Ok(resp) = client.get(&url).send().await
+                && resp.status().is_success()
+                && let Ok(json) = resp.json::<serde_json::Value>().await
+            {
+                let project_dir = json
+                    .get("project_dir")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let pid = json
+                    .get("pid")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as u32;
+
+                if project_dir.is_empty() {
+                    continue;
+                }
+
+                let key = normalize_path_key(std::path::Path::new(&project_dir));
+
+                // プロジェクト名を解決（config の名前を優先）
+                let project_name = {
+                    let projects = self.projects.read().await;
+                    projects.get(&key).map(|p| p.name.clone())
+                }
+                .unwrap_or_else(|| {
+                    std::path::Path::new(&project_dir)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("unknown")
+                        .to_string()
+                });
+
+                // 同パスのプロジェクトが既に登録済みかチェック
+                if let Some(existing) = tracked.get(&key) {
+                    // 既に登録済み → このポートはゴースト。shutdown を送って停止
+                    tracing::info!(
+                        "Reconcile: ゴースト検出 '{}' (port={}, pid={}) — 既に port={} で稼働中 → shutdown",
+                        project_name,
+                        port,
+                        pid,
+                        existing.port
+                    );
+                    let shutdown_url = format!("http://[::1]:{}/api/shutdown", port);
+                    let _ = client.post(&shutdown_url).send().await;
+                    continue;
+                }
+
+                let process = RunningProcess {
+                    project_name: project_name.clone(),
+                    port,
+                    pid,
+                    project_path: project_dir.into(),
+                    tmux_session: None,
+                };
+
+                tracing::info!(
+                    "Reconcile: 未登録 SP 発見 → '{}' 追加 (port={}, pid={})",
+                    project_name,
+                    port,
+                    pid
+                );
+
+                // ロック順序統一: projects → running_processes
+                {
+                    let mut projects = self.projects.write().await;
+                    if let Some(p) = projects.get_mut(&key) {
+                        p.process_status = ProcessStatus::Running;
+                    }
+                }
+                {
+                    let mut procs = self.running_processes.write().await;
+                    procs.insert(key.clone(), process.clone());
+                }
+                // tracked を更新して後続ポートのゴースト検出に使う
+                tracked.insert(key, process);
+                tracked_ports.insert(port);
+            }
+        }
+
+        // ── Phase 3: プロジェクト状態を最終同期 ──
+        // running_processes と projects は同じパスキーなので直接比較可能
+        let running_keys: std::collections::HashSet<String> = {
             let running = self.running_processes.read().await;
             running.keys().cloned().collect()
         };
         {
             let mut projects = self.projects.write().await;
-            for (name, info) in projects.iter_mut() {
-                info.process_status = if running_names.contains(name) {
+            for (key, info) in projects.iter_mut() {
+                info.process_status = if running_keys.contains(key) {
                     ProcessStatus::Running
                 } else {
                     ProcessStatus::Stopped

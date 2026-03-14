@@ -29,7 +29,7 @@ pub use core::{CapabilityContext, CapabilityEvent, CapabilityInfo, CapabilitySta
 pub use eventbus::EventBus;
 pub use midi_capability::MidiCapability;
 pub use process_manager_capability::{
-    ProcessManagerCapability, ProcessStatus, ProjectInfo, RunningProcess,
+    normalize_path_key, ProcessManagerCapability, ProcessStatus, ProjectInfo, RunningProcess,
 };
 pub use protocol_capability::ProtocolCapability;
 pub use registry::CapabilityRegistry;
