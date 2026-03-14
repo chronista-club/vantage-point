@@ -113,6 +113,8 @@ struct MainWindowView: View {
                 }
             }
             .toolbarBackground(.visible, for: .windowToolbar)
+            .navigationTitle(selectedProject?.name ?? "Vantage Point")
+            .navigationSubtitle(selectedProject != nil ? (selectedProject?.path as NSString?)?.lastPathComponent ?? "" : "")
         }
         .onAppear {
             loadProjects()
