@@ -96,6 +96,14 @@ pub async fn run(
         }
     }
 
+    // ccwire セッション登録（tmux セッションと連動）
+    if crate::tmux::session_exists(&tmux_session) {
+        let tmux_target = format!("{}:0.0", tmux_session);
+        if let Err(e) = crate::ccwire::register(&tmux_session, &tmux_target) {
+            tracing::warn!("ccwire 登録失敗: {}", e);
+        }
+    }
+
     // TmuxActor 起動（tmux セッションが存在すれば有効）
     let tmux_handle = if crate::tmux::is_tmux_available()
         && crate::tmux::session_exists(&tmux_session)
@@ -104,6 +112,25 @@ pub async fn run(
     } else {
         None
     };
+
+    // ccwire heartbeat タスク（3分間隔、SP 生存中は継続）
+    {
+        let session_for_hb = tmux_session.clone();
+        let shutdown_for_hb = shutdown_token.clone();
+        tokio::spawn(async move {
+            let mut interval =
+                tokio::time::interval(crate::ccwire::HEARTBEAT_INTERVAL);
+            interval.tick().await; // 初回スキップ
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        let _ = crate::ccwire::heartbeat(&session_for_hb);
+                    }
+                    _ = shutdown_for_hb.cancelled() => break,
+                }
+            }
+        });
+    }
 
     // TopicRouter 初期化 + Hub → TopicRouter ブリッジ
     let topic_router = Arc::new(TopicRouter::new());
@@ -296,9 +323,13 @@ pub async fn run(
     // ファイル監視を全停止
     file_watchers_for_shutdown.lock().await.stop_all();
 
-    // tmux セッションを kill（SP がライフサイクルオーナー）
+    // ccwire セッション解除 + tmux セッション削除（SP がライフサイクルオーナー）
     if crate::tmux::is_tmux_available() {
         let session = crate::tmux::session_name(&project_name);
+        // ccwire を先に解除（tmux kill 後だと DB アクセスが不要に遅延する可能性）
+        if let Err(e) = crate::ccwire::unregister(&session) {
+            tracing::warn!("ccwire 解除失敗: {}", e);
+        }
         if crate::tmux::kill_session(&session) {
             tracing::info!("tmux セッション削除: {}", session);
         }
