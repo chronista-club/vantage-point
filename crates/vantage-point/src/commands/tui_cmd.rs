@@ -9,6 +9,58 @@ use anyhow::Result;
 use crate::config::Config;
 use crate::tmux;
 
+/// VP Shell コマンドを実行
+fn execute_command(input: &str, session_name: &str) -> String {
+    let parts: Vec<&str> = input.trim().splitn(2, ' ').collect();
+    let cmd = parts[0];
+    let args = parts.get(1).copied().unwrap_or("");
+
+    match cmd {
+        "split" | "sp" => {
+            // tmux split-window
+            let tmux_bin = if std::path::Path::new("/opt/homebrew/bin/tmux").exists() {
+                "/opt/homebrew/bin/tmux"
+            } else {
+                "tmux"
+            };
+            let status = std::process::Command::new(tmux_bin)
+                .args(["split-window", "-t", session_name, "-d"])
+                .status();
+            match status {
+                Ok(s) if s.success() => "Split created".to_string(),
+                _ => "Split failed".to_string(),
+            }
+        }
+        "vsplit" | "vs" => {
+            let tmux_bin = if std::path::Path::new("/opt/homebrew/bin/tmux").exists() {
+                "/opt/homebrew/bin/tmux"
+            } else {
+                "tmux"
+            };
+            let status = std::process::Command::new(tmux_bin)
+                .args(["split-window", "-h", "-t", session_name, "-d"])
+                .status();
+            match status {
+                Ok(s) if s.success() => "Vertical split created".to_string(),
+                _ => "VSplit failed".to_string(),
+            }
+        }
+        "q" | "quit" => {
+            std::process::exit(0);
+        }
+        "help" | "h" => {
+            ":split :vsplit :quit :help".to_string()
+        }
+        _ => {
+            if args.is_empty() {
+                format!("Unknown command: {}", cmd)
+            } else {
+                format!("Unknown command: {} {}", cmd, args)
+            }
+        }
+    }
+}
+
 /// vp tui コマンドを実行
 pub fn execute(session: Option<String>, config: &Config) -> Result<()> {
     // セッション名を解決（指定なしなら cwd から自動検出）
@@ -197,9 +249,22 @@ async fn run_tui_console(session_name: &str) -> Result<()> {
         });
     }
 
+    // コマンドモード状態
+    let mut command_mode = false;
+    let mut command_input = String::new();
+    let mut status_message: Option<String> = None;
+
     loop {
         // 描画
         let current_header = header_text.lock().unwrap().clone();
+        let footer_text = if command_mode {
+            format!("  :{}", command_input)
+        } else if let Some(ref msg) = status_message {
+            format!("  {}", msg)
+        } else {
+            "  :cmd │ ⌘D Split │ Ctrl+C Quit".to_string()
+        };
+
         terminal.draw(|frame| {
             let chunks = Layout::vertical([
                 Constraint::Length(1), // ヘッダー
@@ -219,21 +284,66 @@ async fn run_tui_console(session_name: &str) -> Result<()> {
             let widget = crate::tui::terminal_widget::TerminalView::new(&snapshot);
             frame.render_widget(widget, chunks[1]);
 
-            // フッター
-            let footer = Paragraph::new("  :cmd │ ⌘D Split │ q Quit")
-                .style(Style::default().fg(Color::DarkGray).bg(Color::DarkGray));
+            // フッター（通常 or コマンド入力）
+            let footer_style = if command_mode {
+                Style::default().fg(Color::White).bg(Color::DarkGray)
+            } else {
+                Style::default().fg(Color::DarkGray).bg(Color::DarkGray)
+            };
+            let footer = Paragraph::new(footer_text.clone()).style(footer_style);
             frame.render_widget(footer, chunks[2]);
         })?;
 
         // イベント処理（10ms ポーリング）
         if event::poll(std::time::Duration::from_millis(10))? {
             if let Event::Key(key) = event::read()? {
+                if command_mode {
+                    // コマンドモード: 入力をバッファに蓄積
+                    match key.code {
+                        KeyCode::Enter => {
+                            // コマンド実行
+                            let result = execute_command(&command_input, session_name);
+                            status_message = Some(result);
+                            command_input.clear();
+                            command_mode = false;
+                        }
+                        KeyCode::Esc => {
+                            // コマンドモード解除
+                            command_input.clear();
+                            command_mode = false;
+                        }
+                        KeyCode::Backspace => {
+                            command_input.pop();
+                            if command_input.is_empty() {
+                                command_mode = false;
+                            }
+                        }
+                        KeyCode::Char(c) => {
+                            command_input.push(c);
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+
+                // 通常モード
                 // Ctrl+C で終了
                 if key.modifiers.contains(KeyModifiers::CONTROL)
                     && key.code == KeyCode::Char('c')
                 {
                     break;
                 }
+
+                // ':' でコマンドモードに入る
+                if key.code == KeyCode::Char(':') && key.modifiers.is_empty() {
+                    command_mode = true;
+                    command_input.clear();
+                    status_message = None;
+                    continue;
+                }
+
+                // ステータスメッセージをクリア（任意のキーで）
+                status_message = None;
 
                 // キー入力を PTY に送信
                 let app_cursor = {
