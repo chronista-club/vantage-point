@@ -13,6 +13,8 @@ struct MainWindowView: View {
     @State private var worldStatus: WorldStatus = .checking
     /// Canvas（Paisley Park）表示フラグ
     @State private var showCanvas: Bool = false
+    /// CC 通知バッジ: プロジェクト名 → 未読フラグ
+    @State private var notifications: Set<String> = []
 
     /// 外部から指定されたプロジェクトパス（起動引数・URL スキーム経由）
     var initialProjectPath: String?
@@ -108,6 +110,23 @@ struct MainWindowView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .selectNextProject)) { _ in
             selectNextProject()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: AppDelegate.ccNotification)) { notification in
+            if let project = notification.userInfo?["project"] as? String, !project.isEmpty {
+                // 現在選択中のプロジェクトでなければバッジを付ける
+                let matchingPath = projects.first(where: {
+                    $0.name == project || $0.path.hasSuffix("/\(project)")
+                })?.path
+                if let path = matchingPath, path != selectedProjectPath {
+                    notifications.insert(path)
+                }
+            }
+        }
+        .onChange(of: selectedProjectPath) { _, newPath in
+            // プロジェクト選択時にバッジクリア
+            if let path = newPath {
+                notifications.remove(path)
+            }
         }
     }
 
@@ -216,7 +235,8 @@ struct MainWindowView: View {
                 path: entry.path,
                 isRunning: false,
                 port: nil,
-                startedAt: nil
+                startedAt: nil,
+                hasNotification: notifications.contains(entry.path)
             )
         }
     }
@@ -269,7 +289,8 @@ struct MainWindowView: View {
                         isRunning: true,
                         port: process.port,
                         startedAt: detail?.startedAt,
-                        stands: detail?.stands ?? []
+                        stands: detail?.stands ?? [],
+                        hasNotification: notifications.contains(entry.path)
                     )
                 } else {
                     return SidebarProject(
@@ -278,7 +299,8 @@ struct MainWindowView: View {
                         path: entry.path,
                         isRunning: false,
                         port: nil,
-                        startedAt: nil
+                        startedAt: nil,
+                        hasNotification: notifications.contains(entry.path)
                     )
                 }
             }

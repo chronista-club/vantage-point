@@ -105,10 +105,17 @@ struct SidebarProjectRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
-                // プロジェクト名
-                Text(project.name)
-                    .fontWeight(project.isRunning ? .semibold : .regular)
-                    .lineLimit(1)
+                // プロジェクト名 + 通知バッジ
+                HStack(spacing: 6) {
+                    Text(project.name)
+                        .fontWeight(project.isRunning ? .semibold : .regular)
+                        .lineLimit(1)
+                    if project.hasNotification {
+                        Circle()
+                            .fill(.orange)
+                            .frame(width: 7, height: 7)
+                    }
+                }
 
                 // 稼働中: 起動時刻 + Stand
                 if project.isRunning {
@@ -191,7 +198,10 @@ struct SidebarProject: Identifiable, Equatable {
     /// 配下の Stand 一覧（稼働中のみ）
     let stands: [SidebarStand]
 
-    init(id: String, name: String, path: String, isRunning: Bool, port: UInt16?, startedAt: Date?, stands: [SidebarStand] = []) {
+    /// CC からの未読通知あり
+    let hasNotification: Bool
+
+    init(id: String, name: String, path: String, isRunning: Bool, port: UInt16?, startedAt: Date?, stands: [SidebarStand] = [], hasNotification: Bool = false) {
         self.id = id
         self.name = name
         self.path = path
@@ -199,6 +209,7 @@ struct SidebarProject: Identifiable, Equatable {
         self.port = port
         self.startedAt = startedAt
         self.stands = stands
+        self.hasNotification = hasNotification
     }
 
     var statusColor: Color {

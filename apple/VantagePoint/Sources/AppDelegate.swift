@@ -37,6 +37,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// プロジェクト選択通知（Popover → MainWindowView）
     static let selectProjectNotification = Notification.Name("club.chronista.vp.selectProject")
+    /// CC 完了通知（Notification hook → サイドバーバッジ）
+    static let ccNotification = Notification.Name("club.chronista.vp.cc.notification")
+
+    /// DistributedNotification リスナー
+    private var ccNotificationObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_: Notification) {
         // Dock アイコン + メニューバーを有効化（Liquid Glass ウィンドウアプリ）
@@ -58,6 +63,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             )
             NSApp.activate(ignoringOtherApps: true)
         }
+
+        // CC 完了通知をサイドバーに転送
+        setupCCNotificationObserver()
 
         // 自動リフレッシュ開始
         popoverViewModel.startAutoRefresh(interval: 5.0)
@@ -239,6 +247,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.windowsMenu = windowMenu
 
         NSApp.mainMenu = mainMenu
+    }
+
+    /// CC 完了通知の DistributedNotification リスナーを設定
+    private func setupCCNotificationObserver() {
+        ccNotificationObserver = DistributedNotificationCenter.default().addObserver(
+            forName: NSNotification.Name("club.chronista.vp.cc.notification"),
+            object: nil,
+            queue: .main
+        ) { notification in
+            let project = notification.userInfo?["project"] as? String ?? ""
+            let message = notification.userInfo?["message"] as? String ?? "完了"
+            // ローカル Notification で MainWindowView に転送
+            NotificationCenter.default.post(
+                name: AppDelegate.ccNotification,
+                object: nil,
+                userInfo: ["project": project, "message": message]
+            )
+        }
     }
 
     @objc private func openSettings(_ sender: Any?) {
