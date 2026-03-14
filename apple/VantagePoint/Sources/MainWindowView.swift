@@ -28,7 +28,14 @@ struct MainWindowView: View {
 
     var body: some View {
         NavigationSplitView {
-            SidebarView(projects: projects, selection: $selectedProjectPath, worldStatus: worldStatus)
+            SidebarView(
+                projects: projects,
+                selection: $selectedProjectPath,
+                worldStatus: worldStatus,
+                onAdd: addProject,
+                onDelete: deleteProject,
+                onRename: renameProject
+            )
         } detail: {
             // ターミナル + Canvas（Canvas は Cmd+O でトグル）
             // HSplitView は子が1つだとレイアウト崩壊するため HStack で管理
@@ -95,6 +102,84 @@ struct MainWindowView: View {
             // 定期ポーリング: TheWorld ステータス + プロセス状態
             await pollStatus()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .selectPreviousProject)) { _ in
+            selectPreviousProject()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .selectNextProject)) { _ in
+            selectNextProject()
+        }
+    }
+
+    // MARK: - プロジェクト選択ナビゲーション
+
+    /// 前のプロジェクトを選択（⌘↑）
+    private func selectPreviousProject() {
+        guard !projects.isEmpty else { return }
+        guard let current = selectedProjectPath,
+              let index = projects.firstIndex(where: { $0.path == current }),
+              index > 0 else {
+            selectedProjectPath = projects.last?.path
+            return
+        }
+        selectedProjectPath = projects[index - 1].path
+    }
+
+    /// 次のプロジェクトを選択（⌘↓）
+    private func selectNextProject() {
+        guard !projects.isEmpty else { return }
+        guard let current = selectedProjectPath,
+              let index = projects.firstIndex(where: { $0.path == current }),
+              index < projects.count - 1 else {
+            selectedProjectPath = projects.first?.path
+            return
+        }
+        selectedProjectPath = projects[index + 1].path
+    }
+
+    // MARK: - プロジェクト CRUD
+
+    /// フォルダ選択ダイアログでプロジェクトを追加
+    private func addProject() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.message = "プロジェクトフォルダを選択"
+        panel.prompt = "追加"
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        var config = ConfigManager.shared.load()
+        let path = url.path
+        // 重複チェック
+        guard !config.projects.contains(where: { $0.path == path }) else { return }
+        config.projects.append(
+            ConfigManager.ProjectEntry(name: url.lastPathComponent, path: path)
+        )
+        try? ConfigManager.shared.save(config)
+        loadProjects()
+    }
+
+    /// プロジェクトをリストから削除（config.toml から除去）
+    private func deleteProject(path: String) {
+        var config = ConfigManager.shared.load()
+        config.projects.removeAll { $0.path == path }
+        try? ConfigManager.shared.save(config)
+        loadProjects()
+    }
+
+    /// プロジェクト名を変更
+    private func renameProject(path: String, newName: String) {
+        var config = ConfigManager.shared.load()
+        if let index = config.projects.firstIndex(where: { $0.path == path }) {
+            config.projects[index] = ConfigManager.ProjectEntry(
+                name: newName,
+                path: config.projects[index].path,
+                port: config.projects[index].port
+            )
+        }
+        try? ConfigManager.shared.save(config)
+        loadProjects()
     }
 
     // MARK: - データ読み込み
@@ -233,4 +318,11 @@ struct MainWindowView: View {
             )
         }
     }
+}
+
+// MARK: - Notification Names
+
+extension Notification.Name {
+    static let selectPreviousProject = Notification.Name("VP.selectPreviousProject")
+    static let selectNextProject = Notification.Name("VP.selectNextProject")
 }

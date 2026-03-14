@@ -9,15 +9,91 @@ struct SidebarView: View {
     @Binding var selection: String?
     /// TheWorld 接続ステータス
     let worldStatus: WorldStatus
+    /// プロジェクト追加コールバック
+    var onAdd: (() -> Void)?
+    /// プロジェクト削除コールバック
+    var onDelete: ((String) -> Void)?
+    /// プロジェクト名変更コールバック
+    var onRename: ((String, String) -> Void)?
 
     var body: some View {
         List(projects, selection: $selection) { project in
             SidebarProjectRow(project: project)
                 .tag(project.id)
+                .contextMenu {
+                    // 名前変更（稼働中でも可）
+                    Button("名前を変更…", systemImage: "pencil") {
+                        // NSAlert でテキスト入力（SwiftUI の alert だと List 内で崩れるため）
+                        promptRename(project: project)
+                    }
+                    Divider()
+                    // 削除（稼働中は不可）
+                    Button("リストから削除", systemImage: "trash", role: .destructive) {
+                        onDelete?(project.path)
+                    }
+                    .disabled(project.isRunning)
+                }
         }
         .navigationTitle("Projects")
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button("Add", systemImage: "plus") {
+                    onAdd?()
+                }
+                .help("プロジェクトフォルダを追加")
+            }
+        }
+        .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+            handleDrop(providers: providers)
+        }
         .safeAreaInset(edge: .bottom) {
             WorldStatusFooter(status: worldStatus)
+        }
+    }
+
+    /// フォルダのドラッグ＆ドロップ処理
+    private func handleDrop(providers: [NSItemProvider]) -> Bool {
+        var handled = false
+        for provider in providers {
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                guard let url, url.hasDirectoryPath else { return }
+                DispatchQueue.main.async {
+                    let name = url.lastPathComponent
+                    let path = url.path
+                    // ConfigManager に追加
+                    var config = ConfigManager.shared.load()
+                    // 重複チェック
+                    guard !config.projects.contains(where: { $0.path == path }) else { return }
+                    config.projects.append(
+                        ConfigManager.ProjectEntry(name: name, path: path)
+                    )
+                    try? ConfigManager.shared.save(config)
+                    // リロードは pollStatus で自動反映
+                }
+                handled = true
+            }
+        }
+        return handled
+    }
+
+    /// NSAlert で名前変更ダイアログを表示
+    private func promptRename(project: SidebarProject) {
+        let alert = NSAlert()
+        alert.messageText = "プロジェクト名を変更"
+        alert.informativeText = project.path
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "変更")
+        alert.addButton(withTitle: "キャンセル")
+
+        let textField = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        textField.stringValue = project.name
+        alert.accessoryView = textField
+
+        if alert.runModal() == .alertFirstButtonReturn {
+            let newName = textField.stringValue.trimmingCharacters(in: .whitespaces)
+            if !newName.isEmpty && newName != project.name {
+                onRename?(project.path, newName)
+            }
         }
     }
 }
@@ -32,25 +108,20 @@ struct SidebarProjectRow: View {
     let project: SidebarProject
 
     var body: some View {
-        HStack(spacing: 8) {
-            // ステータスドット
-            Circle()
-                .fill(project.statusColor)
-                .frame(width: 8, height: 8)
-
-            VStack(alignment: .leading, spacing: 1) {
+        VStack(alignment: .leading, spacing: 1) {
                 // プロジェクト名
                 Text(project.name)
+                    .fontWeight(project.isRunning ? .semibold : .regular)
                     .lineLimit(1)
 
-                // 稼働中: ポート + 経過時間
+                // 稼働中: ポート + 起動時刻 + Stand
                 if project.isRunning {
                     HStack(spacing: 4) {
                         if let port = project.port {
                             Text(":\(port)")
                         }
                         if let startedAt = project.startedAt {
-                            Text("· \(startedAt, style: .relative)")
+                            Text("· \(startedAt, style: .time)")
                         }
                     }
                     .font(.caption2)
@@ -71,10 +142,9 @@ struct SidebarProjectRow: View {
                         }
                     }
                 }
-            }
-
             Spacer()
         }
+        .opacity(project.isRunning ? 1.0 : 0.5)
     }
 }
 

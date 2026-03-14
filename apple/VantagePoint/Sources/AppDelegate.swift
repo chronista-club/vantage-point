@@ -215,6 +215,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         editMenuItem.submenu = editMenu
         mainMenu.addItem(editMenuItem)
 
+        // Navigate メニュー（プロジェクト切り替え）
+        let navigateMenu = NSMenu(title: "Navigate")
+        let prevItem = NSMenuItem(title: "前のプロジェクト", action: #selector(selectPreviousProject(_:)), keyEquivalent: "\u{F700}") // ↑
+        prevItem.keyEquivalentModifierMask = .command
+        navigateMenu.addItem(prevItem)
+        let nextItem = NSMenuItem(title: "次のプロジェクト", action: #selector(selectNextProject(_:)), keyEquivalent: "\u{F701}") // ↓
+        nextItem.keyEquivalentModifierMask = .command
+        navigateMenu.addItem(nextItem)
+        let navigateMenuItem = NSMenuItem()
+        navigateMenuItem.submenu = navigateMenu
+        mainMenu.addItem(navigateMenuItem)
+
         // Window メニュー
         let windowMenu = NSMenu(title: "Window")
         windowMenu.addItem(NSMenuItem(title: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m"))
@@ -231,6 +243,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openSettings(_ sender: Any?) {
         settingsWindowController.show()
+    }
+
+    @objc private func selectPreviousProject(_ sender: Any?) {
+        NotificationCenter.default.post(name: .selectPreviousProject, object: nil)
+    }
+
+    @objc private func selectNextProject(_ sender: Any?) {
+        NotificationCenter.default.post(name: .selectNextProject, object: nil)
     }
 
     // MARK: - Status Item
