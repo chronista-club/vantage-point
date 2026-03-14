@@ -174,37 +174,53 @@ struct MainWindowView: View {
         return projects.first(where: { $0.path == path })
     }
 
-    /// ターミナル上部のヘッダー（プロジェクト名 + Stand ステータス）
+    /// ターミナル上部のヘッダー（プロジェクト情報 + Stand + 作業コンテキスト）
     @ViewBuilder
     private var terminalHeader: some View {
         if let project = selectedProject {
-            HStack(spacing: 8) {
-                Text(project.name)
-                    .fontWeight(.medium)
+            VStack(spacing: 0) {
+                // 上段: プロジェクト名 + Stand + 時刻
+                HStack(spacing: 8) {
+                    // プロジェクト名
+                    Image(systemName: "mountain.2.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Text(project.name)
+                        .fontWeight(.semibold)
 
-                if project.isRunning {
-                    // Stand アイコン
-                    let activeStands = project.stands.filter { $0.status != "disabled" }
-                    ForEach(activeStands, id: \.key) { stand in
-                        HStack(spacing: 2) {
-                            Image(systemName: stand.systemImage)
-                            Text(stand.shortName)
+                    if project.isRunning {
+                        // Stand アイコン（コンパクト）
+                        let activeStands = project.stands.filter { $0.status != "disabled" }
+                        HStack(spacing: 6) {
+                            ForEach(activeStands, id: \.key) { stand in
+                                Image(systemName: stand.systemImage)
+                                    .foregroundStyle(stand.statusColor)
+                                    .help("\(stand.shortName): \(stand.status)")
+                            }
                         }
-                        .foregroundStyle(stand.statusColor)
+                    } else {
+                        Text("stopped")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Spacer()
+
+                    // ディレクトリパス（短縮）
+                    Text("~/\((project.path as NSString).lastPathComponent)")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+
+                    if let startedAt = project.startedAt {
+                        Text(startedAt, style: .time)
+                            .foregroundStyle(.tertiary)
                     }
                 }
-
-                Spacer()
-
-                if let startedAt = project.startedAt {
-                    Text(startedAt, style: .time)
-                        .foregroundStyle(.tertiary)
-                }
+                .font(.caption)
+                .foregroundStyle(.white)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 5)
             }
-            .font(.caption)
-            .foregroundStyle(.white)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 5)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(Color(white: 0.15))
         }
