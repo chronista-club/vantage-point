@@ -144,6 +144,9 @@ struct MainWindowView: View {
         .onReceive(NotificationCenter.default.publisher(for: .selectNextProject)) { _ in
             selectNextProject()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .splitTerminalPane)) { _ in
+            splitPane()
+        }
         .onReceive(NotificationCenter.default.publisher(for: AppDelegate.ccNotification)) { notification in
             if let project = notification.userInfo?["project"] as? String, !project.isEmpty {
                 // 現在選択中のプロジェクトでなければバッジを付ける
@@ -232,6 +235,22 @@ struct MainWindowView: View {
                 .fontWeight(.medium)
                 .foregroundStyle(.secondary)
             Text(label)
+        }
+    }
+
+    // MARK: - tmux ペイン操作
+
+    /// tmux ペインを分割（⌘D）
+    private func splitPane() {
+        guard let port = selectedPort else { return }
+        Task {
+            let url = URL(string: "http://[::1]:\(port)/api/tmux/split")!
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try? JSONSerialization.data(withJSONObject: ["horizontal": true])
+            request.timeoutInterval = 5
+            _ = try? await URLSession.shared.data(for: request)
         }
     }
 
@@ -463,7 +482,8 @@ struct MainWindowView: View {
                 path: project.path,
                 isRunning: false,
                 port: nil,
-                startedAt: nil
+                startedAt: nil,
+                hasNotification: notifications.contains(project.path)
             )
         }
     }
@@ -474,4 +494,5 @@ struct MainWindowView: View {
 extension Notification.Name {
     static let selectPreviousProject = Notification.Name("VP.selectPreviousProject")
     static let selectNextProject = Notification.Name("VP.selectNextProject")
+    static let splitTerminalPane = Notification.Name("VP.splitTerminalPane")
 }

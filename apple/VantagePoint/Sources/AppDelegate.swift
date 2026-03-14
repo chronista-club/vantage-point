@@ -239,6 +239,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let nextItem = NSMenuItem(title: "次のプロジェクト", action: #selector(selectNextProject(_:)), keyEquivalent: "\u{F701}") // ↓
         nextItem.keyEquivalentModifierMask = .command
         navigateMenu.addItem(nextItem)
+        navigateMenu.addItem(.separator())
+        navigateMenu.addItem(NSMenuItem(title: "Split Pane", action: #selector(splitTerminalPane(_:)), keyEquivalent: "d"))
         let navigateMenuItem = NSMenuItem()
         navigateMenuItem.submenu = navigateMenu
         mainMenu.addItem(navigateMenuItem)
@@ -315,6 +317,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func selectNextProject(_ sender: Any?) {
         NotificationCenter.default.post(name: .selectNextProject, object: nil)
+    }
+
+    @objc private func splitTerminalPane(_ sender: Any?) {
+        NotificationCenter.default.post(name: .splitTerminalPane, object: nil)
     }
 
     // MARK: - Status Item
