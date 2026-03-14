@@ -44,31 +44,22 @@ struct MainWindowView: View {
         } detail: {
             // ターミナル + Canvas（Canvas は Cmd+O でトグル）
             HStack(spacing: 0) {
-                // ターミナル（左 — ヘッダー + ビューポート + フッター）
-                VStack(spacing: 0) {
-                    // ヘッダー: プロジェクト情報 + Stand ステータス
-                    terminalHeader
-
-                    // ビューポート: PTY → tmux セッション
-                    ZStack {
-                        ForEach(projects) { project in
-                            let isActive = selectedProjectPath == project.path
-                            TerminalRepresentable(projectPath: project.path, isActive: isActive)
-                                .opacity(isActive ? 1 : 0)
-                                .allowsHitTesting(isActive)
-                        }
-
-                        if selectedProjectPath == nil {
-                            ContentUnavailableView(
-                                "Select a Project",
-                                systemImage: "mountain.2",
-                                description: Text("Choose a project from the sidebar to start")
-                            )
-                        }
+                // ターミナル（左 — vp-bridge クロームがヘッダー/フッターを描画）
+                ZStack {
+                    ForEach(projects) { project in
+                        let isActive = selectedProjectPath == project.path
+                        TerminalRepresentable(projectPath: project.path, isActive: isActive)
+                            .opacity(isActive ? 1 : 0)
+                            .allowsHitTesting(isActive)
                     }
 
-                    // フッター: ショートカットヒント
-                    terminalFooter
+                    if selectedProjectPath == nil {
+                        ContentUnavailableView(
+                            "Select a Project",
+                            systemImage: "mountain.2",
+                            description: Text("Choose a project from the sidebar to start")
+                        )
+                    }
                 }
 
                 // Canvas（右）— トグルで表示/非表示、ドラッグで幅変更
@@ -166,94 +157,12 @@ struct MainWindowView: View {
         }
     }
 
-    // MARK: - ターミナルヘッダー/フッター
+    // MARK: - ヘルパー
 
     /// 選択中プロジェクトの情報
     private var selectedProject: SidebarProject? {
         guard let path = selectedProjectPath else { return nil }
         return projects.first(where: { $0.path == path })
-    }
-
-    /// ターミナル上部のヘッダー（プロジェクト情報 + Stand + 作業コンテキスト）
-    @ViewBuilder
-    private var terminalHeader: some View {
-        if let project = selectedProject {
-            VStack(spacing: 0) {
-                // 上段: プロジェクト名 + Stand + 時刻
-                HStack(spacing: 8) {
-                    // プロジェクト名
-                    Image(systemName: "mountain.2.fill")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    Text(project.name)
-                        .fontWeight(.semibold)
-
-                    if project.isRunning {
-                        // Stand アイコン（コンパクト）
-                        let activeStands = project.stands.filter { $0.status != "disabled" }
-                        HStack(spacing: 6) {
-                            ForEach(activeStands, id: \.key) { stand in
-                                Image(systemName: stand.systemImage)
-                                    .foregroundStyle(stand.statusColor)
-                            }
-                        }
-                    } else {
-                        Text("stopped")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Spacer()
-
-                    // ディレクトリパス（~/repos/ からの相対パス）
-                    Text(project.path.replacingOccurrences(
-                        of: NSHomeDirectory() + "/repos/",
-                        with: ""
-                    ))
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-
-                    if let startedAt = project.startedAt {
-                        Text(startedAt, style: .time)
-                            .foregroundStyle(.tertiary)
-                    }
-                }
-                .font(.caption)
-                .foregroundStyle(.white)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 5)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color(white: 0.15))
-        }
-    }
-
-    /// ターミナル下部のフッター（ショートカットヒント）
-    @ViewBuilder
-    private var terminalFooter: some View {
-        if selectedProject != nil {
-            HStack(spacing: 16) {
-                shortcutHint("⌘O", "Canvas")
-                shortcutHint("⌘↑↓", "Project")
-                shortcutHint("⌘D", "Split")
-            }
-            .font(.caption2)
-            .foregroundStyle(.gray)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 4)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color(white: 0.15))
-        }
-    }
-
-    /// ショートカットヒントの表示ヘルパー
-    private func shortcutHint(_ key: String, _ label: String) -> some View {
-        HStack(spacing: 3) {
-            Text(key)
-                .fontWeight(.medium)
-                .foregroundStyle(.secondary)
-            Text(label)
-        }
     }
 
     // MARK: - tmux ペイン操作
