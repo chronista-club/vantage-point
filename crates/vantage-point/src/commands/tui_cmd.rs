@@ -134,10 +134,72 @@ async fn run_tui_console(session_name: &str) -> Result<()> {
     // メインループ
     let project_name = session_name
         .strip_suffix("-vp")
-        .unwrap_or(session_name);
+        .unwrap_or(session_name)
+        .to_string();
+
+    // Stand 情報を定期取得（5秒間隔、バックグラウンド）
+    let header_text = std::sync::Arc::new(std::sync::Mutex::new(
+        format!("  {}  │  connecting...", project_name),
+    ));
+    {
+        let header_text = header_text.clone();
+        let project_name = project_name.clone();
+        // SP のポートを発見（cwd ベースで TheWorld に問い合わせ）
+        let cwd_for_discover = cwd.clone();
+        let port = crate::discovery::find_by_project_blocking(&cwd_for_discover)
+            .map(|p| p.port);
+        std::thread::spawn(move || {
+            let client = reqwest::blocking::Client::builder()
+                .timeout(std::time::Duration::from_secs(3))
+                .build()
+                .unwrap_or_default();
+            loop {
+                if let Some(port) = port {
+                    let url = format!("http://[::1]:{}/api/health", port);
+                    if let Ok(resp) = client.get(&url).send() {
+                        if let Ok(json) = resp.json::<serde_json::Value>() {
+                            let mut parts = vec![format!("  {}", project_name)];
+
+                            // Stand ステータス
+                            if let Some(stands) = json.get("stands").and_then(|s| s.as_object()) {
+                                let icons: Vec<&str> = stands
+                                    .iter()
+                                    .filter(|(_, v)| {
+                                        v.get("status").and_then(|s| s.as_str()) != Some("disabled")
+                                    })
+                                    .map(|(k, _)| match k.as_str() {
+                                        "heavens_door" => "HD",
+                                        "paisley_park" => "PP",
+                                        "gold_experience" => "GE",
+                                        "hermit_purple" => "HP",
+                                        _ => "??",
+                                    })
+                                    .collect();
+                                if !icons.is_empty() {
+                                    parts.push(icons.join(" "));
+                                }
+                            }
+
+                            // 起動時刻
+                            if let Some(started) = json.get("started_at").and_then(|s| s.as_str()) {
+                                if let Some(time_part) = started.split('T').nth(1) {
+                                    let short_time = &time_part[..5]; // HH:MM
+                                    parts.push(short_time.to_string());
+                                }
+                            }
+
+                            *header_text.lock().unwrap() = parts.join("  │  ");
+                        }
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_secs(5));
+            }
+        });
+    }
 
     loop {
         // 描画
+        let current_header = header_text.lock().unwrap().clone();
         terminal.draw(|frame| {
             let chunks = Layout::vertical([
                 Constraint::Length(1), // ヘッダー
@@ -146,8 +208,8 @@ async fn run_tui_console(session_name: &str) -> Result<()> {
             ])
             .split(frame.area());
 
-            // ヘッダー
-            let header = Paragraph::new(format!("  {}  │  vp tui", project_name))
+            // ヘッダー（動的: Stand + 時刻）
+            let header = Paragraph::new(current_header)
                 .style(Style::default().fg(Color::Gray).bg(Color::DarkGray));
             frame.render_widget(header, chunks[0]);
 
