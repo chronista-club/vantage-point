@@ -44,26 +44,31 @@ struct MainWindowView: View {
         } detail: {
             // ターミナル + Canvas（Canvas は Cmd+O でトグル）
             HStack(spacing: 0) {
-                // ターミナル（左 — vp-bridge クロームがヘッダー/フッターを描画）
-                ZStack {
-                    ForEach(projects) { project in
-                        let isActive = selectedProjectPath == project.path
-                        TerminalRepresentable(
-                            projectPath: project.path,
-                            isActive: isActive,
-                            headerText: chromeHeaderText(for: project)
-                        )
-                            .opacity(isActive ? 1 : 0)
-                            .allowsHitTesting(isActive)
+                // ターミナル（左 — SwiftUI ヘッダー + PTY + フッター）
+                VStack(spacing: 0) {
+                    // ヘッダー: プロジェクト情報 + Stand ステータス
+                    terminalHeader
+
+                    // ビューポート: PTY → tmux セッション
+                    ZStack {
+                        ForEach(projects) { project in
+                            let isActive = selectedProjectPath == project.path
+                            TerminalRepresentable(projectPath: project.path, isActive: isActive)
+                                .opacity(isActive ? 1 : 0)
+                                .allowsHitTesting(isActive)
+                        }
+
+                        if selectedProjectPath == nil {
+                            ContentUnavailableView(
+                                "Select a Project",
+                                systemImage: "mountain.2",
+                                description: Text("Choose a project from the sidebar to start")
+                            )
+                        }
                     }
 
-                    if selectedProjectPath == nil {
-                        ContentUnavailableView(
-                            "Select a Project",
-                            systemImage: "mountain.2",
-                            description: Text("Choose a project from the sidebar to start")
-                        )
-                    }
+                    // フッター: ショートカットヒント
+                    terminalFooter
                 }
 
                 // Canvas（右）— トグルで表示/非表示、ドラッグで幅変更
@@ -161,7 +166,7 @@ struct MainWindowView: View {
         }
     }
 
-    // MARK: - ヘルパー
+    // MARK: - ターミナルヘッダー/フッター
 
     /// 選択中プロジェクトの情報
     private var selectedProject: SidebarProject? {
@@ -169,38 +174,79 @@ struct MainWindowView: View {
         return projects.first(where: { $0.path == path })
     }
 
-    /// クロームヘッダーテキストを生成（Stand アイコン + パス + 時刻）
-    private func chromeHeaderText(for project: SidebarProject) -> String {
-        var parts: [String] = ["  \(project.name)"]
+    /// ターミナル上部のヘッダー（プロジェクト情報 + Stand + パス）
+    @ViewBuilder
+    private var terminalHeader: some View {
+        if let project = selectedProject {
+            HStack(spacing: 8) {
+                Image(systemName: "mountain.2.fill")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Text(project.name)
+                    .fontWeight(.semibold)
 
-        if project.isRunning {
-            // Stand ステータス（アイコン文字列）
-            let standIcons = project.stands
-                .filter { $0.status != "disabled" }
-                .map { stand in
-                    let icon: String
-                    switch stand.key {
-                    case "heavens_door": icon = "HD"
-                    case "paisley_park": icon = "PP"
-                    case "gold_experience": icon = "GE"
-                    case "hermit_purple": icon = "HP"
-                    default: icon = stand.key
+                if project.isRunning {
+                    let activeStands = project.stands.filter { $0.status != "disabled" }
+                    HStack(spacing: 6) {
+                        ForEach(activeStands, id: \.key) { stand in
+                            Image(systemName: stand.systemImage)
+                                .foregroundStyle(stand.statusColor)
+                        }
                     }
-                    return icon
+                } else {
+                    Text("stopped")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                 }
-            if !standIcons.isEmpty {
-                parts.append(standIcons.joined(separator: " "))
+
+                Spacer()
+
+                Text(project.path.replacingOccurrences(
+                    of: NSHomeDirectory() + "/repos/",
+                    with: ""
+                ))
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+
+                if let startedAt = project.startedAt {
+                    Text(startedAt, style: .time)
+                        .foregroundStyle(.tertiary)
+                }
             }
+            .font(.caption)
+            .foregroundStyle(.white)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 5)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(white: 0.15))
         }
+    }
 
-        // パス
-        let shortPath = project.path.replacingOccurrences(
-            of: NSHomeDirectory() + "/repos/",
-            with: ""
-        )
-        parts.append(shortPath)
+    /// ターミナル下部のフッター（ショートカットヒント）
+    @ViewBuilder
+    private var terminalFooter: some View {
+        if selectedProject != nil {
+            HStack(spacing: 16) {
+                shortcutHint("⌘O", "Canvas")
+                shortcutHint("⌘↑↓", "Project")
+                shortcutHint("⌘D", "Split")
+            }
+            .font(.caption2)
+            .foregroundStyle(.gray)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 4)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(white: 0.15))
+        }
+    }
 
-        return parts.joined(separator: "  │  ")
+    private func shortcutHint(_ key: String, _ label: String) -> some View {
+        HStack(spacing: 3) {
+            Text(key)
+                .fontWeight(.medium)
+                .foregroundStyle(.secondary)
+            Text(label)
+        }
     }
 
     // MARK: - tmux ペイン操作
