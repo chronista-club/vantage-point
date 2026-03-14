@@ -841,15 +841,18 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                 }
                                 "unregister" => {
                                     if let Some(ref path_key) = registered_name {
-                                        // ロック順序: projects → running_processes
+                                        // ロック順序統一: projects → running_processes
+                                        // スコープブロックで projects ロックを先に解放
                                         if let Some(ref projects) = projects {
                                             let mut projs = projects.write().await;
                                             if let Some(p) = projs.get_mut(path_key) {
                                                 p.process_status =
                                                     crate::capability::ProcessStatus::Stopped;
                                             }
+                                        } // ← projects ロック解放
+                                        {
+                                            running_processes.write().await.remove(path_key);
                                         }
-                                        running_processes.write().await.remove(path_key);
 
                                         tracing::info!(
                                             "Registry: SP 登録解除 (key={})",

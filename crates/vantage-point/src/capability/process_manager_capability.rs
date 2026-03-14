@@ -228,17 +228,18 @@ impl ProcessManagerCapability {
         })?;
 
         // 名前→パスキー解決 + プロジェクト情報取得
-        let key = self.resolve_key_by_name(project_name).await.ok_or_else(|| {
-            CapabilityError::Other(format!("Project not found: {}", project_name))
-        })?;
+        let key = self
+            .resolve_key_by_name(project_name)
+            .await
+            .ok_or_else(|| {
+                CapabilityError::Other(format!("Project not found: {}", project_name))
+            })?;
 
         let project = {
             let projects = self.projects.read().await;
             projects.get(&key).cloned()
         }
-        .ok_or_else(|| {
-            CapabilityError::Other(format!("Project not found: {}", project_name))
-        })?;
+        .ok_or_else(|| CapabilityError::Other(format!("Project not found: {}", project_name)))?;
 
         // 既に起動中かチェック
         {
@@ -312,9 +313,12 @@ impl ProcessManagerCapability {
 
     /// Processを停止
     pub async fn stop_process(&self, project_name: &str) -> CapabilityResult<()> {
-        let key = self.resolve_key_by_name(project_name).await.ok_or_else(|| {
-            CapabilityError::Other(format!("Project not found: {}", project_name))
-        })?;
+        let key = self
+            .resolve_key_by_name(project_name)
+            .await
+            .ok_or_else(|| {
+                CapabilityError::Other(format!("Project not found: {}", project_name))
+            })?;
 
         let running = {
             let procs = self.running_processes.read().await;
@@ -396,9 +400,7 @@ impl ProcessManagerCapability {
         let key = normalize_path_key(std::path::Path::new(project_dir));
         let name = {
             let projects = self.projects.read().await;
-            projects
-                .get(&key)
-                .map(|p| p.name.clone())
+            projects.get(&key).map(|p| p.name.clone())
         }
         .unwrap_or_else(|| {
             std::path::Path::new(project_dir)
@@ -432,7 +434,12 @@ impl ProcessManagerCapability {
             }
         }
         procs.insert(key.clone(), process);
-        tracing::info!("Process 登録: port={}, dir={}, key={}", port, project_dir, key);
+        tracing::info!(
+            "Process 登録: port={}, dir={}, key={}",
+            port,
+            project_dir,
+            key
+        );
     }
 
     /// 外部 Process の登録解除（Process 停止時に呼ばれる）
@@ -533,7 +540,7 @@ impl ProcessManagerCapability {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_millis(500))
             .build()
-            .unwrap_or_default();
+            .expect("reqwest Client 構築失敗");
 
         for port in crate::cli::PORT_RANGE_START..=crate::cli::PORT_RANGE_END {
             if tracked_ports.contains(&port) {
@@ -550,10 +557,7 @@ impl ProcessManagerCapability {
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
-                let pid = json
-                    .get("pid")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0) as u32;
+                let pid = json.get("pid").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
 
                 if project_dir.is_empty() {
                     continue;
@@ -688,16 +692,17 @@ impl ProcessManagerCapability {
                     missing_count.remove(name);
                 }
 
-                let mut targets: Vec<(String, u16)> = Vec::new();
-                for (name, prev_proc) in &previous {
-                    if !current.contains_key(name) {
-                        let count = missing_count.entry(name.clone()).or_insert(0);
+                // (path_key, project_name, port) — start_process には project_name を渡す
+                let mut targets: Vec<(String, String, u16)> = Vec::new();
+                for (path_key, prev_proc) in &previous {
+                    if !current.contains_key(path_key) {
+                        let count = missing_count.entry(path_key.clone()).or_insert(0);
                         *count += 1;
 
                         if *count < 2 {
                             tracing::debug!(
                                 "Health check: Process '{}' が不在（{}/2回目、次回再確認）",
-                                name,
+                                prev_proc.project_name,
                                 count
                             );
                             continue;
@@ -705,10 +710,14 @@ impl ProcessManagerCapability {
 
                         tracing::warn!(
                             "Health check: Process '{}' (port {}) がクラッシュを検知（2回連続不在）",
-                            name,
+                            prev_proc.project_name,
                             prev_proc.port
                         );
-                        targets.push((name.clone(), prev_proc.port));
+                        targets.push((
+                            path_key.clone(),
+                            prev_proc.project_name.clone(),
+                            prev_proc.port,
+                        ));
                     }
                 }
 
@@ -725,24 +734,28 @@ impl ProcessManagerCapability {
             // ── 書き込みフェーズ（再起動が必要な場合のみ）──
             // start_process は内部でスリープ + ポートスキャンがあるため、
             // read ガードを長時間保持しないよう clone して解放する
-            for (name, _port) in &restart_targets {
-                tracing::info!("Health check: Process '{}' を自動再起動中...", name);
+            for (path_key, project_name, _port) in &restart_targets {
+                tracing::info!("Health check: Process '{}' を自動再起動中...", project_name);
                 let world_cap = {
                     let w = world.read().await;
                     w.clone()
                 };
-                match world_cap.start_process(name).await {
+                match world_cap.start_process(project_name).await {
                     Ok(new_proc) => {
                         tracing::info!(
                             "Health check: Process '{}' 再起動成功 (port {})",
-                            name,
+                            project_name,
                             new_proc.port
                         );
-                        missing_count.remove(name);
+                        missing_count.remove(path_key);
                         crate::notify::post_process_changed(new_proc.port, "restarted");
                     }
                     Err(e) => {
-                        tracing::error!("Health check: Process '{}' 再起動失敗: {}", name, e);
+                        tracing::error!(
+                            "Health check: Process '{}' 再起動失敗: {}",
+                            project_name,
+                            e
+                        );
                     }
                 }
             }
