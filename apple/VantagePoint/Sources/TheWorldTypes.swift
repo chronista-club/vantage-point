@@ -65,15 +65,23 @@ struct TWErrorResponse: Codable {
     let error: String
 }
 
+/// Stand（Capability）のステータス
+struct StandStatus: Codable, Equatable {
+    let status: String
+    let detail: [String: Int]?
+}
+
 /// TheWorld ヘルス詳細レスポンス
 struct WorldHealthDetail: Codable {
     let status: String
     let version: String
     let pid: UInt32
     let startedAt: String
+    /// 配下の Stand ステータス（SP のみ、TheWorld では nil）
+    let stands: [String: StandStatus]?
 
     enum CodingKeys: String, CodingKey {
-        case status, version, pid
+        case status, version, pid, stands
         case startedAt = "started_at"
     }
 }

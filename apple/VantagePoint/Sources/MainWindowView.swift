@@ -155,19 +155,21 @@ struct MainWindowView: View {
                 uniquingKeysWith: { first, _ in first }
             )
 
-            // 各 running process の started_at を並列取得
-            let startTimes = await fetchStartTimes(processes: running)
+            // 各 running process の started_at + stands を並列取得
+            let details = await fetchProcessDetails(processes: running)
 
             let config = ConfigManager.shared.load()
             projects = config.projects.map { entry in
                 if let process = runningByPath[entry.path] {
+                    let detail = details[entry.path]
                     return SidebarProject(
                         id: entry.path,
                         name: entry.name,
                         path: entry.path,
                         isRunning: true,
                         port: process.port,
-                        startedAt: startTimes[entry.path]
+                        startedAt: detail?.startedAt,
+                        stands: detail?.stands ?? []
                     )
                 } else {
                     return SidebarProject(
@@ -186,9 +188,15 @@ struct MainWindowView: View {
         }
     }
 
-    /// 各 Process の /api/health から started_at を並列取得
-    private nonisolated func fetchStartTimes(processes: [RunningProcess]) async -> [String: Date] {
-        await withTaskGroup(of: (String, Date?).self) { group in
+    /// SP の health から取得した詳細情報
+    struct ProcessDetail {
+        let startedAt: Date?
+        let stands: [SidebarStand]
+    }
+
+    /// 各 Process の /api/health から started_at + stands を並列取得
+    private nonisolated func fetchProcessDetails(processes: [RunningProcess]) async -> [String: ProcessDetail] {
+        await withTaskGroup(of: (String, ProcessDetail).self) { group in
             for process in processes {
                 group.addTask {
                     do {
@@ -198,16 +206,22 @@ struct MainWindowView: View {
                         let formatter = ISO8601DateFormatter()
                         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
                         let date = formatter.date(from: health.startedAt)
-                        return (process.projectPath, date)
+
+                        // Stand ステータスを変換
+                        let stands: [SidebarStand] = (health.stands ?? [:]).map { key, value in
+                            SidebarStand(key: key, status: value.status, detail: value.detail)
+                        }.sorted { $0.key < $1.key }
+
+                        return (process.projectPath, ProcessDetail(startedAt: date, stands: stands))
                     } catch {
-                        return (process.projectPath, nil)
+                        return (process.projectPath, ProcessDetail(startedAt: nil, stands: []))
                     }
                 }
             }
 
-            var result: [String: Date] = [:]
-            for await (path, date) in group {
-                if let date { result[path] = date }
+            var result: [String: ProcessDetail] = [:]
+            for await (path, detail) in group {
+                result[path] = detail
             }
             return result
         }

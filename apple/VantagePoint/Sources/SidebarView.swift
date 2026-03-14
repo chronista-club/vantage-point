@@ -55,10 +55,61 @@ struct SidebarProjectRow: View {
                     }
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+
+                    // Stand ステータス（disabled 以外を表示）
+                    if !project.stands.isEmpty {
+                        HStack(spacing: 3) {
+                            ForEach(project.stands.filter { $0.status != "disabled" }, id: \.key) { stand in
+                                Text("\(stand.icon)\(stand.shortName)")
+                                    .font(.caption2)
+                                    .foregroundStyle(stand.statusColor)
+                            }
+                        }
+                    }
                 }
             }
 
             Spacer()
+        }
+    }
+}
+
+/// サイドバー表示用の Stand 情報
+struct SidebarStand: Equatable {
+    let key: String     // "heavens_door", "paisley_park", etc.
+    let status: String  // "active", "idle", "connected", "disabled"
+    let detail: [String: Int]?
+
+    /// Stand のアイコン（JoJo メタファー）
+    var icon: String {
+        switch key {
+        case "heavens_door": "📖"
+        case "paisley_park": "🧭"
+        case "gold_experience": "🌿"
+        case "hermit_purple": "🍇"
+        default: "⭐"
+        }
+    }
+
+    /// Stand の短縮名
+    var shortName: String {
+        switch key {
+        case "heavens_door": "HD"
+        case "paisley_park": "PP"
+        case "gold_experience": "GE"
+        case "hermit_purple": "HP"
+        default: key
+        }
+    }
+
+    /// ステータス色
+    var statusColor: Color {
+        switch status {
+        case "active": .green
+        case "connected": .blue
+        case "idle": .gray
+        case "disabled": .gray.opacity(0.4)
+        default: .gray
         }
     }
 }
@@ -73,6 +124,18 @@ struct SidebarProject: Identifiable, Equatable {
     let port: UInt16?
     /// プロセス開始時刻（稼働中のみ）
     let startedAt: Date?
+    /// 配下の Stand 一覧（稼働中のみ）
+    let stands: [SidebarStand]
+
+    init(id: String, name: String, path: String, isRunning: Bool, port: UInt16?, startedAt: Date?, stands: [SidebarStand] = []) {
+        self.id = id
+        self.name = name
+        self.path = path
+        self.isRunning = isRunning
+        self.port = port
+        self.startedAt = startedAt
+        self.stands = stands
+    }
 
     var statusColor: Color {
         isRunning ? .green : .gray
