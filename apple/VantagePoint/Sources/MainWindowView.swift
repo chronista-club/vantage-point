@@ -195,7 +195,6 @@ struct MainWindowView: View {
                             ForEach(activeStands, id: \.key) { stand in
                                 Image(systemName: stand.systemImage)
                                     .foregroundStyle(stand.statusColor)
-                                    .help("\(stand.shortName): \(stand.status)")
                             }
                         }
                     } else {
@@ -206,8 +205,11 @@ struct MainWindowView: View {
 
                     Spacer()
 
-                    // ディレクトリパス（短縮）
-                    Text("~/\((project.path as NSString).lastPathComponent)")
+                    // ディレクトリパス（~/repos/ からの相対パス）
+                    Text(project.path.replacingOccurrences(
+                        of: NSHomeDirectory() + "/repos/",
+                        with: ""
+                    ))
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
 
