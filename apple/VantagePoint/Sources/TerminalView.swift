@@ -942,7 +942,11 @@ class TerminalView: NSView {
         // 特殊キー → VT100 エスケープシーケンス
         switch keyCode {
         case 36:  return [0x0D]                    // Return → CR
-        case 48:  return [0x09]                    // Tab
+        case 48:                                      // Tab / Shift+Tab
+            if modifiers.contains(.shift) {
+                return [0x1B, 0x5B, 0x5A]             // Shift+Tab → CSI Z (Backtab)
+            }
+            return [0x09]
         case 51:  return [0x7F]                    // Delete (Backspace)
         case 53:  return [0x1B]                    // Escape
         case 117: return [0x1B, 0x5B, 0x33, 0x7E] // Forward Delete
