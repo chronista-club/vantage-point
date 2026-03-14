@@ -48,7 +48,11 @@ struct MainWindowView: View {
                 ZStack {
                     ForEach(projects) { project in
                         let isActive = selectedProjectPath == project.path
-                        TerminalRepresentable(projectPath: project.path, isActive: isActive)
+                        TerminalRepresentable(
+                            projectPath: project.path,
+                            isActive: isActive,
+                            headerText: chromeHeaderText(for: project)
+                        )
                             .opacity(isActive ? 1 : 0)
                             .allowsHitTesting(isActive)
                     }
@@ -163,6 +167,40 @@ struct MainWindowView: View {
     private var selectedProject: SidebarProject? {
         guard let path = selectedProjectPath else { return nil }
         return projects.first(where: { $0.path == path })
+    }
+
+    /// クロームヘッダーテキストを生成（Stand アイコン + パス + 時刻）
+    private func chromeHeaderText(for project: SidebarProject) -> String {
+        var parts: [String] = ["  \(project.name)"]
+
+        if project.isRunning {
+            // Stand ステータス（アイコン文字列）
+            let standIcons = project.stands
+                .filter { $0.status != "disabled" }
+                .map { stand in
+                    let icon: String
+                    switch stand.key {
+                    case "heavens_door": icon = "HD"
+                    case "paisley_park": icon = "PP"
+                    case "gold_experience": icon = "GE"
+                    case "hermit_purple": icon = "HP"
+                    default: icon = stand.key
+                    }
+                    return icon
+                }
+            if !standIcons.isEmpty {
+                parts.append(standIcons.joined(separator: " "))
+            }
+        }
+
+        // パス
+        let shortPath = project.path.replacingOccurrences(
+            of: NSHomeDirectory() + "/repos/",
+            with: ""
+        )
+        parts.append(shortPath)
+
+        return parts.joined(separator: "  │  ")
     }
 
     // MARK: - tmux ペイン操作

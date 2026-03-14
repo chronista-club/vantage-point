@@ -12,6 +12,8 @@ struct TerminalRepresentable: NSViewRepresentable {
     let projectPath: String?
     /// このターミナルがアクティブ（表示中）かどうか
     var isActive: Bool = true
+    /// クロームヘッダーテキスト（動的更新）
+    var headerText: String = ""
 
     func makeNSView(context: Context) -> TerminalView {
         let view = TerminalView(frame: .zero)
@@ -48,6 +50,11 @@ struct TerminalRepresentable: NSViewRepresentable {
     func updateNSView(_ nsView: TerminalView, context: Context) {
         let wasActive = nsView.isActive
         nsView.isActive = isActive
+
+        // クロームヘッダーを動的更新（5秒ポーリングで Stand 情報が変わるたびに反映）
+        if isActive && !headerText.isEmpty {
+            nsView.updateChromeText(row: 0, text: headerText, fg: 0xCCCCCCFF, bg: 0x333333FF)
+        }
 
         // アクティブに切り替わった → 即座に再描画（フレームコールバック待ちの間の stale 表示を防ぐ）
         if isActive && !wasActive {
