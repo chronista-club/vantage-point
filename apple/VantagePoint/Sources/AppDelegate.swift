@@ -166,6 +166,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let monitor = eventMonitor {
             NSEvent.removeMonitor(monitor)
         }
+        // メニューバーアイコンを削除
+        NSStatusBar.system.removeStatusItem(statusItem)
+    }
+
+    /// 最後のウィンドウが閉じたらアプリを終了
+    func applicationShouldTerminateAfterLastWindowClosed(_: NSApplication) -> Bool {
+        true
     }
 
     // MARK: - メインメニュー（キーボードショートカット用）
