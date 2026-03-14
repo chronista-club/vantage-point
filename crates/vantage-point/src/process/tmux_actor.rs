@@ -551,7 +551,13 @@ pub fn spawn(session_name: &str) -> Option<TmuxHandle> {
     if !crate::tmux::is_inside_tmux() {
         return None;
     }
+    spawn_for_session(session_name)
+}
 
+/// 指定した tmux セッションに対して TmuxActor を起動
+///
+/// `is_inside_tmux` チェックなし。SP が外部から tmux セッションを管理する場合に使用。
+pub fn spawn_for_session(session_name: &str) -> Option<TmuxHandle> {
     let (tx, rx) = mpsc::channel(32);
 
     let actor = TmuxActor {

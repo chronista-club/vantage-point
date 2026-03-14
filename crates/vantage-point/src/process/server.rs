@@ -69,13 +69,41 @@ pub async fn run(
     // Terminal チャネル認証トークンを生成
     let terminal_token = crate::discovery::generate_terminal_token();
 
-    // tmux Actor 起動（tmux 環境下でのみ有効）
+    // tmux セッション管理（SP がライフサイクルオーナー）
     let project_name = crate::resolve::project_name_from_path(
         &project_dir,
         &crate::config::Config::load().unwrap_or_default(),
     )
     .to_string();
-    let tmux_handle = super::tmux_actor::spawn(&crate::tmux::session_name(&project_name));
+    let tmux_session = crate::tmux::session_name(&project_name);
+
+    // tmux セッションが存在しなければ作成（detach モード）
+    // SP が tmux 内で動いているか否かに関わらず、セッションを確保する
+    if crate::tmux::is_tmux_available() && !crate::tmux::session_exists(&tmux_session) {
+        match std::process::Command::new("tmux")
+            .args(["new-session", "-d", "-s", &tmux_session, "-c", &project_dir])
+            .status()
+        {
+            Ok(s) if s.success() => {
+                tracing::info!("tmux セッション作成: {}", tmux_session);
+            }
+            Ok(_) => {
+                tracing::warn!("tmux セッション作成失敗: {}", tmux_session);
+            }
+            Err(e) => {
+                tracing::warn!("tmux コマンド実行失敗: {}", e);
+            }
+        }
+    }
+
+    // TmuxActor 起動（tmux セッションが存在すれば有効）
+    let tmux_handle = if crate::tmux::is_tmux_available()
+        && crate::tmux::session_exists(&tmux_session)
+    {
+        super::tmux_actor::spawn_for_session(&tmux_session)
+    } else {
+        None
+    };
 
     // TopicRouter 初期化 + Hub → TopicRouter ブリッジ
     let topic_router = Arc::new(TopicRouter::new());
@@ -267,6 +295,14 @@ pub async fn run(
 
     // ファイル監視を全停止
     file_watchers_for_shutdown.lock().await.stop_all();
+
+    // tmux セッションを kill（SP がライフサイクルオーナー）
+    if crate::tmux::is_tmux_available() {
+        let session = crate::tmux::session_name(&project_name);
+        if crate::tmux::kill_session(&session) {
+            tracing::info!("tmux セッション削除: {}", session);
+        }
+    }
 
     // Shutdown all capabilities
     tracing::info!("Shutting down capabilities...");

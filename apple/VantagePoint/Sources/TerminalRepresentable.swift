@@ -18,7 +18,17 @@ struct TerminalRepresentable: NSViewRepresentable {
         // Bridge は作成するが、PTY 起動はレイアウト確定後に遅延
         // makeNSView 時点では bounds が .zero → 1x1 グリッドになりシェルが正常に動けない
         view.setupBridge()
-        view.deferredPtyCwd = projectPath ?? NSHomeDirectory()
+
+        let cwd = projectPath ?? NSHomeDirectory()
+        let projectName = (cwd as NSString).lastPathComponent
+        // tmux セッション名: {project}-vp（SP が作成済み）
+        let tmuxSession = projectName.replacingOccurrences(of: ".", with: "-") + "-vp"
+
+        // tmux セッションが存在すれば attach、なければ raw シェル
+        view.deferredPtyCwd = cwd
+        // tmux attach を試行。失敗時はログインシェルにフォールバック
+        // FFI 側で zsh -l -c "command" として実行される
+        view.deferredPtyCommand = "tmux attach-session -t \(tmuxSession) 2>/dev/null || exec zsh -l"
         return view
     }
 
