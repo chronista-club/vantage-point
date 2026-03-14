@@ -13,6 +13,8 @@ struct MainWindowView: View {
     @State private var worldStatus: WorldStatus = .checking
     /// Canvas（Paisley Park）表示フラグ
     @State private var showCanvas: Bool = false
+    /// Canvas の幅（ドラッグで変更可能）
+    @State private var canvasWidth: CGFloat = 500
     /// CC 通知バッジ: プロジェクト名 → 未読フラグ
     @State private var notifications: Set<String> = []
 
@@ -61,10 +63,31 @@ struct MainWindowView: View {
                     }
                 }
 
-                // Canvas（右）— トグルで表示/非表示
+                // Canvas（右）— トグルで表示/非表示、ドラッグで幅変更
                 if showCanvas {
+                    // ドラッグハンドル（分割線）
+                    Rectangle()
+                        .fill(Color.gray.opacity(0.01)) // ほぼ透明（ホバー時だけ見える）
+                        .frame(width: 6)
+                        .contentShape(Rectangle())
+                        .onHover { hovering in
+                            if hovering {
+                                NSCursor.resizeLeftRight.push()
+                            } else {
+                                NSCursor.pop()
+                            }
+                        }
+                        .gesture(
+                            DragGesture()
+                                .onChanged { value in
+                                    // ドラッグで Canvas 幅を調整（左にドラッグ = 幅拡大）
+                                    let newWidth = canvasWidth - value.translation.width
+                                    canvasWidth = max(200, min(newWidth, 1200))
+                                }
+                        )
+
                     CanvasRepresentable(port: selectedPort)
-                        .frame(minWidth: 300, idealWidth: 500)
+                        .frame(width: canvasWidth)
                 }
             }
             .toolbar {
