@@ -28,7 +28,8 @@ struct TerminalRepresentable: NSViewRepresentable {
         view.deferredPtyCwd = cwd
         // tmux attach を試行。失敗時はログインシェルにフォールバック
         // FFI 側で zsh -l -c "command" として実行される
-        view.deferredPtyCommand = "tmux attach-session -t \(tmuxSession) 2>/dev/null || exec zsh -l"
+        // .app バンドルから起動すると PATH が最小限のため tmux のフルパスを使用
+        view.deferredPtyCommand = "/opt/homebrew/bin/tmux attach-session -t \(tmuxSession) 2>/dev/null || exec zsh -l"
         return view
     }
 
