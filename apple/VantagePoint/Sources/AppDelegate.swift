@@ -64,8 +64,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.activate(ignoringOtherApps: true)
         }
 
-        // CC 完了通知をサイドバーに転送
+        // CC 完了通知をサイドバーに転送 + プロジェクトフォーカス
         setupCCNotificationObserver()
+        setupFocusProjectObserver()
 
         // 自動リフレッシュ開始
         popoverViewModel.startAutoRefresh(interval: 5.0)
@@ -264,6 +265,36 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 object: nil,
                 userInfo: ["project": project, "message": message]
             )
+        }
+    }
+
+    /// OS 通知クリック → VP アプリをアクティブ化 + プロジェクト選択
+    private func setupFocusProjectObserver() {
+        DistributedNotificationCenter.default().addObserver(
+            forName: NSNotification.Name("club.chronista.vp.focus.project"),
+            object: nil,
+            queue: .main
+        ) { notification in
+            let projectName = notification.userInfo?["project"] as? String ?? ""
+            guard !projectName.isEmpty else { return }
+
+            // config からプロジェクトパスを解決
+            let config = ConfigManager.shared.load()
+            let path = config.projects.first(where: {
+                $0.name == projectName || $0.path.hasSuffix("/\(projectName)")
+            })?.path
+
+            if let path {
+                // メインウィンドウにプロジェクト選択を通知
+                NotificationCenter.default.post(
+                    name: AppDelegate.selectProjectNotification,
+                    object: nil,
+                    userInfo: ["path": path]
+                )
+            }
+
+            // アプリをアクティブ化
+            NSApp.activate(ignoringOtherApps: true)
         }
     }
 
