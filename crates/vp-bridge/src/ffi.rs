@@ -549,6 +549,70 @@ pub extern "C" fn vp_bridge_scroll_session(session_id: u32, delta: i32) {
 }
 
 // =============================================================================
+// クローム（ヘッダー/フッター）FFI
+// =============================================================================
+
+/// クローム領域を設定（ヘッダー/フッターの行数）
+///
+/// PTY には `height - header - footer` 行のグリッドサイズが通知される。
+/// PTY 出力は header 行目からオフセットされて描画される。
+#[unsafe(no_mangle)]
+pub extern "C" fn vp_bridge_set_chrome(session_id: u32, header_rows: u16, footer_rows: u16) {
+    let guard = ensure_sessions();
+    if let Some(session) = guard.as_ref().and_then(|m| m.get(&session_id)) {
+        let mut be = session.backend.lock().unwrap();
+        be.set_chrome(header_rows, footer_rows);
+    }
+}
+
+/// クローム行にテキストを書き込む
+///
+/// `y` はグリッド上の絶対行番号（0 = 最上行）。
+/// `text` は UTF-8 C 文字列。
+/// `fg` / `bg` は RGBA u32（0 = デフォルト色）。
+#[unsafe(no_mangle)]
+pub extern "C" fn vp_bridge_write_chrome_line(
+    session_id: u32,
+    y: u16,
+    text: *const std::ffi::c_char,
+    fg: u32,
+    bg: u32,
+) {
+    let guard = ensure_sessions();
+    if let Some(session) = guard.as_ref().and_then(|m| m.get(&session_id)) {
+        let text_str = if text.is_null() {
+            ""
+        } else {
+            unsafe { std::ffi::CStr::from_ptr(text) }
+                .to_str()
+                .unwrap_or("")
+        };
+
+        // RGBA u32 → ratatui Style
+        let style = {
+            use ratatui::style::{Color, Style};
+            let mut s = Style::default();
+            if fg != 0 {
+                let r = ((fg >> 24) & 0xFF) as u8;
+                let g = ((fg >> 16) & 0xFF) as u8;
+                let b = ((fg >> 8) & 0xFF) as u8;
+                s = s.fg(Color::Rgb(r, g, b));
+            }
+            if bg != 0 {
+                let r = ((bg >> 24) & 0xFF) as u8;
+                let g = ((bg >> 16) & 0xFF) as u8;
+                let b = ((bg >> 8) & 0xFF) as u8;
+                s = s.bg(Color::Rgb(r, g, b));
+            }
+            s
+        };
+
+        let mut be = session.backend.lock().unwrap();
+        be.write_chrome_line(y, text_str, style);
+    }
+}
+
+// =============================================================================
 // テスト・ユーティリティ FFI
 // =============================================================================
 

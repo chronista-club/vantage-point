@@ -109,6 +109,13 @@ class TerminalView: NSView {
     /// アクティブ（表示中）フラグ — false のとき描画をスキップ
     var isActive: Bool = true
 
+    /// クローム行数（ヘッダー/フッター）
+    private var chromeHeaderRows: UInt16 = 0
+    private var chromeFooterRows: UInt16 = 0
+
+    /// 遅延フッターテキスト（PTY 起動後に行数確定してから描画）
+    var deferredFooterText: String?
+
     // MARK: - 初期化
 
     override init(frame frameRect: NSRect) {
@@ -226,6 +233,25 @@ class TerminalView: NSView {
         // バッファを確保
         let totalCells = Int(gridCols) * Int(gridRows)
         cellBuffer = [VPCellData](repeating: VPCellData(), count: totalCells)
+    }
+
+    /// クローム（ヘッダー/フッター）を設定
+    ///
+    /// PTY には `height - headerRows - footerRows` 行が通知される。
+    /// ヘッダー/フッターのテキストは `updateChromeText()` で設定。
+    func setupChrome(headerRows: UInt16, footerRows: UInt16) {
+        guard bridgeInitialized else { return }
+        vp_bridge_set_chrome(sessionId, headerRows, footerRows)
+        chromeHeaderRows = headerRows
+        chromeFooterRows = footerRows
+    }
+
+    /// クローム行にテキストを書き込む
+    func updateChromeText(row: UInt16, text: String, fg: UInt32 = 0, bg: UInt32 = 0) {
+        guard bridgeInitialized else { return }
+        text.withCString { ptr in
+            vp_bridge_write_chrome_line(sessionId, row, ptr, fg, bg)
+        }
     }
 
     // MARK: - フォント
@@ -732,30 +758,39 @@ class TerminalView: NSView {
     func startPty(cwd: String? = nil, command: String? = nil) {
         guard bridgeInitialized else { return }
 
+        // PTY に渡す行数はクローム分を引く
+        let ptyRows = max(1, gridRows - chromeHeaderRows - chromeFooterRows)
+
         let result: Int32
         if let cmd = command {
             // コマンド指定あり → vp_bridge_pty_start_command_session
             result = cmd.withCString { cmdPtr in
                 if let cwdPath = cwd {
                     return cwdPath.withCString { cwdPtr in
-                        vp_bridge_pty_start_command_session(self.sessionId, cwdPtr, cmdPtr, self.gridCols, self.gridRows)
+                        vp_bridge_pty_start_command_session(self.sessionId, cwdPtr, cmdPtr, self.gridCols, ptyRows)
                     }
                 } else {
-                    return vp_bridge_pty_start_command_session(self.sessionId, nil, cmdPtr, self.gridCols, self.gridRows)
+                    return vp_bridge_pty_start_command_session(self.sessionId, nil, cmdPtr, self.gridCols, ptyRows)
                 }
             }
         } else {
             // コマンド指定なし → 従来通り
             if let cwdPath = cwd {
                 result = cwdPath.withCString { ptr in
-                    vp_bridge_pty_start_session(self.sessionId, ptr, self.gridCols, self.gridRows)
+                    vp_bridge_pty_start_session(self.sessionId, ptr, self.gridCols, ptyRows)
                 }
             } else {
-                result = vp_bridge_pty_start_session(self.sessionId, nil, self.gridCols, self.gridRows)
+                result = vp_bridge_pty_start_session(self.sessionId, nil, self.gridCols, ptyRows)
             }
         }
 
         if result == 0 {
+            // フッターを描画（グリッド最終行）
+            if chromeFooterRows > 0, let footerText = deferredFooterText {
+                let footerRow = gridRows - chromeFooterRows
+                updateChromeText(row: footerRow, text: footerText, fg: 0x999999FF, bg: 0x333333FF)
+                deferredFooterText = nil
+            }
             needsDisplay = true
         }
     }
