@@ -27,6 +27,31 @@ use crate::file_watcher::FileWatcherManager;
 use crate::protocol::DebugMode;
 
 /// Run the Process server
+/// claude CLI のフルパスを検索
+fn which_claude() -> String {
+    // 1. ~/.claude/local/bin/claude（公式インストール先）
+    if let Some(home) = dirs::home_dir() {
+        let path = home.join(".claude/local/bin/claude");
+        if path.exists() {
+            return path.to_string_lossy().to_string();
+        }
+    }
+    // 2. PATH から検索
+    if let Ok(output) = std::process::Command::new("which")
+        .arg("claude")
+        .output()
+    {
+        if output.status.success() {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path.is_empty() {
+                return path;
+            }
+        }
+    }
+    // 3. フォールバック
+    "claude".to_string()
+}
+
 pub async fn run(
     port: u16,
     auto_open_browser: bool,
@@ -80,8 +105,20 @@ pub async fn run(
     // tmux セッションが存在しなければ作成（detach モード）
     // SP が tmux 内で動いているか否かに関わらず、セッションを確保する
     if crate::tmux::is_tmux_available() && !crate::tmux::session_exists(&tmux_session) {
+        // tmux セッション作成時に claude を自動起動
+        // エイリアス (ccf) は非対話シェルで使えないためフルパスで指定
+        let claude_bin = which_claude();
+        let tmux_cmd = format!(
+            "{} --continue --dangerously-skip-permissions",
+            claude_bin
+        );
         match std::process::Command::new("tmux")
-            .args(["new-session", "-d", "-s", &tmux_session, "-c", &project_dir])
+            .args([
+                "new-session", "-d",
+                "-s", &tmux_session,
+                "-c", &project_dir,
+                &tmux_cmd,
+            ])
             .status()
         {
             Ok(s) if s.success() => {
