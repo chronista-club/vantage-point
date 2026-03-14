@@ -25,12 +25,11 @@ struct TerminalRepresentable: NSViewRepresentable {
         // tmux セッション名: {project}-vp（SP が作成済み）
         let tmuxSession = projectName.replacingOccurrences(of: ".", with: "-") + "-vp"
 
-        // tmux セッションが存在すれば attach、なければ raw シェル
+        // vp tui を起動（ratatui コンソール → tmux セッション）
+        // vp tui が未インストールなら tmux attach に直接フォールバック
         view.deferredPtyCwd = cwd
-        // tmux attach を試行。失敗時はログインシェルにフォールバック
-        // FFI 側で zsh -l -c "command" として実行される
-        // .app バンドルから起動すると PATH が最小限のため tmux のフルパスを使用
-        view.deferredPtyCommand = "/opt/homebrew/bin/tmux attach-session -t \(tmuxSession) 2>/dev/null || exec zsh -l"
+        let vpBin = "\(NSHomeDirectory())/.cargo/bin/vp"
+        view.deferredPtyCommand = "\(vpBin) tui --session \(tmuxSession) 2>/dev/null || /opt/homebrew/bin/tmux attach-session -t \(tmuxSession) 2>/dev/null || exec zsh -l"
         return view
     }
 
