@@ -110,18 +110,13 @@ struct SidebarProjectRow: View {
                     .fontWeight(project.isRunning ? .semibold : .regular)
                     .lineLimit(1)
 
-                // 稼働中: ポート + 起動時刻 + Stand
+                // 稼働中: 起動時刻 + Stand
                 if project.isRunning {
-                    HStack(spacing: 4) {
-                        if let port = project.port {
-                            Text(":\(port)")
-                        }
-                        if let startedAt = project.startedAt {
-                            Text("· \(startedAt, style: .time)")
-                        }
+                    if let startedAt = project.startedAt {
+                        Text(startedAt, style: .time)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
                     }
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
 
                     // Stand ステータス（disabled 以外を表示）
                     let activeStands = project.stands.filter { $0.status != "disabled" }
