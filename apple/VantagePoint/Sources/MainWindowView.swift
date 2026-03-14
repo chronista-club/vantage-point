@@ -43,24 +43,32 @@ struct MainWindowView: View {
             )
         } detail: {
             // ターミナル + Canvas（Canvas は Cmd+O でトグル）
-            // HSplitView は子が1つだとレイアウト崩壊するため HStack で管理
             HStack(spacing: 0) {
-                // ターミナル（左 — 常に表示）
-                ZStack {
-                    ForEach(projects) { project in
-                        let isActive = selectedProjectPath == project.path
-                        TerminalRepresentable(projectPath: project.path, isActive: isActive)
-                            .opacity(isActive ? 1 : 0)
-                            .allowsHitTesting(isActive)
+                // ターミナル（左 — ヘッダー + ビューポート + フッター）
+                VStack(spacing: 0) {
+                    // ヘッダー: プロジェクト情報 + Stand ステータス
+                    terminalHeader
+
+                    // ビューポート: PTY → tmux セッション
+                    ZStack {
+                        ForEach(projects) { project in
+                            let isActive = selectedProjectPath == project.path
+                            TerminalRepresentable(projectPath: project.path, isActive: isActive)
+                                .opacity(isActive ? 1 : 0)
+                                .allowsHitTesting(isActive)
+                        }
+
+                        if selectedProjectPath == nil {
+                            ContentUnavailableView(
+                                "Select a Project",
+                                systemImage: "mountain.2",
+                                description: Text("Choose a project from the sidebar to start")
+                            )
+                        }
                     }
 
-                    if selectedProjectPath == nil {
-                        ContentUnavailableView(
-                            "Select a Project",
-                            systemImage: "mountain.2",
-                            description: Text("Choose a project from the sidebar to start")
-                        )
-                    }
+                    // フッター: ショートカットヒント
+                    terminalFooter
                 }
 
                 // Canvas（右）— トグルで表示/非表示、ドラッグで幅変更
@@ -150,6 +158,75 @@ struct MainWindowView: View {
             if let path = newPath {
                 notifications.remove(path)
             }
+        }
+    }
+
+    // MARK: - ターミナルヘッダー/フッター
+
+    /// 選択中プロジェクトの情報
+    private var selectedProject: SidebarProject? {
+        guard let path = selectedProjectPath else { return nil }
+        return projects.first(where: { $0.path == path })
+    }
+
+    /// ターミナル上部のヘッダー（プロジェクト名 + Stand ステータス）
+    @ViewBuilder
+    private var terminalHeader: some View {
+        if let project = selectedProject {
+            HStack(spacing: 8) {
+                Text(project.name)
+                    .fontWeight(.medium)
+
+                if project.isRunning {
+                    // Stand アイコン
+                    let activeStands = project.stands.filter { $0.status != "disabled" }
+                    ForEach(activeStands, id: \.key) { stand in
+                        HStack(spacing: 2) {
+                            Image(systemName: stand.systemImage)
+                            Text(stand.shortName)
+                        }
+                        .foregroundStyle(stand.statusColor)
+                    }
+                }
+
+                Spacer()
+
+                if let startedAt = project.startedAt {
+                    Text(startedAt, style: .time)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .font(.caption)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 4)
+            .background(.black.opacity(0.3))
+        }
+    }
+
+    /// ターミナル下部のフッター（ショートカットヒント）
+    @ViewBuilder
+    private var terminalFooter: some View {
+        if selectedProject != nil {
+            HStack(spacing: 16) {
+                shortcutHint("⌘O", "Canvas")
+                shortcutHint("⌘↑↓", "Project")
+                shortcutHint("⌘D", "Split")
+            }
+            .font(.caption2)
+            .foregroundStyle(.tertiary)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 3)
+            .background(.black.opacity(0.3))
+        }
+    }
+
+    /// ショートカットヒントの表示ヘルパー
+    private func shortcutHint(_ key: String, _ label: String) -> some View {
+        HStack(spacing: 3) {
+            Text(key)
+                .fontWeight(.medium)
+                .foregroundStyle(.secondary)
+            Text(label)
         }
     }
 
