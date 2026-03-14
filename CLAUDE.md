@@ -70,6 +70,8 @@ vantage-point/
 │   └── vantage-core/    # 共通ライブラリ
 ├── apple/               # macOS ネイティブアプリ (Swift)
 │   └── VantagePoint/    # メニューバーアプリ (SwiftUI)
+│        # サイドバー CRUD: ＋(NSOpenPanel)、右クリック(名前変更・削除)、D&D
+│        # ナビゲーション: ⌘↑/⌘↓ でプロジェクト切り替え（Navigate メニュー）
 ├── web/                 # WebView HTML/JS
 ├── docs/
 │   ├── spec/            # 仕様書
@@ -123,6 +125,18 @@ cargo clippy --workspace --all-targets    # Lint
   - Project: 33000〜33010 (HTTP + WS)
   - Unison per Process: 33100〜33110 (QUIC, +100)
 - `vp ps` で 33000-33010 をスキャン
+
+### プロセス管理（Reconciliation）
+
+TheWorld が **Push + Pull の二重パス** でプロセスを管理。どちらが落ちても自律復帰する。
+
+| パス | 仕組み | 用途 |
+|------|--------|------|
+| **Push (QUIC Registry)** | SP が TheWorld に QUIC 永続接続で自己登録。切断 = 即時除去 | リアルタイム検出 |
+| **Pull (ポートスキャン)** | TheWorld が 33000-33010 を 30秒間隔でスキャン | QUIC 障害時の自律復帰 |
+
+- `running_processes` / `projects` の HashMap キーは正規化パス（`normalize_path_key()`）。`project_name` は表示用ラベル
+- `/api/health` レスポンスに `stands` フィールドを含む（各 Stand の状態をリアルタイムで返す）
 
 ## Agent モジュール
 
@@ -180,6 +194,20 @@ state.send_debug_detail("category", "メッセージ", serde_json::json!({"key":
 2. WebUIデバッグパネル（右パネル）でログ確認
 3. ブラウザコンソールで `Received:` ログ確認
 4. 必要に応じてログ追加 → 再ビルド
+
+## MCP ツール補足
+
+### capture_terminal
+
+- `CGWindowListCopyWindowInfo`（`swift -e`）でウィンドウ ID を取得
+- プロセス名は `"Vantage Point"`（スペースあり）で照合
+
+## 今後の Issue
+
+| Issue | 概要 |
+|-------|------|
+| #108 | MCP TheWorld 経由統一 |
+| #109 | VP Shell コマンドレイヤー |
 
 ## クロスプロジェクト協業（MARU x VP）
 

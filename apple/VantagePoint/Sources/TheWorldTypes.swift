@@ -68,7 +68,35 @@ struct TWErrorResponse: Codable {
 /// Stand（Capability）のステータス
 struct StandStatus: Codable, Equatable {
     let status: String
-    let detail: [String: Int]?
+    /// Stand 固有の詳細情報（任意 JSON — Int/String/Bool 等を値に取りうる）
+    let detail: [String: AnyCodableValue]?
+}
+
+/// 任意の JSON 値を Codable でラップ（Stand detail 用）
+enum AnyCodableValue: Codable, Equatable {
+    case int(Int)
+    case string(String)
+    case bool(Bool)
+    case double(Double)
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let v = try? container.decode(Int.self) { self = .int(v); return }
+        if let v = try? container.decode(Bool.self) { self = .bool(v); return }
+        if let v = try? container.decode(Double.self) { self = .double(v); return }
+        if let v = try? container.decode(String.self) { self = .string(v); return }
+        throw DecodingError.typeMismatch(AnyCodableValue.self, .init(codingPath: decoder.codingPath, debugDescription: "Unsupported type"))
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .int(let v): try container.encode(v)
+        case .string(let v): try container.encode(v)
+        case .bool(let v): try container.encode(v)
+        case .double(let v): try container.encode(v)
+        }
+    }
 }
 
 /// TheWorld ヘルス詳細レスポンス

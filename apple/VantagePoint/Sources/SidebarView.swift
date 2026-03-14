@@ -133,7 +133,6 @@ struct SidebarProjectRow: View {
                         }
                     }
                 }
-            Spacer()
         }
         .opacity(project.isRunning ? 1.0 : 0.5)
     }
@@ -143,7 +142,7 @@ struct SidebarProjectRow: View {
 struct SidebarStand: Equatable {
     let key: String     // "heavens_door", "paisley_park", etc.
     let status: String  // "active", "idle", "connected", "disabled"
-    let detail: [String: Int]?
+    let detail: [String: AnyCodableValue]?
 
     /// Stand の SF Symbol 名（単色アイコン）
     var systemImage: String {

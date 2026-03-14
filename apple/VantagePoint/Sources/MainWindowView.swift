@@ -139,6 +139,15 @@ struct MainWindowView: View {
 
     // MARK: - プロジェクト CRUD
 
+    /// config.toml を保存（失敗時はログ出力）
+    private func saveConfig(_ config: ConfigManager.VpConfig) {
+        do {
+            try ConfigManager.shared.save(config)
+        } catch {
+            NSLog("[VP] config.toml 保存失敗: %@", error.localizedDescription)
+        }
+    }
+
     /// フォルダ選択ダイアログでプロジェクトを追加
     private func addProject() {
         let panel = NSOpenPanel()
@@ -157,7 +166,7 @@ struct MainWindowView: View {
         config.projects.append(
             ConfigManager.ProjectEntry(name: url.lastPathComponent, path: path)
         )
-        try? ConfigManager.shared.save(config)
+        saveConfig(config)
         loadProjects()
     }
 
@@ -169,7 +178,7 @@ struct MainWindowView: View {
         config.projects.append(
             ConfigManager.ProjectEntry(name: url.lastPathComponent, path: path)
         )
-        try? ConfigManager.shared.save(config)
+        saveConfig(config)
         loadProjects()
     }
 
@@ -177,7 +186,7 @@ struct MainWindowView: View {
     private func deleteProject(path: String) {
         var config = ConfigManager.shared.load()
         config.projects.removeAll { $0.path == path }
-        try? ConfigManager.shared.save(config)
+        saveConfig(config)
         loadProjects()
     }
 
@@ -191,7 +200,7 @@ struct MainWindowView: View {
                 port: config.projects[index].port
             )
         }
-        try? ConfigManager.shared.save(config)
+        saveConfig(config)
         loadProjects()
     }
 

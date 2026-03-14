@@ -178,7 +178,8 @@ final class ConfigManager: Sendable {
     /// TOML 文字列のアンエスケープ + クオート除去
     private func unquote(_ value: String) -> String {
         let stripped = value.trimmingCharacters(in: CharacterSet(charactersIn: "\""))
-        return stripped.replacingOccurrences(of: "\\\"", with: "\"")
-                       .replacingOccurrences(of: "\\\\", with: "\\")
+        return stripped.replacingOccurrences(of: "\\\\", with: "\u{0000}")  // \\ → 一時プレースホルダ
+                       .replacingOccurrences(of: "\\\"", with: "\"")     // \" → "
+                       .replacingOccurrences(of: "\u{0000}", with: "\\") // プレースホルダ → \
     }
 }
