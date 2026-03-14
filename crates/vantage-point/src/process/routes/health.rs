@@ -123,6 +123,16 @@ pub async fn canvas_handler() -> impl IntoResponse {
     )
 }
 
+/// Stand（Capability）のステータス
+#[derive(serde::Serialize)]
+pub struct StandStatus {
+    /// Stand の状態: "active", "idle", "connected", "disabled"
+    pub status: &'static str,
+    /// Stand 固有の詳細情報
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<serde_json::Value>,
+}
+
 /// Health check response
 #[derive(serde::Serialize)]
 pub struct HealthResponse {
@@ -135,6 +145,9 @@ pub struct HealthResponse {
     pub terminal_token: Option<String>,
     /// プロセス起動時刻（ISO 8601）
     pub started_at: String,
+    /// 配下の Stand（Capability）ステータス
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stands: Option<std::collections::HashMap<String, StandStatus>>,
 }
 
 pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthResponse> {
@@ -144,6 +157,70 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
         Some(state.terminal_token.clone())
     };
 
+    // Stand ステータスを収集（TheWorld モードでは省略）
+    let stands = if state.terminal_token != "WORLD_DISABLED" {
+        let mut map = std::collections::HashMap::new();
+
+        // 📖 Heaven's Door（Agent）— interactive_agent の有無で判定
+        let hd_status = {
+            let agent = state.interactive_agent.read().await;
+            if agent.is_some() { "active" } else { "idle" }
+        };
+        map.insert(
+            "heavens_door".to_string(),
+            StandStatus {
+                status: hd_status,
+                detail: None,
+            },
+        );
+
+        // 🧭 Paisley Park（Canvas）— WebSocket クライアント接続数
+        let canvas_clients = state.canvas_senders.lock().await.len();
+        map.insert(
+            "paisley_park".to_string(),
+            StandStatus {
+                status: if canvas_clients > 0 {
+                    "connected"
+                } else {
+                    "idle"
+                },
+                detail: Some(serde_json::json!({ "clients": canvas_clients })),
+            },
+        );
+
+        // 🌿 Gold Experience（ProcessRunner）— 実行中プロセス数
+        let running_processes = state.process_registry.lock().await.list().len();
+        map.insert(
+            "gold_experience".to_string(),
+            StandStatus {
+                status: if running_processes > 0 {
+                    "active"
+                } else {
+                    "idle"
+                },
+                detail: Some(serde_json::json!({ "processes": running_processes })),
+            },
+        );
+
+        // 🍇 Hermit Purple（MIDI）— Capability 有無
+        let midi_status = if state.capabilities.midi.is_some() {
+            "active"
+        } else {
+            "disabled"
+        };
+        map.insert(
+            "hermit_purple".to_string(),
+            StandStatus {
+                status: midi_status,
+                detail: None,
+            },
+        );
+
+        Some(map)
+    } else {
+        None
+    };
+
     Json(HealthResponse {
         status: "ok",
         version: env!("CARGO_PKG_VERSION"),
@@ -151,6 +228,7 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
         project_dir: state.project_dir.clone(),
         terminal_token: token,
         started_at: state.started_at.clone(),
+        stands,
     })
 }
 
