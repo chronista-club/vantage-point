@@ -384,21 +384,24 @@ impl BridgePty {
 
         // Backend に書き込み
         let mut be = backend.lock().unwrap();
-        // まずクリア
+        let y_offset = be.pty_y_offset();
+        // PTY 領域のみクリア（クロームヘッダー/フッターは保持）
+        // TODO: 部分クリアに最適化。現在は全体クリア後にクローム再描画が必要
         let _ = be.clear();
         be.clear_wide_flags();
-        // ワイドフラグを設定（VT パーサーの判定結果をそのまま伝搬）
+        // ワイドフラグを設定（Y オフセット付き）
         for &(x, y) in &wide_positions {
-            be.set_wide_flag(x, y, true);
+            be.set_wide_flag(x, y + y_offset, true);
         }
-        // セル書き込み
-        let refs: Vec<(u16, u16, &Cell)> = cells.iter().map(|(x, y, c)| (*x, *y, c)).collect();
+        // セル書き込み（Y オフセット付き — クロームヘッダーの下から描画）
+        let refs: Vec<(u16, u16, &Cell)> =
+            cells.iter().map(|(x, y, c)| (*x, *y + y_offset, c)).collect();
         let _ = be.draw(refs.into_iter());
-        // カーソル設定（負値の場合は無視）
+        // カーソル設定（Y オフセット付き）
         if cursor_line >= 0 && (cursor_line as usize) < lines {
             let _ = be.set_cursor_position(ratatui::layout::Position::new(
                 cursor_col,
-                cursor_line as u16,
+                cursor_line as u16 + y_offset,
             ));
         }
         if cursor_visible {

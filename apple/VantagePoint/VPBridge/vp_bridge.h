@@ -136,6 +136,21 @@ bool vp_bridge_pty_is_running(void);
 void vp_bridge_pty_stop(void);
 
 // =============================================================================
+// クローム（ヘッダー/フッター）
+// =============================================================================
+
+/// クローム領域を設定（ヘッダー/フッターの行数）
+/// PTY には height - header - footer 行が通知される
+void vp_bridge_set_chrome(uint32_t session_id, uint16_t header_rows, uint16_t footer_rows);
+
+/// クローム行にテキストを書き込む
+/// @param y グリッド上の絶対行番号（0 = 最上行）
+/// @param text UTF-8 文字列
+/// @param fg 前景色 RGBA (0 = デフォルト)
+/// @param bg 背景色 RGBA (0 = デフォルト)
+void vp_bridge_write_chrome_line(uint32_t session_id, uint16_t y, const char *text, uint32_t fg, uint32_t bg);
+
+// =============================================================================
 // テスト・ユーティリティ
 // =============================================================================
 

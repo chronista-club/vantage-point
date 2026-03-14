@@ -38,6 +38,10 @@ pub struct NativeBackend {
     frame_callback: Option<FrameReadyCallback>,
     /// ダーティフラグ（draw 後〜flush 前を追跡）
     dirty: AtomicBool,
+    /// クロームヘッダー行数（PTY 出力のオフセット）
+    chrome_header_rows: u16,
+    /// クロームフッター行数
+    chrome_footer_rows: u16,
 }
 
 impl NativeBackend {
@@ -53,7 +57,55 @@ impl NativeBackend {
             cursor_visible: true,
             frame_callback: None,
             dirty: AtomicBool::new(false),
+            chrome_header_rows: 0,
+            chrome_footer_rows: 0,
         }
+    }
+
+    /// クローム（ヘッダー/フッター）の行数を設定
+    ///
+    /// PTY 出力は `chrome_header_rows` 行目からオフセットされる。
+    /// PTY に通知するグリッドサイズは `height - header - footer`。
+    pub fn set_chrome(&mut self, header_rows: u16, footer_rows: u16) {
+        self.chrome_header_rows = header_rows;
+        self.chrome_footer_rows = footer_rows;
+    }
+
+    /// PTY に通知すべきグリッドサイズ（クローム分を除いた行数）
+    pub fn pty_rows(&self) -> u16 {
+        self.height
+            .saturating_sub(self.chrome_header_rows)
+            .saturating_sub(self.chrome_footer_rows)
+    }
+
+    /// PTY 出力の Y オフセット（ヘッダー行数分だけ下にずらす）
+    pub fn pty_y_offset(&self) -> u16 {
+        self.chrome_header_rows
+    }
+
+    /// クローム行にスタイル付きテキストを書き込む
+    ///
+    /// ratatui の Cell/Style を使って任意の行にテキストを描画。
+    /// ヘッダー/フッターの描画に使用。
+    pub fn write_chrome_line(&mut self, y: u16, text: &str, style: ratatui::style::Style) {
+        if y >= self.height {
+            return;
+        }
+        // 行全体をクリア
+        for x in 0..self.width {
+            let cell = &mut self.buffer[(x, y)];
+            cell.reset();
+            cell.set_style(style);
+        }
+        // テキストを書き込み
+        for (i, ch) in text.chars().enumerate() {
+            let x = i as u16;
+            if x >= self.width {
+                break;
+            }
+            self.buffer[(x, y)].set_char(ch);
+        }
+        self.dirty.store(true, Ordering::Release);
     }
 
     /// フレーム更新コールバックを登録
