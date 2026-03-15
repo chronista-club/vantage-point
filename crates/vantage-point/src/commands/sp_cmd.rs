@@ -45,6 +45,11 @@ fn sp_start(session_name: &str, project_dir: &str) -> Result<()> {
         anyhow::bail!("tmux が見つかりません。インストールしてください。");
     }
 
+    // ゴーストセッションを掃除（tmux が消えてるのに ccwire に残ってるエントリ）
+    if let Err(e) = crate::ccwire::cleanup_stale() {
+        eprintln!("⚠️  ccwire ゴースト掃除失敗: {}", e);
+    }
+
     // tmux セッション作成（既にあれば再利用）
     if tmux::session_exists(session_name) {
         println!("✅ tmux セッション '{}' は既に存在します", session_name);
@@ -133,27 +138,11 @@ fn sp_status(session_name: &str) -> Result<()> {
         println!("   tmux:   ❌ not found");
     }
 
-    // ccwire 状態
-    let db_path = dirs::home_dir()
-        .unwrap_or_default()
-        .join(".cache/ccwire/ccwire.db");
-    if db_path.exists() {
-        if let Ok(conn) = rusqlite::Connection::open(&db_path) {
-            let registered: bool = conn
-                .query_row(
-                    "SELECT COUNT(*) > 0 FROM sessions WHERE name = ?1",
-                    rusqlite::params![session_name],
-                    |row| row.get(0),
-                )
-                .unwrap_or(false);
-            if registered {
-                println!("   ccwire: ✅ registered");
-            } else {
-                println!("   ccwire: ❌ not registered");
-            }
-        }
+    // ccwire 状態（ccwire.rs の公開関数を使用）
+    if crate::ccwire::is_registered(session_name) {
+        println!("   ccwire: ✅ registered");
     } else {
-        println!("   ccwire: ⚠️  DB not found");
+        println!("   ccwire: ❌ not registered");
     }
 
     Ok(())

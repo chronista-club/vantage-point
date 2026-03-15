@@ -111,5 +111,60 @@ pub fn heartbeat(session_name: &str) -> Result<()> {
     Ok(())
 }
 
-/// heartbeat インターバル（3分）
+/// heartbeat インターバル（3分）— レガシー、vp sp では不使用
 pub const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(180);
+
+/// 古いゴーストセッションを掃除
+///
+/// tmux セッションが存在しないのに ccwire に登録が残ってるエントリを削除。
+/// `vp sp start` 時に呼ぶ。
+pub fn cleanup_stale() -> Result<()> {
+    let db = db_path();
+    if !db.exists() {
+        return Ok(());
+    }
+
+    let conn = Connection::open(&db)?;
+    let mut stmt = conn.prepare("SELECT name FROM sessions")?;
+    let names: Vec<String> = stmt
+        .query_map([], |row| row.get(0))?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let mut removed = 0;
+    for name in &names {
+        // tmux セッションが存在しない → ゴースト
+        if !crate::tmux::session_exists(name) {
+            conn.execute(
+                "DELETE FROM sessions WHERE name = ?1",
+                rusqlite::params![name],
+            )?;
+            removed += 1;
+            tracing::info!("ccwire ゴースト除去: {}", name);
+        }
+    }
+
+    if removed > 0 {
+        tracing::info!("ccwire ゴースト掃除完了: {}件削除", removed);
+    }
+
+    Ok(())
+}
+
+/// セッションが登録されているか確認
+pub fn is_registered(session_name: &str) -> bool {
+    let db = db_path();
+    if !db.exists() {
+        return false;
+    }
+
+    Connection::open(&db)
+        .and_then(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) > 0 FROM sessions WHERE name = ?1",
+                rusqlite::params![session_name],
+                |row| row.get(0),
+            )
+        })
+        .unwrap_or(false)
+}
