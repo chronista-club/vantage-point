@@ -151,8 +151,7 @@ fn sp_status(session_name: &str) -> Result<()> {
 /// セッションに接続（vp tui 経由）
 fn sp_attach(session_name: &str, config: &Config) -> Result<()> {
     if !tmux::session_exists(session_name) {
-        eprintln!("セッション '{}' が見つかりません。先に vp sp start してください。", session_name);
-        std::process::exit(1);
+        anyhow::bail!("セッション '{}' が見つかりません。先に vp sp start してください。", session_name);
     }
 
     // vp tui に委譲

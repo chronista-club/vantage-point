@@ -41,6 +41,14 @@ struct TerminalRepresentable: NSViewRepresentable {
         let wasActive = nsView.isActive
         nsView.isActive = isActive
 
+        // PTY 終了検知 → 自動復旧（クールダウン付き）
+        if isActive && nsView.bridgeInitialized
+            && !vp_bridge_pty_is_running_session(nsView.sessionId)
+            && nsView.lastPtyCwd != nil
+        {
+            nsView.restartPtyIfNeeded()
+        }
+
         // アクティブに切り替わった → 即座に再描画（フレームコールバック待ちの間の stale 表示を防ぐ）
         if isActive && !wasActive {
             nsView.needsDisplay = true

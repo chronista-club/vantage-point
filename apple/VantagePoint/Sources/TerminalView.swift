@@ -99,7 +99,7 @@ class TerminalView: NSView {
     private var cellBuffer: [VPCellData] = []
 
     /// Bridge 初期化済みフラグ
-    private var bridgeInitialized: Bool { sessionId != 0 }
+    var bridgeInitialized: Bool { sessionId != 0 }
 
     /// 遅延 PTY 起動用: レイアウト確定後に自動起動するコマンド
     var deferredPtyCommand: String?
@@ -115,6 +115,16 @@ class TerminalView: NSView {
 
     /// 遅延フッターテキスト（PTY 起動後に行数確定してから描画）
     var deferredFooterText: String?
+
+    /// PTY 起動時のコマンド（再起動用に保持）
+    var lastPtyCommand: String?
+    /// PTY 起動時の CWD（再起動用に保持）
+    var lastPtyCwd: String?
+    /// PTY 自動復旧: 終了検知 → 再起動（クールダウン付き）
+    private var ptyRestartCount: Int = 0
+    private var lastPtyExit: Date?
+    private static let maxRestartCount = 3
+    private static let restartCooldown: TimeInterval = 5.0
 
     // MARK: - 初期化
 
@@ -758,6 +768,10 @@ class TerminalView: NSView {
     func startPty(cwd: String? = nil, command: String? = nil) {
         guard bridgeInitialized else { return }
 
+        // 再起動用にコマンドを保持
+        lastPtyCommand = command
+        lastPtyCwd = cwd
+
         // PTY に渡す行数はクローム分を引く
         let ptyRows = max(1, gridRows - chromeHeaderRows - chromeFooterRows)
 
@@ -793,6 +807,31 @@ class TerminalView: NSView {
             }
             needsDisplay = true
         }
+    }
+
+    /// PTY 終了を検知して自動復旧（クールダウン付き）
+    ///
+    /// 最大3回まで再起動、5秒以内の連続終了はカウントアップ。
+    /// 無限ループ防止のため上限で停止。
+    func restartPtyIfNeeded() {
+        let now = Date()
+
+        // クールダウン: 前回の終了から5秒以内は待つ
+        if let lastExit = lastPtyExit, now.timeIntervalSince(lastExit) < Self.restartCooldown {
+            return
+        }
+
+        // 再起動上限チェック
+        guard ptyRestartCount < Self.maxRestartCount else {
+            NSLog("[VP] PTY 再起動上限に到達 (%d回)。手動で再起動してください。", ptyRestartCount)
+            return
+        }
+
+        lastPtyExit = now
+        ptyRestartCount += 1
+
+        NSLog("[VP] PTY 終了検知 → 自動復旧 (%d/%d)", ptyRestartCount, Self.maxRestartCount)
+        startPty(cwd: lastPtyCwd, command: lastPtyCommand)
     }
 
     /// PTY を停止
