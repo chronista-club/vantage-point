@@ -25,11 +25,15 @@ struct TerminalRepresentable: NSViewRepresentable {
         // tmux セッション名: {project}-vp（SP が作成済み）
         let tmuxSession = projectName.replacingOccurrences(of: ".", with: "-") + "-vp"
 
-        // vp tui を起動（ratatui コンソール → tmux セッション）
-        // vp tui が未インストールなら tmux attach に直接フォールバック
+        // フォールバックチェーン: vp tui → tmux attach → zsh → claude
+        // 1. vp tui: ratatui コンソール（最優先）
+        // 2. tmux attach: tmux 直接接続
+        // 3. zsh -l: ログインシェル
+        // 4. ccf: claude --continue --dangerously-skip-permissions
         view.deferredPtyCwd = cwd
         let vpBin = "\(NSHomeDirectory())/.cargo/bin/vp"
-        view.deferredPtyCommand = "\(vpBin) tui --session \(tmuxSession) 2>/dev/null || /opt/homebrew/bin/tmux attach-session -t \(tmuxSession) 2>/dev/null || exec zsh -l"
+        let claudeBin = "\(NSHomeDirectory())/.claude/local/bin/claude"
+        view.deferredPtyCommand = "\(vpBin) tui --session \(tmuxSession) 2>/dev/null || /opt/homebrew/bin/tmux attach-session -t \(tmuxSession) 2>/dev/null || exec zsh -l -c '\(claudeBin) --continue --dangerously-skip-permissions 2>/dev/null || exec zsh -l'"
         return view
     }
 
