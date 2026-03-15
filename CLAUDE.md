@@ -205,12 +205,12 @@ state.send_debug_detail("category", "メッセージ", serde_json::json!({"key":
 ## プロジェクト管理（Linear）
 
 **Linear プロジェクト**: [Vantage Point](https://linear.app/chronista/project/vantage-point-d0b78d9cb67e)
-**チーム**: VP
+**チーム**: Vantage Point (VP)
 
 ### ルール
 
 - **Issue 管理は Linear に一元化**（GitHub Issues は使わない）
-- Issue 作成: `save_issue` MCP ツールで作成、`project: "Vantage Point"` + `team: "VP"` を指定
+- Issue 作成: `save_issue` MCP ツールで作成、`project: "Vantage Point"` + `team: "Vantage Point"` を指定
 - ブランチ名: Linear が生成する `mako/vp-XX-...` 形式を使用
 - PR: `Closes VP-XX` でマージ時に Linear Issue を自動クローズ
 - ステータス: 実装開始 → In Progress、完了 → Done
