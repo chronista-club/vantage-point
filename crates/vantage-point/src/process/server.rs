@@ -27,7 +27,6 @@ use crate::file_watcher::FileWatcherManager;
 use crate::protocol::DebugMode;
 
 /// Run the Process server
-
 pub async fn run(
     port: u16,
     auto_open_browser: bool,

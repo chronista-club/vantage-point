@@ -3,12 +3,9 @@ import SwiftUI
 
 // MARK: - Font
 
-/// Fira Code Nerd Font → system default フォールバック
+/// システムフォント（ポップオーバー用）
 private func vpFont(size: CGFloat, weight: Font.Weight = .regular) -> Font {
-    if let _ = NSFont(name: "FiraCode Nerd Font", size: size) {
-        return .custom("FiraCode Nerd Font", size: size).weight(weight)
-    }
-    return .system(size: size, weight: weight)
+    .system(size: size, weight: weight)
 }
 
 /// メニューバーポップオーバー — リスタート中心のシンプルメニュー
@@ -21,11 +18,12 @@ struct PopoverView: View {
             headerView
             Divider()
 
-            // グローバルアクション
-            globalActions
+            // 👑 World エリア（デーモン管理）
+            worldSection
             Divider()
 
-            // プロジェクト別
+            // ⭐ SP エリア（プロジェクト別セッション）
+            spSectionHeader
             if viewModel.projects.isEmpty {
                 emptyView
             } else {
@@ -56,22 +54,52 @@ struct PopoverView: View {
         .padding(.vertical, 10)
     }
 
-    // MARK: - Global Actions
+    // MARK: - World Section
 
-    private var globalActions: some View {
+    private var worldSection: some View {
         VStack(spacing: 0) {
-            MenuRow(label: "Restart All Process", icon: "arrow.triangle.2.circlepath",
-                    isLoading: viewModel.isRestartingAll) {
-                Task { await viewModel.restartAll() }
+            // セクションヘッダー
+            HStack {
+                Image(systemName: "crown")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Text("World")
+                    .font(vpFont(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Circle()
+                    .fill(viewModel.theWorldState == .connected ? Color.green : Color.red)
+                    .frame(width: 6, height: 6)
             }
-            MenuRow(label: "Restart Daemon", icon: "globe",
+            .padding(.horizontal, 14)
+            .padding(.vertical, 6)
+
+            MenuRow(label: "Restart Daemon", icon: "arrow.clockwise",
                     isLoading: viewModel.isRestartingTheWorld) {
                 Task { await viewModel.restartTheWorld() }
             }
-            MenuRow(label: "Restart App", icon: "arrow.clockwise", isLoading: false) {
-                viewModel.restartApp()
-            }
         }
+    }
+
+    // MARK: - SP Section
+
+    private var spSectionHeader: some View {
+        HStack {
+            Image(systemName: "star")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Text("Projects")
+                .font(vpFont(size: 11, weight: .medium))
+                .foregroundStyle(.secondary)
+            Spacer()
+            MenuRow(label: "Restart All", icon: "arrow.triangle.2.circlepath",
+                    isLoading: viewModel.isRestartingAll) {
+                Task { await viewModel.restartAll() }
+            }
+            .frame(width: 120)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 4)
     }
 
     // MARK: - Project List
