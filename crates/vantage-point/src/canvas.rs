@@ -121,22 +121,6 @@ pub fn stop_canvas() -> Option<u32> {
     Some(pid)
 }
 
-/// 別プロセスで Canvas ウィンドウを起動（レガシー互換）
-pub fn run_canvas_detached(port: u16, project_name: &str) -> anyhow::Result<()> {
-    let vp_bin = std::env::current_exe().unwrap_or_else(|_| "vp".into());
-    std::process::Command::new(&vp_bin)
-        .args([
-            "canvas",
-            "internal",
-            "--port",
-            &port.to_string(),
-            "--name",
-            project_name,
-        ])
-        .spawn()?;
-    Ok(())
-}
-
 /// キャンバスウィンドウ（WebViewのみ、ターミナルなし）
 ///
 /// Processの Web UIをスタンドアロンウィンドウで表示。

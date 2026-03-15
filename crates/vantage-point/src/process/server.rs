@@ -78,13 +78,12 @@ pub async fn run(
     .to_string();
     let tmux_session = crate::tmux::session_name(&project_name);
 
-    let tmux_handle = if crate::tmux::is_tmux_available()
-        && crate::tmux::session_exists(&tmux_session)
-    {
-        super::tmux_actor::spawn_for_session(&tmux_session)
-    } else {
-        None
-    };
+    let tmux_handle =
+        if crate::tmux::is_tmux_available() && crate::tmux::session_exists(&tmux_session) {
+            super::tmux_actor::spawn_for_session(&tmux_session)
+        } else {
+            None
+        };
 
     // TopicRouter 初期化 + Hub → TopicRouter ブリッジ
     let topic_router = Arc::new(TopicRouter::new());

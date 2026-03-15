@@ -94,29 +94,20 @@ async fn handle_unwatch_file(
 // Canvas チャネル ハンドラー
 // =============================================================================
 
-/// PP Window (Paisley Park) を開く（TheWorld フォールバック付き）
+/// PP Window (Paisley Park) を開く — AppState 経由で一元管理
 async fn handle_canvas_open(state: &AppState) -> Result<serde_json::Value, String> {
-    let (port, lanes) = crate::canvas::canvas_target(state.port);
-    let project_name = state.project_dir.rsplit('/').next();
-    match crate::canvas::ensure_canvas_running(port, lanes, project_name) {
+    match state.ensure_canvas().await {
         Ok(pid) => {
-            *state.canvas_pid.lock().await = Some(pid);
-            tracing::info!(
-                "PP Window opened (pid={}, port={}, lanes={})",
-                pid,
-                port,
-                lanes
-            );
+            tracing::info!("PP Window opened via QUIC (pid={})", pid);
             Ok(serde_json::json!({"status": "opened", "pid": pid}))
         }
         Err(e) => Err(format!("Failed to open PP window: {}", e)),
     }
 }
 
-/// canvas.close メソッドのハンドラー（シングルトン管理）
+/// canvas.close メソッドのハンドラー — AppState 経由で一元管理
 async fn handle_canvas_close(state: &AppState) -> Result<serde_json::Value, String> {
-    if let Some(pid) = crate::canvas::stop_canvas() {
-        *state.canvas_pid.lock().await = None;
+    if let Some(pid) = state.close_canvas().await {
         tracing::info!("Canvas window closed via QUIC (pid={})", pid);
         Ok(serde_json::json!({"status": "closed", "pid": pid}))
     } else {

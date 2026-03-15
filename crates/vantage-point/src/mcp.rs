@@ -774,16 +774,12 @@ impl VantageMcp {
         self.quic_call(method, payload).await
     }
 
-    /// PP Window が存在しなければ自動起動
+    /// PP Window が存在しなければ自動起動（SP 経由で一元管理）
     ///
-    /// TheWorld 稼働中 → WORLD_PORT + Lane モード
-    /// 未稼働 → Process ポート + 単体モード
+    /// QUIC "process" チャネルの open_canvas を呼び出し、
+    /// SP の AppState が Canvas ライフサイクルを管理する。
     async fn ensure_pp_window(&self) {
-        if crate::canvas::find_running_canvas().is_none() {
-            let sp_port = *self.process_port.lock().await;
-            let (port, lanes) = crate::canvas::canvas_target(sp_port);
-            let _ = crate::canvas::ensure_canvas_running(port, lanes, None);
-        }
+        let _ = self.quic_call("open_canvas", serde_json::json!({})).await;
     }
 
     /// PP Window（Paisley Park）を開く
@@ -798,18 +794,25 @@ impl VantageMcp {
         )]))
     }
 
-    /// PP Window を閉じる
+    /// PP Window を閉じる（SP 経由で一元管理）
     #[tool(description = "Close the Paisley Park (PP) window.")]
     async fn close_canvas(&self) -> Result<CallToolResult, McpError> {
-        if let Some(pid) = crate::canvas::stop_canvas() {
-            Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-                format!("PP Window closed (pid={})", pid),
-            )]))
+        let result = self
+            .quic_call("close_canvas", serde_json::json!({}))
+            .await?;
+        let status = result
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        let msg = if status == "closed" {
+            let pid = result.get("pid").and_then(|v| v.as_u64()).unwrap_or(0);
+            format!("PP Window closed (pid={})", pid)
         } else {
-            Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-                "PP Window was not open".to_string(),
-            )]))
-        }
+            "PP Window was not open".to_string()
+        };
+        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+            msg,
+        )]))
     }
 
     /// Canvas の表示 Lane を切り替える
@@ -1455,17 +1458,27 @@ impl VantageMcp {
         let swift_script = r#"
 import CoreGraphics
 let windows = CGWindowListCopyWindowInfo(.optionAll, kCGNullWindowID) as? [[String: Any]] ?? []
+// layer=0 で最も大きいウィンドウをメインウィンドウとみなす
+// （ウィンドウタイトルが空の場合があるため name ではなくサイズで判定）
+var bestId = 0
+var bestArea = 0
 for w in windows {
     let owner = w["kCGWindowOwnerName"] as? String ?? ""
     if owner.contains("Vantage") || owner == "VantagePoint" {
         let layer = w["kCGWindowLayer"] as? Int ?? -1
-        let name = w["kCGWindowName"] as? String ?? ""
-        if layer == 0 && !name.isEmpty {
-            print(w["kCGWindowNumber"] as? Int ?? 0)
-            break
+        if layer == 0 {
+            let bounds = w["kCGWindowBounds"] as? [String: Any] ?? [:]
+            let width = bounds["Width"] as? Int ?? 0
+            let height = bounds["Height"] as? Int ?? 0
+            let area = width * height
+            if area > bestArea {
+                bestArea = area
+                bestId = w["kCGWindowNumber"] as? Int ?? 0
+            }
         }
     }
 }
+if bestId > 0 { print(bestId) }
 "#;
         let wid_output = tokio::process::Command::new("swift")
             .args(["-e", swift_script])

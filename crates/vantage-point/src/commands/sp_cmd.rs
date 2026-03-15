@@ -24,10 +24,7 @@ pub enum SpCommands {
 /// vp sp コマンドを実行
 pub fn execute(cmd: SpCommands, config: &Config) -> Result<()> {
     let cwd = std::env::current_dir()?;
-    let project_name = crate::resolve::project_name_from_path(
-        &cwd.to_string_lossy(),
-        config,
-    );
+    let project_name = crate::resolve::project_name_from_path(&cwd.to_string_lossy(), config);
     let session_name = tmux::session_name(&project_name);
     let project_dir = cwd.to_string_lossy().to_string();
 
@@ -55,7 +52,16 @@ fn sp_start(session_name: &str, project_dir: &str) -> Result<()> {
         println!("✅ tmux セッション '{}' は既に存在します", session_name);
     } else {
         match std::process::Command::new("tmux")
-            .args(["new-session", "-d", "-s", session_name, "-c", project_dir])
+            .args([
+                "new-session",
+                "-d",
+                "-s",
+                session_name,
+                "-c",
+                project_dir,
+                "-e",
+                "VP_TUI=1",
+            ])
             .status()
         {
             Ok(s) if s.success() => {
@@ -66,6 +72,11 @@ fn sp_start(session_name: &str, project_dir: &str) -> Result<()> {
             }
         }
     }
+
+    // VP_TUI 環境変数をセッションに設定（全ペインに伝搬）
+    let _ = std::process::Command::new("tmux")
+        .args(["set-environment", "-t", session_name, "VP_TUI", "1"])
+        .status();
 
     // ccwire 登録
     let tmux_target = format!("{}:0.0", session_name);
@@ -116,8 +127,11 @@ fn sp_status(session_name: &str) -> Result<()> {
         // ペイン情報を取得
         let output = std::process::Command::new("tmux")
             .args([
-                "list-panes", "-t", session_name,
-                "-F", "#{pane_id} #{pane_current_command} #{pane_width}x#{pane_height}",
+                "list-panes",
+                "-t",
+                session_name,
+                "-F",
+                "#{pane_id} #{pane_current_command} #{pane_width}x#{pane_height}",
             ])
             .output();
 
@@ -151,7 +165,10 @@ fn sp_status(session_name: &str) -> Result<()> {
 /// セッションに接続（vp tui 経由）
 fn sp_attach(session_name: &str, config: &Config) -> Result<()> {
     if !tmux::session_exists(session_name) {
-        anyhow::bail!("セッション '{}' が見つかりません。先に vp sp start してください。", session_name);
+        anyhow::bail!(
+            "セッション '{}' が見つかりません。先に vp sp start してください。",
+            session_name
+        );
     }
 
     // vp tui に委譲

@@ -191,6 +191,36 @@ impl AppState {
     }
 
     // =========================================================================
+    // Canvas ライフサイクル管理
+    // =========================================================================
+
+    /// Canvas を確実に起動する（TheWorld フォールバック付き）
+    ///
+    /// SP が Canvas のライフサイクルを一元管理する。
+    /// PID ファイルと AppState の canvas_pid を同期。
+    pub async fn ensure_canvas(&self) -> anyhow::Result<u32> {
+        let (port, lanes) = crate::canvas::canvas_target(self.port);
+        let project_name = self.project_dir.rsplit('/').next();
+        let pid = crate::canvas::ensure_canvas_running(port, lanes, project_name)?;
+        *self.canvas_pid.lock().await = Some(pid);
+        Ok(pid)
+    }
+
+    /// Canvas を停止する
+    ///
+    /// PID ファイル削除 + AppState の canvas_pid をクリア。
+    pub async fn close_canvas(&self) -> Option<u32> {
+        let pid = crate::canvas::stop_canvas()?;
+        *self.canvas_pid.lock().await = None;
+        Some(pid)
+    }
+
+    /// Canvas が起動中か確認（PID ファイルベース）
+    pub fn is_canvas_open(&self) -> bool {
+        crate::canvas::find_running_canvas().is_some()
+    }
+
+    // =========================================================================
     // Canvas 状態永続化
     // =========================================================================
 

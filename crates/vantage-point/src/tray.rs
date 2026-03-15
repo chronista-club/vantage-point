@@ -182,8 +182,13 @@ pub fn run_tray() -> anyhow::Result<()> {
                             crate::resolve::project_name_from_path(&i.project_dir, &config)
                         })
                         .unwrap_or_else(|| "Vantage Point".to_string());
-                    if let Err(e) = crate::canvas::run_canvas_detached(port, &project_name) {
-                        tracing::error!("Failed to open WebView: {}", e);
+                    let (canvas_port, lanes) = crate::canvas::canvas_target(port);
+                    if let Err(e) = crate::canvas::ensure_canvas_running(
+                        canvas_port,
+                        lanes,
+                        Some(&project_name),
+                    ) {
+                        tracing::error!("Failed to open Canvas: {}", e);
                         // Fallback to browser
                         let url = format!("http://localhost:{}", port);
                         let _ = open::that(&url);

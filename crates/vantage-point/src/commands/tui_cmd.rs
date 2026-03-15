@@ -48,9 +48,7 @@ fn execute_command(input: &str, session_name: &str) -> String {
         "q" | "quit" => {
             std::process::exit(0);
         }
-        "help" | "h" => {
-            ":split :vsplit :quit :help".to_string()
-        }
+        "help" | "h" => ":split :vsplit :quit :help".to_string(),
         _ => {
             if args.is_empty() {
                 format!("Unknown command: {}", cmd)
@@ -101,7 +99,6 @@ pub fn execute(session: Option<String>, config: &Config) -> Result<()> {
 
 /// ratatui コンソールのメインループ
 async fn run_tui_console(session_name: &str) -> Result<()> {
-    use std::io;
     use crossterm::event::{self, Event, KeyCode, KeyModifiers};
     use crossterm::terminal::{
         EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -109,8 +106,10 @@ async fn run_tui_console(session_name: &str) -> Result<()> {
     use ratatui::Terminal;
     use ratatui::backend::CrosstermBackend;
     use ratatui::layout::{Constraint, Layout};
-    use ratatui::style::{Color, Style};
-    use ratatui::widgets::Paragraph;
+    use ratatui::style::{Color, Modifier, Style};
+    use ratatui::text::{Line, Span};
+    use ratatui::widgets::{Block, Borders, Paragraph};
+    use std::io;
 
     // ターミナル初期化
     enable_raw_mode()?;
@@ -121,9 +120,10 @@ async fn run_tui_console(session_name: &str) -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     // PTY でtmux attach を起動
+    // レイアウト: ヘッダー1行 + ボーダー上1行 + PTY + ボーダー下1行 + フッター1行
     let size = terminal.size()?;
-    let pty_rows = size.height.saturating_sub(2); // ヘッダー1行 + フッター1行
-    let pty_cols = size.width;
+    let pty_rows = size.height.saturating_sub(4).max(1); // ヘッダー + ボーダー上下 + フッター
+    let pty_cols = size.width.saturating_sub(2).max(1); // ボーダー左右
 
     let term_state = std::sync::Arc::new(std::sync::Mutex::new(
         crate::terminal::state::TerminalState::new(pty_cols as usize, pty_rows as usize),
@@ -165,6 +165,8 @@ async fn run_tui_console(session_name: &str) -> Result<()> {
 
     let reader = pair.master.try_clone_reader()?;
     let mut writer = pair.master.take_writer()?;
+    // リサイズ用に master を保持
+    let pty_master = std::sync::Arc::new(std::sync::Mutex::new(pair.master));
 
     // PTY 出力リーダースレッド
     let term_state_for_reader = term_state.clone();
@@ -190,15 +192,16 @@ async fn run_tui_console(session_name: &str) -> Result<()> {
         .to_string();
 
     // Stand 情報を定期取得（5秒間隔、バックグラウンド）
-    let header_text = std::sync::Arc::new(std::sync::Mutex::new(
-        format!("  {}  │  connecting...", project_name),
-    ));
+    let header_text = std::sync::Arc::new(std::sync::Mutex::new(format!(
+        "  {}  │  connecting...",
+        project_name
+    )));
     {
         let header_text = header_text.clone();
         let project_name = project_name.clone();
         // SP のポートを発見（cwd ベースで TheWorld に問い合わせ）
-        let cwd_for_discover = cwd.clone();
-        let port = crate::discovery::find_by_project_blocking(&cwd_for_discover)
+        let port = crate::discovery::find_by_project(&cwd)
+            .await
             .map(|p| p.port);
         std::thread::spawn(move || {
             let client = reqwest::blocking::Client::builder()
@@ -268,27 +271,48 @@ async fn run_tui_console(session_name: &str) -> Result<()> {
         terminal.draw(|frame| {
             let chunks = Layout::vertical([
                 Constraint::Length(1), // ヘッダー
-                Constraint::Min(1),    // ターミナル
+                Constraint::Min(1),    // ターミナル（ボーダー込み）
                 Constraint::Length(1), // フッター
             ])
             .split(frame.area());
 
-            // ヘッダー（動的: Stand + 時刻）
-            let header = Paragraph::new(current_header)
-                .style(Style::default().fg(Color::Gray).bg(Color::DarkGray));
+            // ヘッダー（project-lead ラベル + Stand + 時刻）
+            let header = Paragraph::new(Line::from(vec![
+                Span::styled(
+                    " project-lead ",
+                    Style::default()
+                        .fg(Color::Rgb(11, 17, 32))
+                        .bg(Color::Rgb(136, 192, 208))
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    &current_header,
+                    Style::default()
+                        .fg(Color::Rgb(216, 222, 233))
+                        .bg(Color::Rgb(46, 52, 64)),
+                ),
+            ]))
+            .style(Style::default().bg(Color::Rgb(46, 52, 64)));
             frame.render_widget(header, chunks[0]);
 
-            // ターミナルビューポート
+            // ターミナルビューポート（ボーダー付き）
             let state = term_state.lock().unwrap();
             let snapshot = state.snapshot();
             let widget = crate::tui::terminal_widget::TerminalView::new(&snapshot);
-            frame.render_widget(widget, chunks[1]);
+            let border_block = Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Rgb(76, 86, 106)));
+            let inner = border_block.inner(chunks[1]);
+            frame.render_widget(border_block, chunks[1]);
+            frame.render_widget(widget, inner);
 
             // フッター（通常 or コマンド入力）
             let footer_style = if command_mode {
-                Style::default().fg(Color::White).bg(Color::DarkGray)
+                Style::default().fg(Color::White).bg(Color::Rgb(46, 52, 64))
             } else {
-                Style::default().fg(Color::DarkGray).bg(Color::DarkGray)
+                Style::default()
+                    .fg(Color::Rgb(76, 86, 106))
+                    .bg(Color::Rgb(46, 52, 64))
             };
             let footer = Paragraph::new(footer_text.clone()).style(footer_style);
             frame.render_widget(footer, chunks[2]);
@@ -296,66 +320,87 @@ async fn run_tui_console(session_name: &str) -> Result<()> {
 
         // イベント処理（10ms ポーリング）
         if event::poll(std::time::Duration::from_millis(10))? {
-            if let Event::Key(key) = event::read()? {
-                if command_mode {
-                    // コマンドモード: 入力をバッファに蓄積
-                    match key.code {
-                        KeyCode::Enter => {
-                            // コマンド実行
-                            let result = execute_command(&command_input, session_name);
-                            status_message = Some(result);
-                            command_input.clear();
-                            command_mode = false;
-                        }
-                        KeyCode::Esc => {
-                            // コマンドモード解除
-                            command_input.clear();
-                            command_mode = false;
-                        }
-                        KeyCode::Backspace => {
-                            command_input.pop();
-                            if command_input.is_empty() {
-                                command_mode = false;
-                            }
-                        }
-                        KeyCode::Char(c) => {
-                            command_input.push(c);
-                        }
-                        _ => {}
+            match event::read()? {
+                Event::Resize(cols, rows) => {
+                    // ボーダー分を差し引いて PTY リサイズ
+                    let new_cols = cols.saturating_sub(2).max(1);
+                    let new_rows = rows.saturating_sub(4).max(1); // ヘッダー + ボーダー上下 + フッター
+                    {
+                        let mut state = term_state.lock().unwrap();
+                        state.resize(new_cols as usize, new_rows as usize);
+                    }
+                    if let Ok(master) = pty_master.lock() {
+                        let _ = master.resize(PtySize {
+                            rows: new_rows,
+                            cols: new_cols,
+                            pixel_width: 0,
+                            pixel_height: 0,
+                        });
                     }
                     continue;
                 }
+                Event::Key(key) => {
+                    if command_mode {
+                        // コマンドモード: 入力をバッファに蓄積
+                        match key.code {
+                            KeyCode::Enter => {
+                                // コマンド実行
+                                let result = execute_command(&command_input, session_name);
+                                status_message = Some(result);
+                                command_input.clear();
+                                command_mode = false;
+                            }
+                            KeyCode::Esc => {
+                                // コマンドモード解除
+                                command_input.clear();
+                                command_mode = false;
+                            }
+                            KeyCode::Backspace => {
+                                command_input.pop();
+                                if command_input.is_empty() {
+                                    command_mode = false;
+                                }
+                            }
+                            KeyCode::Char(c) => {
+                                command_input.push(c);
+                            }
+                            _ => {}
+                        }
+                        continue;
+                    }
 
-                // 通常モード
-                // Ctrl+C で終了
-                if key.modifiers.contains(KeyModifiers::CONTROL)
-                    && key.code == KeyCode::Char('c')
-                {
-                    break;
-                }
+                    // 通常モード
+                    // Ctrl+C で終了
+                    if key.modifiers.contains(KeyModifiers::CONTROL)
+                        && key.code == KeyCode::Char('c')
+                    {
+                        break;
+                    }
 
-                // ':' でコマンドモードに入る
-                if key.code == KeyCode::Char(':') && key.modifiers.is_empty() {
-                    command_mode = true;
-                    command_input.clear();
+                    // ':' でコマンドモードに入る
+                    if key.code == KeyCode::Char(':') && key.modifiers.is_empty() {
+                        command_mode = true;
+                        command_input.clear();
+                        status_message = None;
+                        continue;
+                    }
+
+                    // ステータスメッセージをクリア（任意のキーで）
                     status_message = None;
-                    continue;
-                }
 
-                // ステータスメッセージをクリア（任意のキーで）
-                status_message = None;
-
-                // キー入力を PTY に送信
-                let app_cursor = {
-                    let state = term_state.lock().unwrap();
-                    state.app_cursor_mode()
-                };
-                let bytes = crate::tui::input::key_to_pty_bytes(key, app_cursor);
-                if !bytes.is_empty() {
-                    use std::io::Write;
-                    let _ = writer.write_all(&bytes);
-                    let _ = writer.flush();
+                    // キー入力を PTY に送信
+                    let app_cursor = {
+                        let state = term_state.lock().unwrap();
+                        state.app_cursor_mode()
+                    };
+                    let bytes = crate::tui::input::key_to_pty_bytes(key, app_cursor);
+                    if !bytes.is_empty() {
+                        use std::io::Write;
+                        let _ = writer.write_all(&bytes);
+                        let _ = writer.flush();
+                    }
                 }
+                _ => {} // FocusGained, FocusLost, Mouse, Paste
             }
         }
 

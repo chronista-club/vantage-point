@@ -17,6 +17,12 @@ struct MainWindowView: View {
     @State private var canvasWidth: CGFloat = 500
     /// CC 通知バッジ: プロジェクト名 → 未読フラグ
     @State private var notifications: Set<String> = []
+    /// ターミナルターゲットのパス一覧（プロジェクト + worker）
+    ///
+    /// computed property だとポーリングのたびに再計算 → ForEach が
+    /// TerminalRepresentable を再生成 → PTY 再起動してしまう。
+    /// @State で保持し、差分がある場合のみ更新する。
+    @State private var terminalPaths: [String] = []
 
     /// 外部から指定されたプロジェクトパス（起動引数・URL スキーム経由）
     var initialProjectPath: String?
@@ -51,10 +57,11 @@ struct MainWindowView: View {
                     terminalHeader
 
                     // ビューポート: PTY → tmux セッション
+                    // プロジェクト + worker それぞれ独立した SP/PTY を持つ
                     ZStack {
-                        ForEach(projects) { project in
-                            let isActive = selectedProjectPath == project.path
-                            TerminalRepresentable(projectPath: project.path, isActive: isActive)
+                        ForEach(terminalPaths, id: \.self) { path in
+                            let isActive = selectedProjectPath == path
+                            TerminalRepresentable(projectPath: path, isActive: isActive)
                                 .opacity(isActive ? 1 : 0)
                                 .allowsHitTesting(isActive)
                         }
@@ -125,6 +132,11 @@ struct MainWindowView: View {
             if selectedProjectPath == nil {
                 selectedProjectPath = initialProjectPath ?? newProjects.first?.path
             }
+            // ターミナルパス一覧を差分更新（不要な TerminalRepresentable 再生成を防ぐ）
+            let newPaths = Self.buildTerminalPaths(from: newProjects)
+            if newPaths != terminalPaths {
+                terminalPaths = newPaths
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: AppDelegate.selectProjectNotification)) { notification in
             if let path = notification.userInfo?["path"] as? String {
@@ -169,10 +181,39 @@ struct MainWindowView: View {
 
     // MARK: - ターミナルヘッダー/フッター
 
-    /// 選択中プロジェクトの情報
+    /// 選択中プロジェクトの情報（worker 選択時は親プロジェクト）
     private var selectedProject: SidebarProject? {
         guard let path = selectedProjectPath else { return nil }
-        return projects.first(where: { $0.path == path })
+        if let project = projects.first(where: { $0.path == path }) {
+            return project
+        }
+        // worker パスから親プロジェクトを解決
+        return projects.first(where: { project in
+            project.workers.contains(where: { $0.id == path })
+        })
+    }
+
+    /// 選択中の worker（worker が選択されている場合のみ non-nil）
+    private var selectedWorker: CcwsWorkerInfo? {
+        guard let path = selectedProjectPath else { return nil }
+        for project in projects {
+            if let worker = project.workers.first(where: { $0.id == path }) {
+                return worker
+            }
+        }
+        return nil
+    }
+
+    /// projects からターミナルパス一覧を計算（差分チェック用）
+    private static func buildTerminalPaths(from projects: [SidebarProject]) -> [String] {
+        var paths: [String] = []
+        for project in projects {
+            paths.append(project.path)
+            for worker in project.workers {
+                paths.append(worker.path)
+            }
+        }
+        return paths
     }
 
     /// ターミナル上部のヘッダー（プロジェクト情報 + Stand + パス）
@@ -180,14 +221,33 @@ struct MainWindowView: View {
     private var terminalHeader: some View {
         if let project = selectedProject {
             HStack(spacing: 8) {
-                Image(systemName: "mountain.2.fill")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                Text(project.name)
-                    .fontWeight(.semibold)
+                if let worker = selectedWorker {
+                    // worker 選択時
+                    Image(systemName: "arrow.branch")
+                        .font(.caption2)
+                        .foregroundStyle(.cyan)
+                    Text(worker.suffix)
+                        .fontWeight(.semibold)
+                    if let branch = worker.branch {
+                        Text(branch)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    Text("›")
+                        .foregroundStyle(.tertiary)
+                    Text(project.name)
+                        .foregroundStyle(.secondary)
+                } else {
+                    // プロジェクト選択時
+                    Image(systemName: "mountain.2.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Text(project.name)
+                        .fontWeight(.semibold)
+                }
 
                 if project.isRunning {
-                    let activeStands = project.stands.filter { $0.status != "disabled" }
+                    let activeStands = project.stands.filter { $0.status == "active" || $0.status == "connected" }
                     HStack(spacing: 6) {
                         ForEach(activeStands, id: \.key) { stand in
                             Image(systemName: stand.systemImage)
@@ -422,8 +482,18 @@ struct MainWindowView: View {
             // 各 running process の started_at + stands を並列取得
             let details = await fetchProcessDetails(processes: running)
 
+            // ccws ワーカーをバックグラウンドでスキャン（メインスレッドの I/O を回避）
             let config = ConfigManager.shared.load()
+            let projectNames = config.projects.map { $0.name }
+            let workersByProject = await Task.detached(priority: .utility) {
+                Dictionary(uniqueKeysWithValues: projectNames.map { name in
+                    (name, CcwsDiscovery.discoverWorkers(forProject: name))
+                })
+            }.value
+
             projects = config.projects.map { entry in
+                let workers = workersByProject[entry.name] ?? []
+
                 if let process = runningByPath[entry.path] {
                     let detail = details[entry.path]
                     return SidebarProject(
@@ -434,6 +504,7 @@ struct MainWindowView: View {
                         port: process.port,
                         startedAt: detail?.startedAt,
                         stands: detail?.stands ?? [],
+                        workers: workers,
                         hasNotification: notifications.contains(entry.path)
                     )
                 } else {
@@ -444,6 +515,7 @@ struct MainWindowView: View {
                         isRunning: false,
                         port: nil,
                         startedAt: nil,
+                        workers: workers,
                         hasNotification: notifications.contains(entry.path)
                     )
                 }
@@ -493,7 +565,7 @@ struct MainWindowView: View {
         }
     }
 
-    /// 全プロジェクトを非稼働にリセット
+    /// 全プロジェクトを非稼働にリセット（workers はローカル情報なので保持）
     private func resetProjectStatus() {
         projects = projects.map { project in
             SidebarProject(
@@ -503,6 +575,7 @@ struct MainWindowView: View {
                 isRunning: false,
                 port: nil,
                 startedAt: nil,
+                workers: project.workers,
                 hasNotification: notifications.contains(project.path)
             )
         }

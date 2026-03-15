@@ -272,18 +272,10 @@ pub async fn close_pane_handler(
 
 /// POST /api/canvas/open - Canvas シングルトンウィンドウを起動
 ///
-/// PID ファイルベースのシングルトン管理。既存 Canvas があればそれを再利用。
+/// AppState 経由で Canvas ライフサイクルを一元管理。
 pub async fn canvas_open_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    // canvas_target で TheWorld フォールバック判定を統一
-    let (port, lanes) = crate::canvas::canvas_target(state.port);
-
-    let project_name = state.project_dir.rsplit('/').next();
-    match crate::canvas::ensure_canvas_running(port, lanes, project_name) {
-        Ok(pid) => {
-            // AppState の canvas_pid も同期（後方互換）
-            *state.canvas_pid.lock().await = Some(pid);
-            Json(serde_json::json!({"status": "opened", "pid": pid}))
-        }
+    match state.ensure_canvas().await {
+        Ok(pid) => Json(serde_json::json!({"status": "opened", "pid": pid})),
         Err(e) => {
             tracing::error!("Failed to open canvas: {}", e);
             Json(serde_json::json!({"status": "error", "message": e.to_string()}))
@@ -293,8 +285,7 @@ pub async fn canvas_open_handler(State(state): State<Arc<AppState>>) -> impl Int
 
 /// POST /api/canvas/close - Canvas シングルトンウィンドウを終了
 pub async fn canvas_close_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    if let Some(pid) = crate::canvas::stop_canvas() {
-        *state.canvas_pid.lock().await = None;
+    if let Some(pid) = state.close_canvas().await {
         Json(serde_json::json!({"status": "closed", "pid": pid}))
     } else {
         Json(serde_json::json!({"status": "not_open"}))
@@ -409,34 +400,10 @@ pub async fn canvas_capture_handler(
     State(state): State<Arc<AppState>>,
     Json(params): Json<CaptureParams>,
 ) -> impl IntoResponse {
-    // 1. Canvas プロセスの生存確認（AppState → PID ファイル fallback）
-    let mut pid_guard = state.canvas_pid.lock().await;
-    let canvas_alive = match *pid_guard {
-        Some(pid) => unsafe { libc::kill(pid as i32, 0) == 0 },
-        None => {
-            // AppState に PID がなくても、PID ファイルから既存 Canvas を発見できる
-            if let Some(pid) = crate::canvas::find_running_canvas() {
-                *pid_guard = Some(pid);
-                true
-            } else {
-                false
-            }
-        }
-    };
-
-    // Canvas 未起動なら自動起動 + WebSocket 接続待ち
-    if !canvas_alive {
-        let vp_bin = std::env::current_exe().unwrap_or_else(|_| "vp".into());
-        match std::process::Command::new(&vp_bin)
-            .args(["canvas", "internal", "--port", &state.port.to_string()])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-        {
-            Ok(child) => {
-                let pid = child.id();
-                *pid_guard = Some(pid);
+    // 1. Canvas が未起動なら AppState 経由で起動（TheWorld + Lane モード対応）
+    if !state.is_canvas_open() {
+        match state.ensure_canvas().await {
+            Ok(pid) => {
                 tracing::info!("Canvas auto-started for capture (pid={})", pid);
             }
             Err(e) => {
@@ -450,9 +417,6 @@ pub async fn canvas_capture_handler(
             }
         }
         // Canvas の WebSocket 接続を待つ（最大 5 秒）
-        // TheWorld では Hub ではなく /ws/lanes 経由で Canvas が接続するため、
-        // canvas_senders の登録で接続確認する
-        drop(pid_guard);
         let mut connected = false;
         for _ in 0..50 {
             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
@@ -471,8 +435,6 @@ pub async fn canvas_capture_handler(
                 })),
             );
         }
-    } else {
-        drop(pid_guard);
     }
 
     // 2. request_id 生成、oneshot channel 作成

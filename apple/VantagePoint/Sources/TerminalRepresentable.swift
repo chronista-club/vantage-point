@@ -25,15 +25,18 @@ struct TerminalRepresentable: NSViewRepresentable {
         // tmux セッション名: {project}-vp（SP が作成済み）
         let tmuxSession = projectName.replacingOccurrences(of: ".", with: "-") + "-vp"
 
-        // フォールバックチェーン: vp tui → tmux attach → zsh → claude
-        // 1. vp tui: ratatui コンソール（最優先）
-        // 2. tmux attach: tmux 直接接続
-        // 3. zsh -l: ログインシェル
-        // 4. ccf: claude --continue --dangerously-skip-permissions
+        // シェル引用のエスケープ（シングルクォート内で安全に埋め込む）
+        let safeCwd = cwd.replacingOccurrences(of: "'", with: "'\\''")
+
+        // フォールバックチェーン:
+        // 1. vp tui: 既存 tmux セッションに ratatui コンソールで接続
+        // 2. vp sp start → vp tui: セッションを作成してから接続（worker 初回起動時）
+        // 3. tmux attach: tmux 直接接続（vp がない環境向け）
+        // 4. zsh -l -c 'claude || zsh': シェルフォールバック
         view.deferredPtyCwd = cwd
         let vpBin = "\(NSHomeDirectory())/.cargo/bin/vp"
         let claudeBin = "\(NSHomeDirectory())/.claude/local/bin/claude"
-        view.deferredPtyCommand = "\(vpBin) tui --session \(tmuxSession) 2>/dev/null || /opt/homebrew/bin/tmux attach-session -t \(tmuxSession) 2>/dev/null || exec zsh -l -c '\(claudeBin) --continue --dangerously-skip-permissions 2>/dev/null || exec zsh -l'"
+        view.deferredPtyCommand = "\(vpBin) tui --session \(tmuxSession) 2>/dev/null || (cd '\(safeCwd)' && \(vpBin) sp start >/dev/null 2>&1 && exec \(vpBin) tui --session \(tmuxSession)) || /opt/homebrew/bin/tmux attach-session -t \(tmuxSession) 2>/dev/null || exec zsh -l -c '\(claudeBin) --continue --dangerously-skip-permissions 2>/dev/null || exec zsh -l'"
         return view
     }
 

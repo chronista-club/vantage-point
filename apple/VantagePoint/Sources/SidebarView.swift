@@ -23,20 +23,23 @@ struct SidebarView: View {
     var body: some View {
         List(selection: $selection) {
             ForEach(projects) { project in
-                SidebarProjectRow(project: project)
-                    .tag(project.id)
-                    .contextMenu {
-                        // 名前変更（稼働中でも可）
-                        Button("名前を変更…", systemImage: "pencil") {
-                            promptRename(project: project)
-                        }
-                        Divider()
-                        // 削除（稼働中は不可）
-                        Button("リストから削除", systemImage: "trash", role: .destructive) {
-                            onDelete?(project.path)
-                        }
-                        .disabled(project.isRunning)
+                // ワーカーがあればツリー表示
+                if project.workers.isEmpty {
+                    SidebarProjectRow(project: project)
+                        .tag(project.id)
+                        .contextMenu { projectContextMenu(project: project) }
+                } else {
+                    SidebarProjectRow(project: project)
+                        .tag(project.id)
+                        .contextMenu { projectContextMenu(project: project) }
+
+                    // ccws ワーカーをインデント表示
+                    ForEach(project.workers) { worker in
+                        SidebarWorkerRow(worker: worker)
+                            .tag(worker.id)
+                            .padding(.leading, 20)
                     }
+                }
             }
             .onMove { from, to in
                 onReorder?(from, to)
@@ -57,6 +60,19 @@ struct SidebarView: View {
         .safeAreaInset(edge: .bottom) {
             WorldStatusFooter(status: worldStatus)
         }
+    }
+
+    /// プロジェクト行のコンテキストメニュー
+    @ViewBuilder
+    private func projectContextMenu(project: SidebarProject) -> some View {
+        Button("名前を変更…", systemImage: "pencil") {
+            promptRename(project: project)
+        }
+        Divider()
+        Button("リストから削除", systemImage: "trash", role: .destructive) {
+            onDelete?(project.path)
+        }
+        .disabled(project.isRunning)
     }
 
     /// フォルダのドラッグ＆ドロップ処理
@@ -110,7 +126,13 @@ struct SidebarProjectRow: View {
     let project: SidebarProject
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 1) {
+        HStack(spacing: 8) {
+            // ステータスドット
+            Circle()
+                .fill(project.statusColor)
+                .frame(width: 8, height: 8)
+
+            VStack(alignment: .leading, spacing: 1) {
                 // プロジェクト名 + 通知バッジ
                 HStack(spacing: 6) {
                     Text(project.name)
@@ -131,8 +153,8 @@ struct SidebarProjectRow: View {
                             .foregroundStyle(.secondary)
                     }
 
-                    // Stand ステータス（disabled 以外を表示）
-                    let activeStands = project.stands.filter { $0.status != "disabled" }
+                    // Stand ステータス（active/connected のみ表示）
+                    let activeStands = project.stands.filter { $0.status == "active" || $0.status == "connected" }
                     if !activeStands.isEmpty {
                         HStack(spacing: 4) {
                             ForEach(activeStands, id: \.key) { stand in
@@ -146,8 +168,37 @@ struct SidebarProjectRow: View {
                         }
                     }
                 }
+            }
         }
         .opacity(project.isRunning ? 1.0 : 0.5)
+    }
+}
+
+// MARK: - ワーカー行
+
+/// ccws ワーカーの行表示
+struct SidebarWorkerRow: View {
+    let worker: CcwsWorkerInfo
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "arrow.branch")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(worker.suffix)
+                    .font(.callout)
+                    .lineLimit(1)
+
+                if let branch = worker.branch {
+                    Text(branch)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
+            }
+        }
     }
 }
 
@@ -191,6 +242,15 @@ struct SidebarStand: Equatable {
     }
 }
 
+/// ccws ワーカー情報
+struct CcwsWorkerInfo: Identifiable, Equatable {
+    let id: String       // ワーカーパス
+    let name: String     // ディレクトリ名全体
+    let suffix: String   // 親プロジェクト名を除いた部分
+    let path: String
+    let branch: String?
+}
+
 /// サイドバー表示用のプロジェクトモデル
 struct SidebarProject: Identifiable, Equatable {
     let id: String        // プロジェクトパス（一意キー）
@@ -203,11 +263,13 @@ struct SidebarProject: Identifiable, Equatable {
     let startedAt: Date?
     /// 配下の Stand 一覧（稼働中のみ）
     let stands: [SidebarStand]
+    /// ccws ワーカー一覧
+    let workers: [CcwsWorkerInfo]
 
     /// CC からの未読通知あり
     let hasNotification: Bool
 
-    init(id: String, name: String, path: String, isRunning: Bool, port: UInt16?, startedAt: Date?, stands: [SidebarStand] = [], hasNotification: Bool = false) {
+    init(id: String, name: String, path: String, isRunning: Bool, port: UInt16?, startedAt: Date?, stands: [SidebarStand] = [], workers: [CcwsWorkerInfo] = [], hasNotification: Bool = false) {
         self.id = id
         self.name = name
         self.path = path
@@ -215,11 +277,92 @@ struct SidebarProject: Identifiable, Equatable {
         self.port = port
         self.startedAt = startedAt
         self.stands = stands
+        self.workers = workers
         self.hasNotification = hasNotification
     }
 
     var statusColor: Color {
         isRunning ? .green : .gray
+    }
+}
+
+// MARK: - ccws ワーカー検出
+
+/// ~/.local/share/ccws/ をスキャンして親プロジェクトに紐づくワーカーを検出
+enum CcwsDiscovery {
+    /// ccws ベースディレクトリ（環境変数 CCWS_DIR で上書き可能）
+    static let baseDir: URL = {
+        if let envPath = ProcessInfo.processInfo.environment["CCWS_DIR"] {
+            return URL(fileURLWithPath: envPath)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".local/share/ccws")
+    }()
+
+    /// 指定プロジェクト名に紐づくワーカーを検出
+    static func discoverWorkers(forProject projectName: String) -> [CcwsWorkerInfo] {
+        let prefix = "\(projectName)-"
+        let fm = FileManager.default
+        guard let entries = try? fm.contentsOfDirectory(
+            at: baseDir,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return []
+        }
+
+        return entries.compactMap { url in
+            let dirName = url.lastPathComponent
+            guard dirName.hasPrefix(prefix) else { return nil }
+
+            // ディレクトリか確認
+            var isDir: ObjCBool = false
+            guard fm.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue else {
+                return nil
+            }
+
+            let suffix = String(dirName.dropFirst(prefix.count))
+            let branch = readGitBranch(at: url)
+
+            return CcwsWorkerInfo(
+                id: url.path,
+                name: dirName,
+                suffix: suffix,
+                path: url.path,
+                branch: branch
+            )
+        }
+        .sorted { $0.suffix < $1.suffix }
+    }
+
+    /// Git ブランチ名を取得
+    private static func readGitBranch(at path: URL) -> String? {
+        let headFile = path.appendingPathComponent(".git/HEAD")
+        let gitFile = path.appendingPathComponent(".git")
+
+        let content: String
+        if FileManager.default.isReadableFile(atPath: headFile.path) {
+            guard let data = try? String(contentsOf: headFile, encoding: .utf8) else { return nil }
+            content = data
+        } else if let gitRef = try? String(contentsOf: gitFile, encoding: .utf8),
+                  let gitDir = gitRef.trimmingCharacters(in: .whitespacesAndNewlines)
+                      .components(separatedBy: "gitdir: ").last {
+            // git worktree: .git ファイルが gitdir を指す（相対パス対応）
+            let resolvedGitDir = URL(fileURLWithPath: gitDir, relativeTo: path).standardized
+            let actualHead = resolvedGitDir.appendingPathComponent("HEAD")
+            guard let data = try? String(contentsOf: actualHead, encoding: .utf8) else { return nil }
+            content = data
+        } else {
+            return nil
+        }
+
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let branch = trimmed.components(separatedBy: "ref: refs/heads/").last,
+           branch != trimmed {
+            return branch
+        }
+        // detached HEAD — 短縮 SHA
+        return String(trimmed.prefix(8))
     }
 }
 

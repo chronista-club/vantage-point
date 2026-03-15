@@ -394,8 +394,10 @@ impl BridgePty {
             be.set_wide_flag(x, y + y_offset, true);
         }
         // セル書き込み（Y オフセット付き — クロームヘッダーの下から描画）
-        let refs: Vec<(u16, u16, &Cell)> =
-            cells.iter().map(|(x, y, c)| (*x, *y + y_offset, c)).collect();
+        let refs: Vec<(u16, u16, &Cell)> = cells
+            .iter()
+            .map(|(x, y, c)| (*x, *y + y_offset, c))
+            .collect();
         let _ = be.draw(refs.into_iter());
         // カーソル設定（Y オフセット付き）
         if cursor_line >= 0 && (cursor_line as usize) < lines {

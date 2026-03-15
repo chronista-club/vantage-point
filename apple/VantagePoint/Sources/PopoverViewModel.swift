@@ -186,11 +186,22 @@ class PopoverViewModel: ObservableObject {
     var onOpenMainWindow: ((String) -> Void)?
 
     /// ウィンドウを開き、該当 Lane にフォーカス
+    ///
+    /// SP が未起動の場合は自動起動してからウィンドウを表示する。
     func openWindow(projectName: String, projectPath: String) {
         onOpenMainWindow?(projectPath)
 
-        // Canvas Lane 切り替え（ウィンドウ表示後に少し待ってから）
         Task {
+            // SP が未起動なら自動起動
+            let running = (try? await theWorldClient.listRunningProcesses()) ?? []
+            let isRunning = running.contains { $0.projectPath == projectPath }
+            if !isRunning {
+                _ = try? await theWorldClient.startProcess(projectName: projectName)
+                // SP 起動を待つ
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+            }
+
+            // Canvas Lane 切り替え
             try? await Task.sleep(nanoseconds: 300_000_000)
             try? await theWorldClient.switchLane(projectName: projectName)
         }
