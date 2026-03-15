@@ -202,12 +202,19 @@ state.send_debug_detail("category", "メッセージ", serde_json::json!({"key":
 - `CGWindowListCopyWindowInfo`（`swift -e`）でウィンドウ ID を取得
 - プロセス名は `"Vantage Point"`（スペースあり）で照合
 
-## 今後の Issue
+## プロジェクト管理（Linear）
 
-| Issue | 概要 |
-|-------|------|
-| #108 | MCP TheWorld 経由統一 |
-| #109 | VP Shell コマンドレイヤー |
+**Linear プロジェクト**: [Vantage Point](https://linear.app/chronista/project/vantage-point-d0b78d9cb67e)
+**チーム**: ANYCREATIVE (AC) / Chronista Club (CHC)
+
+### ルール
+
+- **Issue 管理は Linear に一元化**（GitHub Issues は使わない）
+- Issue 作成: `save_issue` MCP ツールで作成、`project: "Vantage Point"` + `team: "ANYCREATIVE"` を指定
+- ブランチ名: Linear が生成する `mako/ac-XX-...` 形式を使用
+- PR: `Closes AC-XX` でマージ時に Linear Issue を自動クローズ
+- ステータス: 実装開始 → In Progress、完了 → Done
+- 優先度: 1=Urgent, 2=High, 3=Medium, 4=Low
 
 ## クロスプロジェクト協業（MARU x VP）
 
