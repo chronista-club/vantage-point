@@ -1,13 +1,6 @@
 import AppKit
 import SwiftUI
 
-// MARK: - Font
-
-/// システムフォント（ポップオーバー用）
-private func vpFont(size: CGFloat, weight: Font.Weight = .regular) -> Font {
-    .system(size: size, weight: weight)
-}
-
 /// メニューバーポップオーバー — リスタート中心のシンプルメニュー
 struct PopoverView: View {
     @ObservedObject var viewModel: PopoverViewModel
@@ -44,7 +37,7 @@ struct PopoverView: View {
     private var headerView: some View {
         HStack {
             Text("Vantage Point")
-                .font(vpFont(size: 13, weight: .semibold))
+                .font(.system(size: 13, weight: .semibold))
             Spacer()
             Circle()
                 .fill(viewModel.theWorldState == .connected ? Color.green : Color.red)
@@ -64,7 +57,7 @@ struct PopoverView: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 Text("World")
-                    .font(vpFont(size: 11, weight: .medium))
+                    .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.secondary)
                 Spacer()
                 Circle()
@@ -89,17 +82,26 @@ struct PopoverView: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
             Text("Projects")
-                .font(vpFont(size: 11, weight: .medium))
+                .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(.secondary)
             Spacer()
-            MenuRow(label: "Restart All", icon: "arrow.triangle.2.circlepath",
-                    isLoading: viewModel.isRestartingAll) {
-                Task { await viewModel.restartAll() }
+            if viewModel.isRestartingAll {
+                ProgressView()
+                    .scaleEffect(0.5)
+                    .frame(width: 16, height: 16)
+            } else {
+                Button {
+                    Task { await viewModel.restartAll() }
+                } label: {
+                    Label("Restart All", systemImage: "arrow.triangle.2.circlepath")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
             }
-            .frame(width: 120)
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 4)
+        .padding(.vertical, 6)
     }
 
     // MARK: - Project List
@@ -127,7 +129,7 @@ struct PopoverView: View {
 
     private var emptyView: some View {
         Text("No projects")
-            .font(vpFont(size: 12))
+            .font(.system(size: 12))
             .foregroundColor(.secondary)
             .frame(maxWidth: .infinity, minHeight: 40)
     }
@@ -138,7 +140,7 @@ struct PopoverView: View {
         HStack {
             Button("Quit") { onQuit() }
                 .buttonStyle(.plain)
-                .font(vpFont(size: 12))
+                .font(.system(size: 12))
                 .foregroundColor(.secondary)
             Spacer()
         }
@@ -161,12 +163,12 @@ struct MenuRow: View {
         Button(action: action) {
             HStack(spacing: 8) {
                 Image(systemName: icon)
-                    .font(vpFont(size: 12))
+                    .font(.system(size: 12))
                     .frame(width: 16)
                     .foregroundColor(.secondary)
 
                 Text(label)
-                    .font(vpFont(size: 13))
+                    .font(.system(size: 13))
 
                 Spacer()
 
@@ -208,7 +210,7 @@ struct ProjectRow: View {
 
             // プロジェクト名
             Text(project.name)
-                .font(vpFont(size: 13))
+                .font(.system(size: 13))
                 .lineLimit(1)
 
             Spacer()
@@ -258,7 +260,7 @@ struct IconButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: icon)
-                .font(vpFont(size: 11))
+                .font(.system(size: 11))
                 .foregroundColor(.secondary)
                 .frame(width: 22, height: 22)
                 .contentShape(Rectangle())
