@@ -39,7 +39,8 @@ struct MainWindowView: View {
                 onAdd: addProject,
                 onDropAdd: dropAddProject,
                 onDelete: deleteProject,
-                onRename: renameProject
+                onRename: renameProject,
+                onReorder: reorderProjects
             )
         } detail: {
             // ターミナル + Canvas（Canvas は Cmd+O でトグル）
@@ -340,6 +341,14 @@ struct MainWindowView: View {
     private func deleteProject(path: String) {
         var config = ConfigManager.shared.load()
         config.projects.removeAll { $0.path == path }
+        saveConfig(config)
+        loadProjects()
+    }
+
+    /// プロジェクトの並び順を変更（ドラッグ＆ドロップ）
+    private func reorderProjects(from: IndexSet, to: Int) {
+        var config = ConfigManager.shared.load()
+        config.projects.move(fromOffsets: from, toOffset: to)
         saveConfig(config)
         loadProjects()
     }

@@ -17,24 +17,30 @@ struct SidebarView: View {
     var onDelete: ((String) -> Void)?
     /// プロジェクト名変更コールバック
     var onRename: ((String, String) -> Void)?
+    /// プロジェクト並び替えコールバック
+    var onReorder: ((IndexSet, Int) -> Void)?
 
     var body: some View {
-        List(projects, selection: $selection) { project in
-            SidebarProjectRow(project: project)
-                .tag(project.id)
-                .contextMenu {
-                    // 名前変更（稼働中でも可）
-                    Button("名前を変更…", systemImage: "pencil") {
-                        // NSAlert でテキスト入力（SwiftUI の alert だと List 内で崩れるため）
-                        promptRename(project: project)
+        List(selection: $selection) {
+            ForEach(projects) { project in
+                SidebarProjectRow(project: project)
+                    .tag(project.id)
+                    .contextMenu {
+                        // 名前変更（稼働中でも可）
+                        Button("名前を変更…", systemImage: "pencil") {
+                            promptRename(project: project)
+                        }
+                        Divider()
+                        // 削除（稼働中は不可）
+                        Button("リストから削除", systemImage: "trash", role: .destructive) {
+                            onDelete?(project.path)
+                        }
+                        .disabled(project.isRunning)
                     }
-                    Divider()
-                    // 削除（稼働中は不可）
-                    Button("リストから削除", systemImage: "trash", role: .destructive) {
-                        onDelete?(project.path)
-                    }
-                    .disabled(project.isRunning)
-                }
+            }
+            .onMove { from, to in
+                onReorder?(from, to)
+            }
         }
         .navigationTitle("Projects")
         .toolbar {
