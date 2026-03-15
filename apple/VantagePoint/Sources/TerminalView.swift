@@ -768,9 +768,11 @@ class TerminalView: NSView {
     func startPty(cwd: String? = nil, command: String? = nil) {
         guard bridgeInitialized else { return }
 
-        // 再起動用にコマンドを保持
+        // 再起動用にコマンドを保持 + 復旧カウントリセット
         lastPtyCommand = command
         lastPtyCwd = cwd
+        ptyRestartCount = 0
+        lastPtyExit = nil
 
         // PTY に渡す行数はクローム分を引く
         let ptyRows = max(1, gridRows - chromeHeaderRows - chromeFooterRows)
