@@ -27,31 +27,6 @@ use crate::file_watcher::FileWatcherManager;
 use crate::protocol::DebugMode;
 
 /// Run the Process server
-/// claude CLI のフルパスを検索
-fn which_claude() -> String {
-    // 1. ~/.claude/local/bin/claude（公式インストール先）
-    if let Some(home) = dirs::home_dir() {
-        let path = home.join(".claude/local/bin/claude");
-        if path.exists() {
-            return path.to_string_lossy().to_string();
-        }
-    }
-    // 2. PATH から検索
-    if let Ok(output) = std::process::Command::new("which")
-        .arg("claude")
-        .output()
-    {
-        if output.status.success() {
-            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !path.is_empty() {
-                return path;
-            }
-        }
-    }
-    // 3. フォールバック
-    "claude".to_string()
-}
-
 pub async fn run(
     port: u16,
     auto_open_browser: bool,
@@ -94,7 +69,8 @@ pub async fn run(
     // Terminal チャネル認証トークンを生成
     let terminal_token = crate::discovery::generate_terminal_token();
 
-    // tmux セッション管理（SP がライフサイクルオーナー）
+    // tmux / ccwire はvp sp コマンドで独立管理（server.rs では触らない）
+    // TmuxActor は SP がペイン操作（tmux_split 等）に使うため、既存セッションがあれば起動
     let project_name = crate::resolve::project_name_from_path(
         &project_dir,
         &crate::config::Config::load().unwrap_or_default(),
@@ -102,46 +78,6 @@ pub async fn run(
     .to_string();
     let tmux_session = crate::tmux::session_name(&project_name);
 
-    // tmux セッションが存在しなければ作成（detach モード）
-    // SP が tmux 内で動いているか否かに関わらず、セッションを確保する
-    if crate::tmux::is_tmux_available() && !crate::tmux::session_exists(&tmux_session) {
-        // tmux セッション作成時に claude を自動起動
-        // エイリアス (ccf) は非対話シェルで使えないためフルパスで指定
-        let claude_bin = which_claude();
-        let tmux_cmd = format!(
-            "{} --continue --dangerously-skip-permissions",
-            claude_bin
-        );
-        match std::process::Command::new("tmux")
-            .args([
-                "new-session", "-d",
-                "-s", &tmux_session,
-                "-c", &project_dir,
-                &tmux_cmd,
-            ])
-            .status()
-        {
-            Ok(s) if s.success() => {
-                tracing::info!("tmux セッション作成: {}", tmux_session);
-            }
-            Ok(_) => {
-                tracing::warn!("tmux セッション作成失敗: {}", tmux_session);
-            }
-            Err(e) => {
-                tracing::warn!("tmux コマンド実行失敗: {}", e);
-            }
-        }
-    }
-
-    // ccwire セッション登録（tmux セッションと連動）
-    if crate::tmux::session_exists(&tmux_session) {
-        let tmux_target = format!("{}:0.0", tmux_session);
-        if let Err(e) = crate::ccwire::register(&tmux_session, &tmux_target) {
-            tracing::warn!("ccwire 登録失敗: {}", e);
-        }
-    }
-
-    // TmuxActor 起動（tmux セッションが存在すれば有効）
     let tmux_handle = if crate::tmux::is_tmux_available()
         && crate::tmux::session_exists(&tmux_session)
     {
@@ -149,25 +85,6 @@ pub async fn run(
     } else {
         None
     };
-
-    // ccwire heartbeat タスク（3分間隔、SP 生存中は継続）
-    {
-        let session_for_hb = tmux_session.clone();
-        let shutdown_for_hb = shutdown_token.clone();
-        tokio::spawn(async move {
-            let mut interval =
-                tokio::time::interval(crate::ccwire::HEARTBEAT_INTERVAL);
-            interval.tick().await; // 初回スキップ
-            loop {
-                tokio::select! {
-                    _ = interval.tick() => {
-                        let _ = crate::ccwire::heartbeat(&session_for_hb);
-                    }
-                    _ = shutdown_for_hb.cancelled() => break,
-                }
-            }
-        });
-    }
 
     // TopicRouter 初期化 + Hub → TopicRouter ブリッジ
     let topic_router = Arc::new(TopicRouter::new());
@@ -360,17 +277,7 @@ pub async fn run(
     // ファイル監視を全停止
     file_watchers_for_shutdown.lock().await.stop_all();
 
-    // ccwire セッション解除 + tmux セッション削除（SP がライフサイクルオーナー）
-    if crate::tmux::is_tmux_available() {
-        let session = crate::tmux::session_name(&project_name);
-        // ccwire を先に解除（tmux kill 後だと DB アクセスが不要に遅延する可能性）
-        if let Err(e) = crate::ccwire::unregister(&session) {
-            tracing::warn!("ccwire 解除失敗: {}", e);
-        }
-        if crate::tmux::kill_session(&session) {
-            tracing::info!("tmux セッション削除: {}", session);
-        }
-    }
+    // tmux / ccwire は vp sp stop で管理（SP 停止時には触らない）
 
     // Shutdown all capabilities
     tracing::info!("Shutting down capabilities...");

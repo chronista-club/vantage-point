@@ -159,6 +159,10 @@ enum Commands {
         session: Option<String>,
     },
 
+    /// セッション環境管理（tmux + ccwire）
+    #[command(subcommand)]
+    Sp(commands::sp_cmd::SpCommands),
+
     // --- Groups ---
     /// デーモンプロセス管理（Process管理 + ヘルスチェック）
     #[command(subcommand)]
@@ -289,6 +293,7 @@ fn main() -> Result<()> {
         }
 
         Commands::Tui { session } => commands::tui_cmd::execute(session, &config),
+        Commands::Sp(cmd) => commands::sp_cmd::execute(cmd, &config),
 
         // Groups
         Commands::Daemon(cmd) => commands::daemon::execute(cmd),
