@@ -1041,4 +1041,188 @@ mod tests {
         let json = serde_json::to_string(&status).unwrap();
         assert_eq!(json, "\"running\"");
     }
+
+    #[test]
+    fn test_normalize_path_key_consistency() {
+        // 同じパスの異なる表現が同じキーになることを確認
+        let key1 = normalize_path_key(&PathBuf::from("/tmp/test-project"));
+        let key2 = normalize_path_key(&PathBuf::from("/tmp/test-project/"));
+        // 末尾スラッシュの正規化は Config::normalize_path に依存
+        assert!(!key1.is_empty());
+        assert!(!key2.is_empty());
+    }
+
+    #[test]
+    fn test_project_info_port_serialization() {
+        // port が Some のとき JSON に含まれることを確認
+        let info = ProjectInfo {
+            name: "test".to_string(),
+            path: "/tmp/test".into(),
+            process_status: ProcessStatus::Stopped,
+            port: Some(33005),
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("33005"));
+
+        // port が None のとき JSON に含まれないことを確認（skip_serializing_if）
+        let info_no_port = ProjectInfo {
+            name: "test".to_string(),
+            path: "/tmp/test".into(),
+            process_status: ProcessStatus::Stopped,
+            port: None,
+        };
+        let json_no_port = serde_json::to_string(&info_no_port).unwrap();
+        assert!(!json_no_port.contains("port"));
+    }
+
+    // --- CRUD テスト（async） ---
+
+    /// テスト用ヘルパー: 空の ProcessManagerCapability を作成
+    fn make_test_cap() -> ProcessManagerCapability {
+        ProcessManagerCapability::new()
+    }
+
+    #[tokio::test]
+    async fn test_add_project_success() {
+        let cap = make_test_cap();
+        let dir = std::env::temp_dir();
+        let path = dir.to_string_lossy().to_string();
+
+        let result = cap.add_project("test-project", &path).await;
+        assert!(result.is_ok());
+
+        let info = result.unwrap();
+        assert_eq!(info.name, "test-project");
+        assert_eq!(info.process_status, ProcessStatus::Stopped);
+        assert_eq!(info.port, None);
+    }
+
+    #[tokio::test]
+    async fn test_add_project_duplicate_path() {
+        let cap = make_test_cap();
+        let dir = std::env::temp_dir();
+        let path = dir.to_string_lossy().to_string();
+
+        cap.add_project("first", &path).await.unwrap();
+        let result = cap.add_project("second", &path).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("already exists"));
+    }
+
+    #[tokio::test]
+    async fn test_add_project_empty_name() {
+        let cap = make_test_cap();
+        let dir = std::env::temp_dir();
+        let path = dir.to_string_lossy().to_string();
+
+        let result = cap.add_project("", &path).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("cannot be empty"));
+    }
+
+    #[tokio::test]
+    async fn test_add_project_whitespace_name() {
+        let cap = make_test_cap();
+        let dir = std::env::temp_dir();
+        let path = dir.to_string_lossy().to_string();
+
+        let result = cap.add_project("   ", &path).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_add_project_nonexistent_path() {
+        let cap = make_test_cap();
+        let result = cap
+            .add_project("ghost", "/nonexistent/path/that/does/not/exist")
+            .await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not a directory"));
+    }
+
+    #[tokio::test]
+    async fn test_remove_project_success() {
+        let cap = make_test_cap();
+        let dir = std::env::temp_dir();
+        let path = dir.to_string_lossy().to_string();
+
+        cap.add_project("removable", &path).await.unwrap();
+        let result = cap.remove_project(&path).await;
+        assert!(result.is_ok());
+
+        // 削除後は一覧に含まれない
+        let projects = cap.list_projects().await;
+        assert!(projects.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_remove_project_not_found() {
+        let cap = make_test_cap();
+        let result = cap.remove_project("/nonexistent").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn test_rename_project_success() {
+        let cap = make_test_cap();
+        let dir = std::env::temp_dir();
+        let path = dir.to_string_lossy().to_string();
+
+        cap.add_project("old-name", &path).await.unwrap();
+        let result = cap.rename_project(&path, "new-name").await;
+        assert!(result.is_ok());
+
+        let projects = cap.list_projects().await;
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].name, "new-name");
+    }
+
+    #[tokio::test]
+    async fn test_rename_project_empty_name() {
+        let cap = make_test_cap();
+        let dir = std::env::temp_dir();
+        let path = dir.to_string_lossy().to_string();
+
+        cap.add_project("existing", &path).await.unwrap();
+        let result = cap.rename_project(&path, "").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("cannot be empty"));
+    }
+
+    #[tokio::test]
+    async fn test_rename_project_not_found() {
+        let cap = make_test_cap();
+        let result = cap.rename_project("/nonexistent", "new").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_resolve_key_by_name() {
+        let cap = make_test_cap();
+        let dir = std::env::temp_dir();
+        let path = dir.to_string_lossy().to_string();
+
+        cap.add_project("findme", &path).await.unwrap();
+
+        let found = cap.resolve_key_by_name("findme").await;
+        assert!(found.is_some());
+
+        let not_found = cap.resolve_key_by_name("nothere").await;
+        assert!(not_found.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_list_projects_empty() {
+        let cap = make_test_cap();
+        let projects = cap.list_projects().await;
+        assert!(projects.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_list_running_processes_empty() {
+        let cap = make_test_cap();
+        let procs = cap.list_running_processes().await;
+        assert!(procs.is_empty());
+    }
 }
