@@ -30,13 +30,13 @@ struct TerminalRepresentable: NSViewRepresentable {
 
         // フォールバックチェーン:
         // 1. vp tui: 既存 tmux セッションに ratatui コンソールで接続
-        // 2. vp sp start → vp tui: セッションを作成してから接続（worker 初回起動時）
+        // 2. vp sp start → vp hd start → vp tui: SP + HD を作成してから接続
         // 3. tmux attach: tmux 直接接続（vp がない環境向け）
         // 4. zsh -l -c 'claude || zsh': シェルフォールバック
         view.deferredPtyCwd = cwd
         let vpBin = "\(NSHomeDirectory())/.cargo/bin/vp"
         let claudeBin = "\(NSHomeDirectory())/.claude/local/bin/claude"
-        view.deferredPtyCommand = "\(vpBin) tui --session \(tmuxSession) 2>/dev/null || (cd '\(safeCwd)' && \(vpBin) sp start >/dev/null 2>&1 && exec \(vpBin) tui --session \(tmuxSession)) || /opt/homebrew/bin/tmux attach-session -t \(tmuxSession) 2>/dev/null || exec zsh -l -c '\(claudeBin) --continue --dangerously-skip-permissions 2>/dev/null || exec zsh -l'"
+        view.deferredPtyCommand = "\(vpBin) tui --session \(tmuxSession) 2>/dev/null || (cd '\(safeCwd)' && \(vpBin) sp start >/dev/null 2>&1; \(vpBin) hd start >/dev/null 2>&1 && exec \(vpBin) tui --session \(tmuxSession)) || /opt/homebrew/bin/tmux attach-session -t \(tmuxSession) 2>/dev/null || exec zsh -l -c '\(claudeBin) --continue --dangerously-skip-permissions 2>/dev/null || exec zsh -l'"
         return view
     }
 
