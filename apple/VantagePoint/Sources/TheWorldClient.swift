@@ -79,6 +79,46 @@ actor TheWorldClient {
         try await executeWithErrorHandling(request: request)
     }
 
+    /// プロジェクトを追加
+    func addProject(name: String, path: String) async throws {
+        let url = baseURL.appendingPathComponent("/api/world/projects")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(["name": name, "path": path])
+        try await executeWithErrorHandling(request: request)
+    }
+
+    /// プロジェクトを削除
+    func removeProject(path: String) async throws {
+        let url = baseURL.appendingPathComponent("/api/world/projects/remove")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(["path": path])
+        try await executeWithErrorHandling(request: request)
+    }
+
+    /// プロジェクト名を変更
+    func updateProject(path: String, name: String) async throws {
+        let url = baseURL.appendingPathComponent("/api/world/projects/update")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(["path": path, "name": name])
+        try await executeWithErrorHandling(request: request)
+    }
+
+    /// プロジェクトの並び順を変更
+    func reorderProjects(paths: [String]) async throws {
+        let url = baseURL.appendingPathComponent("/api/world/projects/reorder")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(["paths": paths])
+        try await executeWithErrorHandling(request: request)
+    }
+
     /// Process状態をリフレッシュ
     func refreshStatus() async throws {
         try await postWithErrorHandling(path: "/api/world/refresh")

@@ -396,16 +396,7 @@ struct MainWindowView: View {
         selectedProjectPath = projects[index + 1].path
     }
 
-    // MARK: - プロジェクト CRUD
-
-    /// config.toml を保存（失敗時はログ出力）
-    private func saveConfig(_ config: ConfigManager.VpConfig) {
-        do {
-            try ConfigManager.shared.save(config)
-        } catch {
-            NSLog("[VP] config.toml 保存失敗: %@", error.localizedDescription)
-        }
-    }
+    // MARK: - プロジェクト CRUD（TheWorld API 経由）
 
     /// フォルダ選択ダイアログでプロジェクトを追加
     private func addProject() {
@@ -418,57 +409,49 @@ struct MainWindowView: View {
 
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
-        var config = ConfigManager.shared.load()
         let path = url.path
-        // 重複チェック
-        guard !config.projects.contains(where: { $0.path == path }) else { return }
-        config.projects.append(
-            ConfigManager.ProjectEntry(name: url.lastPathComponent, path: path)
-        )
-        saveConfig(config)
-        loadProjects()
+        let name = url.lastPathComponent
+        Task {
+            try? await theWorldClient.addProject(name: name, path: path)
+            loadProjects()
+        }
     }
 
     /// ドラッグ＆ドロップでプロジェクトを追加（URL 指定）
     private func dropAddProject(url: URL) {
-        var config = ConfigManager.shared.load()
         let path = url.path
-        guard !config.projects.contains(where: { $0.path == path }) else { return }
-        config.projects.append(
-            ConfigManager.ProjectEntry(name: url.lastPathComponent, path: path)
-        )
-        saveConfig(config)
-        loadProjects()
+        let name = url.lastPathComponent
+        Task {
+            try? await theWorldClient.addProject(name: name, path: path)
+            loadProjects()
+        }
     }
 
-    /// プロジェクトをリストから削除（config.toml から除去）
+    /// プロジェクトをリストから削除
     private func deleteProject(path: String) {
-        var config = ConfigManager.shared.load()
-        config.projects.removeAll { $0.path == path }
-        saveConfig(config)
-        loadProjects()
+        Task {
+            try? await theWorldClient.removeProject(path: path)
+            loadProjects()
+        }
     }
 
     /// プロジェクトの並び順を変更（ドラッグ＆ドロップ）
     private func reorderProjects(from: IndexSet, to: Int) {
-        var config = ConfigManager.shared.load()
-        config.projects.move(fromOffsets: from, toOffset: to)
-        saveConfig(config)
-        loadProjects()
+        // ローカルの projects 配列で並び替えを計算
+        var paths = projects.map(\.path)
+        paths.move(fromOffsets: from, toOffset: to)
+        Task {
+            try? await theWorldClient.reorderProjects(paths: paths)
+            loadProjects()
+        }
     }
 
     /// プロジェクト名を変更
     private func renameProject(path: String, newName: String) {
-        var config = ConfigManager.shared.load()
-        if let index = config.projects.firstIndex(where: { $0.path == path }) {
-            config.projects[index] = ConfigManager.ProjectEntry(
-                name: newName,
-                path: config.projects[index].path,
-                port: config.projects[index].port
-            )
+        Task {
+            try? await theWorldClient.updateProject(path: path, name: newName)
+            loadProjects()
         }
-        saveConfig(config)
-        loadProjects()
     }
 
     // MARK: - データ読み込み
@@ -526,21 +509,24 @@ struct MainWindowView: View {
             // 各 running process の started_at + stands を並列取得
             let details = await fetchProcessDetails(processes: running)
 
+            // プロジェクト一覧を TheWorld API から取得（config.toml ではなく TheWorld が真実源）
+            let registeredProjects = (try? await theWorldClient.listProjects()) ?? []
+
             // ccws ワーカー + Git ブランチをバックグラウンドでスキャン
-            let config = ConfigManager.shared.load()
-            let projectEntries = config.projects
+            let projectEntries = registeredProjects
             let projectInfoByPath = await Task.detached(priority: .utility) {
                 Dictionary(uniqueKeysWithValues: projectEntries.map { entry in
                     let workers = CcwsDiscovery.discoverWorkers(forProject: entry.name)
-                    let branch = CcwsDiscovery.readGitBranch(at: URL(fileURLWithPath: entry.path))
-                    // tmux セッション名: {name}-vp
+                    let branch = CcwsDiscovery.readGitBranch(
+                        at: URL(fileURLWithPath: entry.path)
+                    )
                     let tmuxName = entry.name.replacingOccurrences(of: ".", with: "-") + "-vp"
                     let hasHD = CcwsDiscovery.tmuxSessionExists(tmuxName)
                     return (entry.path, (workers: workers, branch: branch, hasHD: hasHD))
                 })
             }.value
 
-            projects = config.projects.map { entry in
+            projects = registeredProjects.map { entry in
                 let info = projectInfoByPath[entry.path]
                 let workers = info?.workers ?? []
                 let branch = info?.branch
