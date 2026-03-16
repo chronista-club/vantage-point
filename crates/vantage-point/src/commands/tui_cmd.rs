@@ -400,7 +400,55 @@ async fn run_tui_console(session_name: &str) -> Result<()> {
                         let _ = writer.flush();
                     }
                 }
-                _ => {} // FocusGained, FocusLost, Mouse, Paste
+                Event::Mouse(mouse) => {
+                    use crossterm::event::MouseEventKind;
+                    // マウスイベントを SGR エスケープシーケンスで PTY(tmux) に転送
+                    // Block 枠分のオフセット: ヘッダー1行 + 上枠1行 = 2行分, 左枠1列
+                    let x = mouse.column.saturating_sub(1);
+                    let y = mouse.row.saturating_sub(2);
+                    let seq = match mouse.kind {
+                        MouseEventKind::ScrollUp => {
+                            format!("\x1b[<64;{};{}M", x + 1, y + 1)
+                        }
+                        MouseEventKind::ScrollDown => {
+                            format!("\x1b[<65;{};{}M", x + 1, y + 1)
+                        }
+                        MouseEventKind::Down(btn) => {
+                            let b = match btn {
+                                crossterm::event::MouseButton::Left => 0,
+                                crossterm::event::MouseButton::Right => 2,
+                                crossterm::event::MouseButton::Middle => 1,
+                            };
+                            format!("\x1b[<{};{};{}M", b, x + 1, y + 1)
+                        }
+                        MouseEventKind::Up(btn) => {
+                            let b = match btn {
+                                crossterm::event::MouseButton::Left => 0,
+                                crossterm::event::MouseButton::Right => 2,
+                                crossterm::event::MouseButton::Middle => 1,
+                            };
+                            format!("\x1b[<{};{};{}m", b, x + 1, y + 1)
+                        }
+                        MouseEventKind::Drag(btn) => {
+                            let b = match btn {
+                                crossterm::event::MouseButton::Left => 32,
+                                crossterm::event::MouseButton::Right => 34,
+                                crossterm::event::MouseButton::Middle => 33,
+                            };
+                            format!("\x1b[<{};{};{}M", b, x + 1, y + 1)
+                        }
+                        MouseEventKind::Moved => {
+                            format!("\x1b[<35;{};{}M", x + 1, y + 1)
+                        }
+                        _ => String::new(),
+                    };
+                    if !seq.is_empty() {
+                        use std::io::Write;
+                        let _ = writer.write_all(seq.as_bytes());
+                        let _ = writer.flush();
+                    }
+                }
+                _ => {} // FocusGained, FocusLost, Paste
             }
         }
 
