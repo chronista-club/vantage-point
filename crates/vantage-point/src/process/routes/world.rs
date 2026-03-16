@@ -143,6 +143,140 @@ pub async fn world_open_pointview(
     }
 }
 
+/// プロジェクト追加リクエスト
+#[derive(serde::Deserialize)]
+pub struct AddProjectRequest {
+    pub name: String,
+    pub path: String,
+}
+
+/// POST /api/world/projects - プロジェクトを追加
+pub async fn world_add_project(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<AddProjectRequest>,
+) -> impl IntoResponse {
+    let Some(world) = &state.world else {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "World not available"})),
+        );
+    };
+
+    let world = world.read().await;
+    match world.add_project(&req.name, &req.path).await {
+        Ok(info) => (
+            axum::http::StatusCode::OK,
+            Json(serde_json::to_value(&info).unwrap_or_default()),
+        ),
+        Err(e) => (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": e.to_string()})),
+        ),
+    }
+}
+
+/// プロジェクト更新リクエスト
+#[derive(serde::Deserialize)]
+pub struct UpdateProjectRequest {
+    pub path: String,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+/// PUT /api/world/projects/update - プロジェクト名を変更
+pub async fn world_update_project(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<UpdateProjectRequest>,
+) -> impl IntoResponse {
+    let Some(world) = &state.world else {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "World not available"})),
+        );
+    };
+
+    let world = world.read().await;
+    if let Some(new_name) = &req.name {
+        match world.rename_project(&req.path, new_name).await {
+            Ok(()) => (
+                axum::http::StatusCode::OK,
+                Json(serde_json::json!({"status": "updated", "path": req.path})),
+            ),
+            Err(e) => (
+                axum::http::StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": e.to_string()})),
+            ),
+        }
+    } else {
+        (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "No fields to update"})),
+        )
+    }
+}
+
+/// プロジェクト削除リクエスト
+#[derive(serde::Deserialize)]
+pub struct RemoveProjectRequest {
+    pub path: String,
+}
+
+/// POST /api/world/projects/remove - プロジェクトを削除
+pub async fn world_remove_project(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<RemoveProjectRequest>,
+) -> impl IntoResponse {
+    let Some(world) = &state.world else {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "World not available"})),
+        );
+    };
+
+    let world = world.read().await;
+    match world.remove_project(&req.path).await {
+        Ok(()) => (
+            axum::http::StatusCode::OK,
+            Json(serde_json::json!({"status": "removed", "path": req.path})),
+        ),
+        Err(e) => (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": e.to_string()})),
+        ),
+    }
+}
+
+/// プロジェクト並び替えリクエスト
+#[derive(serde::Deserialize)]
+pub struct ReorderProjectsRequest {
+    pub paths: Vec<String>,
+}
+
+/// PUT /api/world/projects - プロジェクトの並び順を変更
+pub async fn world_reorder_projects(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<ReorderProjectsRequest>,
+) -> impl IntoResponse {
+    let Some(world) = &state.world else {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "World not available"})),
+        );
+    };
+
+    let world = world.read().await;
+    match world.reorder_projects(&req.paths).await {
+        Ok(()) => (
+            axum::http::StatusCode::OK,
+            Json(serde_json::json!({"status": "reordered"})),
+        ),
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        ),
+    }
+}
+
 /// Process 自己登録リクエスト
 #[derive(serde::Deserialize)]
 pub struct RegisterRequest {

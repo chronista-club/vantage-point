@@ -181,7 +181,22 @@ pub async fn run(
             get(prompt::prompts_list_pending_handler),
         )
         // World API routes
-        .route("/api/world/projects", get(world::world_list_projects))
+        .route(
+            "/api/world/projects",
+            get(world::world_list_projects).post(world::world_add_project),
+        )
+        .route(
+            "/api/world/projects/reorder",
+            post(world::world_reorder_projects),
+        )
+        .route(
+            "/api/world/projects/update",
+            post(world::world_update_project),
+        )
+        .route(
+            "/api/world/projects/remove",
+            post(world::world_remove_project),
+        )
         .route("/api/world/processes", get(world::world_list_processes))
         .route(
             "/api/world/processes/{project_name}/start",
@@ -381,7 +396,22 @@ pub async fn run_world(port: u16) -> Result<()> {
             get(health::canvas_layout_get_handler).post(health::canvas_layout_save_handler),
         )
         // World API routes
-        .route("/api/world/projects", get(world::world_list_projects))
+        .route(
+            "/api/world/projects",
+            get(world::world_list_projects).post(world::world_add_project),
+        )
+        .route(
+            "/api/world/projects/reorder",
+            post(world::world_reorder_projects),
+        )
+        .route(
+            "/api/world/projects/update",
+            post(world::world_update_project),
+        )
+        .route(
+            "/api/world/projects/remove",
+            post(world::world_remove_project),
+        )
         .route("/api/world/processes", get(world::world_list_processes))
         .route(
             "/api/world/processes/{project_name}/start",

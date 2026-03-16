@@ -238,6 +238,131 @@ impl ProcessManagerCapability {
         }
     }
 
+    /// プロジェクトを追加（+ config.toml に永続化）
+    pub async fn add_project(&self, name: &str, path: &str) -> CapabilityResult<ProjectInfo> {
+        let key = normalize_path_key(&PathBuf::from(path));
+
+        let info = ProjectInfo {
+            name: name.to_string(),
+            path: path.into(),
+            process_status: ProcessStatus::Stopped,
+        };
+
+        {
+            let mut projects = self.projects.write().await;
+            if projects.contains_key(&key) {
+                return Err(CapabilityError::Other(format!(
+                    "Project already exists: {}",
+                    path
+                )));
+            }
+            projects.insert(key, info.clone());
+        }
+
+        self.persist_projects().await;
+        Ok(info)
+    }
+
+    /// プロジェクトを削除（+ config.toml に永続化）
+    pub async fn remove_project(&self, path: &str) -> CapabilityResult<()> {
+        let key = normalize_path_key(&PathBuf::from(path));
+
+        // 稼働中なら停止を先にする必要がある
+        {
+            let procs = self.running_processes.read().await;
+            if procs.contains_key(&key) {
+                return Err(CapabilityError::Other(
+                    "Cannot remove running project. Stop it first.".to_string(),
+                ));
+            }
+        }
+
+        {
+            let mut projects = self.projects.write().await;
+            if projects.remove(&key).is_none() {
+                return Err(CapabilityError::Other(format!(
+                    "Project not found: {}",
+                    path
+                )));
+            }
+        }
+
+        self.persist_projects().await;
+        Ok(())
+    }
+
+    /// プロジェクト名を変更（+ config.toml に永続化）
+    pub async fn rename_project(&self, path: &str, new_name: &str) -> CapabilityResult<()> {
+        let key = normalize_path_key(&PathBuf::from(path));
+
+        {
+            let mut projects = self.projects.write().await;
+            if let Some(p) = projects.get_mut(&key) {
+                p.name = new_name.to_string();
+            } else {
+                return Err(CapabilityError::Other(format!(
+                    "Project not found: {}",
+                    path
+                )));
+            }
+        }
+
+        self.persist_projects().await;
+        Ok(())
+    }
+
+    /// プロジェクトの並び順を更新（+ config.toml に永続化）
+    ///
+    /// paths の順序で config.toml に書き出す。
+    pub async fn reorder_projects(&self, paths: &[String]) -> CapabilityResult<()> {
+        // 並び順は config.toml の `[[projects]]` 順で管理
+        // HashMap は順序を持たないため、永続化時に paths の順で書き出す
+        self.persist_projects_ordered(paths).await;
+        Ok(())
+    }
+
+    /// projects HashMap を config.toml に永続化
+    async fn persist_projects(&self) {
+        let projects = self.projects.read().await;
+        let ordered: Vec<String> = projects.keys().cloned().collect();
+        drop(projects);
+        self.persist_projects_ordered(&ordered).await;
+    }
+
+    /// 指定順序で config.toml に永続化
+    async fn persist_projects_ordered(&self, order: &[String]) {
+        let projects = self.projects.read().await;
+
+        let mut config = Config::load().unwrap_or_default();
+        config.projects = order
+            .iter()
+            .filter_map(|key| {
+                projects.get(key).map(|info| crate::config::ProjectConfig {
+                    name: info.name.clone(),
+                    path: info.path.to_string_lossy().to_string(),
+                    port: None,
+                })
+            })
+            .collect();
+
+        // order に含まれないプロジェクトも末尾に追加
+        for (key, info) in projects.iter() {
+            if !order.contains(key) {
+                config.projects.push(crate::config::ProjectConfig {
+                    name: info.name.clone(),
+                    path: info.path.to_string_lossy().to_string(),
+                    port: None,
+                });
+            }
+        }
+
+        if let Err(e) = config.save() {
+            tracing::error!("config.toml 永続化失敗: {}", e);
+        } else {
+            tracing::info!("config.toml 永続化完了: {} projects", config.projects.len());
+        }
+    }
+
     /// Processを起動
     pub async fn start_process(&self, project_name: &str) -> CapabilityResult<RunningProcess> {
         let vp_path = self.vp_binary_path.clone().ok_or_else(|| {
