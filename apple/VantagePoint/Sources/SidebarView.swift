@@ -21,6 +21,8 @@ struct SidebarView: View {
     var onReorder: ((IndexSet, Int) -> Void)?
     /// HD リスタートコールバック（プロジェクトパス）
     var onRestartHD: ((String) -> Void)?
+    /// SP リスタートコールバック（プロジェクトパス）
+    var onRestartSP: ((String) -> Void)?
 
     var body: some View {
         List(selection: $selection) {
@@ -77,6 +79,11 @@ struct SidebarView: View {
         Button("HD をリスタート", systemImage: "arrow.clockwise") {
             onRestartHD?(project.path)
         }
+        Button("SP をリスタート", systemImage: "bolt.trianglebadge.exclamationmark") {
+            onRestartSP?(project.path)
+        }
+        .disabled(!project.isRunning)
+        Divider()
         Button("名前を変更…", systemImage: "pencil") {
             promptRename(project: project)
         }

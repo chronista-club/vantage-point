@@ -49,7 +49,8 @@ struct MainWindowView: View {
                 onDelete: deleteProject,
                 onRename: renameProject,
                 onReorder: reorderProjects,
-                onRestartHD: restartHD
+                onRestartHD: restartHD,
+                onRestartSP: restartSP
             )
         } detail: {
             // ターミナル + Canvas（Canvas は Cmd+O でトグル）
@@ -367,6 +368,32 @@ struct MainWindowView: View {
             // TerminalRepresentable を強制再生成（PTY をフレッシュに起動）
             terminalGeneration[path, default: 0] += 1
             print("[VP] HD restart done, terminal generation=\(terminalGeneration[path] ?? 0)")
+        }
+    }
+
+    /// SP（Star Platinum）をリスタート — TheWorld API 経由で stop → start
+    private func restartSP(path: String) {
+        print("[VP] restartSP called for path: \(path)")
+        guard let project = projects.first(where: { $0.path == path }) else { return }
+
+        Task {
+            do {
+                // stop
+                try await theWorldClient.stopProcess(projectName: project.name)
+                print("[VP] SP stopped: \(project.name)")
+
+                // 少し待ってから start（ポート解放待ち）
+                try await Task.sleep(nanoseconds: 500_000_000)
+
+                // start
+                let newProcess = try await theWorldClient.startProcess(projectName: project.name)
+                print("[VP] SP restarted: \(project.name) on port \(newProcess.port)")
+            } catch {
+                print("[VP] SP restart error: \(error)")
+            }
+
+            // ポーリングで状態が更新されるまで手動リフレッシュ
+            await refreshAll()
         }
     }
 
