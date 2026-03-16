@@ -1,7 +1,6 @@
-//! World API ルートハンドラー - PP (Paisley Park) プロセス管理
+//! World API ルートハンドラー — TheWorld (Process Manager) REST API
 //!
-//! World（TheWorld）から呼び出される REST API。
-//! PP の起動・停止・監視を行う。
+//! プロジェクト CRUD・Process 起動・停止・監視を担当する。
 
 use std::sync::Arc;
 

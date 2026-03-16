@@ -49,7 +49,8 @@ struct MainWindowView: View {
                 onDelete: deleteProject,
                 onRename: renameProject,
                 onReorder: reorderProjects,
-                onRestartHD: restartHD
+                onRestartHD: restartHD,
+                onRestartSP: restartSP
             )
         } detail: {
             // ターミナル + Canvas（Canvas は Cmd+O でトグル）
@@ -345,9 +346,9 @@ struct MainWindowView: View {
         print("[VP] restartHD called for path: \(path)")
         let vpBin = NSHomeDirectory() + "/.cargo/bin/vp"
 
-        Task {
+        // waitUntilExit() はブロッキング API のため detached で実行
+        Task.detached(priority: .utility) {
             // vp hd stop → vp hd start（tmux セッション再生成）
-            // HD（tmux）は SP 無しでも独立動作する
             for (label, cmd) in [("hd stop", "\(vpBin) hd stop"), ("hd start", "\(vpBin) hd start")] {
                 let process = Process()
                 process.executableURL = URL(fileURLWithPath: "/bin/zsh")
@@ -364,9 +365,37 @@ struct MainWindowView: View {
                 }
             }
 
-            // TerminalRepresentable を強制再生成（PTY をフレッシュに起動）
-            terminalGeneration[path, default: 0] += 1
-            print("[VP] HD restart done, terminal generation=\(terminalGeneration[path] ?? 0)")
+            // @State 更新は MainActor で実行
+            await MainActor.run {
+                terminalGeneration[path, default: 0] += 1
+                print("[VP] HD restart done, terminal generation=\(terminalGeneration[path] ?? 0)")
+            }
+        }
+    }
+
+    /// SP（Star Platinum）をリスタート — TheWorld API 経由で stop → start
+    private func restartSP(path: String) {
+        print("[VP] restartSP called for path: \(path)")
+        guard let project = projects.first(where: { $0.path == path }) else { return }
+
+        Task {
+            do {
+                // stop
+                try await theWorldClient.stopProcess(projectName: project.name)
+                print("[VP] SP stopped: \(project.name)")
+
+                // 少し待ってから start（ポート解放待ち）
+                try await Task.sleep(nanoseconds: 500_000_000)
+
+                // start
+                let newProcess = try await theWorldClient.startProcess(projectName: project.name)
+                print("[VP] SP restarted: \(project.name) on port \(newProcess.port)")
+            } catch {
+                print("[VP] SP restart error: \(error)")
+            }
+
+            // ポーリングで状態が更新されるまで手動リフレッシュ
+            await refreshAll()
         }
     }
 
@@ -413,7 +442,7 @@ struct MainWindowView: View {
         let name = url.lastPathComponent
         Task {
             try? await theWorldClient.addProject(name: name, path: path)
-            await refreshAll()
+            loadProjects()
         }
     }
 
@@ -423,7 +452,7 @@ struct MainWindowView: View {
         let name = url.lastPathComponent
         Task {
             try? await theWorldClient.addProject(name: name, path: path)
-            await refreshAll()
+            loadProjects()
         }
     }
 
@@ -431,17 +460,18 @@ struct MainWindowView: View {
     private func deleteProject(path: String) {
         Task {
             try? await theWorldClient.removeProject(path: path)
-            await refreshAll()
+            loadProjects()
         }
     }
 
     /// プロジェクトの並び順を変更（ドラッグ＆ドロップ）
     private func reorderProjects(from: IndexSet, to: Int) {
+        // ローカルの projects 配列で並び替えを計算
         var paths = projects.map(\.path)
         paths.move(fromOffsets: from, toOffset: to)
         Task {
             try? await theWorldClient.reorderProjects(paths: paths)
-            await refreshAll()
+            loadProjects()
         }
     }
 
@@ -449,7 +479,7 @@ struct MainWindowView: View {
     private func renameProject(path: String, newName: String) {
         Task {
             try? await theWorldClient.updateProject(path: path, name: newName)
-            await refreshAll()
+            loadProjects()
         }
     }
 

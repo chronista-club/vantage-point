@@ -53,6 +53,9 @@ pub struct ProjectInfo {
     pub path: PathBuf,
     /// Process状態
     pub process_status: ProcessStatus,
+    /// 指定ポート（config.toml の port フィールド、永続化時に保持）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
 }
 
 /// Process状態
@@ -153,6 +156,7 @@ impl ProcessManagerCapability {
                     name: project.name.clone(),
                     path: project.path.clone().into(),
                     process_status: ProcessStatus::Stopped,
+                    port: project.port,
                 },
             );
         }
@@ -232,6 +236,7 @@ impl ProcessManagerCapability {
                     name: project.name.clone(),
                     path: project.path.clone().into(),
                     process_status: ProcessStatus::Stopped,
+                    port: project.port,
                 });
             }
             tracing::info!("Config reloaded: {} projects", projects.len());
@@ -240,12 +245,22 @@ impl ProcessManagerCapability {
 
     /// プロジェクトを追加（+ config.toml に永続化）
     pub async fn add_project(&self, name: &str, path: &str) -> CapabilityResult<ProjectInfo> {
-        let key = normalize_path_key(&PathBuf::from(path));
+        // パスの存在・ディレクトリ確認
+        let pb = PathBuf::from(path);
+        if !pb.is_dir() {
+            return Err(CapabilityError::Other(format!(
+                "Path is not a directory: {}",
+                path
+            )));
+        }
+
+        let key = normalize_path_key(&pb);
 
         let info = ProjectInfo {
             name: name.to_string(),
             path: path.into(),
             process_status: ProcessStatus::Stopped,
+            port: None,
         };
 
         {
@@ -340,7 +355,7 @@ impl ProcessManagerCapability {
                 projects.get(key).map(|info| crate::config::ProjectConfig {
                     name: info.name.clone(),
                     path: info.path.to_string_lossy().to_string(),
-                    port: None,
+                    port: info.port,
                 })
             })
             .collect();
@@ -352,7 +367,7 @@ impl ProcessManagerCapability {
                 config.projects.push(crate::config::ProjectConfig {
                     name: info.name.clone(),
                     path: info.path.to_string_lossy().to_string(),
-                    port: None,
+                    port: info.port,
                 });
             }
         }

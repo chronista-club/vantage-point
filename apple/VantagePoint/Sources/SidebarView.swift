@@ -21,6 +21,8 @@ struct SidebarView: View {
     var onReorder: ((IndexSet, Int) -> Void)?
     /// HD リスタートコールバック（プロジェクトパス）
     var onRestartHD: ((String) -> Void)?
+    /// SP リスタートコールバック（プロジェクトパス）
+    var onRestartSP: ((String) -> Void)?
 
     var body: some View {
         List(selection: $selection) {
@@ -77,6 +79,11 @@ struct SidebarView: View {
         Button("HD をリスタート", systemImage: "arrow.clockwise") {
             onRestartHD?(project.path)
         }
+        Button("SP をリスタート", systemImage: "bolt.trianglebadge.exclamationmark") {
+            onRestartSP?(project.path)
+        }
+        .disabled(!project.isRunning)
+        Divider()
         Button("名前を変更…", systemImage: "pencil") {
             promptRename(project: project)
         }
@@ -375,11 +382,11 @@ enum CcwsDiscovery {
         .sorted { $0.suffix < $1.suffix }
     }
 
-    /// tmux セッションが存在するか確認
+    /// tmux セッションが存在するか確認（PATH から tmux を解決）
     static func tmuxSessionExists(_ name: String) -> Bool {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/tmux")
-        process.arguments = ["has-session", "-t", name]
+        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        process.arguments = ["-lc", "tmux has-session -t \(name)"]
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         do {
