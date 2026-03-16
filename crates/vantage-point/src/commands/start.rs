@@ -378,8 +378,16 @@ fn tmux_session_exists(name: &str) -> bool {
 /// tmux セッション作成（Claude CLI を中で起動、ステータスバー非表示）
 ///
 /// `--continue` 付きで起動し、即死した場合は `--continue` なしでフォールバック。
-pub fn create_tmux_session(name: &str, project_dir: &str, cols: u16, rows: u16) -> Result<()> {
-    let mise_envs = collect_mise_env(project_dir);
+pub fn create_tmux_session(
+    name: &str,
+    project_dir: &str,
+    cols: u16,
+    rows: u16,
+    process_port: u16,
+) -> Result<()> {
+    let mut mise_envs = collect_mise_env(project_dir);
+    // VP_PROCESS_PORT を注入 → CC が起動する MCP プロセスに自動伝播
+    mise_envs.push(("VP_PROCESS_PORT".to_string(), process_port.to_string()));
 
     // まず --continue 付きで試行
     let created = try_create_tmux_claude(name, project_dir, cols, rows, &mise_envs, true)?;
@@ -544,12 +552,16 @@ fn run_tui(
 
     // tmux セッション確保
     if !is_reconnect {
-        create_tmux_session(session_name, project_dir, pty_cols as u16, pty_lines as u16)?;
+        create_tmux_session(session_name, project_dir, pty_cols as u16, pty_lines as u16, port)?;
     } else {
         resize_tmux_session(session_name, pty_cols as u16, pty_lines as u16);
         // 再接続時もステータスバーを非表示にする
         let _ = std::process::Command::new("tmux")
             .args(["set-option", "-t", session_name, "status", "off"])
+            .status();
+        // 再接続時も VP_PROCESS_PORT を注入（ポート変更に追従）
+        let _ = std::process::Command::new("tmux")
+            .args(["set-environment", "-t", session_name, "VP_PROCESS_PORT", &port.to_string()])
             .status();
     }
 

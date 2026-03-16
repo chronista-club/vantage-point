@@ -79,7 +79,9 @@ fn hd_start(
 
     // SP サーバー稼働チェック（Warning のみ、エラーにはしない）
     let normalized = Config::normalize_path(std::path::Path::new(project_dir));
-    if crate::discovery::find_by_project_blocking(&normalized).is_none() {
+    let sp_port = crate::discovery::find_by_project_blocking(&normalized)
+        .map(|p| p.port);
+    if sp_port.is_none() {
         eprintln!("⚠️  SP サーバーが未起動です。`vp sp start` で起動を推奨します。");
     }
 
@@ -99,6 +101,7 @@ fn hd_start(
             project_dir,
             cols,
             rows,
+            sp_port.unwrap_or(33000),
         )?;
         println!("✅ tmux セッション '{}' を作成しました", session_name);
     }
