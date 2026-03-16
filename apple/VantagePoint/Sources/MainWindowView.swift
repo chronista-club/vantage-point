@@ -646,6 +646,13 @@ struct MainWindowView: View {
             for project in projects where project.isRunning && !project.hasHD {
                 autoStartHD(path: project.path)
             }
+            // ccws ワーカーの HD も自動起動（ワーカー環境が存在 + HD 未起動）
+            for project in projects {
+                for worker in project.workers where !worker.hasHD {
+                    autoStartHD(path: worker.path)
+                }
+            }
+
         } catch {
             // プロセス一覧取得失敗 → ステータスだけリセット
             resetProjectStatus()
