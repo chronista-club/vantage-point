@@ -382,11 +382,31 @@ enum CcwsDiscovery {
         .sorted { $0.suffix < $1.suffix }
     }
 
-    /// tmux セッションが存在するか確認（PATH から tmux を解決）
-    static func tmuxSessionExists(_ name: String) -> Bool {
+    /// tmux バイナリパスをキャッシュ（PATH から一度だけ解決）
+    private static let tmuxPath: String? = {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        process.arguments = ["-lc", "tmux has-session -t \(name)"]
+        process.arguments = ["-lc", "which tmux"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            process.waitUntilExit()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            let path = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return path?.isEmpty == false ? path : nil
+        } catch {
+            return nil
+        }
+    }()
+
+    /// tmux セッションが存在するか確認（Shell Injection 回避: tmux を直接実行）
+    static func tmuxSessionExists(_ name: String) -> Bool {
+        guard let tmux = tmuxPath else { return false }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: tmux)
+        process.arguments = ["has-session", "-t", name]
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         do {

@@ -344,12 +344,12 @@ struct MainWindowView: View {
     /// App Store 配布時は SP の HTTP API 経由（POST /api/hd/restart）に移行する。
     private func restartHD(path: String) {
         print("[VP] restartHD called for path: \(path)")
-        let vpBin = NSHomeDirectory() + "/.cargo/bin/vp"
 
         // waitUntilExit() はブロッキング API のため detached で実行
         Task.detached(priority: .utility) {
             // vp hd stop → vp hd start（tmux セッション再生成）
-            for (label, cmd) in [("hd stop", "\(vpBin) hd stop"), ("hd start", "\(vpBin) hd start")] {
+            // zsh -lc 経由なので PATH から vp を解決（ハードコード不要）
+            for (label, cmd) in [("hd stop", "vp hd stop"), ("hd start", "vp hd start")] {
                 let process = Process()
                 process.executableURL = URL(fileURLWithPath: "/bin/zsh")
                 process.arguments = ["-lc", cmd]
@@ -442,7 +442,7 @@ struct MainWindowView: View {
         let name = url.lastPathComponent
         Task {
             try? await theWorldClient.addProject(name: name, path: path)
-            loadProjects()
+            await refreshAll()
         }
     }
 
@@ -452,7 +452,7 @@ struct MainWindowView: View {
         let name = url.lastPathComponent
         Task {
             try? await theWorldClient.addProject(name: name, path: path)
-            loadProjects()
+            await refreshAll()
         }
     }
 
@@ -460,18 +460,17 @@ struct MainWindowView: View {
     private func deleteProject(path: String) {
         Task {
             try? await theWorldClient.removeProject(path: path)
-            loadProjects()
+            await refreshAll()
         }
     }
 
     /// プロジェクトの並び順を変更（ドラッグ＆ドロップ）
     private func reorderProjects(from: IndexSet, to: Int) {
-        // ローカルの projects 配列で並び替えを計算
         var paths = projects.map(\.path)
         paths.move(fromOffsets: from, toOffset: to)
         Task {
             try? await theWorldClient.reorderProjects(paths: paths)
-            loadProjects()
+            await refreshAll()
         }
     }
 
@@ -479,7 +478,7 @@ struct MainWindowView: View {
     private func renameProject(path: String, newName: String) {
         Task {
             try? await theWorldClient.updateProject(path: path, name: newName)
-            loadProjects()
+            await refreshAll()
         }
     }
 

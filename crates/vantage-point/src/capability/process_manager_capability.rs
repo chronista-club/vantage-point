@@ -245,6 +245,13 @@ impl ProcessManagerCapability {
 
     /// プロジェクトを追加（+ config.toml に永続化）
     pub async fn add_project(&self, name: &str, path: &str) -> CapabilityResult<ProjectInfo> {
+        // 名前バリデーション
+        if name.trim().is_empty() {
+            return Err(CapabilityError::Other(
+                "Project name cannot be empty".to_string(),
+            ));
+        }
+
         // パスの存在・ディレクトリ確認
         let pb = PathBuf::from(path);
         if !pb.is_dir() {
@@ -308,6 +315,12 @@ impl ProcessManagerCapability {
 
     /// プロジェクト名を変更（+ config.toml に永続化）
     pub async fn rename_project(&self, path: &str, new_name: &str) -> CapabilityResult<()> {
+        if new_name.trim().is_empty() {
+            return Err(CapabilityError::Other(
+                "Project name cannot be empty".to_string(),
+            ));
+        }
+
         let key = normalize_path_key(&PathBuf::from(path));
 
         {
@@ -330,9 +343,12 @@ impl ProcessManagerCapability {
     ///
     /// paths の順序で config.toml に書き出す。
     pub async fn reorder_projects(&self, paths: &[String]) -> CapabilityResult<()> {
-        // 並び順は config.toml の `[[projects]]` 順で管理
-        // HashMap は順序を持たないため、永続化時に paths の順で書き出す
-        self.persist_projects_ordered(paths).await;
+        // raw paths を正規化して HashMap キーと一致させる
+        let normalized: Vec<String> = paths
+            .iter()
+            .map(|p| normalize_path_key(&PathBuf::from(p)))
+            .collect();
+        self.persist_projects_ordered(&normalized).await;
         Ok(())
     }
 
