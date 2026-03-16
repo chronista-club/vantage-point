@@ -25,57 +25,33 @@ struct SidebarView: View {
     var body: some View {
         List(selection: $selection) {
             ForEach(projects) { project in
-                // ワーカーがあればツリー表示
+                // ワーカーがあれば DisclosureGroup でツリー表示
                 if project.workers.isEmpty {
                     SidebarProjectRow(project: project)
                         .tag(project.id)
                         .contextMenu { projectContextMenu(project: project) }
                 } else {
-                    SidebarProjectRow(project: project)
-                        .tag(project.id)
-                        .contextMenu { projectContextMenu(project: project) }
-
-                    // ccws ワーカーをインデント表示（D&D 並び替え対象外）
-                    ForEach(project.workers) { worker in
-                        SidebarWorkerRow(worker: worker)
-                            .tag(worker.id)
-                            .padding(.leading, 20)
-                            .moveDisabled(true)
-                            .contextMenu {
-                                Button("HD をリスタート", systemImage: "arrow.clockwise") {
-                                    onRestartHD?(worker.path)
+                    DisclosureGroup {
+                        ForEach(project.workers) { worker in
+                            SidebarWorkerRow(worker: worker)
+                                .tag(worker.id)
+                                .contextMenu {
+                                    Button("HD をリスタート", systemImage: "arrow.clockwise") {
+                                        onRestartHD?(worker.path)
+                                    }
                                 }
-                            }
+                        }
+                    } label: {
+                        SidebarProjectRow(project: project)
+                            .tag(project.id)
+                            .contextMenu { projectContextMenu(project: project) }
                     }
                 }
             }
-            .onMove { flatFrom, flatTo in
-                // フラット List インデックス → projects 配列インデックスに変換
-                // worker 行が混在すると List の行番号と projects のインデックスがズレるため
-                var flatToProject: [Int: Int] = [:]
-                var flat = 0
-                for (i, project) in projects.enumerated() {
-                    flatToProject[flat] = i
-                    flat += 1
-                    flat += project.workers.count
-                }
-                let projectFrom = IndexSet(flatFrom.compactMap { flatToProject[$0] })
-                // flatTo が worker 行の間を指す場合、直前のプロジェクトの「後ろ」に丸める
-                let projectTo: Int
-                if let direct = flatToProject[flatTo] {
-                    projectTo = direct
-                } else {
-                    var best = projects.count
-                    for fi in stride(from: flatTo - 1, through: 0, by: -1) {
-                        if let pi = flatToProject[fi] {
-                            best = pi + 1
-                            break
-                        }
-                    }
-                    projectTo = best
-                }
-                guard !projectFrom.isEmpty else { return }
-                onReorder?(projectFrom, projectTo)
+            // DisclosureGroup により worker が ForEach のインデックス空間から外れるため
+            // projects 配列と1:1対応になり、変換不要
+            .onMove { from, to in
+                onReorder?(from, to)
             }
         }
         .navigationTitle("Projects")
@@ -189,11 +165,11 @@ struct SidebarProjectRow: View {
                             .foregroundStyle(.secondary)
                     }
 
-                    // Stand ステータス（active/connected のみ表示）
-                    let activeStands = project.stands.filter { $0.status == "active" || $0.status == "connected" }
-                    if !activeStands.isEmpty {
+                    // Stand ステータス（disabled 以外を表示）
+                    let visibleStands = project.stands.filter { $0.status != "disabled" }
+                    if !visibleStands.isEmpty {
                         HStack(spacing: 4) {
-                            ForEach(activeStands, id: \.key) { stand in
+                            ForEach(visibleStands, id: \.key) { stand in
                                 HStack(spacing: 2) {
                                     Image(systemName: stand.systemImage)
                                     Text(stand.shortName)
@@ -223,9 +199,16 @@ struct SidebarWorkerRow: View {
                 .foregroundStyle(.secondary)
 
             VStack(alignment: .leading, spacing: 1) {
-                Text(worker.suffix)
-                    .font(.callout)
-                    .lineLimit(1)
+                HStack(spacing: 4) {
+                    Text(worker.suffix)
+                        .font(.callout)
+                        .lineLimit(1)
+                    if worker.hasHD {
+                        Image(systemName: "text.book.closed")
+                            .font(.caption2)
+                            .foregroundStyle(.green)
+                    }
+                }
 
                 if let branch = worker.branch {
                     Text(branch)
@@ -235,6 +218,7 @@ struct SidebarWorkerRow: View {
                 }
             }
         }
+        .opacity(worker.hasHD ? 1.0 : 0.5)
     }
 }
 
@@ -285,6 +269,7 @@ struct CcwsWorkerInfo: Identifiable, Equatable {
     let suffix: String   // 親プロジェクト名を除いた部分
     let path: String
     let branch: String?
+    let hasHD: Bool      // tmux セッションが存在するか
 }
 
 /// サイドバー表示用のプロジェクトモデル
@@ -359,16 +344,36 @@ enum CcwsDiscovery {
 
             let suffix = String(dirName.dropFirst(prefix.count))
             let branch = readGitBranch(at: url)
+            // tmux セッション名: {dirName}-vp
+            let tmuxSession = dirName.replacingOccurrences(of: ".", with: "-") + "-vp"
+            let hasHD = tmuxSessionExists(tmuxSession)
 
             return CcwsWorkerInfo(
                 id: url.path,
                 name: dirName,
                 suffix: suffix,
                 path: url.path,
-                branch: branch
+                branch: branch,
+                hasHD: hasHD
             )
         }
         .sorted { $0.suffix < $1.suffix }
+    }
+
+    /// tmux セッションが存在するか確認
+    private static func tmuxSessionExists(_ name: String) -> Bool {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/tmux")
+        process.arguments = ["has-session", "-t", name]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            process.waitUntilExit()
+            return process.terminationStatus == 0
+        } catch {
+            return false
+        }
     }
 
     /// Git ブランチ名を取得

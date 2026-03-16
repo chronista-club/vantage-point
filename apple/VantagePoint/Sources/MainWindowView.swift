@@ -252,9 +252,9 @@ struct MainWindowView: View {
                 }
 
                 if project.isRunning {
-                    let activeStands = project.stands.filter { $0.status == "active" || $0.status == "connected" }
+                    let visibleStands = project.stands.filter { $0.status != "disabled" }
                     HStack(spacing: 6) {
-                        ForEach(activeStands, id: \.key) { stand in
+                        ForEach(visibleStands, id: \.key) { stand in
                             Image(systemName: stand.systemImage)
                                 .foregroundStyle(stand.statusColor)
                         }
