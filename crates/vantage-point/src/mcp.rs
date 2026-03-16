@@ -1819,12 +1819,17 @@ if bestId > 0 { print(bestId) }
         let base_url = url.clone();
         drop(url);
 
-        // Extract port from URL
+        // Extract port from URL（resolve_process_port と同じ優先度チェーンでフォールバック）
         let port: u16 = base_url
             .split(':')
             .next_back()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(33000);
+            .unwrap_or_else(|| {
+                std::env::var("VP_PROCESS_PORT")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(33000)
+            });
 
         // 1. Get current Process info (project_dir)
         let health_url = format!("{}/api/health", base_url);
@@ -1950,29 +1955,37 @@ impl rmcp::ServerHandler for VantageMcp {
     }
 }
 
-/// Resolve Process port for MCP communication
+/// Process ポートを解決（MCP 通信先の決定）
 ///
-/// Priority:
-/// 1. Explicit port argument (if provided and != 33000)
-/// 2. running.json lookup by current working directory
-/// 3. Default port (33000)
-async fn resolve_process_port(explicit_port: u16) -> u16 {
-    // If an explicit port was provided (not the default), use it
-    if explicit_port != 33000 {
-        return explicit_port;
+/// 優先度チェーン:
+/// 1. 明示的なポート引数（Some で指定された場合）
+/// 2. 環境変数 `VP_PROCESS_PORT`（tmux セッション起動時に注入）
+/// 3. `find_for_cwd()` による cwd ベースの自動解決
+/// 4. デフォルトポート 33000（互換性フォールバック）
+async fn resolve_process_port(explicit_port: Option<u16>) -> u16 {
+    // 1. 明示的なポート指定
+    if let Some(port) = explicit_port {
+        return port;
     }
 
-    // Try to find a running Process for the current directory
+    // 2. 環境変数 VP_PROCESS_PORT
+    if let Ok(env_port) = std::env::var("VP_PROCESS_PORT") {
+        if let Ok(port) = env_port.parse::<u16>() {
+            return port;
+        }
+    }
+
+    // 3. cwd ベースの自動解決（TheWorld API 経由）
     if let Some(process_info) = crate::discovery::find_for_cwd().await {
         return process_info.port;
     }
 
-    // Fall back to default
+    // 4. フォールバック
     33000
 }
 
 /// Run the MCP server over stdio
-pub async fn run_mcp_server(process_port: u16) -> anyhow::Result<()> {
+pub async fn run_mcp_server(process_port: Option<u16>) -> anyhow::Result<()> {
     // rustls 0.23+ は CryptoProvider の明示的な設定が必要（QUIC 接続用）
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 

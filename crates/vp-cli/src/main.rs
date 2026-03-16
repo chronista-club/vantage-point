@@ -246,7 +246,7 @@ fn main() -> Result<()> {
         Commands::Config => commands::config::execute(&config),
         Commands::Mcp => {
             let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(mcp::run_mcp_server(33000))
+            rt.block_on(mcp::run_mcp_server(None))
         }
         Commands::Update { check } => commands::update::execute(check),
         Commands::Canvas(cmd) => commands::canvas_cmd::execute(cmd, &config),
