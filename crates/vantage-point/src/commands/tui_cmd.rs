@@ -401,47 +401,7 @@ async fn run_tui_console(session_name: &str) -> Result<()> {
                     }
                 }
                 Event::Mouse(mouse) => {
-                    use crossterm::event::MouseEventKind;
-                    // マウスイベントを SGR エスケープシーケンスで PTY(tmux) に転送
-                    // Block 枠分のオフセット: ヘッダー1行 + 上枠1行 = 2行分, 左枠1列
-                    let x = mouse.column.saturating_sub(1);
-                    let y = mouse.row.saturating_sub(2);
-                    let seq = match mouse.kind {
-                        MouseEventKind::ScrollUp => {
-                            format!("\x1b[<64;{};{}M", x + 1, y + 1)
-                        }
-                        MouseEventKind::ScrollDown => {
-                            format!("\x1b[<65;{};{}M", x + 1, y + 1)
-                        }
-                        MouseEventKind::Down(btn) => {
-                            let b = match btn {
-                                crossterm::event::MouseButton::Left => 0,
-                                crossterm::event::MouseButton::Right => 2,
-                                crossterm::event::MouseButton::Middle => 1,
-                            };
-                            format!("\x1b[<{};{};{}M", b, x + 1, y + 1)
-                        }
-                        MouseEventKind::Up(btn) => {
-                            let b = match btn {
-                                crossterm::event::MouseButton::Left => 0,
-                                crossterm::event::MouseButton::Right => 2,
-                                crossterm::event::MouseButton::Middle => 1,
-                            };
-                            format!("\x1b[<{};{};{}m", b, x + 1, y + 1)
-                        }
-                        MouseEventKind::Drag(btn) => {
-                            let b = match btn {
-                                crossterm::event::MouseButton::Left => 32,
-                                crossterm::event::MouseButton::Right => 34,
-                                crossterm::event::MouseButton::Middle => 33,
-                            };
-                            format!("\x1b[<{};{};{}M", b, x + 1, y + 1)
-                        }
-                        MouseEventKind::Moved => {
-                            format!("\x1b[<35;{};{}M", x + 1, y + 1)
-                        }
-                        _ => String::new(),
-                    };
+                    let seq = mouse_to_sgr(&mouse);
                     if !seq.is_empty() {
                         use std::io::Write;
                         let _ = writer.write_all(seq.as_bytes());
@@ -467,4 +427,126 @@ async fn run_tui_console(session_name: &str) -> Result<()> {
     disable_raw_mode()?;
 
     Ok(())
+}
+
+/// マウスイベントを SGR エスケープシーケンスに変換
+///
+/// Block 枠分のオフセット: ヘッダー1行 + 上枠1行 = 2行分, 左枠1列
+fn mouse_to_sgr(mouse: &crossterm::event::MouseEvent) -> String {
+    use crossterm::event::MouseEventKind;
+
+    let x = mouse.column.saturating_sub(1);
+    let y = mouse.row.saturating_sub(2);
+    match mouse.kind {
+        MouseEventKind::ScrollUp => format!("\x1b[<64;{};{}M", x + 1, y + 1),
+        MouseEventKind::ScrollDown => format!("\x1b[<65;{};{}M", x + 1, y + 1),
+        MouseEventKind::Down(btn) => {
+            let b = match btn {
+                crossterm::event::MouseButton::Left => 0,
+                crossterm::event::MouseButton::Right => 2,
+                crossterm::event::MouseButton::Middle => 1,
+            };
+            format!("\x1b[<{};{};{}M", b, x + 1, y + 1)
+        }
+        MouseEventKind::Up(btn) => {
+            let b = match btn {
+                crossterm::event::MouseButton::Left => 0,
+                crossterm::event::MouseButton::Right => 2,
+                crossterm::event::MouseButton::Middle => 1,
+            };
+            format!("\x1b[<{};{};{}m", b, x + 1, y + 1)
+        }
+        MouseEventKind::Drag(btn) => {
+            let b = match btn {
+                crossterm::event::MouseButton::Left => 32,
+                crossterm::event::MouseButton::Right => 34,
+                crossterm::event::MouseButton::Middle => 33,
+            };
+            format!("\x1b[<{};{};{}M", b, x + 1, y + 1)
+        }
+        MouseEventKind::Moved => format!("\x1b[<35;{};{}M", x + 1, y + 1),
+        _ => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+
+    /// テスト用ヘルパー: MouseEvent を生成
+    fn make_mouse(kind: MouseEventKind, col: u16, row: u16) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column: col,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    #[test]
+    fn test_scroll_up() {
+        // col=5, row=4 → x=5-1=4, y=4-2=2 → SGR座標 x+1=5, y+1=3
+        let seq = mouse_to_sgr(&make_mouse(MouseEventKind::ScrollUp, 5, 4));
+        assert_eq!(seq, "\x1b[<64;5;3M");
+    }
+
+    #[test]
+    fn test_scroll_down() {
+        let seq = mouse_to_sgr(&make_mouse(MouseEventKind::ScrollDown, 10, 6));
+        assert_eq!(seq, "\x1b[<65;10;5M");
+    }
+
+    #[test]
+    fn test_left_click_down() {
+        let seq = mouse_to_sgr(&make_mouse(MouseEventKind::Down(MouseButton::Left), 3, 5));
+        assert_eq!(seq, "\x1b[<0;3;4M");
+    }
+
+    #[test]
+    fn test_left_click_up_uses_lowercase_m() {
+        // release は小文字 'm'（SGR プロトコル仕様）
+        let seq = mouse_to_sgr(&make_mouse(MouseEventKind::Up(MouseButton::Left), 3, 5));
+        assert_eq!(seq, "\x1b[<0;3;4m");
+    }
+
+    #[test]
+    fn test_right_click_button_code() {
+        let seq = mouse_to_sgr(&make_mouse(MouseEventKind::Down(MouseButton::Right), 1, 2));
+        assert_eq!(seq, "\x1b[<2;1;1M");
+    }
+
+    #[test]
+    fn test_middle_click_button_code() {
+        let seq = mouse_to_sgr(&make_mouse(MouseEventKind::Down(MouseButton::Middle), 1, 2));
+        assert_eq!(seq, "\x1b[<1;1;1M");
+    }
+
+    #[test]
+    fn test_drag_left_button_code() {
+        // left drag = button 32
+        let seq = mouse_to_sgr(&make_mouse(MouseEventKind::Drag(MouseButton::Left), 10, 10));
+        assert_eq!(seq, "\x1b[<32;10;9M");
+    }
+
+    #[test]
+    fn test_moved_button_code() {
+        // move = button 35
+        let seq = mouse_to_sgr(&make_mouse(MouseEventKind::Moved, 20, 15));
+        assert_eq!(seq, "\x1b[<35;20;14M");
+    }
+
+    #[test]
+    fn test_offset_saturating_at_zero() {
+        // col=0, row=0 → saturating_sub で負にならない → SGR (1,1)
+        let seq = mouse_to_sgr(&make_mouse(MouseEventKind::ScrollUp, 0, 0));
+        assert_eq!(seq, "\x1b[<64;1;1M");
+    }
+
+    #[test]
+    fn test_offset_row_in_header_area() {
+        // row=1 → y=saturating_sub(2)=0 → SGR y=1
+        let seq = mouse_to_sgr(&make_mouse(MouseEventKind::ScrollUp, 5, 1));
+        assert_eq!(seq, "\x1b[<64;5;1M");
+    }
 }
