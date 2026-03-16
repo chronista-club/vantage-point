@@ -46,7 +46,8 @@ struct MainWindowView: View {
                 onDropAdd: dropAddProject,
                 onDelete: deleteProject,
                 onRename: renameProject,
-                onReorder: reorderProjects
+                onReorder: reorderProjects,
+                onRestartHD: restartHD
             )
         } detail: {
             // ターミナル + Canvas（Canvas は Cmd+O でトグル）
@@ -323,6 +324,40 @@ struct MainWindowView: View {
             request.httpBody = try? JSONSerialization.data(withJSONObject: ["horizontal": true])
             request.timeoutInterval = 5
             _ = try? await URLSession.shared.data(for: request)
+        }
+    }
+
+    // MARK: - HD リスタート
+
+    /// HD（tmux セッション）を再生成する
+    ///
+    /// `vp hd stop && vp hd start` をプロジェクトディレクトリで実行。
+    /// tmux セッション死亡 → PTY 終了検知 → 自動復旧でターミナルが再接続する。
+    ///
+    /// Note: Process() は App Sandbox では使えないが、現在は Notarize のみ配布。
+    /// TerminalView の PTY spawn も同様に非 Sandbox 前提。
+    /// App Store 配布時は SP の HTTP API 経由（POST /api/hd/restart）に移行する。
+    private func restartHD(path: String) {
+        let vpBin = NSHomeDirectory() + "/.cargo/bin/vp"
+        Task.detached(priority: .utility) {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+            // -lc でログインシェル経由 → PATH 解決（mise 等のカスタムパスに対応）
+            process.arguments = ["-lc", "\(vpBin) hd stop && \(vpBin) hd start"]
+            process.currentDirectoryURL = URL(fileURLWithPath: path)
+            process.standardOutput = nil
+            process.standardError = nil
+            do {
+                try process.run()
+                process.waitUntilExit()
+                if process.terminationStatus != 0 {
+                    NSLog("[VP] HD restart failed for %@ (exit: %d)", path, process.terminationStatus)
+                } else {
+                    NSLog("[VP] HD restart completed for %@", path)
+                }
+            } catch {
+                NSLog("[VP] HD restart error for %@: %@", path, error.localizedDescription)
+            }
         }
     }
 

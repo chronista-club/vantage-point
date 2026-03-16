@@ -19,6 +19,8 @@ struct SidebarView: View {
     var onRename: ((String, String) -> Void)?
     /// プロジェクト並び替えコールバック
     var onReorder: ((IndexSet, Int) -> Void)?
+    /// HD リスタートコールバック（プロジェクトパス）
+    var onRestartHD: ((String) -> Void)?
 
     var body: some View {
         List(selection: $selection) {
@@ -33,16 +35,42 @@ struct SidebarView: View {
                         .tag(project.id)
                         .contextMenu { projectContextMenu(project: project) }
 
-                    // ccws ワーカーをインデント表示
+                    // ccws ワーカーをインデント表示（D&D 並び替え対象外）
                     ForEach(project.workers) { worker in
                         SidebarWorkerRow(worker: worker)
                             .tag(worker.id)
                             .padding(.leading, 20)
+                            .moveDisabled(true)
                     }
                 }
             }
-            .onMove { from, to in
-                onReorder?(from, to)
+            .onMove { flatFrom, flatTo in
+                // フラット List インデックス → projects 配列インデックスに変換
+                // worker 行が混在すると List の行番号と projects のインデックスがズレるため
+                var flatToProject: [Int: Int] = [:]
+                var flat = 0
+                for (i, project) in projects.enumerated() {
+                    flatToProject[flat] = i
+                    flat += 1
+                    flat += project.workers.count
+                }
+                let projectFrom = IndexSet(flatFrom.compactMap { flatToProject[$0] })
+                // flatTo が worker 行の間を指す場合、直前のプロジェクトの「後ろ」に丸める
+                let projectTo: Int
+                if let direct = flatToProject[flatTo] {
+                    projectTo = direct
+                } else {
+                    var best = projects.count
+                    for fi in stride(from: flatTo - 1, through: 0, by: -1) {
+                        if let pi = flatToProject[fi] {
+                            best = pi + 1
+                            break
+                        }
+                    }
+                    projectTo = best
+                }
+                guard !projectFrom.isEmpty else { return }
+                onReorder?(projectFrom, projectTo)
             }
         }
         .navigationTitle("Projects")
@@ -65,6 +93,10 @@ struct SidebarView: View {
     /// プロジェクト行のコンテキストメニュー
     @ViewBuilder
     private func projectContextMenu(project: SidebarProject) -> some View {
+        Button("HD をリスタート", systemImage: "arrow.clockwise") {
+            onRestartHD?(project.path)
+        }
+        .disabled(!project.isRunning)
         Button("名前を変更…", systemImage: "pencil") {
             promptRename(project: project)
         }
