@@ -41,6 +41,11 @@ struct SidebarView: View {
                             .tag(worker.id)
                             .padding(.leading, 20)
                             .moveDisabled(true)
+                            .contextMenu {
+                                Button("HD をリスタート", systemImage: "arrow.clockwise") {
+                                    onRestartHD?(worker.path)
+                                }
+                            }
                     }
                 }
             }
@@ -96,7 +101,6 @@ struct SidebarView: View {
         Button("HD をリスタート", systemImage: "arrow.clockwise") {
             onRestartHD?(project.path)
         }
-        .disabled(!project.isRunning)
         Button("名前を変更…", systemImage: "pencil") {
             promptRename(project: project)
         }

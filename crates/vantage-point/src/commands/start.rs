@@ -449,13 +449,13 @@ pub fn try_create_tmux_claude(
         args.push("-e".to_string());
         args.push(format!("{}={}", key, value));
     }
-    // bash -c でラップ: tmux の直接 exec ではシェル初期化が走らず
+    // zsh -lc でラップ: tmux の直接 exec ではシェル初期化が走らず
     // claude が依存する PATH/環境変数が不足して即死するケースを回避
     let mut claude_cmd = "claude --dangerously-skip-permissions".to_string();
     if with_continue {
         claude_cmd.push_str(" --continue");
     }
-    args.push("bash".to_string());
+    args.push("zsh".to_string());
     args.push("-lc".to_string());
     args.push(claude_cmd);
 

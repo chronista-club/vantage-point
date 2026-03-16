@@ -23,6 +23,8 @@ struct MainWindowView: View {
     /// TerminalRepresentable を再生成 → PTY 再起動してしまう。
     /// @State で保持し、差分がある場合のみ更新する。
     @State private var terminalPaths: [String] = []
+    /// TerminalRepresentable の強制再生成用カウンタ（HD リスタート時にインクリメント）
+    @State private var terminalGeneration: [String: Int] = [:]
 
     /// 外部から指定されたプロジェクトパス（起動引数・URL スキーム経由）
     var initialProjectPath: String?
@@ -62,7 +64,9 @@ struct MainWindowView: View {
                     ZStack {
                         ForEach(terminalPaths, id: \.self) { path in
                             let isActive = selectedProjectPath == path
+                            let gen = terminalGeneration[path] ?? 0
                             TerminalRepresentable(projectPath: path, isActive: isActive)
+                                .id("\(path):\(gen)")
                                 .opacity(isActive ? 1 : 0)
                                 .allowsHitTesting(isActive)
                         }
@@ -338,26 +342,41 @@ struct MainWindowView: View {
     /// TerminalView の PTY spawn も同様に非 Sandbox 前提。
     /// App Store 配布時は SP の HTTP API 経由（POST /api/hd/restart）に移行する。
     private func restartHD(path: String) {
+        print("[VP] restartHD called for path: \(path)")
         let vpBin = NSHomeDirectory() + "/.cargo/bin/vp"
-        Task.detached(priority: .utility) {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-            // -lc でログインシェル経由 → PATH 解決（mise 等のカスタムパスに対応）
-            process.arguments = ["-lc", "\(vpBin) hd stop && \(vpBin) hd start"]
-            process.currentDirectoryURL = URL(fileURLWithPath: path)
-            process.standardOutput = nil
-            process.standardError = nil
-            do {
-                try process.run()
-                process.waitUntilExit()
-                if process.terminationStatus != 0 {
-                    NSLog("[VP] HD restart failed for %@ (exit: %d)", path, process.terminationStatus)
-                } else {
-                    NSLog("[VP] HD restart completed for %@", path)
-                }
-            } catch {
-                NSLog("[VP] HD restart error for %@: %@", path, error.localizedDescription)
+        let projectName = (path as NSString).lastPathComponent
+
+        Task {
+            // 1. SP が未起動なら TheWorld API 経由で起動（デーモン管理下で永続化）
+            let running = (try? await theWorldClient.listRunningProcesses()) ?? []
+            let isRunning = running.contains { $0.projectPath == path }
+            if !isRunning {
+                print("[VP] SP not running, starting via TheWorld API: \(projectName)")
+                _ = try? await theWorldClient.startProcess(projectName: projectName)
+                // SP 起動待ち
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
             }
+
+            // 2. vp hd stop → vp hd start（tmux セッション再生成）
+            for (label, cmd) in [("hd stop", "\(vpBin) hd stop"), ("hd start", "\(vpBin) hd start")] {
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+                process.arguments = ["-lc", cmd]
+                process.currentDirectoryURL = URL(fileURLWithPath: path)
+                process.standardOutput = FileHandle.nullDevice
+                process.standardError = FileHandle.nullDevice
+                do {
+                    try process.run()
+                    process.waitUntilExit()
+                    print("[VP] \(label) exit=\(process.terminationStatus)")
+                } catch {
+                    print("[VP] \(label) error: \(error)")
+                }
+            }
+
+            // 3. TerminalRepresentable を強制再生成（PTY をフレッシュに起動）
+            terminalGeneration[path, default: 0] += 1
+            print("[VP] HD restart done, terminal generation=\(terminalGeneration[path] ?? 0)")
         }
     }
 
