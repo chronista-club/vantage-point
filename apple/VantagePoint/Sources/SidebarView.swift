@@ -169,10 +169,10 @@ struct SidebarProjectRow: View {
                 StatusBadge(label: "SP", icon: "star", isActive: project.isRunning)
                 StatusBadge(label: "Lead-HD", icon: "text.book.closed", isActive: project.hasHD)
 
-                // PP は SP health API から取得（SP 稼働中のみ）
+                // PP: SP 稼働中で disabled でなければ利用可能（緑）
                 if let pp = project.stands.first(where: { $0.key == "paisley_park" }) {
                     StatusBadge(label: "PP", icon: "compass.drawing",
-                                isActive: pp.status == "active" || pp.status == "connected")
+                                isActive: pp.status != "disabled")
                 } else {
                     StatusBadge(label: "PP", icon: "compass.drawing", isActive: false)
                 }
