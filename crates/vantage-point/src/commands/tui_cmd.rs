@@ -465,7 +465,10 @@ fn extract_url_at(
 /// URL パターン: `https?://[^\s<>"'）」\]]+`
 /// 末尾の句読点（`.` `,` `)` `]`）は除去
 fn find_url_at_column(line: &str, col: usize) -> Option<String> {
-    let url_pattern = regex::Regex::new(r#"https?://[^\s<>"'）」\]]+"#).ok()?;
+    static URL_REGEX: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let url_pattern = URL_REGEX.get_or_init(|| {
+        regex::Regex::new(r#"https?://[^\s<>"'）」\]]+"#).unwrap()
+    });
     for m in url_pattern.find_iter(line) {
         let start_col = line[..m.start()].chars().count();
         let end_col = start_col + m.as_str().chars().count();

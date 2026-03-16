@@ -145,6 +145,10 @@ class TerminalView: NSView {
 
     /// mouseMoved イベント受信用のトラッキングエリア
     private var mouseTrackingArea: NSTrackingArea?
+    /// mouseMoved の URL 検出キャッシュ（行が変わった時のみ再計算）
+    private var lastHoveredRow: Int = -1
+    private var lastHoveredCol: Int = -1
+    private var lastHoveredUrl: URL?
 
     private func commonInit() {
         wantsLayer = true
@@ -1080,7 +1084,8 @@ class TerminalView: NSView {
 
     /// URL 検出用の正規表現（https:// または http:// で始まる URL）
     private static let urlRegex: NSRegularExpression? = {
-        try? NSRegularExpression(pattern: "https?://[^\\s)\\]>\"'`]+", options: [])
+        // Rust 側 (tui_cmd.rs) と統一: `)` はパターンに含め、末尾除去で処理
+        try? NSRegularExpression(pattern: "https?://[^\\s<>\"'）」\\]]+", options: [])
     }()
 
     /// トラッキングエリアを設定（mouseMoved イベントを受信するため）
@@ -1170,7 +1175,7 @@ class TerminalView: NSView {
                 let urlString = nsText.substring(with: match.range)
                 // 末尾の句読点・括弧を除去（URL の一部でない可能性が高い）
                 let trimmed = urlString.replacingOccurrences(
-                    of: "[.,;:!?）】」』》〉]+$",
+                    of: "[.,;:!?)）】」』》〉\\]]+$",
                     with: "",
                     options: .regularExpression
                 )
@@ -1180,11 +1185,20 @@ class TerminalView: NSView {
         return nil
     }
 
-    /// Cmd+ホバー時にカーソルをポインティングハンドに変更
+    /// Cmd+ホバー時にカーソルをポインティングハンドに変更（行キャッシュで負荷軽減）
     override func mouseMoved(with event: NSEvent) {
         let pos = gridPosition(from: event.locationInWindow)
-        if event.modifierFlags.contains(.command),
-           urlAtPosition(col: pos.col, row: pos.row) != nil {
+        guard event.modifierFlags.contains(.command) else {
+            NSCursor.iBeam.set()
+            return
+        }
+        // 行またはカラムが変わった場合のみ URL を再検出
+        if pos.row != lastHoveredRow || pos.col != lastHoveredCol {
+            lastHoveredRow = pos.row
+            lastHoveredCol = pos.col
+            lastHoveredUrl = urlAtPosition(col: pos.col, row: pos.row)
+        }
+        if lastHoveredUrl != nil {
             NSCursor.pointingHand.set()
         } else {
             NSCursor.iBeam.set()
