@@ -401,11 +401,22 @@ async fn run_tui_console(session_name: &str) -> Result<()> {
                     }
                 }
                 Event::Mouse(mouse) => {
-                    let seq = mouse_to_sgr(&mouse);
-                    if !seq.is_empty() {
-                        use std::io::Write;
-                        let _ = writer.write_all(seq.as_bytes());
-                        let _ = writer.flush();
+                    // Cmd+Click で URL をブラウザで開く
+                    if mouse.modifiers.contains(KeyModifiers::SUPER)
+                        && matches!(mouse.kind, event::MouseEventKind::Down(event::MouseButton::Left))
+                    {
+                        let col = mouse.column.saturating_sub(1) as usize;
+                        let row = mouse.row.saturating_sub(2) as usize;
+                        if let Some(url) = extract_url_at(&term_state, row, col) {
+                            let _ = open::that(&url);
+                        }
+                    } else {
+                        let seq = mouse_to_sgr(&mouse);
+                        if !seq.is_empty() {
+                            use std::io::Write;
+                            let _ = writer.write_all(seq.as_bytes());
+                            let _ = writer.flush();
+                        }
                     }
                 }
                 _ => {} // FocusGained, FocusLost, Paste
@@ -427,6 +438,46 @@ async fn run_tui_console(session_name: &str) -> Result<()> {
     disable_raw_mode()?;
 
     Ok(())
+}
+
+/// ターミナルグリッドの指定位置から URL を抽出
+///
+/// 指定行のテキストを取得し、カラム位置を含む URL があればその URL を返す。
+fn extract_url_at(
+    term_state: &std::sync::Arc<std::sync::Mutex<crate::terminal::state::TerminalState>>,
+    row: usize,
+    col: usize,
+) -> Option<String> {
+    let state = term_state.lock().ok()?;
+    let snapshot = state.snapshot();
+
+    if row >= snapshot.cells.len() {
+        return None;
+    }
+
+    // 行テキストを構築して URL を検索
+    let line: String = snapshot.cells[row].iter().map(|c| c.ch).collect();
+    find_url_at_column(&line, col)
+}
+
+/// テキスト行の指定カラム位置にある URL を抽出
+///
+/// URL パターン: `https?://[^\s<>"'）」\]]+`
+/// 末尾の句読点（`.` `,` `)` `]`）は除去
+fn find_url_at_column(line: &str, col: usize) -> Option<String> {
+    let url_pattern = regex::Regex::new(r#"https?://[^\s<>"'）」\]]+"#).ok()?;
+    for m in url_pattern.find_iter(line) {
+        let start_col = line[..m.start()].chars().count();
+        let end_col = start_col + m.as_str().chars().count();
+
+        if col >= start_col && col < end_col {
+            let url = m
+                .as_str()
+                .trim_end_matches(|c| matches!(c, '.' | ',' | ')' | ']'));
+            return Some(url.to_string());
+        }
+    }
+    None
 }
 
 /// マウスイベントを SGR エスケープシーケンスに変換
@@ -548,5 +599,91 @@ mod tests {
         // row=1 → y=saturating_sub(2)=0 → SGR y=1
         let seq = mouse_to_sgr(&make_mouse(MouseEventKind::ScrollUp, 5, 1));
         assert_eq!(seq, "\x1b[<64;5;1M");
+    }
+
+    // --- URL 検出テスト ---
+
+    #[test]
+    fn test_find_url_basic() {
+        let line = "See https://example.com for details";
+        assert_eq!(
+            find_url_at_column(line, 5),
+            Some("https://example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn test_find_url_with_path() {
+        let line = "Visit https://linear.app/chronista/issue/VP-15 now";
+        assert_eq!(
+            find_url_at_column(line, 10),
+            Some("https://linear.app/chronista/issue/VP-15".to_string())
+        );
+    }
+
+    #[test]
+    fn test_find_url_http() {
+        let line = "Check http://localhost:3000/api/health endpoint";
+        assert_eq!(
+            find_url_at_column(line, 8),
+            Some("http://localhost:3000/api/health".to_string())
+        );
+    }
+
+    #[test]
+    fn test_find_url_trailing_period() {
+        // 末尾のピリオドは除去
+        let line = "See https://example.com.";
+        assert_eq!(
+            find_url_at_column(line, 5),
+            Some("https://example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn test_find_url_trailing_comma() {
+        let line = "URLs: https://a.com, https://b.com";
+        assert_eq!(
+            find_url_at_column(line, 7),
+            Some("https://a.com".to_string())
+        );
+    }
+
+    #[test]
+    fn test_find_url_not_on_url() {
+        let line = "No URL here, just text";
+        assert_eq!(find_url_at_column(line, 5), None);
+    }
+
+    #[test]
+    fn test_find_url_col_before_url() {
+        let line = "text https://example.com rest";
+        // col=0 は "text" の部分
+        assert_eq!(find_url_at_column(line, 0), None);
+    }
+
+    #[test]
+    fn test_find_url_col_after_url() {
+        let line = "text https://example.com rest";
+        // "rest" の部分（col=25 以降）
+        assert_eq!(find_url_at_column(line, 26), None);
+    }
+
+    #[test]
+    fn test_find_url_multiple_urls() {
+        let line = "a https://first.com b https://second.com c";
+        assert_eq!(
+            find_url_at_column(line, 3),
+            Some("https://first.com".to_string())
+        );
+        assert_eq!(
+            find_url_at_column(line, 23),
+            Some("https://second.com".to_string())
+        );
+    }
+
+    #[test]
+    fn test_find_url_empty_line() {
+        assert_eq!(find_url_at_column("", 0), None);
     }
 }
