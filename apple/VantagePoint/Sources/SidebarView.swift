@@ -164,10 +164,10 @@ struct SidebarProjectRow: View {
                 }
             }
 
-            // 2行目: SP / HD / PP ステータス（統一表記）
+            // 2行目: SP / Lead-HD / PP ステータス（統一表記）
             HStack(spacing: 6) {
                 StatusBadge(label: "SP", icon: "star", isActive: project.isRunning)
-                StatusBadge(label: "HD", icon: "text.book.closed", isActive: project.hasHD)
+                StatusBadge(label: "Lead-HD", icon: "text.book.closed", isActive: project.hasHD)
 
                 // PP は SP health API から取得（SP 稼働中のみ）
                 if let pp = project.stands.first(where: { $0.key == "paisley_park" }) {
@@ -211,9 +211,9 @@ struct SidebarWorkerRow: View {
                 }
             }
 
-            // 2行目: HD ステータス（親と統一フォーマット）
+            // 2行目: Worker-HD ステータス
             HStack(spacing: 6) {
-                StatusBadge(label: "HD", icon: "text.book.closed", isActive: worker.hasHD)
+                StatusBadge(label: "Worker-HD", icon: "text.book.closed", isActive: worker.hasHD)
             }
         }
         .opacity(worker.hasHD ? 1.0 : 0.6)
@@ -383,7 +383,16 @@ enum CcwsDiscovery {
     }
 
     /// tmux バイナリパスをキャッシュ（PATH から一度だけ解決）
-    private static let tmuxPath: String? = {
+    /// GUI アプリは PATH が制限されるため、既知パスも含めてフォールバック
+    static let tmuxPath: String? = {
+        // 既知パスを先にチェック（GUI アプリの PATH 制限を回避）
+        for knownPath in ["/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/usr/bin/tmux"] {
+            if FileManager.default.isExecutableFile(atPath: knownPath) {
+                print("[VP] tmux found at: \(knownPath)")
+                return knownPath
+            }
+        }
+        // zsh -lc which tmux でフォールバック
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")
         process.arguments = ["-lc", "which tmux"]
@@ -395,8 +404,14 @@ enum CcwsDiscovery {
             process.waitUntilExit()
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             let path = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
-            return path?.isEmpty == false ? path : nil
+            if let p = path, !p.isEmpty {
+                print("[VP] tmux found via zsh: \(p)")
+                return p
+            }
+            print("[VP] tmux not found")
+            return nil
         } catch {
+            print("[VP] tmux search error: \(error)")
             return nil
         }
     }()
