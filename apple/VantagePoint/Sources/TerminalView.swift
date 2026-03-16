@@ -143,11 +143,15 @@ class TerminalView: NSView {
     /// nonisolated(unsafe) は deinit からのアクセスのために必要。
     nonisolated(unsafe) private var keyMonitor: Any?
 
+    /// mouseMoved イベント受信用のトラッキングエリア
+    private var mouseTrackingArea: NSTrackingArea?
+
     private func commonInit() {
         wantsLayer = true
         layer?.backgroundColor = defaultBackground.cgColor
 
         updateFontMetrics()
+        setupTrackingArea()
 
         // macOS は PageUp/PageDown を scrollPageUp:/scrollPageDown: NSResponder アクションに変換し、
         // NSViewRepresentable 内の NSView の keyDown には到達させない。
@@ -1058,6 +1062,133 @@ class TerminalView: NSView {
 
     override func flagsChanged(with event: NSEvent) {
         // Modifier キー単独では PTY に何も送らない
+
+        // Cmd キーの押下/解放でカーソルを更新（URL ホバー表示の切り替え）
+        if let window = self.window {
+            let mouseLocation = window.mouseLocationOutsideOfEventStream
+            let pos = gridPosition(from: mouseLocation)
+            if event.modifierFlags.contains(.command),
+               urlAtPosition(col: pos.col, row: pos.row) != nil {
+                NSCursor.pointingHand.set()
+            } else {
+                NSCursor.iBeam.set()
+            }
+        }
+    }
+
+    // MARK: - URL 検出（Cmd+Click でブラウザ起動）
+
+    /// URL 検出用の正規表現（https:// または http:// で始まる URL）
+    private static let urlRegex: NSRegularExpression? = {
+        try? NSRegularExpression(pattern: "https?://[^\\s)\\]>\"'`]+", options: [])
+    }()
+
+    /// トラッキングエリアを設定（mouseMoved イベントを受信するため）
+    private func setupTrackingArea() {
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseMoved, .activeInKeyWindow, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        mouseTrackingArea = area
+    }
+
+    /// ビューサイズ変更時にトラッキングエリアを再構築
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let old = mouseTrackingArea {
+            removeTrackingArea(old)
+        }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseMoved, .activeInKeyWindow, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        mouseTrackingArea = area
+    }
+
+    /// 指定行のテキストを cellBuffer から抽出
+    private func extractRowText(row: Int) -> String {
+        let cols = Int(gridCols)
+        var text = ""
+        var skipNext = false
+        for col in 0..<cols {
+            if skipNext { skipNext = false; continue }
+            let idx = row * cols + col
+            guard idx < cellBuffer.count else { continue }
+            let cell = cellBuffer[idx]
+            let ch = cellString(from: cell)
+            // WIDE_CHAR (bit 6) の場合、次のセル（スペーサー）をスキップ
+            if (cell.flags & (1 << 6)) != 0 {
+                skipNext = true
+            }
+            text += ch.isEmpty ? " " : ch
+        }
+        return text
+    }
+
+    /// 行テキスト中の指定カラム位置にある URL を返す
+    ///
+    /// セルグリッドのカラム位置とテキストのカラム位置を照合し、
+    /// Cmd+Click 位置が URL 範囲内かを判定する。
+    private func urlAtPosition(col: Int, row: Int) -> URL? {
+        guard let regex = Self.urlRegex else { return nil }
+        let text = extractRowText(row: row)
+        let nsText = text as NSString
+        let matches = regex.matches(in: text, options: [], range: NSRange(location: 0, length: nsText.length))
+
+        // ワイド文字を考慮してテキストインデックス → カラム位置のマッピングを構築
+        let cols = Int(gridCols)
+        var textIdx = 0
+        var colToTextIdx: [Int: Int] = [:]
+        var skipNext = false
+        for c in 0..<cols {
+            if skipNext { skipNext = false; continue }
+            let idx = row * cols + c
+            guard idx < cellBuffer.count else { continue }
+            let cell = cellBuffer[idx]
+            let ch = cellString(from: cell)
+            let charLen = ch.isEmpty ? 1 : (ch as NSString).length
+            colToTextIdx[c] = textIdx
+            if (cell.flags & (1 << 6)) != 0 {
+                // ワイド文字: 次カラムも同じテキスト位置
+                colToTextIdx[c + 1] = textIdx
+                skipNext = true
+            }
+            textIdx += charLen
+        }
+
+        guard let clickTextIdx = colToTextIdx[col] else { return nil }
+
+        for match in matches {
+            if clickTextIdx >= match.range.location
+                && clickTextIdx < match.range.location + match.range.length {
+                let urlString = nsText.substring(with: match.range)
+                // 末尾の句読点・括弧を除去（URL の一部でない可能性が高い）
+                let trimmed = urlString.replacingOccurrences(
+                    of: "[.,;:!?）】」』》〉]+$",
+                    with: "",
+                    options: .regularExpression
+                )
+                return URL(string: trimmed)
+            }
+        }
+        return nil
+    }
+
+    /// Cmd+ホバー時にカーソルをポインティングハンドに変更
+    override func mouseMoved(with event: NSEvent) {
+        let pos = gridPosition(from: event.locationInWindow)
+        if event.modifierFlags.contains(.command),
+           urlAtPosition(col: pos.col, row: pos.row) != nil {
+            NSCursor.pointingHand.set()
+        } else {
+            NSCursor.iBeam.set()
+        }
     }
 
     // MARK: - テキスト選択
@@ -1084,6 +1215,15 @@ class TerminalView: NSView {
     override func mouseDown(with event: NSEvent) {
         // クリックで first responder を取得（SwiftUI サイドバーからフォーカスを奪う）
         window?.makeFirstResponder(self)
+
+        // Cmd+Click: URL をブラウザで開く
+        if event.modifierFlags.contains(.command) {
+            let pos = gridPosition(from: event.locationInWindow)
+            if let url = urlAtPosition(col: pos.col, row: pos.row) {
+                NSWorkspace.shared.open(url)
+                return
+            }
+        }
 
         let pos = gridPosition(from: event.locationInWindow)
         selectionStart = pos

@@ -399,31 +399,6 @@ struct MainWindowView: View {
         }
     }
 
-    /// SP（Star Platinum）をリスタート — TheWorld API 経由で stop → start
-    private func restartSP(path: String) {
-        print("[VP] restartSP called for path: \(path)")
-        guard let project = projects.first(where: { $0.path == path }) else { return }
-
-        Task {
-            do {
-                // プロセスを停止
-                try await theWorldClient.stopProcess(projectName: project.name)
-                print("[VP] SP stopped: \(project.name)")
-
-                // 少し待ってから start（ポート解放待ち）
-                try await Task.sleep(nanoseconds: 500_000_000)
-
-                // プロセスを起動
-                let newProcess = try await theWorldClient.startProcess(projectName: project.name)
-                print("[VP] SP restarted: \(project.name) on port \(newProcess.port)")
-            } catch {
-                print("[VP] SP restart error: \(error)")
-            }
-
-            // ポーリングで状態が更新されるまで手動リフレッシュ
-            await refreshAll()
-        }
-    }
 
     // MARK: - プロジェクト選択ナビゲーション
 
