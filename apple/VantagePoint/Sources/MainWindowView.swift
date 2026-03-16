@@ -344,20 +344,10 @@ struct MainWindowView: View {
     private func restartHD(path: String) {
         print("[VP] restartHD called for path: \(path)")
         let vpBin = NSHomeDirectory() + "/.cargo/bin/vp"
-        let projectName = (path as NSString).lastPathComponent
 
         Task {
-            // 1. SP が未起動なら TheWorld API 経由で起動（デーモン管理下で永続化）
-            let running = (try? await theWorldClient.listRunningProcesses()) ?? []
-            let isRunning = running.contains { $0.projectPath == path }
-            if !isRunning {
-                print("[VP] SP not running, starting via TheWorld API: \(projectName)")
-                _ = try? await theWorldClient.startProcess(projectName: projectName)
-                // SP 起動待ち
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
-            }
-
-            // 2. vp hd stop → vp hd start（tmux セッション再生成）
+            // vp hd stop → vp hd start（tmux セッション再生成）
+            // HD（tmux）は SP 無しでも独立動作する
             for (label, cmd) in [("hd stop", "\(vpBin) hd stop"), ("hd start", "\(vpBin) hd start")] {
                 let process = Process()
                 process.executableURL = URL(fileURLWithPath: "/bin/zsh")
@@ -374,7 +364,7 @@ struct MainWindowView: View {
                 }
             }
 
-            // 3. TerminalRepresentable を強制再生成（PTY をフレッシュに起動）
+            // TerminalRepresentable を強制再生成（PTY をフレッシュに起動）
             terminalGeneration[path, default: 0] += 1
             print("[VP] HD restart done, terminal generation=\(terminalGeneration[path] ?? 0)")
         }
