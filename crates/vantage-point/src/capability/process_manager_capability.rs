@@ -346,8 +346,9 @@ impl ProcessManagerCapability {
             .collect();
 
         // order に含まれないプロジェクトも末尾に追加
+        let order_set: std::collections::HashSet<&String> = order.iter().collect();
         for (key, info) in projects.iter() {
-            if !order.contains(key) {
+            if !order_set.contains(key) {
                 config.projects.push(crate::config::ProjectConfig {
                     name: info.name.clone(),
                     path: info.path.to_string_lossy().to_string(),

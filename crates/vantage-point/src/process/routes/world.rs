@@ -183,7 +183,7 @@ pub struct UpdateProjectRequest {
     pub name: Option<String>,
 }
 
-/// PUT /api/world/projects/update - プロジェクト名を変更
+/// POST /api/world/projects/update - プロジェクト名を変更
 pub async fn world_update_project(
     State(state): State<Arc<AppState>>,
     Json(req): Json<UpdateProjectRequest>,
@@ -252,7 +252,7 @@ pub struct ReorderProjectsRequest {
     pub paths: Vec<String>,
 }
 
-/// PUT /api/world/projects - プロジェクトの並び順を変更
+/// POST /api/world/projects/reorder - プロジェクトの並び順を変更
 pub async fn world_reorder_projects(
     State(state): State<Arc<AppState>>,
     Json(req): Json<ReorderProjectsRequest>,

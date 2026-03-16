@@ -413,7 +413,7 @@ struct MainWindowView: View {
         let name = url.lastPathComponent
         Task {
             try? await theWorldClient.addProject(name: name, path: path)
-            loadProjects()
+            await refreshAll()
         }
     }
 
@@ -423,7 +423,7 @@ struct MainWindowView: View {
         let name = url.lastPathComponent
         Task {
             try? await theWorldClient.addProject(name: name, path: path)
-            loadProjects()
+            await refreshAll()
         }
     }
 
@@ -431,18 +431,17 @@ struct MainWindowView: View {
     private func deleteProject(path: String) {
         Task {
             try? await theWorldClient.removeProject(path: path)
-            loadProjects()
+            await refreshAll()
         }
     }
 
     /// プロジェクトの並び順を変更（ドラッグ＆ドロップ）
     private func reorderProjects(from: IndexSet, to: Int) {
-        // ローカルの projects 配列で並び替えを計算
         var paths = projects.map(\.path)
         paths.move(fromOffsets: from, toOffset: to)
         Task {
             try? await theWorldClient.reorderProjects(paths: paths)
-            loadProjects()
+            await refreshAll()
         }
     }
 
@@ -450,7 +449,7 @@ struct MainWindowView: View {
     private func renameProject(path: String, newName: String) {
         Task {
             try? await theWorldClient.updateProject(path: path, name: newName)
-            loadProjects()
+            await refreshAll()
         }
     }
 
