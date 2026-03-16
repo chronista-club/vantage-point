@@ -67,6 +67,9 @@ struct ResolvedProject {
 // =============================================================================
 
 /// `vp start` を実行
+///
+/// 注: 将来的に `vp sp start` + `vp hd start` に分離予定。
+/// 現時点では `vp start` が主要エントリーポイント。
 pub fn execute(opts: StartOptions) -> Result<()> {
     let StartOptions {
         target,
@@ -375,7 +378,7 @@ fn tmux_session_exists(name: &str) -> bool {
 /// tmux セッション作成（Claude CLI を中で起動、ステータスバー非表示）
 ///
 /// `--continue` 付きで起動し、即死した場合は `--continue` なしでフォールバック。
-fn create_tmux_session(name: &str, project_dir: &str, cols: u16, rows: u16) -> Result<()> {
+pub fn create_tmux_session(name: &str, project_dir: &str, cols: u16, rows: u16) -> Result<()> {
     let mise_envs = collect_mise_env(project_dir);
 
     // まず --continue 付きで試行
@@ -414,7 +417,7 @@ fn create_tmux_session(name: &str, project_dir: &str, cols: u16, rows: u16) -> R
 }
 
 /// tmux new-session で Claude CLI を起動（成功なら true）
-fn try_create_tmux_claude(
+pub fn try_create_tmux_claude(
     name: &str,
     project_dir: &str,
     cols: u16,
@@ -456,7 +459,7 @@ fn try_create_tmux_claude(
 /// mise env を project_dir で評価し、環境変数の (key, value) ペアを返す
 ///
 /// mise が未インストール or .mise.toml がなければ空 Vec を返す（ベストエフォート）。
-fn collect_mise_env(project_dir: &str) -> Vec<(String, String)> {
+pub fn collect_mise_env(project_dir: &str) -> Vec<(String, String)> {
     let mise_bin = dirs::home_dir()
         .map(|h| h.join(".local/bin/mise"))
         .unwrap_or_else(|| "mise".into());
@@ -831,7 +834,7 @@ pub fn wait_for_ready(port: u16) -> Result<()> {
 }
 
 /// SP サーバーが応答するかチェック（TCP 接続テスト）
-fn is_server_responding(port: u16) -> bool {
+pub fn is_server_responding(port: u16) -> bool {
     std::net::TcpStream::connect_timeout(
         &format!("[::1]:{}", port).parse().unwrap(),
         std::time::Duration::from_millis(200),

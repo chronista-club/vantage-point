@@ -8,6 +8,7 @@ pub mod canvas_cmd;
 pub mod config;
 pub mod daemon;
 pub mod file_cmd;
+pub mod hd_cmd;
 pub mod midi;
 pub mod pane;
 pub mod process_client;

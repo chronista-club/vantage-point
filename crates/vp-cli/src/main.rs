@@ -159,9 +159,13 @@ enum Commands {
         session: Option<String>,
     },
 
-    /// セッション環境管理（tmux + ccwire）
+    /// SP サーバー管理（HTTP/QUIC サーバーのライフサイクル）
     #[command(subcommand)]
     Sp(commands::sp_cmd::SpCommands),
+
+    /// HD インスタンス管理（tmux + Claude CLI + ccwire）
+    #[command(subcommand)]
+    Hd(commands::hd_cmd::HdCommands),
 
     // --- Groups ---
     /// デーモンプロセス管理（Process管理 + ヘルスチェック）
@@ -294,6 +298,7 @@ fn main() -> Result<()> {
 
         Commands::Tui { session } => commands::tui_cmd::execute(session, &config),
         Commands::Sp(cmd) => commands::sp_cmd::execute(cmd, &config),
+        Commands::Hd(cmd) => commands::hd_cmd::execute(cmd, &config),
 
         // Groups
         Commands::Daemon(cmd) => commands::daemon::execute(cmd),

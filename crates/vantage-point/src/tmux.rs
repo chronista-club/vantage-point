@@ -36,6 +36,18 @@ pub fn session_name(project_name: &str) -> String {
     format!("{}{}", sanitized, TMUX_SUFFIX)
 }
 
+/// プロジェクト名 + オプショナル ID から tmux セッション名を生成
+///
+/// ID ありの場合: `{project}-{id}-vp`（例: `vantage-point-kaizen-vp`）
+/// ID なしの場合: `{project}-vp`（通常の session_name と同じ）
+pub fn session_name_with_id(project_name: &str, id: Option<&str>) -> String {
+    let sanitized = project_name.replace('.', "-");
+    match id {
+        Some(id) => format!("{}-{}{}", sanitized, id, TMUX_SUFFIX),
+        None => format!("{}{}", sanitized, TMUX_SUFFIX),
+    }
+}
+
 /// 指定名の tmux セッションが存在するか確認
 pub fn session_exists(name: &str) -> bool {
     Command::new("tmux")
@@ -199,6 +211,26 @@ mod tests {
     #[test]
     fn test_session_name_sanitizes_dots() {
         assert_eq!(session_name("com.example.app"), "com-example-app-vp");
+    }
+
+    #[test]
+    fn test_session_name_with_id() {
+        assert_eq!(
+            session_name_with_id("vantage-point", Some("kaizen")),
+            "vantage-point-kaizen-vp"
+        );
+        assert_eq!(
+            session_name_with_id("vantage-point", None),
+            "vantage-point-vp"
+        );
+    }
+
+    #[test]
+    fn test_session_name_with_id_sanitizes_dots() {
+        assert_eq!(
+            session_name_with_id("com.example", Some("test")),
+            "com-example-test-vp"
+        );
     }
 
     #[test]
