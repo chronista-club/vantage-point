@@ -25,6 +25,8 @@ struct MainWindowView: View {
     @State private var terminalPaths: [String] = []
     /// TerminalRepresentable の強制再生成用カウンタ（HD リスタート時にインクリメント）
     @State private var terminalGeneration: [String: Int] = [:]
+    /// HD 自動起動を試みたパス（ポーリングで繰り返し起動しないため）
+    @State private var hdAutoStartAttempted: Set<String> = []
 
     /// 外部から指定されたプロジェクトパス（起動引数・URL スキーム経由）
     var initialProjectPath: String?
@@ -337,6 +339,34 @@ struct MainWindowView: View {
         }
     }
 
+    // MARK: - HD 自動起動
+
+    /// SP 稼働中 + HD 未起動のプロジェクトに HD を自動起動
+    ///
+    /// ポーリングで繰り返し起動しないよう、試行済みパスを記録。
+    /// HD が起動したら hasHD = true になり、次のポーリングでは対象外。
+    private func autoStartHD(path: String) {
+        guard !hdAutoStartAttempted.contains(path) else { return }
+        hdAutoStartAttempted.insert(path)
+        print("[VP] Auto-starting HD for: \(path)")
+
+        Task.detached(priority: .utility) {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+            process.arguments = ["-lc", "vp hd start"]
+            process.currentDirectoryURL = URL(fileURLWithPath: path)
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            do {
+                try process.run()
+                process.waitUntilExit()
+                print("[VP] Auto HD start exit=\(process.terminationStatus) for \(path)")
+            } catch {
+                print("[VP] Auto HD start error: \(error)")
+            }
+        }
+    }
+
     // MARK: - HD リスタート
 
     /// HD（tmux セッション）を再生成する
@@ -605,6 +635,11 @@ struct MainWindowView: View {
                         hasNotification: notifications.contains(entry.path)
                     )
                 }
+            }
+
+            // SP 稼働中 + HD 未起動のプロジェクトに HD を自動起動
+            for project in projects where project.isRunning && !project.hasHD {
+                autoStartHD(path: project.path)
             }
         } catch {
             // プロセス一覧取得失敗 → ステータスだけリセット
