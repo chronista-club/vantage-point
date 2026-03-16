@@ -396,7 +396,8 @@ pub fn create_tmux_session(
     }
 
     // セッションが即死していないか確認（claude --continue が壊れたセッションで落ちるケース）
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    // ccws ワーカー環境ではセッション履歴がなく --continue が即死するため、十分に待つ
+    std::thread::sleep(std::time::Duration::from_millis(1500));
     if !tmux_session_exists(name) {
         tracing::warn!("claude --continue が即死。--continue なしでフォールバック");
         let created = try_create_tmux_claude(name, project_dir, cols, rows, &mise_envs, false)?;

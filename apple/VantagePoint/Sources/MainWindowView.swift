@@ -302,7 +302,8 @@ struct MainWindowView: View {
         if selectedProject != nil {
             HStack(spacing: 16) {
                 shortcutHint("⌘O", "Canvas")
-                shortcutHint("⌘↑↓", "Project")
+                shortcutHint("⌘↑↓", "Proj")
+                shortcutHint("⌘1-9", "Lane")
                 shortcutHint("⌘D", "Split")
             }
             .font(.caption2)
@@ -345,6 +346,9 @@ struct MainWindowView: View {
     ///
     /// ポーリングで繰り返し起動しないよう、試行済みパスを記録。
     /// HD が起動したら hasHD = true になり、次のポーリングでは対象外。
+    ///
+    /// Note: Process() は App Sandbox では使えないが、現在は Notarize のみ配布。
+    /// App Store 配布時は SP の HTTP API 経由（POST /api/hd/start）に移行する。
     private func autoStartHD(path: String) {
         guard !hdAutoStartAttempted.contains(path) else { return }
         hdAutoStartAttempted.insert(path)
@@ -415,8 +419,9 @@ struct MainWindowView: View {
 
         Task {
             do {
-                // stop
+                // stop（HD 自動起動のリトライを許可）
                 try await theWorldClient.stopProcess(projectName: project.name)
+                hdAutoStartAttempted.remove(path)
                 print("[VP] SP stopped: \(project.name)")
 
                 // 少し待ってから start（ポート解放待ち）
