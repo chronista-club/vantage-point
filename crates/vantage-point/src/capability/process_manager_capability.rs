@@ -105,6 +105,8 @@ pub struct ProcessManagerCapability {
     state: CapabilityState,
     /// 登録プロジェクト一覧（キー: 正規化パス）
     projects: Arc<RwLock<HashMap<String, ProjectInfo>>>,
+    /// プロジェクトの並び順（正規化パスの Vec、config.toml の [[projects]] 順を保持）
+    project_order: Arc<RwLock<Vec<String>>>,
     /// 稼働中Process一覧（キー: 正規化パス）
     running_processes: Arc<RwLock<HashMap<String, RunningProcess>>>,
     /// 前回のヘルスチェックで稼働中だった Process（クラッシュ検知用）
@@ -113,6 +115,9 @@ pub struct ProcessManagerCapability {
     config: Option<Config>,
     /// vpバイナリパス
     vp_binary_path: Option<PathBuf>,
+    /// テスト時に config.toml への永続化を無効化
+    #[cfg(test)]
+    disable_persist: bool,
 }
 
 impl ProcessManagerCapability {
@@ -121,10 +126,13 @@ impl ProcessManagerCapability {
         Self {
             state: CapabilityState::Uninitialized,
             projects: Arc::new(RwLock::new(HashMap::new())),
+            project_order: Arc::new(RwLock::new(Vec::new())),
             running_processes: Arc::new(RwLock::new(HashMap::new())),
             previously_running: Arc::new(RwLock::new(HashMap::new())),
             config: None,
             vp_binary_path: None,
+            #[cfg(test)]
+            disable_persist: true,
         }
     }
 
@@ -144,12 +152,15 @@ impl ProcessManagerCapability {
             CapabilityError::InitializationFailed(format!("Failed to load config: {}", e))
         })?;
 
-        // プロジェクト一覧を更新
+        // プロジェクト一覧を更新（順序を保持）
         let mut projects = self.projects.write().await;
+        let mut order = self.project_order.write().await;
         projects.clear();
+        order.clear();
 
         for project in &config.projects {
             let key = normalize_path_key(&PathBuf::from(&project.path));
+            order.push(key.clone());
             projects.insert(
                 key,
                 ProjectInfo {
@@ -229,15 +240,25 @@ impl ProcessManagerCapability {
     pub async fn reload_config(&self) {
         if let Ok(config) = Config::load() {
             let mut projects = self.projects.write().await;
+            let mut order = self.project_order.write().await;
             for project in &config.projects {
                 let key = normalize_path_key(&PathBuf::from(&project.path));
-                // 既存エントリは上書きしない（稼働状態を保持）
-                projects.entry(key).or_insert_with(|| ProjectInfo {
-                    name: project.name.clone(),
-                    path: project.path.clone().into(),
-                    process_status: ProcessStatus::Stopped,
-                    port: project.port,
-                });
+                if projects
+                    .entry(key.clone())
+                    .or_insert_with(|| ProjectInfo {
+                        name: project.name.clone(),
+                        path: project.path.clone().into(),
+                        process_status: ProcessStatus::Stopped,
+                        port: project.port,
+                    })
+                    .name
+                    == project.name
+                {
+                    // 新規追加の場合のみ order に追加
+                    if !order.contains(&key) {
+                        order.push(key);
+                    }
+                }
             }
             tracing::info!("Config reloaded: {} projects", projects.len());
         }
@@ -278,8 +299,10 @@ impl ProcessManagerCapability {
                     path
                 )));
             }
-            projects.insert(key, info.clone());
+            projects.insert(key.clone(), info.clone());
         }
+        // 順序リストに末尾追加
+        self.project_order.write().await.push(key);
 
         self.persist_projects().await;
         Ok(info)
@@ -308,6 +331,8 @@ impl ProcessManagerCapability {
                 )));
             }
         }
+        // 順序リストからも削除
+        self.project_order.write().await.retain(|k| k != &key);
 
         self.persist_projects().await;
         Ok(())
@@ -348,16 +373,20 @@ impl ProcessManagerCapability {
             .iter()
             .map(|p| normalize_path_key(&PathBuf::from(p)))
             .collect();
+        // 順序リストを更新
+        *self.project_order.write().await = normalized.clone();
         self.persist_projects_ordered(&normalized).await;
         Ok(())
     }
 
-    /// projects HashMap を config.toml に永続化
+    /// projects を config.toml に永続化（project_order の順序で書き出す）
     async fn persist_projects(&self) {
-        let projects = self.projects.read().await;
-        let ordered: Vec<String> = projects.keys().cloned().collect();
-        drop(projects);
-        self.persist_projects_ordered(&ordered).await;
+        #[cfg(test)]
+        if self.disable_persist {
+            return;
+        }
+        let order = self.project_order.read().await.clone();
+        self.persist_projects_ordered(&order).await;
     }
 
     /// 指定順序で config.toml に永続化

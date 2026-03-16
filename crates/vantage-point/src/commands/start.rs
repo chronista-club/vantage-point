@@ -552,7 +552,13 @@ fn run_tui(
 
     // tmux セッション確保
     if !is_reconnect {
-        create_tmux_session(session_name, project_dir, pty_cols as u16, pty_lines as u16, port)?;
+        create_tmux_session(
+            session_name,
+            project_dir,
+            pty_cols as u16,
+            pty_lines as u16,
+            port,
+        )?;
     } else {
         resize_tmux_session(session_name, pty_cols as u16, pty_lines as u16);
         // 再接続時もステータスバーを非表示にする
@@ -561,7 +567,13 @@ fn run_tui(
             .status();
         // 再接続時も VP_PROCESS_PORT を注入（ポート変更に追従）
         let _ = std::process::Command::new("tmux")
-            .args(["set-environment", "-t", session_name, "VP_PROCESS_PORT", &port.to_string()])
+            .args([
+                "set-environment",
+                "-t",
+                session_name,
+                "VP_PROCESS_PORT",
+                &port.to_string(),
+            ])
             .status();
     }
 

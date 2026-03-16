@@ -403,7 +403,10 @@ async fn run_tui_console(session_name: &str) -> Result<()> {
                 Event::Mouse(mouse) => {
                     // Cmd+Click で URL をブラウザで開く
                     if mouse.modifiers.contains(KeyModifiers::SUPER)
-                        && matches!(mouse.kind, event::MouseEventKind::Down(event::MouseButton::Left))
+                        && matches!(
+                            mouse.kind,
+                            event::MouseEventKind::Down(event::MouseButton::Left)
+                        )
                     {
                         let col = mouse.column.saturating_sub(1) as usize;
                         let row = mouse.row.saturating_sub(2) as usize;
@@ -466,9 +469,8 @@ fn extract_url_at(
 /// 末尾の句読点（`.` `,` `)` `]`）は除去
 fn find_url_at_column(line: &str, col: usize) -> Option<String> {
     static URL_REGEX: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    let url_pattern = URL_REGEX.get_or_init(|| {
-        regex::Regex::new(r#"https?://[^\s<>"'）」\]]+"#).unwrap()
-    });
+    let url_pattern =
+        URL_REGEX.get_or_init(|| regex::Regex::new(r#"https?://[^\s<>"'）」\]]+"#).unwrap());
     for m in url_pattern.find_iter(line) {
         let start_col = line[..m.start()].chars().count();
         let end_col = start_col + m.as_str().chars().count();
