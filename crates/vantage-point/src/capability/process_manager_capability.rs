@@ -224,10 +224,14 @@ impl ProcessManagerCapability {
             .map(|(key, _)| key.clone())
     }
 
-    /// プロジェクト一覧を取得
+    /// プロジェクト一覧を取得（project_order の順序で返す）
     pub async fn list_projects(&self) -> Vec<ProjectInfo> {
         let projects = self.projects.read().await;
-        projects.values().cloned().collect()
+        let order = self.project_order.read().await;
+        order
+            .iter()
+            .filter_map(|key| projects.get(key).cloned())
+            .collect()
     }
 
     /// 稼働中Process一覧を取得
