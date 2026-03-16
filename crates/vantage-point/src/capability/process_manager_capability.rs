@@ -221,19 +221,41 @@ impl ProcessManagerCapability {
         procs.values().cloned().collect()
     }
 
+    /// config.toml を再読み込みして projects を更新（新規プロジェクトの動的追加対応）
+    pub async fn reload_config(&self) {
+        if let Ok(config) = Config::load() {
+            let mut projects = self.projects.write().await;
+            for project in &config.projects {
+                let key = normalize_path_key(&PathBuf::from(&project.path));
+                // 既存エントリは上書きしない（稼働状態を保持）
+                projects.entry(key).or_insert_with(|| ProjectInfo {
+                    name: project.name.clone(),
+                    path: project.path.clone().into(),
+                    process_status: ProcessStatus::Stopped,
+                });
+            }
+            tracing::info!("Config reloaded: {} projects", projects.len());
+        }
+    }
+
     /// Processを起動
     pub async fn start_process(&self, project_name: &str) -> CapabilityResult<RunningProcess> {
         let vp_path = self.vp_binary_path.clone().ok_or_else(|| {
             CapabilityError::InitializationFailed("vp binary not found".to_string())
         })?;
 
-        // 名前→パスキー解決 + プロジェクト情報取得
-        let key = self
-            .resolve_key_by_name(project_name)
-            .await
-            .ok_or_else(|| {
-                CapabilityError::Other(format!("Project not found: {}", project_name))
-            })?;
+        // 名前→パスキー解決（見つからなければ config を再読み込みして再試行）
+        let key = match self.resolve_key_by_name(project_name).await {
+            Some(k) => k,
+            None => {
+                self.reload_config().await;
+                self.resolve_key_by_name(project_name)
+                    .await
+                    .ok_or_else(|| {
+                        CapabilityError::Other(format!("Project not found: {}", project_name))
+                    })?
+            }
+        };
 
         let project = {
             let projects = self.projects.read().await;
