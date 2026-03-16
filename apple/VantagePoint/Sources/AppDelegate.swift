@@ -240,6 +240,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         nextItem.keyEquivalentModifierMask = .command
         navigateMenu.addItem(nextItem)
         navigateMenu.addItem(.separator())
+        // Cmd+1〜9 で Lane 切り替え
+        for i in 1...9 {
+            let item = NSMenuItem(
+                title: "Lane \(i)",
+                action: #selector(selectLaneByNumber(_:)),
+                keyEquivalent: "\(i)"
+            )
+            item.tag = i
+            navigateMenu.addItem(item)
+        }
+        navigateMenu.addItem(.separator())
         navigateMenu.addItem(NSMenuItem(title: "Split Pane", action: #selector(splitTerminalPane(_:)), keyEquivalent: "d"))
         let navigateMenuItem = NSMenuItem()
         navigateMenuItem.submenu = navigateMenu
@@ -321,6 +332,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func splitTerminalPane(_ sender: Any?) {
         NotificationCenter.default.post(name: .splitTerminalPane, object: nil)
+    }
+
+    @objc private func selectLaneByNumber(_ sender: NSMenuItem) {
+        NotificationCenter.default.post(
+            name: .selectLaneByNumber,
+            object: nil,
+            userInfo: ["number": sender.tag]
+        )
     }
 
     // MARK: - Status Item

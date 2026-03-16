@@ -166,6 +166,11 @@ struct MainWindowView: View {
         .onReceive(NotificationCenter.default.publisher(for: .splitTerminalPane)) { _ in
             splitPane()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .selectLaneByNumber)) { notification in
+            if let number = notification.userInfo?["number"] as? Int {
+                selectLaneByNumber(number)
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: AppDelegate.ccNotification)) { notification in
             if let project = notification.userInfo?["project"] as? String, !project.isEmpty {
                 // 現在選択中のプロジェクトでなければバッジを付ける
@@ -426,6 +431,16 @@ struct MainWindowView: View {
         selectedProjectPath = projects[index + 1].path
     }
 
+    /// Cmd+1〜9 で Lane（プロジェクト + worker）を番号で切り替え
+    ///
+    /// terminalPaths の順序で番号を割り当て（1-indexed）。
+    /// プロジェクトと worker を含むフラットなリスト。
+    private func selectLaneByNumber(_ number: Int) {
+        let index = number - 1
+        guard index >= 0 && index < terminalPaths.count else { return }
+        selectedProjectPath = terminalPaths[index]
+    }
+
     // MARK: - プロジェクト CRUD（TheWorld API 経由）
 
     /// フォルダ選択ダイアログでプロジェクトを追加
@@ -659,4 +674,5 @@ extension Notification.Name {
     static let selectPreviousProject = Notification.Name("VP.selectPreviousProject")
     static let selectNextProject = Notification.Name("VP.selectNextProject")
     static let splitTerminalPane = Notification.Name("VP.splitTerminalPane")
+    static let selectLaneByNumber = Notification.Name("VP.selectLaneByNumber")
 }
