@@ -378,14 +378,14 @@ struct MainWindowView: View {
 
         Task {
             do {
-                // stop
+                // プロセスを停止
                 try await theWorldClient.stopProcess(projectName: project.name)
                 print("[VP] SP stopped: \(project.name)")
 
                 // 少し待ってから start（ポート解放待ち）
                 try await Task.sleep(nanoseconds: 500_000_000)
 
-                // start
+                // プロセスを起動
                 let newProcess = try await theWorldClient.startProcess(projectName: project.name)
                 print("[VP] SP restarted: \(project.name) on port \(newProcess.port)")
             } catch {
