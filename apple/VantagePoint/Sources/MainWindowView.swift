@@ -536,17 +536,25 @@ struct MainWindowView: View {
             // 各 running process の started_at + stands を並列取得
             let details = await fetchProcessDetails(processes: running)
 
-            // ccws ワーカーをバックグラウンドでスキャン（メインスレッドの I/O を回避）
+            // ccws ワーカー + Git ブランチをバックグラウンドでスキャン
             let config = ConfigManager.shared.load()
-            let projectNames = config.projects.map { $0.name }
-            let workersByProject = await Task.detached(priority: .utility) {
-                Dictionary(uniqueKeysWithValues: projectNames.map { name in
-                    (name, CcwsDiscovery.discoverWorkers(forProject: name))
+            let projectEntries = config.projects
+            let projectInfoByPath = await Task.detached(priority: .utility) {
+                Dictionary(uniqueKeysWithValues: projectEntries.map { entry in
+                    let workers = CcwsDiscovery.discoverWorkers(forProject: entry.name)
+                    let branch = CcwsDiscovery.readGitBranch(at: URL(fileURLWithPath: entry.path))
+                    // tmux セッション名: {name}-vp
+                    let tmuxName = entry.name.replacingOccurrences(of: ".", with: "-") + "-vp"
+                    let hasHD = CcwsDiscovery.tmuxSessionExists(tmuxName)
+                    return (entry.path, (workers: workers, branch: branch, hasHD: hasHD))
                 })
             }.value
 
             projects = config.projects.map { entry in
-                let workers = workersByProject[entry.name] ?? []
+                let info = projectInfoByPath[entry.path]
+                let workers = info?.workers ?? []
+                let branch = info?.branch
+                let hasHD = info?.hasHD ?? false
 
                 if let process = runningByPath[entry.path] {
                     let detail = details[entry.path]
@@ -559,6 +567,8 @@ struct MainWindowView: View {
                         startedAt: detail?.startedAt,
                         stands: detail?.stands ?? [],
                         workers: workers,
+                        branch: branch,
+                        hasHD: hasHD,
                         hasNotification: notifications.contains(entry.path)
                     )
                 } else {
@@ -570,6 +580,8 @@ struct MainWindowView: View {
                         port: nil,
                         startedAt: nil,
                         workers: workers,
+                        branch: branch,
+                        hasHD: hasHD,
                         hasNotification: notifications.contains(entry.path)
                     )
                 }

@@ -138,51 +138,47 @@ struct SidebarProjectRow: View {
     let project: SidebarProject
 
     var body: some View {
-        HStack(spacing: 8) {
-            // ステータスドット
-            Circle()
-                .fill(project.statusColor)
-                .frame(width: 8, height: 8)
-
-            VStack(alignment: .leading, spacing: 1) {
-                // プロジェクト名 + 通知バッジ
-                HStack(spacing: 6) {
-                    Text(project.name)
-                        .fontWeight(project.isRunning ? .semibold : .regular)
+        VStack(alignment: .leading, spacing: 2) {
+            // 1行目: プロジェクト名 + ブランチ + 通知バッジ
+            HStack(spacing: 6) {
+                Text(project.name)
+                    .fontWeight(project.isRunning ? .semibold : .regular)
+                    .lineLimit(1)
+                if let branch = project.branch {
+                    Text(branch)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
                         .lineLimit(1)
-                    if project.hasNotification {
-                        Circle()
-                            .fill(.orange)
-                            .frame(width: 7, height: 7)
-                    }
+                }
+                if project.hasNotification {
+                    Circle()
+                        .fill(.orange)
+                        .frame(width: 7, height: 7)
+                }
+            }
+
+            // 2行目: SP / HD / PP ステータス（統一表記）
+            HStack(spacing: 6) {
+                StatusBadge(label: "SP", icon: "star", isActive: project.isRunning)
+                StatusBadge(label: "HD", icon: "text.book.closed", isActive: project.hasHD)
+
+                // PP は SP health API から取得（SP 稼働中のみ）
+                if let pp = project.stands.first(where: { $0.key == "paisley_park" }) {
+                    StatusBadge(label: "PP", icon: "compass.drawing",
+                                isActive: pp.status == "active" || pp.status == "connected")
+                } else {
+                    StatusBadge(label: "PP", icon: "compass.drawing", isActive: false)
                 }
 
-                // 稼働中: 起動時刻 + Stand
-                if project.isRunning {
-                    if let startedAt = project.startedAt {
-                        Text(startedAt, style: .time)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    // Stand ステータス（disabled 以外を表示）
-                    let visibleStands = project.stands.filter { $0.status != "disabled" }
-                    if !visibleStands.isEmpty {
-                        HStack(spacing: 4) {
-                            ForEach(visibleStands, id: \.key) { stand in
-                                HStack(spacing: 2) {
-                                    Image(systemName: stand.systemImage)
-                                    Text(stand.shortName)
-                                }
-                                .font(.caption2)
-                                .foregroundStyle(stand.statusColor)
-                            }
-                        }
-                    }
+                // 起動時刻（ツールチップ）
+                if let startedAt = project.startedAt {
+                    Text(startedAt, style: .time)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
                 }
             }
         }
-        .opacity(project.isRunning ? 1.0 : 0.5)
+        .opacity(project.isRunning ? 1.0 : 0.6)
     }
 }
 
@@ -193,23 +189,13 @@ struct SidebarWorkerRow: View {
     let worker: CcwsWorkerInfo
 
     var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "arrow.branch")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-
-            VStack(alignment: .leading, spacing: 1) {
-                HStack(spacing: 4) {
-                    Text(worker.suffix)
-                        .font(.callout)
-                        .lineLimit(1)
-                    if worker.hasHD {
-                        Image(systemName: "text.book.closed")
-                            .font(.caption2)
-                            .foregroundStyle(.green)
-                    }
-                }
-
+        VStack(alignment: .leading, spacing: 2) {
+            // 1行目: ワーカー名 + ブランチ
+            HStack(spacing: 6) {
+                Text(worker.suffix)
+                    .font(.callout)
+                    .fontWeight(worker.hasHD ? .semibold : .regular)
+                    .lineLimit(1)
                 if let branch = worker.branch {
                     Text(branch)
                         .font(.caption2)
@@ -217,8 +203,13 @@ struct SidebarWorkerRow: View {
                         .lineLimit(1)
                 }
             }
+
+            // 2行目: HD ステータス（親と統一フォーマット）
+            HStack(spacing: 6) {
+                StatusBadge(label: "HD", icon: "text.book.closed", isActive: worker.hasHD)
+            }
         }
-        .opacity(worker.hasHD ? 1.0 : 0.5)
+        .opacity(worker.hasHD ? 1.0 : 0.6)
     }
 }
 
@@ -286,11 +277,15 @@ struct SidebarProject: Identifiable, Equatable {
     let stands: [SidebarStand]
     /// ccws ワーカー一覧
     let workers: [CcwsWorkerInfo]
+    /// Git ブランチ名
+    let branch: String?
+    /// HD（tmux セッション）が存在するか
+    let hasHD: Bool
 
     /// CC からの未読通知あり
     let hasNotification: Bool
 
-    init(id: String, name: String, path: String, isRunning: Bool, port: UInt16?, startedAt: Date?, stands: [SidebarStand] = [], workers: [CcwsWorkerInfo] = [], hasNotification: Bool = false) {
+    init(id: String, name: String, path: String, isRunning: Bool, port: UInt16?, startedAt: Date?, stands: [SidebarStand] = [], workers: [CcwsWorkerInfo] = [], branch: String? = nil, hasHD: Bool = false, hasNotification: Bool = false) {
         self.id = id
         self.name = name
         self.path = path
@@ -299,11 +294,31 @@ struct SidebarProject: Identifiable, Equatable {
         self.startedAt = startedAt
         self.stands = stands
         self.workers = workers
+        self.branch = branch
+        self.hasHD = hasHD
         self.hasNotification = hasNotification
     }
 
     var statusColor: Color {
         isRunning ? .green : .gray
+    }
+}
+
+// MARK: - ステータスバッジ
+
+/// SP/HD/PP のステータスを統一表示するバッジ
+struct StatusBadge: View {
+    let label: String
+    let icon: String
+    let isActive: Bool
+
+    var body: some View {
+        HStack(spacing: 2) {
+            Image(systemName: icon)
+            Text(label)
+        }
+        .font(.caption2)
+        .foregroundStyle(isActive ? .green : .gray)
     }
 }
 
@@ -361,7 +376,7 @@ enum CcwsDiscovery {
     }
 
     /// tmux セッションが存在するか確認
-    private static func tmuxSessionExists(_ name: String) -> Bool {
+    static func tmuxSessionExists(_ name: String) -> Bool {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/tmux")
         process.arguments = ["has-session", "-t", name]
@@ -377,7 +392,7 @@ enum CcwsDiscovery {
     }
 
     /// Git ブランチ名を取得
-    private static func readGitBranch(at path: URL) -> String? {
+    static func readGitBranch(at path: URL) -> String? {
         let headFile = path.appendingPathComponent(".git/HEAD")
         let gitFile = path.appendingPathComponent(".git")
 
