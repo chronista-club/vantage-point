@@ -1190,6 +1190,7 @@ class TerminalView: NSView {
         let pos = gridPosition(from: event.locationInWindow)
         guard event.modifierFlags.contains(.command) else {
             NSCursor.iBeam.set()
+            lastHoveredUrl = nil
             return
         }
         // 行またはカラムが変わった場合のみ URL を再検出

@@ -474,9 +474,7 @@ fn find_url_at_column(line: &str, col: usize) -> Option<String> {
         let end_col = start_col + m.as_str().chars().count();
 
         if col >= start_col && col < end_col {
-            let url = m
-                .as_str()
-                .trim_end_matches(|c| matches!(c, '.' | ',' | ')' | ']'));
+            let url = m.as_str().trim_end_matches(['.', ',', ')', ']']);
             return Some(url.to_string());
         }
     }
