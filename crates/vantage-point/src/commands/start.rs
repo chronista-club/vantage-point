@@ -559,6 +559,10 @@ fn run_tui(
         let _ = std::process::Command::new("tmux")
             .args(["set-option", "-t", session_name, "status", "off"])
             .status();
+        // 再接続時も VP_PROCESS_PORT を注入（ポート変更に追従）
+        let _ = std::process::Command::new("tmux")
+            .args(["set-environment", "-t", session_name, "VP_PROCESS_PORT", &port.to_string()])
+            .status();
     }
 
     // ローカル PTY で tmux にアタッチ

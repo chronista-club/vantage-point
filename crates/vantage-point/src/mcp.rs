@@ -1819,7 +1819,7 @@ if bestId > 0 { print(bestId) }
         let base_url = url.clone();
         drop(url);
 
-        // Extract port from URL（resolve_process_port と同じ優先度チェーンでフォールバック）
+        // URL からポートを抽出（失敗時は VP_PROCESS_PORT → 33000 の順でフォールバック）
         let port: u16 = base_url
             .split(':')
             .next_back()
