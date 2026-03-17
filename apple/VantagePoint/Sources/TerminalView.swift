@@ -3,7 +3,7 @@ import CoreText
 import OSLog
 import VPBridge
 
-private let logger = Logger(subsystem: "club.chronista.vp", category: "Terminal")
+private let logger = Logger(subsystem: "tech.anycreative.vp", category: "Terminal")
 
 // MARK: - セッションレジストリ（マルチウィンドウ対応）
 

@@ -1,7 +1,7 @@
 import OSLog
 import SwiftUI
 
-private let logger = Logger(subsystem: "club.chronista.vp", category: "Sidebar")
+private let logger = Logger(subsystem: "tech.anycreative.vp", category: "Sidebar")
 
 /// サイドバー: プロジェクト一覧（Liquid Glass 自動適用）
 ///

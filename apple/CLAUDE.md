@@ -40,7 +40,7 @@ vantage-point-mac/
 ### AppDelegate
 - NSStatusItem setup
 - NSPopover management
-- DistributedNotification listener (`club.chronista.vp.process.changed`)
+- DistributedNotification listener (`tech.anycreative.vp.process.changed`)
 
 ### TheWorldClient
 - Communicates with TheWorld daemon (port 32000)

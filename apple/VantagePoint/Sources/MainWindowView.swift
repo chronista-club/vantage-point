@@ -1,7 +1,7 @@
 import OSLog
 import SwiftUI
 
-private let logger = Logger(subsystem: "club.chronista.vp", category: "MainWindow")
+private let logger = Logger(subsystem: "tech.anycreative.vp", category: "MainWindow")
 
 /// メインウィンドウ: NavigationSplitView (Glass Sidebar + Terminal)
 ///

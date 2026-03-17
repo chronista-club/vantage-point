@@ -32,15 +32,15 @@ use std::path::PathBuf;
 use tokio::io::AsyncWriteExt;
 
 /// GitHubリポジトリ情報（vp CLI）
-const GITHUB_OWNER: &str = "chronista-club";
+const GITHUB_OWNER: &str = "anycreative-tech";
 const GITHUB_REPO: &str = "vantage-point";
 
 /// GitHubリポジトリ情報（VantagePoint.app）
-const MAC_APP_GITHUB_OWNER: &str = "chronista-club";
+const MAC_APP_GITHUB_OWNER: &str = "anycreative-tech";
 const MAC_APP_GITHUB_REPO: &str = "vantage-point-mac";
 
 /// VantagePoint.appのバンドルID
-const MAC_APP_BUNDLE_ID: &str = "club.chronista.VantagePoint";
+const MAC_APP_BUNDLE_ID: &str = "tech.anycreative.VantagePoint";
 
 /// 現在のバージョン
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");

@@ -36,9 +36,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var eventMonitor: Any?
 
     /// プロジェクト選択通知（Popover → MainWindowView）
-    static let selectProjectNotification = Notification.Name("club.chronista.vp.selectProject")
+    static let selectProjectNotification = Notification.Name("tech.anycreative.vp.selectProject")
     /// CC 完了通知（Notification hook → サイドバーバッジ）
-    static let ccNotification = Notification.Name("club.chronista.vp.cc.notification")
+    static let ccNotification = Notification.Name("tech.anycreative.vp.cc.notification")
 
     /// DistributedNotification リスナー
     private var ccNotificationObserver: NSObjectProtocol?
@@ -273,7 +273,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// CC 完了通知の DistributedNotification リスナーを設定
     private func setupCCNotificationObserver() {
         ccNotificationObserver = DistributedNotificationCenter.default().addObserver(
-            forName: NSNotification.Name("club.chronista.vp.cc.notification"),
+            forName: NSNotification.Name("tech.anycreative.vp.cc.notification"),
             object: nil,
             queue: .main
         ) { notification in
@@ -291,7 +291,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// OS 通知クリック → VP アプリをアクティブ化 + プロジェクト選択
     private func setupFocusProjectObserver() {
         DistributedNotificationCenter.default().addObserver(
-            forName: NSNotification.Name("club.chronista.vp.focus.project"),
+            forName: NSNotification.Name("tech.anycreative.vp.focus.project"),
             object: nil,
             queue: .main
         ) { notification in

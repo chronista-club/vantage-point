@@ -6741,7 +6741,7 @@ checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
 [[package]]
 name = "unison"
 version = "0.3.3"
-source = "git+https://github.com/chronista-club/unison.git?tag=v0.3.3#fd33f8231198097f4b58eb9da993455ca1a37fac"
+source = "git+https://github.com/anycreative-tech/unison.git?tag=v0.3.3#fd33f8231198097f4b58eb9da993455ca1a37fac"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -6781,7 +6781,7 @@ dependencies = [
 [[package]]
 name = "unison-kdl"
 version = "0.1.0"
-source = "git+https://github.com/chronista-club/unison-kdl.git#4fbebeeacb7921a7fe468359ea4916a5f978b0d1"
+source = "git+https://github.com/anycreative-tech/unison-kdl.git#4fbebeeacb7921a7fe468359ea4916a5f978b0d1"
 dependencies = [
  "kdl",
  "thiserror 2.0.18",
@@ -6791,7 +6791,7 @@ dependencies = [
 [[package]]
 name = "unison-kdl-derive"
 version = "0.1.0"
-source = "git+https://github.com/chronista-club/unison-kdl.git#4fbebeeacb7921a7fe468359ea4916a5f978b0d1"
+source = "git+https://github.com/anycreative-tech/unison-kdl.git#4fbebeeacb7921a7fe468359ea4916a5f978b0d1"
 dependencies = [
  "proc-macro2",
  "quote",
