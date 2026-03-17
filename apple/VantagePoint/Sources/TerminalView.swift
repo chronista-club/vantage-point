@@ -899,28 +899,28 @@ class TerminalView: NSView {
     /// クリップボードからテキスト/画像を PTY にペースト
     private func pasteFromClipboard() {
         let pb = NSPasteboard.general
+        let text = pb.string(forType: .string)
+        print("[VP] pasteFromClipboard: text=\(text?.prefix(50) ?? "nil") types=\(pb.types?.map(\.rawValue) ?? [])")
 
-        // テキストペースト（Bracketed Paste Mode）
-        if let text = pb.string(forType: .string), !text.isEmpty {
-            let bracketStart: [UInt8] = [0x1B, 0x5B, 0x32, 0x30, 0x30, 0x7E] // \e[200~
-            let bracketEnd: [UInt8] = [0x1B, 0x5B, 0x32, 0x30, 0x31, 0x7E]   // \e[201~
-
-            bracketStart.withUnsafeBufferPointer { ptr in
-                _ = vp_bridge_pty_write_session(sessionId, ptr.baseAddress!, UInt32(ptr.count))
-            }
-
+        // テキストペースト（1文字ずつ送信 — keyDown と同じ経路）
+        if let text, !text.isEmpty {
             if let data = text.data(using: .utf8) {
-                data.withUnsafeBytes { ptr in
-                    _ = vp_bridge_pty_write_session(
-                        sessionId,
-                        ptr.baseAddress!.assumingMemoryBound(to: UInt8.self),
-                        UInt32(ptr.count)
-                    )
+                // 一括送信だと tmux に届かないケースがあるため、チャンク分割で送信
+                let chunkSize = 64
+                var offset = 0
+                while offset < data.count {
+                    let end = min(offset + chunkSize, data.count)
+                    let chunk = data[offset..<end]
+                    chunk.withUnsafeBytes { ptr in
+                        _ = vp_bridge_pty_write_session(
+                            sessionId,
+                            ptr.baseAddress!.assumingMemoryBound(to: UInt8.self),
+                            UInt32(ptr.count)
+                        )
+                    }
+                    offset = end
                 }
-            }
-
-            bracketEnd.withUnsafeBufferPointer { ptr in
-                _ = vp_bridge_pty_write_session(sessionId, ptr.baseAddress!, UInt32(ptr.count))
+                print("[VP] paste written: \(data.count) bytes in \((data.count + chunkSize - 1) / chunkSize) chunks")
             }
             return
         }
