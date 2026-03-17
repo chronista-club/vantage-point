@@ -114,6 +114,34 @@ struct WorldHealthDetail: Codable {
     }
 }
 
+// MARK: - ccwire Types
+
+/// ccwire セッション情報
+struct CcwireSessionInfo: Codable, Identifiable, Equatable {
+    let name: String
+    let status: String
+    let pid: Int?
+    let tmuxTarget: String?
+    let registeredAt: String
+    let lastSeen: String
+    let pendingMessages: UInt32
+
+    var id: String { name }
+
+    enum CodingKeys: String, CodingKey {
+        case name, status, pid
+        case tmuxTarget = "tmux_target"
+        case registeredAt = "registered_at"
+        case lastSeen = "last_seen"
+        case pendingMessages = "pending_messages"
+    }
+}
+
+/// ccwire セッション一覧レスポンス
+struct CcwireSessionsResponse: Codable {
+    let sessions: [CcwireSessionInfo]
+}
+
 // MARK: - Update API Types
 
 /// リリースアセット情報

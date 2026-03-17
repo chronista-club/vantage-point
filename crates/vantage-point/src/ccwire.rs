@@ -151,6 +151,58 @@ pub fn cleanup_stale() -> Result<()> {
     Ok(())
 }
 
+/// ccwire セッション情報（API レスポンス用）
+#[derive(Debug, serde::Serialize)]
+pub struct CcwireSession {
+    pub name: String,
+    pub status: String,
+    pub pid: Option<i64>,
+    pub tmux_target: Option<String>,
+    pub registered_at: String,
+    pub last_seen: String,
+    /// 未読（pending）メッセージ数
+    pub pending_messages: u32,
+}
+
+/// 全セッション一覧を取得（未読メッセージ数付き）
+pub fn list_sessions() -> Result<Vec<CcwireSession>> {
+    let db = db_path();
+    if !db.exists() {
+        return Ok(vec![]);
+    }
+
+    let conn = Connection::open(&db)?;
+    let mut stmt = conn.prepare(
+        "SELECT s.name, s.status, s.pid, s.tmux_target, s.registered_at, s.last_seen,
+                COALESCE(m.cnt, 0) as pending_messages
+         FROM sessions s
+         LEFT JOIN (
+             SELECT \"to\", COUNT(*) as cnt
+             FROM messages
+             WHERE status = 'pending'
+             GROUP BY \"to\"
+         ) m ON s.name = m.\"to\"
+         ORDER BY s.registered_at DESC",
+    )?;
+
+    let sessions = stmt
+        .query_map([], |row| {
+            Ok(CcwireSession {
+                name: row.get(0)?,
+                status: row.get(1)?,
+                pid: row.get(2)?,
+                tmux_target: row.get(3)?,
+                registered_at: row.get(4)?,
+                last_seen: row.get(5)?,
+                pending_messages: row.get(6)?,
+            })
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    Ok(sessions)
+}
+
 /// セッションが登録されているか確認
 pub fn is_registered(session_name: &str) -> bool {
     let db = db_path();

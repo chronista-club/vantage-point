@@ -57,7 +57,8 @@ struct MainWindowView: View {
                 onRename: renameProject,
                 onReorder: reorderProjects,
                 onRestartHD: restartHD,
-                onRestartSP: restartSP
+                onRestartSP: restartSP,
+                onRestartWorld: restartWorld
             )
         } detail: {
             // ターミナル + Canvas（Canvas は Cmd+O でトグル）
@@ -441,28 +442,69 @@ struct MainWindowView: View {
         guard let project = projects.first(where: { $0.path == path }) else { return }
 
         Task {
+            // stop と start を独立 do-catch に分離（stop 失敗でも start を試行）
             do {
-                // stop（自動起動のリトライを許可）
                 try await theWorldClient.stopProcess(projectName: project.name)
                 hdAutoStartAttempted.remove(path)
                 spAutoStartAttempted.remove(path)
                 logger.info("[VP]SP stopped: \(project.name)")
+            } catch {
+                logger.error("[VP]SP stop skipped (may already be stopped): \(error)")
+            }
 
-                // 少し待ってから start（ポート解放待ち）
-                try await Task.sleep(nanoseconds: 500_000_000)
+            // ポート解放待ち
+            try? await Task.sleep(nanoseconds: 500_000_000)
 
-                // start
+            do {
                 let newProcess = try await theWorldClient.startProcess(projectName: project.name)
                 logger.info("[VP]SP restarted: \(project.name) on port \(newProcess.port)")
             } catch {
-                logger.error("[VP]SP restart error: \(error)")
+                logger.error("[VP]SP start error: \(error)")
             }
 
-            // ポーリングで状態が更新されるまで手動リフレッシュ
             await refreshAll()
         }
     }
 
+    /// TheWorld を再起動（vp stop → vp world）
+    private func restartWorld() {
+        Task {
+            worldStatus = .checking
+
+            // 停止
+            do {
+                let stop = Process()
+                stop.executableURL = URL(fileURLWithPath: "/bin/zsh")
+                stop.arguments = ["-lc", "vp stop --port 32000"]
+                stop.standardOutput = FileHandle.nullDevice
+                stop.standardError = FileHandle.nullDevice
+                try stop.run()
+                stop.waitUntilExit()
+                logger.info("[VP]TheWorld stopped")
+            } catch {
+                logger.error("[VP]TheWorld stop skipped: \(error)")
+            }
+
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+
+            // 起動（バックグラウンドで vp world）
+            do {
+                let start = Process()
+                start.executableURL = URL(fileURLWithPath: "/bin/zsh")
+                start.arguments = ["-lc", "vp world"]
+                start.standardOutput = FileHandle.nullDevice
+                start.standardError = FileHandle.nullDevice
+                try start.run()
+                logger.info("[VP]TheWorld starting")
+            } catch {
+                logger.error("[VP]TheWorld start error: \(error)")
+            }
+
+            // 起動待ち
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            await refreshAll()
+        }
+    }
 
     // MARK: - プロジェクト選択ナビゲーション
 
@@ -619,6 +661,9 @@ struct MainWindowView: View {
             // プロジェクト一覧を TheWorld API から取得（config.toml ではなく TheWorld が真実源）
             let registeredProjects = (try? await theWorldClient.listProjects()) ?? []
 
+            // ccwire セッション一覧を取得（エラー時は空配列）
+            let ccwireSessions = (try? await theWorldClient.listCcwireSessions()) ?? []
+
             // ccws ワーカー + Git ブランチをバックグラウンドでスキャン
             let projectEntries = registeredProjects
             let projectInfoByPath = await Task.detached(priority: .utility) {
@@ -635,9 +680,23 @@ struct MainWindowView: View {
 
             projects = registeredProjects.map { entry in
                 let info = projectInfoByPath[entry.path]
-                let workers = info?.workers ?? []
                 let branch = info?.branch
                 let hasHD = info?.hasHD ?? false
+
+                // Worker に ccwire セッションを注入
+                let workers: [CcwsWorkerInfo] = (info?.workers ?? []).map { worker in
+                    let workerTmux = worker.name.replacingOccurrences(of: ".", with: "-") + "-vp"
+                    let wireSession = ccwireSessions.first { $0.name == workerTmux }
+                    return CcwsWorkerInfo(
+                        id: worker.id, name: worker.name, suffix: worker.suffix,
+                        path: worker.path, branch: worker.branch, hasHD: worker.hasHD,
+                        ccwireSession: wireSession
+                    )
+                }
+
+                // ccwire セッション名マッチング: "{project-name}-vp" パターン
+                let tmuxName = entry.name.replacingOccurrences(of: ".", with: "-") + "-vp"
+                let wireSession = ccwireSessions.first { $0.name == tmuxName }
 
                 if let process = runningByPath[entry.path] {
                     let detail = details[entry.path]
@@ -652,7 +711,8 @@ struct MainWindowView: View {
                         workers: workers,
                         branch: branch,
                         hasHD: hasHD,
-                        hasNotification: notifications.contains(entry.path)
+                        hasNotification: notifications.contains(entry.path),
+                        ccwireSession: wireSession
                     )
                 } else {
                     return SidebarProject(
@@ -665,7 +725,8 @@ struct MainWindowView: View {
                         workers: workers,
                         branch: branch,
                         hasHD: hasHD,
-                        hasNotification: notifications.contains(entry.path)
+                        hasNotification: notifications.contains(entry.path),
+                        ccwireSession: wireSession
                     )
                 }
             }
@@ -734,14 +795,22 @@ struct MainWindowView: View {
     /// 全プロジェクトを非稼働にリセット（workers はローカル情報なので保持）
     private func resetProjectStatus() {
         projects = projects.map { project in
-            SidebarProject(
+            // Worker の ccwireSession もクリア（TheWorld オフライン時は ccwire 情報も無効）
+            let cleanWorkers = project.workers.map { worker in
+                CcwsWorkerInfo(
+                    id: worker.id, name: worker.name, suffix: worker.suffix,
+                    path: worker.path, branch: worker.branch, hasHD: worker.hasHD,
+                    ccwireSession: nil
+                )
+            }
+            return SidebarProject(
                 id: project.id,
                 name: project.name,
                 path: project.path,
                 isRunning: false,
                 port: nil,
                 startedAt: nil,
-                workers: project.workers,
+                workers: cleanWorkers,
                 hasNotification: notifications.contains(project.path)
             )
         }

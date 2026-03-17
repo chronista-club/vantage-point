@@ -879,8 +879,9 @@ impl VantageMcp {
             title: params.title,
         };
 
-        // PP Window がなければ自動生成（show 時に Canvas が見えるように）
-        self.ensure_pp_window().await;
+        // Mac アプリの CanvasView（WKWebView）が Hub を subscribe しているため、
+        // 別ウィンドウ（vp canvas internal）の自動起動は行わない。
+        // 明示的に開きたい場合は open_canvas ツールを使用する。
 
         self.process_call("show", &msg).await?;
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
