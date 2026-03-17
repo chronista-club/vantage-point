@@ -266,13 +266,13 @@ class TerminalView: NSView {
         // セッション作成（Rust 側で Backend + PTY スロットが確保される）
         let id = vp_bridge_create(gridCols, gridRows, sharedFrameCallback)
         guard id != 0 else {
-            NSLog("[VP] vp_bridge_create failed")
+            logger.debug("[VP] vp_bridge_create failed")
             return
         }
 
         sessionId = id
         sessionRegistry[id] = self
-        NSLog("[VP] Bridge session created: %d (%dx%d)", id, gridCols, gridRows)
+        logger.debug("Bridge session created: \(id) (\(self.gridCols)x\(self.gridRows))")
 
         // バッファを確保
         let totalCells = Int(gridCols) * Int(gridRows)
@@ -306,7 +306,7 @@ class TerminalView: NSView {
             ?? NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
         font = nsFont as CTFont
 
-        NSLog("[VP] Font resolved: %@ (size: %.1f)", nsFont.fontName, fontSize)
+        logger.debug("Font resolved: \(nsFont.fontName) (size: \(self.fontSize))")
 
         // Bold / Italic バリアント
         let boldTraits: CTFontSymbolicTraits = .boldTrait
@@ -329,8 +329,7 @@ class TerminalView: NSView {
         cellHeight = naturalHeight * lineHeightMultiplier
         baselineOffset = CTFontGetDescent(font) + (cellHeight - naturalHeight) / 2.0
 
-        NSLog("[VP] Cell metrics: width=%.2f height=%.2f (natural=%.2f, multiplier=%.1f) baseline=%.2f",
-              cellWidth, cellHeight, naturalHeight, lineHeightMultiplier, baselineOffset)
+        logger.debug("Cell metrics: w=\(self.cellWidth) h=\(self.cellHeight) baseline=\(self.baselineOffset)")
 
         // セルサイズが 0 の場合のフォールバック
         if cellWidth <= 0 { cellWidth = fontSize * 0.6 }
@@ -378,7 +377,7 @@ class TerminalView: NSView {
             let cmd = deferredPtyCommand
             deferredPtyCommand = nil
             deferredPtyCwd = nil
-            NSLog("[VP] Deferred PTY start: %dx%d cmd=%@", gridCols, gridRows, cmd ?? "(shell)")
+            logger.debug("Deferred PTY start: \(self.gridCols)x\(self.gridRows)")
             startPty(cwd: cwd, command: cmd)
         }
     }
@@ -773,22 +772,22 @@ class TerminalView: NSView {
 
         // ビューのレンダリングをビットマップにキャプチャ
         guard let rep = bitmapImageRepForCachingDisplay(in: bounds) else {
-            NSLog("[VP] Screenshot failed: could not create bitmap rep")
+            logger.debug("[VP] Screenshot failed: could not create bitmap rep")
             return nil
         }
         cacheDisplay(in: bounds, to: rep)
 
         guard let pngData = rep.representation(using: .png, properties: [:]) else {
-            NSLog("[VP] Screenshot failed: PNG encoding failed")
+            logger.debug("[VP] Screenshot failed: PNG encoding failed")
             return nil
         }
 
         do {
             try pngData.write(to: URL(fileURLWithPath: targetPath))
-            NSLog("[VP] Screenshot saved: %@", targetPath)
+            logger.debug("Screenshot saved: \(targetPath)")
             return targetPath
         } catch {
-            NSLog("[VP] Screenshot failed: %@", error.localizedDescription)
+            logger.error("Screenshot failed: \(error.localizedDescription)")
             return nil
         }
     }
@@ -859,14 +858,14 @@ class TerminalView: NSView {
 
         // 再起動上限チェック
         guard ptyRestartCount < Self.maxRestartCount else {
-            NSLog("[VP] PTY 再起動上限に到達 (%d回)。手動で再起動してください。", ptyRestartCount)
+            logger.warning("PTY 再起動上限に到達 (\(self.ptyRestartCount)回)")
             return
         }
 
         lastPtyExit = now
         ptyRestartCount += 1
 
-        NSLog("[VP] PTY 終了検知 → 自動復旧 (%d/%d)", ptyRestartCount, Self.maxRestartCount)
+        logger.info("PTY 終了検知 → 自動復旧 (\(self.ptyRestartCount)/\(Self.maxRestartCount))")
         startPty(cwd: lastPtyCwd, command: lastPtyCommand)
     }
 
