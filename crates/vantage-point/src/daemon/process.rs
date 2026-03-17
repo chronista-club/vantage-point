@@ -18,9 +18,21 @@ pub fn pid_file() -> PathBuf {
 
 /// Daemon が生きているか確認する
 ///
-/// PIDファイルを読み取り、そのプロセスが存在するかを `kill(pid, 0)` で確認。
-/// 生きていれば `Some(pid)` を返す。
+/// 1. PIDファイルを読み取り、`kill(pid, 0)` でプロセスの存在を確認
+/// 2. PIDファイルが無い/古い場合、ポート接続で実際の稼働を確認（フォールバック）
 pub fn is_daemon_running() -> Option<u32> {
+    // 1. PIDファイルベースの確認
+    if let Some(pid) = check_pid_file() {
+        return Some(pid);
+    }
+
+    // 2. フォールバック: ポート接続で TheWorld の生存を確認
+    //    PIDファイルが壊れた・消えた場合でも制御可能にする
+    check_world_port()
+}
+
+/// PIDファイルからデーモンの生存を確認
+fn check_pid_file() -> Option<u32> {
     let pid_path = pid_file();
     if !pid_path.exists() {
         return None;
@@ -28,7 +40,6 @@ pub fn is_daemon_running() -> Option<u32> {
     let pid_str = std::fs::read_to_string(&pid_path).ok()?;
     let pid: u32 = pid_str.trim().parse().ok()?;
 
-    // kill(pid, 0) でプロセスの存在を確認（シグナルは送信しない）
     let alive = i32::try_from(pid).is_ok_and(|pid_i32| unsafe { libc::kill(pid_i32, 0) == 0 });
     if alive {
         Some(pid)
@@ -37,6 +48,32 @@ pub fn is_daemon_running() -> Option<u32> {
         let _ = std::fs::remove_file(&pid_path);
         None
     }
+}
+
+/// TheWorld ポートに接続して PID を取得（PIDファイル不在時のフォールバック）
+fn check_world_port() -> Option<u32> {
+    let url = format!("http://[::1]:{}/api/health", crate::cli::WORLD_PORT);
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build()
+        .ok()?;
+    let resp = client.get(&url).send().ok()?;
+    let health: crate::cli::HealthResponse = resp.json().ok()?;
+
+    // PIDファイルを復元する
+    let dir = daemon_dir();
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        tracing::warn!("PIDファイルディレクトリ作成失敗: {}", e);
+    }
+    if let Err(e) = std::fs::write(pid_file(), health.pid.to_string()) {
+        tracing::warn!("PIDファイル復元書き込み失敗: {}", e);
+    }
+    tracing::info!(
+        "PIDファイル復元（ポートフォールバック）: PID {}",
+        health.pid
+    );
+
+    Some(health.pid)
 }
 
 /// PIDファイルを書き出す
@@ -155,8 +192,10 @@ pub fn stop_daemon(pid: u32) -> Result<()> {
 
     // PIDファイルはDaemon側のシャットダウン処理で削除される
     // ただし、Daemonが応答しなかった場合のフォールバック
+    // 注: ポートフォールバック（check_world_port）は使わない。
+    //      シャットダウン中はポートがまだ開いていることがあり、誤検出で SIGKILL を送ってしまうため。
     std::thread::sleep(std::time::Duration::from_millis(500));
-    if is_daemon_running().is_some() {
+    if check_pid_file().is_some_and(|running_pid| running_pid == pid) {
         tracing::warn!("SIGTERM後もDaemonが生存、SIGKILLを送信");
         let ret = unsafe { libc::kill(pid_i32, libc::SIGKILL) };
         if ret != 0 {
@@ -194,10 +233,12 @@ mod tests {
     }
 
     #[test]
-    fn test_is_daemon_running_stale_pid_cleanup() {
+    fn test_check_pid_file_stale_pid_cleanup() {
         let _lock = PID_FILE_LOCK.lock().unwrap();
         // 存在しないPIDのPIDファイルが残っている場合、
-        // is_daemon_running は None を返し、ファイルを掃除するべき
+        // check_pid_file は None を返し、ファイルを掃除するべき
+        // 注: is_daemon_running() はポートフォールバックを含むため、
+        //      TheWorld 稼働中に誤検出する。PIDファイル単体のテストには check_pid_file を使う。
         let dir = daemon_dir();
         let _ = std::fs::create_dir_all(&dir);
         let path = pid_file();
@@ -208,7 +249,7 @@ mod tests {
         // ほぼ確実に存在しないPIDを書き込む
         std::fs::write(&path, "2147483647").unwrap(); // i32::MAX
 
-        let result = is_daemon_running();
+        let result = check_pid_file();
         assert!(result.is_none(), "存在しないPIDなのに Some が返った");
         // PIDファイルが掃除されていること
         assert!(!path.exists(), "古いPIDファイルが削除されていない");
@@ -221,10 +262,10 @@ mod tests {
     }
 
     #[test]
-    fn test_is_daemon_running_overflow_pid() {
+    fn test_check_pid_file_overflow_pid() {
         let _lock = PID_FILE_LOCK.lock().unwrap();
         // i32::MAX を超えるPIDがPIDファイルに書かれた場合、
-        // is_daemon_running は安全に None を返すべき
+        // check_pid_file は安全に None を返すべき
         let dir = daemon_dir();
         let _ = std::fs::create_dir_all(&dir);
         let path = pid_file();
@@ -234,7 +275,7 @@ mod tests {
         // u32::MAX は i32::try_from で失敗する
         std::fs::write(&path, u32::MAX.to_string()).unwrap();
 
-        let result = is_daemon_running();
+        let result = check_pid_file();
         assert!(result.is_none(), "オーバーフローPIDが Some を返した");
 
         // バックアップを復元（PIDファイルが消えている場合に備え）
