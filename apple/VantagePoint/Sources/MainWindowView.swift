@@ -531,9 +531,13 @@ struct MainWindowView: View {
         }
     }
 
-    /// プロジェクトをリストから削除
+    /// プロジェクトをリストから削除（SP 稼働中なら先に停止）
     private func deleteProject(path: String) {
         Task {
+            // SP 稼働中なら先に停止
+            if let project = projects.first(where: { $0.path == path }), project.isRunning {
+                try? await theWorldClient.stopProcess(projectName: project.name)
+            }
             try? await theWorldClient.removeProject(path: path)
             await refreshAll()
         }

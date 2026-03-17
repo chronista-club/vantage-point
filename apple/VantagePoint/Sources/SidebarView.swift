@@ -94,7 +94,6 @@ struct SidebarView: View {
         Button("リストから削除", systemImage: "trash", role: .destructive) {
             onDelete?(project.path)
         }
-        .disabled(project.isRunning)
     }
 
     /// フォルダのドラッグ＆ドロップ処理
