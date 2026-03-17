@@ -118,6 +118,10 @@ int32_t vp_bridge_pty_write_session(uint32_t session_id, const uint8_t *data, ui
 /// PTY が稼働中か（セッション指定）
 bool vp_bridge_pty_is_running_session(uint32_t session_id);
 
+/// Bracketed Paste モードが有効か（セッション指定）
+/// ペースト時は \x1b[200~ ... \x1b[201~ で囲んで送信する
+bool vp_bridge_pty_bracketed_paste_session(uint32_t session_id);
+
 /// PTY を停止（セッション指定）
 void vp_bridge_pty_stop_session(uint32_t session_id);
 

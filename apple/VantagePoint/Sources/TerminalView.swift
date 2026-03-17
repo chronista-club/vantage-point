@@ -896,24 +896,37 @@ class TerminalView: NSView {
     /// クリップボードからテキスト/画像を PTY にペースト
     private func pasteFromClipboard() {
         let pb = NSPasteboard.general
+        logger.info("pasteFromClipboard: types=\(pb.types?.map(\.rawValue) ?? []) string=\(pb.string(forType: .string) ?? "nil")")
 
-        // テキストペースト（チャンク分割で送信）
+        // テキストペースト: tmux のペーストバッファ経由で送信
+        // PTY 直接書き込みでは tmux がデータを消費してしまうため、
+        // tmux load-buffer + paste-buffer でネイティブに送信する
         if let text = pb.string(forType: .string), !text.isEmpty {
-            if let data = text.data(using: .utf8) {
-                let chunkSize = 64
-                var offset = 0
-                while offset < data.count {
-                    let end = min(offset + chunkSize, data.count)
-                    let chunk = data[offset..<end]
-                    chunk.withUnsafeBytes { ptr in
-                        _ = vp_bridge_pty_write_session(
-                            sessionId,
-                            ptr.baseAddress!.assumingMemoryBound(to: UInt8.self),
-                            UInt32(ptr.count)
-                        )
-                    }
-                    offset = end
+            logger.info("pasteFromClipboard: text=\(text.prefix(50)) len=\(text.count) via tmux paste-buffer")
+            let tmuxBin = "/opt/homebrew/bin/tmux"
+            // tmux のペーストバッファにテキストを設定して貼り付け
+            let loadProcess = Process()
+            loadProcess.executableURL = URL(fileURLWithPath: tmuxBin)
+            loadProcess.arguments = ["load-buffer", "-"]
+            let pipe = Pipe()
+            loadProcess.standardInput = pipe
+            do {
+                try loadProcess.run()
+                if let data = text.data(using: .utf8) {
+                    pipe.fileHandleForWriting.write(data)
                 }
+                pipe.fileHandleForWriting.closeFile()
+                loadProcess.waitUntilExit()
+
+                // paste-buffer で貼り付け（bracketed paste 付き）
+                let pasteProcess = Process()
+                pasteProcess.executableURL = URL(fileURLWithPath: tmuxBin)
+                pasteProcess.arguments = ["paste-buffer", "-p"]
+                try pasteProcess.run()
+                pasteProcess.waitUntilExit()
+                logger.info("tmux paste-buffer: done")
+            } catch {
+                logger.error("tmux paste failed: \(error)")
             }
             return
         }
@@ -947,8 +960,9 @@ class TerminalView: NSView {
 
         switch ch {
         case "v":
-            // Cmd+V: 直接ペースト（メニュー経由だと first responder の問題で届かないことがある）
-            paste(nil)
+            // Cmd+V: 直接ペースト（paste(nil) は NSResponder チェーンで迷子になることがあるため直接呼ぶ）
+            logger.info("performKeyEquivalent: Cmd+V detected, calling pasteFromClipboard()")
+            pasteFromClipboard()
             return true
         case "c":
             // Cmd+C: 選択あり → メニューの copy: に委譲（コピー）

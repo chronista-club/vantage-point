@@ -99,7 +99,7 @@ pub fn execute(session: Option<String>, config: &Config) -> Result<()> {
 
 /// ratatui コンソールのメインループ
 async fn run_tui_console(session_name: &str) -> Result<()> {
-    use crossterm::event::{self, Event, KeyCode, KeyModifiers};
+    use crossterm::event::{self, Event, KeyModifiers};
     use crossterm::terminal::{
         EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
     };
@@ -185,20 +185,9 @@ async fn run_tui_console(session_name: &str) -> Result<()> {
         }
     });
 
-    // コマンドモード状態
-    let mut command_mode = false;
-    let mut command_input = String::new();
-    let mut status_message: Option<String> = None;
-
     loop {
         // 描画
-        let footer_text = if command_mode {
-            format!("  :{}", command_input)
-        } else if let Some(ref msg) = status_message {
-            format!("  {}", msg)
-        } else {
-            "  :cmd │ Ctrl+C".to_string()
-        };
+        let footer_text = String::new();
 
         terminal.draw(|frame| {
             let chunks = Layout::vertical([
@@ -266,15 +255,9 @@ async fn run_tui_console(session_name: &str) -> Result<()> {
             frame.render_widget(border_block, chunks[1]);
             frame.render_widget(widget, inner);
 
-            // フッター（通常 or コマンド入力）
-            let footer_style = if command_mode {
-                Style::default().fg(Color::White).bg(Color::Rgb(46, 52, 64))
-            } else {
-                Style::default()
-                    .fg(Color::Rgb(76, 86, 106))
-                    .bg(Color::Rgb(46, 52, 64))
-            };
-            let footer = Paragraph::new(footer_text.clone()).style(footer_style);
+            // フッター
+            let footer = Paragraph::new(footer_text.clone())
+                .style(Style::default().fg(Color::Rgb(76, 86, 106)).bg(Color::Rgb(46, 52, 64)));
             frame.render_widget(footer, chunks[2]);
         })?;
 
@@ -300,55 +283,7 @@ async fn run_tui_console(session_name: &str) -> Result<()> {
                     continue;
                 }
                 Event::Key(key) => {
-                    if command_mode {
-                        // コマンドモード: 入力をバッファに蓄積
-                        match key.code {
-                            KeyCode::Enter => {
-                                // コマンド実行
-                                let result = execute_command(&command_input, session_name);
-                                status_message = Some(result);
-                                command_input.clear();
-                                command_mode = false;
-                            }
-                            KeyCode::Esc => {
-                                // コマンドモード解除
-                                command_input.clear();
-                                command_mode = false;
-                            }
-                            KeyCode::Backspace => {
-                                command_input.pop();
-                                if command_input.is_empty() {
-                                    command_mode = false;
-                                }
-                            }
-                            KeyCode::Char(c) => {
-                                command_input.push(c);
-                            }
-                            _ => {}
-                        }
-                        continue;
-                    }
-
-                    // 通常モード
-                    // Ctrl+C で終了
-                    if key.modifiers.contains(KeyModifiers::CONTROL)
-                        && key.code == KeyCode::Char('c')
-                    {
-                        break;
-                    }
-
-                    // ':' でコマンドモードに入る
-                    if key.code == KeyCode::Char(':') && key.modifiers.is_empty() {
-                        command_mode = true;
-                        command_input.clear();
-                        status_message = None;
-                        continue;
-                    }
-
-                    // ステータスメッセージをクリア（任意のキーで）
-                    status_message = None;
-
-                    // キー入力を PTY に送信
+                    // 全キー入力を PTY にパススルー
                     let app_cursor = {
                         let state = term_state.lock().unwrap();
                         state.app_cursor_mode()
