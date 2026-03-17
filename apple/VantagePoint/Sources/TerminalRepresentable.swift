@@ -37,7 +37,7 @@ struct TerminalRepresentable: NSViewRepresentable {
         // passthrough モード: tmux に直接 exec（vp tui の crossterm は Native App PTY 内で動かないため）
         // tmux status off にしてから attach — vp tui のヘッダー/フッターは Native App 側で描画
         let tmuxBin = "/opt/homebrew/bin/tmux"
-        view.deferredPtyCommand = "\(tmuxBin) set-option -t \(tmuxSession) status off 2>/dev/null; exec \(tmuxBin) attach-session -t \(tmuxSession)"
+        view.deferredPtyCommand = "\(tmuxBin) set-option -t \(tmuxSession) status on 2>/dev/null; exec \(tmuxBin) attach-session -t \(tmuxSession)"
         return view
     }
 
