@@ -42,9 +42,7 @@ struct SidebarView: View {
                         ForEach(project.workers) { worker in
                             SidebarWorkerRow(
                                 worker: worker,
-                                parentPPActive: project.stands.contains {
-                                    $0.key == "paisley_park" && ($0.status == "active" || $0.status == "connected")
-                                },
+                                parentPPStatus: ppBadgeStatus(for: project),
                                 ccwireSession: worker.ccwireSession
                             )
                                 .tag(worker.id)
@@ -184,13 +182,9 @@ struct SidebarProjectRow: View {
                 StatusBadge(label: "Lead-HD", icon: "text.book.closed", isActive: project.hasHD)
                     .help(ccwireTooltip(for: project))
 
-                // PP: SP 稼働中で disabled でなければ利用可能（緑）
-                if let pp = project.stands.first(where: { $0.key == "paisley_park" }) {
-                    StatusBadge(label: "PP", icon: "compass.drawing",
-                                isActive: pp.status != "disabled")
-                } else {
-                    StatusBadge(label: "PP", icon: "compass.drawing", isActive: false)
-                }
+                // PP: connected=青（Canvas接続中）, idle=緑（show受信可能）, その他=灰
+                StatusBadge(label: "PP", icon: "compass.drawing",
+                            status: ppBadgeStatus(for: project))
 
                 // ccwire 未読メッセージ数
                 if let wire = project.ccwireSession, wire.pendingMessages > 0 {
@@ -229,7 +223,7 @@ struct SidebarProjectRow: View {
 struct SidebarWorkerRow: View {
     let worker: CcwsWorkerInfo
     /// 親プロジェクトの PP 状態を継承表示
-    var parentPPActive: Bool = false
+    var parentPPStatus: BadgeStatus = .inactive
     /// ccwire セッション情報
     var ccwireSession: CcwireSessionInfo?
 
@@ -253,7 +247,7 @@ struct SidebarWorkerRow: View {
             HStack(spacing: 6) {
                 StatusBadge(label: "Worker-HD", icon: "text.book.closed", isActive: worker.hasHD)
                     .help(workerCcwireTooltip)
-                StatusBadge(label: "PP", icon: "compass.drawing", isActive: parentPPActive)
+                StatusBadge(label: "PP", icon: "compass.drawing", status: parentPPStatus)
 
                 // ccwire 未読メッセージ数
                 if let wire = ccwireSession, wire.pendingMessages > 0 {
@@ -376,11 +370,41 @@ struct SidebarProject: Identifiable, Equatable {
 
 // MARK: - ステータスバッジ
 
+/// Stand のステータス種別
+enum BadgeStatus {
+    case inactive   // 灰: 停止・利用不可
+    case active     // 緑: 稼働中・利用可能
+    case connected  // 青: 接続中・リアルタイム
+
+    var color: Color {
+        switch self {
+        case .inactive: .gray
+        case .active: .green
+        case .connected: .blue
+        }
+    }
+}
+
+/// PP の BadgeStatus を判定
+/// connected(青): Canvas WebSocket 接続中、idle(緑): show 受信可能、それ以外(灰)
+private func ppBadgeStatus(for project: SidebarProject) -> BadgeStatus {
+    guard project.isRunning,
+          let pp = project.stands.first(where: { $0.key == "paisley_park" }) else {
+        return .inactive
+    }
+    switch pp.status {
+    case "connected": return .connected
+    case "idle": return .active
+    default: return .inactive
+    }
+}
+
 /// SP/HD/PP のステータスを統一表示するバッジ
 struct StatusBadge: View {
     let label: String
     let icon: String
-    let isActive: Bool
+    var isActive: Bool = false
+    var status: BadgeStatus? = nil
 
     var body: some View {
         HStack(spacing: 2) {
@@ -388,7 +412,14 @@ struct StatusBadge: View {
             Text(label)
         }
         .font(.caption2)
-        .foregroundStyle(isActive ? .green : .gray)
+        .foregroundStyle(resolvedColor)
+    }
+
+    private var resolvedColor: Color {
+        // status が明示的に指定されていればそちらを優先
+        if let status { return status.color }
+        // 後方互換: isActive のみ指定
+        return isActive ? .green : .gray
     }
 }
 
