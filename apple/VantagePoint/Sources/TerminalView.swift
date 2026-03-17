@@ -212,26 +212,26 @@ class TerminalView: NSView {
     /// キーウィンドウ外でもキー入力を受け取る
     override var needsPanelToBecomeKey: Bool { true }
 
-    /// first responder 変更時にボーダーで視覚化（デバッグ用）
+    /// first responder 変更時にボーダーで視覚化（フォーカスインジケーター）
     override func becomeFirstResponder() -> Bool {
         let result = super.becomeFirstResponder()
-        updateFirstResponderBorder()
+        updateFocusBorder()
         return result
     }
 
     override func resignFirstResponder() -> Bool {
         let result = super.resignFirstResponder()
-        updateFirstResponderBorder()
+        updateFocusBorder()
         return result
     }
 
-    private func updateFirstResponderBorder() {
+    private func updateFocusBorder() {
         if window?.firstResponder === self {
-            layer?.borderColor = NSColor.systemBlue.withAlphaComponent(0.5).cgColor
-            layer?.borderWidth = 2
-        } else {
-            layer?.borderColor = NSColor.systemRed.withAlphaComponent(0.3).cgColor
+            layer?.borderColor = NSColor.controlAccentColor.withAlphaComponent(0.3).cgColor
             layer?.borderWidth = 1
+        } else {
+            layer?.borderColor = nil
+            layer?.borderWidth = 0
         }
     }
 
