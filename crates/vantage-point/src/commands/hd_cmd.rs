@@ -79,8 +79,7 @@ fn hd_start(
 
     // SP サーバー稼働チェック（Warning のみ、エラーにはしない）
     let normalized = Config::normalize_path(std::path::Path::new(project_dir));
-    let sp_port = crate::discovery::find_by_project_blocking(&normalized)
-        .map(|p| p.port);
+    let sp_port = crate::discovery::find_by_project_blocking(&normalized).map(|p| p.port);
     if sp_port.is_none() {
         eprintln!("⚠️  SP サーバーが未起動です。`vp sp start` で起動を推奨します。");
     }
@@ -208,7 +207,9 @@ fn hd_attach(project_name: &str, id: Option<&str>, config: &Config) -> Result<()
         if let Some(id) = id {
             anyhow::bail!(
                 "HD インスタンス '{}' (セッション: {}) が見つかりません。先に `vp hd start --id {}` してください。",
-                id, session_name, id
+                id,
+                session_name,
+                id
             );
         } else {
             anyhow::bail!(
@@ -271,11 +272,7 @@ fn extract_id_from_session<'a>(session: &'a str, project_prefix: &str) -> Option
     let suffix = suffix.strip_suffix("-vp")?;
     // 先頭の "-" を除去
     let id = suffix.strip_prefix('-')?;
-    if id.is_empty() {
-        None
-    } else {
-        Some(id)
-    }
+    if id.is_empty() { None } else { Some(id) }
 }
 
 #[cfg(test)]
@@ -292,7 +289,11 @@ mod tests {
 
         // 自プロジェクトの ID 付きセッション
         assert!(is_own_session("creo-kaizen-vp", "creo", &others));
-        assert!(is_own_session("vantage-point-kaizen-vp", "vantage-point", &[]));
+        assert!(is_own_session(
+            "vantage-point-kaizen-vp",
+            "vantage-point",
+            &[]
+        ));
 
         // 別プロジェクト（prefix が部分一致するが別物）
         assert!(!is_own_session("creo-memories-vp", "creo", &others));

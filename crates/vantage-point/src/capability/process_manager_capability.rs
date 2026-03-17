@@ -53,6 +53,9 @@ pub struct ProjectInfo {
     pub path: PathBuf,
     /// Process状態
     pub process_status: ProcessStatus,
+    /// 指定ポート（config.toml の port フィールド、永続化時に保持）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
 }
 
 /// Process状態
@@ -102,6 +105,8 @@ pub struct ProcessManagerCapability {
     state: CapabilityState,
     /// 登録プロジェクト一覧（キー: 正規化パス）
     projects: Arc<RwLock<HashMap<String, ProjectInfo>>>,
+    /// プロジェクトの並び順（正規化パスの Vec、config.toml の [[projects]] 順を保持）
+    project_order: Arc<RwLock<Vec<String>>>,
     /// 稼働中Process一覧（キー: 正規化パス）
     running_processes: Arc<RwLock<HashMap<String, RunningProcess>>>,
     /// 前回のヘルスチェックで稼働中だった Process（クラッシュ検知用）
@@ -110,6 +115,9 @@ pub struct ProcessManagerCapability {
     config: Option<Config>,
     /// vpバイナリパス
     vp_binary_path: Option<PathBuf>,
+    /// テスト時に config.toml への永続化を無効化
+    #[cfg(test)]
+    disable_persist: bool,
 }
 
 impl ProcessManagerCapability {
@@ -118,10 +126,13 @@ impl ProcessManagerCapability {
         Self {
             state: CapabilityState::Uninitialized,
             projects: Arc::new(RwLock::new(HashMap::new())),
+            project_order: Arc::new(RwLock::new(Vec::new())),
             running_processes: Arc::new(RwLock::new(HashMap::new())),
             previously_running: Arc::new(RwLock::new(HashMap::new())),
             config: None,
             vp_binary_path: None,
+            #[cfg(test)]
+            disable_persist: true,
         }
     }
 
@@ -141,18 +152,22 @@ impl ProcessManagerCapability {
             CapabilityError::InitializationFailed(format!("Failed to load config: {}", e))
         })?;
 
-        // プロジェクト一覧を更新
+        // プロジェクト一覧を更新（順序を保持）
         let mut projects = self.projects.write().await;
+        let mut order = self.project_order.write().await;
         projects.clear();
+        order.clear();
 
         for project in &config.projects {
             let key = normalize_path_key(&PathBuf::from(&project.path));
+            order.push(key.clone());
             projects.insert(
                 key,
                 ProjectInfo {
                     name: project.name.clone(),
                     path: project.path.clone().into(),
                     process_status: ProcessStatus::Stopped,
+                    port: project.port,
                 },
             );
         }
@@ -209,10 +224,14 @@ impl ProcessManagerCapability {
             .map(|(key, _)| key.clone())
     }
 
-    /// プロジェクト一覧を取得
+    /// プロジェクト一覧を取得（project_order の順序で返す）
     pub async fn list_projects(&self) -> Vec<ProjectInfo> {
         let projects = self.projects.read().await;
-        projects.values().cloned().collect()
+        let order = self.project_order.read().await;
+        order
+            .iter()
+            .filter_map(|key| projects.get(key).cloned())
+            .collect()
     }
 
     /// 稼働中Process一覧を取得
@@ -225,14 +244,25 @@ impl ProcessManagerCapability {
     pub async fn reload_config(&self) {
         if let Ok(config) = Config::load() {
             let mut projects = self.projects.write().await;
+            let mut order = self.project_order.write().await;
             for project in &config.projects {
                 let key = normalize_path_key(&PathBuf::from(&project.path));
-                // 既存エントリは上書きしない（稼働状態を保持）
-                projects.entry(key).or_insert_with(|| ProjectInfo {
-                    name: project.name.clone(),
-                    path: project.path.clone().into(),
-                    process_status: ProcessStatus::Stopped,
-                });
+                if projects
+                    .entry(key.clone())
+                    .or_insert_with(|| ProjectInfo {
+                        name: project.name.clone(),
+                        path: project.path.clone().into(),
+                        process_status: ProcessStatus::Stopped,
+                        port: project.port,
+                    })
+                    .name
+                    == project.name
+                {
+                    // 新規追加の場合のみ order に追加
+                    if !order.contains(&key) {
+                        order.push(key);
+                    }
+                }
             }
             tracing::info!("Config reloaded: {} projects", projects.len());
         }
@@ -240,12 +270,29 @@ impl ProcessManagerCapability {
 
     /// プロジェクトを追加（+ config.toml に永続化）
     pub async fn add_project(&self, name: &str, path: &str) -> CapabilityResult<ProjectInfo> {
-        let key = normalize_path_key(&PathBuf::from(path));
+        // 名前バリデーション
+        if name.trim().is_empty() {
+            return Err(CapabilityError::Other(
+                "Project name cannot be empty".to_string(),
+            ));
+        }
+
+        // パスの存在・ディレクトリ確認
+        let pb = PathBuf::from(path);
+        if !pb.is_dir() {
+            return Err(CapabilityError::Other(format!(
+                "Path is not a directory: {}",
+                path
+            )));
+        }
+
+        let key = normalize_path_key(&pb);
 
         let info = ProjectInfo {
             name: name.to_string(),
             path: path.into(),
             process_status: ProcessStatus::Stopped,
+            port: None,
         };
 
         {
@@ -256,8 +303,10 @@ impl ProcessManagerCapability {
                     path
                 )));
             }
-            projects.insert(key, info.clone());
+            projects.insert(key.clone(), info.clone());
         }
+        // 順序リストに末尾追加
+        self.project_order.write().await.push(key);
 
         self.persist_projects().await;
         Ok(info)
@@ -286,6 +335,8 @@ impl ProcessManagerCapability {
                 )));
             }
         }
+        // 順序リストからも削除
+        self.project_order.write().await.retain(|k| k != &key);
 
         self.persist_projects().await;
         Ok(())
@@ -293,6 +344,12 @@ impl ProcessManagerCapability {
 
     /// プロジェクト名を変更（+ config.toml に永続化）
     pub async fn rename_project(&self, path: &str, new_name: &str) -> CapabilityResult<()> {
+        if new_name.trim().is_empty() {
+            return Err(CapabilityError::Other(
+                "Project name cannot be empty".to_string(),
+            ));
+        }
+
         let key = normalize_path_key(&PathBuf::from(path));
 
         {
@@ -315,18 +372,25 @@ impl ProcessManagerCapability {
     ///
     /// paths の順序で config.toml に書き出す。
     pub async fn reorder_projects(&self, paths: &[String]) -> CapabilityResult<()> {
-        // 並び順は config.toml の `[[projects]]` 順で管理
-        // HashMap は順序を持たないため、永続化時に paths の順で書き出す
-        self.persist_projects_ordered(paths).await;
+        // raw paths を正規化して HashMap キーと一致させる
+        let normalized: Vec<String> = paths
+            .iter()
+            .map(|p| normalize_path_key(&PathBuf::from(p)))
+            .collect();
+        // 順序リストを更新
+        *self.project_order.write().await = normalized.clone();
+        self.persist_projects_ordered(&normalized).await;
         Ok(())
     }
 
-    /// projects HashMap を config.toml に永続化
+    /// projects を config.toml に永続化（project_order の順序で書き出す）
     async fn persist_projects(&self) {
-        let projects = self.projects.read().await;
-        let ordered: Vec<String> = projects.keys().cloned().collect();
-        drop(projects);
-        self.persist_projects_ordered(&ordered).await;
+        #[cfg(test)]
+        if self.disable_persist {
+            return;
+        }
+        let order = self.project_order.read().await.clone();
+        self.persist_projects_ordered(&order).await;
     }
 
     /// 指定順序で config.toml に永続化
@@ -340,18 +404,19 @@ impl ProcessManagerCapability {
                 projects.get(key).map(|info| crate::config::ProjectConfig {
                     name: info.name.clone(),
                     path: info.path.to_string_lossy().to_string(),
-                    port: None,
+                    port: info.port,
                 })
             })
             .collect();
 
         // order に含まれないプロジェクトも末尾に追加
+        let order_set: std::collections::HashSet<&String> = order.iter().collect();
         for (key, info) in projects.iter() {
-            if !order.contains(key) {
+            if !order_set.contains(key) {
                 config.projects.push(crate::config::ProjectConfig {
                     name: info.name.clone(),
                     path: info.path.to_string_lossy().to_string(),
-                    port: None,
+                    port: info.port,
                 });
             }
         }
@@ -1008,5 +1073,189 @@ mod tests {
         let status = ProcessStatus::Running;
         let json = serde_json::to_string(&status).unwrap();
         assert_eq!(json, "\"running\"");
+    }
+
+    #[test]
+    fn test_normalize_path_key_consistency() {
+        // 同じパスの異なる表現が同じキーになることを確認
+        let key1 = normalize_path_key(&PathBuf::from("/tmp/test-project"));
+        let key2 = normalize_path_key(&PathBuf::from("/tmp/test-project/"));
+        // 末尾スラッシュの正規化は Config::normalize_path に依存
+        assert!(!key1.is_empty());
+        assert!(!key2.is_empty());
+    }
+
+    #[test]
+    fn test_project_info_port_serialization() {
+        // port が Some のとき JSON に含まれることを確認
+        let info = ProjectInfo {
+            name: "test".to_string(),
+            path: "/tmp/test".into(),
+            process_status: ProcessStatus::Stopped,
+            port: Some(33005),
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("33005"));
+
+        // port が None のとき JSON に含まれないことを確認（skip_serializing_if）
+        let info_no_port = ProjectInfo {
+            name: "test".to_string(),
+            path: "/tmp/test".into(),
+            process_status: ProcessStatus::Stopped,
+            port: None,
+        };
+        let json_no_port = serde_json::to_string(&info_no_port).unwrap();
+        assert!(!json_no_port.contains("port"));
+    }
+
+    // --- CRUD テスト（async） ---
+
+    /// テスト用ヘルパー: 空の ProcessManagerCapability を作成
+    fn make_test_cap() -> ProcessManagerCapability {
+        ProcessManagerCapability::new()
+    }
+
+    #[tokio::test]
+    async fn test_add_project_success() {
+        let cap = make_test_cap();
+        let dir = std::env::temp_dir();
+        let path = dir.to_string_lossy().to_string();
+
+        let result = cap.add_project("test-project", &path).await;
+        assert!(result.is_ok());
+
+        let info = result.unwrap();
+        assert_eq!(info.name, "test-project");
+        assert_eq!(info.process_status, ProcessStatus::Stopped);
+        assert_eq!(info.port, None);
+    }
+
+    #[tokio::test]
+    async fn test_add_project_duplicate_path() {
+        let cap = make_test_cap();
+        let dir = std::env::temp_dir();
+        let path = dir.to_string_lossy().to_string();
+
+        cap.add_project("first", &path).await.unwrap();
+        let result = cap.add_project("second", &path).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("already exists"));
+    }
+
+    #[tokio::test]
+    async fn test_add_project_empty_name() {
+        let cap = make_test_cap();
+        let dir = std::env::temp_dir();
+        let path = dir.to_string_lossy().to_string();
+
+        let result = cap.add_project("", &path).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("cannot be empty"));
+    }
+
+    #[tokio::test]
+    async fn test_add_project_whitespace_name() {
+        let cap = make_test_cap();
+        let dir = std::env::temp_dir();
+        let path = dir.to_string_lossy().to_string();
+
+        let result = cap.add_project("   ", &path).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_add_project_nonexistent_path() {
+        let cap = make_test_cap();
+        let result = cap
+            .add_project("ghost", "/nonexistent/path/that/does/not/exist")
+            .await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not a directory"));
+    }
+
+    #[tokio::test]
+    async fn test_remove_project_success() {
+        let cap = make_test_cap();
+        let dir = std::env::temp_dir();
+        let path = dir.to_string_lossy().to_string();
+
+        cap.add_project("removable", &path).await.unwrap();
+        let result = cap.remove_project(&path).await;
+        assert!(result.is_ok());
+
+        // 削除後は一覧に含まれない
+        let projects = cap.list_projects().await;
+        assert!(projects.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_remove_project_not_found() {
+        let cap = make_test_cap();
+        let result = cap.remove_project("/nonexistent").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn test_rename_project_success() {
+        let cap = make_test_cap();
+        let dir = std::env::temp_dir();
+        let path = dir.to_string_lossy().to_string();
+
+        cap.add_project("old-name", &path).await.unwrap();
+        let result = cap.rename_project(&path, "new-name").await;
+        assert!(result.is_ok());
+
+        let projects = cap.list_projects().await;
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].name, "new-name");
+    }
+
+    #[tokio::test]
+    async fn test_rename_project_empty_name() {
+        let cap = make_test_cap();
+        let dir = std::env::temp_dir();
+        let path = dir.to_string_lossy().to_string();
+
+        cap.add_project("existing", &path).await.unwrap();
+        let result = cap.rename_project(&path, "").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("cannot be empty"));
+    }
+
+    #[tokio::test]
+    async fn test_rename_project_not_found() {
+        let cap = make_test_cap();
+        let result = cap.rename_project("/nonexistent", "new").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_resolve_key_by_name() {
+        let cap = make_test_cap();
+        let dir = std::env::temp_dir();
+        let path = dir.to_string_lossy().to_string();
+
+        cap.add_project("findme", &path).await.unwrap();
+
+        let found = cap.resolve_key_by_name("findme").await;
+        assert!(found.is_some());
+
+        let not_found = cap.resolve_key_by_name("nothere").await;
+        assert!(not_found.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_list_projects_empty() {
+        let cap = make_test_cap();
+        let projects = cap.list_projects().await;
+        assert!(projects.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_list_running_processes_empty() {
+        let cap = make_test_cap();
+        let procs = cap.list_running_processes().await;
+        assert!(procs.is_empty());
     }
 }

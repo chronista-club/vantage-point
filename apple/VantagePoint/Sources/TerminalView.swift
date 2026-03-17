@@ -1,6 +1,9 @@
 import AppKit
 import CoreText
+import OSLog
 import VPBridge
+
+private let logger = Logger(subsystem: "tech.anycreative.vp", category: "Terminal")
 
 // MARK: - セッションレジストリ（マルチウィンドウ対応）
 
@@ -143,11 +146,19 @@ class TerminalView: NSView {
     /// nonisolated(unsafe) は deinit からのアクセスのために必要。
     nonisolated(unsafe) private var keyMonitor: Any?
 
+    /// mouseMoved イベント受信用のトラッキングエリア
+    private var mouseTrackingArea: NSTrackingArea?
+    /// mouseMoved の URL 検出キャッシュ（行が変わった時のみ再計算）
+    private var lastHoveredRow: Int = -1
+    private var lastHoveredCol: Int = -1
+    private var lastHoveredUrl: URL?
+
     private func commonInit() {
         wantsLayer = true
         layer?.backgroundColor = defaultBackground.cgColor
 
         updateFontMetrics()
+        setupTrackingArea()
 
         // macOS は PageUp/PageDown を scrollPageUp:/scrollPageDown: NSResponder アクションに変換し、
         // NSViewRepresentable 内の NSView の keyDown には到達させない。
@@ -204,6 +215,29 @@ class TerminalView: NSView {
     /// キーウィンドウ外でもキー入力を受け取る
     override var needsPanelToBecomeKey: Bool { true }
 
+    /// first responder 変更時にボーダーで視覚化（フォーカスインジケーター）
+    override func becomeFirstResponder() -> Bool {
+        let result = super.becomeFirstResponder()
+        updateFocusBorder()
+        return result
+    }
+
+    override func resignFirstResponder() -> Bool {
+        let result = super.resignFirstResponder()
+        updateFocusBorder()
+        return result
+    }
+
+    private func updateFocusBorder() {
+        if window?.firstResponder === self {
+            layer?.borderColor = NSColor.controlAccentColor.withAlphaComponent(0.3).cgColor
+            layer?.borderWidth = 1
+        } else {
+            layer?.borderColor = nil
+            layer?.borderWidth = 0
+        }
+    }
+
 
     deinit {
         // deinit は nonisolated — MainActor 外から呼ばれる可能性がある
@@ -232,13 +266,13 @@ class TerminalView: NSView {
         // セッション作成（Rust 側で Backend + PTY スロットが確保される）
         let id = vp_bridge_create(gridCols, gridRows, sharedFrameCallback)
         guard id != 0 else {
-            NSLog("[VP] vp_bridge_create failed")
+            logger.debug("[VP] vp_bridge_create failed")
             return
         }
 
         sessionId = id
         sessionRegistry[id] = self
-        NSLog("[VP] Bridge session created: %d (%dx%d)", id, gridCols, gridRows)
+        logger.debug("Bridge session created: \(id) (\(self.gridCols)x\(self.gridRows))")
 
         // バッファを確保
         let totalCells = Int(gridCols) * Int(gridRows)
@@ -272,7 +306,7 @@ class TerminalView: NSView {
             ?? NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
         font = nsFont as CTFont
 
-        NSLog("[VP] Font resolved: %@ (size: %.1f)", nsFont.fontName, fontSize)
+        logger.debug("Font resolved: \(nsFont.fontName) (size: \(self.fontSize))")
 
         // Bold / Italic バリアント
         let boldTraits: CTFontSymbolicTraits = .boldTrait
@@ -295,8 +329,7 @@ class TerminalView: NSView {
         cellHeight = naturalHeight * lineHeightMultiplier
         baselineOffset = CTFontGetDescent(font) + (cellHeight - naturalHeight) / 2.0
 
-        NSLog("[VP] Cell metrics: width=%.2f height=%.2f (natural=%.2f, multiplier=%.1f) baseline=%.2f",
-              cellWidth, cellHeight, naturalHeight, lineHeightMultiplier, baselineOffset)
+        logger.debug("Cell metrics: w=\(self.cellWidth) h=\(self.cellHeight) baseline=\(self.baselineOffset)")
 
         // セルサイズが 0 の場合のフォールバック
         if cellWidth <= 0 { cellWidth = fontSize * 0.6 }
@@ -344,7 +377,7 @@ class TerminalView: NSView {
             let cmd = deferredPtyCommand
             deferredPtyCommand = nil
             deferredPtyCwd = nil
-            NSLog("[VP] Deferred PTY start: %dx%d cmd=%@", gridCols, gridRows, cmd ?? "(shell)")
+            logger.debug("Deferred PTY start: \(self.gridCols)x\(self.gridRows)")
             startPty(cwd: cwd, command: cmd)
         }
     }
@@ -739,22 +772,22 @@ class TerminalView: NSView {
 
         // ビューのレンダリングをビットマップにキャプチャ
         guard let rep = bitmapImageRepForCachingDisplay(in: bounds) else {
-            NSLog("[VP] Screenshot failed: could not create bitmap rep")
+            logger.debug("[VP] Screenshot failed: could not create bitmap rep")
             return nil
         }
         cacheDisplay(in: bounds, to: rep)
 
         guard let pngData = rep.representation(using: .png, properties: [:]) else {
-            NSLog("[VP] Screenshot failed: PNG encoding failed")
+            logger.debug("[VP] Screenshot failed: PNG encoding failed")
             return nil
         }
 
         do {
             try pngData.write(to: URL(fileURLWithPath: targetPath))
-            NSLog("[VP] Screenshot saved: %@", targetPath)
+            logger.debug("Screenshot saved: \(targetPath)")
             return targetPath
         } catch {
-            NSLog("[VP] Screenshot failed: %@", error.localizedDescription)
+            logger.error("Screenshot failed: \(error.localizedDescription)")
             return nil
         }
     }
@@ -825,14 +858,14 @@ class TerminalView: NSView {
 
         // 再起動上限チェック
         guard ptyRestartCount < Self.maxRestartCount else {
-            NSLog("[VP] PTY 再起動上限に到達 (%d回)。手動で再起動してください。", ptyRestartCount)
+            logger.warning("PTY 再起動上限に到達 (\(self.ptyRestartCount)回)")
             return
         }
 
         lastPtyExit = now
         ptyRestartCount += 1
 
-        NSLog("[VP] PTY 終了検知 → 自動復旧 (%d/%d)", ptyRestartCount, Self.maxRestartCount)
+        logger.info("PTY 終了検知 → 自動復旧 (\(self.ptyRestartCount)/\(Self.maxRestartCount))")
         startPty(cwd: lastPtyCwd, command: lastPtyCommand)
     }
 
@@ -864,27 +897,23 @@ class TerminalView: NSView {
     private func pasteFromClipboard() {
         let pb = NSPasteboard.general
 
-        // テキストペースト（Bracketed Paste Mode）
+        // テキストペースト（チャンク分割で送信）
         if let text = pb.string(forType: .string), !text.isEmpty {
-            let bracketStart: [UInt8] = [0x1B, 0x5B, 0x32, 0x30, 0x30, 0x7E] // \e[200~
-            let bracketEnd: [UInt8] = [0x1B, 0x5B, 0x32, 0x30, 0x31, 0x7E]   // \e[201~
-
-            bracketStart.withUnsafeBufferPointer { ptr in
-                _ = vp_bridge_pty_write_session(sessionId, ptr.baseAddress!, UInt32(ptr.count))
-            }
-
             if let data = text.data(using: .utf8) {
-                data.withUnsafeBytes { ptr in
-                    _ = vp_bridge_pty_write_session(
-                        sessionId,
-                        ptr.baseAddress!.assumingMemoryBound(to: UInt8.self),
-                        UInt32(ptr.count)
-                    )
+                let chunkSize = 64
+                var offset = 0
+                while offset < data.count {
+                    let end = min(offset + chunkSize, data.count)
+                    let chunk = data[offset..<end]
+                    chunk.withUnsafeBytes { ptr in
+                        _ = vp_bridge_pty_write_session(
+                            sessionId,
+                            ptr.baseAddress!.assumingMemoryBound(to: UInt8.self),
+                            UInt32(ptr.count)
+                        )
+                    }
+                    offset = end
                 }
-            }
-
-            bracketEnd.withUnsafeBufferPointer { ptr in
-                _ = vp_bridge_pty_write_session(sessionId, ptr.baseAddress!, UInt32(ptr.count))
             }
             return
         }
@@ -918,8 +947,9 @@ class TerminalView: NSView {
 
         switch ch {
         case "v":
-            // Cmd+V: メニューの paste: アクションに委譲（TerminalView.paste(_:) が呼ばれる）
-            return false
+            // Cmd+V: 直接ペースト（メニュー経由だと first responder の問題で届かないことがある）
+            paste(nil)
+            return true
         case "c":
             // Cmd+C: 選択あり → メニューの copy: に委譲（コピー）
             //         選択なし → Ctrl+C (SIGINT) を直接送信
@@ -1058,6 +1088,144 @@ class TerminalView: NSView {
 
     override func flagsChanged(with event: NSEvent) {
         // Modifier キー単独では PTY に何も送らない
+
+        // Cmd キーの押下/解放でカーソルを更新（URL ホバー表示の切り替え）
+        if let window = self.window {
+            let mouseLocation = window.mouseLocationOutsideOfEventStream
+            let pos = gridPosition(from: mouseLocation)
+            if event.modifierFlags.contains(.command),
+               urlAtPosition(col: pos.col, row: pos.row) != nil {
+                NSCursor.pointingHand.set()
+            } else {
+                NSCursor.iBeam.set()
+            }
+        }
+    }
+
+    // MARK: - URL 検出（Cmd+Click でブラウザ起動）
+
+    /// URL 検出用の正規表現（https:// または http:// で始まる URL）
+    private static let urlRegex: NSRegularExpression? = {
+        // Rust 側 (tui_cmd.rs) と統一: `)` はパターンに含め、末尾除去で処理
+        try? NSRegularExpression(pattern: "https?://[^\\s<>\"'）」\\]]+", options: [])
+    }()
+
+    /// トラッキングエリアを設定（mouseMoved イベントを受信するため）
+    private func setupTrackingArea() {
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseMoved, .activeInKeyWindow, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        mouseTrackingArea = area
+    }
+
+    /// ビューサイズ変更時にトラッキングエリアを再構築
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let old = mouseTrackingArea {
+            removeTrackingArea(old)
+        }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseMoved, .activeInKeyWindow, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        mouseTrackingArea = area
+    }
+
+    /// 指定行のテキストを cellBuffer から抽出
+    private func extractRowText(row: Int) -> String {
+        let cols = Int(gridCols)
+        var text = ""
+        var skipNext = false
+        for col in 0..<cols {
+            if skipNext { skipNext = false; continue }
+            let idx = row * cols + col
+            guard idx < cellBuffer.count else { continue }
+            let cell = cellBuffer[idx]
+            let ch = cellString(from: cell)
+            // WIDE_CHAR (bit 6) の場合、次のセル（スペーサー）をスキップ
+            if (cell.flags & (1 << 6)) != 0 {
+                skipNext = true
+            }
+            text += ch.isEmpty ? " " : ch
+        }
+        return text
+    }
+
+    /// 行テキスト中の指定カラム位置にある URL を返す
+    ///
+    /// セルグリッドのカラム位置とテキストのカラム位置を照合し、
+    /// Cmd+Click 位置が URL 範囲内かを判定する。
+    private func urlAtPosition(col: Int, row: Int) -> URL? {
+        guard let regex = Self.urlRegex else { return nil }
+        let text = extractRowText(row: row)
+        let nsText = text as NSString
+        let matches = regex.matches(in: text, options: [], range: NSRange(location: 0, length: nsText.length))
+
+        // ワイド文字を考慮してテキストインデックス → カラム位置のマッピングを構築
+        let cols = Int(gridCols)
+        var textIdx = 0
+        var colToTextIdx: [Int: Int] = [:]
+        var skipNext = false
+        for c in 0..<cols {
+            if skipNext { skipNext = false; continue }
+            let idx = row * cols + c
+            guard idx < cellBuffer.count else { continue }
+            let cell = cellBuffer[idx]
+            let ch = cellString(from: cell)
+            let charLen = ch.isEmpty ? 1 : (ch as NSString).length
+            colToTextIdx[c] = textIdx
+            if (cell.flags & (1 << 6)) != 0 {
+                // ワイド文字: 次カラムも同じテキスト位置
+                colToTextIdx[c + 1] = textIdx
+                skipNext = true
+            }
+            textIdx += charLen
+        }
+
+        guard let clickTextIdx = colToTextIdx[col] else { return nil }
+
+        for match in matches {
+            if clickTextIdx >= match.range.location
+                && clickTextIdx < match.range.location + match.range.length {
+                let urlString = nsText.substring(with: match.range)
+                // 末尾の句読点・括弧を除去（URL の一部でない可能性が高い）
+                let trimmed = urlString.replacingOccurrences(
+                    of: "[.,;:!?)）】」』》〉\\]]+$",
+                    with: "",
+                    options: .regularExpression
+                )
+                return URL(string: trimmed)
+            }
+        }
+        return nil
+    }
+
+    /// Cmd+ホバー時にカーソルをポインティングハンドに変更（行キャッシュで負荷軽減）
+    override func mouseMoved(with event: NSEvent) {
+        let pos = gridPosition(from: event.locationInWindow)
+        guard event.modifierFlags.contains(.command) else {
+            NSCursor.iBeam.set()
+            lastHoveredUrl = nil
+            return
+        }
+        // 行またはカラムが変わった場合のみ URL を再検出
+        if pos.row != lastHoveredRow || pos.col != lastHoveredCol {
+            lastHoveredRow = pos.row
+            lastHoveredCol = pos.col
+            lastHoveredUrl = urlAtPosition(col: pos.col, row: pos.row)
+        }
+        if lastHoveredUrl != nil {
+            NSCursor.pointingHand.set()
+        } else {
+            NSCursor.iBeam.set()
+        }
     }
 
     // MARK: - テキスト選択
@@ -1084,6 +1252,15 @@ class TerminalView: NSView {
     override func mouseDown(with event: NSEvent) {
         // クリックで first responder を取得（SwiftUI サイドバーからフォーカスを奪う）
         window?.makeFirstResponder(self)
+
+        // Cmd+Click: URL をブラウザで開く
+        if event.modifierFlags.contains(.command) {
+            let pos = gridPosition(from: event.locationInWindow)
+            if let url = urlAtPosition(col: pos.col, row: pos.row) {
+                NSWorkspace.shared.open(url)
+                return
+            }
+        }
 
         let pos = gridPosition(from: event.locationInWindow)
         selectionStart = pos

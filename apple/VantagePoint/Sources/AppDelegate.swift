@@ -36,9 +36,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var eventMonitor: Any?
 
     /// プロジェクト選択通知（Popover → MainWindowView）
-    static let selectProjectNotification = Notification.Name("club.chronista.vp.selectProject")
+    static let selectProjectNotification = Notification.Name("tech.anycreative.vp.selectProject")
     /// CC 完了通知（Notification hook → サイドバーバッジ）
-    static let ccNotification = Notification.Name("club.chronista.vp.cc.notification")
+    static let ccNotification = Notification.Name("tech.anycreative.vp.cc.notification")
 
     /// DistributedNotification リスナー
     private var ccNotificationObserver: NSObjectProtocol?
@@ -240,6 +240,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         nextItem.keyEquivalentModifierMask = .command
         navigateMenu.addItem(nextItem)
         navigateMenu.addItem(.separator())
+        // Cmd+1〜9 で Lane 切り替え
+        for i in 1...9 {
+            let item = NSMenuItem(
+                title: "Lane \(i)",
+                action: #selector(selectLaneByNumber(_:)),
+                keyEquivalent: "\(i)"
+            )
+            item.tag = i
+            navigateMenu.addItem(item)
+        }
+        navigateMenu.addItem(.separator())
         navigateMenu.addItem(NSMenuItem(title: "Split Pane", action: #selector(splitTerminalPane(_:)), keyEquivalent: "d"))
         let navigateMenuItem = NSMenuItem()
         navigateMenuItem.submenu = navigateMenu
@@ -262,7 +273,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// CC 完了通知の DistributedNotification リスナーを設定
     private func setupCCNotificationObserver() {
         ccNotificationObserver = DistributedNotificationCenter.default().addObserver(
-            forName: NSNotification.Name("club.chronista.vp.cc.notification"),
+            forName: NSNotification.Name("tech.anycreative.vp.cc.notification"),
             object: nil,
             queue: .main
         ) { notification in
@@ -280,7 +291,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// OS 通知クリック → VP アプリをアクティブ化 + プロジェクト選択
     private func setupFocusProjectObserver() {
         DistributedNotificationCenter.default().addObserver(
-            forName: NSNotification.Name("club.chronista.vp.focus.project"),
+            forName: NSNotification.Name("tech.anycreative.vp.focus.project"),
             object: nil,
             queue: .main
         ) { notification in
@@ -321,6 +332,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func splitTerminalPane(_ sender: Any?) {
         NotificationCenter.default.post(name: .splitTerminalPane, object: nil)
+    }
+
+    @objc private func selectLaneByNumber(_ sender: NSMenuItem) {
+        NotificationCenter.default.post(
+            name: .selectLaneByNumber,
+            object: nil,
+            userInfo: ["number": sender.tag]
+        )
     }
 
     // MARK: - Status Item

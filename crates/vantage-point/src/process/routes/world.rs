@@ -1,7 +1,6 @@
-//! World API ルートハンドラー - PP (Paisley Park) プロセス管理
+//! World API ルートハンドラー — TheWorld (Process Manager) REST API
 //!
-//! World（TheWorld）から呼び出される REST API。
-//! PP の起動・停止・監視を行う。
+//! プロジェクト CRUD・Process 起動・停止・監視を担当する。
 
 use std::sync::Arc;
 
@@ -183,7 +182,7 @@ pub struct UpdateProjectRequest {
     pub name: Option<String>,
 }
 
-/// PUT /api/world/projects/update - プロジェクト名を変更
+/// POST /api/world/projects/update - プロジェクト名を変更
 pub async fn world_update_project(
     State(state): State<Arc<AppState>>,
     Json(req): Json<UpdateProjectRequest>,
@@ -252,7 +251,7 @@ pub struct ReorderProjectsRequest {
     pub paths: Vec<String>,
 }
 
-/// PUT /api/world/projects - プロジェクトの並び順を変更
+/// POST /api/world/projects/reorder - プロジェクトの並び順を変更
 pub async fn world_reorder_projects(
     State(state): State<Arc<AppState>>,
     Json(req): Json<ReorderProjectsRequest>,

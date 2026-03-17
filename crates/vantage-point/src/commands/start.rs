@@ -396,7 +396,8 @@ pub fn create_tmux_session(
     }
 
     // セッションが即死していないか確認（claude --continue が壊れたセッションで落ちるケース）
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    // ccws ワーカー環境ではセッション履歴がなく --continue が即死するため、十分に待つ
+    std::thread::sleep(std::time::Duration::from_millis(1500));
     if !tmux_session_exists(name) {
         tracing::warn!("claude --continue が即死。--continue なしでフォールバック");
         let created = try_create_tmux_claude(name, project_dir, cols, rows, &mise_envs, false)?;
@@ -552,7 +553,13 @@ fn run_tui(
 
     // tmux セッション確保
     if !is_reconnect {
-        create_tmux_session(session_name, project_dir, pty_cols as u16, pty_lines as u16, port)?;
+        create_tmux_session(
+            session_name,
+            project_dir,
+            pty_cols as u16,
+            pty_lines as u16,
+            port,
+        )?;
     } else {
         resize_tmux_session(session_name, pty_cols as u16, pty_lines as u16);
         // 再接続時もステータスバーを非表示にする
@@ -561,7 +568,13 @@ fn run_tui(
             .status();
         // 再接続時も VP_PROCESS_PORT を注入（ポート変更に追従）
         let _ = std::process::Command::new("tmux")
-            .args(["set-environment", "-t", session_name, "VP_PROCESS_PORT", &port.to_string()])
+            .args([
+                "set-environment",
+                "-t",
+                session_name,
+                "VP_PROCESS_PORT",
+                &port.to_string(),
+            ])
             .status();
     }
 

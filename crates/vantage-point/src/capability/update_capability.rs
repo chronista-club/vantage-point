@@ -40,7 +40,7 @@ const MAC_APP_GITHUB_OWNER: &str = "chronista-club";
 const MAC_APP_GITHUB_REPO: &str = "vantage-point-mac";
 
 /// VantagePoint.appのバンドルID
-const MAC_APP_BUNDLE_ID: &str = "club.chronista.VantagePoint";
+const MAC_APP_BUNDLE_ID: &str = "tech.anycreative.VantagePoint";
 
 /// 現在のバージョン
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");

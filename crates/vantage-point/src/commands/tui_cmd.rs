@@ -185,73 +185,6 @@ async fn run_tui_console(session_name: &str) -> Result<()> {
         }
     });
 
-    // メインループ
-    let project_name = session_name
-        .strip_suffix("-vp")
-        .unwrap_or(session_name)
-        .to_string();
-
-    // Stand 情報を定期取得（5秒間隔、バックグラウンド）
-    let header_text = std::sync::Arc::new(std::sync::Mutex::new(format!(
-        "  {}  │  connecting...",
-        project_name
-    )));
-    {
-        let header_text = header_text.clone();
-        let project_name = project_name.clone();
-        // SP のポートを発見（cwd ベースで TheWorld に問い合わせ）
-        let port = crate::discovery::find_by_project(&cwd)
-            .await
-            .map(|p| p.port);
-        std::thread::spawn(move || {
-            let client = reqwest::blocking::Client::builder()
-                .timeout(std::time::Duration::from_secs(3))
-                .build()
-                .unwrap_or_default();
-            loop {
-                if let Some(port) = port {
-                    let url = format!("http://[::1]:{}/api/health", port);
-                    if let Ok(resp) = client.get(&url).send() {
-                        if let Ok(json) = resp.json::<serde_json::Value>() {
-                            let mut parts = vec![format!("  {}", project_name)];
-
-                            // Stand ステータス
-                            if let Some(stands) = json.get("stands").and_then(|s| s.as_object()) {
-                                let icons: Vec<&str> = stands
-                                    .iter()
-                                    .filter(|(_, v)| {
-                                        v.get("status").and_then(|s| s.as_str()) != Some("disabled")
-                                    })
-                                    .map(|(k, _)| match k.as_str() {
-                                        "heavens_door" => "HD",
-                                        "paisley_park" => "PP",
-                                        "gold_experience" => "GE",
-                                        "hermit_purple" => "HP",
-                                        _ => "??",
-                                    })
-                                    .collect();
-                                if !icons.is_empty() {
-                                    parts.push(icons.join(" "));
-                                }
-                            }
-
-                            // 起動時刻
-                            if let Some(started) = json.get("started_at").and_then(|s| s.as_str()) {
-                                if let Some(time_part) = started.split('T').nth(1) {
-                                    let short_time = &time_part[..5]; // HH:MM
-                                    parts.push(short_time.to_string());
-                                }
-                            }
-
-                            *header_text.lock().unwrap() = parts.join("  │  ");
-                        }
-                    }
-                }
-                std::thread::sleep(std::time::Duration::from_secs(5));
-            }
-        });
-    }
-
     // コマンドモード状態
     let mut command_mode = false;
     let mut command_input = String::new();
@@ -259,13 +192,12 @@ async fn run_tui_console(session_name: &str) -> Result<()> {
 
     loop {
         // 描画
-        let current_header = header_text.lock().unwrap().clone();
         let footer_text = if command_mode {
             format!("  :{}", command_input)
         } else if let Some(ref msg) = status_message {
             format!("  {}", msg)
         } else {
-            "  :cmd │ ⌘D Split │ Ctrl+C Quit".to_string()
+            "  :cmd │ Ctrl+C".to_string()
         };
 
         terminal.draw(|frame| {
@@ -276,17 +208,45 @@ async fn run_tui_console(session_name: &str) -> Result<()> {
             ])
             .split(frame.area());
 
-            // ヘッダー（project-lead ラベル + Stand + 時刻）
+            // ヘッダー（ロール + セッション名 — ステータスは NSView 側に委譲）
+            // セッション名パターンで Lead/Worker を判定:
+            //   {project}-vp → proj-lead
+            //   {project}-{id}-vp → proj-worker
+            let role_label = {
+                let without_vp = session_name.strip_suffix("-vp").unwrap_or(session_name);
+                // config のプロジェクト名と一致すれば Lead、それ以外は Worker
+                // 簡易判定: ハイフン分割で最後のセグメントがプロジェクト名でなければ Worker
+                if without_vp.contains('-') {
+                    // ccws ワーカー名は {parent}-{worker} 形式
+                    // ただし vantage-point のようにプロジェクト名自体にハイフンが含まれる場合もある
+                    // tmux セッション名が ccws ディレクトリ名ベースかどうかで判定
+                    let ccws_dir = dirs::home_dir()
+                        .map(|h| h.join(".local/share/ccws").join(without_vp))
+                        .unwrap_or_default();
+                    if ccws_dir.is_dir() {
+                        " proj-worker "
+                    } else {
+                        " proj-lead "
+                    }
+                } else {
+                    " proj-lead "
+                }
+            };
+            let (role_fg, role_bg) = if role_label.contains("worker") {
+                (Color::Rgb(11, 17, 32), Color::Rgb(163, 190, 140)) // 緑系
+            } else {
+                (Color::Rgb(11, 17, 32), Color::Rgb(136, 192, 208)) // 青系
+            };
             let header = Paragraph::new(Line::from(vec![
                 Span::styled(
-                    " project-lead ",
+                    role_label,
                     Style::default()
-                        .fg(Color::Rgb(11, 17, 32))
-                        .bg(Color::Rgb(136, 192, 208))
+                        .fg(role_fg)
+                        .bg(role_bg)
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    &current_header,
+                    format!(" {}", session_name),
                     Style::default()
                         .fg(Color::Rgb(216, 222, 233))
                         .bg(Color::Rgb(46, 52, 64)),
@@ -401,51 +361,25 @@ async fn run_tui_console(session_name: &str) -> Result<()> {
                     }
                 }
                 Event::Mouse(mouse) => {
-                    use crossterm::event::MouseEventKind;
-                    // マウスイベントを SGR エスケープシーケンスで PTY(tmux) に転送
-                    // Block 枠分のオフセット: ヘッダー1行 + 上枠1行 = 2行分, 左枠1列
-                    let x = mouse.column.saturating_sub(1);
-                    let y = mouse.row.saturating_sub(2);
-                    let seq = match mouse.kind {
-                        MouseEventKind::ScrollUp => {
-                            format!("\x1b[<64;{};{}M", x + 1, y + 1)
+                    // Cmd+Click で URL をブラウザで開く
+                    if mouse.modifiers.contains(KeyModifiers::SUPER)
+                        && matches!(
+                            mouse.kind,
+                            event::MouseEventKind::Down(event::MouseButton::Left)
+                        )
+                    {
+                        let col = mouse.column.saturating_sub(1) as usize;
+                        let row = mouse.row.saturating_sub(2) as usize;
+                        if let Some(url) = extract_url_at(&term_state, row, col) {
+                            let _ = open::that(&url);
                         }
-                        MouseEventKind::ScrollDown => {
-                            format!("\x1b[<65;{};{}M", x + 1, y + 1)
+                    } else {
+                        let seq = mouse_to_sgr(&mouse);
+                        if !seq.is_empty() {
+                            use std::io::Write;
+                            let _ = writer.write_all(seq.as_bytes());
+                            let _ = writer.flush();
                         }
-                        MouseEventKind::Down(btn) => {
-                            let b = match btn {
-                                crossterm::event::MouseButton::Left => 0,
-                                crossterm::event::MouseButton::Right => 2,
-                                crossterm::event::MouseButton::Middle => 1,
-                            };
-                            format!("\x1b[<{};{};{}M", b, x + 1, y + 1)
-                        }
-                        MouseEventKind::Up(btn) => {
-                            let b = match btn {
-                                crossterm::event::MouseButton::Left => 0,
-                                crossterm::event::MouseButton::Right => 2,
-                                crossterm::event::MouseButton::Middle => 1,
-                            };
-                            format!("\x1b[<{};{};{}m", b, x + 1, y + 1)
-                        }
-                        MouseEventKind::Drag(btn) => {
-                            let b = match btn {
-                                crossterm::event::MouseButton::Left => 32,
-                                crossterm::event::MouseButton::Right => 34,
-                                crossterm::event::MouseButton::Middle => 33,
-                            };
-                            format!("\x1b[<{};{};{}M", b, x + 1, y + 1)
-                        }
-                        MouseEventKind::Moved => {
-                            format!("\x1b[<35;{};{}M", x + 1, y + 1)
-                        }
-                        _ => String::new(),
-                    };
-                    if !seq.is_empty() {
-                        use std::io::Write;
-                        let _ = writer.write_all(seq.as_bytes());
-                        let _ = writer.flush();
                     }
                 }
                 _ => {} // FocusGained, FocusLost, Paste
@@ -467,4 +401,252 @@ async fn run_tui_console(session_name: &str) -> Result<()> {
     disable_raw_mode()?;
 
     Ok(())
+}
+
+/// ターミナルグリッドの指定位置から URL を抽出
+///
+/// 指定行のテキストを取得し、カラム位置を含む URL があればその URL を返す。
+fn extract_url_at(
+    term_state: &std::sync::Arc<std::sync::Mutex<crate::terminal::state::TerminalState>>,
+    row: usize,
+    col: usize,
+) -> Option<String> {
+    let state = term_state.lock().ok()?;
+    let snapshot = state.snapshot();
+
+    if row >= snapshot.cells.len() {
+        return None;
+    }
+
+    // 行テキストを構築して URL を検索
+    let line: String = snapshot.cells[row].iter().map(|c| c.ch).collect();
+    find_url_at_column(&line, col)
+}
+
+/// テキスト行の指定カラム位置にある URL を抽出
+///
+/// URL パターン: `https?://[^\s<>"'）」\]]+`
+/// 末尾の句読点（`.` `,` `)` `]`）は除去
+fn find_url_at_column(line: &str, col: usize) -> Option<String> {
+    static URL_REGEX: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let url_pattern =
+        URL_REGEX.get_or_init(|| regex::Regex::new(r#"https?://[^\s<>"'）」\]]+"#).unwrap());
+    for m in url_pattern.find_iter(line) {
+        let start_col = line[..m.start()].chars().count();
+        let end_col = start_col + m.as_str().chars().count();
+
+        if col >= start_col && col < end_col {
+            let url = m.as_str().trim_end_matches(['.', ',', ')', ']']);
+            return Some(url.to_string());
+        }
+    }
+    None
+}
+
+/// マウスイベントを SGR エスケープシーケンスに変換
+///
+/// Block 枠分のオフセット: ヘッダー1行 + 上枠1行 = 2行分, 左枠1列
+fn mouse_to_sgr(mouse: &crossterm::event::MouseEvent) -> String {
+    use crossterm::event::MouseEventKind;
+
+    let x = mouse.column.saturating_sub(1);
+    let y = mouse.row.saturating_sub(2);
+    match mouse.kind {
+        MouseEventKind::ScrollUp => format!("\x1b[<64;{};{}M", x + 1, y + 1),
+        MouseEventKind::ScrollDown => format!("\x1b[<65;{};{}M", x + 1, y + 1),
+        MouseEventKind::Down(btn) => {
+            let b = match btn {
+                crossterm::event::MouseButton::Left => 0,
+                crossterm::event::MouseButton::Right => 2,
+                crossterm::event::MouseButton::Middle => 1,
+            };
+            format!("\x1b[<{};{};{}M", b, x + 1, y + 1)
+        }
+        MouseEventKind::Up(btn) => {
+            let b = match btn {
+                crossterm::event::MouseButton::Left => 0,
+                crossterm::event::MouseButton::Right => 2,
+                crossterm::event::MouseButton::Middle => 1,
+            };
+            format!("\x1b[<{};{};{}m", b, x + 1, y + 1)
+        }
+        MouseEventKind::Drag(btn) => {
+            let b = match btn {
+                crossterm::event::MouseButton::Left => 32,
+                crossterm::event::MouseButton::Right => 34,
+                crossterm::event::MouseButton::Middle => 33,
+            };
+            format!("\x1b[<{};{};{}M", b, x + 1, y + 1)
+        }
+        MouseEventKind::Moved => format!("\x1b[<35;{};{}M", x + 1, y + 1),
+        _ => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+
+    /// テスト用ヘルパー: MouseEvent を生成
+    fn make_mouse(kind: MouseEventKind, col: u16, row: u16) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column: col,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    #[test]
+    fn test_scroll_up() {
+        // col=5, row=4 → x=5-1=4, y=4-2=2 → SGR座標 x+1=5, y+1=3
+        let seq = mouse_to_sgr(&make_mouse(MouseEventKind::ScrollUp, 5, 4));
+        assert_eq!(seq, "\x1b[<64;5;3M");
+    }
+
+    #[test]
+    fn test_scroll_down() {
+        let seq = mouse_to_sgr(&make_mouse(MouseEventKind::ScrollDown, 10, 6));
+        assert_eq!(seq, "\x1b[<65;10;5M");
+    }
+
+    #[test]
+    fn test_left_click_down() {
+        let seq = mouse_to_sgr(&make_mouse(MouseEventKind::Down(MouseButton::Left), 3, 5));
+        assert_eq!(seq, "\x1b[<0;3;4M");
+    }
+
+    #[test]
+    fn test_left_click_up_uses_lowercase_m() {
+        // release は小文字 'm'（SGR プロトコル仕様）
+        let seq = mouse_to_sgr(&make_mouse(MouseEventKind::Up(MouseButton::Left), 3, 5));
+        assert_eq!(seq, "\x1b[<0;3;4m");
+    }
+
+    #[test]
+    fn test_right_click_button_code() {
+        let seq = mouse_to_sgr(&make_mouse(MouseEventKind::Down(MouseButton::Right), 1, 2));
+        assert_eq!(seq, "\x1b[<2;1;1M");
+    }
+
+    #[test]
+    fn test_middle_click_button_code() {
+        let seq = mouse_to_sgr(&make_mouse(MouseEventKind::Down(MouseButton::Middle), 1, 2));
+        assert_eq!(seq, "\x1b[<1;1;1M");
+    }
+
+    #[test]
+    fn test_drag_left_button_code() {
+        // left drag = button 32
+        let seq = mouse_to_sgr(&make_mouse(MouseEventKind::Drag(MouseButton::Left), 10, 10));
+        assert_eq!(seq, "\x1b[<32;10;9M");
+    }
+
+    #[test]
+    fn test_moved_button_code() {
+        // move = button 35
+        let seq = mouse_to_sgr(&make_mouse(MouseEventKind::Moved, 20, 15));
+        assert_eq!(seq, "\x1b[<35;20;14M");
+    }
+
+    #[test]
+    fn test_offset_saturating_at_zero() {
+        // col=0, row=0 → saturating_sub で負にならない → SGR (1,1)
+        let seq = mouse_to_sgr(&make_mouse(MouseEventKind::ScrollUp, 0, 0));
+        assert_eq!(seq, "\x1b[<64;1;1M");
+    }
+
+    #[test]
+    fn test_offset_row_in_header_area() {
+        // row=1 → y=saturating_sub(2)=0 → SGR y=1
+        let seq = mouse_to_sgr(&make_mouse(MouseEventKind::ScrollUp, 5, 1));
+        assert_eq!(seq, "\x1b[<64;5;1M");
+    }
+
+    // --- URL 検出テスト ---
+
+    #[test]
+    fn test_find_url_basic() {
+        let line = "See https://example.com for details";
+        assert_eq!(
+            find_url_at_column(line, 5),
+            Some("https://example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn test_find_url_with_path() {
+        let line = "Visit https://linear.app/chronista/issue/VP-15 now";
+        assert_eq!(
+            find_url_at_column(line, 10),
+            Some("https://linear.app/chronista/issue/VP-15".to_string())
+        );
+    }
+
+    #[test]
+    fn test_find_url_http() {
+        let line = "Check http://localhost:3000/api/health endpoint";
+        assert_eq!(
+            find_url_at_column(line, 8),
+            Some("http://localhost:3000/api/health".to_string())
+        );
+    }
+
+    #[test]
+    fn test_find_url_trailing_period() {
+        // 末尾のピリオドは除去
+        let line = "See https://example.com.";
+        assert_eq!(
+            find_url_at_column(line, 5),
+            Some("https://example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn test_find_url_trailing_comma() {
+        let line = "URLs: https://a.com, https://b.com";
+        assert_eq!(
+            find_url_at_column(line, 7),
+            Some("https://a.com".to_string())
+        );
+    }
+
+    #[test]
+    fn test_find_url_not_on_url() {
+        let line = "No URL here, just text";
+        assert_eq!(find_url_at_column(line, 5), None);
+    }
+
+    #[test]
+    fn test_find_url_col_before_url() {
+        let line = "text https://example.com rest";
+        // col=0 は "text" の部分
+        assert_eq!(find_url_at_column(line, 0), None);
+    }
+
+    #[test]
+    fn test_find_url_col_after_url() {
+        let line = "text https://example.com rest";
+        // "rest" の部分（col=25 以降）
+        assert_eq!(find_url_at_column(line, 26), None);
+    }
+
+    #[test]
+    fn test_find_url_multiple_urls() {
+        let line = "a https://first.com b https://second.com c";
+        assert_eq!(
+            find_url_at_column(line, 3),
+            Some("https://first.com".to_string())
+        );
+        assert_eq!(
+            find_url_at_column(line, 23),
+            Some("https://second.com".to_string())
+        );
+    }
+
+    #[test]
+    fn test_find_url_empty_line() {
+        assert_eq!(find_url_at_column("", 0), None);
+    }
 }

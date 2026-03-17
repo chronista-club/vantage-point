@@ -41,7 +41,7 @@ class PopoverViewModel: ObservableObject {
     nonisolated(unsafe) private var processChangedObserver: NSObjectProtocol?
 
     /// DistributedNotification 通知名
-    static let processChangedNotification = "club.chronista.vp.process.changed"
+    static let processChangedNotification = "tech.anycreative.vp.process.changed"
 
     init(theWorldClient: TheWorldClient) {
         self.theWorldClient = theWorldClient

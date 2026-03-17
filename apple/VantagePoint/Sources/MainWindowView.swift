@@ -1,4 +1,7 @@
+import OSLog
 import SwiftUI
+
+private let logger = Logger(subsystem: "tech.anycreative.vp", category: "MainWindow")
 
 /// メインウィンドウ: NavigationSplitView (Glass Sidebar + Terminal)
 ///
@@ -25,6 +28,10 @@ struct MainWindowView: View {
     @State private var terminalPaths: [String] = []
     /// TerminalRepresentable の強制再生成用カウンタ（HD リスタート時にインクリメント）
     @State private var terminalGeneration: [String: Int] = [:]
+    /// HD 自動起動を試みたパス（ポーリングで繰り返し起動しないため）
+    @State private var hdAutoStartAttempted: Set<String> = []
+    /// SP 自動起動を試みたパス（ポーリングで繰り返し起動しないため）
+    @State private var spAutoStartAttempted: Set<String> = []
 
     /// 外部から指定されたプロジェクトパス（起動引数・URL スキーム経由）
     var initialProjectPath: String?
@@ -167,6 +174,11 @@ struct MainWindowView: View {
         .onReceive(NotificationCenter.default.publisher(for: .splitTerminalPane)) { _ in
             splitPane()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .selectLaneByNumber)) { notification in
+            if let number = notification.userInfo?["number"] as? Int {
+                selectLaneByNumber(number)
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: AppDelegate.ccNotification)) { notification in
             if let project = notification.userInfo?["project"] as? String, !project.isEmpty {
                 // 現在選択中のプロジェクトでなければバッジを付ける
@@ -296,7 +308,8 @@ struct MainWindowView: View {
         if selectedProject != nil {
             HStack(spacing: 16) {
                 shortcutHint("⌘O", "Canvas")
-                shortcutHint("⌘↑↓", "Project")
+                shortcutHint("⌘↑↓", "Proj")
+                shortcutHint("⌘1-9", "Lane")
                 shortcutHint("⌘D", "Split")
             }
             .font(.caption2)
@@ -333,6 +346,55 @@ struct MainWindowView: View {
         }
     }
 
+    // MARK: - SP 自動起動
+
+    /// SP 未起動のプロジェクトを TheWorld API 経由で自動起動
+    ///
+    /// ポーリングで繰り返し起動しないよう、試行済みパスを記録。
+    private func autoStartSP(project: SidebarProject) async {
+        guard !spAutoStartAttempted.contains(project.path) else { return }
+        spAutoStartAttempted.insert(project.path)
+        logger.info("[VP]Auto-starting SP for: \(project.name)")
+
+        do {
+            _ = try await theWorldClient.startProcess(projectName: project.name)
+            logger.info("[VP]SP auto-started: \(project.name)")
+        } catch {
+            logger.error("[VP]SP auto-start failed: \(project.name) - \(error)")
+        }
+    }
+
+    // MARK: - HD 自動起動
+
+    /// SP 稼働中 + HD 未起動のプロジェクトに HD を自動起動
+    ///
+    /// ポーリングで繰り返し起動しないよう、試行済みパスを記録。
+    /// HD が起動したら hasHD = true になり、次のポーリングでは対象外。
+    ///
+    /// Note: Process() は App Sandbox では使えないが、現在は Notarize のみ配布。
+    /// App Store 配布時は SP の HTTP API 経由（POST /api/hd/start）に移行する。
+    private func autoStartHD(path: String) {
+        guard !hdAutoStartAttempted.contains(path) else { return }
+        hdAutoStartAttempted.insert(path)
+        logger.info("[VP]Auto-starting HD for: \(path)")
+
+        Task.detached(priority: .utility) {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+            process.arguments = ["-lc", "vp hd start"]
+            process.currentDirectoryURL = URL(fileURLWithPath: path)
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            do {
+                try process.run()
+                process.waitUntilExit()
+                logger.info("[VP]Auto HD start exit=\(process.terminationStatus) for \(path)")
+            } catch {
+                logger.error("[VP]Auto HD start error: \(error)")
+            }
+        }
+    }
+
     // MARK: - HD リスタート
 
     /// HD（tmux セッション）を再生成する
@@ -344,13 +406,13 @@ struct MainWindowView: View {
     /// TerminalView の PTY spawn も同様に非 Sandbox 前提。
     /// App Store 配布時は SP の HTTP API 経由（POST /api/hd/restart）に移行する。
     private func restartHD(path: String) {
-        print("[VP] restartHD called for path: \(path)")
-        let vpBin = NSHomeDirectory() + "/.cargo/bin/vp"
+        logger.info("[VP]restartHD called for path: \(path)")
 
-        Task {
+        // waitUntilExit() はブロッキング API のため detached で実行
+        Task.detached(priority: .utility) {
             // vp hd stop → vp hd start（tmux セッション再生成）
-            // HD（tmux）は SP 無しでも独立動作する
-            for (label, cmd) in [("hd stop", "\(vpBin) hd stop"), ("hd start", "\(vpBin) hd start")] {
+            // zsh -lc 経由なので PATH から vp を解決（ハードコード不要）
+            for (label, cmd) in [("hd stop", "vp hd stop"), ("hd start", "vp hd start")] {
                 let process = Process()
                 process.executableURL = URL(fileURLWithPath: "/bin/zsh")
                 process.arguments = ["-lc", cmd]
@@ -360,30 +422,34 @@ struct MainWindowView: View {
                 do {
                     try process.run()
                     process.waitUntilExit()
-                    print("[VP] \(label) exit=\(process.terminationStatus)")
+                    logger.info("[VP]\(label) exit=\(process.terminationStatus)")
                 } catch {
-                    print("[VP] \(label) error: \(error)")
+                    logger.error("[VP]\(label) error: \(error)")
                 }
             }
 
-            // TerminalRepresentable を強制再生成（PTY をフレッシュに起動）
-            terminalGeneration[path, default: 0] += 1
-            print("[VP] HD restart done, terminal generation=\(terminalGeneration[path] ?? 0)")
+            // @State 更新は MainActor で実行
+            await MainActor.run {
+                terminalGeneration[path, default: 0] += 1
+                logger.info("HD restart done, terminal generation=\(terminalGeneration[path] ?? 0)")
+            }
         }
     }
 
     /// SP（Star Platinum）をリスタート — TheWorld API 経由で stop → start
     private func restartSP(path: String) {
-        print("[VP] restartSP called for path: \(path)")
+        logger.info("[VP]restartSP called for path: \(path)")
         guard let project = projects.first(where: { $0.path == path }) else { return }
 
         Task {
             // stop と start を独立 do-catch に分離（stop 失敗でも start を試行）
             do {
                 try await theWorldClient.stopProcess(projectName: project.name)
-                print("[VP] SP 停止完了: \(project.name)")
+                hdAutoStartAttempted.remove(path)
+                spAutoStartAttempted.remove(path)
+                logger.info("[VP]SP stopped: \(project.name)")
             } catch {
-                print("[VP] SP 停止スキップ（既停止の可能性）: \(error)")
+                logger.error("[VP]SP stop skipped (may already be stopped): \(error)")
             }
 
             // ポート解放待ち
@@ -391,9 +457,9 @@ struct MainWindowView: View {
 
             do {
                 let newProcess = try await theWorldClient.startProcess(projectName: project.name)
-                print("[VP] SP 起動完了: \(project.name) port \(newProcess.port)")
+                logger.info("[VP]SP restarted: \(project.name) on port \(newProcess.port)")
             } catch {
-                print("[VP] SP 起動エラー: \(error)")
+                logger.error("[VP]SP start error: \(error)")
             }
 
             await refreshAll()
@@ -408,13 +474,15 @@ struct MainWindowView: View {
             // 停止
             do {
                 let stop = Process()
-                stop.executableURL = URL(fileURLWithPath: "/Users/makoto/.cargo/bin/vp")
-                stop.arguments = ["stop", "--port", "32000"]
+                stop.executableURL = URL(fileURLWithPath: "/bin/zsh")
+                stop.arguments = ["-lc", "vp stop --port 32000"]
+                stop.standardOutput = FileHandle.nullDevice
+                stop.standardError = FileHandle.nullDevice
                 try stop.run()
                 stop.waitUntilExit()
-                print("[VP] TheWorld 停止完了")
+                logger.info("[VP]TheWorld stopped")
             } catch {
-                print("[VP] TheWorld 停止スキップ: \(error)")
+                logger.error("[VP]TheWorld stop skipped: \(error)")
             }
 
             try? await Task.sleep(nanoseconds: 1_000_000_000)
@@ -422,12 +490,14 @@ struct MainWindowView: View {
             // 起動（バックグラウンドで vp world）
             do {
                 let start = Process()
-                start.executableURL = URL(fileURLWithPath: "/Users/makoto/.cargo/bin/vp")
-                start.arguments = ["world"]
+                start.executableURL = URL(fileURLWithPath: "/bin/zsh")
+                start.arguments = ["-lc", "vp world"]
+                start.standardOutput = FileHandle.nullDevice
+                start.standardError = FileHandle.nullDevice
                 try start.run()
-                print("[VP] TheWorld 起動開始")
+                logger.info("[VP]TheWorld starting")
             } catch {
-                print("[VP] TheWorld 起動エラー: \(error)")
+                logger.error("[VP]TheWorld start error: \(error)")
             }
 
             // 起動待ち
@@ -462,6 +532,16 @@ struct MainWindowView: View {
         selectedProjectPath = projects[index + 1].path
     }
 
+    /// Cmd+1〜9 で Lane（プロジェクト + worker）を番号で切り替え
+    ///
+    /// terminalPaths の順序で番号を割り当て（1-indexed）。
+    /// プロジェクトと worker を含むフラットなリスト。
+    private func selectLaneByNumber(_ number: Int) {
+        let index = number - 1
+        guard index >= 0 && index < terminalPaths.count else { return }
+        selectedProjectPath = terminalPaths[index]
+    }
+
     // MARK: - プロジェクト CRUD（TheWorld API 経由）
 
     /// フォルダ選択ダイアログでプロジェクトを追加
@@ -479,7 +559,7 @@ struct MainWindowView: View {
         let name = url.lastPathComponent
         Task {
             try? await theWorldClient.addProject(name: name, path: path)
-            loadProjects()
+            await refreshAll()
         }
     }
 
@@ -489,26 +569,29 @@ struct MainWindowView: View {
         let name = url.lastPathComponent
         Task {
             try? await theWorldClient.addProject(name: name, path: path)
-            loadProjects()
+            await refreshAll()
         }
     }
 
-    /// プロジェクトをリストから削除
+    /// プロジェクトをリストから削除（SP 稼働中なら先に停止）
     private func deleteProject(path: String) {
         Task {
+            // SP 稼働中なら先に停止
+            if let project = projects.first(where: { $0.path == path }), project.isRunning {
+                try? await theWorldClient.stopProcess(projectName: project.name)
+            }
             try? await theWorldClient.removeProject(path: path)
-            loadProjects()
+            await refreshAll()
         }
     }
 
     /// プロジェクトの並び順を変更（ドラッグ＆ドロップ）
     private func reorderProjects(from: IndexSet, to: Int) {
-        // ローカルの projects 配列で並び替えを計算
         var paths = projects.map(\.path)
         paths.move(fromOffsets: from, toOffset: to)
         Task {
             try? await theWorldClient.reorderProjects(paths: paths)
-            loadProjects()
+            await refreshAll()
         }
     }
 
@@ -516,7 +599,7 @@ struct MainWindowView: View {
     private func renameProject(path: String, newName: String) {
         Task {
             try? await theWorldClient.updateProject(path: path, name: newName)
-            loadProjects()
+            await refreshAll()
         }
     }
 
@@ -647,6 +730,23 @@ struct MainWindowView: View {
                     )
                 }
             }
+
+            // SP 未起動のプロジェクトを自動起動（TheWorld API 経由）
+            for project in projects where !project.isRunning {
+                await autoStartSP(project: project)
+            }
+
+            // SP 稼働中 + HD 未起動のプロジェクトに HD を自動起動
+            for project in projects where project.isRunning && !project.hasHD {
+                autoStartHD(path: project.path)
+            }
+            // ccws ワーカーの HD も自動起動（ワーカー環境が存在 + HD 未起動）
+            for project in projects {
+                for worker in project.workers where !worker.hasHD {
+                    autoStartHD(path: worker.path)
+                }
+            }
+
         } catch {
             // プロセス一覧取得失敗 → ステータスだけリセット
             resetProjectStatus()
@@ -723,4 +823,5 @@ extension Notification.Name {
     static let selectPreviousProject = Notification.Name("VP.selectPreviousProject")
     static let selectNextProject = Notification.Name("VP.selectNextProject")
     static let splitTerminalPane = Notification.Name("VP.splitTerminalPane")
+    static let selectLaneByNumber = Notification.Name("VP.selectLaneByNumber")
 }

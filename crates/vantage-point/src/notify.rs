@@ -4,7 +4,7 @@
 //! OS カーネルが仲介するため、追加サーバー不要・数ミリ秒で配信。
 
 /// 通知名の定数
-pub const NOTIFICATION_PROCESS_CHANGED: &str = "club.chronista.vp.process.changed";
+pub const NOTIFICATION_PROCESS_CHANGED: &str = "tech.anycreative.vp.process.changed";
 
 /// Process の状態変更を通知する
 ///

@@ -34,3 +34,4 @@ DerivedData/
 
 # Local settings (per-user, not tracked)
 *.local.*
+.claude/worktrees/

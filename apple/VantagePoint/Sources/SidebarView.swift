@@ -1,4 +1,7 @@
+import OSLog
 import SwiftUI
+
+private let logger = Logger(subsystem: "tech.anycreative.vp", category: "Sidebar")
 
 /// サイドバー: プロジェクト一覧（Liquid Glass 自動適用）
 ///
@@ -101,7 +104,6 @@ struct SidebarView: View {
         Button("リストから削除", systemImage: "trash", role: .destructive) {
             onDelete?(project.path)
         }
-        .disabled(project.isRunning)
     }
 
     /// フォルダのドラッグ＆ドロップ処理
@@ -174,18 +176,18 @@ struct SidebarProjectRow: View {
                 }
             }
 
-            // 2行目: SP / HD / PP ステータス（統一表記）
+            // 2行目: SP / Lead-HD / PP ステータス（統一表記）
             HStack(spacing: 6) {
                 StatusBadge(label: "SP", icon: "star", isActive: project.isRunning)
 
-                // HD + ccwire ツールチップ
-                StatusBadge(label: "HD", icon: "text.book.closed", isActive: project.hasHD)
+                // Lead-HD + ccwire ツールチップ
+                StatusBadge(label: "Lead-HD", icon: "text.book.closed", isActive: project.hasHD)
                     .help(ccwireTooltip(for: project))
 
-                // PP は SP health API から取得（SP 稼働中のみ）
+                // PP: SP 稼働中で disabled でなければ利用可能（緑）
                 if let pp = project.stands.first(where: { $0.key == "paisley_park" }) {
                     StatusBadge(label: "PP", icon: "compass.drawing",
-                                isActive: pp.status == "active" || pp.status == "connected")
+                                isActive: pp.status != "disabled")
                 } else {
                     StatusBadge(label: "PP", icon: "compass.drawing", isActive: false)
                 }
@@ -247,9 +249,9 @@ struct SidebarWorkerRow: View {
                 }
             }
 
-            // 2行目: HD + PP ステータス（親と統一フォーマット）
+            // 2行目: Worker-HD + PP ステータス（親と統一フォーマット）
             HStack(spacing: 6) {
-                StatusBadge(label: "HD", icon: "text.book.closed", isActive: worker.hasHD)
+                StatusBadge(label: "Worker-HD", icon: "text.book.closed", isActive: worker.hasHD)
                     .help(workerCcwireTooltip)
                 StatusBadge(label: "PP", icon: "compass.drawing", isActive: parentPPActive)
 
@@ -444,10 +446,45 @@ enum CcwsDiscovery {
         .sorted { $0.suffix < $1.suffix }
     }
 
-    /// tmux セッションが存在するか確認
-    static func tmuxSessionExists(_ name: String) -> Bool {
+    /// tmux バイナリパスをキャッシュ（PATH から一度だけ解決）
+    /// GUI アプリは PATH が制限されるため、既知パスも含めてフォールバック
+    static let tmuxPath: String? = {
+        // 既知パスを先にチェック（GUI アプリの PATH 制限を回避）
+        for knownPath in ["/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/usr/bin/tmux"] {
+            if FileManager.default.isExecutableFile(atPath: knownPath) {
+                logger.debug("[VP]tmux found at: \(knownPath)")
+                return knownPath
+            }
+        }
+        // zsh -lc which tmux でフォールバック
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/tmux")
+        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        process.arguments = ["-lc", "which tmux"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            process.waitUntilExit()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            let path = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let p = path, !p.isEmpty {
+                logger.debug("[VP]tmux found via zsh: \(p)")
+                return p
+            }
+            logger.debug("[VP]tmux not found")
+            return nil
+        } catch {
+            logger.debug("[VP]tmux search error: \(error)")
+            return nil
+        }
+    }()
+
+    /// tmux セッションが存在するか確認（Shell Injection 回避: tmux を直接実行）
+    static func tmuxSessionExists(_ name: String) -> Bool {
+        guard let tmux = tmuxPath else { return false }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: tmux)
         process.arguments = ["has-session", "-t", name]
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
