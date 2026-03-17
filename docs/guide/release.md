@@ -145,7 +145,7 @@ cargo install --path crates/vp-cli
 
 ---
 
-**Full Changelog**: https://github.com/anycreative-tech/vantage-point/compare/vA.B.C...vX.Y.Z
+**Full Changelog**: https://github.com/chronista-club/vantage-point/compare/vA.B.C...vX.Y.Z
 ```
 
 ## チェックリスト

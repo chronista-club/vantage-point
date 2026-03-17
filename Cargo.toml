@@ -7,7 +7,7 @@ version = "0.8.7"
 edition = "2024"
 authors = ["Makoto"]
 license = "LicenseRef-Proprietary"
-repository = "https://github.com/anycreative-tech/vantage-point"
+repository = "https://github.com/chronista-club/vantage-point"
 
 [workspace.dependencies]
 # Async runtime
@@ -42,7 +42,7 @@ futures = "0.3"
 tokio-stream = "0.1"
 
 # QUIC protocol (Unison)
-unison = { git = "https://github.com/anycreative-tech/unison.git", tag = "v0.3.3" }
+unison = { git = "https://github.com/chronista-club/unison.git", tag = "v0.3.3" }
 
 # TUI
 ratatui = { version = "0.30", features = ["crossterm"] }

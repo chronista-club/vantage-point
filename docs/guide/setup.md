@@ -44,7 +44,7 @@
 ### 1. クローン
 
 ```bash
-git clone git@github.com:anycreative-tech/vantage-point.git
+git clone git@github.com:chronista-club/vantage-point.git
 cd vantage-point
 ```
 
