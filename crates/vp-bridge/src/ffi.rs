@@ -515,6 +515,20 @@ pub extern "C" fn vp_bridge_pty_is_running() -> bool {
     vp_bridge_pty_is_running_session(1)
 }
 
+/// Bracketed Paste モードが有効か（セッション指定）
+///
+/// CC 等の TUI アプリが有効化している場合 true。
+/// ペースト時は `\x1b[200~` ... `\x1b[201~` で囲んで送信する必要がある。
+#[unsafe(no_mangle)]
+pub extern "C" fn vp_bridge_pty_bracketed_paste_session(session_id: u32) -> bool {
+    let guard = ensure_sessions();
+    guard
+        .as_ref()
+        .and_then(|m| m.get(&session_id))
+        .and_then(|s| s.pty.as_ref().map(|p| p.bracketed_paste_mode()))
+        .unwrap_or(false)
+}
+
 /// PTY を停止（セッション指定）
 #[unsafe(no_mangle)]
 pub extern "C" fn vp_bridge_pty_stop_session(session_id: u32) {

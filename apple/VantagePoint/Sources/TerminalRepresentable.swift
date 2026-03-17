@@ -34,9 +34,10 @@ struct TerminalRepresentable: NSViewRepresentable {
         // 3. tmux attach: tmux 直接接続（vp がない環境向け）
         // 4. zsh -l -c 'claude || zsh': シェルフォールバック
         view.deferredPtyCwd = cwd
-        let vpBin = "\(NSHomeDirectory())/.cargo/bin/vp"
-        let claudeBin = "\(NSHomeDirectory())/.claude/local/bin/claude"
-        view.deferredPtyCommand = "\(vpBin) tui --session \(tmuxSession) 2>/dev/null || (cd '\(safeCwd)' && \(vpBin) sp start >/dev/null 2>&1; \(vpBin) hd start >/dev/null 2>&1 && exec \(vpBin) tui --session \(tmuxSession)) || /opt/homebrew/bin/tmux attach-session -t \(tmuxSession) 2>/dev/null || exec zsh -l -c '\(claudeBin) --continue --dangerously-skip-permissions 2>/dev/null || exec zsh -l'"
+        // passthrough モード: tmux に直接 exec（vp tui の crossterm は Native App PTY 内で動かないため）
+        // tmux status off にしてから attach — vp tui のヘッダー/フッターは Native App 側で描画
+        let tmuxBin = "/opt/homebrew/bin/tmux"
+        view.deferredPtyCommand = "\(tmuxBin) set-option -t \(tmuxSession) status off 2>/dev/null; exec \(tmuxBin) attach-session -t \(tmuxSession)"
         return view
     }
 

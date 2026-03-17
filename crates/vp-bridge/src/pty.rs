@@ -446,6 +446,16 @@ impl BridgePty {
         self.running.load(Ordering::Relaxed)
     }
 
+    /// Bracketed Paste モードが有効か
+    ///
+    /// 有効時、ペースト内容を `\x1b[200~` ... `\x1b[201~` で囲んで送信する。
+    /// これにより TUI アプリがペーストとキー入力を区別できる。
+    pub fn bracketed_paste_mode(&self) -> bool {
+        use alacritty_terminal::term::TermMode;
+        let state = self.term_state.lock().unwrap();
+        state.term.mode().contains(TermMode::BRACKETED_PASTE)
+    }
+
     /// スクロールバック表示位置を変更
     ///
     /// delta > 0: 上にスクロール（過去を遡る）
