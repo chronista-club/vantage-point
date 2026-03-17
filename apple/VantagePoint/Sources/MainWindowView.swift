@@ -40,9 +40,10 @@ struct MainWindowView: View {
     private let theWorldClient = TheWorldClient.shared
 
     /// 選択中プロジェクトの SP ポート（Canvas 接続用）
+    ///
+    /// Worker 選択時は親プロジェクトのポートを返す（Worker は独自の SP を持たない）。
     private var selectedPort: UInt16? {
-        guard let path = selectedProjectPath else { return nil }
-        return projects.first(where: { $0.path == path })?.port
+        selectedProject?.port
     }
 
     var body: some View {
