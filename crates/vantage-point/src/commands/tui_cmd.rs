@@ -185,73 +185,6 @@ async fn run_tui_console(session_name: &str) -> Result<()> {
         }
     });
 
-    // メインループ
-    let project_name = session_name
-        .strip_suffix("-vp")
-        .unwrap_or(session_name)
-        .to_string();
-
-    // Stand 情報を定期取得（5秒間隔、バックグラウンド）
-    let header_text = std::sync::Arc::new(std::sync::Mutex::new(format!(
-        "  {}  │  connecting...",
-        project_name
-    )));
-    {
-        let header_text = header_text.clone();
-        let project_name = project_name.clone();
-        // SP のポートを発見（cwd ベースで TheWorld に問い合わせ）
-        let port = crate::discovery::find_by_project(&cwd)
-            .await
-            .map(|p| p.port);
-        std::thread::spawn(move || {
-            let client = reqwest::blocking::Client::builder()
-                .timeout(std::time::Duration::from_secs(3))
-                .build()
-                .unwrap_or_default();
-            loop {
-                if let Some(port) = port {
-                    let url = format!("http://[::1]:{}/api/health", port);
-                    if let Ok(resp) = client.get(&url).send() {
-                        if let Ok(json) = resp.json::<serde_json::Value>() {
-                            let mut parts = vec![format!("  {}", project_name)];
-
-                            // Stand ステータス
-                            if let Some(stands) = json.get("stands").and_then(|s| s.as_object()) {
-                                let icons: Vec<&str> = stands
-                                    .iter()
-                                    .filter(|(_, v)| {
-                                        v.get("status").and_then(|s| s.as_str()) != Some("disabled")
-                                    })
-                                    .map(|(k, _)| match k.as_str() {
-                                        "heavens_door" => "HD",
-                                        "paisley_park" => "PP",
-                                        "gold_experience" => "GE",
-                                        "hermit_purple" => "HP",
-                                        _ => "??",
-                                    })
-                                    .collect();
-                                if !icons.is_empty() {
-                                    parts.push(icons.join(" "));
-                                }
-                            }
-
-                            // 起動時刻
-                            if let Some(started) = json.get("started_at").and_then(|s| s.as_str()) {
-                                if let Some(time_part) = started.split('T').nth(1) {
-                                    let short_time = &time_part[..5]; // HH:MM
-                                    parts.push(short_time.to_string());
-                                }
-                            }
-
-                            *header_text.lock().unwrap() = parts.join("  │  ");
-                        }
-                    }
-                }
-                std::thread::sleep(std::time::Duration::from_secs(5));
-            }
-        });
-    }
-
     // コマンドモード状態
     let mut command_mode = false;
     let mut command_input = String::new();
@@ -259,13 +192,12 @@ async fn run_tui_console(session_name: &str) -> Result<()> {
 
     loop {
         // 描画
-        let current_header = header_text.lock().unwrap().clone();
         let footer_text = if command_mode {
             format!("  :{}", command_input)
         } else if let Some(ref msg) = status_message {
             format!("  {}", msg)
         } else {
-            "  :cmd │ ⌘D Split │ Ctrl+C Quit".to_string()
+            "  :cmd │ Ctrl+C".to_string()
         };
 
         terminal.draw(|frame| {
@@ -276,17 +208,45 @@ async fn run_tui_console(session_name: &str) -> Result<()> {
             ])
             .split(frame.area());
 
-            // ヘッダー（project-lead ラベル + Stand + 時刻）
+            // ヘッダー（ロール + セッション名 — ステータスは NSView 側に委譲）
+            // セッション名パターンで Lead/Worker を判定:
+            //   {project}-vp → proj-lead
+            //   {project}-{id}-vp → proj-worker
+            let role_label = {
+                let without_vp = session_name.strip_suffix("-vp").unwrap_or(session_name);
+                // config のプロジェクト名と一致すれば Lead、それ以外は Worker
+                // 簡易判定: ハイフン分割で最後のセグメントがプロジェクト名でなければ Worker
+                if without_vp.contains('-') {
+                    // ccws ワーカー名は {parent}-{worker} 形式
+                    // ただし vantage-point のようにプロジェクト名自体にハイフンが含まれる場合もある
+                    // tmux セッション名が ccws ディレクトリ名ベースかどうかで判定
+                    let ccws_dir = dirs::home_dir()
+                        .map(|h| h.join(".local/share/ccws").join(without_vp))
+                        .unwrap_or_default();
+                    if ccws_dir.is_dir() {
+                        " proj-worker "
+                    } else {
+                        " proj-lead "
+                    }
+                } else {
+                    " proj-lead "
+                }
+            };
+            let (role_fg, role_bg) = if role_label.contains("worker") {
+                (Color::Rgb(11, 17, 32), Color::Rgb(163, 190, 140)) // 緑系
+            } else {
+                (Color::Rgb(11, 17, 32), Color::Rgb(136, 192, 208)) // 青系
+            };
             let header = Paragraph::new(Line::from(vec![
                 Span::styled(
-                    " project-lead ",
+                    role_label,
                     Style::default()
-                        .fg(Color::Rgb(11, 17, 32))
-                        .bg(Color::Rgb(136, 192, 208))
+                        .fg(role_fg)
+                        .bg(role_bg)
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    &current_header,
+                    format!(" {}", session_name),
                     Style::default()
                         .fg(Color::Rgb(216, 222, 233))
                         .bg(Color::Rgb(46, 52, 64)),
