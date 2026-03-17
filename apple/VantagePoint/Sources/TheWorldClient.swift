@@ -42,6 +42,13 @@ actor TheWorldClient {
         return resp.processes
     }
 
+    /// ccwire セッション一覧を取得
+    func listCcwireSessions() async throws -> [CcwireSessionInfo] {
+        let url = baseURL.appendingPathComponent("/api/world/ccwire/sessions")
+        let resp: CcwireSessionsResponse = try await getAndDecode(url: url)
+        return resp.sessions
+    }
+
     /// プロジェクトのProcessを起動
     func startProcess(projectName: String) async throws -> RunningProcess {
         let url = baseURL.appendingPathComponent(

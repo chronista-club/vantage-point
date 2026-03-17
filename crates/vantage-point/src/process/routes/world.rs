@@ -337,6 +337,20 @@ pub async fn world_unregister_process(
     )
 }
 
+/// GET /api/world/ccwire/sessions - ccwire セッション一覧
+pub async fn world_ccwire_sessions() -> impl IntoResponse {
+    match crate::ccwire::list_sessions() {
+        Ok(sessions) => (
+            axum::http::StatusCode::OK,
+            Json(serde_json::json!({ "sessions": sessions })),
+        ),
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        ),
+    }
+}
+
 /// POST /api/world/refresh - Refresh process status
 pub async fn world_refresh(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let Some(world) = &state.world else {

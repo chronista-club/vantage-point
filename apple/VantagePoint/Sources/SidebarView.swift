@@ -23,6 +23,8 @@ struct SidebarView: View {
     var onRestartHD: ((String) -> Void)?
     /// SP リスタートコールバック（プロジェクトパス）
     var onRestartSP: ((String) -> Void)?
+    /// TheWorld 再起動コールバック
+    var onRestartWorld: (() -> Void)?
 
     var body: some View {
         List(selection: $selection) {
@@ -35,7 +37,13 @@ struct SidebarView: View {
                 } else {
                     DisclosureGroup {
                         ForEach(project.workers) { worker in
-                            SidebarWorkerRow(worker: worker)
+                            SidebarWorkerRow(
+                                worker: worker,
+                                parentPPActive: project.stands.contains {
+                                    $0.key == "paisley_park" && ($0.status == "active" || $0.status == "connected")
+                                },
+                                ccwireSession: worker.ccwireSession
+                            )
                                 .tag(worker.id)
                                 .contextMenu {
                                     Button("HD をリスタート", systemImage: "arrow.clockwise") {
@@ -69,16 +77,18 @@ struct SidebarView: View {
             handleDrop(providers: providers)
         }
         .safeAreaInset(edge: .bottom) {
-            WorldStatusFooter(status: worldStatus)
+            WorldStatusFooter(status: worldStatus, onRestart: onRestartWorld)
         }
     }
 
     /// プロジェクト行のコンテキストメニュー
     @ViewBuilder
     private func projectContextMenu(project: SidebarProject) -> some View {
+        // HD は SP 無しでも独立動作可能（SP 停止中でもリスタート可）
         Button("HD をリスタート", systemImage: "arrow.clockwise") {
             onRestartHD?(project.path)
         }
+        // SP リスタートはプロセス稼働中のみ有効
         Button("SP をリスタート", systemImage: "bolt.trianglebadge.exclamationmark") {
             onRestartSP?(project.path)
         }
@@ -167,7 +177,10 @@ struct SidebarProjectRow: View {
             // 2行目: SP / HD / PP ステータス（統一表記）
             HStack(spacing: 6) {
                 StatusBadge(label: "SP", icon: "star", isActive: project.isRunning)
+
+                // HD + ccwire ツールチップ
                 StatusBadge(label: "HD", icon: "text.book.closed", isActive: project.hasHD)
+                    .help(ccwireTooltip(for: project))
 
                 // PP は SP health API から取得（SP 稼働中のみ）
                 if let pp = project.stands.first(where: { $0.key == "paisley_park" }) {
@@ -177,7 +190,14 @@ struct SidebarProjectRow: View {
                     StatusBadge(label: "PP", icon: "compass.drawing", isActive: false)
                 }
 
-                // 起動時刻（ツールチップ）
+                // ccwire 未読メッセージ数
+                if let wire = project.ccwireSession, wire.pendingMessages > 0 {
+                    Text("📨 \(wire.pendingMessages)")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
+
+                // 起動時刻
                 if let startedAt = project.startedAt {
                     Text(startedAt, style: .time)
                         .font(.caption2)
@@ -187,6 +207,18 @@ struct SidebarProjectRow: View {
         }
         .opacity(project.isRunning ? 1.0 : 0.6)
     }
+
+    /// HD バッジのツールチップに ccwire 情報を表示
+    private func ccwireTooltip(for project: SidebarProject) -> String {
+        guard let wire = project.ccwireSession else {
+            return "HD: \(project.hasHD ? "active" : "inactive")"
+        }
+        var tip = "Wire: \(wire.name) (\(wire.status))"
+        if wire.pendingMessages > 0 {
+            tip += "\n未読: \(wire.pendingMessages)件"
+        }
+        return tip
+    }
 }
 
 // MARK: - ワーカー行
@@ -194,6 +226,10 @@ struct SidebarProjectRow: View {
 /// ccws ワーカーの行表示
 struct SidebarWorkerRow: View {
     let worker: CcwsWorkerInfo
+    /// 親プロジェクトの PP 状態を継承表示
+    var parentPPActive: Bool = false
+    /// ccwire セッション情報
+    var ccwireSession: CcwireSessionInfo?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -211,12 +247,32 @@ struct SidebarWorkerRow: View {
                 }
             }
 
-            // 2行目: HD ステータス（親と統一フォーマット）
+            // 2行目: HD + PP ステータス（親と統一フォーマット）
             HStack(spacing: 6) {
                 StatusBadge(label: "HD", icon: "text.book.closed", isActive: worker.hasHD)
+                    .help(workerCcwireTooltip)
+                StatusBadge(label: "PP", icon: "compass.drawing", isActive: parentPPActive)
+
+                // ccwire 未読メッセージ数
+                if let wire = ccwireSession, wire.pendingMessages > 0 {
+                    Text("📨 \(wire.pendingMessages)")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
             }
         }
         .opacity(worker.hasHD ? 1.0 : 0.6)
+    }
+
+    private var workerCcwireTooltip: String {
+        guard let wire = ccwireSession else {
+            return "HD: \(worker.hasHD ? "active" : "inactive")"
+        }
+        var tip = "Wire: \(wire.name) (\(wire.status))"
+        if wire.pendingMessages > 0 {
+            tip += "\n未読: \(wire.pendingMessages)件"
+        }
+        return tip
     }
 }
 
@@ -268,6 +324,8 @@ struct CcwsWorkerInfo: Identifiable, Equatable {
     let path: String
     let branch: String?
     let hasHD: Bool      // tmux セッションが存在するか
+    /// ccwire セッション情報（HD に紐づく）
+    let ccwireSession: CcwireSessionInfo?
 }
 
 /// サイドバー表示用のプロジェクトモデル
@@ -291,8 +349,10 @@ struct SidebarProject: Identifiable, Equatable {
 
     /// CC からの未読通知あり
     let hasNotification: Bool
+    /// ccwire セッション情報（HD に紐づく）
+    let ccwireSession: CcwireSessionInfo?
 
-    init(id: String, name: String, path: String, isRunning: Bool, port: UInt16?, startedAt: Date?, stands: [SidebarStand] = [], workers: [CcwsWorkerInfo] = [], branch: String? = nil, hasHD: Bool = false, hasNotification: Bool = false) {
+    init(id: String, name: String, path: String, isRunning: Bool, port: UInt16?, startedAt: Date?, stands: [SidebarStand] = [], workers: [CcwsWorkerInfo] = [], branch: String? = nil, hasHD: Bool = false, hasNotification: Bool = false, ccwireSession: CcwireSessionInfo? = nil) {
         self.id = id
         self.name = name
         self.path = path
@@ -304,6 +364,7 @@ struct SidebarProject: Identifiable, Equatable {
         self.branch = branch
         self.hasHD = hasHD
         self.hasNotification = hasNotification
+        self.ccwireSession = ccwireSession
     }
 
     var statusColor: Color {
@@ -376,7 +437,8 @@ enum CcwsDiscovery {
                 suffix: suffix,
                 path: url.path,
                 branch: branch,
-                hasHD: hasHD
+                hasHD: hasHD,
+                ccwireSession: nil
             )
         }
         .sorted { $0.suffix < $1.suffix }
@@ -441,6 +503,8 @@ enum WorldStatus: Equatable {
 /// サイドバーフッター: TheWorld 接続ステータス
 struct WorldStatusFooter: View {
     let status: WorldStatus
+    /// TheWorld 再起動アクション
+    var onRestart: (() -> Void)?
 
     var body: some View {
         HStack(spacing: 6) {
@@ -457,6 +521,16 @@ struct WorldStatusFooter: View {
                 Text(startedAt, style: .time)
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
+                // TheWorld 再起動ボタン
+                Button {
+                    onRestart?()
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.caption2)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("TheWorld を再起動")
             case .disconnected:
                 Text("TheWorld offline")
                     .font(.caption2)

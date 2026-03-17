@@ -211,6 +211,10 @@ pub async fn run(
             post(world::world_open_pointview),
         )
         .route("/api/world/refresh", post(world::world_refresh))
+        .route(
+            "/api/world/ccwire/sessions",
+            get(world::world_ccwire_sessions),
+        )
         .layer(CorsLayer::permissive())
         .with_state(state.clone());
 
@@ -426,6 +430,10 @@ pub async fn run_world(port: u16) -> Result<()> {
             post(world::world_open_pointview),
         )
         .route("/api/world/refresh", post(world::world_refresh))
+        .route(
+            "/api/world/ccwire/sessions",
+            get(world::world_ccwire_sessions),
+        )
         // HTTP register/unregister: Swift メニューバーアプリの移行完了まで残す（後方互換）
         // SP は QUIC registry チャネルで自己登録するため、これらは外部ツール用
         .route(
