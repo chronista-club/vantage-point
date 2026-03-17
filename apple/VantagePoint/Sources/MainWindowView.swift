@@ -27,6 +27,8 @@ struct MainWindowView: View {
     @State private var terminalGeneration: [String: Int] = [:]
     /// HD 自動起動を試みたパス（ポーリングで繰り返し起動しないため）
     @State private var hdAutoStartAttempted: Set<String> = []
+    /// SP 自動起動を試みたパス（ポーリングで繰り返し起動しないため）
+    @State private var spAutoStartAttempted: Set<String> = []
 
     /// 外部から指定されたプロジェクトパス（起動引数・URL スキーム経由）
     var initialProjectPath: String?
@@ -340,6 +342,24 @@ struct MainWindowView: View {
         }
     }
 
+    // MARK: - SP 自動起動
+
+    /// SP 未起動のプロジェクトを TheWorld API 経由で自動起動
+    ///
+    /// ポーリングで繰り返し起動しないよう、試行済みパスを記録。
+    private func autoStartSP(project: SidebarProject) async {
+        guard !spAutoStartAttempted.contains(project.path) else { return }
+        spAutoStartAttempted.insert(project.path)
+        print("[VP] Auto-starting SP for: \(project.name)")
+
+        do {
+            _ = try await theWorldClient.startProcess(projectName: project.name)
+            print("[VP] SP auto-started: \(project.name)")
+        } catch {
+            print("[VP] SP auto-start failed: \(project.name) - \(error)")
+        }
+    }
+
     // MARK: - HD 自動起動
 
     /// SP 稼働中 + HD 未起動のプロジェクトに HD を自動起動
@@ -419,9 +439,10 @@ struct MainWindowView: View {
 
         Task {
             do {
-                // stop（HD 自動起動のリトライを許可）
+                // stop（自動起動のリトライを許可）
                 try await theWorldClient.stopProcess(projectName: project.name)
                 hdAutoStartAttempted.remove(path)
+                spAutoStartAttempted.remove(path)
                 print("[VP] SP stopped: \(project.name)")
 
                 // 少し待ってから start（ポート解放待ち）
@@ -640,6 +661,11 @@ struct MainWindowView: View {
                         hasNotification: notifications.contains(entry.path)
                     )
                 }
+            }
+
+            // SP 未起動のプロジェクトを自動起動（TheWorld API 経由）
+            for project in projects where !project.isRunning {
+                await autoStartSP(project: project)
             }
 
             // SP 稼働中 + HD 未起動のプロジェクトに HD を自動起動
