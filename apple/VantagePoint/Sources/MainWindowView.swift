@@ -90,8 +90,6 @@ struct MainWindowView: View {
                         }
                     }
 
-                    // フッター: ショートカットヒント
-                    terminalFooter
                 }
 
                 // Canvas（右）— トグルで表示/非表示、ドラッグで幅変更
@@ -303,33 +301,6 @@ struct MainWindowView: View {
         }
     }
 
-    /// ターミナル下部のフッター（ショートカットヒント）
-    @ViewBuilder
-    private var terminalFooter: some View {
-        if selectedProject != nil {
-            HStack(spacing: 16) {
-                shortcutHint("⌘O", "Canvas")
-                shortcutHint("⌘↑↓", "Proj")
-                shortcutHint("⌘1-9", "Lane")
-                shortcutHint("⌘D", "Split")
-            }
-            .font(.caption2)
-            .foregroundStyle(.gray)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 4)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color(white: 0.15))
-        }
-    }
-
-    private func shortcutHint(_ key: String, _ label: String) -> some View {
-        HStack(spacing: 3) {
-            Text(key)
-                .fontWeight(.medium)
-                .foregroundStyle(.secondary)
-            Text(label)
-        }
-    }
 
     // MARK: - tmux ペイン操作
 

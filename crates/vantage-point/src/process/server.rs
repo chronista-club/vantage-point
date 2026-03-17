@@ -314,8 +314,7 @@ pub async fn run_world(port: u16) -> Result<()> {
     use crate::capability::core::{Capability, CapabilityContext};
     use crate::daemon::process;
 
-    // PID ファイル書き出し（Daemon 統合）
-    process::write_pid_file()?;
+    // PID ファイルはポートバインド成功後に書き出す（下記参照）
 
     // Shutdown signal
     let shutdown_token = CancellationToken::new();
@@ -463,6 +462,10 @@ pub async fn run_world(port: u16) -> Result<()> {
     tracing::info!("{} 起動 http://{}", crate::stands::WORLD.display(), addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
+
+    // ポートバインド成功後に PID ファイルを書き出す
+    // （バインド前に書くと、失敗時に既存デーモンの PID が上書きされ制御不能になる）
+    process::write_pid_file()?;
 
     // Clone world for shutdown
     let world_for_shutdown = world_cap.clone();

@@ -18,9 +18,21 @@ pub fn pid_file() -> PathBuf {
 
 /// Daemon が生きているか確認する
 ///
-/// PIDファイルを読み取り、そのプロセスが存在するかを `kill(pid, 0)` で確認。
-/// 生きていれば `Some(pid)` を返す。
+/// 1. PIDファイルを読み取り、`kill(pid, 0)` でプロセスの存在を確認
+/// 2. PIDファイルが無い/古い場合、ポート接続で実際の稼働を確認（フォールバック）
 pub fn is_daemon_running() -> Option<u32> {
+    // 1. PIDファイルベースの確認
+    if let Some(pid) = check_pid_file() {
+        return Some(pid);
+    }
+
+    // 2. フォールバック: ポート接続で TheWorld の生存を確認
+    //    PIDファイルが壊れた・消えた場合でも制御可能にする
+    check_world_port()
+}
+
+/// PIDファイルからデーモンの生存を確認
+fn check_pid_file() -> Option<u32> {
     let pid_path = pid_file();
     if !pid_path.exists() {
         return None;
@@ -28,7 +40,6 @@ pub fn is_daemon_running() -> Option<u32> {
     let pid_str = std::fs::read_to_string(&pid_path).ok()?;
     let pid: u32 = pid_str.trim().parse().ok()?;
 
-    // kill(pid, 0) でプロセスの存在を確認（シグナルは送信しない）
     let alive = i32::try_from(pid).is_ok_and(|pid_i32| unsafe { libc::kill(pid_i32, 0) == 0 });
     if alive {
         Some(pid)
@@ -37,6 +48,28 @@ pub fn is_daemon_running() -> Option<u32> {
         let _ = std::fs::remove_file(&pid_path);
         None
     }
+}
+
+/// TheWorld ポートに接続して PID を取得（PIDファイル不在時のフォールバック）
+fn check_world_port() -> Option<u32> {
+    let url = format!("http://[::1]:{}/api/health", crate::cli::WORLD_PORT);
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build()
+        .ok()?;
+    let resp = client.get(&url).send().ok()?;
+    let health: crate::cli::HealthResponse = resp.json().ok()?;
+
+    // PIDファイルを復元する
+    let dir = daemon_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = std::fs::write(pid_file(), health.pid.to_string());
+    tracing::info!(
+        "PIDファイル復元（ポートフォールバック）: PID {}",
+        health.pid
+    );
+
+    Some(health.pid)
 }
 
 /// PIDファイルを書き出す
