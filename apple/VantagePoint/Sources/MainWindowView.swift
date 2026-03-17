@@ -1,4 +1,7 @@
+import OSLog
 import SwiftUI
+
+private let logger = Logger(subsystem: "club.chronista.vp", category: "MainWindow")
 
 /// メインウィンドウ: NavigationSplitView (Glass Sidebar + Terminal)
 ///
@@ -350,13 +353,13 @@ struct MainWindowView: View {
     private func autoStartSP(project: SidebarProject) async {
         guard !spAutoStartAttempted.contains(project.path) else { return }
         spAutoStartAttempted.insert(project.path)
-        print("[VP] Auto-starting SP for: \(project.name)")
+        logger.info("[VP]Auto-starting SP for: \(project.name)")
 
         do {
             _ = try await theWorldClient.startProcess(projectName: project.name)
-            print("[VP] SP auto-started: \(project.name)")
+            logger.info("[VP]SP auto-started: \(project.name)")
         } catch {
-            print("[VP] SP auto-start failed: \(project.name) - \(error)")
+            logger.error("[VP]SP auto-start failed: \(project.name) - \(error)")
         }
     }
 
@@ -372,7 +375,7 @@ struct MainWindowView: View {
     private func autoStartHD(path: String) {
         guard !hdAutoStartAttempted.contains(path) else { return }
         hdAutoStartAttempted.insert(path)
-        print("[VP] Auto-starting HD for: \(path)")
+        logger.info("[VP]Auto-starting HD for: \(path)")
 
         Task.detached(priority: .utility) {
             let process = Process()
@@ -384,9 +387,9 @@ struct MainWindowView: View {
             do {
                 try process.run()
                 process.waitUntilExit()
-                print("[VP] Auto HD start exit=\(process.terminationStatus) for \(path)")
+                logger.info("[VP]Auto HD start exit=\(process.terminationStatus) for \(path)")
             } catch {
-                print("[VP] Auto HD start error: \(error)")
+                logger.error("[VP]Auto HD start error: \(error)")
             }
         }
     }
@@ -402,7 +405,7 @@ struct MainWindowView: View {
     /// TerminalView の PTY spawn も同様に非 Sandbox 前提。
     /// App Store 配布時は SP の HTTP API 経由（POST /api/hd/restart）に移行する。
     private func restartHD(path: String) {
-        print("[VP] restartHD called for path: \(path)")
+        logger.info("[VP]restartHD called for path: \(path)")
 
         // waitUntilExit() はブロッキング API のため detached で実行
         Task.detached(priority: .utility) {
@@ -418,23 +421,23 @@ struct MainWindowView: View {
                 do {
                     try process.run()
                     process.waitUntilExit()
-                    print("[VP] \(label) exit=\(process.terminationStatus)")
+                    logger.info("[VP]\(label) exit=\(process.terminationStatus)")
                 } catch {
-                    print("[VP] \(label) error: \(error)")
+                    logger.error("[VP]\(label) error: \(error)")
                 }
             }
 
             // @State 更新は MainActor で実行
             await MainActor.run {
                 terminalGeneration[path, default: 0] += 1
-                print("[VP] HD restart done, terminal generation=\(terminalGeneration[path] ?? 0)")
+                logger.info("HD restart done, terminal generation=\(terminalGeneration[path] ?? 0)")
             }
         }
     }
 
     /// SP（Star Platinum）をリスタート — TheWorld API 経由で stop → start
     private func restartSP(path: String) {
-        print("[VP] restartSP called for path: \(path)")
+        logger.info("[VP]restartSP called for path: \(path)")
         guard let project = projects.first(where: { $0.path == path }) else { return }
 
         Task {
@@ -443,16 +446,16 @@ struct MainWindowView: View {
                 try await theWorldClient.stopProcess(projectName: project.name)
                 hdAutoStartAttempted.remove(path)
                 spAutoStartAttempted.remove(path)
-                print("[VP] SP stopped: \(project.name)")
+                logger.info("[VP]SP stopped: \(project.name)")
 
                 // 少し待ってから start（ポート解放待ち）
                 try await Task.sleep(nanoseconds: 500_000_000)
 
                 // start
                 let newProcess = try await theWorldClient.startProcess(projectName: project.name)
-                print("[VP] SP restarted: \(project.name) on port \(newProcess.port)")
+                logger.info("[VP]SP restarted: \(project.name) on port \(newProcess.port)")
             } catch {
-                print("[VP] SP restart error: \(error)")
+                logger.error("[VP]SP restart error: \(error)")
             }
 
             // ポーリングで状態が更新されるまで手動リフレッシュ

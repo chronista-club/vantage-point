@@ -1,6 +1,9 @@
 import AppKit
 import CoreText
+import OSLog
 import VPBridge
+
+private let logger = Logger(subsystem: "club.chronista.vp", category: "Terminal")
 
 // MARK: - セッションレジストリ（マルチウィンドウ対応）
 
@@ -887,25 +890,17 @@ class TerminalView: NSView {
 
     /// メニュー Edit → Paste (Cmd+V) から呼ばれる
     @objc func paste(_ sender: Any?) {
-        let ptyRunning = vp_bridge_pty_is_running_session(sessionId)
-        print("[VP] paste called: sessionId=\(sessionId) ptyRunning=\(ptyRunning)")
-        guard ptyRunning else {
-            print("[VP] paste skipped: PTY not running")
-            return
-        }
+        guard vp_bridge_pty_is_running_session(sessionId) else { return }
         pasteFromClipboard()
     }
 
     /// クリップボードからテキスト/画像を PTY にペースト
     private func pasteFromClipboard() {
         let pb = NSPasteboard.general
-        let text = pb.string(forType: .string)
-        print("[VP] pasteFromClipboard: text=\(text?.prefix(50) ?? "nil") types=\(pb.types?.map(\.rawValue) ?? [])")
 
-        // テキストペースト（1文字ずつ送信 — keyDown と同じ経路）
-        if let text, !text.isEmpty {
+        // テキストペースト（チャンク分割で送信）
+        if let text = pb.string(forType: .string), !text.isEmpty {
             if let data = text.data(using: .utf8) {
-                // 一括送信だと tmux に届かないケースがあるため、チャンク分割で送信
                 let chunkSize = 64
                 var offset = 0
                 while offset < data.count {
@@ -920,7 +915,6 @@ class TerminalView: NSView {
                     }
                     offset = end
                 }
-                print("[VP] paste written: \(data.count) bytes in \((data.count + chunkSize - 1) / chunkSize) chunks")
             }
             return
         }

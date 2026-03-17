@@ -1,4 +1,7 @@
+import OSLog
 import SwiftUI
+
+private let logger = Logger(subsystem: "club.chronista.vp", category: "Sidebar")
 
 /// サイドバー: プロジェクト一覧（Liquid Glass 自動適用）
 ///
@@ -388,7 +391,7 @@ enum CcwsDiscovery {
         // 既知パスを先にチェック（GUI アプリの PATH 制限を回避）
         for knownPath in ["/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/usr/bin/tmux"] {
             if FileManager.default.isExecutableFile(atPath: knownPath) {
-                print("[VP] tmux found at: \(knownPath)")
+                logger.debug("[VP]tmux found at: \(knownPath)")
                 return knownPath
             }
         }
@@ -405,13 +408,13 @@ enum CcwsDiscovery {
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             let path = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
             if let p = path, !p.isEmpty {
-                print("[VP] tmux found via zsh: \(p)")
+                logger.debug("[VP]tmux found via zsh: \(p)")
                 return p
             }
-            print("[VP] tmux not found")
+            logger.debug("[VP]tmux not found")
             return nil
         } catch {
-            print("[VP] tmux search error: \(error)")
+            logger.debug("[VP]tmux search error: \(error)")
             return nil
         }
     }()
