@@ -212,6 +212,29 @@ class TerminalView: NSView {
     /// キーウィンドウ外でもキー入力を受け取る
     override var needsPanelToBecomeKey: Bool { true }
 
+    /// first responder 変更時にボーダーで視覚化（デバッグ用）
+    override func becomeFirstResponder() -> Bool {
+        let result = super.becomeFirstResponder()
+        updateFirstResponderBorder()
+        return result
+    }
+
+    override func resignFirstResponder() -> Bool {
+        let result = super.resignFirstResponder()
+        updateFirstResponderBorder()
+        return result
+    }
+
+    private func updateFirstResponderBorder() {
+        if window?.firstResponder === self {
+            layer?.borderColor = NSColor.systemBlue.withAlphaComponent(0.5).cgColor
+            layer?.borderWidth = 2
+        } else {
+            layer?.borderColor = NSColor.systemRed.withAlphaComponent(0.3).cgColor
+            layer?.borderWidth = 1
+        }
+    }
+
 
     deinit {
         // deinit は nonisolated — MainActor 外から呼ばれる可能性がある
@@ -864,7 +887,12 @@ class TerminalView: NSView {
 
     /// メニュー Edit → Paste (Cmd+V) から呼ばれる
     @objc func paste(_ sender: Any?) {
-        guard vp_bridge_pty_is_running_session(sessionId) else { return }
+        let ptyRunning = vp_bridge_pty_is_running_session(sessionId)
+        print("[VP] paste called: sessionId=\(sessionId) ptyRunning=\(ptyRunning)")
+        guard ptyRunning else {
+            print("[VP] paste skipped: PTY not running")
+            return
+        }
         pasteFromClipboard()
     }
 
@@ -926,8 +954,9 @@ class TerminalView: NSView {
 
         switch ch {
         case "v":
-            // Cmd+V: メニューの paste: アクションに委譲（TerminalView.paste(_:) が呼ばれる）
-            return false
+            // Cmd+V: 直接ペースト（メニュー経由だと first responder の問題で届かないことがある）
+            paste(nil)
+            return true
         case "c":
             // Cmd+C: 選択あり → メニューの copy: に委譲（コピー）
             //         選択なし → Ctrl+C (SIGINT) を直接送信
