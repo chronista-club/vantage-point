@@ -234,8 +234,9 @@ pub async fn run(
         .route("/api/unwatch-file", post(health::unwatch_file_handler))
         .route("/api/canvas/open", post(health::canvas_open_handler))
         .route("/api/canvas/close", post(health::canvas_close_handler))
-        // tmux ペイン操作（Native App の Cmd+D から呼ばれる）
+        // tmux ペイン操作（Native App の Cmd+D / Cmd+Shift+D から呼ばれる）
         .route("/api/tmux/split", post(health::tmux_split_handler))
+        .route("/api/tmux/close", post(health::tmux_close_handler))
         .route("/api/ruby/eval", post(health::ruby_eval_handler))
         .route("/api/ruby/run", post(health::ruby_run_handler))
         .route("/api/ruby/stop", post(health::ruby_stop_handler))

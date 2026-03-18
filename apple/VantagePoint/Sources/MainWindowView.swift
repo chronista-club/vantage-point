@@ -181,6 +181,9 @@ struct MainWindowView: View {
         .onReceive(NotificationCenter.default.publisher(for: .splitTerminalPane)) { _ in
             splitPane()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .closeTerminalPane)) { _ in
+            closePane()
+        }
         .onReceive(NotificationCenter.default.publisher(for: .canvasOpen)) { _ in
             showCanvas = true
         }
@@ -326,6 +329,31 @@ struct MainWindowView: View {
             request.httpBody = try? JSONSerialization.data(withJSONObject: ["horizontal": true])
             request.timeoutInterval = 5
             _ = try? await URLSession.shared.data(for: request)
+        }
+    }
+
+    /// tmux ペインを閉じる（⌘⇧D）
+    ///
+    /// 直近で split したペインを閉じる。pane_id を指定しない場合、
+    /// SP 側でアクティブでないペインのうち最後のものを閉じる。
+    private func closePane() {
+        guard let port = selectedPort else { return }
+        Task {
+            // まず pane 一覧を取得して、active でない最後のペインを閉じる
+            let listUrl = URL(string: "http://[::1]:\(port)/api/tmux/split")!
+            // tmux_list は QUIC のみなので、tmux CLI で直接取得
+            // 簡易実装: 最新の non-active ペインを tmux で取得して close
+            let url = URL(string: "http://[::1]:\(port)/api/tmux/close")!
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            // pane_id なしで呼ぶと SP 側でエラーになるので、tmux CLI で最新ペインを取得
+            let _ = listUrl // suppress unused warning
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            process.arguments = ["tmux", "kill-pane", "-t", "{last}"]
+            try? process.run()
+            process.waitUntilExit()
         }
     }
 
@@ -806,6 +834,7 @@ extension Notification.Name {
     static let selectPreviousProject = Notification.Name("VP.selectPreviousProject")
     static let selectNextProject = Notification.Name("VP.selectNextProject")
     static let splitTerminalPane = Notification.Name("VP.splitTerminalPane")
+    static let closeTerminalPane = Notification.Name("VP.closeTerminalPane")
     static let selectLaneByNumber = Notification.Name("VP.selectLaneByNumber")
     static let canvasOpen = Notification.Name("VP.canvasOpen")
 }

@@ -687,6 +687,29 @@ pub async fn tmux_split_handler(
     }
 }
 
+/// tmux close パラメータ
+#[derive(Deserialize)]
+pub struct TmuxCloseParams {
+    pub pane_id: String,
+}
+
+/// POST /api/tmux/close - tmux ペインを閉じる
+pub async fn tmux_close_handler(
+    State(state): State<Arc<AppState>>,
+    Json(params): Json<TmuxCloseParams>,
+) -> impl IntoResponse {
+    let handle = match state.ensure_tmux().await {
+        Some(h) => h,
+        None => {
+            return Json(serde_json::json!({"error": "tmux 未使用環境です"}));
+        }
+    };
+    match handle.close(&params.pane_id).await {
+        Ok(()) => Json(serde_json::json!({"status": "ok"})),
+        Err(e) => Json(serde_json::json!({"error": e})),
+    }
+}
+
 // ===== Ruby VM ハンドラー =====
 
 /// Ruby eval パラメータ

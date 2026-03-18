@@ -256,6 +256,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         navigateMenu.addItem(.separator())
         navigateMenu.addItem(NSMenuItem(title: "Split Pane", action: #selector(splitTerminalPane(_:)), keyEquivalent: "d"))
+        let closePaneItem = NSMenuItem(title: "Close Pane", action: #selector(closeTerminalPane(_:)), keyEquivalent: "d")
+        closePaneItem.keyEquivalentModifierMask = [.command, .shift]
+        navigateMenu.addItem(closePaneItem)
         let navigateMenuItem = NSMenuItem()
         navigateMenuItem.submenu = navigateMenu
         mainMenu.addItem(navigateMenuItem)
@@ -356,6 +359,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func splitTerminalPane(_ sender: Any?) {
         NotificationCenter.default.post(name: .splitTerminalPane, object: nil)
+    }
+
+    @objc private func closeTerminalPane(_ sender: Any?) {
+        NotificationCenter.default.post(name: .closeTerminalPane, object: nil)
     }
 
     @objc private func selectLaneByNumber(_ sender: NSMenuItem) {
