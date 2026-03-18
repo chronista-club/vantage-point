@@ -112,6 +112,22 @@ pub async fn run(
         });
     }
 
+    // SurrealDB に接続（VP-21: SP ローカルテーブル移行）
+    // 接続失敗時は warn して DB なしで継続（フォールバック）
+    let vpdb: Option<crate::db::SharedVpDb> = {
+        let password = crate::db::ensure_db_password();
+        match crate::db::VpDb::connect(crate::db::SURREAL_PORT, &password, 10).await {
+            Ok(db) => {
+                tracing::info!("SP: SurrealDB 接続成功 (port={})", crate::db::SURREAL_PORT);
+                Some(std::sync::Arc::new(db))
+            }
+            Err(e) => {
+                tracing::warn!("SP: SurrealDB 未接続、DB なしで継続: {}", e);
+                None
+            }
+        }
+    };
+
     // MCP 用 Mailbox ハンドルを登録（VP-24）
     let mcp_mailbox = capabilities.mailbox_router.register("mcp").await;
 
@@ -188,6 +204,7 @@ pub async fn run(
         canvas_senders: Arc::new(tokio::sync::Mutex::new(Vec::new())),
         started_at: chrono::Utc::now().to_rfc3339(),
         mcp_mailbox: Some(mcp_mailbox),
+        vpdb,
     });
 
     // ペイン状態をディスクから復元（前回 Process 終了時の状態 → RetainedStore）
@@ -397,6 +414,49 @@ pub async fn run_world(port: u16) -> Result<()> {
         tracing::warn!("Failed to initialize UpdateCapability: {}", e);
     }
 
+    // SurrealDB 認証パスワードを取得（なければ生成）
+    let db_password = crate::db::ensure_db_password();
+
+    // SurrealDB デーモンを自動起動（未起動なら起動、起動済みならスキップ）
+    // TheWorld 終了時には SurrealDB は止めない（独立デーモン）
+    match crate::db::ensure_surreal_running(crate::db::SURREAL_PORT, &db_password) {
+        Ok(pid) => {
+            tracing::info!(
+                "SurrealDB 起動済み (pid={}, port={})",
+                pid,
+                crate::db::SURREAL_PORT
+            );
+        }
+        Err(e) => {
+            tracing::warn!("SurrealDB 起動失敗（DB なしで継続）: {}", e);
+        }
+    }
+
+    // SurrealDB に接続してスキーマ定義
+    let vpdb: Option<crate::db::SharedVpDb> =
+        match crate::db::VpDb::connect(crate::db::SURREAL_PORT, &db_password, 30).await {
+            Ok(db) => {
+                if let Err(e) = db.define_schema().await {
+                    tracing::warn!("SurrealDB スキーマ定義失敗: {}", e);
+                }
+                Some(std::sync::Arc::new(db))
+            }
+            Err(e) => {
+                tracing::warn!("SurrealDB 接続失敗（DB なしで継続）: {}", e);
+                None
+            }
+        };
+
+    // VpDb を ProcessManagerCapability に注入し、DB からプロジェクトを再読み込み
+    // （initialize 時点では vpdb 未設定のため config.toml から読み込まれている。
+    //   ここで DB マイグレーション + DB → HashMap 同期を実行する）
+    if let Some(ref db) = vpdb {
+        world_cap.set_vpdb(db.clone());
+        if let Err(e) = world_cap.load_config().await {
+            tracing::warn!("DB 付き config 再読み込み失敗: {}", e);
+        }
+    }
+
     let world_cap = Arc::new(RwLock::new(world_cap));
     let update_cap = Arc::new(RwLock::new(update_cap));
     let hub = Hub::new();
@@ -438,6 +498,7 @@ pub async fn run_world(port: u16) -> Result<()> {
         canvas_senders: Arc::new(tokio::sync::Mutex::new(Vec::new())),
         started_at: chrono::Utc::now().to_rfc3339(),
         mcp_mailbox: None, // World モードでは MCP Mailbox 不要
+        vpdb,             // World モードでも DB 参照あり
     });
 
     let app = Router::new()
@@ -526,50 +587,6 @@ pub async fn run_world(port: u16) -> Result<()> {
     // ポートバインド成功後に PID ファイルを書き出す
     // （バインド前に書くと、失敗時に既存デーモンの PID が上書きされ制御不能になる）
     process::write_pid_file()?;
-
-    // SurrealDB 認証パスワードを取得（なければ生成）
-    let db_password = crate::db::ensure_db_password();
-
-    // SurrealDB デーモンを自動起動（未起動なら起動、起動済みならスキップ）
-    // TheWorld 終了時には SurrealDB は止めない（独立デーモン）
-    match crate::db::ensure_surreal_running(crate::db::SURREAL_PORT, &db_password) {
-        Ok(pid) => {
-            tracing::info!(
-                "SurrealDB 起動済み (pid={}, port={})",
-                pid,
-                crate::db::SURREAL_PORT
-            );
-        }
-        Err(e) => {
-            tracing::warn!("SurrealDB 起動失敗（DB なしで継続）: {}", e);
-        }
-    }
-
-    // SurrealDB に接続してスキーマ定義
-    let vpdb: Option<crate::db::SharedVpDb> =
-        match crate::db::VpDb::connect(crate::db::SURREAL_PORT, &db_password, 30).await {
-            Ok(db) => {
-                if let Err(e) = db.define_schema().await {
-                    tracing::warn!("SurrealDB スキーマ定義失敗: {}", e);
-                }
-                Some(std::sync::Arc::new(db))
-            }
-            Err(e) => {
-                tracing::warn!("SurrealDB 接続失敗（DB なしで継続）: {}", e);
-                None
-            }
-        };
-
-    // VpDb を ProcessManagerCapability に注入し、DB からプロジェクトを再読み込み
-    // （initialize 時点では vpdb 未設定のため config.toml から読み込まれている。
-    //   ここで DB マイグレーション + DB → HashMap 同期を実行する）
-    if let Some(ref db) = vpdb {
-        let mut cap = world_cap.write().await;
-        cap.set_vpdb(db.clone());
-        if let Err(e) = cap.load_config().await {
-            tracing::warn!("DB 付き config 再読み込み失敗: {}", e);
-        }
-    }
 
     // Clone for shutdown
     let world_for_shutdown = world_cap.clone();

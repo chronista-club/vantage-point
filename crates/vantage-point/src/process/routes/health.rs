@@ -216,6 +216,18 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
             },
         );
 
+        // DB にも Stand ステータスを書き込み（VP-21）
+        if let Some(ref db) = state.vpdb {
+            for (key, s) in &map {
+                if let Err(e) = db
+                    .upsert_stand_status(&state.project_dir, key, s.status, s.detail.as_ref())
+                    .await
+                {
+                    tracing::warn!("DB stand_status 書き込み失敗 ({}): {}", key, e);
+                }
+            }
+        }
+
         Some(map)
     } else {
         None

@@ -341,6 +341,124 @@ impl VpDb {
             .map_err(|e| anyhow::anyhow!("processes クリアエラー: {}", e))?;
         Ok(())
     }
+
+    // =========================================================================
+    // Pane Contents CRUD（Canvas ペイン状態の永続化）
+    // =========================================================================
+
+    /// ペイン状態を保存（UPSERT: project_path + pane_id で一意）
+    pub async fn upsert_pane_content(
+        &self,
+        project_path: &str,
+        pane_id: &str,
+        content_type: &str,
+        content: &str,
+        title: Option<&str>,
+    ) -> Result<()> {
+        self.db
+            .query(
+                "INSERT INTO pane_contents {
+                    project_path: $project_path,
+                    pane_id: $pane_id,
+                    content_type: $content_type,
+                    content: $content,
+                    title: $title,
+                    updated_at: time::now()
+                } ON DUPLICATE KEY UPDATE
+                    content_type = $input.content_type,
+                    content = $input.content,
+                    title = $input.title,
+                    updated_at = time::now()",
+            )
+            .bind(("project_path", project_path.to_string()))
+            .bind(("pane_id", pane_id.to_string()))
+            .bind(("content_type", content_type.to_string()))
+            .bind(("content", content.to_string()))
+            .bind(("title", title.map(|s| s.to_string())))
+            .await
+            .map_err(|e| anyhow::anyhow!("pane_content upsert 失敗: {}", e))?
+            .check()
+            .map_err(|e| anyhow::anyhow!("pane_content upsert エラー: {}", e))?;
+        Ok(())
+    }
+
+    /// プロジェクトの全ペイン状態を取得
+    pub async fn list_pane_contents(
+        &self,
+        project_path: &str,
+    ) -> Result<Vec<serde_json::Value>> {
+        let mut result = self
+            .db
+            .query("SELECT * FROM pane_contents WHERE project_path = $path")
+            .bind(("path", project_path.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("pane_contents 取得失敗: {}", e))?;
+        let records: Vec<serde_json::Value> = result.take(0)?;
+        Ok(records)
+    }
+
+    /// プロジェクトの全ペイン状態を削除
+    pub async fn clear_pane_contents(&self, project_path: &str) -> Result<()> {
+        self.db
+            .query("DELETE FROM pane_contents WHERE project_path = $path")
+            .bind(("path", project_path.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("pane_contents 削除失敗: {}", e))?
+            .check()
+            .map_err(|e| anyhow::anyhow!("pane_contents 削除エラー: {}", e))?;
+        Ok(())
+    }
+
+    // =========================================================================
+    // Stand Status CRUD
+    // =========================================================================
+
+    /// Stand ステータスを更新（UPSERT）
+    pub async fn upsert_stand_status(
+        &self,
+        project_path: &str,
+        stand_key: &str,
+        status: &str,
+        detail: Option<&serde_json::Value>,
+    ) -> Result<()> {
+        self.db
+            .query(
+                "INSERT INTO stand_status {
+                    project_path: $project_path,
+                    stand_key: $stand_key,
+                    status: $status,
+                    detail: $detail,
+                    updated_at: time::now()
+                } ON DUPLICATE KEY UPDATE
+                    status = $input.status,
+                    detail = $input.detail,
+                    updated_at = time::now()",
+            )
+            .bind(("project_path", project_path.to_string()))
+            .bind(("stand_key", stand_key.to_string()))
+            .bind(("status", status.to_string()))
+            .bind(("detail", detail.cloned()))
+            .await
+            .map_err(|e| anyhow::anyhow!("stand_status upsert 失敗: {}", e))?
+            .check()
+            .map_err(|e| anyhow::anyhow!("stand_status upsert エラー: {}", e))?;
+        Ok(())
+    }
+
+    /// プロジェクトの全 Stand ステータスを取得
+    pub async fn list_stand_status(
+        &self,
+        project_path: &str,
+    ) -> Result<Vec<serde_json::Value>> {
+        let mut result = self
+            .db
+            .query("SELECT * FROM stand_status WHERE project_path = $path")
+            .bind(("path", project_path.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("stand_status 取得失敗: {}", e))?;
+        let records: Vec<serde_json::Value> = result.take(0)?;
+        Ok(records)
+    }
 }
 
 // =============================================================================
