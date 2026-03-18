@@ -35,7 +35,7 @@ struct CanvasRepresentable: NSViewRepresentable {
         coordinator.hasLoaded = true
 
         if let port = currentPort {
-            // SP が起動中 → canvas.html をロード
+            // SP が起動中 → canvas.html をロード（direct モード: SP 個別の PP コンテンツ表示）
             let url = URL(string: "http://localhost:\(port)/canvas?direct")!
             webView.load(URLRequest(url: url))
         } else {

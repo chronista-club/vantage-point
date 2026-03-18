@@ -36,6 +36,10 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
 
     state.hub.client_connected().await;
 
+    // Canvas クライアントとして登録（PP ステータスの connected 判定用）
+    let (canvas_tx, _canvas_rx) = tokio::sync::mpsc::channel::<serde_json::Value>(64);
+    state.canvas_senders.lock().await.push(canvas_tx);
+
     // Send debug mode info on connection
     if state.debug_mode != DebugMode::None {
         let mode_msg = ProcessMessage::DebugModeChanged {
