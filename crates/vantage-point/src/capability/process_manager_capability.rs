@@ -117,9 +117,6 @@ pub struct ProcessManagerCapability {
     vp_binary_path: Option<PathBuf>,
     /// SurrealDB クライアント（Some なら DB に二重書き込み）
     vpdb: Option<crate::db::SharedVpDb>,
-    /// テスト時に config.toml への永続化を無効化
-    #[cfg(test)]
-    disable_persist: bool,
 }
 
 impl ProcessManagerCapability {
@@ -134,8 +131,6 @@ impl ProcessManagerCapability {
             config: None,
             vp_binary_path: None,
             vpdb: None,
-            #[cfg(test)]
-            disable_persist: true,
         }
     }
 
@@ -375,11 +370,10 @@ impl ProcessManagerCapability {
             }
         }
 
-        self.persist_projects().await;
         Ok(info)
     }
 
-    /// プロジェクトを削除（+ DB / config.toml に永続化）
+    /// プロジェクトを削除（+ DB に永続化）
     pub async fn remove_project(&self, path: &str) -> CapabilityResult<()> {
         let key = normalize_path_key(&PathBuf::from(path));
 
@@ -412,11 +406,10 @@ impl ProcessManagerCapability {
             }
         }
 
-        self.persist_projects().await;
         Ok(())
     }
 
-    /// プロジェクト名を変更（+ DB / config.toml に永続化）
+    /// プロジェクト名を変更（+ DB に永続化）
     pub async fn rename_project(&self, path: &str, new_name: &str) -> CapabilityResult<()> {
         if new_name.trim().is_empty() {
             return Err(CapabilityError::Other(
@@ -445,13 +438,10 @@ impl ProcessManagerCapability {
             }
         }
 
-        self.persist_projects().await;
         Ok(())
     }
 
-    /// プロジェクトの並び順を更新（+ DB / config.toml に永続化）
-    ///
-    /// paths の順序で config.toml に書き出す。
+    /// プロジェクトの並び順を更新（+ DB に永続化）
     pub async fn reorder_projects(&self, paths: &[String]) -> CapabilityResult<()> {
         // raw paths を正規化して HashMap キーと一致させる
         let normalized: Vec<String> = paths
@@ -468,53 +458,7 @@ impl ProcessManagerCapability {
             }
         }
 
-        self.persist_projects_ordered(&normalized).await;
         Ok(())
-    }
-
-    /// projects を config.toml に永続化（project_order の順序で書き出す）
-    async fn persist_projects(&self) {
-        #[cfg(test)]
-        if self.disable_persist {
-            return;
-        }
-        let order = self.project_order.read().await.clone();
-        self.persist_projects_ordered(&order).await;
-    }
-
-    /// 指定順序で config.toml に永続化
-    async fn persist_projects_ordered(&self, order: &[String]) {
-        let projects = self.projects.read().await;
-
-        let mut config = Config::load().unwrap_or_default();
-        config.projects = order
-            .iter()
-            .filter_map(|key| {
-                projects.get(key).map(|info| crate::config::ProjectConfig {
-                    name: info.name.clone(),
-                    path: info.path.to_string_lossy().to_string(),
-                    port: info.port,
-                })
-            })
-            .collect();
-
-        // order に含まれないプロジェクトも末尾に追加
-        let order_set: std::collections::HashSet<&String> = order.iter().collect();
-        for (key, info) in projects.iter() {
-            if !order_set.contains(key) {
-                config.projects.push(crate::config::ProjectConfig {
-                    name: info.name.clone(),
-                    path: info.path.to_string_lossy().to_string(),
-                    port: info.port,
-                });
-            }
-        }
-
-        if let Err(e) = config.save() {
-            tracing::error!("config.toml 永続化失敗: {}", e);
-        } else {
-            tracing::info!("config.toml 永続化完了: {} projects", config.projects.len());
-        }
     }
 
     /// Processを起動
