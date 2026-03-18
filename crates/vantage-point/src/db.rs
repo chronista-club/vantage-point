@@ -1,8 +1,9 @@
 //! SurrealDB 統合モジュール
 //!
 //! VP の状態管理を SurrealDB サーバーに統一する。
-//! TheWorld が SurrealDB サーバープロセスを子プロセスとして起動し、
+//! SurrealDB は独立デーモンとして起動し（`vp db start` / TheWorld 起動時に自動起動）、
 //! 全クライアント（TheWorld, SP, Native App, Canvas）が同一 DB に接続する。
+//! TheWorld が停止しても SurrealDB は継続稼働する。
 //!
 //! ## 接続方式
 //!
@@ -20,7 +21,6 @@
 //! - `notifications`: CC 通知
 
 use std::path::PathBuf;
-use std::process::Child;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -138,11 +138,7 @@ impl VpDb {
                     // 名前空間・DB を選択
                     db.use_ns(NS).use_db(DB_NAME).await?;
 
-                    tracing::info!(
-                        "SurrealDB 接続成功 ({}), attempt={}",
-                        endpoint,
-                        attempt + 1
-                    );
+                    tracing::info!("SurrealDB 接続成功 ({}), attempt={}", endpoint, attempt + 1);
                     return Ok(Self { db });
                 }
                 Err(e) => {
@@ -347,11 +343,58 @@ impl VpDb {
     }
 }
 
-/// SurrealDB サーバープロセスを子プロセスとして起動
+// =============================================================================
+// SurrealDB デーモン管理（PID ファイルベース）
+//
+// TheWorld と同様の独立デーモン方式。
+// - 起動時: DB が上がっていなければ自動起動
+// - 終了時: DB は止めない（独立デーモンとして生存し続ける）
+// - 再起動: `vp db restart` でいつでも再起動可能
+// =============================================================================
+
+/// SurrealDB の PID ファイルパス
+fn surreal_pid_path() -> PathBuf {
+    PathBuf::from("/tmp/vantage-point/surreal.pid")
+}
+
+/// SurrealDB が稼働中か確認（PID ファイルベース）
+pub fn is_surreal_running() -> Option<u32> {
+    let path = surreal_pid_path();
+    let content = std::fs::read_to_string(&path).ok()?;
+    let pid: u32 = content.trim().parse().ok()?;
+
+    // kill(pid, 0) の結果を errno も含めて判定する。
+    // - 戻り値 0: プロセスが存在し、シグナルを送れる
+    // - 戻り値 -1 + ESRCH: プロセスが存在しない → ゴースト
+    // - 戻り値 -1 + EPERM: 権限なし（プロセスは存在する。別ユーザーが PID を再使用）→ alive 扱い
+    let alive = i32::try_from(pid).is_ok_and(|pid_i32| {
+        let ret = unsafe { libc::kill(pid_i32, 0) };
+        if ret == 0 {
+            true
+        } else {
+            // EPERM: プロセスは存在するが権限がない（alive とみなす）
+            let err = std::io::Error::last_os_error();
+            err.raw_os_error() == Some(libc::EPERM)
+        }
+    });
+    if alive {
+        Some(pid)
+    } else {
+        // ゴースト PID ファイルを掃除
+        let _ = std::fs::remove_file(&path);
+        None
+    }
+}
+
+/// SurrealDB がまだ起動していなければバックグラウンドで自動起動
 ///
-/// `surreal start` をバックグラウンドで起動し、Child ハンドルを返す。
-/// 呼び出し元が Child を保持し、TheWorld 停止時に kill する。
-pub fn spawn_surreal_server(port: u16, password: &str) -> Result<Child> {
+/// 既に稼働中ならその PID を返す。
+pub fn ensure_surreal_running(port: u16, password: &str) -> Result<u32> {
+    if let Some(pid) = is_surreal_running() {
+        tracing::info!("SurrealDB は既に起動中 (pid={})", pid);
+        return Ok(pid);
+    }
+
     let data_dir = db_data_dir();
     std::fs::create_dir_all(&data_dir)?;
 
@@ -390,43 +433,79 @@ pub fn spawn_surreal_server(port: u16, password: &str) -> Result<Child> {
             )
         })?;
 
-    tracing::info!("SurrealDB サーバー起動 (pid={})", child.id());
-    Ok(child)
+    let pid = child.id();
+
+    // child をここでスコープ外に出して drop する。
+    // Rust の Child::drop は wait() を呼ばないため、プロセスはデタッチされて独立デーモンとして継続する。
+    // （意図的。stop は PID ファイル + SIGTERM/SIGKILL で行う）
+    drop(child);
+
+    // PID ファイルに書き出し
+    let pid_path = surreal_pid_path();
+    if let Some(parent) = pid_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(&pid_path, pid.to_string());
+
+    tracing::info!("SurrealDB サーバー起動 (pid={})", pid);
+    Ok(pid)
 }
 
-/// SurrealDB 子プロセスを停止
-pub fn stop_surreal_server(child: &mut Child) {
-    let pid = child.id();
+/// SurrealDB デーモンを停止
+///
+/// SIGTERM → 2秒待ち → SIGKILL のフォールバック付き。
+pub fn stop_surreal() -> Option<u32> {
+    let pid = is_surreal_running()?;
     tracing::info!("SurrealDB サーバー停止中 (pid={})", pid);
 
-    // SIGTERM を送信
-    if let Ok(pid_i32) = i32::try_from(pid) {
-        unsafe {
-            libc::kill(pid_i32, libc::SIGTERM);
+    let pid_i32 = match i32::try_from(pid) {
+        Ok(p) => p,
+        Err(_) => {
+            let _ = std::fs::remove_file(surreal_pid_path());
+            return Some(pid);
         }
+    };
+
+    // SIGTERM を送信
+    unsafe {
+        libc::kill(pid_i32, libc::SIGTERM);
     }
 
     // 最大 2 秒待つ
     for _ in 0..20 {
-        match child.try_wait() {
-            Ok(Some(_)) => {
-                tracing::info!("SurrealDB サーバー停止完了 (pid={})", pid);
-                return;
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        // ESRCH（プロセスなし）のみ停止完了とみなす。EPERM は alive 扱い。
+        let alive = unsafe {
+            let ret = libc::kill(pid_i32, 0);
+            if ret == 0 {
+                true
+            } else {
+                let err = std::io::Error::last_os_error();
+                err.raw_os_error() == Some(libc::EPERM)
             }
-            Ok(None) => {
-                std::thread::sleep(std::time::Duration::from_millis(100));
-            }
-            Err(e) => {
-                tracing::warn!("SurrealDB プロセス状態確認失敗: {}", e);
-                return;
-            }
+        };
+        if !alive {
+            let _ = std::fs::remove_file(surreal_pid_path());
+            tracing::info!("SurrealDB サーバー停止完了 (pid={})", pid);
+            return Some(pid);
         }
     }
 
     // タイムアウト → SIGKILL
     tracing::warn!("SurrealDB SIGTERM タイムアウト、SIGKILL (pid={})", pid);
-    let _ = child.kill();
-    let _ = child.wait();
+    unsafe {
+        libc::kill(pid_i32, libc::SIGKILL);
+    }
+    let _ = std::fs::remove_file(surreal_pid_path());
+    Some(pid)
+}
+
+/// SurrealDB デーモンを再起動
+pub fn restart_surreal(port: u16, password: &str) -> Result<u32> {
+    stop_surreal();
+    // 停止完了を少し待つ
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    ensure_surreal_running(port, password)
 }
 
 // =============================================================================

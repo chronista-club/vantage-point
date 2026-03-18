@@ -530,40 +530,35 @@ pub async fn run_world(port: u16) -> Result<()> {
     // SurrealDB 認証パスワードを取得（なければ生成）
     let db_password = crate::db::ensure_db_password();
 
-    // SurrealDB サーバーを子プロセスとして起動
-    let mut surreal_child = match crate::db::spawn_surreal_server(crate::db::SURREAL_PORT, &db_password) {
-        Ok(child) => {
+    // SurrealDB デーモンを自動起動（未起動なら起動、起動済みならスキップ）
+    // TheWorld 終了時には SurrealDB は止めない（独立デーモン）
+    match crate::db::ensure_surreal_running(crate::db::SURREAL_PORT, &db_password) {
+        Ok(pid) => {
             tracing::info!(
-                "SurrealDB サーバー起動 (pid={}, port={})",
-                child.id(),
+                "SurrealDB 起動済み (pid={}, port={})",
+                pid,
                 crate::db::SURREAL_PORT
             );
-            Some(child)
         }
         Err(e) => {
-            tracing::warn!("SurrealDB サーバー起動失敗（DB なしで継続）: {}", e);
-            None
+            tracing::warn!("SurrealDB 起動失敗（DB なしで継続）: {}", e);
         }
-    };
+    }
 
     // SurrealDB に接続してスキーマ定義
-    let vpdb = if surreal_child.is_some() {
+    let vpdb: Option<crate::db::SharedVpDb> =
         match crate::db::VpDb::connect(crate::db::SURREAL_PORT, &db_password, 30).await {
             Ok(db) => {
                 if let Err(e) = db.define_schema().await {
                     tracing::warn!("SurrealDB スキーマ定義失敗: {}", e);
                 }
-                Some(db)
+                Some(std::sync::Arc::new(db))
             }
             Err(e) => {
-                tracing::warn!("SurrealDB 接続失敗: {}", e);
+                tracing::warn!("SurrealDB 接続失敗（DB なしで継続）: {}", e);
                 None
             }
-        }
-    } else {
-        None
-    };
-    let vpdb: Option<crate::db::SharedVpDb> = vpdb.map(std::sync::Arc::new);
+        };
 
     // VpDb を ProcessManagerCapability に注入し、DB からプロジェクトを再読み込み
     // （initialize 時点では vpdb 未設定のため config.toml から読み込まれている。
@@ -650,10 +645,8 @@ pub async fn run_world(port: u16) -> Result<()> {
         }
     }
 
-    // SurrealDB 子プロセスを停止
-    if let Some(ref mut child) = surreal_child {
-        crate::db::stop_surreal_server(child);
-    }
+    // SurrealDB は独立デーモンなので TheWorld 終了時には止めない
+    // 再起動が必要な場合は `vp db restart` を使用
 
     // PID ファイル削除
     process::remove_pid_file();
