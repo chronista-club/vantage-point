@@ -485,7 +485,7 @@ impl VantageMcp {
                     ));
                     return Err(McpError::internal_error(
                         format!(
-                            "Process 通信失敗 ({}): {}. Auto-start failed. Run `vp start` manually.",
+                            "Process 通信失敗 ({}): {}. Auto-start failed. Run `vp sp start` manually.",
                             endpoint, e
                         ),
                         None,
@@ -701,7 +701,7 @@ impl VantageMcp {
 
     /// Process が見つからない場合に自動起動する
     ///
-    /// `vp start --headless` をバックグラウンドで spawn し、
+    /// `vp sp start` をバックグラウンドで spawn し、
     /// health check ポーリングで起動完了を待つ。
     /// 成功したら `process_url` を更新し、新しい URL を返す。
     async fn auto_start_process(&self, endpoint: &str) -> Option<String> {
@@ -719,13 +719,10 @@ impl VantageMcp {
             format!("Process 自動起動: project_dir={}", cwd_str),
         ));
 
-        // vp start --headless をデタッチ実行
+        // vp sp start をデタッチ実行
         let vp_bin = std::env::current_exe().unwrap_or_else(|_| "vp".into());
         let spawn_result = std::process::Command::new(&vp_bin)
-            .arg("start")
-            .arg("--headless")
-            .arg("-C")
-            .arg(&cwd_str)
+            .args(["sp", "start", "-C", &cwd_str])
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -737,7 +734,7 @@ impl VantageMcp {
                 &tid,
                 "auto_start",
                 "ERROR",
-                format!("vp start spawn 失敗: {}", e),
+                format!("vp sp start spawn 失敗: {}", e),
             ));
             return None;
         }

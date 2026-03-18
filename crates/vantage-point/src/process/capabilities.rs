@@ -151,6 +151,7 @@ impl ProcessCapabilities {
     pub fn start_event_bridge(
         &self,
         hub_sender: tokio::sync::broadcast::Sender<crate::protocol::ProcessMessage>,
+        shutdown_token: tokio_util::sync::CancellationToken,
     ) -> tokio::task::JoinHandle<()> {
         let event_bus = self.event_bus.clone();
 
@@ -158,12 +159,22 @@ impl ProcessCapabilities {
             // EventBus を購読
             let mut subscription = event_bus.subscribe("process-bridge", "*").await;
 
-            while let Some(event) = subscription.recv().await {
-                // CapabilityEvent を ProcessMessage に変換
-                let process_msg = capability_event_to_process_message(&event);
-
-                // Hub にブロードキャスト
-                let _ = hub_sender.send(process_msg);
+            loop {
+                tokio::select! {
+                    _ = shutdown_token.cancelled() => {
+                        tracing::info!("EventBus bridge: shutdown");
+                        break;
+                    }
+                    event = subscription.recv() => {
+                        match event {
+                            Some(event) => {
+                                let process_msg = capability_event_to_process_message(&event);
+                                let _ = hub_sender.send(process_msg);
+                            }
+                            None => break,
+                        }
+                    }
+                }
             }
         })
     }

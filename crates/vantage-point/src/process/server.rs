@@ -62,8 +62,8 @@ pub async fn run(
 
     let hub = Hub::new();
 
-    // Start event bridge: EventBus -> Hub
-    let _event_bridge = capabilities.start_event_bridge(hub.sender());
+    // Start event bridge: EventBus -> Hub（shutdown token で停止可能）
+    let _event_bridge = capabilities.start_event_bridge(hub.sender(), shutdown_token.clone());
     tracing::info!("Capability event bridge started");
 
     // Terminal チャネル認証トークンを生成
@@ -85,18 +85,27 @@ pub async fn run(
             None
         };
 
-    // TopicRouter 初期化 + Hub → TopicRouter ブリッジ
+    // TopicRouter 初期化 + Hub → TopicRouter ブリッジ（shutdown token で停止可能）
     let topic_router = Arc::new(TopicRouter::new());
     {
         let router_clone = topic_router.clone();
         let mut hub_rx = hub.subscribe();
+        let shutdown = shutdown_token.clone();
         tokio::spawn(async move {
             loop {
-                match hub_rx.recv().await {
-                    Ok(msg) => router_clone.route(msg).await,
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                        tracing::warn!("TopicRouter lagged: {} messages dropped", n);
+                tokio::select! {
+                    _ = shutdown.cancelled() => {
+                        tracing::info!("TopicRouter bridge: shutdown");
+                        break;
+                    }
+                    result = hub_rx.recv() => {
+                        match result {
+                            Ok(msg) => router_clone.route(msg).await,
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                                tracing::warn!("TopicRouter lagged: {} messages dropped", n);
+                            }
+                        }
                     }
                 }
             }
@@ -108,32 +117,45 @@ pub async fn run(
 
     // Notification ブリッジ: Mailbox "notify" → DistributedNotification（VP-24）
     // Mailbox に送られた Notification メッセージを macOS DistributedNotification に変換
+    // shutdown token で停止可能
     {
         let notify_handle = capabilities.mailbox_router.register("notify").await;
         let project_dir_clone = project_dir.clone();
+        let shutdown = shutdown_token.clone();
         tokio::spawn(async move {
-            while let Some(msg) = notify_handle.recv().await {
-                if msg.kind == crate::capability::mailbox::MessageKind::Notification {
-                    let project = msg
-                        .payload
-                        .get("project")
-                        .and_then(|v| v.as_str())
-                        .filter(|s| !s.is_empty())
-                        .unwrap_or_else(|| {
-                            // プロジェクト名が未指定なら project_dir から推定
-                            project_dir_clone
-                                .rsplit('/')
-                                .find(|s| !s.is_empty())
-                                .unwrap_or("unknown")
-                        })
-                        .to_string();
-                    let message = msg
-                        .payload
-                        .get("message")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("完了")
-                        .to_string();
-                    crate::notify::post_cc_notification(&project, &message);
+            loop {
+                tokio::select! {
+                    _ = shutdown.cancelled() => {
+                        tracing::info!("Notification bridge: shutdown");
+                        break;
+                    }
+                    msg = notify_handle.recv() => {
+                        match msg {
+                            Some(msg) if msg.kind == crate::capability::mailbox::MessageKind::Notification => {
+                                let project = msg
+                                    .payload
+                                    .get("project")
+                                    .and_then(|v| v.as_str())
+                                    .filter(|s| !s.is_empty())
+                                    .unwrap_or_else(|| {
+                                        project_dir_clone
+                                            .rsplit('/')
+                                            .find(|s| !s.is_empty())
+                                            .unwrap_or("unknown")
+                                    })
+                                    .to_string();
+                                let message = msg
+                                    .payload
+                                    .get("message")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("完了")
+                                    .to_string();
+                                crate::notify::post_cc_notification(&project, &message);
+                            }
+                            Some(_) => {} // 非 Notification メッセージは無視
+                            None => break, // チャネル閉鎖
+                        }
+                    }
                 }
             }
         });
@@ -505,7 +527,7 @@ pub async fn run_world(port: u16) -> Result<()> {
     // （バインド前に書くと、失敗時に既存デーモンの PID が上書きされ制御不能になる）
     process::write_pid_file()?;
 
-    // Clone world for shutdown
+    // Clone for shutdown
     let world_for_shutdown = world_cap.clone();
 
     // Daemon QUIC サーバー起動（PTY セッション管理 + Registry チャネル、同一ポートで UDP/QUIC）
@@ -567,10 +589,16 @@ pub async fn run_world(port: u16) -> Result<()> {
     health_monitor.abort();
     daemon_handle.abort();
 
-    // Shutdown world capability
+    // Shutdown capabilities
     tracing::info!("Shutting down World...");
     if let Err(e) = world_for_shutdown.write().await.shutdown().await {
         tracing::warn!("Error during world shutdown: {}", e);
+    }
+    {
+        let mut update = update_cap.write().await;
+        if let Err(e) = update.shutdown().await {
+            tracing::warn!("Error during update shutdown: {}", e);
+        }
     }
 
     // PID ファイル削除

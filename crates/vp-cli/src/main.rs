@@ -1,11 +1,12 @@
 //! Vantage Point CLI — AI協働開発プラットフォーム
 //!
 //! Usage:
-//!   vp start    # Processを起動（HTTP + WebSocket）
-//!   vp ps       # 稼働中インスタンス一覧
-//!   vp mcp      # MCPサーバーとして起動（stdio）
-//!   vp daemon   # デーモンプロセス管理
-//!   vp midi     # MIDIハードウェア操作
+//!   vp            # 稼働中インスタンス一覧（vp ps）
+//!   vp sp start   # SP サーバーを起動
+//!   vp hd start   # HD (Claude CLI) を起動
+//!   vp hd attach  # HD に TUI 接続
+//!   vp mcp        # MCPサーバーとして起動（stdio）
+//!   vp world      # TheWorld デーモン管理
 //!
 //! Environment variables:
 //!   VANTAGE_DEBUG=none|simple|detail  # デバッグ表示モード
@@ -16,14 +17,12 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use vantage_point::cli::{self, DebugModeArg, parse_debug_env};
+use vantage_point::cli::{self, parse_debug_env};
 use vantage_point::commands;
 use vantage_point::config::Config;
-use vantage_point::protocol::DebugMode;
-use vantage_point::{mcp, midi, tray};
+use vantage_point::mcp;
 
 use commands::canvas_cmd::CanvasCommands;
-use commands::daemon::DaemonCommands;
 use commands::file_cmd::FileCommands;
 use commands::midi::MidiCommands;
 use commands::pane::PaneCommands;
@@ -39,72 +38,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Processを起動（HTTPサーバー + WebSocketハブ）[デフォルト]
-    Start {
-        /// プロジェクト名またはインデックス（省略時はcwd自動検出）
-        #[arg()]
-        target: Option<String>,
-
-        /// 待ち受けポート番号
-        #[arg(short, long)]
-        port: Option<u16>,
-
-        /// ネイティブウィンドウモード（Unison ブリッジ）
-        #[arg(long)]
-        gui: bool,
-
-        /// ヘッドレスモード（HTTPサーバーのみ）
-        #[arg(long)]
-        headless: bool,
-
-        /// システムブラウザでWebUIを開く
-        #[arg(long)]
-        browser: bool,
-
-        /// デバッグ表示モード（VANTAGE_DEBUG環境変数より優先）
-        #[arg(long, short = 'd', value_enum)]
-        debug: Option<DebugModeArg>,
-
-        /// プロジェクトディレクトリ（targetより優先）
-        #[arg(long, short = 'C')]
-        project_dir: Option<String>,
-
-        /// MIDI入力を有効化（ポート番号または名前パターン）
-        #[arg(long, short = 'm')]
-        midi: Option<String>,
-    },
-    /// Processを停止
-    Stop {
-        /// プロジェクト名またはインデックス（省略時はcwd自動検出）
-        #[arg()]
-        target: Option<String>,
-    },
-    /// Processを再起動（セッション状態を保持）
-    Restart {
-        /// プロジェクト名またはインデックス（省略時はcwd自動検出）
-        #[arg()]
-        target: Option<String>,
-
-        /// ネイティブWebViewの代わりにシステムブラウザを使用
-        #[arg(long)]
-        browser: bool,
-
-        /// ネイティブWebViewを開く（デフォルトはヘッドレス）
-        #[arg(long)]
-        gui: bool,
-    },
     /// 全 Process + TheWorld + Canvas を一括再起動
     #[command(alias = "ra")]
     RestartAll,
     /// 稼働中のインスタンス一覧
     #[command(alias = "list")]
     Ps,
-    /// 指定インスタンスのWebUIを開く
-    Open {
-        /// プロジェクト名またはインデックス（省略時はcwd自動検出）
-        #[arg()]
-        target: Option<String>,
-    },
     /// 設定と登録済みプロジェクトを表示
     Config,
     /// MCPサーバーとして起動（stdio JSON-RPC）
@@ -125,38 +64,15 @@ enum Commands {
     #[command(subcommand)]
     File(FileCommands),
 
-    // --- App ---
     /// TheWorld 管理 — 全 Process を統括する常駐プロセス
     #[command(alias = "conductor")]
     World {
         /// 待ち受けポート番号（サブコマンド省略時に使用）
         #[arg(short, long, default_value_t = cli::WORLD_PORT)]
         port: u16,
-        /// サブコマンド（省略時は start として動作、後方互換: `vp world --port 32000`）
+        /// サブコマンド（省略時は start として動作）
         #[command(subcommand)]
         command: Option<commands::world_cmd::WorldCommands>,
-    },
-    /// VantagePoint.app を起動（TheWorld も自動起動）
-    App {
-        /// TheWorld ポート番号
-        #[arg(short, long, default_value_t = cli::WORLD_PORT)]
-        port: u16,
-        /// TheWorld 起動をスキップ（既に起動している場合）
-        #[arg(long)]
-        no_daemon: bool,
-    },
-    /// メニューバーアイコンとして起動（システムトレイ）
-    Tray {
-        /// MIDI入力を有効化（ポート番号または名前パターン）
-        #[arg(long, short = 'm')]
-        midi: Option<String>,
-    },
-
-    /// TUI コンソール（ratatui ヘッダー/フッター + tmux パススルー）
-    Tui {
-        /// tmux セッション名（省略時は cwd から自動検出）
-        #[arg(long, short = 's')]
-        session: Option<String>,
     },
 
     /// SP サーバー管理（HTTP/QUIC サーバーのライフサイクル）
@@ -167,10 +83,6 @@ enum Commands {
     #[command(subcommand)]
     Hd(commands::hd_cmd::HdCommands),
 
-    // --- Groups ---
-    /// デーモンプロセス管理（Process管理 + ヘルスチェック）
-    #[command(subcommand)]
-    Daemon(DaemonCommands),
     /// MIDIハードウェア操作
     #[command(subcommand)]
     Midi(MidiCommands),
@@ -186,63 +98,16 @@ fn main() -> Result<()> {
     // Load config
     let config = Config::load().unwrap_or_default();
 
-    // Default to Start if no command given
-    let command = cli.command.unwrap_or(Commands::Start {
-        target: None,
-        port: None,
-        gui: false,
-        headless: false,
-        browser: false,
-        debug: None,
-        project_dir: None,
-        midi: None,
-    });
+    // 引数なし → vp ps（稼働中インスタンス一覧）
+    let command = cli.command.unwrap_or(Commands::Ps);
 
     // Initialize tracing
-    let debug_mode_for_tracing = match &command {
-        Commands::Start { debug, .. } => debug
-            .as_ref()
-            .map(|d| DebugMode::from(*d))
-            .or_else(parse_debug_env)
-            .unwrap_or_default(),
-        Commands::Restart { .. } => parse_debug_env().unwrap_or_default(),
-        _ => parse_debug_env().unwrap_or_default(),
-    };
-    // TUI モードでは tracing 出力をファイルにリダイレクト（stderr 漏れ防止）
-    let tui_mode = matches!(&command, Commands::Start { headless, gui, .. } if !headless && !gui);
-    cli::init_tracing(debug_mode_for_tracing, tui_mode);
+    let debug_mode_for_tracing = parse_debug_env().unwrap_or_default();
+    cli::init_tracing(debug_mode_for_tracing, false);
 
     match command {
-        // Core
-        Commands::Start {
-            target,
-            port,
-            gui,
-            headless,
-            browser,
-            debug,
-            project_dir,
-            midi,
-        } => commands::start::execute(commands::start::StartOptions {
-            target,
-            port,
-            gui,
-            headless,
-            browser,
-            debug,
-            project_dir,
-            midi,
-            config: &config,
-        }),
-        Commands::Stop { target } => cli::stop_by_target(target.as_deref(), &config),
-        Commands::Restart {
-            target,
-            browser,
-            gui,
-        } => commands::restart::execute(target.as_deref(), browser, !gui, &config),
         Commands::RestartAll => commands::restart_all::execute(),
         Commands::Ps => cli::list_instances(&config),
-        Commands::Open { target } => cli::open_by_target(target.as_deref(), &config),
         Commands::Config => commands::config::execute(&config),
         Commands::Mcp => {
             let rt = tokio::runtime::Runtime::new()?;
@@ -253,55 +118,13 @@ fn main() -> Result<()> {
         Commands::Pane(cmd) => commands::pane::execute(cmd, &config),
         Commands::File(cmd) => commands::file_cmd::execute(cmd, &config),
 
-        // App
         Commands::World { port, command } => {
-            // サブコマンド省略時は start として動作（後方互換: `vp world --port 32000`）
             let cmd = command.unwrap_or(commands::world_cmd::WorldCommands::Start { port });
             commands::world_cmd::execute(cmd)
         }
-        Commands::App { port, no_daemon } => commands::app::execute(port, no_daemon),
-        Commands::Tray { midi } => {
-            // MIDI をバックグラウンドスレッドで起動
-            if let Some(ref midi_arg) = midi {
-                let mut config = midi::MidiConfig::default();
-                config
-                    .note_actions
-                    .insert(36, midi::MidiAction::OpenWebUI { port: None });
-                config
-                    .note_actions
-                    .insert(37, midi::MidiAction::CancelChat { port: None });
-                config
-                    .note_actions
-                    .insert(38, midi::MidiAction::ResetSession { port: None });
-
-                let (port_idx, config) = if let Ok(idx) = midi_arg.parse::<usize>() {
-                    (Some(idx), config)
-                } else {
-                    let mut c = config;
-                    c.port_pattern = Some(midi_arg.clone());
-                    (None, c)
-                };
-
-                std::thread::spawn(move || {
-                    let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime");
-                    rt.block_on(async {
-                        if let Err(e) = midi::run_midi(port_idx, config, 33000).await {
-                            tracing::error!("MIDI error: {}", e);
-                        }
-                    });
-                });
-                tracing::info!("MIDI monitoring enabled");
-            }
-
-            tray::run_tray()
-        }
-
-        Commands::Tui { session } => commands::tui_cmd::execute(session, &config),
         Commands::Sp(cmd) => commands::sp_cmd::execute(cmd, &config),
         Commands::Hd(cmd) => commands::hd_cmd::execute(cmd, &config),
 
-        // Groups
-        Commands::Daemon(cmd) => commands::daemon::execute(cmd),
         Commands::Midi(cmd) => commands::midi::execute(cmd),
     }
 }

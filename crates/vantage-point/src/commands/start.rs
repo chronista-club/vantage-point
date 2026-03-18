@@ -1,24 +1,9 @@
-//! `vp start` コマンドの実行ロジック
+//! SP/HD 起動ユーティリティ
 //!
-//! ## アーキテクチャ
-//!
-//! ```text
-//! execute()
-//!   ├── Step 1: resolve_project()   — ターゲット → (dir, port, name)
-//!   ├── Step 2: route by mode
-//!   │     ├── --headless  → run_headless()   SP サーバー本体（blocking）
-//!   │     ├── --browser   → run_browser()    SP 確保 → ブラウザ
-//!   │     ├── --gui       → run_gui()        SP 確保 → ネイティブウィンドウ
-//!   │     └── default     → run_tui_mode()   SP 確保 → tmux + TUI
-//!   └── 共通: ensure_sp_running()            SP 未起動なら in-process spawn
-//! ```
-//!
-//! ## TUI アーキテクチャ（v2）
-//!
-//! TUI は tmux の**外**で直接 ratatui を起動する。
-//! tmux セッションは Claude CLI の永続化層として HD が管理。
-//! TUI 終了 = detach（Claude CLI は tmux 内で生き続ける）。
-//! TUI 再起動 = 既存 tmux セッションに再接続。
+//! `vp sp start` / `vp hd start` から共有されるヘルパー関数群。
+//! - `ensure_sp_running()` — SP を detached subprocess として起動
+//! - `create_tmux_session()` — Claude CLI 入りの tmux セッション作成
+//! - `is_server_responding()` — TCP 疎通チェック
 
 use std::io::{self, Read, Write};
 use std::sync::{Arc, Mutex};
@@ -41,7 +26,7 @@ use crate::resolve::{self, ResolvedTarget};
 use crate::terminal::state::TerminalState;
 use crate::tui::input::key_to_pty_bytes;
 use crate::tui::terminal_widget::TerminalView;
-/// `vp start` の起動オプション
+/// 旧 `vp start` の起動オプション（後方互換のため残存）
 pub struct StartOptions<'a> {
     pub target: Option<String>,
     pub port: Option<u16>,
@@ -66,10 +51,7 @@ struct ResolvedProject {
 // メインエントリー
 // =============================================================================
 
-/// `vp start` を実行
-///
-/// 注: 将来的に `vp sp start` + `vp hd start` に分離予定。
-/// 現時点では `vp start` が主要エントリーポイント。
+/// 旧 `vp start` エントリーポイント（現在は未使用、後方互換のため残存）
 pub fn execute(opts: StartOptions) -> Result<()> {
     let StartOptions {
         target,
@@ -790,7 +772,7 @@ fn run_tui(
         "\u{1f44b} TUI を終了しました。tmux セッション '{}' は継続中です。",
         session_name
     );
-    println!("   再接続: vp start");
+    println!("   再接続: vp hd attach");
 
     result
 }
@@ -803,36 +785,59 @@ fn run_tui(
 // SP（Star Platinum）サーバー管理
 // =============================================================================
 
-/// SP が起動していなければ in-process thread で起動する
+/// SP が起動していなければ detached subprocess として起動する
+///
+/// `vp sp start -C <dir>` を独立プロセスとして spawn し、
+/// health check で起動完了を待つ。SP はこのプロセスが終了しても生存する。
 pub fn ensure_sp_running(
     port: u16,
-    debug_mode: DebugMode,
+    _debug_mode: DebugMode,
     cap_config: CapabilityConfig,
 ) -> Result<()> {
     // TheWorld がまだ起動していなければ自動起動
     if let Err(e) = crate::daemon::process::ensure_daemon_running(crate::cli::WORLD_PORT) {
-        tracing::warn!("TheWorld 自動起動失敗（Process は続行）: {}", e);
+        tracing::warn!("TheWorld 自動起動失敗（SP は続行）: {}", e);
     }
 
-    // HTTP サーバーが実際に応答するか確認
+    // 既に起動中ならスキップ
     if is_server_responding(port) {
         tracing::info!("SP already running (port={})", port);
         return Ok(());
     }
 
-    // in-process thread で SP を起動
+    // detached subprocess として SP を起動
     tracing::info!("Starting SP server (port={})...", port);
-
-    std::thread::spawn(move || {
-        let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime");
-        rt.block_on(async {
-            if let Err(e) = crate::process::run(port, false, debug_mode, cap_config).await {
-                tracing::error!("SP server error: {}", e);
-            }
-        })
-    });
+    spawn_sp_detached(&cap_config.project_dir, Some(port))?;
 
     wait_for_ready(port)
+}
+
+/// SP を detached subprocess として spawn
+///
+/// `vp sp start -C <dir> [-p <port>]` を独立プロセスとして起動。
+/// 呼び出し元が終了しても SP は生存する。
+pub fn spawn_sp_detached(project_dir: &str, port: Option<u16>) -> Result<()> {
+    let vp_bin = crate::cli::which_vp()
+        .or_else(|| std::env::current_exe().ok())
+        .unwrap_or_else(|| "vp".into());
+
+    let mut args = vec!["sp".to_string(), "start".to_string()];
+    args.push("-C".to_string());
+    args.push(project_dir.to_string());
+    if let Some(p) = port {
+        args.push("-p".to_string());
+        args.push(p.to_string());
+    }
+
+    std::process::Command::new(&vp_bin)
+        .args(&args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("SP spawn 失敗: {}", e))?;
+
+    Ok(())
 }
 
 /// SP の HTTP サーバーが応答するまでポーリング（最大5秒）

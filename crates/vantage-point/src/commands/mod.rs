@@ -6,7 +6,6 @@ pub mod app;
 pub mod canvas;
 pub mod canvas_cmd;
 pub mod config;
-pub mod daemon;
 pub mod file_cmd;
 pub mod hd_cmd;
 pub mod midi;

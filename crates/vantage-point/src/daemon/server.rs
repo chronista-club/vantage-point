@@ -1,7 +1,7 @@
 //! Daemon の Unison QUIC サーバー
 //!
 //! session / terminal / system の3チャネルを提供。
-//! Console (vp start) からの接続を受け付け、PTY I/O を中継する。
+//! Console (vp hd attach) からの接続を受け付け、PTY I/O を中継する。
 
 use std::collections::HashMap;
 use std::sync::Arc;

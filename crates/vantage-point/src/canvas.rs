@@ -111,13 +111,32 @@ pub fn canvas_target(sp_port: u16) -> (u16, bool) {
 }
 
 /// Canvas シングルトンを停止
+///
+/// SIGTERM → 2秒待ち → SIGKILL のフォールバック付き。
 pub fn stop_canvas() -> Option<u32> {
     let pid = find_running_canvas()?;
     unsafe {
         libc::kill(pid as i32, libc::SIGTERM);
     }
+
+    // SIGTERM 後にプロセス終了を待つ（最大2秒）
+    for _ in 0..20 {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let alive = unsafe { libc::kill(pid as i32, 0) == 0 };
+        if !alive {
+            remove_canvas_pid();
+            tracing::info!("Canvas stopped gracefully (pid={})", pid);
+            return Some(pid);
+        }
+    }
+
+    // タイムアウト → SIGKILL
+    tracing::warn!("Canvas SIGTERM timeout, sending SIGKILL (pid={})", pid);
+    unsafe {
+        libc::kill(pid as i32, libc::SIGKILL);
+    }
     remove_canvas_pid();
-    tracing::info!("Canvas stopped (pid={})", pid);
+    tracing::info!("Canvas force killed (pid={})", pid);
     Some(pid)
 }
 

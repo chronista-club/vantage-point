@@ -34,7 +34,7 @@ impl ProcessClient {
         {
             Ok(resp) if resp.status().is_success() => {}
             _ => bail!(
-                "Process が起動していません（port {}）。`vp start` で起動してください。",
+                "Process が起動していません（port {}）。`vp sp start` で起動してください。",
                 resolved_port
             ),
         }
@@ -76,13 +76,13 @@ fn resolve_port_from_target(target: Option<&str>, config: &Config) -> Result<u16
         ResolvedTarget::Running { port, .. } => Ok(port),
         ResolvedTarget::Configured { name, .. } => {
             bail!(
-                "プロジェクト '{}' は登録済みですが起動していません。`vp start` で起動してください。",
+                "プロジェクト '{}' は登録済みですが起動していません。`vp sp start` で起動してください。",
                 name
             )
         }
         ResolvedTarget::Cwd { .. } => {
             // resolve_target が running.json も config も見つけられなかった
-            bail!("起動中の Process が見つかりません。`vp start` で起動してください。")
+            bail!("起動中の Process が見つかりません。`vp sp start` で起動してください。")
         }
     }
 }

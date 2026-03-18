@@ -1,6 +1,6 @@
 //! Daemon への Unison チャネルクライアント
 //!
-//! Console (vp start) から Daemon に QUIC 接続し、
+//! Console (vp hd attach) から Daemon に QUIC 接続し、
 //! 3つの永続チャネル（session / terminal / system）を通じて
 //! セッション操作・PTY I/O を行う。
 //!
