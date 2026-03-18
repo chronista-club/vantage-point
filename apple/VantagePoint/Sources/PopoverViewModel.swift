@@ -232,35 +232,22 @@ class PopoverViewModel: ObservableObject {
     // MARK: - TheWorld Lifecycle
 
     private func startTheWorld() async {
-        guard let vpPath = findVpBinary() else {
-            errorMessage = "vp command not found"
+        theWorldState = .starting
+
+        // vp バイナリが見つからなければ早期リターン
+        if TheWorldClient.findVpBinary() == nil {
+            theWorldState = .disconnected
+            errorMessage = "vp command not found (~/.cargo/bin/vp)"
             return
         }
 
-        theWorldState = .starting
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: vpPath)
-        process.arguments = ["world", "start", "--port", String(TheWorldClient.defaultPort)]
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-
-        do {
-            try process.run()
-            for _ in 0 ..< 50 {
-                try? await Task.sleep(nanoseconds: 100_000_000)
-                let healthy = try? await theWorldClient.healthCheck()
-                if healthy == true {
-                    theWorldState = .connected
-                    await refresh()
-                    return
-                }
-            }
+        let started = await theWorldClient.ensureRunning()
+        if started {
+            theWorldState = .connected
+            await refresh()
+        } else {
             theWorldState = .disconnected
             errorMessage = "TheWorld startup timed out"
-        } catch {
-            theWorldState = .disconnected
-            errorMessage = "Failed to start TheWorld: \(error.localizedDescription)"
         }
     }
 
@@ -278,16 +265,5 @@ class PopoverViewModel: ObservableObject {
     func stopAutoRefresh() {
         refreshTimer?.invalidate()
         refreshTimer = nil
-    }
-
-    // MARK: - Helpers
-
-    private func findVpBinary() -> String? {
-        let candidates = [
-            FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent(".cargo/bin/vp").path,
-            "/usr/local/bin/vp",
-        ]
-        return candidates.first { FileManager.default.fileExists(atPath: $0) }
     }
 }
