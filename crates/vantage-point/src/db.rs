@@ -91,6 +91,12 @@ pub fn ensure_db_password() -> String {
                         return existing;
                     }
                 }
+                // 再読み込みも失敗した場合: 今回生成したパスワードを使い続けるが、
+                // 永続化できていないため次回起動時に再生成される。警告を残す。
+                tracing::warn!(
+                    "SurrealDB パスワードの永続化に失敗（競合）。セッション限定パスワードを使用: {}",
+                    path.display()
+                );
             }
         }
     }
@@ -580,7 +586,7 @@ pub fn ensure_surreal_running(port: u16, password: &str) -> Result<u32> {
         ])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
         .spawn()
         .map_err(|e| {
             anyhow::anyhow!(
@@ -934,5 +940,400 @@ mod tests {
         db.clear_all_processes().await.unwrap();
         let procs = db.list_processes().await.unwrap();
         assert_eq!(procs.len(), 0);
+    }
+
+    // =========================================================================
+    // define_schema 冪等性テスト
+    // =========================================================================
+
+    /// define_schema を2回呼び出しても失敗しない（IF NOT EXISTS を検証）
+    #[tokio::test]
+    async fn test_define_schema_idempotent() {
+        let db = VpDb::connect_mem().await.unwrap();
+        // 1回目
+        db.define_schema().await.unwrap();
+        // 2回目: DEFINE TABLE IF NOT EXISTS / DEFINE FIELD IF NOT EXISTS があるため再定義でもエラーにならない
+        db.define_schema()
+            .await
+            .expect("2回目の define_schema が失敗してはいけない");
+        assert!(
+            db.health().await,
+            "2回目の define_schema 後もヘルスチェックが通る"
+        );
+    }
+
+    // =========================================================================
+    // Processes エッジケーステスト
+    // =========================================================================
+
+    /// tmux_session=None を保存 → NULL として保存される
+    #[tokio::test]
+    async fn test_processes_tmux_session_none() {
+        let db = make_test_db().await;
+
+        db.upsert_process("/repos/vp", "vp", 33000, 1234, "running", None)
+            .await
+            .unwrap();
+
+        let procs = db.list_processes().await.unwrap();
+        assert_eq!(procs.len(), 1);
+        // NULL は serde_json::Value::Null として取得される
+        assert!(
+            procs[0]["tmux_session"].is_null(),
+            "tmux_session が NULL でない: {:?}",
+            procs[0]["tmux_session"]
+        );
+    }
+
+    /// 存在しない project_path を delete_process してもエラーにならない
+    #[tokio::test]
+    async fn test_processes_delete_nonexistent() {
+        let db = make_test_db().await;
+
+        // 何も INSERT せずに DELETE → エラーなし（空操作）
+        db.delete_process("/repos/nonexistent")
+            .await
+            .expect("存在しないレコードの削除はエラーにならない");
+
+        let procs = db.list_processes().await.unwrap();
+        assert_eq!(procs.len(), 0);
+    }
+
+    // =========================================================================
+    // Pane Contents CRUD テスト
+    // =========================================================================
+
+    /// 基本的な INSERT → SELECT フロー
+    #[tokio::test]
+    async fn test_pane_contents_basic_crud() {
+        let db = make_test_db().await;
+
+        db.upsert_pane_content(
+            "/repos/vp",
+            "pane-1",
+            "markdown",
+            r##"{"Markdown":"# Hello"}"##,
+            Some("テストペイン"),
+        )
+        .await
+        .unwrap();
+
+        let panes = db.list_pane_contents("/repos/vp").await.unwrap();
+        assert_eq!(panes.len(), 1);
+        assert_eq!(panes[0]["pane_id"], "pane-1");
+        assert_eq!(panes[0]["content_type"], "markdown");
+        assert_eq!(panes[0]["content"], r##"{"Markdown":"# Hello"}"##);
+        assert_eq!(panes[0]["title"], "テストペイン");
+    }
+
+    /// 同一 (project_path, pane_id) で再度 upsert → content が更新される（UPSERT 冪等性）
+    #[tokio::test]
+    async fn test_pane_contents_upsert_updates_content() {
+        let db = make_test_db().await;
+
+        db.upsert_pane_content(
+            "/repos/vp",
+            "pane-1",
+            "markdown",
+            r#"{"Markdown":"初回内容"}"#,
+            Some("初回タイトル"),
+        )
+        .await
+        .unwrap();
+
+        // 同じ pane_id で異なる content
+        db.upsert_pane_content(
+            "/repos/vp",
+            "pane-1",
+            "html",
+            r#"{"Html":"<h1>更新後</h1>"}"#,
+            Some("更新後タイトル"),
+        )
+        .await
+        .unwrap();
+
+        let panes = db.list_pane_contents("/repos/vp").await.unwrap();
+        // レコード数は1のまま（UPSERT）
+        assert_eq!(panes.len(), 1);
+        assert_eq!(panes[0]["content_type"], "html");
+        assert_eq!(panes[0]["content"], r#"{"Html":"<h1>更新後</h1>"}"#);
+        assert_eq!(panes[0]["title"], "更新後タイトル");
+    }
+
+    /// 異なる project_path のペインは list_pane_contents で見えない（プロジェクト分離）
+    #[tokio::test]
+    async fn test_pane_contents_project_isolation() {
+        let db = make_test_db().await;
+
+        db.upsert_pane_content(
+            "/repos/vp",
+            "pane-1",
+            "markdown",
+            r#"{"Markdown":"VP の内容"}"#,
+            None,
+        )
+        .await
+        .unwrap();
+
+        db.upsert_pane_content(
+            "/repos/creo",
+            "pane-1",
+            "markdown",
+            r#"{"Markdown":"Creo の内容"}"#,
+            None,
+        )
+        .await
+        .unwrap();
+
+        // VP のペイン → VP の内容だけ見える
+        let vp_panes = db.list_pane_contents("/repos/vp").await.unwrap();
+        assert_eq!(vp_panes.len(), 1);
+        assert_eq!(vp_panes[0]["content"], r#"{"Markdown":"VP の内容"}"#);
+
+        // Creo のペイン → Creo の内容だけ見える
+        let creo_panes = db.list_pane_contents("/repos/creo").await.unwrap();
+        assert_eq!(creo_panes.len(), 1);
+        assert_eq!(creo_panes[0]["content"], r#"{"Markdown":"Creo の内容"}"#);
+    }
+
+    /// clear_pane_contents は対象 project_path のみ削除（他プロジェクトに影響なし）
+    #[tokio::test]
+    async fn test_pane_contents_clear_isolates_projects() {
+        let db = make_test_db().await;
+
+        db.upsert_pane_content("/repos/vp", "pane-1", "log", r#"{"Log":[]}"#, None)
+            .await
+            .unwrap();
+        db.upsert_pane_content("/repos/creo", "pane-2", "log", r#"{"Log":[]}"#, None)
+            .await
+            .unwrap();
+
+        // VP のみクリア
+        db.clear_pane_contents("/repos/vp").await.unwrap();
+
+        let vp_panes = db.list_pane_contents("/repos/vp").await.unwrap();
+        assert_eq!(vp_panes.len(), 0, "VP のペインはクリアされている");
+
+        let creo_panes = db.list_pane_contents("/repos/creo").await.unwrap();
+        assert_eq!(creo_panes.len(), 1, "Creo のペインは残っている");
+    }
+
+    /// title が None → NULL で保存・復元できる
+    #[tokio::test]
+    async fn test_pane_contents_title_null() {
+        let db = make_test_db().await;
+
+        db.upsert_pane_content(
+            "/repos/vp",
+            "pane-notitle",
+            "url",
+            r#"{"Url":"https://example.com"}"#,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let panes = db.list_pane_contents("/repos/vp").await.unwrap();
+        assert_eq!(panes.len(), 1);
+        assert!(
+            panes[0]["title"].is_null(),
+            "title が NULL でない: {:?}",
+            panes[0]["title"]
+        );
+    }
+
+    // =========================================================================
+    // Stand Status CRUD テスト
+    // =========================================================================
+
+    /// 基本的な INSERT → SELECT フロー
+    #[tokio::test]
+    async fn test_stand_status_basic_crud() {
+        let db = make_test_db().await;
+
+        db.upsert_stand_status("/repos/vp", "heaven-door", "running", None)
+            .await
+            .unwrap();
+
+        let statuses = db.list_stand_status("/repos/vp").await.unwrap();
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(statuses[0]["stand_key"], "heaven-door");
+        assert_eq!(statuses[0]["status"], "running");
+    }
+
+    /// 同一 (project_path, stand_key) で再度 upsert → status が更新される
+    #[tokio::test]
+    async fn test_stand_status_upsert_updates_status() {
+        let db = make_test_db().await;
+
+        db.upsert_stand_status("/repos/vp", "heaven-door", "running", None)
+            .await
+            .unwrap();
+
+        db.upsert_stand_status("/repos/vp", "heaven-door", "stopped", None)
+            .await
+            .unwrap();
+
+        let statuses = db.list_stand_status("/repos/vp").await.unwrap();
+        // レコード数は1のまま（UPSERT）
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(statuses[0]["status"], "stopped");
+    }
+
+    /// detail が None → NULL で保存できる
+    #[tokio::test]
+    async fn test_stand_status_detail_null() {
+        let db = make_test_db().await;
+
+        db.upsert_stand_status("/repos/vp", "paisley-park", "idle", None)
+            .await
+            .unwrap();
+
+        let statuses = db.list_stand_status("/repos/vp").await.unwrap();
+        assert_eq!(statuses.len(), 1);
+        assert!(
+            statuses[0]["detail"].is_null(),
+            "detail が NULL でない: {:?}",
+            statuses[0]["detail"]
+        );
+    }
+
+    /// detail に JSON オブジェクト → 保存・復元できる
+    #[tokio::test]
+    async fn test_stand_status_detail_with_json() {
+        let db = make_test_db().await;
+
+        let detail = serde_json::json!({
+            "canvas_open": true,
+            "pane_count": 3
+        });
+
+        db.upsert_stand_status("/repos/vp", "paisley-park", "running", Some(&detail))
+            .await
+            .unwrap();
+
+        let statuses = db.list_stand_status("/repos/vp").await.unwrap();
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(statuses[0]["detail"]["canvas_open"], true);
+        assert_eq!(statuses[0]["detail"]["pane_count"], 3);
+    }
+
+    /// 異なる project_path の stand_status は分離される
+    #[tokio::test]
+    async fn test_stand_status_project_isolation() {
+        let db = make_test_db().await;
+
+        db.upsert_stand_status("/repos/vp", "heaven-door", "running", None)
+            .await
+            .unwrap();
+        db.upsert_stand_status("/repos/creo", "heaven-door", "stopped", None)
+            .await
+            .unwrap();
+
+        let vp_statuses = db.list_stand_status("/repos/vp").await.unwrap();
+        assert_eq!(vp_statuses.len(), 1);
+        assert_eq!(vp_statuses[0]["status"], "running");
+
+        let creo_statuses = db.list_stand_status("/repos/creo").await.unwrap();
+        assert_eq!(creo_statuses.len(), 1);
+        assert_eq!(creo_statuses[0]["status"], "stopped");
+    }
+
+    // =========================================================================
+    // Mailbox 配信フローテスト
+    // =========================================================================
+
+    /// delivered=false で INSERT → 取得できる
+    /// delivered=true に UPDATE → 未配信一覧から消える
+    #[tokio::test]
+    async fn test_mailbox_delivered_flag() {
+        let db = make_test_db().await;
+
+        // 未配信メッセージを挿入（RETURN AFTER で挿入後レコードを取得）
+        let mut result = db
+            .inner()
+            .query(
+                "INSERT INTO mailbox {
+                    from_addr: 'mcp',
+                    to_addr: 'notify',
+                    kind: 'notification',
+                    payload: { message: '配信テスト' },
+                    delivered: false,
+                    created_at: time::now()
+                } RETURN AFTER",
+            )
+            .await
+            .unwrap();
+        let inserted: Vec<serde_json::Value> = result.take(0).unwrap();
+        assert_eq!(inserted.len(), 1);
+        let msg_id = inserted[0]["id"].as_str().unwrap().to_string();
+
+        // 未配信一覧に含まれる
+        let mut result = db
+            .inner()
+            .query("SELECT * FROM mailbox WHERE to_addr = 'notify' AND delivered = false")
+            .await
+            .unwrap();
+        let pending: Vec<serde_json::Value> = result.take(0).unwrap();
+        assert_eq!(pending.len(), 1, "未配信メッセージが1件あるはず");
+
+        // delivered=true に更新（type::record はレコード ID を RecordId 型に変換する SurrealDB v2 の関数）
+        db.inner()
+            .query("UPDATE type::record($id) SET delivered = true")
+            .bind(("id", msg_id))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+
+        // 未配信一覧から消える
+        let mut result = db
+            .inner()
+            .query("SELECT * FROM mailbox WHERE to_addr = 'notify' AND delivered = false")
+            .await
+            .unwrap();
+        let pending: Vec<serde_json::Value> = result.take(0).unwrap();
+        assert_eq!(
+            pending.len(),
+            0,
+            "配信済みメッセージは未配信一覧に出てはいけない"
+        );
+
+        // delivered=true のレコードは全件取得では見える
+        let mut result = db
+            .inner()
+            .query("SELECT * FROM mailbox WHERE to_addr = 'notify'")
+            .await
+            .unwrap();
+        let all: Vec<serde_json::Value> = result.take(0).unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0]["delivered"], true);
+    }
+
+    // =========================================================================
+    // LIVE SELECT テスト
+    // =========================================================================
+
+    /// kv-mem で live_processes を開始してストリームが取得できる（接続確認）
+    #[tokio::test]
+    async fn test_live_processes_stream_connects() {
+        let db = make_test_db().await;
+
+        // ストリーム開始がエラーにならないことを確認
+        let _stream = db
+            .live_processes()
+            .await
+            .expect("live_processes ストリームの開始が失敗してはいけない");
+    }
+
+    /// kv-mem で live_projects を開始してストリームが取得できる（接続確認）
+    #[tokio::test]
+    async fn test_live_projects_stream_connects() {
+        let db = make_test_db().await;
+
+        let _stream = db
+            .live_projects()
+            .await
+            .expect("live_projects ストリームの開始が失敗してはいけない");
     }
 }

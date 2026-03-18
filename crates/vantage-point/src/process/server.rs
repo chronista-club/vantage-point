@@ -114,12 +114,18 @@ pub async fn run(
 
     // SurrealDB に接続（VP-21: SP ローカルテーブル移行）
     // 接続失敗時は warn して DB なしで継続（フォールバック）
+    // スキーマ定義も行う（TheWorld 未起動の SP 単独起動時でも正常動作するよう冪等に実行）
     let vpdb: Option<crate::db::SharedVpDb> = {
         let password = crate::db::ensure_db_password();
         match crate::db::VpDb::connect(crate::db::SURREAL_PORT, &password, 10).await {
             Ok(db) => {
-                tracing::info!("SP: SurrealDB 接続成功 (port={})", crate::db::SURREAL_PORT);
-                Some(std::sync::Arc::new(db))
+                if let Err(e) = db.define_schema().await {
+                    tracing::warn!("SP: SurrealDB スキーマ定義失敗（DB なしで継続）: {}", e);
+                    None
+                } else {
+                    tracing::info!("SP: SurrealDB 接続成功 (port={})", crate::db::SURREAL_PORT);
+                    Some(std::sync::Arc::new(db))
+                }
             }
             Err(e) => {
                 tracing::warn!("SP: SurrealDB 未接続、DB なしで継続: {}", e);
@@ -434,7 +440,7 @@ pub async fn run_world(port: u16) -> Result<()> {
 
     // SurrealDB に接続してスキーマ定義
     let vpdb: Option<crate::db::SharedVpDb> =
-        match crate::db::VpDb::connect(crate::db::SURREAL_PORT, &db_password, 30).await {
+        match crate::db::VpDb::connect(crate::db::SURREAL_PORT, &db_password, 100).await {
             Ok(db) => {
                 if let Err(e) = db.define_schema().await {
                     tracing::warn!("SurrealDB スキーマ定義失敗: {}", e);
@@ -641,6 +647,7 @@ pub async fn run_world(port: u16) -> Result<()> {
                 };
 
                 let mut stream = std::pin::pin!(stream);
+                let mut error_count: u32 = 0;
                 loop {
                     tokio::select! {
                         _ = shutdown.cancelled() => {
@@ -650,6 +657,7 @@ pub async fn run_world(port: u16) -> Result<()> {
                         item = stream.next() => {
                             match item {
                                 Some(Ok(notification)) => {
+                                    error_count = 0; // 成功時にリセット
                                     let action = notification.action;
                                     let data = &notification.data;
                                     let port_val = data["port"].as_u64().unwrap_or(0) as u16;
@@ -676,7 +684,17 @@ pub async fn run_world(port: u16) -> Result<()> {
                                     }
                                 }
                                 Some(Err(e)) => {
-                                    tracing::warn!("LIVE SELECT エラー: {}", e);
+                                    error_count += 1;
+                                    tracing::warn!("LIVE SELECT エラー ({}/5): {}", error_count, e);
+                                    // 連続 5 回エラーで再接続ループに移行
+                                    if error_count >= 5 {
+                                        tracing::warn!("LIVE SELECT 連続エラー → 再接続...");
+                                        tokio::select! {
+                                            _ = shutdown.cancelled() => break 'reconnect,
+                                            _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {}
+                                        }
+                                        continue 'reconnect;
+                                    }
                                 }
                                 None => {
                                     // ストリーム終了（DB 再起動など）— 再接続を試みる

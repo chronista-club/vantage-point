@@ -364,16 +364,16 @@ impl ProcessManagerCapability {
         self.project_order.write().await.push(key.clone());
 
         // DB に書き込み（正規化パスで保存）
-        if let Some(ref db) = self.vpdb {
-            if let Err(e) = db.upsert_project(name, &key, sort_order).await {
-                tracing::warn!("DB project 追加失敗: {}", e);
-            }
+        if let Some(ref db) = self.vpdb
+            && let Err(e) = db.upsert_project(name, &key, sort_order).await
+        {
+            tracing::warn!("DB project 追加失敗: {}", e);
         }
 
         Ok(info)
     }
 
-    /// プロジェクトを削除（+ DB に永続化）
+    /// プロジェクトを削除（+ DB / config.toml に永続化）
     pub async fn remove_project(&self, path: &str) -> CapabilityResult<()> {
         let key = normalize_path_key(&PathBuf::from(path));
 
@@ -400,16 +400,16 @@ impl ProcessManagerCapability {
         self.project_order.write().await.retain(|k| k != &key);
 
         // DB から削除（正規化パスで削除）
-        if let Some(ref db) = self.vpdb {
-            if let Err(e) = db.delete_project(&key).await {
-                tracing::warn!("DB project 削除失敗: {}", e);
-            }
+        if let Some(ref db) = self.vpdb
+            && let Err(e) = db.delete_project(&key).await
+        {
+            tracing::warn!("DB project 削除失敗: {}", e);
         }
 
         Ok(())
     }
 
-    /// プロジェクト名を変更（+ DB に永続化）
+    /// プロジェクト名を変更（+ DB / config.toml に永続化）
     pub async fn rename_project(&self, path: &str, new_name: &str) -> CapabilityResult<()> {
         if new_name.trim().is_empty() {
             return Err(CapabilityError::Other(
@@ -432,16 +432,16 @@ impl ProcessManagerCapability {
         }
 
         // DB を更新（正規化パスで更新）
-        if let Some(ref db) = self.vpdb {
-            if let Err(e) = db.update_project_name(&key, new_name).await {
-                tracing::warn!("DB project 名前変更失敗: {}", e);
-            }
+        if let Some(ref db) = self.vpdb
+            && let Err(e) = db.update_project_name(&key, new_name).await
+        {
+            tracing::warn!("DB project 名前変更失敗: {}", e);
         }
 
         Ok(())
     }
 
-    /// プロジェクトの並び順を更新（+ DB に永続化）
+    /// プロジェクトの並び順を更新（+ DB / config.toml に永続化）
     pub async fn reorder_projects(&self, paths: &[String]) -> CapabilityResult<()> {
         // raw paths を正規化して HashMap キーと一致させる
         let normalized: Vec<String> = paths
@@ -452,10 +452,10 @@ impl ProcessManagerCapability {
         *self.project_order.write().await = normalized.clone();
 
         // DB を更新（正規化パスで更新）
-        if let Some(ref db) = self.vpdb {
-            if let Err(e) = db.reorder_projects(&normalized).await {
-                tracing::warn!("DB project 並び替え失敗: {}", e);
-            }
+        if let Some(ref db) = self.vpdb
+            && let Err(e) = db.reorder_projects(&normalized).await
+        {
+            tracing::warn!("DB project 並び替え失敗: {}", e);
         }
 
         Ok(())
@@ -548,13 +548,12 @@ impl ProcessManagerCapability {
         }
 
         // DB に書き込み（正規化パスで保存）
-        if let Some(ref db) = self.vpdb {
-            if let Err(e) = db
+        if let Some(ref db) = self.vpdb
+            && let Err(e) = db
                 .upsert_process(&key, project_name, port, pid, "running", None)
                 .await
-            {
-                tracing::warn!("DB process 登録失敗: {}", e);
-            }
+        {
+            tracing::warn!("DB process 登録失敗: {}", e);
         }
 
         tracing::info!(
@@ -624,10 +623,10 @@ impl ProcessManagerCapability {
         }
 
         // DB から削除（正規化パスで削除）
-        if let Some(ref db) = self.vpdb {
-            if let Err(e) = db.delete_process(&key).await {
-                tracing::warn!("DB process 削除失敗: {}", e);
-            }
+        if let Some(ref db) = self.vpdb
+            && let Err(e) = db.delete_process(&key).await
+        {
+            tracing::warn!("DB process 削除失敗: {}", e);
         }
 
         tracing::info!(project = project_name, "Process stopped");
@@ -707,8 +706,8 @@ impl ProcessManagerCapability {
         procs.insert(key.clone(), process.clone());
 
         // DB に書き込み（正規化パスで保存）
-        if let Some(ref db) = self.vpdb {
-            if let Err(e) = db
+        if let Some(ref db) = self.vpdb
+            && let Err(e) = db
                 .upsert_process(
                     &key,
                     &name,
@@ -718,9 +717,8 @@ impl ProcessManagerCapability {
                     process.tmux_session.as_deref(),
                 )
                 .await
-            {
-                tracing::warn!("DB process 登録失敗: {}", e);
-            }
+        {
+            tracing::warn!("DB process 登録失敗: {}", e);
         }
 
         tracing::info!(
@@ -756,10 +754,10 @@ impl ProcessManagerCapability {
             }
 
             // DB から削除（正規化パスで削除）
-            if let Some(ref db) = self.vpdb {
-                if let Err(e) = db.delete_process(&key).await {
-                    tracing::warn!("DB process 登録解除失敗: {}", e);
-                }
+            if let Some(ref db) = self.vpdb
+                && let Err(e) = db.delete_process(&key).await
+            {
+                tracing::warn!("DB process 登録解除失敗: {}", e);
             }
 
             tracing::info!("Process 登録解除: port={}, key={}", port, key);
@@ -819,10 +817,10 @@ impl ProcessManagerCapability {
                         removed.port
                     );
                     // DB からも削除
-                    if let Some(ref db) = self.vpdb {
-                        if let Err(e) = db.delete_process(name).await {
-                            tracing::warn!("DB process 削除失敗 (PID死亡): {}", e);
-                        }
+                    if let Some(ref db) = self.vpdb
+                        && let Err(e) = db.delete_process(name).await
+                    {
+                        tracing::warn!("DB process 削除失敗 (PID死亡): {}", e);
                     }
                 }
             }
@@ -923,13 +921,12 @@ impl ProcessManagerCapability {
                     procs.insert(key.clone(), process.clone());
                 }
                 // DB にも書き込み（正規化パス）
-                if let Some(ref db) = self.vpdb {
-                    if let Err(e) = db
+                if let Some(ref db) = self.vpdb
+                    && let Err(e) = db
                         .upsert_process(&key, &project_name, port, pid, "running", None)
                         .await
-                    {
-                        tracing::warn!("DB process 登録失敗 (Reconcile): {}", e);
-                    }
+                {
+                    tracing::warn!("DB process 登録失敗 (Reconcile): {}", e);
                 }
                 // tracked を更新して後続ポートのゴースト検出に使う
                 tracked.insert(key, process);
