@@ -38,9 +38,10 @@ struct TerminalRepresentable: NSViewRepresentable {
         // セッションが無ければ SP + HD を起動してから接続
         let tmuxBin = "/opt/homebrew/bin/tmux"
         let vpBin = "\(NSHomeDirectory())/.cargo/bin/vp"
+        // セッションが無ければ tmux で直接作成（vp start は非 TTY でハングすることがあるため）
         view.deferredPtyCommand = """
             \(tmuxBin) has-session -t \(tmuxSession) 2>/dev/null || \
-            (cd '\(safeCwd)' && \(vpBin) sp start >/dev/null 2>&1; \(vpBin) hd start >/dev/null 2>&1; sleep 1); \
+            \(tmuxBin) new-session -d -s \(tmuxSession) -c '\(safeCwd)'; \
             \(tmuxBin) set-option -t \(tmuxSession) status on 2>/dev/null; \
             exec \(tmuxBin) attach-session -t \(tmuxSession)
             """
