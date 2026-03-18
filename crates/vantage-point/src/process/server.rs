@@ -103,6 +103,42 @@ pub async fn run(
         });
     }
 
+    // MCP 用 Mailbox ハンドルを登録（VP-24）
+    let mcp_mailbox = capabilities.mailbox_router.register("mcp").await;
+
+    // Notification ブリッジ: Mailbox "notify" → DistributedNotification（VP-24）
+    // Mailbox に送られた Notification メッセージを macOS DistributedNotification に変換
+    {
+        let notify_handle = capabilities.mailbox_router.register("notify").await;
+        let project_dir_clone = project_dir.clone();
+        tokio::spawn(async move {
+            while let Some(msg) = notify_handle.recv().await {
+                if msg.kind == crate::capability::mailbox::MessageKind::Notification {
+                    let project = msg
+                        .payload
+                        .get("project")
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| {
+                            // プロジェクト名が未指定なら project_dir から推定
+                            project_dir_clone
+                                .rsplit('/')
+                                .find(|s| !s.is_empty())
+                                .unwrap_or("unknown")
+                        })
+                        .to_string();
+                    let message = msg
+                        .payload
+                        .get("message")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("完了")
+                        .to_string();
+                    crate::notify::post_cc_notification(&project, &message);
+                }
+            }
+        });
+    }
+
     let state = Arc::new(AppState {
         hub,
         sessions: Arc::new(RwLock::new(sessions)),
@@ -129,6 +165,7 @@ pub async fn run(
         topic_router,
         canvas_senders: Arc::new(tokio::sync::Mutex::new(Vec::new())),
         started_at: chrono::Utc::now().to_rfc3339(),
+        mcp_mailbox: Some(mcp_mailbox),
     });
 
     // ペイン状態をディスクから復元（前回 Process 終了時の状態 → RetainedStore）
@@ -378,6 +415,7 @@ pub async fn run_world(port: u16) -> Result<()> {
         topic_router,
         canvas_senders: Arc::new(tokio::sync::Mutex::new(Vec::new())),
         started_at: chrono::Utc::now().to_rfc3339(),
+        mcp_mailbox: None, // World モードでは MCP Mailbox 不要
     });
 
     let app = Router::new()

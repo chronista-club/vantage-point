@@ -109,6 +109,42 @@ pub struct ClosePaneParams {
     pub pane_id: String,
 }
 
+/// Parameters for mailbox_send tool (VP-24)
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct MailboxSendParams {
+    /// 宛先アドレス
+    #[schemars(description = "Destination mailbox address (e.g. 'agent', 'protocol', 'notify')")]
+    pub to: String,
+
+    /// メッセージ本文（JSON）
+    #[schemars(description = "Message payload as JSON value")]
+    pub payload: serde_json::Value,
+
+    /// メッセージ種別
+    #[schemars(
+        description = "Message kind: 'direct' (default), 'notification', 'request', 'response'"
+    )]
+    pub kind: Option<String>,
+
+    /// 返信先メッセージID（スレッド用）
+    #[schemars(description = "Reply-to message ID for threaded conversations")]
+    pub reply_to: Option<String>,
+}
+
+/// Parameters for mailbox_recv tool (VP-24)
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct MailboxRecvParams {
+    /// 受信タイムアウト（秒）
+    #[schemars(
+        description = "Timeout in seconds to wait for a message (default: 5, max: 30). Returns immediately if a message is already queued."
+    )]
+    pub timeout: Option<u64>,
+
+    /// 送信元フィルタ
+    #[schemars(description = "Only receive messages from this address (optional filter)")]
+    pub from: Option<String>,
+}
+
 /// Parameters for the watch_file tool
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct WatchFileParams {
@@ -1931,6 +1967,82 @@ if bestId > 0 { print(bestId) }
                 }
             }
         }
+    }
+
+    // =========================================================================
+    // Mailbox ツール (VP-24)
+    // =========================================================================
+
+    /// Send a message to a mailbox address
+    #[tool(
+        description = "Send a message to a VP Mailbox address. Use this for inter-agent communication (replaces ccwire). Available addresses: 'agent', 'protocol', 'midi', 'notify'."
+    )]
+    async fn mailbox_send(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<MailboxSendParams>,
+    ) -> Result<CallToolResult, McpError> {
+        use crate::capability::mailbox::MessageKind;
+
+        let kind = match params.kind.as_deref() {
+            Some("notification") => MessageKind::Notification,
+            Some("request") => MessageKind::Request,
+            Some("response") => MessageKind::Response,
+            _ => MessageKind::Direct,
+        };
+
+        let mut msg = crate::capability::mailbox::MailboxMessage::new("mcp", &params.to, kind)
+            .with_payload(&params.payload);
+
+        if let Some(reply_to) = params.reply_to {
+            msg = msg.with_reply_to(reply_to);
+        }
+
+        let msg_id = msg.id.clone();
+
+        // QUIC 経由で Process の Mailbox に送信
+        let payload = serde_json::to_value(&msg)
+            .map_err(|e| McpError::internal_error(format!("Serialize error: {}", e), None))?;
+        self.quic_call("mailbox_send", payload).await?;
+
+        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+            format!("Message sent to '{}' (id: {})", params.to, msg_id),
+        )]))
+    }
+
+    /// List registered mailbox addresses
+    #[tool(
+        description = "List all registered Mailbox addresses in the current Process. Shows which capabilities and agents have active mailboxes."
+    )]
+    async fn mailbox_list(&self) -> Result<CallToolResult, McpError> {
+        let resp = self
+            .quic_call("mailbox_list", serde_json::json!({}))
+            .await?;
+
+        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+            serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "[]".to_string()),
+        )]))
+    }
+
+    /// Receive a message from the MCP mailbox
+    #[tool(
+        description = "Receive a message from the MCP mailbox. Waits up to timeout seconds for a message. Returns immediately if a message is already queued. Use this for inter-agent communication (replaces ccwire wire_receive)."
+    )]
+    async fn mailbox_recv(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<MailboxRecvParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let timeout = params.timeout.unwrap_or(5).min(30);
+
+        let payload = serde_json::json!({
+            "timeout": timeout,
+            "from": params.from,
+        });
+
+        let resp = self.quic_call("mailbox_recv", payload).await?;
+
+        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+            serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "null".to_string()),
+        )]))
     }
 }
 

@@ -18,6 +18,7 @@ use super::tmux_actor::TmuxHandle;
 use super::topic_router::TopicRouter;
 use crate::agent::InteractiveClaudeAgent;
 use crate::agui::AgUiEvent;
+use crate::capability::mailbox::MailboxHandle;
 use crate::capability::{ProcessManagerCapability, UpdateCapability};
 use crate::file_watcher::FileWatcherManager;
 use crate::mcp::PermissionResponse;
@@ -142,6 +143,8 @@ pub(crate) struct AppState {
     pub canvas_senders: Arc<tokio::sync::Mutex<Vec<tokio::sync::mpsc::Sender<serde_json::Value>>>>,
     /// プロセス起動時刻（ISO 8601）
     pub started_at: String,
+    /// MCP 用 Mailbox ハンドル（VP-24: MCP → Capability への Mailbox 配信）
+    pub mcp_mailbox: Option<MailboxHandle>,
 }
 
 impl AppState {

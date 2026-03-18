@@ -5,8 +5,8 @@
 
 use crate::capability::core::Capability;
 use crate::capability::{
-    AgentCapability, CapabilityContext, CapabilityRegistry, EventBus, MidiCapability,
-    ProtocolCapability,
+    AgentCapability, CapabilityContext, CapabilityRegistry, EventBus, MailboxRouter,
+    MidiCapability, ProtocolCapability,
 };
 use crate::midi::MidiConfig;
 use std::sync::Arc;
@@ -18,6 +18,8 @@ use tokio::sync::RwLock;
 pub struct ProcessCapabilities {
     /// イベントバス（全Capability共有）
     pub event_bus: Arc<EventBus>,
+    /// メールボックスルーター（1:1 ポイントツーポイント通信）
+    pub mailbox_router: Arc<MailboxRouter>,
     /// Capability レジストリ
     pub registry: Arc<RwLock<CapabilityRegistry>>,
     /// Protocol Capability（WebSocket/stdio配信用）
@@ -41,6 +43,9 @@ impl ProcessCapabilities {
     pub async fn new(config: CapabilityConfig) -> Self {
         // EventBus を作成
         let event_bus = Arc::new(EventBus::new());
+
+        // MailboxRouter を作成
+        let mailbox_router = Arc::new(MailboxRouter::new());
 
         // Registry を作成
         let ctx = CapabilityContext::new().with_config(serde_json::json!({
@@ -67,6 +72,7 @@ impl ProcessCapabilities {
 
         Self {
             event_bus,
+            mailbox_router,
             registry,
             protocol,
             agent,
@@ -76,22 +82,28 @@ impl ProcessCapabilities {
 
     /// 全 Capability を初期化
     pub async fn initialize(&self) -> anyhow::Result<()> {
-        let ctx = CapabilityContext::new();
+        // 各 Capability に Mailbox を登録
+        let protocol_mailbox = self.mailbox_router.register("protocol").await;
+        let agent_mailbox = self.mailbox_router.register("agent").await;
 
         // Protocol Capability 初期化
         {
+            let ctx = CapabilityContext::new().with_mailbox(protocol_mailbox);
             let mut protocol = self.protocol.write().await;
             protocol.initialize(&ctx).await?;
         }
 
         // Agent Capability 初期化
         {
+            let ctx = CapabilityContext::new().with_mailbox(agent_mailbox);
             let mut agent = self.agent.write().await;
             agent.initialize(&ctx).await?;
         }
 
         // MIDI Capability 初期化と監視開始（存在する場合）
         if let Some(ref midi) = self.midi {
+            let midi_mailbox = self.mailbox_router.register("midi").await;
+            let ctx = CapabilityContext::new().with_mailbox(midi_mailbox);
             let mut midi = midi.write().await;
             midi.initialize(&ctx).await?;
             // MidiConfigからport_indexを取得して監視開始
@@ -101,7 +113,10 @@ impl ProcessCapabilities {
             }
         }
 
-        tracing::info!("All capabilities initialized");
+        tracing::info!(
+            "All capabilities initialized (mailbox addresses: {:?})",
+            self.mailbox_router.addresses().await
+        );
         Ok(())
     }
 
@@ -124,6 +139,9 @@ impl ProcessCapabilities {
             let mut protocol = self.protocol.write().await;
             let _ = protocol.shutdown().await;
         }
+
+        // MailboxRouter シャットダウン
+        self.mailbox_router.shutdown();
 
         tracing::info!("All capabilities shut down");
         Ok(())

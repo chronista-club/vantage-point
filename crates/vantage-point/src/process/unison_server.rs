@@ -39,20 +39,28 @@ struct UnwatchFileRequest {
 // Process チャネル ハンドラー
 // =============================================================================
 
-/// ProcessMessage を受け取って broadcast する汎用ハンドラー
+/// ProcessMessage を受け取って broadcast + Mailbox 配信する汎用ハンドラー
 ///
 /// MCP → QUIC → ここ の経路では、MCP が ProcessMessage をそのままシリアライズして送る。
 /// HTTP ハンドラ（health.rs の show_handler 等）と同じ ProcessMessage 形式を受ける。
+///
+/// 配信先:
+/// 1. Hub broadcast → WebSocket → Canvas（既存）
+/// 2. Mailbox "protocol" → PP Capability（VP-24）
 fn handle_process_message(
     state: &AppState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    let msg: ProcessMessage =
-        serde_json::from_value(payload).map_err(|e| format!("Invalid ProcessMessage: {}", e))?;
+    let msg: ProcessMessage = serde_json::from_value(payload.clone())
+        .map_err(|e| format!("Invalid ProcessMessage: {}", e))?;
 
+    // 1. Hub broadcast → WebSocket → Canvas（既存経路）
     // TopicRouter が Hub ブリッジ経由で自動的に retained に保存するため、
     // 明示的なキャッシュは不要。Hub に broadcast するだけ。
     state.hub.broadcast(msg);
+
+    // NOTE: Mailbox 経由の配信は ProtocolCapability 側の受信ループ実装後に追加（VP-24）
+    // 現在は Hub broadcast のみで Canvas に配信。
 
     Ok(serde_json::json!({"status": "ok"}))
 }
@@ -541,6 +549,10 @@ pub async fn start_unison_server(
                             "process_stop" => handle_process_stop(&state, payload).await,
                             "process_inject" => handle_process_inject(&state, payload).await,
                             "process_list" => handle_process_list(&state).await,
+                            // Mailbox (VP-24)
+                            "mailbox_send" => handle_mailbox_send(&state, payload).await,
+                            "mailbox_recv" => handle_mailbox_recv(&state, payload).await,
+                            "mailbox_list" => handle_mailbox_list(&state).await,
                             _ => Err(format!("不明なメソッド: process.{}", method)),
                         };
 
@@ -815,4 +827,89 @@ pub async fn start_unison_server(
             let _ = ready_tx.send(()); // エラーでも通知（ブロック防止）
         }
     }
+}
+
+// =============================================================================
+// Mailbox ハンドラー (VP-24)
+// =============================================================================
+
+/// Mailbox にメッセージを送信
+async fn handle_mailbox_send(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let msg: crate::capability::mailbox::MailboxMessage =
+        serde_json::from_value(payload).map_err(|e| format!("Invalid MailboxMessage: {}", e))?;
+
+    // 自分自身への送信を拒否
+    if msg.to == msg.from {
+        return Err(format!("自分自身('{}')への送信はできません", msg.to));
+    }
+
+    let to = msg.to.clone();
+    let msg_id = msg.id.clone();
+
+    // MCP 用ハンドルがあればそれを使い、なければ直接 router 経由
+    if let Some(ref mcp_mailbox) = state.mcp_mailbox {
+        mcp_mailbox
+            .send(msg)
+            .await
+            .map_err(|e| format!("Mailbox send failed: {}", e))?;
+    } else {
+        return Err("MCP mailbox not initialized".to_string());
+    }
+
+    Ok(serde_json::json!({"status": "ok", "to": to, "id": msg_id}))
+}
+
+/// Mailbox からメッセージを受信（タイムアウト付き、Selective Receive）
+///
+/// from フィルタ指定時は `recv_matching` を使い、フィルタ不一致メッセージを
+/// stash に退避する（メッセージロスなし）。
+async fn handle_mailbox_recv(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let timeout_secs = payload
+        .get("timeout")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(5)
+        .min(30);
+    let from_filter = payload
+        .get("from")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let mcp_mailbox = state
+        .mcp_mailbox
+        .as_ref()
+        .ok_or_else(|| "MCP mailbox not initialized".to_string())?;
+
+    // タイムアウト付きで受信を試行（Selective Receive でメッセージロスなし）
+    let result = tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), async {
+        if let Some(filter) = from_filter {
+            // Selective Receive: フィルタ不一致メッセージは stash に退避
+            mcp_mailbox.recv_matching(move |m| m.from == filter).await
+        } else {
+            // フィルタなし: 通常の recv（stash 優先）
+            mcp_mailbox.recv().await
+        }
+    })
+    .await;
+
+    match result {
+        Ok(Some(msg)) => {
+            let value =
+                serde_json::to_value(&msg).map_err(|e| format!("Serialize error: {}", e))?;
+            Ok(serde_json::json!({"message": value}))
+        }
+        Ok(None) => Ok(serde_json::json!({"message": null, "reason": "mailbox closed"})),
+        Err(_) => Ok(serde_json::json!({"message": null, "reason": "timeout"})),
+    }
+}
+
+/// 登録済み Mailbox アドレス一覧を返す
+async fn handle_mailbox_list(state: &AppState) -> Result<serde_json::Value, String> {
+    let addresses = state.capabilities.mailbox_router.addresses().await;
+    Ok(serde_json::json!({"addresses": addresses}))
 }

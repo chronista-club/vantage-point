@@ -277,8 +277,28 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             object: nil,
             queue: .main
         ) { notification in
-            let project = notification.userInfo?["project"] as? String ?? ""
-            let message = notification.userInfo?["message"] as? String ?? "完了"
+            var project = ""
+            var message = "完了"
+
+            // userInfo 形式（hook 経由: swift -e）
+            if let info = notification.userInfo {
+                project = info["project"] as? String ?? ""
+                message = info["message"] as? String ?? "完了"
+            }
+
+            // object 形式（Rust notify.rs 経由: "project:message"）
+            if project.isEmpty, let object = notification.object as? String {
+                let parts = object.split(separator: ":", maxSplits: 1)
+                if let first = parts.first {
+                    project = String(first)
+                }
+                if parts.count > 1 {
+                    message = String(parts.dropFirst().joined(separator: ":"))
+                }
+            }
+
+            guard !project.isEmpty else { return }
+
             // ローカル Notification で MainWindowView に転送
             NotificationCenter.default.post(
                 name: AppDelegate.ccNotification,

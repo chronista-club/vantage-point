@@ -17,6 +17,7 @@ pub mod agent_capability;
 pub mod core;
 pub mod eventbus;
 pub mod evolution;
+pub mod mailbox;
 pub mod midi_capability;
 pub mod params;
 pub mod process_manager_capability;
@@ -27,6 +28,7 @@ pub mod update_capability;
 pub use agent_capability::AgentCapability;
 pub use core::{CapabilityContext, CapabilityEvent, CapabilityInfo, CapabilityState};
 pub use eventbus::EventBus;
+pub use mailbox::{MailboxHandle, MailboxMessage, MailboxRouter, MessageKind};
 pub use midi_capability::MidiCapability;
 pub use process_manager_capability::{
     ProcessManagerCapability, ProcessStatus, ProjectInfo, RunningProcess, normalize_path_key,
