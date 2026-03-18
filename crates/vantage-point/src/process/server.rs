@@ -498,7 +498,7 @@ pub async fn run_world(port: u16) -> Result<()> {
         canvas_senders: Arc::new(tokio::sync::Mutex::new(Vec::new())),
         started_at: chrono::Utc::now().to_rfc3339(),
         mcp_mailbox: None, // World モードでは MCP Mailbox 不要
-        vpdb,             // World モードでも DB 参照あり
+        vpdb: vpdb.clone(), // World モードでも DB 参照あり
     });
 
     let app = Router::new()
@@ -613,6 +613,91 @@ pub async fn run_world(port: u16) -> Result<()> {
         world_cap.clone(),
         shutdown_token.clone(),
     ));
+
+    // LIVE SELECT → 通知ブリッジ（VP-21 Phase 4）
+    // processes テーブルの変更を検知して DistributedNotification に変換
+    // DB 切断でストリームが終了した場合は再接続ループで自律復帰する
+    if let Some(db) = vpdb.clone() {
+        let shutdown = shutdown_token.clone();
+        tokio::spawn(async move {
+            use futures::StreamExt;
+            tracing::info!("LIVE SELECT processes ブリッジ起動");
+            // 再接続ループ: ストリームが切断されたら 5秒待って再サブスクライブ
+            'reconnect: loop {
+                if shutdown.is_cancelled() {
+                    break 'reconnect;
+                }
+
+                let stream = match db.live_processes().await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tracing::warn!("LIVE SELECT 起動失敗（5秒後に再試行）: {}", e);
+                        tokio::select! {
+                            _ = shutdown.cancelled() => break 'reconnect,
+                            _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {}
+                        }
+                        continue 'reconnect;
+                    }
+                };
+
+                let mut stream = std::pin::pin!(stream);
+                loop {
+                    tokio::select! {
+                        _ = shutdown.cancelled() => {
+                            tracing::info!("LIVE SELECT ブリッジ: shutdown");
+                            break 'reconnect;
+                        }
+                        item = stream.next() => {
+                            match item {
+                                Some(Ok(notification)) => {
+                                    let action = notification.action;
+                                    let data = &notification.data;
+                                    let port_val = data["port"].as_u64().unwrap_or(0) as u16;
+                                    let project_name = data["project_name"]
+                                        .as_str()
+                                        .unwrap_or("unknown");
+
+                                    let event = match action {
+                                        surrealdb::types::Action::Create => "started",
+                                        surrealdb::types::Action::Update => "updated",
+                                        surrealdb::types::Action::Delete => "stopped",
+                                        _ => "changed",
+                                    };
+
+                                    tracing::info!(
+                                        "LIVE SELECT: {} '{}' (port={})",
+                                        event,
+                                        project_name,
+                                        port_val
+                                    );
+
+                                    if port_val > 0 {
+                                        crate::notify::post_process_changed(port_val, event);
+                                    }
+                                }
+                                Some(Err(e)) => {
+                                    tracing::warn!("LIVE SELECT エラー: {}", e);
+                                }
+                                None => {
+                                    // ストリーム終了（DB 再起動など）— 再接続を試みる
+                                    tracing::warn!(
+                                        "LIVE SELECT ストリーム切断、5秒後に再接続..."
+                                    );
+                                    tokio::select! {
+                                        _ = shutdown.cancelled() => break 'reconnect,
+                                        _ = tokio::time::sleep(
+                                            std::time::Duration::from_secs(5)
+                                        ) => {}
+                                    }
+                                    continue 'reconnect;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
 
     // シグナルハンドラ: SIGTERM でグレースフルシャットダウン
     let shutdown_for_signal = shutdown_token.clone();

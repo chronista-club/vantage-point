@@ -445,6 +445,44 @@ impl VpDb {
         Ok(())
     }
 
+    // =========================================================================
+    // LIVE SELECT（リアルタイム変更通知）
+    // =========================================================================
+
+    /// processes テーブルの LIVE SELECT を開始
+    ///
+    /// INSERT/UPDATE/DELETE のたびに `Notification<serde_json::Value>` を返すストリーム。
+    /// TheWorld が購読して DistributedNotification に変換する。
+    ///
+    /// 返り値は `'static` ライフタイム（`Surreal<Any>` は内部 Arc なので clone が軽量）。
+    pub async fn live_processes(
+        &self,
+    ) -> Result<surrealdb::method::Stream<Vec<serde_json::Value>>> {
+        let stream = self
+            .db
+            .select("processes")
+            .live()
+            .await
+            .map_err(|e| anyhow::anyhow!("LIVE SELECT processes 失敗: {}", e))?;
+        Ok(stream)
+    }
+
+    /// projects テーブルの LIVE SELECT を開始
+    ///
+    /// 現時点では未使用（将来: Native App への projects 変更通知に利用予定）
+    #[allow(dead_code)]
+    pub async fn live_projects(
+        &self,
+    ) -> Result<surrealdb::method::Stream<Vec<serde_json::Value>>> {
+        let stream = self
+            .db
+            .select("projects")
+            .live()
+            .await
+            .map_err(|e| anyhow::anyhow!("LIVE SELECT projects 失敗: {}", e))?;
+        Ok(stream)
+    }
+
     /// プロジェクトの全 Stand ステータスを取得
     pub async fn list_stand_status(
         &self,
