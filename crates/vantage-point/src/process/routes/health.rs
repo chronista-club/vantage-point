@@ -656,6 +656,37 @@ pub async fn shutdown_handler(State(state): State<Arc<AppState>>) -> impl IntoRe
     Json(serde_json::json!({"status": "shutting_down"}))
 }
 
+// ===== tmux ペイン操作ハンドラー =====
+
+/// tmux split パラメータ
+#[derive(Deserialize)]
+pub struct TmuxSplitParams {
+    #[serde(default = "default_true")]
+    pub horizontal: bool,
+    pub command: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// POST /api/tmux/split - tmux ペインを分割
+pub async fn tmux_split_handler(
+    State(state): State<Arc<AppState>>,
+    Json(params): Json<TmuxSplitParams>,
+) -> impl IntoResponse {
+    let handle = match &state.tmux {
+        Some(h) => h,
+        None => {
+            return Json(serde_json::json!({"error": "tmux 未使用環境です"}));
+        }
+    };
+    match handle.split(params.horizontal, params.command).await {
+        Ok(pane) => Json(serde_json::json!({"status": "ok", "pane": pane})),
+        Err(e) => Json(serde_json::json!({"error": e})),
+    }
+}
+
 // ===== Ruby VM ハンドラー =====
 
 /// Ruby eval パラメータ
