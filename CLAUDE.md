@@ -112,7 +112,7 @@ vp midi lpd8 write|switch|ports
 ```bash
 cargo build --release -p vantage-point   # ビルド
 cargo test --workspace                    # テスト
-cargo install --path crates/vantage-point # インストール
+cargo install --path crates/vp-cli        # インストール（codesign 自動付与）
 cargo fmt --all -- --check                # フォーマットチェック
 cargo clippy --workspace --all-targets    # Lint
 ```
