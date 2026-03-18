@@ -1281,6 +1281,22 @@ class TerminalView: NSView {
         }
 
         let pos = gridPosition(from: event.locationInWindow)
+
+        // SGR マウスイベントを PTY に送信（tmux ペインフォーカス切替等）
+        if vp_bridge_pty_is_running_session(sessionId) {
+            let col = pos.col + 1  // 1-based
+            let row = pos.row + 1
+            let seq = "\u{1B}[<0;\(col);\(row)M"
+            if let data = seq.data(using: .ascii) {
+                data.withUnsafeBytes { ptr in
+                    _ = vp_bridge_pty_write_session(
+                        sessionId,
+                        ptr.baseAddress!.assumingMemoryBound(to: UInt8.self),
+                        UInt32(ptr.count))
+                }
+            }
+        }
+
         selectionStart = pos
         selectionEnd = pos
         isDragging = true
@@ -1289,14 +1305,46 @@ class TerminalView: NSView {
 
     override func mouseDragged(with event: NSEvent) {
         guard isDragging else { return }
-        selectionEnd = gridPosition(from: event.locationInWindow)
+        let pos = gridPosition(from: event.locationInWindow)
+        selectionEnd = pos
         needsDisplay = true
+
+        // SGR マウスドラッグイベント（tmux のマウス選択等）
+        if vp_bridge_pty_is_running_session(sessionId) {
+            let col = pos.col + 1
+            let row = pos.row + 1
+            let seq = "\u{1B}[<32;\(col);\(row)M"  // 32 = button1 + motion
+            if let data = seq.data(using: .ascii) {
+                data.withUnsafeBytes { ptr in
+                    _ = vp_bridge_pty_write_session(
+                        sessionId,
+                        ptr.baseAddress!.assumingMemoryBound(to: UInt8.self),
+                        UInt32(ptr.count))
+                }
+            }
+        }
     }
 
     override func mouseUp(with event: NSEvent) {
         guard isDragging else { return }
         isDragging = false
-        selectionEnd = gridPosition(from: event.locationInWindow)
+        let pos = gridPosition(from: event.locationInWindow)
+        selectionEnd = pos
+
+        // SGR マウスリリースイベント
+        if vp_bridge_pty_is_running_session(sessionId) {
+            let col = pos.col + 1
+            let row = pos.row + 1
+            let seq = "\u{1B}[<0;\(col);\(row)m"  // 小文字 m = release
+            if let data = seq.data(using: .ascii) {
+                data.withUnsafeBytes { ptr in
+                    _ = vp_bridge_pty_write_session(
+                        sessionId,
+                        ptr.baseAddress!.assumingMemoryBound(to: UInt8.self),
+                        UInt32(ptr.count))
+                }
+            }
+        }
 
         if selectionStart?.col == selectionEnd?.col && selectionStart?.row == selectionEnd?.row {
             selectionStart = nil

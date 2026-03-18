@@ -334,26 +334,28 @@ struct MainWindowView: View {
 
     /// tmux ペインを閉じる（⌘⇧D）
     ///
-    /// 直近で split したペインを閉じる。pane_id を指定しない場合、
-    /// SP 側でアクティブでないペインのうち最後のものを閉じる。
+    /// 現在アクティブなペインを閉じる（tmux kill-pane）。
+    /// tmux の PATH は Homebrew と macOS 標準の両方を試す。
     private func closePane() {
-        guard let port = selectedPort else { return }
         Task {
-            // まず pane 一覧を取得して、active でない最後のペインを閉じる
-            let listUrl = URL(string: "http://[::1]:\(port)/api/tmux/split")!
-            // tmux_list は QUIC のみなので、tmux CLI で直接取得
-            // 簡易実装: 最新の non-active ペインを tmux で取得して close
-            let url = URL(string: "http://[::1]:\(port)/api/tmux/close")!
-            var request = URLRequest(url: url)
-            request.httpMethod = "POST"
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            // pane_id なしで呼ぶと SP 側でエラーになるので、tmux CLI で最新ペインを取得
-            let _ = listUrl // suppress unused warning
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            process.arguments = ["tmux", "kill-pane", "-t", "{last}"]
-            try? process.run()
-            process.waitUntilExit()
+            let tmuxPaths = ["/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/usr/bin/tmux"]
+            for tmuxPath in tmuxPaths {
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: tmuxPath)
+                process.arguments = ["kill-pane"]
+                process.standardOutput = FileHandle.nullDevice
+                process.standardError = FileHandle.nullDevice
+                do {
+                    try process.run()
+                    process.waitUntilExit()
+                    if process.terminationStatus == 0 {
+                        return
+                    }
+                } catch {
+                    continue
+                }
+            }
+            logger.warning("tmux kill-pane 失敗: tmux が見つからないか、ペインが1つしかありません")
         }
     }
 
