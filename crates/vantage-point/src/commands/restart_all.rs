@@ -118,4 +118,3 @@ fn project_name(project_dir: &str) -> String {
         .unwrap_or(project_dir)
         .to_string()
 }
-

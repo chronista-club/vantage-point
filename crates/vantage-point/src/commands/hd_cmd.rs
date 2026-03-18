@@ -68,7 +68,9 @@ pub fn execute(cmd: HdCommands, config: &Config) -> Result<()> {
             hd_start(&project_name, id.as_deref(), &project_dir, config)
         }
         HdCommands::Stop { id } => hd_stop(&project_name, id.as_deref()),
-        HdCommands::Restart { id } => hd_restart(&project_name, id.as_deref(), &cwd.to_string_lossy(), config),
+        HdCommands::Restart { id } => {
+            hd_restart(&project_name, id.as_deref(), &cwd.to_string_lossy(), config)
+        }
         HdCommands::List => hd_list(&project_name, &other_prefixes),
         HdCommands::Attach { id, session } => {
             // --session 直接指定 > --id ベース解決 > cwd 自動検出
