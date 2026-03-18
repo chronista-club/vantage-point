@@ -1,49 +1,17 @@
-//! vp tui — ratatui コンソール
+//! TUI コンソール — ratatui ベース
 //!
 //! tmux セッションをヘッダー/フッター付きで表示する TUI コンソール。
 //! どのターミナル（Kitty, Ghostty, iTerm, VantagePoint.app）でも
 //! 同じ見た目・操作感を提供する「ターミナル体験の標準レイヤー」。
+//!
+//! エントリポイントは `vp hd attach`。このモジュールは内部ユーティリティ。
 
 use anyhow::Result;
 
-use crate::config::Config;
-use crate::tmux;
-
-/// vp tui コマンドを実行
-pub fn execute(session: Option<String>, config: &Config) -> Result<()> {
-    // セッション名を解決（指定なしなら cwd から自動検出）
-    let session_name = if let Some(s) = session {
-        s
-    } else {
-        let cwd = std::env::current_dir()?;
-        let project_name = cwd
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("default");
-        // config から名前を解決（登録済みプロジェクトなら config の名前を優先）
-        let resolved_name = config
-            .projects
-            .iter()
-            .find(|p| {
-                Config::normalize_path(std::path::Path::new(&p.path))
-                    == Config::normalize_path(&cwd)
-            })
-            .map(|p| p.name.as_str())
-            .unwrap_or(project_name);
-        tmux::session_name(resolved_name)
-    };
-
-    // tmux セッションが存在するか確認
-    if !tmux::session_exists(&session_name) {
-        eprintln!("tmux session '{}' not found.", session_name);
-        eprintln!("Start a project first: vp start");
-        std::process::exit(1);
-    }
-
-    // ratatui TUI を起動
+/// TUI コンソールをブロック起動（vp hd attach から呼ばれる）
+pub fn run_tui_console_blocking(session_name: &str) -> Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(run_tui_console(&session_name))?;
-
+    rt.block_on(run_tui_console(session_name))?;
     Ok(())
 }
 
@@ -206,8 +174,11 @@ async fn run_tui_console(session_name: &str) -> Result<()> {
             frame.render_widget(widget, inner);
 
             // フッター
-            let footer = Paragraph::new(footer_text.clone())
-                .style(Style::default().fg(Color::Rgb(76, 86, 106)).bg(Color::Rgb(46, 52, 64)));
+            let footer = Paragraph::new(footer_text.clone()).style(
+                Style::default()
+                    .fg(Color::Rgb(76, 86, 106))
+                    .bg(Color::Rgb(46, 52, 64)),
+            );
             frame.render_widget(footer, chunks[2]);
         })?;
 

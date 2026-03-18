@@ -6,8 +6,8 @@
 //! HTML/JS の変更がビルド不要、ブラウザリロードだけで反映される。
 //!
 //! ```bash
-//! VP_DEV=1 vp start   # ファイルシステムから読む
-//! vp start             # バイナリ埋め込みから読む（本番）
+//! VP_DEV=1 vp sp start   # ファイルシステムから読む
+//! vp sp start             # バイナリ埋め込みから読む（本番）
 //! ```
 
 use std::sync::Arc;

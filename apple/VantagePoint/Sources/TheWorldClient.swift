@@ -255,6 +255,73 @@ actor TheWorldClient {
         try await executeWithErrorHandling(request: request)
     }
 
+    // MARK: - Lifecycle
+
+    /// 起動中フラグ（二重起動防止）
+    private var isStarting: Bool = false
+
+    /// TheWorld が未起動なら自動起動する
+    ///
+    /// App 起動時に AppDelegate から呼ばれる。
+    /// 既に起動中ならすぐに return。未起動なら `vp world start` を spawn して health check で待つ。
+    /// actor 内部の `isStarting` フラグで二重起動を防止。
+    func ensureRunning() async -> Bool {
+        // 既に起動中？
+        if (try? await healthCheck()) == true {
+            return true
+        }
+
+        // 別の呼び出しが既に起動中なら、完了を待つ
+        guard !isStarting else {
+            for _ in 0 ..< 50 {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+                if (try? await healthCheck()) == true { return true }
+            }
+            return false
+        }
+
+        isStarting = true
+        defer { isStarting = false }
+
+        // vp バイナリを探す
+        guard let vpPath = Self.findVpBinary() else {
+            return false
+        }
+
+        // vp world start を spawn
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: vpPath)
+        process.arguments = ["world", "start", "--port", String(Self.defaultPort)]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+
+        do {
+            try process.run()
+        } catch {
+            return false
+        }
+
+        // health check ポーリング（最大5秒）
+        for _ in 0 ..< 50 {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            if (try? await healthCheck()) == true {
+                return true
+            }
+        }
+
+        return false
+    }
+
+    /// vp バイナリのパスを探す
+    static func findVpBinary() -> String? {
+        let candidates = [
+            FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".cargo/bin/vp").path,
+            "/usr/local/bin/vp",
+        ]
+        return candidates.first { FileManager.default.fileExists(atPath: $0) }
+    }
+
     // MARK: - Private Helpers
 
     /// GET して Decodable にデコード

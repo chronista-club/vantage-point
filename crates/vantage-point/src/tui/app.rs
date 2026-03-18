@@ -848,11 +848,20 @@ fn start_background_services(
     _project_name: &str,
 ) -> Result<()> {
     let port = crate::resolve::port_for_configured(project_index, config)?;
-    let cap_config = crate::process::CapabilityConfig {
-        project_dir: project_dir.to_string(),
-        midi_config: None,
-    };
-    crate::commands::start::ensure_sp_running(port, crate::protocol::DebugMode::None, cap_config)?;
+
+    // 既に起動中ならスキップ
+    if crate::commands::start::is_server_responding(port) {
+        return Ok(());
+    }
+
+    // TheWorld 自動起動
+    if let Err(e) = crate::daemon::process::ensure_daemon_running(crate::cli::WORLD_PORT) {
+        tracing::warn!("TheWorld 自動起動失敗: {}", e);
+    }
+
+    // detached subprocess として SP を起動
+    crate::commands::start::spawn_sp_detached(project_dir, Some(port))?;
+    crate::commands::start::wait_for_ready(port)?;
     Ok(())
 }
 

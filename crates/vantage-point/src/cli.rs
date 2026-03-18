@@ -263,13 +263,13 @@ pub fn open_by_target(target: Option<&str>, config: &crate::config::Config) -> R
         }
         ResolvedTarget::Configured { name, .. } => {
             println!(
-                "\u{2717} '{}' is not running. Use `vp start {}` first.",
-                name, name
+                "\u{2717} '{}' is not running. Use `vp sp start` first.",
+                name
             );
         }
         ResolvedTarget::Cwd { .. } => {
             println!("\u{2717} No running Process found for current directory.");
-            println!("  Use `vp start` to start a new Process.");
+            println!("  Use `vp sp start` to start a new SP server.");
         }
     }
 

@@ -74,8 +74,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // ステータスアイコンの自動更新
         startIconRefresh()
 
-        // 初回データ取得
+        // TheWorld 自動起動 → 初回データ取得
         Task {
+            let started = await theWorldClient.ensureRunning()
+            if !started {
+                print("[VP] TheWorld 自動起動失敗")
+            }
             await popoverViewModel.refresh()
             updateStatusIcon()
             updatePromptServiceProcesses()

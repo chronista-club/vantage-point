@@ -12,7 +12,7 @@ use crate::protocol::DebugMode;
 
 #[derive(Subcommand)]
 pub enum SpCommands {
-    /// SP サーバーを起動
+    /// SP サーバーを起動（フォアグラウンドでブロック実行）
     Start {
         /// 待ち受けポート番号
         #[arg(short, long)]
@@ -20,6 +20,9 @@ pub enum SpCommands {
         /// デバッグモード
         #[arg(long, short = 'd', value_enum)]
         debug: Option<DebugModeArg>,
+        /// プロジェクトディレクトリ（省略時は cwd）
+        #[arg(long, short = 'C')]
+        project_dir: Option<String>,
     },
     /// SP サーバーを停止
     Stop,
@@ -31,18 +34,39 @@ pub enum SpCommands {
 
 /// vp sp コマンドを実行
 pub fn execute(cmd: SpCommands, config: &Config) -> Result<()> {
-    let cwd = std::env::current_dir()?;
-    let project_dir = cwd.to_string_lossy().to_string();
-
     match cmd {
-        SpCommands::Start { port, debug } => sp_start(&project_dir, port, debug, config),
-        SpCommands::Stop => sp_stop(&project_dir, config),
-        SpCommands::Status => sp_status(&project_dir, config),
-        SpCommands::Restart => sp_restart(&project_dir, config),
+        SpCommands::Start {
+            port,
+            debug,
+            project_dir,
+        } => {
+            let dir = project_dir.unwrap_or_else(|| {
+                std::env::current_dir()
+                    .expect("cwd 取得失敗")
+                    .to_string_lossy()
+                    .to_string()
+            });
+            sp_start(&dir, port, debug, config)
+        }
+        SpCommands::Stop => {
+            let cwd = std::env::current_dir()?;
+            sp_stop(&cwd.to_string_lossy(), config)
+        }
+        SpCommands::Status => {
+            let cwd = std::env::current_dir()?;
+            sp_status(&cwd.to_string_lossy(), config)
+        }
+        SpCommands::Restart => {
+            let cwd = std::env::current_dir()?;
+            sp_restart(&cwd.to_string_lossy(), config)
+        }
     }
 }
 
-/// SP サーバーを起動（tmux/ccwire なし）
+/// SP サーバーを起動（フォアグラウンド、ブロック実行）
+///
+/// 既に起動中なら何もしない。未起動ならサーバーを起動してブロックする。
+/// バックグラウンド実行が必要な場合は呼び出し元が detached subprocess として spawn する。
 fn sp_start(
     project_dir: &str,
     explicit_port: Option<u16>,
@@ -52,20 +76,26 @@ fn sp_start(
     let port = explicit_port.unwrap_or_else(|| resolve_port(project_dir, config));
     let debug_mode = debug.map(DebugMode::from).unwrap_or_default();
 
+    // 既に起動中ならスキップ
+    if crate::commands::start::is_server_responding(port) {
+        println!("✅ SP サーバーは既に起動済み (port={})", port);
+        return Ok(());
+    }
+
+    // TheWorld 自動起動
+    if let Err(e) = crate::daemon::process::ensure_daemon_running(crate::cli::WORLD_PORT) {
+        tracing::warn!("TheWorld 自動起動失敗（SP は続行）: {}", e);
+    }
+
+    println!("⭐ SP サーバー起動 (port={})...", port);
+
     let cap_config = crate::process::CapabilityConfig {
         project_dir: project_dir.to_string(),
         midi_config: None,
     };
 
-    match crate::commands::start::ensure_sp_running(port, debug_mode, cap_config) {
-        Ok(()) => {
-            println!("✅ SP サーバー起動済み (port={})", port);
-            Ok(())
-        }
-        Err(e) => {
-            anyhow::bail!("SP サーバー起動失敗: {}", e);
-        }
-    }
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(async { crate::process::run(port, false, debug_mode, cap_config).await })
 }
 
 /// SP サーバーを停止
@@ -73,7 +103,6 @@ fn sp_stop(project_dir: &str, _config: &Config) -> Result<()> {
     let normalized = Config::normalize_path(std::path::Path::new(project_dir));
 
     if let Some(running) = crate::discovery::find_by_project_blocking(&normalized) {
-        // /api/shutdown エンドポイントを叩く
         let client = reqwest::blocking::Client::builder()
             .timeout(std::time::Duration::from_secs(5))
             .build()
@@ -84,7 +113,6 @@ fn sp_stop(project_dir: &str, _config: &Config) -> Result<()> {
                 println!("✅ SP サーバーを停止しました (port={})", running.port);
             }
             _ => {
-                // shutdown エンドポイントがなければプロセスを kill
                 eprintln!("⚠️  shutdown API が応答しません。プロセスを終了します。");
                 let _ = kill_process_on_port(running.port);
                 println!("✅ SP サーバーを停止しました (port={})", running.port);
@@ -108,7 +136,6 @@ fn sp_status(project_dir: &str, config: &Config) -> Result<()> {
     if let Some(running) = crate::discovery::find_by_project_blocking(&normalized) {
         println!("   サーバー: ✅ running (port={})", running.port);
 
-        // /api/health から詳細情報を取得
         let client = reqwest::blocking::Client::builder()
             .timeout(std::time::Duration::from_secs(3))
             .build()
@@ -117,12 +144,10 @@ fn sp_status(project_dir: &str, config: &Config) -> Result<()> {
 
         if let Ok(resp) = client.get(&url).send() {
             if let Ok(json) = resp.json::<serde_json::Value>() {
-                // 起動時刻
                 if let Some(started) = json.get("started_at").and_then(|s| s.as_str()) {
                     println!("   起動時刻: {}", started);
                 }
 
-                // Stand ステータス
                 if let Some(stands) = json.get("stands").and_then(|s| s.as_object()) {
                     println!();
                     println!("   Stand 一覧:");
@@ -155,7 +180,6 @@ fn sp_status(project_dir: &str, config: &Config) -> Result<()> {
     // HD セッション情報も参考表示
     let sessions = crate::tmux::list_vp_sessions();
     let prefix = project_name.replace('.', "-");
-    // 他プロジェクト名一覧（prefix フィルタ用）
     let other_prefixes: Vec<String> = config
         .projects
         .iter()
@@ -183,13 +207,9 @@ fn sp_status(project_dir: &str, config: &Config) -> Result<()> {
 }
 
 /// SP サーバーを再起動
-///
-/// 停止前にポートを保存し、再起動時に同じポートを使用する。
-/// ポート開放をポーリングで待つ（最大5秒）。
 fn sp_restart(project_dir: &str, config: &Config) -> Result<()> {
     let normalized = Config::normalize_path(std::path::Path::new(project_dir));
 
-    // 停止前にポートを保存
     let saved_port = crate::discovery::find_by_project_blocking(&normalized).map(|r| r.port);
 
     println!("🔄 SP サーバーを再起動します...");
@@ -203,7 +223,6 @@ fn sp_restart(project_dir: &str, config: &Config) -> Result<()> {
             }
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
-        // 保存したポートで再起動
         sp_start(project_dir, Some(port), None, config)
     } else {
         sp_start(project_dir, None, None, config)
@@ -213,7 +232,6 @@ fn sp_restart(project_dir: &str, config: &Config) -> Result<()> {
 /// プロジェクトディレクトリからポートを解決
 fn resolve_port(project_dir: &str, config: &Config) -> u16 {
     let normalized = Config::normalize_path(std::path::Path::new(project_dir));
-    // 既に稼働中のプロセスがあればそのポートを返す
     if let Some(running) = crate::discovery::find_by_project_blocking(&normalized) {
         return running.port;
     }

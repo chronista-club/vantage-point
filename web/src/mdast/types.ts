@@ -18,41 +18,13 @@ title: string | null,
 children: Array<MdNode>, position: Position | null, };
 
 /**
- * Admonition ブロック — `:::note` `:::warning` `:::danger` `:::tip`
- */
-export type Admonition = { 
-/**
- * タイプ: note, warning, danger, tip, info, caution
- */
-kind: string, 
-/**
- * タイトル（省略可）
- */
-title: string | null, 
-/**
- * 子ノード（本文）
- */
-children: Array<MdNode>, position: Position | null, };
-
-/**
- * テーブルセルの配置
- */
-export type AlignKind = "Left" | "Right" | "Center" | "None";
-
-/**
  * テーブルセルの配置
  */
 export type AlignKind = "Left" | "Right" | "Center" | "None";
 
 export type BlockQuote = { children: Array<MdNode>, position: Position | null, };
 
-export type BlockQuote = { children: Array<MdNode>, position: Position | null, };
-
 export type Break = { position: Position | null, };
-
-export type Break = { position: Position | null, };
-
-export type Code = { value: string, lang: string | null, meta: string | null, position: Position | null, };
 
 export type Code = { value: string, lang: string | null, meta: string | null, position: Position | null, };
 
@@ -63,8 +35,6 @@ export type Delete = { children: Array<MdNode>, position: Position | null, };
 
 export type Emphasis = { children: Array<MdNode>, position: Position | null, };
 
-export type Emphasis = { children: Array<MdNode>, position: Position | null, };
-
 /**
  * YAML frontmatter — `---` で囲まれたメタデータブロック
  */
@@ -73,17 +43,6 @@ export type Frontmatter = {
  * YAML 生テキスト（Canvas 側で js-yaml 等でパース）
  */
 value: string, position: Position | null, };
-
-/**
- * YAML frontmatter — `---` で囲まれたメタデータブロック
- */
-export type Frontmatter = { 
-/**
- * YAML 生テキスト（Canvas 側で js-yaml 等でパース）
- */
-value: string, position: Position | null, };
-
-export type Heading = { depth: number, children: Array<MdNode>, position: Position | null, };
 
 export type Heading = { depth: number, children: Array<MdNode>, position: Position | null, };
 
@@ -91,21 +50,11 @@ export type Html = { value: string, position: Position | null, };
 
 export type Image = { url: string, alt: string | null, title: string | null, position: Position | null, };
 
-export type Image = { url: string, alt: string | null, title: string | null, position: Position | null, };
-
-export type InlineCode = { value: string, position: Position | null, };
-
 export type InlineCode = { value: string, position: Position | null, };
 
 export type Link = { children: Array<MdNode>, url: string, title: string | null, position: Position | null, };
 
-export type Link = { children: Array<MdNode>, url: string, title: string | null, position: Position | null, };
-
 export type List = { children: Array<MdNode>, ordered: boolean, start: number | null, spread: boolean, position: Position | null, };
-
-export type List = { children: Array<MdNode>, ordered: boolean, start: number | null, spread: boolean, position: Position | null, };
-
-export type ListItem = { children: Array<MdNode>, spread: boolean, checked: boolean | null, position: Position | null, };
 
 export type ListItem = { children: Array<MdNode>, spread: boolean, checked: boolean | null, position: Position | null, };
 
@@ -114,19 +63,7 @@ export type ListItem = { children: Array<MdNode>, spread: boolean, checked: bool
  */
 export type MdNode = { "type": "Root" } & Root | { "type": "Heading" } & Heading | { "type": "Paragraph" } & Paragraph | { "type": "BlockQuote" } & BlockQuote | { "type": "List" } & List | { "type": "ListItem" } & ListItem | { "type": "Code" } & Code | { "type": "ThematicBreak" } & ThematicBreak | { "type": "Table" } & Table | { "type": "TableRow" } & TableRow | { "type": "TableCell" } & TableCell | { "type": "Html" } & Html | { "type": "Text" } & Text | { "type": "Emphasis" } & Emphasis | { "type": "Strong" } & Strong | { "type": "InlineCode" } & InlineCode | { "type": "Link" } & Link | { "type": "Image" } & Image | { "type": "Break" } & Break | { "type": "Delete" } & Delete | { "type": "Frontmatter" } & Frontmatter | { "type": "Admonition" } & Admonition | { "type": "WikiLink" } & WikiLink;
 
-/**
- * mdast ノード（全ノードタイプの enum）
- */
-export type MdNode = { "type": "Root" } & Root | { "type": "Heading" } & Heading | { "type": "Paragraph" } & Paragraph | { "type": "BlockQuote" } & BlockQuote | { "type": "List" } & List | { "type": "ListItem" } & ListItem | { "type": "Code" } & Code | { "type": "ThematicBreak" } & ThematicBreak | { "type": "Table" } & Table | { "type": "TableRow" } & TableRow | { "type": "TableCell" } & TableCell | { "type": "Html" } & Html | { "type": "Text" } & Text | { "type": "Emphasis" } & Emphasis | { "type": "Strong" } & Strong | { "type": "InlineCode" } & InlineCode | { "type": "Link" } & Link | { "type": "Image" } & Image | { "type": "Break" } & Break | { "type": "Delete" } & Delete | { "type": "Frontmatter" } & Frontmatter | { "type": "Admonition" } & Admonition | { "type": "WikiLink" } & WikiLink;
-
 export type Paragraph = { children: Array<MdNode>, position: Position | null, };
-
-export type Paragraph = { children: Array<MdNode>, position: Position | null, };
-
-/**
- * 行・列・オフセット
- */
-export type Point = { line: number, column: number, offset: number, };
 
 /**
  * 行・列・オフセット
@@ -138,55 +75,19 @@ export type Point = { line: number, column: number, offset: number, };
  */
 export type Position = { start: Point, end: Point, };
 
-/**
- * ソース位置情報
- */
-export type Position = { start: Point, end: Point, };
-
 export type Root = { children: Array<MdNode>, position: Position | null, };
-
-export type Root = { children: Array<MdNode>, position: Position | null, };
-
-export type Strong = { children: Array<MdNode>, position: Position | null, };
 
 export type Strong = { children: Array<MdNode>, position: Position | null, };
 
 export type Table = { children: Array<MdNode>, align: Array<AlignKind>, position: Position | null, };
 
-export type Table = { children: Array<MdNode>, align: Array<AlignKind>, position: Position | null, };
-
 export type TableCell = { children: Array<MdNode>, position: Position | null, };
-
-export type TableCell = { children: Array<MdNode>, position: Position | null, };
-
-export type TableRow = { children: Array<MdNode>, position: Position | null, };
 
 export type TableRow = { children: Array<MdNode>, position: Position | null, };
 
 export type Text = { value: string, position: Position | null, };
 
-export type Text = { value: string, position: Position | null, };
-
 export type ThematicBreak = { position: Position | null, };
-
-export type ThematicBreak = { position: Position | null, };
-
-/**
- * Wiki-link — `[[target]]` or `[[target|display]]` or `[[creo:id]]`
- */
-export type WikiLink = { 
-/**
- * リンク先（ドキュメント名 or `creo:memory-id`）
- */
-target: string, 
-/**
- * 表示テキスト（省略時は target を使用）
- */
-label: string | null, 
-/**
- * リンク種別: "doc"（プロジェクト内）, "creo"（creo-memories）
- */
-link_type: string, position: Position | null, };
 
 /**
  * Wiki-link — `[[target]]` or `[[target|display]]` or `[[creo:id]]`

@@ -152,7 +152,7 @@ pub async fn run_daemon(port: u16) -> Result<()> {
 
 /// TheWorld がまだ起動していなければバックグラウンドで自動起動する
 ///
-/// `vp start` から呼ばれる。既に起動済みならそのPIDを返す。
+/// `vp sp start` から呼ばれる。既に起動済みならそのPIDを返す。
 pub fn ensure_daemon_running(port: u16) -> Result<u32> {
     if let Some(pid) = is_daemon_running() {
         tracing::info!("TheWorld は既に起動中 (PID: {})", pid);

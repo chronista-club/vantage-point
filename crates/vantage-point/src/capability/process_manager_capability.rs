@@ -472,9 +472,10 @@ impl ProcessManagerCapability {
             }
         }
 
-        // vp start を実行
+        // vp sp start を子プロセスとして実行
+        let project_path_str = project.path.to_string_lossy();
         let mut cmd = Command::new(&vp_path);
-        cmd.args(["start", "--headless"]);
+        cmd.args(["sp", "start", "-C", &project_path_str]);
         cmd.current_dir(&project.path);
 
         // バックグラウンドで起動
