@@ -675,7 +675,7 @@ pub async fn tmux_split_handler(
     State(state): State<Arc<AppState>>,
     Json(params): Json<TmuxSplitParams>,
 ) -> impl IntoResponse {
-    let handle = match &state.tmux {
+    let handle = match state.ensure_tmux().await {
         Some(h) => h,
         None => {
             return Json(serde_json::json!({"error": "tmux 未使用環境です"}));

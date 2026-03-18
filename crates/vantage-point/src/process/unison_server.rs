@@ -130,8 +130,8 @@ async fn handle_tmux_split(
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let handle = state
-        .tmux
-        .as_ref()
+        .ensure_tmux()
+        .await
         .ok_or_else(|| "tmux 未使用環境です".to_string())?;
     let horizontal = payload["horizontal"].as_bool().unwrap_or(true);
     let command = payload["command"].as_str().map(|s| s.to_string());
@@ -142,8 +142,8 @@ async fn handle_tmux_split(
 /// tmux ペイン一覧
 async fn handle_tmux_list(state: &AppState) -> Result<serde_json::Value, String> {
     let handle = state
-        .tmux
-        .as_ref()
+        .ensure_tmux()
+        .await
         .ok_or_else(|| "tmux 未使用環境です".to_string())?;
     let panes = handle.list().await;
     Ok(serde_json::json!({"panes": panes}))
@@ -155,8 +155,8 @@ async fn handle_tmux_close(
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let handle = state
-        .tmux
-        .as_ref()
+        .ensure_tmux()
+        .await
         .ok_or_else(|| "tmux 未使用環境です".to_string())?;
     let pane_id = payload["pane_id"]
         .as_str()
@@ -171,8 +171,8 @@ async fn handle_tmux_capture(
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let handle = state
-        .tmux
-        .as_ref()
+        .ensure_tmux()
+        .await
         .ok_or_else(|| "tmux 未使用環境です".to_string())?;
     let pane_id = payload["pane_id"]
         .as_str()
@@ -184,8 +184,8 @@ async fn handle_tmux_capture(
 /// tmux 全ペインキャプチャ（ダッシュボード用）
 async fn handle_tmux_capture_all(state: &AppState) -> Result<serde_json::Value, String> {
     let handle = state
-        .tmux
-        .as_ref()
+        .ensure_tmux()
+        .await
         .ok_or_else(|| "tmux 未使用環境です".to_string())?;
     let captures = handle.capture_all().await;
     Ok(serde_json::json!({"status": "ok", "captures": captures}))
@@ -197,8 +197,8 @@ async fn handle_tmux_set_agent_meta(
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let handle = state
-        .tmux
-        .as_ref()
+        .ensure_tmux()
+        .await
         .ok_or_else(|| "tmux 未使用環境です".to_string())?;
     let pane_id = payload["pane_id"]
         .as_str()
@@ -224,8 +224,8 @@ async fn handle_tmux_update_agent_status(
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let handle = state
-        .tmux
-        .as_ref()
+        .ensure_tmux()
+        .await
         .ok_or_else(|| "tmux 未使用環境です".to_string())?;
     let pane_id = payload["pane_id"]
         .as_str()
@@ -262,8 +262,8 @@ async fn handle_tmux_clear_agent_meta(
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let handle = state
-        .tmux
-        .as_ref()
+        .ensure_tmux()
+        .await
         .ok_or_else(|| "tmux 未使用環境です".to_string())?;
     let pane_id = payload["pane_id"]
         .as_str()
@@ -278,8 +278,8 @@ async fn handle_tmux_send_keys(
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let handle = state
-        .tmux
-        .as_ref()
+        .ensure_tmux()
+        .await
         .ok_or_else(|| "tmux 未使用環境です".to_string())?;
     let pane_id = payload["pane_id"]
         .as_str()

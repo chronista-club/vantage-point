@@ -130,8 +130,10 @@ pub(crate) struct AppState {
     pub file_watchers: Arc<tokio::sync::Mutex<FileWatcherManager>>,
     /// Terminal チャネル認証トークン
     pub terminal_token: String,
-    /// tmux ペイン管理 Actor（tmux 環境下でのみ有効）
-    pub tmux: Option<TmuxHandle>,
+    /// tmux ペイン管理 Actor（遅延初期化: 初回アクセス時にセッションを検索して起動）
+    pub tmux: Arc<tokio::sync::Mutex<Option<TmuxHandle>>>,
+    /// tmux セッション名（遅延初期化で使用）
+    pub tmux_session_name: String,
     /// スクリーンショット応答待ち: request_id → oneshot sender
     /// プロセスレジストリ（ProcessRunner）
     pub process_registry: Arc<tokio::sync::Mutex<ProcessRegistry>>,
@@ -150,6 +152,32 @@ pub(crate) struct AppState {
 }
 
 impl AppState {
+    /// tmux ハンドルを取得（遅延初期化: 未接続なら tmux セッションを検索して起動）
+    pub async fn ensure_tmux(&self) -> Option<TmuxHandle> {
+        let mut guard = self.tmux.lock().await;
+        if let Some(ref handle) = *guard {
+            return Some(handle.clone());
+        }
+
+        // tmux セッションが存在すれば起動
+        if crate::tmux::is_tmux_available()
+            && crate::tmux::session_exists(&self.tmux_session_name)
+        {
+            if let Some(handle) =
+                super::tmux_actor::spawn_for_session(&self.tmux_session_name)
+            {
+                *guard = Some(handle.clone());
+                tracing::info!(
+                    "TmuxActor 遅延初期化: session={}",
+                    self.tmux_session_name
+                );
+                return Some(handle);
+            }
+        }
+
+        None
+    }
+
     /// Send debug info to connected clients
     pub fn send_debug(&self, category: &str, message: &str, data: Option<serde_json::Value>) {
         if self.debug_mode == DebugMode::None {

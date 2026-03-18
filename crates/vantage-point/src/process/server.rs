@@ -84,6 +84,7 @@ pub async fn run(
         } else {
             None
         };
+    let tmux_session_name = tmux_session.clone();
 
     // TopicRouter 初期化 + Hub → TopicRouter ブリッジ（shutdown token で停止可能）
     let topic_router = Arc::new(TopicRouter::new());
@@ -201,7 +202,8 @@ pub async fn run(
         port,
         file_watchers: Arc::new(tokio::sync::Mutex::new(FileWatcherManager::new())),
         terminal_token: terminal_token.clone(),
-        tmux: tmux_handle,
+        tmux: Arc::new(tokio::sync::Mutex::new(tmux_handle)),
+        tmux_session_name: tmux_session_name,
         process_registry: Arc::new(tokio::sync::Mutex::new(
             crate::process::process_runner::ProcessRegistry::new(),
         )),
@@ -497,7 +499,8 @@ pub async fn run_world(port: u16) -> Result<()> {
         port,
         file_watchers: Arc::new(tokio::sync::Mutex::new(FileWatcherManager::new())),
         terminal_token: "WORLD_DISABLED".to_string(),
-        tmux: None,
+        tmux: Arc::new(tokio::sync::Mutex::new(None)),
+        tmux_session_name: String::new(),
         process_registry: Arc::new(tokio::sync::Mutex::new(
             crate::process::process_runner::ProcessRegistry::new(),
         )),
