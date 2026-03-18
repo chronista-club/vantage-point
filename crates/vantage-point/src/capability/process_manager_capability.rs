@@ -103,11 +103,11 @@ pub fn normalize_path_key(path: &std::path::Path) -> String {
 pub struct ProcessManagerCapability {
     /// 現在の状態
     state: CapabilityState,
-    /// 登録プロジェクト一覧（キー: 正規化パス）
+    /// 登録プロジェクト一覧（キー: 正規化パス）— インメモリキャッシュ
     projects: Arc<RwLock<HashMap<String, ProjectInfo>>>,
     /// プロジェクトの並び順（正規化パスの Vec、config.toml の [[projects]] 順を保持）
     project_order: Arc<RwLock<Vec<String>>>,
-    /// 稼働中Process一覧（キー: 正規化パス）
+    /// 稼働中Process一覧（キー: 正規化パス）— インメモリキャッシュ
     running_processes: Arc<RwLock<HashMap<String, RunningProcess>>>,
     /// 前回のヘルスチェックで稼働中だった Process（クラッシュ検知用）
     previously_running: Arc<RwLock<HashMap<String, RunningProcess>>>,
@@ -115,6 +115,8 @@ pub struct ProcessManagerCapability {
     config: Option<Config>,
     /// vpバイナリパス
     vp_binary_path: Option<PathBuf>,
+    /// SurrealDB クライアント（Some なら DB に二重書き込み）
+    vpdb: Option<crate::db::SharedVpDb>,
     /// テスト時に config.toml への永続化を無効化
     #[cfg(test)]
     disable_persist: bool,
@@ -131,9 +133,15 @@ impl ProcessManagerCapability {
             previously_running: Arc::new(RwLock::new(HashMap::new())),
             config: None,
             vp_binary_path: None,
+            vpdb: None,
             #[cfg(test)]
             disable_persist: true,
         }
+    }
+
+    /// SurrealDB クライアントを設定
+    pub fn set_vpdb(&mut self, vpdb: crate::db::SharedVpDb) {
+        self.vpdb = Some(vpdb);
     }
 
     /// running_processes の共有参照を取得（DaemonState と共有するため）
@@ -147,29 +155,80 @@ impl ProcessManagerCapability {
     }
 
     /// 設定を読み込み
+    ///
+    /// DB が接続済みなら DB → HashMap 同期。
+    /// DB が未接続なら config.toml → HashMap。
+    /// 初回起動時（DB 空）は config.toml → DB マイグレーションも実行。
     pub async fn load_config(&mut self) -> CapabilityResult<()> {
         let config = Config::load().map_err(|e| {
             CapabilityError::InitializationFailed(format!("Failed to load config: {}", e))
         })?;
 
-        // プロジェクト一覧を更新（順序を保持）
-        let mut projects = self.projects.write().await;
-        let mut order = self.project_order.write().await;
-        projects.clear();
-        order.clear();
+        // DB があれば DB から読む + config.toml からマイグレーション
+        if let Some(ref db) = self.vpdb {
+            // DB の既存プロジェクトを取得
+            let db_projects = db.list_projects().await.unwrap_or_default();
 
-        for project in &config.projects {
-            let key = normalize_path_key(&PathBuf::from(&project.path));
-            order.push(key.clone());
-            projects.insert(
-                key,
-                ProjectInfo {
-                    name: project.name.clone(),
-                    path: project.path.clone().into(),
-                    process_status: ProcessStatus::Stopped,
-                    port: project.port,
-                },
-            );
+            if db_projects.is_empty() && !config.projects.is_empty() {
+                // 初回マイグレーション: config.toml → DB
+                tracing::info!(
+                    "config.toml → DB マイグレーション: {} projects",
+                    config.projects.len()
+                );
+                for (i, project) in config.projects.iter().enumerate() {
+                    // 正規化パスで DB に保存（add_project と統一）
+                    let normalized = normalize_path_key(&PathBuf::from(&project.path));
+                    if let Err(e) = db
+                        .upsert_project(&project.name, &normalized, i as i64)
+                        .await
+                    {
+                        tracing::warn!("DB マイグレーション失敗 ({}): {}", project.name, e);
+                    }
+                }
+            }
+
+            // DB → HashMap 同期
+            let db_projects = db.list_projects().await.unwrap_or_default();
+            let mut projects = self.projects.write().await;
+            let mut order = self.project_order.write().await;
+            projects.clear();
+            order.clear();
+
+            for row in &db_projects {
+                let name = row["name"].as_str().unwrap_or("").to_string();
+                let path = row["path"].as_str().unwrap_or("").to_string();
+                let key = normalize_path_key(&PathBuf::from(&path));
+                order.push(key.clone());
+                projects.insert(
+                    key,
+                    ProjectInfo {
+                        name,
+                        path: path.into(),
+                        process_status: ProcessStatus::Stopped,
+                        port: None, // DB には port を持たない（動的割当）
+                    },
+                );
+            }
+        } else {
+            // DB 未接続: config.toml から読む（従来通り）
+            let mut projects = self.projects.write().await;
+            let mut order = self.project_order.write().await;
+            projects.clear();
+            order.clear();
+
+            for project in &config.projects {
+                let key = normalize_path_key(&PathBuf::from(&project.path));
+                order.push(key.clone());
+                projects.insert(
+                    key,
+                    ProjectInfo {
+                        name: project.name.clone(),
+                        path: project.path.clone().into(),
+                        process_status: ProcessStatus::Stopped,
+                        port: project.port,
+                    },
+                );
+            }
         }
 
         self.config = Some(config);
@@ -268,7 +327,7 @@ impl ProcessManagerCapability {
         }
     }
 
-    /// プロジェクトを追加（+ config.toml に永続化）
+    /// プロジェクトを追加（+ DB / config.toml に永続化）
     pub async fn add_project(&self, name: &str, path: &str) -> CapabilityResult<ProjectInfo> {
         // 名前バリデーション
         if name.trim().is_empty() {
@@ -295,7 +354,7 @@ impl ProcessManagerCapability {
             port: None,
         };
 
-        {
+        let sort_order = {
             let mut projects = self.projects.write().await;
             if projects.contains_key(&key) {
                 return Err(CapabilityError::Other(format!(
@@ -304,15 +363,23 @@ impl ProcessManagerCapability {
                 )));
             }
             projects.insert(key.clone(), info.clone());
-        }
+            projects.len() as i64 - 1
+        };
         // 順序リストに末尾追加
-        self.project_order.write().await.push(key);
+        self.project_order.write().await.push(key.clone());
+
+        // DB に書き込み（正規化パスで保存）
+        if let Some(ref db) = self.vpdb {
+            if let Err(e) = db.upsert_project(name, &key, sort_order).await {
+                tracing::warn!("DB project 追加失敗: {}", e);
+            }
+        }
 
         self.persist_projects().await;
         Ok(info)
     }
 
-    /// プロジェクトを削除（+ config.toml に永続化）
+    /// プロジェクトを削除（+ DB / config.toml に永続化）
     pub async fn remove_project(&self, path: &str) -> CapabilityResult<()> {
         let key = normalize_path_key(&PathBuf::from(path));
 
@@ -338,11 +405,18 @@ impl ProcessManagerCapability {
         // 順序リストからも削除
         self.project_order.write().await.retain(|k| k != &key);
 
+        // DB から削除（正規化パスで削除）
+        if let Some(ref db) = self.vpdb {
+            if let Err(e) = db.delete_project(&key).await {
+                tracing::warn!("DB project 削除失敗: {}", e);
+            }
+        }
+
         self.persist_projects().await;
         Ok(())
     }
 
-    /// プロジェクト名を変更（+ config.toml に永続化）
+    /// プロジェクト名を変更（+ DB / config.toml に永続化）
     pub async fn rename_project(&self, path: &str, new_name: &str) -> CapabilityResult<()> {
         if new_name.trim().is_empty() {
             return Err(CapabilityError::Other(
@@ -364,11 +438,18 @@ impl ProcessManagerCapability {
             }
         }
 
+        // DB を更新（正規化パスで更新）
+        if let Some(ref db) = self.vpdb {
+            if let Err(e) = db.update_project_name(&key, new_name).await {
+                tracing::warn!("DB project 名前変更失敗: {}", e);
+            }
+        }
+
         self.persist_projects().await;
         Ok(())
     }
 
-    /// プロジェクトの並び順を更新（+ config.toml に永続化）
+    /// プロジェクトの並び順を更新（+ DB / config.toml に永続化）
     ///
     /// paths の順序で config.toml に書き出す。
     pub async fn reorder_projects(&self, paths: &[String]) -> CapabilityResult<()> {
@@ -379,6 +460,14 @@ impl ProcessManagerCapability {
             .collect();
         // 順序リストを更新
         *self.project_order.write().await = normalized.clone();
+
+        // DB を更新（正規化パスで更新）
+        if let Some(ref db) = self.vpdb {
+            if let Err(e) = db.reorder_projects(&normalized).await {
+                tracing::warn!("DB project 並び替え失敗: {}", e);
+            }
+        }
+
         self.persist_projects_ordered(&normalized).await;
         Ok(())
     }
@@ -514,6 +603,16 @@ impl ProcessManagerCapability {
             procs.insert(key.clone(), running_process.clone());
         }
 
+        // DB に書き込み（正規化パスで保存）
+        if let Some(ref db) = self.vpdb {
+            if let Err(e) = db
+                .upsert_process(&key, project_name, port, pid, "running", None)
+                .await
+            {
+                tracing::warn!("DB process 登録失敗: {}", e);
+            }
+        }
+
         tracing::info!(
             project = project_name,
             port = port,
@@ -554,11 +653,19 @@ impl ProcessManagerCapability {
         let client = reqwest::Client::new();
         let url = format!("http://[::1]:{}/api/shutdown", running.port);
 
-        let _ = client
+        if let Err(e) = client
             .post(&url)
             .timeout(std::time::Duration::from_secs(5))
             .send()
-            .await;
+            .await
+        {
+            tracing::warn!(
+                "shutdown リクエスト失敗 '{}' (port={}): {}",
+                project_name,
+                running.port,
+                e
+            );
+        }
 
         // ロック順序統一: projects → running_processes
         {
@@ -570,6 +677,13 @@ impl ProcessManagerCapability {
         {
             let mut procs = self.running_processes.write().await;
             procs.remove(&key);
+        }
+
+        // DB から削除（正規化パスで削除）
+        if let Some(ref db) = self.vpdb {
+            if let Err(e) = db.delete_process(&key).await {
+                tracing::warn!("DB process 削除失敗: {}", e);
+            }
         }
 
         tracing::info!(project = project_name, "Process stopped");
@@ -646,7 +760,25 @@ impl ProcessManagerCapability {
                 process.tmux_session = existing.tmux_session.clone();
             }
         }
-        procs.insert(key.clone(), process);
+        procs.insert(key.clone(), process.clone());
+
+        // DB に書き込み（正規化パスで保存）
+        if let Some(ref db) = self.vpdb {
+            if let Err(e) = db
+                .upsert_process(
+                    &key,
+                    &name,
+                    port,
+                    pid,
+                    "running",
+                    process.tmux_session.as_deref(),
+                )
+                .await
+            {
+                tracing::warn!("DB process 登録失敗: {}", e);
+            }
+        }
+
         tracing::info!(
             "Process 登録: port={}, dir={}, key={}",
             port,
@@ -678,6 +810,14 @@ impl ProcessManagerCapability {
                 let mut procs = self.running_processes.write().await;
                 procs.remove(&key);
             }
+
+            // DB から削除（正規化パスで削除）
+            if let Some(ref db) = self.vpdb {
+                if let Err(e) = db.delete_process(&key).await {
+                    tracing::warn!("DB process 登録解除失敗: {}", e);
+                }
+            }
+
             tracing::info!("Process 登録解除: port={}, key={}", port, key);
         }
     }
@@ -734,6 +874,12 @@ impl ProcessManagerCapability {
                         name,
                         removed.port
                     );
+                    // DB からも削除
+                    if let Some(ref db) = self.vpdb {
+                        if let Err(e) = db.delete_process(name).await {
+                            tracing::warn!("DB process 削除失敗 (PID死亡): {}", e);
+                        }
+                    }
                 }
             }
         }
@@ -831,6 +977,15 @@ impl ProcessManagerCapability {
                 {
                     let mut procs = self.running_processes.write().await;
                     procs.insert(key.clone(), process.clone());
+                }
+                // DB にも書き込み（正規化パス）
+                if let Some(ref db) = self.vpdb {
+                    if let Err(e) = db
+                        .upsert_process(&key, &project_name, port, pid, "running", None)
+                        .await
+                    {
+                        tracing::warn!("DB process 登録失敗 (Reconcile): {}", e);
+                    }
                 }
                 // tracked を更新して後続ポートのゴースト検出に使う
                 tracked.insert(key, process);

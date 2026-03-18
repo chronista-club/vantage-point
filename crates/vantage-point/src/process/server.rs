@@ -527,6 +527,55 @@ pub async fn run_world(port: u16) -> Result<()> {
     // （バインド前に書くと、失敗時に既存デーモンの PID が上書きされ制御不能になる）
     process::write_pid_file()?;
 
+    // SurrealDB 認証パスワードを取得（なければ生成）
+    let db_password = crate::db::ensure_db_password();
+
+    // SurrealDB サーバーを子プロセスとして起動
+    let mut surreal_child = match crate::db::spawn_surreal_server(crate::db::SURREAL_PORT, &db_password) {
+        Ok(child) => {
+            tracing::info!(
+                "SurrealDB サーバー起動 (pid={}, port={})",
+                child.id(),
+                crate::db::SURREAL_PORT
+            );
+            Some(child)
+        }
+        Err(e) => {
+            tracing::warn!("SurrealDB サーバー起動失敗（DB なしで継続）: {}", e);
+            None
+        }
+    };
+
+    // SurrealDB に接続してスキーマ定義
+    let vpdb = if surreal_child.is_some() {
+        match crate::db::VpDb::connect(crate::db::SURREAL_PORT, &db_password, 30).await {
+            Ok(db) => {
+                if let Err(e) = db.define_schema().await {
+                    tracing::warn!("SurrealDB スキーマ定義失敗: {}", e);
+                }
+                Some(db)
+            }
+            Err(e) => {
+                tracing::warn!("SurrealDB 接続失敗: {}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let vpdb: Option<crate::db::SharedVpDb> = vpdb.map(std::sync::Arc::new);
+
+    // VpDb を ProcessManagerCapability に注入し、DB からプロジェクトを再読み込み
+    // （initialize 時点では vpdb 未設定のため config.toml から読み込まれている。
+    //   ここで DB マイグレーション + DB → HashMap 同期を実行する）
+    if let Some(ref db) = vpdb {
+        let mut cap = world_cap.write().await;
+        cap.set_vpdb(db.clone());
+        if let Err(e) = cap.load_config().await {
+            tracing::warn!("DB 付き config 再読み込み失敗: {}", e);
+        }
+    }
+
     // Clone for shutdown
     let world_for_shutdown = world_cap.clone();
 
@@ -599,6 +648,11 @@ pub async fn run_world(port: u16) -> Result<()> {
         if let Err(e) = update.shutdown().await {
             tracing::warn!("Error during update shutdown: {}", e);
         }
+    }
+
+    // SurrealDB 子プロセスを停止
+    if let Some(ref mut child) = surreal_child {
+        crate::db::stop_surreal_server(child);
     }
 
     // PID ファイル削除
