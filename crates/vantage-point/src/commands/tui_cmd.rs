@@ -9,56 +9,6 @@ use anyhow::Result;
 use crate::config::Config;
 use crate::tmux;
 
-/// VP Shell コマンドを実行
-fn execute_command(input: &str, session_name: &str) -> String {
-    let parts: Vec<&str> = input.trim().splitn(2, ' ').collect();
-    let cmd = parts[0];
-    let args = parts.get(1).copied().unwrap_or("");
-
-    match cmd {
-        "split" | "sp" => {
-            // tmux split-window
-            let tmux_bin = if std::path::Path::new("/opt/homebrew/bin/tmux").exists() {
-                "/opt/homebrew/bin/tmux"
-            } else {
-                "tmux"
-            };
-            let status = std::process::Command::new(tmux_bin)
-                .args(["split-window", "-t", session_name, "-d"])
-                .status();
-            match status {
-                Ok(s) if s.success() => "Split created".to_string(),
-                _ => "Split failed".to_string(),
-            }
-        }
-        "vsplit" | "vs" => {
-            let tmux_bin = if std::path::Path::new("/opt/homebrew/bin/tmux").exists() {
-                "/opt/homebrew/bin/tmux"
-            } else {
-                "tmux"
-            };
-            let status = std::process::Command::new(tmux_bin)
-                .args(["split-window", "-h", "-t", session_name, "-d"])
-                .status();
-            match status {
-                Ok(s) if s.success() => "Vertical split created".to_string(),
-                _ => "VSplit failed".to_string(),
-            }
-        }
-        "q" | "quit" => {
-            std::process::exit(0);
-        }
-        "help" | "h" => ":split :vsplit :quit :help".to_string(),
-        _ => {
-            if args.is_empty() {
-                format!("Unknown command: {}", cmd)
-            } else {
-                format!("Unknown command: {} {}", cmd, args)
-            }
-        }
-    }
-}
-
 /// vp tui コマンドを実行
 pub fn execute(session: Option<String>, config: &Config) -> Result<()> {
     // セッション名を解決（指定なしなら cwd から自動検出）

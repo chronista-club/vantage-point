@@ -37,6 +37,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
     state.hub.client_connected().await;
 
     // Canvas クライアントとして登録（PP ステータスの connected 判定用）
+    // _canvas_rx は関数スコープ終了まで保持（drop すると sender.is_closed() → true → 即除去）
     let (canvas_tx, _canvas_rx) = tokio::sync::mpsc::channel::<serde_json::Value>(64);
     state.canvas_senders.lock().await.push(canvas_tx);
 
@@ -394,6 +395,13 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
         _ = send_task => {},
         _ = recv_task => {},
     }
+
+    // Canvas クライアント登録を解除（切断済み sender を除去）
+    state
+        .canvas_senders
+        .lock()
+        .await
+        .retain(|tx| !tx.is_closed());
 
     state.hub.client_disconnected().await;
 }

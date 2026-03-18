@@ -903,30 +903,34 @@ class TerminalView: NSView {
         // tmux load-buffer + paste-buffer でネイティブに送信する
         if let text = pb.string(forType: .string), !text.isEmpty {
             logger.info("pasteFromClipboard: text=\(text.prefix(50)) len=\(text.count) via tmux paste-buffer")
-            let tmuxBin = "/opt/homebrew/bin/tmux"
-            // tmux のペーストバッファにテキストを設定して貼り付け
-            let loadProcess = Process()
-            loadProcess.executableURL = URL(fileURLWithPath: tmuxBin)
-            loadProcess.arguments = ["load-buffer", "-"]
-            let pipe = Pipe()
-            loadProcess.standardInput = pipe
-            do {
-                try loadProcess.run()
-                if let data = text.data(using: .utf8) {
-                    pipe.fileHandleForWriting.write(data)
-                }
-                pipe.fileHandleForWriting.closeFile()
-                loadProcess.waitUntilExit()
+            // メインスレッドをブロックしないよう非同期で実行
+            DispatchQueue.global(qos: .userInitiated).async {
+                let tmuxBin = "/opt/homebrew/bin/tmux"
+                // 名前付きバッファで複数ウィンドウの同時ペーストの競合を回避
+                let bufferName = "vp-paste-\(UUID().uuidString.prefix(8))"
+                let loadProcess = Process()
+                loadProcess.executableURL = URL(fileURLWithPath: tmuxBin)
+                loadProcess.arguments = ["load-buffer", "-b", bufferName, "-"]
+                let pipe = Pipe()
+                loadProcess.standardInput = pipe
+                do {
+                    try loadProcess.run()
+                    if let data = text.data(using: .utf8) {
+                        pipe.fileHandleForWriting.write(data)
+                    }
+                    pipe.fileHandleForWriting.closeFile()
+                    loadProcess.waitUntilExit()
 
-                // paste-buffer で貼り付け（bracketed paste 付き）
-                let pasteProcess = Process()
-                pasteProcess.executableURL = URL(fileURLWithPath: tmuxBin)
-                pasteProcess.arguments = ["paste-buffer", "-p"]
-                try pasteProcess.run()
-                pasteProcess.waitUntilExit()
-                logger.info("tmux paste-buffer: done")
-            } catch {
-                logger.error("tmux paste failed: \(error)")
+                    // paste-buffer で貼り付け（-p: bracketed paste, -d: 使用後にバッファ削除）
+                    let pasteProcess = Process()
+                    pasteProcess.executableURL = URL(fileURLWithPath: tmuxBin)
+                    pasteProcess.arguments = ["paste-buffer", "-b", bufferName, "-d", "-p"]
+                    try pasteProcess.run()
+                    pasteProcess.waitUntilExit()
+                    logger.info("tmux paste-buffer: done (buffer: \(bufferName))")
+                } catch {
+                    logger.error("tmux paste failed: \(error)")
+                }
             }
             return
         }
