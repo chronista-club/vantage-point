@@ -370,6 +370,9 @@ impl ProcessManagerCapability {
             tracing::warn!("DB project 追加失敗: {}", e);
         }
 
+        // DB 未接続時は config.toml にフォールバック
+        self.persist_to_config_fallback().await;
+
         Ok(info)
     }
 
@@ -406,6 +409,9 @@ impl ProcessManagerCapability {
             tracing::warn!("DB project 削除失敗: {}", e);
         }
 
+        // DB 未接続時は config.toml にフォールバック
+        self.persist_to_config_fallback().await;
+
         Ok(())
     }
 
@@ -438,6 +444,9 @@ impl ProcessManagerCapability {
             tracing::warn!("DB project 名前変更失敗: {}", e);
         }
 
+        // DB 未接続時は config.toml にフォールバック
+        self.persist_to_config_fallback().await;
+
         Ok(())
     }
 
@@ -458,7 +467,50 @@ impl ProcessManagerCapability {
             tracing::warn!("DB project 並び替え失敗: {}", e);
         }
 
+        // DB 未接続時は config.toml にフォールバック
+        self.persist_to_config_fallback().await;
+
         Ok(())
+    }
+
+    /// DB が未接続の場合に config.toml に永続化するフォールバック（project_order の順序で書き出す）
+    async fn persist_to_config_fallback(&self) {
+        if self.vpdb.is_some() {
+            // DB 接続中は DB が source of truth なのでスキップ
+            return;
+        }
+        let order = self.project_order.read().await.clone();
+        let projects = self.projects.read().await;
+
+        let mut config = Config::load().unwrap_or_default();
+        config.projects = order
+            .iter()
+            .filter_map(|key| {
+                projects.get(key).map(|info| crate::config::ProjectConfig {
+                    name: info.name.clone(),
+                    path: info.path.to_string_lossy().to_string(),
+                    port: info.port,
+                })
+            })
+            .collect();
+
+        // order に含まれないプロジェクトも末尾に追加
+        let order_set: std::collections::HashSet<&String> = order.iter().collect();
+        for (key, info) in projects.iter() {
+            if !order_set.contains(key) {
+                config.projects.push(crate::config::ProjectConfig {
+                    name: info.name.clone(),
+                    path: info.path.to_string_lossy().to_string(),
+                    port: info.port,
+                });
+            }
+        }
+
+        if let Err(e) = config.save() {
+            tracing::error!("config.toml 永続化失敗: {}", e);
+        } else {
+            tracing::info!("config.toml 永続化完了: {} projects", config.projects.len());
+        }
     }
 
     /// Processを起動

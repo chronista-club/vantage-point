@@ -503,7 +503,7 @@ pub async fn run_world(port: u16) -> Result<()> {
         topic_router,
         canvas_senders: Arc::new(tokio::sync::Mutex::new(Vec::new())),
         started_at: chrono::Utc::now().to_rfc3339(),
-        mcp_mailbox: None, // World モードでは MCP Mailbox 不要
+        mcp_mailbox: None,  // World モードでは MCP Mailbox 不要
         vpdb: vpdb.clone(), // World モードでも DB 参照あり
     });
 

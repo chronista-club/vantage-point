@@ -389,10 +389,7 @@ impl VpDb {
     }
 
     /// プロジェクトの全ペイン状態を取得
-    pub async fn list_pane_contents(
-        &self,
-        project_path: &str,
-    ) -> Result<Vec<serde_json::Value>> {
+    pub async fn list_pane_contents(&self, project_path: &str) -> Result<Vec<serde_json::Value>> {
         let mut result = self
             .db
             .query("SELECT * FROM pane_contents WHERE project_path = $path")
@@ -477,9 +474,7 @@ impl VpDb {
     ///
     /// 現時点では未使用（将来: Native App への projects 変更通知に利用予定）
     #[allow(dead_code)]
-    pub async fn live_projects(
-        &self,
-    ) -> Result<surrealdb::method::Stream<Vec<serde_json::Value>>> {
+    pub async fn live_projects(&self) -> Result<surrealdb::method::Stream<Vec<serde_json::Value>>> {
         let stream = self
             .db
             .select("projects")
@@ -490,10 +485,7 @@ impl VpDb {
     }
 
     /// プロジェクトの全 Stand ステータスを取得
-    pub async fn list_stand_status(
-        &self,
-        project_path: &str,
-    ) -> Result<Vec<serde_json::Value>> {
+    pub async fn list_stand_status(&self, project_path: &str) -> Result<Vec<serde_json::Value>> {
         let mut result = self
             .db
             .query("SELECT * FROM stand_status WHERE project_path = $path")
