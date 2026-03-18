@@ -5,6 +5,7 @@
 
 /// 通知名の定数
 pub const NOTIFICATION_PROCESS_CHANGED: &str = "tech.anycreative.vp.process.changed";
+pub const NOTIFICATION_CANVAS_OPEN: &str = "tech.anycreative.vp.canvas.open";
 
 /// Process の状態変更を通知する
 ///
@@ -34,6 +35,37 @@ pub fn post_process_changed(port: u16, event: &str) {
         event
     );
 }
+
+/// Canvas を開く通知を送信
+///
+/// Native App が受信して CanvasView パネルを表示する。
+/// object に "PORT" を含め、どの SP の Canvas を開くかを特定する。
+#[cfg(target_os = "macos")]
+pub fn post_canvas_open(port: u16) {
+    use objc2_foundation::{NSDistributedNotificationCenter, NSString};
+
+    let center = NSDistributedNotificationCenter::defaultCenter();
+    let name = NSString::from_str(NOTIFICATION_CANVAS_OPEN);
+    let object = NSString::from_str(&port.to_string());
+
+    unsafe {
+        center.postNotificationName_object_userInfo_deliverImmediately(
+            &name,
+            Some(&object),
+            None,
+            true,
+        );
+    }
+
+    tracing::debug!(
+        "Posted DistributedNotification: {} (port={})",
+        NOTIFICATION_CANVAS_OPEN,
+        port
+    );
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn post_canvas_open(_port: u16) {}
 
 #[cfg(not(target_os = "macos"))]
 pub fn post_process_changed(_port: u16, _event: &str) {

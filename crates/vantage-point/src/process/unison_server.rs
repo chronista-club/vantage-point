@@ -94,15 +94,12 @@ async fn handle_unwatch_file(
 // Canvas チャネル ハンドラー
 // =============================================================================
 
-/// PP Window (Paisley Park) を開く — AppState 経由で一元管理
+/// PP Canvas パネルを開く — DistributedNotification で Native App に通知
 async fn handle_canvas_open(state: &AppState) -> Result<serde_json::Value, String> {
-    match state.ensure_canvas().await {
-        Ok(pid) => {
-            tracing::info!("PP Window opened via QUIC (pid={})", pid);
-            Ok(serde_json::json!({"status": "opened", "pid": pid}))
-        }
-        Err(e) => Err(format!("Failed to open PP window: {}", e)),
-    }
+    // Native App の CanvasView パネルを開く（別ウィンドウではない）
+    crate::notify::post_canvas_open(state.port);
+    tracing::info!("Canvas open notification sent (port={})", state.port);
+    Ok(serde_json::json!({"status": "opened", "port": state.port}))
 }
 
 /// canvas.close メソッドのハンドラー — AppState 経由で一元管理

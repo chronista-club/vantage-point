@@ -139,6 +139,14 @@ struct MainWindowView: View {
         }
         .onAppear {
             loadProjects()
+            // Canvas open の DistributedNotification をローカル通知に中継
+            DistributedNotificationCenter.default().addObserver(
+                forName: NSNotification.Name("tech.anycreative.vp.canvas.open"),
+                object: nil,
+                queue: .main
+            ) { _ in
+                NotificationCenter.default.post(name: .canvasOpen, object: nil)
+            }
         }
         .onChange(of: projects) { _, newProjects in
             // @State 更新後に初期選択（onAppear 直後の競合を回避）
@@ -172,6 +180,9 @@ struct MainWindowView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .splitTerminalPane)) { _ in
             splitPane()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .canvasOpen)) { _ in
+            showCanvas = true
         }
         .onReceive(NotificationCenter.default.publisher(for: .selectLaneByNumber)) { notification in
             if let number = notification.userInfo?["number"] as? Int {
@@ -796,4 +807,5 @@ extension Notification.Name {
     static let selectNextProject = Notification.Name("VP.selectNextProject")
     static let splitTerminalPane = Notification.Name("VP.splitTerminalPane")
     static let selectLaneByNumber = Notification.Name("VP.selectLaneByNumber")
+    static let canvasOpen = Notification.Name("VP.canvasOpen")
 }

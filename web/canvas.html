@@ -93,11 +93,11 @@
             gap: 16px;
         }
 
-        /* 接続ステータス（左上に小さく表示） */
+        /* 接続ステータス（右下に固定表示） */
         .canvas-status {
             position: fixed;
-            top: 12px;
-            left: 16px;
+            bottom: 12px;
+            right: 16px;
             z-index: 10;
             font-size: 11px;
             color: var(--color-text-muted);
@@ -728,8 +728,7 @@
         body.has-lanes .canvas-tab-bar { top: var(--lane-bar-height); }
         body.has-lanes .canvas-content { padding-top: calc(var(--lane-bar-height) + var(--tab-bar-height)); }
         body.has-lanes:not(.has-tabs) .canvas-content { padding-top: var(--lane-bar-height); }
-        body.has-lanes .canvas-status { top: var(--lane-bar-height); }
-        body.has-lanes.has-tabs .canvas-status { top: calc(var(--lane-bar-height) + var(--tab-bar-height)); }
+        /* canvas-status は右下固定のためオフセット不要 */
 
         /* ===== タブバー ===== */
         .canvas-tab-bar {
@@ -765,7 +764,7 @@
         /* タブバー表示時のコンテンツ余白 */
         :root { --tab-bar-height: 44px; }
         body.has-tabs .canvas-content { padding-top: var(--tab-bar-height); }
-        body.has-tabs .canvas-status { top: var(--tab-bar-height); }
+        /* canvas-status は右下固定のためオフセット不要 */
 
         .tab-container { display: none; }
         .tab-container.active {
@@ -2175,7 +2174,9 @@
             ws.onopen = () => {
                 reconnectAttempts = 0;
                 document.getElementById('status').classList.add('connected');
-                document.getElementById('status-text').textContent = LANE_MODE ? 'Lanes' : 'Connected';
+                document.getElementById('status-text').textContent = LANE_MODE
+                    ? 'Lanes'
+                    : `PP :${location.port}`;
                 if (!LANE_MODE) {
                     ws.send(JSON.stringify({ type: 'ready' }));
                 }
