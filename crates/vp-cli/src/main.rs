@@ -86,6 +86,10 @@ enum Commands {
     /// MIDIハードウェア操作
     #[command(subcommand)]
     Midi(MidiCommands),
+
+    /// SurrealDB デーモン管理
+    #[command(subcommand)]
+    Db(commands::db_cmd::DbCommands),
 }
 
 fn main() -> Result<()> {
@@ -126,5 +130,6 @@ fn main() -> Result<()> {
         Commands::Hd(cmd) => commands::hd_cmd::execute(cmd, &config),
 
         Commands::Midi(cmd) => commands::midi::execute(cmd),
+        Commands::Db(cmd) => commands::db_cmd::execute(cmd),
     }
 }

@@ -145,6 +145,8 @@ pub(crate) struct AppState {
     pub started_at: String,
     /// MCP 用 Mailbox ハンドル（VP-24: MCP → Capability への Mailbox 配信）
     pub mcp_mailbox: Option<MailboxHandle>,
+    /// SurrealDB クライアント（VP-21: 状態管理の DB 統一）
+    pub vpdb: Option<crate::db::SharedVpDb>,
 }
 
 impl AppState {
@@ -241,7 +243,9 @@ impl AppState {
             .join(format!("{}-canvas-layout.json", self.port))
     }
 
-    /// RetainedStore から Paisley Park のペイン状態を取得してディスクに保存
+    /// RetainedStore から Paisley Park のペイン状態を取得して保存
+    ///
+    /// 保存先: JSON ファイル（フォールバック）+ SurrealDB（vpdb がある場合）
     pub async fn persist_pane_contents(&self) {
         let pattern = TopicPattern::parse("process/paisley-park/command/show/#");
         let retained = self.topic_router.retained();
@@ -276,6 +280,34 @@ impl AppState {
             return;
         }
 
+        // DB に保存（vpdb がある場合）
+        if let Some(ref db) = self.vpdb {
+            let project_path = &self.project_dir;
+            for (pane_id, pane_state) in &panes {
+                let content_json = serde_json::to_string(&pane_state.content).unwrap_or_default();
+                let content_type = match &pane_state.content {
+                    Content::Log(_) => "log",
+                    Content::Markdown(_) => "markdown",
+                    Content::Html(_) => "html",
+                    Content::Url(_) => "url",
+                    Content::ImageBase64 { .. } => "image_base64",
+                };
+                if let Err(e) = db
+                    .upsert_pane_content(
+                        project_path,
+                        pane_id,
+                        content_type,
+                        &content_json,
+                        pane_state.title.as_deref(),
+                    )
+                    .await
+                {
+                    tracing::warn!("DB ペイン状態保存失敗 ({}): {}", pane_id, e);
+                }
+            }
+        }
+
+        // JSON ファイルに保存（フォールバック）
         let path = self.pane_state_path();
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -291,8 +323,48 @@ impl AppState {
         }
     }
 
-    /// ディスクからペイン状態を復元し、RetainedStore にセットする
+    /// ペイン状態を復元し、RetainedStore にセットする
+    ///
+    /// 復元元: SurrealDB（優先）→ JSON ファイル（フォールバック）
     pub async fn restore_pane_contents(&self) {
+        // DB から復元を試みる
+        if let Some(ref db) = self.vpdb
+            && let Ok(rows) = db.list_pane_contents(&self.project_dir).await
+            && !rows.is_empty()
+        {
+            let retained = self.topic_router.retained();
+            let mut store = retained.write().await;
+            let mut count = 0;
+            for row in &rows {
+                let pane_id = row["pane_id"].as_str().unwrap_or("").to_string();
+                let content_json = row["content"].as_str().unwrap_or("");
+                let title = row["title"].as_str().map(|s| s.to_string());
+
+                if let Ok(content) = serde_json::from_str::<Content>(content_json) {
+                    let topic = format!("process/paisley-park/command/show/{}", pane_id);
+                    store.set(
+                        &topic,
+                        ProcessMessage::Show {
+                            pane_id,
+                            content,
+                            append: false,
+                            title,
+                        },
+                    );
+                    count += 1;
+                }
+            }
+            if count > 0 {
+                tracing::info!(
+                    "ペイン状態を DB から復元: {} ペイン (port={})",
+                    count,
+                    self.port
+                );
+                return;
+            }
+        }
+
+        // フォールバック: JSON ファイルから復元
         let path = self.pane_state_path();
         if !path.exists() {
             return;
@@ -316,7 +388,11 @@ impl AppState {
                             },
                         );
                     }
-                    tracing::info!("ペイン状態を復元: {} ペイン (port={})", count, self.port);
+                    tracing::info!(
+                        "ペイン状態をファイルから復元: {} ペイン (port={})",
+                        count,
+                        self.port
+                    );
                 }
                 Err(e) => tracing::warn!("ペイン状態のデシリアライズに失敗: {}", e),
             },

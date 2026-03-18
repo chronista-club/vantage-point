@@ -102,6 +102,9 @@ regex = "1"
 # ccwire (SQLite peer-to-peer messaging)
 rusqlite = { workspace = true }
 
+# SurrealDB (状態管理 + Mailbox の統一データベース)
+surrealdb = { workspace = true }
+
 # Terminal emulation (VT parser + grid state)
 alacritty_terminal = "0.25"
 vte = "0.15"

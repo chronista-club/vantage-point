@@ -51,4 +51,5 @@ crossterm = "0.28"
 # Database
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
 rusqlite = { version = "0.34", features = ["bundled"] }
+surrealdb = { version = "3.0", default-features = false, features = ["protocol-ws", "kv-mem"] }
 

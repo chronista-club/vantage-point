@@ -112,6 +112,28 @@ pub async fn run(
         });
     }
 
+    // SurrealDB に接続（VP-21: SP ローカルテーブル移行）
+    // 接続失敗時は warn して DB なしで継続（フォールバック）
+    // スキーマ定義も行う（TheWorld 未起動の SP 単独起動時でも正常動作するよう冪等に実行）
+    let vpdb: Option<crate::db::SharedVpDb> = {
+        let password = crate::db::ensure_db_password();
+        match crate::db::VpDb::connect(crate::db::SURREAL_PORT, &password, 10).await {
+            Ok(db) => {
+                if let Err(e) = db.define_schema().await {
+                    tracing::warn!("SP: SurrealDB スキーマ定義失敗（DB なしで継続）: {}", e);
+                    None
+                } else {
+                    tracing::info!("SP: SurrealDB 接続成功 (port={})", crate::db::SURREAL_PORT);
+                    Some(std::sync::Arc::new(db))
+                }
+            }
+            Err(e) => {
+                tracing::warn!("SP: SurrealDB 未接続、DB なしで継続: {}", e);
+                None
+            }
+        }
+    };
+
     // MCP 用 Mailbox ハンドルを登録（VP-24）
     let mcp_mailbox = capabilities.mailbox_router.register("mcp").await;
 
@@ -188,6 +210,7 @@ pub async fn run(
         canvas_senders: Arc::new(tokio::sync::Mutex::new(Vec::new())),
         started_at: chrono::Utc::now().to_rfc3339(),
         mcp_mailbox: Some(mcp_mailbox),
+        vpdb,
     });
 
     // ペイン状態をディスクから復元（前回 Process 終了時の状態 → RetainedStore）
@@ -397,6 +420,49 @@ pub async fn run_world(port: u16) -> Result<()> {
         tracing::warn!("Failed to initialize UpdateCapability: {}", e);
     }
 
+    // SurrealDB 認証パスワードを取得（なければ生成）
+    let db_password = crate::db::ensure_db_password();
+
+    // SurrealDB デーモンを自動起動（未起動なら起動、起動済みならスキップ）
+    // TheWorld 終了時には SurrealDB は止めない（独立デーモン）
+    match crate::db::ensure_surreal_running(crate::db::SURREAL_PORT, &db_password) {
+        Ok(pid) => {
+            tracing::info!(
+                "SurrealDB 起動済み (pid={}, port={})",
+                pid,
+                crate::db::SURREAL_PORT
+            );
+        }
+        Err(e) => {
+            tracing::warn!("SurrealDB 起動失敗（DB なしで継続）: {}", e);
+        }
+    }
+
+    // SurrealDB に接続してスキーマ定義
+    let vpdb: Option<crate::db::SharedVpDb> =
+        match crate::db::VpDb::connect(crate::db::SURREAL_PORT, &db_password, 100).await {
+            Ok(db) => {
+                if let Err(e) = db.define_schema().await {
+                    tracing::warn!("SurrealDB スキーマ定義失敗: {}", e);
+                }
+                Some(std::sync::Arc::new(db))
+            }
+            Err(e) => {
+                tracing::warn!("SurrealDB 接続失敗（DB なしで継続）: {}", e);
+                None
+            }
+        };
+
+    // VpDb を ProcessManagerCapability に注入し、DB からプロジェクトを再読み込み
+    // （initialize 時点では vpdb 未設定のため config.toml から読み込まれている。
+    //   ここで DB マイグレーション + DB → HashMap 同期を実行する）
+    if let Some(ref db) = vpdb {
+        world_cap.set_vpdb(db.clone());
+        if let Err(e) = world_cap.load_config().await {
+            tracing::warn!("DB 付き config 再読み込み失敗: {}", e);
+        }
+    }
+
     let world_cap = Arc::new(RwLock::new(world_cap));
     let update_cap = Arc::new(RwLock::new(update_cap));
     let hub = Hub::new();
@@ -437,7 +503,8 @@ pub async fn run_world(port: u16) -> Result<()> {
         topic_router,
         canvas_senders: Arc::new(tokio::sync::Mutex::new(Vec::new())),
         started_at: chrono::Utc::now().to_rfc3339(),
-        mcp_mailbox: None, // World モードでは MCP Mailbox 不要
+        mcp_mailbox: None,  // World モードでは MCP Mailbox 不要
+        vpdb: vpdb.clone(), // World モードでも DB 参照あり
     });
 
     let app = Router::new()
@@ -553,6 +620,103 @@ pub async fn run_world(port: u16) -> Result<()> {
         shutdown_token.clone(),
     ));
 
+    // LIVE SELECT → 通知ブリッジ（VP-21 Phase 4）
+    // processes テーブルの変更を検知して DistributedNotification に変換
+    // DB 切断でストリームが終了した場合は再接続ループで自律復帰する
+    if let Some(db) = vpdb.clone() {
+        let shutdown = shutdown_token.clone();
+        tokio::spawn(async move {
+            use futures::StreamExt;
+            tracing::info!("LIVE SELECT processes ブリッジ起動");
+            // 再接続ループ: ストリームが切断されたら 5秒待って再サブスクライブ
+            'reconnect: loop {
+                if shutdown.is_cancelled() {
+                    break 'reconnect;
+                }
+
+                let stream = match db.live_processes().await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tracing::warn!("LIVE SELECT 起動失敗（5秒後に再試行）: {}", e);
+                        tokio::select! {
+                            _ = shutdown.cancelled() => break 'reconnect,
+                            _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {}
+                        }
+                        continue 'reconnect;
+                    }
+                };
+
+                let mut stream = std::pin::pin!(stream);
+                let mut error_count: u32 = 0;
+                loop {
+                    tokio::select! {
+                        _ = shutdown.cancelled() => {
+                            tracing::info!("LIVE SELECT ブリッジ: shutdown");
+                            break 'reconnect;
+                        }
+                        item = stream.next() => {
+                            match item {
+                                Some(Ok(notification)) => {
+                                    error_count = 0; // 成功時にリセット
+                                    let action = notification.action;
+                                    let data = &notification.data;
+                                    let port_val = data["port"].as_u64().unwrap_or(0) as u16;
+                                    let project_name = data["project_name"]
+                                        .as_str()
+                                        .unwrap_or("unknown");
+
+                                    let event = match action {
+                                        surrealdb::types::Action::Create => "started",
+                                        surrealdb::types::Action::Update => "updated",
+                                        surrealdb::types::Action::Delete => "stopped",
+                                        _ => "changed",
+                                    };
+
+                                    tracing::info!(
+                                        "LIVE SELECT: {} '{}' (port={})",
+                                        event,
+                                        project_name,
+                                        port_val
+                                    );
+
+                                    if port_val > 0 {
+                                        crate::notify::post_process_changed(port_val, event);
+                                    }
+                                }
+                                Some(Err(e)) => {
+                                    error_count += 1;
+                                    tracing::warn!("LIVE SELECT エラー ({}/5): {}", error_count, e);
+                                    // 連続 5 回エラーで再接続ループに移行
+                                    if error_count >= 5 {
+                                        tracing::warn!("LIVE SELECT 連続エラー → 再接続...");
+                                        tokio::select! {
+                                            _ = shutdown.cancelled() => break 'reconnect,
+                                            _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {}
+                                        }
+                                        continue 'reconnect;
+                                    }
+                                }
+                                None => {
+                                    // ストリーム終了（DB 再起動など）— 再接続を試みる
+                                    tracing::warn!(
+                                        "LIVE SELECT ストリーム切断、5秒後に再接続..."
+                                    );
+                                    tokio::select! {
+                                        _ = shutdown.cancelled() => break 'reconnect,
+                                        _ = tokio::time::sleep(
+                                            std::time::Duration::from_secs(5)
+                                        ) => {}
+                                    }
+                                    continue 'reconnect;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+
     // シグナルハンドラ: SIGTERM でグレースフルシャットダウン
     let shutdown_for_signal = shutdown_token.clone();
     tokio::spawn(async move {
@@ -600,6 +764,9 @@ pub async fn run_world(port: u16) -> Result<()> {
             tracing::warn!("Error during update shutdown: {}", e);
         }
     }
+
+    // SurrealDB は独立デーモンなので TheWorld 終了時には止めない
+    // 再起動が必要な場合は `vp db restart` を使用
 
     // PID ファイル削除
     process::remove_pid_file();

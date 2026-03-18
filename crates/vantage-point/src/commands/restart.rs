@@ -10,7 +10,12 @@ use crate::resolve::{self, ResolvedTarget};
 use crate::tmux;
 
 /// SP + tmux をセットで再起動（restart-all から呼ばれる）
-pub fn execute(target: Option<&str>, _browser: bool, _headless: bool, config: &Config) -> Result<()> {
+pub fn execute(
+    target: Option<&str>,
+    _browser: bool,
+    _headless: bool,
+    config: &Config,
+) -> Result<()> {
     let resolved = resolve::resolve_target(target, config)?;
 
     let (port, project_dir, project_name) = match resolved {
