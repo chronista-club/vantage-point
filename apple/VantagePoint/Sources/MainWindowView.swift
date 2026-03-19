@@ -74,6 +74,8 @@ struct MainWindowView: View {
     @State private var splitNavigator: SplitNavigatorStep = .hidden
     /// VP Pane レイアウト: プロジェクトパス → ペインツリー
     @State private var paneLayouts: [String: VPPaneLayout] = [:]
+    /// VP Pane レイアウト変更カウンター（SwiftUI 再描画を確実にトリガーするため）
+    @State private var paneLayoutVersion: Int = 0
 
     /// 外部から指定されたプロジェクトパス（起動引数・URL スキーム経由）
     var initialProjectPath: String?
@@ -126,7 +128,8 @@ struct MainWindowView: View {
                                 isActive: isActive,
                                 splitNavigatorActive: splitNavigator != .hidden,
                                 terminalGeneration: gen,
-                                port: selectedPort
+                                port: selectedPort,
+                                layoutVersion: paneLayoutVersion
                             )
                                 .id("\(path):\(gen)")
                                 .opacity(isActive ? 1 : 0)
@@ -548,15 +551,17 @@ struct MainWindowView: View {
             contentType: contentType
         )
 
-        let focusedId = paneLayouts[path]!.focusedPaneId
-        paneLayouts[path]!.root = paneLayouts[path]!.root.inserting(
+        var layout = paneLayouts[path]!
+        layout.root = layout.root.inserting(
             newLeaf: newLeaf,
-            adjacentTo: focusedId,
+            adjacentTo: layout.focusedPaneId,
             horizontal: horizontal
         )
-        paneLayouts[path]!.focusedPaneId = paneId
+        layout.focusedPaneId = paneId
+        paneLayouts[path] = layout
+        paneLayoutVersion += 1  // SwiftUI 再描画を確実にトリガー
 
-        logger.info("VP Pane added: \(windowName) (horizontal=\(horizontal), content=\(contentType))")
+        logger.info("VP Pane added: \(windowName) (horizontal=\(horizontal), content=\(contentType), leafCount=\(layout.root.leafCount), v=\(paneLayoutVersion))")
     }
 
     /// VP Pane を閉じる（⌘⇧D）
@@ -583,9 +588,10 @@ struct MainWindowView: View {
             // フォーカスを最初のリーフに移動
             layout.focusedPaneId = newRoot.leafIds.first ?? layout.focusedPaneId
             paneLayouts[path] = layout
+            paneLayoutVersion += 1
         }
 
-        logger.info("VP Pane closed: \(layout.root.leafCount) panes remaining")
+        logger.info("VP Pane closed: \(layout.root.leafCount) panes remaining, v=\(paneLayoutVersion)")
     }
 
     // MARK: - VP Pane ヘルパー

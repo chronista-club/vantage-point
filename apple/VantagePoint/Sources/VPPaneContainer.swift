@@ -191,6 +191,8 @@ struct VPPaneContainer: View {
     let terminalGeneration: Int
     /// SP の HTTP ポート（Canvas 表示用、nil なら未接続）
     let port: UInt16?
+    /// レイアウト変更カウンター（SwiftUI の差分検出を確実にトリガーするため）
+    let layoutVersion: Int
 
     var body: some View {
         paneNodeView(for: node)
@@ -206,7 +208,7 @@ struct VPPaneContainer: View {
             let isFocused = leaf.id == focusedPaneId
 
             // Canvas ペイン: CanvasRepresentable を表示
-            if leaf.contentType == "canvas" {
+            if leaf.contentType == "canvas" || leaf.contentType == "pp" {
                 return AnyView(
                     CanvasRepresentable(port: port)
                         .id("\(leaf.id):canvas:\(port ?? 0)")
