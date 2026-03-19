@@ -664,10 +664,26 @@ pub struct TmuxSplitParams {
     #[serde(default = "default_true")]
     pub horizontal: bool,
     pub command: Option<String>,
+    /// コンテンツ種別: "shell" (The Hand), "canvas" (PP), "agent" (HD)
+    pub content_type: Option<String>,
 }
 
 fn default_true() -> bool {
     true
+}
+
+/// content_type からコマンドを解決する
+pub fn resolve_content_command(content_type: Option<&str>, command: Option<String>) -> Option<String> {
+    // command が直接指定されていればそちらを優先（後方互換）
+    if command.is_some() {
+        return command;
+    }
+    match content_type {
+        Some("agent") | Some("hd") => Some("claude".to_string()),
+        Some("canvas") | Some("pp") => None, // TODO: PP ビュー起動コマンド（将来実装）
+        Some("shell") | Some("th") | None => None, // デフォルトシェル
+        Some(_) => None,
+    }
 }
 
 /// POST /api/tmux/split - tmux ペインを分割
@@ -681,7 +697,8 @@ pub async fn tmux_split_handler(
             return Json(serde_json::json!({"error": "tmux 未使用環境です"}));
         }
     };
-    match handle.split(params.horizontal, params.command).await {
+    let command = resolve_content_command(params.content_type.as_deref(), params.command);
+    match handle.split(params.horizontal, command).await {
         Ok(pane) => Json(serde_json::json!({"status": "ok", "pane": pane})),
         Err(e) => Json(serde_json::json!({"error": e})),
     }

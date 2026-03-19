@@ -282,6 +282,11 @@ pub struct TmuxSplitParams {
         description = "Command to run in the new pane (e.g. 'claude --dangerously-skip-permissions'). Defaults to shell."
     )]
     pub command: Option<String>,
+    /// コンテンツ種別: "shell" (The Hand ✋), "agent"/"hd" (Heaven's Door 📖), "canvas"/"pp" (Paisley Park 🧭)
+    #[schemars(
+        description = "Content type for the new pane: 'shell' (The Hand, default shell), 'agent'/'hd' (Heaven's Door, Claude CLI), 'canvas'/'pp' (Paisley Park). Overridden by 'command' if both specified."
+    )]
+    pub content_type: Option<String>,
 }
 
 /// tmux ペインキャプチャのパラメータ
@@ -1093,6 +1098,9 @@ impl VantageMcp {
         let mut payload = serde_json::json!({"horizontal": horizontal});
         if let Some(cmd) = &params.command {
             payload["command"] = serde_json::Value::String(cmd.clone());
+        }
+        if let Some(ct) = &params.content_type {
+            payload["content_type"] = serde_json::Value::String(ct.clone());
         }
         let resp = self.quic_call("tmux_split", payload).await?;
         let pane_id = resp

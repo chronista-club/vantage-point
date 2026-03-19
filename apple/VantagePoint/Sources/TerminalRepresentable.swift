@@ -12,6 +12,8 @@ struct TerminalRepresentable: NSViewRepresentable {
     let projectPath: String?
     /// このターミナルがアクティブ（表示中）かどうか
     var isActive: Bool = true
+    /// Split Navigator がアクティブ（キーイベントをインターセプトする）
+    var splitNavigatorActive: Bool = false
 
     func makeNSView(context: Context) -> TerminalView {
         let view = TerminalView(frame: .zero)
@@ -51,6 +53,7 @@ struct TerminalRepresentable: NSViewRepresentable {
     func updateNSView(_ nsView: TerminalView, context: Context) {
         let wasActive = nsView.isActive
         nsView.isActive = isActive
+        nsView.splitNavigatorActive = splitNavigatorActive
 
         // PTY 終了検知 → 自動復旧（クールダウン付き）
         if isActive && nsView.bridgeInitialized

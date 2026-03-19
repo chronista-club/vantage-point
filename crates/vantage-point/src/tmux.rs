@@ -8,15 +8,23 @@
 use std::path::Path;
 use std::process::Command;
 
+/// tmux のフルパス（Homebrew 優先、macOS 標準にフォールバック）
+pub fn tmux_bin() -> Option<&'static str> {
+    static TMUX_BIN: std::sync::OnceLock<Option<&'static str>> = std::sync::OnceLock::new();
+    *TMUX_BIN.get_or_init(|| {
+        let candidates = ["/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/usr/bin/tmux"];
+        for path in candidates {
+            if Path::new(path).exists() {
+                return Some(path);
+            }
+        }
+        None
+    })
+}
+
 /// tmux がインストールされているか確認
 pub fn is_tmux_available() -> bool {
-    Command::new("which")
-        .arg("tmux")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    tmux_bin().is_some()
 }
 
 /// 現在のプロセスが tmux セッション内で実行されているか確認
@@ -50,7 +58,7 @@ pub fn session_name_with_id(project_name: &str, id: Option<&str>) -> String {
 
 /// 指定名の tmux セッションが存在するか確認
 pub fn session_exists(name: &str) -> bool {
-    Command::new("tmux")
+    Command::new(tmux_bin().unwrap_or("tmux"))
         .args(["has-session", "-t", name])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -96,7 +104,7 @@ pub fn attach_and_exec(name: &str) -> ! {
 
 /// tmux セッションを kill する（存在しなくてもエラーにしない）
 pub fn kill_session(name: &str) -> bool {
-    Command::new("tmux")
+    Command::new(tmux_bin().unwrap_or("tmux"))
         .args(["kill-session", "-t", name])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -114,7 +122,7 @@ pub fn create_detached(name: &str, vp_bin: &Path, args: &[&str]) -> std::io::Res
     cmd_parts.extend(args.iter().map(|s| s.to_string()));
     let shell_command = cmd_parts.join(" ");
 
-    let status = Command::new("tmux")
+    let status = Command::new(tmux_bin().unwrap_or("tmux"))
         .args(["new-session", "-d", "-s", name, &shell_command])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -132,7 +140,7 @@ pub fn create_detached(name: &str, vp_bin: &Path, args: &[&str]) -> std::io::Res
 
 /// `-vp` サフィックスを持つ全 tmux セッション名を列挙
 pub fn list_vp_sessions() -> Vec<String> {
-    let output = Command::new("tmux")
+    let output = Command::new(tmux_bin().unwrap_or("tmux"))
         .args(["list-sessions", "-F", "#{session_name}"])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
@@ -156,7 +164,7 @@ pub fn is_in_session(session_name: &str) -> bool {
         return false;
     }
     // tmux display-message で現在のセッション名を取得
-    let output = Command::new("tmux")
+    let output = Command::new(tmux_bin().unwrap_or("tmux"))
         .args(["display-message", "-p", "#{session_name}"])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
@@ -175,7 +183,7 @@ pub fn is_in_session(session_name: &str) -> bool {
 ///
 /// tmux 内からプロジェクトを切り替える場合に使用。
 pub fn switch_client(target_session: &str) {
-    let _ = Command::new("tmux")
+    let _ = Command::new(tmux_bin().unwrap_or("tmux"))
         .args(["switch-client", "-t", target_session])
         .status();
 }

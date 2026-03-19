@@ -97,6 +97,15 @@ pub const GOLD_EXPERIENCE: StandAlias = StandAlias {
     emoji: "🌿",
 };
 
+/// シェルターミナル能力 — 直接操作ターミナル
+pub const THE_HAND: StandAlias = StandAlias {
+    id: "shell",
+    functional_name: "Shell Terminal",
+    stand_name: "The Hand",
+    short: "TH",
+    emoji: "✋",
+};
+
 /// 外部コントロール能力 — MIDI / MCP / tmux
 pub const HERMIT_PURPLE: StandAlias = StandAlias {
     id: "external",
@@ -113,5 +122,6 @@ pub const ALL: &[&StandAlias] = &[
     &GOLD_EXPERIENCE,
     &PAISLEY_PARK,
     &HEAVENS_DOOR,
+    &THE_HAND,
     &HERMIT_PURPLE,
 ];

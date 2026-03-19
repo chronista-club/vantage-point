@@ -135,6 +135,8 @@ async fn handle_tmux_split(
         .ok_or_else(|| "tmux 未使用環境です".to_string())?;
     let horizontal = payload["horizontal"].as_bool().unwrap_or(true);
     let command = payload["command"].as_str().map(|s| s.to_string());
+    let content_type = payload["content_type"].as_str();
+    let command = crate::process::routes::health::resolve_content_command(content_type, command);
     let pane = handle.split(horizontal, command).await?;
     Ok(serde_json::json!({"status": "ok", "pane": pane}))
 }

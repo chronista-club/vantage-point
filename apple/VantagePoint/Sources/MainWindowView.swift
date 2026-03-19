@@ -7,6 +7,44 @@ private let logger = Logger(subsystem: "tech.anycreative.vp", category: "MainWin
 ///
 /// Liquid Glass はサイドバーとツールバーに自動適用される。
 /// ターミナル領域は暗い背景のまま — Glass コントロールが浮かぶ構成。
+/// Pane Split Navigator のステップ状態
+enum SplitNavigatorStep: Equatable {
+    case hidden
+    case direction(selected: Int)   // 0=右, 1=下, 2=上, 3=左
+    case content(horizontal: Bool, selected: Int)  // 0=The Hand, 1=PP, 2=HD
+}
+
+/// 分割方向の定義
+struct SplitDirection: Identifiable {
+    let id: Int
+    let label: String
+    let symbol: String
+    let horizontal: Bool  // tmux の horizontal パラメータ
+}
+
+/// コンテンツ種別の定義
+struct SplitContent: Identifiable {
+    let id: Int
+    let label: String
+    let emoji: String
+    let contentType: String
+}
+
+/// 分割方向の一覧（右, 下, 上, 左）
+let splitDirections: [SplitDirection] = [
+    SplitDirection(id: 0, label: "右", symbol: "→", horizontal: true),
+    SplitDirection(id: 1, label: "下", symbol: "↓", horizontal: false),
+    SplitDirection(id: 2, label: "上", symbol: "↑", horizontal: false),
+    SplitDirection(id: 3, label: "左", symbol: "←", horizontal: true),
+]
+
+/// コンテンツ種別の一覧（The Hand, Paisley Park, Heaven's Door）
+let splitContents: [SplitContent] = [
+    SplitContent(id: 0, label: "The Hand", emoji: "✋", contentType: "shell"),
+    SplitContent(id: 1, label: "Paisley Park", emoji: "🧭", contentType: "pp"),
+    SplitContent(id: 2, label: "Heaven's Door", emoji: "📖", contentType: "agent"),
+]
+
 struct MainWindowView: View {
     /// 選択中のプロジェクトパス
     @State private var selectedProjectPath: String?
@@ -32,6 +70,8 @@ struct MainWindowView: View {
     @State private var hdAutoStartAttempted: Set<String> = []
     /// SP 自動起動を試みたパス（ポーリングで繰り返し起動しないため）
     @State private var spAutoStartAttempted: Set<String> = []
+    /// Pane Split Navigator の状態
+    @State private var splitNavigator: SplitNavigatorStep = .hidden
 
     /// 外部から指定されたプロジェクトパス（起動引数・URL スキーム経由）
     var initialProjectPath: String?
@@ -75,7 +115,11 @@ struct MainWindowView: View {
                         ForEach(terminalPaths, id: \.self) { path in
                             let isActive = selectedProjectPath == path
                             let gen = terminalGeneration[path] ?? 0
-                            TerminalRepresentable(projectPath: path, isActive: isActive)
+                            TerminalRepresentable(
+                                projectPath: path,
+                                isActive: isActive,
+                                splitNavigatorActive: splitNavigator != .hidden
+                            )
                                 .id("\(path):\(gen)")
                                 .opacity(isActive ? 1 : 0)
                                 .allowsHitTesting(isActive)
@@ -87,6 +131,16 @@ struct MainWindowView: View {
                                 systemImage: "mountain.2",
                                 description: Text("Choose a project from the sidebar to start")
                             )
+                        }
+
+                        // Pane Split Navigator フッター
+                        if splitNavigator != .hidden {
+                            VStack {
+                                Spacer()
+                                splitNavigatorFooter
+                            }
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                            .animation(.easeInOut(duration: 0.15), value: splitNavigator)
                         }
                     }
 
@@ -179,10 +233,20 @@ struct MainWindowView: View {
             selectNextProject()
         }
         .onReceive(NotificationCenter.default.publisher(for: .splitTerminalPane)) { _ in
-            splitPane()
+            // Cmd+D: ナビゲーター展開（トグル）
+            withAnimation(.easeInOut(duration: 0.15)) {
+                if splitNavigator == .hidden {
+                    splitNavigator = .direction(selected: 0)
+                } else {
+                    splitNavigator = .hidden
+                }
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: .closeTerminalPane)) { _ in
             closePane()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .splitNavigatorKey)) { notification in
+            handleSplitNavigatorKey(notification)
         }
         .onReceive(NotificationCenter.default.publisher(for: .canvasOpen)) { _ in
             showCanvas = true
@@ -316,17 +380,140 @@ struct MainWindowView: View {
     }
 
 
-    // MARK: - tmux ペイン操作
+    // MARK: - Pane Split Navigator
 
-    /// tmux ペインを分割（⌘D）
-    private func splitPane() {
+    /// フッターナビ UI
+    @ViewBuilder
+    private var splitNavigatorFooter: some View {
+        HStack(spacing: 0) {
+            switch splitNavigator {
+            case .hidden:
+                EmptyView()
+
+            case .direction(let selected):
+                HStack(spacing: 4) {
+                    Text("Split")
+                        .fontWeight(.medium)
+                        .foregroundStyle(.secondary)
+                    ForEach(splitDirections) { dir in
+                        splitNavItem(
+                            index: dir.id,
+                            label: "\(dir.symbol) \(dir.label)",
+                            isSelected: dir.id == selected,
+                            total: splitDirections.count
+                        )
+                    }
+                    Spacer()
+                    Text("←→/Enter  Esc:cancel")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+
+            case .content(_, let selected):
+                HStack(spacing: 4) {
+                    Text("Open")
+                        .fontWeight(.medium)
+                        .foregroundStyle(.secondary)
+                    ForEach(splitContents) { content in
+                        splitNavItem(
+                            index: content.id,
+                            label: "\(content.emoji) \(content.label)",
+                            isSelected: content.id == selected,
+                            total: splitContents.count
+                        )
+                    }
+                    Spacer()
+                    Text("←→/Enter  Esc:cancel")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        }
+        .font(.caption)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(Color(white: 0.12).opacity(0.95))
+    }
+
+    /// ナビの個別アイテム
+    private func splitNavItem(index: Int, label: String, isSelected: Bool, total: Int) -> some View {
+        Text("\(index + 1): \(label)")
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(isSelected ? Color.accentColor.opacity(0.3) : Color.clear)
+            .cornerRadius(4)
+            .foregroundStyle(isSelected ? .white : .secondary)
+    }
+
+    /// キー入力ハンドラー
+    private func handleSplitNavigatorKey(_ notification: Notification) {
+        guard let key = notification.userInfo?["key"] as? String else { return }
+
+        withAnimation(.easeInOut(duration: 0.15)) {
+            switch splitNavigator {
+            case .hidden:
+                break
+
+            case .direction(let selected):
+                switch key {
+                case "left":
+                    splitNavigator = .direction(selected: (selected - 1 + splitDirections.count) % splitDirections.count)
+                case "right":
+                    splitNavigator = .direction(selected: (selected + 1) % splitDirections.count)
+                case "enter":
+                    let dir = splitDirections[selected]
+                    splitNavigator = .content(horizontal: dir.horizontal, selected: 0)
+                case "1", "2", "3", "4":
+                    let idx = Int(key)! - 1
+                    if idx < splitDirections.count {
+                        let dir = splitDirections[idx]
+                        splitNavigator = .content(horizontal: dir.horizontal, selected: 0)
+                    }
+                case "escape":
+                    splitNavigator = .hidden
+                default:
+                    break
+                }
+
+            case .content(let horizontal, let selected):
+                switch key {
+                case "left":
+                    splitNavigator = .content(horizontal: horizontal, selected: (selected - 1 + splitContents.count) % splitContents.count)
+                case "right":
+                    splitNavigator = .content(horizontal: horizontal, selected: (selected + 1) % splitContents.count)
+                case "enter":
+                    let content = splitContents[selected]
+                    executeSplit(horizontal: horizontal, contentType: content.contentType)
+                    splitNavigator = .hidden
+                case "1", "2", "3":
+                    let idx = Int(key)! - 1
+                    if idx < splitContents.count {
+                        let content = splitContents[idx]
+                        executeSplit(horizontal: horizontal, contentType: content.contentType)
+                        splitNavigator = .hidden
+                    }
+                case "escape":
+                    splitNavigator = .hidden
+                default:
+                    break
+                }
+            }
+        }
+    }
+
+    /// tmux split API 呼び出し
+    private func executeSplit(horizontal: Bool, contentType: String) {
         guard let port = selectedPort else { return }
         Task {
             let url = URL(string: "http://[::1]:\(port)/api/tmux/split")!
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.httpBody = try? JSONSerialization.data(withJSONObject: ["horizontal": true])
+            let body: [String: Any] = [
+                "horizontal": horizontal,
+                "content_type": contentType,
+            ]
+            request.httpBody = try? JSONSerialization.data(withJSONObject: body)
             request.timeoutInterval = 5
             _ = try? await URLSession.shared.data(for: request)
         }
@@ -839,4 +1026,5 @@ extension Notification.Name {
     static let closeTerminalPane = Notification.Name("VP.closeTerminalPane")
     static let selectLaneByNumber = Notification.Name("VP.selectLaneByNumber")
     static let canvasOpen = Notification.Name("VP.canvasOpen")
+    static let splitNavigatorKey = Notification.Name("VP.splitNavigatorKey")
 }

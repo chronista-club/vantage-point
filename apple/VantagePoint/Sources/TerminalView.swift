@@ -112,6 +112,9 @@ class TerminalView: NSView {
     /// アクティブ（表示中）フラグ — false のとき描画をスキップ
     var isActive: Bool = true
 
+    /// Split Navigator がアクティブ — true のとき矢印/数字/Enter/Esc を PTY に送らずナビゲーターに転送
+    var splitNavigatorActive: Bool = false
+
     /// クローム行数（ヘッダー/フッター）
     private var chromeHeaderRows: UInt16 = 0
     private var chromeFooterRows: UInt16 = 0
@@ -957,6 +960,8 @@ class TerminalView: NSView {
     /// NSViewRepresentable 内の NSView はメニューショートカットが効きにくいため、
     /// ここで Cmd+V / Cmd+C を直接処理する。
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let firstResp = window?.firstResponder === self
+        logger.info("[IME] performKeyEquivalent: code=\(event.keyCode) chars=\(event.charactersIgnoringModifiers ?? "nil") firstResp=\(firstResp) marked=\(self.hasMarkedText())")
         guard event.modifierFlags.contains(.command),
               let ch = event.charactersIgnoringModifiers else {
             return super.performKeyEquivalent(with: event)
@@ -998,10 +1003,27 @@ class TerminalView: NSView {
     }
 
     override func keyDown(with event: NSEvent) {
+        // Split Navigator アクティブ時: ナビキーをインターセプト
+        if splitNavigatorActive {
+            if let navKey = splitNavigatorKeyFromEvent(event) {
+                NotificationCenter.default.post(
+                    name: .splitNavigatorKey,
+                    object: nil,
+                    userInfo: ["key": navKey]
+                )
+                return // PTY には送らない
+            }
+        }
+
         guard vp_bridge_pty_is_running_session(sessionId) else {
             super.keyDown(with: event)
             return
         }
+
+        // [IME Debug] keyDown の入口ログ
+        let imeMarked = hasMarkedText()
+        let firstResp = window?.firstResponder === self
+        logger.info("[IME] keyDown: code=\(event.keyCode) chars=\(event.characters ?? "nil") marked=\(imeMarked) firstResp=\(firstResp) inputCtx=\(self.inputContext != nil)")
 
         // Cmd ショートカットは performKeyEquivalent で処理済み
         // ここに到達する Cmd イベントは未処理のもの（Cmd+`, Cmd+Q 等）
@@ -1011,7 +1033,8 @@ class TerminalView: NSView {
         }
 
         // IME 変換中はすべて IME に委譲
-        if hasMarkedText() {
+        if imeMarked {
+            logger.info("[IME] keyDown: delegating to IME (hasMarkedText)")
             _ = inputContext?.handleEvent(event)
             return
         }
@@ -1026,10 +1049,12 @@ class TerminalView: NSView {
 
         // IME を経由して処理（日本語入力対応）
         if inputContext?.handleEvent(event) == true {
+            logger.info("[IME] keyDown: handled by inputContext")
             return
         }
 
         // IME が処理しなかった文字を直接送信
+        logger.info("[IME] keyDown: IME declined, direct send chars=\(event.characters ?? "nil")")
         if let chars = event.characters, let data = chars.data(using: .utf8) {
             data.withUnsafeBytes { ptr in
                 _ = vp_bridge_pty_write_session(
@@ -1443,13 +1468,18 @@ extension TerminalView: @preconcurrency NSTextInputClient {
         } else if let str = string as? String {
             text = str
         } else {
+            logger.info("[IME] insertText: unknown type \(type(of: string))")
             return
         }
 
+        logger.info("[IME] insertText: \"\(text.prefix(30))\" len=\(text.count) replacementRange=\(replacementRange)")
         markedString = NSMutableAttributedString()
         _markedRange = NSRange(location: NSNotFound, length: 0)
 
-        guard vp_bridge_pty_is_running_session(sessionId) else { return }
+        guard vp_bridge_pty_is_running_session(sessionId) else {
+            logger.info("[IME] insertText: PTY not running, dropped")
+            return
+        }
         if let data = text.data(using: .utf8) {
             data.withUnsafeBytes { ptr in
                 _ = vp_bridge_pty_write_session(
@@ -1471,11 +1501,13 @@ extension TerminalView: @preconcurrency NSTextInputClient {
         }
         _markedRange = NSRange(location: 0, length: markedString.length)
         selectedRangeValue = selectedRange
+        logger.info("[IME] setMarkedText: \"\(self.markedString.string.prefix(30))\" len=\(self.markedString.length)")
         needsDisplay = true
     }
 
     @MainActor
     func unmarkText() {
+        logger.info("[IME] unmarkText: was=\"\(self.markedString.string.prefix(30))\"")
         markedString = NSMutableAttributedString()
         _markedRange = NSRange(location: NSNotFound, length: 0)
         needsDisplay = true
@@ -1557,5 +1589,44 @@ extension TerminalView: @preconcurrency NSTextInputClient {
     @MainActor
     func validAttributesForMarkedText() -> [NSAttributedString.Key] {
         [.font, .foregroundColor, .underlineStyle]
+    }
+}
+
+// MARK: - Split Navigator キーマッピング
+
+extension TerminalView {
+    /// Split Navigator 用キーイベント → 文字列キー名への変換
+    ///
+    /// ナビゲーターが消費するキーのみ変換、それ以外は nil（PTY に通す）
+    func splitNavigatorKeyFromEvent(_ event: NSEvent) -> String? {
+        // IME 変換中はパススルー（候補選択の矢印キー等を横取りしない）
+        if hasMarkedText() {
+            return nil
+        }
+
+        // Modifier キー付きは無視（Cmd+D 等はメニュー経由で処理済み）
+        if event.modifierFlags.intersection([.command, .control, .option]).isEmpty == false {
+            return nil
+        }
+
+        switch event.keyCode {
+        case 123: return "left"   // ←
+        case 124: return "right"  // →
+        case 126: return "up"     // ↑（未使用だが将来用）
+        case 125: return "down"   // ↓（未使用だが将来用）
+        case 36:  return "enter"  // Return
+        case 53:  return "escape" // Escape
+        default: break
+        }
+
+        // 数字キー 1〜4
+        if let chars = event.charactersIgnoringModifiers,
+           chars.count == 1,
+           let ch = chars.first,
+           ch >= "1" && ch <= "4" {
+            return String(ch)
+        }
+
+        return nil
     }
 }

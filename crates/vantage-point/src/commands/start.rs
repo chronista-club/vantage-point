@@ -348,7 +348,7 @@ fn run_tui_mode(
 // =============================================================================
 
 fn tmux_session_exists(name: &str) -> bool {
-    std::process::Command::new("tmux")
+    std::process::Command::new(crate::tmux::tmux_bin().unwrap_or("tmux"))
         .args(["has-session", "-t", name])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -393,13 +393,13 @@ pub fn create_tmux_session(
     }
 
     // TUI が自前のヘッダー/フッターを持つため tmux ステータスバーを非表示
-    let _ = std::process::Command::new("tmux")
+    let _ = std::process::Command::new(crate::tmux::tmux_bin().unwrap_or("tmux"))
         .args(["set-option", "-t", name, "status", "off"])
         .status();
 
     // mise 環境変数を tmux セッションにも set-environment（後続ペイン用）
     for (key, value) in &mise_envs {
-        let _ = std::process::Command::new("tmux")
+        let _ = std::process::Command::new(crate::tmux::tmux_bin().unwrap_or("tmux"))
             .args(["set-environment", "-t", name, key, value])
             .status();
     }
@@ -442,7 +442,7 @@ pub fn try_create_tmux_claude(
     args.push("-lc".to_string());
     args.push(claude_cmd);
 
-    let status = std::process::Command::new("tmux").args(&args).status()?;
+    let status = std::process::Command::new(crate::tmux::tmux_bin().unwrap_or("tmux")).args(&args).status()?;
 
     Ok(status.success())
 }
@@ -482,7 +482,7 @@ pub fn collect_mise_env(project_dir: &str) -> Vec<(String, String)> {
 
 /// tmux セッションのリサイズ
 fn resize_tmux_session(name: &str, cols: u16, rows: u16) {
-    let _ = std::process::Command::new("tmux")
+    let _ = std::process::Command::new(crate::tmux::tmux_bin().unwrap_or("tmux"))
         .args([
             "resize-window",
             "-t",
@@ -545,11 +545,11 @@ fn run_tui(
     } else {
         resize_tmux_session(session_name, pty_cols as u16, pty_lines as u16);
         // 再接続時もステータスバーを非表示にする
-        let _ = std::process::Command::new("tmux")
+        let _ = std::process::Command::new(crate::tmux::tmux_bin().unwrap_or("tmux"))
             .args(["set-option", "-t", session_name, "status", "off"])
             .status();
         // 再接続時も VP_PROCESS_PORT を注入（ポート変更に追従）
-        let _ = std::process::Command::new("tmux")
+        let _ = std::process::Command::new(crate::tmux::tmux_bin().unwrap_or("tmux"))
             .args([
                 "set-environment",
                 "-t",
