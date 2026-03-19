@@ -72,6 +72,8 @@ struct MainWindowView: View {
     @State private var spAutoStartAttempted: Set<String> = []
     /// Pane Split Navigator の状態
     @State private var splitNavigator: SplitNavigatorStep = .hidden
+    /// VP Pane レイアウト: プロジェクトパス → ペインツリー
+    @State private var paneLayouts: [String: VPPaneLayout] = [:]
 
     /// 外部から指定されたプロジェクトパス（起動引数・URL スキーム経由）
     var initialProjectPath: String?
@@ -109,16 +111,21 @@ struct MainWindowView: View {
                     // ヘッダー: プロジェクト情報 + Stand ステータス
                     terminalHeader
 
-                    // ビューポート: PTY → tmux セッション
-                    // プロジェクト + worker それぞれ独立した SP/PTY を持つ
+                    // ビューポート: VP Pane コンテナ（NSView レイヤの分割管理）
+                    // プロジェクト + worker それぞれ独立した VP Pane ツリーを持つ
                     ZStack {
                         ForEach(terminalPaths, id: \.self) { path in
                             let isActive = selectedProjectPath == path
                             let gen = terminalGeneration[path] ?? 0
-                            TerminalRepresentable(
+                            let layout = paneLayouts[path] ?? VPPaneLayout.initial()
+                            VPPaneContainer(
                                 projectPath: path,
+                                tmuxSession: tmuxSessionName(for: path),
+                                node: layout.root,
+                                focusedPaneId: layout.focusedPaneId,
                                 isActive: isActive,
-                                splitNavigatorActive: splitNavigator != .hidden
+                                splitNavigatorActive: splitNavigator != .hidden,
+                                terminalGeneration: gen
                             )
                                 .id("\(path):\(gen)")
                                 .opacity(isActive ? 1 : 0)
@@ -271,6 +278,20 @@ struct MainWindowView: View {
             // プロジェクト選択時にバッジクリア
             if let path = newPath {
                 notifications.remove(path)
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .vpPaneFocused)) { notification in
+            // VP Pane クリック → フォーカス切り替え
+            guard let paneId = notification.userInfo?["paneId"] as? UUID,
+                  let path = selectedProjectPath else { return }
+            if paneLayouts[path]?.focusedPaneId != paneId {
+                paneLayouts[path]?.focusedPaneId = paneId
+            }
+        }
+        .onChange(of: terminalPaths) { _, newPaths in
+            // 新しいプロジェクトの VP Pane レイアウトを初期化
+            for path in newPaths where paneLayouts[path] == nil {
+                paneLayouts[path] = VPPaneLayout.initial()
             }
         }
     }
@@ -501,49 +522,76 @@ struct MainWindowView: View {
         }
     }
 
-    /// tmux split API 呼び出し
+    /// VP Pane 追加（NSView レイヤの分割）
+    ///
+    /// tmux split API ではなく、SwiftUI レイヤでペインを分割する。
+    /// 新しいペインは tmux の新 window + グループセッション経由で独立表示。
     private func executeSplit(horizontal: Bool, contentType: String) {
-        guard let port = selectedPort else { return }
-        Task {
-            let url = URL(string: "http://[::1]:\(port)/api/tmux/split")!
-            var request = URLRequest(url: url)
-            request.httpMethod = "POST"
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            let body: [String: Any] = [
-                "horizontal": horizontal,
-                "content_type": contentType,
-            ]
-            request.httpBody = try? JSONSerialization.data(withJSONObject: body)
-            request.timeoutInterval = 5
-            _ = try? await URLSession.shared.data(for: request)
+        guard let path = selectedProjectPath else { return }
+
+        // レイアウトが無ければ初期化
+        if paneLayouts[path] == nil {
+            paneLayouts[path] = VPPaneLayout.initial()
         }
+
+        let paneId = UUID()
+        let tmuxSession = tmuxSessionName(for: path)
+        let shortId = paneId.uuidString.prefix(8).lowercased()
+        let paneSession = "\(tmuxSession)-vpp-\(shortId)"
+        let windowName = "vpp-\(shortId)"
+
+        let newLeaf = VPPaneLeaf(
+            id: paneId,
+            paneSessionName: paneSession,
+            tmuxWindowName: windowName
+        )
+
+        let focusedId = paneLayouts[path]!.focusedPaneId
+        paneLayouts[path]!.root = paneLayouts[path]!.root.inserting(
+            newLeaf: newLeaf,
+            adjacentTo: focusedId,
+            horizontal: horizontal
+        )
+        paneLayouts[path]!.focusedPaneId = paneId
+
+        logger.info("VP Pane added: \(windowName) (horizontal=\(horizontal), content=\(contentType))")
     }
 
-    /// tmux ペインを閉じる（⌘⇧D）
+    /// VP Pane を閉じる（⌘⇧D）
     ///
-    /// 現在アクティブなペインを閉じる（tmux kill-pane）。
-    /// tmux の PATH は Homebrew と macOS 標準の両方を試す。
+    /// フォーカス中の VP Pane を削除し、対応する tmux リソースをクリーンアップ。
+    /// 最後の 1 つは閉じない（プロジェクトには最低 1 ペイン必要）。
     private func closePane() {
-        Task {
-            let tmuxPaths = ["/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/usr/bin/tmux"]
-            for tmuxPath in tmuxPaths {
-                let process = Process()
-                process.executableURL = URL(fileURLWithPath: tmuxPath)
-                process.arguments = ["kill-pane"]
-                process.standardOutput = FileHandle.nullDevice
-                process.standardError = FileHandle.nullDevice
-                do {
-                    try process.run()
-                    process.waitUntilExit()
-                    if process.terminationStatus == 0 {
-                        return
-                    }
-                } catch {
-                    continue
-                }
-            }
-            logger.warning("tmux kill-pane 失敗: tmux が見つからないか、ペインが1つしかありません")
+        guard let path = selectedProjectPath,
+              var layout = paneLayouts[path],
+              layout.root.leafCount > 1 else {
+            logger.info("VP Pane close: 最後の1つは閉じない")
+            return
         }
+
+        // 削除対象のリーフの tmux リソースをクリーンアップ
+        if let leaf = layout.root.findLeaf(id: layout.focusedPaneId) {
+            let tmuxSession = tmuxSessionName(for: path)
+            cleanupVPPaneTmux(tmuxSession: tmuxSession, leaf: leaf)
+        }
+
+        // ツリーから削除
+        if let newRoot = layout.root.removing(targetId: layout.focusedPaneId) {
+            layout.root = newRoot
+            // フォーカスを最初のリーフに移動
+            layout.focusedPaneId = newRoot.leafIds.first ?? layout.focusedPaneId
+            paneLayouts[path] = layout
+        }
+
+        logger.info("VP Pane closed: \(layout.root.leafCount) panes remaining")
+    }
+
+    // MARK: - VP Pane ヘルパー
+
+    /// プロジェクトパスから tmux セッション名を生成
+    private func tmuxSessionName(for path: String) -> String {
+        let projectName = (path as NSString).lastPathComponent
+        return projectName.replacingOccurrences(of: ".", with: "-") + "-vp"
     }
 
     // MARK: - SP 自動起動
@@ -1027,4 +1075,5 @@ extension Notification.Name {
     static let selectLaneByNumber = Notification.Name("VP.selectLaneByNumber")
     static let canvasOpen = Notification.Name("VP.canvasOpen")
     static let splitNavigatorKey = Notification.Name("VP.splitNavigatorKey")
+    static let vpPaneFocused = Notification.Name("VP.vpPaneFocused")
 }
