@@ -37,9 +37,6 @@ struct MultiProjectApp {
     overlay: Option<OverlayKind>,
     config: Config,
     was_ai_busy: bool,
-    /// PP window 稼働状態キャッシュ（描画ループ内の I/O を排除）
-    pp_open: bool,
-    pp_check_timer: std::time::Instant,
 }
 
 impl MultiProjectApp {
@@ -50,8 +47,6 @@ impl MultiProjectApp {
             overlay: None,
             config,
             was_ai_busy: false,
-            pp_open: false,
-            pp_check_timer: std::time::Instant::now(),
         }
     }
 
@@ -147,16 +142,6 @@ impl MultiProjectApp {
         let mut needs_redraw = true;
 
         loop {
-            // PP window 状態を定期チェック（1秒間隔）
-            if self.pp_check_timer.elapsed() >= Duration::from_secs(1) {
-                let was_open = self.pp_open;
-                self.pp_open = crate::canvas::find_running_canvas().is_some();
-                if was_open != self.pp_open {
-                    needs_redraw = true;
-                }
-                self.pp_check_timer = std::time::Instant::now();
-            }
-
             // 全プロジェクトのイベントをポーリング
             for i in 0..self.projects.len() {
                 let changed = self.projects[i].poll_events();
@@ -359,13 +344,6 @@ impl MultiProjectApp {
                 let _ = ctx.cmd_tx.send(BridgeCommand::SwitchSession(sid));
                 return Ok(true);
             }
-        }
-
-        // Home: PP window トグル（TheWorld フォールバック付き）
-        if key.code == KeyCode::Home {
-            toggle_pp_window(ctx.port);
-            self.pp_open = crate::canvas::find_running_canvas().is_some();
-            return Ok(true);
         }
 
         // PageUp/PageDown: スクロールバック
@@ -865,15 +843,3 @@ fn start_background_services(
     Ok(())
 }
 
-/// PP Window（Paisley Park）のトグル
-///
-/// TheWorld 稼働中 → Lane モード、未稼働 → 個別ポートで Canvas 起動。
-/// TUI インライン分割は廃止 — 常に外部ウィンドウ。
-fn toggle_pp_window(sp_port: u16) {
-    if crate::canvas::find_running_canvas().is_some() {
-        crate::canvas::stop_canvas();
-    } else {
-        let (port, lanes) = crate::canvas::canvas_target(sp_port);
-        let _ = crate::canvas::ensure_canvas_running(port, lanes, None);
-    }
-}

@@ -9,7 +9,6 @@
 //! "process" チャネルですべての操作を統一:
 //! - show / clear / toggle_pane / split_pane / close_pane
 //! - watch_file / unwatch_file
-//! - open_canvas / close_canvas
 
 use std::sync::Arc;
 
@@ -96,28 +95,6 @@ async fn handle_unwatch_file(
     state.file_watchers.lock().await.stop_watch(&req.pane_id);
 
     Ok(serde_json::json!({"status": "ok", "pane_id": req.pane_id}))
-}
-
-// =============================================================================
-// Canvas チャネル ハンドラー
-// =============================================================================
-
-/// PP Canvas パネルを開く — DistributedNotification で Native App に通知
-async fn handle_canvas_open(state: &AppState) -> Result<serde_json::Value, String> {
-    // Native App の CanvasView パネルを開く（別ウィンドウではない）
-    crate::notify::post_canvas_open(state.port);
-    tracing::info!("Canvas open notification sent (port={})", state.port);
-    Ok(serde_json::json!({"status": "opened", "port": state.port}))
-}
-
-/// canvas.close メソッドのハンドラー — AppState 経由で一元管理
-async fn handle_canvas_close(state: &AppState) -> Result<serde_json::Value, String> {
-    if let Some(pid) = state.close_canvas().await {
-        tracing::info!("Canvas window closed via QUIC (pid={})", pid);
-        Ok(serde_json::json!({"status": "closed", "pid": pid}))
-    } else {
-        Ok(serde_json::json!({"status": "not_open"}))
-    }
 }
 
 // =============================================================================
@@ -528,8 +505,6 @@ pub async fn start_unison_server(
                             }
                             "watch_file" => handle_watch_file(&state, payload).await,
                             "unwatch_file" => handle_unwatch_file(&state, payload).await,
-                            "open_canvas" => handle_canvas_open(&state).await,
-                            "close_canvas" => handle_canvas_close(&state).await,
                             "tmux_split" => handle_tmux_split(&state, payload).await,
                             "tmux_list" => handle_tmux_list(&state).await,
                             "tmux_close" => handle_tmux_close(&state, payload).await,

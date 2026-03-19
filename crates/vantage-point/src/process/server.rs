@@ -198,7 +198,6 @@ pub async fn run(
         update: None,
         interactive_agent: Arc::new(RwLock::new(None)),
         pty_manager: Arc::new(tokio::sync::Mutex::new(PtyManager::new())),
-        canvas_pid: Arc::new(tokio::sync::Mutex::new(None)),
         port,
         file_watchers: Arc::new(tokio::sync::Mutex::new(FileWatcherManager::new())),
         terminal_token: terminal_token.clone(),
@@ -232,8 +231,6 @@ pub async fn run(
         .route("/api/close-pane", post(health::close_pane_handler))
         .route("/api/watch-file", post(health::watch_file_handler))
         .route("/api/unwatch-file", post(health::unwatch_file_handler))
-        .route("/api/canvas/open", post(health::canvas_open_handler))
-        .route("/api/canvas/close", post(health::canvas_close_handler))
         // tmux ペイン操作（Native App の Cmd+D / Cmd+Shift+D から呼ばれる）
         .route("/api/tmux/split", post(health::tmux_split_handler))
         .route("/api/tmux/close", post(health::tmux_close_handler))
@@ -496,7 +493,6 @@ pub async fn run_world(port: u16) -> Result<()> {
         update: Some(update_cap.clone()),
         interactive_agent: Arc::new(RwLock::new(None)),
         pty_manager: Arc::new(tokio::sync::Mutex::new(PtyManager::new())),
-        canvas_pid: Arc::new(tokio::sync::Mutex::new(None)),
         port,
         file_watchers: Arc::new(tokio::sync::Mutex::new(FileWatcherManager::new())),
         terminal_token: "WORLD_DISABLED".to_string(),

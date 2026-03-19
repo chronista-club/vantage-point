@@ -1,6 +1,6 @@
 //! `vp restart-all` コマンドの実行ロジック
 //!
-//! TheWorld + 全 SP + Canvas + tmux セッションを一括再起動する。
+//! TheWorld + 全 SP + tmux セッションを一括再起動する。
 //! 主に新バイナリへの切り替え時に使用。
 
 use anyhow::Result;
@@ -34,12 +34,7 @@ pub fn execute() -> Result<()> {
         }
     });
 
-    // 3. Canvas を停止
-    if let Some(pid) = crate::canvas::stop_canvas() {
-        println!("  ⏹ Canvas (pid {})... ok", pid);
-    }
-
-    // 4. tmux セッションを kill
+    // 3. tmux セッションを kill
     if tmux::is_tmux_available() {
         let sessions = tmux::list_vp_sessions();
         for session in &sessions {
@@ -52,7 +47,7 @@ pub fn execute() -> Result<()> {
         }
     }
 
-    // 5. TheWorld を停止
+    // 4. TheWorld を停止
     if let Some(pid) = daemon::is_daemon_running() {
         print!("  ⏹ TheWorld (pid {})... ", pid);
         match daemon::stop_daemon(pid) {
@@ -64,7 +59,7 @@ pub fn execute() -> Result<()> {
 
     println!();
 
-    // 6. TheWorld を再起動
+    // 5. TheWorld を再起動
     println!("🚀 TheWorld を起動中...");
     if let Err(e) = daemon::ensure_daemon_running(crate::cli::WORLD_PORT) {
         eprintln!("✗ TheWorld 起動失敗: {}", e);
@@ -73,7 +68,7 @@ pub fn execute() -> Result<()> {
     std::thread::sleep(std::time::Duration::from_millis(500));
     println!("  ✓ TheWorld ready (port {})", crate::cli::WORLD_PORT);
 
-    // 7. 全 SP を再起動
+    // 6. 全 SP を再起動
     if !processes.is_empty() {
         println!("🚀 {} 個の SP を再起動中...", processes.len());
     }

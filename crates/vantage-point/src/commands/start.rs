@@ -600,10 +600,6 @@ fn run_tui(
             }
         })?;
 
-    // PP window 状態
-    let mut pp_open = crate::canvas::find_running_canvas().is_some();
-    let mut pp_check_timer = std::time::Instant::now();
-
     // ccwire heartbeat タイマー
     let mut ccwire_heartbeat_timer = std::time::Instant::now();
 
@@ -614,16 +610,6 @@ fn run_tui(
         if ccwire_heartbeat_timer.elapsed() >= crate::ccwire::HEARTBEAT_INTERVAL {
             let _ = crate::ccwire::heartbeat(session_name);
             ccwire_heartbeat_timer = std::time::Instant::now();
-        }
-
-        // PP window 状態を定期チェック
-        if pp_check_timer.elapsed() >= Duration::from_secs(1) {
-            let was_open = pp_open;
-            pp_open = crate::canvas::find_running_canvas().is_some();
-            if was_open != pp_open {
-                needs_redraw = true;
-            }
-            pp_check_timer = std::time::Instant::now();
         }
 
         // 描画
@@ -648,18 +634,6 @@ fn run_tui(
                         && key.modifiers.contains(KeyModifiers::CONTROL)
                     {
                         break Ok(());
-                    }
-
-                    // Home: PP window トグル
-                    if key.code == KeyCode::Home {
-                        let (canvas_port, lanes) = crate::canvas::canvas_target(port);
-                        if crate::canvas::find_running_canvas().is_some() {
-                            crate::canvas::stop_canvas();
-                        } else {
-                            let _ = crate::canvas::ensure_canvas_running(canvas_port, lanes, None);
-                        }
-                        pp_open = crate::canvas::find_running_canvas().is_some();
-                        continue;
                     }
 
                     // キー入力を PTY に送信

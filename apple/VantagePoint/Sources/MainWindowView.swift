@@ -52,10 +52,6 @@ struct MainWindowView: View {
     @State private var projects: [SidebarProject] = []
     /// TheWorld 接続ステータス
     @State private var worldStatus: WorldStatus = .checking
-    /// Canvas（Paisley Park）表示フラグ
-    @State private var showCanvas: Bool = false
-    /// Canvas の幅（ドラッグで変更可能）
-    @State private var canvasWidth: CGFloat = 500
     /// CC 通知バッジ: プロジェクト名 → 未読フラグ
     @State private var notifications: Set<String> = []
     /// ターミナルターゲットのパス一覧（プロジェクト + worker）
@@ -106,10 +102,8 @@ struct MainWindowView: View {
                 onRestartWorld: restartWorld
             )
         } detail: {
-            // ターミナル + Canvas（Canvas は Cmd+O でトグル）
-            HStack(spacing: 0) {
-                // ターミナル（左 — SwiftUI ヘッダー + PTY + フッター）
-                VStack(spacing: 0) {
+            // ターミナル（SwiftUI ヘッダー + VP Pane コンテナ）
+            VStack(spacing: 0) {
                     // ヘッダー: プロジェクト情報 + Stand ステータス
                     terminalHeader
 
@@ -155,48 +149,6 @@ struct MainWindowView: View {
                         }
                     }
 
-                }
-
-                // Canvas（右）— トグルで表示/非表示、ドラッグで幅変更
-                if showCanvas {
-                    // ドラッグハンドル（分割線）
-                    Rectangle()
-                        .fill(Color.gray.opacity(0.01)) // ほぼ透明（ホバー時だけ見える）
-                        .frame(width: 6)
-                        .contentShape(Rectangle())
-                        .onHover { hovering in
-                            if hovering {
-                                NSCursor.resizeLeftRight.push()
-                            } else {
-                                NSCursor.pop()
-                            }
-                        }
-                        .gesture(
-                            DragGesture()
-                                .onChanged { value in
-                                    // ドラッグで Canvas 幅を調整（左にドラッグ = 幅拡大）
-                                    let newWidth = canvasWidth - value.translation.width
-                                    canvasWidth = max(200, min(newWidth, 1200))
-                                }
-                        )
-
-                    CanvasRepresentable(port: selectedPort)
-                        .frame(width: canvasWidth)
-                }
-            }
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        showCanvas.toggle()
-                    } label: {
-                        Label(
-                            showCanvas ? "Hide Canvas" : "Show Canvas",
-                            systemImage: showCanvas ? "sidebar.right" : "sidebar.squares.right"
-                        )
-                    }
-                    .help("Canvas (Paisley Park) の表示/非表示  ⌘O")
-                    .keyboardShortcut("o", modifiers: .command)
-                }
             }
             .toolbarBackground(.visible, for: .windowToolbar)
             .navigationTitle(selectedProject?.name ?? "Vantage Point")
@@ -204,14 +156,6 @@ struct MainWindowView: View {
         }
         .onAppear {
             loadProjects()
-            // Canvas open の DistributedNotification をローカル通知に中継
-            DistributedNotificationCenter.default().addObserver(
-                forName: NSNotification.Name("tech.anycreative.vp.canvas.open"),
-                object: nil,
-                queue: .main
-            ) { _ in
-                NotificationCenter.default.post(name: .canvasOpen, object: nil)
-            }
         }
         .onChange(of: projects) { _, newProjects in
             // @State 更新後に初期選択（onAppear 直後の競合を回避）
@@ -258,9 +202,6 @@ struct MainWindowView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .splitNavigatorKey)) { notification in
             handleSplitNavigatorKey(notification)
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .canvasOpen)) { _ in
-            showCanvas = true
         }
         .onReceive(NotificationCenter.default.publisher(for: .selectLaneByNumber)) { notification in
             if let number = notification.userInfo?["number"] as? Int {
@@ -1081,7 +1022,6 @@ extension Notification.Name {
     static let splitTerminalPane = Notification.Name("VP.splitTerminalPane")
     static let closeTerminalPane = Notification.Name("VP.closeTerminalPane")
     static let selectLaneByNumber = Notification.Name("VP.selectLaneByNumber")
-    static let canvasOpen = Notification.Name("VP.canvasOpen")
     static let splitNavigatorKey = Notification.Name("VP.splitNavigatorKey")
     static let vpPaneFocused = Notification.Name("VP.vpPaneFocused")
 }
