@@ -125,7 +125,8 @@ struct MainWindowView: View {
                                 focusedPaneId: layout.focusedPaneId,
                                 isActive: isActive,
                                 splitNavigatorActive: splitNavigator != .hidden,
-                                terminalGeneration: gen
+                                terminalGeneration: gen,
+                                port: selectedPort
                             )
                                 .id("\(path):\(gen)")
                                 .opacity(isActive ? 1 : 0)
@@ -543,7 +544,8 @@ struct MainWindowView: View {
         let newLeaf = VPPaneLeaf(
             id: paneId,
             paneSessionName: paneSession,
-            tmuxWindowName: windowName
+            tmuxWindowName: windowName,
+            contentType: contentType
         )
 
         let focusedId = paneLayouts[path]!.focusedPaneId

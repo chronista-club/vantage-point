@@ -12,6 +12,8 @@ struct VPPaneLeaf: Identifiable, Equatable {
     let paneSessionName: String?
     /// tmux window 名（nil = デフォルト window）
     let tmuxWindowName: String?
+    /// Stand 種別（"agent" = TerminalView, "canvas" = CanvasRepresentable, "shell" = 将来用）
+    let contentType: String
 }
 
 /// VP Pane のツリー構造（NSView レイヤの分割コンテナ）
@@ -108,7 +110,7 @@ struct VPPaneLayout: Equatable {
     static func initial() -> VPPaneLayout {
         let id = UUID()
         return VPPaneLayout(
-            root: .leaf(VPPaneLeaf(id: id, paneSessionName: nil, tmuxWindowName: nil)),
+            root: .leaf(VPPaneLeaf(id: id, paneSessionName: nil, tmuxWindowName: nil, contentType: "agent")),
             focusedPaneId: id
         )
     }
@@ -187,6 +189,8 @@ struct VPPaneContainer: View {
     let isActive: Bool
     let splitNavigatorActive: Bool
     let terminalGeneration: Int
+    /// SP の HTTP ポート（Canvas 表示用、nil なら未接続）
+    let port: UInt16?
 
     var body: some View {
         paneNodeView(for: node)
@@ -200,7 +204,16 @@ struct VPPaneContainer: View {
         switch node {
         case .leaf(let leaf):
             let isFocused = leaf.id == focusedPaneId
-            // 追加ペインはグループセッション経由、初期ペインは直接 attach
+
+            // Canvas ペイン: CanvasRepresentable を表示
+            if leaf.contentType == "canvas" {
+                return AnyView(
+                    CanvasRepresentable(port: port)
+                        .id("\(leaf.id):canvas:\(port ?? 0)")
+                )
+            }
+
+            // Agent / Shell ペイン: TerminalView を表示
             let tmuxCmd: String? = {
                 guard let paneSession = leaf.paneSessionName,
                       let windowName = leaf.tmuxWindowName else {
