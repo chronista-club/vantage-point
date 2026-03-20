@@ -215,7 +215,22 @@ struct VPPaneContainer: View {
                 )
             }
 
-            // Agent / Shell ペイン: TerminalView を表示
+            // Shell ペイン (The Hand): 素シェルを直接起動（tmux 不要）
+            if leaf.contentType == "shell" {
+                return AnyView(
+                    TerminalRepresentable(
+                        projectPath: projectPath,
+                        isActive: isActive,
+                        isFocused: isFocused,
+                        splitNavigatorActive: splitNavigatorActive,
+                        tmuxCommand: "exec zsh -l",
+                        paneId: leaf.id
+                    )
+                    .id("\(leaf.id):shell")
+                )
+            }
+
+            // Agent ペイン (HD): tmux グループセッション経由で独立表示
             let tmuxCmd: String? = {
                 guard let paneSession = leaf.paneSessionName,
                       let windowName = leaf.tmuxWindowName else {
