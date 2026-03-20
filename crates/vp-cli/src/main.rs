@@ -22,7 +22,6 @@ use vantage_point::commands;
 use vantage_point::config::Config;
 use vantage_point::mcp;
 
-use commands::canvas_cmd::CanvasCommands;
 use commands::file_cmd::FileCommands;
 use commands::midi::MidiCommands;
 use commands::pane::PaneCommands;
@@ -38,7 +37,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// 全 Process + TheWorld + Canvas を一括再起動
+    /// 全 Process + TheWorld を一括再起動
     #[command(alias = "ra")]
     RestartAll,
     /// 稼働中のインスタンス一覧
@@ -54,9 +53,6 @@ enum Commands {
         #[arg(long)]
         check: bool,
     },
-    /// Canvas ウィンドウ操作
-    #[command(subcommand)]
-    Canvas(CanvasCommands),
     /// ペイン操作（コンテンツ表示・レイアウト）
     #[command(subcommand)]
     Pane(PaneCommands),
@@ -118,7 +114,6 @@ fn main() -> Result<()> {
             rt.block_on(mcp::run_mcp_server(None))
         }
         Commands::Update { check } => commands::update::execute(check),
-        Commands::Canvas(cmd) => commands::canvas_cmd::execute(cmd, &config),
         Commands::Pane(cmd) => commands::pane::execute(cmd, &config),
         Commands::File(cmd) => commands::file_cmd::execute(cmd, &config),
 

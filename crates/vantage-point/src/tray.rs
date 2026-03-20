@@ -173,26 +173,9 @@ pub fn run_tray() -> anyhow::Result<()> {
                 // Note: In a real implementation, we'd update the menu here
             } else if let Some(port_str) = id.strip_prefix(OPEN_WEBUI_PREFIX) {
                 if let Ok(port) = port_str.parse::<u16>() {
-                    // Open WebView window for existing Process instance
-                    let project_name = crate::discovery::list_blocking()
-                        .iter()
-                        .find(|i| i.port == port)
-                        .map(|i| {
-                            let config = crate::config::Config::load().unwrap_or_default();
-                            crate::resolve::project_name_from_path(&i.project_dir, &config)
-                        })
-                        .unwrap_or_else(|| "Vantage Point".to_string());
-                    let (canvas_port, lanes) = crate::canvas::canvas_target(port);
-                    if let Err(e) = crate::canvas::ensure_canvas_running(
-                        canvas_port,
-                        lanes,
-                        Some(&project_name),
-                    ) {
-                        tracing::error!("Failed to open Canvas: {}", e);
-                        // Fallback to browser
-                        let url = format!("http://localhost:{}", port);
-                        let _ = open::that(&url);
-                    }
+                    // ブラウザでWebUIを開く
+                    let url = format!("http://localhost:{}", port);
+                    let _ = open::that(&url);
                 }
             } else if let Some(port_str) = id.strip_prefix(STOP_PREFIX)
                 && let Ok(port) = port_str.parse::<u16>()

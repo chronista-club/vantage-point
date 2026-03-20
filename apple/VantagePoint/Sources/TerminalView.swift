@@ -115,6 +115,9 @@ class TerminalView: NSView {
     /// Split Navigator がアクティブ — true のとき矢印/数字/Enter/Esc を PTY に送らずナビゲーターに転送
     var splitNavigatorActive: Bool = false
 
+    /// VP Pane ID（ペインフォーカス通知用）
+    var paneId: UUID?
+
     /// クローム行数（ヘッダー/フッター）
     private var chromeHeaderRows: UInt16 = 0
     private var chromeFooterRows: UInt16 = 0
@@ -221,6 +224,14 @@ class TerminalView: NSView {
     /// first responder 変更時にボーダーで視覚化（フォーカスインジケーター）
     override func becomeFirstResponder() -> Bool {
         let result = super.becomeFirstResponder()
+        // VP Pane フォーカス通知: クリック等で first responder になったペインを通知
+        if let id = paneId {
+            NotificationCenter.default.post(
+                name: .vpPaneFocused,
+                object: nil,
+                userInfo: ["paneId": id]
+            )
+        }
         updateFocusBorder()
         return result
     }
@@ -399,6 +410,11 @@ class TerminalView: NSView {
         // バッファ一括読み取り
         let totalCells = Int(gridCols) * Int(gridRows)
         guard totalCells > 0 else { return }
+
+        // cellBuffer のサイズが不整合ならリサイズ（setFrameSize と draw の競合対策）
+        if cellBuffer.count != totalCells {
+            cellBuffer = [VPCellData](repeating: VPCellData(), count: totalCells)
+        }
 
         cellBuffer.withUnsafeMutableBufferPointer { ptr in
             _ = vp_bridge_get_buffer_session(sessionId, ptr.baseAddress!, UInt32(totalCells))

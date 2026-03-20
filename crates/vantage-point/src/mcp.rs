@@ -6,7 +6,7 @@
 //! - permission: Handle permission requests for tool execution
 //!
 //! ## 通信レイヤー
-//! process / canvas チャネルは Unison QUIC で通信。
+//! process チャネルは Unison QUIC で通信。
 //! Ruby VM / capture / permission 等の一部 API は HTTP フォールバック。
 
 // running.json 不使用 — discovery モジュール経由
@@ -87,18 +87,6 @@ pub struct TogglePaneParams {
         description = "Set explicit visibility: true = show, false = hide. If not provided, toggles current state."
     )]
     pub visible: Option<bool>,
-}
-
-/// Parameters for the split_pane tool
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-pub struct SplitPaneParams {
-    /// Split direction
-    #[schemars(description = "Split direction: 'horizontal' or 'vertical'")]
-    pub direction: String,
-
-    /// Source pane ID to split from
-    #[schemars(description = "Pane ID to split from. If not provided, splits the 'main' pane.")]
-    pub source_pane_id: Option<String>,
 }
 
 /// Parameters for the close_pane tool
@@ -367,7 +355,7 @@ pub struct PermissionRequestPayload {
 /// MCP → Process 通信クライアント
 ///
 /// Unison QUIC で Process と通信する。
-/// process / canvas チャネルは lazy 接続し、persistent に保持。
+/// process チャネルは lazy 接続し、persistent に保持。
 /// Ruby / capture / permission 等の未対応メソッドは HTTP フォールバック。
 pub struct VantageMcp {
     /// HTTP クライアント（QUIC 未対応の API 用フォールバック）
@@ -801,7 +789,7 @@ impl VantageMcp {
         None
     }
 
-    /// Process に QUIC で ProcessMessage を送信（show/clear/toggle_pane/split_pane/close_pane）
+    /// Process に QUIC で ProcessMessage を送信（show/clear/toggle_pane/close_pane）
     async fn process_call(
         &self,
         method: &str,
@@ -810,47 +798,6 @@ impl VantageMcp {
         let payload = serde_json::to_value(msg)
             .map_err(|e| McpError::internal_error(format!("Serialize error: {}", e), None))?;
         self.quic_call(method, payload).await
-    }
-
-    /// PP Window が存在しなければ自動起動（SP 経由で一元管理）
-    ///
-    /// QUIC "process" チャネルの open_canvas を呼び出し、
-    /// SP の AppState が Canvas ライフサイクルを管理する。
-    async fn ensure_pp_window(&self) {
-        let _ = self.quic_call("open_canvas", serde_json::json!({})).await;
-    }
-
-    /// PP Window（Paisley Park）を開く
-    #[tool(
-        description = "Open the Paisley Park (PP) window. Displays all running projects as Lanes in a single window."
-    )]
-    async fn open_canvas(&self) -> Result<CallToolResult, McpError> {
-        // PP Window は TheWorld + Lane モードで直接起動
-        self.ensure_pp_window().await;
-        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-            "PP Window opened (Lane mode)".to_string(),
-        )]))
-    }
-
-    /// PP Window を閉じる（SP 経由で一元管理）
-    #[tool(description = "Close the Paisley Park (PP) window.")]
-    async fn close_canvas(&self) -> Result<CallToolResult, McpError> {
-        let result = self
-            .quic_call("close_canvas", serde_json::json!({}))
-            .await?;
-        let status = result
-            .get("status")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown");
-        let msg = if status == "closed" {
-            let pid = result.get("pid").and_then(|v| v.as_u64()).unwrap_or(0);
-            format!("PP Window closed (pid={})", pid)
-        } else {
-            "PP Window was not open".to_string()
-        };
-        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-            msg,
-        )]))
     }
 
     /// Canvas の表示 Lane を切り替える
@@ -917,10 +864,6 @@ impl VantageMcp {
             title: params.title,
         };
 
-        // Mac アプリの CanvasView（WKWebView）が Hub を subscribe しているため、
-        // 別ウィンドウ（vp canvas internal）の自動起動は行わない。
-        // 明示的に開きたい場合は open_canvas ツールを使用する。
-
         self.process_call("show", &msg).await?;
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
             format!("Content displayed in pane '{}'", pane_id),
@@ -966,48 +909,6 @@ impl VantageMcp {
 
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
             format!("Pane '{}' {}", params.pane_id, state_desc),
-        )]))
-    }
-
-    /// Split a pane into two
-    #[tool(
-        description = "Split a pane in the Vantage Point browser viewer. Creates a new pane by splitting an existing one horizontally or vertically."
-    )]
-    async fn split_pane(
-        &self,
-        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<SplitPaneParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let source_pane_id = params.source_pane_id.unwrap_or_else(|| "main".to_string());
-
-        // direction の検証
-        let direction = match params.direction.to_lowercase().as_str() {
-            "horizontal" | "h" => crate::protocol::SplitDirection::Horizontal,
-            "vertical" | "v" => crate::protocol::SplitDirection::Vertical,
-            _ => {
-                return Err(McpError::invalid_params(
-                    "direction must be 'horizontal' or 'vertical'",
-                    None,
-                ));
-            }
-        };
-
-        // UUID の先頭セグメントでペインIDを生成
-        let new_pane_id = uuid::Uuid::new_v4().to_string();
-        let new_pane_id = new_pane_id.split('-').next().unwrap_or(&new_pane_id);
-        let new_pane_id = format!("pane-{}", new_pane_id);
-
-        let msg = ProcessMessage::Split {
-            pane_id: source_pane_id.clone(),
-            direction,
-            new_pane_id: new_pane_id.clone(),
-        };
-        self.process_call("split_pane", &msg).await?;
-
-        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-            format!(
-                "Pane '{}' split. New pane ID: '{}'",
-                source_pane_id, new_pane_id
-            ),
         )]))
     }
 
@@ -2057,10 +1958,9 @@ impl rmcp::ServerHandler for VantageMcp {
         ServerInfo {
             instructions: Some(
                 "Vantage Point Process - Display rich content (markdown, HTML, images) in a browser viewer. \
-                 Use 'open_canvas' to open the native Canvas window, 'close_canvas' to close it, \
-                 'capture_canvas' to take a PNG screenshot of the Canvas (viewable with Read tool), \
-                 'show' to display content, 'clear' to clear panes, 'split_pane' to split a pane \
-                 horizontally or vertically, 'close_pane' to close a pane, 'toggle_pane' to toggle panel visibility, \
+                 Use 'capture_canvas' to take a PNG screenshot of the Canvas (viewable with Read tool), \
+                 'show' to display content, 'clear' to clear panes, \
+                 'close_pane' to close a pane, 'toggle_pane' to toggle panel visibility, \
                  'permission' to request user approval, 'restart' to restart the Process, \
                  'watch_file' to monitor a log file in real-time, and 'unwatch_file' to stop monitoring.\n\n\
                  When using 'show', prefer content_type='markdown' as the default format. \

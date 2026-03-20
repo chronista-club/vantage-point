@@ -282,27 +282,6 @@ pub async fn close_pane_handler(
     Json(serde_json::json!({"status": "ok"}))
 }
 
-/// POST /api/canvas/open - Canvas シングルトンウィンドウを起動
-///
-/// AppState 経由で Canvas ライフサイクルを一元管理。
-pub async fn canvas_open_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    match state.ensure_canvas().await {
-        Ok(pid) => Json(serde_json::json!({"status": "opened", "pid": pid})),
-        Err(e) => {
-            tracing::error!("Failed to open canvas: {}", e);
-            Json(serde_json::json!({"status": "error", "message": e.to_string()}))
-        }
-    }
-}
-
-/// POST /api/canvas/close - Canvas シングルトンウィンドウを終了
-pub async fn canvas_close_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    if let Some(pid) = state.close_canvas().await {
-        Json(serde_json::json!({"status": "closed", "pid": pid}))
-    } else {
-        Json(serde_json::json!({"status": "not_open"}))
-    }
-}
 
 /// POST /api/canvas/switch_lane - Canvas Lane 切り替え
 ///
@@ -412,44 +391,7 @@ pub async fn canvas_capture_handler(
     State(state): State<Arc<AppState>>,
     Json(params): Json<CaptureParams>,
 ) -> impl IntoResponse {
-    // 1. Canvas が未起動なら AppState 経由で起動（TheWorld + Lane モード対応）
-    if !state.is_canvas_open() {
-        match state.ensure_canvas().await {
-            Ok(pid) => {
-                tracing::info!("Canvas auto-started for capture (pid={})", pid);
-            }
-            Err(e) => {
-                return (
-                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({
-                        "status": "error",
-                        "message": format!("Canvas 起動失敗: {}", e)
-                    })),
-                );
-            }
-        }
-        // Canvas の WebSocket 接続を待つ（最大 5 秒）
-        let mut connected = false;
-        for _ in 0..50 {
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-            let senders = state.canvas_senders.lock().await;
-            if !senders.is_empty() {
-                connected = true;
-                break;
-            }
-        }
-        if !connected {
-            return (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({
-                    "status": "error",
-                    "message": "Canvas 起動後の WebSocket 接続がタイムアウト"
-                })),
-            );
-        }
-    }
-
-    // 2. request_id 生成、oneshot channel 作成
+    // 1. request_id 生成、oneshot channel 作成
     let request_id = uuid::Uuid::new_v4().to_string();
     let (tx, rx) = tokio::sync::oneshot::channel();
 

@@ -517,7 +517,10 @@ impl TmuxActor {
     fn do_send_keys(pane_id: &str, keys: &str) -> Result<(), String> {
         // pane_id のインジェクション防止
         Self::validate_tmux_command(pane_id)?;
-        let status = std::process::Command::new(crate::tmux::tmux_bin().unwrap_or("tmux"))
+        let tmux = crate::tmux::tmux_bin().unwrap_or("tmux");
+
+        // テキスト送信
+        let status = std::process::Command::new(tmux)
             .args(["send-keys", "-t", pane_id, keys])
             .status()
             .map_err(|e| format!("tmux send-keys 失敗: {}", e))?;
@@ -525,6 +528,15 @@ impl TmuxActor {
         if !status.success() {
             return Err(format!("tmux send-keys エラー: pane_id={}", pane_id));
         }
+
+        // テキストに改行が含まれていれば Enter を送信
+        if keys.contains('\n') {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            let _ = std::process::Command::new(tmux)
+                .args(["send-keys", "-t", pane_id, "Enter"])
+                .status();
+        }
+
         Ok(())
     }
 

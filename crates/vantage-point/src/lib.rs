@@ -1,14 +1,13 @@
 //! Vantage Point Core — AI ネイティブ開発環境のコアライブラリ
 //!
 //! CLI バイナリ (`vp`) や外部クレートから利用される
-//! Process サーバー、MCP、Canvas、Daemon 等のコアロジックを提供する。
+//! Process サーバー、MCP、Daemon 等のコアロジックを提供する。
 
 // 開発中のスキャフォールドコードが多いため一時的に抑制
 #![allow(dead_code)]
 
 pub mod agent;
 pub mod agui;
-pub mod canvas;
 pub mod capability;
 pub mod ccwire;
 pub mod cli;

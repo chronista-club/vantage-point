@@ -12,8 +12,16 @@ struct TerminalRepresentable: NSViewRepresentable {
     let projectPath: String?
     /// このターミナルがアクティブ（表示中）かどうか
     var isActive: Bool = true
+    /// このターミナルがフォーカスされている（キー入力を受け取る）かどうか
+    /// VP Pane で複数ターミナルが同時表示される場合、フォーカス中のペインのみ true
+    var isFocused: Bool = true
     /// Split Navigator がアクティブ（キーイベントをインターセプトする）
     var splitNavigatorActive: Bool = false
+    /// カスタム tmux コマンド（VP Pane 追加時にグループセッション経由の attach 用）
+    /// nil の場合はデフォルトのセッション attach コマンドを使用
+    var tmuxCommand: String?
+    /// VP Pane ID（ペインフォーカス通知用）
+    var paneId: UUID?
 
     func makeNSView(context: Context) -> TerminalView {
         let view = TerminalView(frame: .zero)
@@ -36,17 +44,25 @@ struct TerminalRepresentable: NSViewRepresentable {
         // 3. tmux attach: tmux 直接接続（vp がない環境向け）
         // 4. zsh -l -c 'claude || zsh': シェルフォールバック
         view.deferredPtyCwd = cwd
-        // passthrough モード: tmux に直接 exec（vp tui の crossterm は Native App PTY 内で動かないため）
-        // セッションが無ければ SP + HD を起動してから接続
-        let tmuxBin = "/opt/homebrew/bin/tmux"
-        let vpBin = "\(NSHomeDirectory())/.cargo/bin/vp"
-        // セッションが無ければ tmux で直接作成（vp start は非 TTY でハングすることがあるため）
-        view.deferredPtyCommand = """
-            \(tmuxBin) has-session -t \(tmuxSession) 2>/dev/null || \
-            \(tmuxBin) new-session -d -s \(tmuxSession) -c '\(safeCwd)'; \
-            \(tmuxBin) set-option -t \(tmuxSession) status on 2>/dev/null; \
-            exec \(tmuxBin) attach-session -t \(tmuxSession)
-            """
+        view.paneId = paneId
+
+        if let customCmd = tmuxCommand {
+            // VP Pane: カスタムコマンド（グループセッション経由の attach）
+            view.deferredPtyCommand = customCmd
+        } else {
+            // デフォルト: ベースセッションに直接 attach
+            // passthrough モード: tmux に直接 exec（vp tui の crossterm は Native App PTY 内で動かないため）
+            // セッションが無ければ tmux で直接作成（vp start は非 TTY でハングすることがあるため）
+            let tmuxBin = "/opt/homebrew/bin/tmux"
+            view.deferredPtyCommand = """
+                \(tmuxBin) has-session -t \(tmuxSession) 2>/dev/null || \
+                \(tmuxBin) new-session -d -s \(tmuxSession) -c '\(safeCwd)'; \
+                \(tmuxBin) set-option -t \(tmuxSession) status on 2>/dev/null; \
+                \(tmuxBin) set-option -t \(tmuxSession) status-left '#S ❯ #I:#P ' 2>/dev/null; \
+                \(tmuxBin) set-option -t \(tmuxSession) status-right '' 2>/dev/null; \
+                exec \(tmuxBin) attach-session -t \(tmuxSession)
+                """
+        }
         return view
     }
 
@@ -54,6 +70,7 @@ struct TerminalRepresentable: NSViewRepresentable {
         let wasActive = nsView.isActive
         nsView.isActive = isActive
         nsView.splitNavigatorActive = splitNavigatorActive
+        nsView.paneId = paneId
 
         // PTY 終了検知 → 自動復旧（クールダウン付き）
         if isActive && nsView.bridgeInitialized
@@ -68,9 +85,9 @@ struct TerminalRepresentable: NSViewRepresentable {
             nsView.needsDisplay = true
         }
 
-        // アクティブなターミナルのみフォーカスを取得
-        // ZStack で非表示のビューがフォーカスを奪うのを防ぐ
-        guard isActive else { return }
+        // フォーカス中のペインのみ first responder を取得
+        // VP Pane で複数ターミナルが同時表示される場合、非フォーカスペインがフォーカスを奪うのを防ぐ
+        guard isActive && isFocused else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
             if let window = nsView.window, window.firstResponder !== nsView {
                 window.makeFirstResponder(nsView)

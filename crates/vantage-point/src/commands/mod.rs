@@ -3,8 +3,6 @@
 //! 各サブコマンドの実行ロジックを分離して管理する。
 
 pub mod app;
-pub mod canvas;
-pub mod canvas_cmd;
 pub mod config;
 pub mod db_cmd;
 pub mod file_cmd;

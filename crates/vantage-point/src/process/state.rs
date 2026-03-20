@@ -122,9 +122,7 @@ pub(crate) struct AppState {
     pub interactive_agent: Arc<RwLock<Option<InteractiveClaudeAgent>>>,
     /// PTYセッションマネージャー（ターミナル機能）- レガシー、tmux未対応環境用
     pub pty_manager: Arc<tokio::sync::Mutex<PtyManager>>,
-    /// Canvasウィンドウのプロセス管理（PID）
-    pub canvas_pid: Arc<tokio::sync::Mutex<Option<u32>>>,
-    /// Processの待ち受けポート番号（Canvas起動時に使用）
+    /// Processの待ち受けポート番号
     pub port: u16,
     /// ファイル監視マネージャー
     pub file_watchers: Arc<tokio::sync::Mutex<FileWatcherManager>>,
@@ -224,37 +222,7 @@ impl AppState {
     }
 
     // =========================================================================
-    // Canvas ライフサイクル管理
-    // =========================================================================
-
-    /// Canvas を確実に起動する（TheWorld フォールバック付き）
-    ///
-    /// SP が Canvas のライフサイクルを一元管理する。
-    /// PID ファイルと AppState の canvas_pid を同期。
-    pub async fn ensure_canvas(&self) -> anyhow::Result<u32> {
-        let (port, lanes) = crate::canvas::canvas_target(self.port);
-        let project_name = self.project_dir.rsplit('/').next();
-        let pid = crate::canvas::ensure_canvas_running(port, lanes, project_name)?;
-        *self.canvas_pid.lock().await = Some(pid);
-        Ok(pid)
-    }
-
-    /// Canvas を停止する
-    ///
-    /// PID ファイル削除 + AppState の canvas_pid をクリア。
-    pub async fn close_canvas(&self) -> Option<u32> {
-        let pid = crate::canvas::stop_canvas()?;
-        *self.canvas_pid.lock().await = None;
-        Some(pid)
-    }
-
-    /// Canvas が起動中か確認（PID ファイルベース）
-    pub fn is_canvas_open(&self) -> bool {
-        crate::canvas::find_running_canvas().is_some()
-    }
-
-    // =========================================================================
-    // Canvas 状態永続化
+    // ペイン状態永続化
     // =========================================================================
 
     /// ペイン状態のファイルパス
