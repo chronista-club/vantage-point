@@ -411,6 +411,11 @@ class TerminalView: NSView {
         let totalCells = Int(gridCols) * Int(gridRows)
         guard totalCells > 0 else { return }
 
+        // cellBuffer のサイズが不整合ならリサイズ（setFrameSize と draw の競合対策）
+        if cellBuffer.count != totalCells {
+            cellBuffer = [VPCellData](repeating: VPCellData(), count: totalCells)
+        }
+
         cellBuffer.withUnsafeMutableBufferPointer { ptr in
             _ = vp_bridge_get_buffer_session(sessionId, ptr.baseAddress!, UInt32(totalCells))
         }

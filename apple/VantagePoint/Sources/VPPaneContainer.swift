@@ -120,56 +120,41 @@ struct VPPaneLayout: Equatable {
 
 /// VP Pane 用の tmux コマンドを生成
 ///
-/// 追加ペイン用: ベースセッションに新しい window を作成し、
-/// グループセッション経由で独立表示する。
-/// 各 VP Pane が異なる tmux window を同時に表示するために、
-/// tmux のグループセッション機能を使用する。
+/// 追加 HD ペイン用: 独立した tmux セッションを作成して attach する。
+/// ベースセッションとは分離され、冪等（既にセッションがあれば再利用）。
 func vpPaneTmuxCommand(
-    tmuxSession: String,
     paneSessionName: String,
-    windowName: String,
     cwd: String
 ) -> String {
     let tmuxBin = "/opt/homebrew/bin/tmux"
     let safeCwd = cwd.replacingOccurrences(of: "'", with: "'\\''")
 
+    // ステータスバー: セッション名 + window:pane ID のみ表示
+    let statusFormat = "#S ❯ #I:#P"
+
     return """
-        \(tmuxBin) has-session -t \(tmuxSession) 2>/dev/null || \
-        \(tmuxBin) new-session -d -s \(tmuxSession) -c '\(safeCwd)'; \
-        \(tmuxBin) set-option -t \(tmuxSession) status on 2>/dev/null; \
-        \(tmuxBin) new-window -t \(tmuxSession) -n \(windowName) -c '\(safeCwd)' 2>/dev/null; \
-        \(tmuxBin) kill-session -t \(paneSessionName) 2>/dev/null; \
-        \(tmuxBin) new-session -d -t \(tmuxSession) -s \(paneSessionName); \
-        \(tmuxBin) select-window -t \(paneSessionName):\(windowName); \
+        \(tmuxBin) has-session -t \(paneSessionName) 2>/dev/null || \
+        \(tmuxBin) new-session -d -s \(paneSessionName) -c '\(safeCwd)'; \
+        \(tmuxBin) set-option -t \(paneSessionName) status on 2>/dev/null; \
+        \(tmuxBin) set-option -t \(paneSessionName) status-left '\(statusFormat) ' 2>/dev/null; \
+        \(tmuxBin) set-option -t \(paneSessionName) status-right '' 2>/dev/null; \
         exec \(tmuxBin) attach-session -t \(paneSessionName)
         """
 }
 
 /// VP Pane の tmux リソースをクリーンアップ
-func cleanupVPPaneTmux(tmuxSession: String, leaf: VPPaneLeaf) {
+func cleanupVPPaneTmux(leaf: VPPaneLeaf) {
     guard let paneSession = leaf.paneSessionName else { return }
     let tmuxBin = "/opt/homebrew/bin/tmux"
 
     Task.detached(priority: .utility) {
-        // グループセッション削除
-        let killSession = Process()
-        killSession.executableURL = URL(fileURLWithPath: tmuxBin)
-        killSession.arguments = ["kill-session", "-t", paneSession]
-        killSession.standardOutput = FileHandle.nullDevice
-        killSession.standardError = FileHandle.nullDevice
-        try? killSession.run()
-        killSession.waitUntilExit()
-
-        // 対応する window を削除
-        if let windowName = leaf.tmuxWindowName {
-            let killWindow = Process()
-            killWindow.executableURL = URL(fileURLWithPath: tmuxBin)
-            killWindow.arguments = ["kill-window", "-t", "\(tmuxSession):\(windowName)"]
-            killWindow.standardOutput = FileHandle.nullDevice
-            killWindow.standardError = FileHandle.nullDevice
-            try? killWindow.run()
-            killWindow.waitUntilExit()
-        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: tmuxBin)
+        process.arguments = ["kill-session", "-t", paneSession]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try? process.run()
+        process.waitUntilExit()
 
         logger.info("VP Pane cleanup: session=\(paneSession)")
     }
@@ -183,7 +168,6 @@ func cleanupVPPaneTmux(tmuxSession: String, leaf: VPPaneLeaf) {
 /// 初期状態は 1 つの TerminalView。Cmd+D で分割を追加。
 struct VPPaneContainer: View {
     let projectPath: String
-    let tmuxSession: String
     let node: VPPaneNode
     let focusedPaneId: UUID
     let isActive: Bool
@@ -230,16 +214,13 @@ struct VPPaneContainer: View {
                 )
             }
 
-            // Agent ペイン (HD): tmux グループセッション経由で独立表示
+            // Agent ペイン (HD): 独立 tmux セッションに attach
             let tmuxCmd: String? = {
-                guard let paneSession = leaf.paneSessionName,
-                      let windowName = leaf.tmuxWindowName else {
+                guard let paneSession = leaf.paneSessionName else {
                     return nil
                 }
                 return vpPaneTmuxCommand(
-                    tmuxSession: tmuxSession,
                     paneSessionName: paneSession,
-                    windowName: windowName,
                     cwd: projectPath
                 )
             }()

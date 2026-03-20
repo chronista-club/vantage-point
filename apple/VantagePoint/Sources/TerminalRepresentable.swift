@@ -58,6 +58,8 @@ struct TerminalRepresentable: NSViewRepresentable {
                 \(tmuxBin) has-session -t \(tmuxSession) 2>/dev/null || \
                 \(tmuxBin) new-session -d -s \(tmuxSession) -c '\(safeCwd)'; \
                 \(tmuxBin) set-option -t \(tmuxSession) status on 2>/dev/null; \
+                \(tmuxBin) set-option -t \(tmuxSession) status-left '#S ❯ #I:#P ' 2>/dev/null; \
+                \(tmuxBin) set-option -t \(tmuxSession) status-right '' 2>/dev/null; \
                 exec \(tmuxBin) attach-session -t \(tmuxSession)
                 """
         }

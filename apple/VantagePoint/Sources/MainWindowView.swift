@@ -116,7 +116,6 @@ struct MainWindowView: View {
                             let layout = paneLayouts[path] ?? VPPaneLayout.initial()
                             VPPaneContainer(
                                 projectPath: path,
-                                tmuxSession: tmuxSessionName(for: path),
                                 node: layout.root,
                                 focusedPaneId: layout.focusedPaneId,
                                 isActive: isActive,
@@ -480,15 +479,15 @@ struct MainWindowView: View {
         }
 
         let paneId = UUID()
-        let tmuxSession = tmuxSessionName(for: path)
         let shortId = paneId.uuidString.prefix(8).lowercased()
-        let paneSession = "\(tmuxSession)-vpp-\(shortId)"
-        let windowName = "vpp-\(shortId)"
+        let projectName = (path as NSString).lastPathComponent
+            .replacingOccurrences(of: ".", with: "-")
+        let paneSession = "\(projectName)-vpp-\(shortId)"
 
         let newLeaf = VPPaneLeaf(
             id: paneId,
             paneSessionName: paneSession,
-            tmuxWindowName: windowName,
+            tmuxWindowName: nil,
             contentType: contentType
         )
 
@@ -502,7 +501,7 @@ struct MainWindowView: View {
         paneLayouts[path] = layout
         paneLayoutVersion += 1  // SwiftUI 再描画を確実にトリガー
 
-        logger.info("VP Pane added: \(windowName) (horizontal=\(horizontal), content=\(contentType), leafCount=\(layout.root.leafCount), v=\(paneLayoutVersion))")
+        logger.info("VP Pane added: \(paneSession) (horizontal=\(horizontal), content=\(contentType), leafCount=\(layout.root.leafCount), v=\(paneLayoutVersion))")
     }
 
     /// VP Pane を閉じる（⌘⇧D）
@@ -519,8 +518,7 @@ struct MainWindowView: View {
 
         // 削除対象のリーフの tmux リソースをクリーンアップ
         if let leaf = layout.root.findLeaf(id: layout.focusedPaneId) {
-            let tmuxSession = tmuxSessionName(for: path)
-            cleanupVPPaneTmux(tmuxSession: tmuxSession, leaf: leaf)
+            cleanupVPPaneTmux(leaf: leaf)
         }
 
         // ツリーから削除
