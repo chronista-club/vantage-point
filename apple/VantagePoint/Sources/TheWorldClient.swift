@@ -116,6 +116,17 @@ actor TheWorldClient {
         try await executeWithErrorHandling(request: request)
     }
 
+    /// プロジェクトの enabled/disabled を切り替え
+    func setProjectEnabled(path: String, enabled: Bool) async throws {
+        let url = baseURL.appendingPathComponent("/api/world/projects/update")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body: [String: Any] = ["path": path, "enabled": enabled]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        try await executeWithErrorHandling(request: request)
+    }
+
     /// プロジェクトの並び順を変更
     func reorderProjects(paths: [String]) async throws {
         let url = baseURL.appendingPathComponent("/api/world/projects/reorder")

@@ -7,13 +7,14 @@ struct ProjectInfo: Codable, Identifiable {
     let name: String
     let path: String
     let processStatus: ProcessStatus
+    let enabled: Bool
 
     var id: String {
         name
     }
 
     enum CodingKeys: String, CodingKey {
-        case name, path
+        case name, path, enabled
         case processStatus = "process_status"
     }
 }

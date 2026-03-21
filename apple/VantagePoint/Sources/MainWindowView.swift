@@ -99,7 +99,8 @@ struct MainWindowView: View {
                 onReorder: reorderProjects,
                 onRestartHD: restartHD,
                 onRestartSP: restartSP,
-                onRestartWorld: restartWorld
+                onRestartWorld: restartWorld,
+                onToggleEnabled: toggleProjectEnabled
             )
         } detail: {
             // ターミナル（SwiftUI ヘッダー + VP Pane コンテナ）
@@ -798,6 +799,22 @@ struct MainWindowView: View {
         }
     }
 
+    /// SP の有効/無効をトグル
+    private func toggleProjectEnabled(path: String, enabled: Bool) {
+        Task {
+            do {
+                try await theWorldClient.setProjectEnabled(path: path, enabled: enabled)
+                // 無効化する場合は SP を停止
+                if !enabled, let project = projects.first(where: { $0.path == path }), project.isRunning {
+                    try? await theWorldClient.stopProcess(projectName: project.name)
+                }
+                await refreshAll()
+            } catch {
+                logger.error("[VP]toggleProjectEnabled error: \(error)")
+            }
+        }
+    }
+
     // MARK: - データ読み込み
 
     /// config.toml からプロジェクト一覧を読み込む（初期値: 非稼働）
@@ -907,7 +924,8 @@ struct MainWindowView: View {
                         branch: branch,
                         hasHD: hasHD,
                         hasNotification: notifications.contains(entry.path),
-                        ccwireSession: wireSession
+                        ccwireSession: wireSession,
+                        enabled: entry.enabled
                     )
                 } else {
                     return SidebarProject(
@@ -921,13 +939,14 @@ struct MainWindowView: View {
                         branch: branch,
                         hasHD: hasHD,
                         hasNotification: notifications.contains(entry.path),
-                        ccwireSession: wireSession
+                        ccwireSession: wireSession,
+                        enabled: entry.enabled
                     )
                 }
             }
 
-            // SP 未起動のプロジェクトを自動起動（TheWorld API 経由）
-            for project in projects where !project.isRunning {
+            // SP 未起動 + enabled のプロジェクトを自動起動（TheWorld API 経由）
+            for project in projects where !project.isRunning && project.enabled {
                 await autoStartSP(project: project)
             }
 

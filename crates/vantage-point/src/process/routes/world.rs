@@ -180,6 +180,8 @@ pub struct UpdateProjectRequest {
     pub path: String,
     #[serde(default)]
     pub name: Option<String>,
+    #[serde(default)]
+    pub enabled: Option<bool>,
 }
 
 /// POST /api/world/projects/update - プロジェクト名を変更
@@ -195,17 +197,37 @@ pub async fn world_update_project(
     };
 
     let world = world.read().await;
+    let mut updated = false;
+
     if let Some(new_name) = &req.name {
         match world.rename_project(&req.path, new_name).await {
-            Ok(()) => (
-                axum::http::StatusCode::OK,
-                Json(serde_json::json!({"status": "updated", "path": req.path})),
-            ),
-            Err(e) => (
-                axum::http::StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": e.to_string()})),
-            ),
+            Ok(()) => updated = true,
+            Err(e) => {
+                return (
+                    axum::http::StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": e.to_string()})),
+                );
+            }
         }
+    }
+
+    if let Some(enabled) = req.enabled {
+        match world.set_project_enabled(&req.path, enabled).await {
+            Ok(()) => updated = true,
+            Err(e) => {
+                return (
+                    axum::http::StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": e.to_string()})),
+                );
+            }
+        }
+    }
+
+    if updated {
+        (
+            axum::http::StatusCode::OK,
+            Json(serde_json::json!({"status": "updated", "path": req.path})),
+        )
     } else {
         (
             axum::http::StatusCode::BAD_REQUEST,
