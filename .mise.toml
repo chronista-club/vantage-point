@@ -21,14 +21,26 @@ run = "cargo test"
 [tasks.mac]
 description = "Build & run macOS native app (VantagePoint.app)"
 run = """
+set -euo pipefail
+ROOT="$(pwd)"
+
 echo "🔨 Building vp-bridge (staticlib)..."
 cargo build --release -p vp-bridge
+
 echo "🔨 Building VantagePoint (Swift)..."
-cd apple/VantagePoint && swift build -c release
+(cd apple/VantagePoint && swift build -c release)
+
 echo "🔄 既存プロセスを停止..."
 pkill -f 'VantagePoint$' 2>/dev/null && sleep 1 || true
+
+echo "📦 .app バンドルを作成..."
+rm -rf "$ROOT/VantagePoint.app"
+mkdir -p "$ROOT/VantagePoint.app/Contents/MacOS"
+cp "$ROOT/apple/VantagePoint/.build/release/VantagePoint" "$ROOT/VantagePoint.app/Contents/MacOS/"
+cp "$ROOT/apple/VantagePoint/Resources/Info.plist" "$ROOT/VantagePoint.app/Contents/"
+
 echo "🚀 Launching VantagePoint..."
-exec .build/release/VantagePoint
+exec open "$ROOT/VantagePoint.app"
 """
 
 [tasks."mac:build"]

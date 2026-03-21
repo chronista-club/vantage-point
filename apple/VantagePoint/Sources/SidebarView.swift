@@ -149,11 +149,12 @@ struct SidebarView: View {
         }
         guard !fileProviders.isEmpty else { return false }
 
+        let callback = onDropAdd
         for provider in fileProviders {
             _ = provider.loadObject(ofClass: URL.self) { url, _ in
                 guard let url, url.hasDirectoryPath else { return }
-                DispatchQueue.main.async { [onDropAdd] in
-                    onDropAdd?(url)
+                DispatchQueue.main.async {
+                    callback?(url)
                 }
             }
         }

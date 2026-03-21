@@ -22,6 +22,8 @@ struct TerminalRepresentable: NSViewRepresentable {
     var tmuxCommand: String?
     /// VP Pane ID（ペインフォーカス通知用）
     var paneId: UUID?
+    /// マウスイベントを PTY に送信するか（tmux 内は true、素シェルは false）
+    var sendMouseEvents: Bool = true
 
     func makeNSView(context: Context) -> TerminalView {
         let view = TerminalView(frame: .zero)
@@ -71,6 +73,7 @@ struct TerminalRepresentable: NSViewRepresentable {
         nsView.isActive = isActive
         nsView.splitNavigatorActive = splitNavigatorActive
         nsView.paneId = paneId
+        nsView.sendMouseEvents = sendMouseEvents
 
         // PTY 終了検知 → 自動復旧（クールダウン付き）
         if isActive && nsView.bridgeInitialized

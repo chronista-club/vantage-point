@@ -208,7 +208,8 @@ struct VPPaneContainer: View {
                         isFocused: isFocused,
                         splitNavigatorActive: splitNavigatorActive,
                         tmuxCommand: "exec zsh -l",
-                        paneId: leaf.id
+                        paneId: leaf.id,
+                        sendMouseEvents: false
                     )
                     .id("\(leaf.id):shell")
                 )

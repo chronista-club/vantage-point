@@ -158,7 +158,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             existing.makeKeyAndOrderFront(nil)
         } else {
             // SwiftUI WindowGroup にウィンドウ作成を依頼
-            NSApp.sendAction(Selector(("newWindowForTab:")), to: nil, from: nil)
+            NSApp.sendAction(#selector(NSResponder.newWindowForTab(_:)), to: nil, from: nil)
         }
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -228,9 +228,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // copy:/paste:/selectAll: セレクタは first responder に送られる
         // → TerminalView が first responder なら TerminalView の実装が呼ばれる
         let editMenu = NSMenu(title: "Edit")
-        editMenu.addItem(NSMenuItem(title: "Copy", action: Selector(("copy:")), keyEquivalent: "c"))
-        editMenu.addItem(NSMenuItem(title: "Paste", action: Selector(("paste:")), keyEquivalent: "v"))
-        editMenu.addItem(NSMenuItem(title: "Select All", action: Selector(("selectAll:")), keyEquivalent: "a"))
+        editMenu.addItem(NSMenuItem(title: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c"))
+        editMenu.addItem(NSMenuItem(title: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v"))
+        editMenu.addItem(NSMenuItem(title: "Select All", action: #selector(NSStandardKeyBindingResponding.selectAll(_:)), keyEquivalent: "a"))
         let editMenuItem = NSMenuItem()
         editMenuItem.submenu = editMenu
         mainMenu.addItem(editMenuItem)
@@ -307,8 +307,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             guard !project.isEmpty else { return }
 
             // ローカル Notification で MainWindowView に転送
+            let notifName = Notification.Name("tech.anycreative.vp.cc.notification")
             NotificationCenter.default.post(
-                name: AppDelegate.ccNotification,
+                name: notifName,
                 object: nil,
                 userInfo: ["project": project, "message": message]
             )
@@ -333,15 +334,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
             if let path {
                 // メインウィンドウにプロジェクト選択を通知
+                let notifName = Notification.Name("tech.anycreative.vp.selectProject")
                 NotificationCenter.default.post(
-                    name: AppDelegate.selectProjectNotification,
+                    name: notifName,
                     object: nil,
                     userInfo: ["path": path]
                 )
             }
 
             // アプリをアクティブ化
-            NSApp.activate(ignoringOtherApps: true)
+            DispatchQueue.main.async {
+                NSApp.activate(ignoringOtherApps: true)
+            }
         }
     }
 

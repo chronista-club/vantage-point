@@ -118,6 +118,9 @@ class TerminalView: NSView {
     /// VP Pane ID（ペインフォーカス通知用）
     var paneId: UUID?
 
+    /// マウスイベントを PTY に送信するか（tmux 内は true、素シェルは false）
+    var sendMouseEvents: Bool = true
+
     /// クローム行数（ヘッダー/フッター）
     private var chromeHeaderRows: UInt16 = 0
     private var chromeFooterRows: UInt16 = 0
@@ -1312,6 +1315,15 @@ class TerminalView: NSView {
         // クリックで first responder を取得（SwiftUI サイドバーからフォーカスを奪う）
         window?.makeFirstResponder(self)
 
+        // VP Pane フォーカス通知（クリックしたペインを focusedPaneId に更新）
+        if let paneId = paneId {
+            NotificationCenter.default.post(
+                name: .vpPaneFocused,
+                object: nil,
+                userInfo: ["paneId": paneId]
+            )
+        }
+
         // Cmd+Click: URL をブラウザで開く
         if event.modifierFlags.contains(.command) {
             let pos = gridPosition(from: event.locationInWindow)
@@ -1324,7 +1336,8 @@ class TerminalView: NSView {
         let pos = gridPosition(from: event.locationInWindow)
 
         // SGR マウスイベントを PTY に送信（tmux ペインフォーカス切替等）
-        if vp_bridge_pty_is_running_session(sessionId) {
+        // 素シェル（The Hand 等）ではマウスイベントを送らない（制御文字がそのまま表示されるため）
+        if sendMouseEvents && vp_bridge_pty_is_running_session(sessionId) {
             let col = pos.col + 1  // 1-based
             let row = pos.row + 1
             let seq = "\u{1B}[<0;\(col);\(row)M"
@@ -1351,7 +1364,7 @@ class TerminalView: NSView {
         needsDisplay = true
 
         // SGR マウスドラッグイベント（tmux のマウス選択等）
-        if vp_bridge_pty_is_running_session(sessionId) {
+        if sendMouseEvents && vp_bridge_pty_is_running_session(sessionId) {
             let col = pos.col + 1
             let row = pos.row + 1
             let seq = "\u{1B}[<32;\(col);\(row)M"  // 32 = button1 + motion
@@ -1373,7 +1386,7 @@ class TerminalView: NSView {
         selectionEnd = pos
 
         // SGR マウスリリースイベント
-        if vp_bridge_pty_is_running_session(sessionId) {
+        if sendMouseEvents && vp_bridge_pty_is_running_session(sessionId) {
             let col = pos.col + 1
             let row = pos.row + 1
             let seq = "\u{1B}[<0;\(col);\(row)m"  // 小文字 m = release
