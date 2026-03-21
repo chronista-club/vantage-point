@@ -235,8 +235,12 @@ async fn handle_lanes_socket(socket: WebSocket, state: Arc<AppState>) {
                     if matches!(status, LaneStatus::Disconnected) {
                         ports_for_send.lock().await.remove(&port);
 
-                        // RetainedStore から該当 Lane のペインエントリを直接クリア
-                        {
+                        // Self-lane（World 自身）: RetainedStore を直接クリア
+                        // Remote lane: Process 側の RetainedStore は到達不可だが、
+                        //   - Process shutdown 時に persist_pane_contents() 済み
+                        //   - Canvas は LanePanesCleared で stale 表示を除去
+                        //   - 再接続時は ready → retained replay で復元
+                        if port == state_for_send.port {
                             let retained = state_for_send.topic_router.retained();
                             let mut store = retained.write().await;
                             let removed = store
