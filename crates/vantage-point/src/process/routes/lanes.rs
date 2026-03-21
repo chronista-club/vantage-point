@@ -210,8 +210,9 @@ async fn handle_lanes_socket(socket: WebSocket, state: Arc<AppState>) {
         }
     });
 
-    // ブリッジ → Canvas 送信タスク（切断時に connected_ports からも除去）
+    // ブリッジ → Canvas 送信タスク（切断時に connected_ports + RetainedStore をクリア）
     let ports_for_send = Arc::clone(&connected_ports);
+    let state_for_send = state.clone();
     let send_task = tokio::spawn(async move {
         while let Some(msg) = bridge_rx.recv().await {
             let event = match msg {
@@ -230,16 +231,27 @@ async fn handle_lanes_socket(socket: WebSocket, state: Arc<AppState>) {
                     ref status,
                     ..
                 } => {
-                    // 切断時: 追跡セットから除去 + ペインクリアイベント送信
+                    // 切断時: 追跡セットから除去 + RetainedStore クリア + Canvas 通知
                     if matches!(status, LaneStatus::Disconnected) {
                         ports_for_send.lock().await.remove(&port);
-                        tracing::info!(
-                            "Lane {} (port {}) 切断 — ペインクリアイベントを送信",
-                            lane,
-                            port
-                        );
 
-                        // ペインクリアイベントを先に送信（Canvas が stale 表示を除去）
+                        // RetainedStore から該当 Lane のペインエントリを直接クリア
+                        {
+                            let retained = state_for_send.topic_router.retained();
+                            let mut store = retained.write().await;
+                            let removed = store
+                                .remove_by_prefix("process/paisley-park/command/show/");
+                            if removed > 0 {
+                                tracing::info!(
+                                    "Lane {} (port {}) 切断 — RetainedStore から {} エントリをクリア",
+                                    lane,
+                                    port,
+                                    removed
+                                );
+                            }
+                        }
+
+                        // Canvas にペインクリアイベントを送信（stale 表示を除去）
                         let clear_event = LaneEvent::LanePanesCleared {
                             lane: lane.clone(),
                             port,
