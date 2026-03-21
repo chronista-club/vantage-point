@@ -8,3 +8,112 @@ bun = "latest"
 
 [env]
 VANTAGE_ROOT = "{{config_root}}"
+_.file = ".env"
+
+[tasks.build]
+description = "Build Rust crates"
+run = "cargo build"
+
+[tasks.test]
+description = "Run tests"
+run = "cargo test"
+
+[tasks.mac]
+description = "Build & run macOS native app (VantagePoint.app)"
+run = """
+echo "🔨 Building vp-bridge (staticlib)..."
+cargo build --release -p vp-bridge
+echo "🔨 Building VantagePoint (Swift)..."
+cd apple/VantagePoint && swift build -c release
+echo "🔄 既存プロセスを停止..."
+pkill -f 'VantagePoint$' 2>/dev/null && sleep 1 || true
+echo "🚀 Launching VantagePoint..."
+exec .build/release/VantagePoint
+"""
+
+[tasks."mac:build"]
+description = "Build macOS native app without launching"
+run = """
+cargo build --release -p vp-bridge
+cd apple/VantagePoint && swift build -c release
+echo "✅ Built: apple/VantagePoint/.build/release/VantagePoint"
+"""
+
+[tasks."mac:release"]
+description = "Build, sign, notarize & package VantagePoint.app as DMG"
+run = """
+set -euo pipefail
+
+TEAM_ID="3EQKG4B352"
+SIGN_ID="Developer ID Application: Anycreative Inc. ($TEAM_ID)"
+KEYCHAIN_PROFILE="vp-notarize"
+VERSION=$(grep 'CFBundleShortVersionString' apple/VantagePoint/Resources/Info.plist -A1 | grep '<string>' | sed 's/.*<string>//;s/<\\/string>//')
+ARCHIVE_PATH="/tmp/VantagePoint.xcarchive"
+DMG_DIR="/tmp/vp-dmg"
+DMG_PATH="dist/VantagePoint-${VERSION}.dmg"
+
+echo "📦 Vantage Point v${VERSION} リリースビルド"
+echo "==========================================="
+
+# 1. Rust ライブラリビルド
+echo ""
+echo "🔨 [1/6] vp-bridge ビルド..."
+cargo build --release -p vp-bridge
+
+# 2. Xcode Archive
+echo ""
+echo "🔨 [2/6] Xcode Archive..."
+rm -rf "$ARCHIVE_PATH"
+cd apple/VantagePoint
+xcodebuild archive \
+  -scheme VantagePoint \
+  -archivePath "$ARCHIVE_PATH" \
+  -configuration Release \
+  CODE_SIGN_IDENTITY="$SIGN_ID" \
+  CODE_SIGN_STYLE=Manual \
+  DEVELOPMENT_TEAM="$TEAM_ID" \
+  ARCHS=arm64 \
+  ONLY_ACTIVE_ARCH=YES \
+  -quiet
+cd ../..
+
+# 3. 署名検証
+echo ""
+echo "🔏 [3/6] 署名検証..."
+codesign -vvv "$ARCHIVE_PATH/Products/Applications/VantagePoint.app"
+
+# 4. DMG 作成
+echo ""
+echo "📀 [4/6] DMG 作成..."
+rm -rf "$DMG_DIR"
+mkdir -p "$DMG_DIR" "dist"
+cp -R "$ARCHIVE_PATH/Products/Applications/VantagePoint.app" "$DMG_DIR/"
+ln -s /Applications "$DMG_DIR/Applications"
+rm -f "$DMG_PATH"
+hdiutil create -volname "Vantage Point" \
+  -srcfolder "$DMG_DIR" \
+  -ov -format UDZO \
+  "$DMG_PATH"
+
+# 5. DMG 署名 + Notarize
+echo ""
+echo "🔏 [5/6] DMG 署名 + Notarize..."
+codesign --force --sign "$SIGN_ID" "$DMG_PATH"
+xcrun notarytool submit "$DMG_PATH" --keychain-profile "$KEYCHAIN_PROFILE" --wait
+
+# 6. Staple
+echo ""
+echo "📎 [6/6] Staple..."
+xcrun stapler staple "$DMG_PATH"
+
+# クリーンアップ
+rm -rf "$DMG_DIR" "$ARCHIVE_PATH"
+
+echo ""
+echo "==========================================="
+echo "✅ リリース完了: $DMG_PATH"
+echo "   Version: $VERSION"
+echo "   Signed:  $SIGN_ID"
+echo "   Notarized + Stapled"
+ls -lh "$DMG_PATH"
+"""
