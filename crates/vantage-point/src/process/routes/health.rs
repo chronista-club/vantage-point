@@ -606,20 +606,23 @@ pub async fn clear_panes_handler(
     State(state): State<Arc<AppState>>,
     Json(params): Json<ClearPanesParams>,
 ) -> impl IntoResponse {
-    let mut cleared_db = false;
+    let mut db_status: Option<bool> = None; // None = DB 未設定, Some(true) = 成功, Some(false) = 失敗
+    let mut db_error: Option<String> = None;
     let mut cleared_retained = 0usize;
 
     // DB pane_contents をクリア
     if let Some(ref db) = state.vpdb {
         match db.clear_pane_contents(&params.project_path).await {
             Ok(()) => {
-                cleared_db = true;
+                db_status = Some(true);
                 tracing::info!(
                     "DB pane_contents クリア完了: {}",
                     params.project_path
                 );
             }
             Err(e) => {
+                db_status = Some(false);
+                db_error = Some(e.to_string());
                 tracing::warn!(
                     "DB pane_contents クリア失敗 ({}): {}",
                     params.project_path,
@@ -629,22 +632,42 @@ pub async fn clear_panes_handler(
         }
     }
 
-    // 自プロジェクトの場合は RetainedStore もクリア
-    if params.project_path == state.project_dir {
+    // RetainedStore クリア:
+    // - Process モード: 自プロジェクトの場合のみ
+    // - World モード (project_dir が空): 常にクリア
+    let is_world = state.project_dir.is_empty();
+    if is_world || params.project_path == state.project_dir {
         let retained = state.topic_router.retained();
         let mut store = retained.write().await;
         cleared_retained = store.remove_by_prefix("process/paisley-park/command/show/");
         tracing::info!(
-            "RetainedStore ペインクリア完了: {} エントリ",
-            cleared_retained
+            "RetainedStore ペインクリア完了: {} エントリ (world={})",
+            cleared_retained,
+            is_world
         );
     }
 
-    Json(serde_json::json!({
-        "status": "ok",
-        "cleared_db": cleared_db,
-        "cleared_retained": cleared_retained,
-    }))
+    // DB が設定済みでクリアに失敗した場合は 500 を返す
+    if db_status == Some(false) {
+        return (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "status": "error",
+                "cleared_db": false,
+                "cleared_retained": cleared_retained,
+                "error": db_error,
+            })),
+        );
+    }
+
+    (
+        axum::http::StatusCode::OK,
+        Json(serde_json::json!({
+            "status": "ok",
+            "cleared_db": db_status,
+            "cleared_retained": cleared_retained,
+        })),
+    )
 }
 
 /// clear_panes_handler のパラメータ

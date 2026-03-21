@@ -2269,6 +2269,31 @@
                     }
                     break;
                 }
+                // Lane 切断時のペインクリア（stale 表示を除去）
+                case 'lane_panes_cleared': {
+                    const laneName = data.lane;
+                    console.info('Lane panes cleared:', laneName);
+
+                    if (laneName === laneState.activeLane) {
+                        // アクティブ Lane: DOM とタブ状態をクリア
+                        canvasContent.replaceChildren();
+                        tabBar.replaceChildren();
+                        tabBar.classList.remove('visible');
+                        document.body.classList.remove('has-tabs');
+                        tabState.tabs = new Map();
+                        tabState.activeTab = null;
+                        emptyState.style.display = '';
+                    }
+
+                    // Lane のタブ状態キャッシュを破棄
+                    laneState.laneTabStates.delete(laneName);
+
+                    // メッセージキューも破棄
+                    if (laneState.messageQueues?.[laneName]) {
+                        delete laneState.messageQueues[laneName];
+                    }
+                    break;
+                }
                 // Canvas レベルのメッセージ（Lane ラップなし）は直接 handleMessage に委譲
                 case 'screenshot_request':
                 case 'ping':
