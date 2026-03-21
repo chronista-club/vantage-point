@@ -69,6 +69,24 @@ impl RetainedStore {
         self.store.remove(topic).map(|e| e.message)
     }
 
+    /// 指定プレフィックスに一致するエントリを一括削除
+    ///
+    /// Lane 切断時のクリーンアップに使用。
+    /// 削除されたエントリ数を返す。
+    pub fn remove_by_prefix(&mut self, prefix: &str) -> usize {
+        let keys: Vec<String> = self
+            .store
+            .keys()
+            .filter(|k| k.starts_with(prefix))
+            .cloned()
+            .collect();
+        let count = keys.len();
+        for key in keys {
+            self.store.remove(&key);
+        }
+        count
+    }
+
     /// 全エントリを削除
     pub fn clear(&mut self) {
         self.store.clear();
@@ -248,6 +266,49 @@ mod tests {
         let pattern = TopicPattern::parse("process/debug/#");
         let results = store.get_matching(&pattern);
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_remove_by_prefix() {
+        let mut store = RetainedStore::new();
+        store.set(
+            "process/paisley-park/command/show/main",
+            make_show("main", "A"),
+        );
+        store.set(
+            "process/paisley-park/command/show/side",
+            make_show("side", "B"),
+        );
+        store.set(
+            "process/terminal/state/ready",
+            ProcessMessage::TerminalReady,
+        );
+
+        // paisley-park 配下だけ削除
+        let removed = store.remove_by_prefix("process/paisley-park/");
+        assert_eq!(removed, 2);
+        assert_eq!(store.len(), 1);
+        assert!(store.get("process/terminal/state/ready").is_some());
+    }
+
+    #[test]
+    fn test_remove_by_prefix_no_match() {
+        let mut store = RetainedStore::new();
+        store.set(
+            "process/terminal/state/ready",
+            ProcessMessage::TerminalReady,
+        );
+
+        let removed = store.remove_by_prefix("process/debug/");
+        assert_eq!(removed, 0);
+        assert_eq!(store.len(), 1);
+    }
+
+    #[test]
+    fn test_remove_by_prefix_empty_store() {
+        let mut store = RetainedStore::new();
+        let removed = store.remove_by_prefix("process/");
+        assert_eq!(removed, 0);
     }
 
     #[test]

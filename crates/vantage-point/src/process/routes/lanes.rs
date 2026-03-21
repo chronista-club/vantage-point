@@ -47,6 +47,9 @@ pub struct LaneInfo {
     pub port: u16,
     /// 接続状態
     pub status: LaneStatus,
+    /// プロジェクトパス（DB クリーンアップ用）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_path: Option<String>,
 }
 
 /// Lane 接続状態
@@ -81,6 +84,8 @@ enum LaneEvent {
     },
     /// Canvas Lane 切り替え指示
     SwitchLane { lane: String },
+    /// Lane のペインコンテンツをクリア（Lane 切断時）
+    LanePanesCleared { lane: String, port: u16 },
 }
 
 /// Canvas クライアント → サーバーへのメッセージ
@@ -106,6 +111,8 @@ enum BridgeMsg {
         lane: String,
         port: u16,
         status: LaneStatus,
+        /// プロジェクトパス（DB クリーンアップ用、Disconnected 時に使用）
+        project_path: Option<String>,
     },
     /// Lane 一覧更新
     LanesUpdated(Vec<LaneInfo>),
@@ -221,11 +228,31 @@ async fn handle_lanes_socket(socket: WebSocket, state: Arc<AppState>) {
                     ref lane,
                     port,
                     ref status,
+                    ..
                 } => {
-                    // 切断時に追跡セットから除去 → 次回スキャンで再接続可能に
+                    // 切断時: 追跡セットから除去 + ペインクリアイベント送信
                     if matches!(status, LaneStatus::Disconnected) {
                         ports_for_send.lock().await.remove(&port);
-                        tracing::debug!("Lane {} (port {}) を追跡セットから除去", lane, port);
+                        tracing::info!(
+                            "Lane {} (port {}) 切断 — ペインクリアイベントを送信",
+                            lane,
+                            port
+                        );
+
+                        // ペインクリアイベントを先に送信（Canvas が stale 表示を除去）
+                        let clear_event = LaneEvent::LanePanesCleared {
+                            lane: lane.clone(),
+                            port,
+                        };
+                        let clear_text =
+                            serde_json::to_string(&clear_event).unwrap_or_default();
+                        if ws_sender
+                            .send(Message::Text(clear_text.into()))
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
                     }
                     LaneEvent::LaneStatusChanged {
                         lane: lane.clone(),
@@ -380,6 +407,7 @@ async fn discover_and_connect(
                 name: proc.project_name.clone(),
                 port: proc.port,
                 status: LaneStatus::Connected,
+                project_path: Some(proc.project_path.to_string_lossy().to_string()),
             });
             continue;
         }
@@ -390,6 +418,7 @@ async fn discover_and_connect(
                 name: proc.project_name.clone(),
                 port: proc.port,
                 status: LaneStatus::Connected,
+                project_path: Some(proc.project_path.to_string_lossy().to_string()),
             });
             continue;
         }
@@ -399,17 +428,19 @@ async fn discover_and_connect(
 
         let lane_name = proc.project_name.clone();
         let port = proc.port;
+        let proj_path = Some(proc.project_path.to_string_lossy().to_string());
 
         // WS クライアント接続を spawn
         let tx = bridge_tx.clone();
         tokio::spawn(async move {
-            spawn_lane_bridge(lane_name, port, tx).await;
+            spawn_lane_bridge(lane_name, port, proj_path, tx).await;
         });
 
         lanes.push(LaneInfo {
             name: proc.project_name.clone(),
             port: proc.port,
             status: LaneStatus::Connecting,
+            project_path: Some(proc.project_path.to_string_lossy().to_string()),
         });
     }
 
@@ -417,7 +448,12 @@ async fn discover_and_connect(
 }
 
 /// 1つの Process に対する WS クライアント接続を確立し、メッセージを中継
-async fn spawn_lane_bridge(lane: String, port: u16, bridge_tx: mpsc::Sender<BridgeMsg>) {
+async fn spawn_lane_bridge(
+    lane: String,
+    port: u16,
+    project_path: Option<String>,
+    bridge_tx: mpsc::Sender<BridgeMsg>,
+) {
     let url = format!("ws://[::1]:{}/ws", port);
 
     // WS クライアント接続
@@ -430,6 +466,7 @@ async fn spawn_lane_bridge(lane: String, port: u16, bridge_tx: mpsc::Sender<Brid
                     lane,
                     port,
                     status: LaneStatus::Disconnected,
+                    project_path,
                 })
                 .await;
             return;
@@ -444,6 +481,7 @@ async fn spawn_lane_bridge(lane: String, port: u16, bridge_tx: mpsc::Sender<Brid
             lane: lane.clone(),
             port,
             status: LaneStatus::Connected,
+            project_path: project_path.clone(),
         })
         .await;
 
@@ -486,6 +524,7 @@ async fn spawn_lane_bridge(lane: String, port: u16, bridge_tx: mpsc::Sender<Brid
             lane,
             port,
             status: LaneStatus::Disconnected,
+            project_path,
         })
         .await;
 }

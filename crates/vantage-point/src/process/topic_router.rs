@@ -470,6 +470,56 @@ mod tests {
     }
 
     // =========================================================================
+    // RetainedStore クリーンアップ（Lane ライフサイクル連動）
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_retained_cleanup_by_prefix() {
+        let router = TopicRouter::new();
+
+        // PP の Show メッセージ（retained 対象: command カテゴリ）
+        router.route(make_show("main", "# Hello")).await;
+        router.route(make_show("side", "# Sidebar")).await;
+        // Terminal state（retained 対象: state カテゴリ）
+        router.route(ProcessMessage::TerminalReady).await;
+
+        // PP の pane だけクリア（Lane 切断時のクリーンアップ相当）
+        {
+            let mut store = router.retained.write().await;
+            let removed = store.remove_by_prefix("process/paisley-park/command/show/");
+            assert_eq!(removed, 2);
+        }
+
+        // Terminal state は残っている
+        let store = router.retained.read().await;
+        assert_eq!(store.len(), 1);
+        assert!(store.get("process/terminal/state/ready").is_some());
+    }
+
+    #[tokio::test]
+    async fn test_retained_cleanup_does_not_affect_new_subscribe() {
+        let router = TopicRouter::new();
+
+        // retained に保存
+        router.route(make_show("main", "# Before")).await;
+
+        // クリア
+        {
+            let mut store = router.retained.write().await;
+            store.remove_by_prefix("process/paisley-park/");
+        }
+
+        // クリア後の subscribe は空
+        let (_id, mut rx) = router.subscribe("process/paisley-park/command/#").await;
+        assert!(rx.try_recv().is_err());
+
+        // 新しいメッセージを route すると受信できる
+        router.route(make_show("main", "# After")).await;
+        let (topic, _) = rx.try_recv().expect("新規メッセージを受信");
+        assert_eq!(topic, "process/paisley-park/command/show/main");
+    }
+
+    // =========================================================================
     // Default trait
     // =========================================================================
 

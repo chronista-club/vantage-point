@@ -598,6 +598,61 @@ pub async fn shutdown_handler(State(state): State<Arc<AppState>>) -> impl IntoRe
     Json(serde_json::json!({"status": "shutting_down"}))
 }
 
+/// DELETE /api/panes - Lane 削除時の pane_contents クリーンアップ
+///
+/// プロジェクトパスを指定して DB の pane_contents とインメモリ RetainedStore を同時にクリアする。
+/// Body: `{"project_path": "/path/to/project"}`
+pub async fn clear_panes_handler(
+    State(state): State<Arc<AppState>>,
+    Json(params): Json<ClearPanesParams>,
+) -> impl IntoResponse {
+    let mut cleared_db = false;
+    let mut cleared_retained = 0usize;
+
+    // DB pane_contents をクリア
+    if let Some(ref db) = state.vpdb {
+        match db.clear_pane_contents(&params.project_path).await {
+            Ok(()) => {
+                cleared_db = true;
+                tracing::info!(
+                    "DB pane_contents クリア完了: {}",
+                    params.project_path
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "DB pane_contents クリア失敗 ({}): {}",
+                    params.project_path,
+                    e
+                );
+            }
+        }
+    }
+
+    // 自プロジェクトの場合は RetainedStore もクリア
+    if params.project_path == state.project_dir {
+        let retained = state.topic_router.retained();
+        let mut store = retained.write().await;
+        cleared_retained = store.remove_by_prefix("process/paisley-park/command/show/");
+        tracing::info!(
+            "RetainedStore ペインクリア完了: {} エントリ",
+            cleared_retained
+        );
+    }
+
+    Json(serde_json::json!({
+        "status": "ok",
+        "cleared_db": cleared_db,
+        "cleared_retained": cleared_retained,
+    }))
+}
+
+/// clear_panes_handler のパラメータ
+#[derive(Deserialize)]
+pub struct ClearPanesParams {
+    pub project_path: String,
+}
+
 // ===== tmux ペイン操作ハンドラー =====
 
 /// tmux split パラメータ

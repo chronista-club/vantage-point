@@ -246,6 +246,7 @@ pub async fn run(
         .route("/api/process/list", get(health::process_list_handler))
         .route("/api/health", get(health::health_handler))
         .route("/api/shutdown", post(health::shutdown_handler))
+        .route("/api/panes", axum::routing::delete(health::clear_panes_handler))
         .route(
             "/api/permission",
             post(permission::permission_request_handler),
@@ -512,6 +513,7 @@ pub async fn run_world(port: u16) -> Result<()> {
     let app = Router::new()
         .route("/api/health", get(health::health_handler))
         .route("/api/shutdown", post(health::shutdown_handler))
+        .route("/api/panes", axum::routing::delete(health::clear_panes_handler))
         // Canvas HTML（PP window が TheWorld ポートから直接ロードするため必要）
         .route("/canvas", get(health::canvas_handler))
         .route("/vendor/{filename}", get(health::vendor_handler))
