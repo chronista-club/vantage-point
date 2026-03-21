@@ -28,41 +28,37 @@ struct SidebarView: View {
     var onRestartSP: ((String) -> Void)?
     /// TheWorld 再起動コールバック
     var onRestartWorld: (() -> Void)?
+    /// SP 有効/無効トグルコールバック（パス, 新しい enabled 値）
+    var onToggleEnabled: ((String, Bool) -> Void)?
+
+    /// 有効なプロジェクト（稼働中 + 停止中だが enabled）
+    private var enabledProjects: [SidebarProject] {
+        projects.filter { $0.enabled }
+    }
+
+    /// 無効化されたプロジェクト（enabled = false）
+    private var disabledProjects: [SidebarProject] {
+        projects.filter { !$0.enabled }
+    }
 
     var body: some View {
         List(selection: $selection) {
-            ForEach(projects) { project in
-                // ワーカーがあれば DisclosureGroup でツリー表示
-                if project.workers.isEmpty {
-                    SidebarProjectRow(project: project)
-                        .tag(project.id)
-                        .contextMenu { projectContextMenu(project: project) }
-                } else {
-                    DisclosureGroup {
-                        ForEach(project.workers) { worker in
-                            SidebarWorkerRow(
-                                worker: worker,
-                                parentPPStatus: ppBadgeStatus(for: project),
-                                ccwireSession: worker.ccwireSession
-                            )
-                                .tag(worker.id)
-                                .contextMenu {
-                                    Button("HD をリスタート", systemImage: "arrow.clockwise") {
-                                        onRestartHD?(worker.path)
-                                    }
-                                }
-                        }
-                    } label: {
-                        SidebarProjectRow(project: project)
-                            .tag(project.id)
-                            .contextMenu { projectContextMenu(project: project) }
-                    }
-                }
+            // 有効なプロジェクト
+            ForEach(enabledProjects) { project in
+                sidebarProjectItem(project: project)
             }
-            // DisclosureGroup により worker が ForEach のインデックス空間から外れるため
-            // projects 配列と1:1対応になり、変換不要
             .onMove { from, to in
                 onReorder?(from, to)
+            }
+
+            // 無効化されたプロジェクト（停止中セクション）
+            if !disabledProjects.isEmpty {
+                Section("Disabled") {
+                    ForEach(disabledProjects) { project in
+                        sidebarProjectItem(project: project)
+                            .opacity(0.5)
+                    }
+                }
             }
         }
         .navigationTitle("Projects")
@@ -82,9 +78,50 @@ struct SidebarView: View {
         }
     }
 
+    /// プロジェクト行の共通レンダリング（ワーカーありなら DisclosureGroup）
+    @ViewBuilder
+    private func sidebarProjectItem(project: SidebarProject) -> some View {
+        if project.workers.isEmpty {
+            SidebarProjectRow(project: project)
+                .tag(project.id)
+                .contextMenu { projectContextMenu(project: project) }
+        } else {
+            DisclosureGroup {
+                ForEach(project.workers) { worker in
+                    SidebarWorkerRow(
+                        worker: worker,
+                        parentPPStatus: ppBadgeStatus(for: project),
+                        ccwireSession: worker.ccwireSession
+                    )
+                        .tag(worker.id)
+                        .contextMenu {
+                            Button("HD をリスタート", systemImage: "arrow.clockwise") {
+                                onRestartHD?(worker.path)
+                            }
+                        }
+                }
+            } label: {
+                SidebarProjectRow(project: project)
+                    .tag(project.id)
+                    .contextMenu { projectContextMenu(project: project) }
+            }
+        }
+    }
+
     /// プロジェクト行のコンテキストメニュー
     @ViewBuilder
     private func projectContextMenu(project: SidebarProject) -> some View {
+        // enable/disable トグル
+        if project.enabled {
+            Button("SP を停止", systemImage: "stop.circle") {
+                onToggleEnabled?(project.path, false)
+            }
+        } else {
+            Button("SP を有効化", systemImage: "play.circle") {
+                onToggleEnabled?(project.path, true)
+            }
+        }
+        Divider()
         // HD は SP 無しでも独立動作可能（SP 停止中でもリスタート可）
         Button("HD をリスタート", systemImage: "arrow.clockwise") {
             onRestartHD?(project.path)
@@ -347,8 +384,10 @@ struct SidebarProject: Identifiable, Equatable {
     let hasNotification: Bool
     /// ccwire セッション情報（HD に紐づく）
     let ccwireSession: CcwireSessionInfo?
+    /// SP 自動起動の有効/無効
+    let enabled: Bool
 
-    init(id: String, name: String, path: String, isRunning: Bool, port: UInt16?, startedAt: Date?, stands: [SidebarStand] = [], workers: [CcwsWorkerInfo] = [], branch: String? = nil, hasHD: Bool = false, hasNotification: Bool = false, ccwireSession: CcwireSessionInfo? = nil) {
+    init(id: String, name: String, path: String, isRunning: Bool, port: UInt16?, startedAt: Date?, stands: [SidebarStand] = [], workers: [CcwsWorkerInfo] = [], branch: String? = nil, hasHD: Bool = false, hasNotification: Bool = false, ccwireSession: CcwireSessionInfo? = nil, enabled: Bool = true) {
         self.id = id
         self.name = name
         self.path = path
@@ -361,6 +400,7 @@ struct SidebarProject: Identifiable, Equatable {
         self.hasHD = hasHD
         self.hasNotification = hasNotification
         self.ccwireSession = ccwireSession
+        self.enabled = enabled
     }
 
     var statusColor: Color {

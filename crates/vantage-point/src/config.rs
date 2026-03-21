@@ -65,6 +65,13 @@ pub struct ProjectConfig {
     pub path: String,
     /// Preferred port for this project (optional)
     pub port: Option<u16>,
+    /// SP 自動起動の有効/無効（デフォルト: true）
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+}
+
+fn default_enabled() -> bool {
+    true
 }
 
 impl Config {
@@ -182,6 +189,7 @@ mod tests {
                 name: "vantage-point".to_string(),
                 path: "/Users/makoto/repos/vantage-point".to_string(),
                 port: Some(33000),
+                enabled: true,
             }],
         };
 
