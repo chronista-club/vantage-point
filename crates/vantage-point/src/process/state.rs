@@ -147,6 +147,8 @@ pub(crate) struct AppState {
     pub mcp_mailbox: Option<MailboxHandle>,
     /// SurrealDB クライアント（VP-21: 状態管理の DB 統一）
     pub vpdb: Option<crate::db::SharedVpDb>,
+    /// Whitesnake 🐍 — 汎用永続化レイヤー
+    pub whitesnake: crate::capability::Whitesnake,
 }
 
 impl AppState {
@@ -158,17 +160,11 @@ impl AppState {
         }
 
         // tmux セッションが存在すれば起動
-        if crate::tmux::is_tmux_available()
-            && crate::tmux::session_exists(&self.tmux_session_name)
+        if crate::tmux::is_tmux_available() && crate::tmux::session_exists(&self.tmux_session_name)
         {
-            if let Some(handle) =
-                super::tmux_actor::spawn_for_session(&self.tmux_session_name)
-            {
+            if let Some(handle) = super::tmux_actor::spawn_for_session(&self.tmux_session_name) {
                 *guard = Some(handle.clone());
-                tracing::info!(
-                    "TmuxActor 遅延初期化: session={}",
-                    self.tmux_session_name
-                );
+                tracing::info!("TmuxActor 遅延初期化: session={}", self.tmux_session_name);
                 return Some(handle);
             }
         }
@@ -222,26 +218,13 @@ impl AppState {
     }
 
     // =========================================================================
-    // ペイン状態永続化
+    // ペイン状態永続化（Whitesnake 🐍 経由）
     // =========================================================================
 
-    /// ペイン状態のファイルパス
-    fn pane_state_path(&self) -> std::path::PathBuf {
-        crate::config::config_dir()
-            .join("state")
-            .join(format!("{}-panes.json", self.port))
-    }
-
-    /// Canvas レイアウト状態のファイルパス
-    fn canvas_layout_path(&self) -> std::path::PathBuf {
-        crate::config::config_dir()
-            .join("state")
-            .join(format!("{}-canvas-layout.json", self.port))
-    }
-
-    /// RetainedStore から Paisley Park のペイン状態を取得して保存
+    /// RetainedStore から Paisley Park のペイン状態を Whitesnake に保存
     ///
-    /// 保存先: JSON ファイル（フォールバック）+ SurrealDB（vpdb がある場合）
+    /// Whitesnake が DISC として永続化（FileBackend）。
+    /// 旧: SurrealDB + JSON ファイルの二重管理 → Whitesnake に統一。
     pub async fn persist_pane_contents(&self) {
         let pattern = TopicPattern::parse("process/paisley-park/command/show/#");
         let retained = self.topic_router.retained();
@@ -252,8 +235,8 @@ impl AppState {
             return;
         }
 
-        // RetainedStore の ProcessMessage::Show → PaneState に変換
-        let mut panes = HashMap::new();
+        // RetainedStore の ProcessMessage::Show → PaneState に変換して DISC に焼く
+        let mut count = 0;
         for (_topic, msg) in &matching {
             if let ProcessMessage::Show {
                 pane_id,
@@ -262,161 +245,93 @@ impl AppState {
                 ..
             } = msg
             {
-                panes.insert(
-                    pane_id.clone(),
-                    PaneState {
-                        content: content.clone(),
-                        title: title.clone(),
-                    },
-                );
-            }
-        }
-
-        if panes.is_empty() {
-            return;
-        }
-
-        // DB に保存（vpdb がある場合）
-        if let Some(ref db) = self.vpdb {
-            let project_path = &self.project_dir;
-            for (pane_id, pane_state) in &panes {
-                let content_json = serde_json::to_string(&pane_state.content).unwrap_or_default();
-                let content_type = match &pane_state.content {
-                    Content::Log(_) => "log",
-                    Content::Markdown(_) => "markdown",
-                    Content::Html(_) => "html",
-                    Content::Url(_) => "url",
-                    Content::ImageBase64 { .. } => "image_base64",
+                let pane_state = PaneState {
+                    content: content.clone(),
+                    title: title.clone(),
                 };
-                if let Err(e) = db
-                    .upsert_pane_content(
-                        project_path,
-                        pane_id,
-                        content_type,
-                        &content_json,
-                        pane_state.title.as_deref(),
-                    )
+                let key = format!("pane/{}", pane_id);
+                if let Err(e) = self
+                    .whitesnake
+                    .extract("paisley-park", &key, &pane_state)
                     .await
                 {
-                    tracing::warn!("DB ペイン状態保存失敗 ({}): {}", pane_id, e);
-                }
-            }
-        }
-
-        // JSON ファイルに保存（フォールバック）
-        let path = self.pane_state_path();
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-
-        match serde_json::to_string(&panes) {
-            Ok(json) => {
-                if let Err(e) = std::fs::write(&path, json) {
-                    tracing::warn!("ペイン状態の保存に失敗: {}", e);
-                }
-            }
-            Err(e) => tracing::warn!("ペイン状態のシリアライズに失敗: {}", e),
-        }
-    }
-
-    /// ペイン状態を復元し、RetainedStore にセットする
-    ///
-    /// 復元元: SurrealDB（優先）→ JSON ファイル（フォールバック）
-    pub async fn restore_pane_contents(&self) {
-        // DB から復元を試みる
-        if let Some(ref db) = self.vpdb
-            && let Ok(rows) = db.list_pane_contents(&self.project_dir).await
-            && !rows.is_empty()
-        {
-            let retained = self.topic_router.retained();
-            let mut store = retained.write().await;
-            let mut count = 0;
-            for row in &rows {
-                let pane_id = row["pane_id"].as_str().unwrap_or("").to_string();
-                let content_json = row["content"].as_str().unwrap_or("");
-                let title = row["title"].as_str().map(|s| s.to_string());
-
-                if let Ok(content) = serde_json::from_str::<Content>(content_json) {
-                    let topic = format!("process/paisley-park/command/show/{}", pane_id);
-                    store.set(
-                        &topic,
-                        ProcessMessage::Show {
-                            pane_id,
-                            content,
-                            append: false,
-                            title,
-                        },
-                    );
+                    tracing::warn!("Whitesnake DISC 保存失敗 ({}): {}", pane_id, e);
+                } else {
                     count += 1;
                 }
             }
-            if count > 0 {
-                tracing::info!(
-                    "ペイン状態を DB から復元: {} ペイン (port={})",
-                    count,
-                    self.port
-                );
-                return;
-            }
         }
 
-        // フォールバック: JSON ファイルから復元
-        let path = self.pane_state_path();
-        if !path.exists() {
-            return;
+        if count > 0 {
+            tracing::info!("{} ペイン状態を DISC に保存 (port={})", count, self.port);
         }
+    }
 
-        match std::fs::read_to_string(&path) {
-            Ok(json) => match serde_json::from_str::<HashMap<String, PaneState>>(&json) {
-                Ok(restored) => {
-                    let count = restored.len();
-                    let retained = self.topic_router.retained();
-                    let mut store = retained.write().await;
-                    for (pane_id, pane_state) in restored {
+    /// Whitesnake から DISC を読み出し、RetainedStore に復元する
+    pub async fn restore_pane_contents(&self) {
+        // Whitesnake から paisley-park/pane/* を復元
+        match self
+            .whitesnake
+            .list_by_prefix("paisley-park", "pane/")
+            .await
+        {
+            Ok(discs) if !discs.is_empty() => {
+                let retained = self.topic_router.retained();
+                let mut store = retained.write().await;
+                let mut count = 0;
+                for disc in &discs {
+                    // key = "pane/{pane_id}" → pane_id を抽出
+                    let pane_id = disc.key.strip_prefix("pane/").unwrap_or(&disc.key);
+                    if let Ok(pane_state) = disc.extract::<PaneState>() {
                         let topic = format!("process/paisley-park/command/show/{}", pane_id);
                         store.set(
                             &topic,
                             ProcessMessage::Show {
-                                pane_id,
+                                pane_id: pane_id.to_string(),
                                 content: pane_state.content,
                                 append: false,
                                 title: pane_state.title,
                             },
                         );
+                        count += 1;
                     }
+                }
+                if count > 0 {
                     tracing::info!(
-                        "ペイン状態をファイルから復元: {} ペイン (port={})",
+                        "ペイン状態を Whitesnake DISC から復元: {} ペイン (port={})",
                         count,
                         self.port
                     );
                 }
-                Err(e) => tracing::warn!("ペイン状態のデシリアライズに失敗: {}", e),
-            },
-            Err(e) => tracing::warn!("ペイン状態ファイルの読み込みに失敗: {}", e),
-        }
-    }
-
-    /// Canvas レイアウト状態を保存（フロントエンドからの JSON をそのまま保存）
-    pub fn save_canvas_layout(&self, layout: &serde_json::Value) {
-        let path = self.canvas_layout_path();
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-
-        match serde_json::to_string_pretty(layout) {
-            Ok(json) => {
-                if let Err(e) = std::fs::write(&path, json) {
-                    tracing::warn!("Canvas レイアウト保存に失敗: {}", e);
-                }
             }
-            Err(e) => tracing::warn!("Canvas レイアウトのシリアライズに失敗: {}", e),
+            Ok(_) => {
+                // DISC が空 — 旧形式からのマイグレーション不要（初回起動）
+            }
+            Err(e) => {
+                tracing::warn!("Whitesnake DISC 読み出し失敗: {}", e);
+            }
         }
     }
 
-    /// Canvas レイアウト状態を復元
-    pub fn load_canvas_layout(&self) -> Option<serde_json::Value> {
-        let path = self.canvas_layout_path();
-        let json = std::fs::read_to_string(&path).ok()?;
-        serde_json::from_str(&json).ok()
+    /// Canvas レイアウト状態を Whitesnake に保存
+    pub async fn save_canvas_layout(&self, layout: &serde_json::Value) {
+        if let Err(e) = self
+            .whitesnake
+            .extract("paisley-park", "layout", layout)
+            .await
+        {
+            tracing::warn!("Canvas レイアウト DISC 保存に失敗: {}", e);
+        }
+    }
+
+    /// Canvas レイアウト状態を Whitesnake から復元
+    pub async fn load_canvas_layout(&self) -> Option<serde_json::Value> {
+        match self.whitesnake.insert("paisley-park", "layout").await {
+            Ok(value) => value,
+            Err(e) => {
+                tracing::warn!("Canvas レイアウト DISC 読み出しに失敗: {}", e);
+                None
+            }
+        }
     }
 }

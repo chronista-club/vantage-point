@@ -282,7 +282,6 @@ pub async fn close_pane_handler(
     Json(serde_json::json!({"status": "ok"}))
 }
 
-
 /// POST /api/canvas/switch_lane - Canvas Lane 切り替え
 ///
 /// canvas_senders 経由で接続中の全 Canvas WS クライアントに直接送信。
@@ -319,7 +318,7 @@ pub async fn canvas_switch_lane_handler(
 
 /// GET /api/canvas/layout - Canvas レイアウト状態を復元
 pub async fn canvas_layout_get_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    match state.load_canvas_layout() {
+    match state.load_canvas_layout().await {
         Some(layout) => Json(serde_json::json!({"status": "ok", "layout": layout})),
         None => Json(serde_json::json!({"status": "empty"})),
     }
@@ -333,7 +332,7 @@ pub async fn canvas_layout_save_handler(
     State(state): State<Arc<AppState>>,
     Json(layout): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    state.save_canvas_layout(&layout);
+    state.save_canvas_layout(&layout).await;
     // ペイン内容も同時に保存（RetainedStore から取得）
     state.persist_pane_contents().await;
     Json(serde_json::json!({"status": "saved"}))
@@ -615,7 +614,10 @@ fn default_true() -> bool {
 }
 
 /// content_type からコマンドを解決する
-pub fn resolve_content_command(content_type: Option<&str>, command: Option<String>) -> Option<String> {
+pub fn resolve_content_command(
+    content_type: Option<&str>,
+    command: Option<String>,
+) -> Option<String> {
     // command が直接指定されていればそちらを優先（後方互換）
     if command.is_some() {
         return command;

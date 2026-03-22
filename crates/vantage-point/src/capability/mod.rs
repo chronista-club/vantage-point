@@ -24,6 +24,7 @@ pub mod process_manager_capability;
 pub mod protocol_capability;
 pub mod registry;
 pub mod update_capability;
+pub mod whitesnake;
 
 pub use agent_capability::AgentCapability;
 pub use core::{CapabilityContext, CapabilityEvent, CapabilityInfo, CapabilityState};
@@ -36,3 +37,4 @@ pub use process_manager_capability::{
 pub use protocol_capability::ProtocolCapability;
 pub use registry::CapabilityRegistry;
 pub use update_capability::UpdateCapability;
+pub use whitesnake::Whitesnake;

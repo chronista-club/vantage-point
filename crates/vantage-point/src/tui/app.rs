@@ -842,4 +842,3 @@ fn start_background_services(
     crate::commands::start::wait_for_ready(port)?;
     Ok(())
 }
-

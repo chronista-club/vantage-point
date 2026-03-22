@@ -19,7 +19,7 @@ description = "Run tests"
 run = "cargo test"
 
 [tasks.mac]
-description = "Build & run macOS native app (VantagePoint.app)"
+description = "Build & run macOS native app (VantagePoint.app) via xcodebuild"
 run = """
 set -euo pipefail
 ROOT="$(pwd)"
@@ -27,20 +27,21 @@ ROOT="$(pwd)"
 echo "🔨 Building vp-bridge (staticlib)..."
 cargo build --release -p vp-bridge
 
-echo "🔨 Building VantagePoint (Swift)..."
-(cd apple/VantagePoint && swift build -c release)
+echo "🔨 Building VantagePoint (xcodebuild)..."
+xcodebuild build \
+  -project "$ROOT/apple/VantagePoint/VantagePoint.xcodeproj" \
+  -scheme VantagePoint \
+  -configuration Release \
+  -derivedDataPath "$ROOT/.build/DerivedData" \
+  -quiet
 
 echo "🔄 既存プロセスを停止..."
 pkill -f 'VantagePoint$' 2>/dev/null && sleep 1 || true
 
-echo "📦 .app バンドルを作成..."
-rm -rf "$ROOT/VantagePoint.app"
-mkdir -p "$ROOT/VantagePoint.app/Contents/MacOS"
-cp "$ROOT/apple/VantagePoint/.build/release/VantagePoint" "$ROOT/VantagePoint.app/Contents/MacOS/"
-cp "$ROOT/apple/VantagePoint/Resources/Info.plist" "$ROOT/VantagePoint.app/Contents/"
+APP_PATH="$ROOT/.build/DerivedData/Build/Products/Release/VantagePoint.app"
 
-echo "🚀 Launching VantagePoint..."
-exec open "$ROOT/VantagePoint.app"
+echo "🚀 Launching $APP_PATH ..."
+exec open "$APP_PATH"
 """
 
 [tasks."mac:build"]

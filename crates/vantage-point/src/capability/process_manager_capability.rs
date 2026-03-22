@@ -478,11 +478,7 @@ impl ProcessManagerCapability {
         }
 
         self.persist_to_config_fallback().await;
-        tracing::info!(
-            "Project enabled={}: {}",
-            enabled,
-            path
-        );
+        tracing::info!("Project enabled={}: {}", enabled, path);
 
         Ok(())
     }
@@ -511,11 +507,13 @@ impl ProcessManagerCapability {
     }
 
     /// DB が未接続の場合に config.toml に永続化するフォールバック（project_order の順序で書き出す）
+    #[cfg(not(test))]
     async fn persist_to_config_fallback(&self) {
         if self.vpdb.is_some() {
             // DB 接続中は DB が source of truth なのでスキップ
             return;
         }
+
         let order = self.project_order.read().await.clone();
         let projects = self.projects.read().await;
 
@@ -550,6 +548,12 @@ impl ProcessManagerCapability {
         } else {
             tracing::info!("config.toml 永続化完了: {} projects", config.projects.len());
         }
+    }
+
+    /// テスト環境では config.toml を書き換えない（データ破壊防止）
+    #[cfg(test)]
+    async fn persist_to_config_fallback(&self) {
+        // no-op: テスト時は本番の config.toml に触れない
     }
 
     /// Processを起動

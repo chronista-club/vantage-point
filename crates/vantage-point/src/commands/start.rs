@@ -442,7 +442,9 @@ pub fn try_create_tmux_claude(
     args.push("-lc".to_string());
     args.push(claude_cmd);
 
-    let status = std::process::Command::new(crate::tmux::tmux_bin().unwrap_or("tmux")).args(&args).status()?;
+    let status = std::process::Command::new(crate::tmux::tmux_bin().unwrap_or("tmux"))
+        .args(&args)
+        .status()?;
 
     Ok(status.success())
 }

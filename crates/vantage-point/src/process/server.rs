@@ -212,6 +212,8 @@ pub async fn run(
         started_at: chrono::Utc::now().to_rfc3339(),
         mcp_mailbox: Some(mcp_mailbox),
         vpdb,
+        // ポート別ディレクトリで分離（複数プロセスの namespace 衝突を防ぐ）
+        whitesnake: crate::capability::Whitesnake::file_backed_for_port(port),
     });
 
     // ペイン状態をディスクから復元（前回 Process 終了時の状態 → RetainedStore）
@@ -507,6 +509,8 @@ pub async fn run_world(port: u16) -> Result<()> {
         started_at: chrono::Utc::now().to_rfc3339(),
         mcp_mailbox: None,  // World モードでは MCP Mailbox 不要
         vpdb: vpdb.clone(), // World モードでも DB 参照あり
+        // TheWorld もポート別ディレクトリで分離
+        whitesnake: crate::capability::Whitesnake::file_backed_for_port(port),
     });
 
     let app = Router::new()

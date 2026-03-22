@@ -12,7 +12,11 @@ use std::process::Command;
 pub fn tmux_bin() -> Option<&'static str> {
     static TMUX_BIN: std::sync::OnceLock<Option<&'static str>> = std::sync::OnceLock::new();
     *TMUX_BIN.get_or_init(|| {
-        let candidates = ["/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/usr/bin/tmux"];
+        let candidates = [
+            "/opt/homebrew/bin/tmux",
+            "/usr/local/bin/tmux",
+            "/usr/bin/tmux",
+        ];
         for path in candidates {
             if Path::new(path).exists() {
                 return Some(path);

@@ -152,3 +152,6 @@ objc2-app-kit = { version = "0.3", features = [
 ] }
 objc2-core-foundation = "0.3"
 objc2-core-graphics = { version = "0.3", features = ["CGColor", "CGContext"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"
