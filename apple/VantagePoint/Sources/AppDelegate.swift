@@ -256,9 +256,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         navigateMenu.addItem(.separator())
         navigateMenu.addItem(NSMenuItem(title: "Split Pane", action: #selector(splitTerminalPane(_:)), keyEquivalent: "d"))
-        let closePaneItem = NSMenuItem(title: "Close Pane", action: #selector(closeTerminalPane(_:)), keyEquivalent: "d")
-        closePaneItem.keyEquivalentModifierMask = [.command, .shift]
-        navigateMenu.addItem(closePaneItem)
+        // Close Pane (Cmd+Shift+D) は一旦無効化 — PaneHeader の × ボタンで閉じる (VP-46)
+        // let closePaneItem = NSMenuItem(title: "Close Pane", action: #selector(closeTerminalPane(_:)), keyEquivalent: "d")
+        // closePaneItem.keyEquivalentModifierMask = [.command, .shift]
+        // navigateMenu.addItem(closePaneItem)
         let navigateMenuItem = NSMenuItem()
         navigateMenuItem.submenu = navigateMenu
         mainMenu.addItem(navigateMenuItem)
