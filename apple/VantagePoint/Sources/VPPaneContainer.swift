@@ -41,6 +41,15 @@ indirect enum VPPaneNode: Identifiable, Equatable {
         }
     }
 
+    /// 全リーフを収集（表示順）
+    var leaves: [VPPaneLeaf] {
+        switch self {
+        case .leaf(let leaf): return [leaf]
+        case .split(_, _, let first, let second):
+            return first.leaves + second.leaves
+        }
+    }
+
     /// 全リーフの ID を収集（表示順）
     var leafIds: [UUID] {
         switch self {

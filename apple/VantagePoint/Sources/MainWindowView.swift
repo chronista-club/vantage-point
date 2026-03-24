@@ -541,6 +541,16 @@ struct MainWindowView: View {
             return
         }
 
+        // 最後の Agent ペインは閉じない（VP-46: Agent 消失防止）
+        if let leaf = layout.root.findLeaf(id: paneId),
+           leaf.contentType == "agent" {
+            let agentCount = layout.root.leaves.filter { $0.contentType == "agent" }.count
+            if agentCount <= 1 {
+                logger.info("VP Pane close: 最後の Agent ペインは閉じない")
+                return
+            }
+        }
+
         // 削除対象のリーフの tmux リソースをクリーンアップ
         if let leaf = layout.root.findLeaf(id: paneId) {
             cleanupVPPaneTmux(leaf: leaf)
