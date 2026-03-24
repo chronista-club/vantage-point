@@ -45,6 +45,7 @@
       "env": {}
     },
     "vantage-point": {
+      "type": "stdio",
       "command": "vp",
       "args": ["mcp"]
     }

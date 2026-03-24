@@ -123,7 +123,13 @@ struct MainWindowView: View {
                                 splitNavigatorActive: splitNavigator != .hidden,
                                 terminalGeneration: gen,
                                 port: selectedPort,
-                                layoutVersion: paneLayoutVersion
+                                layoutVersion: paneLayoutVersion,
+                                onMinimizePane: { paneId in
+                                    minimizePane(path: path, paneId: paneId)
+                                },
+                                onClosePane: { paneId in
+                                    closePane(path: path, paneId: paneId)
+                                }
                             )
                                 .id("\(path):\(gen)")
                                 .opacity(isActive ? 1 : 0)
@@ -510,28 +516,42 @@ struct MainWindowView: View {
     /// フォーカス中の VP Pane を削除し、対応する tmux リソースをクリーンアップ。
     /// 最後の 1 つは閉じない（プロジェクトには最低 1 ペイン必要）。
     private func closePane() {
-        guard let path = selectedProjectPath,
-              var layout = paneLayouts[path],
+        guard let path = selectedProjectPath else { return }
+        let layout = paneLayouts[path] ?? VPPaneLayout.initial()
+        closePane(path: path, paneId: layout.focusedPaneId)
+    }
+
+    /// 指定ペインを閉じる（PaneHeader の × ボタンから呼ばれる）
+    private func closePane(path: String, paneId: UUID) {
+        guard var layout = paneLayouts[path],
               layout.root.leafCount > 1 else {
             logger.info("VP Pane close: 最後の1つは閉じない")
             return
         }
 
         // 削除対象のリーフの tmux リソースをクリーンアップ
-        if let leaf = layout.root.findLeaf(id: layout.focusedPaneId) {
+        if let leaf = layout.root.findLeaf(id: paneId) {
             cleanupVPPaneTmux(leaf: leaf)
         }
 
         // ツリーから削除
-        if let newRoot = layout.root.removing(targetId: layout.focusedPaneId) {
+        if let newRoot = layout.root.removing(targetId: paneId) {
             layout.root = newRoot
             // フォーカスを最初のリーフに移動
-            layout.focusedPaneId = newRoot.leafIds.first ?? layout.focusedPaneId
+            if layout.focusedPaneId == paneId {
+                layout.focusedPaneId = newRoot.leafIds.first ?? layout.focusedPaneId
+            }
             paneLayouts[path] = layout
             paneLayoutVersion += 1
         }
 
         logger.info("VP Pane closed: \(layout.root.leafCount) panes remaining, v=\(paneLayoutVersion)")
+    }
+
+    /// ペインを退避（VP-49: Dock に格納、現在は stub）
+    private func minimizePane(path: String, paneId: UUID) {
+        // TODO: VP-49 で Dock エリアに退避する実装を追加
+        logger.info("VP Pane minimize: paneId=\(paneId) (stub — VP-49)")
     }
 
     // MARK: - VP Pane ヘルパー

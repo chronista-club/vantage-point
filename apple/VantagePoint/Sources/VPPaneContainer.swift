@@ -177,6 +177,10 @@ struct VPPaneContainer: View {
     let port: UInt16?
     /// レイアウト変更カウンター（SwiftUI の差分検出を確実にトリガーするため）
     let layoutVersion: Int
+    /// ペイン退避コールバック（VP-48: Dock に格納）
+    var onMinimizePane: ((UUID) -> Void)?
+    /// ペイン削除コールバック
+    var onClosePane: ((UUID) -> Void)?
 
     var body: some View {
         paneNodeView(for: node)
@@ -190,28 +194,44 @@ struct VPPaneContainer: View {
         switch node {
         case .leaf(let leaf):
             let isFocused = leaf.id == focusedPaneId
+            // ベース HD ペイン（paneSessionName == nil）は閉じられない
+            let canClose = leaf.paneSessionName != nil || leaf.contentType != "agent"
 
             // Canvas ペイン: CanvasRepresentable を表示
             if leaf.contentType == "canvas" || leaf.contentType == "pp" {
                 return AnyView(
-                    CanvasRepresentable(port: port)
-                        .id("\(leaf.id):canvas:\(port ?? 0)")
+                    PaneHeaderView(
+                        leaf: leaf,
+                        isFocused: isFocused,
+                        onMinimize: { onMinimizePane?(leaf.id) },
+                        onClose: canClose ? { onClosePane?(leaf.id) } : nil
+                    ) {
+                        CanvasRepresentable(port: port)
+                            .id("\(leaf.id):canvas:\(port ?? 0)")
+                    }
                 )
             }
 
             // Shell ペイン (The Hand): 素シェルを直接起動（tmux 不要）
             if leaf.contentType == "shell" {
                 return AnyView(
-                    TerminalRepresentable(
-                        projectPath: projectPath,
-                        isActive: isActive,
+                    PaneHeaderView(
+                        leaf: leaf,
                         isFocused: isFocused,
-                        splitNavigatorActive: splitNavigatorActive,
-                        tmuxCommand: "exec zsh -l",
-                        paneId: leaf.id,
-                        sendMouseEvents: false
-                    )
-                    .id("\(leaf.id):shell")
+                        onMinimize: { onMinimizePane?(leaf.id) },
+                        onClose: { onClosePane?(leaf.id) }
+                    ) {
+                        TerminalRepresentable(
+                            projectPath: projectPath,
+                            isActive: isActive,
+                            isFocused: isFocused,
+                            splitNavigatorActive: splitNavigatorActive,
+                            tmuxCommand: "exec zsh -l",
+                            paneId: leaf.id,
+                            sendMouseEvents: false
+                        )
+                        .id("\(leaf.id):shell")
+                    }
                 )
             }
 
@@ -227,15 +247,22 @@ struct VPPaneContainer: View {
             }()
 
             return AnyView(
-                TerminalRepresentable(
-                    projectPath: projectPath,
-                    isActive: isActive,
+                PaneHeaderView(
+                    leaf: leaf,
                     isFocused: isFocused,
-                    splitNavigatorActive: splitNavigatorActive,
-                    tmuxCommand: tmuxCmd,
-                    paneId: leaf.id
-                )
-                .id("\(leaf.id):\(terminalGeneration)")
+                    onMinimize: { onMinimizePane?(leaf.id) },
+                    onClose: canClose ? { onClosePane?(leaf.id) } : nil
+                ) {
+                    TerminalRepresentable(
+                        projectPath: projectPath,
+                        isActive: isActive,
+                        isFocused: isFocused,
+                        splitNavigatorActive: splitNavigatorActive,
+                        tmuxCommand: tmuxCmd,
+                        paneId: leaf.id
+                    )
+                    .id("\(leaf.id):\(terminalGeneration)")
+                }
             )
 
         case .split(let splitId, let horizontal, let first, let second):
@@ -250,6 +277,107 @@ struct VPPaneContainer: View {
                 }
                 .id(splitId)
             )
+        }
+    }
+}
+
+// MARK: - PaneHeaderView
+
+/// ペインの Stand 情報（ヘッダー表示用）
+struct PaneStandInfo {
+    let icon: String      // SF Symbol or emoji
+    let label: String     // 表示名
+    let color: Color      // アクセントカラー
+
+    /// contentType から Stand 情報を導出
+    static func from(leaf: VPPaneLeaf) -> PaneStandInfo {
+        switch leaf.contentType {
+        case "canvas", "pp":
+            return PaneStandInfo(icon: "safari", label: "Paisley Park", color: .cyan)
+        case "shell":
+            return PaneStandInfo(icon: "terminal", label: "The Hand", color: .orange)
+        default: // "agent", "hd"
+            // paneSessionName があれば追加 HD ペイン
+            let label = leaf.paneSessionName != nil ? "Heaven's Door" : "Lead-HD"
+            return PaneStandInfo(icon: "book", label: label, color: .green)
+        }
+    }
+}
+
+/// 統一ペインヘッダー（VP-48）
+///
+/// 全ペイン種別に共通のヘッダーバーを付与する。
+/// Stand アイコン + タイトル + 操作ボタン（退避・閉じる）。
+struct PaneHeaderView<Content: View>: View {
+    let leaf: VPPaneLeaf
+    let isFocused: Bool
+    let onMinimize: (() -> Void)?
+    let onClose: (() -> Void)?
+    @ViewBuilder let content: Content
+
+    private let headerHeight: CGFloat = 28
+
+    private var standInfo: PaneStandInfo {
+        PaneStandInfo.from(leaf: leaf)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // ヘッダーバー
+            HStack(spacing: 6) {
+                // Stand アイコン + タイトル
+                Image(systemName: standInfo.icon)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(standInfo.color)
+
+                Text(standInfo.label)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+
+                Spacer()
+
+                // 退避ボタン
+                if let onMinimize {
+                    headerButton(icon: "minus", action: onMinimize)
+                        .help("ペインを退避")
+                }
+
+                // 閉じるボタン（ベース HD ペインは削除不可）
+                if let onClose {
+                    headerButton(icon: "xmark", action: onClose)
+                        .help("ペインを閉じる")
+                }
+            }
+            .padding(.horizontal, 8)
+            .frame(height: headerHeight)
+            .background(
+                isFocused
+                    ? Color.white.opacity(0.06)
+                    : Color.white.opacity(0.03)
+            )
+
+            // 区切り線
+            Divider().opacity(0.3)
+
+            // ペイン本体
+            content
+        }
+    }
+
+    /// ヘッダー操作ボタン（ミニマルスタイル）
+    private func headerButton(icon: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(.secondary)
+                .frame(width: 16, height: 16)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .opacity(0.6)
+        .onHover { hovering in
+            // ホバーで不透明度を上げる（SwiftUI animation で対応）
         }
     }
 }
