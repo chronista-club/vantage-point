@@ -570,6 +570,9 @@ pub extern "C" fn vp_bridge_scroll_session(session_id: u32, delta: i32) {
 ///
 /// PTY には `height - header - footer` 行のグリッドサイズが通知される。
 /// PTY 出力は header 行目からオフセットされて描画される。
+///
+/// NOTE(VP-50): Swift 側の呼び出し元は削除済み（PaneHeader に一本化）。
+/// chrome 機能を復活させる場合は TerminalView.swift の setupChrome() も復元すること。
 #[unsafe(no_mangle)]
 pub extern "C" fn vp_bridge_set_chrome(session_id: u32, header_rows: u16, footer_rows: u16) {
     let guard = ensure_sessions();
@@ -584,6 +587,8 @@ pub extern "C" fn vp_bridge_set_chrome(session_id: u32, header_rows: u16, footer
 /// `y` はグリッド上の絶対行番号（0 = 最上行）。
 /// `text` は UTF-8 C 文字列。
 /// `fg` / `bg` は RGBA u32（0 = デフォルト色）。
+///
+/// NOTE(VP-50): Swift 側の呼び出し元は削除済み。
 #[unsafe(no_mangle)]
 pub extern "C" fn vp_bridge_write_chrome_line(
     session_id: u32,

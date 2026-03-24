@@ -121,13 +121,6 @@ class TerminalView: NSView {
     /// マウスイベントを PTY に送信するか（tmux 内は true、素シェルは false）
     var sendMouseEvents: Bool = true
 
-    /// クローム行数（ヘッダー/フッター）
-    private var chromeHeaderRows: UInt16 = 0
-    private var chromeFooterRows: UInt16 = 0
-
-    /// 遅延フッターテキスト（PTY 起動後に行数確定してから描画）
-    var deferredFooterText: String?
-
     /// PTY 起動時のコマンド（再起動用に保持）
     var lastPtyCommand: String?
     /// PTY 起動時の CWD（再起動用に保持）
@@ -294,25 +287,6 @@ class TerminalView: NSView {
         // バッファを確保
         let totalCells = Int(gridCols) * Int(gridRows)
         cellBuffer = [VPCellData](repeating: VPCellData(), count: totalCells)
-    }
-
-    /// クローム（ヘッダー/フッター）を設定
-    ///
-    /// PTY には `height - headerRows - footerRows` 行が通知される。
-    /// ヘッダー/フッターのテキストは `updateChromeText()` で設定。
-    func setupChrome(headerRows: UInt16, footerRows: UInt16) {
-        guard bridgeInitialized else { return }
-        vp_bridge_set_chrome(sessionId, headerRows, footerRows)
-        chromeHeaderRows = headerRows
-        chromeFooterRows = footerRows
-    }
-
-    /// クローム行にテキストを書き込む
-    func updateChromeText(row: UInt16, text: String, fg: UInt32 = 0, bg: UInt32 = 0) {
-        guard bridgeInitialized else { return }
-        text.withCString { ptr in
-            vp_bridge_write_chrome_line(sessionId, row, ptr, fg, bg)
-        }
     }
 
     // MARK: - フォント
@@ -829,8 +803,7 @@ class TerminalView: NSView {
         ptyRestartCount = 0
         lastPtyExit = nil
 
-        // PTY に渡す行数はクローム分を引く
-        let ptyRows = max(1, gridRows - chromeHeaderRows - chromeFooterRows)
+        let ptyRows = gridRows
 
         let result: Int32
         if let cmd = command {
@@ -856,12 +829,6 @@ class TerminalView: NSView {
         }
 
         if result == 0 {
-            // フッターを描画（グリッド最終行）
-            if chromeFooterRows > 0, let footerText = deferredFooterText {
-                let footerRow = gridRows - chromeFooterRows
-                updateChromeText(row: footerRow, text: footerText, fg: 0x999999FF, bg: 0x333333FF)
-                deferredFooterText = nil
-            }
             needsDisplay = true
         }
     }

@@ -107,9 +107,6 @@ struct MainWindowView: View {
         } detail: {
             // ターミナル（SwiftUI ヘッダー + VP Pane コンテナ）
             VStack(spacing: 0) {
-                    // ヘッダー: プロジェクト情報 + Stand ステータス
-                    terminalHeader
-
                     // ビューポート: VP Pane コンテナ（NSView レイヤの分割管理）
                     // プロジェクト + worker それぞれ独立した VP Pane ツリーを持つ
                     ZStack {
@@ -273,17 +270,6 @@ struct MainWindowView: View {
         })
     }
 
-    /// 選択中の worker（worker が選択されている場合のみ non-nil）
-    private var selectedWorker: CcwsWorkerInfo? {
-        guard let path = selectedProjectPath else { return nil }
-        for project in projects {
-            if let worker = project.workers.first(where: { $0.id == path }) {
-                return worker
-            }
-        }
-        return nil
-    }
-
     /// projects からターミナルパス一覧を計算（差分チェック用）
     private static func buildTerminalPaths(from projects: [SidebarProject]) -> [String] {
         var paths: [String] = []
@@ -295,74 +281,6 @@ struct MainWindowView: View {
         }
         return paths
     }
-
-    /// ターミナル上部のヘッダー（プロジェクト情報 + Stand + パス）
-    @ViewBuilder
-    private var terminalHeader: some View {
-        if let project = selectedProject {
-            HStack(spacing: 8) {
-                if let worker = selectedWorker {
-                    // worker 選択時
-                    Image(systemName: "arrow.branch")
-                        .font(.caption2)
-                        .foregroundStyle(.cyan)
-                    Text(worker.suffix)
-                        .fontWeight(.semibold)
-                    if let branch = worker.branch {
-                        Text(branch)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    Text("›")
-                        .foregroundStyle(.tertiary)
-                    Text(project.name)
-                        .foregroundStyle(.secondary)
-                } else {
-                    // プロジェクト選択時
-                    Image(systemName: "mountain.2.fill")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    Text(project.name)
-                        .fontWeight(.semibold)
-                }
-
-                if project.isRunning {
-                    let visibleStands = project.stands.filter { $0.status != "disabled" }
-                    HStack(spacing: 6) {
-                        ForEach(visibleStands, id: \.key) { stand in
-                            Image(systemName: stand.systemImage)
-                                .foregroundStyle(stand.statusColor)
-                        }
-                    }
-                } else {
-                    Text("stopped")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-
-                Spacer()
-
-                Text(project.path.replacingOccurrences(
-                    of: NSHomeDirectory() + "/repos/",
-                    with: ""
-                ))
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-
-                if let startedAt = project.startedAt {
-                    Text(startedAt, style: .time)
-                        .foregroundStyle(.tertiary)
-                }
-            }
-            .font(.caption)
-            .foregroundStyle(.white)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 5)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color(white: 0.15))
-        }
-    }
-
 
     // MARK: - Pane Split Navigator
 
