@@ -116,6 +116,71 @@ struct VPPaneLayout: Equatable {
     }
 }
 
+// MARK: - 退避ペイン (VP-49)
+
+/// 退避（アイコン化）されたペインの情報
+struct MinimizedPane: Identifiable, Equatable {
+    let id: UUID
+    /// 退避前のリーフ情報（復帰時に使う）
+    let leaf: VPPaneLeaf
+    /// 退避前の分割位置を記録（隣接リーフ ID + 方向）
+    let adjacentToId: UUID?
+    let horizontal: Bool
+    /// Stand 情報（表示用キャッシュ）
+    let standInfo: PaneStandInfo
+
+    static func == (lhs: MinimizedPane, rhs: MinimizedPane) -> Bool {
+        lhs.id == rhs.id && lhs.leaf == rhs.leaf
+    }
+}
+
+/// Pane Dock — 退避ペインのアイコンバー (VP-49)
+///
+/// Canvas 下部に Fixed 配置。退避ペインをアイコンとして表示し、
+/// クリックで元の分割位置に復帰する。
+struct PaneDock: View {
+    let minimizedPanes: [MinimizedPane]
+    let onRestore: (MinimizedPane) -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            ForEach(minimizedPanes) { pane in
+                Button {
+                    withAnimation(.spring(duration: 0.3)) {
+                        onRestore(pane)
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: pane.standInfo.icon)
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(pane.standInfo.color)
+                        Text(pane.standInfo.label)
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(Color.white.opacity(0.06))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(pane.standInfo.color.opacity(0.3), lineWidth: 0.5)
+                    )
+                }
+                .buttonStyle(.plain)
+                .help("\(pane.standInfo.label) を復帰")
+                .transition(.scale.combined(with: .opacity))
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(Color.black.opacity(0.3))
+    }
+}
+
 // MARK: - tmux コマンド生成
 
 /// VP Pane 用の tmux コマンドを生成

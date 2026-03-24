@@ -72,6 +72,8 @@ struct MainWindowView: View {
     @State private var paneLayouts: [String: VPPaneLayout] = [:]
     /// VP Pane レイアウト変更カウンター（SwiftUI 再描画を確実にトリガーするため）
     @State private var paneLayoutVersion: Int = 0
+    /// 退避中のペイン: プロジェクトパス → 退避ペインリスト (VP-49)
+    @State private var minimizedPanes: [String: [MinimizedPane]] = [:]
 
     /// 外部から指定されたプロジェクトパス（起動引数・URL スキーム経由）
     var initialProjectPath: String?
@@ -153,6 +155,16 @@ struct MainWindowView: View {
                             .transition(.move(edge: .bottom).combined(with: .opacity))
                             .animation(.easeInOut(duration: 0.15), value: splitNavigator)
                         }
+                    }
+
+                    // Pane Dock — 退避ペインのアイコンバー (VP-49)
+                    if let path = selectedProjectPath,
+                       let docked = minimizedPanes[path],
+                       !docked.isEmpty {
+                        PaneDock(minimizedPanes: docked) { pane in
+                            restorePane(path: path, pane: pane)
+                        }
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
                     }
 
             }
@@ -548,10 +560,74 @@ struct MainWindowView: View {
         logger.info("VP Pane closed: \(layout.root.leafCount) panes remaining, v=\(paneLayoutVersion)")
     }
 
-    /// ペインを退避（VP-49: Dock に格納、現在は stub）
+    /// ペインを退避して Dock に格納 (VP-49)
     private func minimizePane(path: String, paneId: UUID) {
-        // TODO: VP-49 で Dock エリアに退避する実装を追加
-        logger.info("VP Pane minimize: paneId=\(paneId) (stub — VP-49)")
+        guard var layout = paneLayouts[path],
+              layout.root.leafCount > 1,
+              let leaf = layout.root.findLeaf(id: paneId) else {
+            logger.info("VP Pane minimize: 最後の1つは退避できない")
+            return
+        }
+
+        // 隣接リーフ ID を取得（復帰時の挿入位置）
+        let leafIds = layout.root.leafIds
+        let adjacentId: UUID? = {
+            guard let idx = leafIds.firstIndex(of: paneId) else { return nil }
+            if idx > 0 { return leafIds[idx - 1] }
+            if idx < leafIds.count - 1 { return leafIds[idx + 1] }
+            return nil
+        }()
+
+        // MinimizedPane を作成
+        let minimized = MinimizedPane(
+            id: paneId,
+            leaf: leaf,
+            adjacentToId: adjacentId,
+            horizontal: true,
+            standInfo: PaneStandInfo.from(leaf: leaf)
+        )
+
+        // ツリーから削除（tmux はクリーンアップしない — 復帰時に再利用）
+        withAnimation(.spring(duration: 0.3)) {
+            if let newRoot = layout.root.removing(targetId: paneId) {
+                layout.root = newRoot
+                if layout.focusedPaneId == paneId {
+                    layout.focusedPaneId = newRoot.leafIds.first ?? layout.focusedPaneId
+                }
+                paneLayouts[path] = layout
+                paneLayoutVersion += 1
+            }
+
+            // Dock に追加
+            var docked = minimizedPanes[path] ?? []
+            docked.append(minimized)
+            minimizedPanes[path] = docked
+        }
+
+        logger.info("VP Pane minimized: \(leaf.contentType) → Dock (\(minimizedPanes[path]?.count ?? 0) items)")
+    }
+
+    /// Dock から復帰（元の分割位置に挿入）(VP-49)
+    private func restorePane(path: String, pane: MinimizedPane) {
+        guard var layout = paneLayouts[path] else { return }
+
+        // Dock から削除
+        withAnimation(.spring(duration: 0.3)) {
+            minimizedPanes[path]?.removeAll { $0.id == pane.id }
+
+            // ツリーに再挿入（adjacentToId の隣に分割）
+            let targetId = pane.adjacentToId ?? layout.focusedPaneId
+            layout.root = layout.root.inserting(
+                newLeaf: pane.leaf,
+                adjacentTo: targetId,
+                horizontal: pane.horizontal
+            )
+            layout.focusedPaneId = pane.leaf.id
+            paneLayouts[path] = layout
+            paneLayoutVersion += 1
+        }
+
+        logger.info("VP Pane restored: \(pane.standInfo.label) from Dock")
     }
 
     // MARK: - VP Pane ヘルパー
