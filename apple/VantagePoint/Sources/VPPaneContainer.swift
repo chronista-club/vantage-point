@@ -242,7 +242,7 @@ struct VPPaneContainer: View {
     let port: UInt16?
     /// レイアウト変更カウンター（SwiftUI の差分検出を確実にトリガーするため）
     let layoutVersion: Int
-    /// ペイン退避コールバック（VP-48: Dock に格納）
+    /// ペイン退避コールバック（VP-49: Dock に格納）
     var onMinimizePane: ((UUID) -> Void)?
     /// ペイン削除コールバック
     var onClosePane: ((UUID) -> Void)?
@@ -432,6 +432,17 @@ struct PaneHeaderView<Content: View>: View {
 
     /// ヘッダー操作ボタン（ミニマルスタイル）
     private func headerButton(icon: String, action: @escaping () -> Void) -> some View {
+        HoverButton(icon: icon, action: action)
+    }
+}
+
+/// ホバー時に不透明度が上がるヘッダーボタン
+private struct HoverButton: View {
+    let icon: String
+    let action: () -> Void
+    @State private var isHovering = false
+
+    var body: some View {
         Button(action: action) {
             Image(systemName: icon)
                 .font(.system(size: 9, weight: .medium))
@@ -440,9 +451,11 @@ struct PaneHeaderView<Content: View>: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .opacity(0.6)
+        .opacity(isHovering ? 1.0 : 0.6)
         .onHover { hovering in
-            // ホバーで不透明度を上げる（SwiftUI animation で対応）
+            withAnimation(.easeInOut(duration: 0.1)) {
+                isHovering = hovering
+            }
         }
     }
 }

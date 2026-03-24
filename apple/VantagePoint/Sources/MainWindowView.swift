@@ -588,15 +588,16 @@ struct MainWindowView: View {
         )
 
         // ツリーから削除（tmux はクリーンアップしない — 復帰時に再利用）
+        // removing が成功した場合のみ Dock に追加する（アトミックに更新）
+        guard let newRoot = layout.root.removing(targetId: paneId) else { return }
+
         withAnimation(.spring(duration: 0.3)) {
-            if let newRoot = layout.root.removing(targetId: paneId) {
-                layout.root = newRoot
-                if layout.focusedPaneId == paneId {
-                    layout.focusedPaneId = newRoot.leafIds.first ?? layout.focusedPaneId
-                }
-                paneLayouts[path] = layout
-                paneLayoutVersion += 1
+            layout.root = newRoot
+            if layout.focusedPaneId == paneId {
+                layout.focusedPaneId = newRoot.leafIds.first ?? layout.focusedPaneId
             }
+            paneLayouts[path] = layout
+            paneLayoutVersion += 1
 
             // Dock に追加
             var docked = minimizedPanes[path] ?? []
