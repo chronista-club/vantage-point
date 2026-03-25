@@ -48,18 +48,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.regular)
         // OS のウィンドウタブバーを無効化（カスタム Project Tab バーに置換済み）
         NSWindow.allowsAutomaticWindowTabbing = false
-        // 既存 + 新規ウィンドウのタブバーを非表示にする
-        NotificationCenter.default.addObserver(
-            forName: NSWindow.didBecomeKeyNotification,
-            object: nil, queue: .main
-        ) { notification in
-            guard let window = notification.object as? NSWindow else { return }
-            window.tabbingMode = .disallowed
-            // タブバーが表示されていたら明示的に非表示にする
-            if let tabGroup = window.tabGroup, tabGroup.isTabBarVisible {
-                window.toggleTabBar(nil)
-            }
-        }
+        disableNativeTabBar()
 
         setupMainMenu()
         setupStatusItem()
@@ -175,6 +164,31 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.sendAction(#selector(NSResponder.newWindowForTab(_:)), to: nil, from: nil)
         }
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// OS ネイティブタブバーを無効化（カスタム Project Tab バーに置換）
+    private func disableNativeTabBar() {
+        // 新規ウィンドウのタブバーを無効化
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeKeyNotification,
+            object: nil, queue: .main
+        ) { notification in
+            guard let window = notification.object as? NSWindow else { return }
+            Self.configureWindowTabbing(window)
+        }
+        // 初回ウィンドウは SwiftUI が先に作るため遅延で捕まえる
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            for window in NSApp.windows where window.canBecomeMain {
+                Self.configureWindowTabbing(window)
+            }
+        }
+    }
+
+    private static func configureWindowTabbing(_ window: NSWindow) {
+        window.tabbingMode = .disallowed
+        if let tabGroup = window.tabGroup, tabGroup.isTabBarVisible {
+            window.toggleTabBar(nil)
+        }
     }
 
     func applicationWillTerminate(_: Notification) {
