@@ -189,8 +189,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let tabGroup = window.tabGroup, tabGroup.isTabBarVisible {
             window.toggleTabBar(nil)
         }
-        // タイトルバーのタイトル文字は非表示（Project Tab バーで代替）
-        window.titleVisibility = .hidden
+        // タイトルバーにアプリ名を固定表示
+        window.title = "Vantage Point"
     }
 
     func applicationWillTerminate(_: Notification) {
