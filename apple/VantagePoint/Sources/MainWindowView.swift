@@ -731,26 +731,28 @@ struct MainWindowView: View {
 
     /// 前のプロジェクトを選択（⌘↑）
     private func selectPreviousProject() {
-        guard !projects.isEmpty else { return }
+        let enabled = projects.filter { $0.enabled }
+        guard !enabled.isEmpty else { return }
         guard let current = selectedProjectPath,
-              let index = projects.firstIndex(where: { $0.path == current }),
+              let index = enabled.firstIndex(where: { $0.path == current }),
               index > 0 else {
-            selectedProjectPath = projects.last?.path
+            selectedProjectPath = enabled.last?.path
             return
         }
-        selectedProjectPath = projects[index - 1].path
+        selectedProjectPath = enabled[index - 1].path
     }
 
-    /// 次のプロジェクトを選択（⌘↓）
+    /// 次のプロジェクトを選択（⌘↓）— enabled プロジェクトのみ
     private func selectNextProject() {
-        guard !projects.isEmpty else { return }
+        let enabled = projects.filter { $0.enabled }
+        guard !enabled.isEmpty else { return }
         guard let current = selectedProjectPath,
-              let index = projects.firstIndex(where: { $0.path == current }),
-              index < projects.count - 1 else {
-            selectedProjectPath = projects.first?.path
+              let index = enabled.firstIndex(where: { $0.path == current }),
+              index < enabled.count - 1 else {
+            selectedProjectPath = enabled.first?.path
             return
         }
-        selectedProjectPath = projects[index + 1].path
+        selectedProjectPath = enabled[index + 1].path
     }
 
     /// Cmd+1〜9 で Lane（プロジェクト + worker）を番号で切り替え
