@@ -244,13 +244,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         nextItem.keyEquivalentModifierMask = .command
         navigateMenu.addItem(nextItem)
         navigateMenu.addItem(.separator())
-        // Cmd+1〜9 で Lane 切り替え
+        // ⌘1〜9 で Project 切り替え（enabled のみ）
+        for i in 1...9 {
+            let item = NSMenuItem(
+                title: "Project \(i)",
+                action: #selector(selectProjectByNumber(_:)),
+                keyEquivalent: "\(i)"
+            )
+            item.tag = i
+            navigateMenu.addItem(item)
+        }
+        navigateMenu.addItem(.separator())
+        // ⌃1〜9 で Lane 切り替え（フォーカス中プロジェクト内）
         for i in 1...9 {
             let item = NSMenuItem(
                 title: "Lane \(i)",
                 action: #selector(selectLaneByNumber(_:)),
                 keyEquivalent: "\(i)"
             )
+            item.keyEquivalentModifierMask = .control
             item.tag = i
             navigateMenu.addItem(item)
         }
@@ -368,6 +380,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func closeTerminalPane(_ sender: Any?) {
         NotificationCenter.default.post(name: .closeTerminalPane, object: nil)
+    }
+
+    @objc private func selectProjectByNumber(_ sender: NSMenuItem) {
+        NotificationCenter.default.post(
+            name: .selectProjectByNumber,
+            object: nil,
+            userInfo: ["number": sender.tag]
+        )
     }
 
     @objc private func selectLaneByNumber(_ sender: NSMenuItem) {

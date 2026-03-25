@@ -88,6 +88,18 @@ struct MainWindowView: View {
         selectedProject?.port
     }
 
+    /// フォーカス中プロジェクトの Lane 一覧（lead + workers）
+    private var currentLanes: [Lane] {
+        guard let project = selectedProject else { return [] }
+        var lanes: [Lane] = [
+            Lane(path: project.path, label: "Lead-HD", isLead: true)
+        ]
+        for worker in project.workers {
+            lanes.append(Lane(path: worker.path, label: worker.suffix, isLead: false))
+        }
+        return lanes
+    }
+
     var body: some View {
         NavigationSplitView {
             SidebarView(
@@ -107,9 +119,18 @@ struct MainWindowView: View {
         } detail: {
             // ターミナル（SwiftUI ヘッダー + VP Pane コンテナ）
             VStack(spacing: 0) {
-                    // ビューポート: VP Pane コンテナ（NSView レイヤの分割管理）
-                    // プロジェクト + worker それぞれ独立した VP Pane ツリーを持つ
-                    ZStack {
+                // Lane Tab バー — フォーカス中プロジェクトの Lane 切替 (VP-51)
+                if currentLanes.count > 1 {
+                    LaneTabBar(
+                        lanes: currentLanes,
+                        selectedPath: selectedProjectPath,
+                        onSelect: { path in selectedProjectPath = path }
+                    )
+                }
+
+                // ビューポート: VP Pane コンテナ（NSView レイヤの分割管理）
+                // プロジェクト + worker それぞれ独立した VP Pane ツリーを持つ
+                ZStack {
                         ForEach(terminalPaths, id: \.self) { path in
                             let isActive = selectedProjectPath == path
                             let gen = terminalGeneration[path] ?? 0
@@ -217,6 +238,11 @@ struct MainWindowView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .splitNavigatorKey)) { notification in
             handleSplitNavigatorKey(notification)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .selectProjectByNumber)) { notification in
+            if let number = notification.userInfo?["number"] as? Int {
+                selectProjectByNumber(number)
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: .selectLaneByNumber)) { notification in
             if let number = notification.userInfo?["number"] as? Int {
@@ -729,14 +755,19 @@ struct MainWindowView: View {
 
     // MARK: - プロジェクト選択ナビゲーション
 
-    /// 前のプロジェクトを選択（⌘↑）
+    /// 前のプロジェクトを選択（⌘↑）— enabled プロジェクトのみ
     private func selectPreviousProject() {
         let enabled = projects.filter { $0.enabled }
         guard !enabled.isEmpty else { return }
-        guard let current = selectedProjectPath,
-              let index = enabled.firstIndex(where: { $0.path == current }),
-              index > 0 else {
+        guard let current = selectedProjectPath else {
             selectedProjectPath = enabled.last?.path
+            return
+        }
+        guard let index = enabled.firstIndex(where: { $0.path == current }) else {
+            return // disabled 選択中は何もしない
+        }
+        guard index > 0 else {
+            selectedProjectPath = enabled.last?.path // 先頭でラップアラウンド
             return
         }
         selectedProjectPath = enabled[index - 1].path
@@ -746,23 +777,34 @@ struct MainWindowView: View {
     private func selectNextProject() {
         let enabled = projects.filter { $0.enabled }
         guard !enabled.isEmpty else { return }
-        guard let current = selectedProjectPath,
-              let index = enabled.firstIndex(where: { $0.path == current }),
-              index < enabled.count - 1 else {
+        guard let current = selectedProjectPath else {
             selectedProjectPath = enabled.first?.path
+            return
+        }
+        guard let index = enabled.firstIndex(where: { $0.path == current }) else {
+            return // disabled 選択中は何もしない
+        }
+        guard index < enabled.count - 1 else {
+            selectedProjectPath = enabled.first?.path // 末尾でラップアラウンド
             return
         }
         selectedProjectPath = enabled[index + 1].path
     }
 
-    /// Cmd+1〜9 で Lane（プロジェクト + worker）を番号で切り替え
-    ///
-    /// terminalPaths の順序で番号を割り当て（1-indexed）。
-    /// プロジェクトと worker を含むフラットなリスト。
-    private func selectLaneByNumber(_ number: Int) {
+    /// ⌘1〜9 で enabled プロジェクトを番号で切り替え
+    private func selectProjectByNumber(_ number: Int) {
+        let enabled = projects.filter { $0.enabled }
         let index = number - 1
-        guard index >= 0 && index < terminalPaths.count else { return }
-        selectedProjectPath = terminalPaths[index]
+        guard index >= 0 && index < enabled.count else { return }
+        selectedProjectPath = enabled[index].path
+    }
+
+    /// ⌃1〜9 でフォーカス中プロジェクト内の Lane を番号で切り替え
+    private func selectLaneByNumber(_ number: Int) {
+        let lanes = currentLanes
+        let index = number - 1
+        guard index >= 0 && index < lanes.count else { return }
+        selectedProjectPath = lanes[index].path
     }
 
     // MARK: - プロジェクト CRUD（TheWorld API 経由）
@@ -1058,6 +1100,60 @@ struct MainWindowView: View {
     }
 }
 
+// MARK: - Lane モデル
+
+/// プロジェクト内の Lane（lead または worker）
+struct Lane: Identifiable {
+    let path: String
+    let label: String
+    let isLead: Bool
+
+    var id: String { path }
+}
+
+/// Lane Tab バー — フォーカス中プロジェクトの Lane 切替 (VP-51)
+struct LaneTabBar: View {
+    let lanes: [Lane]
+    let selectedPath: String?
+    let onSelect: (String) -> Void
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(Array(lanes.enumerated()), id: \.element.id) { index, lane in
+                let isSelected = lane.path == selectedPath
+                Button {
+                    onSelect(lane.path)
+                } label: {
+                    HStack(spacing: 4) {
+                        // ⌃番号のショートカットヒント
+                        Text("⌃\(index + 1)")
+                            .font(.system(size: 9, weight: .medium, design: .monospaced))
+                            .foregroundStyle(.tertiary)
+
+                        Image(systemName: lane.isLead ? "book" : "arrow.branch")
+                            .font(.system(size: 10))
+                            .foregroundStyle(lane.isLead ? .green : .cyan)
+
+                        Text(lane.label)
+                            .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
+                            .lineLimit(1)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(isSelected ? Color.white.opacity(0.08) : Color.clear)
+                    .cornerRadius(4)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(isSelected ? .primary : .secondary)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 2)
+        .background(Color(white: 0.12))
+    }
+}
+
 // MARK: - Notification Names
 
 extension Notification.Name {
@@ -1065,6 +1161,7 @@ extension Notification.Name {
     static let selectNextProject = Notification.Name("VP.selectNextProject")
     static let splitTerminalPane = Notification.Name("VP.splitTerminalPane")
     static let closeTerminalPane = Notification.Name("VP.closeTerminalPane")
+    static let selectProjectByNumber = Notification.Name("VP.selectProjectByNumber")
     static let selectLaneByNumber = Notification.Name("VP.selectLaneByNumber")
     static let splitNavigatorKey = Notification.Name("VP.splitNavigatorKey")
     static let vpPaneFocused = Notification.Name("VP.vpPaneFocused")
