@@ -124,20 +124,6 @@ struct MainWindowView: View {
         } detail: {
             // ターミナル（SwiftUI ヘッダー + VP Pane コンテナ）
             VStack(spacing: 0) {
-                // Project Tab バー — enabled プロジェクト切替
-                if enabledProjects.count > 1 {
-                    ProjectTabBar(
-                        projects: enabledProjects,
-                        selectedPath: selectedProject?.path,
-                        onSelect: { path in
-                            // 別プロジェクト or worker 選択中 → Lead に切替
-                            if selectedProjectPath != path {
-                                selectedProjectPath = path
-                            }
-                        }
-                    )
-                }
-
                 // Lane Tab バー — フォーカス中プロジェクトの Lane 切替 (VP-51)
                 if currentLanes.count > 1 {
                     LaneTabBar(
@@ -205,7 +191,22 @@ struct MainWindowView: View {
                     }
 
             }
-            .navigationTitle(selectedProject?.name ?? "Vantage Point")
+            .navigationTitle("Vantage Point")
+            .toolbar {
+                ToolbarItem(placement: .principal) {
+                    if enabledProjects.count > 1 {
+                        ProjectTabBar(
+                            projects: enabledProjects,
+                            selectedPath: selectedProject?.path,
+                            onSelect: { path in
+                                if selectedProjectPath != path {
+                                    selectedProjectPath = path
+                                }
+                            }
+                        )
+                    }
+                }
+            }
         }
         .onAppear {
             loadProjects()
