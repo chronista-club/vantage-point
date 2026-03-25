@@ -46,6 +46,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_: Notification) {
         // Dock アイコン + メニューバーを有効化（Liquid Glass ウィンドウアプリ）
         NSApp.setActivationPolicy(.regular)
+        // OS のウィンドウタブバーを無効化（カスタム Project Tab バーに置換済み）
+        NSWindow.allowsAutomaticWindowTabbing = false
 
         setupMainMenu()
         setupStatusItem()
