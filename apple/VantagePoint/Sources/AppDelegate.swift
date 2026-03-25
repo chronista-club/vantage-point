@@ -48,6 +48,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.regular)
         // OS のウィンドウタブバーを無効化（カスタム Project Tab バーに置換済み）
         NSWindow.allowsAutomaticWindowTabbing = false
+        // 既存 + 新規ウィンドウのタブバーを非表示にする
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeMainNotification,
+            object: nil, queue: .main
+        ) { notification in
+            guard let window = notification.object as? NSWindow else { return }
+            window.tabbingMode = .disallowed
+        }
 
         setupMainMenu()
         setupStatusItem()
