@@ -205,7 +205,7 @@ struct MainWindowView: View {
                     }
 
             }
-            .toolbar(.hidden, for: .windowToolbar)
+            .navigationTitle(selectedProject?.name ?? "Vantage Point")
         }
         .onAppear {
             loadProjects()
