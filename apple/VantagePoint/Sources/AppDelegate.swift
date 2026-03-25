@@ -50,11 +50,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSWindow.allowsAutomaticWindowTabbing = false
         // 既存 + 新規ウィンドウのタブバーを非表示にする
         NotificationCenter.default.addObserver(
-            forName: NSWindow.didBecomeMainNotification,
+            forName: NSWindow.didBecomeKeyNotification,
             object: nil, queue: .main
         ) { notification in
             guard let window = notification.object as? NSWindow else { return }
             window.tabbingMode = .disallowed
+            // タブバーが表示されていたら明示的に非表示にする
+            if let tabGroup = window.tabGroup, tabGroup.isTabBarVisible {
+                window.toggleTabBar(nil)
+            }
         }
 
         setupMainMenu()
