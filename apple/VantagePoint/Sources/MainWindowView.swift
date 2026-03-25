@@ -206,8 +206,6 @@ struct MainWindowView: View {
 
             }
             .toolbar(.hidden, for: .windowToolbar)
-            .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
-            .ignoresSafeArea(.container, edges: .top)
         }
         .onAppear {
             loadProjects()

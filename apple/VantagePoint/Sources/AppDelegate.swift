@@ -189,9 +189,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let tabGroup = window.tabGroup, tabGroup.isTabBarVisible {
             window.toggleTabBar(nil)
         }
-        // タイトルバーを透明化し、コンテンツをタイトルバー領域まで拡張
-        window.titlebarAppearsTransparent = true
-        window.styleMask.insert(.fullSizeContentView)
+        // タイトルバーのタイトル文字は非表示（Project Tab バーで代替）
         window.titleVisibility = .hidden
     }
 
