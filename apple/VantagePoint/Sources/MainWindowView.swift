@@ -88,6 +88,11 @@ struct MainWindowView: View {
         selectedProject?.port
     }
 
+    /// enabled プロジェクト一覧
+    private var enabledProjects: [SidebarProject] {
+        projects.filter { $0.enabled }
+    }
+
     /// フォーカス中プロジェクトの Lane 一覧（lead + workers）
     private var currentLanes: [Lane] {
         guard let project = selectedProject else { return [] }
@@ -119,6 +124,20 @@ struct MainWindowView: View {
         } detail: {
             // ターミナル（SwiftUI ヘッダー + VP Pane コンテナ）
             VStack(spacing: 0) {
+                // Project Tab バー — enabled プロジェクト切替
+                if enabledProjects.count > 1 {
+                    ProjectTabBar(
+                        projects: enabledProjects,
+                        selectedPath: selectedProject?.path,
+                        onSelect: { path in
+                            // 別プロジェクト or worker 選択中 → Lead に切替
+                            if selectedProjectPath != path {
+                                selectedProjectPath = path
+                            }
+                        }
+                    )
+                }
+
                 // Lane Tab バー — フォーカス中プロジェクトの Lane 切替 (VP-51)
                 if currentLanes.count > 1 {
                     LaneTabBar(
@@ -757,7 +776,7 @@ struct MainWindowView: View {
 
     /// 前のプロジェクトを選択（⌘↑）— enabled プロジェクトのみ
     private func selectPreviousProject() {
-        let enabled = projects.filter { $0.enabled }
+        let enabled = enabledProjects
         guard !enabled.isEmpty else { return }
         guard let current = selectedProjectPath else {
             selectedProjectPath = enabled.last?.path
@@ -775,7 +794,7 @@ struct MainWindowView: View {
 
     /// 次のプロジェクトを選択（⌘↓）— enabled プロジェクトのみ
     private func selectNextProject() {
-        let enabled = projects.filter { $0.enabled }
+        let enabled = enabledProjects
         guard !enabled.isEmpty else { return }
         guard let current = selectedProjectPath else {
             selectedProjectPath = enabled.first?.path
@@ -793,7 +812,7 @@ struct MainWindowView: View {
 
     /// ⌘1〜9 で enabled プロジェクトを番号で切り替え
     private func selectProjectByNumber(_ number: Int) {
-        let enabled = projects.filter { $0.enabled }
+        let enabled = enabledProjects
         let index = number - 1
         guard index >= 0 && index < enabled.count else { return }
         selectedProjectPath = enabled[index].path
@@ -1097,6 +1116,54 @@ struct MainWindowView: View {
                 hasNotification: notifications.contains(project.path)
             )
         }
+    }
+}
+
+// MARK: - Project Tab バー
+
+/// Project Tab バー — enabled プロジェクト切替
+struct ProjectTabBar: View {
+    let projects: [SidebarProject]
+    let selectedPath: String?
+    let onSelect: (String) -> Void
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(Array(projects.enumerated()), id: \.element.id) { index, project in
+                let isSelected = project.path == selectedPath
+                Button {
+                    onSelect(project.path)
+                } label: {
+                    HStack(spacing: 4) {
+                        // ⌘1〜9 のみヒント表示（キーバインドは9まで）
+                        if index < 9 {
+                            Text("⌘\(index + 1)")
+                                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                                .foregroundStyle(.tertiary)
+                        }
+
+                        // 稼働状態のドット
+                        Circle()
+                            .fill(project.isRunning ? .green : .gray)
+                            .frame(width: 6, height: 6)
+
+                        Text(project.name)
+                            .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
+                            .lineLimit(1)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(isSelected ? Color.white.opacity(0.1) : Color.clear)
+                    .cornerRadius(4)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(isSelected ? .primary : .secondary)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 2)
+        .background(Color(white: 0.1))
     }
 }
 
