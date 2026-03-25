@@ -191,7 +191,6 @@ struct MainWindowView: View {
                     }
 
             }
-            .navigationTitle("Vantage Point")
             .toolbar {
                 ToolbarItem(placement: .principal) {
                     if enabledProjects.count > 1 {
