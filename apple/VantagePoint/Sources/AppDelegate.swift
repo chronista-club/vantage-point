@@ -189,6 +189,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let tabGroup = window.tabGroup, tabGroup.isTabBarVisible {
             window.toggleTabBar(nil)
         }
+        // タイトルバーを透明化し、コンテンツをタイトルバー領域まで拡張
+        window.titlebarAppearsTransparent = true
+        window.styleMask.insert(.fullSizeContentView)
+        window.titleVisibility = .hidden
     }
 
     func applicationWillTerminate(_: Notification) {

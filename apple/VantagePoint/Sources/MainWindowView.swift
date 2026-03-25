@@ -1160,7 +1160,8 @@ struct ProjectTabBar: View {
             Spacer()
         }
         .padding(.horizontal, 8)
-        .padding(.vertical, 2)
+        .padding(.top, 6)
+        .padding(.bottom, 2)
         .background(Color(white: 0.1))
     }
 }
