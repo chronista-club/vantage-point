@@ -191,22 +191,20 @@ struct MainWindowView: View {
                     }
 
             }
-            .toolbar(.hidden, for: .windowToolbar)
             .toolbar {
                 ToolbarItem(placement: .principal) {
-                    if enabledProjects.count > 1 {
-                        ProjectTabBar(
-                            projects: enabledProjects,
-                            selectedPath: selectedProject?.path,
-                            onSelect: { path in
-                                if selectedProjectPath != path {
-                                    selectedProjectPath = path
-                                }
+                    ProjectTabBar(
+                        projects: enabledProjects,
+                        selectedPath: selectedProject?.path,
+                        onSelect: { path in
+                            if selectedProjectPath != path {
+                                selectedProjectPath = path
                             }
-                        )
-                    }
+                        }
+                    )
                 }
             }
+            .navigationTitle("")
         }
         .onAppear {
             loadProjects()
