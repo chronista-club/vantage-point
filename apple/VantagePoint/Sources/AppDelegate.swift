@@ -191,9 +191,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // タイトルバーにアプリ名を固定表示
         window.title = "Vantage Point"
-        window.subtitle = ""
-        // ツールバー領域（「Vantage Point」重複 + 「+」ボタン）を除去
-        window.toolbar = nil
     }
 
     func applicationWillTerminate(_: Notification) {

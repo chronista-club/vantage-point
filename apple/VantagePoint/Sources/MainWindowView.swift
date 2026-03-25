@@ -191,6 +191,7 @@ struct MainWindowView: View {
                     }
 
             }
+            .toolbar(.hidden, for: .windowToolbar)
             .toolbar {
                 ToolbarItem(placement: .principal) {
                     if enabledProjects.count > 1 {
