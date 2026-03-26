@@ -191,7 +191,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // タイトルバーを透明化 — コンテンツをタイトルバー領域まで拡張
         window.titlebarAppearsTransparent = true
-        window.titleVisibility = .hidden
+        window.titleVisibility = .visible
         window.styleMask.insert(.fullSizeContentView)
         window.title = "Vantage Point"
         // SwiftUI が生成するツールバーを除去（信号機は残る）
