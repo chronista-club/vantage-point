@@ -354,14 +354,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 message = info["message"] as? String ?? "完了"
             }
 
-            // object 形式（Rust notify.rs 経由: "project:message"）
+            // object 形式（Rust notify.rs 経由: "project:path:message"）
+            var path = ""
             if project.isEmpty, let object = notification.object as? String {
-                let parts = object.split(separator: ":", maxSplits: 1)
+                let parts = object.split(separator: ":", maxSplits: 2)
                 if let first = parts.first {
                     project = String(first)
                 }
                 if parts.count > 1 {
-                    message = String(parts.dropFirst().joined(separator: ":"))
+                    path = String(parts[1])
+                }
+                if parts.count > 2 {
+                    message = String(parts[2])
                 }
             }
 
@@ -372,7 +376,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             NotificationCenter.default.post(
                 name: notifName,
                 object: nil,
-                userInfo: ["project": project, "message": message]
+                userInfo: ["project": project, "message": message, "path": path]
             )
         }
     }

@@ -133,7 +133,8 @@ struct MainWindowView: View {
                     onRestartHD: restartHD,
                     onRestartSP: restartSP,
                     onRestartWorld: restartWorld,
-                    onToggleEnabled: toggleProjectEnabled
+                    onToggleEnabled: toggleProjectEnabled,
+                    notifications: notifications
                 )
                 .frame(width: sidebarWidth)
                 .background(VisualEffectBackground(material: .sidebar, blendingMode: .behindWindow))
@@ -287,11 +288,19 @@ struct MainWindowView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: AppDelegate.ccNotification)) { notification in
             if let project = notification.userInfo?["project"] as? String, !project.isEmpty {
-                // 現在選択中のプロジェクトでなければバッジを付ける
-                let matchingPath = projects.first(where: {
-                    $0.name == project || $0.path.hasSuffix("/\(project)")
-                })?.path
-                if let path = matchingPath, path != selectedProjectPath {
+                // path が指定されていればそのまま使用（Lane 単位通知）
+                let notifPath = notification.userInfo?["path"] as? String ?? ""
+                let lanePath: String?
+                if !notifPath.isEmpty {
+                    lanePath = notifPath
+                } else {
+                    // path 未指定: プロジェクト名からプロジェクトパスを解決
+                    lanePath = projects.first(where: {
+                        $0.name == project || $0.path.hasSuffix("/\(project)")
+                    })?.path
+                }
+                // 現在選択中の Lane でなければバッジを付ける
+                if let path = lanePath, path != selectedProjectPath {
                     notifications.insert(path)
                 }
             }

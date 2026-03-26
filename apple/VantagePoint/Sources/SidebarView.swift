@@ -30,6 +30,8 @@ struct SidebarView: View {
     var onRestartWorld: (() -> Void)?
     /// SP 有効/無効トグルコールバック（パス, 新しい enabled 値）
     var onToggleEnabled: ((String, Bool) -> Void)?
+    /// CC 通知バッジ: Lane パス → 未読フラグ
+    var notifications: Set<String> = []
 
     /// 有効なプロジェクト（稼働中 + 停止中だが enabled）
     private var enabledProjects: [SidebarProject] {
@@ -118,7 +120,8 @@ struct SidebarView: View {
             ),
             isLead: true,
             parentPPStatus: ppBadgeStatus(for: project),
-            ccwireSession: project.ccwireSession
+            ccwireSession: project.ccwireSession,
+            hasNotification: notifications.contains(project.path)
         )
         .tag(project.path)
         .padding(.leading, 16)
@@ -134,7 +137,8 @@ struct SidebarView: View {
                 worker: worker,
                 isLead: false,
                 parentPPStatus: ppBadgeStatus(for: project),
-                ccwireSession: worker.ccwireSession
+                ccwireSession: worker.ccwireSession,
+                hasNotification: notifications.contains(worker.path)
             )
             .tag(worker.id)
             .padding(.leading, 16)
@@ -232,22 +236,11 @@ struct SidebarProjectRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            // 1行目: プロジェクト名 + ブランチ + 通知バッジ
+            // 1行目: プロジェクト名（通知バッジは Lane 行に委譲）
             HStack(spacing: 6) {
                 Text(project.name)
                     .fontWeight(project.isRunning ? .semibold : .regular)
                     .lineLimit(1)
-                if let branch = project.branch {
-                    Text(branch)
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                }
-                if project.hasNotification {
-                    Circle()
-                        .fill(.orange)
-                        .frame(width: 7, height: 7)
-                }
             }
 
             // 2行目: SP ステータス + 起動時刻（HD/PP は Lane 行に委譲）
@@ -288,6 +281,8 @@ struct SidebarWorkerRow: View {
     var parentPPStatus: BadgeStatus = .inactive
     /// ccwire セッション情報
     var ccwireSession: CcwireSessionInfo?
+    /// CC 通知バッジ
+    var hasNotification: Bool = false
 
     /// 表示ラベル（Lead-HD / Worker-HD）
     private var roleLabel: String {
@@ -310,6 +305,11 @@ struct SidebarWorkerRow: View {
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                         .lineLimit(1)
+                }
+                if hasNotification {
+                    Circle()
+                        .fill(.orange)
+                        .frame(width: 7, height: 7)
                 }
             }
 

@@ -67,20 +67,21 @@ pub fn post_canvas_open(port: u16) {
 
 /// CC（Claude Code）の完了・承認要求などを Native App に通知
 ///
-/// サイドバーのプロジェクト名横にオレンジバッジを表示する。
+/// サイドバーの Lane 行にオレンジバッジを表示する。
 /// Mailbox の Notification メッセージから呼び出される想定（VP-24）。
 ///
 /// ## 引数
 /// - `project`: プロジェクト名（サイドバーのマッチングに使用）
 /// - `message`: 通知メッセージ（例: "完了", "承認待ち"）
+/// - `path`: ターミナルのパス（Lane 単位の通知に使用、省略時はプロジェクトのパス）
 #[cfg(target_os = "macos")]
-pub fn post_cc_notification(project: &str, message: &str) {
+pub fn post_cc_notification(project: &str, message: &str, path: &str) {
     use objc2_foundation::{NSDistributedNotificationCenter, NSString};
 
     let center = NSDistributedNotificationCenter::defaultCenter();
     let name = NSString::from_str(NOTIFICATION_CC);
-    // object に "project:message" 形式で情報を含める（既存パターンと統一）
-    let object = NSString::from_str(&format!("{}:{}", project, message));
+    // object に "project:path:message" 形式で情報を含める
+    let object = NSString::from_str(&format!("{}:{}:{}", project, path, message));
 
     unsafe {
         center.postNotificationName_object_userInfo_deliverImmediately(
@@ -92,15 +93,16 @@ pub fn post_cc_notification(project: &str, message: &str) {
     }
 
     tracing::debug!(
-        "Posted DistributedNotification: {} (project={}, message={})",
+        "Posted DistributedNotification: {} (project={}, path={}, message={})",
         NOTIFICATION_CC,
         project,
+        path,
         message
     );
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn post_cc_notification(_project: &str, _message: &str) {}
+pub fn post_cc_notification(_project: &str, _message: &str, _path: &str) {}
 
 #[cfg(not(target_os = "macos"))]
 pub fn post_canvas_open(_port: u16) {}
