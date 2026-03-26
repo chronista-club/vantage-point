@@ -74,11 +74,13 @@ struct SidebarView: View {
                     onReorder?(from, to)
                 }
 
-                // 無効化されたプロジェクト（停止中セクション）
+                // 無効化されたプロジェクト（プロジェクト名のみ、Lane 非展開）
                 if !disabledProjects.isEmpty {
                     Section("Disabled") {
                         ForEach(disabledProjects) { project in
-                            sidebarProjectItem(project: project)
+                            SidebarProjectRow(project: project)
+                                .tag(project.id)
+                                .contextMenu { projectContextMenu(project: project) }
                                 .opacity(0.5)
                         }
                     }
@@ -96,32 +98,50 @@ struct SidebarView: View {
         }
     }
 
-    /// プロジェクト行の共通レンダリング（ワーカーありなら DisclosureGroup）
+    /// プロジェクト行の共通レンダリング（常にツリー展開: project → lead, workers）
     @ViewBuilder
     private func sidebarProjectItem(project: SidebarProject) -> some View {
-        if project.workers.isEmpty {
-            SidebarProjectRow(project: project)
-                .tag(project.id)
-                .contextMenu { projectContextMenu(project: project) }
-        } else {
-            DisclosureGroup {
-                ForEach(project.workers) { worker in
-                    SidebarWorkerRow(
-                        worker: worker,
-                        parentPPStatus: ppBadgeStatus(for: project),
-                        ccwireSession: worker.ccwireSession
-                    )
-                        .tag(worker.id)
-                        .contextMenu {
-                            Button("HD をリスタート", systemImage: "arrow.clockwise") {
-                                onRestartHD?(worker.path)
-                            }
-                        }
+        SidebarProjectRow(project: project)
+            .tag(project.id)
+            .contextMenu { projectContextMenu(project: project) }
+
+        // Lead — プロジェクトのブランチを表示
+        SidebarWorkerRow(
+            worker: CcwsWorkerInfo(
+                id: project.path,
+                name: "Lead-HD",
+                suffix: "Lead-HD",
+                path: project.path,
+                branch: project.branch,
+                hasHD: project.hasHD,
+                ccwireSession: project.ccwireSession
+            ),
+            isLead: true,
+            parentPPStatus: ppBadgeStatus(for: project),
+            ccwireSession: project.ccwireSession
+        )
+        .tag(project.path)
+        .padding(.leading, 16)
+        .contextMenu {
+            Button("HD をリスタート", systemImage: "arrow.clockwise") {
+                onRestartHD?(project.path)
+            }
+        }
+
+        // Workers — 各ワーカーのブランチを表示
+        ForEach(project.workers) { worker in
+            SidebarWorkerRow(
+                worker: worker,
+                isLead: false,
+                parentPPStatus: ppBadgeStatus(for: project),
+                ccwireSession: worker.ccwireSession
+            )
+            .tag(worker.id)
+            .padding(.leading, 16)
+            .contextMenu {
+                Button("HD をリスタート", systemImage: "arrow.clockwise") {
+                    onRestartHD?(worker.path)
                 }
-            } label: {
-                SidebarProjectRow(project: project)
-                    .tag(project.id)
-                    .contextMenu { projectContextMenu(project: project) }
             }
         }
     }
@@ -230,26 +250,10 @@ struct SidebarProjectRow: View {
                 }
             }
 
-            // 2行目: SP / Lead-HD / PP ステータス（統一表記）
+            // 2行目: SP ステータス + 起動時刻（HD/PP は Lane 行に委譲）
             HStack(spacing: 6) {
                 StatusBadge(label: "SP", icon: "star", isActive: project.isRunning)
 
-                // Lead-HD + ccwire ツールチップ
-                StatusBadge(label: "Lead-HD", icon: "text.book.closed", isActive: project.hasHD)
-                    .help(ccwireTooltip(for: project))
-
-                // PP: connected=青（Canvas接続中）, idle=緑（show受信可能）, その他=灰
-                StatusBadge(label: "PP", icon: "compass.drawing",
-                            status: ppBadgeStatus(for: project))
-
-                // ccwire 未読メッセージ数
-                if let wire = project.ccwireSession, wire.pendingMessages > 0 {
-                    Text("📨 \(wire.pendingMessages)")
-                        .font(.caption2)
-                        .foregroundStyle(.orange)
-                }
-
-                // 起動時刻
                 if let startedAt = project.startedAt {
                     Text(startedAt, style: .time)
                         .font(.caption2)
@@ -275,18 +279,28 @@ struct SidebarProjectRow: View {
 
 // MARK: - ワーカー行
 
-/// ccws ワーカーの行表示
+/// Lane（Lead / Worker）の行表示
 struct SidebarWorkerRow: View {
     let worker: CcwsWorkerInfo
+    /// Lead か Worker か
+    var isLead: Bool = false
     /// 親プロジェクトの PP 状態を継承表示
     var parentPPStatus: BadgeStatus = .inactive
     /// ccwire セッション情報
     var ccwireSession: CcwireSessionInfo?
 
+    /// 表示ラベル（Lead-HD / Worker-HD）
+    private var roleLabel: String {
+        isLead ? "Lead-HD" : "Worker-HD"
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            // 1行目: ワーカー名 + ブランチ
+            // 1行目: Lane 名 + ブランチ
             HStack(spacing: 6) {
+                Image(systemName: isLead ? "text.book.closed" : "arrow.branch")
+                    .font(.system(size: 10))
+                    .foregroundStyle(isLead ? .green : .cyan)
                 Text(worker.suffix)
                     .font(.callout)
                     .fontWeight(worker.hasHD ? .semibold : .regular)
@@ -299,9 +313,9 @@ struct SidebarWorkerRow: View {
                 }
             }
 
-            // 2行目: Worker-HD + PP ステータス（親と統一フォーマット）
+            // 2行目: HD + PP ステータス
             HStack(spacing: 6) {
-                StatusBadge(label: "Worker-HD", icon: "text.book.closed", isActive: worker.hasHD)
+                StatusBadge(label: roleLabel, icon: "text.book.closed", isActive: worker.hasHD)
                     .help(workerCcwireTooltip)
                 StatusBadge(label: "PP", icon: "compass.drawing", status: parentPPStatus)
 
