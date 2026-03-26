@@ -76,6 +76,13 @@ struct MainWindowView: View {
     @State private var minimizedPanes: [String: [MinimizedPane]] = [:]
     /// サイドバー表示状態
     @State private var sidebarVisible: Bool = true
+    /// ProjectTabBar の手動表示設定（true = 常時表示）
+    @State private var projectTabBarForced: Bool = false
+
+    /// ProjectTabBar を表示するか（サイドバー非表示時は自動表示、手動トグルで常時表示）
+    private var showProjectTabBar: Bool {
+        projectTabBarForced || !sidebarVisible
+    }
 
     /// サイドバー幅（固定）
     private let sidebarWidth: CGFloat = 240
@@ -137,16 +144,18 @@ struct MainWindowView: View {
 
             // メインエリア（ターミナル + タブ）
             VStack(spacing: 0) {
-                // Project Tab バー — enabled プロジェクト切替
-                ProjectTabBar(
-                    projects: enabledProjects,
-                    selectedPath: selectedProject?.path,
-                    onSelect: { path in
-                        if selectedProjectPath != path {
-                            selectedProjectPath = path
+                // Project Tab バー — サイドバー非表示時 or 手動トグルで表示
+                if showProjectTabBar {
+                    ProjectTabBar(
+                        projects: enabledProjects,
+                        selectedPath: selectedProject?.path,
+                        onSelect: { path in
+                            if selectedProjectPath != path {
+                                selectedProjectPath = path
+                            }
                         }
-                    }
-                )
+                    )
+                }
 
                 // Lane Tab バー — フォーカス中プロジェクトの Lane 切替 (VP-51)
                 if currentLanes.count > 1 {
@@ -304,6 +313,11 @@ struct MainWindowView: View {
         .onReceive(NotificationCenter.default.publisher(for: .toggleSidebar)) { _ in
             withAnimation(.easeInOut(duration: 0.2)) {
                 sidebarVisible.toggle()
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .toggleProjectTabBar)) { _ in
+            withAnimation(.easeInOut(duration: 0.15)) {
+                projectTabBarForced.toggle()
             }
         }
         .onChange(of: terminalPaths) { _, newPaths in
@@ -1247,4 +1261,5 @@ extension Notification.Name {
     static let splitNavigatorKey = Notification.Name("VP.splitNavigatorKey")
     static let vpPaneFocused = Notification.Name("VP.vpPaneFocused")
     static let toggleSidebar = Notification.Name("VP.toggleSidebar")
+    static let toggleProjectTabBar = Notification.Name("VP.toggleProjectTabBar")
 }

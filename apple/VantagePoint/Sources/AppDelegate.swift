@@ -259,6 +259,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         )
         toggleSidebarItem.keyEquivalentModifierMask = [.command, .option]
         viewMenu.addItem(toggleSidebarItem)
+        let toggleTabBarItem = NSMenuItem(
+            title: "Toggle Project Tab Bar",
+            action: #selector(toggleProjectTabBar(_:)),
+            keyEquivalent: "t"
+        )
+        toggleTabBarItem.keyEquivalentModifierMask = [.command, .option]
+        viewMenu.addItem(toggleTabBarItem)
         let viewMenuItem = NSMenuItem()
         viewMenuItem.submenu = viewMenu
         mainMenu.addItem(viewMenuItem)
@@ -407,6 +414,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func toggleSidebar(_ sender: Any?) {
         NotificationCenter.default.post(name: .toggleSidebar, object: nil)
+    }
+
+    @objc private func toggleProjectTabBar(_ sender: Any?) {
+        NotificationCenter.default.post(name: .toggleProjectTabBar, object: nil)
     }
 
     @objc private func selectPreviousProject(_ sender: Any?) {
