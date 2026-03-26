@@ -189,8 +189,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let tabGroup = window.tabGroup, tabGroup.isTabBarVisible {
             window.toggleTabBar(nil)
         }
-        // タイトルバーにアプリ名を固定表示
+        // タイトルバーを透明化 — コンテンツをタイトルバー領域まで拡張
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        window.styleMask.insert(.fullSizeContentView)
         window.title = "Vantage Point"
+        // SwiftUI が生成するツールバーを除去（信号機は残る）
+        // SwiftUI のセットアップ後に実行するため遅延
+        window.toolbar = nil
+        DispatchQueue.main.async {
+            window.toolbar = nil
+        }
     }
 
     func applicationWillTerminate(_: Notification) {
@@ -245,7 +254,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let viewMenu = NSMenu(title: "View")
         let toggleSidebarItem = NSMenuItem(
             title: "Toggle Sidebar",
-            action: #selector(NSSplitViewController.toggleSidebar(_:)),
+            action: #selector(toggleSidebar(_:)),
             keyEquivalent: "s"
         )
         toggleSidebarItem.keyEquivalentModifierMask = [.command, .option]
@@ -394,6 +403,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openSettings(_ sender: Any?) {
         settingsWindowController.show()
+    }
+
+    @objc private func toggleSidebar(_ sender: Any?) {
+        NotificationCenter.default.post(name: .toggleSidebar, object: nil)
     }
 
     @objc private func selectPreviousProject(_ sender: Any?) {

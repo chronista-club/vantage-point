@@ -74,6 +74,11 @@ struct MainWindowView: View {
     @State private var paneLayoutVersion: Int = 0
     /// 退避中のペイン: プロジェクトパス → 退避ペインリスト (VP-49)
     @State private var minimizedPanes: [String: [MinimizedPane]] = [:]
+    /// サイドバー表示状態
+    @State private var sidebarVisible: Bool = true
+
+    /// サイドバー幅（固定）
+    private let sidebarWidth: CGFloat = 240
 
     /// 外部から指定されたプロジェクトパス（起動引数・URL スキーム経由）
     var initialProjectPath: String?
@@ -106,23 +111,31 @@ struct MainWindowView: View {
     }
 
     var body: some View {
-        NavigationSplitView {
-            SidebarView(
-                projects: projects,
-                selection: $selectedProjectPath,
-                worldStatus: worldStatus,
-                onAdd: addProject,
-                onDropAdd: dropAddProject,
-                onDelete: deleteProject,
-                onRename: renameProject,
-                onReorder: reorderProjects,
-                onRestartHD: restartHD,
-                onRestartSP: restartSP,
-                onRestartWorld: restartWorld,
-                onToggleEnabled: toggleProjectEnabled
-            )
-        } detail: {
-            // ターミナル（SwiftUI ヘッダー + VP Pane コンテナ）
+        HStack(spacing: 0) {
+            // カスタムサイドバー（半透明 Material 背景）
+            if sidebarVisible {
+                SidebarView(
+                    projects: projects,
+                    selection: $selectedProjectPath,
+                    worldStatus: worldStatus,
+                    onAdd: addProject,
+                    onDropAdd: dropAddProject,
+                    onDelete: deleteProject,
+                    onRename: renameProject,
+                    onReorder: reorderProjects,
+                    onRestartHD: restartHD,
+                    onRestartSP: restartSP,
+                    onRestartWorld: restartWorld,
+                    onToggleEnabled: toggleProjectEnabled
+                )
+                .frame(width: sidebarWidth)
+                .background(VisualEffectBackground(material: .sidebar, blendingMode: .behindWindow))
+                .transition(.move(edge: .leading))
+
+                Divider()
+            }
+
+            // メインエリア（ターミナル + タブ）
             VStack(spacing: 0) {
                 // Project Tab バー — enabled プロジェクト切替
                 ProjectTabBar(
@@ -202,8 +215,8 @@ struct MainWindowView: View {
                     }
 
             }
-            .toolbar(.hidden, for: .windowToolbar)
         }
+        .animation(.easeInOut(duration: 0.2), value: sidebarVisible)
         .onAppear {
             loadProjects()
         }
@@ -286,6 +299,11 @@ struct MainWindowView: View {
                   let path = selectedProjectPath else { return }
             if paneLayouts[path]?.focusedPaneId != paneId {
                 paneLayouts[path]?.focusedPaneId = paneId
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .toggleSidebar)) { _ in
+            withAnimation(.easeInOut(duration: 0.2)) {
+                sidebarVisible.toggle()
             }
         }
         .onChange(of: terminalPaths) { _, newPaths in
@@ -1228,4 +1246,5 @@ extension Notification.Name {
     static let selectLaneByNumber = Notification.Name("VP.selectLaneByNumber")
     static let splitNavigatorKey = Notification.Name("VP.splitNavigatorKey")
     static let vpPaneFocused = Notification.Name("VP.vpPaneFocused")
+    static let toggleSidebar = Notification.Name("VP.toggleSidebar")
 }

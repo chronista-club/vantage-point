@@ -3,10 +3,10 @@ import SwiftUI
 
 private let logger = Logger(subsystem: "tech.anycreative.vp", category: "Sidebar")
 
-/// サイドバー: プロジェクト一覧（Liquid Glass 自動適用）
+/// サイドバー: プロジェクト一覧
 ///
-/// NavigationSplitView のサイドバーに配置される。
-/// macOS 26 では自動的に Liquid Glass マテリアルが適用される。
+/// HStack ベースのカスタムサイドバー。NavigationSplitView を使わず、
+/// 開閉・幅・見た目を完全に自前制御する。
 struct SidebarView: View {
     let projects: [SidebarProject]
     @Binding var selection: String?
@@ -42,38 +42,56 @@ struct SidebarView: View {
     }
 
     var body: some View {
-        List(selection: $selection) {
-            // 有効なプロジェクト
-            ForEach(enabledProjects) { project in
-                sidebarProjectItem(project: project)
+        VStack(spacing: 0) {
+            // カスタムヘッダー: 信号機の右にタイトル + 追加ボタン
+            HStack {
+                Text("Projects")
+                    .font(.headline)
+                Spacer()
+                Button {
+                    onAdd?()
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .buttonStyle(.plain)
+                .help("プロジェクトフォルダを追加")
             }
-            .onMove { from, to in
-                onReorder?(from, to)
-            }
+            .padding(.leading, 78)  // 信号機ボタン分のオフセット
+            .padding(.trailing, 12)
+            .padding(.top, 6)
+            .padding(.bottom, 8)
 
-            // 無効化されたプロジェクト（停止中セクション）
-            if !disabledProjects.isEmpty {
-                Section("Disabled") {
-                    ForEach(disabledProjects) { project in
-                        sidebarProjectItem(project: project)
-                            .opacity(0.5)
+            Divider()
+
+            // プロジェクトリスト
+            List(selection: $selection) {
+                // 有効なプロジェクト
+                ForEach(enabledProjects) { project in
+                    sidebarProjectItem(project: project)
+                }
+                .onMove { from, to in
+                    onReorder?(from, to)
+                }
+
+                // 無効化されたプロジェクト（停止中セクション）
+                if !disabledProjects.isEmpty {
+                    Section("Disabled") {
+                        ForEach(disabledProjects) { project in
+                            sidebarProjectItem(project: project)
+                                .opacity(0.5)
+                        }
                     }
                 }
             }
-        }
-        .navigationTitle("Projects")
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button("Add", systemImage: "plus") {
-                    onAdd?()
-                }
-                .help("プロジェクトフォルダを追加")
+            .listStyle(.sidebar)
+            .scrollContentBackground(.hidden)
+            .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+                handleDrop(providers: providers)
             }
-        }
-        .onDrop(of: [.fileURL], isTargeted: nil) { providers in
-            handleDrop(providers: providers)
-        }
-        .safeAreaInset(edge: .bottom) {
+
+            // フッター: TheWorld ステータス
+            Divider()
             WorldStatusFooter(status: worldStatus, onRestart: onRestartWorld)
         }
     }
@@ -149,7 +167,7 @@ struct SidebarView: View {
         }
         guard !fileProviders.isEmpty else { return false }
 
-        let callback = onDropAdd
+        nonisolated(unsafe) let callback = onDropAdd
         for provider in fileProviders {
             _ = provider.loadObject(ofClass: URL.self) { url, _ in
                 guard let url, url.hasDirectoryPath else { return }
@@ -664,4 +682,28 @@ struct WorldStatusFooter: View {
         }
     }
 
+}
+
+// MARK: - NSVisualEffectView ラッパー
+
+/// AppKit の NSVisualEffectView を SwiftUI で使うためのブリッジ
+///
+/// NavigationSplitView が内部で使っている `.sidebar` マテリアルを
+/// カスタムサイドバーでも再現する。
+struct VisualEffectBackground: NSViewRepresentable {
+    let material: NSVisualEffectView.Material
+    let blendingMode: NSVisualEffectView.BlendingMode
+
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = material
+        view.blendingMode = blendingMode
+        view.state = .followsWindowActiveState
+        return view
+    }
+
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
+        nsView.material = material
+        nsView.blendingMode = blendingMode
+    }
 }
