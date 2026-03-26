@@ -70,8 +70,6 @@ struct MainWindowView: View {
     @State private var splitNavigator: SplitNavigatorStep = .hidden
     /// VP Pane レイアウト: プロジェクトパス → ペインツリー
     @State private var paneLayouts: [String: VPPaneLayout] = [:]
-    /// VP Pane レイアウト変更カウンター（SwiftUI 再描画を確実にトリガーするため）
-    @State private var paneLayoutVersion: Int = 0
     /// 退避中のペイン: プロジェクトパス → 退避ペインリスト (VP-49)
     @State private var minimizedPanes: [String: [MinimizedPane]] = [:]
     /// サイドバー表示状態
@@ -176,13 +174,11 @@ struct MainWindowView: View {
                             let layout = paneLayouts[path] ?? VPPaneLayout.initial()
                             VPPaneContainer(
                                 projectPath: path,
-                                node: layout.root,
-                                focusedPaneId: layout.focusedPaneId,
+                                node: layout.root.withFocus(on: layout.focusedPaneId),
                                 isActive: isActive,
                                 splitNavigatorActive: splitNavigator != .hidden,
                                 terminalGeneration: gen,
                                 port: selectedPort,
-                                layoutVersion: paneLayoutVersion,
                                 onMinimizePane: { paneId in
                                     minimizePane(path: path, paneId: paneId)
                                 },
@@ -517,9 +513,8 @@ struct MainWindowView: View {
         )
         layout.focusedPaneId = paneId
         paneLayouts[path] = layout
-        paneLayoutVersion += 1  // SwiftUI 再描画を確実にトリガー
 
-        logger.info("VP Pane added: \(paneSession) (horizontal=\(horizontal), content=\(contentType), leafCount=\(layout.root.leafCount), v=\(paneLayoutVersion))")
+        logger.info("VP Pane added: \(paneSession) (horizontal=\(horizontal), content=\(contentType), leafCount=\(layout.root.leafCount))")
     }
 
     /// VP Pane を閉じる（⌘⇧D）
@@ -563,10 +558,9 @@ struct MainWindowView: View {
                 layout.focusedPaneId = newRoot.leafIds.first ?? layout.focusedPaneId
             }
             paneLayouts[path] = layout
-            paneLayoutVersion += 1
         }
 
-        logger.info("VP Pane closed: \(layout.root.leafCount) panes remaining, v=\(paneLayoutVersion)")
+        logger.info("VP Pane closed: \(layout.root.leafCount) panes remaining")
     }
 
     /// ペインを退避して Dock に格納 (VP-49)
@@ -606,7 +600,6 @@ struct MainWindowView: View {
                 layout.focusedPaneId = newRoot.leafIds.first ?? layout.focusedPaneId
             }
             paneLayouts[path] = layout
-            paneLayoutVersion += 1
 
             // Dock に追加
             var docked = minimizedPanes[path] ?? []
@@ -634,7 +627,6 @@ struct MainWindowView: View {
             )
             layout.focusedPaneId = pane.leaf.id
             paneLayouts[path] = layout
-            paneLayoutVersion += 1
         }
 
         logger.info("VP Pane restored: \(pane.standInfo.label) from Dock")
@@ -1234,7 +1226,7 @@ struct LaneTabBar: View {
                             .font(.system(size: 9, weight: .medium, design: .monospaced))
                             .foregroundStyle(.tertiary)
 
-                        Image(systemName: lane.isLead ? "book" : "arrow.branch")
+                        Image(systemName: lane.isLead ? "text.book.closed" : "arrow.branch")
                             .font(.system(size: 10))
                             .foregroundStyle(lane.isLead ? .green : .cyan)
 

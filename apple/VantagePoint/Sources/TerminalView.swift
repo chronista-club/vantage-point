@@ -112,6 +112,9 @@ class TerminalView: NSView {
     /// アクティブ（表示中）フラグ — false のとき描画をスキップ
     var isActive: Bool = true
 
+    /// このターミナルがフォーカスされているか（first responder 制御用）
+    var isFocused: Bool = true
+
     /// Split Navigator がアクティブ — true のとき矢印/数字/Enter/Esc を PTY に送らずナビゲーターに転送
     var splitNavigatorActive: Bool = false
 
@@ -885,40 +888,56 @@ class TerminalView: NSView {
     /// クリップボードからテキスト/画像を PTY にペースト
     private func pasteFromClipboard() {
         let pb = NSPasteboard.general
-        logger.info("pasteFromClipboard: types=\(pb.types?.map(\.rawValue) ?? []) string=\(pb.string(forType: .string) ?? "nil")")
+        let useTmux = self.sendMouseEvents
+        logger.info("pasteFromClipboard: types=\(pb.types?.map(\.rawValue) ?? []) string=\(pb.string(forType: .string) ?? "nil") useTmux=\(useTmux)")
 
-        // テキストペースト: tmux のペーストバッファ経由で送信
-        // PTY 直接書き込みでは tmux がデータを消費してしまうため、
-        // tmux load-buffer + paste-buffer でネイティブに送信する
         if let text = pb.string(forType: .string), !text.isEmpty {
-            logger.info("pasteFromClipboard: text=\(text.prefix(50)) len=\(text.count) via tmux paste-buffer")
-            // メインスレッドをブロックしないよう非同期で実行
-            DispatchQueue.global(qos: .userInitiated).async {
-                let tmuxBin = "/opt/homebrew/bin/tmux"
-                // 名前付きバッファで複数ウィンドウの同時ペーストの競合を回避
-                let bufferName = "vp-paste-\(UUID().uuidString.prefix(8))"
-                let loadProcess = Process()
-                loadProcess.executableURL = URL(fileURLWithPath: tmuxBin)
-                loadProcess.arguments = ["load-buffer", "-b", bufferName, "-"]
-                let pipe = Pipe()
-                loadProcess.standardInput = pipe
-                do {
-                    try loadProcess.run()
-                    if let data = text.data(using: .utf8) {
-                        pipe.fileHandleForWriting.write(data)
-                    }
-                    pipe.fileHandleForWriting.closeFile()
-                    loadProcess.waitUntilExit()
+            // tmux 内ターミナル: tmux paste-buffer 経由で送信
+            // 素シェル (The Hand): PTY 直接書き込み（bracketed paste 対応）
+            if useTmux {
+                // tmux のペーストバッファ経由で送信
+                // PTY 直接書き込みでは tmux がデータを消費してしまうため
+                logger.info("pasteFromClipboard: text=\(text.prefix(50)) len=\(text.count) via tmux paste-buffer")
+                DispatchQueue.global(qos: .userInitiated).async {
+                    let tmuxBin = "/opt/homebrew/bin/tmux"
+                    let bufferName = "vp-paste-\(UUID().uuidString.prefix(8))"
+                    let loadProcess = Process()
+                    loadProcess.executableURL = URL(fileURLWithPath: tmuxBin)
+                    loadProcess.arguments = ["load-buffer", "-b", bufferName, "-"]
+                    let pipe = Pipe()
+                    loadProcess.standardInput = pipe
+                    do {
+                        try loadProcess.run()
+                        if let data = text.data(using: .utf8) {
+                            pipe.fileHandleForWriting.write(data)
+                        }
+                        pipe.fileHandleForWriting.closeFile()
+                        loadProcess.waitUntilExit()
 
-                    // paste-buffer で貼り付け（-p: bracketed paste, -d: 使用後にバッファ削除）
-                    let pasteProcess = Process()
-                    pasteProcess.executableURL = URL(fileURLWithPath: tmuxBin)
-                    pasteProcess.arguments = ["paste-buffer", "-b", bufferName, "-d", "-p"]
-                    try pasteProcess.run()
-                    pasteProcess.waitUntilExit()
-                    logger.info("tmux paste-buffer: done (buffer: \(bufferName))")
-                } catch {
-                    logger.error("tmux paste failed: \(error)")
+                        let pasteProcess = Process()
+                        pasteProcess.executableURL = URL(fileURLWithPath: tmuxBin)
+                        pasteProcess.arguments = ["paste-buffer", "-b", bufferName, "-d", "-p"]
+                        try pasteProcess.run()
+                        pasteProcess.waitUntilExit()
+                        logger.info("tmux paste-buffer: done (buffer: \(bufferName))")
+                    } catch {
+                        logger.error("tmux paste failed: \(error)")
+                    }
+                }
+            } else {
+                // 素シェル (The Hand): PTY 直接書き込み + bracketed paste
+                logger.info("pasteFromClipboard: text=\(text.prefix(50)) len=\(text.count) via PTY direct write")
+                let bracketStart = "\u{1B}[200~"
+                let bracketEnd = "\u{1B}[201~"
+                let payload = bracketStart + text + bracketEnd
+                if let data = payload.data(using: .utf8) {
+                    data.withUnsafeBytes { ptr in
+                        _ = vp_bridge_pty_write_session(
+                            sessionId,
+                            ptr.baseAddress!.assumingMemoryBound(to: UInt8.self),
+                            UInt32(ptr.count)
+                        )
+                    }
                 }
             }
             return

@@ -194,11 +194,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         window.titleVisibility = .visible
         window.styleMask.insert(.fullSizeContentView)
         window.title = "Vantage Point"
-        // SwiftUI が生成するツールバーを除去（信号機は残る）
-        // SwiftUI のセットアップ後に実行するため遅延
+        // SwiftUI / Liquid Glass が生成するツールバーを徹底除去
         window.toolbar = nil
+        // タブバーも非表示に（macOS 26 で自動表示されることがある）
+        if let tabGroup = window.tabGroup, tabGroup.isTabBarVisible {
+            window.toggleTabBar(nil)
+        }
+        // SwiftUI のセットアップ後に再度除去（遅延実行）
         DispatchQueue.main.async {
             window.toolbar = nil
+            if let tabGroup = window.tabGroup, tabGroup.isTabBarVisible {
+                window.toggleTabBar(nil)
+            }
         }
     }
 

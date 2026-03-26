@@ -70,7 +70,9 @@ struct TerminalRepresentable: NSViewRepresentable {
 
     func updateNSView(_ nsView: TerminalView, context: Context) {
         let wasActive = nsView.isActive
+        let wasFocused = nsView.isFocused
         nsView.isActive = isActive
+        nsView.isFocused = isFocused
         nsView.splitNavigatorActive = splitNavigatorActive
         nsView.paneId = paneId
         nsView.sendMouseEvents = sendMouseEvents
@@ -89,8 +91,10 @@ struct TerminalRepresentable: NSViewRepresentable {
         }
 
         // フォーカス中のペインのみ first responder を取得
-        // VP Pane で複数ターミナルが同時表示される場合、非フォーカスペインがフォーカスを奪うのを防ぐ
-        guard isActive && isFocused else { return }
+        // フォーカス状態が変わった時のみ切り替え（updateNSView の連続呼び出しによるちらつきを防止）
+        let shouldFocus = isActive && isFocused
+        let wasFocusedAndActive = wasActive && wasFocused
+        guard shouldFocus && !wasFocusedAndActive else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
             if let window = nsView.window, window.firstResponder !== nsView {
                 window.makeFirstResponder(nsView)

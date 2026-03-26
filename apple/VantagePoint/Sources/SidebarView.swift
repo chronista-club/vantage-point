@@ -100,36 +100,18 @@ struct SidebarView: View {
         }
     }
 
-    /// プロジェクト行の共通レンダリング（常にツリー展開: project → lead, workers）
+    /// プロジェクト行の共通レンダリング（Project = Lead Lane + Workers）
     @ViewBuilder
     private func sidebarProjectItem(project: SidebarProject) -> some View {
-        SidebarProjectRow(project: project)
-            .tag(project.id)
-            .contextMenu { projectContextMenu(project: project) }
-
-        // Lead — プロジェクトのブランチを表示
-        SidebarWorkerRow(
-            worker: CcwsWorkerInfo(
-                id: project.path,
-                name: "Lead-HD",
-                suffix: "Lead-HD",
-                path: project.path,
-                branch: project.branch,
-                hasHD: project.hasHD,
-                ccwireSession: project.ccwireSession
-            ),
-            isLead: true,
-            parentPPStatus: ppBadgeStatus(for: project),
+        // Project 行 = Lead Lane（ブランチ・HD/PP・通知を含む）
+        SidebarProjectRow(
+            project: project,
+            ppStatus: ppBadgeStatus(for: project),
             ccwireSession: project.ccwireSession,
             hasNotification: notifications.contains(project.path)
         )
-        .tag(project.path)
-        .padding(.leading, 16)
-        .contextMenu {
-            Button("HD をリスタート", systemImage: "arrow.clockwise") {
-                onRestartHD?(project.path)
-            }
-        }
+        .tag(project.id)
+        .contextMenu { projectContextMenu(project: project) }
 
         // Workers — 各ワーカーのブランチを表示
         ForEach(project.workers) { worker in
@@ -233,19 +215,48 @@ struct SidebarView: View {
 /// List の selection で選択状態のハイライトは自動適用される。
 struct SidebarProjectRow: View {
     let project: SidebarProject
+    /// PP バッジステータス
+    var ppStatus: BadgeStatus = .inactive
+    /// ccwire セッション情報
+    var ccwireSession: CcwireSessionInfo?
+    /// CC 通知バッジ
+    var hasNotification: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            // 1行目: プロジェクト名（通知バッジは Lane 行に委譲）
+            // 1行目: プロジェクト名 + ブランチ + 通知バッジ
             HStack(spacing: 6) {
+                Image(systemName: "text.book.closed")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.green)
                 Text(project.name)
                     .fontWeight(project.isRunning ? .semibold : .regular)
                     .lineLimit(1)
+                if let branch = project.branch {
+                    Text(branch)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
+                if hasNotification {
+                    Circle()
+                        .fill(.orange)
+                        .frame(width: 7, height: 7)
+                }
             }
 
-            // 2行目: SP ステータス + 起動時刻（HD/PP は Lane 行に委譲）
+            // 2行目: SP + HD + PP ステータス + 起動時刻
             HStack(spacing: 6) {
                 StatusBadge(label: "SP", icon: "star", isActive: project.isRunning)
+                StatusBadge(label: "HD", icon: "text.book.closed", isActive: project.hasHD)
+                StatusBadge(label: "PP", icon: "compass.drawing", status: ppStatus)
+
+                // ccwire 未読メッセージ数
+                if let wire = ccwireSession, wire.pendingMessages > 0 {
+                    Text("📨 \(wire.pendingMessages)")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
 
                 if let startedAt = project.startedAt {
                     Text(startedAt, style: .time)
