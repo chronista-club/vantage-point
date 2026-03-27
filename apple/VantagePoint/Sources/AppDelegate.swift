@@ -42,6 +42,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// DistributedNotification リスナー
     private var ccNotificationObserver: NSObjectProtocol?
+    /// OS ネイティブタブバー無効化用 Observer トークン
+    private var windowTabBarObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_: Notification) {
         // Dock アイコン + メニューバーを有効化（Liquid Glass ウィンドウアプリ）
@@ -168,8 +170,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// OS ネイティブタブバーを無効化（カスタム Project Tab バーに置換）
     private func disableNativeTabBar() {
-        // 新規ウィンドウのタブバーを無効化
-        NotificationCenter.default.addObserver(
+        // 新規ウィンドウのタブバーを無効化（トークンを保持してリーク防止）
+        windowTabBarObserver = NotificationCenter.default.addObserver(
             forName: NSWindow.didBecomeKeyNotification,
             object: nil, queue: .main
         ) { notification in
@@ -184,11 +186,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private static func configureWindowTabbing(_ window: NSWindow) {
+    @MainActor private static func configureWindowTabbing(_ window: NSWindow) {
         window.tabbingMode = .disallowed
-        if let tabGroup = window.tabGroup, tabGroup.isTabBarVisible {
-            window.toggleTabBar(nil)
-        }
         // タイトルバーを透明化 — コンテンツをタイトルバー領域まで拡張
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .visible
@@ -215,6 +214,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         iconTimer?.invalidate()
         if let monitor = eventMonitor {
             NSEvent.removeMonitor(monitor)
+        }
+        // タブバー Observer を解放
+        if let observer = windowTabBarObserver {
+            NotificationCenter.default.removeObserver(observer)
         }
         // メニューバーアイコンを削除
         NSStatusBar.system.removeStatusItem(statusItem)
