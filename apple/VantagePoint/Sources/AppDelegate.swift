@@ -190,7 +190,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         window.tabbingMode = .disallowed
         // タイトルバーを透明化 — コンテンツをタイトルバー領域まで拡張
         window.titlebarAppearsTransparent = true
-        window.titleVisibility = .visible
+        window.titleVisibility = .hidden
         window.styleMask.insert(.fullSizeContentView)
         window.title = "Vantage Point"
         // SwiftUI / Liquid Glass が生成するツールバーを徹底除去

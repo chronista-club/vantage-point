@@ -222,6 +222,7 @@ struct MainWindowView: View {
 
             }
         }
+        .ignoresSafeArea(.all, edges: .top)
         .animation(.easeInOut(duration: 0.2), value: sidebarVisible)
         .onAppear {
             loadProjects()
