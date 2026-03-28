@@ -14,6 +14,8 @@ struct VPPaneLeaf: Identifiable, Equatable {
     let tmuxWindowName: String?
     /// Stand 種別（"agent" = TerminalView, "canvas" = CanvasRepresentable, "shell" = 将来用）
     let contentType: String
+    /// このペインがフォーカスされているか
+    var isFocused: Bool = false
 }
 
 /// VP Pane のツリー構造（NSView レイヤの分割コンテナ）
@@ -89,6 +91,19 @@ indirect enum VPPaneNode: Identifiable, Equatable {
                 first: first.inserting(newLeaf: newLeaf, adjacentTo: targetId, horizontal: horizontal),
                 second: second.inserting(newLeaf: newLeaf, adjacentTo: targetId, horizontal: horizontal)
             )
+        }
+    }
+
+    /// 全リーフの isFocused を focusedPaneId に基づいて設定
+    func withFocus(on focusedId: UUID) -> VPPaneNode {
+        switch self {
+        case .leaf(var leaf):
+            leaf.isFocused = leaf.id == focusedId
+            return .leaf(leaf)
+        case .split(let id, let h, let first, let second):
+            return .split(id: id, horizontal: h,
+                          first: first.withFocus(on: focusedId),
+                          second: second.withFocus(on: focusedId))
         }
     }
 
@@ -243,14 +258,11 @@ func cleanupVPPaneTmux(leaf: VPPaneLeaf) {
 struct VPPaneContainer: View {
     let projectPath: String
     let node: VPPaneNode
-    let focusedPaneId: UUID
     let isActive: Bool
     let splitNavigatorActive: Bool
     let terminalGeneration: Int
     /// SP の HTTP ポート（Canvas 表示用、nil なら未接続）
     let port: UInt16?
-    /// レイアウト変更カウンター（SwiftUI の差分検出を確実にトリガーするため）
-    let layoutVersion: Int
     /// ペイン退避コールバック（VP-49: Dock に格納）
     var onMinimizePane: ((UUID) -> Void)?
     /// ペイン削除コールバック
@@ -267,7 +279,7 @@ struct VPPaneContainer: View {
     private func paneNodeView(for node: VPPaneNode) -> AnyView {
         switch node {
         case .leaf(let leaf):
-            let isFocused = leaf.id == focusedPaneId
+            let isFocused = leaf.isFocused
             // ベース HD ペイン（paneSessionName == nil）は閉じられない
             let canClose = leaf.paneSessionName != nil || leaf.contentType != "agent"
 
@@ -399,14 +411,21 @@ struct PaneHeaderView<Content: View>: View {
         VStack(spacing: 0) {
             // ヘッダーバー
             HStack(spacing: 6) {
+                // フォーカスインジケーター（アクセントカラーの縦バー）
+                if isFocused {
+                    RoundedRectangle(cornerRadius: 1)
+                        .fill(standInfo.color)
+                        .frame(width: 2, height: 14)
+                }
+
                 // Stand アイコン + タイトル
                 Image(systemName: standInfo.icon)
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(standInfo.color)
+                    .foregroundStyle(isFocused ? standInfo.color : standInfo.color.opacity(0.5))
 
                 Text(standInfo.label)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 11, weight: isFocused ? .semibold : .medium))
+                    .foregroundStyle(isFocused ? .primary : .secondary)
                     .lineLimit(1)
 
                 Spacer()

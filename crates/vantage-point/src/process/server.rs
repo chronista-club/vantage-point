@@ -173,7 +173,14 @@ pub async fn run(
                                     .and_then(|v| v.as_str())
                                     .unwrap_or("完了")
                                     .to_string();
-                                crate::notify::post_cc_notification(&project, &message);
+                                // path: 通知元のターミナルパス（Lane 単位通知用）
+                                let path = msg
+                                    .payload
+                                    .get("path")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or(&project_dir_clone)
+                                    .to_string();
+                                crate::notify::post_cc_notification(&project, &message, &path);
                             }
                             Some(_) => {} // 非 Notification メッセージは無視
                             None => break, // チャネル閉鎖

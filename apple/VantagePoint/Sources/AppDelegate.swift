@@ -42,10 +42,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// DistributedNotification リスナー
     private var ccNotificationObserver: NSObjectProtocol?
+    /// OS ネイティブタブバー無効化用 Observer トークン
+    private var windowTabBarObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_: Notification) {
         // Dock アイコン + メニューバーを有効化（Liquid Glass ウィンドウアプリ）
         NSApp.setActivationPolicy(.regular)
+        // OS のウィンドウタブバーを無効化（カスタム Project Tab バーに置換済み）
+        NSWindow.allowsAutomaticWindowTabbing = false
+        disableNativeTabBar()
 
         setupMainMenu()
         setupStatusItem()
@@ -163,12 +168,56 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    /// OS ネイティブタブバーを無効化（カスタム Project Tab バーに置換）
+    private func disableNativeTabBar() {
+        // 新規ウィンドウのタブバーを無効化（トークンを保持してリーク防止）
+        windowTabBarObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeKeyNotification,
+            object: nil, queue: .main
+        ) { notification in
+            guard let window = notification.object as? NSWindow else { return }
+            Self.configureWindowTabbing(window)
+        }
+        // 初回ウィンドウは SwiftUI が先に作るため遅延で捕まえる
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            for window in NSApp.windows where window.canBecomeMain {
+                Self.configureWindowTabbing(window)
+            }
+        }
+    }
+
+    @MainActor private static func configureWindowTabbing(_ window: NSWindow) {
+        window.tabbingMode = .disallowed
+        // タイトルバーを透明化 — コンテンツをタイトルバー領域まで拡張
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .visible
+        window.styleMask.insert(.fullSizeContentView)
+        window.title = "Vantage Point"
+        // SwiftUI / Liquid Glass が生成するツールバーを徹底除去
+        window.toolbar = nil
+        // タブバーも非表示に（macOS 26 で自動表示されることがある）
+        if let tabGroup = window.tabGroup, tabGroup.isTabBarVisible {
+            window.toggleTabBar(nil)
+        }
+        // SwiftUI のセットアップ後に再度除去（遅延実行）
+        DispatchQueue.main.async {
+            window.toolbar = nil
+            if let tabGroup = window.tabGroup, tabGroup.isTabBarVisible {
+                window.toggleTabBar(nil)
+            }
+        }
+    }
+
     func applicationWillTerminate(_: Notification) {
         userPromptService.stopPolling()
         popoverViewModel.stopAutoRefresh()
         iconTimer?.invalidate()
         if let monitor = eventMonitor {
             NSEvent.removeMonitor(monitor)
+        }
+        // タブバー Observer を解放
+        if let observer = windowTabBarObserver {
+            NotificationCenter.default.removeObserver(observer)
         }
         // メニューバーアイコンを削除
         NSStatusBar.system.removeStatusItem(statusItem)
@@ -215,11 +264,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let viewMenu = NSMenu(title: "View")
         let toggleSidebarItem = NSMenuItem(
             title: "Toggle Sidebar",
-            action: #selector(NSSplitViewController.toggleSidebar(_:)),
+            action: #selector(toggleSidebarAction(_:)),
             keyEquivalent: "s"
         )
         toggleSidebarItem.keyEquivalentModifierMask = [.command, .option]
+        toggleSidebarItem.target = self
         viewMenu.addItem(toggleSidebarItem)
+        let toggleTabBarItem = NSMenuItem(
+            title: "Toggle Project Tab Bar",
+            action: #selector(toggleProjectTabBar(_:)),
+            keyEquivalent: "t"
+        )
+        toggleTabBarItem.keyEquivalentModifierMask = [.command, .option]
+        toggleTabBarItem.target = self
+        viewMenu.addItem(toggleTabBarItem)
         let viewMenuItem = NSMenuItem()
         viewMenuItem.submenu = viewMenu
         mainMenu.addItem(viewMenuItem)
@@ -306,14 +364,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 message = info["message"] as? String ?? "完了"
             }
 
-            // object 形式（Rust notify.rs 経由: "project:message"）
+            // object 形式（Rust notify.rs 経由: "project:path:message"）
+            var path = ""
             if project.isEmpty, let object = notification.object as? String {
-                let parts = object.split(separator: ":", maxSplits: 1)
+                let parts = object.split(separator: ":", maxSplits: 2)
                 if let first = parts.first {
                     project = String(first)
                 }
                 if parts.count > 1 {
-                    message = String(parts.dropFirst().joined(separator: ":"))
+                    path = String(parts[1])
+                }
+                if parts.count > 2 {
+                    message = String(parts[2])
                 }
             }
 
@@ -324,7 +386,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             NotificationCenter.default.post(
                 name: notifName,
                 object: nil,
-                userInfo: ["project": project, "message": message]
+                userInfo: ["project": project, "message": message, "path": path]
             )
         }
     }
@@ -364,6 +426,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openSettings(_ sender: Any?) {
         settingsWindowController.show()
+    }
+
+    @objc private func toggleSidebarAction(_ sender: Any?) {
+        NotificationCenter.default.post(name: .toggleSidebar, object: nil)
+    }
+
+    @objc private func toggleProjectTabBar(_ sender: Any?) {
+        NotificationCenter.default.post(name: .toggleProjectTabBar, object: nil)
     }
 
     @objc private func selectPreviousProject(_ sender: Any?) {

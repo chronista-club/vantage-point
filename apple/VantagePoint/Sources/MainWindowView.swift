@@ -70,10 +70,20 @@ struct MainWindowView: View {
     @State private var splitNavigator: SplitNavigatorStep = .hidden
     /// VP Pane レイアウト: プロジェクトパス → ペインツリー
     @State private var paneLayouts: [String: VPPaneLayout] = [:]
-    /// VP Pane レイアウト変更カウンター（SwiftUI 再描画を確実にトリガーするため）
-    @State private var paneLayoutVersion: Int = 0
     /// 退避中のペイン: プロジェクトパス → 退避ペインリスト (VP-49)
     @State private var minimizedPanes: [String: [MinimizedPane]] = [:]
+    /// サイドバー表示状態
+    @State private var sidebarVisible: Bool = true
+    /// ProjectTabBar の手動表示設定（true = 常時表示）
+    @State private var projectTabBarForced: Bool = false
+
+    /// ProjectTabBar を表示するか（サイドバー非表示時は自動表示、手動トグルで常時表示）
+    private var showProjectTabBar: Bool {
+        projectTabBarForced || !sidebarVisible
+    }
+
+    /// サイドバー幅（固定）
+    private let sidebarWidth: CGFloat = 240
 
     /// 外部から指定されたプロジェクトパス（起動引数・URL スキーム経由）
     var initialProjectPath: String?
@@ -86,6 +96,11 @@ struct MainWindowView: View {
     /// Worker 選択時は親プロジェクトのポートを返す（Worker は独自の SP を持たない）。
     private var selectedPort: UInt16? {
         selectedProject?.port
+    }
+
+    /// enabled プロジェクト一覧
+    private var enabledProjects: [SidebarProject] {
+        projects.filter { $0.enabled }
     }
 
     /// フォーカス中プロジェクトの Lane 一覧（lead + workers）
@@ -101,24 +116,46 @@ struct MainWindowView: View {
     }
 
     var body: some View {
-        NavigationSplitView {
-            SidebarView(
-                projects: projects,
-                selection: $selectedProjectPath,
-                worldStatus: worldStatus,
-                onAdd: addProject,
-                onDropAdd: dropAddProject,
-                onDelete: deleteProject,
-                onRename: renameProject,
-                onReorder: reorderProjects,
-                onRestartHD: restartHD,
-                onRestartSP: restartSP,
-                onRestartWorld: restartWorld,
-                onToggleEnabled: toggleProjectEnabled
-            )
-        } detail: {
-            // ターミナル（SwiftUI ヘッダー + VP Pane コンテナ）
+        HStack(spacing: 0) {
+            // カスタムサイドバー（半透明 Material 背景）
+            if sidebarVisible {
+                SidebarView(
+                    projects: projects,
+                    selection: $selectedProjectPath,
+                    worldStatus: worldStatus,
+                    onAdd: addProject,
+                    onDropAdd: dropAddProject,
+                    onDelete: deleteProject,
+                    onRename: renameProject,
+                    onReorder: reorderProjects,
+                    onRestartHD: restartHD,
+                    onRestartSP: restartSP,
+                    onRestartWorld: restartWorld,
+                    onToggleEnabled: toggleProjectEnabled,
+                    notifications: notifications
+                )
+                .frame(width: sidebarWidth)
+                .background(VisualEffectBackground(material: .sidebar, blendingMode: .behindWindow))
+                .transition(.move(edge: .leading))
+
+                Divider()
+            }
+
+            // メインエリア（ターミナル + タブ）
             VStack(spacing: 0) {
+                // Project Tab バー — サイドバー非表示時 or 手動トグルで表示
+                if showProjectTabBar {
+                    ProjectTabBar(
+                        projects: enabledProjects,
+                        selectedPath: selectedProject?.path,
+                        onSelect: { path in
+                            if selectedProjectPath != path {
+                                selectedProjectPath = path
+                            }
+                        }
+                    )
+                }
+
                 // Lane Tab バー — フォーカス中プロジェクトの Lane 切替 (VP-51)
                 if currentLanes.count > 1 {
                     LaneTabBar(
@@ -137,13 +174,11 @@ struct MainWindowView: View {
                             let layout = paneLayouts[path] ?? VPPaneLayout.initial()
                             VPPaneContainer(
                                 projectPath: path,
-                                node: layout.root,
-                                focusedPaneId: layout.focusedPaneId,
+                                node: layout.root.withFocus(on: layout.focusedPaneId),
                                 isActive: isActive,
                                 splitNavigatorActive: splitNavigator != .hidden,
                                 terminalGeneration: gen,
                                 port: selectedPort,
-                                layoutVersion: paneLayoutVersion,
                                 onMinimizePane: { paneId in
                                     minimizePane(path: path, paneId: paneId)
                                 },
@@ -186,10 +221,8 @@ struct MainWindowView: View {
                     }
 
             }
-            .toolbarBackground(.visible, for: .windowToolbar)
-            .navigationTitle(selectedProject?.name ?? "Vantage Point")
-            .navigationSubtitle(selectedProject != nil ? (selectedProject?.path as NSString?)?.lastPathComponent ?? "" : "")
         }
+        .animation(.easeInOut(duration: 0.2), value: sidebarVisible)
         .onAppear {
             loadProjects()
         }
@@ -251,11 +284,19 @@ struct MainWindowView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: AppDelegate.ccNotification)) { notification in
             if let project = notification.userInfo?["project"] as? String, !project.isEmpty {
-                // 現在選択中のプロジェクトでなければバッジを付ける
-                let matchingPath = projects.first(where: {
-                    $0.name == project || $0.path.hasSuffix("/\(project)")
-                })?.path
-                if let path = matchingPath, path != selectedProjectPath {
+                // path が指定されていればそのまま使用（Lane 単位通知）
+                let notifPath = notification.userInfo?["path"] as? String ?? ""
+                let lanePath: String?
+                if !notifPath.isEmpty {
+                    lanePath = notifPath
+                } else {
+                    // path 未指定: プロジェクト名からプロジェクトパスを解決
+                    lanePath = projects.first(where: {
+                        $0.name == project || $0.path.hasSuffix("/\(project)")
+                    })?.path
+                }
+                // 現在選択中の Lane でなければバッジを付ける
+                if let path = lanePath, path != selectedProjectPath {
                     notifications.insert(path)
                 }
             }
@@ -272,6 +313,16 @@ struct MainWindowView: View {
                   let path = selectedProjectPath else { return }
             if paneLayouts[path]?.focusedPaneId != paneId {
                 paneLayouts[path]?.focusedPaneId = paneId
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .toggleSidebar)) { _ in
+            withAnimation(.easeInOut(duration: 0.2)) {
+                sidebarVisible.toggle()
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .toggleProjectTabBar)) { _ in
+            withAnimation(.easeInOut(duration: 0.15)) {
+                projectTabBarForced.toggle()
             }
         }
         .onChange(of: terminalPaths) { _, newPaths in
@@ -462,9 +513,8 @@ struct MainWindowView: View {
         )
         layout.focusedPaneId = paneId
         paneLayouts[path] = layout
-        paneLayoutVersion += 1  // SwiftUI 再描画を確実にトリガー
 
-        logger.info("VP Pane added: \(paneSession) (horizontal=\(horizontal), content=\(contentType), leafCount=\(layout.root.leafCount), v=\(paneLayoutVersion))")
+        logger.info("VP Pane added: \(paneSession) (horizontal=\(horizontal), content=\(contentType), leafCount=\(layout.root.leafCount))")
     }
 
     /// VP Pane を閉じる（⌘⇧D）
@@ -508,10 +558,9 @@ struct MainWindowView: View {
                 layout.focusedPaneId = newRoot.leafIds.first ?? layout.focusedPaneId
             }
             paneLayouts[path] = layout
-            paneLayoutVersion += 1
         }
 
-        logger.info("VP Pane closed: \(layout.root.leafCount) panes remaining, v=\(paneLayoutVersion)")
+        logger.info("VP Pane closed: \(layout.root.leafCount) panes remaining")
     }
 
     /// ペインを退避して Dock に格納 (VP-49)
@@ -551,7 +600,6 @@ struct MainWindowView: View {
                 layout.focusedPaneId = newRoot.leafIds.first ?? layout.focusedPaneId
             }
             paneLayouts[path] = layout
-            paneLayoutVersion += 1
 
             // Dock に追加
             var docked = minimizedPanes[path] ?? []
@@ -579,7 +627,6 @@ struct MainWindowView: View {
             )
             layout.focusedPaneId = pane.leaf.id
             paneLayouts[path] = layout
-            paneLayoutVersion += 1
         }
 
         logger.info("VP Pane restored: \(pane.standInfo.label) from Dock")
@@ -757,7 +804,7 @@ struct MainWindowView: View {
 
     /// 前のプロジェクトを選択（⌘↑）— enabled プロジェクトのみ
     private func selectPreviousProject() {
-        let enabled = projects.filter { $0.enabled }
+        let enabled = enabledProjects
         guard !enabled.isEmpty else { return }
         guard let current = selectedProjectPath else {
             selectedProjectPath = enabled.last?.path
@@ -775,7 +822,7 @@ struct MainWindowView: View {
 
     /// 次のプロジェクトを選択（⌘↓）— enabled プロジェクトのみ
     private func selectNextProject() {
-        let enabled = projects.filter { $0.enabled }
+        let enabled = enabledProjects
         guard !enabled.isEmpty else { return }
         guard let current = selectedProjectPath else {
             selectedProjectPath = enabled.first?.path
@@ -793,7 +840,7 @@ struct MainWindowView: View {
 
     /// ⌘1〜9 で enabled プロジェクトを番号で切り替え
     private func selectProjectByNumber(_ number: Int) {
-        let enabled = projects.filter { $0.enabled }
+        let enabled = enabledProjects
         let index = number - 1
         guard index >= 0 && index < enabled.count else { return }
         selectedProjectPath = enabled[index].path
@@ -1100,6 +1147,55 @@ struct MainWindowView: View {
     }
 }
 
+// MARK: - Project Tab バー
+
+/// Project Tab バー — enabled プロジェクト切替
+struct ProjectTabBar: View {
+    let projects: [SidebarProject]
+    let selectedPath: String?
+    let onSelect: (String) -> Void
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(Array(projects.enumerated()), id: \.element.id) { index, project in
+                let isSelected = project.path == selectedPath
+                Button {
+                    onSelect(project.path)
+                } label: {
+                    HStack(spacing: 4) {
+                        // ⌘1〜9 のみヒント表示（キーバインドは9まで）
+                        if index < 9 {
+                            Text("⌘\(index + 1)")
+                                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                                .foregroundStyle(.tertiary)
+                        }
+
+                        // 稼働状態のドット
+                        Circle()
+                            .fill(project.isRunning ? .green : .gray)
+                            .frame(width: 6, height: 6)
+
+                        Text(project.name)
+                            .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
+                            .lineLimit(1)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(isSelected ? Color.white.opacity(0.1) : Color.clear)
+                    .cornerRadius(4)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(isSelected ? .primary : .secondary)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 8)
+        .padding(.top, 6)
+        .padding(.bottom, 2)
+        .background(Color(white: 0.1))
+    }
+}
+
 // MARK: - Lane モデル
 
 /// プロジェクト内の Lane（lead または worker）
@@ -1130,7 +1226,7 @@ struct LaneTabBar: View {
                             .font(.system(size: 9, weight: .medium, design: .monospaced))
                             .foregroundStyle(.tertiary)
 
-                        Image(systemName: lane.isLead ? "book" : "arrow.branch")
+                        Image(systemName: lane.isLead ? "text.book.closed" : "arrow.branch")
                             .font(.system(size: 10))
                             .foregroundStyle(lane.isLead ? .green : .cyan)
 
@@ -1165,4 +1261,6 @@ extension Notification.Name {
     static let selectLaneByNumber = Notification.Name("VP.selectLaneByNumber")
     static let splitNavigatorKey = Notification.Name("VP.splitNavigatorKey")
     static let vpPaneFocused = Notification.Name("VP.vpPaneFocused")
+    static let toggleSidebar = Notification.Name("VP.toggleSidebar")
+    static let toggleProjectTabBar = Notification.Name("VP.toggleProjectTabBar")
 }

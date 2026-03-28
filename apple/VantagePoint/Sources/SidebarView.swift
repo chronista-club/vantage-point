@@ -3,10 +3,10 @@ import SwiftUI
 
 private let logger = Logger(subsystem: "tech.anycreative.vp", category: "Sidebar")
 
-/// サイドバー: プロジェクト一覧（Liquid Glass 自動適用）
+/// サイドバー: プロジェクト一覧
 ///
-/// NavigationSplitView のサイドバーに配置される。
-/// macOS 26 では自動的に Liquid Glass マテリアルが適用される。
+/// HStack ベースのカスタムサイドバー。NavigationSplitView を使わず、
+/// 開閉・幅・見た目を完全に自前制御する。
 struct SidebarView: View {
     let projects: [SidebarProject]
     @Binding var selection: String?
@@ -30,6 +30,8 @@ struct SidebarView: View {
     var onRestartWorld: (() -> Void)?
     /// SP 有効/無効トグルコールバック（パス, 新しい enabled 値）
     var onToggleEnabled: ((String, Bool) -> Void)?
+    /// CC 通知バッジ: Lane パス → 未読フラグ
+    var notifications: Set<String> = []
 
     /// 有効なプロジェクト（稼働中 + 停止中だが enabled）
     private var enabledProjects: [SidebarProject] {
@@ -42,68 +44,90 @@ struct SidebarView: View {
     }
 
     var body: some View {
-        List(selection: $selection) {
-            // 有効なプロジェクト
-            ForEach(enabledProjects) { project in
-                sidebarProjectItem(project: project)
+        VStack(spacing: 0) {
+            // カスタムヘッダー: 信号機の右にタイトル + 追加ボタン
+            HStack {
+                Text("Projects")
+                    .font(.headline)
+                Spacer()
+                Button {
+                    onAdd?()
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .buttonStyle(.plain)
+                .help("プロジェクトフォルダを追加")
             }
-            .onMove { from, to in
-                onReorder?(from, to)
-            }
+            .padding(.leading, 78)  // 信号機ボタン分のオフセット
+            .padding(.trailing, 12)
+            .padding(.top, 6)
+            .padding(.bottom, 8)
 
-            // 無効化されたプロジェクト（停止中セクション）
-            if !disabledProjects.isEmpty {
-                Section("Disabled") {
-                    ForEach(disabledProjects) { project in
-                        sidebarProjectItem(project: project)
-                            .opacity(0.5)
+            Divider()
+
+            // プロジェクトリスト
+            List(selection: $selection) {
+                // 有効なプロジェクト
+                ForEach(enabledProjects) { project in
+                    sidebarProjectItem(project: project)
+                }
+                .onMove { from, to in
+                    onReorder?(from, to)
+                }
+
+                // 無効化されたプロジェクト（プロジェクト名のみ、Lane 非展開）
+                if !disabledProjects.isEmpty {
+                    Section("Disabled") {
+                        ForEach(disabledProjects) { project in
+                            SidebarProjectRow(project: project)
+                                .tag(project.id)
+                                .contextMenu { projectContextMenu(project: project) }
+                                .opacity(0.5)
+                        }
                     }
                 }
             }
-        }
-        .navigationTitle("Projects")
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button("Add", systemImage: "plus") {
-                    onAdd?()
-                }
-                .help("プロジェクトフォルダを追加")
+            .listStyle(.sidebar)
+            .scrollContentBackground(.hidden)
+            .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+                handleDrop(providers: providers)
             }
-        }
-        .onDrop(of: [.fileURL], isTargeted: nil) { providers in
-            handleDrop(providers: providers)
-        }
-        .safeAreaInset(edge: .bottom) {
+
+            // フッター: TheWorld ステータス
+            Divider()
             WorldStatusFooter(status: worldStatus, onRestart: onRestartWorld)
         }
     }
 
-    /// プロジェクト行の共通レンダリング（ワーカーありなら DisclosureGroup）
+    /// プロジェクト行の共通レンダリング（Project = Lead Lane + Workers）
     @ViewBuilder
     private func sidebarProjectItem(project: SidebarProject) -> some View {
-        if project.workers.isEmpty {
-            SidebarProjectRow(project: project)
-                .tag(project.id)
-                .contextMenu { projectContextMenu(project: project) }
-        } else {
-            DisclosureGroup {
-                ForEach(project.workers) { worker in
-                    SidebarWorkerRow(
-                        worker: worker,
-                        parentPPStatus: ppBadgeStatus(for: project),
-                        ccwireSession: worker.ccwireSession
-                    )
-                        .tag(worker.id)
-                        .contextMenu {
-                            Button("HD をリスタート", systemImage: "arrow.clockwise") {
-                                onRestartHD?(worker.path)
-                            }
-                        }
+        // Project 行 = Lead Lane（ブランチ・HD/PP・通知を含む）
+        SidebarProjectRow(
+            project: project,
+            ppStatus: ppBadgeStatus(for: project),
+            ccwireSession: project.ccwireSession,
+            hasNotification: notifications.contains(project.path)
+        )
+        .tag(project.id)
+        .contextMenu { projectContextMenu(project: project) }
+
+        // Workers — 各ワーカーのブランチを表示
+        ForEach(project.workers) { worker in
+            SidebarWorkerRow(
+                worker: worker,
+                isLead: false,
+                parentPPStatus: ppBadgeStatus(for: project),
+                ccwireSession: worker.ccwireSession,
+                hasNotification: notifications.contains(worker.path)
+            )
+            .tag(worker.id)
+            .padding(.leading, 16)
+            .contextMenu {
+                Button("HD をリスタート", systemImage: "arrow.clockwise") {
+                    onRestartHD?(worker.path)
                 }
-            } label: {
-                SidebarProjectRow(project: project)
-                    .tag(project.id)
-                    .contextMenu { projectContextMenu(project: project) }
             }
         }
     }
@@ -149,7 +173,7 @@ struct SidebarView: View {
         }
         guard !fileProviders.isEmpty else { return false }
 
-        let callback = onDropAdd
+        nonisolated(unsafe) let callback = onDropAdd
         for provider in fileProviders {
             _ = provider.loadObject(ofClass: URL.self) { url, _ in
                 guard let url, url.hasDirectoryPath else { return }
@@ -191,11 +215,20 @@ struct SidebarView: View {
 /// List の selection で選択状態のハイライトは自動適用される。
 struct SidebarProjectRow: View {
     let project: SidebarProject
+    /// PP バッジステータス
+    var ppStatus: BadgeStatus = .inactive
+    /// ccwire セッション情報
+    var ccwireSession: CcwireSessionInfo?
+    /// CC 通知バッジ
+    var hasNotification: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             // 1行目: プロジェクト名 + ブランチ + 通知バッジ
             HStack(spacing: 6) {
+                Image(systemName: "text.book.closed")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.green)
                 Text(project.name)
                     .fontWeight(project.isRunning ? .semibold : .regular)
                     .lineLimit(1)
@@ -205,33 +238,26 @@ struct SidebarProjectRow: View {
                         .foregroundStyle(.tertiary)
                         .lineLimit(1)
                 }
-                if project.hasNotification {
+                if hasNotification {
                     Circle()
                         .fill(.orange)
                         .frame(width: 7, height: 7)
                 }
             }
 
-            // 2行目: SP / Lead-HD / PP ステータス（統一表記）
+            // 2行目: SP + HD + PP ステータス + 起動時刻
             HStack(spacing: 6) {
                 StatusBadge(label: "SP", icon: "star", isActive: project.isRunning)
-
-                // Lead-HD + ccwire ツールチップ
-                StatusBadge(label: "Lead-HD", icon: "text.book.closed", isActive: project.hasHD)
-                    .help(ccwireTooltip(for: project))
-
-                // PP: connected=青（Canvas接続中）, idle=緑（show受信可能）, その他=灰
-                StatusBadge(label: "PP", icon: "compass.drawing",
-                            status: ppBadgeStatus(for: project))
+                StatusBadge(label: "HD", icon: "text.book.closed", isActive: project.hasHD)
+                StatusBadge(label: "PP", icon: "compass.drawing", status: ppStatus)
 
                 // ccwire 未読メッセージ数
-                if let wire = project.ccwireSession, wire.pendingMessages > 0 {
+                if let wire = ccwireSession, wire.pendingMessages > 0 {
                     Text("📨 \(wire.pendingMessages)")
                         .font(.caption2)
                         .foregroundStyle(.orange)
                 }
 
-                // 起動時刻
                 if let startedAt = project.startedAt {
                     Text(startedAt, style: .time)
                         .font(.caption2)
@@ -257,18 +283,30 @@ struct SidebarProjectRow: View {
 
 // MARK: - ワーカー行
 
-/// ccws ワーカーの行表示
+/// Lane（Lead / Worker）の行表示
 struct SidebarWorkerRow: View {
     let worker: CcwsWorkerInfo
+    /// Lead か Worker か
+    var isLead: Bool = false
     /// 親プロジェクトの PP 状態を継承表示
     var parentPPStatus: BadgeStatus = .inactive
     /// ccwire セッション情報
     var ccwireSession: CcwireSessionInfo?
+    /// CC 通知バッジ
+    var hasNotification: Bool = false
+
+    /// 表示ラベル（Lead-HD / Worker-HD）
+    private var roleLabel: String {
+        isLead ? "Lead-HD" : "Worker-HD"
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            // 1行目: ワーカー名 + ブランチ
+            // 1行目: Lane 名 + ブランチ
             HStack(spacing: 6) {
+                Image(systemName: isLead ? "text.book.closed" : "arrow.branch")
+                    .font(.system(size: 10))
+                    .foregroundStyle(isLead ? .green : .cyan)
                 Text(worker.suffix)
                     .font(.callout)
                     .fontWeight(worker.hasHD ? .semibold : .regular)
@@ -279,11 +317,16 @@ struct SidebarWorkerRow: View {
                         .foregroundStyle(.tertiary)
                         .lineLimit(1)
                 }
+                if hasNotification {
+                    Circle()
+                        .fill(.orange)
+                        .frame(width: 7, height: 7)
+                }
             }
 
-            // 2行目: Worker-HD + PP ステータス（親と統一フォーマット）
+            // 2行目: HD + PP ステータス
             HStack(spacing: 6) {
-                StatusBadge(label: "Worker-HD", icon: "text.book.closed", isActive: worker.hasHD)
+                StatusBadge(label: roleLabel, icon: "text.book.closed", isActive: worker.hasHD)
                     .help(workerCcwireTooltip)
                 StatusBadge(label: "PP", icon: "compass.drawing", status: parentPPStatus)
 
@@ -664,4 +707,28 @@ struct WorldStatusFooter: View {
         }
     }
 
+}
+
+// MARK: - NSVisualEffectView ラッパー
+
+/// AppKit の NSVisualEffectView を SwiftUI で使うためのブリッジ
+///
+/// NavigationSplitView が内部で使っている `.sidebar` マテリアルを
+/// カスタムサイドバーでも再現する。
+struct VisualEffectBackground: NSViewRepresentable {
+    let material: NSVisualEffectView.Material
+    let blendingMode: NSVisualEffectView.BlendingMode
+
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = material
+        view.blendingMode = blendingMode
+        view.state = .followsWindowActiveState
+        return view
+    }
+
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
+        nsView.material = material
+        nsView.blendingMode = blendingMode
+    }
 }

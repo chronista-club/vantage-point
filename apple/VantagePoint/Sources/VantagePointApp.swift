@@ -12,6 +12,7 @@ struct VantagePointApp: App {
     var body: some Scene {
         WindowGroup {
             MainWindowView()
+                .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
         }
         .defaultSize(width: 1200, height: 800)
     }
