@@ -43,18 +43,35 @@ struct SidebarView: View {
         projects.filter { !$0.enabled }
     }
 
+    /// 選択中のプロジェクト名
+    private var selectedProjectName: String? {
+        guard let sel = selection else { return nil }
+        return projects.first(where: { $0.id == sel })?.name
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            // カスタムヘッダー: 信号機の右にタイトル + 追加ボタン
+            // カスタムヘッダー: 選択中プロジェクト名 + 追加ボタン
             HStack {
-                Text("Projects")
-                    .font(.headline)
+                if let name = selectedProjectName {
+                    Text(name)
+                        .font(.headline)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
                 Spacer()
                 Button {
                     onAdd?()
                 } label: {
                     Image(systemName: "plus")
-                        .font(.system(size: 12, weight: .medium))
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.secondary)
+                        .frame(width: 22, height: 22)
+                        .background(
+                            RoundedRectangle(cornerRadius: 5)
+                                .fill(Color.primary.opacity(0.06))
+                        )
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .help("プロジェクトフォルダを追加")
