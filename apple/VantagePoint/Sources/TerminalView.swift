@@ -224,7 +224,9 @@ class TerminalView: NSView {
     override func becomeFirstResponder() -> Bool {
         let result = super.becomeFirstResponder()
         // VP Pane フォーカス通知: クリック等で first responder になったペインを通知
-        if let id = paneId {
+        // isFocused が既に true の場合は updateNSView 経由の自動フォーカスなのでスキップ
+        // （通知 → focusedPaneId 更新 → updateNSView のループを防止）
+        if let id = paneId, !isFocused {
             NotificationCenter.default.post(
                 name: .vpPaneFocused,
                 object: nil,
@@ -967,6 +969,8 @@ class TerminalView: NSView {
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let firstResp = window?.firstResponder === self
         logger.info("[IME] performKeyEquivalent: code=\(event.keyCode) chars=\(event.charactersIgnoringModifiers ?? "nil") firstResp=\(firstResp) marked=\(self.hasMarkedText())")
+        // first responder でないペインはショートカットを処理しない（メニューに委譲）
+        guard firstResp else { return false }
         guard event.modifierFlags.contains(.command),
               let ch = event.charactersIgnoringModifiers else {
             return super.performKeyEquivalent(with: event)
@@ -1389,11 +1393,7 @@ class TerminalView: NSView {
         if selectionStart?.col == selectionEnd?.col && selectionStart?.row == selectionEnd?.row {
             selectionStart = nil
             selectionEnd = nil
-            needsDisplay = true
-            return
         }
-
-        copySelectionToClipboard()
         needsDisplay = true
     }
 
