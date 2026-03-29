@@ -243,6 +243,10 @@ pub async fn run(
         // tmux ペイン操作（Native App の Cmd+D / Cmd+Shift+D から呼ばれる）
         .route("/api/tmux/split", post(health::tmux_split_handler))
         .route("/api/tmux/close", post(health::tmux_close_handler))
+        .route("/api/tmux/capture", post(health::tmux_capture_handler))
+        .route("/api/tmux/list", get(health::tmux_list_handler))
+        .route("/api/tmux/send-keys", post(health::tmux_send_keys_handler))
+        .route("/api/tmux/agent-meta", get(health::tmux_agent_meta_handler))
         .route("/api/ruby/eval", post(health::ruby_eval_handler))
         .route("/api/ruby/run", post(health::ruby_run_handler))
         .route("/api/ruby/stop", post(health::ruby_stop_handler))

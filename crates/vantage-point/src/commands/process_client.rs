@@ -65,6 +65,25 @@ impl ProcessClient {
         Ok(json)
     }
 
+    /// GET リクエストを Process に送信
+    pub fn get(&self, path: &str) -> Result<serde_json::Value> {
+        let url = format!("http://[::1]:{}{}", self.port, path);
+        let resp = self
+            .client
+            .get(&url)
+            .timeout(std::time::Duration::from_secs(15))
+            .send()?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().unwrap_or_default();
+            bail!("Process returned HTTP {} ({}): {}", status, path, body);
+        }
+
+        let json: serde_json::Value = resp.json()?;
+        Ok(json)
+    }
+
     pub fn port(&self) -> u16 {
         self.port
     }
