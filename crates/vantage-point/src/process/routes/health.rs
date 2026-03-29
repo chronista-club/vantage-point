@@ -694,7 +694,9 @@ pub async fn tmux_capture_handler(
     };
     match params.pane_id {
         Some(pane_id) => match handle.capture(&pane_id).await {
-            Ok(content) => Json(serde_json::json!({"status": "ok", "pane_id": pane_id, "content": content})),
+            Ok(content) => {
+                Json(serde_json::json!({"status": "ok", "pane_id": pane_id, "content": content}))
+            }
             Err(e) => Json(serde_json::json!({"error": e})),
         },
         None => {
@@ -705,9 +707,7 @@ pub async fn tmux_capture_handler(
 }
 
 /// GET /api/tmux/list - ペイン一覧
-pub async fn tmux_list_handler(
-    State(state): State<Arc<AppState>>,
-) -> impl IntoResponse {
+pub async fn tmux_list_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let handle = match state.ensure_tmux().await {
         Some(h) => h,
         None => {
