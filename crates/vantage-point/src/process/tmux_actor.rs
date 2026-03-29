@@ -464,6 +464,7 @@ impl TmuxActor {
 
     /// ペインを閉じる（ブロッキング — spawn_blocking 内で呼ぶ）
     fn do_close(pane_id: &str) -> Result<(), String> {
+        Self::validate_tmux_command(pane_id)?;
         let status = std::process::Command::new(crate::tmux::tmux_bin().unwrap_or("tmux"))
             .args(["kill-pane", "-t", pane_id])
             .status()
@@ -477,6 +478,7 @@ impl TmuxActor {
 
     /// ペインの内容をキャプチャ（ブロッキング — spawn_blocking 内で呼ぶ）
     fn do_capture(pane_id: &str) -> Result<String, String> {
+        Self::validate_tmux_command(pane_id)?;
         let output = std::process::Command::new(crate::tmux::tmux_bin().unwrap_or("tmux"))
             .args(["capture-pane", "-t", pane_id, "-p"])
             .output()
@@ -514,8 +516,11 @@ impl TmuxActor {
     }
 
     /// ペインにキー入力を送信（ブロッキング — spawn_blocking 内で呼ぶ）
+    ///
+    /// `keys` は意図的に無検証: tmux send-keys はシェル経由ではなく
+    /// tmux プロトコルレベルで処理されるため、任意テキスト送信が本来の用途。
     fn do_send_keys(pane_id: &str, keys: &str) -> Result<(), String> {
-        // pane_id のインジェクション防止
+        // pane_id のインジェクション防止（keys は意図的に無検証）
         Self::validate_tmux_command(pane_id)?;
         let tmux = crate::tmux::tmux_bin().unwrap_or("tmux");
 

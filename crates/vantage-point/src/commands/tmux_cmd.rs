@@ -3,7 +3,7 @@
 //! tmux ペイン操作を CLI から実行する。
 //! Process の HTTP API (`/api/tmux/*`) を経由して TmuxActor にコマンドを送信する。
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use clap::Subcommand;
 
 use crate::commands::process_client::ProcessClient;
@@ -83,9 +83,7 @@ pub enum TmuxCommands {
     Deploy {
         /// 実行するコマンド
         command: String,
-        /// ラベル名
-        #[arg(long, short)]
-        label: Option<String>,
+        // TODO: --label でエージェントメタデータ設定（/api/tmux/set-agent-meta 追加後に実装）
         /// 接続先プロジェクト名またはインデックス
         #[arg(long)]
         target: Option<String>,
@@ -106,6 +104,22 @@ pub enum TmuxCommands {
     },
 }
 
+/// HTTP レスポンスの "error" フィールドをチェックし、エラーなら bail する
+fn check_error(resp: &serde_json::Value) -> Result<()> {
+    if let Some(err) = resp.get("error").and_then(|v| v.as_str()) {
+        bail!("tmux エラー: {}", err);
+    }
+    Ok(())
+}
+
+/// pane_id を URL クエリパラメータ用にエンコードする
+///
+/// tmux の pane_id は `%0`, `%8` のように `%` で始まるため、
+/// URL のパーセントエンコーディングと衝突する。
+fn encode_pane_id(id: &str) -> String {
+    id.replace('%', "%25")
+}
+
 pub fn execute(cmd: TmuxCommands, config: &Config) -> Result<()> {
     match cmd {
         TmuxCommands::Capture { pane, target, port } => {
@@ -114,11 +128,7 @@ pub fn execute(cmd: TmuxCommands, config: &Config) -> Result<()> {
                 "/api/tmux/capture",
                 &serde_json::json!({ "pane_id": pane }),
             )?;
-
-            if let Some(err) = resp.get("error").and_then(|v| v.as_str()) {
-                eprintln!("エラー: {}", err);
-                return Ok(());
-            }
+            check_error(&resp)?;
 
             // 単一ペインの場合
             if let Some(content) = resp.get("content").and_then(|v| v.as_str()) {
@@ -167,11 +177,7 @@ pub fn execute(cmd: TmuxCommands, config: &Config) -> Result<()> {
                     "content_type": content_type,
                 }),
             )?;
-
-            if let Some(err) = resp.get("error").and_then(|v| v.as_str()) {
-                eprintln!("エラー: {}", err);
-                return Ok(());
-            }
+            check_error(&resp)?;
 
             if let Some(pane) = resp.get("pane") {
                 let id = pane.get("id").and_then(|v| v.as_str()).unwrap_or("?");
@@ -196,12 +202,8 @@ pub fn execute(cmd: TmuxCommands, config: &Config) -> Result<()> {
                     "enter": !no_enter,
                 }),
             )?;
-
-            if let Some(err) = resp.get("error").and_then(|v| v.as_str()) {
-                eprintln!("エラー: {}", err);
-            } else {
-                println!("送信完了: {} → {}", pane, text);
-            }
+            check_error(&resp)?;
+            println!("送信完了: {} → {}", pane, text);
             Ok(())
         }
 
@@ -249,7 +251,7 @@ pub fn execute(cmd: TmuxCommands, config: &Config) -> Result<()> {
             for pane in &panes {
                 let id = pane.get("id").and_then(|v| v.as_str()).unwrap_or("?");
                 let meta_resp =
-                    client.get(&format!("/api/tmux/agent-meta?pane_id={}", id));
+                    client.get(&format!("/api/tmux/agent-meta?pane_id={}", encode_pane_id(id)));
                 if let Ok(resp) = meta_resp {
                     if let Some(meta) = resp.get("meta") {
                         if !meta.is_null() {
@@ -299,7 +301,7 @@ pub fn execute(cmd: TmuxCommands, config: &Config) -> Result<()> {
                 let cmd = p.get("command").and_then(|v| v.as_str()).unwrap_or("");
 
                 let meta_resp =
-                    client.get(&format!("/api/tmux/agent-meta?pane_id={}", id));
+                    client.get(&format!("/api/tmux/agent-meta?pane_id={}", encode_pane_id(id)));
                 let meta_info = if let Ok(resp) = meta_resp {
                     if let Some(meta) = resp.get("meta") {
                         if !meta.is_null() {
@@ -333,13 +335,12 @@ pub fn execute(cmd: TmuxCommands, config: &Config) -> Result<()> {
 
         TmuxCommands::Deploy {
             command,
-            label,
             target,
             port,
         } => {
             let client = ProcessClient::connect(target.as_deref(), port, config)?;
 
-            // 1. ペイン分割
+            // ペイン分割してコマンド実行
             let split_resp = client.post(
                 "/api/tmux/split",
                 &serde_json::json!({
@@ -347,11 +348,7 @@ pub fn execute(cmd: TmuxCommands, config: &Config) -> Result<()> {
                     "command": command,
                 }),
             )?;
-
-            if let Some(err) = split_resp.get("error").and_then(|v| v.as_str()) {
-                eprintln!("エラー: {}", err);
-                return Ok(());
-            }
+            check_error(&split_resp)?;
 
             let pane_id = split_resp
                 .pointer("/pane/id")
@@ -359,12 +356,6 @@ pub fn execute(cmd: TmuxCommands, config: &Config) -> Result<()> {
                 .unwrap_or("?");
 
             println!("デプロイ: {} → {}", pane_id, command);
-
-            // 2. ラベルがあればエージェントメタデータ設定（send-keys 経由で間接的に）
-            if let Some(label) = label {
-                println!("  ラベル: {}", label);
-            }
-
             Ok(())
         }
 
@@ -374,12 +365,8 @@ pub fn execute(cmd: TmuxCommands, config: &Config) -> Result<()> {
                 "/api/tmux/close",
                 &serde_json::json!({ "pane_id": pane }),
             )?;
-
-            if let Some(err) = resp.get("error").and_then(|v| v.as_str()) {
-                eprintln!("エラー: {}", err);
-            } else {
-                println!("ペイン {} を閉じました", pane);
-            }
+            check_error(&resp)?;
+            println!("ペイン {} を閉じました", pane);
             Ok(())
         }
     }
