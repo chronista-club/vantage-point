@@ -671,6 +671,106 @@ pub async fn tmux_close_handler(
     }
 }
 
+// ===== tmux 追加ハンドラー（CLI 用） =====
+
+/// tmux capture パラメータ
+#[derive(Deserialize)]
+pub struct TmuxCaptureParams {
+    pub pane_id: Option<String>,
+}
+
+/// POST /api/tmux/capture - ペイン内容をキャプチャ
+///
+/// pane_id 指定で単一ペイン、省略で全ペインをキャプチャ。
+pub async fn tmux_capture_handler(
+    State(state): State<Arc<AppState>>,
+    Json(params): Json<TmuxCaptureParams>,
+) -> impl IntoResponse {
+    let handle = match state.ensure_tmux().await {
+        Some(h) => h,
+        None => {
+            return Json(serde_json::json!({"error": "tmux 未使用環境です"}));
+        }
+    };
+    match params.pane_id {
+        Some(pane_id) => match handle.capture(&pane_id).await {
+            Ok(content) => {
+                Json(serde_json::json!({"status": "ok", "pane_id": pane_id, "content": content}))
+            }
+            Err(e) => Json(serde_json::json!({"error": e})),
+        },
+        None => {
+            let captures = handle.capture_all().await;
+            Json(serde_json::json!({"status": "ok", "captures": captures}))
+        }
+    }
+}
+
+/// GET /api/tmux/list - ペイン一覧
+pub async fn tmux_list_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let handle = match state.ensure_tmux().await {
+        Some(h) => h,
+        None => {
+            return Json(serde_json::json!({"error": "tmux 未使用環境です"}));
+        }
+    };
+    let panes = handle.list().await;
+    Json(serde_json::json!({"status": "ok", "panes": panes}))
+}
+
+/// tmux send-keys パラメータ
+#[derive(Deserialize)]
+pub struct TmuxSendKeysParams {
+    pub pane_id: String,
+    pub text: String,
+    /// true なら末尾に Enter を付与
+    #[serde(default)]
+    pub enter: bool,
+}
+
+/// POST /api/tmux/send-keys - ペインにキー入力送信
+pub async fn tmux_send_keys_handler(
+    State(state): State<Arc<AppState>>,
+    Json(params): Json<TmuxSendKeysParams>,
+) -> impl IntoResponse {
+    let handle = match state.ensure_tmux().await {
+        Some(h) => h,
+        None => {
+            return Json(serde_json::json!({"error": "tmux 未使用環境です"}));
+        }
+    };
+    let keys = if params.enter {
+        format!("{} Enter", params.text)
+    } else {
+        params.text
+    };
+    match handle.send_keys(&params.pane_id, &keys).await {
+        Ok(()) => Json(serde_json::json!({"status": "ok"})),
+        Err(e) => Json(serde_json::json!({"error": e})),
+    }
+}
+
+/// tmux agent-meta パラメータ
+#[derive(Deserialize)]
+pub struct TmuxAgentMetaParams {
+    pub pane_id: String,
+}
+
+/// GET /api/tmux/agent-meta - エージェントメタデータ取得
+pub async fn tmux_agent_meta_handler(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(params): axum::extract::Query<TmuxAgentMetaParams>,
+) -> impl IntoResponse {
+    let handle = match state.ensure_tmux().await {
+        Some(h) => h,
+        None => {
+            return Json(serde_json::json!({"error": "tmux 未使用環境です"}));
+        }
+    };
+    let meta = handle.get_agent_meta(&params.pane_id).await;
+    Json(serde_json::json!({"status": "ok", "meta": meta}))
+}
+
 // ===== Ruby VM ハンドラー =====
 
 /// Ruby eval パラメータ

@@ -25,6 +25,7 @@ use vantage_point::mcp;
 use commands::file_cmd::FileCommands;
 use commands::midi::MidiCommands;
 use commands::pane::PaneCommands;
+use commands::tmux_cmd::TmuxCommands;
 
 #[derive(Parser)]
 #[command(name = "vp")]
@@ -79,6 +80,10 @@ enum Commands {
     #[command(subcommand)]
     Hd(commands::hd_cmd::HdCommands),
 
+    /// tmux ペイン操作（キャプチャ・分割・送信・ダッシュボード）
+    #[command(subcommand)]
+    Tmux(TmuxCommands),
+
     /// MIDIハードウェア操作
     #[command(subcommand)]
     Midi(MidiCommands),
@@ -124,6 +129,7 @@ fn main() -> Result<()> {
         Commands::Sp(cmd) => commands::sp_cmd::execute(cmd, &config),
         Commands::Hd(cmd) => commands::hd_cmd::execute(cmd, &config),
 
+        Commands::Tmux(cmd) => commands::tmux_cmd::execute(cmd, &config),
         Commands::Midi(cmd) => commands::midi::execute(cmd),
         Commands::Db(cmd) => commands::db_cmd::execute(cmd),
     }
