@@ -739,15 +739,18 @@ pub async fn tmux_send_keys_handler(
             return Json(serde_json::json!({"error": "tmux 未使用環境です"}));
         }
     };
-    let keys = if params.enter {
-        format!("{} Enter", params.text)
-    } else {
-        params.text
-    };
-    match handle.send_keys(&params.pane_id, &keys).await {
-        Ok(()) => Json(serde_json::json!({"status": "ok"})),
-        Err(e) => Json(serde_json::json!({"error": e})),
+    // テキスト送信
+    match handle.send_keys(&params.pane_id, &params.text).await {
+        Ok(()) => {}
+        Err(e) => return Json(serde_json::json!({"error": e})),
     }
+    // enter=true なら Enter キーを別途送信（tmux send-keys は引数単位で解釈する）
+    if params.enter {
+        if let Err(e) = handle.send_keys(&params.pane_id, "Enter").await {
+            return Json(serde_json::json!({"error": e}));
+        }
+    }
+    Json(serde_json::json!({"status": "ok"}))
 }
 
 /// tmux agent-meta パラメータ
