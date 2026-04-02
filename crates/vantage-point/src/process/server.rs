@@ -247,6 +247,7 @@ pub async fn run(
         .route("/api/tmux/list", get(health::tmux_list_handler))
         .route("/api/tmux/send-keys", post(health::tmux_send_keys_handler))
         .route("/api/tmux/agent-meta", get(health::tmux_agent_meta_handler))
+        .route("/api/tmux/resolve-pane", get(health::tmux_resolve_pane_handler))
         .route("/api/ruby/eval", post(health::ruby_eval_handler))
         .route("/api/ruby/run", post(health::ruby_run_handler))
         .route("/api/ruby/stop", post(health::ruby_stop_handler))

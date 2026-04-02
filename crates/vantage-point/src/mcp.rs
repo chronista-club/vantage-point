@@ -280,8 +280,10 @@ pub struct TmuxSplitParams {
 /// tmux ペインキャプチャのパラメータ
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct TmuxCaptureParams {
-    /// ペイン ID（例: %0）。省略すると全ペインをキャプチャ。
-    #[schemars(description = "Pane ID (e.g. %0). If omitted, captures all panes.")]
+    /// ペイン ID（例: %0）またはエージェント label。省略すると全ペインをキャプチャ。
+    #[schemars(
+        description = "Pane ID (e.g. %0) or agent label (e.g. 'Moody Blues'). If omitted, captures all panes."
+    )]
     pub pane_id: Option<String>,
 }
 
@@ -307,8 +309,8 @@ pub struct TmuxAgentDeployParams {
 /// エージェントステータス更新のパラメータ
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct TmuxAgentStatusParams {
-    /// ペイン ID
-    #[schemars(description = "Pane ID (e.g. %3)")]
+    /// ペイン ID またはエージェント label
+    #[schemars(description = "Pane ID (e.g. %3) or agent label (e.g. 'Moody Blues')")]
     pub pane_id: String,
     /// ステータス（"running", "waiting", "done", "error"）
     #[schemars(description = "Agent status: 'running', 'waiting', 'done', or 'error'")]
@@ -321,8 +323,8 @@ pub struct TmuxAgentStatusParams {
 /// エージェントへのテキスト送信パラメータ
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct TmuxAgentSendParams {
-    /// ペイン ID
-    #[schemars(description = "Pane ID (e.g. %3)")]
+    /// ペイン ID またはエージェント label
+    #[schemars(description = "Pane ID (e.g. %3) or agent label (e.g. 'Moody Blues')")]
     pub pane_id: String,
     /// 送信するテキスト（改行はそのまま送信される）
     #[schemars(description = "Text to send to the pane (newlines are sent as-is)")]
@@ -692,6 +694,46 @@ impl VantageMcp {
         }
     }
 
+    /// label または pane_id を受け取り、pane_id に解決する
+    ///
+    /// `%` で始まるならそのまま返す。それ以外は QUIC 経由で label を逆引き。
+    async fn resolve_pane_id(&self, query: &str) -> Result<String, McpError> {
+        if query.starts_with('%') {
+            return Ok(query.to_string());
+        }
+        let resp = self
+            .quic_call(
+                "tmux_resolve_pane",
+                serde_json::json!({"query": query}),
+            )
+            .await?;
+        resp.get("pane_id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .ok_or_else(|| {
+                McpError::invalid_params(
+                    format!("ペインが見つかりません: {}", query),
+                    None,
+                )
+            })
+    }
+
+    /// pane_id から表示用ラベルを取得する（エージェントメタデータがあれば label を返す）
+    async fn format_pane_display(&self, pane_id: &str) -> String {
+        if let Ok(resp) = self
+            .quic_call(
+                "tmux_resolve_pane",
+                serde_json::json!({"query": pane_id}),
+            )
+            .await
+        {
+            if let Some(label) = resp.pointer("/meta/label").and_then(|v| v.as_str()) {
+                return format!("{} ({})", label, pane_id);
+            }
+        }
+        pane_id.to_string()
+    }
+
     /// Process が見つからない場合に自動起動する
     ///
     /// `vp sp start` をバックグラウンドで spawn し、
@@ -1028,14 +1070,16 @@ impl VantageMcp {
         &self,
         rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<TmuxCaptureParams>,
     ) -> Result<CallToolResult, McpError> {
-        if let Some(pane_id) = &params.pane_id {
-            // 単一ペインキャプチャ
+        if let Some(query) = &params.pane_id {
+            // 単一ペインキャプチャ（label でも指定可能）
+            let pane_id = self.resolve_pane_id(query).await?;
             let resp = self
                 .quic_call("tmux_capture", serde_json::json!({"pane_id": pane_id}))
                 .await?;
             let content = resp.get("content").and_then(|v| v.as_str()).unwrap_or("");
+            let display = self.format_pane_display(&pane_id).await;
             Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-                format!("=== Pane {} ===\n{}", pane_id, content),
+                format!("=== Pane {} ===\n{}", display, content),
             )]))
         } else {
             // 全ペインキャプチャ
@@ -1059,10 +1103,15 @@ impl VantageMcp {
                     .and_then(|v| v.as_str())
                     .unwrap_or("?");
                 let content = cap.get("content").and_then(|v| v.as_str()).unwrap_or("");
-                output.push_str(&format!(
-                    "=== Pane {} ({}) ===\n{}\n\n",
-                    pane_id, cmd, content
-                ));
+                // エージェントメタデータがあればラベルを併記
+                let label = cap
+                    .pointer("/agent/label")
+                    .and_then(|v| v.as_str());
+                let header = match label {
+                    Some(l) => format!("=== {} ({}) [{}] ===", l, pane_id, cmd),
+                    None => format!("=== Pane {} ({}) ===", pane_id, cmd),
+                };
+                output.push_str(&format!("{}\n{}\n\n", header, content));
             }
 
             if output.is_empty() {
@@ -1264,8 +1313,9 @@ impl VantageMcp {
         &self,
         rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<TmuxAgentStatusParams>,
     ) -> Result<CallToolResult, McpError> {
+        let pane_id = self.resolve_pane_id(&params.pane_id).await?;
         let mut payload = serde_json::json!({
-            "pane_id": params.pane_id,
+            "pane_id": pane_id,
             "status": params.status,
         });
         if let Some(task) = &params.task {
@@ -1273,10 +1323,11 @@ impl VantageMcp {
         }
         self.quic_call("tmux_update_agent_status", payload).await?;
 
+        let display = self.format_pane_display(&pane_id).await;
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
             format!(
                 "Agent status updated: pane={}, status={}",
-                params.pane_id, params.status
+                display, params.status
             ),
         )]))
     }
@@ -1292,17 +1343,19 @@ impl VantageMcp {
         &self,
         rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<TmuxAgentSendParams>,
     ) -> Result<CallToolResult, McpError> {
+        let pane_id = self.resolve_pane_id(&params.pane_id).await?;
         self.quic_call(
             "tmux_send_keys",
             serde_json::json!({
-                "pane_id": params.pane_id,
+                "pane_id": pane_id,
                 "keys": params.text,
             }),
         )
         .await?;
 
+        let display = self.format_pane_display(&pane_id).await;
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-            format!("Sent to pane {}: {:?}", params.pane_id, params.text),
+            format!("Sent to pane {}: {:?}", display, params.text),
         )]))
     }
 

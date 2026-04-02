@@ -753,6 +753,33 @@ pub async fn tmux_send_keys_handler(
     Json(serde_json::json!({"status": "ok"}))
 }
 
+/// tmux resolve-pane パラメータ
+#[derive(Deserialize)]
+pub struct TmuxResolvePaneParams {
+    /// label または pane_id（%始まり）
+    pub q: String,
+}
+
+/// GET /api/tmux/resolve-pane - label/pane_id からペイン ID を解決
+pub async fn tmux_resolve_pane_handler(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(params): axum::extract::Query<TmuxResolvePaneParams>,
+) -> impl IntoResponse {
+    let handle = match state.ensure_tmux().await {
+        Some(h) => h,
+        None => {
+            return Json(serde_json::json!({"error": "tmux 未使用環境です"}));
+        }
+    };
+    match handle.resolve_pane_id(&params.q).await {
+        Some(pane_id) => {
+            let meta = handle.get_agent_meta(&pane_id).await;
+            Json(serde_json::json!({"status": "ok", "pane_id": pane_id, "meta": meta}))
+        }
+        None => Json(serde_json::json!({"error": format!("ペインが見つかりません: {}", params.q)})),
+    }
+}
+
 /// tmux agent-meta パラメータ
 #[derive(Deserialize)]
 pub struct TmuxAgentMetaParams {

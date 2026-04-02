@@ -14,7 +14,7 @@ use crate::config::Config;
 pub enum TmuxCommands {
     /// ペイン内容をキャプチャ
     Capture {
-        /// キャプチャ対象のペイン ID（省略で全ペイン）
+        /// キャプチャ対象のペイン ID またはエージェント label（省略で全ペイン）
         #[arg(long)]
         pane: Option<String>,
         /// 接続先プロジェクト名またはインデックス
@@ -44,7 +44,7 @@ pub enum TmuxCommands {
     },
     /// ペインにキー入力を送信
     SendKeys {
-        /// 送信先ペイン ID
+        /// 送信先ペイン ID またはエージェント label
         pane: String,
         /// 送信するテキスト
         text: String,
@@ -69,7 +69,7 @@ pub enum TmuxCommands {
     },
     /// エージェントステータス確認
     Status {
-        /// 対象ペイン ID（省略で全ペイン）
+        /// 対象ペイン ID またはエージェント label（省略で全ペイン）
         #[arg(long)]
         pane: Option<String>,
         /// 接続先プロジェクト名またはインデックス
@@ -93,7 +93,7 @@ pub enum TmuxCommands {
     },
     /// ペインを閉じる
     Close {
-        /// 閉じるペイン ID
+        /// 閉じるペイン ID またはエージェント label
         pane: String,
         /// 接続先プロジェクト名またはインデックス
         #[arg(long)]
@@ -124,13 +124,20 @@ pub fn execute(cmd: TmuxCommands, config: &Config) -> Result<()> {
     match cmd {
         TmuxCommands::Capture { pane, target, port } => {
             let client = ProcessClient::connect(target.as_deref(), port, config)?;
-            let resp = client.post("/api/tmux/capture", &serde_json::json!({ "pane_id": pane }))?;
+            // label → pane_id 解決
+            let resolved_pane = match &pane {
+                Some(q) => Some(client.resolve_pane_id(q)?),
+                None => None,
+            };
+            let resp = client
+                .post("/api/tmux/capture", &serde_json::json!({ "pane_id": resolved_pane }))?;
             check_error(&resp)?;
 
             // 単一ペインの場合
             if let Some(content) = resp.get("content").and_then(|v| v.as_str()) {
                 let pane_id = resp.get("pane_id").and_then(|v| v.as_str()).unwrap_or("?");
-                println!("=== Pane {} ===", pane_id);
+                let display = client.format_pane_display(pane_id);
+                println!("=== Pane {} ===", display);
                 println!("{}", content);
                 return Ok(());
             }
@@ -146,8 +153,13 @@ pub fn execute(cmd: TmuxCommands, config: &Config) -> Result<()> {
                         .pointer("/pane/command")
                         .and_then(|v| v.as_str())
                         .unwrap_or("");
+                    let label = cap.pointer("/agent/label").and_then(|v| v.as_str());
                     let content = cap.get("content").and_then(|v| v.as_str()).unwrap_or("");
-                    println!("=== Pane {} ({}) ===", pane_id, cmd_str);
+                    let header = match label {
+                        Some(l) => format!("=== {} ({}) [{}] ===", l, pane_id, cmd_str),
+                        None => format!("=== Pane {} ({}) ===", pane_id, cmd_str),
+                    };
+                    println!("{}", header);
                     println!("{}", content);
                     println!();
                 }
@@ -188,16 +200,18 @@ pub fn execute(cmd: TmuxCommands, config: &Config) -> Result<()> {
             port,
         } => {
             let client = ProcessClient::connect(target.as_deref(), port, config)?;
+            let pane_id = client.resolve_pane_id(&pane)?;
             let resp = client.post(
                 "/api/tmux/send-keys",
                 &serde_json::json!({
-                    "pane_id": pane,
+                    "pane_id": pane_id,
                     "text": text,
                     "enter": !no_enter,
                 }),
             )?;
             check_error(&resp)?;
-            println!("送信完了: {} → {}", pane, text);
+            let display = client.format_pane_display(&pane_id);
+            println!("送信完了: {} → {}", display, text);
             Ok(())
         }
 
@@ -217,12 +231,12 @@ pub fn execute(cmd: TmuxCommands, config: &Config) -> Result<()> {
                 return Ok(());
             }
 
-            println!("┌──────┬─────────┬─────┬──────────────────────┐");
+            println!("┌──────┬──────────────────┬─────────┬─────┬──────────────────────┐");
             println!(
-                "│ {:>4} │ {:^7} │ {:^3} │ {:<20} │",
-                "ID", "Size", "Act", "Command"
+                "│ {:>4} │ {:<16} │ {:^7} │ {:^3} │ {:<20} │",
+                "ID", "Label", "Size", "Act", "Command"
             );
-            println!("├──────┼─────────┼─────┼──────────────────────┤");
+            println!("├──────┼──────────────────┼─────────┼─────┼──────────────────────┤");
 
             for pane in &panes {
                 let id = pane.get("id").and_then(|v| v.as_str()).unwrap_or("?");
@@ -235,12 +249,33 @@ pub fn execute(cmd: TmuxCommands, config: &Config) -> Result<()> {
                 let cmd = pane.get("command").and_then(|v| v.as_str()).unwrap_or("");
                 let active_mark = if active { "*" } else { " " };
                 let size = format!("{}x{}", w, h);
+                // エージェント label を取得
+                let label = {
+                    let meta_resp = client.get(&format!(
+                        "/api/tmux/agent-meta?pane_id={}",
+                        encode_pane_id(id)
+                    ));
+                    meta_resp
+                        .ok()
+                        .and_then(|r| {
+                            r.pointer("/meta/label")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string())
+                        })
+                        .unwrap_or_else(|| "-".to_string())
+                };
+                // label が長い場合は切り詰め
+                let label_display = if label.len() > 16 {
+                    format!("{}…", &label[..15])
+                } else {
+                    label
+                };
                 println!(
-                    "│ {:>4} │ {:>7} │  {}  │ {:<20} │",
-                    id, size, active_mark, cmd
+                    "│ {:>4} │ {:<16} │ {:>7} │  {}  │ {:<20} │",
+                    id, label_display, size, active_mark, cmd
                 );
             }
-            println!("└──────┴─────────┴─────┴──────────────────────┘");
+            println!("└──────┴──────────────────┴─────────┴─────┴──────────────────────┘");
             println!("  port {}", client.port());
 
             // エージェントメタデータを表示
@@ -283,8 +318,14 @@ pub fn execute(cmd: TmuxCommands, config: &Config) -> Result<()> {
                 .cloned()
                 .unwrap_or_default();
 
+            // label → pane_id 解決
+            let resolved_pane = match &pane {
+                Some(q) => Some(client.resolve_pane_id(q)?),
+                None => None,
+            };
+
             // フィルタ対象を決定
-            let target_panes: Vec<&serde_json::Value> = match &pane {
+            let target_panes: Vec<&serde_json::Value> = match &resolved_pane {
                 Some(id) => panes
                     .iter()
                     .filter(|p| p.get("id").and_then(|v| v.as_str()) == Some(id.as_str()))
@@ -356,9 +397,12 @@ pub fn execute(cmd: TmuxCommands, config: &Config) -> Result<()> {
 
         TmuxCommands::Close { pane, target, port } => {
             let client = ProcessClient::connect(target.as_deref(), port, config)?;
-            let resp = client.post("/api/tmux/close", &serde_json::json!({ "pane_id": pane }))?;
+            let pane_id = client.resolve_pane_id(&pane)?;
+            let display = client.format_pane_display(&pane_id);
+            let resp =
+                client.post("/api/tmux/close", &serde_json::json!({ "pane_id": pane_id }))?;
             check_error(&resp)?;
-            println!("ペイン {} を閉じました", pane);
+            println!("ペイン {} を閉じました", display);
             Ok(())
         }
     }

@@ -87,6 +87,51 @@ impl ProcessClient {
     pub fn port(&self) -> u16 {
         self.port
     }
+
+    /// label または pane_id を受け取り、pane_id に解決する
+    ///
+    /// `%` で始まるならそのまま返す。それ以外は `/api/tmux/resolve-pane` で逆引き。
+    pub fn resolve_pane_id(&self, query: &str) -> Result<String> {
+        if query.starts_with('%') {
+            return Ok(query.to_string());
+        }
+        // クエリ文字列のエンコード（スペースや特殊文字を安全に送信）
+        let encoded: String = query
+            .chars()
+            .map(|c| match c {
+                ' ' => "%20".to_string(),
+                '%' => "%25".to_string(),
+                '&' => "%26".to_string(),
+                '=' => "%3D".to_string(),
+                '#' => "%23".to_string(),
+                _ => c.to_string(),
+            })
+            .collect();
+        let resp = self.get(&format!("/api/tmux/resolve-pane?q={}", encoded))?;
+        if let Some(pane_id) = resp.get("pane_id").and_then(|v| v.as_str()) {
+            Ok(pane_id.to_string())
+        } else {
+            let err = resp
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("ペインが見つかりません");
+            bail!("{}", err);
+        }
+    }
+
+    /// pane_id の表示用フォーマットを取得（label があれば "label (pane_id)" 形式）
+    pub fn format_pane_display(&self, pane_id: &str) -> String {
+        let meta_resp = self.get(&format!(
+            "/api/tmux/agent-meta?pane_id={}",
+            pane_id.replace('%', "%25")
+        ));
+        if let Ok(resp) = meta_resp {
+            if let Some(label) = resp.pointer("/meta/label").and_then(|v| v.as_str()) {
+                return format!("{} ({})", label, pane_id);
+            }
+        }
+        pane_id.to_string()
+    }
 }
 
 /// target 引数からポートを解決

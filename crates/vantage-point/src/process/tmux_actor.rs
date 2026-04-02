@@ -82,6 +82,11 @@ enum TmuxCommand {
         keys: String,
         reply: oneshot::Sender<Result<(), String>>,
     },
+    /// label または pane_id からペイン ID を解決
+    ResolvePaneId {
+        query: String,
+        reply: oneshot::Sender<Option<String>>,
+    },
 }
 
 /// エージェントメタデータ（tmux pane に紐づく論理情報）
@@ -227,6 +232,26 @@ impl TmuxHandle {
         self.tx
             .send(TmuxCommand::GetAgentMeta {
                 pane_id: pane_id.to_string(),
+                reply,
+            })
+            .await
+            .ok()?;
+        rx.await.ok().flatten()
+    }
+
+    /// label または pane_id からペイン ID を解決する
+    ///
+    /// `%` で始まる文字列はそのまま pane_id として返す。
+    /// それ以外は agent_metadata の label を前方一致（case-insensitive）で検索する。
+    pub async fn resolve_pane_id(&self, query: &str) -> Option<String> {
+        // `%` で始まるなら pane_id そのもの
+        if query.starts_with('%') {
+            return Some(query.to_string());
+        }
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(TmuxCommand::ResolvePaneId {
+                query: query.to_string(),
                 reply,
             })
             .await
@@ -400,6 +425,16 @@ impl TmuxActor {
                         tracing::info!("tmux send-keys: pane={}", pane_id);
                     }
                     let _ = reply.send(result);
+                }
+                TmuxCommand::ResolvePaneId { query, reply } => {
+                    // agent_metadata の label を前方一致（case-insensitive）で検索
+                    let query_lower = query.to_lowercase();
+                    let found = self
+                        .agent_metadata
+                        .iter()
+                        .find(|(_, meta)| meta.label.to_lowercase().starts_with(&query_lower))
+                        .map(|(pane_id, _)| pane_id.clone());
+                    let _ = reply.send(found);
                 }
             }
         }
