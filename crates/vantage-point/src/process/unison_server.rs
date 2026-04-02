@@ -542,9 +542,7 @@ pub async fn start_unison_server(
                                 handle_tmux_clear_agent_meta(&state, payload).await
                             }
                             "tmux_send_keys" => handle_tmux_send_keys(&state, payload).await,
-                            "tmux_resolve_pane" => {
-                                handle_tmux_resolve_pane(&state, payload).await
-                            }
+                            "tmux_resolve_pane" => handle_tmux_resolve_pane(&state, payload).await,
                             // ProcessRunner
                             "process_run" => handle_process_run(&state, payload).await,
                             "process_stop" => handle_process_stop(&state, payload).await,

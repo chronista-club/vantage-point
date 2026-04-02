@@ -715,7 +715,19 @@ pub async fn tmux_list_handler(State(state): State<Arc<AppState>>) -> impl IntoR
         }
     };
     let panes = handle.list().await;
-    Json(serde_json::json!({"status": "ok", "panes": panes}))
+    let all_meta = handle.list_all_agent_meta().await;
+    // 各ペインにエージェントメタデータを付与（一括取得済み）
+    let panes_with_meta: Vec<serde_json::Value> = panes
+        .iter()
+        .map(|pane| {
+            let mut pane_json = serde_json::to_value(pane).unwrap_or_default();
+            if let Some(meta) = all_meta.get(&pane.id) {
+                pane_json["agent"] = serde_json::to_value(meta).unwrap_or_default();
+            }
+            pane_json
+        })
+        .collect();
+    Json(serde_json::json!({"status": "ok", "panes": panes_with_meta}))
 }
 
 /// tmux send-keys パラメータ
