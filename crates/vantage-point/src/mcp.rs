@@ -117,6 +117,12 @@ pub struct MailboxSendParams {
     /// 返信先メッセージID（スレッド用）
     #[schemars(description = "Reply-to message ID for threaded conversations")]
     pub reply_to: Option<String>,
+
+    /// 永続化フラグ（Process 再起動後も生存）
+    #[schemars(
+        description = "If true, persist the message across Process restarts (opt-in). Default: false (ephemeral, in-memory only)."
+    )]
+    pub persistent: Option<bool>,
 }
 
 /// Parameters for mailbox_recv tool (VP-24)
@@ -1901,6 +1907,11 @@ if bestId > 0 { print(bestId) }
 
         if let Some(reply_to) = params.reply_to {
             msg = msg.with_reply_to(reply_to);
+        }
+
+        // opt-in 永続化フラグ
+        if params.persistent.unwrap_or(false) {
+            msg = msg.persistent();
         }
 
         let msg_id = msg.id.clone();

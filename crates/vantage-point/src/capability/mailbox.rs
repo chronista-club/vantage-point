@@ -15,6 +15,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{RwLock, mpsc};
 
+use crate::capability::whitesnake::Whitesnake;
+
+/// 永続化メッセージを保存する Whitesnake namespace
+const MAILBOX_NAMESPACE: &str = "mailbox";
+/// 永続化メッセージの key prefix（`msg/{id}`）
+const MAILBOX_KEY_PREFIX: &str = "msg/";
+
 // =============================================================================
 // MailboxMessage
 // =============================================================================
@@ -36,6 +43,9 @@ pub struct MailboxMessage {
     pub reply_to: Option<String>,
     /// メッセージID
     pub id: String,
+    /// 永続化フラグ（true の場合、Process 再起動後も生存）
+    #[serde(default)]
+    pub persistent: bool,
 }
 
 /// メッセージ種別
@@ -66,6 +76,7 @@ impl MailboxMessage {
                 .as_millis() as u64,
             reply_to: None,
             id: uuid::Uuid::new_v4().to_string(),
+            persistent: false,
         }
     }
 
@@ -78,6 +89,15 @@ impl MailboxMessage {
     /// 返信先を設定
     pub fn with_reply_to(mut self, reply_to: impl Into<String>) -> Self {
         self.reply_to = Some(reply_to.into());
+        self
+    }
+
+    /// 永続化フラグを設定（Process 再起動後も生存）
+    ///
+    /// MailboxRouter が Whitesnake で構築されている場合のみ実効。
+    /// `with_persistence()` で作られた Router 以外では no-op（in-memory 配信）。
+    pub fn persistent(mut self) -> Self {
+        self.persistent = true;
         self
     }
 
@@ -108,6 +128,8 @@ pub struct MailboxHandle {
     rx: Arc<tokio::sync::Mutex<mpsc::Receiver<MailboxMessage>>>,
     /// Selective Receive 用のメッセージ退避バッファ
     stash: Arc<tokio::sync::Mutex<std::collections::VecDeque<MailboxMessage>>>,
+    /// 永続化バックエンド（persistent メッセージ受信時に ack = DISC 削除）
+    whitesnake: Option<Whitesnake>,
 }
 
 impl MailboxHandle {
@@ -148,21 +170,26 @@ impl MailboxHandle {
     /// メッセージを受信（ブロッキング）
     ///
     /// stash にメッセージがあればそちらを先に返す。
+    /// persistent メッセージの場合、受信完了時に永続ストアから DISC を削除（ack）。
     pub async fn recv(&self) -> Option<MailboxMessage> {
         // stash を先に確認
-        {
+        let msg = {
             let mut stash = self.stash.lock().await;
-            if let Some(msg) = stash.pop_front() {
-                return Some(msg);
-            }
-        }
-        self.rx.lock().await.recv().await
+            stash.pop_front()
+        };
+        let msg = match msg {
+            Some(msg) => Some(msg),
+            None => self.rx.lock().await.recv().await,
+        };
+        self.ack_if_persistent(msg.as_ref()).await;
+        msg
     }
 
     /// Selective Receive: 条件に合うメッセージのみ受信（Erlang 方式）
     ///
     /// 条件に合わないメッセージは stash に退避し、次回の recv/recv_matching で再確認。
     /// メッセージロスが起きない安全な設計。
+    /// persistent メッセージの場合、受信完了時に永続ストアから DISC を削除（ack）。
     pub async fn recv_matching<F>(&self, predicate: F) -> Option<MailboxMessage>
     where
         F: Fn(&MailboxMessage) -> bool,
@@ -171,7 +198,10 @@ impl MailboxHandle {
         {
             let mut stash = self.stash.lock().await;
             if let Some(pos) = stash.iter().position(&predicate) {
-                return stash.remove(pos);
+                let msg = stash.remove(pos);
+                drop(stash);
+                self.ack_if_persistent(msg.as_ref()).await;
+                return msg;
             }
         }
 
@@ -194,7 +224,21 @@ impl MailboxHandle {
         if !deferred.is_empty() {
             self.stash.lock().await.extend(deferred);
         }
+        self.ack_if_persistent(found.as_ref()).await;
         found
+    }
+
+    /// persistent メッセージの受信完了を永続ストアに反映（DISC 削除 = ack）
+    async fn ack_if_persistent(&self, msg: Option<&MailboxMessage>) {
+        let Some(msg) = msg else { return };
+        if !msg.persistent {
+            return;
+        }
+        let Some(ws) = &self.whitesnake else { return };
+        let key = format!("{}{}", MAILBOX_KEY_PREFIX, msg.id);
+        if let Err(e) = ws.remove(MAILBOX_NAMESPACE, &key).await {
+            tracing::warn!("Mailbox: persistent ack failed id={} err={}", msg.id, e);
+        }
     }
 }
 
@@ -206,6 +250,9 @@ impl MailboxHandle {
 ///
 /// 全 Mailbox を管理し、メッセージを宛先に配信する。
 /// Process（SP）または TheWorld が保持する。
+///
+/// Whitesnake を注入した場合、`persistent: true` のメッセージを SurrealDB/ファイルに保存し、
+/// Process 再起動後に `restore_pending()` で未配信メッセージを再投入可能。
 pub struct MailboxRouter {
     /// アドレス → 送信チャンネルのマッピング
     boxes: Arc<RwLock<HashMap<String, mpsc::Sender<MailboxMessage>>>>,
@@ -213,11 +260,25 @@ pub struct MailboxRouter {
     router_tx: mpsc::Sender<MailboxMessage>,
     /// ルーティングループの停止トークン
     shutdown: tokio_util::sync::CancellationToken,
+    /// 永続化バックエンド（persistent メッセージ対応）
+    whitesnake: Option<Whitesnake>,
 }
 
 impl MailboxRouter {
-    /// 新しい MailboxRouter を作成し、ルーティングループを開始
+    /// 新しい MailboxRouter を作成し、ルーティングループを開始（永続化なし）
     pub fn new() -> Self {
+        Self::new_inner(None)
+    }
+
+    /// 永続化バックエンド付きで MailboxRouter を作成
+    ///
+    /// `persistent: true` のメッセージは Whitesnake に保存され、
+    /// Process 再起動後に `restore_pending()` で再投入できる。
+    pub fn with_persistence(whitesnake: Whitesnake) -> Self {
+        Self::new_inner(Some(whitesnake))
+    }
+
+    fn new_inner(whitesnake: Option<Whitesnake>) -> Self {
         let (router_tx, router_rx) = mpsc::channel::<MailboxMessage>(1024);
         let boxes: Arc<RwLock<HashMap<String, mpsc::Sender<MailboxMessage>>>> =
             Arc::new(RwLock::new(HashMap::new()));
@@ -226,20 +287,31 @@ impl MailboxRouter {
         // ルーティングループ
         let boxes_clone = boxes.clone();
         let shutdown_clone = shutdown.clone();
-        tokio::spawn(Self::routing_loop(router_rx, boxes_clone, shutdown_clone));
+        let ws_clone = whitesnake.clone();
+        tokio::spawn(Self::routing_loop(
+            router_rx,
+            boxes_clone,
+            shutdown_clone,
+            ws_clone,
+        ));
 
         Self {
             boxes,
             router_tx,
             shutdown,
+            whitesnake,
         }
     }
 
     /// ルーティングループ — Router に届いたメッセージを宛先に配信
+    ///
+    /// persistent メッセージは配信前に Whitesnake に保存。
+    /// 受信側の recv() で ack（DISC 削除）される。
     async fn routing_loop(
         mut router_rx: mpsc::Receiver<MailboxMessage>,
         boxes: Arc<RwLock<HashMap<String, mpsc::Sender<MailboxMessage>>>>,
         shutdown: tokio_util::sync::CancellationToken,
+        whitesnake: Option<Whitesnake>,
     ) {
         loop {
             tokio::select! {
@@ -250,6 +322,18 @@ impl MailboxRouter {
                 msg = router_rx.recv() => {
                     match msg {
                         Some(msg) => {
+                            // persistent なら配信前に永続化
+                            if msg.persistent && let Some(ws) = &whitesnake {
+                                let key = format!("{}{}", MAILBOX_KEY_PREFIX, msg.id);
+                                if let Err(e) = ws.extract(MAILBOX_NAMESPACE, &key, &msg).await {
+                                    tracing::warn!(
+                                        "MailboxRouter: persistent 保存失敗 id={} err={}",
+                                        msg.id,
+                                        e
+                                    );
+                                }
+                            }
+
                             let boxes = boxes.read().await;
                             if let Some(tx) = boxes.get(&msg.to) {
                                 if let Err(e) = tx.try_send(msg.clone()) {
@@ -291,7 +375,46 @@ impl MailboxRouter {
             router_tx: self.router_tx.clone(),
             rx: Arc::new(tokio::sync::Mutex::new(rx)),
             stash: Arc::new(tokio::sync::Mutex::new(std::collections::VecDeque::new())),
+            whitesnake: self.whitesnake.clone(),
         }
+    }
+
+    /// 永続化ストアから未配信メッセージを復元し、Router に再投入
+    ///
+    /// Process 起動時に全 Stand の registration が完了した後で呼ぶ。
+    /// 戻り値は再投入したメッセージ数。
+    pub async fn restore_pending(&self) -> anyhow::Result<usize> {
+        let Some(ws) = &self.whitesnake else {
+            return Ok(0);
+        };
+
+        let discs = ws
+            .list_by_prefix(MAILBOX_NAMESPACE, MAILBOX_KEY_PREFIX)
+            .await?;
+        let mut restored = 0;
+        for disc in discs {
+            match disc.extract::<MailboxMessage>() {
+                Ok(msg) => {
+                    if let Err(e) = self.router_tx.send(msg).await {
+                        tracing::warn!("MailboxRouter: 復元したメッセージの再投入失敗: {}", e);
+                        break;
+                    }
+                    restored += 1;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "MailboxRouter: DISC デコード失敗 path={} err={}",
+                        disc.path(),
+                        e
+                    );
+                }
+            }
+        }
+
+        if restored > 0 {
+            tracing::info!("MailboxRouter: {} 件の永続メッセージを再投入", restored);
+        }
+        Ok(restored)
     }
 
     /// Mailbox を登録解除
@@ -639,5 +762,134 @@ mod tests {
         assert_eq!(received, vec!["msg-0", "msg-1", "msg-2", "msg-3", "msg-4"]);
 
         router.shutdown();
+    }
+
+    // =========================================================================
+    // 永続化テスト (opt-in persistent + Whitesnake)
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_persistent_message_survives_router_restart() {
+        let ws = Whitesnake::in_memory();
+
+        // --- 第1ラウンド: persistent 送信 → recv 前に Router 消失 ---
+        {
+            let router = MailboxRouter::with_persistence(ws.clone());
+            let sender = router.register("sender").await;
+            let _target = router.register("target").await;
+
+            let msg = MailboxMessage::new("sender", "target", MessageKind::Request)
+                .with_payload(&"persistent-payload")
+                .persistent();
+            sender.send(msg).await.unwrap();
+
+            // routing_loop による永続化完了を待機
+            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+            router.shutdown();
+        }
+
+        // Whitesnake に 1 件残っているはず（未 recv なので未 ack）
+        let pending = ws.list_by_prefix("mailbox", "msg/").await.unwrap();
+        assert_eq!(
+            pending.len(),
+            1,
+            "persistent メッセージが Whitesnake に残る"
+        );
+
+        // --- 第2ラウンド: 新しい Router で restore_pending → recv ---
+        let router2 = MailboxRouter::with_persistence(ws.clone());
+        let target2 = router2.register("target").await;
+
+        let restored = router2.restore_pending().await.unwrap();
+        assert_eq!(restored, 1);
+
+        let msg = target2.recv().await.unwrap();
+        assert_eq!(msg.payload_as::<String>().unwrap(), "persistent-payload");
+        assert!(msg.persistent);
+
+        // recv 完了で ack → Whitesnake から削除
+        tokio::time::sleep(tokio::time::Duration::from_millis(30)).await;
+        let remaining = ws.list_by_prefix("mailbox", "msg/").await.unwrap();
+        assert_eq!(remaining.len(), 0, "recv 後に ack で DISC が消える");
+
+        router2.shutdown();
+    }
+
+    #[tokio::test]
+    async fn test_ephemeral_message_not_persisted() {
+        let ws = Whitesnake::in_memory();
+        let router = MailboxRouter::with_persistence(ws.clone());
+        let sender = router.register("sender").await;
+        let target = router.register("target").await;
+
+        // persistent フラグなしで送信（デフォルト ephemeral）
+        sender.send_to("target", &"ephemeral").await.unwrap();
+
+        let msg = target.recv().await.unwrap();
+        assert!(!msg.persistent);
+        assert_eq!(msg.payload_as::<String>().unwrap(), "ephemeral");
+
+        // Whitesnake には何も保存されない
+        let stored = ws.list_by_prefix("mailbox", "msg/").await.unwrap();
+        assert_eq!(stored.len(), 0);
+
+        router.shutdown();
+    }
+
+    #[tokio::test]
+    async fn test_persistent_without_whitesnake_is_noop() {
+        // Whitesnake なしの Router では persistent フラグは無視される
+        let router = MailboxRouter::new();
+        let sender = router.register("sender").await;
+        let target = router.register("target").await;
+
+        let msg = MailboxMessage::new("sender", "target", MessageKind::Direct)
+            .with_payload(&"would-be-persistent")
+            .persistent();
+        sender.send(msg).await.unwrap();
+
+        // 通常通り配信される（in-memory のみ）
+        let received = target.recv().await.unwrap();
+        assert!(received.persistent);
+        assert_eq!(
+            received.payload_as::<String>().unwrap(),
+            "would-be-persistent"
+        );
+
+        router.shutdown();
+    }
+
+    #[tokio::test]
+    async fn test_restore_pending_without_whitesnake_returns_zero() {
+        let router = MailboxRouter::new();
+        let restored = router.restore_pending().await.unwrap();
+        assert_eq!(restored, 0);
+        router.shutdown();
+    }
+
+    #[tokio::test]
+    async fn test_persistent_builder_sets_flag() {
+        let msg = MailboxMessage::new("a", "b", MessageKind::Direct).persistent();
+        assert!(msg.persistent);
+
+        let msg2 = MailboxMessage::new("a", "b", MessageKind::Direct);
+        assert!(!msg2.persistent);
+    }
+
+    #[tokio::test]
+    async fn test_persistent_field_serde_default() {
+        // 旧バージョンの JSON（persistent フィールドなし）をデコードできる
+        let json = r#"{
+            "from": "a",
+            "to": "b",
+            "kind": "direct",
+            "payload": null,
+            "timestamp": 0,
+            "reply_to": null,
+            "id": "test-id"
+        }"#;
+        let msg: MailboxMessage = serde_json::from_str(json).unwrap();
+        assert!(!msg.persistent, "persistent が無い JSON はデフォルト false");
     }
 }

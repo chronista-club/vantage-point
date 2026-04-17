@@ -92,6 +92,7 @@ fn sp_start(
     let cap_config = crate::process::CapabilityConfig {
         project_dir: project_dir.to_string(),
         midi_config: None,
+        whitesnake: None, // server.rs 側でポート別に注入
     };
 
     let rt = tokio::runtime::Runtime::new()?;

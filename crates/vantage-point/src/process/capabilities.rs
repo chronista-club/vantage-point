@@ -6,7 +6,7 @@
 use crate::capability::core::Capability;
 use crate::capability::{
     AgentCapability, CapabilityContext, CapabilityRegistry, EventBus, MailboxRouter,
-    MidiCapability, ProtocolCapability,
+    MidiCapability, ProtocolCapability, Whitesnake,
 };
 use crate::midi::MidiConfig;
 use std::sync::Arc;
@@ -36,6 +36,11 @@ pub struct CapabilityConfig {
     pub project_dir: String,
     /// MIDI設定（有効な場合）
     pub midi_config: Option<MidiConfig>,
+    /// 永続化バックエンド（Mailbox persistent メッセージ用）
+    ///
+    /// Some の場合、MailboxRouter が persistent メッセージを DISC に保存し、
+    /// Process 再起動後に `restore_pending()` で復元する。
+    pub whitesnake: Option<Whitesnake>,
 }
 
 impl ProcessCapabilities {
@@ -44,8 +49,11 @@ impl ProcessCapabilities {
         // EventBus を作成
         let event_bus = Arc::new(EventBus::new());
 
-        // MailboxRouter を作成
-        let mailbox_router = Arc::new(MailboxRouter::new());
+        // MailboxRouter を作成（Whitesnake 注入時は persistent メッセージ対応）
+        let mailbox_router = Arc::new(match config.whitesnake.clone() {
+            Some(ws) => MailboxRouter::with_persistence(ws),
+            None => MailboxRouter::new(),
+        });
 
         // Registry を作成
         let ctx = CapabilityContext::new().with_config(serde_json::json!({
@@ -117,6 +125,14 @@ impl ProcessCapabilities {
             "All capabilities initialized (mailbox addresses: {:?})",
             self.mailbox_router.addresses().await
         );
+
+        // 永続化メッセージを復元（Whitesnake 有効時のみ）
+        match self.mailbox_router.restore_pending().await {
+            Ok(0) => {}
+            Ok(n) => tracing::info!("Mailbox: {} 件の永続メッセージを復元", n),
+            Err(e) => tracing::warn!("Mailbox: 永続メッセージ復元失敗: {}", e),
+        }
+
         Ok(())
     }
 
@@ -273,6 +289,7 @@ mod tests {
         let config = CapabilityConfig {
             project_dir: "/tmp/test".to_string(),
             midi_config: None,
+            whitesnake: None,
         };
 
         let caps = ProcessCapabilities::new(config).await;
@@ -284,6 +301,7 @@ mod tests {
         let config = CapabilityConfig {
             project_dir: "/tmp/test".to_string(),
             midi_config: Some(MidiConfig::default()),
+            whitesnake: None,
         };
 
         let caps = ProcessCapabilities::new(config).await;
@@ -295,6 +313,7 @@ mod tests {
         let config = CapabilityConfig {
             project_dir: "/tmp/test".to_string(),
             midi_config: None,
+            whitesnake: None,
         };
 
         let caps = ProcessCapabilities::new(config).await;
