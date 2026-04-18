@@ -552,6 +552,7 @@ pub async fn start_unison_server(
                             "mailbox_send" => handle_mailbox_send(&state, payload).await,
                             "mailbox_recv" => handle_mailbox_recv(&state, payload).await,
                             "mailbox_list" => handle_mailbox_list(&state).await,
+                            "mailbox_ack" => handle_mailbox_ack(&state, payload).await,
                             _ => Err(format!("不明なメソッド: process.{}", method)),
                         };
 
@@ -911,4 +912,27 @@ async fn handle_mailbox_recv(
 async fn handle_mailbox_list(state: &AppState) -> Result<serde_json::Value, String> {
     let addresses = state.capabilities.mailbox_router.addresses().await;
     Ok(serde_json::json!({"addresses": addresses}))
+}
+
+/// 明示 ack — persistent メッセージを永続ストアから削除
+///
+/// `manual_ack: true` で受信したメッセージに対して使う。
+/// 処理完了後に呼び出すことで、途中クラッシュ時の再配信を保証。
+async fn handle_mailbox_ack(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let id = payload
+        .get("id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "id required".to_string())?
+        .to_string();
+
+    let mcp_mailbox = state
+        .mcp_mailbox
+        .as_ref()
+        .ok_or_else(|| "MCP mailbox not initialized".to_string())?;
+    mcp_mailbox.ack(&id).await;
+
+    Ok(serde_json::json!({"status": "ok", "id": id}))
 }

@@ -21,6 +21,18 @@ use crate::capability::whitesnake::Whitesnake;
 const MAILBOX_NAMESPACE: &str = "mailbox";
 /// 永続化メッセージの key prefix（`msg/{id}`）
 const MAILBOX_KEY_PREFIX: &str = "msg/";
+/// デフォルト TTL（48 時間、ミリ秒）
+const DEFAULT_TTL_MS: u64 = 48 * 3600 * 1000;
+/// GC スイープ間隔（ミリ秒）
+const GC_INTERVAL_MS: u64 = 5 * 60 * 1000;
+
+/// 現在時刻（Unix epoch ミリ秒）
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
 
 // =============================================================================
 // MailboxMessage
@@ -46,6 +58,18 @@ pub struct MailboxMessage {
     /// 永続化フラグ（true の場合、Process 再起動後も生存）
     #[serde(default)]
     pub persistent: bool,
+    /// 失効時刻（Unix epoch ミリ秒）
+    ///
+    /// persistent メッセージのみ有効。`now_ms()` 超過で GC 対象。
+    /// None の場合、送信時に `DEFAULT_TTL_MS` (48h) が自動適用される。
+    #[serde(default)]
+    pub expires_at: Option<u64>,
+    /// 明示 ack モード（true の場合、recv での自動 ack を無効化）
+    ///
+    /// 受信側が `MailboxHandle::ack(id)` を明示呼び出しするまで DISC を保持。
+    /// 受信後の処理中クラッシュで再配信したいパターン向け。
+    #[serde(default)]
+    pub manual_ack: bool,
 }
 
 /// メッセージ種別
@@ -70,13 +94,12 @@ impl MailboxMessage {
             to: to.into(),
             kind,
             payload: serde_json::Value::Null,
-            timestamp: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64,
+            timestamp: now_ms(),
             reply_to: None,
             id: uuid::Uuid::new_v4().to_string(),
             persistent: false,
+            expires_at: None,
+            manual_ack: false,
         }
     }
 
@@ -99,6 +122,35 @@ impl MailboxMessage {
     pub fn persistent(mut self) -> Self {
         self.persistent = true;
         self
+    }
+
+    /// TTL を秒単位で設定（persistent メッセージの失効時刻を now + secs に）
+    pub fn with_ttl_secs(mut self, secs: u64) -> Self {
+        self.expires_at = Some(now_ms().saturating_add(secs.saturating_mul(1000)));
+        self
+    }
+
+    /// TTL をミリ秒単位で設定
+    pub fn with_ttl_ms(mut self, ms: u64) -> Self {
+        self.expires_at = Some(now_ms().saturating_add(ms));
+        self
+    }
+
+    /// 明示 ack モードを有効化（recv での自動 ack を無効化）
+    ///
+    /// 受信側が `MailboxHandle::ack(id)` を呼ぶまで DISC を保持。
+    /// 受信後の処理中にクラッシュしても、Process 再起動時に再配信される。
+    pub fn manual_ack(mut self) -> Self {
+        self.manual_ack = true;
+        self
+    }
+
+    /// メッセージが失効しているか判定
+    pub fn is_expired(&self) -> bool {
+        match self.expires_at {
+            Some(exp) => now_ms() >= exp,
+            None => false,
+        }
     }
 
     /// ペイロードを型付きで取得
@@ -229,15 +281,30 @@ impl MailboxHandle {
     }
 
     /// persistent メッセージの受信完了を永続ストアに反映（DISC 削除 = ack）
+    ///
+    /// `manual_ack: true` のメッセージは自動 ack せず、受信側が `ack()` を
+    /// 明示呼び出しするまで DISC を保持する。
     async fn ack_if_persistent(&self, msg: Option<&MailboxMessage>) {
         let Some(msg) = msg else { return };
-        if !msg.persistent {
+        if !msg.persistent || msg.manual_ack {
             return;
         }
+        self.ack_by_id(&msg.id).await;
+    }
+
+    /// メッセージID で明示的に ack（DISC 削除）
+    ///
+    /// `manual_ack: true` で受信したメッセージに対して呼ぶ。
+    /// 受信後の処理が完了してから呼ぶことで、途中クラッシュ時の再配信を保証。
+    pub async fn ack(&self, msg_id: &str) {
+        self.ack_by_id(msg_id).await;
+    }
+
+    async fn ack_by_id(&self, msg_id: &str) {
         let Some(ws) = &self.whitesnake else { return };
-        let key = format!("{}{}", MAILBOX_KEY_PREFIX, msg.id);
+        let key = format!("{}{}", MAILBOX_KEY_PREFIX, msg_id);
         if let Err(e) = ws.remove(MAILBOX_NAMESPACE, &key).await {
-            tracing::warn!("Mailbox: persistent ack failed id={} err={}", msg.id, e);
+            tracing::warn!("Mailbox: persistent ack failed id={} err={}", msg_id, e);
         }
     }
 }
@@ -295,12 +362,62 @@ impl MailboxRouter {
             ws_clone,
         ));
 
+        // GC タスク（Whitesnake 注入時のみ）
+        if let Some(ws) = whitesnake.clone() {
+            let shutdown_gc = shutdown.clone();
+            tokio::spawn(Self::gc_loop(ws, shutdown_gc));
+        }
+
         Self {
             boxes,
             router_tx,
             shutdown,
             whitesnake,
         }
+    }
+
+    /// GC ループ — 期限切れ persistent メッセージを定期的にクリーンアップ
+    async fn gc_loop(whitesnake: Whitesnake, shutdown: tokio_util::sync::CancellationToken) {
+        let interval = std::time::Duration::from_millis(GC_INTERVAL_MS);
+        let mut ticker = tokio::time::interval(interval);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        // 初回の即時 tick はスキップして間隔空ける
+        ticker.tick().await;
+
+        loop {
+            tokio::select! {
+                _ = shutdown.cancelled() => {
+                    tracing::debug!("MailboxRouter: GC ループ終了");
+                    break;
+                }
+                _ = ticker.tick() => {
+                    match Self::sweep_expired(&whitesnake).await {
+                        Ok(0) => {}
+                        Ok(n) => tracing::info!("Mailbox GC: {} 件の期限切れを削除", n),
+                        Err(e) => tracing::warn!("Mailbox GC: スイープ失敗 {}", e),
+                    }
+                }
+            }
+        }
+    }
+
+    /// 期限切れメッセージを一括削除
+    async fn sweep_expired(whitesnake: &Whitesnake) -> anyhow::Result<usize> {
+        let discs = whitesnake
+            .list_by_prefix(MAILBOX_NAMESPACE, MAILBOX_KEY_PREFIX)
+            .await?;
+        let mut removed = 0;
+        for disc in discs {
+            if let Ok(msg) = disc.extract::<MailboxMessage>()
+                && msg.is_expired()
+            {
+                let key = format!("{}{}", MAILBOX_KEY_PREFIX, msg.id);
+                if whitesnake.remove(MAILBOX_NAMESPACE, &key).await.is_ok() {
+                    removed += 1;
+                }
+            }
+        }
+        Ok(removed)
     }
 
     /// ルーティングループ — Router に届いたメッセージを宛先に配信
@@ -321,9 +438,13 @@ impl MailboxRouter {
                 }
                 msg = router_rx.recv() => {
                     match msg {
-                        Some(msg) => {
+                        Some(mut msg) => {
                             // persistent なら配信前に永続化
                             if msg.persistent && let Some(ws) = &whitesnake {
+                                // TTL 未設定ならデフォルト（48h）を適用
+                                if msg.expires_at.is_none() {
+                                    msg.expires_at = Some(now_ms().saturating_add(DEFAULT_TTL_MS));
+                                }
                                 let key = format!("{}{}", MAILBOX_KEY_PREFIX, msg.id);
                                 if let Err(e) = ws.extract(MAILBOX_NAMESPACE, &key, &msg).await {
                                     tracing::warn!(
@@ -392,9 +513,17 @@ impl MailboxRouter {
             .list_by_prefix(MAILBOX_NAMESPACE, MAILBOX_KEY_PREFIX)
             .await?;
         let mut restored = 0;
+        let mut expired = 0;
         for disc in discs {
             match disc.extract::<MailboxMessage>() {
                 Ok(msg) => {
+                    // 期限切れは再投入せず即削除（GC を起動時に兼ねる）
+                    if msg.is_expired() {
+                        let key = format!("{}{}", MAILBOX_KEY_PREFIX, msg.id);
+                        let _ = ws.remove(MAILBOX_NAMESPACE, &key).await;
+                        expired += 1;
+                        continue;
+                    }
                     if let Err(e) = self.router_tx.send(msg).await {
                         tracing::warn!("MailboxRouter: 復元したメッセージの再投入失敗: {}", e);
                         break;
@@ -411,8 +540,12 @@ impl MailboxRouter {
             }
         }
 
-        if restored > 0 {
-            tracing::info!("MailboxRouter: {} 件の永続メッセージを再投入", restored);
+        if restored > 0 || expired > 0 {
+            tracing::info!(
+                "MailboxRouter: 復元={} 件 / 期限切れ削除={} 件",
+                restored,
+                expired
+            );
         }
         Ok(restored)
     }
@@ -891,5 +1024,190 @@ mod tests {
         }"#;
         let msg: MailboxMessage = serde_json::from_str(json).unwrap();
         assert!(!msg.persistent, "persistent が無い JSON はデフォルト false");
+        assert!(msg.expires_at.is_none(), "expires_at デフォルト None");
+        assert!(!msg.manual_ack, "manual_ack デフォルト false");
+    }
+
+    // =========================================================================
+    // Phase 2: TTL + 明示 ack テスト
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_ttl_builder_sets_expires_at() {
+        let before = now_ms();
+        let msg = MailboxMessage::new("a", "b", MessageKind::Direct).with_ttl_secs(10);
+        let after = now_ms();
+
+        let exp = msg.expires_at.expect("expires_at should be set");
+        assert!(exp >= before + 10_000);
+        assert!(exp <= after + 10_000);
+        assert!(!msg.is_expired());
+    }
+
+    #[tokio::test]
+    async fn test_is_expired_true_when_past() {
+        let mut msg = MailboxMessage::new("a", "b", MessageKind::Direct);
+        msg.expires_at = Some(now_ms().saturating_sub(1000)); // 1 秒前に失効
+        assert!(msg.is_expired());
+    }
+
+    #[tokio::test]
+    async fn test_is_expired_false_when_no_expiry() {
+        let msg = MailboxMessage::new("a", "b", MessageKind::Direct);
+        assert!(!msg.is_expired(), "expires_at=None は is_expired=false");
+    }
+
+    #[tokio::test]
+    async fn test_default_ttl_applied_on_persist() {
+        let ws = Whitesnake::in_memory();
+        let router = MailboxRouter::with_persistence(ws.clone());
+        let sender = router.register("sender").await;
+        let _target = router.register("target").await;
+
+        // TTL を明示せず persistent 送信
+        let msg = MailboxMessage::new("sender", "target", MessageKind::Direct)
+            .with_payload(&"no-ttl")
+            .persistent();
+        sender.send(msg).await.unwrap();
+
+        // routing_loop による永続化完了を待機
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        let discs = ws.list_by_prefix("mailbox", "msg/").await.unwrap();
+        assert_eq!(discs.len(), 1);
+        let stored: MailboxMessage = discs[0].extract().unwrap();
+        assert!(
+            stored.expires_at.is_some(),
+            "デフォルト TTL が自動適用される"
+        );
+        let exp = stored.expires_at.unwrap();
+        // デフォルト 48h を大きく超えないことを確認（ほぼ now + 48h）
+        assert!(exp > now_ms() + DEFAULT_TTL_MS - 60_000);
+        assert!(exp < now_ms() + DEFAULT_TTL_MS + 60_000);
+
+        router.shutdown();
+    }
+
+    #[tokio::test]
+    async fn test_restore_pending_skips_expired() {
+        let ws = Whitesnake::in_memory();
+
+        // 事前に期限切れメッセージを DISC に直接書き込み
+        let mut expired_msg =
+            MailboxMessage::new("a", "target", MessageKind::Direct).with_payload(&"expired");
+        expired_msg.persistent = true;
+        expired_msg.expires_at = Some(now_ms().saturating_sub(1000)); // 1 秒前に失効
+        let key = format!("msg/{}", expired_msg.id);
+        ws.extract("mailbox", &key, &expired_msg).await.unwrap();
+
+        // 有効なメッセージも 1 件
+        let mut valid_msg =
+            MailboxMessage::new("a", "target", MessageKind::Direct).with_payload(&"valid");
+        valid_msg.persistent = true;
+        valid_msg.expires_at = Some(now_ms() + 60_000); // 1 分後失効
+        let valid_id = valid_msg.id.clone();
+        let key2 = format!("msg/{}", valid_msg.id);
+        ws.extract("mailbox", &key2, &valid_msg).await.unwrap();
+
+        // 復元: 期限切れは捨て、有効な 1 件だけ再投入
+        let router = MailboxRouter::with_persistence(ws.clone());
+        let target = router.register("target").await;
+
+        let restored = router.restore_pending().await.unwrap();
+        assert_eq!(restored, 1);
+
+        let received = target.recv().await.unwrap();
+        assert_eq!(received.id, valid_id);
+        assert_eq!(received.payload_as::<String>().unwrap(), "valid");
+
+        // 期限切れは Whitesnake からも削除済み
+        tokio::time::sleep(tokio::time::Duration::from_millis(30)).await;
+        let remaining = ws.list_by_prefix("mailbox", "msg/").await.unwrap();
+        assert_eq!(remaining.len(), 0);
+
+        router.shutdown();
+    }
+
+    #[tokio::test]
+    async fn test_manual_ack_keeps_disc_until_explicit_ack() {
+        let ws = Whitesnake::in_memory();
+        let router = MailboxRouter::with_persistence(ws.clone());
+        let sender = router.register("sender").await;
+        let target = router.register("target").await;
+
+        let msg = MailboxMessage::new("sender", "target", MessageKind::Request)
+            .with_payload(&"needs-ack")
+            .persistent()
+            .manual_ack();
+        sender.send(msg).await.unwrap();
+
+        // recv しても auto-ack されない
+        let received = target.recv().await.unwrap();
+        assert!(received.manual_ack);
+        let msg_id = received.id.clone();
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(30)).await;
+        let still_stored = ws.list_by_prefix("mailbox", "msg/").await.unwrap();
+        assert_eq!(still_stored.len(), 1, "manual_ack では recv 後も DISC 保持");
+
+        // 明示 ack で削除
+        target.ack(&msg_id).await;
+        let after_ack = ws.list_by_prefix("mailbox", "msg/").await.unwrap();
+        assert_eq!(after_ack.len(), 0);
+
+        router.shutdown();
+    }
+
+    #[tokio::test]
+    async fn test_auto_ack_still_works_by_default() {
+        // 既存の persistent（manual_ack なし）は従来通り auto-ack
+        let ws = Whitesnake::in_memory();
+        let router = MailboxRouter::with_persistence(ws.clone());
+        let sender = router.register("sender").await;
+        let target = router.register("target").await;
+
+        let msg = MailboxMessage::new("sender", "target", MessageKind::Direct)
+            .with_payload(&"auto")
+            .persistent();
+        sender.send(msg).await.unwrap();
+
+        let _received = target.recv().await.unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_millis(30)).await;
+
+        let remaining = ws.list_by_prefix("mailbox", "msg/").await.unwrap();
+        assert_eq!(remaining.len(), 0, "manual_ack なしでは auto-ack");
+
+        router.shutdown();
+    }
+
+    #[tokio::test]
+    async fn test_sweep_expired_removes_only_expired() {
+        let ws = Whitesnake::in_memory();
+
+        // 期限切れ × 2
+        for i in 0..2 {
+            let mut m = MailboxMessage::new("a", "b", MessageKind::Direct)
+                .with_payload(&format!("expired-{}", i));
+            m.persistent = true;
+            m.expires_at = Some(now_ms().saturating_sub(1000));
+            ws.extract("mailbox", &format!("msg/{}", m.id), &m)
+                .await
+                .unwrap();
+        }
+        // 有効 × 1
+        let mut valid = MailboxMessage::new("a", "b", MessageKind::Direct).with_payload(&"valid");
+        valid.persistent = true;
+        valid.expires_at = Some(now_ms() + 60_000);
+        ws.extract("mailbox", &format!("msg/{}", valid.id), &valid)
+            .await
+            .unwrap();
+
+        let removed = MailboxRouter::sweep_expired(&ws).await.unwrap();
+        assert_eq!(removed, 2);
+
+        let remaining = ws.list_by_prefix("mailbox", "msg/").await.unwrap();
+        assert_eq!(remaining.len(), 1);
+        let stored: MailboxMessage = remaining[0].extract().unwrap();
+        assert_eq!(stored.payload_as::<String>().unwrap(), "valid");
     }
 }
