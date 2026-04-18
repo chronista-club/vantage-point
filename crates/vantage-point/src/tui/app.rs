@@ -203,13 +203,8 @@ impl MultiProjectApp {
                         }
                         true
                     }
-                    Event::Mouse(mouse) => {
-                        if self.overlay.is_none() {
-                            self.handle_mouse(mouse)
-                        } else {
-                            false
-                        }
-                    }
+                    Event::Mouse(mouse) if self.overlay.is_none() => self.handle_mouse(mouse),
+                    Event::Mouse(_) => false,
                     Event::Resize(cols, rows) => {
                         self.handle_resize(cols, rows);
                         true
