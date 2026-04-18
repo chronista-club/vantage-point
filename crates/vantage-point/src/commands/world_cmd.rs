@@ -53,33 +53,30 @@ pub fn execute(cmd: WorldCommands) -> Result<()> {
                     if let Ok(resp) = reqwest::blocking::get(format!(
                         "http://[::1]:{}/api/health",
                         crate::cli::WORLD_PORT
-                    )) {
-                        if let Ok(json) = resp.json::<serde_json::Value>() {
-                            println!(
-                                "  Version: {}",
-                                json.get("version").and_then(|v| v.as_str()).unwrap_or("?")
-                            );
-                            println!("  Port: {}", crate::cli::WORLD_PORT);
-                        }
+                    )) && let Ok(json) = resp.json::<serde_json::Value>()
+                    {
+                        println!(
+                            "  Version: {}",
+                            json.get("version").and_then(|v| v.as_str()).unwrap_or("?")
+                        );
+                        println!("  Port: {}", crate::cli::WORLD_PORT);
                     }
                     // Process 一覧
                     if let Ok(resp) = reqwest::blocking::get(format!(
                         "http://[::1]:{}/api/world/processes",
                         crate::cli::WORLD_PORT
-                    )) {
-                        if let Ok(json) = resp.json::<serde_json::Value>() {
-                            if let Some(processes) = json.as_array() {
-                                println!("  Processes: {}", processes.len());
-                                for p in processes {
-                                    let name = p
-                                        .get("project_name")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("?");
-                                    let port = p.get("port").and_then(|v| v.as_u64()).unwrap_or(0);
-                                    let pid = p.get("pid").and_then(|v| v.as_u64()).unwrap_or(0);
-                                    println!("    - {} (port:{}, pid:{})", name, port, pid);
-                                }
-                            }
+                    )) && let Ok(json) = resp.json::<serde_json::Value>()
+                        && let Some(processes) = json.as_array()
+                    {
+                        println!("  Processes: {}", processes.len());
+                        for p in processes {
+                            let name = p
+                                .get("project_name")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("?");
+                            let port = p.get("port").and_then(|v| v.as_u64()).unwrap_or(0);
+                            let pid = p.get("pid").and_then(|v| v.as_u64()).unwrap_or(0);
+                            println!("    - {} (port:{}, pid:{})", name, port, pid);
                         }
                     }
                 }

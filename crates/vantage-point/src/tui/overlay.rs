@@ -91,7 +91,7 @@ fn draw_project_switcher(
         )
         .highlight_symbol("▸ ");
 
-    let mut state = list_state.clone();
+    let mut state = *list_state;
     frame.render_stateful_widget(list, inner, &mut state);
 }
 

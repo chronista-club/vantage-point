@@ -793,10 +793,10 @@ impl ProcessManagerCapability {
 
         let mut procs = self.running_processes.write().await;
         // 既存の tmux_session を保持（QUIC 登録済みのセッション名を HTTP で上書きしない）
-        if let Some(existing) = procs.get(&key) {
-            if process.tmux_session.is_none() {
-                process.tmux_session = existing.tmux_session.clone();
-            }
+        if let Some(existing) = procs.get(&key)
+            && process.tmux_session.is_none()
+        {
+            process.tmux_session = existing.tmux_session.clone();
         }
         procs.insert(key.clone(), process.clone());
 

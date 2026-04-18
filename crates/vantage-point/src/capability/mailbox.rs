@@ -170,7 +170,7 @@ impl MailboxHandle {
         // まず stash から条件に合うものを探す
         {
             let mut stash = self.stash.lock().await;
-            if let Some(pos) = stash.iter().position(|m| predicate(m)) {
+            if let Some(pos) = stash.iter().position(&predicate) {
                 return stash.remove(pos);
             }
         }

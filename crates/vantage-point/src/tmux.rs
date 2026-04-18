@@ -17,12 +17,7 @@ pub fn tmux_bin() -> Option<&'static str> {
             "/usr/local/bin/tmux",
             "/usr/bin/tmux",
         ];
-        for path in candidates {
-            if Path::new(path).exists() {
-                return Some(path);
-            }
-        }
-        None
+        candidates.into_iter().find(|path| Path::new(path).exists())
     })
 }
 
@@ -135,10 +130,10 @@ pub fn create_detached(name: &str, vp_bin: &Path, args: &[&str]) -> std::io::Res
     if status.success() {
         Ok(())
     } else {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("tmux new-session -d -s {} failed", name),
-        ))
+        Err(std::io::Error::other(format!(
+            "tmux new-session -d -s {} failed",
+            name
+        )))
     }
 }
 
