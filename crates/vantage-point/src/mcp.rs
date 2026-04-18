@@ -123,6 +123,26 @@ pub struct MailboxSendParams {
         description = "If true, persist the message across Process restarts (opt-in). Default: false (ephemeral, in-memory only)."
     )]
     pub persistent: Option<bool>,
+
+    /// TTL（秒）— persistent メッセージの有効期限
+    #[schemars(
+        description = "TTL in seconds for persistent messages. Default: 172800 (48h). Ignored when persistent is false."
+    )]
+    pub ttl_secs: Option<u64>,
+
+    /// 明示 ack モード
+    #[schemars(
+        description = "If true, persistent messages are NOT auto-acked on recv; receiver must call ack() explicitly. Useful for at-least-once delivery with crash resilience during message processing."
+    )]
+    pub manual_ack: Option<bool>,
+}
+
+/// Parameters for mailbox_ack tool (明示 ack)
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct MailboxAckParams {
+    /// ack 対象のメッセージID
+    #[schemars(description = "Message ID to acknowledge (received from mailbox_recv)")]
+    pub id: String,
 }
 
 /// Parameters for mailbox_recv tool (VP-24)
@@ -1962,6 +1982,16 @@ if bestId > 0 { print(bestId) }
             msg = msg.persistent();
         }
 
+        // opt-in TTL
+        if let Some(secs) = params.ttl_secs {
+            msg = msg.with_ttl_secs(secs);
+        }
+
+        // opt-in 明示 ack モード
+        if params.manual_ack.unwrap_or(false) {
+            msg = msg.manual_ack();
+        }
+
         let msg_id = msg.id.clone();
 
         // QUIC 経由で Process の Mailbox に送信
@@ -2007,6 +2037,24 @@ if bestId > 0 { print(bestId) }
 
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
             serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "null".to_string()),
+        )]))
+    }
+
+    /// Acknowledge a message explicitly (for manual_ack mode)
+    #[tool(
+        description = "Explicitly acknowledge a persistent message received with manual_ack=true. Removes the message from the persistent store. No-op for auto-ack messages (they are acked automatically on recv)."
+    )]
+    async fn mailbox_ack(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<MailboxAckParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let payload = serde_json::json!({
+            "id": params.id,
+        });
+        self.quic_call("mailbox_ack", payload).await?;
+
+        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+            format!("Acked message {}", params.id),
         )]))
     }
 }
