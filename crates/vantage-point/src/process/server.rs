@@ -31,9 +31,13 @@ pub async fn run(
     port: u16,
     auto_open_browser: bool,
     debug_mode: DebugMode,
-    cap_config: CapabilityConfig,
+    mut cap_config: CapabilityConfig,
 ) -> Result<()> {
     let project_dir = cap_config.project_dir.clone();
+
+    // Whitesnake をポート別ディレクトリで早期初期化（Mailbox persistence で使用）
+    let whitesnake = crate::capability::Whitesnake::file_backed_for_port(port);
+    cap_config.whitesnake = Some(whitesnake.clone());
 
     // rustls 0.23+ は CryptoProvider の明示的な設定が必要
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
@@ -220,7 +224,8 @@ pub async fn run(
         mcp_mailbox: Some(mcp_mailbox),
         vpdb,
         // ポート別ディレクトリで分離（複数プロセスの namespace 衝突を防ぐ）
-        whitesnake: crate::capability::Whitesnake::file_backed_for_port(port),
+        // run() 冒頭で作成した Whitesnake を共有（Mailbox persistent と同一インスタンス）
+        whitesnake: whitesnake.clone(),
     });
 
     // ペイン状態をディスクから復元（前回 Process 終了時の状態 → RetainedStore）
@@ -499,6 +504,7 @@ pub async fn run_world(port: u16) -> Result<()> {
             ProcessCapabilities::new(CapabilityConfig {
                 project_dir: String::new(),
                 midi_config: None,
+                whitesnake: None, // World モードは永続 mailbox 不要
             })
             .await,
         ),
