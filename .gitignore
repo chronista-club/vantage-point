@@ -35,4 +35,11 @@ DerivedData/
 # Local settings (per-user, not tracked)
 *.local.*
 .claude/worktrees/
+.claude/scheduled_tasks.lock
 .gitnexus
+
+# xcodebuild 中間成果物
+/apple/VantagePoint/build/
+
+# Release 配布物（DMG 等）
+/dist/

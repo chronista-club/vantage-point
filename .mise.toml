@@ -40,10 +40,17 @@ xcodebuild build \
 echo "🔄 既存プロセスを停止..."
 pkill -f 'VantagePoint$' 2>/dev/null && sleep 1 || true
 
-APP_PATH="$ROOT/.build/DerivedData/Build/Products/Release/VantagePoint.app"
+BUILD_APP="$ROOT/.build/DerivedData/Build/Products/Release/VantagePoint.app"
+INSTALL_APP="/Applications/VantagePoint.app"
 
-echo "🚀 Launching $APP_PATH ..."
-exec open "$APP_PATH"
+echo "📦 /Applications に反映..."
+# 古い /Applications バージョンを削除（ditto は上書きを完全サポートしないため）
+rm -rf "$INSTALL_APP"
+# ditto でメタデータ（codesign 含む）ごとコピー
+ditto "$BUILD_APP" "$INSTALL_APP"
+
+echo "🚀 Launching $INSTALL_APP ..."
+exec open "$INSTALL_APP"
 """
 
 [tasks."mac:build"]
