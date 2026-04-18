@@ -49,3 +49,6 @@ targets:
       path: Resources/VantagePoint.entitlements
       properties:
         com.apple.security.app-sandbox: false
+    scheme:
+      gatherCoverageData: false
+      buildImplicitDependencies: true

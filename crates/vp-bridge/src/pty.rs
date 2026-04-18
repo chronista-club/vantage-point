@@ -18,7 +18,35 @@ use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
 use ratatui::backend::Backend;
 use ratatui::buffer::Cell;
 use ratatui::style::{Color, Modifier, Style};
+use unicode_width::UnicodeWidthChar;
 use vte::ansi::{Color as VteColor, NamedColor, Rgb};
+
+/// ambiguous 幅文字を wide 扱いに昇格してよいか判定
+///
+/// まる数字・ローマ数字・★・◯・矢印 等は CJK フォント描画で 2 セル幅になるため wide 化する。
+/// ただし、英文でも narrow として頻出する文字（引用符・ダッシュ・Latin-1 記号）は除外。
+/// Smart Quotes で入力される U+201C/201D 等が wide 化されると PTY とのセルずれが起きるため。
+fn should_promote_ambiguous_to_wide(c: char) -> bool {
+    // cjk=2 かつ default=1 の ambiguous 幅文字が対象
+    if UnicodeWidthChar::width_cjk(c) != Some(2) {
+        return false;
+    }
+    if UnicodeWidthChar::width(c) == Some(2) {
+        return false;
+    }
+
+    // narrow 例外: 英文で narrow として使われる Unicode ブロック
+    let cp = c as u32;
+    match cp {
+        // Latin-1 Supplement（§ ° ± ¥ 等、コード・英文で narrow 使用）
+        0x00A0..=0x00FF => return false,
+        // General Punctuation（Smart Quotes の " " ' '・dash 類・… 等）
+        0x2010..=0x206F => return false,
+        _ => {}
+    }
+
+    true
+}
 
 use crate::backend::NativeBackend;
 
@@ -311,6 +339,9 @@ impl BridgePty {
         let mut cells: Vec<(u16, u16, Cell)> = Vec::new();
         // ワイドキャラクター位置を記録（ratatui Cell にはこの情報がないため別途保持）
         let mut wide_positions: Vec<(u16, u16)> = Vec::new();
+        // CJK ambiguous 幅で wide 扱いに昇格したセルが消費する右隣セル（描画スキップ）
+        let mut consumed_by_ambiguous_wide: std::collections::HashSet<(u16, u16)> =
+            std::collections::HashSet::new();
 
         for line_idx in 0..state.lines {
             let line = Line(line_idx as i32 - display_offset as i32);
@@ -323,7 +354,24 @@ impl BridgePty {
                     continue;
                 }
 
-                let is_wide = vte_cell.flags.contains(CellFlags::WIDE_CHAR);
+                // CJK ambiguous 幅で右隣を消費したセルはスキップ
+                if consumed_by_ambiguous_wide.contains(&(col_idx as u16, line_idx as u16)) {
+                    continue;
+                }
+
+                let mut is_wide = vte_cell.flags.contains(CellFlags::WIDE_CHAR);
+
+                // ambiguous 幅文字（まる数字・★・◯・矢印・ギリシャ文字 等）を CJK 文脈で wide 扱いに昇格
+                // alacritty_terminal は UAX #11 default の width() を使うため ambiguous=1 だが、
+                // CJK フォント描画では glyph 幅が cell の 2 倍になり右側が見切れる。
+                if !is_wide && should_promote_ambiguous_to_wide(vte_cell.c) {
+                    is_wide = true;
+                    // 右隣セルを消費（次のループ反復で skip）
+                    if col_idx + 1 < state.cols {
+                        consumed_by_ambiguous_wide.insert((col_idx as u16 + 1, line_idx as u16));
+                    }
+                }
+
                 if is_wide {
                     wide_positions.push((col_idx as u16, line_idx as u16));
                 }

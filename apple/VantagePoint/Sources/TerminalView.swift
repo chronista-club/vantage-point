@@ -539,7 +539,12 @@ class TerminalView: NSView {
             ctx.setFillColor(NSColor.selectedTextBackgroundColor.withAlphaComponent(0.35).cgColor)
             for row in sel.start.row...sel.end.row {
                 let colStart = (row == sel.start.row) ? sel.start.col : 0
-                let colEnd = (row == sel.end.row) ? sel.end.col : cols - 1
+                var colEnd = (row == sel.end.row) ? sel.end.col : cols - 1
+                // colEnd が wide 文字なら spacer セルまでハイライトを延長
+                let endIdx = row * cols + colEnd
+                if endIdx < cellBuffer.count && (cellBuffer[endIdx].flags & (1 << 6)) != 0 {
+                    colEnd = min(colEnd + 1, cols - 1)
+                }
                 let sx = round(CGFloat(colStart) * cellWidth)
                 let ex = round(CGFloat(colEnd + 1) * cellWidth)
                 let sy = round(bounds.height - CGFloat(row + 1) * cellHeight)
@@ -1288,8 +1293,16 @@ class TerminalView: NSView {
 
     private func gridPosition(from point: NSPoint) -> (col: Int, row: Int) {
         let local = convert(point, from: nil)
-        let col = max(0, min(Int(gridCols) - 1, Int(local.x / cellWidth)))
+        var col = max(0, min(Int(gridCols) - 1, Int(local.x / cellWidth)))
         let row = max(0, min(Int(gridRows) - 1, Int((bounds.height - local.y) / cellHeight)))
+        // スペーサーセル（wide 文字の右半分）へのクリックは wide 文字本体にスナップ
+        let cols = Int(gridCols)
+        if col > 0 {
+            let prevIdx = row * cols + (col - 1)
+            if prevIdx < cellBuffer.count && (cellBuffer[prevIdx].flags & (1 << 6)) != 0 {
+                col -= 1
+            }
+        }
         return (col, row)
     }
 
