@@ -270,6 +270,27 @@ async fn handle_tmux_send_keys(
     Ok(serde_json::json!({"status": "ok"}))
 }
 
+/// label または pane_id からペイン ID を解決
+async fn handle_tmux_resolve_pane(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let handle = state
+        .ensure_tmux()
+        .await
+        .ok_or_else(|| "tmux 未使用環境です".to_string())?;
+    let query = payload["query"]
+        .as_str()
+        .ok_or_else(|| "query が必要です".to_string())?;
+    match handle.resolve_pane_id(query).await {
+        Some(pane_id) => {
+            let meta = handle.get_agent_meta(&pane_id).await;
+            Ok(serde_json::json!({"status": "ok", "pane_id": pane_id, "meta": meta}))
+        }
+        None => Err(format!("ペインが見つかりません: {}", query)),
+    }
+}
+
 // =============================================================================
 // ProcessRunner ハンドラー
 // =============================================================================
@@ -521,6 +542,7 @@ pub async fn start_unison_server(
                                 handle_tmux_clear_agent_meta(&state, payload).await
                             }
                             "tmux_send_keys" => handle_tmux_send_keys(&state, payload).await,
+                            "tmux_resolve_pane" => handle_tmux_resolve_pane(&state, payload).await,
                             // ProcessRunner
                             "process_run" => handle_process_run(&state, payload).await,
                             "process_stop" => handle_process_stop(&state, payload).await,

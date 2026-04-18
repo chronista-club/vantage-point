@@ -87,6 +87,55 @@ impl ProcessClient {
     pub fn port(&self) -> u16 {
         self.port
     }
+
+    /// label または pane_id を受け取り、(pane_id, 表示名) を返す
+    ///
+    /// `%` で始まるならそのまま pane_id とし、resolve API で meta を取得して表示名を生成。
+    /// label の場合は逆引きして pane_id + meta を一括取得（HTTP 1回のみ）。
+    pub fn resolve_pane(&self, query: &str) -> Result<(String, String)> {
+        if query.starts_with('%') {
+            // pane_id → resolve API で meta も取得
+            let encoded = query.replace('%', "%25");
+            let display = match self.get(&format!("/api/tmux/resolve-pane?q={}", encoded)) {
+                Ok(resp) => {
+                    if let Some(label) = resp.pointer("/meta/label").and_then(|v| v.as_str()) {
+                        format!("{} ({})", label, query)
+                    } else {
+                        query.to_string()
+                    }
+                }
+                Err(_) => query.to_string(),
+            };
+            return Ok((query.to_string(), display));
+        }
+        // label → resolve API で逆引き
+        let encoded: String = query
+            .chars()
+            .map(|c| match c {
+                ' ' => "%20".to_string(),
+                '%' => "%25".to_string(),
+                '&' => "%26".to_string(),
+                '=' => "%3D".to_string(),
+                '#' => "%23".to_string(),
+                _ => c.to_string(),
+            })
+            .collect();
+        let resp = self.get(&format!("/api/tmux/resolve-pane?q={}", encoded))?;
+        if let Some(pane_id) = resp.get("pane_id").and_then(|v| v.as_str()) {
+            let label = resp.pointer("/meta/label").and_then(|v| v.as_str());
+            let display = match label {
+                Some(l) => format!("{} ({})", l, pane_id),
+                None => pane_id.to_string(),
+            };
+            Ok((pane_id.to_string(), display))
+        } else {
+            let err = resp
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("ペインが見つかりません");
+            bail!("{}", err);
+        }
+    }
 }
 
 /// target 引数からポートを解決

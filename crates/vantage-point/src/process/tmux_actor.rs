@@ -82,6 +82,15 @@ enum TmuxCommand {
         keys: String,
         reply: oneshot::Sender<Result<(), String>>,
     },
+    /// label または pane_id からペイン ID を解決
+    ResolvePaneId {
+        query: String,
+        reply: oneshot::Sender<Option<String>>,
+    },
+    /// 全エージェントメタデータを一括取得
+    ListAllAgentMeta {
+        reply: oneshot::Sender<HashMap<String, AgentMeta>>,
+    },
 }
 
 /// エージェントメタデータ（tmux pane に紐づく論理情報）
@@ -227,6 +236,40 @@ impl TmuxHandle {
         self.tx
             .send(TmuxCommand::GetAgentMeta {
                 pane_id: pane_id.to_string(),
+                reply,
+            })
+            .await
+            .ok()?;
+        rx.await.ok().flatten()
+    }
+
+    /// 全エージェントメタデータを一括取得
+    pub async fn list_all_agent_meta(&self) -> HashMap<String, AgentMeta> {
+        let (reply, rx) = oneshot::channel();
+        if self
+            .tx
+            .send(TmuxCommand::ListAllAgentMeta { reply })
+            .await
+            .is_err()
+        {
+            return HashMap::new();
+        }
+        rx.await.unwrap_or_default()
+    }
+
+    /// label または pane_id からペイン ID を解決する
+    ///
+    /// `%` で始まる文字列はそのまま pane_id として返す。
+    /// それ以外は agent_metadata の label を前方一致（case-insensitive）で検索する。
+    pub async fn resolve_pane_id(&self, query: &str) -> Option<String> {
+        // `%` で始まるなら pane_id そのもの
+        if query.starts_with('%') {
+            return Some(query.to_string());
+        }
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(TmuxCommand::ResolvePaneId {
+                query: query.to_string(),
                 reply,
             })
             .await
@@ -400,6 +443,43 @@ impl TmuxActor {
                         tracing::info!("tmux send-keys: pane={}", pane_id);
                     }
                     let _ = reply.send(result);
+                }
+                TmuxCommand::ListAllAgentMeta { reply } => {
+                    let _ = reply.send(self.agent_metadata.clone());
+                }
+                TmuxCommand::ResolvePaneId { query, reply } => {
+                    // agent_metadata の label を前方一致（case-insensitive）で検索
+                    // 完全一致を優先し、複数の前方一致がある場合はエラー
+                    let query_lower = query.to_lowercase();
+                    let matches: Vec<String> = self
+                        .agent_metadata
+                        .iter()
+                        .filter(|(_, meta)| meta.label.to_lowercase().starts_with(&query_lower))
+                        .map(|(pane_id, _)| pane_id.clone())
+                        .collect();
+                    let found = match matches.len() {
+                        0 => None,
+                        1 => Some(matches.into_iter().next().unwrap()),
+                        _ => {
+                            // 完全一致があれば優先
+                            let exact = self
+                                .agent_metadata
+                                .iter()
+                                .find(|(_, meta)| meta.label.to_lowercase() == query_lower)
+                                .map(|(pane_id, _)| pane_id.clone());
+                            if exact.is_some() {
+                                exact
+                            } else {
+                                tracing::warn!(
+                                    "label '{}' が複数ペインにマッチ: {:?}",
+                                    query,
+                                    matches
+                                );
+                                None
+                            }
+                        }
+                    };
+                    let _ = reply.send(found);
                 }
             }
         }
