@@ -1987,10 +1987,10 @@ async fn resolve_process_port(explicit_port: Option<u16>) -> u16 {
     }
 
     // 2. 環境変数 VP_PROCESS_PORT
-    if let Ok(env_port) = std::env::var("VP_PROCESS_PORT") {
-        if let Ok(port) = env_port.parse::<u16>() {
-            return port;
-        }
+    if let Ok(env_port) = std::env::var("VP_PROCESS_PORT")
+        && let Ok(port) = env_port.parse::<u16>()
+    {
+        return port;
     }
 
     // 3. cwd ベースの自動解決（TheWorld API 経由）

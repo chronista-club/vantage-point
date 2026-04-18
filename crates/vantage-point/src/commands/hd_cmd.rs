@@ -274,23 +274,24 @@ pub fn is_own_session(session: &str, project_prefix: &str, other_prefixes: &[Str
     }
 
     // ID 付きセッション: {prefix}-{id}-vp
-    if let Some(rest) = session.strip_prefix(&format!("{}-", project_prefix)) {
-        if rest.ends_with("-vp") && rest.len() > 3 {
-            // 他プロジェクトのセッション名でないことを確認
-            // 例: session="creo-memories-vp", prefix="creo" → rest="memories-vp"
-            //     other_prefixes に "creo-memories" があれば除外
-            for other in other_prefixes {
-                if let Some(other_suffix) = other.strip_prefix(&format!("{}-", project_prefix)) {
-                    // rest が "{other_suffix}-vp" または "{other_suffix}-{id}-vp" で始まるなら除外
-                    let other_default = format!("{}-vp", other_suffix);
-                    let other_id_prefix = format!("{}-", other_suffix);
-                    if rest == other_default || rest.starts_with(&other_id_prefix) {
-                        return false;
-                    }
+    if let Some(rest) = session.strip_prefix(&format!("{}-", project_prefix))
+        && rest.ends_with("-vp")
+        && rest.len() > 3
+    {
+        // 他プロジェクトのセッション名でないことを確認
+        // 例: session="creo-memories-vp", prefix="creo" → rest="memories-vp"
+        //     other_prefixes に "creo-memories" があれば除外
+        for other in other_prefixes {
+            if let Some(other_suffix) = other.strip_prefix(&format!("{}-", project_prefix)) {
+                // rest が "{other_suffix}-vp" または "{other_suffix}-{id}-vp" で始まるなら除外
+                let other_default = format!("{}-vp", other_suffix);
+                let other_id_prefix = format!("{}-", other_suffix);
+                if rest == other_default || rest.starts_with(&other_id_prefix) {
+                    return false;
                 }
             }
-            return true;
         }
+        return true;
     }
 
     false

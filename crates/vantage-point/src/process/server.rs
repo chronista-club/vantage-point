@@ -209,7 +209,7 @@ pub async fn run(
         file_watchers: Arc::new(tokio::sync::Mutex::new(FileWatcherManager::new())),
         terminal_token: terminal_token.clone(),
         tmux: Arc::new(tokio::sync::Mutex::new(tmux_handle)),
-        tmux_session_name: tmux_session_name,
+        tmux_session_name,
         process_registry: Arc::new(tokio::sync::Mutex::new(
             crate::process::process_runner::ProcessRegistry::new(),
         )),

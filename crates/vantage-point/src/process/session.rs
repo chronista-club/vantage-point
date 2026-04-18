@@ -279,7 +279,7 @@ impl SessionManager {
             })
             .collect();
         // Sort by created_at descending (newest first)
-        sessions.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        sessions.sort_by_key(|s| std::cmp::Reverse(s.created_at));
         sessions
     }
 }

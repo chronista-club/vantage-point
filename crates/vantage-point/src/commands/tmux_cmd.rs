@@ -251,25 +251,24 @@ pub fn execute(cmd: TmuxCommands, config: &Config) -> Result<()> {
                     "/api/tmux/agent-meta?pane_id={}",
                     encode_pane_id(id)
                 ));
-                if let Ok(resp) = meta_resp {
-                    if let Some(meta) = resp.get("meta") {
-                        if !meta.is_null() {
-                            if !has_agents {
-                                println!("\n  Agents:");
-                                has_agents = true;
-                            }
-                            let label = meta
-                                .get("label")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("(no label)");
-                            let status = meta
-                                .get("status")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("unknown");
-                            let task = meta.get("task").and_then(|v| v.as_str()).unwrap_or("");
-                            println!("  {} [{}] {} — {}", id, status, label, task);
-                        }
+                if let Ok(resp) = meta_resp
+                    && let Some(meta) = resp.get("meta")
+                    && !meta.is_null()
+                {
+                    if !has_agents {
+                        println!("\n  Agents:");
+                        has_agents = true;
                     }
+                    let label = meta
+                        .get("label")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("(no label)");
+                    let status = meta
+                        .get("status")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown");
+                    let task = meta.get("task").and_then(|v| v.as_str()).unwrap_or("");
+                    println!("  {} [{}] {} — {}", id, status, label, task);
                 }
             }
             Ok(())

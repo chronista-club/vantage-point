@@ -203,13 +203,8 @@ impl MultiProjectApp {
                         }
                         true
                     }
-                    Event::Mouse(mouse) => {
-                        if self.overlay.is_none() {
-                            self.handle_mouse(mouse)
-                        } else {
-                            false
-                        }
-                    }
+                    Event::Mouse(mouse) if self.overlay.is_none() => self.handle_mouse(mouse),
+                    Event::Mouse(_) => false,
                     Event::Resize(cols, rows) => {
                         self.handle_resize(cols, rows);
                         true
@@ -270,15 +265,14 @@ impl MultiProjectApp {
         }
 
         // Ctrl+1~9: プロジェクト直接切替
-        if key.modifiers.contains(KeyModifiers::CONTROL) {
-            if let KeyCode::Char(c) = key.code {
-                if let Some(digit) = c.to_digit(10) {
-                    if digit >= 1 && (digit as usize) <= self.projects.len() {
-                        self.switch_to((digit - 1) as usize);
-                        return Ok(true);
-                    }
-                }
-            }
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && let KeyCode::Char(c) = key.code
+            && let Some(digit) = c.to_digit(10)
+            && digit >= 1
+            && (digit as usize) <= self.projects.len()
+        {
+            self.switch_to((digit - 1) as usize);
+            return Ok(true);
         }
 
         // Ctrl+←/→: プロジェクト切替

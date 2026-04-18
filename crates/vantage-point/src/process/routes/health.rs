@@ -745,10 +745,10 @@ pub async fn tmux_send_keys_handler(
         Err(e) => return Json(serde_json::json!({"error": e})),
     }
     // enter=true なら Enter キーを別途送信（tmux send-keys は引数単位で解釈する）
-    if params.enter {
-        if let Err(e) = handle.send_keys(&params.pane_id, "Enter").await {
-            return Json(serde_json::json!({"error": e}));
-        }
+    if params.enter
+        && let Err(e) = handle.send_keys(&params.pane_id, "Enter").await
+    {
+        return Json(serde_json::json!({"error": e}));
     }
     Json(serde_json::json!({"status": "ok"}))
 }

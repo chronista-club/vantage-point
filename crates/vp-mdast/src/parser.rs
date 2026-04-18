@@ -48,7 +48,7 @@ fn convert_node(node: mdast::Node) -> MdNode {
         mdast::Node::List(n) => MdNode::List(List {
             children: convert_children(n.children),
             ordered: n.ordered,
-            start: n.start.map(|s| s as u32),
+            start: n.start,
             spread: n.spread,
             position: convert_position(n.position),
         }),
@@ -175,7 +175,7 @@ fn transform_admonitions(node: &mut MdNode) {
     }
 }
 
-fn transform_admonition_children(children: &mut Vec<MdNode>) {
+fn transform_admonition_children(children: &mut [MdNode]) {
     // 各子ノードを再帰処理
     for child in children.iter_mut() {
         transform_admonitions(child);
@@ -184,10 +184,10 @@ fn transform_admonition_children(children: &mut Vec<MdNode>) {
     // BlockQuote → Admonition 変換
     let mut i = 0;
     while i < children.len() {
-        if let MdNode::BlockQuote(bq) = &children[i] {
-            if let Some(admonition) = try_convert_blockquote_to_admonition(bq) {
-                children[i] = MdNode::Admonition(admonition);
-            }
+        if let MdNode::BlockQuote(bq) = &children[i]
+            && let Some(admonition) = try_convert_blockquote_to_admonition(bq)
+        {
+            children[i] = MdNode::Admonition(admonition);
         }
         i += 1;
     }
@@ -200,45 +200,45 @@ fn try_convert_blockquote_to_admonition(bq: &BlockQuote) -> Option<Admonition> {
     }
 
     // 最初の子が Paragraph で、その最初の Text が `[!TYPE]` パターン
-    if let MdNode::Paragraph(para) = &bq.children[0] {
-        if let Some(MdNode::Text(text)) = para.children.first() {
-            // GitHub alerts: [!NOTE], [!WARNING], [!TIP], [!IMPORTANT], [!CAUTION]
-            if let Some(kind) = extract_alert_kind(&text.value) {
-                let title = extract_alert_title(&text.value);
-                // 残りの子ノード（最初の Paragraph の残りテキスト + 後続ノード）
-                let mut admonition_children = Vec::new();
+    if let MdNode::Paragraph(para) = &bq.children[0]
+        && let Some(MdNode::Text(text)) = para.children.first()
+    {
+        // GitHub alerts: [!NOTE], [!WARNING], [!TIP], [!IMPORTANT], [!CAUTION]
+        if let Some(kind) = extract_alert_kind(&text.value) {
+            let title = extract_alert_title(&text.value);
+            // 残りの子ノード（最初の Paragraph の残りテキスト + 後続ノード）
+            let mut admonition_children = Vec::new();
 
-                // 最初の Paragraph の残りインライン要素
-                let remaining_inline: Vec<MdNode> = para.children[1..].to_vec();
-                // タイトル行の後の残りテキスト（改行後）がある場合
-                let remaining_text = extract_remaining_text(&text.value);
-                if !remaining_text.is_empty() || !remaining_inline.is_empty() {
-                    let mut new_children = Vec::new();
-                    if !remaining_text.is_empty() {
-                        new_children.push(MdNode::Text(Text {
-                            value: remaining_text,
-                            position: None,
-                        }));
-                    }
-                    new_children.extend(remaining_inline);
-                    if !new_children.is_empty() {
-                        admonition_children.push(MdNode::Paragraph(Paragraph {
-                            children: new_children,
-                            position: None,
-                        }));
-                    }
+            // 最初の Paragraph の残りインライン要素
+            let remaining_inline: Vec<MdNode> = para.children[1..].to_vec();
+            // タイトル行の後の残りテキスト（改行後）がある場合
+            let remaining_text = extract_remaining_text(&text.value);
+            if !remaining_text.is_empty() || !remaining_inline.is_empty() {
+                let mut new_children = Vec::new();
+                if !remaining_text.is_empty() {
+                    new_children.push(MdNode::Text(Text {
+                        value: remaining_text,
+                        position: None,
+                    }));
                 }
-
-                // 後続のブロックノード
-                admonition_children.extend(bq.children[1..].iter().cloned());
-
-                return Some(Admonition {
-                    kind,
-                    title,
-                    children: admonition_children,
-                    position: bq.position.clone(),
-                });
+                new_children.extend(remaining_inline);
+                if !new_children.is_empty() {
+                    admonition_children.push(MdNode::Paragraph(Paragraph {
+                        children: new_children,
+                        position: None,
+                    }));
+                }
             }
+
+            // 後続のブロックノード
+            admonition_children.extend(bq.children[1..].iter().cloned());
+
+            return Some(Admonition {
+                kind,
+                title,
+                children: admonition_children,
+                position: bq.position.clone(),
+            });
         }
     }
     None

@@ -173,15 +173,15 @@ async fn handle_lanes_socket(socket: WebSocket, state: Arc<AppState>) {
     let cmd_task = tokio::spawn(async move {
         while let Some(json) = cmd_rx.recv().await {
             // switch_lane は専用 BridgeMsg で送信（LaneEvent 正規パス）
-            if json.get("type").and_then(|v| v.as_str()) == Some("switch_lane") {
-                if let Some(lane) = json.get("lane").and_then(|v| v.as_str()) {
-                    let _ = cmd_bridge_tx
-                        .send(BridgeMsg::SwitchLane {
-                            lane: lane.to_string(),
-                        })
-                        .await;
-                    continue;
-                }
+            if json.get("type").and_then(|v| v.as_str()) == Some("switch_lane")
+                && let Some(lane) = json.get("lane").and_then(|v| v.as_str())
+            {
+                let _ = cmd_bridge_tx
+                    .send(BridgeMsg::SwitchLane {
+                        lane: lane.to_string(),
+                    })
+                    .await;
+                continue;
             }
             let _ = cmd_bridge_tx.send(BridgeMsg::DirectMessage(json)).await;
         }

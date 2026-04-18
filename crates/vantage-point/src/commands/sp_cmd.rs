@@ -142,34 +142,34 @@ fn sp_status(project_dir: &str, config: &Config) -> Result<()> {
             .unwrap_or_else(|_| reqwest::blocking::Client::new());
         let url = format!("http://[::1]:{}/api/health", running.port);
 
-        if let Ok(resp) = client.get(&url).send() {
-            if let Ok(json) = resp.json::<serde_json::Value>() {
-                if let Some(started) = json.get("started_at").and_then(|s| s.as_str()) {
-                    println!("   起動時刻: {}", started);
-                }
+        if let Ok(resp) = client.get(&url).send()
+            && let Ok(json) = resp.json::<serde_json::Value>()
+        {
+            if let Some(started) = json.get("started_at").and_then(|s| s.as_str()) {
+                println!("   起動時刻: {}", started);
+            }
 
-                if let Some(stands) = json.get("stands").and_then(|s| s.as_object()) {
-                    println!();
-                    println!("   Stand 一覧:");
-                    for (name, info) in stands {
-                        let status = info
-                            .get("status")
-                            .and_then(|s| s.as_str())
-                            .unwrap_or("unknown");
-                        let icon = match name.as_str() {
-                            "heavens_door" => "📖 Heaven's Door (HD)",
-                            "paisley_park" => "🧭 Paisley Park (PP)",
-                            "gold_experience" => "🌿 Gold Experience (GE)",
-                            "hermit_purple" => "🍇 Hermit Purple (HP)",
-                            _ => name.as_str(),
-                        };
-                        let status_icon = match status {
-                            "active" => "✅",
-                            "disabled" => "⏸️",
-                            _ => "❓",
-                        };
-                        println!("     {} {} {}", status_icon, icon, status);
-                    }
+            if let Some(stands) = json.get("stands").and_then(|s| s.as_object()) {
+                println!();
+                println!("   Stand 一覧:");
+                for (name, info) in stands {
+                    let status = info
+                        .get("status")
+                        .and_then(|s| s.as_str())
+                        .unwrap_or("unknown");
+                    let icon = match name.as_str() {
+                        "heavens_door" => "📖 Heaven's Door (HD)",
+                        "paisley_park" => "🧭 Paisley Park (PP)",
+                        "gold_experience" => "🌿 Gold Experience (GE)",
+                        "hermit_purple" => "🍇 Hermit Purple (HP)",
+                        _ => name.as_str(),
+                    };
+                    let status_icon = match status {
+                        "active" => "✅",
+                        "disabled" => "⏸️",
+                        _ => "❓",
+                    };
+                    println!("     {} {} {}", status_icon, icon, status);
                 }
             }
         }

@@ -287,12 +287,11 @@ impl FileBackend {
                 let path = entry.path();
                 if path.is_dir() {
                     FileBackend::collect_discs_recursive(&path, discs).await?;
-                } else if path.extension().and_then(|e| e.to_str()) == Some("json") {
-                    if let Ok(json) = tokio::fs::read_to_string(&path).await
-                        && let Ok(disc) = serde_json::from_str::<Disc>(&json)
-                    {
-                        discs.push(disc);
-                    }
+                } else if path.extension().and_then(|e| e.to_str()) == Some("json")
+                    && let Ok(json) = tokio::fs::read_to_string(&path).await
+                    && let Ok(disc) = serde_json::from_str::<Disc>(&json)
+                {
+                    discs.push(disc);
                 }
             }
             Ok(())

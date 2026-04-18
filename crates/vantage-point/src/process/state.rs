@@ -160,13 +160,13 @@ impl AppState {
         }
 
         // tmux セッションが存在すれば起動
-        if crate::tmux::is_tmux_available() && crate::tmux::session_exists(&self.tmux_session_name)
+        if crate::tmux::is_tmux_available()
+            && crate::tmux::session_exists(&self.tmux_session_name)
+            && let Some(handle) = super::tmux_actor::spawn_for_session(&self.tmux_session_name)
         {
-            if let Some(handle) = super::tmux_actor::spawn_for_session(&self.tmux_session_name) {
-                *guard = Some(handle.clone());
-                tracing::info!("TmuxActor 遅延初期化: session={}", self.tmux_session_name);
-                return Some(handle);
-            }
+            *guard = Some(handle.clone());
+            tracing::info!("TmuxActor 遅延初期化: session={}", self.tmux_session_name);
+            return Some(handle);
         }
 
         None
