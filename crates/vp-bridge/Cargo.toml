@@ -14,6 +14,9 @@ ratatui = { version = "0.30", default-features = false }
 portable-pty = "0.9"
 alacritty_terminal = "0.25"
 
+# Unicode 文字幅判定（ambiguous 幅文字を CJK 文脈で wide 扱い）
+unicode-width = "0.2"
+
 # mise env JSON パース用
 serde_json = "1"
 libc = "0.2.183"
