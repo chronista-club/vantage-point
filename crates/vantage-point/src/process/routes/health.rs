@@ -255,18 +255,18 @@ pub async fn show_handler(
     Json(serde_json::json!({"status": "ok"}))
 }
 
-/// POST /api/mailbox/remote_deliver - Cross-Process forward 受信（Mailbox Phase 3 Step 2）
+/// POST /api/msgbox/remote_deliver - Cross-Process forward 受信（Msgbox Phase 3 Step 2）
 ///
 /// 別 Process の `RemoteRoutingClient::forward` から呼ばれる。
 /// 認証: `VP_REGISTRY_TOKEN` 環境変数設定時は Bearer header 検証。
-/// 配信: ローカル MailboxRouter の `deliver_local` に渡す。
-pub async fn mailbox_remote_deliver_handler(
+/// 配信: ローカル MsgboxRouter の `deliver_local` に渡す。
+pub async fn msgbox_remote_deliver_handler(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
-    Json(msg): Json<crate::capability::MailboxMessage>,
+    Json(msg): Json<crate::capability::MsgboxMessage>,
 ) -> impl IntoResponse {
     // Auth 検証
-    if let Some(expected) = crate::capability::mailbox_remote::registry_token() {
+    if let Some(expected) = crate::capability::msgbox_remote::registry_token() {
         let provided = headers
             .get(axum::http::header::AUTHORIZATION)
             .and_then(|v| v.to_str().ok())
@@ -282,7 +282,7 @@ pub async fn mailbox_remote_deliver_handler(
     // ローカル配信
     match state
         .capabilities
-        .mailbox_router
+        .msgbox_router
         .deliver_local(msg.clone())
         .await
     {

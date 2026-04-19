@@ -6,7 +6,7 @@
 //!
 //! ## レイヤー位置
 //!
-//! EventBus / Mailbox と同じインフラ層。Capability の下に位置し、
+//! EventBus / Msgbox と同じインフラ層。Capability の下に位置し、
 //! 各 Capability が Whitesnake を通じて状態を永続化する。
 //!
 //! ## 設計思想
@@ -24,7 +24,7 @@
 //! 例:
 //! paisley-park/pane/main        — PP メインペインの内容
 //! paisley-park/layout           — Canvas レイアウト
-//! mailbox/msg/{id}              — Mailbox メッセージ
+//! msgbox/msg/{id}              — Msgbox メッセージ
 //! heavens-door/session/{id}     — HD セッション状態
 //! process/stand-status          — Stand ステータス一覧
 //! ```
@@ -621,16 +621,16 @@ mod tests {
     async fn test_whitesnake_remove_by_prefix() {
         let ws = Whitesnake::in_memory();
 
-        ws.extract("mailbox", "msg/001", &"msg1").await.unwrap();
-        ws.extract("mailbox", "msg/002", &"msg2").await.unwrap();
-        ws.extract("mailbox", "config", &"cfg").await.unwrap();
+        ws.extract("msgbox", "msg/001", &"msg1").await.unwrap();
+        ws.extract("msgbox", "msg/002", &"msg2").await.unwrap();
+        ws.extract("msgbox", "config", &"cfg").await.unwrap();
 
         // msg/ だけ削除
-        let removed = ws.remove_by_prefix("mailbox", "msg/").await.unwrap();
+        let removed = ws.remove_by_prefix("msgbox", "msg/").await.unwrap();
         assert_eq!(removed, 2);
 
         // config は残る
-        let remaining = ws.list_discs("mailbox").await.unwrap();
+        let remaining = ws.list_discs("msgbox").await.unwrap();
         assert_eq!(remaining.len(), 1);
     }
 

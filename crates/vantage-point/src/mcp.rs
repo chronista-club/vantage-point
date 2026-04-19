@@ -97,11 +97,11 @@ pub struct ClosePaneParams {
     pub pane_id: String,
 }
 
-/// Parameters for mailbox_send tool (VP-24)
+/// Parameters for msg_send tool (VP-24)
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
-pub struct MailboxSendParams {
+pub struct MsgSendParams {
     /// 宛先アドレス
-    #[schemars(description = "Destination mailbox address (e.g. 'agent', 'protocol', 'notify')")]
+    #[schemars(description = "Destination msgbox address (e.g. 'agent', 'protocol', 'notify')")]
     pub to: String,
 
     /// メッセージ本文（JSON）
@@ -137,17 +137,17 @@ pub struct MailboxSendParams {
     pub manual_ack: Option<bool>,
 }
 
-/// Parameters for mailbox_ack tool (明示 ack)
+/// Parameters for msg_ack tool (明示 ack)
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
-pub struct MailboxAckParams {
+pub struct MsgAckParams {
     /// ack 対象のメッセージID
-    #[schemars(description = "Message ID to acknowledge (received from mailbox_recv)")]
+    #[schemars(description = "Message ID to acknowledge (received from msg_recv)")]
     pub id: String,
 }
 
-/// Parameters for mailbox_recv tool (VP-24)
+/// Parameters for msg_recv tool (VP-24)
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
-pub struct MailboxRecvParams {
+pub struct MsgRecvParams {
     /// 受信タイムアウト（秒）
     #[schemars(
         description = "Timeout in seconds to wait for a message (default: 5, max: 30). Returns immediately if a message is already queued."
@@ -1950,18 +1950,18 @@ if bestId > 0 { print(bestId) }
     }
 
     // =========================================================================
-    // Mailbox ツール (VP-24)
+    // Msgbox ツール (VP-24)
     // =========================================================================
 
-    /// Send a message to a mailbox address
+    /// Send a message to a msgbox address
     #[tool(
-        description = "Send a message to a VP Mailbox address. Use this for inter-agent communication (replaces ccwire). Available addresses: 'agent', 'protocol', 'midi', 'notify'."
+        description = "Send a message to a VP Msgbox address. Use this for inter-agent communication (replaces ccwire). Available addresses: 'agent', 'protocol', 'midi', 'notify'."
     )]
-    async fn mailbox_send(
+    async fn msg_send(
         &self,
-        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<MailboxSendParams>,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<MsgSendParams>,
     ) -> Result<CallToolResult, McpError> {
-        use crate::capability::mailbox::MessageKind;
+        use crate::capability::msgbox::MessageKind;
 
         let kind = match params.kind.as_deref() {
             Some("notification") => MessageKind::Notification,
@@ -1970,7 +1970,7 @@ if bestId > 0 { print(bestId) }
             _ => MessageKind::Direct,
         };
 
-        let mut msg = crate::capability::mailbox::MailboxMessage::new("mcp", &params.to, kind)
+        let mut msg = crate::capability::msgbox::MsgboxMessage::new("mcp", &params.to, kind)
             .with_payload(&params.payload);
 
         if let Some(reply_to) = params.reply_to {
@@ -1994,23 +1994,23 @@ if bestId > 0 { print(bestId) }
 
         let msg_id = msg.id.clone();
 
-        // QUIC 経由で Process の Mailbox に送信
+        // QUIC 経由で Process の Msgbox に送信
         let payload = serde_json::to_value(&msg)
             .map_err(|e| McpError::internal_error(format!("Serialize error: {}", e), None))?;
-        self.quic_call("mailbox_send", payload).await?;
+        self.quic_call("msg_send", payload).await?;
 
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
             format!("Message sent to '{}' (id: {})", params.to, msg_id),
         )]))
     }
 
-    /// List registered mailbox addresses
+    /// List registered msgbox addresses
     #[tool(
-        description = "List all registered Mailbox addresses in the current Process. Shows which capabilities and agents have active mailboxes."
+        description = "List all registered Msgbox addresses in the current Process. Shows which capabilities and agents have active msgboxes."
     )]
-    async fn mailbox_list(&self) -> Result<CallToolResult, McpError> {
+    async fn msg_peers(&self) -> Result<CallToolResult, McpError> {
         let resp = self
-            .quic_call("mailbox_list", serde_json::json!({}))
+            .quic_call("msg_peers", serde_json::json!({}))
             .await?;
 
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
@@ -2018,13 +2018,13 @@ if bestId > 0 { print(bestId) }
         )]))
     }
 
-    /// Receive a message from the MCP mailbox
+    /// Receive a message from the MCP msgbox
     #[tool(
-        description = "Receive a message from the MCP mailbox. Waits up to timeout seconds for a message. Returns immediately if a message is already queued. Use this for inter-agent communication (replaces ccwire wire_receive)."
+        description = "Receive a message from the MCP msgbox. Waits up to timeout seconds for a message. Returns immediately if a message is already queued. Use this for inter-agent communication (replaces ccwire wire_receive)."
     )]
-    async fn mailbox_recv(
+    async fn msg_recv(
         &self,
-        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<MailboxRecvParams>,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<MsgRecvParams>,
     ) -> Result<CallToolResult, McpError> {
         let timeout = params.timeout.unwrap_or(5).min(30);
 
@@ -2033,7 +2033,7 @@ if bestId > 0 { print(bestId) }
             "from": params.from,
         });
 
-        let resp = self.quic_call("mailbox_recv", payload).await?;
+        let resp = self.quic_call("msg_recv", payload).await?;
 
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
             serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "null".to_string()),
@@ -2044,14 +2044,14 @@ if bestId > 0 { print(bestId) }
     #[tool(
         description = "Explicitly acknowledge a persistent message received with manual_ack=true. Removes the message from the persistent store. No-op for auto-ack messages (they are acked automatically on recv)."
     )]
-    async fn mailbox_ack(
+    async fn msg_ack(
         &self,
-        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<MailboxAckParams>,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<MsgAckParams>,
     ) -> Result<CallToolResult, McpError> {
         let payload = serde_json::json!({
             "id": params.id,
         });
-        self.quic_call("mailbox_ack", payload).await?;
+        self.quic_call("msg_ack", payload).await?;
 
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
             format!("Acked message {}", params.id),

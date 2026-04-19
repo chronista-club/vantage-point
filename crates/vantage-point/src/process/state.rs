@@ -18,7 +18,7 @@ use super::tmux_actor::TmuxHandle;
 use super::topic_router::TopicRouter;
 use crate::agent::InteractiveClaudeAgent;
 use crate::agui::AgUiEvent;
-use crate::capability::mailbox::MailboxHandle;
+use crate::capability::msgbox::MsgboxHandle;
 use crate::capability::{ProcessManagerCapability, UpdateCapability};
 use crate::file_watcher::FileWatcherManager;
 use crate::mcp::PermissionResponse;
@@ -116,8 +116,8 @@ pub(crate) struct AppState {
     pub capabilities: Arc<ProcessCapabilities>,
     /// World capability for managing multiple processes (optional, only for world mode)
     pub world: Option<Arc<RwLock<ProcessManagerCapability>>>,
-    /// Mailbox actor registry — TheWorld のみ保持（Mailbox Phase 3: cross-Process routing）
-    pub mailbox_registry: Option<Arc<crate::capability::MailboxRegistry>>,
+    /// Msgbox actor registry — TheWorld のみ保持（Msgbox Phase 3: cross-Process routing）
+    pub msgbox_registry: Option<Arc<crate::capability::MsgboxRegistry>>,
     /// Update capability for version checking (optional, only for world mode)
     pub update: Option<Arc<RwLock<UpdateCapability>>>,
     /// Interactive Claude agent (stream-json mode for structured communication)
@@ -145,8 +145,8 @@ pub(crate) struct AppState {
     pub canvas_senders: Arc<tokio::sync::Mutex<Vec<tokio::sync::mpsc::Sender<serde_json::Value>>>>,
     /// プロセス起動時刻（ISO 8601）
     pub started_at: String,
-    /// MCP 用 Mailbox ハンドル（VP-24: MCP → Capability への Mailbox 配信）
-    pub mcp_mailbox: Option<MailboxHandle>,
+    /// MCP 用 Msgbox ハンドル（VP-24: MCP → Capability への Msgbox 配信）
+    pub mcp_msgbox: Option<MsgboxHandle>,
     /// SurrealDB クライアント（VP-21: 状態管理の DB 統一）
     pub vpdb: Option<crate::db::SharedVpDb>,
     /// Whitesnake 🐍 — 汎用永続化レイヤー

@@ -38,14 +38,14 @@ struct UnwatchFileRequest {
 // Process チャネル ハンドラー
 // =============================================================================
 
-/// ProcessMessage を受け取って broadcast + Mailbox 配信する汎用ハンドラー
+/// ProcessMessage を受け取って broadcast + Msgbox 配信する汎用ハンドラー
 ///
 /// MCP → QUIC → ここ の経路では、MCP が ProcessMessage をそのままシリアライズして送る。
 /// HTTP ハンドラ（health.rs の show_handler 等）と同じ ProcessMessage 形式を受ける。
 ///
 /// 配信先:
 /// 1. Hub broadcast → WebSocket → Canvas（既存）
-/// 2. Mailbox "protocol" → PP Capability（VP-24）
+/// 2. Msgbox "protocol" → PP Capability（VP-24）
 fn handle_process_message(
     state: &AppState,
     payload: serde_json::Value,
@@ -58,7 +58,7 @@ fn handle_process_message(
     // 明示的なキャッシュは不要。Hub に broadcast するだけ。
     state.hub.broadcast(msg);
 
-    // NOTE: Mailbox 経由の配信は ProtocolCapability 側の受信ループ実装後に追加（VP-24）
+    // NOTE: Msgbox 経由の配信は ProtocolCapability 側の受信ループ実装後に追加（VP-24）
     // 現在は Hub broadcast のみで Canvas に配信。
 
     Ok(serde_json::json!({"status": "ok"}))
@@ -548,11 +548,11 @@ pub async fn start_unison_server(
                             "process_stop" => handle_process_stop(&state, payload).await,
                             "process_inject" => handle_process_inject(&state, payload).await,
                             "process_list" => handle_process_list(&state).await,
-                            // Mailbox (VP-24)
-                            "mailbox_send" => handle_mailbox_send(&state, payload).await,
-                            "mailbox_recv" => handle_mailbox_recv(&state, payload).await,
-                            "mailbox_list" => handle_mailbox_list(&state).await,
-                            "mailbox_ack" => handle_mailbox_ack(&state, payload).await,
+                            // Msgbox (VP-24)
+                            "msg_send" => handle_msg_send(&state, payload).await,
+                            "msg_recv" => handle_msg_recv(&state, payload).await,
+                            "msg_peers" => handle_msg_peers(&state).await,
+                            "msg_ack" => handle_msg_ack(&state, payload).await,
                             _ => Err(format!("不明なメソッド: process.{}", method)),
                         };
 
@@ -830,16 +830,16 @@ pub async fn start_unison_server(
 }
 
 // =============================================================================
-// Mailbox ハンドラー (VP-24)
+// Msgbox ハンドラー (VP-24)
 // =============================================================================
 
-/// Mailbox にメッセージを送信
-async fn handle_mailbox_send(
+/// Msgbox にメッセージを送信
+async fn handle_msg_send(
     state: &AppState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    let msg: crate::capability::mailbox::MailboxMessage =
-        serde_json::from_value(payload).map_err(|e| format!("Invalid MailboxMessage: {}", e))?;
+    let msg: crate::capability::msgbox::MsgboxMessage =
+        serde_json::from_value(payload).map_err(|e| format!("Invalid MsgboxMessage: {}", e))?;
 
     // 自分自身への送信を拒否
     if msg.to == msg.from {
@@ -850,23 +850,23 @@ async fn handle_mailbox_send(
     let msg_id = msg.id.clone();
 
     // MCP 用ハンドルがあればそれを使い、なければ直接 router 経由
-    if let Some(ref mcp_mailbox) = state.mcp_mailbox {
-        mcp_mailbox
+    if let Some(ref mcp_msgbox) = state.mcp_msgbox {
+        mcp_msgbox
             .send(msg)
             .await
-            .map_err(|e| format!("Mailbox send failed: {}", e))?;
+            .map_err(|e| format!("Msgbox send failed: {}", e))?;
     } else {
-        return Err("MCP mailbox not initialized".to_string());
+        return Err("MCP msgbox not initialized".to_string());
     }
 
     Ok(serde_json::json!({"status": "ok", "to": to, "id": msg_id}))
 }
 
-/// Mailbox からメッセージを受信（タイムアウト付き、Selective Receive）
+/// Msgbox からメッセージを受信（タイムアウト付き、Selective Receive）
 ///
 /// from フィルタ指定時は `recv_matching` を使い、フィルタ不一致メッセージを
 /// stash に退避する（メッセージロスなし）。
-async fn handle_mailbox_recv(
+async fn handle_msg_recv(
     state: &AppState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
@@ -880,19 +880,19 @@ async fn handle_mailbox_recv(
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
-    let mcp_mailbox = state
-        .mcp_mailbox
+    let mcp_msgbox = state
+        .mcp_msgbox
         .as_ref()
-        .ok_or_else(|| "MCP mailbox not initialized".to_string())?;
+        .ok_or_else(|| "MCP msgbox not initialized".to_string())?;
 
     // タイムアウト付きで受信を試行（Selective Receive でメッセージロスなし）
     let result = tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), async {
         if let Some(filter) = from_filter {
             // Selective Receive: フィルタ不一致メッセージは stash に退避
-            mcp_mailbox.recv_matching(move |m| m.from == filter).await
+            mcp_msgbox.recv_matching(move |m| m.from == filter).await
         } else {
             // フィルタなし: 通常の recv（stash 優先）
-            mcp_mailbox.recv().await
+            mcp_msgbox.recv().await
         }
     })
     .await;
@@ -903,14 +903,14 @@ async fn handle_mailbox_recv(
                 serde_json::to_value(&msg).map_err(|e| format!("Serialize error: {}", e))?;
             Ok(serde_json::json!({"message": value}))
         }
-        Ok(None) => Ok(serde_json::json!({"message": null, "reason": "mailbox closed"})),
+        Ok(None) => Ok(serde_json::json!({"message": null, "reason": "msgbox closed"})),
         Err(_) => Ok(serde_json::json!({"message": null, "reason": "timeout"})),
     }
 }
 
-/// 登録済み Mailbox アドレス一覧を返す
-async fn handle_mailbox_list(state: &AppState) -> Result<serde_json::Value, String> {
-    let addresses = state.capabilities.mailbox_router.addresses().await;
+/// 登録済み Msgbox アドレス一覧を返す
+async fn handle_msg_peers(state: &AppState) -> Result<serde_json::Value, String> {
+    let addresses = state.capabilities.msgbox_router.addresses().await;
     Ok(serde_json::json!({"addresses": addresses}))
 }
 
@@ -918,7 +918,7 @@ async fn handle_mailbox_list(state: &AppState) -> Result<serde_json::Value, Stri
 ///
 /// `manual_ack: true` で受信したメッセージに対して使う。
 /// 処理完了後に呼び出すことで、途中クラッシュ時の再配信を保証。
-async fn handle_mailbox_ack(
+async fn handle_msg_ack(
     state: &AppState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
@@ -928,11 +928,11 @@ async fn handle_mailbox_ack(
         .ok_or_else(|| "id required".to_string())?
         .to_string();
 
-    let mcp_mailbox = state
-        .mcp_mailbox
+    let mcp_msgbox = state
+        .mcp_msgbox
         .as_ref()
-        .ok_or_else(|| "MCP mailbox not initialized".to_string())?;
-    mcp_mailbox.ack(&id).await;
+        .ok_or_else(|| "MCP msgbox not initialized".to_string())?;
+    mcp_msgbox.ack(&id).await;
 
     Ok(serde_json::json!({"status": "ok", "id": id}))
 }

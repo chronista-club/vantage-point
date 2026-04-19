@@ -35,11 +35,11 @@ pub async fn run(
 ) -> Result<()> {
     let project_dir = cap_config.project_dir.clone();
 
-    // Whitesnake をポート別ディレクトリで早期初期化（Mailbox persistence で使用）
+    // Whitesnake をポート別ディレクトリで早期初期化（Msgbox persistence で使用）
     let whitesnake = crate::capability::Whitesnake::file_backed_for_port(port);
     cap_config.whitesnake = Some(whitesnake.clone());
 
-    // Mailbox Phase 3: cross-Process routing 用 RemoteRoutingClient を注入
+    // Msgbox Phase 3: cross-Process routing 用 RemoteRoutingClient を注入
     // - project_name は project_dir から解決
     // - local_port = この Process の port
     let project_name_for_remote = crate::resolve::project_name_from_path(
@@ -47,7 +47,7 @@ pub async fn run(
         &crate::config::Config::load().unwrap_or_default(),
     )
     .to_string();
-    let remote_client = crate::capability::mailbox_remote::RemoteRoutingClient::new(
+    let remote_client = crate::capability::msgbox_remote::RemoteRoutingClient::new(
         crate::cli::WORLD_PORT,
         project_name_for_remote.clone(),
         port,
@@ -79,16 +79,16 @@ pub async fn run(
         tracing::warn!("Failed to initialize capabilities: {}", e);
     }
 
-    // Mailbox Phase 3 Step 2b: TheWorld registry に actor を一括 register
+    // Msgbox Phase 3 Step 2b: TheWorld registry に actor を一括 register
     // initialize() 後の addresses を登録対象とする
     {
-        let addresses = capabilities.mailbox_router.addresses().await;
+        let addresses = capabilities.msgbox_router.addresses().await;
         let project_name = project_name_for_remote.clone();
         let world_port = crate::cli::WORLD_PORT;
         tokio::spawn(async move {
             // TheWorld 起動完了を少し待つ（ベストエフォート）
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            let failed = crate::capability::mailbox_remote::register_actors_to_world(
+            let failed = crate::capability::msgbox_remote::register_actors_to_world(
                 world_port,
                 &project_name,
                 port,
@@ -97,14 +97,14 @@ pub async fn run(
             .await;
             if failed.is_empty() {
                 tracing::info!(
-                    "Mailbox: {} 件の actor を TheWorld registry に登録 (project={}, port={})",
+                    "Msgbox: {} 件の actor を TheWorld registry に登録 (project={}, port={})",
                     addresses.len(),
                     project_name,
                     port
                 );
             } else {
                 tracing::warn!(
-                    "Mailbox: {} 件 register 失敗（TheWorld 未起動の可能性）: {:?}",
+                    "Msgbox: {} 件 register 失敗（TheWorld 未起動の可能性）: {:?}",
                     failed.len(),
                     failed
                 );
@@ -117,16 +117,16 @@ pub async fn run(
         let shutdown_for_unreg = shutdown_token.clone();
         tokio::spawn(async move {
             shutdown_for_unreg.cancelled().await;
-            if let Err(e) = crate::capability::mailbox_remote::unregister_process_from_world(
+            if let Err(e) = crate::capability::msgbox_remote::unregister_process_from_world(
                 crate::cli::WORLD_PORT,
                 port,
             )
             .await
             {
-                tracing::warn!("Mailbox: TheWorld unregister failed: {}", e);
+                tracing::warn!("Msgbox: TheWorld unregister failed: {}", e);
             } else {
                 tracing::info!(
-                    "Mailbox: TheWorld registry から port={} 配下を unregister",
+                    "Msgbox: TheWorld registry から port={} 配下を unregister",
                     port
                 );
             }
@@ -208,14 +208,14 @@ pub async fn run(
         }
     };
 
-    // MCP 用 Mailbox ハンドルを登録（VP-24）
-    let mcp_mailbox = capabilities.mailbox_router.register("mcp").await;
+    // MCP 用 Msgbox ハンドルを登録（VP-24）
+    let mcp_msgbox = capabilities.msgbox_router.register("mcp").await;
 
-    // Notification ブリッジ: Mailbox "notify" → DistributedNotification（VP-24）
-    // Mailbox に送られた Notification メッセージを macOS DistributedNotification に変換
+    // Notification ブリッジ: Msgbox "notify" → DistributedNotification（VP-24）
+    // Msgbox に送られた Notification メッセージを macOS DistributedNotification に変換
     // shutdown token で停止可能
     {
-        let notify_handle = capabilities.mailbox_router.register("notify").await;
+        let notify_handle = capabilities.msgbox_router.register("notify").await;
         let project_dir_clone = project_dir.clone();
         let shutdown = shutdown_token.clone();
         tokio::spawn(async move {
@@ -227,7 +227,7 @@ pub async fn run(
                     }
                     msg = notify_handle.recv() => {
                         match msg {
-                            Some(msg) if msg.kind == crate::capability::mailbox::MessageKind::Notification => {
+                            Some(msg) if msg.kind == crate::capability::msgbox::MessageKind::Notification => {
                                 let project = msg
                                     .payload
                                     .get("project")
@@ -275,7 +275,7 @@ pub async fn run(
         pending_prompts: Arc::new(RwLock::new(HashMap::new())),
         capabilities,
         world: None,
-        mailbox_registry: None, // SP モードでは TheWorld registry 不要
+        msgbox_registry: None, // SP モードでは TheWorld registry 不要
         update: None,
         interactive_agent: Arc::new(RwLock::new(None)),
         pty_manager: Arc::new(tokio::sync::Mutex::new(PtyManager::new())),
@@ -291,10 +291,10 @@ pub async fn run(
         topic_router,
         canvas_senders: Arc::new(tokio::sync::Mutex::new(Vec::new())),
         started_at: chrono::Utc::now().to_rfc3339(),
-        mcp_mailbox: Some(mcp_mailbox),
+        mcp_msgbox: Some(mcp_msgbox),
         vpdb,
         // ポート別ディレクトリで分離（複数プロセスの namespace 衝突を防ぐ）
-        // run() 冒頭で作成した Whitesnake を共有（Mailbox persistent と同一インスタンス）
+        // run() 冒頭で作成した Whitesnake を共有（Msgbox persistent と同一インスタンス）
         whitesnake: whitesnake.clone(),
     });
 
@@ -311,8 +311,8 @@ pub async fn run(
         .route("/ws/lanes", get(lanes::lanes_ws_handler))
         .route("/api/show", post(health::show_handler))
         .route(
-            "/api/mailbox/remote_deliver",
-            post(health::mailbox_remote_deliver_handler),
+            "/api/msgbox/remote_deliver",
+            post(health::msgbox_remote_deliver_handler),
         )
         .route("/api/toggle-pane", post(health::toggle_pane_handler))
         .route("/api/split-pane", post(health::split_pane_handler))
@@ -582,13 +582,13 @@ pub async fn run_world(port: u16) -> Result<()> {
             ProcessCapabilities::new(CapabilityConfig {
                 project_dir: String::new(),
                 midi_config: None,
-                whitesnake: None,     // World モードは永続 mailbox 不要
+                whitesnake: None,     // World モードは永続 msgbox 不要
                 remote_routing: None, // World モードは cross-Process forward 不要
             })
             .await,
         ),
         world: Some(world_cap.clone()),
-        mailbox_registry: Some(Arc::new(crate::capability::MailboxRegistry::new())),
+        msgbox_registry: Some(Arc::new(crate::capability::MsgboxRegistry::new())),
         update: Some(update_cap.clone()),
         interactive_agent: Arc::new(RwLock::new(None)),
         pty_manager: Arc::new(tokio::sync::Mutex::new(PtyManager::new())),
@@ -604,7 +604,7 @@ pub async fn run_world(port: u16) -> Result<()> {
         topic_router,
         canvas_senders: Arc::new(tokio::sync::Mutex::new(Vec::new())),
         started_at: chrono::Utc::now().to_rfc3339(),
-        mcp_mailbox: None,  // World モードでは MCP Mailbox 不要
+        mcp_msgbox: None,  // World モードでは MCP Msgbox 不要
         vpdb: vpdb.clone(), // World モードでも DB 参照あり
         // TheWorld もポート別ディレクトリで分離
         whitesnake: crate::capability::Whitesnake::file_backed_for_port(port),
@@ -673,24 +673,24 @@ pub async fn run_world(port: u16) -> Result<()> {
             "/api/world/processes/unregister",
             post(world::world_unregister_process),
         )
-        // Mailbox Registry (Phase 3: cross-Process actor messaging)
+        // Msgbox Registry (Phase 3: cross-Process actor messaging)
         .route(
-            "/api/world/mailbox/register",
-            post(world::world_mailbox_register),
+            "/api/world/msgbox/register",
+            post(world::world_msgbox_register),
         )
         .route(
-            "/api/world/mailbox/unregister",
-            post(world::world_mailbox_unregister),
+            "/api/world/msgbox/unregister",
+            post(world::world_msgbox_unregister),
         )
         .route(
-            "/api/world/mailbox/unregister-process",
-            post(world::world_mailbox_unregister_process),
+            "/api/world/msgbox/unregister-process",
+            post(world::world_msgbox_unregister_process),
         )
         .route(
-            "/api/world/mailbox/lookup",
-            get(world::world_mailbox_lookup),
+            "/api/world/msgbox/lookup",
+            get(world::world_msgbox_lookup),
         )
-        .route("/api/world/mailbox/list", get(world::world_mailbox_list))
+        .route("/api/world/msgbox/list", get(world::world_msgbox_list))
         // Update API routes (vp CLI)
         .route("/api/update/check", get(update::update_check))
         .route("/api/update/apply", post(update::update_apply))

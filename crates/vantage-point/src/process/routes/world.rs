@@ -395,26 +395,26 @@ pub async fn world_refresh(State(state): State<Arc<AppState>>) -> impl IntoRespo
 }
 
 // =============================================================================
-// Mailbox Registry — Phase 3: cross-Process actor messaging
+// Msgbox Registry — Phase 3: cross-Process actor messaging
 // =============================================================================
 
-/// Mailbox actor 登録リクエスト
+/// Msgbox actor 登録リクエスト
 #[derive(serde::Deserialize)]
-pub struct MailboxRegisterRequest {
+pub struct MsgboxRegisterRequest {
     pub actor: String,
     pub project_name: String,
     pub port: u16,
 }
 
-/// POST /api/world/mailbox/register — VP Process が自身の actor を登録
-pub async fn world_mailbox_register(
+/// POST /api/world/msgbox/register — VP Process が自身の actor を登録
+pub async fn world_msgbox_register(
     State(state): State<Arc<AppState>>,
-    Json(req): Json<MailboxRegisterRequest>,
+    Json(req): Json<MsgboxRegisterRequest>,
 ) -> impl IntoResponse {
-    let Some(registry) = &state.mailbox_registry else {
+    let Some(registry) = &state.msgbox_registry else {
         return (
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({"error": "Mailbox registry not available"})),
+            Json(serde_json::json!({"error": "Msgbox registry not available"})),
         );
     };
 
@@ -439,22 +439,22 @@ pub async fn world_mailbox_register(
     )
 }
 
-/// Mailbox actor 登録解除リクエスト
+/// Msgbox actor 登録解除リクエスト
 #[derive(serde::Deserialize)]
-pub struct MailboxUnregisterRequest {
+pub struct MsgboxUnregisterRequest {
     pub actor: String,
     pub project_name: String,
 }
 
-/// POST /api/world/mailbox/unregister — actor 単独 unregister
-pub async fn world_mailbox_unregister(
+/// POST /api/world/msgbox/unregister — actor 単独 unregister
+pub async fn world_msgbox_unregister(
     State(state): State<Arc<AppState>>,
-    Json(req): Json<MailboxUnregisterRequest>,
+    Json(req): Json<MsgboxUnregisterRequest>,
 ) -> impl IntoResponse {
-    let Some(registry) = &state.mailbox_registry else {
+    let Some(registry) = &state.msgbox_registry else {
         return (
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({"error": "Mailbox registry not available"})),
+            Json(serde_json::json!({"error": "Msgbox registry not available"})),
         );
     };
 
@@ -473,19 +473,19 @@ pub async fn world_mailbox_unregister(
 
 /// Process 単位の一括 unregister リクエスト（Process 停止時）
 #[derive(serde::Deserialize)]
-pub struct MailboxUnregisterProcessRequest {
+pub struct MsgboxUnregisterProcessRequest {
     pub port: u16,
 }
 
-/// POST /api/world/mailbox/unregister-process — port 配下の全 actor を一括解除
-pub async fn world_mailbox_unregister_process(
+/// POST /api/world/msgbox/unregister-process — port 配下の全 actor を一括解除
+pub async fn world_msgbox_unregister_process(
     State(state): State<Arc<AppState>>,
-    Json(req): Json<MailboxUnregisterProcessRequest>,
+    Json(req): Json<MsgboxUnregisterProcessRequest>,
 ) -> impl IntoResponse {
-    let Some(registry) = &state.mailbox_registry else {
+    let Some(registry) = &state.msgbox_registry else {
         return (
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({"error": "Mailbox registry not available"})),
+            Json(serde_json::json!({"error": "Msgbox registry not available"})),
         );
     };
 
@@ -501,9 +501,9 @@ pub async fn world_mailbox_unregister_process(
     )
 }
 
-/// Mailbox actor lookup query
+/// Msgbox actor lookup query
 #[derive(serde::Deserialize)]
-pub struct MailboxLookupQuery {
+pub struct MsgboxLookupQuery {
     /// Actor 名（必須）
     pub actor: String,
     /// project_name または port（どちらか必須）
@@ -511,16 +511,16 @@ pub struct MailboxLookupQuery {
     pub port: Option<u16>,
 }
 
-/// GET /api/world/mailbox/lookup?actor=...&project_name=...
-/// or  /api/world/mailbox/lookup?actor=...&port=...
-pub async fn world_mailbox_lookup(
+/// GET /api/world/msgbox/lookup?actor=...&project_name=...
+/// or  /api/world/msgbox/lookup?actor=...&port=...
+pub async fn world_msgbox_lookup(
     State(state): State<Arc<AppState>>,
-    axum::extract::Query(query): axum::extract::Query<MailboxLookupQuery>,
+    axum::extract::Query(query): axum::extract::Query<MsgboxLookupQuery>,
 ) -> impl IntoResponse {
-    let Some(registry) = &state.mailbox_registry else {
+    let Some(registry) = &state.msgbox_registry else {
         return (
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({"error": "Mailbox registry not available"})),
+            Json(serde_json::json!({"error": "Msgbox registry not available"})),
         );
     };
 
@@ -547,22 +547,22 @@ pub async fn world_mailbox_lookup(
     }
 }
 
-/// Mailbox registry list query
+/// Msgbox registry list query
 #[derive(serde::Deserialize)]
-pub struct MailboxListQuery {
+pub struct MsgboxListQuery {
     /// project_name でフィルタ（省略時は全件）
     pub project_name: Option<String>,
 }
 
-/// GET /api/world/mailbox/list?project_name=... — debug / 確認用
-pub async fn world_mailbox_list(
+/// GET /api/world/msgbox/list?project_name=... — debug / 確認用
+pub async fn world_msgbox_list(
     State(state): State<Arc<AppState>>,
-    axum::extract::Query(query): axum::extract::Query<MailboxListQuery>,
+    axum::extract::Query(query): axum::extract::Query<MsgboxListQuery>,
 ) -> impl IntoResponse {
-    let Some(registry) = &state.mailbox_registry else {
+    let Some(registry) = &state.msgbox_registry else {
         return (
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({"error": "Mailbox registry not available"})),
+            Json(serde_json::json!({"error": "Msgbox registry not available"})),
         );
     };
 

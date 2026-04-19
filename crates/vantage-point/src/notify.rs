@@ -68,7 +68,7 @@ pub fn post_canvas_open(port: u16) {
 /// CC（Claude Code）の完了・承認要求などを Native App に通知
 ///
 /// サイドバーの Lane 行にオレンジバッジを表示する。
-/// Mailbox の Notification メッセージから呼び出される想定（VP-24）。
+/// Msgbox の Notification メッセージから呼び出される想定（VP-24）。
 ///
 /// ## 引数
 /// - `project`: プロジェクト名（サイドバーのマッチングに使用）

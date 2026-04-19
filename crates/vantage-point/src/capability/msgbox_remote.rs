@@ -1,7 +1,7 @@
-//! Mailbox Remote Routing — Cross-Process メッセージ転送（Mailbox Phase 3 Step 2）
+//! Msgbox Remote Routing — Cross-Process メッセージ転送（Msgbox Phase 3 Step 2）
 //!
-//! `MailboxRouter` から remote address 宛のメッセージを受け取り、TheWorld registry で
-//! target Process の port を解決、HTTP（暫定）で `mailbox_remote_deliver` を呼ぶ。
+//! `MsgboxRouter` から remote address 宛のメッセージを受け取り、TheWorld registry で
+//! target Process の port を解決、HTTP（暫定）で `msgbox_remote_deliver` を呼ぶ。
 //!
 //! ## 改善ポイント（Step 2 設計レビュー対応）
 //!
@@ -17,8 +17,8 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::Mutex;
 
-use crate::capability::mailbox::MailboxMessage;
-use crate::capability::mailbox_registry::{MailboxActorEntry, ResolvedAddress};
+use crate::capability::msgbox::MsgboxMessage;
+use crate::capability::msgbox_registry::{MsgboxActorEntry, ResolvedAddress};
 
 /// Lookup cache の TTL（30 秒）
 const LOOKUP_CACHE_TTL: Duration = Duration::from_secs(30);
@@ -48,7 +48,7 @@ pub async fn register_actor_to_world(
     self_port: u16,
     actor: &str,
 ) -> anyhow::Result<()> {
-    let url = format!("http://[::1]:{}/api/world/mailbox/register", world_port);
+    let url = format!("http://[::1]:{}/api/world/msgbox/register", world_port);
     let body = serde_json::json!({
         "actor": actor,
         "project_name": project_name,
@@ -84,7 +84,7 @@ pub async fn register_actors_to_world(
     for actor in actors {
         if let Err(e) = register_actor_to_world(world_port, project_name, self_port, actor).await {
             tracing::warn!(
-                "MailboxRouter: register '{}' to TheWorld failed: {}",
+                "MsgboxRouter: register '{}' to TheWorld failed: {}",
                 actor,
                 e
             );
@@ -99,7 +99,7 @@ pub async fn register_actors_to_world(
 /// Process 停止時に呼ぶ。失敗してもログ出すだけ（shutdown を止めない）。
 pub async fn unregister_process_from_world(world_port: u16, self_port: u16) -> anyhow::Result<()> {
     let url = format!(
-        "http://[::1]:{}/api/world/mailbox/unregister-process",
+        "http://[::1]:{}/api/world/msgbox/unregister-process",
         world_port
     );
     let body = serde_json::json!({ "port": self_port });
@@ -132,7 +132,7 @@ pub struct RemoteRoutingClient {
     /// 自 Process の port（local 判定用）
     local_port: u16,
     /// Lookup cache（30s TTL）— `(actor, port_or_project)` → entry
-    lookup_cache: Arc<Mutex<HashMap<String, (MailboxActorEntry, Instant)>>>,
+    lookup_cache: Arc<Mutex<HashMap<String, (MsgboxActorEntry, Instant)>>>,
 }
 
 /// Remote routing エラー
@@ -185,7 +185,7 @@ impl RemoteRoutingClient {
     }
 
     /// Cache から有効 entry を引く（期限切れは削除）
-    async fn cache_get(&self, key: &str) -> Option<MailboxActorEntry> {
+    async fn cache_get(&self, key: &str) -> Option<MsgboxActorEntry> {
         let mut cache = self.lookup_cache.lock().await;
         if let Some((entry, inserted_at)) = cache.get(key) {
             if inserted_at.elapsed() < LOOKUP_CACHE_TTL {
@@ -198,7 +198,7 @@ impl RemoteRoutingClient {
     }
 
     /// Cache に insert
-    async fn cache_put(&self, key: String, entry: MailboxActorEntry) {
+    async fn cache_put(&self, key: String, entry: MsgboxActorEntry) {
         self.lookup_cache
             .lock()
             .await
@@ -209,7 +209,7 @@ impl RemoteRoutingClient {
     pub async fn lookup(
         &self,
         resolved: &ResolvedAddress,
-    ) -> Result<MailboxActorEntry, RemoteRoutingError> {
+    ) -> Result<MsgboxActorEntry, RemoteRoutingError> {
         // 1. Cache lookup
         if let Some(key) = Self::cache_key(resolved)
             && let Some(entry) = self.cache_get(&key).await
@@ -227,13 +227,13 @@ impl RemoteRoutingClient {
             // actor / project は validate 済み（[a-zA-Z0-9_.-]）で URL 安全文字のみ
             ResolvedAddress::Port { actor, port } => {
                 format!(
-                    "{}/api/world/mailbox/lookup?actor={}&port={}",
+                    "{}/api/world/msgbox/lookup?actor={}&port={}",
                     self.world_base_url, actor, port
                 )
             }
             ResolvedAddress::Project { actor, project } => {
                 format!(
-                    "{}/api/world/mailbox/lookup?actor={}&project_name={}",
+                    "{}/api/world/msgbox/lookup?actor={}&project_name={}",
                     self.world_base_url, actor, project
                 )
             }
@@ -264,7 +264,7 @@ impl RemoteRoutingClient {
 
         #[derive(serde::Deserialize)]
         struct LookupResponse {
-            entry: MailboxActorEntry,
+            entry: MsgboxActorEntry,
         }
 
         let body: LookupResponse = resp
@@ -282,13 +282,13 @@ impl RemoteRoutingClient {
 
     /// 解決済みアドレスにメッセージを forward（retry 付き）
     ///
-    /// 1. TheWorld で lookup（cache）→ MailboxActorEntry
+    /// 1. TheWorld で lookup（cache）→ MsgboxActorEntry
     /// 2. msg.to を actor 名のみ、msg.from を `actor@local_project` に正規化
     /// 3. exponential backoff で最大 5 回リトライ
     pub async fn forward(
         &self,
         resolved: &ResolvedAddress,
-        msg: MailboxMessage,
+        msg: MsgboxMessage,
     ) -> Result<(), RemoteRoutingError> {
         let entry = self.lookup(resolved).await?;
         let target_port = entry.port;
@@ -310,7 +310,7 @@ impl RemoteRoutingClient {
                 Ok(()) => {
                     if attempt > 0 {
                         tracing::debug!(
-                            "MailboxRouter: forward 成功（{} 回目のリトライ） to={}@{}",
+                            "MsgboxRouter: forward 成功（{} 回目のリトライ） to={}@{}",
                             attempt + 1,
                             normalized.to,
                             target_project
@@ -321,7 +321,7 @@ impl RemoteRoutingClient {
                 Err(e) => {
                     let reason = e.to_string();
                     tracing::warn!(
-                        "MailboxRouter: forward 試行 {}/{} 失敗 to={}@{} reason={}",
+                        "MsgboxRouter: forward 試行 {}/{} 失敗 to={}@{} reason={}",
                         attempt + 1,
                         FORWARD_MAX_RETRIES,
                         normalized.to,
@@ -378,8 +378,8 @@ impl RemoteRoutingClient {
 }
 
 /// HTTP fallback で remote_deliver を呼ぶ（Step 2 暫定 — Step 2b で Unison QUIC へ）
-async fn http_forward(target_port: u16, msg: &MailboxMessage) -> anyhow::Result<()> {
-    let url = format!("http://[::1]:{}/api/mailbox/remote_deliver", target_port);
+async fn http_forward(target_port: u16, msg: &MsgboxMessage) -> anyhow::Result<()> {
+    let url = format!("http://[::1]:{}/api/msgbox/remote_deliver", target_port);
     let mut req = reqwest::Client::builder()
         .timeout(Duration::from_secs(3))
         .build()?
@@ -528,7 +528,7 @@ mod tests {
     #[tokio::test]
     async fn test_cache_put_and_get_within_ttl() {
         let client = make_client();
-        let entry = MailboxActorEntry {
+        let entry = MsgboxActorEntry {
             actor: "agent".to_string(),
             project_name: "vantage-point".to_string(),
             port: 33003,
