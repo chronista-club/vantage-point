@@ -569,22 +569,123 @@ class TerminalView: NSView {
             }
         }
 
-        // カーソル描画（全角文字の上では幅 2 セル）
+        // IME 変換中文字の inline 描画（カーソルより前に描画）
+        // hasMarkedText() == true のとき、カーソル位置から右に変換中テキストを表示。
+        // iTerm2/Terminal.app と同等の UX。
         let cursor = vp_bridge_get_cursor_session(sessionId)
+        let markedWidth = drawMarkedTextIfNeeded(ctx: ctx, cursor: cursor)
+
+        // カーソル描画（全角文字の上では幅 2 セル、IME 変換中はマーク末尾に移動）
         if cursor.visible {
-            let cursorX = CGFloat(cursor.x) * cellWidth
+            let cursorX = (CGFloat(cursor.x) + CGFloat(markedWidth)) * cellWidth
             let cursorY = bounds.height - CGFloat(Int(cursor.y) + 1) * cellHeight
 
             // カーソル位置の文字がワイドかチェック（bit 6: WIDE_CHAR）
-            let idx = Int(cursor.y) * Int(gridCols) + Int(cursor.x)
+            // ただし IME 変換中は末尾位置 = 確定後の挿入点なので 1 セル幅で十分
             var cursorWidth = cellWidth
-            if idx < cellBuffer.count && (cellBuffer[idx].flags & (1 << 6)) != 0 {
-                cursorWidth = cellWidth * 2
+            if markedWidth == 0 {
+                let idx = Int(cursor.y) * Int(gridCols) + Int(cursor.x)
+                if idx < cellBuffer.count && (cellBuffer[idx].flags & (1 << 6)) != 0 {
+                    cursorWidth = cellWidth * 2
+                }
             }
 
             ctx.setFillColor(NSColor.white.withAlphaComponent(0.5).cgColor)
             ctx.fill(CGRect(x: cursorX, y: cursorY, width: cursorWidth, height: cellHeight))
         }
+    }
+
+    /// IME 変換中文字（markedString）を半透明背景 + 下線でカーソル位置から描画
+    /// - Returns: 描画した文字の合計セル幅（カーソル位置補正用）
+    @MainActor
+    private func drawMarkedTextIfNeeded(ctx: CGContext, cursor: VPCursorInfo) -> Int {
+        guard hasMarkedText() else { return 0 }
+        let text = markedString.string
+        guard !text.isEmpty else { return 0 }
+
+        let cursorY = bounds.height - CGFloat(Int(cursor.y) + 1) * cellHeight
+        let totalWidth = TerminalView.displayWidth(of: text)
+        let baseX = CGFloat(cursor.x) * cellWidth
+
+        // 半透明ハイライト背景（system accent の薄塗り）
+        ctx.setFillColor(NSColor.controlAccentColor.withAlphaComponent(0.25).cgColor)
+        ctx.fill(CGRect(
+            x: baseX,
+            y: cursorY,
+            width: CGFloat(totalWidth) * cellWidth,
+            height: cellHeight
+        ))
+
+        // 文字描画（grapheme 単位、各グリフを cascade font で）
+        var col = CGFloat(cursor.x)
+        let fgColor = NSColor.textColor
+        for char in text {
+            let charStr = String(char)
+            let charWidth = char.unicodeScalars.first.map { TerminalView.eastAsianWidth($0) } ?? 1
+
+            let attrs: [CFString: Any] = [
+                kCTFontAttributeName: font as Any,
+                kCTForegroundColorAttributeName: fgColor.cgColor,
+            ]
+            let attrStr = CFAttributedStringCreate(nil, charStr as CFString, attrs as CFDictionary)!
+            let line = CTLineCreateWithAttributedString(attrStr)
+            ctx.textPosition = CGPoint(x: col * cellWidth, y: cursorY + baselineOffset)
+            CTLineDraw(line, ctx)
+
+            col += CGFloat(charWidth)
+        }
+
+        // 下線（変換中であることを示す点線）
+        ctx.saveGState()
+        ctx.setStrokeColor(fgColor.cgColor)
+        ctx.setLineWidth(1.0)
+        ctx.setLineDash(phase: 0, lengths: [2.0, 2.0])
+        ctx.move(to: CGPoint(x: baseX, y: cursorY + 1))
+        ctx.addLine(to: CGPoint(x: baseX + CGFloat(totalWidth) * cellWidth, y: cursorY + 1))
+        ctx.strokePath()
+        ctx.restoreGState()
+
+        return totalWidth
+    }
+
+    /// East Asian Width（簡易版）— 主要 CJK ブロックと絵文字を 2 セル扱い
+    /// 厳密な Unicode UAX#11 ではなく、IME 描画位置算出用の実用範囲
+    static func eastAsianWidth(_ scalar: Unicode.Scalar) -> Int {
+        let v = scalar.value
+        switch v {
+        case 0x1100...0x115F,    // Hangul Jamo
+             0x2E80...0x303E,    // CJK Radicals, Kangxi, CJK Symbols
+             0x3041...0x33FF,    // Hiragana, Katakana, CJK Strokes, Bopomofo
+             0x3400...0x4DBF,    // CJK Extension A
+             0x4E00...0x9FFF,    // CJK Unified Ideographs
+             0xA000...0xA4CF,    // Yi Syllables
+             0xAC00...0xD7A3,    // Hangul Syllables
+             0xF900...0xFAFF,    // CJK Compatibility Ideographs
+             0xFE30...0xFE4F,    // CJK Compatibility Forms
+             0xFF00...0xFF60,    // Fullwidth Forms
+             0xFFE0...0xFFE6,    // Fullwidth Symbols
+             0x20000...0x2FFFD,  // CJK Extension B-F
+             0x30000...0x3FFFD,  // CJK Extension G
+             0x1F300...0x1F64F,  // Emoji Misc Symbols
+             0x1F680...0x1F6FF,  // Transport and Map
+             0x1F900...0x1F9FF:  // Supplemental Symbols and Pictographs
+            return 2
+        default:
+            return 1
+        }
+    }
+
+    /// 文字列の表示セル幅を grapheme cluster 単位で合計
+    static func displayWidth(of string: String) -> Int {
+        var width = 0
+        for char in string {
+            if let first = char.unicodeScalars.first {
+                width += eastAsianWidth(first)
+            } else {
+                width += 1
+            }
+        }
+        return width
     }
 
     // MARK: - ヘルパー
@@ -1585,7 +1686,9 @@ extension TerminalView: @preconcurrency NSTextInputClient {
     @MainActor
     func firstRect(forCharacterRange range: NSRange, actualRange: NSRangePointer?) -> NSRect {
         let cursor = vp_bridge_get_cursor_session(sessionId)
-        let cursorCol = CGFloat(cursor.x) + CGFloat(markedString.length)
+        // markedString.length は UTF-16 単位なので全角と合わない → displayWidth で grapheme 単位に
+        let markedWidth = TerminalView.displayWidth(of: markedString.string)
+        let cursorCol = CGFloat(cursor.x) + CGFloat(markedWidth)
         let localX = cursorCol * cellWidth
         let localY = bounds.height - CGFloat(Int(cursor.y) + 1) * cellHeight
 
