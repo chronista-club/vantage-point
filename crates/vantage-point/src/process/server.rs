@@ -241,6 +241,10 @@ pub async fn run(
         // Canvas Lane 集約 WebSocket（全 Process のメッセージを Lane でラップして中継）
         .route("/ws/lanes", get(lanes::lanes_ws_handler))
         .route("/api/show", post(health::show_handler))
+        .route(
+            "/api/mailbox/remote_deliver",
+            post(health::mailbox_remote_deliver_handler),
+        )
         .route("/api/toggle-pane", post(health::toggle_pane_handler))
         .route("/api/split-pane", post(health::split_pane_handler))
         .route("/api/close-pane", post(health::close_pane_handler))
@@ -509,7 +513,8 @@ pub async fn run_world(port: u16) -> Result<()> {
             ProcessCapabilities::new(CapabilityConfig {
                 project_dir: String::new(),
                 midi_config: None,
-                whitesnake: None, // World モードは永続 mailbox 不要
+                whitesnake: None,     // World モードは永続 mailbox 不要
+                remote_routing: None, // World モードは cross-Process forward 不要
             })
             .await,
         ),

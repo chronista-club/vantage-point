@@ -19,6 +19,7 @@ pub mod eventbus;
 pub mod evolution;
 pub mod mailbox;
 pub mod mailbox_registry;
+pub mod mailbox_remote;
 pub mod midi_capability;
 pub mod params;
 pub mod process_manager_capability;

@@ -229,6 +229,17 @@ pub enum ResolvedAddress {
     Project { actor: String, project: String },
 }
 
+impl ResolvedAddress {
+    /// 含まれる actor 名を返す（log 等で使う、debug 用）
+    pub fn actor_or_unknown(&self) -> &str {
+        match self {
+            ResolvedAddress::Local { actor }
+            | ResolvedAddress::Port { actor, .. }
+            | ResolvedAddress::Project { actor, .. } => actor,
+        }
+    }
+}
+
 /// Address 文字列を parse して `ResolvedAddress` に解決
 ///
 /// 形式:

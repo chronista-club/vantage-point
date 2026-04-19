@@ -15,6 +15,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{RwLock, mpsc};
 
+use crate::capability::mailbox_registry::{ResolvedAddress, parse_address};
+use crate::capability::mailbox_remote::RemoteRoutingClient;
 use crate::capability::whitesnake::Whitesnake;
 
 /// 永続化メッセージを保存する Whitesnake namespace
@@ -25,6 +27,8 @@ const MAILBOX_KEY_PREFIX: &str = "msg/";
 const DEFAULT_TTL_MS: u64 = 48 * 3600 * 1000;
 /// GC スイープ間隔（ミリ秒）
 const GC_INTERVAL_MS: u64 = 5 * 60 * 1000;
+/// Remote forward queue 容量（メモリ無防備防止、Phase 3 Step 2）
+const REMOTE_FORWARD_QUEUE_CAP: usize = 10_000;
 
 /// 現在時刻（Unix epoch ミリ秒）
 fn now_ms() -> u64 {
@@ -329,12 +333,15 @@ pub struct MailboxRouter {
     shutdown: tokio_util::sync::CancellationToken,
     /// 永続化バックエンド（persistent メッセージ対応）
     whitesnake: Option<Whitesnake>,
+    /// Remote routing client（cross-Process 配信、Phase 3 Step 2）
+    /// None の場合は Process-local のみ
+    remote: Option<RemoteRoutingClient>,
 }
 
 impl MailboxRouter {
-    /// 新しい MailboxRouter を作成し、ルーティングループを開始（永続化なし）
+    /// 新しい MailboxRouter を作成し、ルーティングループを開始（永続化・remote なし）
     pub fn new() -> Self {
-        Self::new_inner(None)
+        Self::new_inner(None, None)
     }
 
     /// 永続化バックエンド付きで MailboxRouter を作成
@@ -342,24 +349,86 @@ impl MailboxRouter {
     /// `persistent: true` のメッセージは Whitesnake に保存され、
     /// Process 再起動後に `restore_pending()` で再投入できる。
     pub fn with_persistence(whitesnake: Whitesnake) -> Self {
-        Self::new_inner(Some(whitesnake))
+        Self::new_inner(Some(whitesnake), None)
     }
 
-    fn new_inner(whitesnake: Option<Whitesnake>) -> Self {
+    /// Remote routing 付き（永続化なし）— 主にテスト・World モード以外用
+    pub fn with_remote(remote: RemoteRoutingClient) -> Self {
+        Self::new_inner(None, Some(remote))
+    }
+
+    /// 永続化 + Remote routing 両方付き — 通常の VP Process 構成
+    pub fn with_persistence_and_remote(
+        whitesnake: Whitesnake,
+        remote: RemoteRoutingClient,
+    ) -> Self {
+        Self::new_inner(Some(whitesnake), Some(remote))
+    }
+
+    /// Remote forward 専用 worker task
+    ///
+    /// routing_loop から `(ResolvedAddress, MailboxMessage)` を受け取り、
+    /// `RemoteRoutingClient::forward` を呼ぶ。
+    /// unbounded で受けて routing_loop 側を絶対ブロックさせない。
+    /// エラー時は warn ログのみ（persistent message は送信側で永続化済みなので
+    /// 再起動で復元される設計）。
+    async fn remote_forward_loop(
+        mut rx: mpsc::Receiver<(ResolvedAddress, MailboxMessage)>,
+        client: RemoteRoutingClient,
+        shutdown: tokio_util::sync::CancellationToken,
+    ) {
+        loop {
+            tokio::select! {
+                _ = shutdown.cancelled() => {
+                    tracing::debug!("MailboxRouter: remote forward loop 終了");
+                    break;
+                }
+                item = rx.recv() => {
+                    let Some((resolved, msg)) = item else { break };
+                    if let Err(e) = client.forward(&resolved, msg).await {
+                        tracing::warn!(
+                            "MailboxRouter: remote forward 失敗 to='{}' err={}",
+                            resolved.actor_or_unknown(),
+                            e
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    fn new_inner(whitesnake: Option<Whitesnake>, remote: Option<RemoteRoutingClient>) -> Self {
         let (router_tx, router_rx) = mpsc::channel::<MailboxMessage>(1024);
         let boxes: Arc<RwLock<HashMap<String, mpsc::Sender<MailboxMessage>>>> =
             Arc::new(RwLock::new(HashMap::new()));
         let shutdown = tokio_util::sync::CancellationToken::new();
 
+        // Remote forward 用 bounded channel（cap=10000、メモリ無防備防止）+ worker task
+        let remote_tx = remote.as_ref().map(|client| {
+            let (tx, rx) =
+                mpsc::channel::<(ResolvedAddress, MailboxMessage)>(REMOTE_FORWARD_QUEUE_CAP);
+            let shutdown_remote = shutdown.clone();
+            tokio::spawn(Self::remote_forward_loop(
+                rx,
+                client.clone(),
+                shutdown_remote,
+            ));
+            tx
+        });
+
         // ルーティングループ
         let boxes_clone = boxes.clone();
         let shutdown_clone = shutdown.clone();
         let ws_clone = whitesnake.clone();
+        let remote_clone = remote.clone();
+        let remote_tx_clone = remote_tx.clone();
         tokio::spawn(Self::routing_loop(
             router_rx,
             boxes_clone,
             shutdown_clone,
             ws_clone,
+            remote_clone,
+            remote_tx_clone,
         ));
 
         // GC タスク（Whitesnake 注入時のみ）
@@ -373,7 +442,26 @@ impl MailboxRouter {
             router_tx,
             shutdown,
             whitesnake,
+            remote,
         }
+    }
+
+    /// Remote forward 経由で受け取ったメッセージを **そのまま** ローカル box に配信
+    ///
+    /// HTTP `/api/mailbox/remote_deliver` ハンドラから呼ぶ。
+    /// `routing_loop` を介さないため remote forward の二重ループを起こさない。
+    /// 受信側で permanent 化済み（送信側 Process が永続化済み）なのでここでは ack 不要。
+    pub async fn deliver_local(&self, msg: MailboxMessage) -> Result<(), MailboxError> {
+        let boxes = self.boxes.read().await;
+        let Some(tx) = boxes.get(&msg.to) else {
+            tracing::debug!(
+                "MailboxRouter::deliver_local: 宛先 '{}' が見つからない（from: {}）",
+                msg.to,
+                msg.from
+            );
+            return Err(MailboxError::RouterClosed); // box not found
+        };
+        tx.try_send(msg).map_err(|_| MailboxError::RouterClosed)
     }
 
     /// GC ループ — 期限切れ persistent メッセージを定期的にクリーンアップ
@@ -429,6 +517,8 @@ impl MailboxRouter {
         boxes: Arc<RwLock<HashMap<String, mpsc::Sender<MailboxMessage>>>>,
         shutdown: tokio_util::sync::CancellationToken,
         whitesnake: Option<Whitesnake>,
+        remote: Option<RemoteRoutingClient>,
+        remote_tx: Option<mpsc::Sender<(ResolvedAddress, MailboxMessage)>>,
     ) {
         loop {
             tokio::select! {
@@ -455,12 +545,56 @@ impl MailboxRouter {
                                 }
                             }
 
+                            // Remote routing 判定（Phase 3 Step 2）
+                            // 1. parse_address で local / port / project を判定
+                            // 2. remote が None → 全部 local 扱い（後方互換）
+                            // 3. remote.is_local(addr) → ローカル配信、それ以外 → forward
+                            let resolved = match parse_address(&msg.to) {
+                                Ok(r) => r,
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "MailboxRouter: address parse error to='{}' err={}",
+                                        msg.to,
+                                        e
+                                    );
+                                    continue;
+                                }
+                            };
+
+                            let is_local = match (&remote, &resolved) {
+                                (None, _) => true,
+                                (Some(client), addr) => client.is_local(addr),
+                            };
+
+                            // remote 配信: bounded channel に投函（worker task が forward）
+                            // 満杯時は warn ログ + drop（persistent message は Whitesnake に
+                            // 既に保存済みなので restore で復元される）
+                            if !is_local {
+                                if let Some(tx) = &remote_tx
+                                    && let Err(e) = tx.try_send((resolved.clone(), msg.clone()))
+                                {
+                                    tracing::warn!(
+                                        "MailboxRouter: remote forward queue 満杯 / 閉鎖: {} (msg_id={})",
+                                        e,
+                                        msg.id
+                                    );
+                                }
+                                continue;
+                            }
+
+                            // ローカル配信: actor 名のみで box を引く（@... は剥がす）
+                            let local_actor = match &resolved {
+                                ResolvedAddress::Local { actor }
+                                | ResolvedAddress::Port { actor, .. }
+                                | ResolvedAddress::Project { actor, .. } => actor.clone(),
+                            };
+
                             let boxes = boxes.read().await;
-                            if let Some(tx) = boxes.get(&msg.to) {
+                            if let Some(tx) = boxes.get(&local_actor) {
                                 if let Err(e) = tx.try_send(msg.clone()) {
                                     tracing::warn!(
                                         "MailboxRouter: {} 宛の配信失敗: {}",
-                                        msg.to,
+                                        local_actor,
                                         e
                                     );
                                 }
