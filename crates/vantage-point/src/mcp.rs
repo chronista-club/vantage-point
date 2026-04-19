@@ -173,6 +173,16 @@ pub struct MsgBroadcastParams {
     pub kind: Option<String>,
 }
 
+/// Parameters for msg_thread tool
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct MsgThreadParams {
+    /// スレッドを辿る起点のメッセージID
+    #[schemars(
+        description = "Message ID to trace the reply_to chain from. Returns all messages in the thread (root + all descendants), sorted by timestamp. Only works for persistent messages."
+    )]
+    pub id: String,
+}
+
 /// Parameters for the watch_file tool
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct WatchFileParams {
@@ -2089,6 +2099,22 @@ if bestId > 0 { print(bestId) }
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
             serde_json::to_string_pretty(&resp)
                 .unwrap_or_else(|_| "broadcast complete".to_string()),
+        )]))
+    }
+
+    /// Get the full thread (reply_to chain) for a given message
+    #[tool(
+        description = "Trace the reply_to chain from a given message and return all messages in the thread (root + all descendants), sorted by timestamp. Only works for persistent messages (sent with persistent=true)."
+    )]
+    async fn msg_thread(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<MsgThreadParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let payload = serde_json::json!({ "id": params.id });
+        let resp = self.quic_call("msg_thread", payload).await?;
+        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+            serde_json::to_string_pretty(&resp)
+                .unwrap_or_else(|_| "thread retrieved".to_string()),
         )]))
     }
 }
