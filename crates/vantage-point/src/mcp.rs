@@ -159,6 +159,20 @@ pub struct MsgRecvParams {
     pub from: Option<String>,
 }
 
+/// Parameters for msg_broadcast tool
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct MsgBroadcastParams {
+    /// ブロードキャスト本文（JSON）
+    #[schemars(description = "Message payload (JSON value) to broadcast to all peers")]
+    pub content: serde_json::Value,
+
+    /// メッセージ種別
+    #[schemars(
+        description = "Message kind: 'notification' (default), 'direct', 'request', 'response'"
+    )]
+    pub kind: Option<String>,
+}
+
 /// Parameters for the watch_file tool
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct WatchFileParams {
@@ -2055,6 +2069,28 @@ if bestId > 0 { print(bestId) }
 
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
             format!("Acked message {}", params.id),
+        )]))
+    }
+
+    /// Broadcast a message to all registered peers
+    #[tool(
+        description = "Broadcast a message to every registered peer (except self). Best-effort delivery; returns {sent, failures}."
+    )]
+    async fn msg_broadcast(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<MsgBroadcastParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let mut payload = serde_json::json!({
+            "content": params.content,
+        });
+        if let Some(kind) = params.kind {
+            payload["kind"] = serde_json::Value::String(kind);
+        }
+
+        let resp = self.quic_call("msg_broadcast", payload).await?;
+        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+            serde_json::to_string_pretty(&resp)
+                .unwrap_or_else(|_| "broadcast complete".to_string()),
         )]))
     }
 }

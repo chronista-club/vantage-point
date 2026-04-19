@@ -553,6 +553,7 @@ pub async fn start_unison_server(
                             "msg_recv" => handle_msg_recv(&state, payload).await,
                             "msg_peers" => handle_msg_peers(&state).await,
                             "msg_ack" => handle_msg_ack(&state, payload).await,
+                            "msg_broadcast" => handle_msg_broadcast(&state, payload).await,
                             _ => Err(format!("不明なメソッド: process.{}", method)),
                         };
 
@@ -935,4 +936,55 @@ async fn handle_msg_ack(
     mcp_msgbox.ack(&id).await;
 
     Ok(serde_json::json!({"status": "ok", "id": id}))
+}
+
+/// Broadcast — 登録済み全 actor にメッセージを投函
+///
+/// 送信元（`from`）自身は除外する。宛先ごとに個別の Message を生成して
+/// `Router::deliver_local` で配信。部分失敗は `failures` に記録し、
+/// 全体としては成功レスポンスを返す（best-effort delivery）。
+async fn handle_msg_broadcast(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    use crate::capability::msgbox::{Message, MessageKind};
+
+    let content = payload
+        .get("content")
+        .cloned()
+        .ok_or_else(|| "content field is required".to_string())?;
+
+    let kind = match payload.get("kind").and_then(|v| v.as_str()) {
+        Some("direct") => MessageKind::Direct,
+        Some("request") => MessageKind::Request,
+        Some("response") => MessageKind::Response,
+        _ => MessageKind::Notification,
+    };
+
+    let from = payload
+        .get("from")
+        .and_then(|v| v.as_str())
+        .unwrap_or("mcp")
+        .to_string();
+
+    let addresses = state.capabilities.msgbox_router.addresses().await;
+    let mut sent = 0usize;
+    let mut failures: Vec<serde_json::Value> = Vec::new();
+
+    for to in addresses.iter() {
+        if to == &from {
+            continue; // 送信元自身には届けない
+        }
+        let msg = Message::new(&from, to, kind.clone()).with_payload(&content);
+        match state.capabilities.msgbox_router.deliver_local(msg).await {
+            Ok(_) => sent += 1,
+            Err(e) => failures.push(serde_json::json!({"to": to, "error": e.to_string()})),
+        }
+    }
+
+    Ok(serde_json::json!({
+        "status": "ok",
+        "sent": sent,
+        "failures": failures,
+    }))
 }
