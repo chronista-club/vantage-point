@@ -116,6 +116,8 @@ pub(crate) struct AppState {
     pub capabilities: Arc<ProcessCapabilities>,
     /// World capability for managing multiple processes (optional, only for world mode)
     pub world: Option<Arc<RwLock<ProcessManagerCapability>>>,
+    /// Mailbox actor registry — TheWorld のみ保持（Mailbox Phase 3: cross-Process routing）
+    pub mailbox_registry: Option<Arc<crate::capability::MailboxRegistry>>,
     /// Update capability for version checking (optional, only for world mode)
     pub update: Option<Arc<RwLock<UpdateCapability>>>,
     /// Interactive Claude agent (stream-json mode for structured communication)

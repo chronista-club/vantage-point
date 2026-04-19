@@ -206,6 +206,7 @@ pub async fn run(
         pending_prompts: Arc::new(RwLock::new(HashMap::new())),
         capabilities,
         world: None,
+        mailbox_registry: None, // SP モードでは TheWorld registry 不要
         update: None,
         interactive_agent: Arc::new(RwLock::new(None)),
         pty_manager: Arc::new(tokio::sync::Mutex::new(PtyManager::new())),
@@ -513,6 +514,7 @@ pub async fn run_world(port: u16) -> Result<()> {
             .await,
         ),
         world: Some(world_cap.clone()),
+        mailbox_registry: Some(Arc::new(crate::capability::MailboxRegistry::new())),
         update: Some(update_cap.clone()),
         interactive_agent: Arc::new(RwLock::new(None)),
         pty_manager: Arc::new(tokio::sync::Mutex::new(PtyManager::new())),
@@ -597,6 +599,24 @@ pub async fn run_world(port: u16) -> Result<()> {
             "/api/world/processes/unregister",
             post(world::world_unregister_process),
         )
+        // Mailbox Registry (Phase 3: cross-Process actor messaging)
+        .route(
+            "/api/world/mailbox/register",
+            post(world::world_mailbox_register),
+        )
+        .route(
+            "/api/world/mailbox/unregister",
+            post(world::world_mailbox_unregister),
+        )
+        .route(
+            "/api/world/mailbox/unregister-process",
+            post(world::world_mailbox_unregister_process),
+        )
+        .route(
+            "/api/world/mailbox/lookup",
+            get(world::world_mailbox_lookup),
+        )
+        .route("/api/world/mailbox/list", get(world::world_mailbox_list))
         // Update API routes (vp CLI)
         .route("/api/update/check", get(update::update_check))
         .route("/api/update/apply", post(update::update_apply))
