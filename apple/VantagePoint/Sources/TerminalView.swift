@@ -206,9 +206,10 @@ class TerminalView: NSView {
         super.viewDidMoveToWindow()
         guard let window = self.window else { return }
         // SwiftUI のレイアウトサイクル完了を待って複数回リトライ
+        // isFocused == true のペインのみ first responder を取りに行く（取り合い race 防止）
         for delay in [0.05, 0.1, 0.3, 0.5] {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-                guard let self, self.window != nil else { return }
+                guard let self, self.window != nil, self.isFocused else { return }
                 window.makeFirstResponder(self)
             }
         }
@@ -234,12 +235,21 @@ class TerminalView: NSView {
             )
         }
         updateFocusBorder()
+        needsDisplay = true  // カーソル中空/塗り切替のため
         return result
     }
 
     override func resignFirstResponder() -> Bool {
+        // フォーカス喪失時に IME 変換中の状態をクリーンアップ
+        // - hasMarkedText() == true のままにすると次回 keyDown で「IME 委譲」され続け、
+        //   「日本語が打てなくなった」stuck 現象の根本原因になる
+        if hasMarkedText() {
+            inputContext?.discardMarkedText()
+            unmarkText()
+        }
         let result = super.resignFirstResponder()
         updateFocusBorder()
+        needsDisplay = true  // カーソル中空/塗り切替のため
         return result
     }
 
@@ -576,6 +586,7 @@ class TerminalView: NSView {
         let markedWidth = drawMarkedTextIfNeeded(ctx: ctx, cursor: cursor)
 
         // カーソル描画（全角文字の上では幅 2 セル、IME 変換中はマーク末尾に移動）
+        // フォーカス無し時は中空（線描画のみ）にして「どこに打ち込まれるか」を視覚化
         if cursor.visible {
             let cursorX = (CGFloat(cursor.x) + CGFloat(markedWidth)) * cellWidth
             let cursorY = bounds.height - CGFloat(Int(cursor.y) + 1) * cellHeight
@@ -590,8 +601,17 @@ class TerminalView: NSView {
                 }
             }
 
-            ctx.setFillColor(NSColor.white.withAlphaComponent(0.5).cgColor)
-            ctx.fill(CGRect(x: cursorX, y: cursorY, width: cursorWidth, height: cellHeight))
+            let cursorRect = CGRect(x: cursorX, y: cursorY, width: cursorWidth, height: cellHeight)
+            let isFocused = window?.firstResponder === self
+            if isFocused {
+                ctx.setFillColor(NSColor.white.withAlphaComponent(0.5).cgColor)
+                ctx.fill(cursorRect)
+            } else {
+                // 中空カーソル（フォーカス無し）— 1px 枠線のみ
+                ctx.setStrokeColor(NSColor.white.withAlphaComponent(0.4).cgColor)
+                ctx.setLineWidth(1.0)
+                ctx.stroke(cursorRect.insetBy(dx: 0.5, dy: 0.5))
+            }
         }
     }
 
@@ -1040,6 +1060,7 @@ class TerminalView: NSView {
     /// メニュー Edit → Copy (Cmd+C) から呼ばれる — テキストコピー専用
     /// 選択なしの Ctrl+C (SIGINT) は performKeyEquivalent で直接処理する
     @objc func copy(_ sender: Any?) {
+        guard window?.firstResponder === self else { return }
         guard normalizedSelection() != nil else { return }
         copySelectionToClipboard()
         selectionStart = nil
@@ -1049,8 +1070,19 @@ class TerminalView: NSView {
 
     /// メニュー Edit → Paste (Cmd+V) から呼ばれる
     @objc func paste(_ sender: Any?) {
+        // 非フォーカスペインに paste が誤配されるのを防ぐ
+        guard window?.firstResponder === self else { return }
         guard vp_bridge_pty_is_running_session(sessionId) else { return }
         pasteFromClipboard()
+    }
+
+    /// メニュー Edit → Select All (Cmd+A) から呼ばれる
+    override func selectAll(_ sender: Any?) {
+        guard window?.firstResponder === self else { return }
+        guard gridCols > 0, gridRows > 0 else { return }
+        selectionStart = (col: 0, row: 0)
+        selectionEnd = (col: Int(gridCols) - 1, row: Int(gridRows) - 1)
+        needsDisplay = true
     }
 
     /// クリップボードからテキスト/画像を PTY にペースト
@@ -1689,6 +1721,9 @@ extension TerminalView: @preconcurrency NSTextInputClient {
     func unmarkText() {
         markedString = NSMutableAttributedString()
         _markedRange = NSRange(location: NSNotFound, length: 0)
+        // selectedRangeValue を初期化しないと、次回 setMarkedText 時に
+        // stale な範囲を指して firstRect 等の座標計算が壊れる
+        selectedRangeValue = NSRange(location: 0, length: 0)
         needsDisplay = true
     }
 
