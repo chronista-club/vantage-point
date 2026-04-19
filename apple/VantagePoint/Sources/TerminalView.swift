@@ -1134,7 +1134,6 @@ class TerminalView: NSView {
     /// ここで Cmd+V / Cmd+C を直接処理する。
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let firstResp = window?.firstResponder === self
-        logger.info("[IME] performKeyEquivalent: code=\(event.keyCode) chars=\(event.charactersIgnoringModifiers ?? "nil") firstResp=\(firstResp) marked=\(self.hasMarkedText())")
         // first responder でないペインはショートカットを処理しない（メニューに委譲）
         guard firstResp else { return false }
         guard event.modifierFlags.contains(.command),
@@ -1195,10 +1194,7 @@ class TerminalView: NSView {
             return
         }
 
-        // [IME Debug] keyDown の入口ログ
         let imeMarked = hasMarkedText()
-        let firstResp = window?.firstResponder === self
-        logger.info("[IME] keyDown: code=\(event.keyCode) chars=\(event.characters ?? "nil") marked=\(imeMarked) firstResp=\(firstResp) inputCtx=\(self.inputContext != nil)")
 
         // Cmd ショートカットは performKeyEquivalent で処理済み
         // ここに到達する Cmd イベントは未処理のもの（Cmd+`, Cmd+Q 等）
@@ -1209,7 +1205,6 @@ class TerminalView: NSView {
 
         // IME 変換中はすべて IME に委譲
         if imeMarked {
-            logger.info("[IME] keyDown: delegating to IME (hasMarkedText)")
             _ = inputContext?.handleEvent(event)
             return
         }
@@ -1224,12 +1219,10 @@ class TerminalView: NSView {
 
         // IME を経由して処理（日本語入力対応）
         if inputContext?.handleEvent(event) == true {
-            logger.info("[IME] keyDown: handled by inputContext")
             return
         }
 
         // IME が処理しなかった文字を直接送信
-        logger.info("[IME] keyDown: IME declined, direct send chars=\(event.characters ?? "nil")")
         if let chars = event.characters, let data = chars.data(using: .utf8) {
             data.withUnsafeBytes { ptr in
                 _ = vp_bridge_pty_write_session(
@@ -1661,7 +1654,6 @@ extension TerminalView: @preconcurrency NSTextInputClient {
             return
         }
 
-        logger.info("[IME] insertText: \"\(text.prefix(30))\" len=\(text.count) replacementRange=\(replacementRange)")
         markedString = NSMutableAttributedString()
         _markedRange = NSRange(location: NSNotFound, length: 0)
 
@@ -1690,13 +1682,11 @@ extension TerminalView: @preconcurrency NSTextInputClient {
         }
         _markedRange = NSRange(location: 0, length: markedString.length)
         selectedRangeValue = selectedRange
-        logger.info("[IME] setMarkedText: \"\(self.markedString.string.prefix(30))\" len=\(self.markedString.length)")
         needsDisplay = true
     }
 
     @MainActor
     func unmarkText() {
-        logger.info("[IME] unmarkText: was=\"\(self.markedString.string.prefix(30))\"")
         markedString = NSMutableAttributedString()
         _markedRange = NSRange(location: NSNotFound, length: 0)
         needsDisplay = true
