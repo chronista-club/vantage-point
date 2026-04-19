@@ -554,6 +554,7 @@ pub async fn start_unison_server(
                             "msg_peers" => handle_msg_peers(&state).await,
                             "msg_ack" => handle_msg_ack(&state, payload).await,
                             "msg_broadcast" => handle_msg_broadcast(&state, payload).await,
+                            "msg_thread" => handle_msg_thread(&state, payload).await,
                             _ => Err(format!("不明なメソッド: process.{}", method)),
                         };
 
@@ -986,5 +987,90 @@ async fn handle_msg_broadcast(
         "status": "ok",
         "sent": sent,
         "failures": failures,
+    }))
+}
+
+/// Thread — reply_to チェーンに連なる全メッセージを返す
+///
+/// 与えられた msg_id を起点に:
+/// 1. reply_to を辿って root を特定
+/// 2. root から descendant を BFS で収集
+/// 3. timestamp でソートして返す
+///
+/// 注: persistent: true で送信された message のみ thread 追跡可能。
+/// 揮発メッセージは recv 後に in-memory から破棄されるため history が残らない。
+async fn handle_msg_thread(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    use crate::capability::msgbox::Message;
+    use std::collections::HashMap;
+
+    let msg_id = payload
+        .get("id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "id required".to_string())?
+        .to_string();
+
+    // Whitesnake から全 persistent メッセージを取得
+    let discs = state
+        .whitesnake
+        .list_by_prefix("msgbox", "msg/")
+        .await
+        .map_err(|e| format!("Whitesnake list failed: {}", e))?;
+
+    let mut messages: HashMap<String, Message> = HashMap::new();
+    for disc in discs.iter() {
+        if let Ok(msg) = disc.extract::<Message>() {
+            messages.insert(msg.id.clone(), msg);
+        }
+    }
+
+    if !messages.contains_key(&msg_id) {
+        return Err(format!(
+            "Message '{}' not found in persistent store (only persistent messages have thread history)",
+            msg_id
+        ));
+    }
+
+    // 1. root を見つける（reply_to を辿る）
+    let mut current = msg_id.clone();
+    loop {
+        match messages.get(&current).and_then(|m| m.reply_to.clone()) {
+            Some(parent) if messages.contains_key(&parent) => current = parent,
+            _ => break,
+        }
+    }
+    let root_id = current;
+
+    // 2. reverse index: reply_to → [child_id]
+    let mut children: HashMap<String, Vec<String>> = HashMap::new();
+    for (id, msg) in messages.iter() {
+        if let Some(parent) = &msg.reply_to {
+            children.entry(parent.clone()).or_default().push(id.clone());
+        }
+    }
+
+    // 3. BFS で root からの descendant を collect
+    let mut result: Vec<Message> = Vec::new();
+    let mut stack: Vec<String> = vec![root_id];
+    while let Some(id) = stack.pop() {
+        if let Some(msg) = messages.get(&id) {
+            result.push(msg.clone());
+            if let Some(kids) = children.get(&id) {
+                for k in kids {
+                    stack.push(k.clone());
+                }
+            }
+        }
+    }
+
+    // 4. timestamp 昇順でソート
+    result.sort_by_key(|m| m.timestamp);
+
+    Ok(serde_json::json!({
+        "thread": serde_json::to_value(&result)
+            .map_err(|e| format!("Serialize: {}", e))?,
+        "count": result.len(),
     }))
 }
