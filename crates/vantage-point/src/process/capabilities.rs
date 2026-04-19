@@ -4,6 +4,7 @@
 //! EventBus、Registry、各Capabilityの初期化と連携を担当。
 
 use crate::capability::core::Capability;
+use crate::capability::mailbox_remote::RemoteRoutingClient;
 use crate::capability::{
     AgentCapability, CapabilityContext, CapabilityRegistry, EventBus, MailboxRouter,
     MidiCapability, ProtocolCapability, Whitesnake,
@@ -41,6 +42,11 @@ pub struct CapabilityConfig {
     /// Some の場合、MailboxRouter が persistent メッセージを DISC に保存し、
     /// Process 再起動後に `restore_pending()` で復元する。
     pub whitesnake: Option<Whitesnake>,
+    /// Remote routing client（Mailbox Phase 3: cross-Process actor messaging）
+    ///
+    /// Some の場合、`@{port}` / `@{project}` 形式のアドレスを TheWorld registry で
+    /// 解決し、target Process に forward する。None の場合は Process-local 配信のみ。
+    pub remote_routing: Option<RemoteRoutingClient>,
 }
 
 impl ProcessCapabilities {
@@ -49,11 +55,17 @@ impl ProcessCapabilities {
         // EventBus を作成
         let event_bus = Arc::new(EventBus::new());
 
-        // MailboxRouter を作成（Whitesnake 注入時は persistent メッセージ対応）
-        let mailbox_router = Arc::new(match config.whitesnake.clone() {
-            Some(ws) => MailboxRouter::with_persistence(ws),
-            None => MailboxRouter::new(),
-        });
+        // MailboxRouter を作成
+        // - Whitesnake 注入: persistent メッセージ対応
+        // - RemoteRoutingClient 注入: cross-Process forward 対応（Phase 3 Step 2）
+        let mailbox_router = Arc::new(
+            match (config.whitesnake.clone(), config.remote_routing.clone()) {
+                (Some(ws), Some(remote)) => MailboxRouter::with_persistence_and_remote(ws, remote),
+                (Some(ws), None) => MailboxRouter::with_persistence(ws),
+                (None, Some(remote)) => MailboxRouter::with_remote(remote),
+                (None, None) => MailboxRouter::new(),
+            },
+        );
 
         // Registry を作成
         let ctx = CapabilityContext::new().with_config(serde_json::json!({
@@ -290,6 +302,7 @@ mod tests {
             project_dir: "/tmp/test".to_string(),
             midi_config: None,
             whitesnake: None,
+            remote_routing: None,
         };
 
         let caps = ProcessCapabilities::new(config).await;
@@ -302,6 +315,7 @@ mod tests {
             project_dir: "/tmp/test".to_string(),
             midi_config: Some(MidiConfig::default()),
             whitesnake: None,
+            remote_routing: None,
         };
 
         let caps = ProcessCapabilities::new(config).await;
@@ -314,6 +328,7 @@ mod tests {
             project_dir: "/tmp/test".to_string(),
             midi_config: None,
             whitesnake: None,
+            remote_routing: None,
         };
 
         let caps = ProcessCapabilities::new(config).await;

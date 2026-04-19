@@ -106,7 +106,8 @@ pub fn execute(opts: StartOptions) -> Result<()> {
     let cap_config = CapabilityConfig {
         project_dir: resolved.dir.clone(),
         midi_config,
-        whitesnake: None, // server.rs 側でポート別に注入
+        whitesnake: None,     // server.rs 側でポート別に注入
+        remote_routing: None, // server.rs 側でポート別に注入
     };
 
     // Step 2: モード別ルーティング
