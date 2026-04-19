@@ -1,8 +1,20 @@
-//! ccwire — セッション間通信プロトコル（SQLite ベース）
+//! ccwire — tmux session tracking（2026-04-19 役割再定義）
 //!
-//! Claude Code セッション間のメッセージングを提供する ccwire の
-//! Rust ネイティブクライアント。HD（Heaven's Door）が tmux セッション
-//! 作成時に直接登録し、TUI 終了時に解除する。
+//! ## 役割
+//!
+//! **tmux session のライフサイクル追跡** に特化した薄いクライアント。
+//! HD（Heaven's Door）が tmux セッション作成時に直接登録し、TUI 終了時に解除する。
+//!
+//! `~/repos/claude-plugin-ccwire`（外部プラグイン）と SQLite DB を共有して、
+//! session 一覧の grobal view を実現する。
+//!
+//! ## 役割境界（重要）
+//!
+//! | 機能 | 担当 |
+//! |------|------|
+//! | tmux session の register/unregister/list | **このモジュール（ccwire）** |
+//! | actor 間 messaging（cross-Process 含む） | **VP Mailbox** (`capability::mailbox`) |
+//! | ccwire の wire-send/wire-receive 系 CLI | 削除予定（messaging は mailbox に集約） |
 //!
 //! ## プロトコル概要
 //!
@@ -10,6 +22,16 @@
 //! - sessions テーブルに INSERT OR REPLACE で登録
 //! - 10分 TTL、3分ごとの heartbeat で生存管理
 //! - TUI 終了時に DELETE で即時解除
+//!
+//! ## 進化方針（次セッション以降）
+//!
+//! tmux power-tool 化:
+//! - Pane orchestration（split / select / swap / resize）
+//! - メタデータ管理（pane title / border / formats）
+//! - capture-pane / send-keys 拡張
+//! - monitor-activity / pipe-pane / hooks 連携
+//!
+//! VP 既存の `tmux_actor` / `vp tmux` コマンドとの境界線は spec 起こし時に決定。
 
 use std::path::PathBuf;
 use std::time::Duration;
