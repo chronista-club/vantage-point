@@ -638,8 +638,8 @@ mod tests {
     fn box_drawing_must_not_be_promoted() {
         // 罫線が wide 化されると右隣のセルが描画スキップされて「途切れた線」になる
         let chars = [
-            '─', '│', '┌', '┐', '└', '┘', '├', '┤', '┬', '┴', '┼', '╭', '╮', '╯', '╰', '═',
-            '║', '╔', '╗', '╚', '╝', '╠', '╣', '╦', '╩', '╬',
+            '─', '│', '┌', '┐', '└', '┘', '├', '┤', '┬', '┴', '┼', '╭', '╮', '╯', '╰', '═', '║',
+            '╔', '╗', '╚', '╝', '╠', '╣', '╦', '╩', '╬',
         ];
         for c in chars {
             assert!(
@@ -682,7 +682,9 @@ mod tests {
     #[test]
     fn smart_quotes_still_excluded() {
         // 既存挙動の維持: General Punctuation は narrow
-        let chars = ['\u{2018}', '\u{2019}', '\u{201C}', '\u{201D}', '\u{2014}', '\u{2026}'];
+        let chars = [
+            '\u{2018}', '\u{2019}', '\u{201C}', '\u{201D}', '\u{2014}', '\u{2026}',
+        ];
         for c in chars {
             assert!(
                 !should_promote_ambiguous_to_wide(c),

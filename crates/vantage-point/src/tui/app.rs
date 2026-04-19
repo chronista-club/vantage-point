@@ -42,7 +42,11 @@ fn sanitize_pasted_text(raw: &str) -> String {
         raw.chars()
             .scan(0usize, |acc, c| {
                 *acc += c.len_utf8();
-                if *acc <= MAX_PASTE_BYTES { Some(c) } else { None }
+                if *acc <= MAX_PASTE_BYTES {
+                    Some(c)
+                } else {
+                    None
+                }
             })
             .collect()
     } else {
