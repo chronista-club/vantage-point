@@ -26,6 +26,57 @@ use super::project_context::ProjectContext;
 use super::session::{SessionMode, list_sessions};
 use super::terminal_widget::TerminalView;
 
+/// ペースト最大バイト数 — 超えるとフリーズ防止のため切り詰める
+const MAX_PASTE_BYTES: usize = 1_000_000;
+
+/// ペーストテキストの sanitize（Native App 経路と同じロジック）:
+/// - サイズ上限（1 MB）
+/// - NFC 正規化（macOS の NFD 文字化け対策）
+/// - 改行コード正規化 (\r\n / \n → \r、bracketed paste 規約)
+/// - 制御文字フィルタ（タブ・改行除く C0/C1 を削除）
+/// - bracketed paste 終了シーケンス除去（注入攻撃の最後の砦）
+fn sanitize_pasted_text(raw: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+
+    let truncated: String = if raw.len() > MAX_PASTE_BYTES {
+        raw.chars()
+            .scan(0usize, |acc, c| {
+                *acc += c.len_utf8();
+                if *acc <= MAX_PASTE_BYTES { Some(c) } else { None }
+            })
+            .collect()
+    } else {
+        raw.to_string()
+    };
+
+    let nfc: String = truncated.nfc().collect();
+
+    let mut out = String::with_capacity(nfc.len());
+    let mut prev_cr = false;
+    for c in nfc.chars() {
+        let v = c as u32;
+        if v == 0x0D {
+            out.push('\r');
+            prev_cr = true;
+            continue;
+        }
+        if v == 0x0A {
+            if prev_cr {
+                prev_cr = false; // \r\n → \r
+            } else {
+                out.push('\r'); // \n → \r
+            }
+            continue;
+        }
+        prev_cr = false;
+        if v == 0x09 || (v >= 0x20 && v != 0x7F) {
+            out.push(c);
+        }
+    }
+
+    out.replace("\u{1B}[201~", "")
+}
+
 // =============================================================================
 // MultiProjectApp — マルチプロジェクト TUI アプリ
 // =============================================================================
@@ -496,9 +547,13 @@ impl MultiProjectApp {
             let state = ctx.term_state.lock().unwrap();
             state.bracketed_paste_mode()
         };
+        let sanitized = sanitize_pasted_text(text);
+        if sanitized.is_empty() {
+            return;
+        }
         tracing::info!(
-            "handle_paste: text={:?} ({}bytes), bracketed={}",
-            &text[..text.len().min(50)],
+            "handle_paste: len={} (raw={}), bracketed={}",
+            sanitized.len(),
             text.len(),
             bracketed
         );
@@ -506,7 +561,7 @@ impl MultiProjectApp {
         if bracketed {
             bytes.extend_from_slice(b"\x1b[200~");
         }
-        bytes.extend_from_slice(text.as_bytes());
+        bytes.extend_from_slice(sanitized.as_bytes());
         if bracketed {
             bytes.extend_from_slice(b"\x1b[201~");
         }
@@ -835,4 +890,50 @@ fn start_background_services(
     crate::commands::start::spawn_sp_detached(project_dir, Some(port))?;
     crate::commands::start::wait_for_ready(port)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sanitize_pasted_text;
+
+    #[test]
+    fn nfd_dakuten_normalized_to_nfc() {
+        // か (U+304B) + 濁点 (U+3099) → が (U+304C)
+        let nfd = "\u{304B}\u{3099}んばれ";
+        let result = sanitize_pasted_text(nfd);
+        assert_eq!(result, "がんばれ");
+    }
+
+    #[test]
+    fn newline_normalized_to_cr() {
+        assert_eq!(sanitize_pasted_text("a\r\nb\nc"), "a\rb\rc");
+    }
+
+    #[test]
+    fn control_chars_filtered() {
+        // null, BEL は削除、tab は維持
+        let dirty = "hello\u{00}\u{07}\tworld";
+        assert_eq!(sanitize_pasted_text(dirty), "hello\tworld");
+    }
+
+    #[test]
+    fn bracketed_paste_end_stripped() {
+        // 注入攻撃: \x1b[201~ で bracketed paste を早期終了させる試み
+        let injected = "innocent\u{1B}[201~RM -RF /";
+        let result = sanitize_pasted_text(injected);
+        assert!(!result.contains("\u{1B}[201~"));
+    }
+
+    #[test]
+    fn size_limit_enforced() {
+        let huge = "a".repeat(2_000_000);
+        let result = sanitize_pasted_text(&huge);
+        assert!(result.len() <= 1_000_000);
+    }
+
+    #[test]
+    fn ascii_passthrough() {
+        let text = "hello world\n";
+        assert_eq!(sanitize_pasted_text(text), "hello world\r");
+    }
 }

@@ -1085,19 +1085,73 @@ class TerminalView: NSView {
         needsDisplay = true
     }
 
+    /// ペースト最大サイズ — これを超えるテキストは切り詰めてフリーズ防止
+    private static let maxPasteBytes = 1_000_000  // 1 MB
+
+    /// ペーストテキストの sanitize:
+    /// - NFC 正規化（macOS の NFD ファイル名等の文字化け対策）
+    /// - 改行コード正規化 (\r\n / \n → \r、bracketed paste の規約)
+    /// - 制御文字フィルタ (タブ・改行除く 0x00-0x1F、0x7F を削除)
+    /// - bracketed paste 終了シーケンス (\x1b[201~) の混入を遮断（注入攻撃対策）
+    /// - サイズ上限（メモリ枯渇防止）
+    private static func sanitizePastedText(_ raw: String) -> String {
+        // サイズ上限
+        let truncated = raw.utf8.count > maxPasteBytes
+            ? String(raw.unicodeScalars.prefix(maxPasteBytes))
+            : raw
+
+        // NFC 正規化
+        let nfc = truncated.precomposedStringWithCanonicalMapping
+
+        // 制御文字フィルタ + 改行正規化を 1 パスで
+        var result = String.UnicodeScalarView()
+        result.reserveCapacity(nfc.unicodeScalars.count)
+        var prevWasCR = false
+        for scalar in nfc.unicodeScalars {
+            let v = scalar.value
+            if v == 0x0D {  // CR
+                result.append(scalar)
+                prevWasCR = true
+                continue
+            }
+            if v == 0x0A {  // LF
+                if prevWasCR {
+                    // \r\n → \r （\n を捨てる）
+                    prevWasCR = false
+                } else {
+                    // \n → \r
+                    result.append(Unicode.Scalar(0x0D)!)
+                }
+                continue
+            }
+            prevWasCR = false
+            // タブと印字可能文字以外（C0/C1 制御文字）を削除
+            if v == 0x09 || (v >= 0x20 && v != 0x7F) {
+                result.append(scalar)
+            }
+        }
+        let cleaned = String(result)
+
+        // bracketed paste 終了シーケンスの混入を除去（注入攻撃の最後の砦）
+        return cleaned.replacingOccurrences(of: "\u{1B}[201~", with: "")
+    }
+
     /// クリップボードからテキスト/画像を PTY にペースト
     private func pasteFromClipboard() {
         let pb = NSPasteboard.general
         let useTmux = self.sendMouseEvents
-        logger.info("pasteFromClipboard: types=\(pb.types?.map(\.rawValue) ?? []) string=\(pb.string(forType: .string) ?? "nil") useTmux=\(useTmux)")
+        logger.info("pasteFromClipboard: types=\(pb.types?.map(\.rawValue) ?? []) useTmux=\(useTmux)")
 
-        if let text = pb.string(forType: .string), !text.isEmpty {
+        if let raw = pb.string(forType: .string), !raw.isEmpty {
+            let text = TerminalView.sanitizePastedText(raw)
+            if text.isEmpty { return }
+
             // tmux 内ターミナル: tmux paste-buffer 経由で送信
             // 素シェル (The Hand): PTY 直接書き込み（bracketed paste 対応）
             if useTmux {
                 // tmux のペーストバッファ経由で送信
                 // PTY 直接書き込みでは tmux がデータを消費してしまうため
-                logger.info("pasteFromClipboard: text=\(text.prefix(50)) len=\(text.count) via tmux paste-buffer")
+                logger.info("pasteFromClipboard: len=\(text.count) via tmux paste-buffer")
                 DispatchQueue.global(qos: .userInitiated).async {
                     let tmuxBin = "/opt/homebrew/bin/tmux"
                     let bufferName = "vp-paste-\(UUID().uuidString.prefix(8))"
@@ -1126,7 +1180,7 @@ class TerminalView: NSView {
                 }
             } else {
                 // 素シェル (The Hand): PTY 直接書き込み + bracketed paste
-                logger.info("pasteFromClipboard: text=\(text.prefix(50)) len=\(text.count) via PTY direct write")
+                logger.info("pasteFromClipboard: len=\(text.count) via PTY direct write")
                 let bracketStart = "\u{1B}[200~"
                 let bracketEnd = "\u{1B}[201~"
                 let payload = bracketStart + text + bracketEnd

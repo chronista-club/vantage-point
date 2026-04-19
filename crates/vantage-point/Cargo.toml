@@ -38,6 +38,9 @@ thiserror = { workspace = true }
 futures = { workspace = true }
 tokio-util = "0.7"
 
+# Unicode 正規化（ペースト sanitize 用、NFD → NFC）
+unicode-normalization = "0.1"
+
 # HTTP client (for MCP to communicate with Process)
 reqwest = { workspace = true }
 
