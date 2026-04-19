@@ -1524,6 +1524,31 @@ class TerminalView: NSView {
 
         let pos = gridPosition(from: event.locationInWindow)
 
+        // Shift+Click: 既存選択を拡張（start を維持して end のみ移動）
+        if event.modifierFlags.contains(.shift), selectionStart != nil {
+            selectionEnd = pos
+            isDragging = true
+            needsDisplay = true
+            return
+        }
+
+        // ダブルクリック: 単語選択 / トリプルクリック: 行選択
+        if event.clickCount == 2 {
+            if let (startCol, endCol) = wordBoundaries(at: pos) {
+                selectionStart = (col: startCol, row: pos.row)
+                selectionEnd = (col: endCol, row: pos.row)
+                isDragging = false
+                needsDisplay = true
+                return
+            }
+        } else if event.clickCount >= 3 {
+            selectionStart = (col: 0, row: pos.row)
+            selectionEnd = (col: max(0, Int(gridCols) - 1), row: pos.row)
+            isDragging = false
+            needsDisplay = true
+            return
+        }
+
         // SGR マウスイベントを PTY に送信（tmux ペインフォーカス切替等）
         // 素シェル（The Hand 等）ではマウスイベントを送らない（制御文字がそのまま表示されるため）
         if sendMouseEvents && vp_bridge_pty_is_running_session(sessionId) {
@@ -1544,6 +1569,78 @@ class TerminalView: NSView {
         selectionEnd = pos
         isDragging = true
         needsDisplay = true
+    }
+
+    /// クリック位置の単語境界を返す（ダブルクリック単語選択用）
+    /// 単語文字: 英数字 + ASCII underscore + 一部記号（パス・URL を含むファイル名対応）
+    /// CJK 文字は連続する CJK 範囲を 1 単語として扱う
+    private func wordBoundaries(at pos: (col: Int, row: Int)) -> (start: Int, end: Int)? {
+        let cols = Int(gridCols)
+        guard pos.col >= 0, pos.col < cols, pos.row >= 0 else { return nil }
+
+        // 行の各セルから char + wide flag を取り出す（spacer はスキップ）
+        var cells: [(col: Int, ch: Character, isWordChar: Bool)] = []
+        var skipNext = false
+        for c in 0..<cols {
+            if skipNext { skipNext = false; continue }
+            let idx = pos.row * cols + c
+            guard idx < cellBuffer.count else { break }
+            let cell = cellBuffer[idx]
+            let str = cellString(from: cell)
+            let ch = str.first ?? " "
+            cells.append((col: c, ch: ch, isWordChar: TerminalView.isWordCharacter(ch)))
+            if (cell.flags & (1 << 6)) != 0 { skipNext = true }
+        }
+
+        // クリック位置 → cells インデックス
+        guard let clickIdx = cells.firstIndex(where: { $0.col >= pos.col }) else { return nil }
+        let actualClick = cells[clickIdx]
+        guard actualClick.isWordChar else { return nil }
+
+        // 左右に同じ word-char 連続を辿る
+        var startIdx = clickIdx
+        while startIdx > 0 && cells[startIdx - 1].isWordChar {
+            startIdx -= 1
+        }
+        var endIdx = clickIdx
+        while endIdx + 1 < cells.count && cells[endIdx + 1].isWordChar {
+            endIdx += 1
+        }
+        return (cells[startIdx].col, cells[endIdx].col)
+    }
+
+    /// 単語文字判定（ダブルクリック単語選択用）
+    /// 英数字、underscore、ハイフン、ドット、スラッシュ、コロン、+、~、% — パス/URL 友好
+    /// CJK 範囲も単語文字として扱う（連続漢字を 1 単語選択）
+    private static func isWordCharacter(_ char: Character) -> Bool {
+        for scalar in char.unicodeScalars {
+            let v = scalar.value
+            // ASCII alphanumeric + word-like punctuation
+            if (v >= 0x30 && v <= 0x39) ||  // 0-9
+                (v >= 0x41 && v <= 0x5A) ||  // A-Z
+                (v >= 0x61 && v <= 0x7A) ||  // a-z
+                v == 0x5F ||  // _
+                v == 0x2D ||  // -
+                v == 0x2E ||  // .
+                v == 0x2F ||  // /
+                v == 0x3A ||  // :
+                v == 0x2B ||  // +
+                v == 0x7E ||  // ~
+                v == 0x25 ||  // %
+                v == 0x40 ||  // @
+                v == 0x23 ||  // #
+                v == 0x3F ||  // ?
+                v == 0x3D ||  // =
+                v == 0x26     // &
+            {
+                return true
+            }
+            // CJK block (連続漢字 / かな / ハングル を 1 単語扱い)
+            if TerminalView.eastAsianWidth(scalar) == 2 {
+                return true
+            }
+        }
+        return false
     }
 
     override func mouseDragged(with event: NSEvent) {
