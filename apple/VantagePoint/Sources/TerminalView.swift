@@ -300,9 +300,24 @@ class TerminalView: NSView {
         // Fira Code Nerd Font Mono 固定。未インストール時のみシステム等幅にフォールバック
         let nsFont = NSFont(name: fontName, size: fontSize)
             ?? NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
-        font = nsFont as CTFont
 
-        logger.debug("Font resolved: \(nsFont.fontName) (size: \(self.fontSize))")
+        // CJK フォント cascade list を明示設定（Hiragino Sans → Apple Color Emoji 等）。
+        // これにより毎セル CTFontCreateForString を呼ばずに済み、CJK 多用時のスクロール性能が向上。
+        // 豆腐表示の予防にもなる。
+        let cascadeNames = ["Hiragino Sans", "Hiragino Kaku Gothic ProN", "Apple Color Emoji"]
+        let cascadeDescriptors: [CTFontDescriptor] = cascadeNames.map { name in
+            CTFontDescriptorCreateWithNameAndSize(name as CFString, 0)
+        }
+        let attributes: [CFString: Any] = [
+            kCTFontCascadeListAttribute: cascadeDescriptors as CFArray,
+        ]
+        let descriptor = CTFontDescriptorCreateCopyWithAttributes(
+            nsFont.fontDescriptor as CTFontDescriptor,
+            attributes as CFDictionary
+        )
+        font = CTFontCreateWithFontDescriptor(descriptor, fontSize, nil)
+
+        logger.debug("Font resolved: \(nsFont.fontName) (size: \(self.fontSize)) with CJK cascade")
 
         // Bold / Italic バリアント
         let boldTraits: CTFontSymbolicTraits = .boldTrait
@@ -523,12 +538,13 @@ class TerminalView: NSView {
                     }
                 }
 
-                // アンダーライン
+                // アンダーライン（全角文字は 2 セル幅で描画）
                 if isUnderline {
+                    let underlineWidth = charIsFullWidth ? cellWidth * 2 : cellWidth
                     ctx.setStrokeColor(fgColor.cgColor)
                     ctx.setLineWidth(1.0)
                     ctx.move(to: CGPoint(x: x, y: y + 1))
-                    ctx.addLine(to: CGPoint(x: x + cellWidth, y: y + 1))
+                    ctx.addLine(to: CGPoint(x: x + underlineWidth, y: y + 1))
                     ctx.strokePath()
                 }
             }
