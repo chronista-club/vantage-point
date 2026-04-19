@@ -39,6 +39,21 @@ pub async fn run(
     let whitesnake = crate::capability::Whitesnake::file_backed_for_port(port);
     cap_config.whitesnake = Some(whitesnake.clone());
 
+    // Mailbox Phase 3: cross-Process routing 用 RemoteRoutingClient を注入
+    // - project_name は project_dir から解決
+    // - local_port = この Process の port
+    let project_name_for_remote = crate::resolve::project_name_from_path(
+        &project_dir,
+        &crate::config::Config::load().unwrap_or_default(),
+    )
+    .to_string();
+    let remote_client = crate::capability::mailbox_remote::RemoteRoutingClient::new(
+        crate::cli::WORLD_PORT,
+        project_name_for_remote.clone(),
+        port,
+    );
+    cap_config.remote_routing = Some(remote_client);
+
     // rustls 0.23+ は CryptoProvider の明示的な設定が必要
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
@@ -62,6 +77,60 @@ pub async fn run(
     // Initialize all capabilities
     if let Err(e) = capabilities.initialize().await {
         tracing::warn!("Failed to initialize capabilities: {}", e);
+    }
+
+    // Mailbox Phase 3 Step 2b: TheWorld registry に actor を一括 register
+    // initialize() 後の addresses を登録対象とする
+    {
+        let addresses = capabilities.mailbox_router.addresses().await;
+        let project_name = project_name_for_remote.clone();
+        let world_port = crate::cli::WORLD_PORT;
+        tokio::spawn(async move {
+            // TheWorld 起動完了を少し待つ（ベストエフォート）
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            let failed = crate::capability::mailbox_remote::register_actors_to_world(
+                world_port,
+                &project_name,
+                port,
+                &addresses,
+            )
+            .await;
+            if failed.is_empty() {
+                tracing::info!(
+                    "Mailbox: {} 件の actor を TheWorld registry に登録 (project={}, port={})",
+                    addresses.len(),
+                    project_name,
+                    port
+                );
+            } else {
+                tracing::warn!(
+                    "Mailbox: {} 件 register 失敗（TheWorld 未起動の可能性）: {:?}",
+                    failed.len(),
+                    failed
+                );
+            }
+        });
+    }
+
+    // Shutdown 時の TheWorld unregister（cancellation token で発火）
+    {
+        let shutdown_for_unreg = shutdown_token.clone();
+        tokio::spawn(async move {
+            shutdown_for_unreg.cancelled().await;
+            if let Err(e) = crate::capability::mailbox_remote::unregister_process_from_world(
+                crate::cli::WORLD_PORT,
+                port,
+            )
+            .await
+            {
+                tracing::warn!("Mailbox: TheWorld unregister failed: {}", e);
+            } else {
+                tracing::info!(
+                    "Mailbox: TheWorld registry から port={} 配下を unregister",
+                    port
+                );
+            }
+        });
     }
 
     let hub = Hub::new();

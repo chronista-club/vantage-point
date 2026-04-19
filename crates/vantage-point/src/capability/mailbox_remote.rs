@@ -37,6 +37,89 @@ pub fn registry_token() -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+// =============================================================================
+// TheWorld registry への register/unregister（Step 2b: Process startup/shutdown）
+// =============================================================================
+
+/// 単一 actor を TheWorld registry に register
+pub async fn register_actor_to_world(
+    world_port: u16,
+    project_name: &str,
+    self_port: u16,
+    actor: &str,
+) -> anyhow::Result<()> {
+    let url = format!("http://[::1]:{}/api/world/mailbox/register", world_port);
+    let body = serde_json::json!({
+        "actor": actor,
+        "project_name": project_name,
+        "port": self_port,
+    });
+
+    let resp = reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()?
+        .post(&url)
+        .json(&body)
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        anyhow::bail!("register failed: HTTP {} - {}", status, body);
+    }
+    Ok(())
+}
+
+/// 一括 register（Process 起動時）
+///
+/// 各 actor の register に失敗しても他は試す。失敗 actor 名のリストを返す。
+pub async fn register_actors_to_world(
+    world_port: u16,
+    project_name: &str,
+    self_port: u16,
+    actors: &[String],
+) -> Vec<String> {
+    let mut failed = Vec::new();
+    for actor in actors {
+        if let Err(e) = register_actor_to_world(world_port, project_name, self_port, actor).await {
+            tracing::warn!(
+                "MailboxRouter: register '{}' to TheWorld failed: {}",
+                actor,
+                e
+            );
+            failed.push(actor.clone());
+        }
+    }
+    failed
+}
+
+/// Process（port）配下の全 actor を TheWorld registry から一括 unregister
+///
+/// Process 停止時に呼ぶ。失敗してもログ出すだけ（shutdown を止めない）。
+pub async fn unregister_process_from_world(world_port: u16, self_port: u16) -> anyhow::Result<()> {
+    let url = format!(
+        "http://[::1]:{}/api/world/mailbox/unregister-process",
+        world_port
+    );
+    let body = serde_json::json!({ "port": self_port });
+
+    let resp = reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()?
+        .post(&url)
+        .json(&body)
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        anyhow::bail!("unregister failed: HTTP {} - {}", status, body);
+    }
+    Ok(())
+}
+
 /// Remote routing 用のクライアント
 ///
 /// TheWorld への HTTP lookup（cache 付き）と target Process への forward を担う。
