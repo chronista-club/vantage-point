@@ -393,3 +393,189 @@ pub async fn world_refresh(State(state): State<Arc<AppState>>) -> impl IntoRespo
         ),
     }
 }
+
+// =============================================================================
+// Mailbox Registry — Phase 3: cross-Process actor messaging
+// =============================================================================
+
+/// Mailbox actor 登録リクエスト
+#[derive(serde::Deserialize)]
+pub struct MailboxRegisterRequest {
+    pub actor: String,
+    pub project_name: String,
+    pub port: u16,
+}
+
+/// POST /api/world/mailbox/register — VP Process が自身の actor を登録
+pub async fn world_mailbox_register(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<MailboxRegisterRequest>,
+) -> impl IntoResponse {
+    let Some(registry) = &state.mailbox_registry else {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "Mailbox registry not available"})),
+        );
+    };
+
+    if let Err(e) = registry
+        .register(&req.actor, &req.project_name, req.port)
+        .await
+    {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": e.to_string()})),
+        );
+    }
+
+    (
+        axum::http::StatusCode::OK,
+        Json(serde_json::json!({
+            "status": "registered",
+            "actor": req.actor,
+            "project_name": req.project_name,
+            "port": req.port,
+        })),
+    )
+}
+
+/// Mailbox actor 登録解除リクエスト
+#[derive(serde::Deserialize)]
+pub struct MailboxUnregisterRequest {
+    pub actor: String,
+    pub project_name: String,
+}
+
+/// POST /api/world/mailbox/unregister — actor 単独 unregister
+pub async fn world_mailbox_unregister(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<MailboxUnregisterRequest>,
+) -> impl IntoResponse {
+    let Some(registry) = &state.mailbox_registry else {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "Mailbox registry not available"})),
+        );
+    };
+
+    let removed = registry.unregister(&req.project_name, &req.actor).await;
+
+    (
+        axum::http::StatusCode::OK,
+        Json(serde_json::json!({
+            "status": "unregistered",
+            "actor": req.actor,
+            "project_name": req.project_name,
+            "removed": removed,
+        })),
+    )
+}
+
+/// Process 単位の一括 unregister リクエスト（Process 停止時）
+#[derive(serde::Deserialize)]
+pub struct MailboxUnregisterProcessRequest {
+    pub port: u16,
+}
+
+/// POST /api/world/mailbox/unregister-process — port 配下の全 actor を一括解除
+pub async fn world_mailbox_unregister_process(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<MailboxUnregisterProcessRequest>,
+) -> impl IntoResponse {
+    let Some(registry) = &state.mailbox_registry else {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "Mailbox registry not available"})),
+        );
+    };
+
+    let removed = registry.unregister_process(req.port).await;
+
+    (
+        axum::http::StatusCode::OK,
+        Json(serde_json::json!({
+            "status": "unregistered",
+            "port": req.port,
+            "removed": removed,
+        })),
+    )
+}
+
+/// Mailbox actor lookup query
+#[derive(serde::Deserialize)]
+pub struct MailboxLookupQuery {
+    /// Actor 名（必須）
+    pub actor: String,
+    /// project_name または port（どちらか必須）
+    pub project_name: Option<String>,
+    pub port: Option<u16>,
+}
+
+/// GET /api/world/mailbox/lookup?actor=...&project_name=...
+/// or  /api/world/mailbox/lookup?actor=...&port=...
+pub async fn world_mailbox_lookup(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(query): axum::extract::Query<MailboxLookupQuery>,
+) -> impl IntoResponse {
+    let Some(registry) = &state.mailbox_registry else {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "Mailbox registry not available"})),
+        );
+    };
+
+    let entry = match (query.project_name.as_deref(), query.port) {
+        (Some(project), _) => registry.lookup_by_project(&query.actor, project).await,
+        (None, Some(port)) => registry.lookup_by_port(&query.actor, port).await,
+        (None, None) => {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "either project_name or port is required"})),
+            );
+        }
+    };
+
+    match entry {
+        Some(e) => (
+            axum::http::StatusCode::OK,
+            Json(serde_json::json!({"entry": e})),
+        ),
+        None => (
+            axum::http::StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "actor not found"})),
+        ),
+    }
+}
+
+/// Mailbox registry list query
+#[derive(serde::Deserialize)]
+pub struct MailboxListQuery {
+    /// project_name でフィルタ（省略時は全件）
+    pub project_name: Option<String>,
+}
+
+/// GET /api/world/mailbox/list?project_name=... — debug / 確認用
+pub async fn world_mailbox_list(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(query): axum::extract::Query<MailboxListQuery>,
+) -> impl IntoResponse {
+    let Some(registry) = &state.mailbox_registry else {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "Mailbox registry not available"})),
+        );
+    };
+
+    let entries = match query.project_name.as_deref() {
+        Some(project) => registry.list_by_project(project).await,
+        None => registry.list().await,
+    };
+
+    (
+        axum::http::StatusCode::OK,
+        Json(serde_json::json!({
+            "count": entries.len(),
+            "entries": entries,
+        })),
+    )
+}
