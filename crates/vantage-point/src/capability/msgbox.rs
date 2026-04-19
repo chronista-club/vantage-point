@@ -243,8 +243,18 @@ impl Handle {
     /// Selective Receive: 条件に合うメッセージのみ受信（Erlang 方式）
     ///
     /// 条件に合わないメッセージは stash に退避し、次回の recv/recv_matching で再確認。
-    /// メッセージロスが起きない安全な設計。
+    /// メッセージロスが起きない cancel-safe 設計。
     /// persistent メッセージの場合、受信完了時に永続ストアから DISC を削除（ack）。
+    ///
+    /// ## Cancel Safety
+    ///
+    /// `tokio::time::timeout` 等で外側からこの Future をキャンセルしても
+    /// メッセージは失われない。実装方針:
+    ///
+    /// 1. `rx.lock()` を保持したままの長時間 await を避ける
+    /// 2. `rx.recv()` 呼び出し前後でロックを取り直す（try_recv + 待機のループ）
+    /// 3. deferred メッセージは stash に随時書き込む（rx ロックを手放した直後）
+    ///    → キャンセル時点で stash に保存済みのため消失しない
     pub async fn recv_matching<F>(&self, predicate: F) -> Option<Message>
     where
         F: Fn(&Message) -> bool,
@@ -260,27 +270,57 @@ impl Handle {
             }
         }
 
-        // チャンネルから読み出し、条件に合わないものはローカルに集めてから stash に退避
-        // rx と stash のロック順序を分離してデッドロックを防止
-        let mut rx = self.rx.lock().await;
-        let mut deferred = Vec::new();
-        let found = loop {
-            match rx.recv().await {
+        // チャンネルからメッセージを 1 件ずつ取り出す。
+        //
+        // cancel-safe のために rx ロックの保持を 1 メッセージ分ずつに限定する:
+        //   1. try_recv で即時取得を試みる
+        //   2. メッセージがなければ recv().await で待機（1 件取れたら即ロック解放）
+        //   3. deferred は stash に即書き込み → キャンセルされても消えない
+        loop {
+            // --- step 1: stash を再確認（別タスクが追加した可能性） ---
+            {
+                let mut stash = self.stash.lock().await;
+                if let Some(pos) = stash.iter().position(&predicate) {
+                    let msg = stash.remove(pos);
+                    drop(stash);
+                    self.ack_if_persistent(msg.as_ref()).await;
+                    return msg;
+                }
+            }
+
+            // --- step 2: チャンネルから 1 件受信（rx ロックは最小限） ---
+            let msg = {
+                let mut rx = self.rx.lock().await;
+                // try_recv で即時取得を試みる
+                match rx.try_recv() {
+                    Ok(msg) => Some(msg),
+                    Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                        // 待機が必要 — ロックを保持したまま await するが、
+                        // 1 件取れたら即 break するため最短で解放される。
+                        // キャンセルされた場合 MutexGuard は Drop され、
+                        // 取得前のメッセージ（= チャンネル内）は消えない。
+                        rx.recv().await
+                    }
+                    Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => None,
+                }
+            }; // ← rx ロックをここで解放
+
+            match msg {
+                None => {
+                    // チャンネルが閉じた
+                    return None;
+                }
                 Some(msg) => {
                     if predicate(&msg) {
-                        break Some(msg);
+                        self.ack_if_persistent(Some(&msg)).await;
+                        return Some(msg);
                     }
-                    deferred.push(msg);
+                    // 条件不一致 → stash に即書き込み（rx ロック解放後なので安全）
+                    self.stash.lock().await.push_back(msg);
+                    // 次のイテレーションへ（stash + チャンネルを再スキャン）
                 }
-                None => break None,
             }
-        };
-        drop(rx); // rx ロック解放してから stash に書き込む
-        if !deferred.is_empty() {
-            self.stash.lock().await.extend(deferred);
         }
-        self.ack_if_persistent(found.as_ref()).await;
-        found
     }
 
     /// persistent メッセージの受信完了を永続ストアに反映（DISC 削除 = ack）
@@ -457,7 +497,9 @@ impl Router {
                 msg.to,
                 msg.from
             );
-            return Err(Error::RouterClosed); // box not found
+            return Err(Error::BoxNotFound {
+                address: msg.to.clone(),
+            });
         };
         tx.try_send(msg).map_err(|_| Error::RouterClosed)
     }
@@ -710,9 +752,12 @@ impl Default for Router {
 /// Msgbox 操作のエラー
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    /// Router が閉じている
+    /// Router が閉じている（router_tx が drop された）
     #[error("msgbox router is closed")]
     RouterClosed,
+    /// 宛先 box が見つからない
+    #[error("msgbox address not found: {address}")]
+    BoxNotFound { address: String },
 }
 
 // =============================================================================

@@ -290,10 +290,17 @@ pub async fn msgbox_remote_deliver_handler(
             axum::http::StatusCode::OK,
             Json(serde_json::json!({"status": "delivered", "to": msg.to})),
         ),
-        Err(e) => (
+        Err(crate::capability::msgbox::Error::BoxNotFound { ref address }) => (
             axum::http::StatusCode::NOT_FOUND,
             Json(serde_json::json!({
-                "error": format!("local box not found or closed: {}", e),
+                "error": format!("msgbox address not found: {}", address),
+                "to": msg.to,
+            })),
+        ),
+        Err(e) => (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "error": format!("msgbox router unavailable: {}", e),
                 "to": msg.to,
             })),
         ),
@@ -490,7 +497,7 @@ pub async fn canvas_capture_handler(
                 format!("/tmp/vp-canvas-{}.png", ts)
             });
 
-            if let Err(e) = std::fs::write(&save_path, &bytes) {
+            if let Err(e) = tokio::fs::write(&save_path, &bytes).await {
                 return (
                     axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                     Json(serde_json::json!({
@@ -613,8 +620,8 @@ pub async fn wasm_handler(Path(filename): Path<String>) -> impl IntoResponse {
 
 /// WASM ファイルを読み込む
 fn load_wasm_file(filename: &str) -> Option<Vec<u8>> {
-    // セキュリティ: パストラバーサル防止
-    if filename.contains("..") || filename.contains('/') {
+    // セキュリティ: パストラバーサル防止（vendor_handler と同一ルール）
+    if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
         return None;
     }
 

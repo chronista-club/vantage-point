@@ -2032,7 +2032,7 @@ if bestId > 0 { print(bestId) }
 
     /// Receive a message from the MCP msgbox
     #[tool(
-        description = "Receive a message from the MCP msgbox. Waits up to timeout seconds for a message. Returns immediately if a message is already queued. Use this for inter-agent communication (replaces ccwire wire_receive)."
+        description = "Receive a message from the MCP msgbox. Waits up to timeout seconds for a message. Returns immediately if a message is already queued. Use this for inter-agent communication."
     )]
     async fn msg_recv(
         &self,
