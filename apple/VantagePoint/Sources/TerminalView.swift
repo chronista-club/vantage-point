@@ -206,9 +206,10 @@ class TerminalView: NSView {
         super.viewDidMoveToWindow()
         guard let window = self.window else { return }
         // SwiftUI のレイアウトサイクル完了を待って複数回リトライ
+        // isFocused == true のペインのみ first responder を取りに行く（取り合い race 防止）
         for delay in [0.05, 0.1, 0.3, 0.5] {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-                guard let self, self.window != nil else { return }
+                guard let self, self.window != nil, self.isFocused else { return }
                 window.makeFirstResponder(self)
             }
         }
@@ -234,12 +235,21 @@ class TerminalView: NSView {
             )
         }
         updateFocusBorder()
+        needsDisplay = true  // カーソル中空/塗り切替のため
         return result
     }
 
     override func resignFirstResponder() -> Bool {
+        // フォーカス喪失時に IME 変換中の状態をクリーンアップ
+        // - hasMarkedText() == true のままにすると次回 keyDown で「IME 委譲」され続け、
+        //   「日本語が打てなくなった」stuck 現象の根本原因になる
+        if hasMarkedText() {
+            inputContext?.discardMarkedText()
+            unmarkText()
+        }
         let result = super.resignFirstResponder()
         updateFocusBorder()
+        needsDisplay = true  // カーソル中空/塗り切替のため
         return result
     }
 
@@ -300,9 +310,24 @@ class TerminalView: NSView {
         // Fira Code Nerd Font Mono 固定。未インストール時のみシステム等幅にフォールバック
         let nsFont = NSFont(name: fontName, size: fontSize)
             ?? NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
-        font = nsFont as CTFont
 
-        logger.debug("Font resolved: \(nsFont.fontName) (size: \(self.fontSize))")
+        // CJK フォント cascade list を明示設定（Hiragino Sans → Apple Color Emoji 等）。
+        // これにより毎セル CTFontCreateForString を呼ばずに済み、CJK 多用時のスクロール性能が向上。
+        // 豆腐表示の予防にもなる。
+        let cascadeNames = ["Hiragino Sans", "Hiragino Kaku Gothic ProN", "Apple Color Emoji"]
+        let cascadeDescriptors: [CTFontDescriptor] = cascadeNames.map { name in
+            CTFontDescriptorCreateWithNameAndSize(name as CFString, 0)
+        }
+        let attributes: [CFString: Any] = [
+            kCTFontCascadeListAttribute: cascadeDescriptors as CFArray,
+        ]
+        let descriptor = CTFontDescriptorCreateCopyWithAttributes(
+            nsFont.fontDescriptor as CTFontDescriptor,
+            attributes as CFDictionary
+        )
+        font = CTFontCreateWithFontDescriptor(descriptor, fontSize, nil)
+
+        logger.debug("Font resolved: \(nsFont.fontName) (size: \(self.fontSize)) with CJK cascade")
 
         // Bold / Italic バリアント
         let boldTraits: CTFontSymbolicTraits = .boldTrait
@@ -523,12 +548,13 @@ class TerminalView: NSView {
                     }
                 }
 
-                // アンダーライン
+                // アンダーライン（全角文字は 2 セル幅で描画）
                 if isUnderline {
+                    let underlineWidth = charIsFullWidth ? cellWidth * 2 : cellWidth
                     ctx.setStrokeColor(fgColor.cgColor)
                     ctx.setLineWidth(1.0)
                     ctx.move(to: CGPoint(x: x, y: y + 1))
-                    ctx.addLine(to: CGPoint(x: x + cellWidth, y: y + 1))
+                    ctx.addLine(to: CGPoint(x: x + underlineWidth, y: y + 1))
                     ctx.strokePath()
                 }
             }
@@ -553,22 +579,177 @@ class TerminalView: NSView {
             }
         }
 
-        // カーソル描画（全角文字の上では幅 2 セル）
+        // IME 変換中文字の inline 描画（カーソルより前に描画）
+        // hasMarkedText() == true のとき、カーソル位置から右に変換中テキストを表示。
+        // iTerm2/Terminal.app と同等の UX。
         let cursor = vp_bridge_get_cursor_session(sessionId)
+        let markedWidth = drawMarkedTextIfNeeded(ctx: ctx, cursor: cursor)
+
+        // カーソル描画（全角文字の上では幅 2 セル、IME 変換中はマーク末尾に移動）
+        // フォーカス無し時は中空（線描画のみ）にして「どこに打ち込まれるか」を視覚化
         if cursor.visible {
-            let cursorX = CGFloat(cursor.x) * cellWidth
+            let cursorX = (CGFloat(cursor.x) + CGFloat(markedWidth)) * cellWidth
             let cursorY = bounds.height - CGFloat(Int(cursor.y) + 1) * cellHeight
 
             // カーソル位置の文字がワイドかチェック（bit 6: WIDE_CHAR）
-            let idx = Int(cursor.y) * Int(gridCols) + Int(cursor.x)
+            // ただし IME 変換中は末尾位置 = 確定後の挿入点なので 1 セル幅で十分
             var cursorWidth = cellWidth
-            if idx < cellBuffer.count && (cellBuffer[idx].flags & (1 << 6)) != 0 {
-                cursorWidth = cellWidth * 2
+            if markedWidth == 0 {
+                let idx = Int(cursor.y) * Int(gridCols) + Int(cursor.x)
+                if idx < cellBuffer.count && (cellBuffer[idx].flags & (1 << 6)) != 0 {
+                    cursorWidth = cellWidth * 2
+                }
             }
 
-            ctx.setFillColor(NSColor.white.withAlphaComponent(0.5).cgColor)
-            ctx.fill(CGRect(x: cursorX, y: cursorY, width: cursorWidth, height: cellHeight))
+            let cursorRect = CGRect(x: cursorX, y: cursorY, width: cursorWidth, height: cellHeight)
+            let isFocused = window?.firstResponder === self
+            if isFocused {
+                ctx.setFillColor(NSColor.white.withAlphaComponent(0.5).cgColor)
+                ctx.fill(cursorRect)
+            } else {
+                // 中空カーソル（フォーカス無し）— 1px 枠線のみ
+                ctx.setStrokeColor(NSColor.white.withAlphaComponent(0.4).cgColor)
+                ctx.setLineWidth(1.0)
+                ctx.stroke(cursorRect.insetBy(dx: 0.5, dy: 0.5))
+            }
         }
+    }
+
+    /// IME 変換中文字（markedString）を半透明背景 + 下線でカーソル位置から描画
+    /// selectedRange（編集中の節）は別色でハイライト + 太い実線下線
+    /// その他の節は薄い背景 + 点線下線
+    /// - Returns: 描画した文字の合計セル幅（カーソル位置補正用）
+    @MainActor
+    private func drawMarkedTextIfNeeded(ctx: CGContext, cursor: VPCursorInfo) -> Int {
+        guard hasMarkedText() else { return 0 }
+        let text = markedString.string
+        guard !text.isEmpty else { return 0 }
+
+        let cursorY = bounds.height - CGFloat(Int(cursor.y) + 1) * cellHeight
+        let totalWidth = TerminalView.displayWidth(of: text)
+        let baseX = CGFloat(cursor.x) * cellWidth
+        let totalPixelWidth = CGFloat(totalWidth) * cellWidth
+
+        // selectedRange（編集中の節）の表示幅を計算
+        // selectedRangeValue は markedString 内の UTF-16 オフセットなので grapheme で再計算
+        let (selStartCol, selWidthCols) = selectedRangeWidthInCells(text: text, range: selectedRangeValue)
+        let selStartX = baseX + CGFloat(selStartCol) * cellWidth
+        let selPixelWidth = CGFloat(selWidthCols) * cellWidth
+
+        ctx.saveGState()
+
+        // 全体背景（薄いアクセント）— rounded で「浮いている」感を出す
+        let bgRect = CGRect(x: baseX, y: cursorY, width: totalPixelWidth, height: cellHeight)
+        let bgPath = CGPath(roundedRect: bgRect, cornerWidth: 3, cornerHeight: 3, transform: nil)
+        ctx.addPath(bgPath)
+        ctx.setFillColor(NSColor.controlAccentColor.withAlphaComponent(0.12).cgColor)
+        ctx.fillPath()
+
+        // selectedRange（編集中の節）— 濃い背景でアクティブ強調
+        if selWidthCols > 0 {
+            let selRect = CGRect(x: selStartX, y: cursorY, width: selPixelWidth, height: cellHeight)
+            let selPath = CGPath(roundedRect: selRect, cornerWidth: 3, cornerHeight: 3, transform: nil)
+            ctx.addPath(selPath)
+            ctx.setFillColor(NSColor.controlAccentColor.withAlphaComponent(0.32).cgColor)
+            ctx.fillPath()
+        }
+
+        // 文字描画（grapheme 単位、各グリフを cascade font で）
+        var col = CGFloat(cursor.x)
+        let fgColor = NSColor.textColor
+        for char in text {
+            let charStr = String(char)
+            let charWidth = char.unicodeScalars.first.map { TerminalView.eastAsianWidth($0) } ?? 1
+
+            let attrs: [CFString: Any] = [
+                kCTFontAttributeName: font as Any,
+                kCTForegroundColorAttributeName: fgColor.cgColor,
+            ]
+            let attrStr = CFAttributedStringCreate(nil, charStr as CFString, attrs as CFDictionary)!
+            let line = CTLineCreateWithAttributedString(attrStr)
+            ctx.textPosition = CGPoint(x: col * cellWidth, y: cursorY + baselineOffset)
+            CTLineDraw(line, ctx)
+
+            col += CGFloat(charWidth)
+        }
+
+        // 下線階層化:
+        //  - 全体: 点線（変換途中）
+        //  - selectedRange: 実線・太め（編集中の節）
+        let underlineY = cursorY + 1
+        let accentColor = NSColor.controlAccentColor.withAlphaComponent(0.7).cgColor
+        ctx.setStrokeColor(accentColor)
+
+        ctx.setLineWidth(1.0)
+        ctx.setLineDash(phase: 0, lengths: [2.0, 2.0])
+        ctx.move(to: CGPoint(x: baseX, y: underlineY))
+        ctx.addLine(to: CGPoint(x: baseX + totalPixelWidth, y: underlineY))
+        ctx.strokePath()
+
+        if selWidthCols > 0 {
+            ctx.setLineDash(phase: 0, lengths: [])
+            ctx.setLineWidth(2.0)
+            ctx.move(to: CGPoint(x: selStartX, y: underlineY))
+            ctx.addLine(to: CGPoint(x: selStartX + selPixelWidth, y: underlineY))
+            ctx.strokePath()
+        }
+
+        ctx.restoreGState()
+        return totalWidth
+    }
+
+    /// markedString 内の UTF-16 範囲を「先頭からのセル幅オフセット + セル幅」に変換
+    /// IME の selectedRange を grapheme クラスタ単位で位置算出するため
+    @MainActor
+    private func selectedRangeWidthInCells(text: String, range: NSRange) -> (startCol: Int, widthCols: Int) {
+        guard range.location != NSNotFound, range.location <= (text as NSString).length else {
+            return (0, 0)
+        }
+        let nsText = text as NSString
+        let safeLength = min(range.length, nsText.length - range.location)
+        let beforeRange = nsText.substring(to: range.location)
+        let selRange = nsText.substring(with: NSRange(location: range.location, length: safeLength))
+        return (TerminalView.displayWidth(of: beforeRange), TerminalView.displayWidth(of: selRange))
+    }
+
+    /// East Asian Width（簡易版）— 主要 CJK ブロックと絵文字を 2 セル扱い
+    /// 厳密な Unicode UAX#11 ではなく、IME 描画位置算出用の実用範囲
+    static func eastAsianWidth(_ scalar: Unicode.Scalar) -> Int {
+        let v = scalar.value
+        switch v {
+        case 0x1100...0x115F,    // Hangul Jamo
+             0x2E80...0x303E,    // CJK Radicals, Kangxi, CJK Symbols
+             0x3041...0x33FF,    // Hiragana, Katakana, CJK Strokes, Bopomofo
+             0x3400...0x4DBF,    // CJK Extension A
+             0x4E00...0x9FFF,    // CJK Unified Ideographs
+             0xA000...0xA4CF,    // Yi Syllables
+             0xAC00...0xD7A3,    // Hangul Syllables
+             0xF900...0xFAFF,    // CJK Compatibility Ideographs
+             0xFE30...0xFE4F,    // CJK Compatibility Forms
+             0xFF00...0xFF60,    // Fullwidth Forms
+             0xFFE0...0xFFE6,    // Fullwidth Symbols
+             0x20000...0x2FFFD,  // CJK Extension B-F
+             0x30000...0x3FFFD,  // CJK Extension G
+             0x1F300...0x1F64F,  // Emoji Misc Symbols
+             0x1F680...0x1F6FF,  // Transport and Map
+             0x1F900...0x1F9FF:  // Supplemental Symbols and Pictographs
+            return 2
+        default:
+            return 1
+        }
+    }
+
+    /// 文字列の表示セル幅を grapheme cluster 単位で合計
+    static func displayWidth(of string: String) -> Int {
+        var width = 0
+        for char in string {
+            if let first = char.unicodeScalars.first {
+                width += eastAsianWidth(first)
+            } else {
+                width += 1
+            }
+        }
+        return width
     }
 
     // MARK: - ヘルパー
@@ -879,6 +1060,7 @@ class TerminalView: NSView {
     /// メニュー Edit → Copy (Cmd+C) から呼ばれる — テキストコピー専用
     /// 選択なしの Ctrl+C (SIGINT) は performKeyEquivalent で直接処理する
     @objc func copy(_ sender: Any?) {
+        guard window?.firstResponder === self else { return }
         guard normalizedSelection() != nil else { return }
         copySelectionToClipboard()
         selectionStart = nil
@@ -888,23 +1070,88 @@ class TerminalView: NSView {
 
     /// メニュー Edit → Paste (Cmd+V) から呼ばれる
     @objc func paste(_ sender: Any?) {
+        // 非フォーカスペインに paste が誤配されるのを防ぐ
+        guard window?.firstResponder === self else { return }
         guard vp_bridge_pty_is_running_session(sessionId) else { return }
         pasteFromClipboard()
+    }
+
+    /// メニュー Edit → Select All (Cmd+A) から呼ばれる
+    override func selectAll(_ sender: Any?) {
+        guard window?.firstResponder === self else { return }
+        guard gridCols > 0, gridRows > 0 else { return }
+        selectionStart = (col: 0, row: 0)
+        selectionEnd = (col: Int(gridCols) - 1, row: Int(gridRows) - 1)
+        needsDisplay = true
+    }
+
+    /// ペースト最大サイズ — これを超えるテキストは切り詰めてフリーズ防止
+    private static let maxPasteBytes = 1_000_000  // 1 MB
+
+    /// ペーストテキストの sanitize:
+    /// - NFC 正規化（macOS の NFD ファイル名等の文字化け対策）
+    /// - 改行コード正規化 (\r\n / \n → \r、bracketed paste の規約)
+    /// - 制御文字フィルタ (タブ・改行除く 0x00-0x1F、0x7F を削除)
+    /// - bracketed paste 終了シーケンス (\x1b[201~) の混入を遮断（注入攻撃対策）
+    /// - サイズ上限（メモリ枯渇防止）
+    private static func sanitizePastedText(_ raw: String) -> String {
+        // サイズ上限
+        let truncated = raw.utf8.count > maxPasteBytes
+            ? String(raw.unicodeScalars.prefix(maxPasteBytes))
+            : raw
+
+        // NFC 正規化
+        let nfc = truncated.precomposedStringWithCanonicalMapping
+
+        // 制御文字フィルタ + 改行正規化を 1 パスで
+        var result = String.UnicodeScalarView()
+        result.reserveCapacity(nfc.unicodeScalars.count)
+        var prevWasCR = false
+        for scalar in nfc.unicodeScalars {
+            let v = scalar.value
+            if v == 0x0D {  // CR
+                result.append(scalar)
+                prevWasCR = true
+                continue
+            }
+            if v == 0x0A {  // LF
+                if prevWasCR {
+                    // \r\n → \r （\n を捨てる）
+                    prevWasCR = false
+                } else {
+                    // \n → \r
+                    result.append(Unicode.Scalar(0x0D)!)
+                }
+                continue
+            }
+            prevWasCR = false
+            // タブと印字可能文字以外（C0/C1 制御文字）を削除
+            if v == 0x09 || (v >= 0x20 && v != 0x7F) {
+                result.append(scalar)
+            }
+        }
+        let cleaned = String(result)
+
+        // bracketed paste 終了シーケンスの混入を除去（注入攻撃の最後の砦）
+        return cleaned.replacingOccurrences(of: "\u{1B}[201~", with: "")
     }
 
     /// クリップボードからテキスト/画像を PTY にペースト
     private func pasteFromClipboard() {
         let pb = NSPasteboard.general
         let useTmux = self.sendMouseEvents
-        logger.info("pasteFromClipboard: types=\(pb.types?.map(\.rawValue) ?? []) string=\(pb.string(forType: .string) ?? "nil") useTmux=\(useTmux)")
+        logger.info("pasteFromClipboard: types=\(pb.types?.map(\.rawValue) ?? []) useTmux=\(useTmux)")
 
-        if let text = pb.string(forType: .string), !text.isEmpty {
+        if let raw = pb.string(forType: .string), !raw.isEmpty {
+            let text = TerminalView.sanitizePastedText(raw)
+            if text.isEmpty { return }
+
             // tmux 内ターミナル: tmux paste-buffer 経由で送信
             // 素シェル (The Hand): PTY 直接書き込み（bracketed paste 対応）
             if useTmux {
                 // tmux のペーストバッファ経由で送信
                 // PTY 直接書き込みでは tmux がデータを消費してしまうため
-                logger.info("pasteFromClipboard: text=\(text.prefix(50)) len=\(text.count) via tmux paste-buffer")
+                logger.info("pasteFromClipboard: len=\(text.count) via tmux paste-buffer")
                 DispatchQueue.global(qos: .userInitiated).async {
                     let tmuxBin = "/opt/homebrew/bin/tmux"
                     let bufferName = "vp-paste-\(UUID().uuidString.prefix(8))"
@@ -933,7 +1180,7 @@ class TerminalView: NSView {
                 }
             } else {
                 // 素シェル (The Hand): PTY 直接書き込み + bracketed paste
-                logger.info("pasteFromClipboard: text=\(text.prefix(50)) len=\(text.count) via PTY direct write")
+                logger.info("pasteFromClipboard: len=\(text.count) via PTY direct write")
                 let bracketStart = "\u{1B}[200~"
                 let bracketEnd = "\u{1B}[201~"
                 let payload = bracketStart + text + bracketEnd
@@ -973,7 +1220,6 @@ class TerminalView: NSView {
     /// ここで Cmd+V / Cmd+C を直接処理する。
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let firstResp = window?.firstResponder === self
-        logger.info("[IME] performKeyEquivalent: code=\(event.keyCode) chars=\(event.charactersIgnoringModifiers ?? "nil") firstResp=\(firstResp) marked=\(self.hasMarkedText())")
         // first responder でないペインはショートカットを処理しない（メニューに委譲）
         guard firstResp else { return false }
         guard event.modifierFlags.contains(.command),
@@ -1034,10 +1280,7 @@ class TerminalView: NSView {
             return
         }
 
-        // [IME Debug] keyDown の入口ログ
         let imeMarked = hasMarkedText()
-        let firstResp = window?.firstResponder === self
-        logger.info("[IME] keyDown: code=\(event.keyCode) chars=\(event.characters ?? "nil") marked=\(imeMarked) firstResp=\(firstResp) inputCtx=\(self.inputContext != nil)")
 
         // Cmd ショートカットは performKeyEquivalent で処理済み
         // ここに到達する Cmd イベントは未処理のもの（Cmd+`, Cmd+Q 等）
@@ -1048,7 +1291,6 @@ class TerminalView: NSView {
 
         // IME 変換中はすべて IME に委譲
         if imeMarked {
-            logger.info("[IME] keyDown: delegating to IME (hasMarkedText)")
             _ = inputContext?.handleEvent(event)
             return
         }
@@ -1063,12 +1305,10 @@ class TerminalView: NSView {
 
         // IME を経由して処理（日本語入力対応）
         if inputContext?.handleEvent(event) == true {
-            logger.info("[IME] keyDown: handled by inputContext")
             return
         }
 
         // IME が処理しなかった文字を直接送信
-        logger.info("[IME] keyDown: IME declined, direct send chars=\(event.characters ?? "nil")")
         if let chars = event.characters, let data = chars.data(using: .utf8) {
             data.withUnsafeBytes { ptr in
                 _ = vp_bridge_pty_write_session(
@@ -1338,6 +1578,31 @@ class TerminalView: NSView {
 
         let pos = gridPosition(from: event.locationInWindow)
 
+        // Shift+Click: 既存選択を拡張（start を維持して end のみ移動）
+        if event.modifierFlags.contains(.shift), selectionStart != nil {
+            selectionEnd = pos
+            isDragging = true
+            needsDisplay = true
+            return
+        }
+
+        // ダブルクリック: 単語選択 / トリプルクリック: 行選択
+        if event.clickCount == 2 {
+            if let (startCol, endCol) = wordBoundaries(at: pos) {
+                selectionStart = (col: startCol, row: pos.row)
+                selectionEnd = (col: endCol, row: pos.row)
+                isDragging = false
+                needsDisplay = true
+                return
+            }
+        } else if event.clickCount >= 3 {
+            selectionStart = (col: 0, row: pos.row)
+            selectionEnd = (col: max(0, Int(gridCols) - 1), row: pos.row)
+            isDragging = false
+            needsDisplay = true
+            return
+        }
+
         // SGR マウスイベントを PTY に送信（tmux ペインフォーカス切替等）
         // 素シェル（The Hand 等）ではマウスイベントを送らない（制御文字がそのまま表示されるため）
         if sendMouseEvents && vp_bridge_pty_is_running_session(sessionId) {
@@ -1358,6 +1623,78 @@ class TerminalView: NSView {
         selectionEnd = pos
         isDragging = true
         needsDisplay = true
+    }
+
+    /// クリック位置の単語境界を返す（ダブルクリック単語選択用）
+    /// 単語文字: 英数字 + ASCII underscore + 一部記号（パス・URL を含むファイル名対応）
+    /// CJK 文字は連続する CJK 範囲を 1 単語として扱う
+    private func wordBoundaries(at pos: (col: Int, row: Int)) -> (start: Int, end: Int)? {
+        let cols = Int(gridCols)
+        guard pos.col >= 0, pos.col < cols, pos.row >= 0 else { return nil }
+
+        // 行の各セルから char + wide flag を取り出す（spacer はスキップ）
+        var cells: [(col: Int, ch: Character, isWordChar: Bool)] = []
+        var skipNext = false
+        for c in 0..<cols {
+            if skipNext { skipNext = false; continue }
+            let idx = pos.row * cols + c
+            guard idx < cellBuffer.count else { break }
+            let cell = cellBuffer[idx]
+            let str = cellString(from: cell)
+            let ch = str.first ?? " "
+            cells.append((col: c, ch: ch, isWordChar: TerminalView.isWordCharacter(ch)))
+            if (cell.flags & (1 << 6)) != 0 { skipNext = true }
+        }
+
+        // クリック位置 → cells インデックス
+        guard let clickIdx = cells.firstIndex(where: { $0.col >= pos.col }) else { return nil }
+        let actualClick = cells[clickIdx]
+        guard actualClick.isWordChar else { return nil }
+
+        // 左右に同じ word-char 連続を辿る
+        var startIdx = clickIdx
+        while startIdx > 0 && cells[startIdx - 1].isWordChar {
+            startIdx -= 1
+        }
+        var endIdx = clickIdx
+        while endIdx + 1 < cells.count && cells[endIdx + 1].isWordChar {
+            endIdx += 1
+        }
+        return (cells[startIdx].col, cells[endIdx].col)
+    }
+
+    /// 単語文字判定（ダブルクリック単語選択用）
+    /// 英数字、underscore、ハイフン、ドット、スラッシュ、コロン、+、~、% — パス/URL 友好
+    /// CJK 範囲も単語文字として扱う（連続漢字を 1 単語選択）
+    private static func isWordCharacter(_ char: Character) -> Bool {
+        for scalar in char.unicodeScalars {
+            let v = scalar.value
+            // ASCII alphanumeric + word-like punctuation
+            if (v >= 0x30 && v <= 0x39) ||  // 0-9
+                (v >= 0x41 && v <= 0x5A) ||  // A-Z
+                (v >= 0x61 && v <= 0x7A) ||  // a-z
+                v == 0x5F ||  // _
+                v == 0x2D ||  // -
+                v == 0x2E ||  // .
+                v == 0x2F ||  // /
+                v == 0x3A ||  // :
+                v == 0x2B ||  // +
+                v == 0x7E ||  // ~
+                v == 0x25 ||  // %
+                v == 0x40 ||  // @
+                v == 0x23 ||  // #
+                v == 0x3F ||  // ?
+                v == 0x3D ||  // =
+                v == 0x26     // &
+            {
+                return true
+            }
+            // CJK block (連続漢字 / かな / ハングル を 1 単語扱い)
+            if TerminalView.eastAsianWidth(scalar) == 2 {
+                return true
+            }
+        }
+        return false
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -1500,7 +1837,6 @@ extension TerminalView: @preconcurrency NSTextInputClient {
             return
         }
 
-        logger.info("[IME] insertText: \"\(text.prefix(30))\" len=\(text.count) replacementRange=\(replacementRange)")
         markedString = NSMutableAttributedString()
         _markedRange = NSRange(location: NSNotFound, length: 0)
 
@@ -1529,15 +1865,16 @@ extension TerminalView: @preconcurrency NSTextInputClient {
         }
         _markedRange = NSRange(location: 0, length: markedString.length)
         selectedRangeValue = selectedRange
-        logger.info("[IME] setMarkedText: \"\(self.markedString.string.prefix(30))\" len=\(self.markedString.length)")
         needsDisplay = true
     }
 
     @MainActor
     func unmarkText() {
-        logger.info("[IME] unmarkText: was=\"\(self.markedString.string.prefix(30))\"")
         markedString = NSMutableAttributedString()
         _markedRange = NSRange(location: NSNotFound, length: 0)
+        // selectedRangeValue を初期化しないと、次回 setMarkedText 時に
+        // stale な範囲を指して firstRect 等の座標計算が壊れる
+        selectedRangeValue = NSRange(location: 0, length: 0)
         needsDisplay = true
     }
 
@@ -1569,7 +1906,9 @@ extension TerminalView: @preconcurrency NSTextInputClient {
     @MainActor
     func firstRect(forCharacterRange range: NSRange, actualRange: NSRangePointer?) -> NSRect {
         let cursor = vp_bridge_get_cursor_session(sessionId)
-        let cursorCol = CGFloat(cursor.x) + CGFloat(markedString.length)
+        // markedString.length は UTF-16 単位なので全角と合わない → displayWidth で grapheme 単位に
+        let markedWidth = TerminalView.displayWidth(of: markedString.string)
+        let cursorCol = CGFloat(cursor.x) + CGFloat(markedWidth)
         let localX = cursorCol * cellWidth
         let localY = bounds.height - CGFloat(Int(cursor.y) + 1) * cellHeight
 
