@@ -596,6 +596,8 @@ class TerminalView: NSView {
     }
 
     /// IME 変換中文字（markedString）を半透明背景 + 下線でカーソル位置から描画
+    /// selectedRange（編集中の節）は別色でハイライト + 太い実線下線
+    /// その他の節は薄い背景 + 点線下線
     /// - Returns: 描画した文字の合計セル幅（カーソル位置補正用）
     @MainActor
     private func drawMarkedTextIfNeeded(ctx: CGContext, cursor: VPCursorInfo) -> Int {
@@ -606,15 +608,31 @@ class TerminalView: NSView {
         let cursorY = bounds.height - CGFloat(Int(cursor.y) + 1) * cellHeight
         let totalWidth = TerminalView.displayWidth(of: text)
         let baseX = CGFloat(cursor.x) * cellWidth
+        let totalPixelWidth = CGFloat(totalWidth) * cellWidth
 
-        // 半透明ハイライト背景（system accent の薄塗り）
-        ctx.setFillColor(NSColor.controlAccentColor.withAlphaComponent(0.25).cgColor)
-        ctx.fill(CGRect(
-            x: baseX,
-            y: cursorY,
-            width: CGFloat(totalWidth) * cellWidth,
-            height: cellHeight
-        ))
+        // selectedRange（編集中の節）の表示幅を計算
+        // selectedRangeValue は markedString 内の UTF-16 オフセットなので grapheme で再計算
+        let (selStartCol, selWidthCols) = selectedRangeWidthInCells(text: text, range: selectedRangeValue)
+        let selStartX = baseX + CGFloat(selStartCol) * cellWidth
+        let selPixelWidth = CGFloat(selWidthCols) * cellWidth
+
+        ctx.saveGState()
+
+        // 全体背景（薄いアクセント）— rounded で「浮いている」感を出す
+        let bgRect = CGRect(x: baseX, y: cursorY, width: totalPixelWidth, height: cellHeight)
+        let bgPath = CGPath(roundedRect: bgRect, cornerWidth: 3, cornerHeight: 3, transform: nil)
+        ctx.addPath(bgPath)
+        ctx.setFillColor(NSColor.controlAccentColor.withAlphaComponent(0.12).cgColor)
+        ctx.fillPath()
+
+        // selectedRange（編集中の節）— 濃い背景でアクティブ強調
+        if selWidthCols > 0 {
+            let selRect = CGRect(x: selStartX, y: cursorY, width: selPixelWidth, height: cellHeight)
+            let selPath = CGPath(roundedRect: selRect, cornerWidth: 3, cornerHeight: 3, transform: nil)
+            ctx.addPath(selPath)
+            ctx.setFillColor(NSColor.controlAccentColor.withAlphaComponent(0.32).cgColor)
+            ctx.fillPath()
+        }
 
         // 文字描画（grapheme 単位、各グリフを cascade font で）
         var col = CGFloat(cursor.x)
@@ -635,17 +653,43 @@ class TerminalView: NSView {
             col += CGFloat(charWidth)
         }
 
-        // 下線（変換中であることを示す点線）
-        ctx.saveGState()
-        ctx.setStrokeColor(fgColor.cgColor)
+        // 下線階層化:
+        //  - 全体: 点線（変換途中）
+        //  - selectedRange: 実線・太め（編集中の節）
+        let underlineY = cursorY + 1
+        let accentColor = NSColor.controlAccentColor.withAlphaComponent(0.7).cgColor
+        ctx.setStrokeColor(accentColor)
+
         ctx.setLineWidth(1.0)
         ctx.setLineDash(phase: 0, lengths: [2.0, 2.0])
-        ctx.move(to: CGPoint(x: baseX, y: cursorY + 1))
-        ctx.addLine(to: CGPoint(x: baseX + CGFloat(totalWidth) * cellWidth, y: cursorY + 1))
+        ctx.move(to: CGPoint(x: baseX, y: underlineY))
+        ctx.addLine(to: CGPoint(x: baseX + totalPixelWidth, y: underlineY))
         ctx.strokePath()
-        ctx.restoreGState()
 
+        if selWidthCols > 0 {
+            ctx.setLineDash(phase: 0, lengths: [])
+            ctx.setLineWidth(2.0)
+            ctx.move(to: CGPoint(x: selStartX, y: underlineY))
+            ctx.addLine(to: CGPoint(x: selStartX + selPixelWidth, y: underlineY))
+            ctx.strokePath()
+        }
+
+        ctx.restoreGState()
         return totalWidth
+    }
+
+    /// markedString 内の UTF-16 範囲を「先頭からのセル幅オフセット + セル幅」に変換
+    /// IME の selectedRange を grapheme クラスタ単位で位置算出するため
+    @MainActor
+    private func selectedRangeWidthInCells(text: String, range: NSRange) -> (startCol: Int, widthCols: Int) {
+        guard range.location != NSNotFound, range.location <= (text as NSString).length else {
+            return (0, 0)
+        }
+        let nsText = text as NSString
+        let safeLength = min(range.length, nsText.length - range.location)
+        let beforeRange = nsText.substring(to: range.location)
+        let selRange = nsText.substring(with: NSRange(location: range.location, length: safeLength))
+        return (TerminalView.displayWidth(of: beforeRange), TerminalView.displayWidth(of: selRange))
     }
 
     /// East Asian Width（簡易版）— 主要 CJK ブロックと絵文字を 2 セル扱い
