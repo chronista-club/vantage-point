@@ -171,17 +171,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// OS ネイティブタブバーを無効化（カスタム Project Tab バーに置換）
     private func disableNativeTabBar() {
         // 新規ウィンドウのタブバーを無効化（トークンを保持してリーク防止）
+        // queue: .main 指定により callback はメインスレッドで実行される → MainActor.assumeIsolated で
+        // @MainActor 関数を呼べるようにする（Swift 6 strict concurrency 対応）
         windowTabBarObserver = NotificationCenter.default.addObserver(
             forName: NSWindow.didBecomeKeyNotification,
             object: nil, queue: .main
         ) { notification in
             guard let window = notification.object as? NSWindow else { return }
-            Self.configureWindowTabbing(window)
+            MainActor.assumeIsolated {
+                Self.configureWindowTabbing(window)
+            }
         }
         // 初回ウィンドウは SwiftUI が先に作るため遅延で捕まえる
+        // DispatchQueue.main 上の実行なのでメインスレッド保証
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            for window in NSApp.windows where window.canBecomeMain {
-                Self.configureWindowTabbing(window)
+            MainActor.assumeIsolated {
+                for window in NSApp.windows where window.canBecomeMain {
+                    Self.configureWindowTabbing(window)
+                }
             }
         }
     }
