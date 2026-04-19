@@ -42,6 +42,10 @@ fn should_promote_ambiguous_to_wide(c: char) -> bool {
         0x00A0..=0x00FF => return false,
         // General Punctuation（Smart Quotes の " " ' '・dash 類・… 等）
         0x2010..=0x206F => return false,
+        // Box Drawing（─│┌┐└┘├┤┬┴┼╭╮╯╰═║╔╗╚╝ 等）— 罫線は 1 セル幅で描画する
+        0x2500..=0x257F => return false,
+        // Block Elements（▀▄█▌▐░▒▓ 等）— progress bar / spinner で 1 セル幅前提
+        0x2580..=0x259F => return false,
         _ => {}
     }
 
@@ -622,6 +626,70 @@ impl Drop for BridgePty {
                 }
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_promote_ambiguous_to_wide;
+
+    #[test]
+    fn box_drawing_must_not_be_promoted() {
+        // 罫線が wide 化されると右隣のセルが描画スキップされて「途切れた線」になる
+        let chars = [
+            '─', '│', '┌', '┐', '└', '┘', '├', '┤', '┬', '┴', '┼', '╭', '╮', '╯', '╰', '═',
+            '║', '╔', '╗', '╚', '╝', '╠', '╣', '╦', '╩', '╬',
+        ];
+        for c in chars {
+            assert!(
+                !should_promote_ambiguous_to_wide(c),
+                "{} (U+{:04X}) は wide 化されてはならない",
+                c,
+                c as u32
+            );
+        }
+    }
+
+    #[test]
+    fn block_elements_must_not_be_promoted() {
+        // progress bar や spinner で 1 セル幅前提
+        let chars = ['▀', '▄', '█', '▌', '▐', '░', '▒', '▓'];
+        for c in chars {
+            assert!(
+                !should_promote_ambiguous_to_wide(c),
+                "{} (U+{:04X}) は wide 化されてはならない",
+                c,
+                c as u32
+            );
+        }
+    }
+
+    #[test]
+    fn circled_numbers_still_promoted() {
+        // 既存挙動の維持: まる数字は wide 化（CJK フォント描画で 2 セル幅）
+        let chars = ['①', '②', '⑤', '⑩', '⑳'];
+        for c in chars {
+            assert!(
+                should_promote_ambiguous_to_wide(c),
+                "{} (U+{:04X}) は wide 化されるべき",
+                c,
+                c as u32
+            );
+        }
+    }
+
+    #[test]
+    fn smart_quotes_still_excluded() {
+        // 既存挙動の維持: General Punctuation は narrow
+        let chars = ['\u{2018}', '\u{2019}', '\u{201C}', '\u{201D}', '\u{2014}', '\u{2026}'];
+        for c in chars {
+            assert!(
+                !should_promote_ambiguous_to_wide(c),
+                "{} (U+{:04X}) は narrow（既存挙動）",
+                c,
+                c as u32
+            );
         }
     }
 }
