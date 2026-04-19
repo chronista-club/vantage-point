@@ -218,8 +218,7 @@ impl Handle {
         to: impl Into<String>,
         payload: &impl Serialize,
     ) -> Result<(), Error> {
-        let msg =
-            Message::new(&self.address, to, MessageKind::Notification).with_payload(payload);
+        let msg = Message::new(&self.address, to, MessageKind::Notification).with_payload(payload);
         self.send(msg).await
     }
 
@@ -405,8 +404,7 @@ impl Router {
 
         // Remote forward 用 bounded channel（cap=10000、メモリ無防備防止）+ worker task
         let remote_tx = remote.as_ref().map(|client| {
-            let (tx, rx) =
-                mpsc::channel::<(ResolvedAddress, Message)>(REMOTE_FORWARD_QUEUE_CAP);
+            let (tx, rx) = mpsc::channel::<(ResolvedAddress, Message)>(REMOTE_FORWARD_QUEUE_CAP);
             let shutdown_remote = shutdown.clone();
             tokio::spawn(Self::remote_forward_loop(
                 rx,
@@ -665,21 +663,13 @@ impl Router {
                     restored += 1;
                 }
                 Err(e) => {
-                    tracing::warn!(
-                        "Router: DISC デコード失敗 path={} err={}",
-                        disc.path(),
-                        e
-                    );
+                    tracing::warn!("Router: DISC デコード失敗 path={} err={}", disc.path(), e);
                 }
             }
         }
 
         if restored > 0 || expired > 0 {
-            tracing::info!(
-                "Router: 復元={} 件 / 期限切れ削除={} 件",
-                restored,
-                expired
-            );
+            tracing::info!("Router: 復元={} 件 / 期限切れ削除={} 件", restored, expired);
         }
         Ok(restored)
     }
@@ -865,8 +855,7 @@ mod tests {
 
         // 3つのメッセージを送信（異なる送信元）
         handle_a.send_to("b", &"from-a-1").await.unwrap();
-        let msg_other =
-            Message::new("other", "b", MessageKind::Direct).with_payload(&"from-other");
+        let msg_other = Message::new("other", "b", MessageKind::Direct).with_payload(&"from-other");
         handle_a.send(msg_other).await.unwrap();
         handle_a.send_to("b", &"from-a-2").await.unwrap();
 
@@ -1235,8 +1224,7 @@ mod tests {
         ws.extract("msgbox", &key, &expired_msg).await.unwrap();
 
         // 有効なメッセージも 1 件
-        let mut valid_msg =
-            Message::new("a", "target", MessageKind::Direct).with_payload(&"valid");
+        let mut valid_msg = Message::new("a", "target", MessageKind::Direct).with_payload(&"valid");
         valid_msg.persistent = true;
         valid_msg.expires_at = Some(now_ms() + 60_000); // 1 分後失効
         let valid_id = valid_msg.id.clone();
@@ -1320,8 +1308,8 @@ mod tests {
 
         // 期限切れ × 2
         for i in 0..2 {
-            let mut m = Message::new("a", "b", MessageKind::Direct)
-                .with_payload(&format!("expired-{}", i));
+            let mut m =
+                Message::new("a", "b", MessageKind::Direct).with_payload(&format!("expired-{}", i));
             m.persistent = true;
             m.expires_at = Some(now_ms().saturating_sub(1000));
             ws.extract("msgbox", &format!("msg/{}", m.id), &m)

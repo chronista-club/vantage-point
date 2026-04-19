@@ -83,11 +83,7 @@ pub async fn register_actors_to_world(
     let mut failed = Vec::new();
     for actor in actors {
         if let Err(e) = register_actor_to_world(world_port, project_name, self_port, actor).await {
-            tracing::warn!(
-                "Router: register '{}' to TheWorld failed: {}",
-                actor,
-                e
-            );
+            tracing::warn!("Router: register '{}' to TheWorld failed: {}", actor, e);
             failed.push(actor.clone());
         }
     }

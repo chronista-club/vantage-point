@@ -604,7 +604,7 @@ pub async fn run_world(port: u16) -> Result<()> {
         topic_router,
         canvas_senders: Arc::new(tokio::sync::Mutex::new(Vec::new())),
         started_at: chrono::Utc::now().to_rfc3339(),
-        mcp_msgbox: None,  // World モードでは MCP Msgbox 不要
+        mcp_msgbox: None,   // World モードでは MCP Msgbox 不要
         vpdb: vpdb.clone(), // World モードでも DB 参照あり
         // TheWorld もポート別ディレクトリで分離
         whitesnake: crate::capability::Whitesnake::file_backed_for_port(port),
@@ -686,10 +686,7 @@ pub async fn run_world(port: u16) -> Result<()> {
             "/api/world/msgbox/unregister-process",
             post(world::world_msgbox_unregister_process),
         )
-        .route(
-            "/api/world/msgbox/lookup",
-            get(world::world_msgbox_lookup),
-        )
+        .route("/api/world/msgbox/lookup", get(world::world_msgbox_lookup))
         .route("/api/world/msgbox/list", get(world::world_msgbox_list))
         // Update API routes (vp CLI)
         .route("/api/update/check", get(update::update_check))

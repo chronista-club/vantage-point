@@ -17,10 +17,10 @@ pub mod agent_capability;
 pub mod core;
 pub mod eventbus;
 pub mod evolution;
+pub mod midi_capability;
 pub mod msgbox;
 pub mod msgbox_registry;
 pub mod msgbox_remote;
-pub mod midi_capability;
 pub mod params;
 pub mod process_manager_capability;
 pub mod protocol_capability;
@@ -31,9 +31,9 @@ pub mod whitesnake;
 pub use agent_capability::AgentCapability;
 pub use core::{CapabilityContext, CapabilityEvent, CapabilityInfo, CapabilityState};
 pub use eventbus::EventBus;
-pub use msgbox::{Handle, Message, Router as MsgboxRouter, MessageKind};
-pub use msgbox_registry::{ActorEntry, Registry as MsgboxRegistry};
 pub use midi_capability::MidiCapability;
+pub use msgbox::{Handle, Message, MessageKind, Router as MsgboxRouter};
+pub use msgbox_registry::{ActorEntry, Registry as MsgboxRegistry};
 pub use process_manager_capability::{
     ProcessManagerCapability, ProcessStatus, ProjectInfo, RunningProcess, normalize_path_key,
 };

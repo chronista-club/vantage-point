@@ -102,11 +102,7 @@ impl Registry {
     }
 
     /// project_name から actor を lookup
-    pub async fn lookup_by_project(
-        &self,
-        actor: &str,
-        project_name: &str,
-    ) -> Option<ActorEntry> {
+    pub async fn lookup_by_project(&self, actor: &str, project_name: &str) -> Option<ActorEntry> {
         self.entries
             .read()
             .await

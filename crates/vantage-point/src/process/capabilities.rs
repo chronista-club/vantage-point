@@ -6,8 +6,8 @@
 use crate::capability::core::Capability;
 use crate::capability::msgbox_remote::RemoteRoutingClient;
 use crate::capability::{
-    AgentCapability, CapabilityContext, CapabilityRegistry, EventBus, MsgboxRouter,
-    MidiCapability, ProtocolCapability, Whitesnake,
+    AgentCapability, CapabilityContext, CapabilityRegistry, EventBus, MidiCapability, MsgboxRouter,
+    ProtocolCapability, Whitesnake,
 };
 use crate::midi::MidiConfig;
 use std::sync::Arc;

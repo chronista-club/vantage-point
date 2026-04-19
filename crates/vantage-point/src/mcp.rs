@@ -2023,9 +2023,7 @@ if bestId > 0 { print(bestId) }
         description = "List all registered Msgbox addresses in the current Process. Shows which capabilities and agents have active msgboxes."
     )]
     async fn msg_peers(&self) -> Result<CallToolResult, McpError> {
-        let resp = self
-            .quic_call("msg_peers", serde_json::json!({}))
-            .await?;
+        let resp = self.quic_call("msg_peers", serde_json::json!({})).await?;
 
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
             serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "[]".to_string()),
