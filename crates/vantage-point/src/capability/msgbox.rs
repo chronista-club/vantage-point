@@ -39,12 +39,12 @@ fn now_ms() -> u64 {
 }
 
 // =============================================================================
-// MsgboxMessage
+// Message
 // =============================================================================
 
 /// Msgbox で送受信されるメッセージ
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MsgboxMessage {
+pub struct Message {
     /// 送信元のアドレス
     pub from: String,
     /// 宛先のアドレス
@@ -70,7 +70,7 @@ pub struct MsgboxMessage {
     pub expires_at: Option<u64>,
     /// 明示 ack モード（true の場合、recv での自動 ack を無効化）
     ///
-    /// 受信側が `MsgboxHandle::ack(id)` を明示呼び出しするまで DISC を保持。
+    /// 受信側が `Handle::ack(id)` を明示呼び出しするまで DISC を保持。
     /// 受信後の処理中クラッシュで再配信したいパターン向け。
     #[serde(default)]
     pub manual_ack: bool,
@@ -90,7 +90,7 @@ pub enum MessageKind {
     Response,
 }
 
-impl MsgboxMessage {
+impl Message {
     /// 新しいメッセージを作成
     pub fn new(from: impl Into<String>, to: impl Into<String>, kind: MessageKind) -> Self {
         Self {
@@ -121,7 +121,7 @@ impl MsgboxMessage {
 
     /// 永続化フラグを設定（Process 再起動後も生存）
     ///
-    /// MsgboxRouter が Whitesnake で構築されている場合のみ実効。
+    /// Router が Whitesnake で構築されている場合のみ実効。
     /// `with_persistence()` で作られた Router 以外では no-op（in-memory 配信）。
     pub fn persistent(mut self) -> Self {
         self.persistent = true;
@@ -142,7 +142,7 @@ impl MsgboxMessage {
 
     /// 明示 ack モードを有効化（recv での自動 ack を無効化）
     ///
-    /// 受信側が `MsgboxHandle::ack(id)` を呼ぶまで DISC を保持。
+    /// 受信側が `Handle::ack(id)` を呼ぶまで DISC を保持。
     /// 受信後の処理中にクラッシュしても、Process 再起動時に再配信される。
     pub fn manual_ack(mut self) -> Self {
         self.manual_ack = true;
@@ -164,7 +164,7 @@ impl MsgboxMessage {
 }
 
 // =============================================================================
-// MsgboxHandle — 各 Capability が持つ送受信ハンドル
+// Handle — 各 Capability が持つ送受信ハンドル
 // =============================================================================
 
 /// 個別の Msgbox ハンドル
@@ -175,31 +175,31 @@ impl MsgboxMessage {
 /// Selective Receive: `recv_matching()` でフィルタ不一致メッセージを
 /// 内部 stash に退避し、次回の recv で再確認する（Erlang 方式）。
 #[derive(Debug, Clone)]
-pub struct MsgboxHandle {
+pub struct Handle {
     /// 自身のアドレス
     address: String,
-    /// MsgboxRouter への送信チャンネル（他者宛メッセージを Router に渡す）
-    router_tx: mpsc::Sender<MsgboxMessage>,
+    /// Router への送信チャンネル（他者宛メッセージを Router に渡す）
+    router_tx: mpsc::Sender<Message>,
     /// 自分宛メッセージの受信チャンネル
-    rx: Arc<tokio::sync::Mutex<mpsc::Receiver<MsgboxMessage>>>,
+    rx: Arc<tokio::sync::Mutex<mpsc::Receiver<Message>>>,
     /// Selective Receive 用のメッセージ退避バッファ
-    stash: Arc<tokio::sync::Mutex<std::collections::VecDeque<MsgboxMessage>>>,
+    stash: Arc<tokio::sync::Mutex<std::collections::VecDeque<Message>>>,
     /// 永続化バックエンド（persistent メッセージ受信時に ack = DISC 削除）
     whitesnake: Option<Whitesnake>,
 }
 
-impl MsgboxHandle {
+impl Handle {
     /// 自身のアドレスを取得
     pub fn address(&self) -> &str {
         &self.address
     }
 
     /// メッセージを送信（Router 経由で宛先に配信）
-    pub async fn send(&self, msg: MsgboxMessage) -> Result<(), MsgboxError> {
+    pub async fn send(&self, msg: Message) -> Result<(), Error> {
         self.router_tx
             .send(msg)
             .await
-            .map_err(|_| MsgboxError::RouterClosed)
+            .map_err(|_| Error::RouterClosed)
     }
 
     /// ダイレクトメッセージを簡易送信
@@ -207,8 +207,8 @@ impl MsgboxHandle {
         &self,
         to: impl Into<String>,
         payload: &impl Serialize,
-    ) -> Result<(), MsgboxError> {
-        let msg = MsgboxMessage::new(&self.address, to, MessageKind::Direct).with_payload(payload);
+    ) -> Result<(), Error> {
+        let msg = Message::new(&self.address, to, MessageKind::Direct).with_payload(payload);
         self.send(msg).await
     }
 
@@ -217,9 +217,9 @@ impl MsgboxHandle {
         &self,
         to: impl Into<String>,
         payload: &impl Serialize,
-    ) -> Result<(), MsgboxError> {
+    ) -> Result<(), Error> {
         let msg =
-            MsgboxMessage::new(&self.address, to, MessageKind::Notification).with_payload(payload);
+            Message::new(&self.address, to, MessageKind::Notification).with_payload(payload);
         self.send(msg).await
     }
 
@@ -227,7 +227,7 @@ impl MsgboxHandle {
     ///
     /// stash にメッセージがあればそちらを先に返す。
     /// persistent メッセージの場合、受信完了時に永続ストアから DISC を削除（ack）。
-    pub async fn recv(&self) -> Option<MsgboxMessage> {
+    pub async fn recv(&self) -> Option<Message> {
         // stash を先に確認
         let msg = {
             let mut stash = self.stash.lock().await;
@@ -246,9 +246,9 @@ impl MsgboxHandle {
     /// 条件に合わないメッセージは stash に退避し、次回の recv/recv_matching で再確認。
     /// メッセージロスが起きない安全な設計。
     /// persistent メッセージの場合、受信完了時に永続ストアから DISC を削除（ack）。
-    pub async fn recv_matching<F>(&self, predicate: F) -> Option<MsgboxMessage>
+    pub async fn recv_matching<F>(&self, predicate: F) -> Option<Message>
     where
-        F: Fn(&MsgboxMessage) -> bool,
+        F: Fn(&Message) -> bool,
     {
         // まず stash から条件に合うものを探す
         {
@@ -288,7 +288,7 @@ impl MsgboxHandle {
     ///
     /// `manual_ack: true` のメッセージは自動 ack せず、受信側が `ack()` を
     /// 明示呼び出しするまで DISC を保持する。
-    async fn ack_if_persistent(&self, msg: Option<&MsgboxMessage>) {
+    async fn ack_if_persistent(&self, msg: Option<&Message>) {
         let Some(msg) = msg else { return };
         if !msg.persistent || msg.manual_ack {
             return;
@@ -314,7 +314,7 @@ impl MsgboxHandle {
 }
 
 // =============================================================================
-// MsgboxRouter — メッセージルーティング
+// Router — メッセージルーティング
 // =============================================================================
 
 /// メッセージルーター
@@ -324,11 +324,11 @@ impl MsgboxHandle {
 ///
 /// Whitesnake を注入した場合、`persistent: true` のメッセージを SurrealDB/ファイルに保存し、
 /// Process 再起動後に `restore_pending()` で未配信メッセージを再投入可能。
-pub struct MsgboxRouter {
+pub struct Router {
     /// アドレス → 送信チャンネルのマッピング
-    boxes: Arc<RwLock<HashMap<String, mpsc::Sender<MsgboxMessage>>>>,
+    boxes: Arc<RwLock<HashMap<String, mpsc::Sender<Message>>>>,
     /// Router への送信チャンネル
-    router_tx: mpsc::Sender<MsgboxMessage>,
+    router_tx: mpsc::Sender<Message>,
     /// ルーティングループの停止トークン
     shutdown: tokio_util::sync::CancellationToken,
     /// 永続化バックエンド（persistent メッセージ対応）
@@ -338,13 +338,13 @@ pub struct MsgboxRouter {
     remote: Option<RemoteRoutingClient>,
 }
 
-impl MsgboxRouter {
-    /// 新しい MsgboxRouter を作成し、ルーティングループを開始（永続化・remote なし）
+impl Router {
+    /// 新しい Router を作成し、ルーティングループを開始（永続化・remote なし）
     pub fn new() -> Self {
         Self::new_inner(None, None)
     }
 
-    /// 永続化バックエンド付きで MsgboxRouter を作成
+    /// 永続化バックエンド付きで Router を作成
     ///
     /// `persistent: true` のメッセージは Whitesnake に保存され、
     /// Process 再起動後に `restore_pending()` で再投入できる。
@@ -367,27 +367,27 @@ impl MsgboxRouter {
 
     /// Remote forward 専用 worker task
     ///
-    /// routing_loop から `(ResolvedAddress, MsgboxMessage)` を受け取り、
+    /// routing_loop から `(ResolvedAddress, Message)` を受け取り、
     /// `RemoteRoutingClient::forward` を呼ぶ。
     /// unbounded で受けて routing_loop 側を絶対ブロックさせない。
     /// エラー時は warn ログのみ（persistent message は送信側で永続化済みなので
     /// 再起動で復元される設計）。
     async fn remote_forward_loop(
-        mut rx: mpsc::Receiver<(ResolvedAddress, MsgboxMessage)>,
+        mut rx: mpsc::Receiver<(ResolvedAddress, Message)>,
         client: RemoteRoutingClient,
         shutdown: tokio_util::sync::CancellationToken,
     ) {
         loop {
             tokio::select! {
                 _ = shutdown.cancelled() => {
-                    tracing::debug!("MsgboxRouter: remote forward loop 終了");
+                    tracing::debug!("Router: remote forward loop 終了");
                     break;
                 }
                 item = rx.recv() => {
                     let Some((resolved, msg)) = item else { break };
                     if let Err(e) = client.forward(&resolved, msg).await {
                         tracing::warn!(
-                            "MsgboxRouter: remote forward 失敗 to='{}' err={}",
+                            "Router: remote forward 失敗 to='{}' err={}",
                             resolved.actor_or_unknown(),
                             e
                         );
@@ -398,15 +398,15 @@ impl MsgboxRouter {
     }
 
     fn new_inner(whitesnake: Option<Whitesnake>, remote: Option<RemoteRoutingClient>) -> Self {
-        let (router_tx, router_rx) = mpsc::channel::<MsgboxMessage>(1024);
-        let boxes: Arc<RwLock<HashMap<String, mpsc::Sender<MsgboxMessage>>>> =
+        let (router_tx, router_rx) = mpsc::channel::<Message>(1024);
+        let boxes: Arc<RwLock<HashMap<String, mpsc::Sender<Message>>>> =
             Arc::new(RwLock::new(HashMap::new()));
         let shutdown = tokio_util::sync::CancellationToken::new();
 
         // Remote forward 用 bounded channel（cap=10000、メモリ無防備防止）+ worker task
         let remote_tx = remote.as_ref().map(|client| {
             let (tx, rx) =
-                mpsc::channel::<(ResolvedAddress, MsgboxMessage)>(REMOTE_FORWARD_QUEUE_CAP);
+                mpsc::channel::<(ResolvedAddress, Message)>(REMOTE_FORWARD_QUEUE_CAP);
             let shutdown_remote = shutdown.clone();
             tokio::spawn(Self::remote_forward_loop(
                 rx,
@@ -451,17 +451,17 @@ impl MsgboxRouter {
     /// HTTP `/api/msgbox/remote_deliver` ハンドラから呼ぶ。
     /// `routing_loop` を介さないため remote forward の二重ループを起こさない。
     /// 受信側で permanent 化済み（送信側 Process が永続化済み）なのでここでは ack 不要。
-    pub async fn deliver_local(&self, msg: MsgboxMessage) -> Result<(), MsgboxError> {
+    pub async fn deliver_local(&self, msg: Message) -> Result<(), Error> {
         let boxes = self.boxes.read().await;
         let Some(tx) = boxes.get(&msg.to) else {
             tracing::debug!(
-                "MsgboxRouter::deliver_local: 宛先 '{}' が見つからない（from: {}）",
+                "Router::deliver_local: 宛先 '{}' が見つからない（from: {}）",
                 msg.to,
                 msg.from
             );
-            return Err(MsgboxError::RouterClosed); // box not found
+            return Err(Error::RouterClosed); // box not found
         };
-        tx.try_send(msg).map_err(|_| MsgboxError::RouterClosed)
+        tx.try_send(msg).map_err(|_| Error::RouterClosed)
     }
 
     /// GC ループ — 期限切れ persistent メッセージを定期的にクリーンアップ
@@ -475,7 +475,7 @@ impl MsgboxRouter {
         loop {
             tokio::select! {
                 _ = shutdown.cancelled() => {
-                    tracing::debug!("MsgboxRouter: GC ループ終了");
+                    tracing::debug!("Router: GC ループ終了");
                     break;
                 }
                 _ = ticker.tick() => {
@@ -496,7 +496,7 @@ impl MsgboxRouter {
             .await?;
         let mut removed = 0;
         for disc in discs {
-            if let Ok(msg) = disc.extract::<MsgboxMessage>()
+            if let Ok(msg) = disc.extract::<Message>()
                 && msg.is_expired()
             {
                 let key = format!("{}{}", MAILBOX_KEY_PREFIX, msg.id);
@@ -513,17 +513,17 @@ impl MsgboxRouter {
     /// persistent メッセージは配信前に Whitesnake に保存。
     /// 受信側の recv() で ack（DISC 削除）される。
     async fn routing_loop(
-        mut router_rx: mpsc::Receiver<MsgboxMessage>,
-        boxes: Arc<RwLock<HashMap<String, mpsc::Sender<MsgboxMessage>>>>,
+        mut router_rx: mpsc::Receiver<Message>,
+        boxes: Arc<RwLock<HashMap<String, mpsc::Sender<Message>>>>,
         shutdown: tokio_util::sync::CancellationToken,
         whitesnake: Option<Whitesnake>,
         remote: Option<RemoteRoutingClient>,
-        remote_tx: Option<mpsc::Sender<(ResolvedAddress, MsgboxMessage)>>,
+        remote_tx: Option<mpsc::Sender<(ResolvedAddress, Message)>>,
     ) {
         loop {
             tokio::select! {
                 _ = shutdown.cancelled() => {
-                    tracing::info!("MsgboxRouter: ルーティングループ終了");
+                    tracing::info!("Router: ルーティングループ終了");
                     break;
                 }
                 msg = router_rx.recv() => {
@@ -538,7 +538,7 @@ impl MsgboxRouter {
                                 let key = format!("{}{}", MAILBOX_KEY_PREFIX, msg.id);
                                 if let Err(e) = ws.extract(MAILBOX_NAMESPACE, &key, &msg).await {
                                     tracing::warn!(
-                                        "MsgboxRouter: persistent 保存失敗 id={} err={}",
+                                        "Router: persistent 保存失敗 id={} err={}",
                                         msg.id,
                                         e
                                     );
@@ -553,7 +553,7 @@ impl MsgboxRouter {
                                 Ok(r) => r,
                                 Err(e) => {
                                     tracing::warn!(
-                                        "MsgboxRouter: address parse error to='{}' err={}",
+                                        "Router: address parse error to='{}' err={}",
                                         msg.to,
                                         e
                                     );
@@ -574,7 +574,7 @@ impl MsgboxRouter {
                                     && let Err(e) = tx.try_send((resolved.clone(), msg.clone()))
                                 {
                                     tracing::warn!(
-                                        "MsgboxRouter: remote forward queue 満杯 / 閉鎖: {} (msg_id={})",
+                                        "Router: remote forward queue 満杯 / 閉鎖: {} (msg_id={})",
                                         e,
                                         msg.id
                                     );
@@ -593,21 +593,21 @@ impl MsgboxRouter {
                             if let Some(tx) = boxes.get(&local_actor) {
                                 if let Err(e) = tx.try_send(msg.clone()) {
                                     tracing::warn!(
-                                        "MsgboxRouter: {} 宛の配信失敗: {}",
+                                        "Router: {} 宛の配信失敗: {}",
                                         local_actor,
                                         e
                                     );
                                 }
                             } else {
                                 tracing::debug!(
-                                    "MsgboxRouter: 宛先 '{}' が見つからない（from: {}）",
+                                    "Router: 宛先 '{}' が見つからない（from: {}）",
                                     msg.to,
                                     msg.from
                                 );
                             }
                         }
                         None => {
-                            tracing::info!("MsgboxRouter: router_tx がドロップされたため終了");
+                            tracing::info!("Router: router_tx がドロップされたため終了");
                             break;
                         }
                     }
@@ -617,15 +617,15 @@ impl MsgboxRouter {
     }
 
     /// 新しい Msgbox を登録し、ハンドルを返す
-    pub async fn register(&self, address: impl Into<String>) -> MsgboxHandle {
+    pub async fn register(&self, address: impl Into<String>) -> Handle {
         let address = address.into();
-        let (tx, rx) = mpsc::channel::<MsgboxMessage>(256);
+        let (tx, rx) = mpsc::channel::<Message>(256);
 
         self.boxes.write().await.insert(address.clone(), tx);
 
-        tracing::debug!("MsgboxRouter: '{}' を登録", address);
+        tracing::debug!("Router: '{}' を登録", address);
 
-        MsgboxHandle {
+        Handle {
             address,
             router_tx: self.router_tx.clone(),
             rx: Arc::new(tokio::sync::Mutex::new(rx)),
@@ -649,7 +649,7 @@ impl MsgboxRouter {
         let mut restored = 0;
         let mut expired = 0;
         for disc in discs {
-            match disc.extract::<MsgboxMessage>() {
+            match disc.extract::<Message>() {
                 Ok(msg) => {
                     // 期限切れは再投入せず即削除（GC を起動時に兼ねる）
                     if msg.is_expired() {
@@ -659,14 +659,14 @@ impl MsgboxRouter {
                         continue;
                     }
                     if let Err(e) = self.router_tx.send(msg).await {
-                        tracing::warn!("MsgboxRouter: 復元したメッセージの再投入失敗: {}", e);
+                        tracing::warn!("Router: 復元したメッセージの再投入失敗: {}", e);
                         break;
                     }
                     restored += 1;
                 }
                 Err(e) => {
                     tracing::warn!(
-                        "MsgboxRouter: DISC デコード失敗 path={} err={}",
+                        "Router: DISC デコード失敗 path={} err={}",
                         disc.path(),
                         e
                     );
@@ -676,7 +676,7 @@ impl MsgboxRouter {
 
         if restored > 0 || expired > 0 {
             tracing::info!(
-                "MsgboxRouter: 復元={} 件 / 期限切れ削除={} 件",
+                "Router: 復元={} 件 / 期限切れ削除={} 件",
                 restored,
                 expired
             );
@@ -687,7 +687,7 @@ impl MsgboxRouter {
     /// Msgbox を登録解除
     pub async fn unregister(&self, address: &str) {
         if self.boxes.write().await.remove(address).is_some() {
-            tracing::debug!("MsgboxRouter: '{}' を登録解除", address);
+            tracing::debug!("Router: '{}' を登録解除", address);
         }
     }
 
@@ -707,19 +707,19 @@ impl MsgboxRouter {
     }
 }
 
-impl Default for MsgboxRouter {
+impl Default for Router {
     fn default() -> Self {
         Self::new()
     }
 }
 
 // =============================================================================
-// MsgboxError
+// Error
 // =============================================================================
 
 /// Msgbox 操作のエラー
 #[derive(Debug, thiserror::Error)]
-pub enum MsgboxError {
+pub enum Error {
     /// Router が閉じている
     #[error("msgbox router is closed")]
     RouterClosed,
@@ -735,7 +735,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_register_and_send() {
-        let router = MsgboxRouter::new();
+        let router = Router::new();
 
         let handle_a = router.register("agent-a").await;
         let handle_b = router.register("agent-b").await;
@@ -756,7 +756,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_notification() {
-        let router = MsgboxRouter::new();
+        let router = Router::new();
 
         let handle_hd = router.register("heavens-door").await;
         let handle_pp = router.register("paisley-park").await;
@@ -779,13 +779,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_bidirectional() {
-        let router = MsgboxRouter::new();
+        let router = Router::new();
 
         let handle_a = router.register("lead").await;
         let handle_b = router.register("worker-1").await;
 
         // worker → lead: 質問
-        let question = MsgboxMessage::new("worker-1", "lead", MessageKind::Request)
+        let question = Message::new("worker-1", "lead", MessageKind::Request)
             .with_payload(&serde_json::json!({"question": "DB スキーマどうする？"}));
         let question_id = question.id.clone();
         handle_b.send(question).await.unwrap();
@@ -795,7 +795,7 @@ mod tests {
         assert_eq!(received.kind, MessageKind::Request);
 
         // lead → worker: 回答
-        let answer = MsgboxMessage::new("lead", "worker-1", MessageKind::Response)
+        let answer = Message::new("lead", "worker-1", MessageKind::Response)
             .with_payload(&serde_json::json!({"answer": "PostgreSQL で"}))
             .with_reply_to(question_id.clone());
         handle_a.send(answer).await.unwrap();
@@ -810,7 +810,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_unregister() {
-        let router = MsgboxRouter::new();
+        let router = Router::new();
 
         let _handle = router.register("temp-agent").await;
         assert_eq!(router.count().await, 1);
@@ -823,7 +823,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_addresses() {
-        let router = MsgboxRouter::new();
+        let router = Router::new();
 
         let _a = router.register("hd").await;
         let _b = router.register("pp").await;
@@ -838,7 +838,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_send_to_unknown_address() {
-        let router = MsgboxRouter::new();
+        let router = Router::new();
 
         let handle = router.register("sender").await;
 
@@ -851,14 +851,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_message_id_unique() {
-        let msg1 = MsgboxMessage::new("a", "b", MessageKind::Direct);
-        let msg2 = MsgboxMessage::new("a", "b", MessageKind::Direct);
+        let msg1 = Message::new("a", "b", MessageKind::Direct);
+        let msg2 = Message::new("a", "b", MessageKind::Direct);
         assert_ne!(msg1.id, msg2.id);
     }
 
     #[tokio::test]
     async fn test_selective_receive_no_message_loss() {
-        let router = MsgboxRouter::new();
+        let router = Router::new();
 
         let handle_a = router.register("a").await;
         let handle_b = router.register("b").await;
@@ -866,7 +866,7 @@ mod tests {
         // 3つのメッセージを送信（異なる送信元）
         handle_a.send_to("b", &"from-a-1").await.unwrap();
         let msg_other =
-            MsgboxMessage::new("other", "b", MessageKind::Direct).with_payload(&"from-other");
+            Message::new("other", "b", MessageKind::Direct).with_payload(&"from-other");
         handle_a.send(msg_other).await.unwrap();
         handle_a.send_to("b", &"from-a-2").await.unwrap();
 
@@ -888,7 +888,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_recv_checks_stash_first() {
-        let router = MsgboxRouter::new();
+        let router = Router::new();
 
         let handle = router.register("target").await;
         let sender = router.register("sender").await;
@@ -913,7 +913,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_unregister_then_send_to_removed_address() {
-        let router = MsgboxRouter::new();
+        let router = Router::new();
 
         let handle_a = router.register("a").await;
         let _handle_b = router.register("b").await;
@@ -931,7 +931,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_unregister_nonexistent_no_panic() {
-        let router = MsgboxRouter::new();
+        let router = Router::new();
         // 存在しないアドレスの解除でパニックしない
         router.unregister("ghost").await;
         assert_eq!(router.count().await, 0);
@@ -940,7 +940,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_duplicate_register_overwrites() {
-        let router = MsgboxRouter::new();
+        let router = Router::new();
 
         let _handle_old = router.register("dup").await;
         let handle_new = router.register("dup").await;
@@ -962,7 +962,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_shutdown_then_send_returns_error() {
-        let router = MsgboxRouter::new();
+        let router = Router::new();
         let handle = router.register("agent").await;
 
         router.shutdown();
@@ -979,7 +979,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_address() {
-        let router = MsgboxRouter::new();
+        let router = Router::new();
         let handle = router.register("my-agent").await;
         assert_eq!(handle.address(), "my-agent");
         router.shutdown();
@@ -987,7 +987,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_payload_as_type_mismatch_returns_none() {
-        let msg = MsgboxMessage::new("a", "b", MessageKind::Direct).with_payload(&"hello");
+        let msg = Message::new("a", "b", MessageKind::Direct).with_payload(&"hello");
         // 文字列ペイロードを数値として取得 → None
         let result: Option<i32> = msg.payload_as();
         assert!(result.is_none());
@@ -995,7 +995,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_payload_as_null_returns_none() {
-        let msg = MsgboxMessage::new("a", "b", MessageKind::Direct);
+        let msg = Message::new("a", "b", MessageKind::Direct);
         // ペイロード未設定（Null）→ None
         let result: Option<String> = msg.payload_as();
         assert!(result.is_none());
@@ -1003,7 +1003,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fan_in_multiple_senders() {
-        let router = MsgboxRouter::new();
+        let router = Router::new();
 
         let receiver = router.register("receiver").await;
         let mut senders = Vec::new();
@@ -1041,11 +1041,11 @@ mod tests {
 
         // --- 第1ラウンド: persistent 送信 → recv 前に Router 消失 ---
         {
-            let router = MsgboxRouter::with_persistence(ws.clone());
+            let router = Router::with_persistence(ws.clone());
             let sender = router.register("sender").await;
             let _target = router.register("target").await;
 
-            let msg = MsgboxMessage::new("sender", "target", MessageKind::Request)
+            let msg = Message::new("sender", "target", MessageKind::Request)
                 .with_payload(&"persistent-payload")
                 .persistent();
             sender.send(msg).await.unwrap();
@@ -1065,7 +1065,7 @@ mod tests {
         );
 
         // --- 第2ラウンド: 新しい Router で restore_pending → recv ---
-        let router2 = MsgboxRouter::with_persistence(ws.clone());
+        let router2 = Router::with_persistence(ws.clone());
         let target2 = router2.register("target").await;
 
         let restored = router2.restore_pending().await.unwrap();
@@ -1086,7 +1086,7 @@ mod tests {
     #[tokio::test]
     async fn test_ephemeral_message_not_persisted() {
         let ws = Whitesnake::in_memory();
-        let router = MsgboxRouter::with_persistence(ws.clone());
+        let router = Router::with_persistence(ws.clone());
         let sender = router.register("sender").await;
         let target = router.register("target").await;
 
@@ -1107,11 +1107,11 @@ mod tests {
     #[tokio::test]
     async fn test_persistent_without_whitesnake_is_noop() {
         // Whitesnake なしの Router では persistent フラグは無視される
-        let router = MsgboxRouter::new();
+        let router = Router::new();
         let sender = router.register("sender").await;
         let target = router.register("target").await;
 
-        let msg = MsgboxMessage::new("sender", "target", MessageKind::Direct)
+        let msg = Message::new("sender", "target", MessageKind::Direct)
             .with_payload(&"would-be-persistent")
             .persistent();
         sender.send(msg).await.unwrap();
@@ -1129,7 +1129,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_restore_pending_without_whitesnake_returns_zero() {
-        let router = MsgboxRouter::new();
+        let router = Router::new();
         let restored = router.restore_pending().await.unwrap();
         assert_eq!(restored, 0);
         router.shutdown();
@@ -1137,10 +1137,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_persistent_builder_sets_flag() {
-        let msg = MsgboxMessage::new("a", "b", MessageKind::Direct).persistent();
+        let msg = Message::new("a", "b", MessageKind::Direct).persistent();
         assert!(msg.persistent);
 
-        let msg2 = MsgboxMessage::new("a", "b", MessageKind::Direct);
+        let msg2 = Message::new("a", "b", MessageKind::Direct);
         assert!(!msg2.persistent);
     }
 
@@ -1156,7 +1156,7 @@ mod tests {
             "reply_to": null,
             "id": "test-id"
         }"#;
-        let msg: MsgboxMessage = serde_json::from_str(json).unwrap();
+        let msg: Message = serde_json::from_str(json).unwrap();
         assert!(!msg.persistent, "persistent が無い JSON はデフォルト false");
         assert!(msg.expires_at.is_none(), "expires_at デフォルト None");
         assert!(!msg.manual_ack, "manual_ack デフォルト false");
@@ -1169,7 +1169,7 @@ mod tests {
     #[tokio::test]
     async fn test_ttl_builder_sets_expires_at() {
         let before = now_ms();
-        let msg = MsgboxMessage::new("a", "b", MessageKind::Direct).with_ttl_secs(10);
+        let msg = Message::new("a", "b", MessageKind::Direct).with_ttl_secs(10);
         let after = now_ms();
 
         let exp = msg.expires_at.expect("expires_at should be set");
@@ -1180,26 +1180,26 @@ mod tests {
 
     #[tokio::test]
     async fn test_is_expired_true_when_past() {
-        let mut msg = MsgboxMessage::new("a", "b", MessageKind::Direct);
+        let mut msg = Message::new("a", "b", MessageKind::Direct);
         msg.expires_at = Some(now_ms().saturating_sub(1000)); // 1 秒前に失効
         assert!(msg.is_expired());
     }
 
     #[tokio::test]
     async fn test_is_expired_false_when_no_expiry() {
-        let msg = MsgboxMessage::new("a", "b", MessageKind::Direct);
+        let msg = Message::new("a", "b", MessageKind::Direct);
         assert!(!msg.is_expired(), "expires_at=None は is_expired=false");
     }
 
     #[tokio::test]
     async fn test_default_ttl_applied_on_persist() {
         let ws = Whitesnake::in_memory();
-        let router = MsgboxRouter::with_persistence(ws.clone());
+        let router = Router::with_persistence(ws.clone());
         let sender = router.register("sender").await;
         let _target = router.register("target").await;
 
         // TTL を明示せず persistent 送信
-        let msg = MsgboxMessage::new("sender", "target", MessageKind::Direct)
+        let msg = Message::new("sender", "target", MessageKind::Direct)
             .with_payload(&"no-ttl")
             .persistent();
         sender.send(msg).await.unwrap();
@@ -1209,7 +1209,7 @@ mod tests {
 
         let discs = ws.list_by_prefix("msgbox", "msg/").await.unwrap();
         assert_eq!(discs.len(), 1);
-        let stored: MsgboxMessage = discs[0].extract().unwrap();
+        let stored: Message = discs[0].extract().unwrap();
         assert!(
             stored.expires_at.is_some(),
             "デフォルト TTL が自動適用される"
@@ -1228,7 +1228,7 @@ mod tests {
 
         // 事前に期限切れメッセージを DISC に直接書き込み
         let mut expired_msg =
-            MsgboxMessage::new("a", "target", MessageKind::Direct).with_payload(&"expired");
+            Message::new("a", "target", MessageKind::Direct).with_payload(&"expired");
         expired_msg.persistent = true;
         expired_msg.expires_at = Some(now_ms().saturating_sub(1000)); // 1 秒前に失効
         let key = format!("msg/{}", expired_msg.id);
@@ -1236,7 +1236,7 @@ mod tests {
 
         // 有効なメッセージも 1 件
         let mut valid_msg =
-            MsgboxMessage::new("a", "target", MessageKind::Direct).with_payload(&"valid");
+            Message::new("a", "target", MessageKind::Direct).with_payload(&"valid");
         valid_msg.persistent = true;
         valid_msg.expires_at = Some(now_ms() + 60_000); // 1 分後失効
         let valid_id = valid_msg.id.clone();
@@ -1244,7 +1244,7 @@ mod tests {
         ws.extract("msgbox", &key2, &valid_msg).await.unwrap();
 
         // 復元: 期限切れは捨て、有効な 1 件だけ再投入
-        let router = MsgboxRouter::with_persistence(ws.clone());
+        let router = Router::with_persistence(ws.clone());
         let target = router.register("target").await;
 
         let restored = router.restore_pending().await.unwrap();
@@ -1265,11 +1265,11 @@ mod tests {
     #[tokio::test]
     async fn test_manual_ack_keeps_disc_until_explicit_ack() {
         let ws = Whitesnake::in_memory();
-        let router = MsgboxRouter::with_persistence(ws.clone());
+        let router = Router::with_persistence(ws.clone());
         let sender = router.register("sender").await;
         let target = router.register("target").await;
 
-        let msg = MsgboxMessage::new("sender", "target", MessageKind::Request)
+        let msg = Message::new("sender", "target", MessageKind::Request)
             .with_payload(&"needs-ack")
             .persistent()
             .manual_ack();
@@ -1296,11 +1296,11 @@ mod tests {
     async fn test_auto_ack_still_works_by_default() {
         // 既存の persistent（manual_ack なし）は従来通り auto-ack
         let ws = Whitesnake::in_memory();
-        let router = MsgboxRouter::with_persistence(ws.clone());
+        let router = Router::with_persistence(ws.clone());
         let sender = router.register("sender").await;
         let target = router.register("target").await;
 
-        let msg = MsgboxMessage::new("sender", "target", MessageKind::Direct)
+        let msg = Message::new("sender", "target", MessageKind::Direct)
             .with_payload(&"auto")
             .persistent();
         sender.send(msg).await.unwrap();
@@ -1320,7 +1320,7 @@ mod tests {
 
         // 期限切れ × 2
         for i in 0..2 {
-            let mut m = MsgboxMessage::new("a", "b", MessageKind::Direct)
+            let mut m = Message::new("a", "b", MessageKind::Direct)
                 .with_payload(&format!("expired-{}", i));
             m.persistent = true;
             m.expires_at = Some(now_ms().saturating_sub(1000));
@@ -1329,19 +1329,19 @@ mod tests {
                 .unwrap();
         }
         // 有効 × 1
-        let mut valid = MsgboxMessage::new("a", "b", MessageKind::Direct).with_payload(&"valid");
+        let mut valid = Message::new("a", "b", MessageKind::Direct).with_payload(&"valid");
         valid.persistent = true;
         valid.expires_at = Some(now_ms() + 60_000);
         ws.extract("msgbox", &format!("msg/{}", valid.id), &valid)
             .await
             .unwrap();
 
-        let removed = MsgboxRouter::sweep_expired(&ws).await.unwrap();
+        let removed = Router::sweep_expired(&ws).await.unwrap();
         assert_eq!(removed, 2);
 
         let remaining = ws.list_by_prefix("msgbox", "msg/").await.unwrap();
         assert_eq!(remaining.len(), 1);
-        let stored: MsgboxMessage = remaining[0].extract().unwrap();
+        let stored: Message = remaining[0].extract().unwrap();
         assert_eq!(stored.payload_as::<String>().unwrap(), "valid");
     }
 }

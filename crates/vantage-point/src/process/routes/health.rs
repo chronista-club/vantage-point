@@ -263,7 +263,7 @@ pub async fn show_handler(
 pub async fn msgbox_remote_deliver_handler(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
-    Json(msg): Json<crate::capability::MsgboxMessage>,
+    Json(msg): Json<crate::capability::Message>,
 ) -> impl IntoResponse {
     // Auth 検証
     if let Some(expected) = crate::capability::msgbox_remote::registry_token() {

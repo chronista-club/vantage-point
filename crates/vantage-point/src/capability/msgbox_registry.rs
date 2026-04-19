@@ -1,4 +1,4 @@
-//! MsgboxRegistry — TheWorld 中央 actor 登録簿（Msgbox Phase 3）
+//! Registry — TheWorld 中央 actor 登録簿（Msgbox Phase 3）
 //!
 //! Cross-Process msgbox messaging のための **actor → port マッピング**。
 //! Process が起動時に自身の actor 一覧を register、停止時に unregister。
@@ -30,7 +30,7 @@ use tokio::sync::RwLock;
 
 /// Actor 登録エントリ
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct MsgboxActorEntry {
+pub struct ActorEntry {
     /// Actor 名（例: "agent", "protocol", "notify", "mcp"）
     pub actor: String,
     /// Process が紐づく project 名（TheWorld の project registry と一致）
@@ -41,7 +41,7 @@ pub struct MsgboxActorEntry {
     pub registered_at: u64,
 }
 
-impl MsgboxActorEntry {
+impl ActorEntry {
     fn new(actor: impl Into<String>, project_name: impl Into<String>, port: u16) -> Self {
         Self {
             actor: actor.into(),
@@ -55,16 +55,16 @@ impl MsgboxActorEntry {
 /// 登録簿のキー: (project_name, actor)
 type RegistryKey = (String, String);
 
-/// MsgboxRegistry — TheWorld の actor 登録簿
+/// Registry — TheWorld の actor 登録簿
 ///
-/// 構造: `(project_name, actor)` → `MsgboxActorEntry`
+/// 構造: `(project_name, actor)` → `ActorEntry`
 /// project + actor の組で一意。同じ actor 名でも異なる project に居られる。
 #[derive(Debug, Default)]
-pub struct MsgboxRegistry {
-    entries: Arc<RwLock<HashMap<RegistryKey, MsgboxActorEntry>>>,
+pub struct Registry {
+    entries: Arc<RwLock<HashMap<RegistryKey, ActorEntry>>>,
 }
 
-impl MsgboxRegistry {
+impl Registry {
     pub fn new() -> Self {
         Self::default()
     }
@@ -83,7 +83,7 @@ impl MsgboxRegistry {
         validate_actor(&actor)?;
         validate_project(&project_name)?;
 
-        let entry = MsgboxActorEntry::new(&actor, &project_name, port);
+        let entry = ActorEntry::new(&actor, &project_name, port);
         self.entries
             .write()
             .await
@@ -106,7 +106,7 @@ impl MsgboxRegistry {
         &self,
         actor: &str,
         project_name: &str,
-    ) -> Option<MsgboxActorEntry> {
+    ) -> Option<ActorEntry> {
         self.entries
             .read()
             .await
@@ -115,7 +115,7 @@ impl MsgboxRegistry {
     }
 
     /// port から actor を lookup（actor 名 + port 一致のエントリ）
-    pub async fn lookup_by_port(&self, actor: &str, port: u16) -> Option<MsgboxActorEntry> {
+    pub async fn lookup_by_port(&self, actor: &str, port: u16) -> Option<ActorEntry> {
         self.entries
             .read()
             .await
@@ -135,12 +135,12 @@ impl MsgboxRegistry {
     }
 
     /// 全エントリを返す（debug / list API 用）
-    pub async fn list(&self) -> Vec<MsgboxActorEntry> {
+    pub async fn list(&self) -> Vec<ActorEntry> {
         self.entries.read().await.values().cloned().collect()
     }
 
     /// project_name 配下のエントリだけ返す
-    pub async fn list_by_project(&self, project_name: &str) -> Vec<MsgboxActorEntry> {
+    pub async fn list_by_project(&self, project_name: &str) -> Vec<ActorEntry> {
         self.entries
             .read()
             .await
@@ -283,7 +283,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_register_and_lookup_by_project() {
-        let registry = MsgboxRegistry::new();
+        let registry = Registry::new();
         registry
             .register("agent", "vantage-point", 33003)
             .await
@@ -300,7 +300,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_register_and_lookup_by_port() {
-        let registry = MsgboxRegistry::new();
+        let registry = Registry::new();
         registry
             .register("agent", "vantage-point", 33003)
             .await
@@ -326,7 +326,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_unregister_single() {
-        let registry = MsgboxRegistry::new();
+        let registry = Registry::new();
         registry
             .register("agent", "vantage-point", 33003)
             .await
@@ -344,7 +344,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_unregister_process_removes_all_actors_at_port() {
-        let registry = MsgboxRegistry::new();
+        let registry = Registry::new();
         registry
             .register("agent", "vantage-point", 33003)
             .await
@@ -376,7 +376,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_register_overwrites_existing() {
-        let registry = MsgboxRegistry::new();
+        let registry = Registry::new();
         registry
             .register("agent", "vantage-point", 33003)
             .await
@@ -396,7 +396,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_all() {
-        let registry = MsgboxRegistry::new();
+        let registry = Registry::new();
         registry
             .register("agent", "vantage-point", 33003)
             .await
@@ -416,7 +416,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_by_project() {
-        let registry = MsgboxRegistry::new();
+        let registry = Registry::new();
         registry
             .register("agent", "vantage-point", 33003)
             .await
@@ -441,7 +441,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_lookup_nonexistent_returns_none() {
-        let registry = MsgboxRegistry::new();
+        let registry = Registry::new();
         assert!(
             registry
                 .lookup_by_project("agent", "vantage-point")
@@ -453,7 +453,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_actor_entry_serialization() {
-        let registry = MsgboxRegistry::new();
+        let registry = Registry::new();
         registry
             .register("agent", "vantage-point", 33003)
             .await
@@ -464,13 +464,13 @@ mod tests {
             .unwrap();
 
         let json = serde_json::to_string(&entry).unwrap();
-        let restored: MsgboxActorEntry = serde_json::from_str(&json).unwrap();
+        let restored: ActorEntry = serde_json::from_str(&json).unwrap();
         assert_eq!(restored, entry);
     }
 
     #[tokio::test]
     async fn test_concurrent_register() {
-        let registry = Arc::new(MsgboxRegistry::new());
+        let registry = Arc::new(Registry::new());
 
         let mut handles = Vec::new();
         for i in 0..10 {
@@ -613,7 +613,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_register_validates_inputs() {
-        let registry = MsgboxRegistry::new();
+        let registry = Registry::new();
 
         // 不正 actor
         assert_eq!(

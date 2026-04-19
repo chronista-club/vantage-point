@@ -31,8 +31,8 @@ pub mod whitesnake;
 pub use agent_capability::AgentCapability;
 pub use core::{CapabilityContext, CapabilityEvent, CapabilityInfo, CapabilityState};
 pub use eventbus::EventBus;
-pub use msgbox::{MsgboxHandle, MsgboxMessage, MsgboxRouter, MessageKind};
-pub use msgbox_registry::{MsgboxActorEntry, MsgboxRegistry};
+pub use msgbox::{Handle, Message, Router as MsgboxRouter, MessageKind};
+pub use msgbox_registry::{ActorEntry, Registry as MsgboxRegistry};
 pub use midi_capability::MidiCapability;
 pub use process_manager_capability::{
     ProcessManagerCapability, ProcessStatus, ProjectInfo, RunningProcess, normalize_path_key,

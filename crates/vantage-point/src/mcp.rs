@@ -1970,7 +1970,7 @@ if bestId > 0 { print(bestId) }
             _ => MessageKind::Direct,
         };
 
-        let mut msg = crate::capability::msgbox::MsgboxMessage::new("mcp", &params.to, kind)
+        let mut msg = crate::capability::msgbox::Message::new("mcp", &params.to, kind)
             .with_payload(&params.payload);
 
         if let Some(reply_to) = params.reply_to {

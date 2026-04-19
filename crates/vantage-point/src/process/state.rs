@@ -18,7 +18,7 @@ use super::tmux_actor::TmuxHandle;
 use super::topic_router::TopicRouter;
 use crate::agent::InteractiveClaudeAgent;
 use crate::agui::AgUiEvent;
-use crate::capability::msgbox::MsgboxHandle;
+use crate::capability::msgbox::Handle;
 use crate::capability::{ProcessManagerCapability, UpdateCapability};
 use crate::file_watcher::FileWatcherManager;
 use crate::mcp::PermissionResponse;
@@ -146,7 +146,7 @@ pub(crate) struct AppState {
     /// プロセス起動時刻（ISO 8601）
     pub started_at: String,
     /// MCP 用 Msgbox ハンドル（VP-24: MCP → Capability への Msgbox 配信）
-    pub mcp_msgbox: Option<MsgboxHandle>,
+    pub mcp_msgbox: Option<Handle>,
     /// SurrealDB クライアント（VP-21: 状態管理の DB 統一）
     pub vpdb: Option<crate::db::SharedVpDb>,
     /// Whitesnake 🐍 — 汎用永続化レイヤー

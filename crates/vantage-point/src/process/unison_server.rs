@@ -838,8 +838,8 @@ async fn handle_msg_send(
     state: &AppState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    let msg: crate::capability::msgbox::MsgboxMessage =
-        serde_json::from_value(payload).map_err(|e| format!("Invalid MsgboxMessage: {}", e))?;
+    let msg: crate::capability::msgbox::Message =
+        serde_json::from_value(payload).map_err(|e| format!("Invalid Message: {}", e))?;
 
     // 自分自身への送信を拒否
     if msg.to == msg.from {
