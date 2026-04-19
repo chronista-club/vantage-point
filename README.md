@@ -145,4 +145,7 @@ vantage-point/
 
 ## ライセンス
 
-Private
+**MIT OR Apache-2.0** dual license.
+
+詳細は [LICENSE-MIT](LICENSE-MIT) / [LICENSE-APACHE](LICENSE-APACHE) を参照。
+コントリビュートについては [CONTRIBUTING.md](CONTRIBUTING.md)、セキュリティ報告は [SECURITY.md](SECURITY.md) を参照。
