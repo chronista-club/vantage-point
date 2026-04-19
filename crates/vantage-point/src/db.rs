@@ -14,7 +14,7 @@
 //!
 //! - `processes`: プロセス状態（QUIC Registry + HTTP polling 代替）
 //! - `projects`: プロジェクト一覧（config.toml 代替）
-//! - `mailbox`: cross-process メッセージング
+//! - `msgbox`: cross-process メッセージング
 //! - `pane_contents`: Canvas ペイン状態
 //! - `stand_status`: Stand ステータス
 //! - `prompts`: User Prompt
@@ -691,16 +691,16 @@ DEFINE FIELD IF NOT EXISTS path ON projects TYPE string;
 DEFINE FIELD IF NOT EXISTS sort_order ON projects TYPE int;
 DEFINE INDEX IF NOT EXISTS idx_projects_path ON projects COLUMNS path UNIQUE;
 
--- Mailbox（cross-process メッセージング）
-DEFINE TABLE IF NOT EXISTS mailbox SCHEMAFULL;
-DEFINE FIELD IF NOT EXISTS from_addr ON mailbox TYPE string;
-DEFINE FIELD IF NOT EXISTS to_addr ON mailbox TYPE string;
-DEFINE FIELD IF NOT EXISTS kind ON mailbox TYPE string;
-DEFINE FIELD IF NOT EXISTS payload ON mailbox TYPE object FLEXIBLE;
-DEFINE FIELD IF NOT EXISTS reply_to ON mailbox TYPE option<string>;
-DEFINE FIELD IF NOT EXISTS delivered ON mailbox TYPE bool DEFAULT false;
-DEFINE FIELD IF NOT EXISTS created_at ON mailbox TYPE datetime DEFAULT time::now();
-DEFINE INDEX IF NOT EXISTS idx_to ON mailbox COLUMNS to_addr, delivered;
+-- Msgbox（cross-process メッセージング）
+DEFINE TABLE IF NOT EXISTS msgbox SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS from_addr ON msgbox TYPE string;
+DEFINE FIELD IF NOT EXISTS to_addr ON msgbox TYPE string;
+DEFINE FIELD IF NOT EXISTS kind ON msgbox TYPE string;
+DEFINE FIELD IF NOT EXISTS payload ON msgbox TYPE object FLEXIBLE;
+DEFINE FIELD IF NOT EXISTS reply_to ON msgbox TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS delivered ON msgbox TYPE bool DEFAULT false;
+DEFINE FIELD IF NOT EXISTS created_at ON msgbox TYPE datetime DEFAULT time::now();
+DEFINE INDEX IF NOT EXISTS idx_to ON msgbox COLUMNS to_addr, delivered;
 
 -- =========================================================================
 -- SP 固有テーブル（project_path でフィルタ — D11 準拠）
@@ -786,13 +786,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_mailbox_crud_mem() {
+    async fn test_msgbox_crud_mem() {
         let db = make_test_db().await;
 
         // メッセージ送信
         db.inner()
             .query(
-                "INSERT INTO mailbox {
+                "INSERT INTO msgbox {
                     from_addr: 'mcp',
                     to_addr: 'notify',
                     kind: 'notification',
@@ -807,7 +807,7 @@ mod tests {
         // 未配信メッセージを取得
         let mut result = db
             .inner()
-            .query("SELECT * FROM mailbox WHERE to_addr = 'notify' AND delivered = false")
+            .query("SELECT * FROM msgbox WHERE to_addr = 'notify' AND delivered = false")
             .await
             .unwrap();
         let records: Vec<serde_json::Value> = result.take(0).unwrap();
@@ -1232,20 +1232,20 @@ mod tests {
     }
 
     // =========================================================================
-    // Mailbox 配信フローテスト
+    // Msgbox 配信フローテスト
     // =========================================================================
 
     /// delivered=false で INSERT → 取得できる
     /// delivered=true に UPDATE → 未配信一覧から消える
     #[tokio::test]
-    async fn test_mailbox_delivered_flag() {
+    async fn test_msgbox_delivered_flag() {
         let db = make_test_db().await;
 
         // 未配信メッセージを挿入（RETURN AFTER で挿入後レコードを取得）
         let mut result = db
             .inner()
             .query(
-                "INSERT INTO mailbox {
+                "INSERT INTO msgbox {
                     from_addr: 'mcp',
                     to_addr: 'notify',
                     kind: 'notification',
@@ -1263,7 +1263,7 @@ mod tests {
         // 未配信一覧に含まれる
         let mut result = db
             .inner()
-            .query("SELECT * FROM mailbox WHERE to_addr = 'notify' AND delivered = false")
+            .query("SELECT * FROM msgbox WHERE to_addr = 'notify' AND delivered = false")
             .await
             .unwrap();
         let pending: Vec<serde_json::Value> = result.take(0).unwrap();
@@ -1281,7 +1281,7 @@ mod tests {
         // 未配信一覧から消える
         let mut result = db
             .inner()
-            .query("SELECT * FROM mailbox WHERE to_addr = 'notify' AND delivered = false")
+            .query("SELECT * FROM msgbox WHERE to_addr = 'notify' AND delivered = false")
             .await
             .unwrap();
         let pending: Vec<serde_json::Value> = result.take(0).unwrap();
@@ -1294,7 +1294,7 @@ mod tests {
         // delivered=true のレコードは全件取得では見える
         let mut result = db
             .inner()
-            .query("SELECT * FROM mailbox WHERE to_addr = 'notify'")
+            .query("SELECT * FROM msgbox WHERE to_addr = 'notify'")
             .await
             .unwrap();
         let all: Vec<serde_json::Value> = result.take(0).unwrap();

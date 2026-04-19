@@ -13,8 +13,8 @@
 //! | 機能 | 担当 |
 //! |------|------|
 //! | tmux session の register/unregister/list | **このモジュール（ccwire）** |
-//! | actor 間 messaging（cross-Process 含む） | **VP Mailbox** (`capability::mailbox`) |
-//! | ccwire の wire-send/wire-receive 系 CLI | 削除予定（messaging は mailbox に集約） |
+//! | actor 間 messaging（cross-Process 含む） | **VP Msgbox** (`capability::msgbox`) |
+//! | ccwire の wire-send/wire-receive 系 CLI | 削除予定（messaging は msgbox に集約） |
 //!
 //! ## プロトコル概要
 //!

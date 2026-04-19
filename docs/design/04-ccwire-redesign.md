@@ -69,7 +69,7 @@ vp ccwire macro split-send <pane-id> "<keys>"
 vp ccwire macro capture-after <pane-id> "<keys>" --wait 500ms
 
 # Dispatch（mailbox との橋渡し、convenience）
-vp ccwire dispatch worker-1 "wire_send で質問"   # → mailbox_send to: "worker-1@..."
+vp ccwire dispatch worker-1 "質問内容"   # → msg_send to: "worker-1@..."
 ```
 
 ## ccwire.toml フォーマット（spec）
@@ -105,7 +105,7 @@ follow = "tail -f /tmp/vp.log"
 
 - `worker-1` (semantic role + 連番) ↔ mailbox actor `worker-1@vantage-point`
 - ccwire spawn 時に actor 名を自動採番、mailbox に register
-- `vp ccwire dispatch worker-1 "..."` は内部で `mailbox_send(to: "worker-1@vantage-point", payload: ...)`
+- `vp ccwire dispatch worker-1 "..."` は内部で `msg_send(to: "worker-1@vantage-point", payload: ...)`
 
 ## 既存 ccwire DB との互換
 

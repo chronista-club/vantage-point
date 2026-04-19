@@ -50,7 +50,7 @@
 
 | ユーザーの目的 | 旧方式 | 新方式（推奨） |
 |---------------|--------|--------------|
-| 別 CC セッションにメッセージ送信 | `wire-send` | **`vp mailbox send`** または MCP `mailbox_send` |
+| 別 CC セッションにメッセージ送信 | `wire-send` | MCP `msg_send` |
 | tmux session の一覧確認 | `wire-sessions` | `vp ccwire sessions` (将来) or 進化版 ccwire CLI |
 | pane 分割 | tmux 直接 / `vp tmux split` | `vp tmux split` |
 | エージェントへの状態通知 | （未対応） | `vp mailbox send to=notify` |

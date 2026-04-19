@@ -4,10 +4,10 @@
 //! EventBus、Registry、各Capabilityの初期化と連携を担当。
 
 use crate::capability::core::Capability;
-use crate::capability::mailbox_remote::RemoteRoutingClient;
+use crate::capability::msgbox_remote::RemoteRoutingClient;
 use crate::capability::{
-    AgentCapability, CapabilityContext, CapabilityRegistry, EventBus, MailboxRouter,
-    MidiCapability, ProtocolCapability, Whitesnake,
+    AgentCapability, CapabilityContext, CapabilityRegistry, EventBus, MidiCapability, MsgboxRouter,
+    ProtocolCapability, Whitesnake,
 };
 use crate::midi::MidiConfig;
 use std::sync::Arc;
@@ -20,7 +20,7 @@ pub struct ProcessCapabilities {
     /// イベントバス（全Capability共有）
     pub event_bus: Arc<EventBus>,
     /// メールボックスルーター（1:1 ポイントツーポイント通信）
-    pub mailbox_router: Arc<MailboxRouter>,
+    pub msgbox_router: Arc<MsgboxRouter>,
     /// Capability レジストリ
     pub registry: Arc<RwLock<CapabilityRegistry>>,
     /// Protocol Capability（WebSocket/stdio配信用）
@@ -37,12 +37,12 @@ pub struct CapabilityConfig {
     pub project_dir: String,
     /// MIDI設定（有効な場合）
     pub midi_config: Option<MidiConfig>,
-    /// 永続化バックエンド（Mailbox persistent メッセージ用）
+    /// 永続化バックエンド（Msgbox persistent メッセージ用）
     ///
-    /// Some の場合、MailboxRouter が persistent メッセージを DISC に保存し、
+    /// Some の場合、MsgboxRouter が persistent メッセージを DISC に保存し、
     /// Process 再起動後に `restore_pending()` で復元する。
     pub whitesnake: Option<Whitesnake>,
-    /// Remote routing client（Mailbox Phase 3: cross-Process actor messaging）
+    /// Remote routing client（Msgbox Phase 3: cross-Process actor messaging）
     ///
     /// Some の場合、`@{port}` / `@{project}` 形式のアドレスを TheWorld registry で
     /// 解決し、target Process に forward する。None の場合は Process-local 配信のみ。
@@ -55,15 +55,15 @@ impl ProcessCapabilities {
         // EventBus を作成
         let event_bus = Arc::new(EventBus::new());
 
-        // MailboxRouter を作成
+        // MsgboxRouter を作成
         // - Whitesnake 注入: persistent メッセージ対応
         // - RemoteRoutingClient 注入: cross-Process forward 対応（Phase 3 Step 2）
-        let mailbox_router = Arc::new(
+        let msgbox_router = Arc::new(
             match (config.whitesnake.clone(), config.remote_routing.clone()) {
-                (Some(ws), Some(remote)) => MailboxRouter::with_persistence_and_remote(ws, remote),
-                (Some(ws), None) => MailboxRouter::with_persistence(ws),
-                (None, Some(remote)) => MailboxRouter::with_remote(remote),
-                (None, None) => MailboxRouter::new(),
+                (Some(ws), Some(remote)) => MsgboxRouter::with_persistence_and_remote(ws, remote),
+                (Some(ws), None) => MsgboxRouter::with_persistence(ws),
+                (None, Some(remote)) => MsgboxRouter::with_remote(remote),
+                (None, None) => MsgboxRouter::new(),
             },
         );
 
@@ -92,7 +92,7 @@ impl ProcessCapabilities {
 
         Self {
             event_bus,
-            mailbox_router,
+            msgbox_router,
             registry,
             protocol,
             agent,
@@ -102,28 +102,28 @@ impl ProcessCapabilities {
 
     /// 全 Capability を初期化
     pub async fn initialize(&self) -> anyhow::Result<()> {
-        // 各 Capability に Mailbox を登録
-        let protocol_mailbox = self.mailbox_router.register("protocol").await;
-        let agent_mailbox = self.mailbox_router.register("agent").await;
+        // 各 Capability に Msgbox を登録
+        let protocol_msgbox = self.msgbox_router.register("protocol").await;
+        let agent_msgbox = self.msgbox_router.register("agent").await;
 
         // Protocol Capability 初期化
         {
-            let ctx = CapabilityContext::new().with_mailbox(protocol_mailbox);
+            let ctx = CapabilityContext::new().with_msgbox(protocol_msgbox);
             let mut protocol = self.protocol.write().await;
             protocol.initialize(&ctx).await?;
         }
 
         // Agent Capability 初期化
         {
-            let ctx = CapabilityContext::new().with_mailbox(agent_mailbox);
+            let ctx = CapabilityContext::new().with_msgbox(agent_msgbox);
             let mut agent = self.agent.write().await;
             agent.initialize(&ctx).await?;
         }
 
         // MIDI Capability 初期化と監視開始（存在する場合）
         if let Some(ref midi) = self.midi {
-            let midi_mailbox = self.mailbox_router.register("midi").await;
-            let ctx = CapabilityContext::new().with_mailbox(midi_mailbox);
+            let midi_msgbox = self.msgbox_router.register("midi").await;
+            let ctx = CapabilityContext::new().with_msgbox(midi_msgbox);
             let mut midi = midi.write().await;
             midi.initialize(&ctx).await?;
             // MidiConfigからport_indexを取得して監視開始
@@ -134,15 +134,15 @@ impl ProcessCapabilities {
         }
 
         tracing::info!(
-            "All capabilities initialized (mailbox addresses: {:?})",
-            self.mailbox_router.addresses().await
+            "All capabilities initialized (msgbox addresses: {:?})",
+            self.msgbox_router.addresses().await
         );
 
         // 永続化メッセージを復元（Whitesnake 有効時のみ）
-        match self.mailbox_router.restore_pending().await {
+        match self.msgbox_router.restore_pending().await {
             Ok(0) => {}
-            Ok(n) => tracing::info!("Mailbox: {} 件の永続メッセージを復元", n),
-            Err(e) => tracing::warn!("Mailbox: 永続メッセージ復元失敗: {}", e),
+            Ok(n) => tracing::info!("Msgbox: {} 件の永続メッセージを復元", n),
+            Err(e) => tracing::warn!("Msgbox: 永続メッセージ復元失敗: {}", e),
         }
 
         Ok(())
@@ -168,8 +168,8 @@ impl ProcessCapabilities {
             let _ = protocol.shutdown().await;
         }
 
-        // MailboxRouter シャットダウン
-        self.mailbox_router.shutdown();
+        // MsgboxRouter シャットダウン
+        self.msgbox_router.shutdown();
 
         tracing::info!("All capabilities shut down");
         Ok(())

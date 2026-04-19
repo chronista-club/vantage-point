@@ -255,18 +255,18 @@ pub async fn show_handler(
     Json(serde_json::json!({"status": "ok"}))
 }
 
-/// POST /api/mailbox/remote_deliver - Cross-Process forward 受信（Mailbox Phase 3 Step 2）
+/// POST /api/msgbox/remote_deliver - Cross-Process forward 受信（Msgbox Phase 3 Step 2）
 ///
 /// 別 Process の `RemoteRoutingClient::forward` から呼ばれる。
 /// 認証: `VP_REGISTRY_TOKEN` 環境変数設定時は Bearer header 検証。
-/// 配信: ローカル MailboxRouter の `deliver_local` に渡す。
-pub async fn mailbox_remote_deliver_handler(
+/// 配信: ローカル MsgboxRouter の `deliver_local` に渡す。
+pub async fn msgbox_remote_deliver_handler(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
-    Json(msg): Json<crate::capability::MailboxMessage>,
+    Json(msg): Json<crate::capability::Message>,
 ) -> impl IntoResponse {
     // Auth 検証
-    if let Some(expected) = crate::capability::mailbox_remote::registry_token() {
+    if let Some(expected) = crate::capability::msgbox_remote::registry_token() {
         let provided = headers
             .get(axum::http::header::AUTHORIZATION)
             .and_then(|v| v.to_str().ok())
@@ -282,7 +282,7 @@ pub async fn mailbox_remote_deliver_handler(
     // ローカル配信
     match state
         .capabilities
-        .mailbox_router
+        .msgbox_router
         .deliver_local(msg.clone())
         .await
     {
@@ -290,10 +290,17 @@ pub async fn mailbox_remote_deliver_handler(
             axum::http::StatusCode::OK,
             Json(serde_json::json!({"status": "delivered", "to": msg.to})),
         ),
-        Err(e) => (
+        Err(crate::capability::msgbox::Error::BoxNotFound { ref address }) => (
             axum::http::StatusCode::NOT_FOUND,
             Json(serde_json::json!({
-                "error": format!("local box not found or closed: {}", e),
+                "error": format!("msgbox address not found: {}", address),
+                "to": msg.to,
+            })),
+        ),
+        Err(e) => (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "error": format!("msgbox router unavailable: {}", e),
                 "to": msg.to,
             })),
         ),
@@ -490,7 +497,7 @@ pub async fn canvas_capture_handler(
                 format!("/tmp/vp-canvas-{}.png", ts)
             });
 
-            if let Err(e) = std::fs::write(&save_path, &bytes) {
+            if let Err(e) = tokio::fs::write(&save_path, &bytes).await {
                 return (
                     axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                     Json(serde_json::json!({
@@ -613,8 +620,8 @@ pub async fn wasm_handler(Path(filename): Path<String>) -> impl IntoResponse {
 
 /// WASM ファイルを読み込む
 fn load_wasm_file(filename: &str) -> Option<Vec<u8>> {
-    // セキュリティ: パストラバーサル防止
-    if filename.contains("..") || filename.contains('/') {
+    // セキュリティ: パストラバーサル防止（vendor_handler と同一ルール）
+    if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
         return None;
     }
 
