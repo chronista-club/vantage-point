@@ -8944,6 +8944,7 @@ dependencies = [
  "tui-scrollview",
  "unicode-normalization",
  "unison",
+ "urlencoding",
  "uuid",
  "vte",
  "wry",
