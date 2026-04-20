@@ -2113,8 +2113,7 @@ if bestId > 0 { print(bestId) }
         let payload = serde_json::json!({ "id": params.id });
         let resp = self.quic_call("msg_thread", payload).await?;
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-            serde_json::to_string_pretty(&resp)
-                .unwrap_or_else(|_| "thread retrieved".to_string()),
+            serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "thread retrieved".to_string()),
         )]))
     }
 }
