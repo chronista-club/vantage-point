@@ -159,6 +159,16 @@ pub struct MsgRecvParams {
     pub from: Option<String>,
 }
 
+/// Parameters for msg_directory tool (VP-65: cross-process actor discovery)
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct MsgDirectoryParams {
+    /// project_name フィルタ（省略時は全プロジェクト）
+    #[schemars(
+        description = "Filter by project name (e.g. 'creo-memories'). If omitted, returns all registered actors across all projects."
+    )]
+    pub project_name: Option<String>,
+}
+
 /// Parameters for msg_broadcast tool
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct MsgBroadcastParams {
@@ -2037,6 +2047,106 @@ if bestId > 0 { print(bestId) }
 
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
             serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "[]".to_string()),
+        )]))
+    }
+
+    /// Cross-process actor directory (VP-65)
+    #[tool(
+        description = "List all registered actors across all VP processes via TheWorld registry. Returns project_name → [actors] mapping. Use this to discover available addresses (e.g. 'agent@creo-memories') before calling msg_send. Optionally filter by project_name."
+    )]
+    async fn msg_directory(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<MsgDirectoryParams>,
+    ) -> Result<CallToolResult, McpError> {
+        // TheWorld の HTTP API 経由で actor 一覧を取得
+        let world_port = crate::cli::WORLD_PORT;
+        let url = match params.project_name.as_deref() {
+            Some(p) => format!(
+                "http://[::1]:{}/api/world/msgbox/list?project_name={}",
+                world_port,
+                urlencoding::encode(p)
+            ),
+            None => format!("http://[::1]:{}/api/world/msgbox/list", world_port),
+        };
+
+        let client = reqwest::Client::new();
+        let resp = match client.get(&url).send().await {
+            Ok(r) if r.status().is_success() => r,
+            Ok(r) => {
+                let status = r.status();
+                let text = r.text().await.unwrap_or_default();
+                return Err(McpError::internal_error(
+                    format!("TheWorld API error: {} {}", status, text),
+                    None,
+                ));
+            }
+            Err(e) => {
+                return Err(McpError::internal_error(
+                    format!("Failed to reach TheWorld: {}", e),
+                    None,
+                ));
+            }
+        };
+
+        let body: serde_json::Value = match resp.json().await {
+            Ok(v) => v,
+            Err(e) => {
+                return Err(McpError::internal_error(
+                    format!("Failed to parse TheWorld response: {}", e),
+                    None,
+                ));
+            }
+        };
+
+        // entries を project_name → [actors] にグループ化
+        let entries = body
+            .get("entries")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        let mut by_project: std::collections::BTreeMap<String, (u16, Vec<String>)> =
+            std::collections::BTreeMap::new();
+        for entry in &entries {
+            let project = entry
+                .get("project_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let actor = entry
+                .get("actor")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let port = entry.get("port").and_then(|v| v.as_u64()).unwrap_or(0) as u16;
+            if project.is_empty() || actor.is_empty() {
+                continue;
+            }
+            let entry = by_project.entry(project).or_insert((port, Vec::new()));
+            entry.0 = port;
+            entry.1.push(actor);
+        }
+
+        let directory: serde_json::Value = by_project
+            .into_iter()
+            .map(|(project, (port, actors))| {
+                (
+                    project,
+                    serde_json::json!({
+                        "port": port,
+                        "actors": actors,
+                    }),
+                )
+            })
+            .collect::<serde_json::Map<_, _>>()
+            .into();
+
+        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+            serde_json::to_string_pretty(&serde_json::json!({
+                "count": entries.len(),
+                "directory": directory,
+            }))
+            .unwrap_or_else(|_| "{}".to_string()),
         )]))
     }
 
