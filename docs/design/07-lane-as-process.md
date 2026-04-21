@@ -53,6 +53,7 @@ Lane は生まれ、育ち、成熟し、死ぬ。死は喪失ではなく記憶
 | 用語 | 定義 |
 |------|-----|
 | **Lane** | 目的を持つ有限時間の process unit。Identity を持つ Living Actor |
+| **LaneId** | Lane の一意識別子。**UUID v7** (`lane-{uuid7}` 形式を推奨)。Event.id と同じ time-ordered 性質で causation chain 参加 |
 | **Lead Lane** | Project Root Lane。Project 作成時に自動生成、project 削除時のみ destroy。Meta task の responsibility holder |
 | **Worker Lane** | Linear issue 1 つに対応する実装 context。`vp ws new` で create |
 | **Meta Lane** | Issue に紐付かない常駐 / 周期 Lane (Daily Journal 等) |
@@ -347,6 +348,28 @@ pub struct LaneState {
 - L2 以上の Linear push は dry-run 可能、user が approve で実行
 - Linear API エラー 5 回連続で circuit open、L1 に自動降格
 
+### 8.5 `lane_map` projection との整合 (VP-74 連携)
+
+VP-74 (R1) の MVP projections 6 本に **`lane_map`** が含まれる (Decision Log #2 D-10)。
+Lane の現在状態は **event log から materialize される projection** として表現される:
+
+```sql
+-- VP-74 R1 で定義される projection (仮)
+-- lane_map: event_log を fold して Lane 現在状態を表示
+CREATE VIEW lane_map AS
+  SELECT lane_id,
+         fold_state(events ORDER BY timestamp) AS state,
+         latest(events).causation AS last_causation,
+         count(events) AS event_count
+  FROM event_log
+  WHERE topic LIKE 'project/lane/**'
+  GROUP BY lane_id;
+```
+
+- Lane state machine (§3) の遷移は全て event として publish → `lane_map` が自動更新
+- Sidebar / Dashboard はこの projection を読む (読む側は state machine を知らなくて良い)
+- Mortality (§9) 時に lane_map から row を drop → snapshot_memory に移送
+
 ---
 
 ## 9. Mortality / Snapshot 昇華
@@ -473,6 +496,7 @@ snapshot_memory の body:
 
 - SC 利用者 (Lane state を render する) が先に存在している状態で Lane actor 化する方が価値が出る
 - PP Requiem は Lane actor が存在する前提で routing 判断を改善できる → R5 を強化
+- **VP-76 (R3) の SC Content scope `"lane"` 実装との結合保証**: R3 で `scope="lane"` を抽象化しておけば、R3.5 で Lane actor が自然に scope owner として振る舞える。逆順だと SC が Lane ID をハードコード運用する中間状態が発生
 
 ### 13.3 sub-issue 化予定
 
@@ -542,3 +566,7 @@ snapshot_memory の body:
   - Canvas pane `lane-as-process` の内容を仕様書に整形
   - Open questions §14 に推奨付きで列挙
   - 命名推奨 = B (Movement)、Autonomy 推奨 = L1 Steward、Phase 推奨 = R3.5
+- **2026-04-22 v0.1** — VP-74/75/76 description を精読して整合性 findings を反映:
+  - §2 用語定義に `LaneId` (UUID v7、`lane-{uuid7}` 形式) を追加
+  - §8.5 `lane_map projection` との整合を新設 (VP-74 R1 連携)
+  - §13.2 R3.5 推奨根拠に "VP-76 Content scope `"lane"` との結合保証" を追加
