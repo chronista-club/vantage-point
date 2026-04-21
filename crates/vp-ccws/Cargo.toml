@@ -1,0 +1,19 @@
+[package]
+name = "vp-ccws"
+description = "VP Stone Free 🧵 — Git clone-based workspace manager (formerly ccws)"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version = "1.94"
+
+[dependencies]
+clap = { workspace = true }
+unison-kdl = { workspace = true }
+glob = { workspace = true }
+
+# `ccws` コマンド（後方互換、Stone Free Phase 3 完了まで維持）
+[[bin]]
+name = "ccws"
+path = "src/main.rs"

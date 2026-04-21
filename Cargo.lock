@@ -8781,7 +8781,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "unison-kdl",
+ "unison-kdl 0.1.0",
  "uuid",
  "zstd",
 ]
@@ -8793,13 +8793,35 @@ source = "git+https://github.com/chronista-club/unison-kdl.git#4fbebeeacb7921a7f
 dependencies = [
  "kdl",
  "thiserror 2.0.18",
- "unison-kdl-derive",
+ "unison-kdl-derive 0.1.0",
+]
+
+[[package]]
+name = "unison-kdl"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "677c544dd0c819bdcd05714b4d449377419fdedbea28aba2efce94f69c8adefc"
+dependencies = [
+ "kdl",
+ "thiserror 2.0.18",
+ "unison-kdl-derive 0.3.0",
 ]
 
 [[package]]
 name = "unison-kdl-derive"
 version = "0.1.0"
 source = "git+https://github.com/chronista-club/unison-kdl.git#4fbebeeacb7921a7fe468359ea4916a5f978b0d1"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.115",
+]
+
+[[package]]
+name = "unison-kdl-derive"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b9601e82df75eb9f8fcfdbf2af24206a771727b75cb176531ebc5e1f66f3c85"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -8990,6 +9012,15 @@ dependencies = [
  "ratatui",
  "serde_json",
  "unicode-width 0.2.0",
+]
+
+[[package]]
+name = "vp-ccws"
+version = "0.14.0"
+dependencies = [
+ "clap",
+ "glob",
+ "unison-kdl 0.3.0",
 ]
 
 [[package]]
