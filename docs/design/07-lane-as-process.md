@@ -66,6 +66,14 @@ Lane は生まれ、育ち、成熟し、死ぬ。死は喪失ではなく記憶
 
 ## 3. Lane State Machine
 
+> **⚠️ 意味論上の注意** (v0.2 追記):
+> 現行コードに存在する `LaneStatus::Connected / Connecting / Disconnected` は **WebSocket 接続状態** を意味しており、本節の `LanePhase` (Sprout / Active / Building / ...) とは **直交する別概念**。
+>
+> 単純 s/Lane/Movement/ migration 時は両者を分離する必要がある:
+> - 現行 `LaneStatus` → `ConnectionStatus` or `WsStatus` に rename (意味明確化)
+> - 本節の `LanePhase` は新規 field として共存
+> - 型: `struct LaneState { connection: ConnectionStatus, phase: LanePhase, ... }`
+
 ### 3.1 ステート図
 
 ```mermaid
@@ -462,11 +470,38 @@ snapshot_memory の body:
 外部公開モード前 (project_creo_refactor_window.md) に rename するのが理想。
 遅延するほど cost 増。
 
-### 11.4 移行戦略 (B 選択時)
+### 11.4 移行戦略 (B 選択時、v0.2 で精緻化)
 
-- alias: `Lane` を deprecated alias として維持 (永久互換)
-- 新コードは `Movement`
-- CLI は `vp ws` (worker session) のまま、英語 doc で "worker Movement" を使う
+agent 調査 (95 occurrences / 15 files) による **Phase 分割** を採用:
+
+| Phase | 範囲 | リスク | 期間 |
+|:---:|------|:---:|:---:|
+| **1** | 内部 Rust 型 + CSS + Swift 値型 | 🟢 非破壊 | 1 日 |
+| **2** | HTTP/WS path に alias 追加 (両対応) | 🟡 両対応必須 | 2-3 release |
+| **3** | MCP tool の alias (deprecated wrapper) | 🟠 外部 agent 通知 | 1 release |
+
+### 11.5 破壊的 contract (alias 必須 6 種)
+
+agent 発見:
+1. MCP tool `switch_lane` → `switch_movement`
+2. HTTP `POST /api/canvas/switch_lane` → `switch_movement`
+3. WebSocket `GET /ws/lanes` → `/ws/movements`
+4. WS JSON schema (`type: "lane_message"` 等)
+5. Unison topic `process/paisley-park/command/switch-lane`
+6. Swift `Notification.Name("VP.selectLaneByNumber")`
+
+これらは **alias を 2-3 release 維持** して緩やかに移行。
+
+### 11.6 Rust 命名上の懸念 (v0.2 追記、要判断)
+
+- `Movement` は egui / bevy / winit で頻出する generic 英単語 → 将来 dep 衝突可能性
+- `SwitchMovement` variant は「楽曲の乗り換え」と読め意味誇張 → `FocusMovement` / `ActivateMovement` 候補
+- **`Movement::Connected` は英語として違和感** (Lane の connection 接続はしっくりくるが Movement なら Playing/Paused/Finished が自然) — これが §3 冒頭の意味論分離に直結
+
+### 11.7 工数再評価 (v0.2)
+
+- 単純 rename のみ: 1 日
+- **意味論見直し込み** (ConnectionStatus 分離 + MovementPhase 新設): **2-3 日 + 同時リリース調整**
 
 ---
 
@@ -570,3 +605,9 @@ snapshot_memory の body:
   - §2 用語定義に `LaneId` (UUID v7、`lane-{uuid7}` 形式) を追加
   - §8.5 `lane_map projection` との整合を新設 (VP-74 R1 連携)
   - §13.2 R3.5 推奨根拠に "VP-76 Content scope `"lane"` との結合保証" を追加
+- **2026-04-22 v0.2** — 並列 worker agent B/C 調査結果を反映:
+  - §3 冒頭に **意味論分離の警告** — 現行 `LaneStatus` (WS connection) と `LanePhase` (lifecycle) は直交別概念
+  - §11.4 移行戦略に Worker B 調査の **3 Phase 分割** (非破壊 → alias → MCP rename)
+  - §11.5 **破壊的 contract 6 種** のリスト追加
+  - §11.6 **Rust 命名懸念** (Movement の generic 語義、SwitchMovement の意味誇張、Connected/Playing 不一致)
+  - §11.7 工数再評価: 単純 rename = 1 日、意味論見直し込み = 2-3 日
