@@ -90,14 +90,27 @@ struct TerminalRepresentable: NSViewRepresentable {
             nsView.needsDisplay = true
         }
 
-        // フォーカス中のペインのみ first responder を取得
-        // フォーカス状態が変わった時のみ切り替え（updateNSView の連続呼び出しによるちらつきを防止）
+        // フォーカス管理 — paste 誤配 (別 Project の HD pane へ送信) 防止
+        // フォーカス状態が変わった時のみ切り替え（updateNSView 連続呼び出しによるちらつき防止）
         let shouldFocus = isActive && isFocused
         let wasFocusedAndActive = wasActive && wasFocused
-        guard shouldFocus && !wasFocusedAndActive else { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            if let window = nsView.window, window.firstResponder !== nsView {
+
+        if shouldFocus && !wasFocusedAndActive {
+            // フォーカス取得 — async で同じ runloop 終端まで遅らせる（layout 確定後）
+            // 0.1s 遅延は race window を作るため削除（旧 firstResponder が残って paste 誤配する原因）
+            DispatchQueue.main.async { [weak nsView] in
+                guard let nsView, let window = nsView.window,
+                      window.firstResponder !== nsView else { return }
                 window.makeFirstResponder(nsView)
+            }
+        } else if !shouldFocus && wasFocusedAndActive {
+            // フォーカス手放し — 古い firstResponder に paste が誤配される問題の根本治療
+            // 自分が firstResponder のままだと、別 Project に切替えても Cmd+V がここに来る
+            DispatchQueue.main.async { [weak nsView] in
+                guard let nsView, let window = nsView.window,
+                      window.firstResponder === nsView else { return }
+                // window 自体に firstResponder を戻す（次の active pane が取りに来るのを待つ）
+                window.makeFirstResponder(nil)
             }
         }
     }
