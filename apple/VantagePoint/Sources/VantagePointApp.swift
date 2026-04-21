@@ -19,7 +19,31 @@ struct VantagePointApp: App {
         }
         .defaultSize(width: 1200, height: 800)
         .commands {
+            fileCommands
             navigateCommands
+        }
+    }
+
+    /// File メニュー（New Window / Close Window）
+    ///
+    /// SwiftUI WindowGroup が AppDelegate.setupMainMenu の File menu を上書き
+    /// するため、`CommandGroup(replacing: .newItem)` で SwiftUI 側に再宣言する。
+    @CommandsBuilder
+    private var fileCommands: some Commands {
+        CommandGroup(replacing: .newItem) {
+            Button("New Window") {
+                // SwiftUI WindowGroup に新ウィンドウ作成を依頼
+                // openWindow を直接使えない（@Environment 取得タイミング問題）ため
+                // newWindowForTab セレクタを呼ぶ（VP-54 マルチウィンドウ対応経由）
+                NSApp.sendAction(#selector(NSResponder.newWindowForTab(_:)), to: nil, from: nil)
+                NSApp.activate(ignoringOtherApps: true)
+            }
+            .keyboardShortcut("n", modifiers: .command)
+
+            Button("Close Window") {
+                NSApp.keyWindow?.performClose(nil)
+            }
+            .keyboardShortcut("w", modifiers: .command)
         }
     }
 
