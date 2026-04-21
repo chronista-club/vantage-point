@@ -733,10 +733,12 @@ mod tests {
         base: &std::path::Path,
     ) -> (std::path::PathBuf, std::path::PathBuf) {
         // 1. bare repo（origin の代替）を作成
+        //    --initial-branch=main で CI runner (init.defaultBranch=master 可能性) でも
+        //    origin/HEAD が main に固定されるようにする
         let bare = base.join("bare.git");
         fs::create_dir_all(&bare).unwrap();
         Cmd::new("git")
-            .args(["init", "--bare"])
+            .args(["init", "--bare", "--initial-branch=main"])
             .current_dir(&bare)
             .output()
             .unwrap();

@@ -9029,7 +9029,9 @@ version = "0.14.0"
 dependencies = [
  "anyhow",
  "clap",
+ "reqwest",
  "rustls",
+ "serde_json",
  "tokio",
  "tracing",
  "vantage-point",
