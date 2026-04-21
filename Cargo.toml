@@ -44,6 +44,12 @@ tokio-stream = "0.1"
 # QUIC protocol (Unison)
 unison = { git = "https://github.com/chronista-club/unison.git", tag = "v0.3.3" }
 
+# KDL parsing (Unison KDL helper)
+unison-kdl = "0.3"
+
+# Glob patterns (vp-ccws / Stone Free)
+glob = "0.3"
+
 # TUI
 ratatui = { version = "0.30", features = ["crossterm"] }
 crossterm = "0.28"
