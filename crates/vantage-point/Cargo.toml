@@ -74,8 +74,8 @@ tray-icon = "0.21"
 # MIDI input
 midir = "0.10"
 
-# UUID generation
-uuid = { version = "1", features = ["v4"] }
+# UUID generation (v7 for time-ordered Event ids; serde for wire format)
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
 
 # Date/Time
 chrono = { version = "0.4", features = ["serde"] }
