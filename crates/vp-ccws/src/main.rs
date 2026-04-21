@@ -1,8 +1,6 @@
 use clap::{Parser, Subcommand};
 use std::process::ExitCode;
-
-mod commands;
-mod config;
+use vp_ccws::commands;
 
 #[derive(Parser)]
 #[command(

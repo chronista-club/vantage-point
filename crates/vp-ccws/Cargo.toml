@@ -13,6 +13,11 @@ clap = { workspace = true }
 unison-kdl = { workspace = true }
 glob = { workspace = true }
 
+# Library API (vp-cli + Native App から呼び出し用)
+[lib]
+name = "vp_ccws"
+path = "src/lib.rs"
+
 # `ccws` コマンド（後方互換、Stone Free Phase 3 完了まで維持）
 [[bin]]
 name = "ccws"
