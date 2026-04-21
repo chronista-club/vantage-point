@@ -194,26 +194,115 @@ fn main() -> Result<()> {
 }
 
 /// Stone Free 🧵 worker workspace 操作を vp-ccws library に委譲
+///
+/// Phase 2 追加: worker 作成/削除時に TheWorld の msgbox registry に
+/// `worker-{name}@{project}` actor を register/unregister（best-effort、
+/// TheWorld 未起動でも workspace 操作自体は成功させる）。
 fn execute_ws(cmd: WsCommands) -> Result<()> {
     use vp_ccws::commands as ws;
 
-    let result = match cmd {
+    match cmd {
         WsCommands::New {
             name,
             branch,
             force,
-        } => ws::new_worker(&name, &branch, force),
+        } => {
+            ws::new_worker(&name, &branch, force).map_err(|e| anyhow::anyhow!(e))?;
+            // best-effort: TheWorld に worker actor を register
+            if let Err(e) = register_worker_actor(&name) {
+                eprintln!("  msgbox: register skipped ({e})");
+            }
+            Ok(())
+        }
         WsCommands::Fork {
             name,
             branch,
             force,
-        } => ws::fork_worker(&name, &branch, force),
-        WsCommands::Ls => ws::list_workers(),
-        WsCommands::Path { name } => ws::worker_path(&name),
-        WsCommands::Rm { name, all, force } => ws::remove_worker(name.as_deref(), all, force),
-        WsCommands::Status => ws::status_workers(),
-        WsCommands::Cleanup { force } => ws::cleanup_workers(force),
-    };
+        } => {
+            ws::fork_worker(&name, &branch, force).map_err(|e| anyhow::anyhow!(e))?;
+            if let Err(e) = register_worker_actor(&name) {
+                eprintln!("  msgbox: register skipped ({e})");
+            }
+            Ok(())
+        }
+        WsCommands::Ls => ws::list_workers().map_err(|e| anyhow::anyhow!(e)),
+        WsCommands::Path { name } => ws::worker_path(&name).map_err(|e| anyhow::anyhow!(e)),
+        WsCommands::Rm { name, all, force } => {
+            // 先に unregister（削除後だと parent SP 不明になる可能性）
+            if let Some(ref worker_name) = name {
+                if let Err(e) = unregister_worker_actor(worker_name) {
+                    eprintln!("  msgbox: unregister skipped ({e})");
+                }
+            }
+            ws::remove_worker(name.as_deref(), all, force).map_err(|e| anyhow::anyhow!(e))
+        }
+        WsCommands::Status => ws::status_workers().map_err(|e| anyhow::anyhow!(e)),
+        WsCommands::Cleanup { force } => ws::cleanup_workers(force).map_err(|e| anyhow::anyhow!(e)),
+    }
+}
 
-    result.map_err(|e| anyhow::anyhow!(e))
+/// Worker actor を TheWorld msgbox registry に登録
+///
+/// actor format: `worker-{name}` (例: `worker-VP-10`)
+/// project_name: 親プロジェクトの repo root dir 名
+/// port: 親プロジェクト SP の port (discovery::find_by_project_blocking で取得)
+fn register_worker_actor(worker_name: &str) -> Result<()> {
+    let (project_name, port) = resolve_parent_project()?;
+    let actor = format!("worker-{worker_name}");
+    let world_port = vantage_point::cli::WORLD_PORT;
+    let url = format!("http://[::1]:{world_port}/api/world/msgbox/register");
+    let body = serde_json::json!({
+        "actor": actor,
+        "project_name": project_name,
+        "port": port,
+    });
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build()?;
+    let resp = client.post(&url).json(&body).send()?;
+    if resp.status().is_success() {
+        eprintln!("  msgbox: registered {actor}@{project_name} (port {port})");
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!("register failed: {}", resp.status()))
+    }
+}
+
+/// Worker actor を TheWorld msgbox registry から解除
+fn unregister_worker_actor(worker_name: &str) -> Result<()> {
+    let (project_name, _port) = resolve_parent_project()?;
+    let actor = format!("worker-{worker_name}");
+    let world_port = vantage_point::cli::WORLD_PORT;
+    let url = format!("http://[::1]:{world_port}/api/world/msgbox/unregister");
+    let body = serde_json::json!({
+        "actor": actor,
+        "project_name": project_name,
+    });
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build()?;
+    let resp = client.post(&url).json(&body).send()?;
+    if resp.status().is_success() {
+        eprintln!("  msgbox: unregistered {actor}@{project_name}");
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!("unregister failed: {}", resp.status()))
+    }
+}
+
+/// 現在の repo root から parent project 名と SP port を導出
+fn resolve_parent_project() -> Result<(String, u16)> {
+    let repo_root = vp_ccws::config::find_repo_root()
+        .map_err(|e| anyhow::anyhow!("find_repo_root failed: {}", e))?;
+    let project_name = repo_root
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| anyhow::anyhow!("project name not found"))?
+        .to_string();
+    let repo_root_str = repo_root
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("repo path contains invalid UTF-8"))?;
+    let process = vantage_point::discovery::find_by_project_blocking(repo_root_str)
+        .ok_or_else(|| anyhow::anyhow!("parent SP not running (TheWorld has no record)"))?;
+    Ok((project_name, process.port))
 }
