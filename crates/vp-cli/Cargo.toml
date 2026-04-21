@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 vantage-point = { path = "../vantage-point" }
+vp-ccws = { path = "../vp-ccws" }
 clap = { workspace = true }
 anyhow = { workspace = true }
 tokio = { workspace = true }
