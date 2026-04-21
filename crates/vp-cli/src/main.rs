@@ -229,10 +229,10 @@ fn execute_ws(cmd: WsCommands) -> Result<()> {
         WsCommands::Path { name } => ws::worker_path(&name).map_err(|e| anyhow::anyhow!(e)),
         WsCommands::Rm { name, all, force } => {
             // 先に unregister（削除後だと parent SP 不明になる可能性）
-            if let Some(ref worker_name) = name {
-                if let Err(e) = unregister_worker_actor(worker_name) {
-                    eprintln!("  msgbox: unregister skipped ({e})");
-                }
+            if let Some(ref worker_name) = name
+                && let Err(e) = unregister_worker_actor(worker_name)
+            {
+                eprintln!("  msgbox: unregister skipped ({e})");
             }
             ws::remove_worker(name.as_deref(), all, force).map_err(|e| anyhow::anyhow!(e))
         }
