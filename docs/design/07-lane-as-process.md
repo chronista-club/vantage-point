@@ -584,7 +584,11 @@ agent 発見:
 - **Epic**: [VP-72 Requiem Architecture](https://linear.app/chronista/issue/VP-72)
 - **R0 upstream**: [VP-73](https://linear.app/chronista/issue/VP-73) (Event schema + CreoUI draft)
 - **Foundation**: [VP-69](https://linear.app/chronista/issue/VP-69) (Stone Free Phase 2 worker msgbox)
-- **Prev design**: `docs/design/05-pane-content-lane-smart-canvas.md`, `docs/design/06-creoui-draft.md`
+- **Base architecture**: `docs/design/01-architecture.md` (TheWorld / Process / Capability 層)
+- **Prev design**: `docs/design/05-pane-content-lane-smart-canvas.md` (4 層モデル), `docs/design/06-creoui-draft.md` (R0 Event schema)
+- **Related decisions** (creo-memories):
+  - `mem_1CaGvxreWpPRsMrfmddMai` Stand Ensemble / Requiem Architecture
+  - `mem_1CaGxnzEsjyyvnqaaVSFBH` VP-72 Final Summary (D-1 〜 D-12)
 
 ### creo-memories 関連 memo
 - `mem_1CaHBz1iFqfW6o4MbF1TaL` — 「規約の追加」 framing (本 spec の発端)
