@@ -595,7 +595,9 @@ struct RightChevronDisclosureStyle: DisclosureGroupStyle {
         VStack(alignment: .leading, spacing: 0) {
             // Header row — chevron オミット、header 全体が tap area
             HStack(spacing: 6) {
+                // bg は edge 到達、text だけ右に 1 文字分 inset (VP-83 refinement 23)
                 configuration.label
+                    .padding(.leading, CreoUITokens.spacingSm)
                 Spacer(minLength: 0)
             }
             .padding(.vertical, CreoUITokens.spacingXs + 2)
