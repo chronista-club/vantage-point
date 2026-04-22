@@ -893,13 +893,11 @@ struct CcwsWorkerInfo: Identifiable, Equatable {
 
 /// サイドバー表示用のプロジェクトモデル
 extension SidebarProject {
-    /// 表示用 title — displayName があれば優先、なければ slug を format
+    /// 表示用 title — displayName があれば優先、なければ slug を titleCased
+    /// (CreoUI の `String.titleCased` util 経由、Rails titleize / Lodash startCase 相当)
     var displayTitle: String {
         if let d = displayName, !d.isEmpty { return d }
-        return name
-            .split(separator: "-")
-            .map { $0.prefix(1).uppercased() + $0.dropFirst() }
-            .joined(separator: " ")
+        return name.titleCased
     }
 }
 
