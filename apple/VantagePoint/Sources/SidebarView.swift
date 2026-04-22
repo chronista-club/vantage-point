@@ -60,10 +60,23 @@ struct SidebarView: View {
         projects.filter { !$0.enabled }
     }
 
-    /// 選択中のプロジェクト名
-    private var selectedProjectName: String? {
+    /// 選択中プロジェクト (Lead 選択時 / Worker 選択時の親 project)
+    private var selectedProject: SidebarProject? {
         guard let sel = selection else { return nil }
-        return projects.first(where: { $0.id == sel })?.name
+        if let p = projects.first(where: { $0.id == sel }) {
+            return p
+        }
+        return projects.first(where: { proj in
+            proj.workers.contains(where: { $0.id == sel })
+        })
+    }
+
+    /// 選択中プロジェクトの display title
+    /// - displayName (user 設定) があれば優先
+    /// - なければ slug (`vantage-point`) を `Vantage Point` に format
+    private var selectedProjectTitle: String {
+        guard let p = selectedProject else { return "" }
+        return p.displayTitle
     }
 
     /// 永続化された展開状態を復元
@@ -115,8 +128,16 @@ struct SidebarView: View {
         VStack(spacing: 0) {
             // カスタムヘッダー: + ボタンのみ (選択中 Project 名は冗長のため削除、
             // 選択中 Lane は Sidebar 内行で highlight される)
-            HStack {
-                Spacer()
+            HStack(spacing: 8) {
+                // 選択中 Project の display title (VP-83 refinement 30)
+                Text(selectedProjectTitle)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.colorTextPrimary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+
+                Spacer(minLength: 8)
+
                 Button {
                     onAdd?()
                 } label: {
@@ -871,9 +892,24 @@ struct CcwsWorkerInfo: Identifiable, Equatable {
 }
 
 /// サイドバー表示用のプロジェクトモデル
+extension SidebarProject {
+    /// 表示用 title — displayName があれば優先、なければ slug を format
+    var displayTitle: String {
+        if let d = displayName, !d.isEmpty { return d }
+        return name
+            .split(separator: "-")
+            .map { $0.prefix(1).uppercased() + $0.dropFirst() }
+            .joined(separator: " ")
+    }
+}
+
 struct SidebarProject: Identifiable, Equatable {
     let id: String        // プロジェクトパス（一意キー）
-    let name: String
+    let name: String      // slug (kebab-case identifier, e.g. "vantage-point")
+    /// 表示用の人間可読名 (user 設定 or config 由来)
+    /// 未設定なら `name` (slug) を CamelCase + space 区切りに自動変換して表示
+    /// VP-83 refinement 30: slug と displayName を first-class 分離
+    let displayName: String?
     let path: String
     let isRunning: Bool
     /// プロセスのポート番号（稼働中のみ）
@@ -896,9 +932,10 @@ struct SidebarProject: Identifiable, Equatable {
     /// SP 自動起動の有効/無効
     let enabled: Bool
 
-    init(id: String, name: String, path: String, isRunning: Bool, port: UInt16?, startedAt: Date?, stands: [SidebarStand] = [], workers: [CcwsWorkerInfo] = [], branch: String? = nil, hasHD: Bool = false, hasNotification: Bool = false, ccwireSession: CcwireSessionInfo? = nil, enabled: Bool = true) {
+    init(id: String, name: String, displayName: String? = nil, path: String, isRunning: Bool, port: UInt16?, startedAt: Date?, stands: [SidebarStand] = [], workers: [CcwsWorkerInfo] = [], branch: String? = nil, hasHD: Bool = false, hasNotification: Bool = false, ccwireSession: CcwireSessionInfo? = nil, enabled: Bool = true) {
         self.id = id
         self.name = name
+        self.displayName = displayName
         self.path = path
         self.isRunning = isRunning
         self.port = port
