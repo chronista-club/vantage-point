@@ -313,12 +313,14 @@ struct SidebarProjectHeaderRow: View {
     var ppStatus: BadgeStatus = .inactive
 
     var body: some View {
-        // VP-83 refinement 9: Title + address の縦積み (Lead/Worker row の
-        // 視覚構造と揃える)、時刻オミット (Phase 2 Drawer 移行)
+        // VP-83 refinement 9/11: Title + address の縦積み
+        // Project header は Lane 行より視覚階層が上 → .headline で格上げ
+        // Lane 行との差別化: headline (title) + bold address
         VStack(alignment: .leading, spacing: 2) {
-            // 1行目: Project 名 (title)
+            // 1行目: Project 名 (title、headline で Lane 行より強調)
             Text(project.name)
-                .fontWeight(project.isRunning ? .semibold : .regular)
+                .font(.headline)
+                .fontWeight(project.isRunning ? .bold : .semibold)
                 .lineLimit(1)
 
             // 2行目: SP actor address (lane-lead address と同じ vocabulary)
@@ -527,6 +529,9 @@ struct RightChevronDisclosureStyle: DisclosureGroupStyle {
 
             if configuration.isExpanded {
                 configuration.content
+                    // Lane rows を Project header から視覚的にインデント
+                    // (VP-83 refinement 11: Lane は左 pad spacingMd = 18px)
+                    .padding(.leading, CreoUITokens.spacingMd)
             }
         }
     }
