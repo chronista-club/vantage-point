@@ -236,35 +236,9 @@ struct MainWindowView: View {
         }
         .ignoresSafeArea(.all, edges: .top)
         .animation(.easeInOut(duration: 0.2), value: sidebarVisible)
-        // Command Palette ⌘K overlay (T6)
-        .overlay {
-            if commandPaletteVisible {
-                ZStack(alignment: .top) {
-                    Color.black.opacity(0.35)
-                        .ignoresSafeArea()
-                        .onTapGesture { commandPaletteVisible = false }
-                    CommandPaletteView(
-                        laneRegistry: laneRegistry,
-                        appActions: paletteActions,
-                        onSelectLane: { record in
-                            selectedProjectPath = record.path
-                        },
-                        onSelectAction: { action in
-                            executePaletteAction(action)
-                        },
-                        onClose: { commandPaletteVisible = false }
-                    )
-                    .padding(.top, 80)
-                    .transition(.move(edge: .top).combined(with: .opacity))
-                }
-                .animation(.smooth(duration: 0.18), value: commandPaletteVisible)
-            }
-        }
+        .overlay { commandPaletteOverlay }
         .onReceive(NotificationCenter.default.publisher(for: .openCommandPalette)) { _ in
-            commandPaletteVisible = true
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .openDesignInspector)) { _ in
-            openWindow(id: "design-inspector")
+            handleOpenCommandPalette()
         }
         .onAppear {
             loadProjects()
@@ -682,6 +656,34 @@ struct MainWindowView: View {
 
     /// プロジェクトパスから tmux セッション名を生成
     /// tmux session 名 (Phase L5: LaneRegistry に集約、Registry lookup を優先)
+    private func handleOpenCommandPalette() {
+        commandPaletteVisible = true
+    }
+
+    /// Command Palette overlay view (型推論簡易化のため分離)
+    @ViewBuilder
+    private var commandPaletteOverlay: some View {
+        if commandPaletteVisible {
+            commandPaletteBody
+        }
+    }
+
+    private var commandPaletteBody: some View {
+        ZStack(alignment: .top) {
+            Color.black.opacity(0.35)
+                .ignoresSafeArea()
+                .onTapGesture { commandPaletteVisible = false }
+            CommandPaletteView(
+                laneRegistry: laneRegistry,
+                appActions: paletteActions,
+                onSelectLane: { record in selectedProjectPath = record.path },
+                onSelectAction: { action in executePaletteAction(action) },
+                onClose: { commandPaletteVisible = false }
+            )
+            .padding(.top, 80)
+        }
+    }
+
     /// Command Palette の App Action 一覧
     private var paletteActions: [AppAction] {
         [
