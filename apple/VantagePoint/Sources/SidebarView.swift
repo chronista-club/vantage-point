@@ -390,7 +390,8 @@ struct SidebarLeadRow: View {
                     laneActor: leadActor,
                     unreadCount: Int(ccwireSession?.pendingMessages ?? 0),
                     hasNotification: hasNotification,
-                    wireStatus: ccwireSession?.status
+                    wireStatus: ccwireSession?.status,
+                    forceShort: true
                 )
             }
         }
@@ -454,7 +455,8 @@ struct SidebarWorkerRow: View {
                     laneActor: workerLaneActor,
                     unreadCount: Int(ccwireSession?.pendingMessages ?? 0),
                     hasNotification: hasNotification,
-                    wireStatus: ccwireSession?.status
+                    wireStatus: ccwireSession?.status,
+                    forceShort: true
                 )
             }
         }
@@ -652,15 +654,24 @@ struct StandRef {
 struct StandDotButton: View {
     let stand: StandRef
 
+    /// 強制 short form (Lane row 用、VP-83 refinement 14)
+    /// Lane は Project accordion の中にある = 所属 project が tree で自明なので、
+    /// `@project` は redundant。default false、Lane 側で明示的に true を渡す。
+    var forceShort: Bool = false
+
     /// Editor mode 切替 (default = off = basic UI)
     /// opt-in: Drawer / preferences で on にすると alias 短縮表示
     @AppStorage("vp.ui.editorMode") private var editorMode: Bool = false
 
     /// 表示用 address
+    /// - forceShort=true (Lane row): 常に `@project` 省略
     /// - editor mode off (basic UI): full canonical `hd.lead@vantage-point`
     /// - editor mode on (alias): `@project` 省略版 `hd.lead`
+    ///
+    /// ※ copy value (`stand.address`) は常に full canonical — msg_send で
+    /// 使える実 actor address 形を保つ
     private var displayText: String {
-        if editorMode, let atIdx = stand.address.firstIndex(of: "@") {
+        if (forceShort || editorMode), let atIdx = stand.address.firstIndex(of: "@") {
             return String(stand.address[..<atIdx])
         }
         return stand.address
@@ -707,10 +718,12 @@ struct UnifiedStatusBadge: View {
     var hasNotification: Bool = false
     /// msgbox / ccwire 状態 ("connected" / "idle" / "disconnected" / "stale" / nil)
     var wireStatus: String? = nil
+    /// 強制 short form (Lane row 用、`@project` 省略)
+    var forceShort: Bool = false
 
     var body: some View {
         HStack(spacing: 6) {
-            StandDotButton(stand: laneActor)
+            StandDotButton(stand: laneActor, forceShort: forceShort)
 
             // msgbox 活動状態 (wire status)
             if let status = wireStatus {
