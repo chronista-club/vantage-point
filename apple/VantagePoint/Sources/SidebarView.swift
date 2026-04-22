@@ -574,30 +574,33 @@ struct SidebarStand: Equatable {
 /// - content: List が自動で row insert/remove を animate
 /// - header bg: transition 180ms
 struct RightChevronDisclosureStyle: DisclosureGroupStyle {
+    /// Expand/shrink アニメーション (VP-83 refinement 17)
+    ///
+    /// `.smooth(duration:extraBounce:)` は macOS 14+ の natural spring。
+    /// extraBounce: 0 で overshoot なし、smooth damping で accordion に最適。
+    /// duration 0.28 は人間の知覚的 comfort zone (200-300ms) の中央付近。
+    private static let expandAnimation: Animation = .smooth(duration: 0.28, extraBounce: 0)
+
     func makeBody(configuration: Configuration) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Header row (閉/開 共通) — 角丸なし、sharp rectangular bg
+            // Header row — chevron オミット、header 全体が tap area
+            // open/close 状態は header bg tint + content の有無で自明
             HStack(spacing: 8) {
                 configuration.label
-                Spacer(minLength: 4)
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(Color.colorTextTertiary)
-                    .rotationEffect(.degrees(configuration.isExpanded ? 90 : 0))
-                    .animation(.easeInOut(duration: 0.22), value: configuration.isExpanded)
+                Spacer(minLength: 0)
             }
             .padding(.horizontal, CreoUITokens.spacingSm)
             .padding(.vertical, CreoUITokens.spacingXs + 2)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
-                // Open 時のみ header subtle tint (sharp 矩形、角丸なし)
+                // Open 時のみ header subtle tint (active state を bg で示す)
                 Color.colorSurfaceBgEmphasis
                     .opacity(configuration.isExpanded ? 0.35 : 0)
-                    .animation(.easeInOut(duration: 0.18), value: configuration.isExpanded)
+                    .animation(Self.expandAnimation, value: configuration.isExpanded)
             )
             .contentShape(Rectangle())
             .onTapGesture {
-                withAnimation(.easeInOut(duration: 0.22)) {
+                withAnimation(Self.expandAnimation) {
                     configuration.isExpanded.toggle()
                 }
             }
@@ -618,12 +621,14 @@ struct RightChevronDisclosureStyle: DisclosureGroupStyle {
                     .padding(.leading, CreoUITokens.spacingSm)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+                // 対称的な shutter transition: 上からロールダウン / 上へロールアップ
                 .transition(
                     .asymmetric(
-                        insertion: .opacity.combined(with: .move(edge: .top)),
-                        removal: .opacity
+                        insertion: .move(edge: .top).combined(with: .opacity),
+                        removal: .move(edge: .top).combined(with: .opacity)
                     )
                 )
+                .clipped()  // 上方向へのスライドが header を突き抜けないよう clip
             }
 
             // Project 間の sharp boundary (hairline divider)
