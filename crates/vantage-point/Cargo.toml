@@ -105,8 +105,9 @@ notify = "8"
 # Regex (for log level filtering in file watcher)
 regex = "1"
 
-# ccwire (SQLite peer-to-peer messaging)
-rusqlite = { workspace = true }
+# Phase L7d: rusqlite dep 削除 — ccwire.rs 除去で不要に
+# (msgbox / Mailbox は SurrealDB に統一)
+# rusqlite = { workspace = true }
 
 # SurrealDB (状態管理 + Mailbox の統一データベース)
 surrealdb = { workspace = true }

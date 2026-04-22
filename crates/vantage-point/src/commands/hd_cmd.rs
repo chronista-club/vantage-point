@@ -182,15 +182,9 @@ fn hd_list(project_name: &str, other_prefixes: &[String]) -> Result<()> {
 
         // セッション名から ID を抽出
         let id = extract_id_from_session(session, &prefix);
-        let registered = crate::ccwire::is_registered(session);
-
         let id_display = id.unwrap_or("(default)");
-        let ccwire_icon = if registered { "✅" } else { "❌" };
-
-        println!(
-            "  {} {} (tmux: ✅, ccwire: {})",
-            id_display, session, ccwire_icon
-        );
+        // Phase L7d: ccwire 表示削除
+        println!("  {} {} (tmux: ✅)", id_display, session);
     }
 
     if !found {

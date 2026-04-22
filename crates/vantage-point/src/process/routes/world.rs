@@ -358,18 +358,16 @@ pub async fn world_unregister_process(
     )
 }
 
-/// GET /api/world/ccwire/sessions - ccwire セッション一覧
+/// GET /api/world/ccwire/sessions - msgbox セッション一覧
+///
+/// Phase L7d: ccwire registry 廃止、Mailbox Router 経由に切替るまでは
+/// 空 list を返す stub。endpoint path は互換のため維持 (Mac app が叩く)。
+/// 将来: daemon の Mailbox Router.boxes + msgbox table を aggregate。
 pub async fn world_ccwire_sessions() -> impl IntoResponse {
-    match crate::ccwire::list_sessions() {
-        Ok(sessions) => (
-            axum::http::StatusCode::OK,
-            Json(serde_json::json!({ "sessions": sessions })),
-        ),
-        Err(e) => (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": e.to_string()})),
-        ),
-    }
+    (
+        axum::http::StatusCode::OK,
+        Json(serde_json::json!({ "sessions": Vec::<()>::new() })),
+    )
 }
 
 /// POST /api/world/refresh - Refresh process status
