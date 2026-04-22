@@ -1284,10 +1284,11 @@ enum WorldStatus: Equatable {
 
 /// システム restart の phase — footer に逐次表示される
 enum RestartPhase: Equatable {
-    case stoppingWorld       // Backend daemon stop
-    case killingTmux         // tmux sessions kill (SPs 巻き込み)
+    case stoppingProjects    // 稼働中の各 SP を明示的 kill
+    case stoppingWorld       // World (daemon) stop
+    case killingTmux         // tmux sessions kill (HD agent 含む)
     case waitingShutdown     // shutdown 待ち
-    case startingWorld       // Backend daemon start
+    case startingWorld       // World (daemon) start
     case waitingHealth       // /api/health が通るまで poll
     case reconnectingSPs     // SP auto_start + project list reconnect
     case verifying           // 最終確認
@@ -1296,6 +1297,7 @@ enum RestartPhase: Equatable {
 
     var displayText: String {
         switch self {
+        case .stoppingProjects:   "Stopping projects…"
         case .stoppingWorld:      "Stopping World…"
         case .killingTmux:        "Closing terminals…"
         case .waitingShutdown:    "Waiting for shutdown…"

@@ -765,11 +765,13 @@ struct MainWindowView: View {
         }
     }
 
-    /// システム全体を再起動 — TheWorld daemon + tmux sessions + SPs
+    /// World を再接続 — Local で動く VP 関連全プロセスを停止 → 再起動 → 順次復活
     ///
-    /// Phase-based flow で status を逐次 footer に流す (VP-83 refinement 34):
-    /// stoppingWorld → killingTmux → waitingShutdown → startingWorld →
-    /// waitingHealth (health poll) → verifying → complete
+    /// Phase flow (VP-83 refinement 39):
+    /// stoppingProjects (各 SP を順次 stop) → stoppingWorld (daemon stop) →
+    /// killingTmux → waitingShutdown → startingWorld → waitingHealth →
+    /// reconnectingSPs (Current Projects が順次 running 状態に復活) →
+    /// verifying → complete
     private func restartWorld() {
         Task {
             @MainActor func update(_ phase: RestartPhase) {
@@ -777,12 +779,25 @@ struct MainWindowView: View {
                 logger.info("[VP]restart phase: \(phase.displayText)")
             }
 
+            // --- 停止フェーズ: Local VP 関連全プロセス kill ---
+
+            await update(.stoppingProjects)
+            // 稼働中の SP を 1 個ずつ stop (順次落ちていく様子を sidebar で見せる)
+            let runningSnapshot = await MainActor.run {
+                self.projects.filter { $0.isRunning }
+            }
+            for project in runningSnapshot {
+                try? await theWorldClient.stopProcess(projectName: project.name)
+                await refreshAll()
+                try? await Task.sleep(nanoseconds: 180_000_000)  // 180ms gap
+            }
+
             await update(.stoppingWorld)
             try? await runShell("vp stop --port 32000")
 
             await update(.killingTmux)
-            // VP 関連 tmux session を全 kill。kill-server は同一 user の
-            // 他 tmux も巻き込むため、session 名単位の kill に留める。
+            // VP 関連 tmux session を全 kill。kill-server は他 user tmux を
+            // 巻き込むため、session 名単位の kill に留める。
             try? await runShell("""
                 tmux ls 2>/dev/null \
                   | awk -F: '{print $1}' \
@@ -791,14 +806,16 @@ struct MainWindowView: View {
                 """)
 
             await update(.waitingShutdown)
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+
+            // --- 起動フェーズ: daemon up → project 順次復活 ---
 
             await update(.startingWorld)
             try? await runShell("vp world", detached: true)
 
             await update(.waitingHealth)
             var ready = false
-            for _ in 0..<30 {  // 最大 15 秒 (500ms × 30)
+            for _ in 0..<30 {  // 最大 15 秒
                 try? await Task.sleep(nanoseconds: 500_000_000)
                 if (try? await theWorldClient.healthCheck()) == true {
                     ready = true
@@ -813,17 +830,37 @@ struct MainWindowView: View {
             }
 
             await update(.reconnectingSPs)
-            // daemon が auto_start の SP を re-spawn する時間を与える
-            // + project list を refresh して reconnect
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
-            await refreshAll()
+            // enabled projects が auto_start で順次 running に戻るのを poll。
+            // 500ms 毎に refreshAll、Sidebar の Agent icon status が順次
+            // active (緑) に切り替わっていく様子が見える。
+            let expected = await MainActor.run {
+                self.projects.filter { $0.enabled }.count
+            }
+            var allUp = false
+            for _ in 0..<30 {  // 最大 15 秒
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                await refreshAll()
+                let runningCount = await MainActor.run {
+                    self.projects.filter { $0.isRunning }.count
+                }
+                if expected == 0 || runningCount >= expected {
+                    allUp = true
+                    break
+                }
+            }
 
             await update(.verifying)
-            try? await Task.sleep(nanoseconds: 500_000_000)
+            try? await Task.sleep(nanoseconds: 400_000_000)
 
-            await update(.complete)
-            try? await Task.sleep(nanoseconds: 800_000_000)
-            await refreshAll()  // 正規の connected(...) 状態へ
+            if allUp {
+                await update(.complete)
+                try? await Task.sleep(nanoseconds: 700_000_000)
+                await refreshAll()  // 正規の connected(...) へ
+            } else {
+                // daemon は up だが projects が完全復活していない
+                await update(.failed("Some projects did not restart"))
+                await refreshAll()
+            }
         }
     }
 
