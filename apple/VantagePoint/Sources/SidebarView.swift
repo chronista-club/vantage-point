@@ -249,7 +249,7 @@ struct SidebarView: View {
     @ViewBuilder
     private func laneRowBackground(isFocused: Bool) -> some View {
         Rectangle()
-            .fill(isFocused ? Color.colorSurfaceBgEmphasis.opacity(0.5) : Color.clear)
+            .fill(isFocused ? Color.colorSemanticSuccess.opacity(0.28) : Color.clear)
     }
 
     /// プロジェクト行のコンテキストメニュー
@@ -604,9 +604,9 @@ struct RightChevronDisclosureStyle: DisclosureGroupStyle {
             .padding(.vertical, CreoUITokens.spacingXs + 2)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
-                // Open 時のみ header extra tint (base tint に重ねる overlay)
-                Color.colorSurfaceBgEmphasis
-                    .opacity(configuration.isExpanded ? 0.22 : 0)
+                // Open 時のみ header extra tint (緑系、base tint に重ねる overlay)
+                Color.colorSemanticSuccess
+                    .opacity(configuration.isExpanded ? 0.14 : 0)
                     .animation(Self.expandAnimation, value: configuration.isExpanded)
             )
             .contentShape(Rectangle())
@@ -647,10 +647,10 @@ struct RightChevronDisclosureStyle: DisclosureGroupStyle {
                 .frame(height: 1)
                 .frame(maxWidth: .infinity)
         }
-        // Project card 全体の base tint (open 時、sharp 矩形、side ピタッと揃う)
+        // Project card 全体の base tint (open 時、緑系 subtle、sharp 矩形)
         .background(
-            Color.colorSurfaceBgEmphasis
-                .opacity(configuration.isExpanded ? 0.14 : 0)
+            Color.colorSemanticSuccess
+                .opacity(configuration.isExpanded ? 0.08 : 0)
                 .animation(Self.expandAnimation, value: configuration.isExpanded)
         )
     }
