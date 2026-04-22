@@ -255,7 +255,7 @@ struct SidebarView: View {
                 .listRowInsets(EdgeInsets())
                 .listRowBackground(laneRowBackground(isFocused: selection == worker.id))
                 .contextMenu {
-                    Button("HD をリスタート", systemImage: "arrow.clockwise") {
+                    Button("エージェントを再起動", systemImage: "arrow.clockwise") {
                         onRestartHD?(worker.path)
                     }
                 }
@@ -294,21 +294,21 @@ struct SidebarView: View {
     private func projectContextMenu(project: SidebarProject) -> some View {
         // enable/disable トグル
         if project.enabled {
-            Button("SP を停止", systemImage: "stop.circle") {
+            Button("プロジェクトを停止", systemImage: "stop.circle") {
                 onToggleEnabled?(project.path, false)
             }
         } else {
-            Button("SP を有効化", systemImage: "play.circle") {
+            Button("プロジェクトを有効化", systemImage: "play.circle") {
                 onToggleEnabled?(project.path, true)
             }
         }
         Divider()
-        // HD は SP 無しでも独立動作可能（SP 停止中でもリスタート可）
-        Button("HD をリスタート", systemImage: "arrow.clockwise") {
+        // エージェントはプロジェクト停止中でも独立起動可
+        Button("エージェントを再起動", systemImage: "arrow.clockwise") {
             onRestartHD?(project.path)
         }
-        // SP リスタートはプロセス稼働中のみ有効
-        Button("SP をリスタート", systemImage: "bolt.trianglebadge.exclamationmark") {
+        // プロジェクト再起動は稼働中のみ有効
+        Button("プロジェクトを再起動", systemImage: "bolt.trianglebadge.exclamationmark") {
             onRestartSP?(project.path)
         }
         .disabled(!project.isRunning)
@@ -485,11 +485,12 @@ struct SidebarLeadRow: View {
     }
 
     /// Lead Lane を代表する lane-lead actor: `hd.lead@{project}`
+    /// displayName は tooltip 表示 — layer 2 で JoJo 名 (Heaven's Door) を併記
     private var leadActor: StandRef {
         StandRef(
             status: project.hasHD ? .active : .inactive,
             address: "hd.lead@\(project.name)",
-            displayName: "Heaven's Door (Lead)"
+            displayName: "Lead Agent — Heaven's Door 📖"
         )
     }
 }
@@ -579,7 +580,7 @@ struct SidebarWorkerRow: View {
         return StandRef(
             status: worker.hasHD ? .active : .inactive,
             address: "hd.\(lane)@\(proj)",
-            displayName: "Heaven's Door (\(lane))"
+            displayName: "Agent \(lane) — Heaven's Door 📖"
         )
     }
 }
@@ -1262,11 +1263,11 @@ enum RestartPhase: Equatable {
     var displayText: String {
         switch self {
         case .stoppingWorld:      "Stopping backend…"
-        case .killingTmux:        "Closing tmux sessions…"
+        case .killingTmux:        "Closing terminals…"
         case .waitingShutdown:    "Waiting for shutdown…"
         case .startingWorld:      "Starting backend…"
         case .waitingHealth:      "Waiting for health…"
-        case .reconnectingSPs:    "Reconnecting SPs…"
+        case .reconnectingSPs:    "Reconnecting projects…"
         case .verifying:          "Verifying…"
         case .complete:           "Ready"
         case .failed(let msg):    "Failed: \(msg)"
@@ -1314,7 +1315,7 @@ struct WorldStatusFooter: View {
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
                 .disabled(isRestarting)
-                .help("バックエンドを再接続 (tmux / daemon / SPs)")
+                .help("バックエンドを再接続（ターミナル・デーモン・プロジェクト）")
             case .disconnected:
                 Text("Offline")
                     .font(.caption2)

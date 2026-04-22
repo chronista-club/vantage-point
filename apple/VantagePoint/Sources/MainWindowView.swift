@@ -40,10 +40,12 @@ let splitDirections: [SplitDirection] = [
 ]
 
 /// コンテンツ種別の一覧（The Hand, Paisley Park, Heaven's Door）
+// 表側は technical 用語で統一。JoJo 名は tooltip / doc / code comment
+// レイヤー 2 以降で見えてくる (VP-83 refinement 36)
 let splitContents: [SplitContent] = [
-    SplitContent(id: 0, label: "The Hand", emoji: "✋", contentType: "shell"),
-    SplitContent(id: 1, label: "Paisley Park", emoji: "🧭", contentType: "pp"),
-    SplitContent(id: 2, label: "Heaven's Door", emoji: "📖", contentType: "agent"),
+    SplitContent(id: 0, label: "Shell", emoji: "✋", contentType: "shell"),
+    SplitContent(id: 1, label: "Navigator", emoji: "🧭", contentType: "pp"),
+    SplitContent(id: 2, label: "Agent", emoji: "📖", contentType: "agent"),
 ]
 
 struct MainWindowView: View {

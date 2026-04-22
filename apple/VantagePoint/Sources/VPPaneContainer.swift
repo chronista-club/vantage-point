@@ -375,16 +375,16 @@ struct PaneStandInfo {
     let label: String     // 表示名
     let color: Color      // アクセントカラー
 
-    /// contentType から Stand 情報を導出
+    /// contentType から Stand 情報を導出 (表 label は technical、内部は Stand 名)
     static func from(leaf: VPPaneLeaf) -> PaneStandInfo {
         switch leaf.contentType {
         case "canvas", "pp":
-            return PaneStandInfo(icon: "safari", label: "Paisley Park", color: .cyan)
+            return PaneStandInfo(icon: "safari", label: "Navigator", color: .cyan)
         case "shell":
-            return PaneStandInfo(icon: "terminal", label: "The Hand", color: .orange)
+            return PaneStandInfo(icon: "terminal", label: "Shell", color: .orange)
         default: // "agent", "hd"
-            // paneSessionName があれば追加 HD ペイン
-            let label = leaf.paneSessionName != nil ? "Heaven's Door" : "Lead-HD"
+            // paneSessionName があれば追加 Agent pane、なければ Lead Agent
+            let label = leaf.paneSessionName != nil ? "Agent" : "Lead Agent"
             return PaneStandInfo(icon: "book", label: label, color: .green)
         }
     }

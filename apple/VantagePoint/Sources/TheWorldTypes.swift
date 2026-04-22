@@ -269,13 +269,13 @@ enum TheWorldError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .invalidResponse:
-            "Invalid response from TheWorld"
+            "Invalid response from backend"
         case let .httpError(code):
             "HTTP error: \(code)"
         case let .serverError(message):
             message
         case .notAvailable:
-            "TheWorld is not available"
+            "Backend is not available"
         }
     }
 }
