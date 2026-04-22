@@ -175,6 +175,10 @@ struct SidebarView: View {
             }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
+            // macOS List の system selection overlay (blue) を透明化。
+            // 自前の .listRowBackground + laneRowBackground() が唯一の
+            // selection visual になる (VP-83 refinement 20)
+            .tint(.clear)
             .onDrop(of: [.fileURL], isTargeted: nil) { providers in
                 handleDrop(providers: providers)
             }
