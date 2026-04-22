@@ -246,7 +246,16 @@ struct SidebarView: View {
             )
             .contextMenu { projectContextMenu(project: project) }
         }
-        .disclosureGroupStyle(RightChevronDisclosureStyle(tokens: tokens))
+        .disclosureGroupStyle(RightChevronDisclosureStyle(
+            tokens: tokens,
+            isProjectFocused: isProjectFocused(project)
+        ))
+    }
+
+    /// Project の配下に focused Lane があるか判定 (selection が Lead or Worker の tag と一致)
+    private func isProjectFocused(_ project: SidebarProject) -> Bool {
+        if selection == project.id { return true }
+        return project.workers.contains { selection == $0.id }
     }
 
     /// Lane row の背景 (sharp 矩形、角丸なし)
@@ -594,6 +603,13 @@ struct RightChevronDisclosureStyle: DisclosureGroupStyle {
     /// Design token store (Inspector で live edit)
     let tokens: DesignTokenStore
 
+    /// この Project の配下に focused Lane があるか (selection の親かどうか)
+    /// VP-83 refinement 29: 選択中のみ濃く、他の open project は dim (40%) 表示
+    var isProjectFocused: Bool = false
+
+    /// 非選択 Project の tint dim 係数
+    private static let dimFactor: Double = 0.4
+
     func makeBody(configuration: Configuration) -> some View {
         // Open 時 Project card 全体を subtle tint で塗り、header + content が
         // 同じ area にまとまっているように見せる (VP-83 refinement 18)
@@ -615,8 +631,9 @@ struct RightChevronDisclosureStyle: DisclosureGroupStyle {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 // Open 時のみ header extra tint (緑系、tokens driven)
+                // 選択中のみ full、非選択 open は dimFactor で弱める
                 Color.colorSemanticSuccess
-                    .opacity(configuration.isExpanded ? tokens.sidebarHeaderOverlayOpacity : 0)
+                    .opacity(headerOverlayOpacity(isExpanded: configuration.isExpanded))
                     .animation(Self.expandAnimation, value: configuration.isExpanded)
             )
             .contentShape(Rectangle())
@@ -657,12 +674,26 @@ struct RightChevronDisclosureStyle: DisclosureGroupStyle {
                 .frame(height: 1)
                 .frame(maxWidth: .infinity)
         }
-        // Project card 全体の base tint (open 時、tokens driven)
+        // Project card 全体の base tint (open 時、tokens driven、selection-aware)
         .background(
             Color.colorSemanticSuccess
-                .opacity(configuration.isExpanded ? tokens.sidebarCardBaseOpacity : 0)
+                .opacity(cardBaseOpacity(isExpanded: configuration.isExpanded))
                 .animation(Self.expandAnimation, value: configuration.isExpanded)
         )
+    }
+
+    /// Card base tint opacity (選択中 full / 非選択 open dim)
+    private func cardBaseOpacity(isExpanded: Bool) -> Double {
+        guard isExpanded else { return 0 }
+        let base = tokens.sidebarCardBaseOpacity
+        return isProjectFocused ? base : base * Self.dimFactor
+    }
+
+    /// Header overlay tint opacity (同上)
+    private func headerOverlayOpacity(isExpanded: Bool) -> Double {
+        guard isExpanded else { return 0 }
+        let base = tokens.sidebarHeaderOverlayOpacity
+        return isProjectFocused ? base : base * Self.dimFactor
     }
 }
 
