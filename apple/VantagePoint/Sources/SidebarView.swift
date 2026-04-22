@@ -465,6 +465,7 @@ struct SidebarLeadRow: View {
             // Lane status bar (右端、色=status、反応=focus)
             LaneStatusBar(status: laneStatus, isFocused: isFocused)
                 .padding(.leading, 6)
+                .padding(.trailing, 6)
         }
         .padding(.vertical, 4)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -552,6 +553,7 @@ struct SidebarWorkerRow: View {
             // Lane status bar (右端、色=status、反応=focus)
             LaneStatusBar(status: laneStatus, isFocused: isFocused)
                 .padding(.leading, 6)
+                .padding(.trailing, 6)
         }
         .padding(.vertical, 4)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -795,13 +797,13 @@ struct LaneStatusBar: View {
     let isFocused: Bool
 
     var body: some View {
-        Rectangle()
+        RoundedRectangle(cornerRadius: 2)
             .fill(status.color)
-            .frame(width: isFocused ? 3 : 2)
-            .padding(.vertical, isFocused ? 4 : 6)
+            .frame(width: isFocused ? 4 : 3)
+            .padding(.vertical, isFocused ? 3 : 5)
             .opacity(status.baseOpacity)
             .shadow(
-                color: isFocused ? status.color.opacity(0.6) : .clear,
+                color: isFocused ? status.color.opacity(0.7) : .clear,
                 radius: isFocused ? 4 : 0,
                 x: 0, y: 0
             )
