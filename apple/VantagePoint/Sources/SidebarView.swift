@@ -429,7 +429,7 @@ struct SidebarLeadRow: View {
     var body: some View {
         HStack(spacing: 0) {
             // HD root pane icon badge (VP-83 refinement 31)
-            LaneRootPaneIcon(systemImage: "book.pages")
+            LaneRootPaneIcon(systemImage: "book.pages", status: laneStatus, isFocused: isFocused)
                 .padding(.trailing, 6)
 
             VStack(alignment: .leading, spacing: 2) {
@@ -462,8 +462,8 @@ struct SidebarLeadRow: View {
 
             Spacer(minLength: 0)
 
-            // Lane status bar (右端、色=status、反応=focus)
-            LaneStatusBar(status: laneStatus, isFocused: isFocused)
+            // Lane focus marker (右端、selected 時のみ緑 pill visible)
+            LaneStatusBar(isFocused: isFocused)
                 .padding(.leading, 6)
                 .padding(.trailing, 6)
         }
@@ -517,7 +517,7 @@ struct SidebarWorkerRow: View {
     var body: some View {
         HStack(spacing: 0) {
             // HD root pane icon badge (VP-83 refinement 31)
-            LaneRootPaneIcon(systemImage: "book.pages")
+            LaneRootPaneIcon(systemImage: "book.pages", status: laneStatus, isFocused: isFocused)
                 .padding(.trailing, 6)
 
             VStack(alignment: .leading, spacing: 2) {
@@ -550,8 +550,8 @@ struct SidebarWorkerRow: View {
 
             Spacer(minLength: 0)
 
-            // Lane status bar (右端、色=status、反応=focus)
-            LaneStatusBar(status: laneStatus, isFocused: isFocused)
+            // Lane focus marker (右端、selected 時のみ緑 pill visible)
+            LaneStatusBar(isFocused: isFocused)
                 .padding(.leading, 6)
                 .padding(.trailing, 6)
         }
@@ -784,31 +784,28 @@ enum LaneStatus: Equatable {
     }
 }
 
-/// Lane の status bar — Lane row 右端に常在、色で状態、反応で focus を表現
+/// Lane の focus marker — Lane row 右端、**選択中かどうか** のみを示す
 ///
-/// VP-83 refinement 32: 左端の `LaneFocusLight` (focus 専用) を廃止して、
-/// 右端に **status + focus の複合メタファ** として再配置。
+/// VP-83 refinement 38: Agent status 表現は LaneRootPaneIcon に移譲。
+/// このバーは「selected Lane の右端に発光する緑 pill」として役割固定。
 ///
-/// - 色: Lane status (active=緑 / idle=gray / notification=warning / error=red)
-/// - focused: width 微増 + glow shadow で視覚的に強調
-/// - 将来: メッセージ受信 pulse animation 等の "反応" を追加
+/// - isFocused=true: 緑 pill + glow
+/// - isFocused=false: 非表示 (width 0 + opacity 0)
 struct LaneStatusBar: View {
-    let status: LaneStatus
     let isFocused: Bool
 
     var body: some View {
         RoundedRectangle(cornerRadius: 2)
-            .fill(status.color)
-            .frame(width: isFocused ? 4 : 3)
-            .padding(.vertical, isFocused ? 3 : 5)
-            .opacity(status.baseOpacity)
+            .fill(Color.colorSemanticSuccess)
+            .frame(width: isFocused ? 4 : 0)
+            .padding(.vertical, 3)
+            .opacity(isFocused ? 1 : 0)
             .shadow(
-                color: isFocused ? status.color.opacity(0.7) : .clear,
+                color: isFocused ? Color.colorSemanticSuccess.opacity(0.7) : .clear,
                 radius: isFocused ? 4 : 0,
                 x: 0, y: 0
             )
-            .animation(.easeInOut(duration: 0.2), value: isFocused)
-            .animation(.easeInOut(duration: 0.25), value: status)
+            .animation(.easeInOut(duration: 0.22), value: isFocused)
     }
 }
 
@@ -825,18 +822,53 @@ struct LaneStatusBar: View {
 /// - icon: SF Symbol (HD = `text.book.closed`、将来 pane kind 別)
 struct LaneRootPaneIcon: View {
     let systemImage: String
-    var tint: Color = .colorTextSecondary
+    var status: LaneStatus = .inactive
+    var isFocused: Bool = false
 
     var body: some View {
         Image(systemName: systemImage)
             .font(.system(size: 13, weight: .medium))
-            .foregroundStyle(tint)
+            .foregroundStyle(iconColor)
             .frame(width: 14, height: 14)
             .padding(8)
             .background(
                 RoundedRectangle(cornerRadius: 8)
-                    .fill(Color.colorSurfaceBgEmphasis.opacity(0.7))
+                    .fill(backgroundColor)
             )
+            .shadow(
+                color: glowColor,
+                radius: isFocused ? 3 : 0, x: 0, y: 0
+            )
+            .animation(.easeInOut(duration: 0.22), value: status)
+            .animation(.easeInOut(duration: 0.22), value: isFocused)
+    }
+
+    /// icon foreground — status.color を solid (inactive のみ tertiary)
+    private var iconColor: Color {
+        switch status {
+        case .inactive: Color.colorTextTertiary
+        default:        status.color
+        }
+    }
+
+    /// 下地 tint — status color を低 opacity で (status の tone を area で示す)
+    private var backgroundColor: Color {
+        switch status {
+        case .inactive:      Color.colorSurfaceBgEmphasis.opacity(0.5)
+        case .active:        status.color.opacity(0.18)
+        case .idle:          Color.colorSurfaceBgEmphasis.opacity(0.7)
+        case .notification:  status.color.opacity(0.28)
+        case .error:         status.color.opacity(0.25)
+        }
+    }
+
+    /// focused 時のみ glow (active/notification/error は強め、idle は subtle)
+    private var glowColor: Color {
+        guard isFocused else { return .clear }
+        switch status {
+        case .inactive, .idle: return .clear
+        default:               return status.color.opacity(0.55)
+        }
     }
 }
 
@@ -1264,10 +1296,10 @@ enum RestartPhase: Equatable {
 
     var displayText: String {
         switch self {
-        case .stoppingWorld:      "Stopping backend…"
+        case .stoppingWorld:      "Stopping World…"
         case .killingTmux:        "Closing terminals…"
         case .waitingShutdown:    "Waiting for shutdown…"
-        case .startingWorld:      "Starting backend…"
+        case .startingWorld:      "Starting World…"
         case .waitingHealth:      "Waiting for health…"
         case .reconnectingSPs:    "Reconnecting projects…"
         case .verifying:          "Verifying…"
@@ -1300,7 +1332,7 @@ struct WorldStatusFooter: View {
             case .connected(let version, let startedAt):
                 // Backend (daemon) のバージョン表示 (VP-83 refinement 35)
                 // Mac app は常在、これは backend daemon のみの version
-                Text("Backend v\(version)")
+                Text("World v\(version)")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -1317,7 +1349,7 @@ struct WorldStatusFooter: View {
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
                 .disabled(isRestarting)
-                .help("バックエンドを再接続（ターミナル・デーモン・プロジェクト）")
+                .help("World を再接続（ターミナル・デーモン・プロジェクト）")
             case .disconnected:
                 Text("Offline")
                     .font(.caption2)

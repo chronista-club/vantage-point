@@ -247,7 +247,7 @@ class PopoverViewModel: ObservableObject {
             await refresh()
         } else {
             theWorldState = .disconnected
-            errorMessage = "Backend startup timed out"
+            errorMessage = "World startup timed out"
         }
     }
 
