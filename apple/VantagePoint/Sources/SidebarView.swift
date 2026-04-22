@@ -205,6 +205,7 @@ struct SidebarView: View {
                 SidebarWorkerRow(
                     worker: worker,
                     isLead: false,
+                    parentProjectName: project.name,
                     parentPPStatus: ppBadgeStatus(for: project),
                     ccwireSession: worker.ccwireSession,
                     hasNotification: notifications.contains(worker.path)
@@ -355,56 +356,58 @@ struct SidebarLeadRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            // 1行目: 📖 Lead-HD + ブランチ + 通知バッジ
+            // 1行目: branch primary (Stand icon / "Lead-HD" label オミット、position で Lead 識別)
             HStack(spacing: 6) {
-                Image(systemName: "text.book.closed")
-                    .font(.system(size: 10))
-                    .foregroundStyle(Color.colorSemanticSuccess)
-                Text("Lead-HD")
-                    .font(.callout)
-                    .fontWeight(project.hasHD ? .semibold : .regular)
-                    .lineLimit(1)
                 if let branch = project.branch {
                     Text(branch)
-                        .font(.caption2)
-                        .foregroundStyle(Color.colorTextTertiary)
+                        .font(.callout)
+                        .fontWeight(project.hasHD ? .semibold : .regular)
+                        .foregroundStyle(Color.colorTextPrimary)
                         .lineLimit(1)
+                        .truncationMode(.middle)
+                } else {
+                    Text("(no branch)")
+                        .font(.callout)
+                        .foregroundStyle(Color.colorTextTertiary)
                 }
-                if hasNotification {
-                    Circle()
-                        .fill(Color.colorSemanticWarning)
-                        .frame(width: 7, height: 7)
-                }
+                Spacer()
             }
 
-            // 2行目: SP + HD + PP ステータス
-            HStack(spacing: 6) {
-                StatusBadge(label: "SP", icon: "star", isActive: project.isRunning)
-                StatusBadge(label: "HD", icon: "text.book.closed", isActive: project.hasHD)
-                    .help(leadCcwireTooltip)
-                StatusBadge(label: "PP", icon: "compass.drawing", status: ppStatus)
-
-                // ccwire 未読メッセージ数
-                if let wire = ccwireSession, wire.pendingMessages > 0 {
-                    Text("📨 \(wire.pendingMessages)")
-                        .font(.caption2)
-                        .foregroundStyle(Color.colorSemanticWarning)
-                }
-            }
+            // 2行目: 統合 status cluster — dot のみ、click で address copy
+            UnifiedStatusBadge(
+                stands: leadStands,
+                unreadCount: Int(ccwireSession?.pendingMessages ?? 0),
+                hasNotification: hasNotification
+            )
         }
         .opacity(project.hasHD ? 1.0 : 0.6)
     }
 
-    /// HD バッジのツールチップに ccwire 情報を表示
-    private var leadCcwireTooltip: String {
-        guard let wire = ccwireSession else {
-            return "HD: \(project.hasHD ? "active" : "inactive")"
-        }
-        var tip = "Wire: \(wire.name) (\(wire.status))"
-        if wire.pendingMessages > 0 {
-            tip += "\n未読: \(wire.pendingMessages)件"
-        }
-        return tip
+    /// Lead Lane の 3 Stand (SP, HD, PP) を address 付きで
+    ///
+    /// short but unique canonical form:
+    /// - `sp@{project}` — Star Platinum (project server)
+    /// - `hd.lead@{project}` — Heaven's Door of Lead lane
+    /// - `pp.lead@{project}` — Paisley Park of Lead lane
+    private var leadStands: [StandRef] {
+        let proj = project.name
+        return [
+            StandRef(
+                status: project.isRunning ? .active : .inactive,
+                address: "sp@\(proj)",
+                displayName: "Star Platinum"
+            ),
+            StandRef(
+                status: project.hasHD ? .active : .inactive,
+                address: "hd.lead@\(proj)",
+                displayName: "Heaven's Door (Lead)"
+            ),
+            StandRef(
+                status: ppStatus,
+                address: "pp.lead@\(proj)",
+                displayName: "Paisley Park (Lead)"
+            ),
+        ]
     }
 }
 
@@ -413,8 +416,10 @@ struct SidebarLeadRow: View {
 /// Lane（Lead / Worker）の行表示
 struct SidebarWorkerRow: View {
     let worker: CcwsWorkerInfo
-    /// Lead か Worker か
+    /// Lead か Worker か (VP-83 Phase 1 以降は position で区別、historical flag として残存)
     var isLead: Bool = false
+    /// 親プロジェクト名 (address 生成用: `hd.w-83@{parentProject}`)
+    var parentProjectName: String = ""
     /// 親プロジェクトの PP 状態を継承表示
     var parentPPStatus: BadgeStatus = .inactive
     /// ccwire セッション情報
@@ -422,61 +427,57 @@ struct SidebarWorkerRow: View {
     /// CC 通知バッジ
     var hasNotification: Bool = false
 
-    /// 表示ラベル（Lead-HD / Worker-HD）
-    private var roleLabel: String {
-        isLead ? "Lead-HD" : "Worker-HD"
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            // 1行目: Lane 名 + ブランチ
+            // 1行目: worker suffix (primary) + branch (secondary)。icon / role label オミット
             HStack(spacing: 6) {
-                Image(systemName: isLead ? "text.book.closed" : "arrow.branch")
-                    .font(.system(size: 10))
-                    .foregroundStyle(isLead ? Color.colorSemanticSuccess : Color.colorSemanticInfo)
                 Text(worker.suffix)
                     .font(.callout)
                     .fontWeight(worker.hasHD ? .semibold : .regular)
+                    .foregroundStyle(Color.colorTextPrimary)
                     .lineLimit(1)
                 if let branch = worker.branch {
                     Text(branch)
                         .font(.caption2)
                         .foregroundStyle(Color.colorTextTertiary)
                         .lineLimit(1)
+                        .truncationMode(.middle)
                 }
-                if hasNotification {
-                    Circle()
-                        .fill(Color.colorSemanticWarning)
-                        .frame(width: 7, height: 7)
-                }
+                Spacer()
             }
 
-            // 2行目: HD + PP ステータス
-            HStack(spacing: 6) {
-                StatusBadge(label: roleLabel, icon: "text.book.closed", isActive: worker.hasHD)
-                    .help(workerCcwireTooltip)
-                StatusBadge(label: "PP", icon: "compass.drawing", status: parentPPStatus)
-
-                // ccwire 未読メッセージ数
-                if let wire = ccwireSession, wire.pendingMessages > 0 {
-                    Text("📨 \(wire.pendingMessages)")
-                        .font(.caption2)
-                        .foregroundStyle(Color.colorSemanticWarning)
-                }
-            }
+            // 2行目: 統合 status cluster (HD + PP) — dot のみ、click で address copy
+            UnifiedStatusBadge(
+                stands: workerStands,
+                unreadCount: Int(ccwireSession?.pendingMessages ?? 0),
+                hasNotification: hasNotification
+            )
         }
         .opacity(worker.hasHD ? 1.0 : 0.6)
     }
 
-    private var workerCcwireTooltip: String {
-        guard let wire = ccwireSession else {
-            return "HD: \(worker.hasHD ? "active" : "inactive")"
-        }
-        var tip = "Wire: \(wire.name) (\(wire.status))"
-        if wire.pendingMessages > 0 {
-            tip += "\n未読: \(wire.pendingMessages)件"
-        }
-        return tip
+    /// Worker Lane の 2 Stand (HD, PP) を address 付きで
+    ///
+    /// short but unique canonical form:
+    /// - `hd.{suffix}@{project}`  — Worker Lane の HD
+    /// - `pp.{suffix}@{project}`  — Worker Lane の PP (parent から継承)
+    ///
+    /// worker.suffix = 親 project 名を除いた lane 識別子 (例: "vp-83"、"maru-42")
+    private var workerStands: [StandRef] {
+        let proj = parentProjectName.isEmpty ? "?" : parentProjectName
+        let lane = worker.suffix
+        return [
+            StandRef(
+                status: worker.hasHD ? .active : .inactive,
+                address: "hd.\(lane)@\(proj)",
+                displayName: "Heaven's Door (\(lane))"
+            ),
+            StandRef(
+                status: parentPPStatus,
+                address: "pp.\(lane)@\(proj)",
+                displayName: "Paisley Park (\(lane))"
+            ),
+        ]
     }
 }
 
@@ -516,6 +517,83 @@ struct SidebarStand: Equatable {
         case "idle": Color.colorTextTertiary
         case "disabled": Color.colorTextDisabled
         default: Color.colorTextTertiary
+        }
+    }
+}
+
+// MARK: - 統合 status cluster (VP-83 Phase 1 refinement)
+
+/// Stand の address reference + 状態
+///
+/// Sidebar の dot 1 つ = 1 Stand actor への entry point。
+/// VP-77 §7.1 ActorRef canonical form `{stand}.{lane}@{project}` に準拠。
+/// tooltip で address 確認、click で clipboard copy。
+struct StandRef {
+    let status: BadgeStatus
+    /// Actor address (canonical form、short but unique): `sp@vp`, `hd.lead@vp`, `pp.w-83@vp`
+    let address: String
+    /// tooltip 表示名 (human-readable): "Heaven's Door (Lead)"
+    let displayName: String
+}
+
+/// Stand の状態 dot button。click で address を clipboard に copy、hover で tooltip。
+struct StandDotButton: View {
+    let stand: StandRef
+
+    var body: some View {
+        Circle()
+            .fill(stand.status.color)
+            .frame(width: 8, height: 8)
+            .contentShape(Rectangle())
+            .help("\(stand.displayName)\n\(stand.address) — click to copy")
+            .onTapGesture {
+                copyAddress()
+            }
+            .contextMenu {
+                Button {
+                    copyAddress()
+                } label: {
+                    Label("Copy \(stand.address)", systemImage: "doc.on.doc")
+                }
+            }
+    }
+
+    private func copyAddress() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(stand.address, forType: .string)
+    }
+}
+
+/// Stand 状態 + 通知の統合 cluster
+///
+/// VP-83 Phase 1 refinement:
+/// - Stand icon / label オミット (position で識別)
+/// - dot 色で稼働 status、click で address clipboard copy
+/// - 通知/ccwire unread は右端の count に合流
+///
+/// Lead row: stands = [SP, HD, PP] の 3 dots
+/// Worker row: stands = [HD, PP] の 2 dots
+struct UnifiedStatusBadge: View {
+    let stands: [StandRef]
+    var unreadCount: Int = 0
+    var hasNotification: Bool = false
+
+    var body: some View {
+        HStack(spacing: 5) {
+            ForEach(stands.indices, id: \.self) { i in
+                StandDotButton(stand: stands[i])
+            }
+            if unreadCount > 0 {
+                Text("\(unreadCount)")
+                    .font(.caption2)
+                    .foregroundStyle(Color.colorSemanticWarning)
+                    .padding(.leading, 2)
+            } else if hasNotification {
+                Circle()
+                    .fill(Color.colorSemanticWarning)
+                    .frame(width: 6, height: 6)
+                    .padding(.leading, 2)
+            }
         }
     }
 }
