@@ -43,9 +43,9 @@ actor TheWorldClient {
     }
 
     /// ccwire セッション一覧を取得
-    func listCcwireSessions() async throws -> [CcwireSessionInfo] {
+    func listMsgboxSessions() async throws -> [MsgboxSessionInfo] {
         let url = baseURL.appendingPathComponent("/api/world/ccwire/sessions")
-        let resp: CcwireSessionsResponse = try await getAndDecode(url: url)
+        let resp: MsgboxSessionsResponse = try await getAndDecode(url: url)
         return resp.sessions
     }
 

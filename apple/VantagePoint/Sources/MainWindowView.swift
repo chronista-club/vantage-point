@@ -1084,7 +1084,7 @@ struct MainWindowView: View {
             let registeredProjects = (try? await theWorldClient.listProjects()) ?? []
 
             // ccwire セッション一覧を取得（エラー時は空配列）
-            let ccwireSessions = (try? await theWorldClient.listCcwireSessions()) ?? []
+            let msgboxSessions = (try? await theWorldClient.listMsgboxSessions()) ?? []
 
             // ccws ワーカー + Git ブランチをバックグラウンドでスキャン
             let projectEntries = registeredProjects
@@ -1111,19 +1111,19 @@ struct MainWindowView: View {
                 // Worker に ccwire セッション + CC session title を注入
                 let workers: [CcwsWorkerInfo] = (info?.workers ?? []).map { worker in
                     let workerTmux = worker.name.replacingOccurrences(of: ".", with: "-") + "-vp"
-                    let wireSession = ccwireSessions.first { $0.name == workerTmux }
+                    let wireSession = msgboxSessions.first { $0.name == workerTmux }
                     let workerSessionTitle = ClaudeSessionReader.latestSessionTitle(for: worker.path)
                     return CcwsWorkerInfo(
                         id: worker.id, name: worker.name, suffix: worker.suffix,
                         path: worker.path, branch: worker.branch, hasHD: worker.hasHD,
-                        ccwireSession: wireSession,
+                        msgboxSession: wireSession,
                         ccSessionTitle: workerSessionTitle
                     )
                 }
 
                 // ccwire セッション名マッチング: "{project-name}-vp" パターン
                 let tmuxName = entry.name.replacingOccurrences(of: ".", with: "-") + "-vp"
-                let wireSession = ccwireSessions.first { $0.name == tmuxName }
+                let wireSession = msgboxSessions.first { $0.name == tmuxName }
 
                 if let process = runningByPath[entry.path] {
                     let detail = details[entry.path]
@@ -1139,7 +1139,7 @@ struct MainWindowView: View {
                         branch: branch,
                         hasHD: hasHD,
                         hasNotification: notifications.contains(entry.path),
-                        ccwireSession: wireSession,
+                        msgboxSession: wireSession,
                         enabled: entry.enabled
                     )
                     sp.ccSessionTitle = projectSessionTitle
@@ -1156,7 +1156,7 @@ struct MainWindowView: View {
                         branch: branch,
                         hasHD: hasHD,
                         hasNotification: notifications.contains(entry.path),
-                        ccwireSession: wireSession,
+                        msgboxSession: wireSession,
                         enabled: entry.enabled
                     )
                     sp.ccSessionTitle = projectSessionTitle
@@ -1228,12 +1228,12 @@ struct MainWindowView: View {
     /// 全プロジェクトを非稼働にリセット（workers はローカル情報なので保持）
     private func resetProjectStatus() {
         projects = projects.map { project in
-            // Worker の ccwireSession もクリア（TheWorld オフライン時は ccwire 情報も無効）
+            // Worker の msgboxSession もクリア（TheWorld オフライン時は ccwire 情報も無効）
             let cleanWorkers = project.workers.map { worker in
                 CcwsWorkerInfo(
                     id: worker.id, name: worker.name, suffix: worker.suffix,
                     path: worker.path, branch: worker.branch, hasHD: worker.hasHD,
-                    ccwireSession: nil
+                    msgboxSession: nil
                 )
             }
             return SidebarProject(

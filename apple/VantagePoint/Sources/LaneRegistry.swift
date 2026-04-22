@@ -32,9 +32,72 @@ struct LaneRecord: Identifiable, Equatable {
 
     var id: String { path }
 
-    /// 将来 Port Management 統合用 placeholder
-    /// L3 で LaneRecord が LaneRegistry から slot + lane_index を得て port 計算
-    var ports: [String: UInt16] { [:] }  // TODO: Phase L3 で LanePortLayout 連携
+    /// Project slot (nil = config で未割当、Phase L3 統合後は backend から取得)
+    let slot: UInt16?
+    /// Lane index (0 = Lead、1+ = Worker)
+    let laneIndex: UInt16
+
+    /// Port Management 計算済みの全 role port (Phase L3 完成、slot 未割当時は空)
+    /// `LanePortLayout.ports(slot:laneIndex:)` を build 時に埋める
+    let ports: [String: UInt16]
+}
+
+// MARK: - Port Layout mirror (Phase L3)
+
+/// Swift 側 PortLayout mirror — Rust \`crates/vantage-point/src/port_layout.rs\` の
+/// default 値を Mac app で port 計算するためのミラー。
+///
+/// 将来 (Phase L5 full) backend が `/api/port_layout` 的な endpoint を生やしたら
+/// 取得層に切替、今は default 固定で OK。
+enum LanePortLayout {
+    static let projectSlotBase: UInt16 = 33000
+    static let projectSlotSize: UInt16 = 100
+    static let maxProjects: UInt16 = 20
+    static let laneBaseOffset: UInt16 = 10
+    static let laneSize: UInt16 = 10
+
+    /// Role → offset within Lane
+    static let roles: [String: UInt16] = [
+        "agent": 0,
+        "dev_server": 1,
+        "db_admin": 2,
+        "canvas": 3,
+        "preview": 4,
+    ]
+
+    static func projectBase(slot: UInt16) -> UInt16? {
+        guard slot < maxProjects else { return nil }
+        return projectSlotBase + slot * projectSlotSize
+    }
+
+    static func laneBase(slot: UInt16, laneIndex: UInt16) -> UInt16? {
+        guard let pb = projectBase(slot: slot) else { return nil }
+        let lb = pb + laneBaseOffset + laneIndex * laneSize
+        guard lb + laneSize <= pb + projectSlotSize else { return nil }
+        return lb
+    }
+
+    static func port(slot: UInt16, laneIndex: UInt16, role: String) -> UInt16? {
+        guard let base = laneBase(slot: slot, laneIndex: laneIndex),
+              let offset = roles[role] else { return nil }
+        return base + offset
+    }
+
+    /// 指定 Lane の全 role port を dictionary で返す
+    static func ports(slot: UInt16, laneIndex: UInt16) -> [String: UInt16] {
+        var result: [String: UInt16] = [:]
+        for (role, _) in roles {
+            if let p = port(slot: slot, laneIndex: laneIndex, role: role) {
+                result[role] = p
+            }
+        }
+        return result
+    }
+
+    /// URL 生成 (`http://localhost:{port}`)
+    static func url(slot: UInt16, laneIndex: UInt16, role: String) -> String? {
+        port(slot: slot, laneIndex: laneIndex, role: role).map { "http://localhost:\($0)" }
+    }
 }
 
 /// In-memory Lane Registry (view-time derived)
@@ -58,13 +121,27 @@ struct LaneRegistry {
     }
 
     /// projects array から registry を build (view-time)
+    ///
+    /// - projects の index を project_slot として採用 (config.projects[n].slot が未提供
+    ///   なので view-time 側で n 番目 = slot n として扱う、暫定)
+    /// - Lead = laneIndex 0、Worker = 1, 2, ... の appearance order
     static func build(from projects: [SidebarProject], notifications: Set<String> = []) -> LaneRegistry {
         var records: [LaneRecord] = []
-        for project in projects {
-            records.append(leadRecord(for: project, hasNotification: notifications.contains(project.path)))
-            for worker in project.workers {
-                records.append(workerRecord(for: worker, parent: project,
-                                            hasNotification: notifications.contains(worker.path)))
+        for (slotIdx, project) in projects.enumerated() {
+            let slot = UInt16(slotIdx)
+            records.append(leadRecord(
+                for: project,
+                slot: slot,
+                hasNotification: notifications.contains(project.path)
+            ))
+            for (workerIdx, worker) in project.workers.enumerated() {
+                records.append(workerRecord(
+                    for: worker,
+                    parent: project,
+                    slot: slot,
+                    laneIndex: UInt16(workerIdx + 1),
+                    hasNotification: notifications.contains(worker.path)
+                ))
             }
         }
         return LaneRegistry(records: records)
@@ -83,7 +160,9 @@ struct LaneRegistry {
 
     // MARK: - Record 生成 (内部)
 
-    private static func leadRecord(for project: SidebarProject, hasNotification: Bool) -> LaneRecord {
+    private static func leadRecord(for project: SidebarProject,
+                                   slot: UInt16,
+                                   hasNotification: Bool) -> LaneRecord {
         LaneRecord(
             address: "hd.lead@\(project.name)",
             path: project.path,
@@ -93,14 +172,19 @@ struct LaneRegistry {
             branch: project.branch,
             status: project.projectStatus,
             ccSessionTitle: project.ccSessionTitle,
-            wireStatus: project.ccwireSession?.status,
+            wireStatus: project.msgboxSession?.status,
             unreadCount: project.unreadCount,
-            hasHD: project.hasHD
+            hasHD: project.hasHD,
+            slot: slot,
+            laneIndex: 0,
+            ports: LanePortLayout.ports(slot: slot, laneIndex: 0)
         )
     }
 
     private static func workerRecord(for worker: CcwsWorkerInfo,
                                      parent: SidebarProject,
+                                     slot: UInt16,
+                                     laneIndex: UInt16,
                                      hasNotification: Bool) -> LaneRecord {
         let status = deriveWorkerStatus(worker: worker, hasNotification: hasNotification)
         return LaneRecord(
@@ -112,9 +196,12 @@ struct LaneRegistry {
             branch: worker.branch,
             status: status,
             ccSessionTitle: worker.ccSessionTitle,
-            wireStatus: worker.ccwireSession?.status,
-            unreadCount: Int(worker.ccwireSession?.pendingMessages ?? 0),
-            hasHD: worker.hasHD
+            wireStatus: worker.msgboxSession?.status,
+            unreadCount: Int(worker.msgboxSession?.pendingMessages ?? 0),
+            hasHD: worker.hasHD,
+            slot: slot,
+            laneIndex: laneIndex,
+            ports: LanePortLayout.ports(slot: slot, laneIndex: laneIndex)
         )
     }
 
@@ -130,7 +217,7 @@ struct LaneRegistry {
     private static func deriveWorkerStatus(worker: CcwsWorkerInfo, hasNotification: Bool) -> LaneStatus {
         if !worker.hasHD { return .inactive }
         if hasNotification { return .notification }
-        switch worker.ccwireSession?.status {
+        switch worker.msgboxSession?.status {
         case "connected": return .active
         case "idle": return .idle
         case "stale", "disconnected": return .error

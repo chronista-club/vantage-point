@@ -118,7 +118,7 @@ struct WorldHealthDetail: Codable {
 // MARK: - ccwire Types
 
 /// ccwire セッション情報
-struct CcwireSessionInfo: Codable, Identifiable, Equatable {
+struct MsgboxSessionInfo: Codable, Identifiable, Equatable {
     let name: String
     let status: String
     let pid: Int?
@@ -139,8 +139,8 @@ struct CcwireSessionInfo: Codable, Identifiable, Equatable {
 }
 
 /// ccwire セッション一覧レスポンス
-struct CcwireSessionsResponse: Codable {
-    let sessions: [CcwireSessionInfo]
+struct MsgboxSessionsResponse: Codable {
+    let sessions: [MsgboxSessionInfo]
 }
 
 // MARK: - Update API Types

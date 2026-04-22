@@ -231,7 +231,7 @@ struct SidebarView: View {
             SidebarLeadRow(
                 project: project,
                 ppStatus: ppBadgeStatus(for: project),
-                ccwireSession: project.ccwireSession,
+                msgboxSession: project.msgboxSession,
                 hasNotification: notifications.contains(project.path),
                 isFocused: selection == project.id
             )
@@ -247,7 +247,7 @@ struct SidebarView: View {
                     isLead: false,
                     parentProjectName: project.name,
                     parentPPStatus: ppBadgeStatus(for: project),
-                    ccwireSession: worker.ccwireSession,
+                    msgboxSession: worker.msgboxSession,
                     hasNotification: notifications.contains(worker.path),
                     isFocused: selection == worker.id
                 )
@@ -420,7 +420,7 @@ struct SidebarLeadRow: View {
     /// PP バッジステータス
     var ppStatus: BadgeStatus = .inactive
     /// ccwire セッション情報
-    var ccwireSession: CcwireSessionInfo?
+    var msgboxSession: MsgboxSessionInfo?
     /// CC 通知バッジ
     var hasNotification: Bool = false
     /// 現在 focus されているか (VP-83 refinement 12: focus light)
@@ -466,9 +466,9 @@ struct SidebarLeadRow: View {
 
             // 下段: L3 通知層 (幅いっぱい、上段と切り離し)
             LaneNotificationRow(
-                unreadCount: Int(ccwireSession?.pendingMessages ?? 0),
+                unreadCount: Int(msgboxSession?.pendingMessages ?? 0),
                 hasNotification: hasNotification,
-                wireStatus: ccwireSession?.status
+                wireStatus: msgboxSession?.status
             )
         }
         .padding(.vertical, 4)
@@ -481,7 +481,7 @@ struct SidebarLeadRow: View {
     private var laneStatus: LaneStatus {
         if !project.hasHD { return .inactive }
         if hasNotification { return .notification }
-        switch ccwireSession?.status {
+        switch msgboxSession?.status {
         case "connected": return .active
         case "idle": return .idle
         case "stale", "disconnected": return .error
@@ -520,7 +520,7 @@ struct SidebarWorkerRow: View {
     /// 親プロジェクトの PP 状態を継承表示
     var parentPPStatus: BadgeStatus = .inactive
     /// ccwire セッション情報
-    var ccwireSession: CcwireSessionInfo?
+    var msgboxSession: MsgboxSessionInfo?
     /// CC 通知バッジ
     var hasNotification: Bool = false
     /// 現在 focus されているか (VP-83 refinement 12: focus light)
@@ -562,9 +562,9 @@ struct SidebarWorkerRow: View {
 
             // 下段: L3 通知層 (幅いっぱい)
             LaneNotificationRow(
-                unreadCount: Int(ccwireSession?.pendingMessages ?? 0),
+                unreadCount: Int(msgboxSession?.pendingMessages ?? 0),
                 hasNotification: hasNotification,
-                wireStatus: ccwireSession?.status
+                wireStatus: msgboxSession?.status
             )
         }
         .padding(.vertical, 4)
@@ -577,7 +577,7 @@ struct SidebarWorkerRow: View {
     private var laneStatus: LaneStatus {
         if !worker.hasHD { return .inactive }
         if hasNotification { return .notification }
-        switch ccwireSession?.status {
+        switch msgboxSession?.status {
         case "connected": return .active
         case "idle": return .idle
         case "stale", "disconnected": return .error
@@ -1130,7 +1130,7 @@ struct CcwsWorkerInfo: Identifiable, Equatable {
     let branch: String?
     let hasHD: Bool      // tmux セッションが存在するか
     /// ccwire セッション情報（HD に紐づく）
-    let ccwireSession: CcwireSessionInfo?
+    let msgboxSession: MsgboxSessionInfo?
     /// Claude CLI session title (最新 session の最初 user message、refinement 44)
     var ccSessionTitle: String? = nil
 }
@@ -1149,7 +1149,7 @@ extension SidebarProject {
     var projectStatus: LaneStatus {
         if !hasHD { return .inactive }
         if hasNotification { return .notification }
-        switch ccwireSession?.status {
+        switch msgboxSession?.status {
         case "connected": return .active
         case "idle": return .idle
         case "stale", "disconnected": return .error
@@ -1159,7 +1159,7 @@ extension SidebarProject {
 
     /// 未読 msgbox count (ccwire pendingMessages)
     var unreadCount: Int {
-        Int(ccwireSession?.pendingMessages ?? 0)
+        Int(msgboxSession?.pendingMessages ?? 0)
     }
 }
 
@@ -1190,11 +1190,11 @@ struct SidebarProject: Identifiable, Equatable {
     /// CC からの未読通知あり
     let hasNotification: Bool
     /// ccwire セッション情報（HD に紐づく）
-    let ccwireSession: CcwireSessionInfo?
+    let msgboxSession: MsgboxSessionInfo?
     /// SP 自動起動の有効/無効
     let enabled: Bool
 
-    init(id: String, name: String, displayName: String? = nil, path: String, isRunning: Bool, port: UInt16?, startedAt: Date?, stands: [SidebarStand] = [], workers: [CcwsWorkerInfo] = [], branch: String? = nil, hasHD: Bool = false, hasNotification: Bool = false, ccwireSession: CcwireSessionInfo? = nil, enabled: Bool = true) {
+    init(id: String, name: String, displayName: String? = nil, path: String, isRunning: Bool, port: UInt16?, startedAt: Date?, stands: [SidebarStand] = [], workers: [CcwsWorkerInfo] = [], branch: String? = nil, hasHD: Bool = false, hasNotification: Bool = false, msgboxSession: MsgboxSessionInfo? = nil, enabled: Bool = true) {
         self.id = id
         self.name = name
         self.displayName = displayName
@@ -1207,7 +1207,7 @@ struct SidebarProject: Identifiable, Equatable {
         self.branch = branch
         self.hasHD = hasHD
         self.hasNotification = hasNotification
-        self.ccwireSession = ccwireSession
+        self.msgboxSession = msgboxSession
         self.enabled = enabled
     }
 
@@ -1319,7 +1319,7 @@ enum CcwsDiscovery {
                 path: url.path,
                 branch: branch,
                 hasHD: hasHD,
-                ccwireSession: nil
+                msgboxSession: nil
             )
         }
         .sorted { $0.suffix < $1.suffix }
