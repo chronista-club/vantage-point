@@ -267,8 +267,31 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         fileMenuItem.submenu = fileMenu
         mainMenu.addItem(fileMenuItem)
 
-        // View メニュー（サイドバートグル）
+        // View メニュー（サイドバートグル + Command Palette + Design Inspector）
         let viewMenu = NSMenu(title: "View")
+
+        // Command Palette (⌘K) — T6
+        let paletteItem = NSMenuItem(
+            title: "Command Palette…",
+            action: #selector(openCommandPaletteAction(_:)),
+            keyEquivalent: "k"
+        )
+        paletteItem.keyEquivalentModifierMask = .command
+        paletteItem.target = self
+        viewMenu.addItem(paletteItem)
+
+        // Design Inspector (⌘⇧I)
+        let inspectorItem = NSMenuItem(
+            title: "Design Inspector…",
+            action: #selector(openDesignInspectorAction(_:)),
+            keyEquivalent: "i"
+        )
+        inspectorItem.keyEquivalentModifierMask = [.command, .shift]
+        inspectorItem.target = self
+        viewMenu.addItem(inspectorItem)
+
+        viewMenu.addItem(.separator())
+
         let toggleSidebarItem = NSMenuItem(
             title: "Toggle Sidebar",
             action: #selector(toggleSidebarAction(_:)),
@@ -441,6 +464,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func toggleProjectTabBar(_ sender: Any?) {
         NotificationCenter.default.post(name: .toggleProjectTabBar, object: nil)
+    }
+
+    @objc private func openCommandPaletteAction(_ sender: Any?) {
+        NotificationCenter.default.post(name: .openCommandPalette, object: nil)
+    }
+
+    @objc private func openDesignInspectorAction(_ sender: Any?) {
+        NotificationCenter.default.post(name: .openDesignInspector, object: nil)
     }
 
     @objc private func selectPreviousProject(_ sender: Any?) {

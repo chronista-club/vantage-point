@@ -263,6 +263,9 @@ struct MainWindowView: View {
         .onReceive(NotificationCenter.default.publisher(for: .openCommandPalette)) { _ in
             commandPaletteVisible = true
         }
+        .onReceive(NotificationCenter.default.publisher(for: .openDesignInspector)) { _ in
+            openWindow(id: "design-inspector")
+        }
         .onAppear {
             loadProjects()
         }
@@ -1499,4 +1502,5 @@ extension Notification.Name {
     static let toggleSidebar = Notification.Name("VP.toggleSidebar")
     static let toggleProjectTabBar = Notification.Name("VP.toggleProjectTabBar")
     static let openCommandPalette = Notification.Name("VP.openCommandPalette")
+    static let openDesignInspector = Notification.Name("VP.openDesignInspector")
 }
