@@ -1027,6 +1027,24 @@ extension SidebarProject {
         if let d = displayName, !d.isEmpty { return d }
         return name.titleCased
     }
+
+    /// Project level の agent status (Lead HD 基準、Tab Bar T1 で使用)
+    /// Sidebar Lane row と同じ derivation ロジック
+    var projectStatus: LaneStatus {
+        if !hasHD { return .inactive }
+        if hasNotification { return .notification }
+        switch ccwireSession?.status {
+        case "connected": return .active
+        case "idle": return .idle
+        case "stale", "disconnected": return .error
+        default: return .active
+        }
+    }
+
+    /// 未読 msgbox count (ccwire pendingMessages)
+    var unreadCount: Int {
+        Int(ccwireSession?.pendingMessages ?? 0)
+    }
 }
 
 struct SidebarProject: Identifiable, Equatable {

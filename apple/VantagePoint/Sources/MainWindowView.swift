@@ -1246,10 +1246,12 @@ struct ProjectTabBar: View {
         HStack(spacing: 0) {
             ForEach(Array(projects.enumerated()), id: \.element.id) { index, project in
                 let isSelected = project.path == selectedPath
+                let status = project.projectStatus
+                let unread = project.unreadCount
                 Button {
                     onSelect(project.path)
                 } label: {
-                    HStack(spacing: 4) {
+                    HStack(spacing: 5) {
                         // ⌘1〜9 のみヒント表示（キーバインドは9まで）
                         if index < 9 {
                             Text("⌘\(index + 1)")
@@ -1257,14 +1259,34 @@ struct ProjectTabBar: View {
                                 .foregroundStyle(.tertiary)
                         }
 
-                        // 稼働状態のドット
+                        // VP-83 refinement T1: Agent 4-state dot (Sidebar と同期)
+                        // active=緑 / idle=gray / notification=orange / error=red / inactive=faint
                         Circle()
-                            .fill(project.isRunning ? Color.colorSemanticSuccess : Color.colorTextTertiary)
-                            .frame(width: 6, height: 6)
+                            .fill(status.color)
+                            .frame(width: 7, height: 7)
+                            .opacity(status.baseOpacity)
+                            .shadow(
+                                color: (status == .active || status == .notification)
+                                    ? status.color.opacity(0.5) : .clear,
+                                radius: 2
+                            )
 
-                        Text(project.name)
+                        Text(project.displayTitle)
                             .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
                             .lineLimit(1)
+
+                        // Unread badge (msgbox pendingMessages)
+                        if unread > 0 {
+                            Text("\(unread)")
+                                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(Color.colorSemanticWarning)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 1)
+                                .background(
+                                    Capsule()
+                                        .fill(Color.colorSemanticWarning.opacity(0.18))
+                                )
+                        }
                     }
                     .padding(.horizontal, 10)
                     .padding(.vertical, 5)
@@ -1273,6 +1295,7 @@ struct ProjectTabBar: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(isSelected ? Color.colorTextPrimary : Color.colorTextSecondary)
+                .help("\(project.displayTitle) — \(status.helpText)")
             }
             Spacer()
         }
@@ -1280,6 +1303,19 @@ struct ProjectTabBar: View {
         .padding(.top, 6)
         .padding(.bottom, 2)
         .background(Color.colorSurfaceBgSubtle)
+    }
+}
+
+private extension LaneStatus {
+    /// Tooltip 用の人間可読状態名 (Tab Bar T1)
+    var helpText: String {
+        switch self {
+        case .active: "active"
+        case .idle: "idle"
+        case .notification: "notification"
+        case .inactive: "inactive"
+        case .error: "error"
+        }
     }
 }
 
