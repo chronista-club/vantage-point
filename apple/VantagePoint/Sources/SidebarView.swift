@@ -1249,25 +1249,27 @@ enum WorldStatus: Equatable {
 
 /// システム restart の phase — footer に逐次表示される
 enum RestartPhase: Equatable {
-    case stoppingWorld       // TheWorld daemon stop
-    case killingTmux         // tmux sessions kill
+    case stoppingWorld       // Backend daemon stop
+    case killingTmux         // tmux sessions kill (SPs 巻き込み)
     case waitingShutdown     // shutdown 待ち
-    case startingWorld       // TheWorld daemon start
+    case startingWorld       // Backend daemon start
     case waitingHealth       // /api/health が通るまで poll
+    case reconnectingSPs     // SP auto_start + project list reconnect
     case verifying           // 最終確認
     case complete            // 正常完了
     case failed(String)      // 失敗
 
     var displayText: String {
         switch self {
-        case .stoppingWorld:    "Stopping system…"
-        case .killingTmux:      "Closing tmux sessions…"
-        case .waitingShutdown:  "Waiting for shutdown…"
-        case .startingWorld:    "Starting system…"
-        case .waitingHealth:    "Waiting for health…"
-        case .verifying:        "Verifying…"
-        case .complete:         "Ready"
-        case .failed(let msg):  "Failed: \(msg)"
+        case .stoppingWorld:      "Stopping backend…"
+        case .killingTmux:        "Closing tmux sessions…"
+        case .waitingShutdown:    "Waiting for shutdown…"
+        case .startingWorld:      "Starting backend…"
+        case .waitingHealth:      "Waiting for health…"
+        case .reconnectingSPs:    "Reconnecting SPs…"
+        case .verifying:          "Verifying…"
+        case .complete:           "Ready"
+        case .failed(let msg):    "Failed: \(msg)"
         }
     }
 
@@ -1293,16 +1295,16 @@ struct WorldStatusFooter: View {
 
             switch status {
             case .connected(let version, let startedAt):
-                // 一般向け表示名 (VP-83 refinement 33): "TheWorld" は内部名、
-                // user には "Vantage Point" アプリ名で見せる。version は残す (重要)。
-                Text("Vantage Point v\(version)")
+                // Backend (daemon) のバージョン表示 (VP-83 refinement 35)
+                // Mac app は常在、これは backend daemon のみの version
+                Text("Backend v\(version)")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 Spacer()
                 Text(startedAt, style: .time)
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
-                // 再起動ボタン (user 明示指示: 残す)
+                // Backend 再接続ボタン (Mac app は生存、daemon + tmux のみ restart)
                 Button {
                     onRestart?()
                 } label: {
@@ -1312,7 +1314,7 @@ struct WorldStatusFooter: View {
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
                 .disabled(isRestarting)
-                .help("システム全体を再起動 (tmux / TheWorld / SPs)")
+                .help("バックエンドを再接続 (tmux / daemon / SPs)")
             case .disconnected:
                 Text("Offline")
                     .font(.caption2)

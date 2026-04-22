@@ -47,8 +47,9 @@ let splitContents: [SplitContent] = [
 ]
 
 struct MainWindowView: View {
-    /// 選択中のプロジェクトパス
-    @State private var selectedProjectPath: String?
+    /// 選択中の Lane (Lead or Worker の id = パス)
+    /// VP-83 refinement 35: @AppStorage で永続化、再起動時に復元
+    @AppStorage("vp.sidebar.selection") private var selectedProjectPath: String?
     /// サイドバーのプロジェクト一覧
     @State private var projects: [SidebarProject] = []
     /// TheWorld 接続ステータス
@@ -803,17 +804,24 @@ struct MainWindowView: View {
                 }
             }
 
+            if !ready {
+                await update(.failed("Health check timeout"))
+                logger.error("[VP]restart failed: health check timeout")
+                return
+            }
+
+            await update(.reconnectingSPs)
+            // daemon が auto_start の SP を re-spawn する時間を与える
+            // + project list を refresh して reconnect
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            await refreshAll()
+
             await update(.verifying)
             try? await Task.sleep(nanoseconds: 500_000_000)
 
-            if ready {
-                await update(.complete)
-                try? await Task.sleep(nanoseconds: 800_000_000)
-                await refreshAll()  // 正規の connected(...) 状態へ
-            } else {
-                await update(.failed("Health check timeout"))
-                logger.error("[VP]restart failed: health check timeout")
-            }
+            await update(.complete)
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            await refreshAll()  // 正規の connected(...) 状態へ
         }
     }
 
