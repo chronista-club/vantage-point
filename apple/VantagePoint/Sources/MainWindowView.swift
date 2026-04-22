@@ -1307,14 +1307,14 @@ struct ProjectTabBar: View {
 }
 
 private extension LaneStatus {
-    /// Tooltip 用の人間可読状態名 (Tab Bar T1)
+    /// Tooltip 用の人間可読状態名 (Tab Bar T1、日本語統一)
     var helpText: String {
         switch self {
-        case .active: "active"
-        case .idle: "idle"
-        case .notification: "notification"
-        case .inactive: "inactive"
-        case .error: "error"
+        case .active: "稼働中"
+        case .idle: "アイドル"
+        case .notification: "通知あり"
+        case .inactive: "未稼働"
+        case .error: "エラー"
         }
     }
 }

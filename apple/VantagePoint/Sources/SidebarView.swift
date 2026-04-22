@@ -433,24 +433,23 @@ struct SidebarLeadRow: View {
                 .padding(.trailing, 6)
 
             VStack(alignment: .leading, spacing: 2) {
-                // 1行目: branch primary
-                HStack(spacing: 6) {
-                    if let branch = project.branch {
-                        Text(branch)
-                            .font(.callout)
-                            .fontWeight(project.hasHD ? .semibold : .regular)
-                            .foregroundStyle(Color.colorTextPrimary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    } else {
-                        Text("(no branch)")
-                            .font(.callout)
-                            .foregroundStyle(Color.colorTextTertiary)
-                    }
-                    Spacer()
+                // L1: Lane 名 (primary) — "Lead" 固定、将来 CC session title 対応
+                Text(laneDisplayName)
+                    .font(.callout)
+                    .fontWeight(project.hasHD ? .semibold : .regular)
+                    .foregroundStyle(Color.colorTextPrimary)
+                    .lineLimit(1)
+
+                // L2: branch (サブ情報、小さく薄く)
+                if let branch = project.branch {
+                    Text(branch)
+                        .font(.caption2)
+                        .foregroundStyle(Color.colorTextTertiary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                 }
 
-                // 2行目: Lane-lead address + msgbox + 未読
+                // L3: address + msgbox + 未読
                 UnifiedStatusBadge(
                     laneActor: leadActor,
                     unreadCount: Int(ccwireSession?.pendingMessages ?? 0),
@@ -483,6 +482,12 @@ struct SidebarLeadRow: View {
         case "stale", "disconnected": return .error
         default: return .active
         }
+    }
+
+    /// Lane 名 (L1 primary) — 将来 CC session title があれば優先
+    private var laneDisplayName: String {
+        // TODO: project.ccSessionTitle (backend 連動) を優先、未設定なら "Lead"
+        "Lead"
     }
 
     /// Lead Lane を代表する lane-lead actor: `hd.lead@{project}`
@@ -521,24 +526,23 @@ struct SidebarWorkerRow: View {
                 .padding(.trailing, 6)
 
             VStack(alignment: .leading, spacing: 2) {
-                // 1行目: worker suffix + branch
-                HStack(spacing: 6) {
-                    Text(worker.suffix)
-                        .font(.callout)
-                        .fontWeight(worker.hasHD ? .semibold : .regular)
-                        .foregroundStyle(Color.colorTextPrimary)
+                // L1: Lane 名 (primary) — worker suffix、将来 CC session title 優先
+                Text(worker.suffix)
+                    .font(.callout)
+                    .fontWeight(worker.hasHD ? .semibold : .regular)
+                    .foregroundStyle(Color.colorTextPrimary)
+                    .lineLimit(1)
+
+                // L2: branch (サブ情報、小さく薄く)
+                if let branch = worker.branch {
+                    Text(branch)
+                        .font(.caption2)
+                        .foregroundStyle(Color.colorTextTertiary)
                         .lineLimit(1)
-                    if let branch = worker.branch {
-                        Text(branch)
-                            .font(.caption2)
-                            .foregroundStyle(Color.colorTextTertiary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
-                    Spacer()
+                        .truncationMode(.middle)
                 }
 
-                // 2行目: Lane-lead address + msgbox + 未読
+                // L3: address + msgbox + 未読
                 UnifiedStatusBadge(
                     laneActor: workerLaneActor,
                     unreadCount: Int(ccwireSession?.pendingMessages ?? 0),
@@ -1315,16 +1319,16 @@ enum RestartPhase: Equatable {
 
     var displayText: String {
         switch self {
-        case .stoppingProjects:   "Stopping projects…"
-        case .stoppingWorld:      "Stopping World…"
-        case .killingTmux:        "Closing terminals…"
-        case .waitingShutdown:    "Waiting for shutdown…"
-        case .startingWorld:      "Starting World…"
-        case .waitingHealth:      "Waiting for health…"
-        case .reconnectingSPs:    "Reconnecting projects…"
-        case .verifying:          "Verifying…"
-        case .complete:           "Ready"
-        case .failed(let msg):    "Failed: \(msg)"
+        case .stoppingProjects:   "プロジェクト停止中…"
+        case .stoppingWorld:      "World 停止中…"
+        case .killingTmux:        "ターミナル終了中…"
+        case .waitingShutdown:    "停止待機中…"
+        case .startingWorld:      "World 起動中…"
+        case .waitingHealth:      "ヘルスチェック待機中…"
+        case .reconnectingSPs:    "プロジェクト再接続中…"
+        case .verifying:          "検証中…"
+        case .complete:           "準備完了"
+        case .failed(let msg):    "失敗: \(msg)"
         }
     }
 
@@ -1371,12 +1375,12 @@ struct WorldStatusFooter: View {
                 .disabled(isRestarting)
                 .help("World を再接続（ターミナル・デーモン・プロジェクト）")
             case .disconnected:
-                Text("Offline")
+                Text("オフライン")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 Spacer()
             case .checking:
-                Text("Connecting…")
+                Text("接続中…")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 Spacer()
