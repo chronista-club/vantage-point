@@ -443,11 +443,11 @@ struct SidebarLeadRow: View {
                 // L2 (固定情報): branch + address を一緒に
                 HStack(spacing: 8) {
                     if let branch = project.branch {
-                        Text(branch)
+                        Text(branch.head(6))
                             .font(.caption2)
                             .foregroundStyle(Color.colorTextTertiary)
                             .lineLimit(1)
-                            .truncationMode(.middle)
+                            .help(branch)
                     }
                     StandDotButton(stand: leadActor, forceShort: true)
                 }
@@ -537,11 +537,11 @@ struct SidebarWorkerRow: View {
                 // L2 (固定情報): branch + address を一緒に
                 HStack(spacing: 8) {
                     if let branch = worker.branch {
-                        Text(branch)
+                        Text(branch.head(6))
                             .font(.caption2)
                             .foregroundStyle(Color.colorTextTertiary)
                             .lineLimit(1)
-                            .truncationMode(.middle)
+                            .help(branch)
                     }
                     StandDotButton(stand: workerLaneActor, forceShort: true)
                 }
