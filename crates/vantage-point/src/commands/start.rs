@@ -328,19 +328,14 @@ fn run_tui_mode(
         println!("\u{1f504} 既存セッションに再接続: {}", session_name);
     }
 
-    // ccwire 登録（tmux セッション作成前でも可だが、target 確定後がベスト）
-    let tmux_target = format!("{}:0.0", session_name);
-    if let Err(e) = crate::ccwire::register(&session_name, &tmux_target) {
-        tracing::warn!("ccwire 登録失敗（続行）: {}", e);
-    }
+    // Phase L7b: ccwire register / unregister 停止 (Mailbox Router 経由へ)
+    // let tmux_target = format!("{}:0.0", session_name);
+    // if let Err(e) = crate::ccwire::register(&session_name, &tmux_target) { ... }
 
     // TUI 起動（tmux の外で直接）
     let result = run_tui(&session_name, project_dir, project_name, port, is_reconnect);
 
-    // ccwire 解除（TUI 終了時）
-    if let Err(e) = crate::ccwire::unregister(&session_name) {
-        tracing::warn!("ccwire 解除失敗: {}", e);
-    }
+    // ccwire unregister は停止 (L7b)
 
     result
 }

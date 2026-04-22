@@ -124,12 +124,10 @@ fn hd_start(
         println!("✅ tmux セッション '{}' を作成しました", session_name);
     }
 
-    // ccwire 登録
-    let tmux_target = format!("{}:0.0", session_name);
-    match crate::ccwire::register(&session_name, &tmux_target) {
-        Ok(()) => println!("✅ ccwire 登録完了: {}", session_name),
-        Err(e) => eprintln!("⚠️  ccwire 登録失敗（続行）: {}", e),
-    }
+    // Phase L7b: ccwire register 呼出停止 (Mailbox Router が daemon 側で
+    // 保持、agent 起動時に自動 register する設計。soft degradation)
+    // let tmux_target = format!("{}:0.0", session_name);
+    // match crate::ccwire::register(&session_name, &tmux_target) { ... }
 
     println!();
     if let Some(id) = id {
@@ -149,11 +147,8 @@ fn hd_start(
 fn hd_stop(project_name: &str, id: Option<&str>) -> Result<()> {
     let session_name = tmux::session_name_with_id(project_name, id);
 
-    // ccwire 解除
-    match crate::ccwire::unregister(&session_name) {
-        Ok(()) => println!("✅ ccwire 解除: {}", session_name),
-        Err(e) => eprintln!("⚠️  ccwire 解除失敗: {}", e),
-    }
+    // Phase L7b: ccwire unregister 呼出停止
+    // match crate::ccwire::unregister(&session_name) { ... }
 
     // tmux kill
     if tmux::session_exists(&session_name) {
