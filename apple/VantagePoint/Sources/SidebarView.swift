@@ -298,25 +298,24 @@ struct SidebarView: View {
 
 // MARK: - プロジェクト行（カスタムビュー）
 
-/// サイドバーの Project disclosure header 行（VP-83 Phase 1）
+/// サイドバーの Project disclosure header 行（VP-83 Phase 1、refinement 7）
 ///
-/// Disclosure の label として使われる。コンパクトな project identity のみ表示:
+/// Disclosure の label として使われる。コンパクトな project identity:
+/// - SP を address 形式 (`sp@{project}`) で表示 (Lane row と同じ address 語彙)
 /// - プロジェクト名（強調）
-/// - SP 稼働ステータスドット
-/// - 起動時刻（稼働中のみ）
+/// - 起動時刻（Phase 2 Right Drawer 移行予定）
 ///
-/// 詳細な HD/PP/branch 情報は展開後の SidebarLeadRow に移譲。
+/// 詳細な HD/PP/branch/status 情報は展開後の SidebarLeadRow + Phase 2 Drawer に移譲。
 struct SidebarProjectHeaderRow: View {
     let project: SidebarProject
-    /// PP バッジステータス（disclosure header では SP のみ表示するが、将来の拡張用）
+    /// PP バッジステータス（将来の拡張用、現状未使用）
     var ppStatus: BadgeStatus = .inactive
 
     var body: some View {
         HStack(spacing: 6) {
-            // SP status dot（稼働中: 緑、停止中: 灰）
-            Circle()
-                .fill(project.isRunning ? Color.colorSemanticSuccess : Color.colorTextTertiary)
-                .frame(width: 7, height: 7)
+            // SP actor を address 形式で (VP-83 refinement 7: dot → address 昇格)
+            // Lane row 2 行目の lane-lead address と同じ vocabulary を統一
+            StandDotButton(stand: spStand)
 
             Text(project.name)
                 .fontWeight(project.isRunning ? .semibold : .regular)
@@ -324,7 +323,7 @@ struct SidebarProjectHeaderRow: View {
 
             Spacer()
 
-            // 稼働時刻（稼働中のみ）
+            // 稼働時刻（Phase 2 Right Drawer 移行予定）
             if let startedAt = project.startedAt {
                 Text(startedAt, style: .time)
                     .font(.caption2)
@@ -332,6 +331,18 @@ struct SidebarProjectHeaderRow: View {
             }
         }
         .opacity(project.isRunning ? 1.0 : 0.6)
+    }
+
+    /// Star Platinum actor (project server、lane 概念外)
+    ///
+    /// basic form: `sp@{project}` (Lane の actor address と同系)
+    /// Editor mode で `sp` に短縮
+    private var spStand: StandRef {
+        StandRef(
+            status: project.isRunning ? .active : .inactive,
+            address: "sp@\(project.name)",
+            displayName: "Star Platinum (Project Server)"
+        )
     }
 }
 
