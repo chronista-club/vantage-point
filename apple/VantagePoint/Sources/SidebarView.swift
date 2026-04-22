@@ -504,25 +504,41 @@ struct StandRef {
     let displayName: String
 }
 
-/// Stand の address button。monospaced text で短縮形表示、
-/// color で status、click で full address (`{stand}.{lane}@{project}`) clipboard copy。
-/// hover で full canonical form を tooltip 表示。
+/// Stand の address button。
+///
+/// UI 表示原則:
+/// - **basic UI (default)**: full canonical form `{stand}.{lane}@{project}` (正確性優先)
+/// - **Editor mode (opt-in)**: alias 展開で短縮 (`@project` 省略 or alias map)
+///
+/// Editor mode は `@AppStorage("vp.ui.editorMode")` で切替、将来 CreoUI Editor Mode protocol と連動。
+///
+/// 動作:
+/// - text color で status、monospaced font で address 感
+/// - click で full address (basic form) を clipboard copy
+/// - hover で displayName + full address tooltip
 struct StandDotButton: View {
     let stand: StandRef
 
-    /// Sidebar 表示用の短縮形 (project 部分を暗黙化、例: `hd.lead@vp` → `hd.lead`)
-    private var shortForm: String {
-        if let atIdx = stand.address.firstIndex(of: "@") {
+    /// Editor mode 切替 (default = off = basic UI)
+    /// opt-in: Drawer / preferences で on にすると alias 短縮表示
+    @AppStorage("vp.ui.editorMode") private var editorMode: Bool = false
+
+    /// 表示用 address
+    /// - editor mode off (basic UI): full canonical `hd.lead@vantage-point`
+    /// - editor mode on (alias): `@project` 省略版 `hd.lead`
+    private var displayText: String {
+        if editorMode, let atIdx = stand.address.firstIndex(of: "@") {
             return String(stand.address[..<atIdx])
         }
         return stand.address
     }
 
     var body: some View {
-        Text(shortForm)
+        Text(displayText)
             .font(.system(size: 10, design: .monospaced))
             .foregroundStyle(stand.status.color)
             .lineLimit(1)
+            .truncationMode(.middle)
             .contentShape(Rectangle())
             .help("\(stand.displayName)\n\(stand.address) — click to copy")
             .onTapGesture {
