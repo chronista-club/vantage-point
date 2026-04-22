@@ -485,10 +485,12 @@ struct SidebarLeadRow: View {
         }
     }
 
-    /// Lane 名 (L1 primary) — 将来 CC session title があれば優先
+    /// Lane 名 (L1 primary) — CC session title があれば優先、なければ "Lead"
     private var laneDisplayName: String {
-        // TODO: project.ccSessionTitle (backend 連動) を優先、未設定なら "Lead"
-        "Lead"
+        if let title = project.ccSessionTitle, !title.isEmpty {
+            return title
+        }
+        return "Lead"
     }
 
     /// Lead Lane を代表する lane-lead actor: `hd.lead@{project}`
@@ -527,8 +529,8 @@ struct SidebarWorkerRow: View {
                 .padding(.trailing, 6)
 
             VStack(alignment: .leading, spacing: 2) {
-                // L1 (可変): Lane 名 — worker.suffix、将来 CC session title 優先
-                Text(worker.suffix)
+                // L1 (可変): Lane 名 — CC session title 優先、なければ worker.suffix
+                Text(workerLaneDisplayName)
                     .font(.callout)
                     .fontWeight(worker.hasHD ? .semibold : .regular)
                     .foregroundStyle(Color.colorTextPrimary)
@@ -577,6 +579,14 @@ struct SidebarWorkerRow: View {
         case "stale", "disconnected": return .error
         default: return .active
         }
+    }
+
+    /// Worker Lane の L1 primary — CC session title 優先、なければ worker.suffix
+    private var workerLaneDisplayName: String {
+        if let title = worker.ccSessionTitle, !title.isEmpty {
+            return title
+        }
+        return worker.suffix
     }
 
     /// Worker Lane を代表する lane-lead actor: `hd.{suffix}@{project}`
@@ -1082,6 +1092,8 @@ struct CcwsWorkerInfo: Identifiable, Equatable {
     let hasHD: Bool      // tmux セッションが存在するか
     /// ccwire セッション情報（HD に紐づく）
     let ccwireSession: CcwireSessionInfo?
+    /// Claude CLI session title (最新 session の最初 user message、refinement 44)
+    var ccSessionTitle: String? = nil
 }
 
 /// サイドバー表示用のプロジェクトモデル
@@ -1119,6 +1131,8 @@ struct SidebarProject: Identifiable, Equatable {
     /// 未設定なら `name` (slug) を CamelCase + space 区切りに自動変換して表示
     /// VP-83 refinement 30: slug と displayName を first-class 分離
     let displayName: String?
+    /// Claude CLI session title (最新 session の最初 user message、refinement 44)
+    var ccSessionTitle: String? = nil
     let path: String
     let isRunning: Bool
     /// プロセスのポート番号（稼働中のみ）

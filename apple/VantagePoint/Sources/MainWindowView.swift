@@ -1098,14 +1098,19 @@ struct MainWindowView: View {
                 let branch = info?.branch
                 let hasHD = info?.hasHD ?? false
 
-                // Worker に ccwire セッションを注入
+                // CC session title (最新 session の最初 user message) を project path 毎に取得
+                let projectSessionTitle = ClaudeSessionReader.latestSessionTitle(for: entry.path)
+
+                // Worker に ccwire セッション + CC session title を注入
                 let workers: [CcwsWorkerInfo] = (info?.workers ?? []).map { worker in
                     let workerTmux = worker.name.replacingOccurrences(of: ".", with: "-") + "-vp"
                     let wireSession = ccwireSessions.first { $0.name == workerTmux }
+                    let workerSessionTitle = ClaudeSessionReader.latestSessionTitle(for: worker.path)
                     return CcwsWorkerInfo(
                         id: worker.id, name: worker.name, suffix: worker.suffix,
                         path: worker.path, branch: worker.branch, hasHD: worker.hasHD,
-                        ccwireSession: wireSession
+                        ccwireSession: wireSession,
+                        ccSessionTitle: workerSessionTitle
                     )
                 }
 
@@ -1115,7 +1120,7 @@ struct MainWindowView: View {
 
                 if let process = runningByPath[entry.path] {
                     let detail = details[entry.path]
-                    return SidebarProject(
+                    var sp = SidebarProject(
                         id: entry.path,
                         name: entry.name,
                         path: entry.path,
@@ -1130,8 +1135,10 @@ struct MainWindowView: View {
                         ccwireSession: wireSession,
                         enabled: entry.enabled
                     )
+                    sp.ccSessionTitle = projectSessionTitle
+                    return sp
                 } else {
-                    return SidebarProject(
+                    var sp = SidebarProject(
                         id: entry.path,
                         name: entry.name,
                         path: entry.path,
@@ -1145,6 +1152,8 @@ struct MainWindowView: View {
                         ccwireSession: wireSession,
                         enabled: entry.enabled
                     )
+                    sp.ccSessionTitle = projectSessionTitle
+                    return sp
                 }
             }
 
