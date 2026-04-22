@@ -315,29 +315,20 @@ struct SidebarProjectHeaderRow: View {
     var ppStatus: BadgeStatus = .inactive
 
     var body: some View {
-        // VP-83 refinement 12: 2-state accordion header
-        // Leading accent bar (3pt) で SP 稼働状態を visual に示す。
-        // bar の色自体が status indicator、address text と二重で意味を持たせる。
-        HStack(spacing: CreoUITokens.spacingSm) {
-            // Leading accent bar (SP 稼働状態、sharp rectangle で統一)
-            Rectangle()
-                .fill(project.isRunning ? Color.colorSemanticSuccess : Color.colorSurfaceBorderSubtle)
-                .frame(width: 3)
-                .frame(maxHeight: .infinity)
-                .animation(.easeInOut(duration: 0.2), value: project.isRunning)
+        // VP-83 refinement 13: accent bar 廃止
+        // 理由: sp@{project} address の色 (active=緑/inactive=gray) と
+        // 完全に redundant、さらに Lane focus light と同色 (緑) で視覚的に紛らわしい。
+        // 廃止により「光る緑縦線 = Lane focus」の identity が明確化。
+        // 稼働状態は Title の bold/semibold + address の色で十分伝わる。
+        VStack(alignment: .leading, spacing: 2) {
+            Text(project.name)
+                .font(.headline)
+                .fontWeight(project.isRunning ? .bold : .semibold)
+                .lineLimit(1)
 
-            // Title + address 縦積み
-            VStack(alignment: .leading, spacing: 2) {
-                Text(project.name)
-                    .font(.headline)
-                    .fontWeight(project.isRunning ? .bold : .semibold)
-                    .lineLimit(1)
-
-                // SP actor address (lane-lead address と同じ vocabulary)
-                StandDotButton(stand: spStand)
-            }
+            // SP actor address (lane-lead address と同じ vocabulary)
+            StandDotButton(stand: spStand)
         }
-        .frame(minHeight: 36)
         .opacity(project.isRunning ? 1.0 : 0.55)
     }
 
