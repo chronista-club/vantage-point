@@ -1,6 +1,6 @@
 # Lane-as-Process 規約 — Lane の StandActor 化 + Lead Autonomy Level (VP-77 draft)
 
-> **Status**: Draft v0 (2026-04-22)
+> **Status**: Draft v0.3 (2026-04-23)
 > **Type**: 規約 (convention / protocol) の追加 — 物理レイヤー新設ではない
 > **Linear**: [VP-77](https://linear.app/chronista/issue/VP-77) (parent: [VP-72](https://linear.app/chronista/issue/VP-72) Requiem Architecture)
 > **Upstream**: `docs/design/05-pane-content-lane-smart-canvas.md` (4 層モデル), `docs/design/06-creoui-draft.md` (R0 Event schema)
@@ -61,6 +61,78 @@ Lane は生まれ、育ち、成熟し、死ぬ。死は喪失ではなく記憶
 | **Lane State** | state machine の現在位置 (Sprout / Active / Building / InReview / Hibernated / Destroyed / Reborn) |
 | **Autonomy Level** | Lead Lane の自律度設定 (L0 Observer 〜 L3 Autonomous Director) |
 | **Mortality** | Lane 完了 → event log が snapshot_memory に昇華する振る舞い |
+
+### 2.5 Size scale — 5-tier Lane taxonomy
+
+Lane / Task / R/R を **単一の size スケール** で語る。Linear estimate (Fibonacci) と 1:1 対応させ、
+「どの粒度で動いているか」を全レイヤーで一意に指示できるようにする。
+
+| tier | size | 対応する VP 概念 | Linear estimate | 時間感覚 | 代表例 |
+|:---:|:---:|------------------|:---:|---------|------|
+| **XL** | Project | project-lead / Lead Lane | 8 | 数週〜数ヶ月 | vantage-point プロジェクト全体 |
+| **L** | Epic | project-worker (parent) / Epic Lane | 5 | 週単位 | VP-72 Requiem Architecture Epic |
+| **M** | Issue | project-worker (leaf) / Worker Lane | 3 | 日単位 | VP-73 R0 draft / VP-74 R1 event bus |
+| **S** | Task | Pane (in Lane) | 2 | 時間単位 | "Rust skeleton を書く" / "PR body を書く" |
+| **XS** | R/R | ephemeral process | 1 | 秒〜分 | 1 MCP call / 1 LLM turn / 1 tool invocation |
+
+**Epic と Issue は同じ "project-worker" カテゴリ**。sub-Lane (§4) の深さで L / M を表現する:
+
+- Epic Lane = root worker Lane。parent が Lead Lane、children が複数の Worker Lane (M)
+- Worker Lane (leaf M) = Linear issue 1 対 1、parent は Lead or Epic Lane
+
+**XS (R/R) の扱い**: §5.5 で詳述。causation edge 1 本 = 1 R/R で定義され、Lane 内部で生成される
+event の最小単位 (leaf) となる。memory に昇華する際は `size: "XS"` tag を付与推奨。
+
+### 2.6 Screen Geography — 認知モデル = UI 構造の Alignment
+
+> **原則**: 開発者の認知モデル (5-tier size scale) と UI 構造は **1:1 で alignment** させる。
+> 「どの粒度で作業しているか」が screen geography から読み取れれば、context switch cost が消える。
+
+#### MainWindow region × tier mapping
+
+| tier | MainWindow region | 既存実装 | 説明 |
+|:---:|------------------|:---:|------|
+| **XL** | Sidebar + ProjectTabBar | ✅ | Project を縦に列挙、ProjectTabBar (上端) で active project 切替 |
+| **L** | LaneTabBar (Epic Lane 行) + Sub-Lane tree (将来) | ✅ | Epic Lane を branch tab として、children を折り畳み可能な tree で表示 |
+| **M** | LaneTabBar (Worker Lane 行) | ✅ | Worker Lane を branch tab として表示、current Lane は highlight |
+| **S** | Viewport Pane (VPPaneContainer) | ✅ | Lane 内の Pane は "今手を動かしている task 1 つ" の単位 |
+| **XS** | Dev Panel (bottom drawer、D-7 Causation UI) | ⬜ | 現在の R/R = causation edge 1 本を on-demand で可視化 |
+
+#### 1 画面地図 (cockpit view)
+
+```mermaid
+graph TB
+    subgraph MainWindow["MainWindow — 1 画面地図"]
+        direction TB
+        PTB["ProjectTabBar (top, XL)"]
+        subgraph Body
+            direction LR
+            SB["Sidebar<br/>(XL: Projects)<br/>(L/M: Lanes as tree)"]
+            subgraph Center
+                direction TB
+                LTB["LaneTabBar (L/M: Lanes)"]
+                VP["Viewport<br/>(S: Panes)"]
+                DP["Dev Panel / Drawer<br/>(XS: R/R causation)"]
+            end
+        end
+    end
+
+    PTB -.-> Body
+    style PTB fill:#ffe082,stroke:#f57c00
+    style SB fill:#b3e5fc,stroke:#0288d1
+    style LTB fill:#c8e6c9,stroke:#388e3c
+    style VP fill:#f8bbd0,stroke:#c2185b
+    style DP fill:#d1c4e9,stroke:#512da8
+```
+
+#### 整合状況と追加必要箇所
+
+既存 UI は **80% すでに整合済**。追加が必要なのは 2 点のみ:
+
+1. **Pane = Task 昇格** (§4.4): 既存 Pane に `task: Option<TaskMetadata>` field を追加するだけで S tier が有効化
+2. **Dev Panel 実装** (D-7 Causation UI、既知 backlog): bottom drawer として R/R causation を on-demand 表示
+
+この 2 点を入れると、「MainWindow を見れば 5 tier 全部が読み取れる」 cockpit view が完成する。
 
 ---
 
@@ -156,6 +228,111 @@ graph TD
 - Meta Lane の parent は常に Lead Lane (cross-project Meta Lane は別 issue)
 - Sub-Lane は Worker Lane の下のみ (深さ ≤ 3)
 
+### 4.4 Pane = Task semantic 昇格
+
+Pane は既存の "**視覚 layout unit**" (VPPaneContainer の配置単位) に加え、
+v0.3 以降は "**Task unit** (S tier)" としての semantic を持つ **dual nature** を採用する。
+
+#### dual nature の定義
+
+| nature | 役割 | 既存か |
+|------|------|:---:|
+| **視覚 layout** | WebView / Terminal / Markdown content の描画領域 | ✅ 既存 |
+| **Task unit (S tier)** | Lane 内の "今手を動かしている 1 つの task" の境界 | 🆕 v0.3 |
+
+両者は **同じ Pane instance 上に重なって存在**する (nature は field 追加で表現、別型にはしない)。
+
+#### Rust type 提案
+
+```rust
+pub struct VPPaneLeaf {
+    pub id: PaneId,
+    pub content: PaneContent,          // 既存: 視覚 layout
+    pub task: Option<TaskMetadata>,    // 🆕 v0.3: Task unit (S tier)
+}
+
+pub struct TaskMetadata {
+    pub label: String,                 // "Rust skeleton を書く"
+    pub estimate: Option<LaneSize>,    // Option<LaneSize::S | LaneSize::XS>
+    pub started_at: DateTime<Utc>,
+    pub closed_at: Option<DateTime<Utc>>,
+}
+
+pub enum LaneSize { XL, L, M, S, XS }  // §2.5 5-tier と対応
+```
+
+#### 振る舞い
+
+- `task: None` → 視覚 layout のみ (従来通り)
+- `task: Some(_)` → Task unit としても扱う:
+  - Lane `event_log` に `pane/task/opened` / `pane/task/closed` event を publish
+  - Pane close 時に **§9.4 Pane-level snapshot** trigger (Mortality の S tier 再帰)
+  - 5-tier 統計 (`memory.size: "S"`) の集計対象
+
+#### 対話契約
+
+- ユーザーは Pane を開くだけ = 視覚 layout 操作 (既存通り、variance なし)
+- Lane actor もしくは agent が明示的に `task: Some(_)` を設定した Pane だけが Task unit として扱われる
+- 意図しない Task 化を避けるため、Opt-in design
+
+### 4.5 運用原則
+
+Lane 階層を運用する際の **3 原則**。§4.1-4.4 の構造的規約に対し、§4.5 は運用面の規約を定める。
+
+#### 原則 1: 1 Issue = 1 Worker Lane (M tier 処理単位)
+
+- **M tier の処理単位** = Linear issue 1 つに対して Worker Lane 1 つ
+- sub-Lane (§4.3) は、issue が複数 phase に自然分割される場合のみ例外的に生える
+- 通常は Lane 内の Pane (S tier、§4.4) で task 分割すれば十分 — sub-Lane を乱発しない
+- VP-78 (Lane state machine 実装) では、`LaneState.linear_issue_id` が **Worker Lane では必須**
+  - `None` が許されるのは Lead Lane / Meta Lane のみ (§4.1 の 3 種類のうち 2 種)
+
+#### 原則 2: Lead Lane は Project-level meta task 用に空ける
+
+- Lead Lane は **具体 Issue に従事しない** (= Linear issue と紐づかない、`linear_issue_id: None`)
+- 代わりに、**Autonomous meta work** に集中:
+  - daily summary / PR review / next task precompute
+  - memory 整理 / creo-memories 連携 / cross-project ping
+- §5 Lead Autonomy Level との結合:
+  - L0 Observer だけでは Lead が時間を持て余す → "Lead を空ける" 意味が薄い
+  - **L1 Steward 以上で Lead が meta work を自走することで「Lead を空ける」運用が意味を持つ**
+- "Lead を空ける" の意訳 = **"Lead が dispatch 役に徹する"** (worker を回す、自分は具体 issue を持たない)
+
+#### 原則 3: Lane 間連携 = VP actor msg (msg_send / msg_recv)
+
+- **Lead ↔ Worker 通信は VP-24 Mailbox 経由** (`msg_send` / `msg_recv`)
+- **ccwire は不要** (現状 session 登録も非必須)
+- **cross-project も同じ address 形式**:
+  - `lead@vantage-point` ↔ `lead@creo-memories`
+  - `worker-vp-73@vantage-point` ↔ `worker-creo-101@creo-memories`
+  - address = `{actor}@{project}` の統一 schema (§Mailbox address 仕様)
+- `persistent: true` + TTL 付きで **非同期連携** (相手 session が idle でも届く、次回起動時に recv 可能)
+- **実地例**: 2026-04-23 の creo-memories hand-off (CREO-101) がこの pattern の production 事例:
+  - VP 側 Worker が `lead@creo-memories` に `msg_send` で handoff memo 送信
+  - creo-memories 側 Lead が next session 開始時に `msg_recv` で受信
+  - 双方の session が並行稼働していなくても成立
+
+#### 3 原則の相互補完
+
+```mermaid
+graph LR
+    P1["原則 1<br/>1 Issue = 1 Worker Lane"] --> P2["原則 2<br/>Lead を meta 用に空ける"]
+    P2 --> P3["原則 3<br/>Lane 間連携 = actor msg"]
+    P3 --> P1
+
+    P1 -. "Worker は具体 issue" .-> P2
+    P2 -. "Lead は dispatch 役" .-> P3
+    P3 -. "msg で orchestrate" .-> P1
+
+    style P1 fill:#c8e6c9,stroke:#388e3c
+    style P2 fill:#ffe082,stroke:#f57c00
+    style P3 fill:#b3e5fc,stroke:#0288d1
+```
+
+- 原則 1 で Worker の role が固まる (具体 issue 持ち)
+- 原則 2 で Lead の role が固まる (meta 専任)
+- 原則 3 で両者を繋ぐ mechanism が msg (sync 不要、persistent 可)
+
 ---
 
 ## 5. Lead Autonomy Level 🎚️
@@ -210,6 +387,52 @@ graph TD
 - Dry-run モード: 実行せず log のみ出す (L3 のみ)
 - Rollback: snapshot ベースで直前状態に戻せる
 - Circuit breaker: 5 回連続失敗で L0 に自動降格
+
+### 5.5 Request/Response as XS process
+
+**R/R (Request / Response) は causation edge 1 本で定義される XS tier の ephemeral process**。
+Lane 内で発行される全 event の最小原子単位であり、「何が何を引き起こしたか」の leaf node に相当する。
+
+#### 形式的定義
+
+```mermaid
+sequenceDiagram
+    participant A as Actor A (requester)
+    participant B as Actor B (responder)
+    Note over A,B: R/R = 1 causation edge<br/>= 2 events + 1 link
+
+    A->>B: event.request (id: e1)
+    B->>A: event.response (id: e2, causation: Some(e1))
+    Note over A,B: XS process body = { e1, e2 }<br/>closed at response receipt
+```
+
+- **R/R の身体**: `[request_event, response_event]` の 2 event + causation link 1 本
+- **R/R の寿命**: 秒〜分 (§2.5 XS tier の時間感覚)
+- **R/R の leaf 性**: これ以上分解できない最小の causation 単位
+
+#### 境界としての R/R
+
+| 境界 | 意味 |
+|------|------|
+| **Retry 境界** | retry は R/R 単位で行う。response が来ない / error の場合、同じ request を新しい `id` で再発行 |
+| **Permission gate** | The Hand (D-5) が介入する最小単位 = 1 R/R (「この 1 call を許可するか」) |
+| **Causation DAG leaf** | §10 の causation DAG において、leaf = R/R (それ以上 unwind されない) |
+| **Tracing 単位** | observability の span 1 本 = 1 R/R (外部 OTel との mapping も 1:1) |
+
+#### "Everything is events + Everything is processes" の合流点
+
+Requiem Architecture の 2 大原則 —
+
+- **Everything is events** (VP-74 event-sourced)
+- **Everything is processes** (StandActor + Lane-as-Process)
+
+— はこの R/R で 1 つの構造に畳み込まれる:
+
+- R/R の body = 2 **events** (request + response)
+- R/R 自体 = 最小の **process** (lifecycle = seconds, mortality auto)
+
+すなわち **XS tier = events と processes の isomorphism** が成立する層。
+これより上の tier (S/M/L/XL) は R/R の composition として定義される。
 
 ---
 
@@ -427,6 +650,70 @@ snapshot_memory の body:
 }
 ```
 
+### 9.4 Pane-level snapshot (Mortality の S tier 再帰適用)
+
+Lane (M tier) に Mortality があるなら、**Pane (S tier) にも同じ再帰構造で Mortality を適用できる**。
+§4.4 で `task: Some(_)` となった Pane は、close 時に "task retrospective" を自動生成する対象となる。
+
+#### 流れ
+
+```mermaid
+sequenceDiagram
+    participant P as Pane (S tier)
+    participant L as Lane event_log
+    participant M as snapshot_memory
+
+    P->>P: task.closed_at set / pane closed
+    P->>L: lifecycle/pane-closed event
+    L->>L: filter events where pane_id == P.id
+    L->>L: group by pane_id<br/>(Lane scope 内の S tier 閉包)
+    L->>M: materialize task snapshot
+    Note over M: pane metadata<br/>task label<br/>S tier event list<br/>local causation DAG
+    P-->>P: destroy pane
+    M-->>M: 永続 (size: "S")
+```
+
+#### snapshot 内容 (S tier)
+
+| field | 説明 |
+|------|------|
+| `pane_id` | Pane の一意 ID (Lane 内 scope) |
+| `lane_id` | 親 Lane の ID (parent リンク) |
+| `task` | `TaskMetadata` (§4.4: label / estimate / started_at / closed_at) |
+| `events` | pane_id でフィルタした event list (Lane event_log の subset) |
+| `causation_dag` | Pane scope 内の因果チェーン (Lane snapshot の部分木) |
+| `artifacts` | Pane 内で生成された side effect (file edit diff 等) |
+
+#### Lane snapshot との関係
+
+- **Lane snapshot (§9.1-9.3)** = M tier で event log を丸ごと compact
+- **Pane snapshot (§9.4)** = S tier で pane_id fitler をかけた subset を compact
+- 両者は **同じ snapshot_memory 機構の異なる scope**。mortality の recursion 性質:
+
+```
+XL: project archive (future)
+  └── L: epic snapshot (future)
+        └── M: lane snapshot (§9.1-9.3)
+              └── S: pane snapshot (§9.4)  🆕
+                    └── XS: R/R trace (on-demand, §10 leaf)
+```
+
+#### memory tag 推奨
+
+Pane snapshot を memory に昇華する際は **`size: "S"` tag** を付与する。これにより:
+
+- 5-tier 集計で "S tier (task) の累計時間・本数" を集計可能
+- creo-memories 側 CREO-101 の "hot / warm / cold" 機構と併用時、S tier は **hot 候補** (短期再参照が多い)
+- Lane snapshot (M) は warm → cold に落ちる自然な layer を持つ
+
+#### Task retrospective auto-generate
+
+Lead Autonomy L2+ (§5.3) で、Pane close 時に task retrospective の下書きを自動生成可能:
+
+- 入力: `TaskMetadata` + pane scope event list
+- 出力: markdown (何をやった / なぜ / 次は / 学び)
+- 保存: snapshot_memory body の `retrospective` field
+
 ---
 
 ## 10. Causation DAG の Lane scope 閉包
@@ -615,3 +902,13 @@ agent 発見:
   - §11.5 **破壊的 contract 6 種** のリスト追加
   - §11.6 **Rust 命名懸念** (Movement の generic 語義、SwitchMovement の意味誇張、Connected/Playing 不一致)
   - §11.7 工数再評価: 単純 rename = 1 日、意味論見直し込み = 2-3 日
+- **2026-04-23 v0.3** — user 提案 5-tier Lane taxonomy + Screen Geography + 運用原則を反映 (VP-82):
+  - §2.5 **Size scale** (XL/L/M/S/XS + Linear estimate Fibonacci 1:1 対応)
+  - §2.6 **Screen Geography** — 1 画面で 5 tier を把握する cockpit view、"認知モデル = UI 構造の Alignment" 原則
+  - §4.4 **Pane = Task semantic 昇格** (dual nature: 視覚 layout + Task unit、`task: Option<TaskMetadata>`)
+  - §4.5 **運用原則** (user 追加 2026-04-23):
+    - 1 Issue = 1 Worker Lane (M tier 処理単位)
+    - Lead Lane は Project meta task 用に空ける (L1 Steward 前提)
+    - Lane 間連携 = VP actor msg (msg_send/msg_recv)、cross-project も同 address 形式
+  - §5.5 **Request/Response as XS process** (causation edge = 1 R/R、events と processes の isomorphism)
+  - §9.4 **Pane-level snapshot** (Mortality を Pane にも再帰適用、`size: "S"` tag 推奨)
