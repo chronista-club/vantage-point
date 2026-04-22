@@ -598,7 +598,6 @@ struct RightChevronDisclosureStyle: DisclosureGroupStyle {
                 configuration.label
                 Spacer(minLength: 0)
             }
-            .padding(.horizontal, CreoUITokens.spacingXs)
             .padding(.vertical, CreoUITokens.spacingXs + 2)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
