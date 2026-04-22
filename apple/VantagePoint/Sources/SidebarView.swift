@@ -996,30 +996,65 @@ struct LaneNotificationRow: View {
 
     var body: some View {
         if hasAnySignal {
-            HStack(spacing: 8) {
-                // msgbox / ccwire 状態 dot (L3 の leading、icon 列と揃う)
+            HStack(spacing: 10) {
+                // msgbox / ccwire 状態 — icon + label で意味明示 (refinement 45)
                 if let status = wireStatus {
-                    Circle()
-                        .fill(msgboxColor(for: status))
-                        .frame(width: 6, height: 6)
-                        .help("msgbox: \(status)")
-                } else {
-                    // spacer to keep leading position consistent
-                    Color.clear.frame(width: 6, height: 6)
+                    HStack(spacing: 3) {
+                        Image(systemName: msgboxIcon(for: status))
+                            .font(.system(size: 10))
+                            .foregroundStyle(msgboxColor(for: status))
+                        Text(msgboxLabel(for: status))
+                            .font(.caption2)
+                            .foregroundStyle(Color.colorTextTertiary)
+                    }
+                    .help("msgbox: \(status)")
                 }
 
-                // 未読 count or 通知 indicator
+                // 未読 (envelope + count)
                 if unreadCount > 0 {
-                    Text("\(unreadCount) 未読")
-                        .font(.caption2)
-                        .foregroundStyle(Color.colorSemanticWarning)
+                    HStack(spacing: 3) {
+                        Image(systemName: "envelope.fill")
+                            .font(.system(size: 10))
+                            .foregroundStyle(Color.colorSemanticWarning)
+                        Text("\(unreadCount) 未読")
+                            .font(.caption2)
+                            .foregroundStyle(Color.colorSemanticWarning)
+                    }
                 } else if hasNotification {
-                    Circle()
-                        .fill(Color.colorSemanticWarning)
-                        .frame(width: 6, height: 6)
+                    // 通知 (bell)
+                    HStack(spacing: 3) {
+                        Image(systemName: "bell.fill")
+                            .font(.system(size: 10))
+                            .foregroundStyle(Color.colorSemanticWarning)
+                        Text("通知")
+                            .font(.caption2)
+                            .foregroundStyle(Color.colorSemanticWarning)
+                    }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// wireStatus 文字列を SF Symbol に
+    private func msgboxIcon(for status: String) -> String {
+        switch status {
+        case "connected", "active": "antenna.radiowaves.left.and.right"
+        case "idle":                "moon.zzz"
+        case "stale", "disconnected", "error": "exclamationmark.triangle.fill"
+        default:                    "circle"
+        }
+    }
+
+    /// wireStatus の日本語ラベル
+    private func msgboxLabel(for status: String) -> String {
+        switch status {
+        case "connected", "active": "接続"
+        case "idle":                "待機"
+        case "stale":               "失効"
+        case "disconnected":        "切断"
+        case "error":               "エラー"
+        default:                    status
         }
     }
 
