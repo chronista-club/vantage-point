@@ -427,45 +427,49 @@ struct SidebarLeadRow: View {
     var isFocused: Bool = false
 
     var body: some View {
-        HStack(spacing: 0) {
-            // HD root pane icon badge (VP-83 refinement 31)
-            LaneRootPaneIcon(systemImage: "book.pages", status: laneStatus, isFocused: isFocused)
-                .padding(.trailing, 6)
+        // VP-83 refinement 46: Lane row を 2 ブロック化
+        //   上段: [icon] + [L1 Lane 名 / L2 branch+address] + [focus pill]
+        //   下段: L3 通知層 (幅いっぱい、icon の下から)
+        VStack(alignment: .leading, spacing: 3) {
+            // 上段
+            HStack(spacing: 0) {
+                LaneRootPaneIcon(systemImage: "book.pages", status: laneStatus, isFocused: isFocused)
+                    .padding(.trailing, 6)
 
-            VStack(alignment: .leading, spacing: 2) {
-                // L1 (可変): Lane 名 — "Lead"、将来 CC session title 対応
-                Text(laneDisplayName)
-                    .font(.callout)
-                    .fontWeight(project.hasHD ? .semibold : .regular)
-                    .foregroundStyle(Color.colorTextPrimary)
-                    .lineLimit(1)
+                VStack(alignment: .leading, spacing: 2) {
+                    // L1 (可変): Lane 名
+                    Text(laneDisplayName)
+                        .font(.callout)
+                        .fontWeight(project.hasHD ? .semibold : .regular)
+                        .foregroundStyle(Color.colorTextPrimary)
+                        .lineLimit(1)
 
-                // L2 (固定情報): branch + address を一緒に
-                HStack(spacing: 8) {
-                    if let branch = project.branch {
-                        Text(branch.smartHead(tailLimit: 12))
-                            .font(.caption2)
-                            .foregroundStyle(Color.colorTextTertiary)
-                            .lineLimit(1)
-                            .help(branch)
+                    // L2 (固定): branch + address
+                    HStack(spacing: 8) {
+                        if let branch = project.branch {
+                            Text(branch.smartHead(tailLimit: 12))
+                                .font(.caption2)
+                                .foregroundStyle(Color.colorTextTertiary)
+                                .lineLimit(1)
+                                .help(branch)
+                        }
+                        StandDotButton(stand: leadActor, forceShort: true)
                     }
-                    StandDotButton(stand: leadActor, forceShort: true)
                 }
 
-                // L3 (通知 only): msgbox dot + 未読 + notification
-                LaneNotificationRow(
-                    unreadCount: Int(ccwireSession?.pendingMessages ?? 0),
-                    hasNotification: hasNotification,
-                    wireStatus: ccwireSession?.status
-                )
+                Spacer(minLength: 0)
+
+                LaneStatusBar(isFocused: isFocused)
+                    .padding(.leading, 6)
+                    .padding(.trailing, 6)
             }
 
-            Spacer(minLength: 0)
-
-            // Lane focus marker (右端、selected 時のみ緑 pill visible)
-            LaneStatusBar(isFocused: isFocused)
-                .padding(.leading, 6)
-                .padding(.trailing, 6)
+            // 下段: L3 通知層 (幅いっぱい、上段と切り離し)
+            LaneNotificationRow(
+                unreadCount: Int(ccwireSession?.pendingMessages ?? 0),
+                hasNotification: hasNotification,
+                wireStatus: ccwireSession?.status
+            )
         }
         .padding(.vertical, 4)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -523,45 +527,45 @@ struct SidebarWorkerRow: View {
     var isFocused: Bool = false
 
     var body: some View {
-        HStack(spacing: 0) {
-            // HD root pane icon badge (VP-83 refinement 31)
-            LaneRootPaneIcon(systemImage: "book.pages", status: laneStatus, isFocused: isFocused)
-                .padding(.trailing, 6)
+        // VP-83 refinement 46: Lane row を 2 ブロック化
+        VStack(alignment: .leading, spacing: 3) {
+            // 上段
+            HStack(spacing: 0) {
+                LaneRootPaneIcon(systemImage: "book.pages", status: laneStatus, isFocused: isFocused)
+                    .padding(.trailing, 6)
 
-            VStack(alignment: .leading, spacing: 2) {
-                // L1 (可変): Lane 名 — CC session title 優先、なければ worker.suffix
-                Text(workerLaneDisplayName)
-                    .font(.callout)
-                    .fontWeight(worker.hasHD ? .semibold : .regular)
-                    .foregroundStyle(Color.colorTextPrimary)
-                    .lineLimit(1)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(workerLaneDisplayName)
+                        .font(.callout)
+                        .fontWeight(worker.hasHD ? .semibold : .regular)
+                        .foregroundStyle(Color.colorTextPrimary)
+                        .lineLimit(1)
 
-                // L2 (固定情報): branch + address を一緒に
-                HStack(spacing: 8) {
-                    if let branch = worker.branch {
-                        Text(branch.smartHead(tailLimit: 12))
-                            .font(.caption2)
-                            .foregroundStyle(Color.colorTextTertiary)
-                            .lineLimit(1)
-                            .help(branch)
+                    HStack(spacing: 8) {
+                        if let branch = worker.branch {
+                            Text(branch.smartHead(tailLimit: 12))
+                                .font(.caption2)
+                                .foregroundStyle(Color.colorTextTertiary)
+                                .lineLimit(1)
+                                .help(branch)
+                        }
+                        StandDotButton(stand: workerLaneActor, forceShort: true)
                     }
-                    StandDotButton(stand: workerLaneActor, forceShort: true)
                 }
 
-                // L3 (通知 only): msgbox dot + 未読 + notification
-                LaneNotificationRow(
-                    unreadCount: Int(ccwireSession?.pendingMessages ?? 0),
-                    hasNotification: hasNotification,
-                    wireStatus: ccwireSession?.status
-                )
+                Spacer(minLength: 0)
+
+                LaneStatusBar(isFocused: isFocused)
+                    .padding(.leading, 6)
+                    .padding(.trailing, 6)
             }
 
-            Spacer(minLength: 0)
-
-            // Lane focus marker (右端、selected 時のみ緑 pill visible)
-            LaneStatusBar(isFocused: isFocused)
-                .padding(.leading, 6)
-                .padding(.trailing, 6)
+            // 下段: L3 通知層 (幅いっぱい)
+            LaneNotificationRow(
+                unreadCount: Int(ccwireSession?.pendingMessages ?? 0),
+                hasNotification: hasNotification,
+                wireStatus: ccwireSession?.status
+            )
         }
         .padding(.vertical, 4)
         .frame(maxWidth: .infinity, alignment: .leading)
