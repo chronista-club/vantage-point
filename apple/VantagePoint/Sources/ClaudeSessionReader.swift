@@ -25,9 +25,9 @@ enum ClaudeSessionReader {
     /// project_dir に紐づく最新 session の title を取得
     /// - Parameters:
     ///   - projectDir: 絶対パス (e.g. "/Users/makoto/repos/vantage-point")
-    ///   - maxChars: 先頭 n 文字で cap (default 60)
+    ///   - maxChars: 先頭 n 文字で cap (default 17、Lane row L1 の単段 width 考慮)
     /// - Returns: 最初の user message (trimmed)、取得失敗は nil
-    static func latestSessionTitle(for projectDir: String, maxChars: Int = 60) -> String? {
+    static func latestSessionTitle(for projectDir: String, maxChars: Int = 17) -> String? {
         let key = projectDirToKey(projectDir)
         let sessionsDir = claudeProjectsDir().appendingPathComponent(key)
 
