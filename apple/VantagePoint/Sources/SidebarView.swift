@@ -144,9 +144,7 @@ struct SidebarView: View {
                 // 有効なプロジェクト（展開可能な disclosure header）
                 ForEach(enabledProjects) { project in
                     sidebarProjectDisclosure(project: project)
-                        // macOS .plain List の system container padding を相殺。
-                        // 左は二層 (list container + section separator inset) 分大きく食い込ませる
-                        .listRowInsets(EdgeInsets(top: 0, leading: -20, bottom: 0, trailing: -8))
+                        .listRowInsets(EdgeInsets())
                         .listRowBackground(Color.clear)
                         .listRowSeparator(.hidden)
                 }
@@ -175,9 +173,10 @@ struct SidebarView: View {
             }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
-            // macOS List の system selection overlay (blue) を透明化。
-            // 自前の .listRowBackground + laneRowBackground() が唯一の
-            // selection visual になる (VP-83 refinement 20)
+            // macOS 14+ API: scroll content の系統的 horizontal margin を 0 に。
+            // これで Project card bg が window/sidebar edge にピタッと到達
+            .contentMargins(.horizontal, 0, for: .scrollContent)
+            // macOS List の system selection overlay (blue) を透明化
             .tint(.clear)
             .onDrop(of: [.fileURL], isTargeted: nil) { providers in
                 handleDrop(providers: providers)
