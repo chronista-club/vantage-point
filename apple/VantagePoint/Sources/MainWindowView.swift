@@ -158,7 +158,9 @@ struct MainWindowView: View {
                             if selectedProjectPath != path {
                                 selectedProjectPath = path
                             }
-                        }
+                        },
+                        selectedBranch: selectedProject?.branch,
+                        laneCount: selectedProject.map { 1 + $0.workers.count }
                     )
                 }
 
@@ -1257,6 +1259,10 @@ struct ProjectTabBar: View {
     let projects: [SidebarProject]
     let selectedPath: String?
     let onSelect: (String) -> Void
+    /// Context Zone (T2): 選択中 Project の branch chip
+    var selectedBranch: String? = nil
+    /// Context Zone: 選択中 Project の Lane 数 (Lead + Worker)
+    var laneCount: Int? = nil
 
     var body: some View {
         HStack(spacing: 0) {
@@ -1314,6 +1320,32 @@ struct ProjectTabBar: View {
                 .help("\(project.displayTitle) — \(status.helpText)")
             }
             Spacer()
+
+            // Context Zone (T2): branch chip + lane count
+            if let branch = selectedBranch {
+                HStack(spacing: 4) {
+                    Image(systemName: "arrow.branch")
+                        .font(.system(size: 9))
+                        .foregroundStyle(Color.colorTextTertiary)
+                    Text(branch.smartHead(tailLimit: 14))
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(Color.colorTextSecondary)
+                        .lineLimit(1)
+                        .help(branch)
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(
+                    RoundedRectangle(cornerRadius: CreoUITokens.radiusSm)
+                        .fill(Color.colorSurfaceBgEmphasis.opacity(0.5))
+                )
+            }
+            if let count = laneCount, count > 0 {
+                Text("\(count) lane\(count > 1 ? "s" : "")")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(Color.colorTextTertiary)
+                    .padding(.leading, 6)
+            }
         }
         .padding(.horizontal, 8)
         .padding(.top, 6)
