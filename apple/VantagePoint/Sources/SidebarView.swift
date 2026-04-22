@@ -190,7 +190,8 @@ struct SidebarView: View {
                 project: project,
                 ppStatus: ppBadgeStatus(for: project),
                 ccwireSession: project.ccwireSession,
-                hasNotification: notifications.contains(project.path)
+                hasNotification: notifications.contains(project.path),
+                isFocused: selection == project.id
             )
             .tag(project.id)
             .contextMenu { projectContextMenu(project: project) }
@@ -203,7 +204,8 @@ struct SidebarView: View {
                     parentProjectName: project.name,
                     parentPPStatus: ppBadgeStatus(for: project),
                     ccwireSession: worker.ccwireSession,
-                    hasNotification: notifications.contains(worker.path)
+                    hasNotification: notifications.contains(worker.path),
+                    isFocused: selection == worker.id
                 )
                 .tag(worker.id)
                 .contextMenu {
@@ -313,20 +315,30 @@ struct SidebarProjectHeaderRow: View {
     var ppStatus: BadgeStatus = .inactive
 
     var body: some View {
-        // VP-83 refinement 9/11: Title + address の縦積み
-        // Project header は Lane 行より視覚階層が上 → .headline で格上げ
-        // Lane 行との差別化: headline (title) + bold address
-        VStack(alignment: .leading, spacing: 2) {
-            // 1行目: Project 名 (title、headline で Lane 行より強調)
-            Text(project.name)
-                .font(.headline)
-                .fontWeight(project.isRunning ? .bold : .semibold)
-                .lineLimit(1)
+        // VP-83 refinement 12: 2-state accordion header
+        // Leading accent bar (3pt) で SP 稼働状態を visual に示す。
+        // bar の色自体が status indicator、address text と二重で意味を持たせる。
+        HStack(spacing: CreoUITokens.spacingSm) {
+            // Leading accent bar (SP 稼働状態、sharp rectangle で統一)
+            Rectangle()
+                .fill(project.isRunning ? Color.colorSemanticSuccess : Color.colorSurfaceBorderSubtle)
+                .frame(width: 3)
+                .frame(maxHeight: .infinity)
+                .animation(.easeInOut(duration: 0.2), value: project.isRunning)
 
-            // 2行目: SP actor address (lane-lead address と同じ vocabulary)
-            StandDotButton(stand: spStand)
+            // Title + address 縦積み
+            VStack(alignment: .leading, spacing: 2) {
+                Text(project.name)
+                    .font(.headline)
+                    .fontWeight(project.isRunning ? .bold : .semibold)
+                    .lineLimit(1)
+
+                // SP actor address (lane-lead address と同じ vocabulary)
+                StandDotButton(stand: spStand)
+            }
         }
-        .opacity(project.isRunning ? 1.0 : 0.6)
+        .frame(minHeight: 36)
+        .opacity(project.isRunning ? 1.0 : 0.55)
     }
 
     /// Star Platinum actor (project server、lane 概念外)
@@ -355,33 +367,41 @@ struct SidebarLeadRow: View {
     var ccwireSession: CcwireSessionInfo?
     /// CC 通知バッジ
     var hasNotification: Bool = false
+    /// 現在 focus されているか (VP-83 refinement 12: focus light)
+    var isFocused: Bool = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            // 1行目: branch primary (Stand icon / "Lead-HD" label オミット、position で Lead 識別)
-            HStack(spacing: 6) {
-                if let branch = project.branch {
-                    Text(branch)
-                        .font(.callout)
-                        .fontWeight(project.hasHD ? .semibold : .regular)
-                        .foregroundStyle(Color.colorTextPrimary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                } else {
-                    Text("(no branch)")
-                        .font(.callout)
-                        .foregroundStyle(Color.colorTextTertiary)
-                }
-                Spacer()
-            }
+        HStack(spacing: 0) {
+            // Focus light (selected 時のみ visible、rail より内側 + shorter)
+            LaneFocusLight(isFocused: isFocused)
+                .padding(.trailing, 4)
 
-            // 2行目: Lane-lead address + msgbox 状況 + 未読 (SP/PP は Phase 2 Drawer へ)
-            UnifiedStatusBadge(
-                laneActor: leadActor,
-                unreadCount: Int(ccwireSession?.pendingMessages ?? 0),
-                hasNotification: hasNotification,
-                wireStatus: ccwireSession?.status
-            )
+            VStack(alignment: .leading, spacing: 2) {
+                // 1行目: branch primary
+                HStack(spacing: 6) {
+                    if let branch = project.branch {
+                        Text(branch)
+                            .font(.callout)
+                            .fontWeight(project.hasHD ? .semibold : .regular)
+                            .foregroundStyle(Color.colorTextPrimary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    } else {
+                        Text("(no branch)")
+                            .font(.callout)
+                            .foregroundStyle(Color.colorTextTertiary)
+                    }
+                    Spacer()
+                }
+
+                // 2行目: Lane-lead address + msgbox + 未読
+                UnifiedStatusBadge(
+                    laneActor: leadActor,
+                    unreadCount: Int(ccwireSession?.pendingMessages ?? 0),
+                    hasNotification: hasNotification,
+                    wireStatus: ccwireSession?.status
+                )
+            }
         }
         .opacity(project.hasHD ? 1.0 : 0.6)
     }
@@ -411,33 +431,41 @@ struct SidebarWorkerRow: View {
     var ccwireSession: CcwireSessionInfo?
     /// CC 通知バッジ
     var hasNotification: Bool = false
+    /// 現在 focus されているか (VP-83 refinement 12: focus light)
+    var isFocused: Bool = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            // 1行目: worker suffix (primary) + branch (secondary)。icon / role label オミット
-            HStack(spacing: 6) {
-                Text(worker.suffix)
-                    .font(.callout)
-                    .fontWeight(worker.hasHD ? .semibold : .regular)
-                    .foregroundStyle(Color.colorTextPrimary)
-                    .lineLimit(1)
-                if let branch = worker.branch {
-                    Text(branch)
-                        .font(.caption2)
-                        .foregroundStyle(Color.colorTextTertiary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-                Spacer()
-            }
+        HStack(spacing: 0) {
+            // Focus light
+            LaneFocusLight(isFocused: isFocused)
+                .padding(.trailing, 4)
 
-            // 2行目: Lane-lead address + msgbox 状況 + 未読 (PP は Phase 2 Drawer へ)
-            UnifiedStatusBadge(
-                laneActor: workerLaneActor,
-                unreadCount: Int(ccwireSession?.pendingMessages ?? 0),
-                hasNotification: hasNotification,
-                wireStatus: ccwireSession?.status
-            )
+            VStack(alignment: .leading, spacing: 2) {
+                // 1行目: worker suffix + branch
+                HStack(spacing: 6) {
+                    Text(worker.suffix)
+                        .font(.callout)
+                        .fontWeight(worker.hasHD ? .semibold : .regular)
+                        .foregroundStyle(Color.colorTextPrimary)
+                        .lineLimit(1)
+                    if let branch = worker.branch {
+                        Text(branch)
+                            .font(.caption2)
+                            .foregroundStyle(Color.colorTextTertiary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    Spacer()
+                }
+
+                // 2行目: Lane-lead address + msgbox + 未読
+                UnifiedStatusBadge(
+                    laneActor: workerLaneActor,
+                    unreadCount: Int(ccwireSession?.pendingMessages ?? 0),
+                    hasNotification: hasNotification,
+                    wireStatus: ccwireSession?.status
+                )
+            }
         }
         .opacity(worker.hasHD ? 1.0 : 0.6)
     }
@@ -496,44 +524,110 @@ struct SidebarStand: Equatable {
     }
 }
 
-// MARK: - Disclosure style (web accordion 風、chevron 右端)
+// MARK: - Disclosure style (web accordion 風、2-state design)
 
-/// Web accordion 風の DisclosureGroup style (VP-83 Phase 1 refinement 8)
+/// VP Project Accordion — closed/open の 2 state をデザインとして成立させた
+/// DisclosureGroup style (VP-83 Phase 1 refinement 12)
 ///
-/// SwiftUI DisclosureGroup の default は chevron が左 (macOS / iOS 標準)。
-/// Web accordion (Material / shadcn / Tailwind UI) では chevron が右端、
-/// header 全体が click 可能、rotation animation で open/close を示す。
+/// ## Closed State
+/// ```
+/// [ label                                  ▷ ]
+/// ```
+/// - chevron: right、tertiary text
+/// - background: transparent
 ///
-/// 本 style は VP Sidebar の Project row に適用:
-/// - header: SidebarProjectHeaderRow (sp@... + name + time)
-/// - chevron: 右端、閉時 right、開時 90° rotate (down)
-/// - 行全体 (label area) を click で toggle
+/// ## Open State
+/// ```
+/// [ label                                  ▽ ]   ← subtle bg
+/// [ │  content ............................ ]   ← left rail (tree branch)
+/// ```
+/// - chevron: 90° rotate (down)
+/// - header: 薄い bg tint で "active" を示す
+/// - content: 左 rail (1pt vertical line) で tree を表現
+///
+/// ## Motion
+/// - chevron rotation: easeInOut 220ms
+/// - content: List が自動で row insert/remove を animate
+/// - header bg: transition 180ms
 struct RightChevronDisclosureStyle: DisclosureGroupStyle {
     func makeBody(configuration: Configuration) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 6) {
+            // Header row (閉/開 共通) — 角丸なし、sharp rectangular bg
+            HStack(spacing: 8) {
                 configuration.label
                 Spacer(minLength: 4)
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 10, weight: .medium))
+                    .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(Color.colorTextTertiary)
                     .rotationEffect(.degrees(configuration.isExpanded ? 90 : 0))
-                    .animation(.easeInOut(duration: 0.2), value: configuration.isExpanded)
+                    .animation(.easeInOut(duration: 0.22), value: configuration.isExpanded)
             }
+            .padding(.horizontal, CreoUITokens.spacingSm)
+            .padding(.vertical, CreoUITokens.spacingXs + 2)
+            .background(
+                // Open 時のみ header subtle tint (sharp 矩形、角丸なし)
+                Color.colorSurfaceBgEmphasis
+                    .opacity(configuration.isExpanded ? 0.35 : 0)
+                    .animation(.easeInOut(duration: 0.18), value: configuration.isExpanded)
+            )
             .contentShape(Rectangle())
             .onTapGesture {
-                withAnimation(.easeInOut(duration: 0.2)) {
+                withAnimation(.easeInOut(duration: 0.22)) {
                     configuration.isExpanded.toggle()
                 }
             }
 
+            // Content area — Open 時のみ left rail (tree) 付きで表示
             if configuration.isExpanded {
-                configuration.content
-                    // Lane rows を Project header から視覚的にインデント
-                    // (VP-83 refinement 11: Lane は左 pad spacingMd = 18px)
-                    .padding(.leading, CreoUITokens.spacingMd)
+                HStack(alignment: .top, spacing: 0) {
+                    // Tree rail (所属関係を示す 1pt 縦線、sharp rectangle)
+                    Rectangle()
+                        .fill(Color.colorSurfaceBorderSubtle)
+                        .frame(width: 1)
+                        .padding(.leading, CreoUITokens.spacingSm + 4)
+                        .padding(.vertical, 2)
+
+                    VStack(alignment: .leading, spacing: 0) {
+                        configuration.content
+                    }
+                    .padding(.leading, CreoUITokens.spacingSm)
+                    .padding(.trailing, CreoUITokens.spacingXs)
+                }
+                .padding(.bottom, CreoUITokens.spacingXs)
+                .transition(
+                    .asymmetric(
+                        insertion: .opacity.combined(with: .move(edge: .top)),
+                        removal: .opacity
+                    )
+                )
             }
         }
+    }
+}
+
+// MARK: - Focus light (lane 選択インジケータ)
+
+/// Lane row の leading に描画する focus light
+///
+/// VP-83 refinement 12: "縦のラインで左側に光っている、縦のラインよりちょっと短く、
+/// ちょっと内側にパディングされたような位置" を実現する
+///
+/// - width: 2.5pt (rail の 1pt より太く、存在感あり)
+/// - height: row の 65% 程度 (rail より短い、vertical padding で削る)
+/// - offset: rail より内側 (content 側)、row の leading edge 付近
+/// - glow: subtle shadow で "光っている" 感
+struct LaneFocusLight: View {
+    let isFocused: Bool
+
+    var body: some View {
+        Rectangle()
+            .fill(Color.colorSemanticSuccess)
+            .frame(width: 2.5)
+            .padding(.vertical, 6)
+            .opacity(isFocused ? 1 : 0)
+            .shadow(color: Color.colorSemanticSuccess.opacity(isFocused ? 0.5 : 0),
+                    radius: 3, x: 0, y: 0)
+            .animation(.easeInOut(duration: 0.18), value: isFocused)
     }
 }
 
