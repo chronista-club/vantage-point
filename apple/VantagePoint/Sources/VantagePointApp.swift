@@ -32,10 +32,10 @@ struct VantagePointApp: App {
         .windowResizability(.contentSize)
     }
 
-    /// View メニュー — Command Palette + Design Inspector
+    /// VP メニュー — Command Palette + Design Inspector (macOS 既定 View menu と衝突避け)
     @CommandsBuilder
     private var viewCommands: some Commands {
-        CommandMenu("View") {
+        CommandMenu("VP") {
             Button("Command Palette…") {
                 NotificationCenter.default.post(name: .openCommandPalette, object: nil)
             }
