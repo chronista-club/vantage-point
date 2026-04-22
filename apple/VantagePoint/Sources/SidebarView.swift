@@ -1259,14 +1259,16 @@ struct WorldStatusFooter: View {
 
             switch status {
             case .connected(let version, let startedAt):
-                Text("TheWorld v\(version)")
+                // 一般向け表示名 (VP-83 refinement 33): "TheWorld" は内部名、
+                // user には "Vantage Point" アプリ名で見せる。version は残す (重要)。
+                Text("Vantage Point v\(version)")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 Spacer()
                 Text(startedAt, style: .time)
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
-                // TheWorld 再起動ボタン
+                // 再起動ボタン (user 明示指示: 残す)
                 Button {
                     onRestart?()
                 } label: {
@@ -1275,14 +1277,14 @@ struct WorldStatusFooter: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
-                .help("TheWorld を再起動")
+                .help("Vantage Point を再起動")
             case .disconnected:
-                Text("TheWorld offline")
+                Text("Offline")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 Spacer()
             case .checking:
-                Text("Connecting...")
+                Text("Connecting…")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 Spacer()
