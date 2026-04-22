@@ -219,6 +219,7 @@ struct SidebarView: View {
             )
             .contextMenu { projectContextMenu(project: project) }
         }
+        .disclosureGroupStyle(RightChevronDisclosureStyle())
     }
 
     /// プロジェクト行のコンテキストメニュー
@@ -312,23 +313,16 @@ struct SidebarProjectHeaderRow: View {
     var ppStatus: BadgeStatus = .inactive
 
     var body: some View {
-        HStack(spacing: 6) {
-            // SP actor を address 形式で (VP-83 refinement 7: dot → address 昇格)
-            // Lane row 2 行目の lane-lead address と同じ vocabulary を統一
-            StandDotButton(stand: spStand)
-
+        // VP-83 refinement 9: Title + address の縦積み (Lead/Worker row の
+        // 視覚構造と揃える)、時刻オミット (Phase 2 Drawer 移行)
+        VStack(alignment: .leading, spacing: 2) {
+            // 1行目: Project 名 (title)
             Text(project.name)
                 .fontWeight(project.isRunning ? .semibold : .regular)
                 .lineLimit(1)
 
-            Spacer()
-
-            // 稼働時刻（Phase 2 Right Drawer 移行予定）
-            if let startedAt = project.startedAt {
-                Text(startedAt, style: .time)
-                    .font(.caption2)
-                    .foregroundStyle(Color.colorTextTertiary)
-            }
+            // 2行目: SP actor address (lane-lead address と同じ vocabulary)
+            StandDotButton(stand: spStand)
         }
         .opacity(project.isRunning ? 1.0 : 0.6)
     }
@@ -496,6 +490,44 @@ struct SidebarStand: Equatable {
         case "idle": Color.colorTextTertiary
         case "disabled": Color.colorTextDisabled
         default: Color.colorTextTertiary
+        }
+    }
+}
+
+// MARK: - Disclosure style (web accordion 風、chevron 右端)
+
+/// Web accordion 風の DisclosureGroup style (VP-83 Phase 1 refinement 8)
+///
+/// SwiftUI DisclosureGroup の default は chevron が左 (macOS / iOS 標準)。
+/// Web accordion (Material / shadcn / Tailwind UI) では chevron が右端、
+/// header 全体が click 可能、rotation animation で open/close を示す。
+///
+/// 本 style は VP Sidebar の Project row に適用:
+/// - header: SidebarProjectHeaderRow (sp@... + name + time)
+/// - chevron: 右端、閉時 right、開時 90° rotate (down)
+/// - 行全体 (label area) を click で toggle
+struct RightChevronDisclosureStyle: DisclosureGroupStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 6) {
+                configuration.label
+                Spacer(minLength: 4)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(Color.colorTextTertiary)
+                    .rotationEffect(.degrees(configuration.isExpanded ? 90 : 0))
+                    .animation(.easeInOut(duration: 0.2), value: configuration.isExpanded)
+            }
+            .contentShape(Rectangle())
+            .onTapGesture {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    configuration.isExpanded.toggle()
+                }
+            }
+
+            if configuration.isExpanded {
+                configuration.content
+            }
         }
     }
 }
