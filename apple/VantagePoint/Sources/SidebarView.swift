@@ -1,3 +1,4 @@
+import CreoUI
 import OSLog
 import SwiftUI
 
@@ -65,11 +66,11 @@ struct SidebarView: View {
                 } label: {
                     Image(systemName: "plus")
                         .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(.secondary)
+                        .foregroundColor(Color.colorTextSecondary)
                         .frame(width: 22, height: 22)
                         .background(
-                            RoundedRectangle(cornerRadius: 5)
-                                .fill(Color.primary.opacity(0.06))
+                            RoundedRectangle(cornerRadius: CreoUITokens.radiusSm)
+                                .fill(Color.colorSurfaceBgEmphasis)
                         )
                         .contentShape(Rectangle())
                 }
@@ -245,19 +246,19 @@ struct SidebarProjectRow: View {
             HStack(spacing: 6) {
                 Image(systemName: "text.book.closed")
                     .font(.system(size: 10))
-                    .foregroundStyle(.green)
+                    .foregroundStyle(Color.colorSemanticSuccess)
                 Text(project.name)
                     .fontWeight(project.isRunning ? .semibold : .regular)
                     .lineLimit(1)
                 if let branch = project.branch {
                     Text(branch)
                         .font(.caption2)
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(Color.colorTextTertiary)
                         .lineLimit(1)
                 }
                 if hasNotification {
                     Circle()
-                        .fill(.orange)
+                        .fill(Color.colorSemanticWarning)
                         .frame(width: 7, height: 7)
                 }
             }
@@ -272,13 +273,13 @@ struct SidebarProjectRow: View {
                 if let wire = ccwireSession, wire.pendingMessages > 0 {
                     Text("📨 \(wire.pendingMessages)")
                         .font(.caption2)
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(Color.colorSemanticWarning)
                 }
 
                 if let startedAt = project.startedAt {
                     Text(startedAt, style: .time)
                         .font(.caption2)
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(Color.colorTextTertiary)
                 }
             }
         }
@@ -323,7 +324,7 @@ struct SidebarWorkerRow: View {
             HStack(spacing: 6) {
                 Image(systemName: isLead ? "text.book.closed" : "arrow.branch")
                     .font(.system(size: 10))
-                    .foregroundStyle(isLead ? .green : .cyan)
+                    .foregroundStyle(isLead ? Color.colorSemanticSuccess : Color.colorSemanticInfo)
                 Text(worker.suffix)
                     .font(.callout)
                     .fontWeight(worker.hasHD ? .semibold : .regular)
@@ -331,12 +332,12 @@ struct SidebarWorkerRow: View {
                 if let branch = worker.branch {
                     Text(branch)
                         .font(.caption2)
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(Color.colorTextTertiary)
                         .lineLimit(1)
                 }
                 if hasNotification {
                     Circle()
-                        .fill(.orange)
+                        .fill(Color.colorSemanticWarning)
                         .frame(width: 7, height: 7)
                 }
             }
@@ -351,7 +352,7 @@ struct SidebarWorkerRow: View {
                 if let wire = ccwireSession, wire.pendingMessages > 0 {
                     Text("📨 \(wire.pendingMessages)")
                         .font(.caption2)
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(Color.colorSemanticWarning)
                 }
             }
         }
@@ -401,11 +402,11 @@ struct SidebarStand: Equatable {
     /// ステータス色
     var statusColor: Color {
         switch status {
-        case "active": .green
-        case "connected": .blue
-        case "idle": .gray
-        case "disabled": .gray.opacity(0.4)
-        default: .gray
+        case "active": Color.colorSemanticSuccess
+        case "connected": Color.colorSemanticInfo
+        case "idle": Color.colorTextTertiary
+        case "disabled": Color.colorTextDisabled
+        default: Color.colorTextTertiary
         }
     }
 }
@@ -465,7 +466,7 @@ struct SidebarProject: Identifiable, Equatable {
     }
 
     var statusColor: Color {
-        isRunning ? .green : .gray
+        isRunning ? Color.colorSemanticSuccess : Color.colorTextTertiary
     }
 }
 
@@ -479,9 +480,9 @@ enum BadgeStatus {
 
     var color: Color {
         switch self {
-        case .inactive: .gray
-        case .active: .green
-        case .connected: .blue
+        case .inactive: Color.colorTextTertiary
+        case .active: Color.colorSemanticSuccess
+        case .connected: Color.colorSemanticInfo
         }
     }
 }
@@ -520,7 +521,7 @@ struct StatusBadge: View {
         // status が明示的に指定されていればそちらを優先
         if let status { return status.color }
         // 後方互換: isActive のみ指定
-        return isActive ? .green : .gray
+        return isActive ? Color.colorSemanticSuccess : Color.colorTextTertiary
     }
 }
 
@@ -718,9 +719,9 @@ struct WorldStatusFooter: View {
 
     private var statusColor: Color {
         switch status {
-        case .connected: .green
-        case .disconnected: .red
-        case .checking: .orange
+        case .connected: Color.colorSemanticSuccess
+        case .disconnected: Color.colorSemanticError
+        case .checking: Color.colorSemanticWarning
         }
     }
 
