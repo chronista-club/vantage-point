@@ -144,9 +144,9 @@ struct SidebarView: View {
                 // 有効なプロジェクト（展開可能な disclosure header）
                 ForEach(enabledProjects) { project in
                     sidebarProjectDisclosure(project: project)
-                        // macOS .plain List の系統的な左右 padding (~8pt ずつ) を
-                        // negative inset で相殺、bg が sidebar の edge ピタッと揃う
-                        .listRowInsets(EdgeInsets(top: 0, leading: -8, bottom: 0, trailing: -8))
+                        // macOS .plain List の system container padding を相殺。
+                        // 左は二層 (list container + section separator inset) 分大きく食い込ませる
+                        .listRowInsets(EdgeInsets(top: 0, leading: -20, bottom: 0, trailing: -8))
                         .listRowBackground(Color.clear)
                         .listRowSeparator(.hidden)
                 }
