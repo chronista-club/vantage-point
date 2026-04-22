@@ -88,51 +88,76 @@ event の最小単位 (leaf) となる。memory に昇華する際は `size: "XS
 > **原則**: 開発者の認知モデル (5-tier size scale) と UI 構造は **1:1 で alignment** させる。
 > 「どの粒度で作業しているか」が screen geography から読み取れれば、context switch cost が消える。
 
-#### MainWindow region × tier mapping
+#### 2.6.1 MainWindow 完成形 (5-tier cockpit)
 
-| tier | MainWindow region | 既存実装 | 説明 |
-|:---:|------------------|:---:|------|
-| **XL** | Sidebar + ProjectTabBar | ✅ | Project を縦に列挙、ProjectTabBar (上端) で active project 切替 |
-| **L** | LaneTabBar (Epic Lane 行) + Sub-Lane tree (将来) | ✅ | Epic Lane を branch tab として、children を折り畳み可能な tree で表示 |
-| **M** | LaneTabBar (Worker Lane 行) | ✅ | Worker Lane を branch tab として表示、current Lane は highlight |
-| **S** | Viewport Pane (VPPaneContainer) | ✅ | Lane 内の Pane は "今手を動かしている task 1 つ" の単位 |
-| **XS** | Dev Panel (bottom drawer、D-7 Causation UI) | ⬜ | 現在の R/R = causation edge 1 本を on-demand で可視化 |
+本 spec が目指す終着点は、**Sidebar + Viewport + Bottom Console + Right Drawer** の 4 region で 5 tier を一望できる cockpit レイアウト。
 
-#### 1 画面地図 (cockpit view)
-
-```mermaid
-graph TB
-    subgraph MainWindow["MainWindow — 1 画面地図"]
-        direction TB
-        PTB["ProjectTabBar (top, XL)"]
-        subgraph Body
-            direction LR
-            SB["Sidebar<br/>(XL: Projects)<br/>(L/M: Lanes as tree)"]
-            subgraph Center
-                direction TB
-                LTB["LaneTabBar (L/M: Lanes)"]
-                VP["Viewport<br/>(S: Panes)"]
-                DP["Dev Panel / Drawer<br/>(XS: R/R causation)"]
-            end
-        end
-    end
-
-    PTB -.-> Body
-    style PTB fill:#ffe082,stroke:#f57c00
-    style SB fill:#b3e5fc,stroke:#0288d1
-    style LTB fill:#c8e6c9,stroke:#388e3c
-    style VP fill:#f8bbd0,stroke:#c2185b
-    style DP fill:#d1c4e9,stroke:#512da8
+```
+┌──────────┬─────────────────────────────┬──────────────┐
+│ Sidebar  │  Viewport 上 2/3 (S tier)    │ Right Drawer │
+│ (Lanes)  │  Pane tree / empty "+"       │ (toggle)     │
+│ XL+L/M   ├─────────────────────────────┤ Status /     │
+│ (fixed)  │  Bottom Console 下 1/3        │ XL+L/M 詳細  │
+│          │  (XS tier、event stream 固定)  │ (slide-in)   │
+└──────────┴─────────────────────────────┴──────────────┘
 ```
 
-#### 整合状況と追加必要箇所
+Mermaid 版 (同じ構造の図解):
 
-既存 UI は **80% すでに整合済**。追加が必要なのは 2 点のみ:
+```mermaid
+graph LR
+    subgraph MainWindow["MainWindow — cockpit 完成形"]
+        direction LR
+        SB["Sidebar<br/>(XL: Projects)<br/>(L/M: Lane Stack)<br/>fixed / 常時"]
+        subgraph Center
+            direction TB
+            VP["Viewport 上 2/3<br/>(S: Pane tree / '+')<br/>常時"]
+            BC["Bottom Console 下 1/3<br/>(XS: event stream)<br/>固定 / 常時"]
+        end
+        RD["Right Drawer<br/>(XL/L/M 詳細・Status)<br/>toggle / slide-in"]
+    end
 
-1. **Pane = Task 昇格** (§4.4): 既存 Pane に `task: Option<TaskMetadata>` field を追加するだけで S tier が有効化
-2. **Dev Panel 実装** (D-7 Causation UI、既知 backlog): bottom drawer として R/R causation を on-demand 表示
+    style SB fill:#b3e5fc,stroke:#0288d1
+    style VP fill:#f8bbd0,stroke:#c2185b
+    style BC fill:#d1c4e9,stroke:#512da8
+    style RD fill:#ffe082,stroke:#f57c00
+```
 
-この 2 点を入れると、「MainWindow を見れば 5 tier 全部が読み取れる」 cockpit view が完成する。
+#### 2.6.2 4 region × tier mapping (完成形)
+
+| tier | region | 挙動 | 状態 |
+|:---:|--------|------|:---:|
+| **XL** | Sidebar (Project list) | fixed、expand/collapse 状態記憶 | 常時 |
+| **L / M** | Sidebar (Lane Stack) + Right Drawer (詳細) | Sidebar = 一覧 / Drawer = toggle 詳細 | Sidebar 常時 / Drawer on-demand |
+| **S** | Viewport 上 2/3 (Pane tree) | fixed、empty 時は "+" 単焦点 | 常時 |
+| **XS** | Bottom Console 下 1/3 | 固定表示 (event stream、causation、log) | 常時 |
+
+> 旧 v0.3 では XS を "Dev Panel (bottom drawer)" として on-demand 扱いにしていたが、**cockpit 完成形では Bottom Console を固定表示** に格上げする (§2.6.3 の設計原則参照)。
+
+#### 2.6.3 設計原則 — "static な情報 ≠ 常時表示、動的な流れ = 常時表示"
+
+cockpit レイアウトの trade-off を支える 3 つのルール:
+
+1. **Status / 詳細情報は常時非表示** — Project/Lane の設定、meta data、health 指標など **static な情報** は Right Drawer に畳み、必要な時だけ slide-in で呼び出す。常時表示すると scan cost が増え、肝心な流れが埋もれる。
+2. **XS event stream は常時表示** — R/R causation・log・Mailbox 流入などの **動的な流れ** は Bottom Console で固定し、開発者が「何が起きているか」を peripheral vision で把握できるようにする。
+3. **情報密度の 4 階層を役割分担** — region ごとに扱う粒度を固定して、**どこを見れば何が分かるか** を一意にする:
+
+   | region | 情報粒度 | 役割 |
+   |--------|---------|------|
+   | Sidebar | 一覧 (navigation) | Project / Lane の構造把握 |
+   | Right Drawer | 詳細 (detail) | 1 つの entity を深掘り (on-demand) |
+   | Viewport | task (working set) | 今手を動かしている S tier の Pane |
+   | Bottom Console | stream (live) | XS の event flow を固定表示 |
+
+#### 2.6.4 既存実装との整合
+
+既存 UI は **Sidebar + LaneTabBar + Viewport** の骨格まで整合済み。cockpit 完成形に向けた追加作業:
+
+1. **Pane = Task 昇格** (§4.4): 既存 Pane に `task: Option<TaskMetadata>` field を追加して S tier を有効化
+2. **Bottom Console 常時表示化**: 既存 Dev Panel を bottom 1/3 固定に格上げ、XS event stream を常時描画
+3. **Right Drawer 実装**: XL/L/M の詳細 view を slide-in で提供 (Status を内蔵、常時非表示)
+
+> **実装 issue pointer**: 本 spec §2.6 は **設計仕様**。具体的な UI 実装 (Bottom Console 固定化、Right Drawer slide-in、LaneTabBar の廃止/統合など) は **[VP-83](https://linear.app/chronista/issue/VP-83)** が実装 issue として追う。
 
 ---
 
@@ -912,3 +937,9 @@ agent 発見:
     - Lane 間連携 = VP actor msg (msg_send/msg_recv)、cross-project も同 address 形式
   - §5.5 **Request/Response as XS process** (causation edge = 1 R/R、events と processes の isomorphism)
   - §9.4 **Pane-level snapshot** (Mortality を Pane にも再帰適用、`size: "S"` tag 推奨)
+- **2026-04-23 v0.3 (更新)** — §2.6 Screen Geography を cockpit 完成形に拡充 (VP-83 合流):
+  - MainWindow 完成形 diagram 追加 (4 region × 4 tier: Sidebar / Viewport / Bottom Console / Right Drawer)
+  - Bottom Console (XS tier 固定) + Right Drawer (XL/L/M toggle) を明示、旧 v0.3 の "Dev Panel on-demand" 扱いを格上げ
+  - "Status 常時非表示 / XS stream 常時表示" 設計原則を §2.6.3 として追記 (static ≠ 常時表示、動的 = 常時表示)
+  - 情報密度の 4 階層 (Sidebar=一覧 / Drawer=詳細 / Viewport=task / Console=stream) 使い分けを明示
+  - 本 spec §2.6 は設計仕様、実装 issue は [VP-83](https://linear.app/chronista/issue/VP-83) が追う旨を明記
