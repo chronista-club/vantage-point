@@ -50,6 +50,24 @@ pub struct Config {
     /// Projects configuration
     #[serde(default)]
     pub projects: Vec<ProjectConfig>,
+
+    /// Port layout overrides (optional、default は PortLayout::default())
+    /// VP Port Management Phase 1: config で layout 定数を変更可能に
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ports: Option<PortLayoutOverrides>,
+}
+
+/// PortLayout の config 上書き (全 field optional、未指定は default)
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct PortLayoutOverrides {
+    pub world_port: Option<u16>,
+    pub project_slot_base: Option<u16>,
+    pub project_slot_size: Option<u16>,
+    pub max_projects: Option<u16>,
+    pub lane_base_offset: Option<u16>,
+    pub lane_size: Option<u16>,
+    #[serde(default)]
+    pub roles: Option<std::collections::BTreeMap<String, u16>>,
 }
 
 fn default_port() -> u16 {
@@ -68,6 +86,10 @@ pub struct ProjectConfig {
     /// SP 自動起動の有効/無効（デフォルト: true）
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+    /// Port slot (VP Port Management Phase 1, deterministic layout 用)
+    /// 永続 assign: 一度割り当てたら project の port は常にこの slot から計算
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot: Option<u16>,
 }
 
 fn default_enabled() -> bool {
@@ -140,6 +162,99 @@ impl Config {
         })
     }
 
+    // =========================================================================
+    // VP Port Management — Phase 1 (memory mem_1CaKCbNE24KTQDuf9x4Eim)
+    // =========================================================================
+
+    /// 実効 PortLayout (default + config overrides)
+    pub fn port_layout(&self) -> crate::port_layout::PortLayout {
+        let mut layout = crate::port_layout::PortLayout::default();
+        if let Some(ov) = &self.ports {
+            if let Some(v) = ov.world_port { layout.world_port = v; }
+            if let Some(v) = ov.project_slot_base { layout.project_slot_base = v; }
+            if let Some(v) = ov.project_slot_size { layout.project_slot_size = v; }
+            if let Some(v) = ov.max_projects { layout.max_projects = v; }
+            if let Some(v) = ov.lane_base_offset { layout.lane_base_offset = v; }
+            if let Some(v) = ov.lane_size { layout.lane_size = v; }
+            if let Some(r) = &ov.roles { layout.roles = r.clone(); }
+        }
+        layout
+    }
+
+    /// project 名 → slot index (未割当 / 未登録なら None)
+    pub fn resolve_slot_by_name(&self, name: &str) -> Option<u16> {
+        self.projects.iter().find(|p| p.name == name).and_then(|p| p.slot)
+    }
+
+    /// slot index → project (割当済みの場合)
+    pub fn project_by_slot(&self, slot: u16) -> Option<&ProjectConfig> {
+        self.projects.iter().find(|p| p.slot == Some(slot))
+    }
+
+    /// 使用中 slot 集合
+    pub fn used_slots(&self) -> std::collections::BTreeSet<u16> {
+        self.projects.iter().filter_map(|p| p.slot).collect()
+    }
+
+    /// 次の空き slot を返す (0..max_projects 内で未使用のうち最小)
+    pub fn next_free_slot(&self) -> Option<u16> {
+        let layout = self.port_layout();
+        let used = self.used_slots();
+        (0..layout.max_projects).find(|s| !used.contains(s))
+    }
+
+    /// project に slot を assign (未割当の場合のみ)。指定 slot の衝突は Err。
+    /// 戻り値: 割当られた slot
+    pub fn ensure_slot(&mut self, project_name: &str, preferred: Option<u16>) -> Result<u16> {
+        // 既に割当済み: そのまま返す
+        if let Some(s) = self.resolve_slot_by_name(project_name) {
+            return Ok(s);
+        }
+
+        let layout = self.port_layout();
+        let slot = match preferred {
+            Some(s) => {
+                if s >= layout.max_projects {
+                    anyhow::bail!("slot {} exceeds max_projects ({})", s, layout.max_projects);
+                }
+                if let Some(existing) = self.project_by_slot(s) {
+                    anyhow::bail!(
+                        "slot {} already assigned to project '{}'",
+                        s, existing.name
+                    );
+                }
+                s
+            }
+            None => self.next_free_slot().ok_or_else(|| {
+                anyhow::anyhow!("no free slot available (max_projects={})", layout.max_projects)
+            })?,
+        };
+
+        // 該当 project を探して slot field を更新 (存在しない場合は登録なしとして Err)
+        let entry = self.projects.iter_mut().find(|p| p.name == project_name);
+        match entry {
+            Some(p) => {
+                p.slot = Some(slot);
+                Ok(slot)
+            }
+            None => anyhow::bail!(
+                "project '{}' not registered in config",
+                project_name
+            ),
+        }
+    }
+
+    /// project の slot 割当解除
+    pub fn unassign_slot(&mut self, project_name: &str) -> Result<()> {
+        let entry = self
+            .projects
+            .iter_mut()
+            .find(|p| p.name == project_name)
+            .ok_or_else(|| anyhow::anyhow!("project '{}' not found", project_name))?;
+        entry.slot = None;
+        Ok(())
+    }
+
     /// パスを正規化（相対パス→絶対パス変換）
     pub fn normalize_path(path: &std::path::Path) -> String {
         if path.is_absolute() {
@@ -190,7 +305,9 @@ mod tests {
                 path: "/Users/makoto/repos/vantage-point".to_string(),
                 port: Some(33000),
                 enabled: true,
+                slot: Some(0),
             }],
+            ports: None,
         };
 
         let toml = toml::to_string_pretty(&config).unwrap();

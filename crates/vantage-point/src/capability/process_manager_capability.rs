@@ -521,11 +521,20 @@ impl ProcessManagerCapability {
         config.projects = order
             .iter()
             .filter_map(|key| {
-                projects.get(key).map(|info| crate::config::ProjectConfig {
-                    name: info.name.clone(),
-                    path: info.path.to_string_lossy().to_string(),
-                    port: info.port,
-                    enabled: info.enabled,
+                projects.get(key).map(|info| {
+                    // 既存 config の slot を継承 (port management Phase 1)
+                    let slot = config
+                        .projects
+                        .iter()
+                        .find(|p| p.name == info.name)
+                        .and_then(|p| p.slot);
+                    crate::config::ProjectConfig {
+                        name: info.name.clone(),
+                        path: info.path.to_string_lossy().to_string(),
+                        port: info.port,
+                        enabled: info.enabled,
+                        slot,
+                    }
                 })
             })
             .collect();
@@ -534,11 +543,17 @@ impl ProcessManagerCapability {
         let order_set: std::collections::HashSet<&String> = order.iter().collect();
         for (key, info) in projects.iter() {
             if !order_set.contains(key) {
+                let slot = config
+                    .projects
+                    .iter()
+                    .find(|p| p.name == info.name)
+                    .and_then(|p| p.slot);
                 config.projects.push(crate::config::ProjectConfig {
                     name: info.name.clone(),
                     path: info.path.to_string_lossy().to_string(),
                     port: info.port,
                     enabled: info.enabled,
+                    slot,
                 });
             }
         }
