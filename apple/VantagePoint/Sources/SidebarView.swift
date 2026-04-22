@@ -138,11 +138,15 @@ struct SidebarView: View {
             Divider()
 
             // プロジェクトリスト
-            // VP-83 Phase 1: DisclosureGroup ベースの Lane Stack
+            // VP-83 Phase 1 refinement 16: sharp stack — .plain + listRowInsets 0
+            // .sidebar style は auto card 化 (rounded outline + row gap) するため廃止
             List(selection: $selection) {
                 // 有効なプロジェクト（展開可能な disclosure header）
                 ForEach(enabledProjects) { project in
                     sidebarProjectDisclosure(project: project)
+                        .listRowInsets(EdgeInsets())
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
                 }
                 .onMove { from, to in
                     onReorder?(from, to)
@@ -162,9 +166,12 @@ struct SidebarView: View {
                             .font(.caption)
                             .foregroundStyle(Color.colorTextTertiary)
                     }
+                    .listRowInsets(EdgeInsets())
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
                 }
             }
-            .listStyle(.sidebar)
+            .listStyle(.plain)
             .scrollContentBackground(.hidden)
             .onDrop(of: [.fileURL], isTargeted: nil) { providers in
                 handleDrop(providers: providers)
@@ -581,6 +588,7 @@ struct RightChevronDisclosureStyle: DisclosureGroupStyle {
             }
             .padding(.horizontal, CreoUITokens.spacingSm)
             .padding(.vertical, CreoUITokens.spacingXs + 2)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 // Open 時のみ header subtle tint (sharp 矩形、角丸なし)
                 Color.colorSurfaceBgEmphasis
@@ -608,9 +616,8 @@ struct RightChevronDisclosureStyle: DisclosureGroupStyle {
                         configuration.content
                     }
                     .padding(.leading, CreoUITokens.spacingSm)
-                    .padding(.trailing, CreoUITokens.spacingXs)
                 }
-                .padding(.bottom, CreoUITokens.spacingXs)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .transition(
                     .asymmetric(
                         insertion: .opacity.combined(with: .move(edge: .top)),
@@ -618,6 +625,12 @@ struct RightChevronDisclosureStyle: DisclosureGroupStyle {
                     )
                 )
             }
+
+            // Project 間の sharp boundary (hairline divider)
+            Rectangle()
+                .fill(Color.colorSurfaceBorderSubtle)
+                .frame(height: 1)
+                .frame(maxWidth: .infinity)
         }
     }
 }
