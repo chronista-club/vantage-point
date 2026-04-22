@@ -373,9 +373,9 @@ struct SidebarLeadRow: View {
                 Spacer()
             }
 
-            // 2行目: 統合 status cluster — dot のみ、click で address copy
+            // 2行目: Lane-lead actor address のみ (SP/PP は Phase 2 Drawer へ移行)
             UnifiedStatusBadge(
-                stands: leadStands,
+                laneActor: leadActor,
                 unreadCount: Int(ccwireSession?.pendingMessages ?? 0),
                 hasNotification: hasNotification
             )
@@ -383,31 +383,13 @@ struct SidebarLeadRow: View {
         .opacity(project.hasHD ? 1.0 : 0.6)
     }
 
-    /// Lead Lane の 3 Stand (SP, HD, PP) を address 付きで
-    ///
-    /// short but unique canonical form:
-    /// - `sp@{project}` — Star Platinum (project server)
-    /// - `hd.lead@{project}` — Heaven's Door of Lead lane
-    /// - `pp.lead@{project}` — Paisley Park of Lead lane
-    private var leadStands: [StandRef] {
-        let proj = project.name
-        return [
-            StandRef(
-                status: project.isRunning ? .active : .inactive,
-                address: "sp@\(proj)",
-                displayName: "Star Platinum"
-            ),
-            StandRef(
-                status: project.hasHD ? .active : .inactive,
-                address: "hd.lead@\(proj)",
-                displayName: "Heaven's Door (Lead)"
-            ),
-            StandRef(
-                status: ppStatus,
-                address: "pp.lead@\(proj)",
-                displayName: "Paisley Park (Lead)"
-            ),
-        ]
+    /// Lead Lane を代表する lane-lead actor: `hd.lead@{project}`
+    private var leadActor: StandRef {
+        StandRef(
+            status: project.hasHD ? .active : .inactive,
+            address: "hd.lead@\(project.name)",
+            displayName: "Heaven's Door (Lead)"
+        )
     }
 }
 
@@ -446,9 +428,9 @@ struct SidebarWorkerRow: View {
                 Spacer()
             }
 
-            // 2行目: 統合 status cluster (HD + PP) — dot のみ、click で address copy
+            // 2行目: Lane-lead actor address のみ (PP は Phase 2 Drawer へ移行)
             UnifiedStatusBadge(
-                stands: workerStands,
+                laneActor: workerLaneActor,
                 unreadCount: Int(ccwireSession?.pendingMessages ?? 0),
                 hasNotification: hasNotification
             )
@@ -456,28 +438,17 @@ struct SidebarWorkerRow: View {
         .opacity(worker.hasHD ? 1.0 : 0.6)
     }
 
-    /// Worker Lane の 2 Stand (HD, PP) を address 付きで
-    ///
-    /// short but unique canonical form:
-    /// - `hd.{suffix}@{project}`  — Worker Lane の HD
-    /// - `pp.{suffix}@{project}`  — Worker Lane の PP (parent から継承)
+    /// Worker Lane を代表する lane-lead actor: `hd.{suffix}@{project}`
     ///
     /// worker.suffix = 親 project 名を除いた lane 識別子 (例: "vp-83"、"maru-42")
-    private var workerStands: [StandRef] {
+    private var workerLaneActor: StandRef {
         let proj = parentProjectName.isEmpty ? "?" : parentProjectName
         let lane = worker.suffix
-        return [
-            StandRef(
-                status: worker.hasHD ? .active : .inactive,
-                address: "hd.\(lane)@\(proj)",
-                displayName: "Heaven's Door (\(lane))"
-            ),
-            StandRef(
-                status: parentPPStatus,
-                address: "pp.\(lane)@\(proj)",
-                displayName: "Paisley Park (\(lane))"
-            ),
-        ]
+        return StandRef(
+            status: worker.hasHD ? .active : .inactive,
+            address: "hd.\(lane)@\(proj)",
+            displayName: "Heaven's Door (\(lane))"
+        )
     }
 }
 
@@ -575,25 +546,24 @@ struct StandDotButton: View {
     }
 }
 
-/// Stand 状態 + 通知の統合 cluster
+/// Lane-lead actor + 通知の統合 cluster (VP-83 Phase 1 refinement 3)
 ///
-/// VP-83 Phase 1 refinement:
-/// - Stand icon / label オミット (position で識別)
-/// - dot 色で稼働 status、click で address clipboard copy
-/// - 通知/ccwire unread は右端の count に合流
+/// Stand ごとの dot / label を全てオミット、**Lane 自身を指す lane-lead address 1 つ**で識別。
+/// SP / PP の個別 status は Phase 2 Right Drawer に移行予定。
 ///
-/// Lead row: stands = [SP, HD, PP] の 3 dots
-/// Worker row: stands = [HD, PP] の 2 dots
+/// - Lead lane: `hd.lead@{project}`
+/// - Worker lane: `hd.{suffix}@{project}`
+///
+/// color で稼働 status (green=active, gray=inactive)、click で full address clipboard copy。
 struct UnifiedStatusBadge: View {
-    let stands: [StandRef]
+    /// Lane 自身を代表する lane-lead actor (= HD actor)
+    let laneActor: StandRef
     var unreadCount: Int = 0
     var hasNotification: Bool = false
 
     var body: some View {
-        HStack(spacing: 5) {
-            ForEach(stands.indices, id: \.self) { i in
-                StandDotButton(stand: stands[i])
-            }
+        HStack(spacing: 6) {
+            StandDotButton(stand: laneActor)
             if unreadCount > 0 {
                 Text("\(unreadCount)")
                     .font(.caption2)
