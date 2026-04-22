@@ -194,6 +194,8 @@ struct SidebarView: View {
                 isFocused: selection == project.id
             )
             .tag(project.id)
+            .listRowInsets(EdgeInsets())
+            .listRowBackground(laneRowBackground(isFocused: selection == project.id))
             .contextMenu { projectContextMenu(project: project) }
 
             // Worker Lane 行
@@ -208,6 +210,8 @@ struct SidebarView: View {
                     isFocused: selection == worker.id
                 )
                 .tag(worker.id)
+                .listRowInsets(EdgeInsets())
+                .listRowBackground(laneRowBackground(isFocused: selection == worker.id))
                 .contextMenu {
                     Button("HD をリスタート", systemImage: "arrow.clockwise") {
                         onRestartHD?(worker.path)
@@ -222,6 +226,16 @@ struct SidebarView: View {
             .contextMenu { projectContextMenu(project: project) }
         }
         .disclosureGroupStyle(RightChevronDisclosureStyle())
+    }
+
+    /// Lane row の背景 (sharp 矩形、角丸なし)
+    ///
+    /// VP-83 refinement 15: List の default selection (rounded rect) を上書きし、
+    /// sharp stack 思想に合わせて pad/margin 0 の矩形 highlight を描画
+    @ViewBuilder
+    private func laneRowBackground(isFocused: Bool) -> some View {
+        Rectangle()
+            .fill(isFocused ? Color.colorSurfaceBgEmphasis.opacity(0.5) : Color.clear)
     }
 
     /// プロジェクト行のコンテキストメニュー
@@ -394,7 +408,12 @@ struct SidebarLeadRow: View {
                     forceShort: true
                 )
             }
+
+            Spacer(minLength: 0)
         }
+        .padding(.vertical, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
         .opacity(project.hasHD ? 1.0 : 0.6)
     }
 
@@ -459,7 +478,12 @@ struct SidebarWorkerRow: View {
                     forceShort: true
                 )
             }
+
+            Spacer(minLength: 0)
         }
+        .padding(.vertical, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
         .opacity(worker.hasHD ? 1.0 : 0.6)
     }
 
