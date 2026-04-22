@@ -536,14 +536,25 @@ struct StandRef {
     let displayName: String
 }
 
-/// Stand の状態 dot button。click で address を clipboard に copy、hover で tooltip。
+/// Stand の address button。monospaced text で短縮形表示、
+/// color で status、click で full address (`{stand}.{lane}@{project}`) clipboard copy。
+/// hover で full canonical form を tooltip 表示。
 struct StandDotButton: View {
     let stand: StandRef
 
+    /// Sidebar 表示用の短縮形 (project 部分を暗黙化、例: `hd.lead@vp` → `hd.lead`)
+    private var shortForm: String {
+        if let atIdx = stand.address.firstIndex(of: "@") {
+            return String(stand.address[..<atIdx])
+        }
+        return stand.address
+    }
+
     var body: some View {
-        Circle()
-            .fill(stand.status.color)
-            .frame(width: 8, height: 8)
+        Text(shortForm)
+            .font(.system(size: 10, design: .monospaced))
+            .foregroundStyle(stand.status.color)
+            .lineLimit(1)
             .contentShape(Rectangle())
             .help("\(stand.displayName)\n\(stand.address) — click to copy")
             .onTapGesture {
