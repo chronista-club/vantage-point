@@ -574,17 +574,20 @@ struct SidebarStand: Equatable {
 /// - content: List が自動で row insert/remove を animate
 /// - header bg: transition 180ms
 struct RightChevronDisclosureStyle: DisclosureGroupStyle {
-    /// Expand/shrink アニメーション (VP-83 refinement 17)
-    ///
-    /// `.smooth(duration:extraBounce:)` は macOS 14+ の natural spring。
-    /// extraBounce: 0 で overshoot なし、smooth damping で accordion に最適。
-    /// duration 0.28 は人間の知覚的 comfort zone (200-300ms) の中央付近。
+    /// Expand/shrink アニメーション
     private static let expandAnimation: Animation = .smooth(duration: 0.28, extraBounce: 0)
 
     func makeBody(configuration: Configuration) -> some View {
+        // Open 時 Project card 全体を subtle tint で塗り、header + content が
+        // 同じ area にまとまっているように見せる (VP-83 refinement 18)
+        //
+        // 階層感 (bg opacity で 4 段階):
+        //  - Closed project:        0.00  (transparent)
+        //  - Open project card:     0.14  (area 全体、ベース tint)
+        //  - Open project header:   0.14 + 0.22 = 0.36 (base + overlay)
+        //  - Focused Lane row:      0.14 + 0.50 ≒ 0.64 (base + focus highlight)
         VStack(alignment: .leading, spacing: 0) {
             // Header row — chevron オミット、header 全体が tap area
-            // open/close 状態は header bg tint + content の有無で自明
             HStack(spacing: 8) {
                 configuration.label
                 Spacer(minLength: 0)
@@ -593,9 +596,9 @@ struct RightChevronDisclosureStyle: DisclosureGroupStyle {
             .padding(.vertical, CreoUITokens.spacingXs + 2)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
-                // Open 時のみ header subtle tint (active state を bg で示す)
+                // Open 時のみ header extra tint (base tint に重ねる overlay)
                 Color.colorSurfaceBgEmphasis
-                    .opacity(configuration.isExpanded ? 0.35 : 0)
+                    .opacity(configuration.isExpanded ? 0.22 : 0)
                     .animation(Self.expandAnimation, value: configuration.isExpanded)
             )
             .contentShape(Rectangle())
@@ -621,14 +624,13 @@ struct RightChevronDisclosureStyle: DisclosureGroupStyle {
                     .padding(.leading, CreoUITokens.spacingSm)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                // 対称的な shutter transition: 上からロールダウン / 上へロールアップ
                 .transition(
                     .asymmetric(
                         insertion: .move(edge: .top).combined(with: .opacity),
                         removal: .move(edge: .top).combined(with: .opacity)
                     )
                 )
-                .clipped()  // 上方向へのスライドが header を突き抜けないよう clip
+                .clipped()
             }
 
             // Project 間の sharp boundary (hairline divider)
@@ -637,6 +639,12 @@ struct RightChevronDisclosureStyle: DisclosureGroupStyle {
                 .frame(height: 1)
                 .frame(maxWidth: .infinity)
         }
+        // Project card 全体の base tint (open 時、sharp 矩形、side ピタッと揃う)
+        .background(
+            Color.colorSurfaceBgEmphasis
+                .opacity(configuration.isExpanded ? 0.14 : 0)
+                .animation(Self.expandAnimation, value: configuration.isExpanded)
+        )
     }
 }
 
