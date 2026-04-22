@@ -9,6 +9,7 @@ pub mod file_cmd;
 pub mod hd_cmd;
 pub mod midi;
 pub mod pane;
+pub mod port_cmd;
 pub mod process_client;
 pub mod restart;
 pub mod restart_all;

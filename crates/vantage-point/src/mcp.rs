@@ -2226,6 +2226,146 @@ if bestId > 0 { print(bestId) }
             serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "thread retrieved".to_string()),
         )]))
     }
+
+    // ========================================================================
+    // VP Port Management (VP-83 refinement, memory: mem_1CaKCbNE24KTQDuf9x4Eim)
+    //
+    // Deterministic port layout に基づき、slot × lane × role から port / URL
+    // を透過的に計算して返す。HD agent は msg_send 結果の URL を WebFetch で
+    // 読み込む等、自律 workflow で port を問い合わせできる。
+    // ========================================================================
+
+    /// Port 計算: slot × lane × role → port
+    #[tool(
+        description = "Compute the deterministic port for a given project slot + lane index + role. Returns the port number. Use port_url to get the full URL."
+    )]
+    async fn port_show(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<PortShowParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let layout = crate::port_layout::PortLayout::default();
+        let port = match params.role.as_deref() {
+            Some(role) => layout.port(params.slot, params.lane, role),
+            None => layout.lane_base(params.slot, params.lane),
+        };
+        let text = match port {
+            Some(p) => format!("{}", p),
+            None => format!(
+                "no port: slot={}, lane={}, role={:?}",
+                params.slot, params.lane, params.role
+            ),
+        };
+        Ok(CallToolResult::success(vec![rmcp::model::Content::text(text)]))
+    }
+
+    /// URL 生成: `http://localhost:{port}`
+    #[tool(
+        description = "Generate a localhost URL (http://localhost:{port}) for a project slot + lane + role. Convenience wrapper over port_show."
+    )]
+    async fn port_url(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<PortUrlParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let layout = crate::port_layout::PortLayout::default();
+        let text = match layout.url(params.slot, params.lane, &params.role) {
+            Some(u) => u,
+            None => format!(
+                "no URL: slot={}, lane={}, role={}",
+                params.slot, params.lane, params.role
+            ),
+        };
+        Ok(CallToolResult::success(vec![rmcp::model::Content::text(text)]))
+    }
+
+    /// Role → offset table
+    #[tool(
+        description = "List all registered port roles (agent/dev_server/db_admin/canvas/preview) with their offsets within a Lane."
+    )]
+    async fn port_roles(
+        &self,
+        _params: rmcp::handler::server::wrapper::Parameters<()>,
+    ) -> Result<CallToolResult, McpError> {
+        let layout = crate::port_layout::PortLayout::default();
+        let mut out = format!("Role offsets (lane_size={}):\n", layout.lane_size);
+        for (name, offset) in layout.valid_roles() {
+            out.push_str(&format!("  +{:>2}  {}\n", offset, name));
+        }
+        Ok(CallToolResult::success(vec![rmcp::model::Content::text(out)]))
+    }
+
+    /// 1 Project slot の全割当一覧 (Markdown)
+    #[tool(
+        description = "Show the full port layout for one project slot: SP HTTP, SP Unison, and all Lane × role combinations. Returns Markdown-formatted text."
+    )]
+    async fn port_layout(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<PortLayoutParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let layout = crate::port_layout::PortLayout::default();
+        let Some(base) = layout.project_base(params.slot) else {
+            return Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+                format!(
+                    "slot {} is out of range (max_projects={})",
+                    params.slot, layout.max_projects
+                ),
+            )]));
+        };
+        let mut md = format!("# Project slot {} (base {})\n\n", params.slot, base);
+        md.push_str(&format!(
+            "- SP HTTP: `{}`\n- SP Unison: `{}`\n\n",
+            layout.sp_port(params.slot).unwrap(),
+            layout.unison_port(params.slot).unwrap()
+        ));
+        for lane in 0..layout.max_lanes_per_project() {
+            let Some(lb) = layout.lane_base(params.slot, lane) else {
+                continue;
+            };
+            let label = if lane == 0 { "Lead" } else { "Worker" };
+            md.push_str(&format!("## Lane {} ({}) — base `{}`\n\n", lane, label, lb));
+            for (role, offset) in layout.valid_roles() {
+                if let Some(p) = layout.port(params.slot, lane, &role) {
+                    md.push_str(&format!("- +{} `{}`: `{}`\n", offset, role, p));
+                }
+            }
+            md.push('\n');
+        }
+        Ok(CallToolResult::success(vec![rmcp::model::Content::text(md)]))
+    }
+}
+
+// --- Port Management tool params ---
+
+/// Parameters for `port_show`
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct PortShowParams {
+    /// Project slot (0-based, see port_slot_list for mapping)
+    #[schemars(description = "Project slot index (0-19)")]
+    pub slot: u16,
+    /// Lane index (0 = Lead, 1+ = Worker)
+    #[schemars(description = "Lane index within project slot (0 = Lead, 1+ = Worker)")]
+    #[serde(default)]
+    pub lane: u16,
+    /// Role (agent / dev_server / db_admin / canvas / preview)
+    #[schemars(
+        description = "Role within Lane (agent/dev_server/db_admin/canvas/preview). Omit to get the Lane base port."
+    )]
+    pub role: Option<String>,
+}
+
+/// Parameters for `port_url`
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct PortUrlParams {
+    pub slot: u16,
+    #[serde(default)]
+    pub lane: u16,
+    pub role: String,
+}
+
+/// Parameters for `port_layout`
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct PortLayoutParams {
+    /// Project slot to show
+    pub slot: u16,
 }
 
 #[tool_handler]

@@ -20,6 +20,7 @@ pub mod file_watcher;
 pub mod mcp;
 pub mod midi;
 pub mod notify;
+pub mod port_layout;
 pub mod process;
 pub mod protocol;
 pub mod resolve;
