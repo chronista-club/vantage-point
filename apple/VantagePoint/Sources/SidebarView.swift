@@ -16,6 +16,9 @@ private let logger = Logger(subsystem: "tech.anycreative.vp", category: "Sidebar
 struct SidebarView: View {
     let projects: [SidebarProject]
     @Binding var selection: String?
+
+    /// Design token override store (Design Inspector で live edit 可能)
+    @State private var tokens = DesignTokenStore.shared
     /// TheWorld 接続ステータス
     let worldStatus: WorldStatus
     /// プロジェクト追加コールバック（＋ボタン）
@@ -144,9 +147,13 @@ struct SidebarView: View {
                 // 有効なプロジェクト（展開可能な disclosure header）
                 ForEach(enabledProjects) { project in
                     sidebarProjectDisclosure(project: project)
-                        // macOS List の system container padding を大きく食い込ませて
-                        // bg が window/sidebar edge にピタッと到達させる
-                        .listRowInsets(EdgeInsets(top: 0, leading: -24, bottom: 0, trailing: -12))
+                        // Inset 値は DesignTokenStore 駆動、Inspector で live edit 可能
+                        .listRowInsets(EdgeInsets(
+                            top: 0,
+                            leading: tokens.sidebarListRowLeadingInset,
+                            bottom: 0,
+                            trailing: tokens.sidebarListRowTrailingInset
+                        ))
                         .listRowBackground(Color.clear)
                         .listRowSeparator(.hidden)
                 }
@@ -239,7 +246,7 @@ struct SidebarView: View {
             )
             .contextMenu { projectContextMenu(project: project) }
         }
-        .disclosureGroupStyle(RightChevronDisclosureStyle())
+        .disclosureGroupStyle(RightChevronDisclosureStyle(tokens: tokens))
     }
 
     /// Lane row の背景 (sharp 矩形、角丸なし)
@@ -249,7 +256,7 @@ struct SidebarView: View {
     @ViewBuilder
     private func laneRowBackground(isFocused: Bool) -> some View {
         Rectangle()
-            .fill(isFocused ? Color.colorSemanticSuccess.opacity(0.28) : Color.clear)
+            .fill(isFocused ? Color.colorSemanticSuccess.opacity(tokens.sidebarLaneFocusOpacity) : Color.clear)
     }
 
     /// プロジェクト行のコンテキストメニュー
@@ -584,6 +591,9 @@ struct RightChevronDisclosureStyle: DisclosureGroupStyle {
     /// Expand/shrink アニメーション
     private static let expandAnimation: Animation = .smooth(duration: 0.28, extraBounce: 0)
 
+    /// Design token store (Inspector で live edit)
+    let tokens: DesignTokenStore
+
     func makeBody(configuration: Configuration) -> some View {
         // Open 時 Project card 全体を subtle tint で塗り、header + content が
         // 同じ area にまとまっているように見せる (VP-83 refinement 18)
@@ -596,17 +606,17 @@ struct RightChevronDisclosureStyle: DisclosureGroupStyle {
         VStack(alignment: .leading, spacing: 0) {
             // Header row — chevron オミット、header 全体が tap area
             HStack(spacing: 6) {
-                // bg は edge 到達、text だけ右に 1 文字分 inset (VP-83 refinement 23)
+                // bg は edge 到達、text だけ tokens.sidebarHeaderTextLeading inset
                 configuration.label
-                    .padding(.leading, CreoUITokens.spacingSm)
+                    .padding(.leading, tokens.sidebarHeaderTextLeading)
                 Spacer(minLength: 0)
             }
             .padding(.vertical, CreoUITokens.spacingXs + 2)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
-                // Open 時のみ header extra tint (緑系、base tint に重ねる overlay)
+                // Open 時のみ header extra tint (緑系、tokens driven)
                 Color.colorSemanticSuccess
-                    .opacity(configuration.isExpanded ? 0.14 : 0)
+                    .opacity(configuration.isExpanded ? tokens.sidebarHeaderOverlayOpacity : 0)
                     .animation(Self.expandAnimation, value: configuration.isExpanded)
             )
             .contentShape(Rectangle())
@@ -647,10 +657,10 @@ struct RightChevronDisclosureStyle: DisclosureGroupStyle {
                 .frame(height: 1)
                 .frame(maxWidth: .infinity)
         }
-        // Project card 全体の base tint (open 時、緑系 subtle、sharp 矩形)
+        // Project card 全体の base tint (open 時、tokens driven)
         .background(
             Color.colorSemanticSuccess
-                .opacity(configuration.isExpanded ? 0.08 : 0)
+                .opacity(configuration.isExpanded ? tokens.sidebarCardBaseOpacity : 0)
                 .animation(Self.expandAnimation, value: configuration.isExpanded)
         )
     }
