@@ -187,58 +187,18 @@ pub struct CcwireSession {
 }
 
 /// 全セッション一覧を取得（未読メッセージ数付き）
+///
+/// Phase L7c: Mailbox Router 移行中のため empty を返す stub。
+/// 将来的に daemon の Mailbox Router.boxes + msgbox table を aggregate する
+/// /api/world/msgbox/sessions endpoint に差し替え予定。
 pub fn list_sessions() -> Result<Vec<CcwireSession>> {
-    let db = db_path();
-    if !db.exists() {
-        return Ok(vec![]);
-    }
-
-    let conn = Connection::open(&db)?;
-    let mut stmt = conn.prepare(
-        "SELECT s.name, s.status, s.pid, s.tmux_target, s.registered_at, s.last_seen,
-                COALESCE(m.cnt, 0) as pending_messages
-         FROM sessions s
-         LEFT JOIN (
-             SELECT \"to\", COUNT(*) as cnt
-             FROM messages
-             WHERE status = 'pending'
-             GROUP BY \"to\"
-         ) m ON s.name = m.\"to\"
-         ORDER BY s.registered_at DESC",
-    )?;
-
-    let sessions = stmt
-        .query_map([], |row| {
-            Ok(CcwireSession {
-                name: row.get(0)?,
-                status: row.get(1)?,
-                pid: row.get(2)?,
-                tmux_target: row.get(3)?,
-                registered_at: row.get(4)?,
-                last_seen: row.get(5)?,
-                pending_messages: row.get(6)?,
-            })
-        })?
-        .filter_map(|r| r.ok())
-        .collect();
-
-    Ok(sessions)
+    Ok(vec![])
 }
 
 /// セッションが登録されているか確認
-pub fn is_registered(session_name: &str) -> bool {
-    let db = db_path();
-    if !db.exists() {
-        return false;
-    }
-
-    Connection::open(&db)
-        .and_then(|conn| {
-            conn.query_row(
-                "SELECT COUNT(*) > 0 FROM sessions WHERE name = ?1",
-                rusqlite::params![session_name],
-                |row| row.get(0),
-            )
-        })
-        .unwrap_or(false)
+///
+/// Phase L7c: ccwire registry 廃止、false 固定 stub。
+/// 呼び側 (hd_list / sp_cmd) は registration status 表示のみなので影響軽微。
+pub fn is_registered(_session_name: &str) -> bool {
+    false
 }
