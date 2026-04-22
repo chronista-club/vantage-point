@@ -762,43 +762,81 @@ struct MainWindowView: View {
         }
     }
 
-    /// TheWorld を再起動（vp stop → vp world）
+    /// システム全体を再起動 — TheWorld daemon + tmux sessions + SPs
+    ///
+    /// Phase-based flow で status を逐次 footer に流す (VP-83 refinement 34):
+    /// stoppingWorld → killingTmux → waitingShutdown → startingWorld →
+    /// waitingHealth (health poll) → verifying → complete
     private func restartWorld() {
         Task {
-            worldStatus = .checking
-
-            // 停止
-            do {
-                let stop = Process()
-                stop.executableURL = URL(fileURLWithPath: "/bin/zsh")
-                stop.arguments = ["-lc", "vp stop --port 32000"]
-                stop.standardOutput = FileHandle.nullDevice
-                stop.standardError = FileHandle.nullDevice
-                try stop.run()
-                stop.waitUntilExit()
-                logger.info("[VP]TheWorld stopped")
-            } catch {
-                logger.error("[VP]TheWorld stop skipped: \(error)")
+            @MainActor func update(_ phase: RestartPhase) {
+                self.worldStatus = .restarting(phase)
+                logger.info("[VP]restart phase: \(phase.displayText)")
             }
 
-            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            await update(.stoppingWorld)
+            try? await runShell("vp stop --port 32000")
 
-            // 起動（バックグラウンドで vp world）
-            do {
-                let start = Process()
-                start.executableURL = URL(fileURLWithPath: "/bin/zsh")
-                start.arguments = ["-lc", "vp world"]
-                start.standardOutput = FileHandle.nullDevice
-                start.standardError = FileHandle.nullDevice
-                try start.run()
-                logger.info("[VP]TheWorld starting")
-            } catch {
-                logger.error("[VP]TheWorld start error: \(error)")
+            await update(.killingTmux)
+            // VP 関連 tmux session を全 kill。kill-server は同一 user の
+            // 他 tmux も巻き込むため、session 名単位の kill に留める。
+            try? await runShell("""
+                tmux ls 2>/dev/null \
+                  | awk -F: '{print $1}' \
+                  | grep -E '^(vp|creo|nexus|fleetstage|go-fast-packing|creo-ui|maru|modeling-factory)' \
+                  | xargs -I{} tmux kill-session -t {} 2>/dev/null || true
+                """)
+
+            await update(.waitingShutdown)
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+
+            await update(.startingWorld)
+            try? await runShell("vp world", detached: true)
+
+            await update(.waitingHealth)
+            var ready = false
+            for _ in 0..<30 {  // 最大 15 秒 (500ms × 30)
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                if (try? await theWorldClient.healthCheck()) == true {
+                    ready = true
+                    break
+                }
             }
 
-            // 起動待ち
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
-            await refreshAll()
+            await update(.verifying)
+            try? await Task.sleep(nanoseconds: 500_000_000)
+
+            if ready {
+                await update(.complete)
+                try? await Task.sleep(nanoseconds: 800_000_000)
+                await refreshAll()  // 正規の connected(...) 状態へ
+            } else {
+                await update(.failed("Health check timeout"))
+                logger.error("[VP]restart failed: health check timeout")
+            }
+        }
+    }
+
+    /// Shell command を async で実行 (stdout/stderr は破棄)
+    /// - detached: true なら waitUntilExit しない (bg process)
+    private func runShell(_ cmd: String, detached: Bool = false) async throws {
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            DispatchQueue.global().async {
+                do {
+                    let proc = Process()
+                    proc.executableURL = URL(fileURLWithPath: "/bin/zsh")
+                    proc.arguments = ["-lc", cmd]
+                    proc.standardOutput = FileHandle.nullDevice
+                    proc.standardError = FileHandle.nullDevice
+                    try proc.run()
+                    if !detached {
+                        proc.waitUntilExit()
+                    }
+                    cont.resume()
+                } catch {
+                    cont.resume(throwing: error)
+                }
+            }
         }
     }
 

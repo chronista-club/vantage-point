@@ -1243,6 +1243,40 @@ enum WorldStatus: Equatable {
     case connected(version: String, startedAt: Date)
     case disconnected
     case checking
+    /// システム全体 restart 中 (VP-83 refinement 34)
+    case restarting(RestartPhase)
+}
+
+/// システム restart の phase — footer に逐次表示される
+enum RestartPhase: Equatable {
+    case stoppingWorld       // TheWorld daemon stop
+    case killingTmux         // tmux sessions kill
+    case waitingShutdown     // shutdown 待ち
+    case startingWorld       // TheWorld daemon start
+    case waitingHealth       // /api/health が通るまで poll
+    case verifying           // 最終確認
+    case complete            // 正常完了
+    case failed(String)      // 失敗
+
+    var displayText: String {
+        switch self {
+        case .stoppingWorld:    "Stopping system…"
+        case .killingTmux:      "Closing tmux sessions…"
+        case .waitingShutdown:  "Waiting for shutdown…"
+        case .startingWorld:    "Starting system…"
+        case .waitingHealth:    "Waiting for health…"
+        case .verifying:        "Verifying…"
+        case .complete:         "Ready"
+        case .failed(let msg):  "Failed: \(msg)"
+        }
+    }
+
+    var isActive: Bool {
+        switch self {
+        case .complete, .failed: false
+        default: true
+        }
+    }
 }
 
 /// サイドバーフッター: TheWorld 接続ステータス
@@ -1277,7 +1311,8 @@ struct WorldStatusFooter: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
-                .help("Vantage Point を再起動")
+                .disabled(isRestarting)
+                .help("システム全体を再起動 (tmux / TheWorld / SPs)")
             case .disconnected:
                 Text("Offline")
                     .font(.caption2)
@@ -1288,6 +1323,19 @@ struct WorldStatusFooter: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 Spacer()
+
+            case .restarting(let phase):
+                Text(phase.displayText)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer()
+                if phase.isActive {
+                    ProgressView()
+                        .controlSize(.mini)
+                        .scaleEffect(0.6)
+                        .frame(width: 14, height: 14)
+                }
             }
         }
         .padding(.horizontal, 16)
@@ -1299,7 +1347,19 @@ struct WorldStatusFooter: View {
         case .connected: Color.colorSemanticSuccess
         case .disconnected: Color.colorSemanticError
         case .checking: Color.colorSemanticWarning
+        case .restarting(let phase):
+            switch phase {
+            case .complete: Color.colorSemanticSuccess
+            case .failed: Color.colorSemanticError
+            default: Color.colorSemanticWarning
+            }
         }
+    }
+
+    /// Restart 中は button を disable (重複 trigger 防止)
+    private var isRestarting: Bool {
+        if case .restarting(let phase) = status, phase.isActive { return true }
+        return false
     }
 
 }
