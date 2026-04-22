@@ -373,11 +373,12 @@ struct SidebarLeadRow: View {
                 Spacer()
             }
 
-            // 2行目: Lane-lead actor address のみ (SP/PP は Phase 2 Drawer へ移行)
+            // 2行目: Lane-lead address + msgbox 状況 + 未読 (SP/PP は Phase 2 Drawer へ)
             UnifiedStatusBadge(
                 laneActor: leadActor,
                 unreadCount: Int(ccwireSession?.pendingMessages ?? 0),
-                hasNotification: hasNotification
+                hasNotification: hasNotification,
+                wireStatus: ccwireSession?.status
             )
         }
         .opacity(project.hasHD ? 1.0 : 0.6)
@@ -428,11 +429,12 @@ struct SidebarWorkerRow: View {
                 Spacer()
             }
 
-            // 2行目: Lane-lead actor address のみ (PP は Phase 2 Drawer へ移行)
+            // 2行目: Lane-lead address + msgbox 状況 + 未読 (PP は Phase 2 Drawer へ)
             UnifiedStatusBadge(
                 laneActor: workerLaneActor,
                 unreadCount: Int(ccwireSession?.pendingMessages ?? 0),
-                hasNotification: hasNotification
+                hasNotification: hasNotification,
+                wireStatus: ccwireSession?.status
             )
         }
         .opacity(worker.hasHD ? 1.0 : 0.6)
@@ -546,24 +548,35 @@ struct StandDotButton: View {
     }
 }
 
-/// Lane-lead actor + 通知の統合 cluster (VP-83 Phase 1 refinement 3)
+/// Lane-lead actor + msgbox 状況 + 通知の統合 cluster (VP-83 Phase 1 refinement 4)
 ///
-/// Stand ごとの dot / label を全てオミット、**Lane 自身を指す lane-lead address 1 つ**で識別。
-/// SP / PP の個別 status は Phase 2 Right Drawer に移行予定。
+/// 構成:
+/// 1. lane-lead address (monospaced text、click で copy)
+/// 2. msgbox 活動状態 (wire status dot、connected=info blue / idle=gray / stale=error red)
+/// 3. 未読 count or 通知 indicator (warning orange)
 ///
-/// - Lead lane: `hd.lead@{project}`
-/// - Worker lane: `hd.{suffix}@{project}`
-///
-/// color で稼働 status (green=active, gray=inactive)、click で full address clipboard copy。
+/// SP / PP の個別 status と cache 管理は Phase 2 Right Drawer に移行予定。
 struct UnifiedStatusBadge: View {
     /// Lane 自身を代表する lane-lead actor (= HD actor)
     let laneActor: StandRef
     var unreadCount: Int = 0
     var hasNotification: Bool = false
+    /// msgbox / ccwire 状態 ("connected" / "idle" / "disconnected" / "stale" / nil)
+    var wireStatus: String? = nil
 
     var body: some View {
         HStack(spacing: 6) {
             StandDotButton(stand: laneActor)
+
+            // msgbox 活動状態 (wire status)
+            if let status = wireStatus {
+                Circle()
+                    .fill(msgboxColor(for: status))
+                    .frame(width: 5, height: 5)
+                    .help("msgbox: \(status)")
+            }
+
+            // 未読 count / 通知
             if unreadCount > 0 {
                 Text("\(unreadCount)")
                     .font(.caption2)
@@ -575,6 +588,16 @@ struct UnifiedStatusBadge: View {
                     .frame(width: 6, height: 6)
                     .padding(.leading, 2)
             }
+        }
+    }
+
+    /// wire/msgbox status を色に map
+    private func msgboxColor(for status: String) -> Color {
+        switch status.lowercased() {
+        case "connected", "active": return Color.colorSemanticInfo
+        case "idle": return Color.colorTextTertiary
+        case "disconnected", "stale", "error": return Color.colorSemanticError
+        default: return Color.colorTextTertiary
         }
     }
 }
