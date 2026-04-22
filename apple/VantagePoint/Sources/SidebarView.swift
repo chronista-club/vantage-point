@@ -428,12 +428,8 @@ struct SidebarLeadRow: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            // Focus light (selected 時のみ visible、rail より内側 + shorter)
-            LaneFocusLight(isFocused: isFocused)
-                .padding(.trailing, 4)
-
             // HD root pane icon badge (VP-83 refinement 31)
-            LaneRootPaneIcon(systemImage: "text.book.closed")
+            LaneRootPaneIcon(systemImage: "book.pages")
                 .padding(.trailing, 6)
 
             VStack(alignment: .leading, spacing: 2) {
@@ -465,11 +461,27 @@ struct SidebarLeadRow: View {
             }
 
             Spacer(minLength: 0)
+
+            // Lane status bar (右端、色=status、反応=focus)
+            LaneStatusBar(status: laneStatus, isFocused: isFocused)
+                .padding(.leading, 6)
         }
         .padding(.vertical, 4)
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
         .opacity(project.hasHD ? 1.0 : 0.6)
+    }
+
+    /// Lane の現在状態 (HD / ccwire / notification から導出)
+    private var laneStatus: LaneStatus {
+        if !project.hasHD { return .inactive }
+        if hasNotification { return .notification }
+        switch ccwireSession?.status {
+        case "connected": return .active
+        case "idle": return .idle
+        case "stale", "disconnected": return .error
+        default: return .active
+        }
     }
 
     /// Lead Lane を代表する lane-lead actor: `hd.lead@{project}`
@@ -502,12 +514,8 @@ struct SidebarWorkerRow: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            // Focus light
-            LaneFocusLight(isFocused: isFocused)
-                .padding(.trailing, 4)
-
             // HD root pane icon badge (VP-83 refinement 31)
-            LaneRootPaneIcon(systemImage: "text.book.closed")
+            LaneRootPaneIcon(systemImage: "book.pages")
                 .padding(.trailing, 6)
 
             VStack(alignment: .leading, spacing: 2) {
@@ -539,11 +547,27 @@ struct SidebarWorkerRow: View {
             }
 
             Spacer(minLength: 0)
+
+            // Lane status bar (右端、色=status、反応=focus)
+            LaneStatusBar(status: laneStatus, isFocused: isFocused)
+                .padding(.leading, 6)
         }
         .padding(.vertical, 4)
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
         .opacity(worker.hasHD ? 1.0 : 0.6)
+    }
+
+    /// Lane の現在状態 (HD / ccwire / notification から導出)
+    private var laneStatus: LaneStatus {
+        if !worker.hasHD { return .inactive }
+        if hasNotification { return .notification }
+        switch ccwireSession?.status {
+        case "connected": return .active
+        case "idle": return .idle
+        case "stale", "disconnected": return .error
+        default: return .active
+        }
     }
 
     /// Worker Lane を代表する lane-lead actor: `hd.{suffix}@{project}`
@@ -672,21 +696,13 @@ struct RightChevronDisclosureStyle: DisclosureGroupStyle {
                 }
             }
 
-            // Content area — Open 時のみ left rail (tree) 付きで表示
+            // Content area — Open 時のみ表示 (VP-83 refinement 32: tree rail 廃止、
+            // 所属関係は Project card の bg tint で示す。padding は header text と揃える)
             if configuration.isExpanded {
-                HStack(alignment: .top, spacing: 0) {
-                    // Tree rail (所属関係を示す 1pt 縦線、sharp rectangle)
-                    Rectangle()
-                        .fill(Color.colorSurfaceBorderSubtle)
-                        .frame(width: 1)
-                        .padding(.leading, CreoUITokens.spacingXs + 2)
-                        .padding(.vertical, 2)
-
-                    VStack(alignment: .leading, spacing: 0) {
-                        configuration.content
-                    }
-                    .padding(.leading, CreoUITokens.spacingXs)
+                VStack(alignment: .leading, spacing: 0) {
+                    configuration.content
                 }
+                .padding(.leading, tokens.sidebarHeaderTextLeading)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .transition(
                     .asymmetric(
@@ -737,18 +753,59 @@ struct RightChevronDisclosureStyle: DisclosureGroupStyle {
 /// - height: row の 65% 程度 (rail より短い、vertical padding で削る)
 /// - offset: rail より内側 (content 側)、row の leading edge 付近
 /// - glow: subtle shadow で "光っている" 感
-struct LaneFocusLight: View {
+// MARK: - Lane Status (VP-83 refinement 32)
+
+/// Lane の状態 — 色で表現し、右端 `LaneStatusBar` で可視化
+enum LaneStatus: Equatable {
+    case active        // HD 稼働 + ccwire connected (通常状態)
+    case idle          // HD 稼働 + idle (reply 待ち等)
+    case notification  // 未読 / attention 要請あり
+    case inactive      // HD 未稼働
+    case error         // stale / disconnected / failure
+
+    var color: Color {
+        switch self {
+        case .active: return .colorSemanticSuccess
+        case .idle: return .colorTextTertiary
+        case .notification: return .colorSemanticWarning
+        case .inactive: return .colorSurfaceBorderSubtle
+        case .error: return .colorSemanticError
+        }
+    }
+
+    var baseOpacity: Double {
+        switch self {
+        case .inactive: return 0.35
+        default: return 1.0
+        }
+    }
+}
+
+/// Lane の status bar — Lane row 右端に常在、色で状態、反応で focus を表現
+///
+/// VP-83 refinement 32: 左端の `LaneFocusLight` (focus 専用) を廃止して、
+/// 右端に **status + focus の複合メタファ** として再配置。
+///
+/// - 色: Lane status (active=緑 / idle=gray / notification=warning / error=red)
+/// - focused: width 微増 + glow shadow で視覚的に強調
+/// - 将来: メッセージ受信 pulse animation 等の "反応" を追加
+struct LaneStatusBar: View {
+    let status: LaneStatus
     let isFocused: Bool
 
     var body: some View {
         Rectangle()
-            .fill(Color.colorSemanticSuccess)
-            .frame(width: 2.5)
-            .padding(.vertical, 6)
-            .opacity(isFocused ? 1 : 0)
-            .shadow(color: Color.colorSemanticSuccess.opacity(isFocused ? 0.5 : 0),
-                    radius: 3, x: 0, y: 0)
-            .animation(.easeInOut(duration: 0.18), value: isFocused)
+            .fill(status.color)
+            .frame(width: isFocused ? 3 : 2)
+            .padding(.vertical, isFocused ? 4 : 6)
+            .opacity(status.baseOpacity)
+            .shadow(
+                color: isFocused ? status.color.opacity(0.6) : .clear,
+                radius: isFocused ? 4 : 0,
+                x: 0, y: 0
+            )
+            .animation(.easeInOut(duration: 0.2), value: isFocused)
+            .animation(.easeInOut(duration: 0.25), value: status)
     }
 }
 
@@ -774,7 +831,7 @@ struct LaneRootPaneIcon: View {
             .frame(width: 14, height: 14)
             .padding(8)
             .background(
-                RoundedRectangle(cornerRadius: 15)
+                RoundedRectangle(cornerRadius: 8)
                     .fill(Color.colorSurfaceBgEmphasis.opacity(0.7))
             )
     }
