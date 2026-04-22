@@ -33,9 +33,8 @@ struct TerminalRepresentable: NSViewRepresentable {
         // クロームは SwiftUI で描画（vp-bridge クロームは standalone TUI 用に温存）
 
         let cwd = projectPath ?? NSHomeDirectory()
-        let projectName = (cwd as NSString).lastPathComponent
-        // tmux セッション名: {project}-vp（SP が作成済み）
-        let tmuxSession = projectName.replacingOccurrences(of: ".", with: "-") + "-vp"
+        // tmux セッション名を LaneRegistry の集約ロジック経由で取得 (Phase L5)
+        let tmuxSession = LaneRegistry.tmuxSessionName(from: cwd)
 
         // シェル引用のエスケープ（シングルクォート内で安全に埋め込む）
         let safeCwd = cwd.replacingOccurrences(of: "'", with: "'\\''")

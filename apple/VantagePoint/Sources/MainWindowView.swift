@@ -645,9 +645,11 @@ struct MainWindowView: View {
     // MARK: - VP Pane ヘルパー
 
     /// プロジェクトパスから tmux セッション名を生成
+    /// tmux session 名 (Phase L5: LaneRegistry に集約、Registry lookup を優先)
     private func tmuxSessionName(for path: String) -> String {
-        let projectName = (path as NSString).lastPathComponent
-        return projectName.replacingOccurrences(of: ".", with: "-") + "-vp"
+        // Registry に entry があればそこから、なければ fallback derivation
+        laneRegistry.findByPath(path)?.tmuxSession
+            ?? LaneRegistry.tmuxSessionName(from: path)
     }
 
     // MARK: - SP 自動起動
