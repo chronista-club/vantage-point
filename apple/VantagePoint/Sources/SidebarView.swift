@@ -433,29 +433,30 @@ struct SidebarLeadRow: View {
                 .padding(.trailing, 6)
 
             VStack(alignment: .leading, spacing: 2) {
-                // L1: Lane 名 (primary) — "Lead" 固定、将来 CC session title 対応
+                // L1 (可変): Lane 名 — "Lead"、将来 CC session title 対応
                 Text(laneDisplayName)
                     .font(.callout)
                     .fontWeight(project.hasHD ? .semibold : .regular)
                     .foregroundStyle(Color.colorTextPrimary)
                     .lineLimit(1)
 
-                // L2: branch (サブ情報、小さく薄く)
-                if let branch = project.branch {
-                    Text(branch)
-                        .font(.caption2)
-                        .foregroundStyle(Color.colorTextTertiary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                // L2 (固定情報): branch + address を一緒に
+                HStack(spacing: 8) {
+                    if let branch = project.branch {
+                        Text(branch)
+                            .font(.caption2)
+                            .foregroundStyle(Color.colorTextTertiary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    StandDotButton(stand: leadActor, forceShort: true)
                 }
 
-                // L3: address + msgbox + 未読
-                UnifiedStatusBadge(
-                    laneActor: leadActor,
+                // L3 (通知 only): msgbox dot + 未読 + notification
+                LaneNotificationRow(
                     unreadCount: Int(ccwireSession?.pendingMessages ?? 0),
                     hasNotification: hasNotification,
-                    wireStatus: ccwireSession?.status,
-                    forceShort: true
+                    wireStatus: ccwireSession?.status
                 )
             }
 
@@ -526,29 +527,30 @@ struct SidebarWorkerRow: View {
                 .padding(.trailing, 6)
 
             VStack(alignment: .leading, spacing: 2) {
-                // L1: Lane 名 (primary) — worker suffix、将来 CC session title 優先
+                // L1 (可変): Lane 名 — worker.suffix、将来 CC session title 優先
                 Text(worker.suffix)
                     .font(.callout)
                     .fontWeight(worker.hasHD ? .semibold : .regular)
                     .foregroundStyle(Color.colorTextPrimary)
                     .lineLimit(1)
 
-                // L2: branch (サブ情報、小さく薄く)
-                if let branch = worker.branch {
-                    Text(branch)
-                        .font(.caption2)
-                        .foregroundStyle(Color.colorTextTertiary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                // L2 (固定情報): branch + address を一緒に
+                HStack(spacing: 8) {
+                    if let branch = worker.branch {
+                        Text(branch)
+                            .font(.caption2)
+                            .foregroundStyle(Color.colorTextTertiary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    StandDotButton(stand: workerLaneActor, forceShort: true)
                 }
 
-                // L3: address + msgbox + 未読
-                UnifiedStatusBadge(
-                    laneActor: workerLaneActor,
+                // L3 (通知 only): msgbox dot + 未読 + notification
+                LaneNotificationRow(
                     unreadCount: Int(ccwireSession?.pendingMessages ?? 0),
                     hasNotification: hasNotification,
-                    wireStatus: ccwireSession?.status,
-                    forceShort: true
+                    wireStatus: ccwireSession?.status
                 )
             }
 
@@ -963,6 +965,65 @@ struct StandDotButton: View {
 /// 3. 未読 count or 通知 indicator (warning orange)
 ///
 /// SP / PP の個別 status と cache 管理は Phase 2 Right Drawer に移行予定。
+// MARK: - Lane Notification Row (L3、通知 only、refinement 41)
+
+/// Lane row L3 — 通知 layer のみ (msgbox / unread / notification)
+///
+/// VP-83 refinement 41: Lane row 3 層構造の確立:
+/// - L1: 可変 Lane 名 (将来 CC session title)
+/// - L2: 固定情報 (branch + address)
+/// - **L3: 通知 (本 component)**
+///
+/// 無通知時は空 view (spacing 0 で縮む)
+struct LaneNotificationRow: View {
+    let unreadCount: Int
+    let hasNotification: Bool
+    let wireStatus: String?
+
+    private var hasAnySignal: Bool {
+        unreadCount > 0 || hasNotification || wireStatus != nil
+    }
+
+    var body: some View {
+        if hasAnySignal {
+            HStack(spacing: 8) {
+                // msgbox / ccwire 状態 dot (L3 の leading、icon 列と揃う)
+                if let status = wireStatus {
+                    Circle()
+                        .fill(msgboxColor(for: status))
+                        .frame(width: 6, height: 6)
+                        .help("msgbox: \(status)")
+                } else {
+                    // spacer to keep leading position consistent
+                    Color.clear.frame(width: 6, height: 6)
+                }
+
+                // 未読 count or 通知 indicator
+                if unreadCount > 0 {
+                    Text("\(unreadCount) 未読")
+                        .font(.caption2)
+                        .foregroundStyle(Color.colorSemanticWarning)
+                } else if hasNotification {
+                    Circle()
+                        .fill(Color.colorSemanticWarning)
+                        .frame(width: 6, height: 6)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// wireStatus 文字列を色に
+    private func msgboxColor(for status: String) -> Color {
+        switch status {
+        case "connected", "active": Color.colorSemanticInfo
+        case "idle":                Color.colorTextTertiary
+        case "stale", "disconnected", "error": Color.colorSemanticError
+        default:                    Color.colorTextTertiary
+        }
+    }
+}
+
 struct UnifiedStatusBadge: View {
     /// Lane 自身を代表する lane-lead actor (= HD actor)
     let laneActor: StandRef
