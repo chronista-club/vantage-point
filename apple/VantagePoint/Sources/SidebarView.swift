@@ -144,7 +144,9 @@ struct SidebarView: View {
                 // 有効なプロジェクト（展開可能な disclosure header）
                 ForEach(enabledProjects) { project in
                     sidebarProjectDisclosure(project: project)
-                        .listRowInsets(EdgeInsets())
+                        // macOS .plain List の系統的な左右 padding (~8pt ずつ) を
+                        // negative inset で相殺、bg が sidebar の edge ピタッと揃う
+                        .listRowInsets(EdgeInsets(top: 0, leading: -8, bottom: 0, trailing: -8))
                         .listRowBackground(Color.clear)
                         .listRowSeparator(.hidden)
                 }
@@ -588,11 +590,11 @@ struct RightChevronDisclosureStyle: DisclosureGroupStyle {
         //  - Focused Lane row:      0.14 + 0.50 ≒ 0.64 (base + focus highlight)
         VStack(alignment: .leading, spacing: 0) {
             // Header row — chevron オミット、header 全体が tap area
-            HStack(spacing: 8) {
+            HStack(spacing: 6) {
                 configuration.label
                 Spacer(minLength: 0)
             }
-            .padding(.horizontal, CreoUITokens.spacingSm)
+            .padding(.horizontal, CreoUITokens.spacingXs)
             .padding(.vertical, CreoUITokens.spacingXs + 2)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
@@ -615,13 +617,13 @@ struct RightChevronDisclosureStyle: DisclosureGroupStyle {
                     Rectangle()
                         .fill(Color.colorSurfaceBorderSubtle)
                         .frame(width: 1)
-                        .padding(.leading, CreoUITokens.spacingSm + 4)
+                        .padding(.leading, CreoUITokens.spacingXs + 2)
                         .padding(.vertical, 2)
 
                     VStack(alignment: .leading, spacing: 0) {
                         configuration.content
                     }
-                    .padding(.leading, CreoUITokens.spacingSm)
+                    .padding(.leading, CreoUITokens.spacingXs)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .transition(
