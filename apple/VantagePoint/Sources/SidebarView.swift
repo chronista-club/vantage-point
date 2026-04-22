@@ -432,6 +432,10 @@ struct SidebarLeadRow: View {
             LaneFocusLight(isFocused: isFocused)
                 .padding(.trailing, 4)
 
+            // HD root pane icon badge (VP-83 refinement 31)
+            LaneRootPaneIcon(systemImage: "text.book.closed")
+                .padding(.trailing, 6)
+
             VStack(alignment: .leading, spacing: 2) {
                 // 1行目: branch primary
                 HStack(spacing: 6) {
@@ -501,6 +505,10 @@ struct SidebarWorkerRow: View {
             // Focus light
             LaneFocusLight(isFocused: isFocused)
                 .padding(.trailing, 4)
+
+            // HD root pane icon badge (VP-83 refinement 31)
+            LaneRootPaneIcon(systemImage: "text.book.closed")
+                .padding(.trailing, 6)
 
             VStack(alignment: .leading, spacing: 2) {
                 // 1行目: worker suffix + branch
@@ -741,6 +749,34 @@ struct LaneFocusLight: View {
             .shadow(color: Color.colorSemanticSuccess.opacity(isFocused ? 0.5 : 0),
                     radius: 3, x: 0, y: 0)
             .animation(.easeInOut(duration: 0.18), value: isFocused)
+    }
+}
+
+// MARK: - Lane root pane icon (VP-83 refinement 31)
+
+/// Lane の root pane (代表 pane) を示す icon badge
+///
+/// 現状 Lane = HD single pane が default だが、VP-77 Lane-as-Process では
+/// Lane が複数 pane を持つ pane stack。その **root = 最上位** pane を
+/// icon で Sidebar に表示、Lane の中身が一目で分かる。
+///
+/// - 下地: 角丸 15pt の rounded rect (colorSurfaceBgEmphasis subtle)
+/// - padding: 内側 8pt で icon の周囲に呼吸空間
+/// - icon: SF Symbol (HD = `text.book.closed`、将来 pane kind 別)
+struct LaneRootPaneIcon: View {
+    let systemImage: String
+    var tint: Color = .colorTextSecondary
+
+    var body: some View {
+        Image(systemName: systemImage)
+            .font(.system(size: 13, weight: .medium))
+            .foregroundStyle(tint)
+            .frame(width: 14, height: 14)
+            .padding(8)
+            .background(
+                RoundedRectangle(cornerRadius: 15)
+                    .fill(Color.colorSurfaceBgEmphasis.opacity(0.7))
+            )
     }
 }
 
