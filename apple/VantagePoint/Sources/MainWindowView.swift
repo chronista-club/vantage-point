@@ -64,6 +64,8 @@ struct MainWindowView: View {
     /// TerminalRepresentable を再生成 → PTY 再起動してしまう。
     /// @State で保持し、差分がある場合のみ更新する。
     @State private var terminalPaths: [String] = []
+    /// Lane Registry — projects 更新時に build、view-time lookup で使用 (L1 MVP)
+    @State private var laneRegistry: LaneRegistry = LaneRegistry(records: [])
     /// TerminalRepresentable の強制再生成用カウンタ（HD リスタート時にインクリメント）
     @State private var terminalGeneration: [String: Int] = [:]
     /// HD 自動起動を試みたパス（ポーリングで繰り返し起動しないため）
@@ -241,6 +243,9 @@ struct MainWindowView: View {
             if newPaths != terminalPaths {
                 terminalPaths = newPaths
             }
+            // Lane Registry rebuild (L1 MVP): 1 source of truth for
+            // address / path / tmuxSession / status lookup
+            laneRegistry = LaneRegistry.build(from: newProjects, notifications: notifications)
         }
         .onReceive(NotificationCenter.default.publisher(for: AppDelegate.selectProjectNotification)) { notification in
             if let path = notification.userInfo?["path"] as? String {
