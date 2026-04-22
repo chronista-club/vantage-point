@@ -17,6 +17,7 @@ pub mod creo;
 pub mod daemon;
 pub mod db;
 pub mod discovery;
+pub mod event_bus;
 pub mod file_watcher;
 pub mod mcp;
 pub mod midi;

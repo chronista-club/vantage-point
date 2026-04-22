@@ -745,6 +745,44 @@ DEFINE FIELD IF NOT EXISTS project_name ON notifications TYPE string;
 DEFINE FIELD IF NOT EXISTS message ON notifications TYPE string;
 DEFINE FIELD IF NOT EXISTS read ON notifications TYPE bool DEFAULT false;
 DEFINE FIELD IF NOT EXISTS created_at ON notifications TYPE datetime DEFAULT time::now();
+
+-- =========================================================================
+-- VP-74 R1 Phase A: Event Bus (event_log + projections)
+-- =========================================================================
+
+-- Event Log (全 creo::Event の append-only ストア)
+DEFINE TABLE IF NOT EXISTS event_log SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS event_id ON event_log TYPE string;          -- UUID v7
+DEFINE FIELD IF NOT EXISTS topic ON event_log TYPE string;
+DEFINE FIELD IF NOT EXISTS source_stand ON event_log TYPE string;
+DEFINE FIELD IF NOT EXISTS source_lane ON event_log TYPE string;
+DEFINE FIELD IF NOT EXISTS source_project ON event_log TYPE string;
+DEFINE FIELD IF NOT EXISTS timestamp ON event_log TYPE datetime;
+DEFINE FIELD IF NOT EXISTS causation ON event_log TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS payload ON event_log TYPE object FLEXIBLE;
+DEFINE FIELD IF NOT EXISTS ui ON event_log TYPE option<object> FLEXIBLE;
+DEFINE INDEX IF NOT EXISTS idx_event_id ON event_log COLUMNS event_id UNIQUE;
+DEFINE INDEX IF NOT EXISTS idx_event_topic_ts ON event_log COLUMNS topic, timestamp;
+DEFINE INDEX IF NOT EXISTS idx_event_causation ON event_log COLUMNS causation;
+
+-- Lane Map projection (lane ごとの最新状態、VP-77 §8.5)
+DEFINE TABLE IF NOT EXISTS lane_map SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS project ON lane_map TYPE string;
+DEFINE FIELD IF NOT EXISTS lane ON lane_map TYPE string;
+DEFINE FIELD IF NOT EXISTS last_event_id ON lane_map TYPE string;
+DEFINE FIELD IF NOT EXISTS last_topic ON lane_map TYPE string;
+DEFINE FIELD IF NOT EXISTS updated_at ON lane_map TYPE datetime DEFAULT time::now();
+DEFINE INDEX IF NOT EXISTS idx_lane_map ON lane_map COLUMNS project, lane UNIQUE;
+
+-- Permission Audit projection (append-only、VP-72 D-5 / VP-77 §5.4)
+DEFINE TABLE IF NOT EXISTS permission_audit SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS ts ON permission_audit TYPE datetime DEFAULT time::now();
+DEFINE FIELD IF NOT EXISTS actor ON permission_audit TYPE string;       -- canonical address
+DEFINE FIELD IF NOT EXISTS topic ON permission_audit TYPE string;
+DEFINE FIELD IF NOT EXISTS payload_digest ON permission_audit TYPE string;
+DEFINE FIELD IF NOT EXISTS decision ON permission_audit TYPE option<string>;
+DEFINE INDEX IF NOT EXISTS idx_audit_ts ON permission_audit COLUMNS ts;
+DEFINE INDEX IF NOT EXISTS idx_audit_actor ON permission_audit COLUMNS actor;
 "#;
 
 // =============================================================================
