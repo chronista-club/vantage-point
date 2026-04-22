@@ -104,10 +104,9 @@ fn hd_start(
         eprintln!("⚠️  SP サーバーが未起動です。`vp sp start` で起動を推奨します。");
     }
 
-    // ゴーストセッションを掃除
-    if let Err(e) = crate::ccwire::cleanup_stale() {
-        eprintln!("⚠️  ccwire ゴースト掃除失敗: {}", e);
-    }
+    // Phase L7a: ccwire::cleanup_stale 呼出停止 (Mailbox 移行、stale は tmux session
+    // 存在判定で derive する方針。ghost session は実害なく残る)
+    // if let Err(e) = crate::ccwire::cleanup_stale() { ... }
 
     // tmux セッション作成（既にあれば再利用）
     if tmux::session_exists(&session_name) {

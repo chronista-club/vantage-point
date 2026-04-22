@@ -605,16 +605,14 @@ fn run_tui(
         })?;
 
     // ccwire heartbeat タイマー
-    let mut ccwire_heartbeat_timer = std::time::Instant::now();
+    // Phase L7a: ccwire heartbeat 停止 (Mailbox 移行、presence は tmux has-session
+    // + last_activity で derive)
+    // let mut ccwire_heartbeat_timer = std::time::Instant::now();
 
     // メインループ
     let mut needs_redraw = true;
     let result = loop {
-        // ccwire heartbeat（3分間隔）
-        if ccwire_heartbeat_timer.elapsed() >= crate::ccwire::HEARTBEAT_INTERVAL {
-            let _ = crate::ccwire::heartbeat(session_name);
-            ccwire_heartbeat_timer = std::time::Instant::now();
-        }
+        // ccwire heartbeat は停止 (L7a)
 
         // 描画
         if needs_redraw {
