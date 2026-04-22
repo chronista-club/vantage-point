@@ -9,10 +9,20 @@ let package = Package(
     products: [
         .executable(name: "VantagePoint", targets: ["VantagePoint"])
     ],
+    dependencies: [
+        // CreoUI design system — local path dependency
+        // (creo-ui repo は packages/swift サブディレクトリに SPM manifest を持つ)
+        .package(path: "../../../creo-ui/packages/swift"),
+    ],
     targets: [
         .executableTarget(
             name: "VantagePoint",
-            dependencies: ["VPBridge"],
+            dependencies: [
+                "VPBridge",
+                // package 名は SPM が path dep の directory 名 ("swift") として解釈する
+                // (creo-ui/packages/swift/Package.swift の name: "CreoUI" ではなく)
+                .product(name: "CreoUI", package: "swift"),
+            ],
             path: "Sources",
             linkerSettings: [
                 // libvp_bridge.a をリンク（cargo build --release で生成）

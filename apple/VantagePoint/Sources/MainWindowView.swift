@@ -1,3 +1,4 @@
+import CreoUI
 import OSLog
 import SwiftUI
 
@@ -412,7 +413,7 @@ struct MainWindowView: View {
         .font(.caption)
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
-        .background(Color(white: 0.12).opacity(0.95))
+        .background(Color.colorSurfaceSurface.opacity(0.95))
     }
 
     /// ナビの個別アイテム
@@ -420,9 +421,9 @@ struct MainWindowView: View {
         Text("\(index + 1): \(label)")
             .padding(.horizontal, 8)
             .padding(.vertical, 3)
-            .background(isSelected ? Color.accentColor.opacity(0.3) : Color.clear)
-            .cornerRadius(4)
-            .foregroundStyle(isSelected ? .white : .secondary)
+            .background(isSelected ? Color.colorBrandPrimarySubtle : Color.clear)
+            .cornerRadius(CreoUITokens.radiusSm)
+            .foregroundStyle(isSelected ? Color.colorTextPrimary : Color.colorTextSecondary)
     }
 
     /// キー入力ハンドラー
@@ -1173,7 +1174,7 @@ struct ProjectTabBar: View {
 
                         // 稼働状態のドット
                         Circle()
-                            .fill(project.isRunning ? .green : .gray)
+                            .fill(project.isRunning ? Color.colorSemanticSuccess : Color.colorTextTertiary)
                             .frame(width: 6, height: 6)
 
                         Text(project.name)
@@ -1182,18 +1183,18 @@ struct ProjectTabBar: View {
                     }
                     .padding(.horizontal, 10)
                     .padding(.vertical, 5)
-                    .background(isSelected ? Color.white.opacity(0.1) : Color.clear)
-                    .cornerRadius(4)
+                    .background(isSelected ? Color.colorSurfaceBgEmphasis : Color.clear)
+                    .cornerRadius(CreoUITokens.radiusSm)
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(isSelected ? .primary : .secondary)
+                .foregroundStyle(isSelected ? Color.colorTextPrimary : Color.colorTextSecondary)
             }
             Spacer()
         }
         .padding(.horizontal, 8)
         .padding(.top, 6)
         .padding(.bottom, 2)
-        .background(Color(white: 0.1))
+        .background(Color.colorSurfaceBgSubtle)
     }
 }
 
@@ -1229,7 +1230,7 @@ struct LaneTabBar: View {
 
                         Image(systemName: lane.isLead ? "text.book.closed" : "arrow.branch")
                             .font(.system(size: 10))
-                            .foregroundStyle(lane.isLead ? .green : .cyan)
+                            .foregroundStyle(lane.isLead ? Color.colorSemanticSuccess : Color.colorSemanticInfo)
 
                         Text(lane.label)
                             .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
@@ -1237,17 +1238,17 @@ struct LaneTabBar: View {
                     }
                     .padding(.horizontal, 10)
                     .padding(.vertical, 5)
-                    .background(isSelected ? Color.white.opacity(0.08) : Color.clear)
-                    .cornerRadius(4)
+                    .background(isSelected ? Color.colorSurfaceBgEmphasis.opacity(0.8) : Color.clear)
+                    .cornerRadius(CreoUITokens.radiusSm)
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(isSelected ? .primary : .secondary)
+                .foregroundStyle(isSelected ? Color.colorTextPrimary : Color.colorTextSecondary)
             }
             Spacer()
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 2)
-        .background(Color(white: 0.12))
+        .background(Color.colorSurfaceSurface)
     }
 }
 
