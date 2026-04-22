@@ -110,14 +110,9 @@ struct SidebarView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // カスタムヘッダー: 選択中プロジェクト名 + 追加ボタン
+            // カスタムヘッダー: + ボタンのみ (選択中 Project 名は冗長のため削除、
+            // 選択中 Lane は Sidebar 内行で highlight される)
             HStack {
-                if let name = selectedProjectName {
-                    Text(name)
-                        .font(.headline)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                }
                 Spacer()
                 Button {
                     onAdd?()
@@ -135,7 +130,7 @@ struct SidebarView: View {
                 .buttonStyle(.plain)
                 .help("プロジェクトフォルダを追加")
             }
-            .padding(.leading, 78)  // 信号機ボタン分のオフセット
+            .padding(.leading, 78)  // 信号機ボタン分のオフセット (左にドラッグ area 確保)
             .padding(.trailing, 12)
             .padding(.top, 6)
             .padding(.bottom, 8)
