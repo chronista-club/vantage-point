@@ -82,6 +82,10 @@ struct MainWindowView: View {
     @State private var sidebarVisible: Bool = true
     /// ProjectTabBar の手動表示設定（true = 常時表示）
     @State private var projectTabBarForced: Bool = false
+    /// Command Palette (⌘K) 表示状態 (T6)
+    @State private var commandPaletteVisible: Bool = false
+    /// Command Palette → Design Inspector window open 用
+    @Environment(\.openWindow) private var openWindow
 
     /// ProjectTabBar を表示するか（サイドバー非表示時は自動表示、手動トグルで常時表示）
     private var showProjectTabBar: Bool {
@@ -232,6 +236,33 @@ struct MainWindowView: View {
         }
         .ignoresSafeArea(.all, edges: .top)
         .animation(.easeInOut(duration: 0.2), value: sidebarVisible)
+        // Command Palette ⌘K overlay (T6)
+        .overlay {
+            if commandPaletteVisible {
+                ZStack(alignment: .top) {
+                    Color.black.opacity(0.35)
+                        .ignoresSafeArea()
+                        .onTapGesture { commandPaletteVisible = false }
+                    CommandPaletteView(
+                        laneRegistry: laneRegistry,
+                        appActions: paletteActions,
+                        onSelectLane: { record in
+                            selectedProjectPath = record.path
+                        },
+                        onSelectAction: { action in
+                            executePaletteAction(action)
+                        },
+                        onClose: { commandPaletteVisible = false }
+                    )
+                    .padding(.top, 80)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                }
+                .animation(.smooth(duration: 0.18), value: commandPaletteVisible)
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openCommandPalette)) { _ in
+            commandPaletteVisible = true
+        }
         .onAppear {
             loadProjects()
         }
@@ -648,6 +679,39 @@ struct MainWindowView: View {
 
     /// プロジェクトパスから tmux セッション名を生成
     /// tmux session 名 (Phase L5: LaneRegistry に集約、Registry lookup を優先)
+    /// Command Palette の App Action 一覧
+    private var paletteActions: [AppAction] {
+        [
+            AppAction(id: "open.design.inspector", title: "Design Inspector を開く",
+                      systemImage: "slider.horizontal.3", keyEquivalent: "⌘⇧I"),
+            AppAction(id: "toggle.sidebar", title: "サイドバーを切替",
+                      systemImage: "sidebar.left", keyEquivalent: "⌘/"),
+            AppAction(id: "toggle.tabbar", title: "Project Tab Bar を切替",
+                      systemImage: "rectangle.topthird.inset.filled", keyEquivalent: nil),
+            AppAction(id: "restart.world", title: "World を再接続",
+                      systemImage: "arrow.clockwise", keyEquivalent: nil),
+            AppAction(id: "split.pane", title: "Pane を分割 (Split)",
+                      systemImage: "rectangle.split.2x1", keyEquivalent: "⌘D"),
+        ]
+    }
+
+    private func executePaletteAction(_ action: AppAction) {
+        switch action.id {
+        case "open.design.inspector":
+            openWindow(id: "design-inspector")
+        case "toggle.sidebar":
+            withAnimation(.easeInOut(duration: 0.2)) { sidebarVisible.toggle() }
+        case "toggle.tabbar":
+            withAnimation(.easeInOut(duration: 0.15)) { projectTabBarForced.toggle() }
+        case "restart.world":
+            restartWorld()
+        case "split.pane":
+            NotificationCenter.default.post(name: .splitTerminalPane, object: nil)
+        default:
+            break
+        }
+    }
+
     private func tmuxSessionName(for path: String) -> String {
         // Registry に entry があればそこから、なければ fallback derivation
         laneRegistry.findByPath(path)?.tmuxSession
@@ -1434,4 +1498,5 @@ extension Notification.Name {
     static let vpPaneFocused = Notification.Name("VP.vpPaneFocused")
     static let toggleSidebar = Notification.Name("VP.toggleSidebar")
     static let toggleProjectTabBar = Notification.Name("VP.toggleProjectTabBar")
+    static let openCommandPalette = Notification.Name("VP.openCommandPalette")
 }

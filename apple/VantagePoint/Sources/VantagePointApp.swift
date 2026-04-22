@@ -32,10 +32,15 @@ struct VantagePointApp: App {
         .windowResizability(.contentSize)
     }
 
-    /// View メニュー — Design Inspector 起動用
+    /// View メニュー — Command Palette + Design Inspector
     @CommandsBuilder
     private var viewCommands: some Commands {
         CommandMenu("View") {
+            Button("Command Palette…") {
+                NotificationCenter.default.post(name: .openCommandPalette, object: nil)
+            }
+            .keyboardShortcut("k", modifiers: .command)
+            Divider()
             DesignInspectorMenuButton()
         }
     }
