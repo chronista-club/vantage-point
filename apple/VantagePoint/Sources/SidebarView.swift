@@ -8,6 +8,11 @@ private let logger = Logger(subsystem: "tech.anycreative.vp", category: "Sidebar
 ///
 /// HStack ベースのカスタムサイドバー。NavigationSplitView を使わず、
 /// 開閉・幅・見た目を完全に自前制御する。
+///
+/// VP-83 Phase 1: Project Disclosure + Lane Stack 構造
+/// - Project 行 = disclosure header（クリックで展開/折りたたみ）
+/// - 展開時: Lead-HD 行（常時 top）+ Worker Lane 行
+/// - 展開状態は @AppStorage で永続化
 struct SidebarView: View {
     let projects: [SidebarProject]
     @Binding var selection: String?
@@ -34,6 +39,14 @@ struct SidebarView: View {
     /// CC 通知バッジ: Lane パス → 未読フラグ
     var notifications: Set<String> = []
 
+    /// サイドバー展開状態の永続化（VP-83 Phase 1）
+    /// key = project.path、新規プロジェクトは default expanded
+    /// 特別キー `__disabled_section__` は Disabled セクションの展開状態
+    @AppStorage("vp.sidebar.expansion") private var expansionJSON: String = "{}"
+
+    /// Disabled セクション展開状態用の特別キー
+    private static let disabledSectionKey = "__disabled_section__"
+
     /// 有効なプロジェクト（稼働中 + 停止中だが enabled）
     private var enabledProjects: [SidebarProject] {
         projects.filter { $0.enabled }
@@ -48,6 +61,51 @@ struct SidebarView: View {
     private var selectedProjectName: String? {
         guard let sel = selection else { return nil }
         return projects.first(where: { $0.id == sel })?.name
+    }
+
+    /// 永続化された展開状態を復元
+    private var expansionState: [String: Bool] {
+        guard let data = expansionJSON.data(using: .utf8),
+              let dict = try? JSONDecoder().decode([String: Bool].self, from: data) else {
+            return [:]
+        }
+        return dict
+    }
+
+    /// Project の展開状態（default: true — 新規は展開）
+    private func isExpanded(for projectPath: String) -> Bool {
+        expansionState[projectPath] ?? true
+    }
+
+    /// Disabled セクションの展開状態（default: false — 折りたたみ）
+    private var isDisabledSectionExpanded: Bool {
+        expansionState[Self.disabledSectionKey] ?? false
+    }
+
+    /// 展開状態を更新
+    private func setExpanded(_ expanded: Bool, for key: String) {
+        var dict = expansionState
+        dict[key] = expanded
+        if let data = try? JSONEncoder().encode(dict),
+           let json = String(data: data, encoding: .utf8) {
+            expansionJSON = json
+        }
+    }
+
+    /// Project 用の Binding<Bool> を生成
+    private func expansionBinding(for projectPath: String) -> Binding<Bool> {
+        Binding(
+            get: { isExpanded(for: projectPath) },
+            set: { setExpanded($0, for: projectPath) }
+        )
+    }
+
+    /// Disabled セクション用の Binding<Bool>
+    private var disabledSectionBinding: Binding<Bool> {
+        Binding(
+            get: { isDisabledSectionExpanded },
+            set: { setExpanded($0, for: Self.disabledSectionKey) }
+        )
     }
 
     var body: some View {
@@ -85,24 +143,29 @@ struct SidebarView: View {
             Divider()
 
             // プロジェクトリスト
+            // VP-83 Phase 1: DisclosureGroup ベースの Lane Stack
             List(selection: $selection) {
-                // 有効なプロジェクト
+                // 有効なプロジェクト（展開可能な disclosure header）
                 ForEach(enabledProjects) { project in
-                    sidebarProjectItem(project: project)
+                    sidebarProjectDisclosure(project: project)
                 }
                 .onMove { from, to in
                     onReorder?(from, to)
                 }
 
-                // 無効化されたプロジェクト（プロジェクト名のみ、Lane 非展開）
+                // 無効化されたプロジェクト（Disabled セクション、default 折りたたみ）
                 if !disabledProjects.isEmpty {
-                    Section("Disabled") {
+                    DisclosureGroup(isExpanded: disabledSectionBinding) {
                         ForEach(disabledProjects) { project in
-                            SidebarProjectRow(project: project)
+                            SidebarProjectHeaderRow(project: project, ppStatus: .inactive)
                                 .tag(project.id)
                                 .contextMenu { projectContextMenu(project: project) }
                                 .opacity(0.5)
                         }
+                    } label: {
+                        Text("Disabled")
+                            .font(.caption)
+                            .foregroundStyle(Color.colorTextTertiary)
                     }
                 }
             }
@@ -118,35 +181,47 @@ struct SidebarView: View {
         }
     }
 
-    /// プロジェクト行の共通レンダリング（Project = Lead Lane + Workers）
+    /// プロジェクトの disclosure 表示
+    ///
+    /// Header: Project 名 + status dot + chevron（SidebarProjectHeaderRow）
+    /// Content:
+    ///   - Lead-HD 行（常時 top、明示 row）— SidebarLeadRow
+    ///   - Worker 行 — SidebarWorkerRow
     @ViewBuilder
-    private func sidebarProjectItem(project: SidebarProject) -> some View {
-        // Project 行 = Lead Lane（ブランチ・HD/PP・通知を含む）
-        SidebarProjectRow(
-            project: project,
-            ppStatus: ppBadgeStatus(for: project),
-            ccwireSession: project.ccwireSession,
-            hasNotification: notifications.contains(project.path)
-        )
-        .tag(project.id)
-        .contextMenu { projectContextMenu(project: project) }
-
-        // Workers — 各ワーカーのブランチを表示
-        ForEach(project.workers) { worker in
-            SidebarWorkerRow(
-                worker: worker,
-                isLead: false,
-                parentPPStatus: ppBadgeStatus(for: project),
-                ccwireSession: worker.ccwireSession,
-                hasNotification: notifications.contains(worker.path)
+    private func sidebarProjectDisclosure(project: SidebarProject) -> some View {
+        DisclosureGroup(isExpanded: expansionBinding(for: project.path)) {
+            // Lead-HD 行（常時 top）
+            SidebarLeadRow(
+                project: project,
+                ppStatus: ppBadgeStatus(for: project),
+                ccwireSession: project.ccwireSession,
+                hasNotification: notifications.contains(project.path)
             )
-            .tag(worker.id)
-            .padding(.leading, 16)
-            .contextMenu {
-                Button("HD をリスタート", systemImage: "arrow.clockwise") {
-                    onRestartHD?(worker.path)
+            .tag(project.id)
+            .contextMenu { projectContextMenu(project: project) }
+
+            // Worker Lane 行
+            ForEach(project.workers) { worker in
+                SidebarWorkerRow(
+                    worker: worker,
+                    isLead: false,
+                    parentPPStatus: ppBadgeStatus(for: project),
+                    ccwireSession: worker.ccwireSession,
+                    hasNotification: notifications.contains(worker.path)
+                )
+                .tag(worker.id)
+                .contextMenu {
+                    Button("HD をリスタート", systemImage: "arrow.clockwise") {
+                        onRestartHD?(worker.path)
+                    }
                 }
             }
+        } label: {
+            SidebarProjectHeaderRow(
+                project: project,
+                ppStatus: ppBadgeStatus(for: project)
+            )
+            .contextMenu { projectContextMenu(project: project) }
         }
     }
 
@@ -227,11 +302,49 @@ struct SidebarView: View {
 
 // MARK: - プロジェクト行（カスタムビュー）
 
-/// サイドバーの各プロジェクト行
+/// サイドバーの Project disclosure header 行（VP-83 Phase 1）
 ///
-/// ステータスドット + プロジェクト名 + 開始時刻をコンパクトに表示。
-/// List の selection で選択状態のハイライトは自動適用される。
-struct SidebarProjectRow: View {
+/// Disclosure の label として使われる。コンパクトな project identity のみ表示:
+/// - プロジェクト名（強調）
+/// - SP 稼働ステータスドット
+/// - 起動時刻（稼働中のみ）
+///
+/// 詳細な HD/PP/branch 情報は展開後の SidebarLeadRow に移譲。
+struct SidebarProjectHeaderRow: View {
+    let project: SidebarProject
+    /// PP バッジステータス（disclosure header では SP のみ表示するが、将来の拡張用）
+    var ppStatus: BadgeStatus = .inactive
+
+    var body: some View {
+        HStack(spacing: 6) {
+            // SP status dot（稼働中: 緑、停止中: 灰）
+            Circle()
+                .fill(project.isRunning ? Color.colorSemanticSuccess : Color.colorTextTertiary)
+                .frame(width: 7, height: 7)
+
+            Text(project.name)
+                .fontWeight(project.isRunning ? .semibold : .regular)
+                .lineLimit(1)
+
+            Spacer()
+
+            // 稼働時刻（稼働中のみ）
+            if let startedAt = project.startedAt {
+                Text(startedAt, style: .time)
+                    .font(.caption2)
+                    .foregroundStyle(Color.colorTextTertiary)
+            }
+        }
+        .opacity(project.isRunning ? 1.0 : 0.6)
+    }
+}
+
+/// Lead Lane 行（VP-83 Phase 1）
+///
+/// Project disclosure 展開時の top row として表示される。
+/// Lead-HD の branch + SP/HD/PP badges + 通知バッジを持つ。
+/// 従来の SidebarProjectRow の詳細情報部分を継承。
+struct SidebarLeadRow: View {
     let project: SidebarProject
     /// PP バッジステータス
     var ppStatus: BadgeStatus = .inactive
@@ -242,13 +355,14 @@ struct SidebarProjectRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            // 1行目: プロジェクト名 + ブランチ + 通知バッジ
+            // 1行目: 📖 Lead-HD + ブランチ + 通知バッジ
             HStack(spacing: 6) {
                 Image(systemName: "text.book.closed")
                     .font(.system(size: 10))
                     .foregroundStyle(Color.colorSemanticSuccess)
-                Text(project.name)
-                    .fontWeight(project.isRunning ? .semibold : .regular)
+                Text("Lead-HD")
+                    .font(.callout)
+                    .fontWeight(project.hasHD ? .semibold : .regular)
                     .lineLimit(1)
                 if let branch = project.branch {
                     Text(branch)
@@ -263,10 +377,11 @@ struct SidebarProjectRow: View {
                 }
             }
 
-            // 2行目: SP + HD + PP ステータス + 起動時刻
+            // 2行目: SP + HD + PP ステータス
             HStack(spacing: 6) {
                 StatusBadge(label: "SP", icon: "star", isActive: project.isRunning)
                 StatusBadge(label: "HD", icon: "text.book.closed", isActive: project.hasHD)
+                    .help(leadCcwireTooltip)
                 StatusBadge(label: "PP", icon: "compass.drawing", status: ppStatus)
 
                 // ccwire 未読メッセージ数
@@ -275,20 +390,14 @@ struct SidebarProjectRow: View {
                         .font(.caption2)
                         .foregroundStyle(Color.colorSemanticWarning)
                 }
-
-                if let startedAt = project.startedAt {
-                    Text(startedAt, style: .time)
-                        .font(.caption2)
-                        .foregroundStyle(Color.colorTextTertiary)
-                }
             }
         }
-        .opacity(project.isRunning ? 1.0 : 0.6)
+        .opacity(project.hasHD ? 1.0 : 0.6)
     }
 
     /// HD バッジのツールチップに ccwire 情報を表示
-    private func ccwireTooltip(for project: SidebarProject) -> String {
-        guard let wire = project.ccwireSession else {
+    private var leadCcwireTooltip: String {
+        guard let wire = ccwireSession else {
             return "HD: \(project.hasHD ? "active" : "inactive")"
         }
         var tip = "Wire: \(wire.name) (\(wire.status))"
