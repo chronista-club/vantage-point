@@ -9,9 +9,9 @@
 //! ┌─── tao ネイティブウィンドウ (native chrome, menu, tray) ──┐
 //! │ ┌──────────┬───────────────────────────────────────┐ │
 //! │ │ sidebar  │       canvas (wry WebView)             │ │
-//! │ │ wry      │                                        │ │
-//! │ │ WebView  ├────────────────────────────────────────┤ │
-//! │ │          │       terminal (xterm.js in WebView)   │ │
+//! │ │ (Creo)   ├────────────────────────────────────────┤ │
+//! │ │ project  │       terminal (xterm.js in WebView)   │ │
+//! │ │ list     │                                        │ │
 //! │ │ (~280px) │                                        │ │
 //! │ └──────────┴───────────────────────────────────────┘ │
 //! └──────────────────────────────────────────────────────┘
@@ -20,16 +20,21 @@
 //! - **ウィンドウ・メニュー・トレイ・レイアウト境界** は Rust (tao + muda + tray-icon)
 //! - **各ペインの内容** は wry WebView (HTML/CSS/JS、xterm.js 含む)
 //! - **Creo UI tokens.css (mint-dark)** を各 WebView に inline して token 統一
+//! - **Sidebar** は起動時に TheWorld `/api/world/projects` を fetch、
+//!   失敗時は placeholder (daemon 未起動扱い)
+
+use std::thread;
 
 use tao::dpi::LogicalSize;
 use tao::event::{Event, WindowEvent};
-use tao::event_loop::{ControlFlow, EventLoopBuilder};
+use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
 use tao::window::WindowBuilder;
 use wry::{
     Rect, WebView, WebViewBuilder, dpi::LogicalPosition, dpi::LogicalSize as WryLogicalSize,
 };
 
-use crate::terminal::{self, TerminalEvent};
+use crate::client::TheWorldClient;
+use crate::terminal::{self, AppEvent};
 
 /// Sidebar の固定幅 (LogicalPixel)
 const SIDEBAR_WIDTH: f64 = 280.0;
@@ -47,18 +52,78 @@ const SIDEBAR_HTML: &str = concat!(
     include_str!("../assets/creo-tokens.css"),
     r#"</style><style>
   html,body{margin:0;height:100%;background:var(--color-surface-bg-subtle);color:var(--color-text-primary);font-family:system-ui,-apple-system,"Segoe UI",sans-serif;}
-  header{padding:16px;font-size:12px;color:var(--color-text-tertiary);text-transform:uppercase;letter-spacing:.08em;}
+  header{padding:16px 16px 8px;font-size:11px;color:var(--color-text-tertiary);text-transform:uppercase;letter-spacing:.08em;display:flex;justify-content:space-between;align-items:center;}
+  header .status{font-size:10px;padding:2px 6px;border-radius:4px;background:var(--color-surface-bg-emphasis);color:var(--color-text-secondary);text-transform:none;letter-spacing:0;}
+  header .status.ok{background:var(--color-brand-primary-subtle);color:var(--color-brand-primary);}
+  header .status.err{background:var(--color-surface-bg-emphasis);color:var(--color-text-tertiary);}
   ul{list-style:none;margin:0;padding:0 8px;}
-  li{padding:8px 12px;border-radius:var(--radius-sm,6px);color:var(--color-text-primary);cursor:pointer;font-size:14px;transition:background .12s ease;}
+  li{padding:8px 12px;border-radius:var(--radius-sm,6px);color:var(--color-text-primary);cursor:pointer;font-size:14px;transition:background .12s ease;display:flex;flex-direction:column;gap:2px;}
   li:hover{background:var(--color-surface-bg-emphasis);}
-  li.active{background:var(--color-brand-primary-subtle);color:var(--color-text-primary);}
+  li.active{background:var(--color-brand-primary-subtle);}
+  li .name{font-weight:500;}
+  li .path{font-size:11px;color:var(--color-text-tertiary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  li.empty,li.loading,li.error{color:var(--color-text-tertiary);cursor:default;font-style:italic;}
+  li.empty:hover,li.loading:hover,li.error:hover{background:transparent;}
 </style></head>
 <body>
-  <header>Projects</header>
-  <ul>
-    <li class="active">vantage-point</li>
-    <li>(Phase W2 scaffold)</li>
-  </ul>
+  <header>Projects <span id="status" class="status">…</span></header>
+  <ul id="projects"><li class="loading">読込中…</li></ul>
+<script>
+  // renderProjects / renderError は Rust の evaluate_script から呼ばれる。
+  // DOM 未 ready 時に先に call される可能性があるため buffer する。
+  let pending = null;
+  let pendingError = null;
+
+  function doRender(projects) {
+    const list = document.getElementById('projects');
+    const status = document.getElementById('status');
+    if (!list || !status) return false;
+    list.innerHTML = '';
+    if (projects.length === 0) {
+      list.innerHTML = '<li class="empty">(no projects)</li>';
+      status.textContent = '0';
+      status.className = 'status';
+      return true;
+    }
+    for (const p of projects) {
+      const li = document.createElement('li');
+      const name = document.createElement('span');
+      name.className = 'name';
+      name.textContent = p.name;
+      const path = document.createElement('span');
+      path.className = 'path';
+      path.textContent = p.path;
+      li.appendChild(name);
+      li.appendChild(path);
+      list.appendChild(li);
+    }
+    status.textContent = projects.length;
+    status.className = 'status ok';
+    return true;
+  }
+
+  function doError(msg) {
+    const list = document.getElementById('projects');
+    const status = document.getElementById('status');
+    if (!list || !status) return false;
+    list.innerHTML = '<li class="error">' + (msg || 'TheWorld 未接続') + '</li>';
+    status.textContent = 'offline';
+    status.className = 'status err';
+    return true;
+  }
+
+  window.renderProjects = function(projects) {
+    if (!doRender(projects)) pending = projects;
+  };
+  window.renderError = function(msg) {
+    if (!doError(msg)) pendingError = msg;
+  };
+
+  window.addEventListener('DOMContentLoaded', function() {
+    if (pending !== null) { doRender(pending); pending = null; }
+    else if (pendingError !== null) { doError(pendingError); pendingError = null; }
+  });
+</script>
 </body>
 </html>"#
 );
@@ -116,6 +181,41 @@ fn update_pane_bounds(
     });
 }
 
+/// 起動時に TheWorld `/api/world/projects` を別スレッドで fetch。
+/// 成功/失敗を `AppEvent::ProjectsLoaded` / `ProjectsError` として main thread に通知。
+fn spawn_projects_fetch(proxy: EventLoopProxy<AppEvent>) {
+    let _ = thread::Builder::new()
+        .name("projects-fetch".into())
+        .spawn(move || {
+            let rt = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt,
+                Err(e) => {
+                    let _ = proxy.send_event(AppEvent::ProjectsError(format!(
+                        "tokio runtime 作成失敗: {}",
+                        e
+                    )));
+                    return;
+                }
+            };
+            rt.block_on(async {
+                let client = TheWorldClient::default();
+                match client.list_projects().await {
+                    Ok(projects) => {
+                        tracing::info!("TheWorld projects: {} 件", projects.len());
+                        let _ = proxy.send_event(AppEvent::ProjectsLoaded(projects));
+                    }
+                    Err(e) => {
+                        tracing::warn!("TheWorld fetch 失敗 (daemon 未起動?): {}", e);
+                        let _ = proxy.send_event(AppEvent::ProjectsError(e.to_string()));
+                    }
+                }
+            });
+        });
+}
+
 /// App のエントリポイント
 pub fn run() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -127,7 +227,7 @@ pub fn run() -> anyhow::Result<()> {
 
     tracing::info!("vp-shell 起動 (Creo UI mint-dark)");
 
-    let event_loop = EventLoopBuilder::<TerminalEvent>::with_user_event().build();
+    let event_loop = EventLoopBuilder::<AppEvent>::with_user_event().build();
 
     // メニューバー + トレイ
     let _menu = crate::menu::build_menu_bar();
@@ -147,6 +247,9 @@ pub fn run() -> anyhow::Result<()> {
     // PTY を起動し、reader thread が EventLoopProxy 経由で出力イベントを送る
     let proxy = event_loop.create_proxy();
     let pty = terminal::spawn_shell(None, 80, 24, proxy)?;
+
+    // TheWorld から project list を非同期 fetch
+    spawn_projects_fetch(event_loop.create_proxy());
 
     // Sidebar
     let sidebar = WebViewBuilder::new()
@@ -214,9 +317,8 @@ pub fn run() -> anyhow::Result<()> {
                     window.scale_factor(),
                 );
             }
-            Event::UserEvent(TerminalEvent::Output(bytes)) => {
+            Event::UserEvent(AppEvent::Output(bytes)) => {
                 if !xterm_ready {
-                    // xterm がまだ起動中 → buffer
                     pending.extend_from_slice(&bytes);
                     tracing::debug!(
                         "PTY output buffered ({} bytes, pending total={})",
@@ -230,7 +332,7 @@ pub fn run() -> anyhow::Result<()> {
                     }
                 }
             }
-            Event::UserEvent(TerminalEvent::XtermReady) => {
+            Event::UserEvent(AppEvent::XtermReady) => {
                 xterm_ready = true;
                 if !pending.is_empty() {
                     tracing::info!("xterm ready → flush {} 保留バイト", pending.len());
@@ -239,6 +341,20 @@ pub fn run() -> anyhow::Result<()> {
                         tracing::warn!("terminal flush 失敗: {}", e);
                     }
                     pending.clear();
+                }
+            }
+            Event::UserEvent(AppEvent::ProjectsLoaded(projects)) => {
+                let json = serde_json::to_string(&projects).unwrap_or_else(|_| "[]".into());
+                let script = format!("window.renderProjects({})", json);
+                if let Err(e) = sidebar.evaluate_script(&script) {
+                    tracing::warn!("sidebar renderProjects 失敗: {}", e);
+                }
+            }
+            Event::UserEvent(AppEvent::ProjectsError(msg)) => {
+                let js_msg = serde_json::to_string(&msg).unwrap_or_else(|_| "\"error\"".into());
+                let script = format!("window.renderError({})", js_msg);
+                if let Err(e) = sidebar.evaluate_script(&script) {
+                    tracing::warn!("sidebar renderError 失敗: {}", e);
                 }
             }
             _ => {}

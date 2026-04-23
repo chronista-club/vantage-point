@@ -17,13 +17,17 @@ use anyhow::{Context, Result};
 use portable_pty::{CommandBuilder, NativePtySystem, PtyPair, PtySize, PtySystem};
 use tao::event_loop::EventLoopProxy;
 
-/// EventLoop に送る terminal 関連のイベント
+/// EventLoop に送る app 全体のイベント
 #[derive(Debug, Clone)]
-pub enum TerminalEvent {
+pub enum AppEvent {
     /// PTY から読み取った出力バイト列
     Output(Vec<u8>),
     /// xterm.js 側から ready 通知 (IPC 経由で届いたら main thread に伝える)
     XtermReady,
+    /// TheWorld から project list 取得成功
+    ProjectsLoaded(Vec<crate::client::ProjectInfo>),
+    /// TheWorld への接続失敗
+    ProjectsError(String),
 }
 
 /// PTY セッションのハンドル
@@ -87,7 +91,7 @@ pub fn spawn_shell(
     cwd: Option<&str>,
     cols: u16,
     rows: u16,
-    proxy: EventLoopProxy<TerminalEvent>,
+    proxy: EventLoopProxy<AppEvent>,
 ) -> Result<PtyHandle> {
     let pty_system = NativePtySystem::default();
     let pair = pty_system
@@ -140,7 +144,7 @@ pub fn spawn_shell(
 }
 
 /// PTY reader ループ。EOF / エラーで終了。
-fn reader_loop(mut reader: Box<dyn Read + Send>, proxy: EventLoopProxy<TerminalEvent>) {
+fn reader_loop(mut reader: Box<dyn Read + Send>, proxy: EventLoopProxy<AppEvent>) {
     let mut buf = [0u8; 4096];
     let mut total = 0usize;
     loop {
@@ -170,7 +174,7 @@ fn reader_loop(mut reader: Box<dyn Read + Send>, proxy: EventLoopProxy<TerminalE
                     total
                 );
                 if proxy
-                    .send_event(TerminalEvent::Output(buf[..n].to_vec()))
+                    .send_event(AppEvent::Output(buf[..n].to_vec()))
                     .is_err()
                 {
                     tracing::info!("EventLoop 終了、reader_loop 終了");
@@ -257,7 +261,7 @@ fn dirs_home() -> Option<String> {
 /// - `{"t":"in","d":"..."}` — ユーザ入力 (string)
 /// - `{"t":"resize","cols":N,"rows":N}` — リサイズ
 /// - `{"t":"ready"}` — xterm.js 初期化完了 → UserEvent::XtermReady を main thread に送る
-pub fn handle_ipc_message(msg: &str, pty: &PtyHandle, proxy: &EventLoopProxy<TerminalEvent>) {
+pub fn handle_ipc_message(msg: &str, pty: &PtyHandle, proxy: &EventLoopProxy<AppEvent>) {
     let parsed: serde_json::Value = match serde_json::from_str(msg) {
         Ok(v) => v,
         Err(e) => {
@@ -285,7 +289,7 @@ pub fn handle_ipc_message(msg: &str, pty: &PtyHandle, proxy: &EventLoopProxy<Ter
         }
         Some("ready") => {
             tracing::info!("xterm.js ready → flush buffered PTY output");
-            let _ = proxy.send_event(TerminalEvent::XtermReady);
+            let _ = proxy.send_event(AppEvent::XtermReady);
         }
         Some("debug") => {
             if let Some(msg) = parsed.get("msg").and_then(|v| v.as_str()) {
@@ -328,7 +332,12 @@ pub const TERMINAL_HTML: &str = concat!(
     r#"
 html,body,#t{margin:0;padding:0;height:100%;width:100%;background:var(--color-surface-bg-base);}
 body{overflow:hidden;}
-#t{padding:8px;}
+#t{padding:12px;}
+/* xterm 内 scrollbar を Creo tokens で統一 */
+.xterm-viewport::-webkit-scrollbar{width:8px;}
+.xterm-viewport::-webkit-scrollbar-track{background:transparent;}
+.xterm-viewport::-webkit-scrollbar-thumb{background:var(--color-surface-border);border-radius:4px;}
+.xterm-viewport::-webkit-scrollbar-thumb:hover{background:var(--color-brand-primary-subtle);}
 </style>
 </head>
 <body>
@@ -356,11 +365,19 @@ body{overflow:hidden;}
     selectionBackground: v('--color-brand-primary-subtle', '#2C2843')
   };
   const term = new Terminal({
-    fontFamily: '"Cascadia Mono", "SF Mono", Menlo, Consolas, monospace',
+    fontFamily: '"Cascadia Code", "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace',
     fontSize: 13,
+    lineHeight: 1.15,
+    letterSpacing: 0,
     theme: theme,
     allowProposedApi: true,
-    convertEol: true
+    convertEol: true,
+    scrollback: 5000,
+    cursorBlink: true,
+    cursorStyle: 'bar',
+    cursorWidth: 2,
+    smoothScrollDuration: 80,
+    fontLigatures: true
   });
   const fitAddon = new FitAddon.FitAddon();
   term.loadAddon(fitAddon);
