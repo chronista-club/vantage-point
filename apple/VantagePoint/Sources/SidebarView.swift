@@ -489,10 +489,11 @@ struct SidebarLeadRow: View {
         }
     }
 
-    /// Lane 名 (L1 primary) — CC session title があれば優先、なければ "Lead"
+    /// Lane 名 (L1 primary) — "Lead" identity は常に visible、session title は suffix
+    /// refinement 48: Lead が session title に埋もれ worker と混同される問題 fix
     private var laneDisplayName: String {
         if let title = project.ccSessionTitle, !title.isEmpty {
-            return title
+            return "Lead · \(title)"
         }
         return "Lead"
     }
