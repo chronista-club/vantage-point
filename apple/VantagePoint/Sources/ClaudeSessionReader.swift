@@ -10,7 +10,7 @@ import Foundation
 /// 同等の Rust 実装: `crates/vantage-point/src/tui/session.rs`
 enum ClaudeSessionReader {
 
-    /// project_dir (`/Users/makoto/repos/vantage-point`) を
+    /// project_dir (`/path/to/vantage-point`) を
     /// Claude projects directory key (`-Users-makoto-repos-vantage-point`) に変換
     static func projectDirToKey(_ dir: String) -> String {
         dir.replacingOccurrences(of: "/", with: "-")
@@ -24,7 +24,7 @@ enum ClaudeSessionReader {
 
     /// project_dir に紐づく最新 session の title を取得
     /// - Parameters:
-    ///   - projectDir: 絶対パス (e.g. "/Users/makoto/repos/vantage-point")
+    ///   - projectDir: 絶対パス (e.g. "/path/to/vantage-point")
     ///   - maxChars: 先頭 n 文字で cap (default 17、Lane row L1 の単段 width 考慮)
     /// - Returns: 最初の user message (trimmed)、取得失敗は nil
     static func latestSessionTitle(for projectDir: String, maxChars: Int = 17) -> String? {

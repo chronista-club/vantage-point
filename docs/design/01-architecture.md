@@ -317,7 +317,7 @@ default_port = 33000
 
 [[projects]]
 name = "vantage-point"
-path = "/Users/makoto/repos/vantage-point"
+path = "/path/to/vantage-point"
 ```
 
 ---

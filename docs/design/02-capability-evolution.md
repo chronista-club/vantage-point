@@ -367,4 +367,4 @@ pub fn my_custom_capability_path() -> EvolutionPath {
 ## 関連
 
 - [05-capability.md](../spec/05-capability.md) - Capability仕様
-- [evolution.rs](/Users/makoto/repos/vantage-point/crates/vantage-point/src/capability/evolution.rs) - 実装
+- [evolution.rs](crates/vantage-point/src/capability/evolution.rs) - 実装

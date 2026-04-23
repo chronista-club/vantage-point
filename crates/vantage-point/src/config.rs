@@ -302,7 +302,7 @@ mod tests {
             claude_cli_path: None,
             projects: vec![ProjectConfig {
                 name: "vantage-point".to_string(),
-                path: "/Users/makoto/repos/vantage-point".to_string(),
+                path: "/path/to/vantage-point".to_string(),
                 port: Some(33000),
                 enabled: true,
                 slot: Some(0),

@@ -74,7 +74,7 @@
 
 ### ダブルクリック単語選択
 
-- [ ] ファイルパス `/Users/makoto/repos/vantage-point/README.md` をダブルクリック → 全体が 1 単語として選択
+- [ ] ファイルパス `/path/to/vantage-point/README.md` をダブルクリック → 全体が 1 単語として選択
 - [ ] URL `https://example.com/path?query=1` → 全体選択
 - [ ] 関数名 `some_function_name` → underscore 含む全体選択
 - [ ] 日本語の連続漢字「東京都渋谷区」→ 連続 CJK として 1 単語選択
