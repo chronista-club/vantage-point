@@ -84,14 +84,15 @@ final class DesignTokenStore {
     // MARK: - Defaults
 
     private enum Defaults {
-        static let sidebarHeaderTextLeading: Double = 8       // CreoUITokens.spacingSm
-        static let sidebarListRowLeadingInset: Double = -24
-        static let sidebarListRowTrailingInset: Double = -12
-        // VP-83 refinement 28: user 要望「通常からこれくらい目立っててもいい」で
-        // default 値を大幅アップ。緑系 semanticSuccess tint で selection を強調。
-        static let sidebarCardBaseOpacity: Double = 0.18
-        static let sidebarHeaderOverlayOpacity: Double = 0.32
-        static let sidebarLaneFocusOpacity: Double = 0.55
+        // VP-83 refinement 51: Design Inspector で tuning した値を default に焼き込み。
+        // header text をわずかに左寄せ / row inset は widen / 全 opacity を大幅に下げて
+        // 落ち着いた tint に調整 (user 好みの状態)。
+        static let sidebarHeaderTextLeading: Double = 7
+        static let sidebarListRowLeadingInset: Double = -25
+        static let sidebarListRowTrailingInset: Double = -11
+        static let sidebarCardBaseOpacity: Double = 0.05
+        static let sidebarHeaderOverlayOpacity: Double = 0.27
+        static let sidebarLaneFocusOpacity: Double = 0.07
     }
 
     private enum Keys {
