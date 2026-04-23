@@ -58,7 +58,12 @@ struct TerminalRepresentable: NSViewRepresentable {
             // VP-83 refinement 53 / Tier 1 Chain tuning:
             // attach の tmux session にも escape-time / focus-events / truecolor
             // override を注入 (Rust 側 create_tmux_session 経路と揃える)。
-            // 既存 session に attach するケースでも毎回上書きで state 保証。
+            //
+            // VP-83 refinement 54 / T3.2 HD 改行 bug workaround:
+            // attach 後 0.5s 遅延で C-l (form feed、画面 redraw) を subshell
+            // background で送信。Claude CLI TUI が 2 行 height で stuck した
+            // input area を 1 行に reset する効果。focus-events (T1.2) でも
+            // resize trigger で再発するので補強として併用。
             view.deferredPtyCommand = """
                 \(tmuxBin) has-session -t \(tmuxSession) 2>/dev/null || \
                 \(tmuxBin) new-session -d -s \(tmuxSession) -c '\(safeCwd)'; \
@@ -68,6 +73,7 @@ struct TerminalRepresentable: NSViewRepresentable {
                 \(tmuxBin) set-option -t \(tmuxSession) escape-time 0 2>/dev/null; \
                 \(tmuxBin) set-option -t \(tmuxSession) focus-events on 2>/dev/null; \
                 \(tmuxBin) set-option -ga terminal-overrides ',*:Tc' 2>/dev/null; \
+                (sleep 0.5 && \(tmuxBin) send-keys -t \(tmuxSession) C-l 2>/dev/null &); \
                 exec \(tmuxBin) attach-session -t \(tmuxSession)
                 """
         }
