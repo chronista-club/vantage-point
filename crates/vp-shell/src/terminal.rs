@@ -99,9 +99,13 @@ pub fn spawn_shell(
         })
         .context("openpty")?;
 
-    // シェルコマンドを決定 (Windows: cmd.exe、Unix: $SHELL or /bin/bash)
+    // シェルコマンド + 引数を決定
     let shell = detect_shell();
+    let shell_args = detect_shell_args();
     let mut cmd = CommandBuilder::new(&shell);
+    for arg in &shell_args {
+        cmd.arg(arg);
+    }
     if let Some(dir) = cwd {
         cmd.cwd(dir);
     } else if let Some(home) = dirs_home() {
@@ -109,7 +113,17 @@ pub fn spawn_shell(
     }
 
     let _child = pair.slave.spawn_command(cmd).context("spawn shell")?;
-    tracing::info!("PTY shell 起動: {} ({}x{})", shell, cols, rows);
+    if shell_args.is_empty() {
+        tracing::info!("PTY shell 起動: {} ({}x{})", shell, cols, rows);
+    } else {
+        tracing::info!(
+            "PTY shell 起動: {} {} ({}x{})",
+            shell,
+            shell_args.join(" "),
+            cols,
+            rows
+        );
+    }
 
     // reader thread: PTY master → EventLoopProxy
     let reader = pair.master.try_clone_reader().context("clone reader")?;
@@ -176,6 +190,11 @@ fn reader_loop(mut reader: Box<dyn Read + Send>, proxy: EventLoopProxy<TerminalE
 /// Windows: PATH から pwsh (PowerShell 7+) → powershell (5.x) → cmd の順で
 /// 最初に見つかったものを採用。`VP_SHELL` env var があればそれを優先。
 /// Unix: `$SHELL` → `/bin/bash` フォールバック。
+///
+/// ## WSL / claude 連携例
+/// ```bash
+/// VP_SHELL=wsl.exe VP_SHELL_ARGS="--cd /home/mito/repos/vantage-point -- claude"
+/// ```
 fn detect_shell() -> String {
     if let Ok(explicit) = std::env::var("VP_SHELL") {
         return explicit;
@@ -193,6 +212,17 @@ fn detect_shell() -> String {
     {
         std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".into())
     }
+}
+
+/// シェル起動時の引数 (`VP_SHELL_ARGS` env var、POSIX シェル風クォート対応)
+///
+/// 例: `--cd /path -- bash -l -c "claude --continue || claude"` は
+/// ["--cd", "/path", "--", "bash", "-l", "-c", "claude --continue || claude"] に分割。
+fn detect_shell_args() -> Vec<String> {
+    std::env::var("VP_SHELL_ARGS")
+        .ok()
+        .and_then(|s| shell_words::split(&s).ok())
+        .unwrap_or_default()
 }
 
 /// 簡易 `which`: PATH を走査して実行可能ファイルの存在を確認

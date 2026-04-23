@@ -48,3 +48,6 @@ portable-pty = "0.9"
 
 # Base64 encoding (for PTY binary I/O over wry IPC)
 base64 = "0.22"
+
+# VP_SHELL_ARGS のシェル風クォート split
+shell-words = "1.1"
