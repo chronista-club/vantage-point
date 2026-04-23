@@ -252,10 +252,8 @@ fn kill_process_on_port(port: u16) -> Result<()> {
     if output.status.success() {
         let pids = String::from_utf8_lossy(&output.stdout);
         for pid in pids.lines() {
-            if let Ok(pid) = pid.trim().parse::<i32>() {
-                unsafe {
-                    libc::kill(pid, libc::SIGTERM);
-                }
+            if let Ok(pid) = pid.trim().parse::<u32>() {
+                crate::platform::process_terminate(pid);
             }
         }
     }

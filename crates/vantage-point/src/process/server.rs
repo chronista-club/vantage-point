@@ -835,24 +835,14 @@ pub async fn run_world(port: u16) -> Result<()> {
         });
     }
 
-    // シグナルハンドラ: SIGTERM でグレースフルシャットダウン
+    // シグナルハンドラ: Unix は SIGTERM、Windows は Ctrl-C を代替イベントに
     let shutdown_for_signal = shutdown_token.clone();
     tokio::spawn(async move {
-        let sigterm_result =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate());
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
-                tracing::info!("SIGINT 受信、シャットダウン開始");
+                tracing::info!("SIGINT (Ctrl-C) 受信、シャットダウン開始");
             }
-            _ = async {
-                match sigterm_result {
-                    Ok(mut sigterm) => { sigterm.recv().await; }
-                    Err(e) => {
-                        tracing::warn!("SIGTERM ハンドラ登録失敗: {}, SIGINT のみで停止", e);
-                        std::future::pending::<()>().await;
-                    }
-                }
-            } => {
+            _ = crate::platform::wait_for_terminate_signal() => {
                 tracing::info!("SIGTERM 受信、シャットダウン開始");
             }
         }

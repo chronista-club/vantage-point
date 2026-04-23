@@ -244,10 +244,8 @@ mod tests {
             return;
         }
 
-        let pid_i32 = pid as i32;
-
         // プロセスが起動していることを確認
-        let alive_before = unsafe { libc::kill(pid_i32, 0) == 0 };
+        let alive_before = crate::platform::process_alive(pid);
         assert!(alive_before, "子プロセスが起動していない (PID: {})", pid);
 
         // PtySlot を drop → Drop impl が kill + wait を呼ぶ
@@ -256,8 +254,7 @@ mod tests {
         // リトライループで終了を確認（固定sleepより安定）
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
         loop {
-            let alive = unsafe { libc::kill(pid_i32, 0) == 0 };
-            if !alive {
+            if !crate::platform::process_alive(pid) {
                 break; // 成功: プロセスが終了した
             }
             if tokio::time::Instant::now() >= deadline {

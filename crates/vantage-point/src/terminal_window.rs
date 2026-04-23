@@ -8,6 +8,23 @@
 //! Process Server (QUIC "terminal") ─── UnisonChannel ───► EventLoopProxy → TerminalState → TerminalView
 //! keyboard (main thread) → mpsc → input-bridge → unison-bridge → UnisonChannel → Process Server
 //! ```
+//!
+//! ## プラットフォーム
+//! 現状 macOS のみ実装。非 macOS (Windows/Linux) では `run_terminal_unison` が
+//! 即座にエラーを返す stub 実装になる。Phase W2 で xterm.js in WebView2 に置換予定。
+
+// 非 macOS では実装が stub のため、macOS 専用ヘルパー・変数が dead code / unused になる。
+// Phase W2 で置換するまで warning を抑止。
+#![cfg_attr(
+    not(target_os = "macos"),
+    allow(
+        dead_code,
+        unused_imports,
+        unused_variables,
+        unused_assignments,
+        unused_mut
+    )
+)]
 
 use std::sync::mpsc;
 
@@ -462,6 +479,7 @@ fn start_unison_bridge(
 ///
 /// Process サーバーの QUIC "terminal" チャネルに接続し、ネイティブウィンドウで描画する。
 /// ウィンドウを閉じても Process 側の PTY は生存し、再度接続で re-attach できる。
+#[cfg(target_os = "macos")]
 pub fn run_terminal_unison(
     port: u16,
     terminal_token: &str,
@@ -770,4 +788,16 @@ pub fn run_terminal_unison(
         let _ = &terminal_view;
         let _ = &menu;
     });
+}
+
+/// 非 macOS での stub 実装。Phase W2 で xterm.js in WebView2 に置換予定。
+#[cfg(not(target_os = "macos"))]
+pub fn run_terminal_unison(
+    _port: u16,
+    _terminal_token: &str,
+    _project_name: &str,
+) -> anyhow::Result<()> {
+    anyhow::bail!(
+        "ネイティブターミナルウィンドウは現在 macOS のみ対応です (Windows/Linux は Phase W2 で xterm.js in WebView2 に対応予定)"
+    )
 }

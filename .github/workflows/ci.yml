@@ -50,6 +50,25 @@ jobs:
         run: cargo test --workspace
 
   # ===========================================
+  # Windows ビルド check（VP-87 Phase W0）
+  # cargo check のみ。clippy / test は後続 Phase で追加
+  # -D warnings は一旦外す（Phase W1 以降で段階的に warning 0 化）
+  # ===========================================
+  check-windows:
+    name: Check (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Cargo check
+        run: cargo check --workspace --all-targets
+
+  # ===========================================
   # セキュリティ監査（依存クレートの既知脆弱性チェック）
   # 既知の許容済みアドバイザリは --ignore で管理
   # 新規の脆弱性が混入した場合にCIが失敗する
