@@ -50,8 +50,9 @@ let splitContents: [SplitContent] = [
 
 struct MainWindowView: View {
     /// 選択中の Lane (Lead or Worker の id = パス)
-    /// VP-83 refinement 35: @AppStorage で永続化、再起動時に復元
-    @AppStorage("vp.sidebar.selection") private var selectedProjectPath: String?
+    /// VP-83 refinement 47: @SceneStorage で **window ごとに独立** 永続化
+    /// (@AppStorage は UserDefaults 共有で複数 window が同期してしまう問題の fix)
+    @SceneStorage("vp.sidebar.selection") private var selectedProjectPath: String?
     /// サイドバーのプロジェクト一覧
     @State private var projects: [SidebarProject] = []
     /// TheWorld 接続ステータス
