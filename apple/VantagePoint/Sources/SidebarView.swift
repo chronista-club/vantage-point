@@ -166,9 +166,11 @@ struct SidebarView: View {
             // .sidebar style は auto card 化 (rounded outline + row gap) するため廃止
             List(selection: $selection) {
                 // 有効なプロジェクト（展開可能な disclosure header）
+                // refinement 55.2: .onMove は Custom DisclosureGroupStyle と併用すると
+                // 発火しないため、.draggable + .dropDestination で手動 D&D に切替。
+                // project.path を String として搬送、drop target で index 解決して reorder。
                 ForEach(enabledProjects) { project in
                     sidebarProjectDisclosure(project: project)
-                        // Inset 値は DesignTokenStore 駆動、Inspector で live edit 可能
                         .listRowInsets(EdgeInsets(
                             top: 0,
                             leading: tokens.sidebarListRowLeadingInset,
@@ -178,6 +180,8 @@ struct SidebarView: View {
                         .listRowBackground(Color.clear)
                         .listRowSeparator(.hidden)
                 }
+                // refinement 55: .onMove で行間挿入 indicator UI、index ずれ fix は
+                // MainWindowView.reorderProjects 側で enabled/disabled 分離して対応
                 .onMove { from, to in
                     onReorder?(from, to)
                 }
@@ -241,7 +245,8 @@ struct SidebarView: View {
             .listRowInsets(EdgeInsets())
             .listRowBackground(laneRowBackground(isFocused: selection == project.id))
             .contentShape(Rectangle())
-            .onTapGesture { selection = project.id }
+            // refinement 55: D&D 並び替え (onMove) と tap 選択を両立
+            .simultaneousGesture(TapGesture().onEnded { selection = project.id })
             .contextMenu { projectContextMenu(project: project) }
 
             // Worker Lane 行
@@ -259,7 +264,7 @@ struct SidebarView: View {
                 .listRowInsets(EdgeInsets())
                 .listRowBackground(laneRowBackground(isFocused: selection == worker.id))
                 .contentShape(Rectangle())
-                .onTapGesture { selection = worker.id }
+                .simultaneousGesture(TapGesture().onEnded { selection = worker.id })
                 .contextMenu {
                     Button("エージェントを再起動", systemImage: "arrow.clockwise") {
                         onRestartHD?(worker.path)
@@ -720,11 +725,15 @@ struct RightChevronDisclosureStyle: DisclosureGroupStyle {
                     .animation(Self.expandAnimation, value: configuration.isExpanded)
             )
             .contentShape(Rectangle())
-            .onTapGesture {
-                withAnimation(Self.expandAnimation) {
-                    configuration.isExpanded.toggle()
+            // refinement 55: .onTapGesture だと drag gesture を intercept、
+            // List の .onMove が発火しなくなるため .simultaneousGesture に変更
+            .simultaneousGesture(
+                TapGesture().onEnded {
+                    withAnimation(Self.expandAnimation) {
+                        configuration.isExpanded.toggle()
+                    }
                 }
-            }
+            )
 
             // Content area — Open 時のみ表示
             // refinement 49: VStack wrap を撤廃 — List(selection:) が children の

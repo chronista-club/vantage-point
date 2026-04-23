@@ -1073,9 +1073,15 @@ struct MainWindowView: View {
     }
 
     /// プロジェクトの並び順を変更（ドラッグ＆ドロップ）
+    /// refinement 55.5: from/to は Sidebar の enabledProjects 内 index なので、
+    /// disabled projects と分離して reorder、その後合成して server へ送る。
     private func reorderProjects(from: IndexSet, to: Int) {
-        var paths = projects.map(\.path)
-        paths.move(fromOffsets: from, toOffset: to)
+        let enabled = projects.filter { $0.enabled }
+        let disabled = projects.filter { !$0.enabled }
+        var enabledPaths = enabled.map(\.path)
+        enabledPaths.move(fromOffsets: from, toOffset: to)
+        // Disabled は末尾にまとめて配置 (Sidebar でも末尾に Disabled section)
+        let paths = enabledPaths + disabled.map(\.path)
         Task {
             try? await theWorldClient.reorderProjects(paths: paths)
             await refreshAll()
