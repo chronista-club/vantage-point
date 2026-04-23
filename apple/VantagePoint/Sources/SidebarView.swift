@@ -720,21 +720,12 @@ struct RightChevronDisclosureStyle: DisclosureGroupStyle {
                 }
             }
 
-            // Content area — Open 時のみ表示 (VP-83 refinement 32: tree rail 廃止、
-            // 所属関係は Project card の bg tint で示す。padding は header text と揃える)
+            // Content area — Open 時のみ表示
+            // refinement 49: VStack wrap を撤廃 — List(selection:) が children の
+            // .tag を row 個別に認識できなくなる問題の fix。
+            // List 内で使う前提、各 row の .listRowInsets が効くよう raw content 直出し。
             if configuration.isExpanded {
-                VStack(alignment: .leading, spacing: 0) {
-                    configuration.content
-                }
-                .padding(.leading, tokens.sidebarHeaderTextLeading)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .transition(
-                    .asymmetric(
-                        insertion: .move(edge: .top).combined(with: .opacity),
-                        removal: .move(edge: .top).combined(with: .opacity)
-                    )
-                )
-                .clipped()
+                configuration.content
             }
 
             // Project 間の sharp boundary (hairline divider)
