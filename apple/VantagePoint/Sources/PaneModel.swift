@@ -65,6 +65,11 @@ indirect enum PaneNode: Identifiable, Equatable {
         leaves.map(\.id)
     }
 
+    /// leaf の総数
+    var leafCount: Int {
+        leaves.count
+    }
+
     /// 指定 ID の leaf を探す (深さ優先)
     func findLeaf(id: UUID) -> PaneLeaf? {
         switch self {
@@ -105,8 +110,8 @@ indirect enum PaneNode: Identifiable, Equatable {
     }
 
     /// 指定 leaf の**隣に**新 leaf を追加する。
-    /// target が group の child なら、その group に child として append。
-    /// target が root leaf なら、新 group を作成して target + new を children に。
+    /// target の leaf を新 group で wrap、children に target と newLeaf を並べる。
+    /// 新 group の表示ルール (horizontal/vertical) は呼出し側で LayoutMap に入れる。
     func inserting(newLeaf: PaneLeaf, adjacentTo targetId: UUID, newGroupId: UUID = UUID()) -> PaneNode {
         switch self {
         case .leaf(let leaf) where leaf.id == targetId:
@@ -114,16 +119,13 @@ indirect enum PaneNode: Identifiable, Equatable {
         case .leaf:
             return self
         case .group(let id, let children):
-            // target が直下の child に含まれるか
-            if children.contains(where: { $0.id == targetId }) {
-                var updated = children
-                if let idx = updated.firstIndex(where: { $0.id == targetId }) {
-                    updated.insert(.leaf(newLeaf), at: idx + 1)
+            // 再帰: target を持つ child 経路を走査、leaf に到達して wrap する
+            return .group(
+                id: id,
+                children: children.map {
+                    $0.inserting(newLeaf: newLeaf, adjacentTo: targetId, newGroupId: newGroupId)
                 }
-                return .group(id: id, children: updated)
-            }
-            // 再帰
-            return .group(id: id, children: children.map { $0.inserting(newLeaf: newLeaf, adjacentTo: targetId, newGroupId: newGroupId) })
+            )
         }
     }
 }

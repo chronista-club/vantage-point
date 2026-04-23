@@ -76,7 +76,9 @@ struct MainWindowView: View {
     /// Pane Split Navigator の状態
     @State private var splitNavigator: SplitNavigatorStep = .hidden
     /// VP Pane レイアウト: プロジェクトパス → ペインツリー
-    @State private var paneLayouts: [String: VPPaneLayout] = [:]
+    // VP-83 Phase 2.1b: state を新 PaneLayout に migrate (Lead-Pane root + LayoutMap)。
+    // VPPaneContainer へ渡す際は .toLegacy() で bridge (Segment 2 で render 側も移行予定)。
+    @State private var paneLayouts: [String: PaneLayout] = [:]
     /// 退避中のペイン: プロジェクトパス → 退避ペインリスト (VP-49)
     @State private var minimizedPanes: [String: [MinimizedPane]] = [:]
     /// サイドバー表示状態
@@ -184,10 +186,13 @@ struct MainWindowView: View {
                         ForEach(terminalPaths, id: \.self) { path in
                             let isActive = selectedProjectPath == path
                             let gen = terminalGeneration[path] ?? 0
-                            let layout = paneLayouts[path] ?? VPPaneLayout.initial()
+                            let layout = paneLayouts[path] ?? PaneLayout.initial()
+                            // bridge: 新 PaneNode + LayoutMap → 旧 VPPaneNode (Segment 2 で除去)
+                            let focusedNode = layout.root.withFocus(on: layout.focusedPaneId)
+                            let legacyNode = focusedNode.toLegacy(layoutMap: layout.layoutMap)
                             VPPaneContainer(
                                 projectPath: path,
-                                node: layout.root.withFocus(on: layout.focusedPaneId),
+                                node: legacyNode,
                                 isActive: isActive,
                                 splitNavigatorActive: splitNavigator != .hidden,
                                 terminalGeneration: gen,
@@ -349,7 +354,7 @@ struct MainWindowView: View {
         .onChange(of: terminalPaths) { _, newPaths in
             // 新しいプロジェクトの VP Pane レイアウトを初期化
             for path in newPaths where paneLayouts[path] == nil {
-                paneLayouts[path] = VPPaneLayout.initial()
+                paneLayouts[path] = PaneLayout.initial()
             }
         }
     }
@@ -510,7 +515,7 @@ struct MainWindowView: View {
 
         // レイアウトが無ければ初期化
         if paneLayouts[path] == nil {
-            paneLayouts[path] = VPPaneLayout.initial()
+            paneLayouts[path] = PaneLayout.initial()
         }
 
         let paneId = UUID()
@@ -519,23 +524,27 @@ struct MainWindowView: View {
             .replacingOccurrences(of: ".", with: "-")
         let paneSession = "\(projectName)-vpp-\(shortId)"
 
-        let newLeaf = VPPaneLeaf(
+        let kind = PaneKind(rawValue: contentType) ?? .agent
+        let newLeaf = PaneLeaf(
             id: paneId,
             paneSessionName: paneSession,
             tmuxWindowName: nil,
-            contentType: contentType
+            kind: kind
         )
 
         var layout = paneLayouts[path]!
+        let newGroupId = UUID()
         layout.root = layout.root.inserting(
             newLeaf: newLeaf,
             adjacentTo: layout.focusedPaneId,
-            horizontal: horizontal
+            newGroupId: newGroupId
         )
+        // 新しく作成された group の表示ルールを LayoutMap に登録
+        layout.layoutMap[newGroupId] = horizontal ? .horizontalSplit : .verticalSplit
         layout.focusedPaneId = paneId
         paneLayouts[path] = layout
 
-        logger.info("VP Pane added: \(paneSession) (horizontal=\(horizontal), content=\(contentType), leafCount=\(layout.root.leafCount))")
+        logger.info("VP Pane added: \(paneSession) (horizontal=\(horizontal), kind=\(kind.rawValue), leafCount=\(layout.root.leafCount))")
     }
 
     /// VP Pane を閉じる（⌘⇧D）
@@ -544,7 +553,7 @@ struct MainWindowView: View {
     /// 最後の 1 つは閉じない（プロジェクトには最低 1 ペイン必要）。
     private func closePane() {
         guard let path = selectedProjectPath else { return }
-        let layout = paneLayouts[path] ?? VPPaneLayout.initial()
+        let layout = paneLayouts[path] ?? PaneLayout.initial()
         closePane(path: path, paneId: layout.focusedPaneId)
     }
 
@@ -558,17 +567,24 @@ struct MainWindowView: View {
 
         // 最後の Agent ペインは閉じない（VP-46: Agent 消失防止）
         if let leaf = layout.root.findLeaf(id: paneId),
-           leaf.contentType == "agent" {
-            let agentCount = layout.root.leaves.filter { $0.contentType == "agent" }.count
+           leaf.kind == .agent {
+            let agentCount = layout.root.leaves.filter { $0.kind == .agent }.count
             if agentCount <= 1 {
                 logger.info("VP Pane close: 最後の Agent ペインは閉じない")
                 return
             }
         }
 
-        // 削除対象のリーフの tmux リソースをクリーンアップ
+        // 削除対象のリーフの tmux リソースをクリーンアップ (bridge: 旧 VPPaneLeaf へ変換)
         if let leaf = layout.root.findLeaf(id: paneId) {
-            cleanupVPPaneTmux(leaf: leaf)
+            let legacyLeaf = VPPaneLeaf(
+                id: leaf.id,
+                paneSessionName: leaf.paneSessionName,
+                tmuxWindowName: leaf.tmuxWindowName,
+                contentType: leaf.kind.rawValue,
+                isFocused: leaf.isFocused
+            )
+            cleanupVPPaneTmux(leaf: legacyLeaf)
         }
 
         // ツリーから削除
@@ -602,13 +618,20 @@ struct MainWindowView: View {
             return nil
         }()
 
-        // MinimizedPane を作成
+        // MinimizedPane を作成 (MinimizedPane は旧 VPPaneLeaf を保持する — Segment 2 で新 model 化)
+        let legacyLeaf = VPPaneLeaf(
+            id: leaf.id,
+            paneSessionName: leaf.paneSessionName,
+            tmuxWindowName: leaf.tmuxWindowName,
+            contentType: leaf.kind.rawValue,
+            isFocused: leaf.isFocused
+        )
         let minimized = MinimizedPane(
             id: paneId,
-            leaf: leaf,
+            leaf: legacyLeaf,
             adjacentToId: adjacentId,
             horizontal: true,
-            standInfo: PaneStandInfo.from(leaf: leaf)
+            standInfo: PaneStandInfo.from(leaf: legacyLeaf)
         )
 
         // ツリーから削除（tmux はクリーンアップしない — 復帰時に再利用）
@@ -628,7 +651,7 @@ struct MainWindowView: View {
             minimizedPanes[path] = docked
         }
 
-        logger.info("VP Pane minimized: \(leaf.contentType) → Dock (\(minimizedPanes[path]?.count ?? 0) items)")
+        logger.info("VP Pane minimized: \(leaf.kind.rawValue) → Dock (\(minimizedPanes[path]?.count ?? 0) items)")
     }
 
     /// Dock から復帰（元の分割位置に挿入）(VP-49)
@@ -640,12 +663,22 @@ struct MainWindowView: View {
             minimizedPanes[path]?.removeAll { $0.id == pane.id }
 
             // ツリーに再挿入（adjacentToId の隣に分割）
+            // pane.leaf は旧 VPPaneLeaf なので新 PaneLeaf に変換、併せて LayoutMap も更新
             let targetId = pane.adjacentToId ?? layout.focusedPaneId
-            layout.root = layout.root.inserting(
-                newLeaf: pane.leaf,
-                adjacentTo: targetId,
-                horizontal: pane.horizontal
+            let newLeaf = PaneLeaf(
+                id: pane.leaf.id,
+                paneSessionName: pane.leaf.paneSessionName,
+                tmuxWindowName: pane.leaf.tmuxWindowName,
+                kind: PaneKind(rawValue: pane.leaf.contentType) ?? .agent,
+                isFocused: pane.leaf.isFocused
             )
+            let newGroupId = UUID()
+            layout.root = layout.root.inserting(
+                newLeaf: newLeaf,
+                adjacentTo: targetId,
+                newGroupId: newGroupId
+            )
+            layout.layoutMap[newGroupId] = pane.horizontal ? .horizontalSplit : .verticalSplit
             layout.focusedPaneId = pane.leaf.id
             paneLayouts[path] = layout
         }
