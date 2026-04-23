@@ -42,7 +42,7 @@ const SIDEBAR_WIDTH: f64 = 280.0;
 /// Creo UI design tokens (CSS custom properties、mint-dark default)
 ///
 /// <https://github.com/chronista-club/creo-ui> packages/web が source。
-/// vp-shell の 3 ペインすべてに inline して共通 token で描画する。
+/// vp-app の 3 ペインすべてに inline して共通 token で描画する。
 pub const CREO_TOKENS_CSS: &str = include_str!("../assets/creo-tokens.css");
 
 const SIDEBAR_HTML: &str = concat!(
@@ -221,11 +221,11 @@ pub fn run() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "vp_shell=info".into()),
+                .unwrap_or_else(|_| "vp_app=info".into()),
         )
         .init();
 
-    tracing::info!("vp-shell 起動 (Creo UI mint-dark)");
+    tracing::info!("vp-app 起動 (Creo UI mint-dark)");
 
     let event_loop = EventLoopBuilder::<AppEvent>::with_user_event().build();
 

@@ -9,7 +9,7 @@
 //!
 //! **IPv6 `[::1]` は WSL2 → Windows の localhost 転送で通らない**ため
 //! デフォルトは IPv4。WSL2 側で daemon を立ち上げて Windows の
-//! vp-shell から接続するケースを前提にしている。
+//! vp-app から接続するケースを前提にしている。
 
 use anyhow::Result;
 use serde::Deserialize;

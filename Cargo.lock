@@ -9189,6 +9189,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "051eb1abcf10076295e815102942cc58f9d5e3b4560e46e53c21e8ff6f3af7b1"
 
 [[package]]
+name = "vp-app"
+version = "0.14.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "muda",
+ "notify-rust",
+ "portable-pty",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "shell-words",
+ "tao",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "tray-icon",
+ "wry",
+]
+
+[[package]]
 name = "vp-bridge"
 version = "0.14.0"
 dependencies = [
@@ -9243,27 +9264,6 @@ dependencies = [
  "serde_json",
  "vp-mdast",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "vp-shell"
-version = "0.14.0"
-dependencies = [
- "anyhow",
- "base64",
- "muda",
- "notify-rust",
- "portable-pty",
- "reqwest",
- "serde",
- "serde_json",
- "shell-words",
- "tao",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "tray-icon",
- "wry",
 ]
 
 [[package]]

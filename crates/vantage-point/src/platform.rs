@@ -6,7 +6,7 @@
 //! ## Windows 対応状況
 //! - 現状 Windows 版は stub (always false / no-op) — Phase W1 以降で
 //!   `windows-sys` 経由の `OpenProcess` + `TerminateProcess` で本実装予定。
-//! - vp-shell (Phase W1) で daemon を Windows で実際に動かす段で必要になる。
+//! - vp-app (Phase W1) で daemon を Windows で実際に動かす段で必要になる。
 
 /// PID が alive かを判定 (Unix: `kill(pid, 0)` + EPERM 判定)。Windows は現状 false。
 ///

@@ -1,17 +1,17 @@
 [package]
-name = "vp-shell"
+name = "vp-app"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "Vantage Point native shell — Rust-native window/tray/menu over TheWorld daemon"
+description = "Vantage Point native app — Rust-native window/tray/menu over TheWorld daemon"
 
 [[bin]]
-name = "vp-shell"
+name = "vp-app"
 path = "src/main.rs"
 
 [lib]
-name = "vp_shell"
+name = "vp_app"
 path = "src/lib.rs"
 
 [dependencies]
