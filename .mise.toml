@@ -142,12 +142,14 @@ echo "✅ Built: target/x86_64-pc-windows-gnu/debug/vp-shell.exe"
 
 [tasks."win:wsl"]
 description = "vp-shell on Windows で WSL (Arch) を terminal に立ち上げる"
-env = { VP_SHELL = "wsl.exe", VP_SHELL_ARGS = "--cd /home/mito/repos/vantage-point -- bash -l" }
+# bash -i で interactive shell、~/.bashrc (PATH 設定含む) を適切に読み込む
+env = { VP_SHELL = "wsl.exe", VP_SHELL_ARGS = "--cd /home/mito/repos/vantage-point -- bash -i" }
 run = "mise run win"
 
 [tasks."win:claude"]
 description = "vp-shell on Windows で WSL 上の claude code を terminal で起動 (claude --continue 優先、失敗で claude フォールバック)"
-env = { VP_SHELL = "wsl.exe", VP_SHELL_ARGS = '--cd /home/mito/repos/vantage-point -- bash -l -c "claude --continue || claude"' }
+# $HOME/.bun/bin を PATH に明示追加 (bash -l は .bashrc early-return で PATH が効かないため)
+env = { VP_SHELL = "wsl.exe", VP_SHELL_ARGS = '--cd /home/mito/repos/vantage-point -- bash -lc "export PATH=$HOME/.bun/bin:$PATH; claude --continue || claude"' }
 run = "mise run win"
 
 [tasks."win:release"]
