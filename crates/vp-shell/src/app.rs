@@ -1,24 +1,25 @@
 //! Main EventLoop + window lifecycle
 //!
-//! ## アーキテクチャ方針 (Mac 版と同等)
+//! ## アーキテクチャ方針 (Mac 版と同等 + Creo UI 統一)
 //!
-//! 「ネイティブ層ベース + WebUI on top」のハイブリッド構成:
+//! 「ネイティブ層ベース + WebUI on top」のハイブリッド構成。
+//! デザインシステムは **Creo UI** (mint-dark theme) を全ペインで共有。
 //!
 //! ```text
 //! ┌─── tao ネイティブウィンドウ (native chrome, menu, tray) ──┐
 //! │ ┌──────────┬───────────────────────────────────────┐ │
-//! │ │ sidebar  │                                        │ │
-//! │ │ wry      │       canvas (wry WebView)             │ │
-//! │ │ WebView  │                                        │ │
-//! │ │          │                                        │ │
-//! │ │ (~280px) │       (残り幅)                          │ │
+//! │ │ sidebar  │       canvas (wry WebView)             │ │
+//! │ │ wry      │                                        │ │
+//! │ │ WebView  ├────────────────────────────────────────┤ │
+//! │ │          │       terminal (xterm.js in WebView)   │ │
+//! │ │ (~280px) │                                        │ │
 //! │ └──────────┴───────────────────────────────────────┘ │
 //! └──────────────────────────────────────────────────────┘
 //! ```
 //!
 //! - **ウィンドウ・メニュー・トレイ・レイアウト境界** は Rust (tao + muda + tray-icon)
-//! - **各ペインの内容** は wry WebView (HTML/CSS/JS)
-//! - Phase W2 で terminal ペインを xterm.js WebView として下段に追加予定
+//! - **各ペインの内容** は wry WebView (HTML/CSS/JS、xterm.js 含む)
+//! - **Creo UI tokens.css (mint-dark)** を各 WebView に inline して token 統一
 
 use tao::dpi::LogicalSize;
 use tao::event::{Event, WindowEvent};
@@ -28,64 +29,95 @@ use wry::{
     Rect, WebView, WebViewBuilder, dpi::LogicalPosition, dpi::LogicalSize as WryLogicalSize,
 };
 
+use crate::terminal::{self, TerminalEvent};
+
 /// Sidebar の固定幅 (LogicalPixel)
 const SIDEBAR_WIDTH: f64 = 280.0;
 
-const SIDEBAR_HTML: &str = r#"<!doctype html>
-<html lang="ja"><head><meta charset="utf-8"><style>
-  html,body{margin:0;height:100%;background:#1A2332;color:#D8DEE9;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;}
-  header{padding:16px;font-size:12px;color:#81A1C1;text-transform:uppercase;letter-spacing:.08em;}
+/// Creo UI design tokens (CSS custom properties、mint-dark default)
+///
+/// <https://github.com/chronista-club/creo-ui> packages/web が source。
+/// vp-shell の 3 ペインすべてに inline して共通 token で描画する。
+pub const CREO_TOKENS_CSS: &str = include_str!("../assets/creo-tokens.css");
+
+const SIDEBAR_HTML: &str = concat!(
+    r#"<!doctype html>
+<html lang="ja" data-theme="mint-dark">
+<head><meta charset="utf-8"><style>"#,
+    include_str!("../assets/creo-tokens.css"),
+    r#"</style><style>
+  html,body{margin:0;height:100%;background:var(--color-surface-bg-subtle);color:var(--color-text-primary);font-family:system-ui,-apple-system,"Segoe UI",sans-serif;}
+  header{padding:16px;font-size:12px;color:var(--color-text-tertiary);text-transform:uppercase;letter-spacing:.08em;}
   ul{list-style:none;margin:0;padding:0 8px;}
-  li{padding:8px 12px;border-radius:6px;color:#ECEFF4;cursor:pointer;font-size:14px;}
-  li:hover{background:#2C3E50;}
-</style></head><body>
+  li{padding:8px 12px;border-radius:var(--radius-sm,6px);color:var(--color-text-primary);cursor:pointer;font-size:14px;transition:background .12s ease;}
+  li:hover{background:var(--color-surface-bg-emphasis);}
+  li.active{background:var(--color-brand-primary-subtle);color:var(--color-text-primary);}
+</style></head>
+<body>
   <header>Projects</header>
   <ul>
-    <li>(Phase W1 scaffold)</li>
-    <li>vantage-point</li>
+    <li class="active">vantage-point</li>
+    <li>(Phase W2 scaffold)</li>
   </ul>
-</body></html>"#;
+</body>
+</html>"#
+);
 
-const CANVAS_HTML: &str = r#"<!doctype html>
-<html lang="ja"><head><meta charset="utf-8"><style>
-  html,body{margin:0;height:100%;background:#0B1120;color:#ECEFF4;font-family:system-ui,-apple-system,"Segoe UI","Cascadia Code",monospace;}
+const CANVAS_HTML: &str = concat!(
+    r#"<!doctype html>
+<html lang="ja" data-theme="mint-dark">
+<head><meta charset="utf-8"><style>"#,
+    include_str!("../assets/creo-tokens.css"),
+    r#"</style><style>
+  html,body{margin:0;height:100%;background:var(--color-surface-bg-base);color:var(--color-text-primary);font-family:system-ui,-apple-system,"Segoe UI","Cascadia Code",monospace;}
   body{display:grid;place-items:center;}
   main{text-align:center;}
-  h1{font-weight:500;font-size:2rem;margin:0 0 .5rem;}
-  p{color:#81A1C1;margin:0;}
-</style></head><body>
+  h1{font-weight:500;font-size:1.6rem;margin:0 0 .25rem;color:var(--color-text-primary);}
+  p{color:var(--color-text-tertiary);margin:0;font-size:.9rem;}
+  .brand{color:var(--color-brand-primary);}
+</style></head>
+<body>
   <main>
-    <h1>Vantage Point</h1>
-    <p>Canvas pane — Phase W2 で xterm.js + Canvas HTML を連結予定</p>
+    <h1>Canvas pane</h1>
+    <p>Phase W2 — <span class="brand">Creo UI mint-dark</span> を全ペイン統一で適用</p>
   </main>
-</body></html>"#;
+</body>
+</html>"#
+);
 
-/// Sidebar と Canvas の bounds を現在のウィンドウサイズから計算して両 WebView に適用。
+/// Sidebar / Canvas / Terminal の bounds をウィンドウサイズから計算
 fn update_pane_bounds(
     sidebar: &WebView,
     canvas: &WebView,
+    terminal_view: &WebView,
     window_size: tao::dpi::PhysicalSize<u32>,
     scale: f64,
 ) {
     let logical = window_size.to_logical::<f64>(scale);
     let width = logical.width;
     let height = logical.height;
-    let canvas_x = SIDEBAR_WIDTH;
-    let canvas_w = (width - SIDEBAR_WIDTH).max(0.0);
+    let right_x = SIDEBAR_WIDTH;
+    let right_w = (width - SIDEBAR_WIDTH).max(0.0);
+    let canvas_h = (height / 2.0).round();
+    let terminal_y = canvas_h;
+    let terminal_h = (height - canvas_h).max(0.0);
 
     let _ = sidebar.set_bounds(Rect {
         position: LogicalPosition::new(0.0, 0.0).into(),
         size: WryLogicalSize::new(SIDEBAR_WIDTH, height).into(),
     });
     let _ = canvas.set_bounds(Rect {
-        position: LogicalPosition::new(canvas_x, 0.0).into(),
-        size: WryLogicalSize::new(canvas_w, height).into(),
+        position: LogicalPosition::new(right_x, 0.0).into(),
+        size: WryLogicalSize::new(right_w, canvas_h).into(),
+    });
+    let _ = terminal_view.set_bounds(Rect {
+        position: LogicalPosition::new(right_x, terminal_y).into(),
+        size: WryLogicalSize::new(right_w, terminal_h).into(),
     });
 }
 
 /// App のエントリポイント
 pub fn run() -> anyhow::Result<()> {
-    // tracing 初期化
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -93,14 +125,12 @@ pub fn run() -> anyhow::Result<()> {
         )
         .init();
 
-    tracing::info!("vp-shell 起動");
+    tracing::info!("vp-shell 起動 (Creo UI mint-dark)");
 
-    let event_loop = EventLoopBuilder::new().build();
+    let event_loop = EventLoopBuilder::<TerminalEvent>::with_user_event().build();
 
-    // メニューバー構築 (macOS は NSApp、Windows は in-window menubar に muda が適用)
+    // メニューバー + トレイ
     let _menu = crate::menu::build_menu_bar();
-
-    // トレイアイコン (Err 時は無効化して続行 — CI/headless 環境用)
     let _tray = match crate::tray::build_tray() {
         Ok(t) => Some(t),
         Err(e) => {
@@ -114,7 +144,11 @@ pub fn run() -> anyhow::Result<()> {
         .with_inner_size(LogicalSize::new(1200.0, 800.0))
         .build(&event_loop)?;
 
-    // Sidebar + Canvas の 2 つの WebView を親ウィンドウに貼る
+    // PTY を起動し、reader thread が EventLoopProxy 経由で出力イベントを送る
+    let proxy = event_loop.create_proxy();
+    let pty = terminal::spawn_shell(None, 80, 24, proxy)?;
+
+    // Sidebar
     let sidebar = WebViewBuilder::new()
         .with_html(SIDEBAR_HTML)
         .with_bounds(Rect {
@@ -123,15 +157,29 @@ pub fn run() -> anyhow::Result<()> {
         })
         .build_as_child(&window)?;
 
+    // Canvas
     let canvas = WebViewBuilder::new()
         .with_html(CANVAS_HTML)
         .with_bounds(Rect {
             position: LogicalPosition::new(SIDEBAR_WIDTH, 0.0).into(),
-            size: WryLogicalSize::new(1200.0 - SIDEBAR_WIDTH, 800.0).into(),
+            size: WryLogicalSize::new(1200.0 - SIDEBAR_WIDTH, 400.0).into(),
         })
         .build_as_child(&window)?;
 
-    tracing::info!("メインウィンドウ + 2 ペイン (sidebar/canvas) 作成");
+    // Terminal pane: xterm.js + IPC handler で PTY に双方向接続
+    let pty_for_ipc = pty.clone();
+    let terminal_view = WebViewBuilder::new()
+        .with_html(terminal::TERMINAL_HTML)
+        .with_bounds(Rect {
+            position: LogicalPosition::new(SIDEBAR_WIDTH, 400.0).into(),
+            size: WryLogicalSize::new(1200.0 - SIDEBAR_WIDTH, 400.0).into(),
+        })
+        .with_ipc_handler(move |req| {
+            terminal::handle_ipc_message(req.body(), &pty_for_ipc);
+        })
+        .build_as_child(&window)?;
+
+    tracing::info!("メインウィンドウ + 3 ペイン (sidebar/canvas/terminal) 作成");
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
@@ -148,7 +196,19 @@ pub fn run() -> anyhow::Result<()> {
                 event: WindowEvent::Resized(size),
                 ..
             } => {
-                update_pane_bounds(&sidebar, &canvas, size, window.scale_factor());
+                update_pane_bounds(
+                    &sidebar,
+                    &canvas,
+                    &terminal_view,
+                    size,
+                    window.scale_factor(),
+                );
+            }
+            Event::UserEvent(TerminalEvent::Output(bytes)) => {
+                let script = terminal::build_output_script(&bytes);
+                if let Err(e) = terminal_view.evaluate_script(&script) {
+                    tracing::warn!("terminal evaluate_script 失敗: {}", e);
+                }
             }
             _ => {}
         }

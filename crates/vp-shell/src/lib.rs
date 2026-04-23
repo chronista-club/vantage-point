@@ -12,4 +12,5 @@
 pub mod app;
 pub mod client;
 pub mod menu;
+pub mod terminal;
 pub mod tray;

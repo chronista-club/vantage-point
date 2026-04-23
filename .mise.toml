@@ -100,14 +100,14 @@ WIN_LOCALAPPDATA=$(cmd.exe /c "echo %LOCALAPPDATA%" 2>/dev/null | tr -d '\\r')
 INSTALL_DIR=$(wslpath -u "$WIN_LOCALAPPDATA")/VantagePoint-dev
 INSTALL_EXE="$INSTALL_DIR/vp-shell.exe"
 
+echo "🔄 既存 vp-shell プロセスを停止 (exe ロック解放)..."
+powershell.exe -NoProfile -Command "Get-Process vp-shell -ErrorAction SilentlyContinue | Stop-Process -Force" 2>/dev/null | tr -d '\\r' || true
+sleep 1
+
 echo "📦 $INSTALL_DIR に配置..."
 mkdir -p "$INSTALL_DIR"
 cp "$BUILD_EXE" "$INSTALL_EXE"
 cp "$WEBVIEW2_DLL" "$INSTALL_DIR/WebView2Loader.dll"
-
-echo "🔄 既存 vp-shell プロセスを停止..."
-powershell.exe -NoProfile -Command "Get-Process vp-shell -ErrorAction SilentlyContinue | Stop-Process -Force" 2>/dev/null | tr -d '\\r' || true
-sleep 1
 
 INSTALL_DIR_WIN="$WIN_LOCALAPPDATA\\\\VantagePoint-dev"
 INSTALL_EXE_WIN="$INSTALL_DIR_WIN\\\\vp-shell.exe"
