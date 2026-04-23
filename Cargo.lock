@@ -9162,7 +9162,6 @@ dependencies = [
  "urlencoding",
  "uuid",
  "vte",
- "wry",
 ]
 
 [[package]]

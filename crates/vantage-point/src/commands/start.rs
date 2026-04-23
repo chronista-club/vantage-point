@@ -82,7 +82,8 @@ pub fn execute(opts: StartOptions) -> Result<()> {
 
     tracing::info!("Project dir: {}", resolved.dir);
 
-    // MIDI 設定
+    // MIDI 設定 (feature = "midi" 有効時のみ)
+    #[cfg(feature = "midi")]
     let midi_config = midi.as_ref().map(|midi_arg| {
         let mut config = crate::midi::MidiConfig::default();
         config
@@ -102,9 +103,12 @@ pub fn execute(opts: StartOptions) -> Result<()> {
         }
         config
     });
+    #[cfg(not(feature = "midi"))]
+    let _ = midi;
 
     let cap_config = CapabilityConfig {
         project_dir: resolved.dir.clone(),
+        #[cfg(feature = "midi")]
         midi_config,
         whitesnake: None,     // server.rs 側でポート別に注入
         remote_routing: None, // server.rs 側でポート別に注入
@@ -279,6 +283,7 @@ fn run_browser(port: u16, debug_mode: DebugMode, cap_config: CapabilityConfig) -
 }
 
 /// GUI モード: SP を確保してネイティブウィンドウ（Unison）を起動
+#[cfg(feature = "gui")]
 fn run_gui(
     port: u16,
     project_name: &str,
@@ -303,6 +308,17 @@ fn run_gui(
     }
 
     Ok(())
+}
+
+/// GUI モードの stub (feature = "gui" 無効時)
+#[cfg(not(feature = "gui"))]
+fn run_gui(
+    _port: u16,
+    _project_name: &str,
+    _debug_mode: DebugMode,
+    _cap_config: CapabilityConfig,
+) -> Result<()> {
+    anyhow::bail!("GUI モードは無効化されています。`--features gui` 付きで再 build してください")
 }
 
 /// TUI モード: SP を確保 → tmux セッション（Claude CLI）→ TUI 描画

@@ -3,12 +3,15 @@
 //! Capability システムを Process に統合するモジュール。
 //! EventBus、Registry、各Capabilityの初期化と連携を担当。
 
+#[cfg(feature = "midi")]
+use crate::capability::MidiCapability;
 use crate::capability::core::Capability;
 use crate::capability::msgbox_remote::RemoteRoutingClient;
 use crate::capability::{
-    AgentCapability, CapabilityContext, CapabilityRegistry, EventBus, MidiCapability, MsgboxRouter,
+    AgentCapability, CapabilityContext, CapabilityRegistry, EventBus, MsgboxRouter,
     ProtocolCapability, Whitesnake,
 };
+#[cfg(feature = "midi")]
 use crate::midi::MidiConfig;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -27,7 +30,8 @@ pub struct ProcessCapabilities {
     pub protocol: Arc<RwLock<ProtocolCapability>>,
     /// Agent Capability（Claude Agent統合）
     pub agent: Arc<RwLock<AgentCapability>>,
-    /// MIDI Capability（オプション）
+    /// MIDI Capability（オプション、feature = "midi" 有効時のみ）
+    #[cfg(feature = "midi")]
     pub midi: Option<Arc<RwLock<MidiCapability>>>,
 }
 
@@ -35,7 +39,8 @@ pub struct ProcessCapabilities {
 pub struct CapabilityConfig {
     /// プロジェクトディレクトリ
     pub project_dir: String,
-    /// MIDI設定（有効な場合）
+    /// MIDI設定（feature = "midi" 有効時のみ）
+    #[cfg(feature = "midi")]
     pub midi_config: Option<MidiConfig>,
     /// 永続化バックエンド（Msgbox persistent メッセージ用）
     ///
@@ -81,7 +86,8 @@ impl ProcessCapabilities {
         agent.set_event_bus(event_bus.clone());
         let agent = Arc::new(RwLock::new(agent));
 
-        // MIDI Capability（オプション）
+        // MIDI Capability（feature = "midi" 有効時のみ）
+        #[cfg(feature = "midi")]
         let midi = if let Some(midi_config) = config.midi_config {
             let mut midi_cap = MidiCapability::with_config(midi_config);
             midi_cap.set_event_bus(event_bus.clone());
@@ -96,6 +102,7 @@ impl ProcessCapabilities {
             registry,
             protocol,
             agent,
+            #[cfg(feature = "midi")]
             midi,
         }
     }
@@ -120,7 +127,8 @@ impl ProcessCapabilities {
             agent.initialize(&ctx).await?;
         }
 
-        // MIDI Capability 初期化と監視開始（存在する場合）
+        // MIDI Capability 初期化と監視開始（feature = "midi" 有効時のみ）
+        #[cfg(feature = "midi")]
         if let Some(ref midi) = self.midi {
             let midi_msgbox = self.msgbox_router.register("midi").await;
             let ctx = CapabilityContext::new().with_msgbox(midi_msgbox);
@@ -150,7 +158,8 @@ impl ProcessCapabilities {
 
     /// 全 Capability をシャットダウン
     pub async fn shutdown(&self) -> anyhow::Result<()> {
-        // MIDI Capability シャットダウン
+        // MIDI Capability シャットダウン（feature = "midi" 有効時のみ）
+        #[cfg(feature = "midi")]
         if let Some(ref midi) = self.midi {
             let mut midi = midi.write().await;
             let _ = midi.shutdown().await;
@@ -207,13 +216,20 @@ impl ProcessCapabilities {
         })
     }
 
-    /// MIDI 監視を開始（MIDIが有効な場合）
+    /// MIDI 監視を開始（feature = "midi" 有効時のみ）
+    #[cfg(feature = "midi")]
     pub async fn start_midi_monitoring(&self, port_index: Option<usize>) -> anyhow::Result<()> {
         if let Some(ref midi) = self.midi {
             let mut midi = midi.write().await;
             midi.start_monitoring(port_index).await?;
             tracing::info!("MIDI monitoring started");
         }
+        Ok(())
+    }
+
+    /// MIDI 監視の stub (feature = "midi" 無効時)
+    #[cfg(not(feature = "midi"))]
+    pub async fn start_midi_monitoring(&self, _port_index: Option<usize>) -> anyhow::Result<()> {
         Ok(())
     }
 }

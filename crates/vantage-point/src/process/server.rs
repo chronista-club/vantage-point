@@ -581,6 +581,7 @@ pub async fn run_world(port: u16) -> Result<()> {
         capabilities: Arc::new(
             ProcessCapabilities::new(CapabilityConfig {
                 project_dir: String::new(),
+                #[cfg(feature = "midi")]
                 midi_config: None,
                 whitesnake: None,     // World モードは永続 msgbox 不要
                 remote_routing: None, // World モードは cross-Process forward 不要

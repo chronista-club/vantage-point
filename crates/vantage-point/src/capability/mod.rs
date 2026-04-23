@@ -17,6 +17,7 @@ pub mod agent_capability;
 pub mod core;
 pub mod eventbus;
 pub mod evolution;
+#[cfg(feature = "midi")]
 pub mod midi_capability;
 pub mod msgbox;
 pub mod msgbox_registry;
@@ -31,6 +32,7 @@ pub mod whitesnake;
 pub use agent_capability::AgentCapability;
 pub use core::{CapabilityContext, CapabilityEvent, CapabilityInfo, CapabilityState};
 pub use eventbus::EventBus;
+#[cfg(feature = "midi")]
 pub use midi_capability::MidiCapability;
 pub use msgbox::{Handle, Message, MessageKind, Router as MsgboxRouter};
 pub use msgbox_registry::{ActorEntry, Registry as MsgboxRegistry};

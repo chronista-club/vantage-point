@@ -10,6 +10,13 @@ description = "AI-powered development platform with Agent and MIDI services"
 name = "vantage_point"
 path = "src/lib.rs"
 
+[features]
+# Daemon-only build (Linux の GTK/ALSA 無し環境で通す) は
+# `--no-default-features` で gui + midi を外す。
+default = ["gui", "midi"]
+gui = ["dep:tao", "dep:muda", "dep:tray-icon"]
+midi = ["dep:midir"]
+
 [dependencies]
 # Async runtime
 tokio = { workspace = true }
@@ -54,9 +61,10 @@ schemars = "1"
 # QUIC protocol (Unison)
 unison = { workspace = true }
 
-# Native WebView
-wry = { version = "0.54", features = ["devtools"] }
-tao = "0.34"
+# GUI stack (feature = "gui" 有効時のみ有効化)
+tao = { version = "0.34", optional = true }
+muda = { version = "0.17", optional = true }
+tray-icon = { version = "0.21", optional = true }
 
 # Open URLs in system browser
 open = "5"
@@ -65,14 +73,8 @@ open = "5"
 toml = "0.8"
 dirs = "6"
 
-# Menu (for native menu bar on macOS)
-muda = "0.17"
-
-# System tray icon
-tray-icon = "0.21"
-
-# MIDI input
-midir = "0.10"
+# MIDI input (feature = "midi" 有効時のみ、ALSA 依存回避のため optional)
+midir = { version = "0.10", optional = true }
 
 # UUID generation
 uuid = { version = "1", features = ["v4"] }

@@ -7,6 +7,7 @@ pub mod config;
 pub mod db_cmd;
 pub mod file_cmd;
 pub mod hd_cmd;
+#[cfg(feature = "midi")]
 pub mod midi;
 pub mod pane;
 pub mod port_cmd;
