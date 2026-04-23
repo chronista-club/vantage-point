@@ -228,6 +228,8 @@ struct SidebarView: View {
     private func sidebarProjectDisclosure(project: SidebarProject) -> some View {
         DisclosureGroup(isExpanded: expansionBinding(for: project.path)) {
             // Lead-HD 行（常時 top）
+            // refinement 50: .tag が DisclosureGroupStyle 層で block される問題、
+            // manual onTapGesture で selection 直接 set に変更
             SidebarLeadRow(
                 project: project,
                 ppStatus: ppBadgeStatus(for: project),
@@ -238,6 +240,8 @@ struct SidebarView: View {
             .tag(project.id)
             .listRowInsets(EdgeInsets())
             .listRowBackground(laneRowBackground(isFocused: selection == project.id))
+            .contentShape(Rectangle())
+            .onTapGesture { selection = project.id }
             .contextMenu { projectContextMenu(project: project) }
 
             // Worker Lane 行
@@ -254,6 +258,8 @@ struct SidebarView: View {
                 .tag(worker.id)
                 .listRowInsets(EdgeInsets())
                 .listRowBackground(laneRowBackground(isFocused: selection == worker.id))
+                .contentShape(Rectangle())
+                .onTapGesture { selection = worker.id }
                 .contextMenu {
                     Button("エージェントを再起動", systemImage: "arrow.clockwise") {
                         onRestartHD?(worker.path)
