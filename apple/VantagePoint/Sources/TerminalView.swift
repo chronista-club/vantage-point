@@ -306,6 +306,21 @@ class TerminalView: NSView {
 
     // MARK: - フォント
 
+    /// ambiguous-wide codepoint 判定 — wide cell で FiraCode が narrow glyph しか
+    /// 提供しない記号群。日本語環境ユーザの iTerm 挙動 (East Asian Ambiguous = Wide)
+    /// に合わせて system cascade 経由で CJK font の 2 cell wide glyph を使う。
+    private func isAmbiguousWideCodepoint(_ ch: String) -> Bool {
+        guard let scalar = ch.unicodeScalars.first else { return false }
+        switch scalar.value {
+        case 0x2190...0x21FF: return true  // Arrows (→ ← ↑ ↓ ↔ 等)
+        case 0x25A0...0x25FF: return true  // Geometric Shapes (■ □ ▲ ▼ ◆ ● ◯ 等)
+        case 0x2600...0x26FF: return true  // Misc Symbols (★ ☆ ♠ ♣ ♥ ♦ ♪ ☀ 等)
+        case 0x2700...0x27BF: return true  // Dingbats (✓ ✗ ✦ ➔ ➢ 等)
+        case 0x2900...0x297F: return true  // Supplemental Arrows (⟵ ⟶ ⬅ ➡ 等)
+        default: return false
+        }
+    }
+
     private func updateFontMetrics() {
         // Fira Code Nerd Font Mono 固定。未インストール時のみシステム等幅にフォールバック
         let nsFont = NSFont(name: fontName, size: fontSize)
@@ -519,7 +534,15 @@ class TerminalView: NSView {
                 ctx.setFillColor(fgColor.cgColor)
                 let chars = Array(ch.utf16)
                 var glyphs = [CGGlyph](repeating: 0, count: chars.count)
-                let found = CTFontGetGlyphsForCharacters(selectedFont, chars, &glyphs, chars.count)
+
+                // VP-83 refinement 52: wide cell の ambiguous-width 記号（→ ← ● ▲ ★ 等）は
+                // FiraCode が narrow glyph を提供してしまい「矢印 + 右半分空」の崩れになるため、
+                // 日本語環境ユーザの iTerm 挙動に合わせて primary font をスキップ、
+                // system cascade (Hiragino) 経由で 2 cell wide glyph を取得する
+                let forceCJKForWide = charIsFullWidth && isAmbiguousWideCodepoint(ch)
+                let found = forceCJKForWide
+                    ? false
+                    : CTFontGetGlyphsForCharacters(selectedFont, chars, &glyphs, chars.count)
 
                 // グリフが見つからない場合はフォールバックフォントで描画
                 if found && !glyphs.contains(0) {

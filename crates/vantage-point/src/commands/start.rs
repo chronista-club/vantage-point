@@ -394,6 +394,22 @@ pub fn create_tmux_session(
         .args(["set-option", "-t", name, "status", "off"])
         .status();
 
+    // VP-83 refinement 53 / Tier 1 Chain tuning:
+    // ─ escape-time 0: Esc 応答即時化 (vi-like TUI 体験改善)
+    // ─ focus-events on: terminal focus 変化を Claude CLI 等に forward
+    //   → NSWindow become-key で TUI redraw → HD 入力 area の 2 行問題緩和の期待
+    // ─ terminal-overrides *:Tc: 24-bit truecolor を 256 色にダウングレードさせない
+    let tmux_bin = crate::tmux::tmux_bin().unwrap_or("tmux");
+    let _ = std::process::Command::new(tmux_bin)
+        .args(["set-option", "-t", name, "escape-time", "0"])
+        .status();
+    let _ = std::process::Command::new(tmux_bin)
+        .args(["set-option", "-t", name, "focus-events", "on"])
+        .status();
+    let _ = std::process::Command::new(tmux_bin)
+        .args(["set-option", "-ga", "terminal-overrides", ",*:Tc"])
+        .status();
+
     // mise 環境変数を tmux セッションにも set-environment（後続ペイン用）
     for (key, value) in &mise_envs {
         let _ = std::process::Command::new(crate::tmux::tmux_bin().unwrap_or("tmux"))
