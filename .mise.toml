@@ -64,6 +64,97 @@ cd apple/VantagePoint && swift build -c release
 echo "✅ Built: apple/VantagePoint/.build/release/VantagePoint"
 """
 
+[tasks.win]
+description = "Build & run vp-shell on Windows host (WSL2 mingw cross-compile → Windows exec)"
+run = """
+set -euo pipefail
+ROOT="$(pwd)"
+
+# 前提チェック
+if ! command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
+  echo "❌ mingw-w64 が未インストール: brew install mingw-w64" >&2
+  exit 1
+fi
+if ! command -v wslpath >/dev/null 2>&1; then
+  echo "❌ WSL 環境でのみ実行可能 (wslpath が必要)" >&2
+  exit 1
+fi
+if ! rustup target list --installed 2>/dev/null | grep -q "x86_64-pc-windows-gnu"; then
+  echo "📦 rustup target 追加: x86_64-pc-windows-gnu"
+  rustup target add x86_64-pc-windows-gnu
+fi
+
+echo "🔨 vp-shell を Windows (x86_64-pc-windows-gnu) 向けにクロスビルド..."
+CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc \
+  cargo build --target x86_64-pc-windows-gnu -p vp-shell
+
+BUILD_EXE="$ROOT/target/x86_64-pc-windows-gnu/debug/vp-shell.exe"
+WEBVIEW2_DLL=$(find "$ROOT/target/x86_64-pc-windows-gnu/debug/build" -path "*/webview2-com-sys-*/out/x64/WebView2Loader.dll" -print -quit)
+if [ -z "$WEBVIEW2_DLL" ]; then
+  echo "❌ WebView2Loader.dll が見つからない (build 失敗?)" >&2
+  exit 1
+fi
+
+# Windows 側のインストール先 (user-scope、LOCALAPPDATA 配下)
+WIN_LOCALAPPDATA=$(cmd.exe /c "echo %LOCALAPPDATA%" 2>/dev/null | tr -d '\\r')
+INSTALL_DIR=$(wslpath -u "$WIN_LOCALAPPDATA")/VantagePoint-dev
+INSTALL_EXE="$INSTALL_DIR/vp-shell.exe"
+
+echo "📦 $INSTALL_DIR に配置..."
+mkdir -p "$INSTALL_DIR"
+cp "$BUILD_EXE" "$INSTALL_EXE"
+cp "$WEBVIEW2_DLL" "$INSTALL_DIR/WebView2Loader.dll"
+
+echo "🔄 既存 vp-shell プロセスを停止..."
+powershell.exe -NoProfile -Command "Get-Process vp-shell -ErrorAction SilentlyContinue | Stop-Process -Force" 2>/dev/null | tr -d '\\r' || true
+sleep 1
+
+INSTALL_DIR_WIN="$WIN_LOCALAPPDATA\\\\VantagePoint-dev"
+INSTALL_EXE_WIN="$INSTALL_DIR_WIN\\\\vp-shell.exe"
+echo "🚀 Launching $INSTALL_EXE_WIN ..."
+# PowerShell の Start-Process を使用 (WSL から cmd.exe /c start は UNC cwd で失敗するため)
+powershell.exe -NoProfile -Command "Start-Process -FilePath '$INSTALL_EXE_WIN' -WorkingDirectory '$INSTALL_DIR_WIN'" 2>&1 | tr -d '\\r' || true
+echo "✅ 起動リクエスト送信 (Windows 側にウィンドウが表示される)"
+"""
+
+[tasks."win:build"]
+description = "Build vp-shell for Windows without launching (cross-compile from WSL2)"
+run = """
+set -euo pipefail
+if ! command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
+  echo "❌ mingw-w64 が未インストール: brew install mingw-w64" >&2
+  exit 1
+fi
+if ! rustup target list --installed 2>/dev/null | grep -q "x86_64-pc-windows-gnu"; then
+  rustup target add x86_64-pc-windows-gnu
+fi
+
+CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc \
+  cargo build --target x86_64-pc-windows-gnu -p vp-shell
+echo "✅ Built: target/x86_64-pc-windows-gnu/debug/vp-shell.exe"
+"""
+
+[tasks."win:release"]
+description = "Build vp-shell release for Windows (MSI/署名/winget は Phase W4 で追加予定)"
+run = """
+set -euo pipefail
+if ! command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
+  echo "❌ mingw-w64 が未インストール: brew install mingw-w64" >&2
+  exit 1
+fi
+if ! rustup target list --installed 2>/dev/null | grep -q "x86_64-pc-windows-gnu"; then
+  rustup target add x86_64-pc-windows-gnu
+fi
+
+CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc \
+  cargo build --release --target x86_64-pc-windows-gnu -p vp-shell
+
+EXE="target/x86_64-pc-windows-gnu/release/vp-shell.exe"
+ls -lh "$EXE"
+echo "✅ Release built: $EXE"
+echo "ℹ️  WiX MSI + Authenticode 署名 + winget manifest は Phase W4 (VP-90) で追加予定"
+"""
+
 [tasks."mac:release"]
 description = "Build, sign, notarize & package VantagePoint.app as DMG"
 run = """
