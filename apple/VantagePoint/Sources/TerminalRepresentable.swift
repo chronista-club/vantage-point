@@ -55,12 +55,19 @@ struct TerminalRepresentable: NSViewRepresentable {
             // passthrough モード: tmux に直接 exec（vp tui の crossterm は Native App PTY 内で動かないため）
             // セッションが無ければ tmux で直接作成（vp start は非 TTY でハングすることがあるため）
             let tmuxBin = "/opt/homebrew/bin/tmux"
+            // VP-83 refinement 53 / Tier 1 Chain tuning:
+            // attach の tmux session にも escape-time / focus-events / truecolor
+            // override を注入 (Rust 側 create_tmux_session 経路と揃える)。
+            // 既存 session に attach するケースでも毎回上書きで state 保証。
             view.deferredPtyCommand = """
                 \(tmuxBin) has-session -t \(tmuxSession) 2>/dev/null || \
                 \(tmuxBin) new-session -d -s \(tmuxSession) -c '\(safeCwd)'; \
                 \(tmuxBin) set-option -t \(tmuxSession) status on 2>/dev/null; \
                 \(tmuxBin) set-option -t \(tmuxSession) status-left '#S ❯ #I:#P ' 2>/dev/null; \
                 \(tmuxBin) set-option -t \(tmuxSession) status-right '' 2>/dev/null; \
+                \(tmuxBin) set-option -t \(tmuxSession) escape-time 0 2>/dev/null; \
+                \(tmuxBin) set-option -t \(tmuxSession) focus-events on 2>/dev/null; \
+                \(tmuxBin) set-option -ga terminal-overrides ',*:Tc' 2>/dev/null; \
                 exec \(tmuxBin) attach-session -t \(tmuxSession)
                 """
         }

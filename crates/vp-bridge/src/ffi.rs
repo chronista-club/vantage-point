@@ -479,6 +479,24 @@ pub extern "C" fn vp_bridge_pty_write_session(session_id: u32, data: *const u8, 
 
     let bytes = unsafe { std::slice::from_raw_parts(data, len as usize) };
 
+    // VP-HD-NEWLINE-DEBUG: app quit 時の改行混入原因調査 (bug feedback_hd_input_newline_on_restart)
+    // 環境変数 VP_PTY_WRITE_DEBUG=1 で有効化
+    if std::env::var("VP_PTY_WRITE_DEBUG").as_deref() == Ok("1") {
+        let hex = bytes
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let utf8 = std::str::from_utf8(bytes)
+            .unwrap_or("<non-utf8>")
+            .replace('\n', "\\n")
+            .replace('\r', "\\r");
+        eprintln!(
+            "[VP_PTY_WRITE session={} len={}] hex=[{}] utf8=[{}]",
+            session_id, len, hex, utf8
+        );
+    }
+
     let mut guard = ensure_sessions();
     if let Some(map) = guard.as_mut()
         && let Some(session) = map.get_mut(&session_id)
