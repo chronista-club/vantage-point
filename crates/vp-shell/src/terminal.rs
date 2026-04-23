@@ -22,6 +22,8 @@ use tao::event_loop::EventLoopProxy;
 pub enum TerminalEvent {
     /// PTY から読み取った出力バイト列
     Output(Vec<u8>),
+    /// xterm.js 側から ready 通知 (IPC 経由で届いたら main thread に伝える)
+    XtermReady,
 }
 
 /// PTY セッションのハンドル
@@ -126,18 +128,38 @@ pub fn spawn_shell(
 /// PTY reader ループ。EOF / エラーで終了。
 fn reader_loop(mut reader: Box<dyn Read + Send>, proxy: EventLoopProxy<TerminalEvent>) {
     let mut buf = [0u8; 4096];
+    let mut total = 0usize;
     loop {
         match reader.read(&mut buf) {
             Ok(0) => {
-                tracing::info!("PTY reader: EOF");
+                tracing::info!("PTY reader: EOF (total={} bytes)", total);
                 break;
             }
             Ok(n) => {
+                total += n;
+                let hex: String = buf[..n].iter().map(|b| format!("{:02x}", b)).collect();
+                let ascii: String = buf[..n]
+                    .iter()
+                    .map(|&b| {
+                        if (0x20..=0x7e).contains(&b) {
+                            b as char
+                        } else {
+                            '.'
+                        }
+                    })
+                    .collect();
+                tracing::debug!(
+                    "PTY reader: {} bytes [hex={} ascii={:?}] total={}",
+                    n,
+                    hex,
+                    ascii,
+                    total
+                );
                 if proxy
                     .send_event(TerminalEvent::Output(buf[..n].to_vec()))
                     .is_err()
                 {
-                    // EventLoop 終了済み
+                    tracing::info!("EventLoop 終了、reader_loop 終了");
                     break;
                 }
             }
@@ -150,15 +172,41 @@ fn reader_loop(mut reader: Box<dyn Read + Send>, proxy: EventLoopProxy<TerminalE
 }
 
 /// プラットフォーム別のデフォルトシェル
+///
+/// Windows: PATH から pwsh (PowerShell 7+) → powershell (5.x) → cmd の順で
+/// 最初に見つかったものを採用。`VP_SHELL` env var があればそれを優先。
+/// Unix: `$SHELL` → `/bin/bash` フォールバック。
 fn detect_shell() -> String {
+    if let Ok(explicit) = std::env::var("VP_SHELL") {
+        return explicit;
+    }
     #[cfg(windows)]
     {
+        for candidate in &["pwsh.exe", "powershell.exe", "cmd.exe"] {
+            if is_on_path(candidate) {
+                return (*candidate).to_string();
+            }
+        }
         std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".into())
     }
     #[cfg(unix)]
     {
         std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".into())
     }
+}
+
+/// 簡易 `which`: PATH を走査して実行可能ファイルの存在を確認
+#[cfg(windows)]
+fn is_on_path(name: &str) -> bool {
+    if let Ok(path) = std::env::var("PATH") {
+        for dir in path.split(';') {
+            let candidate = std::path::Path::new(dir).join(name);
+            if candidate.is_file() {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// HOME ディレクトリ (PTY cwd のデフォルト)
@@ -178,8 +226,8 @@ fn dirs_home() -> Option<String> {
 /// 期待する形式:
 /// - `{"t":"in","d":"..."}` — ユーザ入力 (string)
 /// - `{"t":"resize","cols":N,"rows":N}` — リサイズ
-/// - `{"t":"ready"}` — xterm.js 初期化完了 (現状は情報のみ)
-pub fn handle_ipc_message(msg: &str, pty: &PtyHandle) {
+/// - `{"t":"ready"}` — xterm.js 初期化完了 → UserEvent::XtermReady を main thread に送る
+pub fn handle_ipc_message(msg: &str, pty: &PtyHandle, proxy: &EventLoopProxy<TerminalEvent>) {
     let parsed: serde_json::Value = match serde_json::from_str(msg) {
         Ok(v) => v,
         Err(e) => {
@@ -190,21 +238,29 @@ pub fn handle_ipc_message(msg: &str, pty: &PtyHandle) {
 
     match parsed.get("t").and_then(|v| v.as_str()) {
         Some("in") => {
-            if let Some(data) = parsed.get("d").and_then(|v| v.as_str())
-                && let Err(e) = pty.write(data.as_bytes())
-            {
-                tracing::warn!("PTY write 失敗: {}", e);
+            if let Some(data) = parsed.get("d").and_then(|v| v.as_str()) {
+                tracing::debug!("IPC in: {} bytes", data.len());
+                if let Err(e) = pty.write(data.as_bytes()) {
+                    tracing::warn!("PTY write 失敗: {}", e);
+                }
             }
         }
         Some("resize") => {
             let cols = parsed.get("cols").and_then(|v| v.as_u64()).unwrap_or(80) as u16;
             let rows = parsed.get("rows").and_then(|v| v.as_u64()).unwrap_or(24) as u16;
+            tracing::info!("IPC resize: {}x{}", cols, rows);
             if let Err(e) = pty.resize(cols, rows) {
                 tracing::warn!("PTY resize 失敗: {}", e);
             }
         }
         Some("ready") => {
-            tracing::info!("xterm.js ready");
+            tracing::info!("xterm.js ready → flush buffered PTY output");
+            let _ = proxy.send_event(TerminalEvent::XtermReady);
+        }
+        Some("debug") => {
+            if let Some(msg) = parsed.get("msg").and_then(|v| v.as_str()) {
+                tracing::info!("[xterm debug] {}", msg);
+            }
         }
         other => {
             tracing::debug!("terminal IPC: unknown type {:?}", other);
@@ -287,7 +343,9 @@ body{overflow:hidden;}
 
   window.addEventListener('resize', () => { fitAddon.fit(); sendResize(); });
 
-  term.onData(d => window.ipc.postMessage(JSON.stringify({t:'in', d: d})));
+  term.onData(d => {
+    window.ipc.postMessage(JSON.stringify({t:'in', d: d}));
+  });
 
   // Rust から呼ばれる関数
   window.onPtyData = function(b64) {
@@ -301,7 +359,19 @@ body{overflow:hidden;}
   window.ipc.postMessage(JSON.stringify({t:'ready'}));
   sendResize();
 
-  term.focus();
+  // WebView2 + child WebView で focus が弱いので、click / pointerdown で明示 focus
+  const container = document.getElementById('t');
+  const focusTerm = () => {
+    try { term.focus(); } catch (_) {}
+    window.ipc.postMessage(JSON.stringify({t:'debug', msg: 'focus requested'}));
+  };
+  container.addEventListener('mousedown', focusTerm);
+  container.addEventListener('click', focusTerm);
+  window.addEventListener('focus', focusTerm);
+
+  // 初期 focus も明示 (DOM ready 後)
+  setTimeout(focusTerm, 100);
+  setTimeout(focusTerm, 500);
 })();
 </script>
 </body>

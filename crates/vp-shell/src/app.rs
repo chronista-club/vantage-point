@@ -167,19 +167,29 @@ pub fn run() -> anyhow::Result<()> {
         .build_as_child(&window)?;
 
     // Terminal pane: xterm.js + IPC handler で PTY に双方向接続
+    // IPC handler は ready 通知を EventLoopProxy 経由で main thread に伝える
     let pty_for_ipc = pty.clone();
+    let ipc_proxy = event_loop.create_proxy();
     let terminal_view = WebViewBuilder::new()
         .with_html(terminal::TERMINAL_HTML)
         .with_bounds(Rect {
             position: LogicalPosition::new(SIDEBAR_WIDTH, 400.0).into(),
             size: WryLogicalSize::new(1200.0 - SIDEBAR_WIDTH, 400.0).into(),
         })
+        .with_devtools(true)
         .with_ipc_handler(move |req| {
-            terminal::handle_ipc_message(req.body(), &pty_for_ipc);
+            terminal::handle_ipc_message(req.body(), &pty_for_ipc, &ipc_proxy);
         })
+        .with_focused(true)
         .build_as_child(&window)?;
 
     tracing::info!("メインウィンドウ + 3 ペイン (sidebar/canvas/terminal) 作成");
+
+    // xterm.js が ready になるまで PTY 出力を buffer
+    // (ConPTY は起動直後に DSR \x1b[6n を送ってきて xterm の応答を待つため、
+    //  ready 前の bytes を欠落させると shell が永久に block する)
+    let mut xterm_ready = false;
+    let mut pending: Vec<u8> = Vec::new();
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
@@ -205,9 +215,30 @@ pub fn run() -> anyhow::Result<()> {
                 );
             }
             Event::UserEvent(TerminalEvent::Output(bytes)) => {
-                let script = terminal::build_output_script(&bytes);
-                if let Err(e) = terminal_view.evaluate_script(&script) {
-                    tracing::warn!("terminal evaluate_script 失敗: {}", e);
+                if !xterm_ready {
+                    // xterm がまだ起動中 → buffer
+                    pending.extend_from_slice(&bytes);
+                    tracing::debug!(
+                        "PTY output buffered ({} bytes, pending total={})",
+                        bytes.len(),
+                        pending.len()
+                    );
+                } else {
+                    let script = terminal::build_output_script(&bytes);
+                    if let Err(e) = terminal_view.evaluate_script(&script) {
+                        tracing::warn!("terminal evaluate_script 失敗: {}", e);
+                    }
+                }
+            }
+            Event::UserEvent(TerminalEvent::XtermReady) => {
+                xterm_ready = true;
+                if !pending.is_empty() {
+                    tracing::info!("xterm ready → flush {} 保留バイト", pending.len());
+                    let script = terminal::build_output_script(&pending);
+                    if let Err(e) = terminal_view.evaluate_script(&script) {
+                        tracing::warn!("terminal flush 失敗: {}", e);
+                    }
+                    pending.clear();
                 }
             }
             _ => {}
