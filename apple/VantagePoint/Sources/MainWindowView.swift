@@ -237,8 +237,8 @@ struct MainWindowView: View {
         .ignoresSafeArea(.all, edges: .top)
         .animation(.easeInOut(duration: 0.2), value: sidebarVisible)
         .overlay { commandPaletteOverlay }
-        .onReceive(NotificationCenter.default.publisher(for: .openCommandPalette)) { _ in
-            handleOpenCommandPalette()
+        .onReceive(NotificationCenter.default.publisher(for: .vpAction)) { note in
+            handleVPAction(note)
         }
         .onAppear {
             loadProjects()
@@ -656,8 +656,17 @@ struct MainWindowView: View {
 
     /// プロジェクトパスから tmux セッション名を生成
     /// tmux session 名 (Phase L5: LaneRegistry に集約、Registry lookup を優先)
-    private func handleOpenCommandPalette() {
-        commandPaletteVisible = true
+    /// 統合 Notification handler — `userInfo["kind"]` で 分岐 (build 型推論軽減のため 1 経路)
+    private func handleVPAction(_ note: Notification) {
+        guard let kind = note.userInfo?["kind"] as? String else { return }
+        switch kind {
+        case "palette":
+            commandPaletteVisible = true
+        case "inspector":
+            openWindow(id: "design-inspector")
+        default:
+            break
+        }
     }
 
     /// Command Palette overlay view (型推論簡易化のため分離)
@@ -1505,4 +1514,6 @@ extension Notification.Name {
     static let toggleProjectTabBar = Notification.Name("VP.toggleProjectTabBar")
     static let openCommandPalette = Notification.Name("VP.openCommandPalette")
     static let openDesignInspector = Notification.Name("VP.openDesignInspector")
+    /// 統合 Notification (kind で分岐、build 型推論軽減)
+    static let vpAction = Notification.Name("VP.action")
 }
