@@ -95,6 +95,10 @@ enum Commands {
     /// Stone Free 🧵 — worker workspace 管理（旧 ccws、Phase 1 で統合）
     #[command(subcommand, alias = "workspace")]
     Ws(WsCommands),
+
+    /// Port Layout — deterministic 透過的固定 port の計算・表示
+    #[command(subcommand)]
+    Port(commands::port_cmd::PortCommands),
 }
 
 /// Stone Free worker workspace コマンド（vp-ccws library への薄い wrapper）
@@ -190,6 +194,7 @@ fn main() -> Result<()> {
         Commands::Db(cmd) => commands::db_cmd::execute(cmd),
 
         Commands::Ws(cmd) => execute_ws(cmd),
+        Commands::Port(cmd) => commands::port_cmd::execute(cmd),
     }
 }
 

@@ -13,6 +13,13 @@ settings:
     MACOSX_DEPLOYMENT_TARGET: "26.0"
     SWIFT_STRICT_CONCURRENCY: complete
 
+# Swift Package dependencies (Xcodeproj target に注入)
+packages:
+  CreoUI:
+    # creo-ui repo は packages/swift サブディレクトリに SPM manifest を持つ
+    # path は project.yml の場所からの相対 (apple/VantagePoint/project.yml → ../../../creo-ui/packages/swift)
+    path: ../../../creo-ui/packages/swift
+
 targets:
   VantagePoint:
     type: application
@@ -24,6 +31,10 @@ targets:
       - path: Resources/Info.plist
         buildPhase: none
       - path: Resources/Assets.xcassets
+    dependencies:
+      # CreoUI design system (SPM local path dep)
+      - package: CreoUI
+        product: CreoUI
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: tech.anycreative.VantagePoint

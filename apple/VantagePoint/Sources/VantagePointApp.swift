@@ -21,6 +21,27 @@ struct VantagePointApp: App {
         .commands {
             fileCommands
             navigateCommands
+            viewCommands
+        }
+
+        // Design Inspector — VP-83 refinement 27 の creo-ui Editor 連携 MVP
+        Window("Design Inspector", id: "design-inspector") {
+            DesignInspectorView()
+        }
+        .defaultSize(width: 560, height: 520)
+        .windowResizability(.contentSize)
+    }
+
+    /// VP メニュー — Command Palette + Design Inspector (macOS 既定 View menu と衝突避け)
+    @CommandsBuilder
+    private var viewCommands: some Commands {
+        CommandMenu("VP") {
+            Button("Command Palette…") {
+                NotificationCenter.default.post(name: .openCommandPalette, object: nil)
+            }
+            .keyboardShortcut("k", modifiers: .command)
+            Divider()
+            DesignInspectorMenuButton()
         }
     }
 
@@ -97,5 +118,18 @@ struct VantagePointApp: App {
             }
             .keyboardShortcut("d", modifiers: .command)
         }
+    }
+}
+
+/// @Environment(\.openWindow) を read するための中間 View
+/// (`.commands` Scene context では直接 openWindow を使えないため)
+private struct DesignInspectorMenuButton: View {
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Button("Design Inspector…") {
+            openWindow(id: "design-inspector")
+        }
+        .keyboardShortcut("i", modifiers: [.command, .shift])
     }
 }

@@ -43,3 +43,7 @@ DerivedData/
 
 # Release 配布物（DMG 等）
 /dist/
+
+
+# Per-user MCP overlay (add extra servers without leaking credentials)
+.mcp.local.json

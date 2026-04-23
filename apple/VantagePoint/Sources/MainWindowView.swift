@@ -1,3 +1,4 @@
+import CreoUI
 import OSLog
 import SwiftUI
 
@@ -39,15 +40,19 @@ let splitDirections: [SplitDirection] = [
 ]
 
 /// コンテンツ種別の一覧（The Hand, Paisley Park, Heaven's Door）
+// 表側は technical 用語で統一。JoJo 名は tooltip / doc / code comment
+// レイヤー 2 以降で見えてくる (VP-83 refinement 36)
 let splitContents: [SplitContent] = [
-    SplitContent(id: 0, label: "The Hand", emoji: "✋", contentType: "shell"),
-    SplitContent(id: 1, label: "Paisley Park", emoji: "🧭", contentType: "pp"),
-    SplitContent(id: 2, label: "Heaven's Door", emoji: "📖", contentType: "agent"),
+    SplitContent(id: 0, label: "Shell", emoji: "✋", contentType: "shell"),
+    SplitContent(id: 1, label: "Navigator", emoji: "🧭", contentType: "pp"),
+    SplitContent(id: 2, label: "Agent", emoji: "📖", contentType: "agent"),
 ]
 
 struct MainWindowView: View {
-    /// 選択中のプロジェクトパス
-    @State private var selectedProjectPath: String?
+    /// 選択中の Lane (Lead or Worker の id = パス)
+    /// VP-83 refinement 47: @SceneStorage で **window ごとに独立** 永続化
+    /// (@AppStorage は UserDefaults 共有で複数 window が同期してしまう問題の fix)
+    @SceneStorage("vp.sidebar.selection") private var selectedProjectPath: String?
     /// サイドバーのプロジェクト一覧
     @State private var projects: [SidebarProject] = []
     /// TheWorld 接続ステータス
@@ -60,6 +65,8 @@ struct MainWindowView: View {
     /// TerminalRepresentable を再生成 → PTY 再起動してしまう。
     /// @State で保持し、差分がある場合のみ更新する。
     @State private var terminalPaths: [String] = []
+    /// Lane Registry — projects 更新時に build、view-time lookup で使用 (L1 MVP)
+    @State private var laneRegistry: LaneRegistry = LaneRegistry(records: [])
     /// TerminalRepresentable の強制再生成用カウンタ（HD リスタート時にインクリメント）
     @State private var terminalGeneration: [String: Int] = [:]
     /// HD 自動起動を試みたパス（ポーリングで繰り返し起動しないため）
@@ -76,6 +83,10 @@ struct MainWindowView: View {
     @State private var sidebarVisible: Bool = true
     /// ProjectTabBar の手動表示設定（true = 常時表示）
     @State private var projectTabBarForced: Bool = false
+    /// Command Palette (⌘K) 表示状態 (T6)
+    @State private var commandPaletteVisible: Bool = false
+    /// Command Palette → Design Inspector window open 用
+    @Environment(\.openWindow) private var openWindow
 
     /// ProjectTabBar を表示するか（サイドバー非表示時は自動表示、手動トグルで常時表示）
     private var showProjectTabBar: Bool {
@@ -152,7 +163,9 @@ struct MainWindowView: View {
                             if selectedProjectPath != path {
                                 selectedProjectPath = path
                             }
-                        }
+                        },
+                        selectedBranch: selectedProject?.branch,
+                        laneCount: selectedProject.map { 1 + $0.workers.count }
                     )
                 }
 
@@ -224,6 +237,10 @@ struct MainWindowView: View {
         }
         .ignoresSafeArea(.all, edges: .top)
         .animation(.easeInOut(duration: 0.2), value: sidebarVisible)
+        .overlay { commandPaletteOverlay }
+        .onReceive(NotificationCenter.default.publisher(for: .vpAction)) { note in
+            handleVPAction(note)
+        }
         .onAppear {
             loadProjects()
         }
@@ -237,6 +254,9 @@ struct MainWindowView: View {
             if newPaths != terminalPaths {
                 terminalPaths = newPaths
             }
+            // Lane Registry rebuild (L1 MVP): 1 source of truth for
+            // address / path / tmuxSession / status lookup
+            laneRegistry = LaneRegistry.build(from: newProjects, notifications: notifications)
         }
         .onReceive(NotificationCenter.default.publisher(for: AppDelegate.selectProjectNotification)) { notification in
             if let path = notification.userInfo?["path"] as? String {
@@ -412,7 +432,7 @@ struct MainWindowView: View {
         .font(.caption)
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
-        .background(Color(white: 0.12).opacity(0.95))
+        .background(Color.colorSurfaceSurface.opacity(0.95))
     }
 
     /// ナビの個別アイテム
@@ -420,9 +440,9 @@ struct MainWindowView: View {
         Text("\(index + 1): \(label)")
             .padding(.horizontal, 8)
             .padding(.vertical, 3)
-            .background(isSelected ? Color.accentColor.opacity(0.3) : Color.clear)
-            .cornerRadius(4)
-            .foregroundStyle(isSelected ? .white : .secondary)
+            .background(isSelected ? Color.colorBrandPrimarySubtle : Color.clear)
+            .cornerRadius(CreoUITokens.radiusSm)
+            .foregroundStyle(isSelected ? Color.colorTextPrimary : Color.colorTextSecondary)
     }
 
     /// キー入力ハンドラー
@@ -636,9 +656,81 @@ struct MainWindowView: View {
     // MARK: - VP Pane ヘルパー
 
     /// プロジェクトパスから tmux セッション名を生成
+    /// tmux session 名 (Phase L5: LaneRegistry に集約、Registry lookup を優先)
+    /// 統合 Notification handler — `userInfo["kind"]` で 分岐 (build 型推論軽減のため 1 経路)
+    private func handleVPAction(_ note: Notification) {
+        guard let kind = note.userInfo?["kind"] as? String else { return }
+        switch kind {
+        case "palette":
+            commandPaletteVisible = true
+        case "inspector":
+            openWindow(id: "design-inspector")
+        default:
+            break
+        }
+    }
+
+    /// Command Palette overlay view (型推論簡易化のため分離)
+    @ViewBuilder
+    private var commandPaletteOverlay: some View {
+        if commandPaletteVisible {
+            commandPaletteBody
+        }
+    }
+
+    private var commandPaletteBody: some View {
+        ZStack(alignment: .top) {
+            Color.black.opacity(0.35)
+                .ignoresSafeArea()
+                .onTapGesture { commandPaletteVisible = false }
+            CommandPaletteView(
+                laneRegistry: laneRegistry,
+                appActions: paletteActions,
+                onSelectLane: { record in selectedProjectPath = record.path },
+                onSelectAction: { action in executePaletteAction(action) },
+                onClose: { commandPaletteVisible = false }
+            )
+            .padding(.top, 80)
+        }
+    }
+
+    /// Command Palette の App Action 一覧
+    private var paletteActions: [AppAction] {
+        [
+            AppAction(id: "open.design.inspector", title: "Design Inspector を開く",
+                      systemImage: "slider.horizontal.3", keyEquivalent: "⌘⇧I"),
+            AppAction(id: "toggle.sidebar", title: "サイドバーを切替",
+                      systemImage: "sidebar.left", keyEquivalent: "⌘/"),
+            AppAction(id: "toggle.tabbar", title: "Project Tab Bar を切替",
+                      systemImage: "rectangle.topthird.inset.filled", keyEquivalent: nil),
+            AppAction(id: "restart.world", title: "World を再接続",
+                      systemImage: "arrow.clockwise", keyEquivalent: nil),
+            AppAction(id: "split.pane", title: "Pane を分割 (Split)",
+                      systemImage: "rectangle.split.2x1", keyEquivalent: "⌘D"),
+        ]
+    }
+
+    private func executePaletteAction(_ action: AppAction) {
+        switch action.id {
+        case "open.design.inspector":
+            openWindow(id: "design-inspector")
+        case "toggle.sidebar":
+            withAnimation(.easeInOut(duration: 0.2)) { sidebarVisible.toggle() }
+        case "toggle.tabbar":
+            withAnimation(.easeInOut(duration: 0.15)) { projectTabBarForced.toggle() }
+        case "restart.world":
+            restartWorld()
+        case "split.pane":
+            NotificationCenter.default.post(name: .splitTerminalPane, object: nil)
+        default:
+            break
+        }
+    }
+
     private func tmuxSessionName(for path: String) -> String {
-        let projectName = (path as NSString).lastPathComponent
-        return projectName.replacingOccurrences(of: ".", with: "-") + "-vp"
+        // Registry に entry があればそこから、なければ fallback derivation
+        laneRegistry.findByPath(path)?.tmuxSession
+            ?? LaneRegistry.tmuxSessionName(from: path)
     }
 
     // MARK: - SP 自動起動
@@ -761,43 +853,125 @@ struct MainWindowView: View {
         }
     }
 
-    /// TheWorld を再起動（vp stop → vp world）
+    /// World を再接続 — Local で動く VP 関連全プロセスを停止 → 再起動 → 順次復活
+    ///
+    /// Phase flow (VP-83 refinement 39):
+    /// stoppingProjects (各 SP を順次 stop) → stoppingWorld (daemon stop) →
+    /// killingTmux → waitingShutdown → startingWorld → waitingHealth →
+    /// reconnectingSPs (Current Projects が順次 running 状態に復活) →
+    /// verifying → complete
     private func restartWorld() {
         Task {
-            worldStatus = .checking
-
-            // 停止
-            do {
-                let stop = Process()
-                stop.executableURL = URL(fileURLWithPath: "/bin/zsh")
-                stop.arguments = ["-lc", "vp stop --port 32000"]
-                stop.standardOutput = FileHandle.nullDevice
-                stop.standardError = FileHandle.nullDevice
-                try stop.run()
-                stop.waitUntilExit()
-                logger.info("[VP]TheWorld stopped")
-            } catch {
-                logger.error("[VP]TheWorld stop skipped: \(error)")
+            @MainActor func update(_ phase: RestartPhase) {
+                self.worldStatus = .restarting(phase)
+                logger.info("[VP]restart phase: \(phase.displayText)")
             }
 
+            // --- 停止フェーズ: Local VP 関連全プロセス kill ---
+
+            await update(.stoppingProjects)
+            // 稼働中の SP を 1 個ずつ stop (順次落ちていく様子を sidebar で見せる)
+            let runningSnapshot = await MainActor.run {
+                self.projects.filter { $0.isRunning }
+            }
+            for project in runningSnapshot {
+                try? await theWorldClient.stopProcess(projectName: project.name)
+                await refreshAll()
+                try? await Task.sleep(nanoseconds: 180_000_000)  // 180ms gap
+            }
+
+            await update(.stoppingWorld)
+            try? await runShell("vp stop --port 32000")
+
+            await update(.killingTmux)
+            // VP 関連 tmux session を全 kill。kill-server は他 user tmux を
+            // 巻き込むため、session 名単位の kill に留める。
+            try? await runShell("""
+                tmux ls 2>/dev/null \
+                  | awk -F: '{print $1}' \
+                  | grep -E '^(vp|creo|nexus|fleetstage|go-fast-packing|creo-ui|maru|modeling-factory)' \
+                  | xargs -I{} tmux kill-session -t {} 2>/dev/null || true
+                """)
+
+            await update(.waitingShutdown)
             try? await Task.sleep(nanoseconds: 1_000_000_000)
 
-            // 起動（バックグラウンドで vp world）
-            do {
-                let start = Process()
-                start.executableURL = URL(fileURLWithPath: "/bin/zsh")
-                start.arguments = ["-lc", "vp world"]
-                start.standardOutput = FileHandle.nullDevice
-                start.standardError = FileHandle.nullDevice
-                try start.run()
-                logger.info("[VP]TheWorld starting")
-            } catch {
-                logger.error("[VP]TheWorld start error: \(error)")
+            // --- 起動フェーズ: daemon up → project 順次復活 ---
+
+            await update(.startingWorld)
+            try? await runShell("vp world", detached: true)
+
+            await update(.waitingHealth)
+            var ready = false
+            for _ in 0..<30 {  // 最大 15 秒
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                if (try? await theWorldClient.healthCheck()) == true {
+                    ready = true
+                    break
+                }
             }
 
-            // 起動待ち
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
-            await refreshAll()
+            if !ready {
+                await update(.failed("Health check timeout"))
+                logger.error("[VP]restart failed: health check timeout")
+                return
+            }
+
+            await update(.reconnectingSPs)
+            // enabled projects が auto_start で順次 running に戻るのを poll。
+            // 500ms 毎に refreshAll、Sidebar の Agent icon status が順次
+            // active (緑) に切り替わっていく様子が見える。
+            let expected = await MainActor.run {
+                self.projects.filter { $0.enabled }.count
+            }
+            var allUp = false
+            for _ in 0..<30 {  // 最大 15 秒
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                await refreshAll()
+                let runningCount = await MainActor.run {
+                    self.projects.filter { $0.isRunning }.count
+                }
+                if expected == 0 || runningCount >= expected {
+                    allUp = true
+                    break
+                }
+            }
+
+            await update(.verifying)
+            try? await Task.sleep(nanoseconds: 400_000_000)
+
+            if allUp {
+                await update(.complete)
+                try? await Task.sleep(nanoseconds: 700_000_000)
+                await refreshAll()  // 正規の connected(...) へ
+            } else {
+                // daemon は up だが projects が完全復活していない
+                await update(.failed("Some projects did not restart"))
+                await refreshAll()
+            }
+        }
+    }
+
+    /// Shell command を async で実行 (stdout/stderr は破棄)
+    /// - detached: true なら waitUntilExit しない (bg process)
+    private func runShell(_ cmd: String, detached: Bool = false) async throws {
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            DispatchQueue.global().async {
+                do {
+                    let proc = Process()
+                    proc.executableURL = URL(fileURLWithPath: "/bin/zsh")
+                    proc.arguments = ["-lc", cmd]
+                    proc.standardOutput = FileHandle.nullDevice
+                    proc.standardError = FileHandle.nullDevice
+                    try proc.run()
+                    if !detached {
+                        proc.waitUntilExit()
+                    }
+                    cont.resume()
+                } catch {
+                    cont.resume(throwing: error)
+                }
+            }
         }
     }
 
@@ -991,7 +1165,7 @@ struct MainWindowView: View {
             let registeredProjects = (try? await theWorldClient.listProjects()) ?? []
 
             // ccwire セッション一覧を取得（エラー時は空配列）
-            let ccwireSessions = (try? await theWorldClient.listCcwireSessions()) ?? []
+            let msgboxSessions = (try? await theWorldClient.listMsgboxSessions()) ?? []
 
             // ccws ワーカー + Git ブランチをバックグラウンドでスキャン
             let projectEntries = registeredProjects
@@ -1012,24 +1186,29 @@ struct MainWindowView: View {
                 let branch = info?.branch
                 let hasHD = info?.hasHD ?? false
 
-                // Worker に ccwire セッションを注入
+                // CC session title (最新 session の最初 user message) を project path 毎に取得
+                let projectSessionTitle = ClaudeSessionReader.latestSessionTitle(for: entry.path)
+
+                // Worker に ccwire セッション + CC session title を注入
                 let workers: [CcwsWorkerInfo] = (info?.workers ?? []).map { worker in
                     let workerTmux = worker.name.replacingOccurrences(of: ".", with: "-") + "-vp"
-                    let wireSession = ccwireSessions.first { $0.name == workerTmux }
+                    let wireSession = msgboxSessions.first { $0.name == workerTmux }
+                    let workerSessionTitle = ClaudeSessionReader.latestSessionTitle(for: worker.path)
                     return CcwsWorkerInfo(
                         id: worker.id, name: worker.name, suffix: worker.suffix,
                         path: worker.path, branch: worker.branch, hasHD: worker.hasHD,
-                        ccwireSession: wireSession
+                        msgboxSession: wireSession,
+                        ccSessionTitle: workerSessionTitle
                     )
                 }
 
                 // ccwire セッション名マッチング: "{project-name}-vp" パターン
                 let tmuxName = entry.name.replacingOccurrences(of: ".", with: "-") + "-vp"
-                let wireSession = ccwireSessions.first { $0.name == tmuxName }
+                let wireSession = msgboxSessions.first { $0.name == tmuxName }
 
                 if let process = runningByPath[entry.path] {
                     let detail = details[entry.path]
-                    return SidebarProject(
+                    var sp = SidebarProject(
                         id: entry.path,
                         name: entry.name,
                         path: entry.path,
@@ -1041,11 +1220,13 @@ struct MainWindowView: View {
                         branch: branch,
                         hasHD: hasHD,
                         hasNotification: notifications.contains(entry.path),
-                        ccwireSession: wireSession,
+                        msgboxSession: wireSession,
                         enabled: entry.enabled
                     )
+                    sp.ccSessionTitle = projectSessionTitle
+                    return sp
                 } else {
-                    return SidebarProject(
+                    var sp = SidebarProject(
                         id: entry.path,
                         name: entry.name,
                         path: entry.path,
@@ -1056,9 +1237,11 @@ struct MainWindowView: View {
                         branch: branch,
                         hasHD: hasHD,
                         hasNotification: notifications.contains(entry.path),
-                        ccwireSession: wireSession,
+                        msgboxSession: wireSession,
                         enabled: entry.enabled
                     )
+                    sp.ccSessionTitle = projectSessionTitle
+                    return sp
                 }
             }
 
@@ -1126,12 +1309,12 @@ struct MainWindowView: View {
     /// 全プロジェクトを非稼働にリセット（workers はローカル情報なので保持）
     private func resetProjectStatus() {
         projects = projects.map { project in
-            // Worker の ccwireSession もクリア（TheWorld オフライン時は ccwire 情報も無効）
+            // Worker の msgboxSession もクリア（TheWorld オフライン時は ccwire 情報も無効）
             let cleanWorkers = project.workers.map { worker in
                 CcwsWorkerInfo(
                     id: worker.id, name: worker.name, suffix: worker.suffix,
                     path: worker.path, branch: worker.branch, hasHD: worker.hasHD,
-                    ccwireSession: nil
+                    msgboxSession: nil
                 )
             }
             return SidebarProject(
@@ -1155,15 +1338,21 @@ struct ProjectTabBar: View {
     let projects: [SidebarProject]
     let selectedPath: String?
     let onSelect: (String) -> Void
+    /// Context Zone (T2): 選択中 Project の branch chip
+    var selectedBranch: String? = nil
+    /// Context Zone: 選択中 Project の Lane 数 (Lead + Worker)
+    var laneCount: Int? = nil
 
     var body: some View {
         HStack(spacing: 0) {
             ForEach(Array(projects.enumerated()), id: \.element.id) { index, project in
                 let isSelected = project.path == selectedPath
+                let status = project.projectStatus
+                let unread = project.unreadCount
                 Button {
                     onSelect(project.path)
                 } label: {
-                    HStack(spacing: 4) {
+                    HStack(spacing: 5) {
                         // ⌘1〜9 のみヒント表示（キーバインドは9まで）
                         if index < 9 {
                             Text("⌘\(index + 1)")
@@ -1171,29 +1360,89 @@ struct ProjectTabBar: View {
                                 .foregroundStyle(.tertiary)
                         }
 
-                        // 稼働状態のドット
+                        // VP-83 refinement T1: Agent 4-state dot (Sidebar と同期)
+                        // active=緑 / idle=gray / notification=orange / error=red / inactive=faint
                         Circle()
-                            .fill(project.isRunning ? .green : .gray)
-                            .frame(width: 6, height: 6)
+                            .fill(status.color)
+                            .frame(width: 7, height: 7)
+                            .opacity(status.baseOpacity)
+                            .shadow(
+                                color: (status == .active || status == .notification)
+                                    ? status.color.opacity(0.5) : .clear,
+                                radius: 2
+                            )
 
-                        Text(project.name)
+                        Text(project.displayTitle)
                             .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
                             .lineLimit(1)
+
+                        // Unread badge (msgbox pendingMessages)
+                        if unread > 0 {
+                            Text("\(unread)")
+                                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(Color.colorSemanticWarning)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 1)
+                                .background(
+                                    Capsule()
+                                        .fill(Color.colorSemanticWarning.opacity(0.18))
+                                )
+                        }
                     }
                     .padding(.horizontal, 10)
                     .padding(.vertical, 5)
-                    .background(isSelected ? Color.white.opacity(0.1) : Color.clear)
-                    .cornerRadius(4)
+                    .background(isSelected ? Color.colorSurfaceBgEmphasis : Color.clear)
+                    .cornerRadius(CreoUITokens.radiusSm)
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(isSelected ? .primary : .secondary)
+                .foregroundStyle(isSelected ? Color.colorTextPrimary : Color.colorTextSecondary)
+                .help("\(project.displayTitle) — \(status.helpText)")
             }
             Spacer()
+
+            // Context Zone (T2): branch chip + lane count
+            if let branch = selectedBranch {
+                HStack(spacing: 4) {
+                    Image(systemName: "arrow.branch")
+                        .font(.system(size: 9))
+                        .foregroundStyle(Color.colorTextTertiary)
+                    Text(branch.smartHead(tailLimit: 14))
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(Color.colorTextSecondary)
+                        .lineLimit(1)
+                        .help(branch)
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(
+                    RoundedRectangle(cornerRadius: CreoUITokens.radiusSm)
+                        .fill(Color.colorSurfaceBgEmphasis.opacity(0.5))
+                )
+            }
+            if let count = laneCount, count > 0 {
+                Text("\(count) lane\(count > 1 ? "s" : "")")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(Color.colorTextTertiary)
+                    .padding(.leading, 6)
+            }
         }
         .padding(.horizontal, 8)
         .padding(.top, 6)
         .padding(.bottom, 2)
-        .background(Color(white: 0.1))
+        .background(Color.colorSurfaceBgSubtle)
+    }
+}
+
+private extension LaneStatus {
+    /// Tooltip 用の人間可読状態名 (Tab Bar T1、日本語統一)
+    var helpText: String {
+        switch self {
+        case .active: "稼働中"
+        case .idle: "アイドル"
+        case .notification: "通知あり"
+        case .inactive: "未稼働"
+        case .error: "エラー"
+        }
     }
 }
 
@@ -1229,7 +1478,7 @@ struct LaneTabBar: View {
 
                         Image(systemName: lane.isLead ? "text.book.closed" : "arrow.branch")
                             .font(.system(size: 10))
-                            .foregroundStyle(lane.isLead ? .green : .cyan)
+                            .foregroundStyle(lane.isLead ? Color.colorSemanticSuccess : Color.colorSemanticInfo)
 
                         Text(lane.label)
                             .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
@@ -1237,17 +1486,17 @@ struct LaneTabBar: View {
                     }
                     .padding(.horizontal, 10)
                     .padding(.vertical, 5)
-                    .background(isSelected ? Color.white.opacity(0.08) : Color.clear)
-                    .cornerRadius(4)
+                    .background(isSelected ? Color.colorSurfaceBgEmphasis.opacity(0.8) : Color.clear)
+                    .cornerRadius(CreoUITokens.radiusSm)
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(isSelected ? .primary : .secondary)
+                .foregroundStyle(isSelected ? Color.colorTextPrimary : Color.colorTextSecondary)
             }
             Spacer()
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 2)
-        .background(Color(white: 0.12))
+        .background(Color.colorSurfaceSurface)
     }
 }
 
@@ -1264,4 +1513,8 @@ extension Notification.Name {
     static let vpPaneFocused = Notification.Name("VP.vpPaneFocused")
     static let toggleSidebar = Notification.Name("VP.toggleSidebar")
     static let toggleProjectTabBar = Notification.Name("VP.toggleProjectTabBar")
+    static let openCommandPalette = Notification.Name("VP.openCommandPalette")
+    static let openDesignInspector = Notification.Name("VP.openDesignInspector")
+    /// 統合 Notification (kind で分岐、build 型推論軽減)
+    static let vpAction = Notification.Name("VP.action")
 }

@@ -156,15 +156,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return false
     }
 
-    /// File > New Window: メインウィンドウを表示（なければ新規作成）
+    /// File > New Window: メインウィンドウを新規生成
+    /// (旧実装は既存 window 前面化で新規生成しなかった — user 指摘 fix)
     @objc func showMainWindow(_ sender: Any?) {
-        let mainWindows = NSApp.windows.filter { $0.canBecomeMain }
-        if let existing = mainWindows.first(where: { $0.isVisible }) {
-            existing.makeKeyAndOrderFront(nil)
-        } else {
-            // SwiftUI WindowGroup にウィンドウ作成を依頼
-            NSApp.sendAction(#selector(NSResponder.newWindowForTab(_:)), to: nil, from: nil)
-        }
+        // SwiftUI WindowGroup に新規生成を依頼 (常に新 window)
+        NSApp.sendAction(#selector(NSResponder.newWindowForTab(_:)), to: nil, from: nil)
         NSApp.activate(ignoringOtherApps: true)
     }
 
@@ -267,8 +263,31 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         fileMenuItem.submenu = fileMenu
         mainMenu.addItem(fileMenuItem)
 
-        // View メニュー（サイドバートグル）
+        // View メニュー（サイドバートグル + Command Palette + Design Inspector）
         let viewMenu = NSMenu(title: "View")
+
+        // Command Palette (⌘K) — T6
+        let paletteItem = NSMenuItem(
+            title: "Command Palette…",
+            action: #selector(openCommandPaletteAction(_:)),
+            keyEquivalent: "k"
+        )
+        paletteItem.keyEquivalentModifierMask = .command
+        paletteItem.target = self
+        viewMenu.addItem(paletteItem)
+
+        // Design Inspector (⌘⇧I)
+        let inspectorItem = NSMenuItem(
+            title: "Design Inspector…",
+            action: #selector(openDesignInspectorAction(_:)),
+            keyEquivalent: "i"
+        )
+        inspectorItem.keyEquivalentModifierMask = [.command, .shift]
+        inspectorItem.target = self
+        viewMenu.addItem(inspectorItem)
+
+        viewMenu.addItem(.separator())
+
         let toggleSidebarItem = NSMenuItem(
             title: "Toggle Sidebar",
             action: #selector(toggleSidebarAction(_:)),
@@ -441,6 +460,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func toggleProjectTabBar(_ sender: Any?) {
         NotificationCenter.default.post(name: .toggleProjectTabBar, object: nil)
+    }
+
+    @objc private func openCommandPaletteAction(_ sender: Any?) {
+        NotificationCenter.default.post(name: .vpAction, object: nil, userInfo: ["kind": "palette"])
+    }
+
+    @objc private func openDesignInspectorAction(_ sender: Any?) {
+        NotificationCenter.default.post(name: .vpAction, object: nil, userInfo: ["kind": "inspector"])
     }
 
     @objc private func selectPreviousProject(_ sender: Any?) {

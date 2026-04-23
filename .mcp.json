@@ -1,49 +1,5 @@
 {
   "mcpServers": {
-    "gemini-cli": {
-      "command": "bunx",
-      "args": [
-        "@choplin/mcp-gemini-cli"
-      ]
-    },
-    "drawio": {
-      "command": "bunx",
-      "args": [
-        "drawio-mcp-server"
-      ]
-    },
-    "surrealdb": {
-      "command": "bunx",
-      "args": [
-        "surrealdb-mcp-server"
-      ],
-      "env": {
-        "SURREALDB_URL": "ws://localhost:12000/rpc",
-        "SURREALDB_NS": "creo",
-        "SURREALDB_DB": "memories",
-        "SURREALDB_USER": "root",
-        "SURREALDB_PASS": "root"
-      }
-    },
-    "creo-memories": {
-      "type": "http",
-      "url": "https://mcp.creo-memories.in/"
-    },
-    "serena": {
-      "command": "uvx",
-      "args": [
-        "--from",
-        "serena-agent",
-        "serena-mcp-server",
-        "--context",
-        "ide-assistant",
-        "--project",
-        "$(pwd)",
-        "--enable-web-dashboard",
-        "false"
-      ],
-      "env": {}
-    },
     "vantage-point": {
       "type": "stdio",
       "command": "vp",

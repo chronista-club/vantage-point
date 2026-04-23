@@ -1,6 +1,40 @@
 # Vantage Point
 
-Claude Code のためのリッチ表示サーバー。Markdown、HTML、ログをブラウザに表示する。
+**AI-native Mac IDE** — Claude CLI agent を first-class "Lane" として扱う、
+live design surface + deterministic port layout + 統合 messaging backbone を
+備える開発環境。
+
+## Status
+
+Private alpha → public OSS 移行中 (2026-04-23)。API・内部構造は活発に変化中。
+README は work in progress、詳細は `docs/` 配下。
+
+## Core concepts
+
+- **Lane** — canonical address `hd.{lane}@{project}` が tmux session、
+  Claude agent、Mailbox actor、deterministic port range を一意に束ねる
+- **Command Palette (⌘K)** — 全 Lane / app action への fuzzy jump
+- **Design Inspector (⌘⇧I)** — Sidebar token (padding, opacity 等) を
+  runtime で live edit
+- **Layout Foundations** — Sidebar / Viewport-Top / Viewport / Bottom Deck
+  の 4 領域 sharp stack
+- **Port Management** — `33000 + slot × 100 + lane × 10 + role` で
+  Lane × role port が透過的固定、bookmark 可能
+
+内部 codename は JoJo's Bizarre Adventure のスタンド:
+TheWorld (daemon) / Star Platinum (Project) / Heaven's Door (Agent) /
+Paisley Park (Navigator) / Gold Experience (Runner) 等。
+
+## License
+
+Dual-licensed under [MIT](./LICENSE-MIT) OR [Apache-2.0](./LICENSE-APACHE).
+
+---
+
+## Reference display server (legacy section)
+
+VP の基盤機能の 1 つとして、Claude Code 向けの Markdown/HTML 表示サーバー
+があります。以下はこのモードのインストール・動作説明。
 
 ## インストール・更新
 

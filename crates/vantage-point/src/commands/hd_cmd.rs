@@ -104,10 +104,9 @@ fn hd_start(
         eprintln!("⚠️  SP サーバーが未起動です。`vp sp start` で起動を推奨します。");
     }
 
-    // ゴーストセッションを掃除
-    if let Err(e) = crate::ccwire::cleanup_stale() {
-        eprintln!("⚠️  ccwire ゴースト掃除失敗: {}", e);
-    }
+    // Phase L7a: ccwire::cleanup_stale 呼出停止 (Mailbox 移行、stale は tmux session
+    // 存在判定で derive する方針。ghost session は実害なく残る)
+    // if let Err(e) = crate::ccwire::cleanup_stale() { ... }
 
     // tmux セッション作成（既にあれば再利用）
     if tmux::session_exists(&session_name) {
@@ -125,12 +124,10 @@ fn hd_start(
         println!("✅ tmux セッション '{}' を作成しました", session_name);
     }
 
-    // ccwire 登録
-    let tmux_target = format!("{}:0.0", session_name);
-    match crate::ccwire::register(&session_name, &tmux_target) {
-        Ok(()) => println!("✅ ccwire 登録完了: {}", session_name),
-        Err(e) => eprintln!("⚠️  ccwire 登録失敗（続行）: {}", e),
-    }
+    // Phase L7b: ccwire register 呼出停止 (Mailbox Router が daemon 側で
+    // 保持、agent 起動時に自動 register する設計。soft degradation)
+    // let tmux_target = format!("{}:0.0", session_name);
+    // match crate::ccwire::register(&session_name, &tmux_target) { ... }
 
     println!();
     if let Some(id) = id {
@@ -150,11 +147,8 @@ fn hd_start(
 fn hd_stop(project_name: &str, id: Option<&str>) -> Result<()> {
     let session_name = tmux::session_name_with_id(project_name, id);
 
-    // ccwire 解除
-    match crate::ccwire::unregister(&session_name) {
-        Ok(()) => println!("✅ ccwire 解除: {}", session_name),
-        Err(e) => eprintln!("⚠️  ccwire 解除失敗: {}", e),
-    }
+    // Phase L7b: ccwire unregister 呼出停止
+    // match crate::ccwire::unregister(&session_name) { ... }
 
     // tmux kill
     if tmux::session_exists(&session_name) {
@@ -188,15 +182,9 @@ fn hd_list(project_name: &str, other_prefixes: &[String]) -> Result<()> {
 
         // セッション名から ID を抽出
         let id = extract_id_from_session(session, &prefix);
-        let registered = crate::ccwire::is_registered(session);
-
         let id_display = id.unwrap_or("(default)");
-        let ccwire_icon = if registered { "✅" } else { "❌" };
-
-        println!(
-            "  {} {} (tmux: ✅, ccwire: {})",
-            id_display, session, ccwire_icon
-        );
+        // Phase L7d: ccwire 表示削除
+        println!("  {} {} (tmux: ✅)", id_display, session);
     }
 
     if !found {

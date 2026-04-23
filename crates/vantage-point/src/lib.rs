@@ -9,7 +9,8 @@
 pub mod agent;
 pub mod agui;
 pub mod capability;
-pub mod ccwire;
+// Phase L7d: ccwire module 削除 — Mailbox Router (msgbox.rs) に統合
+// pub mod ccwire;
 pub mod cli;
 pub mod commands;
 pub mod config;
@@ -20,6 +21,7 @@ pub mod file_watcher;
 pub mod mcp;
 pub mod midi;
 pub mod notify;
+pub mod port_layout;
 pub mod process;
 pub mod protocol;
 pub mod resolve;

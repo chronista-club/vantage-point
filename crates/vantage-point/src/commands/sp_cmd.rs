@@ -199,9 +199,8 @@ fn sp_status(project_dir: &str, config: &Config) -> Result<()> {
         println!();
         println!("   HD セッション:");
         for s in &hd_sessions {
-            let registered = crate::ccwire::is_registered(s);
-            let ccwire_icon = if registered { "✅" } else { "❌" };
-            println!("     {} (ccwire: {})", s, ccwire_icon);
+            // Phase L7d: ccwire registry 廃止、tmux session 存在のみで表示
+            println!("     {}", s);
         }
     }
 

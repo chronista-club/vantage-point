@@ -27,6 +27,9 @@ ROOT="$(pwd)"
 echo "🔨 Building vp-bridge (staticlib)..."
 cargo build --release -p vp-bridge
 
+echo "🔧 Regenerating xcodeproj via xcodegen (project.yml → .xcodeproj)..."
+(cd "$ROOT/apple/VantagePoint" && xcodegen generate --spec project.yml -q)
+
 echo "🔨 Building VantagePoint (xcodebuild)..."
 xcodebuild build \
   -project "$ROOT/apple/VantagePoint/VantagePoint.xcodeproj" \
