@@ -129,6 +129,8 @@ struct VPPaneContainer: View {
     let node: PaneNode
     /// 表示ルール (group id → rule)、未登録は既定 horizontalSplit
     let layoutMap: PaneLayoutMap
+    /// Phase 2.4b: tab rule の group ごとの active child index (未登録 = 0)
+    var activeTabIndex: [UUID: Int] = [:]
     let isActive: Bool
     let splitNavigatorActive: Bool
     let terminalGeneration: Int
@@ -138,6 +140,8 @@ struct VPPaneContainer: View {
     var onMinimizePane: ((UUID) -> Void)?
     /// ペイン削除コールバック
     var onClosePane: ((UUID) -> Void)?
+    /// Phase 2.4b: tab header tap で active 切替 (group id, new index)
+    var onTabSelect: ((UUID, Int) -> Void)?
 
     var body: some View {
         paneNodeView(for: node)
@@ -319,29 +323,36 @@ struct VPPaneContainer: View {
         )
     }
 
-    /// Tab — tab bar header + content area (Phase 2.4 MVP: 第一子固定表示、
-    /// active 切替 state は次 PR で PaneLayout に活性 index を追加して実装)。
+    /// Tab — tab bar header + content area。
+    /// Phase 2.4b: activeTabIndex[id] で表示する child を切替、header tap で更新。
     private func renderTab(id: UUID, children: [PaneNode]) -> AnyView {
+        let activeIdx = min(max(activeTabIndex[id] ?? 0, 0), children.count - 1)
         return AnyView(
             VStack(spacing: 0) {
                 HStack(spacing: 2) {
                     ForEach(Array(children.enumerated()), id: \.offset) { idx, child in
                         let label = "Pane \(idx + 1)"
-                        Text(label)
-                            .font(.system(size: 11))
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 4)
-                            .background(
-                                idx == 0
-                                    ? Color.colorSurfaceBgEmphasis.opacity(0.5)
-                                    : Color.clear
-                            )
-                            .cornerRadius(4)
-                            .foregroundStyle(
-                                idx == 0
-                                    ? Color.colorTextPrimary
-                                    : Color.colorTextTertiary
-                            )
+                        Button {
+                            onTabSelect?(id, idx)
+                        } label: {
+                            Text(label)
+                                .font(.system(size: 11))
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 4)
+                                .background(
+                                    idx == activeIdx
+                                        ? Color.colorSurfaceBgEmphasis.opacity(0.5)
+                                        : Color.clear
+                                )
+                                .cornerRadius(4)
+                                .foregroundStyle(
+                                    idx == activeIdx
+                                        ? Color.colorTextPrimary
+                                        : Color.colorTextTertiary
+                                )
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
                     }
                     Spacer()
                 }
@@ -349,8 +360,7 @@ struct VPPaneContainer: View {
                 .padding(.vertical, 4)
                 .background(Color.colorSurfaceBgSubtle.opacity(0.4))
 
-                // MVP: 第一子を content area として常時表示
-                paneNodeView(for: children[0])
+                paneNodeView(for: children[activeIdx])
             }
             .id(id)
         )

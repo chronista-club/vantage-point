@@ -150,6 +150,57 @@ pub struct HealthResponse {
     pub stands: Option<std::collections::HashMap<String, StandStatus>>,
 }
 
+/// VP-83 Phase 2.5 準備: Msgbox 内部 state を dump する debug endpoint。
+/// Mailbox に登録されている address 一覧を返し、Lead/Worker 間 msg flow の疎通確認に使う。
+pub async fn msgbox_debug_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let addresses = state.capabilities.msgbox_router.addresses().await;
+    Json(serde_json::json!({
+        "addresses": addresses,
+        "count": addresses.len(),
+    }))
+}
+
+/// Stand 自己診断 (2026-04-25 user 発案) — ProcessCapabilities の各 Stand の
+/// diagnose() を集約。side-effect-free、いつでも呼び出し可能。
+///
+/// NOTE: CapabilityRegistry は現状 skeleton (未使用) のため、state.capabilities
+/// の field を直接 iterate する方式を採用。Mailbox address list と Stand state を
+/// 1 view にまとめて観測可能に。
+pub async fn diagnose_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    use crate::capability::core::Capability;
+    let mut reports = Vec::new();
+
+    // Protocol Capability (WebSocket / stdio 配信)
+    {
+        let protocol = state.capabilities.protocol.read().await;
+        reports.push(protocol.diagnose());
+    }
+    // Agent Capability (Heaven's Door 📖、Claude CLI 統合)
+    {
+        let agent = state.capabilities.agent.read().await;
+        reports.push(agent.diagnose());
+    }
+    // MIDI Capability (Hermit Purple 🍇、feature 有効時)
+    #[cfg(feature = "midi")]
+    if let Some(ref midi) = state.capabilities.midi {
+        let midi = midi.read().await;
+        reports.push(midi.diagnose());
+    }
+
+    // Mailbox (Router 自体は Capability trait 外だが、integration layer として
+    // 診断対象に含める)
+    let msgbox_addresses = state.capabilities.msgbox_router.addresses().await;
+
+    Json(serde_json::json!({
+        "count": reports.len(),
+        "reports": reports,
+        "msgbox": {
+            "addresses": msgbox_addresses,
+            "count": msgbox_addresses.len(),
+        },
+    }))
+}
+
 pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthResponse> {
     let token = if state.terminal_token == "WORLD_DISABLED" {
         None

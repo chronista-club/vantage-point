@@ -30,7 +30,9 @@ pub mod update_capability;
 pub mod whitesnake;
 
 pub use agent_capability::AgentCapability;
-pub use core::{CapabilityContext, CapabilityEvent, CapabilityInfo, CapabilityState};
+pub use core::{
+    CapabilityContext, CapabilityEvent, CapabilityInfo, CapabilityState, DiagnosticReport,
+};
 pub use eventbus::EventBus;
 #[cfg(feature = "midi")]
 pub use midi_capability::MidiCapability;
