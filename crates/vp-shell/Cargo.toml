@@ -1,0 +1,44 @@
+[package]
+name = "vp-shell"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Vantage Point native shell — Rust-native window/tray/menu over TheWorld daemon"
+
+[[bin]]
+name = "vp-shell"
+path = "src/main.rs"
+
+[lib]
+name = "vp_shell"
+path = "src/lib.rs"
+
+[dependencies]
+# Async runtime
+tokio = { workspace = true }
+
+# Native window + WebView (crossplat: macOS/Windows/Linux)
+wry = { version = "0.54", features = ["devtools"] }
+tao = "0.34"
+
+# Menu + tray (crossplat)
+muda = "0.17"
+tray-icon = "0.21"
+
+# HTTP client (TheWorld API)
+reqwest = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Toast notifications (crossplat; WinRT on Windows, libnotify on Linux, NSUserNotificationCenter on macOS)
+notify-rust = "4"
