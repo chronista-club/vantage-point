@@ -152,6 +152,12 @@ description = "vp-app on Windows で WSL 上の claude code を terminal で起�
 env = { VP_SHELL = "wsl.exe", VP_SHELL_ARGS = '--cd /home/mito/repos/vantage-point -- bash -lc "export PATH=$HOME/.bun/bin:$PATH; claude --continue || claude"' }
 run = "mise run win"
 
+[tasks."win:claude-yolo"]
+description = "win:claude + bypass permissions ON (--dangerously-skip-permissions) — 信頼するセッションのみ"
+# 意図的に bypass を有効化。script や lint / format / test / git を prompt なしで走らせたい時に。
+env = { VP_SHELL = "wsl.exe", VP_SHELL_ARGS = '--cd /home/mito/repos/vantage-point -- bash -lc "export PATH=$HOME/.bun/bin:$PATH; claude --dangerously-skip-permissions --continue || claude --dangerously-skip-permissions"' }
+run = "mise run win"
+
 [tasks."win:release"]
 description = "Build vp-app release for Windows (MSI/署名/winget は Phase W4 で追加予定)"
 run = """

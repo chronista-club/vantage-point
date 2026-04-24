@@ -163,9 +163,11 @@ fn update_pane_bounds(
     let height = logical.height;
     let right_x = SIDEBAR_WIDTH;
     let right_w = (width - SIDEBAR_WIDTH).max(0.0);
-    let canvas_h = (height / 2.0).round();
+    // Phase W2.5 の開発用途では terminal (lead pane) を右側の上下いっぱいに。
+    // canvas は後続 phase で復活させるため 0 高さで待機。
+    let canvas_h = 0.0;
     let terminal_y = canvas_h;
-    let terminal_h = (height - canvas_h).max(0.0);
+    let terminal_h = height;
 
     let _ = sidebar.set_bounds(Rect {
         position: LogicalPosition::new(0.0, 0.0).into(),
