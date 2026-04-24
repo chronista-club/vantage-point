@@ -445,6 +445,42 @@ body{overflow:hidden;}
   // 初期 focus も明示 (DOM ready 後)
   setTimeout(focusTerm, 100);
   setTimeout(focusTerm, 500);
+
+  // ----- Copy / Paste -----
+  // terminal 慣習: Ctrl+Shift+C で選択コピー、Ctrl+Shift+V でペースト
+  // (Ctrl+C は SIGINT として shell に送る)。右クリックも paste にマップ。
+  // Mac の Cmd+C/V も拾う。
+  const dbg = (msg) => window.ipc.postMessage(JSON.stringify({t:'debug', msg: msg}));
+
+  term.attachCustomKeyEventHandler((e) => {
+    if (e.type !== 'keydown') return true;
+    const key = (e.key || '').toLowerCase();
+    const modCopy = (e.ctrlKey && e.shiftKey) || e.metaKey;
+    if (modCopy && key === 'c') {
+      const sel = term.getSelection();
+      if (sel) {
+        navigator.clipboard.writeText(sel)
+          .then(() => dbg('copy ok: ' + sel.length + ' chars'))
+          .catch((err) => dbg('copy failed: ' + err));
+      }
+      return false;
+    }
+    if (modCopy && key === 'v') {
+      navigator.clipboard.readText()
+        .then((text) => { if (text) term.paste(text); })
+        .catch((err) => dbg('paste failed: ' + err));
+      return false;
+    }
+    return true;
+  });
+
+  // 右クリック = paste (xterm のデフォルト context menu を抑制)
+  container.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    navigator.clipboard.readText()
+      .then((text) => { if (text) term.paste(text); })
+      .catch((err) => dbg('rclick paste failed: ' + err));
+  });
 })();
 </script>
 </body>
