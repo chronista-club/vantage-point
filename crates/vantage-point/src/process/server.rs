@@ -17,7 +17,7 @@ use tower_http::cors::CorsLayer;
 use super::capabilities::{CapabilityConfig, ProcessCapabilities};
 use super::hub::Hub;
 use super::pty::PtyManager;
-use super::routes::{health, lanes, permission, prompt, update, world, ws};
+use super::routes::{health, lanes, permission, prompt, update, world, ws, ws_terminal};
 use super::session::SessionManager;
 use super::state::AppState;
 use super::topic_router::TopicRouter;
@@ -702,6 +702,8 @@ pub async fn run_world(port: u16) -> Result<()> {
             "/api/update/mac/rollback",
             post(update::update_mac_rollback),
         )
+        // VP-93 Step 2a: vp-app からの terminal WebSocket bridge
+        .route("/ws/terminal", get(ws_terminal::ws_terminal_handler))
         .layer(CorsLayer::permissive())
         .with_state(state);
 

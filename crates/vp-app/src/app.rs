@@ -246,9 +246,24 @@ pub fn run() -> anyhow::Result<()> {
         .with_inner_size(LogicalSize::new(1200.0, 800.0))
         .build(&event_loop)?;
 
-    // PTY を起動し、reader thread が EventLoopProxy 経由で出力イベントを送る
+    // Terminal backend 選択 (VP-93 Step 2a)
+    // - VP_TERMINAL_MODE=daemon: TheWorld daemon の /ws/terminal 経由 (remote)
+    // - それ以外 (default): 従来の local portable-pty
     let proxy = event_loop.create_proxy();
-    let pty = terminal::spawn_shell(None, 80, 24, proxy)?;
+    let pty = match std::env::var("VP_TERMINAL_MODE").as_deref() {
+        Ok("daemon") => {
+            let world_url =
+                std::env::var("VP_WORLD_URL").unwrap_or_else(|_| "http://127.0.0.1:32000".into());
+            tracing::info!("terminal mode = daemon (WS to {})", world_url);
+            terminal::TerminalHandle::Daemon(crate::ws_terminal::connect_daemon_terminal(
+                &world_url, 80, 24, proxy,
+            )?)
+        }
+        _ => {
+            tracing::info!("terminal mode = local (portable-pty)");
+            terminal::TerminalHandle::Local(terminal::spawn_shell(None, 80, 24, proxy)?)
+        }
+    };
 
     // TheWorld から project list を非同期 fetch
     spawn_projects_fetch(event_loop.create_proxy());

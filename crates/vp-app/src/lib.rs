@@ -14,3 +14,4 @@ pub mod client;
 pub mod menu;
 pub mod terminal;
 pub mod tray;
+pub mod ws_terminal;

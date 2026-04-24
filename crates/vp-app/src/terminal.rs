@@ -261,7 +261,7 @@ fn dirs_home() -> Option<String> {
 /// - `{"t":"in","d":"..."}` — ユーザ入力 (string)
 /// - `{"t":"resize","cols":N,"rows":N}` — リサイズ
 /// - `{"t":"ready"}` — xterm.js 初期化完了 → UserEvent::XtermReady を main thread に送る
-pub fn handle_ipc_message(msg: &str, pty: &PtyHandle, proxy: &EventLoopProxy<AppEvent>) {
+pub fn handle_ipc_message(msg: &str, pty: &TerminalHandle, proxy: &EventLoopProxy<AppEvent>) {
     let parsed: serde_json::Value = match serde_json::from_str(msg) {
         Ok(v) => v,
         Err(e) => {
@@ -298,6 +298,32 @@ pub fn handle_ipc_message(msg: &str, pty: &PtyHandle, proxy: &EventLoopProxy<App
         }
         other => {
             tracing::debug!("terminal IPC: unknown type {:?}", other);
+        }
+    }
+}
+
+/// Terminal backend の統一ハンドル
+///
+/// local portable-pty (`PtyHandle`) と daemon WebSocket (`WsTerminalHandle`) を
+/// 相互交換可能に wrap する。
+#[derive(Clone)]
+pub enum TerminalHandle {
+    Local(PtyHandle),
+    Daemon(crate::ws_terminal::WsTerminalHandle),
+}
+
+impl TerminalHandle {
+    pub fn write(&self, data: &[u8]) -> Result<()> {
+        match self {
+            Self::Local(h) => h.write(data),
+            Self::Daemon(h) => h.write(data),
+        }
+    }
+
+    pub fn resize(&self, cols: u16, rows: u16) -> Result<()> {
+        match self {
+            Self::Local(h) => h.resize(cols, rows),
+            Self::Daemon(h) => h.resize(cols, rows),
         }
     }
 }
