@@ -1497,7 +1497,8 @@ struct MainWindowView: View {
                         hasHD: hasHD,
                         hasNotification: notifications.contains(entry.path),
                         msgboxSession: wireSession,
-                        enabled: entry.enabled
+                        enabled: entry.enabled,
+                        recentMessages: detail?.recentMessages ?? []
                     )
                     sp.ccSessionTitle = projectSessionTitle
                     return sp
@@ -1547,16 +1548,23 @@ struct MainWindowView: View {
     struct ProcessDetail {
         let startedAt: Date?
         let stands: [SidebarStand]
+        /// 直近の msgbox history (VP-83: 受取・開封状況 UI 用、/api/diagnose 由来)
+        let recentMessages: [MsgboxHistoryEntry]
     }
 
-    /// 各 Process の /api/health から started_at + stands を並列取得
+    /// 各 Process の /api/health + /api/diagnose から started_at / stands / msgbox recent を並列取得
     private nonisolated func fetchProcessDetails(processes: [RunningProcess]) async -> [String: ProcessDetail] {
         await withTaskGroup(of: (String, ProcessDetail).self) { group in
             for process in processes {
                 group.addTask {
                     do {
                         let client = TheWorldClient(port: process.port)
-                        let health = try await client.healthDetail()
+                        // 2 エンドポイントを並列取得 (health は必須、diagnose は best-effort)
+                        async let healthAsync = client.healthDetail()
+                        async let diagnoseAsync = try? client.fetchProcessDiagnose(port: process.port)
+                        let health = try await healthAsync
+                        let diagnose = await diagnoseAsync
+
                         // ISO8601DateFormatter は Sendable ではないため closure 内で生成
                         let formatter = ISO8601DateFormatter()
                         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -1567,9 +1575,10 @@ struct MainWindowView: View {
                             SidebarStand(key: key, status: value.status, detail: value.detail)
                         }.sorted { $0.key < $1.key }
 
-                        return (process.projectPath, ProcessDetail(startedAt: date, stands: stands))
+                        let recent = diagnose?.msgbox.recent ?? []
+                        return (process.projectPath, ProcessDetail(startedAt: date, stands: stands, recentMessages: recent))
                     } catch {
-                        return (process.projectPath, ProcessDetail(startedAt: nil, stands: []))
+                        return (process.projectPath, ProcessDetail(startedAt: nil, stands: [], recentMessages: []))
                     }
                 }
             }

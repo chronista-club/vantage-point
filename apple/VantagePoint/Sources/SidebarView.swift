@@ -479,7 +479,8 @@ struct SidebarLeadRow: View {
             LaneNotificationRow(
                 unreadCount: Int(msgboxSession?.pendingMessages ?? 0),
                 hasNotification: hasNotification,
-                wireStatus: msgboxSession?.status
+                wireStatus: msgboxSession?.status,
+                recentMessages: project.recentMessages
             )
         }
         .padding(.vertical, 4)
@@ -1000,9 +1001,18 @@ struct LaneNotificationRow: View {
     let unreadCount: Int
     let hasNotification: Bool
     let wireStatus: String?
+    /// 直近 msgbox 履歴 (VP-83: 受取・開封状況 UI、/api/diagnose 由来、最大 3 件)
+    let recentMessages: [MsgboxHistoryEntry]
+
+    init(unreadCount: Int, hasNotification: Bool, wireStatus: String?, recentMessages: [MsgboxHistoryEntry] = []) {
+        self.unreadCount = unreadCount
+        self.hasNotification = hasNotification
+        self.wireStatus = wireStatus
+        self.recentMessages = recentMessages
+    }
 
     private var hasAnySignal: Bool {
-        unreadCount > 0 || hasNotification || wireStatus != nil
+        unreadCount > 0 || hasNotification || wireStatus != nil || !recentMessages.isEmpty
     }
 
     var body: some View {
@@ -1042,9 +1052,43 @@ struct LaneNotificationRow: View {
                             .foregroundStyle(Color.colorSemanticWarning)
                     }
                 }
+
+                // 直近 msgbox 3 件 (VP-83 開封状況)
+                // state 別 color: queued=orange / received=blue / acked=green
+                if !recentMessages.isEmpty {
+                    HStack(spacing: 2) {
+                        ForEach(recentMessages.prefix(3)) { entry in
+                            Circle()
+                                .fill(recentStateColor(entry.state))
+                                .frame(width: 6, height: 6)
+                        }
+                    }
+                    .help(recentTooltip(recentMessages))
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    private func recentStateColor(_ state: MsgboxEnvelopeState) -> Color {
+        switch state {
+        case .queued:   Color.colorSemanticWarning  // 未開封 (orange)
+        case .received: Color.colorSemanticInfo     // 開封済 (blue)
+        case .acked:    Color.colorSemanticSuccess  // ack 済 (green)
+        }
+    }
+
+    private func recentTooltip(_ entries: [MsgboxHistoryEntry]) -> String {
+        entries.prefix(3).map { e in
+            let label: String = switch e.state {
+            case .queued:   "⏳ queued"
+            case .received: "📥 received"
+            case .acked:    "✓ acked"
+            }
+            let payload = e.payloadPreview ?? ""
+            let trimmed = payload.count > 32 ? String(payload.prefix(32)) + "…" : payload
+            return "\(label) \(e.from)→\(e.to) \(trimmed)"
+        }.joined(separator: "\n")
     }
 
     /// wireStatus 文字列を SF Symbol に
@@ -1200,8 +1244,11 @@ struct SidebarProject: Identifiable, Equatable {
     let msgboxSession: MsgboxSessionInfo?
     /// SP 自動起動の有効/無効
     let enabled: Bool
+    /// 直近の msgbox 履歴 (VP-83: 受取・開封状況 UI 用)
+    /// /api/diagnose.msgbox.recent から取得 (最大 3 件)
+    let recentMessages: [MsgboxHistoryEntry]
 
-    init(id: String, name: String, displayName: String? = nil, path: String, isRunning: Bool, port: UInt16?, startedAt: Date?, stands: [SidebarStand] = [], workers: [CcwsWorkerInfo] = [], branch: String? = nil, hasHD: Bool = false, hasNotification: Bool = false, msgboxSession: MsgboxSessionInfo? = nil, enabled: Bool = true) {
+    init(id: String, name: String, displayName: String? = nil, path: String, isRunning: Bool, port: UInt16?, startedAt: Date?, stands: [SidebarStand] = [], workers: [CcwsWorkerInfo] = [], branch: String? = nil, hasHD: Bool = false, hasNotification: Bool = false, msgboxSession: MsgboxSessionInfo? = nil, enabled: Bool = true, recentMessages: [MsgboxHistoryEntry] = []) {
         self.id = id
         self.name = name
         self.displayName = displayName
@@ -1216,6 +1263,7 @@ struct SidebarProject: Identifiable, Equatable {
         self.hasNotification = hasNotification
         self.msgboxSession = msgboxSession
         self.enabled = enabled
+        self.recentMessages = recentMessages
     }
 
     var statusColor: Color {
