@@ -164,7 +164,7 @@ struct VPPaneContainer: View {
         let canClose = leaf.paneSessionName != nil || leaf.kind != .agent
 
         switch leaf.kind {
-        case .canvas, .preview:
+        case .canvas:
             return AnyView(
                 PaneHeaderView(
                     leaf: leaf,
@@ -174,6 +174,19 @@ struct VPPaneContainer: View {
                 ) {
                     CanvasRepresentable(port: port)
                         .id("\(leaf.id):canvas:\(port ?? 0)")
+                }
+            )
+
+        case .preview:
+            return AnyView(
+                PaneHeaderView(
+                    leaf: leaf,
+                    isFocused: isFocused,
+                    onMinimize: { onMinimizePane?(leaf.id) },
+                    onClose: canClose ? { onClosePane?(leaf.id) } : nil
+                ) {
+                    PreviewRepresentable(url: leaf.previewURL)
+                        .id("\(leaf.id):preview:\(leaf.previewURL?.absoluteString ?? "empty")")
                 }
             )
 
