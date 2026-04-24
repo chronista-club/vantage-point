@@ -24,7 +24,9 @@ use tao::dpi::LogicalSize;
 use tao::event::{Event, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tao::window::WindowBuilder;
-use wry::{Rect, WebView, WebViewBuilder, dpi::LogicalPosition, dpi::LogicalSize as WryLogicalSize};
+use wry::{
+    Rect, WebView, WebViewBuilder, dpi::LogicalPosition, dpi::LogicalSize as WryLogicalSize,
+};
 
 /// Sidebar の固定幅 (LogicalPixel)
 const SIDEBAR_WIDTH: f64 = 280.0;
