@@ -113,13 +113,24 @@ INSTALL_DIR_WIN="$WIN_LOCALAPPDATA\\VantagePoint-dev"
 INSTALL_EXE_WIN="$INSTALL_DIR_WIN\\vp-app.exe"
 echo "🚀 Launching $INSTALL_EXE_WIN ..."
 
-# WSL → Windows の env boundary を超えて VP_SHELL / VP_SHELL_ARGS / RUST_LOG を
-# 明示的に引き継ぐ (powershell の $env:X = '...' で設定してから Start-Process)
+# WSL → Windows の env boundary を超えて明示的に引き継ぐ
+# (powershell の $env:X = '...' で設定してから Start-Process)
 VP_SHELL_VAL="${VP_SHELL:-}"
 VP_SHELL_ARGS_VAL="${VP_SHELL_ARGS:-}"
 RUST_LOG_VAL="${RUST_LOG:-vp_app=info}"
+VP_TERMINAL_MODE_VAL="${VP_TERMINAL_MODE:-}"
+VP_WORLD_URL_VAL="${VP_WORLD_URL:-}"
 
-powershell.exe -NoProfile -Command "\$env:VP_SHELL='$VP_SHELL_VAL'; \$env:VP_SHELL_ARGS='$VP_SHELL_ARGS_VAL'; \$env:RUST_LOG='$RUST_LOG_VAL'; Start-Process -FilePath '$INSTALL_EXE_WIN' -WorkingDirectory '$INSTALL_DIR_WIN'" 2>&1 | tr -d '\r' || true
+LOG_FILE_WIN="$INSTALL_DIR_WIN\\vp-app.log"
+LOG_ERR_WIN="$INSTALL_DIR_WIN\\vp-app.err.log"
+LOG_ERR_WSL="$INSTALL_DIR/vp-app.err.log"
+LOG_OUT_WSL="$INSTALL_DIR/vp-app.log"
+
+# 前回 log を truncate (新 run を切り分けやすく)
+: > "$LOG_ERR_WSL" 2>/dev/null || true
+: > "$LOG_OUT_WSL" 2>/dev/null || true
+
+powershell.exe -NoProfile -Command "\$env:VP_SHELL='$VP_SHELL_VAL'; \$env:VP_SHELL_ARGS='$VP_SHELL_ARGS_VAL'; \$env:RUST_LOG='$RUST_LOG_VAL'; \$env:VP_TERMINAL_MODE='$VP_TERMINAL_MODE_VAL'; \$env:VP_WORLD_URL='$VP_WORLD_URL_VAL'; Start-Process -FilePath '$INSTALL_EXE_WIN' -WorkingDirectory '$INSTALL_DIR_WIN' -RedirectStandardOutput '$LOG_FILE_WIN' -RedirectStandardError '$LOG_ERR_WIN'" 2>&1 | tr -d '\r' || true
 echo "✅ 起動リクエスト送信 (VP_SHELL=$VP_SHELL_VAL VP_SHELL_ARGS='$VP_SHELL_ARGS_VAL')"
 '''
 
@@ -157,6 +168,15 @@ description = "win:claude + bypass permissions ON (--dangerously-skip-permission
 # 意図的に bypass を有効化。script や lint / format / test / git を prompt なしで走らせたい時に。
 env = { VP_SHELL = "wsl.exe", VP_SHELL_ARGS = '--cd /home/mito/repos/vantage-point -- bash -lc "export PATH=$HOME/.bun/bin:$PATH; claude --dangerously-skip-permissions --continue || claude --dangerously-skip-permissions"' }
 run = "mise run win"
+
+[tasks."win:daemon"]
+description = "WSL 側で TheWorld daemon 起動 → vp-app を daemon mode で launch (/ws/terminal 経由)"
+depends = ["win:daemon:up"]
+run = "bash scripts/win-daemon-launch.sh"
+
+[tasks."win:daemon:up"]
+description = "(helper) WSL で TheWorld daemon を起動し :32000 が ready になるまで待つ"
+run = "bash scripts/win-daemon-up.sh"
 
 [tasks."win:release"]
 description = "Build vp-app release for Windows (MSI/署名/winget は Phase W4 で追加予定)"
