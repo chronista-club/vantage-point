@@ -476,7 +476,8 @@ pub async fn start_unison_server(
     ready_tx: tokio::sync::oneshot::Sender<()>,
 ) {
     let quic_port = http_port + QUIC_PORT_OFFSET;
-    let addr = format!("[::1]:{}", quic_port);
+    // [::]: dual-stack (IPv6 + IPv4) bind on all interfaces (WSL2/LAN 経由アクセス対応)
+    let addr = format!("[::]:{}", quic_port);
 
     let server =
         ProtocolServer::with_identity("vp-process", env!("CARGO_PKG_VERSION"), "vantage-point");
