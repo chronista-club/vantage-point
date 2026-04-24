@@ -14,7 +14,10 @@ export VP_TERMINAL_MODE=daemon
 export VP_WORLD_URL
 export VP_DAEMON_SHELL=bash
 
-echo "▶ VP_TERMINAL_MODE=$VP_TERMINAL_MODE VP_WORLD_URL=$VP_WORLD_URL"
+# WSL daemon に繋ぐので Windows 側 vp.exe の cross-build はスキップ (~3分節約)
+export VP_SKIP_DAEMON_BUILD=1
+
+echo "▶ VP_TERMINAL_MODE=$VP_TERMINAL_MODE VP_WORLD_URL=$VP_WORLD_URL VP_SKIP_DAEMON_BUILD=$VP_SKIP_DAEMON_BUILD"
 
 # 既存 win task を call — vp-app を Windows cross-build + launch
 exec mise run win
