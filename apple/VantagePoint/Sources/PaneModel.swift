@@ -32,6 +32,8 @@ struct PaneLeaf: Identifiable, Equatable {
     let kind: PaneKind
     /// focus 状態
     var isFocused: Bool = false
+    /// Preview kind 用の URL (file:// or https://)、他 kind では無視
+    var previewURL: URL? = nil
 }
 
 /// Pane の tree 構造

@@ -226,6 +226,10 @@ struct MainWindowView: View {
                             .animation(.easeInOut(duration: 0.15), value: splitNavigator)
                         }
                     }
+                    // VP-83 Phase 2.3: viewport area への file drop で preview pane 追加
+                    .onDrop(of: ["public.file-url"], isTargeted: nil) { providers in
+                        handlePreviewDrop(providers: providers)
+                    }
 
                     // Pane Dock — 退避ペインのアイコンバー (VP-49)
                     if let path = selectedProjectPath,
@@ -562,6 +566,57 @@ struct MainWindowView: View {
         paneLayouts[path] = layout
 
         logger.info("Canvas auto-open: \(target.name) に canvas pane 追加 (port=\(port))")
+    }
+
+    /// VP-83 Phase 2.3: drag & drop 等で与えられた URL で preview pane を追加。
+    /// 現在 focus 中の project に horizontal split で追加、focus は preview に移す。
+    private func addPreviewPane(url: URL) {
+        guard let path = selectedProjectPath else {
+            logger.info("Preview add: selected project なし、skip")
+            return
+        }
+        if paneLayouts[path] == nil {
+            paneLayouts[path] = PaneLayout.initial()
+        }
+        guard var layout = paneLayouts[path] else { return }
+        let paneId = UUID()
+        let newLeaf = PaneLeaf(
+            id: paneId,
+            paneSessionName: nil,
+            tmuxWindowName: nil,
+            kind: .preview,
+            previewURL: url
+        )
+        let newGroupId = UUID()
+        layout.root = layout.root.inserting(
+            newLeaf: newLeaf,
+            adjacentTo: layout.focusedPaneId,
+            newGroupId: newGroupId
+        )
+        layout.layoutMap[newGroupId] = .horizontalSplit
+        layout.focusedPaneId = paneId
+        paneLayouts[path] = layout
+        logger.info("Preview pane added: \(url.lastPathComponent) → \(path)")
+    }
+
+    /// onDrop ハンドラ: file URL を受け取って addPreviewPane 発火
+    private func handlePreviewDrop(providers: [NSItemProvider]) -> Bool {
+        guard let provider = providers.first else { return false }
+        // public.file-url で load、data/URL 両対応
+        provider.loadItem(forTypeIdentifier: "public.file-url", options: nil) { item, _ in
+            var url: URL?
+            if let data = item as? Data {
+                url = URL(dataRepresentation: data, relativeTo: nil)
+            } else if let u = item as? URL {
+                url = u
+            }
+            if let u = url {
+                DispatchQueue.main.async {
+                    addPreviewPane(url: u)
+                }
+            }
+        }
+        return true
     }
 
     /// VP Pane 追加（NSView レイヤの分割）
