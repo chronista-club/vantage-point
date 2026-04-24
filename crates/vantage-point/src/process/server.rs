@@ -315,6 +315,7 @@ pub async fn run(
             post(health::msgbox_remote_deliver_handler),
         )
         .route("/api/msgbox/debug", get(health::msgbox_debug_handler))
+        .route("/api/msgbox/send", post(health::msgbox_send_handler))
         .route("/api/diagnose", get(health::diagnose_handler))
         .route("/api/toggle-pane", post(health::toggle_pane_handler))
         .route("/api/split-pane", post(health::split_pane_handler))

@@ -160,6 +160,38 @@ pub async fn msgbox_debug_handler(State(state): State<Arc<AppState>>) -> Json<se
     }))
 }
 
+/// VP-83: HTTP msg send — CLI から直接 msg を送る動作確認用 endpoint。
+/// POST body: {"to": "worker-xxx@project", "from": "mcp", "payload": "..."}
+#[derive(serde::Deserialize)]
+pub struct MsgboxSendRequest {
+    pub to: String,
+    pub from: String,
+    #[serde(default)]
+    pub payload: serde_json::Value,
+    #[serde(default)]
+    pub persistent: bool,
+}
+
+pub async fn msgbox_send_handler(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<MsgboxSendRequest>,
+) -> Json<serde_json::Value> {
+    use crate::capability::msgbox::{Message, MessageKind};
+    let mut msg = Message::new(req.from, req.to.clone(), MessageKind::Direct);
+    msg.payload = req.payload;
+    if req.persistent {
+        msg = msg.persistent();
+    }
+    let msg_id = msg.id.clone();
+    let Some(ref mcp) = state.mcp_msgbox else {
+        return Json(serde_json::json!({"error": "MCP msgbox not initialized"}));
+    };
+    match mcp.send(msg).await {
+        Ok(()) => Json(serde_json::json!({"status": "ok", "id": msg_id, "to": req.to})),
+        Err(e) => Json(serde_json::json!({"error": e.to_string()})),
+    }
+}
+
 /// Stand 自己診断 (2026-04-25 user 発案) — ProcessCapabilities の各 Stand の
 /// diagnose() を集約。side-effect-free、いつでも呼び出し可能。
 ///
