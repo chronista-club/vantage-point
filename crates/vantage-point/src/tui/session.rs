@@ -157,7 +157,7 @@ fn truncate(s: &str, max: usize) -> String {
 
 /// プロジェクトディレクトリを Claude のプロジェクトキーに変換
 ///
-/// `/path/to/vantage-point` → `-Users-makoto-repos-vantage-point`
+/// `/Users/makoto/repos/vantage-point` → `-Users-makoto-repos-vantage-point`
 fn project_dir_to_key(project_dir: &str) -> String {
     project_dir.replace('/', "-")
 }
@@ -169,7 +169,7 @@ mod tests {
     #[test]
     fn test_project_dir_to_key() {
         assert_eq!(
-            project_dir_to_key("/path/to/vantage-point"),
+            project_dir_to_key("/Users/makoto/repos/vantage-point"),
             "-Users-makoto-repos-vantage-point"
         );
     }

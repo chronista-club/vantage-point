@@ -570,8 +570,14 @@ fn inject_mise_env(cmd: &mut CommandBuilder, cwd: &str) {
         std::thread::sleep(Duration::from_secs(3));
         // child が既に終了していたら kill しない（PID 再利用による誤 kill 防止）
         if !cancel_clone.load(std::sync::atomic::Ordering::Acquire) {
+            #[cfg(unix)]
             unsafe {
                 libc::kill(child_pid as i32, libc::SIGKILL);
+            }
+            #[cfg(windows)]
+            {
+                // Windows 版: Phase W1 で TerminateProcess に置換予定
+                let _ = child_pid;
             }
         }
     });

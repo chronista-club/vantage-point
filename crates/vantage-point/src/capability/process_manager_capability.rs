@@ -34,14 +34,9 @@ use std::sync::Arc;
 use tokio::process::Command;
 use tokio::sync::RwLock;
 
-/// PID が生存しているか確認（kill(pid, 0) でシグナルを送らずチェック）
+/// PID が生存しているか確認（crossplat）
 fn is_pid_alive(pid: u32) -> bool {
-    if let Ok(pid_i32) = i32::try_from(pid) {
-        // SAFETY: signal 0 はプロセスに何もしない。存在確認のみ。
-        unsafe { libc::kill(pid_i32, 0) == 0 }
-    } else {
-        false
-    }
+    crate::platform::process_alive(pid)
 }
 
 /// プロジェクト情報

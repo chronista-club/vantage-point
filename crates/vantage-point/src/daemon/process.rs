@@ -40,7 +40,7 @@ fn check_pid_file() -> Option<u32> {
     let pid_str = std::fs::read_to_string(&pid_path).ok()?;
     let pid: u32 = pid_str.trim().parse().ok()?;
 
-    let alive = i32::try_from(pid).is_ok_and(|pid_i32| unsafe { libc::kill(pid_i32, 0) == 0 });
+    let alive = crate::platform::process_alive(pid);
     if alive {
         Some(pid)
     } else {
@@ -121,21 +121,17 @@ pub async fn run_daemon(port: u16) -> Result<()> {
         port
     );
 
-    // シグナルハンドラ: SIGTERM / SIGINT でグレースフルシャットダウン
-    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        .expect("SIGTERM ハンドラ登録失敗");
-
     // DaemonState を初期化し、Unison Server を起動
     let state = std::sync::Arc::new(super::server::DaemonState::new());
     let server_handle = tokio::spawn(super::server::start_daemon_server(state, port));
 
-    // シャットダウン待機
+    // シャットダウン待機 (Unix: SIGTERM / SIGINT。Windows: Ctrl-C のみ)
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {
-            tracing::info!("SIGINT 受信、シャットダウン開始");
+            tracing::info!("SIGINT (Ctrl-C) 受信、シャットダウン開始");
             println!("Shutting down VP Daemon...");
         }
-        _ = sigterm.recv() => {
+        _ = crate::platform::wait_for_terminate_signal() => {
             tracing::info!("SIGTERM 受信、シャットダウン開始");
             println!("Shutting down VP Daemon (SIGTERM)...");
         }
@@ -178,14 +174,16 @@ pub fn ensure_daemon_running(port: u16) -> Result<u32> {
 pub fn stop_daemon(pid: u32) -> Result<()> {
     tracing::info!("Daemon 停止要求 (PID: {})", pid);
 
-    let pid_i32 = i32::try_from(pid).map_err(|_| anyhow::anyhow!("PIDがi32の範囲外: {}", pid))?;
+    // u32 → i32 overflow は Unix の kill(2) で扱えないため早期 Err
+    // (Phase W1 で Windows 向け OpenProcess/TerminateProcess を導入する際は
+    //  Windows DWORD に合わせてこの制限を外す)
+    if i32::try_from(pid).is_err() {
+        anyhow::bail!("PID {} が i32 範囲外 — 停止対象として不正", pid);
+    }
 
     // SIGTERM を送信
-    let ret = unsafe { libc::kill(pid_i32, libc::SIGTERM) };
-    if ret != 0 {
-        let err = std::io::Error::last_os_error();
-        tracing::warn!("SIGTERM送信失敗 (PID: {}): {}", pid, err);
-        // プロセスが既に死んでいる可能性がある
+    if !crate::platform::process_terminate(pid) {
+        tracing::warn!("SIGTERM 送信失敗 (PID: {}) — 既に死んでいる可能性", pid);
         remove_pid_file();
         return Ok(());
     }
@@ -197,13 +195,8 @@ pub fn stop_daemon(pid: u32) -> Result<()> {
     std::thread::sleep(std::time::Duration::from_millis(500));
     if check_pid_file().is_some_and(|running_pid| running_pid == pid) {
         tracing::warn!("SIGTERM後もDaemonが生存、SIGKILLを送信");
-        let ret = unsafe { libc::kill(pid_i32, libc::SIGKILL) };
-        if ret != 0 {
-            tracing::warn!(
-                "SIGKILL送信失敗 (PID: {}): {}",
-                pid,
-                std::io::Error::last_os_error()
-            );
+        if !crate::platform::process_kill(pid) {
+            tracing::warn!("SIGKILL 送信失敗 (PID: {})", pid);
         }
         remove_pid_file();
     }

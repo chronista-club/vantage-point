@@ -532,16 +532,8 @@ fn handle_system_shutdown(id: u64) -> ChannelMessage {
     std::thread::spawn(|| {
         std::thread::sleep(std::time::Duration::from_millis(100));
         let pid = std::process::id();
-        if let Ok(pid_i32) = i32::try_from(pid) {
-            unsafe {
-                let ret = libc::kill(pid_i32, libc::SIGTERM);
-                if ret != 0 {
-                    tracing::warn!("system.shutdown: kill が失敗しました（errno）");
-                    std::process::exit(1);
-                }
-            }
-        } else {
-            tracing::error!("PIDがi32の範囲外: {}", pid);
+        if !crate::platform::process_terminate(pid) {
+            tracing::warn!("system.shutdown: terminate 送信が失敗しました");
             std::process::exit(1);
         }
     });

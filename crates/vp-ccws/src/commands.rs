@@ -3,6 +3,23 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// crossplat symlink (Unix: `symlink`。Windows: file/dir を `is_dir()` で判別)。
+/// Windows で symlink を張るには Developer Mode もしくは管理者権限が必要。
+fn symlink(src: &Path, dst: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(src, dst)
+    }
+    #[cfg(windows)]
+    {
+        if src.is_dir() {
+            std::os::windows::fs::symlink_dir(src, dst)
+        } else {
+            std::os::windows::fs::symlink_file(src, dst)
+        }
+    }
+}
+
 /// Create a new worker environment
 pub fn new_worker(name: &str, branch: &str, force: bool) -> Result<(), String> {
     let repo_root = config::find_repo_root().map_err(|e| e.to_string())?;
@@ -86,7 +103,7 @@ fn setup_worker(
             }
             // Remove existing file from clone (if it exists) before symlinking
             let _ = fs::remove_file(&dst);
-            std::os::unix::fs::symlink(&src, &dst).map_err(|e| e.to_string())?;
+            symlink(&src, &dst).map_err(|e| e.to_string())?;
             eprintln!("  symlink: {file}");
         }
     }
@@ -120,7 +137,7 @@ fn setup_worker(
                     if let Some(parent) = dst.parent() {
                         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
                     }
-                    std::os::unix::fs::symlink(&entry, &dst).map_err(|e| e.to_string())?;
+                    symlink(&entry, &dst).map_err(|e| e.to_string())?;
                     eprintln!("  symlink (pattern): {}", rel.display());
                 }
             }

@@ -2255,7 +2255,9 @@ if bestId > 0 { print(bestId) }
                 params.slot, params.lane, params.role
             ),
         };
-        Ok(CallToolResult::success(vec![rmcp::model::Content::text(text)]))
+        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+            text,
+        )]))
     }
 
     /// URL 生成: `http://localhost:{port}`
@@ -2274,7 +2276,9 @@ if bestId > 0 { print(bestId) }
                 params.slot, params.lane, params.role
             ),
         };
-        Ok(CallToolResult::success(vec![rmcp::model::Content::text(text)]))
+        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+            text,
+        )]))
     }
 
     /// Role → offset table
@@ -2290,7 +2294,9 @@ if bestId > 0 { print(bestId) }
         for (name, offset) in layout.valid_roles() {
             out.push_str(&format!("  +{:>2}  {}\n", offset, name));
         }
-        Ok(CallToolResult::success(vec![rmcp::model::Content::text(out)]))
+        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+            out,
+        )]))
     }
 
     /// 1 Project slot の全割当一覧 (Markdown)
@@ -2329,7 +2335,9 @@ if bestId > 0 { print(bestId) }
             }
             md.push('\n');
         }
-        Ok(CallToolResult::success(vec![rmcp::model::Content::text(md)]))
+        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+            md,
+        )]))
     }
 }
 

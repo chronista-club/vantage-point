@@ -170,20 +170,37 @@ impl Config {
     pub fn port_layout(&self) -> crate::port_layout::PortLayout {
         let mut layout = crate::port_layout::PortLayout::default();
         if let Some(ov) = &self.ports {
-            if let Some(v) = ov.world_port { layout.world_port = v; }
-            if let Some(v) = ov.project_slot_base { layout.project_slot_base = v; }
-            if let Some(v) = ov.project_slot_size { layout.project_slot_size = v; }
-            if let Some(v) = ov.max_projects { layout.max_projects = v; }
-            if let Some(v) = ov.lane_base_offset { layout.lane_base_offset = v; }
-            if let Some(v) = ov.lane_size { layout.lane_size = v; }
-            if let Some(r) = &ov.roles { layout.roles = r.clone(); }
+            if let Some(v) = ov.world_port {
+                layout.world_port = v;
+            }
+            if let Some(v) = ov.project_slot_base {
+                layout.project_slot_base = v;
+            }
+            if let Some(v) = ov.project_slot_size {
+                layout.project_slot_size = v;
+            }
+            if let Some(v) = ov.max_projects {
+                layout.max_projects = v;
+            }
+            if let Some(v) = ov.lane_base_offset {
+                layout.lane_base_offset = v;
+            }
+            if let Some(v) = ov.lane_size {
+                layout.lane_size = v;
+            }
+            if let Some(r) = &ov.roles {
+                layout.roles = r.clone();
+            }
         }
         layout
     }
 
     /// project 名 → slot index (未割当 / 未登録なら None)
     pub fn resolve_slot_by_name(&self, name: &str) -> Option<u16> {
-        self.projects.iter().find(|p| p.name == name).and_then(|p| p.slot)
+        self.projects
+            .iter()
+            .find(|p| p.name == name)
+            .and_then(|p| p.slot)
     }
 
     /// slot index → project (割当済みの場合)
@@ -218,15 +235,15 @@ impl Config {
                     anyhow::bail!("slot {} exceeds max_projects ({})", s, layout.max_projects);
                 }
                 if let Some(existing) = self.project_by_slot(s) {
-                    anyhow::bail!(
-                        "slot {} already assigned to project '{}'",
-                        s, existing.name
-                    );
+                    anyhow::bail!("slot {} already assigned to project '{}'", s, existing.name);
                 }
                 s
             }
             None => self.next_free_slot().ok_or_else(|| {
-                anyhow::anyhow!("no free slot available (max_projects={})", layout.max_projects)
+                anyhow::anyhow!(
+                    "no free slot available (max_projects={})",
+                    layout.max_projects
+                )
             })?,
         };
 
@@ -237,10 +254,7 @@ impl Config {
                 p.slot = Some(slot);
                 Ok(slot)
             }
-            None => anyhow::bail!(
-                "project '{}' not registered in config",
-                project_name
-            ),
+            None => anyhow::bail!("project '{}' not registered in config", project_name),
         }
     }
 

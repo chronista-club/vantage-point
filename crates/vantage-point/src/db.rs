@@ -517,20 +517,8 @@ pub fn is_surreal_running() -> Option<u32> {
     let content = std::fs::read_to_string(&path).ok()?;
     let pid: u32 = content.trim().parse().ok()?;
 
-    // kill(pid, 0) の結果を errno も含めて判定する。
-    // - 戻り値 0: プロセスが存在し、シグナルを送れる
-    // - 戻り値 -1 + ESRCH: プロセスが存在しない → ゴースト
-    // - 戻り値 -1 + EPERM: 権限なし（プロセスは存在する。別ユーザーが PID を再使用）→ alive 扱い
-    let alive = i32::try_from(pid).is_ok_and(|pid_i32| {
-        let ret = unsafe { libc::kill(pid_i32, 0) };
-        if ret == 0 {
-            true
-        } else {
-            // EPERM: プロセスは存在するが権限がない（alive とみなす）
-            let err = std::io::Error::last_os_error();
-            err.raw_os_error() == Some(libc::EPERM)
-        }
-    });
+    // EPERM (権限なし) はプロセス存在 → alive 扱い。platform::process_alive が判定。
+    let alive = crate::platform::process_alive(pid);
     if alive {
         Some(pid)
     } else {
@@ -612,33 +600,13 @@ pub fn stop_surreal() -> Option<u32> {
     let pid = is_surreal_running()?;
     tracing::info!("SurrealDB サーバー停止中 (pid={})", pid);
 
-    let pid_i32 = match i32::try_from(pid) {
-        Ok(p) => p,
-        Err(_) => {
-            let _ = std::fs::remove_file(surreal_pid_path());
-            return Some(pid);
-        }
-    };
-
     // SIGTERM を送信
-    unsafe {
-        libc::kill(pid_i32, libc::SIGTERM);
-    }
+    crate::platform::process_terminate(pid);
 
     // 最大 2 秒待つ
     for _ in 0..20 {
         std::thread::sleep(std::time::Duration::from_millis(100));
-        // ESRCH（プロセスなし）のみ停止完了とみなす。EPERM は alive 扱い。
-        let alive = unsafe {
-            let ret = libc::kill(pid_i32, 0);
-            if ret == 0 {
-                true
-            } else {
-                let err = std::io::Error::last_os_error();
-                err.raw_os_error() == Some(libc::EPERM)
-            }
-        };
-        if !alive {
+        if !crate::platform::process_alive(pid) {
             let _ = std::fs::remove_file(surreal_pid_path());
             tracing::info!("SurrealDB サーバー停止完了 (pid={})", pid);
             return Some(pid);
@@ -647,9 +615,7 @@ pub fn stop_surreal() -> Option<u32> {
 
     // タイムアウト → SIGKILL
     tracing::warn!("SurrealDB SIGTERM タイムアウト、SIGKILL (pid={})", pid);
-    unsafe {
-        libc::kill(pid_i32, libc::SIGKILL);
-    }
+    crate::platform::process_kill(pid);
     let _ = std::fs::remove_file(surreal_pid_path());
     Some(pid)
 }

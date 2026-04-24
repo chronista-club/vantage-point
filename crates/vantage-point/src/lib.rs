@@ -21,6 +21,7 @@ pub mod file_watcher;
 pub mod mcp;
 pub mod midi;
 pub mod notify;
+pub mod platform;
 pub mod port_layout;
 pub mod process;
 pub mod protocol;
