@@ -1,9 +1,9 @@
-# vp-app ↔ HD bridge 設計 (draft)
+# vp-app ↔ HD bridge 設計
 
-**Status**: draft — user review 待ち
-**Author**: Claude (reconnaissance 基に起草)
+**Status**: reviewed (2026-04-24) — Option D 確定、Q1-Q5 合意済
+**Author**: Claude (reconnaissance 基に起草) + mito (review)
 **Date**: 2026-04-24
-**Target**: Phase W2.5 step 2 以降 (VP-92 派生)
+**Target**: Phase W2.5 step 2 以降 (VP-93 = 2a+2b+2c、2d は別 issue)
 
 ---
 
@@ -164,49 +164,63 @@ vp-app (WS client) ──tcp──► TheWorld :32000/ws/terminal ──► PtyS
 
 **Cons**: daemon 側に新 endpoint 追加 = 実装コスト
 
-## 5. tentative 推奨
+## 5. 採用 Option: D (確定)
 
-**Option D** が以下の理由で最も筋が良い:
+**Option D (TheWorld に `/ws/terminal` 新設)** を採用。
 
 1. **WSL2 境界で TCP/WS**: UDP/QUIC の不確実性を回避。既存の `[::]` HTTP bind がそのまま使える。
 2. **daemon 中心の architecture**: HD の session 寿命は daemon 側が握っているべき (vp-app は view に徹する)。SP は project-specific 、HD/terminal という横断 concern は TheWorld (daemon) が持つのが CLAUDE.md の意匠と整合。
 3. **認証を最初から**: `[::]` bind で LAN 越えに届く今、terminal_token を WS handshake で検証する新 endpoint のほうが安全に作れる。
 4. **SP `/ws` の単一 session 制約を引きずらない**: PtySlot ベースで複数セッション対応を一発で入れる。
+5. **Q1-Q4 の合意と整合**: tmux 継続 / Windows 先行 / daemon owner / 2a+2b+2c フルスコープ、全て D で自然に成立。
 
-ただし **実装コストは A/B より大きい** (daemon に新 endpoint + HD bridge)。user が「MVP を来週欲しい」のであれば Option A / C 経由 も現実的。
+実装コストは A/B より大きいが、**VP-93 の対象範囲 (Step 2a+2b+2c)** を一本の設計で走り切れるので割に合う。
 
-## 6. MVP phasing (Option D 前提の draft)
+## 6. MVP phasing (VP-93 スコープ = 2a+2b+2c)
 
-### Step 2a (VP-92 本体): Daemon に `/ws/terminal` 骨格
+### Step 2a: Daemon に `/ws/terminal` 骨格 (VP-93)
 - 新 endpoint: `GET /ws/terminal?token={terminal_token}&pane={pane_id}`
 - 既存 PtySlot を流用、ただし `tmux attach-session -t {session}` を subprocess に
 - vp-app 側は portable-pty を消して tungstenite で接続
 - "今動いている wsl.exe -- bash" 相当の単発 terminal を remote 化して、まず現状同等を達成
 
-### Step 2b (VP-93 相当、新 issue): HD 専用チャネル化
+### Step 2b: HD 専用チャネル化 (VP-93)
 - Step 2a の汎用 terminal を HD 向けに特化
-- tmux session を daemon が起動/再接続
+- **tmux session を daemon が起動・明示終了** (Q3 の daemon owner モデル)
+  - daemon 起動時: tmux session spawn + Claude CLI 起動
+  - daemon 終了時: tmux kill-session で Claude も明示終了
+  - vp-app の起動・終了は daemon の session lifecycle に影響しない (WebSocket connect/disconnect のみ)
 - registry の agent_card と WS session を紐づけ
 
-### Step 2c (future): project 切替
+### Step 2c: project 切替 (VP-93)
 - vp-app の sidebar クリック → 現 session detach → 別 HD 再 attach
+- 複数 project の HD を daemon が同時管理 (project 単位の `{project}-vp` tmux session)
 - xterm.js の buffer 保持 / 復元
+- **vp-app 閉じて開き直しても、daemon 側の HD は継続 → xterm に前回表示が残る体験**
 
-### Step 2d (future): authz / LAN 対策
+### Step 2d: authz / LAN 対策 (別 issue — VP-95 等で後続)
 - terminal_token の signed handshake
 - `[::]` bind を loopback only に戻すか、localhost auth を強化
+- LAN 越えを正式サポートする/しないの decision も含める
 
-## 7. Open questions (user と詰めたい)
+## 7. Resolved decisions (2026-04-24 review)
 
-1. **HD は tmux session を継続前提で良いか？** `tmux attach -t ...` を daemon が PtySlot で起動するモデルでよい？
-2. **Windows 単発 release を Mac と足並み揃えるか？** vp-app の HD bridge を Mac native app にも適用するなら設計統一が必要。Mac は既に SwiftUI + tmux attach が動いているので、まず Windows 特化で始めるのも有り。
-3. **session 永続性の担保範囲** — daemon が落ちても HD (tmux) は生き残る想定で良い？それとも daemon で lifecycle 完結？
-4. **MVP スコープ** — Step 2a (単発 terminal remote 化) だけ切り出して "動く" とみなす？ それとも 2a+2b セットで VP-92 完結まで持っていく？
-5. **Option 選択** — D が筋と書いたが、user として A / B / C に引き寄せたい理由があるか？
+| # | Question | 結論 |
+|---|---|---|
+| Q1 | HD は tmux 継続前提で良いか | ✅ **tmux 継続**。`tmux attach -t ...` を daemon の PtySlot で起動する Mac 実装との整合、session 永続化の無料感、既存コード流用性で勝る |
+| Q2 | Windows 単発 release を Mac と揃えるか | ✅ **Hybrid — Windows 先行、Mac 統一は後続 Epic**。今 Mac を触ると Windows 体験を磨く余力が消える |
+| Q3 | session 永続性の担保範囲 | ✅ **daemon owner model**。tmux は PTY host として残すが lifecycle は daemon が明示的に握る。daemon stop = tmux kill、再起動で Claude 再 init は許容 (debug 楽優先) |
+| Q4 | MVP スコープ | ✅ **Step 2a+2b+2c 全部**。project 切替まで含めて VP-93 完結。2d (authz) は別 issue |
+| Q5 | Option 選択 | ✅ **D (TheWorld に `/ws/terminal` 新設)** |
+
+**派生する重要な特性** (Q3 + Q4 から):
+- vp-app (GUI frontend) を閉じて開き直しても **daemon 側の Claude は生きてる** → 前回 session に re-attach
+- `vp world stop` すると Claude も明示終了 (意図した挙動)
+- OS 再起動は両方消える
 
 ## 8. 次アクション
 
-user review 後:
-- option 確定 → Linear issue (VP-93 等) に分解
-- 必要なら `docs/spec/` に WS endpoint の仕様を別出し
-- 実装は W2.5 merge 完了後、新 branch (`mako/vp-93-xxx`) から再開
+- 本 doc PR (#184) merge
+- VP-93 を Step 2a / 2b / 2c のサブ issue に分解 (または inline TODO として track)
+- Step 2a 実装から着手 — `mako/vp-93-*` branch
+- WS endpoint の詳細 protocol が固まってきたら `docs/spec/` に別出し検討
