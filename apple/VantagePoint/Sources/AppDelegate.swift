@@ -289,20 +289,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         viewMenu.addItem(.separator())
 
+        // VP-83 refinement 58: Sidebar toggle を ⌘⇧L (Safari 慣習) に変更
         let toggleSidebarItem = NSMenuItem(
             title: "Toggle Sidebar",
             action: #selector(toggleSidebarAction(_:)),
-            keyEquivalent: "s"
+            keyEquivalent: "l"
         )
-        toggleSidebarItem.keyEquivalentModifierMask = [.command, .option]
+        toggleSidebarItem.keyEquivalentModifierMask = [.command, .shift]
         toggleSidebarItem.target = self
         viewMenu.addItem(toggleSidebarItem)
+        // VP-83 refinement 58: Project Tab Bar toggle を ⌘⇧\ (Safari 慣習) に変更
         let toggleTabBarItem = NSMenuItem(
             title: "Toggle Project Tab Bar",
             action: #selector(toggleProjectTabBar(_:)),
-            keyEquivalent: "t"
+            keyEquivalent: "\\"
         )
-        toggleTabBarItem.keyEquivalentModifierMask = [.command, .option]
+        toggleTabBarItem.keyEquivalentModifierMask = [.command, .shift]
         toggleTabBarItem.target = self
         viewMenu.addItem(toggleTabBarItem)
         let viewMenuItem = NSMenuItem()
@@ -320,46 +322,67 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         editMenuItem.submenu = editMenu
         mainMenu.addItem(editMenuItem)
 
-        // Navigate メニュー（プロジェクト切り替え）
+        // VP-83 refinement 58: Navigate メニュー再構成。
+        // Project 概念を shortcut 層から除去し、全 Lane フラット一覧で操作。
         let navigateMenu = NSMenu(title: "Navigate")
-        let prevItem = NSMenuItem(title: "前のプロジェクト", action: #selector(selectPreviousProject(_:)), keyEquivalent: "\u{F700}") // ↑
+        let prevItem = NSMenuItem(title: "前の Lane", action: #selector(selectPreviousProject(_:)), keyEquivalent: "\u{F700}") // ↑
         prevItem.keyEquivalentModifierMask = .command
         navigateMenu.addItem(prevItem)
-        let nextItem = NSMenuItem(title: "次のプロジェクト", action: #selector(selectNextProject(_:)), keyEquivalent: "\u{F701}") // ↓
+        let nextItem = NSMenuItem(title: "次の Lane", action: #selector(selectNextProject(_:)), keyEquivalent: "\u{F701}") // ↓
         nextItem.keyEquivalentModifierMask = .command
         navigateMenu.addItem(nextItem)
         navigateMenu.addItem(.separator())
-        // ⌘1〜9 で Project 切り替え（enabled のみ）
-        for i in 1...9 {
-            let item = NSMenuItem(
-                title: "Project \(i)",
-                action: #selector(selectProjectByNumber(_:)),
-                keyEquivalent: "\(i)"
-            )
-            item.tag = i
-            navigateMenu.addItem(item)
-        }
-        navigateMenu.addItem(.separator())
-        // ⌃1〜9 で Lane 切り替え（フォーカス中プロジェクト内）
+        // ⌘1〜9 で Lane 切り替え (Project Lead + Worker flat index)
         for i in 1...9 {
             let item = NSMenuItem(
                 title: "Lane \(i)",
                 action: #selector(selectLaneByNumber(_:)),
                 keyEquivalent: "\(i)"
             )
-            item.keyEquivalentModifierMask = .control
             item.tag = i
             navigateMenu.addItem(item)
         }
         navigateMenu.addItem(.separator())
-        navigateMenu.addItem(NSMenuItem(title: "Split Pane", action: #selector(splitTerminalPane(_:)), keyEquivalent: "d"))
-        // Close Pane (Cmd+Shift+D) は一旦無効化 — PaneHeader の × ボタンで閉じる (VP-46)
-        // let closePaneItem = NSMenuItem(title: "Close Pane", action: #selector(closeTerminalPane(_:)), keyEquivalent: "d")
-        // closePaneItem.keyEquivalentModifierMask = [.command, .shift]
-        // navigateMenu.addItem(closePaneItem)
+        // Split Navigator (⌘D) — Shell / Canvas / Preview 3 択の kind 選択 UI
+        navigateMenu.addItem(NSMenuItem(title: "Split Pane (kind 選択)", action: #selector(splitTerminalPane(_:)), keyEquivalent: "d"))
         let navigateMenuItem = NSMenuItem()
         navigateMenuItem.submenu = navigateMenu
         mainMenu.addItem(navigateMenuItem)
+
+        // VP-83 refinement 58: Pane メニュー (⌃ = 端末・pane 層)
+        let paneMenu = NSMenu(title: "Pane")
+        let focusLeftItem = NSMenuItem(title: "Focus Left", action: #selector(paneFocusLeft(_:)), keyEquivalent: "\u{F702}") // ←
+        focusLeftItem.keyEquivalentModifierMask = .control
+        focusLeftItem.target = self
+        paneMenu.addItem(focusLeftItem)
+        let focusRightItem = NSMenuItem(title: "Focus Right", action: #selector(paneFocusRight(_:)), keyEquivalent: "\u{F703}") // →
+        focusRightItem.keyEquivalentModifierMask = .control
+        focusRightItem.target = self
+        paneMenu.addItem(focusRightItem)
+        let focusUpItem = NSMenuItem(title: "Focus Up", action: #selector(paneFocusUp(_:)), keyEquivalent: "\u{F700}") // ↑
+        focusUpItem.keyEquivalentModifierMask = .control
+        focusUpItem.target = self
+        paneMenu.addItem(focusUpItem)
+        let focusDownItem = NSMenuItem(title: "Focus Down", action: #selector(paneFocusDown(_:)), keyEquivalent: "\u{F701}") // ↓
+        focusDownItem.keyEquivalentModifierMask = .control
+        focusDownItem.target = self
+        paneMenu.addItem(focusDownItem)
+        paneMenu.addItem(.separator())
+        let splitAgentItem = NSMenuItem(title: "Split (Agent)", action: #selector(paneSplitAgent(_:)), keyEquivalent: ",")
+        splitAgentItem.keyEquivalentModifierMask = .control
+        splitAgentItem.target = self
+        paneMenu.addItem(splitAgentItem)
+        let closeItem = NSMenuItem(title: "Close Focused", action: #selector(paneCloseFocused(_:)), keyEquivalent: ".")
+        closeItem.keyEquivalentModifierMask = .control
+        closeItem.target = self
+        paneMenu.addItem(closeItem)
+        let minimizeToggleItem = NSMenuItem(title: "Minimize Focused", action: #selector(paneMinimizeToggle(_:)), keyEquivalent: "/")
+        minimizeToggleItem.keyEquivalentModifierMask = .control
+        minimizeToggleItem.target = self
+        paneMenu.addItem(minimizeToggleItem)
+        let paneMenuItem = NSMenuItem()
+        paneMenuItem.submenu = paneMenu
+        mainMenu.addItem(paneMenuItem)
 
         // Window メニュー
         let windowMenu = NSMenu(title: "Window")
@@ -492,6 +515,29 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openDesignInspectorAction(_ sender: Any?) {
         NotificationCenter.default.post(name: .vpAction, object: nil, userInfo: ["kind": "inspector"])
+    }
+
+    // VP-83 refinement 58: Pane 操作 (⌃) の menu action → Notification 中継
+    @objc private func paneFocusLeft(_ sender: Any?) {
+        NotificationCenter.default.post(name: .paneFocusLeft, object: nil)
+    }
+    @objc private func paneFocusRight(_ sender: Any?) {
+        NotificationCenter.default.post(name: .paneFocusRight, object: nil)
+    }
+    @objc private func paneFocusUp(_ sender: Any?) {
+        NotificationCenter.default.post(name: .paneFocusUp, object: nil)
+    }
+    @objc private func paneFocusDown(_ sender: Any?) {
+        NotificationCenter.default.post(name: .paneFocusDown, object: nil)
+    }
+    @objc private func paneSplitAgent(_ sender: Any?) {
+        NotificationCenter.default.post(name: .paneSplitAgent, object: nil)
+    }
+    @objc private func paneCloseFocused(_ sender: Any?) {
+        NotificationCenter.default.post(name: .paneCloseFocused, object: nil)
+    }
+    @objc private func paneMinimizeToggle(_ sender: Any?) {
+        NotificationCenter.default.post(name: .paneMinimizeToggle, object: nil)
     }
 
     @objc private func selectPreviousProject(_ sender: Any?) {
