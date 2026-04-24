@@ -163,6 +163,15 @@ actor TheWorldClient {
         return try await getAndDecode(url: url)
     }
 
+    /// Process 単位の診断情報取得 (VP-83)
+    ///
+    /// 指定ポート (33xxx) の `/api/diagnose` を叩き、Stand 自己診断と msgbox
+    /// recent history を取得する。TheWorld (32000) ではなく Process 本体に直接問い合わせ。
+    func fetchProcessDiagnose(port: UInt16) async throws -> DiagnoseResponse {
+        let url = URL(string: "http://[::1]:\(port)/api/diagnose")!
+        return try await getAndDecode(url: url)
+    }
+
     // MARK: - Update API Methods
 
     /// 更新をチェック

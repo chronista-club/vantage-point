@@ -79,9 +79,11 @@ enum AnyCodableValue: Codable, Equatable {
     case string(String)
     case bool(Bool)
     case double(Double)
+    case null
 
     init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
+        if container.decodeNil() { self = .null; return }
         if let v = try? container.decode(Int.self) { self = .int(v); return }
         if let v = try? container.decode(Bool.self) { self = .bool(v); return }
         if let v = try? container.decode(Double.self) { self = .double(v); return }
@@ -96,6 +98,7 @@ enum AnyCodableValue: Codable, Equatable {
         case .string(let v): try container.encode(v)
         case .bool(let v): try container.encode(v)
         case .double(let v): try container.encode(v)
+        case .null: try container.encodeNil()
         }
     }
 }
@@ -141,6 +144,60 @@ struct MsgboxSessionInfo: Codable, Identifiable, Equatable {
 /// ccwire セッション一覧レスポンス
 struct MsgboxSessionsResponse: Codable {
     let sessions: [MsgboxSessionInfo]
+}
+
+// MARK: - Diagnose / Msgbox Recent History (VP-83)
+
+/// Msgbox envelope の lifecycle state
+enum MsgboxEnvelopeState: String, Codable {
+    case queued
+    case received
+    case acked
+}
+
+/// Msgbox history entry (直近受信/送信したメッセージの lifecycle 情報)
+/// Rust 側 `crate::capability::msgbox::MessageEnvelope` に対応。
+struct MsgboxHistoryEntry: Codable, Identifiable, Equatable {
+    let id: String
+    let from: String
+    let to: String
+    let kind: String
+    let payloadPreview: String?
+    let state: MsgboxEnvelopeState
+    let sentAtMs: UInt64
+    let receivedAtMs: UInt64?
+    let ackedAtMs: UInt64?
+
+    enum CodingKeys: String, CodingKey {
+        case id, from, to, kind, state
+        case payloadPreview = "payload_preview"
+        case sentAtMs = "sent_at_ms"
+        case receivedAtMs = "received_at_ms"
+        case ackedAtMs = "acked_at_ms"
+    }
+}
+
+/// `/api/diagnose` の msgbox フィールド
+struct MsgboxDiagnose: Codable, Equatable {
+    let addresses: [String]
+    let count: Int
+    let recent: [MsgboxHistoryEntry]
+}
+
+/// `/api/diagnose` レスポンス (Process 単位、port 33xxx)
+struct DiagnoseResponse: Codable {
+    let count: Int
+    let reports: [DiagnoseReport]
+    let msgbox: MsgboxDiagnose
+}
+
+/// Stand 自己診断レポート
+struct DiagnoseReport: Codable, Equatable {
+    let name: String
+    let version: String
+    let state: String
+    let timestamp: String
+    let details: [String: AnyCodableValue]?
 }
 
 // MARK: - Update API Types
