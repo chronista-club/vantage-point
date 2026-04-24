@@ -4,149 +4,18 @@ import SwiftUI
 private let logger = Logger(subsystem: "tech.anycreative.vp", category: "VPPane")
 
 // MARK: - データモデル
-
-/// VP Pane のリーフ（1つの TerminalView に対応）
-struct VPPaneLeaf: Identifiable, Equatable {
-    let id: UUID
-    /// tmux のグループセッション名（nil = ベースセッションに直接 attach）
-    let paneSessionName: String?
-    /// tmux window 名（nil = デフォルト window）
-    let tmuxWindowName: String?
-    /// Stand 種別（"agent" = TerminalView, "canvas" = CanvasRepresentable, "shell" = 将来用）
-    let contentType: String
-    /// このペインがフォーカスされているか
-    var isFocused: Bool = false
-}
-
-/// VP Pane のツリー構造（NSView レイヤの分割コンテナ）
-///
-/// tmux のペイン分割とは独立した、SwiftUI レイヤの分割管理。
-/// 各リーフは独立した TerminalView（tmux window に attach）を保持する。
-/// split の horizontal は HStack（水平並び = 右に追加）を意味する。
-indirect enum VPPaneNode: Identifiable, Equatable {
-    case leaf(VPPaneLeaf)
-    case split(id: UUID, horizontal: Bool, first: VPPaneNode, second: VPPaneNode)
-
-    var id: UUID {
-        switch self {
-        case .leaf(let leaf): return leaf.id
-        case .split(let id, _, _, _): return id
-        }
-    }
-
-    /// リーフの数
-    var leafCount: Int {
-        switch self {
-        case .leaf: return 1
-        case .split(_, _, let first, let second):
-            return first.leafCount + second.leafCount
-        }
-    }
-
-    /// 全リーフを収集（表示順）
-    var leaves: [VPPaneLeaf] {
-        switch self {
-        case .leaf(let leaf): return [leaf]
-        case .split(_, _, let first, let second):
-            return first.leaves + second.leaves
-        }
-    }
-
-    /// 全リーフの ID を収集（表示順）
-    var leafIds: [UUID] {
-        switch self {
-        case .leaf(let leaf): return [leaf.id]
-        case .split(_, _, let first, let second):
-            return first.leafIds + second.leafIds
-        }
-    }
-
-    /// リーフを検索
-    func findLeaf(id: UUID) -> VPPaneLeaf? {
-        switch self {
-        case .leaf(let leaf):
-            return leaf.id == id ? leaf : nil
-        case .split(_, _, let first, let second):
-            return first.findLeaf(id: id) ?? second.findLeaf(id: id)
-        }
-    }
-
-    /// ターゲットリーフの隣に新しいリーフを挿入（分割）
-    func inserting(newLeaf: VPPaneLeaf, adjacentTo targetId: UUID, horizontal: Bool) -> VPPaneNode {
-        switch self {
-        case .leaf(let leaf) where leaf.id == targetId:
-            // ターゲットを分割: 元のリーフ + 新しいリーフ
-            return .split(
-                id: UUID(),
-                horizontal: horizontal,
-                first: self,
-                second: .leaf(newLeaf)
-            )
-        case .leaf:
-            return self
-        case .split(let id, let h, let first, let second):
-            return .split(
-                id: id,
-                horizontal: h,
-                first: first.inserting(newLeaf: newLeaf, adjacentTo: targetId, horizontal: horizontal),
-                second: second.inserting(newLeaf: newLeaf, adjacentTo: targetId, horizontal: horizontal)
-            )
-        }
-    }
-
-    /// 全リーフの isFocused を focusedPaneId に基づいて設定
-    func withFocus(on focusedId: UUID) -> VPPaneNode {
-        switch self {
-        case .leaf(var leaf):
-            leaf.isFocused = leaf.id == focusedId
-            return .leaf(leaf)
-        case .split(let id, let h, let first, let second):
-            return .split(id: id, horizontal: h,
-                          first: first.withFocus(on: focusedId),
-                          second: second.withFocus(on: focusedId))
-        }
-    }
-
-    /// ターゲットリーフを削除（兄弟ノードが親を置き換え）
-    func removing(targetId: UUID) -> VPPaneNode? {
-        switch self {
-        case .leaf(let leaf):
-            return leaf.id == targetId ? nil : self
-        case .split(let id, let h, let first, let second):
-            let newFirst = first.removing(targetId: targetId)
-            let newSecond = second.removing(targetId: targetId)
-            // 片方が消えたら兄弟が親を置き換え
-            if newFirst == nil { return newSecond }
-            if newSecond == nil { return newFirst }
-            return .split(id: id, horizontal: h, first: newFirst!, second: newSecond!)
-        }
-    }
-}
-
-// MARK: - レイアウト状態
-
-/// プロジェクトごとの VP Pane レイアウト
-struct VPPaneLayout: Equatable {
-    var root: VPPaneNode
-    var focusedPaneId: UUID
-
-    /// 初期レイアウト（1つのペインのみ）
-    static func initial() -> VPPaneLayout {
-        let id = UUID()
-        return VPPaneLayout(
-            root: .leaf(VPPaneLeaf(id: id, paneSessionName: nil, tmuxWindowName: nil, contentType: "agent")),
-            focusedPaneId: id
-        )
-    }
-}
+//
+// VP-83 Phase 2.1c: 旧 VPPaneNode/VPPaneLeaf/VPPaneLayout は削除済。
+// 新 PaneNode / PaneLeaf / PaneLayout (PaneModel.swift) を直接使用。
+// 表示ルールは PaneLayoutMap で分離管理。
 
 // MARK: - 退避ペイン (VP-49)
 
 /// 退避（アイコン化）されたペインの情報
 struct MinimizedPane: Identifiable, Equatable {
     let id: UUID
-    /// 退避前のリーフ情報（復帰時に使う）
-    let leaf: VPPaneLeaf
+    /// 退避前のリーフ情報（復帰時に使う、新 PaneLeaf）
+    let leaf: PaneLeaf
     /// 退避前の分割位置を記録（隣接リーフ ID + 方向）
     let adjacentToId: UUID?
     let horizontal: Bool
@@ -232,7 +101,7 @@ func vpPaneTmuxCommand(
 }
 
 /// VP Pane の tmux リソースをクリーンアップ
-func cleanupVPPaneTmux(leaf: VPPaneLeaf) {
+func cleanupVPPaneTmux(leaf: PaneLeaf) {
     guard let paneSession = leaf.paneSessionName else { return }
     let tmuxBin = "/opt/homebrew/bin/tmux"
 
@@ -257,7 +126,9 @@ func cleanupVPPaneTmux(leaf: VPPaneLeaf) {
 /// 初期状態は 1 つの TerminalView。Cmd+D で分割を追加。
 struct VPPaneContainer: View {
     let projectPath: String
-    let node: VPPaneNode
+    let node: PaneNode
+    /// 表示ルール (group id → rule)、未登録は既定 horizontalSplit
+    let layoutMap: PaneLayoutMap
     let isActive: Bool
     let splitNavigatorActive: Bool
     let terminalGeneration: Int
@@ -276,62 +147,62 @@ struct VPPaneContainer: View {
     ///
     /// 再帰呼び出しで opaque return type が自己参照するため AnyView で型消去する。
     /// ペインの数は通常 2〜4 個なのでパフォーマンスへの影響は無視できる。
-    private func paneNodeView(for node: VPPaneNode) -> AnyView {
+    private func paneNodeView(for node: PaneNode) -> AnyView {
         switch node {
         case .leaf(let leaf):
-            let isFocused = leaf.isFocused
-            // ベース HD ペイン（paneSessionName == nil）は閉じられない
-            let canClose = leaf.paneSessionName != nil || leaf.contentType != "agent"
+            return renderLeaf(leaf)
+        case .group(let gid, let children):
+            let rule = layoutMap[gid] ?? .horizontalSplit
+            return renderGroup(id: gid, children: children, rule: rule)
+        }
+    }
 
-            // Canvas ペイン: CanvasRepresentable を表示
-            if leaf.contentType == "canvas" || leaf.contentType == "pp" {
-                return AnyView(
-                    PaneHeaderView(
-                        leaf: leaf,
-                        isFocused: isFocused,
-                        onMinimize: { onMinimizePane?(leaf.id) },
-                        onClose: canClose ? { onClosePane?(leaf.id) } : nil
-                    ) {
-                        CanvasRepresentable(port: port)
-                            .id("\(leaf.id):canvas:\(port ?? 0)")
-                    }
-                )
-            }
+    /// leaf を kind で分岐 render
+    private func renderLeaf(_ leaf: PaneLeaf) -> AnyView {
+        let isFocused = leaf.isFocused
+        // ベース HD ペイン（paneSessionName == nil）は閉じられない
+        let canClose = leaf.paneSessionName != nil || leaf.kind != .agent
 
-            // Shell ペイン (The Hand): 素シェルを直接起動（tmux 不要）
-            if leaf.contentType == "shell" {
-                return AnyView(
-                    PaneHeaderView(
-                        leaf: leaf,
-                        isFocused: isFocused,
-                        onMinimize: { onMinimizePane?(leaf.id) },
-                        onClose: { onClosePane?(leaf.id) }
-                    ) {
-                        TerminalRepresentable(
-                            projectPath: projectPath,
-                            isActive: isActive,
-                            isFocused: isFocused,
-                            splitNavigatorActive: splitNavigatorActive,
-                            tmuxCommand: "exec zsh -l",
-                            paneId: leaf.id,
-                            sendMouseEvents: false
-                        )
-                        .id("\(leaf.id):shell")
-                    }
-                )
-            }
-
-            // Agent ペイン (HD): 独立 tmux セッションに attach
-            let tmuxCmd: String? = {
-                guard let paneSession = leaf.paneSessionName else {
-                    return nil
+        switch leaf.kind {
+        case .canvas, .preview:
+            return AnyView(
+                PaneHeaderView(
+                    leaf: leaf,
+                    isFocused: isFocused,
+                    onMinimize: { onMinimizePane?(leaf.id) },
+                    onClose: canClose ? { onClosePane?(leaf.id) } : nil
+                ) {
+                    CanvasRepresentable(port: port)
+                        .id("\(leaf.id):canvas:\(port ?? 0)")
                 }
-                return vpPaneTmuxCommand(
-                    paneSessionName: paneSession,
-                    cwd: projectPath
-                )
-            }()
+            )
 
+        case .shell:
+            return AnyView(
+                PaneHeaderView(
+                    leaf: leaf,
+                    isFocused: isFocused,
+                    onMinimize: { onMinimizePane?(leaf.id) },
+                    onClose: { onClosePane?(leaf.id) }
+                ) {
+                    TerminalRepresentable(
+                        projectPath: projectPath,
+                        isActive: isActive,
+                        isFocused: isFocused,
+                        splitNavigatorActive: splitNavigatorActive,
+                        tmuxCommand: "exec zsh -l",
+                        paneId: leaf.id,
+                        sendMouseEvents: false
+                    )
+                    .id("\(leaf.id):shell")
+                }
+            )
+
+        case .agent:
+            let tmuxCmd: String? = {
+                guard let paneSession = leaf.paneSessionName else { return nil }
+                return vpPaneTmuxCommand(paneSessionName: paneSession, cwd: projectPath)
+            }()
             return AnyView(
                 PaneHeaderView(
                     leaf: leaf,
@@ -350,20 +221,50 @@ struct VPPaneContainer: View {
                     .id("\(leaf.id):\(terminalGeneration)")
                 }
             )
+        }
+    }
 
-        case .split(let splitId, let horizontal, let first, let second):
+    /// group を LayoutRule に応じて render。
+    /// Phase 2.1c では horizontalSplit / verticalSplit のみ本実装、
+    /// overlay / tab は horizontalSplit にフォールバック (Phase 2.4 で本実装)。
+    /// children 2 つは直接 VPPaneSplitView、3+ は右結合で再帰。
+    private func renderGroup(id: UUID, children: [PaneNode], rule: LayoutRule) -> AnyView {
+        guard !children.isEmpty else {
+            return AnyView(Color.clear)
+        }
+        if children.count == 1 {
+            return paneNodeView(for: children[0])
+        }
+        let horizontal = (rule.kind != .verticalSplit)  // vertical 以外は横扱い (overlay/tab も fallback)
+
+        if children.count == 2 {
             return AnyView(
                 VPPaneSplitView(
                     horizontal: horizontal,
-                    splitId: splitId
+                    splitId: id
                 ) {
-                    paneNodeView(for: first)
+                    paneNodeView(for: children[0])
                 } second: {
-                    paneNodeView(for: second)
+                    paneNodeView(for: children[1])
                 }
-                .id(splitId)
+                .id(id)
             )
         }
+
+        // 3 つ以上 → 右結合で split 連鎖
+        let first = children[0]
+        let rest = PaneNode.group(id: UUID(), children: Array(children.dropFirst()))
+        return AnyView(
+            VPPaneSplitView(
+                horizontal: horizontal,
+                splitId: id
+            ) {
+                paneNodeView(for: first)
+            } second: {
+                paneNodeView(for: rest)
+            }
+            .id(id)
+        )
     }
 }
 
@@ -375,14 +276,14 @@ struct PaneStandInfo {
     let label: String     // 表示名
     let color: Color      // アクセントカラー
 
-    /// contentType から Stand 情報を導出 (表 label は technical、内部は Stand 名)
-    static func from(leaf: VPPaneLeaf) -> PaneStandInfo {
-        switch leaf.contentType {
-        case "canvas", "pp":
+    /// kind から Stand 情報を導出 (表 label は technical、内部は Stand 名)
+    static func from(leaf: PaneLeaf) -> PaneStandInfo {
+        switch leaf.kind {
+        case .canvas, .preview:
             return PaneStandInfo(icon: "safari", label: "Navigator", color: .cyan)
-        case "shell":
+        case .shell:
             return PaneStandInfo(icon: "terminal", label: "Shell", color: .orange)
-        default: // "agent", "hd"
+        case .agent:
             // paneSessionName があれば追加 Agent pane、なければ Lead Agent
             let label = leaf.paneSessionName != nil ? "Agent" : "Lead Agent"
             return PaneStandInfo(icon: "book", label: label, color: .green)
@@ -395,7 +296,7 @@ struct PaneStandInfo {
 /// 全ペイン種別に共通のヘッダーバーを付与する。
 /// Stand アイコン + タイトル + 操作ボタン（退避・閉じる）。
 struct PaneHeaderView<Content: View>: View {
-    let leaf: VPPaneLeaf
+    let leaf: PaneLeaf
     let isFocused: Bool
     let onMinimize: (() -> Void)?
     let onClose: (() -> Void)?
