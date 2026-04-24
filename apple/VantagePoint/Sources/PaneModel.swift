@@ -192,4 +192,55 @@ struct PaneLayout: Equatable {
     func rule(for groupId: UUID) -> LayoutRule {
         layoutMap[groupId] ?? .horizontalSplit
     }
+
+    /// VP-83 refinement 58: spatial focus 移動 (⌃←→↑↓)
+    ///
+    /// focused leaf の親 group を下から辿り、direction が rule.kind と一致する最初の
+    /// group で sibling に移動する。見つからなければ nil (端)。
+    func nextLeafId(from fromId: UUID, direction: PaneFocusDirection) -> UUID? {
+        guard let path = Self.findPath(to: fromId, in: root) else { return nil }
+        // path は root → ... → target leaf の順
+        for depth in stride(from: path.count - 1, through: 1, by: -1) {
+            let parent = path[depth - 1]
+            guard case .group(let gid, let children) = parent else { continue }
+            let rule = layoutMap[gid] ?? .horizontalSplit
+            let matchesHorizontal = (direction == .left || direction == .right)
+                && rule.kind == .horizontalSplit
+            let matchesVertical = (direction == .up || direction == .down)
+                && rule.kind == .verticalSplit
+            guard matchesHorizontal || matchesVertical else { continue }
+            let currentChildId = path[depth].id
+            guard let idx = children.firstIndex(where: { $0.id == currentChildId }) else { continue }
+            let nextIdx: Int?
+            switch direction {
+            case .left, .up:
+                nextIdx = idx > 0 ? idx - 1 : nil
+            case .right, .down:
+                nextIdx = idx < children.count - 1 ? idx + 1 : nil
+            }
+            guard let i = nextIdx else { continue }
+            return children[i].leaves.first?.id
+        }
+        return nil
+    }
+
+    /// root から leafId に至るノード path を返す (見つからなければ nil)
+    private static func findPath(to leafId: UUID, in node: PaneNode) -> [PaneNode]? {
+        switch node {
+        case .leaf(let leaf):
+            return leaf.id == leafId ? [node] : nil
+        case .group(_, let children):
+            for child in children {
+                if let rest = findPath(to: leafId, in: child) {
+                    return [node] + rest
+                }
+            }
+            return nil
+        }
+    }
+}
+
+/// pane focus の方向
+enum PaneFocusDirection {
+    case left, right, up, down
 }

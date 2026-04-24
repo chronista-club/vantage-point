@@ -39,14 +39,38 @@ let splitDirections: [SplitDirection] = [
     SplitDirection(id: 3, label: "左", symbol: "←", horizontal: true),
 ]
 
-/// コンテンツ種別の一覧（The Hand, Paisley Park, Heaven's Door）
-// 表側は technical 用語で統一。JoJo 名は tooltip / doc / code comment
-// レイヤー 2 以降で見えてくる (VP-83 refinement 36)
+/// コンテンツ種別の一覧 (Shell / Canvas / Preview)
+///
+/// VP-83 refinement 58: Agent は `⌃,` direct chord 専用になったため Navigator UI
+/// から除去。代わりに Preview を追加 (drag&drop 以外の明示入口)。
 let splitContents: [SplitContent] = [
     SplitContent(id: 0, label: "Shell", emoji: "✋", contentType: "shell"),
-    SplitContent(id: 1, label: "Navigator", emoji: "🧭", contentType: "pp"),
-    SplitContent(id: 2, label: "Agent", emoji: "📖", contentType: "agent"),
+    SplitContent(id: 1, label: "Navigator", emoji: "🧭", contentType: "canvas"),
+    SplitContent(id: 2, label: "Preview", emoji: "🔍", contentType: "preview"),
 ]
+
+/// VP-83 refinement 58: Pane 操作 7 種の onReceive を ViewModifier に集約
+/// (body の type-check timeout 回避)
+struct PaneShortcutHandlerModifier: ViewModifier {
+    let onFocusLeft: () -> Void
+    let onFocusRight: () -> Void
+    let onFocusUp: () -> Void
+    let onFocusDown: () -> Void
+    let onSplitAgent: () -> Void
+    let onCloseFocused: () -> Void
+    let onMinimizeToggle: () -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .onReceive(NotificationCenter.default.publisher(for: .paneFocusLeft)) { _ in onFocusLeft() }
+            .onReceive(NotificationCenter.default.publisher(for: .paneFocusRight)) { _ in onFocusRight() }
+            .onReceive(NotificationCenter.default.publisher(for: .paneFocusUp)) { _ in onFocusUp() }
+            .onReceive(NotificationCenter.default.publisher(for: .paneFocusDown)) { _ in onFocusDown() }
+            .onReceive(NotificationCenter.default.publisher(for: .paneSplitAgent)) { _ in onSplitAgent() }
+            .onReceive(NotificationCenter.default.publisher(for: .paneCloseFocused)) { _ in onCloseFocused() }
+            .onReceive(NotificationCenter.default.publisher(for: .paneMinimizeToggle)) { _ in onMinimizeToggle() }
+    }
+}
 
 struct MainWindowView: View {
     /// 選択中の Lane (Lead or Worker の id = パス)
@@ -308,6 +332,17 @@ struct MainWindowView: View {
             guard let port = notification.userInfo?["port"] as? UInt16 else { return }
             ensureCanvasPane(forPort: port)
         }
+        // VP-83 refinement 58: Pane direct chord (⌃←→↑↓ / ⌃, / ⌃. / ⌃/)
+        // 21+ onReceive で body type-check timeout するため ViewModifier に extract
+        .modifier(PaneShortcutHandlerModifier(
+            onFocusLeft: { focusPane(.left) },
+            onFocusRight: { focusPane(.right) },
+            onFocusUp: { focusPane(.up) },
+            onFocusDown: { focusPane(.down) },
+            onSplitAgent: { executeSplit(horizontal: true, contentType: "agent") },
+            onCloseFocused: { closePane() },
+            onMinimizeToggle: { minimizeFocusedPane() }
+        ))
         .onReceive(NotificationCenter.default.publisher(for: .selectProjectByNumber)) { notification in
             if let number = notification.userInfo?["number"] as? Int {
                 selectProjectByNumber(number)
@@ -566,6 +601,22 @@ struct MainWindowView: View {
         paneLayouts[path] = layout
 
         logger.info("Canvas auto-open: \(target.name) に canvas pane 追加 (port=\(port))")
+    }
+
+    /// VP-83 refinement 58: spatial focus 移動 (⌃←→↑↓)
+    private func focusPane(_ direction: PaneFocusDirection) {
+        guard let path = selectedProjectPath, var layout = paneLayouts[path] else { return }
+        guard let nextId = layout.nextLeafId(from: layout.focusedPaneId, direction: direction) else {
+            return
+        }
+        layout.focusedPaneId = nextId
+        paneLayouts[path] = layout
+    }
+
+    /// VP-83 refinement 58: focus 中の pane を minimize (toggle)
+    private func minimizeFocusedPane() {
+        guard let path = selectedProjectPath, let layout = paneLayouts[path] else { return }
+        minimizePane(path: path, paneId: layout.focusedPaneId)
     }
 
     /// VP-83 Phase 2.3: drag & drop 等で与えられた URL で preview pane を追加。
@@ -1102,55 +1153,60 @@ struct MainWindowView: View {
     // MARK: - プロジェクト選択ナビゲーション
 
     /// 前のプロジェクトを選択（⌘↑）— enabled プロジェクトのみ
+    /// ⌘↑ で前の Lane (flat index、Lead + Workers 全部)。VP-83 refinement 58
     private func selectPreviousProject() {
-        let enabled = enabledProjects
-        guard !enabled.isEmpty else { return }
+        let lanes = allLanePaths()
+        guard !lanes.isEmpty else { return }
         guard let current = selectedProjectPath else {
-            selectedProjectPath = enabled.last?.path
+            selectedProjectPath = lanes.last
             return
         }
-        guard let index = enabled.firstIndex(where: { $0.path == current }) else {
-            return // disabled 選択中は何もしない
-        }
-        guard index > 0 else {
-            selectedProjectPath = enabled.last?.path // 先頭でラップアラウンド
+        guard let index = lanes.firstIndex(of: current) else {
+            selectedProjectPath = lanes.last
             return
         }
-        selectedProjectPath = enabled[index - 1].path
+        selectedProjectPath = index > 0 ? lanes[index - 1] : lanes.last
     }
 
-    /// 次のプロジェクトを選択（⌘↓）— enabled プロジェクトのみ
+    /// ⌘↓ で次の Lane (flat index)。VP-83 refinement 58
     private func selectNextProject() {
-        let enabled = enabledProjects
-        guard !enabled.isEmpty else { return }
+        let lanes = allLanePaths()
+        guard !lanes.isEmpty else { return }
         guard let current = selectedProjectPath else {
-            selectedProjectPath = enabled.first?.path
+            selectedProjectPath = lanes.first
             return
         }
-        guard let index = enabled.firstIndex(where: { $0.path == current }) else {
-            return // disabled 選択中は何もしない
-        }
-        guard index < enabled.count - 1 else {
-            selectedProjectPath = enabled.first?.path // 末尾でラップアラウンド
+        guard let index = lanes.firstIndex(of: current) else {
+            selectedProjectPath = lanes.first
             return
         }
-        selectedProjectPath = enabled[index + 1].path
+        selectedProjectPath = index < lanes.count - 1 ? lanes[index + 1] : lanes.first
     }
 
-    /// ⌘1〜9 で enabled プロジェクトを番号で切り替え
+    /// VP-83 refinement 58: Lane flat (project の Lead + Workers、enabled project 順)
+    /// Project 選択 shortcut は Lane 一本化に伴い廃止、該当 handler は Lane flat 扱い。
+    private func allLanePaths() -> [String] {
+        var paths: [String] = []
+        for project in enabledProjects {
+            paths.append(project.path)
+            for worker in project.workers {
+                paths.append(worker.path)
+            }
+        }
+        return paths
+    }
+
+    /// ⌘1〜9 で Lane N を flat index で選択
     private func selectProjectByNumber(_ number: Int) {
-        let enabled = enabledProjects
-        let index = number - 1
-        guard index >= 0 && index < enabled.count else { return }
-        selectedProjectPath = enabled[index].path
+        selectLaneByNumber(number)
     }
 
-    /// ⌃1〜9 でフォーカス中プロジェクト内の Lane を番号で切り替え
+    /// Lane flat index による選択 (新仕様)
     private func selectLaneByNumber(_ number: Int) {
-        let lanes = currentLanes
+        let lanes = allLanePaths()
         let index = number - 1
         guard index >= 0 && index < lanes.count else { return }
-        selectedProjectPath = lanes[index].path
+        selectedProjectPath = lanes[index]
     }
 
     // MARK: - プロジェクト CRUD（TheWorld API 経由）
@@ -1647,4 +1703,13 @@ extension Notification.Name {
     static let openDesignInspector = Notification.Name("VP.openDesignInspector")
     /// 統合 Notification (kind で分岐、build 型推論軽減)
     static let vpAction = Notification.Name("VP.action")
+
+    // VP-83 refinement 58: Pane 操作 direct chord (⌃)
+    static let paneFocusLeft = Notification.Name("VP.paneFocusLeft")
+    static let paneFocusRight = Notification.Name("VP.paneFocusRight")
+    static let paneFocusUp = Notification.Name("VP.paneFocusUp")
+    static let paneFocusDown = Notification.Name("VP.paneFocusDown")
+    static let paneSplitAgent = Notification.Name("VP.paneSplitAgent")
+    static let paneCloseFocused = Notification.Name("VP.paneCloseFocused")
+    static let paneMinimizeToggle = Notification.Name("VP.paneMinimizeToggle")
 }

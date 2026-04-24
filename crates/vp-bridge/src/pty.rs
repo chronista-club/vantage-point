@@ -343,9 +343,6 @@ impl BridgePty {
         let mut cells: Vec<(u16, u16, Cell)> = Vec::new();
         // ワイドキャラクター位置を記録（ratatui Cell にはこの情報がないため別途保持）
         let mut wide_positions: Vec<(u16, u16)> = Vec::new();
-        // CJK ambiguous 幅で wide 扱いに昇格したセルが消費する右隣セル（描画スキップ）
-        let mut consumed_by_ambiguous_wide: std::collections::HashSet<(u16, u16)> =
-            std::collections::HashSet::new();
 
         for line_idx in 0..state.lines {
             let line = Line(line_idx as i32 - display_offset as i32);
@@ -358,22 +355,17 @@ impl BridgePty {
                     continue;
                 }
 
-                // CJK ambiguous 幅で右隣を消費したセルはスキップ
-                if consumed_by_ambiguous_wide.contains(&(col_idx as u16, line_idx as u16)) {
-                    continue;
-                }
-
                 let mut is_wide = vte_cell.flags.contains(CellFlags::WIDE_CHAR);
 
-                // ambiguous 幅文字（まる数字・★・◯・矢印・ギリシャ文字 等）を CJK 文脈で wide 扱いに昇格
-                // alacritty_terminal は UAX #11 default の width() を使うため ambiguous=1 だが、
-                // CJK フォント描画では glyph 幅が cell の 2 倍になり右側が見切れる。
+                // VP-83 refinement 57: ambiguous 幅文字 (⌘ ⇧ → ● 等) の wide 昇格は
+                // is_wide flag のみ立てる。右隣セル consume は以前ここで行っていたが、
+                // ratatui cell[n+1] (次の実文字) を skip する破壊的副作用があり廃止。
+                //
+                // narrow cell 幅に CJK glyph を描画する責務は Swift renderer 側に移管:
+                // TerminalView.isAmbiguousWideCodepoint で判定、Hiragino 等で描画するが
+                // cell 幅は 1 のまま (glyph overflow 部は隣 cell の glyph と overlap、実用上問題薄)。
                 if !is_wide && should_promote_ambiguous_to_wide(vte_cell.c) {
                     is_wide = true;
-                    // 右隣セルを消費（次のループ反復で skip）
-                    if col_idx + 1 < state.cols {
-                        consumed_by_ambiguous_wide.insert((col_idx as u16 + 1, line_idx as u16));
-                    }
                 }
 
                 if is_wide {
