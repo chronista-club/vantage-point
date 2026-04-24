@@ -55,3 +55,6 @@ shell-words = "1.1"
 # VP-93 Step 2a: daemon 経由 terminal (WebSocket client)
 tokio-tungstenite = "0.24"
 futures-util = "0.3"
+
+# Terminal clipboard (native OS clipboard fallback for WebView2)
+arboard = "3"

@@ -291,6 +291,20 @@ pub fn handle_ipc_message(msg: &str, pty: &TerminalHandle, proxy: &EventLoopProx
             tracing::info!("xterm.js ready → flush buffered PTY output");
             let _ = proxy.send_event(AppEvent::XtermReady);
         }
+        Some("copy") => {
+            // navigator.clipboard が使えなかった時の fallback: arboard で OS clipboard 直書き
+            if let Some(data) = parsed.get("d").and_then(|v| v.as_str()) {
+                match arboard::Clipboard::new() {
+                    Ok(mut cb) => match cb.set_text(data) {
+                        Ok(_) => {
+                            tracing::info!("[clipboard] copy via arboard: {} chars", data.len())
+                        }
+                        Err(e) => tracing::warn!("[clipboard] arboard set_text failed: {}", e),
+                    },
+                    Err(e) => tracing::warn!("[clipboard] arboard init failed: {}", e),
+                }
+            }
+        }
         Some("debug") => {
             if let Some(msg) = parsed.get("msg").and_then(|v| v.as_str()) {
                 tracing::info!("[xterm debug] {}", msg);
@@ -447,29 +461,70 @@ body{overflow:hidden;}
   setTimeout(focusTerm, 500);
 
   // ----- Copy / Paste -----
-  // terminal 慣習: Ctrl+Shift+C で選択コピー、Ctrl+Shift+V でペースト
-  // (Ctrl+C は SIGINT として shell に送る)。右クリックも paste にマップ。
-  // Mac の Cmd+C/V も拾う。
+  // WebView2 は Ctrl+Shift+C を DevTools Element Inspector として予約しているので、
+  // 以下の多段バインディングで対応:
+  //   - Ctrl+Insert / Cmd+C          → copy 選択
+  //   - Shift+Insert / Ctrl+Shift+V  → paste (後者は DevTools 衝突なし)
+  //   - Ctrl+C は選択あれば copy / 無ければ SIGINT (smart)
+  //   - 右クリック                    → paste
+  // 念のため Ctrl+Shift+C の WebView default を capture phase で封じる試みも入れる。
   const dbg = (msg) => window.ipc.postMessage(JSON.stringify({t:'debug', msg: msg}));
+
+  const doCopy = () => {
+    const sel = term.getSelection();
+    dbg('doCopy called: sel len=' + (sel ? sel.length : 0));
+    if (!sel) return false;
+    // 1st: navigator.clipboard.writeText
+    navigator.clipboard.writeText(sel)
+      .then(() => dbg('copy ok via clipboard API: ' + sel.length + ' chars'))
+      .catch((err) => {
+        dbg('copy clipboard API failed: ' + err + ' → IPC fallback');
+        // 2nd: IPC → Rust arboard
+        window.ipc.postMessage(JSON.stringify({t:'copy', d: sel}));
+      });
+    return true;
+  };
+  const doPaste = () => {
+    navigator.clipboard.readText()
+      .then((text) => { if (text) term.paste(text); })
+      .catch((err) => dbg('paste failed: ' + err));
+  };
+
+  // WebView の Ctrl+Shift+C (Element Inspector) を capture phase で吸収試行。
+  // (効かないブラウザは素通り、その場合は他 binding に逃げてもらう)
+  window.addEventListener('keydown', (e) => {
+    if (e.ctrlKey && e.shiftKey && (e.key === 'C' || e.key === 'c')) {
+      e.preventDefault();
+      e.stopPropagation();
+      doCopy();
+    }
+  }, true);
 
   term.attachCustomKeyEventHandler((e) => {
     if (e.type !== 'keydown') return true;
     const key = (e.key || '').toLowerCase();
-    const modCopy = (e.ctrlKey && e.shiftKey) || e.metaKey;
-    if (modCopy && key === 'c') {
-      const sel = term.getSelection();
-      if (sel) {
-        navigator.clipboard.writeText(sel)
-          .then(() => dbg('copy ok: ' + sel.length + ' chars'))
-          .catch((err) => dbg('copy failed: ' + err));
-      }
+    // すべての修飾キー付き keydown を log (診断用)
+    if (e.ctrlKey || e.shiftKey || e.metaKey) {
+      dbg('keydown ctrl=' + e.ctrlKey + ' shift=' + e.shiftKey + ' meta=' + e.metaKey + ' key=' + e.key);
+    }
+    // Ctrl+Insert / Cmd+C: copy
+    if ((e.ctrlKey && e.key === 'Insert' && !e.shiftKey) || (e.metaKey && key === 'c')) {
+      if (doCopy()) return false;
+    }
+    // Shift+Insert / Ctrl+Shift+V / Cmd+V: paste
+    if ((e.shiftKey && e.key === 'Insert' && !e.ctrlKey) ||
+        (e.ctrlKey && e.shiftKey && key === 'v') ||
+        (e.metaKey && key === 'v')) {
+      doPaste();
       return false;
     }
-    if (modCopy && key === 'v') {
-      navigator.clipboard.readText()
-        .then((text) => { if (text) term.paste(text); })
-        .catch((err) => dbg('paste failed: ' + err));
-      return false;
+    // smart Ctrl+C: 選択中なら copy、無ければ SIGINT (= xterm にそのまま流す)
+    if (e.ctrlKey && !e.shiftKey && !e.metaKey && key === 'c') {
+      if (term.hasSelection()) {
+        doCopy();
+        term.clearSelection();
+        return false;
+      }
     }
     return true;
   });
@@ -477,9 +532,20 @@ body{overflow:hidden;}
   // 右クリック = paste (xterm のデフォルト context menu を抑制)
   container.addEventListener('contextmenu', (e) => {
     e.preventDefault();
-    navigator.clipboard.readText()
-      .then((text) => { if (text) term.paste(text); })
-      .catch((err) => dbg('rclick paste failed: ' + err));
+    doPaste();
+  });
+
+  // Copy-on-select: Windows Terminal 風 — mouseup 時に selection があれば自動 copy
+  // (ドラッグ中の連続発火を避けるため mouseup のみ hook、keyboard 選択拡張は対象外)
+  container.addEventListener('mouseup', () => {
+    // xterm の selection finalization を待って少し後に評価
+    setTimeout(() => {
+      const sel = term.getSelection();
+      if (sel && sel.length > 0) {
+        dbg('copy-on-select: ' + sel.length + ' chars');
+        doCopy();
+      }
+    }, 0);
   });
 })();
 </script>
