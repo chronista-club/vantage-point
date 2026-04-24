@@ -464,11 +464,18 @@ impl Handle {
     }
 
     async fn ack_by_id(&self, msg_id: &str) {
-        let Some(ws) = &self.whitesnake else { return };
+        let Some(ws) = &self.whitesnake else {
+            // Whitesnake 未注入でも history は更新（観測用）
+            self.history.mark_acked(msg_id).await;
+            return;
+        };
         let key = format!("{}{}", MAILBOX_KEY_PREFIX, msg_id);
         if let Err(e) = ws.remove(MAILBOX_NAMESPACE, &key).await {
             tracing::warn!("Msgbox: persistent ack failed id={} err={}", msg_id, e);
+            return;
         }
+        // 永続削除成功時のみ acked 記録
+        self.history.mark_acked(msg_id).await;
     }
 }
 

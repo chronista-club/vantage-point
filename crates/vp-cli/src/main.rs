@@ -266,8 +266,7 @@ fn execute_ws(cmd: WsCommands) -> Result<()> {
 /// parent project は **config から最長一致** で解決 (cwd 不要)。
 fn resync_all_workers() -> Result<()> {
     use std::fs;
-    let home = std::env::var("HOME")
-        .map_err(|_| anyhow::anyhow!("HOME env 未設定"))?;
+    let home = std::env::var("HOME").map_err(|_| anyhow::anyhow!("HOME env 未設定"))?;
     let workers_dir = std::path::PathBuf::from(home).join(".local/share/ccws");
     if !workers_dir.exists() {
         println!("No ccws workers found at {}", workers_dir.display());
