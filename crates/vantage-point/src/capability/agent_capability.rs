@@ -379,6 +379,31 @@ impl Capability for AgentCapability {
         self.state
     }
 
+    /// VP-83 Stand 自己診断 (2026-04-25) — Heaven's Door 📖 の実行時 snapshot
+    ///
+    /// Agent は Claude CLI の orchestrator、観測ポイント:
+    /// - working_dir (実行 project dir)
+    /// - event_bus 接続 flag (初期化完了の指標)
+    /// - run_state の summary (running / idle / error)
+    /// - current_task の active flag
+    fn diagnose(&self) -> crate::capability::DiagnosticReport {
+        // run_state は async なので read() 結果を待てない (diagnose は sync trait method)。
+        // 同期読みだけ — current_task / event_bus の状態は sync で判断可能。
+        let details = serde_json::json!({
+            "working_dir": self.config.working_dir,
+            "model": self.config.model,
+            "has_event_bus": self.event_bus.is_some(),
+            "has_current_task": self.current_task.is_some(),
+            "stand_metaphor": "Heaven's Door",
+        });
+        crate::capability::DiagnosticReport::with_details(
+            self.name(),
+            self.version(),
+            self.state(),
+            details,
+        )
+    }
+
     async fn initialize(&mut self, ctx: &CapabilityContext) -> CapabilityResult<()> {
         tracing::info!("AgentCapability initializing");
 

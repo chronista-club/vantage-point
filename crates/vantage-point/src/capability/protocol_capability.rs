@@ -249,6 +249,22 @@ impl Capability for ProtocolCapability {
         self.state
     }
 
+    /// VP-83 Stand 自己診断 (2026-04-25) — Protocol layer の snapshot
+    /// 観測ポイント: subscriber 数、subscription_id、broadcast receiver count
+    fn diagnose(&self) -> crate::capability::DiagnosticReport {
+        let details = serde_json::json!({
+            "subscription_id": self.subscription_id,
+            "broadcast_receiver_count": self.protocol_tx.receiver_count(),
+            "stand_metaphor": "Protocol",
+        });
+        crate::capability::DiagnosticReport::with_details(
+            self.name(),
+            self.version(),
+            self.state(),
+            details,
+        )
+    }
+
     async fn initialize(&mut self, _ctx: &CapabilityContext) -> CapabilityResult<()> {
         tracing::info!("ProtocolCapability initializing");
         self.state = CapabilityState::Idle;
