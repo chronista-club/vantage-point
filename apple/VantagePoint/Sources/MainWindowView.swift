@@ -186,6 +186,8 @@ struct MainWindowView: View {
             // メインエリア（ターミナル + タブ）
             VStack(spacing: 0) {
                 // Project Tab バー — サイドバー非表示時 or 手動トグルで表示
+                // VP-83 refinement 60: sidebar 非表示時、window の traffic light (赤/黄/緑 3 ボタン)
+                // と Tab Bar が被るため、sidebar なし時は leading に 78pt 空ける。
                 if showProjectTabBar {
                     ProjectTabBar(
                         projects: enabledProjects,
@@ -198,6 +200,7 @@ struct MainWindowView: View {
                         selectedBranch: selectedProject?.branch,
                         laneCount: selectedProject.map { 1 + $0.workers.count }
                     )
+                    .padding(.leading, sidebarVisible ? 0 : 78)
                 }
 
                 // Lane Tab バー — フォーカス中プロジェクトの Lane 切替 (VP-51)
