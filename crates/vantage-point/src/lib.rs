@@ -14,6 +14,7 @@ pub mod capability;
 pub mod cli;
 pub mod commands;
 pub mod config;
+pub mod creo;
 pub mod daemon;
 pub mod db;
 pub mod discovery;
