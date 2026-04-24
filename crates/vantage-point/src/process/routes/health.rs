@@ -192,6 +192,43 @@ pub async fn msgbox_send_handler(
     }
 }
 
+/// Msgbox 受信 debug endpoint (動作確認用)
+///
+/// state.mcp_msgbox の Handle から 1 件 recv する。
+/// recv() 内で history.mark_received が走るため、/api/diagnose の recent
+/// で state: "received" + received_at_ms を観測できる。
+#[derive(serde::Deserialize, Default)]
+pub struct MsgboxRecvRequest {
+    /// タイムアウト秒（デフォルト 2 秒、最大 30 秒）
+    #[serde(default)]
+    pub timeout: Option<u64>,
+    /// from フィルタ（指定時は recv_matching）
+    #[serde(default)]
+    pub from: Option<String>,
+}
+
+pub async fn msgbox_recv_handler(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<MsgboxRecvRequest>,
+) -> Json<serde_json::Value> {
+    let timeout_secs = req.timeout.unwrap_or(2).min(30);
+    let Some(ref mcp) = state.mcp_msgbox else {
+        return Json(serde_json::json!({"error": "MCP msgbox not initialized"}));
+    };
+    let result = tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), async {
+        match req.from {
+            Some(filter) => mcp.recv_matching(move |m| m.from == filter).await,
+            None => mcp.recv().await,
+        }
+    })
+    .await;
+    match result {
+        Ok(Some(msg)) => Json(serde_json::json!({"status": "ok", "message": msg})),
+        Ok(None) => Json(serde_json::json!({"status": "closed", "message": null})),
+        Err(_) => Json(serde_json::json!({"status": "timeout", "message": null})),
+    }
+}
+
 /// Stand 自己診断 (2026-04-25 user 発案) — ProcessCapabilities の各 Stand の
 /// diagnose() を集約。side-effect-free、いつでも呼び出し可能。
 ///
