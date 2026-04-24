@@ -446,11 +446,41 @@ body{overflow:hidden;}
   window.ipc.postMessage(JSON.stringify({t:'ready'}));
   sendResize();
 
+  // DevTools console から term を手動検査できるよう露出
+  window.__vpTerm = term;
+
+  // OSC 52 (clipboard) intercept
+  //   PTY 側 app (Claude Code, tmux, vim 等) が mouse reporting 下で自前 selection を
+  //   実装し、"copy to clipboard" リクエストとして OSC 52 を送ってくる。
+  //   xterm.js 自体は OSC 52 を clipboard に書かない (security の為) ので、
+  //   ここで intercept して Rust に飛ばし arboard で OS clipboard に反映する。
+  //
+  //   OSC 52 format: `ESC ] 52 ; Pc ; Pd ST`
+  //     Pc: selection target ('c' = clipboard, 'p' = primary, 複数可)
+  //     Pd: base64 payload (or '?' で query)
+  //   handler が受け取る `data` は "Pc;Pd" 部分のみ。
+  term.parser.registerOscHandler(52, (data) => {
+    const idx = data.indexOf(';');
+    if (idx < 0) return true;
+    const pd = data.slice(idx + 1);
+    if (pd === '?' || pd.length === 0) return true; // query 応答は未対応、空は無視
+    try {
+      const binary = atob(pd);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      const text = new TextDecoder('utf-8').decode(bytes);
+      window.ipc.postMessage(JSON.stringify({t:'copy', d: text}));
+      window.ipc.postMessage(JSON.stringify({t:'debug', msg: 'OSC 52 copy: ' + text.length + ' chars'}));
+    } catch (e) {
+      window.ipc.postMessage(JSON.stringify({t:'debug', msg: 'OSC 52 decode error: ' + e.message}));
+    }
+    return true;
+  });
+
   // WebView2 + child WebView で focus が弱いので、click / pointerdown で明示 focus
   const container = document.getElementById('t');
   const focusTerm = () => {
     try { term.focus(); } catch (_) {}
-    window.ipc.postMessage(JSON.stringify({t:'debug', msg: 'focus requested'}));
   };
   container.addEventListener('mousedown', focusTerm);
   container.addEventListener('click', focusTerm);
@@ -472,16 +502,11 @@ body{overflow:hidden;}
 
   const doCopy = () => {
     const sel = term.getSelection();
-    dbg('doCopy called: sel len=' + (sel ? sel.length : 0));
     if (!sel) return false;
-    // 1st: navigator.clipboard.writeText
-    navigator.clipboard.writeText(sel)
-      .then(() => dbg('copy ok via clipboard API: ' + sel.length + ' chars'))
-      .catch((err) => {
-        dbg('copy clipboard API failed: ' + err + ' → IPC fallback');
-        // 2nd: IPC → Rust arboard
-        window.ipc.postMessage(JSON.stringify({t:'copy', d: sel}));
-      });
+    // 1st: navigator.clipboard.writeText / 2nd: IPC → Rust arboard fallback
+    navigator.clipboard.writeText(sel).catch(() => {
+      window.ipc.postMessage(JSON.stringify({t:'copy', d: sel}));
+    });
     return true;
   };
   const doPaste = () => {
@@ -503,10 +528,6 @@ body{overflow:hidden;}
   term.attachCustomKeyEventHandler((e) => {
     if (e.type !== 'keydown') return true;
     const key = (e.key || '').toLowerCase();
-    // すべての修飾キー付き keydown を log (診断用)
-    if (e.ctrlKey || e.shiftKey || e.metaKey) {
-      dbg('keydown ctrl=' + e.ctrlKey + ' shift=' + e.shiftKey + ' meta=' + e.metaKey + ' key=' + e.key);
-    }
     // Ctrl+Insert / Cmd+C: copy
     if ((e.ctrlKey && e.key === 'Insert' && !e.shiftKey) || (e.metaKey && key === 'c')) {
       if (doCopy()) return false;
@@ -535,16 +556,12 @@ body{overflow:hidden;}
     doPaste();
   });
 
-  // Copy-on-select: Windows Terminal 風 — mouseup 時に selection があれば自動 copy
-  // (ドラッグ中の連続発火を避けるため mouseup のみ hook、keyboard 選択拡張は対象外)
+  // Copy-on-select: Windows Terminal 風 — mouseup 時に xterm 内部 selection があれば自動 copy
+  //   (PTY app が mouse reporting 下で自前 selection する場合は OSC 52 handler で別途処理)
   container.addEventListener('mouseup', () => {
-    // xterm の selection finalization を待って少し後に評価
     setTimeout(() => {
       const sel = term.getSelection();
-      if (sel && sel.length > 0) {
-        dbg('copy-on-select: ' + sel.length + ' chars');
-        doCopy();
-      }
+      if (sel && sel.length > 0) doCopy();
     }, 0);
   });
 })();
