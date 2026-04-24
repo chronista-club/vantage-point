@@ -118,7 +118,7 @@ pub struct ProcessManagerCapability {
     /// vpバイナリパス
     vp_binary_path: Option<PathBuf>,
     /// SurrealDB クライアント（Some なら DB に二重書き込み）
-    vpdb: Option<crate::db::SharedVpDb>,
+    vpdb: Option<vp_db::SharedVpDb>,
 }
 
 impl ProcessManagerCapability {
@@ -137,7 +137,7 @@ impl ProcessManagerCapability {
     }
 
     /// SurrealDB クライアントを設定
-    pub fn set_vpdb(&mut self, vpdb: crate::db::SharedVpDb) {
+    pub fn set_vpdb(&mut self, vpdb: vp_db::SharedVpDb) {
         self.vpdb = Some(vpdb);
     }
 

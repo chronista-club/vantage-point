@@ -1,14 +1,15 @@
-//! SurrealDB 統合モジュール
+//! SurrealDB 統合モジュール (embed mode)
 //!
-//! VP の状態管理を SurrealDB サーバーに統一する。
-//! SurrealDB は独立デーモンとして起動し（`vp db start` / TheWorld 起動時に自動起動）、
-//! 全クライアント（TheWorld, SP, Native App, Canvas）が同一 DB に接続する。
-//! TheWorld が停止しても SurrealDB は継続稼働する。
+//! VP の状態管理を **プロセス内の SurrealDB** に統一する。
+//! surrealkv backend を使い、外部 `surreal` バイナリは不要。
 //!
 //! ## 接続方式
 //!
-//! - 本番: WebSocket (`ws://[::1]:32001`) で外部サーバーに接続
-//! - テスト: `kv-mem` で in-memory embedded DB を使用
+//! - 本番: `surrealkv://<data_dir>` で in-process embedded DB
+//! - テスト: `kv-mem` で in-memory embedded DB
+//!
+//! 単一プロセスが DB を保持する single-writer モデル。
+//! 複数 Process が同時に書くユースケースは現状ない (TheWorld が集約点)。
 //!
 //! ## テーブル設計
 //!
@@ -20,16 +21,15 @@
 //! - `prompts`: User Prompt
 //! - `notifications`: CC 通知
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Result;
 use surrealdb::Surreal;
 use surrealdb::engine::any::Any;
-use surrealdb::opt::auth::Root;
 
-/// SurrealDB のデフォルトポート
-pub const SURREAL_PORT: u16 = 32001;
+// LIVE SELECT の Action enum を caller に露出 (downstream が surrealdb 直接依存しなくて済むように)
+pub use surrealdb::types::Action;
 
 /// SurrealDB の名前空間
 const NS: &str = "vp";
@@ -37,81 +37,17 @@ const NS: &str = "vp";
 /// SurrealDB のデータベース名
 const DB_NAME: &str = "vp";
 
-/// SurrealDB のデータディレクトリ
-fn db_data_dir() -> PathBuf {
+/// SurrealDB のデータディレクトリ (デフォルト: `$XDG_CONFIG_HOME/vantage/db`)
+pub fn db_data_dir() -> PathBuf {
     dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
         .join("vantage")
         .join("db")
 }
 
-/// DB 認証パスワードファイルのパス
-fn db_pass_path() -> PathBuf {
-    dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("vantage")
-        .join("db_pass")
-}
-
-/// DB 認証パスワードを取得（なければランダム生成して保存）
-pub fn ensure_db_password() -> String {
-    let path = db_pass_path();
-    if let Ok(pass) = std::fs::read_to_string(&path) {
-        let pass = pass.trim().to_string();
-        if !pass.is_empty() {
-            return pass;
-        }
-    }
-
-    // ランダムパスワードを生成
-    let pass = uuid::Uuid::new_v4().to_string();
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-
-    // 0600 パーミッションで排他作成（create_new で二重生成を防止）
-    #[cfg(unix)]
-    {
-        use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&path)
-        {
-            Ok(mut f) => {
-                let _ = f.write_all(pass.as_bytes());
-            }
-            Err(_) => {
-                // 競合: 他プロセスが先に書いた。再度読み込む
-                if let Ok(existing) = std::fs::read_to_string(&path) {
-                    let existing = existing.trim().to_string();
-                    if !existing.is_empty() {
-                        return existing;
-                    }
-                }
-                // 再読み込みも失敗した場合: 今回生成したパスワードを使い続けるが、
-                // 永続化できていないため次回起動時に再生成される。警告を残す。
-                tracing::warn!(
-                    "SurrealDB パスワードの永続化に失敗（競合）。セッション限定パスワードを使用: {}",
-                    path.display()
-                );
-            }
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = std::fs::write(&path, &pass);
-    }
-
-    tracing::info!("SurrealDB パスワード生成: {}", path.display());
-    pass
-}
-
 /// VP のデータベースクライアント
 ///
-/// `Surreal<Any>` を使うことで WebSocket (本番) と kv-mem (テスト) の両方に対応。
+/// `Surreal<Any>` を使うことで embedded (surrealkv) と kv-mem (テスト) の両方に対応。
 pub struct VpDb {
     db: Surreal<Any>,
 }
@@ -120,52 +56,20 @@ pub struct VpDb {
 pub type SharedVpDb = Arc<VpDb>;
 
 impl VpDb {
-    /// WebSocket で SurrealDB サーバーに接続
+    /// ローカルファイルシステム上の surrealkv DB を開いて接続する
     ///
-    /// リトライ付き（最大 `max_retries` 回、100ms 間隔）
-    pub async fn connect(port: u16, password: &str, max_retries: u32) -> Result<Self> {
-        let endpoint = format!("ws://[::1]:{}", port);
-        let mut last_err = None;
-
-        for attempt in 0..=max_retries {
-            if attempt > 0 {
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            }
-
-            match surrealdb::engine::any::connect(&endpoint).await {
-                Ok(db) => {
-                    // root ユーザーで認証
-                    db.signin(Root {
-                        username: "root".to_string(),
-                        password: password.to_string(),
-                    })
-                    .await?;
-
-                    // 名前空間・DB を選択
-                    db.use_ns(NS).use_db(DB_NAME).await?;
-
-                    tracing::info!("SurrealDB 接続成功 ({}), attempt={}", endpoint, attempt + 1);
-                    return Ok(Self { db });
-                }
-                Err(e) => {
-                    last_err = Some(e);
-                    if attempt < max_retries {
-                        tracing::debug!(
-                            "SurrealDB 接続リトライ {}/{}: {}",
-                            attempt + 1,
-                            max_retries,
-                            last_err.as_ref().unwrap()
-                        );
-                    }
-                }
-            }
-        }
-
-        Err(anyhow::anyhow!(
-            "SurrealDB 接続失敗 ({}回リトライ): {}",
-            max_retries,
-            last_err.unwrap()
-        ))
+    /// - `data_dir` が無ければ作成
+    /// - 認証なし (in-process のみアクセス可能なのでパスワード不要)
+    pub async fn connect_embedded(data_dir: &Path) -> Result<Self> {
+        std::fs::create_dir_all(data_dir)
+            .map_err(|e| anyhow::anyhow!("DB data dir 作成失敗 ({}): {}", data_dir.display(), e))?;
+        let endpoint = format!("surrealkv://{}", data_dir.display());
+        let db = surrealdb::engine::any::connect(&endpoint)
+            .await
+            .map_err(|e| anyhow::anyhow!("SurrealDB embedded 接続失敗 ({}): {}", endpoint, e))?;
+        db.use_ns(NS).use_db(DB_NAME).await?;
+        tracing::info!("SurrealDB 接続成功 (embedded: {})", endpoint);
+        Ok(Self { db })
     }
 
     /// kv-mem (in-memory) で接続（テスト用）
@@ -498,137 +402,6 @@ impl VpDb {
 }
 
 // =============================================================================
-// SurrealDB デーモン管理（PID ファイルベース）
-//
-// TheWorld と同様の独立デーモン方式。
-// - 起動時: DB が上がっていなければ自動起動
-// - 終了時: DB は止めない（独立デーモンとして生存し続ける）
-// - 再起動: `vp db restart` でいつでも再起動可能
-// =============================================================================
-
-/// SurrealDB の PID ファイルパス
-fn surreal_pid_path() -> PathBuf {
-    PathBuf::from("/tmp/vantage-point/surreal.pid")
-}
-
-/// SurrealDB が稼働中か確認（PID ファイルベース）
-pub fn is_surreal_running() -> Option<u32> {
-    let path = surreal_pid_path();
-    let content = std::fs::read_to_string(&path).ok()?;
-    let pid: u32 = content.trim().parse().ok()?;
-
-    // EPERM (権限なし) はプロセス存在 → alive 扱い。platform::process_alive が判定。
-    let alive = crate::platform::process_alive(pid);
-    if alive {
-        Some(pid)
-    } else {
-        // ゴースト PID ファイルを掃除
-        let _ = std::fs::remove_file(&path);
-        None
-    }
-}
-
-/// SurrealDB がまだ起動していなければバックグラウンドで自動起動
-///
-/// 既に稼働中ならその PID を返す。
-pub fn ensure_surreal_running(port: u16, password: &str) -> Result<u32> {
-    if let Some(pid) = is_surreal_running() {
-        tracing::info!("SurrealDB は既に起動中 (pid={})", pid);
-        return Ok(pid);
-    }
-
-    let data_dir = db_data_dir();
-    std::fs::create_dir_all(&data_dir)?;
-
-    let bind_addr = format!("[::1]:{}", port);
-    let data_path = format!("rocksdb:{}", data_dir.display());
-
-    tracing::info!(
-        "SurrealDB サーバー起動: bind={}, path={}",
-        bind_addr,
-        data_path
-    );
-
-    let child = std::process::Command::new("surreal")
-        .args([
-            "start",
-            "--bind",
-            &bind_addr,
-            "--path",
-            &data_path,
-            "--user",
-            "root",
-            "--pass",
-            password,
-            "--log",
-            "warn",
-            "--no-banner",
-        ])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map_err(|e| {
-            anyhow::anyhow!(
-                "surreal コマンドが見つかりません。`brew install surrealdb/tap/surreal` でインストールしてください: {}",
-                e
-            )
-        })?;
-
-    let pid = child.id();
-
-    // child をここでスコープ外に出して drop する。
-    // Rust の Child::drop は wait() を呼ばないため、プロセスはデタッチされて独立デーモンとして継続する。
-    // （意図的。stop は PID ファイル + SIGTERM/SIGKILL で行う）
-    drop(child);
-
-    // PID ファイルに書き出し
-    let pid_path = surreal_pid_path();
-    if let Some(parent) = pid_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let _ = std::fs::write(&pid_path, pid.to_string());
-
-    tracing::info!("SurrealDB サーバー起動 (pid={})", pid);
-    Ok(pid)
-}
-
-/// SurrealDB デーモンを停止
-///
-/// SIGTERM → 2秒待ち → SIGKILL のフォールバック付き。
-pub fn stop_surreal() -> Option<u32> {
-    let pid = is_surreal_running()?;
-    tracing::info!("SurrealDB サーバー停止中 (pid={})", pid);
-
-    // SIGTERM を送信
-    crate::platform::process_terminate(pid);
-
-    // 最大 2 秒待つ
-    for _ in 0..20 {
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        if !crate::platform::process_alive(pid) {
-            let _ = std::fs::remove_file(surreal_pid_path());
-            tracing::info!("SurrealDB サーバー停止完了 (pid={})", pid);
-            return Some(pid);
-        }
-    }
-
-    // タイムアウト → SIGKILL
-    tracing::warn!("SurrealDB SIGTERM タイムアウト、SIGKILL (pid={})", pid);
-    crate::platform::process_kill(pid);
-    let _ = std::fs::remove_file(surreal_pid_path());
-    Some(pid)
-}
-
-/// SurrealDB デーモンを再起動
-pub fn restart_surreal(port: u16, password: &str) -> Result<u32> {
-    stop_surreal();
-    // 停止完了を少し待つ
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    ensure_surreal_running(port, password)
-}
-
-// =============================================================================
 // スキーマ定義 SQL
 // =============================================================================
 
@@ -740,7 +513,6 @@ mod tests {
 
     #[test]
     fn test_constants() {
-        assert_eq!(SURREAL_PORT, 32001);
         assert_eq!(NS, "vp");
         assert_eq!(DB_NAME, "vp");
     }

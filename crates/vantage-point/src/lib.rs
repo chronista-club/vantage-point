@@ -16,7 +16,6 @@ pub mod commands;
 pub mod config;
 pub mod creo;
 pub mod daemon;
-pub mod db;
 pub mod discovery;
 pub mod file_watcher;
 pub mod mcp;

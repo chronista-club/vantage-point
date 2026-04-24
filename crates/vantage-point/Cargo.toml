@@ -111,8 +111,9 @@ regex = "1"
 # (msgbox / Mailbox は SurrealDB に統一)
 # rusqlite = { workspace = true }
 
-# SurrealDB (状態管理 + Mailbox の統一データベース)
-surrealdb = { workspace = true }
+# SurrealDB を touch する部分は vp-db crate に隔離
+# (surrealdb 本体が重いので、non-DB 変更時の再 compile を避ける)
+vp-db = { path = "../vp-db" }
 
 # Terminal emulation (VT parser + grid state)
 alacritty_terminal = "0.25"

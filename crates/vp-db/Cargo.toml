@@ -1,0 +1,37 @@
+[package]
+name = "vp-db"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Vantage Point 用 SurrealDB 統合レイヤ (VpDb / schema / CRUD)"
+
+[lib]
+name = "vp_db"
+path = "src/lib.rs"
+
+[dependencies]
+# Async runtime
+tokio = { workspace = true }
+
+# SurrealDB (本体)
+surrealdb = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Date/Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Config dir (db data dir の置き場)
+dirs = "6"
+
+[dev-dependencies]
+tempfile = "3"

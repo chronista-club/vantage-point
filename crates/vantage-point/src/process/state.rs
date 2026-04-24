@@ -148,7 +148,7 @@ pub(crate) struct AppState {
     /// MCP 用 Msgbox ハンドル（VP-24: MCP → Capability への Msgbox 配信）
     pub mcp_msgbox: Option<Handle>,
     /// SurrealDB クライアント（VP-21: 状態管理の DB 統一）
-    pub vpdb: Option<crate::db::SharedVpDb>,
+    pub vpdb: Option<vp_db::SharedVpDb>,
     /// Whitesnake 🐍 — 汎用永続化レイヤー
     pub whitesnake: crate::capability::Whitesnake,
 }
