@@ -202,12 +202,15 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
             },
         );
 
-        // 🍇 Hermit Purple（MIDI）— Capability 有無
+        // 🍇 Hermit Purple（MIDI）— Capability 有無 (feature = "midi" 有効時のみ active)
+        #[cfg(feature = "midi")]
         let midi_status = if state.capabilities.midi.is_some() {
             "active"
         } else {
             "disabled"
         };
+        #[cfg(not(feature = "midi"))]
+        let midi_status = "disabled";
         map.insert(
             "hermit_purple".to_string(),
             StandStatus {

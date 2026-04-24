@@ -91,6 +91,7 @@ fn sp_start(
 
     let cap_config = crate::process::CapabilityConfig {
         project_dir: project_dir.to_string(),
+        #[cfg(feature = "midi")]
         midi_config: None,
         whitesnake: None,     // server.rs 側でポート別に注入
         remote_routing: None, // server.rs 側でポート別に注入

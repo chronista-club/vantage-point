@@ -6,7 +6,7 @@
 //!  PTY reader (stdout/stderr) ──► EventLoopProxy ──► UserEvent ──► evaluate_script ──► xterm.js.write
 //! ```
 //!
-//! Phase W2 MVP: vp-shell プロセス内で直接 PTY spawn (local PTY)。
+//! Phase W2 MVP: vp-app プロセス内で直接 PTY spawn (local PTY)。
 //! 後続 Phase で daemon (TheWorld) の WebSocket PTY channel 経由に差し替え予定。
 
 use std::io::Read;
@@ -132,7 +132,7 @@ pub fn spawn_shell(
     // reader thread: PTY master → EventLoopProxy
     let reader = pair.master.try_clone_reader().context("clone reader")?;
     thread::Builder::new()
-        .name("vp-shell-pty-reader".into())
+        .name("vp-app-pty-reader".into())
         .spawn(move || reader_loop(reader, proxy))
         .context("spawn reader thread")?;
 
@@ -320,7 +320,7 @@ pub const TERMINAL_HTML: &str = concat!(
 <html lang="en" data-theme="mint-dark">
 <head>
 <meta charset="utf-8">
-<title>vp-shell terminal</title>
+<title>vp-app terminal</title>
 <style>
 "#,
     include_str!("../assets/creo-tokens.css"),

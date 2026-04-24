@@ -19,6 +19,7 @@ pub mod db;
 pub mod discovery;
 pub mod file_watcher;
 pub mod mcp;
+#[cfg(feature = "midi")]
 pub mod midi;
 pub mod notify;
 pub mod platform;
@@ -28,8 +29,10 @@ pub mod protocol;
 pub mod resolve;
 pub mod stands;
 pub mod terminal;
+#[cfg(feature = "gui")]
 pub mod terminal_window;
 pub mod tmux;
 pub mod trace_log;
+#[cfg(feature = "gui")]
 pub mod tray;
 pub mod tui;

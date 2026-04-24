@@ -576,7 +576,8 @@ async fn send_channel_response(
 /// session / terminal / system の各チャネルハンドラーを登録し、
 /// 指定ポートで QUIC 接続を待ち受ける。
 pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
-    let addr = format!("[::1]:{}", port);
+    // [::]: dual-stack (IPv6 + IPv4) bind on all interfaces (WSL2/LAN 経由アクセス対応)
+    let addr = format!("[::]:{}", port);
     let server =
         ProtocolServer::with_identity("vp-daemon", env!("CARGO_PKG_VERSION"), "vantage-point");
 

@@ -23,6 +23,7 @@ use vantage_point::config::Config;
 use vantage_point::mcp;
 
 use commands::file_cmd::FileCommands;
+#[cfg(feature = "midi")]
 use commands::midi::MidiCommands;
 use commands::pane::PaneCommands;
 use commands::tmux_cmd::TmuxCommands;
@@ -85,6 +86,7 @@ enum Commands {
     Tmux(TmuxCommands),
 
     /// MIDIハードウェア操作
+    #[cfg(feature = "midi")]
     #[command(subcommand)]
     Midi(MidiCommands),
 
@@ -190,6 +192,7 @@ fn main() -> Result<()> {
         Commands::Hd(cmd) => commands::hd_cmd::execute(cmd, &config),
 
         Commands::Tmux(cmd) => commands::tmux_cmd::execute(cmd, &config),
+        #[cfg(feature = "midi")]
         Commands::Midi(cmd) => commands::midi::execute(cmd),
         Commands::Db(cmd) => commands::db_cmd::execute(cmd),
 

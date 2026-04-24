@@ -1,4 +1,4 @@
-//! Vantage Point native shell — ライブラリ層
+//! Vantage Point native app — ライブラリ層
 //!
 //! `main.rs` から使う app モジュール一式。
 //! クロスプラットフォーム (macOS / Windows / Linux) 対応を原則とする。

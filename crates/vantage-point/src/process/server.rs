@@ -398,7 +398,8 @@ pub async fn run(
         .layer(CorsLayer::permissive())
         .with_state(state.clone());
 
-    let addr: SocketAddr = format!("[::1]:{}", port).parse()?;
+    // [::]: dual-stack (IPv6 + IPv4) bind on all interfaces (WSL2/LAN 経由アクセス対応)
+    let addr: SocketAddr = format!("[::]:{}", port).parse()?;
     tracing::info!("Starting vp on http://{}", addr);
 
     // Auto-open browser
@@ -581,6 +582,7 @@ pub async fn run_world(port: u16) -> Result<()> {
         capabilities: Arc::new(
             ProcessCapabilities::new(CapabilityConfig {
                 project_dir: String::new(),
+                #[cfg(feature = "midi")]
                 midi_config: None,
                 whitesnake: None,     // World モードは永続 msgbox 不要
                 remote_routing: None, // World モードは cross-Process forward 不要
@@ -703,7 +705,9 @@ pub async fn run_world(port: u16) -> Result<()> {
         .layer(CorsLayer::permissive())
         .with_state(state);
 
-    let addr: SocketAddr = format!("[::1]:{}", port).parse()?;
+    // [::]: dual-stack (IPv6 + IPv4) bind on all interfaces
+    // (WSL2 → Windows vp-app は IPv4 経路なので [::1] loopback-only だと届かない)
+    let addr: SocketAddr = format!("[::]:{}", port).parse()?;
     tracing::info!("{} 起動 http://{}", crate::stands::WORLD.display(), addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
