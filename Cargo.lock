@@ -9251,11 +9251,14 @@ name = "vp-shell"
 version = "0.14.0"
 dependencies = [
  "anyhow",
+ "base64",
  "muda",
  "notify-rust",
+ "portable-pty",
  "reqwest",
  "serde",
  "serde_json",
+ "shell-words",
  "tao",
  "tokio",
  "tracing",

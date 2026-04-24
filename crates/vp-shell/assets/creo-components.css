@@ -1,0 +1,1139 @@
+/**
+ * creo-ui-web — components.css
+ *
+ * Generated: concat of packages/web/src/components/*.css.
+ * Requires tokens.css to be imported first (CSS variables).
+ *
+ * Bundled files: avatar.css, badge.css, button.css, card.css, dialog.css, form-controls.css, form-field.css, header.css, input.css, segmented.css, tabs.css
+ */
+
+/* ================ avatar.css ================ */
+/**
+ * Creo UI — Avatar component
+ *
+ * 円形 (or square) の image / initials container。
+ *
+ * Spec: docs/components/avatar.md
+ * Token: creo-ui-web/tokens.css (必須)
+ */
+
+.creo-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  position: relative;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-full);
+  background-color: var(--color-brand-primary-subtle);
+  color: var(--color-text-primary);
+  overflow: hidden;
+  vertical-align: middle;
+  user-select: none;
+}
+
+/* ---------- Sizes ---------- */
+
+.creo-avatar[data-size="sm"] {
+  width: 24px;
+  height: 24px;
+}
+.creo-avatar[data-size="md"],
+.creo-avatar:not([data-size]) {
+  width: 32px;
+  height: 32px;
+}
+.creo-avatar[data-size="lg"] {
+  width: var(--layout-target-tap);
+  height: var(--layout-target-tap);
+}
+.creo-avatar[data-size="xl"] {
+  width: 64px;
+  height: 64px;
+}
+
+/* ---------- Shapes ---------- */
+
+.creo-avatar[data-shape="square"] {
+  border-radius: var(--radius-sm);
+}
+
+/* ---------- Image ---------- */
+
+.creo-avatar-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/* ---------- Initials fallback ---------- */
+
+.creo-avatar-initials {
+  font-family: inherit;
+  font-size: var(--typography-size-sm);
+  font-weight: var(--typography-weight-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.creo-avatar[data-size="sm"] .creo-avatar-initials {
+  font-size: var(--typography-size-xs);
+}
+.creo-avatar[data-size="lg"] .creo-avatar-initials {
+  font-size: var(--typography-size-md);
+}
+.creo-avatar[data-size="xl"] .creo-avatar-initials {
+  font-size: var(--typography-size-lg);
+}
+
+/* ---------- Status dot ---------- */
+
+.creo-avatar-status {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 25%;
+  height: 25%;
+  min-width: 8px;
+  min-height: 8px;
+  border-radius: var(--radius-full);
+  border: 2px solid var(--color-surface-surface);
+  background-color: var(--color-text-tertiary); /* offline default */
+}
+.creo-avatar-status[data-status="online"] {
+  background-color: var(--color-semantic-success);
+}
+.creo-avatar-status[data-status="busy"] {
+  background-color: var(--color-semantic-error);
+}
+.creo-avatar-status[data-status="away"] {
+  background-color: var(--color-semantic-warning);
+}
+
+/* ================ badge.css ================ */
+/**
+ * Creo UI — Badge component (pill-shaped status / count / tag)
+ *
+ * Spec: docs/components/badge.md
+ * Token: creo-ui-web/tokens.css (必須)
+ */
+
+.creo-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px var(--spacing-xs);
+  font-family: inherit;
+  font-size: var(--typography-size-sm);
+  font-weight: var(--typography-weight-medium);
+  line-height: 1;
+  border-radius: var(--radius-full);
+  white-space: nowrap;
+
+  /* default: neutral variant */
+  background-color: var(--color-surface-bg-subtle);
+  color: var(--color-text-secondary);
+}
+
+/* ---------- Variants ---------- */
+
+.creo-badge[data-variant="brand"] {
+  background-color: var(--color-brand-primary-subtle);
+  color: var(--color-brand-primary);
+}
+.creo-badge[data-variant="success"] {
+  background-color: color-mix(in oklch, var(--color-semantic-success) 20%, transparent);
+  color: var(--color-semantic-success);
+}
+.creo-badge[data-variant="warning"] {
+  background-color: color-mix(in oklch, var(--color-semantic-warning) 20%, transparent);
+  color: var(--color-semantic-warning);
+}
+.creo-badge[data-variant="error"] {
+  background-color: color-mix(in oklch, var(--color-semantic-error) 20%, transparent);
+  color: var(--color-semantic-error);
+}
+.creo-badge[data-variant="info"] {
+  background-color: color-mix(in oklch, var(--color-semantic-info) 20%, transparent);
+  color: var(--color-semantic-info);
+}
+
+/* ---------- Sizes ---------- */
+
+.creo-badge[data-size="sm"] {
+  font-size: var(--typography-size-xs);
+  padding: 1px var(--spacing-xs);
+}
+
+/* ---------- Shapes ---------- */
+
+.creo-badge[data-shape="square"] {
+  border-radius: var(--radius-xs);
+}
+
+/* ================ button.css ================ */
+/**
+ * Creo UI — Button component
+ *
+ * data attribute で variant / size を表現。`.creo-btn` base + `data-variant` + `data-size`。
+ * Default: primary / md。
+ *
+ * Spec: docs/components/button.md
+ * Token: creo-ui-web/tokens.css (必須)
+ *
+ * Usage:
+ *   <button class="creo-btn" data-variant="primary">Label</button>
+ *   <button class="creo-btn" data-variant="secondary" data-size="sm">Small</button>
+ *   <button class="creo-btn" data-variant="ghost" aria-pressed="true">Toggle</button>
+ */
+
+.creo-btn {
+  /* Base layout */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--layout-gap-tight);
+  min-height: var(--layout-target-tap);
+  padding: var(--spacing-sm) var(--spacing-md);
+
+  /* Typography */
+  font-family: inherit;
+  font-size: var(--typography-size-md);
+  font-weight: var(--typography-weight-medium);
+  line-height: 1;
+  text-decoration: none;
+  white-space: nowrap;
+
+  /* Shape */
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+
+  /* Default interaction */
+  cursor: pointer;
+  user-select: none;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease, transform
+    120ms ease;
+
+  /* Default (primary) — variant で override される */
+  background-color: var(--color-brand-primary);
+  color: var(--color-surface-bg-base);
+}
+
+/* ---------- Variants ---------- */
+
+.creo-btn[data-variant="primary"],
+.creo-btn:not([data-variant]) {
+  background-color: var(--color-brand-primary);
+  border-color: var(--color-brand-primary);
+  color: var(--color-surface-bg-base);
+}
+.creo-btn[data-variant="primary"]:hover:not(:disabled),
+.creo-btn:not([data-variant]):hover:not(:disabled) {
+  background-color: var(--color-brand-primary-hover);
+  border-color: var(--color-brand-primary-hover);
+}
+.creo-btn[data-variant="primary"]:active:not(:disabled),
+.creo-btn:not([data-variant]):active:not(:disabled) {
+  background-color: var(--color-brand-primary-active);
+  border-color: var(--color-brand-primary-active);
+  transform: translateY(1px);
+}
+
+.creo-btn[data-variant="secondary"] {
+  background-color: var(--color-surface-surface);
+  border-color: var(--color-surface-border);
+  color: var(--color-text-primary);
+}
+.creo-btn[data-variant="secondary"]:hover:not(:disabled) {
+  background-color: var(--color-surface-bg-subtle);
+  border-color: var(--color-brand-primary);
+}
+.creo-btn[data-variant="secondary"]:active:not(:disabled) {
+  background-color: var(--color-surface-bg-subtle);
+  transform: translateY(1px);
+}
+
+.creo-btn[data-variant="ghost"] {
+  background-color: transparent;
+  border-color: transparent;
+  color: var(--color-text-primary);
+}
+.creo-btn[data-variant="ghost"]:hover:not(:disabled) {
+  background-color: var(--color-surface-bg-subtle);
+}
+.creo-btn[data-variant="ghost"]:active:not(:disabled) {
+  background-color: var(--color-surface-bg-subtle);
+  transform: translateY(1px);
+}
+
+/* ---------- Sizes ---------- */
+
+.creo-btn[data-size="sm"] {
+  min-height: var(--layout-target-focus);
+  padding: var(--spacing-xs) var(--spacing-sm);
+  font-size: var(--typography-size-sm);
+  border-radius: var(--radius-xs);
+}
+
+/* data-size="md" は base と同じ、明示しなくても OK だが editor-mode 親和で一応ルール定義 */
+.creo-btn[data-size="md"] {
+  min-height: var(--layout-target-tap);
+  padding: var(--spacing-sm) var(--spacing-md);
+  font-size: var(--typography-size-md);
+  border-radius: var(--radius-sm);
+}
+
+.creo-btn[data-size="lg"] {
+  min-height: calc(var(--layout-target-tap) * 1.15);
+  padding: var(--spacing-md) var(--spacing-lg);
+  font-size: var(--typography-size-lg);
+  border-radius: var(--radius-md);
+}
+
+/* ---------- State: disabled ---------- */
+
+.creo-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+/* ---------- State: toggle (aria-pressed) ---------- */
+
+.creo-btn[aria-pressed="true"] {
+  background-color: var(--color-brand-primary-active);
+  border-color: var(--color-brand-primary-active);
+  color: var(--color-surface-bg-base);
+}
+.creo-btn[data-variant="secondary"][aria-pressed="true"] {
+  background-color: var(--color-surface-bg-subtle);
+  border-color: var(--color-brand-primary);
+  color: var(--color-brand-primary);
+}
+.creo-btn[data-variant="ghost"][aria-pressed="true"] {
+  background-color: var(--color-surface-bg-subtle);
+  color: var(--color-brand-primary);
+}
+
+/* ---------- Focus ring ---------- */
+
+.creo-btn:focus-visible {
+  outline: 2px solid var(--color-brand-primary);
+  outline-offset: 2px;
+}
+
+/* ================ card.css ================ */
+/**
+ * Creo UI — Card component
+ *
+ * `.creo-card` base + data-variant (default / elevated / outlined) + data-padding (sm/md/lg)。
+ *
+ * Spec: docs/components/card.md
+ * Token: creo-ui-web/tokens.css (必須)
+ *
+ * Usage:
+ *   <article class="creo-card">...</article>
+ *   <article class="creo-card" data-variant="elevated" data-padding="lg">...</article>
+ *   <article class="creo-card" data-variant="outlined" data-interactive="true">...</article>
+ */
+
+.creo-card {
+  display: block;
+  background-color: var(--color-surface-surface);
+  border: 1px solid var(--color-surface-border);
+  border-radius: var(--radius-md);
+  padding: var(--spacing-md);
+  color: var(--color-text-primary);
+  transition: background-color 150ms ease, box-shadow 150ms ease, border-color 150ms ease, transform
+    150ms ease;
+}
+
+/* ---------- Variants ---------- */
+
+.creo-card[data-variant="default"],
+.creo-card:not([data-variant]) {
+  background-color: var(--color-surface-surface);
+  border-color: var(--color-surface-border);
+  box-shadow: var(--shadow-sm);
+}
+
+.creo-card[data-variant="elevated"] {
+  background-color: var(--color-surface-surface);
+  border-color: transparent;
+  box-shadow: var(--shadow-md);
+}
+
+.creo-card[data-variant="outlined"] {
+  background-color: transparent;
+  border-color: var(--color-surface-border);
+  border-width: 1.5px;
+  box-shadow: none;
+}
+
+/* ---------- Padding sizes ---------- */
+
+.creo-card[data-padding="sm"] {
+  padding: var(--spacing-sm);
+}
+.creo-card[data-padding="md"],
+.creo-card:not([data-padding]) {
+  padding: var(--spacing-md);
+}
+.creo-card[data-padding="lg"] {
+  padding: var(--spacing-lg);
+}
+
+/* ---------- Interactive state ---------- */
+
+.creo-card[data-interactive="true"] {
+  cursor: pointer;
+}
+.creo-card[data-interactive="true"]:hover {
+  border-color: var(--color-brand-primary);
+  transform: translateY(-1px);
+}
+.creo-card[data-interactive="true"][data-variant="elevated"]:hover {
+  box-shadow: var(--shadow-lg);
+}
+.creo-card[data-interactive="true"]:active {
+  transform: translateY(0);
+}
+
+/* ================ dialog.css ================ */
+/**
+ * Creo UI — Dialog component (native <dialog> based)
+ *
+ * native `<dialog>` + `showModal()` で focus trap / Esc close / ARIA を browser に任せる。
+ * consumer は JS で showModal() / close() を呼ぶだけ。
+ *
+ * Spec: docs/components/dialog.md
+ * Token: creo-ui-web/tokens.css (必須)
+ */
+
+.creo-dialog {
+  /* Reset native defaults */
+  padding: 0;
+  border: 1px solid var(--color-surface-border);
+
+  /* Shape */
+  background-color: var(--color-surface-surface);
+  color: var(--color-text-primary);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+
+  /* Width */
+  width: min(90vw, 480px);
+  max-height: 85vh;
+  overflow: hidden;
+
+  /* Typography */
+  font-family: inherit;
+  font-size: var(--typography-size-md);
+  line-height: var(--typography-line-height-normal);
+
+  /* Entrance (開いた時の軽い lift) */
+  animation: creoDialogIn 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.creo-dialog::backdrop {
+  background-color: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+
+@keyframes creoDialogIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* ---------- Sizes ---------- */
+
+.creo-dialog[data-size="sm"] {
+  width: min(90vw, 320px);
+}
+.creo-dialog[data-size="md"],
+.creo-dialog:not([data-size]) {
+  width: min(90vw, 480px);
+}
+.creo-dialog[data-size="lg"] {
+  width: min(92vw, 720px);
+}
+
+/* ---------- Slots ---------- */
+
+.creo-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-sm) var(--spacing-md);
+  border-bottom: 1px solid var(--color-surface-border);
+}
+
+.creo-dialog-title {
+  margin: 0;
+  font-size: var(--typography-title-subsection);
+  font-weight: var(--typography-weight-semibold);
+  color: var(--color-text-primary);
+  line-height: 1.3;
+}
+
+.creo-dialog[data-variant="destructive"] .creo-dialog-title {
+  color: var(--color-semantic-error);
+}
+
+.creo-dialog-body {
+  padding: var(--spacing-md);
+  overflow-y: auto;
+  max-height: 60vh;
+}
+
+.creo-dialog-body > * + * {
+  margin-top: var(--spacing-sm);
+}
+
+.creo-dialog-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--layout-gap-tight);
+  padding: var(--spacing-sm) var(--spacing-md);
+  border-top: 1px solid var(--color-surface-border);
+}
+
+/* ---------- Closing (opt-in、consumer が .is-closing を付けて trigger) ---------- */
+
+.creo-dialog.is-closing {
+  animation: creoDialogOut 140ms cubic-bezier(0.4, 0, 1, 1);
+}
+
+@keyframes creoDialogOut {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(4px) scale(0.98);
+  }
+}
+
+/* ================ form-controls.css ================ */
+/**
+ * Creo UI — Form controls (Checkbox / Radio / Switch)
+ *
+ * native <input> を accent-color で brand 色に染める最小実装 + switch (native 非対応) の custom painting。
+ *
+ * Spec: docs/components/form-controls.md
+ * Token: creo-ui-web/tokens.css (必須)
+ */
+
+/* ---------- Checkbox / Radio (label wrapper) ---------- */
+
+.creo-checkbox,
+.creo-radio {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--layout-gap-tight);
+  font-size: var(--typography-size-md);
+  line-height: 1.4;
+  color: var(--color-text-primary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.creo-checkbox-input,
+.creo-radio-input {
+  accent-color: var(--color-brand-primary);
+  width: 1.1em;
+  height: 1.1em;
+  cursor: pointer;
+  margin: 0;
+  flex-shrink: 0;
+}
+
+.creo-checkbox-input:focus-visible,
+.creo-radio-input:focus-visible {
+  outline: 2px solid var(--color-brand-primary);
+  outline-offset: 2px;
+}
+
+.creo-checkbox-input:disabled,
+.creo-radio-input:disabled,
+.creo-checkbox:has(> .creo-checkbox-input:disabled),
+.creo-radio:has(> .creo-radio-input:disabled) {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ---------- Switch (custom toggle) ---------- */
+
+.creo-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--layout-gap-tight);
+  font-size: var(--typography-size-md);
+  line-height: 1.4;
+  color: var(--color-text-primary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.creo-switch-input {
+  /* native checkbox を隠す (visually-hidden、a11y 保持) */
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.creo-switch-track {
+  display: inline-block;
+  position: relative;
+  width: 44px;
+  height: 24px;
+  background-color: var(--color-surface-bg-subtle);
+  border: 1px solid var(--color-surface-border);
+  border-radius: var(--radius-full);
+  transition: background-color 160ms ease, border-color 160ms ease;
+  flex-shrink: 0;
+}
+
+.creo-switch-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  background-color: var(--color-surface-surface);
+  border-radius: var(--radius-full);
+  box-shadow: var(--shadow-sm);
+  transition: transform 160ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.creo-switch-input:checked ~ .creo-switch-track {
+  background-color: var(--color-brand-primary);
+  border-color: var(--color-brand-primary);
+}
+
+.creo-switch-input:checked ~ .creo-switch-track .creo-switch-thumb {
+  transform: translateX(20px);
+}
+
+.creo-switch-input:focus-visible ~ .creo-switch-track {
+  outline: 2px solid var(--color-brand-primary);
+  outline-offset: 2px;
+}
+
+.creo-switch-input:disabled ~ .creo-switch-track,
+.creo-switch:has(> .creo-switch-input:disabled) {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ================ form-field.css ================ */
+/**
+ * Creo UI — FormField utility
+ *
+ * label + input + helper-text を垂直 stack で束ねる minimal wrapper。
+ * component ではなく CSS class utility として提供。
+ *
+ * Spec: docs/components/form-field.md
+ * Token: creo-ui-web/tokens.css (必須)
+ */
+
+.creo-form-field {
+  display: grid;
+  gap: var(--spacing-xs);
+}
+
+.creo-form-field-label {
+  font-size: var(--typography-body-helper);
+  font-weight: var(--typography-weight-medium);
+  color: var(--color-text-primary);
+  line-height: var(--typography-line-height-normal);
+}
+
+/* required モディファイア: label の末尾に * (semantic-error 色) を付与 */
+.creo-form-field-required::after {
+  content: " *";
+  color: var(--color-semantic-error);
+  font-weight: var(--typography-weight-medium);
+}
+
+/* ================ header.css ================ */
+/**
+ * Creo UI — Header component
+ *
+ * `.creo-header` base + data-variant (app / marketing) + data-sticky + data-elevation。
+ * Slot classes: `.creo-header-logo` / `.creo-header-nav` / `.creo-header-actions`。
+ *
+ * Spec: docs/components/header.md
+ * Token: creo-ui-web/tokens.css (必須)
+ *
+ * Usage:
+ *   <header class="creo-header" data-variant="app" data-sticky="true">
+ *     <a class="creo-header-logo">…</a>
+ *     <nav class="creo-header-nav">…</nav>
+ *     <div class="creo-header-actions">…</div>
+ *   </header>
+ */
+
+.creo-header {
+  display: flex;
+  align-items: center;
+  gap: var(--layout-gap-sibling);
+  padding: var(--spacing-sm) var(--spacing-lg);
+  background-color: var(--color-surface-surface);
+  color: var(--color-text-primary);
+  border-bottom: 1px solid var(--color-surface-border);
+  transition: background-color 120ms ease, box-shadow 120ms ease;
+}
+
+/* ---------- Variants ---------- */
+
+.creo-header[data-variant="marketing"] {
+  padding: var(--spacing-md) var(--spacing-xl);
+  min-height: 72px;
+  background-color: var(--color-surface-bg-base);
+}
+
+/* app (default) は base を使う */
+
+/* ---------- Sticky ---------- */
+
+.creo-header[data-sticky="true"] {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  background-color: color-mix(in oklch, var(--color-surface-surface) 85%, transparent);
+}
+
+.creo-header[data-variant="marketing"][data-sticky="true"] {
+  background-color: color-mix(in oklch, var(--color-surface-bg-base) 85%, transparent);
+}
+
+/* ---------- Elevation ---------- */
+
+.creo-header[data-elevation="none"] {
+  border-bottom: none;
+  box-shadow: none;
+}
+.creo-header[data-elevation="sm"],
+.creo-header:not([data-elevation]) {
+  border-bottom: 1px solid var(--color-surface-border);
+  box-shadow: none;
+}
+.creo-header[data-elevation="md"] {
+  border-bottom: none;
+  box-shadow: var(--shadow-sm);
+}
+
+/* ---------- Slots ---------- */
+
+.creo-header-logo {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--layout-gap-tight);
+  font-size: var(--typography-title-card);
+  font-weight: var(--typography-weight-semibold);
+  color: var(--color-text-primary);
+  text-decoration: none;
+  flex-shrink: 0;
+}
+.creo-header-logo:hover {
+  color: var(--color-brand-primary);
+}
+.creo-header-logo img,
+.creo-header-logo svg {
+  width: 1.5em;
+  height: 1.5em;
+  display: block;
+}
+
+.creo-header-nav {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+  flex: 1;
+  min-width: 0;
+  /* nav を logo の直後から流す (app)、marketing では中央寄せも consumer で可 */
+}
+.creo-header-nav a {
+  color: var(--color-text-secondary);
+  text-decoration: none;
+  font-size: var(--typography-size-md);
+  font-weight: var(--typography-weight-regular);
+  padding: var(--spacing-xs) var(--spacing-sm);
+  border-radius: var(--radius-xs);
+  transition: color 120ms ease, background-color 120ms ease;
+}
+.creo-header-nav a:hover,
+.creo-header-nav a[aria-current="page"] {
+  color: var(--color-text-primary);
+  background-color: var(--color-surface-bg-subtle);
+}
+
+.creo-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--layout-gap-tight);
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+/* ================ input.css ================ */
+/**
+ * Creo UI — Input component
+ *
+ * `.creo-input` base + data-variant (bordered / filled) + data-size (sm/md/lg) + data-state (default/error)。
+ *
+ * Spec: docs/components/input.md
+ * Token: creo-ui-web/tokens.css (必須)
+ *
+ * Usage:
+ *   <input class="creo-input" type="text">
+ *   <input class="creo-input" type="email" data-variant="filled" data-size="lg">
+ *   <input class="creo-input" data-state="error" aria-invalid="true">
+ */
+
+.creo-input {
+  display: block;
+  width: 100%;
+  min-height: var(--layout-target-tap);
+  padding: var(--spacing-sm) var(--spacing-md);
+  box-sizing: border-box;
+
+  font-family: inherit;
+  font-size: var(--typography-size-md);
+  font-weight: var(--typography-weight-regular);
+  line-height: 1.4;
+  color: var(--color-text-primary);
+
+  background-color: var(--color-surface-surface);
+  border: 1px solid var(--color-surface-border);
+  border-radius: var(--radius-sm);
+
+  outline: none;
+  transition: border-color 120ms ease, background-color 120ms ease, box-shadow 120ms ease;
+}
+
+.creo-input::placeholder {
+  color: var(--color-text-tertiary);
+}
+
+/* ---------- Variants ---------- */
+
+.creo-input[data-variant="filled"] {
+  background-color: var(--color-surface-bg-subtle);
+  border-color: transparent;
+}
+.creo-input[data-variant="filled"]:hover:not(:disabled):not(:focus) {
+  background-color: var(--color-surface-bg-subtle);
+}
+
+/* bordered (default) は base を使う */
+
+/* ---------- Sizes ---------- */
+
+.creo-input[data-size="sm"] {
+  min-height: var(--layout-target-focus);
+  padding: var(--spacing-xs) var(--spacing-sm);
+  font-size: var(--typography-size-sm);
+  border-radius: var(--radius-xs);
+}
+.creo-input[data-size="md"],
+.creo-input:not([data-size]) {
+  min-height: var(--layout-target-tap);
+  padding: var(--spacing-sm) var(--spacing-md);
+  font-size: var(--typography-size-md);
+  border-radius: var(--radius-sm);
+}
+.creo-input[data-size="lg"] {
+  min-height: calc(var(--layout-target-tap) * 1.15);
+  padding: var(--spacing-md) var(--spacing-lg);
+  font-size: var(--typography-size-lg);
+  border-radius: var(--radius-md);
+}
+
+/* ---------- State: focus ---------- */
+
+.creo-input:focus-visible,
+.creo-input:focus {
+  border-color: var(--color-brand-primary);
+  box-shadow: 0 0 0 2px color-mix(in oklch, var(--color-brand-primary) 25%, transparent);
+}
+
+/* ---------- State: error ---------- */
+
+.creo-input[data-state="error"],
+.creo-input[aria-invalid="true"] {
+  border-color: var(--color-semantic-error);
+  border-width: 1.5px;
+}
+.creo-input[data-state="error"]:focus-visible,
+.creo-input[aria-invalid="true"]:focus-visible {
+  box-shadow: 0 0 0 2px color-mix(in oklch, var(--color-semantic-error) 25%, transparent);
+}
+
+/* ---------- State: disabled / readonly ---------- */
+
+.creo-input:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+  background-color: var(--color-surface-bg-subtle);
+}
+.creo-input:read-only:not(:disabled) {
+  background-color: var(--color-surface-bg-subtle);
+  color: var(--color-text-secondary);
+}
+
+/* ---------- Helper text (label / error) ---------- */
+
+.creo-helper-text {
+  display: block;
+  margin-top: var(--spacing-xs);
+  font-size: var(--typography-body-caption);
+  color: var(--color-text-tertiary);
+  line-height: var(--typography-line-height-normal);
+}
+.creo-helper-text--error {
+  color: var(--color-semantic-error);
+}
+
+/* ================ segmented.css ================ */
+/**
+ * Creo UI — Segmented control
+ *
+ * 2-4 option の排他選択肢を横並びで表示。Tabs は view 切替、Segmented は state 値選択。
+ *
+ * Spec: docs/components/segmented.md
+ * Token: creo-ui-web/tokens.css (必須)
+ */
+
+.creo-segmented {
+  display: inline-flex;
+  align-items: stretch;
+  gap: var(--spacing-xs);
+  padding: var(--spacing-xs);
+  background-color: var(--color-surface-bg-subtle);
+  border: 1px solid var(--color-surface-border);
+  border-radius: var(--radius-md);
+}
+
+.creo-segmented[data-width="full"] {
+  display: flex;
+  width: 100%;
+}
+.creo-segmented[data-width="full"] .creo-segmented-option {
+  flex: 1;
+}
+
+/* ---------- Option (base) ---------- */
+
+.creo-segmented-option {
+  appearance: none;
+  background: transparent;
+  border: none;
+  padding: var(--spacing-xs) var(--spacing-md);
+  min-height: var(--layout-target-focus);
+
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--layout-gap-tight);
+
+  font-family: inherit;
+  font-size: var(--typography-size-md);
+  font-weight: var(--typography-weight-medium);
+  color: var(--color-text-secondary);
+
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: background-color 150ms ease, color 150ms ease, box-shadow 150ms ease;
+  user-select: none;
+}
+
+.creo-segmented-option:hover:not(:disabled) {
+  color: var(--color-text-primary);
+}
+
+.creo-segmented-option:focus-visible {
+  outline: 2px solid var(--color-brand-primary);
+  outline-offset: 2px;
+}
+
+.creo-segmented-option:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ---------- Active state (aria-pressed + :has(radio:checked)) ---------- */
+
+.creo-segmented-option[aria-pressed="true"],
+.creo-segmented-option:has(> input[type="radio"]:checked) {
+  background-color: var(--color-surface-surface);
+  color: var(--color-brand-primary);
+  box-shadow: var(--shadow-sm);
+}
+
+/* ---------- Radio inside (hide native input) ---------- */
+
+.creo-segmented-option > input[type="radio"] {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
+}
+
+/* ---------- Sizes ---------- */
+
+.creo-segmented[data-size="sm"] .creo-segmented-option {
+  min-height: 24px;
+  padding: 2px var(--spacing-sm);
+  font-size: var(--typography-size-sm);
+}
+.creo-segmented[data-size="lg"] .creo-segmented-option {
+  min-height: var(--layout-target-tap);
+  padding: var(--spacing-sm) var(--spacing-lg);
+  font-size: var(--typography-size-lg);
+}
+
+/* ================ tabs.css ================ */
+/**
+ * Creo UI — Tabs component (ARIA tablist pattern)
+ *
+ * `.creo-tabs` wrapper + `.creo-tabs-list` (role=tablist) + `.creo-tabs-tab`
+ * (role=tab) + `.creo-tabs-panel` (role=tabpanel)。active 判定は
+ * `aria-selected="true"` を SSOT として CSS selector でスタイル切替。
+ *
+ * Spec: docs/components/tabs.md
+ * Token: creo-ui-web/tokens.css (必須)
+ */
+
+.creo-tabs {
+  display: block;
+}
+
+/* ---------- Tab list (button 列) ---------- */
+
+.creo-tabs-list {
+  display: flex;
+  gap: var(--spacing-xs);
+  border-bottom: 1px solid var(--color-surface-border);
+  overflow-x: auto;
+}
+
+.creo-tabs[data-variant="pill"] .creo-tabs-list {
+  border-bottom: none;
+  padding: var(--spacing-xs);
+  background-color: var(--color-surface-bg-subtle);
+  border-radius: var(--radius-md);
+  gap: var(--spacing-xs);
+}
+
+/* ---------- Tab button (base) ---------- */
+
+.creo-tabs-tab {
+  appearance: none;
+  background: transparent;
+  border: none;
+  padding: var(--spacing-sm) var(--spacing-md);
+  min-height: var(--layout-target-tap);
+
+  font-family: inherit;
+  font-size: var(--typography-size-md);
+  font-weight: var(--typography-weight-medium);
+  color: var(--color-text-secondary);
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+
+  position: relative;
+  transition: color 150ms ease, background-color 150ms ease;
+}
+
+.creo-tabs-tab:hover:not(:disabled) {
+  color: var(--color-text-primary);
+}
+
+.creo-tabs-tab:focus-visible {
+  outline: 2px solid var(--color-brand-primary);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
+}
+
+.creo-tabs-tab:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* ---------- Active state (aria-selected=true) ---------- */
+
+/* underline variant (default): 下線で active を示す */
+.creo-tabs[data-variant="underline"] .creo-tabs-tab[aria-selected="true"],
+.creo-tabs:not([data-variant]) .creo-tabs-tab[aria-selected="true"] {
+  color: var(--color-brand-primary);
+}
+.creo-tabs[data-variant="underline"] .creo-tabs-tab[aria-selected="true"]::after,
+.creo-tabs:not([data-variant]) .creo-tabs-tab[aria-selected="true"]::after {
+  content: "";
+  position: absolute;
+  left: var(--spacing-sm);
+  right: var(--spacing-sm);
+  bottom: -1px;
+  height: 2px;
+  background-color: var(--color-brand-primary);
+  border-radius: var(--radius-xs);
+}
+
+/* pill variant: background を埋めて active を示す */
+.creo-tabs[data-variant="pill"] .creo-tabs-tab {
+  border-radius: var(--radius-sm);
+}
+.creo-tabs[data-variant="pill"] .creo-tabs-tab[aria-selected="true"] {
+  background-color: var(--color-brand-primary);
+  color: var(--color-surface-bg-base);
+}
+
+/* ---------- Sizes ---------- */
+
+.creo-tabs[data-size="sm"] .creo-tabs-tab {
+  min-height: var(--layout-target-focus);
+  padding: var(--spacing-xs) var(--spacing-sm);
+  font-size: var(--typography-size-sm);
+}
+.creo-tabs[data-size="lg"] .creo-tabs-tab {
+  min-height: calc(var(--layout-target-tap) * 1.15);
+  padding: var(--spacing-md) var(--spacing-lg);
+  font-size: var(--typography-size-lg);
+}
+
+/* ---------- Panel ---------- */
+
+.creo-tabs-panel {
+  padding: var(--spacing-md) 0;
+}
+.creo-tabs-panel[hidden] {
+  display: none;
+}
+

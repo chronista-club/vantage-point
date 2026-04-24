@@ -42,3 +42,12 @@ tracing-subscriber = { workspace = true }
 
 # Toast notifications (crossplat; WinRT on Windows, libnotify on Linux, NSUserNotificationCenter on macOS)
 notify-rust = "4"
+
+# PTY (pseudo-terminal) for shell sessions — ConPTY on Windows, forkpty on Unix
+portable-pty = "0.9"
+
+# Base64 encoding (for PTY binary I/O over wry IPC)
+base64 = "0.22"
+
+# VP_SHELL_ARGS のシェル風クォート split
+shell-words = "1.1"

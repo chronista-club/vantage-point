@@ -18,7 +18,7 @@ pub struct TheWorldClient {
 }
 
 /// プロジェクト情報 (TheWorld `/api/world/projects` レスポンス要素)
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, Deserialize)]
 pub struct ProjectInfo {
     pub name: String,
     pub path: String,
