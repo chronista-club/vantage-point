@@ -224,6 +224,7 @@ struct MainWindowView: View {
                                 projectPath: path,
                                 node: focusedNode,
                                 layoutMap: layout.layoutMap,
+                                activeTabIndex: layout.activeTabIndex,
                                 isActive: isActive,
                                 splitNavigatorActive: splitNavigator != .hidden,
                                 terminalGeneration: gen,
@@ -233,6 +234,9 @@ struct MainWindowView: View {
                                 },
                                 onClosePane: { paneId in
                                     closePane(path: path, paneId: paneId)
+                                },
+                                onTabSelect: { groupId, newIdx in
+                                    setTabActive(path: path, groupId: groupId, index: newIdx)
                                 }
                             )
                                 .id("\(path):\(gen)")
@@ -628,6 +632,13 @@ struct MainWindowView: View {
         minimizePane(path: path, paneId: layout.focusedPaneId)
     }
 
+    /// Phase 2.4b: tab rule の group で active child index を切替
+    private func setTabActive(path: String, groupId: UUID, index: Int) {
+        guard var layout = paneLayouts[path] else { return }
+        layout.activeTabIndex[groupId] = index
+        paneLayouts[path] = layout
+    }
+
     /// VP-83 refinement 59 (Phase C): `⌥L` chord で focus 中 pane の**親 group の**表示 rule を切替
     private func changeLayoutOfFocusedGroup(to layoutName: String) {
         guard let path = selectedProjectPath, var layout = paneLayouts[path] else { return }
@@ -745,14 +756,27 @@ struct MainWindowView: View {
         )
 
         var layout = paneLayouts[path]!
-        let newGroupId = UUID()
-        layout.root = layout.root.inserting(
-            newLeaf: newLeaf,
-            adjacentTo: layout.focusedPaneId,
-            newGroupId: newGroupId
-        )
-        // 新しく作成された group の表示ルールを LayoutMap に登録
-        layout.layoutMap[newGroupId] = horizontal ? .horizontalSplit : .verticalSplit
+        let desiredKind: LayoutKind = horizontal ? .horizontalSplit : .verticalSplit
+
+        // VP-83 Phase 2.4c: 同方向の親 group があれば flat append、無ければ新 group で wrap。
+        // これで 3+ pane の tab mode 切替も全 pane 対象にできる。
+        if let parentGid = Self.findParentGroupId(of: layout.focusedPaneId, in: layout.root),
+           (layout.layoutMap[parentGid] ?? .horizontalSplit).kind == desiredKind
+        {
+            layout.root = layout.root.appendingChild(
+                .leaf(newLeaf),
+                toGroup: parentGid,
+                after: layout.focusedPaneId
+            )
+        } else {
+            let newGroupId = UUID()
+            layout.root = layout.root.inserting(
+                newLeaf: newLeaf,
+                adjacentTo: layout.focusedPaneId,
+                newGroupId: newGroupId
+            )
+            layout.layoutMap[newGroupId] = LayoutRule(kind: desiredKind)
+        }
         layout.focusedPaneId = paneId
         paneLayouts[path] = layout
 

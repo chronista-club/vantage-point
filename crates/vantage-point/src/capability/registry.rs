@@ -166,6 +166,14 @@ impl CapabilityRegistry {
             .collect()
     }
 
+    /// 全能力の自己診断レポートを収集 (2026-04-25 Stand 自己診断)
+    pub async fn diagnose_all(&self) -> Vec<crate::capability::DiagnosticReport> {
+        let caps = self.capabilities.read().await;
+        caps.values()
+            .map(|entry| entry.capability.diagnose())
+            .collect()
+    }
+
     /// 登録済み能力の数を取得
     pub async fn count(&self) -> usize {
         let caps = self.capabilities.read().await;

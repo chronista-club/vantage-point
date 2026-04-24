@@ -111,6 +111,32 @@ indirect enum PaneNode: Identifiable, Equatable {
         }
     }
 
+    /// 指定 group の子として child を append (flat)。
+    /// afterId leaf が直下 child にあればその直後に insert、なければ末尾に。
+    /// VP-83 Phase 2.4c: 同方向 split 連続時の flat 集約に使用。
+    func appendingChild(_ child: PaneNode, toGroup groupId: UUID, after afterId: UUID) -> PaneNode {
+        switch self {
+        case .leaf:
+            return self
+        case .group(let gid, let children):
+            if gid == groupId {
+                var updated = children
+                if let idx = updated.firstIndex(where: { $0.id == afterId }) {
+                    updated.insert(child, at: idx + 1)
+                } else {
+                    updated.append(child)
+                }
+                return .group(id: gid, children: updated)
+            }
+            return .group(
+                id: gid,
+                children: children.map {
+                    $0.appendingChild(child, toGroup: groupId, after: afterId)
+                }
+            )
+        }
+    }
+
     /// 指定 leaf の**隣に**新 leaf を追加する。
     /// target の leaf を新 group で wrap、children に target と newLeaf を並べる。
     /// 新 group の表示ルール (horizontal/vertical) は呼出し側で LayoutMap に入れる。
@@ -168,10 +194,13 @@ typealias PaneLayoutMap = [UUID: LayoutRule]
 /// - `root`: Lead Pane が root の不変な所属 tree
 /// - `focusedPaneId`: 現在 focus 中の leaf
 /// - `layoutMap`: group id → 表示ルール (自由に書き換え可能)
+/// - `activeTabIndex`: tab kind の group id → active child index (Phase 2.4b)
 struct PaneLayout: Equatable {
     var root: PaneNode
     var focusedPaneId: UUID
     var layoutMap: PaneLayoutMap
+    /// Phase 2.4b: tab rule の group で表示中の child index (未登録は 0)
+    var activeTabIndex: [UUID: Int] = [:]
 
     /// Lead Pane 1 つのみ、の初期状態
     static func initial(leadKind: PaneKind = .agent) -> PaneLayout {
@@ -184,7 +213,8 @@ struct PaneLayout: Equatable {
                 kind: leadKind
             )),
             focusedPaneId: id,
-            layoutMap: [:]
+            layoutMap: [:],
+            activeTabIndex: [:]
         )
     }
 
