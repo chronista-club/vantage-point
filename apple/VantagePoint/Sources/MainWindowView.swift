@@ -59,6 +59,8 @@ struct PaneShortcutHandlerModifier: ViewModifier {
     let onSplitAgent: () -> Void
     let onCloseFocused: () -> Void
     let onMinimizeToggle: () -> Void
+    /// VP-83 refinement 59 (Phase C): `⌥L` chord 経由の layout change
+    let onLayoutChange: (String) -> Void
 
     func body(content: Content) -> some View {
         content
@@ -69,6 +71,9 @@ struct PaneShortcutHandlerModifier: ViewModifier {
             .onReceive(NotificationCenter.default.publisher(for: .paneSplitAgent)) { _ in onSplitAgent() }
             .onReceive(NotificationCenter.default.publisher(for: .paneCloseFocused)) { _ in onCloseFocused() }
             .onReceive(NotificationCenter.default.publisher(for: .paneMinimizeToggle)) { _ in onMinimizeToggle() }
+            .onReceive(NotificationCenter.default.publisher(for: .paneLayoutChange)) { notification in
+                if let name = notification.userInfo?["layout"] as? String { onLayoutChange(name) }
+            }
     }
 }
 
@@ -341,7 +346,8 @@ struct MainWindowView: View {
             onFocusDown: { focusPane(.down) },
             onSplitAgent: { executeSplit(horizontal: true, contentType: "agent") },
             onCloseFocused: { closePane() },
-            onMinimizeToggle: { minimizeFocusedPane() }
+            onMinimizeToggle: { minimizeFocusedPane() },
+            onLayoutChange: { layoutName in changeLayoutOfFocusedGroup(to: layoutName) }
         ))
         .onReceive(NotificationCenter.default.publisher(for: .selectProjectByNumber)) { notification in
             if let number = notification.userInfo?["number"] as? Int {
@@ -619,6 +625,45 @@ struct MainWindowView: View {
         minimizePane(path: path, paneId: layout.focusedPaneId)
     }
 
+    /// VP-83 refinement 59 (Phase C): `⌥L` chord で focus 中 pane の**親 group の**表示 rule を切替
+    private func changeLayoutOfFocusedGroup(to layoutName: String) {
+        guard let path = selectedProjectPath, var layout = paneLayouts[path] else { return }
+        guard let parentGid = Self.findParentGroupId(of: layout.focusedPaneId, in: layout.root) else {
+            // 単一 leaf (root が leaf) では変更できない、silently skip
+            return
+        }
+        let kind: LayoutKind
+        switch layoutName {
+        case "horizontalSplit": kind = .horizontalSplit
+        case "verticalSplit": kind = .verticalSplit
+        case "overlay": kind = .overlay
+        case "tab": kind = .tab
+        default: return
+        }
+        layout.layoutMap[parentGid] = LayoutRule(kind: kind)
+        paneLayouts[path] = layout
+    }
+
+    private static func findParentGroupId(of leafId: UUID, in node: PaneNode) -> UUID? {
+        switch node {
+        case .leaf:
+            return nil
+        case .group(let gid, let children):
+            // 直下の child に target leaf あればこの group が parent
+            if children.contains(where: { node in
+                if case .leaf(let l) = node { return l.id == leafId }
+                return false
+            }) {
+                return gid
+            }
+            // 子 group の中を再帰探索
+            for child in children {
+                if let found = findParentGroupId(of: leafId, in: child) { return found }
+            }
+            return nil
+        }
+    }
+
     /// VP-83 Phase 2.3: drag & drop 等で与えられた URL で preview pane を追加。
     /// 現在 focus 中の project に horizontal split で追加、focus は preview に移す。
     private func addPreviewPane(url: URL) {
@@ -875,13 +920,22 @@ struct MainWindowView: View {
             AppAction(id: "open.design.inspector", title: "Design Inspector を開く",
                       systemImage: "slider.horizontal.3", keyEquivalent: "⌘⇧I"),
             AppAction(id: "toggle.sidebar", title: "サイドバーを切替",
-                      systemImage: "sidebar.left", keyEquivalent: "⌘/"),
+                      systemImage: "sidebar.left", keyEquivalent: "⌘⇧L"),
             AppAction(id: "toggle.tabbar", title: "Project Tab Bar を切替",
-                      systemImage: "rectangle.topthird.inset.filled", keyEquivalent: nil),
+                      systemImage: "rectangle.topthird.inset.filled", keyEquivalent: "⌘⇧\\"),
             AppAction(id: "restart.world", title: "World を再接続",
                       systemImage: "arrow.clockwise", keyEquivalent: nil),
-            AppAction(id: "split.pane", title: "Pane を分割 (Split)",
+            AppAction(id: "split.pane", title: "Pane 分割 (kind 選択 UI)",
                       systemImage: "rectangle.split.2x1", keyEquivalent: "⌘D"),
+            // VP-83 refinement 59 (Phase D): kind-specific split 4 種
+            AppAction(id: "split.agent", title: "Split with Agent (新 HD pane)",
+                      systemImage: "book.closed", keyEquivalent: "⌃,"),
+            AppAction(id: "split.canvas", title: "Split with Navigator (Canvas)",
+                      systemImage: "safari", keyEquivalent: nil),
+            AppAction(id: "split.preview", title: "Split with Preview",
+                      systemImage: "doc.richtext", keyEquivalent: nil),
+            AppAction(id: "split.shell", title: "Split with Shell",
+                      systemImage: "terminal", keyEquivalent: nil),
         ]
     }
 
@@ -897,6 +951,15 @@ struct MainWindowView: View {
             restartWorld()
         case "split.pane":
             NotificationCenter.default.post(name: .splitTerminalPane, object: nil)
+        // VP-83 refinement 59 (Phase D): kind-specific split を Palette 経由で実行
+        case "split.agent":
+            executeSplit(horizontal: true, contentType: "agent")
+        case "split.canvas":
+            executeSplit(horizontal: true, contentType: "canvas")
+        case "split.preview":
+            executeSplit(horizontal: true, contentType: "preview")
+        case "split.shell":
+            executeSplit(horizontal: true, contentType: "shell")
         default:
             break
         }
@@ -1712,4 +1775,9 @@ extension Notification.Name {
     static let paneSplitAgent = Notification.Name("VP.paneSplitAgent")
     static let paneCloseFocused = Notification.Name("VP.paneCloseFocused")
     static let paneMinimizeToggle = Notification.Name("VP.paneMinimizeToggle")
+
+    // VP-83 refinement 59 (Phase C): ⌥L chord layout 切替
+    static let paneLayoutChange = Notification.Name("VP.paneLayoutChange")
+    static let paneLayoutModeEnter = Notification.Name("VP.paneLayoutModeEnter")
+    static let paneLayoutModeExit = Notification.Name("VP.paneLayoutModeExit")
 }

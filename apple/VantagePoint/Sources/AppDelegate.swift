@@ -35,6 +35,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// イベントモニター（クリック外でポップオーバーを閉じる）
     private var eventMonitor: Any?
 
+    /// VP-83 refinement 59 (Phase C): ⌥L chord state machine
+    /// `⌥L` 押下で layout mode 入り、3 秒以内に H/V/O/T で layout rule 切替
+    private var layoutChordMonitor: Any?
+    private var layoutModeActive = false
+    private var layoutModeTimer: Timer?
+
     /// プロジェクト選択通知（Popover → MainWindowView）
     static let selectProjectNotification = Notification.Name("tech.anycreative.vp.selectProject")
     /// CC 完了通知（Notification hook → サイドバーバッジ）
@@ -73,6 +79,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         setupCCNotificationObserver()
         setupFocusProjectObserver()
         setupCanvasOpenObserver()
+        setupLayoutChordMonitor()
 
         // 自動リフレッシュ開始
         popoverViewModel.startAutoRefresh(interval: 5.0)
@@ -515,6 +522,65 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openDesignInspectorAction(_ sender: Any?) {
         NotificationCenter.default.post(name: .vpAction, object: nil, userInfo: ["kind": "inspector"])
+    }
+
+    // VP-83 refinement 59 (Phase C): ⌥L chord state machine
+    //
+    // `⌥L` 押下で layout mode enter (3 秒 timeout)、次のキー H/V/O/T で layout rule 切替。
+    // その他キー or timeout で cancel。
+    private func setupLayoutChordMonitor() {
+        layoutChordMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self else { return event }
+            // layout mode 中: 次キー判定
+            if self.layoutModeActive {
+                let ch = event.charactersIgnoringModifiers?.lowercased() ?? ""
+                let layoutName: String? = {
+                    switch ch {
+                    case "h": return "horizontalSplit"
+                    case "v": return "verticalSplit"
+                    case "o": return "overlay"
+                    case "t": return "tab"
+                    default: return nil
+                    }
+                }()
+                if let layoutName {
+                    NotificationCenter.default.post(
+                        name: .paneLayoutChange,
+                        object: nil,
+                        userInfo: ["layout": layoutName]
+                    )
+                    self.exitLayoutMode()
+                    return nil  // consume
+                }
+                // 他キー (Escape 含む) → cancel
+                self.exitLayoutMode()
+                return event
+            }
+            // ⌥L detection (keyCode 37 = L、他 modifier なし)
+            let flags = event.modifierFlags.intersection([.command, .control, .option, .shift])
+            if flags == .option && event.keyCode == 37 {
+                self.enterLayoutMode()
+                return nil  // consume
+            }
+            return event
+        }
+    }
+
+    private func enterLayoutMode() {
+        layoutModeActive = true
+        layoutModeTimer?.invalidate()
+        layoutModeTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { [weak self] _ in
+            self?.exitLayoutMode()
+        }
+        // visual feedback: Notification で MainWindowView に通知 (toast 等で表示可能)
+        NotificationCenter.default.post(name: .paneLayoutModeEnter, object: nil)
+    }
+
+    private func exitLayoutMode() {
+        layoutModeActive = false
+        layoutModeTimer?.invalidate()
+        layoutModeTimer = nil
+        NotificationCenter.default.post(name: .paneLayoutModeExit, object: nil)
     }
 
     // VP-83 refinement 58: Pane 操作 (⌃) の menu action → Notification 中継
