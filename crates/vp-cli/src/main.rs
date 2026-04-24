@@ -145,6 +145,17 @@ enum WsCommands {
         #[arg(long, short)]
         force: bool,
     },
+    /// Worker actor を TheWorld msgbox registry に (再) 登録
+    ///
+    /// Worker 作成時 (`vp ws new`) に一度 register されるが、TheWorld 再起動で
+    /// registry が memory-reset するため再登録が必要。本コマンドで手動再登録 or
+    /// 起動スクリプトから呼び出して整合性を維持する。
+    Register {
+        /// Worker 名 (親 project は cwd から推測)
+        name: String,
+    },
+    /// ccws ls の全 Worker を registry に一括再登録 (sync)
+    Resync,
     /// 全 worker の状態表示
     Status,
     /// branch が main に merge 済の worker を削除
@@ -246,16 +257,84 @@ fn execute_ws(cmd: WsCommands) -> Result<()> {
         }
         WsCommands::Status => ws::status_workers().map_err(|e| anyhow::anyhow!(e)),
         WsCommands::Cleanup { force } => ws::cleanup_workers(force).map_err(|e| anyhow::anyhow!(e)),
+        WsCommands::Register { name } => register_worker_actor(&name),
+        WsCommands::Resync => resync_all_workers(),
     }
 }
 
-/// Worker actor を TheWorld msgbox registry に登録
+/// ccws ls の全 Worker を registry に一括再登録。
+/// parent project は **config から最長一致** で解決 (cwd 不要)。
+fn resync_all_workers() -> Result<()> {
+    use std::fs;
+    let home = std::env::var("HOME")
+        .map_err(|_| anyhow::anyhow!("HOME env 未設定"))?;
+    let workers_dir = std::path::PathBuf::from(home).join(".local/share/ccws");
+    if !workers_dir.exists() {
+        println!("No ccws workers found at {}", workers_dir.display());
+        return Ok(());
+    }
+    let config = vantage_point::config::Config::load()
+        .map_err(|e| anyhow::anyhow!("config load failed: {e}"))?;
+
+    let entries = fs::read_dir(&workers_dir)?;
+    let mut ok = 0;
+    let mut fail = 0;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let dirname = match path.file_name().and_then(|n| n.to_str()) {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+        match register_worker_from_dirname(&config, &dirname) {
+            Ok(()) => ok += 1,
+            Err(e) => {
+                eprintln!("  skip {dirname}: {e}");
+                fail += 1;
+            }
+        }
+    }
+    eprintln!("resync: {ok} ok, {fail} skipped");
+    Ok(())
+}
+
+/// dirname (`{project}-{worker}` format) から parent project を config の最長一致で
+/// 決定、SP port を discovery で確認、register API call。
+fn register_worker_from_dirname(
+    config: &vantage_point::config::Config,
+    dirname: &str,
+) -> Result<()> {
+    // config.projects の name で最長 prefix match の project を探す
+    let parent = config
+        .projects
+        .iter()
+        .filter(|p| dirname.starts_with(&format!("{}-", p.name)))
+        .max_by_key(|p| p.name.len())
+        .ok_or_else(|| anyhow::anyhow!("parent project not found in config"))?;
+    let worker_name = dirname
+        .strip_prefix(&format!("{}-", parent.name))
+        .ok_or_else(|| anyhow::anyhow!("worker name extract failed"))?;
+    let process = vantage_point::discovery::find_by_project_blocking(&parent.path)
+        .ok_or_else(|| anyhow::anyhow!("parent SP not running"))?;
+    register_worker_actor_with_context(&parent.name, process.port, worker_name)
+}
+
+/// Worker actor を TheWorld msgbox registry に登録 (cwd ベース — ws new 等の内部用)
 ///
 /// actor format: `worker-{name}` (例: `worker-VP-10`)
-/// project_name: 親プロジェクトの repo root dir 名
-/// port: 親プロジェクト SP の port (discovery::find_by_project_blocking で取得)
 fn register_worker_actor(worker_name: &str) -> Result<()> {
     let (project_name, port) = resolve_parent_project()?;
+    register_worker_actor_with_context(&project_name, port, worker_name)
+}
+
+/// Worker actor を指定 parent project / port で register (core 実装)
+fn register_worker_actor_with_context(
+    project_name: &str,
+    port: u16,
+    worker_name: &str,
+) -> Result<()> {
     let actor = format!("worker-{worker_name}");
     let world_port = vantage_point::cli::WORLD_PORT;
     let url = format!("http://[::1]:{world_port}/api/world/msgbox/register");
