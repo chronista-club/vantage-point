@@ -8425,6 +8425,18 @@ dependencies = [
 
 [[package]]
 name = "tokio-tungstenite"
+version = "0.24.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "edc5f74e248dc973e0dbb7b74c7e0d6fcc301c694ff50049504004ef4d0cdcd9"
+dependencies = [
+ "futures-util",
+ "log",
+ "tokio",
+ "tungstenite 0.24.0",
+]
+
+[[package]]
+name = "tokio-tungstenite"
 version = "0.26.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7a9daff607c6d2bf6c16fd681ccb7eecc83e4e2cdc1ca067ffaadfca5de7f084"
@@ -8801,6 +8813,24 @@ dependencies = [
  "indoc",
  "ratatui-core",
  "ratatui-widgets",
+]
+
+[[package]]
+name = "tungstenite"
+version = "0.24.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "18e5b8366ee7a95b16d32197d0b2604b43a0be89dc5fac9f8e96ccafbaedda8a"
+dependencies = [
+ "byteorder",
+ "bytes",
+ "data-encoding",
+ "http",
+ "httparse",
+ "log",
+ "rand 0.8.5",
+ "sha1",
+ "thiserror 1.0.69",
+ "utf-8",
 ]
 
 [[package]]
@@ -9194,6 +9224,7 @@ version = "0.14.0"
 dependencies = [
  "anyhow",
  "base64",
+ "futures-util",
  "muda",
  "notify-rust",
  "portable-pty",
@@ -9203,6 +9234,7 @@ dependencies = [
  "shell-words",
  "tao",
  "tokio",
+ "tokio-tungstenite 0.24.0",
  "tracing",
  "tracing-subscriber",
  "tray-icon",

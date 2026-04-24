@@ -51,3 +51,7 @@ base64 = "0.22"
 
 # VP_SHELL_ARGS のシェル風クォート split
 shell-words = "1.1"
+
+# VP-93 Step 2a: daemon 経由 terminal (WebSocket client)
+tokio-tungstenite = "0.24"
+futures-util = "0.3"

@@ -8,3 +8,4 @@ pub mod prompt;
 pub mod update;
 pub mod world;
 pub mod ws;
+pub mod ws_terminal;
