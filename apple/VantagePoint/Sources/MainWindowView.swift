@@ -283,10 +283,12 @@ struct MainWindowView: View {
             selectNextProject()
         }
         .onReceive(NotificationCenter.default.publisher(for: .splitTerminalPane)) { _ in
-            // Cmd+D: ナビゲーター展開（トグル）
+            // Cmd+D: 方向を right (horizontal) に固定、content 選択 Navigator のみ展開。
+            // 従来の 2 ステップ (方向 → content) のうち、方向選択を skip し content 選択の
+            // 1 ステップに短縮。agent / canvas (PP) 等を user が選べる。
             withAnimation(.easeInOut(duration: 0.15)) {
                 if splitNavigator == .hidden {
-                    splitNavigator = .direction(selected: 0)
+                    splitNavigator = .content(horizontal: true, selected: 0)
                 } else {
                     splitNavigator = .hidden
                 }
