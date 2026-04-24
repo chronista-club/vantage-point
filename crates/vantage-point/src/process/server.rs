@@ -189,15 +189,15 @@ pub async fn run(
     // SurrealDB に接続（VP-21: SP ローカルテーブル移行）
     // 接続失敗時は warn して DB なしで継続（フォールバック）
     // スキーマ定義も行う（TheWorld 未起動の SP 単独起動時でも正常動作するよう冪等に実行）
-    let vpdb: Option<crate::db::SharedVpDb> = {
-        let password = crate::db::ensure_db_password();
-        match crate::db::VpDb::connect(crate::db::SURREAL_PORT, &password, 10).await {
+    let vpdb: Option<vp_db::SharedVpDb> = {
+        let password = vp_db::ensure_db_password();
+        match vp_db::VpDb::connect(vp_db::SURREAL_PORT, &password, 10).await {
             Ok(db) => {
                 if let Err(e) = db.define_schema().await {
                     tracing::warn!("SP: SurrealDB スキーマ定義失敗（DB なしで継続）: {}", e);
                     None
                 } else {
-                    tracing::info!("SP: SurrealDB 接続成功 (port={})", crate::db::SURREAL_PORT);
+                    tracing::info!("SP: SurrealDB 接続成功 (port={})", vp_db::SURREAL_PORT);
                     Some(std::sync::Arc::new(db))
                 }
             }
@@ -524,16 +524,16 @@ pub async fn run_world(port: u16) -> Result<()> {
     }
 
     // SurrealDB 認証パスワードを取得（なければ生成）
-    let db_password = crate::db::ensure_db_password();
+    let db_password = vp_db::ensure_db_password();
 
     // SurrealDB デーモンを自動起動（未起動なら起動、起動済みならスキップ）
     // TheWorld 終了時には SurrealDB は止めない（独立デーモン）
-    match crate::db::ensure_surreal_running(crate::db::SURREAL_PORT, &db_password) {
+    match vp_db::ensure_surreal_running(vp_db::SURREAL_PORT, &db_password) {
         Ok(pid) => {
             tracing::info!(
                 "SurrealDB 起動済み (pid={}, port={})",
                 pid,
-                crate::db::SURREAL_PORT
+                vp_db::SURREAL_PORT
             );
         }
         Err(e) => {
@@ -542,8 +542,8 @@ pub async fn run_world(port: u16) -> Result<()> {
     }
 
     // SurrealDB に接続してスキーマ定義
-    let vpdb: Option<crate::db::SharedVpDb> =
-        match crate::db::VpDb::connect(crate::db::SURREAL_PORT, &db_password, 100).await {
+    let vpdb: Option<vp_db::SharedVpDb> =
+        match vp_db::VpDb::connect(vp_db::SURREAL_PORT, &db_password, 100).await {
             Ok(db) => {
                 if let Err(e) = db.define_schema().await {
                     tracing::warn!("SurrealDB スキーマ定義失敗: {}", e);
@@ -794,9 +794,9 @@ pub async fn run_world(port: u16) -> Result<()> {
                                         .unwrap_or("unknown");
 
                                     let event = match action {
-                                        surrealdb::types::Action::Create => "started",
-                                        surrealdb::types::Action::Update => "updated",
-                                        surrealdb::types::Action::Delete => "stopped",
+                                        vp_db::Action::Create => "started",
+                                        vp_db::Action::Update => "updated",
+                                        vp_db::Action::Delete => "stopped",
                                         _ => "changed",
                                     };
 

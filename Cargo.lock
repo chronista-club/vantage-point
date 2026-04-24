@@ -9218,7 +9218,6 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
- "surrealdb",
  "tao",
  "tempfile",
  "thiserror 2.0.18",
@@ -9236,6 +9235,7 @@ dependencies = [
  "unison",
  "urlencoding",
  "uuid",
+ "vp-db",
  "vte",
 ]
 
@@ -9321,6 +9321,23 @@ dependencies = [
  "tracing",
  "vantage-point",
  "vp-ccws",
+]
+
+[[package]]
+name = "vp-db"
+version = "0.14.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "dirs",
+ "libc",
+ "serde",
+ "serde_json",
+ "surrealdb",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

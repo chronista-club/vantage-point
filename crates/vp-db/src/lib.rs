@@ -28,6 +28,11 @@ use surrealdb::Surreal;
 use surrealdb::engine::any::Any;
 use surrealdb::opt::auth::Root;
 
+// LIVE SELECT の Action enum を caller に露出 (downstream が surrealdb 直接依存しなくて済むように)
+pub use surrealdb::types::Action;
+
+mod platform;
+
 /// SurrealDB のデフォルトポート
 pub const SURREAL_PORT: u16 = 32001;
 
@@ -518,7 +523,7 @@ pub fn is_surreal_running() -> Option<u32> {
     let pid: u32 = content.trim().parse().ok()?;
 
     // EPERM (権限なし) はプロセス存在 → alive 扱い。platform::process_alive が判定。
-    let alive = crate::platform::process_alive(pid);
+    let alive = platform::process_alive(pid);
     if alive {
         Some(pid)
     } else {
@@ -601,12 +606,12 @@ pub fn stop_surreal() -> Option<u32> {
     tracing::info!("SurrealDB サーバー停止中 (pid={})", pid);
 
     // SIGTERM を送信
-    crate::platform::process_terminate(pid);
+    platform::process_terminate(pid);
 
     // 最大 2 秒待つ
     for _ in 0..20 {
         std::thread::sleep(std::time::Duration::from_millis(100));
-        if !crate::platform::process_alive(pid) {
+        if !platform::process_alive(pid) {
             let _ = std::fs::remove_file(surreal_pid_path());
             tracing::info!("SurrealDB サーバー停止完了 (pid={})", pid);
             return Some(pid);
@@ -615,7 +620,7 @@ pub fn stop_surreal() -> Option<u32> {
 
     // タイムアウト → SIGKILL
     tracing::warn!("SurrealDB SIGTERM タイムアウト、SIGKILL (pid={})", pid);
-    crate::platform::process_kill(pid);
+    platform::process_kill(pid);
     let _ = std::fs::remove_file(surreal_pid_path());
     Some(pid)
 }
