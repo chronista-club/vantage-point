@@ -238,9 +238,10 @@ struct VPPaneContainer: View {
     }
 
     /// group を LayoutRule に応じて render。
-    /// Phase 2.1c では horizontalSplit / verticalSplit のみ本実装、
-    /// overlay / tab は horizontalSplit にフォールバック (Phase 2.4 で本実装)。
-    /// children 2 つは直接 VPPaneSplitView、3+ は右結合で再帰。
+    /// VP-83 Phase 2.4: overlay / tab を本実装。
+    ///  - horizontalSplit / verticalSplit: 2 children は直接 split、3+ は右結合
+    ///  - overlay: 第一子を base layer、残りを ZStack で floating overlay
+    ///  - tab: tab bar 表示 + 先頭 child 固定表示 (active 切替 state は次 PR)
     private func renderGroup(id: UUID, children: [PaneNode], rule: LayoutRule) -> AnyView {
         guard !children.isEmpty else {
             return AnyView(Color.clear)
@@ -248,8 +249,18 @@ struct VPPaneContainer: View {
         if children.count == 1 {
             return paneNodeView(for: children[0])
         }
-        let horizontal = (rule.kind != .verticalSplit)  // vertical 以外は横扱い (overlay/tab も fallback)
 
+        switch rule.kind {
+        case .horizontalSplit, .verticalSplit:
+            return renderSplit(id: id, children: children, horizontal: rule.kind == .horizontalSplit)
+        case .overlay:
+            return renderOverlay(id: id, children: children)
+        case .tab:
+            return renderTab(id: id, children: children)
+        }
+    }
+
+    private func renderSplit(id: UUID, children: [PaneNode], horizontal: Bool) -> AnyView {
         if children.count == 2 {
             return AnyView(
                 VPPaneSplitView(
@@ -263,7 +274,6 @@ struct VPPaneContainer: View {
                 .id(id)
             )
         }
-
         // 3 つ以上 → 右結合で split 連鎖
         let first = children[0]
         let rest = PaneNode.group(id: UUID(), children: Array(children.dropFirst()))
@@ -275,6 +285,72 @@ struct VPPaneContainer: View {
                 paneNodeView(for: first)
             } second: {
                 paneNodeView(for: rest)
+            }
+            .id(id)
+        )
+    }
+
+    /// Overlay — 第一子を base layer、残りを ZStack で前景 overlay。
+    /// overlay 層は material 背景 + 余白 + 影で floating card として表現。
+    private func renderOverlay(id: UUID, children: [PaneNode]) -> AnyView {
+        let base = children[0]
+        let overlayChildren = Array(children.dropFirst())
+        return AnyView(
+            ZStack {
+                paneNodeView(for: base)
+
+                if !overlayChildren.isEmpty {
+                    VStack(spacing: 6) {
+                        ForEach(Array(overlayChildren.enumerated()), id: \.offset) { _, child in
+                            paneNodeView(for: child)
+                        }
+                    }
+                    .padding(10)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10)
+                            .fill(.regularMaterial)
+                    )
+                    .shadow(color: .black.opacity(0.3), radius: 20, y: 8)
+                    .padding(.horizontal, 48)
+                    .padding(.vertical, 48)
+                }
+            }
+            .id(id)
+        )
+    }
+
+    /// Tab — tab bar header + content area (Phase 2.4 MVP: 第一子固定表示、
+    /// active 切替 state は次 PR で PaneLayout に活性 index を追加して実装)。
+    private func renderTab(id: UUID, children: [PaneNode]) -> AnyView {
+        return AnyView(
+            VStack(spacing: 0) {
+                HStack(spacing: 2) {
+                    ForEach(Array(children.enumerated()), id: \.offset) { idx, child in
+                        let label = "Pane \(idx + 1)"
+                        Text(label)
+                            .font(.system(size: 11))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
+                            .background(
+                                idx == 0
+                                    ? Color.colorSurfaceBgEmphasis.opacity(0.5)
+                                    : Color.clear
+                            )
+                            .cornerRadius(4)
+                            .foregroundStyle(
+                                idx == 0
+                                    ? Color.colorTextPrimary
+                                    : Color.colorTextTertiary
+                            )
+                    }
+                    Spacer()
+                }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 4)
+                .background(Color.colorSurfaceBgSubtle.opacity(0.4))
+
+                // MVP: 第一子を content area として常時表示
+                paneNodeView(for: children[0])
             }
             .id(id)
         )
