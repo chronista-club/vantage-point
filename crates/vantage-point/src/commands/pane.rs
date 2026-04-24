@@ -118,6 +118,12 @@ pub fn execute(cmd: PaneCommands, config: &Config) -> Result<()> {
                 title,
             };
             client.post("/api/show", &msg)?;
+
+            // VP-83 Phase 2.2: Native App に Canvas pane auto-open 通知
+            // (CLI 経路 + MCP 経路 両方から発火するよう CLI 側にも追加)
+            #[cfg(target_os = "macos")]
+            crate::notify::post_canvas_open(client.port());
+
             println!("Content displayed in pane '{}'", pane_id);
             Ok(())
         }
