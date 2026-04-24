@@ -174,6 +174,13 @@ pub fn ensure_daemon_running(port: u16) -> Result<u32> {
 pub fn stop_daemon(pid: u32) -> Result<()> {
     tracing::info!("Daemon 停止要求 (PID: {})", pid);
 
+    // u32 → i32 overflow は Unix の kill(2) で扱えないため早期 Err
+    // (Phase W1 で Windows 向け OpenProcess/TerminateProcess を導入する際は
+    //  Windows DWORD に合わせてこの制限を外す)
+    if i32::try_from(pid).is_err() {
+        anyhow::bail!("PID {} が i32 範囲外 — 停止対象として不正", pid);
+    }
+
     // SIGTERM を送信
     if !crate::platform::process_terminate(pid) {
         tracing::warn!("SIGTERM 送信失敗 (PID: {}) — 既に死んでいる可能性", pid);

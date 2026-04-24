@@ -79,12 +79,22 @@ pub fn execute(cmd: PortCommands) -> Result<()> {
             print_roles(&layout);
             Ok(())
         }
-        PortCommands::Show { project, slot, lane, role } => {
+        PortCommands::Show {
+            project,
+            slot,
+            lane,
+            role,
+        } => {
             let (layout, slot) = resolve_slot(project.as_deref(), slot)?;
             show(&layout, slot, lane, role.as_deref());
             Ok(())
         }
-        PortCommands::Url { project, slot, lane, role } => {
+        PortCommands::Url {
+            project,
+            slot,
+            lane,
+            role,
+        } => {
             let (layout, slot) = resolve_slot(project.as_deref(), slot)?;
             url_cmd(&layout, slot, lane, &role);
             Ok(())
@@ -164,7 +174,9 @@ fn print_layout(layout: &PortLayout, slot: u16) {
     println!("  SP Unison     : {}", layout.unison_port(slot).unwrap());
     println!();
     for lane in 0..layout.max_lanes_per_project() {
-        let Some(lb) = layout.lane_base(slot, lane) else { continue };
+        let Some(lb) = layout.lane_base(slot, lane) else {
+            continue;
+        };
         let label = if lane == 0 { "Lead" } else { "Worker" };
         println!("  Lane {} ({}) — base {}", lane, label, lb);
         for (role, offset) in layout.valid_roles() {
@@ -181,10 +193,7 @@ fn execute_slot(cmd: SlotCommands) -> Result<()> {
         SlotCommands::List => {
             let config = Config::load().unwrap_or_default();
             let layout = config.port_layout();
-            println!(
-                "Slot assignments (max_projects = {}):",
-                layout.max_projects
-            );
+            println!("Slot assignments (max_projects = {}):", layout.max_projects);
             let mut assigned: Vec<_> = config
                 .projects
                 .iter()
@@ -196,10 +205,19 @@ fn execute_slot(cmd: SlotCommands) -> Result<()> {
             } else {
                 for p in &assigned {
                     let base = layout.project_base(p.slot.unwrap()).unwrap_or(0);
-                    println!("  slot {:>2} → {:<30} (base {})", p.slot.unwrap(), p.name, base);
+                    println!(
+                        "  slot {:>2} → {:<30} (base {})",
+                        p.slot.unwrap(),
+                        p.name,
+                        base
+                    );
                 }
             }
-            let unassigned: Vec<_> = config.projects.iter().filter(|p| p.slot.is_none()).collect();
+            let unassigned: Vec<_> = config
+                .projects
+                .iter()
+                .filter(|p| p.slot.is_none())
+                .collect();
             if !unassigned.is_empty() {
                 println!("\nUnassigned:");
                 for p in unassigned {
