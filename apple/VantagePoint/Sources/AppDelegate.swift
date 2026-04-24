@@ -72,6 +72,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // CC 完了通知をサイドバーに転送 + プロジェクトフォーカス
         setupCCNotificationObserver()
         setupFocusProjectObserver()
+        setupCanvasOpenObserver()
 
         // 自動リフレッシュ開始
         popoverViewModel.startAutoRefresh(interval: 5.0)
@@ -413,6 +414,29 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 name: notifName,
                 object: nil,
                 userInfo: ["project": project, "message": message, "path": path]
+            )
+        }
+    }
+
+    /// VP-83 Phase 2.2: Rust 側 `vp show` が post_canvas_open(port) で通知、
+    /// Swift 側はこの DistributedNotification を受けて該当 project の Canvas pane を
+    /// 自動生成 (既に存在すれば no-op)。
+    ///
+    /// object に SP port (数字文字列) が入る。MainWindowView は port → project path
+    /// 解決して Canvas pane auto-create。
+    private func setupCanvasOpenObserver() {
+        DistributedNotificationCenter.default().addObserver(
+            forName: NSNotification.Name("tech.anycreative.vp.canvas.open"),
+            object: nil,
+            queue: .main
+        ) { notification in
+            let portStr = notification.object as? String ?? ""
+            guard let port = UInt16(portStr) else { return }
+            // ローカル Notification に変換、MainWindowView に転送
+            NotificationCenter.default.post(
+                name: Notification.Name("tech.anycreative.vp.canvas.open"),
+                object: nil,
+                userInfo: ["port": port]
             )
         }
     }

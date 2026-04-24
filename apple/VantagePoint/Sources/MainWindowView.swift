@@ -299,6 +299,11 @@ struct MainWindowView: View {
         .onReceive(NotificationCenter.default.publisher(for: .splitNavigatorKey)) { notification in
             handleSplitNavigatorKey(notification)
         }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("tech.anycreative.vp.canvas.open"))) { notification in
+            // VP-83 Phase 2.2: Rust vp show → Canvas pane auto-open
+            guard let port = notification.userInfo?["port"] as? UInt16 else { return }
+            ensureCanvasPane(forPort: port)
+        }
         .onReceive(NotificationCenter.default.publisher(for: .selectProjectByNumber)) { notification in
             if let number = notification.userInfo?["number"] as? Int {
                 selectProjectByNumber(number)
@@ -505,6 +510,58 @@ struct MainWindowView: View {
                 }
             }
         }
+    }
+
+    /// VP-83 Phase 2.2: 指定 SP port に対応する project に Canvas pane が
+    /// 存在しない場合のみ作成する (auto-open for `vp show`)。
+    ///
+    /// Rust 側 `vp show` MCP → post_canvas_open(port) → AppDelegate observer →
+    /// NotificationCenter → ここ、の経路で発動。
+    private func ensureCanvasPane(forPort port: UInt16) {
+        // port → project path 解決
+        guard let target = projects.first(where: { $0.port == port }) else {
+            logger.info("Canvas auto-open: port \(port) に該当する project なし")
+            return
+        }
+        let path = target.path
+
+        // 既に Canvas pane があれば何もしない
+        if let layout = paneLayouts[path],
+           layout.root.leaves.contains(where: { $0.kind == .canvas }) {
+            logger.debug("Canvas auto-open: \(target.name) 既に Canvas pane あり、skip")
+            return
+        }
+
+        // レイアウト初期化 (無ければ)
+        if paneLayouts[path] == nil {
+            paneLayouts[path] = PaneLayout.initial()
+        }
+
+        // focus 先: 現在 focus か Lead
+        guard var layout = paneLayouts[path] else { return }
+        let targetLeaf = layout.focusedPaneId
+        let paneId = UUID()
+        let shortId = paneId.uuidString.prefix(8).lowercased()
+        let projectName = (path as NSString).lastPathComponent
+            .replacingOccurrences(of: ".", with: "-")
+        let paneSession = "\(projectName)-vpp-\(shortId)"
+        let newLeaf = PaneLeaf(
+            id: paneId,
+            paneSessionName: paneSession,
+            tmuxWindowName: nil,
+            kind: .canvas
+        )
+        let newGroupId = UUID()
+        layout.root = layout.root.inserting(
+            newLeaf: newLeaf,
+            adjacentTo: targetLeaf,
+            newGroupId: newGroupId
+        )
+        layout.layoutMap[newGroupId] = .horizontalSplit
+        // focus は元の pane を維持 (Canvas は navigator、対話は Agent に残す)
+        paneLayouts[path] = layout
+
+        logger.info("Canvas auto-open: \(target.name) に canvas pane 追加 (port=\(port))")
     }
 
     /// VP Pane 追加（NSView レイヤの分割）

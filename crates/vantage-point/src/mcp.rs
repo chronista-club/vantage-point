@@ -967,6 +967,15 @@ impl VantageMcp {
         };
 
         self.process_call("show", &msg).await?;
+
+        // VP-83 Phase 2.2: Native App に Canvas pane auto-open 通知を送信。
+        // 既に Canvas pane があれば Swift 側で no-op、無ければ自動生成。
+        #[cfg(target_os = "macos")]
+        {
+            let port = *self.process_port.lock().await;
+            crate::notify::post_canvas_open(port);
+        }
+
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
             format!("Content displayed in pane '{}'", pane_id),
         )]))
