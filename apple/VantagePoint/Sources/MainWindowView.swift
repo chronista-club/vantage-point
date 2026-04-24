@@ -187,12 +187,11 @@ struct MainWindowView: View {
                             let isActive = selectedProjectPath == path
                             let gen = terminalGeneration[path] ?? 0
                             let layout = paneLayouts[path] ?? PaneLayout.initial()
-                            // bridge: 新 PaneNode + LayoutMap → 旧 VPPaneNode (Segment 2 で除去)
                             let focusedNode = layout.root.withFocus(on: layout.focusedPaneId)
-                            let legacyNode = focusedNode.toLegacy(layoutMap: layout.layoutMap)
                             VPPaneContainer(
                                 projectPath: path,
-                                node: legacyNode,
+                                node: focusedNode,
+                                layoutMap: layout.layoutMap,
                                 isActive: isActive,
                                 splitNavigatorActive: splitNavigator != .hidden,
                                 terminalGeneration: gen,
@@ -577,16 +576,9 @@ struct MainWindowView: View {
             }
         }
 
-        // 削除対象のリーフの tmux リソースをクリーンアップ (bridge: 旧 VPPaneLeaf へ変換)
+        // 削除対象のリーフの tmux リソースをクリーンアップ
         if let leaf = layout.root.findLeaf(id: paneId) {
-            let legacyLeaf = VPPaneLeaf(
-                id: leaf.id,
-                paneSessionName: leaf.paneSessionName,
-                tmuxWindowName: leaf.tmuxWindowName,
-                contentType: leaf.kind.rawValue,
-                isFocused: leaf.isFocused
-            )
-            cleanupVPPaneTmux(leaf: legacyLeaf)
+            cleanupVPPaneTmux(leaf: leaf)
         }
 
         // ツリーから削除
@@ -620,20 +612,13 @@ struct MainWindowView: View {
             return nil
         }()
 
-        // MinimizedPane を作成 (MinimizedPane は旧 VPPaneLeaf を保持する — Segment 2 で新 model 化)
-        let legacyLeaf = VPPaneLeaf(
-            id: leaf.id,
-            paneSessionName: leaf.paneSessionName,
-            tmuxWindowName: leaf.tmuxWindowName,
-            contentType: leaf.kind.rawValue,
-            isFocused: leaf.isFocused
-        )
+        // MinimizedPane を作成 (新 PaneLeaf を直接保持)
         let minimized = MinimizedPane(
             id: paneId,
-            leaf: legacyLeaf,
+            leaf: leaf,
             adjacentToId: adjacentId,
             horizontal: true,
-            standInfo: PaneStandInfo.from(leaf: legacyLeaf)
+            standInfo: PaneStandInfo.from(leaf: leaf)
         )
 
         // ツリーから削除（tmux はクリーンアップしない — 復帰時に再利用）
@@ -665,18 +650,10 @@ struct MainWindowView: View {
             minimizedPanes[path]?.removeAll { $0.id == pane.id }
 
             // ツリーに再挿入（adjacentToId の隣に分割）
-            // pane.leaf は旧 VPPaneLeaf なので新 PaneLeaf に変換、併せて LayoutMap も更新
             let targetId = pane.adjacentToId ?? layout.focusedPaneId
-            let newLeaf = PaneLeaf(
-                id: pane.leaf.id,
-                paneSessionName: pane.leaf.paneSessionName,
-                tmuxWindowName: pane.leaf.tmuxWindowName,
-                kind: PaneKind(rawValue: pane.leaf.contentType) ?? .agent,
-                isFocused: pane.leaf.isFocused
-            )
             let newGroupId = UUID()
             layout.root = layout.root.inserting(
-                newLeaf: newLeaf,
+                newLeaf: pane.leaf,
                 adjacentTo: targetId,
                 newGroupId: newGroupId
             )
