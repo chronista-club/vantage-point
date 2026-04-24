@@ -27,17 +27,11 @@ tracing = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
-# UUID (DB password random 生成)
-uuid = { version = "1", features = ["v4"] }
-
 # Date/Time
 chrono = { version = "0.4", features = ["serde"] }
 
-# Config dir (db data / pass file の置き場)
+# Config dir (db data dir の置き場)
 dirs = "6"
-
-# libc (Unix 系 permission 操作)
-libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"

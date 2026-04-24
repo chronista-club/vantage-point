@@ -1,9 +1,8 @@
-//! `vp db` コマンド — SurrealDB デーモン管理
+//! `vp db` コマンド — embedded SurrealDB のメンテナンス
 //!
-//! - `vp db start` — SurrealDB を起動（未起動なら）
-//! - `vp db stop` — SurrealDB を停止
-//! - `vp db restart` — SurrealDB を再起動
-//! - `vp db status` — SurrealDB の状態確認
+//! embedded mode に移行したため、DB は TheWorld Process のライフサイクルと
+//! 一緒に上がる (別 daemon は不要)。ここでは主に path 確認・初期化・スキーマ
+//! 適用に絞った utility を提供する。
 
 use anyhow::Result;
 use clap::Subcommand;
@@ -13,78 +12,48 @@ use vp_db as db;
 /// SurrealDB サブコマンド
 #[derive(Subcommand)]
 pub enum DbCommands {
-    /// SurrealDB を起動（未起動なら）
-    Start,
-    /// SurrealDB を停止
-    Stop,
-    /// SurrealDB を再起動
-    Restart,
-    /// SurrealDB の状態確認
+    /// DB data dir を確認し、初期スキーマを適用する (open → define_schema)
+    Init,
+    /// DB data dir のパスを表示
+    Path,
+    /// embedded DB のヘルスチェック (open → RETURN true)
     Status,
 }
 
 /// `vp db` を実行
 pub fn execute(cmd: DbCommands) -> Result<()> {
-    let password = db::ensure_db_password();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let data_dir = db::db_data_dir();
 
     match cmd {
-        DbCommands::Start => {
-            match db::ensure_surreal_running(db::SURREAL_PORT, &password) {
-                Ok(pid) => {
+        DbCommands::Init => rt.block_on(async {
+            let vpdb = db::VpDb::connect_embedded(&data_dir).await?;
+            vpdb.define_schema().await?;
+            println!("SurrealDB initialized at {}", data_dir.display());
+            Ok(())
+        }),
+        DbCommands::Path => {
+            println!("{}", data_dir.display());
+            Ok(())
+        }
+        DbCommands::Status => rt.block_on(async {
+            match db::VpDb::connect_embedded(&data_dir).await {
+                Ok(vpdb) => {
+                    let healthy = vpdb.health().await;
                     println!(
-                        "SurrealDB running (pid: {}, port: {})",
-                        pid,
-                        db::SURREAL_PORT
+                        "SurrealDB embedded at {} — {}",
+                        data_dir.display(),
+                        if healthy { "OK" } else { "unhealthy" }
                     );
+                    Ok(())
                 }
                 Err(e) => {
-                    eprintln!("SurrealDB 起動失敗: {}", e);
+                    eprintln!("SurrealDB open failed ({}): {}", data_dir.display(), e);
                     std::process::exit(1);
                 }
             }
-            Ok(())
-        }
-        DbCommands::Stop => {
-            match db::stop_surreal() {
-                Some(pid) => {
-                    println!("SurrealDB stopped (pid: {})", pid);
-                }
-                None => {
-                    println!("SurrealDB is not running");
-                }
-            }
-            Ok(())
-        }
-        DbCommands::Restart => {
-            match db::restart_surreal(db::SURREAL_PORT, &password) {
-                Ok(pid) => {
-                    println!(
-                        "SurrealDB restarted (pid: {}, port: {})",
-                        pid,
-                        db::SURREAL_PORT
-                    );
-                }
-                Err(e) => {
-                    eprintln!("SurrealDB 再起動失敗: {}", e);
-                    std::process::exit(1);
-                }
-            }
-            Ok(())
-        }
-        DbCommands::Status => {
-            match db::is_surreal_running() {
-                Some(pid) => {
-                    println!(
-                        "SurrealDB is running (pid: {}, port: {})",
-                        pid,
-                        db::SURREAL_PORT
-                    );
-                }
-                None => {
-                    println!("SurrealDB is not running");
-                }
-            }
-            Ok(())
-        }
+        }),
     }
 }

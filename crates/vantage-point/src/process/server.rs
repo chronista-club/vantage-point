@@ -186,18 +186,19 @@ pub async fn run(
         });
     }
 
-    // SurrealDB に接続（VP-21: SP ローカルテーブル移行）
-    // 接続失敗時は warn して DB なしで継続（フォールバック）
-    // スキーマ定義も行う（TheWorld 未起動の SP 単独起動時でも正常動作するよう冪等に実行）
+    // SurrealDB (embedded) に接続
+    // single-writer の前提下で World (= この Process) がオープン中は他 Process は
+    // 同じ DB を開けないため、SP 独立起動時はエラー時に DB なし継続する fallback は
+    // 残しておく (dogfooding / 将来の "vp start -p N" 併用で有用)。
     let vpdb: Option<vp_db::SharedVpDb> = {
-        let password = vp_db::ensure_db_password();
-        match vp_db::VpDb::connect(vp_db::SURREAL_PORT, &password, 10).await {
+        let data_dir = vp_db::db_data_dir();
+        match vp_db::VpDb::connect_embedded(&data_dir).await {
             Ok(db) => {
                 if let Err(e) = db.define_schema().await {
                     tracing::warn!("SP: SurrealDB スキーマ定義失敗（DB なしで継続）: {}", e);
                     None
                 } else {
-                    tracing::info!("SP: SurrealDB 接続成功 (port={})", vp_db::SURREAL_PORT);
+                    tracing::info!("SP: SurrealDB 接続成功 (embedded)");
                     Some(std::sync::Arc::new(db))
                 }
             }
@@ -523,27 +524,11 @@ pub async fn run_world(port: u16) -> Result<()> {
         tracing::warn!("Failed to initialize UpdateCapability: {}", e);
     }
 
-    // SurrealDB 認証パスワードを取得（なければ生成）
-    let db_password = vp_db::ensure_db_password();
-
-    // SurrealDB デーモンを自動起動（未起動なら起動、起動済みならスキップ）
-    // TheWorld 終了時には SurrealDB は止めない（独立デーモン）
-    match vp_db::ensure_surreal_running(vp_db::SURREAL_PORT, &db_password) {
-        Ok(pid) => {
-            tracing::info!(
-                "SurrealDB 起動済み (pid={}, port={})",
-                pid,
-                vp_db::SURREAL_PORT
-            );
-        }
-        Err(e) => {
-            tracing::warn!("SurrealDB 起動失敗（DB なしで継続）: {}", e);
-        }
-    }
-
-    // SurrealDB に接続してスキーマ定義
-    let vpdb: Option<vp_db::SharedVpDb> =
-        match vp_db::VpDb::connect(vp_db::SURREAL_PORT, &db_password, 100).await {
+    // SurrealDB (embedded) に接続してスキーマ定義
+    // surrealkv backend で in-process DB を開く。外部 `surreal` バイナリ不要。
+    let vpdb: Option<vp_db::SharedVpDb> = {
+        let data_dir = vp_db::db_data_dir();
+        match vp_db::VpDb::connect_embedded(&data_dir).await {
             Ok(db) => {
                 if let Err(e) = db.define_schema().await {
                     tracing::warn!("SurrealDB スキーマ定義失敗: {}", e);
@@ -554,7 +539,8 @@ pub async fn run_world(port: u16) -> Result<()> {
                 tracing::warn!("SurrealDB 接続失敗（DB なしで継続）: {}", e);
                 None
             }
-        };
+        }
+    };
 
     // VpDb を ProcessManagerCapability に注入し、DB からプロジェクトを再読み込み
     // （initialize 時点では vpdb 未設定のため config.toml から読み込まれている。
