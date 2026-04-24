@@ -190,6 +190,7 @@ pub async fn diagnose_handler(State(state): State<Arc<AppState>>) -> Json<serde_
     // Mailbox (Router 自体は Capability trait 外だが、integration layer として
     // 診断対象に含める)
     let msgbox_addresses = state.capabilities.msgbox_router.addresses().await;
+    let msgbox_recent = state.capabilities.msgbox_router.recent_history(3).await;
 
     Json(serde_json::json!({
         "count": reports.len(),
@@ -197,6 +198,7 @@ pub async fn diagnose_handler(State(state): State<Arc<AppState>>) -> Json<serde_
         "msgbox": {
             "addresses": msgbox_addresses,
             "count": msgbox_addresses.len(),
+            "recent": msgbox_recent,
         },
     }))
 }

@@ -164,6 +164,118 @@ impl Message {
 }
 
 // =============================================================================
+// MessageEnvelope — 診断用の msg 履歴 entry (VP-83 Stand 自己診断)
+// =============================================================================
+
+/// Mailbox msg lifecycle の observable state
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EnvelopeState {
+    /// send された (Router 受領)
+    Queued,
+    /// recv で取り出された (宛先 Handle から外された = "開封")
+    Received,
+    /// 明示 ack された (manual_ack 時のみ、persistent store 削除)
+    Acked,
+}
+
+/// 診断用 envelope (history 表示用の軽量メタ、payload は truncate)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessageEnvelope {
+    pub id: String,
+    pub from: String,
+    pub to: String,
+    pub kind: String, // MessageKind の文字列表現
+    pub sent_at_ms: u64,
+    pub received_at_ms: Option<u64>,
+    pub acked_at_ms: Option<u64>,
+    pub state: EnvelopeState,
+    /// payload の要約 (先頭 80 文字)
+    pub payload_preview: String,
+}
+
+impl MessageEnvelope {
+    fn from_msg(msg: &Message) -> Self {
+        let kind = match msg.kind {
+            MessageKind::Direct => "direct",
+            MessageKind::Notification => "notification",
+            MessageKind::Request => "request",
+            MessageKind::Response => "response",
+        };
+        let preview = {
+            let s = msg.payload.to_string();
+            if s.len() > 80 {
+                format!("{}…", &s[..80])
+            } else {
+                s
+            }
+        };
+        Self {
+            id: msg.id.clone(),
+            from: msg.from.clone(),
+            to: msg.to.clone(),
+            kind: kind.to_string(),
+            sent_at_ms: msg.timestamp,
+            received_at_ms: None,
+            acked_at_ms: None,
+            state: EnvelopeState::Queued,
+            payload_preview: preview,
+        }
+    }
+}
+
+/// bounded history buffer (最新 N 件を保持、push で古い entry を pop)
+const HISTORY_CAP: usize = 50;
+
+#[derive(Debug, Clone, Default)]
+pub struct MessageHistory {
+    /// envelope の index (id → buffer idx)
+    /// 注: ring buffer で popfront されると id は無効化、その時は skip
+    pub(crate) entries: Arc<RwLock<std::collections::VecDeque<MessageEnvelope>>>,
+}
+
+impl MessageHistory {
+    fn new() -> Self {
+        Self {
+            entries: Arc::new(RwLock::new(std::collections::VecDeque::with_capacity(
+                HISTORY_CAP,
+            ))),
+        }
+    }
+
+    async fn record_sent(&self, msg: &Message) {
+        let env = MessageEnvelope::from_msg(msg);
+        let mut h = self.entries.write().await;
+        if h.len() >= HISTORY_CAP {
+            h.pop_front();
+        }
+        h.push_back(env);
+    }
+
+    async fn mark_received(&self, msg_id: &str) {
+        let mut h = self.entries.write().await;
+        if let Some(env) = h.iter_mut().find(|e| e.id == msg_id) {
+            env.received_at_ms = Some(now_ms());
+            env.state = EnvelopeState::Received;
+        }
+    }
+
+    async fn mark_acked(&self, msg_id: &str) {
+        let mut h = self.entries.write().await;
+        if let Some(env) = h.iter_mut().find(|e| e.id == msg_id) {
+            env.acked_at_ms = Some(now_ms());
+            env.state = EnvelopeState::Acked;
+        }
+    }
+
+    /// 新しい順に最大 limit 件
+    pub async fn recent(&self, limit: usize) -> Vec<MessageEnvelope> {
+        let h = self.entries.read().await;
+        h.iter().rev().take(limit).cloned().collect()
+    }
+}
+
+// =============================================================================
 // Handle — 各 Capability が持つ送受信ハンドル
 // =============================================================================
 
@@ -186,6 +298,8 @@ pub struct Handle {
     stash: Arc<tokio::sync::Mutex<std::collections::VecDeque<Message>>>,
     /// 永続化バックエンド（persistent メッセージ受信時に ack = DISC 削除）
     whitesnake: Option<Whitesnake>,
+    /// msg 履歴 tracker (VP-83 Stand 自己診断、Router と共有)
+    history: MessageHistory,
 }
 
 impl Handle {
@@ -196,6 +310,8 @@ impl Handle {
 
     /// メッセージを送信（Router 経由で宛先に配信）
     pub async fn send(&self, msg: Message) -> Result<(), Error> {
+        // VP-83: 診断用に履歴を記録 (send hook)
+        self.history.record_sent(&msg).await;
         self.router_tx
             .send(msg)
             .await
@@ -236,6 +352,10 @@ impl Handle {
             Some(msg) => Some(msg),
             None => self.rx.lock().await.recv().await,
         };
+        // VP-83: 診断用に history を更新 (recv hook、開封状況に相当)
+        if let Some(ref m) = msg {
+            self.history.mark_received(&m.id).await;
+        }
         self.ack_if_persistent(msg.as_ref()).await;
         msg
     }
@@ -375,6 +495,8 @@ pub struct Router {
     /// Remote routing client（cross-Process 配信、Phase 3 Step 2）
     /// None の場合は Process-local のみ
     remote: Option<RemoteRoutingClient>,
+    /// msg 履歴 tracker (VP-83 Stand 自己診断、全 Handle と共有)
+    history: MessageHistory,
 }
 
 impl Router {
@@ -481,7 +603,13 @@ impl Router {
             shutdown,
             whitesnake,
             remote,
+            history: MessageHistory::new(),
         }
+    }
+
+    /// 診断用の msg 履歴 (新しい順、最大 limit 件)
+    pub async fn recent_history(&self, limit: usize) -> Vec<MessageEnvelope> {
+        self.history.recent(limit).await
     }
 
     /// Remote forward 経由で受け取ったメッセージを **そのまま** ローカル box に配信
@@ -671,6 +799,7 @@ impl Router {
             rx: Arc::new(tokio::sync::Mutex::new(rx)),
             stash: Arc::new(tokio::sync::Mutex::new(std::collections::VecDeque::new())),
             whitesnake: self.whitesnake.clone(),
+            history: self.history.clone(),
         }
     }
 
