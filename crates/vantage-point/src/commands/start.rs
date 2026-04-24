@@ -349,11 +349,8 @@ fn run_tui_mode(
     // if let Err(e) = crate::ccwire::register(&session_name, &tmux_target) { ... }
 
     // TUI 起動（tmux の外で直接）
-    let result = run_tui(&session_name, project_dir, project_name, port, is_reconnect);
-
-    // ccwire unregister は停止 (L7b)
-
-    result
+    // ccwire unregister は Phase L7b で停止済 (Mailbox Router 経由へ)
+    run_tui(&session_name, project_dir, project_name, port, is_reconnect)
 }
 
 // =============================================================================

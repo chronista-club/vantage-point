@@ -124,14 +124,14 @@ async fn run_ws_loop(
         tokio::select! {
             cmd = rx.recv() => match cmd {
                 Some(WsCommand::Input(bytes)) => {
-                    if write.send(Message::Binary(bytes.into())).await.is_err() {
+                    if write.send(Message::Binary(bytes)).await.is_err() {
                         tracing::info!("/ws/terminal write closed");
                         break;
                     }
                 }
                 Some(WsCommand::Resize(c, r)) => {
                     let json = format!(r#"{{"type":"resize","cols":{},"rows":{}}}"#, c, r);
-                    if write.send(Message::Text(json.into())).await.is_err() {
+                    if write.send(Message::Text(json)).await.is_err() {
                         tracing::info!("/ws/terminal resize write closed");
                         break;
                     }
