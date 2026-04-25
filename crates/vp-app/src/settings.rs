@@ -25,6 +25,16 @@ pub struct Settings {
     /// `None` = 未設定 (env var or `cfg!(debug_assertions)` にフォールバック)。
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub developer_mode: Option<bool>,
+    /// デフォルトのプロジェクトルートディレクトリ。
+    ///
+    /// - Add Project ボタンの folder picker の初期ディレクトリ
+    /// - Clone Repository の clone 先親ディレクトリ
+    ///
+    /// `None` の時は `~/repos` (存在すれば) → home dir のフォールバック。
+    /// WSL2 上の Linux home を Windows-native の vp-app から指したい場合は
+    /// `\\\\wsl$\\<distro>\\home\\<user>\\repos` のような UNC path を入れる。
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub default_project_root: Option<String>,
 }
 
 impl Settings {
@@ -95,9 +105,14 @@ mod tests {
     fn round_trip_toml() {
         let s = Settings {
             developer_mode: Some(true),
+            default_project_root: Some("/home/mito/repos".to_string()),
         };
         let toml = toml::to_string(&s).unwrap();
         let parsed: Settings = toml::from_str(&toml).unwrap();
         assert_eq!(parsed.developer_mode, Some(true));
+        assert_eq!(
+            parsed.default_project_root.as_deref(),
+            Some("/home/mito/repos")
+        );
     }
 }

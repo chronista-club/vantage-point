@@ -110,9 +110,31 @@ const SIDEBAR_HTML: &str = concat!(
   .projects-section{flex:1;overflow-y:auto;padding:6px 0;}
   .projects-section .section-header{padding:10px 16px 6px;font-size:10px;color:var(--color-text-tertiary);text-transform:uppercase;letter-spacing:.08em;display:flex;justify-content:space-between;align-items:center;}
 
-  /* Bottom Add Project ボタン — sidebar 幅一杯、目立たない subtle スタイル */
-  .add-project-bottom{margin:6px 12px 10px;padding:6px 8px;border-radius:var(--radius-sm,6px);cursor:pointer;color:var(--color-text-tertiary);font-size:11px;text-align:center;border:1px dashed var(--color-surface-border,#1f2233);background:transparent;transition:background .12s ease,color .12s ease,border-color .12s ease;user-select:none;}
-  .add-project-bottom:hover{background:var(--color-surface-bg-emphasis);color:var(--color-text-secondary);border-color:var(--color-text-tertiary);}
+  /* Bottom Add ボタン (single trigger) と展開後の sub-actions */
+  .add-trigger{margin:6px 12px 10px;padding:6px 8px;border-radius:var(--radius-sm,6px);cursor:pointer;color:var(--color-text-tertiary);font-size:11px;text-align:center;border:1px dashed var(--color-surface-border,#1f2233);background:transparent;transition:background .12s ease,color .12s ease,border-color .12s ease;user-select:none;}
+  .add-trigger:hover{background:var(--color-surface-bg-emphasis);color:var(--color-text-secondary);border-color:var(--color-text-tertiary);}
+  .add-trigger.expanded{color:var(--color-text-secondary);border-color:var(--color-text-tertiary);background:var(--color-surface-bg-emphasis);}
+
+  /* sub-actions (Select / Clone) — 展開時に max-height + opacity トランジション */
+  .add-actions{margin:0 12px 10px;display:flex;flex-direction:column;gap:4px;max-height:0;opacity:0;overflow:hidden;transition:max-height .22s ease, opacity .22s ease, margin-top .22s ease;margin-top:0;pointer-events:none;}
+  .add-actions.expanded{max-height:120px;opacity:1;margin-top:-6px;pointer-events:auto;}
+  .add-action{padding:6px 10px;border-radius:var(--radius-sm,6px);cursor:pointer;color:var(--color-text-tertiary);font-size:11px;text-align:left;background:var(--color-surface-bg-subtle);border:1px solid transparent;transition:background .12s ease,color .12s ease,border-color .12s ease,transform .15s ease;user-select:none;display:flex;align-items:center;gap:6px;transform:translateY(-2px);}
+  .add-actions.expanded .add-action{transform:translateY(0);}
+  .add-action:hover{background:var(--color-surface-bg-emphasis);color:var(--color-text-primary);border-color:var(--color-surface-border,#1f2233);}
+  .add-action .icon{width:16px;text-align:center;color:var(--color-brand-primary);font-size:12px;}
+
+  /* Clone modal overlay */
+  .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.5);display:none;align-items:center;justify-content:center;z-index:100;}
+  .modal-overlay.active{display:flex;}
+  .modal{background:var(--color-surface-bg-base);border:1px solid var(--color-surface-border,#1f2233);border-radius:8px;padding:16px;min-width:240px;max-width:90%;}
+  .modal h2{font-size:13px;margin:0 0 8px;color:var(--color-text-primary);font-weight:500;}
+  .modal input{width:100%;padding:6px 8px;border-radius:4px;border:1px solid var(--color-surface-border,#1f2233);background:var(--color-surface-bg-subtle);color:var(--color-text-primary);font-family:inherit;font-size:12px;box-sizing:border-box;}
+  .modal input:focus{outline:none;border-color:var(--color-brand-primary);}
+  .modal .actions{display:flex;justify-content:flex-end;gap:6px;margin-top:10px;}
+  .modal button{padding:5px 12px;border-radius:4px;border:1px solid var(--color-surface-border,#1f2233);background:transparent;color:var(--color-text-secondary);cursor:pointer;font-size:11px;transition:background .12s ease,color .12s ease;}
+  .modal button:hover{background:var(--color-surface-bg-emphasis);color:var(--color-text-primary);}
+  .modal button.primary{background:var(--color-brand-primary-subtle);color:var(--color-brand-primary);border-color:var(--color-brand-primary-subtle);}
+  .modal button.primary:hover{background:var(--color-brand-primary);color:var(--color-surface-bg-base);}
 
   .project{margin:0 6px 2px;}
   .project-header{display:flex;align-items:center;gap:6px;padding:6px 8px;border-radius:var(--radius-sm,6px);cursor:pointer;transition:background .1s ease;user-select:none;}
@@ -148,7 +170,22 @@ const SIDEBAR_HTML: &str = concat!(
   <div class="projects-section">
     <div class="section-header">Projects</div>
     <div id="projects"><div class="loading">読込中…</div></div>
-    <div class="add-project-bottom" id="add-project-btn" title="Add Project">＋ Add Project</div>
+    <div class="add-trigger" id="add-trigger" title="Add Project">＋ Add</div>
+    <div class="add-actions" id="add-actions">
+      <div class="add-action" id="select-project-btn" title="Select existing folder"><span class="icon">📁</span> Select Folder</div>
+      <div class="add-action" id="clone-project-btn" title="Clone repository from URL"><span class="icon">🌱</span> Clone Repository</div>
+    </div>
+  </div>
+  <!-- Clone modal (重畳 overlay、Cancel / Clone) -->
+  <div class="modal-overlay" id="clone-modal">
+    <div class="modal">
+      <h2>Clone Repository</h2>
+      <input type="text" id="clone-url" placeholder="https://github.com/user/repo.git" />
+      <div class="actions">
+        <button id="clone-cancel">Cancel</button>
+        <button id="clone-confirm" class="primary">Clone</button>
+      </div>
+    </div>
   </div>
 <script>
   // Rust から push される sidebar state を保持
@@ -318,11 +355,73 @@ const SIDEBAR_HTML: &str = concat!(
       }
       pendingState = null;
     }
-    // VP-100 follow-up: "+" Add Project ボタン
-    const addBtn = document.getElementById('add-project-btn');
-    if (addBtn) {
-      addBtn.addEventListener('click', () => send({t: 'project:add'}));
+    // VP-100 follow-up: 「+ Add」展開 → Select / Clone のサブアクション
+    const addTrigger = document.getElementById('add-trigger');
+    const addActions = document.getElementById('add-actions');
+    function setAddExpanded(open) {
+      if (!addTrigger || !addActions) return;
+      addTrigger.classList.toggle('expanded', open);
+      addActions.classList.toggle('expanded', open);
     }
+    function toggleAdd() {
+      setAddExpanded(!(addActions && addActions.classList.contains('expanded')));
+    }
+    function collapseAdd() { setAddExpanded(false); }
+    if (addTrigger) addTrigger.addEventListener('click', toggleAdd);
+
+    // Select Folder
+    const selectBtn = document.getElementById('select-project-btn');
+    if (selectBtn) selectBtn.addEventListener('click', () => {
+      collapseAdd();
+      send({t: 'project:add'});
+    });
+
+    // Clone Repository — modal で URL を受け取る
+    const cloneBtn = document.getElementById('clone-project-btn');
+    const cloneModal = document.getElementById('clone-modal');
+    const cloneInput = document.getElementById('clone-url');
+    const cloneCancel = document.getElementById('clone-cancel');
+    const cloneConfirm = document.getElementById('clone-confirm');
+    function openCloneModal() {
+      if (!cloneModal) return;
+      cloneInput.value = '';
+      cloneModal.classList.add('active');
+      setTimeout(() => cloneInput && cloneInput.focus(), 50);
+    }
+    function closeCloneModal() {
+      if (cloneModal) cloneModal.classList.remove('active');
+    }
+    function submitClone() {
+      const url = (cloneInput && cloneInput.value || '').trim();
+      if (!url) return;
+      send({t: 'project:clone', url: url});
+      closeCloneModal();
+    }
+    if (cloneBtn) cloneBtn.addEventListener('click', () => {
+      collapseAdd();
+      openCloneModal();
+    });
+    if (cloneCancel) cloneCancel.addEventListener('click', closeCloneModal);
+    if (cloneConfirm) cloneConfirm.addEventListener('click', submitClone);
+    if (cloneInput) {
+      cloneInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); submitClone(); }
+        else if (e.key === 'Escape') { e.preventDefault(); closeCloneModal(); }
+      });
+    }
+    if (cloneModal) {
+      cloneModal.addEventListener('click', (e) => {
+        if (e.target === cloneModal) closeCloneModal();
+      });
+    }
+    // 別の場所をクリックしたら add actions を畳む
+    document.addEventListener('click', (e) => {
+      if (!addTrigger || !addActions) return;
+      if (!addActions.classList.contains('expanded')) return;
+      const t = e.target;
+      if (addTrigger.contains(t) || addActions.contains(t)) return;
+      collapseAdd();
+    });
   });
 </script>
 </body>
@@ -355,6 +454,33 @@ fn update_pane_bounds(
     });
 }
 
+/// Settings → 実 path 解決。
+///
+/// 優先順位:
+/// 1. `Settings.default_project_root` が指定されていて存在する → それ
+/// 2. `~/repos` が存在する → それ
+/// 3. `~` (home) → それ
+/// 4. それ以外 → `None`
+fn resolve_default_project_root(settings: &Settings) -> Option<std::path::PathBuf> {
+    if let Some(s) = &settings.default_project_root {
+        let p = std::path::PathBuf::from(s);
+        if p.exists() {
+            return Some(p);
+        }
+        tracing::warn!(
+            "default_project_root が設定されているが存在しない: {} → home にフォールバック",
+            s
+        );
+    }
+    let home = dirs::home_dir()?;
+    let repos = home.join("repos");
+    if repos.exists() {
+        Some(repos)
+    } else {
+        Some(home)
+    }
+}
+
 /// VP-100 follow-up: 「+ Add Project」クリック時の native folder picker + API 呼出。
 ///
 /// rfd の picker は blocking なので別スレッドで実行。folder 選択後:
@@ -362,14 +488,19 @@ fn update_pane_bounds(
 /// 2. 成功なら `client.list_projects()` で再取得 → `AppEvent::ProjectsLoaded`
 ///
 /// User キャンセル / API 失敗時は何もしない (sidebar は変化しない)。
-fn spawn_add_project_picker(proxy: EventLoopProxy<AppEvent>) {
+/// `initial_dir` が `Some` なら picker の初期表示ディレクトリに設定。
+fn spawn_add_project_picker(
+    proxy: EventLoopProxy<AppEvent>,
+    initial_dir: Option<std::path::PathBuf>,
+) {
     let _ = thread::Builder::new()
         .name("add-project-picker".into())
         .spawn(move || {
-            let folder = match rfd::FileDialog::new()
-                .set_title("プロジェクトフォルダを選択")
-                .pick_folder()
-            {
+            let mut dialog = rfd::FileDialog::new().set_title("プロジェクトフォルダを選択");
+            if let Some(d) = initial_dir.as_ref() {
+                dialog = dialog.set_directory(d);
+            }
+            let folder = match dialog.pick_folder() {
                 Some(p) => p,
                 None => {
                     tracing::debug!("project:add canceled by user");
@@ -410,6 +541,103 @@ fn spawn_add_project_picker(proxy: EventLoopProxy<AppEvent>) {
                 }
             });
         });
+}
+
+/// VP-100 follow-up: 「+ Clone Repository」クリック時の git clone + API 呼出。
+///
+/// 1. `git clone <url> <default_root>/<repo_name>` を実行
+/// 2. 成功なら `add_project` で TheWorld に register
+/// 3. `list_projects` で再取得 → `AppEvent::ProjectsLoaded`
+///
+/// `default_root` が `None` の時は何もしない (default_project_root が解決できないケース)。
+/// git バイナリが PATH に無い場合も spawn 失敗で終わる。
+fn spawn_clone_project(
+    proxy: EventLoopProxy<AppEvent>,
+    url: String,
+    default_root: Option<std::path::PathBuf>,
+) {
+    let Some(default_root) = default_root else {
+        tracing::warn!("project:clone but default_project_root is unresolved (set in settings)");
+        return;
+    };
+    let repo_name = derive_repo_name(&url);
+    let _ = thread::Builder::new()
+        .name("clone-project".into())
+        .spawn(move || {
+            let target = default_root.join(&repo_name);
+            tracing::info!("git clone {} {}", url, target.display());
+            let status = std::process::Command::new("git")
+                .arg("clone")
+                .arg(&url)
+                .arg(&target)
+                .status();
+            let success = match status {
+                Ok(s) if s.success() => true,
+                Ok(s) => {
+                    tracing::warn!("git clone failed: exit code {:?}", s.code());
+                    false
+                }
+                Err(e) => {
+                    tracing::warn!("git clone spawn 失敗 (git PATH 確認): {}", e);
+                    false
+                }
+            };
+            if !success {
+                let _ = notify_rust::Notification::new()
+                    .summary("Vantage Point")
+                    .body(&format!("Clone 失敗: {}", url))
+                    .show();
+                return;
+            }
+            // Register
+            let path_str = target.to_string_lossy().into_owned();
+            let rt = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt,
+                Err(e) => {
+                    tracing::warn!("clone-project tokio runtime 失敗: {}", e);
+                    return;
+                }
+            };
+            rt.block_on(async move {
+                let client = TheWorldClient::default();
+                if let Err(e) = client.add_project(&repo_name, &path_str).await {
+                    tracing::warn!("clone 後の add_project 失敗: {}", e);
+                    return;
+                }
+                tracing::info!("clone + add_project 成功 → projects 再 fetch");
+                match client.list_projects().await {
+                    Ok(projects) => {
+                        let _ = proxy.send_event(AppEvent::ProjectsLoaded(projects));
+                    }
+                    Err(e) => {
+                        tracing::warn!("list_projects 失敗: {}", e);
+                    }
+                }
+            });
+        });
+}
+
+/// URL から repo 名を推定する (`/` or `:` の最後の segment、`.git` 末尾を除去)
+///
+/// 例:
+/// - `https://github.com/user/repo.git` → `repo`
+/// - `git@github.com:user/repo.git` → `repo`
+/// - `https://gitlab.com/group/sub/repo` → `repo`
+fn derive_repo_name(url: &str) -> String {
+    let trimmed = url.trim().trim_end_matches('/');
+    let last = trimmed
+        .rsplit(['/', ':'])
+        .next()
+        .unwrap_or("project")
+        .trim_end_matches(".git");
+    if last.is_empty() {
+        "project".to_string()
+    } else {
+        last.to_string()
+    }
 }
 
 /// muda の `MenuEvent::receiver()` channel を polling して `AppEvent::MenuClicked` に
@@ -915,13 +1143,31 @@ pub fn run() -> anyhow::Result<()> {
                 push_sidebar_state(&sidebar, &sidebar_state);
             }
             Event::UserEvent(AppEvent::SidebarIpc(msg)) => {
-                // VP-100 follow-up: project:add は async picker → API → ProjectsLoaded ルート
+                // VP-100 follow-up: project:add / project:clone は async picker → API → ProjectsLoaded ルート
                 // (state 直接 mutate しないので handle_sidebar_ipc の前で分岐)
-                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&msg)
-                    && parsed.get("t").and_then(|v| v.as_str()) == Some("project:add")
-                {
-                    spawn_add_project_picker(async_action_proxy.clone());
-                    return;
+                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&msg) {
+                    match parsed.get("t").and_then(|v| v.as_str()) {
+                        Some("project:add") => {
+                            let initial_dir = resolve_default_project_root(&settings);
+                            spawn_add_project_picker(async_action_proxy.clone(), initial_dir);
+                            return;
+                        }
+                        Some("project:clone") => {
+                            let url = parsed
+                                .get("url")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            if url.is_empty() {
+                                tracing::warn!("project:clone with empty url");
+                                return;
+                            }
+                            let default_root = resolve_default_project_root(&settings);
+                            spawn_clone_project(async_action_proxy.clone(), url, default_root);
+                            return;
+                        }
+                        _ => {}
+                    }
                 }
                 let outcome = handle_sidebar_ipc(&msg, &mut sidebar_state);
                 if outcome.changed {
