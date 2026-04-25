@@ -32,6 +32,16 @@ pub enum AppEvent {
     ActivityUpdate(crate::pane::ActivitySnapshot),
     /// VP-95: sidebar webview からの IPC メッセージ (JSON 文字列、main loop でパース)
     SidebarIpc(String),
+    /// VP-100 γ-light: main area の active pane slot 矩形通知。
+    ///
+    /// Phase 2 時点では受け取って store するだけ。Phase 4+ で native pane が
+    /// 追加された時に native widget の `set_position` 同期に使う想定。
+    /// 詳細は memory:vp_app_native_overlay_resize_ghost.md。
+    SlotRect {
+        pane_id: Option<String>,
+        kind: String,
+        rect: crate::main_area::SlotRect,
+    },
 }
 
 /// PTY セッションのハンドル
@@ -314,6 +324,31 @@ pub fn handle_ipc_message(msg: &str, pty: &TerminalHandle, proxy: &EventLoopProx
                 tracing::info!("[xterm debug] {}", msg);
             }
         }
+        // VP-100 γ-light: main area の active slot 矩形通知 (ResizeObserver から)
+        Some("slot:rect") => {
+            let pane_id = parsed
+                .get("pane_id")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let kind = parsed
+                .get("kind")
+                .and_then(|v| v.as_str())
+                .unwrap_or("empty")
+                .to_string();
+            if let Some(rect_v) = parsed.get("rect") {
+                let rect = crate::main_area::SlotRect {
+                    x: rect_v.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                    y: rect_v.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                    w: rect_v.get("w").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                    h: rect_v.get("h").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                };
+                let _ = proxy.send_event(AppEvent::SlotRect {
+                    pane_id,
+                    kind,
+                    rect,
+                });
+            }
+        }
         other => {
             tracing::debug!("terminal IPC: unknown type {:?}", other);
         }
@@ -354,222 +389,3 @@ pub fn build_output_script(bytes: &[u8]) -> String {
     let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
     format!("window.onPtyData('{}')", b64)
 }
-
-/// Terminal pane の HTML (xterm.js + Creo UI tokens + init script を inline)
-///
-/// xterm.js のテーマ色は Creo UI tokens (mint-dark) から getComputedStyle で
-/// 動的に取得して適用。token の変更が xterm にも伝播する。
-pub const TERMINAL_HTML: &str = concat!(
-    r#"<!doctype html>
-<html lang="en" data-theme="mint-dark">
-<head>
-<meta charset="utf-8">
-<title>vp-app terminal</title>
-<style>
-"#,
-    include_str!("../assets/creo-tokens.css"),
-    r#"
-</style>
-<style>
-"#,
-    include_str!("../assets/xterm.min.css"),
-    r#"
-html,body,#t{margin:0;padding:0;height:100%;width:100%;background:var(--color-surface-bg-base);}
-body{overflow:hidden;}
-#t{padding:12px;}
-/* xterm 内 scrollbar を Creo tokens で統一 */
-.xterm-viewport::-webkit-scrollbar{width:8px;}
-.xterm-viewport::-webkit-scrollbar-track{background:transparent;}
-.xterm-viewport::-webkit-scrollbar-thumb{background:var(--color-surface-border);border-radius:4px;}
-.xterm-viewport::-webkit-scrollbar-thumb:hover{background:var(--color-brand-primary-subtle);}
-</style>
-</head>
-<body>
-<div id="t"></div>
-<script>
-"#,
-    include_str!("../assets/xterm.min.js"),
-    r#"
-</script>
-<script>
-"#,
-    include_str!("../assets/addon-fit.min.js"),
-    r#"
-</script>
-<script>
-(function() {
-  // Creo tokens から xterm.js theme を構築 (runtime で var() 解決)
-  const css = getComputedStyle(document.documentElement);
-  const v = (name, fallback) => (css.getPropertyValue(name).trim() || fallback);
-  const theme = {
-    background: v('--color-surface-bg-base', '#0F1128'),
-    foreground: v('--color-text-primary', '#EDEEF4'),
-    cursor: v('--color-brand-primary', '#7D6BC2'),
-    cursorAccent: v('--color-surface-bg-base', '#0F1128'),
-    selectionBackground: v('--color-brand-primary-subtle', '#2C2843')
-  };
-  const term = new Terminal({
-    fontFamily: '"Cascadia Code", "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace',
-    fontSize: 13,
-    lineHeight: 1.15,
-    letterSpacing: 0,
-    theme: theme,
-    allowProposedApi: true,
-    convertEol: true,
-    scrollback: 5000,
-    cursorBlink: true,
-    cursorStyle: 'bar',
-    cursorWidth: 2,
-    smoothScrollDuration: 80,
-    fontLigatures: true
-  });
-  const fitAddon = new FitAddon.FitAddon();
-  term.loadAddon(fitAddon);
-  term.open(document.getElementById('t'));
-  fitAddon.fit();
-
-  function sendResize() {
-    window.ipc.postMessage(JSON.stringify({t:'resize', cols: term.cols, rows: term.rows}));
-  }
-
-  window.addEventListener('resize', () => { fitAddon.fit(); sendResize(); });
-
-  term.onData(d => {
-    window.ipc.postMessage(JSON.stringify({t:'in', d: d}));
-  });
-
-  // Rust から呼ばれる関数
-  window.onPtyData = function(b64) {
-    const bin = atob(b64);
-    const bytes = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    term.write(bytes);
-  };
-
-  // 初期化完了を Rust に通知 (resize 情報も同時に)
-  window.ipc.postMessage(JSON.stringify({t:'ready'}));
-  sendResize();
-
-  // DevTools console から term を手動検査できるよう露出
-  window.__vpTerm = term;
-
-  // OSC 52 (clipboard) intercept
-  //   PTY 側 app (Claude Code, tmux, vim 等) が mouse reporting 下で自前 selection を
-  //   実装し、"copy to clipboard" リクエストとして OSC 52 を送ってくる。
-  //   xterm.js 自体は OSC 52 を clipboard に書かない (security の為) ので、
-  //   ここで intercept して Rust に飛ばし arboard で OS clipboard に反映する。
-  //
-  //   OSC 52 format: `ESC ] 52 ; Pc ; Pd ST`
-  //     Pc: selection target ('c' = clipboard, 'p' = primary, 複数可)
-  //     Pd: base64 payload (or '?' で query)
-  //   handler が受け取る `data` は "Pc;Pd" 部分のみ。
-  term.parser.registerOscHandler(52, (data) => {
-    const idx = data.indexOf(';');
-    if (idx < 0) return true;
-    const pd = data.slice(idx + 1);
-    if (pd === '?' || pd.length === 0) return true; // query 応答は未対応、空は無視
-    try {
-      const binary = atob(pd);
-      const bytes = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-      const text = new TextDecoder('utf-8').decode(bytes);
-      window.ipc.postMessage(JSON.stringify({t:'copy', d: text}));
-      window.ipc.postMessage(JSON.stringify({t:'debug', msg: 'OSC 52 copy: ' + text.length + ' chars'}));
-    } catch (e) {
-      window.ipc.postMessage(JSON.stringify({t:'debug', msg: 'OSC 52 decode error: ' + e.message}));
-    }
-    return true;
-  });
-
-  // WebView2 + child WebView で focus が弱いので、click / pointerdown で明示 focus
-  const container = document.getElementById('t');
-  const focusTerm = () => {
-    try { term.focus(); } catch (_) {}
-  };
-  container.addEventListener('mousedown', focusTerm);
-  container.addEventListener('click', focusTerm);
-  window.addEventListener('focus', focusTerm);
-
-  // 初期 focus も明示 (DOM ready 後)
-  setTimeout(focusTerm, 100);
-  setTimeout(focusTerm, 500);
-
-  // ----- Copy / Paste -----
-  // WebView2 は Ctrl+Shift+C を DevTools Element Inspector として予約しているので、
-  // 以下の多段バインディングで対応:
-  //   - Ctrl+Insert / Cmd+C          → copy 選択
-  //   - Shift+Insert / Ctrl+Shift+V  → paste (後者は DevTools 衝突なし)
-  //   - Ctrl+C は選択あれば copy / 無ければ SIGINT (smart)
-  //   - 右クリック                    → paste
-  // 念のため Ctrl+Shift+C の WebView default を capture phase で封じる試みも入れる。
-  const dbg = (msg) => window.ipc.postMessage(JSON.stringify({t:'debug', msg: msg}));
-
-  const doCopy = () => {
-    const sel = term.getSelection();
-    if (!sel) return false;
-    // 1st: navigator.clipboard.writeText / 2nd: IPC → Rust arboard fallback
-    navigator.clipboard.writeText(sel).catch(() => {
-      window.ipc.postMessage(JSON.stringify({t:'copy', d: sel}));
-    });
-    return true;
-  };
-  const doPaste = () => {
-    navigator.clipboard.readText()
-      .then((text) => { if (text) term.paste(text); })
-      .catch((err) => dbg('paste failed: ' + err));
-  };
-
-  // WebView の Ctrl+Shift+C (Element Inspector) を capture phase で吸収試行。
-  // (効かないブラウザは素通り、その場合は他 binding に逃げてもらう)
-  window.addEventListener('keydown', (e) => {
-    if (e.ctrlKey && e.shiftKey && (e.key === 'C' || e.key === 'c')) {
-      e.preventDefault();
-      e.stopPropagation();
-      doCopy();
-    }
-  }, true);
-
-  term.attachCustomKeyEventHandler((e) => {
-    if (e.type !== 'keydown') return true;
-    const key = (e.key || '').toLowerCase();
-    // Ctrl+Insert / Cmd+C: copy
-    if ((e.ctrlKey && e.key === 'Insert' && !e.shiftKey) || (e.metaKey && key === 'c')) {
-      if (doCopy()) return false;
-    }
-    // Shift+Insert / Ctrl+Shift+V / Cmd+V: paste
-    if ((e.shiftKey && e.key === 'Insert' && !e.ctrlKey) ||
-        (e.ctrlKey && e.shiftKey && key === 'v') ||
-        (e.metaKey && key === 'v')) {
-      doPaste();
-      return false;
-    }
-    // smart Ctrl+C: 選択中なら copy、無ければ SIGINT (= xterm にそのまま流す)
-    if (e.ctrlKey && !e.shiftKey && !e.metaKey && key === 'c') {
-      if (term.hasSelection()) {
-        doCopy();
-        term.clearSelection();
-        return false;
-      }
-    }
-    return true;
-  });
-
-  // 右クリック = paste (xterm のデフォルト context menu を抑制)
-  container.addEventListener('contextmenu', (e) => {
-    e.preventDefault();
-    doPaste();
-  });
-
-  // Copy-on-select: Windows Terminal 風 — mouseup 時に xterm 内部 selection があれば自動 copy
-  //   (PTY app が mouse reporting 下で自前 selection する場合は OSC 52 handler で別途処理)
-  container.addEventListener('mouseup', () => {
-    setTimeout(() => {
-      const sel = term.getSelection();
-      if (sel && sel.length > 0) doCopy();
-    }, 0);
-  });
-})();
-</script>
-</body>
-</html>"#
-);

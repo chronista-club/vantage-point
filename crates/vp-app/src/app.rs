@@ -8,20 +8,23 @@
 //! ```text
 //! ┌─── tao ネイティブウィンドウ (native chrome, menu, tray) ──┐
 //! │ ┌──────────┬───────────────────────────────────────┐ │
-//! │ │ sidebar  │       canvas (wry WebView)             │ │
-//! │ │ (Creo)   ├────────────────────────────────────────┤ │
-//! │ │ project  │       terminal (xterm.js in WebView)   │ │
-//! │ │ list     │                                        │ │
-//! │ │ (~280px) │                                        │ │
+//! │ │ sidebar  │   main area (単一 wry WebView)          │ │
+//! │ │ (Creo)   │   ┌─ pane-terminal (xterm.js)─────┐   │ │
+//! │ │ project  │   ├─ pane-canvas (placeholder)─────┤   │ │
+//! │ │ + Activ. │   ├─ pane-preview (iframe)─────────┤   │ │
+//! │ │ widget   │   └─ pane-empty   (no selection)───┘   │ │
+//! │ │ (~280px) │   active pane を kind 別に切替表示       │ │
 //! │ └──────────┴───────────────────────────────────────┘ │
 //! └──────────────────────────────────────────────────────┘
 //! ```
 //!
 //! - **ウィンドウ・メニュー・トレイ・レイアウト境界** は Rust (tao + muda + tray-icon)
-//! - **各ペインの内容** は wry WebView (HTML/CSS/JS、xterm.js 含む)
+//! - **sidebar** は wry WebView (accordion + Activity widget、VP-95)
+//! - **main area** は単一 wry WebView (β 戦略、VP-100 Phase 2)。
+//!   PaneKind 別の content を全部 mount しておき、`window.setActivePane` で表示切替
 //! - **Creo UI tokens.css (mint-dark)** を各 WebView に inline して token 統一
-//! - **Sidebar** は起動時に TheWorld `/api/world/projects` を fetch、
-//!   失敗時は placeholder (daemon 未起動扱い)
+//! - **γ-light readiness**: main area の slot rect を ResizeObserver 経由で Rust に
+//!   push (`AppEvent::SlotRect`)、Phase 4+ で native overlay の `set_position` 同期に使用
 
 use std::thread;
 use std::time::Duration;
@@ -35,6 +38,7 @@ use wry::{
 };
 
 use crate::client::TheWorldClient;
+use crate::main_area::{self, ActivePaneInfo, MAIN_AREA_HTML, SlotRect};
 use crate::pane::{ActivitySnapshot, PaneKind, ProjectPaneState, SidebarState};
 use crate::terminal::{self, AppEvent};
 
@@ -290,33 +294,13 @@ const SIDEBAR_HTML: &str = concat!(
 </html>"#
 );
 
-const CANVAS_HTML: &str = concat!(
-    r#"<!doctype html>
-<html lang="ja" data-theme="mint-dark">
-<head><meta charset="utf-8"><style>"#,
-    include_str!("../assets/creo-tokens.css"),
-    r#"</style><style>
-  html,body{margin:0;height:100%;background:var(--color-surface-bg-base);color:var(--color-text-primary);font-family:system-ui,-apple-system,"Segoe UI","Cascadia Code",monospace;}
-  body{display:grid;place-items:center;}
-  main{text-align:center;}
-  h1{font-weight:500;font-size:1.6rem;margin:0 0 .25rem;color:var(--color-text-primary);}
-  p{color:var(--color-text-tertiary);margin:0;font-size:.9rem;}
-  .brand{color:var(--color-brand-primary);}
-</style></head>
-<body>
-  <main>
-    <h1>Canvas pane</h1>
-    <p>Phase W2 — <span class="brand">Creo UI mint-dark</span> を全ペイン統一で適用</p>
-  </main>
-</body>
-</html>"#
-);
-
-/// Sidebar / Canvas / Terminal の bounds をウィンドウサイズから計算
+/// Sidebar + Main area の bounds をウィンドウサイズから計算 (VP-100 Phase 2)
+///
+/// Phase 2 で canvas + terminal の 2 WebView を main_view 1 つに統合。
+/// レイアウトは sidebar (左固定 280px) + main (右側全部) のシンプル構造。
 fn update_pane_bounds(
     sidebar: &WebView,
-    canvas: &WebView,
-    terminal_view: &WebView,
+    main_view: &WebView,
     window_size: tao::dpi::PhysicalSize<u32>,
     scale: f64,
 ) {
@@ -325,23 +309,14 @@ fn update_pane_bounds(
     let height = logical.height;
     let right_x = SIDEBAR_WIDTH;
     let right_w = (width - SIDEBAR_WIDTH).max(0.0);
-    // Phase W2.5 の開発用途では terminal (lead pane) を右側の上下いっぱいに。
-    // canvas は後続 phase で復活させるため 0 高さで待機。
-    let canvas_h = 0.0;
-    let terminal_y = canvas_h;
-    let terminal_h = height;
 
     let _ = sidebar.set_bounds(Rect {
         position: LogicalPosition::new(0.0, 0.0).into(),
         size: WryLogicalSize::new(SIDEBAR_WIDTH, height).into(),
     });
-    let _ = canvas.set_bounds(Rect {
+    let _ = main_view.set_bounds(Rect {
         position: LogicalPosition::new(right_x, 0.0).into(),
-        size: WryLogicalSize::new(right_w, canvas_h).into(),
-    });
-    let _ = terminal_view.set_bounds(Rect {
-        position: LogicalPosition::new(right_x, terminal_y).into(),
-        size: WryLogicalSize::new(right_w, terminal_h).into(),
+        size: WryLogicalSize::new(right_w, height).into(),
     });
 }
 
@@ -436,6 +411,54 @@ async fn collect_activity(client: &TheWorldClient) -> ActivitySnapshot {
     snap
 }
 
+/// VP-100 Phase 2: sidebar の active pane 情報を main area に push。
+///
+/// SidebarState から「現在 focus している project の active pane」を抜き出して、
+/// `window.setActivePane({kind, pane_id, preview_url})` を呼ぶ JS を main area に
+/// evaluate_script する。active pane が無ければ kind=None で empty 状態に切替。
+///
+/// 「focus している project」の決定ロジック (Phase 2 暫定): 直近で active_pane_id を
+/// 設定した project (= sidebar IPC で pane:select / pane:add した project)。
+/// Phase 3 で project-level focus state を導入したら整理する。
+fn push_active_pane(main_view: &WebView, state: &SidebarState, focused_path: Option<&str>) {
+    let active = focused_path
+        .and_then(|fp| state.projects.iter().find(|p| p.path == fp))
+        .or_else(|| {
+            // fallback: active_pane_id を持つ最初の project
+            state.projects.iter().find(|p| p.active_pane_id.is_some())
+        })
+        .and_then(|p| {
+            p.active_pane_id.as_ref().and_then(|aid| {
+                p.panes
+                    .iter()
+                    .find(|pn| &pn.id == aid)
+                    .map(|pn| (pn, p.path.as_str()))
+            })
+        });
+
+    let info = match active {
+        Some((pane, _path)) => ActivePaneInfo {
+            kind: Some(match pane.kind {
+                PaneKind::Agent => "agent",
+                PaneKind::Canvas => "canvas",
+                PaneKind::Preview => "preview",
+                PaneKind::Shell => "shell",
+            }),
+            pane_id: Some(&pane.id),
+            preview_url: pane.preview_url.as_deref(),
+        },
+        None => ActivePaneInfo {
+            kind: None,
+            pane_id: None,
+            preview_url: None,
+        },
+    };
+    let script = main_area::build_set_active_pane_script(&info);
+    if let Err(e) = main_view.evaluate_script(&script) {
+        tracing::warn!("main setActivePane 失敗: {}", e);
+    }
+}
+
 /// SidebarState を JSON にして sidebar webview に push
 fn push_sidebar_state(sidebar: &WebView, state: &SidebarState) {
     let json = match serde_json::to_string(state) {
@@ -451,14 +474,24 @@ fn push_sidebar_state(sidebar: &WebView, state: &SidebarState) {
     }
 }
 
+/// sidebar IPC を解釈した結果
+#[derive(Debug, Default)]
+struct SidebarIpcOutcome {
+    /// SidebarState が変化したか (true なら push_sidebar_state を呼ぶ)
+    changed: bool,
+    /// active pane を変更した project の path (main area に push する手がかり)
+    /// pane:select / pane:add で更新される
+    active_changed_path: Option<String>,
+}
+
 /// sidebar webview から IPC で受け取った JSON を解釈し、`SidebarState` を mutate。
-/// 戻り値: 状態が変化したら true (caller は push_sidebar_state を呼ぶ)
-fn handle_sidebar_ipc(msg: &str, state: &mut SidebarState) -> bool {
+fn handle_sidebar_ipc(msg: &str, state: &mut SidebarState) -> SidebarIpcOutcome {
+    let mut out = SidebarIpcOutcome::default();
     let parsed: serde_json::Value = match serde_json::from_str(msg) {
         Ok(v) => v,
         Err(e) => {
             tracing::warn!("sidebar IPC JSON パース失敗: {}", e);
-            return false;
+            return out;
         }
     };
     let t = parsed.get("t").and_then(|v| v.as_str()).unwrap_or("");
@@ -469,7 +502,7 @@ fn handle_sidebar_ipc(msg: &str, state: &mut SidebarState) -> bool {
             if let Some(p) = state.projects.iter_mut().find(|p| p.path == path) {
                 p.expanded = !p.expanded;
                 tracing::debug!("project:toggle {} → expanded={}", path, p.expanded);
-                return true;
+                out.changed = true;
             }
         }
         "pane:select" => {
@@ -479,7 +512,8 @@ fn handle_sidebar_ipc(msg: &str, state: &mut SidebarState) -> bool {
             {
                 p.active_pane_id = Some(pane_id.to_string());
                 tracing::info!("pane:select {} pane={}", path, pane_id);
-                return true;
+                out.changed = true;
+                out.active_changed_path = Some(path.to_string());
             }
         }
         "pane:add" => {
@@ -500,14 +534,15 @@ fn handle_sidebar_ipc(msg: &str, state: &mut SidebarState) -> bool {
                 p.panes.push(pane);
                 p.active_pane_id = Some(id);
                 tracing::info!("pane:add {} kind={:?}", path, kind);
-                return true;
+                out.changed = true;
+                out.active_changed_path = Some(path.to_string());
             }
         }
         other => {
             tracing::debug!("sidebar IPC: 未知の type {:?}", other);
         }
     }
-    false
+    out
 }
 
 /// App のエントリポイント
@@ -589,24 +624,16 @@ pub fn run() -> anyhow::Result<()> {
         })
         .build_as_child(&window)?;
 
-    // Canvas
-    let canvas = WebViewBuilder::new()
-        .with_html(CANVAS_HTML)
-        .with_bounds(Rect {
-            position: LogicalPosition::new(SIDEBAR_WIDTH, 0.0).into(),
-            size: WryLogicalSize::new(1200.0 - SIDEBAR_WIDTH, 400.0).into(),
-        })
-        .build_as_child(&window)?;
-
-    // Terminal pane: xterm.js + IPC handler で PTY に双方向接続
-    // IPC handler は ready 通知を EventLoopProxy 経由で main thread に伝える
+    // VP-100 Phase 2: main area = 単一 WebView (canvas + terminal を統合)。
+    // xterm.js + canvas placeholder + preview iframe を kind 別に切替表示する。
+    // PTY ブリッジは旧 terminal_view と同じ IPC handler を引き継ぐ。
     let pty_for_ipc = pty.clone();
     let ipc_proxy = event_loop.create_proxy();
-    let terminal_view = WebViewBuilder::new()
-        .with_html(terminal::TERMINAL_HTML)
+    let main_view = WebViewBuilder::new()
+        .with_html(MAIN_AREA_HTML)
         .with_bounds(Rect {
-            position: LogicalPosition::new(SIDEBAR_WIDTH, 400.0).into(),
-            size: WryLogicalSize::new(1200.0 - SIDEBAR_WIDTH, 400.0).into(),
+            position: LogicalPosition::new(SIDEBAR_WIDTH, 0.0).into(),
+            size: WryLogicalSize::new(1200.0 - SIDEBAR_WIDTH, 800.0).into(),
         })
         .with_devtools(true)
         .with_ipc_handler(move |req| {
@@ -615,7 +642,7 @@ pub fn run() -> anyhow::Result<()> {
         .with_focused(true)
         .build_as_child(&window)?;
 
-    tracing::info!("メインウィンドウ + 3 ペイン (sidebar/canvas/terminal) 作成");
+    tracing::info!("メインウィンドウ + 2 ペイン (sidebar / main) 作成");
 
     // xterm.js が ready になるまで PTY 出力を buffer
     // (ConPTY は起動直後に DSR \x1b[6n を送ってきて xterm の応答を待つため、
@@ -624,6 +651,10 @@ pub fn run() -> anyhow::Result<()> {
     let mut pending: Vec<u8> = Vec::new();
     // VP-95: sidebar 全体 state (projects + widget + activity)
     let mut sidebar_state = SidebarState::default();
+    // VP-100 γ-light: pane_id → slot rect。Phase 2 では蓄積するだけ、Phase 4+ で
+    // native overlay の `set_position` 同期に使う。
+    let mut slot_rects: std::collections::HashMap<String, SlotRect> =
+        std::collections::HashMap::new();
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
@@ -640,13 +671,7 @@ pub fn run() -> anyhow::Result<()> {
                 event: WindowEvent::Resized(size),
                 ..
             } => {
-                update_pane_bounds(
-                    &sidebar,
-                    &canvas,
-                    &terminal_view,
-                    size,
-                    window.scale_factor(),
-                );
+                update_pane_bounds(&sidebar, &main_view, size, window.scale_factor());
             }
             Event::UserEvent(AppEvent::Output(bytes)) => {
                 if !xterm_ready {
@@ -658,8 +683,8 @@ pub fn run() -> anyhow::Result<()> {
                     );
                 } else {
                     let script = terminal::build_output_script(&bytes);
-                    if let Err(e) = terminal_view.evaluate_script(&script) {
-                        tracing::warn!("terminal evaluate_script 失敗: {}", e);
+                    if let Err(e) = main_view.evaluate_script(&script) {
+                        tracing::warn!("main evaluate_script 失敗: {}", e);
                     }
                 }
             }
@@ -668,8 +693,8 @@ pub fn run() -> anyhow::Result<()> {
                 if !pending.is_empty() {
                     tracing::info!("xterm ready → flush {} 保留バイト", pending.len());
                     let script = terminal::build_output_script(&pending);
-                    if let Err(e) = terminal_view.evaluate_script(&script) {
-                        tracing::warn!("terminal flush 失敗: {}", e);
+                    if let Err(e) = main_view.evaluate_script(&script) {
+                        tracing::warn!("main flush 失敗: {}", e);
                     }
                     pending.clear();
                 }
@@ -705,10 +730,32 @@ pub fn run() -> anyhow::Result<()> {
                 sidebar_state.activity = snap;
                 push_sidebar_state(&sidebar, &sidebar_state);
             }
-            Event::UserEvent(AppEvent::SidebarIpc(msg))
-                if handle_sidebar_ipc(&msg, &mut sidebar_state) =>
-            {
-                push_sidebar_state(&sidebar, &sidebar_state);
+            Event::UserEvent(AppEvent::SidebarIpc(msg)) => {
+                let outcome = handle_sidebar_ipc(&msg, &mut sidebar_state);
+                if outcome.changed {
+                    push_sidebar_state(&sidebar, &sidebar_state);
+                }
+                if outcome.active_changed_path.is_some() {
+                    push_active_pane(
+                        &main_view,
+                        &sidebar_state,
+                        outcome.active_changed_path.as_deref(),
+                    );
+                }
+            }
+            // VP-100 γ-light: ResizeObserver からの slot 矩形通知を蓄積。
+            // Phase 4+ で native overlay の `set_position` 同期に使う。
+            Event::UserEvent(AppEvent::SlotRect {
+                pane_id,
+                kind,
+                rect,
+            }) => {
+                if let Some(id) = pane_id {
+                    slot_rects.insert(id.clone(), rect);
+                    tracing::trace!("slot:rect kind={} pane={} rect={:?}", kind, id, rect);
+                } else {
+                    tracing::trace!("slot:rect kind={} (no pane_id) rect={:?}", kind, rect);
+                }
             }
             _ => {}
         }

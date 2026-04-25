@@ -12,6 +12,7 @@
 pub mod app;
 pub mod client;
 pub mod daemon_launcher;
+pub mod main_area;
 pub mod menu;
 pub mod pane;
 pub mod terminal;
