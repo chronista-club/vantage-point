@@ -18,7 +18,7 @@ use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
 use unicode_width::UnicodeWidthChar;
 use vte::ansi::{Color as VteColor, NamedColor, Rgb as VteRgb};
 
-use crate::types::{flags, rgb_to_rgba, CellData, Position};
+use crate::types::{CellData, Position, flags, rgb_to_rgba};
 
 /// ambiguous 幅文字を wide 扱いに昇格してよいか判定
 ///

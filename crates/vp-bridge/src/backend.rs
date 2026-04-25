@@ -10,7 +10,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::types::{flags, CellData, Position, Size};
+use crate::types::{CellData, Position, Size, flags};
 
 /// フレーム更新通知コールバック型
 pub type FrameReadyCallback = extern "C" fn();

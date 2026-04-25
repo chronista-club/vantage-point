@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::backend::{FrameReadyCallback, NativeBackend};
 use crate::pty::BridgePty;
-use crate::types::{flags as cflags, rgb_to_rgba, CellData};
+use crate::types::{CellData, flags as cflags, rgb_to_rgba};
 
 /// セッションデータ（Backend + PTY のペア）
 struct Session {
@@ -654,7 +654,6 @@ fn unicode_width_hint(ch: char) -> usize {
 pub extern "C" fn vp_bridge_version() -> *const c_char {
     c"0.2.0".as_ptr()
 }
-
 
 #[cfg(test)]
 mod tests {
