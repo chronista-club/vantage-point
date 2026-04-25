@@ -146,57 +146,37 @@ echo "🚀 Launching $INSTALL_EXE_WIN ..."
 WIN_PID=$(powershell.exe -NoProfile -Command "\$env:VP_SHELL='$VP_SHELL_VAL'; \$env:VP_SHELL_ARGS='$VP_SHELL_ARGS_VAL'; \$env:RUST_LOG='$RUST_LOG_VAL'; \$env:VP_TERMINAL_MODE='$VP_TERMINAL_MODE_VAL'; \$env:VP_WORLD_URL='$VP_WORLD_URL_VAL'; Start-Process -FilePath '$INSTALL_EXE_WIN' -WorkingDirectory '$INSTALL_DIR_WIN' -PassThru | Select-Object -ExpandProperty Id" 2>&1 | tr -d '\r' | tr -d '[:space:]')
 echo "✅ 起動完了 (PID=$WIN_PID)。log: $LOG_KDL_WSL"
 echo ""
-echo "📺 ログを stdout に流します (Ctrl+C で polling 停止、vp-app は継続)..."
+echo "📺 ログを stdout に流します (Ctrl+C で tail 停止、vp-app は継続)..."
 echo "─────────────────────────────────────────────────"
 
-# WSL2 /mnt/c/ への inotify は **Win native プロセスの file 変更を検知しない** (9P 制約)
-# polling で file size を監視、増分を出力。
-poll_log() {
-  local pos=0 win_pid="$1" log_file="$2"
-  while true; do
-    if [ -n "$win_pid" ] && ! tasklist.exe /FI "PID eq $win_pid" 2>/dev/null | grep -q "$win_pid"; then
-      echo ""
-      echo "🏁 vp-app (PID=$win_pid) 終了"
-      break
-    fi
-    if [ -f "$log_file" ]; then
-      local new
-      new=$(stat -c%s "$log_file" 2>/dev/null || echo 0)
-      if [ "$new" -gt "$pos" ]; then
-        tail -c +$((pos + 1)) "$log_file" 2>/dev/null
-        pos=$new
-      fi
-    fi
-    sleep 0.3
-  done
-}
+# tracing-appender が file に直書きするので、tail -F で follow。
+# WSL2 /mnt/c/ inotify が Win-native プロセスの書込で発火しないケースに備えて
+# polling 間隔を short に設定 (`---disable-inotify` で stat-based polling 強制)。
+# 1 秒間隔で stat、変更検出 → flush。
+tail -F --sleep-interval=0.5 ---disable-inotify "$LOG_KDL_WSL" &
+TAIL_PID=$!
 
-trap 'echo ""; echo "📴 polling 停止 (vp-app は継続中)。再度開始する場合: mise run win:logs"' EXIT INT TERM
+# vp-app プロセス (Win-side PID) を tasklist.exe で監視、終了したら tail 止めて抜ける。
+trap 'kill $TAIL_PID 2>/dev/null; echo ""; echo "📴 tail 停止 (vp-app は継続中)。再度開始: mise run win:logs"' EXIT INT TERM
 
-poll_log "$WIN_PID" "$LOG_KDL_WSL"
+while [ -n "$WIN_PID" ] && tasklist.exe /FI "PID eq $WIN_PID" 2>/dev/null | grep -q "$WIN_PID"; do
+  sleep 1
+done
+echo ""
+echo "🏁 vp-app (PID=$WIN_PID) 終了"
 '''
 
 [tasks."win:logs"]
-description = "実行中の vp-app の log を polling で stdout 表示 (WSL2 inotify が効かないので polling)"
+description = "実行中の vp-app の log を tail -F で stdout 表示"
 run = '''
 set -euo pipefail
 WIN_LOCALAPPDATA=$(cmd.exe /c "echo %LOCALAPPDATA%" 2>/dev/null | tr -d '\r')
 INSTALL_DIR=$(wslpath -u "$WIN_LOCALAPPDATA")/VantagePoint-dev
 LOG="$INSTALL_DIR/Logs/vp-app.kdl.log"
 
-echo "📺 polling tail: $LOG"
+echo "📺 tail -F: $LOG"
 echo "─────────────────────────────────────────────────"
-pos=0
-while true; do
-  if [ -f "$LOG" ]; then
-    new=$(stat -c%s "$LOG" 2>/dev/null || echo 0)
-    if [ "$new" -gt "$pos" ]; then
-      tail -c +$((pos + 1)) "$LOG" 2>/dev/null
-      pos=$new
-    fi
-  fi
-  sleep 0.3
-done
+exec tail -F --sleep-interval=0.5 ---disable-inotify "$LOG"
 '''
 
 [tasks."win:build"]
