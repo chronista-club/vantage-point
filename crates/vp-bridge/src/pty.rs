@@ -34,9 +34,9 @@ fn should_promote_ambiguous_to_wide(c: char) -> bool {
     if UnicodeWidthChar::width(c) == Some(2) {
         return false;
     }
+    let cp = c as u32;
 
     // narrow 例外: 英文で narrow として使われる Unicode ブロック
-    let cp = c as u32;
     match cp {
         // Latin-1 Supplement（§ ° ± ¥ 等、コード・英文で narrow 使用）
         0x00A0..=0x00FF => return false,
@@ -664,9 +664,25 @@ mod tests {
     }
 
     #[test]
-    fn circled_numbers_still_promoted() {
-        // 既存挙動の維持: まる数字は wide 化（CJK フォント描画で 2 セル幅）
+    fn enclosed_alphanumerics_still_promoted() {
+        // Enclosed Alphanumerics (U+2460-U+24FF) のまる数字は CJK フォント描画で
+        // 2 セル幅 glyph を持つため wide 化を維持
         let chars = ['①', '②', '⑤', '⑩', '⑳'];
+        for c in chars {
+            assert!(
+                should_promote_ambiguous_to_wide(c),
+                "{} (U+{:04X}) は wide 化されるべき",
+                c,
+                c as u32
+            );
+        }
+    }
+
+    #[test]
+    fn negative_circled_digits_still_promoted() {
+        // Negative Circled Digit (U+2776-U+277F: ❶❷❸…❿) は EA-Width Ambiguous
+        // (width_cjk=2) で wide 化対象。Hiragino Sans に 2 cell wide glyph 存在。
+        let chars = ['❶', '❷', '❸', '❺', '❾', '❿'];
         for c in chars {
             assert!(
                 should_promote_ambiguous_to_wide(c),
