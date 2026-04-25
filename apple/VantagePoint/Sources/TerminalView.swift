@@ -468,6 +468,16 @@ class TerminalView: NSView {
                 let idx = row * cols + col
                 guard idx < cellBuffer.count else { continue }
 
+                // 前 cell が wide なら、この cell は wide cell の右半分 spacer として
+                // 確保された空白セル（pty.rs の sync_to_backend で実 2 cell layout 化済み）。
+                // 描画 skip して wide glyph の右半分を保護する。
+                if col > 0 {
+                    let prevCell = cellBuffer[row * cols + col - 1]
+                    if (prevCell.flags & (1 << 6)) != 0 {
+                        continue
+                    }
+                }
+
                 let cell = cellBuffer[idx]
                 // X 座標: 物理ピクセル境界にスナップ
                 let x = floor(CGFloat(col) * cellWidth * scale) / scale
