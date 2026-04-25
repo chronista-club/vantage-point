@@ -45,6 +45,39 @@ struct ProjectsResponse {
     projects: Vec<ProjectInfo>,
 }
 
+/// `/api/health` の主要 field のみを取り出した軽量レスポンス
+///
+/// vp-app の Activity widget で表示するため、TheWorld 側 `HealthResponse` の
+/// stands / terminal_token / pid 等は無視。サーバ側の field 追加で壊れないよう
+/// `#[serde(default)]` を付けている。
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub struct WorldHealthInfo {
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub started_at: String,
+}
+
+/// 稼働中 process 情報 (`/api/world/processes` レスポンス要素)
+///
+/// サーバ側 `RunningProcess` (capability/process_manager_capability.rs) の subset。
+/// Activity widget で count にしか使わないので最小限。
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct RunningProcessInfo {
+    #[serde(default)]
+    pub project_name: String,
+    #[serde(default)]
+    pub port: u16,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProcessesResponse {
+    #[serde(default)]
+    processes: Vec<RunningProcessInfo>,
+}
+
 impl TheWorldClient {
     /// ポート指定で IPv4 loopback に向ける
     pub fn new(port: u16) -> Self {
@@ -74,6 +107,20 @@ impl TheWorldClient {
         let url = format!("{}/api/health", self.base_url);
         let resp = self.client.get(&url).send().await?;
         Ok(resp.status().is_success())
+    }
+
+    /// `/api/health` の中身を取得 (Activity widget 用)
+    pub async fn world_health(&self) -> Result<WorldHealthInfo> {
+        let url = format!("{}/api/health", self.base_url);
+        let info: WorldHealthInfo = self.client.get(&url).send().await?.json().await?;
+        Ok(info)
+    }
+
+    /// 稼働中 process 一覧
+    pub async fn list_processes(&self) -> Result<Vec<RunningProcessInfo>> {
+        let url = format!("{}/api/world/processes", self.base_url);
+        let resp: ProcessesResponse = self.client.get(&url).send().await?.json().await?;
+        Ok(resp.processes)
     }
 }
 

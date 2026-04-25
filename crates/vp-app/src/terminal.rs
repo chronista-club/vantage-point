@@ -28,6 +28,10 @@ pub enum AppEvent {
     ProjectsLoaded(Vec<crate::client::ProjectInfo>),
     /// TheWorld への接続失敗
     ProjectsError(String),
+    /// VP-95: Activity widget の定期更新 payload
+    ActivityUpdate(crate::pane::ActivitySnapshot),
+    /// VP-95: sidebar webview からの IPC メッセージ (JSON 文字列、main loop でパース)
+    SidebarIpc(String),
 }
 
 /// PTY セッションのハンドル
