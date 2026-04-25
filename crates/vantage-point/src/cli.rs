@@ -364,6 +364,35 @@ pub fn init_tracing(debug_mode: DebugMode, tui_mode: bool) {
 
     let env_filter = tracing_subscriber::EnvFilter::from_default_env();
 
+    // VP-101 follow-up (Windows daemon support):
+    // 環境変数 `VP_DAEMON_LOG_FILE` が指定されていれば、そのパスに直接書き込む。
+    // Win-native vp-app から daemon を spawn する際に Logs/vp-world.kdl.log 等を渡す想定。
+    // GUI subsystem では stderr が NUL 化されるので file writer 必須。
+    if let Ok(path_str) = std::env::var("VP_DAEMON_LOG_FILE")
+        && !path_str.is_empty()
+    {
+        let path = std::path::PathBuf::from(&path_str);
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let dir = path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        let file_name = path
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "vp-world.kdl.log".to_string());
+        let appender = tracing_appender::rolling::never(&dir, &file_name);
+        tracing_subscriber::fmt()
+            .with_env_filter(env_filter)
+            .with_target(false)
+            .with_ansi(false)
+            .with_writer(appender)
+            .init();
+        return;
+    }
+
     if tui_mode {
         // TUI モード: ファイルに出力（stderr 汚染を防止）
         if let Some(path) = crate::trace_log::log_file_path() {

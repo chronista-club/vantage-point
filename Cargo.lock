@@ -9417,6 +9417,7 @@ dependencies = [
  "toml",
  "tower-http",
  "tracing",
+ "tracing-appender",
  "tracing-subscriber",
  "tray-icon",
  "tui-markdown",

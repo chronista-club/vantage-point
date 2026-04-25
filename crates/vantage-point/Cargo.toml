@@ -73,6 +73,10 @@ open = "5"
 toml = "0.8"
 dirs = "6"
 
+# Log file writer (Win GUI subsystem では stderr が NUL 化されるので、
+# `VP_DAEMON_LOG_FILE` env が指定された時に file に直接書く)
+tracing-appender = "0.2"
+
 # MIDI input (feature = "midi" 有効時のみ、ALSA 依存回避のため optional)
 midir = { version = "0.10", optional = true }
 
