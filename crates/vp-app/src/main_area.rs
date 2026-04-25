@@ -143,6 +143,9 @@ body{overflow:hidden;}
     </main>
   </div>
 </div>
+<!-- VP-101 Phase A2: creo-ui-editor-host (SolidJS) の mount 先。
+     Ctrl+Shift+E で activate される floating overlay (font / theme / token を runtime 編集)。 -->
+<div id="editor-root"></div>
 <script>
 "#,
     include_str!("../assets/xterm.min.js"),
@@ -151,6 +154,14 @@ body{overflow:hidden;}
 <script>
 "#,
     include_str!("../assets/addon-fit.min.js"),
+    r#"
+</script>
+<!-- VP-101 Phase A2: creo-ui-editor-host bundle (SolidJS + EditorLayer + tokens auto-discover).
+     Ctrl+Shift+E で activate、font / theme / spacing 等を runtime 編集。
+     Build: cd crates/vp-app/web-bundle && bun install && bun run build。 -->
+<script>
+"#,
+    include_str!("../assets/editor-host.bundle.js"),
     r#"
 </script>
 <script>
