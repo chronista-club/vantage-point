@@ -207,14 +207,22 @@ fn reader_loop(mut reader: Box<dyn Read + Send>, proxy: EventLoopProxy<AppEvent>
 
 /// プラットフォーム別のデフォルトシェル
 ///
-/// Windows: PATH から pwsh (PowerShell 7+) → powershell (5.x) → cmd の順で
-/// 最初に見つかったものを採用。`VP_SHELL` env var があればそれを優先。
-/// Unix: `$SHELL` → `/bin/bash` フォールバック。
+/// ## Windows
 ///
-/// ## WSL / claude 連携例
+/// 基本 **Windows ネイティブシェル** を優先 (vp-app は Windows native アプリ):
+///
+/// 1. `VP_SHELL` env var があれば最優先
+/// 2. PATH から pwsh.exe (PowerShell 7+) → powershell.exe (5.x) → cmd.exe
+///
+/// WSL2 経由で bash を使いたい場合 (mise / dev tooling を WSL2 内に持ってる場合等):
+///
 /// ```bash
-/// VP_SHELL=wsl.exe VP_SHELL_ARGS="--cd /home/mito/repos/vantage-point -- claude"
+/// VP_SHELL=wsl.exe VP_SHELL_ARGS="-d archlinux -- bash -li"
 /// ```
+///
+/// ## Unix
+///
+/// `$SHELL` → `/bin/bash` フォールバック。
 fn detect_shell() -> String {
     if let Ok(explicit) = std::env::var("VP_SHELL") {
         return explicit;
@@ -237,7 +245,7 @@ fn detect_shell() -> String {
 /// シェル起動時の引数 (`VP_SHELL_ARGS` env var、POSIX シェル風クォート対応)
 ///
 /// 例: `--cd /path -- bash -l -c "claude --continue || claude"` は
-/// ["--cd", "/path", "--", "bash", "-l", "-c", "claude --continue || claude"] に分割。
+/// `["--cd", "/path", "--", "bash", "-l", "-c", "claude --continue || claude"]` に分割。
 fn detect_shell_args() -> Vec<String> {
     std::env::var("VP_SHELL_ARGS")
         .ok()
