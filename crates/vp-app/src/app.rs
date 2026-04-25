@@ -445,24 +445,46 @@ fn update_pane_bounds(
     });
 }
 
-/// Settings → 実 path 解決。
+/// Settings + 既存プロジェクトから picker の初期ディレクトリを解決。
 ///
 /// 優先順位:
 /// 1. `Settings.default_project_root` が指定されていて存在する → それ
-/// 2. `~/repos` が存在する → それ
-/// 3. `~` (home) → それ
-/// 4. それ以外 → `None`
-fn resolve_default_project_root(settings: &Settings) -> Option<std::path::PathBuf> {
+/// 2. **既存登録プロジェクトの親ディレクトリ** (= "vp のレポジトリホーム" 推定)
+///    `sidebar_state.projects` の最初の project の parent dir。多くは
+///    `~/repos` か `C:\Users\<user>\repos` 等の repos 親。
+/// 3. `~/repos` が存在する → それ
+/// 4. `~` (home) → それ
+/// 5. それ以外 → `None`
+fn resolve_default_project_root(
+    settings: &Settings,
+    sidebar_state: &SidebarState,
+) -> Option<std::path::PathBuf> {
+    // 1. Settings explicit
     if let Some(s) = &settings.default_project_root {
         let p = std::path::PathBuf::from(s);
         if p.exists() {
             return Some(p);
         }
         tracing::warn!(
-            "default_project_root が設定されているが存在しない: {} → home にフォールバック",
+            "default_project_root が設定されているが存在しない: {} → 推定にフォールバック",
             s
         );
     }
+    // 2. 既存 project の parent dir = "vp レポジトリホーム" 推定
+    for proj in &sidebar_state.projects {
+        let path = std::path::PathBuf::from(&proj.path);
+        if let Some(parent) = path.parent()
+            && parent.exists()
+        {
+            tracing::debug!(
+                "default picker dir 推定: {} (project '{}' の parent)",
+                parent.display(),
+                proj.name
+            );
+            return Some(parent.to_path_buf());
+        }
+    }
+    // 3. ~/repos fallback
     let home = dirs::home_dir()?;
     let repos = home.join("repos");
     if repos.exists() {
@@ -1151,7 +1173,8 @@ pub fn run() -> anyhow::Result<()> {
                 if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&msg) {
                     match parsed.get("t").and_then(|v| v.as_str()) {
                         Some("project:add") => {
-                            let initial_dir = resolve_default_project_root(&settings);
+                            let initial_dir =
+                                resolve_default_project_root(&settings, &sidebar_state);
                             spawn_add_project_picker(async_action_proxy.clone(), initial_dir);
                             return;
                         }
@@ -1165,7 +1188,8 @@ pub fn run() -> anyhow::Result<()> {
                                 tracing::warn!("project:clone with empty url");
                                 return;
                             }
-                            let default_root = resolve_default_project_root(&settings);
+                            let default_root =
+                                resolve_default_project_root(&settings, &sidebar_state);
                             spawn_clone_project(async_action_proxy.clone(), url, default_root);
                             return;
                         }
