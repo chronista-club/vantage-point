@@ -61,3 +61,13 @@ arboard = "3"
 
 # Pane id 用 UUID (VP-95)
 uuid = { version = "1", features = ["v4", "serde"] }
+
+# Settings 永続化 (VP-100 follow-up: 開発者モード等)
+toml = "0.8"
+dirs = "6"
+
+# 構造化ログ用 timestamp (KDL 1-line formatter)
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+
+# Native folder picker (project 追加用、cross-platform)
+rfd = "0.15"
