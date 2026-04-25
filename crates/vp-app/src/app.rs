@@ -135,26 +135,25 @@ const SIDEBAR_HTML: &str = concat!(
   .modal button.primary{background:var(--color-brand-primary-subtle);color:var(--color-brand-primary);border-color:var(--color-brand-primary-subtle);}
   .modal button.primary:hover{background:var(--color-brand-primary);color:var(--color-surface-bg-base);}
 
-  .project{margin:0 6px 2px;}
-  .project-header{display:flex;align-items:center;gap:6px;padding:6px 8px;border-radius:var(--radius-sm,6px);cursor:pointer;transition:background .1s ease;user-select:none;}
-  .project-header:hover{background:var(--color-surface-bg-emphasis);}
-  .project-header .chevron{font-size:9px;color:var(--color-text-tertiary);width:10px;display:inline-block;transition:transform .12s ease;}
-  .project-header.expanded .chevron{transform:rotate(90deg);}
-  .project-header .name{flex:1;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-  .project-header .path{font-size:10px;color:var(--color-text-tertiary);}
+  /* creo-accordion を sidebar 用に override (default の bordered card 風 → flush) */
+  .projects-section .creo-accordion{margin:0 6px 2px;background:transparent;border:none;border-radius:var(--radius-sm,6px);overflow:visible;}
+  .projects-section .creo-accordion-summary{padding:6px 8px;min-height:auto;font-size:13px;border-radius:var(--radius-sm,6px);}
+  .projects-section .creo-accordion-summary:hover{background:var(--color-surface-bg-emphasis);}
+  .projects-section .creo-accordion-summary::before{font-size:9px;color:var(--color-text-tertiary);width:10px;}
+  .projects-section .creo-accordion-title{font-weight:500;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .projects-section .creo-accordion-content{padding:2px 0 4px 18px;}
+  .projects-section .creo-accordion-content > * + * {margin-top:0;}
 
-  .pane-list{display:none;padding:2px 0 4px 18px;}
-  .project.expanded .pane-list{display:block;}
+  /* vp-app 固有の pane row (creo-ui に accordion-children component が無いので自前) */
+  .vp-pane-row{display:flex;align-items:center;gap:6px;padding:5px 8px;border-radius:var(--radius-sm,6px);cursor:pointer;transition:background .1s ease;font-size:12px;}
+  .vp-pane-row:hover{background:var(--color-surface-bg-emphasis);}
+  .vp-pane-row.active{background:var(--color-brand-primary-subtle);color:var(--color-brand-primary);}
+  .vp-pane-row .icon{width:16px;text-align:center;font-size:13px;font-family:var(--typography-family-icon);}
+  .vp-pane-row .label{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 
-  .pane-row{display:flex;align-items:center;gap:6px;padding:5px 8px;border-radius:var(--radius-sm,6px);cursor:pointer;transition:background .1s ease;font-size:12px;}
-  .pane-row:hover{background:var(--color-surface-bg-emphasis);}
-  .pane-row.active{background:var(--color-brand-primary-subtle);color:var(--color-brand-primary);}
-  .pane-row .icon{width:16px;text-align:center;font-size:13px;}
-  .pane-row .label{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-
-  .pane-add{display:flex;align-items:center;gap:6px;padding:5px 8px;border-radius:var(--radius-sm,6px);cursor:pointer;color:var(--color-text-tertiary);font-size:11px;font-style:italic;}
-  .pane-add:hover{background:var(--color-surface-bg-emphasis);color:var(--color-text-secondary);}
-  .pane-add .icon{width:16px;text-align:center;}
+  .vp-pane-add{display:flex;align-items:center;gap:6px;padding:5px 8px;border-radius:var(--radius-sm,6px);cursor:pointer;color:var(--color-text-tertiary);font-size:11px;font-style:italic;}
+  .vp-pane-add:hover{background:var(--color-surface-bg-emphasis);color:var(--color-text-secondary);}
+  .vp-pane-add .icon{width:16px;text-align:center;}
 
   .empty,.loading,.error{padding:8px 16px;color:var(--color-text-tertiary);font-style:italic;font-size:12px;}
 </style></head>
@@ -242,27 +241,28 @@ const SIDEBAR_HTML: &str = concat!(
       return;
     }
     for (const p of projects) {
-      const proj = document.createElement('div');
-      proj.className = 'project' + (p.expanded ? ' expanded' : '');
+      // creo-accordion: native <details> ベース。expand/collapse + chevron + ARIA は creo-ui 側 CSS。
+      const proj = document.createElement('details');
+      proj.className = 'creo-accordion';
+      if (p.expanded) proj.setAttribute('open', '');
+      // 'toggle' イベントで Rust に永続化 IPC を送る (native toggle は即時、IPC は state 同期用)
+      proj.addEventListener('toggle', () => {
+        send({t: 'project:toggle', path: p.path, expanded: proj.open});
+      });
 
-      const head = document.createElement('div');
-      head.className = 'project-header' + (p.expanded ? ' expanded' : '');
-      const chev = document.createElement('span');
-      chev.className = 'chevron';
-      chev.textContent = '▶';
-      const name = document.createElement('span');
-      name.className = 'name';
-      name.textContent = p.name;
-      head.appendChild(chev);
-      head.appendChild(name);
-      head.addEventListener('click', () => send({t: 'project:toggle', path: p.path}));
-      proj.appendChild(head);
+      const summary = document.createElement('summary');
+      summary.className = 'creo-accordion-summary';
+      const title = document.createElement('span');
+      title.className = 'creo-accordion-title';
+      title.textContent = p.name;
+      summary.appendChild(title);
+      proj.appendChild(summary);
 
-      const list = document.createElement('div');
-      list.className = 'pane-list';
+      const content = document.createElement('div');
+      content.className = 'creo-accordion-content';
       for (const pane of p.panes || []) {
         const row = document.createElement('div');
-        row.className = 'pane-row' + (p.active_pane_id === pane.id ? ' active' : '');
+        row.className = 'vp-pane-row' + (p.active_pane_id === pane.id ? ' active' : '');
         const icon = document.createElement('span');
         icon.className = 'icon';
         icon.textContent = paneIcon(pane.kind);
@@ -275,11 +275,11 @@ const SIDEBAR_HTML: &str = concat!(
           e.stopPropagation();
           send({t: 'pane:select', path: p.path, paneId: pane.id});
         });
-        list.appendChild(row);
+        content.appendChild(row);
       }
-      // "+" Add pane (P2/P3 で wire up、今は kind picker なし MVP として agent を追加)
+      // "+" Add pane (現状 kind picker なし、agent をデフォルト追加)
       const add = document.createElement('div');
-      add.className = 'pane-add';
+      add.className = 'vp-pane-add';
       const addIcon = document.createElement('span');
       addIcon.className = 'icon';
       addIcon.textContent = '+';
@@ -289,12 +289,11 @@ const SIDEBAR_HTML: &str = concat!(
       add.appendChild(addLabel);
       add.addEventListener('click', (e) => {
         e.stopPropagation();
-        // P1 MVP: kind 選択 prompt は P3 で。今は agent を追加して動作確認用
         send({t: 'pane:add', path: p.path, kind: 'agent'});
       });
-      list.appendChild(add);
+      content.appendChild(add);
 
-      proj.appendChild(list);
+      proj.appendChild(content);
       root.appendChild(proj);
     }
   }
@@ -865,10 +864,22 @@ fn handle_sidebar_ipc(msg: &str, state: &mut SidebarState) -> SidebarIpcOutcome 
 
     match t {
         "project:toggle" => {
+            // VP-101 Phase A1.b: native <details> が IPC で `expanded` の新状態を渡してくる。
+            // DOM は既に user click で toggle 済なので、Rust state を silently sync するだけ。
+            // `out.changed` は立てない (rebuild すると flash する)。
             if let Some(p) = state.projects.iter_mut().find(|p| p.path == path) {
-                p.expanded = !p.expanded;
-                tracing::debug!("project:toggle {} → expanded={}", path, p.expanded);
-                out.changed = true;
+                let new_state = parsed
+                    .get("expanded")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(!p.expanded);
+                if p.expanded != new_state {
+                    p.expanded = new_state;
+                    tracing::debug!(
+                        "project:toggle {} → expanded={} (silent sync)",
+                        path,
+                        p.expanded
+                    );
+                }
             }
         }
         "pane:select" => {
