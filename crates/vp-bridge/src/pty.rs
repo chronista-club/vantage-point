@@ -334,35 +334,61 @@ impl BridgePty {
     }
 
     /// VT グリッド → NativeBackend バッファ同期
+    ///
+    /// alacritty col → backend col の **再マッピング**を行う。
+    /// ambiguous 昇格 cell (`should_promote_ambiguous_to_wide` で true) は
+    /// backend 上で **実 2 cell 確保** し、隣 cell は default の空白 (clear() 由来)
+    /// として残す。これにより wide glyph が 2 cell layout に綺麗に収まる。
+    /// alacritty buffer は無傷なので alacritty 側の整合性は保たれる。
     fn sync_to_backend(term_state: &Arc<Mutex<TermState>>, backend: &Arc<Mutex<NativeBackend>>) {
         let state = term_state.lock().unwrap();
         let grid = state.term.grid();
         let display_offset = grid.display_offset();
 
         let mut cells: Vec<(u16, u16, CellData)> = Vec::new();
+        let backend_max_col = state.cols as u16;
+
+        // alacritty cursor の point.column は alacritty col 基準。
+        // backend col への変換のため、cursor_line と一致する行で同じ scan ロジックを通す。
+        let cursor_point = grid.cursor.point;
+        let cursor_alacritty_col = cursor_point.column.0;
+        let cursor_line = cursor_point.line.0;
+        let mut cursor_backend_col: u16 = 0;
 
         for line_idx in 0..state.lines {
             let line = Line(line_idx as i32 - display_offset as i32);
+            let mut backend_col: u16 = 0;
+            // この行が cursor 行かどうか (display_offset 反転後の比較)
+            let is_cursor_row =
+                cursor_line >= 0 && (cursor_line as usize) == line_idx && display_offset == 0;
 
             for col_idx in 0..state.cols {
+                if backend_col >= backend_max_col {
+                    break;
+                }
+
                 let vte_cell = &grid[line][Column(col_idx)];
 
-                // ワイドキャラクターのスペーサーはスキップ
+                // alacritty 自身の WIDE_CHAR_SPACER は alacritty 内部での占有表現。
+                // backend には転送せず alacritty col だけ進める。
                 if vte_cell.flags.contains(CellFlags::WIDE_CHAR_SPACER) {
+                    if is_cursor_row && col_idx < cursor_alacritty_col {
+                        // cursor 位置への scan: spacer は alacritty 上で 1 cell 占有
+                        // するが backend 上は wide 文字側に統合されるので進めない
+                    }
                     continue;
                 }
 
                 let mut is_wide = vte_cell.flags.contains(CellFlags::WIDE_CHAR);
-
-                // VP-83 refinement 57: ambiguous 幅文字 (⌘ ⇧ → ● 等) の wide 昇格は
-                // is_wide flag のみ立てる。右隣セル consume は以前ここで行っていたが、
-                // ratatui cell[n+1] (次の実文字) を skip する破壊的副作用があり廃止。
-                //
-                // narrow cell 幅に CJK glyph を描画する責務は Swift renderer 側に移管:
-                // TerminalView.isAmbiguousWideCodepoint で判定、Hiragino 等で描画するが
-                // cell 幅は 1 のまま (glyph overflow 部は隣 cell の glyph と overlap、実用上問題薄)。
                 if !is_wide && should_promote_ambiguous_to_wide(vte_cell.c) {
                     is_wide = true;
+                }
+
+                // cursor 位置を backend col に換算
+                if is_cursor_row && col_idx < cursor_alacritty_col {
+                    cursor_backend_col = cursor_backend_col
+                        .saturating_add(if is_wide { 2 } else { 1 })
+                        .min(backend_max_col.saturating_sub(1));
                 }
 
                 let mut fg_rgb = resolve_color_inner(&vte_cell.fg);
@@ -399,14 +425,14 @@ impl BridgePty {
                 cell.bg = rgb_to_rgba(bg_rgb.0, bg_rgb.1, bg_rgb.2);
                 cell.flags = f;
 
-                cells.push((col_idx as u16, line_idx as u16, cell));
+                cells.push((backend_col, line_idx as u16, cell));
+
+                // wide なら backend col を 2 進める。隣 cell は backend.clear() で
+                // default 空白に初期化されているのでそのまま spacer として残る。
+                backend_col = backend_col.saturating_add(if is_wide { 2 } else { 1 });
             }
         }
 
-        // カーソル位置も同期（負値チェック: スクロール時に負の Line になりうる）
-        let cursor_point = grid.cursor.point;
-        let cursor_col = cursor_point.column.0 as u16;
-        let cursor_line = cursor_point.line.0;
         let cursor_visible = if display_offset > 0 {
             false
         } else {
@@ -430,9 +456,12 @@ impl BridgePty {
         for (x, y, cell) in cells {
             be.set_cell(x, y + y_offset, cell);
         }
-        // カーソル設定（Y オフセット付き）
+        // カーソル設定（Y オフセット付き、backend col 換算後の値を使用）
         if cursor_line >= 0 && (cursor_line as usize) < lines {
-            be.set_cursor_position(Position::new(cursor_col, cursor_line as u16 + y_offset));
+            be.set_cursor_position(Position::new(
+                cursor_backend_col,
+                cursor_line as u16 + y_offset,
+            ));
         }
         be.set_cursor_visible(cursor_visible);
         be.flush();
