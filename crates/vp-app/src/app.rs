@@ -941,16 +941,50 @@ fn handle_sidebar_ipc(msg: &str, state: &mut SidebarState) -> SidebarIpcOutcome 
 pub fn run() -> anyhow::Result<()> {
     // VP-100 follow-up: KDL 1-line formatter で構造化ログ出力
     // (color disable + KdlFormatter で機械可読 / grep 可能な log を吐く)
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "vp_app=info".into()),
+    //
+    // ## file writer に切替 (重要)
+    //
+    // Win GUI subsystem の vp-app では stderr handle が NUL 化される (CONIN$/CONOUT$ も無い)。
+    // PowerShell の Start-Process -RedirectStandardOutput でも GUI subsystem に対しては
+    // 確実に redirect が効かない。
+    //
+    // 解決: tracing-appender で **file に直接書き込む**。
+    // Path: `%LOCALAPPDATA%\VantagePoint-dev\vp-app.kdl.log` (Win)
+    //       `~/.local/share/vantage-point-dev/vp-app.kdl.log` (Linux/Mac fallback)
+    //
+    // mise run win の polling tail が同 file を見る。
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+    // Win 推奨: `%LOCALAPPDATA%\<AppName>\Logs\<file>`
+    // - debug build: `VantagePoint-dev` (dev install と分離)
+    // - release: `VantagePoint`
+    let app_dir = if cfg!(debug_assertions) {
+        "VantagePoint-dev"
+    } else {
+        "VantagePoint"
+    };
+    let log_dir = dirs::data_local_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join(app_dir)
+        .join("Logs");
+    let _ = std::fs::create_dir_all(&log_dir);
+    let file_appender = tracing_appender::rolling::never(&log_dir, "vp-app.kdl.log");
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "vp_app=info".into());
+    let _ = tracing_subscriber::registry()
+        .with(env_filter)
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_ansi(false)
+                .event_format(crate::log_format::KdlFormatter)
+                .with_writer(file_appender),
         )
-        .with_ansi(false)
-        .event_format(crate::log_format::KdlFormatter)
-        .init();
+        .try_init();
 
-    tracing::info!("vp-app 起動 (Creo UI mint-dark)");
+    tracing::info!(
+        log_dir = %log_dir.display(),
+        "vp-app 起動 (Creo UI mint-dark)"
+    );
 
     let event_loop = EventLoopBuilder::<AppEvent>::with_user_event().build();
 

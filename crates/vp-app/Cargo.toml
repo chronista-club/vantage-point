@@ -69,5 +69,8 @@ dirs = "6"
 # 構造化ログ用 timestamp (KDL 1-line formatter)
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
+# Log file writer (Win GUI subsystem では stderr が NUL 化することがあるので file に直接書く)
+tracing-appender = "0.2"
+
 # Native folder picker (project 追加用、cross-platform)
 rfd = "0.15"
