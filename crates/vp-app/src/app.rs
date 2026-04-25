@@ -619,11 +619,15 @@ fn handle_sidebar_ipc(msg: &str, state: &mut SidebarState) -> SidebarIpcOutcome 
 
 /// App のエントリポイント
 pub fn run() -> anyhow::Result<()> {
+    // VP-100 follow-up: KDL 1-line formatter で構造化ログ出力
+    // (color disable + KdlFormatter で機械可読 / grep 可能な log を吐く)
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "vp_app=info".into()),
         )
+        .with_ansi(false)
+        .event_format(crate::log_format::KdlFormatter)
         .init();
 
     tracing::info!("vp-app 起動 (Creo UI mint-dark)");
