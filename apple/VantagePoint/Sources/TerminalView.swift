@@ -306,6 +306,40 @@ class TerminalView: NSView {
 
     // MARK: - フォント
 
+    /// glyph を targetWidth に収まるように描画する。
+    ///
+    /// Apple Color Emoji の glyph (❤ ☂ ✅ ☎ ⚓ など) は visual advance が
+    /// cell 幅を超えることが多く、そのまま描画すると隣 cell にはみ出して欠けて
+    /// 見える。glyph の advance を計測し、targetWidth を超える場合は
+    /// `CGContext.scaleBy(x:)` で horizontal 縮小してきれいに収める。
+    /// 通常文字は advance ≤ targetWidth なので scale 適用されず影響なし。
+    private func drawGlyphsFitted(ctx: CGContext, font: CTFont, glyphs: [CGGlyph],
+                                  originX: CGFloat, originY: CGFloat,
+                                  targetWidth: CGFloat) {
+        guard !glyphs.isEmpty else { return }
+
+        // 主要 glyph の advance を計測 (chars.count > 1 でも先頭 glyph で代表)
+        var firstGlyph = glyphs[0]
+        var advance: CGSize = .zero
+        CTFontGetAdvancesForGlyphs(font, .horizontal, &firstGlyph, &advance, 1)
+
+        if advance.width > targetWidth + 0.5 && advance.width > 0 {
+            // glyph が cell 幅を超える → horizontal scale で縮小
+            let scaleX = targetWidth / advance.width
+            ctx.saveGState()
+            // (originX, originY) を基準点にスケール
+            ctx.translateBy(x: originX, y: 0)
+            ctx.scaleBy(x: scaleX, y: 1.0)
+            ctx.translateBy(x: -originX, y: 0)
+            var position = CGPoint(x: originX, y: originY)
+            CTFontDrawGlyphs(font, glyphs, &position, glyphs.count, ctx)
+            ctx.restoreGState()
+        } else {
+            var position = CGPoint(x: originX, y: originY)
+            CTFontDrawGlyphs(font, glyphs, &position, glyphs.count, ctx)
+        }
+    }
+
     /// ambiguous-wide codepoint 判定 — wide cell で FiraCode が narrow glyph しか
     /// 提供しない記号群。日本語環境ユーザの iTerm 挙動 (East Asian Ambiguous = Wide)
     /// に合わせて system cascade 経由で CJK font の 2 cell wide glyph を使う。
@@ -316,12 +350,14 @@ class TerminalView: NSView {
     private func isAmbiguousWideCodepoint(_ ch: String) -> Bool {
         guard let scalar = ch.unicodeScalars.first else { return false }
         switch scalar.value {
-        case 0x2190...0x21FF: return true  // Arrows (→ ← ↑ ↓ ↔ 等)
+        // Arrows (→ ← ↑ ↓ ↔ 0x2190-0x21FF) と Supplemental Arrows
+        // (⟵ ⟶ ⬅ ➡ 0x2900-0x297F) は意図的に除外: layout は wide (2 cell)
+        // のまま FiraCode の narrow glyph で描画させ、右半分は spacer として
+        // 空白を残す (ユーザ指定 2026-04-25)
         case 0x2460...0x24FF: return true  // Enclosed Alphanumerics (① ② ⑤ ⑩ ⓐ Ⓐ ⓪ 等)
         case 0x25A0...0x25FF: return true  // Geometric Shapes (■ □ ▲ ▼ ◆ ● ◯ 等)
         case 0x2600...0x26FF: return true  // Misc Symbols (★ ☆ ♠ ♣ ♥ ♦ ♪ ☀ 等)
         case 0x2700...0x27BF: return true  // Dingbats (✓ ✗ ✦ ➔ ➢ ❶❷❸ ➀➁➂ 等)
-        case 0x2900...0x297F: return true  // Supplemental Arrows (⟵ ⟶ ⬅ ➡ 等)
         default: return false
         }
     }
@@ -559,11 +595,15 @@ class TerminalView: NSView {
                     ? false
                     : CTFontGetGlyphsForCharacters(selectedFont, chars, &glyphs, chars.count)
 
+                // glyph 描画用のターゲット幅 (wide cell は 2 cell 分)
+                let targetWidth = charIsFullWidth ? cellWidth * 2 : cellWidth
+
                 // グリフが見つからない場合はフォールバックフォントで描画
                 if found && !glyphs.contains(0) {
                     // プライマリフォントにグリフあり → 高速パス
-                    var position = CGPoint(x: x, y: y + baselineOffset)
-                    CTFontDrawGlyphs(selectedFont, glyphs, &position, glyphs.count, ctx)
+                    drawGlyphsFitted(ctx: ctx, font: selectedFont, glyphs: glyphs,
+                                     originX: x, originY: y + baselineOffset,
+                                     targetWidth: targetWidth)
                 } else {
                     // システムフォールバック（CJK・絵文字・記号すべて対応）
                     let fallbackFont = CTFontCreateForString(selectedFont, ch as CFString,
@@ -571,8 +611,9 @@ class TerminalView: NSView {
                     var fbGlyphs = [CGGlyph](repeating: 0, count: chars.count)
                     if CTFontGetGlyphsForCharacters(fallbackFont, chars, &fbGlyphs, chars.count) {
                         // フォールバックフォントにグリフあり → 直接描画（高速）
-                        var position = CGPoint(x: x, y: y + baselineOffset)
-                        CTFontDrawGlyphs(fallbackFont, fbGlyphs, &position, fbGlyphs.count, ctx)
+                        drawGlyphsFitted(ctx: ctx, font: fallbackFont, glyphs: fbGlyphs,
+                                         originX: x, originY: y + baselineOffset,
+                                         targetWidth: targetWidth)
                     } else {
                         // 最終手段: CTLine（NSAttributedString 経由）
                         let attrs: [CFString: Any] = [
