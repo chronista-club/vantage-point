@@ -122,18 +122,10 @@ const SIDEBAR_HTML: &str = concat!(
   .add-action:hover{background:var(--color-surface-bg-emphasis);color:var(--color-text-primary);border-color:var(--color-surface-border,#1f2233);}
   .add-action .icon{width:16px;text-align:center;color:var(--color-brand-primary);font-size:12px;}
 
-  /* Clone modal overlay */
-  .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.5);display:none;align-items:center;justify-content:center;z-index:100;}
-  .modal-overlay.active{display:flex;}
-  .modal{background:var(--color-surface-bg-base);border:1px solid var(--color-surface-border,#1f2233);border-radius:8px;padding:16px;min-width:240px;max-width:90%;}
-  .modal h2{font-size:13px;margin:0 0 8px;color:var(--color-text-primary);font-weight:500;}
-  .modal input{width:100%;padding:6px 8px;border-radius:4px;border:1px solid var(--color-surface-border,#1f2233);background:var(--color-surface-bg-subtle);color:var(--color-text-primary);font-family:inherit;font-size:12px;box-sizing:border-box;}
-  .modal input:focus{outline:none;border-color:var(--color-brand-primary);}
-  .modal .actions{display:flex;justify-content:flex-end;gap:6px;margin-top:10px;}
-  .modal button{padding:5px 12px;border-radius:4px;border:1px solid var(--color-surface-border,#1f2233);background:transparent;color:var(--color-text-secondary);cursor:pointer;font-size:11px;transition:background .12s ease,color .12s ease;}
-  .modal button:hover{background:var(--color-surface-bg-emphasis);color:var(--color-text-primary);}
-  .modal button.primary{background:var(--color-brand-primary-subtle);color:var(--color-brand-primary);border-color:var(--color-brand-primary-subtle);}
-  .modal button.primary:hover{background:var(--color-brand-primary);color:var(--color-surface-bg-base);}
+  /* Clone dialog (creo-dialog ベース、vp-app 固有の小調整のみ) */
+  .vp-clone-form{padding:16px;display:flex;flex-direction:column;gap:10px;min-width:280px;}
+  .vp-clone-form h2{font-size:13px;margin:0;color:var(--color-text-primary);font-weight:500;}
+  .vp-clone-form .vp-modal-actions{display:flex;justify-content:flex-end;gap:6px;margin-top:4px;}
 
   /* creo-accordion を sidebar 用に override (default の bordered card 風 → flush) */
   .projects-section .creo-accordion{margin:0 6px 2px;background:transparent;border:none;border-radius:var(--radius-sm,6px);overflow:visible;}
@@ -174,17 +166,17 @@ const SIDEBAR_HTML: &str = concat!(
       <div class="add-action" id="clone-project-btn" title="Clone repository from URL"><span class="icon">🌱</span> Clone Repository</div>
     </div>
   </div>
-  <!-- Clone modal (重畳 overlay、Cancel / Clone) -->
-  <div class="modal-overlay" id="clone-modal">
-    <div class="modal">
+  <!-- Clone dialog (creo-dialog: native <dialog>、Esc / focus trap は browser 任せ) -->
+  <dialog class="creo-dialog" data-size="sm" id="clone-modal">
+    <div class="vp-clone-form">
       <h2>Clone Repository</h2>
-      <input type="text" id="clone-url" placeholder="https://github.com/user/repo.git" />
-      <div class="actions">
-        <button id="clone-cancel">Cancel</button>
-        <button id="clone-confirm" class="primary">Clone</button>
+      <input class="creo-input" type="text" id="clone-url" placeholder="https://github.com/user/repo.git" />
+      <div class="vp-modal-actions">
+        <button type="button" class="creo-btn" data-variant="secondary" data-size="sm" id="clone-cancel">Cancel</button>
+        <button type="button" class="creo-btn" data-variant="primary" data-size="sm" id="clone-confirm">Clone</button>
       </div>
     </div>
-  </div>
+  </dialog>
 <script>
   // Rust から push される sidebar state を保持
   let state = null;
@@ -383,11 +375,13 @@ const SIDEBAR_HTML: &str = concat!(
     function openCloneModal() {
       if (!cloneModal) return;
       cloneInput.value = '';
-      cloneModal.classList.add('active');
+      // creo-dialog: native <dialog>.showModal() で focus trap + ::backdrop + Esc close を browser に任せる
+      try { cloneModal.showModal(); } catch (_) { /* already open は ignore */ }
       setTimeout(() => cloneInput && cloneInput.focus(), 50);
     }
     function closeCloneModal() {
-      if (cloneModal) cloneModal.classList.remove('active');
+      if (!cloneModal) return;
+      try { cloneModal.close(); } catch (_) {}
     }
     function submitClone() {
       const url = (cloneInput && cloneInput.value || '').trim();
@@ -404,13 +398,15 @@ const SIDEBAR_HTML: &str = concat!(
     if (cloneInput) {
       cloneInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') { e.preventDefault(); submitClone(); }
-        else if (e.key === 'Escape') { e.preventDefault(); closeCloneModal(); }
+        // Escape は <dialog> が native で close してくれる、明示処理不要
       });
     }
     if (cloneModal) {
+      // backdrop (= dialog 自身) クリックで close (内部 form クリックは bubbling しないので自然に弾かれる)
       cloneModal.addEventListener('click', (e) => {
         if (e.target === cloneModal) closeCloneModal();
       });
+      // <dialog> が Esc で発火する 'cancel' / 'close' event は何もしなくても DOM が close 状態になる
     }
     // 別の場所をクリックしたら add actions を畳む
     document.addEventListener('click', (e) => {
