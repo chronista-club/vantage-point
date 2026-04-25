@@ -9354,6 +9354,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tray-icon",
+ "uuid",
  "wry",
 ]
 

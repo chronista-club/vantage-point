@@ -24,6 +24,7 @@
 //!   失敗時は placeholder (daemon 未起動扱い)
 
 use std::thread;
+use std::time::Duration;
 
 use tao::dpi::LogicalSize;
 use tao::event::{Event, WindowEvent};
@@ -34,6 +35,7 @@ use wry::{
 };
 
 use crate::client::TheWorldClient;
+use crate::pane::{ActivitySnapshot, PaneKind, ProjectPaneState, SidebarState};
 use crate::terminal::{self, AppEvent};
 
 /// Sidebar の固定幅 (LogicalPixel)
@@ -45,83 +47,243 @@ const SIDEBAR_WIDTH: f64 = 280.0;
 /// vp-app の 3 ペインすべてに inline して共通 token で描画する。
 pub const CREO_TOKENS_CSS: &str = include_str!("../assets/creo-tokens.css");
 
+/// VP-95: Sidebar accordion HTML
+///
+/// 上から:
+/// 1. **Widget slot** (Activity / Stand status — `/api/health` + `/api/world/processes`)
+/// 2. **Projects accordion** (project ヘッダー ▶/▼ + 子 pane 一覧)
+///
+/// state は `window.renderSidebarState(state)` で Rust → JS に push される。
+/// クリック操作は `window.ipc.postMessage(JSON)` で Rust に送信:
+///   - `{"t":"project:toggle","path":"..."}`
+///   - `{"t":"pane:select","path":"...","paneId":"..."}`
+///   - `{"t":"pane:add","path":"...","kind":"agent|canvas|preview|shell"}`
 const SIDEBAR_HTML: &str = concat!(
     r#"<!doctype html>
 <html lang="ja" data-theme="mint-dark">
 <head><meta charset="utf-8"><style>"#,
     include_str!("../assets/creo-tokens.css"),
     r#"</style><style>
-  html,body{margin:0;height:100%;background:var(--color-surface-bg-subtle);color:var(--color-text-primary);font-family:system-ui,-apple-system,"Segoe UI",sans-serif;}
-  header{padding:16px 16px 8px;font-size:11px;color:var(--color-text-tertiary);text-transform:uppercase;letter-spacing:.08em;display:flex;justify-content:space-between;align-items:center;}
-  header .status{font-size:10px;padding:2px 6px;border-radius:4px;background:var(--color-surface-bg-emphasis);color:var(--color-text-secondary);text-transform:none;letter-spacing:0;}
-  header .status.ok{background:var(--color-brand-primary-subtle);color:var(--color-brand-primary);}
-  header .status.err{background:var(--color-surface-bg-emphasis);color:var(--color-text-tertiary);}
-  ul{list-style:none;margin:0;padding:0 8px;}
-  li{padding:8px 12px;border-radius:var(--radius-sm,6px);color:var(--color-text-primary);cursor:pointer;font-size:14px;transition:background .12s ease;display:flex;flex-direction:column;gap:2px;}
-  li:hover{background:var(--color-surface-bg-emphasis);}
-  li.active{background:var(--color-brand-primary-subtle);}
-  li .name{font-weight:500;}
-  li .path{font-size:11px;color:var(--color-text-tertiary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-  li.empty,li.loading,li.error{color:var(--color-text-tertiary);cursor:default;font-style:italic;}
-  li.empty:hover,li.loading:hover,li.error:hover{background:transparent;}
+  html,body{margin:0;height:100%;background:var(--color-surface-bg-subtle);color:var(--color-text-primary);font-family:system-ui,-apple-system,"Segoe UI",sans-serif;font-size:13px;overflow:hidden;}
+  body{display:flex;flex-direction:column;height:100%;}
+
+  /* Widget slot (top) */
+  .widget-slot{padding:10px 12px;border-bottom:1px solid var(--color-surface-border,#1f2233);background:var(--color-surface-bg-base);}
+  .widget-slot .widget-title{font-size:10px;color:var(--color-text-tertiary);text-transform:uppercase;letter-spacing:.08em;display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;}
+  .widget-slot .widget-title .badge{font-size:10px;padding:1px 6px;border-radius:3px;background:var(--color-surface-bg-emphasis);color:var(--color-text-secondary);text-transform:none;letter-spacing:0;}
+  .widget-slot .widget-title .badge.online{background:var(--color-brand-primary-subtle);color:var(--color-brand-primary);}
+  .widget-slot .widget-title .badge.offline{color:var(--color-text-tertiary);}
+  .widget-slot .stat{display:flex;justify-content:space-between;font-size:11px;padding:2px 0;color:var(--color-text-secondary);}
+  .widget-slot .stat .label{color:var(--color-text-tertiary);}
+  .widget-slot .stat .value{font-weight:500;color:var(--color-text-primary);font-variant-numeric:tabular-nums;}
+
+  /* Projects accordion */
+  .projects-section{flex:1;overflow-y:auto;padding:6px 0;}
+  .projects-section .section-header{padding:10px 16px 6px;font-size:10px;color:var(--color-text-tertiary);text-transform:uppercase;letter-spacing:.08em;display:flex;justify-content:space-between;align-items:center;}
+
+  .project{margin:0 6px 2px;}
+  .project-header{display:flex;align-items:center;gap:6px;padding:6px 8px;border-radius:var(--radius-sm,6px);cursor:pointer;transition:background .1s ease;user-select:none;}
+  .project-header:hover{background:var(--color-surface-bg-emphasis);}
+  .project-header .chevron{font-size:9px;color:var(--color-text-tertiary);width:10px;display:inline-block;transition:transform .12s ease;}
+  .project-header.expanded .chevron{transform:rotate(90deg);}
+  .project-header .name{flex:1;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .project-header .path{font-size:10px;color:var(--color-text-tertiary);}
+
+  .pane-list{display:none;padding:2px 0 4px 18px;}
+  .project.expanded .pane-list{display:block;}
+
+  .pane-row{display:flex;align-items:center;gap:6px;padding:5px 8px;border-radius:var(--radius-sm,6px);cursor:pointer;transition:background .1s ease;font-size:12px;}
+  .pane-row:hover{background:var(--color-surface-bg-emphasis);}
+  .pane-row.active{background:var(--color-brand-primary-subtle);color:var(--color-brand-primary);}
+  .pane-row .icon{width:16px;text-align:center;font-size:13px;}
+  .pane-row .label{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+
+  .pane-add{display:flex;align-items:center;gap:6px;padding:5px 8px;border-radius:var(--radius-sm,6px);cursor:pointer;color:var(--color-text-tertiary);font-size:11px;font-style:italic;}
+  .pane-add:hover{background:var(--color-surface-bg-emphasis);color:var(--color-text-secondary);}
+  .pane-add .icon{width:16px;text-align:center;}
+
+  .empty,.loading,.error{padding:8px 16px;color:var(--color-text-tertiary);font-style:italic;font-size:12px;}
 </style></head>
 <body>
-  <header>Projects <span id="status" class="status">…</span></header>
-  <ul id="projects"><li class="loading">読込中…</li></ul>
+  <div class="widget-slot" id="widget-slot">
+    <div class="widget-title">Activity <span class="badge" id="world-badge">…</span></div>
+    <div class="stat"><span class="label">Version</span><span class="value" id="world-version">—</span></div>
+    <div class="stat"><span class="label">Started</span><span class="value" id="world-uptime">—</span></div>
+    <div class="stat"><span class="label">Projects</span><span class="value" id="proj-count">0</span></div>
+    <div class="stat"><span class="label">Processes</span><span class="value" id="proc-count">0</span></div>
+  </div>
+  <div class="projects-section">
+    <div class="section-header">Projects</div>
+    <div id="projects"><div class="loading">読込中…</div></div>
+  </div>
 <script>
-  // renderProjects / renderError は Rust の evaluate_script から呼ばれる。
-  // DOM 未 ready 時に先に call される可能性があるため buffer する。
-  let pending = null;
-  let pendingError = null;
+  // Rust から push される sidebar state を保持
+  let state = null;
+  let pendingState = null;
+  let domReady = false;
 
-  function doRender(projects) {
-    const list = document.getElementById('projects');
-    const status = document.getElementById('status');
-    if (!list || !status) return false;
-    list.innerHTML = '';
-    if (projects.length === 0) {
-      list.innerHTML = '<li class="empty">(no projects)</li>';
-      status.textContent = '0';
-      status.className = 'status';
-      return true;
+  // ipc 送信 wrapper (window.ipc は wry が提供)
+  function send(msg) {
+    if (window.ipc && window.ipc.postMessage) {
+      window.ipc.postMessage(JSON.stringify(msg));
+    }
+  }
+
+  // unix 時刻 ISO → "Xh Ym ago" 風文字列
+  function formatStartedAt(iso) {
+    if (!iso) return '—';
+    const t = Date.parse(iso);
+    if (Number.isNaN(t)) return iso;
+    const sec = Math.max(0, Math.floor((Date.now() - t) / 1000));
+    if (sec < 60) return sec + 's ago';
+    const m = Math.floor(sec / 60);
+    if (m < 60) return m + 'm ago';
+    const h = Math.floor(m / 60);
+    const rem = m % 60;
+    return h + 'h ' + rem + 'm ago';
+  }
+
+  function renderActivity(activity) {
+    const badge = document.getElementById('world-badge');
+    const ver = document.getElementById('world-version');
+    const upt = document.getElementById('world-uptime');
+    const pc = document.getElementById('proj-count');
+    const rc = document.getElementById('proc-count');
+    if (!badge || !ver || !upt || !pc || !rc) return;
+    if (activity && activity.world_online) {
+      badge.textContent = 'online';
+      badge.className = 'badge online';
+    } else {
+      badge.textContent = 'offline';
+      badge.className = 'badge offline';
+    }
+    ver.textContent = (activity && activity.world_version) || '—';
+    upt.textContent = formatStartedAt(activity && activity.world_started_at);
+    pc.textContent = String((activity && activity.project_count) || 0);
+    rc.textContent = String((activity && activity.running_process_count) || 0);
+  }
+
+  function renderProjects(projects) {
+    const root = document.getElementById('projects');
+    if (!root) return;
+    root.innerHTML = '';
+    if (!projects || projects.length === 0) {
+      root.innerHTML = '<div class="empty">(no projects)</div>';
+      return;
     }
     for (const p of projects) {
-      const li = document.createElement('li');
+      const proj = document.createElement('div');
+      proj.className = 'project' + (p.expanded ? ' expanded' : '');
+
+      const head = document.createElement('div');
+      head.className = 'project-header' + (p.expanded ? ' expanded' : '');
+      const chev = document.createElement('span');
+      chev.className = 'chevron';
+      chev.textContent = '▶';
       const name = document.createElement('span');
       name.className = 'name';
       name.textContent = p.name;
-      const path = document.createElement('span');
-      path.className = 'path';
-      path.textContent = p.path;
-      li.appendChild(name);
-      li.appendChild(path);
-      list.appendChild(li);
+      head.appendChild(chev);
+      head.appendChild(name);
+      head.addEventListener('click', () => send({t: 'project:toggle', path: p.path}));
+      proj.appendChild(head);
+
+      const list = document.createElement('div');
+      list.className = 'pane-list';
+      for (const pane of p.panes || []) {
+        const row = document.createElement('div');
+        row.className = 'pane-row' + (p.active_pane_id === pane.id ? ' active' : '');
+        const icon = document.createElement('span');
+        icon.className = 'icon';
+        icon.textContent = paneIcon(pane.kind);
+        const label = document.createElement('span');
+        label.className = 'label';
+        label.textContent = pane.title || defaultLabel(pane.kind);
+        row.appendChild(icon);
+        row.appendChild(label);
+        row.addEventListener('click', (e) => {
+          e.stopPropagation();
+          send({t: 'pane:select', path: p.path, paneId: pane.id});
+        });
+        list.appendChild(row);
+      }
+      // "+" Add pane (P2/P3 で wire up、今は kind picker なし MVP として agent を追加)
+      const add = document.createElement('div');
+      add.className = 'pane-add';
+      const addIcon = document.createElement('span');
+      addIcon.className = 'icon';
+      addIcon.textContent = '+';
+      const addLabel = document.createElement('span');
+      addLabel.textContent = 'Add pane';
+      add.appendChild(addIcon);
+      add.appendChild(addLabel);
+      add.addEventListener('click', (e) => {
+        e.stopPropagation();
+        // P1 MVP: kind 選択 prompt は P3 で。今は agent を追加して動作確認用
+        send({t: 'pane:add', path: p.path, kind: 'agent'});
+      });
+      list.appendChild(add);
+
+      proj.appendChild(list);
+      root.appendChild(proj);
     }
-    status.textContent = projects.length;
-    status.className = 'status ok';
-    return true;
   }
 
-  function doError(msg) {
-    const list = document.getElementById('projects');
-    const status = document.getElementById('status');
-    if (!list || !status) return false;
-    list.innerHTML = '<li class="error">' + (msg || 'TheWorld 未接続') + '</li>';
-    status.textContent = 'offline';
-    status.className = 'status err';
-    return true;
+  function paneIcon(kind) {
+    switch (kind) {
+      case 'agent': return '📖';
+      case 'canvas': return '🧭';
+      case 'preview': return '📄';
+      case 'shell': return '⚙';
+      default: return '·';
+    }
+  }
+  function defaultLabel(kind) {
+    switch (kind) {
+      case 'agent': return 'Lead Agent';
+      case 'canvas': return 'Canvas';
+      case 'preview': return 'Preview';
+      case 'shell': return 'Shell';
+      default: return kind || '';
+    }
   }
 
-  window.renderProjects = function(projects) {
-    if (!doRender(projects)) pending = projects;
-  };
-  window.renderError = function(msg) {
-    if (!doError(msg)) pendingError = msg;
-  };
+  function applyState(s) {
+    if (!domReady) { pendingState = s; return; }
+    state = s;
+    renderActivity(s.activity);
+    renderProjects(s.projects);
+  }
 
-  window.addEventListener('DOMContentLoaded', function() {
-    if (pending !== null) { doRender(pending); pending = null; }
-    else if (pendingError !== null) { doError(pendingError); pendingError = null; }
+  // 起動初期エラー (TheWorld 未接続) 表示
+  function applyError(msg) {
+    if (!domReady) { pendingState = {projects: null, _error: msg, activity: {world_online:false}}; return; }
+    renderActivity({world_online: false});
+    const root = document.getElementById('projects');
+    if (root) root.innerHTML = '<div class="error">' + (msg || 'TheWorld 未接続') + '</div>';
+  }
+
+  window.renderSidebarState = applyState;
+  window.renderError = applyError;
+
+  // uptime を 1 秒ごとに自更新 (state.activity.world_started_at から計算)
+  setInterval(() => {
+    if (state && state.activity) {
+      const upt = document.getElementById('world-uptime');
+      if (upt) upt.textContent = formatStartedAt(state.activity.world_started_at);
+    }
+  }, 1000);
+
+  window.addEventListener('DOMContentLoaded', () => {
+    domReady = true;
+    if (pendingState !== null) {
+      if (pendingState._error) {
+        applyError(pendingState._error);
+      } else {
+        applyState(pendingState);
+      }
+      pendingState = null;
+    }
   });
 </script>
 </body>
@@ -218,6 +380,136 @@ fn spawn_projects_fetch(proxy: EventLoopProxy<AppEvent>) {
         });
 }
 
+/// VP-95: Activity widget の定期更新。
+///
+/// 5 秒間隔で `/api/health` + `/api/world/projects` + `/api/world/processes` を
+/// fetch し、`AppEvent::ActivityUpdate` として main thread に push する。
+/// daemon 未起動時は world_online=false で穏やかに通る。
+fn spawn_activity_poller(proxy: EventLoopProxy<AppEvent>) {
+    let _ = thread::Builder::new()
+        .name("activity-poller".into())
+        .spawn(move || {
+            let rt = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt,
+                Err(e) => {
+                    tracing::warn!("activity poller tokio runtime 作成失敗: {}", e);
+                    return;
+                }
+            };
+            rt.block_on(async move {
+                let client = TheWorldClient::default();
+                let mut tick = tokio::time::interval(Duration::from_secs(5));
+                loop {
+                    tick.tick().await;
+                    let snap = collect_activity(&client).await;
+                    if proxy.send_event(AppEvent::ActivityUpdate(snap)).is_err() {
+                        tracing::debug!("EventLoop 終了、activity poller も終了");
+                        break;
+                    }
+                }
+            });
+        });
+}
+
+/// `/api/health` + `/api/world/projects` + `/api/world/processes` を集約して
+/// `ActivitySnapshot` を組み立てる。各 endpoint 失敗時は default で穏当に通す。
+async fn collect_activity(client: &TheWorldClient) -> ActivitySnapshot {
+    let mut snap = ActivitySnapshot::default();
+    if let Ok(h) = client.world_health().await {
+        snap.world_online = !h.status.is_empty();
+        if !h.version.is_empty() {
+            snap.world_version = Some(h.version);
+        }
+        if !h.started_at.is_empty() {
+            snap.world_started_at = Some(h.started_at);
+        }
+    }
+    if let Ok(projects) = client.list_projects().await {
+        snap.project_count = projects.len();
+    }
+    if let Ok(procs) = client.list_processes().await {
+        snap.running_process_count = procs.len();
+    }
+    snap
+}
+
+/// SidebarState を JSON にして sidebar webview に push
+fn push_sidebar_state(sidebar: &WebView, state: &SidebarState) {
+    let json = match serde_json::to_string(state) {
+        Ok(j) => j,
+        Err(e) => {
+            tracing::warn!("SidebarState serialize 失敗: {}", e);
+            return;
+        }
+    };
+    let script = format!("window.renderSidebarState({})", json);
+    if let Err(e) = sidebar.evaluate_script(&script) {
+        tracing::warn!("sidebar renderSidebarState 失敗: {}", e);
+    }
+}
+
+/// sidebar webview から IPC で受け取った JSON を解釈し、`SidebarState` を mutate。
+/// 戻り値: 状態が変化したら true (caller は push_sidebar_state を呼ぶ)
+fn handle_sidebar_ipc(msg: &str, state: &mut SidebarState) -> bool {
+    let parsed: serde_json::Value = match serde_json::from_str(msg) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("sidebar IPC JSON パース失敗: {}", e);
+            return false;
+        }
+    };
+    let t = parsed.get("t").and_then(|v| v.as_str()).unwrap_or("");
+    let path = parsed.get("path").and_then(|v| v.as_str()).unwrap_or("");
+
+    match t {
+        "project:toggle" => {
+            if let Some(p) = state.projects.iter_mut().find(|p| p.path == path) {
+                p.expanded = !p.expanded;
+                tracing::debug!("project:toggle {} → expanded={}", path, p.expanded);
+                return true;
+            }
+        }
+        "pane:select" => {
+            let pane_id = parsed.get("paneId").and_then(|v| v.as_str()).unwrap_or("");
+            if let Some(p) = state.projects.iter_mut().find(|p| p.path == path)
+                && p.panes.iter().any(|pn| pn.id == pane_id)
+            {
+                p.active_pane_id = Some(pane_id.to_string());
+                tracing::info!("pane:select {} pane={}", path, pane_id);
+                return true;
+            }
+        }
+        "pane:add" => {
+            let kind_str = parsed
+                .get("kind")
+                .and_then(|v| v.as_str())
+                .unwrap_or("agent");
+            let kind = match kind_str {
+                "agent" => PaneKind::Agent,
+                "canvas" => PaneKind::Canvas,
+                "preview" => PaneKind::Preview,
+                "shell" => PaneKind::Shell,
+                _ => PaneKind::Agent,
+            };
+            if let Some(p) = state.projects.iter_mut().find(|p| p.path == path) {
+                let pane = crate::pane::Pane::with_default_label(kind);
+                let id = pane.id.clone();
+                p.panes.push(pane);
+                p.active_pane_id = Some(id);
+                tracing::info!("pane:add {} kind={:?}", path, kind);
+                return true;
+            }
+        }
+        other => {
+            tracing::debug!("sidebar IPC: 未知の type {:?}", other);
+        }
+    }
+    false
+}
+
 /// App のエントリポイント
 pub fn run() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -278,15 +570,22 @@ pub fn run() -> anyhow::Result<()> {
         }
     };
 
-    // TheWorld から project list を非同期 fetch
+    // TheWorld から project list を非同期 fetch (起動初回)
     spawn_projects_fetch(event_loop.create_proxy());
+    // VP-95: Activity widget の定期更新 (5s 間隔)
+    spawn_activity_poller(event_loop.create_proxy());
 
     // Sidebar
+    let sidebar_ipc_proxy = event_loop.create_proxy();
     let sidebar = WebViewBuilder::new()
         .with_html(SIDEBAR_HTML)
         .with_bounds(Rect {
             position: LogicalPosition::new(0.0, 0.0).into(),
             size: WryLogicalSize::new(SIDEBAR_WIDTH, 800.0).into(),
+        })
+        .with_ipc_handler(move |req| {
+            // sidebar からのクリック等を main thread に飛ばす (state mutation は main で)
+            let _ = sidebar_ipc_proxy.send_event(AppEvent::SidebarIpc(req.body().to_string()));
         })
         .build_as_child(&window)?;
 
@@ -323,6 +622,8 @@ pub fn run() -> anyhow::Result<()> {
     //  ready 前の bytes を欠落させると shell が永久に block する)
     let mut xterm_ready = false;
     let mut pending: Vec<u8> = Vec::new();
+    // VP-95: sidebar 全体 state (projects + widget + activity)
+    let mut sidebar_state = SidebarState::default();
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
@@ -374,17 +675,39 @@ pub fn run() -> anyhow::Result<()> {
                 }
             }
             Event::UserEvent(AppEvent::ProjectsLoaded(projects)) => {
-                let json = serde_json::to_string(&projects).unwrap_or_else(|_| "[]".into());
-                let script = format!("window.renderProjects({})", json);
-                if let Err(e) = sidebar.evaluate_script(&script) {
-                    tracing::warn!("sidebar renderProjects 失敗: {}", e);
-                }
+                // 既存 SidebarState とマージ:
+                //  - 同じ path があれば既存 state を維持 (expanded / panes / active 保持)
+                //  - 新規は ProjectPaneState::new (Lead Agent 1 つ + 折畳)
+                //  - サーバから消えた project は除外
+                let prev: std::collections::HashMap<String, ProjectPaneState> = sidebar_state
+                    .projects
+                    .drain(..)
+                    .map(|p| (p.path.clone(), p))
+                    .collect();
+                sidebar_state.projects = projects
+                    .into_iter()
+                    .map(|p| {
+                        prev.get(&p.path).cloned().unwrap_or_else(|| {
+                            ProjectPaneState::new(p.path.clone(), p.name.clone())
+                        })
+                    })
+                    .collect();
+                push_sidebar_state(&sidebar, &sidebar_state);
             }
             Event::UserEvent(AppEvent::ProjectsError(msg)) => {
                 let js_msg = serde_json::to_string(&msg).unwrap_or_else(|_| "\"error\"".into());
                 let script = format!("window.renderError({})", js_msg);
                 if let Err(e) = sidebar.evaluate_script(&script) {
                     tracing::warn!("sidebar renderError 失敗: {}", e);
+                }
+            }
+            Event::UserEvent(AppEvent::ActivityUpdate(snap)) => {
+                sidebar_state.activity = snap;
+                push_sidebar_state(&sidebar, &sidebar_state);
+            }
+            Event::UserEvent(AppEvent::SidebarIpc(msg)) => {
+                if handle_sidebar_ipc(&msg, &mut sidebar_state) {
+                    push_sidebar_state(&sidebar, &sidebar_state);
                 }
             }
             _ => {}

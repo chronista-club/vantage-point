@@ -58,3 +58,6 @@ futures-util = "0.3"
 
 # Terminal clipboard (native OS clipboard fallback for WebView2)
 arboard = "3"
+
+# Pane id 用 UUID (VP-95)
+uuid = { version = "1", features = ["v4", "serde"] }

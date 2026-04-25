@@ -13,6 +13,7 @@ pub mod app;
 pub mod client;
 pub mod daemon_launcher;
 pub mod menu;
+pub mod pane;
 pub mod terminal;
 pub mod tray;
 pub mod ws_terminal;
