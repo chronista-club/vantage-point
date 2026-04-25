@@ -403,8 +403,11 @@ pub async fn run(
         .layer(CorsLayer::permissive())
         .with_state(state.clone());
 
-    // [::]: dual-stack (IPv6 + IPv4) bind on all interfaces (WSL2/LAN 経由アクセス対応)
-    let addr: SocketAddr = format!("[::]:{}", port).parse()?;
+    // VP-101 follow-up: Windows IPV6_V6ONLY=true default 対策で IPv4 wildcard に統一。
+    // [::]:port (IPv6 wildcard) は Win では IPv4 ping (127.0.0.1) に応答しない。
+    // 0.0.0.0:port (IPv4 wildcard) で listen → 127.0.0.1 / LAN IPv4 全部 OK。
+    // (IPv6 LAN access は犠牲だが、Win11 target で実害なし)
+    let addr: SocketAddr = format!("0.0.0.0:{}", port).parse()?;
     tracing::info!("Starting vp on http://{}", addr);
 
     // Auto-open browser
@@ -697,9 +700,10 @@ pub async fn run_world(port: u16) -> Result<()> {
         .layer(CorsLayer::permissive())
         .with_state(state);
 
-    // [::]: dual-stack (IPv6 + IPv4) bind on all interfaces
-    // (WSL2 → Windows vp-app は IPv4 経路なので [::1] loopback-only だと届かない)
-    let addr: SocketAddr = format!("[::]:{}", port).parse()?;
+    // VP-101 follow-up: Windows IPV6_V6ONLY=true default 対策で IPv4 wildcard に統一。
+    // [::]:port は Win では IPv4 ping に応答しない (IPv6 only listen 扱い)。
+    // 0.0.0.0:port で listen → vp-app の `http://127.0.0.1:32000` ping が通る。
+    let addr: SocketAddr = format!("0.0.0.0:{}", port).parse()?;
     tracing::info!("{} 起動 http://{}", crate::stands::WORLD.display(), addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
