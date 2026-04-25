@@ -69,9 +69,10 @@
   --typography-display-md: 2.75rem; /** Display md — default hero / h2 (Creo aesthetic: 柔らかく強い存在感) */
   --typography-display-lg: 3.5rem; /** Display lg — page hero / h1 */
   --typography-display-xl: 4.5rem; /** Display xl — landing mega headline / promotional hero */
-  --typography-family-sans: 'Creo Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans JP', sans-serif; /** Default UI sans-serif family (multi-language: EN/JA/KO) */
-  --typography-family-mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Consolas', monospace; /** Monospace family for code blocks, tokens, IDs */
-  --typography-family-display: 'Creo Sans', -apple-system, 'Noto Sans JP', sans-serif; /** Display family — heroes, large marketing headlines */
+  --typography-family-sans: 'Creo Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI Variable', 'Segoe UI', 'Yu Gothic UI', 'Meiryo UI', Roboto, 'Noto Sans JP', sans-serif; /** Default UI sans-serif family (multi-language: EN/JA/KO, multi-platform: macOS/Win/Linux) */
+  --typography-family-mono: 'JetBrainsMono Nerd Font', 'FiraCode Nerd Font', 'CaskaydiaCove Nerd Font', 'JetBrains Mono', 'SF Mono', 'Cascadia Code', 'Cascadia Mono', 'Fira Code', 'Consolas', 'Yu Gothic UI', monospace; /** Monospace family for code blocks, tokens, IDs. Nerd Font が install 済なら icon glyph も同 stack で使える (multi-platform) */
+  --typography-family-display: 'Creo Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI Variable', 'Segoe UI', 'Yu Gothic UI', 'Noto Sans JP', sans-serif; /** Display family — heroes, large marketing headlines (multi-platform) */
+  --typography-family-icon: 'Symbols Nerd Font Mono', 'Symbols Nerd Font', 'JetBrainsMono Nerd Font', 'FiraCode Nerd Font', 'CaskaydiaCove Nerd Font', 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji', sans-serif; /** Icon family — Nerd Fonts (~10k アイコン: devicons / octicons / font-awesome / material) + OS native emoji fallback。Nerd Font 未 install 環境では emoji / 普通文字に degrade */
   --typography-line-height-tight: 1.25; /** Tight line-height — headings */
   --typography-line-height-normal: 1.5; /** Normal line-height — default body */
   --typography-line-height-relaxed: 1.75; /** Relaxed line-height — long-form text, CJK languages */

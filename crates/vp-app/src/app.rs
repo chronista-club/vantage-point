@@ -92,16 +92,15 @@ const SIDEBAR_HTML: &str = concat!(
 <html lang="ja" data-theme="mint-dark">
 <head><meta charset="utf-8"><style>"#,
     include_str!("../assets/creo-tokens.css"),
+    r#"</style><style>"#,
+    include_str!("../assets/creo-components.css"),
     r#"</style><style>
-  html,body{margin:0;height:100%;background:var(--color-surface-bg-subtle);color:var(--color-text-primary);font-family:system-ui,-apple-system,"Segoe UI",sans-serif;font-size:13px;overflow:hidden;}
+  html,body{margin:0;height:100%;background:var(--color-surface-bg-subtle);color:var(--color-text-primary);font-family:var(--typography-family-sans);font-size:13px;overflow:hidden;}
   body{display:flex;flex-direction:column;height:100%;}
 
   /* Widget slot (top) */
   .widget-slot{padding:10px 12px;border-bottom:1px solid var(--color-surface-border,#1f2233);background:var(--color-surface-bg-base);}
   .widget-slot .widget-title{font-size:10px;color:var(--color-text-tertiary);text-transform:uppercase;letter-spacing:.08em;display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;}
-  .widget-slot .widget-title .badge{font-size:10px;padding:1px 6px;border-radius:3px;background:var(--color-surface-bg-emphasis);color:var(--color-text-secondary);text-transform:none;letter-spacing:0;}
-  .widget-slot .widget-title .badge.online{background:var(--color-brand-primary-subtle);color:var(--color-brand-primary);}
-  .widget-slot .widget-title .badge.offline{color:var(--color-text-tertiary);}
   .widget-slot .stat{display:flex;justify-content:space-between;font-size:11px;padding:2px 0;color:var(--color-text-secondary);}
   .widget-slot .stat .label{color:var(--color-text-tertiary);}
   .widget-slot .stat .value{font-weight:500;color:var(--color-text-primary);font-variant-numeric:tabular-nums;}
@@ -161,7 +160,7 @@ const SIDEBAR_HTML: &str = concat!(
 </style></head>
 <body>
   <div class="widget-slot" id="widget-slot">
-    <div class="widget-title">Activity <span class="badge" id="world-badge">…</span></div>
+    <div class="widget-title">Activity <span class="creo-badge" data-size="sm" id="world-badge">…</span></div>
     <div class="stat"><span class="label">Version</span><span class="value" id="world-version">—</span></div>
     <div class="stat"><span class="label">Started</span><span class="value" id="world-uptime">—</span></div>
     <div class="stat"><span class="label">Projects</span><span class="value" id="proj-count">0</span></div>
@@ -223,10 +222,10 @@ const SIDEBAR_HTML: &str = concat!(
     if (!badge || !ver || !upt || !pc || !rc) return;
     if (activity && activity.world_online) {
       badge.textContent = 'online';
-      badge.className = 'badge online';
+      badge.setAttribute('data-variant', 'success');
     } else {
       badge.textContent = 'offline';
-      badge.className = 'badge offline';
+      badge.removeAttribute('data-variant');
     }
     ver.textContent = (activity && activity.world_version) || '—';
     upt.textContent = formatStartedAt(activity && activity.world_started_at);
