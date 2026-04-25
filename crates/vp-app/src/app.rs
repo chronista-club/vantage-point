@@ -705,10 +705,10 @@ pub fn run() -> anyhow::Result<()> {
                 sidebar_state.activity = snap;
                 push_sidebar_state(&sidebar, &sidebar_state);
             }
-            Event::UserEvent(AppEvent::SidebarIpc(msg)) => {
-                if handle_sidebar_ipc(&msg, &mut sidebar_state) {
-                    push_sidebar_state(&sidebar, &sidebar_state);
-                }
+            Event::UserEvent(AppEvent::SidebarIpc(msg))
+                if handle_sidebar_ipc(&msg, &mut sidebar_state) =>
+            {
+                push_sidebar_state(&sidebar, &sidebar_state);
             }
             _ => {}
         }
