@@ -4,8 +4,235 @@
  * Generated: concat of packages/web/src/components/*.css.
  * Requires tokens.css to be imported first (CSS variables).
  *
- * Bundled files: avatar.css, badge.css, button.css, card.css, dialog.css, form-controls.css, form-field.css, header.css, input.css, segmented.css, tabs.css
+ * Bundled files: accordion.css, alert.css, avatar.css, badge.css, breadcrumbs.css, button.css, card.css, combobox.css, dialog.css, drawer.css, empty-state.css, form-controls.css, form-field.css, header.css, input.css, menu.css, pagination.css, popover.css, progress.css, segmented.css, skeleton.css, stepper.css, table.css, tabs.css, timeline.css, toast.css, tooltip.css
  */
+
+/* ================ accordion.css ================ */
+/**
+ * Creo UI — Accordion / Disclosure (native details/summary)
+ *
+ * ARIA / keyboard は browser native に任せる。CSS のみで styling + chevron rotate。
+ *
+ * Spec: docs/components/accordion.md
+ * Token: creo-ui-web/tokens.css (必須)
+ */
+
+.creo-accordion {
+  display: block;
+  margin-bottom: var(--spacing-sm);
+}
+
+/* bordered variant (default に見た目を与える) */
+.creo-accordion[data-variant="bordered"],
+.creo-accordion:not([data-variant]) {
+  background-color: var(--color-surface-surface);
+  border: 1px solid var(--color-surface-border);
+  border-radius: var(--radius-sm);
+  padding: 0;
+  overflow: hidden;
+}
+
+.creo-accordion[data-variant="subtle"] {
+  background-color: var(--color-surface-bg-subtle);
+  border: none;
+  border-radius: var(--radius-sm);
+}
+
+/* ---------- Summary (clickable header) ---------- */
+
+.creo-accordion-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--layout-gap-tight);
+  padding: var(--spacing-sm) var(--spacing-md);
+  min-height: var(--layout-target-tap);
+  cursor: pointer;
+  user-select: none;
+  list-style: none; /* default chevron を消す */
+  transition: background-color 120ms ease;
+}
+
+/* Safari / Firefox の default marker を完全に消す */
+.creo-accordion-summary::-webkit-details-marker {
+  display: none;
+}
+.creo-accordion-summary::marker {
+  display: none;
+}
+
+.creo-accordion-summary:hover {
+  background-color: var(--color-surface-bg-subtle);
+}
+
+.creo-accordion-summary:focus-visible {
+  outline: 2px solid var(--color-brand-primary);
+  outline-offset: -2px;
+  border-radius: var(--radius-sm);
+}
+
+/* Chevron (自前で挿入) */
+.creo-accordion-summary::before {
+  content: "▸";
+  display: inline-block;
+  flex-shrink: 0;
+  color: var(--color-text-secondary);
+  transform: rotate(0deg);
+  transition: transform 180ms ease;
+  font-size: var(--typography-size-sm);
+  width: 1em;
+}
+
+.creo-accordion[open] .creo-accordion-summary::before {
+  transform: rotate(90deg);
+}
+
+/* ---------- Title ---------- */
+
+.creo-accordion-title {
+  flex: 1;
+  font-size: var(--typography-size-md);
+  font-weight: var(--typography-weight-medium);
+  color: var(--color-text-primary);
+  min-width: 0;
+}
+
+/* ---------- Content (expanded body) ---------- */
+
+.creo-accordion-content {
+  padding: var(--spacing-sm) var(--spacing-md) var(--spacing-md);
+  font-size: var(--typography-size-md);
+  color: var(--color-text-primary);
+  line-height: var(--typography-line-height-normal);
+}
+
+.creo-accordion-content > * + * {
+  margin-top: var(--spacing-sm);
+}
+
+/* ---------- Reduced motion ---------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .creo-accordion-summary::before {
+    transition: none;
+  }
+}
+
+/* ================ alert.css ================ */
+/**
+ * Creo UI — Alert (inline persistent status)
+ *
+ * Spec: docs/components/alert.md
+ * Token: creo-ui-web/tokens.css (必須)
+ */
+
+.creo-alert {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-sm) var(--spacing-md);
+  border-radius: var(--radius-md);
+  border: 1px solid transparent;
+  color: var(--color-text-primary);
+  font-size: var(--typography-size-md);
+}
+
+/* ---------- Variants (default style = 15% tint bg) ---------- */
+
+.creo-alert[data-variant="info"],
+.creo-alert:not([data-variant]) {
+  background-color: color-mix(in oklch, var(--color-semantic-info) 15%, transparent);
+  border-color: color-mix(in oklch, var(--color-semantic-info) 30%, transparent);
+}
+.creo-alert[data-variant="info"] .creo-alert-icon {
+  color: var(--color-semantic-info);
+}
+
+.creo-alert[data-variant="success"] {
+  background-color: color-mix(in oklch, var(--color-semantic-success) 15%, transparent);
+  border-color: color-mix(in oklch, var(--color-semantic-success) 30%, transparent);
+}
+.creo-alert[data-variant="success"] .creo-alert-icon {
+  color: var(--color-semantic-success);
+}
+
+.creo-alert[data-variant="warning"] {
+  background-color: color-mix(in oklch, var(--color-semantic-warning) 15%, transparent);
+  border-color: color-mix(in oklch, var(--color-semantic-warning) 30%, transparent);
+}
+.creo-alert[data-variant="warning"] .creo-alert-icon {
+  color: var(--color-semantic-warning);
+}
+
+.creo-alert[data-variant="error"] {
+  background-color: color-mix(in oklch, var(--color-semantic-error) 15%, transparent);
+  border-color: color-mix(in oklch, var(--color-semantic-error) 30%, transparent);
+}
+.creo-alert[data-variant="error"] .creo-alert-icon {
+  color: var(--color-semantic-error);
+}
+
+/* ---------- Variant-style: subtle (border 強調、背景淡) ---------- */
+
+.creo-alert[data-variant-style="subtle"] {
+  background-color: var(--color-surface-surface);
+  border-width: 1.5px;
+}
+
+/* ---------- Variant-style: banner (full-width、border-radius 0) ---------- */
+
+.creo-alert[data-variant-style="banner"] {
+  border-radius: 0;
+  border-left: none;
+  border-right: none;
+}
+
+/* ---------- Slots ---------- */
+
+.creo-alert-icon {
+  flex-shrink: 0;
+  font-size: var(--typography-title-card);
+  line-height: 1;
+  margin-top: 2px;
+}
+
+.creo-alert-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.creo-alert-content > strong {
+  font-size: var(--typography-size-md);
+  font-weight: var(--typography-weight-semibold);
+}
+
+.creo-alert-content > span {
+  font-size: var(--typography-body-helper);
+  color: var(--color-text-secondary);
+  line-height: var(--typography-line-height-normal);
+}
+
+.creo-alert-close {
+  flex-shrink: 0;
+  appearance: none;
+  background: transparent;
+  border: none;
+  padding: 2px var(--spacing-xs);
+  color: var(--color-text-tertiary);
+  font-size: var(--typography-size-md);
+  cursor: pointer;
+  border-radius: var(--radius-xs);
+}
+.creo-alert-close:hover {
+  color: var(--color-text-primary);
+  background-color: var(--color-surface-bg-subtle);
+}
+.creo-alert-close:focus-visible {
+  outline: 2px solid var(--color-brand-primary);
+  outline-offset: 1px;
+}
 
 /* ================ avatar.css ================ */
 /**
@@ -171,6 +398,91 @@
 
 .creo-badge[data-shape="square"] {
   border-radius: var(--radius-xs);
+}
+
+/* ================ breadcrumbs.css ================ */
+/**
+ * Creo UI — Breadcrumbs
+ *
+ * Spec: docs/components/breadcrumbs.md
+ * Token: creo-ui-web/tokens.css (必須)
+ */
+
+.creo-breadcrumbs {
+  display: block;
+  font-size: var(--typography-size-sm);
+  color: var(--color-text-secondary);
+}
+
+.creo-breadcrumbs[data-size="sm"] {
+  font-size: var(--typography-size-xs);
+}
+
+.creo-breadcrumbs-list {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.creo-breadcrumbs-item {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+}
+
+/* ---------- Separator (::after on item、最後の item には付けない) ---------- */
+
+.creo-breadcrumbs-item:not([aria-current="page"])::after {
+  content: "›";
+  margin: 0 var(--spacing-xs);
+  color: var(--color-text-tertiary);
+  display: inline-block;
+  user-select: none;
+}
+
+.creo-breadcrumbs[data-separator="slash"] .creo-breadcrumbs-item:not([aria-current="page"])::after {
+  content: "/";
+}
+
+.creo-breadcrumbs[data-separator="dot"] .creo-breadcrumbs-item:not([aria-current="page"])::after {
+  content: "·";
+}
+
+/* ---------- Link ---------- */
+
+.creo-breadcrumbs-link {
+  color: var(--color-text-secondary);
+  text-decoration: none;
+  padding: var(--spacing-xs) 0;
+  border-radius: var(--radius-xs);
+  transition: color 120ms ease;
+
+  /* truncate support */
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.creo-breadcrumbs-link:hover {
+  color: var(--color-text-primary);
+}
+
+.creo-breadcrumbs-link:focus-visible {
+  outline: 2px solid var(--color-brand-primary);
+  outline-offset: 2px;
+}
+
+/* 現在 page: link じゃない (span)、font-weight 強調 */
+.creo-breadcrumbs-item[aria-current="page"] > .creo-breadcrumbs-link,
+.creo-breadcrumbs-item[aria-current="page"] > span {
+  color: var(--color-text-primary);
+  font-weight: var(--typography-weight-medium);
+  cursor: default;
 }
 
 /* ================ button.css ================ */
@@ -401,6 +713,39 @@
   transform: translateY(0);
 }
 
+/* ================ combobox.css ================ */
+/**
+ * Creo UI — Combobox (`<input list>` + `<datalist>`)
+ *
+ * native datalist を使う小さい visual cue 追加のみ。`.creo-input` と組合せて使用。
+ *
+ * Spec: docs/components/combobox.md
+ * Token: creo-ui-web/tokens.css (必須)
+ */
+
+.creo-combobox {
+  /* input right side に chevron room を確保 */
+  padding-right: var(--spacing-xl);
+
+  /* chevron icon を背景画像として描く (SVG inline、token 色追従) */
+  background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="12" height="8" viewBox="0 0 12 8" fill="none"><path d="M1 1L6 6L11 1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>');
+  background-repeat: no-repeat;
+  background-position: right var(--spacing-sm) center;
+  background-size: 12px 8px;
+
+  /* currentColor が使えないので、text-tertiary を指定 (hack: CSS mask 使うと完全追従できるが SVG で十分) */
+}
+
+/* list opened 時 (focus) は chevron を反転させたい → native datalist は open state を
+   CSS で知る術がないので省略。focus ring は .creo-input の :focus-visible で統一 */
+
+/* RTL 対応 (right に chevron だと LTR 前提、RTL では left に) */
+[dir="rtl"] .creo-combobox {
+  padding-right: var(--spacing-md);
+  padding-left: var(--spacing-xl);
+  background-position: left var(--spacing-sm) center;
+}
+
 /* ================ dialog.css ================ */
 /**
  * Creo UI — Dialog component (native <dialog> based)
@@ -524,6 +869,305 @@
     opacity: 0;
     transform: translateY(4px) scale(0.98);
   }
+}
+
+/* ================ drawer.css ================ */
+/**
+ * Creo UI — Drawer (side sheet、Dialog の placement 版)
+ *
+ * Spec: docs/components/drawer.md
+ * Token: creo-ui-web/tokens.css (必須)
+ */
+
+.creo-drawer {
+  padding: 0;
+  margin: 0;
+  border: 1px solid var(--color-surface-border);
+  background-color: var(--color-surface-surface);
+  color: var(--color-text-primary);
+  box-shadow: var(--shadow-xl, var(--shadow-lg));
+  overflow: hidden;
+
+  display: flex;
+  flex-direction: column;
+
+  font-family: inherit;
+  font-size: var(--typography-size-md);
+  line-height: var(--typography-line-height-normal);
+
+  animation: creoDrawerInRight 240ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.creo-drawer::backdrop {
+  background-color: rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+}
+
+/* ---------- Placement ---------- */
+
+/* Right (default) */
+.creo-drawer[data-placement="right"],
+.creo-drawer:not([data-placement]) {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  height: 100vh;
+  width: min(90vw, 400px);
+  border-radius: 0;
+  border-right: none;
+  animation-name: creoDrawerInRight;
+}
+
+.creo-drawer[data-placement="left"] {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  height: 100vh;
+  width: min(90vw, 400px);
+  border-radius: 0;
+  border-left: none;
+  animation-name: creoDrawerInLeft;
+}
+
+.creo-drawer[data-placement="top"] {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  width: 100vw;
+  height: min(70vh, 50vh);
+  border-radius: 0;
+  border-top: none;
+  animation-name: creoDrawerInTop;
+}
+
+.creo-drawer[data-placement="bottom"] {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  top: auto;
+  width: 100vw;
+  height: min(70vh, 50vh);
+  border-radius: 0;
+  border-bottom: none;
+  animation-name: creoDrawerInBottom;
+}
+
+/* ---------- Sizes (horizontal = width / vertical = height) ---------- */
+
+.creo-drawer[data-placement="right"][data-size="sm"],
+.creo-drawer[data-placement="left"][data-size="sm"] {
+  width: min(90vw, 280px);
+}
+.creo-drawer[data-placement="right"][data-size="lg"],
+.creo-drawer[data-placement="left"][data-size="lg"] {
+  width: min(92vw, 560px);
+}
+.creo-drawer[data-placement="right"][data-size="xl"],
+.creo-drawer[data-placement="left"][data-size="xl"] {
+  width: min(94vw, 800px);
+}
+
+.creo-drawer[data-placement="top"][data-size="sm"],
+.creo-drawer[data-placement="bottom"][data-size="sm"] {
+  height: 40vh;
+}
+.creo-drawer[data-placement="top"][data-size="lg"],
+.creo-drawer[data-placement="bottom"][data-size="lg"] {
+  height: 65vh;
+}
+.creo-drawer[data-placement="top"][data-size="xl"],
+.creo-drawer[data-placement="bottom"][data-size="xl"] {
+  height: 80vh;
+}
+
+/* ---------- Entrance animations (per placement) ---------- */
+
+@keyframes creoDrawerInRight {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+@keyframes creoDrawerInLeft {
+  from {
+    transform: translateX(-100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+@keyframes creoDrawerInTop {
+  from {
+    transform: translateY(-100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+@keyframes creoDrawerInBottom {
+  from {
+    transform: translateY(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .creo-drawer {
+    animation: none;
+  }
+}
+
+/* ---------- Slots ---------- */
+
+.creo-drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-sm) var(--spacing-md);
+  border-bottom: 1px solid var(--color-surface-border);
+  flex-shrink: 0;
+}
+
+.creo-drawer-title {
+  margin: 0;
+  font-size: var(--typography-title-subsection);
+  font-weight: var(--typography-weight-semibold);
+  color: var(--color-text-primary);
+  line-height: 1.3;
+}
+
+.creo-drawer-body {
+  padding: var(--spacing-md);
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+.creo-drawer-body > * + * {
+  margin-top: var(--spacing-sm);
+}
+
+.creo-drawer-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--layout-gap-tight);
+  padding: var(--spacing-sm) var(--spacing-md);
+  border-top: 1px solid var(--color-surface-border);
+  flex-shrink: 0;
+}
+
+/* ================ empty-state.css ================ */
+/**
+ * Creo UI — Empty state
+ *
+ * Spec: docs/components/empty-state.md
+ * Token: creo-ui-web/tokens.css (必須)
+ */
+
+.creo-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-xl);
+  color: var(--color-text-primary);
+}
+
+/* ---------- Sizes ---------- */
+
+.creo-empty-state[data-size="sm"] {
+  padding: var(--spacing-md);
+  gap: var(--spacing-xs);
+}
+
+.creo-empty-state[data-size="lg"] {
+  padding: calc(var(--spacing-xl) * 2) var(--spacing-xl);
+  gap: var(--spacing-md);
+}
+
+/* ---------- Icon ---------- */
+
+.creo-empty-state-icon {
+  font-size: 64px;
+  line-height: 1;
+  color: var(--color-text-tertiary);
+  opacity: 0.6;
+  margin-bottom: var(--spacing-xs);
+  user-select: none;
+}
+
+.creo-empty-state[data-size="sm"] .creo-empty-state-icon {
+  font-size: 40px;
+  margin-bottom: 0;
+}
+
+.creo-empty-state[data-size="lg"] .creo-empty-state-icon {
+  font-size: 96px;
+  margin-bottom: var(--spacing-sm);
+}
+
+/* ---------- Title ---------- */
+
+.creo-empty-state-title {
+  margin: 0;
+  font-size: var(--typography-title-subsection);
+  font-weight: var(--typography-weight-semibold);
+  color: var(--color-text-primary);
+  line-height: 1.3;
+}
+
+.creo-empty-state[data-size="sm"] .creo-empty-state-title {
+  font-size: var(--typography-title-card);
+}
+
+.creo-empty-state[data-size="lg"] .creo-empty-state-title {
+  font-size: var(--typography-title-section);
+}
+
+/* ---------- Description ---------- */
+
+.creo-empty-state-description {
+  margin: 0;
+  font-size: var(--typography-size-md);
+  color: var(--color-text-secondary);
+  line-height: var(--typography-line-height-relaxed);
+  max-width: 440px;
+}
+
+.creo-empty-state[data-size="sm"] .creo-empty-state-description {
+  font-size: var(--typography-size-sm);
+  max-width: 320px;
+}
+
+/* ---------- Actions ---------- */
+
+.creo-empty-state-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--layout-gap-tight);
+  flex-wrap: wrap;
+  margin-top: var(--spacing-sm);
 }
 
 /* ================ form-controls.css ================ */
@@ -916,6 +1560,478 @@
   color: var(--color-semantic-error);
 }
 
+/* ================ menu.css ================ */
+/**
+ * Creo UI — Menu (Dropdown, popover-based)
+ *
+ * native `popover` API を推奨。consumer は `<div popover="auto">` + `popovertarget` で
+ * open/close 制御、JS 最小化。
+ *
+ * Spec: docs/components/menu.md
+ * Token: creo-ui-web/tokens.css (必須)
+ */
+
+.creo-menu {
+  /* popover 指定時は browser が position fixed + top-layer に配置するので、
+     ここは box-style のみを指定。placement (position) は consumer 側 JS or
+     data-placement + anchor positioning (browser 対応進行中) で後付け。 */
+  min-width: 180px;
+  padding: var(--spacing-xs);
+  background-color: var(--color-surface-surface);
+  border: 1px solid var(--color-surface-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  color: var(--color-text-primary);
+  font-family: inherit;
+  font-size: var(--typography-size-md);
+
+  /* popover 無しで手動配置する場合の保険 */
+  position: absolute;
+  margin: 0;
+}
+
+/* popover backdrop: 薄く blur (native popover=auto の自動 backdrop) */
+.creo-menu::backdrop {
+  background-color: transparent;
+}
+
+/* ---------- Menu item ---------- */
+
+.creo-menu-item {
+  appearance: none;
+  background: transparent;
+  border: none;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--layout-gap-tight);
+  padding: var(--spacing-xs) var(--spacing-sm);
+  min-height: var(--layout-target-focus);
+
+  font-family: inherit;
+  font-size: var(--typography-size-md);
+  color: var(--color-text-primary);
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+  border-radius: var(--radius-xs);
+
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.creo-menu-item:hover:not(:disabled),
+.creo-menu-item:focus-visible {
+  background-color: var(--color-surface-bg-subtle);
+  outline: none;
+}
+
+.creo-menu-item:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ---------- Destructive variant ---------- */
+
+.creo-menu-item[data-variant="destructive"] {
+  color: var(--color-semantic-error);
+}
+.creo-menu-item[data-variant="destructive"]:hover:not(:disabled),
+.creo-menu-item[data-variant="destructive"]:focus-visible {
+  background-color: color-mix(in oklch, var(--color-semantic-error) 12%, transparent);
+}
+
+/* ---------- Separator ---------- */
+
+.creo-menu-separator {
+  height: 1px;
+  background-color: var(--color-surface-border);
+  border: none;
+  margin: var(--spacing-xs) 0;
+}
+
+/* ---------- Group label ---------- */
+
+.creo-menu-label {
+  padding: var(--spacing-xs) var(--spacing-sm) 2px;
+  font-size: var(--typography-body-caption);
+  font-weight: var(--typography-weight-medium);
+  color: var(--color-text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  user-select: none;
+}
+
+/* ================ pagination.css ================ */
+/**
+ * Creo UI — Pagination
+ *
+ * Spec: docs/components/pagination.md
+ * Token: creo-ui-web/tokens.css (必須)
+ */
+
+.creo-pagination {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+}
+
+.creo-pagination[data-variant="compact"] {
+  gap: 0;
+}
+
+.creo-pagination-list {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.creo-pagination[data-variant="compact"] .creo-pagination-list {
+  gap: 0;
+}
+
+.creo-pagination-list > li {
+  list-style: none;
+}
+
+/* ---------- Item (button) ---------- */
+
+.creo-pagination-item {
+  appearance: none;
+  background: transparent;
+  border: 1px solid transparent;
+  min-width: var(--layout-target-focus);
+  min-height: var(--layout-target-focus);
+  padding: 0 var(--spacing-xs);
+  border-radius: var(--radius-sm);
+
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+
+  font-family: inherit;
+  font-size: var(--typography-size-md);
+  font-weight: var(--typography-weight-medium);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  user-select: none;
+
+  transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.creo-pagination-item:hover:not(:disabled):not([aria-current="page"]) {
+  background-color: var(--color-surface-bg-subtle);
+  color: var(--color-text-primary);
+}
+
+.creo-pagination-item:focus-visible {
+  outline: 2px solid var(--color-brand-primary);
+  outline-offset: 2px;
+}
+
+.creo-pagination-item:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ---------- Active (aria-current=page) ---------- */
+
+.creo-pagination-item[aria-current="page"] {
+  background-color: var(--color-brand-primary);
+  color: var(--color-surface-bg-base);
+  border-color: var(--color-brand-primary);
+  cursor: default;
+}
+
+/* ---------- Sizes ---------- */
+
+.creo-pagination[data-size="sm"] .creo-pagination-item {
+  min-width: 24px;
+  min-height: 24px;
+  font-size: var(--typography-size-sm);
+  padding: 0 6px;
+  border-radius: var(--radius-xs);
+}
+
+.creo-pagination[data-size="lg"] .creo-pagination-item {
+  min-width: var(--layout-target-tap);
+  min-height: var(--layout-target-tap);
+  font-size: var(--typography-size-lg);
+  padding: 0 var(--spacing-sm);
+  border-radius: var(--radius-md);
+}
+
+/* ---------- Ellipsis ---------- */
+
+.creo-pagination-ellipsis {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--layout-target-focus);
+  color: var(--color-text-tertiary);
+  user-select: none;
+  font-weight: var(--typography-weight-medium);
+}
+
+/* ---------- Prev/Next button 装飾 (data-action) ---------- */
+
+.creo-pagination-item[data-action="prev"],
+.creo-pagination-item[data-action="next"] {
+  color: var(--color-text-primary);
+}
+
+/* ================ popover.css ================ */
+/**
+ * Creo UI — Popover (interactive overlay)
+ *
+ * Menu は action list only、Dialog は重要決定 (modal)。Popover はその中間 —
+ * 小さい interactive content (inline edit / preview / quick confirm)。
+ *
+ * native `popover="auto"` を推奨。browser が outside click / Esc を自動 handle。
+ *
+ * Spec: docs/components/popover.md
+ * Token: creo-ui-web/tokens.css (必須)
+ */
+
+.creo-popover {
+  /* popover 指定時は browser が top-layer に配置 */
+  padding: 0;
+  background-color: var(--color-surface-surface);
+  color: var(--color-text-primary);
+  border: 1px solid var(--color-surface-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  font-family: inherit;
+  font-size: var(--typography-size-md);
+  line-height: var(--typography-line-height-normal);
+
+  /* popover 無しで手動配置する場合の fallback */
+  margin: 0;
+  position: absolute;
+  overflow: hidden;
+
+  /* Size default (md) */
+  width: min(90vw, 320px);
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.creo-popover::backdrop {
+  /* popover="auto" の backdrop を透過 (Dialog と違って dim しない) */
+  background-color: transparent;
+}
+
+/* ---------- Sizes ---------- */
+
+.creo-popover[data-size="sm"] {
+  width: min(90vw, 240px);
+}
+.creo-popover[data-size="md"],
+.creo-popover:not([data-size]) {
+  width: min(90vw, 320px);
+}
+.creo-popover[data-size="lg"] {
+  width: min(92vw, 480px);
+}
+
+/* ---------- Variants ---------- */
+
+.creo-popover[data-variant="muted"] {
+  background-color: var(--color-surface-bg-subtle);
+}
+
+/* ---------- Slots ---------- */
+
+.creo-popover-header {
+  padding: var(--spacing-sm) var(--spacing-md);
+  border-bottom: 1px solid var(--color-surface-border);
+}
+
+.creo-popover-title {
+  margin: 0;
+  font-size: var(--typography-title-card);
+  font-weight: var(--typography-weight-semibold);
+  color: var(--color-text-primary);
+  line-height: 1.3;
+}
+
+.creo-popover-body {
+  padding: var(--spacing-md);
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+.creo-popover-body > * + * {
+  margin-top: var(--spacing-sm);
+}
+
+.creo-popover-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--layout-gap-tight);
+  padding: var(--spacing-sm) var(--spacing-md);
+  border-top: 1px solid var(--color-surface-border);
+}
+
+/* ---------- Entrance animation (gentle) ---------- */
+
+.creo-popover:popover-open {
+  animation: creoPopoverIn 160ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes creoPopoverIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .creo-popover:popover-open {
+    animation: none;
+  }
+}
+
+/* ================ progress.css ================ */
+/**
+ * Creo UI — Progress bar + Spinner
+ *
+ * Spec: docs/components/progress.md
+ * Token: creo-ui-web/tokens.css (必須)
+ */
+
+/* ================================================= */
+/*                 Progress (bar)                    */
+/* ================================================= */
+
+.creo-progress {
+  display: block;
+  width: 100%;
+  height: 8px;
+  background-color: var(--color-surface-bg-subtle);
+  border-radius: var(--radius-full);
+  overflow: hidden;
+}
+
+.creo-progress-fill {
+  height: 100%;
+  background-color: var(--color-brand-primary);
+  border-radius: inherit;
+  transition: width 240ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* ---------- Sizes ---------- */
+
+.creo-progress[data-size="sm"] {
+  height: 4px;
+}
+.creo-progress[data-size="lg"] {
+  height: 12px;
+}
+
+/* ---------- Variants ---------- */
+
+.creo-progress[data-variant="success"] .creo-progress-fill {
+  background-color: var(--color-semantic-success);
+}
+.creo-progress[data-variant="warning"] .creo-progress-fill {
+  background-color: var(--color-semantic-warning);
+}
+.creo-progress[data-variant="error"] .creo-progress-fill {
+  background-color: var(--color-semantic-error);
+}
+
+/* ---------- Indeterminate (流れる風アニメ) ---------- */
+
+.creo-progress[data-indeterminate="true"] .creo-progress-fill {
+  width: 40%;
+  animation: creoProgressIndeterminate 1.4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+@keyframes creoProgressIndeterminate {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(250%);
+  }
+}
+
+/* ================================================= */
+/*                     Spinner                       */
+/* ================================================= */
+
+.creo-spinner {
+  display: inline-block;
+  width: 24px;
+  height: 24px;
+  border: 2px solid var(--color-surface-bg-subtle);
+  border-top-color: var(--color-brand-primary);
+  border-radius: var(--radius-full);
+  animation: creoSpinnerRotate 900ms linear infinite;
+  vertical-align: middle;
+}
+
+@keyframes creoSpinnerRotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---------- Sizes ---------- */
+
+.creo-spinner[data-size="sm"] {
+  width: 16px;
+  height: 16px;
+  border-width: 2px;
+}
+.creo-spinner[data-size="lg"] {
+  width: 40px;
+  height: 40px;
+  border-width: 3px;
+}
+
+/* ---------- Variants ---------- */
+
+.creo-spinner[data-variant="neutral"] {
+  border-top-color: var(--color-text-secondary);
+}
+
+/* ---------- Reduced motion ---------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .creo-progress[data-indeterminate="true"] .creo-progress-fill {
+    animation: none;
+    width: 100%;
+    opacity: 0.6;
+  }
+  .creo-spinner {
+    animation-duration: 3000ms; /* 動きは残すが遅く */
+  }
+}
+
+/* ---------- visually-hidden helper (for SR-only text inside spinner/progress) ---------- */
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 /* ================ segmented.css ================ */
 /**
  * Creo UI — Segmented control
@@ -1016,6 +2132,375 @@
   min-height: var(--layout-target-tap);
   padding: var(--spacing-sm) var(--spacing-lg);
   font-size: var(--typography-size-lg);
+}
+
+/* ================ skeleton.css ================ */
+/**
+ * Creo UI — Skeleton loader
+ *
+ * Spec: docs/components/skeleton.md
+ * Token: creo-ui-web/tokens.css (必須)
+ */
+
+.creo-skeleton {
+  display: inline-block;
+  background: linear-gradient(
+    90deg,
+    var(--color-surface-bg-subtle) 0%,
+    var(--color-surface-bg-emphasis) 50%,
+    var(--color-surface-bg-subtle) 100%
+  );
+  background-size: 200% 100%;
+  animation: creoSkeletonShimmer 1.4s linear infinite;
+  border-radius: var(--radius-sm);
+  width: 100%;
+  height: 16px;
+  vertical-align: middle;
+}
+
+@keyframes creoSkeletonShimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+/* ---------- Shapes ---------- */
+
+.creo-skeleton[data-shape="text"] {
+  display: block;
+  height: 16px;
+  border-radius: var(--radius-xs);
+  margin-bottom: var(--spacing-xs);
+}
+
+.creo-skeleton[data-shape="circle"] {
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-full);
+  flex-shrink: 0;
+}
+
+.creo-skeleton[data-shape="rect"],
+.creo-skeleton:not([data-shape]) {
+  border-radius: var(--radius-sm);
+}
+
+/* ---------- Sizes (text / circle only) ---------- */
+
+.creo-skeleton[data-shape="text"][data-size="sm"] {
+  height: 12px;
+}
+.creo-skeleton[data-shape="text"][data-size="lg"] {
+  height: 20px;
+}
+
+.creo-skeleton[data-shape="circle"][data-size="sm"] {
+  width: 24px;
+  height: 24px;
+}
+.creo-skeleton[data-shape="circle"][data-size="lg"] {
+  width: 64px;
+  height: 64px;
+}
+
+/* ---------- Reduced motion ---------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .creo-skeleton {
+    animation: none;
+    background: var(--color-surface-bg-subtle);
+  }
+}
+
+/* ================ stepper.css ================ */
+/**
+ * Creo UI — Stepper (wizard / progress indicator)
+ *
+ * Spec: docs/components/stepper.md
+ * Token: creo-ui-web/tokens.css (必須)
+ */
+
+.creo-stepper {
+  display: flex;
+  gap: var(--spacing-xs);
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.creo-stepper[data-orientation="horizontal"],
+.creo-stepper:not([data-orientation]) {
+  flex-direction: row;
+  align-items: flex-start;
+}
+
+.creo-stepper[data-orientation="vertical"] {
+  flex-direction: column;
+}
+
+/* ---------- Item ---------- */
+
+.creo-stepper-item {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-rows: auto auto;
+  column-gap: var(--spacing-sm);
+  row-gap: 2px;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+}
+
+/* vertical の場合、item は row-wise に積む */
+.creo-stepper[data-orientation="vertical"] .creo-stepper-item {
+  flex: 0 1 auto;
+  padding-bottom: var(--spacing-md);
+}
+
+/* connector: 次 item との繋ぎ線 */
+.creo-stepper-item:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  background-color: var(--color-surface-border);
+  transition: background-color 180ms ease;
+}
+
+.creo-stepper[data-orientation="horizontal"] .creo-stepper-item:not(:last-child)::after,
+.creo-stepper:not([data-orientation]) .creo-stepper-item:not(:last-child)::after {
+  left: calc(32px + var(--spacing-sm));
+  right: 0;
+  top: 15px;
+  height: 2px;
+}
+
+.creo-stepper[data-orientation="vertical"] .creo-stepper-item:not(:last-child)::after {
+  left: 15px;
+  top: 32px;
+  bottom: 0;
+  width: 2px;
+}
+
+/* completed item の connector は brand 色 */
+.creo-stepper-item[data-status="completed"]:not(:last-child)::after {
+  background-color: var(--color-brand-primary);
+}
+
+/* ---------- Marker ---------- */
+
+.creo-stepper-marker {
+  grid-row: 1 / span 2;
+  grid-column: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--layout-target-focus);
+  height: var(--layout-target-focus);
+  border-radius: var(--radius-full);
+  background-color: var(--color-surface-bg-subtle);
+  color: var(--color-text-tertiary);
+  border: 2px solid var(--color-surface-border);
+  font-size: var(--typography-size-sm);
+  font-weight: var(--typography-weight-semibold);
+  line-height: 1;
+  user-select: none;
+  transition: background-color 180ms ease, color 180ms ease, border-color 180ms ease;
+  z-index: 1;
+}
+
+/* Size variants */
+.creo-stepper[data-size="sm"] .creo-stepper-marker {
+  width: 24px;
+  height: 24px;
+  font-size: var(--typography-size-xs);
+}
+
+/* ---------- Status colors ---------- */
+
+.creo-stepper-item[data-status="completed"] .creo-stepper-marker {
+  background-color: var(--color-brand-primary);
+  color: var(--color-surface-bg-base);
+  border-color: var(--color-brand-primary);
+}
+
+.creo-stepper-item[data-status="current"] .creo-stepper-marker {
+  background-color: var(--color-brand-primary);
+  color: var(--color-surface-bg-base);
+  border-color: var(--color-brand-primary);
+  box-shadow: 0 0 0 4px color-mix(in oklch, var(--color-brand-primary) 20%, transparent);
+}
+
+.creo-stepper-item[data-status="error"] .creo-stepper-marker {
+  background-color: var(--color-semantic-error);
+  color: var(--color-surface-bg-base);
+  border-color: var(--color-semantic-error);
+}
+
+/* ---------- Label + Description ---------- */
+
+.creo-stepper-label {
+  grid-row: 1;
+  grid-column: 2;
+  font-size: var(--typography-size-md);
+  font-weight: var(--typography-weight-medium);
+  color: var(--color-text-primary);
+  line-height: 1.3;
+}
+
+.creo-stepper-item[data-status="pending"] .creo-stepper-label {
+  color: var(--color-text-secondary);
+}
+
+.creo-stepper-description {
+  grid-row: 2;
+  grid-column: 2;
+  font-size: var(--typography-body-caption);
+  color: var(--color-text-secondary);
+  line-height: var(--typography-line-height-normal);
+}
+
+/* ================ table.css ================ */
+/**
+ * Creo UI — Table
+ *
+ * Spec: docs/components/table.md
+ * Token: creo-ui-web/tokens.css (必須)
+ */
+
+.creo-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-family: inherit;
+  font-size: var(--typography-size-md);
+  color: var(--color-text-primary);
+  background-color: var(--color-surface-surface);
+  border: 1px solid var(--color-surface-border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+/* ---------- Head ---------- */
+
+.creo-table-head .creo-table-row {
+  background-color: var(--color-surface-bg-subtle);
+}
+
+.creo-table-head .creo-table-cell {
+  font-size: var(--typography-body-caption);
+  font-weight: var(--typography-weight-medium);
+  color: var(--color-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  text-align: left;
+  padding: var(--spacing-sm) var(--spacing-md);
+  border-bottom: 1px solid var(--color-surface-border);
+}
+
+.creo-table[data-sticky-head="true"] .creo-table-head .creo-table-cell {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+/* ---------- Body cells ---------- */
+
+.creo-table-cell {
+  padding: var(--spacing-sm) var(--spacing-md);
+  border-bottom: 1px solid var(--color-surface-border-subtle, var(--color-surface-border));
+  vertical-align: middle;
+}
+
+/* 最終 row の下線を消す (radius を曇らせない) */
+.creo-table-body > .creo-table-row:last-child > .creo-table-cell {
+  border-bottom: none;
+}
+
+.creo-table-cell[data-align="center"] {
+  text-align: center;
+}
+.creo-table-cell[data-align="end"] {
+  text-align: right;
+}
+
+/* ---------- Sizes ---------- */
+
+.creo-table[data-size="sm"] .creo-table-cell {
+  padding: var(--spacing-xs) var(--spacing-sm);
+  font-size: var(--typography-size-sm);
+}
+.creo-table[data-size="lg"] .creo-table-cell {
+  padding: var(--spacing-md) var(--spacing-lg);
+  font-size: var(--typography-size-lg);
+}
+
+/* ---------- Variants ---------- */
+
+.creo-table[data-variant="striped"] .creo-table-body > .creo-table-row:nth-child(even) {
+  background-color: var(--color-surface-bg-subtle);
+}
+
+.creo-table[data-variant="bordered"] .creo-table-cell {
+  border-right: 1px solid var(--color-surface-border-subtle, var(--color-surface-border));
+}
+.creo-table[data-variant="bordered"] .creo-table-cell:last-child {
+  border-right: none;
+}
+
+/* ---------- Row states ---------- */
+
+.creo-table-body .creo-table-row:hover:not([data-selected="true"]):not([data-disabled="true"]) {
+  background-color: var(--color-surface-bg-subtle);
+}
+
+.creo-table-row[data-selected="true"] {
+  background-color: var(--color-brand-primary-subtle);
+}
+
+.creo-table-row[data-disabled="true"] {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+/* ---------- Sortable headers ---------- */
+
+.creo-table-sortable {
+  cursor: pointer;
+  user-select: none;
+  position: relative;
+}
+
+.creo-table-sortable::after {
+  content: "↕";
+  display: inline-block;
+  margin-left: var(--spacing-xs);
+  color: var(--color-text-tertiary);
+  font-size: 0.85em;
+  vertical-align: baseline;
+  transition: color 120ms ease, transform 120ms ease;
+}
+
+.creo-table-sortable[aria-sort="ascending"]::after {
+  content: "▲";
+  color: var(--color-brand-primary);
+}
+
+.creo-table-sortable[aria-sort="descending"]::after {
+  content: "▼";
+  color: var(--color-brand-primary);
+}
+
+.creo-table-sortable:hover::after {
+  color: var(--color-text-primary);
+}
+
+.creo-table-sortable:focus-visible {
+  outline: 2px solid var(--color-brand-primary);
+  outline-offset: -2px;
 }
 
 /* ================ tabs.css ================ */
@@ -1135,5 +2620,386 @@
 }
 .creo-tabs-panel[hidden] {
   display: none;
+}
+
+/* ================ timeline.css ================ */
+/**
+ * Creo UI — Timeline (event / activity history)
+ *
+ * Spec: docs/components/timeline.md
+ * Token: creo-ui-web/tokens.css (必須)
+ */
+
+.creo-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+/* ---------- Item ---------- */
+
+.creo-timeline-item {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: var(--spacing-sm);
+  padding: 0;
+}
+
+/* connector: 次 item との縦線 */
+.creo-timeline-item:not(:last-child)::before {
+  content: "";
+  position: absolute;
+  left: calc(32px / 2 - 1px);
+  top: 32px;
+  bottom: calc(-1 * var(--spacing-md));
+  width: 2px;
+  background-color: var(--color-surface-border);
+}
+
+.creo-timeline[data-size="sm"] .creo-timeline-item:not(:last-child)::before {
+  left: calc(24px / 2 - 1px);
+  top: 24px;
+}
+
+/* ---------- Marker ---------- */
+
+.creo-timeline-marker {
+  grid-column: 1;
+  grid-row: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-full);
+  background-color: var(--color-surface-bg-subtle);
+  color: var(--color-text-primary);
+  border: 2px solid var(--color-surface-border);
+  font-size: var(--typography-size-sm);
+  font-weight: var(--typography-weight-semibold);
+  line-height: 1;
+  user-select: none;
+  flex-shrink: 0;
+  z-index: 1;
+}
+
+.creo-timeline[data-size="sm"] .creo-timeline-marker {
+  width: 24px;
+  height: 24px;
+  font-size: var(--typography-size-xs);
+}
+
+/* ---------- Variants (marker 色) ---------- */
+
+.creo-timeline-item[data-variant="success"] .creo-timeline-marker {
+  background-color: var(--color-semantic-success);
+  color: var(--color-surface-bg-base);
+  border-color: var(--color-semantic-success);
+}
+.creo-timeline-item[data-variant="warning"] .creo-timeline-marker {
+  background-color: var(--color-semantic-warning);
+  color: var(--color-surface-bg-base);
+  border-color: var(--color-semantic-warning);
+}
+.creo-timeline-item[data-variant="error"] .creo-timeline-marker {
+  background-color: var(--color-semantic-error);
+  color: var(--color-surface-bg-base);
+  border-color: var(--color-semantic-error);
+}
+.creo-timeline-item[data-variant="info"] .creo-timeline-marker {
+  background-color: var(--color-semantic-info);
+  color: var(--color-surface-bg-base);
+  border-color: var(--color-semantic-info);
+}
+
+/* ---------- Content ---------- */
+
+.creo-timeline-content {
+  grid-column: 2;
+  grid-row: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding-top: 4px;
+}
+
+.creo-timeline-title {
+  font-size: var(--typography-size-md);
+  font-weight: var(--typography-weight-medium);
+  color: var(--color-text-primary);
+  line-height: 1.4;
+}
+
+.creo-timeline-meta {
+  font-size: var(--typography-body-caption);
+  color: var(--color-text-tertiary);
+  line-height: var(--typography-line-height-normal);
+}
+
+.creo-timeline-description {
+  margin: var(--spacing-xs) 0 0 0;
+  font-size: var(--typography-size-md);
+  color: var(--color-text-secondary);
+  line-height: var(--typography-line-height-normal);
+}
+
+/* ================ toast.css ================ */
+/**
+ * Creo UI — Toast + toast-region
+ *
+ * Spec: docs/components/toast.md
+ * Token: creo-ui-web/tokens.css (必須)
+ */
+
+.creo-toast-region {
+  position: fixed;
+  display: flex;
+  flex-direction: column;
+  gap: var(--layout-gap-tight);
+  padding: var(--spacing-md);
+  pointer-events: none;
+  z-index: 1000;
+  max-width: min(420px, calc(100vw - var(--spacing-lg)));
+}
+
+/* Region placement */
+.creo-toast-region[data-placement="top-right"],
+.creo-toast-region:not([data-placement]) {
+  top: 0;
+  right: 0;
+}
+.creo-toast-region[data-placement="top-left"] {
+  top: 0;
+  left: 0;
+}
+.creo-toast-region[data-placement="top-center"] {
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+}
+.creo-toast-region[data-placement="bottom-right"] {
+  bottom: 0;
+  right: 0;
+}
+.creo-toast-region[data-placement="bottom-left"] {
+  bottom: 0;
+  left: 0;
+}
+.creo-toast-region[data-placement="bottom-center"] {
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+/* ---------- Toast (item) ---------- */
+
+.creo-toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-sm) var(--spacing-md);
+  background-color: var(--color-surface-surface);
+  border: 1px solid var(--color-surface-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  color: var(--color-text-primary);
+  animation: creoToastIn 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes creoToastIn {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ---------- Variants ---------- */
+
+.creo-toast[data-variant="success"] {
+  border-color: var(--color-semantic-success);
+  border-width: 1.5px;
+}
+.creo-toast[data-variant="success"] .creo-toast-icon {
+  color: var(--color-semantic-success);
+}
+
+.creo-toast[data-variant="warning"] {
+  border-color: var(--color-semantic-warning);
+  border-width: 1.5px;
+}
+.creo-toast[data-variant="warning"] .creo-toast-icon {
+  color: var(--color-semantic-warning);
+}
+
+.creo-toast[data-variant="error"] {
+  border-color: var(--color-semantic-error);
+  border-width: 1.5px;
+}
+.creo-toast[data-variant="error"] .creo-toast-icon {
+  color: var(--color-semantic-error);
+}
+
+.creo-toast[data-variant="info"] {
+  border-color: var(--color-semantic-info);
+  border-width: 1.5px;
+}
+.creo-toast[data-variant="info"] .creo-toast-icon {
+  color: var(--color-semantic-info);
+}
+
+/* ---------- Slots ---------- */
+
+.creo-toast-icon {
+  flex-shrink: 0;
+  font-size: var(--typography-title-card);
+  line-height: 1;
+  margin-top: 2px;
+}
+
+.creo-toast-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.creo-toast-content > strong {
+  font-size: var(--typography-size-md);
+  font-weight: var(--typography-weight-semibold);
+}
+
+.creo-toast-content > span {
+  font-size: var(--typography-body-helper);
+  color: var(--color-text-secondary);
+  line-height: var(--typography-line-height-normal);
+}
+
+.creo-toast-close {
+  flex-shrink: 0;
+  appearance: none;
+  background: transparent;
+  border: none;
+  padding: 2px var(--spacing-xs);
+  color: var(--color-text-tertiary);
+  font-size: var(--typography-size-md);
+  cursor: pointer;
+  border-radius: var(--radius-xs);
+}
+.creo-toast-close:hover {
+  color: var(--color-text-primary);
+  background-color: var(--color-surface-bg-subtle);
+}
+.creo-toast-close:focus-visible {
+  outline: 2px solid var(--color-brand-primary);
+  outline-offset: 1px;
+}
+
+/* ---------- Reduced motion ---------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .creo-toast {
+    animation: none;
+  }
+}
+
+/* ================ tooltip.css ================ */
+/**
+ * Creo UI — Tooltip (CSS-only, JS 不要)
+ *
+ * `.creo-tooltip` wrapper に hover / focus-within で `.creo-tooltip-content` が可視化。
+ *
+ * Spec: docs/components/tooltip.md
+ * Token: creo-ui-web/tokens.css (必須)
+ */
+
+.creo-tooltip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.creo-tooltip-content {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + var(--spacing-xs));
+  transform: translateX(-50%) translateY(4px);
+
+  padding: var(--spacing-xs) var(--spacing-sm);
+  background-color: var(--color-surface-bg-emphasis);
+  color: var(--color-text-primary);
+  border-radius: var(--radius-xs);
+  box-shadow: var(--shadow-md);
+
+  font-size: var(--typography-body-caption);
+  font-weight: var(--typography-weight-regular);
+  line-height: 1.4;
+  white-space: nowrap;
+  max-width: 280px;
+
+  opacity: 0;
+  pointer-events: none;
+  z-index: 100;
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+
+/* ---------- Hover / focus-within で可視化 ---------- */
+
+.creo-tooltip:hover > .creo-tooltip-content,
+.creo-tooltip:focus-within > .creo-tooltip-content {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+/* ---------- Placement ---------- */
+
+.creo-tooltip-content[data-placement="bottom"] {
+  top: calc(100% + var(--spacing-xs));
+  bottom: auto;
+  transform: translateX(-50%) translateY(-4px);
+}
+.creo-tooltip:hover > .creo-tooltip-content[data-placement="bottom"],
+.creo-tooltip:focus-within > .creo-tooltip-content[data-placement="bottom"] {
+  transform: translateX(-50%) translateY(0);
+}
+
+.creo-tooltip-content[data-placement="left"] {
+  right: calc(100% + var(--spacing-xs));
+  left: auto;
+  top: 50%;
+  bottom: auto;
+  transform: translateY(-50%) translateX(4px);
+}
+.creo-tooltip:hover > .creo-tooltip-content[data-placement="left"],
+.creo-tooltip:focus-within > .creo-tooltip-content[data-placement="left"] {
+  transform: translateY(-50%) translateX(0);
+}
+
+.creo-tooltip-content[data-placement="right"] {
+  left: calc(100% + var(--spacing-xs));
+  top: 50%;
+  bottom: auto;
+  transform: translateY(-50%) translateX(-4px);
+}
+.creo-tooltip:hover > .creo-tooltip-content[data-placement="right"],
+.creo-tooltip:focus-within > .creo-tooltip-content[data-placement="right"] {
+  transform: translateY(-50%) translateX(0);
+}
+
+/* ---------- Inverse variant ---------- */
+
+.creo-tooltip-content[data-variant="inverse"] {
+  background-color: var(--color-text-primary);
+  color: var(--color-surface-bg-base);
 }
 

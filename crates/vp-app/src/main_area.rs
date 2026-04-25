@@ -87,9 +87,14 @@ pub const MAIN_AREA_HTML: &str = concat!(
 </style>
 <style>
 "#,
+    include_str!("../assets/creo-components.css"),
+    r#"
+</style>
+<style>
+"#,
     include_str!("../assets/xterm.min.css"),
     r#"
-html,body{margin:0;padding:0;height:100%;width:100%;background:var(--color-surface-bg-base);color:var(--color-text-primary);font-family:system-ui,-apple-system,"Segoe UI","Cascadia Code",monospace;}
+html,body{margin:0;padding:0;height:100%;width:100%;background:var(--color-surface-bg-base);color:var(--color-text-primary);font-family:var(--typography-family-sans);}
 body{overflow:hidden;}
 #host{position:relative;width:100%;height:100%;}
 .pane{position:absolute;inset:0;display:none;}
@@ -138,6 +143,9 @@ body{overflow:hidden;}
     </main>
   </div>
 </div>
+<!-- VP-101 Phase A2: creo-ui-editor-host (SolidJS) の mount 先。
+     Ctrl+Shift+E で activate される floating overlay (font / theme / token を runtime 編集)。 -->
+<div id="editor-root"></div>
 <script>
 "#,
     include_str!("../assets/xterm.min.js"),
@@ -146,6 +154,14 @@ body{overflow:hidden;}
 <script>
 "#,
     include_str!("../assets/addon-fit.min.js"),
+    r#"
+</script>
+<!-- VP-101 Phase A2: creo-ui-editor-host bundle (SolidJS + EditorLayer + tokens auto-discover).
+     Ctrl+Shift+E で activate、font / theme / spacing 等を runtime 編集。
+     Build: cd crates/vp-app/web-bundle && bun install && bun run build。 -->
+<script>
+"#,
+    include_str!("../assets/editor-host.bundle.js"),
     r#"
 </script>
 <script>
@@ -160,8 +176,10 @@ body{overflow:hidden;}
     cursorAccent: v('--color-surface-bg-base', '#0F1128'),
     selectionBackground: v('--color-brand-primary-subtle', '#2C2843')
   };
+  const monoFamily = (css.getPropertyValue('--typography-family-mono') || '').trim()
+    || '"JetBrainsMono Nerd Font", "Cascadia Code", "SF Mono", Menlo, Consolas, monospace';
   const term = new Terminal({
-    fontFamily: '"Cascadia Code", "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace',
+    fontFamily: monoFamily,
     fontSize: 13,
     lineHeight: 1.15,
     letterSpacing: 0,

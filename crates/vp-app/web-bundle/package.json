@@ -1,0 +1,20 @@
+{
+  "name": "vp-app-web-bundle",
+  "version": "0.0.1",
+  "description": "vp-app WebView 用 JS bundle (SolidJS + creo-ui-editor-host)",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bun run build.mjs",
+    "build:dev": "bun run build.mjs --dev"
+  },
+  "dependencies": {
+    "creo-ui-editor-host": "^0.4.0",
+    "solid-js": "^1.9.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "esbuild-plugin-solid": "^0.6.0",
+    "typescript": "^5.9.0"
+  }
+}

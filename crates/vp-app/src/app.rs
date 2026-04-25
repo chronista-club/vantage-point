@@ -92,16 +92,15 @@ const SIDEBAR_HTML: &str = concat!(
 <html lang="ja" data-theme="mint-dark">
 <head><meta charset="utf-8"><style>"#,
     include_str!("../assets/creo-tokens.css"),
+    r#"</style><style>"#,
+    include_str!("../assets/creo-components.css"),
     r#"</style><style>
-  html,body{margin:0;height:100%;background:var(--color-surface-bg-subtle);color:var(--color-text-primary);font-family:system-ui,-apple-system,"Segoe UI",sans-serif;font-size:13px;overflow:hidden;}
+  html,body{margin:0;height:100%;background:var(--color-surface-bg-subtle);color:var(--color-text-primary);font-family:var(--typography-family-sans);font-size:13px;overflow:hidden;}
   body{display:flex;flex-direction:column;height:100%;}
 
   /* Widget slot (top) */
   .widget-slot{padding:10px 12px;border-bottom:1px solid var(--color-surface-border,#1f2233);background:var(--color-surface-bg-base);}
   .widget-slot .widget-title{font-size:10px;color:var(--color-text-tertiary);text-transform:uppercase;letter-spacing:.08em;display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;}
-  .widget-slot .widget-title .badge{font-size:10px;padding:1px 6px;border-radius:3px;background:var(--color-surface-bg-emphasis);color:var(--color-text-secondary);text-transform:none;letter-spacing:0;}
-  .widget-slot .widget-title .badge.online{background:var(--color-brand-primary-subtle);color:var(--color-brand-primary);}
-  .widget-slot .widget-title .badge.offline{color:var(--color-text-tertiary);}
   .widget-slot .stat{display:flex;justify-content:space-between;font-size:11px;padding:2px 0;color:var(--color-text-secondary);}
   .widget-slot .stat .label{color:var(--color-text-tertiary);}
   .widget-slot .stat .value{font-weight:500;color:var(--color-text-primary);font-variant-numeric:tabular-nums;}
@@ -123,45 +122,43 @@ const SIDEBAR_HTML: &str = concat!(
   .add-action:hover{background:var(--color-surface-bg-emphasis);color:var(--color-text-primary);border-color:var(--color-surface-border,#1f2233);}
   .add-action .icon{width:16px;text-align:center;color:var(--color-brand-primary);font-size:12px;}
 
-  /* Clone modal overlay */
-  .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.5);display:none;align-items:center;justify-content:center;z-index:100;}
-  .modal-overlay.active{display:flex;}
-  .modal{background:var(--color-surface-bg-base);border:1px solid var(--color-surface-border,#1f2233);border-radius:8px;padding:16px;min-width:240px;max-width:90%;}
-  .modal h2{font-size:13px;margin:0 0 8px;color:var(--color-text-primary);font-weight:500;}
-  .modal input{width:100%;padding:6px 8px;border-radius:4px;border:1px solid var(--color-surface-border,#1f2233);background:var(--color-surface-bg-subtle);color:var(--color-text-primary);font-family:inherit;font-size:12px;box-sizing:border-box;}
-  .modal input:focus{outline:none;border-color:var(--color-brand-primary);}
-  .modal .actions{display:flex;justify-content:flex-end;gap:6px;margin-top:10px;}
-  .modal button{padding:5px 12px;border-radius:4px;border:1px solid var(--color-surface-border,#1f2233);background:transparent;color:var(--color-text-secondary);cursor:pointer;font-size:11px;transition:background .12s ease,color .12s ease;}
-  .modal button:hover{background:var(--color-surface-bg-emphasis);color:var(--color-text-primary);}
-  .modal button.primary{background:var(--color-brand-primary-subtle);color:var(--color-brand-primary);border-color:var(--color-brand-primary-subtle);}
-  .modal button.primary:hover{background:var(--color-brand-primary);color:var(--color-surface-bg-base);}
+  /* Clone inline form — sidebar 内で展開する form (modal でなく inline) */
+  .vp-clone-inline{margin:0 12px 10px;display:flex;flex-direction:column;gap:6px;max-height:0;opacity:0;overflow:hidden;transition:max-height .22s ease, opacity .22s ease, margin-top .22s ease;margin-top:0;pointer-events:none;}
+  .vp-clone-inline.expanded{max-height:140px;opacity:1;margin-top:-6px;pointer-events:auto;}
+  .vp-clone-inline label{font-size:10px;color:var(--color-text-tertiary);text-transform:uppercase;letter-spacing:.06em;}
+  .vp-clone-inline input{width:100%;padding:6px 8px;border-radius:var(--radius-sm,6px);border:1px solid var(--color-surface-border,#1f2233);background:var(--color-surface-bg-base);color:var(--color-text-primary);font-family:inherit;font-size:12px;box-sizing:border-box;}
+  .vp-clone-inline input:focus{outline:none;border-color:var(--color-brand-primary);}
+  .vp-clone-inline .actions{display:flex;justify-content:flex-end;gap:6px;}
+  .vp-clone-inline button{padding:4px 10px;border-radius:var(--radius-sm,6px);border:1px solid var(--color-surface-border,#1f2233);background:transparent;color:var(--color-text-secondary);cursor:pointer;font-size:11px;font-family:inherit;transition:background .12s ease,color .12s ease;}
+  .vp-clone-inline button:hover{background:var(--color-surface-bg-emphasis);color:var(--color-text-primary);}
+  .vp-clone-inline button.primary{background:var(--color-brand-primary-subtle);color:var(--color-brand-primary);border-color:var(--color-brand-primary-subtle);}
+  .vp-clone-inline button.primary:hover{background:var(--color-brand-primary);color:var(--color-surface-bg-base);}
 
-  .project{margin:0 6px 2px;}
-  .project-header{display:flex;align-items:center;gap:6px;padding:6px 8px;border-radius:var(--radius-sm,6px);cursor:pointer;transition:background .1s ease;user-select:none;}
-  .project-header:hover{background:var(--color-surface-bg-emphasis);}
-  .project-header .chevron{font-size:9px;color:var(--color-text-tertiary);width:10px;display:inline-block;transition:transform .12s ease;}
-  .project-header.expanded .chevron{transform:rotate(90deg);}
-  .project-header .name{flex:1;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-  .project-header .path{font-size:10px;color:var(--color-text-tertiary);}
+  /* creo-accordion を sidebar 用に override (default の bordered card 風 → flush) */
+  .projects-section .creo-accordion{margin:0 6px 2px;background:transparent;border:none;border-radius:var(--radius-sm,6px);overflow:visible;}
+  .projects-section .creo-accordion-summary{padding:6px 8px;min-height:auto;font-size:13px;border-radius:var(--radius-sm,6px);}
+  .projects-section .creo-accordion-summary:hover{background:var(--color-surface-bg-emphasis);}
+  .projects-section .creo-accordion-summary::before{font-size:9px;color:var(--color-text-tertiary);width:10px;}
+  .projects-section .creo-accordion-title{font-weight:500;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .projects-section .creo-accordion-content{padding:2px 0 4px 18px;}
+  .projects-section .creo-accordion-content > * + * {margin-top:0;}
 
-  .pane-list{display:none;padding:2px 0 4px 18px;}
-  .project.expanded .pane-list{display:block;}
+  /* vp-app 固有の pane row (creo-ui に accordion-children component が無いので自前) */
+  .vp-pane-row{display:flex;align-items:center;gap:6px;padding:5px 8px;border-radius:var(--radius-sm,6px);cursor:pointer;transition:background .1s ease;font-size:12px;}
+  .vp-pane-row:hover{background:var(--color-surface-bg-emphasis);}
+  .vp-pane-row.active{background:var(--color-brand-primary-subtle);color:var(--color-brand-primary);}
+  .vp-pane-row .icon{width:16px;text-align:center;font-size:13px;font-family:var(--typography-family-icon);}
+  .vp-pane-row .label{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 
-  .pane-row{display:flex;align-items:center;gap:6px;padding:5px 8px;border-radius:var(--radius-sm,6px);cursor:pointer;transition:background .1s ease;font-size:12px;}
-  .pane-row:hover{background:var(--color-surface-bg-emphasis);}
-  .pane-row.active{background:var(--color-brand-primary-subtle);color:var(--color-brand-primary);}
-  .pane-row .icon{width:16px;text-align:center;font-size:13px;}
-  .pane-row .label{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-
-  .pane-add{display:flex;align-items:center;gap:6px;padding:5px 8px;border-radius:var(--radius-sm,6px);cursor:pointer;color:var(--color-text-tertiary);font-size:11px;font-style:italic;}
-  .pane-add:hover{background:var(--color-surface-bg-emphasis);color:var(--color-text-secondary);}
-  .pane-add .icon{width:16px;text-align:center;}
+  .vp-pane-add{display:flex;align-items:center;gap:6px;padding:5px 8px;border-radius:var(--radius-sm,6px);cursor:pointer;color:var(--color-text-tertiary);font-size:11px;font-style:italic;}
+  .vp-pane-add:hover{background:var(--color-surface-bg-emphasis);color:var(--color-text-secondary);}
+  .vp-pane-add .icon{width:16px;text-align:center;}
 
   .empty,.loading,.error{padding:8px 16px;color:var(--color-text-tertiary);font-style:italic;font-size:12px;}
 </style></head>
 <body>
   <div class="widget-slot" id="widget-slot">
-    <div class="widget-title">Activity <span class="badge" id="world-badge">…</span></div>
+    <div class="widget-title">Activity <span class="creo-badge" data-size="sm" id="world-badge">…</span></div>
     <div class="stat"><span class="label">Version</span><span class="value" id="world-version">—</span></div>
     <div class="stat"><span class="label">Started</span><span class="value" id="world-uptime">—</span></div>
     <div class="stat"><span class="label">Projects</span><span class="value" id="proj-count">0</span></div>
@@ -176,15 +173,13 @@ const SIDEBAR_HTML: &str = concat!(
       <div class="add-action" id="clone-project-btn" title="Clone repository from URL"><span class="icon">🌱</span> Clone Repository</div>
     </div>
   </div>
-  <!-- Clone modal (重畳 overlay、Cancel / Clone) -->
-  <div class="modal-overlay" id="clone-modal">
-    <div class="modal">
-      <h2>Clone Repository</h2>
-      <input type="text" id="clone-url" placeholder="https://github.com/user/repo.git" />
-      <div class="actions">
-        <button id="clone-cancel">Cancel</button>
-        <button id="clone-confirm" class="primary">Clone</button>
-      </div>
+  <!-- Clone inline form (sidebar 内 expand、modal でなく inline) -->
+  <div class="vp-clone-inline" id="clone-inline">
+    <label for="clone-url">Repository URL</label>
+    <input type="text" id="clone-url" placeholder="https://github.com/user/repo.git" />
+    <div class="actions">
+      <button type="button" id="clone-cancel">Cancel</button>
+      <button type="button" class="primary" id="clone-confirm">Clone</button>
     </div>
   </div>
 <script>
@@ -223,10 +218,10 @@ const SIDEBAR_HTML: &str = concat!(
     if (!badge || !ver || !upt || !pc || !rc) return;
     if (activity && activity.world_online) {
       badge.textContent = 'online';
-      badge.className = 'badge online';
+      badge.setAttribute('data-variant', 'success');
     } else {
       badge.textContent = 'offline';
-      badge.className = 'badge offline';
+      badge.removeAttribute('data-variant');
     }
     ver.textContent = (activity && activity.world_version) || '—';
     upt.textContent = formatStartedAt(activity && activity.world_started_at);
@@ -243,27 +238,28 @@ const SIDEBAR_HTML: &str = concat!(
       return;
     }
     for (const p of projects) {
-      const proj = document.createElement('div');
-      proj.className = 'project' + (p.expanded ? ' expanded' : '');
+      // creo-accordion: native <details> ベース。expand/collapse + chevron + ARIA は creo-ui 側 CSS。
+      const proj = document.createElement('details');
+      proj.className = 'creo-accordion';
+      if (p.expanded) proj.setAttribute('open', '');
+      // 'toggle' イベントで Rust に永続化 IPC を送る (native toggle は即時、IPC は state 同期用)
+      proj.addEventListener('toggle', () => {
+        send({t: 'project:toggle', path: p.path, expanded: proj.open});
+      });
 
-      const head = document.createElement('div');
-      head.className = 'project-header' + (p.expanded ? ' expanded' : '');
-      const chev = document.createElement('span');
-      chev.className = 'chevron';
-      chev.textContent = '▶';
-      const name = document.createElement('span');
-      name.className = 'name';
-      name.textContent = p.name;
-      head.appendChild(chev);
-      head.appendChild(name);
-      head.addEventListener('click', () => send({t: 'project:toggle', path: p.path}));
-      proj.appendChild(head);
+      const summary = document.createElement('summary');
+      summary.className = 'creo-accordion-summary';
+      const title = document.createElement('span');
+      title.className = 'creo-accordion-title';
+      title.textContent = p.name;
+      summary.appendChild(title);
+      proj.appendChild(summary);
 
-      const list = document.createElement('div');
-      list.className = 'pane-list';
+      const content = document.createElement('div');
+      content.className = 'creo-accordion-content';
       for (const pane of p.panes || []) {
         const row = document.createElement('div');
-        row.className = 'pane-row' + (p.active_pane_id === pane.id ? ' active' : '');
+        row.className = 'vp-pane-row' + (p.active_pane_id === pane.id ? ' active' : '');
         const icon = document.createElement('span');
         icon.className = 'icon';
         icon.textContent = paneIcon(pane.kind);
@@ -276,11 +272,11 @@ const SIDEBAR_HTML: &str = concat!(
           e.stopPropagation();
           send({t: 'pane:select', path: p.path, paneId: pane.id});
         });
-        list.appendChild(row);
+        content.appendChild(row);
       }
-      // "+" Add pane (P2/P3 で wire up、今は kind picker なし MVP として agent を追加)
+      // "+" Add pane (現状 kind picker なし、agent をデフォルト追加)
       const add = document.createElement('div');
-      add.className = 'pane-add';
+      add.className = 'vp-pane-add';
       const addIcon = document.createElement('span');
       addIcon.className = 'icon';
       addIcon.textContent = '+';
@@ -290,12 +286,11 @@ const SIDEBAR_HTML: &str = concat!(
       add.appendChild(addLabel);
       add.addEventListener('click', (e) => {
         e.stopPropagation();
-        // P1 MVP: kind 選択 prompt は P3 で。今は agent を追加して動作確認用
         send({t: 'pane:add', path: p.path, kind: 'agent'});
       });
-      list.appendChild(add);
+      content.appendChild(add);
 
-      proj.appendChild(list);
+      proj.appendChild(content);
       root.appendChild(proj);
     }
   }
@@ -376,42 +371,38 @@ const SIDEBAR_HTML: &str = concat!(
       send({t: 'project:add'});
     });
 
-    // Clone Repository — modal で URL を受け取る
+    // Clone Repository — sidebar 内 inline expand form で URL を受け取る
     const cloneBtn = document.getElementById('clone-project-btn');
-    const cloneModal = document.getElementById('clone-modal');
+    const cloneInline = document.getElementById('clone-inline');
     const cloneInput = document.getElementById('clone-url');
     const cloneCancel = document.getElementById('clone-cancel');
     const cloneConfirm = document.getElementById('clone-confirm');
-    function openCloneModal() {
-      if (!cloneModal) return;
+    function openCloneInline() {
+      if (!cloneInline) return;
       cloneInput.value = '';
-      cloneModal.classList.add('active');
+      cloneInline.classList.add('expanded');
       setTimeout(() => cloneInput && cloneInput.focus(), 50);
     }
-    function closeCloneModal() {
-      if (cloneModal) cloneModal.classList.remove('active');
+    function closeCloneInline() {
+      if (!cloneInline) return;
+      cloneInline.classList.remove('expanded');
     }
     function submitClone() {
       const url = (cloneInput && cloneInput.value || '').trim();
       if (!url) return;
       send({t: 'project:clone', url: url});
-      closeCloneModal();
+      closeCloneInline();
     }
     if (cloneBtn) cloneBtn.addEventListener('click', () => {
       collapseAdd();
-      openCloneModal();
+      openCloneInline();
     });
-    if (cloneCancel) cloneCancel.addEventListener('click', closeCloneModal);
+    if (cloneCancel) cloneCancel.addEventListener('click', closeCloneInline);
     if (cloneConfirm) cloneConfirm.addEventListener('click', submitClone);
     if (cloneInput) {
       cloneInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') { e.preventDefault(); submitClone(); }
-        else if (e.key === 'Escape') { e.preventDefault(); closeCloneModal(); }
-      });
-    }
-    if (cloneModal) {
-      cloneModal.addEventListener('click', (e) => {
-        if (e.target === cloneModal) closeCloneModal();
+        else if (e.key === 'Escape') { e.preventDefault(); closeCloneInline(); }
       });
     }
     // 別の場所をクリックしたら add actions を畳む
@@ -454,24 +445,46 @@ fn update_pane_bounds(
     });
 }
 
-/// Settings → 実 path 解決。
+/// Settings + 既存プロジェクトから picker の初期ディレクトリを解決。
 ///
 /// 優先順位:
 /// 1. `Settings.default_project_root` が指定されていて存在する → それ
-/// 2. `~/repos` が存在する → それ
-/// 3. `~` (home) → それ
-/// 4. それ以外 → `None`
-fn resolve_default_project_root(settings: &Settings) -> Option<std::path::PathBuf> {
+/// 2. **既存登録プロジェクトの親ディレクトリ** (= "vp のレポジトリホーム" 推定)
+///    `sidebar_state.projects` の最初の project の parent dir。多くは
+///    `~/repos` か `C:\Users\<user>\repos` 等の repos 親。
+/// 3. `~/repos` が存在する → それ
+/// 4. `~` (home) → それ
+/// 5. それ以外 → `None`
+fn resolve_default_project_root(
+    settings: &Settings,
+    sidebar_state: &SidebarState,
+) -> Option<std::path::PathBuf> {
+    // 1. Settings explicit
     if let Some(s) = &settings.default_project_root {
         let p = std::path::PathBuf::from(s);
         if p.exists() {
             return Some(p);
         }
         tracing::warn!(
-            "default_project_root が設定されているが存在しない: {} → home にフォールバック",
+            "default_project_root が設定されているが存在しない: {} → 推定にフォールバック",
             s
         );
     }
+    // 2. 既存 project の parent dir = "vp レポジトリホーム" 推定
+    for proj in &sidebar_state.projects {
+        let path = std::path::PathBuf::from(&proj.path);
+        if let Some(parent) = path.parent()
+            && parent.exists()
+        {
+            tracing::debug!(
+                "default picker dir 推定: {} (project '{}' の parent)",
+                parent.display(),
+                proj.name
+            );
+            return Some(parent.to_path_buf());
+        }
+    }
+    // 3. ~/repos fallback
     let home = dirs::home_dir()?;
     let repos = home.join("repos");
     if repos.exists() {
@@ -866,10 +879,22 @@ fn handle_sidebar_ipc(msg: &str, state: &mut SidebarState) -> SidebarIpcOutcome 
 
     match t {
         "project:toggle" => {
+            // VP-101 Phase A1.b: native <details> が IPC で `expanded` の新状態を渡してくる。
+            // DOM は既に user click で toggle 済なので、Rust state を silently sync するだけ。
+            // `out.changed` は立てない (rebuild すると flash する)。
             if let Some(p) = state.projects.iter_mut().find(|p| p.path == path) {
-                p.expanded = !p.expanded;
-                tracing::debug!("project:toggle {} → expanded={}", path, p.expanded);
-                out.changed = true;
+                let new_state = parsed
+                    .get("expanded")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(!p.expanded);
+                if p.expanded != new_state {
+                    p.expanded = new_state;
+                    tracing::debug!(
+                        "project:toggle {} → expanded={} (silent sync)",
+                        path,
+                        p.expanded
+                    );
+                }
             }
         }
         "pane:select" => {
@@ -1114,22 +1139,46 @@ pub fn run() -> anyhow::Result<()> {
             Event::UserEvent(AppEvent::ProjectsLoaded(projects)) => {
                 // 既存 SidebarState とマージ:
                 //  - 同じ path があれば既存 state を維持 (expanded / panes / active 保持)
-                //  - 新規は ProjectPaneState::new (Lead Agent 1 つ + 折畳)
+                //  - 新規は ProjectPaneState::new (Lead Agent 1 つ)
                 //  - サーバから消えた project は除外
+                //
+                // VP-101 follow-up: register 後の auto-expand + auto-select
+                //  - prev が **non-empty** で新規 project が見つかった場合、
+                //    その project を auto-expand + 最初の pane (Lead Agent) を main area に push
+                //  - 初回起動 (prev empty) の場合は全 project が「新規」だが、
+                //    まとめて全部開く UX は noisy なので auto-expand しない
                 let prev: std::collections::HashMap<String, ProjectPaneState> = sidebar_state
                     .projects
                     .drain(..)
                     .map(|p| (p.path.clone(), p))
                     .collect();
+                let is_initial_load = prev.is_empty();
+                let mut newly_added_path: Option<String> = None;
                 sidebar_state.projects = projects
                     .into_iter()
                     .map(|p| {
-                        prev.get(&p.path).cloned().unwrap_or_else(|| {
-                            ProjectPaneState::new(p.path.clone(), p.name.clone())
-                        })
+                        if let Some(existing) = prev.get(&p.path) {
+                            existing.clone()
+                        } else {
+                            // 新規 project
+                            let mut state = ProjectPaneState::new(p.path.clone(), p.name.clone());
+                            if !is_initial_load {
+                                // session 中に追加された project → auto-expand + 後で auto-select
+                                state.expanded = true;
+                                if newly_added_path.is_none() {
+                                    newly_added_path = Some(state.path.clone());
+                                }
+                            }
+                            state
+                        }
                     })
                     .collect();
                 push_sidebar_state(&sidebar, &sidebar_state);
+                // auto-select: 新規 project の最初の pane (Lead Agent) を main area に show
+                if let Some(path) = newly_added_path.as_deref() {
+                    tracing::info!("auto-select: 新規 project '{}' の Lead Agent を main area に表示", path);
+                    push_active_pane(&main_view, &sidebar_state, Some(path));
+                }
             }
             Event::UserEvent(AppEvent::ProjectsError(msg)) => {
                 let js_msg = serde_json::to_string(&msg).unwrap_or_else(|_| "\"error\"".into());
@@ -1148,7 +1197,8 @@ pub fn run() -> anyhow::Result<()> {
                 if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&msg) {
                     match parsed.get("t").and_then(|v| v.as_str()) {
                         Some("project:add") => {
-                            let initial_dir = resolve_default_project_root(&settings);
+                            let initial_dir =
+                                resolve_default_project_root(&settings, &sidebar_state);
                             spawn_add_project_picker(async_action_proxy.clone(), initial_dir);
                             return;
                         }
@@ -1162,7 +1212,8 @@ pub fn run() -> anyhow::Result<()> {
                                 tracing::warn!("project:clone with empty url");
                                 return;
                             }
-                            let default_root = resolve_default_project_root(&settings);
+                            let default_root =
+                                resolve_default_project_root(&settings, &sidebar_state);
                             spawn_clone_project(async_action_proxy.clone(), url, default_root);
                             return;
                         }
