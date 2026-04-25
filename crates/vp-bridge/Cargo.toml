@@ -4,12 +4,9 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "ratatui NSView Backend + FFI bridge for VP native app"
+description = "Native Cell NSView Backend + FFI bridge for VP native app"
 
 [dependencies]
-# ratatui without crossterm — we provide our own backend
-ratatui = { version = "0.30", default-features = false }
-
 # PTY + ターミナルエミュレーション
 portable-pty = "0.9"
 alacritty_terminal = "0.25"
