@@ -146,28 +146,82 @@ LOG_OUT_WSL="$INSTALL_DIR/vp-app.log"
 : > "$LOG_OUT_WSL" 2>/dev/null || true
 
 echo "🚀 Launching $INSTALL_EXE_WIN (daemon auto-launch → vp.exe world を同ディレクトリから spawn)..."
-powershell.exe -NoProfile -Command "\$env:VP_SHELL='$VP_SHELL_VAL'; \$env:VP_SHELL_ARGS='$VP_SHELL_ARGS_VAL'; \$env:RUST_LOG='$RUST_LOG_VAL'; \$env:VP_TERMINAL_MODE='$VP_TERMINAL_MODE_VAL'; \$env:VP_WORLD_URL='$VP_WORLD_URL_VAL'; Start-Process -FilePath '$INSTALL_EXE_WIN' -WorkingDirectory '$INSTALL_DIR_WIN' -RedirectStandardOutput '$LOG_FILE_WIN' -RedirectStandardError '$LOG_ERR_WIN' -PassThru | Select-Object -ExpandProperty Id" 2>&1 | tr -d '\r'
-echo "✅ 起動完了。log: $LOG_OUT_WSL (stdout) / $LOG_ERR_WSL (stderr)"
+WIN_PID=$(powershell.exe -NoProfile -Command "\$env:VP_SHELL='$VP_SHELL_VAL'; \$env:VP_SHELL_ARGS='$VP_SHELL_ARGS_VAL'; \$env:RUST_LOG='$RUST_LOG_VAL'; \$env:VP_TERMINAL_MODE='$VP_TERMINAL_MODE_VAL'; \$env:VP_WORLD_URL='$VP_WORLD_URL_VAL'; Start-Process -FilePath '$INSTALL_EXE_WIN' -WorkingDirectory '$INSTALL_DIR_WIN' -RedirectStandardOutput '$LOG_FILE_WIN' -RedirectStandardError '$LOG_ERR_WIN' -PassThru | Select-Object -ExpandProperty Id" 2>&1 | tr -d '\r' | tr -d '[:space:]')
+echo "✅ 起動完了 (PID=$WIN_PID)。log: $LOG_OUT_WSL (stdout) / $LOG_ERR_WSL (stderr)"
 echo ""
 echo "📺 ログを stdout に流します (Ctrl+C で tail だけ停止、vp-app は継続)..."
 echo "─────────────────────────────────────────────────"
 
-# 一瞬待って Start-Process がファイルを open するのを待つ (race 防止)
-sleep 1
+# WSL2 → /mnt/c/ への inotify は **Windows native プロセスの file 変更を検知しない**
+# (9P protocol の既知制約)。よって `tail -F` は使えず、polling ベースで file size を
+# 監視し、増分を sed prefix で stdout に流す。
+#
+# 300ms 間隔で stat → 増分 tail -c → 出力。stderr は赤プレフィクス。
+poll_logs() {
+  local out_pos=0 err_pos=0 win_pid="$1"
+  while true; do
+    # vp-app プロセスが死んだら抜ける (Win 側の PID を tasklist で確認)
+    if [ -n "$win_pid" ] && ! tasklist.exe /FI "PID eq $win_pid" 2>/dev/null | grep -q "$win_pid"; then
+      echo ""
+      echo "🏁 vp-app (PID=$win_pid) 終了"
+      break
+    fi
+    # stdout
+    if [ -f "$LOG_OUT_WSL" ]; then
+      local new_out
+      new_out=$(stat -c%s "$LOG_OUT_WSL" 2>/dev/null || echo 0)
+      if [ "$new_out" -gt "$out_pos" ]; then
+        tail -c +$((out_pos + 1)) "$LOG_OUT_WSL" 2>/dev/null | sed 's/^/[OUT] /'
+        out_pos=$new_out
+      fi
+    fi
+    # stderr
+    if [ -f "$LOG_ERR_WSL" ]; then
+      local new_err
+      new_err=$(stat -c%s "$LOG_ERR_WSL" 2>/dev/null || echo 0)
+      if [ "$new_err" -gt "$err_pos" ]; then
+        tail -c +$((err_pos + 1)) "$LOG_ERR_WSL" 2>/dev/null | sed $'s/^/\033[31m[ERR]\033[0m /'
+        err_pos=$new_err
+      fi
+    fi
+    sleep 0.3
+  done
+}
 
-# stdout / stderr を別々の prefix で同時 follow。
-# `tail -F` (大文字 F) でファイル truncate / rotate にも追従。
-# stderr 行は赤くする。終了は Ctrl+C (mise 側が SIGINT を tail に届けて停止)。
-tail -F "$LOG_OUT_WSL" 2>/dev/null | sed -u 's/^/[OUT] /' &
-TAIL_OUT=$!
-tail -F "$LOG_ERR_WSL" 2>/dev/null | sed -u $'s/^/\033[31m[ERR]\033[0m /' &
-TAIL_ERR=$!
+trap 'echo ""; echo "📴 polling 停止 (vp-app は継続中)。再度開始する場合は: tail -F $LOG_OUT_WSL $LOG_ERR_WSL もしくは mise run win:logs"' EXIT INT TERM
 
-trap 'kill $TAIL_OUT $TAIL_ERR 2>/dev/null; echo ""; echo "📴 tail 停止 (vp-app は継続中)。再度開始する場合は: tail -F $LOG_OUT_WSL $LOG_ERR_WSL"' EXIT INT TERM
+poll_logs "$WIN_PID"
+'''
 
-# vp-app プロセスが死ぬまで待つ (tail も自動で生き続ける)。
-# ユーザが vp-app の窓を閉じる or Ctrl+C で tail だけ止める の 2 経路で抜ける。
-wait $TAIL_OUT $TAIL_ERR 2>/dev/null || true
+[tasks."win:logs"]
+description = "実行中の vp-app の log を polling で stdout 表示 (WSL2 inotify が効かないので polling)"
+run = '''
+set -euo pipefail
+WIN_LOCALAPPDATA=$(cmd.exe /c "echo %LOCALAPPDATA%" 2>/dev/null | tr -d '\r')
+INSTALL_DIR=$(wslpath -u "$WIN_LOCALAPPDATA")/VantagePoint-dev
+LOG_OUT="$INSTALL_DIR/vp-app.log"
+LOG_ERR="$INSTALL_DIR/vp-app.err.log"
+
+echo "📺 polling tail: $LOG_OUT / $LOG_ERR"
+echo "─────────────────────────────────────────────────"
+out_pos=0 err_pos=0
+while true; do
+  if [ -f "$LOG_OUT" ]; then
+    new_out=$(stat -c%s "$LOG_OUT" 2>/dev/null || echo 0)
+    if [ "$new_out" -gt "$out_pos" ]; then
+      tail -c +$((out_pos + 1)) "$LOG_OUT" 2>/dev/null | sed 's/^/[OUT] /'
+      out_pos=$new_out
+    fi
+  fi
+  if [ -f "$LOG_ERR" ]; then
+    new_err=$(stat -c%s "$LOG_ERR" 2>/dev/null || echo 0)
+    if [ "$new_err" -gt "$err_pos" ]; then
+      tail -c +$((err_pos + 1)) "$LOG_ERR" 2>/dev/null | sed $'s/^/\033[31m[ERR]\033[0m /'
+      err_pos=$new_err
+    fi
+  fi
+  sleep 0.3
+done
 '''
 
 [tasks."win:build"]
