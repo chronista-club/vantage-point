@@ -309,13 +309,18 @@ class TerminalView: NSView {
     /// ambiguous-wide codepoint 判定 — wide cell で FiraCode が narrow glyph しか
     /// 提供しない記号群。日本語環境ユーザの iTerm 挙動 (East Asian Ambiguous = Wide)
     /// に合わせて system cascade 経由で CJK font の 2 cell wide glyph を使う。
+    ///
+    /// 注意: Rust 側 `should_promote_ambiguous_to_wide` (vp-bridge/src/pty.rs)
+    /// と判定範囲を整合させること。Rust が wide flag を立てるが Swift cascade が
+    /// 対象外だと「2 cell layout / 1 cell narrow glyph」の右側空白症状が出る。
     private func isAmbiguousWideCodepoint(_ ch: String) -> Bool {
         guard let scalar = ch.unicodeScalars.first else { return false }
         switch scalar.value {
         case 0x2190...0x21FF: return true  // Arrows (→ ← ↑ ↓ ↔ 等)
+        case 0x2460...0x24FF: return true  // Enclosed Alphanumerics (① ② ⑤ ⑩ ⓐ Ⓐ ⓪ 等)
         case 0x25A0...0x25FF: return true  // Geometric Shapes (■ □ ▲ ▼ ◆ ● ◯ 等)
         case 0x2600...0x26FF: return true  // Misc Symbols (★ ☆ ♠ ♣ ♥ ♦ ♪ ☀ 等)
-        case 0x2700...0x27BF: return true  // Dingbats (✓ ✗ ✦ ➔ ➢ 等)
+        case 0x2700...0x27BF: return true  // Dingbats (✓ ✗ ✦ ➔ ➢ ❶❷❸ ➀➁➂ 等)
         case 0x2900...0x297F: return true  // Supplemental Arrows (⟵ ⟶ ⬅ ➡ 等)
         default: return false
         }
