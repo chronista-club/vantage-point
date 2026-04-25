@@ -110,6 +110,10 @@ const SIDEBAR_HTML: &str = concat!(
   .projects-section{flex:1;overflow-y:auto;padding:6px 0;}
   .projects-section .section-header{padding:10px 16px 6px;font-size:10px;color:var(--color-text-tertiary);text-transform:uppercase;letter-spacing:.08em;display:flex;justify-content:space-between;align-items:center;}
 
+  /* Bottom Add Project ボタン — sidebar 幅一杯、目立たない subtle スタイル */
+  .add-project-bottom{margin:6px 12px 10px;padding:6px 8px;border-radius:var(--radius-sm,6px);cursor:pointer;color:var(--color-text-tertiary);font-size:11px;text-align:center;border:1px dashed var(--color-surface-border,#1f2233);background:transparent;transition:background .12s ease,color .12s ease,border-color .12s ease;user-select:none;}
+  .add-project-bottom:hover{background:var(--color-surface-bg-emphasis);color:var(--color-text-secondary);border-color:var(--color-text-tertiary);}
+
   .project{margin:0 6px 2px;}
   .project-header{display:flex;align-items:center;gap:6px;padding:6px 8px;border-radius:var(--radius-sm,6px);cursor:pointer;transition:background .1s ease;user-select:none;}
   .project-header:hover{background:var(--color-surface-bg-emphasis);}
@@ -144,6 +148,7 @@ const SIDEBAR_HTML: &str = concat!(
   <div class="projects-section">
     <div class="section-header">Projects</div>
     <div id="projects"><div class="loading">読込中…</div></div>
+    <div class="add-project-bottom" id="add-project-btn" title="Add Project">＋ Add Project</div>
   </div>
 <script>
   // Rust から push される sidebar state を保持
@@ -313,6 +318,11 @@ const SIDEBAR_HTML: &str = concat!(
       }
       pendingState = null;
     }
+    // VP-100 follow-up: "+" Add Project ボタン
+    const addBtn = document.getElementById('add-project-btn');
+    if (addBtn) {
+      addBtn.addEventListener('click', () => send({t: 'project:add'}));
+    }
   });
 </script>
 </body>
@@ -343,6 +353,63 @@ fn update_pane_bounds(
         position: LogicalPosition::new(right_x, 0.0).into(),
         size: WryLogicalSize::new(right_w, height).into(),
     });
+}
+
+/// VP-100 follow-up: 「+ Add Project」クリック時の native folder picker + API 呼出。
+///
+/// rfd の picker は blocking なので別スレッドで実行。folder 選択後:
+/// 1. `client.add_project(name, path)` を呼ぶ (TheWorld の `/api/world/projects` POST)
+/// 2. 成功なら `client.list_projects()` で再取得 → `AppEvent::ProjectsLoaded`
+///
+/// User キャンセル / API 失敗時は何もしない (sidebar は変化しない)。
+fn spawn_add_project_picker(proxy: EventLoopProxy<AppEvent>) {
+    let _ = thread::Builder::new()
+        .name("add-project-picker".into())
+        .spawn(move || {
+            let folder = match rfd::FileDialog::new()
+                .set_title("プロジェクトフォルダを選択")
+                .pick_folder()
+            {
+                Some(p) => p,
+                None => {
+                    tracing::debug!("project:add canceled by user");
+                    return;
+                }
+            };
+            let name = folder
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "project".to_string());
+            let path = folder.to_string_lossy().into_owned();
+            tracing::info!("project:add picker → name={} path={}", name, path);
+
+            let rt = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt,
+                Err(e) => {
+                    tracing::warn!("add-project tokio runtime 作成失敗: {}", e);
+                    return;
+                }
+            };
+            rt.block_on(async move {
+                let client = TheWorldClient::default();
+                if let Err(e) = client.add_project(&name, &path).await {
+                    tracing::warn!("add_project API 失敗: {}", e);
+                    return;
+                }
+                tracing::info!("add_project 成功 → projects 再 fetch");
+                match client.list_projects().await {
+                    Ok(projects) => {
+                        let _ = proxy.send_event(AppEvent::ProjectsLoaded(projects));
+                    }
+                    Err(e) => {
+                        tracing::warn!("add_project 後の list_projects 失敗: {}", e);
+                    }
+                }
+            });
+        });
 }
 
 /// muda の `MenuEvent::receiver()` channel を polling して `AppEvent::MenuClicked` に
@@ -753,6 +820,8 @@ pub fn run() -> anyhow::Result<()> {
         std::collections::HashMap::new();
     // VP-100 follow-up (1Password 風): runtime 開発者モード state
     let mut dev_mode = initial_dev_mode;
+    // project:add 等の async 操作で event loop に project list 再 fetch を kick するための proxy
+    let async_action_proxy = event_loop.create_proxy();
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
@@ -846,6 +915,14 @@ pub fn run() -> anyhow::Result<()> {
                 push_sidebar_state(&sidebar, &sidebar_state);
             }
             Event::UserEvent(AppEvent::SidebarIpc(msg)) => {
+                // VP-100 follow-up: project:add は async picker → API → ProjectsLoaded ルート
+                // (state 直接 mutate しないので handle_sidebar_ipc の前で分岐)
+                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&msg)
+                    && parsed.get("t").and_then(|v| v.as_str()) == Some("project:add")
+                {
+                    spawn_add_project_picker(async_action_proxy.clone());
+                    return;
+                }
                 let outcome = handle_sidebar_ipc(&msg, &mut sidebar_state);
                 if outcome.changed {
                     push_sidebar_state(&sidebar, &sidebar_state);

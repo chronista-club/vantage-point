@@ -68,3 +68,6 @@ dirs = "6"
 
 # 構造化ログ用 timestamp (KDL 1-line formatter)
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+
+# Native folder picker (project 追加用、cross-platform)
+rfd = "0.15"

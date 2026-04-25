@@ -122,6 +122,22 @@ impl TheWorldClient {
         let resp: ProcessesResponse = self.client.get(&url).send().await?.json().await?;
         Ok(resp.processes)
     }
+
+    /// プロジェクトを追加 (POST /api/world/projects)
+    ///
+    /// サーバ側 `AddProjectRequest`: `{ name: String, path: String }`
+    /// 成功時はサーバが追加した `ProjectInfo` を返す (本実装では破棄)。
+    pub async fn add_project(&self, name: &str, path: &str) -> Result<()> {
+        let url = format!("{}/api/world/projects", self.base_url);
+        let body = serde_json::json!({ "name": name, "path": path });
+        let resp = self.client.post(&url).json(&body).send().await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("add_project HTTP {}: {}", status, text);
+        }
+        Ok(())
+    }
 }
 
 impl Default for TheWorldClient {
