@@ -15,11 +15,10 @@ use alacritty_terminal::term::cell::Flags as CellFlags;
 use alacritty_terminal::term::{Config as TermConfig, Term};
 use alacritty_terminal::vte;
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
-use ratatui::backend::Backend;
-use ratatui::buffer::Cell;
-use ratatui::style::{Color, Modifier, Style};
 use unicode_width::UnicodeWidthChar;
-use vte::ansi::{Color as VteColor, NamedColor, Rgb};
+use vte::ansi::{Color as VteColor, NamedColor, Rgb as VteRgb};
+
+use crate::types::{flags, rgb_to_rgba, CellData, Position};
 
 /// ambiguous 幅文字を wide 扱いに昇格してよいか判定
 ///
@@ -175,10 +174,10 @@ fn indexed_to_rgb(index: u8) -> (u8, u8, u8) {
     }
 }
 
-fn resolve_color(color: &VteColor) -> (u8, u8, u8) {
+fn resolve_color_inner(color: &VteColor) -> (u8, u8, u8) {
     match color {
         VteColor::Named(named) => named_to_rgb(named),
-        VteColor::Spec(Rgb { r, g, b }) => (*r, *g, *b),
+        VteColor::Spec(VteRgb { r, g, b }) => (*r, *g, *b),
         VteColor::Indexed(idx) => indexed_to_rgb(*idx),
     }
 }
@@ -340,9 +339,7 @@ impl BridgePty {
         let grid = state.term.grid();
         let display_offset = grid.display_offset();
 
-        let mut cells: Vec<(u16, u16, Cell)> = Vec::new();
-        // ワイドキャラクター位置を記録（ratatui Cell にはこの情報がないため別途保持）
-        let mut wide_positions: Vec<(u16, u16)> = Vec::new();
+        let mut cells: Vec<(u16, u16, CellData)> = Vec::new();
 
         for line_idx in 0..state.lines {
             let line = Line(line_idx as i32 - display_offset as i32);
@@ -368,43 +365,39 @@ impl BridgePty {
                     is_wide = true;
                 }
 
-                if is_wide {
-                    wide_positions.push((col_idx as u16, line_idx as u16));
-                }
-
-                let mut fg_rgb = resolve_color(&vte_cell.fg);
-                let mut bg_rgb = resolve_color(&vte_cell.bg);
+                let mut fg_rgb = resolve_color_inner(&vte_cell.fg);
+                let mut bg_rgb = resolve_color_inner(&vte_cell.bg);
 
                 // SGR 7 (INVERSE)
                 if vte_cell.flags.contains(CellFlags::INVERSE) {
                     std::mem::swap(&mut fg_rgb, &mut bg_rgb);
                 }
 
-                let fg = Color::Rgb(fg_rgb.0, fg_rgb.1, fg_rgb.2);
-                let bg = Color::Rgb(bg_rgb.0, bg_rgb.1, bg_rgb.2);
-
-                let mut modifier = Modifier::empty();
+                let mut f: u8 = 0;
                 if vte_cell.flags.contains(CellFlags::BOLD) {
-                    modifier |= Modifier::BOLD;
+                    f |= flags::BOLD;
                 }
                 if vte_cell.flags.contains(CellFlags::ITALIC) {
-                    modifier |= Modifier::ITALIC;
+                    f |= flags::ITALIC;
                 }
                 if vte_cell.flags.contains(CellFlags::UNDERLINE) {
-                    modifier |= Modifier::UNDERLINED;
+                    f |= flags::UNDERLINED;
                 }
                 if vte_cell.flags.contains(CellFlags::DIM_BOLD) {
-                    modifier |= Modifier::DIM;
+                    f |= flags::DIM;
                 }
                 if vte_cell.flags.contains(CellFlags::STRIKEOUT) {
-                    modifier |= Modifier::CROSSED_OUT;
+                    f |= flags::CROSSED_OUT;
+                }
+                if is_wide {
+                    f |= flags::WIDE;
                 }
 
-                let style = Style::default().fg(fg).bg(bg).add_modifier(modifier);
-
-                let mut cell = Cell::default();
+                let mut cell = CellData::default();
                 cell.set_char(vte_cell.c);
-                cell.set_style(style);
+                cell.fg = rgb_to_rgba(fg_rgb.0, fg_rgb.1, fg_rgb.2);
+                cell.bg = rgb_to_rgba(bg_rgb.0, bg_rgb.1, bg_rgb.2);
+                cell.flags = f;
 
                 cells.push((col_idx as u16, line_idx as u16, cell));
             }
@@ -431,31 +424,18 @@ impl BridgePty {
         let y_offset = be.pty_y_offset();
         // PTY 領域のみクリア（クロームヘッダー/フッターは保持）
         // TODO: 部分クリアに最適化。現在は全体クリア後にクローム再描画が必要
-        let _ = be.clear();
-        be.clear_wide_flags();
-        // ワイドフラグを設定（Y オフセット付き）
-        for &(x, y) in &wide_positions {
-            be.set_wide_flag(x, y + y_offset, true);
-        }
+        be.clear();
         // セル書き込み（Y オフセット付き — クロームヘッダーの下から描画）
-        let refs: Vec<(u16, u16, &Cell)> = cells
-            .iter()
-            .map(|(x, y, c)| (*x, *y + y_offset, c))
-            .collect();
-        let _ = be.draw(refs.into_iter());
+        // WIDE flag は CellData.flags に統合済みなので別途設定不要
+        for (x, y, cell) in cells {
+            be.set_cell(x, y + y_offset, cell);
+        }
         // カーソル設定（Y オフセット付き）
         if cursor_line >= 0 && (cursor_line as usize) < lines {
-            let _ = be.set_cursor_position(ratatui::layout::Position::new(
-                cursor_col,
-                cursor_line as u16 + y_offset,
-            ));
+            be.set_cursor_position(Position::new(cursor_col, cursor_line as u16 + y_offset));
         }
-        if cursor_visible {
-            let _ = be.show_cursor();
-        } else {
-            let _ = be.hide_cursor();
-        }
-        let _ = be.flush();
+        be.set_cursor_visible(cursor_visible);
+        be.flush();
     }
 
     /// PTY にバイト列を送信（キー入力）
