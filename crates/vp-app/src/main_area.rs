@@ -271,8 +271,19 @@ body{overflow:hidden;}
     }));
   }
   // ResizeObserver は host (= main area の root) に張る。中の pane も同サイズでリサイズされる。
+  // PH#4: rAF debounce — window resize 中の高頻度発火で event queue が詰まらないよう、
+  // 1 frame に最大 1 回 sendSlotRect を呼ぶように制限。
+  let rafScheduled = false;
+  function scheduleSendSlotRect() {
+    if (rafScheduled) return;
+    rafScheduled = true;
+    requestAnimationFrame(() => {
+      rafScheduled = false;
+      sendSlotRect();
+    });
+  }
   if (typeof ResizeObserver !== 'undefined') {
-    const ro = new ResizeObserver(() => sendSlotRect());
+    const ro = new ResizeObserver(() => scheduleSendSlotRect());
     ro.observe(document.getElementById('host'));
   }
 

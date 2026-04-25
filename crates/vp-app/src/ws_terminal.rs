@@ -163,4 +163,10 @@ async fn run_ws_loop(
             },
         }
     }
+    // PH#3: WS disconnect の user-facing 通知
+    // (loop 抜けた = サーバ close / 通信エラー / sender drop のいずれか)
+    let line = "\r\n\x1b[31m[vp-app] daemon disconnected (reconnect not implemented; restart vp-app to recover)\x1b[0m\r\n"
+        .as_bytes()
+        .to_vec();
+    let _ = proxy.send_event(AppEvent::Output(line));
 }

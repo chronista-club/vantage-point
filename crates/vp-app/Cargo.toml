@@ -61,3 +61,7 @@ arboard = "3"
 
 # Pane id 用 UUID (VP-95)
 uuid = { version = "1", features = ["v4", "serde"] }
+
+# Settings 永続化 (VP-100 follow-up: 開発者モード等)
+toml = "0.8"
+dirs = "6"

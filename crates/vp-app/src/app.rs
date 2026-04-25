@@ -40,10 +40,35 @@ use wry::{
 use crate::client::TheWorldClient;
 use crate::main_area::{self, ActivePaneInfo, MAIN_AREA_HTML, SlotRect};
 use crate::pane::{ActivitySnapshot, PaneKind, ProjectPaneState, SidebarState};
+use crate::settings::Settings;
 use crate::terminal::{self, AppEvent};
 
 /// Sidebar の固定幅 (LogicalPixel)
 const SIDEBAR_WIDTH: f64 = 280.0;
+
+/// 開発者モード判定 (起動時の初期値計算に使用、runtime 切替は menu 経由)
+///
+/// 優先順位 (1Password 風の挙動):
+/// 1. `VP_DEVELOPER_MODE` env var が `1`/`true`/`yes`/`on` → 強制 ON
+/// 2. `VP_DEVELOPER_MODE` env var が `0`/`false`/`no`/`off` → 強制 OFF
+/// 3. Settings ファイル (`~/.config/vantage/vp-app.toml` 等) の `developer_mode` フィールド
+/// 4. それ以外 (未設定) → `cfg!(debug_assertions)` (debug ビルドは ON、release は OFF)
+///
+/// 起動後の runtime 切替 (View → Developer Mode メニュー) は app.rs の event loop で
+/// settings ファイルを更新しつつ、対応する menu item の状態を即時反映する。
+fn initial_developer_mode(settings: &Settings) -> bool {
+    if let Ok(v) = std::env::var("VP_DEVELOPER_MODE") {
+        match v.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => return true,
+            "0" | "false" | "no" | "off" => return false,
+            _ => {}
+        }
+    }
+    if let Some(b) = settings.developer_mode {
+        return b;
+    }
+    cfg!(debug_assertions)
+}
 
 /// Creo UI design tokens (CSS custom properties、mint-dark default)
 ///
@@ -320,6 +345,23 @@ fn update_pane_bounds(
     });
 }
 
+/// muda の `MenuEvent::receiver()` channel を polling して `AppEvent::MenuClicked` に
+/// 変換する pump スレッドを起動する。muda の menu event は global channel (single
+/// receiver) なので 1 thread だけ起動する。
+fn spawn_menu_event_pump(proxy: EventLoopProxy<AppEvent>) {
+    let _ = thread::Builder::new()
+        .name("menu-event-pump".into())
+        .spawn(move || {
+            let rx = muda::MenuEvent::receiver();
+            while let Ok(ev) = rx.recv() {
+                if proxy.send_event(AppEvent::MenuClicked(ev.id)).is_err() {
+                    tracing::debug!("EventLoop 終了、menu pump も終了");
+                    break;
+                }
+            }
+        });
+}
+
 /// 起動時に TheWorld `/api/world/projects` を別スレッドで fetch。
 /// 成功/失敗を `AppEvent::ProjectsLoaded` / `ProjectsError` として main thread に通知。
 fn spawn_projects_fetch(proxy: EventLoopProxy<AppEvent>) {
@@ -360,6 +402,13 @@ fn spawn_projects_fetch(proxy: EventLoopProxy<AppEvent>) {
 /// 5 秒間隔で `/api/health` + `/api/world/projects` + `/api/world/processes` を
 /// fetch し、`AppEvent::ActivityUpdate` として main thread に push する。
 /// daemon 未起動時は world_online=false で穏やかに通る。
+///
+/// VP-100 follow-up (B1 / MB1 / PH#7): daemon が **後発で online 復帰** した時、
+/// `world_online: false → true` の遷移を検知して `/api/world/projects` を
+/// 再 fetch し `AppEvent::ProjectsLoaded` を再送する。これにより sidebar
+/// projects accordion が永遠に空のまま、という UX バグを防ぐ。
+/// 起動初回 (`prev_online == None`) では `spawn_projects_fetch` 側が担当するので
+/// 二重 fetch を避けるため transition 検知をスキップする。
 fn spawn_activity_poller(proxy: EventLoopProxy<AppEvent>) {
     let _ = thread::Builder::new()
         .name("activity-poller".into())
@@ -377,12 +426,35 @@ fn spawn_activity_poller(proxy: EventLoopProxy<AppEvent>) {
             rt.block_on(async move {
                 let client = TheWorldClient::default();
                 let mut tick = tokio::time::interval(Duration::from_secs(5));
+                let mut prev_online: Option<bool> = None;
                 loop {
                     tick.tick().await;
                     let snap = collect_activity(&client).await;
+                    let became_online = matches!(prev_online, Some(false)) && snap.world_online;
+                    prev_online = Some(snap.world_online);
                     if proxy.send_event(AppEvent::ActivityUpdate(snap)).is_err() {
                         tracing::debug!("EventLoop 終了、activity poller も終了");
                         break;
+                    }
+                    // daemon 復帰検知 → projects 再 fetch を kick
+                    if became_online {
+                        match client.list_projects().await {
+                            Ok(projects) => {
+                                tracing::info!(
+                                    "daemon online 復帰検知 → projects 再 fetch ({} 件)",
+                                    projects.len()
+                                );
+                                if proxy
+                                    .send_event(AppEvent::ProjectsLoaded(projects))
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!("daemon online but list_projects failed: {}", e);
+                            }
+                        }
                     }
                 }
             });
@@ -558,8 +630,17 @@ pub fn run() -> anyhow::Result<()> {
 
     let event_loop = EventLoopBuilder::<AppEvent>::with_user_event().build();
 
-    // メニューバー + トレイ
-    let _menu = crate::menu::build_menu_bar();
+    // VP-100 follow-up: 永続設定 + 1Password 風 開発者モード切替
+    let mut settings = Settings::load();
+    let initial_dev_mode = initial_developer_mode(&settings);
+    tracing::info!("Settings: developer_mode = {} (initial)", initial_dev_mode);
+
+    // メニューバー (View → Developer Mode / Open Developer Tools を含む) + トレイ
+    let menu_handles = crate::menu::build_menu_bar(initial_dev_mode);
+    let _menu = menu_handles.menu.clone();
+    let dev_mode_item = menu_handles.developer_mode_item;
+    let open_devtools_item = menu_handles.open_devtools_item;
+    let menu_ids = menu_handles.ids;
     let _tray = match crate::tray::build_tray() {
         Ok(t) => Some(t),
         Err(e) => {
@@ -567,6 +648,9 @@ pub fn run() -> anyhow::Result<()> {
             None
         }
     };
+
+    // muda の MenuEvent を main loop に橋渡しする thread を起動
+    spawn_menu_event_pump(event_loop.create_proxy());
 
     let window = WindowBuilder::new()
         .with_title("Vantage Point")
@@ -629,6 +713,11 @@ pub fn run() -> anyhow::Result<()> {
     // PTY ブリッジは旧 terminal_view と同じ IPC handler を引き継ぐ。
     let pty_for_ipc = pty.clone();
     let ipc_proxy = event_loop.create_proxy();
+    // VP-100 follow-up (1Password 風 runtime 切替):
+    // wry の DevTools 機能は **compile 時 always 有効** で固定。
+    // 実際に開けるかどうかは menu の「Open Developer Tools」item から
+    // `webview.open_devtools()` を呼ぶかで runtime 制御 (本番ビルドでも切替可)。
+    // Mac App Store 審査が必要な配布では Cargo features で更に絞る予定 (Phase 4)。
     let main_view = WebViewBuilder::new()
         .with_html(MAIN_AREA_HTML)
         .with_bounds(Rect {
@@ -649,12 +738,17 @@ pub fn run() -> anyhow::Result<()> {
     //  ready 前の bytes を欠落させると shell が永久に block する)
     let mut xterm_ready = false;
     let mut pending: Vec<u8> = Vec::new();
+    // pending buffer の上限。xterm が永久に ready にならないシナリオでも OOM を回避する
+    // (PH#2)。1MB を超えたら冒頭以外を捨てて overflow メッセージを残す。
+    const PENDING_MAX: usize = 1_000_000;
     // VP-95: sidebar 全体 state (projects + widget + activity)
     let mut sidebar_state = SidebarState::default();
     // VP-100 γ-light: pane_id → slot rect。Phase 2 では蓄積するだけ、Phase 4+ で
     // native overlay の `set_position` 同期に使う。
     let mut slot_rects: std::collections::HashMap<String, SlotRect> =
         std::collections::HashMap::new();
+    // VP-100 follow-up (1Password 風): runtime 開発者モード state
+    let mut dev_mode = initial_dev_mode;
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
@@ -675,6 +769,18 @@ pub fn run() -> anyhow::Result<()> {
             }
             Event::UserEvent(AppEvent::Output(bytes)) => {
                 if !xterm_ready {
+                    if pending.len() + bytes.len() > PENDING_MAX {
+                        tracing::warn!(
+                            "PTY pending overflow ({} + {} > {}), truncating",
+                            pending.len(),
+                            bytes.len(),
+                            PENDING_MAX
+                        );
+                        pending.clear();
+                        pending.extend_from_slice(
+                            b"\r\n\x1b[33m[vp-app] PTY buffer overflow, truncated\x1b[0m\r\n",
+                        );
+                    }
                     pending.extend_from_slice(&bytes);
                     tracing::debug!(
                         "PTY output buffered ({} bytes, pending total={})",
@@ -689,6 +795,11 @@ pub fn run() -> anyhow::Result<()> {
                 }
             }
             Event::UserEvent(AppEvent::XtermReady) => {
+                // PH#1: 二重 ready 防御 — `setActivePane` 等で再起動した場合に
+                // 二重 flush しないよう冪等化。
+                if xterm_ready {
+                    return;
+                }
                 xterm_ready = true;
                 if !pending.is_empty() {
                     tracing::info!("xterm ready → flush {} 保留バイト", pending.len());
@@ -755,6 +866,44 @@ pub fn run() -> anyhow::Result<()> {
                     tracing::trace!("slot:rect kind={} pane={} rect={:?}", kind, id, rect);
                 } else {
                     tracing::trace!("slot:rect kind={} (no pane_id) rect={:?}", kind, rect);
+                }
+            }
+            // VP-100 follow-up: muda メニュー項目クリック処理
+            //
+            // 1Password 風 UX:
+            //  - "Developer Mode" check item トグル → settings 永続化、Open DevTools の enabled 切替
+            //  - "Open Developer Tools" → dev_mode == true なら main_view.open_devtools()
+            Event::UserEvent(AppEvent::MenuClicked(id)) => {
+                if id == menu_ids.developer_mode {
+                    dev_mode = !dev_mode;
+                    dev_mode_item.set_checked(dev_mode);
+                    open_devtools_item.set_enabled(dev_mode);
+                    settings.developer_mode = Some(dev_mode);
+                    if let Err(e) = settings.save() {
+                        tracing::warn!("Settings 保存失敗: {}", e);
+                    }
+                    tracing::info!("Developer Mode: {} (永続化)", dev_mode);
+                    let body = if dev_mode {
+                        "Developer Mode が有効になりました。View → Open Developer Tools で DevTools を開けます。"
+                    } else {
+                        "Developer Mode が無効になりました。"
+                    };
+                    if let Err(e) = notify_rust::Notification::new()
+                        .summary("Vantage Point")
+                        .body(body)
+                        .show()
+                    {
+                        tracing::debug!("notification 表示失敗: {}", e);
+                    }
+                } else if id == menu_ids.open_devtools {
+                    if dev_mode {
+                        main_view.open_devtools();
+                        tracing::info!("DevTools open");
+                    } else {
+                        tracing::warn!("Open DevTools clicked but dev_mode=false (gated)");
+                    }
+                } else {
+                    tracing::debug!("MenuClicked: 未処理の id = {:?}", id);
                 }
             }
             _ => {}

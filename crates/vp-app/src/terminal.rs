@@ -42,6 +42,8 @@ pub enum AppEvent {
         kind: String,
         rect: crate::main_area::SlotRect,
     },
+    /// VP-100 follow-up: muda メニュー項目クリック (developer mode toggle / open devtools 等)
+    MenuClicked(muda::MenuId),
 }
 
 /// PTY セッションのハンドル
