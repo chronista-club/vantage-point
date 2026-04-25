@@ -306,38 +306,19 @@ class TerminalView: NSView {
 
     // MARK: - フォント
 
-    /// glyph を targetWidth に収まるように描画する。
+    /// glyph を natural advance で描画する。
     ///
-    /// Apple Color Emoji の glyph (❤ ☂ ✅ ☎ ⚓ など) は visual advance が
-    /// cell 幅を超えることが多く、そのまま描画すると隣 cell にはみ出して欠けて
-    /// 見える。glyph の advance を計測し、targetWidth を超える場合は
-    /// `CGContext.scaleBy(x:)` で horizontal 縮小してきれいに収める。
-    /// 通常文字は advance ≤ targetWidth なので scale 適用されず影響なし。
+    /// scale (縮小・拡大) は適用しない。Apple Color Emoji の glyph は visual
+    /// が `cellHeight × cellHeight` の正方形になるよう描画されるため、
+    /// 行高さと整合し、scale 無しでも崩れない。scale 拡大すると行高さを超えて
+    /// 「フォントが大きくなった」と見える副作用が出るため (実機確認 2026-04-25)、
+    /// natural 描画に統一。
     private func drawGlyphsFitted(ctx: CGContext, font: CTFont, glyphs: [CGGlyph],
                                   originX: CGFloat, originY: CGFloat,
-                                  targetWidth: CGFloat) {
+                                  targetWidth _: CGFloat) {
         guard !glyphs.isEmpty else { return }
-
-        // 主要 glyph の advance を計測 (chars.count > 1 でも先頭 glyph で代表)
-        var firstGlyph = glyphs[0]
-        var advance: CGSize = .zero
-        CTFontGetAdvancesForGlyphs(font, .horizontal, &firstGlyph, &advance, 1)
-
-        if advance.width > targetWidth + 0.5 && advance.width > 0 {
-            // glyph が cell 幅を超える → horizontal scale で縮小
-            let scaleX = targetWidth / advance.width
-            ctx.saveGState()
-            // (originX, originY) を基準点にスケール
-            ctx.translateBy(x: originX, y: 0)
-            ctx.scaleBy(x: scaleX, y: 1.0)
-            ctx.translateBy(x: -originX, y: 0)
-            var position = CGPoint(x: originX, y: originY)
-            CTFontDrawGlyphs(font, glyphs, &position, glyphs.count, ctx)
-            ctx.restoreGState()
-        } else {
-            var position = CGPoint(x: originX, y: originY)
-            CTFontDrawGlyphs(font, glyphs, &position, glyphs.count, ctx)
-        }
+        var position = CGPoint(x: originX, y: originY)
+        CTFontDrawGlyphs(font, glyphs, &position, glyphs.count, ctx)
     }
 
     /// ambiguous-wide codepoint 判定 — wide cell で FiraCode が narrow glyph しか
