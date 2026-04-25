@@ -1139,22 +1139,46 @@ pub fn run() -> anyhow::Result<()> {
             Event::UserEvent(AppEvent::ProjectsLoaded(projects)) => {
                 // 既存 SidebarState とマージ:
                 //  - 同じ path があれば既存 state を維持 (expanded / panes / active 保持)
-                //  - 新規は ProjectPaneState::new (Lead Agent 1 つ + 折畳)
+                //  - 新規は ProjectPaneState::new (Lead Agent 1 つ)
                 //  - サーバから消えた project は除外
+                //
+                // VP-101 follow-up: register 後の auto-expand + auto-select
+                //  - prev が **non-empty** で新規 project が見つかった場合、
+                //    その project を auto-expand + 最初の pane (Lead Agent) を main area に push
+                //  - 初回起動 (prev empty) の場合は全 project が「新規」だが、
+                //    まとめて全部開く UX は noisy なので auto-expand しない
                 let prev: std::collections::HashMap<String, ProjectPaneState> = sidebar_state
                     .projects
                     .drain(..)
                     .map(|p| (p.path.clone(), p))
                     .collect();
+                let is_initial_load = prev.is_empty();
+                let mut newly_added_path: Option<String> = None;
                 sidebar_state.projects = projects
                     .into_iter()
                     .map(|p| {
-                        prev.get(&p.path).cloned().unwrap_or_else(|| {
-                            ProjectPaneState::new(p.path.clone(), p.name.clone())
-                        })
+                        if let Some(existing) = prev.get(&p.path) {
+                            existing.clone()
+                        } else {
+                            // 新規 project
+                            let mut state = ProjectPaneState::new(p.path.clone(), p.name.clone());
+                            if !is_initial_load {
+                                // session 中に追加された project → auto-expand + 後で auto-select
+                                state.expanded = true;
+                                if newly_added_path.is_none() {
+                                    newly_added_path = Some(state.path.clone());
+                                }
+                            }
+                            state
+                        }
                     })
                     .collect();
                 push_sidebar_state(&sidebar, &sidebar_state);
+                // auto-select: 新規 project の最初の pane (Lead Agent) を main area に show
+                if let Some(path) = newly_added_path.as_deref() {
+                    tracing::info!("auto-select: 新規 project '{}' の Lead Agent を main area に表示", path);
+                    push_active_pane(&main_view, &sidebar_state, Some(path));
+                }
             }
             Event::UserEvent(AppEvent::ProjectsError(msg)) => {
                 let js_msg = serde_json::to_string(&msg).unwrap_or_else(|_| "\"error\"".into());
