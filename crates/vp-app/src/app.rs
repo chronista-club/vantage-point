@@ -124,9 +124,13 @@ const SIDEBAR_HTML: &str = concat!(
 
   /* Clone inline form — sidebar 内で展開する form (modal でなく inline) */
   .vp-clone-inline{margin:0 12px 10px;display:flex;flex-direction:column;gap:6px;max-height:0;opacity:0;overflow:hidden;transition:max-height .22s ease, opacity .22s ease, margin-top .22s ease;margin-top:0;pointer-events:none;}
-  .vp-clone-inline.expanded{max-height:140px;opacity:1;margin-top:-6px;pointer-events:auto;}
+  .vp-clone-inline.expanded{max-height:240px;opacity:1;margin-top:-6px;pointer-events:auto;}
   .vp-clone-inline label{font-size:10px;color:var(--color-text-tertiary);text-transform:uppercase;letter-spacing:.06em;}
   .vp-clone-inline input{width:100%;padding:6px 8px;border-radius:var(--radius-sm,6px);border:1px solid var(--color-surface-border,#1f2233);background:var(--color-surface-bg-base);color:var(--color-text-primary);font-family:inherit;font-size:12px;box-sizing:border-box;}
+  .vp-clone-inline .path-row{display:flex;align-items:center;gap:6px;}
+  .vp-clone-inline .path-display{flex:1;min-width:0;padding:5px 8px;border-radius:var(--radius-sm,6px);border:1px solid var(--color-surface-border,#1f2233);background:var(--color-surface-bg-base);color:var(--color-text-secondary);font-size:11px;font-family:inherit;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .vp-clone-inline .path-display.is-default{color:var(--color-text-tertiary);font-style:italic;}
+  .vp-clone-inline .path-icon-btn{flex:0 0 auto;padding:4px 8px;font-size:12px;}
   .vp-clone-inline input:focus{outline:none;border-color:var(--color-brand-primary);}
   .vp-clone-inline .actions{display:flex;justify-content:flex-end;gap:6px;}
   .vp-clone-inline button{padding:4px 10px;border-radius:var(--radius-sm,6px);border:1px solid var(--color-surface-border,#1f2233);background:transparent;color:var(--color-text-secondary);cursor:pointer;font-size:11px;font-family:inherit;transition:background .12s ease,color .12s ease;}
@@ -177,6 +181,12 @@ const SIDEBAR_HTML: &str = concat!(
   <div class="vp-clone-inline" id="clone-inline">
     <label for="clone-url">Repository URL</label>
     <input type="text" id="clone-url" placeholder="https://github.com/user/repo.git" />
+    <label>Clone destination</label>
+    <div class="path-row">
+      <span id="clone-path-display" class="path-display is-default" title="default 設定 (~/repos など)">(default)</span>
+      <button type="button" id="clone-path-browse" class="path-icon-btn" title="Browse folder...">📁</button>
+      <button type="button" id="clone-path-clear" class="path-icon-btn" title="Use default">×</button>
+    </div>
     <div class="actions">
       <button type="button" id="clone-cancel">Cancel</button>
       <button type="button" class="primary" id="clone-confirm">Clone</button>
@@ -371,15 +381,34 @@ const SIDEBAR_HTML: &str = concat!(
       send({t: 'project:add'});
     });
 
-    // Clone Repository — sidebar 内 inline expand form で URL を受け取る
+    // Clone Repository — sidebar 内 inline expand form で URL + clone 先 (任意) を受け取る
     const cloneBtn = document.getElementById('clone-project-btn');
     const cloneInline = document.getElementById('clone-inline');
     const cloneInput = document.getElementById('clone-url');
     const cloneCancel = document.getElementById('clone-cancel');
     const cloneConfirm = document.getElementById('clone-confirm');
+    const clonePathDisplay = document.getElementById('clone-path-display');
+    const clonePathBrowse = document.getElementById('clone-path-browse');
+    const clonePathClear = document.getElementById('clone-path-clear');
+    // null = default (Settings の default_project_root + repo 名 で auto)
+    let clonePathOverride = null;
+    function updateClonePathDisplay() {
+      if (!clonePathDisplay) return;
+      if (clonePathOverride) {
+        clonePathDisplay.textContent = clonePathOverride;
+        clonePathDisplay.classList.remove('is-default');
+        clonePathDisplay.title = clonePathOverride;
+      } else {
+        clonePathDisplay.textContent = '(default)';
+        clonePathDisplay.classList.add('is-default');
+        clonePathDisplay.title = 'default 設定 (~/repos など)';
+      }
+    }
     function openCloneInline() {
       if (!cloneInline) return;
       cloneInput.value = '';
+      clonePathOverride = null;
+      updateClonePathDisplay();
       cloneInline.classList.add('expanded');
       setTimeout(() => cloneInput && cloneInput.focus(), 50);
     }
@@ -390,7 +419,9 @@ const SIDEBAR_HTML: &str = concat!(
     function submitClone() {
       const url = (cloneInput && cloneInput.value || '').trim();
       if (!url) return;
-      send({t: 'project:clone', url: url});
+      const msg = {t: 'project:clone', url: url};
+      if (clonePathOverride) msg.target_dir = clonePathOverride;
+      send(msg);
       closeCloneInline();
     }
     if (cloneBtn) cloneBtn.addEventListener('click', () => {
@@ -399,6 +430,18 @@ const SIDEBAR_HTML: &str = concat!(
     });
     if (cloneCancel) cloneCancel.addEventListener('click', closeCloneInline);
     if (cloneConfirm) cloneConfirm.addEventListener('click', submitClone);
+    if (clonePathBrowse) clonePathBrowse.addEventListener('click', () => {
+      send({t: 'project:clone:pickFolder'});
+    });
+    if (clonePathClear) clonePathClear.addEventListener('click', () => {
+      clonePathOverride = null;
+      updateClonePathDisplay();
+    });
+    // Rust 側の picker から呼ばれる setter (キャンセル時は path = null)
+    window.setClonePath = (path) => {
+      clonePathOverride = (typeof path === 'string' && path.length > 0) ? path : null;
+      updateClonePathDisplay();
+    };
     if (cloneInput) {
       cloneInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') { e.preventDefault(); submitClone(); }
@@ -558,26 +601,32 @@ fn spawn_add_project_picker(
 
 /// VP-100 follow-up: 「+ Clone Repository」クリック時の git clone + API 呼出。
 ///
-/// 1. `git clone <url> <default_root>/<repo_name>` を実行
+/// 1. `git clone <url> <target>` を実行 (target は override 優先、無ければ
+///    `<default_root>/<repo_name>`)
 /// 2. 成功なら `add_project` で TheWorld に register
 /// 3. `list_projects` で再取得 → `AppEvent::ProjectsLoaded`
 ///
-/// `default_root` が `None` の時は何もしない (default_project_root が解決できないケース)。
+/// `target_override` が `Some` ならそれを target とする (user が picker で選択した
+/// folder)。`None` なら `default_root` + repo 名で auto 決定。後者で `default_root`
+/// も `None` の場合は何もしない (default_project_root が解決できないケース)。
 /// git バイナリが PATH に無い場合も spawn 失敗で終わる。
 fn spawn_clone_project(
     proxy: EventLoopProxy<AppEvent>,
     url: String,
     default_root: Option<std::path::PathBuf>,
+    target_override: Option<std::path::PathBuf>,
 ) {
-    let Some(default_root) = default_root else {
+    let target = if let Some(t) = target_override {
+        t
+    } else if let Some(root) = default_root {
+        root.join(derive_repo_name(&url))
+    } else {
         tracing::warn!("project:clone but default_project_root is unresolved (set in settings)");
         return;
     };
-    let repo_name = derive_repo_name(&url);
     let _ = thread::Builder::new()
         .name("clone-project".into())
         .spawn(move || {
-            let target = default_root.join(&repo_name);
             tracing::info!("git clone {} {}", url, target.display());
             let status = std::process::Command::new("git")
                 .arg("clone")
@@ -602,7 +651,12 @@ fn spawn_clone_project(
                     .show();
                 return;
             }
-            // Register
+            // Register — project 名は target folder の末尾セグメントから (override 時は
+            // user が選んだ folder 名、default 時は repo 名と同一になる)
+            let project_name = target
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| derive_repo_name(&url));
             let path_str = target.to_string_lossy().into_owned();
             let rt = match tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -616,7 +670,7 @@ fn spawn_clone_project(
             };
             rt.block_on(async move {
                 let client = TheWorldClient::default();
-                if let Err(e) = client.add_project(&repo_name, &path_str).await {
+                if let Err(e) = client.add_project(&project_name, &path_str).await {
                     tracing::warn!("clone 後の add_project 失敗: {}", e);
                     return;
                 }
@@ -630,6 +684,27 @@ fn spawn_clone_project(
                     }
                 }
             });
+        });
+}
+
+/// Clone 先 folder picker。選択結果 (キャンセル時は None) を `AppEvent::ClonePathPicked`
+/// で main thread に送り、sidebar JS の `window.setClonePath()` に push する。
+///
+/// `initial_dir` が `Some` なら picker の初期表示ディレクトリに設定。
+fn spawn_clone_path_picker(
+    proxy: EventLoopProxy<AppEvent>,
+    initial_dir: Option<std::path::PathBuf>,
+) {
+    let _ = thread::Builder::new()
+        .name("clone-path-picker".into())
+        .spawn(move || {
+            let mut dialog = rfd::FileDialog::new().set_title("Clone 先フォルダを選択");
+            if let Some(d) = initial_dir.as_ref() {
+                dialog = dialog.set_directory(d);
+            }
+            let folder = dialog.pick_folder();
+            let payload = folder.map(|p| p.to_string_lossy().into_owned());
+            let _ = proxy.send_event(AppEvent::ClonePathPicked(payload));
         });
 }
 
@@ -1191,6 +1266,19 @@ pub fn run() -> anyhow::Result<()> {
                 sidebar_state.activity = snap;
                 push_sidebar_state(&sidebar, &sidebar_state);
             }
+            Event::UserEvent(AppEvent::ClonePathPicked(path)) => {
+                // user キャンセル時 (None) は JS 状態を変更しない (= 既存 override を保持)
+                if let Some(p) = path {
+                    let js_arg = serde_json::to_string(&p).unwrap_or_else(|_| "null".into());
+                    let script =
+                        format!("window.setClonePath && window.setClonePath({})", js_arg);
+                    if let Err(e) = sidebar.evaluate_script(&script) {
+                        tracing::warn!("sidebar setClonePath 失敗: {}", e);
+                    }
+                } else {
+                    tracing::debug!("clone path picker canceled");
+                }
+            }
             Event::UserEvent(AppEvent::SidebarIpc(msg)) => {
                 // VP-100 follow-up: project:add / project:clone は async picker → API → ProjectsLoaded ルート
                 // (state 直接 mutate しないので handle_sidebar_ipc の前で分岐)
@@ -1212,9 +1300,25 @@ pub fn run() -> anyhow::Result<()> {
                                 tracing::warn!("project:clone with empty url");
                                 return;
                             }
+                            let target_override = parsed
+                                .get("target_dir")
+                                .and_then(|v| v.as_str())
+                                .filter(|s| !s.is_empty())
+                                .map(std::path::PathBuf::from);
                             let default_root =
                                 resolve_default_project_root(&settings, &sidebar_state);
-                            spawn_clone_project(async_action_proxy.clone(), url, default_root);
+                            spawn_clone_project(
+                                async_action_proxy.clone(),
+                                url,
+                                default_root,
+                                target_override,
+                            );
+                            return;
+                        }
+                        Some("project:clone:pickFolder") => {
+                            let initial_dir =
+                                resolve_default_project_root(&settings, &sidebar_state);
+                            spawn_clone_path_picker(async_action_proxy.clone(), initial_dir);
                             return;
                         }
                         _ => {}

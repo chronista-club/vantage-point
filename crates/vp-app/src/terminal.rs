@@ -44,6 +44,8 @@ pub enum AppEvent {
     },
     /// VP-100 follow-up: muda メニュー項目クリック (developer mode toggle / open devtools 等)
     MenuClicked(muda::MenuId),
+    /// Clone 先フォルダ picker で選択された path を sidebar JS に push (キャンセル時は None)
+    ClonePathPicked(Option<String>),
 }
 
 /// PTY セッションのハンドル
