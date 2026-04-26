@@ -1,170 +1,161 @@
 # Vantage Point
 
-**AI-native Mac IDE** — Claude CLI agent を first-class "Lane" として扱う、
-live design surface + deterministic port layout + 統合 messaging backbone を
-備える開発環境。
+**AI ネイティブ開発環境** — Claude CLI をエンジンとして、TUI コンソール + Canvas (WebView) + 外部コントロール (MIDI / MCP) を統合した、Rust 製の開発環境。
+
+**プロジェクト起点**で開発フローを設計し、Claude との対話と Canvas 表示を並列に動かす。前回の続きから再開できるセッション永続化を備え、Mac / Windows native で動作する。
 
 ## Status
 
-Private alpha → public OSS 移行中 (2026-04-23)。API・内部構造は活発に変化中。
-README は work in progress、詳細は `docs/` 配下。
+Private alpha (v0.14.0)。dogfooding を通じて体験を磨きながら使用感を確かめる段階。
+README は work in progress、API・内部構造は活発に変化中。
 
-## Core concepts
+## コアコンセプト
 
-- **Lane** — canonical address `hd.{lane}@{project}` が tmux session、
-  Claude agent、Mailbox actor、deterministic port range を一意に束ねる
-- **Command Palette (⌘K)** — 全 Lane / app action への fuzzy jump
-- **Design Inspector (⌘⇧I)** — Sidebar token (padding, opacity 等) を
-  runtime で live edit
-- **Layout Foundations** — Sidebar / Viewport-Top / Viewport / Bottom Deck
-  の 4 領域 sharp stack
-- **Port Management** — `33000 + slot × 100 + lane × 10 + role` で
-  Lane × role port が透過的固定、bookmark 可能
+- **VP が主、Claude Code はそのエンジン** — VP はあなたの開発フローの "視点" を提供し、Claude を駆動する
+- **TUI で操る、Canvas で視る** — TUI コンソールから Claude と対話し、HTML / Mermaid / 画像 / ログ等は Canvas WebView で同時に視る
+- **セッション永続化** — プロジェクト + Pane 構成 + Lead Agent を再開できる、開発の "場" を残す環境
+- **deterministic ports** — TheWorld 32000 / Project 33000-33010 / Unison 33100-33110 で透過的固定。`vp port` で確認
 
-内部 codename は JoJo's Bizarre Adventure のスタンド:
-TheWorld (daemon) / Star Platinum (Project) / Heaven's Door (Agent) /
-Paisley Park (Navigator) / Gold Experience (Runner) 等。
+## アーキテクチャ (JoJo メタファー)
 
-## License
+外向けは普通の用語、内部 codename は JoJo's Bizarre Adventure のスタンド。命名定義は [`crates/vantage-point/src/stands.rs`](crates/vantage-point/src/stands.rs) に集約。
 
-Dual-licensed under [MIT](./LICENSE-MIT) OR [Apache-2.0](./LICENSE-APACHE).
+```
+TheWorld 👑 (常駐デーモン / Process Manager)
+  └── Star Platinum ⭐ (Project Core / TUI 統合ビュー)
+        ├── Heaven's Door 📖 (Coding Assistant / Claude CLI orchestrator)
+        ├── Paisley Park 🧭 (Information Navigator / Canvas)
+        ├── Gold Experience 🌿 (Code Runner / 動的生命注入)
+        └── Hermit Purple 🍇 (External Control / MIDI / tmux / MCP)
+```
 
----
+| Stand | 役割 |
+|-------|------|
+| **TheWorld 👑** | 全 Project Process を統括する常駐デーモン (port 32000)。Push (QUIC self-register) + Pull (port scan) の二重パスで自律復帰 |
+| **Star Platinum ⭐** | プロジェクトごとの Process。HTTP + WebSocket + QUIC を持ち、各 Stand の同居場 |
+| **Heaven's Door 📖** | Claude CLI の orchestration 層 (OneShot / Interactive / PTY 3 mode) |
+| **Paisley Park 🧭** | Canvas / WebView による情報提示と関連検索 |
+| **Gold Experience 🌿** | コード実行・スクリプト評価 (Ruby 等) |
+| **Hermit Purple 🍇** | MIDI / tmux / MCP の外部コントロール |
 
-## Reference display server (legacy section)
+## ターゲット環境
 
-VP の基盤機能の 1 つとして、Claude Code 向けの Markdown/HTML 表示サーバー
-があります。以下はこのモードのインストール・動作説明。
+| 配布形態 | 状態 | 経路 |
+|---------|-----|-----|
+| **VantagePoint.app** (macOS Swift app, メニューバー) | 開発中 | `apple/VantagePoint/` (SwiftUI + vp-bridge staticlib) |
+| **vp-app** (cross-platform, tao + wry + WebView) | 開発中 | `crates/vp-app/` (Mac / Windows native) |
+| **`vp` CLI** | active | `crates/vp-cli/` |
 
-## インストール・更新
+将来的には Mac App Store 配布予定 (有料 + Free プランの可能性あり)。
+
+## クイックスタート
+
+### 前提
+
+- **macOS 13+** (VantagePoint.app) または **Windows 11** (vp-app)
+- **Rust 1.94+** (workspace で固定、[mise](https://mise.jdx.dev/) で auto install)
+- **Claude CLI** ([インストール手順](https://docs.anthropic.com/en/docs/build-with-claude/claude-code))
+- ([mise](https://mise.jdx.dev/) があると tool / env / task が一括管理される — 推奨)
+
+### Mac (Swift VantagePoint.app)
 
 ```bash
-# インストール
-curl -L https://github.com/chronista-club/vantage-point/releases/latest/download/vp-aarch64-apple-darwin -o /usr/local/bin/vp
-chmod +x /usr/local/bin/vp
-
-# 更新
-vp update
+# mise で rust + node + bun を install してから
+mise run mac          # vp-bridge build → xcodegen → xcodebuild → /Applications に install → 起動
+mise run mac:build    # ビルドのみ
+mise run mac:release  # DMG + 署名 + Notarize (要 keychain profile)
 ```
 
-macOS 13.0 (Ventura) 以降、[Claude CLI](https://docs.anthropic.com/en/docs/build-with-claude/claude-code) が必要。
+### Mac (cross-platform vp-app — tao + wry + WebView)
 
----
+Swift 版とは別経路。Windows 版と同じコードを Mac で動かす。
 
-## vp start すると何が起こるか
+```bash
+# 別 pane で daemon 起動
+cargo run -p vp-cli -- world
 
-```mermaid
-sequenceDiagram
-    participant U as ユーザー
-    participant VP as vp start
-    participant CC as Claude Code
-    participant B as ブラウザ
-
-    U->>VP: vp start
-    VP->>B: WebView ウィンドウを開く
-    VP->>VP: HTTP + WebSocket サーバー起動<br/>（ポート 33000〜）
-    U->>CC: claude mcp add vp -- vp mcp
-    CC->>VP: MCP ツール呼び出し<br/>show / split_pane / clear
-    VP->>B: WebSocket でコンテンツ配信
+# vp-app 起動
+cargo run -p vp-app
 ```
 
-1. `vp start` で Process（HTTP + WebSocket サーバー）が起動し、WebView ウィンドウが開く
-2. Claude Code に MCP サーバーとして登録する
-3. Claude Code がセッション中に `show` ツールを呼ぶと、ブラウザにコンテンツが表示される
+### Windows (vp-app)
 
-ターミナルでは表示しきれないもの — Mermaid 図、HTML、長いログ — をブラウザ側に出力できる。
+`mise run win` 一発でビルド + 配置 + 起動 + ログ tail まで行う。**Git Bash (MINGW64) で実行**。
 
----
+```bash
+# 前提 (初回のみ)
+scoop install mingw nasm
+rustup target add x86_64-pc-windows-gnu
 
-## Claude Code に登録する
+# ビルド + 起動 + log 監視
+mise run win
+
+# その他
+mise run win:build    # ビルドのみ
+mise run win:logs     # 起動済 vp-app + daemon の log を tail
+mise run win:release  # release build
+```
+
+詳細は [`docs/guide/setup.md`](docs/guide/setup.md) と [`.mise.toml`](.mise.toml) を参照。
+
+## CLI
+
+```bash
+# Core
+vp                    # 稼働中インスタンス一覧 (= vp ps)
+vp world              # TheWorld 起動 (port 32000)
+vp ps                 # Process 一覧
+vp config             # 設定と登録プロジェクト表示
+vp restart-all        # 全 Process + TheWorld を一括再起動
+vp update [--check]   # セルフアップデート
+
+# Project Process
+vp sp <subcmd>        # SP (Project Core) 管理
+vp pane <subcmd>      # ペイン操作
+
+# Agent / 外部
+vp hd <subcmd>        # HD (Claude CLI) 管理
+vp mcp                # MCP サーバーモード (stdio JSON-RPC)
+vp port <subcmd>      # deterministic port layout 表示
+vp ws <subcmd>        # Stone Free 🧵 worker workspace 管理
+vp midi <subcmd>      # MIDI ハードウェア操作 (要 midi feature)
+vp tmux <subcmd>      # tmux ペイン操作 / capture / dashboard
+vp file <subcmd>      # ファイル監視
+vp db <subcmd>        # SurrealDB デーモン管理
+```
+
+設定ファイル: `~/.config/vantage/config.toml`
+
+## Claude Code との統合
+
+`vp` は MCP サーバーとして Claude CLI に登録できる。
 
 ```bash
 claude mcp add vp -- vp mcp
 ```
 
-登録後、Claude Code のセッション中に以下の MCP ツールが使える:
+Claude のセッション中から、Canvas に Markdown / HTML / 画像を表示する `show`、Pane の分割・close、tmux pane の dashboard / capture、Ruby スクリプト評価、deterministic port lookup、TheWorld 上の他 actor との messaging (`msg_*`) など多数の tool が呼べる。
 
-| ツール | 説明 |
-|--------|------|
-| `show` | Markdown / HTML / ログをペインに表示 |
-| `split_pane` | ペインを水平・垂直に分割 |
-| `close_pane` | ペインを閉じる |
-| `toggle_pane` | 左右パネルの表示切替 |
-| `clear` | ペインをクリア |
-| `open_canvas` | Canvas ウィンドウを開く |
-| `close_canvas` | Canvas ウィンドウを閉じる |
-| `permission` | ツール実行の承認リクエスト |
-| `restart` | Process を再起動 |
+具体的な tool 一覧は `vp mcp` 起動後の MCP capability か [`crates/vantage-point/src/mcp.rs`](crates/vantage-point/src/mcp.rs) を参照。
 
----
-
-## コマンド
-
-```bash
-vp start [N]          # Process を起動（N はプロジェクト番号）
-vp start --headless   # WebView なしで起動
-vp start --browser    # ネイティブ WebView の代わりにブラウザで開く
-vp stop               # Process を停止
-vp restart            # 再起動（セッション状態を保持）
-vp ps                 # 稼働中 Process の一覧
-vp open [N]           # WebUI を開く
-vp config             # 設定と登録プロジェクトを表示
-vp update             # 最新版に更新
-vp mcp                # MCP サーバーとして起動（Claude Code 用）
-```
-
-### MIDI
-
-```bash
-vp start --midi 0     # MIDI ポート 0 を有効化
-```
-
-### 設定ファイル
-
-`~/.config/vantage/config.toml` にプロジェクトを登録する:
-
-```toml
-[[projects]]
-name = "my-project"
-path = "/path/to/your/project"
-```
-
----
-
-## VantagePoint.app（メニューバーアプリ）
-
-Process をメニューバーから操作できる Mac アプリ。
-
-1. [VantagePoint.app.zip](https://github.com/chronista-club/vantage-point-mac/releases/latest/download/VantagePoint.app.zip) をダウンロード
-2. `/Applications` に移動して起動
-
-```
-VantagePoint.app (メニューバー)
-    ↓ Conductor Process を管理
-vp conductor
-    ↓ Project Process を管理
-vp start (プロジェクトごと)
-```
-
----
-
-## プロジェクト構成
+## プロジェクト構造
 
 ```
 vantage-point/
-├── crates/vantage-point/   # CLI + Process (Rust)
-│   └── src/
-│       ├── process/        # HTTP + WebSocket サーバー
-│       ├── mcp.rs          # MCP ツール実装
-│       ├── canvas.rs       # Canvas ウィンドウ
-│       ├── terminal/       # ネイティブターミナル
-│       ├── daemon/         # デーモンプロセス管理
-│       └── midi.rs         # MIDI 入力
-├── web/                    # WebView HTML/JS
-└── docs/                   # 仕様・設計
-
-# 関連リポジトリ
-# https://github.com/chronista-club/vantage-point-mac (Swift メニューバーアプリ)
+├── crates/
+│   ├── vantage-point/   # コアロジック (lib)
+│   ├── vp-cli/          # `vp` CLI バイナリ
+│   ├── vp-app/          # cross-platform native app (tao + wry + WebView)
+│   ├── vp-bridge/       # Swift / Rust ブリッジ (staticlib for VantagePoint.app)
+│   ├── vp-ccws/         # Stone Free worker workspace
+│   ├── vp-db/           # SurrealDB 統合 (embed mode / surrealkv)
+│   ├── vp-mdast/        # Markdown → mdast パーサー + TS 型自動生成
+│   └── vp-mdast-wasm/   # vp-mdast の WASM ターゲット (Canvas 用)
+├── apple/VantagePoint/  # macOS Swift app (SwiftUI, メニューバー + サイドバー)
+├── web/                 # WebView HTML / JS
+├── docs/                # 仕様 / 設計 / ガイド
+├── scripts/             # 補助 script
+└── .mise.toml           # tool / env / task 統合管理
 ```
 
 ## 技術スタック
@@ -172,14 +163,22 @@ vantage-point/
 | レイヤー | 技術 |
 |---------|------|
 | CLI / Process | Rust (Tokio, Axum, Clap) |
-| WebView | wry + tao |
-| MCP | rmcp (stdio) |
-| Menu Bar App | Swift (AppKit) |
+| Native app (cross-platform) | tao + wry + WebView (WebView2 / WKWebView) |
+| Native app (macOS) | SwiftUI + AppKit + vp-bridge |
+| Agent | Claude CLI + MCP (rmcp) |
+| QUIC | unison (in-house) |
+| Database | SurrealDB / SQLite |
 | MIDI | midir |
+| Tool / env / task | mise |
+
+## ドキュメント
+
+- [`CLAUDE.md`](CLAUDE.md) — Claude Code (および AI agent) 向けプロジェクト概要
+- [`docs/`](docs/README.md) — Spec / Design / Guide
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — 開発参加ガイド
 
 ## ライセンス
 
 **MIT OR Apache-2.0** dual license.
 
-詳細は [LICENSE-MIT](LICENSE-MIT) / [LICENSE-APACHE](LICENSE-APACHE) を参照。
-コントリビュートについては [CONTRIBUTING.md](CONTRIBUTING.md)、セキュリティ報告は [SECURITY.md](SECURITY.md) を参照。
+詳細は [LICENSE-MIT](LICENSE-MIT) / [LICENSE-APACHE](LICENSE-APACHE)、コントリビュートは [CONTRIBUTING.md](CONTRIBUTING.md)、セキュリティ報告は [SECURITY.md](SECURITY.md) を参照。
