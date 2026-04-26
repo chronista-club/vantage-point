@@ -9,6 +9,7 @@
 //! Phase W2 MVP: vp-app プロセス内で直接 PTY spawn (local PTY)。
 //! 後続 Phase で daemon (TheWorld) の WebSocket PTY channel 経由に差し替え予定。
 
+use std::collections::HashMap;
 use std::io::Read;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -17,13 +18,19 @@ use anyhow::{Context, Result};
 use portable_pty::{CommandBuilder, NativePtySystem, PtyPair, PtySize, PtySystem};
 use tao::event_loop::EventLoopProxy;
 
+/// pane_id → PTY handle のグローバル pool 型エイリアス
+///
+/// Phase 3: Pane ごとに独立した PTY を持つ。Arc<Mutex<>> で
+/// IPC handler thread と main thread から同時アクセスされる。
+pub type PtyPool = Arc<Mutex<HashMap<String, PtyHandle>>>;
+
 /// EventLoop に送る app 全体のイベント
 #[derive(Debug, Clone)]
 pub enum AppEvent {
-    /// PTY から読み取った出力バイト列
-    Output(Vec<u8>),
-    /// xterm.js 側から ready 通知 (IPC 経由で届いたら main thread に伝える)
-    XtermReady,
+    /// PTY から読み取った出力バイト列 (Phase 3: pane_id でルーティング)
+    PtyOutput { pane_id: String, bytes: Vec<u8> },
+    /// xterm.js 側から ready 通知 (Phase 3: pane_id 単位で 1 回ずつ届く)
+    XtermReady { pane_id: String },
     /// TheWorld から project list 取得成功
     ProjectsLoaded(Vec<crate::client::ProjectInfo>),
     /// TheWorld への接続失敗
@@ -102,8 +109,12 @@ impl Clone for PtyHandle {
 
 /// シェルを PTY 上で起動し、reader thread で出力を EventLoop に送り続ける
 ///
+/// Phase 3: `pane_id` を渡すと、出力 event (`AppEvent::PtyOutput`) に pane_id を付与して
+/// JS 側の `window.onPtyData(paneId, b64)` でルーティングする。
+///
 /// 戻り値: xterm.js とのブリッジに使う `PtyHandle` (write / resize)
 pub fn spawn_shell(
+    pane_id: String,
     cwd: Option<&str>,
     cols: u16,
     rows: u16,
@@ -145,11 +156,15 @@ pub fn spawn_shell(
         );
     }
 
-    // reader thread: PTY master → EventLoopProxy
+    // reader thread: PTY master → EventLoopProxy (pane_id 付きで送出)
     let reader = pair.master.try_clone_reader().context("clone reader")?;
+    let reader_pane_id = pane_id.clone();
     thread::Builder::new()
-        .name("vp-app-pty-reader".into())
-        .spawn(move || reader_loop(reader, proxy))
+        .name(format!(
+            "vp-app-pty-reader-{}",
+            &pane_id[..pane_id.len().min(8)]
+        ))
+        .spawn(move || reader_loop(reader, reader_pane_id, proxy))
         .context("spawn reader thread")?;
 
     let writer = pair.master.take_writer().context("take writer")?;
@@ -160,45 +175,32 @@ pub fn spawn_shell(
 }
 
 /// PTY reader ループ。EOF / エラーで終了。
-fn reader_loop(mut reader: Box<dyn Read + Send>, proxy: EventLoopProxy<AppEvent>) {
+fn reader_loop(mut reader: Box<dyn Read + Send>, pane_id: String, proxy: EventLoopProxy<AppEvent>) {
     let mut buf = [0u8; 4096];
     let mut total = 0usize;
+    let pane_short = &pane_id[..pane_id.len().min(8)];
     loop {
         match reader.read(&mut buf) {
             Ok(0) => {
-                tracing::info!("PTY reader: EOF (total={} bytes)", total);
+                tracing::info!("PTY reader[{}]: EOF (total={} bytes)", pane_short, total);
                 break;
             }
             Ok(n) => {
                 total += n;
-                let hex: String = buf[..n].iter().map(|b| format!("{:02x}", b)).collect();
-                let ascii: String = buf[..n]
-                    .iter()
-                    .map(|&b| {
-                        if (0x20..=0x7e).contains(&b) {
-                            b as char
-                        } else {
-                            '.'
-                        }
-                    })
-                    .collect();
-                tracing::debug!(
-                    "PTY reader: {} bytes [hex={} ascii={:?}] total={}",
-                    n,
-                    hex,
-                    ascii,
-                    total
-                );
+                tracing::trace!("PTY reader[{}]: {} bytes total={}", pane_short, n, total);
                 if proxy
-                    .send_event(AppEvent::Output(buf[..n].to_vec()))
+                    .send_event(AppEvent::PtyOutput {
+                        pane_id: pane_id.clone(),
+                        bytes: buf[..n].to_vec(),
+                    })
                     .is_err()
                 {
-                    tracing::info!("EventLoop 終了、reader_loop 終了");
+                    tracing::info!("EventLoop 終了、reader_loop[{}] 終了", pane_short);
                     break;
                 }
             }
             Err(e) => {
-                tracing::warn!("PTY reader error: {}", e);
+                tracing::warn!("PTY reader[{}] error: {}", pane_short, e);
                 break;
             }
         }
@@ -281,11 +283,13 @@ fn dirs_home() -> Option<String> {
 
 /// xterm.js から IPC で送られてきた JSON メッセージを処理
 ///
-/// 期待する形式:
-/// - `{"t":"in","d":"..."}` — ユーザ入力 (string)
-/// - `{"t":"resize","cols":N,"rows":N}` — リサイズ
-/// - `{"t":"ready"}` — xterm.js 初期化完了 → UserEvent::XtermReady を main thread に送る
-pub fn handle_ipc_message(msg: &str, pty: &TerminalHandle, proxy: &EventLoopProxy<AppEvent>) {
+/// 期待する形式 (Phase 3: paneId 付き):
+/// - `{"t":"in","paneId":"...","d":"..."}` — ユーザ入力 (string)
+/// - `{"t":"resize","paneId":"...","cols":N,"rows":N}` — リサイズ
+/// - `{"t":"ready","paneId":"..."}` — xterm.js 初期化完了 → XtermReady event
+///
+/// `paneId` を pool で照合して該当 PTY に転送。pool に無ければ warn して捨てる。
+pub fn handle_ipc_message(msg: &str, pool: &PtyPool, proxy: &EventLoopProxy<AppEvent>) {
     let parsed: serde_json::Value = match serde_json::from_str(msg) {
         Ok(v) => v,
         Err(e) => {
@@ -294,26 +298,63 @@ pub fn handle_ipc_message(msg: &str, pty: &TerminalHandle, proxy: &EventLoopProx
         }
     };
 
+    let pane_id = parsed
+        .get("paneId")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
     match parsed.get("t").and_then(|v| v.as_str()) {
         Some("in") => {
+            let Some(pid) = pane_id.as_deref() else {
+                tracing::warn!("IPC in: paneId 欠落");
+                return;
+            };
             if let Some(data) = parsed.get("d").and_then(|v| v.as_str()) {
-                tracing::debug!("IPC in: {} bytes", data.len());
-                if let Err(e) = pty.write(data.as_bytes()) {
-                    tracing::warn!("PTY write 失敗: {}", e);
+                tracing::trace!("IPC in[{}]: {} bytes", pid, data.len());
+                let pool = match pool.lock() {
+                    Ok(g) => g,
+                    Err(e) => {
+                        tracing::warn!("PTY pool mutex poisoned: {}", e);
+                        return;
+                    }
+                };
+                if let Some(handle) = pool.get(pid) {
+                    if let Err(e) = handle.write(data.as_bytes()) {
+                        tracing::warn!("PTY write[{}] 失敗: {}", pid, e);
+                    }
+                } else {
+                    tracing::warn!("IPC in: pool に paneId='{}' が無い", pid);
                 }
             }
         }
         Some("resize") => {
+            let Some(pid) = pane_id.as_deref() else {
+                tracing::warn!("IPC resize: paneId 欠落");
+                return;
+            };
             let cols = parsed.get("cols").and_then(|v| v.as_u64()).unwrap_or(80) as u16;
             let rows = parsed.get("rows").and_then(|v| v.as_u64()).unwrap_or(24) as u16;
-            tracing::info!("IPC resize: {}x{}", cols, rows);
-            if let Err(e) = pty.resize(cols, rows) {
-                tracing::warn!("PTY resize 失敗: {}", e);
+            tracing::debug!("IPC resize[{}]: {}x{}", pid, cols, rows);
+            let pool = match pool.lock() {
+                Ok(g) => g,
+                Err(e) => {
+                    tracing::warn!("PTY pool mutex poisoned: {}", e);
+                    return;
+                }
+            };
+            if let Some(handle) = pool.get(pid)
+                && let Err(e) = handle.resize(cols, rows)
+            {
+                tracing::warn!("PTY resize[{}] 失敗: {}", pid, e);
             }
         }
         Some("ready") => {
-            tracing::info!("xterm.js ready → flush buffered PTY output");
-            let _ = proxy.send_event(AppEvent::XtermReady);
+            let Some(pid) = pane_id else {
+                tracing::warn!("IPC ready: paneId 欠落");
+                return;
+            };
+            tracing::info!("xterm ready[{}] → flush buffered PTY output", pid);
+            let _ = proxy.send_event(AppEvent::XtermReady { pane_id: pid });
         }
         Some("copy") => {
             // navigator.clipboard が使えなかった時の fallback: arboard で OS clipboard 直書き
@@ -365,37 +406,13 @@ pub fn handle_ipc_message(msg: &str, pty: &TerminalHandle, proxy: &EventLoopProx
     }
 }
 
-/// Terminal backend の統一ハンドル
-///
-/// local portable-pty (`PtyHandle`) と daemon WebSocket (`WsTerminalHandle`) を
-/// 相互交換可能に wrap する。
-#[derive(Clone)]
-pub enum TerminalHandle {
-    Local(PtyHandle),
-    Daemon(crate::ws_terminal::WsTerminalHandle),
-}
-
-impl TerminalHandle {
-    pub fn write(&self, data: &[u8]) -> Result<()> {
-        match self {
-            Self::Local(h) => h.write(data),
-            Self::Daemon(h) => h.write(data),
-        }
-    }
-
-    pub fn resize(&self, cols: u16, rows: u16) -> Result<()> {
-        match self {
-            Self::Local(h) => h.resize(cols, rows),
-            Self::Daemon(h) => h.resize(cols, rows),
-        }
-    }
-}
-
 /// Rust → xterm.js に PTY バイト列を送る JS スニペットを生成
 ///
-/// base64 でエンコードして `window.onPtyData(b64)` を呼ぶ。
-pub fn build_output_script(bytes: &[u8]) -> String {
+/// Phase 3: pane_id を付けて `window.onPtyData(paneId, b64)` を呼ぶ。
+/// pane_id ごとに別の xterm.js Terminal インスタンスがあり、JS 側で routing する。
+pub fn build_output_script(pane_id: &str, bytes: &[u8]) -> String {
     use base64::Engine;
     let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
-    format!("window.onPtyData('{}')", b64)
+    let pid_json = serde_json::to_string(pane_id).unwrap_or_else(|_| "\"\"".into());
+    format!("window.onPtyData({}, '{}')", pid_json, b64)
 }

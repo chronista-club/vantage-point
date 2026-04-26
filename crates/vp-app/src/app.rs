@@ -26,6 +26,8 @@
 //! - **γ-light readiness**: main area の slot rect を ResizeObserver 経由で Rust に
 //!   push (`AppEvent::SlotRect`)、Phase 4+ で native overlay の `set_position` 同期に使用
 
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -839,6 +841,53 @@ fn push_active_pane(main_view: &WebView, state: &SidebarState, focused_path: Opt
     }
 }
 
+/// SidebarState の Agent/Shell pane で PTY pool に未登録のものを spawn する。
+///
+/// Phase 3: ProjectsLoaded / pane:add の後に呼ぶ。idempotent (登録済みは skip)。
+/// project の path を cwd として渡すので、Lead Agent はそのプロジェクト直下で起動される。
+fn ensure_pane_ptys(
+    pool: &terminal::PtyPool,
+    state: &SidebarState,
+    proxy: &EventLoopProxy<AppEvent>,
+) {
+    for project in &state.projects {
+        for pane in &project.panes {
+            if !matches!(pane.kind, PaneKind::Agent | PaneKind::Shell) {
+                continue;
+            }
+            // 既に pool にある場合 skip (lock を毎回取り直して dead-lock 回避)
+            {
+                let guard = match pool.lock() {
+                    Ok(g) => g,
+                    Err(e) => {
+                        tracing::warn!("PTY pool mutex poisoned: {}", e);
+                        return;
+                    }
+                };
+                if guard.contains_key(&pane.id) {
+                    continue;
+                }
+            }
+            match terminal::spawn_shell(pane.id.clone(), Some(&project.path), 80, 24, proxy.clone())
+            {
+                Ok(handle) => {
+                    tracing::info!(
+                        "PTY spawn pane='{}' project='{}'",
+                        &pane.id[..pane.id.len().min(8)],
+                        project.name
+                    );
+                    if let Ok(mut guard) = pool.lock() {
+                        guard.insert(pane.id.clone(), handle);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("PTY spawn 失敗 (pane='{}'): {}", pane.id, e);
+                }
+            }
+        }
+    }
+}
+
 /// SidebarState を JSON にして sidebar webview に push
 fn push_sidebar_state(sidebar: &WebView, state: &SidebarState) {
     let json = match serde_json::to_string(state) {
@@ -1015,37 +1064,22 @@ pub fn run() -> anyhow::Result<()> {
         .with_inner_size(LogicalSize::new(1200.0, 800.0))
         .build(&event_loop)?;
 
-    // Terminal backend 選択 (VP-93 Step 2a + auto-launch)
-    // - VP_TERMINAL_MODE=local: 明示 opt-out で in-proc portable-pty
-    // - それ以外 (default): TheWorld daemon の /ws/terminal 経由
-    //   localhost URL かつ daemon が down なら `vp` binary を auto-spawn して待つ。
-    //   spawn 失敗 or timeout なら local portable-pty にフォールバック (黙って落ちない)。
-    let proxy = event_loop.create_proxy();
-    let pty = match std::env::var("VP_TERMINAL_MODE").as_deref() {
-        Ok("local") => {
-            tracing::info!("terminal mode = local (portable-pty, explicit opt-out)");
-            terminal::TerminalHandle::Local(terminal::spawn_shell(None, 80, 24, proxy)?)
-        }
-        _ => {
-            let world_url =
-                std::env::var("VP_WORLD_URL").unwrap_or_else(|_| "http://127.0.0.1:32000".into());
-            match crate::daemon_launcher::ensure_daemon_ready(&world_url) {
-                Ok(()) => {
-                    tracing::info!("terminal mode = daemon (WS to {})", world_url);
-                    terminal::TerminalHandle::Daemon(crate::ws_terminal::connect_daemon_terminal(
-                        &world_url, 80, 24, proxy,
-                    )?)
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "daemon auto-launch 失敗、local portable-pty に fallback: {}",
-                        e
-                    );
-                    terminal::TerminalHandle::Local(terminal::spawn_shell(None, 80, 24, proxy)?)
-                }
-            }
-        }
-    };
+    // Phase 3: Pane ごとに独立した PTY を持つ。pool に Arc<Mutex<HashMap<paneId, PtyHandle>>>。
+    // 起動時は空。`ProjectsLoaded` で project が来たら Lead Agent (= Agent kind pane) を spawn、
+    // `pane:add` でも spawn、`pane:select` 時は JS 側で xterm を切替表示するだけ。
+    //
+    // VP_TERMINAL_MODE=daemon の旧 path (単一 WS terminal) は Phase 3 では bypass。
+    // HTTP API (project list / health) は依然 daemon 経由。
+    let pty_pool: terminal::PtyPool = Arc::new(Mutex::new(HashMap::new()));
+
+    // daemon を確実に起動しておく (HTTP API 用、terminal WS は使わない)
+    let world_url =
+        std::env::var("VP_WORLD_URL").unwrap_or_else(|_| "http://127.0.0.1:32000".into());
+    if let Err(e) = crate::daemon_launcher::ensure_daemon_ready(&world_url) {
+        tracing::warn!("daemon auto-launch 失敗 (HTTP API は使えなくなる): {}", e);
+    } else {
+        tracing::info!("daemon 準備完了 (HTTP API: {})", world_url);
+    }
 
     // TheWorld から project list を非同期 fetch (起動初回)
     spawn_projects_fetch(event_loop.create_proxy());
@@ -1068,8 +1102,8 @@ pub fn run() -> anyhow::Result<()> {
 
     // VP-100 Phase 2: main area = 単一 WebView (canvas + terminal を統合)。
     // xterm.js + canvas placeholder + preview iframe を kind 別に切替表示する。
-    // PTY ブリッジは旧 terminal_view と同じ IPC handler を引き継ぐ。
-    let pty_for_ipc = pty.clone();
+    // Phase 3: IPC handler は pty_pool を参照、paneId tag で該当 PTY に転送。
+    let pty_pool_for_ipc = pty_pool.clone();
     let ipc_proxy = event_loop.create_proxy();
     // VP-100 follow-up (1Password 風 runtime 切替):
     // wry の DevTools 機能は **compile 時 always 有効** で固定。
@@ -1084,20 +1118,22 @@ pub fn run() -> anyhow::Result<()> {
         })
         .with_devtools(true)
         .with_ipc_handler(move |req| {
-            terminal::handle_ipc_message(req.body(), &pty_for_ipc, &ipc_proxy);
+            terminal::handle_ipc_message(req.body(), &pty_pool_for_ipc, &ipc_proxy);
         })
         .with_focused(true)
         .build_as_child(&window)?;
 
     tracing::info!("メインウィンドウ + 2 ペイン (sidebar / main) 作成");
 
-    // xterm.js が ready になるまで PTY 出力を buffer
-    // (ConPTY は起動直後に DSR \x1b[6n を送ってきて xterm の応答を待つため、
-    //  ready 前の bytes を欠落させると shell が永久に block する)
-    let mut xterm_ready = false;
-    let mut pending: Vec<u8> = Vec::new();
-    // pending buffer の上限。xterm が永久に ready にならないシナリオでも OOM を回避する
-    // (PH#2)。1MB を超えたら冒頭以外を捨てて overflow メッセージを残す。
+    // Phase 3: pane_id 単位で xterm ready 判定 + pre-ready buffer。
+    // 各 pane の xterm.js Terminal は active 化時に動的生成され、`{t:ready, paneId}` を
+    // 送ってくる。それまでに届いた PTY 出力は pending[paneId] に貯める。
+    //
+    // ConPTY は起動直後に DSR `\x1b[6n` を送るので、ready 前の bytes を欠落させると
+    // shell が永久に block する。pre-ready buffer 必須。
+    let mut xterm_ready: HashSet<String> = HashSet::new();
+    let mut pending: HashMap<String, Vec<u8>> = HashMap::new();
+    // pending buffer の per-pane 上限 (OOM 回避)
     const PENDING_MAX: usize = 1_000_000;
     // VP-95: sidebar 全体 state (projects + widget + activity)
     let mut sidebar_state = SidebarState::default();
@@ -1127,47 +1163,49 @@ pub fn run() -> anyhow::Result<()> {
             } => {
                 update_pane_bounds(&sidebar, &main_view, size, window.scale_factor());
             }
-            Event::UserEvent(AppEvent::Output(bytes)) => {
-                if !xterm_ready {
-                    if pending.len() + bytes.len() > PENDING_MAX {
+            Event::UserEvent(AppEvent::PtyOutput { pane_id, bytes }) => {
+                if !xterm_ready.contains(&pane_id) {
+                    let buf = pending.entry(pane_id.clone()).or_default();
+                    if buf.len() + bytes.len() > PENDING_MAX {
                         tracing::warn!(
-                            "PTY pending overflow ({} + {} > {}), truncating",
-                            pending.len(),
+                            "PTY pending[{}] overflow ({} + {} > {}), truncating",
+                            pane_id,
+                            buf.len(),
                             bytes.len(),
                             PENDING_MAX
                         );
-                        pending.clear();
-                        pending.extend_from_slice(
+                        buf.clear();
+                        buf.extend_from_slice(
                             b"\r\n\x1b[33m[vp-app] PTY buffer overflow, truncated\x1b[0m\r\n",
                         );
                     }
-                    pending.extend_from_slice(&bytes);
-                    tracing::debug!(
-                        "PTY output buffered ({} bytes, pending total={})",
+                    buf.extend_from_slice(&bytes);
+                    tracing::trace!(
+                        "PTY output[{}] buffered ({} bytes, total={})",
+                        pane_id,
                         bytes.len(),
-                        pending.len()
+                        buf.len()
                     );
                 } else {
-                    let script = terminal::build_output_script(&bytes);
+                    let script = terminal::build_output_script(&pane_id, &bytes);
                     if let Err(e) = main_view.evaluate_script(&script) {
-                        tracing::warn!("main evaluate_script 失敗: {}", e);
+                        tracing::warn!("main evaluate_script[{}] 失敗: {}", pane_id, e);
                     }
                 }
             }
-            Event::UserEvent(AppEvent::XtermReady) => {
-                // PH#1: 二重 ready 防御 — `setActivePane` 等で再起動した場合に
-                // 二重 flush しないよう冪等化。
-                if xterm_ready {
+            Event::UserEvent(AppEvent::XtermReady { pane_id }) => {
+                // 二重 ready 防御 (冪等化)
+                if !xterm_ready.insert(pane_id.clone()) {
                     return;
                 }
-                xterm_ready = true;
-                if !pending.is_empty() {
-                    tracing::info!("xterm ready → flush {} 保留バイト", pending.len());
-                    let script = terminal::build_output_script(&pending);
+                if let Some(buf) = pending.remove(&pane_id)
+                    && !buf.is_empty()
+                {
+                    tracing::info!("xterm ready[{}] → flush {} 保留バイト", pane_id, buf.len());
+                    let script = terminal::build_output_script(&pane_id, &buf);
                     if let Err(e) = main_view.evaluate_script(&script) {
-                        tracing::warn!("main flush 失敗: {}", e);
+                        tracing::warn!("main flush[{}] 失敗: {}", pane_id, e);
                     }
-                    pending.clear();
                 }
             }
             Event::UserEvent(AppEvent::ProjectsLoaded(projects)) => {
@@ -1208,6 +1246,8 @@ pub fn run() -> anyhow::Result<()> {
                     })
                     .collect();
                 push_sidebar_state(&sidebar, &sidebar_state);
+                // Phase 3: 新規 project の Lead Agent + 既存 pane で PTY 未 spawn のものを spawn
+                ensure_pane_ptys(&pty_pool, &sidebar_state, &async_action_proxy);
                 // auto-select: 新規 project の最初の pane (Lead Agent) を main area に show
                 if let Some(path) = newly_added_path.as_deref() {
                     tracing::info!("auto-select: 新規 project '{}' の Lead Agent を main area に表示", path);
@@ -1257,6 +1297,8 @@ pub fn run() -> anyhow::Result<()> {
                 let outcome = handle_sidebar_ipc(&msg, &mut sidebar_state);
                 if outcome.changed {
                     push_sidebar_state(&sidebar, &sidebar_state);
+                    // Phase 3: pane:add で増えた可能性があるので PTY pool 再 ensure
+                    ensure_pane_ptys(&pty_pool, &sidebar_state, &async_action_proxy);
                 }
                 if outcome.active_changed_path.is_some() {
                     push_active_pane(

@@ -1,4 +1,8 @@
-//! Daemon 経由 terminal (VP-93 Step 2a)
+//! Daemon 経由 terminal (VP-93 Step 2a) — **Phase 3 では bypass**
+//!
+//! Phase 3 で per-pane local PTY pool に移行したため、本ファイルの
+//! `connect_daemon_terminal` は呼び出されない (dead code 扱い)。
+//! 復活させる場合は WS protocol を per-pane に拡張する必要がある (Phase 4+ 候補)。
 //!
 //! TheWorld の `/ws/terminal` WebSocket endpoint に接続し、
 //! local portable-pty (`terminal::PtyHandle`) と同等の write / resize API を提供する。
@@ -107,13 +111,11 @@ async fn run_ws_loop(
     proxy: EventLoopProxy<AppEvent>,
 ) {
     tracing::info!("/ws/terminal connecting: {}", url);
+    let _ = &proxy; // Phase 3: AppEvent::Output 廃止のため未使用 (dead code path)
     let (ws, _) = match connect_async(&url).await {
         Ok(x) => x,
         Err(e) => {
             tracing::error!("/ws/terminal connect failed: {}", e);
-            let err_line =
-                format!("\r\n\x1b[31m[vp-app] daemon 接続失敗: {}\x1b[0m\r\n", e).into_bytes();
-            let _ = proxy.send_event(AppEvent::Output(err_line));
             return;
         }
     };
@@ -143,10 +145,8 @@ async fn run_ws_loop(
             },
             msg = read.next() => match msg {
                 Some(Ok(Message::Binary(b))) => {
-                    if proxy.send_event(AppEvent::Output(b.to_vec())).is_err() {
-                        tracing::info!("EventLoop 終了、ws-terminal read 終了");
-                        break;
-                    }
+                    // Phase 3: AppEvent::Output 廃止 → routing 不能なので drop
+                    tracing::trace!("/ws/terminal binary recv: {} bytes (drop in Phase 3)", b.len());
                 }
                 Some(Ok(Message::Text(t))) => {
                     tracing::warn!("/ws/terminal unexpected text from server: {}", t);
@@ -163,10 +163,5 @@ async fn run_ws_loop(
             },
         }
     }
-    // PH#3: WS disconnect の user-facing 通知
-    // (loop 抜けた = サーバ close / 通信エラー / sender drop のいずれか)
-    let line = "\r\n\x1b[31m[vp-app] daemon disconnected (reconnect not implemented; restart vp-app to recover)\x1b[0m\r\n"
-        .as_bytes()
-        .to_vec();
-    let _ = proxy.send_event(AppEvent::Output(line));
+    tracing::info!("/ws/terminal loop 終了 (Phase 3 では本 path は呼ばれない)");
 }
