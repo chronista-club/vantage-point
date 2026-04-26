@@ -100,7 +100,11 @@ body{overflow:hidden;}
 .pane{position:absolute;inset:0;display:none;}
 .pane.active{display:block;}
 .pane.terminal{padding:0;}
-.pane.terminal #t{padding:12px;height:100%;width:100%;box-sizing:border-box;}
+.pane.terminal #term-pool{position:relative;width:100%;height:100%;}
+/* Phase 3: pane ごとに独立した xterm.js Terminal が動的に追加される。
+   active pane のみ display:block、他は display:none で hidden。 */
+.term-instance{position:absolute;inset:0;padding:12px;box-sizing:border-box;display:none;}
+.term-instance.active{display:block;}
 .pane.canvas{display:none;place-items:center;}
 .pane.canvas.active{display:grid;}
 .pane.canvas main{text-align:center;}
@@ -125,7 +129,9 @@ body{overflow:hidden;}
   <!-- 各 .pane は data-kind を持つ。data-pane-id は active pane 切替時に Rust が動的に設定。
        VP-100 γ-light: ResizeObserver が slot rect を IPC で送る (Phase 4+ で native overlay 同期に使う)。 -->
   <div class="pane terminal" id="pane-terminal" data-kind="agent">
-    <div id="t"></div>
+    <!-- Phase 3: pane ごとの xterm.js Terminal は <div class="term-instance"> として
+         JS から動的に追加される。term-pool は単なる positioning 親。 -->
+    <div id="term-pool"></div>
   </div>
   <div class="pane canvas" id="pane-canvas" data-kind="canvas">
     <main>
@@ -169,62 +175,164 @@ body{overflow:hidden;}
   // Creo tokens から xterm.js theme を構築 (runtime で var() 解決)
   const css = getComputedStyle(document.documentElement);
   const v = (name, fallback) => (css.getPropertyValue(name).trim() || fallback);
-  const theme = {
-    background: v('--color-surface-bg-base', '#0F1128'),
-    foreground: v('--color-text-primary', '#EDEEF4'),
-    cursor: v('--color-brand-primary', '#7D6BC2'),
-    cursorAccent: v('--color-surface-bg-base', '#0F1128'),
-    selectionBackground: v('--color-brand-primary-subtle', '#2C2843')
-  };
   const monoFamily = (css.getPropertyValue('--typography-family-mono') || '').trim()
     || '"JetBrainsMono Nerd Font", "Cascadia Code", "SF Mono", Menlo, Consolas, monospace';
-  const term = new Terminal({
-    fontFamily: monoFamily,
-    fontSize: 13,
-    lineHeight: 1.15,
-    letterSpacing: 0,
-    theme: theme,
-    allowProposedApi: true,
-    convertEol: true,
-    scrollback: 5000,
-    cursorBlink: true,
-    cursorStyle: 'bar',
-    cursorWidth: 2,
-    smoothScrollDuration: 80,
-    fontLigatures: true
-  });
-  const fitAddon = new FitAddon.FitAddon();
-  term.loadAddon(fitAddon);
-  term.open(document.getElementById('t'));
-  // 初回は terminal が hidden の可能性があるので、active 化時にも fit する。
-  fitAddon.fit();
-
-  function sendResize() {
-    window.ipc.postMessage(JSON.stringify({t:'resize', cols: term.cols, rows: term.rows}));
+  function buildTheme() {
+    return {
+      background: v('--color-surface-bg-base', '#0F1128'),
+      foreground: v('--color-text-primary', '#EDEEF4'),
+      cursor: v('--color-brand-primary', '#7D6BC2'),
+      cursorAccent: v('--color-surface-bg-base', '#0F1128'),
+      selectionBackground: v('--color-brand-primary-subtle', '#2C2843')
+    };
   }
 
-  window.addEventListener('resize', () => {
-    if (document.getElementById('pane-terminal').classList.contains('active')) {
-      fitAddon.fit();
-      sendResize();
+  // ========= Phase 3: per-pane xterm.js Terminal Map =========
+  // paneId → {term, fitAddon, container}
+  const terms = new Map();
+  const termPool = document.getElementById('term-pool');
+
+  const dbg = (msg) => window.ipc.postMessage(JSON.stringify({t:'debug', msg: msg}));
+
+  function attachCopyPaste(container, term) {
+    const doCopy = () => {
+      const sel = term.getSelection();
+      if (!sel) return false;
+      navigator.clipboard.writeText(sel).catch(() => {
+        window.ipc.postMessage(JSON.stringify({t:'copy', d: sel}));
+      });
+      return true;
+    };
+    const doPaste = () => {
+      navigator.clipboard.readText()
+        .then((text) => { if (text) term.paste(text); })
+        .catch((err) => dbg('paste failed: ' + err));
+    };
+
+    // Ctrl+Shift+C は container 単位で capture (term の上でだけ拾うように)
+    container.addEventListener('keydown', (e) => {
+      if (e.ctrlKey && e.shiftKey && (e.key === 'C' || e.key === 'c')) {
+        e.preventDefault();
+        e.stopPropagation();
+        doCopy();
+      }
+    }, true);
+
+    term.attachCustomKeyEventHandler((e) => {
+      if (e.type !== 'keydown') return true;
+      const key = (e.key || '').toLowerCase();
+      if ((e.ctrlKey && e.key === 'Insert' && !e.shiftKey) || (e.metaKey && key === 'c')) {
+        if (doCopy()) return false;
+      }
+      if ((e.shiftKey && e.key === 'Insert' && !e.ctrlKey) ||
+          (e.ctrlKey && e.shiftKey && key === 'v') ||
+          (e.metaKey && key === 'v')) {
+        doPaste();
+        return false;
+      }
+      if (e.ctrlKey && !e.shiftKey && !e.metaKey && key === 'c') {
+        if (term.hasSelection()) {
+          doCopy();
+          term.clearSelection();
+          return false;
+        }
+      }
+      return true;
+    });
+
+    container.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      doPaste();
+    });
+
+    container.addEventListener('mouseup', () => {
+      setTimeout(() => {
+        const sel = term.getSelection();
+        if (sel && sel.length > 0) doCopy();
+      }, 0);
+    });
+  }
+
+  function ensureTerm(paneId) {
+    if (terms.has(paneId)) return terms.get(paneId);
+
+    const container = document.createElement('div');
+    container.className = 'term-instance';
+    container.dataset.paneId = paneId;
+    termPool.appendChild(container);
+
+    const term = new Terminal({
+      fontFamily: monoFamily,
+      fontSize: 13,
+      lineHeight: 1.15,
+      letterSpacing: 0,
+      theme: buildTheme(),
+      allowProposedApi: true,
+      convertEol: true,
+      scrollback: 5000,
+      cursorBlink: true,
+      cursorStyle: 'bar',
+      cursorWidth: 2,
+      smoothScrollDuration: 80,
+      fontLigatures: true
+    });
+    const fitAddon = new FitAddon.FitAddon();
+    term.loadAddon(fitAddon);
+    term.open(container);
+
+    term.onData(d => {
+      window.ipc.postMessage(JSON.stringify({t:'in', paneId: paneId, d: d}));
+    });
+
+    // OSC 52 (clipboard) intercept (Phase 1 から継続)
+    term.parser.registerOscHandler(52, (data) => {
+      const idx = data.indexOf(';');
+      if (idx < 0) return true;
+      const pd = data.slice(idx + 1);
+      if (pd === '?' || pd.length === 0) return true;
+      try {
+        const binary = atob(pd);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        const text = new TextDecoder('utf-8').decode(bytes);
+        window.ipc.postMessage(JSON.stringify({t:'copy', d: text}));
+      } catch (e) {
+        dbg('OSC 52 decode error: ' + e.message);
+      }
+      return true;
+    });
+
+    attachCopyPaste(container, term);
+
+    const focusTerm = () => { try { term.focus(); } catch (_) {} };
+    container.addEventListener('mousedown', focusTerm);
+    container.addEventListener('click', focusTerm);
+
+    const entry = { term, fitAddon, container };
+    terms.set(paneId, entry);
+
+    // ready 通知 (Rust が pre-ready buffer を flush してくる)
+    window.ipc.postMessage(JSON.stringify({t:'ready', paneId: paneId}));
+
+    return entry;
+  }
+
+  // Rust → JS で per-pane PTY 出力
+  window.onPtyData = function(paneId, b64) {
+    const e = terms.get(paneId);
+    if (!e) {
+      // ready 前の race: Rust が xterm_ready をセットする前に flush しに来た or
+      // pane が JS 側で生成される前 → console warn のみ (Rust 側 buffer で吸収済のはず)
+      return;
     }
-  });
-
-  term.onData(d => {
-    window.ipc.postMessage(JSON.stringify({t:'in', d: d}));
-  });
-
-  // Rust から呼ばれる関数
-  window.onPtyData = function(b64) {
     const bin = atob(b64);
     const bytes = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    term.write(bytes);
+    e.term.write(bytes);
   };
 
-  // ========= VP-100 Phase 2: Pane 切替 API =========
+  // ========= Phase 3: Pane 切替 API =========
   // Rust → JS で active pane を切替。kind が null の場合は empty 状態を表示。
-  // payload: {kind: "agent"|"canvas"|"preview"|"shell"|null, pane_id, preview_url}
   const KIND_TO_PANE = {
     agent: 'pane-terminal',
     shell: 'pane-terminal',
@@ -232,8 +340,8 @@ body{overflow:hidden;}
     preview: 'pane-preview',
     empty: 'pane-empty',
   };
-  // 現在 active な pane の info (slot:rect 送出時の pane_id 補完用)
   let activePaneInfo = null;
+
   function setActiveImpl(info) {
     activePaneInfo = info || null;
     const kind = info && info.kind ? info.kind : 'empty';
@@ -241,13 +349,40 @@ body{overflow:hidden;}
     document.querySelectorAll('.pane').forEach(el => {
       const isActive = (el.id === targetId);
       el.classList.toggle('active', isActive);
-      // 動的に data-pane-id を設定 (γ-light: native overlay が pane_id で照合する想定)
       if (isActive && info && info.pane_id) {
         el.setAttribute('data-pane-id', info.pane_id);
       } else if (isActive) {
         el.removeAttribute('data-pane-id');
       }
     });
+
+    // Phase 3: per-pane xterm container 切替
+    if (kind === 'agent' || kind === 'shell') {
+      const paneId = info && info.pane_id;
+      if (paneId) ensureTerm(paneId);
+      for (const [id, e] of terms) {
+        e.container.classList.toggle('active', id === paneId);
+      }
+      if (paneId) {
+        const e = terms.get(paneId);
+        try {
+          e.fitAddon.fit();
+          window.ipc.postMessage(JSON.stringify({
+            t: 'resize',
+            paneId: paneId,
+            cols: e.term.cols,
+            rows: e.term.rows
+          }));
+          e.term.focus();
+        } catch (_) {}
+      }
+    } else {
+      // 非 terminal kind: 全 term container を hide
+      for (const [, e] of terms) {
+        e.container.classList.remove('active');
+      }
+    }
+
     if (kind === 'preview') {
       const frame = document.getElementById('preview-frame');
       const url = (info && info.preview_url) || 'about:blank';
@@ -255,17 +390,9 @@ body{overflow:hidden;}
         frame.setAttribute('src', url);
       }
     }
-    if (kind === 'agent' || kind === 'shell') {
-      // hidden 中はサイズ計算が 0 になり xterm が壊れるので、active 化直後に fit + resize 通知
-      try {
-        fitAddon.fit();
-        sendResize();
-        focusTerm();
-      } catch (_) {}
-    }
-    // active 切替直後に slot rect を一発送る (ResizeObserver 起動前 fail-safe)
     sendSlotRect();
   }
+
   // DOM 未 ready の前に呼ばれた場合は buffer
   let pendingPane = null;
   let domReady = false;
@@ -275,8 +402,6 @@ body{overflow:hidden;}
   };
 
   // ========= VP-100 γ-light: slot rect を Rust に push =========
-  // ResizeObserver が active pane container の rect 変化を捕捉。
-  // Phase 2 時点では Rust は受け取って store するだけ (Phase 4+ で native overlay 同期に使用)。
   function sendSlotRect() {
     const target = document.querySelector('.pane.active');
     if (!target) return;
@@ -288,9 +413,6 @@ body{overflow:hidden;}
       rect: { x: r.left, y: r.top, w: r.width, h: r.height },
     }));
   }
-  // ResizeObserver は host (= main area の root) に張る。中の pane も同サイズでリサイズされる。
-  // PH#4: rAF debounce — window resize 中の高頻度発火で event queue が詰まらないよう、
-  // 1 frame に最大 1 回 sendSlotRect を呼ぶように制限。
   let rafScheduled = false;
   function scheduleSendSlotRect() {
     if (rafScheduled) return;
@@ -305,102 +427,31 @@ body{overflow:hidden;}
     ro.observe(document.getElementById('host'));
   }
 
-  // 初期化完了を Rust に通知 (resize 情報も同時に)
-  window.ipc.postMessage(JSON.stringify({t:'ready'}));
-  sendResize();
-
-  // DevTools console から term を手動検査できるよう露出
-  window.__vpTerm = term;
-
-  // OSC 52 (clipboard) intercept (Phase 1 から継続)
-  term.parser.registerOscHandler(52, (data) => {
-    const idx = data.indexOf(';');
-    if (idx < 0) return true;
-    const pd = data.slice(idx + 1);
-    if (pd === '?' || pd.length === 0) return true;
+  // window resize で active term の fit + resize 通知
+  window.addEventListener('resize', () => {
+    if (!activePaneInfo) return;
+    const k = activePaneInfo.kind;
+    if (k !== 'agent' && k !== 'shell') return;
+    const paneId = activePaneInfo.pane_id;
+    if (!paneId) return;
+    const e = terms.get(paneId);
+    if (!e) return;
     try {
-      const binary = atob(pd);
-      const bytes = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-      const text = new TextDecoder('utf-8').decode(bytes);
-      window.ipc.postMessage(JSON.stringify({t:'copy', d: text}));
-      window.ipc.postMessage(JSON.stringify({t:'debug', msg: 'OSC 52 copy: ' + text.length + ' chars'}));
-    } catch (e) {
-      window.ipc.postMessage(JSON.stringify({t:'debug', msg: 'OSC 52 decode error: ' + e.message}));
-    }
-    return true;
+      e.fitAddon.fit();
+      window.ipc.postMessage(JSON.stringify({
+        t: 'resize',
+        paneId: paneId,
+        cols: e.term.cols,
+        rows: e.term.rows
+      }));
+    } catch (_) {}
   });
 
-  // focus 制御
-  const container = document.getElementById('t');
-  const focusTerm = () => {
-    try { term.focus(); } catch (_) {}
+  // DevTools console から active term を inspect する getter
+  window.__vpTerm = () => {
+    const id = activePaneInfo ? activePaneInfo.pane_id : null;
+    return id ? terms.get(id) : null;
   };
-  container.addEventListener('mousedown', focusTerm);
-  container.addEventListener('click', focusTerm);
-  window.addEventListener('focus', focusTerm);
-  setTimeout(focusTerm, 100);
-  setTimeout(focusTerm, 500);
-
-  // ----- Copy / Paste -----
-  const dbg = (msg) => window.ipc.postMessage(JSON.stringify({t:'debug', msg: msg}));
-
-  const doCopy = () => {
-    const sel = term.getSelection();
-    if (!sel) return false;
-    navigator.clipboard.writeText(sel).catch(() => {
-      window.ipc.postMessage(JSON.stringify({t:'copy', d: sel}));
-    });
-    return true;
-  };
-  const doPaste = () => {
-    navigator.clipboard.readText()
-      .then((text) => { if (text) term.paste(text); })
-      .catch((err) => dbg('paste failed: ' + err));
-  };
-
-  window.addEventListener('keydown', (e) => {
-    if (e.ctrlKey && e.shiftKey && (e.key === 'C' || e.key === 'c')) {
-      e.preventDefault();
-      e.stopPropagation();
-      doCopy();
-    }
-  }, true);
-
-  term.attachCustomKeyEventHandler((e) => {
-    if (e.type !== 'keydown') return true;
-    const key = (e.key || '').toLowerCase();
-    if ((e.ctrlKey && e.key === 'Insert' && !e.shiftKey) || (e.metaKey && key === 'c')) {
-      if (doCopy()) return false;
-    }
-    if ((e.shiftKey && e.key === 'Insert' && !e.ctrlKey) ||
-        (e.ctrlKey && e.shiftKey && key === 'v') ||
-        (e.metaKey && key === 'v')) {
-      doPaste();
-      return false;
-    }
-    if (e.ctrlKey && !e.shiftKey && !e.metaKey && key === 'c') {
-      if (term.hasSelection()) {
-        doCopy();
-        term.clearSelection();
-        return false;
-      }
-    }
-    return true;
-  });
-
-  container.addEventListener('contextmenu', (e) => {
-    e.preventDefault();
-    doPaste();
-  });
-
-  // Copy-on-select
-  container.addEventListener('mouseup', () => {
-    setTimeout(() => {
-      const sel = term.getSelection();
-      if (sel && sel.length > 0) doCopy();
-    }, 0);
-  });
 
   // DOM ready 後に pending pane を flush
   window.addEventListener('DOMContentLoaded', () => {
