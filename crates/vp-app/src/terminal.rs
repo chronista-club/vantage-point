@@ -55,6 +55,8 @@ pub enum AppEvent {
         process_path: String,
         message: String,
     },
+    /// Clone 先フォルダ picker で選択された path を sidebar JS に push (キャンセル時は None)
+    ClonePathPicked(Option<String>),
 }
 
 /// PTY セッションのハンドル
