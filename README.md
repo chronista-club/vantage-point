@@ -147,7 +147,10 @@ vantage-point/
 │   ├── vp-cli/          # `vp` CLI バイナリ
 │   ├── vp-app/          # cross-platform native app (tao + wry + WebView)
 │   ├── vp-bridge/       # Swift / Rust ブリッジ (staticlib for VantagePoint.app)
-│   └── vp-ccws/         # Stone Free worker workspace
+│   ├── vp-ccws/         # Stone Free worker workspace
+│   ├── vp-db/           # SurrealDB 統合 (embed mode / surrealkv)
+│   ├── vp-mdast/        # Markdown → mdast パーサー + TS 型自動生成
+│   └── vp-mdast-wasm/   # vp-mdast の WASM ターゲット (Canvas 用)
 ├── apple/VantagePoint/  # macOS Swift app (SwiftUI, メニューバー + サイドバー)
 ├── web/                 # WebView HTML / JS
 ├── docs/                # 仕様 / 設計 / ガイド
