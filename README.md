@@ -53,9 +53,9 @@ TheWorld 👑 (常駐デーモン / Process Manager)
 ### 前提
 
 - **macOS 13+** (VantagePoint.app) または **Windows 11** (vp-app)
-- **Rust 1.94+** (workspace で固定、[mise](https://mise.jdx.dev/) で auto install)
+- **Rust 1.94+** (workspace で `1.94.0` 固定)
 - **Claude CLI** ([インストール手順](https://docs.anthropic.com/en/docs/build-with-claude/claude-code))
-- ([mise](https://mise.jdx.dev/) があると tool / env / task が一括管理される — 推奨)
+- **[mise](https://mise.jdx.dev/)** (推奨) — Rust / node / bun の auto install + tool / env / task 統合管理
 
 ### Mac (Swift VantagePoint.app)
 
@@ -103,7 +103,7 @@ mise run win:release  # release build
 ```bash
 # Core
 vp                    # 稼働中インスタンス一覧 (= vp ps)
-vp world              # TheWorld 起動 (port 32000)
+vp world              # TheWorld 起動 (port 32000、alias: conductor)
 vp ps                 # Process 一覧
 vp config             # 設定と登録プロジェクト表示
 vp restart-all        # 全 Process + TheWorld を一括再起動
