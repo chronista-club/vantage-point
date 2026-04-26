@@ -48,5 +48,5 @@ DerivedData/
 # Per-user MCP overlay (add extra servers without leaking credentials)
 .mcp.local.json
 
-# vp-app dev log (mise win / win:daemon task の stderr redirect 先)
+# vp-app dev log (mise win task の stderr redirect 先)
 vp-*.log
