@@ -160,7 +160,10 @@ pub fn spawn_shell(
     let reader = pair.master.try_clone_reader().context("clone reader")?;
     let reader_pane_id = pane_id.clone();
     thread::Builder::new()
-        .name(format!("vp-app-pty-reader-{}", &pane_id[..pane_id.len().min(8)]))
+        .name(format!(
+            "vp-app-pty-reader-{}",
+            &pane_id[..pane_id.len().min(8)]
+        ))
         .spawn(move || reader_loop(reader, reader_pane_id, proxy))
         .context("spawn reader thread")?;
 
@@ -172,11 +175,7 @@ pub fn spawn_shell(
 }
 
 /// PTY reader ループ。EOF / エラーで終了。
-fn reader_loop(
-    mut reader: Box<dyn Read + Send>,
-    pane_id: String,
-    proxy: EventLoopProxy<AppEvent>,
-) {
+fn reader_loop(mut reader: Box<dyn Read + Send>, pane_id: String, proxy: EventLoopProxy<AppEvent>) {
     let mut buf = [0u8; 4096];
     let mut total = 0usize;
     let pane_short = &pane_id[..pane_id.len().min(8)];
@@ -188,12 +187,7 @@ fn reader_loop(
             }
             Ok(n) => {
                 total += n;
-                tracing::trace!(
-                    "PTY reader[{}]: {} bytes total={}",
-                    pane_short,
-                    n,
-                    total
-                );
+                tracing::trace!("PTY reader[{}]: {} bytes total={}", pane_short, n, total);
                 if proxy
                     .send_event(AppEvent::PtyOutput {
                         pane_id: pane_id.clone(),
@@ -348,10 +342,10 @@ pub fn handle_ipc_message(msg: &str, pool: &PtyPool, proxy: &EventLoopProxy<AppE
                     return;
                 }
             };
-            if let Some(handle) = pool.get(pid) {
-                if let Err(e) = handle.resize(cols, rows) {
-                    tracing::warn!("PTY resize[{}] 失敗: {}", pid, e);
-                }
+            if let Some(handle) = pool.get(pid)
+                && let Err(e) = handle.resize(cols, rows)
+            {
+                tracing::warn!("PTY resize[{}] 失敗: {}", pid, e);
             }
         }
         Some("ready") => {

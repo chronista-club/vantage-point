@@ -868,13 +868,8 @@ fn ensure_pane_ptys(
                     continue;
                 }
             }
-            match terminal::spawn_shell(
-                pane.id.clone(),
-                Some(&project.path),
-                80,
-                24,
-                proxy.clone(),
-            ) {
+            match terminal::spawn_shell(pane.id.clone(), Some(&project.path), 80, 24, proxy.clone())
+            {
                 Ok(handle) => {
                     tracing::info!(
                         "PTY spawn pane='{}' project='{}'",
@@ -1203,13 +1198,13 @@ pub fn run() -> anyhow::Result<()> {
                 if !xterm_ready.insert(pane_id.clone()) {
                     return;
                 }
-                if let Some(buf) = pending.remove(&pane_id) {
-                    if !buf.is_empty() {
-                        tracing::info!("xterm ready[{}] → flush {} 保留バイト", pane_id, buf.len());
-                        let script = terminal::build_output_script(&pane_id, &buf);
-                        if let Err(e) = main_view.evaluate_script(&script) {
-                            tracing::warn!("main flush[{}] 失敗: {}", pane_id, e);
-                        }
+                if let Some(buf) = pending.remove(&pane_id)
+                    && !buf.is_empty()
+                {
+                    tracing::info!("xterm ready[{}] → flush {} 保留バイト", pane_id, buf.len());
+                    let script = terminal::build_output_script(&pane_id, &buf);
+                    if let Err(e) = main_view.evaluate_script(&script) {
+                        tracing::warn!("main flush[{}] 失敗: {}", pane_id, e);
                     }
                 }
             }
