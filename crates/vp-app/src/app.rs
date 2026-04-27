@@ -161,6 +161,10 @@ const SIDEBAR_HTML: &str = concat!(
   .vp-lane-row .icon{width:18px;text-align:center;font-size:12px;font-family:var(--typography-family-icon);}
   .vp-lane-row .label{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .vp-lane-row .state{font-size:9px;}
+  /* Phase 4-A: Worker row × button (delete) — hover 時のみ表示で row UI を雑然とさせない */
+  .vp-lane-row .vp-lane-delete{font-size:14px;color:var(--color-text-tertiary);padding:0 4px;border-radius:3px;opacity:0;transition:opacity .12s ease,color .12s ease,background .12s ease;cursor:pointer;}
+  .vp-lane-row:hover .vp-lane-delete{opacity:0.8;}
+  .vp-lane-row .vp-lane-delete:hover{color:#fff;background:var(--color-status-error,#d4444c);opacity:1;}
 
   /* Stand row (Lane の中身、 HD/TH 等) — read-only 表示 */
   .vp-stand-row{display:flex;align-items:center;gap:6px;padding:2px 8px 2px 34px;font-size:10px;color:var(--color-text-tertiary);}
@@ -386,12 +390,27 @@ const SIDEBAR_HTML: &str = concat!(
           const label = document.createElement('span');
           label.className = 'label';
           label.textContent = laneLabel(lane);
+          // Phase 4-A: Worker row だけ × button (delete) を追加。 Lead は project lifetime 紐付きで削除不可。
+          const isWorker = (lane.kind === 'worker') ||
+            (lane.address && lane.address.kind === 'worker');
           const stateMark = document.createElement('span');
           stateMark.className = 'state';
           stateMark.textContent = processStateMark(lane.state);
           row.appendChild(icon);
           row.appendChild(label);
           row.appendChild(stateMark);
+          // Phase 4-A: Worker のみ × button (即 delete、 confirm dialog なし — dogfooding speed 優先)
+          if (isWorker) {
+            const delBtn = document.createElement('span');
+            delBtn.className = 'vp-lane-delete';
+            delBtn.textContent = '×';
+            delBtn.title = 'Delete worker (PtySlot kill + lane remove)';
+            delBtn.addEventListener('click', (e) => {
+              e.stopPropagation();
+              send({t: 'lane:delete', path: p.path, address: addr});
+            });
+            row.appendChild(delBtn);
+          }
           row.addEventListener('click', (e) => {
             e.stopPropagation();
             send({t: 'lane:select', path: p.path, address: addr});
@@ -1332,6 +1351,9 @@ struct SidebarIpcOutcome {
     /// Phase 3-A: Worker Lane 作成要求 `(project_path, name, branch)`。
     /// caller が project の SP port を解決して `client.create_worker_lane` を呼ぶ。
     add_worker_request: Option<(String, String, Option<String>)>,
+    /// Phase 4-A: Worker Lane 削除要求 `(project_path, address)`。
+    /// caller が SP port を解決して `client.delete_lane` を呼ぶ。
+    delete_lane_request: Option<(String, String)>,
 }
 
 /// sidebar webview から IPC で受け取った JSON を解釈し、`SidebarState` を mutate。
@@ -1371,6 +1393,20 @@ fn handle_sidebar_ipc(msg: &str, state: &mut SidebarState) -> SidebarIpcOutcome 
                 }
                 if new_state && p.state.as_deref() == Some("dead") {
                     out.sp_spawn_request = Some((p.name.clone(), p.path.clone()));
+                }
+            }
+        }
+        "lane:delete" => {
+            // Phase 4-A: Worker Lane 削除要求。 caller (event loop) で SP port を解決して
+            // client.delete_lane を呼ぶ。 active Lane を消した場合は active_lane_address を unset。
+            let address = parsed.get("address").and_then(|v| v.as_str()).unwrap_or("");
+            if !path.is_empty() && !address.is_empty() {
+                out.delete_lane_request = Some((path.to_string(), address.to_string()));
+                // active だった Lane が消えるなら preemptively clear (UI 反映を待たず)
+                if state.active_lane_address.as_deref() == Some(address) {
+                    state.active_lane_address = None;
+                    out.changed = true;
+                    out.active_changed = true;
                 }
             }
         }
@@ -1877,6 +1913,68 @@ pub fn run() -> anyhow::Result<()> {
                         spawn_sp_start(async_action_proxy.clone(), name, path);
                     } else {
                         tracing::debug!("SP auto-spawn skip (既 trigger): {}", path);
+                    }
+                }
+                // Phase 4-A: Worker Lane 削除要求 (sidebar の × button から)
+                if let Some((project_path, address)) = outcome.delete_lane_request {
+                    let sp_port = sidebar_state
+                        .processes
+                        .iter()
+                        .find(|p| p.path == project_path)
+                        .and_then(|p| p.port);
+                    if let Some(port) = sp_port {
+                        // JS-side からも先 removeLane を呼ぶ (= xterm + WS 即時 dispose、
+                        // server side は polling で sidebar から消える前にこちらが先)
+                        lane_js::remove_lane(&main_view, &address);
+                        let proxy = async_action_proxy.clone();
+                        let path_clone = project_path.clone();
+                        let addr_clone = address.clone();
+                        thread::Builder::new()
+                            .name(format!("delete-lane-{}", address))
+                            .spawn(move || {
+                                let rt =
+                                    match tokio::runtime::Builder::new_current_thread()
+                                        .enable_all()
+                                        .build()
+                                    {
+                                        Ok(rt) => rt,
+                                        Err(e) => {
+                                            tracing::warn!("delete-lane runtime: {}", e);
+                                            return;
+                                        }
+                                    };
+                                rt.block_on(async {
+                                    let client = TheWorldClient::new(port);
+                                    match client.delete_lane(&addr_clone).await {
+                                        Ok(()) => {
+                                            tracing::info!(
+                                                "Lane deleted: project={} address={}",
+                                                path_clone,
+                                                addr_clone
+                                            );
+                                            spawn_lanes_fetch(
+                                                proxy.clone(),
+                                                path_clone,
+                                                port,
+                                            );
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                "delete_lane failed: project={} address={}: {}",
+                                                path_clone,
+                                                addr_clone,
+                                                e
+                                            );
+                                        }
+                                    }
+                                });
+                            })
+                            .ok();
+                    } else {
+                        tracing::warn!(
+                            "lane:delete: SP port unknown for path={} (skip)",
+                            project_path
+                        );
                     }
                 }
                 // Phase 3-A: Worker Lane 作成要求 (sidebar の + Add Worker から)

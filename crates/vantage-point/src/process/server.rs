@@ -333,7 +333,9 @@ pub async fn run(
         // GET: list、 POST: Worker create (A6 minimum)
         .route(
             "/api/lanes",
-            get(lanes::list_handler).post(lanes::create_handler),
+            get(lanes::list_handler)
+                .post(lanes::create_handler)
+                .delete(lanes::delete_handler),
         )
         .route("/api/show", post(health::show_handler))
         .route(

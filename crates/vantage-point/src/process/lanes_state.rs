@@ -257,6 +257,9 @@ impl LanePool {
     }
 
     pub fn remove(&mut self, addr: &LaneAddress) -> Option<LaneInfo> {
+        // Phase 4-A: PtySlot も一緒に drop (= child kill 経由でプロセス停止)
+        // PtySlot::Drop が child.kill() + child.wait() を呼ぶので zombie 防止。
+        self.pty_slots.remove(addr);
         self.lanes.remove(addr)
     }
 

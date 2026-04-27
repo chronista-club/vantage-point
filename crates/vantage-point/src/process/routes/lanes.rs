@@ -17,11 +17,16 @@
 
 use std::sync::Arc;
 
-use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
+use axum::{
+    Json,
+    extract::{Query, State},
+    http::StatusCode,
+    response::IntoResponse,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::super::lanes_state::{LaneAddress, LaneInfo, LaneKind, LaneStand, LaneState};
+use super::super::lanes_state::{LaneAddress, LaneInfo, LaneKind, LanePool, LaneStand, LaneState};
 use super::super::state::AppState;
 
 /// REST response: `GET /api/lanes` の JSON shape
@@ -215,4 +220,68 @@ pub async fn create_handler(
     }
 
     Ok((StatusCode::CREATED, Json(info)))
+}
+
+/// `DELETE /api/lanes?address=<addr>` request の query
+#[derive(Debug, Deserialize)]
+pub struct DeleteLaneQuery {
+    /// Display 形 ("<project>/lead" / "<project>/worker/<name>")
+    pub address: String,
+}
+
+/// `DELETE /api/lanes?address=<addr>` — Lane destroy (Phase 4-A)
+///
+/// 動作:
+/// 1. address parse (LanePool::parse_address で逆変換)
+/// 2. Lead は削除拒否 (400) — Project lifetime 紐付き
+/// 3. LanePool::remove で LaneInfo + PtySlot を drop (PtySlot::Drop で child kill + wait)
+/// 4. 200 OK with deleted info
+///
+/// 関連 memory: mem_1CaTpCQH8iLJ2PasRcPjHv (Architecture v4: Lane lifecycle)
+pub async fn delete_handler(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<DeleteLaneQuery>,
+) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<serde_json::Value>)> {
+    let Some(addr) = LanePool::parse_address(&q.address) else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": format!("invalid lane address: {}", q.address)})),
+        ));
+    };
+
+    // Lead は削除拒否 — Project per Lead 1 つ固定の architecture rule
+    if matches!(addr.kind, LaneKind::Lead) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "Lead Lane is fixed per project and cannot be deleted (use SP shutdown instead)"
+            })),
+        ));
+    }
+
+    let removed = {
+        let mut pool = state.lane_pool.write().await;
+        pool.remove(&addr)
+    };
+
+    match removed {
+        Some(info) => {
+            tracing::info!(
+                "Worker Lane deleted: addr={} pid={:?} (PtySlot dropped → child killed)",
+                addr,
+                info.pid
+            );
+            Ok((
+                StatusCode::OK,
+                Json(json!({
+                    "deleted": addr.to_string(),
+                    "pid": info.pid,
+                })),
+            ))
+        }
+        None => Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": format!("Lane not found: {}", addr)})),
+        )),
+    }
 }
