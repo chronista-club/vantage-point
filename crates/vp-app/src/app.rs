@@ -160,6 +160,14 @@ const SIDEBAR_HTML: &str = concat!(
   .vp-stand-row .icon{width:18px;text-align:center;font-family:var(--typography-family-icon);}
   .vp-stand-row .label{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 
+  /* Phase 3-B: Project scope の Stand (PP/GE/HP) row + section header */
+  .vp-project-stands-header,
+  .vp-lanes-header{padding:6px 12px 2px 14px;font-size:9px;color:var(--color-text-tertiary);text-transform:uppercase;letter-spacing:0.06em;font-weight:500;}
+  .vp-project-stand-row{display:flex;align-items:center;gap:6px;padding:3px 8px 3px 18px;font-size:11px;color:var(--color-text-secondary);cursor:default;}
+  .vp-project-stand-row .icon{width:18px;text-align:center;font-family:var(--typography-family-icon);}
+  .vp-project-stand-row .label{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .vp-project-stand-row .state{font-size:9px;color:var(--color-text-tertiary);}
+
   /* SP 未起動 / Lane loading 等の hint 表示 */
   .vp-empty-hint{padding:6px 12px 6px 14px;font-size:11px;color:var(--color-text-tertiary);font-style:italic;}
 
@@ -323,6 +331,41 @@ const SIDEBAR_HTML: &str = concat!(
         loading.textContent = '📡 loading lanes…';
         content.appendChild(loading);
       } else {
+        // Phase 3-B: Project-scope Stand (PP/GE/HP) を Lane より上に表示。
+        // 「この project では PP/GE/HP が available」 を視覚的に示す read-only marker。
+        // Stand 個別 click は Phase 4+ で Canvas/eval/external pane に bind 予定。
+        const projectStandsHeader = document.createElement('div');
+        projectStandsHeader.className = 'vp-project-stands-header';
+        projectStandsHeader.textContent = 'PROJECT STANDS';
+        content.appendChild(projectStandsHeader);
+        const projectStands = [
+          { kind: 'paisley_park',   label: 'Paisley Park',    icon: '🧭', desc: 'Canvas / Information Navigator' },
+          { kind: 'gold_experience', label: 'Gold Experience', icon: '🌿', desc: 'Code Runner / 動的生命注入' },
+          { kind: 'hermit_purple',   label: 'Hermit Purple',   icon: '🍇', desc: 'External Control / MIDI/MCP/tmux' },
+        ];
+        for (const st of projectStands) {
+          const row = document.createElement('div');
+          row.className = 'vp-project-stand-row';
+          row.title = st.desc;
+          const icon = document.createElement('span');
+          icon.className = 'icon';
+          icon.textContent = st.icon;
+          const label = document.createElement('span');
+          label.className = 'label';
+          label.textContent = st.label;
+          const status = document.createElement('span');
+          status.className = 'state';
+          status.textContent = '⚪'; // available (Phase 4+ で actual state を fetch して 🟢/🔵 表示予定)
+          row.appendChild(icon);
+          row.appendChild(label);
+          row.appendChild(status);
+          content.appendChild(row);
+        }
+        const lanesHeader = document.createElement('div');
+        lanesHeader.className = 'vp-lanes-header';
+        lanesHeader.textContent = 'LANES';
+        content.appendChild(lanesHeader);
+
         for (const lane of lanes) {
           const addr = laneAddressKey(lane);
           const isActive = activeAddr && activeAddr === addr;
