@@ -99,8 +99,18 @@ body{overflow:hidden;}
 #host{position:relative;width:100%;height:100%;}
 .pane{position:absolute;inset:0;display:none;}
 .pane.active{display:block;}
-.pane.terminal{padding:0;}
-.pane.terminal #t{padding:12px;height:100%;width:100%;box-sizing:border-box;}
+.pane.terminal{padding:0;position:relative;}
+/* Phase 2.5: per-Lane instance container. lane-host が pane-terminal 全領域を埋め、
+   各 .lane-pane が absolute で重なる。 active のみ display:block。 */
+#lane-host{position:absolute;inset:0;}
+.lane-pane{position:absolute;inset:0;display:none;}
+.lane-pane.active{display:block;}
+.lane-pane .lane-term{padding:12px;height:100%;width:100%;box-sizing:border-box;}
+/* どの Lane も無い時の placeholder (active class で表示制御、 default は表示) */
+#lane-empty{position:absolute;inset:0;display:none;place-items:center;color:var(--color-text-tertiary);text-align:center;}
+#lane-empty.active{display:grid;}
+#lane-empty h1{font-weight:400;font-size:1.1rem;margin:0;}
+#lane-empty p{margin:.25rem 0 0;font-size:.85rem;}
 .pane.canvas{display:none;place-items:center;}
 .pane.canvas.active{display:grid;}
 .pane.canvas main{text-align:center;}
@@ -147,8 +157,17 @@ body{overflow:hidden;}
 <div id="host">
   <!-- 各 .pane は data-kind を持つ。data-pane-id は active pane 切替時に Rust が動的に設定。
        VP-100 γ-light: ResizeObserver が slot rect を IPC で送る (Phase 4+ で native overlay 同期に使う)。 -->
-  <div class="pane terminal" id="pane-terminal" data-kind="agent">
-    <div id="t"></div>
+  <!-- Phase 2.5 (per-Lane instance): pane-terminal 内に lane-host を置き、
+       Lane ごとに xterm.js + WebSocket instance を mount。 active な 1 つだけ display:block。 -->
+  <div class="pane terminal" id="pane-terminal" data-kind="terminal">
+    <div id="lane-host"></div>
+    <!-- empty placeholder: どの Lane も無い時に出す -->
+    <div id="lane-empty" class="lane-empty active">
+      <main>
+        <h1>No Lane selected</h1>
+        <p>sidebar から Lane を選択してください (or accordion を開いて auto-spawn)</p>
+      </main>
+    </div>
   </div>
   <div class="pane canvas" id="pane-canvas" data-kind="canvas">
     <main>
@@ -194,7 +213,7 @@ body{overflow:hidden;}
 </script>
 <script>
 (function() {
-  // Creo tokens から xterm.js theme を構築。
+  // Creo tokens から xterm.js theme を構築 (全 Lane instance で共有)。
   // OKLCH 値は xterm.js の内部 color parser が直接解釈できないので、
   // hidden probe で `color: var(...)` を browser に解決させて
   // `getComputedStyle().color` から rgb(R,G,B) を取得 → hex に降ろす。
@@ -220,7 +239,6 @@ body{overflow:hidden;}
     cursor: resolveHex('--color-brand-primary', '#7D6BC2'),
     cursorAccent: resolveHex('--color-surface-bg-base', '#0F1128'),
     selectionBackground: resolveHex('--color-brand-primary-subtle', '#2C2843'),
-    // ANSI 16 色 (creo-ui contrast-dark + OKLCH hue rotation)
     black: resolveHex('--terminal-ansi-black', '#1E1E2E'),
     red: resolveHex('--terminal-ansi-red', '#F38BA8'),
     green: resolveHex('--terminal-ansi-green', '#A6E3A1'),
@@ -241,78 +259,256 @@ body{overflow:hidden;}
   probe.remove();
   const monoFamily = (css.getPropertyValue('--typography-family-mono') || '').trim()
     || '"JetBrainsMono Nerd Font", "Cascadia Code", "SF Mono", Menlo, Consolas, monospace';
-  const term = new Terminal({
-    fontFamily: monoFamily,
-    fontSize: 13,
-    lineHeight: 1.15,
-    letterSpacing: 0,
-    theme: theme,
-    allowProposedApi: true,
-    convertEol: true,
-    scrollback: 5000,
-    cursorBlink: true,
-    cursorStyle: 'bar',
-    cursorWidth: 2,
-    smoothScrollDuration: 80,
-    fontLigatures: true
-  });
-  const fitAddon = new FitAddon.FitAddon();
-  term.loadAddon(fitAddon);
 
-  // WebGL renderer addon — DOM renderer の scroll back-and-forth で起きる
-  // 重なり描画 bug を回避。GPU 描画で性能も向上。
-  // GPU context loss 時は dispose して DOM renderer に自動 fallback。
-  try {
-    const webglAddon = new WebglAddon.WebglAddon();
-    term.loadAddon(webglAddon);
-    webglAddon.onContextLoss(() => {
-      console.warn('[xterm] WebGL context loss — DOM fallback');
-      webglAddon.dispose();
+  // ========= Phase 2.5: per-Lane instance registry =========
+  // Lane address → {term, fitAddon, ws, container, ro, webglAddon}
+  // Architecture v4: Lane = Session Process なので 1 Lane に 1 xterm.js + 1 WebSocket。
+  // memory cost > switch reliability の trade-off で per-instance を選択 (user 決定)。
+  const laneInstances = new Map();
+
+  function dbg(msg) {
+    try { window.ipc.postMessage(JSON.stringify({t:'debug', msg: msg})); } catch (_) {}
+  }
+
+  function createLaneInstance(address, port) {
+    const host = document.getElementById('lane-host');
+    if (!host) {
+      console.error('createLaneInstance: lane-host not found');
+      return null;
+    }
+    // container は Lane あたり 1 つ、 absolute で pane-terminal 全領域を埋める
+    const container = document.createElement('div');
+    container.className = 'lane-pane';
+    container.dataset.laneAddr = address;
+    const tdiv = document.createElement('div');
+    tdiv.className = 'lane-term';
+    container.appendChild(tdiv);
+    host.appendChild(container);
+
+    const term = new Terminal({
+      fontFamily: monoFamily,
+      fontSize: 13,
+      lineHeight: 1.15,
+      letterSpacing: 0,
+      theme: theme,
+      allowProposedApi: true,
+      convertEol: true,
+      scrollback: 5000,
+      cursorBlink: true,
+      cursorStyle: 'bar',
+      cursorWidth: 2,
+      smoothScrollDuration: 80,
+      fontLigatures: true
     });
-    console.log('[xterm] WebGL renderer enabled');
-  } catch (e) {
-    console.warn('[xterm] WebGL unavailable, DOM fallback:', e);
+    const fitAddon = new FitAddon.FitAddon();
+    term.loadAddon(fitAddon);
+
+    // WebGL renderer (per-instance、 個別に context 持つ)
+    let webglAddon = null;
+    try {
+      webglAddon = new WebglAddon.WebglAddon();
+      term.loadAddon(webglAddon);
+      webglAddon.onContextLoss(() => {
+        console.warn('[xterm:' + address + '] WebGL context loss — DOM fallback');
+        webglAddon.dispose();
+      });
+    } catch (e) {
+      console.warn('[xterm:' + address + '] WebGL unavailable:', e);
+    }
+
+    term.open(tdiv);
+    // hidden 状態で fit すると 0 cols になるので、 showLane の active 化後にも fit を呼ぶ
+    try { fitAddon.fit(); } catch (_) {}
+
+    // ===== WebSocket: SP に直接接続 (Phase 2.5: Rust 側 mpsc 中継を撤去) =====
+    // URL: ws://127.0.0.1:<sp_port>/ws/terminal?lane=<address>&cols=&rows=
+    const initCols = term.cols || 80;
+    const initRows = term.rows || 24;
+    const wsUrl = 'ws://127.0.0.1:' + port + '/ws/terminal?lane='
+      + encodeURIComponent(address)
+      + '&cols=' + initCols + '&rows=' + initRows;
+    const ws = new WebSocket(wsUrl);
+    ws.binaryType = 'arraybuffer';
+
+    function sendResize() {
+      if (ws.readyState !== WebSocket.OPEN) return;
+      try {
+        ws.send(JSON.stringify({type:'resize', cols: term.cols, rows: term.rows}));
+      } catch (_) {}
+    }
+
+    ws.onopen = () => {
+      dbg('[lane:' + address + '] ws open');
+      try { fitAddon.fit(); } catch (_) {}
+      sendResize();
+    };
+    ws.onmessage = (ev) => {
+      if (ev.data instanceof ArrayBuffer) {
+        term.write(new Uint8Array(ev.data));
+      } else if (typeof ev.data === 'string') {
+        // server からの error 等 (Text frame)
+        term.write('\r\n\x1b[33m[lane:' + address + '] ' + ev.data + '\x1b[0m\r\n');
+      }
+    };
+    ws.onclose = (ev) => {
+      dbg('[lane:' + address + '] ws close code=' + ev.code);
+      // 静かに切断 (Lane が dead になった、 user が remove した、 等)
+    };
+    ws.onerror = () => {
+      term.write('\r\n\x1b[31m[lane:' + address + '] WebSocket error\x1b[0m\r\n');
+    };
+
+    // input → WS (Rust 中継せず直接送信)
+    term.onData((d) => {
+      if (ws.readyState !== WebSocket.OPEN) return;
+      try {
+        ws.send(new TextEncoder().encode(d));
+      } catch (e) {
+        dbg('[lane:' + address + '] input send error: ' + e);
+      }
+    });
+
+    // OSC 52 (clipboard) intercept — Lane ごとに独立
+    term.parser.registerOscHandler(52, (data) => {
+      const idx = data.indexOf(';');
+      if (idx < 0) return true;
+      const pd = data.slice(idx + 1);
+      if (pd === '?' || pd.length === 0) return true;
+      try {
+        const binary = atob(pd);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        const text = new TextDecoder('utf-8').decode(bytes);
+        window.ipc.postMessage(JSON.stringify({t:'copy', d: text}));
+      } catch (_) {}
+      return true;
+    });
+
+    // Copy/Paste (per-Lane scope)
+    function doCopy() {
+      const sel = term.getSelection();
+      if (!sel) return false;
+      navigator.clipboard.writeText(sel).catch(() => {
+        window.ipc.postMessage(JSON.stringify({t:'copy', d: sel}));
+      });
+      return true;
+    }
+    function doPaste() {
+      navigator.clipboard.readText()
+        .then((text) => { if (text) term.paste(text); })
+        .catch((err) => dbg('[lane:' + address + '] paste failed: ' + err));
+    }
+    term.attachCustomKeyEventHandler((e) => {
+      if (e.type !== 'keydown') return true;
+      const key = (e.key || '').toLowerCase();
+      if ((e.ctrlKey && e.key === 'Insert' && !e.shiftKey) || (e.metaKey && key === 'c')) {
+        if (doCopy()) return false;
+      }
+      if ((e.shiftKey && e.key === 'Insert' && !e.ctrlKey) ||
+          (e.ctrlKey && e.shiftKey && key === 'v') ||
+          (e.metaKey && key === 'v')) {
+        doPaste();
+        return false;
+      }
+      if (e.ctrlKey && !e.shiftKey && !e.metaKey && key === 'c') {
+        if (term.hasSelection()) {
+          doCopy();
+          term.clearSelection();
+          return false;
+        }
+      }
+      return true;
+    });
+    container.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      doPaste();
+    });
+    container.addEventListener('mouseup', () => {
+      setTimeout(() => {
+        const sel = term.getSelection();
+        if (sel && sel.length > 0) doCopy();
+      }, 0);
+    });
+    container.addEventListener('click', () => { try { term.focus(); } catch (_) {} });
+
+    // ResizeObserver (per-container): active な間だけ fit + resize 通知
+    const ro = new ResizeObserver(() => {
+      if (!container.classList.contains('active')) return;
+      try { fitAddon.fit(); sendResize(); } catch (_) {}
+    });
+    ro.observe(container);
+
+    return { term, fitAddon, ws, container, ro, webglAddon };
   }
 
-  term.open(document.getElementById('t'));
-  // 初回は terminal が hidden の可能性があるので、active 化時にも fit する。
-  fitAddon.fit();
+  window.ensureLane = function(address, port) {
+    if (laneInstances.has(address)) return;
+    const inst = createLaneInstance(address, port);
+    if (inst) {
+      laneInstances.set(address, inst);
+      dbg('[lane:' + address + '] ensured');
+    }
+  };
 
-  function sendResize() {
-    window.ipc.postMessage(JSON.stringify({t:'resize', cols: term.cols, rows: term.rows}));
-  }
+  window.showLane = function(address) {
+    // empty placeholder は非表示に
+    const empty = document.getElementById('lane-empty');
+    if (empty) empty.classList.toggle('active', !address || !laneInstances.has(address));
+    for (const [addr, info] of laneInstances) {
+      info.container.classList.toggle('active', addr === address);
+    }
+    const active = laneInstances.get(address);
+    if (active) {
+      // active 化直後の hidden→visible 遷移で fit / focus
+      setTimeout(() => {
+        try {
+          active.fitAddon.fit();
+          if (active.ws.readyState === WebSocket.OPEN) {
+            active.ws.send(JSON.stringify({type:'resize', cols: active.term.cols, rows: active.term.rows}));
+          }
+          active.term.focus();
+        } catch (_) {}
+      }, 0);
+    }
+  };
+
+  window.removeLane = function(address) {
+    const info = laneInstances.get(address);
+    if (!info) return;
+    try {
+      info.ws.close();
+      info.ro.disconnect();
+      if (info.webglAddon) { try { info.webglAddon.dispose(); } catch (_) {} }
+      info.term.dispose();
+      info.container.remove();
+    } catch (e) {
+      console.error('removeLane error:', e);
+    }
+    laneInstances.delete(address);
+    dbg('[lane:' + address + '] removed');
+  };
+
+  // 互換: legacy callers (terminal.rs::build_output_script) が onPtyData を呼ぶケースを安全に noop。
+  // Phase 2.5 では Rust 側 PTY 経路は廃止されているが、 startup の placeholder PTY が
+  // 残っているケースで誤って呼ばれても落ちないように。
+  window.onPtyData = function(_b64) {
+    // no-op: Lane WebSocket が直接 term.write するので Rust 経路の出力は無視
+  };
 
   window.addEventListener('resize', () => {
-    if (document.getElementById('pane-terminal').classList.contains('active')) {
-      fitAddon.fit();
-      sendResize();
+    // active な Lane だけ fit + resize 通知
+    for (const [, info] of laneInstances) {
+      if (info.container.classList.contains('active')) {
+        try {
+          info.fitAddon.fit();
+          if (info.ws.readyState === WebSocket.OPEN) {
+            info.ws.send(JSON.stringify({type:'resize', cols: info.term.cols, rows: info.term.rows}));
+          }
+        } catch (_) {}
+        break;
+      }
     }
   });
-
-  // PH 計測 (mem_1CaSpUi6cz9abzcEU3d6KC): keystroke drop 切り分け用 log。
-  // DevTools 出せない環境のため、Rust log file (~/Library/Logs/Vantage/vp-app.kdl.log) で
-  // 確認できるよう debug ipc 経由で xterm.onData の発火も流す。
-  //   - [xterm debug] [xterm.onData] "a" codes=97 t=...   ← xterm.js が onData 発火した
-  //   - [ipc.in] 1 bytes codes=[97] data="a"              ← Native handler が IPC で受けた
-  // 両方が 2 文字 rapid typing で 2 個ずつ出れば JS / IPC 経路 OK、
-  // 出ない方が drop layer。
-  term.onData(d => {
-    const codes = Array.from(d).map(c => c.charCodeAt(0)).join(',');
-    const t = performance.now().toFixed(2);
-    window.ipc.postMessage(JSON.stringify({t:'debug', msg: '[xterm.onData] ' + JSON.stringify(d) + ' codes=' + codes + ' t=' + t}));
-    if (typeof console !== 'undefined' && console.log) {
-      console.log('[xterm.onData]', JSON.stringify(d), 'codes=', codes, 't=', t);
-    }
-    window.ipc.postMessage(JSON.stringify({t:'in', d: d}));
-  });
-
-  // Rust から呼ばれる関数
-  window.onPtyData = function(b64) {
-    const bin = atob(b64);
-    const bytes = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    term.write(bytes);
-  };
 
   // ========= Architecture v4: Lane 切替 API =========
   // Rust → JS で active Lane を切替。kind が null の場合は empty 状態を表示。
@@ -351,11 +547,10 @@ body{overflow:hidden;}
       }
     }
     if (kind === 'terminal' || kind === 'agent' || kind === 'shell') {
-      // hidden 中はサイズ計算が 0 になり xterm が壊れるので、active 化直後に fit + resize 通知
+      // Phase 2.5: per-Lane instance を切替 (= showLane(address))。 pane_id は Lane address。
+      // showLane が空なら lane-empty placeholder を出す。
       try {
-        fitAddon.fit();
-        sendResize();
-        focusTerm();
+        window.showLane(info && info.pane_id);
       } catch (_) {}
     }
     // active 切替直後に slot rect を一発送る (ResizeObserver 起動前 fail-safe)
@@ -400,102 +595,32 @@ body{overflow:hidden;}
     ro.observe(document.getElementById('host'));
   }
 
-  // 初期化完了を Rust に通知 (resize 情報も同時に)
+  // 初期化完了を Rust に通知 (Phase 2.5: legacy `sendResize()` は撤去、 Lane 個別の WS が resize 通知する)
   window.ipc.postMessage(JSON.stringify({t:'ready'}));
-  sendResize();
 
-  // DevTools console から term を手動検査できるよう露出
-  window.__vpTerm = term;
+  // DevTools console から laneInstances を手動検査できるよう露出
+  window.__vpLanes = laneInstances;
 
-  // OSC 52 (clipboard) intercept (Phase 1 から継続)
-  term.parser.registerOscHandler(52, (data) => {
-    const idx = data.indexOf(';');
-    if (idx < 0) return true;
-    const pd = data.slice(idx + 1);
-    if (pd === '?' || pd.length === 0) return true;
-    try {
-      const binary = atob(pd);
-      const bytes = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-      const text = new TextDecoder('utf-8').decode(bytes);
-      window.ipc.postMessage(JSON.stringify({t:'copy', d: text}));
-      window.ipc.postMessage(JSON.stringify({t:'debug', msg: 'OSC 52 copy: ' + text.length + ' chars'}));
-    } catch (e) {
-      window.ipc.postMessage(JSON.stringify({t:'debug', msg: 'OSC 52 decode error: ' + e.message}));
-    }
-    return true;
-  });
-
-  // focus 制御
-  const container = document.getElementById('t');
-  const focusTerm = () => {
-    try { term.focus(); } catch (_) {}
-  };
-  container.addEventListener('mousedown', focusTerm);
-  container.addEventListener('click', focusTerm);
-  window.addEventListener('focus', focusTerm);
-  setTimeout(focusTerm, 100);
-  setTimeout(focusTerm, 500);
-
-  // ----- Copy / Paste -----
-  const dbg = (msg) => window.ipc.postMessage(JSON.stringify({t:'debug', msg: msg}));
-
-  const doCopy = () => {
-    const sel = term.getSelection();
-    if (!sel) return false;
-    navigator.clipboard.writeText(sel).catch(() => {
-      window.ipc.postMessage(JSON.stringify({t:'copy', d: sel}));
-    });
-    return true;
-  };
-  const doPaste = () => {
-    navigator.clipboard.readText()
-      .then((text) => { if (text) term.paste(text); })
-      .catch((err) => dbg('paste failed: ' + err));
-  };
-
+  // 全体 Ctrl+Shift+C のフォールバック (active Lane の selection を copy)
+  // Lane 個別の handler では取り切れないケース (focus が container 外にある等) の保険。
   window.addEventListener('keydown', (e) => {
     if (e.ctrlKey && e.shiftKey && (e.key === 'C' || e.key === 'c')) {
-      e.preventDefault();
-      e.stopPropagation();
-      doCopy();
-    }
-  }, true);
-
-  term.attachCustomKeyEventHandler((e) => {
-    if (e.type !== 'keydown') return true;
-    const key = (e.key || '').toLowerCase();
-    if ((e.ctrlKey && e.key === 'Insert' && !e.shiftKey) || (e.metaKey && key === 'c')) {
-      if (doCopy()) return false;
-    }
-    if ((e.shiftKey && e.key === 'Insert' && !e.ctrlKey) ||
-        (e.ctrlKey && e.shiftKey && key === 'v') ||
-        (e.metaKey && key === 'v')) {
-      doPaste();
-      return false;
-    }
-    if (e.ctrlKey && !e.shiftKey && !e.metaKey && key === 'c') {
-      if (term.hasSelection()) {
-        doCopy();
-        term.clearSelection();
-        return false;
+      // active な Lane を探して selection 取得
+      for (const [, info] of laneInstances) {
+        if (info.container.classList.contains('active')) {
+          const sel = info.term.getSelection();
+          if (sel) {
+            e.preventDefault();
+            e.stopPropagation();
+            navigator.clipboard.writeText(sel).catch(() => {
+              window.ipc.postMessage(JSON.stringify({t:'copy', d: sel}));
+            });
+          }
+          break;
+        }
       }
     }
-    return true;
-  });
-
-  container.addEventListener('contextmenu', (e) => {
-    e.preventDefault();
-    doPaste();
-  });
-
-  // Copy-on-select
-  container.addEventListener('mouseup', () => {
-    setTimeout(() => {
-      const sel = term.getSelection();
-      if (sel && sel.length > 0) doCopy();
-    }, 0);
-  });
+  }, true);
 
   // DOM ready 後に pending pane を flush
   window.addEventListener('DOMContentLoaded', () => {

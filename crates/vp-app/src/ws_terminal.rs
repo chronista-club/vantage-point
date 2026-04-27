@@ -182,6 +182,11 @@ async fn run_ws_loop(
     tracing::info!("/ws/terminal connected");
     let (mut write, mut read) = ws.split();
 
+    // Phase 2: caller (= WsTerminalHandle) が drop で sender 全消失したケースを「意図的 close」
+    // として識別し、 disconnect 通知の赤文字 line を skip する。 lane:select の hot-swap で
+    // 旧 handle が drop されるたびに「daemon disconnected」 が xterm に出てた問題の修正。
+    let mut graceful_close = false;
+
     loop {
         tokio::select! {
             cmd = rx.recv() => match cmd {
@@ -199,7 +204,8 @@ async fn run_ws_loop(
                     }
                 }
                 None => {
-                    // sender 全部 drop — terminate
+                    // sender 全部 drop — caller が意図的に close (Phase 2 swap 等)
+                    graceful_close = true;
                     break;
                 }
             },
@@ -225,10 +231,15 @@ async fn run_ws_loop(
             },
         }
     }
-    // PH#3: WS disconnect の user-facing 通知
-    // (loop 抜けた = サーバ close / 通信エラー / sender drop のいずれか)
-    let line = "\r\n\x1b[31m[vp-app] daemon disconnected (reconnect not implemented; restart vp-app to recover)\x1b[0m\r\n"
-        .as_bytes()
-        .to_vec();
-    let _ = proxy.send_event(AppEvent::Output(line));
+    // PH#3: WS disconnect の user-facing 通知 (異常時のみ)
+    // sender drop による graceful close (= Phase 2 hot-swap で旧 handle drop) は通知しない。
+    // user の意図的な操作なので xterm に赤文字 error を出すと混乱する。
+    if graceful_close {
+        tracing::info!("/ws/terminal: graceful close (caller drop)");
+    } else {
+        let line = "\r\n\x1b[31m[vp-app] daemon disconnected (reconnect not implemented; restart vp-app to recover)\x1b[0m\r\n"
+            .as_bytes()
+            .to_vec();
+        let _ = proxy.send_event(AppEvent::Output(line));
+    }
 }

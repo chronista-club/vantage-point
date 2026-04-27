@@ -261,11 +261,10 @@ fn dirs_home() -> Option<String> {
 
 /// xterm.js から IPC で送られてきた JSON メッセージを処理
 ///
-/// 期待する形式:
-/// - `{"t":"in","d":"..."}` — ユーザ入力 (string)
-/// - `{"t":"resize","cols":N,"rows":N}` — リサイズ
-/// - `{"t":"ready"}` — xterm.js 初期化完了 → UserEvent::XtermReady を main thread に送る
-pub fn handle_ipc_message(msg: &str, pty: &TerminalHandle, proxy: &EventLoopProxy<AppEvent>) {
+/// Phase 2.5 (per-Lane instance): `in` / `resize` は Lane WebSocket が browser native で
+/// SP に直接送信するので、 Rust 経路は使わない (silent no-op)。
+/// `ready` / `copy` / `debug` / `slot:rect` は引き続き Rust 側で処理。
+pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
     let parsed: serde_json::Value = match serde_json::from_str(msg) {
         Ok(v) => v,
         Err(e) => {
@@ -275,33 +274,9 @@ pub fn handle_ipc_message(msg: &str, pty: &TerminalHandle, proxy: &EventLoopProx
     };
 
     match parsed.get("t").and_then(|v| v.as_str()) {
-        Some("in") => {
-            if let Some(data) = parsed.get("d").and_then(|v| v.as_str()) {
-                // PH 計測 (mem_1CaSpUi6cz9abzcEU3d6KC): keystroke drop 切り分け用。
-                // xterm.onData の console log と timestamp を突き合わせて、IPC 到達率を確認。
-                let codes: String = data
-                    .bytes()
-                    .map(|b| format!("{}", b))
-                    .collect::<Vec<_>>()
-                    .join(",");
-                tracing::info!(
-                    "[ipc.in] {} bytes codes=[{}] data={:?}",
-                    data.len(),
-                    codes,
-                    data
-                );
-                if let Err(e) = pty.write(data.as_bytes()) {
-                    tracing::warn!("PTY write 失敗: {}", e);
-                }
-            }
-        }
-        Some("resize") => {
-            let cols = parsed.get("cols").and_then(|v| v.as_u64()).unwrap_or(80) as u16;
-            let rows = parsed.get("rows").and_then(|v| v.as_u64()).unwrap_or(24) as u16;
-            tracing::info!("IPC resize: {}x{}", cols, rows);
-            if let Err(e) = pty.resize(cols, rows) {
-                tracing::warn!("PTY resize 失敗: {}", e);
-            }
+        Some("in") | Some("resize") => {
+            // Phase 2.5: Lane WS が直接 SP に送信するので Rust 経路は使わない。
+            // 旧 single-term の互換のため受け取りは続けるが silent no-op。
         }
         Some("ready") => {
             tracing::info!("xterm.js ready → flush buffered PTY output");

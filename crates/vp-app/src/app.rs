@@ -26,7 +26,6 @@
 //! - **γ-light readiness**: main area の slot rect を ResizeObserver 経由で Rust に
 //!   push (`AppEvent::SlotRect`)、Phase 4+ で native overlay の `set_position` 同期に使用
 
-use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -892,67 +891,41 @@ fn spawn_lanes_fetch(proxy: EventLoopProxy<AppEvent>, process_path: String, sp_p
         });
 }
 
-/// Phase 2: active_lane_address で指定された Lane の SP に WS attach し、
-/// 既存 `pty: Arc<Mutex<TerminalHandle>>` を hot-swap する。
-///
-/// 失敗時 (SP port 不明、 接続失敗等) は何もしない (旧 handle のまま)。
-/// `connect_lane_terminal` が thread spawn なので呼び出しは即時 return、
-/// 接続失敗は WS thread 内で AppEvent::Output に赤文字 error を流す。
-fn swap_pty_to_lane(
-    pty: &Arc<Mutex<terminal::TerminalHandle>>,
-    state: &SidebarState,
-    address: &str,
-    proxy: EventLoopProxy<AppEvent>,
-) {
-    // address ("<project>/lead" / "<project>/worker/<name>") から project name を抽出
-    let project_name = match address.split('/').next() {
-        Some(s) if !s.is_empty() => s,
-        _ => {
-            tracing::warn!("swap_pty_to_lane: invalid address {:?}", address);
-            return;
-        }
-    };
-    // sidebar_state.processes から該当 project の SP port を引く
-    let port = state
-        .processes
-        .iter()
-        .find(|p| p.name == project_name)
-        .and_then(|p| p.port);
-    let Some(sp_port) = port else {
-        tracing::warn!(
-            "swap_pty_to_lane: SP port not yet known for project={} (state may still be dead)",
-            project_name
-        );
-        return;
-    };
+/// Phase 2.5 (per-Lane instance): main_view の JS API を呼ぶ helper 群。
+/// xterm.js + WebSocket は **JS-side で per-Lane に管理** され、 Rust は thin trigger を出すだけ。
+mod lane_js {
+    use wry::WebView;
 
-    // connect_lane_terminal は thread spawn 内で WS connect するので、
-    // ここでの失敗は thread spawn 自体の失敗 (= 稀)。
-    let handle = match crate::ws_terminal::connect_lane_terminal(sp_port, address, 80, 24, proxy) {
-        Ok(h) => terminal::TerminalHandle::Daemon(h),
-        Err(e) => {
-            tracing::warn!(
-                "swap_pty_to_lane: connect_lane_terminal failed: addr={} port={}: {}",
-                address,
-                sp_port,
-                e
-            );
-            return;
-        }
-    };
+    /// JS string literal にする (基本 ASCII safe な path 想定だが、 念のため `'` `\\` を escape)
+    fn js_str(s: &str) -> String {
+        let escaped = s.replace('\\', "\\\\").replace('\'', "\\'");
+        format!("'{}'", escaped)
+    }
 
-    // hot-swap: 旧 handle が drop されると WS が close される (channel sender drop → run_ws_loop break)
-    match pty.lock() {
-        Ok(mut guard) => {
-            *guard = handle;
-            tracing::info!(
-                "Lane terminal attached: addr={} port={} (旧 handle drop)",
-                address,
-                sp_port
-            );
+    /// `window.ensureLane(address, port)` を呼ぶ — 既存ならば no-op (idempotent)。
+    pub fn ensure_lane(main_view: &WebView, address: &str, port: u16) {
+        let script = format!("window.ensureLane({}, {})", js_str(address), port);
+        if let Err(e) = main_view.evaluate_script(&script) {
+            tracing::warn!("ensureLane script failed (addr={}): {}", address, e);
         }
-        Err(e) => {
-            tracing::warn!("swap_pty_to_lane: pty mutex poisoned: {}", e);
+    }
+
+    /// `window.showLane(address)` を呼ぶ — active な 1 Lane を表示。 None / 不在の address なら empty placeholder。
+    pub fn show_lane(main_view: &WebView, address: Option<&str>) {
+        let script = match address {
+            Some(a) => format!("window.showLane({})", js_str(a)),
+            None => "window.showLane(null)".into(),
+        };
+        if let Err(e) = main_view.evaluate_script(&script) {
+            tracing::warn!("showLane script failed: {}", e);
+        }
+    }
+
+    /// `window.removeLane(address)` を呼ぶ — Lane が消えた時に xterm + WS を dispose。
+    pub fn remove_lane(main_view: &WebView, address: &str) {
+        let script = format!("window.removeLane({})", js_str(address));
+        if let Err(e) = main_view.evaluate_script(&script) {
+            tracing::warn!("removeLane script failed (addr={}): {}", address, e);
         }
     }
 }
@@ -1357,35 +1330,19 @@ pub fn run() -> anyhow::Result<()> {
     //   localhost URL かつ daemon が down なら `vp` binary を auto-spawn して待つ。
     //   spawn 失敗 or timeout なら local portable-pty にフォールバック (黙って落ちない)。
     let proxy = event_loop.create_proxy();
-    // Phase 2 (Lane terminal binding): TerminalHandle を Arc<Mutex<>> でラップして hot-swap 可能に。
-    // 起動時は legacy daemon spawn / local fallback で xterm を初期化、
-    // LanesLoaded で auto-select / lane:select 時に Lane attach mode に切替える。
-    let initial_pty = match std::env::var("VP_TERMINAL_MODE").as_deref() {
-        Ok("local") => {
-            tracing::info!("terminal mode = local (portable-pty, explicit opt-out)");
-            terminal::TerminalHandle::Local(terminal::spawn_shell(None, 80, 24, proxy)?)
-        }
-        _ => {
-            let world_url =
-                std::env::var("VP_WORLD_URL").unwrap_or_else(|_| "http://127.0.0.1:32000".into());
-            match crate::daemon_launcher::ensure_daemon_ready(&world_url) {
-                Ok(()) => {
-                    tracing::info!("terminal mode = daemon (WS to {})", world_url);
-                    terminal::TerminalHandle::Daemon(crate::ws_terminal::connect_daemon_terminal(
-                        &world_url, 80, 24, proxy,
-                    )?)
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "daemon auto-launch 失敗、local portable-pty に fallback: {}",
-                        e
-                    );
-                    terminal::TerminalHandle::Local(terminal::spawn_shell(None, 80, 24, proxy)?)
-                }
-            }
-        }
-    };
-    let pty: Arc<Mutex<terminal::TerminalHandle>> = Arc::new(Mutex::new(initial_pty));
+    // Phase 2.5 (per-Lane instance): startup の placeholder PTY 接続は撤去。
+    // Lane が出現するまで main area は empty placeholder ("No Lane selected") のみ。
+    // ただし TheWorld の auto-launch だけは継続 (sidebar の Activity widget や
+    // /api/world/projects 取得に必要)。
+    let _ = proxy; // 旧 spawn_shell / connect_daemon_terminal で proxy を消費していた、 互換用に残す
+    let world_url =
+        std::env::var("VP_WORLD_URL").unwrap_or_else(|_| "http://127.0.0.1:32000".into());
+    if let Err(e) = crate::daemon_launcher::ensure_daemon_ready(&world_url) {
+        tracing::warn!(
+            "TheWorld auto-launch 失敗 (continue with offline state): {}",
+            e
+        );
+    }
 
     // TheWorld から project list を非同期 fetch (起動初回)
     spawn_processes_fetch(event_loop.create_proxy());
@@ -1409,7 +1366,6 @@ pub fn run() -> anyhow::Result<()> {
     // VP-100 Phase 2: main area = 単一 WebView (canvas + terminal を統合)。
     // xterm.js + canvas placeholder + preview iframe を kind 別に切替表示する。
     // PTY ブリッジは旧 terminal_view と同じ IPC handler を引き継ぐ。
-    let pty_for_ipc = pty.clone();
     let ipc_proxy = event_loop.create_proxy();
     // VP-100 follow-up (1Password 風 runtime 切替):
     // wry の DevTools 機能は **compile 時 always 有効** で固定。
@@ -1424,16 +1380,10 @@ pub fn run() -> anyhow::Result<()> {
         })
         .with_devtools(true)
         .with_ipc_handler(move |req| {
-            // Phase 2: TerminalHandle が hot-swap されうるので、 lock + clone で受け渡し。
-            // clone は cheap (Arc / mpsc::Sender clone)。 lock は短時間で抜ける。
-            let handle = match pty_for_ipc.lock() {
-                Ok(g) => g.clone(),
-                Err(e) => {
-                    tracing::warn!("pty mutex poisoned: {}", e);
-                    return;
-                }
-            };
-            terminal::handle_ipc_message(req.body(), &handle, &ipc_proxy);
+            // Phase 2.5 (per-Lane instance): IPC handler は ready / copy / debug / slot:rect
+            // のみ処理する thin wrapper。 Lane の input / output は browser native WebSocket が
+            // SP `/ws/terminal?lane=<addr>` に直接接続するので Rust 経路は不要。
+            terminal::handle_ipc_message(req.body(), &ipc_proxy);
         })
         .with_focused(true)
         .build_as_child(&window)?;
@@ -1597,18 +1547,54 @@ pub fn run() -> anyhow::Result<()> {
                 } else {
                     None
                 };
+                let path_key = process_path.clone();
+                // Phase 2.5: prev lanes との diff で「消えた Lane」 を判定 → removeLane 発行
+                let removed_addrs: Vec<String> = sidebar_state
+                    .lanes_by_project
+                    .get(&path_key)
+                    .map(|prev| {
+                        let new_set: std::collections::HashSet<String> = lanes
+                            .iter()
+                            .map(|l| lane_address_key(&l.address))
+                            .collect();
+                        prev.iter()
+                            .map(|l| lane_address_key(&l.address))
+                            .filter(|addr| !new_set.contains(addr))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                for addr in &removed_addrs {
+                    tracing::info!("Lane removed (LanesLoaded diff): {}", addr);
+                    lane_js::remove_lane(&main_view, addr);
+                }
                 sidebar_state.lanes_by_project.insert(process_path, lanes);
+                // Phase 2.5: per-Lane instance — このプロジェクトの SP port を引いて
+                // 各 Lane に ensureLane を発行 (idempotent)。
+                let sp_port_for_project = sidebar_state
+                    .processes
+                    .iter()
+                    .find(|p| p.path == path_key)
+                    .and_then(|p| p.port);
+                if let Some(port) = sp_port_for_project {
+                    if let Some(lanes_for_proj) = sidebar_state.lanes_by_project.get(&path_key) {
+                        for lane in lanes_for_proj {
+                            let addr_str = lane_address_key(&lane.address);
+                            lane_js::ensure_lane(&main_view, &addr_str, port);
+                        }
+                    }
+                } else {
+                    tracing::warn!(
+                        "LanesLoaded: SP port unknown for project_path={} (skip ensureLane)",
+                        path_key
+                    );
+                }
                 if let Some(addr) = first_addr {
                     tracing::info!("auto-select first lane: {}", addr);
                     sidebar_state.active_lane_address = Some(addr.clone());
                     push_active_lane(&main_view, &sidebar_state);
-                    // Phase 2: 初回 LanesLoaded で auto-select した Lane の WS terminal に hot-swap
-                    swap_pty_to_lane(
-                        &pty,
-                        &sidebar_state,
-                        &addr,
-                        async_action_proxy.clone(),
-                    );
+                    // Phase 2.5: per-Lane instance を main area に表示。
+                    // ensureLane は上のループで呼んだので、 ここでは show のみ。
+                    lane_js::show_lane(&main_view, Some(&addr));
                 }
                 push_sidebar_state(&sidebar, &sidebar_state);
             }
@@ -1669,11 +1655,12 @@ pub fn run() -> anyhow::Result<()> {
                 }
                 if outcome.active_changed {
                     push_active_lane(&main_view, &sidebar_state);
-                    // Phase 2: lane:select で Lane が変わったら、 main area の terminal を
-                    // 新 Lane の SP WS attach に hot-swap する。
-                    if let Some(addr) = sidebar_state.active_lane_address.clone() {
-                        swap_pty_to_lane(&pty, &sidebar_state, &addr, async_action_proxy.clone());
-                    }
+                    // Phase 2.5: lane:select は per-Lane instance の display 切替だけ。
+                    // WebSocket は browser native で SP に直接繋がってる (ensure 済)。
+                    lane_js::show_lane(
+                        &main_view,
+                        sidebar_state.active_lane_address.as_deref(),
+                    );
                 }
                 // Architecture v4: dead な project が expand されたら SP を auto-spawn。
                 // dedup: 同 session で同じ path を 2 回呼ばない (TheWorld 側でも弾かれるが
