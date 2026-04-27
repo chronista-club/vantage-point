@@ -181,8 +181,14 @@ const SIDEBAR_HTML: &str = concat!(
   /* Phase 5-C polish: var(--typography-family-icon) は specificity で .nf-icon を上書きするため
      direct 'VPMono' 宣言に固定。 width:18px は Lane row レイアウト固有なので保持。 */
   .vp-lane-row .icon{width:18px;text-align:center;font-size:12px;font-family:'VPMono',monospace;}
-  .vp-lane-row .label{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .vp-lane-row .label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .vp-lane-row .state{font-size:9px;}
+  /* Phase 5-D: Worker row の git 状態 subtitle (= branch / ahead-behind / dirty / merged) */
+  .vp-lane-row .worker-meta{flex:1;font-size:10px;color:var(--color-text-tertiary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-left:6px;font-style:italic;}
+  .vp-lane-row .worker-meta .dirty{color:var(--color-status-warning,#d49b3f);font-weight:500;}
+  .vp-lane-row .worker-meta .ahead{color:var(--color-status-info,#3fb9d4);}
+  .vp-lane-row .worker-meta .behind{color:var(--color-status-warning,#d49b3f);}
+  .vp-lane-row .worker-meta .merged{color:var(--color-status-success,#3fb950);}
   /* Phase 4-A: Worker row × button (delete) — hover 時のみ表示で row UI を雑然とさせない */
   .vp-lane-row .vp-lane-delete{font-size:14px;color:var(--color-text-tertiary);padding:0 4px;border-radius:3px;opacity:0;transition:opacity .12s ease,color .12s ease,background .12s ease;cursor:pointer;}
   .vp-lane-row:hover .vp-lane-delete{opacity:0.8;}
@@ -455,6 +461,55 @@ const SIDEBAR_HTML: &str = concat!(
           stateMark.innerHTML = stateGlyphHTML(lane.state);
           row.appendChild(standIcon);
           row.appendChild(label);
+          // Phase 5-D: Worker のみ git 状態 subtitle (branch · ahead/behind · dirty/merged)
+          if (isWorker && lane.worker_status) {
+            const ws = lane.worker_status;
+            const meta = document.createElement('span');
+            meta.className = 'worker-meta';
+            // branch は textContent で escape (user 入力由来 → XSS 対策)、 数値系は HTML safe
+            let hasContent = false;
+            if (ws.branch) {
+              const br = document.createElement('span');
+              br.textContent = ws.branch;
+              meta.appendChild(br);
+              hasContent = true;
+            }
+            const ahead = ws.ahead | 0;
+            const behind = ws.behind | 0;
+            if (ahead > 0 || behind > 0) {
+              if (hasContent) meta.appendChild(document.createTextNode(' '));
+              if (ahead > 0) {
+                const a = document.createElement('span');
+                a.className = 'ahead';
+                a.textContent = '↑' + ahead;
+                meta.appendChild(a);
+              }
+              if (behind > 0) {
+                const b = document.createElement('span');
+                b.className = 'behind';
+                b.textContent = '↓' + behind;
+                meta.appendChild(b);
+              }
+              hasContent = true;
+            }
+            if ((ws.dirty_count | 0) > 0) {
+              if (hasContent) meta.appendChild(document.createTextNode(' '));
+              const d = document.createElement('span');
+              d.className = 'dirty';
+              d.textContent = ws.dirty_count + 'M';
+              meta.appendChild(d);
+              hasContent = true;
+            }
+            if (ws.is_merged) {
+              if (hasContent) meta.appendChild(document.createTextNode(' '));
+              const m = document.createElement('span');
+              m.className = 'merged';
+              m.textContent = 'merged';
+              meta.appendChild(m);
+              hasContent = true;
+            }
+            if (hasContent) row.appendChild(meta);
+          }
           row.appendChild(stateMark);
           // Phase 4-A: Worker のみ × button (即 delete、 confirm dialog なし — dogfooding speed 優先)
           if (isWorker) {

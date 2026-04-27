@@ -134,6 +134,11 @@ pub struct LaneInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
     pub cwd: String,
+    /// Phase 5-D: Worker のみ embed (Lead は git workspace を持たない設計)。
+    /// `cwd` から `ccws::commands::worker_status()` を呼んで populate。
+    /// `/api/lanes` 応答時に lazy 取得 (registry には保存しない、 git 状態は volatile)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_status: Option<crate::ccws::commands::WorkerStatus>,
 }
 
 /// Lane Pool — Lead/Worker registry
@@ -229,6 +234,8 @@ impl LanePool {
             created_at: chrono::Utc::now().to_rfc3339(),
             pid,
             cwd,
+            // Lead は git workspace 持たない (= project root が cwd)、 worker_status は None
+            worker_status: None,
         };
         pool.lanes.insert(addr, info);
         pool

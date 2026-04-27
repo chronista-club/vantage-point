@@ -216,6 +216,29 @@ pub struct LaneInfo {
     pub pid: Option<u32>,
     #[serde(default)]
     pub cwd: String,
+    /// Phase 5-D: Worker Lane のみ有効、 git workspace の状態 snapshot
+    #[serde(default)]
+    pub worker_status: Option<WorkerStatusWire>,
+}
+
+/// Phase 5-D: vantage-point 側 `ccws::commands::WorkerStatus` の wire shape。
+/// sidebar Worker row に branch / dirty / ahead / behind / merge 状態を表示。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct WorkerStatusWire {
+    #[serde(default)]
+    pub branch: Option<String>,
+    #[serde(default)]
+    pub dirty_count: usize,
+    #[serde(default)]
+    pub ahead: u32,
+    #[serde(default)]
+    pub behind: u32,
+    #[serde(default)]
+    pub has_upstream: bool,
+    #[serde(default)]
+    pub last_commit: String,
+    #[serde(default)]
+    pub is_merged: bool,
 }
 
 #[derive(Debug, Deserialize)]

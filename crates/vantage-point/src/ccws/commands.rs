@@ -635,6 +635,70 @@ fn get_branch(dir: &std::path::Path) -> Option<String> {
     }
 }
 
+// ── Phase 5-D D1: Worker status (struct 返却、 SP API exposure 用) ───────────
+
+/// Worker workspace の git 状態 snapshot。 `worker_status(path)` で取得、
+/// `/api/lanes` の LaneInfo に embed して sidebar に表示する。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct WorkerStatus {
+    /// 現在のブランチ (detached HEAD 時 None)
+    pub branch: Option<String>,
+    /// `git status --short` の non-empty lines (= 変更ファイル数、 0 なら clean)
+    pub dirty_count: usize,
+    /// upstream に対する ahead commit 数 (upstream 無い時 0)
+    pub ahead: u32,
+    /// upstream に対する behind commit 数
+    pub behind: u32,
+    /// upstream tracking 自体があるか (`local` / detached の判別用)
+    pub has_upstream: bool,
+    /// 最新 commit `{sha} {message}` (`git log --oneline -1`)、 取得失敗時 "-"
+    pub last_commit: String,
+    /// origin/main (or origin/master) に merge 済みで cleanup 候補か
+    pub is_merged: bool,
+}
+
+/// Worker workspace dir から status snapshot を取得 (SP API 用)。 git 関連 subprocess を
+/// 5-7 個並列に呼ぶので 1 回 ~50-100ms 程度。 多数 worker 時は SP 側で並列化検討。
+pub fn worker_status(dir: &Path) -> WorkerStatus {
+    let branch = get_branch(dir);
+    let dirty_count = count_changes(dir);
+    let (ahead, behind, has_upstream) = get_ahead_behind_counts(dir);
+    let last_commit = get_last_commit(dir);
+    let is_merged = is_branch_merged(dir);
+    WorkerStatus {
+        branch,
+        dirty_count,
+        ahead,
+        behind,
+        has_upstream,
+        last_commit,
+        is_merged,
+    }
+}
+
+/// `get_ahead_behind` の数値版 ── upstream tracking が無いと `(0, 0, false)` を返す。
+fn get_ahead_behind_counts(dir: &Path) -> (u32, u32, bool) {
+    let output = Command::new("git")
+        .args(["rev-list", "--left-right", "--count", "HEAD...@{upstream}"])
+        .current_dir(dir)
+        .output()
+        .ok();
+    match output {
+        Some(o) if o.status.success() => {
+            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            let parts: Vec<&str> = s.split('\t').collect();
+            if parts.len() == 2 {
+                let ahead: u32 = parts[0].parse().unwrap_or(0);
+                let behind: u32 = parts[1].parse().unwrap_or(0);
+                (ahead, behind, true)
+            } else {
+                (0, 0, false)
+            }
+        }
+        _ => (0, 0, false),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
