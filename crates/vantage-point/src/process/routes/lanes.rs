@@ -227,15 +227,24 @@ pub async fn create_handler(
 pub struct DeleteLaneQuery {
     /// Display 形 ("<project>/lead" / "<project>/worker/<name>")
     pub address: String,
+    /// Phase 4-B: ccws workspace の dir も rm するか (default true)。
+    /// false の場合 PtySlot だけ kill して dir 残置 (= debug / forensic 用途)。
+    #[serde(default = "default_cleanup")]
+    pub cleanup: bool,
 }
 
-/// `DELETE /api/lanes?address=<addr>` — Lane destroy (Phase 4-A)
+fn default_cleanup() -> bool {
+    true
+}
+
+/// `DELETE /api/lanes?address=<addr>&cleanup=true` — Lane destroy (Phase 4-A) + ccws workspace cleanup (Phase 4-B)
 ///
 /// 動作:
 /// 1. address parse (LanePool::parse_address で逆変換)
 /// 2. Lead は削除拒否 (400) — Project lifetime 紐付き
 /// 3. LanePool::remove で LaneInfo + PtySlot を drop (PtySlot::Drop で child kill + wait)
-/// 4. 200 OK with deleted info
+/// 4. cleanup=true (default) なら `ccws rm <name> --force` を subprocess 実行 (PtySlot drop 後 = file handle 解放後)
+/// 5. 200 OK with deleted info + cleanup status
 ///
 /// 関連 memory: mem_1CaTpCQH8iLJ2PasRcPjHv (Architecture v4: Lane lifecycle)
 pub async fn delete_handler(
@@ -259,29 +268,74 @@ pub async fn delete_handler(
         ));
     }
 
+    // Worker name (= ccws workspace name) を保持
+    let worker_name = addr.name.clone();
+
     let removed = {
         let mut pool = state.lane_pool.write().await;
         pool.remove(&addr)
     };
 
-    match removed {
-        Some(info) => {
-            tracing::info!(
-                "Worker Lane deleted: addr={} pid={:?} (PtySlot dropped → child killed)",
-                addr,
-                info.pid
-            );
-            Ok((
-                StatusCode::OK,
-                Json(json!({
-                    "deleted": addr.to_string(),
-                    "pid": info.pid,
-                })),
-            ))
+    let info = match removed {
+        Some(i) => i,
+        None => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": format!("Lane not found: {}", addr)})),
+            ));
         }
-        None => Err((
-            StatusCode::NOT_FOUND,
-            Json(json!({"error": format!("Lane not found: {}", addr)})),
-        )),
-    }
+    };
+
+    tracing::info!(
+        "Worker Lane deleted: addr={} pid={:?} (PtySlot dropped → child killed)",
+        addr,
+        info.pid
+    );
+
+    // Phase 4-B: ccws workspace dir cleanup
+    let cleanup_result = if q.cleanup
+        && let Some(name) = worker_name
+    {
+        let project_dir = state.project_dir.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            std::process::Command::new("ccws")
+                .args(["rm", &name, "--force"])
+                .current_dir(&project_dir)
+                .output()
+        })
+        .await;
+        match result {
+            Ok(Ok(o)) if o.status.success() => {
+                tracing::info!("ccws rm 成功: {}", addr);
+                Some("cleaned")
+            }
+            Ok(Ok(o)) => {
+                tracing::warn!(
+                    "ccws rm 失敗 (lane は削除済、 dir 残置): {}: {}",
+                    addr,
+                    String::from_utf8_lossy(&o.stderr)
+                );
+                Some("dir_retained_ccws_rm_failed")
+            }
+            Ok(Err(e)) => {
+                tracing::warn!("ccws rm spawn 失敗: {}: {}", addr, e);
+                Some("dir_retained_spawn_failed")
+            }
+            Err(e) => {
+                tracing::warn!("ccws task join: {}", e);
+                Some("dir_retained_join_failed")
+            }
+        }
+    } else {
+        None
+    };
+
+    Ok((
+        StatusCode::OK,
+        Json(json!({
+            "deleted": addr.to_string(),
+            "pid": info.pid,
+            "cleanup": cleanup_result,
+        })),
+    ))
 }
