@@ -154,19 +154,31 @@ pub async fn create_handler(
         state.project_dir.clone()
     };
 
-    // PtySlot::spawn で実 PTY 起動 (Lead と同じ stand_spawner 経由)
+    // PtySlot::spawn は openpty + spawn_command の OS syscall でブロッキング。
+    // Phase review fix #2: tokio worker thread を占有しないよう spawn_blocking でラップ。
+    // Phase 4-X の ccws clone と同じ pattern。
     let cmd =
         crate::process::stand_spawner::build_stand_command(stand, std::path::Path::new(&cwd));
-    let (lane_state, pid) = match crate::daemon::pty_slot::PtySlot::spawn(
-        &cwd,
-        &cmd.program,
-        &cmd.args,
-        80,
-        24,
-    ) {
+    let cwd_for_spawn = cwd.clone();
+    let spawn_result = tokio::task::spawn_blocking(move || {
+        crate::daemon::pty_slot::PtySlot::spawn(
+            &cwd_for_spawn,
+            &cmd.program,
+            &cmd.args,
+            80,
+            24,
+        )
+    })
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("PtySlot spawn task join: {}", e)})),
+        )
+    })?;
+    let (lane_state, pid) = match spawn_result {
         Ok((slot, _rx)) => {
             let pid = slot.pid();
-            // PtySlot を LanePool に insert する必要がある (Lead と同じ pattern)
             let mut pool = state.lane_pool.write().await;
             pool.insert_pty_slot(addr.clone(), slot);
             tracing::info!(

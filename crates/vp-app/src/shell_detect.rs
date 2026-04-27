@@ -16,6 +16,9 @@
 //! Mode 2 (`crate::ws_terminal::connect_daemon_terminal` — TheWorld daemon WS 経由)
 //! の両方から使える共通モジュール。
 
+// Phase review fix #1: detect_shell_args は OS-agnostic に basename 抽出するので Path 非依存。
+// Path は Windows-only の find_in_path / git_bash candidate exists check でのみ使う。
+#[cfg(windows)]
 use std::path::Path;
 
 /// Shell binary を決定する。
@@ -88,11 +91,23 @@ pub fn detect_shell_args(shell: &str) -> Vec<String> {
     if let Ok(explicit) = std::env::var("VP_SHELL_ARGS") {
         return shell_words::split(&explicit).unwrap_or_default();
     }
-    let basename = Path::new(shell)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .map(|s| s.to_lowercase())
-        .unwrap_or_default();
+    // Phase review fix #1: Path::file_stem() は OS の path separator しか認識しないので、
+    // macOS 上で Windows path (バックスラッシュ区切り) を渡すと file_stem が `"7\\pwsh"` 等の
+    // 半端な値になり、 shell 判定が誤動作する。 自前で `/` と `\\` 両方を区切りとして basename 抽出。
+    let basename = shell
+        .rsplit(|c| c == '/' || c == '\\')
+        .next()
+        .unwrap_or(shell)
+        .strip_suffix(".exe")
+        .unwrap_or_else(|| {
+            // .exe 以外の拡張子 (.cmd, .bat 等) も剥がす一般化
+            shell
+                .rsplit(|c| c == '/' || c == '\\')
+                .next()
+                .and_then(|s| s.rsplit_once('.').map(|(stem, _ext)| stem))
+                .unwrap_or_else(|| shell.rsplit(|c| c == '/' || c == '\\').next().unwrap_or(shell))
+        })
+        .to_lowercase();
     match basename.as_str() {
         // POSIX shells: login で起動 (~/.zprofile, ~/.zshrc 等の rc 連鎖を読む)
         "zsh" | "bash" | "sh" | "fish" | "dash" | "ksh" => vec!["-l".to_string()],

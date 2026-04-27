@@ -313,6 +313,13 @@ pub async fn run(
         )),
     });
 
+    // Phase review fix #2: LanePool::with_lead は内部で PtySlot::spawn (openpty + spawn_command)
+    // で OS syscall ブロッキング → spawn_blocking で tokio worker thread を保護。
+    // でも... AppState 既に構築済なので restructure したいけど不可。 代替:
+    // with_lead 自体は sync だが state 構築段階で `tokio::task::block_in_place` も使えない。
+    // 結果的に SP 起動時 1 回だけの呼び出しなので影響は軽微。 review 指摘は記録、 現実装維持。
+    // (`create_handler` 側の spawn_blocking 化は完了済 = lanes.rs の方が頻繁に呼ばれる重要 path)
+
     // ペイン状態をディスクから復元（前回 Process 終了時の状態 → RetainedStore）
     state.restore_pane_contents().await;
 

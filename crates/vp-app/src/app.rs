@@ -1099,10 +1099,11 @@ fn spawn_lanes_fetch(proxy: EventLoopProxy<AppEvent>, process_path: String, sp_p
 mod lane_js {
     use wry::WebView;
 
-    /// JS string literal にする (基本 ASCII safe な path 想定だが、 念のため `'` `\\` を escape)
+    /// JS string literal にする (Phase review fix #3 と同設計: serde_json::to_string で
+    /// 全 UTF-8 + null byte + surrogate を JSON spec で escape、 JS の valid string literal に)。
+    /// Lane address は通常 ASCII safe (`<project>/lead`) だが、 一貫性と future-proof のため統一。
     fn js_str(s: &str) -> String {
-        let escaped = s.replace('\\', "\\\\").replace('\'', "\\'");
-        format!("'{}'", escaped)
+        serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into())
     }
 
     /// `window.ensureLane(address, port)` を呼ぶ — 既存ならば no-op (idempotent)。
@@ -1674,16 +1675,16 @@ pub fn run() -> anyhow::Result<()> {
                 if text.is_empty() {
                     tracing::debug!("PasteText empty (clipboard 空 or 取得失敗)、 skip");
                 } else {
-                    // text を JS string literal として安全に escape (backslash → \\\\ は Rust 内 1 個、
-                    // single-quote / newline / carriage return も処理)
-                    let escaped = text
-                        .replace('\\', "\\\\")
-                        .replace('\'', "\\'")
-                        .replace('\n', "\\n")
-                        .replace('\r', "\\r");
+                    // Phase review fix #3: 旧手書き escape (backslash/quote/newline/cr) は
+                    // null byte (`\0`) や Unicode surrogate を見落とす可能性があった。
+                    // serde_json::to_string で **JSON spec full escape** を使えば、
+                    // 全 UTF-8 sequence が JS の string literal として安全に literalize される。
+                    // 出力例: `"foo\nbar"` (ダブルクォート + JSON escape 込み) → JS で valid string literal。
+                    let json_text = serde_json::to_string(&text)
+                        .unwrap_or_else(|_| "\"\"".into());
                     let script = format!(
-                        "if (window.deliverPaste) window.deliverPaste('{}');",
-                        escaped
+                        "if (window.deliverPaste) window.deliverPaste({});",
+                        json_text
                     );
                     if let Err(e) = main_view.evaluate_script(&script) {
                         tracing::warn!("paste deliver script failed: {}", e);
