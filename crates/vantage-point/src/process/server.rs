@@ -325,6 +325,10 @@ pub async fn run(
         // Canvas Project Feed 集約 WebSocket（全 Process のメッセージを Project Feed でラップして中継）
         // 注: URL `/ws/lanes` は外部互換のため維持。内部命名は `project_feed` (mem_1CaSsN7xj69aVQtLPQFJxQ 命名整理)
         .route("/ws/lanes", get(project_feed::project_feed_ws_handler))
+        // Phase 2 (Architecture v4): vp-app から Lane の PtySlot に attach する WS endpoint。
+        // `?lane=<address>` で既存 LanePool の PtySlot に subscribe + write 経路を貼る。
+        // 関連 memory: mem_1CaTpCQH8iLJ2PasRcPjHv (Lane = Session Process)
+        .route("/ws/terminal", get(ws_terminal::ws_terminal_handler))
         // Phase A4-2b: Lane (Lead/Worker) lifecycle の REST endpoint
         // GET: list、 POST: Worker create (A6 minimum)
         .route(

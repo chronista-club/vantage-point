@@ -147,20 +147,26 @@ if [ ! -x "$VP_APP_BIN" ]; then
   exit 1
 fi
 
-# 既存プロセスを停止 (古い vp-app + 古い daemon を確実に終わらせて新 ENV を反映)
-# `^...$` anchor で完全一致のみ kill (sibling process を巻き込まない)
+# 既存プロセスを停止
+# - vp-app は **必ず** kill (新 binary 反映 + 古い app から daemon spawn 防止)
+# - TheWorld は **default では kill しない** (state を持つので毎回再起動すると Started がゼロに戻る)
+#   VP_FORCE_RESTART_DAEMON=1 を渡したときだけ kill する
 echo ""
-echo "🔄 既存プロセスを停止 (新 VP_DAEMON_LOG_FILE を反映)..."
-# vp-app は path-anchored で完全一致 (sibling kill 防止)、daemon 系は path 含む cmdline に対応するため anchor なし
+echo "🔄 既存 vp-app を停止..."
 pkill -f "${VP_APP_BIN}\\$" 2>/dev/null || true
-pkill -f 'vp world' 2>/dev/null || true
-pkill -f 'vp daemon' 2>/dev/null || true
-# port 32000 (TheWorld) も二段目で確実 kill (pattern 漏れ保険)
-PIDS=$(lsof -ti:32000 -sTCP:LISTEN 2>/dev/null || true)
-if [ -n "$PIDS" ]; then
-  kill -TERM $PIDS 2>/dev/null || true
+
+if [ "${VP_FORCE_RESTART_DAEMON:-0}" = "1" ]; then
+  echo "🔄 VP_FORCE_RESTART_DAEMON=1 → TheWorld も停止..."
+  pkill -f 'vp world' 2>/dev/null || true
+  pkill -f 'vp daemon' 2>/dev/null || true
+  PIDS=$(lsof -ti:32000 -sTCP:LISTEN 2>/dev/null || true)
+  if [ -n "$PIDS" ]; then
+    kill -TERM $PIDS 2>/dev/null || true
+  fi
+else
+  echo "ℹ️  TheWorld は kill せず既存を再利用 (state 永続化)。fresh start したい場合は VP_FORCE_RESTART_DAEMON=1 mise run app"
 fi
-sleep 2
+sleep 1
 
 # tail -F が file を見つけられるよう touch (空 file でも -F なら follow 開始)
 touch "$LOG_DIR/vp-world.kdl.log" "$LOG_DIR/vp-app.kdl.log"
