@@ -151,6 +151,12 @@ pub(crate) struct AppState {
     pub vpdb: Option<vp_db::SharedVpDb>,
     /// Whitesnake 🐍 — 汎用永続化レイヤー
     pub whitesnake: crate::capability::Whitesnake,
+    /// Lane Pool (Lead/Worker registry) — Lane scope の Stand container
+    /// 関連 memory: mem_1CaSsN7xj69aVQtLPQFJxQ (SP-as-Project-Master 9 component #4)
+    pub lane_pool: Arc<RwLock<super::lanes_state::LanePool>>,
+    /// Project scope の Stand pool (PP / GE / HP) — Phase A4-2b minimum、skeleton
+    /// 関連 memory: 「多 scope architecture」rule (2026-04-27)
+    pub project_stands: Arc<RwLock<super::project_stands_state::ProjectStandsPool>>,
 }
 
 impl AppState {

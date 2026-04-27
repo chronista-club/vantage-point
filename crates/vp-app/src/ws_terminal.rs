@@ -73,11 +73,25 @@ pub fn connect_daemon_terminal(
     let ws_url = world_url
         .replacen("http://", "ws://", 1)
         .replacen("https://", "wss://", 1);
-    let shell = std::env::var("VP_DAEMON_SHELL").unwrap_or_else(|_| "bash".into());
-    let full_url = format!(
+    // shell + args を決定 (Mac=zsh -l, Win=git-bash -l, etc)。
+    // VP_DAEMON_SHELL で daemon 経路だけ override 可能、未指定なら shell_detect に委ねる。
+    let shell = std::env::var("VP_DAEMON_SHELL")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(crate::shell_detect::detect_shell);
+    let args = crate::shell_detect::detect_shell_args(&shell);
+
+    // shell + args を query param に乗せる。`-l` 等 ASCII 安全な flag のみ想定なので
+    // URL encode は省略 (login flag に & = 等が入ることはない)。
+    // 複数 args は comma-separated (例: "-l" or "-NoLogo,-NoExit")。
+    let mut full_url = format!(
         "{}/ws/terminal?shell={}&cols={}&rows={}",
         ws_url, shell, cols, rows
     );
+    if !args.is_empty() {
+        full_url.push_str("&args=");
+        full_url.push_str(&args.join(","));
+    }
 
     let (tx, rx) = mpsc::unbounded_channel::<WsCommand>();
 

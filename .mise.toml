@@ -56,6 +56,148 @@ echo "🚀 Launching $INSTALL_APP ..."
 exec open "$INSTALL_APP"
 """
 
+[tasks."daemon:build"]
+description = "Build daemon binary (vp-cli の vp) — vp-app の locate_vp_binary が target/release/vp を見れる構成"
+run = """
+set -euo pipefail
+echo "🔨 Building vp-cli (daemon = vp world)..."
+cargo build --release -p vp-cli
+echo "✅ Built: $(pwd)/target/release/vp"
+"""
+
+[tasks.daemon]
+description = "Run daemon (vp world) standalone in foreground — log は VP_DAEMON_LOG_FILE で file 直書き、stdout にも出る"
+depends = ["daemon:build"]
+run = """
+set -euo pipefail
+ROOT="$(pwd)"
+LOG_DIR="${VP_LOG_DIR:-$HOME/Library/Logs/Vantage}"
+mkdir -p "$LOG_DIR"
+LOG_FILE="$LOG_DIR/vp-world.kdl.log"
+
+# 既存 daemon を kill (新 binary 反映、ping は失敗するので app から auto-launch されないよう先に kill)
+# pkill -f は cmdline 全体に regex match。実 cmdline は `/path/to/vp world ...` なので anchor は付けない。
+# port-based kill も二段で (lsof で listen 占有 PID を取得 → SIGTERM)、pattern 漏れの保険。
+echo "🔄 既存 daemon を停止..."
+pkill -f 'vp world' 2>/dev/null || true
+pkill -f 'vp daemon' 2>/dev/null || true
+PIDS=$(lsof -ti:32000 -sTCP:LISTEN 2>/dev/null || true)
+if [ -n "$PIDS" ]; then
+  kill -TERM $PIDS 2>/dev/null || true
+fi
+sleep 2
+
+# tracing-appender が log file 直書きできるよう環境変数を渡す
+export VP_DAEMON_LOG_FILE="$LOG_FILE"
+
+VP_BIN="$ROOT/target/release/vp"
+if [ ! -x "$VP_BIN" ]; then
+  echo "❌ daemon binary not found: $VP_BIN" >&2
+  echo "   先に 'mise run daemon:build' を実行してください" >&2
+  exit 1
+fi
+
+echo ""
+echo "📝 daemon log: $LOG_FILE"
+echo "🚀 Launching $VP_BIN world (foreground、Ctrl+C で停止)..."
+echo "─────────────────────────────────────────────────"
+# foreground で exec、Ctrl+C で daemon stop
+exec "$VP_BIN" world
+"""
+
+[tasks.logs]
+description = "Tail VP logs (daemon + vp-app + project) — terminal で常時 stream 表示"
+run = """
+set -euo pipefail
+LOG_DIR="${VP_LOG_DIR:-$HOME/Library/Logs/Vantage}"
+mkdir -p "$LOG_DIR"
+
+# 必要な log file が無くてもエラーにならないように先に touch
+# (新規 process が立ち上がる前に tail -F が file を見つけられるように)
+touch "$LOG_DIR/vp-world.kdl.log" "$LOG_DIR/vp-app.kdl.log"
+
+echo "📝 Tailing: $LOG_DIR/*.kdl.log"
+echo "─────────────────────────────────────────────────"
+exec tail -F "$LOG_DIR"/*.kdl.log
+"""
+
+[tasks.app]
+description = "Build & run vp-app (Rust GUI: wry+tao+creo-ui) — Mac 主軸版、xcodebuild 不要"
+run = """
+set -euo pipefail
+ROOT="$(pwd)"
+
+# Mac 主軸切替 (2026-04-26 決定、mem_1CaSjEz55wBuy3JdU14LCS, Phase A 補強):
+# Swift app (apple/VantagePoint) ではなく vp-app crate (Rust + wry + xterm.js + creo-ui)
+# を起動する。xcodebuild / xcodegen / ditto / codesign 不要 → build がぐっと速い。
+# log_dir は crates/vp-app/src/app.rs:961 で ~/Library/Logs/Vantage/ に既に統一済み。
+LOG_DIR="${VP_LOG_DIR:-$HOME/Library/Logs/Vantage}"
+mkdir -p "$LOG_DIR"
+LOG_FILE="${VP_APP_LOG:-$LOG_DIR/vp-app.stdout.log}"
+
+# 子プロセス (TheWorld daemon) に inherit させる
+export VP_DAEMON_LOG_FILE="$LOG_DIR/vp-world.kdl.log"
+
+echo "🔨 Building vp-app (Rust: wry+tao+creo-ui)..."
+cargo build --release -p vp-app
+
+VP_APP_BIN="$ROOT/target/release/vp-app"
+if [ ! -x "$VP_APP_BIN" ]; then
+  echo "❌ vp-app binary not found at $VP_APP_BIN" >&2
+  exit 1
+fi
+
+# 既存プロセスを停止 (古い vp-app + 古い daemon を確実に終わらせて新 ENV を反映)
+# `^...$` anchor で完全一致のみ kill (sibling process を巻き込まない)
+echo ""
+echo "🔄 既存プロセスを停止 (新 VP_DAEMON_LOG_FILE を反映)..."
+# vp-app は path-anchored で完全一致 (sibling kill 防止)、daemon 系は path 含む cmdline に対応するため anchor なし
+pkill -f "${VP_APP_BIN}\\$" 2>/dev/null || true
+pkill -f 'vp world' 2>/dev/null || true
+pkill -f 'vp daemon' 2>/dev/null || true
+# port 32000 (TheWorld) も二段目で確実 kill (pattern 漏れ保険)
+PIDS=$(lsof -ti:32000 -sTCP:LISTEN 2>/dev/null || true)
+if [ -n "$PIDS" ]; then
+  kill -TERM $PIDS 2>/dev/null || true
+fi
+sleep 2
+
+# tail -F が file を見つけられるよう touch (空 file でも -F なら follow 開始)
+touch "$LOG_DIR/vp-world.kdl.log" "$LOG_DIR/vp-app.kdl.log"
+
+echo ""
+echo "📝 ログ出力先:"
+echo "   daemon (TheWorld): $VP_DAEMON_LOG_FILE"
+echo "   vp-app (Rust):     $LOG_DIR/vp-app.kdl.log (tracing-appender 直書き)"
+echo "   stdout/stderr:     $LOG_FILE"
+echo ""
+echo "🚀 Launching $VP_APP_BIN (background) ..."
+
+# vp-app を background 起動、stdout/stderr は file に流す (tail で後追い)
+"$VP_APP_BIN" > "$LOG_FILE" 2>&1 &
+APP_PID=$!
+
+# Ctrl+C で vp-app と tail を同時停止 (1 terminal 完結 UX)
+trap 'echo ""; echo "📴 stopping vp-app (PID=$APP_PID) + tail..."; kill $APP_PID 2>/dev/null; exit 0' INT TERM
+
+echo "✅ vp-app launched (PID=$APP_PID)"
+echo "📝 Tailing all logs (Ctrl+C で全停止)..."
+echo "─────────────────────────────────────────────────"
+
+# build/起動 完了後、そのまま全 log multiplex tail (`mise run logs` 同等)
+exec tail -F "$LOG_DIR/vp-world.kdl.log" "$LOG_DIR/vp-app.kdl.log" "$LOG_FILE"
+"""
+
+[tasks."app:swift"]
+description = "[deprecated 2026-04-26] 旧 Swift VantagePoint.app — Mac 主軸は `mise run app` (Rust GUI) に移行"
+run = """
+set -euo pipefail
+echo "⚠️  Swift app (apple/VantagePoint) は Mac 主軸から外れました。"
+echo "    新主軸は vp-app crate (Rust + wry + xterm.js)。'mise run app' を使ってください。"
+echo "    Swift 経路を使い続ける場合は 'mise run mac' を呼んでください。"
+exit 1
+"""
+
 [tasks."mac:build"]
 description = "Build macOS native app without launching"
 run = """

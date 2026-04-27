@@ -10,12 +10,18 @@
 
 pub mod capabilities;
 pub(crate) mod hub;
+/// Lane state types (LaneAddress / LaneStand / LanePool 等) — Lane scope の data model
+pub(crate) mod lanes_state;
 pub mod process_runner;
+/// Project scope の Stand pool (PP / GE / HP)
+pub(crate) mod project_stands_state;
 pub mod pty;
 pub(crate) mod retained;
 mod routes;
 mod server;
 mod session;
+/// StandSpawner — LaneStand 別の spawn command 構築 (Architecture v4 A5-1)
+pub(crate) mod stand_spawner;
 pub(crate) mod state;
 pub(crate) mod tmux_actor;
 pub mod topic;

@@ -101,6 +101,10 @@ enum Commands {
     /// Port Layout — deterministic 透過的固定 port の計算・表示
     #[command(subcommand)]
     Port(commands::port_cmd::PortCommands),
+
+    /// vp-app GUI 管理 (Mac 主軸切替: Rust + wry + xterm.js + creo-ui)
+    #[command(subcommand)]
+    App(commands::app::AppCommands),
 }
 
 /// Stone Free worker workspace コマンド（vp-ccws library への薄い wrapper）
@@ -209,6 +213,7 @@ fn main() -> Result<()> {
 
         Commands::Ws(cmd) => execute_ws(cmd),
         Commands::Port(cmd) => commands::port_cmd::execute(cmd),
+        Commands::App(cmd) => commands::app::execute(cmd),
     }
 }
 

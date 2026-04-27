@@ -9,8 +9,8 @@
 //! Phase W2 MVP: vp-app プロセス内で直接 PTY spawn (local PTY)。
 //! 後続 Phase で daemon (TheWorld) の WebSocket PTY channel 経由に差し替え予定。
 
-use std::io::Read;
-use std::sync::{Arc, Mutex};
+use std::io::{Read, Write};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 
 use anyhow::{Context, Result};
@@ -24,10 +24,10 @@ pub enum AppEvent {
     Output(Vec<u8>),
     /// xterm.js 側から ready 通知 (IPC 経由で届いたら main thread に伝える)
     XtermReady,
-    /// TheWorld から project list 取得成功
-    ProjectsLoaded(Vec<crate::client::ProjectInfo>),
-    /// TheWorld への接続失敗
-    ProjectsError(String),
+    /// TheWorld から Process list 取得成功 (Architecture v4: 旧 ProjectsLoaded)
+    ProcessesLoaded(Vec<crate::client::ProcessInfo>),
+    /// TheWorld への接続失敗 (Architecture v4: 旧 ProjectsError)
+    ProcessesError(String),
     /// VP-95: Activity widget の定期更新 payload
     ActivityUpdate(crate::pane::ActivitySnapshot),
     /// VP-95: sidebar webview からの IPC メッセージ (JSON 文字列、main loop でパース)
@@ -44,43 +44,52 @@ pub enum AppEvent {
     },
     /// VP-100 follow-up: muda メニュー項目クリック (developer mode toggle / open devtools 等)
     MenuClicked(muda::MenuId),
+    /// Phase A4-3b: SP (= Runtime Process) の `/api/lanes` を fetch して Lane list を main thread に通知
+    /// 関連 memory: mem_1CaTpCQH8iLJ2PasRcPjHv (Architecture v4: Process recursive)
+    LanesLoaded {
+        process_path: String,
+        lanes: Vec<crate::client::LaneInfo>,
+    },
+    /// Phase A4-3b: Lane fetch 失敗 (SP 未起動 / 接続失敗)
+    LanesError {
+        process_path: String,
+        message: String,
+    },
 }
 
 /// PTY セッションのハンドル
 ///
-/// writer と pair を保持し、ipc_handler から `write` / `resize` が呼ばれる。
-/// Arc<Mutex<>> で wrap して clone 可能にしている。
+/// IPC handler から `write` / `resize` が呼ばれる。**fire-and-forget で常時高速**:
+/// - `write` は `mpsc::Sender::send` のみ → 瞬時 return (sync block ゼロ)。
+///   実際の `writer.write_all` + `flush` は背景 writer thread が drain して実行。
+///   → tao IPC handler が瞬時 return → JS event loop が常時 responsive →
+///   rapid typing で keystroke drop が起きない。
+/// - `resize` は低頻度なので `Arc<Mutex<PtyPair>>` 経由で OK。
+///
+/// 関連: `mem_1CaSpUi6cz9abzcEU3d6KC` (VP I/O Pipeline — Push Primitives + Non-blocking Internals)
 pub struct PtyHandle {
-    inner: Arc<Mutex<PtyInner>>,
-}
-
-struct PtyInner {
-    writer: Box<dyn std::io::Write + Send>,
-    pair: PtyPair,
+    /// 背景 writer thread に bytes を fire-and-forget で送る送信側
+    write_tx: mpsc::Sender<Vec<u8>>,
+    /// resize 用に master を保持。低頻度操作なので Mutex で十分
+    pair: Arc<Mutex<PtyPair>>,
 }
 
 impl PtyHandle {
+    /// PTY に書き込む。fire-and-forget — 瞬時 return。
+    /// 実際の write/flush は背景 writer thread が drain。
     pub fn write(&self, data: &[u8]) -> Result<()> {
-        let mut inner = self
-            .inner
-            .lock()
-            .map_err(|_| anyhow::anyhow!("PTY mutex poisoned"))?;
-        inner
-            .writer
-            .write_all(data)
-            .context("PTY writer write_all")?;
-        inner.writer.flush().context("PTY writer flush")?;
+        self.write_tx
+            .send(data.to_vec())
+            .map_err(|_| anyhow::anyhow!("PTY writer thread closed"))?;
         Ok(())
     }
 
     pub fn resize(&self, cols: u16, rows: u16) -> Result<()> {
-        let inner = self
-            .inner
-            .lock()
-            .map_err(|_| anyhow::anyhow!("PTY mutex poisoned"))?;
-        inner
+        let pair = self
             .pair
-            .master
+            .lock()
+            .map_err(|_| anyhow::anyhow!("PTY pair mutex poisoned"))?;
+        pair.master
             .resize(PtySize {
                 rows,
                 cols,
@@ -95,7 +104,8 @@ impl PtyHandle {
 impl Clone for PtyHandle {
     fn clone(&self) -> Self {
         Self {
-            inner: self.inner.clone(),
+            write_tx: self.write_tx.clone(),
+            pair: self.pair.clone(),
         }
     }
 }
@@ -119,9 +129,9 @@ pub fn spawn_shell(
         })
         .context("openpty")?;
 
-    // シェルコマンド + 引数を決定
-    let shell = detect_shell();
-    let shell_args = detect_shell_args();
+    // シェルコマンド + 引数を決定 (shell_detect モジュールに集約、Mode 2 と共有)
+    let shell = crate::shell_detect::detect_shell();
+    let shell_args = crate::shell_detect::detect_shell_args(&shell);
     let mut cmd = CommandBuilder::new(&shell);
     for arg in &shell_args {
         cmd.arg(arg);
@@ -154,9 +164,37 @@ pub fn spawn_shell(
 
     let writer = pair.master.take_writer().context("take writer")?;
 
+    // writer thread: fire-and-forget で PTY write を背景で drain
+    // (mem_1CaSpUi6cz9abzcEU3d6KC: input は瞬時 return → JS event loop が常時 responsive)
+    let (write_tx, write_rx) = mpsc::channel::<Vec<u8>>();
+    thread::Builder::new()
+        .name("vp-app-pty-writer".into())
+        .spawn(move || writer_loop(writer, write_rx))
+        .context("spawn writer thread")?;
+
     Ok(PtyHandle {
-        inner: Arc::new(Mutex::new(PtyInner { writer, pair })),
+        write_tx,
+        pair: Arc::new(Mutex::new(pair)),
     })
+}
+
+/// PTY writer ループ。`mpsc::Receiver` から bytes を受け取って sync write + flush。
+///
+/// sender drop (= 全 PtyHandle drop) で `for` iterator が終了 → thread exit。
+/// fire-and-forget の対極にある背景処理: ここで syscall wait しても、
+/// PtyHandle::write の caller (IPC handler、JS event loop) は影響を受けない。
+fn writer_loop(mut writer: Box<dyn Write + Send>, rx: mpsc::Receiver<Vec<u8>>) {
+    for bytes in rx {
+        if let Err(e) = writer.write_all(&bytes) {
+            tracing::warn!("PTY writer write_all failed: {}", e);
+            break;
+        }
+        if let Err(e) = writer.flush() {
+            tracing::warn!("PTY writer flush failed: {}", e);
+            break;
+        }
+    }
+    tracing::info!("PTY writer thread 終了 (sender drop)");
 }
 
 /// PTY reader ループ。EOF / エラーで終了。
@@ -205,67 +243,9 @@ fn reader_loop(mut reader: Box<dyn Read + Send>, proxy: EventLoopProxy<AppEvent>
     }
 }
 
-/// プラットフォーム別のデフォルトシェル
-///
-/// ## Windows
-///
-/// 基本 **Windows ネイティブシェル** を優先 (vp-app は Windows native アプリ):
-///
-/// 1. `VP_SHELL` env var があれば最優先
-/// 2. PATH から pwsh.exe (PowerShell 7+) → powershell.exe (5.x) → cmd.exe
-///
-/// WSL2 経由で bash を使いたい場合 (mise / dev tooling を WSL2 内に持ってる場合等):
-///
-/// ```bash
-/// VP_SHELL=wsl.exe VP_SHELL_ARGS="-d archlinux -- bash -li"
-/// ```
-///
-/// ## Unix
-///
-/// `$SHELL` → `/bin/bash` フォールバック。
-fn detect_shell() -> String {
-    if let Ok(explicit) = std::env::var("VP_SHELL") {
-        return explicit;
-    }
-    #[cfg(windows)]
-    {
-        for candidate in &["pwsh.exe", "powershell.exe", "cmd.exe"] {
-            if is_on_path(candidate) {
-                return (*candidate).to_string();
-            }
-        }
-        std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".into())
-    }
-    #[cfg(unix)]
-    {
-        std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".into())
-    }
-}
-
-/// シェル起動時の引数 (`VP_SHELL_ARGS` env var、POSIX シェル風クォート対応)
-///
-/// 例: `--cd /path -- bash -l -c "claude --continue || claude"` は
-/// `["--cd", "/path", "--", "bash", "-l", "-c", "claude --continue || claude"]` に分割。
-fn detect_shell_args() -> Vec<String> {
-    std::env::var("VP_SHELL_ARGS")
-        .ok()
-        .and_then(|s| shell_words::split(&s).ok())
-        .unwrap_or_default()
-}
-
-/// 簡易 `which`: PATH を走査して実行可能ファイルの存在を確認
-#[cfg(windows)]
-fn is_on_path(name: &str) -> bool {
-    if let Ok(path) = std::env::var("PATH") {
-        for dir in path.split(';') {
-            let candidate = std::path::Path::new(dir).join(name);
-            if candidate.is_file() {
-                return true;
-            }
-        }
-    }
-    false
-}
+// detect_shell / detect_shell_args / is_on_path は `crate::shell_detect` に集約済み。
+// Mode 1 (この file の spawn_shell) と Mode 2 (ws_terminal::connect_daemon_terminal) で
+// 同じ判定ロジックを共有する。
 
 /// HOME ディレクトリ (PTY cwd のデフォルト)
 fn dirs_home() -> Option<String> {
@@ -297,7 +277,19 @@ pub fn handle_ipc_message(msg: &str, pty: &TerminalHandle, proxy: &EventLoopProx
     match parsed.get("t").and_then(|v| v.as_str()) {
         Some("in") => {
             if let Some(data) = parsed.get("d").and_then(|v| v.as_str()) {
-                tracing::debug!("IPC in: {} bytes", data.len());
+                // PH 計測 (mem_1CaSpUi6cz9abzcEU3d6KC): keystroke drop 切り分け用。
+                // xterm.onData の console log と timestamp を突き合わせて、IPC 到達率を確認。
+                let codes: String = data
+                    .bytes()
+                    .map(|b| format!("{}", b))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                tracing::info!(
+                    "[ipc.in] {} bytes codes=[{}] data={:?}",
+                    data.len(),
+                    codes,
+                    data
+                );
                 if let Err(e) = pty.write(data.as_bytes()) {
                     tracing::warn!("PTY write 失敗: {}", e);
                 }

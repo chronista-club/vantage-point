@@ -17,6 +17,7 @@ pub mod main_area;
 pub mod menu;
 pub mod pane;
 pub mod settings;
+pub mod shell_detect;
 pub mod terminal;
 pub mod tray;
 pub mod ws_terminal;

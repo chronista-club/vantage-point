@@ -362,7 +362,18 @@ pub fn init_tracing(debug_mode: DebugMode, tui_mode: bool) {
         }
     }
 
-    let env_filter = tracing_subscriber::EnvFilter::from_default_env();
+    // d (log 整理 minimum, mem_1CaSiJkD9HATDY2srrv6D4 Phase B-2 step):
+    // RUST_LOG 未指定時の default を **絞り込み** verbose を削減。
+    // vantage_point=info を残しつつ、 dependency crate の chatty な debug log を抑制。
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        tracing_subscriber::EnvFilter::new(
+            "vantage_point=info,vp_app=info,\
+             hyper=warn,hyper_util=warn,reqwest=warn,h2=warn,\
+             tokio_tungstenite=warn,tungstenite=warn,\
+             quinn=warn,quinn_proto=warn,quinn_udp=warn,\
+             rustls=warn,rustls_post_quantum=warn",
+        )
+    });
 
     // VP-101 follow-up (Windows daemon support):
     // 環境変数 `VP_DAEMON_LOG_FILE` が指定されていれば、そのパスに直接書き込む。

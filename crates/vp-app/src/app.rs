@@ -39,7 +39,7 @@ use wry::{
 
 use crate::client::TheWorldClient;
 use crate::main_area::{self, ActivePaneInfo, MAIN_AREA_HTML, SlotRect};
-use crate::pane::{ActivitySnapshot, PaneKind, ProjectPaneState, SidebarState};
+use crate::pane::{ActivitySnapshot, ProcessPaneState, SidebarState};
 use crate::settings::Settings;
 use crate::terminal::{self, AppEvent};
 
@@ -84,12 +84,12 @@ pub const CREO_TOKENS_CSS: &str = include_str!("../assets/creo-tokens.css");
 ///
 /// state は `window.renderSidebarState(state)` で Rust → JS に push される。
 /// クリック操作は `window.ipc.postMessage(JSON)` で Rust に送信:
-///   - `{"t":"project:toggle","path":"..."}`
-///   - `{"t":"pane:select","path":"...","paneId":"..."}`
-///   - `{"t":"pane:add","path":"...","kind":"agent|canvas|preview|shell"}`
+///   - `{"t":"process:toggle","path":"...","expanded":true|false}`
+///   - `{"t":"lane:select","path":"...","address":"<project>/lead"}`
+///   - `{"t":"process:add"}` / `{"t":"process:clone","url":"..."}`
 const SIDEBAR_HTML: &str = concat!(
     r#"<!doctype html>
-<html lang="ja" data-theme="mint-dark">
+<html lang="ja" data-theme="contrast-dark">
 <head><meta charset="utf-8"><style>"#,
     include_str!("../assets/creo-tokens.css"),
     r#"</style><style>"#,
@@ -106,8 +106,8 @@ const SIDEBAR_HTML: &str = concat!(
   .widget-slot .stat .value{font-weight:500;color:var(--color-text-primary);font-variant-numeric:tabular-nums;}
 
   /* Projects accordion */
-  .projects-section{flex:1;overflow-y:auto;padding:6px 0;}
-  .projects-section .section-header{padding:10px 16px 6px;font-size:10px;color:var(--color-text-tertiary);text-transform:uppercase;letter-spacing:.08em;display:flex;justify-content:space-between;align-items:center;}
+  .processes-section{flex:1;overflow-y:auto;padding:6px 0;}
+  .processes-section .section-header{padding:10px 16px 6px;font-size:10px;color:var(--color-text-tertiary);text-transform:uppercase;letter-spacing:.08em;display:flex;justify-content:space-between;align-items:center;}
 
   /* Bottom Add ボタン (single trigger) と展開後の sub-actions */
   .add-trigger{margin:6px 12px 10px;padding:6px 8px;border-radius:var(--radius-sm,6px);cursor:pointer;color:var(--color-text-tertiary);font-size:11px;text-align:center;border:1px dashed var(--color-surface-border,#1f2233);background:transparent;transition:background .12s ease,color .12s ease,border-color .12s ease;user-select:none;}
@@ -135,24 +135,29 @@ const SIDEBAR_HTML: &str = concat!(
   .vp-clone-inline button.primary:hover{background:var(--color-brand-primary);color:var(--color-surface-bg-base);}
 
   /* creo-accordion を sidebar 用に override (default の bordered card 風 → flush) */
-  .projects-section .creo-accordion{margin:0 6px 2px;background:transparent;border:none;border-radius:var(--radius-sm,6px);overflow:visible;}
-  .projects-section .creo-accordion-summary{padding:6px 8px;min-height:auto;font-size:13px;border-radius:var(--radius-sm,6px);}
-  .projects-section .creo-accordion-summary:hover{background:var(--color-surface-bg-emphasis);}
-  .projects-section .creo-accordion-summary::before{font-size:9px;color:var(--color-text-tertiary);width:10px;}
-  .projects-section .creo-accordion-title{font-weight:500;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-  .projects-section .creo-accordion-content{padding:2px 0 4px 18px;}
-  .projects-section .creo-accordion-content > * + * {margin-top:0;}
+  .processes-section .creo-accordion{margin:0 6px 2px;background:transparent;border:none;border-radius:var(--radius-sm,6px);overflow:visible;}
+  .processes-section .creo-accordion-summary{padding:6px 8px;min-height:auto;font-size:13px;border-radius:var(--radius-sm,6px);}
+  .processes-section .creo-accordion-summary:hover{background:var(--color-surface-bg-emphasis);}
+  .processes-section .creo-accordion-summary::before{font-size:9px;color:var(--color-text-tertiary);width:10px;}
+  .processes-section .creo-accordion-title{font-weight:500;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .processes-section .creo-accordion-content{padding:2px 0 4px 18px;}
+  .processes-section .creo-accordion-content > * + * {margin-top:0;}
 
-  /* vp-app 固有の pane row (creo-ui に accordion-children component が無いので自前) */
-  .vp-pane-row{display:flex;align-items:center;gap:6px;padding:5px 8px;border-radius:var(--radius-sm,6px);cursor:pointer;transition:background .1s ease;font-size:12px;}
-  .vp-pane-row:hover{background:var(--color-surface-bg-emphasis);}
-  .vp-pane-row.active{background:var(--color-brand-primary-subtle);color:var(--color-brand-primary);}
-  .vp-pane-row .icon{width:16px;text-align:center;font-size:13px;font-family:var(--typography-family-icon);}
-  .vp-pane-row .label{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  /* Architecture v4: Lane row (Project → Lane → Stand 階層の中段) */
+  .vp-lane-row{display:flex;align-items:center;gap:6px;padding:5px 8px 5px 14px;border-radius:var(--radius-sm,6px);cursor:pointer;transition:background .1s ease;font-size:12px;}
+  .vp-lane-row:hover{background:var(--color-surface-bg-emphasis);}
+  .vp-lane-row.active{background:var(--color-brand-primary-subtle);color:var(--color-brand-primary);}
+  .vp-lane-row .icon{width:18px;text-align:center;font-size:13px;font-family:var(--typography-family-icon);}
+  .vp-lane-row .label{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .vp-lane-row .state{font-size:10px;}
 
-  .vp-pane-add{display:flex;align-items:center;gap:6px;padding:5px 8px;border-radius:var(--radius-sm,6px);cursor:pointer;color:var(--color-text-tertiary);font-size:11px;font-style:italic;}
-  .vp-pane-add:hover{background:var(--color-surface-bg-emphasis);color:var(--color-text-secondary);}
-  .vp-pane-add .icon{width:16px;text-align:center;}
+  /* Stand row (Lane の中身、 HD/TH 等) — read-only 表示 */
+  .vp-stand-row{display:flex;align-items:center;gap:6px;padding:2px 8px 2px 34px;font-size:11px;color:var(--color-text-tertiary);}
+  .vp-stand-row .icon{width:18px;text-align:center;font-family:var(--typography-family-icon);}
+  .vp-stand-row .label{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+
+  /* SP 未起動 / Lane loading 等の hint 表示 */
+  .vp-empty-hint{padding:6px 12px 6px 14px;font-size:11px;color:var(--color-text-tertiary);font-style:italic;}
 
   .empty,.loading,.error{padding:8px 16px;color:var(--color-text-tertiary);font-style:italic;font-size:12px;}
 </style></head>
@@ -244,81 +249,169 @@ const SIDEBAR_HTML: &str = concat!(
       if (p.expanded) proj.setAttribute('open', '');
       // 'toggle' イベントで Rust に永続化 IPC を送る (native toggle は即時、IPC は state 同期用)
       proj.addEventListener('toggle', () => {
-        send({t: 'project:toggle', path: p.path, expanded: proj.open});
+        send({t: 'process:toggle', path: p.path, expanded: proj.open});
       });
 
       const summary = document.createElement('summary');
       summary.className = 'creo-accordion-summary';
+      // Sprint 2 (Idea 1 tree visualization): ProcessKind icon (Architecture v4)
+      const kindIcon = document.createElement('span');
+      kindIcon.className = 'icon';
+      kindIcon.style.cssText = 'margin-right:6px;';
+      kindIcon.textContent = processKindIcon(p.kind || 'runtime');
+      summary.appendChild(kindIcon);
       const title = document.createElement('span');
       title.className = 'creo-accordion-title';
       title.textContent = p.name;
       summary.appendChild(title);
+      // Sprint 2: ProcessState badge (running 🟢 / dead 🔴 等)
+      const stateBadge = document.createElement('span');
+      stateBadge.className = 'state';
+      stateBadge.style.cssText = 'margin-left:auto;font-size:10px;';
+      stateBadge.textContent = processStateMark(p.state);
+      summary.appendChild(stateBadge);
       proj.appendChild(summary);
 
       const content = document.createElement('div');
       content.className = 'creo-accordion-content';
-      for (const pane of p.panes || []) {
-        const row = document.createElement('div');
-        row.className = 'vp-pane-row' + (p.active_pane_id === pane.id ? ' active' : '');
-        const icon = document.createElement('span');
-        icon.className = 'icon';
-        icon.textContent = paneIcon(pane.kind);
-        const label = document.createElement('span');
-        label.className = 'label';
-        label.textContent = pane.title || defaultLabel(pane.kind);
-        row.appendChild(icon);
-        row.appendChild(label);
-        row.addEventListener('click', (e) => {
-          e.stopPropagation();
-          send({t: 'pane:select', path: p.path, paneId: pane.id});
-        });
-        content.appendChild(row);
+
+      // Architecture v4 (mem_1CaTpCQH8iLJ2PasRcPjHv): Project → Lane → Stand に統一。
+      // 旧 vp-app local の Pane data model は撤去、 SP `/api/lanes` が SSOT。
+      const lanes = (state && state.lanes_by_project && state.lanes_by_project[p.path]) || [];
+      const isRunning = p.state === 'running';
+      const activeAddr = (state && state.active_lane_address) || null;
+
+      if (!isRunning) {
+        // SP 未起動 — accordion を開いた瞬間 (= toggle expand=true) に Rust 側が auto-spawn する。
+        // user は何もせずに待つだけで OK (mem: TheWorld が SP lifecycle を持つ Architecture v4)。
+        const hint = document.createElement('div');
+        hint.className = 'vp-empty-hint';
+        hint.style.cssText = 'padding:6px 12px 6px 20px;font-size:11px;color:var(--color-text-tertiary);font-style:italic;';
+        hint.textContent = p.expanded
+          ? '⏳ SP starting…'
+          : '💤 SP stopped — open to spawn';
+        content.appendChild(hint);
+      } else if (lanes.length === 0) {
+        // SP は running だが Lane fetch 結果がまだ / 取得失敗
+        const loading = document.createElement('div');
+        loading.className = 'vp-empty-hint';
+        loading.style.cssText = 'padding:6px 12px 6px 20px;font-size:11px;color:var(--color-text-tertiary);font-style:italic;';
+        loading.textContent = '📡 loading lanes…';
+        content.appendChild(loading);
+      } else {
+        for (const lane of lanes) {
+          const addr = laneAddressKey(lane);
+          const isActive = activeAddr && activeAddr === addr;
+
+          // Lane row (📍 Session = Lead/Worker)
+          const row = document.createElement('div');
+          row.className = 'vp-lane-row' + (isActive ? ' active' : '');
+          const icon = document.createElement('span');
+          icon.className = 'icon';
+          icon.textContent = processKindIcon('session');
+          const label = document.createElement('span');
+          label.className = 'label';
+          label.textContent = laneLabel(lane);
+          const stateMark = document.createElement('span');
+          stateMark.className = 'state';
+          stateMark.textContent = processStateMark(lane.state);
+          row.appendChild(icon);
+          row.appendChild(label);
+          row.appendChild(stateMark);
+          row.addEventListener('click', (e) => {
+            e.stopPropagation();
+            send({t: 'lane:select', path: p.path, address: addr});
+          });
+          content.appendChild(row);
+
+          // Stand child row (🦾 Worker = Lane の中身、 HD/TH...)
+          if (lane.stand) {
+            const childRow = document.createElement('div');
+            childRow.className = 'vp-stand-row';
+            const childIcon = document.createElement('span');
+            childIcon.className = 'icon';
+            childIcon.textContent = processKindIcon('worker');
+            const childLabel = document.createElement('span');
+            childLabel.className = 'label';
+            childLabel.textContent = standDisplayName(lane.stand) + ' ' + laneStandIcon(lane.stand);
+            childRow.appendChild(childIcon);
+            childRow.appendChild(childLabel);
+            content.appendChild(childRow);
+          }
+        }
+
+        // Phase 3 で実装予定: + Add Worker (POST /api/lanes)。 Phase 1 は read-only。
       }
-      // "+" Add pane (現状 kind picker なし、agent をデフォルト追加)
-      const add = document.createElement('div');
-      add.className = 'vp-pane-add';
-      const addIcon = document.createElement('span');
-      addIcon.className = 'icon';
-      addIcon.textContent = '+';
-      const addLabel = document.createElement('span');
-      addLabel.textContent = 'Add pane';
-      add.appendChild(addIcon);
-      add.appendChild(addLabel);
-      add.addEventListener('click', (e) => {
-        e.stopPropagation();
-        send({t: 'pane:add', path: p.path, kind: 'agent'});
-      });
-      content.appendChild(add);
 
       proj.appendChild(content);
       root.appendChild(proj);
     }
   }
 
-  function paneIcon(kind) {
+  // Sprint 2 (Idea 1, Architecture v4): ProcessKind / ProcessState 表示用 helpers
+  function processKindIcon(kind) {
     switch (kind) {
-      case 'agent': return '📖';
-      case 'canvas': return '🧭';
-      case 'preview': return '📄';
-      case 'shell': return '⚙';
+      case 'supervisor': return '👑';
+      case 'runtime': return '⭐';
+      case 'session': return '📍';
+      case 'worker': return '🦾';
       default: return '·';
     }
   }
-  function defaultLabel(kind) {
-    switch (kind) {
-      case 'agent': return 'Lead Agent';
-      case 'canvas': return 'Canvas';
-      case 'preview': return 'Preview';
-      case 'shell': return 'Shell';
-      default: return kind || '';
+  function processStateMark(s) {
+    switch (s) {
+      case 'running': return '🟢';
+      case 'spawning': return '🟡';
+      case 'idle': return '🔵';
+      case 'working': return '⚙';
+      case 'pausing': return '⏸';
+      case 'exiting': return '🟠';
+      case 'dead': return '🔴';
+      default: return '';
     }
+  }
+  // Sprint 2-2: Stand display name (Architecture v4 metaphor)
+  function standDisplayName(stand) {
+    switch (stand) {
+      case 'heavens_door': return "Heaven's Door";
+      case 'the_hand': return 'The Hand';
+      case 'paisley_park': return 'Paisley Park';
+      case 'gold_experience': return 'Gold Experience';
+      case 'hermit_purple': return 'Hermit Purple';
+      default: return stand || '';
+    }
+  }
+  // Phase A4-3b-2: Lane 行表示用 helpers (Stand icon は Worker child row で reuse)
+  function laneStandIcon(stand) {
+    switch (stand) {
+      case 'heavens_door': return '📖';
+      case 'the_hand': return '✋';
+      default: return '·';
+    }
+  }
+  function laneLabel(lane) {
+    if (!lane) return '';
+    const kind = lane.kind || (lane.address && lane.address.kind);
+    if (kind === 'lead') return 'Lead';
+    if (kind === 'worker') return 'Worker: ' + (lane.name || (lane.address && lane.address.name) || '?');
+    return kind || '';
+  }
+  // Lane address を Display 形 ("<project>/lead" / "<project>/worker/<name>") に変換。
+  // Rust 側 `lane_address_key()` と完全一致させる (active selection の比較に使うため)。
+  function laneAddressKey(lane) {
+    if (!lane || !lane.address) return '';
+    const a = lane.address;
+    if (a.kind === 'worker') {
+      return a.project + '/worker/' + (a.name || '<unnamed>');
+    }
+    return a.project + '/' + (a.kind || 'lead');
   }
 
   function applyState(s) {
     if (!domReady) { pendingState = s; return; }
     state = s;
     renderActivity(s.activity);
-    renderProjects(s.projects);
+    renderProjects(s.processes);
   }
 
   // 起動初期エラー (TheWorld 未接続) 表示
@@ -368,7 +461,7 @@ const SIDEBAR_HTML: &str = concat!(
     const selectBtn = document.getElementById('select-project-btn');
     if (selectBtn) selectBtn.addEventListener('click', () => {
       collapseAdd();
-      send({t: 'project:add'});
+      send({t: 'process:add'});
     });
 
     // Clone Repository — sidebar 内 inline expand form で URL を受け取る
@@ -390,7 +483,7 @@ const SIDEBAR_HTML: &str = concat!(
     function submitClone() {
       const url = (cloneInput && cloneInput.value || '').trim();
       if (!url) return;
-      send({t: 'project:clone', url: url});
+      send({t: 'process:clone', url: url});
       closeCloneInline();
     }
     if (cloneBtn) cloneBtn.addEventListener('click', () => {
@@ -450,7 +543,7 @@ fn update_pane_bounds(
 /// 優先順位:
 /// 1. `Settings.default_project_root` が指定されていて存在する → それ
 /// 2. **既存登録プロジェクトの親ディレクトリ** (= "vp のレポジトリホーム" 推定)
-///    `sidebar_state.projects` の最初の project の parent dir。多くは
+///    `sidebar_state.processes` の最初の project の parent dir。多くは
 ///    `~/repos` か `C:\Users\<user>\repos` 等の repos 親。
 /// 3. `~/repos` が存在する → それ
 /// 4. `~` (home) → それ
@@ -471,7 +564,7 @@ fn resolve_default_project_root(
         );
     }
     // 2. 既存 project の parent dir = "vp レポジトリホーム" 推定
-    for proj in &sidebar_state.projects {
+    for proj in &sidebar_state.processes {
         let path = std::path::PathBuf::from(&proj.path);
         if let Some(parent) = path.parent()
             && parent.exists()
@@ -498,7 +591,7 @@ fn resolve_default_project_root(
 ///
 /// rfd の picker は blocking なので別スレッドで実行。folder 選択後:
 /// 1. `client.add_project(name, path)` を呼ぶ (TheWorld の `/api/world/projects` POST)
-/// 2. 成功なら `client.list_projects()` で再取得 → `AppEvent::ProjectsLoaded`
+/// 2. 成功なら `client.list_projects()` で再取得 → `AppEvent::ProcessesLoaded`
 ///
 /// User キャンセル / API 失敗時は何もしない (sidebar は変化しない)。
 /// `initial_dir` が `Some` なら picker の初期表示ディレクトリに設定。
@@ -516,7 +609,7 @@ fn spawn_add_project_picker(
             let folder = match dialog.pick_folder() {
                 Some(p) => p,
                 None => {
-                    tracing::debug!("project:add canceled by user");
+                    tracing::debug!("process:add canceled by user");
                     return;
                 }
             };
@@ -525,7 +618,7 @@ fn spawn_add_project_picker(
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "project".to_string());
             let path = folder.to_string_lossy().into_owned();
-            tracing::info!("project:add picker → name={} path={}", name, path);
+            tracing::info!("process:add picker → name={} path={}", name, path);
 
             let rt = match tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -546,7 +639,7 @@ fn spawn_add_project_picker(
                 tracing::info!("add_project 成功 → projects 再 fetch");
                 match client.list_projects().await {
                     Ok(projects) => {
-                        let _ = proxy.send_event(AppEvent::ProjectsLoaded(projects));
+                        let _ = proxy.send_event(AppEvent::ProcessesLoaded(projects));
                     }
                     Err(e) => {
                         tracing::warn!("add_project 後の list_projects 失敗: {}", e);
@@ -560,7 +653,7 @@ fn spawn_add_project_picker(
 ///
 /// 1. `git clone <url> <default_root>/<repo_name>` を実行
 /// 2. 成功なら `add_project` で TheWorld に register
-/// 3. `list_projects` で再取得 → `AppEvent::ProjectsLoaded`
+/// 3. `list_projects` で再取得 → `AppEvent::ProcessesLoaded`
 ///
 /// `default_root` が `None` の時は何もしない (default_project_root が解決できないケース)。
 /// git バイナリが PATH に無い場合も spawn 失敗で終わる。
@@ -570,7 +663,7 @@ fn spawn_clone_project(
     default_root: Option<std::path::PathBuf>,
 ) {
     let Some(default_root) = default_root else {
-        tracing::warn!("project:clone but default_project_root is unresolved (set in settings)");
+        tracing::warn!("process:clone but default_project_root is unresolved (set in settings)");
         return;
     };
     let repo_name = derive_repo_name(&url);
@@ -623,7 +716,7 @@ fn spawn_clone_project(
                 tracing::info!("clone + add_project 成功 → projects 再 fetch");
                 match client.list_projects().await {
                     Ok(projects) => {
-                        let _ = proxy.send_event(AppEvent::ProjectsLoaded(projects));
+                        let _ = proxy.send_event(AppEvent::ProcessesLoaded(projects));
                     }
                     Err(e) => {
                         tracing::warn!("list_projects 失敗: {}", e);
@@ -670,11 +763,17 @@ fn spawn_menu_event_pump(proxy: EventLoopProxy<AppEvent>) {
         });
 }
 
-/// 起動時に TheWorld `/api/world/projects` を別スレッドで fetch。
-/// 成功/失敗を `AppEvent::ProjectsLoaded` / `ProjectsError` として main thread に通知。
-fn spawn_projects_fetch(proxy: EventLoopProxy<AppEvent>) {
+/// 起動時に TheWorld の Process list を別スレッドで fetch。
+///
+/// **Phase A4-3b bug fix (mem_1CaTpCQH8iLJ2PasRcPjHv Architecture v4)**:
+/// `/api/world/projects` (registered Process list、port は持たない) と
+/// `/api/world/processes` (running Process list、port + pid 持つ) を **併行 fetch + join** して、
+/// 各 Process に `port` と `state` を解決した状態で `ProcessesLoaded` event に乗せる。
+///
+/// これにより handler 側で `if let Some(port) = p.port { spawn_lanes_fetch(...) }` が動く経路完成。
+fn spawn_processes_fetch(proxy: EventLoopProxy<AppEvent>) {
     let _ = thread::Builder::new()
-        .name("projects-fetch".into())
+        .name("processes-fetch".into())
         .spawn(move || {
             let rt = match tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -682,7 +781,7 @@ fn spawn_projects_fetch(proxy: EventLoopProxy<AppEvent>) {
             {
                 Ok(rt) => rt,
                 Err(e) => {
-                    let _ = proxy.send_event(AppEvent::ProjectsError(format!(
+                    let _ = proxy.send_event(AppEvent::ProcessesError(format!(
                         "tokio runtime 作成失敗: {}",
                         e
                     )));
@@ -691,14 +790,150 @@ fn spawn_projects_fetch(proxy: EventLoopProxy<AppEvent>) {
             };
             rt.block_on(async {
                 let client = TheWorldClient::default();
-                match client.list_projects().await {
-                    Ok(projects) => {
-                        tracing::info!("TheWorld projects: {} 件", projects.len());
-                        let _ = proxy.send_event(AppEvent::ProjectsLoaded(projects));
+                // 併行 fetch: registered list + running list
+                let (proj_res, run_res) = tokio::join!(
+                    client.list_projects(),
+                    client.list_processes(),
+                );
+                match proj_res {
+                    Ok(mut processes) => {
+                        // running list から (name → port) map を作って join
+                        let port_by_name: std::collections::HashMap<String, u16> = match run_res {
+                            Ok(runs) => runs.into_iter().map(|r| (r.project_name, r.port)).collect(),
+                            Err(e) => {
+                                tracing::warn!(
+                                    "list_processes (running) 失敗 (port 不明、Lane fetch skip): {}",
+                                    e
+                                );
+                                std::collections::HashMap::new()
+                            }
+                        };
+                        // ProcessInfo に port + state を merge
+                        for p in &mut processes {
+                            if let Some(&port) = port_by_name.get(&p.name) {
+                                p.port = Some(port);
+                                p.state = crate::client::ProcessState::Running;
+                            } else {
+                                // running list 未掲載 = stopped (Architecture v4: ProcessState::Dead で代用、Sprint 後半で Stopped 追加検討)
+                                p.state = crate::client::ProcessState::Dead;
+                            }
+                        }
+                        let running_count = processes.iter().filter(|p| p.port.is_some()).count();
+                        tracing::info!(
+                            "TheWorld Processes: {} 件 (running={} 件)",
+                            processes.len(),
+                            running_count
+                        );
+                        let _ = proxy.send_event(AppEvent::ProcessesLoaded(processes));
                     }
                     Err(e) => {
                         tracing::warn!("TheWorld fetch 失敗 (daemon 未起動?): {}", e);
-                        let _ = proxy.send_event(AppEvent::ProjectsError(e.to_string()));
+                        let _ = proxy.send_event(AppEvent::ProcessesError(e.to_string()));
+                    }
+                }
+            });
+        });
+}
+
+/// Phase A4-3b: SP (33000+) の `/api/lanes` を別スレッドで fetch。
+///
+/// 成功/失敗を `AppEvent::LanesLoaded` / `LanesError` として main thread に通知。
+/// ProjectsLoaded handler が各 project の SP に対してこの fn を呼び、
+/// sidebar_state.lanes_by_project に保持する。
+///
+/// 関連 memory: mem_1CaSugEk1W2vr5TAdfDn5D (多 scope: Lane scope は SP per project)
+fn spawn_lanes_fetch(proxy: EventLoopProxy<AppEvent>, process_path: String, sp_port: u16) {
+    let _ = thread::Builder::new()
+        .name(format!("lanes-fetch-{}", sp_port))
+        .spawn(move || {
+            let rt = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt,
+                Err(e) => {
+                    let _ = proxy.send_event(AppEvent::LanesError {
+                        process_path,
+                        message: format!("tokio runtime: {}", e),
+                    });
+                    return;
+                }
+            };
+            rt.block_on(async {
+                let client = TheWorldClient::new(sp_port);
+                match client.list_lanes().await {
+                    Ok(lanes) => {
+                        tracing::info!(
+                            "LanesLoaded: project={} port={} ({} lanes)",
+                            process_path,
+                            sp_port,
+                            lanes.len()
+                        );
+                        let _ = proxy.send_event(AppEvent::LanesLoaded {
+                            process_path,
+                            lanes,
+                        });
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "list_lanes failed: project={} port={}: {}",
+                            process_path,
+                            sp_port,
+                            e
+                        );
+                        let _ = proxy.send_event(AppEvent::LanesError {
+                            process_path,
+                            message: e.to_string(),
+                        });
+                    }
+                }
+            });
+        });
+}
+
+/// 「Current project が dead 状態」 のとき TheWorld に SP spawn を要求する fire-and-forget task。
+///
+/// State は TheWorld が持つ (mem_1CaTpCQH8iLJ2PasRcPjHv) ので、 vp-app は再起動しても
+/// 既存 SP がいれば自動で続行 (state == running なので spawn 不要)。 dead のときだけ trigger。
+///
+/// 重複防止: 呼び出し側が `triggered: HashSet<String>` で path の dedup を担う。
+/// (TheWorld 側でも `Process already running` で弾かれるが、 余計な POST を避けるため。)
+fn spawn_sp_start(proxy: EventLoopProxy<AppEvent>, project_name: String, project_path: String) {
+    let _ = thread::Builder::new()
+        .name(format!("sp-start-{}", project_name))
+        .spawn(move || {
+            let rt = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt,
+                Err(e) => {
+                    tracing::warn!("sp-start tokio runtime 失敗: {}", e);
+                    return;
+                }
+            };
+            rt.block_on(async {
+                let client = TheWorldClient::default();
+                match client.start_process(&project_name).await {
+                    Ok(()) => {
+                        tracing::info!(
+                            "SP auto-spawn 要求成功: project={} path={}",
+                            project_name,
+                            project_path
+                        );
+                        // TheWorld の polling が新 SP を pick up すると、 既存の
+                        // spawn_processes_fetch / spawn_activity_poller が ProcessesLoaded を再送、
+                        // その流れで spawn_lanes_fetch が走って sidebar に Lane が出る。
+                        // ここで明示的に再 fetch trigger する必要はない (polling が 5s で拾う)。
+                        let _ = proxy; // 将来 spawn 完了通知 event を入れるなら使う
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "SP auto-spawn 失敗: project={} path={}: {}",
+                            project_name,
+                            project_path,
+                            e
+                        );
                     }
                 }
             });
@@ -713,9 +948,9 @@ fn spawn_projects_fetch(proxy: EventLoopProxy<AppEvent>) {
 ///
 /// VP-100 follow-up (B1 / MB1 / PH#7): daemon が **後発で online 復帰** した時、
 /// `world_online: false → true` の遷移を検知して `/api/world/projects` を
-/// 再 fetch し `AppEvent::ProjectsLoaded` を再送する。これにより sidebar
+/// 再 fetch し `AppEvent::ProcessesLoaded` を再送する。これにより sidebar
 /// projects accordion が永遠に空のまま、という UX バグを防ぐ。
-/// 起動初回 (`prev_online == None`) では `spawn_projects_fetch` 側が担当するので
+/// 起動初回 (`prev_online == None`) では `spawn_processes_fetch` 側が担当するので
 /// 二重 fetch を避けるため transition 検知をスキップする。
 fn spawn_activity_poller(proxy: EventLoopProxy<AppEvent>) {
     let _ = thread::Builder::new()
@@ -735,32 +970,62 @@ fn spawn_activity_poller(proxy: EventLoopProxy<AppEvent>) {
                 let client = TheWorldClient::default();
                 let mut tick = tokio::time::interval(Duration::from_secs(5));
                 let mut prev_online: Option<bool> = None;
+                let mut prev_running: Option<usize> = None;
                 loop {
                     tick.tick().await;
                     let snap = collect_activity(&client).await;
                     let became_online = matches!(prev_online, Some(false)) && snap.world_online;
+                    let running_changed =
+                        prev_running.is_some_and(|p| p != snap.running_process_count);
                     prev_online = Some(snap.world_online);
-                    if proxy.send_event(AppEvent::ActivityUpdate(snap)).is_err() {
+                    prev_running = Some(snap.running_process_count);
+                    if proxy
+                        .send_event(AppEvent::ActivityUpdate(snap.clone()))
+                        .is_err()
+                    {
                         tracing::debug!("EventLoop 終了、activity poller も終了");
                         break;
                     }
-                    // daemon 復帰検知 → projects 再 fetch を kick
-                    if became_online {
-                        match client.list_projects().await {
-                            Ok(projects) => {
-                                tracing::info!(
-                                    "daemon online 復帰検知 → projects 再 fetch ({} 件)",
-                                    projects.len()
-                                );
-                                if proxy
-                                    .send_event(AppEvent::ProjectsLoaded(projects))
-                                    .is_err()
-                                {
-                                    break;
+                    // 再 fetch trigger (Architecture v4 fix、 mem_1CaTpCQH8iLJ2PasRcPjHv):
+                    // - daemon online 復帰 (false → true)
+                    // - running 数変化 (SP 起動 / 停止)
+                    // どちらも port join 経由で ProcessesLoaded 再送 → sidebar state badge 更新
+                    if (became_online || running_changed) && snap.world_online {
+                        let (proj_res, run_res) = tokio::join!(
+                            client.list_projects(),
+                            client.list_processes(),
+                        );
+                        if let Ok(mut processes) = proj_res {
+                            let port_by_name: std::collections::HashMap<String, u16> =
+                                match run_res {
+                                    Ok(runs) => runs
+                                        .into_iter()
+                                        .map(|r| (r.project_name, r.port))
+                                        .collect(),
+                                    Err(_) => std::collections::HashMap::new(),
+                                };
+                            for p in &mut processes {
+                                if let Some(&port) = port_by_name.get(&p.name) {
+                                    p.port = Some(port);
+                                    p.state = crate::client::ProcessState::Running;
+                                } else {
+                                    p.state = crate::client::ProcessState::Dead;
                                 }
                             }
-                            Err(e) => {
-                                tracing::warn!("daemon online but list_projects failed: {}", e);
+                            let running_count =
+                                processes.iter().filter(|p| p.port.is_some()).count();
+                            tracing::info!(
+                                "polling re-fetch (online={} running_changed={}): processes={} running={}",
+                                became_online,
+                                running_changed,
+                                processes.len(),
+                                running_count
+                            );
+                            if proxy
+                                .send_event(AppEvent::ProcessesLoaded(processes))
+                                .is_err()
+                            {
+                                break;
                             }
                         }
                     }
@@ -791,41 +1056,17 @@ async fn collect_activity(client: &TheWorldClient) -> ActivitySnapshot {
     snap
 }
 
-/// VP-100 Phase 2: sidebar の active pane 情報を main area に push。
+/// Architecture v4: sidebar の active Lane に応じて main area の表示 kind を切替。
 ///
-/// SidebarState から「現在 focus している project の active pane」を抜き出して、
-/// `window.setActivePane({kind, pane_id, preview_url})` を呼ぶ JS を main area に
-/// evaluate_script する。active pane が無ければ kind=None で empty 状態に切替。
-///
-/// 「focus している project」の決定ロジック (Phase 2 暫定): 直近で active_pane_id を
-/// 設定した project (= sidebar IPC で pane:select / pane:add した project)。
-/// Phase 3 で project-level focus state を導入したら整理する。
-fn push_active_pane(main_view: &WebView, state: &SidebarState, focused_path: Option<&str>) {
-    let active = focused_path
-        .and_then(|fp| state.projects.iter().find(|p| p.path == fp))
-        .or_else(|| {
-            // fallback: active_pane_id を持つ最初の project
-            state.projects.iter().find(|p| p.active_pane_id.is_some())
-        })
-        .and_then(|p| {
-            p.active_pane_id.as_ref().and_then(|aid| {
-                p.panes
-                    .iter()
-                    .find(|pn| &pn.id == aid)
-                    .map(|pn| (pn, p.path.as_str()))
-            })
-        });
-
-    let info = match active {
-        Some((pane, _path)) => ActivePaneInfo {
-            kind: Some(match pane.kind {
-                PaneKind::Agent => "agent",
-                PaneKind::Canvas => "canvas",
-                PaneKind::Preview => "preview",
-                PaneKind::Shell => "shell",
-            }),
-            pane_id: Some(&pane.id),
-            preview_url: pane.preview_url.as_deref(),
+/// 現状 (Phase 1): Lane が選択されていれば main area を `kind="terminal"` に切替、
+/// なければ `kind=None` で empty 状態を出す。
+/// Lane address ごとの terminal 接続切替 (Lane の WS terminal に bind) は Phase 2 で。
+fn push_active_lane(main_view: &WebView, state: &SidebarState) {
+    let info = match state.active_lane_address.as_deref() {
+        Some(addr) => ActivePaneInfo {
+            kind: Some("terminal"),
+            pane_id: Some(addr),
+            preview_url: None,
         },
         None => ActivePaneInfo {
             kind: None,
@@ -859,9 +1100,12 @@ fn push_sidebar_state(sidebar: &WebView, state: &SidebarState) {
 struct SidebarIpcOutcome {
     /// SidebarState が変化したか (true なら push_sidebar_state を呼ぶ)
     changed: bool,
-    /// active pane を変更した project の path (main area に push する手がかり)
-    /// pane:select / pane:add で更新される
-    active_changed_path: Option<String>,
+    /// active Lane が変わったか (true なら push_active_lane を呼ぶ)
+    active_changed: bool,
+    /// SP auto-spawn が必要な project (= 「Current」 になった dead な project)。
+    /// `(name, path)` を返し、 caller が `spawn_sp_start` を呼ぶ。
+    /// dedup は caller の `sp_spawn_triggered: HashSet<String>` (path key) で行う。
+    sp_spawn_request: Option<(String, String)>,
 }
 
 /// sidebar webview から IPC で受け取った JSON を解釈し、`SidebarState` を mutate。
@@ -878,11 +1122,15 @@ fn handle_sidebar_ipc(msg: &str, state: &mut SidebarState) -> SidebarIpcOutcome 
     let path = parsed.get("path").and_then(|v| v.as_str()).unwrap_or("");
 
     match t {
-        "project:toggle" => {
+        "process:toggle" => {
             // VP-101 Phase A1.b: native <details> が IPC で `expanded` の新状態を渡してくる。
             // DOM は既に user click で toggle 済なので、Rust state を silently sync するだけ。
             // `out.changed` は立てない (rebuild すると flash する)。
-            if let Some(p) = state.projects.iter_mut().find(|p| p.path == path) {
+            //
+            // Architecture v4 auto-spawn: expand=true で state==dead の project は
+            // 「user が current として designate した dead project」 として扱い、
+            // SP auto-spawn を request する (mem_1CaTpCQH8iLJ2PasRcPjHv: SP lifecycle は TheWorld 責務)。
+            if let Some(p) = state.processes.iter_mut().find(|p| p.path == path) {
                 let new_state = parsed
                     .get("expanded")
                     .and_then(|v| v.as_bool())
@@ -890,44 +1138,46 @@ fn handle_sidebar_ipc(msg: &str, state: &mut SidebarState) -> SidebarIpcOutcome 
                 if p.expanded != new_state {
                     p.expanded = new_state;
                     tracing::debug!(
-                        "project:toggle {} → expanded={} (silent sync)",
+                        "process:toggle {} → expanded={} (silent sync)",
                         path,
                         p.expanded
                     );
                 }
+                if new_state && p.state.as_deref() == Some("dead") {
+                    out.sp_spawn_request = Some((p.name.clone(), p.path.clone()));
+                }
             }
         }
-        "pane:select" => {
-            let pane_id = parsed.get("paneId").and_then(|v| v.as_str()).unwrap_or("");
-            if let Some(p) = state.projects.iter_mut().find(|p| p.path == path)
-                && p.panes.iter().any(|pn| pn.id == pane_id)
-            {
-                p.active_pane_id = Some(pane_id.to_string());
-                tracing::info!("pane:select {} pane={}", path, pane_id);
-                out.changed = true;
-                out.active_changed_path = Some(path.to_string());
+        "lane:select" => {
+            // Architecture v4: Lane row click → `address` (Display 形 "<project>/lead") を受信
+            let address = parsed.get("address").and_then(|v| v.as_str()).unwrap_or("");
+            if address.is_empty() {
+                tracing::warn!("lane:select with empty address: {}", msg);
+                return out;
             }
-        }
-        "pane:add" => {
-            let kind_str = parsed
-                .get("kind")
-                .and_then(|v| v.as_str())
-                .unwrap_or("agent");
-            let kind = match kind_str {
-                "agent" => PaneKind::Agent,
-                "canvas" => PaneKind::Canvas,
-                "preview" => PaneKind::Preview,
-                "shell" => PaneKind::Shell,
-                _ => PaneKind::Agent,
-            };
-            if let Some(p) = state.projects.iter_mut().find(|p| p.path == path) {
-                let pane = crate::pane::Pane::with_default_label(kind);
-                let id = pane.id.clone();
-                p.panes.push(pane);
-                p.active_pane_id = Some(id);
-                tracing::info!("pane:add {} kind={:?}", path, kind);
+            // 念のため: 該当 project の lanes_by_project に address が存在することを確認
+            let lanes_exist = state
+                .lanes_by_project
+                .get(path)
+                .map(|lanes| {
+                    lanes
+                        .iter()
+                        .any(|l| lane_address_key(&l.address) == address)
+                })
+                .unwrap_or(false);
+            if !lanes_exist {
+                tracing::warn!(
+                    "lane:select 対象 lane が見つからない: path={} address={}",
+                    path,
+                    address
+                );
+                return out;
+            }
+            if state.active_lane_address.as_deref() != Some(address) {
+                state.active_lane_address = Some(address.to_string());
+                tracing::info!("lane:select {} address={}", path, address);
                 out.changed = true;
-                out.active_changed_path = Some(path.to_string());
+                out.active_changed = true;
             }
         }
         other => {
@@ -935,6 +1185,18 @@ fn handle_sidebar_ipc(msg: &str, state: &mut SidebarState) -> SidebarIpcOutcome 
         }
     }
     out
+}
+
+/// Lane address (LaneAddressWire) を Display 形の文字列にする。
+///
+/// 形式: `"<project>/lead"` / `"<project>/worker/<name>"`
+/// JS 側 `laneAddressKey()` と完全に一致させる必要がある (active 比較に使うため)。
+fn lane_address_key(addr: &crate::client::LaneAddressWire) -> String {
+    match (addr.kind.as_str(), addr.name.as_deref()) {
+        ("worker", Some(n)) => format!("{}/worker/{}", addr.project, n),
+        ("worker", None) => format!("{}/worker/<unnamed>", addr.project),
+        _ => format!("{}/{}", addr.project, addr.kind),
+    }
 }
 
 /// App のエントリポイント
@@ -955,18 +1217,26 @@ pub fn run() -> anyhow::Result<()> {
     // mise run win の polling tail が同 file を見る。
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
-    // Win 推奨: `%LOCALAPPDATA%\<AppName>\Logs\<file>`
-    // - debug build: `VantagePoint-dev` (dev install と分離)
-    // - release: `VantagePoint`
-    let app_dir = if cfg!(debug_assertions) {
-        "VantagePoint-dev"
+    // Phase A (2026-04-27, mem_1CaSiJkD9HATDY2srrv6D4):
+    // macOS では `~/Library/Logs/Vantage/` に統一。
+    // mise run logs / Console.app / TheWorld daemon log と同じ dir で一緒に tail できる。
+    // Win/Linux は既存挙動を維持 (Phase B で揃える)。
+    let log_dir = if cfg!(target_os = "macos") {
+        dirs::home_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("Library/Logs/Vantage")
     } else {
-        "VantagePoint"
+        // Win: `%LOCALAPPDATA%\VantagePoint(-dev)\Logs\`
+        let app_dir = if cfg!(debug_assertions) {
+            "VantagePoint-dev"
+        } else {
+            "VantagePoint"
+        };
+        dirs::data_local_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join(app_dir)
+            .join("Logs")
     };
-    let log_dir = dirs::data_local_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join(app_dir)
-        .join("Logs");
     let _ = std::fs::create_dir_all(&log_dir);
     let file_appender = tracing_appender::rolling::never(&log_dir, "vp-app.kdl.log");
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
@@ -1048,7 +1318,7 @@ pub fn run() -> anyhow::Result<()> {
     };
 
     // TheWorld から project list を非同期 fetch (起動初回)
-    spawn_projects_fetch(event_loop.create_proxy());
+    spawn_processes_fetch(event_loop.create_proxy());
     // VP-95: Activity widget の定期更新 (5s 間隔)
     spawn_activity_poller(event_loop.create_proxy());
 
@@ -1105,6 +1375,11 @@ pub fn run() -> anyhow::Result<()> {
     // native overlay の `set_position` 同期に使う。
     let mut slot_rects: std::collections::HashMap<String, SlotRect> =
         std::collections::HashMap::new();
+    // SP auto-spawn: 1 セッションで同じ project を二重 trigger しないための guard。
+    // path をキーにする (project_name は重複しうる、 path は正規化済 unique)。
+    // TheWorld 側でも `Process already running` で弾かれるが、 無駄な POST を避ける。
+    let mut sp_spawn_triggered: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
     // VP-100 follow-up (1Password 風): runtime 開発者モード state
     let mut dev_mode = initial_dev_mode;
     // project:add 等の async 操作で event loop に project list 再 fetch を kick するための proxy
@@ -1170,51 +1445,96 @@ pub fn run() -> anyhow::Result<()> {
                     pending.clear();
                 }
             }
-            Event::UserEvent(AppEvent::ProjectsLoaded(projects)) => {
+            Event::UserEvent(AppEvent::ProcessesLoaded(projects)) => {
                 // 既存 SidebarState とマージ:
                 //  - 同じ path があれば既存 state を維持 (expanded / panes / active 保持)
-                //  - 新規は ProjectPaneState::new (Lead Agent 1 つ)
+                //  - 新規は ProcessPaneState::new (Lead Agent 1 つ)
                 //  - サーバから消えた project は除外
                 //
-                // VP-101 follow-up: register 後の auto-expand + auto-select
-                //  - prev が **non-empty** で新規 project が見つかった場合、
-                //    その project を auto-expand + 最初の pane (Lead Agent) を main area に push
-                //  - 初回起動 (prev empty) の場合は全 project が「新規」だが、
-                //    まとめて全部開く UX は noisy なので auto-expand しない
-                let prev: std::collections::HashMap<String, ProjectPaneState> = sidebar_state
-                    .projects
+                // VP-101 follow-up: register 後の auto-expand。
+                // auto-select は LanesLoaded 側で扱う (Architecture v4: 真の selection unit は Lane)。
+                let prev: std::collections::HashMap<String, ProcessPaneState> = sidebar_state
+                    .processes
                     .drain(..)
                     .map(|p| (p.path.clone(), p))
                     .collect();
                 let is_initial_load = prev.is_empty();
-                let mut newly_added_path: Option<String> = None;
-                sidebar_state.projects = projects
+                // Phase A4-3b: drain 前に (path → port) を retain して fetch task に渡す
+                let project_ports: Vec<(String, Option<u16>)> = projects
+                    .iter()
+                    .map(|p| (p.path.clone(), p.port))
+                    .collect();
+                sidebar_state.processes = projects
                     .into_iter()
                     .map(|p| {
-                        if let Some(existing) = prev.get(&p.path) {
+                        // ProcessInfo.state を ProcessPaneState.state に merge
+                        // (sidebar JS が processStateMark で 🟢/🔴 badge 表示に使う)
+                        let state_str = p.state.as_str().to_string();
+                        let mut pane_state = if let Some(existing) = prev.get(&p.path) {
                             existing.clone()
                         } else {
-                            // 新規 project
-                            let mut state = ProjectPaneState::new(p.path.clone(), p.name.clone());
+                            // 新規 project: session 中の追加なら auto-expand
+                            let mut s = ProcessPaneState::new(p.path.clone(), p.name.clone());
                             if !is_initial_load {
-                                // session 中に追加された project → auto-expand + 後で auto-select
-                                state.expanded = true;
-                                if newly_added_path.is_none() {
-                                    newly_added_path = Some(state.path.clone());
-                                }
+                                s.expanded = true;
                             }
-                            state
-                        }
+                            s
+                        };
+                        pane_state.state = Some(state_str);
+                        pane_state
                     })
                     .collect();
-                push_sidebar_state(&sidebar, &sidebar_state);
-                // auto-select: 新規 project の最初の pane (Lead Agent) を main area に show
-                if let Some(path) = newly_added_path.as_deref() {
-                    tracing::info!("auto-select: 新規 project '{}' の Lead Agent を main area に表示", path);
-                    push_active_pane(&main_view, &sidebar_state, Some(path));
+                // Phase A4-3b: 各 project の SP に対して /api/lanes を fetch
+                // (memory mem_1CaSugEk1W2vr5TAdfDn5D: Lane scope は SP per project の所有)
+                for (path, port) in &project_ports {
+                    if let Some(sp_port) = port {
+                        spawn_lanes_fetch(async_action_proxy.clone(), path.clone(), *sp_port);
+                    }
                 }
+                push_sidebar_state(&sidebar, &sidebar_state);
             }
-            Event::UserEvent(AppEvent::ProjectsError(msg)) => {
+            // Phase A4-3b: SP の Lane fetch 結果を sidebar_state に反映
+            Event::UserEvent(AppEvent::LanesLoaded {
+                process_path,
+                lanes,
+            }) => {
+                tracing::info!(
+                    "AppEvent::LanesLoaded handled: project={} count={}",
+                    process_path,
+                    lanes.len()
+                );
+                // Architecture v4: active_lane_address が未設定なら最初の Lane を auto-select。
+                // 「初回起動 → Lead Lane が main area に出る」UX を Lane SSOT で保つ。
+                let auto_select = sidebar_state.active_lane_address.is_none()
+                    && lanes
+                        .first()
+                        .map(|l| lane_address_key(&l.address))
+                        .is_some();
+                let first_addr = if auto_select {
+                    lanes.first().map(|l| lane_address_key(&l.address))
+                } else {
+                    None
+                };
+                sidebar_state.lanes_by_project.insert(process_path, lanes);
+                if let Some(addr) = first_addr {
+                    tracing::info!("auto-select first lane: {}", addr);
+                    sidebar_state.active_lane_address = Some(addr);
+                    push_active_lane(&main_view, &sidebar_state);
+                }
+                push_sidebar_state(&sidebar, &sidebar_state);
+            }
+            Event::UserEvent(AppEvent::LanesError {
+                process_path,
+                message,
+            }) => {
+                tracing::warn!(
+                    "AppEvent::LanesError: project={} message={}",
+                    process_path,
+                    message
+                );
+                // SP 接続失敗 (Project SP 未起動等) — sidebar の lanes_by_project は更新しない
+            }
+            Event::UserEvent(AppEvent::ProcessesError(msg)) => {
                 let js_msg = serde_json::to_string(&msg).unwrap_or_else(|_| "\"error\"".into());
                 let script = format!("window.renderError({})", js_msg);
                 if let Err(e) = sidebar.evaluate_script(&script) {
@@ -1230,20 +1550,20 @@ pub fn run() -> anyhow::Result<()> {
                 // (state 直接 mutate しないので handle_sidebar_ipc の前で分岐)
                 if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&msg) {
                     match parsed.get("t").and_then(|v| v.as_str()) {
-                        Some("project:add") => {
+                        Some("process:add") => {
                             let initial_dir =
                                 resolve_default_project_root(&settings, &sidebar_state);
                             spawn_add_project_picker(async_action_proxy.clone(), initial_dir);
                             return;
                         }
-                        Some("project:clone") => {
+                        Some("process:clone") => {
                             let url = parsed
                                 .get("url")
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("")
                                 .to_string();
                             if url.is_empty() {
-                                tracing::warn!("project:clone with empty url");
+                                tracing::warn!("process:clone with empty url");
                                 return;
                             }
                             let default_root =
@@ -1258,12 +1578,23 @@ pub fn run() -> anyhow::Result<()> {
                 if outcome.changed {
                     push_sidebar_state(&sidebar, &sidebar_state);
                 }
-                if outcome.active_changed_path.is_some() {
-                    push_active_pane(
-                        &main_view,
-                        &sidebar_state,
-                        outcome.active_changed_path.as_deref(),
-                    );
+                if outcome.active_changed {
+                    push_active_lane(&main_view, &sidebar_state);
+                }
+                // Architecture v4: dead な project が expand されたら SP を auto-spawn。
+                // dedup: 同 session で同じ path を 2 回呼ばない (TheWorld 側でも弾かれるが
+                // 余計な POST を避ける)。
+                if let Some((name, path)) = outcome.sp_spawn_request {
+                    if sp_spawn_triggered.insert(path.clone()) {
+                        tracing::info!(
+                            "SP auto-spawn 要求 (accordion expand trigger): name={} path={}",
+                            name,
+                            path
+                        );
+                        spawn_sp_start(async_action_proxy.clone(), name, path);
+                    } else {
+                        tracing::debug!("SP auto-spawn skip (既 trigger): {}", path);
+                    }
                 }
             }
             // VP-100 γ-light: ResizeObserver からの slot 矩形通知を蓄積。

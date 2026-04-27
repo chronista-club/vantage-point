@@ -40,6 +40,7 @@ impl PtySlot {
     pub fn spawn(
         cwd: &str,
         shell_cmd: &str,
+        args: &[String],
         cols: u16,
         rows: u16,
     ) -> Result<(Self, broadcast::Receiver<Vec<u8>>)> {
@@ -54,8 +55,11 @@ impl PtySlot {
 
         let mut cmd = CommandBuilder::new(shell_cmd);
         cmd.cwd(cwd);
-        // ログインシェルとして起動
-        cmd.arg("-l");
+        // 起動引数は caller が決める (zsh/bash → "-l" で login shell、pwsh → "-NoLogo" 等)。
+        // 旧実装は `cmd.arg("-l")` を hardcode していたが、pwsh 等で無効 flag になる問題があり廃止。
+        for arg in args {
+            cmd.arg(arg);
+        }
 
         // 子プロセスを起動（ゾンビ防止のためハンドルを保持する）
         let child = pair.slave.spawn_command(cmd)?;
@@ -176,7 +180,7 @@ mod tests {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
         let cwd = std::env::temp_dir().to_string_lossy().to_string();
 
-        let (slot, mut rx) = PtySlot::spawn(&cwd, &shell, 80, 24).expect("PTY spawn に失敗");
+        let (slot, mut rx) = PtySlot::spawn(&cwd, &shell, &[], 80, 24).expect("PTY spawn に失敗");
 
         // PIDが取得できること
         assert!(slot.pid() > 0 || slot.pid() == 0); // CI環境では0の可能性
@@ -197,7 +201,8 @@ mod tests {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
         let cwd = std::env::temp_dir().to_string_lossy().to_string();
 
-        let (mut slot, mut rx) = PtySlot::spawn(&cwd, &shell, 80, 24).expect("PTY spawn に失敗");
+        let (mut slot, mut rx) =
+            PtySlot::spawn(&cwd, &shell, &[], 80, 24).expect("PTY spawn に失敗");
 
         // 少し待ってからコマンドを送信
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -236,7 +241,7 @@ mod tests {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
         let cwd = std::env::temp_dir().to_string_lossy().to_string();
 
-        let (slot, _rx) = PtySlot::spawn(&cwd, &shell, 80, 24).expect("PTY spawn に失敗");
+        let (slot, _rx) = PtySlot::spawn(&cwd, &shell, &[], 80, 24).expect("PTY spawn に失敗");
         let pid = slot.pid();
 
         // CI環境ではPIDが0の場合がある

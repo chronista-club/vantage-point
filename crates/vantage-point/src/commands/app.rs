@@ -1,62 +1,94 @@
 //! `vp app` コマンドの実行ロジック
+//!
+//! Mac 主軸切替 (2026-04-27, mem_1CaSjv5QQUNDxsEMjAicJ7):
+//! vp-app crate (Rust + wry + xterm.js + creo-ui) を spawn する。
+//! 旧 Swift VantagePoint.app 起動経路は廃止。
 
-use anyhow::Result;
+use std::path::PathBuf;
 
-use crate::cli::{find_vantage_point_app, which_vp};
+use anyhow::{Context, Result};
+use clap::Subcommand;
 
-/// `vp app` を実行
-pub fn execute(port: u16, no_daemon: bool) -> Result<()> {
-    let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(async {
-        // TheWorld が稼働しているか確認
-        if !no_daemon {
-            let world_url = format!("http://[::1]:{}/api/health", port);
-            let client = reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(2))
-                .build()?;
+#[derive(Subcommand)]
+pub enum AppCommands {
+    /// vp-app GUI を起動 (Rust + wry + xterm.js + creo-ui)
+    Run {
+        /// プロジェクト N 番を起動時に開く（省略時はランチャー画面）
+        project_id: Option<usize>,
+    },
+}
 
-            let world_running = client
-                .get(&world_url)
-                .send()
-                .await
-                .map(|r| r.status().is_success())
-                .unwrap_or(false);
+pub fn execute(cmd: AppCommands) -> Result<()> {
+    match cmd {
+        AppCommands::Run { project_id } => run(project_id),
+    }
+}
 
-            if !world_running {
-                println!("Starting TheWorld on port {}...", port);
-                // バックグラウンドで TheWorld を起動
-                let vp_path = which_vp().ok_or_else(|| anyhow::anyhow!("vp binary not found"))?;
+fn run(project_id: Option<usize>) -> Result<()> {
+    let bin = find_vp_app_binary().context(
+        "vp-app binary not found. \
+         Build it first: 'cargo build --release -p vp-app' \
+         or install: 'cargo install --path crates/vp-app'",
+    )?;
 
-                std::process::Command::new(&vp_path)
-                    .args(["world", "start", "--port", &port.to_string()])
-                    .spawn()
-                    .map_err(|e| anyhow::anyhow!("Failed to start TheWorld: {}", e))?;
+    // Phase A: log dir 統一 (~/Library/Logs/Vantage/ on macOS)
+    let log_dir = log_dir_path();
+    std::fs::create_dir_all(&log_dir).ok();
+    let daemon_log = log_dir.join("vp-world.kdl.log");
 
-                // 起動を待つ
-                tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
-            }
+    println!("🚀 Launching vp-app: {}", bin.display());
+    println!("   daemon log: {}", daemon_log.display());
+
+    let mut cmd = std::process::Command::new(&bin);
+    cmd.env("VP_DAEMON_LOG_FILE", &daemon_log);
+    if let Some(id) = project_id {
+        cmd.env("VP_PROJECT_ID", id.to_string());
+    }
+
+    // foreground spawn — ユーザの terminal に attach、Ctrl+C で一緒に終わる。
+    let status = cmd
+        .status()
+        .with_context(|| format!("Failed to spawn vp-app at {}", bin.display()))?;
+
+    std::process::exit(status.code().unwrap_or(1));
+}
+
+/// vp-app binary を探す:
+/// 1. PATH 上の `vp-app` (cargo install で入った場合)
+/// 2. 自分 (vp) の隣 (`~/.cargo/bin/vp` や `target/release/vp` の同 dir)
+fn find_vp_app_binary() -> Option<PathBuf> {
+    if let Some(p) = find_in_path("vp-app") {
+        return Some(p);
+    }
+    if let Ok(self_exe) = std::env::current_exe()
+        && let Some(dir) = self_exe.parent()
+    {
+        let candidate = dir.join("vp-app");
+        if candidate.is_file() {
+            return Some(candidate);
         }
+    }
+    None
+}
 
-        // VantagePoint.app を起動
-        let app_path = find_vantage_point_app();
-        match app_path {
-            Some(path) => {
-                println!("🚀 Opening VantagePoint.app...");
-                std::process::Command::new("open")
-                    .arg(&path)
-                    .spawn()
-                    .map_err(|e| anyhow::anyhow!("Failed to open app: {}", e))?;
-                println!("✓ VantagePoint.app started");
-                Ok(())
-            }
-            None => {
-                eprintln!("✗ VantagePoint.app not found");
-                eprintln!("  Expected locations:");
-                eprintln!("    - /Applications/VantagePoint.app");
-                eprintln!("    - ~/Applications/VantagePoint.app");
-                eprintln!("    - ~/repos/vantage-point-mac/VantagePoint/VantagePoint.app (dev)");
-                std::process::exit(1);
-            }
-        }
-    })
+fn find_in_path(name: &str) -> Option<PathBuf> {
+    let path_var = std::env::var_os("PATH")?;
+    path_var
+        .to_str()?
+        .split(':')
+        .map(|d| PathBuf::from(d).join(name))
+        .find(|p| p.is_file())
+}
+
+/// macOS: `~/Library/Logs/Vantage/`、その他: `~/.local/state/vantage/logs/`
+fn log_dir_path() -> PathBuf {
+    if cfg!(target_os = "macos") {
+        dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("Library/Logs/Vantage")
+    } else {
+        dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".local/state/vantage/logs")
+    }
 }

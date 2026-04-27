@@ -76,7 +76,7 @@ pub struct SlotRect {
 /// Creo tokens 統一は維持。kind 切替を window.setActivePane で行う。
 pub const MAIN_AREA_HTML: &str = concat!(
     r#"<!doctype html>
-<html lang="en" data-theme="mint-dark">
+<html lang="en" data-theme="contrast-dark">
 <head>
 <meta charset="utf-8">
 <title>vp-app main</title>
@@ -118,6 +118,29 @@ body{overflow:hidden;}
 .xterm-viewport::-webkit-scrollbar-track{background:transparent;}
 .xterm-viewport::-webkit-scrollbar-thumb{background:var(--color-surface-border);border-radius:4px;}
 .xterm-viewport::-webkit-scrollbar-thumb:hover{background:var(--color-brand-primary-subtle);}
+/* contrast-dark の terminal ANSI 16 色 — creo-ui に red/green/yellow/blue/cyan が無いので
+   いつもの色空間メソッド (OKLCH) で hue rotation して role に合った色を synthesize。
+   chroma は brand と同等 (~0.16)、L=0.65 (normal) / 0.78 (bright) で
+   背景 (L=0.16) との contrast を WCAG AA 以上確保。
+   関連: mem_1CaSmvKgsX2AQxRYFYgNM3 (Lead pane shell), creo-ui contrast-dark theme. */
+:root[data-theme="contrast-dark"]{
+  --terminal-ansi-black:oklch(0.20 0.02 280);
+  --terminal-ansi-red:oklch(0.65 0.18 25);
+  --terminal-ansi-green:oklch(0.70 0.15 145);
+  --terminal-ansi-yellow:oklch(0.78 0.13 90);
+  --terminal-ansi-blue:oklch(0.65 0.16 255);
+  --terminal-ansi-magenta:oklch(0.70 0.18 320);
+  --terminal-ansi-cyan:oklch(0.72 0.13 195);
+  --terminal-ansi-white:var(--color-text-secondary);
+  --terminal-ansi-bright-black:var(--color-text-tertiary);
+  --terminal-ansi-bright-red:oklch(0.78 0.20 25);
+  --terminal-ansi-bright-green:oklch(0.82 0.18 145);
+  --terminal-ansi-bright-yellow:oklch(0.88 0.15 90);
+  --terminal-ansi-bright-blue:oklch(0.78 0.18 255);
+  --terminal-ansi-bright-magenta:oklch(0.82 0.20 320);
+  --terminal-ansi-bright-cyan:oklch(0.85 0.15 195);
+  --terminal-ansi-bright-white:var(--color-text-primary);
+}
 </style>
 </head>
 <body>
@@ -156,6 +179,11 @@ body{overflow:hidden;}
     include_str!("../assets/addon-fit.min.js"),
     r#"
 </script>
+<script>
+"#,
+    include_str!("../assets/addon-webgl.min.js"),
+    r#"
+</script>
 <!-- VP-101 Phase A2: creo-ui-editor-host bundle (SolidJS + EditorLayer + tokens auto-discover).
      Ctrl+Shift+E で activate、font / theme / spacing 等を runtime 編集。
      Build: cd crates/vp-app/web-bundle && bun install && bun run build。 -->
@@ -166,16 +194,51 @@ body{overflow:hidden;}
 </script>
 <script>
 (function() {
-  // Creo tokens から xterm.js theme を構築 (runtime で var() 解決)
-  const css = getComputedStyle(document.documentElement);
-  const v = (name, fallback) => (css.getPropertyValue(name).trim() || fallback);
-  const theme = {
-    background: v('--color-surface-bg-base', '#0F1128'),
-    foreground: v('--color-text-primary', '#EDEEF4'),
-    cursor: v('--color-brand-primary', '#7D6BC2'),
-    cursorAccent: v('--color-surface-bg-base', '#0F1128'),
-    selectionBackground: v('--color-brand-primary-subtle', '#2C2843')
+  // Creo tokens から xterm.js theme を構築。
+  // OKLCH 値は xterm.js の内部 color parser が直接解釈できないので、
+  // hidden probe で `color: var(...)` を browser に解決させて
+  // `getComputedStyle().color` から rgb(R,G,B) を取得 → hex に降ろす。
+  const probe = document.createElement('span');
+  probe.style.position = 'absolute';
+  probe.style.visibility = 'hidden';
+  document.body.appendChild(probe);
+
+  const resolveHex = (varName, fallback) => {
+    probe.style.color = `var(${varName}, ${fallback})`;
+    const rgb = getComputedStyle(probe).color;
+    const m = rgb.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+    if (!m) return fallback;
+    return '#' + [m[1], m[2], m[3]]
+      .map(n => Number(n).toString(16).padStart(2, '0'))
+      .join('');
   };
+
+  const css = getComputedStyle(document.documentElement);
+  const theme = {
+    background: resolveHex('--color-surface-bg-base', '#0F1128'),
+    foreground: resolveHex('--color-text-primary', '#EDEEF4'),
+    cursor: resolveHex('--color-brand-primary', '#7D6BC2'),
+    cursorAccent: resolveHex('--color-surface-bg-base', '#0F1128'),
+    selectionBackground: resolveHex('--color-brand-primary-subtle', '#2C2843'),
+    // ANSI 16 色 (creo-ui contrast-dark + OKLCH hue rotation)
+    black: resolveHex('--terminal-ansi-black', '#1E1E2E'),
+    red: resolveHex('--terminal-ansi-red', '#F38BA8'),
+    green: resolveHex('--terminal-ansi-green', '#A6E3A1'),
+    yellow: resolveHex('--terminal-ansi-yellow', '#F9E2AF'),
+    blue: resolveHex('--terminal-ansi-blue', '#89B4FA'),
+    magenta: resolveHex('--terminal-ansi-magenta', '#F5C2E7'),
+    cyan: resolveHex('--terminal-ansi-cyan', '#94E2D5'),
+    white: resolveHex('--terminal-ansi-white', '#BAC2DE'),
+    brightBlack: resolveHex('--terminal-ansi-bright-black', '#585B70'),
+    brightRed: resolveHex('--terminal-ansi-bright-red', '#F38BA8'),
+    brightGreen: resolveHex('--terminal-ansi-bright-green', '#A6E3A1'),
+    brightYellow: resolveHex('--terminal-ansi-bright-yellow', '#F9E2AF'),
+    brightBlue: resolveHex('--terminal-ansi-bright-blue', '#89B4FA'),
+    brightMagenta: resolveHex('--terminal-ansi-bright-magenta', '#F5C2E7'),
+    brightCyan: resolveHex('--terminal-ansi-bright-cyan', '#94E2D5'),
+    brightWhite: resolveHex('--terminal-ansi-bright-white', '#FFFFFF')
+  };
+  probe.remove();
   const monoFamily = (css.getPropertyValue('--typography-family-mono') || '').trim()
     || '"JetBrainsMono Nerd Font", "Cascadia Code", "SF Mono", Menlo, Consolas, monospace';
   const term = new Terminal({
@@ -195,6 +258,22 @@ body{overflow:hidden;}
   });
   const fitAddon = new FitAddon.FitAddon();
   term.loadAddon(fitAddon);
+
+  // WebGL renderer addon — DOM renderer の scroll back-and-forth で起きる
+  // 重なり描画 bug を回避。GPU 描画で性能も向上。
+  // GPU context loss 時は dispose して DOM renderer に自動 fallback。
+  try {
+    const webglAddon = new WebglAddon.WebglAddon();
+    term.loadAddon(webglAddon);
+    webglAddon.onContextLoss(() => {
+      console.warn('[xterm] WebGL context loss — DOM fallback');
+      webglAddon.dispose();
+    });
+    console.log('[xterm] WebGL renderer enabled');
+  } catch (e) {
+    console.warn('[xterm] WebGL unavailable, DOM fallback:', e);
+  }
+
   term.open(document.getElementById('t'));
   // 初回は terminal が hidden の可能性があるので、active 化時にも fit する。
   fitAddon.fit();
@@ -210,7 +289,20 @@ body{overflow:hidden;}
     }
   });
 
+  // PH 計測 (mem_1CaSpUi6cz9abzcEU3d6KC): keystroke drop 切り分け用 log。
+  // DevTools 出せない環境のため、Rust log file (~/Library/Logs/Vantage/vp-app.kdl.log) で
+  // 確認できるよう debug ipc 経由で xterm.onData の発火も流す。
+  //   - [xterm debug] [xterm.onData] "a" codes=97 t=...   ← xterm.js が onData 発火した
+  //   - [ipc.in] 1 bytes codes=[97] data="a"              ← Native handler が IPC で受けた
+  // 両方が 2 文字 rapid typing で 2 個ずつ出れば JS / IPC 経路 OK、
+  // 出ない方が drop layer。
   term.onData(d => {
+    const codes = Array.from(d).map(c => c.charCodeAt(0)).join(',');
+    const t = performance.now().toFixed(2);
+    window.ipc.postMessage(JSON.stringify({t:'debug', msg: '[xterm.onData] ' + JSON.stringify(d) + ' codes=' + codes + ' t=' + t}));
+    if (typeof console !== 'undefined' && console.log) {
+      console.log('[xterm.onData]', JSON.stringify(d), 'codes=', codes, 't=', t);
+    }
     window.ipc.postMessage(JSON.stringify({t:'in', d: d}));
   });
 
@@ -222,10 +314,13 @@ body{overflow:hidden;}
     term.write(bytes);
   };
 
-  // ========= VP-100 Phase 2: Pane 切替 API =========
-  // Rust → JS で active pane を切替。kind が null の場合は empty 状態を表示。
-  // payload: {kind: "agent"|"canvas"|"preview"|"shell"|null, pane_id, preview_url}
+  // ========= Architecture v4: Lane 切替 API =========
+  // Rust → JS で active Lane を切替。kind が null の場合は empty 状態を表示。
+  // payload: {kind: "terminal"|"canvas"|"preview"|null, pane_id (= Lane address), preview_url}
+  // 旧 "agent"/"shell" は terminal 系として "terminal" に統合 (Lane SSOT 化に伴う)。
   const KIND_TO_PANE = {
+    terminal: 'pane-terminal',
+    // 互換: 旧 callsite が "agent"/"shell" を渡しても動く
     agent: 'pane-terminal',
     shell: 'pane-terminal',
     canvas: 'pane-canvas',
@@ -255,7 +350,7 @@ body{overflow:hidden;}
         frame.setAttribute('src', url);
       }
     }
-    if (kind === 'agent' || kind === 'shell') {
+    if (kind === 'terminal' || kind === 'agent' || kind === 'shell') {
       // hidden 中はサイズ計算が 0 になり xterm が壊れるので、active 化直後に fit + resize 通知
       try {
         fitAddon.fit();

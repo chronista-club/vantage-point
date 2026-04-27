@@ -38,9 +38,13 @@ use crate::process::state::AppState;
 /// クエリパラメータ
 #[derive(Debug, Deserialize)]
 pub struct TerminalQuery {
-    /// シェルコマンド (default: "bash")
+    /// シェルコマンド (default: "bash"、client が `vp-app` なら shell_detect で決定して送る)
     #[serde(default = "default_shell")]
     pub shell: String,
+    /// シェル起動引数 (comma-separated、例: "-l" or "-NoLogo,-NoExit")。
+    /// 未指定なら何も付けない (caller が決めない場合 shell が default 動作)。
+    #[serde(default)]
+    pub args: Option<String>,
     /// 初期幅 (default: 80)
     #[serde(default = "default_cols")]
     pub cols: u16,
@@ -88,15 +92,28 @@ async fn handle_terminal_socket(socket: WebSocket, params: TerminalQuery) {
         .or_else(|| dirs::home_dir().map(|p| p.to_string_lossy().into_owned()))
         .unwrap_or_else(|| "/tmp".into());
 
-    let (mut slot, mut rx) = match PtySlot::spawn(&cwd, &params.shell, params.cols, params.rows) {
-        Ok(pair) => pair,
-        Err(e) => {
-            tracing::error!("/ws/terminal: PtySlot::spawn failed: {}", e);
-            let err = format!(r#"{{"type":"error","message":"{}"}}"#, e);
-            let _ = sender.send(Message::Text(err.into())).await;
-            return;
-        }
-    };
+    // args は comma-separated (vp-app/src/ws_terminal.rs が乗せる)。空 string や trailing comma は除去。
+    let args: Vec<String> = params
+        .args
+        .as_deref()
+        .map(|s| {
+            s.split(',')
+                .filter(|x| !x.is_empty())
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let (mut slot, mut rx) =
+        match PtySlot::spawn(&cwd, &params.shell, &args, params.cols, params.rows) {
+            Ok(pair) => pair,
+            Err(e) => {
+                tracing::error!("/ws/terminal: PtySlot::spawn failed: {}", e);
+                let err = format!(r#"{{"type":"error","message":"{}"}}"#, e);
+                let _ = sender.send(Message::Text(err.into())).await;
+                return;
+            }
+        };
 
     let pid = slot.pid();
     tracing::info!(

@@ -250,7 +250,8 @@ async fn handle_terminal_create_pane(
     }
 
     // PTYスロット起動（初期 receiver を取得し、シェルプロンプト等の初期出力をロストしない）
-    let (slot, output_rx) = match PtySlot::spawn(&cwd, &req.shell_cmd, req.cols, req.rows) {
+    // shell args は req に含まれない (古い protocol)、空 args で起動。将来 protocol 拡張時に変更。
+    let (slot, output_rx) = match PtySlot::spawn(&cwd, &req.shell_cmd, &[], req.cols, req.rows) {
         Ok(s) => s,
         Err(e) => return ChannelMessage::err(id, format!("PTY起動失敗: {}", e)),
     };

@@ -17,7 +17,9 @@ use tower_http::cors::CorsLayer;
 use super::capabilities::{CapabilityConfig, ProcessCapabilities};
 use super::hub::Hub;
 use super::pty::PtyManager;
-use super::routes::{health, lanes, permission, prompt, update, world, ws, ws_terminal};
+use super::routes::{
+    health, lanes, permission, project_feed, prompt, update, world, ws, ws_terminal,
+};
 use super::session::SessionManager;
 use super::state::AppState;
 use super::topic_router::TopicRouter;
@@ -271,7 +273,8 @@ pub async fn run(
         cancel_token: Arc::new(RwLock::new(CancellationToken::new())),
         debug_mode,
         shutdown_token: shutdown_token.clone(),
-        project_dir,
+        // Phase A4-2b: lane_pool init で同 var を後続参照するため clone
+        project_dir: project_dir.clone(),
         pending_permissions: Arc::new(RwLock::new(HashMap::new())),
         pending_prompts: Arc::new(RwLock::new(HashMap::new())),
         capabilities,
@@ -297,6 +300,17 @@ pub async fn run(
         // ポート別ディレクトリで分離（複数プロセスの namespace 衝突を防ぐ）
         // run() 冒頭で作成した Whitesnake を共有（Msgbox persistent と同一インスタンス）
         whitesnake: whitesnake.clone(),
+        // Phase A4-2b: Lane scope の Stand pool — Lead Lane 1 つ pre-populate
+        // memory rule: 多 scope architecture (App/Project/Lane/Pane)、HD/TH は Lane scope。
+        // Worker Lane の動的 create は A4-4、Stand spawn 連動は A5 で実装。
+        lane_pool: Arc::new(RwLock::new(super::lanes_state::LanePool::with_lead(
+            project_name_for_remote.clone(),
+            project_dir.clone(),
+        ))),
+        // Phase A4-2b: Project scope の Stand pool (PP/GE/HP) — skeleton
+        project_stands: Arc::new(RwLock::new(
+            super::project_stands_state::ProjectStandsPool::new(),
+        )),
     });
 
     // ペイン状態をディスクから復元（前回 Process 終了時の状態 → RetainedStore）
@@ -308,8 +322,15 @@ pub async fn run(
         .route("/vendor/{filename}", get(health::vendor_handler))
         .route("/wasm/{filename}", get(health::wasm_handler))
         .route("/ws", get(ws::ws_handler))
-        // Canvas Lane 集約 WebSocket（全 Process のメッセージを Lane でラップして中継）
-        .route("/ws/lanes", get(lanes::lanes_ws_handler))
+        // Canvas Project Feed 集約 WebSocket（全 Process のメッセージを Project Feed でラップして中継）
+        // 注: URL `/ws/lanes` は外部互換のため維持。内部命名は `project_feed` (mem_1CaSsN7xj69aVQtLPQFJxQ 命名整理)
+        .route("/ws/lanes", get(project_feed::project_feed_ws_handler))
+        // Phase A4-2b: Lane (Lead/Worker) lifecycle の REST endpoint
+        // GET: list、 POST: Worker create (A6 minimum)
+        .route(
+            "/api/lanes",
+            get(lanes::list_handler).post(lanes::create_handler),
+        )
         .route("/api/show", post(health::show_handler))
         .route(
             "/api/msgbox/remote_deliver",
@@ -603,6 +624,12 @@ pub async fn run_world(port: u16) -> Result<()> {
         vpdb: vpdb.clone(), // World モードでも DB 参照あり
         // TheWorld もポート別ディレクトリで分離
         whitesnake: crate::capability::Whitesnake::file_backed_for_port(port),
+        // Phase A4-2b: World モードでは Lane / Project Stand を持たない (空 Pool で AppState を満たす)
+        // 多 scope architecture: World は App scope の component、Lane/ProjectStand は Project scope
+        lane_pool: Arc::new(RwLock::new(super::lanes_state::LanePool::new())),
+        project_stands: Arc::new(RwLock::new(
+            super::project_stands_state::ProjectStandsPool::new(),
+        )),
     });
 
     let app = Router::new()
@@ -612,7 +639,7 @@ pub async fn run_world(port: u16) -> Result<()> {
         .route("/canvas", get(health::canvas_handler))
         .route("/vendor/{filename}", get(health::vendor_handler))
         // Canvas Lane 集約 WebSocket
-        .route("/ws/lanes", get(lanes::lanes_ws_handler))
+        .route("/ws/lanes", get(project_feed::project_feed_ws_handler))
         // Canvas API（TheWorld 経由で Canvas WS に到達 — 一元管理）
         .route("/api/canvas/capture", post(health::canvas_capture_handler))
         .route(
