@@ -321,6 +321,21 @@ impl TheWorldClient {
         Ok(())
     }
 
+    /// Phase 5-C: Process restart (stop + 500ms grace + start chain)
+    pub async fn restart_process(&self, project_name: &str) -> Result<()> {
+        let url = format!(
+            "{}/api/world/processes/{}/restart",
+            self.base_url, project_name
+        );
+        let resp = self.client.post(&url).send().await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("restart_process HTTP {}: {}", status, text);
+        }
+        Ok(())
+    }
+
     /// Phase 3-A: SP に Worker Lane を create (`POST /api/lanes`)。
     /// `branch` 指定時は SP が `ccws new <name> <branch>` で worker dir を作成して spawn する。
     /// `base_url` は SP の URL (例: `http://127.0.0.1:33002`) を指定。

@@ -5,10 +5,15 @@
 //! VP-100 follow-up: 1Password 風の「開発者モード」設定を View メニューに追加。
 //! settings file に永続化、runtime で即時切替 (`Open Developer Tools` の有効/無効が連動)。
 
-use muda::{CheckMenuItem, Menu, MenuId, MenuItem, PredefinedMenuItem, Submenu};
+use muda::{
+    accelerator::{Accelerator, Code, Modifiers},
+    CheckMenuItem, Menu, MenuId, MenuItem, PredefinedMenuItem, Submenu,
+};
 
 /// MenuEvent dispatch で使う MenuId 群
 pub struct MenuIds {
+    /// File → "New Window" (Cmd+N、 新規 vp-app process を spawn)
+    pub new_window: MenuId,
     /// View → "Developer Mode" (CheckMenuItem)
     pub developer_mode: MenuId,
     /// View → "Open Developer Tools" (MenuItem、developer_mode == true の時のみ enabled)
@@ -43,10 +48,22 @@ pub fn build_menu_bar(initial_dev_mode: bool) -> MenuHandles {
     .expect("Failed to build App menu");
 
     // File メニュー
+    // - "New Window" (Cmd+N): 新規 vp-app process を spawn = 新しい MainWindow が独立 process で立つ
+    //   並行開発時に複数 working session を同時操作する入口。
+    //   実装は app.rs の event_loop で MenuClicked event を捕まえて Command::new(current_exe).spawn()。
+    let new_window_item = MenuItem::new(
+        "New Window",
+        true,
+        Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyN)),
+    );
     let file_menu = Submenu::with_items(
         "File",
         true,
-        &[&PredefinedMenuItem::close_window(Some("Close Window"))],
+        &[
+            &new_window_item,
+            &PredefinedMenuItem::separator(),
+            &PredefinedMenuItem::close_window(Some("Close Window")),
+        ],
     )
     .expect("Failed to build File menu");
 
@@ -96,6 +113,7 @@ pub fn build_menu_bar(initial_dev_mode: bool) -> MenuHandles {
     menu.append(&view_menu).expect("append View menu");
 
     let ids = MenuIds {
+        new_window: new_window_item.id().clone(),
         developer_mode: developer_mode_item.id().clone(),
         open_devtools: open_devtools_item.id().clone(),
     };

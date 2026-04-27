@@ -381,9 +381,22 @@ const SIDEBAR_HTML: &str = concat!(
       title.className = 'creo-accordion-title';
       title.textContent = p.name;
       summary.appendChild(title);
+      // Phase 5-C polish: restart button (hover で出現、 click で SP restart)。
+      //  = nf-fa-refresh、 lane WS error 時に user が即復帰できる入口。
+      const restartBtn = document.createElement('span');
+      restartBtn.className = 'vp-project-restart nf-icon';
+      restartBtn.textContent = '';
+      restartBtn.style.cssText = 'margin-left:auto;';
+      restartBtn.title = 'Restart SP (stop + start)';
+      restartBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        send({t: 'process:restart', path: p.path});
+      });
+      summary.appendChild(restartBtn);
       const stateBadge = document.createElement('span');
       stateBadge.className = 'state';
-      stateBadge.style.cssText = 'margin-left:auto;';
+      stateBadge.style.cssText = 'margin-left:6px;';
       stateBadge.innerHTML = stateGlyphHTML(p.state);
       summary.appendChild(stateBadge);
       proj.appendChild(summary);
@@ -1394,6 +1407,9 @@ struct SidebarIpcOutcome {
     /// Phase 4-A: Worker Lane 削除要求 `(project_path, address)`。
     /// caller が SP port を解決して `client.delete_lane` を呼ぶ。
     delete_lane_request: Option<(String, String)>,
+    /// Phase 5-C: Process restart 要求 `(project_name)`。
+    /// caller が TheWorld の `/api/world/processes/{name}/restart` を呼ぶ。
+    restart_process_request: Option<String>,
 }
 
 /// sidebar webview から IPC で受け取った JSON を解釈し、`SidebarState` を mutate。
@@ -1530,6 +1546,21 @@ fn handle_sidebar_ipc(msg: &str, state: &mut SidebarState) -> SidebarIpcOutcome 
                 out.active_changed = true;
             }
         }
+        "process:restart" => {
+            // Phase 5-C: project name (from p.path → leaf name) を抽出して async restart に投げる。
+            // path は normalized full path、 SP の API は project name で識別する。
+            if path.is_empty() {
+                tracing::warn!("process:restart with empty path: {}", msg);
+                return out;
+            }
+            let project_name = std::path::Path::new(path)
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or(path)
+                .to_string();
+            tracing::info!("process:restart {} (project_name={})", path, project_name);
+            out.restart_process_request = Some(project_name);
+        }
         other => {
             tracing::debug!("sidebar IPC: 未知の type {:?}", other);
         }
@@ -1620,6 +1651,15 @@ pub fn run() -> anyhow::Result<()> {
     // メニューバー (View → Developer Mode / Open Developer Tools を含む) + トレイ
     let menu_handles = crate::menu::build_menu_bar(initial_dev_mode);
     let _menu = menu_handles.menu.clone();
+    // macOS: NSApp に menu を attach、 accelerator (Cmd+N 等) を NSApplication menu hotkey 化。
+    // これを呼ばないと MenuItem::new() の accelerator が NSResponder chain で発火しない。
+    // 既存の PredefinedMenuItem (close_window/undo/copy 等) は muda 内部で auto-attach されるが、
+    // user-defined MenuItem は明示の init_for_nsapp が要る。
+    #[cfg(target_os = "macos")]
+    {
+        // muda 0.17: Menu::init_for_nsapp() でメニューバーに attach
+        menu_handles.menu.init_for_nsapp();
+    }
     let dev_mode_item = menu_handles.developer_mode_item;
     let open_devtools_item = menu_handles.open_devtools_item;
     let menu_ids = menu_handles.ids;
@@ -1849,7 +1889,14 @@ pub fn run() -> anyhow::Result<()> {
                 );
                 // Architecture v4: active_lane_address が未設定なら最初の Lane を auto-select。
                 // 「初回起動 → Lead Lane が main area に出る」UX を Lane SSOT で保つ。
-                let auto_select = sidebar_state.active_lane_address.is_none()
+                //
+                // 例外: `VP_APP_SECONDARY=1` (Cmd+N で spawn された secondary instance) の場合は
+                // auto-select を skip。 元 vp-app が既に同 lane の terminal WS を持ってる事が多く、
+                // 衝突して両方の console が壊れるため。 Secondary は user が手動 lane 選択する前提。
+                let is_secondary =
+                    std::env::var("VP_APP_SECONDARY").map(|v| v == "1").unwrap_or(false);
+                let auto_select = !is_secondary
+                    && sidebar_state.active_lane_address.is_none()
                     && lanes
                         .first()
                         .map(|l| lane_address_key(&l.address))
@@ -2018,6 +2065,30 @@ pub fn run() -> anyhow::Result<()> {
                         tracing::debug!("SP auto-spawn skip (既 trigger): {}", path);
                     }
                 }
+                // Phase 5-C: Process restart 要求 (sidebar の 🔄 button から)
+                if let Some(project_name) = outcome.restart_process_request {
+                    let proxy = async_action_proxy.clone();
+                    tokio::spawn(async move {
+                        // TheWorld port は固定 32000 (vantage_point::cli::WORLD_PORT と同期)
+                        let client = crate::client::TheWorldClient::new(32000);
+                        match client.restart_process(&project_name).await {
+                            Ok(()) => {
+                                tracing::info!("restart_process OK: {}", project_name);
+                                // 完了 → projects 再 fetch → sidebar state badge 更新
+                                if let Ok(projects) = client.list_projects().await {
+                                    let _ = proxy.send_event(AppEvent::ProcessesLoaded(projects));
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "restart_process failed for {}: {}",
+                                    project_name,
+                                    e
+                                );
+                            }
+                        }
+                    });
+                }
                 // Phase 4-A: Worker Lane 削除要求 (sidebar の × button から)
                 if let Some((project_path, address)) = outcome.delete_lane_request {
                     let sp_port = sidebar_state
@@ -2172,7 +2243,40 @@ pub fn run() -> anyhow::Result<()> {
             //  - "Developer Mode" check item トグル → settings 永続化、Open DevTools の enabled 切替
             //  - "Open Developer Tools" → dev_mode == true なら main_view.open_devtools()
             Event::UserEvent(AppEvent::MenuClicked(id)) => {
-                if id == menu_ids.developer_mode {
+                if id == menu_ids.new_window {
+                    // Cmd+N: 新規 vp-app process を spawn = 新しい MainWindow が独立 process で立つ。
+                    // 同 EventLoop に重ねるのではなく fork-style で別 process 化することで、
+                    // state 干渉ゼロ + crash isolation + multi-instance 並行開発が可能に。
+                    // TheWorld daemon (port 32000) は process 横断 shared なので projects 一覧は同期。
+                    match std::env::current_exe() {
+                        Ok(exe) => {
+                            match std::process::Command::new(&exe)
+                                // 子 process は auto-select を skip ── 元 vp-app と active_lane
+                                // が衝突して両方の terminal WS が壊れるのを防ぐ。
+                                // 起動後 user が手動で lane 選択するまで main_area は empty。
+                                .env("VP_APP_SECONDARY", "1")
+                                .spawn()
+                            {
+                                Ok(child) => {
+                                    tracing::info!(
+                                        "Cmd+N: spawned new vp-app process (pid={})",
+                                        child.id()
+                                    );
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "Cmd+N: failed to spawn new process at {}: {}",
+                                        exe.display(),
+                                        e
+                                    );
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("Cmd+N: current_exe() failed: {}", e);
+                        }
+                    }
+                } else if id == menu_ids.developer_mode {
                     dev_mode = !dev_mode;
                     dev_mode_item.set_checked(dev_mode);
                     open_devtools_item.set_enabled(dev_mode);
