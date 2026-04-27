@@ -37,11 +37,53 @@ pub struct WindowInfo {
     pub owner: String,
     /// window title (空の場合あり)
     pub title: String,
-    /// pixel size
+    /// 画面座標での window 左上 (logical pixel)
+    pub x: i32,
+    pub y: i32,
+    /// pixel size (logical)
     pub width: u32,
     pub height: u32,
     /// window layer / z-order (macOS: kCGWindowLayer、 0 = 通常)
     pub layer: i32,
+}
+
+/// 画面座標 (logical px) で表す矩形領域 (`screencapture -R x,y,w,h` と一致)。
+#[derive(Debug, Clone, Copy)]
+pub struct Rect {
+    pub x: i32,
+    pub y: i32,
+    pub w: u32,
+    pub h: u32,
+}
+
+impl Rect {
+    /// 文字列 "x,y,w,h" から parse (CLI flag 用)
+    pub fn parse(s: &str) -> Result<Self, String> {
+        let parts: Vec<&str> = s.split(',').collect();
+        if parts.len() != 4 {
+            return Err(format!("rect must be 'x,y,w,h' (got {:?})", s));
+        }
+        let x: i32 = parts[0]
+            .trim()
+            .parse()
+            .map_err(|e| format!("rect.x: {}", e))?;
+        let y: i32 = parts[1]
+            .trim()
+            .parse()
+            .map_err(|e| format!("rect.y: {}", e))?;
+        let w: u32 = parts[2]
+            .trim()
+            .parse()
+            .map_err(|e| format!("rect.w: {}", e))?;
+        let h: u32 = parts[3]
+            .trim()
+            .parse()
+            .map_err(|e| format!("rect.h: {}", e))?;
+        if w == 0 || h == 0 {
+            return Err(format!("rect width/height must be > 0 (got {}x{})", w, h));
+        }
+        Ok(Rect { x, y, w, h })
+    }
 }
 
 /// capture 対象 window の絞り込み
@@ -93,6 +135,45 @@ pub trait Capture: Send + Sync {
         filter: &CaptureFilter,
         output: Option<PathBuf>,
     ) -> Result<CaptureResult, String>;
+
+    /// 画面座標 (logical px) の任意矩形を capture。 window 全体ではなく sub-region 用。
+    /// `Rect.x/y` は screen 座標 (window 左上 + 相対 offset 計算済み)。
+    /// `--region sidebar` 等の名付き region も内部でこの API に解決される。
+    fn capture_rect(
+        &self,
+        rect: Rect,
+        output: Option<PathBuf>,
+    ) -> Result<CaptureResult, String>;
+}
+
+/// 名付き region を window 内 sub-rect に解決。 unknown name は None。
+///
+/// `sidebar`: 左 280px (`SIDEBAR_WIDTH`、 vp-app の layout 固定値と同期)
+/// `main` / `main-area`: sidebar 右側全部
+/// `full`: window 全体
+pub fn region_for_name(name: &str, window: &WindowInfo) -> Option<Rect> {
+    const SIDEBAR_WIDTH: u32 = 280; // vp-app/src/app.rs の SIDEBAR_WIDTH と同期
+    match name {
+        "sidebar" => Some(Rect {
+            x: window.x,
+            y: window.y,
+            w: SIDEBAR_WIDTH.min(window.width),
+            h: window.height,
+        }),
+        "main" | "main-area" => Some(Rect {
+            x: window.x + SIDEBAR_WIDTH as i32,
+            y: window.y,
+            w: window.width.saturating_sub(SIDEBAR_WIDTH),
+            h: window.height,
+        }),
+        "full" => Some(Rect {
+            x: window.x,
+            y: window.y,
+            w: window.width,
+            h: window.height,
+        }),
+        _ => None,
+    }
 }
 
 /// 現 OS に対応した backend を返す。 caller はこの 1 関数だけ意識すれば済む。
@@ -117,6 +198,13 @@ pub fn default_backend() -> Box<dyn Capture> {
             ) -> Result<CaptureResult, String> {
                 Err("screenshot: this OS is not supported".into())
             }
+            fn capture_rect(
+                &self,
+                _: Rect,
+                _: Option<PathBuf>,
+            ) -> Result<CaptureResult, String> {
+                Err("screenshot: this OS is not supported".into())
+            }
         }
         Box::new(NoBackend)
     }
@@ -132,7 +220,7 @@ pub fn default_output_path() -> PathBuf {
 /// `index` が指定されてなければ **「title 非空優先 + 面積大優先」** で sort して先頭を返す。
 /// VP の sub-window (Editor overlay 等、 title 空で size 小) を main window と誤認しない対策。
 /// `index` 指定時は z-order そのままで n 番目 (= sort せず元順序)。
-pub(crate) fn pick_window(
+pub fn pick_window(
     candidates: &[WindowInfo],
     filter: &CaptureFilter,
 ) -> Result<WindowInfo, String> {
@@ -176,6 +264,8 @@ mod tests {
             id,
             owner: owner.into(),
             title: title.into(),
+            x: 0,
+            y: 0,
             width: 800,
             height: 600,
             layer: 0,

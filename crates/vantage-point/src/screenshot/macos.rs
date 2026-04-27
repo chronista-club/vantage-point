@@ -19,7 +19,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-use super::{Capture, CaptureFilter, CaptureResult, WindowInfo};
+use super::{Capture, CaptureFilter, CaptureResult, Rect, WindowInfo};
 
 pub struct MacOsBackend;
 
@@ -38,10 +38,12 @@ for w in windows {{
         let id = w["kCGWindowNumber"] as? Int ?? 0
         let title = w["kCGWindowName"] as? String ?? ""
         let bounds = w["kCGWindowBounds"] as? [String: Any] ?? [:]
+        let x = bounds["X"] as? Int ?? 0
+        let y = bounds["Y"] as? Int ?? 0
         let width = bounds["Width"] as? Int ?? 0
         let height = bounds["Height"] as? Int ?? 0
-        // tab-separated: id\towner\twidth\theight\ttitle
-        print("\(id)\t\(owner)\t\(width)\t\(height)\t\(title)")
+        // tab-separated: id\towner\tx\ty\twidth\theight\ttitle
+        print("\(id)\t\(owner)\t\(x)\t\(y)\t\(width)\t\(height)\t\(title)")
     }}
 }}
 "#,
@@ -58,21 +60,25 @@ for w in windows {{
         let stdout = String::from_utf8_lossy(&output.stdout);
         let mut out = Vec::new();
         for line in stdout.lines() {
-            let parts: Vec<&str> = line.splitn(5, '\t').collect();
-            if parts.len() < 4 {
+            let parts: Vec<&str> = line.splitn(7, '\t').collect();
+            if parts.len() < 6 {
                 continue;
             }
             let id: u64 = parts[0].parse().unwrap_or(0);
             if id == 0 {
                 continue;
             }
-            let width: u32 = parts[2].parse().unwrap_or(0);
-            let height: u32 = parts[3].parse().unwrap_or(0);
-            let title = parts.get(4).copied().unwrap_or("").to_string();
+            let x: i32 = parts[2].parse().unwrap_or(0);
+            let y: i32 = parts[3].parse().unwrap_or(0);
+            let width: u32 = parts[4].parse().unwrap_or(0);
+            let height: u32 = parts[5].parse().unwrap_or(0);
+            let title = parts.get(6).copied().unwrap_or("").to_string();
             out.push(WindowInfo {
                 id,
                 owner: parts[1].to_string(),
                 title,
+                x,
+                y,
                 width,
                 height,
                 layer: 0,
@@ -115,6 +121,47 @@ for w in windows {{
             height: target.height,
             elapsed_ms: started.elapsed().as_millis() as u64,
             window: target,
+        })
+    }
+
+    fn capture_rect(
+        &self,
+        rect: Rect,
+        output: Option<PathBuf>,
+    ) -> Result<CaptureResult, String> {
+        let started = std::time::Instant::now();
+        let path = output.unwrap_or_else(super::default_output_path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("mkdir {}: {}", parent.display(), e))?;
+        }
+        // screencapture -R <x>,<y>,<w>,<h> path
+        let region_arg = format!("{},{},{},{}", rect.x, rect.y, rect.w, rect.h);
+        let status = Command::new("screencapture")
+            .args(["-x", "-o", "-R", &region_arg])
+            .arg(&path)
+            .status()
+            .map_err(|e| format!("screencapture spawn failed: {}", e))?;
+        if !status.success() {
+            return Err(format!("screencapture exit status: {:?}", status.code()));
+        }
+        // capture_rect は WindowInfo 持たないので zero-id placeholder で返す
+        let placeholder = WindowInfo {
+            id: 0,
+            owner: String::new(),
+            title: format!("rect:{}", region_arg),
+            x: rect.x,
+            y: rect.y,
+            width: rect.w,
+            height: rect.h,
+            layer: 0,
+        };
+        Ok(CaptureResult {
+            path,
+            width: rect.w,
+            height: rect.h,
+            elapsed_ms: started.elapsed().as_millis() as u64,
+            window: placeholder,
         })
     }
 }

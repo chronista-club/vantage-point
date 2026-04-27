@@ -128,6 +128,12 @@ enum Commands {
         /// list mode: capture せず候補一覧を表示
         #[arg(long)]
         list: bool,
+        /// 矩形 capture: "x,y,w,h" (screen 座標、 logical px)
+        #[arg(long)]
+        rect: Option<String>,
+        /// 名付き region: sidebar / main / full (window 内 sub-region に解決)
+        #[arg(long)]
+        region: Option<String>,
     },
 }
 
@@ -238,8 +244,8 @@ fn main() -> Result<()> {
         Commands::Ws(cmd) => execute_ws(cmd),
         Commands::Port(cmd) => commands::port_cmd::execute(cmd),
         Commands::App(cmd) => commands::app::execute(cmd),
-        Commands::Shot { output, window, index, title, list } => {
-            execute_shot(output, window, index, title, list)
+        Commands::Shot { output, window, index, title, list, rect, region } => {
+            execute_shot(output, window, index, title, list, rect, region)
         }
     }
 }
@@ -253,8 +259,10 @@ fn execute_shot(
     index: Option<usize>,
     title: Option<String>,
     list: bool,
+    rect: Option<String>,
+    region: Option<String>,
 ) -> Result<()> {
-    use vantage_point::screenshot::{default_backend, CaptureFilter};
+    use vantage_point::screenshot::{default_backend, region_for_name, CaptureFilter, Rect};
     let backend = default_backend();
     let filter = CaptureFilter {
         owner: window,
@@ -272,19 +280,60 @@ fn execute_shot(
             );
             return Ok(());
         }
-        println!("ID       OWNER       SIZE         TITLE");
+        println!("ID       OWNER       POSITION      SIZE         TITLE");
         for w in windows {
             println!(
-                "{:<8} {:<11} {:>4}x{:<4}   {}",
-                w.id, w.owner, w.width, w.height, w.title
+                "{:<8} {:<11} {:>5},{:<5}    {:>4}x{:<4}   {}",
+                w.id, w.owner, w.x, w.y, w.width, w.height, w.title
             );
         }
         return Ok(());
     }
+
+    // Phase 5-C v2: --rect / --region で sub-region capture
+    if let Some(rect_str) = rect {
+        let r = Rect::parse(&rect_str).map_err(|e| anyhow::anyhow!(e))?;
+        let result = backend
+            .capture_rect(r, output)
+            .map_err(|e| anyhow::anyhow!(e))?;
+        println!("{}", result.path.display());
+        eprintln!(
+            "(rect captured {}x{} in {}ms — at {},{})",
+            result.width, result.height, result.elapsed_ms, r.x, r.y
+        );
+        return Ok(());
+    }
+    if let Some(region_name) = region {
+        // 名付き region は window 解決が必要 → list して候補から target を選ぶ → region_for_name で rect 計算
+        let windows = backend
+            .list_windows(&filter)
+            .map_err(|e| anyhow::anyhow!(e))?;
+        if windows.is_empty() {
+            anyhow::bail!("no window with owner = {:?}", filter.owner);
+        }
+        let target = vantage_point::screenshot::pick_window(&windows, &filter)
+            .map_err(|e| anyhow::anyhow!(e))?;
+        let r = region_for_name(&region_name, &target).ok_or_else(|| {
+            anyhow::anyhow!(
+                "unknown region {:?} (known: sidebar / main / full)",
+                region_name
+            )
+        })?;
+        let result = backend
+            .capture_rect(r, output)
+            .map_err(|e| anyhow::anyhow!(e))?;
+        println!("{}", result.path.display());
+        eprintln!(
+            "(region '{}' captured {}x{} in {}ms — at {},{})",
+            region_name, result.width, result.height, result.elapsed_ms, r.x, r.y
+        );
+        return Ok(());
+    }
+
+    // 通常: window 全体 capture
     let result = backend
         .capture(&filter, output)
         .map_err(|e| anyhow::anyhow!(e))?;
-    // stdout: path 1 行 (caller が parse しやすく)
     println!("{}", result.path.display());
     eprintln!(
         "(captured {}x{} in {}ms — id={} title={:?})",
