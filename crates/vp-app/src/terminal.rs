@@ -56,6 +56,9 @@ pub enum AppEvent {
     },
     /// Clone 先フォルダ picker で選択された path を sidebar JS に push (キャンセル時は None)
     ClonePathPicked(Option<String>),
+    /// Phase 4-paste-fix: clipboard paste request の応答。 OS clipboard の内容を JS に届ける。
+    /// 空文字なら paste skip。 main_view の `window.deliverPaste(text)` で active Lane の xterm に inject。
+    PasteText(String),
 }
 
 /// xterm.js から IPC で送られてきた JSON メッセージを処理
@@ -91,6 +94,28 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
                     Err(e) => tracing::warn!("[clipboard] arboard init failed: {}", e),
                 }
             }
+        }
+        Some("paste:request") => {
+            // Phase 4-paste-fix: navigator.clipboard.readText() が webview で permission denied する
+            // ケースの fallback。 arboard で OS clipboard を読んで AppEvent::PasteText で main thread
+            // に届ける → event loop が main_view の window.deliverPaste(text) を evaluate_script。
+            let text = match arboard::Clipboard::new() {
+                Ok(mut cb) => match cb.get_text() {
+                    Ok(t) => {
+                        tracing::info!("[clipboard] paste via arboard: {} chars", t.len());
+                        t
+                    }
+                    Err(e) => {
+                        tracing::warn!("[clipboard] arboard get_text failed: {}", e);
+                        String::new()
+                    }
+                },
+                Err(e) => {
+                    tracing::warn!("[clipboard] arboard init (paste) failed: {}", e);
+                    String::new()
+                }
+            };
+            let _ = proxy.send_event(AppEvent::PasteText(text));
         }
         Some("debug") => {
             if let Some(msg) = parsed.get("msg").and_then(|v| v.as_str()) {

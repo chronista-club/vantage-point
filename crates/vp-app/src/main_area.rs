@@ -396,9 +396,19 @@ body{overflow:hidden;}
       return true;
     }
     function doPaste() {
-      navigator.clipboard.readText()
-        .then((text) => { if (text) term.paste(text); })
-        .catch((err) => dbg('[lane:' + address + '] paste failed: ' + err));
+      // Phase 4-paste-fix: navigator.clipboard.readText() は webview の permission policy で
+      // silent fail することがあるので、 **常に IPC fallback を併用**。 Rust 側 arboard が
+      // OS clipboard を読んで `window.deliverPaste(text)` で戻してくる経路。
+      try {
+        navigator.clipboard.readText()
+          .then((text) => { if (text) term.paste(text); })
+          .catch(() => {
+            window.ipc.postMessage(JSON.stringify({t:'paste:request'}));
+          });
+      } catch (_) {
+        // navigator.clipboard 自体が undefined のケース (古い WebKit 等)
+        window.ipc.postMessage(JSON.stringify({t:'paste:request'}));
+      }
     }
     term.attachCustomKeyEventHandler((e) => {
       if (e.type !== 'keydown') return true;
@@ -492,6 +502,25 @@ body{overflow:hidden;}
 
   // Phase 2.x-d: 旧 onPtyData shim も terminal::build_output_script と一緒に撤去済。
   // Lane WebSocket が直接 term.write するので Rust 経路の出力は存在しない。
+
+  // Phase 4-paste-fix: Rust 側 arboard で読み取った OS clipboard 内容を active Lane の xterm に inject。
+  // `terminal.rs::handle_ipc_message` の `paste:request` → `AppEvent::PasteText` → `app.rs` event loop
+  // で `main_view.evaluate_script("window.deliverPaste(text)")` の最終受け取り口。
+  window.deliverPaste = function(text) {
+    if (!text) return;
+    for (const [, info] of laneInstances) {
+      if (info.container.classList.contains('active')) {
+        try {
+          info.term.paste(text);
+        } catch (e) {
+          console.error('deliverPaste error:', e);
+        }
+        return;
+      }
+    }
+    // active Lane が無い場合は noop
+  };
+
   window.addEventListener('resize', () => {
     // active な Lane だけ fit + resize 通知
     for (const [, info] of laneInstances) {

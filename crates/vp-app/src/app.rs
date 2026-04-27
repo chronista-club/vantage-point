@@ -1668,6 +1668,28 @@ pub fn run() -> anyhow::Result<()> {
             }
             // Phase 2.x-d: AppEvent::Output / XtermReady は撤去済 (per-Lane browser native WS へ移行)。
             // 関連の `xterm_ready` / `pending` / `PENDING_MAX` も一括削除。
+            // Phase 4-paste-fix: clipboard.readText の webview permission 問題への fallback。
+            // IPC `paste:request` を Rust が受けて arboard で読み取り、 ここで JS に inject。
+            Event::UserEvent(AppEvent::PasteText(text)) => {
+                if text.is_empty() {
+                    tracing::debug!("PasteText empty (clipboard 空 or 取得失敗)、 skip");
+                } else {
+                    // text を JS string literal として安全に escape (backslash → \\\\ は Rust 内 1 個、
+                    // single-quote / newline / carriage return も処理)
+                    let escaped = text
+                        .replace('\\', "\\\\")
+                        .replace('\'', "\\'")
+                        .replace('\n', "\\n")
+                        .replace('\r', "\\r");
+                    let script = format!(
+                        "if (window.deliverPaste) window.deliverPaste('{}');",
+                        escaped
+                    );
+                    if let Err(e) = main_view.evaluate_script(&script) {
+                        tracing::warn!("paste deliver script failed: {}", e);
+                    }
+                }
+            }
             Event::UserEvent(AppEvent::ProcessesLoaded(projects)) => {
                 // 既存 SidebarState とマージ:
                 //  - 同じ path があれば既存 state を維持 (expanded / panes / active 保持)
