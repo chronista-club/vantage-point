@@ -109,6 +109,26 @@ enum Commands {
     /// vp-app GUI 管理 (Mac 主軸切替: Rust + wry + xterm.js + creo-ui)
     #[command(subcommand)]
     App(commands::app::AppCommands),
+
+    /// Window screenshot — vp-app window を PNG 保存 (canonical screenshot 機構)
+    #[command(alias = "screenshot")]
+    Shot {
+        /// 出力 path (default: /tmp/vp/shot-latest.png)
+        #[arg(short, long)]
+        output: Option<std::path::PathBuf>,
+        /// owner process name (default: vp-app)
+        #[arg(short, long, default_value = "vp-app")]
+        window: String,
+        /// 候補 window の n 番目 (0-based、 default: 0 = frontmost)
+        #[arg(short, long)]
+        index: Option<usize>,
+        /// title 部分一致でさらに絞り込む
+        #[arg(short, long)]
+        title: Option<String>,
+        /// list mode: capture せず候補一覧を表示
+        #[arg(long)]
+        list: bool,
+    },
 }
 
 /// Stone Free worker workspace コマンド（vp-ccws library への薄い wrapper）
@@ -218,7 +238,59 @@ fn main() -> Result<()> {
         Commands::Ws(cmd) => execute_ws(cmd),
         Commands::Port(cmd) => commands::port_cmd::execute(cmd),
         Commands::App(cmd) => commands::app::execute(cmd),
+        Commands::Shot { output, window, index, title, list } => {
+            execute_shot(output, window, index, title, list)
+        }
     }
+}
+
+/// `vp shot` ── canonical screenshot 機構の薄い wrapper。
+/// 実装本体は `vantage_point::screenshot` module (trait + 各 OS backend)。
+/// stdout に保存先 path 1 行を吐く (caller が grep / read しやすく)。
+fn execute_shot(
+    output: Option<std::path::PathBuf>,
+    window: String,
+    index: Option<usize>,
+    title: Option<String>,
+    list: bool,
+) -> Result<()> {
+    use vantage_point::screenshot::{default_backend, CaptureFilter};
+    let backend = default_backend();
+    let filter = CaptureFilter {
+        owner: window,
+        index,
+        title_match: title,
+    };
+    if list {
+        let windows = backend
+            .list_windows(&filter)
+            .map_err(|e| anyhow::anyhow!(e))?;
+        if windows.is_empty() {
+            eprintln!(
+                "(no window with owner = {:?}; is the app running?)",
+                filter.owner
+            );
+            return Ok(());
+        }
+        println!("ID       OWNER       SIZE         TITLE");
+        for w in windows {
+            println!(
+                "{:<8} {:<11} {:>4}x{:<4}   {}",
+                w.id, w.owner, w.width, w.height, w.title
+            );
+        }
+        return Ok(());
+    }
+    let result = backend
+        .capture(&filter, output)
+        .map_err(|e| anyhow::anyhow!(e))?;
+    // stdout: path 1 行 (caller が parse しやすく)
+    println!("{}", result.path.display());
+    eprintln!(
+        "(captured {}x{} in {}ms — id={} title={:?})",
+        result.width, result.height, result.elapsed_ms, result.window.id, result.window.title
+    );
+    Ok(())
 }
 
 /// Stone Free 🧵 worker workspace 操作を vp-ccws library に委譲
