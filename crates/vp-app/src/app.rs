@@ -117,6 +117,9 @@ const SIDEBAR_HTML: &str = concat!(
   /* Phase 5-C: Currents / Stopped section header (running vs dead で project list を分割表示) */
   .vp-proc-section-header{padding:var(--spacing-sm) var(--spacing-sm) var(--spacing-xs) var(--spacing-sm);font-size:10px;color:var(--color-text-tertiary);text-transform:uppercase;letter-spacing:0.08em;font-weight:500;user-select:none;}
   .vp-proc-section-header:first-child{padding-top:var(--spacing-xs);}
+  /* Phase 5-C polish: Dormant project は視覚的に弱化 (active への視線誘導)。 hover で復帰。 */
+  .vp-proc-dormant{opacity:0.65;transition:opacity .15s ease;}
+  .vp-proc-dormant:hover{opacity:1;}
 
   /* World widget (sidebar 最下部 fixed、 accordion 1-line collapsed)
      Phase 5-C: 旧 widget-slot を最下部に移動、 details/summary で展開可能に */
@@ -175,7 +178,9 @@ const SIDEBAR_HTML: &str = concat!(
   .vp-lane-row{display:flex;align-items:center;gap:6px;padding:5px 8px 5px 14px;border-radius:var(--radius-sm,6px);cursor:pointer;transition:background .1s ease;font-size:12px;}
   .vp-lane-row:hover{background:var(--color-surface-bg-emphasis);}
   .vp-lane-row.active{background:var(--color-brand-primary-subtle);color:var(--color-brand-primary);font-weight:500;}
-  .vp-lane-row .icon{width:18px;text-align:center;font-size:12px;font-family:var(--typography-family-icon);}
+  /* Phase 5-C polish: var(--typography-family-icon) は specificity で .nf-icon を上書きするため
+     direct 'VPMono' 宣言に固定。 width:18px は Lane row レイアウト固有なので保持。 */
+  .vp-lane-row .icon{width:18px;text-align:center;font-size:12px;font-family:'VPMono',monospace;}
   .vp-lane-row .label{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .vp-lane-row .state{font-size:9px;}
   /* Phase 4-A: Worker row × button (delete) — hover 時のみ表示で row UI を雑然とさせない */
@@ -218,7 +223,7 @@ const SIDEBAR_HTML: &str = concat!(
   .vp-state-exiting{color:var(--color-status-warning,#d49b3f);}
 
   /* Phase 5-C: Lead restart button (project row hover で表示) */
-  .vp-project-restart{font-family:var(--typography-family-icon);font-size:11px;color:var(--color-text-tertiary);padding:0 var(--spacing-xs);border-radius:3px;opacity:0;transition:opacity .12s ease,color .12s ease,background .12s ease;cursor:pointer;}
+  .vp-project-restart{font-family:'VPMono',monospace;font-size:11px;color:var(--color-text-tertiary);padding:0 var(--spacing-xs);border-radius:3px;opacity:0;transition:opacity .12s ease,color .12s ease,background .12s ease;cursor:pointer;}
   .processes-section .creo-accordion-summary:hover .vp-project-restart{opacity:0.7;}
   .vp-project-restart:hover{color:var(--color-brand-primary);background:var(--color-brand-primary-subtle);opacity:1;}
 </style></head>
@@ -345,7 +350,7 @@ const SIDEBAR_HTML: &str = concat!(
       h.className = 'vp-proc-section-header';
       h.textContent = 'Currents';
       root.appendChild(h);
-      for (const p of currents) renderProjectAccordion(p, root);
+      for (const p of currents) renderProjectAccordion(p, root, false);
     }
     if (stopped.length > 0) {
       const h = document.createElement('div');
@@ -353,14 +358,15 @@ const SIDEBAR_HTML: &str = concat!(
       // "Currents" (流水) の対比として "Dormant" (休眠) — active ⇄ dormant の王道対比。
       h.textContent = 'Dormant';
       root.appendChild(h);
-      for (const p of stopped) renderProjectAccordion(p, root);
+      for (const p of stopped) renderProjectAccordion(p, root, true);
     }
   }
 
-  function renderProjectAccordion(p, root) {
+  function renderProjectAccordion(p, root, dormant) {
       // creo-accordion: native <details> ベース。expand/collapse + chevron + ARIA は creo-ui 側 CSS。
+      // Phase 5-C polish: Dormant 行は `vp-proc-dormant` で opacity 0.65 に視覚弱化。
       const proj = document.createElement('details');
-      proj.className = 'creo-accordion';
+      proj.className = 'creo-accordion' + (dormant ? ' vp-proc-dormant' : '');
       if (p.expanded) proj.setAttribute('open', '');
       // 'toggle' イベントで Rust に永続化 IPC を送る (native toggle は即時、IPC は state 同期用)
       proj.addEventListener('toggle', () => {
