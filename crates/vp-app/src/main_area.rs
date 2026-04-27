@@ -490,13 +490,8 @@ body{overflow:hidden;}
     dbg('[lane:' + address + '] removed');
   };
 
-  // 互換: legacy callers (terminal.rs::build_output_script) が onPtyData を呼ぶケースを安全に noop。
-  // Phase 2.5 では Rust 側 PTY 経路は廃止されているが、 startup の placeholder PTY が
-  // 残っているケースで誤って呼ばれても落ちないように。
-  window.onPtyData = function(_b64) {
-    // no-op: Lane WebSocket が直接 term.write するので Rust 経路の出力は無視
-  };
-
+  // Phase 2.x-d: 旧 onPtyData shim も terminal::build_output_script と一緒に撤去済。
+  // Lane WebSocket が直接 term.write するので Rust 経路の出力は存在しない。
   window.addEventListener('resize', () => {
     // active な Lane だけ fit + resize 通知
     for (const [, info] of laneInstances) {
@@ -515,12 +510,9 @@ body{overflow:hidden;}
   // ========= Architecture v4: Lane 切替 API =========
   // Rust → JS で active Lane を切替。kind が null の場合は empty 状態を表示。
   // payload: {kind: "terminal"|"canvas"|"preview"|null, pane_id (= Lane address), preview_url}
-  // 旧 "agent"/"shell" は terminal 系として "terminal" に統合 (Lane SSOT 化に伴う)。
+  // Phase 2.x-d で 旧 "agent"/"shell" alias は撤去 (Lane SSOT 化済 + caller 0)
   const KIND_TO_PANE = {
     terminal: 'pane-terminal',
-    // 互換: 旧 callsite が "agent"/"shell" を渡しても動く
-    agent: 'pane-terminal',
-    shell: 'pane-terminal',
     canvas: 'pane-canvas',
     preview: 'pane-preview',
     empty: 'pane-empty',
@@ -548,7 +540,7 @@ body{overflow:hidden;}
         frame.setAttribute('src', url);
       }
     }
-    if (kind === 'terminal' || kind === 'agent' || kind === 'shell') {
+    if (kind === 'terminal') {
       // Phase 2.5: per-Lane instance を切替 (= showLane(address))。 pane_id は Lane address。
       // showLane が空なら lane-empty placeholder を出す。
       try {

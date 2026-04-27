@@ -36,7 +36,6 @@ use axum::{
 use futures::{SinkExt, StreamExt};
 use serde::Deserialize;
 
-use crate::daemon::pty_slot::PtySlot;
 use crate::process::state::AppState;
 
 /// クエリパラメータ
@@ -83,6 +82,10 @@ pub enum ControlMsg {
 }
 
 /// axum ハンドラ (GET /ws/terminal)
+///
+/// Phase 2.x-d (Architecture v4 cleanup): `?lane=<address>` を **必須**化。
+/// 旧 Spawn mode (`lane` 未指定で新 PtySlot を毎回起動する path) は削除済。
+/// 「TheWorld direct shell」 を将来復活させたい場合は新 endpoint (例: `/ws/shell`) で実装する。
 pub async fn ws_terminal_handler(
     ws: WebSocketUpgrade,
     Query(params): Query<TerminalQuery>,
@@ -94,7 +97,11 @@ pub async fn ws_terminal_handler(
                 handle_terminal_socket_lane(socket, params, state).await;
             }
             _ => {
-                handle_terminal_socket_spawn(socket, params).await;
+                // Phase 2.x-d: lane 未指定は protocol error として close
+                let (mut sender, _receiver) = socket.split();
+                let err = r#"{"type":"error","message":"lane query parameter is required (?lane=<address>)"}"#;
+                let _ = sender.send(Message::Text(err.into())).await;
+                let _ = sender.send(Message::Close(None)).await;
             }
         }
     })
@@ -243,98 +250,3 @@ async fn handle_terminal_socket_lane(
     // PtySlot は LanePool が保持し続ける (= Lane の lifecycle は WS 接続と独立)
 }
 
-/// Spawn mode (legacy / TheWorld 用): 接続ごとに新 PtySlot を作る。
-/// WS 切断 = PtySlot drop = child kill。
-async fn handle_terminal_socket_spawn(socket: WebSocket, params: TerminalQuery) {
-    let (mut sender, mut receiver) = socket.split();
-
-    let cwd = params
-        .cwd
-        .clone()
-        .or_else(|| dirs::home_dir().map(|p| p.to_string_lossy().into_owned()))
-        .unwrap_or_else(|| "/tmp".into());
-
-    // args は comma-separated (vp-app/src/ws_terminal.rs が乗せる)。空 string や trailing comma は除去。
-    let args: Vec<String> = params
-        .args
-        .as_deref()
-        .map(|s| {
-            s.split(',')
-                .filter(|x| !x.is_empty())
-                .map(String::from)
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let (mut slot, mut rx) =
-        match PtySlot::spawn(&cwd, &params.shell, &args, params.cols, params.rows) {
-            Ok(pair) => pair,
-            Err(e) => {
-                tracing::error!("/ws/terminal: PtySlot::spawn failed: {}", e);
-                let err = format!(r#"{{"type":"error","message":"{}"}}"#, e);
-                let _ = sender.send(Message::Text(err.into())).await;
-                return;
-            }
-        };
-
-    let pid = slot.pid();
-    tracing::info!(
-        "/ws/terminal connected: shell={}, cwd={}, pid={}",
-        params.shell,
-        cwd,
-        pid
-    );
-
-    // PTY 出力 → WS binary
-    let send_task = tokio::spawn(async move {
-        loop {
-            match rx.recv().await {
-                Ok(bytes) => {
-                    if sender.send(Message::Binary(bytes.into())).await.is_err() {
-                        break;
-                    }
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                    tracing::warn!("/ws/terminal output lagged: {} messages dropped", n);
-                    continue;
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-            }
-        }
-    });
-
-    // WS → PTY / 制御
-    while let Some(msg_res) = receiver.next().await {
-        let msg = match msg_res {
-            Ok(m) => m,
-            Err(e) => {
-                tracing::warn!("/ws/terminal recv error: {}", e);
-                break;
-            }
-        };
-        match msg {
-            Message::Binary(bytes) => {
-                if let Err(e) = slot.write(&bytes) {
-                    tracing::warn!("/ws/terminal pty write failed: {}", e);
-                    break;
-                }
-            }
-            Message::Text(text) => match serde_json::from_str::<ControlMsg>(&text) {
-                Ok(ControlMsg::Resize { cols, rows }) => {
-                    if let Err(e) = slot.resize(cols, rows) {
-                        tracing::warn!("/ws/terminal resize failed: {}", e);
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!("/ws/terminal bad control msg: {} text={}", e, text);
-                }
-            },
-            Message::Close(_) => break,
-            _ => {}
-        }
-    }
-
-    send_task.abort();
-    tracing::info!("/ws/terminal disconnected: pid={}", pid);
-    // slot は drop 時に child を kill する
-}

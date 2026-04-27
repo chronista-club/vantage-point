@@ -1468,14 +1468,9 @@ pub fn run() -> anyhow::Result<()> {
 
     tracing::info!("メインウィンドウ + 2 ペイン (sidebar / main) 作成");
 
-    // xterm.js が ready になるまで PTY 出力を buffer
-    // (ConPTY は起動直後に DSR \x1b[6n を送ってきて xterm の応答を待つため、
-    //  ready 前の bytes を欠落させると shell が永久に block する)
-    let mut xterm_ready = false;
-    let mut pending: Vec<u8> = Vec::new();
-    // pending buffer の上限。xterm が永久に ready にならないシナリオでも OOM を回避する
-    // (PH#2)。1MB を超えたら冒頭以外を捨てて overflow メッセージを残す。
-    const PENDING_MAX: usize = 1_000_000;
+    // Phase 2.x-d: 旧 single-PTY 経路 (`xterm_ready` / `pending` / `PENDING_MAX`) は撤去。
+    // per-Lane instance + browser-native WebSocket では各 Lane の xterm.js が独立に
+    // WS から bytes を受けるので、 Rust 側で buffer / flush 同期する必要が無い。
     // VP-95: sidebar 全体 state (projects + widget + activity)
     let mut sidebar_state = SidebarState::default();
     // VP-100 γ-light: pane_id → slot rect。Phase 2 では蓄積するだけ、Phase 4+ で
@@ -1509,49 +1504,8 @@ pub fn run() -> anyhow::Result<()> {
             } => {
                 update_pane_bounds(&sidebar, &main_view, size, window.scale_factor());
             }
-            Event::UserEvent(AppEvent::Output(bytes)) => {
-                if !xterm_ready {
-                    if pending.len() + bytes.len() > PENDING_MAX {
-                        tracing::warn!(
-                            "PTY pending overflow ({} + {} > {}), truncating",
-                            pending.len(),
-                            bytes.len(),
-                            PENDING_MAX
-                        );
-                        pending.clear();
-                        pending.extend_from_slice(
-                            b"\r\n\x1b[33m[vp-app] PTY buffer overflow, truncated\x1b[0m\r\n",
-                        );
-                    }
-                    pending.extend_from_slice(&bytes);
-                    tracing::debug!(
-                        "PTY output buffered ({} bytes, pending total={})",
-                        bytes.len(),
-                        pending.len()
-                    );
-                } else {
-                    let script = terminal::build_output_script(&bytes);
-                    if let Err(e) = main_view.evaluate_script(&script) {
-                        tracing::warn!("main evaluate_script 失敗: {}", e);
-                    }
-                }
-            }
-            Event::UserEvent(AppEvent::XtermReady) => {
-                // PH#1: 二重 ready 防御 — `setActivePane` 等で再起動した場合に
-                // 二重 flush しないよう冪等化。
-                if xterm_ready {
-                    return;
-                }
-                xterm_ready = true;
-                if !pending.is_empty() {
-                    tracing::info!("xterm ready → flush {} 保留バイト", pending.len());
-                    let script = terminal::build_output_script(&pending);
-                    if let Err(e) = main_view.evaluate_script(&script) {
-                        tracing::warn!("main flush 失敗: {}", e);
-                    }
-                    pending.clear();
-                }
-            }
+            // Phase 2.x-d: AppEvent::Output / XtermReady は撤去済 (per-Lane browser native WS へ移行)。
+            // 関連の `xterm_ready` / `pending` / `PENDING_MAX` も一括削除。
             Event::UserEvent(AppEvent::ProcessesLoaded(projects)) => {
                 // 既存 SidebarState とマージ:
                 //  - 同じ path があれば既存 state を維持 (expanded / panes / active 保持)
