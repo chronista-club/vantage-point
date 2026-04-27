@@ -149,6 +149,10 @@ enum Commands {
         /// series 出力 dir (default: /tmp/vp/series-{unix-ts}/)
         #[arg(long)]
         output_dir: Option<std::path::PathBuf>,
+        /// layout で frame を 1 枚に compose: "MxN" / "vertical" (= "v") / "horizontal" (= "h")
+        /// 出力 path は --output で指定 (未指定時 <output_dir>/composed.png)
+        #[arg(long)]
+        layout: Option<String>,
     },
 }
 
@@ -272,9 +276,10 @@ fn main() -> Result<()> {
             count,
             duration,
             output_dir,
+            layout,
         } => execute_shot(
             output, window, index, title, list, rect, region, series, interval, count, duration,
-            output_dir,
+            output_dir, layout,
         ),
     }
 }
@@ -319,8 +324,12 @@ fn execute_shot(
     count: Option<u32>,
     duration: Option<String>,
     output_dir: Option<std::path::PathBuf>,
+    layout: Option<String>,
 ) -> Result<()> {
-    use vantage_point::screenshot::{default_backend, region_for_name, CaptureFilter, Rect};
+    use vantage_point::screenshot::{
+        compose::{compose, Layout},
+        default_backend, region_for_name, CaptureFilter, Rect,
+    };
     let backend = default_backend();
     let filter = CaptureFilter {
         owner: window,
@@ -399,11 +408,42 @@ fn execute_shot(
         }
 
         let total_ms = series_started.elapsed().as_millis();
-        println!("{}", dir.display());
         eprintln!(
-            "(series: {} frames @ {:?} interval, total {}ms — rect {}x{} at {},{})",
-            frame_count, interval_dur, total_ms, target_rect.w, target_rect.h, target_rect.x, target_rect.y
+            "(series: {} frames @ {:?} interval, capture total {}ms — rect {}x{} at {},{})",
+            frame_count,
+            interval_dur,
+            total_ms,
+            target_rect.w,
+            target_rect.h,
+            target_rect.x,
+            target_rect.y
         );
+
+        // ── layout 指定時: 全 frame を 1 枚に compose ─────────────────────
+        if let Some(layout_str) = layout {
+            let layout_spec = Layout::parse(&layout_str).map_err(|e| anyhow::anyhow!(e))?;
+            let frame_paths: Vec<std::path::PathBuf> = (0..frame_count)
+                .map(|i| dir.join(format!("frame-{:04}.png", i)))
+                .collect();
+            let compose_output = output.unwrap_or_else(|| dir.join("composed.png"));
+            let compose_started = std::time::Instant::now();
+            let (cw, ch) = compose(&frame_paths, layout_spec, &compose_output)
+                .map_err(|e| anyhow::anyhow!(e))?;
+            eprintln!(
+                "(composed {}x{} from {} frames in {}ms — layout {})",
+                cw,
+                ch,
+                frame_count,
+                compose_started.elapsed().as_millis(),
+                layout_str
+            );
+            // stdout: composed image path (caller が parse しやすく、 frame dir は eprintln で報告)
+            println!("{}", compose_output.display());
+            eprintln!("(frames remain at {})", dir.display());
+        } else {
+            // layout 無し: dir path を stdout に
+            println!("{}", dir.display());
+        }
         return Ok(());
     }
 

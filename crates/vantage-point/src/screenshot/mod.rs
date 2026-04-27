@@ -19,6 +19,8 @@
 
 use std::path::PathBuf;
 
+pub mod compose;
+
 #[cfg(target_os = "macos")]
 mod macos;
 
