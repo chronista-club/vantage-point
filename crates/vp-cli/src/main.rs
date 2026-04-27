@@ -134,6 +134,21 @@ enum Commands {
         /// 名付き region: sidebar / main / full (window 内 sub-region に解決)
         #[arg(long)]
         region: Option<String>,
+        /// 時系列 capture mode: --interval + (--count or --duration) を一緒に指定
+        #[arg(long)]
+        series: bool,
+        /// frame 間隔 (ex: "200ms" / "0.5s" / "1s")、 series mode 必須
+        #[arg(long, default_value = "200ms")]
+        interval: String,
+        /// frame 数 (count or duration のどちらか必須)
+        #[arg(long)]
+        count: Option<u32>,
+        /// 撮影時間 (ex: "5s" / "10s")、 count と排他
+        #[arg(long)]
+        duration: Option<String>,
+        /// series 出力 dir (default: /tmp/vp/series-{unix-ts}/)
+        #[arg(long)]
+        output_dir: Option<std::path::PathBuf>,
     },
 }
 
@@ -244,15 +259,53 @@ fn main() -> Result<()> {
         Commands::Ws(cmd) => execute_ws(cmd),
         Commands::Port(cmd) => commands::port_cmd::execute(cmd),
         Commands::App(cmd) => commands::app::execute(cmd),
-        Commands::Shot { output, window, index, title, list, rect, region } => {
-            execute_shot(output, window, index, title, list, rect, region)
-        }
+        Commands::Shot {
+            output,
+            window,
+            index,
+            title,
+            list,
+            rect,
+            region,
+            series,
+            interval,
+            count,
+            duration,
+            output_dir,
+        } => execute_shot(
+            output, window, index, title, list, rect, region, series, interval, count, duration,
+            output_dir,
+        ),
     }
 }
 
 /// `vp shot` ── canonical screenshot 機構の薄い wrapper。
 /// 実装本体は `vantage_point::screenshot` module (trait + 各 OS backend)。
 /// stdout に保存先 path 1 行を吐く (caller が grep / read しやすく)。
+/// 簡易 duration parser ("200ms" / "0.5s" / "1s" など)
+fn parse_duration(s: &str) -> Result<std::time::Duration, String> {
+    let s = s.trim();
+    if let Some(num) = s.strip_suffix("ms") {
+        let n: u64 = num
+            .trim()
+            .parse()
+            .map_err(|e| format!("bad ms value '{}': {}", num, e))?;
+        Ok(std::time::Duration::from_millis(n))
+    } else if let Some(num) = s.strip_suffix('s') {
+        let n: f64 = num
+            .trim()
+            .parse()
+            .map_err(|e| format!("bad s value '{}': {}", num, e))?;
+        Ok(std::time::Duration::from_secs_f64(n))
+    } else {
+        Err(format!(
+            "invalid duration '{}': expected 'Nms' / 'Ns' / 'N.Ns'",
+            s
+        ))
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn execute_shot(
     output: Option<std::path::PathBuf>,
     window: String,
@@ -261,6 +314,11 @@ fn execute_shot(
     list: bool,
     rect: Option<String>,
     region: Option<String>,
+    series: bool,
+    interval: String,
+    count: Option<u32>,
+    duration: Option<String>,
+    output_dir: Option<std::path::PathBuf>,
 ) -> Result<()> {
     use vantage_point::screenshot::{default_backend, region_for_name, CaptureFilter, Rect};
     let backend = default_backend();
@@ -269,6 +327,86 @@ fn execute_shot(
         index,
         title_match: title,
     };
+
+    // ── Phase 5-C v2: series mode ───────────────────────────────────────────
+    // 時系列 capture: 1 回 list_windows + Rect resolve、 以降 loop は capture_rect 直叩き。
+    // swift JIT は最初の 1 回だけ → frame 間 ~50ms / 20fps 上限の高速 capture が可能。
+    if series {
+        let interval_dur = parse_duration(&interval).map_err(|e| anyhow::anyhow!(e))?;
+        let frame_count: u32 = match (count, duration.as_deref()) {
+            (Some(c), None) => c,
+            (None, Some(d)) => {
+                let total = parse_duration(d).map_err(|e| anyhow::anyhow!(e))?;
+                let n = (total.as_millis() / interval_dur.as_millis().max(1)) as u32;
+                n.max(1)
+            }
+            (Some(_), Some(_)) => {
+                anyhow::bail!("--series: --count と --duration は排他 (どちらか 1 つ指定)")
+            }
+            (None, None) => anyhow::bail!("--series は --count または --duration が必要"),
+        };
+
+        // Rect resolve (rect / region / 全 window 全部 Rect 化で統一)
+        let target_rect: Rect = if let Some(rs) = rect {
+            Rect::parse(&rs).map_err(|e| anyhow::anyhow!(e))?
+        } else {
+            let windows = backend
+                .list_windows(&filter)
+                .map_err(|e| anyhow::anyhow!(e))?;
+            if windows.is_empty() {
+                anyhow::bail!("no window with owner = {:?}", filter.owner);
+            }
+            let target = vantage_point::screenshot::pick_window(&windows, &filter)
+                .map_err(|e| anyhow::anyhow!(e))?;
+            if let Some(reg) = region {
+                region_for_name(&reg, &target).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "unknown region {:?} (known: sidebar / main / full)",
+                        reg
+                    )
+                })?
+            } else {
+                Rect {
+                    x: target.x,
+                    y: target.y,
+                    w: target.width,
+                    h: target.height,
+                }
+            }
+        };
+
+        // 出力 dir resolve
+        let dir = output_dir.unwrap_or_else(|| {
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            std::path::PathBuf::from(format!("/tmp/vp/series-{}", ts))
+        });
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| anyhow::anyhow!("mkdir {}: {}", dir.display(), e))?;
+
+        // capture loop
+        let series_started = std::time::Instant::now();
+        for i in 0..frame_count {
+            let frame_path = dir.join(format!("frame-{:04}.png", i));
+            backend
+                .capture_rect(target_rect, Some(frame_path))
+                .map_err(|e| anyhow::anyhow!(e))?;
+            if i + 1 < frame_count {
+                std::thread::sleep(interval_dur);
+            }
+        }
+
+        let total_ms = series_started.elapsed().as_millis();
+        println!("{}", dir.display());
+        eprintln!(
+            "(series: {} frames @ {:?} interval, total {}ms — rect {}x{} at {},{})",
+            frame_count, interval_dur, total_ms, target_rect.w, target_rect.h, target_rect.x, target_rect.y
+        );
+        return Ok(());
+    }
+
     if list {
         let windows = backend
             .list_windows(&filter)
