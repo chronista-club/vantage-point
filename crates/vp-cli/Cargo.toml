@@ -35,6 +35,5 @@ rustls = { version = "0.23", features = ["aws-lc-rs"] }
 # VP-69 Stone Free Phase 2: worker actor を TheWorld に register/unregister
 reqwest = { workspace = true }
 serde_json = { workspace = true }
-# Phase 2.x-e: 旧 vp-ccws crate の deps を継承 (config.rs の KDL parse + commands.rs の glob)
-unison-kdl = { workspace = true }
-glob = { workspace = true }
+# Phase 4-X: ccws lib は vantage-point に移動済、 vp-cli から直 deps は不要
+# (vantage-point 経由で transitively 利用)

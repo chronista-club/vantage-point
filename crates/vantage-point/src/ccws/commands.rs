@@ -28,6 +28,36 @@ pub fn new_worker(name: &str, branch: &str, force: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// Phase 4-X: SP-friendly wrapper. `repo_root` を明示的に受け取り、 worker dir の `PathBuf` を返す。
+/// stdout への print なし、 lib call として完結。 SP server (lanes.rs) から直接呼ぶ用。
+pub fn new_worker_in(
+    repo_root: &Path,
+    name: &str,
+    branch: &str,
+    force: bool,
+) -> Result<PathBuf, String> {
+    setup_worker(name, branch, repo_root, force)
+}
+
+/// Phase 4-X: SP-friendly remove (repo_name 明示)。 worker_name 直 + repo_prefix 試行。
+/// `<workers_dir>/<name>` and `<workers_dir>/<repo_name>-<name>` の 2 path を順に試す。
+pub fn remove_worker_in(repo_name: &str, name: &str) -> Result<(), String> {
+    let workers_dir = config::workers_dir()?;
+    config::validate_worker_name(name)?;
+    let worker_dir = workers_dir.join(name);
+    if worker_dir.exists() {
+        fs::remove_dir_all(&worker_dir).map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    let prefixed = format!("{repo_name}-{name}");
+    let prefixed_dir = workers_dir.join(&prefixed);
+    if prefixed_dir.exists() {
+        fs::remove_dir_all(&prefixed_dir).map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    Err(format!("worker not found: {} or {}", name, prefixed))
+}
+
 /// Fork current dirty state into a new worker environment
 pub fn fork_worker(name: &str, branch: &str, force: bool) -> Result<(), String> {
     let repo_root = config::find_repo_root().map_err(|e| e.to_string())?;

@@ -37,6 +37,10 @@ tracing-subscriber = { workspace = true }
 # CLI
 clap = { workspace = true }
 
+# Phase 4-X: ccws lib (vp-cli から移動) — Worker workspace 管理
+unison-kdl = { workspace = true }
+glob = { workspace = true }
+
 # Error handling
 anyhow = { workspace = true }
 thiserror = { workspace = true }

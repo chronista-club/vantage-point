@@ -9385,6 +9385,7 @@ dependencies = [
  "crossterm 0.28.1",
  "dirs",
  "futures",
+ "glob",
  "hostname",
  "image",
  "libc",
@@ -9424,6 +9425,7 @@ dependencies = [
  "tui-scrollview",
  "unicode-normalization",
  "unison",
+ "unison-kdl 0.3.0",
  "urlencoding",
  "uuid",
  "vp-db",
@@ -9490,13 +9492,11 @@ version = "0.14.0"
 dependencies = [
  "anyhow",
  "clap",
- "glob",
  "reqwest",
  "rustls",
  "serde_json",
  "tokio",
  "tracing",
- "unison-kdl 0.3.0",
  "vantage-point",
 ]
 

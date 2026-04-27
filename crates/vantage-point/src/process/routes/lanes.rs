@@ -119,37 +119,22 @@ pub async fn create_handler(
         }
     }
 
-    // Phase 3-A: cwd 決定 ── 優先順位 explicit cwd > ccws clone > project_dir share
+    // Phase 4-X: cwd 決定 ── 優先順位 explicit cwd > ccws clone (lib call) > project_dir share。
+    // 旧 Phase 3-A の subprocess (`Command::new("ccws")`) を撤去、 直接 `crate::ccws::commands::new_worker_in`
+    // を呼ぶ形に。 利点: 型安全な PathBuf 返却、 PATH 依存なし、 fork overhead なし、 atomicity 向上。
     let cwd = if let Some(c) = req.cwd {
         c
     } else if let Some(branch) = req.branch.as_deref() {
-        // ccws new <name> <branch> を subprocess で実行
-        // ccws CLI は vp-cli から install 済 (Phase 2.x-e で statically linked)
         let project_dir = state.project_dir.clone();
         let name = req.name.clone();
         let branch = branch.to_string();
         let result = tokio::task::spawn_blocking(move || {
-            let output = std::process::Command::new("ccws")
-                .args(["new", &name, &branch])
-                .current_dir(&project_dir)
-                .output();
-            match output {
-                Ok(o) if o.status.success() => {
-                    // ccws new の stdout は worker dir path (commands.rs の new_worker)
-                    let path = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                    if path.is_empty() {
-                        Err("ccws new output was empty".to_string())
-                    } else {
-                        Ok(path)
-                    }
-                }
-                Ok(o) => Err(format!(
-                    "ccws new exited {}: stderr={}",
-                    o.status,
-                    String::from_utf8_lossy(&o.stderr)
-                )),
-                Err(e) => Err(format!("ccws new spawn failed: {}", e)),
-            }
+            crate::ccws::commands::new_worker_in(
+                std::path::Path::new(&project_dir),
+                &name,
+                &branch,
+                false, // force=false
+            )
         })
         .await
         .map_err(|e| {
@@ -158,12 +143,13 @@ pub async fn create_handler(
                 Json(json!({"error": format!("ccws task join: {}", e)})),
             )
         })?;
-        result.map_err(|e| {
+        let path_buf = result.map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({"error": format!("ccws clone failed: {}", e)})),
             )
-        })?
+        })?;
+        path_buf.to_string_lossy().into_owned()
     } else {
         state.project_dir.clone()
     };
@@ -292,34 +278,31 @@ pub async fn delete_handler(
         info.pid
     );
 
-    // Phase 4-B: ccws workspace dir cleanup
+    // Phase 4-X: ccws workspace dir cleanup を直 lib call に。 旧 subprocess (`Command::new("ccws")`) 撤去。
     let cleanup_result = if q.cleanup
         && let Some(name) = worker_name
     {
-        let project_dir = state.project_dir.clone();
+        let repo_name = std::path::Path::new(&state.project_dir)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown")
+            .to_string();
         let result = tokio::task::spawn_blocking(move || {
-            std::process::Command::new("ccws")
-                .args(["rm", &name, "--force"])
-                .current_dir(&project_dir)
-                .output()
+            crate::ccws::commands::remove_worker_in(&repo_name, &name)
         })
         .await;
         match result {
-            Ok(Ok(o)) if o.status.success() => {
-                tracing::info!("ccws rm 成功: {}", addr);
+            Ok(Ok(())) => {
+                tracing::info!("ccws remove 成功: {}", addr);
                 Some("cleaned")
             }
-            Ok(Ok(o)) => {
-                tracing::warn!(
-                    "ccws rm 失敗 (lane は削除済、 dir 残置): {}: {}",
-                    addr,
-                    String::from_utf8_lossy(&o.stderr)
-                );
-                Some("dir_retained_ccws_rm_failed")
-            }
             Ok(Err(e)) => {
-                tracing::warn!("ccws rm spawn 失敗: {}: {}", addr, e);
-                Some("dir_retained_spawn_failed")
+                tracing::warn!(
+                    "ccws remove 失敗 (lane は削除済、 dir 残置): {}: {}",
+                    addr,
+                    e
+                );
+                Some("dir_retained_remove_failed")
             }
             Err(e) => {
                 tracing::warn!("ccws task join: {}", e);
