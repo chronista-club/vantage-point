@@ -66,13 +66,11 @@ TheWorld 👑 (Process Manager / 常駐デーモン)
 ```
 vantage-point/
 ├── crates/
-│   ├── vantage-point/   # メインCLI (vp)
-│   └── vantage-core/    # 共通ライブラリ
-├── apple/               # macOS ネイティブアプリ (Swift)
-│   └── VantagePoint/    # メニューバーアプリ (SwiftUI)
-│        # サイドバー CRUD: ＋(NSOpenPanel)、右クリック(名前変更・削除)、D&D
-│        # ナビゲーション: ⌘↑/⌘↓ でプロジェクト切り替え（Navigate メニュー）
-├── web/                 # WebView HTML/JS
+│   ├── vantage-point/   # server lib (TheWorld + SP の HTTP/WS server)
+│   ├── vp-app/          # Rust GUI (wry + tao + xterm.js + creo-ui) — Mac 主軸 (2026-04-26 移行)
+│   ├── vp-cli/          # CLI binary (vp / ccws、 ccws lib も内包)
+│   ├── vp-db/           # SurrealDB embedded wrapper
+│   └── vp-mdast{,-wasm}/ # Markdown AST parser
 ├── docs/
 │   ├── spec/            # 仕様書
 │   ├── design/          # 設計書

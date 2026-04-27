@@ -23,43 +23,10 @@ run = "cargo build"
 description = "Run tests"
 run = "cargo test"
 
-[tasks.mac]
-description = "Build & run macOS native app (VantagePoint.app) via xcodebuild"
-run = """
-set -euo pipefail
-ROOT="$(pwd)"
-
-echo "🔨 Building vp-bridge (staticlib)..."
-cargo build --release -p vp-bridge
-
-echo "🔧 Regenerating xcodeproj via xcodegen (project.yml → .xcodeproj)..."
-(cd "$ROOT/apple/VantagePoint" && xcodegen generate --spec project.yml -q)
-
-echo "🔨 Building VantagePoint (xcodebuild)..."
-xcodebuild build \
-  -project "$ROOT/apple/VantagePoint/VantagePoint.xcodeproj" \
-  -scheme VantagePoint \
-  -configuration Release \
-  -derivedDataPath "$ROOT/.build/DerivedData" \
-  ARCHS=arm64 \
-  ONLY_ACTIVE_ARCH=YES \
-  -quiet
-
-echo "🔄 既存プロセスを停止..."
-pkill -f 'VantagePoint$' 2>/dev/null && sleep 1 || true
-
-BUILD_APP="$ROOT/.build/DerivedData/Build/Products/Release/VantagePoint.app"
-INSTALL_APP="/Applications/VantagePoint.app"
-
-echo "📦 /Applications に反映..."
-# 古い /Applications バージョンを削除（ditto は上書きを完全サポートしないため）
-rm -rf "$INSTALL_APP"
-# ditto でメタデータ（codesign 含む）ごとコピー
-ditto "$BUILD_APP" "$INSTALL_APP"
-
-echo "🚀 Launching $INSTALL_APP ..."
-exec open "$INSTALL_APP"
-"""
+# [tasks.mac] / [tasks."app:swift"] / [tasks."mac:build"] / [tasks."mac:release"] は
+# Phase 3-C (2026-04-27) で削除。 Mac 主軸が vp-app (Rust GUI: wry+tao+xterm.js+creo-ui) に
+# 移行済 (mem_1CaSjEz55wBuy3JdU14LCS)、 Swift app (apple/VantagePoint) も同時に削除。
+# `mise run app` (Rust GUI) を使うこと。
 
 [tasks."daemon:build"]
 description = "Build daemon binary (vp-cli の vp) — vp-app の locate_vp_binary が target/release/vp を見れる構成"
@@ -197,24 +164,6 @@ echo "────────────────────────�
 
 # build/起動 完了後、そのまま全 log multiplex tail (`mise run logs` 同等)
 exec tail -F "$LOG_DIR/vp-world.kdl.log" "$LOG_DIR/vp-app.kdl.log" "$LOG_FILE"
-"""
-
-[tasks."app:swift"]
-description = "[deprecated 2026-04-26] 旧 Swift VantagePoint.app — Mac 主軸は `mise run app` (Rust GUI) に移行"
-run = """
-set -euo pipefail
-echo "⚠️  Swift app (apple/VantagePoint) は Mac 主軸から外れました。"
-echo "    新主軸は vp-app crate (Rust + wry + xterm.js)。'mise run app' を使ってください。"
-echo "    Swift 経路を使い続ける場合は 'mise run mac' を呼んでください。"
-exit 1
-"""
-
-[tasks."mac:build"]
-description = "Build macOS native app without launching"
-run = """
-cargo build --release -p vp-bridge
-cd apple/VantagePoint && swift build -c release
-echo "✅ Built: apple/VantagePoint/.build/release/VantagePoint"
 """
 
 [tasks.win]
@@ -397,81 +346,3 @@ echo "✅ Release built: $VP_APP + $VP_BIN"
 echo "ℹ️  WiX MSI + Authenticode 署名 + winget manifest は Phase W4 (VP-90) で追加予定"
 """
 
-[tasks."mac:release"]
-description = "Build, sign, notarize & package VantagePoint.app as DMG"
-run = """
-set -euo pipefail
-
-TEAM_ID="3EQKG4B352"
-SIGN_ID="Developer ID Application: Anycreative Inc. ($TEAM_ID)"
-KEYCHAIN_PROFILE="vp-notarize"
-VERSION=$(grep 'CFBundleShortVersionString' apple/VantagePoint/Resources/Info.plist -A1 | grep '<string>' | sed 's/.*<string>//;s/<\\/string>//')
-ARCHIVE_PATH="/tmp/VantagePoint.xcarchive"
-DMG_DIR="/tmp/vp-dmg"
-DMG_PATH="dist/VantagePoint-${VERSION}.dmg"
-
-echo "📦 Vantage Point v${VERSION} リリースビルド"
-echo "==========================================="
-
-# 1. Rust ライブラリビルド
-echo ""
-echo "🔨 [1/6] vp-bridge ビルド..."
-cargo build --release -p vp-bridge
-
-# 2. Xcode Archive
-echo ""
-echo "🔨 [2/6] Xcode Archive..."
-rm -rf "$ARCHIVE_PATH"
-cd apple/VantagePoint
-xcodebuild archive \
-  -scheme VantagePoint \
-  -archivePath "$ARCHIVE_PATH" \
-  -configuration Release \
-  CODE_SIGN_IDENTITY="$SIGN_ID" \
-  CODE_SIGN_STYLE=Manual \
-  DEVELOPMENT_TEAM="$TEAM_ID" \
-  ARCHS=arm64 \
-  ONLY_ACTIVE_ARCH=YES \
-  -quiet
-cd ../..
-
-# 3. 署名検証
-echo ""
-echo "🔏 [3/6] 署名検証..."
-codesign -vvv "$ARCHIVE_PATH/Products/Applications/VantagePoint.app"
-
-# 4. DMG 作成
-echo ""
-echo "📀 [4/6] DMG 作成..."
-rm -rf "$DMG_DIR"
-mkdir -p "$DMG_DIR" "dist"
-cp -R "$ARCHIVE_PATH/Products/Applications/VantagePoint.app" "$DMG_DIR/"
-ln -s /Applications "$DMG_DIR/Applications"
-rm -f "$DMG_PATH"
-hdiutil create -volname "Vantage Point" \
-  -srcfolder "$DMG_DIR" \
-  -ov -format UDZO \
-  "$DMG_PATH"
-
-# 5. DMG 署名 + Notarize
-echo ""
-echo "🔏 [5/6] DMG 署名 + Notarize..."
-codesign --force --sign "$SIGN_ID" "$DMG_PATH"
-xcrun notarytool submit "$DMG_PATH" --keychain-profile "$KEYCHAIN_PROFILE" --wait
-
-# 6. Staple
-echo ""
-echo "📎 [6/6] Staple..."
-xcrun stapler staple "$DMG_PATH"
-
-# クリーンアップ
-rm -rf "$DMG_DIR" "$ARCHIVE_PATH"
-
-echo ""
-echo "==========================================="
-echo "✅ リリース完了: $DMG_PATH"
-echo "   Version: $VERSION"
-echo "   Signed:  $SIGN_ID"
-echo "   Notarized + Stapled"
-ls -lh "$DMG_PATH"
-"""

@@ -1,5 +1,0 @@
-module VPBridge {
-    header "vp_bridge.h"
-    link "vp_bridge"
-    export *
-}
