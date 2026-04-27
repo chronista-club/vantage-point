@@ -99,7 +99,9 @@ body{overflow:hidden;}
 #host{position:relative;width:100%;height:100%;}
 .pane{position:absolute;inset:0;display:none;}
 .pane.active{display:block;}
-.pane.terminal{padding:0;position:relative;}
+/* Phase 2.5 bug fix: position:relative を付けると inset:0 が効かなくなり pane-terminal が 0x0 に潰れる。
+   .pane が既に position:absolute なので containing block 機能は十分、 padding 0 だけ追加で OK。 */
+.pane.terminal{padding:0;}
 /* Phase 2.5: per-Lane instance container. lane-host が pane-terminal 全領域を埋め、
    各 .lane-pane が absolute で重なる。 active のみ display:block。 */
 #lane-host{position:absolute;inset:0;}
