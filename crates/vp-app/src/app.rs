@@ -95,19 +95,25 @@ const SIDEBAR_HTML: &str = concat!(
     r#"</style><style>"#,
     include_str!("../assets/creo-components.css"),
     r#"</style><style>
-  html,body{margin:0;height:100%;background:var(--color-surface-bg-subtle);color:var(--color-text-primary);font-family:var(--typography-family-sans);font-size:13px;overflow:hidden;}
+  /* Phase 3-D typography scale ── 整然とした 3 段階 + 1 micro:
+     - 12px (body)     基本 row text (lane name, label 等)
+     - 11px (body-sm)  補助 (stand row, hint, button)
+     - 10px (caption)  section header (uppercase)、 micro indicator
+     -  9px (state)    state badge / accordion chevron のみ (最小限)
+     uppercase letter-spacing は 0.06em で統一、 line-height は 1.4 を base に */
+  html,body{margin:0;height:100%;background:var(--color-surface-bg-subtle);color:var(--color-text-primary);font-family:var(--typography-family-sans);font-size:12px;line-height:1.4;overflow:hidden;}
   body{display:flex;flex-direction:column;height:100%;}
 
   /* Widget slot (top) */
   .widget-slot{padding:10px 12px;border-bottom:1px solid var(--color-surface-border,#1f2233);background:var(--color-surface-bg-base);}
-  .widget-slot .widget-title{font-size:10px;color:var(--color-text-tertiary);text-transform:uppercase;letter-spacing:.08em;display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;}
+  .widget-slot .widget-title{font-size:10px;color:var(--color-text-tertiary);text-transform:uppercase;letter-spacing:.06em;display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;}
   .widget-slot .stat{display:flex;justify-content:space-between;font-size:11px;padding:2px 0;color:var(--color-text-secondary);}
   .widget-slot .stat .label{color:var(--color-text-tertiary);}
   .widget-slot .stat .value{font-weight:500;color:var(--color-text-primary);font-variant-numeric:tabular-nums;}
 
   /* Projects accordion */
   .processes-section{flex:1;overflow-y:auto;padding:6px 0;}
-  .processes-section .section-header{padding:10px 16px 6px;font-size:10px;color:var(--color-text-tertiary);text-transform:uppercase;letter-spacing:.08em;display:flex;justify-content:space-between;align-items:center;}
+  .processes-section .section-header{padding:10px 16px 6px;font-size:10px;color:var(--color-text-tertiary);text-transform:uppercase;letter-spacing:.06em;display:flex;justify-content:space-between;align-items:center;}
 
   /* Bottom Add ボタン (single trigger) と展開後の sub-actions */
   .add-trigger{margin:6px 12px 10px;padding:6px 8px;border-radius:var(--radius-sm,6px);cursor:pointer;color:var(--color-text-tertiary);font-size:11px;text-align:center;border:1px dashed var(--color-surface-border,#1f2233);background:transparent;transition:background .12s ease,color .12s ease,border-color .12s ease;user-select:none;}
@@ -125,7 +131,7 @@ const SIDEBAR_HTML: &str = concat!(
   /* Clone inline form — sidebar 内で展開する form (modal でなく inline) */
   .vp-clone-inline{margin:0 12px 10px;display:flex;flex-direction:column;gap:6px;max-height:0;opacity:0;overflow:hidden;transition:max-height .22s ease, opacity .22s ease, margin-top .22s ease;margin-top:0;pointer-events:none;}
   .vp-clone-inline.expanded{max-height:240px;opacity:1;margin-top:-6px;pointer-events:auto;}
-  .vp-clone-inline label{font-size:10px;color:var(--color-text-tertiary);text-transform:uppercase;letter-spacing:.06em;}
+  .vp-clone-inline label{font-size:10px;color:var(--color-text-tertiary);text-transform:uppercase;letter-spacing:0.06em;}
   .vp-clone-inline input{width:100%;padding:6px 8px;border-radius:var(--radius-sm,6px);border:1px solid var(--color-surface-border,#1f2233);background:var(--color-surface-bg-base);color:var(--color-text-primary);font-family:inherit;font-size:12px;box-sizing:border-box;}
   .vp-clone-inline .path-row{display:flex;align-items:center;gap:6px;}
   .vp-clone-inline .path-display{flex:1;min-width:0;padding:5px 8px;border-radius:var(--radius-sm,6px);border:1px solid var(--color-surface-border,#1f2233);background:var(--color-surface-bg-base);color:var(--color-text-secondary);font-size:11px;font-family:inherit;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
@@ -140,29 +146,30 @@ const SIDEBAR_HTML: &str = concat!(
 
   /* creo-accordion を sidebar 用に override (default の bordered card 風 → flush) */
   .processes-section .creo-accordion{margin:0 6px 2px;background:transparent;border:none;border-radius:var(--radius-sm,6px);overflow:visible;}
-  .processes-section .creo-accordion-summary{padding:6px 8px;min-height:auto;font-size:13px;border-radius:var(--radius-sm,6px);}
+  /* Phase 3-D: project title は 13 → 12px に統一 (sidebar base と揃える)、 weight 500 で emphasis */
+  .processes-section .creo-accordion-summary{padding:6px 8px;min-height:auto;font-size:12px;border-radius:var(--radius-sm,6px);}
   .processes-section .creo-accordion-summary:hover{background:var(--color-surface-bg-emphasis);}
   .processes-section .creo-accordion-summary::before{font-size:9px;color:var(--color-text-tertiary);width:10px;}
-  .processes-section .creo-accordion-title{font-weight:500;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .processes-section .creo-accordion-title{font-weight:500;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .processes-section .creo-accordion-content{padding:2px 0 4px 18px;}
   .processes-section .creo-accordion-content > * + * {margin-top:0;}
 
   /* Architecture v4: Lane row (Project → Lane → Stand 階層の中段) */
   .vp-lane-row{display:flex;align-items:center;gap:6px;padding:5px 8px 5px 14px;border-radius:var(--radius-sm,6px);cursor:pointer;transition:background .1s ease;font-size:12px;}
   .vp-lane-row:hover{background:var(--color-surface-bg-emphasis);}
-  .vp-lane-row.active{background:var(--color-brand-primary-subtle);color:var(--color-brand-primary);}
-  .vp-lane-row .icon{width:18px;text-align:center;font-size:13px;font-family:var(--typography-family-icon);}
+  .vp-lane-row.active{background:var(--color-brand-primary-subtle);color:var(--color-brand-primary);font-weight:500;}
+  .vp-lane-row .icon{width:18px;text-align:center;font-size:12px;font-family:var(--typography-family-icon);}
   .vp-lane-row .label{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-  .vp-lane-row .state{font-size:10px;}
+  .vp-lane-row .state{font-size:9px;}
 
   /* Stand row (Lane の中身、 HD/TH 等) — read-only 表示 */
-  .vp-stand-row{display:flex;align-items:center;gap:6px;padding:2px 8px 2px 34px;font-size:11px;color:var(--color-text-tertiary);}
+  .vp-stand-row{display:flex;align-items:center;gap:6px;padding:2px 8px 2px 34px;font-size:10px;color:var(--color-text-tertiary);}
   .vp-stand-row .icon{width:18px;text-align:center;font-family:var(--typography-family-icon);}
   .vp-stand-row .label{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 
   /* Phase 3-B: Project scope の Stand (PP/GE/HP) row + section header */
   .vp-project-stands-header,
-  .vp-lanes-header{padding:6px 12px 2px 14px;font-size:9px;color:var(--color-text-tertiary);text-transform:uppercase;letter-spacing:0.06em;font-weight:500;}
+  .vp-lanes-header{padding:6px 12px 2px 14px;font-size:10px;color:var(--color-text-tertiary);text-transform:uppercase;letter-spacing:0.06em;font-weight:500;}
   .vp-project-stand-row{display:flex;align-items:center;gap:6px;padding:3px 8px 3px 18px;font-size:11px;color:var(--color-text-secondary);cursor:default;}
   .vp-project-stand-row .icon{width:18px;text-align:center;font-family:var(--typography-family-icon);}
   .vp-project-stand-row .label{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
