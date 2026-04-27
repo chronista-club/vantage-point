@@ -57,7 +57,55 @@ impl WsTerminalHandle {
     }
 }
 
-/// TheWorld の `/ws/terminal` に接続して WsTerminalHandle を返す
+/// SP の `/ws/terminal?lane=<addr>` に attach して WsTerminalHandle を返す (Phase 2)
+///
+/// - `sp_port`: 該当 project SP の port (33000 系)
+/// - `lane_address`: Display 形 (`"<project>/lead"` / `"<project>/worker/<name>"`)
+/// - 既存 LanePool の PtySlot に attach するので、 切断しても PTY は生き続ける
+///   (Lead Lane の Claude CLI session 等を vp-app から live で見られる)
+///
+/// 関連 memory: mem_1CaTpCQH8iLJ2PasRcPjHv (Architecture v4: Lane = Session Process)
+pub fn connect_lane_terminal(
+    sp_port: u16,
+    lane_address: &str,
+    cols: u16,
+    rows: u16,
+    proxy: EventLoopProxy<AppEvent>,
+) -> Result<WsTerminalHandle> {
+    // Lane address は `<project>/lead` / `<project>/worker/<name>` の形。
+    // `/` は HTTP query value で encode 不要 (slash は special でない)。
+    // project name は通常 ASCII (kebab-case) だが、 念のため CJK / 記号が来た時用に
+    // 簡易エスケープ: space と `&` だけ手動置換 (tungstenite は URL を percent-encode しない)。
+    let safe_addr = lane_address
+        .replace('&', "%26")
+        .replace(' ', "%20")
+        .replace('?', "%3F");
+    let url = format!(
+        "ws://127.0.0.1:{}/ws/terminal?lane={}&cols={}&rows={}",
+        sp_port, safe_addr, cols, rows
+    );
+    let (tx, rx) = mpsc::unbounded_channel::<WsCommand>();
+    let url_for_thread = url.clone();
+    thread::Builder::new()
+        .name(format!("vp-app-ws-lane-{}", sp_port))
+        .spawn(move || {
+            let rt = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt,
+                Err(e) => {
+                    tracing::error!("ws-lane runtime build failed: {}", e);
+                    return;
+                }
+            };
+            rt.block_on(run_ws_loop(url_for_thread, rx, proxy));
+        })
+        .context("spawn ws-lane thread")?;
+    Ok(WsTerminalHandle { tx })
+}
+
+/// TheWorld の `/ws/terminal` に接続して WsTerminalHandle を返す (Spawn mode、 legacy)
 ///
 /// - `world_url`: `http://127.0.0.1:32000` のような base URL (ws:// に変換する)
 /// - `shell`: server 側で起動するシェル (default "bash"、env `VP_DAEMON_SHELL` で override)

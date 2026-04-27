@@ -26,6 +26,7 @@
 //! - **γ-light readiness**: main area の slot rect を ResizeObserver 経由で Rust に
 //!   push (`AppEvent::SlotRect`)、Phase 4+ で native overlay の `set_position` 同期に使用
 
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -891,6 +892,71 @@ fn spawn_lanes_fetch(proxy: EventLoopProxy<AppEvent>, process_path: String, sp_p
         });
 }
 
+/// Phase 2: active_lane_address で指定された Lane の SP に WS attach し、
+/// 既存 `pty: Arc<Mutex<TerminalHandle>>` を hot-swap する。
+///
+/// 失敗時 (SP port 不明、 接続失敗等) は何もしない (旧 handle のまま)。
+/// `connect_lane_terminal` が thread spawn なので呼び出しは即時 return、
+/// 接続失敗は WS thread 内で AppEvent::Output に赤文字 error を流す。
+fn swap_pty_to_lane(
+    pty: &Arc<Mutex<terminal::TerminalHandle>>,
+    state: &SidebarState,
+    address: &str,
+    proxy: EventLoopProxy<AppEvent>,
+) {
+    // address ("<project>/lead" / "<project>/worker/<name>") から project name を抽出
+    let project_name = match address.split('/').next() {
+        Some(s) if !s.is_empty() => s,
+        _ => {
+            tracing::warn!("swap_pty_to_lane: invalid address {:?}", address);
+            return;
+        }
+    };
+    // sidebar_state.processes から該当 project の SP port を引く
+    let port = state
+        .processes
+        .iter()
+        .find(|p| p.name == project_name)
+        .and_then(|p| p.port);
+    let Some(sp_port) = port else {
+        tracing::warn!(
+            "swap_pty_to_lane: SP port not yet known for project={} (state may still be dead)",
+            project_name
+        );
+        return;
+    };
+
+    // connect_lane_terminal は thread spawn 内で WS connect するので、
+    // ここでの失敗は thread spawn 自体の失敗 (= 稀)。
+    let handle = match crate::ws_terminal::connect_lane_terminal(sp_port, address, 80, 24, proxy) {
+        Ok(h) => terminal::TerminalHandle::Daemon(h),
+        Err(e) => {
+            tracing::warn!(
+                "swap_pty_to_lane: connect_lane_terminal failed: addr={} port={}: {}",
+                address,
+                sp_port,
+                e
+            );
+            return;
+        }
+    };
+
+    // hot-swap: 旧 handle が drop されると WS が close される (channel sender drop → run_ws_loop break)
+    match pty.lock() {
+        Ok(mut guard) => {
+            *guard = handle;
+            tracing::info!(
+                "Lane terminal attached: addr={} port={} (旧 handle drop)",
+                address,
+                sp_port
+            );
+        }
+        Err(e) => {
+            tracing::warn!("swap_pty_to_lane: pty mutex poisoned: {}", e);
+        }
+    }
+}
+
 /// 「Current project が dead 状態」 のとき TheWorld に SP spawn を要求する fire-and-forget task。
 ///
 /// State は TheWorld が持つ (mem_1CaTpCQH8iLJ2PasRcPjHv) ので、 vp-app は再起動しても
@@ -1291,7 +1357,10 @@ pub fn run() -> anyhow::Result<()> {
     //   localhost URL かつ daemon が down なら `vp` binary を auto-spawn して待つ。
     //   spawn 失敗 or timeout なら local portable-pty にフォールバック (黙って落ちない)。
     let proxy = event_loop.create_proxy();
-    let pty = match std::env::var("VP_TERMINAL_MODE").as_deref() {
+    // Phase 2 (Lane terminal binding): TerminalHandle を Arc<Mutex<>> でラップして hot-swap 可能に。
+    // 起動時は legacy daemon spawn / local fallback で xterm を初期化、
+    // LanesLoaded で auto-select / lane:select 時に Lane attach mode に切替える。
+    let initial_pty = match std::env::var("VP_TERMINAL_MODE").as_deref() {
         Ok("local") => {
             tracing::info!("terminal mode = local (portable-pty, explicit opt-out)");
             terminal::TerminalHandle::Local(terminal::spawn_shell(None, 80, 24, proxy)?)
@@ -1316,6 +1385,7 @@ pub fn run() -> anyhow::Result<()> {
             }
         }
     };
+    let pty: Arc<Mutex<terminal::TerminalHandle>> = Arc::new(Mutex::new(initial_pty));
 
     // TheWorld から project list を非同期 fetch (起動初回)
     spawn_processes_fetch(event_loop.create_proxy());
@@ -1354,7 +1424,16 @@ pub fn run() -> anyhow::Result<()> {
         })
         .with_devtools(true)
         .with_ipc_handler(move |req| {
-            terminal::handle_ipc_message(req.body(), &pty_for_ipc, &ipc_proxy);
+            // Phase 2: TerminalHandle が hot-swap されうるので、 lock + clone で受け渡し。
+            // clone は cheap (Arc / mpsc::Sender clone)。 lock は短時間で抜ける。
+            let handle = match pty_for_ipc.lock() {
+                Ok(g) => g.clone(),
+                Err(e) => {
+                    tracing::warn!("pty mutex poisoned: {}", e);
+                    return;
+                }
+            };
+            terminal::handle_ipc_message(req.body(), &handle, &ipc_proxy);
         })
         .with_focused(true)
         .build_as_child(&window)?;
@@ -1467,9 +1546,11 @@ pub fn run() -> anyhow::Result<()> {
                 sidebar_state.processes = projects
                     .into_iter()
                     .map(|p| {
-                        // ProcessInfo.state を ProcessPaneState.state に merge
-                        // (sidebar JS が processStateMark で 🟢/🔴 badge 表示に使う)
+                        // ProcessInfo.state / .port を ProcessPaneState に merge
+                        // (sidebar JS が processStateMark で 🟢/🔴 badge 表示に使う、
+                        //  port は Phase 2 で lane:select 時の WS 接続先決定に使う)
                         let state_str = p.state.as_str().to_string();
+                        let port = p.port;
                         let mut pane_state = if let Some(existing) = prev.get(&p.path) {
                             existing.clone()
                         } else {
@@ -1481,6 +1562,7 @@ pub fn run() -> anyhow::Result<()> {
                             s
                         };
                         pane_state.state = Some(state_str);
+                        pane_state.port = port;
                         pane_state
                     })
                     .collect();
@@ -1518,8 +1600,15 @@ pub fn run() -> anyhow::Result<()> {
                 sidebar_state.lanes_by_project.insert(process_path, lanes);
                 if let Some(addr) = first_addr {
                     tracing::info!("auto-select first lane: {}", addr);
-                    sidebar_state.active_lane_address = Some(addr);
+                    sidebar_state.active_lane_address = Some(addr.clone());
                     push_active_lane(&main_view, &sidebar_state);
+                    // Phase 2: 初回 LanesLoaded で auto-select した Lane の WS terminal に hot-swap
+                    swap_pty_to_lane(
+                        &pty,
+                        &sidebar_state,
+                        &addr,
+                        async_action_proxy.clone(),
+                    );
                 }
                 push_sidebar_state(&sidebar, &sidebar_state);
             }
@@ -1580,6 +1669,11 @@ pub fn run() -> anyhow::Result<()> {
                 }
                 if outcome.active_changed {
                     push_active_lane(&main_view, &sidebar_state);
+                    // Phase 2: lane:select で Lane が変わったら、 main area の terminal を
+                    // 新 Lane の SP WS attach に hot-swap する。
+                    if let Some(addr) = sidebar_state.active_lane_address.clone() {
+                        swap_pty_to_lane(&pty, &sidebar_state, &addr, async_action_proxy.clone());
+                    }
                 }
                 // Architecture v4: dead な project が expand されたら SP を auto-spawn。
                 // dedup: 同 session で同じ path を 2 回呼ばない (TheWorld 側でも弾かれるが

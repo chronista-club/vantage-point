@@ -1,24 +1,28 @@
-//! TheWorld daemon の `/ws/terminal` endpoint
+//! SP / TheWorld の `/ws/terminal` endpoint
 //!
-//! WebSocket で PTY 単発 (PtySlot) を remote 化する。
-//! vp-app など native client が local portable-pty を持たずに、
-//! daemon 経由で shell session を張るためのエントリポイント。
+//! WebSocket で PTY を remote 化する。 2 つのモードを併存:
+//!
+//! 1. **Lane attach mode (Phase 2)**: `?lane=<address>` 指定 →
+//!    SP の `LanePool` から既存 PtySlot を `subscribe_output()` で attach。
+//!    複数 client が同じ Lane の PTY (Lead Lane の Claude CLI など) を共有できる。
+//!    WS 切断しても PtySlot は生き続ける (Lane lifecycle は LanePool が支配)。
+//!
+//! 2. **Spawn mode (legacy)**: `lane` 未指定 → 接続ごとに新 PtySlot を spawn。
+//!    WS 切断 = PtySlot drop = child kill。 旧来の挙動、 互換のため残置。
 //!
 //! ## プロトコル
 //!
-//! - URL: `ws://host:32000/ws/terminal?shell=bash&cols=80&rows=24&cwd=/path`
+//! - URL: `ws://host:33xxx/ws/terminal?lane=<project>/lead`  (Lane attach)
+//! - URL: `ws://host:32000/ws/terminal?shell=bash&cols=80&rows=24` (Spawn)
 //! - Server → Client: `Message::Binary(pty_output_bytes)` — PTY からの生バイト列
 //! - Client → Server:
 //!   - `Message::Binary(bytes)` → PTY write (user input)
 //!   - `Message::Text(json)` → 制御メッセージ (`{"type":"resize","cols":N,"rows":M}`)
 //!   - `Message::Close(_)` → 切断
 //!
-//! ## Step 2a MVP の範囲
-//!
-//! - 認証なし (localhost/LAN の信頼前提)
-//! - 接続ごとに独立した PtySlot (shared state なし)
-//! - WS 切断 = PtySlot drop = child process kill
-//! - Step 2b で tmux session 共有 / project 紐付けを追加予定
+//! 関連 memory:
+//! - mem_1CaTpCQH8iLJ2PasRcPjHv (Architecture v4: Lane = Session Process)
+//! - mem_1CaSugEk1W2vr5TAdfDn5D (多 scope architecture: Lane scope は SP per project)
 
 use std::sync::Arc;
 
@@ -38,10 +42,10 @@ use crate::process::state::AppState;
 /// クエリパラメータ
 #[derive(Debug, Deserialize)]
 pub struct TerminalQuery {
-    /// シェルコマンド (default: "bash"、client が `vp-app` なら shell_detect で決定して送る)
+    /// シェルコマンド (Spawn mode のみ、 default: "bash"。 client が `vp-app` なら shell_detect で決定して送る)
     #[serde(default = "default_shell")]
     pub shell: String,
-    /// シェル起動引数 (comma-separated、例: "-l" or "-NoLogo,-NoExit")。
+    /// シェル起動引数 (comma-separated、 Spawn mode のみ、 例: "-l" or "-NoLogo,-NoExit")。
     /// 未指定なら何も付けない (caller が決めない場合 shell が default 動作)。
     #[serde(default)]
     pub args: Option<String>,
@@ -51,9 +55,13 @@ pub struct TerminalQuery {
     /// 初期高さ (default: 24)
     #[serde(default = "default_rows")]
     pub rows: u16,
-    /// 作業ディレクトリ (default: $HOME)
+    /// 作業ディレクトリ (Spawn mode のみ、 default: $HOME)
     #[serde(default)]
     pub cwd: Option<String>,
+    /// Lane address (Phase 2 attach mode、 例: `"vantage-point/lead"` / `"vp/worker/foo"`)。
+    /// Some なら既存 LanePool の PtySlot に attach、 None なら従来の Spawn mode。
+    #[serde(default)]
+    pub lane: Option<String>,
 }
 
 fn default_shell() -> String {
@@ -78,12 +86,148 @@ pub enum ControlMsg {
 pub async fn ws_terminal_handler(
     ws: WebSocketUpgrade,
     Query(params): Query<TerminalQuery>,
-    State(_state): State<Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_terminal_socket(socket, params))
+    ws.on_upgrade(move |socket| async move {
+        match params.lane.as_deref() {
+            Some(addr_str) if !addr_str.is_empty() => {
+                handle_terminal_socket_lane(socket, params, state).await;
+            }
+            _ => {
+                handle_terminal_socket_spawn(socket, params).await;
+            }
+        }
+    })
 }
 
-async fn handle_terminal_socket(socket: WebSocket, params: TerminalQuery) {
+/// Phase 2: 既存 LanePool の PtySlot に attach する mode。
+///
+/// `?lane=<address>` で指定された Lane の PtySlot に対して:
+/// - subscribe_output() で broadcast 受信 → WS Binary に流す
+/// - WS Binary 受信 → LanePool::write_to_lane() で PtySlot に書込
+/// - WS Text {"type":"resize"} 受信 → LanePool::resize_lane()
+/// - WS 切断: PtySlot は生き続ける (Lane lifecycle は LanePool 管理、 attach client は来たり去ったり可能)
+async fn handle_terminal_socket_lane(
+    socket: WebSocket,
+    params: TerminalQuery,
+    state: Arc<AppState>,
+) {
+    use crate::process::lanes_state::LanePool;
+
+    let (mut sender, mut receiver) = socket.split();
+    let addr_str = params.lane.as_deref().unwrap_or("");
+
+    // address parse
+    let Some(addr) = LanePool::parse_address(addr_str) else {
+        tracing::warn!("/ws/terminal lane attach: invalid address {:?}", addr_str);
+        let err = format!(
+            r#"{{"type":"error","message":"invalid lane address: {}"}}"#,
+            addr_str
+        );
+        let _ = sender.send(Message::Text(err.into())).await;
+        return;
+    };
+
+    // subscribe rx
+    let mut rx = {
+        let pool = state.lane_pool.read().await;
+        match pool.subscribe_output(&addr) {
+            Some(rx) => rx,
+            None => {
+                tracing::warn!(
+                    "/ws/terminal lane attach: lane not found or no PtySlot: {}",
+                    addr
+                );
+                let err = format!(
+                    r#"{{"type":"error","message":"lane not found: {}"}}"#,
+                    addr
+                );
+                let _ = sender.send(Message::Text(err.into())).await;
+                return;
+            }
+        }
+    };
+
+    tracing::info!("/ws/terminal lane attach: addr={}", addr);
+
+    // 初期 resize は client 側 cols/rows で更新 (xterm.js が ready 時 sendResize するが
+    // 念のため query param 値で同期しておく)
+    {
+        let pool = state.lane_pool.read().await;
+        if let Err(e) = pool.resize_lane(&addr, params.cols, params.rows) {
+            tracing::debug!("初期 resize 失敗 (continue): {}", e);
+        }
+    }
+
+    // PTY output → WS Binary
+    let send_addr = addr.clone();
+    let send_task = tokio::spawn(async move {
+        loop {
+            match rx.recv().await {
+                Ok(bytes) => {
+                    if sender.send(Message::Binary(bytes.into())).await.is_err() {
+                        break;
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::warn!(
+                        "/ws/terminal lane={} output lagged: {} dropped",
+                        send_addr,
+                        n
+                    );
+                    continue;
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
+
+    // WS → LanePool.write / resize
+    while let Some(msg_res) = receiver.next().await {
+        let msg = match msg_res {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!("/ws/terminal lane={} recv error: {}", addr, e);
+                break;
+            }
+        };
+        match msg {
+            Message::Binary(bytes) => {
+                let pool = state.lane_pool.read().await;
+                if let Err(e) = pool.write_to_lane(&addr, &bytes) {
+                    tracing::warn!("/ws/terminal lane={} write failed: {}", addr, e);
+                    break;
+                }
+            }
+            Message::Text(text) => match serde_json::from_str::<ControlMsg>(&text) {
+                Ok(ControlMsg::Resize { cols, rows }) => {
+                    let pool = state.lane_pool.read().await;
+                    if let Err(e) = pool.resize_lane(&addr, cols, rows) {
+                        tracing::warn!("/ws/terminal lane={} resize failed: {}", addr, e);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "/ws/terminal lane={} bad control msg: {} text={}",
+                        addr,
+                        e,
+                        text
+                    );
+                }
+            },
+            Message::Close(_) => break,
+            _ => {}
+        }
+    }
+
+    send_task.abort();
+    tracing::info!("/ws/terminal lane attach disconnected: addr={}", addr);
+    // PtySlot は LanePool が保持し続ける (= Lane の lifecycle は WS 接続と独立)
+}
+
+/// Spawn mode (legacy / TheWorld 用): 接続ごとに新 PtySlot を作る。
+/// WS 切断 = PtySlot drop = child kill。
+async fn handle_terminal_socket_spawn(socket: WebSocket, params: TerminalQuery) {
     let (mut sender, mut receiver) = socket.split();
 
     let cwd = params

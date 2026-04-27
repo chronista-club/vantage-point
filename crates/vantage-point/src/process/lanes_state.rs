@@ -253,6 +253,60 @@ impl LanePool {
     pub fn count(&self) -> usize {
         self.lanes.len()
     }
+
+    /// Display 形 (`"<project>/lead"` / `"<project>/worker/<name>"`) をパースして LaneAddress を作る。
+    /// vp-app の sidebar から `lane:select` IPC の address (= `lane_address_key`) を逆変換するために使う。
+    pub fn parse_address(s: &str) -> Option<LaneAddress> {
+        // 形式: "<project>/lead" or "<project>/worker/<name>"
+        let parts: Vec<&str> = s.splitn(3, '/').collect();
+        match parts.as_slice() {
+            [project, "lead"] if !project.is_empty() => Some(LaneAddress::lead(*project)),
+            [project, "worker", name] if !project.is_empty() && !name.is_empty() => {
+                Some(LaneAddress::worker(*project, *name))
+            }
+            _ => None,
+        }
+    }
+
+    /// 既存 Lane の PtySlot に新しい subscriber を追加 (PTY output を WS に流す等の用途)。
+    /// `None` = address に対応する Lane が無い、 もしくは PtySlot が無い (state=Dead 等)。
+    ///
+    /// memory rule (mem_1CaTpCQH8iLJ2PasRcPjHv): Lane = Session Process。
+    /// Phase 2 で vp-app が WS で attach する際、 既存 PtySlot に subscribe して
+    /// 同じ PTY を複数 client が共有できる (broadcast channel ベース)。
+    pub fn subscribe_output(
+        &self,
+        addr: &LaneAddress,
+    ) -> Option<tokio::sync::broadcast::Receiver<Vec<u8>>> {
+        let slot_mutex = self.pty_slots.get(addr)?;
+        let slot = slot_mutex.lock().ok()?;
+        Some(slot.subscribe_output())
+    }
+
+    /// 既存 Lane の PtySlot に input を書き込む (WS から user 入力を受けた時に使う)。
+    /// `Mutex<PtySlot>` を lock するので、 broadcast 経路と直交して同期書込み。
+    pub fn write_to_lane(&self, addr: &LaneAddress, data: &[u8]) -> anyhow::Result<()> {
+        let slot_mutex = self
+            .pty_slots
+            .get(addr)
+            .ok_or_else(|| anyhow::anyhow!("Lane has no PtySlot: {}", addr))?;
+        let mut slot = slot_mutex
+            .lock()
+            .map_err(|_| anyhow::anyhow!("PtySlot mutex poisoned: {}", addr))?;
+        slot.write(data)
+    }
+
+    /// 既存 Lane の PtySlot を resize する。
+    pub fn resize_lane(&self, addr: &LaneAddress, cols: u16, rows: u16) -> anyhow::Result<()> {
+        let slot_mutex = self
+            .pty_slots
+            .get(addr)
+            .ok_or_else(|| anyhow::anyhow!("Lane has no PtySlot: {}", addr))?;
+        let slot = slot_mutex
+            .lock()
+            .map_err(|_| anyhow::anyhow!("PtySlot mutex poisoned: {}", addr))?;
+        slot.resize(cols, rows)
+    }
 }
 
 #[cfg(test)]
@@ -268,8 +322,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn lane_pool_with_lead_pre_populates_one_lane() {
+    #[tokio::test]
+    async fn lane_pool_with_lead_pre_populates_one_lane() {
+        // Phase 1: LanePool::with_lead は内部で PtySlot::spawn → tokio::task::spawn_blocking する。
+        // 純 sync test だと runtime が無くて panic するので #[tokio::test] にする。
         let pool = LanePool::with_lead("vp", "/tmp");
         assert_eq!(pool.count(), 1);
         let lanes = pool.list();
@@ -301,5 +357,26 @@ mod tests {
     #[test]
     fn lane_stand_default_is_heavens_door() {
         assert_eq!(LaneStand::default(), LaneStand::HeavensDoor);
+    }
+
+    #[test]
+    fn parse_address_lead_and_worker() {
+        // Phase 2: vp-app が IPC で送る address ("<project>/lead" / "<project>/worker/<name>") を
+        // SP 側で逆変換する。 lane_address_key (vp-app) と完全に対称。
+        let lead = LanePool::parse_address("vp/lead").unwrap();
+        assert_eq!(lead, LaneAddress::lead("vp"));
+
+        let worker = LanePool::parse_address("vp/worker/foo").unwrap();
+        assert_eq!(worker, LaneAddress::worker("vp", "foo"));
+
+        // CJK / kebab-case project name も通る
+        let lead2 = LanePool::parse_address("vantage-point/lead").unwrap();
+        assert_eq!(lead2, LaneAddress::lead("vantage-point"));
+
+        // 不正
+        assert!(LanePool::parse_address("vp").is_none()); // / 無し
+        assert!(LanePool::parse_address("/lead").is_none()); // project 空
+        assert!(LanePool::parse_address("vp/foo").is_none()); // 未知 kind
+        assert!(LanePool::parse_address("vp/worker/").is_none()); // worker name 空
     }
 }
