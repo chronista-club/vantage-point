@@ -1601,6 +1601,21 @@ pub fn run() -> anyhow::Result<()> {
                         spawn_lanes_fetch(async_action_proxy.clone(), path.clone(), *sp_port);
                     }
                 }
+                // Phase 2.x-b: dead-respawn fix — SP が "running" になった時点で
+                // sp_spawn_triggered から path を外す。 これで次に dead に落ちた時、
+                // user が re-expand すれば再度 spawn が trigger される。
+                // 注意: spawn 進行中 (state=="spawning") は外さない、 一連の spawn cycle が完了
+                // (= "running") した時のみ。 こうすれば spawn 中の重複 POST も防げる。
+                for proc in &sidebar_state.processes {
+                    if proc.state.as_deref() == Some("running")
+                        && sp_spawn_triggered.remove(&proc.path)
+                    {
+                        tracing::debug!(
+                            "sp_spawn_triggered cleared (running): {}",
+                            proc.path
+                        );
+                    }
+                }
                 push_sidebar_state(&sidebar, &sidebar_state);
             }
             // Phase A4-3b: SP の Lane fetch 結果を sidebar_state に反映
