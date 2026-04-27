@@ -246,6 +246,16 @@ impl LanePool {
         self.lanes.insert(info.address.clone(), info);
     }
 
+    /// Phase 3-A: 既に spawn 済の PtySlot を Lane address 紐付けで insert (Worker create で使う)
+    pub fn insert_pty_slot(
+        &mut self,
+        addr: LaneAddress,
+        slot: crate::daemon::pty_slot::PtySlot,
+    ) {
+        self.pty_slots
+            .insert(addr, std::sync::Mutex::new(slot));
+    }
+
     pub fn remove(&mut self, addr: &LaneAddress) -> Option<LaneInfo> {
         self.lanes.remove(addr)
     }

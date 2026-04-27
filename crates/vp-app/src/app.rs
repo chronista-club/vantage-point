@@ -163,6 +163,20 @@ const SIDEBAR_HTML: &str = concat!(
   /* SP 未起動 / Lane loading 等の hint 表示 */
   .vp-empty-hint{padding:6px 12px 6px 14px;font-size:11px;color:var(--color-text-tertiary);font-style:italic;}
 
+  /* Phase 3-A: + Add Worker button + inline form */
+  .vp-add-worker{display:flex;align-items:center;gap:6px;padding:5px 8px 5px 14px;border-radius:var(--radius-sm,6px);cursor:pointer;color:var(--color-text-tertiary);font-size:11px;font-style:italic;transition:background .12s ease,color .12s ease;}
+  .vp-add-worker:hover{background:var(--color-surface-bg-emphasis);color:var(--color-text-secondary);}
+  .vp-add-worker .icon{width:18px;text-align:center;}
+  .vp-add-worker-form{margin:0 8px 6px 14px;display:flex;flex-direction:column;gap:6px;max-height:0;opacity:0;overflow:hidden;transition:max-height .22s ease,opacity .22s ease,margin-top .22s ease;margin-top:0;pointer-events:none;}
+  .vp-add-worker-form.expanded{max-height:160px;opacity:1;margin-top:-2px;pointer-events:auto;}
+  .vp-add-worker-form .creo-input{width:100%;padding:5px 8px;border-radius:var(--radius-sm,6px);border:1px solid var(--color-surface-border,#1f2233);background:var(--color-surface-bg-base);color:var(--color-text-primary);font-family:inherit;font-size:11px;box-sizing:border-box;}
+  .vp-add-worker-form .creo-input:focus{outline:none;border-color:var(--color-brand-primary);}
+  .vp-add-worker-actions{display:flex;justify-content:flex-end;gap:6px;}
+  .vp-add-worker-form button{padding:3px 10px;border-radius:var(--radius-sm,6px);border:1px solid var(--color-surface-border,#1f2233);background:transparent;color:var(--color-text-secondary);cursor:pointer;font-size:10px;font-family:inherit;transition:background .12s ease,color .12s ease;}
+  .vp-add-worker-form button:hover{background:var(--color-surface-bg-emphasis);color:var(--color-text-primary);}
+  .vp-add-worker-form button[data-variant="primary"]{background:var(--color-brand-primary-subtle);color:var(--color-brand-primary);border-color:var(--color-brand-primary-subtle);}
+  .vp-add-worker-form button[data-variant="primary"]:hover{background:var(--color-brand-primary);color:var(--color-surface-bg-base);}
+
   .empty,.loading,.error{padding:8px 16px;color:var(--color-text-tertiary);font-style:italic;font-size:12px;}
 </style></head>
 <body>
@@ -350,7 +364,49 @@ const SIDEBAR_HTML: &str = concat!(
           }
         }
 
-        // Phase 3 で実装予定: + Add Worker (POST /api/lanes)。 Phase 1 は read-only。
+        // Phase 3-A: + Add Worker button + inline form (POST /api/lanes + ccws clone 連動)
+        const addWorker = document.createElement('div');
+        addWorker.className = 'vp-add-worker';
+        addWorker.innerHTML =
+          '<span class="icon">+</span>' +
+          '<span class="label">Add Worker (ccws clone)</span>';
+        const addForm = document.createElement('div');
+        addForm.className = 'vp-add-worker-form';
+        addForm.innerHTML =
+          '<input type="text" class="creo-input" placeholder="worker name (例: feat-api)" data-field="name">' +
+          '<input type="text" class="creo-input" placeholder="branch (例: mako/feat-api)" data-field="branch">' +
+          '<div class="vp-add-worker-actions">' +
+            '<button class="creo-btn" data-variant="secondary" data-size="sm" data-action="cancel">Cancel</button>' +
+            '<button class="creo-btn" data-variant="primary" data-size="sm" data-action="submit">Create</button>' +
+          '</div>';
+        addWorker.addEventListener('click', () => {
+          addForm.classList.add('expanded');
+          const nameInput = addForm.querySelector('input[data-field="name"]');
+          if (nameInput) setTimeout(() => nameInput.focus(), 50);
+        });
+        const cancelBtn = addForm.querySelector('button[data-action="cancel"]');
+        const submitBtn = addForm.querySelector('button[data-action="submit"]');
+        const submit = () => {
+          const nameInput = addForm.querySelector('input[data-field="name"]');
+          const branchInput = addForm.querySelector('input[data-field="branch"]');
+          const nameVal = (nameInput && nameInput.value || '').trim();
+          const branchVal = (branchInput && branchInput.value || '').trim();
+          if (!nameVal) return;
+          send({t: 'lane:add_worker', path: p.path, name: nameVal, branch: branchVal || null});
+          addForm.classList.remove('expanded');
+          if (nameInput) nameInput.value = '';
+          if (branchInput) branchInput.value = '';
+        };
+        if (cancelBtn) cancelBtn.addEventListener('click', () => addForm.classList.remove('expanded'));
+        if (submitBtn) submitBtn.addEventListener('click', submit);
+        addForm.querySelectorAll('input').forEach(inp => {
+          inp.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); submit(); }
+            else if (e.key === 'Escape') { e.preventDefault(); addForm.classList.remove('expanded'); }
+          });
+        });
+        content.appendChild(addWorker);
+        content.appendChild(addForm);
       }
 
       proj.appendChild(content);
@@ -1223,6 +1279,9 @@ struct SidebarIpcOutcome {
     /// `(name, path)` を返し、 caller が `spawn_sp_start` を呼ぶ。
     /// dedup は caller の `sp_spawn_triggered: HashSet<String>` (path key) で行う。
     sp_spawn_request: Option<(String, String)>,
+    /// Phase 3-A: Worker Lane 作成要求 `(project_path, name, branch)`。
+    /// caller が project の SP port を解決して `client.create_worker_lane` を呼ぶ。
+    add_worker_request: Option<(String, String, Option<String>)>,
 }
 
 /// sidebar webview から IPC で受け取った JSON を解釈し、`SidebarState` を mutate。
@@ -1263,6 +1322,23 @@ fn handle_sidebar_ipc(msg: &str, state: &mut SidebarState) -> SidebarIpcOutcome 
                 if new_state && p.state.as_deref() == Some("dead") {
                     out.sp_spawn_request = Some((p.name.clone(), p.path.clone()));
                 }
+            }
+        }
+        "lane:add_worker" => {
+            // Phase 3-A: sidebar から Worker Lane 作成要求。 caller (event loop) で
+            // 該当 project の SP port を解決して client.create_worker_lane を呼ぶ。
+            let name = parsed
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let branch = parsed
+                .get("branch")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string());
+            if !path.is_empty() && !name.is_empty() {
+                out.add_worker_request = Some((path.to_string(), name, branch));
             }
         }
         "lane:select" => {
@@ -1751,6 +1827,77 @@ pub fn run() -> anyhow::Result<()> {
                         spawn_sp_start(async_action_proxy.clone(), name, path);
                     } else {
                         tracing::debug!("SP auto-spawn skip (既 trigger): {}", path);
+                    }
+                }
+                // Phase 3-A: Worker Lane 作成要求 (sidebar の + Add Worker から)
+                if let Some((project_path, name, branch)) = outcome.add_worker_request {
+                    let sp_port = sidebar_state
+                        .processes
+                        .iter()
+                        .find(|p| p.path == project_path)
+                        .and_then(|p| p.port);
+                    if let Some(port) = sp_port {
+                        let proxy = async_action_proxy.clone();
+                        let name_clone = name.clone();
+                        let branch_clone = branch.clone();
+                        let path_clone = project_path.clone();
+                        thread::Builder::new()
+                            .name(format!("create-worker-{}", name))
+                            .spawn(move || {
+                                let rt =
+                                    match tokio::runtime::Builder::new_current_thread()
+                                        .enable_all()
+                                        .build()
+                                    {
+                                        Ok(rt) => rt,
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                "create-worker tokio runtime: {}",
+                                                e
+                                            );
+                                            return;
+                                        }
+                                    };
+                                rt.block_on(async {
+                                    let client = TheWorldClient::new(port);
+                                    match client
+                                        .create_worker_lane(
+                                            &name_clone,
+                                            branch_clone.as_deref(),
+                                        )
+                                        .await
+                                    {
+                                        Ok(()) => {
+                                            tracing::info!(
+                                                "Worker Lane created: project={} name={} branch={:?}",
+                                                path_clone,
+                                                name_clone,
+                                                branch_clone
+                                            );
+                                            // 即座に lanes を re-fetch して sidebar 反映
+                                            spawn_lanes_fetch(
+                                                proxy.clone(),
+                                                path_clone,
+                                                port,
+                                            );
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                "create_worker_lane failed: project={} name={}: {}",
+                                                path_clone,
+                                                name_clone,
+                                                e
+                                            );
+                                        }
+                                    }
+                                });
+                            })
+                            .ok();
+                    } else {
+                        tracing::warn!(
+                            "lane:add_worker: SP port unknown for path={} (skip)",
+                            project_path
+                        );
                     }
                 }
             }

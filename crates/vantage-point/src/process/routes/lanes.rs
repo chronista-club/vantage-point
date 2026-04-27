@@ -38,7 +38,7 @@ pub async fn list_handler(State(state): State<Arc<AppState>>) -> impl IntoRespon
     Json(LanesResponse { lanes: pool.list() })
 }
 
-/// `POST /api/lanes` request body (A6 Worker Lane create)
+/// `POST /api/lanes` request body (Phase 3-A: Worker Lane create + ccws clone)
 #[derive(Debug, Deserialize)]
 pub struct CreateLaneReq {
     /// "worker" のみ受付 (Lead は project ごと固定)
@@ -48,17 +48,27 @@ pub struct CreateLaneReq {
     /// LaneStand: "heavens_door" (default) or "the_hand"
     #[serde(default)]
     pub stand: Option<String>,
-    /// 既存 worktree path (auto-clone は A6-2 で)
+    /// 既存 worktree path。 Some なら直接 cwd として使う、 None なら branch 指定で ccws clone を実行する。
     #[serde(default)]
     pub cwd: Option<String>,
+    /// Phase 3-A: ccws clone する branch 名。 cwd が None で branch が Some の時、
+    /// `ccws new <name> <branch>` を SP 内で実行して worker dir を作成、 そこに Lane を spawn する。
+    #[serde(default)]
+    pub branch: Option<String>,
 }
 
-/// `POST /api/lanes` — Worker Lane create
+/// `POST /api/lanes` — Worker Lane create (Phase 3-A: ccws clone + PtySlot spawn)
 ///
-/// **A6 Phase 1 (今)**: Worker Lane を `LanePool` に insert (state=Spawning stub)。
-/// 実 PTY spawn は A5-2 で `LanePool` の PtySlot 連動で実装。
+/// 流れ:
+/// 1. 入力 validation (kind == "worker", name 非空)
+/// 2. cwd 決定:
+///    - `req.cwd` Some → そのまま使う
+///    - `req.branch` Some → `ccws new <name> <branch>` subprocess で worker dir 作成
+///    - 両方 None → state.project_dir (= Lead と同じ dir) を share (legacy fallback)
+/// 3. PtySlot::spawn で実 PTY 起動 (LaneStand 別 command builder 経由)
+/// 4. LanePool に insert (state=Running、 pid 付き)
 ///
-/// 関連 memory: mem_1CaTpCQH8iLJ2PasRcPjHv (Architecture v4: Process recursive)
+/// 関連 memory: mem_1CaTpCQH8iLJ2PasRcPjHv (Architecture v4: Lane = Session Process + ccws clone 連動)
 pub async fn create_handler(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CreateLaneReq>,
@@ -90,9 +100,8 @@ pub async fn create_handler(
         Some("the_hand") | Some("th") => LaneStand::TheHand,
         _ => LaneStand::HeavensDoor, // default HD
     };
-    let cwd = req.cwd.unwrap_or_else(|| state.project_dir.clone());
 
-    // 重複チェック
+    // 重複チェック (早期 return)
     {
         let pool = state.lane_pool.read().await;
         if pool.get(&addr).is_some() {
@@ -105,14 +114,98 @@ pub async fn create_handler(
         }
     }
 
+    // Phase 3-A: cwd 決定 ── 優先順位 explicit cwd > ccws clone > project_dir share
+    let cwd = if let Some(c) = req.cwd {
+        c
+    } else if let Some(branch) = req.branch.as_deref() {
+        // ccws new <name> <branch> を subprocess で実行
+        // ccws CLI は vp-cli から install 済 (Phase 2.x-e で statically linked)
+        let project_dir = state.project_dir.clone();
+        let name = req.name.clone();
+        let branch = branch.to_string();
+        let result = tokio::task::spawn_blocking(move || {
+            let output = std::process::Command::new("ccws")
+                .args(["new", &name, &branch])
+                .current_dir(&project_dir)
+                .output();
+            match output {
+                Ok(o) if o.status.success() => {
+                    // ccws new の stdout は worker dir path (commands.rs の new_worker)
+                    let path = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                    if path.is_empty() {
+                        Err("ccws new output was empty".to_string())
+                    } else {
+                        Ok(path)
+                    }
+                }
+                Ok(o) => Err(format!(
+                    "ccws new exited {}: stderr={}",
+                    o.status,
+                    String::from_utf8_lossy(&o.stderr)
+                )),
+                Err(e) => Err(format!("ccws new spawn failed: {}", e)),
+            }
+        })
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("ccws task join: {}", e)})),
+            )
+        })?;
+        result.map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("ccws clone failed: {}", e)})),
+            )
+        })?
+    } else {
+        state.project_dir.clone()
+    };
+
+    // PtySlot::spawn で実 PTY 起動 (Lead と同じ stand_spawner 経由)
+    let cmd =
+        crate::process::stand_spawner::build_stand_command(stand, std::path::Path::new(&cwd));
+    let (lane_state, pid) = match crate::daemon::pty_slot::PtySlot::spawn(
+        &cwd,
+        &cmd.program,
+        &cmd.args,
+        80,
+        24,
+    ) {
+        Ok((slot, _rx)) => {
+            let pid = slot.pid();
+            // PtySlot を LanePool に insert する必要がある (Lead と同じ pattern)
+            let mut pool = state.lane_pool.write().await;
+            pool.insert_pty_slot(addr.clone(), slot);
+            tracing::info!(
+                "Worker Lane spawned: addr={} stand={:?} cwd={} pid={}",
+                addr,
+                stand,
+                cwd,
+                pid
+            );
+            (LaneState::Running, Some(pid))
+        }
+        Err(e) => {
+            tracing::warn!(
+                "Worker Lane spawn failed (graceful degrade to Dead): addr={} cwd={}: {}",
+                addr,
+                cwd,
+                e
+            );
+            (LaneState::Dead, None)
+        }
+    };
+
     let info = LaneInfo {
         address: addr.clone(),
         kind: LaneKind::Worker,
         name: Some(req.name.clone()),
-        state: LaneState::Spawning, // A5-2 で実 spawn 後 Running に
+        state: lane_state,
         stand,
         created_at: chrono::Utc::now().to_rfc3339(),
-        pid: None,
+        pid,
         cwd,
     };
 
@@ -121,6 +214,5 @@ pub async fn create_handler(
         pool.insert(info.clone());
     }
 
-    tracing::info!("Worker Lane created: {} (stand={:?})", addr, stand);
     Ok((StatusCode::CREATED, Json(info)))
 }
