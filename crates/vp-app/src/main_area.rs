@@ -120,6 +120,14 @@ body{overflow:hidden;}
 .pane.canvas p{color:var(--color-text-tertiary);margin:0;font-size:.9rem;}
 .pane.canvas .brand{color:var(--color-brand-primary);}
 .pane.preview iframe{width:100%;height:100%;border:0;background:#fff;}
+/* Phase 5-A: Project-scope Stand placeholder panes (PP/GE/HP) */
+.pane.stand{display:none;place-items:center;}
+.pane.stand.active{display:grid;}
+.pane.stand main{text-align:center;max-width:520px;padding:0 24px;}
+.pane.stand h1{font-weight:500;font-size:1.6rem;margin:0 0 .5rem;color:var(--color-text-primary);}
+.pane.stand p{color:var(--color-text-tertiary);margin:.25rem 0;font-size:.95rem;}
+.pane.stand .sub{font-size:.85rem;color:var(--color-text-tertiary);opacity:.85;margin-top:1rem;line-height:1.6;}
+.pane.stand .brand{color:var(--color-brand-primary);}
 .pane.empty{display:none;place-items:center;}
 .pane.empty.active{display:grid;}
 .pane.empty main{text-align:center;color:var(--color-text-tertiary);}
@@ -179,6 +187,30 @@ body{overflow:hidden;}
   </div>
   <div class="pane preview" id="pane-preview" data-kind="preview">
     <iframe id="preview-frame" src="about:blank" sandbox="allow-same-origin allow-scripts"></iframe>
+  </div>
+  <!-- Phase 5-A: Project-scope Stand placeholder panes (PP/GE/HP)。
+       click action は Phase 3-B で導入した sidebar の vp-project-stand-row から発火、
+       将来 (Phase 6+) で Canvas 実描画 / Ruby eval / MIDI 制御を bind する予定。 -->
+  <div class="pane stand" id="pane-paisley-park" data-kind="paisley_park">
+    <main>
+      <h1>🧭 Paisley Park</h1>
+      <p>Information Navigator — Canvas / Markdown / HTML / 画像</p>
+      <p class="sub">Phase 6+ で <span class="brand">/api/show 結合</span>、 file watch 連動、 layered Canvas を実装予定</p>
+    </main>
+  </div>
+  <div class="pane stand" id="pane-gold-experience" data-kind="gold_experience">
+    <main>
+      <h1>🌿 Gold Experience</h1>
+      <p>Code Runner — 動的生命注入エンジン</p>
+      <p class="sub">Phase 6+ で <span class="brand">Ruby eval / process_runner</span> 結合、 inline result preview を実装予定</p>
+    </main>
+  </div>
+  <div class="pane stand" id="pane-hermit-purple" data-kind="hermit_purple">
+    <main>
+      <h1>🍇 Hermit Purple</h1>
+      <p>External Control — MIDI / MCP / tmux</p>
+      <p class="sub">Phase 6+ で <span class="brand">MIDI lpd8 / MCP server / tmux session</span> 接続パネルを実装予定</p>
+    </main>
   </div>
   <div class="pane empty active" id="pane-empty" data-kind="empty">
     <main>
@@ -536,14 +568,17 @@ body{overflow:hidden;}
     }
   });
 
-  // ========= Architecture v4: Lane 切替 API =========
-  // Rust → JS で active Lane を切替。kind が null の場合は empty 状態を表示。
-  // payload: {kind: "terminal"|"canvas"|"preview"|null, pane_id (= Lane address), preview_url}
-  // Phase 2.x-d で 旧 "agent"/"shell" alias は撤去 (Lane SSOT 化済 + caller 0)
+  // ========= Architecture v4: Lane / Stand 切替 API =========
+  // Rust → JS で active Lane / Stand を切替。kind が null の場合は empty 状態を表示。
+  // payload: {kind: "terminal"|"canvas"|"preview"|"paisley_park"|"gold_experience"|"hermit_purple"|null, pane_id, preview_url}
+  // Phase 5-A: Project-scope Stand (PP/GE/HP) を click 可能 pane として追加。
   const KIND_TO_PANE = {
     terminal: 'pane-terminal',
     canvas: 'pane-canvas',
     preview: 'pane-preview',
+    paisley_park: 'pane-paisley-park',
+    gold_experience: 'pane-gold-experience',
+    hermit_purple: 'pane-hermit-purple',
     empty: 'pane-empty',
   };
   // 現在 active な pane の info (slot:rect 送出時の pane_id 補完用)

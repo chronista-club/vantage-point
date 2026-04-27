@@ -39,7 +39,7 @@ use wry::{
 
 use crate::client::TheWorldClient;
 use crate::main_area::{self, ActivePaneInfo, MAIN_AREA_HTML, SlotRect};
-use crate::pane::{ActivitySnapshot, ProcessPaneState, SidebarState};
+use crate::pane::{ActiveStand, ActivitySnapshot, ProcessPaneState, SidebarState};
 use crate::settings::Settings;
 use crate::terminal::{self, AppEvent};
 
@@ -174,7 +174,10 @@ const SIDEBAR_HTML: &str = concat!(
   /* Phase 3-B: Project scope の Stand (PP/GE/HP) row + section header */
   .vp-project-stands-header,
   .vp-lanes-header{padding:6px 12px 2px 14px;font-size:10px;color:var(--color-text-tertiary);text-transform:uppercase;letter-spacing:0.06em;font-weight:500;}
-  .vp-project-stand-row{display:flex;align-items:center;gap:6px;padding:3px 8px 3px 18px;font-size:11px;color:var(--color-text-secondary);cursor:default;}
+  /* Phase 5-A: row が clickable に (cursor:pointer + hover/active) */
+  .vp-project-stand-row{display:flex;align-items:center;gap:6px;padding:3px 8px 3px 18px;font-size:11px;color:var(--color-text-secondary);cursor:pointer;border-radius:var(--radius-sm,6px);transition:background .1s ease;}
+  .vp-project-stand-row:hover{background:var(--color-surface-bg-emphasis);}
+  .vp-project-stand-row.active{background:var(--color-brand-primary-subtle);color:var(--color-brand-primary);font-weight:500;}
   .vp-project-stand-row .icon{width:18px;text-align:center;font-family:var(--typography-family-icon);}
   .vp-project-stand-row .label{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .vp-project-stand-row .state{font-size:9px;color:var(--color-text-tertiary);}
@@ -354,9 +357,13 @@ const SIDEBAR_HTML: &str = concat!(
           { kind: 'gold_experience', label: 'Gold Experience', icon: '🌿', desc: 'Code Runner / 動的生命注入' },
           { kind: 'hermit_purple',   label: 'Hermit Purple',   icon: '🍇', desc: 'External Control / MIDI/MCP/tmux' },
         ];
+        const activeStand = (state && state.active_stand) || null;
         for (const st of projectStands) {
+          const isActiveStand = activeStand
+            && activeStand.project_path === p.path
+            && activeStand.kind === st.kind;
           const row = document.createElement('div');
-          row.className = 'vp-project-stand-row';
+          row.className = 'vp-project-stand-row' + (isActiveStand ? ' active' : '');
           row.title = st.desc;
           const icon = document.createElement('span');
           icon.className = 'icon';
@@ -366,10 +373,15 @@ const SIDEBAR_HTML: &str = concat!(
           label.textContent = st.label;
           const status = document.createElement('span');
           status.className = 'state';
-          status.textContent = '⚪'; // available (Phase 4+ で actual state を fetch して 🟢/🔵 表示予定)
+          status.textContent = '⚪';
           row.appendChild(icon);
           row.appendChild(label);
           row.appendChild(status);
+          // Phase 5-A: click で main area に Stand pane を表示 (Lane と排他 active)
+          row.addEventListener('click', (e) => {
+            e.stopPropagation();
+            send({t: 'stand:select', path: p.path, kind: st.kind});
+          });
           content.appendChild(row);
         }
         const lanesHeader = document.createElement('div');
@@ -1299,23 +1311,34 @@ async fn collect_activity(client: &TheWorldClient) -> ActivitySnapshot {
     snap
 }
 
-/// Architecture v4: sidebar の active Lane に応じて main area の表示 kind を切替。
+/// Architecture v4: sidebar の active selection に応じて main area の表示 kind を切替。
 ///
-/// 現状 (Phase 1): Lane が選択されていれば main area を `kind="terminal"` に切替、
-/// なければ `kind=None` で empty 状態を出す。
-/// Lane address ごとの terminal 接続切替 (Lane の WS terminal に bind) は Phase 2 で。
-fn push_active_lane(main_view: &WebView, state: &SidebarState) {
-    let info = match state.active_lane_address.as_deref() {
-        Some(addr) => ActivePaneInfo {
+/// Phase 5-A 拡張: Lane と Stand が **mutually exclusive** な active 軸として扱われる。
+/// 優先順位:
+///   1. `active_stand` Some → kind = "paisley_park" / "gold_experience" / "hermit_purple"
+///   2. `active_lane_address` Some → kind = "terminal"、 pane_id = Lane address
+///   3. 両方 None → kind=None で empty placeholder
+///
+/// Lane address ごとの terminal 接続は per-Lane xterm.js (Phase 2.5) が JS-side で管理。
+fn push_active_view(main_view: &WebView, state: &SidebarState) {
+    let info = if let Some(stand) = state.active_stand.as_ref() {
+        ActivePaneInfo {
+            kind: Some(stand.kind.as_str()),
+            pane_id: None,
+            preview_url: None,
+        }
+    } else if let Some(addr) = state.active_lane_address.as_deref() {
+        ActivePaneInfo {
             kind: Some("terminal"),
             pane_id: Some(addr),
             preview_url: None,
-        },
-        None => ActivePaneInfo {
+        }
+    } else {
+        ActivePaneInfo {
             kind: None,
             pane_id: None,
             preview_url: None,
-        },
+        }
     };
     let script = main_area::build_set_active_pane_script(&info);
     if let Err(e) = main_view.evaluate_script(&script) {
@@ -1343,7 +1366,7 @@ fn push_sidebar_state(sidebar: &WebView, state: &SidebarState) {
 struct SidebarIpcOutcome {
     /// SidebarState が変化したか (true なら push_sidebar_state を呼ぶ)
     changed: bool,
-    /// active Lane が変わったか (true なら push_active_lane を呼ぶ)
+    /// active Lane が変わったか (true なら push_active_view を呼ぶ)
     active_changed: bool,
     /// SP auto-spawn が必要な project (= 「Current」 になった dead な project)。
     /// `(name, path)` を返し、 caller が `spawn_sp_start` を呼ぶ。
@@ -1428,6 +1451,31 @@ fn handle_sidebar_ipc(msg: &str, state: &mut SidebarState) -> SidebarIpcOutcome 
                 out.add_worker_request = Some((path.to_string(), name, branch));
             }
         }
+        "stand:select" => {
+            // Phase 5-A: Project-scope Stand row click → main area に対応 pane を表示
+            // (Lane と mutually exclusive、 active_lane_address は preemptively clear)
+            let kind = parsed.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+            if path.is_empty() || kind.is_empty() {
+                tracing::warn!("stand:select with empty path/kind: {}", msg);
+                return out;
+            }
+            let new_stand = ActiveStand {
+                project_path: path.to_string(),
+                kind: kind.to_string(),
+            };
+            // 既に同じ Stand が active なら no-op
+            if state.active_stand.as_ref() == Some(&new_stand) {
+                return out;
+            }
+            tracing::info!("stand:select project={} kind={}", path, kind);
+            state.active_stand = Some(new_stand);
+            // Lane を排他で clear (= main area の active 軸を Stand に切替)
+            if state.active_lane_address.is_some() {
+                state.active_lane_address = None;
+            }
+            out.changed = true;
+            out.active_changed = true;
+        }
         "lane:select" => {
             // Architecture v4: Lane row click → `address` (Display 形 "<project>/lead") を受信
             let address = parsed.get("address").and_then(|v| v.as_str()).unwrap_or("");
@@ -1456,6 +1504,12 @@ fn handle_sidebar_ipc(msg: &str, state: &mut SidebarState) -> SidebarIpcOutcome 
             if state.active_lane_address.as_deref() != Some(address) {
                 state.active_lane_address = Some(address.to_string());
                 tracing::info!("lane:select {} address={}", path, address);
+                out.changed = true;
+                out.active_changed = true;
+            }
+            // Phase 5-A: Lane と Stand は排他なので active_stand を clear
+            if state.active_stand.is_some() {
+                state.active_stand = None;
                 out.changed = true;
                 out.active_changed = true;
             }
@@ -1823,7 +1877,7 @@ pub fn run() -> anyhow::Result<()> {
                 if let Some(addr) = first_addr {
                     tracing::info!("auto-select first lane: {}", addr);
                     sidebar_state.active_lane_address = Some(addr.clone());
-                    push_active_lane(&main_view, &sidebar_state);
+                    push_active_view(&main_view, &sidebar_state);
                     // Phase 2.5: per-Lane instance を main area に表示。
                     // ensureLane は上のループで呼んだので、 ここでは show のみ。
                     lane_js::show_lane(&main_view, Some(&addr));
@@ -1915,7 +1969,7 @@ pub fn run() -> anyhow::Result<()> {
                     push_sidebar_state(&sidebar, &sidebar_state);
                 }
                 if outcome.active_changed {
-                    push_active_lane(&main_view, &sidebar_state);
+                    push_active_view(&main_view, &sidebar_state);
                     // Phase 2.5: lane:select は per-Lane instance の display 切替だけ。
                     // WebSocket は browser native で SP に直接繋がってる (ensure 済)。
                     lane_js::show_lane(
