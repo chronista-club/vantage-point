@@ -9485,38 +9485,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "vp-bridge"
-version = "0.14.0"
-dependencies = [
- "alacritty_terminal",
- "libc",
- "portable-pty",
- "serde_json",
- "unicode-width 0.2.0",
-]
-
-[[package]]
-name = "vp-ccws"
-version = "0.14.0"
-dependencies = [
- "clap",
- "glob",
- "unison-kdl 0.3.0",
-]
-
-[[package]]
 name = "vp-cli"
 version = "0.14.0"
 dependencies = [
  "anyhow",
  "clap",
+ "glob",
  "reqwest",
  "rustls",
  "serde_json",
  "tokio",
  "tracing",
+ "unison-kdl 0.3.0",
  "vantage-point",
- "vp-ccws",
 ]
 
 [[package]]

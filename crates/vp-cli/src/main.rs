@@ -23,6 +23,10 @@ use vantage_point::config::Config;
 use vantage_point::mcp;
 
 use commands::file_cmd::FileCommands;
+
+// Phase 2.x-e: vp-ccws crate を vp-cli の lib に統合。
+// `ccws` 標準 bin (src/bin/ccws.rs) と main.rs (vp) の両方が `vp_cli::ccws` を共有。
+use vp_cli::ccws;
 #[cfg(feature = "midi")]
 use commands::midi::MidiCommands;
 use commands::pane::PaneCommands;
@@ -223,7 +227,7 @@ fn main() -> Result<()> {
 /// `worker-{name}@{project}` actor を register/unregister（best-effort、
 /// TheWorld 未起動でも workspace 操作自体は成功させる）。
 fn execute_ws(cmd: WsCommands) -> Result<()> {
-    use vp_ccws::commands as ws;
+    use ccws::commands as ws;
 
     match cmd {
         WsCommands::New {
@@ -383,7 +387,7 @@ fn unregister_worker_actor(worker_name: &str) -> Result<()> {
 
 /// 現在の repo root から parent project 名と SP port を導出
 fn resolve_parent_project() -> Result<(String, u16)> {
-    let repo_root = vp_ccws::config::find_repo_root()
+    let repo_root = ccws::config::find_repo_root()
         .map_err(|e| anyhow::anyhow!("find_repo_root failed: {}", e))?;
     let project_name = repo_root
         .file_name()
