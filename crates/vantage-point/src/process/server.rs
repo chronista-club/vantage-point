@@ -426,6 +426,10 @@ pub async fn run(
             post(world::world_stop_process),
         )
         .route(
+            "/api/world/processes/{project_name}/restart",
+            post(world::world_restart_process),
+        )
+        .route(
             "/api/world/processes/{project_name}/pointview",
             post(world::world_open_pointview),
         )
@@ -688,6 +692,10 @@ pub async fn run_world(port: u16) -> Result<()> {
         .route(
             "/api/world/processes/{project_name}/stop",
             post(world::world_stop_process),
+        )
+        .route(
+            "/api/world/processes/{project_name}/restart",
+            post(world::world_restart_process),
         )
         .route(
             "/api/world/processes/{project_name}/pointview",

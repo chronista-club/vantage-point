@@ -112,6 +112,33 @@ pub async fn world_stop_process(
     }
 }
 
+/// Phase 5-C: POST /api/world/processes/{project_name}/restart — SP restart (stop + start chain)
+pub async fn world_restart_process(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(project_name): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    let Some(world) = &state.world else {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "World not available"})),
+        );
+    };
+    let world_cap = {
+        let w = world.read().await;
+        w.clone()
+    };
+    match world_cap.restart_process(&project_name).await {
+        Ok(process) => (
+            axum::http::StatusCode::OK,
+            Json(serde_json::to_value(&process).unwrap_or_default()),
+        ),
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        ),
+    }
+}
+
 /// POST /api/world/processes/{project_name}/pointview - Open PointView for project
 pub async fn world_open_pointview(
     State(state): State<Arc<AppState>>,

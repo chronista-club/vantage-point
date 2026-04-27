@@ -19,8 +19,9 @@ path = "src/lib.rs"
 tokio = { workspace = true }
 
 # Native window + WebView (crossplat: macOS/Windows/Linux)
-wry = { version = "0.54", features = ["devtools"] }
-tao = "0.34"
+# Phase 5-C (2026-04-28): wry 0.54 → 0.55 (custom protocol + WKWebView origin handling 改善期待)、tao 0.34 → 0.35
+wry = { version = "0.55", features = ["devtools"] }
+tao = "0.35"
 
 # Menu + tray (crossplat)
 muda = "0.17"

@@ -1,0 +1,3 @@
+/* Phase 5-C: Nerd Font icon class — VPMono direct 宣言 (var() 経由しない、 monospace fallback)。
+   web_assets.rs の NERD_FONT_CSS から include_str! 参照。 sidebar / main_area 等で共通使用。 */
+.nf-icon{font-family:'VPMono',monospace;font-style:normal;display:inline-block;width:1em;text-align:center;}
