@@ -283,6 +283,17 @@ impl LanePool {
         Some(slot.subscribe_output())
     }
 
+    /// Phase 2.x-c: scrollback 付きで attach する。
+    /// 戻り値: `(rx, initial_bytes)` ── initial_bytes を WS Binary で先送してから rx で継続。
+    pub fn subscribe_with_scrollback(
+        &self,
+        addr: &LaneAddress,
+    ) -> Option<(tokio::sync::broadcast::Receiver<Vec<u8>>, Vec<u8>)> {
+        let slot_mutex = self.pty_slots.get(addr)?;
+        let slot = slot_mutex.lock().ok()?;
+        Some(slot.subscribe_with_scrollback())
+    }
+
     /// 既存 Lane の PtySlot に input を書き込む (WS から user 入力を受けた時に使う)。
     /// `Mutex<PtySlot>` を lock するので、 broadcast 経路と直交して同期書込み。
     pub fn write_to_lane(&self, addr: &LaneAddress, data: &[u8]) -> anyhow::Result<()> {

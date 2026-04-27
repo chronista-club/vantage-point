@@ -128,11 +128,13 @@ async fn handle_terminal_socket_lane(
         return;
     };
 
-    // subscribe rx
-    let mut rx = {
+    // Phase 2.x-c: scrollback 付きで attach。 initial bytes を先送してから
+    // broadcast loop に入る (atomicity: subscribe_with_scrollback 内で snapshot+subscribe を
+    // 同一 ring lock 下で行う、 重複も取りこぼしも無し)。
+    let (mut rx, initial_bytes) = {
         let pool = state.lane_pool.read().await;
-        match pool.subscribe_output(&addr) {
-            Some(rx) => rx,
+        match pool.subscribe_with_scrollback(&addr) {
+            Some(pair) => pair,
             None => {
                 tracing::warn!(
                     "/ws/terminal lane attach: lane not found or no PtySlot: {}",
@@ -148,7 +150,23 @@ async fn handle_terminal_socket_lane(
         }
     };
 
-    tracing::info!("/ws/terminal lane attach: addr={}", addr);
+    tracing::info!(
+        "/ws/terminal lane attach: addr={} scrollback={} bytes",
+        addr,
+        initial_bytes.len()
+    );
+
+    // initial bytes を先に送出 (Phase 2.x-c: scrollback replay)
+    if !initial_bytes.is_empty() {
+        if sender
+            .send(Message::Binary(initial_bytes.into()))
+            .await
+            .is_err()
+        {
+            tracing::warn!("/ws/terminal lane={} initial flush 送出失敗、 disconnect", addr);
+            return;
+        }
+    }
 
     // 初期 resize は client 側 cols/rows で更新 (xterm.js が ready 時 sendResize するが
     // 念のため query param 値で同期しておく)
