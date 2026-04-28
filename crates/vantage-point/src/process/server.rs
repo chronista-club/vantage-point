@@ -4,7 +4,7 @@
 //! ルートハンドラーは `routes/` モジュールに分離されている。
 
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{Ipv6Addr, SocketAddrV6};
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -441,12 +441,11 @@ pub async fn run(
         .layer(CorsLayer::permissive())
         .with_state(state.clone());
 
-    // VP-101 follow-up: Windows IPV6_V6ONLY=true default 対策で IPv4 wildcard に統一。
-    // [::]:port (IPv6 wildcard) は Win では IPv4 ping (127.0.0.1) に応答しない。
-    // 0.0.0.0:port (IPv4 wildcard) で listen → 127.0.0.1 / LAN IPv4 全部 OK。
-    // (IPv6 LAN access は犠牲だが、Win11 target で実害なし)
-    let addr: SocketAddr = format!("0.0.0.0:{}", port).parse()?;
-    tracing::info!("Starting vp on http://{}", addr);
+    // Phase 5-D: dual-stack listen (IPv4 + IPv6) ─ Win の IPV6_V6ONLY=true default を明示的に false に。
+    //  旧コメント: "0.0.0.0 で IPv4 wildcard 統一" は IPv6 client (`http://[::1]:port`) を弾いてた。
+    //  SP register 等が `[::1]:32000` を使ってたため永続失敗していた問題を解消。
+    let listener = bind_dual_stack(port).await?;
+    tracing::info!("Starting vp on http://[::]:{} (dual-stack)", port);
 
     // Auto-open browser
     if auto_open_browser {
@@ -458,8 +457,6 @@ pub async fn run(
             }
         });
     }
-
-    let listener = tokio::net::TcpListener::bind(addr).await?;
 
     // Unison QUIC サーバーを並行起動（readiness signal 付き）
     let quic_port = port + unison_server::QUIC_PORT_OFFSET;
@@ -748,13 +745,14 @@ pub async fn run_world(port: u16) -> Result<()> {
         .layer(CorsLayer::permissive())
         .with_state(state);
 
-    // VP-101 follow-up: Windows IPV6_V6ONLY=true default 対策で IPv4 wildcard に統一。
-    // [::]:port は Win では IPv4 ping に応答しない (IPv6 only listen 扱い)。
-    // 0.0.0.0:port で listen → vp-app の `http://127.0.0.1:32000` ping が通る。
-    let addr: SocketAddr = format!("0.0.0.0:{}", port).parse()?;
-    tracing::info!("{} 起動 http://{}", crate::stands::WORLD.display(), addr);
-
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+    // Phase 5-D: dual-stack listen (IPv4 + IPv6) ─ vp-app の `http://127.0.0.1:32000` ping、
+    //  SP からの `http://[::1]:32000` register、 LAN IPv6 access の 3 経路を全部受け取れるように。
+    let listener = bind_dual_stack(port).await?;
+    tracing::info!(
+        "{} 起動 http://[::]:{} (dual-stack)",
+        crate::stands::WORLD.display(),
+        port
+    );
 
     // ポートバインド成功後に PID ファイルを書き出す
     // （バインド前に書くと、失敗時に既存デーモンの PID が上書きされ制御不能になる）
@@ -928,4 +926,20 @@ pub async fn run_world(port: u16) -> Result<()> {
     process::remove_pid_file();
     tracing::info!("World stopped");
     Ok(())
+}
+
+/// Phase 5-D: dual-stack TCP listener (IPv4 + IPv6 同 port)。
+///
+/// - `[::]` (IPv6 wildcard) に bind ─ macOS / Linux は default で v6only=false なので IPv4 client
+///   (`127.0.0.1:port`) も IPv4-mapped IPv6 経由で受け取れる
+/// - これで `127.0.0.1:port` と `[::1]:port` の両方の client が同じ listener に届く
+/// - **Windows 注意**: default で `IPV6_V6ONLY=true` のため IPv4 client が届かない。
+///   tokio `TcpSocket` には `set_only_v6` API が無いため、 Windows サポート時は socket2 crate
+///   経由で setsockopt(IPV6_V6ONLY, 0) する必要あり。 現在は macOS / Linux のみ正しく動く。
+///
+/// 関連: SP register が `http://[::1]:32000` で TheWorld に register していた箇所が
+///   旧 `0.0.0.0:port` listen で connection refused していた問題の根治。
+async fn bind_dual_stack(port: u16) -> Result<tokio::net::TcpListener> {
+    let addr = SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, port, 0, 0);
+    Ok(tokio::net::TcpListener::bind(addr).await?)
 }

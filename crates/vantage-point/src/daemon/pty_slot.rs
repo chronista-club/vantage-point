@@ -95,7 +95,8 @@ impl PtySlot {
         let (output_tx, initial_rx) = broadcast::channel(256);
 
         // Phase 2.x-c: scrollback ring buffer (256 KB)
-        let scrollback: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::with_capacity(SCROLLBACK_CAP)));
+        let scrollback: Arc<Mutex<Vec<u8>>> =
+            Arc::new(Mutex::new(Vec::with_capacity(SCROLLBACK_CAP)));
 
         // reader task 開始 (scrollback も共有)
         let reader_handle = start_reader_task(reader, output_tx.clone(), scrollback.clone());
@@ -165,6 +166,13 @@ impl PtySlot {
     /// シェルコマンド
     pub fn shell_cmd(&self) -> &str {
         &self.shell_cmd
+    }
+
+    /// 子プロセスがまだ生きているかチェック (non-blocking try_wait)。
+    /// Phase 5-D: spawn 直後の早期 exit 検知 (例: `claude --continue` で session corrupt) に使う。
+    /// `Err` は wait 自体の失敗 ─ 安全側に倒して「死亡」扱いとする。
+    pub fn is_alive(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(None))
     }
 }
 

@@ -26,11 +26,11 @@ use commands::file_cmd::FileCommands;
 
 // Phase 2.x-e: vp-ccws crate を vp-cli の lib に統合。
 // `ccws` 標準 bin (src/bin/ccws.rs) と main.rs (vp) の両方が `vp_cli::ccws` を共有。
-use vp_cli::ccws;
 #[cfg(feature = "midi")]
 use commands::midi::MidiCommands;
 use commands::pane::PaneCommands;
 use commands::tmux_cmd::TmuxCommands;
+use vp_cli::ccws;
 
 #[derive(Parser)]
 #[command(name = "vp")]
@@ -327,8 +327,9 @@ fn execute_shot(
     layout: Option<String>,
 ) -> Result<()> {
     use vantage_point::screenshot::{
-        compose::{compose, Layout},
-        default_backend, region_for_name, CaptureFilter, Rect,
+        CaptureFilter, Rect,
+        compose::{Layout, compose},
+        default_backend, region_for_name,
     };
     let backend = default_backend();
     let filter = CaptureFilter {
@@ -369,10 +370,7 @@ fn execute_shot(
                 .map_err(|e| anyhow::anyhow!(e))?;
             if let Some(reg) = region {
                 region_for_name(&reg, &target).ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "unknown region {:?} (known: sidebar / main / full)",
-                        reg
-                    )
+                    anyhow::anyhow!("unknown region {:?} (known: sidebar / main / full)", reg)
                 })?
             } else {
                 Rect {

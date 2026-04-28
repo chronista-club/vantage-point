@@ -105,7 +105,12 @@ pub fn detect_shell_args(shell: &str) -> Vec<String> {
                 .rsplit(|c| c == '/' || c == '\\')
                 .next()
                 .and_then(|s| s.rsplit_once('.').map(|(stem, _ext)| stem))
-                .unwrap_or_else(|| shell.rsplit(|c| c == '/' || c == '\\').next().unwrap_or(shell))
+                .unwrap_or_else(|| {
+                    shell
+                        .rsplit(|c| c == '/' || c == '\\')
+                        .next()
+                        .unwrap_or(shell)
+                })
         })
         .to_lowercase();
     match basename.as_str() {

@@ -147,10 +147,7 @@ async fn handle_terminal_socket_lane(
                     "/ws/terminal lane attach: lane not found or no PtySlot: {}",
                     addr
                 );
-                let err = format!(
-                    r#"{{"type":"error","message":"lane not found: {}"}}"#,
-                    addr
-                );
+                let err = format!(r#"{{"type":"error","message":"lane not found: {}"}}"#, addr);
                 let _ = sender.send(Message::Text(err.into())).await;
                 return;
             }
@@ -170,7 +167,10 @@ async fn handle_terminal_socket_lane(
             .await
             .is_err()
         {
-            tracing::warn!("/ws/terminal lane={} initial flush 送出失敗、 disconnect", addr);
+            tracing::warn!(
+                "/ws/terminal lane={} initial flush 送出失敗、 disconnect",
+                addr
+            );
             return;
         }
     }
@@ -249,4 +249,3 @@ async fn handle_terminal_socket_lane(
     tracing::info!("/ws/terminal lane attach disconnected: addr={}", addr);
     // PtySlot は LanePool が保持し続ける (= Lane の lifecycle は WS 接続と独立)
 }
-

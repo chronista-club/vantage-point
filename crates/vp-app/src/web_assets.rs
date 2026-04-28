@@ -28,8 +28,8 @@
 //!   3 in 1 構成、 sidebar / chrome / icon を単一 family で統一できる。
 
 use std::borrow::Cow;
-use wry::http::{Request, Response};
 use wry::WebViewId;
+use wry::http::{Request, Response};
 
 // ── PlemolJP Console NF (default 1.0:2.0 ratio、 family="VPMono") ──────────────
 const PLEMOL_THIN: &[u8] = include_bytes!("../assets/fonts/PlemolJPConsoleNF-Thin.ttf");
@@ -53,8 +53,7 @@ const PLEMOL_BOLD_I: &[u8] = include_bytes!("../assets/fonts/PlemolJPConsoleNF-B
 
 // ── PlemolJP 35Console NF (Latin 0.6:1.0、 family="VPMono35") ──────────────────
 const PLEMOL35_THIN: &[u8] = include_bytes!("../assets/fonts/PlemolJP35ConsoleNF-Thin.ttf");
-const PLEMOL35_THIN_I: &[u8] =
-    include_bytes!("../assets/fonts/PlemolJP35ConsoleNF-ThinItalic.ttf");
+const PLEMOL35_THIN_I: &[u8] = include_bytes!("../assets/fonts/PlemolJP35ConsoleNF-ThinItalic.ttf");
 const PLEMOL35_EXTRALIGHT: &[u8] =
     include_bytes!("../assets/fonts/PlemolJP35ConsoleNF-ExtraLight.ttf");
 const PLEMOL35_EXTRALIGHT_I: &[u8] =
@@ -63,20 +62,17 @@ const PLEMOL35_LIGHT: &[u8] = include_bytes!("../assets/fonts/PlemolJP35ConsoleN
 const PLEMOL35_LIGHT_I: &[u8] =
     include_bytes!("../assets/fonts/PlemolJP35ConsoleNF-LightItalic.ttf");
 const PLEMOL35_TEXT: &[u8] = include_bytes!("../assets/fonts/PlemolJP35ConsoleNF-Text.ttf");
-const PLEMOL35_TEXT_I: &[u8] =
-    include_bytes!("../assets/fonts/PlemolJP35ConsoleNF-TextItalic.ttf");
+const PLEMOL35_TEXT_I: &[u8] = include_bytes!("../assets/fonts/PlemolJP35ConsoleNF-TextItalic.ttf");
 const PLEMOL35_REGULAR: &[u8] = include_bytes!("../assets/fonts/PlemolJP35ConsoleNF-Regular.ttf");
 const PLEMOL35_ITALIC: &[u8] = include_bytes!("../assets/fonts/PlemolJP35ConsoleNF-Italic.ttf");
 const PLEMOL35_MEDIUM: &[u8] = include_bytes!("../assets/fonts/PlemolJP35ConsoleNF-Medium.ttf");
 const PLEMOL35_MEDIUM_I: &[u8] =
     include_bytes!("../assets/fonts/PlemolJP35ConsoleNF-MediumItalic.ttf");
-const PLEMOL35_SEMIBOLD: &[u8] =
-    include_bytes!("../assets/fonts/PlemolJP35ConsoleNF-SemiBold.ttf");
+const PLEMOL35_SEMIBOLD: &[u8] = include_bytes!("../assets/fonts/PlemolJP35ConsoleNF-SemiBold.ttf");
 const PLEMOL35_SEMIBOLD_I: &[u8] =
     include_bytes!("../assets/fonts/PlemolJP35ConsoleNF-SemiBoldItalic.ttf");
 const PLEMOL35_BOLD: &[u8] = include_bytes!("../assets/fonts/PlemolJP35ConsoleNF-Bold.ttf");
-const PLEMOL35_BOLD_I: &[u8] =
-    include_bytes!("../assets/fonts/PlemolJP35ConsoleNF-BoldItalic.ttf");
+const PLEMOL35_BOLD_I: &[u8] = include_bytes!("../assets/fonts/PlemolJP35ConsoleNF-BoldItalic.ttf");
 
 /// `vp-asset://` 経路で配信する font 一覧 (32 entries = 16 weights × 2 series)。
 /// 不要 weight は将来 trim 可、 path は JS variants 配列と一致させる必要がある。
@@ -85,7 +81,11 @@ pub const FONT_ASSETS: &[(&str, &[u8], &str)] = &[
     ("font/plemol-thin.ttf", PLEMOL_THIN, "font/ttf"),
     ("font/plemol-thinitalic.ttf", PLEMOL_THIN_I, "font/ttf"),
     ("font/plemol-extralight.ttf", PLEMOL_EXTRALIGHT, "font/ttf"),
-    ("font/plemol-extralightitalic.ttf", PLEMOL_EXTRALIGHT_I, "font/ttf"),
+    (
+        "font/plemol-extralightitalic.ttf",
+        PLEMOL_EXTRALIGHT_I,
+        "font/ttf",
+    ),
     ("font/plemol-light.ttf", PLEMOL_LIGHT, "font/ttf"),
     ("font/plemol-lightitalic.ttf", PLEMOL_LIGHT_I, "font/ttf"),
     ("font/plemol-text.ttf", PLEMOL_TEXT, "font/ttf"),
@@ -95,24 +95,48 @@ pub const FONT_ASSETS: &[(&str, &[u8], &str)] = &[
     ("font/plemol-medium.ttf", PLEMOL_MEDIUM, "font/ttf"),
     ("font/plemol-mediumitalic.ttf", PLEMOL_MEDIUM_I, "font/ttf"),
     ("font/plemol-semibold.ttf", PLEMOL_SEMIBOLD, "font/ttf"),
-    ("font/plemol-semibolditalic.ttf", PLEMOL_SEMIBOLD_I, "font/ttf"),
+    (
+        "font/plemol-semibolditalic.ttf",
+        PLEMOL_SEMIBOLD_I,
+        "font/ttf",
+    ),
     ("font/plemol-bold.ttf", PLEMOL_BOLD, "font/ttf"),
     ("font/plemol-bolditalic.ttf", PLEMOL_BOLD_I, "font/ttf"),
     // VPMono35 = PlemolJP 35Console NF (16 variants)
     ("font/plemol35-thin.ttf", PLEMOL35_THIN, "font/ttf"),
     ("font/plemol35-thinitalic.ttf", PLEMOL35_THIN_I, "font/ttf"),
-    ("font/plemol35-extralight.ttf", PLEMOL35_EXTRALIGHT, "font/ttf"),
-    ("font/plemol35-extralightitalic.ttf", PLEMOL35_EXTRALIGHT_I, "font/ttf"),
+    (
+        "font/plemol35-extralight.ttf",
+        PLEMOL35_EXTRALIGHT,
+        "font/ttf",
+    ),
+    (
+        "font/plemol35-extralightitalic.ttf",
+        PLEMOL35_EXTRALIGHT_I,
+        "font/ttf",
+    ),
     ("font/plemol35-light.ttf", PLEMOL35_LIGHT, "font/ttf"),
-    ("font/plemol35-lightitalic.ttf", PLEMOL35_LIGHT_I, "font/ttf"),
+    (
+        "font/plemol35-lightitalic.ttf",
+        PLEMOL35_LIGHT_I,
+        "font/ttf",
+    ),
     ("font/plemol35-text.ttf", PLEMOL35_TEXT, "font/ttf"),
     ("font/plemol35-textitalic.ttf", PLEMOL35_TEXT_I, "font/ttf"),
     ("font/plemol35-regular.ttf", PLEMOL35_REGULAR, "font/ttf"),
     ("font/plemol35-italic.ttf", PLEMOL35_ITALIC, "font/ttf"),
     ("font/plemol35-medium.ttf", PLEMOL35_MEDIUM, "font/ttf"),
-    ("font/plemol35-mediumitalic.ttf", PLEMOL35_MEDIUM_I, "font/ttf"),
+    (
+        "font/plemol35-mediumitalic.ttf",
+        PLEMOL35_MEDIUM_I,
+        "font/ttf",
+    ),
     ("font/plemol35-semibold.ttf", PLEMOL35_SEMIBOLD, "font/ttf"),
-    ("font/plemol35-semibolditalic.ttf", PLEMOL35_SEMIBOLD_I, "font/ttf"),
+    (
+        "font/plemol35-semibolditalic.ttf",
+        PLEMOL35_SEMIBOLD_I,
+        "font/ttf",
+    ),
     ("font/plemol35-bold.ttf", PLEMOL35_BOLD, "font/ttf"),
     ("font/plemol35-bolditalic.ttf", PLEMOL35_BOLD_I, "font/ttf"),
 ];
@@ -195,11 +219,28 @@ mod tests {
     #[test]
     fn font_assets_have_valid_entries() {
         assert!(!FONT_ASSETS.is_empty(), "FONT_ASSETS is empty");
-        assert_eq!(FONT_ASSETS.len(), 32, "expected 32 font variants (16 weights × 2 series)");
+        assert_eq!(
+            FONT_ASSETS.len(),
+            32,
+            "expected 32 font variants (16 weights × 2 series)"
+        );
         for (path, bytes, ct) in FONT_ASSETS {
-            assert!(path.starts_with("font/"), "asset path missing 'font/' prefix: {}", path);
-            assert!(bytes.len() > 1_000_000, "font {} suspiciously small: {} bytes", path, bytes.len());
-            assert_eq!(*ct, "font/ttf", "unexpected content-type for {}: {}", path, ct);
+            assert!(
+                path.starts_with("font/"),
+                "asset path missing 'font/' prefix: {}",
+                path
+            );
+            assert!(
+                bytes.len() > 1_000_000,
+                "font {} suspiciously small: {} bytes",
+                path,
+                bytes.len()
+            );
+            assert_eq!(
+                *ct, "font/ttf",
+                "unexpected content-type for {}: {}",
+                path, ct
+            );
             let sig = &bytes[..4];
             let valid = sig == [0x00, 0x01, 0x00, 0x00] || sig == b"OTTO" || sig == b"true";
             assert!(valid, "invalid font signature for {}: {:?}", path, sig);
@@ -220,8 +261,7 @@ mod tests {
 
     #[test]
     fn lookup_asset_chains_extra() {
-        const EXTRA: &[(&str, &[u8], &str)] =
-            &[("app/test.html", b"<html>x</html>", "text/html")];
+        const EXTRA: &[(&str, &[u8], &str)] = &[("app/test.html", b"<html>x</html>", "text/html")];
         let r = lookup_asset("vp-asset://app/test.html", EXTRA);
         assert!(r.is_some());
         let (bytes, ct) = r.unwrap();
@@ -248,13 +288,28 @@ mod tests {
     #[test]
     fn nerd_font_loader_js_lists_all_16_weights() {
         for v in &[
-            "thin", "thinitalic", "extralight", "extralightitalic",
-            "light", "lightitalic", "text", "textitalic",
-            "regular", "italic", "medium", "mediumitalic",
-            "semibold", "semibolditalic", "bold", "bolditalic",
+            "thin",
+            "thinitalic",
+            "extralight",
+            "extralightitalic",
+            "light",
+            "lightitalic",
+            "text",
+            "textitalic",
+            "regular",
+            "italic",
+            "medium",
+            "mediumitalic",
+            "semibold",
+            "semibolditalic",
+            "bold",
+            "bolditalic",
         ] {
-            assert!(NERD_FONT_LOADER_JS.contains(&format!("'{}'", v)),
-                "JS loader missing variant: {}", v);
+            assert!(
+                NERD_FONT_LOADER_JS.contains(&format!("'{}'", v)),
+                "JS loader missing variant: {}",
+                v
+            );
         }
     }
 }

@@ -362,11 +362,7 @@ impl TheWorldClient {
     /// Phase 3-A: SP に Worker Lane を create (`POST /api/lanes`)。
     /// `branch` 指定時は SP が `ccws new <name> <branch>` で worker dir を作成して spawn する。
     /// `base_url` は SP の URL (例: `http://127.0.0.1:33002`) を指定。
-    pub async fn create_worker_lane(
-        &self,
-        name: &str,
-        branch: Option<&str>,
-    ) -> Result<()> {
+    pub async fn create_worker_lane(&self, name: &str, branch: Option<&str>) -> Result<()> {
         let url = format!("{}/api/lanes", self.base_url);
         let mut body = serde_json::json!({
             "kind": "worker",

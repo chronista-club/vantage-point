@@ -124,11 +124,7 @@ for w in windows {{
         })
     }
 
-    fn capture_rect(
-        &self,
-        rect: Rect,
-        output: Option<PathBuf>,
-    ) -> Result<CaptureResult, String> {
+    fn capture_rect(&self, rect: Rect, output: Option<PathBuf>) -> Result<CaptureResult, String> {
         let started = std::time::Instant::now();
         let path = output.unwrap_or_else(super::default_output_path);
         if let Some(parent) = path.parent() {

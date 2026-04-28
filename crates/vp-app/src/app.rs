@@ -281,12 +281,18 @@ const SIDEBAR_HTML: &str = concat!(
   let pendingState = null;
   let domReady = false;
 
+  // Phase 5-D fix: ephemeral UI state を re-render を跨いで保持。
+  //  full DOM rebuild (`root.innerHTML = ''`) で form の expanded class が消える問題を回避。
+  //  Set 内に project path があれば `<vp-add-worker-form>` を expanded として再構成。
+  const addWorkerOpen = new Set();
+
   // ipc 送信 wrapper (window.ipc は wry が提供)
   function send(msg) {
     if (window.ipc && window.ipc.postMessage) {
       window.ipc.postMessage(JSON.stringify(msg));
     }
   }
+
 
   // unix 時刻 ISO → "Xh Ym ago" 風文字列
   function formatStartedAt(iso) {
@@ -547,13 +553,21 @@ const SIDEBAR_HTML: &str = concat!(
             '<button class="creo-btn" data-variant="secondary" data-size="sm" data-action="cancel">Cancel</button>' +
             '<button class="creo-btn" data-variant="primary" data-size="sm" data-action="submit">Create</button>' +
           '</div>';
+        // Phase 5-D fix: form 開閉状態を addWorkerOpen Set に永続化。
+        //  re-render で DOM 再生成されても、 Set に path があれば expanded を維持。
+        if (addWorkerOpen.has(p.path)) addForm.classList.add('expanded');
         addWorker.addEventListener('click', () => {
+          addWorkerOpen.add(p.path);
           addForm.classList.add('expanded');
           const nameInput = addForm.querySelector('input[data-field="name"]');
           if (nameInput) setTimeout(() => nameInput.focus(), 50);
         });
         const cancelBtn = addForm.querySelector('button[data-action="cancel"]');
         const submitBtn = addForm.querySelector('button[data-action="submit"]');
+        const closeForm = () => {
+          addWorkerOpen.delete(p.path);
+          addForm.classList.remove('expanded');
+        };
         const submit = () => {
           const nameInput = addForm.querySelector('input[data-field="name"]');
           const branchInput = addForm.querySelector('input[data-field="branch"]');
@@ -561,16 +575,16 @@ const SIDEBAR_HTML: &str = concat!(
           const branchVal = (branchInput && branchInput.value || '').trim();
           if (!nameVal) return;
           send({t: 'lane:add_worker', path: p.path, name: nameVal, branch: branchVal || null});
-          addForm.classList.remove('expanded');
+          closeForm();
           if (nameInput) nameInput.value = '';
           if (branchInput) branchInput.value = '';
         };
-        if (cancelBtn) cancelBtn.addEventListener('click', () => addForm.classList.remove('expanded'));
+        if (cancelBtn) cancelBtn.addEventListener('click', closeForm);
         if (submitBtn) submitBtn.addEventListener('click', submit);
         addForm.querySelectorAll('input').forEach(inp => {
           inp.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') { e.preventDefault(); submit(); }
-            else if (e.key === 'Escape') { e.preventDefault(); addForm.classList.remove('expanded'); }
+            else if (e.key === 'Escape') { e.preventDefault(); closeForm(); }
           });
         });
         content.appendChild(addWorker);
@@ -1465,6 +1479,10 @@ struct SidebarIpcOutcome {
     /// Phase 5-C: Process restart 要求 `(project_name)`。
     /// caller が TheWorld の `/api/world/processes/{name}/restart` を呼ぶ。
     restart_process_request: Option<String>,
+    /// Phase 5-D fix: SP auto-spawn dedup HashSet から path を release する要求。
+    /// 「accordion を閉じる」 = 「ユーザが retry を望んでいる」 と解釈、 失敗ループの
+    /// dedup deadlock を抜けられるようにする。 caller は `sp_spawn_triggered.remove(path)` を呼ぶ。
+    sp_spawn_release: Option<String>,
 }
 
 /// sidebar webview から IPC で受け取った JSON を解釈し、`SidebarState` を mutate。
@@ -1504,6 +1522,12 @@ fn handle_sidebar_ipc(msg: &str, state: &mut SidebarState) -> SidebarIpcOutcome 
                 }
                 if new_state && p.state.as_deref() == Some("dead") {
                     out.sp_spawn_request = Some((p.name.clone(), p.path.clone()));
+                }
+                // Phase 5-D fix: accordion を閉じた = 「retry したい」signal と解釈、
+                //  sp_spawn_triggered HashSet の entry を release。 これで spawn 失敗ループから
+                //  抜けられる (collapse → expand で確実に retry が走る)。
+                if !new_state {
+                    out.sp_spawn_release = Some(p.path.clone());
                 }
             }
         }
@@ -1678,9 +1702,21 @@ pub fn run() -> anyhow::Result<()> {
     // Phase 5-C: log filter の noise 抑制 (2026-04-28 観測: 23MB log の 70% が hyper_util::pool、
     //   25% が vp_app::terminal の PTY I/O event だった)。 vp_app の他モジュールは info で残し、
     //   noise 源を warn まで上げる。 必要なら RUST_LOG 環境変数で override 可。
-    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        "vp_app=info,vp_app::terminal=warn,hyper_util=warn,reqwest=warn".into()
-    });
+    //
+    // Phase 5-D fix: ユーザ shell の `RUST_LOG=vantage_point=debug` 等が `try_from_default_env` で
+    //   default を完全 override してしまい、 hyper_util の debug log が大量に残っていた。
+    //   読み込み後に `add_directive` で noise 源を強制 warn 上書きする (same-target は replace)。
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| {
+            tracing_subscriber::EnvFilter::new(
+                "vp_app=info,vp_app::terminal=warn,vantage_point=info",
+            )
+        })
+        .add_directive("hyper_util=warn".parse().expect("static directive"))
+        .add_directive("hyper=warn".parse().expect("static directive"))
+        .add_directive("reqwest=warn".parse().expect("static directive"))
+        .add_directive("h2=warn".parse().expect("static directive"))
+        .add_directive("rustls=warn".parse().expect("static directive"));
     let _ = tracing_subscriber::registry()
         .with(env_filter)
         .with(
@@ -2120,29 +2156,62 @@ pub fn run() -> anyhow::Result<()> {
                         tracing::debug!("SP auto-spawn skip (既 trigger): {}", path);
                     }
                 }
+                // Phase 5-D fix: accordion 閉じた → dedup HashSet から path を release。
+                //  spawn 失敗で entry が居残ったまま user が collapse → expand すれば確実に retry。
+                if let Some(path) = outcome.sp_spawn_release
+                    && sp_spawn_triggered.remove(&path)
+                {
+                    tracing::info!(
+                        "SP auto-spawn dedup released (accordion collapse): {}",
+                        path
+                    );
+                }
                 // Phase 5-C: Process restart 要求 (sidebar の 🔄 button から)
+                // Phase 5-D fix: bare `tokio::spawn` は wry main thread (= tokio runtime context 無)
+                //   から呼ぶと panic 即死。 他の async handler と同じく
+                //   `thread::Builder::spawn + Builder::new_current_thread + rt.block_on` にする。
                 if let Some(project_name) = outcome.restart_process_request {
                     let proxy = async_action_proxy.clone();
-                    tokio::spawn(async move {
-                        // TheWorld port は固定 32000 (vantage_point::cli::WORLD_PORT と同期)
-                        let client = crate::client::TheWorldClient::new(32000);
-                        match client.restart_process(&project_name).await {
-                            Ok(()) => {
-                                tracing::info!("restart_process OK: {}", project_name);
-                                // 完了 → projects 再 fetch → sidebar state badge 更新
-                                if let Ok(projects) = client.list_projects().await {
-                                    let _ = proxy.send_event(AppEvent::ProcessesLoaded(projects));
+                    let project_name_clone = project_name.clone();
+                    thread::Builder::new()
+                        .name(format!("restart-{}", project_name))
+                        .spawn(move || {
+                            let rt = match tokio::runtime::Builder::new_current_thread()
+                                .enable_all()
+                                .build()
+                            {
+                                Ok(rt) => rt,
+                                Err(e) => {
+                                    tracing::warn!("restart_process tokio runtime: {}", e);
+                                    return;
                                 }
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    "restart_process failed for {}: {}",
-                                    project_name,
-                                    e
-                                );
-                            }
-                        }
-                    });
+                            };
+                            rt.block_on(async move {
+                                // TheWorld port は固定 32000 (vantage_point::cli::WORLD_PORT と同期)
+                                let client = crate::client::TheWorldClient::new(32000);
+                                match client.restart_process(&project_name_clone).await {
+                                    Ok(()) => {
+                                        tracing::info!(
+                                            "restart_process OK: {}",
+                                            project_name_clone
+                                        );
+                                        // 完了 → projects 再 fetch → sidebar state badge 更新
+                                        if let Ok(projects) = client.list_projects().await {
+                                            let _ = proxy
+                                                .send_event(AppEvent::ProcessesLoaded(projects));
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            "restart_process failed for {}: {}",
+                                            project_name_clone,
+                                            e
+                                        );
+                                    }
+                                }
+                            });
+                        })
+                        .ok();
                 }
                 // Phase 4-A: Worker Lane 削除要求 (sidebar の × button から)
                 if let Some((project_path, address)) = outcome.delete_lane_request {
@@ -2368,7 +2437,6 @@ pub fn run() -> anyhow::Result<()> {
     });
 }
 
-
 #[cfg(test)]
 mod sidebar_html_tests {
     //! Phase 5-C: SIDEBAR_HTML の組み立て構造検証。
@@ -2407,13 +2475,22 @@ mod sidebar_html_tests {
     /// NERD_FONT_LOADER_JS 主要要素が SIDEBAR_HTML に embed されている
     #[test]
     fn nerd_font_loader_embedded() {
-        assert!(SIDEBAR_HTML.contains("new FontFace("), "FontFace constructor not found");
+        assert!(
+            SIDEBAR_HTML.contains("new FontFace("),
+            "FontFace constructor not found"
+        );
         assert!(
             SIDEBAR_HTML.contains("vp-asset://font/"),
             "vp-asset:// font URL pattern not found"
         );
-        assert!(SIDEBAR_HTML.contains("document.fonts.add"), "document.fonts.add not found");
-        assert!(SIDEBAR_HTML.contains("VPMono"), "VPMono family name not found");
+        assert!(
+            SIDEBAR_HTML.contains("document.fonts.add"),
+            "document.fonts.add not found"
+        );
+        assert!(
+            SIDEBAR_HTML.contains("VPMono"),
+            "VPMono family name not found"
+        );
     }
 
     /// .nf-icon CSS rule が VPMono direct 宣言を使ってる (var() indirection 経由ではない)
@@ -2428,10 +2505,7 @@ mod sidebar_html_tests {
     /// SIDEBAR_ASSETS で sidebar.html が `web_assets::lookup_asset` 経由で取れる
     #[test]
     fn sidebar_html_servable_via_vp_asset() {
-        let r = crate::web_assets::lookup_asset(
-            "vp-asset://app/sidebar.html",
-            SIDEBAR_ASSETS,
-        );
+        let r = crate::web_assets::lookup_asset("vp-asset://app/sidebar.html", SIDEBAR_ASSETS);
         assert!(r.is_some(), "sidebar.html not lookupable via vp-asset://");
         let (bytes, ct) = r.unwrap();
         assert_eq!(ct, "text/html; charset=utf-8");

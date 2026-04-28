@@ -189,13 +189,9 @@ impl LanePool {
         let cmd =
             crate::process::stand_spawner::build_stand_command(stand, std::path::Path::new(&cwd));
 
-        // A5-2: PtySlot::spawn で実 PTY + child process 起動
-        let (state, pid) = match crate::daemon::pty_slot::PtySlot::spawn(
-            &cwd,
-            &cmd.program,
-            &cmd.args,
-            80,
-            24,
+        // Phase 5-D: spawn_with_fallback で `claude --continue` 早期 exit 時に空 args で retry。
+        let (state, pid) = match crate::process::stand_spawner::spawn_with_fallback(
+            &cwd, &cmd, 80, 24,
         ) {
             Ok((slot, _rx)) => {
                 let pid = slot.pid();
@@ -254,13 +250,8 @@ impl LanePool {
     }
 
     /// Phase 3-A: 既に spawn 済の PtySlot を Lane address 紐付けで insert (Worker create で使う)
-    pub fn insert_pty_slot(
-        &mut self,
-        addr: LaneAddress,
-        slot: crate::daemon::pty_slot::PtySlot,
-    ) {
-        self.pty_slots
-            .insert(addr, std::sync::Mutex::new(slot));
+    pub fn insert_pty_slot(&mut self, addr: LaneAddress, slot: crate::daemon::pty_slot::PtySlot) {
+        self.pty_slots.insert(addr, std::sync::Mutex::new(slot));
     }
 
     pub fn remove(&mut self, addr: &LaneAddress) -> Option<LaneInfo> {

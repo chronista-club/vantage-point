@@ -6,8 +6,8 @@
 //! settings file に永続化、runtime で即時切替 (`Open Developer Tools` の有効/無効が連動)。
 
 use muda::{
-    accelerator::{Accelerator, Code, Modifiers},
     CheckMenuItem, Menu, MenuId, MenuItem, PredefinedMenuItem, Submenu,
+    accelerator::{Accelerator, Code, Modifiers},
 };
 
 /// MenuEvent dispatch で使う MenuId 群

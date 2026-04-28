@@ -48,8 +48,7 @@ pub async fn list_handler(State(state): State<Arc<AppState>>) -> impl IntoRespon
         if matches!(lane.kind, crate::process::lanes_state::LaneKind::Worker) {
             let path = std::path::Path::new(&lane.cwd);
             if path.exists() && path.join(".git").exists() {
-                lane.worker_status =
-                    Some(crate::ccws::commands::worker_status(path));
+                lane.worker_status = Some(crate::ccws::commands::worker_status(path));
             }
         }
     }
@@ -170,17 +169,11 @@ pub async fn create_handler(
     // PtySlot::spawn は openpty + spawn_command の OS syscall でブロッキング。
     // Phase review fix #2: tokio worker thread を占有しないよう spawn_blocking でラップ。
     // Phase 4-X の ccws clone と同じ pattern。
-    let cmd =
-        crate::process::stand_spawner::build_stand_command(stand, std::path::Path::new(&cwd));
+    let cmd = crate::process::stand_spawner::build_stand_command(stand, std::path::Path::new(&cwd));
     let cwd_for_spawn = cwd.clone();
+    // Phase 5-D: spawn_with_fallback で `claude --continue` 早期 exit 時に空 args で retry。
     let spawn_result = tokio::task::spawn_blocking(move || {
-        crate::daemon::pty_slot::PtySlot::spawn(
-            &cwd_for_spawn,
-            &cmd.program,
-            &cmd.args,
-            80,
-            24,
-        )
+        crate::process::stand_spawner::spawn_with_fallback(&cwd_for_spawn, &cmd, 80, 24)
     })
     .await
     .map_err(|e| {

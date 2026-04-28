@@ -141,11 +141,7 @@ pub trait Capture: Send + Sync {
     /// 画面座標 (logical px) の任意矩形を capture。 window 全体ではなく sub-region 用。
     /// `Rect.x/y` は screen 座標 (window 左上 + 相対 offset 計算済み)。
     /// `--region sidebar` 等の名付き region も内部でこの API に解決される。
-    fn capture_rect(
-        &self,
-        rect: Rect,
-        output: Option<PathBuf>,
-    ) -> Result<CaptureResult, String>;
+    fn capture_rect(&self, rect: Rect, output: Option<PathBuf>) -> Result<CaptureResult, String>;
 }
 
 /// 名付き region を window 内 sub-rect に解決。 unknown name は None。
@@ -200,11 +196,7 @@ pub fn default_backend() -> Box<dyn Capture> {
             ) -> Result<CaptureResult, String> {
                 Err("screenshot: this OS is not supported".into())
             }
-            fn capture_rect(
-                &self,
-                _: Rect,
-                _: Option<PathBuf>,
-            ) -> Result<CaptureResult, String> {
+            fn capture_rect(&self, _: Rect, _: Option<PathBuf>) -> Result<CaptureResult, String> {
                 Err("screenshot: this OS is not supported".into())
             }
         }
@@ -290,7 +282,10 @@ mod tests {
             title_match: None,
         };
         let r = pick_window(&windows, &f).unwrap();
-        assert_eq!(r.id, 2, "expected titled window to win over untitled larger");
+        assert_eq!(
+            r.id, 2,
+            "expected titled window to win over untitled larger"
+        );
     }
 
     #[test]

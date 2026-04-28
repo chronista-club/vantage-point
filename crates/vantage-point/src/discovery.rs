@@ -200,6 +200,14 @@ pub fn spawn_registry_keepalive(
         "tmux_session": tmux_session,
     });
 
+    // Phase 5-D: exponential backoff for reconnect resilience。
+    //  TheWorld 復活時に **全 SP が同時に殺到して thundering herd** になるのを避ける。
+    //  1s → 2s → 4s → 8s → 16s → 32s → 60s (cap) の順、 接続成功で 1s に reset。
+    //  Stand-side initiated reconnect (Mako 設計方針 2026-04-28)。
+    const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
+    const MAX_BACKOFF: Duration = Duration::from_secs(60);
+    let mut backoff = INITIAL_BACKOFF;
+
     tokio::spawn(async move {
         loop {
             // TheWorld に QUIC 接続
@@ -210,6 +218,8 @@ pub fn spawn_registry_keepalive(
                         project_name,
                         port
                     );
+                    // 成功で backoff reset (次の disconnect 時に 1s からやり直し)
+                    backoff = INITIAL_BACKOFF;
 
                     // Heartbeat ループ（15秒間隔）
                     // conn（ProtocolClient + UnisonChannel）はこのスコープで保持
@@ -242,11 +252,17 @@ pub fn spawn_registry_keepalive(
                     }
                 }
                 Err(e) => {
-                    tracing::debug!("Registry: TheWorld 接続失敗 ({}), 5秒後にリトライ", e);
+                    tracing::debug!(
+                        "Registry: TheWorld 接続失敗 ({}), {}秒後にリトライ (exp backoff)",
+                        e,
+                        backoff.as_secs()
+                    );
                     tokio::select! {
-                        _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+                        _ = tokio::time::sleep(backoff) => {}
                         _ = shutdown.cancelled() => return,
                     }
+                    // Exponential: 次回は倍、 ただし MAX_BACKOFF cap
+                    backoff = std::cmp::min(backoff * 2, MAX_BACKOFF);
                 }
             }
         }

@@ -64,11 +64,7 @@ impl Layout {
 /// 全 frame が同 size 前提 (vp shot --series で同 Rect から撮ってるので保証済)。
 /// layout が Matrix(cols, rows) で `cols * rows < frames.len()` の場合、 余り frame は無視。
 /// 余り cell (frames.len() < cols * rows) は黒で残る。
-pub fn compose(
-    frames: &[PathBuf],
-    layout: Layout,
-    output: &Path,
-) -> Result<(u32, u32), String> {
+pub fn compose(frames: &[PathBuf], layout: Layout, output: &Path) -> Result<(u32, u32), String> {
     if frames.is_empty() {
         return Err("compose: no frames provided".into());
     }
@@ -88,8 +84,7 @@ pub fn compose(
         let img = if i == 0 {
             first.clone()
         } else {
-            image::open(frame_path)
-                .map_err(|e| format!("open {}: {}", frame_path.display(), e))?
+            image::open(frame_path).map_err(|e| format!("open {}: {}", frame_path.display(), e))?
         };
         let col = i as u32 % cols;
         let row = i as u32 / cols;
@@ -126,7 +121,10 @@ mod tests {
 
     #[test]
     fn layout_parse_vertical() {
-        assert!(matches!(Layout::parse("vertical").unwrap(), Layout::Vertical));
+        assert!(matches!(
+            Layout::parse("vertical").unwrap(),
+            Layout::Vertical
+        ));
         assert!(matches!(Layout::parse("v").unwrap(), Layout::Vertical));
     }
 

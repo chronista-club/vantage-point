@@ -20,13 +20,65 @@
 
 use std::path::Path;
 
+use anyhow::Result;
+use tokio::sync::broadcast;
+
 use super::lanes_state::LaneStand;
+use crate::daemon::pty_slot::PtySlot;
 
 /// Stand spawn 用 command (binary + args)
 #[derive(Debug, Clone)]
 pub struct StandCommand {
     pub program: String,
     pub args: Vec<String>,
+    /// Phase 5-D: primary spawn が早期 exit した時に試す fallback args。
+    ///  HD の `--continue` が前 session corrupt 等で起動しない時に空 args (= 新規 session) で再試行。
+    ///  `None` なら fallback 無し (= 失敗 = error 返却)。
+    pub fallback_args: Option<Vec<String>>,
+}
+
+/// 早期 exit 検知の wait 時間 (ms)。 観測 (gfp-cad で `claude --continue` が 2ms で exit) より十分な値。
+///  小さすぎると検知漏れ、 大きすぎると spawn 全体の latency 悪化。 800ms は経験則的 sweet spot。
+const EARLY_EXIT_CHECK_MS: u64 = 800;
+
+/// `StandCommand` を spawn、 primary が `EARLY_EXIT_CHECK_MS` 以内に死んだら fallback で retry。
+///
+/// Phase 5-D: `claude --continue` failure (例: session corrupt) → `claude` (新規 session) で
+///  Lane を救済する。 caller (lanes.rs / lanes_state.rs) は通常の `PtySlot::spawn` 同様に使える。
+pub fn spawn_with_fallback(
+    cwd: &str,
+    cmd: &StandCommand,
+    cols: u16,
+    rows: u16,
+) -> Result<(PtySlot, broadcast::Receiver<Vec<u8>>)> {
+    let (mut slot, rx) = PtySlot::spawn(cwd, &cmd.program, &cmd.args, cols, rows)?;
+
+    // primary が早期 exit するか peek
+    std::thread::sleep(std::time::Duration::from_millis(EARLY_EXIT_CHECK_MS));
+
+    if slot.is_alive() {
+        return Ok((slot, rx));
+    }
+
+    let Some(fb_args) = cmd.fallback_args.as_ref() else {
+        // fallback 無し → primary 死亡をそのまま error に格上げ (caller graceful degrade)
+        anyhow::bail!(
+            "Stand spawn early-exit (no fallback): program={} args={:?}",
+            cmd.program,
+            cmd.args
+        );
+    };
+
+    tracing::warn!(
+        "Stand primary spawn early-exit, fallback to args={:?}: program={}",
+        fb_args,
+        cmd.program
+    );
+
+    drop(slot); // 死亡 slot を Drop で kill+wait
+    drop(rx);
+
+    PtySlot::spawn(cwd, &cmd.program, fb_args, cols, rows)
 }
 
 /// LaneStand に応じた spawn command を構築
@@ -48,6 +100,8 @@ fn build_heavens_door_command() -> StandCommand {
     StandCommand {
         program: "claude".to_string(),
         args: vec!["--continue".to_string()],
+        // Phase 5-D: `--continue` 失敗時 (session corrupt 等) は新規 session で fallback。
+        fallback_args: Some(vec![]),
     }
 }
 
@@ -66,6 +120,8 @@ fn build_the_hand_command() -> StandCommand {
     StandCommand {
         program: shell,
         args: vec!["-l".to_string()],
+        // shell 起動失敗は何 fallback しても無理 (PATH / OS issue) なので None。
+        fallback_args: None,
     }
 }
 
