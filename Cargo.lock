@@ -9379,6 +9379,7 @@ dependencies = [
  "uuid",
  "vp-db",
  "vte",
+ "windows 0.61.3",
 ]
 
 [[package]]
