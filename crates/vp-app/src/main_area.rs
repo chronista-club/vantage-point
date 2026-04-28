@@ -428,8 +428,16 @@ body{overflow:hidden;}
       ws.onopen = () => {
         dbg('[lane:' + address + '] ws open');
         if (conn.retryCount > 0) {
-          // reconnect 成功 ─ user に明示
-          term.write('\r\n\x1b[32m[lane:' + address + '] reconnected\x1b[0m\r\n');
+          // reconnect: server は always full scrollback を replay する設計 (PR #218 で
+          //  WS auto-reconnect 導入後、 reconnect ごとに重複 scrollback が来る)。
+          //  既存 rendered state に scrollback を上書きすると、 同 ANSI sequence
+          //  (cursor positioning / erase / scroll 等) が二度処理されて render state が drift、
+          //  結果として ghost characters (mem_1CaVpvsBKR3ckieRXo1nwr) が出る。
+          //  対策: term.reset() で xterm.js を clean canvas に戻し、 直後の scrollback replay で
+          //  ground truth state を再構築する。 失う物は xterm.js own scrollback (history) のみ、
+          //  server 側 scrollback (256KB) は保持されるので次回 full attach で復活。
+          term.reset();
+          term.write('\x1b[32m[lane:' + address + '] reconnected\x1b[0m\r\n');
         }
         conn.retryCount = 0;
         try { fitAddon.fit(); } catch (_) {}
