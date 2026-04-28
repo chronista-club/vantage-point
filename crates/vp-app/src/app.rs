@@ -84,9 +84,11 @@ pub const CREO_TOKENS_CSS: &str = include_str!("../assets/creo-tokens.css");
 ///
 /// state は `window.renderSidebarState(state)` で Rust → JS に push される。
 /// クリック操作は `window.ipc.postMessage(JSON)` で Rust に送信:
-///   - `{"t":"process:toggle","path":"...","expanded":true|false}`
-///   - `{"t":"lane:select","path":"...","address":"<project>/lead"}`
-///   - `{"t":"process:add"}` / `{"t":"process:clone","url":"..."}`
+///
+/// - `{"t":"process:toggle","path":"...","expanded":true|false}`
+/// - `{"t":"lane:select","path":"...","address":"<project>/lead"}`
+/// - `{"t":"process:add"}` / `{"t":"process:clone","url":"..."}`
+///
 /// Phase 5-C: sidebar HTML を `vp-asset://app/sidebar.html` で配信するための extra entry。
 /// font 群は `web_assets::FONT_ASSETS` 側で揃ってるので、 ここは sidebar 固有の HTML 1 個のみ。
 /// `web_assets::serve()` が FONT_ASSETS と chain して両方 lookup する。

@@ -161,18 +161,17 @@ async fn handle_terminal_socket_lane(
     );
 
     // initial bytes を先に送出 (Phase 2.x-c: scrollback replay)
-    if !initial_bytes.is_empty() {
-        if sender
+    if !initial_bytes.is_empty()
+        && sender
             .send(Message::Binary(initial_bytes.into()))
             .await
             .is_err()
-        {
-            tracing::warn!(
-                "/ws/terminal lane={} initial flush 送出失敗、 disconnect",
-                addr
-            );
-            return;
-        }
+    {
+        tracing::warn!(
+            "/ws/terminal lane={} initial flush 送出失敗、 disconnect",
+            addr
+        );
+        return;
     }
 
     // 初期 resize は client 側 cols/rows で更新 (xterm.js が ready 時 sendResize するが

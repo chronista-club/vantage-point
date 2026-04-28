@@ -46,36 +46,26 @@ impl fmt::Display for LaneKind {
 ///
 /// - Lead/Worker: HD (default) or TH の 2 択
 /// - PP/GE/HP は **Lane の中身ではない** (Project scope の Stand)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LaneStand {
     /// HD 📖 Heaven's Door — Claude CLI (default)
+    /// memory rule: Lead/Worker default は HD
+    #[default]
     HeavensDoor,
     /// TH ✋ The Hand — 素 shell
     TheHand,
 }
 
-impl Default for LaneStand {
-    fn default() -> Self {
-        // memory rule: Lead/Worker default は HD
-        LaneStand::HeavensDoor
-    }
-}
-
 /// Lane の state machine 状態 (Phase A4-2b では Running 固定で pre-populate)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LaneState {
     Spawning,
+    #[default]
     Running,
     Exiting,
     Dead,
-}
-
-impl Default for LaneState {
-    fn default() -> Self {
-        LaneState::Running
-    }
 }
 
 /// Lane の address — Pool key
