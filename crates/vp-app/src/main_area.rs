@@ -354,6 +354,48 @@ body{overflow:hidden;}
     // hidden 状態で fit すると 0 cols になるので、 showLane の active 化後にも fit を呼ぶ
     try { fitAddon.fit(); } catch (_) {}
 
+    // ===== OSC notification capture (Slice 1: capture-only、 UI は後続 PR) =====
+    // 3 codes 全部 cover ─ cc は terminal 検知して emit する code を切り替える可能性あり、
+    // defensive にすべて hook して dogfood 中に何が来るかを catalog 化する。
+    //
+    // - OSC 9  (iTerm2 / Windows Terminal style):
+    //     ESC ] 9 ; <message> BEL                ─ body only、 metadata 無し
+    //     ESC ] 9 ; <subcode> ; <args> BEL       ─ iTerm2 拡張 (9;2=notification 等)、 cwd reporting にも overload
+    // - OSC 99 (kitty notification protocol):
+    //     ESC ] 99 ; <metadata> ; <payload> ESC \\
+    //   metadata は colon-separated key=value (i=ID:d=0|1:p=title|body|close|...:a=focus|report:u=0|1|2 等)
+    //   multi-chunk: 同 i=ID で `d=0` (cont) / `d=1` (final) を使い分け、 final で commit。
+    // - OSC 777 (rxvt-unicode、 Ghostty / foot 等が踏襲):
+    //     ESC ] 777 ; notify ; <TITLE> ; <BODY> BEL
+    //
+    // observed (2026-04-29 dogfood): cc は vp-app に対して OSC 99 multi-chunk を emit している。
+    //   例: i=211:d=0:p=title;Claude Code → i=211:p=body;Claude is waiting for your input → i=211:d=1:a=focus;
+    //
+    // Phase S1 では capture が動くか確認するだけ ─ console.log + Rust tracing (`[xterm debug]` ログ) に流す。
+    // S2 で id-based accumulator + `d=1` で commit + IPC push、 S3 で sidebar tint UI。
+    try {
+      term.parser.registerOscHandler(9, (data) => {
+        const payload = String(data || '');
+        console.log('[OSC 9] lane=' + address + ' payload=' + JSON.stringify(payload));
+        dbg('[osc9:' + address + '] ' + payload);
+        return true;
+      });
+      term.parser.registerOscHandler(99, (data) => {
+        const payload = String(data || '');
+        console.log('[OSC 99] lane=' + address + ' payload=' + JSON.stringify(payload));
+        dbg('[osc99:' + address + '] ' + payload);
+        return true;
+      });
+      term.parser.registerOscHandler(777, (data) => {
+        const payload = String(data || '');
+        console.log('[OSC 777] lane=' + address + ' payload=' + JSON.stringify(payload));
+        dbg('[osc777:' + address + '] ' + payload);
+        return true;
+      });
+    } catch (e) {
+      console.warn('[xterm:' + address + '] OSC handler registration failed:', e);
+    }
+
     // ===== WebSocket: SP に直接接続 (Phase 2.5: Rust 側 mpsc 中継を撤去) =====
     // URL: ws://127.0.0.1:<sp_port>/ws/terminal?lane=<address>&cols=&rows=
     //
