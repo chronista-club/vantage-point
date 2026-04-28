@@ -83,51 +83,23 @@ pub fn spawn_with_fallback(
 
 /// LaneStand に応じた spawn command を構築
 ///
+/// Phase 6-E (VP-107): 内部実装を `LaneStandSpec` trait dispatch に委譲。
+/// wire format (`LaneStand` enum) は維持しつつ、 `to_spec()` adapter で trait object
+/// に変換、 `build()` を呼ぶ流れに統一。 caller (`lanes_state.rs` / `routes/lanes.rs`)
+/// は無変更で動作する (返り値の `StandCommand` shape 同一)。
+///
 /// `cwd` は将来 cwd-aware command (例: project_dir に応じた custom env) のため
-/// 受け取るが、A5-1 では未使用。
+/// 受け取るが、 6-E でも未使用 (Phase 6.5 の Lane manifest で活用予定)。
 pub fn build_stand_command(stand: LaneStand, _cwd: &Path) -> StandCommand {
-    match stand {
-        LaneStand::HeavensDoor => build_heavens_door_command(),
-        LaneStand::TheHand => build_the_hand_command(),
-    }
-}
-
-/// HD (Heaven's Door) = Claude CLI を起動
-///
-/// `claude --continue` を default、前 session が無ければ Claude CLI 側が新規 session に fall back。
-/// 関連 memory: feedback_hd_input_newline_on_restart で `\n` 混入 bug あり、続けて調査予定。
-fn build_heavens_door_command() -> StandCommand {
-    StandCommand {
-        program: "claude".to_string(),
-        args: vec!["--continue".to_string()],
-        // Phase 5-D: `--continue` 失敗時 (session corrupt 等) は新規 session で fallback。
-        fallback_args: Some(vec![]),
-    }
-}
-
-/// TH (The Hand) = 素 shell を login mode で起動
-///
-/// `$SHELL` (default `/bin/zsh`) + `-l` で `~/.zprofile`/`~/.zshrc` 連鎖を読み、
-/// mise / volta / nvm 等の PATH を rc 経由で取り込む。
-fn build_the_hand_command() -> StandCommand {
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| {
-        if cfg!(target_os = "macos") {
-            "/bin/zsh".to_string()
-        } else {
-            "/bin/bash".to_string()
-        }
-    });
-    StandCommand {
-        program: shell,
-        args: vec!["-l".to_string()],
-        // shell 起動失敗は何 fallback しても無理 (PATH / OS issue) なので None。
-        fallback_args: None,
-    }
+    stand.to_spec().build()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // wire-compat regression test: `LaneStand` enum 経由でも従来挙動が保たれる。
+    // 詳細な trait impl 単位 test は `stand_spec` module に存在。
 
     #[test]
     fn heavens_door_uses_claude_continue() {
