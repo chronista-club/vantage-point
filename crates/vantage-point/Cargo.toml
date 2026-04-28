@@ -172,6 +172,8 @@ objc2-core-foundation = "0.3"
 objc2-core-graphics = { version = "0.3", features = ["CGColor", "CGContext"] }
 
 # Windows native APIs (screenshot backend: EnumWindows + PrintWindow + GDI)
+# Note: PrintWindow / PRINT_WINDOW_FLAGS は 0.61 で `Win32::Storage::Xps` 配下にある
+# (Win32 metadata の API set 分類による。 Print = 印刷 API group)
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.61", features = [
     "Win32_Foundation",
@@ -179,7 +181,7 @@ windows = { version = "0.61", features = [
     "Win32_UI_HiDpi",
     "Win32_Graphics_Gdi",
     "Win32_System_Threading",
-    "Win32_System_ProcessStatus",
+    "Win32_Storage_Xps",
 ] }
 
 [dev-dependencies]
