@@ -254,6 +254,22 @@ const SIDEBAR_HTML: &str = concat!(
   .vp-project-restart{font-family:'VPMono',monospace;font-size:11px;color:var(--color-text-tertiary);padding:0 var(--spacing-xs);border-radius:3px;opacity:0;transition:opacity .12s ease,color .12s ease,background .12s ease;cursor:pointer;}
   .processes-section .creo-accordion-summary:hover .vp-project-restart{opacity:0.7;}
   .vp-project-restart:hover{color:var(--color-brand-primary);background:var(--color-brand-primary-subtle);opacity:1;}
+  /* Lane Lead Stand restart icon (Lane row hover で表示、 click → confirm dialog) */
+  .vp-lane-restart{font-family:'VPMono',monospace;font-size:11px;color:var(--color-text-tertiary);padding:0 var(--spacing-xs);border-radius:3px;opacity:0;transition:opacity .12s ease,color .12s ease,background .12s ease;cursor:pointer;margin-left:4px;}
+  .vp-lane-row:hover .vp-lane-restart{opacity:0.6;}
+  .vp-lane-restart:hover{color:var(--color-brand-primary);background:var(--color-brand-primary-subtle);opacity:1;}
+  /* Restart confirm dialog (HTML5 <dialog> + ::backdrop) */
+  .vp-restart-dialog{padding:0;border:1px solid var(--color-surface-border,#1f2233);border-radius:var(--radius-md,8px);background:var(--color-surface-bg-base);color:var(--color-text-primary);font-family:inherit;font-size:13px;min-width:340px;max-width:480px;box-shadow:0 8px 32px rgba(0,0,0,.5);}
+  .vp-restart-dialog::backdrop{background:rgba(0,0,0,.5);backdrop-filter:blur(2px);}
+  .vp-restart-dialog .body{padding:16px 20px 12px 20px;}
+  .vp-restart-dialog .title{font-weight:600;margin:0 0 8px 0;font-size:14px;}
+  .vp-restart-dialog .detail{margin:0;color:var(--color-text-secondary);font-size:12px;line-height:1.5;}
+  .vp-restart-dialog .target{margin:10px 0 0 0;font-family:'VPMono',monospace;font-size:11px;color:var(--color-text-tertiary);padding:6px 8px;background:var(--color-surface-bg-emphasis);border-radius:var(--radius-sm,4px);}
+  .vp-restart-dialog .actions{display:flex;justify-content:flex-end;gap:8px;padding:8px 20px 16px 20px;}
+  .vp-restart-dialog button{padding:5px 14px;border-radius:var(--radius-sm,6px);border:1px solid var(--color-surface-border,#1f2233);background:transparent;color:var(--color-text-secondary);font-family:inherit;font-size:12px;cursor:pointer;transition:background .12s ease,color .12s ease,border-color .12s ease;}
+  .vp-restart-dialog button:hover{background:var(--color-surface-bg-emphasis);color:var(--color-text-primary);}
+  .vp-restart-dialog button[data-variant="danger"]{background:var(--color-warning-subtle,rgba(255,107,107,.12));color:var(--color-warning,#ff6b6b);border-color:var(--color-warning-subtle,rgba(255,107,107,.32));}
+  .vp-restart-dialog button[data-variant="danger"]:hover{background:var(--color-warning,#ff6b6b);color:var(--color-surface-bg-base);}
 </style></head>
 <body>
   <!-- Phase 5-C minimal: section header "Projects" は冗長 (sidebar = projects と自明) → 削除。
@@ -295,6 +311,18 @@ const SIDEBAR_HTML: &str = concat!(
       <div class="world-stat"><span class="label">Processes</span><span class="value" id="proc-count">0</span></div>
     </div>
   </details>
+  <!-- Lane Lead Stand restart 確認 dialog (global single instance、 表示は showRestartDialog から) -->
+  <dialog id="vp-restart-dialog" class="vp-restart-dialog">
+    <div class="body">
+      <p class="title">Restart Lead Stand?</p>
+      <p class="detail">この Lane の child process (claude 等) を kill して同じ stand 設定で再 spawn します。 進行中の対話は失われ、 WebSocket は auto-reconnect で新 PtySlot に attach し直します。</p>
+      <p class="target" id="restart-dialog-target"></p>
+    </div>
+    <div class="actions">
+      <button type="button" data-action="cancel">Cancel</button>
+      <button type="button" data-action="ok" data-variant="danger">Restart</button>
+    </div>
+  </dialog>
 <script>"#,
     include_str!("../assets/nerd-font-loader.js"),
     r#"
@@ -314,6 +342,32 @@ const SIDEBAR_HTML: &str = concat!(
       window.ipc.postMessage(JSON.stringify(msg));
     }
   }
+
+  // Lane Lead Stand restart 確認 dialog (HTML5 <dialog>、 global single instance)。
+  //  Lane row の restart icon click → showRestartDialog(path, address) で modal 表示、
+  //  OK で `lane:restart` IPC、 Cancel / Esc で dismiss。 destructive action なので
+  //  確認 1 step を必須化 (cf. Worker delete は dogfood speed 優先で confirm 無し)。
+  let restartTarget = null;
+  function showRestartDialog(path, address) {
+    restartTarget = {path: path, address: address};
+    const tgt = document.getElementById('restart-dialog-target');
+    if (tgt) tgt.textContent = address;
+    const dlg = document.getElementById('vp-restart-dialog');
+    if (dlg && dlg.showModal) dlg.showModal();
+  }
+  document.addEventListener('DOMContentLoaded', () => {
+    const dlg = document.getElementById('vp-restart-dialog');
+    if (!dlg) return;
+    const cancelBtn = dlg.querySelector('button[data-action="cancel"]');
+    const okBtn = dlg.querySelector('button[data-action="ok"]');
+    if (cancelBtn) cancelBtn.addEventListener('click', () => { dlg.close(); restartTarget = null; });
+    if (okBtn) okBtn.addEventListener('click', () => {
+      if (restartTarget) send({t: 'lane:restart', path: restartTarget.path, address: restartTarget.address});
+      dlg.close();
+      restartTarget = null;
+    });
+    dlg.addEventListener('cancel', () => { restartTarget = null; }); // Esc キー
+  });
 
 
   // unix 時刻 ISO → "Xh Ym ago" 風文字列
@@ -584,6 +638,18 @@ const SIDEBAR_HTML: &str = concat!(
             if (hasContent) row.appendChild(meta);
           }
           row.appendChild(stateMark);
+          // Lane Lead Stand restart icon (Lead/Worker 共通、 hover で出現、 click → confirm dialog)
+          //  destructive action (claude 等の child 強制 kill + respawn) なので
+          //  showRestartDialog で OK/Cancel 1 step 挟む。
+          const restartLaneBtn = document.createElement('span');
+          restartLaneBtn.className = 'vp-lane-restart nf-icon';
+          restartLaneBtn.textContent = ''; // nf-fa-refresh (vp-project-restart と同じ glyph)
+          restartLaneBtn.title = 'Restart Lead Stand (kill + respawn、 confirm dialog 表示)';
+          restartLaneBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            showRestartDialog(p.path, addr);
+          });
+          row.appendChild(restartLaneBtn);
           // Phase 4-A: Worker のみ × button (即 delete、 confirm dialog なし — dogfooding speed 優先)
           if (isWorker) {
             const delBtn = document.createElement('span');
@@ -1610,6 +1676,9 @@ struct SidebarIpcOutcome {
     /// Phase 4-A: Worker Lane 削除要求 `(project_path, address)`。
     /// caller が SP port を解決して `client.delete_lane` を呼ぶ。
     delete_lane_request: Option<(String, String)>,
+    /// Lane Lead Stand restart 要求 `(project_path, address)`。
+    /// caller が SP port を解決して `client.restart_lane` を呼ぶ。
+    restart_lane_request: Option<(String, String)>,
     /// Phase 5-C: Process restart 要求 `(project_name)`。
     /// caller が TheWorld の `/api/world/processes/{name}/restart` を呼ぶ。
     restart_process_request: Option<String>,
@@ -1684,6 +1753,15 @@ fn handle_sidebar_ipc(
                     out.changed = true;
                     out.active_changed = true;
                 }
+            }
+        }
+        "lane:restart" => {
+            // sidebar の restart icon → confirm dialog OK の連鎖。 caller が SP port を
+            // 解決して `client.restart_lane` を呼ぶ。 active Lane を restart した場合は
+            // WS が onclose → reconnect で新 PtySlot に attach し直す (PR #218)。
+            let address = parsed.get("address").and_then(|v| v.as_str()).unwrap_or("");
+            if !path.is_empty() && !address.is_empty() {
+                out.restart_lane_request = Some((path.to_string(), address.to_string()));
             }
         }
         "lane:add_worker" => {
@@ -2461,6 +2539,62 @@ pub fn run() -> anyhow::Result<()> {
                     } else {
                         tracing::warn!(
                             "lane:delete: SP port unknown for path={} (skip)",
+                            project_path
+                        );
+                    }
+                }
+                // Lane Lead Stand restart 要求 (sidebar の restart icon → confirm dialog から)
+                if let Some((project_path, address)) = outcome.restart_lane_request {
+                    let sp_port = sidebar_state
+                        .processes
+                        .iter()
+                        .find(|p| p.path == project_path)
+                        .and_then(|p| p.port);
+                    if let Some(port) = sp_port {
+                        let proxy = async_action_proxy.clone();
+                        let path_clone = project_path.clone();
+                        let addr_clone = address.clone();
+                        thread::Builder::new()
+                            .name(format!("restart-lane-{}", address))
+                            .spawn(move || {
+                                let rt = match tokio::runtime::Builder::new_current_thread()
+                                    .enable_all()
+                                    .build()
+                                {
+                                    Ok(rt) => rt,
+                                    Err(e) => {
+                                        tracing::warn!("restart-lane runtime: {}", e);
+                                        return;
+                                    }
+                                };
+                                rt.block_on(async {
+                                    let client = TheWorldClient::new(port);
+                                    match client.restart_lane(&addr_clone).await {
+                                        Ok(()) => {
+                                            tracing::info!(
+                                                "Lane restarted: project={} address={}",
+                                                path_clone,
+                                                addr_clone
+                                            );
+                                            // 再 fetch で新 pid / state を sidebar に反映。
+                                            // WS は PR #218 の auto-reconnect で透過的に新 PtySlot に attach し直す。
+                                            spawn_lanes_fetch(proxy.clone(), path_clone, port);
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                "restart_lane failed: project={} address={}: {}",
+                                                path_clone,
+                                                addr_clone,
+                                                e
+                                            );
+                                        }
+                                    }
+                                });
+                            })
+                            .ok();
+                    } else {
+                        tracing::warn!(
+                            "lane:restart: SP port unknown for path={} (skip)",
                             project_path
                         );
                     }

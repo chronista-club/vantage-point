@@ -300,6 +300,64 @@ impl LanePool {
         transitioned
     }
 
+    /// Lane の Lead Stand (= PtySlot の child process) を kill + 再 spawn する。
+    ///
+    /// 同 Lane の cwd / stand を維持したまま child process だけ作り直す。
+    /// (例: HD Lane なら shell を立て直し → `claude --continue || claude` を再 inject)
+    ///
+    /// vp-app の WS connection は PR #218 (auto-reconnect) で透過的に新 PtySlot に
+    /// attach し直す ─ pool の write lock を保持してる間は WS の read が queue され、
+    /// release 後に新しい broadcast channel + scrollback を subscribe する。
+    ///
+    /// spawn 失敗時は LaneInfo.state を Dead にして error を返す (caller の責任で UI 通知)。
+    pub fn restart_lane(&mut self, addr: &LaneAddress) -> anyhow::Result<()> {
+        let info = self
+            .lanes
+            .get(addr)
+            .ok_or_else(|| anyhow::anyhow!("Lane not found: {}", addr))?;
+        let cwd = info.cwd.clone();
+        let stand = info.stand;
+
+        // step 1: 既存 PtySlot を drop (Drop で child.kill() + child.wait() = zombie 解消)
+        let _ = self.pty_slots.remove(addr);
+
+        // step 2: 同 LaneStand で respawn (Phase 5-D: spawn_with_fallback で early-exit retry)
+        let cmd =
+            crate::process::stand_spawner::build_stand_command(stand, std::path::Path::new(&cwd));
+        match crate::process::stand_spawner::spawn_with_fallback(&cwd, &cmd, 80, 24) {
+            Ok((slot, _rx)) => {
+                let pid = slot.pid();
+                self.pty_slots
+                    .insert(addr.clone(), std::sync::Mutex::new(slot));
+                if let Some(info) = self.lanes.get_mut(addr) {
+                    info.state = LaneState::Running;
+                    info.pid = Some(pid);
+                }
+                tracing::info!(
+                    "Lane restarted: addr={} stand={:?} program={} pid={}",
+                    addr,
+                    stand,
+                    cmd.program,
+                    pid
+                );
+                Ok(())
+            }
+            Err(e) => {
+                if let Some(info) = self.lanes.get_mut(addr) {
+                    info.state = LaneState::Dead;
+                    info.pid = None;
+                }
+                tracing::warn!(
+                    "Lane restart failed (state→Dead): addr={} stand={:?} err={}",
+                    addr,
+                    stand,
+                    e
+                );
+                Err(e)
+            }
+        }
+    }
+
     /// Display 形 (`"<project>/lead"` / `"<project>/worker/<name>"`) をパースして LaneAddress を作る。
     /// vp-app の sidebar から `lane:select` IPC の address (= `lane_address_key`) を逆変換するために使う。
     pub fn parse_address(s: &str) -> Option<LaneAddress> {
