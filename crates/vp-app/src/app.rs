@@ -326,6 +326,11 @@ const SIDEBAR_HTML: &str = concat!(
 <script>"#,
     include_str!("../assets/nerd-font-loader.js"),
     r#"
+  // 右クリック context menu (macOS の text actions / AutoFill / Services 等) を全面 suppress。
+  //  sidebar は read-only な navigation UI なので、 default の重い menu を出す価値が無い。
+  //  custom menu (Lane operations 等) は将来必要に応じて別途実装。
+  document.addEventListener('contextmenu', (e) => { e.preventDefault(); }, { capture: true });
+
   // Rust から push される sidebar state を保持
   let state = null;
   let pendingState = null;
