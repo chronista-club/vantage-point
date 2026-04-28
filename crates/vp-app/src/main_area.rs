@@ -351,6 +351,10 @@ body{overflow:hidden;}
     }
 
     term.open(tdiv);
+    // 実験: terminal textarea の autocomplete を **on** に。 browser の autofill が typed commands を
+    //  保存して提案する挙動を観察する。 dogfood で「過去 command の suggestion が出るか / UI の overlay が
+    //  邪魔にならないか / cross-lane suggestion 混在しないか」 を実測。 問題あれば off に戻す。
+    try { term.textarea && term.textarea.setAttribute('autocomplete', 'on'); } catch (_) {}
     // hidden 状態で fit すると 0 cols になるので、 showLane の active 化後にも fit を呼ぶ
     try { fitAddon.fit(); } catch (_) {}
 
