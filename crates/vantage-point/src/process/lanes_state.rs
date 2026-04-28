@@ -322,10 +322,8 @@ impl LanePool {
         let _ = self.pty_slots.remove(addr);
 
         // step 2: 同 LaneStand で respawn (Phase 5-D: spawn_with_fallback で early-exit retry)
-        let cmd = crate::process::stand_spawner::build_stand_command(
-            stand,
-            std::path::Path::new(&cwd),
-        );
+        let cmd =
+            crate::process::stand_spawner::build_stand_command(stand, std::path::Path::new(&cwd));
         match crate::process::stand_spawner::spawn_with_fallback(&cwd, &cmd, 80, 24) {
             Ok((slot, _rx)) => {
                 let pid = slot.pid();
