@@ -265,6 +265,51 @@ impl LanePool {
         self.lanes.len()
     }
 
+    /// Phase 5-D: spawn_with_fallback の 800ms early-exit window を抜けた後で、
+    ///   Lane の child process (例: `claude --continue`) が後で exit した場合の検知。
+    ///
+    /// ## 動作
+    /// 1. 全 PtySlot の `is_alive()` (= non-blocking try_wait) を check
+    /// 2. dead な Lane について:
+    ///    - `LaneInfo.state` が既に Dead でなければ `LaneState::Dead` に更新
+    ///    - `pty_slots` から entry を remove (Drop で child reap、 zombie 解消)
+    /// 3. state transition した Lane の数を返す (caller が log 出力に使える)
+    ///
+    /// ## 関連 memory
+    /// - vantage-point Atlas の Phase 5-D dogfooding bundle (unison-kdl で zombie 観測)
+    /// - PtySlot::is_alive (`crates/vantage-point/src/daemon/pty_slot.rs`)
+    pub fn detect_and_mark_dead(&mut self) -> usize {
+        // step 1: dead な address を収集 (lock を持ったまま remove はできないので 2 段)
+        let mut dead_addrs: Vec<LaneAddress> = Vec::new();
+        for (addr, slot_mutex) in &self.pty_slots {
+            if let Ok(mut slot) = slot_mutex.lock()
+                && !slot.is_alive()
+            {
+                dead_addrs.push(addr.clone());
+            }
+        }
+
+        // step 2: state 更新 + pty_slots から remove
+        let mut transitioned = 0;
+        for addr in dead_addrs {
+            if let Some(info) = self.lanes.get_mut(&addr)
+                && info.state != LaneState::Dead
+            {
+                tracing::warn!(
+                    "Lane lifecycle: dead detected addr={} prev_state={:?} pid={:?}",
+                    addr,
+                    info.state,
+                    info.pid
+                );
+                info.state = LaneState::Dead;
+                transitioned += 1;
+            }
+            // PtySlot Drop で child.kill() + child.wait() = zombie 解消
+            self.pty_slots.remove(&addr);
+        }
+        transitioned
+    }
+
     /// Display 形 (`"<project>/lead"` / `"<project>/worker/<name>"`) をパースして LaneAddress を作る。
     /// vp-app の sidebar から `lane:select` IPC の address (= `lane_address_key`) を逆変換するために使う。
     pub fn parse_address(s: &str) -> Option<LaneAddress> {

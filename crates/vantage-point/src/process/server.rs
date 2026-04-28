@@ -491,6 +491,16 @@ pub async fn run(
         shutdown_token.clone(),
     );
 
+    // Phase 5-D: Lane lifecycle monitor — child PtySlot (例: `claude --continue`) が
+    //   spawn_with_fallback の 800ms early-exit window を抜けた後で死んだ時に、
+    //   Lane state を Dead に mark する periodic task。
+    //   - 5s 間隔で全 Lane の is_alive() を check
+    //   - Dead 検出 → state 更新 + pty_slots remove (zombie reap)
+    //   - sidebar が /api/lanes を polling するので Dead 状態が UI に伝播
+    //   関連: 2026-04-28 unison-kdl で post-spawn zombie 観測 → 検知機構が無く Lead コンソール
+    //         が壊れたまま user が気付かない問題の解消。
+    spawn_lane_lifecycle_monitor(state.lane_pool.clone(), shutdown_token.clone());
+
     // メニューバーアプリに起動完了を通知
     crate::notify::post_process_changed(port, "started");
 
@@ -942,4 +952,57 @@ pub async fn run_world(port: u16) -> Result<()> {
 async fn bind_dual_stack(port: u16) -> Result<tokio::net::TcpListener> {
     let addr = SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, port, 0, 0);
     Ok(tokio::net::TcpListener::bind(addr).await?)
+}
+
+/// Phase 5-D: Lane lifecycle monitor — periodic task that detects Lane の child process が後で
+/// 死んだ場合に state=Dead を mark する。
+///
+/// ## 動機
+/// `spawn_with_fallback` の 800ms early-exit window では `claude --continue` が後で
+/// (= spawn 後 1 秒以上経ってから) exit するパターンを捕まえられない。
+/// 2026-04-28 dogfooding で unison-kdl が zombie 化、 sidebar には running 表示、
+/// PTY write が `Input/output error (os error 5)` で失敗、 Lead コンソールが壊れた状態
+/// で user が気付かないという問題があった。
+///
+/// ## 動作
+/// - 5 秒間隔で `LanePool::detect_and_mark_dead()` を呼ぶ
+/// - Dead 検出 = state を Dead に更新 + pty_slots から remove (PtySlot Drop で zombie reap)
+/// - sidebar は /api/lanes polling で更新後 state を picker → 赤 dot 表示 → user の Restart SP に誘導
+///
+/// ## 設計判断: 検知のみ (auto-respawn なし)
+/// 「自動再起動」は max retries / cooldown / 無限 loop 防止が必要で複雑化する。
+/// まず「Dead 状態を即時 UI に反映」 で user の最低要件を満たし、 auto-respawn は別 PR で。
+///
+/// ## shutdown
+/// `shutdown_token.cancelled()` で graceful 終了。 SP shutdown で task も clean に止まる。
+fn spawn_lane_lifecycle_monitor(
+    lane_pool: Arc<RwLock<super::lanes_state::LanePool>>,
+    shutdown: CancellationToken,
+) {
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
+        // 初回 tick は即時発火するので 1 周回飛ばす (SP 起動直後の他 setup を妨げない配慮)
+        tick.tick().await;
+
+        loop {
+            tokio::select! {
+                _ = tick.tick() => {}
+                _ = shutdown.cancelled() => {
+                    tracing::debug!("Lane lifecycle monitor: shutdown");
+                    return;
+                }
+            }
+
+            let mut pool = lane_pool.write().await;
+            let transitioned = pool.detect_and_mark_dead();
+            drop(pool);
+
+            if transitioned > 0 {
+                tracing::info!(
+                    "Lane lifecycle monitor: {} lane(s) marked Dead this tick",
+                    transitioned
+                );
+            }
+        }
+    });
 }
