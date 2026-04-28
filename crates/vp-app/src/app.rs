@@ -604,58 +604,66 @@ const SIDEBAR_HTML: &str = concat!(
         }
 
         // Phase 3-A: + Add Worker button + inline form (POST /api/lanes + ccws clone 連動)
-        const addWorker = document.createElement('div');
-        addWorker.className = 'vp-add-worker';
-        // Phase 5-C minimal: ラベルは "+" のみ (hover で title tooltip)
-        addWorker.title = 'Add Worker (ccws clone)';
-        addWorker.innerHTML =
-          '<span class="icon">+</span>' +
-          '<span class="label">Add Worker</span>';
-        const addForm = document.createElement('div');
-        addForm.className = 'vp-add-worker-form';
-        addForm.innerHTML =
-          '<input type="text" class="creo-input" placeholder="worker name (例: feat-api)" data-field="name">' +
-          '<input type="text" class="creo-input" placeholder="branch (例: mako/feat-api)" data-field="branch">' +
-          '<div class="vp-add-worker-actions">' +
-            '<button class="creo-btn" data-variant="secondary" data-size="sm" data-action="cancel">Cancel</button>' +
-            '<button class="creo-btn" data-variant="primary" data-size="sm" data-action="submit">Create</button>' +
-          '</div>';
-        // Phase 5-D fix: form 開閉状態を addWorkerOpen Set に永続化。
-        //  re-render で DOM 再生成されても、 Set に path があれば expanded を維持。
-        if (addWorkerOpen.has(p.path)) addForm.classList.add('expanded');
-        addWorker.addEventListener('click', () => {
-          addWorkerOpen.add(p.path);
-          addForm.classList.add('expanded');
-          const nameInput = addForm.querySelector('input[data-field="name"]');
-          if (nameInput) setTimeout(() => nameInput.focus(), 50);
-        });
-        const cancelBtn = addForm.querySelector('button[data-action="cancel"]');
-        const submitBtn = addForm.querySelector('button[data-action="submit"]');
-        const closeForm = () => {
-          addWorkerOpen.delete(p.path);
-          addForm.classList.remove('expanded');
-        };
-        const submit = () => {
-          const nameInput = addForm.querySelector('input[data-field="name"]');
-          const branchInput = addForm.querySelector('input[data-field="branch"]');
-          const nameVal = (nameInput && nameInput.value || '').trim();
-          const branchVal = (branchInput && branchInput.value || '').trim();
-          if (!nameVal) return;
-          send({t: 'lane:add_worker', path: p.path, name: nameVal, branch: branchVal || null});
-          closeForm();
-          if (nameInput) nameInput.value = '';
-          if (branchInput) branchInput.value = '';
-        };
-        if (cancelBtn) cancelBtn.addEventListener('click', closeForm);
-        if (submitBtn) submitBtn.addEventListener('click', submit);
-        addForm.querySelectorAll('input').forEach(inp => {
-          inp.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter') { e.preventDefault(); submit(); }
-            else if (e.key === 'Escape') { e.preventDefault(); closeForm(); }
+        // 2026-04-29 scope tightening: active Lane を含む project だけに表示する。
+        //  全 project に並ぶと redundant、 user が今 focus してる project 1 件への
+        //  操作を CTA する方が自然。 active が無い / 別 project に移ると form が消える。
+        //  `addWorkerOpen` Set state は per-path で保持されるので、 後で同 project に
+        //  戻れば form 開閉状態は復元される (意図を保つ保守的 UX)。
+        const projectIsActive = !!(activeAddr && lanes.some(l => laneAddressKey(l) === activeAddr));
+        if (projectIsActive) {
+          const addWorker = document.createElement('div');
+          addWorker.className = 'vp-add-worker';
+          // Phase 5-C minimal: ラベルは "+" のみ (hover で title tooltip)
+          addWorker.title = 'Add Worker (ccws clone)';
+          addWorker.innerHTML =
+            '<span class="icon">+</span>' +
+            '<span class="label">Add Worker</span>';
+          const addForm = document.createElement('div');
+          addForm.className = 'vp-add-worker-form';
+          addForm.innerHTML =
+            '<input type="text" class="creo-input" placeholder="worker name (例: feat-api)" data-field="name">' +
+            '<input type="text" class="creo-input" placeholder="branch (例: mako/feat-api)" data-field="branch">' +
+            '<div class="vp-add-worker-actions">' +
+              '<button class="creo-btn" data-variant="secondary" data-size="sm" data-action="cancel">Cancel</button>' +
+              '<button class="creo-btn" data-variant="primary" data-size="sm" data-action="submit">Create</button>' +
+            '</div>';
+          // Phase 5-D fix: form 開閉状態を addWorkerOpen Set に永続化。
+          //  re-render で DOM 再生成されても、 Set に path があれば expanded を維持。
+          if (addWorkerOpen.has(p.path)) addForm.classList.add('expanded');
+          addWorker.addEventListener('click', () => {
+            addWorkerOpen.add(p.path);
+            addForm.classList.add('expanded');
+            const nameInput = addForm.querySelector('input[data-field="name"]');
+            if (nameInput) setTimeout(() => nameInput.focus(), 50);
           });
-        });
-        content.appendChild(addWorker);
-        content.appendChild(addForm);
+          const cancelBtn = addForm.querySelector('button[data-action="cancel"]');
+          const submitBtn = addForm.querySelector('button[data-action="submit"]');
+          const closeForm = () => {
+            addWorkerOpen.delete(p.path);
+            addForm.classList.remove('expanded');
+          };
+          const submit = () => {
+            const nameInput = addForm.querySelector('input[data-field="name"]');
+            const branchInput = addForm.querySelector('input[data-field="branch"]');
+            const nameVal = (nameInput && nameInput.value || '').trim();
+            const branchVal = (branchInput && branchInput.value || '').trim();
+            if (!nameVal) return;
+            send({t: 'lane:add_worker', path: p.path, name: nameVal, branch: branchVal || null});
+            closeForm();
+            if (nameInput) nameInput.value = '';
+            if (branchInput) branchInput.value = '';
+          };
+          if (cancelBtn) cancelBtn.addEventListener('click', closeForm);
+          if (submitBtn) submitBtn.addEventListener('click', submit);
+          addForm.querySelectorAll('input').forEach(inp => {
+            inp.addEventListener('keydown', (e) => {
+              if (e.key === 'Enter') { e.preventDefault(); submit(); }
+              else if (e.key === 'Escape') { e.preventDefault(); closeForm(); }
+            });
+          });
+          content.appendChild(addWorker);
+          content.appendChild(addForm);
+        }
       }
 
       proj.appendChild(content);
