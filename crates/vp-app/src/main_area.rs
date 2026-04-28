@@ -304,6 +304,12 @@ body{overflow:hidden;}
     try { window.ipc.postMessage(JSON.stringify({t:'debug', msg: msg})); } catch (_) {}
   }
 
+  // 右クリック context menu (macOS の text actions / AutoFill / Services 等) を全面 suppress。
+  //  per-Lane terminal container は別 listener で paste 動作に差替え済 (e.preventDefault + doPaste)、
+  //  capture phase の document listener は preventDefault のみ呼ぶので container listener の paste も生きる。
+  //  対象外: preview iframe (cross-context、 iframe 内に独立 listener が必要)。
+  document.addEventListener('contextmenu', (e) => { e.preventDefault(); }, { capture: true });
+
   function createLaneInstance(address, port) {
     const host = document.getElementById('lane-host');
     if (!host) {
