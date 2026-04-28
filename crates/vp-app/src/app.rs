@@ -109,9 +109,10 @@ const SIDEBAR_HTML: &str = concat!(
     r#"</style><style>"#,
     include_str!("../assets/nerd-font.css"),
     r#"</style><style>
-  /* Phase 5-C: body の font-family を VPMono (= PlemolJP Console NF、 web_assets で bundle)
-     に統一。 .nf-icon と同 family なので Latin / 日本語 / icon を一貫した字形で描画。 */
-  html,body{margin:0;height:100%;background:var(--color-surface-bg-subtle);color:var(--color-text-primary);font-family:'VPMono',monospace;font-size:12px;line-height:1.4;overflow:hidden;}
+  /* Phase 5-D: sidebar の base font を sans-serif に切替 (--typography-family-sans = Creo Sans → -apple-system fallback)。
+     project name / lane label の scan しやすさ向上 (HIG 準拠)。 monospace は branch / port / address 等の
+     technical data 表示でのみ局所使用 (icon は VPMono 直指定 / .nf-icon class で維持)。 */
+  html,body{margin:0;height:100%;background:var(--color-surface-bg-subtle);color:var(--color-text-primary);font-family:var(--typography-family-sans);font-size:12px;line-height:1.4;overflow:hidden;}
   body{display:flex;flex-direction:column;height:100%;}
 
   /* Projects accordion area (flex 1、 scroll) */
@@ -158,7 +159,8 @@ const SIDEBAR_HTML: &str = concat!(
   .world-widget .world-stat .value{font-weight:500;color:var(--color-text-primary);font-variant-numeric:tabular-nums;}
 
   /* Bottom Add ボタン (single trigger) と展開後の sub-actions */
-  .add-trigger{margin:6px 12px 10px;padding:6px 8px;border-radius:var(--radius-sm,6px);cursor:pointer;color:var(--color-text-tertiary);font-size:11px;text-align:center;border:1px dashed var(--color-surface-border,#1f2233);background:transparent;transition:background .12s ease,color .12s ease,border-color .12s ease;user-select:none;}
+  /* Phase 5-D: dashed border は drop-zone signifier に misleading。 solid に統一。 */
+  .add-trigger{margin:6px 12px 10px;padding:6px 8px;border-radius:var(--radius-sm,6px);cursor:pointer;color:var(--color-text-tertiary);font-size:11px;text-align:center;border:1px solid var(--color-surface-border,#1f2233);background:transparent;transition:background .12s ease,color .12s ease,border-color .12s ease;user-select:none;}
   .add-trigger:hover{background:var(--color-surface-bg-emphasis);color:var(--color-text-secondary);border-color:var(--color-text-tertiary);}
   .add-trigger.expanded{color:var(--color-text-secondary);border-color:var(--color-text-tertiary);background:var(--color-surface-bg-emphasis);}
 
@@ -191,6 +193,9 @@ const SIDEBAR_HTML: &str = concat!(
   /* Phase 3-D: project title は 13 → 12px に統一 (sidebar base と揃える)、 weight 500 で emphasis */
   .processes-section .creo-accordion-summary{padding:6px 8px;min-height:auto;font-size:12px;border-radius:var(--radius-sm,6px);}
   .processes-section .creo-accordion-summary:hover{background:var(--color-surface-bg-emphasis);}
+  /* Phase 5-D: active project (= active lane を含む project) の summary に左 border accent + subtle bg。
+     HIG: 全 navigation level で current location を可視化。 */
+  .processes-section .creo-accordion-summary.vp-project-active{box-shadow:inset 2px 0 0 0 var(--color-brand-primary);background:var(--color-brand-primary-subtle);}
   .processes-section .creo-accordion-summary::before{font-size:9px;color:var(--color-text-tertiary);width:10px;}
   .processes-section .creo-accordion-title{font-weight:500;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .processes-section .creo-accordion-content{padding:2px 0 4px 18px;}
@@ -224,8 +229,10 @@ const SIDEBAR_HTML: &str = concat!(
   .vp-empty-hint{padding:6px 12px 6px 14px;font-size:11px;color:var(--color-text-tertiary);font-style:italic;}
 
   /* Phase 3-A: + Add Worker button + inline form */
-  .vp-add-worker{display:flex;align-items:center;gap:6px;padding:5px 8px 5px 14px;border-radius:var(--radius-sm,6px);cursor:pointer;color:var(--color-text-tertiary);font-size:11px;font-style:italic;transition:background .12s ease,color .12s ease;}
-  .vp-add-worker:hover{background:var(--color-surface-bg-emphasis);color:var(--color-text-secondary);}
+  /* Phase 5-D: italic + tertiary 色を解消 (placeholder/disabled に見えてた)。 normal weight + secondary、 hover で primary 強調 = action affordance に格上げ。 */
+  .vp-add-worker{display:flex;align-items:center;gap:6px;padding:5px 8px 5px 14px;border-radius:var(--radius-sm,6px);cursor:pointer;color:var(--color-text-secondary);font-size:11px;transition:background .12s ease,color .12s ease;}
+  .vp-add-worker:hover{background:var(--color-surface-bg-emphasis);color:var(--color-brand-primary);}
+  .vp-add-worker .icon{color:var(--color-brand-primary);}
   .vp-add-worker .icon{width:18px;text-align:center;}
   .vp-add-worker-form{margin:0 8px 6px 14px;display:flex;flex-direction:column;gap:6px;max-height:0;opacity:0;overflow:hidden;transition:max-height .22s ease,opacity .22s ease,margin-top .22s ease;margin-top:0;pointer-events:none;}
   .vp-add-worker-form.expanded{max-height:160px;opacity:1;margin-top:-2px;pointer-events:auto;}
@@ -681,6 +688,8 @@ const SIDEBAR_HTML: &str = concat!(
         //  `addWorkerOpen` Set state は per-path で保持されるので、 後で同 project に
         //  戻れば form 開閉状態は復元される (意図を保つ保守的 UX)。
         const projectIsActive = !!(activeAddr && lanes.some(l => laneAddressKey(l) === activeAddr));
+        // Phase 5-D: project row 自体に active highlight を付ける (HIG: current location を全 level で示す)。
+        if (projectIsActive) summary.classList.add('vp-project-active');
         if (projectIsActive) {
           const addWorker = document.createElement('div');
           addWorker.className = 'vp-add-worker';
@@ -810,20 +819,21 @@ const SIDEBAR_HTML: &str = concat!(
     heavens_door: '',   // nf-fa-book
     the_hand: '',       // nf-fa-terminal
   };
-  const STATE_CLASS = {
-    running: 'vp-state-running',
-    spawning: 'vp-state-spawning',
-    idle: 'vp-state-idle',
-    working: 'vp-state-working',
-    pausing: 'vp-state-pausing',
-    exiting: 'vp-state-exiting',
-    dead: 'vp-state-dead',
+  // Phase 5-D: state 別 glyph + class 統合 map (色覚多様性 a11y 対応、 purple-haze HIG B4)。
+  //  glyph 列は Nerd Font Font Awesome (web_assets::NERD_FONT_CSS で .nf-icon class 提供)。
+  const STATE_INFO = {
+    running:  { glyph: '', cls: 'vp-state-running' },   // nf-fa-circle = 動作中
+    spawning: { glyph: '', cls: 'vp-state-spawning' },  // nf-fa-spinner = 起動中
+    idle:     { glyph: '', cls: 'vp-state-idle' },      // nf-fa-circle-o = 待機
+    working:  { glyph: '', cls: 'vp-state-working' },   // nf-fa-bolt = 処理中
+    pausing:  { glyph: '', cls: 'vp-state-pausing' },   // nf-fa-pause = 一時停止
+    exiting:  { glyph: '', cls: 'vp-state-exiting' },   // nf-fa-arrow-down = 終了中
+    dead:     { glyph: '', cls: 'vp-state-dead' },      // nf-fa-times-circle = 終了済
   };
-  //  = nf-fa-circle (filled)、 色は CSS class で。 unknown state は空 ('')。
   function stateGlyphHTML(s) {
-    const cls = STATE_CLASS[s];
-    if (!cls) return '';
-    return '<span class="nf-icon ' + cls + '"></span>';
+    const info = STATE_INFO[s];
+    if (!info) return '';
+    return '<span class="nf-icon ' + info.cls + '" aria-label="' + s + '" title="' + s + '">' + info.glyph + '</span>';
   }
   // 旧 processKindIcon は撤去 (kind 別 emoji 不要、 row 位置 + label が情報主体)。
   // 旧 processStateMark は stateGlyphHTML に置換。
