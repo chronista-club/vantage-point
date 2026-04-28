@@ -9322,7 +9322,7 @@ checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 
 [[package]]
 name = "vantage-point"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -9407,7 +9407,7 @@ checksum = "051eb1abcf10076295e815102942cc58f9d5e3b4560e46e53c21e8ff6f3af7b1"
 
 [[package]]
 name = "vp-app"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -9437,7 +9437,7 @@ dependencies = [
 
 [[package]]
 name = "vp-cli"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -9451,7 +9451,7 @@ dependencies = [
 
 [[package]]
 name = "vp-db"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -9466,7 +9466,7 @@ dependencies = [
 
 [[package]]
 name = "vp-mdast"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "markdown",
  "pretty_assertions",
@@ -9477,7 +9477,7 @@ dependencies = [
 
 [[package]]
 name = "vp-mdast-wasm"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "serde-wasm-bindgen",
  "serde_json",
