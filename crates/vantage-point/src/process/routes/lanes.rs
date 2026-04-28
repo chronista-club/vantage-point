@@ -342,3 +342,51 @@ pub async fn delete_handler(
         })),
     ))
 }
+
+/// `POST /api/lanes/restart?address=<addr>` request の query
+#[derive(Debug, Deserialize)]
+pub struct RestartLaneQuery {
+    /// Display 形 ("<project>/lead" / "<project>/worker/<name>")
+    pub address: String,
+}
+
+/// `POST /api/lanes/restart?address=<addr>` — Lane の Lead Stand restart
+///
+/// 動作:
+/// 1. address parse (LanePool::parse_address で逆変換)
+/// 2. LanePool::restart_lane で 既存 PtySlot kill (Drop で child wait) → 同 stand で respawn
+/// 3. vp-app の WS は PR #218 (auto-reconnect) で透過的に新 PtySlot に attach し直す
+/// 4. 200 OK with new pid / 500 on spawn 失敗 (LaneInfo は state=Dead に遷移)
+pub async fn restart_handler(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<RestartLaneQuery>,
+) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<serde_json::Value>)> {
+    let Some(addr) = LanePool::parse_address(&q.address) else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": format!("invalid lane address: {}", q.address)})),
+        ));
+    };
+
+    let pid = {
+        let mut pool = state.lane_pool.write().await;
+        match pool.restart_lane(&addr) {
+            Ok(()) => pool.get(&addr).and_then(|i| i.pid).unwrap_or(0),
+            Err(e) => {
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": e.to_string()})),
+                ));
+            }
+        }
+    };
+
+    tracing::info!("Lane restart OK: addr={} new_pid={}", addr, pid);
+    Ok((
+        StatusCode::OK,
+        Json(json!({
+            "restarted": addr.to_string(),
+            "pid": pid,
+        })),
+    ))
+}

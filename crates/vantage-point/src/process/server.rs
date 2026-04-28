@@ -344,6 +344,8 @@ pub async fn run(
                 .post(lanes::create_handler)
                 .delete(lanes::delete_handler),
         )
+        // Lane の Lead Stand restart (PtySlot kill + 同 stand で respawn)
+        .route("/api/lanes/restart", post(lanes::restart_handler))
         .route("/api/show", post(health::show_handler))
         .route(
             "/api/msgbox/remote_deliver",

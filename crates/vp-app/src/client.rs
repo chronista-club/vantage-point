@@ -388,6 +388,24 @@ impl TheWorldClient {
         }
         Ok(())
     }
+
+    /// Lane の Lead Stand restart (PtySlot kill + 同 stand で respawn)。
+    /// vp-app の WS は PR #218 (auto-reconnect) で透過的に新 PtySlot に再 attach。
+    pub async fn restart_lane(&self, address: &str) -> Result<()> {
+        let encoded = address
+            .replace('%', "%25")
+            .replace('&', "%26")
+            .replace('=', "%3D")
+            .replace(' ', "%20");
+        let url = format!("{}/api/lanes/restart?address={}", self.base_url, encoded);
+        let resp = self.client.post(&url).send().await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("restart_lane HTTP {}: {}", status, text);
+        }
+        Ok(())
+    }
 }
 
 impl Default for TheWorldClient {
