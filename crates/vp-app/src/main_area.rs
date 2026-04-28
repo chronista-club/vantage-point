@@ -356,47 +356,80 @@ body{overflow:hidden;}
 
     // ===== WebSocket: SP に直接接続 (Phase 2.5: Rust 側 mpsc 中継を撤去) =====
     // URL: ws://127.0.0.1:<sp_port>/ws/terminal?lane=<address>&cols=&rows=
-    const initCols = term.cols || 80;
-    const initRows = term.rows || 24;
-    const wsUrl = 'ws://127.0.0.1:' + port + '/ws/terminal?lane='
-      + encodeURIComponent(address)
-      + '&cols=' + initCols + '&rows=' + initRows;
-    const ws = new WebSocket(wsUrl);
-    ws.binaryType = 'arraybuffer';
+    //
+    // Auto-reconnect (2026-04-28 PR #218): SP 再起動 / 一時的 network 断で WS が close した時、
+    // 指数バックオフ (500ms → 16s) で最大 10 回 retry。 user が removeLane() を呼ぶまでは
+    // disposed=false を保ち、 onclose を fail signal として扱う。 Phase 5-D で TUI→Process
+    // 経路に同 pattern (mem_1CYqH6rR7U6RBTxjyDHnfH) を実装済、 vp-app per-Lane WS にも横展開。
+    const RETRY_BACKOFF_MS = [500, 1000, 2000, 4000, 8000, 16000, 16000, 16000, 16000, 16000];
+    const MAX_RETRIES = RETRY_BACKOFF_MS.length;
+    const conn = { ws: null, disposed: false, retryCount: 0, retryTimer: null };
 
     function sendResize() {
-      if (ws.readyState !== WebSocket.OPEN) return;
+      if (!conn.ws || conn.ws.readyState !== WebSocket.OPEN) return;
       try {
-        ws.send(JSON.stringify({type:'resize', cols: term.cols, rows: term.rows}));
+        conn.ws.send(JSON.stringify({type:'resize', cols: term.cols, rows: term.rows}));
       } catch (_) {}
     }
 
-    ws.onopen = () => {
-      dbg('[lane:' + address + '] ws open');
-      try { fitAddon.fit(); } catch (_) {}
-      sendResize();
-    };
-    ws.onmessage = (ev) => {
-      if (ev.data instanceof ArrayBuffer) {
-        term.write(new Uint8Array(ev.data));
-      } else if (typeof ev.data === 'string') {
-        // server からの error 等 (Text frame)
-        term.write('\r\n\x1b[33m[lane:' + address + '] ' + ev.data + '\x1b[0m\r\n');
-      }
-    };
-    ws.onclose = (ev) => {
-      dbg('[lane:' + address + '] ws close code=' + ev.code);
-      // 静かに切断 (Lane が dead になった、 user が remove した、 等)
-    };
-    ws.onerror = () => {
-      term.write('\r\n\x1b[31m[lane:' + address + '] WebSocket error\x1b[0m\r\n');
-    };
+    function connectWs() {
+      if (conn.disposed) return;
+      const initCols = term.cols || 80;
+      const initRows = term.rows || 24;
+      const wsUrl = 'ws://127.0.0.1:' + port + '/ws/terminal?lane='
+        + encodeURIComponent(address)
+        + '&cols=' + initCols + '&rows=' + initRows;
+      const ws = new WebSocket(wsUrl);
+      ws.binaryType = 'arraybuffer';
+      conn.ws = ws;
+
+      ws.onopen = () => {
+        dbg('[lane:' + address + '] ws open');
+        if (conn.retryCount > 0) {
+          // reconnect 成功 ─ user に明示
+          term.write('\r\n\x1b[32m[lane:' + address + '] reconnected\x1b[0m\r\n');
+        }
+        conn.retryCount = 0;
+        try { fitAddon.fit(); } catch (_) {}
+        sendResize();
+      };
+      ws.onmessage = (ev) => {
+        if (ev.data instanceof ArrayBuffer) {
+          term.write(new Uint8Array(ev.data));
+        } else if (typeof ev.data === 'string') {
+          // server からの error 等 (Text frame)
+          term.write('\r\n\x1b[33m[lane:' + address + '] ' + ev.data + '\x1b[0m\r\n');
+        }
+      };
+      ws.onclose = (ev) => {
+        dbg('[lane:' + address + '] ws close code=' + ev.code);
+        if (conn.disposed) return;
+        if (conn.retryCount >= MAX_RETRIES) {
+          term.write('\r\n\x1b[31m[lane:' + address + '] reconnect failed after '
+            + MAX_RETRIES + ' attempts, give up\x1b[0m\r\n');
+          return;
+        }
+        const wait = RETRY_BACKOFF_MS[conn.retryCount];
+        conn.retryCount++;
+        term.write('\r\n\x1b[33m[lane:' + address + '] disconnected (code=' + ev.code
+          + '), reconnecting in ' + wait + 'ms (' + conn.retryCount + '/' + MAX_RETRIES
+          + ')...\x1b[0m\r\n');
+        conn.retryTimer = setTimeout(connectWs, wait);
+      };
+      ws.onerror = () => {
+        // onerror 直後に onclose が必ず fire する (W3C spec) ので retry はそこで処理。
+        // ここでは log のみ ─ 「WebSocket error」 の冗長 noise を避ける。
+        dbg('[lane:' + address + '] ws error (will close)');
+      };
+    }
+
+    connectWs(); // initial connect
 
     // input → WS (Rust 中継せず直接送信)
     term.onData((d) => {
-      if (ws.readyState !== WebSocket.OPEN) return;
+      if (!conn.ws || conn.ws.readyState !== WebSocket.OPEN) return;
       try {
-        ws.send(new TextEncoder().encode(d));
+        conn.ws.send(new TextEncoder().encode(d));
       } catch (e) {
         dbg('[lane:' + address + '] input send error: ' + e);
       }
@@ -482,7 +515,7 @@ body{overflow:hidden;}
     });
     ro.observe(container);
 
-    return { term, fitAddon, ws, container, ro, webglAddon };
+    return { term, fitAddon, conn, container, ro, webglAddon };
   }
 
   window.ensureLane = function(address, port) {
@@ -507,8 +540,8 @@ body{overflow:hidden;}
       setTimeout(() => {
         try {
           active.fitAddon.fit();
-          if (active.ws.readyState === WebSocket.OPEN) {
-            active.ws.send(JSON.stringify({type:'resize', cols: active.term.cols, rows: active.term.rows}));
+          if (active.conn.ws && active.conn.ws.readyState === WebSocket.OPEN) {
+            active.conn.ws.send(JSON.stringify({type:'resize', cols: active.term.cols, rows: active.term.rows}));
           }
           active.term.focus();
         } catch (_) {}
@@ -520,7 +553,13 @@ body{overflow:hidden;}
     const info = laneInstances.get(address);
     if (!info) return;
     try {
-      info.ws.close();
+      // 意図的 dispose ─ retry loop を止めて、 onclose の reconnect スケジュールを抑止
+      info.conn.disposed = true;
+      if (info.conn.retryTimer) {
+        clearTimeout(info.conn.retryTimer);
+        info.conn.retryTimer = null;
+      }
+      if (info.conn.ws) info.conn.ws.close();
       info.ro.disconnect();
       if (info.webglAddon) { try { info.webglAddon.dispose(); } catch (_) {} }
       info.term.dispose();
@@ -559,8 +598,8 @@ body{overflow:hidden;}
       if (info.container.classList.contains('active')) {
         try {
           info.fitAddon.fit();
-          if (info.ws.readyState === WebSocket.OPEN) {
-            info.ws.send(JSON.stringify({type:'resize', cols: info.term.cols, rows: info.term.rows}));
+          if (info.conn.ws && info.conn.ws.readyState === WebSocket.OPEN) {
+            info.conn.ws.send(JSON.stringify({type:'resize', cols: info.term.cols, rows: info.term.rows}));
           }
         } catch (_) {}
         break;
