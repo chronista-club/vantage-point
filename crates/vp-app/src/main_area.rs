@@ -344,16 +344,23 @@ body{overflow:hidden;}
     term.loadAddon(fitAddon);
 
     // WebGL renderer (per-instance、 個別に context 持つ)
+    // Phase 5-D 実験 (ghost char 調査): WebGL の dirty cell tracking で文字幅再計算後に古い cells が
+    //  clear されない疑惑検証中。 一時的に DOM renderer fallback で再現するか確認。
+    //  → 再現しなければ WebGL 起因確定、 dispose 戦略 or canvas 移行を検討。
+    //  → 再現するなら xterm.js core or wcwidth 起因、 別調査。
+    const VP_USE_WEBGL = false; // TEMPORARY for ghost char repro test
     let webglAddon = null;
-    try {
-      webglAddon = new WebglAddon.WebglAddon();
-      term.loadAddon(webglAddon);
-      webglAddon.onContextLoss(() => {
-        console.warn('[xterm:' + address + '] WebGL context loss — DOM fallback');
-        webglAddon.dispose();
-      });
-    } catch (e) {
-      console.warn('[xterm:' + address + '] WebGL unavailable:', e);
+    if (VP_USE_WEBGL) {
+      try {
+        webglAddon = new WebglAddon.WebglAddon();
+        term.loadAddon(webglAddon);
+        webglAddon.onContextLoss(() => {
+          console.warn('[xterm:' + address + '] WebGL context loss — DOM fallback');
+          webglAddon.dispose();
+        });
+      } catch (e) {
+        console.warn('[xterm:' + address + '] WebGL unavailable:', e);
+      }
     }
 
     term.open(tdiv);

@@ -233,6 +233,9 @@ const SIDEBAR_HTML: &str = concat!(
   .vp-add-worker{display:flex;align-items:center;gap:6px;padding:5px 8px 5px 14px;border-radius:var(--radius-sm,6px);cursor:pointer;color:var(--color-text-secondary);font-size:11px;transition:background .12s ease,color .12s ease;}
   .vp-add-worker:hover{background:var(--color-surface-bg-emphasis);color:var(--color-brand-primary);}
   .vp-add-worker .icon{color:var(--color-brand-primary);}
+  /* Phase 5-D Sprint C: Lane HD notification badge (OSC 99/777 由来の unread 件数)。
+     brand-secondary (= 注意喚起寄りの distinct hue) で目立つが過剰でない。 */
+  .vp-lane-notification{display:inline-flex;align-items:center;justify-content:center;min-width:16px;height:16px;padding:0 5px;margin-left:auto;border-radius:8px;background:var(--color-brand-secondary);color:var(--color-surface-bg-base);font-size:10px;font-weight:600;line-height:1;font-family:var(--typography-family-sans);}
   .vp-add-worker .icon{width:18px;text-align:center;}
   .vp-add-worker-form{margin:0 8px 6px 14px;display:flex;flex-direction:column;gap:6px;max-height:0;opacity:0;overflow:hidden;transition:max-height .22s ease,opacity .22s ease,margin-top .22s ease;margin-top:0;pointer-events:none;}
   .vp-add-worker-form.expanded{max-height:160px;opacity:1;margin-top:-2px;pointer-events:auto;}
@@ -600,6 +603,19 @@ const SIDEBAR_HTML: &str = concat!(
           stateMark.innerHTML = stateGlyphHTML(lane.state);
           row.appendChild(standIcon);
           row.appendChild(label);
+          // Phase 5-D Sprint C P2.2 (UI shell): Lane HD notification badge。
+          //  lane.unread_notifications が > 0 で badge 表示 (count + dot)。 OSC 99/777 が
+          //  HD (Heaven's Door = Claude CLI) から発火 → main_area xterm.js が capture →
+          //  IPC で Rust → sidebar state へ push される予定 (次 motif で配線)。
+          //  現時点 backend 未実装なので UI は data 到着待ち (常に hidden)。
+          const unread = lane.unread_notifications | 0;
+          if (unread > 0) {
+            const badge = document.createElement('span');
+            badge.className = 'vp-lane-notification';
+            badge.textContent = unread > 99 ? '99+' : String(unread);
+            badge.title = unread + ' unread notification(s) from HD';
+            row.appendChild(badge);
+          }
           // Phase 5-D: Worker のみ git 状態 subtitle (branch · ahead/behind · dirty/merged)
           if (isWorker && lane.worker_status) {
             const ws = lane.worker_status;
