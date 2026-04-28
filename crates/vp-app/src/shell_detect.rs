@@ -31,15 +31,15 @@ use std::path::Path;
 /// 5. Windows: git-bash 標準 install path → PATH 内 bash.exe (System32 除外)
 ///    → pwsh.exe → powershell.exe → cmd.exe
 pub fn detect_shell() -> String {
-    if let Ok(explicit) = std::env::var("VP_SHELL") {
-        if !explicit.is_empty() {
-            return explicit;
-        }
+    if let Ok(explicit) = std::env::var("VP_SHELL")
+        && !explicit.is_empty()
+    {
+        return explicit;
     }
-    if let Ok(s) = std::env::var("SHELL") {
-        if !s.is_empty() {
-            return s;
-        }
+    if let Ok(s) = std::env::var("SHELL")
+        && !s.is_empty()
+    {
+        return s;
     }
 
     #[cfg(target_os = "macos")]
@@ -95,17 +95,17 @@ pub fn detect_shell_args(shell: &str) -> Vec<String> {
     // macOS 上で Windows path (バックスラッシュ区切り) を渡すと file_stem が `"7\\pwsh"` 等の
     // 半端な値になり、 shell 判定が誤動作する。 自前で `/` と `\\` 両方を区切りとして basename 抽出。
     let basename = shell
-        .rsplit(|c| c == '/' || c == '\\')
+        .rsplit(['/', '\\'])
         .next()
         .unwrap_or(shell)
         .strip_suffix(".exe")
         .unwrap_or_else(|| {
             // .exe 以外の拡張子 (.cmd, .bat 等) も剥がす一般化
             shell
-                .rsplit(|c| c == '/' || c == '\\')
+                .rsplit(['/', '\\'])
                 .next()
                 .and_then(|s| s.rsplit_once('.').map(|(stem, _ext)| stem))
-                .unwrap_or_else(|| shell.rsplit(|c| c == '/' || c == '\\').next().unwrap_or(shell))
+                .unwrap_or_else(|| shell.rsplit(['/', '\\']).next().unwrap_or(shell))
         })
         .to_lowercase();
     match basename.as_str() {

@@ -35,6 +35,10 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # web_assets test が font binary の sig + size を検査するため、
+          # LFS pointer ではなく実 binary を pull 必須 (FONT_ASSETS bytes.len() > 1MB assert)
+          lfs: true
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable

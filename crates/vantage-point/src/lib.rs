@@ -30,6 +30,7 @@ pub mod port_layout;
 pub mod process;
 pub mod protocol;
 pub mod resolve;
+pub mod screenshot;
 pub mod stands;
 pub mod terminal;
 #[cfg(feature = "gui")]

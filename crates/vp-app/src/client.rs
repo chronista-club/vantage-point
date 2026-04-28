@@ -36,25 +36,20 @@ pub struct TheWorldClient {
 /// 全 VP entity (TheWorld / SP / Lane / Stand) は `ProcessKind` を持つ Process として
 /// homogeneous に扱う。Display metaphor は UI / log の format string のみで使い、
 /// code 内 logic は kind 直値で switch する。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProcessKind {
     /// system 全体を supervise する root process (= TheWorld 👑)
     Supervisor,
     /// Project に bind された runtime container (= 旧 SP / Project Core ⭐)
+    /// TheWorld の `/api/world/projects` response に kind field が無いケースは
+    /// Runtime (= Project Process) 扱い (serde default)。
+    #[default]
     Runtime,
     /// PTY session を持つ stream-based process (= Lane: Lead / Worker)
     Session,
     /// 機能 service を提供する worker process (= Stand: HD / TH / PP / GE / HP)
     Worker,
-}
-
-impl Default for ProcessKind {
-    fn default() -> Self {
-        // TheWorld の `/api/world/projects` response に kind field が無いケースは
-        // Runtime (= Project Process) 扱い。serde default 用。
-        ProcessKind::Runtime
-    }
 }
 
 impl ProcessKind {
@@ -73,12 +68,13 @@ impl ProcessKind {
 ///
 /// `lanes_state::LaneState` (Spawning/Running/Exiting/Dead) を superset 包含し、
 /// 全 ProcessKind に共通の state 軸として extend。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProcessState {
     /// 起動中 (Stand process spawn 中、ccws clone 中など)
     Spawning,
     /// 動作中 (PTY I/O 流れる、HTTP server listen 中)
+    #[default]
     Running,
     /// 待機 (input 待ち、idle で work していない)
     Idle,
@@ -90,12 +86,6 @@ pub enum ProcessState {
     Exiting,
     /// 終了済 (process 死亡、auto-respawn or removed)
     Dead,
-}
-
-impl Default for ProcessState {
-    fn default() -> Self {
-        ProcessState::Running
-    }
 }
 
 impl ProcessState {
@@ -216,6 +206,29 @@ pub struct LaneInfo {
     pub pid: Option<u32>,
     #[serde(default)]
     pub cwd: String,
+    /// Phase 5-D: Worker Lane のみ有効、 git workspace の状態 snapshot
+    #[serde(default)]
+    pub worker_status: Option<WorkerStatusWire>,
+}
+
+/// Phase 5-D: vantage-point 側 `ccws::commands::WorkerStatus` の wire shape。
+/// sidebar Worker row に branch / dirty / ahead / behind / merge 状態を表示。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct WorkerStatusWire {
+    #[serde(default)]
+    pub branch: Option<String>,
+    #[serde(default)]
+    pub dirty_count: usize,
+    #[serde(default)]
+    pub ahead: u32,
+    #[serde(default)]
+    pub behind: u32,
+    #[serde(default)]
+    pub has_upstream: bool,
+    #[serde(default)]
+    pub last_commit: String,
+    #[serde(default)]
+    pub is_merged: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -321,14 +334,25 @@ impl TheWorldClient {
         Ok(())
     }
 
+    /// Phase 5-C: Process restart (stop + 500ms grace + start chain)
+    pub async fn restart_process(&self, project_name: &str) -> Result<()> {
+        let url = format!(
+            "{}/api/world/processes/{}/restart",
+            self.base_url, project_name
+        );
+        let resp = self.client.post(&url).send().await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("restart_process HTTP {}: {}", status, text);
+        }
+        Ok(())
+    }
+
     /// Phase 3-A: SP に Worker Lane を create (`POST /api/lanes`)。
     /// `branch` 指定時は SP が `ccws new <name> <branch>` で worker dir を作成して spawn する。
     /// `base_url` は SP の URL (例: `http://127.0.0.1:33002`) を指定。
-    pub async fn create_worker_lane(
-        &self,
-        name: &str,
-        branch: Option<&str>,
-    ) -> Result<()> {
+    pub async fn create_worker_lane(&self, name: &str, branch: Option<&str>) -> Result<()> {
         let url = format!("{}/api/lanes", self.base_url);
         let mut body = serde_json::json!({
             "kind": "worker",

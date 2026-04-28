@@ -84,9 +84,20 @@ pub const CREO_TOKENS_CSS: &str = include_str!("../assets/creo-tokens.css");
 ///
 /// state は `window.renderSidebarState(state)` で Rust → JS に push される。
 /// クリック操作は `window.ipc.postMessage(JSON)` で Rust に送信:
-///   - `{"t":"process:toggle","path":"...","expanded":true|false}`
-///   - `{"t":"lane:select","path":"...","address":"<project>/lead"}`
-///   - `{"t":"process:add"}` / `{"t":"process:clone","url":"..."}`
+///
+/// - `{"t":"process:toggle","path":"...","expanded":true|false}`
+/// - `{"t":"lane:select","path":"...","address":"<project>/lead"}`
+/// - `{"t":"process:add"}` / `{"t":"process:clone","url":"..."}`
+///
+/// Phase 5-C: sidebar HTML を `vp-asset://app/sidebar.html` で配信するための extra entry。
+/// font 群は `web_assets::FONT_ASSETS` 側で揃ってるので、 ここは sidebar 固有の HTML 1 個のみ。
+/// `web_assets::serve()` が FONT_ASSETS と chain して両方 lookup する。
+const SIDEBAR_ASSETS: &[(&str, &[u8], &str)] = &[(
+    "app/sidebar.html",
+    SIDEBAR_HTML.as_bytes(),
+    "text/html; charset=utf-8",
+)];
+
 const SIDEBAR_HTML: &str = concat!(
     r#"<!doctype html>
 <html lang="ja" data-theme="contrast-dark">
@@ -94,26 +105,37 @@ const SIDEBAR_HTML: &str = concat!(
     include_str!("../assets/creo-tokens.css"),
     r#"</style><style>"#,
     include_str!("../assets/creo-components.css"),
+    r#"</style><style>"#,
+    include_str!("../assets/nerd-font.css"),
     r#"</style><style>
-  /* Phase 3-D typography scale ── 整然とした 3 段階 + 1 micro:
-     - 12px (body)     基本 row text (lane name, label 等)
-     - 11px (body-sm)  補助 (stand row, hint, button)
-     - 10px (caption)  section header (uppercase)、 micro indicator
-     -  9px (state)    state badge / accordion chevron のみ (最小限)
-     uppercase letter-spacing は 0.06em で統一、 line-height は 1.4 を base に */
-  html,body{margin:0;height:100%;background:var(--color-surface-bg-subtle);color:var(--color-text-primary);font-family:var(--typography-family-sans);font-size:12px;line-height:1.4;overflow:hidden;}
+  /* Phase 5-C: body の font-family を VPMono (= PlemolJP Console NF、 web_assets で bundle)
+     に統一。 .nf-icon と同 family なので Latin / 日本語 / icon を一貫した字形で描画。 */
+  html,body{margin:0;height:100%;background:var(--color-surface-bg-subtle);color:var(--color-text-primary);font-family:'VPMono',monospace;font-size:12px;line-height:1.4;overflow:hidden;}
   body{display:flex;flex-direction:column;height:100%;}
 
-  /* Widget slot (top) */
-  .widget-slot{padding:10px 12px;border-bottom:1px solid var(--color-surface-border,#1f2233);background:var(--color-surface-bg-base);}
-  .widget-slot .widget-title{font-size:10px;color:var(--color-text-tertiary);text-transform:uppercase;letter-spacing:.06em;display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;}
-  .widget-slot .stat{display:flex;justify-content:space-between;font-size:11px;padding:2px 0;color:var(--color-text-secondary);}
-  .widget-slot .stat .label{color:var(--color-text-tertiary);}
-  .widget-slot .stat .value{font-weight:500;color:var(--color-text-primary);font-variant-numeric:tabular-nums;}
+  /* Projects accordion area (flex 1、 scroll) */
+  .processes-section{flex:1;overflow-y:auto;padding:var(--spacing-xs) 0;}
 
-  /* Projects accordion */
-  .processes-section{flex:1;overflow-y:auto;padding:6px 0;}
-  .processes-section .section-header{padding:10px 16px 6px;font-size:10px;color:var(--color-text-tertiary);text-transform:uppercase;letter-spacing:.06em;display:flex;justify-content:space-between;align-items:center;}
+  /* Phase 5-C: Currents / Stopped section header (running vs dead で project list を分割表示) */
+  .vp-proc-section-header{padding:var(--spacing-sm) var(--spacing-sm) var(--spacing-xs) var(--spacing-sm);font-size:10px;color:var(--color-text-tertiary);text-transform:uppercase;letter-spacing:0.08em;font-weight:500;user-select:none;}
+  .vp-proc-section-header:first-child{padding-top:var(--spacing-xs);}
+  /* Phase 5-C polish: Dormant project は視覚的に弱化 (active への視線誘導)。 hover で復帰。 */
+  .vp-proc-dormant{opacity:0.65;transition:opacity .15s ease;}
+  .vp-proc-dormant:hover{opacity:1;}
+
+  /* World widget (sidebar 最下部 fixed、 accordion 1-line collapsed)
+     Phase 5-C: 旧 widget-slot を最下部に移動、 details/summary で展開可能に */
+  .world-widget{flex:0 0 auto;border-top:1px solid var(--color-surface-border,#1f2233);background:var(--color-surface-bg-base);}
+  .world-widget>summary{list-style:none;padding:var(--spacing-xs) var(--spacing-sm);cursor:pointer;display:flex;align-items:center;gap:var(--spacing-xs);font-size:11px;color:var(--color-text-secondary);user-select:none;}
+  .world-widget>summary::-webkit-details-marker{display:none;}
+  .world-widget>summary:hover{background:var(--color-surface-bg-emphasis);}
+  .world-widget .world-status{font-size:10px;color:var(--color-status-success,#3fb950);width:12px;text-align:center;}
+  .world-widget .world-status.offline{color:var(--color-status-error,#d4444c);}
+  .world-widget .world-line{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-variant-numeric:tabular-nums;}
+  .world-widget .world-detail{padding:var(--spacing-xs) var(--spacing-sm);border-top:1px dashed var(--color-surface-border,#1f2233);}
+  .world-widget .world-stat{display:flex;justify-content:space-between;font-size:11px;padding:1px 0;color:var(--color-text-secondary);}
+  .world-widget .world-stat .label{color:var(--color-text-tertiary);}
+  .world-widget .world-stat .value{font-weight:500;color:var(--color-text-primary);font-variant-numeric:tabular-nums;}
 
   /* Bottom Add ボタン (single trigger) と展開後の sub-actions */
   .add-trigger{margin:6px 12px 10px;padding:6px 8px;border-radius:var(--radius-sm,6px);cursor:pointer;color:var(--color-text-tertiary);font-size:11px;text-align:center;border:1px dashed var(--color-surface-border,#1f2233);background:transparent;transition:background .12s ease,color .12s ease,border-color .12s ease;user-select:none;}
@@ -158,29 +180,25 @@ const SIDEBAR_HTML: &str = concat!(
   .vp-lane-row{display:flex;align-items:center;gap:6px;padding:5px 8px 5px 14px;border-radius:var(--radius-sm,6px);cursor:pointer;transition:background .1s ease;font-size:12px;}
   .vp-lane-row:hover{background:var(--color-surface-bg-emphasis);}
   .vp-lane-row.active{background:var(--color-brand-primary-subtle);color:var(--color-brand-primary);font-weight:500;}
-  .vp-lane-row .icon{width:18px;text-align:center;font-size:12px;font-family:var(--typography-family-icon);}
-  .vp-lane-row .label{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  /* Phase 5-C polish: var(--typography-family-icon) は specificity で .nf-icon を上書きするため
+     direct 'VPMono' 宣言に固定。 width:18px は Lane row レイアウト固有なので保持。 */
+  .vp-lane-row .icon{width:18px;text-align:center;font-size:12px;font-family:'VPMono',monospace;}
+  .vp-lane-row .label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .vp-lane-row .state{font-size:9px;}
+  /* Phase 5-D: Worker row の git 状態 subtitle (= branch / ahead-behind / dirty / merged) */
+  .vp-lane-row .worker-meta{flex:1;font-size:10px;color:var(--color-text-tertiary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-left:6px;font-style:italic;}
+  .vp-lane-row .worker-meta .dirty{color:var(--color-status-warning,#d49b3f);font-weight:500;}
+  .vp-lane-row .worker-meta .ahead{color:var(--color-status-info,#3fb9d4);}
+  .vp-lane-row .worker-meta .behind{color:var(--color-status-warning,#d49b3f);}
+  .vp-lane-row .worker-meta .merged{color:var(--color-status-success,#3fb950);}
   /* Phase 4-A: Worker row × button (delete) — hover 時のみ表示で row UI を雑然とさせない */
   .vp-lane-row .vp-lane-delete{font-size:14px;color:var(--color-text-tertiary);padding:0 4px;border-radius:3px;opacity:0;transition:opacity .12s ease,color .12s ease,background .12s ease;cursor:pointer;}
   .vp-lane-row:hover .vp-lane-delete{opacity:0.8;}
   .vp-lane-row .vp-lane-delete:hover{color:#fff;background:var(--color-status-error,#d4444c);opacity:1;}
 
-  /* Stand row (Lane の中身、 HD/TH 等) — read-only 表示 */
-  .vp-stand-row{display:flex;align-items:center;gap:6px;padding:2px 8px 2px 34px;font-size:10px;color:var(--color-text-tertiary);}
-  .vp-stand-row .icon{width:18px;text-align:center;font-family:var(--typography-family-icon);}
-  .vp-stand-row .label{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-
-  /* Phase 3-B: Project scope の Stand (PP/GE/HP) row + section header */
-  .vp-project-stands-header,
-  .vp-lanes-header{padding:6px 12px 2px 14px;font-size:10px;color:var(--color-text-tertiary);text-transform:uppercase;letter-spacing:0.06em;font-weight:500;}
-  /* Phase 5-A: row が clickable に (cursor:pointer + hover/active) */
-  .vp-project-stand-row{display:flex;align-items:center;gap:6px;padding:3px 8px 3px 18px;font-size:11px;color:var(--color-text-secondary);cursor:pointer;border-radius:var(--radius-sm,6px);transition:background .1s ease;}
-  .vp-project-stand-row:hover{background:var(--color-surface-bg-emphasis);}
-  .vp-project-stand-row.active{background:var(--color-brand-primary-subtle);color:var(--color-brand-primary);font-weight:500;}
-  .vp-project-stand-row .icon{width:18px;text-align:center;font-family:var(--typography-family-icon);}
-  .vp-project-stand-row .label{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-  .vp-project-stand-row .state{font-size:9px;color:var(--color-text-tertiary);}
+  /* Phase 5-C minimal: Project Stands (PP/GE/HP) を sidebar からオミット。
+     stand-row / project-stands / lanes-header は全削除。 Lane 階層は単一 section
+     (= LANES のみ) なので header 自体不要。 Lane 行末尾に Stand glyph を inline 統合。 */
 
   /* SP 未起動 / Lane loading 等の hint 表示 */
   .vp-empty-hint{padding:6px 12px 6px 14px;font-size:11px;color:var(--color-text-tertiary);font-style:italic;}
@@ -199,18 +217,28 @@ const SIDEBAR_HTML: &str = concat!(
   .vp-add-worker-form button[data-variant="primary"]{background:var(--color-brand-primary-subtle);color:var(--color-brand-primary);border-color:var(--color-brand-primary-subtle);}
   .vp-add-worker-form button[data-variant="primary"]:hover{background:var(--color-brand-primary);color:var(--color-surface-bg-base);}
 
-  .empty,.loading,.error{padding:8px 16px;color:var(--color-text-tertiary);font-style:italic;font-size:12px;}
+  .empty,.loading,.error{padding:var(--spacing-sm);color:var(--color-text-tertiary);font-style:italic;font-size:12px;}
+
+  /* Phase 5-C minimal: Nerd Font 単色 icon + state color (emoji 全廃)
+     icon は --typography-family-icon (Nerd Font Mono symbols)、 色は CSS class で割当。
+     .nf-icon CSS rule 自体は web_assets::NERD_FONT_CSS で先頭 <style> に注入済み。 */
+  .vp-state-running{color:var(--color-status-success,#3fb950);}
+  .vp-state-dead{color:var(--color-status-error,#d4444c);}
+  .vp-state-spawning{color:var(--color-status-warning,#d49b3f);}
+  .vp-state-idle{color:var(--color-text-tertiary);}
+  .vp-state-working{color:var(--color-brand-primary);}
+  .vp-state-pausing{color:var(--color-text-tertiary);}
+  .vp-state-exiting{color:var(--color-status-warning,#d49b3f);}
+
+  /* Phase 5-C: Lead restart button (project row hover で表示) */
+  .vp-project-restart{font-family:'VPMono',monospace;font-size:11px;color:var(--color-text-tertiary);padding:0 var(--spacing-xs);border-radius:3px;opacity:0;transition:opacity .12s ease,color .12s ease,background .12s ease;cursor:pointer;}
+  .processes-section .creo-accordion-summary:hover .vp-project-restart{opacity:0.7;}
+  .vp-project-restart:hover{color:var(--color-brand-primary);background:var(--color-brand-primary-subtle);opacity:1;}
 </style></head>
 <body>
-  <div class="widget-slot" id="widget-slot">
-    <div class="widget-title">Activity <span class="creo-badge" data-size="sm" id="world-badge">…</span></div>
-    <div class="stat"><span class="label">Version</span><span class="value" id="world-version">—</span></div>
-    <div class="stat"><span class="label">Started</span><span class="value" id="world-uptime">—</span></div>
-    <div class="stat"><span class="label">Projects</span><span class="value" id="proj-count">0</span></div>
-    <div class="stat"><span class="label">Processes</span><span class="value" id="proc-count">0</span></div>
-  </div>
-  <div class="projects-section">
-    <div class="section-header">Projects</div>
+  <!-- Phase 5-C minimal: section header "Projects" は冗長 (sidebar = projects と自明) → 削除。
+       widget-slot を world-widget として最下部に移動、 accordion 化。 -->
+  <div class="processes-section">
     <div id="projects"><div class="loading">読込中…</div></div>
     <div class="add-trigger" id="add-trigger" title="Add Project">＋ Add</div>
     <div class="add-actions" id="add-actions">
@@ -233,11 +261,32 @@ const SIDEBAR_HTML: &str = concat!(
       <button type="button" class="primary" id="clone-confirm">Clone</button>
     </div>
   </div>
-<script>
+  <!-- Phase 5-C minimal: World widget = sidebar 最下部 fixed accordion。
+       collapsed = 1 行 ("● online vN — Pp/Rr"), expanded = 詳細 stat list。 -->
+  <details class="world-widget" id="world-details">
+    <summary>
+      <span class="world-status offline nf-icon" id="world-status"></span>
+      <span class="world-line" id="world-line">offline</span>
+    </summary>
+    <div class="world-detail">
+      <div class="world-stat"><span class="label">Version</span><span class="value" id="world-version">—</span></div>
+      <div class="world-stat"><span class="label">Started</span><span class="value" id="world-uptime">—</span></div>
+      <div class="world-stat"><span class="label">Projects</span><span class="value" id="proj-count">0</span></div>
+      <div class="world-stat"><span class="label">Processes</span><span class="value" id="proc-count">0</span></div>
+    </div>
+  </details>
+<script>"#,
+    include_str!("../assets/nerd-font-loader.js"),
+    r#"
   // Rust から push される sidebar state を保持
   let state = null;
   let pendingState = null;
   let domReady = false;
+
+  // Phase 5-D fix: ephemeral UI state を re-render を跨いで保持。
+  //  full DOM rebuild (`root.innerHTML = ''`) で form の expanded class が消える問題を回避。
+  //  Set 内に project path があれば `<vp-add-worker-form>` を expanded として再構成。
+  const addWorkerOpen = new Set();
 
   // ipc 送信 wrapper (window.ipc は wry が提供)
   function send(msg) {
@@ -245,6 +294,7 @@ const SIDEBAR_HTML: &str = concat!(
       window.ipc.postMessage(JSON.stringify(msg));
     }
   }
+
 
   // unix 時刻 ISO → "Xh Ym ago" 風文字列
   function formatStartedAt(iso) {
@@ -261,25 +311,40 @@ const SIDEBAR_HTML: &str = concat!(
   }
 
   function renderActivity(activity) {
-    const badge = document.getElementById('world-badge');
+    // Phase 5-C minimal: collapsed 1 行 + expanded 詳細の 2 view。
+    // collapsed: 状態 dot + "v<ver> — P<n> R<m>" の compact 表現。
+    const status = document.getElementById('world-status');
+    const line = document.getElementById('world-line');
     const ver = document.getElementById('world-version');
     const upt = document.getElementById('world-uptime');
     const pc = document.getElementById('proj-count');
     const rc = document.getElementById('proc-count');
-    if (!badge || !ver || !upt || !pc || !rc) return;
-    if (activity && activity.world_online) {
-      badge.textContent = 'online';
-      badge.setAttribute('data-variant', 'success');
+    if (!status || !line || !ver || !upt || !pc || !rc) return;
+    const online = !!(activity && activity.world_online);
+    status.classList.toggle('offline', !online);
+    const projCount = (activity && activity.project_count) || 0;
+    const runCount = (activity && activity.running_process_count) || 0;
+    if (online) {
+      const v = (activity && activity.world_version) || '?';
+      line.textContent = 'TheWorld v' + v + ' — P' + projCount + ' R' + runCount;
     } else {
-      badge.textContent = 'offline';
-      badge.removeAttribute('data-variant');
+      line.textContent = 'TheWorld offline';
     }
     ver.textContent = (activity && activity.world_version) || '—';
     upt.textContent = formatStartedAt(activity && activity.world_started_at);
-    pc.textContent = String((activity && activity.project_count) || 0);
-    rc.textContent = String((activity && activity.running_process_count) || 0);
+    pc.textContent = String(projCount);
+    rc.textContent = String(runCount);
   }
 
+  // Phase 5-C: Currents / Dormant でプロジェクトを 2 段に分割。
+  //   ルールは反転定義 (white-list より意図が明確):
+  //     Dormant = state が `dead` または unset (= 一度も起動していない / 死亡後 reset 済)
+  //     Currents = 上記以外すべて (spawning / running / idle / working / pausing / exiting)
+  //   触ると state が遷移し (例: dead → spawning)、 自然に Currents 側に上がる UX。
+  //   各セクションは空ならヘッダごと描画しない (累計 0 のラベル違和感を避ける)。
+  function isProcessAlive(state) {
+    return !!state && state !== 'dead';
+  }
   function renderProjects(projects) {
     const root = document.getElementById('projects');
     if (!root) return;
@@ -288,10 +353,34 @@ const SIDEBAR_HTML: &str = concat!(
       root.innerHTML = '<div class="empty">(no projects)</div>';
       return;
     }
+    const currents = [];
+    const stopped = [];
     for (const p of projects) {
+      if (isProcessAlive(p.state)) currents.push(p);
+      else stopped.push(p);
+    }
+    if (currents.length > 0) {
+      const h = document.createElement('div');
+      h.className = 'vp-proc-section-header';
+      h.textContent = 'Currents';
+      root.appendChild(h);
+      for (const p of currents) renderProjectAccordion(p, root, false);
+    }
+    if (stopped.length > 0) {
+      const h = document.createElement('div');
+      h.className = 'vp-proc-section-header';
+      // "Currents" (流水) の対比として "Dormant" (休眠) — active ⇄ dormant の王道対比。
+      h.textContent = 'Dormant';
+      root.appendChild(h);
+      for (const p of stopped) renderProjectAccordion(p, root, true);
+    }
+  }
+
+  function renderProjectAccordion(p, root, dormant) {
       // creo-accordion: native <details> ベース。expand/collapse + chevron + ARIA は creo-ui 側 CSS。
+      // Phase 5-C polish: Dormant 行は `vp-proc-dormant` で opacity 0.65 に視覚弱化。
       const proj = document.createElement('details');
-      proj.className = 'creo-accordion';
+      proj.className = 'creo-accordion' + (dormant ? ' vp-proc-dormant' : '');
       if (p.expanded) proj.setAttribute('open', '');
       // 'toggle' イベントで Rust に永続化 IPC を送る (native toggle は即時、IPC は state 同期用)
       proj.addEventListener('toggle', () => {
@@ -300,21 +389,29 @@ const SIDEBAR_HTML: &str = concat!(
 
       const summary = document.createElement('summary');
       summary.className = 'creo-accordion-summary';
-      // Sprint 2 (Idea 1 tree visualization): ProcessKind icon (Architecture v4)
-      const kindIcon = document.createElement('span');
-      kindIcon.className = 'icon';
-      kindIcon.style.cssText = 'margin-right:6px;';
-      kindIcon.textContent = processKindIcon(p.kind || 'runtime');
-      summary.appendChild(kindIcon);
+      // Phase 5-C minimal: kind icon (⭐) は冗長 (accordion title だけで project と分かる) → 削除。
+      // state は Nerd Font 単色 glyph で右端に。
       const title = document.createElement('span');
       title.className = 'creo-accordion-title';
       title.textContent = p.name;
       summary.appendChild(title);
-      // Sprint 2: ProcessState badge (running 🟢 / dead 🔴 等)
+      // Phase 5-C polish: restart button (hover で出現、 click で SP restart)。
+      //  = nf-fa-refresh、 lane WS error 時に user が即復帰できる入口。
+      const restartBtn = document.createElement('span');
+      restartBtn.className = 'vp-project-restart nf-icon';
+      restartBtn.textContent = '';
+      restartBtn.style.cssText = 'margin-left:auto;';
+      restartBtn.title = 'Restart SP (stop + start)';
+      restartBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        send({t: 'process:restart', path: p.path});
+      });
+      summary.appendChild(restartBtn);
       const stateBadge = document.createElement('span');
       stateBadge.className = 'state';
-      stateBadge.style.cssText = 'margin-left:auto;font-size:10px;';
-      stateBadge.textContent = processStateMark(p.state);
+      stateBadge.style.cssText = 'margin-left:6px;';
+      stateBadge.innerHTML = stateGlyphHTML(p.state);
       summary.appendChild(stateBadge);
       proj.appendChild(summary);
 
@@ -345,71 +442,82 @@ const SIDEBAR_HTML: &str = concat!(
         loading.textContent = '📡 loading lanes…';
         content.appendChild(loading);
       } else {
-        // Phase 3-B: Project-scope Stand (PP/GE/HP) を Lane より上に表示。
-        // 「この project では PP/GE/HP が available」 を視覚的に示す read-only marker。
-        // Stand 個別 click は Phase 4+ で Canvas/eval/external pane に bind 予定。
-        const projectStandsHeader = document.createElement('div');
-        projectStandsHeader.className = 'vp-project-stands-header';
-        projectStandsHeader.textContent = 'PROJECT STANDS';
-        content.appendChild(projectStandsHeader);
-        const projectStands = [
-          { kind: 'paisley_park',   label: 'Paisley Park',    icon: '🧭', desc: 'Canvas / Information Navigator' },
-          { kind: 'gold_experience', label: 'Gold Experience', icon: '🌿', desc: 'Code Runner / 動的生命注入' },
-          { kind: 'hermit_purple',   label: 'Hermit Purple',   icon: '🍇', desc: 'External Control / MIDI/MCP/tmux' },
-        ];
-        const activeStand = (state && state.active_stand) || null;
-        for (const st of projectStands) {
-          const isActiveStand = activeStand
-            && activeStand.project_path === p.path
-            && activeStand.kind === st.kind;
-          const row = document.createElement('div');
-          row.className = 'vp-project-stand-row' + (isActiveStand ? ' active' : '');
-          row.title = st.desc;
-          const icon = document.createElement('span');
-          icon.className = 'icon';
-          icon.textContent = st.icon;
-          const label = document.createElement('span');
-          label.className = 'label';
-          label.textContent = st.label;
-          const status = document.createElement('span');
-          status.className = 'state';
-          status.textContent = '⚪';
-          row.appendChild(icon);
-          row.appendChild(label);
-          row.appendChild(status);
-          // Phase 5-A: click で main area に Stand pane を表示 (Lane と排他 active)
-          row.addEventListener('click', (e) => {
-            e.stopPropagation();
-            send({t: 'stand:select', path: p.path, kind: st.kind});
-          });
-          content.appendChild(row);
-        }
-        const lanesHeader = document.createElement('div');
-        lanesHeader.className = 'vp-lanes-header';
-        lanesHeader.textContent = 'LANES';
-        content.appendChild(lanesHeader);
-
+        // Phase 5-C minimal: Project Stands (PP/GE/HP) は sidebar からオミット。
+        // section header (PROJECT STANDS / LANES) も冗長になるため削除。
+        // Lane 行を直接列挙する flat 構造に統一。
         for (const lane of lanes) {
           const addr = laneAddressKey(lane);
           const isActive = activeAddr && activeAddr === addr;
 
-          // Lane row (📍 Session = Lead/Worker)
+          // Phase 5-C minimal: Lane row 単一行に集約。
+          // 構成: [stand glyph (Nerd Font 単色)] [label] ... [state circle] [× (worker only)]
+          // 旧 separate Stand child row は削除、 Stand 識別は 行頭 glyph で表現。
           const row = document.createElement('div');
           row.className = 'vp-lane-row' + (isActive ? ' active' : '');
-          const icon = document.createElement('span');
-          icon.className = 'icon';
-          icon.textContent = processKindIcon('session');
+          const isWorker = (lane.kind === 'worker') ||
+            (lane.address && lane.address.kind === 'worker');
+          const standGlyph = STAND_GLYPH[lane.stand] || '';
+          const standIcon = document.createElement('span');
+          standIcon.className = 'icon nf-icon';
+          standIcon.textContent = standGlyph;
+          standIcon.title = standDisplayName(lane.stand) || lane.stand || '';
           const label = document.createElement('span');
           label.className = 'label';
           label.textContent = laneLabel(lane);
-          // Phase 4-A: Worker row だけ × button (delete) を追加。 Lead は project lifetime 紐付きで削除不可。
-          const isWorker = (lane.kind === 'worker') ||
-            (lane.address && lane.address.kind === 'worker');
           const stateMark = document.createElement('span');
           stateMark.className = 'state';
-          stateMark.textContent = processStateMark(lane.state);
-          row.appendChild(icon);
+          stateMark.innerHTML = stateGlyphHTML(lane.state);
+          row.appendChild(standIcon);
           row.appendChild(label);
+          // Phase 5-D: Worker のみ git 状態 subtitle (branch · ahead/behind · dirty/merged)
+          if (isWorker && lane.worker_status) {
+            const ws = lane.worker_status;
+            const meta = document.createElement('span');
+            meta.className = 'worker-meta';
+            // branch は textContent で escape (user 入力由来 → XSS 対策)、 数値系は HTML safe
+            let hasContent = false;
+            if (ws.branch) {
+              const br = document.createElement('span');
+              br.textContent = ws.branch;
+              meta.appendChild(br);
+              hasContent = true;
+            }
+            const ahead = ws.ahead | 0;
+            const behind = ws.behind | 0;
+            if (ahead > 0 || behind > 0) {
+              if (hasContent) meta.appendChild(document.createTextNode(' '));
+              if (ahead > 0) {
+                const a = document.createElement('span');
+                a.className = 'ahead';
+                a.textContent = '↑' + ahead;
+                meta.appendChild(a);
+              }
+              if (behind > 0) {
+                const b = document.createElement('span');
+                b.className = 'behind';
+                b.textContent = '↓' + behind;
+                meta.appendChild(b);
+              }
+              hasContent = true;
+            }
+            if ((ws.dirty_count | 0) > 0) {
+              if (hasContent) meta.appendChild(document.createTextNode(' '));
+              const d = document.createElement('span');
+              d.className = 'dirty';
+              d.textContent = ws.dirty_count + 'M';
+              meta.appendChild(d);
+              hasContent = true;
+            }
+            if (ws.is_merged) {
+              if (hasContent) meta.appendChild(document.createTextNode(' '));
+              const m = document.createElement('span');
+              m.className = 'merged';
+              m.textContent = 'merged';
+              meta.appendChild(m);
+              hasContent = true;
+            }
+            if (hasContent) row.appendChild(meta);
+          }
           row.appendChild(stateMark);
           // Phase 4-A: Worker のみ × button (即 delete、 confirm dialog なし — dogfooding speed 優先)
           if (isWorker) {
@@ -428,29 +536,16 @@ const SIDEBAR_HTML: &str = concat!(
             send({t: 'lane:select', path: p.path, address: addr});
           });
           content.appendChild(row);
-
-          // Stand child row (🦾 Worker = Lane の中身、 HD/TH...)
-          if (lane.stand) {
-            const childRow = document.createElement('div');
-            childRow.className = 'vp-stand-row';
-            const childIcon = document.createElement('span');
-            childIcon.className = 'icon';
-            childIcon.textContent = processKindIcon('worker');
-            const childLabel = document.createElement('span');
-            childLabel.className = 'label';
-            childLabel.textContent = standDisplayName(lane.stand) + ' ' + laneStandIcon(lane.stand);
-            childRow.appendChild(childIcon);
-            childRow.appendChild(childLabel);
-            content.appendChild(childRow);
-          }
         }
 
         // Phase 3-A: + Add Worker button + inline form (POST /api/lanes + ccws clone 連動)
         const addWorker = document.createElement('div');
         addWorker.className = 'vp-add-worker';
+        // Phase 5-C minimal: ラベルは "+" のみ (hover で title tooltip)
+        addWorker.title = 'Add Worker (ccws clone)';
         addWorker.innerHTML =
           '<span class="icon">+</span>' +
-          '<span class="label">Add Worker (ccws clone)</span>';
+          '<span class="label">Add Worker</span>';
         const addForm = document.createElement('div');
         addForm.className = 'vp-add-worker-form';
         addForm.innerHTML =
@@ -460,13 +555,21 @@ const SIDEBAR_HTML: &str = concat!(
             '<button class="creo-btn" data-variant="secondary" data-size="sm" data-action="cancel">Cancel</button>' +
             '<button class="creo-btn" data-variant="primary" data-size="sm" data-action="submit">Create</button>' +
           '</div>';
+        // Phase 5-D fix: form 開閉状態を addWorkerOpen Set に永続化。
+        //  re-render で DOM 再生成されても、 Set に path があれば expanded を維持。
+        if (addWorkerOpen.has(p.path)) addForm.classList.add('expanded');
         addWorker.addEventListener('click', () => {
+          addWorkerOpen.add(p.path);
           addForm.classList.add('expanded');
           const nameInput = addForm.querySelector('input[data-field="name"]');
           if (nameInput) setTimeout(() => nameInput.focus(), 50);
         });
         const cancelBtn = addForm.querySelector('button[data-action="cancel"]');
         const submitBtn = addForm.querySelector('button[data-action="submit"]');
+        const closeForm = () => {
+          addWorkerOpen.delete(p.path);
+          addForm.classList.remove('expanded');
+        };
         const submit = () => {
           const nameInput = addForm.querySelector('input[data-field="name"]');
           const branchInput = addForm.querySelector('input[data-field="branch"]');
@@ -474,16 +577,16 @@ const SIDEBAR_HTML: &str = concat!(
           const branchVal = (branchInput && branchInput.value || '').trim();
           if (!nameVal) return;
           send({t: 'lane:add_worker', path: p.path, name: nameVal, branch: branchVal || null});
-          addForm.classList.remove('expanded');
+          closeForm();
           if (nameInput) nameInput.value = '';
           if (branchInput) branchInput.value = '';
         };
-        if (cancelBtn) cancelBtn.addEventListener('click', () => addForm.classList.remove('expanded'));
+        if (cancelBtn) cancelBtn.addEventListener('click', closeForm);
         if (submitBtn) submitBtn.addEventListener('click', submit);
         addForm.querySelectorAll('input').forEach(inp => {
           inp.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') { e.preventDefault(); submit(); }
-            else if (e.key === 'Escape') { e.preventDefault(); addForm.classList.remove('expanded'); }
+            else if (e.key === 'Escape') { e.preventDefault(); closeForm(); }
           });
         });
         content.appendChild(addWorker);
@@ -492,31 +595,35 @@ const SIDEBAR_HTML: &str = concat!(
 
       proj.appendChild(content);
       root.appendChild(proj);
-    }
   }
 
-  // Sprint 2 (Idea 1, Architecture v4): ProcessKind / ProcessState 表示用 helpers
-  function processKindIcon(kind) {
-    switch (kind) {
-      case 'supervisor': return '👑';
-      case 'runtime': return '⭐';
-      case 'session': return '📍';
-      case 'worker': return '🦾';
-      default: return '·';
-    }
+  // Phase 5-C minimal: Nerd Font 単色 glyph 集約。 redundant な kindIcon (⭐📍🦾) は撤去、
+  // Stand identity (PP/GE/HP/HD/TH) と state circle のみ残す。 全 emoji → Nerd Font に置換、
+  // 色は CSS class (vp-state-running 等) で割当 (絵文字の色味バラつきゼロ)。
+  const STAND_GLYPH = {
+    paisley_park: '',   // nf-fa-compass
+    gold_experience: '', // nf-fa-leaf
+    hermit_purple: '',  // nf-fa-plug
+    heavens_door: '',   // nf-fa-book
+    the_hand: '',       // nf-fa-terminal
+  };
+  const STATE_CLASS = {
+    running: 'vp-state-running',
+    spawning: 'vp-state-spawning',
+    idle: 'vp-state-idle',
+    working: 'vp-state-working',
+    pausing: 'vp-state-pausing',
+    exiting: 'vp-state-exiting',
+    dead: 'vp-state-dead',
+  };
+  //  = nf-fa-circle (filled)、 色は CSS class で。 unknown state は空 ('')。
+  function stateGlyphHTML(s) {
+    const cls = STATE_CLASS[s];
+    if (!cls) return '';
+    return '<span class="nf-icon ' + cls + '"></span>';
   }
-  function processStateMark(s) {
-    switch (s) {
-      case 'running': return '🟢';
-      case 'spawning': return '🟡';
-      case 'idle': return '🔵';
-      case 'working': return '⚙';
-      case 'pausing': return '⏸';
-      case 'exiting': return '🟠';
-      case 'dead': return '🔴';
-      default: return '';
-    }
-  }
+  // 旧 processKindIcon は撤去 (kind 別 emoji 不要、 row 位置 + label が情報主体)。
+  // 旧 processStateMark は stateGlyphHTML に置換。
   // Sprint 2-2: Stand display name (Architecture v4 metaphor)
   function standDisplayName(stand) {
     switch (stand) {
@@ -528,14 +635,7 @@ const SIDEBAR_HTML: &str = concat!(
       default: return stand || '';
     }
   }
-  // Phase A4-3b-2: Lane 行表示用 helpers (Stand icon は Worker child row で reuse)
-  function laneStandIcon(stand) {
-    switch (stand) {
-      case 'heavens_door': return '📖';
-      case 'the_hand': return '✋';
-      default: return '·';
-    }
-  }
+  // Phase 5-C minimal: 旧 laneStandIcon (絵文字 📖/✋) は STAND_GLYPH (Nerd Font 単色) に置換、 削除。
   function laneLabel(lane) {
     if (!lane) return '';
     const kind = lane.kind || (lane.address && lane.address.kind);
@@ -1378,6 +1478,13 @@ struct SidebarIpcOutcome {
     /// Phase 4-A: Worker Lane 削除要求 `(project_path, address)`。
     /// caller が SP port を解決して `client.delete_lane` を呼ぶ。
     delete_lane_request: Option<(String, String)>,
+    /// Phase 5-C: Process restart 要求 `(project_name)`。
+    /// caller が TheWorld の `/api/world/processes/{name}/restart` を呼ぶ。
+    restart_process_request: Option<String>,
+    /// Phase 5-D fix: SP auto-spawn dedup HashSet から path を release する要求。
+    /// 「accordion を閉じる」 = 「ユーザが retry を望んでいる」 と解釈、 失敗ループの
+    /// dedup deadlock を抜けられるようにする。 caller は `sp_spawn_triggered.remove(path)` を呼ぶ。
+    sp_spawn_release: Option<String>,
 }
 
 /// sidebar webview から IPC で受け取った JSON を解釈し、`SidebarState` を mutate。
@@ -1417,6 +1524,12 @@ fn handle_sidebar_ipc(msg: &str, state: &mut SidebarState) -> SidebarIpcOutcome 
                 }
                 if new_state && p.state.as_deref() == Some("dead") {
                     out.sp_spawn_request = Some((p.name.clone(), p.path.clone()));
+                }
+                // Phase 5-D fix: accordion を閉じた = 「retry したい」signal と解釈、
+                //  sp_spawn_triggered HashSet の entry を release。 これで spawn 失敗ループから
+                //  抜けられる (collapse → expand で確実に retry が走る)。
+                if !new_state {
+                    out.sp_spawn_release = Some(p.path.clone());
                 }
             }
         }
@@ -1514,6 +1627,21 @@ fn handle_sidebar_ipc(msg: &str, state: &mut SidebarState) -> SidebarIpcOutcome 
                 out.active_changed = true;
             }
         }
+        "process:restart" => {
+            // Phase 5-C: project name (from p.path → leaf name) を抽出して async restart に投げる。
+            // path は normalized full path、 SP の API は project name で識別する。
+            if path.is_empty() {
+                tracing::warn!("process:restart with empty path: {}", msg);
+                return out;
+            }
+            let project_name = std::path::Path::new(path)
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or(path)
+                .to_string();
+            tracing::info!("process:restart {} (project_name={})", path, project_name);
+            out.restart_process_request = Some(project_name);
+        }
         other => {
             tracing::debug!("sidebar IPC: 未知の type {:?}", other);
         }
@@ -1573,8 +1701,24 @@ pub fn run() -> anyhow::Result<()> {
     };
     let _ = std::fs::create_dir_all(&log_dir);
     let file_appender = tracing_appender::rolling::never(&log_dir, "vp-app.kdl.log");
+    // Phase 5-C: log filter の noise 抑制 (2026-04-28 観測: 23MB log の 70% が hyper_util::pool、
+    //   25% が vp_app::terminal の PTY I/O event だった)。 vp_app の他モジュールは info で残し、
+    //   noise 源を warn まで上げる。 必要なら RUST_LOG 環境変数で override 可。
+    //
+    // Phase 5-D fix: ユーザ shell の `RUST_LOG=vantage_point=debug` 等が `try_from_default_env` で
+    //   default を完全 override してしまい、 hyper_util の debug log が大量に残っていた。
+    //   読み込み後に `add_directive` で noise 源を強制 warn 上書きする (same-target は replace)。
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| "vp_app=info".into());
+        .unwrap_or_else(|_| {
+            tracing_subscriber::EnvFilter::new(
+                "vp_app=info,vp_app::terminal=warn,vantage_point=info",
+            )
+        })
+        .add_directive("hyper_util=warn".parse().expect("static directive"))
+        .add_directive("hyper=warn".parse().expect("static directive"))
+        .add_directive("reqwest=warn".parse().expect("static directive"))
+        .add_directive("h2=warn".parse().expect("static directive"))
+        .add_directive("rustls=warn".parse().expect("static directive"));
     let _ = tracing_subscriber::registry()
         .with(env_filter)
         .with(
@@ -1600,6 +1744,15 @@ pub fn run() -> anyhow::Result<()> {
     // メニューバー (View → Developer Mode / Open Developer Tools を含む) + トレイ
     let menu_handles = crate::menu::build_menu_bar(initial_dev_mode);
     let _menu = menu_handles.menu.clone();
+    // macOS: NSApp に menu を attach、 accelerator (Cmd+N 等) を NSApplication menu hotkey 化。
+    // これを呼ばないと MenuItem::new() の accelerator が NSResponder chain で発火しない。
+    // 既存の PredefinedMenuItem (close_window/undo/copy 等) は muda 内部で auto-attach されるが、
+    // user-defined MenuItem は明示の init_for_nsapp が要る。
+    #[cfg(target_os = "macos")]
+    {
+        // muda 0.17: Menu::init_for_nsapp() でメニューバーに attach
+        menu_handles.menu.init_for_nsapp();
+    }
     let dev_mode_item = menu_handles.developer_mode_item;
     let open_devtools_item = menu_handles.open_devtools_item;
     let menu_ids = menu_handles.ids;
@@ -1647,7 +1800,13 @@ pub fn run() -> anyhow::Result<()> {
     // Sidebar
     let sidebar_ipc_proxy = event_loop.create_proxy();
     let sidebar = WebViewBuilder::new()
-        .with_html(SIDEBAR_HTML)
+        // Phase 5-C: vp-asset:// custom protocol で bundled font (FONT_ASSETS) + sidebar.html を配信。
+        // serve() に SIDEBAR_ASSETS を渡すと FONT_ASSETS と chain して両方 lookup される。
+        // HTML 自体も同 scheme から読むことで page origin = vp-asset:// に統一、 font fetch も同一 origin。
+        .with_custom_protocol("vp-asset".to_string(), |id, request| {
+            crate::web_assets::serve(id, request, SIDEBAR_ASSETS)
+        })
+        .with_url("vp-asset://app/sidebar.html")
         .with_bounds(Rect {
             position: LogicalPosition::new(0.0, 0.0).into(),
             size: WryLogicalSize::new(SIDEBAR_WIDTH, 800.0).into(),
@@ -1823,7 +1982,14 @@ pub fn run() -> anyhow::Result<()> {
                 );
                 // Architecture v4: active_lane_address が未設定なら最初の Lane を auto-select。
                 // 「初回起動 → Lead Lane が main area に出る」UX を Lane SSOT で保つ。
-                let auto_select = sidebar_state.active_lane_address.is_none()
+                //
+                // 例外: `VP_APP_SECONDARY=1` (Cmd+N で spawn された secondary instance) の場合は
+                // auto-select を skip。 元 vp-app が既に同 lane の terminal WS を持ってる事が多く、
+                // 衝突して両方の console が壊れるため。 Secondary は user が手動 lane 選択する前提。
+                let is_secondary =
+                    std::env::var("VP_APP_SECONDARY").map(|v| v == "1").unwrap_or(false);
+                let auto_select = !is_secondary
+                    && sidebar_state.active_lane_address.is_none()
                     && lanes
                         .first()
                         .map(|l| lane_address_key(&l.address))
@@ -1992,6 +2158,63 @@ pub fn run() -> anyhow::Result<()> {
                         tracing::debug!("SP auto-spawn skip (既 trigger): {}", path);
                     }
                 }
+                // Phase 5-D fix: accordion 閉じた → dedup HashSet から path を release。
+                //  spawn 失敗で entry が居残ったまま user が collapse → expand すれば確実に retry。
+                if let Some(path) = outcome.sp_spawn_release
+                    && sp_spawn_triggered.remove(&path)
+                {
+                    tracing::info!(
+                        "SP auto-spawn dedup released (accordion collapse): {}",
+                        path
+                    );
+                }
+                // Phase 5-C: Process restart 要求 (sidebar の 🔄 button から)
+                // Phase 5-D fix: bare `tokio::spawn` は wry main thread (= tokio runtime context 無)
+                //   から呼ぶと panic 即死。 他の async handler と同じく
+                //   `thread::Builder::spawn + Builder::new_current_thread + rt.block_on` にする。
+                if let Some(project_name) = outcome.restart_process_request {
+                    let proxy = async_action_proxy.clone();
+                    let project_name_clone = project_name.clone();
+                    thread::Builder::new()
+                        .name(format!("restart-{}", project_name))
+                        .spawn(move || {
+                            let rt = match tokio::runtime::Builder::new_current_thread()
+                                .enable_all()
+                                .build()
+                            {
+                                Ok(rt) => rt,
+                                Err(e) => {
+                                    tracing::warn!("restart_process tokio runtime: {}", e);
+                                    return;
+                                }
+                            };
+                            rt.block_on(async move {
+                                // TheWorld port は固定 32000 (vantage_point::cli::WORLD_PORT と同期)
+                                let client = crate::client::TheWorldClient::new(32000);
+                                match client.restart_process(&project_name_clone).await {
+                                    Ok(()) => {
+                                        tracing::info!(
+                                            "restart_process OK: {}",
+                                            project_name_clone
+                                        );
+                                        // 完了 → projects 再 fetch → sidebar state badge 更新
+                                        if let Ok(projects) = client.list_projects().await {
+                                            let _ = proxy
+                                                .send_event(AppEvent::ProcessesLoaded(projects));
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            "restart_process failed for {}: {}",
+                                            project_name_clone,
+                                            e
+                                        );
+                                    }
+                                }
+                            });
+                        })
+                        .ok();
+                }
                 // Phase 4-A: Worker Lane 削除要求 (sidebar の × button から)
                 if let Some((project_path, address)) = outcome.delete_lane_request {
                     let sp_port = sidebar_state
@@ -2146,7 +2369,40 @@ pub fn run() -> anyhow::Result<()> {
             //  - "Developer Mode" check item トグル → settings 永続化、Open DevTools の enabled 切替
             //  - "Open Developer Tools" → dev_mode == true なら main_view.open_devtools()
             Event::UserEvent(AppEvent::MenuClicked(id)) => {
-                if id == menu_ids.developer_mode {
+                if id == menu_ids.new_window {
+                    // Cmd+N: 新規 vp-app process を spawn = 新しい MainWindow が独立 process で立つ。
+                    // 同 EventLoop に重ねるのではなく fork-style で別 process 化することで、
+                    // state 干渉ゼロ + crash isolation + multi-instance 並行開発が可能に。
+                    // TheWorld daemon (port 32000) は process 横断 shared なので projects 一覧は同期。
+                    match std::env::current_exe() {
+                        Ok(exe) => {
+                            match std::process::Command::new(&exe)
+                                // 子 process は auto-select を skip ── 元 vp-app と active_lane
+                                // が衝突して両方の terminal WS が壊れるのを防ぐ。
+                                // 起動後 user が手動で lane 選択するまで main_area は empty。
+                                .env("VP_APP_SECONDARY", "1")
+                                .spawn()
+                            {
+                                Ok(child) => {
+                                    tracing::info!(
+                                        "Cmd+N: spawned new vp-app process (pid={})",
+                                        child.id()
+                                    );
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "Cmd+N: failed to spawn new process at {}: {}",
+                                        exe.display(),
+                                        e
+                                    );
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("Cmd+N: current_exe() failed: {}", e);
+                        }
+                    }
+                } else if id == menu_ids.developer_mode {
                     dev_mode = !dev_mode;
                     dev_mode_item.set_checked(dev_mode);
                     open_devtools_item.set_enabled(dev_mode);
@@ -2181,4 +2437,80 @@ pub fn run() -> anyhow::Result<()> {
             _ => {}
         }
     });
+}
+
+#[cfg(test)]
+mod sidebar_html_tests {
+    //! Phase 5-C: SIDEBAR_HTML の組み立て構造検証。
+    //! Bundle font / serve handler のテストは `web_assets` module 側に分離。
+    use super::*;
+
+    /// HTML サイズが WKWebView の loadHTMLString 安全範囲 (< 200KB) に収まる
+    #[test]
+    fn html_size_under_wkwebview_limit() {
+        let size = SIDEBAR_HTML.len();
+        assert!(
+            size < 200_000,
+            "SIDEBAR_HTML size {} bytes exceeds WKWebView safe range — \
+             check that no font binary got embedded in HTML",
+            size
+        );
+    }
+
+    /// HTML 内に旧 placeholder / data URL / @font-face declaration が残っていない
+    #[test]
+    fn no_legacy_artifacts() {
+        assert!(
+            !SIDEBAR_HTML.contains("__VP_SYMBOLS_FONT_B64__"),
+            "legacy Base64 placeholder still in HTML"
+        );
+        assert!(
+            !SIDEBAR_HTML.contains("data:font/ttf;base64,"),
+            "legacy data URL still in HTML"
+        );
+        assert!(
+            !SIDEBAR_HTML.contains("@font-face {"),
+            "legacy CSS @font-face declaration still present (Plan A: JS FontFace API only)"
+        );
+    }
+
+    /// NERD_FONT_LOADER_JS 主要要素が SIDEBAR_HTML に embed されている
+    #[test]
+    fn nerd_font_loader_embedded() {
+        assert!(
+            SIDEBAR_HTML.contains("new FontFace("),
+            "FontFace constructor not found"
+        );
+        assert!(
+            SIDEBAR_HTML.contains("vp-asset://font/"),
+            "vp-asset:// font URL pattern not found"
+        );
+        assert!(
+            SIDEBAR_HTML.contains("document.fonts.add"),
+            "document.fonts.add not found"
+        );
+        assert!(
+            SIDEBAR_HTML.contains("VPMono"),
+            "VPMono family name not found"
+        );
+    }
+
+    /// .nf-icon CSS rule が VPMono direct 宣言を使ってる (var() indirection 経由ではない)
+    #[test]
+    fn nf_icon_uses_vpmono_direct() {
+        assert!(
+            SIDEBAR_HTML.contains(".nf-icon{font-family:'VPMono'"),
+            ".nf-icon CSS rule does not use 'VPMono' direct font-family"
+        );
+    }
+
+    /// SIDEBAR_ASSETS で sidebar.html が `web_assets::lookup_asset` 経由で取れる
+    #[test]
+    fn sidebar_html_servable_via_vp_asset() {
+        let r = crate::web_assets::lookup_asset("vp-asset://app/sidebar.html", SIDEBAR_ASSETS);
+        assert!(r.is_some(), "sidebar.html not lookupable via vp-asset://");
+        let (bytes, ct) = r.unwrap();
+        assert_eq!(ct, "text/html; charset=utf-8");
+        assert_eq!(bytes, SIDEBAR_HTML.as_bytes());
+    }
 }

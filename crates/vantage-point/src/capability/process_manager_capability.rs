@@ -739,6 +739,27 @@ impl ProcessManagerCapability {
         Ok(())
     }
 
+    /// Phase 5-C: SP を restart する。 stop → 短い grace period → start を atomic に chain。
+    /// stop が「No running Process」 なら start のみ実行 (= ensure-running 的な挙動)。
+    pub async fn restart_process(&self, project_name: &str) -> CapabilityResult<RunningProcess> {
+        // stop が失敗しても start を試みる (= dead な project でも restart で起こす UX)
+        match self.stop_process(project_name).await {
+            Ok(()) => {
+                tracing::info!(project = project_name, "Process stopped (for restart)");
+                // grace period: shutdown signal の伝播 + port release を待つ
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+            Err(e) => {
+                tracing::info!(
+                    project = project_name,
+                    "stop_process during restart failed (continuing to start): {}",
+                    e
+                );
+            }
+        }
+        self.start_process(project_name).await
+    }
+
     /// PointViewを開く
     pub async fn open_pointview(&self, project_name: &str) -> CapabilityResult<()> {
         let key = self.resolve_key_by_name(project_name).await;

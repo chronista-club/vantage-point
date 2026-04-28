@@ -26,11 +26,11 @@ use commands::file_cmd::FileCommands;
 
 // Phase 2.x-e: vp-ccws crate を vp-cli の lib に統合。
 // `ccws` 標準 bin (src/bin/ccws.rs) と main.rs (vp) の両方が `vp_cli::ccws` を共有。
-use vp_cli::ccws;
 #[cfg(feature = "midi")]
 use commands::midi::MidiCommands;
 use commands::pane::PaneCommands;
 use commands::tmux_cmd::TmuxCommands;
+use vp_cli::ccws;
 
 #[derive(Parser)]
 #[command(name = "vp")]
@@ -109,6 +109,51 @@ enum Commands {
     /// vp-app GUI 管理 (Mac 主軸切替: Rust + wry + xterm.js + creo-ui)
     #[command(subcommand)]
     App(commands::app::AppCommands),
+
+    /// Window screenshot — vp-app window を PNG 保存 (canonical screenshot 機構)
+    #[command(alias = "screenshot")]
+    Shot {
+        /// 出力 path (default: /tmp/vp/shot-latest.png)
+        #[arg(short, long)]
+        output: Option<std::path::PathBuf>,
+        /// owner process name (default: vp-app)
+        #[arg(short, long, default_value = "vp-app")]
+        window: String,
+        /// 候補 window の n 番目 (0-based、 default: 0 = frontmost)
+        #[arg(short, long)]
+        index: Option<usize>,
+        /// title 部分一致でさらに絞り込む
+        #[arg(short, long)]
+        title: Option<String>,
+        /// list mode: capture せず候補一覧を表示
+        #[arg(long)]
+        list: bool,
+        /// 矩形 capture: "x,y,w,h" (screen 座標、 logical px)
+        #[arg(long)]
+        rect: Option<String>,
+        /// 名付き region: sidebar / main / full (window 内 sub-region に解決)
+        #[arg(long)]
+        region: Option<String>,
+        /// 時系列 capture mode: --interval + (--count or --duration) を一緒に指定
+        #[arg(long)]
+        series: bool,
+        /// frame 間隔 (ex: "200ms" / "0.5s" / "1s")、 series mode 必須
+        #[arg(long, default_value = "200ms")]
+        interval: String,
+        /// frame 数 (count or duration のどちらか必須)
+        #[arg(long)]
+        count: Option<u32>,
+        /// 撮影時間 (ex: "5s" / "10s")、 count と排他
+        #[arg(long)]
+        duration: Option<String>,
+        /// series 出力 dir (default: /tmp/vp/series-{unix-ts}/)
+        #[arg(long)]
+        output_dir: Option<std::path::PathBuf>,
+        /// layout で frame を 1 枚に compose: "MxN" / "vertical" (= "v") / "horizontal" (= "h")
+        /// 出力 path は --output で指定 (未指定時 <output_dir>/composed.png)
+        #[arg(long)]
+        layout: Option<String>,
+    },
 }
 
 /// Stone Free worker workspace コマンド（vp-ccws library への薄い wrapper）
@@ -218,7 +263,259 @@ fn main() -> Result<()> {
         Commands::Ws(cmd) => execute_ws(cmd),
         Commands::Port(cmd) => commands::port_cmd::execute(cmd),
         Commands::App(cmd) => commands::app::execute(cmd),
+        Commands::Shot {
+            output,
+            window,
+            index,
+            title,
+            list,
+            rect,
+            region,
+            series,
+            interval,
+            count,
+            duration,
+            output_dir,
+            layout,
+        } => execute_shot(
+            output, window, index, title, list, rect, region, series, interval, count, duration,
+            output_dir, layout,
+        ),
     }
+}
+
+/// `vp shot` ── canonical screenshot 機構の薄い wrapper。
+/// 実装本体は `vantage_point::screenshot` module (trait + 各 OS backend)。
+/// stdout に保存先 path 1 行を吐く (caller が grep / read しやすく)。
+/// 簡易 duration parser ("200ms" / "0.5s" / "1s" など)
+fn parse_duration(s: &str) -> Result<std::time::Duration, String> {
+    let s = s.trim();
+    if let Some(num) = s.strip_suffix("ms") {
+        let n: u64 = num
+            .trim()
+            .parse()
+            .map_err(|e| format!("bad ms value '{}': {}", num, e))?;
+        Ok(std::time::Duration::from_millis(n))
+    } else if let Some(num) = s.strip_suffix('s') {
+        let n: f64 = num
+            .trim()
+            .parse()
+            .map_err(|e| format!("bad s value '{}': {}", num, e))?;
+        Ok(std::time::Duration::from_secs_f64(n))
+    } else {
+        Err(format!(
+            "invalid duration '{}': expected 'Nms' / 'Ns' / 'N.Ns'",
+            s
+        ))
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_shot(
+    output: Option<std::path::PathBuf>,
+    window: String,
+    index: Option<usize>,
+    title: Option<String>,
+    list: bool,
+    rect: Option<String>,
+    region: Option<String>,
+    series: bool,
+    interval: String,
+    count: Option<u32>,
+    duration: Option<String>,
+    output_dir: Option<std::path::PathBuf>,
+    layout: Option<String>,
+) -> Result<()> {
+    use vantage_point::screenshot::{
+        CaptureFilter, Rect,
+        compose::{Layout, compose},
+        default_backend, region_for_name,
+    };
+    let backend = default_backend();
+    let filter = CaptureFilter {
+        owner: window,
+        index,
+        title_match: title,
+    };
+
+    // ── Phase 5-C v2: series mode ───────────────────────────────────────────
+    // 時系列 capture: 1 回 list_windows + Rect resolve、 以降 loop は capture_rect 直叩き。
+    // swift JIT は最初の 1 回だけ → frame 間 ~50ms / 20fps 上限の高速 capture が可能。
+    if series {
+        let interval_dur = parse_duration(&interval).map_err(|e| anyhow::anyhow!(e))?;
+        let frame_count: u32 = match (count, duration.as_deref()) {
+            (Some(c), None) => c,
+            (None, Some(d)) => {
+                let total = parse_duration(d).map_err(|e| anyhow::anyhow!(e))?;
+                let n = (total.as_millis() / interval_dur.as_millis().max(1)) as u32;
+                n.max(1)
+            }
+            (Some(_), Some(_)) => {
+                anyhow::bail!("--series: --count と --duration は排他 (どちらか 1 つ指定)")
+            }
+            (None, None) => anyhow::bail!("--series は --count または --duration が必要"),
+        };
+
+        // Rect resolve (rect / region / 全 window 全部 Rect 化で統一)
+        let target_rect: Rect = if let Some(rs) = rect {
+            Rect::parse(&rs).map_err(|e| anyhow::anyhow!(e))?
+        } else {
+            let windows = backend
+                .list_windows(&filter)
+                .map_err(|e| anyhow::anyhow!(e))?;
+            if windows.is_empty() {
+                anyhow::bail!("no window with owner = {:?}", filter.owner);
+            }
+            let target = vantage_point::screenshot::pick_window(&windows, &filter)
+                .map_err(|e| anyhow::anyhow!(e))?;
+            if let Some(reg) = region {
+                region_for_name(&reg, &target).ok_or_else(|| {
+                    anyhow::anyhow!("unknown region {:?} (known: sidebar / main / full)", reg)
+                })?
+            } else {
+                Rect {
+                    x: target.x,
+                    y: target.y,
+                    w: target.width,
+                    h: target.height,
+                }
+            }
+        };
+
+        // 出力 dir resolve
+        let dir = output_dir.unwrap_or_else(|| {
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            std::path::PathBuf::from(format!("/tmp/vp/series-{}", ts))
+        });
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| anyhow::anyhow!("mkdir {}: {}", dir.display(), e))?;
+
+        // capture loop
+        let series_started = std::time::Instant::now();
+        for i in 0..frame_count {
+            let frame_path = dir.join(format!("frame-{:04}.png", i));
+            backend
+                .capture_rect(target_rect, Some(frame_path))
+                .map_err(|e| anyhow::anyhow!(e))?;
+            if i + 1 < frame_count {
+                std::thread::sleep(interval_dur);
+            }
+        }
+
+        let total_ms = series_started.elapsed().as_millis();
+        eprintln!(
+            "(series: {} frames @ {:?} interval, capture total {}ms — rect {}x{} at {},{})",
+            frame_count,
+            interval_dur,
+            total_ms,
+            target_rect.w,
+            target_rect.h,
+            target_rect.x,
+            target_rect.y
+        );
+
+        // ── layout 指定時: 全 frame を 1 枚に compose ─────────────────────
+        if let Some(layout_str) = layout {
+            let layout_spec = Layout::parse(&layout_str).map_err(|e| anyhow::anyhow!(e))?;
+            let frame_paths: Vec<std::path::PathBuf> = (0..frame_count)
+                .map(|i| dir.join(format!("frame-{:04}.png", i)))
+                .collect();
+            let compose_output = output.unwrap_or_else(|| dir.join("composed.png"));
+            let compose_started = std::time::Instant::now();
+            let (cw, ch) = compose(&frame_paths, layout_spec, &compose_output)
+                .map_err(|e| anyhow::anyhow!(e))?;
+            eprintln!(
+                "(composed {}x{} from {} frames in {}ms — layout {})",
+                cw,
+                ch,
+                frame_count,
+                compose_started.elapsed().as_millis(),
+                layout_str
+            );
+            // stdout: composed image path (caller が parse しやすく、 frame dir は eprintln で報告)
+            println!("{}", compose_output.display());
+            eprintln!("(frames remain at {})", dir.display());
+        } else {
+            // layout 無し: dir path を stdout に
+            println!("{}", dir.display());
+        }
+        return Ok(());
+    }
+
+    if list {
+        let windows = backend
+            .list_windows(&filter)
+            .map_err(|e| anyhow::anyhow!(e))?;
+        if windows.is_empty() {
+            eprintln!(
+                "(no window with owner = {:?}; is the app running?)",
+                filter.owner
+            );
+            return Ok(());
+        }
+        println!("ID       OWNER       POSITION      SIZE         TITLE");
+        for w in windows {
+            println!(
+                "{:<8} {:<11} {:>5},{:<5}    {:>4}x{:<4}   {}",
+                w.id, w.owner, w.x, w.y, w.width, w.height, w.title
+            );
+        }
+        return Ok(());
+    }
+
+    // Phase 5-C v2: --rect / --region で sub-region capture
+    if let Some(rect_str) = rect {
+        let r = Rect::parse(&rect_str).map_err(|e| anyhow::anyhow!(e))?;
+        let result = backend
+            .capture_rect(r, output)
+            .map_err(|e| anyhow::anyhow!(e))?;
+        println!("{}", result.path.display());
+        eprintln!(
+            "(rect captured {}x{} in {}ms — at {},{})",
+            result.width, result.height, result.elapsed_ms, r.x, r.y
+        );
+        return Ok(());
+    }
+    if let Some(region_name) = region {
+        // 名付き region は window 解決が必要 → list して候補から target を選ぶ → region_for_name で rect 計算
+        let windows = backend
+            .list_windows(&filter)
+            .map_err(|e| anyhow::anyhow!(e))?;
+        if windows.is_empty() {
+            anyhow::bail!("no window with owner = {:?}", filter.owner);
+        }
+        let target = vantage_point::screenshot::pick_window(&windows, &filter)
+            .map_err(|e| anyhow::anyhow!(e))?;
+        let r = region_for_name(&region_name, &target).ok_or_else(|| {
+            anyhow::anyhow!(
+                "unknown region {:?} (known: sidebar / main / full)",
+                region_name
+            )
+        })?;
+        let result = backend
+            .capture_rect(r, output)
+            .map_err(|e| anyhow::anyhow!(e))?;
+        println!("{}", result.path.display());
+        eprintln!(
+            "(region '{}' captured {}x{} in {}ms — at {},{})",
+            region_name, result.width, result.height, result.elapsed_ms, r.x, r.y
+        );
+        return Ok(());
+    }
+
+    // 通常: window 全体 capture
+    let result = backend
+        .capture(&filter, output)
+        .map_err(|e| anyhow::anyhow!(e))?;
+    println!("{}", result.path.display());
+    eprintln!(
+        "(captured {}x{} in {}ms — id={} title={:?})",
+        result.width, result.height, result.elapsed_ms, result.window.id, result.window.title
+    );
+    Ok(())
 }
 
 /// Stone Free 🧵 worker workspace 操作を vp-ccws library に委譲

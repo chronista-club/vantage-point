@@ -46,36 +46,26 @@ impl fmt::Display for LaneKind {
 ///
 /// - Lead/Worker: HD (default) or TH の 2 択
 /// - PP/GE/HP は **Lane の中身ではない** (Project scope の Stand)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LaneStand {
     /// HD 📖 Heaven's Door — Claude CLI (default)
+    /// memory rule: Lead/Worker default は HD
+    #[default]
     HeavensDoor,
     /// TH ✋ The Hand — 素 shell
     TheHand,
 }
 
-impl Default for LaneStand {
-    fn default() -> Self {
-        // memory rule: Lead/Worker default は HD
-        LaneStand::HeavensDoor
-    }
-}
-
 /// Lane の state machine 状態 (Phase A4-2b では Running 固定で pre-populate)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LaneState {
     Spawning,
+    #[default]
     Running,
     Exiting,
     Dead,
-}
-
-impl Default for LaneState {
-    fn default() -> Self {
-        LaneState::Running
-    }
 }
 
 /// Lane の address — Pool key
@@ -134,6 +124,11 @@ pub struct LaneInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
     pub cwd: String,
+    /// Phase 5-D: Worker のみ embed (Lead は git workspace を持たない設計)。
+    /// `cwd` から `ccws::commands::worker_status()` を呼んで populate。
+    /// `/api/lanes` 応答時に lazy 取得 (registry には保存しない、 git 状態は volatile)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_status: Option<crate::ccws::commands::WorkerStatus>,
 }
 
 /// Lane Pool — Lead/Worker registry
@@ -184,13 +179,9 @@ impl LanePool {
         let cmd =
             crate::process::stand_spawner::build_stand_command(stand, std::path::Path::new(&cwd));
 
-        // A5-2: PtySlot::spawn で実 PTY + child process 起動
-        let (state, pid) = match crate::daemon::pty_slot::PtySlot::spawn(
-            &cwd,
-            &cmd.program,
-            &cmd.args,
-            80,
-            24,
+        // Phase 5-D: spawn_with_fallback で `claude --continue` 早期 exit 時に空 args で retry。
+        let (state, pid) = match crate::process::stand_spawner::spawn_with_fallback(
+            &cwd, &cmd, 80, 24,
         ) {
             Ok((slot, _rx)) => {
                 let pid = slot.pid();
@@ -229,6 +220,8 @@ impl LanePool {
             created_at: chrono::Utc::now().to_rfc3339(),
             pid,
             cwd,
+            // Lead は git workspace 持たない (= project root が cwd)、 worker_status は None
+            worker_status: None,
         };
         pool.lanes.insert(addr, info);
         pool
@@ -247,13 +240,8 @@ impl LanePool {
     }
 
     /// Phase 3-A: 既に spawn 済の PtySlot を Lane address 紐付けで insert (Worker create で使う)
-    pub fn insert_pty_slot(
-        &mut self,
-        addr: LaneAddress,
-        slot: crate::daemon::pty_slot::PtySlot,
-    ) {
-        self.pty_slots
-            .insert(addr, std::sync::Mutex::new(slot));
+    pub fn insert_pty_slot(&mut self, addr: LaneAddress, slot: crate::daemon::pty_slot::PtySlot) {
+        self.pty_slots.insert(addr, std::sync::Mutex::new(slot));
     }
 
     pub fn remove(&mut self, addr: &LaneAddress) -> Option<LaneInfo> {
@@ -265,6 +253,51 @@ impl LanePool {
 
     pub fn count(&self) -> usize {
         self.lanes.len()
+    }
+
+    /// Phase 5-D: spawn_with_fallback の 800ms early-exit window を抜けた後で、
+    ///   Lane の child process (例: `claude --continue`) が後で exit した場合の検知。
+    ///
+    /// ## 動作
+    /// 1. 全 PtySlot の `is_alive()` (= non-blocking try_wait) を check
+    /// 2. dead な Lane について:
+    ///    - `LaneInfo.state` が既に Dead でなければ `LaneState::Dead` に更新
+    ///    - `pty_slots` から entry を remove (Drop で child reap、 zombie 解消)
+    /// 3. state transition した Lane の数を返す (caller が log 出力に使える)
+    ///
+    /// ## 関連 memory
+    /// - vantage-point Atlas の Phase 5-D dogfooding bundle (unison-kdl で zombie 観測)
+    /// - PtySlot::is_alive (`crates/vantage-point/src/daemon/pty_slot.rs`)
+    pub fn detect_and_mark_dead(&mut self) -> usize {
+        // step 1: dead な address を収集 (lock を持ったまま remove はできないので 2 段)
+        let mut dead_addrs: Vec<LaneAddress> = Vec::new();
+        for (addr, slot_mutex) in &self.pty_slots {
+            if let Ok(mut slot) = slot_mutex.lock()
+                && !slot.is_alive()
+            {
+                dead_addrs.push(addr.clone());
+            }
+        }
+
+        // step 2: state 更新 + pty_slots から remove
+        let mut transitioned = 0;
+        for addr in dead_addrs {
+            if let Some(info) = self.lanes.get_mut(&addr)
+                && info.state != LaneState::Dead
+            {
+                tracing::warn!(
+                    "Lane lifecycle: dead detected addr={} prev_state={:?} pid={:?}",
+                    addr,
+                    info.state,
+                    info.pid
+                );
+                info.state = LaneState::Dead;
+                transitioned += 1;
+            }
+            // PtySlot Drop で child.kill() + child.wait() = zombie 解消
+            self.pty_slots.remove(&addr);
+        }
+        transitioned
     }
 
     /// Display 形 (`"<project>/lead"` / `"<project>/worker/<name>"`) をパースして LaneAddress を作る。

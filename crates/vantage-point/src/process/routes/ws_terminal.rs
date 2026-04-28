@@ -147,10 +147,7 @@ async fn handle_terminal_socket_lane(
                     "/ws/terminal lane attach: lane not found or no PtySlot: {}",
                     addr
                 );
-                let err = format!(
-                    r#"{{"type":"error","message":"lane not found: {}"}}"#,
-                    addr
-                );
+                let err = format!(r#"{{"type":"error","message":"lane not found: {}"}}"#, addr);
                 let _ = sender.send(Message::Text(err.into())).await;
                 return;
             }
@@ -164,15 +161,17 @@ async fn handle_terminal_socket_lane(
     );
 
     // initial bytes を先に送出 (Phase 2.x-c: scrollback replay)
-    if !initial_bytes.is_empty() {
-        if sender
+    if !initial_bytes.is_empty()
+        && sender
             .send(Message::Binary(initial_bytes.into()))
             .await
             .is_err()
-        {
-            tracing::warn!("/ws/terminal lane={} initial flush 送出失敗、 disconnect", addr);
-            return;
-        }
+    {
+        tracing::warn!(
+            "/ws/terminal lane={} initial flush 送出失敗、 disconnect",
+            addr
+        );
+        return;
     }
 
     // 初期 resize は client 側 cols/rows で更新 (xterm.js が ready 時 sendResize するが
@@ -249,4 +248,3 @@ async fn handle_terminal_socket_lane(
     tracing::info!("/ws/terminal lane attach disconnected: addr={}", addr);
     // PtySlot は LanePool が保持し続ける (= Lane の lifecycle は WS 接続と独立)
 }
-

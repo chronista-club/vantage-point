@@ -38,9 +38,21 @@ pub struct LanesResponse {
 /// `GET /api/lanes` — Lane list を返す
 ///
 /// Phase A4-2b: Lead Lane が 1 つ pre-populate されてる状態を返却。
+/// Phase 5-D: Worker Lane に対しては `cwd` から git 状態 (`WorkerStatus`) を populate。
+/// registry には保存せず、 GET 時に都度 `worker_status()` を呼ぶ (volatile + 5-7 git subprocess)。
 pub async fn list_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let pool = state.lane_pool.read().await;
-    Json(LanesResponse { lanes: pool.list() })
+    let mut lanes = pool.list();
+    drop(pool); // git subprocess 中の lock を保たない (worker_status は数 100ms かかる事あり)
+    for lane in lanes.iter_mut() {
+        if matches!(lane.kind, crate::process::lanes_state::LaneKind::Worker) {
+            let path = std::path::Path::new(&lane.cwd);
+            if path.exists() && path.join(".git").exists() {
+                lane.worker_status = Some(crate::ccws::commands::worker_status(path));
+            }
+        }
+    }
+    Json(LanesResponse { lanes })
 }
 
 /// `POST /api/lanes` request body (Phase 3-A: Worker Lane create + ccws clone)
@@ -157,17 +169,11 @@ pub async fn create_handler(
     // PtySlot::spawn は openpty + spawn_command の OS syscall でブロッキング。
     // Phase review fix #2: tokio worker thread を占有しないよう spawn_blocking でラップ。
     // Phase 4-X の ccws clone と同じ pattern。
-    let cmd =
-        crate::process::stand_spawner::build_stand_command(stand, std::path::Path::new(&cwd));
+    let cmd = crate::process::stand_spawner::build_stand_command(stand, std::path::Path::new(&cwd));
     let cwd_for_spawn = cwd.clone();
+    // Phase 5-D: spawn_with_fallback で `claude --continue` 早期 exit 時に空 args で retry。
     let spawn_result = tokio::task::spawn_blocking(move || {
-        crate::daemon::pty_slot::PtySlot::spawn(
-            &cwd_for_spawn,
-            &cmd.program,
-            &cmd.args,
-            80,
-            24,
-        )
+        crate::process::stand_spawner::spawn_with_fallback(&cwd_for_spawn, &cmd, 80, 24)
     })
     .await
     .map_err(|e| {
@@ -210,6 +216,8 @@ pub async fn create_handler(
         created_at: chrono::Utc::now().to_rfc3339(),
         pid,
         cwd,
+        // create 時点では git 状態は registry に保存しない、 GET 時に都度 worker_status() で取得
+        worker_status: None,
     };
 
     {
