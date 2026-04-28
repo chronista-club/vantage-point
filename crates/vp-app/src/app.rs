@@ -123,6 +123,16 @@ const SIDEBAR_HTML: &str = concat!(
   .vp-proc-dormant{opacity:0.65;transition:opacity .15s ease;}
   .vp-proc-dormant:hover{opacity:1;}
 
+  /* Phase 5-D: Dormant section 全体を accordion 化 (default 閉じ、 localStorage 永続)。
+     vp-proc-section-header の見た目を summary に踏襲。 chevron は ▶ → 90deg 回転。 */
+  .vp-dormant-section{}
+  .vp-dormant-section>summary{list-style:none;padding:var(--spacing-sm) var(--spacing-sm) var(--spacing-xs) var(--spacing-sm);cursor:pointer;display:flex;align-items:center;gap:6px;font-size:10px;color:var(--color-text-tertiary);text-transform:uppercase;letter-spacing:0.08em;font-weight:500;user-select:none;transition:color .12s ease;}
+  .vp-dormant-section>summary::-webkit-details-marker{display:none;}
+  .vp-dormant-section>summary:hover{color:var(--color-text-secondary);}
+  .vp-dormant-section>summary .chevron{font-family:'VPMono',monospace;font-size:8px;width:8px;display:inline-block;transition:transform .15s ease;color:var(--color-text-tertiary);}
+  .vp-dormant-section[open]>summary .chevron{transform:rotate(90deg);}
+  .vp-dormant-section .count{font-size:10px;color:var(--color-text-tertiary);font-weight:400;text-transform:none;letter-spacing:0;margin-left:auto;font-variant-numeric:tabular-nums;}
+
   /* World widget (sidebar 最下部 fixed、 accordion 1-line collapsed)
      Phase 5-C: 旧 widget-slot を最下部に移動、 details/summary で展開可能に */
   .world-widget{flex:0 0 auto;border-top:1px solid var(--color-surface-border,#1f2233);background:var(--color-surface-bg-base);}
@@ -367,12 +377,33 @@ const SIDEBAR_HTML: &str = concat!(
       for (const p of currents) renderProjectAccordion(p, root, false);
     }
     if (stopped.length > 0) {
-      const h = document.createElement('div');
-      h.className = 'vp-proc-section-header';
+      // Phase 5-D: Dormant 全体を <details> で囲んで折りたたみ可能に。 default 閉じ、
+      //  localStorage で開閉状態を永続化 (sidebar 内で完結、 IPC 不要の軽量永続化)。
+      let dormantOpen = false;
+      try { dormantOpen = localStorage.getItem('vp.sidebar.dormant.open') === '1'; } catch (_) {}
+      const sec = document.createElement('details');
+      sec.className = 'vp-dormant-section';
+      if (dormantOpen) sec.setAttribute('open', '');
+      sec.addEventListener('toggle', () => {
+        try { localStorage.setItem('vp.sidebar.dormant.open', sec.open ? '1' : '0'); } catch (_) {}
+      });
+      const sum = document.createElement('summary');
+      const chev = document.createElement('span');
+      chev.className = 'chevron';
+      chev.textContent = '▶';
+      const lbl = document.createElement('span');
+      lbl.className = 'label';
       // "Currents" (流水) の対比として "Dormant" (休眠) — active ⇄ dormant の王道対比。
-      h.textContent = 'Dormant';
-      root.appendChild(h);
-      for (const p of stopped) renderProjectAccordion(p, root, true);
+      lbl.textContent = 'Dormant';
+      const cnt = document.createElement('span');
+      cnt.className = 'count';
+      cnt.textContent = '(' + stopped.length + ')';
+      sum.appendChild(chev);
+      sum.appendChild(lbl);
+      sum.appendChild(cnt);
+      sec.appendChild(sum);
+      for (const p of stopped) renderProjectAccordion(p, sec, true);
+      root.appendChild(sec);
     }
   }
 
