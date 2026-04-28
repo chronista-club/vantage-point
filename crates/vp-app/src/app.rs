@@ -40,6 +40,7 @@ use wry::{
 use crate::client::TheWorldClient;
 use crate::main_area::{self, ActivePaneInfo, MAIN_AREA_HTML, SlotRect};
 use crate::pane::{ActiveStand, ActivitySnapshot, ProcessPaneState, SidebarState};
+use crate::session_state::SessionState;
 use crate::settings::Settings;
 use crate::terminal::{self, AppEvent};
 
@@ -122,6 +123,15 @@ const SIDEBAR_HTML: &str = concat!(
   /* Phase 5-C polish: Dormant project は視覚的に弱化 (active への視線誘導)。 hover で復帰。 */
   .vp-proc-dormant{opacity:0.65;transition:opacity .15s ease;}
   .vp-proc-dormant:hover{opacity:1;}
+
+  /* Currents 並び替え DnD (HTML5 native) ─ drag 中の対象を半透明 + cursor で示す。
+     hover 中の挿入位置は DOM 移動で表現 (placeholder 線は出さず、 シンプルに動く先を直接見せる)。 */
+  .vp-currents-list{display:flex;flex-direction:column;}
+  .vp-currents-list .creo-accordion{cursor:grab;}
+  .vp-currents-list .creo-accordion:active{cursor:grabbing;}
+  .vp-currents-list .creo-accordion.dragging{opacity:0.4;}
+  /* drag 中は子 (lane row 等) の pointer event を抑止 ─ summary だけ click/drag 認識させる */
+  .vp-currents-list .creo-accordion.dragging *{pointer-events:none;}
 
   /* Phase 5-D: Dormant section 全体を accordion 化 (default 閉じ、 localStorage 永続)。
      vp-proc-section-header の見た目を summary に踏襲。 chevron は ▶ → 90deg 回転。 */
@@ -370,11 +380,30 @@ const SIDEBAR_HTML: &str = concat!(
       else stopped.push(p);
     }
     if (currents.length > 0) {
+      // Currents 表示順: state.currents_order があればその順で並べる (vp-app 再起動越え)。
+      // order に含まれない project は order の末尾に TheWorld 由来順で追加。
+      const order = (state && state.currents_order) || null;
+      if (order && order.length > 0) {
+        const indexOf = new Map(order.map((p, i) => [p, i]));
+        currents.sort((a, b) => {
+          const ai = indexOf.has(a.path) ? indexOf.get(a.path) : Number.MAX_SAFE_INTEGER;
+          const bi = indexOf.has(b.path) ? indexOf.get(b.path) : Number.MAX_SAFE_INTEGER;
+          return ai - bi;
+        });
+      }
+
       const h = document.createElement('div');
       h.className = 'vp-proc-section-header';
       h.textContent = 'Currents';
       root.appendChild(h);
-      for (const p of currents) renderProjectAccordion(p, root, false);
+
+      // DnD container — drop position を data-drop-after で示すため container 単位で hover/drop 受ける
+      const cur = document.createElement('div');
+      cur.className = 'vp-currents-list';
+      cur.dataset.section = 'currents';
+      for (const p of currents) renderProjectAccordion(p, cur, false);
+      attachCurrentsDnd(cur);
+      root.appendChild(cur);
     }
     if (stopped.length > 0) {
       // Phase 5-D: Dormant 全体を <details> で囲んで折りたたみ可能に。 default 閉じ、
@@ -413,6 +442,11 @@ const SIDEBAR_HTML: &str = concat!(
       const proj = document.createElement('details');
       proj.className = 'creo-accordion' + (dormant ? ' vp-proc-dormant' : '');
       if (p.expanded) proj.setAttribute('open', '');
+      // Currents (= !dormant) のみ drag 可。 Dormant は順序操作対象外 (state による分類)。
+      if (!dormant) {
+        proj.draggable = true;
+        proj.dataset.path = p.path;
+      }
       // 'toggle' イベントで Rust に永続化 IPC を送る (native toggle は即時、IPC は state 同期用)
       proj.addEventListener('toggle', () => {
         send({t: 'process:toggle', path: p.path, expanded: proj.open});
@@ -626,6 +660,65 @@ const SIDEBAR_HTML: &str = concat!(
 
       proj.appendChild(content);
       root.appendChild(proj);
+  }
+
+  // Currents 並び替え DnD ─ HTML5 native drag-and-drop。
+  //   dragstart: drag 元 details に .dragging class
+  //   dragover:  drop 候補位置を計算 (mouseY と各 child の中間点で判定)
+  //   drop:      新 order を data-path から拾って IPC `process:reorder` 送信
+  // Currents container 単位で 1 度 attach、 内部の details が draggable=true。
+  function attachCurrentsDnd(container) {
+    let dragging = null;
+
+    container.addEventListener('dragstart', (e) => {
+      const tgt = e.target.closest('details.creo-accordion');
+      if (!tgt || tgt.parentElement !== container) return;
+      dragging = tgt;
+      tgt.classList.add('dragging');
+      // setData で Firefox 対応 (一部 browser は dataTransfer 空だと drag 開始しない)
+      try { e.dataTransfer.setData('text/plain', tgt.dataset.path || ''); } catch (_) {}
+      e.dataTransfer.effectAllowed = 'move';
+    });
+
+    container.addEventListener('dragend', () => {
+      if (dragging) dragging.classList.remove('dragging');
+      dragging = null;
+    });
+
+    container.addEventListener('dragover', (e) => {
+      if (!dragging) return;
+      e.preventDefault();           // drop を許可するために必要
+      e.dataTransfer.dropEffect = 'move';
+      // mouse Y 位置で挿入先を決定 — children のうち最も近い「上半分」 の child の前に置く
+      const after = getDropTarget(container, e.clientY, dragging);
+      if (after === null) {
+        container.appendChild(dragging);
+      } else if (after !== dragging.nextSibling) {
+        container.insertBefore(dragging, after);
+      }
+    });
+
+    container.addEventListener('drop', (e) => {
+      e.preventDefault();
+      if (!dragging) return;
+      // 新 order を DOM から取得 → IPC 送信
+      const order = Array.from(container.querySelectorAll(':scope > details.creo-accordion'))
+        .map(el => el.dataset.path)
+        .filter(Boolean);
+      send({t: 'process:reorder', order});
+    });
+  }
+
+  // dragover 時の挿入先を決定する helper。 mouse Y より下にある最初の child の上半分なら
+  // その child の前に挿入、 それ以外は末尾。 dragging 中の自身は除外。
+  function getDropTarget(container, y, dragging) {
+    const others = Array.from(container.querySelectorAll(':scope > details.creo-accordion'))
+      .filter(el => el !== dragging);
+    for (const el of others) {
+      const rect = el.getBoundingClientRect();
+      if (y < rect.top + rect.height / 2) return el;
+    }
+    return null;
   }
 
   // Phase 5-C minimal: Nerd Font 単色 glyph 集約。 redundant な kindIcon (⭐📍🦾) は撤去、
@@ -1519,7 +1612,11 @@ struct SidebarIpcOutcome {
 }
 
 /// sidebar webview から IPC で受け取った JSON を解釈し、`SidebarState` を mutate。
-fn handle_sidebar_ipc(msg: &str, state: &mut SidebarState) -> SidebarIpcOutcome {
+fn handle_sidebar_ipc(
+    msg: &str,
+    state: &mut SidebarState,
+    session: &mut SessionState,
+) -> SidebarIpcOutcome {
     let mut out = SidebarIpcOutcome::default();
     let parsed: serde_json::Value = match serde_json::from_str(msg) {
         Ok(v) => v,
@@ -1552,6 +1649,9 @@ fn handle_sidebar_ipc(msg: &str, state: &mut SidebarState) -> SidebarIpcOutcome 
                         path,
                         p.expanded
                     );
+                    // session 永続化: vp-app 再起動時に accordion 状態を復元
+                    session.set_project_expanded(path.to_string(), new_state);
+                    session.save();
                 }
                 if new_state && p.state.as_deref() == Some("dead") {
                     out.sp_spawn_request = Some((p.name.clone(), p.path.clone()));
@@ -1650,6 +1750,9 @@ fn handle_sidebar_ipc(msg: &str, state: &mut SidebarState) -> SidebarIpcOutcome 
                 tracing::info!("lane:select {} address={}", path, address);
                 out.changed = true;
                 out.active_changed = true;
+                // session 永続化: vp-app 再起動時に直前 active Lane を復元
+                session.active_lane_address = Some(address.to_string());
+                session.save();
             }
             // Phase 5-A: Lane と Stand は排他なので active_stand を clear
             if state.active_stand.is_some() {
@@ -1657,6 +1760,26 @@ fn handle_sidebar_ipc(msg: &str, state: &mut SidebarState) -> SidebarIpcOutcome 
                 out.changed = true;
                 out.active_changed = true;
             }
+        }
+        "process:reorder" => {
+            // Currents セクションを drag-and-drop で並び替えた時の通知。
+            // payload: `{"t":"process:reorder","order":["/path/a","/path/b",...]}`。
+            // session_state に保存し、 次回起動時 + 現在の sidebar push に反映。
+            let Some(arr) = parsed.get("order").and_then(|v| v.as_array()) else {
+                tracing::warn!("process:reorder: order array が無い: {}", msg);
+                return out;
+            };
+            let order: Vec<String> = arr
+                .iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect();
+            tracing::info!("process:reorder: {} entries", order.len());
+            session.currents_order = Some(order.clone());
+            session.save();
+            // SidebarState にも反映 (次回 push で JS 側 sort に使う)
+            state.currents_order = Some(order);
+            // changed フラグは立てない (DOM 順は user 操作で既に変わっている、
+            // re-push で flash するのを避ける)。 次回 push 時に新 order が乗る。
         }
         "process:restart" => {
             // Phase 5-C: project name (from p.path → leaf name) を抽出して async restart に投げる。
@@ -1880,6 +2003,13 @@ pub fn run() -> anyhow::Result<()> {
     // WS から bytes を受けるので、 Rust 側で buffer / flush 同期する必要が無い。
     // VP-95: sidebar 全体 state (projects + widget + activity)
     let mut sidebar_state = SidebarState::default();
+    // session 永続化: 起動を跨いで復元する UI state (expanded / active_lane / currents_order)
+    let mut session_state = SessionState::load();
+    // 直前 active Lane を初回 LanesLoaded で復元するための pending 値。
+    // 1 度復元したら None にして、 後続 LanesLoaded で再復元しないように。
+    let mut pending_session_active_lane: Option<String> = session_state.active_lane_address.clone();
+    // SidebarState に currents_order を即反映 (renderProjects がこの順で並べる)
+    sidebar_state.currents_order = session_state.currents_order.clone();
     // VP-100 γ-light: pane_id → slot rect。Phase 2 では蓄積するだけ、Phase 4+ で
     // native overlay の `set_position` 同期に使う。
     let mut slot_rects: std::collections::HashMap<String, SlotRect> =
@@ -1965,11 +2095,14 @@ pub fn run() -> anyhow::Result<()> {
                         let mut pane_state = if let Some(existing) = prev.get(&p.path) {
                             existing.clone()
                         } else {
-                            // 新規 project: session 中の追加なら auto-expand
+                            // 新規 project の expanded 解決:
+                            //   1. session_state に saved 値があれば最優先 (vp-app 再起動の復元)
+                            //   2. 上記 None かつ session 中の追加 (= 初回 fetch ではない) なら auto-expand
+                            //   3. 初回 fetch の新規は閉じた状態
                             let mut s = ProcessPaneState::new(p.path.clone(), p.name.clone());
-                            if !is_initial_load {
-                                s.expanded = true;
-                            }
+                            s.expanded = session_state
+                                .project_expanded(&p.path)
+                                .unwrap_or(!is_initial_load);
                             s
                         };
                         pane_state.state = Some(state_str);
@@ -2019,13 +2152,29 @@ pub fn run() -> anyhow::Result<()> {
                 // 衝突して両方の console が壊れるため。 Secondary は user が手動 lane 選択する前提。
                 let is_secondary =
                     std::env::var("VP_APP_SECONDARY").map(|v| v == "1").unwrap_or(false);
+                // session 復元優先: pending_session_active_lane が今回の lanes に含まれれば、
+                // auto-select-first より先にそれを採用 (vp-app 再起動時に直前 active を維持)。
+                let session_match: Option<String> = pending_session_active_lane
+                    .as_ref()
+                    .filter(|saved| {
+                        lanes
+                            .iter()
+                            .any(|l| &lane_address_key(&l.address) == *saved)
+                    })
+                    .cloned();
                 let auto_select = !is_secondary
                     && sidebar_state.active_lane_address.is_none()
+                    && session_match.is_none()
                     && lanes
                         .first()
                         .map(|l| lane_address_key(&l.address))
                         .is_some();
-                let first_addr = if auto_select {
+                let first_addr = if let Some(saved) = session_match {
+                    // session 復元: 1 度限り、 復元済 marker として pending を消費
+                    pending_session_active_lane = None;
+                    tracing::info!("session 復元: active_lane = {}", saved);
+                    Some(saved)
+                } else if auto_select {
                     lanes.first().map(|l| lane_address_key(&l.address))
                 } else {
                     None
@@ -2161,7 +2310,7 @@ pub fn run() -> anyhow::Result<()> {
                         _ => {}
                     }
                 }
-                let outcome = handle_sidebar_ipc(&msg, &mut sidebar_state);
+                let outcome = handle_sidebar_ipc(&msg, &mut sidebar_state, &mut session_state);
                 if outcome.changed {
                     push_sidebar_state(&sidebar, &sidebar_state);
                 }

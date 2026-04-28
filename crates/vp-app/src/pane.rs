@@ -115,6 +115,13 @@ pub struct SidebarState {
     /// `stand:select` IPC で更新される。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_stand: Option<ActiveStand>,
+    /// Currents セクションの project 表示順 (path の順)。
+    ///
+    /// `SessionState.currents_order` から push される。 sidebar JS は Currents
+    /// rendering 時に this list の順で並び替える (list に無い path は末尾、 TheWorld order 維持)。
+    /// `None` なら順序指定なし (TheWorld registration 順)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub currents_order: Option<Vec<String>>,
 }
 
 /// Phase 5-A: Project-scope Stand の active selection (sidebar の row click で発火)
