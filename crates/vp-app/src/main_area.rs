@@ -354,6 +354,31 @@ body{overflow:hidden;}
     // hidden 状態で fit すると 0 cols になるので、 showLane の active 化後にも fit を呼ぶ
     try { fitAddon.fit(); } catch (_) {}
 
+    // ===== OSC notification capture (Slice 1: capture-only、 UI は後続 PR) =====
+    // - OSC 99 (kitty notification protocol):
+    //     ESC ] 99 ; <metadata-or-empty> ; <title-or-body> ESC \\
+    //   metadata は colon-separated key=value (i=ID:t=success:p=title 等)
+    // - OSC 777 (rxvt-unicode notify、 Ghostty 等が踏襲):
+    //     ESC ] 777 ; notify ; <TITLE> ; <BODY> ESC \\
+    // どちらも cc の Stop / Notification hook 等から /dev/tty に書けば PTY 経由で届く。
+    // Phase S1 では capture が動くか確認するだけ ─ console.log + Rust tracing (`[xterm debug]` ログ) に流す。
+    try {
+      term.parser.registerOscHandler(99, (data) => {
+        const payload = String(data || '');
+        console.log('[OSC 99] lane=' + address + ' payload=' + JSON.stringify(payload));
+        dbg('[osc99:' + address + '] ' + payload);
+        return true;
+      });
+      term.parser.registerOscHandler(777, (data) => {
+        const payload = String(data || '');
+        console.log('[OSC 777] lane=' + address + ' payload=' + JSON.stringify(payload));
+        dbg('[osc777:' + address + '] ' + payload);
+        return true;
+      });
+    } catch (e) {
+      console.warn('[xterm:' + address + '] OSC handler registration failed:', e);
+    }
+
     // ===== WebSocket: SP に直接接続 (Phase 2.5: Rust 側 mpsc 中継を撤去) =====
     // URL: ws://127.0.0.1:<sp_port>/ws/terminal?lane=<address>&cols=&rows=
     //
