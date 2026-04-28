@@ -20,10 +20,10 @@ pub(crate) mod retained;
 mod routes;
 mod server;
 mod session;
-/// LaneStandSpec trait — 舞台-役者-演目 metaphor の Layer 2 (Phase 6-E、 VP-107)
-pub(crate) mod stand_spec;
 /// StandSpawner — LaneStand 別の spawn command 構築 (Architecture v4 A5-1)
 pub(crate) mod stand_spawner;
+/// LaneStandSpec trait — 舞台-役者-演目 metaphor の Layer 2 (Phase 6-E、 VP-107)
+pub(crate) mod stand_spec;
 pub(crate) mod state;
 pub(crate) mod tmux_actor;
 pub mod topic;

@@ -26,7 +26,7 @@ use tokio::sync::broadcast;
 use super::lanes_state::LaneStand;
 use crate::daemon::pty_slot::PtySlot;
 
-/// Stand spawn 用 command (binary + args)
+/// Stand spawn 用 command (binary + args + 任意の初期入力)
 #[derive(Debug, Clone)]
 pub struct StandCommand {
     pub program: String,
@@ -34,7 +34,17 @@ pub struct StandCommand {
     /// Phase 5-D: primary spawn が早期 exit した時に試す fallback args。
     ///  HD の `--continue` が前 session corrupt 等で起動しない時に空 args (= 新規 session) で再試行。
     ///  `None` なら fallback 無し (= 失敗 = error 返却)。
+    ///
+    /// Phase 6-E (Slice 2) 以降: shell-hosted Stand では shell 自体は早期 exit しないため
+    /// 実質 dead path。 ただし shell spawn 自体の防御として field 自体は維持。
     pub fallback_args: Option<Vec<String>>,
+    /// Phase 6-E (Slice 2): spawn 直後に PTY に書き込む初期入力 (shell-hosted Stand 用)。
+    ///
+    /// 例: `LlmStand` 経由の HD は `program="zsh", args=["-l"]` で shell を立て、
+    /// `initial_input = Some("claude --continue || claude\n")` で auto-launch。
+    /// `||` chain は shell に retry を任せる ─ memory `mem_1CaVnfJRgWtuRgZD9yQSoV`
+    /// の「lifecycle の違いが直感的」 原則の体現 (役者 lifecycle と舞台 lifecycle が独立)。
+    pub initial_input: Option<String>,
 }
 
 /// 早期 exit 検知の wait 時間 (ms)。 観測 (gfp-cad で `claude --continue` が 2ms で exit) より十分な値。
@@ -57,6 +67,18 @@ pub fn spawn_with_fallback(
     std::thread::sleep(std::time::Duration::from_millis(EARLY_EXIT_CHECK_MS));
 
     if slot.is_alive() {
+        // Phase 6-E (Slice 2): shell-hosted Stand の auto-launch ─ initial_input を PTY に書く。
+        // 失敗は warn のみ (spawn 自体は成功している)、 shell prompt は user に表示される。
+        if let Some(input) = cmd.initial_input.as_deref()
+            && let Err(e) = slot.write(input.as_bytes())
+        {
+            tracing::warn!(
+                "initial_input write failed (Stand spawn keeps shell alive): err={} program={} input_len={}",
+                e,
+                cmd.program,
+                input.len()
+            );
+        }
         return Ok((slot, rx));
     }
 
@@ -78,7 +100,18 @@ pub fn spawn_with_fallback(
     drop(slot); // 死亡 slot を Drop で kill+wait
     drop(rx);
 
-    PtySlot::spawn(cwd, &cmd.program, fb_args, cols, rows)
+    let (mut slot, rx) = PtySlot::spawn(cwd, &cmd.program, fb_args, cols, rows)?;
+    // fallback 経路でも initial_input を書き込む (shell-hosted Stand での一貫性)。
+    if let Some(input) = cmd.initial_input.as_deref()
+        && let Err(e) = slot.write(input.as_bytes())
+    {
+        tracing::warn!(
+            "initial_input write failed on fallback (shell alive): err={} program={}",
+            e,
+            cmd.program
+        );
+    }
+    Ok((slot, rx))
 }
 
 /// LaneStand に応じた spawn command を構築
@@ -98,14 +131,27 @@ pub fn build_stand_command(stand: LaneStand, _cwd: &Path) -> StandCommand {
 mod tests {
     use super::*;
 
-    // wire-compat regression test: `LaneStand` enum 経由でも従来挙動が保たれる。
+    // wire-compat regression test: `LaneStand` enum 経由でも shell-hosted 挙動が保たれる。
     // 詳細な trait impl 単位 test は `stand_spec` module に存在。
 
+    /// Phase 6-E Slice 2: HD は shell + initial_input で `claude --continue || claude\n` を auto-launch。
+    /// Slice 1 の「直接 claude spawn」 から 「shell-hosted」 に挙動が変わったことを test も反映。
     #[test]
-    fn heavens_door_uses_claude_continue() {
+    fn heavens_door_is_shell_hosted_with_claude_invocation() {
         let cmd = build_stand_command(LaneStand::HeavensDoor, Path::new("/tmp"));
-        assert_eq!(cmd.program, "claude");
-        assert_eq!(cmd.args, vec!["--continue".to_string()]);
+        assert!(
+            cmd.program.contains("zsh") || cmd.program.contains("bash"),
+            "HD は shell-hosted (program=zsh/bash 想定)、 got {}",
+            cmd.program
+        );
+        assert_eq!(cmd.args, vec!["-l".to_string()]);
+        let input = cmd.initial_input.expect("HD は initial_input 必須");
+        assert!(input.contains("claude --continue"));
+        assert!(
+            input.contains("|| claude"),
+            "fallback chain (|| claude) 必須"
+        );
+        assert!(input.ends_with('\n'), "PTY 入力は改行で行確定");
     }
 
     #[test]
@@ -117,5 +163,7 @@ mod tests {
             cmd.program
         );
         assert_eq!(cmd.args, vec!["-l".to_string()]);
+        // 素 shell は auto-launch なし
+        assert!(cmd.initial_input.is_none());
     }
 }

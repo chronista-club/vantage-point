@@ -53,6 +53,8 @@ impl LaneStandSpec for TheHand {
             args: vec!["-l".to_string()],
             // shell 起動失敗は何 fallback しても無理 (PATH / OS issue) なので None。
             fallback_args: None,
+            // 素 shell は user 入力待ちのまま。 auto-launch なし。
+            initial_input: None,
         }
     }
 }
@@ -90,6 +92,34 @@ impl LlmProfile {
             fallback_args: Some(vec![]),
         }
     }
+
+    /// Phase 6-E (Slice 2): shell に流す invocation 文字列を組立。
+    ///
+    /// `fallback_args` がある場合、 shell の `||` chain で auto-retry を表現:
+    /// `"claude --continue || claude\n"` ─ `--continue` 失敗時に空 args で再起動、
+    /// retry 制御を shell に委譲することで Rust 側 PTY 出力検知を回避。
+    /// 失敗時も shell は alive のまま、 user は `/exit` 同様 shell prompt に着地。
+    ///
+    /// 末尾 `\n` は PTY 入力として行確定する (== Enter)。
+    pub fn cli_invocation(&self) -> String {
+        let primary = self.format_invocation(&self.args);
+        match &self.fallback_args {
+            Some(fb) => {
+                let fallback = self.format_invocation(fb);
+                format!("{} || {}\n", primary, fallback)
+            }
+            None => format!("{}\n", primary),
+        }
+    }
+
+    /// `cli` + 引数の連結 (空 args は cli のみ)。
+    fn format_invocation(&self, args: &[String]) -> String {
+        if args.is_empty() {
+            self.cli.clone()
+        } else {
+            format!("{} {}", self.cli, args.join(" "))
+        }
+    }
 }
 
 /// LlmStand 📖 (= HD) = 役者を呼ぶ能力。
@@ -118,14 +148,16 @@ impl LaneStandSpec for LlmStand {
     }
 
     fn build(&self) -> StandCommand {
-        // Phase 6-E (Slice 1, behavior-preserving): 既存の HD 挙動 (= 直接 `claude` spawn)
-        // を維持。 Slice 2 で TH 借用 (shell-hosted、 `$SHELL -l` 経由で initial_input に
-        // `claude --continue\n` を送る) に切り替える予定 ─ それまでは wire-compat 重視。
-        StandCommand {
-            program: self.profile.cli.clone(),
-            args: self.profile.args.clone(),
-            fallback_args: self.profile.fallback_args.clone(),
-        }
+        // Phase 6-E (Slice 2, shell-hosted): TH 借用で `$SHELL -l` を立て、
+        // initial_input で LLM CLI を auto-launch。 fallback は profile.cli_invocation()
+        // が `||` chain として shell に流す。 `/exit` で claude を抜けると shell prompt に
+        // 戻る (Lane death ではない) ─ memory mental model の「役者が降りても舞台は残る」。
+        let mut cmd = TheHand.build();
+        cmd.initial_input = Some(self.profile.cli_invocation());
+        // fallback_args は shell-hosted では使わない (shell が retry する)。
+        // shell 自体の spawn 失敗 fallback は TheHand と同じく None。
+        cmd.fallback_args = None;
+        cmd
     }
 }
 
@@ -136,7 +168,9 @@ impl LaneStand {
     /// parse され続ける (互換性維持)。 内部処理が trait object 経由になる橋渡し。
     /// Phase 6-F で wire format を `{name, profile?}` object に拡張する時、
     /// この adapter を通じて新 path も同 trait に流せる。
-    pub fn to_spec(&self) -> Box<dyn LaneStandSpec> {
+    ///
+    /// Copy 型なので `self` by value (clippy::wrong_self_convention)。
+    pub fn to_spec(self) -> Box<dyn LaneStandSpec> {
         match self {
             LaneStand::HeavensDoor => Box::new(LlmStand::heavens_door()),
             LaneStand::TheHand => Box::new(TheHand),
@@ -178,14 +212,21 @@ mod tests {
     }
 
     #[test]
-    fn llm_stand_heavens_door_uses_claude_continue() {
+    fn llm_stand_heavens_door_is_shell_hosted() {
         let stand = LlmStand::heavens_door();
         assert_eq!(stand.name(), "anthropic-claude-continue");
         let cmd = stand.build();
-        assert_eq!(cmd.program, "claude");
-        assert_eq!(cmd.args, vec!["--continue".to_string()]);
-        // Phase 5-D fallback (空 args) を保持
-        assert_eq!(cmd.fallback_args, Some(vec![]));
+        // Slice 2: shell-hosted ─ program は shell、 LLM CLI は initial_input に
+        assert!(
+            cmd.program.contains("zsh") || cmd.program.contains("bash"),
+            "shell-hosted: program=zsh/bash 想定、 got {}",
+            cmd.program
+        );
+        assert_eq!(cmd.args, vec!["-l".to_string()]);
+        // shell-hosted では shell 自体の fallback はなし (shell が retry を担当)
+        assert!(cmd.fallback_args.is_none());
+        let input = cmd.initial_input.expect("HD は initial_input 必須");
+        assert_eq!(input, "claude --continue || claude\n");
     }
 
     #[test]
@@ -194,11 +235,47 @@ mod tests {
         let hd_spec = LaneStand::HeavensDoor.to_spec();
         assert_eq!(hd_spec.name(), "anthropic-claude-continue");
         let hd_cmd = hd_spec.build();
-        assert_eq!(hd_cmd.program, "claude");
+        // Slice 2: HD は shell-hosted
+        assert!(hd_cmd.program.contains("zsh") || hd_cmd.program.contains("bash"));
+        assert!(hd_cmd.initial_input.is_some());
 
         let th_spec = LaneStand::TheHand.to_spec();
         assert_eq!(th_spec.name(), "the_hand");
         let th_cmd = th_spec.build();
         assert!(th_cmd.program.contains("zsh") || th_cmd.program.contains("bash"));
+        // TH は initial_input なし (素 shell)
+        assert!(th_cmd.initial_input.is_none());
+    }
+
+    #[test]
+    fn cli_invocation_with_fallback_chains_via_shell_or() {
+        // anthropic_continue: args=["--continue"], fallback_args=Some([])
+        // → "claude --continue || claude\n"
+        let p = LlmProfile::anthropic_continue();
+        assert_eq!(p.cli_invocation(), "claude --continue || claude\n");
+    }
+
+    #[test]
+    fn cli_invocation_without_fallback_no_chain() {
+        let p = LlmProfile {
+            name: "test".to_string(),
+            provider: "test".to_string(),
+            cli: "foo".to_string(),
+            args: vec!["--bar".to_string(), "baz".to_string()],
+            fallback_args: None,
+        };
+        assert_eq!(p.cli_invocation(), "foo --bar baz\n");
+    }
+
+    #[test]
+    fn cli_invocation_empty_args_renders_cli_only() {
+        let p = LlmProfile {
+            name: "bare".to_string(),
+            provider: "test".to_string(),
+            cli: "foo".to_string(),
+            args: vec![],
+            fallback_args: None,
+        };
+        assert_eq!(p.cli_invocation(), "foo\n");
     }
 }
