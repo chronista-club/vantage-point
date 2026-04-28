@@ -16,6 +16,7 @@ pub mod log_format;
 pub mod main_area;
 pub mod menu;
 pub mod pane;
+pub mod session_state;
 pub mod settings;
 pub mod shell_detect;
 pub mod terminal;
