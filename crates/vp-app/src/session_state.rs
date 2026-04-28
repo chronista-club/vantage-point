@@ -50,8 +50,7 @@ pub struct SessionState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_lane_address: Option<String>,
     /// Currents セクションの project 表示順 (path の order)。
-    /// `None` なら TheWorld の registration 順。 user が drag で並べ替えた時に書き込む予定。
-    /// 現状 (Slice 1) は read-only で field 確保のみ、 UI 操作は後続 PR。
+    /// `None` なら TheWorld の registration 順。 sidebar の DnD で書き込まれる。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub currents_order: Option<Vec<String>>,
 }
