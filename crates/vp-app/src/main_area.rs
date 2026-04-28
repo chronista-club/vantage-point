@@ -406,6 +406,13 @@ body{overflow:hidden;}
     const RETRY_BACKOFF_MS = [500, 1000, 2000, 4000, 8000, 16000, 16000, 16000, 16000, 16000];
     const MAX_RETRIES = RETRY_BACKOFF_MS.length;
     const conn = { ws: null, disposed: false, retryCount: 0, retryTimer: null };
+    // Input keystroke buffer (FIFO、 max 1000 chunk)。 reconnect 中の数百 ms ~ 数秒の窓で
+    //  user が typing した keystroke を保持して、 onopen で flush する。
+    //  「ASCII fast typing 後ろのキーストロークが消失」 (dogfood 観測) への対策 ─ 旧 code は
+    //  readyState !== OPEN で silent drop していたが、 reconnect 中に typing した分が消える。
+    //  上限 1000 chunk: 1 chunk ≈ 1-数 byte なので最大 ~10KB、 stuck 時の memory 暴走を防ぐ。
+    const inputBuffer = [];
+    const INPUT_BUFFER_MAX = 1000;
 
     function sendResize() {
       if (!conn.ws || conn.ws.readyState !== WebSocket.OPEN) return;
@@ -443,6 +450,24 @@ body{overflow:hidden;}
         try { fitAddon.fit(); } catch (_) {}
         sendResize();
       };
+      // 別 listener で input buffer flush ─ ws.onopen (property-based) と並走できる
+      // (addEventListener は property assignment を override しない)。 PR #224 等で
+      // onopen 本体が変更されてもこちらは独立、 conflict 回避。
+      ws.addEventListener('open', () => {
+        if (inputBuffer.length === 0) return;
+        const flushed = inputBuffer.length;
+        while (inputBuffer.length > 0 && conn.ws && conn.ws.readyState === WebSocket.OPEN) {
+          const d = inputBuffer.shift();
+          try {
+            conn.ws.send(new TextEncoder().encode(d));
+          } catch (_) {
+            // 送信失敗 = WS が closing/closed 状態。 残りは drop (次 reconnect で再現難しい)
+            inputBuffer.length = 0;
+            break;
+          }
+        }
+        dbg('[lane:' + address + '] input buffer flushed (' + flushed + ' chunks)');
+      });
       ws.onmessage = (ev) => {
         if (ev.data instanceof ArrayBuffer) {
           term.write(new Uint8Array(ev.data));
@@ -475,9 +500,18 @@ body{overflow:hidden;}
 
     connectWs(); // initial connect
 
-    // input → WS (Rust 中継せず直接送信)
+    // input → WS (Rust 中継せず直接送信)。
+    //  reconnect 中 (readyState !== OPEN) は inputBuffer に積んで onopen で flush する ─
+    //  silent drop を避ける (dogfood で 「fast typing 後ろが消失」 と観測されてた問題)。
     term.onData((d) => {
-      if (!conn.ws || conn.ws.readyState !== WebSocket.OPEN) return;
+      if (!conn.ws || conn.ws.readyState !== WebSocket.OPEN) {
+        inputBuffer.push(d);
+        if (inputBuffer.length > INPUT_BUFFER_MAX) {
+          inputBuffer.shift();
+          dbg('[lane:' + address + '] input buffer overflow, oldest dropped');
+        }
+        return;
+      }
       try {
         conn.ws.send(new TextEncoder().encode(d));
       } catch (e) {
