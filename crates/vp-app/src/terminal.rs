@@ -62,10 +62,7 @@ pub enum AppEvent {
     /// Phase 5-D Sprint C P2.1: Lane HD notification 通知 (OSC 99 final-chunk + a=focus)。
     /// main_area xterm.js が capture → Rust が SidebarState の per-Lane unread count を加算 →
     /// sidebar に push back → badge UI 表示。 active lane への switch で 0 reset。
-    OscNotification {
-        lane: String,
-        code: u32,
-    },
+    OscNotification { lane: String, code: u32 },
 }
 
 /// xterm.js から IPC で送られてきた JSON メッセージを処理

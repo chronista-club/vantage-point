@@ -88,7 +88,9 @@ pub enum MailboxCommands {
 /// Entry point — main.rs から呼び出される。
 pub async fn run(cmd: MailboxCommands) -> Result<()> {
     match cmd {
-        MailboxCommands::Watch { url, timeout, from } => watch(&url, timeout, from.as_deref()).await,
+        MailboxCommands::Watch { url, timeout, from } => {
+            watch(&url, timeout, from.as_deref()).await
+        }
         MailboxCommands::Send {
             url,
             to,
