@@ -82,9 +82,6 @@ if (root) {
 }
 
 // POC panel は body 直下に独立 mount (EditorLayer と無関係)。
-// Default off (production 体験を汚さない)、 DevTools で
-// `localStorage.setItem('vp-icon-poc', '1')` → reload で表示、
-// `localStorage.removeItem('vp-icon-poc')` → reload で非表示。
-if (typeof localStorage !== 'undefined' && localStorage.getItem('vp-icon-poc') === '1') {
-  render(() => <IconPocPanel />, document.body)
-}
+// R5 dogfood phase 中は常時 ON (Phosphor 6 Stand × default+active = 12 icon を showcase)。
+// 不要になったら下記 render() を削除 or `if (localStorage.getItem('vp-icon-poc') === '1')` 等で gate 化。
+render(() => <IconPocPanel />, document.body)

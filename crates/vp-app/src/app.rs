@@ -93,11 +93,24 @@ pub const CREO_TOKENS_CSS: &str = include_str!("../assets/creo-tokens.css");
 /// Phase 5-C: sidebar HTML を `vp-asset://app/sidebar.html` で配信するための extra entry。
 /// font 群は `web_assets::FONT_ASSETS` 側で揃ってるので、 ここは sidebar 固有の HTML 1 個のみ。
 /// `web_assets::serve()` が FONT_ASSETS と chain して両方 lookup する。
-const SIDEBAR_ASSETS: &[(&str, &[u8], &str)] = &[(
-    "app/sidebar.html",
-    SIDEBAR_HTML.as_bytes(),
-    "text/html; charset=utf-8",
-)];
+/// Phase E1 (R5): sidebar 用 iconify-icon Web Component bundle。
+/// crates/vp-app/sidebar-bundle/ で esbuild build → assets/sidebar-icons.bundle.js 生成、
+/// SIDEBAR_HTML 内 `<script src="vp-asset://app/sidebar-icons.bundle.js">` で load。
+const SIDEBAR_ICONS_BUNDLE: &[u8] =
+    include_bytes!("../assets/sidebar-icons.bundle.js");
+
+const SIDEBAR_ASSETS: &[(&str, &[u8], &str)] = &[
+    (
+        "app/sidebar.html",
+        SIDEBAR_HTML.as_bytes(),
+        "text/html; charset=utf-8",
+    ),
+    (
+        "app/sidebar-icons.bundle.js",
+        SIDEBAR_ICONS_BUNDLE,
+        "application/javascript; charset=utf-8",
+    ),
+];
 
 const SIDEBAR_HTML: &str = concat!(
     r#"<!doctype html>
@@ -335,6 +348,9 @@ const SIDEBAR_HTML: &str = concat!(
       <button type="button" data-action="ok" data-variant="danger">Restart</button>
     </div>
   </dialog>
+<!-- Phase E1 (R5): iconify-icon Web Component を register し、 SIDEBAR 内で
+     <iconify-icon icon="ph:compass"> 等が描画可能になる。 SolidJS 不要、 vanilla DOM API で使う。 -->
+<script src="vp-asset://app/sidebar-icons.bundle.js"></script>
 <script>"#,
     include_str!("../assets/nerd-font-loader.js"),
     r#"
@@ -592,10 +608,14 @@ const SIDEBAR_HTML: &str = concat!(
           row.className = 'vp-lane-row' + (isActive ? ' active' : '');
           const isWorker = (lane.kind === 'worker') ||
             (lane.address && lane.address.kind === 'worker');
-          const standGlyph = STAND_GLYPH[lane.stand] || '';
-          const standIcon = document.createElement('span');
-          standIcon.className = 'icon nf-icon';
-          standIcon.textContent = standGlyph;
+          // Phase E1 (R5): Stand glyph を iconify-icon Web Component で描画 (Phosphor SVG)。
+          // state-driven weight: default = regular outline、 active = fill (中身塗りつぶし)。
+          // Phosphor naming convention は `${name}` / `${name}-fill` のペア (ph:book-open / ph:book-open-fill)。
+          const standBaseName = STAND_GLYPH[lane.stand] || '';
+          const standIconName = isActive && standBaseName ? standBaseName + '-fill' : standBaseName;
+          const standIcon = document.createElement('iconify-icon');
+          standIcon.className = 'icon vp-stand-icon' + (isActive ? ' vp-stand-icon-active' : '');
+          standIcon.setAttribute('icon', standIconName);
           standIcon.title = standDisplayName(lane.stand) || lane.stand || '';
           const label = document.createElement('span');
           label.className = 'label';
@@ -826,15 +846,17 @@ const SIDEBAR_HTML: &str = concat!(
     return null;
   }
 
-  // Phase 5-C minimal: Nerd Font 単色 glyph 集約。 redundant な kindIcon (⭐📍🦾) は撤去、
-  // Stand identity (PP/GE/HP/HD/TH) と state circle のみ残す。 全 emoji → Nerd Font に置換、
-  // 色は CSS class (vp-state-running 等) で割当 (絵文字の色味バラつきゼロ)。
+  // Phase E1 (R5、 2026-04-29): Stand glyph を Nerd Font Unicode → Phosphor SVG (iconify-icon
+  // 経由) に移行。 sidebar-bundle/ で iconify-icon Web Component を register、 ph: prefix の
+  // icon name を <iconify-icon icon="ph:compass"> 等で描画。
+  // 旧: nf-fa-compass の Unicode codepoint を .nf-icon span に textContent
+  // 新: Phosphor icon name を iconify-icon 要素に attribute、 default = regular weight。
   const STAND_GLYPH = {
-    paisley_park: '',   // nf-fa-compass
-    gold_experience: '', // nf-fa-leaf
-    hermit_purple: '',  // nf-fa-plug
-    heavens_door: '',   // nf-fa-book
-    the_hand: '',       // nf-fa-terminal
+    paisley_park: 'ph:compass',
+    gold_experience: 'ph:plant',
+    hermit_purple: 'ph:plug',
+    heavens_door: 'ph:book-open',
+    the_hand: 'ph:terminal-window',
   };
   // Phase 5-D: state 別 glyph + class 統合 map (色覚多様性 a11y 対応、 purple-haze HIG B4)。
   //  glyph 列は Nerd Font Font Awesome (web_assets::NERD_FONT_CSS で .nf-icon class 提供)。
