@@ -122,6 +122,12 @@ pub struct SidebarState {
     /// `None` なら順序指定なし (TheWorld registration 順)。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub currents_order: Option<Vec<String>>,
+    /// Phase 5-D Sprint C P2.1: per-Lane HD notification unread count。
+    /// Key: Lane address (Display 形 `"<project>/lead"` 等)、 Value: 未読 OSC 99 focus event 数。
+    /// `OscNotification` event で increment、 `lane:select` で対応 Lane を 0 reset。
+    /// disk persist 不要 (session 起動で 0 から)、 skip_serializing で軽量化。
+    #[serde(default)]
+    pub unread_notifications: std::collections::HashMap<String, u32>,
 }
 
 /// Phase 5-A: Project-scope Stand の active selection (sidebar の row click で発火)

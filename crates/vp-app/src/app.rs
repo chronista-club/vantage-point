@@ -603,12 +603,11 @@ const SIDEBAR_HTML: &str = concat!(
           stateMark.innerHTML = stateGlyphHTML(lane.state);
           row.appendChild(standIcon);
           row.appendChild(label);
-          // Phase 5-D Sprint C P2.2 (UI shell): Lane HD notification badge。
-          //  lane.unread_notifications が > 0 で badge 表示 (count + dot)。 OSC 99/777 が
-          //  HD (Heaven's Door = Claude CLI) から発火 → main_area xterm.js が capture →
-          //  IPC で Rust → sidebar state へ push される予定 (次 motif で配線)。
-          //  現時点 backend 未実装なので UI は data 到着待ち (常に hidden)。
-          const unread = lane.unread_notifications | 0;
+          // Phase 5-D Sprint C P2.1+P2.2: Lane HD notification badge。
+          //  state.unread_notifications (lane address → count) を Rust が OSC 99 受信時に push、
+          //  user が Lane に switch すると 0 reset。 active lane では increment skip (即読扱い)。
+          const unreadMap = (state && state.unread_notifications) || {};
+          const unread = (unreadMap[addr] | 0);
           if (unread > 0) {
             const badge = document.createElement('span');
             badge.className = 'vp-lane-notification';
@@ -1871,6 +1870,12 @@ fn handle_sidebar_ipc(
                 session.active_lane_address = Some(address.to_string());
                 session.save();
             }
+            // Phase 5-D Sprint C P2.1: Lane 切替時に対象 Lane の unread notification を 0 reset。
+            //  user が Lane 開いた = 通知に応答した、 とみなして badge を消す。
+            //  active 切替が無くても reset は走る (= 同 Lane を click 連打しても badge 消えるべき)。
+            if state.unread_notifications.remove(address).is_some() {
+                out.changed = true;
+            }
             // Phase 5-A: Lane と Stand は排他なので active_stand を clear
             if state.active_stand.is_some() {
                 state.active_stand = None;
@@ -2180,6 +2185,21 @@ pub fn run() -> anyhow::Result<()> {
                     if let Err(e) = main_view.evaluate_script(&script) {
                         tracing::warn!("paste deliver script failed: {}", e);
                     }
+                }
+            }
+            Event::UserEvent(AppEvent::OscNotification { lane, code }) => {
+                // Phase 5-D Sprint C P2.1: per-Lane HD notification の unread count 加算。
+                //  Skip increment if user is currently looking at this lane (即読扱い)。
+                if sidebar_state.active_lane_address.as_deref() == Some(lane.as_str()) {
+                    tracing::debug!("osc:notification skip (active lane): lane={} code={}", lane, code);
+                } else {
+                    let count = sidebar_state
+                        .unread_notifications
+                        .entry(lane.clone())
+                        .or_insert(0);
+                    *count += 1;
+                    tracing::info!("osc:notification lane={} code={} unread={}", lane, code, *count);
+                    push_sidebar_state(&sidebar, &sidebar_state);
                 }
             }
             Event::UserEvent(AppEvent::ProcessesLoaded(projects)) => {

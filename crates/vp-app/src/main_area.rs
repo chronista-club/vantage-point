@@ -401,6 +401,16 @@ body{overflow:hidden;}
         const payload = String(data || '');
         console.log('[OSC 99] lane=' + address + ' payload=' + JSON.stringify(payload));
         dbg('[osc99:' + address + '] ' + payload);
+        // Phase 5-D Sprint C P2.1: final-chunk + focus action のみ「user attention 要求」 と判定。
+        //  metadata は最初の ; までの key=value list。 d=1 (final) かつ a=focus を含む chunk が trigger。
+        //  Rust 側で unread count を加算 → sidebar に push back → badge 表示。
+        const semi = payload.indexOf(';');
+        const meta = semi >= 0 ? payload.substring(0, semi) : payload;
+        if (/\bd=1\b/.test(meta) && /\ba=focus\b/.test(meta)) {
+          try {
+            window.ipc.postMessage(JSON.stringify({ t: 'osc:notification', lane: address, code: 99 }));
+          } catch (_) {}
+        }
         return true;
       });
       term.parser.registerOscHandler(777, (data) => {

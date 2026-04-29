@@ -59,6 +59,13 @@ pub enum AppEvent {
     /// Phase 4-paste-fix: clipboard paste request の応答。 OS clipboard の内容を JS に届ける。
     /// 空文字なら paste skip。 main_view の `window.deliverPaste(text)` で active Lane の xterm に inject。
     PasteText(String),
+    /// Phase 5-D Sprint C P2.1: Lane HD notification 通知 (OSC 99 final-chunk + a=focus)。
+    /// main_area xterm.js が capture → Rust が SidebarState の per-Lane unread count を加算 →
+    /// sidebar に push back → badge UI 表示。 active lane への switch で 0 reset。
+    OscNotification {
+        lane: String,
+        code: u32,
+    },
 }
 
 /// xterm.js から IPC で送られてきた JSON メッセージを処理
@@ -120,6 +127,18 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
         Some("debug") => {
             if let Some(msg) = parsed.get("msg").and_then(|v| v.as_str()) {
                 tracing::info!("[xterm debug] {}", msg);
+            }
+        }
+        // Phase 5-D Sprint C P2.1: per-Lane HD notification (OSC 99 final-chunk + a=focus 起源)。
+        // 「user attention 要求」 を sidebar の unread count として蓄積する経路。
+        Some("osc:notification") => {
+            let lane = parsed
+                .get("lane")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let code = parsed.get("code").and_then(|v| v.as_u64()).unwrap_or(99) as u32;
+            if let Some(lane) = lane {
+                let _ = proxy.send_event(AppEvent::OscNotification { lane, code });
             }
         }
         // VP-100 γ-light: main area の active slot 矩形通知 (ResizeObserver から)
