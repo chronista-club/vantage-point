@@ -67,11 +67,6 @@ uuid = { version = "1", features = ["v4", "serde"] }
 toml = "0.8"
 dirs = "6"
 
-# Phase 5-D fix: daemon_launcher で setsid(2) を呼ぶため (Unix で TheWorld を真の daemon 化、
-#  vp-app 死亡時に SIGHUP 巻き添えで TheWorld も死ぬ問題の修正)
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
-
 # 構造化ログ用 timestamp (KDL 1-line formatter)
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
@@ -80,3 +75,11 @@ tracing-appender = "0.2"
 
 # Native folder picker (project 追加用、cross-platform)
 rfd = "0.15"
+
+# Phase 5-D fix: daemon_launcher で setsid(2) を呼ぶため (Unix で TheWorld を真の daemon 化、
+#  vp-app 死亡時に SIGHUP 巻き添えで TheWorld も死ぬ問題の修正)。
+# **重要**: target-specific section は file 末尾に置くこと。 途中に置くと TOML 仕様で
+# 後続の dep declaration が全部この target に吸い込まれる (Windows CI で chrono/rfd/
+# tracing-appender が Unix-only と解釈される bug を 2026-04-29 観測、 末尾移動で修正)。
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
