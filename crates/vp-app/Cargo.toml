@@ -67,6 +67,11 @@ uuid = { version = "1", features = ["v4", "serde"] }
 toml = "0.8"
 dirs = "6"
 
+# Phase 5-D fix: daemon_launcher で setsid(2) を呼ぶため (Unix で TheWorld を真の daemon 化、
+#  vp-app 死亡時に SIGHUP 巻き添えで TheWorld も死ぬ問題の修正)
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 # 構造化ログ用 timestamp (KDL 1-line formatter)
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
