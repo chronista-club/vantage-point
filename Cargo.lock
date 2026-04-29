@@ -9416,6 +9416,7 @@ dependencies = [
  "chrono",
  "dirs",
  "futures-util",
+ "libc",
  "muda",
  "notify-rust",
  "portable-pty",

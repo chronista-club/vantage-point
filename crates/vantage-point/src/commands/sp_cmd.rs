@@ -73,13 +73,38 @@ fn sp_start(
     debug: Option<DebugModeArg>,
     config: &Config,
 ) -> Result<()> {
-    let port = explicit_port.unwrap_or_else(|| resolve_port(project_dir, config));
+    let mut port = explicit_port.unwrap_or_else(|| resolve_port(project_dir, config));
     let debug_mode = debug.map(DebugMode::from).unwrap_or_default();
 
-    // 既に起動中ならスキップ
+    // Port collision 解決: port を誰かが listening してるなら、
+    //   (a) 自 project の SP なら → 既に起動済みで skip
+    //   (b) 他 project の SP もしくは non-SP なら → port 衝突、 alternative port を探して retry
+    //   (c) 未占有 → そのまま spawn
+    // 旧 bug: (b) を (a) と区別せず skip → 永遠に起動しない (bikeboy 2026-04-29 観測)。
     if crate::commands::start::is_server_responding(port) {
-        println!("✅ SP サーバーは既に起動済み (port={})", port);
-        return Ok(());
+        if crate::commands::start::is_sp_for_project_responding(port, project_dir) {
+            println!("✅ SP サーバーは既に起動済み (port={})", port);
+            return Ok(());
+        }
+        // explicit_port 指定時は collision を fail とする (user 意図優先)、
+        // 自動 resolve なら別 port を探す
+        if explicit_port.is_some() {
+            anyhow::bail!(
+                "⚠️ port {} は他 SP が占有中 (project_dir 不一致)。 別 port を指定するか、 該当 SP を停止してください",
+                port
+            );
+        }
+        let alt = crate::resolve::find_available_port().ok_or_else(|| {
+            anyhow::anyhow!(
+                "port {} が他 SP に占有されており、 33000-33010 範囲に空き port なし",
+                port
+            )
+        })?;
+        println!(
+            "⚠️ port {} は他 project の SP に占有されてるため、 port {} で起動します",
+            port, alt
+        );
+        port = alt;
     }
 
     // TheWorld 自動起動

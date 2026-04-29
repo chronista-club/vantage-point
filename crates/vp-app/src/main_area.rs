@@ -304,6 +304,12 @@ body{overflow:hidden;}
     try { window.ipc.postMessage(JSON.stringify({t:'debug', msg: msg})); } catch (_) {}
   }
 
+  // 右クリック context menu (macOS の text actions / AutoFill / Services 等) を全面 suppress。
+  //  per-Lane terminal container は別 listener で paste 動作に差替え済 (e.preventDefault + doPaste)、
+  //  capture phase の document listener は preventDefault のみ呼ぶので container listener の paste も生きる。
+  //  対象外: preview iframe (cross-context、 iframe 内に独立 listener が必要)。
+  document.addEventListener('contextmenu', (e) => { e.preventDefault(); }, { capture: true });
+
   function createLaneInstance(address, port) {
     const host = document.getElementById('lane-host');
     if (!host) {
@@ -338,19 +344,30 @@ body{overflow:hidden;}
     term.loadAddon(fitAddon);
 
     // WebGL renderer (per-instance、 個別に context 持つ)
+    // Phase 5-D 実験 (ghost char 調査): WebGL の dirty cell tracking で文字幅再計算後に古い cells が
+    //  clear されない疑惑検証中。 一時的に DOM renderer fallback で再現するか確認。
+    //  → 再現しなければ WebGL 起因確定、 dispose 戦略 or canvas 移行を検討。
+    //  → 再現するなら xterm.js core or wcwidth 起因、 別調査。
+    const VP_USE_WEBGL = false; // TEMPORARY for ghost char repro test
     let webglAddon = null;
-    try {
-      webglAddon = new WebglAddon.WebglAddon();
-      term.loadAddon(webglAddon);
-      webglAddon.onContextLoss(() => {
-        console.warn('[xterm:' + address + '] WebGL context loss — DOM fallback');
-        webglAddon.dispose();
-      });
-    } catch (e) {
-      console.warn('[xterm:' + address + '] WebGL unavailable:', e);
+    if (VP_USE_WEBGL) {
+      try {
+        webglAddon = new WebglAddon.WebglAddon();
+        term.loadAddon(webglAddon);
+        webglAddon.onContextLoss(() => {
+          console.warn('[xterm:' + address + '] WebGL context loss — DOM fallback');
+          webglAddon.dispose();
+        });
+      } catch (e) {
+        console.warn('[xterm:' + address + '] WebGL unavailable:', e);
+      }
     }
 
     term.open(tdiv);
+    // 実験: terminal textarea の autocomplete を **on** に。 browser の autofill が typed commands を
+    //  保存して提案する挙動を観察する。 dogfood で「過去 command の suggestion が出るか / UI の overlay が
+    //  邪魔にならないか / cross-lane suggestion 混在しないか」 を実測。 問題あれば off に戻す。
+    try { term.textarea && term.textarea.setAttribute('autocomplete', 'on'); } catch (_) {}
     // hidden 状態で fit すると 0 cols になるので、 showLane の active 化後にも fit を呼ぶ
     try { fitAddon.fit(); } catch (_) {}
 
@@ -384,6 +401,16 @@ body{overflow:hidden;}
         const payload = String(data || '');
         console.log('[OSC 99] lane=' + address + ' payload=' + JSON.stringify(payload));
         dbg('[osc99:' + address + '] ' + payload);
+        // Phase 5-D Sprint C P2.1: final-chunk + focus action のみ「user attention 要求」 と判定。
+        //  metadata は最初の ; までの key=value list。 d=1 (final) かつ a=focus を含む chunk が trigger。
+        //  Rust 側で unread count を加算 → sidebar に push back → badge 表示。
+        const semi = payload.indexOf(';');
+        const meta = semi >= 0 ? payload.substring(0, semi) : payload;
+        if (/\bd=1\b/.test(meta) && /\ba=focus\b/.test(meta)) {
+          try {
+            window.ipc.postMessage(JSON.stringify({ t: 'osc:notification', lane: address, code: 99 }));
+          } catch (_) {}
+        }
         return true;
       });
       term.parser.registerOscHandler(777, (data) => {

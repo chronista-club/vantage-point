@@ -871,3 +871,60 @@ pub fn is_server_responding(port: u16) -> bool {
     )
     .is_ok()
 }
+
+/// 指定 port に listening してる SP が **特定の project_dir 用** かを verify。
+///
+/// `is_server_responding` は port 占有のみ check、 「誰の SP か」 を区別しない。
+/// 結果として、 unrelated project の SP が同 port を掴んでる時に false positive で
+/// 「既に起動済み」 判定 → spawn skip → 永遠に起動しない bug が発生していた
+/// (bikeboy が config 未登録で auto-port が他 project と衝突したケースで観察、 2026-04-29)。
+///
+/// 本関数は:
+/// 1. TCP 疎通 (= `is_server_responding`) で fast skip
+/// 2. `/api/health` の `project_dir` field を fetch
+/// 3. `Config::normalize_path` で 両 path を canonicalize して比較
+///
+/// → port の SP が **正しく自 project 用** なら true、 そうでなければ false。
+///
+/// 別 thread で current_thread runtime を立てる構造: 呼び出し元が既に tokio runtime を
+/// 持ってる場合 (panic: Cannot start a runtime from within a runtime) を避ける為。
+pub fn is_sp_for_project_responding(port: u16, project_dir: &str) -> bool {
+    if !is_server_responding(port) {
+        return false;
+    }
+    let target = crate::config::Config::normalize_path(std::path::Path::new(project_dir));
+    let url = format!("http://127.0.0.1:{}/api/health", port);
+    let result = std::thread::spawn(move || {
+        let rt = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(rt) => rt,
+            Err(_) => return false,
+        };
+        rt.block_on(async {
+            let client = match reqwest::Client::builder()
+                .timeout(std::time::Duration::from_millis(500))
+                .build()
+            {
+                Ok(c) => c,
+                Err(_) => return false,
+            };
+            let resp = match client.get(&url).send().await {
+                Ok(r) => r,
+                Err(_) => return false,
+            };
+            let json: serde_json::Value = match resp.json().await {
+                Ok(j) => j,
+                Err(_) => return false,
+            };
+            let Some(actual_dir) = json.get("project_dir").and_then(|v| v.as_str()) else {
+                return false;
+            };
+            let actual = crate::config::Config::normalize_path(std::path::Path::new(actual_dir));
+            actual == target
+        })
+    })
+    .join();
+    result.unwrap_or(false)
+}

@@ -109,9 +109,10 @@ const SIDEBAR_HTML: &str = concat!(
     r#"</style><style>"#,
     include_str!("../assets/nerd-font.css"),
     r#"</style><style>
-  /* Phase 5-C: body の font-family を VPMono (= PlemolJP Console NF、 web_assets で bundle)
-     に統一。 .nf-icon と同 family なので Latin / 日本語 / icon を一貫した字形で描画。 */
-  html,body{margin:0;height:100%;background:var(--color-surface-bg-subtle);color:var(--color-text-primary);font-family:'VPMono',monospace;font-size:12px;line-height:1.4;overflow:hidden;}
+  /* Phase 5-D: sidebar の base font を sans-serif に切替 (--typography-family-sans = Creo Sans → -apple-system fallback)。
+     project name / lane label の scan しやすさ向上 (HIG 準拠)。 monospace は branch / port / address 等の
+     technical data 表示でのみ局所使用 (icon は VPMono 直指定 / .nf-icon class で維持)。 */
+  html,body{margin:0;height:100%;background:var(--color-surface-bg-subtle);color:var(--color-text-primary);font-family:var(--typography-family-sans);font-size:12px;line-height:1.4;overflow:hidden;}
   body{display:flex;flex-direction:column;height:100%;}
 
   /* Projects accordion area (flex 1、 scroll) */
@@ -158,7 +159,8 @@ const SIDEBAR_HTML: &str = concat!(
   .world-widget .world-stat .value{font-weight:500;color:var(--color-text-primary);font-variant-numeric:tabular-nums;}
 
   /* Bottom Add ボタン (single trigger) と展開後の sub-actions */
-  .add-trigger{margin:6px 12px 10px;padding:6px 8px;border-radius:var(--radius-sm,6px);cursor:pointer;color:var(--color-text-tertiary);font-size:11px;text-align:center;border:1px dashed var(--color-surface-border,#1f2233);background:transparent;transition:background .12s ease,color .12s ease,border-color .12s ease;user-select:none;}
+  /* Phase 5-D: dashed border は drop-zone signifier に misleading。 solid に統一。 */
+  .add-trigger{margin:6px 12px 10px;padding:6px 8px;border-radius:var(--radius-sm,6px);cursor:pointer;color:var(--color-text-tertiary);font-size:11px;text-align:center;border:1px solid var(--color-surface-border,#1f2233);background:transparent;transition:background .12s ease,color .12s ease,border-color .12s ease;user-select:none;}
   .add-trigger:hover{background:var(--color-surface-bg-emphasis);color:var(--color-text-secondary);border-color:var(--color-text-tertiary);}
   .add-trigger.expanded{color:var(--color-text-secondary);border-color:var(--color-text-tertiary);background:var(--color-surface-bg-emphasis);}
 
@@ -191,6 +193,9 @@ const SIDEBAR_HTML: &str = concat!(
   /* Phase 3-D: project title は 13 → 12px に統一 (sidebar base と揃える)、 weight 500 で emphasis */
   .processes-section .creo-accordion-summary{padding:6px 8px;min-height:auto;font-size:12px;border-radius:var(--radius-sm,6px);}
   .processes-section .creo-accordion-summary:hover{background:var(--color-surface-bg-emphasis);}
+  /* Phase 5-D: active project (= active lane を含む project) の summary に左 border accent + subtle bg。
+     HIG: 全 navigation level で current location を可視化。 */
+  .processes-section .creo-accordion-summary.vp-project-active{box-shadow:inset 2px 0 0 0 var(--color-brand-primary);background:var(--color-brand-primary-subtle);}
   .processes-section .creo-accordion-summary::before{font-size:9px;color:var(--color-text-tertiary);width:10px;}
   .processes-section .creo-accordion-title{font-weight:500;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .processes-section .creo-accordion-content{padding:2px 0 4px 18px;}
@@ -224,8 +229,15 @@ const SIDEBAR_HTML: &str = concat!(
   .vp-empty-hint{padding:6px 12px 6px 14px;font-size:11px;color:var(--color-text-tertiary);font-style:italic;}
 
   /* Phase 3-A: + Add Worker button + inline form */
-  .vp-add-worker{display:flex;align-items:center;gap:6px;padding:5px 8px 5px 14px;border-radius:var(--radius-sm,6px);cursor:pointer;color:var(--color-text-tertiary);font-size:11px;font-style:italic;transition:background .12s ease,color .12s ease;}
-  .vp-add-worker:hover{background:var(--color-surface-bg-emphasis);color:var(--color-text-secondary);}
+  /* Phase 5-D: italic + tertiary 色を解消 (placeholder/disabled に見えてた)。 normal weight + secondary、 hover で primary 強調 = action affordance に格上げ。 */
+  .vp-add-worker{display:flex;align-items:center;gap:6px;padding:5px 8px 5px 14px;border-radius:var(--radius-sm,6px);cursor:pointer;color:var(--color-text-secondary);font-size:11px;transition:background .12s ease,color .12s ease;}
+  .vp-add-worker:hover{background:var(--color-surface-bg-emphasis);color:var(--color-brand-primary);}
+  .vp-add-worker .icon{color:var(--color-brand-primary);}
+  /* Phase 5-D Sprint C: Lane HD notification は 既存 status dot (.state) を兼用。
+     unread あれば pulse animation で「気付き」 を伝える。 status (running/idle/dead 等) と
+     attention (unread あり) を 1 indicator に統合 = 視覚 noise 最小、 cognitive load 最小。 */
+  .vp-lane-row .state.has-unread .nf-icon{animation:vp-pulse 1.5s ease-in-out infinite;filter:drop-shadow(0 0 3px currentColor);}
+  @keyframes vp-pulse{0%,100%{opacity:1;transform:scale(1);}50%{opacity:0.55;transform:scale(0.85);}}
   .vp-add-worker .icon{width:18px;text-align:center;}
   .vp-add-worker-form{margin:0 8px 6px 14px;display:flex;flex-direction:column;gap:6px;max-height:0;opacity:0;overflow:hidden;transition:max-height .22s ease,opacity .22s ease,margin-top .22s ease;margin-top:0;pointer-events:none;}
   .vp-add-worker-form.expanded{max-height:160px;opacity:1;margin-top:-2px;pointer-events:auto;}
@@ -326,6 +338,11 @@ const SIDEBAR_HTML: &str = concat!(
 <script>"#,
     include_str!("../assets/nerd-font-loader.js"),
     r#"
+  // 右クリック context menu (macOS の text actions / AutoFill / Services 等) を全面 suppress。
+  //  sidebar は read-only な navigation UI なので、 default の重い menu を出す価値が無い。
+  //  custom menu (Lane operations 等) は将来必要に応じて別途実装。
+  document.addEventListener('contextmenu', (e) => { e.preventDefault(); }, { capture: true });
+
   // Rust から push される sidebar state を保持
   let state = null;
   let pendingState = null;
@@ -586,6 +603,18 @@ const SIDEBAR_HTML: &str = concat!(
           const stateMark = document.createElement('span');
           stateMark.className = 'state';
           stateMark.innerHTML = stateGlyphHTML(lane.state);
+          // Phase 5-D Sprint C P2.1+P2.2: Lane HD notification dot (binary 表示)。
+          //  count は出さず「有る / 無い」 だけを伝える。 行頭に置いて視線最初の位置で気付ける。
+          //  state.unread_notifications (lane address → count) を Rust が OSC 99 受信時に push、
+          //  user が Lane に switch すると 0 reset。 active lane では increment skip (即読扱い)。
+          const unreadMap = (state && state.unread_notifications) || {};
+          const unread = (unreadMap[addr] | 0);
+          if (unread > 0) {
+            const dot = document.createElement('span');
+            dot.className = 'vp-lane-notification';
+            dot.title = unread + ' unread notification(s) from HD';
+            row.appendChild(dot);
+          }
           row.appendChild(standIcon);
           row.appendChild(label);
           // Phase 5-D: Worker のみ git 状態 subtitle (branch · ahead/behind · dirty/merged)
@@ -676,6 +705,8 @@ const SIDEBAR_HTML: &str = concat!(
         //  `addWorkerOpen` Set state は per-path で保持されるので、 後で同 project に
         //  戻れば form 開閉状態は復元される (意図を保つ保守的 UX)。
         const projectIsActive = !!(activeAddr && lanes.some(l => laneAddressKey(l) === activeAddr));
+        // Phase 5-D: project row 自体に active highlight を付ける (HIG: current location を全 level で示す)。
+        if (projectIsActive) summary.classList.add('vp-project-active');
         if (projectIsActive) {
           const addWorker = document.createElement('div');
           addWorker.className = 'vp-add-worker';
@@ -805,20 +836,21 @@ const SIDEBAR_HTML: &str = concat!(
     heavens_door: '',   // nf-fa-book
     the_hand: '',       // nf-fa-terminal
   };
-  const STATE_CLASS = {
-    running: 'vp-state-running',
-    spawning: 'vp-state-spawning',
-    idle: 'vp-state-idle',
-    working: 'vp-state-working',
-    pausing: 'vp-state-pausing',
-    exiting: 'vp-state-exiting',
-    dead: 'vp-state-dead',
+  // Phase 5-D: state 別 glyph + class 統合 map (色覚多様性 a11y 対応、 purple-haze HIG B4)。
+  //  glyph 列は Nerd Font Font Awesome (web_assets::NERD_FONT_CSS で .nf-icon class 提供)。
+  const STATE_INFO = {
+    running:  { glyph: '', cls: 'vp-state-running' },   // nf-fa-circle = 動作中
+    spawning: { glyph: '', cls: 'vp-state-spawning' },  // nf-fa-spinner = 起動中
+    idle:     { glyph: '', cls: 'vp-state-idle' },      // nf-fa-circle-o = 待機
+    working:  { glyph: '', cls: 'vp-state-working' },   // nf-fa-bolt = 処理中
+    pausing:  { glyph: '', cls: 'vp-state-pausing' },   // nf-fa-pause = 一時停止
+    exiting:  { glyph: '', cls: 'vp-state-exiting' },   // nf-fa-arrow-down = 終了中
+    dead:     { glyph: '', cls: 'vp-state-dead' },      // nf-fa-times-circle = 終了済
   };
-  //  = nf-fa-circle (filled)、 色は CSS class で。 unknown state は空 ('')。
   function stateGlyphHTML(s) {
-    const cls = STATE_CLASS[s];
-    if (!cls) return '';
-    return '<span class="nf-icon ' + cls + '"></span>';
+    const info = STATE_INFO[s];
+    if (!info) return '';
+    return '<span class="nf-icon ' + info.cls + '" aria-label="' + s + '" title="' + s + '">' + info.glyph + '</span>';
   }
   // 旧 processKindIcon は撤去 (kind 別 emoji 不要、 row 位置 + label が情報主体)。
   // 旧 processStateMark は stateGlyphHTML に置換。
@@ -1840,6 +1872,12 @@ fn handle_sidebar_ipc(
                 session.active_lane_address = Some(address.to_string());
                 session.save();
             }
+            // Phase 5-D Sprint C P2.1: Lane 切替時に対象 Lane の unread notification を 0 reset。
+            //  user が Lane 開いた = 通知に応答した、 とみなして badge を消す。
+            //  active 切替が無くても reset は走る (= 同 Lane を click 連打しても badge 消えるべき)。
+            if state.unread_notifications.remove(address).is_some() {
+                out.changed = true;
+            }
             // Phase 5-A: Lane と Stand は排他なので active_stand を clear
             if state.active_stand.is_some() {
                 state.active_stand = None;
@@ -2149,6 +2187,21 @@ pub fn run() -> anyhow::Result<()> {
                     if let Err(e) = main_view.evaluate_script(&script) {
                         tracing::warn!("paste deliver script failed: {}", e);
                     }
+                }
+            }
+            Event::UserEvent(AppEvent::OscNotification { lane, code }) => {
+                // Phase 5-D Sprint C P2.1: per-Lane HD notification の unread count 加算。
+                //  Skip increment if user is currently looking at this lane (即読扱い)。
+                if sidebar_state.active_lane_address.as_deref() == Some(lane.as_str()) {
+                    tracing::debug!("osc:notification skip (active lane): lane={} code={}", lane, code);
+                } else {
+                    let count = sidebar_state
+                        .unread_notifications
+                        .entry(lane.clone())
+                        .or_insert(0);
+                    *count += 1;
+                    tracing::info!("osc:notification lane={} code={} unread={}", lane, code, *count);
+                    push_sidebar_state(&sidebar, &sidebar_state);
                 }
             }
             Event::UserEvent(AppEvent::ProcessesLoaded(projects)) => {

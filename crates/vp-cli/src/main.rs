@@ -85,6 +85,11 @@ enum Commands {
     #[command(subcommand)]
     Hd(commands::hd_cmd::HdCommands),
 
+    /// Mailbox actor messaging — Phase 1a で `watch` (long-poll subscribe) と `send` を提供。
+    /// Claude Code Monitor の subscription source として使う想定 (vp_mailbox_monitor_agent_inbox.md)。
+    #[command(subcommand)]
+    Mailbox(commands::mailbox_cmd::MailboxCommands),
+
     /// tmux ペイン操作（キャプチャ・分割・送信・ダッシュボード）
     #[command(subcommand)]
     Tmux(TmuxCommands),
@@ -281,6 +286,10 @@ fn main() -> Result<()> {
             output, window, index, title, list, rect, region, series, interval, count, duration,
             output_dir, layout,
         ),
+        Commands::Mailbox(cmd) => {
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(commands::mailbox_cmd::run(cmd))
+        }
     }
 }
 

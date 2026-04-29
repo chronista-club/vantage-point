@@ -180,11 +180,23 @@ pub fn find_available_port() -> Option<u16> {
     crate::discovery::find_available_port()
 }
 
-/// ポートが利用可能かバインドして確認
+/// ポートが利用可能かバインドして確認 (wildcard bind + connect-test、 dual-stack 対応)
+///
+/// 旧 LOCALHOST bind は SP が wildcard bound 時に false positive (= dual-stack の specific
+/// over wildcard 仕様で success してしまう、 bikeboy 2026-04-29 観測) → SP server と同じ
+/// wildcard bind で test し、 connect 経由で listening process 検出も併用。
 fn is_port_available(port: u16) -> bool {
     use std::net::{Ipv6Addr, SocketAddrV6, TcpListener};
-    TcpListener::bind(SocketAddrV6::new(Ipv6Addr::LOCALHOST, port, 0, 0)).is_ok()
-        && TcpListener::bind(("127.0.0.1", port)).is_ok()
+    let v6_wild = TcpListener::bind(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, port, 0, 0)).is_ok();
+    let v4_wild = TcpListener::bind(("0.0.0.0", port)).is_ok();
+    if !v6_wild || !v4_wild {
+        return false;
+    }
+    std::net::TcpStream::connect_timeout(
+        &format!("[::1]:{}", port).parse().unwrap(),
+        std::time::Duration::from_millis(50),
+    )
+    .is_err()
 }
 
 /// Configured ターゲットのポートを決定
