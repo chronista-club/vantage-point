@@ -9358,6 +9358,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "socket2",
  "tao 0.34.5",
  "tempfile",
  "thiserror 2.0.18",
