@@ -66,6 +66,23 @@ pub enum MailboxCommands {
         #[arg(short, long, default_value = "vp-cli")]
         from: String,
     },
+    /// shell-level supervisor: vp mailbox watch を loop で再起動。 inner watch が exit しても
+    /// auto-restart で監視を継続する (Phase 1b: lifecycle resilience)。 Monitor の前段に置いて、
+    /// SessionStart hook 等から自動 arm する想定。
+    WatchSupervised {
+        /// SP の base URL (default: Project 0 の SP)
+        #[arg(short, long, default_value = "http://127.0.0.1:33000")]
+        url: String,
+        /// 各 long-poll の timeout 秒数
+        #[arg(short, long, default_value_t = 25)]
+        timeout: u64,
+        /// Sender 絞り込み
+        #[arg(short, long)]
+        from: Option<String>,
+        /// inner watch exit 後の re-spawn 待機秒数
+        #[arg(long, default_value_t = 2)]
+        restart_delay: u64,
+    },
 }
 
 /// Entry point — main.rs から呼び出される。
@@ -78,6 +95,70 @@ pub async fn run(cmd: MailboxCommands) -> Result<()> {
             body,
             from,
         } => send(&url, &to, &body, &from).await,
+        MailboxCommands::WatchSupervised {
+            url,
+            timeout,
+            from,
+            restart_delay,
+        } => watch_supervised(&url, timeout, from.as_deref(), restart_delay).await,
+    }
+}
+
+/// Supervisor: watch loop の auto-restart wrapper (Phase 1b)。
+/// inner watch が exit するたびに log + sleep + 再 spawn。 Ctrl-C で wrapper ごと停止。
+async fn watch_supervised(
+    url: &str,
+    timeout_secs: u64,
+    from_filter: Option<&str>,
+    restart_delay_secs: u64,
+) -> Result<()> {
+    let mut iteration = 0u64;
+    let ctrl_c = tokio::signal::ctrl_c();
+    tokio::pin!(ctrl_c);
+
+    loop {
+        iteration += 1;
+        eprintln!(
+            "[vp mailbox watch-supervised] iteration={} starting watch (url={}, timeout={}s)",
+            iteration, url, timeout_secs
+        );
+
+        let watch_fut = watch(url, timeout_secs, from_filter);
+        tokio::pin!(watch_fut);
+
+        tokio::select! {
+            _ = &mut ctrl_c => {
+                eprintln!("[vp mailbox watch-supervised] ctrl-c received, exiting (no restart)");
+                return Ok(());
+            }
+            result = &mut watch_fut => {
+                match result {
+                    Ok(()) => {
+                        // Inner watch exited cleanly (e.g., its own ctrl-c handler ran)。
+                        // 通常は inner watch は ctrl-c でしか exit しないので、 wrapper も止める。
+                        eprintln!("[vp mailbox watch-supervised] inner watch exited cleanly, stopping supervisor");
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "[vp mailbox watch-supervised] inner watch failed: {} (restart in {}s)",
+                            e, restart_delay_secs
+                        );
+                    }
+                }
+            }
+        }
+
+        // Restart wait — Ctrl-C 受け取れるよう select で待つ
+        let sleep = tokio::time::sleep(Duration::from_secs(restart_delay_secs));
+        tokio::pin!(sleep);
+        tokio::select! {
+            _ = &mut ctrl_c => {
+                eprintln!("[vp mailbox watch-supervised] ctrl-c during restart wait, exiting");
+                return Ok(());
+            }
+            _ = &mut sleep => {}
+        }
     }
 }
 
