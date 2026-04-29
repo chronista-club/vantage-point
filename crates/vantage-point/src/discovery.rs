@@ -119,11 +119,11 @@ fn is_port_available(port: u16) -> bool {
         return false;
     }
     // 2. listening している process が無いか念のため connect 経由で再確認
-    !std::net::TcpStream::connect_timeout(
+    std::net::TcpStream::connect_timeout(
         &format!("[::1]:{}", port).parse().unwrap(),
         std::time::Duration::from_millis(50),
     )
-    .is_ok()
+    .is_err()
 }
 
 /// TheWorld API に問い合わせ

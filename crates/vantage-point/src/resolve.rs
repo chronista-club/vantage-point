@@ -192,11 +192,11 @@ fn is_port_available(port: u16) -> bool {
     if !v6_wild || !v4_wild {
         return false;
     }
-    !std::net::TcpStream::connect_timeout(
+    std::net::TcpStream::connect_timeout(
         &format!("[::1]:{}", port).parse().unwrap(),
         std::time::Duration::from_millis(50),
     )
-    .is_ok()
+    .is_err()
 }
 
 /// Configured ターゲットのポートを決定
