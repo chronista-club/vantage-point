@@ -101,11 +101,29 @@ pub fn find_available_port() -> Option<u16> {
     (PORT_RANGE_START..=PORT_RANGE_END).find(|&port| is_port_available(port))
 }
 
-/// ポートが利用可能かバインドして確認（IPv6 + IPv4）
+/// ポートが利用可能かバインドして確認 (wildcard で test、 dual-stack)
+///
+/// 旧実装: `[::1]` (loopback specific) で test していたが、 既存 SP が `[::]` (wildcard)
+/// で bound してる場合、 specific bind は OS の dual-stack 仕様で **success してしまう**
+/// (= false positive、 「available」 判定 → actual SP bind で EADDRINUSE) という bug 発生
+/// (bikeboy 2026-04-29 観測)。
+///
+/// 修正: SP server と同じ wildcard (`[::]`) で test bind 試行、
+/// + TCP connect 経由で「listening 中の何か」 検出 (wildcard bind 不可なケース対応)。
 fn is_port_available(port: u16) -> bool {
     use std::net::{Ipv6Addr, SocketAddrV6, TcpListener};
-    TcpListener::bind(SocketAddrV6::new(Ipv6Addr::LOCALHOST, port, 0, 0)).is_ok()
-        && TcpListener::bind(("127.0.0.1", port)).is_ok()
+    // 1. wildcard bind を試行 (= SP が実際に bind するのと同じ場所)
+    let v6_wild = TcpListener::bind(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, port, 0, 0)).is_ok();
+    let v4_wild = TcpListener::bind(("0.0.0.0", port)).is_ok();
+    if !v6_wild || !v4_wild {
+        return false;
+    }
+    // 2. listening している process が無いか念のため connect 経由で再確認
+    !std::net::TcpStream::connect_timeout(
+        &format!("[::1]:{}", port).parse().unwrap(),
+        std::time::Duration::from_millis(50),
+    )
+    .is_ok()
 }
 
 /// TheWorld API に問い合わせ
