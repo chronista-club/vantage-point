@@ -21,6 +21,8 @@
 
 import { render } from 'solid-js/web'
 import { EditorHostProvider, EditorLayer } from 'creo-ui-editor-host'
+import { CreoIcon } from 'creo-ui-icons-web'
+import { STAND_ICON, type StandKind } from './icons/stand'
 
 function App() {
   return (
@@ -30,9 +32,59 @@ function App() {
   )
 }
 
+// R3-c POC: creo-ui-icons-web → iconify-icon Web Component → WKWebView の経路を E2E 実証する panel。
+// 各 Stand を default + active の 2 weight で並べ、 Phosphor 6 weight 切替が WKWebView で render
+// されることを目視確認する。 sidebar の Nerd Font を置換するわけではなく、 「SVG icon が動く」事実
+// を vp-app 内で確立する debug overlay。 不要になったら削除する。
+function IconPocPanel() {
+  const stands: StandKind[] = [
+    'heavens_door',
+    'paisley_park',
+    'gold_experience',
+    'hermit_purple',
+    'whitesnake',
+    'theworld',
+  ]
+  return (
+    <div
+      style={{
+        position: 'fixed',
+        bottom: '8px',
+        right: '8px',
+        padding: '6px 10px',
+        background: 'rgba(20, 20, 20, 0.85)',
+        'border-radius': '6px',
+        'font-size': '20px',
+        color: '#cfd8dc',
+        'z-index': 99999,
+        display: 'flex',
+        gap: '10px',
+        'align-items': 'center',
+        'box-shadow': '0 2px 8px rgba(0,0,0,0.3)',
+      }}
+      title="R3-c POC: creo-ui-icons-web 動作確認 (Stand × default + active)"
+    >
+      {stands.map((s) => (
+        <span style={{ display: 'inline-flex', gap: '2px' }}>
+          <CreoIcon name={STAND_ICON[s].default} size={20} />
+          <CreoIcon name={STAND_ICON[s].active} size={20} color="#7eb6ff" />
+        </span>
+      ))}
+    </div>
+  )
+}
+
 const root = document.getElementById('editor-root')
 if (root) {
   render(() => <App />, root)
 } else {
   console.warn('[vp-app] #editor-root が見つかりません — EditorLayer mount をスキップ')
+}
+
+// POC panel は body 直下に独立 mount (EditorLayer と無関係)。
+// Default off (production 体験を汚さない)、 DevTools で
+// `localStorage.setItem('vp-icon-poc', '1')` → reload で表示、
+// `localStorage.removeItem('vp-icon-poc')` → reload で非表示。
+if (typeof localStorage !== 'undefined' && localStorage.getItem('vp-icon-poc') === '1') {
+  render(() => <IconPocPanel />, document.body)
 }
