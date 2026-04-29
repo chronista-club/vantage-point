@@ -25,7 +25,7 @@
 //!
 //! 各 message が 1 行 JSON で stdout に flush される。 Claude Code 側で:
 //!
-//! ```
+//! ```text
 //! Monitor: vp mailbox watch
 //! ```
 //!
