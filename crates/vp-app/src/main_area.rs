@@ -390,17 +390,87 @@ body{overflow:hidden;}
     //
     // Phase S1 では capture が動くか確認するだけ ─ console.log + Rust tracing (`[xterm debug]` ログ) に流す。
     // S2 で id-based accumulator + `d=1` で commit + IPC push、 S3 で sidebar tint UI。
+    //
+    // ----- structured parse helpers (dogfood 観察用、 S2 accumulator の前哨) -----
+    // raw payload は `[osc99:lane] i=211:d=0:p=title;Claude Code` の形式で、 colon が key delimiter、
+    //  semicolon が value 開始 ─ 人間が毎回頭で parse するのは認知負荷が高いので、
+    //  key=value 対を space-spread した一行サマリも併せて吐く:
+    //    `[osc99-keys:lane] {i=211 d=0 p=title} value="Claude Code"`
+    //
+    // dogfood で観察したい open question:
+    //   * cc が `t=` (semantic type tag) や `u=` (urgency 0/1/2) を emit するか
+    //   * permission prompt 時の `p=body` 文字列 (input 待ちと distinguish できるか)
+    //   * `p=close` / `p=icon` / `p=buttons` 等の non-title/body type が flow するか
+    //   * OSC 9 / 777 が cc 以外の emitter から来るか
+    function parseOsc99(payload) {
+      const semi = payload.indexOf(';');
+      const metaStr = semi >= 0 ? payload.substring(0, semi) : payload;
+      const value = semi >= 0 ? payload.substring(semi + 1) : '';
+      const m = {};
+      for (const kv of metaStr.split(':')) {
+        if (!kv) continue;
+        const eq = kv.indexOf('=');
+        if (eq > 0) m[kv.slice(0, eq)] = kv.slice(eq + 1);
+        else m[kv] = '';
+      }
+      return { m, value };
+    }
+    function fmtOsc99Keys(m) {
+      return Object.entries(m)
+        .map(([k, v]) => v === '' ? k : k + '=' + v)
+        .join(' ');
+    }
+    // OSC 9 = `9;<msg>` (無印 iTerm2 notify) or iTerm2 拡張 `9;<subcode>;<args>` (subcode 9=cwd reporting 等) の混在。
+    //  先頭 segment が pure 数字なら subcode 形式と判定する。
+    //  注意 (review F-233-1): `9;hello world` のような pure 数字始まり plain notify の case は
+    //  subcode="9" 扱い になる ambiguity がある。 これは dogfood log のみへの影響で、
+    //  cc は OSC 9 を emit していない (PR #221 / #233 dogfood で観測ゼロ) ため実害なし。
+    //  別 emitter が乗ってきた段階で iTerm2 既知 subcode (1 / 2 / 9 / 50 / 51 等) の whitelist
+    //  に絞るか、 観察 log にフラグ立てるかを再検討する。
+    //  もう一つの corner case: payload = "9" (semicolon なし、 単一文字) の場合は
+    //  semi < 0 経路で `{ subcode: null, rest: "9" }` を返す。 plain msg "9" として扱われ、
+    //  実害ゼロ (whitelist 化したら自然解消)。
+    function parseOsc9(payload) {
+      const semi = payload.indexOf(';');
+      if (semi < 0) return { subcode: null, rest: payload };
+      const head = payload.substring(0, semi);
+      if (/^\d+$/.test(head)) {
+        return { subcode: head, rest: payload.substring(semi + 1) };
+      }
+      return { subcode: null, rest: payload };
+    }
+    // OSC 777 = `notify;<title>;<body>` (urxvt / foot 流) — title/body を semicolon 区切りで取り出す。
+    function parseOsc777(payload) {
+      const parts = payload.split(';');
+      if (parts[0] === 'notify' && parts.length >= 2) {
+        return { title: parts[1] || '', body: parts.slice(2).join(';') };
+      }
+      return { title: null, body: payload };
+    }
+
     try {
       term.parser.registerOscHandler(9, (data) => {
         const payload = String(data || '');
         console.log('[OSC 9] lane=' + address + ' payload=' + JSON.stringify(payload));
         dbg('[osc9:' + address + '] ' + payload);
+        try {
+          const p = parseOsc9(payload);
+          if (p.subcode != null) {
+            dbg('[osc9-keys:' + address + '] subcode=' + p.subcode + ' rest=' + JSON.stringify(p.rest));
+          } else {
+            dbg('[osc9-keys:' + address + '] (plain) msg=' + JSON.stringify(p.rest));
+          }
+        } catch (_) {}
         return true;
       });
       term.parser.registerOscHandler(99, (data) => {
         const payload = String(data || '');
         console.log('[OSC 99] lane=' + address + ' payload=' + JSON.stringify(payload));
         dbg('[osc99:' + address + '] ' + payload);
+        try {
+          const p = parseOsc99(payload);
+          dbg('[osc99-keys:' + address + '] {' + fmtOsc99Keys(p.m) + '} value=' + JSON.stringify(p.value));
+        } catch (_) {}
         // Phase 5-D Sprint C P2.1: final-chunk + focus action のみ「user attention 要求」 と判定。
         //  metadata は最初の ; までの key=value list。 d=1 (final) かつ a=focus を含む chunk が trigger。
         //  Rust 側で unread count を加算 → sidebar に push back → badge 表示。
@@ -417,10 +487,32 @@ body{overflow:hidden;}
         const payload = String(data || '');
         console.log('[OSC 777] lane=' + address + ' payload=' + JSON.stringify(payload));
         dbg('[osc777:' + address + '] ' + payload);
+        try {
+          const p = parseOsc777(payload);
+          if (p.title !== null) {
+            dbg('[osc777-keys:' + address + '] title=' + JSON.stringify(p.title) + ' body=' + JSON.stringify(p.body));
+          } else {
+            dbg('[osc777-keys:' + address + '] (non-notify form) raw=' + JSON.stringify(p.body));
+          }
+        } catch (_) {}
         return true;
       });
     } catch (e) {
       console.warn('[xterm:' + address + '] OSC handler registration failed:', e);
+    }
+
+    // ===== window title (OSC 0 / 2) capture =====
+    // xterm.js は OSC 0 (icon + title) と OSC 2 (title) を内部で parse して onTitleChange event を fire する。
+    // dogfood 仮説: cc が `/rename` 後に session name を window title として emit していれば、
+    //  この listener で `osc-handler-debug-logging` 等の renamed value が拾える。
+    //  もし fire しなければ session JSONL file watch (~/.claude/projects/<encoded-cwd>/...) の fallback path 検討。
+    try {
+      term.onTitleChange((title) => {
+        console.log('[term-title] lane=' + address + ' title=' + JSON.stringify(title));
+        dbg('[term-title:' + address + '] ' + JSON.stringify(title));
+      });
+    } catch (e) {
+      console.warn('[xterm:' + address + '] onTitleChange listener registration failed:', e);
     }
 
     // ===== WebSocket: SP に直接接続 (Phase 2.5: Rust 側 mpsc 中継を撤去) =====
