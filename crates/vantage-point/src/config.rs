@@ -55,6 +55,37 @@ pub struct Config {
     /// VP Port Management Phase 1: config で layout 定数を変更可能に
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ports: Option<PortLayoutOverrides>,
+
+    /// SP startup behavior — Worker spawn の concurrency 制限等 (I-b、 2026-04-30)
+    #[serde(default)]
+    pub startup: StartupConfig,
+}
+
+/// SP startup behavior config (I-b、 2026-04-30)。
+///
+/// Mailbox actor (`lane-spawn@<project>`) で Worker spawn を Cmd 化した上で、
+/// 内部 Semaphore で同時実行数を gate する。 `max_concurrent_lane_spawn` で
+/// 制限値を tweak、 default は **1** (= 完全 sequential、 dogfood の視覚 pop 体験 +
+/// Claude CLI rate-limit 安全)。 計測 log (`Lane spawn completed: ... elapsed=`) を
+/// dogfood で集計して N 値を実証的に上げる方針。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StartupConfig {
+    /// 同時 Lane spawn 数の上限 (= Mailbox actor 内部 `Semaphore::new(N)`)。
+    /// default 1 = sequential。
+    #[serde(default = "default_max_concurrent_lane_spawn")]
+    pub max_concurrent_lane_spawn: u32,
+}
+
+impl Default for StartupConfig {
+    fn default() -> Self {
+        Self {
+            max_concurrent_lane_spawn: default_max_concurrent_lane_spawn(),
+        }
+    }
+}
+
+fn default_max_concurrent_lane_spawn() -> u32 {
+    1
 }
 
 /// PortLayout の config 上書き (全 field optional、未指定は default)
@@ -322,6 +353,7 @@ mod tests {
                 slot: Some(0),
             }],
             ports: None,
+            startup: StartupConfig::default(),
         };
 
         let toml = toml::to_string_pretty(&config).unwrap();
