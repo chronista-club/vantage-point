@@ -22,14 +22,14 @@ use vantage_point::commands;
 use vantage_point::config::Config;
 use vantage_point::mcp;
 
-use commands::file_cmd::FileCommands;
+use commands::file::FileCommands;
 
 // Phase 2.x-e: vp-ccws crate を vp-cli の lib に統合。
 // `ccws` 標準 bin (src/bin/ccws.rs) と main.rs (vp) の両方が `vp_cli::ccws` を共有。
 #[cfg(feature = "midi")]
 use commands::midi::MidiCommands;
 use commands::pane::PaneCommands;
-use commands::tmux_cmd::TmuxCommands;
+use commands::tmux::TmuxCommands;
 use vp_cli::ccws;
 
 #[derive(Parser)]
@@ -76,21 +76,21 @@ enum Commands {
         port: u16,
         /// サブコマンド（省略時は start として動作）
         #[command(subcommand)]
-        command: Option<commands::world_cmd::WorldCommands>,
+        command: Option<commands::daemon::DaemonCommands>,
     },
 
     /// SP サーバー管理（HTTP/QUIC サーバーのライフサイクル）
     #[command(subcommand)]
-    Sp(commands::sp_cmd::SpCommands),
+    Sp(commands::sp::SpCommands),
 
     /// HD インスタンス管理（tmux + Claude CLI + ccwire）
     #[command(subcommand)]
-    Hd(commands::hd_cmd::HdCommands),
+    Hd(commands::hd::HdCommands),
 
     /// Mailbox actor messaging — Phase 1a で `watch` (long-poll subscribe) と `send` を提供。
     /// Claude Code Monitor の subscription source として使う想定 (vp_mailbox_monitor_agent_inbox.md)。
     #[command(subcommand)]
-    Mailbox(commands::mailbox_cmd::MailboxCommands),
+    Mailbox(commands::mailbox::MailboxCommands),
 
     /// tmux ペイン操作（キャプチャ・分割・送信・ダッシュボード）
     #[command(subcommand)]
@@ -103,7 +103,7 @@ enum Commands {
 
     /// SurrealDB デーモン管理
     #[command(subcommand)]
-    Db(commands::db_cmd::DbCommands),
+    Db(commands::db::DbCommands),
 
     /// Stone Free 🧵 — worker workspace 管理（旧 ccws、Phase 1 で統合）
     #[command(subcommand, alias = "workspace")]
@@ -111,7 +111,7 @@ enum Commands {
 
     /// Port Layout — deterministic 透過的固定 port の計算・表示
     #[command(subcommand)]
-    Port(commands::port_cmd::PortCommands),
+    Port(commands::port::PortCommands),
 
     /// vp-app GUI 管理 (Mac 主軸切替: Rust + wry + xterm.js + creo-ui)
     #[command(subcommand)]
@@ -253,22 +253,22 @@ fn main() -> Result<()> {
         }
         Commands::Update { check } => commands::update::execute(check),
         Commands::Pane(cmd) => commands::pane::execute(cmd, &config),
-        Commands::File(cmd) => commands::file_cmd::execute(cmd, &config),
+        Commands::File(cmd) => commands::file::execute(cmd, &config),
 
         Commands::Daemon { port, command } => {
-            let cmd = command.unwrap_or(commands::world_cmd::WorldCommands::Start { port });
-            commands::world_cmd::execute(cmd)
+            let cmd = command.unwrap_or(commands::daemon::DaemonCommands::Start { port });
+            commands::daemon::execute(cmd)
         }
-        Commands::Sp(cmd) => commands::sp_cmd::execute(cmd, &config),
-        Commands::Hd(cmd) => commands::hd_cmd::execute(cmd, &config),
+        Commands::Sp(cmd) => commands::sp::execute(cmd, &config),
+        Commands::Hd(cmd) => commands::hd::execute(cmd, &config),
 
-        Commands::Tmux(cmd) => commands::tmux_cmd::execute(cmd, &config),
+        Commands::Tmux(cmd) => commands::tmux::execute(cmd, &config),
         #[cfg(feature = "midi")]
         Commands::Midi(cmd) => commands::midi::execute(cmd),
-        Commands::Db(cmd) => commands::db_cmd::execute(cmd),
+        Commands::Db(cmd) => commands::db::execute(cmd),
 
         Commands::Ws(cmd) => execute_ws(cmd),
-        Commands::Port(cmd) => commands::port_cmd::execute(cmd),
+        Commands::Port(cmd) => commands::port::execute(cmd),
         Commands::App(cmd) => commands::app::execute(cmd),
         Commands::Shot {
             output,
@@ -290,7 +290,7 @@ fn main() -> Result<()> {
         ),
         Commands::Mailbox(cmd) => {
             let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(commands::mailbox_cmd::run(cmd))
+            rt.block_on(commands::mailbox::run(cmd))
         }
     }
 }

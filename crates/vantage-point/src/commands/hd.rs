@@ -242,7 +242,7 @@ fn hd_attach(session_name: &str, _config: &Config) -> Result<()> {
     }
 
     // TUI コンソールを起動
-    crate::commands::tui_cmd::run_tui_console_blocking(session_name)
+    crate::commands::tui::run_tui_console_blocking(session_name)
 }
 
 /// セッションがこのプロジェクトに属するか判定

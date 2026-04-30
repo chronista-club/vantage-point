@@ -219,7 +219,7 @@ fn sp_status(project_dir: &str, config: &Config) -> Result<()> {
         .collect();
     let hd_sessions: Vec<_> = sessions
         .iter()
-        .filter(|s| crate::commands::hd_cmd::is_own_session(s, &prefix, &other_prefixes))
+        .filter(|s| crate::commands::hd::is_own_session(s, &prefix, &other_prefixes))
         .collect();
     if !hd_sessions.is_empty() {
         println!();

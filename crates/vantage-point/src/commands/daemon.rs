@@ -16,7 +16,7 @@ use crate::daemon::process;
 ///
 /// サブコマンド省略時は `start` として扱う（後方互換: `vp daemon --port 32000`）
 #[derive(Subcommand)]
-pub enum WorldCommands {
+pub enum DaemonCommands {
     /// TheWorld を起動（foreground blocking、 backgrounding は呼出側で `&` / nohup）
     Start {
         /// 待ち受けポート番号
@@ -35,12 +35,12 @@ pub enum WorldCommands {
 }
 
 /// `vp daemon` (= `vp world`) を実行
-pub fn execute(cmd: WorldCommands) -> Result<()> {
+pub fn execute(cmd: DaemonCommands) -> Result<()> {
     match cmd {
-        WorldCommands::Start { port } => start(port),
-        WorldCommands::Stop => stop(),
-        WorldCommands::Restart { port } => restart(port),
-        WorldCommands::Status => status(),
+        DaemonCommands::Start { port } => start(port),
+        DaemonCommands::Stop => stop(),
+        DaemonCommands::Restart { port } => restart(port),
+        DaemonCommands::Status => status(),
     }
 }
 
