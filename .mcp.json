@@ -3,7 +3,13 @@
     "vantage-point": {
       "type": "stdio",
       "command": "vp",
-      "args": ["mcp"]
+      "args": [
+        "mcp"
+      ]
+    },
+    "creo-memories-mito": {
+      "type": "http",
+      "url": "https://mcp.creo-memories.in"
     }
   }
 }
