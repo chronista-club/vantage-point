@@ -223,7 +223,7 @@ pub async fn create_handler(
             // ccws::commands::new_worker_in は worker dir 既存 + force=false の時に
             // 「ワーカー '<name>' は既に存在します」を返す。 UI で input 下に表示するため
             // CONFLICT を返し、 error message をそのまま流す。
-            let msg = format!("{}", e);
+            let msg = e.to_string();
             let status = if msg.contains("既に存在") || msg.contains("already exists") {
                 StatusCode::CONFLICT
             } else {
@@ -509,7 +509,10 @@ fn sanitize_for_branch(s: &str) -> String {
         .chars()
         .map(|c| c.to_ascii_lowercase())
         .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
+            // PR #228 review fix (Moody Blues #4): `.` を allowlist から外す。
+            // git check-ref-format は連続 `.` (`..`) を禁止するため、 `v1.2.3` のような
+            // 入力も `v1-2-3` として安全側に倒す。 末尾 `.lock` suffix も同時に予防。
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
                 c
             } else {
                 '-'
@@ -544,8 +547,14 @@ mod tests {
         assert_eq!(sanitize_for_branch("Feat/API V2"), "feat-api-v2");
         assert_eq!(sanitize_for_branch("  spaces  "), "spaces");
         assert_eq!(sanitize_for_branch("multi---dash"), "multi-dash");
-        assert_eq!(sanitize_for_branch("--leading-trailing--"), "leading-trailing");
+        assert_eq!(
+            sanitize_for_branch("--leading-trailing--"),
+            "leading-trailing"
+        );
         assert_eq!(sanitize_for_branch("symbols!@#$%"), "symbols");
         assert_eq!(sanitize_for_branch(""), "");
+        // PR #228 review fix (#4): `..` 連続が git ref として無効になるのを防ぐ
+        assert_eq!(sanitize_for_branch("a..b"), "a-b");
+        assert_eq!(sanitize_for_branch("v1.2.3"), "v1-2-3");
     }
 }

@@ -307,15 +307,22 @@ pub async fn run(
         // Phase 5-E (i, 2026-04-30): with_lead 後に ccws workers_dir をスキャンし、
         // 既存 Worker dir を HD で auto-spawn する。 user 指示「default で HD ワーカーが起動」。
         // 起動時点で全 Worker が active 状態 → sidebar タップでそのまま切替動作する。
+        //
+        // PR #228 review fix (Moody Blues #2): populate の `project_id` には
+        // `project_dir.file_name()` 由来の値を渡す。 `routes/lanes.rs::create_handler`
+        // も file_name 由来で `LaneAddress::worker(...)` を組むため、 ここで
+        // `project_name_for_remote` (config 登録名) を渡すと auto-spawn と手動 create で
+        // address が食い違い、 sidebar 表示や WS routing が壊れる。
         lane_pool: Arc::new(RwLock::new({
             let mut pool = super::lanes_state::LanePool::with_lead(
                 project_name_for_remote.clone(),
                 project_dir.clone(),
             );
-            pool.populate_workers_from_disk(
-                &project_name_for_remote,
-                std::path::Path::new(&project_dir),
-            );
+            let workers_project_id = std::path::Path::new(&project_dir)
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("unknown");
+            pool.populate_workers_from_disk(workers_project_id, std::path::Path::new(&project_dir));
             pool
         })),
         // Phase A4-2b: Project scope の Stand pool (PP/GE/HP) — skeleton

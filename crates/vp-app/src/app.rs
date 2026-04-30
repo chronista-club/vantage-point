@@ -96,8 +96,7 @@ pub const CREO_TOKENS_CSS: &str = include_str!("../assets/creo-tokens.css");
 /// Phase E1 (R5): sidebar 用 iconify-icon Web Component bundle。
 /// crates/vp-app/sidebar-bundle/ で esbuild build → assets/sidebar-icons.bundle.js 生成、
 /// SIDEBAR_HTML 内 `<script src="vp-asset://app/sidebar-icons.bundle.js">` で load。
-const SIDEBAR_ICONS_BUNDLE: &[u8] =
-    include_bytes!("../assets/sidebar-icons.bundle.js");
+const SIDEBAR_ICONS_BUNDLE: &[u8] = include_bytes!("../assets/sidebar-icons.bundle.js");
 
 const SIDEBAR_ASSETS: &[(&str, &[u8], &str)] = &[
     (
@@ -771,10 +770,18 @@ const SIDEBAR_HTML: &str = concat!(
         const projectIsActive = !!(activeAddr && lanes.some(l => laneAddressKey(l) === activeAddr));
         // Phase 5-D: project row 自体に active highlight を付ける (HIG: current location を全 level で示す)。
         if (projectIsActive) summary.classList.add('vp-project-active');
-        // Phase 5-E: Project 集約 Inactive 判定 = lanes に 1 つでも pid:null がある (= Pane 全部揃ってない)。
+        // Phase 5-E: Project 集約 Inactive 判定 = Worker lane に 1 つでも pid:null がある (= Pane 全部揃ってない)。
         //  user 仕様: 「Active で、 Lane 上の Pane 全部動いてるか、 Inactive で、 Lane はあるけど Pane は動いてない」
         //  active class が付いてる時は CSS 側で active 優先 (Inactive style は :not(.vp-project-active) で gate)。
-        const projectInactive = lanes.some(l => l.pid == null);
+        //
+        //  PR #228 review fix (Moody Blues #3): Lead lane の pid:null (= Lead spawn 失敗) を含めて
+        //  inactive 化すると SP unhealthy と Worker 不在が同じ dim 表現になり区別できない。
+        //  ここでは Worker lane の pid:null のみを対象にする (Lead Dead は別 indicator、 別 issue)。
+        const projectInactive = lanes.some(l => {
+          if (l.pid != null) return false;
+          const k = l.kind || (l.address && l.address.kind);
+          return k === 'worker';
+        });
         if (projectInactive) summary.classList.add('vp-project-inactive');
         if (projectIsActive) {
           const addWorker = document.createElement('div');

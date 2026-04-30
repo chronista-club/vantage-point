@@ -101,11 +101,7 @@ pub fn build_menu_bar(initial_dev_mode: bool) -> MenuHandles {
     );
     // 「Open Sidebar DevTools」 — sidebar WebView (vp-asset://app/sidebar.html) 用。
     // main_view と sidebar が別 WKWebView なので、 inspect も別 panel が必要。
-    let open_sidebar_devtools_item = MenuItem::new(
-        "Open Sidebar DevTools",
-        initial_dev_mode,
-        None,
-    );
+    let open_sidebar_devtools_item = MenuItem::new("Open Sidebar DevTools", initial_dev_mode, None);
     let view_menu = Submenu::new("View", true);
     view_menu
         .append(&developer_mode_item)

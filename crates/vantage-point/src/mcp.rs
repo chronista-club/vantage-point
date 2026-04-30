@@ -993,9 +993,7 @@ impl VantageMcp {
             .timeout(Duration::from_secs(60)) // ccws clone は 数 sec ~ 数 10 sec かかる
             .send()
             .await
-            .map_err(|e| {
-                McpError::internal_error(format!("SP に到達できません: {}", e), None)
-            })?;
+            .map_err(|e| McpError::internal_error(format!("SP に到達できません: {}", e), None))?;
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
         if !status.is_success() {
@@ -1006,7 +1004,8 @@ impl VantageMcp {
             ));
         }
         // 成功 body は LaneInfo JSON。 address だけ抽出して短い human 向け text を返す。
-        let parsed: serde_json::Value = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
         let addr = parsed
             .get("address")
             .and_then(|v| v.as_str())
@@ -1019,10 +1018,7 @@ impl VantageMcp {
                 })
             })
             .unwrap_or_else(|| format!("worker/{}", params.name));
-        let cwd = parsed
-            .get("cwd")
-            .and_then(|v| v.as_str())
-            .unwrap_or("?");
+        let cwd = parsed.get("cwd").and_then(|v| v.as_str()).unwrap_or("?");
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
             format!("Worker Lane created: {}\n  cwd: {}", addr, cwd),
         )]))

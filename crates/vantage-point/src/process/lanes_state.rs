@@ -240,11 +240,14 @@ impl LanePool {
     /// 既存 entry (= 同 addr が既に居る) は skip。 spawn 失敗 (= ccws workspace 破損 等) は
     /// graceful degrade で `Dead` 状態 + pid:None で record、 routes/lanes.rs の disk-scan
     /// list 補完が pid:null Lane として表示する fallback path に乗る。
-    pub fn populate_workers_from_disk(
-        &mut self,
-        project_id: &str,
-        project_dir: &std::path::Path,
-    ) {
+    ///
+    /// **TODO (PR #228 review #1, latency 線形悪化)**: 内部の `spawn_with_fallback` が Worker
+    /// 1 本ごとに `EARLY_EXIT_CHECK_MS = 800ms` の `std::thread::sleep` で tokio executor を
+    /// ブロックする。 N 本 Worker → SP 起動が N×800ms 直列待ちになる。 dogfood (≤3 本) では
+    /// 顕在化しないが、 Worker 5+ で SP 起動 4 秒超え。 次 sprint で `tokio::task::spawn_blocking`
+    /// で並列化、 もしくは AppState 構築後に背景タスク化して `lane_pool` を後追い update する
+    /// 方式に切り替える (起動直後の `/api/lanes` は一時空 → 既存 disk-scan fallback でカバー)。
+    pub fn populate_workers_from_disk(&mut self, project_id: &str, project_dir: &std::path::Path) {
         let Some(repo_name) = project_dir.file_name().and_then(|s| s.to_str()) else {
             return;
         };
