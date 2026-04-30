@@ -67,8 +67,10 @@ enum Commands {
     File(FileCommands),
 
     /// TheWorld 管理 — 全 Process を統括する常駐プロセス
-    #[command(alias = "conductor")]
-    World {
+    ///
+    /// alias: `vp world` (旧名、 後方互換) / `vp conductor` (古い metaphor)
+    #[command(visible_alias = "world", alias = "conductor")]
+    Daemon {
         /// 待ち受けポート番号（サブコマンド省略時に使用）
         #[arg(short, long, default_value_t = cli::WORLD_PORT)]
         port: u16,
@@ -253,7 +255,7 @@ fn main() -> Result<()> {
         Commands::Pane(cmd) => commands::pane::execute(cmd, &config),
         Commands::File(cmd) => commands::file_cmd::execute(cmd, &config),
 
-        Commands::World { port, command } => {
+        Commands::Daemon { port, command } => {
             let cmd = command.unwrap_or(commands::world_cmd::WorldCommands::Start { port });
             commands::world_cmd::execute(cmd)
         }

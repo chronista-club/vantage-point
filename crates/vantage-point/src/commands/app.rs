@@ -11,20 +11,36 @@ use clap::Subcommand;
 
 #[derive(Subcommand)]
 pub enum AppCommands {
-    /// vp-app GUI を起動 (Rust + wry + xterm.js + creo-ui)
-    Run {
+    /// vp-app GUI を起動 (background spawn、 即 exit)
+    Start {
         /// プロジェクト N 番を起動時に開く（省略時はランチャー画面）
+        project_id: Option<usize>,
+    },
+    /// vp-app を停止 (SIGTERM、 idempotent)
+    Stop,
+    /// vp-app を再起動 (stop + sleep + start)
+    Restart {
+        /// プロジェクト N 番を起動時に開く
         project_id: Option<usize>,
     },
 }
 
 pub fn execute(cmd: AppCommands) -> Result<()> {
     match cmd {
-        AppCommands::Run { project_id } => run(project_id),
+        AppCommands::Start { project_id } => start(project_id),
+        AppCommands::Stop => stop(),
+        AppCommands::Restart { project_id } => restart(project_id),
     }
 }
 
-fn run(project_id: Option<usize>) -> Result<()> {
+/// vp-app を background spawn + 親即 exit。
+///
+/// 設計判断: `Command::status()` (= `wait()` 相当の blocking) ではなく `spawn()` で
+/// child handle を drop することで、 parent (= `vp app start`) は child の終了を
+/// 待たない。 stdout/stderr は log file に redirect、 unix では `process_group(0)`
+/// (`setsid` 相当) で child を新しい process group に分離 ── parent shell が
+/// SIGHUP / exit しても child は生存し続ける (D12: daemon lifecycle 独立性)。
+fn start(project_id: Option<usize>) -> Result<()> {
     let bin = find_vp_app_binary().context(
         "vp-app binary not found. \
          Build it first: 'cargo build --release -p vp-app' \
@@ -35,9 +51,11 @@ fn run(project_id: Option<usize>) -> Result<()> {
     let log_dir = log_dir_path();
     std::fs::create_dir_all(&log_dir).ok();
     let daemon_log = log_dir.join("daemon.kdl.log");
+    let stdout_log = log_dir.join("app.stdout.log");
 
     println!("🚀 Launching vp-app: {}", bin.display());
     println!("   daemon log: {}", daemon_log.display());
+    println!("   stdout log: {}", stdout_log.display());
 
     let mut cmd = std::process::Command::new(&bin);
     cmd.env("VP_DAEMON_LOG_FILE", &daemon_log);
@@ -45,12 +63,59 @@ fn run(project_id: Option<usize>) -> Result<()> {
         cmd.env("VP_PROJECT_ID", id.to_string());
     }
 
-    // foreground spawn — ユーザの terminal に attach、Ctrl+C で一緒に終わる。
-    let status = cmd
-        .status()
-        .with_context(|| format!("Failed to spawn vp-app at {}", bin.display()))?;
+    // stdout/stderr を log file に redirect (parent が exit しても child の出力を
+    // 失わないため、 file descriptor を OS に渡す)。
+    let stdout_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&stdout_log)
+        .with_context(|| format!("Failed to open stdout log: {}", stdout_log.display()))?;
+    let stderr_file = stdout_file
+        .try_clone()
+        .context("Failed to clone stdout file for stderr")?;
+    cmd.stdout(stdout_file);
+    cmd.stderr(stderr_file);
 
-    std::process::exit(status.code().unwrap_or(1));
+    // Unix: setsid 相当 (新 process group で child を分離、 親 shell の SIGHUP から守る)。
+    // Windows は process_group API がないのでそのまま spawn する。
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+
+    let child = cmd
+        .spawn()
+        .with_context(|| format!("Failed to spawn vp-app at {}", bin.display()))?;
+    let pid = child.id();
+    println!("✅ vp-app launched (PID={pid})");
+    println!("   logs: vp logs (or `tail -F {}`)", log_dir.display());
+
+    // child handle drop = parent は child の終了を wait しない (= 即 exit)。
+    drop(child);
+    Ok(())
+}
+
+/// vp-app を SIGTERM で停止。 process が存在しなくても error にしない (idempotent)。
+fn stop() -> Result<()> {
+    let status = std::process::Command::new("pkill")
+        .args(["-f", "vp-app$"])
+        .status()
+        .context("Failed to invoke pkill")?;
+    match status.code() {
+        Some(0) => println!("📴 vp-app stopped (SIGTERM sent)"),
+        Some(1) => println!("(no vp-app process running)"),
+        Some(c) => println!("(pkill exit code {c})"),
+        None => println!("(pkill terminated by signal)"),
+    }
+    Ok(())
+}
+
+/// stop + 短い sleep + start。 sleep は PID 解放と binary file unlink の race 回避。
+fn restart(project_id: Option<usize>) -> Result<()> {
+    stop()?;
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(project_id)
 }
 
 /// vp-app binary を探す:
