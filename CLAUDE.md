@@ -93,11 +93,13 @@ vp mcp                 # MCPサーバーモード（stdio）
 vp update [--check]    # セルフアップデート
 
 # TheWorld（Daemon 統合）
-vp world               # TheWorld 起動（プロジェクト管理 + PTY管理）
-vp daemon start|stop|status  # 後方互換エイリアス
+vp daemon              # TheWorld 起動（プロジェクト管理 + PTY管理、 alias: vp world）
+vp daemon start|stop|restart|status  # subcommand 形式 (Restart は (α) で追加)
 
 # App
-vp app                 # VantagePoint.app起動（TheWorld自動起動）
+vp app start [N]       # vp-app GUI 起動（spawn + 即 exit、 N でプロジェクト指定）
+vp app stop            # vp-app を停止
+vp app restart [N]     # vp-app を再起動
 vp tray                # システムトレイモード
 
 # MIDI

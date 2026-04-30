@@ -6,7 +6,7 @@
 //!   vp hd start   # HD (Claude CLI) を起動
 //!   vp hd attach  # HD に TUI 接続
 //!   vp mcp        # MCPサーバーとして起動（stdio）
-//!   vp world      # TheWorld デーモン管理
+//!   vp daemon     # TheWorld デーモン管理 (alias: vp world)
 //!
 //! Environment variables:
 //!   VANTAGE_DEBUG=none|simple|detail  # デバッグ表示モード

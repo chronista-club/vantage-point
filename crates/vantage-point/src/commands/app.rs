@@ -119,9 +119,19 @@ fn restart(project_id: Option<usize>) -> Result<()> {
 }
 
 /// vp-app binary を探す:
-/// 1. PATH 上の `vp-app` (cargo install で入った場合)
-/// 2. 自分 (vp) の隣 (`~/.cargo/bin/vp` や `target/release/vp` の同 dir)
+/// 1. `VP_APP_BIN` env (mise task / dogfood で `target/release/vp-app` を直接渡す path)
+/// 2. PATH 上の `vp-app` (cargo install で入った場合)
+/// 3. 自分 (vp) の隣 (`~/.cargo/bin/vp` や `target/release/vp` の同 dir)
 fn find_vp_app_binary() -> Option<PathBuf> {
+    // `VP_APP_BIN` env が指す path が file として存在すれば最優先。
+    // cargo install を毎回挟まずに `cargo build --release -p vp-app` 直後の binary を
+    // 即座に呼べる。 dogfood loop の rebuild → restart を高速化する目的 ((γ) 設計)。
+    if let Some(p) = std::env::var_os("VP_APP_BIN") {
+        let pb = PathBuf::from(p);
+        if pb.is_file() {
+            return Some(pb);
+        }
+    }
     if let Some(p) = find_in_path("vp-app") {
         return Some(p);
     }
