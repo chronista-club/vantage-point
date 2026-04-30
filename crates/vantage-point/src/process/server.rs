@@ -960,18 +960,31 @@ pub async fn run_world(port: u16) -> Result<()> {
 
 /// Phase 5-D: dual-stack TCP listener (IPv4 + IPv6 同 port)。
 ///
-/// - `[::]` (IPv6 wildcard) に bind ─ macOS / Linux は default で v6only=false なので IPv4 client
-///   (`127.0.0.1:port`) も IPv4-mapped IPv6 経由で受け取れる
-/// - これで `127.0.0.1:port` と `[::1]:port` の両方の client が同じ listener に届く
-/// - **Windows 注意**: default で `IPV6_V6ONLY=true` のため IPv4 client が届かない。
-///   tokio `TcpSocket` には `set_only_v6` API が無いため、 Windows サポート時は socket2 crate
-///   経由で setsockopt(IPV6_V6ONLY, 0) する必要あり。 現在は macOS / Linux のみ正しく動く。
+/// - `[::]` (IPv6 wildcard) に bind し、 IPV6_V6ONLY を明示 false にすることで
+///   `127.0.0.1:port` と `[::1]:port` の両方の client が同じ listener に届く。
+/// - **Windows 必須**: Windows は default で `IPV6_V6ONLY=true` のため、 これを明示
+///   false に setsockopt しないと IPv4 client (vp-app の `http://127.0.0.1:32000` 等) が
+///   接続不能になる。 macOS / Linux は default で false だが、 platform 差異を消すため
+///   全 OS で明示設定する。 tokio の `TcpSocket` API には `set_only_v6` が無いため
+///   `socket2` 経由で raw socket option を叩く。
 ///
 /// 関連: SP register が `http://[::1]:32000` で TheWorld に register していた箇所が
 ///   旧 `0.0.0.0:port` listen で connection refused していた問題の根治。
 async fn bind_dual_stack(port: u16) -> Result<tokio::net::TcpListener> {
+    use socket2::{Domain, Protocol, Socket, Type};
+
     let addr = SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, port, 0, 0);
-    Ok(tokio::net::TcpListener::bind(addr).await?)
+    let socket = Socket::new(Domain::IPV6, Type::STREAM, Some(Protocol::TCP))?;
+    // IPV6_V6ONLY=0 — IPv4 client も IPv4-mapped IPv6 経由で受け付ける (cross-platform で明示)
+    socket.set_only_v6(false)?;
+    // tokio は non-blocking 必須
+    socket.set_nonblocking(true)?;
+    // SO_REUSEADDR は port reuse 用、 LISTEN backlog は default 128
+    socket.set_reuse_address(true)?;
+    socket.bind(&addr.into())?;
+    socket.listen(128)?;
+    let std_listener: std::net::TcpListener = socket.into();
+    Ok(tokio::net::TcpListener::from_std(std_listener)?)
 }
 
 /// Phase 5-D: Lane lifecycle monitor — periodic task that detects Lane の child process が後で

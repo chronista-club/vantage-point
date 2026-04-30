@@ -97,6 +97,10 @@ mdns-sd = "0.18"
 hostname = "0.4"
 libc = "0.2.178"
 
+# Low-level socket control (IPV6_V6ONLY=0 を Windows でも明示設定するために必要。
+# tokio::net::TcpSocket には set_only_v6 が無いので socket2 経由で setsockopt する)
+socket2 = { version = "0.6", features = ["all"] }
+
 # TLS (QUIC サーバーの CryptoProvider 初期化用)
 rustls = { version = "0.23", features = ["aws-lc-rs"] }
 
