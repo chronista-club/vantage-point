@@ -422,6 +422,11 @@ body{overflow:hidden;}
     }
     // OSC 9 = `9;<msg>` (無印 iTerm2 notify) or iTerm2 拡張 `9;<subcode>;<args>` (subcode 9=cwd reporting 等) の混在。
     //  先頭 segment が pure 数字なら subcode 形式と判定する。
+    //  注意 (review F-233-1): `9;hello world` のような pure 数字始まり plain notify の case は
+    //  subcode="9" 扱い になる ambiguity がある。 これは dogfood log のみへの影響で、
+    //  cc は OSC 9 を emit していない (PR #221 / #233 dogfood で観測ゼロ) ため実害なし。
+    //  別 emitter が乗ってきた段階で iTerm2 既知 subcode (1 / 2 / 9 / 50 / 51 等) の whitelist
+    //  に絞るか、 観察 log にフラグ立てるかを再検討する。
     function parseOsc9(payload) {
       const semi = payload.indexOf(';');
       if (semi < 0) return { subcode: null, rest: payload };
