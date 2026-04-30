@@ -493,6 +493,20 @@ body{overflow:hidden;}
       console.warn('[xterm:' + address + '] OSC handler registration failed:', e);
     }
 
+    // ===== window title (OSC 0 / 2) capture =====
+    // xterm.js は OSC 0 (icon + title) と OSC 2 (title) を内部で parse して onTitleChange event を fire する。
+    // dogfood 仮説: cc が `/rename` 後に session name を window title として emit していれば、
+    //  この listener で `osc-handler-debug-logging` 等の renamed value が拾える。
+    //  もし fire しなければ session JSONL file watch (~/.claude/projects/<encoded-cwd>/...) の fallback path 検討。
+    try {
+      term.onTitleChange((title) => {
+        console.log('[term-title] lane=' + address + ' title=' + JSON.stringify(title));
+        dbg('[term-title:' + address + '] ' + JSON.stringify(title));
+      });
+    } catch (e) {
+      console.warn('[xterm:' + address + '] onTitleChange listener registration failed:', e);
+    }
+
     // ===== WebSocket: SP に直接接続 (Phase 2.5: Rust 側 mpsc 中継を撤去) =====
     // URL: ws://127.0.0.1:<sp_port>/ws/terminal?lane=<address>&cols=&rows=
     //
