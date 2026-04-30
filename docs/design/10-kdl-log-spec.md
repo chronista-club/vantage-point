@@ -56,8 +56,8 @@ Layer 1 source  → Layer 2 aggregator (DB)  → Layer 3 viewer (tail / TUI / Ca
 
 | component | emission site (現状) | 現状の format | v0 移行後 |
 |-----------|---------------------|--------------|-----------|
-| **daemon** (`vp daemon` / `vp world`) | `crates/vantage-point/src/cli.rs:398-436` (`init_tracing`) | `tracing_subscriber::fmt()` default — `2026-04-30T... INFO target Registry: SP '...' 登録` | `KdlFormatter` (本 spec) を `vantage-core` 経由で適用 |
-| **vp-app** (Mac GUI) | `crates/vp-app/src/log_format.rs:38-81` (`KdlFormatter`) + `crates/vp-app/src/app.rs:2159` で layer 設定 | KDL **風** 1-line — `info ts="..." target="..." key=val "msg"` (kdl-rs 未検証) | 同 `KdlFormatter` を `vantage-core` 経由で reuse、 round-trip 検証あり |
+| **daemon** (`vp daemon` / `vp world`) | `crates/vantage-point/src/cli.rs:346-437` (`init_tracing`) | `tracing_subscriber::fmt()` default — `2026-04-30T... INFO target Registry: SP '...' 登録` | `KdlFormatter` (本 spec) を `vantage-core` 経由で適用 |
+| **vp-app** (Mac GUI) | `crates/vp-app/src/log_format.rs:36-82` (`KdlFormatter`) + `crates/vp-app/src/app.rs:2159` で layer 設定 | KDL **風** 1-line — `info ts="..." target="..." key=val "msg"` (kdl-rs 未検証) | 同 `KdlFormatter` を `vantage-core` 経由で reuse、 round-trip 検証あり |
 | **project SP** (`vp start` のサーバ本体) | `crates/vantage-point/src/cli.rs:346` (`init_tracing` を共有、 別 process として起動) | daemon と同じく `tracing_subscriber::fmt()` default | 同 `KdlFormatter` を適用 |
 
 > 現状、 daemon と project SP は同じ `init_tracing` を呼ぶが、 ファイル名は分かれる: daemon = `~/Library/Logs/Vantage/daemon.kdl.log`、 project SP = `~/Library/Logs/Vantage/project-{slug}.kdl.log` (architectural canon § log file 命名)。 中身が plain tracing なのに `.kdl.log` を名乗っているのは misleading で、 これも本 spec が解消する。
@@ -169,9 +169,29 @@ mandatory 以外で **慣習的に使う** field を予約する。 これらは
 
 source-specific な field は **prefix なしで flatten** する (例: OSC 99 の `i` / `d` / `p` / `a` / `u`)。 名前衝突は同一 source 内で起きないので prefix 不要。 cross-source で衝突する可能性のある名前 (`port` 等) は **`event` で文脈を明示**することで区別する。
 
+OSC 99 の field 値は kitty spec に従う:
+
+| key | 型 / 取り得る値 | 意味 |
+|-----|---------------|------|
+| `i` | string (typically integer-like, e.g. `"211"`) | notification ID (multi-chunk 結合 / replace / dismiss キー) |
+| `d` | i64 (`0` = cont / `1` = final、 default `1`) | done flag |
+| `p` | string (`"title"` / `"body"` / `"close"` / `"icon"` / `"?"` / `"alive"` / `"buttons"`) | payload type (default `"title"`) |
+| `a` | string (`"focus"` / `"report"` / `"-"`、 default `"focus"`) | click action |
+| `u` | i64 (`0` low / `1` normal / `2` critical) | urgency |
+
+例 (cc が input 待ちで emit する典型 chunk、 OSC payload `i=211:d=1:a=focus;` 由来):
+
 ```kdl
-debug id="..." ts="..." source="vp-app" target="vp_app::terminal::osc" event="osc99.received" lane="vantage-point/lead" i="bell" d="claude awaiting input" p=33000 a="vantage-point" u="claude" "OSC 99 metadata received"
+debug id="01J6N9GB12V0Y7K6N7Q3M9D6FA9" ts="2026-05-01T07:42:11.345Z" source="vp-app" target="vp_app::terminal::osc" event="osc99.received" lane="vantage-point/lead" i="211" d=1 a="focus" "OSC 99 final chunk"
 ```
+
+multi-chunk のうち title chunk (`i=211:d=0:p=title;Claude Code`) は positional `msg` に value を載せる:
+
+```kdl
+debug id="01J6N9GB10V0Y7K6N7Q3M9D6FA7" ts="2026-05-01T07:42:11.234Z" source="vp-app" target="vp_app::terminal::osc" event="osc99.received" lane="vantage-point/lead" i="211" d=0 p="title" "Claude Code"
+```
+
+> field 値の規約は PR #233 (`mako/osc-debug-keys`) の `parseOsc99` 実装と本 doc § 5.2 で **常に揃える**。 dogfood で cc が新 metadata key (`t=` semantic type tag 等) を emit してくることが判明したら、 spec_version を bump せず § 5.1 / 5.2 に additive で追加する (§ 5.3 拡張ルール参照)。
 
 ### 5.3 拡張ルール
 
@@ -291,7 +311,7 @@ stage 2 の実装には **round-trip test を必須**とする:
 
 ### 9.2 escape rule (formatter 側責務)
 
-`crates/vp-app/src/log_format.rs:156-174` の既存 `kdl_string` 関数が正しい方向性なので、 vantage-core 昇格時に再利用する:
+`crates/vp-app/src/log_format.rs:156-175` の既存 `kdl_string` 関数が正しい方向性なので、 vantage-core 昇格時に再利用する:
 
 | 入力文字 | 出力 |
 |---------|------|
@@ -351,6 +371,7 @@ stage 2 PR が本 spec に準拠しているかを判定する acceptance criter
 - [ ] `--legacy-format` / `VP_LOG_FORMAT=legacy` で旧 tracing default に fallback できる
 - [ ] § 3 の全 example が round-trip test fixture に含まれる
 - [ ] § 8.3 の grep migration ガイドが実 file で動作する (整合性確認)
+- [ ] **daemon tracing init の `with_target` 不変性を確認**: 既存 `crates/vantage-point/src/cli.rs` の `init_tracing` は `with_target(false)` で初期化されているが、 `KdlFormatter::format_event` は `meta.target()` を直接呼ぶため subscriber-level の `with_target` flag に影響されず target field は emit される。 stage 2 で formatter を差し替える際に、 `with_target` の値を変更せずに target が出続けることを test で assert する (regression 防止)
 
 ---
 
@@ -358,7 +379,7 @@ stage 2 PR が本 spec に準拠しているかを判定する acceptance criter
 
 - **architectural canon**: creo memory `mem_1CaSiJkD9HATDY2srrv6D4` (2026-04-27 「VP Observability Stack 設計決定」) — 本 doc の上位 spec
 - **execution snapshot**: creo memory `mem_1CaaLAtsYRhWgpPhnrvaVd` (2026-05-01) — stage 0-4 の実行計画、 本 doc は stage 1 の deliverable
-- **既存 KdlFormatter**: `crates/vp-app/src/log_format.rs:38-81` — 出発点となる KDL 風 formatter
+- **既存 KdlFormatter**: `crates/vp-app/src/log_format.rs:36-82` — 出発点となる KDL 風 formatter
 - **daemon tracing init**: `crates/vantage-point/src/cli.rs:346-437` — stage 2 で formatter 差し替えする箇所
 - **PR #233** (`mako/osc-debug-keys`): OSC 99 metadata structured key=value debug log — 本 viewer 需要の発火源、 § 5.2 の OSC example はここから
 - **VP-77 Lane-as-Process 規約**: `lane` field 値の address 体系 (`{project}/{role}`)
