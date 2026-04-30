@@ -58,6 +58,9 @@ pub enum LaneStand {
 }
 
 /// Lane の state machine 状態 (Phase A4-2b では Running 固定で pre-populate)
+///
+/// 注意: 「ccws disk dir 存在 + Pane 不在」 は **Lane state ではなく `pid: None` で表現する** 設計。
+/// Active/Inactive 概念は Project 集約 (sidebar 側 client-side computed) として扱い、 Lane state には混ぜない。
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LaneState {
@@ -227,8 +230,113 @@ impl LanePool {
         pool
     }
 
+    /// Phase 5-E (i): SP 起動時に ccws workers_dir をスキャンし、
+    /// 既存の Worker dir を **HD で auto-spawn** して Pool に登録する。
+    ///
+    /// user 指示 (2026-04-30): 「ワーカーが起動してないので、 default で HD ワーカーが起動するように」。
+    /// disk-only Lane (pid:null) を見せて Activate UI を別 sprint に切るのではなく、 起動時点で
+    /// 全 Worker を Active 状態にしておき、 sidebar クリックでそのまま切替できる UX を実現する。
+    ///
+    /// 既存 entry (= 同 addr が既に居る) は skip。 spawn 失敗 (= ccws workspace 破損 等) は
+    /// graceful degrade で `Dead` 状態 + pid:None で record、 routes/lanes.rs の disk-scan
+    /// list 補完が pid:null Lane として表示する fallback path に乗る。
+    ///
+    /// **TODO (PR #228 review #1, latency 線形悪化)**: 内部の `spawn_with_fallback` が Worker
+    /// 1 本ごとに `EARLY_EXIT_CHECK_MS = 800ms` の `std::thread::sleep` で tokio executor を
+    /// ブロックする。 N 本 Worker → SP 起動が N×800ms 直列待ちになる。 dogfood (≤3 本) では
+    /// 顕在化しないが、 Worker 5+ で SP 起動 4 秒超え。 次 sprint で `tokio::task::spawn_blocking`
+    /// で並列化、 もしくは AppState 構築後に背景タスク化して `lane_pool` を後追い update する
+    /// 方式に切り替える (起動直後の `/api/lanes` は一時空 → 既存 disk-scan fallback でカバー)。
+    pub fn populate_workers_from_disk(&mut self, project_id: &str, project_dir: &std::path::Path) {
+        let Some(repo_name) = project_dir.file_name().and_then(|s| s.to_str()) else {
+            return;
+        };
+        if repo_name.is_empty() {
+            return;
+        }
+        let workers = crate::ccws::commands::list_workers_for_repo(repo_name);
+        for entry in workers {
+            let addr = LaneAddress::worker(project_id, &entry.name);
+            if self.lanes.contains_key(&addr) {
+                continue;
+            }
+            let stand = LaneStand::default(); // HD
+            let cmd = crate::process::stand_spawner::build_stand_command(
+                stand,
+                std::path::Path::new(&entry.path),
+            );
+            let (state, pid) = match crate::process::stand_spawner::spawn_with_fallback(
+                &entry.path,
+                &cmd,
+                80,
+                24,
+            ) {
+                Ok((slot, _rx)) => {
+                    let pid = slot.pid();
+                    tracing::info!(
+                        "Worker Lane auto-spawned (Phase 5-E i): addr={} cwd={} pid={}",
+                        addr,
+                        entry.path,
+                        pid
+                    );
+                    self.pty_slots
+                        .insert(addr.clone(), std::sync::Mutex::new(slot));
+                    (LaneState::Running, Some(pid))
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Worker Lane auto-spawn failed (graceful degrade to Dead): addr={} cwd={} err={}",
+                        addr,
+                        entry.path,
+                        e
+                    );
+                    (LaneState::Dead, None)
+                }
+            };
+            let info = LaneInfo {
+                address: addr.clone(),
+                kind: LaneKind::Worker,
+                name: Some(entry.name.clone()),
+                state,
+                stand,
+                created_at: chrono::Utc::now().to_rfc3339(),
+                pid,
+                cwd: entry.path,
+                // 起動時点では git 状態取得しない (list_handler 側で必要時に enrich される)。
+                worker_status: None,
+            };
+            self.lanes.insert(addr, info);
+        }
+    }
+
+    /// Lane 一覧を **Lead 先頭、 続いて Worker を生成順 (created_at 昇順)** で返す。
+    ///
+    /// 内部 `lanes` は `HashMap` のため iter 順は non-deterministic (process ごとに異なる
+    /// hash seed)。 sidebar の表示要件 「Root/Lead が一番上、 その下は生成時順」 を満たす
+    /// ため、 list() で sort して contract に order を含める。
+    ///
+    /// `created_at` は ISO 8601 文字列 (UTC fixed) なので String::cmp で時刻順が取れる
+    /// (lexicographic = chronological)。 同 ms 生成 (= populate ループ内連続 spawn) の
+    /// tie-break は Lane name で安定 sort。 N≤10 想定で O(N log N) cost 無視可。
+    ///
+    /// 別案 (IndexMap で insertion order を data 構造に内蔵) は VP-issue 未起票。
+    /// 「pty_slots も順序欲しい」「bulk import で order 崩れる」 等の動機が出たら再検討。
     pub fn list(&self) -> Vec<LaneInfo> {
-        self.lanes.values().cloned().collect()
+        let mut v: Vec<LaneInfo> = self.lanes.values().cloned().collect();
+        v.sort_by(|a, b| {
+            use std::cmp::Ordering;
+            match (a.kind, b.kind) {
+                (LaneKind::Lead, LaneKind::Worker) => Ordering::Less,
+                (LaneKind::Worker, LaneKind::Lead) => Ordering::Greater,
+                _ => a.created_at.cmp(&b.created_at).then_with(|| {
+                    a.name
+                        .as_deref()
+                        .unwrap_or("")
+                        .cmp(b.name.as_deref().unwrap_or(""))
+                }),
+            }
+        });
+        v
     }
 
     pub fn get(&self, addr: &LaneAddress) -> Option<&LaneInfo> {

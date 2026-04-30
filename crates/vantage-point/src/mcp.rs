@@ -243,6 +243,26 @@ pub struct SwitchLaneParams {
     pub lane: String,
 }
 
+/// Parameters for the add_worker tool (R5: ccws clone + Worker Lane spawn).
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct AddWorkerParams {
+    /// Worker name. Used as the `name` field of the Lane address (`<project>/worker/<name>`).
+    #[schemars(
+        description = "Worker name (人間可読の短い slug、 例: 'feat-api', 'sub'). Lane address の `<project>/worker/<name>` 部分になる。"
+    )]
+    pub name: String,
+    /// Optional branch. If omitted, server auto-derives `<git-user>/<sanitized-name>`.
+    #[schemars(
+        description = "ccws clone する branch 名 (省略可)。 省略時は server が `git config user.name` から `<user>/<name>` を auto-derive。"
+    )]
+    pub branch: Option<String>,
+    /// Optional Lane Stand. Defaults to "heavens_door".
+    #[schemars(
+        description = "Lane Stand 種類: 'heavens_door' (default、 Claude CLI) or 'the_hand' (shell)。"
+    )]
+    pub stand: Option<String>,
+}
+
 /// Parameters for the eval_ruby tool
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct EvalRubyParams {
@@ -935,6 +955,73 @@ impl VantageMcp {
                 None,
             )),
         }
+    }
+
+    /// R5: 現 project の SP に Worker Lane を新規作成 (ccws clone + PtySlot spawn)。
+    ///
+    /// - cwd ベースで自動的に local SP を解決 (`self.process_url`)。
+    /// - branch 省略時は server 側で `<git-user>/<sanitized-name>` を auto-derive。
+    /// - 名前重複は HTTP 409 CONFLICT、 ccws clone 失敗は 500 で返ってくる。
+    #[tool(
+        description = "Create a new Worker Lane in the current project (ccws clone + spawn). Resolves the local SP via cwd. If `branch` is omitted, the server auto-derives `<git-user>/<sanitized-name>`. Returns the Lane address `<project>/worker/<name>` on success. Use this to spawn isolated parallel work (e.g. feature branches, exploratory experiments)."
+    )]
+    async fn add_worker(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<AddWorkerParams>,
+    ) -> Result<CallToolResult, McpError> {
+        if params.name.trim().is_empty() {
+            return Err(McpError::invalid_params(
+                "name は必須です (空文字不可)".to_string(),
+                None,
+            ));
+        }
+        let mut body = serde_json::json!({
+            "kind": "worker",
+            "name": params.name,
+        });
+        if let Some(b) = params.branch.as_ref().filter(|s| !s.trim().is_empty()) {
+            body["branch"] = serde_json::Value::String(b.clone());
+        }
+        if let Some(s) = params.stand.as_ref().filter(|s| !s.trim().is_empty()) {
+            body["stand"] = serde_json::Value::String(s.clone());
+        }
+        let url = format!("{}/api/lanes", self.process_url.lock().await);
+        let resp = self
+            .client
+            .post(&url)
+            .json(&body)
+            .timeout(Duration::from_secs(60)) // ccws clone は 数 sec ~ 数 10 sec かかる
+            .send()
+            .await
+            .map_err(|e| McpError::internal_error(format!("SP に到達できません: {}", e), None))?;
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            // server からのエラー文を素直に伝える (CONFLICT = 名前重複等)
+            return Err(McpError::internal_error(
+                format!("SP /api/lanes {}: {}", status, text),
+                None,
+            ));
+        }
+        // 成功 body は LaneInfo JSON。 address だけ抽出して短い human 向け text を返す。
+        let parsed: serde_json::Value =
+            serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
+        let addr = parsed
+            .get("address")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .or_else(|| {
+                parsed.get("address").and_then(|a| {
+                    let proj = a.get("project")?.as_str()?;
+                    let nm = a.get("name")?.as_str()?;
+                    Some(format!("{}/worker/{}", proj, nm))
+                })
+            })
+            .unwrap_or_else(|| format!("worker/{}", params.name));
+        let cwd = parsed.get("cwd").and_then(|v| v.as_str()).unwrap_or("?");
+        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+            format!("Worker Lane created: {}\n  cwd: {}", addr, cwd),
+        )]))
     }
 
     /// Show content in the browser viewer

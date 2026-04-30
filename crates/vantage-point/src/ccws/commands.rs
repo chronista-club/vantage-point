@@ -219,6 +219,69 @@ pub fn list_workers() -> Result<(), String> {
     Ok(())
 }
 
+/// disk 上で発見された Worker 環境 1 件 (ccws Worker dir の structured view、 SP /api/lanes 用)。
+///
+/// PtySlot 起動の有無は問わない (= disk 存在のみ示す)。 lanes.rs:list_handler で
+/// in-memory LanePool に居ない Worker を `LaneState::Inactive` として merge する時の中間 type。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct InactiveWorkerEntry {
+    /// repo prefix を剥がした worker 名 (`<repo_name>-<name>` → `<name>`)
+    pub name: String,
+    /// 絶対 path
+    pub path: String,
+    /// `git branch --show-current` の結果。 取れない時 None
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+}
+
+/// repo_name の prefix を持つ Worker dir を `workers_dir` から走査して返す (SP /api/lanes 用)。
+///
+/// 「基本は通らない防御パス」: 通常 ccws clone は POST /api/lanes 経由で生成され、 同 session 内なら
+/// LanePool に登録されている。 ただし vp-app crash 後の残骸 / 別 session での `ccws new` 等で
+/// disk に存在するが LanePool に居ない Worker が出ることがあり、 それを sidebar に inactive 状態で
+/// surface するため。 click で activate (= POST /api/lanes に cwd 指定で attach) する想定。
+///
+/// `workers_dir` 不在時は空 Vec (error にしない、 防御パスのため fail-soft)。
+/// `repo_name` empty 時は全 dir に match してしまうため空 Vec。
+pub fn list_workers_for_repo(repo_name: &str) -> Vec<InactiveWorkerEntry> {
+    if repo_name.is_empty() {
+        return Vec::new();
+    }
+    let Ok(workers_dir) = config::workers_dir() else {
+        return Vec::new();
+    };
+    if !workers_dir.exists() {
+        return Vec::new();
+    }
+    let Ok(entries) = fs::read_dir(&workers_dir) else {
+        return Vec::new();
+    };
+
+    let prefix = format!("{repo_name}-");
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let dir_name = entry.file_name();
+        let dir_name = dir_name.to_string_lossy();
+        let Some(stripped) = dir_name.strip_prefix(&prefix) else {
+            continue;
+        };
+        // worker 名空 (= "<repo_name>-" だけの dir) は無視
+        if stripped.is_empty() {
+            continue;
+        }
+        out.push(InactiveWorkerEntry {
+            name: stripped.to_string(),
+            path: path.to_string_lossy().into_owned(),
+            branch: get_branch(&path),
+        });
+    }
+    out
+}
+
 /// Print the path to a worker
 pub fn worker_path(name: &str) -> Result<(), String> {
     let workers_dir = config::workers_dir()?;

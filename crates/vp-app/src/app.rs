@@ -93,11 +93,23 @@ pub const CREO_TOKENS_CSS: &str = include_str!("../assets/creo-tokens.css");
 /// Phase 5-C: sidebar HTML を `vp-asset://app/sidebar.html` で配信するための extra entry。
 /// font 群は `web_assets::FONT_ASSETS` 側で揃ってるので、 ここは sidebar 固有の HTML 1 個のみ。
 /// `web_assets::serve()` が FONT_ASSETS と chain して両方 lookup する。
-const SIDEBAR_ASSETS: &[(&str, &[u8], &str)] = &[(
-    "app/sidebar.html",
-    SIDEBAR_HTML.as_bytes(),
-    "text/html; charset=utf-8",
-)];
+/// Phase E1 (R5): sidebar 用 iconify-icon Web Component bundle。
+/// crates/vp-app/sidebar-bundle/ で esbuild build → assets/sidebar-icons.bundle.js 生成、
+/// SIDEBAR_HTML 内 `<script src="vp-asset://app/sidebar-icons.bundle.js">` で load。
+const SIDEBAR_ICONS_BUNDLE: &[u8] = include_bytes!("../assets/sidebar-icons.bundle.js");
+
+const SIDEBAR_ASSETS: &[(&str, &[u8], &str)] = &[
+    (
+        "app/sidebar.html",
+        SIDEBAR_HTML.as_bytes(),
+        "text/html; charset=utf-8",
+    ),
+    (
+        "app/sidebar-icons.bundle.js",
+        SIDEBAR_ICONS_BUNDLE,
+        "application/javascript; charset=utf-8",
+    ),
+];
 
 const SIDEBAR_HTML: &str = concat!(
     r#"<!doctype html>
@@ -109,10 +121,11 @@ const SIDEBAR_HTML: &str = concat!(
     r#"</style><style>"#,
     include_str!("../assets/nerd-font.css"),
     r#"</style><style>
-  /* Phase 5-D: sidebar の base font を sans-serif に切替 (--typography-family-sans = Creo Sans → -apple-system fallback)。
+  /* R5 試着 (2026-04-30): sidebar font を mono-corporate (IBM Plex Mono / Adwaita Mono) に切替検証。
+     旧 Phase 5-D: sidebar の base font を sans-serif に切替 (--typography-family-sans = Creo Sans → -apple-system fallback)。
      project name / lane label の scan しやすさ向上 (HIG 準拠)。 monospace は branch / port / address 等の
      technical data 表示でのみ局所使用 (icon は VPMono 直指定 / .nf-icon class で維持)。 */
-  html,body{margin:0;height:100%;background:var(--color-surface-bg-subtle);color:var(--color-text-primary);font-family:var(--typography-family-sans);font-size:12px;line-height:1.4;overflow:hidden;}
+  html,body{margin:0;height:100%;background:var(--color-surface-bg-subtle);color:var(--color-text-primary);font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.4;overflow:hidden;}
   body{display:flex;flex-direction:column;height:100%;}
 
   /* Projects accordion area (flex 1、 scroll) */
@@ -189,22 +202,43 @@ const SIDEBAR_HTML: &str = concat!(
   .vp-clone-inline button.primary:hover{background:var(--color-brand-primary);color:var(--color-surface-bg-base);}
 
   /* creo-accordion を sidebar 用に override (default の bordered card 風 → flush) */
-  .processes-section .creo-accordion{margin:0 6px 2px;background:transparent;border:none;border-radius:var(--radius-sm,6px);overflow:visible;}
+  /* R5 (2026-04-30): project 行は sidebar 幅にフルフィット (horizontal margin / radius を撤去)。 */
+  .processes-section .creo-accordion{margin:0;background:transparent;border:none;border-radius:0;overflow:visible;}
+  /* R5 (2026-04-30): project 間 divider — sibling combinator で 最初を skip、 二重描画回避。 */
+  .processes-section .creo-accordion + .creo-accordion{border-top:1px solid var(--color-surface-border,#1f2233);}
+  /* R5 (2026-04-30): Lane 間 divider — project 間より薄め (transparent 60% mix)、 sibling combinator で最初を skip。 */
+  .vp-lane-row + .vp-lane-row{border-top:1px solid color-mix(in oklch, var(--color-surface-border,#1f2233), transparent 60%);}
   /* Phase 3-D: project title は 13 → 12px に統一 (sidebar base と揃える)、 weight 500 で emphasis */
-  .processes-section .creo-accordion-summary{padding:6px 8px;min-height:auto;font-size:12px;border-radius:var(--radius-sm,6px);}
+  /* R5 (2026-04-30): project font 12px → 13px に増量 (Lane 行 12px との subtle hierarchy)。 */
+  .processes-section .creo-accordion-summary{padding:6px 8px;min-height:auto;font-size:13px;border-radius:0;}
   .processes-section .creo-accordion-summary:hover{background:var(--color-surface-bg-emphasis);}
   /* Phase 5-D: active project (= active lane を含む project) の summary に左 border accent + subtle bg。
      HIG: 全 navigation level で current location を可視化。 */
-  .processes-section .creo-accordion-summary.vp-project-active{box-shadow:inset 2px 0 0 0 var(--color-brand-primary);background:var(--color-brand-primary-subtle);}
-  .processes-section .creo-accordion-summary::before{font-size:9px;color:var(--color-text-tertiary);width:10px;}
+  /* R5 (2026-04-30): selection bar は Lane 側 (右端) に移動。 project は subtle bg のみで context tint を残す。 */
+  .processes-section .creo-accordion-summary.vp-project-active{background:var(--color-brand-primary-subtle);}
+  /* Phase 5-E (2026-04-30): Project 集約 Inactive = 配下 Lane に pid:null が 1 つでもある (= 全 Pane 揃ってない)。
+     project icon と title を dim、 hover で復帰。 active class が付いてる時はそちら優先。 */
+  .processes-section .creo-accordion-summary.vp-project-inactive:not(.vp-project-active) .vp-proj-icon{opacity:0.55;}
+  .processes-section .creo-accordion-summary.vp-project-inactive:not(.vp-project-active) .creo-accordion-title{color:color-mix(in oklch, var(--color-text-primary), transparent 30%);}
+  /* R5 (2026-04-30): Lane list area を「気持ち明るく」 — Project header (subtle) より step up、 emphasis ほど強くない中間 (oklch 補間 25%)。 sidebar 幅にフルフィット (radius 0)。 */
+  .processes-section .creo-accordion-content{background:color-mix(in oklch, var(--color-surface-bg-subtle), var(--color-surface-bg-emphasis) 25%);border-radius:0;padding:2px 0;}
+  /* R5 (2026-04-30): chevron ▸/▾ 非表示。 ph:folder/folder-open icon が expand state を視覚表現するため redundant。 */
+  .processes-section .creo-accordion-summary::before{display:none;}
   .processes-section .creo-accordion-title{font-weight:500;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .processes-section .creo-accordion-content{padding:2px 0 4px 18px;}
   .processes-section .creo-accordion-content > * + * {margin-top:0;}
 
   /* Architecture v4: Lane row (Project → Lane → Stand 階層の中段) */
-  .vp-lane-row{display:flex;align-items:center;gap:6px;padding:5px 8px 5px 14px;border-radius:var(--radius-sm,6px);cursor:pointer;transition:background .1s ease;font-size:12px;}
+  /* R5 (2026-04-30): Lane 行も project block と整合的に角ばった (radius 0)。 */
+  .vp-lane-row{display:flex;align-items:center;gap:6px;padding:5px 8px 5px 14px;border-radius:0;cursor:pointer;transition:background .1s ease;font-size:12px;}
   .vp-lane-row:hover{background:var(--color-surface-bg-emphasis);}
-  .vp-lane-row.active{background:var(--color-brand-primary-subtle);color:var(--color-brand-primary);font-weight:500;}
+  /* R5 (2026-04-30): active Lane (= 表示中の FirstResponder) を右端 2px の accent bar で表現。 */
+  .vp-lane-row.active{background:var(--color-brand-primary-subtle);color:var(--color-brand-primary);font-weight:500;box-shadow:inset -2px 0 0 0 var(--color-brand-primary);}
+  /* Phase 5-E (2026-04-30): Pane (HD) 不在 = pid:null の Lane (= ccws disk artifact) を dim 表示。
+     Active/Inactive 概念は Project 集約だが、 個別行も視覚的に区別する。 italic で「待機中」感を出す。 */
+  .vp-lane-row.inactive{color:color-mix(in oklch, var(--color-text-secondary), transparent 45%);font-style:italic;}
+  .vp-lane-row.inactive .vp-stand-icon{opacity:0.55;}
+  .vp-lane-row.inactive .worker-meta{opacity:0.7;}
   /* Phase 5-C polish: var(--typography-family-icon) は specificity で .nf-icon を上書きするため
      direct 'VPMono' 宣言に固定。 width:18px は Lane row レイアウト固有なので保持。 */
   .vp-lane-row .icon{width:18px;text-align:center;font-size:12px;font-family:'VPMono',monospace;}
@@ -248,6 +282,8 @@ const SIDEBAR_HTML: &str = concat!(
   .vp-add-worker-form button:hover{background:var(--color-surface-bg-emphasis);color:var(--color-text-primary);}
   .vp-add-worker-form button[data-variant="primary"]{background:var(--color-brand-primary-subtle);color:var(--color-brand-primary);border-color:var(--color-brand-primary-subtle);}
   .vp-add-worker-form button[data-variant="primary"]:hover{background:var(--color-brand-primary);color:var(--color-surface-bg-base);}
+  .vp-add-worker-form button[disabled]{opacity:.5;cursor:wait;}
+  .vp-add-worker-error{color:var(--color-status-error,#ff6b6b);font-size:10px;line-height:1.35;padding:2px 4px;word-break:break-word;}
 
   .empty,.loading,.error{padding:var(--spacing-sm);color:var(--color-text-tertiary);font-style:italic;font-size:12px;}
 
@@ -335,6 +371,9 @@ const SIDEBAR_HTML: &str = concat!(
       <button type="button" data-action="ok" data-variant="danger">Restart</button>
     </div>
   </dialog>
+<!-- Phase E1 (R5): iconify-icon Web Component を register し、 SIDEBAR 内で
+     <iconify-icon icon="ph:compass"> 等が描画可能になる。 SolidJS 不要、 vanilla DOM API で使う。 -->
+<script src="vp-asset://app/sidebar-icons.bundle.js"></script>
 <script>"#,
     include_str!("../assets/nerd-font-loader.js"),
     r#"
@@ -352,6 +391,12 @@ const SIDEBAR_HTML: &str = concat!(
   //  full DOM rebuild (`root.innerHTML = ''`) で form の expanded class が消える問題を回避。
   //  Set 内に project path があれば `<vp-add-worker-form>` を expanded として再構成。
   const addWorkerOpen = new Set();
+  // R5: 失敗時 inline error 表示用 (path → error 文字列)。 success/cancel 時 delete。
+  const addWorkerErrors = new Map();
+  // R5: submit 中の form を disable するため pending 状態を track (path → bool)。
+  // また失敗後の再 submit に備え、 ユーザの入力値を保存しておく (path → {name, branch})。
+  const addWorkerPending = new Set();
+  const addWorkerInputs = new Map();
 
   // ipc 送信 wrapper (window.ipc は wry が提供)
   function send(msg) {
@@ -463,11 +508,8 @@ const SIDEBAR_HTML: &str = concat!(
         });
       }
 
-      const h = document.createElement('div');
-      h.className = 'vp-proc-section-header';
-      h.textContent = 'Currents';
-      root.appendChild(h);
-
+      // R5 (2026-04-30): "CURRENTS" section header を撤去 (sidebar 上部最初のリストは
+      // 自明に currents なので redundant、 spacing も他 dormant section header と差別化済)。
       // DnD container — drop position を data-drop-after で示すため container 単位で hover/drop 受ける
       const cur = document.createElement('div');
       cur.className = 'vp-currents-list';
@@ -525,8 +567,13 @@ const SIDEBAR_HTML: &str = concat!(
 
       const summary = document.createElement('summary');
       summary.className = 'creo-accordion-summary';
-      // Phase 5-C minimal: kind icon (⭐) は冗長 (accordion title だけで project と分かる) → 削除。
-      // state は Nerd Font 単色 glyph で右端に。
+      // R5 (2026-04-30): tree-view 風 project icon を左端に。 expand state で
+      // ph:folder (closed) ↔ ph:folder-open (open) を切替、 macOS Finder 系の親近感。
+      const projIcon = document.createElement('iconify-icon');
+      projIcon.className = 'icon vp-proj-icon';
+      projIcon.setAttribute('icon', p.expanded ? 'ph:folder-open' : 'ph:folder');
+      projIcon.style.cssText = 'margin-right:6px;color:var(--color-text-tertiary);';
+      summary.appendChild(projIcon);
       const title = document.createElement('span');
       title.className = 'creo-accordion-title';
       title.textContent = p.name;
@@ -544,11 +591,9 @@ const SIDEBAR_HTML: &str = concat!(
         send({t: 'process:restart', path: p.path});
       });
       summary.appendChild(restartBtn);
-      const stateBadge = document.createElement('span');
-      stateBadge.className = 'state';
-      stateBadge.style.cssText = 'margin-left:6px;';
-      stateBadge.innerHTML = stateGlyphHTML(p.state);
-      summary.appendChild(stateBadge);
+      // R5 (2026-04-30): Project header 右の state circle (○) を撤去。
+      // Lane 行 (.vp-lane-row .state) で state 表示済、 project header は冗長。
+      // 必要になったら summary に追記、 stateGlyphHTML(p.state) で再取得可能。
       proj.appendChild(summary);
 
       const content = document.createElement('div');
@@ -589,13 +634,20 @@ const SIDEBAR_HTML: &str = concat!(
           // 構成: [stand glyph (Nerd Font 単色)] [label] ... [state circle] [× (worker only)]
           // 旧 separate Stand child row は削除、 Stand 識別は 行頭 glyph で表現。
           const row = document.createElement('div');
-          row.className = 'vp-lane-row' + (isActive ? ' active' : '');
+          // Phase 5-E: Pane (HD) 不在 = pid:null は disk-only Lane (ccws workspace dir のみ)、 dim 表示。
+          //  isActive と inactive は排他ではない (active selection は user 側、 inactive は process state)。
+          const laneInactive = (lane.pid == null);
+          row.className = 'vp-lane-row' + (isActive ? ' active' : '') + (laneInactive ? ' inactive' : '');
           const isWorker = (lane.kind === 'worker') ||
             (lane.address && lane.address.kind === 'worker');
-          const standGlyph = STAND_GLYPH[lane.stand] || '';
-          const standIcon = document.createElement('span');
-          standIcon.className = 'icon nf-icon';
-          standIcon.textContent = standGlyph;
+          // Phase E1 (R5): Stand glyph を iconify-icon Web Component で描画 (Phosphor SVG)。
+          // state-driven weight: default = regular outline、 active = fill (中身塗りつぶし)。
+          // Phosphor naming convention は `${name}` / `${name}-fill` のペア (ph:book-open / ph:book-open-fill)。
+          const standBaseName = STAND_GLYPH[lane.stand] || '';
+          const standIconName = isActive && standBaseName ? standBaseName + '-fill' : standBaseName;
+          const standIcon = document.createElement('iconify-icon');
+          standIcon.className = 'icon vp-stand-icon' + (isActive ? ' vp-stand-icon-active' : '');
+          standIcon.setAttribute('icon', standIconName);
           standIcon.title = standDisplayName(lane.stand) || lane.stand || '';
           const label = document.createElement('span');
           label.className = 'label';
@@ -666,7 +718,11 @@ const SIDEBAR_HTML: &str = concat!(
             }
             if (hasContent) row.appendChild(meta);
           }
-          row.appendChild(stateMark);
+          // Phase 5-E: Inactive (pid:null = disk-only) Lane は Pane 不在のため、
+          //  state glyph (running 等の状態色) を出さない。 LaneState は default("running") で
+          //  埋まるが、 実体 (PtySlot) が無い以上 「running」 主張は嘘になる。
+          //  glyph 非表示 + row dim で 「Lane は在るが Pane は休眠」 を視覚化する。
+          if (!laneInactive) row.appendChild(stateMark);
           // Lane Lead Stand restart icon (Lead/Worker 共通、 hover で出現、 click → confirm dialog)
           //  destructive action (claude 等の child 強制 kill + respawn) なので
           //  showRestartDialog で OK/Cancel 1 step 挟む。
@@ -678,7 +734,9 @@ const SIDEBAR_HTML: &str = concat!(
             e.stopPropagation();
             showRestartDialog(p.path, addr);
           });
-          row.appendChild(restartLaneBtn);
+          // Phase 5-E: Inactive Lane は実 PTY を持たないため restart 操作の意味が無い。
+          //  Activate (= Pane spawn) は別 UI で扱う想定。
+          if (!laneInactive) row.appendChild(restartLaneBtn);
           // Phase 4-A: Worker のみ × button (即 delete、 confirm dialog なし — dogfooding speed 優先)
           if (isWorker) {
             const delBtn = document.createElement('span');
@@ -693,6 +751,11 @@ const SIDEBAR_HTML: &str = concat!(
           }
           row.addEventListener('click', (e) => {
             e.stopPropagation();
+            // Phase 5-E: Inactive Lane (pid:null) は SP 側に PtySlot が存在しない。
+            //  click → lane:select → SP の lanes_state.get_for_select で「lane not found」
+            //  → WS 1006 切断 → 500ms reconnect の無限 loop に入る。
+            //  Pane spawn (Activate) は将来別 UI で。 ここでは noop で逃がす。
+            if (laneInactive) return;
             send({t: 'lane:select', path: p.path, address: addr});
           });
           content.appendChild(row);
@@ -707,6 +770,19 @@ const SIDEBAR_HTML: &str = concat!(
         const projectIsActive = !!(activeAddr && lanes.some(l => laneAddressKey(l) === activeAddr));
         // Phase 5-D: project row 自体に active highlight を付ける (HIG: current location を全 level で示す)。
         if (projectIsActive) summary.classList.add('vp-project-active');
+        // Phase 5-E: Project 集約 Inactive 判定 = Worker lane に 1 つでも pid:null がある (= Pane 全部揃ってない)。
+        //  user 仕様: 「Active で、 Lane 上の Pane 全部動いてるか、 Inactive で、 Lane はあるけど Pane は動いてない」
+        //  active class が付いてる時は CSS 側で active 優先 (Inactive style は :not(.vp-project-active) で gate)。
+        //
+        //  PR #228 review fix (Moody Blues #3): Lead lane の pid:null (= Lead spawn 失敗) を含めて
+        //  inactive 化すると SP unhealthy と Worker 不在が同じ dim 表現になり区別できない。
+        //  ここでは Worker lane の pid:null のみを対象にする (Lead Dead は別 indicator、 別 issue)。
+        const projectInactive = lanes.some(l => {
+          if (l.pid != null) return false;
+          const k = l.kind || (l.address && l.address.kind);
+          return k === 'worker';
+        });
+        if (projectInactive) summary.classList.add('vp-project-inactive');
         if (projectIsActive) {
           const addWorker = document.createElement('div');
           addWorker.className = 'vp-add-worker';
@@ -717,16 +793,30 @@ const SIDEBAR_HTML: &str = concat!(
             '<span class="label">Add Worker</span>';
           const addForm = document.createElement('div');
           addForm.className = 'vp-add-worker-form';
+          // R5: 入力値を addWorkerInputs から復元 (失敗後の再 submit / re-render を跨ぐため)。
+          const savedInputs = addWorkerInputs.get(p.path) || {name: '', branch: ''};
+          const escAttr = (s) => String(s || '')
+            .replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+            .replace(/</g, '&lt;').replace(/>/g, '&gt;');
+          const isPending = addWorkerPending.has(p.path);
           addForm.innerHTML =
-            '<input type="text" class="creo-input" placeholder="worker name (例: feat-api)" data-field="name">' +
-            '<input type="text" class="creo-input" placeholder="branch (例: mako/feat-api)" data-field="branch">' +
+            '<input type="text" class="creo-input" placeholder="worker name (例: feat-api)" data-field="name" value="' + escAttr(savedInputs.name) + '">' +
+            '<input type="text" class="creo-input" placeholder="branch 任意 (省略時は <user>/<name> auto-derive)" data-field="branch" value="' + escAttr(savedInputs.branch) + '">' +
+            '<div class="vp-add-worker-error" data-role="error" style="display:none;"></div>' +
             '<div class="vp-add-worker-actions">' +
               '<button class="creo-btn" data-variant="secondary" data-size="sm" data-action="cancel">Cancel</button>' +
-              '<button class="creo-btn" data-variant="primary" data-size="sm" data-action="submit">Create</button>' +
+              '<button class="creo-btn" data-variant="primary" data-size="sm" data-action="submit"' + (isPending ? ' disabled' : '') + '>' + (isPending ? '作成中…' : 'Create') + '</button>' +
             '</div>';
           // Phase 5-D fix: form 開閉状態を addWorkerOpen Set に永続化。
           //  re-render で DOM 再生成されても、 Set に path があれば expanded を維持。
           if (addWorkerOpen.has(p.path)) addForm.classList.add('expanded');
+          // R5: 既存 error を表示 (再 render でも復元される)
+          const errorEl = addForm.querySelector('[data-role="error"]');
+          const currentError = addWorkerErrors.get(p.path);
+          if (errorEl && currentError) {
+            errorEl.textContent = currentError;
+            errorEl.style.display = 'block';
+          }
           addWorker.addEventListener('click', () => {
             addWorkerOpen.add(p.path);
             addForm.classList.add('expanded');
@@ -737,22 +827,64 @@ const SIDEBAR_HTML: &str = concat!(
           const submitBtn = addForm.querySelector('button[data-action="submit"]');
           const closeForm = () => {
             addWorkerOpen.delete(p.path);
+            addWorkerErrors.delete(p.path);
+            addWorkerInputs.delete(p.path);
             addForm.classList.remove('expanded');
           };
+          // R5: input 値を即時保存 (再 render でも復元できるように)
+          const persistInputs = () => {
+            const nameInput = addForm.querySelector('input[data-field="name"]');
+            const branchInput = addForm.querySelector('input[data-field="branch"]');
+            addWorkerInputs.set(p.path, {
+              name: (nameInput && nameInput.value) || '',
+              branch: (branchInput && branchInput.value) || '',
+            });
+          };
+          const showError = (msg) => {
+            addWorkerErrors.set(p.path, msg);
+            if (errorEl) {
+              errorEl.textContent = msg;
+              errorEl.style.display = 'block';
+            }
+          };
+          const clearError = () => {
+            addWorkerErrors.delete(p.path);
+            if (errorEl) {
+              errorEl.textContent = '';
+              errorEl.style.display = 'none';
+            }
+          };
           const submit = () => {
+            if (addWorkerPending.has(p.path)) return; // double-click guard
             const nameInput = addForm.querySelector('input[data-field="name"]');
             const branchInput = addForm.querySelector('input[data-field="branch"]');
             const nameVal = (nameInput && nameInput.value || '').trim();
             const branchVal = (branchInput && branchInput.value || '').trim();
-            if (!nameVal) return;
+            if (!nameVal) {
+              // R5: 空文字 submit は silent return せず inline error 表示
+              showError('Worker name は必須です');
+              if (nameInput) nameInput.focus();
+              return;
+            }
+            clearError();
+            persistInputs();
+            // R5: pending 状態を立てて submit ボタンを disable + 「作成中…」表示
+            addWorkerPending.add(p.path);
+            if (submitBtn) {
+              submitBtn.disabled = true;
+              submitBtn.textContent = '作成中…';
+            }
             send({t: 'lane:add_worker', path: p.path, name: nameVal, branch: branchVal || null});
-            closeForm();
-            if (nameInput) nameInput.value = '';
-            if (branchInput) branchInput.value = '';
+            // 結果は AppEvent::WorkerCreateResult → window.handleAddWorkerResult で受信。
+            // success → form 閉じる、 error → form 開いたまま inline error 表示。
           };
           if (cancelBtn) cancelBtn.addEventListener('click', closeForm);
           if (submitBtn) submitBtn.addEventListener('click', submit);
           addForm.querySelectorAll('input').forEach(inp => {
+            inp.addEventListener('input', () => {
+              persistInputs();
+              if (addWorkerErrors.has(p.path)) clearError();
+            });
             inp.addEventListener('keydown', (e) => {
               if (e.key === 'Enter') { e.preventDefault(); submit(); }
               else if (e.key === 'Escape') { e.preventDefault(); closeForm(); }
@@ -826,15 +958,17 @@ const SIDEBAR_HTML: &str = concat!(
     return null;
   }
 
-  // Phase 5-C minimal: Nerd Font 単色 glyph 集約。 redundant な kindIcon (⭐📍🦾) は撤去、
-  // Stand identity (PP/GE/HP/HD/TH) と state circle のみ残す。 全 emoji → Nerd Font に置換、
-  // 色は CSS class (vp-state-running 等) で割当 (絵文字の色味バラつきゼロ)。
+  // Phase E1 (R5、 2026-04-29): Stand glyph を Nerd Font Unicode → Phosphor SVG (iconify-icon
+  // 経由) に移行。 sidebar-bundle/ で iconify-icon Web Component を register、 ph: prefix の
+  // icon name を <iconify-icon icon="ph:compass"> 等で描画。
+  // 旧: nf-fa-compass の Unicode codepoint を .nf-icon span に textContent
+  // 新: Phosphor icon name を iconify-icon 要素に attribute、 default = regular weight。
   const STAND_GLYPH = {
-    paisley_park: '',   // nf-fa-compass
-    gold_experience: '', // nf-fa-leaf
-    hermit_purple: '',  // nf-fa-plug
-    heavens_door: '',   // nf-fa-book
-    the_hand: '',       // nf-fa-terminal
+    paisley_park: 'ph:compass',
+    gold_experience: 'ph:plant',
+    hermit_purple: 'ph:plug',
+    heavens_door: 'ph:book-open',
+    the_hand: 'ph:terminal-window',
   };
   // Phase 5-D: state 別 glyph + class 統合 map (色覚多様性 a11y 対応、 purple-haze HIG B4)。
   //  glyph 列は Nerd Font Font Awesome (web_assets::NERD_FONT_CSS で .nf-icon class 提供)。
@@ -901,6 +1035,28 @@ const SIDEBAR_HTML: &str = concat!(
 
   window.renderSidebarState = applyState;
   window.renderError = applyError;
+
+  // R5 Worker create flow: lanes.rs server → vp-app event loop → ここに push back される。
+  //  msg = { project_path, name, error }
+  //   - error === null → 成功: form を閉じ、 inputs/error をクリア
+  //   - error === string → 失敗: pending 解除 + form 下に inline error 表示 (form は開いたまま)
+  // 同 project に他の form 状態を上書きしないよう pending を必ず外す。
+  window.handleAddWorkerResult = function(msg) {
+    if (!msg || typeof msg.project_path !== 'string') return;
+    const path = msg.project_path;
+    addWorkerPending.delete(path);
+    if (msg.error) {
+      addWorkerErrors.set(path, String(msg.error));
+      // form は開いたままにする (input 値は addWorkerInputs に保存済)
+      addWorkerOpen.add(path);
+    } else {
+      addWorkerOpen.delete(path);
+      addWorkerErrors.delete(path);
+      addWorkerInputs.delete(path);
+    }
+    // state 既存値で再 render → 新しい form 状態 (error / pending / inputs) が反映される
+    if (state) applyState(state);
+  };
 
   // uptime を 1 秒ごとに自更新 (state.activity.world_started_at から計算)
   setInterval(() => {
@@ -1951,8 +2107,8 @@ pub fn run() -> anyhow::Result<()> {
     // 確実に redirect が効かない。
     //
     // 解決: tracing-appender で **file に直接書き込む**。
-    // Path: `%LOCALAPPDATA%\VantagePoint-dev\vp-app.kdl.log` (Win)
-    //       `~/.local/share/vantage-point-dev/vp-app.kdl.log` (Linux/Mac fallback)
+    // Path: `%LOCALAPPDATA%\VantagePoint-dev\app.kdl.log` (Win)
+    //       `~/.local/share/vantage-point-dev/app.kdl.log` (Linux/Mac fallback)
     //
     // mise run win の polling tail が同 file を見る。
     use tracing_subscriber::layer::SubscriberExt;
@@ -1978,7 +2134,7 @@ pub fn run() -> anyhow::Result<()> {
             .join("Logs")
     };
     let _ = std::fs::create_dir_all(&log_dir);
-    let file_appender = tracing_appender::rolling::never(&log_dir, "vp-app.kdl.log");
+    let file_appender = tracing_appender::rolling::never(&log_dir, "app.kdl.log");
     // Phase 5-C: log filter の noise 抑制 (2026-04-28 観測: 23MB log の 70% が hyper_util::pool、
     //   25% が vp_app::terminal の PTY I/O event だった)。 vp_app の他モジュールは info で残し、
     //   noise 源を warn まで上げる。 必要なら RUST_LOG 環境変数で override 可。
@@ -2033,6 +2189,7 @@ pub fn run() -> anyhow::Result<()> {
     }
     let dev_mode_item = menu_handles.developer_mode_item;
     let open_devtools_item = menu_handles.open_devtools_item;
+    let open_sidebar_devtools_item = menu_handles.open_sidebar_devtools_item;
     let menu_ids = menu_handles.ids;
     let _tray = match crate::tray::build_tray() {
         Ok(t) => Some(t),
@@ -2085,6 +2242,7 @@ pub fn run() -> anyhow::Result<()> {
             crate::web_assets::serve(id, request, SIDEBAR_ASSETS)
         })
         .with_url("vp-asset://app/sidebar.html")
+        .with_devtools(true) // R5 dev: View → "Open Sidebar DevTools" で Web Inspector 起動可能
         .with_bounds(Rect {
             position: LogicalPosition::new(0.0, 0.0).into(),
             size: WryLogicalSize::new(SIDEBAR_WIDTH, 800.0).into(),
@@ -2301,20 +2459,21 @@ pub fn run() -> anyhow::Result<()> {
                             .any(|l| &lane_address_key(&l.address) == *saved)
                     })
                     .cloned();
+                // Phase 5-E: auto-select は pid あり (= Active = Pane 起動済) な Lane のみ対象。
+                //  disk-only Lane (pid:null) を選ぶと WS 確立先が無く 「lane not found」 reconnect ループに陥る。
+                //  Active Lane が 1 件も無ければ auto-select はスキップ (user 明示選択を待つ)。
+                let first_active = lanes.iter().find(|l| l.pid.is_some());
                 let auto_select = !is_secondary
                     && sidebar_state.active_lane_address.is_none()
                     && session_match.is_none()
-                    && lanes
-                        .first()
-                        .map(|l| lane_address_key(&l.address))
-                        .is_some();
+                    && first_active.is_some();
                 let first_addr = if let Some(saved) = session_match {
                     // session 復元: 1 度限り、 復元済 marker として pending を消費
                     pending_session_active_lane = None;
                     tracing::info!("session 復元: active_lane = {}", saved);
                     Some(saved)
                 } else if auto_select {
-                    lanes.first().map(|l| lane_address_key(&l.address))
+                    first_active.map(|l| lane_address_key(&l.address))
                 } else {
                     None
                 };
@@ -2349,6 +2508,13 @@ pub fn run() -> anyhow::Result<()> {
                 if let Some(port) = sp_port_for_project {
                     if let Some(lanes_for_proj) = sidebar_state.lanes_by_project.get(&path_key) {
                         for lane in lanes_for_proj {
+                            // Phase 5-E: pid:null = disk-only Lane (ccws workspace dir のみ、 PtySlot 不在)。
+                            //  ensureLane で WS 接続するとサーバ側が「lane not found」 を返し、
+                            //  xterm.js が 1006 切断 → 500ms reconnect → 無限ループ に入る。
+                            //  Activate 済 Lane (pid あり) のみ WS 確立対象とする。
+                            if lane.pid.is_none() {
+                                continue;
+                            }
                             let addr_str = lane_address_key(&lane.address);
                             lane_js::ensure_lane(&main_view, &addr_str, port);
                         }
@@ -2385,6 +2551,26 @@ pub fn run() -> anyhow::Result<()> {
                 let script = format!("window.renderError({})", js_msg);
                 if let Err(e) = sidebar.evaluate_script(&script) {
                     tracing::warn!("sidebar renderError 失敗: {}", e);
+                }
+            }
+            // R5 Worker create flow: spawn_blocking thread からの結果を sidebar に push back。
+            // success → form を閉じる + addWorkerOpen から削除。
+            // error → form 下に inline error 表示 + form は開いたまま (再 submit 可能)。
+            Event::UserEvent(AppEvent::WorkerCreateResult {
+                project_path,
+                name,
+                error,
+            }) => {
+                let payload = serde_json::json!({
+                    "project_path": project_path,
+                    "name": name,
+                    "error": error,
+                });
+                let payload_str = serde_json::to_string(&payload)
+                    .unwrap_or_else(|_| "{}".to_string());
+                let script = format!("window.handleAddWorkerResult({})", payload_str);
+                if let Err(e) = sidebar.evaluate_script(&script) {
+                    tracing::warn!("sidebar handleAddWorkerResult 失敗: {}", e);
                 }
             }
             Event::UserEvent(AppEvent::ActivityUpdate(snap)) => {
@@ -2700,16 +2886,36 @@ pub fn run() -> anyhow::Result<()> {
                                             // 即座に lanes を re-fetch して sidebar 反映
                                             spawn_lanes_fetch(
                                                 proxy.clone(),
-                                                path_clone,
+                                                path_clone.clone(),
                                                 port,
+                                            );
+                                            // R5: 成功通知を sidebar に push back (form を閉じる)
+                                            let _ = proxy.send_event(
+                                                AppEvent::WorkerCreateResult {
+                                                    project_path: path_clone,
+                                                    name: name_clone,
+                                                    error: None,
+                                                },
                                             );
                                         }
                                         Err(e) => {
+                                            // R5: 失敗通知を sidebar に push back (form 下に
+                                            // inline error 表示)。 server からは
+                                            // "create_worker_lane HTTP <code>: <body>" 形式で
+                                            // 返ってくるので、 そのまま流す (UI 側で trim)。
+                                            let msg = format!("{}", e);
                                             tracing::warn!(
                                                 "create_worker_lane failed: project={} name={}: {}",
                                                 path_clone,
                                                 name_clone,
-                                                e
+                                                msg
+                                            );
+                                            let _ = proxy.send_event(
+                                                AppEvent::WorkerCreateResult {
+                                                    project_path: path_clone,
+                                                    name: name_clone,
+                                                    error: Some(msg),
+                                                },
                                             );
                                         }
                                     }
@@ -2781,6 +2987,7 @@ pub fn run() -> anyhow::Result<()> {
                     dev_mode = !dev_mode;
                     dev_mode_item.set_checked(dev_mode);
                     open_devtools_item.set_enabled(dev_mode);
+                    open_sidebar_devtools_item.set_enabled(dev_mode);
                     settings.developer_mode = Some(dev_mode);
                     if let Err(e) = settings.save() {
                         tracing::warn!("Settings 保存失敗: {}", e);
@@ -2801,9 +3008,18 @@ pub fn run() -> anyhow::Result<()> {
                 } else if id == menu_ids.open_devtools {
                     if dev_mode {
                         main_view.open_devtools();
-                        tracing::info!("DevTools open");
+                        tracing::info!("DevTools open (main_view)");
                     } else {
                         tracing::warn!("Open DevTools clicked but dev_mode=false (gated)");
+                    }
+                } else if id == menu_ids.open_sidebar_devtools {
+                    if dev_mode {
+                        sidebar.open_devtools();
+                        tracing::info!("DevTools open (sidebar)");
+                    } else {
+                        tracing::warn!(
+                            "Open Sidebar DevTools clicked but dev_mode=false (gated)"
+                        );
                     }
                 } else {
                     tracing::debug!("MenuClicked: 未処理の id = {:?}", id);
@@ -2820,12 +3036,18 @@ mod sidebar_html_tests {
     //! Bundle font / serve handler のテストは `web_assets` module 側に分離。
     use super::*;
 
-    /// HTML サイズが WKWebView の loadHTMLString 安全範囲 (< 200KB) に収まる
+    /// HTML サイズが「font binary 誤 embedded の早期検知 tripwire」 (< 210KB) に収まる。
+    ///
+    /// WKWebView の実 hard limit は数 MB 単位なので 210KB に hard 制限の意味はない。
+    /// 「font binary (1〜数 MB) が誤って HTML に inline されたら即超える」 という defensive
+    /// tripwire として保守的サイズ。 PR #228 で sidebar 機能 (Inactive Worker dim、 Add
+    /// Worker UI、 disk-scan merge 等) が legitimate に増加 → 200KB から 210KB に緩和
+    /// (2026-04-30)。 sidebar HTML 別 file 化 (include_bytes! 経由) は別 sprint で。
     #[test]
     fn html_size_under_wkwebview_limit() {
         let size = SIDEBAR_HTML.len();
         assert!(
-            size < 200_000,
+            size < 210_000,
             "SIDEBAR_HTML size {} bytes exceeds WKWebView safe range — \
              check that no font binary got embedded in HTML",
             size

@@ -32,35 +32,20 @@ run = "cargo test"
 description = "Build daemon binary (vp-cli の vp) — vp-app の locate_vp_binary が target/release/vp を見れる構成"
 run = """
 set -euo pipefail
-echo "🔨 Building vp-cli (daemon = vp world)..."
+echo "🔨 Building vp-cli (daemon = vp daemon, alias vp world)..."
 cargo build --release -p vp-cli
 echo "✅ Built: $(pwd)/target/release/vp"
 """
 
 [tasks.daemon]
-description = "Run daemon (vp world) standalone in foreground — log は VP_DAEMON_LOG_FILE で file 直書き、stdout にも出る"
+description = "Run daemon (vp daemon) standalone in foreground — `vp daemon start` の thin wrapper"
 depends = ["daemon:build"]
 run = """
 set -euo pipefail
 ROOT="$(pwd)"
 LOG_DIR="${VP_LOG_DIR:-$HOME/Library/Logs/Vantage}"
 mkdir -p "$LOG_DIR"
-LOG_FILE="$LOG_DIR/vp-world.kdl.log"
-
-# 既存 daemon を kill (新 binary 反映、ping は失敗するので app から auto-launch されないよう先に kill)
-# pkill -f は cmdline 全体に regex match。実 cmdline は `/path/to/vp world ...` なので anchor は付けない。
-# port-based kill も二段で (lsof で listen 占有 PID を取得 → SIGTERM)、pattern 漏れの保険。
-echo "🔄 既存 daemon を停止..."
-pkill -f 'vp world' 2>/dev/null || true
-pkill -f 'vp daemon' 2>/dev/null || true
-PIDS=$(lsof -ti:32000 -sTCP:LISTEN 2>/dev/null || true)
-if [ -n "$PIDS" ]; then
-  kill -TERM $PIDS 2>/dev/null || true
-fi
-sleep 2
-
-# tracing-appender が log file 直書きできるよう環境変数を渡す
-export VP_DAEMON_LOG_FILE="$LOG_FILE"
+export VP_DAEMON_LOG_FILE="$LOG_DIR/daemon.kdl.log"
 
 VP_BIN="$ROOT/target/release/vp"
 if [ ! -x "$VP_BIN" ]; then
@@ -69,16 +54,17 @@ if [ ! -x "$VP_BIN" ]; then
   exit 1
 fi
 
-echo ""
-echo "📝 daemon log: $LOG_FILE"
-echo "🚀 Launching $VP_BIN world (foreground、Ctrl+C で停止)..."
+echo "📝 daemon log: $VP_DAEMON_LOG_FILE"
+echo "🚀 Starting daemon (vp daemon start、 foreground blocking、 Ctrl+C で停止)..."
 echo "─────────────────────────────────────────────────"
-# foreground で exec、Ctrl+C で daemon stop
-exec "$VP_BIN" world
+# 既存 daemon が居る場合は user が事前に `mise run daemon:stop` で止めるか、
+# `vp daemon stop && mise run daemon` のように合成する。 restart は CLI に持たない方針
+# (user 指示: 「restart いらない、 build -> start -> stop が cli で回ってから」 2026-04-30)。
+exec "$VP_BIN" daemon start
 """
 
 [tasks.logs]
-description = "Tail VP logs (daemon + vp-app + project) — terminal で常時 stream 表示"
+description = "Tail VP logs (daemon + app tracing + app stdout) — terminal で常時 stream 表示"
 run = """
 set -euo pipefail
 LOG_DIR="${VP_LOG_DIR:-$HOME/Library/Logs/Vantage}"
@@ -86,95 +72,54 @@ mkdir -p "$LOG_DIR"
 
 # 必要な log file が無くてもエラーにならないように先に touch
 # (新規 process が立ち上がる前に tail -F が file を見つけられるように)
-touch "$LOG_DIR/vp-world.kdl.log" "$LOG_DIR/vp-app.kdl.log"
+touch "$LOG_DIR/daemon.kdl.log" "$LOG_DIR/app.kdl.log" "$LOG_DIR/app.stdout.log"
 
-echo "📝 Tailing: $LOG_DIR/*.kdl.log"
+echo "📝 Tailing 3 files:"
+echo "   daemon.kdl.log   (TheWorld + SP)"
+echo "   app.kdl.log      (vp-app tracing)"
+echo "   app.stdout.log   (vp-app stdout/panic)"
 echo "─────────────────────────────────────────────────"
-exec tail -F "$LOG_DIR"/*.kdl.log
+exec tail -F "$LOG_DIR/daemon.kdl.log" "$LOG_DIR/app.kdl.log" "$LOG_DIR/app.stdout.log"
 """
 
 [tasks.app]
-description = "Build & run vp-app (Rust GUI: wry+tao+creo-ui) — Mac 主軸版、xcodebuild 不要"
+description = "Build vp-app + `vp app start` (spawn + 即 exit、 ログは `mise run logs` で観察)"
 run = """
 set -euo pipefail
 ROOT="$(pwd)"
 
-# Mac 主軸切替 (2026-04-26 決定、mem_1CaSjEz55wBuy3JdU14LCS, Phase A 補強):
+# Mac 主軸切替 (2026-04-26 決定、mem_1CaSjEz55wBuy3JdU14LCS):
 # Swift app (apple/VantagePoint) ではなく vp-app crate (Rust + wry + xterm.js + creo-ui)
-# を起動する。xcodebuild / xcodegen / ditto / codesign 不要 → build がぐっと速い。
-# log_dir は crates/vp-app/src/app.rs:961 で ~/Library/Logs/Vantage/ に既に統一済み。
-LOG_DIR="${VP_LOG_DIR:-$HOME/Library/Logs/Vantage}"
-mkdir -p "$LOG_DIR"
-LOG_FILE="${VP_APP_LOG:-$LOG_DIR/vp-app.stdout.log}"
+# を起動する。 xcodebuild / xcodegen / codesign 不要 → build がぐっと速い。
 
-# 子プロセス (TheWorld daemon) に inherit させる
-export VP_DAEMON_LOG_FILE="$LOG_DIR/vp-world.kdl.log"
-
-echo "🔨 Building vp-app (Rust: wry+tao+creo-ui)..."
-cargo build --release -p vp-app
+echo "🔨 Building vp-app + vp-cli..."
+cargo build --release -p vp-app -p vp-cli
 
 VP_APP_BIN="$ROOT/target/release/vp-app"
-if [ ! -x "$VP_APP_BIN" ]; then
-  echo "❌ vp-app binary not found at $VP_APP_BIN" >&2
-  exit 1
-fi
+VP_BIN="$ROOT/target/release/vp"
+[ -x "$VP_APP_BIN" ] || { echo "❌ vp-app binary not found at $VP_APP_BIN" >&2; exit 1; }
+[ -x "$VP_BIN" ]     || { echo "❌ vp binary not found at $VP_BIN" >&2; exit 1; }
 
-# 既存プロセスを停止
-# - vp-app は **必ず** kill (新 binary 反映 + 古い app から daemon spawn 防止)
-# - TheWorld は **default では kill しない** (state を持つので毎回再起動すると Started がゼロに戻る)
-#   VP_FORCE_RESTART_DAEMON=1 を渡したときだけ kill する
-echo ""
-echo "🔄 既存 vp-app を停止..."
-pkill -f "${VP_APP_BIN}\\$" 2>/dev/null || true
-
-if [ "${VP_FORCE_RESTART_DAEMON:-0}" = "1" ]; then
-  echo "🔄 VP_FORCE_RESTART_DAEMON=1 → TheWorld も停止..."
-  pkill -f 'vp world' 2>/dev/null || true
-  pkill -f 'vp daemon' 2>/dev/null || true
-  PIDS=$(lsof -ti:32000 -sTCP:LISTEN 2>/dev/null || true)
-  if [ -n "$PIDS" ]; then
-    kill -TERM $PIDS 2>/dev/null || true
-  fi
-else
-  echo "ℹ️  TheWorld は kill せず既存を再利用 (state 永続化)。fresh start したい場合は VP_FORCE_RESTART_DAEMON=1 mise run app"
-fi
-
-# Phase 5-D fix: SP は daemon と独立に kill 制御。 dogfooding 中の bug fix が SP binary に
-# 入る場合 (例: stand_spawner / lanes route 修正) は VP_FORCE_RESTART_SP=1 で全 SP を 一気
-# 入れ替え。 daemon と直交した責務分離 (SP だけ / daemon だけ / 全部 を独立に選べる)。
-if [ "${VP_FORCE_RESTART_SP:-0}" = "1" ]; then
-  echo "🔄 VP_FORCE_RESTART_SP=1 → 全 SP (vp sp start ...) も停止..."
-  pkill -TERM -f 'vp sp start' 2>/dev/null || true
-  # graceful shutdown 待ち (PtySlot Drop で child claude も kill+wait される)
-  sleep 1
-fi
-sleep 1
-
-# tail -F が file を見つけられるよう touch (空 file でも -F なら follow 開始)
-touch "$LOG_DIR/vp-world.kdl.log" "$LOG_DIR/vp-app.kdl.log"
-
-echo ""
-echo "📝 ログ出力先:"
-echo "   daemon (TheWorld): $VP_DAEMON_LOG_FILE"
-echo "   vp-app (Rust):     $LOG_DIR/vp-app.kdl.log (tracing-appender 直書き)"
-echo "   stdout/stderr:     $LOG_FILE"
-echo ""
-echo "🚀 Launching $VP_APP_BIN (background) ..."
-
-# vp-app を background 起動、stdout/stderr は file に流す (tail で後追い)
-"$VP_APP_BIN" > "$LOG_FILE" 2>&1 &
-APP_PID=$!
-
-# Ctrl+C で vp-app と tail を同時停止 (1 terminal 完結 UX)
-trap 'echo ""; echo "📴 stopping vp-app (PID=$APP_PID) + tail..."; kill $APP_PID 2>/dev/null; exit 0' INT TERM
-
-echo "✅ vp-app launched (PID=$APP_PID)"
-echo "📝 Tailing all logs (Ctrl+C で全停止)..."
-echo "─────────────────────────────────────────────────"
-
-# build/起動 完了後、そのまま全 log multiplex tail (`mise run logs` 同等)
-exec tail -F "$LOG_DIR/vp-world.kdl.log" "$LOG_DIR/vp-app.kdl.log" "$LOG_FILE"
+# `vp app start` に VP_APP_BIN env を渡して target/release/vp-app を直接 spawn
+# (cargo install --path crates/vp-app の毎回挟みを回避、 dogfood loop を高速化)。
+# vp app start は spawn + 親即 exit、 mise task もここで終了する (= 「素直に起動して終了」)。
+# stop は vp CLI に統一: `vp app stop` / `mise run app:stop`。 restart は提供しない
+# (合成は user 責任で `mise run app:stop && mise run app` のように並べる)。
+# ログ観察は `mise run logs` で 3 file (daemon / app tracing / app stdout) を集約 tail。
+exec env VP_APP_BIN="$VP_APP_BIN" "$VP_BIN" app start
 """
+
+[tasks."app:stop"]
+description = "vp-app を停止 (`vp app stop` の thin wrapper)"
+run = "exec $VANTAGE_ROOT/target/release/vp app stop"
+
+[tasks."daemon:stop"]
+description = "TheWorld daemon を停止 (`vp daemon stop` の thin wrapper)"
+run = "exec $VANTAGE_ROOT/target/release/vp daemon stop"
+
+# 注: `app:restart` / `daemon:restart` は意図的に提供しない。
+# user 指示「restart いらない、 build -> start -> stop が cli で回ってから」 (2026-04-30)
+# に従い、 合成は user 責任で `mise run app:stop && mise run app` のように並べる方針。
 
 [tasks.sp-kill]
 description = "全 SP (vp sp start ...) を graceful kill。 ghost SP cleanup や binary 入替時に。"
@@ -291,12 +236,12 @@ VP_TERMINAL_MODE_VAL="${VP_TERMINAL_MODE:-}"
 VP_WORLD_URL_VAL="${VP_WORLD_URL:-}"
 
 # vp-app + vp.exe (daemon) は tracing-appender 経由で file に直接書く。
-# - vp-app:  $LOCALAPPDATA\VantagePoint-dev\Logs\vp-app.kdl.log (tracing-appender)
-# - vp.exe:  $LOCALAPPDATA\VantagePoint-dev\Logs\vp-world.kdl.log (VP_DAEMON_LOG_FILE 経由)
+# - vp-app:  $LOCALAPPDATA\VantagePoint-dev\Logs\app.kdl.log (tracing-appender)
+# - vp.exe:  $LOCALAPPDATA\VantagePoint-dev\Logs\daemon.kdl.log (VP_DAEMON_LOG_FILE 経由)
 # Start-Process redirect は使わず (Win GUI subsystem では非機能)、各 process の file writer が source。
-LOG_APP="$INSTALL_DIR/Logs/vp-app.kdl.log"
-LOG_DAEMON="$INSTALL_DIR/Logs/vp-world.kdl.log"
-LOG_DAEMON_WIN="$INSTALL_DIR_WIN\\Logs\\vp-world.kdl.log"
+LOG_APP="$INSTALL_DIR/Logs/app.kdl.log"
+LOG_DAEMON="$INSTALL_DIR/Logs/daemon.kdl.log"
+LOG_DAEMON_WIN="$INSTALL_DIR_WIN\\Logs\\daemon.kdl.log"
 mkdir -p "$INSTALL_DIR/Logs" 2>/dev/null || true
 : > "$LOG_APP" 2>/dev/null || true
 : > "$LOG_DAEMON" 2>/dev/null || true
@@ -330,8 +275,8 @@ description = "実行中の vp-app + vp.exe (daemon) の log を tail -F で std
 run = '''
 set -euo pipefail
 INSTALL_DIR=$(cygpath -u "$LOCALAPPDATA")/VantagePoint-dev
-LOG_APP="$INSTALL_DIR/Logs/vp-app.kdl.log"
-LOG_DAEMON="$INSTALL_DIR/Logs/vp-world.kdl.log"
+LOG_APP="$INSTALL_DIR/Logs/app.kdl.log"
+LOG_DAEMON="$INSTALL_DIR/Logs/daemon.kdl.log"
 
 echo "📺 tail -F: $LOG_APP + $LOG_DAEMON"
 echo "─────────────────────────────────────────────────"
