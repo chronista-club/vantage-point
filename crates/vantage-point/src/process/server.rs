@@ -304,27 +304,15 @@ pub async fn run(
         // memory rule: 多 scope architecture (App/Project/Lane/Pane)、HD/TH は Lane scope。
         // Worker Lane の動的 create は A4-4、Stand spawn 連動は A5 で実装。
         //
-        // Phase 5-E (i, 2026-04-30): with_lead 後に ccws workers_dir をスキャンし、
-        // 既存 Worker dir を HD で auto-spawn する。 user 指示「default で HD ワーカーが起動」。
-        // 起動時点で全 Worker が active 状態 → sidebar タップでそのまま切替動作する。
-        //
-        // PR #228 review fix (Moody Blues #2): populate の `project_id` には
-        // `project_dir.file_name()` 由来の値を渡す。 `routes/lanes.rs::create_handler`
-        // も file_name 由来で `LaneAddress::worker(...)` を組むため、 ここで
-        // `project_name_for_remote` (config 登録名) を渡すと auto-spawn と手動 create で
-        // address が食い違い、 sidebar 表示や WS routing が壊れる。
-        lane_pool: Arc::new(RwLock::new({
-            let mut pool = super::lanes_state::LanePool::with_lead(
-                project_name_for_remote.clone(),
-                project_dir.clone(),
-            );
-            let workers_project_id = std::path::Path::new(&project_dir)
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("unknown");
-            pool.populate_workers_from_disk(workers_project_id, std::path::Path::new(&project_dir));
-            pool
-        })),
+        // (I-b、 2026-04-30): Worker auto-spawn は AppState 構築後に Mailbox actor 経由で実施。
+        // 旧 PR #228 の `populate_workers_from_disk` sync 経路は削除し、 ccws workers を
+        // `LaneCmd::SpawnLane` Cmd 化して `lane-spawn` mailbox に投入する設計に移行
+        // (= concurrency 制御を `Arc<Semaphore::new(N)>` で表現、 N=config.startup.max_concurrent_lane_spawn)。
+        // 詳細は run() 内 lane_spawn_actor wiring 参照。
+        lane_pool: Arc::new(RwLock::new(super::lanes_state::LanePool::with_lead(
+            project_name_for_remote.clone(),
+            project_dir.clone(),
+        ))),
         // Phase A4-2b: Project scope の Stand pool (PP/GE/HP) — skeleton
         project_stands: Arc::new(RwLock::new(
             super::project_stands_state::ProjectStandsPool::new(),
@@ -340,6 +328,73 @@ pub async fn run(
 
     // ペイン状態をディスクから復元（前回 Process 終了時の状態 → RetainedStore）
     state.restore_pane_contents().await;
+
+    // (I-b、 2026-04-30) Lane spawn actor を起動し、 既存 ccws workers を Cmd 化して投入。
+    // 旧 PR #228 の sync `populate_workers_from_disk` 経路を Mailbox actor + Semaphore に置換。
+    // - actor は `lane-spawn` mailbox を recv し、 `Arc<Semaphore::new(N)>` で gate しつつ並列実行
+    // - bootstrap は ccws workers をスキャンして `LaneCmd::SpawnLane` を投入 (= 1 回限りの seed)
+    // - N=config.startup.max_concurrent_lane_spawn (default 1、 dogfood で計測 log を集計して tweak)
+    {
+        let lane_spawn_handle = state
+            .capabilities
+            .msgbox_router
+            .register("lane-spawn")
+            .await;
+        let max_concurrent = crate::config::Config::load()
+            .unwrap_or_default()
+            .startup
+            .max_concurrent_lane_spawn as usize;
+        super::lane_spawn_actor::spawn(
+            lane_spawn_handle,
+            state.lane_pool.clone(),
+            max_concurrent,
+            shutdown_token.clone(),
+        );
+
+        // bootstrap sender: 別 address `sp-bootstrap` で send_to するため、 `lane-spawn` の
+        // recv 流路を actor が独占維持できる (= register 同 address は tx 上書き仕様のため)。
+        let bootstrap_handle = state
+            .capabilities
+            .msgbox_router
+            .register("sp-bootstrap")
+            .await;
+        let workers_project_id = std::path::Path::new(&state.project_dir)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+        let workers = crate::ccws::commands::list_workers_for_repo(&workers_project_id);
+        let total = workers.len();
+        if total > 0 {
+            tracing::info!(
+                "SP startup bootstrap: {} 本の Worker SpawnLane Cmd を投入 (project_id={}, max_concurrent={})",
+                total,
+                workers_project_id,
+                max_concurrent
+            );
+            for entry in workers {
+                let cmd = super::lane_cmd::LaneCmd::SpawnLane {
+                    project_id: workers_project_id.clone(),
+                    name: entry.name.clone(),
+                    cwd: entry.path.clone(),
+                    stand: super::lanes_state::LaneStand::default(),
+                };
+                if let Err(e) = bootstrap_handle.send_to("lane-spawn", &cmd).await {
+                    tracing::warn!(
+                        "SP startup bootstrap: send_to('lane-spawn') 失敗 name={} cwd={} err={}",
+                        entry.name,
+                        entry.path,
+                        e
+                    );
+                }
+            }
+        } else {
+            tracing::info!(
+                "SP startup bootstrap: ccws workers なし (project_id={})",
+                workers_project_id
+            );
+        }
+    }
 
     let app = Router::new()
         .route("/", get(health::index_handler))
