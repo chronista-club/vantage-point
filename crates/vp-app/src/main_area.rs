@@ -427,6 +427,9 @@ body{overflow:hidden;}
     //  cc は OSC 9 を emit していない (PR #221 / #233 dogfood で観測ゼロ) ため実害なし。
     //  別 emitter が乗ってきた段階で iTerm2 既知 subcode (1 / 2 / 9 / 50 / 51 等) の whitelist
     //  に絞るか、 観察 log にフラグ立てるかを再検討する。
+    //  もう一つの corner case: payload = "9" (semicolon なし、 単一文字) の場合は
+    //  semi < 0 経路で `{ subcode: null, rest: "9" }` を返す。 plain msg "9" として扱われ、
+    //  実害ゼロ (whitelist 化したら自然解消)。
     function parseOsc9(payload) {
       const semi = payload.indexOf(';');
       if (semi < 0) return { subcode: null, rest: payload };
