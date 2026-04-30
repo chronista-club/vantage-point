@@ -309,8 +309,34 @@ impl LanePool {
         }
     }
 
+    /// Lane 一覧を **Lead 先頭、 続いて Worker を生成順 (created_at 昇順)** で返す。
+    ///
+    /// 内部 `lanes` は `HashMap` のため iter 順は non-deterministic (process ごとに異なる
+    /// hash seed)。 sidebar の表示要件 「Root/Lead が一番上、 その下は生成時順」 を満たす
+    /// ため、 list() で sort して contract に order を含める。
+    ///
+    /// `created_at` は ISO 8601 文字列 (UTC fixed) なので String::cmp で時刻順が取れる
+    /// (lexicographic = chronological)。 同 ms 生成 (= populate ループ内連続 spawn) の
+    /// tie-break は Lane name で安定 sort。 N≤10 想定で O(N log N) cost 無視可。
+    ///
+    /// 別案 (IndexMap で insertion order を data 構造に内蔵) は VP-issue 未起票。
+    /// 「pty_slots も順序欲しい」「bulk import で order 崩れる」 等の動機が出たら再検討。
     pub fn list(&self) -> Vec<LaneInfo> {
-        self.lanes.values().cloned().collect()
+        let mut v: Vec<LaneInfo> = self.lanes.values().cloned().collect();
+        v.sort_by(|a, b| {
+            use std::cmp::Ordering;
+            match (a.kind, b.kind) {
+                (LaneKind::Lead, LaneKind::Worker) => Ordering::Less,
+                (LaneKind::Worker, LaneKind::Lead) => Ordering::Greater,
+                _ => a.created_at.cmp(&b.created_at).then_with(|| {
+                    a.name
+                        .as_deref()
+                        .unwrap_or("")
+                        .cmp(b.name.as_deref().unwrap_or(""))
+                }),
+            }
+        });
+        v
     }
 
     pub fn get(&self, addr: &LaneAddress) -> Option<&LaneInfo> {
