@@ -372,6 +372,7 @@ stage 2 PR が本 spec に準拠しているかを判定する acceptance criter
 - [ ] § 3 の全 example が round-trip test fixture に含まれる
 - [ ] § 8.3 の grep migration ガイドが実 file で動作する (整合性確認)
 - [ ] **daemon tracing init の `with_target` 不変性を確認**: 既存 `crates/vantage-point/src/cli.rs` の `init_tracing` は `with_target(false)` で初期化されているが、 `KdlFormatter::format_event` は `meta.target()` を直接呼ぶため subscriber-level の `with_target` flag に影響されず target field は emit される。 stage 2 で formatter を差し替える際に、 `with_target` の値を変更せずに target が出続けることを test で assert する (regression 防止)
+- [ ] **i64 field の bare number emit を assert**: `d` (0/1) / `u` (0/1/2) / `pid` / `port` / `retry` / `elapsed_ms` 等 § 5 で型 `i64` と定義した field は KDL bare number (quote なし) として emit する。 round-trip test で `d=0` (number) と `d="0"` (string) が **異なる KDL AST** になることを assert (formatter が誤って quote を付けると spec 違反になり、 viewer の filter / sort が壊れる)
 
 ---
 
