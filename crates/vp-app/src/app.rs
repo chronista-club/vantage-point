@@ -3036,12 +3036,18 @@ mod sidebar_html_tests {
     //! Bundle font / serve handler のテストは `web_assets` module 側に分離。
     use super::*;
 
-    /// HTML サイズが WKWebView の loadHTMLString 安全範囲 (< 200KB) に収まる
+    /// HTML サイズが「font binary 誤 embedded の早期検知 tripwire」 (< 210KB) に収まる。
+    ///
+    /// WKWebView の実 hard limit は数 MB 単位なので 210KB に hard 制限の意味はない。
+    /// 「font binary (1〜数 MB) が誤って HTML に inline されたら即超える」 という defensive
+    /// tripwire として保守的サイズ。 PR #228 で sidebar 機能 (Inactive Worker dim、 Add
+    /// Worker UI、 disk-scan merge 等) が legitimate に増加 → 200KB から 210KB に緩和
+    /// (2026-04-30)。 sidebar HTML 別 file 化 (include_bytes! 経由) は別 sprint で。
     #[test]
     fn html_size_under_wkwebview_limit() {
         let size = SIDEBAR_HTML.len();
         assert!(
-            size < 200_000,
+            size < 210_000,
             "SIDEBAR_HTML size {} bytes exceeds WKWebView safe range — \
              check that no font binary got embedded in HTML",
             size
