@@ -10,6 +10,8 @@
 
 pub mod capabilities;
 pub(crate) mod hub;
+/// Lane subcommand types (LaneCmd) — Mailbox actor 経由の Lane 操作 Cmd (I-b、 2026-04-30)
+pub(crate) mod lane_cmd;
 /// Lane state types (LaneAddress / LaneStand / LanePool 等) — Lane scope の data model
 pub(crate) mod lanes_state;
 pub mod process_runner;
