@@ -623,13 +623,29 @@ impl ProcessManagerCapability {
 
         let pid = child.id().unwrap_or(0);
 
-        // 少し待ってからヘルスチェック
-        tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
-
-        // ポートをスキャンして見つける
-        let port = self.find_process_port(&project.path).await.ok_or_else(|| {
-            CapabilityError::Other("Failed to find Process port after startup".to_string())
-        })?;
+        // ポートが listen ready になるまで polling で待つ。
+        //
+        // 旧実装は固定 sleep(1500ms) + 1-shot scan で、 cold start (SurrealDB lock retry /
+        // dyld load 等) で SP の `/api/health` が 1.5s 直後にちょうど ready になる場合に
+        // refused/timeout を取りこぼして即 fail していた (PR #228 後の dogfood で
+        // unison-kdl / object-records が連続失敗)。
+        //
+        // 新実装: 800ms 待 → scan → miss なら 500ms backoff で max 10s 再試行。
+        // 起動が早い case (~1s) では旧 1500ms 固定より速く抜ける、 遅い case (~3-5s) でも
+        // 確実に catch。 (I-a 対症 fix、 2026-04-30、 user 提案 (I-b) concurrency 化は別 sprint)。
+        let port = self
+            .wait_for_process_port(
+                &project.path,
+                std::time::Duration::from_millis(800),
+                std::time::Duration::from_millis(500),
+                std::time::Duration::from_secs(10),
+            )
+            .await
+            .ok_or_else(|| {
+                CapabilityError::Other(
+                    "Failed to find Process port within 10s startup timeout".to_string(),
+                )
+            })?;
 
         let running_process = RunningProcess {
             project_name: project_name.to_string(),
@@ -910,6 +926,49 @@ impl ProcessManagerCapability {
         }
 
         None
+    }
+
+    /// SP startup port が listen ready になるまで polling で待つ。
+    ///
+    /// `start_process` の補助。 旧固定 sleep(1500ms) + 1-shot scan が cold start で
+    /// 取りこぼしていた問題への対症 fix ((I-a) 2026-04-30)。
+    ///
+    /// - `initial_delay`: 最初の scan までの待機。 SP が axum listen + `/api/health`
+    ///   route 準備完了する最低時間 (典型 ~800ms)。
+    /// - `poll_interval`: miss 時の retry 間隔 (典型 500ms)。
+    /// - `total_timeout`: 諦めるまでの total 時間 (典型 10s)。 timeout 超で `None`。
+    ///
+    /// 計測 log: 解決時に `tracing::info!` で elapsed ms を出す。 dogfood で cold start
+    /// 分布を観察して将来 (I-b) concurrency 化の N 値決定に使う想定。
+    async fn wait_for_process_port(
+        &self,
+        project_path: &std::path::Path,
+        initial_delay: std::time::Duration,
+        poll_interval: std::time::Duration,
+        total_timeout: std::time::Duration,
+    ) -> Option<u16> {
+        let start = std::time::Instant::now();
+        tokio::time::sleep(initial_delay).await;
+
+        loop {
+            if let Some(port) = self.find_process_port(project_path).await {
+                tracing::info!(
+                    "SP startup port resolved in {}ms (project_path={})",
+                    start.elapsed().as_millis(),
+                    project_path.display()
+                );
+                return Some(port);
+            }
+            if start.elapsed() >= total_timeout {
+                tracing::warn!(
+                    "SP startup port resolution timeout after {}ms (project_path={})",
+                    start.elapsed().as_millis(),
+                    project_path.display()
+                );
+                return None;
+            }
+            tokio::time::sleep(poll_interval).await;
+        }
     }
 
     /// 全 Process の状態を更新（PID liveness check + ポートスキャン Reconciliation）
