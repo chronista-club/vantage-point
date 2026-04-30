@@ -2,8 +2,11 @@
 //!
 //! - `vp daemon start` — TheWorld をフォアグラウンドで起動
 //! - `vp daemon stop` — TheWorld を停止 (idempotent)
-//! - `vp daemon restart` — TheWorld を再起動 (stop + sleep + start、 start は foreground blocking)
 //! - `vp daemon status` — TheWorld の状態確認
+//!
+//! restart は意図的に提供しない。 user 指示「restart いらないかも、 わかりずらい。
+//! build -> start -> stop が、 まず cli で回ってからだね。」 (2026-04-30) に従い、
+//! 合成は user 責任で `vp daemon stop && vp daemon start` と並べる方針。
 //!
 //! 注: `vp world ...` は後方互換 alias で同じ実装に dispatch される。
 
@@ -25,11 +28,6 @@ pub enum DaemonCommands {
     },
     /// TheWorld を停止 (idempotent)
     Stop,
-    /// TheWorld を再起動 (stop + sleep + start、 start は foreground blocking)
-    Restart {
-        #[arg(short, long, default_value_t = crate::cli::WORLD_PORT)]
-        port: u16,
-    },
     /// TheWorld の状態確認
     Status,
 }
@@ -39,7 +37,6 @@ pub fn execute(cmd: DaemonCommands) -> Result<()> {
     match cmd {
         DaemonCommands::Start { port } => start(port),
         DaemonCommands::Stop => stop(),
-        DaemonCommands::Restart { port } => restart(port),
         DaemonCommands::Status => status(),
     }
 }
@@ -60,13 +57,6 @@ fn stop() -> Result<()> {
         }
     }
     Ok(())
-}
-
-/// stop + 短い sleep + start。 sleep は port 解放と PID file unlink の race 回避。
-fn restart(port: u16) -> Result<()> {
-    stop()?;
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    start(port)
 }
 
 fn status() -> Result<()> {

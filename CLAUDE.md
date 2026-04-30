@@ -94,12 +94,12 @@ vp update [--check]    # セルフアップデート
 
 # TheWorld（Daemon 統合）
 vp daemon              # TheWorld 起動（プロジェクト管理 + PTY管理、 alias: vp world）
-vp daemon start|stop|restart|status  # subcommand 形式 (Restart は (α) で追加)
+vp daemon start|stop|status  # subcommand 形式
 
 # App
 vp app start [N]       # vp-app GUI 起動（spawn + 即 exit、 N でプロジェクト指定）
 vp app stop            # vp-app を停止
-vp app restart [N]     # vp-app を再起動
+# 再起動は `vp app stop && vp app start` で合成 (restart は意図的に CLI に持たない)
 vp tray                # システムトレイモード
 
 # MIDI

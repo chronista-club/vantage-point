@@ -38,7 +38,7 @@ echo "✅ Built: $(pwd)/target/release/vp"
 """
 
 [tasks.daemon]
-description = "Run daemon (vp daemon) standalone in foreground — `vp daemon restart` の thin wrapper"
+description = "Run daemon (vp daemon) standalone in foreground — `vp daemon start` の thin wrapper"
 depends = ["daemon:build"]
 run = """
 set -euo pipefail
@@ -55,11 +55,12 @@ if [ ! -x "$VP_BIN" ]; then
 fi
 
 echo "📝 daemon log: $VP_DAEMON_LOG_FILE"
-echo "🚀 Starting daemon (vp daemon restart、foreground blocking、Ctrl+C で停止)..."
+echo "🚀 Starting daemon (vp daemon start、 foreground blocking、 Ctrl+C で停止)..."
 echo "─────────────────────────────────────────────────"
-# `vp daemon restart` = stop (idempotent) + sleep + start (foreground blocking)。
-# 既存処理 (pkill / lsof / port 32000 占有 PID kill) は CLI 側 (commands/daemon.rs::stop) に内包済。
-exec "$VP_BIN" daemon restart
+# 既存 daemon が居る場合は user が事前に `mise run daemon:stop` で止めるか、
+# `vp daemon stop && mise run daemon` のように合成する。 restart は CLI に持たない方針
+# (user 指示: 「restart いらない、 build -> start -> stop が cli で回ってから」 2026-04-30)。
+exec "$VP_BIN" daemon start
 """
 
 [tasks.logs]
@@ -102,7 +103,8 @@ VP_BIN="$ROOT/target/release/vp"
 # `vp app start` に VP_APP_BIN env を渡して target/release/vp-app を直接 spawn
 # (cargo install --path crates/vp-app の毎回挟みを回避、 dogfood loop を高速化)。
 # vp app start は spawn + 親即 exit、 mise task もここで終了する (= 「素直に起動して終了」)。
-# stop / restart も vp CLI に統一: `vp app stop`、 `vp app restart`、 `mise run app:stop` 等。
+# stop は vp CLI に統一: `vp app stop` / `mise run app:stop`。 restart は提供しない
+# (合成は user 責任で `mise run app:stop && mise run app` のように並べる)。
 # ログ観察は `mise run logs` で 3 file (daemon / app tracing / app stdout) を集約 tail。
 exec env VP_APP_BIN="$VP_APP_BIN" "$VP_BIN" app start
 """
@@ -111,31 +113,13 @@ exec env VP_APP_BIN="$VP_APP_BIN" "$VP_BIN" app start
 description = "vp-app を停止 (`vp app stop` の thin wrapper)"
 run = "exec $VANTAGE_ROOT/target/release/vp app stop"
 
-[tasks."app:restart"]
-description = "vp-app を再 build + 再起動 (`vp app restart` の thin wrapper)"
-run = """
-set -euo pipefail
-ROOT="$(pwd)"
-echo "🔨 Building vp-app + vp-cli..."
-cargo build --release -p vp-app -p vp-cli
-exec env VP_APP_BIN="$ROOT/target/release/vp-app" "$ROOT/target/release/vp" app restart
-"""
-
 [tasks."daemon:stop"]
 description = "TheWorld daemon を停止 (`vp daemon stop` の thin wrapper)"
 run = "exec $VANTAGE_ROOT/target/release/vp daemon stop"
 
-[tasks."daemon:restart"]
-description = "TheWorld daemon を再起動 (`vp daemon restart` の thin wrapper、 foreground blocking)"
-depends = ["daemon:build"]
-run = """
-set -euo pipefail
-ROOT="$(pwd)"
-LOG_DIR="${VP_LOG_DIR:-$HOME/Library/Logs/Vantage}"
-mkdir -p "$LOG_DIR"
-export VP_DAEMON_LOG_FILE="$LOG_DIR/daemon.kdl.log"
-exec "$ROOT/target/release/vp" daemon restart
-"""
+# 注: `app:restart` / `daemon:restart` は意図的に提供しない。
+# user 指示「restart いらない、 build -> start -> stop が cli で回ってから」 (2026-04-30)
+# に従い、 合成は user 責任で `mise run app:stop && mise run app` のように並べる方針。
 
 [tasks.sp-kill]
 description = "全 SP (vp sp start ...) を graceful kill。 ghost SP cleanup や binary 入替時に。"

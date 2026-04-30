@@ -18,18 +18,12 @@ pub enum AppCommands {
     },
     /// vp-app を停止 (SIGTERM、 idempotent)
     Stop,
-    /// vp-app を再起動 (stop + sleep + start)
-    Restart {
-        /// プロジェクト N 番を起動時に開く
-        project_id: Option<usize>,
-    },
 }
 
 pub fn execute(cmd: AppCommands) -> Result<()> {
     match cmd {
         AppCommands::Start { project_id } => start(project_id),
         AppCommands::Stop => stop(),
-        AppCommands::Restart { project_id } => restart(project_id),
     }
 }
 
@@ -109,13 +103,6 @@ fn stop() -> Result<()> {
         None => println!("(pkill terminated by signal)"),
     }
     Ok(())
-}
-
-/// stop + 短い sleep + start。 sleep は PID 解放と binary file unlink の race 回避。
-fn restart(project_id: Option<usize>) -> Result<()> {
-    stop()?;
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    start(project_id)
 }
 
 /// vp-app binary を探す:
