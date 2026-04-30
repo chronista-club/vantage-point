@@ -34,7 +34,7 @@ fn run(project_id: Option<usize>) -> Result<()> {
     // Phase A: log dir 統一 (~/Library/Logs/Vantage/ on macOS)
     let log_dir = log_dir_path();
     std::fs::create_dir_all(&log_dir).ok();
-    let daemon_log = log_dir.join("vp-world.kdl.log");
+    let daemon_log = log_dir.join("daemon.kdl.log");
 
     println!("🚀 Launching vp-app: {}", bin.display());
     println!("   daemon log: {}", daemon_log.display());

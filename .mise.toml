@@ -45,7 +45,7 @@ set -euo pipefail
 ROOT="$(pwd)"
 LOG_DIR="${VP_LOG_DIR:-$HOME/Library/Logs/Vantage}"
 mkdir -p "$LOG_DIR"
-LOG_FILE="$LOG_DIR/vp-world.kdl.log"
+LOG_FILE="$LOG_DIR/daemon.kdl.log"
 
 # 既存 daemon を kill (新 binary 反映、ping は失敗するので app から auto-launch されないよう先に kill)
 # pkill -f は cmdline 全体に regex match。実 cmdline は `/path/to/vp world ...` なので anchor は付けない。
@@ -86,7 +86,7 @@ mkdir -p "$LOG_DIR"
 
 # 必要な log file が無くてもエラーにならないように先に touch
 # (新規 process が立ち上がる前に tail -F が file を見つけられるように)
-touch "$LOG_DIR/vp-world.kdl.log" "$LOG_DIR/vp-app.kdl.log"
+touch "$LOG_DIR/daemon.kdl.log" "$LOG_DIR/app.kdl.log"
 
 echo "📝 Tailing: $LOG_DIR/*.kdl.log"
 echo "─────────────────────────────────────────────────"
@@ -105,10 +105,10 @@ ROOT="$(pwd)"
 # log_dir は crates/vp-app/src/app.rs:961 で ~/Library/Logs/Vantage/ に既に統一済み。
 LOG_DIR="${VP_LOG_DIR:-$HOME/Library/Logs/Vantage}"
 mkdir -p "$LOG_DIR"
-LOG_FILE="${VP_APP_LOG:-$LOG_DIR/vp-app.stdout.log}"
+LOG_FILE="${VP_APP_LOG:-$LOG_DIR/app.stdout.log}"
 
 # 子プロセス (TheWorld daemon) に inherit させる
-export VP_DAEMON_LOG_FILE="$LOG_DIR/vp-world.kdl.log"
+export VP_DAEMON_LOG_FILE="$LOG_DIR/daemon.kdl.log"
 
 echo "🔨 Building vp-app (Rust: wry+tao+creo-ui)..."
 cargo build --release -p vp-app
@@ -151,12 +151,12 @@ fi
 sleep 1
 
 # tail -F が file を見つけられるよう touch (空 file でも -F なら follow 開始)
-touch "$LOG_DIR/vp-world.kdl.log" "$LOG_DIR/vp-app.kdl.log"
+touch "$LOG_DIR/daemon.kdl.log" "$LOG_DIR/app.kdl.log"
 
 echo ""
 echo "📝 ログ出力先:"
 echo "   daemon (TheWorld): $VP_DAEMON_LOG_FILE"
-echo "   vp-app (Rust):     $LOG_DIR/vp-app.kdl.log (tracing-appender 直書き)"
+echo "   vp-app (Rust):     $LOG_DIR/app.kdl.log (tracing-appender 直書き)"
 echo "   stdout/stderr:     $LOG_FILE"
 echo ""
 echo "🚀 Launching $VP_APP_BIN (background) ..."
@@ -173,7 +173,7 @@ echo "📝 Tailing all logs (Ctrl+C で全停止)..."
 echo "─────────────────────────────────────────────────"
 
 # build/起動 完了後、そのまま全 log multiplex tail (`mise run logs` 同等)
-exec tail -F "$LOG_DIR/vp-world.kdl.log" "$LOG_DIR/vp-app.kdl.log" "$LOG_FILE"
+exec tail -F "$LOG_DIR/daemon.kdl.log" "$LOG_DIR/app.kdl.log" "$LOG_FILE"
 """
 
 [tasks.sp-kill]
@@ -291,12 +291,12 @@ VP_TERMINAL_MODE_VAL="${VP_TERMINAL_MODE:-}"
 VP_WORLD_URL_VAL="${VP_WORLD_URL:-}"
 
 # vp-app + vp.exe (daemon) は tracing-appender 経由で file に直接書く。
-# - vp-app:  $LOCALAPPDATA\VantagePoint-dev\Logs\vp-app.kdl.log (tracing-appender)
-# - vp.exe:  $LOCALAPPDATA\VantagePoint-dev\Logs\vp-world.kdl.log (VP_DAEMON_LOG_FILE 経由)
+# - vp-app:  $LOCALAPPDATA\VantagePoint-dev\Logs\app.kdl.log (tracing-appender)
+# - vp.exe:  $LOCALAPPDATA\VantagePoint-dev\Logs\daemon.kdl.log (VP_DAEMON_LOG_FILE 経由)
 # Start-Process redirect は使わず (Win GUI subsystem では非機能)、各 process の file writer が source。
-LOG_APP="$INSTALL_DIR/Logs/vp-app.kdl.log"
-LOG_DAEMON="$INSTALL_DIR/Logs/vp-world.kdl.log"
-LOG_DAEMON_WIN="$INSTALL_DIR_WIN\\Logs\\vp-world.kdl.log"
+LOG_APP="$INSTALL_DIR/Logs/app.kdl.log"
+LOG_DAEMON="$INSTALL_DIR/Logs/daemon.kdl.log"
+LOG_DAEMON_WIN="$INSTALL_DIR_WIN\\Logs\\daemon.kdl.log"
 mkdir -p "$INSTALL_DIR/Logs" 2>/dev/null || true
 : > "$LOG_APP" 2>/dev/null || true
 : > "$LOG_DAEMON" 2>/dev/null || true
@@ -330,8 +330,8 @@ description = "実行中の vp-app + vp.exe (daemon) の log を tail -F で std
 run = '''
 set -euo pipefail
 INSTALL_DIR=$(cygpath -u "$LOCALAPPDATA")/VantagePoint-dev
-LOG_APP="$INSTALL_DIR/Logs/vp-app.kdl.log"
-LOG_DAEMON="$INSTALL_DIR/Logs/vp-world.kdl.log"
+LOG_APP="$INSTALL_DIR/Logs/app.kdl.log"
+LOG_DAEMON="$INSTALL_DIR/Logs/daemon.kdl.log"
 
 echo "📺 tail -F: $LOG_APP + $LOG_DAEMON"
 echo "─────────────────────────────────────────────────"

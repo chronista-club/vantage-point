@@ -2107,8 +2107,8 @@ pub fn run() -> anyhow::Result<()> {
     // 確実に redirect が効かない。
     //
     // 解決: tracing-appender で **file に直接書き込む**。
-    // Path: `%LOCALAPPDATA%\VantagePoint-dev\vp-app.kdl.log` (Win)
-    //       `~/.local/share/vantage-point-dev/vp-app.kdl.log` (Linux/Mac fallback)
+    // Path: `%LOCALAPPDATA%\VantagePoint-dev\app.kdl.log` (Win)
+    //       `~/.local/share/vantage-point-dev/app.kdl.log` (Linux/Mac fallback)
     //
     // mise run win の polling tail が同 file を見る。
     use tracing_subscriber::layer::SubscriberExt;
@@ -2134,7 +2134,7 @@ pub fn run() -> anyhow::Result<()> {
             .join("Logs")
     };
     let _ = std::fs::create_dir_all(&log_dir);
-    let file_appender = tracing_appender::rolling::never(&log_dir, "vp-app.kdl.log");
+    let file_appender = tracing_appender::rolling::never(&log_dir, "app.kdl.log");
     // Phase 5-C: log filter の noise 抑制 (2026-04-28 観測: 23MB log の 70% が hyper_util::pool、
     //   25% が vp_app::terminal の PTY I/O event だった)。 vp_app の他モジュールは info で残し、
     //   noise 源を warn まで上げる。 必要なら RUST_LOG 環境変数で override 可。
