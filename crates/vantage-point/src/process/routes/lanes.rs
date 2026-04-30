@@ -40,10 +40,17 @@ pub struct LanesResponse {
 /// Phase A4-2b: Lead Lane が 1 つ pre-populate されてる状態を返却。
 /// Phase 5-D: Worker Lane に対しては `cwd` から git 状態 (`WorkerStatus`) を populate。
 /// registry には保存せず、 GET 時に都度 `worker_status()` を呼ぶ (volatile + 5-7 git subprocess)。
+///
+/// Phase 5-E: in-memory LanePool に居ない ccws Worker dir も disk scan で merge して `pid: None` で
+/// emit (Pane 不在を pid で表現、 LaneState には変更を加えない)。 防御パスのため fail-soft。
+/// Active/Inactive は Project 集約として client (sidebar) 側で `lanes.every(pid != null)` で判定する設計。
+/// CURRENTS Project (= SP 起動中) のみが /api/lanes に応答するので、 disk scan 対象が自動 enforce される。
 pub async fn list_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let pool = state.lane_pool.read().await;
     let mut lanes = pool.list();
     drop(pool); // git subprocess 中の lock を保たない (worker_status は数 100ms かかる事あり)
+
+    // 既存 Worker の git status を populate
     for lane in lanes.iter_mut() {
         if matches!(lane.kind, crate::process::lanes_state::LaneKind::Worker) {
             let path = std::path::Path::new(&lane.cwd);
@@ -52,6 +59,50 @@ pub async fn list_handler(State(state): State<Arc<AppState>>) -> impl IntoRespon
             }
         }
     }
+
+    // Phase 5-E: ccws workers_dir を disk scan して、 LanePool に居ない Worker を pid: None で merge
+    let project_id = std::path::Path::new(&state.project_dir)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_string();
+    if !project_id.is_empty() {
+        let existing_names: std::collections::HashSet<String> = lanes
+            .iter()
+            .filter_map(|l| {
+                if matches!(l.kind, crate::process::lanes_state::LaneKind::Worker) {
+                    l.name.clone()
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let inactive = crate::ccws::commands::list_workers_for_repo(&project_id);
+        for entry in inactive {
+            if existing_names.contains(&entry.name) {
+                continue; // in-memory 優先、 disk 側 skip
+            }
+            let addr = LaneAddress::worker(&project_id, &entry.name);
+            let mut info = LaneInfo {
+                address: addr,
+                kind: LaneKind::Worker,
+                name: Some(entry.name.clone()),
+                state: LaneState::default(), // Pane 不在の表現は pid: None に集約 (state は default Running)
+                stand: LaneStand::HeavensDoor, // default、 activate 時に上書き可
+                created_at: chrono::Utc::now().to_rfc3339(),
+                pid: None, // Pane (HD) 不在 = client 側で Inactive 判定の signal
+                cwd: entry.path.clone(),
+                worker_status: None,
+            };
+            // git status を best-effort で populate (branch 表示の連動)
+            let path = std::path::Path::new(&entry.path);
+            if path.exists() && path.join(".git").exists() {
+                info.worker_status = Some(crate::ccws::commands::worker_status(path));
+            }
+            lanes.push(info);
+        }
+    }
+
     Json(LanesResponse { lanes })
 }
 
@@ -131,15 +182,28 @@ pub async fn create_handler(
         }
     }
 
-    // Phase 4-X: cwd 決定 ── 優先順位 explicit cwd > ccws clone (lib call) > project_dir share。
-    // 旧 Phase 3-A の subprocess (`Command::new("ccws")`) を撤去、 直接 `crate::ccws::commands::new_worker_in`
-    // を呼ぶ形に。 利点: 型安全な PathBuf 返却、 PATH 依存なし、 fork overhead なし、 atomicity 向上。
+    // Phase 4-X / R5: cwd 決定 ── 優先順位 explicit cwd > ccws clone (branch 明示 or auto-derive)。
+    //
+    // 旧 fallback (`else { state.project_dir }` で Lead と同 worktree を share) は撤廃。
+    // 理由: UI から name="sub" だけ入力した場合、 silent に Lead と同 dir を共有してしまい、
+    // 「Worker = 隔離 worktree」の mental model が崩れていた (race condition の温床)。
+    //
+    // 新規約: branch が None の時は `git config user.name` から prefix を取り、
+    // `<user>/<sanitized-name>` 形式の branch を auto-derive して必ず ccws clone を実行する。
+    // explicit に同 dir を share したい場合は API caller が `cwd` を明示的に指定する。
     let cwd = if let Some(c) = req.cwd {
         c
-    } else if let Some(branch) = req.branch.as_deref() {
+    } else {
+        let branch = req
+            .branch
+            .clone()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| {
+                derive_default_branch(std::path::Path::new(&state.project_dir), &req.name)
+            });
         let project_dir = state.project_dir.clone();
         let name = req.name.clone();
-        let branch = branch.to_string();
+        let branch_for_log = branch.clone();
         let result = tokio::task::spawn_blocking(move || {
             crate::ccws::commands::new_worker_in(
                 std::path::Path::new(&project_dir),
@@ -156,14 +220,29 @@ pub async fn create_handler(
             )
         })?;
         let path_buf = result.map_err(|e| {
+            // ccws::commands::new_worker_in は worker dir 既存 + force=false の時に
+            // 「ワーカー '<name>' は既に存在します」を返す。 UI で input 下に表示するため
+            // CONFLICT を返し、 error message をそのまま流す。
+            let msg = format!("{}", e);
+            let status = if msg.contains("既に存在") || msg.contains("already exists") {
+                StatusCode::CONFLICT
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
             (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("ccws clone failed: {}", e)})),
+                status,
+                Json(json!({
+                    "error": format!("ccws clone failed (branch={}): {}", branch_for_log, msg)
+                })),
             )
         })?;
+        tracing::info!(
+            "Worker Lane ccws clone: name={} branch={} dir={}",
+            req.name,
+            branch_for_log,
+            path_buf.display()
+        );
         path_buf.to_string_lossy().into_owned()
-    } else {
-        state.project_dir.clone()
     };
 
     // PtySlot::spawn は openpty + spawn_command の OS syscall でブロッキング。
@@ -389,4 +468,84 @@ pub async fn restart_handler(
             "pid": pid,
         })),
     ))
+}
+
+/// Worker name から default branch を auto-derive する。
+///
+/// 形式: `<git-user>/<sanitized-name>`。
+///
+/// - `git-user` は `git config user.name` (repo local > global の標準解決) を lowercase + sanitize したもの。
+///   取得失敗・空・sanitize 後 empty なら fallback `worker` prefix を使う。
+/// - `sanitized-name` は `sanitize_for_branch` で git ref 制約に合わせる。
+///
+/// 例: user="Mako", name="sub" → `mako/sub`
+fn derive_default_branch(repo_root: &std::path::Path, name: &str) -> String {
+    let prefix = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["config", "user.name"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| sanitize_for_branch(&s))
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "worker".to_string());
+    format!("{}/{}", prefix, sanitize_for_branch(name))
+}
+
+/// 文字列を git ref として安全な形に変換する。
+///
+/// 規則:
+/// - lowercase
+/// - ASCII alphanumeric + `-` `_` `.` 以外は `-` に置換
+/// - 連続 `-` は 1 つに圧縮
+/// - 先頭/末尾の `-` `.` は trim
+///
+/// ※ 完全な `git check-ref-format` 互換ではないが、 `~^:?*[\\` 等の禁止文字 + 制御文字を確実に除去する。
+fn sanitize_for_branch(s: &str) -> String {
+    let lowered: String = s
+        .trim()
+        .chars()
+        .map(|c| c.to_ascii_lowercase())
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    // 連続 `-` の圧縮
+    let mut compact = String::with_capacity(lowered.len());
+    let mut prev_dash = false;
+    for c in lowered.chars() {
+        if c == '-' {
+            if !prev_dash {
+                compact.push('-');
+            }
+            prev_dash = true;
+        } else {
+            compact.push(c);
+            prev_dash = false;
+        }
+    }
+    compact.trim_matches(|c| c == '-' || c == '.').to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_handles_typical_inputs() {
+        assert_eq!(sanitize_for_branch("Mako"), "mako");
+        assert_eq!(sanitize_for_branch("sub"), "sub");
+        assert_eq!(sanitize_for_branch("Feat/API V2"), "feat-api-v2");
+        assert_eq!(sanitize_for_branch("  spaces  "), "spaces");
+        assert_eq!(sanitize_for_branch("multi---dash"), "multi-dash");
+        assert_eq!(sanitize_for_branch("--leading-trailing--"), "leading-trailing");
+        assert_eq!(sanitize_for_branch("symbols!@#$%"), "symbols");
+        assert_eq!(sanitize_for_branch(""), "");
+    }
 }

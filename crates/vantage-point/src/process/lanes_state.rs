@@ -58,6 +58,9 @@ pub enum LaneStand {
 }
 
 /// Lane の state machine 状態 (Phase A4-2b では Running 固定で pre-populate)
+///
+/// 注意: 「ccws disk dir 存在 + Pane 不在」 は **Lane state ではなく `pid: None` で表現する** 設計。
+/// Active/Inactive 概念は Project 集約 (sidebar 側 client-side computed) として扱い、 Lane state には混ぜない。
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LaneState {
@@ -225,6 +228,82 @@ impl LanePool {
         };
         pool.lanes.insert(addr, info);
         pool
+    }
+
+    /// Phase 5-E (i): SP 起動時に ccws workers_dir をスキャンし、
+    /// 既存の Worker dir を **HD で auto-spawn** して Pool に登録する。
+    ///
+    /// user 指示 (2026-04-30): 「ワーカーが起動してないので、 default で HD ワーカーが起動するように」。
+    /// disk-only Lane (pid:null) を見せて Activate UI を別 sprint に切るのではなく、 起動時点で
+    /// 全 Worker を Active 状態にしておき、 sidebar クリックでそのまま切替できる UX を実現する。
+    ///
+    /// 既存 entry (= 同 addr が既に居る) は skip。 spawn 失敗 (= ccws workspace 破損 等) は
+    /// graceful degrade で `Dead` 状態 + pid:None で record、 routes/lanes.rs の disk-scan
+    /// list 補完が pid:null Lane として表示する fallback path に乗る。
+    pub fn populate_workers_from_disk(
+        &mut self,
+        project_id: &str,
+        project_dir: &std::path::Path,
+    ) {
+        let Some(repo_name) = project_dir.file_name().and_then(|s| s.to_str()) else {
+            return;
+        };
+        if repo_name.is_empty() {
+            return;
+        }
+        let workers = crate::ccws::commands::list_workers_for_repo(repo_name);
+        for entry in workers {
+            let addr = LaneAddress::worker(project_id, &entry.name);
+            if self.lanes.contains_key(&addr) {
+                continue;
+            }
+            let stand = LaneStand::default(); // HD
+            let cmd = crate::process::stand_spawner::build_stand_command(
+                stand,
+                std::path::Path::new(&entry.path),
+            );
+            let (state, pid) = match crate::process::stand_spawner::spawn_with_fallback(
+                &entry.path,
+                &cmd,
+                80,
+                24,
+            ) {
+                Ok((slot, _rx)) => {
+                    let pid = slot.pid();
+                    tracing::info!(
+                        "Worker Lane auto-spawned (Phase 5-E i): addr={} cwd={} pid={}",
+                        addr,
+                        entry.path,
+                        pid
+                    );
+                    self.pty_slots
+                        .insert(addr.clone(), std::sync::Mutex::new(slot));
+                    (LaneState::Running, Some(pid))
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Worker Lane auto-spawn failed (graceful degrade to Dead): addr={} cwd={} err={}",
+                        addr,
+                        entry.path,
+                        e
+                    );
+                    (LaneState::Dead, None)
+                }
+            };
+            let info = LaneInfo {
+                address: addr.clone(),
+                kind: LaneKind::Worker,
+                name: Some(entry.name.clone()),
+                state,
+                stand,
+                created_at: chrono::Utc::now().to_rfc3339(),
+                pid,
+                cwd: entry.path,
+                // 起動時点では git 状態取得しない (list_handler 側で必要時に enrich される)。
+                worker_status: None,
+            };
+            self.lanes.insert(addr, info);
+        }
     }
 
     pub fn list(&self) -> Vec<LaneInfo> {

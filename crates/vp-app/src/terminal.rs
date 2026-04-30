@@ -63,6 +63,14 @@ pub enum AppEvent {
     /// main_area xterm.js が capture → Rust が SidebarState の per-Lane unread count を加算 →
     /// sidebar に push back → badge UI 表示。 active lane への switch で 0 reset。
     OscNotification { lane: String, code: u32 },
+    /// R5 Worker create flow: Add Worker form が送信した `lane:add_worker` の結果を sidebar に
+    /// push back する。 `error` Some の時 form 下に inline error 表示、 None の時 form を閉じる。
+    /// 例: 名前重複 (CONFLICT)、 ccws clone 失敗、 SP 未起動 等。
+    WorkerCreateResult {
+        project_path: String,
+        name: String,
+        error: Option<String>,
+    },
 }
 
 /// xterm.js から IPC で送られてきた JSON メッセージを処理
