@@ -150,7 +150,12 @@ mod tests {
         assert_eq!(cmd.args, vec!["-l".to_string()]);
         let input = cmd.initial_input.expect("HD は initial_input 必須");
         assert!(
-            input.starts_with("tmux new-session -A -s hd-lead-vp"),
+            input.starts_with("tmux start-server"),
+            "Phase 1e + xterm.js 相性改善: tmux server config 必須、 got: {}",
+            input
+        );
+        assert!(
+            input.contains("tmux new-session -A -s hd-lead-vp"),
             "Phase 1e: tmux session ラッパ必須、 got: {}",
             input
         );

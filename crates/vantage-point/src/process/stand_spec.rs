@@ -112,22 +112,36 @@ impl LlmProfile {
 
     /// Phase 1e: tmux session でラップした invocation を組立。
     ///
-    /// shell の中で更に tmux session を立てて、 その内側で LLM CLI を起動する形:
+    /// shell の中で更に tmux session を立てて、 その内側で LLM CLI を起動する形。
+    /// 加えて、 xterm.js (vp-app の WebView) との描画相性を改善する tmux server option を
+    /// session 起動前に設定する (過去の refinement 53 を init_script に internalize):
+    ///
     /// ```text
-    /// tmux new-session -A -s {session} 'claude --continue || claude' || (claude --continue || claude)
+    /// tmux start-server 2>/dev/null
+    /// tmux set-option -g focus-events on        # VP focus 変化を Claude TUI に forward (redraw trigger)
+    /// tmux set-option -g escape-time 0          # Esc 即時応答 (Vim-like editor との相性)
+    /// tmux set-option -ga terminal-overrides ',xterm-256color:Tc'  # 24-bit truecolor 保持
+    /// tmux new-session -A -s {session} 'claude --continue || claude'
+    ///   || (claude --continue || claude)
     /// ```
     ///
     /// - **副舞台 (tmux session)**: agent が `tmux send-keys -t {session}` で他 Lane の HD に
     ///   入力をリレーできる。 `LaneInfo.tmux` 経由で session 名が引ける。
     /// - **外側 `||`**: tmux 不在環境では shell 直で `claude --continue || claude` に降格 (PtySlotFallback mode)。
     /// - **内側 `'...'`**: tmux session 内 pane の起動 cmd。 `||` chain は shell に委譲済の既存挙動を維持。
+    /// - **set-option `2>/dev/null`**: server 不在 / 失敗時は silent fail、 続けて new-session で起動。
     ///
     /// 関連 memory: `mem_1Cac2YvnAhaVRCJemidtkx` (Phase 1 milestone) の design 確定軸。
     pub fn cli_invocation_tmux_wrapped(&self, tmux_session: &str) -> String {
         let inner = self.invocation_chain();
-        // 副舞台 (tmux) 起動成功 → 内側 cmd で LLM auto-launch、 失敗 → 外側 fallback
+        // tmux server config (xterm.js 描画相性改善) → 副舞台 (session) 起動 → LLM auto-launch、
+        // tmux 不在 / 失敗時は外側 fallback で素 LLM CLI に降格。
         format!(
-            "tmux new-session -A -s {session} '{inner}' || ({inner})\n",
+            "tmux start-server 2>/dev/null; \
+tmux set-option -g focus-events on 2>/dev/null; \
+tmux set-option -g escape-time 0 2>/dev/null; \
+tmux set-option -ga terminal-overrides ',xterm-256color:Tc' 2>/dev/null; \
+tmux new-session -A -s {session} '{inner}' || ({inner})\n",
             session = tmux_session,
             inner = inner
         )
@@ -275,9 +289,14 @@ mod tests {
         assert!(cmd.fallback_args.is_none());
 
         let input = cmd.initial_input.expect("HD は initial_input 必須");
-        // Phase 1e: tmux new-session で副舞台を立てる + 不在環境では `||` で素 claude
+        // Phase 1e + xterm.js 相性改善: tmux server config → session 起動 → 副舞台 + 外側 fallback
         assert!(
-            input.starts_with("tmux new-session -A -s hd-lead-vp"),
+            input.starts_with("tmux start-server"),
+            "Phase 1e: tmux server config (xterm.js 相性) 必須、 got: {}",
+            input
+        );
+        assert!(
+            input.contains("tmux new-session -A -s hd-lead-vp"),
             "Phase 1e: tmux session ラッパ必須、 got: {}",
             input
         );
@@ -347,13 +366,47 @@ mod tests {
 
     #[test]
     fn cli_invocation_tmux_wrapped_with_fallback() {
-        // Phase 1e: tmux session でラップした invocation が正しく組立される
+        // Phase 1e + xterm.js 相性改善: tmux server config + session 起動 + 外側 fallback。
+        // 完全一致でなく contains で柔軟にチェック (option 順序や追加に robust)。
         let p = LlmProfile::anthropic_continue();
         let wrapped = p.cli_invocation_tmux_wrapped("hd-lead-vantage-point");
-        assert_eq!(
-            wrapped,
-            "tmux new-session -A -s hd-lead-vantage-point 'claude --continue || claude' || (claude --continue || claude)\n"
+
+        // tmux server config (xterm.js 描画相性)
+        assert!(
+            wrapped.contains("tmux start-server"),
+            "tmux server start 必須: {}",
+            wrapped
         );
+        assert!(
+            wrapped.contains("focus-events on"),
+            "focus-events option 必須: {}",
+            wrapped
+        );
+        assert!(
+            wrapped.contains("escape-time 0"),
+            "escape-time option 必須: {}",
+            wrapped
+        );
+        assert!(
+            wrapped.contains("xterm-256color:Tc"),
+            "terminal-overrides 必須 (24-bit truecolor): {}",
+            wrapped
+        );
+
+        // session 起動 + 内側 LLM cmd + 外側 fallback
+        assert!(
+            wrapped.contains(
+                "tmux new-session -A -s hd-lead-vantage-point 'claude --continue || claude'"
+            ),
+            "session 起動 + 内側 cmd 必須: {}",
+            wrapped
+        );
+        assert!(
+            wrapped.contains("|| (claude --continue || claude)"),
+            "外側 fallback 必須: {}",
+            wrapped
+        );
+        assert!(wrapped.ends_with('\n'), "PTY 入力行確定: {}", wrapped);
     }
 
     #[test]
@@ -366,9 +419,13 @@ mod tests {
             args: vec![],
             fallback_args: None,
         };
-        assert_eq!(
-            p.cli_invocation_tmux_wrapped("hd-lead-vp"),
-            "tmux new-session -A -s hd-lead-vp 'foo' || (foo)\n"
+        let wrapped = p.cli_invocation_tmux_wrapped("hd-lead-vp");
+        assert!(wrapped.contains("tmux start-server"), "got: {}", wrapped);
+        assert!(
+            wrapped.contains("tmux new-session -A -s hd-lead-vp 'foo'"),
+            "got: {}",
+            wrapped
         );
+        assert!(wrapped.contains("|| (foo)"), "got: {}", wrapped);
     }
 }
