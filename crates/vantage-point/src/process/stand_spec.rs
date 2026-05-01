@@ -34,9 +34,14 @@ pub trait LaneStandSpec {
 
     /// PtySlot 起動用 command を構築。
     ///
-    /// Phase 1e: `addr` を受け取って tmux session 名を導出 (HD は副舞台 = tmux session を立てる)。
-    /// addr 不要な spec (TH 等) は `_addr` で受け流せる。
-    fn build(&self, addr: &LaneAddress) -> StandCommand;
+    /// - `addr`: tmux session 名導出 (HD は副舞台 = tmux session を立てる、 TH は未使用)
+    /// - `cwd`: tmux new-session の `-c` flag で pane の working directory を明示。
+    ///   tmux server を複数 SP / 複数 session で共有する時、 最初に server を起動した
+    ///   process の cwd が以降全 new-session の default に継承される **tmux の有名な罠**を
+    ///   回避するため、 session 単位で cwd を明示する必要がある。
+    ///
+    /// addr / cwd 不要な spec は `_addr` / `_cwd` で受け流せる。
+    fn build(&self, addr: &LaneAddress, cwd: &str) -> StandCommand;
 }
 
 /// TH 🤚 = 舞台を立てる能力 ─ 素 shell PTY (login mode)。
@@ -50,9 +55,10 @@ impl LaneStandSpec for TheHand {
         "the_hand"
     }
 
-    fn build(&self, _addr: &LaneAddress) -> StandCommand {
-        // TH は素 shell なので addr (tmux session 名) は使わない。 Phase 2 で TH 用
-        // init_script (vp_lane_init_script Phase 1) を扱う時に addr を活用予定。
+    fn build(&self, _addr: &LaneAddress, _cwd: &str) -> StandCommand {
+        // TH は素 shell なので addr / cwd は build に未使用 (PtySlot::spawn の cwd 引数で
+        // 指定される shell の起動 cwd で十分)。 Phase 2 で TH 用 init_script
+        // (vp_lane_init_script Phase 1) を扱う時に addr / cwd を活用予定。
         StandCommand {
             program: shell_path(),
             args: vec!["-l".to_string()],
@@ -132,16 +138,22 @@ impl LlmProfile {
     /// - **set-option `2>/dev/null`**: server 不在 / 失敗時は silent fail、 続けて new-session で起動。
     ///
     /// 関連 memory: `mem_1Cac2YvnAhaVRCJemidtkx` (Phase 1 milestone) の design 確定軸。
-    pub fn cli_invocation_tmux_wrapped(&self, tmux_session: &str) -> String {
+    pub fn cli_invocation_tmux_wrapped(&self, tmux_session: &str, cwd: &str) -> String {
         let inner = self.invocation_chain();
+        // shell-safe quote: cwd 内の `'` を `'\''` で escape (POSIX shell single-quote escape pattern)。
+        // 通常の project_dir / ccws workspace path には quote escape 不要だが、 robust に。
+        let cwd_quoted = cwd.replace('\'', r"'\''");
         // tmux server config (xterm.js 描画相性改善) → 副舞台 (session) 起動 → LLM auto-launch、
         // tmux 不在 / 失敗時は外側 fallback で素 LLM CLI に降格。
+        // `-c '{cwd}'`: pane の working directory を明示。 tmux server を共有時、 最初に server を
+        // 起動した process の cwd が以降全 new-session の default に継承される罠を回避。
         format!(
             "tmux start-server 2>/dev/null; \
 tmux set-option -g focus-events on 2>/dev/null; \
 tmux set-option -g escape-time 0 2>/dev/null; \
 tmux set-option -ga terminal-overrides ',xterm-256color:Tc' 2>/dev/null; \
-tmux new-session -A -s {session} '{inner}' || ({inner})\n",
+tmux new-session -A -c '{cwd}' -s {session} '{inner}' || ({inner})\n",
+            cwd = cwd_quoted,
             session = tmux_session,
             inner = inner
         )
@@ -197,7 +209,7 @@ impl LaneStandSpec for LlmStand {
         &self.profile.name
     }
 
-    fn build(&self, addr: &LaneAddress) -> StandCommand {
+    fn build(&self, addr: &LaneAddress, cwd: &str) -> StandCommand {
         // Phase 1e (副舞台付き shell-hosted): TH 借用で shell を立て、 その中で
         // tmux session を立てる二段構造。
         //
@@ -207,9 +219,11 @@ impl LaneStandSpec for LlmStand {
         // 副舞台 (tmux) があれば agent が `tmux send-keys` で他 Lane の HD に入力を
         // リレーできる。 tmux 不在環境では shell 内 `||` で素 claude にフォールバック。
         // session 名 derivation は HD prefix を仮定 (将来 Gemini Stand 等で別 prefix 化)。
-        let mut cmd = TheHand.build(addr);
+        // cwd は tmux new-session の `-c` flag で session の pane working directory を明示
+        // (tmux server 共有罠の回避)。
+        let mut cmd = TheHand.build(addr, cwd);
         let session = addr.tmux_session_name(LaneStand::HeavensDoor);
-        cmd.initial_input = Some(self.profile.cli_invocation_tmux_wrapped(&session));
+        cmd.initial_input = Some(self.profile.cli_invocation_tmux_wrapped(&session, cwd));
         cmd.fallback_args = None;
         cmd
     }
@@ -260,7 +274,7 @@ mod tests {
 
     #[test]
     fn the_hand_builds_shell_login() {
-        let cmd = TheHand.build(&test_addr());
+        let cmd = TheHand.build(&test_addr(), "/tmp");
         assert!(
             cmd.program.contains("zsh") || cmd.program.contains("bash"),
             "shell expected zsh/bash, got {}",
@@ -277,7 +291,7 @@ mod tests {
         // Phase 1e: HD initial_input は tmux session でラップされた invocation
         let stand = LlmStand::heavens_door();
         assert_eq!(stand.name(), "anthropic-claude-continue");
-        let cmd = stand.build(&test_addr());
+        let cmd = stand.build(&test_addr(), "/tmp");
         // shell-hosted (program は shell)
         assert!(
             cmd.program.contains("zsh") || cmd.program.contains("bash"),
@@ -296,8 +310,8 @@ mod tests {
             input
         );
         assert!(
-            input.contains("tmux new-session -A -s hd-lead-vp"),
-            "Phase 1e: tmux session ラッパ必須、 got: {}",
+            input.contains("tmux new-session -A -c '/tmp' -s hd-lead-vp"),
+            "Phase 1e: tmux session ラッパ + cwd 明示 (-c) 必須、 got: {}",
             input
         );
         assert!(
@@ -319,14 +333,14 @@ mod tests {
         let addr = test_addr();
         let hd_spec = LaneStand::HeavensDoor.to_spec();
         assert_eq!(hd_spec.name(), "anthropic-claude-continue");
-        let hd_cmd = hd_spec.build(&addr);
+        let hd_cmd = hd_spec.build(&addr, "/tmp");
         // HD は shell-hosted + tmux wrapped (Phase 1e)
         assert!(hd_cmd.program.contains("zsh") || hd_cmd.program.contains("bash"));
         assert!(hd_cmd.initial_input.is_some());
 
         let th_spec = LaneStand::TheHand.to_spec();
         assert_eq!(th_spec.name(), "the_hand");
-        let th_cmd = th_spec.build(&addr);
+        let th_cmd = th_spec.build(&addr, "/tmp");
         assert!(th_cmd.program.contains("zsh") || th_cmd.program.contains("bash"));
         // TH は initial_input なし (素 shell)
         assert!(th_cmd.initial_input.is_none());
@@ -369,7 +383,8 @@ mod tests {
         // Phase 1e + xterm.js 相性改善: tmux server config + session 起動 + 外側 fallback。
         // 完全一致でなく contains で柔軟にチェック (option 順序や追加に robust)。
         let p = LlmProfile::anthropic_continue();
-        let wrapped = p.cli_invocation_tmux_wrapped("hd-lead-vantage-point");
+        let wrapped =
+            p.cli_invocation_tmux_wrapped("hd-lead-vantage-point", "/Users/foo/repos/bar");
 
         // tmux server config (xterm.js 描画相性)
         assert!(
@@ -393,12 +408,13 @@ mod tests {
             wrapped
         );
 
-        // session 起動 + 内側 LLM cmd + 外側 fallback
+        // session 起動 + cwd 明示 (-c) + 内側 LLM cmd + 外側 fallback
+        // tmux server 共有時の cwd 継承罠を防ぐため、 session 単位で cwd 明示が必須。
         assert!(
             wrapped.contains(
-                "tmux new-session -A -s hd-lead-vantage-point 'claude --continue || claude'"
+                "tmux new-session -A -c '/Users/foo/repos/bar' -s hd-lead-vantage-point 'claude --continue || claude'"
             ),
-            "session 起動 + 内側 cmd 必須: {}",
+            "session 起動 + cwd 明示 + 内側 cmd 必須: {}",
             wrapped
         );
         assert!(
@@ -419,13 +435,28 @@ mod tests {
             args: vec![],
             fallback_args: None,
         };
-        let wrapped = p.cli_invocation_tmux_wrapped("hd-lead-vp");
+        let wrapped = p.cli_invocation_tmux_wrapped("hd-lead-vp", "/tmp");
         assert!(wrapped.contains("tmux start-server"), "got: {}", wrapped);
         assert!(
-            wrapped.contains("tmux new-session -A -s hd-lead-vp 'foo'"),
+            wrapped.contains("tmux new-session -A -c '/tmp' -s hd-lead-vp 'foo'"),
             "got: {}",
             wrapped
         );
         assert!(wrapped.contains("|| (foo)"), "got: {}", wrapped);
+    }
+
+    #[test]
+    fn cli_invocation_tmux_wrapped_escapes_single_quote_in_cwd() {
+        // POSIX shell single-quote escape pattern: `'` → `'\''`。
+        // 通常の project_dir / ccws workspace path には quote 不要だが、 robust に。
+        let p = LlmProfile::anthropic_continue();
+        // cwd に `'` を含むケース (例: `/tmp/foo's bar`)
+        let wrapped = p.cli_invocation_tmux_wrapped("hd-lead-x", "/tmp/foo's bar");
+        // `/tmp/foo's bar` → `/tmp/foo'\''s bar` でシングルクォート閉じ→escape→再開
+        assert!(
+            wrapped.contains("-c '/tmp/foo'\\''s bar'"),
+            "single quote escape (POSIX pattern) 必須: {}",
+            wrapped
+        );
     }
 }
