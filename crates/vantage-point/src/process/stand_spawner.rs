@@ -123,10 +123,11 @@ pub fn spawn_with_fallback(
 /// Phase 1e: `addr` を受け取って HD spec の tmux session 名導出に使う。
 /// TH spec は addr 未使用 (将来 init_script 対応で活用予定)。
 ///
-/// `cwd` は将来 cwd-aware command (例: project_dir に応じた custom env) のため
-/// 受け取るが、 6-E でも未使用 (Phase 6.5 の Lane manifest で活用予定)。
-pub fn build_stand_command(stand: LaneStand, addr: &LaneAddress, _cwd: &Path) -> StandCommand {
-    stand.to_spec().build(addr)
+/// `cwd` は HD spec の `tmux new-session -c {cwd}` で pane の working directory を
+/// 明示するために使う (tmux server 共有時の cwd 継承罠を回避)。 TH spec は未使用。
+pub fn build_stand_command(stand: LaneStand, addr: &LaneAddress, cwd: &Path) -> StandCommand {
+    let cwd_str = cwd.to_string_lossy();
+    stand.to_spec().build(addr, &cwd_str)
 }
 
 #[cfg(test)]
@@ -155,8 +156,8 @@ mod tests {
             input
         );
         assert!(
-            input.contains("tmux new-session -A -s hd-lead-vp"),
-            "Phase 1e: tmux session ラッパ必須、 got: {}",
+            input.contains("tmux new-session -A -c '/tmp' -s hd-lead-vp"),
+            "Phase 1e: tmux session ラッパ + cwd 明示 (-c) 必須、 got: {}",
             input
         );
         assert!(input.contains("'claude --continue || claude'"));
