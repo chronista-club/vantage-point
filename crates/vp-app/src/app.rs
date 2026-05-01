@@ -2097,89 +2097,10 @@ fn lane_address_key(addr: &crate::client::LaneAddressWire) -> String {
 
 /// App のエントリポイント
 pub fn run() -> anyhow::Result<()> {
-    // VP-100 follow-up: KDL 1-line formatter で構造化ログ出力
-    // (color disable + KdlFormatter で機械可読 / grep 可能な log を吐く)
-    //
-    // ## file writer に切替 (重要)
-    //
-    // Win GUI subsystem の vp-app では stderr handle が NUL 化される (CONIN$/CONOUT$ も無い)。
-    // PowerShell の Start-Process -RedirectStandardOutput でも GUI subsystem に対しては
-    // 確実に redirect が効かない。
-    //
-    // 解決: tracing-appender で **file に直接書き込む**。
-    // Path: `%LOCALAPPDATA%\VantagePoint-dev\app.kdl.log` (Win)
-    //       `~/.local/share/vantage-point-dev/app.kdl.log` (Linux/Mac fallback)
-    //
-    // mise run win の polling tail が同 file を見る。
-    use tracing_subscriber::layer::SubscriberExt;
-    use tracing_subscriber::util::SubscriberInitExt;
-    // Phase A (2026-04-27, mem_1CaSiJkD9HATDY2srrv6D4):
-    // macOS では `~/Library/Logs/Vantage/` に統一。
-    // mise run logs / Console.app / TheWorld daemon log と同じ dir で一緒に tail できる。
-    // Win/Linux は既存挙動を維持 (Phase B で揃える)。
-    let log_dir = if cfg!(target_os = "macos") {
-        dirs::home_dir()
-            .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join("Library/Logs/Vantage")
-    } else {
-        // Win: `%LOCALAPPDATA%\VantagePoint(-dev)\Logs\`
-        let app_dir = if cfg!(debug_assertions) {
-            "VantagePoint-dev"
-        } else {
-            "VantagePoint"
-        };
-        dirs::data_local_dir()
-            .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join(app_dir)
-            .join("Logs")
-    };
-    let _ = std::fs::create_dir_all(&log_dir);
-    let file_appender = tracing_appender::rolling::never(&log_dir, "app.kdl.log");
-    // Phase 5-C: log filter の noise 抑制 (2026-04-28 観測: 23MB log の 70% が hyper_util::pool、
-    //   25% が vp_app::terminal の PTY I/O event だった)。 vp_app の他モジュールは info で残し、
-    //   noise 源を warn まで上げる。 必要なら RUST_LOG 環境変数で override 可。
-    //
-    // Phase 5-D fix: ユーザ shell の `RUST_LOG=vantage_point=debug` 等が `try_from_default_env` で
-    //   default を完全 override してしまい、 hyper_util の debug log が大量に残っていた。
-    //   読み込み後に `add_directive` で noise 源を強制 warn 上書きする (same-target は replace)。
-    //
-    // Phase 5-D follow-up (2026-05-01): `RUST_LOG=vantage_point=debug` のように VP module を
-    //   含まない設定だと、 EnvFilter のデフォ「明示されてない target は OFF」 仕様で **vp_app::* が
-    //   完全 silent** になる回帰が発生 (= `[osc99-keys:...]` / `[term-title:...]` 等の dbg log が
-    //   どこにも flow しない)。 user が `vp_app=...` を明示してれば尊重、 無ければ `vp_app=info` を
-    //   default で追加して dbg log を見える化する。
-    let mut env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| {
-            tracing_subscriber::EnvFilter::new(
-                "vp_app=info,vp_app::terminal=warn,vantage_point=info",
-            )
-        })
-        .add_directive("hyper_util=warn".parse().expect("static directive"))
-        .add_directive("hyper=warn".parse().expect("static directive"))
-        .add_directive("reqwest=warn".parse().expect("static directive"))
-        .add_directive("h2=warn".parse().expect("static directive"))
-        .add_directive("rustls=warn".parse().expect("static directive"));
-    let user_rust_log = std::env::var("RUST_LOG").unwrap_or_default();
-    if !user_rust_log
-        .split(',')
-        .any(|d| d.trim().starts_with("vp_app"))
-    {
-        env_filter = env_filter.add_directive("vp_app=info".parse().expect("static directive"));
-    }
-    let _ = tracing_subscriber::registry()
-        .with(env_filter)
-        .with(
-            tracing_subscriber::fmt::layer()
-                .with_ansi(false)
-                .event_format(crate::log_format::KdlFormatter)
-                .with_writer(file_appender),
-        )
-        .try_init();
-
-    tracing::info!(
-        log_dir = %log_dir.display(),
-        "vp-app 起動 (Creo UI mint-dark)"
-    );
+    // R-1 (`docs/design/11-vp-app-refactor.md` § 3.1 / `mem_1CaaaDoXHZvhR46ZfLN6jx`):
+    //   tracing init を `crate::log_init::init_tracing()` に切り出し済。
+    //   filter resilience (PR #235) + appender + KdlFormatter wiring + 起動ログを内包。
+    let _log = crate::log_init::init_tracing();
 
     let event_loop = EventLoopBuilder::<AppEvent>::with_user_event().build();
 
