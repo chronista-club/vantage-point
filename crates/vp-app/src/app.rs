@@ -1008,7 +1008,7 @@ const SIDEBAR_HTML: &str = concat!(
     return kind || '';
   }
   // Lane address を Display 形 ("<project>/lead" / "<project>/worker/<name>") に変換。
-  // Rust 側 `lane_address_key()` と完全一致させる (active selection の比較に使うため)。
+  // Rust 側 `LaneAddressWire::key()` と完全一致させる (active selection の比較に使うため)。
   function laneAddressKey(lane) {
     if (!lane || !lane.address) return '';
     const a = lane.address;
@@ -2008,7 +2008,7 @@ fn handle_sidebar_ipc(
                 .map(|lanes| {
                     lanes
                         .iter()
-                        .any(|l| lane_address_key(&l.address) == address)
+                        .any(|l| l.address.key() == address)
                 })
                 .unwrap_or(false);
             if !lanes_exist {
@@ -2083,17 +2083,9 @@ fn handle_sidebar_ipc(
     out
 }
 
-/// Lane address (LaneAddressWire) を Display 形の文字列にする。
-///
-/// 形式: `"<project>/lead"` / `"<project>/worker/<name>"`
-/// JS 側 `laneAddressKey()` と完全に一致させる必要がある (active 比較に使うため)。
-fn lane_address_key(addr: &crate::client::LaneAddressWire) -> String {
-    match (addr.kind.as_str(), addr.name.as_deref()) {
-        ("worker", Some(n)) => format!("{}/worker/{}", addr.project, n),
-        ("worker", None) => format!("{}/worker/<unnamed>", addr.project),
-        _ => format!("{}/{}", addr.project, addr.kind),
-    }
-}
+// R-0 (`docs/design/11-vp-app-refactor.md` § 3.0a / `mem_1CaaaDoXHZvhR46ZfLN6jx`):
+//   旧 `lane_address_key(&LaneAddressWire) -> String` 関数は `lane.rs::LaneAddressWire::key()`
+//   メソッドに移管 (G2 解消、 3 重実装の 1 元化)。 caller は `wire.key()` で同等の文字列を取れる。
 
 /// App のエントリポイント
 pub fn run() -> anyhow::Result<()> {
@@ -2390,7 +2382,7 @@ pub fn run() -> anyhow::Result<()> {
                     .filter(|saved| {
                         lanes
                             .iter()
-                            .any(|l| &lane_address_key(&l.address) == *saved)
+                            .any(|l| &l.address.key() == *saved)
                     })
                     .cloned();
                 // Phase 5-E: auto-select は pid あり (= Active = Pane 起動済) な Lane のみ対象。
@@ -2407,7 +2399,7 @@ pub fn run() -> anyhow::Result<()> {
                     tracing::info!("session 復元: active_lane = {}", saved);
                     Some(saved)
                 } else if auto_select {
-                    first_active.map(|l| lane_address_key(&l.address))
+                    first_active.map(|l| l.address.key())
                 } else {
                     None
                 };
@@ -2419,10 +2411,10 @@ pub fn run() -> anyhow::Result<()> {
                     .map(|prev| {
                         let new_set: std::collections::HashSet<String> = lanes
                             .iter()
-                            .map(|l| lane_address_key(&l.address))
+                            .map(|l| l.address.key())
                             .collect();
                         prev.iter()
-                            .map(|l| lane_address_key(&l.address))
+                            .map(|l| l.address.key())
                             .filter(|addr| !new_set.contains(addr))
                             .collect()
                     })
@@ -2449,7 +2441,7 @@ pub fn run() -> anyhow::Result<()> {
                             if lane.pid.is_none() {
                                 continue;
                             }
-                            let addr_str = lane_address_key(&lane.address);
+                            let addr_str = lane.address.key();
                             lane_js::ensure_lane(&main_view, &addr_str, port);
                         }
                     }

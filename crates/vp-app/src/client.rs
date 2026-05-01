@@ -14,6 +14,11 @@
 use anyhow::Result;
 use serde::Deserialize;
 
+// R-0 (`docs/design/11-vp-app-refactor.md` § 3.0a / `mem_1CaaaDoXHZvhR46ZfLN6jx`):
+//   `LaneAddressWire` の正規定義は `lane.rs` に移管 (G2 解消、 3 重実装の 1 元化)。
+//   client.rs は consumer として use で bring-into-scope する。
+use crate::lane::LaneAddressWire;
+
 /// TheWorld の既定ポート
 pub const DEFAULT_WORLD_PORT: u16 = 32000;
 
@@ -165,20 +170,8 @@ struct ProcessesResponse {
     processes: Vec<RunningProcessInfo>,
 }
 
-/// Lane address (SP `/api/lanes` レスポンス要素の field)
-///
-/// 関連 memory: mem_1CaSugEk1W2vr5TAdfDn5D (多 scope architecture)、
-/// mem_1CaSuu8xMyWqXzLiKHmYdV (使用範囲ベース scope rule)
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct LaneAddressWire {
-    #[serde(default)]
-    pub project: String,
-    /// "lead" | "worker"
-    #[serde(default)]
-    pub kind: String,
-    #[serde(default)]
-    pub name: Option<String>,
-}
+// `LaneAddressWire` の定義は `crate::lane::LaneAddressWire` に移管 (R-0、 G2 解消)。
+// 本 file 上部の `use crate::lane::LaneAddressWire;` で bring-into-scope 済。
 
 /// Lane info (SP `/api/lanes` レスポンス要素)
 ///
