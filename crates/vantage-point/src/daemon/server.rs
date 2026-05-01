@@ -44,6 +44,11 @@ pub struct DaemonState {
     pub running_processes: Option<Arc<RwLock<HashMap<String, RunningProcess>>>>,
     /// プロジェクト情報（ProcessManagerCapability と共有、状態更新用）
     pub projects: Option<Arc<RwLock<HashMap<String, crate::capability::ProjectInfo>>>>,
+    /// Phase 1b: 各 Project の Lane registry（ProcessManagerCapability と共有）
+    /// SP が register payload に lanes を載せて push、 disconnect で全 Lane drop。
+    /// agent (HD on Claude CLI) が `GET /api/lanes` で resolve するための cache。
+    pub lane_registry:
+        Option<Arc<RwLock<HashMap<String, Vec<crate::process::lanes_state::LaneInfo>>>>>,
 }
 
 impl Default for DaemonState {
@@ -55,6 +60,7 @@ impl Default for DaemonState {
             started_at: Instant::now(),
             running_processes: None,
             projects: None,
+            lane_registry: None,
         }
     }
 }
@@ -70,9 +76,11 @@ impl DaemonState {
         mut self,
         running_processes: Arc<RwLock<HashMap<String, RunningProcess>>>,
         projects: Arc<RwLock<HashMap<String, crate::capability::ProjectInfo>>>,
+        lane_registry: Arc<RwLock<HashMap<String, Vec<crate::process::lanes_state::LaneInfo>>>>,
     ) -> Self {
         self.running_processes = Some(running_processes);
         self.projects = Some(projects);
+        self.lane_registry = Some(lane_registry);
         self
     }
 }
@@ -736,11 +744,14 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
     if let Some(ref running_processes) = state.running_processes {
         let running_processes = running_processes.clone();
         let projects = state.projects.clone();
+        // Phase 1b: lane_registry も capture (register payload の lanes を cache する)
+        let lane_registry = state.lane_registry.clone();
         server
             .register_channel("registry", {
                 move |_ctx, stream| {
                     let running_processes = running_processes.clone();
                     let projects = projects.clone();
+                    let lane_registry = lane_registry.clone();
                     async move {
                         let channel = UnisonChannel::new(stream);
                         let mut registered_name: Option<String> = None;
@@ -813,6 +824,22 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                         .await
                                         .insert(path_key.clone(), process);
 
+                                    // Phase 1b: lanes payload を lane_registry に push
+                                    // payload["lanes"] が不在 or 不正なら空 Vec で記録 (古 SP との互換)
+                                    if let Some(ref lr) = lane_registry {
+                                        let lanes: Vec<
+                                            crate::process::lanes_state::LaneInfo,
+                                        > = serde_json::from_value(payload["lanes"].clone())
+                                            .unwrap_or_default();
+                                        let lane_count = lanes.len();
+                                        lr.write().await.insert(path_key.clone(), lanes);
+                                        tracing::debug!(
+                                            "Registry: SP '{}' lanes 登録 ({} entries)",
+                                            project_name,
+                                            lane_count
+                                        );
+                                    }
+
                                     tracing::info!(
                                         "Registry: SP '{}' 登録 (port={}, pid={}, key={})",
                                         project_name,
@@ -835,7 +862,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                 }
                                 "unregister" => {
                                     if let Some(ref path_key) = registered_name {
-                                        // ロック順序統一: projects → running_processes
+                                        // ロック順序統一: projects → running_processes → lane_registry
                                         // スコープブロックで projects ロックを先に解放
                                         if let Some(ref projects) = projects {
                                             let mut projs = projects.write().await;
@@ -846,6 +873,10 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                         } // ← projects ロック解放
                                         {
                                             running_processes.write().await.remove(path_key);
+                                        }
+                                        // Phase 1b: lane_registry からも remove
+                                        if let Some(ref lr) = lane_registry {
+                                            lr.write().await.remove(path_key);
                                         }
 
                                         tracing::info!(
@@ -935,6 +966,11 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                 let mut procs = running_processes.write().await;
                                 procs.remove(&name).is_some()
                             };
+
+                            // Phase 1b: lane_registry からも remove (disconnect = 全 Lane drop)
+                            if let Some(ref lr) = lane_registry {
+                                lr.write().await.remove(&name);
+                            }
 
                             if removed {
                                 tracing::info!(
