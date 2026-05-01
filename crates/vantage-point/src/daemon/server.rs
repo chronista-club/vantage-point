@@ -47,6 +47,7 @@ pub struct DaemonState {
     /// Phase 1b: 各 Project の Lane registry（ProcessManagerCapability と共有）
     /// SP が register payload に lanes を載せて push、 disconnect で全 Lane drop。
     /// agent (HD on Claude CLI) が `GET /api/lanes` で resolve するための cache。
+    #[allow(clippy::type_complexity)]
     pub lane_registry:
         Option<Arc<RwLock<HashMap<String, Vec<crate::process::lanes_state::LaneInfo>>>>>,
 }
@@ -72,6 +73,7 @@ impl DaemonState {
     }
 
     /// ProcessManagerCapability の running_processes を共有する
+    #[allow(clippy::type_complexity)]
     pub fn with_running_processes(
         mut self,
         running_processes: Arc<RwLock<HashMap<String, RunningProcess>>>,

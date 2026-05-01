@@ -116,8 +116,8 @@ pub struct ProcessManagerCapability {
     /// Phase 1b: 各 Project の Lane registry（キー: 正規化パス）—
     /// SP が register payload に lanes を載せて push、 disconnect で全 Lane drop。
     /// agent (HD on Claude CLI) が `GET /api/lanes` で resolve するための cache。
-    lane_registry:
-        Arc<RwLock<HashMap<String, Vec<crate::process::lanes_state::LaneInfo>>>>,
+    #[allow(clippy::type_complexity)]
+    lane_registry: Arc<RwLock<HashMap<String, Vec<crate::process::lanes_state::LaneInfo>>>>,
     /// 設定
     config: Option<Config>,
     /// vpバイナリパス
@@ -158,6 +158,7 @@ impl ProcessManagerCapability {
     }
 
     /// Phase 1b: lane_registry の共有参照を取得（DaemonState と共有するため）
+    #[allow(clippy::type_complexity)]
     pub fn lane_registry_ref(
         &self,
     ) -> Arc<RwLock<HashMap<String, Vec<crate::process::lanes_state::LaneInfo>>>> {
@@ -1369,7 +1370,10 @@ mod tests {
         // 同じ cap から複数回 lane_registry_ref() を呼んでも内部 HashMap は共有される
         let cap = ProcessManagerCapability::new();
         let lr1 = cap.lane_registry_ref();
-        assert!(lr1.read().await.is_empty(), "新規 cap の lane_registry は empty");
+        assert!(
+            lr1.read().await.is_empty(),
+            "新規 cap の lane_registry は empty"
+        );
 
         // Arc 共有確認: 1 つのハンドル経由で書き込んで、もう 1 つで読める
         lr1.write()
