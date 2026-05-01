@@ -492,6 +492,7 @@ pub async fn run(
             post(world::world_remove_project),
         )
         .route("/api/world/processes", get(world::world_list_processes))
+        .route("/api/world/lanes", get(world::world_list_lanes))
         .route(
             "/api/world/processes/{project_name}/start",
             post(world::world_start_process),
@@ -563,6 +564,7 @@ pub async fn run(
         &state.project_dir,
         pid,
         &terminal_token,
+        state.lane_pool.clone(),
         shutdown_token.clone(),
     );
 
@@ -767,6 +769,7 @@ pub async fn run_world(port: u16) -> Result<()> {
             post(world::world_remove_project),
         )
         .route("/api/world/processes", get(world::world_list_processes))
+        .route("/api/world/lanes", get(world::world_list_lanes))
         .route(
             "/api/world/processes/{project_name}/start",
             post(world::world_start_process),

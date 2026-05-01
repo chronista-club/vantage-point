@@ -604,3 +604,99 @@ pub async fn world_msgbox_list(
         })),
     )
 }
+
+// =============================================================================
+// Lane Registry — Phase 1c: agent (HD on Claude CLI) が tmux session 名を引く
+// =============================================================================
+
+/// Phase 1c: Lane filter query
+#[derive(serde::Deserialize)]
+pub struct LanesQuery {
+    /// Project name filter (LaneAddress.project)
+    pub project: Option<String>,
+    /// Lane name filter — Lead は "lead"、 Worker は name (例: "sub")
+    pub lane: Option<String>,
+    /// Stand kind filter — "heavens_door" or "the_hand"
+    pub stand: Option<String>,
+}
+
+/// GET /api/world/lanes — Phase 1c: Currents の Lane → tmux session resolver
+///
+/// SP が QUIC registry channel で push した lanes (`LaneInfo` の Vec) を全 project に
+/// 渡って flatten + filter で返す。 agent (HD on Claude CLI) はこの response を見て
+/// `vp tmux send-keys -t <session>` の宛先を決める。
+///
+/// query parameter:
+/// - `project=<name>`: 特定 project のみ
+/// - `lane=<name>`: 特定 Lane のみ ("lead" or worker name)
+/// - `stand=<heavens_door|the_hand>`: 特定 Stand のみ (LaneInfo.stand に match)
+///
+/// disconnect された SP の Lane は registry から消えるので、 response = Currents 限定。
+pub async fn world_list_lanes(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(query): axum::extract::Query<LanesQuery>,
+) -> impl IntoResponse {
+    use crate::process::lanes_state::{LaneKind, LaneStand};
+
+    let Some(world) = &state.world else {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "World not available"})),
+        );
+    };
+
+    let world_cap = world.read().await;
+    let lane_registry = world_cap.lane_registry_ref();
+    let registry = lane_registry.read().await;
+
+    // 全 project の Lane を flatten + filter (project / lane / stand)
+    let mut lanes: Vec<crate::process::lanes_state::LaneInfo> = registry
+        .values()
+        .flatten()
+        .filter(|l| {
+            query
+                .project
+                .as_deref()
+                .is_none_or(|p| l.address.project == p)
+        })
+        .filter(|l| {
+            query.lane.as_deref().is_none_or(|n| {
+                match (&l.address.kind, l.address.name.as_deref()) {
+                    (LaneKind::Lead, _) => n == "lead",
+                    (LaneKind::Worker, Some(name)) => name == n,
+                    (LaneKind::Worker, None) => false,
+                }
+            })
+        })
+        .filter(|l| {
+            query.stand.as_deref().is_none_or(|s| {
+                let stand_str = match l.stand {
+                    LaneStand::HeavensDoor => "heavens_door",
+                    LaneStand::TheHand => "the_hand",
+                };
+                stand_str == s
+            })
+        })
+        .cloned()
+        .collect();
+
+    // 順序: project 名昇順 → 同 project 内は Lead 先 → 続いて Worker (created_at 昇順)
+    lanes.sort_by(|a, b| {
+        use std::cmp::Ordering;
+        a.address.project.cmp(&b.address.project).then_with(|| {
+            match (a.address.kind, b.address.kind) {
+                (LaneKind::Lead, LaneKind::Worker) => Ordering::Less,
+                (LaneKind::Worker, LaneKind::Lead) => Ordering::Greater,
+                _ => a.created_at.cmp(&b.created_at),
+            }
+        })
+    });
+
+    (
+        axum::http::StatusCode::OK,
+        Json(serde_json::json!({
+            "count": lanes.len(),
+            "lanes": lanes,
+        })),
+    )
+}
