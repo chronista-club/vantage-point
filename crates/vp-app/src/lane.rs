@@ -149,21 +149,16 @@ impl From<&LaneAddressWire> for LaneAddress {
 /// Lane で起動する Stand (LaneStand)
 ///
 /// architecture: Lane と Stand は 1:1。Lane あたり 1 つの Stand が起動する。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum LaneStand {
     /// HD 📖 Heaven's Door — Claude CLI (default)
+    /// memory rule: Lead/Worker の default は HD (Claude CLI)
+    #[default]
     HeavensDoor,
     /// TH ✋ The Hand — 素 shell (zsh / bash 等)
     TheHand,
     // 将来: GoldExperience(GeConfig) — eval-as-pane
     // 将来: PaisleyPark(PpConfig) — canvas 直 mount?
-}
-
-impl Default for LaneStand {
-    fn default() -> Self {
-        // memory rule: Lead/Worker の default は HD (Claude CLI)
-        LaneStand::HeavensDoor
-    }
 }
 
 impl fmt::Display for LaneStand {

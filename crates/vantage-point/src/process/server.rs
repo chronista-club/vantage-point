@@ -492,6 +492,7 @@ pub async fn run(
             post(world::world_remove_project),
         )
         .route("/api/world/processes", get(world::world_list_processes))
+        .route("/api/world/lanes", get(world::world_list_lanes))
         .route(
             "/api/world/processes/{project_name}/start",
             post(world::world_start_process),
@@ -563,6 +564,7 @@ pub async fn run(
         &state.project_dir,
         pid,
         &terminal_token,
+        state.lane_pool.clone(),
         shutdown_token.clone(),
     );
 
@@ -767,6 +769,7 @@ pub async fn run_world(port: u16) -> Result<()> {
             post(world::world_remove_project),
         )
         .route("/api/world/processes", get(world::world_list_processes))
+        .route("/api/world/lanes", get(world::world_list_lanes))
         .route(
             "/api/world/processes/{project_name}/start",
             post(world::world_start_process),
@@ -850,9 +853,14 @@ pub async fn run_world(port: u16) -> Result<()> {
     // ProcessManagerCapability の running_processes を DaemonState と共有
     let running_processes_ref = world_cap.read().await.running_processes_ref();
     let projects_ref = world_cap.read().await.projects_ref();
+    // Phase 1b: lane_registry も共有 (SP register の lanes payload を cache する)
+    let lane_registry_ref = world_cap.read().await.lane_registry_ref();
     let daemon_state = std::sync::Arc::new(
-        crate::daemon::server::DaemonState::new()
-            .with_running_processes(running_processes_ref, projects_ref),
+        crate::daemon::server::DaemonState::new().with_running_processes(
+            running_processes_ref,
+            projects_ref,
+            lane_registry_ref,
+        ),
     );
     let daemon_handle = tokio::spawn(crate::daemon::server::start_daemon_server(
         daemon_state,

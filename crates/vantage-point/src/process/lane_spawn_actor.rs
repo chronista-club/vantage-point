@@ -230,6 +230,8 @@ async fn handle_cmd(cmd: LaneCmd, pool: Arc<RwLock<LanePool>>, semaphore: Arc<Se
         cwd,
         // 起動時点では git 状態取得しない (list_handler 側で必要時に enrich)。
         worker_status: None,
+        // Phase 1a: tmux address は spawn 結果から Vec に push (Step 0/1e で配線)
+        tmux: Vec::new(),
     };
     let mut pool_write = pool.write().await;
     if pool_write.get(&addr).is_some() {

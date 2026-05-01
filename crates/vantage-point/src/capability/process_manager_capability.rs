@@ -113,6 +113,11 @@ pub struct ProcessManagerCapability {
     running_processes: Arc<RwLock<HashMap<String, RunningProcess>>>,
     /// 前回のヘルスチェックで稼働中だった Process（クラッシュ検知用）
     previously_running: Arc<RwLock<HashMap<String, RunningProcess>>>,
+    /// Phase 1b: 各 Project の Lane registry（キー: 正規化パス）—
+    /// SP が register payload に lanes を載せて push、 disconnect で全 Lane drop。
+    /// agent (HD on Claude CLI) が `GET /api/lanes` で resolve するための cache。
+    #[allow(clippy::type_complexity)]
+    lane_registry: Arc<RwLock<HashMap<String, Vec<crate::process::lanes_state::LaneInfo>>>>,
     /// 設定
     config: Option<Config>,
     /// vpバイナリパス
@@ -130,6 +135,7 @@ impl ProcessManagerCapability {
             project_order: Arc::new(RwLock::new(Vec::new())),
             running_processes: Arc::new(RwLock::new(HashMap::new())),
             previously_running: Arc::new(RwLock::new(HashMap::new())),
+            lane_registry: Arc::new(RwLock::new(HashMap::new())),
             config: None,
             vp_binary_path: None,
             vpdb: None,
@@ -149,6 +155,14 @@ impl ProcessManagerCapability {
     /// projects の共有参照を取得（DaemonState と共有するため）
     pub fn projects_ref(&self) -> Arc<RwLock<HashMap<String, ProjectInfo>>> {
         self.projects.clone()
+    }
+
+    /// Phase 1b: lane_registry の共有参照を取得（DaemonState と共有するため）
+    #[allow(clippy::type_complexity)]
+    pub fn lane_registry_ref(
+        &self,
+    ) -> Arc<RwLock<HashMap<String, Vec<crate::process::lanes_state::LaneInfo>>>> {
+        self.lane_registry.clone()
     }
 
     /// 設定を読み込み
@@ -1348,6 +1362,31 @@ mod tests {
     fn test_world_capability_new() {
         let cap = ProcessManagerCapability::new();
         assert_eq!(cap.state(), CapabilityState::Uninitialized);
+    }
+
+    #[tokio::test]
+    async fn test_lane_registry_ref_returns_shared_arc() {
+        // Phase 1b: lane_registry_ref で取得した Arc が DaemonState 共有用に使える
+        // 同じ cap から複数回 lane_registry_ref() を呼んでも内部 HashMap は共有される
+        let cap = ProcessManagerCapability::new();
+        let lr1 = cap.lane_registry_ref();
+        assert!(
+            lr1.read().await.is_empty(),
+            "新規 cap の lane_registry は empty"
+        );
+
+        // Arc 共有確認: 1 つのハンドル経由で書き込んで、もう 1 つで読める
+        lr1.write()
+            .await
+            .insert("/tmp/test".to_string(), Vec::new());
+
+        let lr2 = cap.lane_registry_ref();
+        assert_eq!(lr2.read().await.len(), 1);
+        assert!(lr2.read().await.contains_key("/tmp/test"));
+
+        // 削除も共有
+        lr1.write().await.remove("/tmp/test");
+        assert!(lr2.read().await.is_empty());
     }
 
     #[test]

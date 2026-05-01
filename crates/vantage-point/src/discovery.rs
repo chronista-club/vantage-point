@@ -176,11 +176,16 @@ pub fn generate_terminal_token() -> String {
 ///
 /// 切断時は自動的に再接続を試みる。shutdown_token がキャンセルされるまでループ。
 /// TheWorld 側の registry チャネルハンドラが切断を検知 → running_processes から即時除去。
+///
+/// Phase 1d: agent_card に `lanes` field を含める。 SP startup 時点の `LanePool::list()` を
+/// JSON 化して push (initial snapshot)。 Lane lifecycle 変更 (Worker create/destroy) の diff
+/// push は Phase 2 の Step E で実装、 現在は initial snapshot のみで Lead を反映。
 pub fn spawn_registry_keepalive(
     port: u16,
     project_dir: &str,
     pid: u32,
     terminal_token: &str,
+    lane_pool: std::sync::Arc<tokio::sync::RwLock<crate::process::lanes_state::LanePool>>,
     shutdown: CancellationToken,
 ) {
     let project_name = std::path::Path::new(project_dir)
@@ -209,14 +214,15 @@ pub fn spawn_registry_keepalive(
         None
     };
 
-    let agent_card = serde_json::json!({
-        "project_name": project_name,
-        "port": port,
-        "project_dir": project_dir,
-        "pid": pid,
-        "terminal_token": terminal_token,
-        "tmux_session": tmux_session,
-    });
+    // Phase 1d: agent_card は tokio::spawn 内で build (lane_pool の最新を読むため async 必要)。
+    // outer の sync context で build する project_name は move、 lane_pool は Arc clone で渡す。
+    let project_name_for_async = project_name.clone();
+    let project_dir_owned = project_dir.to_string();
+    let terminal_token_owned = terminal_token.to_string();
+    let lane_pool_for_async = lane_pool.clone();
+
+    // 前提: 旧 agent_card の build を tokio::spawn 内に移すため、 ここでは build しない。
+    // (旧コードでは sync で build した JSON Value を closure に move していた)
 
     // Phase 5-D: exponential backoff for reconnect resilience。
     //  TheWorld 復活時に **全 SP が同時に殺到して thundering herd** になるのを避ける。
@@ -227,13 +233,27 @@ pub fn spawn_registry_keepalive(
     let mut backoff = INITIAL_BACKOFF;
 
     tokio::spawn(async move {
+        // Phase 1d: agent_card を spawn 内で build (lane_pool の最新 snapshot を反映)。
+        // 旧 sync 構築から async 構築に変更、 reconnect 時は同 JSON を再使用 (Phase 1 MVP)。
+        // Phase 2 の Step E で reconnect 時に lane_pool 再 read + diff push を検討。
+        let lanes = lane_pool_for_async.read().await.list();
+        let agent_card = serde_json::json!({
+            "project_name": project_name_for_async,
+            "port": port,
+            "project_dir": project_dir_owned,
+            "pid": pid,
+            "terminal_token": terminal_token_owned,
+            "tmux_session": tmux_session,
+            "lanes": lanes,
+        });
+
         loop {
             // TheWorld に QUIC 接続
             match connect_and_register(&agent_card).await {
                 Ok(conn) => {
                     tracing::info!(
                         "Registry: QUIC 登録成功 (project={}, port={})",
-                        project_name,
+                        project_name_for_async,
                         port
                     );
                     // 成功で backoff reset (次の disconnect 時に 1s からやり直し)
