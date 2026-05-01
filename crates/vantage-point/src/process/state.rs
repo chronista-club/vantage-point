@@ -154,6 +154,12 @@ pub(crate) struct AppState {
     /// Lane Pool (Lead/Worker registry) — Lane scope の Stand container
     /// 関連 memory: mem_1CaSsN7xj69aVQtLPQFJxQ (SP-as-Project-Master 9 component #4)
     pub lane_pool: Arc<RwLock<super::lanes_state::LanePool>>,
+    /// Phase 2 (Step E): SP の system 系 lifecycle event を 1 つの broadcast bus で配信。
+    /// caller (lane_spawn_actor / routes/lanes / restart_lane / lifecycle monitor) が
+    /// `state.system_event_tx.send(SystemEvent::Lane(LaneDiff::*))` 等で publish、
+    /// `spawn_registry_keepalive` subscriber が QUIC registry channel で TheWorld に push する経路。
+    /// 将来 Pane / Stand / Process 等の lifecycle event も同 bus に variant 追加で乗せる。
+    pub system_event_tx: tokio::sync::broadcast::Sender<super::lanes_state::SystemEvent>,
     /// Project scope の Stand pool (PP / GE / HP) — Phase A4-2b minimum、skeleton
     /// 関連 memory: 「多 scope architecture」rule (2026-04-27)
     pub project_stands: Arc<RwLock<super::project_stands_state::ProjectStandsPool>>,

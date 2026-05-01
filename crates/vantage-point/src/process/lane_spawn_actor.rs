@@ -53,7 +53,7 @@ use tokio_util::sync::CancellationToken;
 use crate::capability::msgbox::{Handle, MessageKind};
 
 use super::lane_cmd::LaneCmd;
-use super::lanes_state::{LaneAddress, LaneInfo, LaneKind, LanePool, LaneState};
+use super::lanes_state::{Diff, LaneAddress, LaneInfo, LaneKind, LanePool, LaneState, SystemEvent};
 
 /// Mailbox actor を起動する。 internal に `Arc<Semaphore::new(max_concurrent)>` を持ち、
 /// `lane-spawn` mailbox から `LaneCmd` を recv して並列度制限付きで Lane を spawn する。
@@ -62,6 +62,7 @@ use super::lanes_state::{LaneAddress, LaneInfo, LaneKind, LanePool, LaneState};
 pub fn spawn(
     handle: Handle,
     lane_pool: Arc<RwLock<LanePool>>,
+    system_event_tx: tokio::sync::broadcast::Sender<SystemEvent>,
     max_concurrent: usize,
     shutdown: CancellationToken,
 ) {
@@ -111,10 +112,11 @@ pub fn spawn(
                     };
                     let sem = semaphore.clone();
                     let pool = lane_pool.clone();
+                    let tx = system_event_tx.clone();
                     // permit 取得を含めて worker task で実行 → recv loop は次の msg を即受領可能。
                     // 結果として「N 本まで permit 待ち + 実行、 残りは queue で待機」 の挙動。
                     tokio::spawn(async move {
-                        handle_cmd(cmd, pool, sem).await;
+                        handle_cmd(cmd, pool, tx, sem).await;
                     });
                 }
             }
@@ -123,7 +125,12 @@ pub fn spawn(
 }
 
 /// 単一 `LaneCmd` を処理。 Semaphore permit を acquire してから heavy spawn を実行。
-async fn handle_cmd(cmd: LaneCmd, pool: Arc<RwLock<LanePool>>, semaphore: Arc<Semaphore>) {
+async fn handle_cmd(
+    cmd: LaneCmd,
+    pool: Arc<RwLock<LanePool>>,
+    system_event_tx: tokio::sync::broadcast::Sender<SystemEvent>,
+    semaphore: Arc<Semaphore>,
+) {
     let LaneCmd::SpawnLane {
         project_id,
         name,
@@ -254,7 +261,19 @@ async fn handle_cmd(cmd: LaneCmd, pool: Arc<RwLock<LanePool>>, semaphore: Arc<Se
     if let Some(slot) = slot_opt {
         pool_write.insert_pty_slot(addr.clone(), slot);
     }
-    pool_write.insert(info);
+    pool_write.insert(info.clone());
+    drop(pool_write); // write lock 解放してから publish (deadlock 回避 + subscriber が即取れる)
+
+    // Phase 2 (Step E): Worker spawn 完了を SystemEvent::Lane(Diff::Add) で TheWorld に push。
+    // QUIC registry channel 経由で realtime sync。 失敗は warn のみ (best-effort、
+    // SP lane_pool が SSOT、 reconnect 時に register snapshot で必ず再構築される)。
+    if let Err(e) = system_event_tx.send(SystemEvent::Lane(Diff::Add { payload: info })) {
+        tracing::warn!(
+            "Lane spawn actor: SystemEvent publish 失敗 addr={} err={}",
+            addr,
+            e
+        );
+    }
 }
 
 #[cfg(test)]
@@ -270,10 +289,11 @@ mod tests {
         let router = Router::new();
         let handle = router.register("lane-spawn").await;
         let pool = Arc::new(RwLock::new(LanePool::new()));
+        let (tx, _rx) = tokio::sync::broadcast::channel::<SystemEvent>(8);
         let shutdown = CancellationToken::new();
 
         // 0 を渡しても 1 に丸めて起動するはず (= タイムアウトせずに actor 起動 + shutdown 完了)
-        spawn(handle.clone(), pool, 0, shutdown.clone());
+        spawn(handle.clone(), pool, tx, 0, shutdown.clone());
 
         // SpawnLane を投入しても fallback 経路 (cwd 不在) で graceful degrade するはず。
         // 重要なのは「actor が動いて shutdown で終了する」 こと。
@@ -300,9 +320,10 @@ mod tests {
         let router = Router::new();
         let handle = router.register("lane-spawn").await;
         let pool = Arc::new(RwLock::new(LanePool::new()));
+        let (tx, _rx) = tokio::sync::broadcast::channel::<SystemEvent>(8);
         let shutdown = CancellationToken::new();
 
-        spawn(handle.clone(), pool.clone(), 1, shutdown.clone());
+        spawn(handle.clone(), pool.clone(), tx, 1, shutdown.clone());
 
         // Notification kind を投入 → ignore されるはず
         let msg = Message::new("test", "lane-spawn", MessageKind::Notification)

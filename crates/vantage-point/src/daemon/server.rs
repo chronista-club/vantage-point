@@ -937,6 +937,106 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                         break;
                                     }
                                 }
+                                "lanes/add" => {
+                                    // Phase 2 (Step E): SP push の Diff::Add 反映 (Worker spawn 完了 等)。
+                                    // payload["payload"] が LaneInfo serde 結果。
+                                    if let Some(ref lr) = lane_registry
+                                        && let Some(ref path_key) = registered_name
+                                        && let Ok(lane) = serde_json::from_value::<
+                                            crate::process::lanes_state::LaneInfo,
+                                        >(payload["payload"].clone())
+                                    {
+                                        let mut registry = lr.write().await;
+                                        let entry = registry.entry(path_key.clone()).or_default();
+                                        // address 重複なら replace、 無ければ push (race 防御)
+                                        if let Some(idx) =
+                                            entry.iter().position(|l| l.address == lane.address)
+                                        {
+                                            entry[idx] = lane;
+                                        } else {
+                                            entry.push(lane);
+                                        }
+                                        tracing::debug!(
+                                            "Registry: lanes/add 反映 (key={})",
+                                            path_key
+                                        );
+                                    }
+                                    if channel
+                                        .send_response(
+                                            request_id,
+                                            "lanes/add",
+                                            serde_json::json!({"status": "ok"}),
+                                        )
+                                        .await
+                                        .is_err()
+                                    {
+                                        break;
+                                    }
+                                }
+                                "lanes/remove" => {
+                                    // Phase 2 (Step E): SP push の Diff::Remove 反映 (Worker delete 等)。
+                                    // payload["id"] が LaneAddress serde 結果。
+                                    if let Some(ref lr) = lane_registry
+                                        && let Some(ref path_key) = registered_name
+                                        && let Ok(addr) = serde_json::from_value::<
+                                            crate::process::lanes_state::LaneAddress,
+                                        >(payload["id"].clone())
+                                    {
+                                        let mut registry = lr.write().await;
+                                        if let Some(entry) = registry.get_mut(path_key) {
+                                            entry.retain(|l| l.address != addr);
+                                        }
+                                        tracing::debug!(
+                                            "Registry: lanes/remove 反映 (key={}, addr={})",
+                                            path_key,
+                                            addr
+                                        );
+                                    }
+                                    if channel
+                                        .send_response(
+                                            request_id,
+                                            "lanes/remove",
+                                            serde_json::json!({"status": "ok"}),
+                                        )
+                                        .await
+                                        .is_err()
+                                    {
+                                        break;
+                                    }
+                                }
+                                "lanes/update" => {
+                                    // Phase 2 (Step E): SP push の Diff::Update 反映 (state 変更 / restart 完了 等)。
+                                    // payload["payload"] が LaneInfo serde 結果。 同 address の entry を replace。
+                                    if let Some(ref lr) = lane_registry
+                                        && let Some(ref path_key) = registered_name
+                                        && let Ok(lane) = serde_json::from_value::<
+                                            crate::process::lanes_state::LaneInfo,
+                                        >(payload["payload"].clone())
+                                    {
+                                        let mut registry = lr.write().await;
+                                        if let Some(entry) = registry.get_mut(path_key)
+                                            && let Some(idx) =
+                                                entry.iter().position(|l| l.address == lane.address)
+                                        {
+                                            entry[idx] = lane;
+                                        }
+                                        tracing::debug!(
+                                            "Registry: lanes/update 反映 (key={})",
+                                            path_key
+                                        );
+                                    }
+                                    if channel
+                                        .send_response(
+                                            request_id,
+                                            "lanes/update",
+                                            serde_json::json!({"status": "ok"}),
+                                        )
+                                        .await
+                                        .is_err()
+                                    {
+                                        break;
+                                    }
+                                }
                                 _ => {
                                     let _ = channel
                                         .send_response(

@@ -313,6 +313,11 @@ pub async fn run(
             project_name_for_remote.clone(),
             project_dir.clone(),
         ))),
+        // Phase 2 (Step E): system 系 lifecycle event の central broadcast bus。
+        // capacity 64 = lifecycle 変更が短時間に集中しても drop しない buffer。
+        // caller publish (SystemEvent::Lane(LaneDiff::*) 等) + spawn_registry_keepalive subscribe
+        // で SP → TheWorld push 経路。 将来 Pane / Stand 等の event も同 bus に variant 追加で乗る。
+        system_event_tx: tokio::sync::broadcast::channel::<super::lanes_state::SystemEvent>(64).0,
         // Phase A4-2b: Project scope の Stand pool (PP/GE/HP) — skeleton
         project_stands: Arc::new(RwLock::new(
             super::project_stands_state::ProjectStandsPool::new(),
@@ -347,6 +352,7 @@ pub async fn run(
         super::lane_spawn_actor::spawn(
             lane_spawn_handle,
             state.lane_pool.clone(),
+            state.system_event_tx.clone(), // Phase 2 (Step E): system event central bus
             max_concurrent,
             shutdown_token.clone(),
         );
@@ -565,6 +571,7 @@ pub async fn run(
         pid,
         &terminal_token,
         state.lane_pool.clone(),
+        state.system_event_tx.clone(), // Phase 2 (Step E): system event central bus
         shutdown_token.clone(),
     );
 
@@ -728,6 +735,8 @@ pub async fn run_world(port: u16) -> Result<()> {
         // Phase A4-2b: World モードでは Lane / Project Stand を持たない (空 Pool で AppState を満たす)
         // 多 scope architecture: World は App scope の component、Lane/ProjectStand は Project scope
         lane_pool: Arc::new(RwLock::new(super::lanes_state::LanePool::new())),
+        // Phase 2 (Step E): system event central bus
+        system_event_tx: tokio::sync::broadcast::channel::<super::lanes_state::SystemEvent>(64).0,
         project_stands: Arc::new(RwLock::new(
             super::project_stands_state::ProjectStandsPool::new(),
         )),

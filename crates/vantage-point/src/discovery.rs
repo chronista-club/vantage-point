@@ -186,6 +186,7 @@ pub fn spawn_registry_keepalive(
     pid: u32,
     terminal_token: &str,
     lane_pool: std::sync::Arc<tokio::sync::RwLock<crate::process::lanes_state::LanePool>>,
+    system_event_tx: tokio::sync::broadcast::Sender<crate::process::lanes_state::SystemEvent>,
     shutdown: CancellationToken,
 ) {
     let project_name = std::path::Path::new(project_dir)
@@ -247,6 +248,12 @@ pub fn spawn_registry_keepalive(
             "lanes": lanes,
         });
 
+        // Phase 2 (Step E): SystemEvent broadcast subscriber (central system bus)。
+        // SP の caller (lane_spawn_actor / routes/* 等) が `system_event_tx.send(SystemEvent::*)`
+        // で publish、 本 keepalive task が QUIC registry channel で TheWorld に push する経路。
+        // reconnect で QUIC 入替時も event_rx は同じ Sender に接続されたまま (lag は警告のみ)。
+        let mut event_rx = system_event_tx.subscribe();
+
         loop {
             // TheWorld に QUIC 接続
             match connect_and_register(&agent_card).await {
@@ -276,6 +283,41 @@ pub fn spawn_registry_keepalive(
                                         "Registry: heartbeat 失敗 → 再接続"
                                     );
                                     break; // 外側ループで再接続
+                                }
+                            }
+                            event_result = event_rx.recv() => {
+                                // Phase 2 (Step E): SystemEvent を QUIC channel で TheWorld に push
+                                use crate::process::lanes_state::{Diff, SystemEvent};
+                                match event_result {
+                                    Ok(SystemEvent::Lane(diff)) => {
+                                        let method = match &diff {
+                                            Diff::Add { .. } => "lanes/add",
+                                            Diff::Remove { .. } => "lanes/remove",
+                                            Diff::Update { .. } => "lanes/update",
+                                        };
+                                        if conn
+                                            .channel
+                                            .request(method, serde_json::to_value(&diff).unwrap_or_default())
+                                            .await
+                                            .is_err()
+                                        {
+                                            tracing::warn!(
+                                                "Registry: SystemEvent push 失敗 ({}) → 再接続 (snapshot で resync)",
+                                                method
+                                            );
+                                            break;
+                                        }
+                                    }
+                                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                                        tracing::warn!(
+                                            "Registry: SystemEvent lagged {} events、 reconnect で snapshot 再 sync",
+                                            n
+                                        );
+                                    }
+                                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                        tracing::info!("Registry: SystemEvent channel closed、 keepalive 終了");
+                                        return;
+                                    }
                                 }
                             }
                             _ = shutdown.cancelled() => {
