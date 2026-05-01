@@ -2005,11 +2005,7 @@ fn handle_sidebar_ipc(
             let lanes_exist = state
                 .lanes_by_project
                 .get(path)
-                .map(|lanes| {
-                    lanes
-                        .iter()
-                        .any(|l| l.address.key() == address)
-                })
+                .map(|lanes| lanes.iter().any(|l| l.address.key() == address))
                 .unwrap_or(false);
             if !lanes_exist {
                 tracing::warn!(
