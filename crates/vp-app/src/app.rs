@@ -2142,7 +2142,13 @@ pub fn run() -> anyhow::Result<()> {
     // Phase 5-D fix: ユーザ shell の `RUST_LOG=vantage_point=debug` 等が `try_from_default_env` で
     //   default を完全 override してしまい、 hyper_util の debug log が大量に残っていた。
     //   読み込み後に `add_directive` で noise 源を強制 warn 上書きする (same-target は replace)。
-    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+    //
+    // Phase 5-D follow-up (2026-05-01): `RUST_LOG=vantage_point=debug` のように VP module を
+    //   含まない設定だと、 EnvFilter のデフォ「明示されてない target は OFF」 仕様で **vp_app::* が
+    //   完全 silent** になる回帰が発生 (= `[osc99-keys:...]` / `[term-title:...]` 等の dbg log が
+    //   どこにも flow しない)。 user が `vp_app=...` を明示してれば尊重、 無ければ `vp_app=info` を
+    //   default で追加して dbg log を見える化する。
+    let mut env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| {
             tracing_subscriber::EnvFilter::new(
                 "vp_app=info,vp_app::terminal=warn,vantage_point=info",
@@ -2153,6 +2159,13 @@ pub fn run() -> anyhow::Result<()> {
         .add_directive("reqwest=warn".parse().expect("static directive"))
         .add_directive("h2=warn".parse().expect("static directive"))
         .add_directive("rustls=warn".parse().expect("static directive"));
+    let user_rust_log = std::env::var("RUST_LOG").unwrap_or_default();
+    if !user_rust_log
+        .split(',')
+        .any(|d| d.trim().starts_with("vp_app"))
+    {
+        env_filter = env_filter.add_directive("vp_app=info".parse().expect("static directive"));
+    }
     let _ = tracing_subscriber::registry()
         .with(env_filter)
         .with(
