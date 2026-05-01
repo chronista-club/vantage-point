@@ -182,6 +182,29 @@ impl fmt::Display for LaneAddress {
     }
 }
 
+impl TmuxLaneAddress {
+    /// Phase 1e: spawn 成功時の tmux address を生成する helper。
+    ///
+    /// `crate::tmux::is_tmux_available()` で mode を事前判定 (Phase 1e 設計確定軸 A):
+    /// - tmux PATH 内 → `Tmux` mode (副舞台あり、 agent が `tmux send-keys -t {session}` で
+    ///   他 Lane の HD に入力リレー可能)
+    /// - tmux なし → `PtySlotFallback` mode (shell 内 `||` で素 LLM CLI に降格、 send-keys 不可)
+    ///
+    /// session 名は `addr.tmux_session_name(stand)` で deterministic 導出。
+    pub fn for_spawn(addr: &LaneAddress, stand: LaneStand) -> Self {
+        let mode = if crate::tmux::is_tmux_available() {
+            TmuxMode::Tmux
+        } else {
+            TmuxMode::PtySlotFallback
+        };
+        Self {
+            stand,
+            session: addr.tmux_session_name(stand),
+            mode,
+        }
+    }
+}
+
 /// Lane の info (REST response 用 + 内部 registry の値)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LaneInfo {
@@ -256,8 +279,12 @@ impl LanePool {
         let stand = LaneStand::default(); // HD
 
         // A5-2: stand_spawner で LaneStand 別 command 構築
-        let cmd =
-            crate::process::stand_spawner::build_stand_command(stand, std::path::Path::new(&cwd));
+        // Phase 1e: addr を渡して HD spec の tmux session 名導出に使う
+        let cmd = crate::process::stand_spawner::build_stand_command(
+            stand,
+            &addr,
+            std::path::Path::new(&cwd),
+        );
 
         // Phase 5-D: spawn_with_fallback で `claude --continue` 早期 exit 時に空 args で retry。
         let (state, pid) = match crate::process::stand_spawner::spawn_with_fallback(
@@ -302,9 +329,13 @@ impl LanePool {
             cwd,
             // Lead は git workspace 持たない (= project root が cwd)、 worker_status は None
             worker_status: None,
-            // Phase 1a: tmux address は spawn 結果から Vec に push (Step 0/1e で配線)
-            // 通常 1 Stand = 1 entry、 将来 HD+TH 並立で 2 entry になる想定
-            tmux: Vec::new(),
+            // Phase 1e: spawn 成功時のみ tmux address を populate
+            // (spawn 失敗 = Dead → 空 Vec で副舞台不在 signal)
+            tmux: if matches!(state, LaneState::Running) {
+                vec![TmuxLaneAddress::for_spawn(&addr, stand)]
+            } else {
+                Vec::new()
+            },
         };
         pool.lanes.insert(addr, info);
         pool
@@ -431,8 +462,12 @@ impl LanePool {
         let _ = self.pty_slots.remove(addr);
 
         // step 2: 同 LaneStand で respawn (Phase 5-D: spawn_with_fallback で early-exit retry)
-        let cmd =
-            crate::process::stand_spawner::build_stand_command(stand, std::path::Path::new(&cwd));
+        // Phase 1e: addr を渡して HD spec の tmux session 名導出に使う
+        let cmd = crate::process::stand_spawner::build_stand_command(
+            stand,
+            addr,
+            std::path::Path::new(&cwd),
+        );
         match crate::process::stand_spawner::spawn_with_fallback(&cwd, &cmd, 80, 24) {
             Ok((slot, _rx)) => {
                 let pid = slot.pid();

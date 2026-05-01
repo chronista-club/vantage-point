@@ -23,7 +23,7 @@ use std::path::Path;
 use anyhow::Result;
 use tokio::sync::broadcast;
 
-use super::lanes_state::LaneStand;
+use super::lanes_state::{LaneAddress, LaneStand};
 use crate::daemon::pty_slot::PtySlot;
 
 /// Stand spawn 用 command (binary + args + 任意の初期入力)
@@ -118,13 +118,15 @@ pub fn spawn_with_fallback(
 ///
 /// Phase 6-E (VP-107): 内部実装を `LaneStandSpec` trait dispatch に委譲。
 /// wire format (`LaneStand` enum) は維持しつつ、 `to_spec()` adapter で trait object
-/// に変換、 `build()` を呼ぶ流れに統一。 caller (`lanes_state.rs` / `routes/lanes.rs`)
-/// は無変更で動作する (返り値の `StandCommand` shape 同一)。
+/// に変換、 `build()` を呼ぶ流れに統一。
+///
+/// Phase 1e: `addr` を受け取って HD spec の tmux session 名導出に使う。
+/// TH spec は addr 未使用 (将来 init_script 対応で活用予定)。
 ///
 /// `cwd` は将来 cwd-aware command (例: project_dir に応じた custom env) のため
 /// 受け取るが、 6-E でも未使用 (Phase 6.5 の Lane manifest で活用予定)。
-pub fn build_stand_command(stand: LaneStand, _cwd: &Path) -> StandCommand {
-    stand.to_spec().build()
+pub fn build_stand_command(stand: LaneStand, addr: &LaneAddress, _cwd: &Path) -> StandCommand {
+    stand.to_spec().build(addr)
 }
 
 #[cfg(test)]
@@ -134,11 +136,12 @@ mod tests {
     // wire-compat regression test: `LaneStand` enum 経由でも shell-hosted 挙動が保たれる。
     // 詳細な trait impl 単位 test は `stand_spec` module に存在。
 
-    /// Phase 6-E Slice 2: HD は shell + initial_input で `claude --continue || claude\n` を auto-launch。
-    /// Slice 1 の「直接 claude spawn」 から 「shell-hosted」 に挙動が変わったことを test も反映。
+    /// Phase 1e: HD は shell + initial_input で `tmux new-session ... 'claude --continue || claude' || ...` を auto-launch。
+    /// 副舞台 (tmux) を立てて agent の send-keys 経路を確保。
     #[test]
-    fn heavens_door_is_shell_hosted_with_claude_invocation() {
-        let cmd = build_stand_command(LaneStand::HeavensDoor, Path::new("/tmp"));
+    fn heavens_door_is_shell_hosted_with_tmux_wrapped_invocation() {
+        let addr = LaneAddress::lead("vp");
+        let cmd = build_stand_command(LaneStand::HeavensDoor, &addr, Path::new("/tmp"));
         assert!(
             cmd.program.contains("zsh") || cmd.program.contains("bash"),
             "HD は shell-hosted (program=zsh/bash 想定)、 got {}",
@@ -146,17 +149,23 @@ mod tests {
         );
         assert_eq!(cmd.args, vec!["-l".to_string()]);
         let input = cmd.initial_input.expect("HD は initial_input 必須");
-        assert!(input.contains("claude --continue"));
         assert!(
-            input.contains("|| claude"),
-            "fallback chain (|| claude) 必須"
+            input.starts_with("tmux new-session -A -s hd-lead-vp"),
+            "Phase 1e: tmux session ラッパ必須、 got: {}",
+            input
+        );
+        assert!(input.contains("'claude --continue || claude'"));
+        assert!(
+            input.contains("|| (claude --continue || claude)"),
+            "外側 fallback (tmux 不在環境) 必須"
         );
         assert!(input.ends_with('\n'), "PTY 入力は改行で行確定");
     }
 
     #[test]
     fn the_hand_uses_shell_login() {
-        let cmd = build_stand_command(LaneStand::TheHand, Path::new("/tmp"));
+        let addr = LaneAddress::lead("vp");
+        let cmd = build_stand_command(LaneStand::TheHand, &addr, Path::new("/tmp"));
         assert!(
             cmd.program.contains("zsh") || cmd.program.contains("bash"),
             "shell expected zsh/bash, got {}",
