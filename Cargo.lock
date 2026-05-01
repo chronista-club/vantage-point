@@ -1646,6 +1646,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "creo-md"
+version = "0.1.0"
+source = "git+https://github.com/chronista-club/creo-views#d0a40e7909b6177341d7e627d586522fbb88c305"
+dependencies = [
+ "markdown",
+ "serde",
+ "serde_json",
+ "ts-rs",
+]
+
+[[package]]
 name = "critical-section"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9471,20 +9482,16 @@ dependencies = [
 name = "vp-mdast"
 version = "0.16.0"
 dependencies = [
- "markdown",
- "pretty_assertions",
- "serde",
- "serde_json",
- "ts-rs",
+ "creo-md",
 ]
 
 [[package]]
 name = "vp-mdast-wasm"
 version = "0.16.0"
 dependencies = [
+ "creo-md",
  "serde-wasm-bindgen",
  "serde_json",
- "vp-mdast",
  "wasm-bindgen",
 ]
 

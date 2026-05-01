@@ -1,14 +1,12 @@
-//! VP mdast パイプライン
+//! VP mdast — alias for creo-md (chronista-club/creo-views)。
 //!
-//! Markdown テキストを mdast (Markdown Abstract Syntax Tree) にパースし、
-//! TypeScript 型定義を自動生成する。
+//! 2026-05-01: vp-mdast を creo-md からの thin re-export に切替。
+//! 真実は creo-md crate (creo-views repo)、 vp-mdast は backward-compat alias。
 //!
-//! - パーサー: markdown-rs (wooorm)
-//! - 型生成: ts-rs (#[derive(TS)])
-//! - シリアライズ: serde (JSON)
+//! Migration: vp-mdast / vp-mdast-wasm の中身を creo-md / creo-md-wasm に同等抽出
+//! (chronista-club/creo-views) → こちらは re-export。 health.rs (vantage-point) や
+//! 他 consumer の `use vp_mdast::...` は無変更で動作。
 
-pub mod nodes;
-pub mod parser;
-
-pub use nodes::*;
-pub use parser::parse;
+pub use creo_md::nodes;
+pub use creo_md::parser;
+pub use creo_md::*;

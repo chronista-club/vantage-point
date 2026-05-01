@@ -4,21 +4,11 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "VP mdast パイプライン — Markdown AST 型定義 + パーサー"
+description = "VP mdast — alias for creo-md (chronista-club/creo-views)。 vp-mdast は backward-compat re-export、 真実は creo-md crate"
 
 [lib]
 name = "vp_mdast"
 
 [dependencies]
-# Markdown パーサー (wooorm/markdown-rs)
-markdown = "1"
-
-# シリアライズ
-serde = { workspace = true }
-serde_json = { workspace = true }
-
-# TypeScript 型生成
-ts-rs = { version = "12", features = ["serde-compat"] }
-
-[dev-dependencies]
-pretty_assertions = "1"
+# 2026-05-01: creo-md (creo-views repo) に migration。 vp-mdast はこの crate の thin re-export
+creo-md = { git = "https://github.com/chronista-club/creo-views" }
