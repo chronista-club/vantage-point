@@ -12,6 +12,7 @@
 pub mod app;
 pub mod client;
 pub mod daemon_launcher;
+pub mod lane;
 pub mod log_format;
 pub mod log_init;
 pub mod main_area;

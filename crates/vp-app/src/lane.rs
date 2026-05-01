@@ -80,6 +80,72 @@ impl fmt::Display for LaneAddress {
     }
 }
 
+/// Lane address の **wire (JSON) 表現** — SP `/api/lanes` レスポンス要素の field
+///
+/// `LaneAddress` (domain enum-based) と区別する役割:
+/// - **`LaneAddressWire`** = JSON 入口、 `kind` を String のまま保持 (vantage-point 側の
+///   "lead"/"worker"/将来の任意値 をそのまま deserialize 受け)
+/// - **`LaneAddress`** = domain 型、 `LaneKind` enum で型安全な分岐
+///
+/// 比較・Display には:
+/// - 文字列直接ほしい時 → `LaneAddressWire::key()` (旧 `app.rs::lane_address_key` 互換)
+/// - 型安全な domain 形ほしい時 → `LaneAddress::from(&wire)` で変換
+///
+/// R-0 (`docs/design/11-vp-app-refactor.md` § 3.0a / `mem_1CaaaDoXHZvhR46ZfLN6jx`):
+///   従来 `client.rs` に居た定義を本 module に統合 (G2 解消、 3 重実装の 1 元化)。
+///
+/// 関連 memory: mem_1CaSugEk1W2vr5TAdfDn5D (多 scope architecture)、
+/// mem_1CaSuu8xMyWqXzLiKHmYdV (使用範囲ベース scope rule)
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct LaneAddressWire {
+    #[serde(default)]
+    pub project: String,
+    /// "lead" | "worker"
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+impl LaneAddressWire {
+    /// Display 形 (`<project>/lead` / `<project>/worker/<name>`) を文字列で返す。
+    ///
+    /// 旧 `app.rs::lane_address_key` を吸収。 JS 側 `laneAddressKey()` と完全に一致させる
+    /// (active 比較に使うため、 byte-for-byte 同一が要件)。
+    ///
+    /// `LaneAddress::Display` と微妙に挙動が違うことに注意:
+    /// - `Wire::key()` は kind string をそのまま保持 (unknown kind "magic" → `"project/magic"`)
+    /// - `LaneAddress::Display` は LaneKind enum 経由 (unknown kind は From で Lead に collapse)
+    ///
+    /// JSON wire 互換 (旧 `lane_address_key` と byte-for-byte 同一) を要する場面では本 method、
+    /// 型安全な domain 表現が要る場面では `LaneAddress::from(&wire).to_string()` を使う。
+    pub fn key(&self) -> String {
+        match (self.kind.as_str(), self.name.as_deref()) {
+            ("worker", Some(n)) => format!("{}/worker/{}", self.project, n),
+            ("worker", None) => format!("{}/worker/<unnamed>", self.project),
+            _ => format!("{}/{}", self.project, self.kind),
+        }
+    }
+}
+
+/// Wire (JSON) 形から domain 形 (enum-based) への変換。
+///
+/// 注意: unknown kind ("magic" 等) は fallback で `LaneKind::Lead` に collapse される
+/// (= 情報損失)。 raw kind 文字列を保ちたい用途では `LaneAddressWire::key()` を直接使う。
+impl From<&LaneAddressWire> for LaneAddress {
+    fn from(wire: &LaneAddressWire) -> Self {
+        let kind = match wire.kind.as_str() {
+            "worker" => LaneKind::Worker,
+            _ => LaneKind::Lead,
+        };
+        Self {
+            project: wire.project.clone(),
+            kind,
+            name: wire.name.clone(),
+        }
+    }
+}
+
 /// Lane で起動する Stand (LaneStand)
 ///
 /// architecture: Lane と Stand は 1:1。Lane あたり 1 つの Stand が起動する。
@@ -139,5 +205,87 @@ mod tests {
     fn lane_stand_default_is_hd() {
         // architecture rule: Lane の default Stand は HD (Claude CLI)
         assert_eq!(LaneStand::default(), LaneStand::HeavensDoor);
+    }
+
+    /// R-0 wire compat: `LaneAddressWire::key()` は旧 `app.rs::lane_address_key` と
+    /// byte-for-byte 同一でなければならない (JS 側 `laneAddressKey()` の active 比較で使うため)。
+    #[test]
+    fn lane_address_wire_key_lead() {
+        let w = LaneAddressWire {
+            project: "vantage-point".into(),
+            kind: "lead".into(),
+            name: None,
+        };
+        assert_eq!(w.key(), "vantage-point/lead");
+    }
+
+    #[test]
+    fn lane_address_wire_key_worker_named() {
+        let w = LaneAddressWire {
+            project: "vp".into(),
+            kind: "worker".into(),
+            name: Some("foo".into()),
+        };
+        assert_eq!(w.key(), "vp/worker/foo");
+    }
+
+    #[test]
+    fn lane_address_wire_key_worker_unnamed() {
+        let w = LaneAddressWire {
+            project: "vp".into(),
+            kind: "worker".into(),
+            name: None,
+        };
+        assert_eq!(w.key(), "vp/worker/<unnamed>");
+    }
+
+    #[test]
+    fn lane_address_wire_key_unknown_kind_passthrough() {
+        // 旧 `lane_address_key` の fallback 挙動: unknown kind は kind string をそのまま使う。
+        // Wire::key() はこれを保持する (Display impl と異なる、 詳細は doc 参照)。
+        let w = LaneAddressWire {
+            project: "vp".into(),
+            kind: "magic".into(),
+            name: None,
+        };
+        assert_eq!(w.key(), "vp/magic");
+    }
+
+    #[test]
+    fn lane_address_from_wire_lead() {
+        let w = LaneAddressWire {
+            project: "vp".into(),
+            kind: "lead".into(),
+            name: None,
+        };
+        let addr = LaneAddress::from(&w);
+        assert_eq!(addr.kind, LaneKind::Lead);
+        assert_eq!(addr.project, "vp");
+        assert!(addr.name.is_none());
+    }
+
+    #[test]
+    fn lane_address_from_wire_worker() {
+        let w = LaneAddressWire {
+            project: "vp".into(),
+            kind: "worker".into(),
+            name: Some("foo".into()),
+        };
+        let addr = LaneAddress::from(&w);
+        assert_eq!(addr.kind, LaneKind::Worker);
+        assert_eq!(addr.name.as_deref(), Some("foo"));
+    }
+
+    #[test]
+    fn lane_address_from_wire_unknown_collapses_to_lead() {
+        // 情報損失の意図的契約: `LaneAddress` enum で表現できない kind は Lead に折りたたむ。
+        // raw kind 保持が必要なら `Wire::key()` 直接使用。
+        let w = LaneAddressWire {
+            project: "vp".into(),
+            kind: "magic".into(),
+            name: None,
+        };
+        let addr = LaneAddress::from(&w);
+        assert_eq!(addr.kind, LaneKind::Lead);
     }
 }
