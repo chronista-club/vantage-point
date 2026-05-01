@@ -340,3 +340,107 @@ echo "✅ Release built: $VP_APP + $VP_BIN"
 echo "ℹ️  WiX MSI + Authenticode 署名 + winget manifest は Phase W4 (VP-90) で追加予定"
 """
 
+# =============================================================================
+# Release artifact push — workspace.package.version の tag (vX.Y.Z) に
+# Mac / Win build artifact を upload する。
+#
+# 運用:
+# 1. Cargo.toml で version を bump → main commit + tag push (release skill / 手動)
+# 2. Mac で `mise run push:mac` → apple-silicon binary 群を release に upload
+# 3. Win で `mise run push:win` → x86_64-pc-windows-gnu binary 群を release に upload
+#
+# release が無ければ最初の push:* で `gh release create`、 既存なら `--clobber` で
+# 同名 asset 上書き (再 build/再 push 可能)。
+# =============================================================================
+
+[tasks."push:mac"]
+description = "Mac silicon (vp + vp-app) を build して GitHub Release に artifact を upload"
+run = '''
+set -euo pipefail
+ROOT="$(pwd)"
+
+# version 取得 (workspace.package.version、 release: vX.Y.Z タグ形式)
+VERSION=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+TAG="v$VERSION"
+echo "📦 push:mac for $TAG"
+
+# Build (apple-silicon、 vp = vp-cli、 vp-app = GUI)
+echo "🔨 cargo build --release --target aarch64-apple-darwin -p vp-cli -p vp-app"
+cargo build --release --target aarch64-apple-darwin -p vp-cli -p vp-app
+
+VP="target/aarch64-apple-darwin/release/vp"
+VP_APP="target/aarch64-apple-darwin/release/vp-app"
+[ -x "$VP" ] || { echo "❌ vp binary not found at $VP" >&2; exit 1; }
+[ -x "$VP_APP" ] || { echo "❌ vp-app binary not found at $VP_APP" >&2; exit 1; }
+
+# Archive (tar.gz、 binary 2 つを target/aarch64-apple-darwin/release/ から直接 archive)
+DIST="$ROOT/target/dist"
+mkdir -p "$DIST"
+ARCHIVE="$DIST/vp-$VERSION-aarch64-apple-darwin.tar.gz"
+echo "📦 archive: $ARCHIVE"
+tar czf "$ARCHIVE" -C "target/aarch64-apple-darwin/release" vp vp-app
+ls -lh "$ARCHIVE"
+
+# Upload (create release if missing、 既存なら --clobber で同名上書き)
+if gh release view "$TAG" >/dev/null 2>&1; then
+  echo "📤 upload to existing release $TAG (--clobber で同名 asset 上書き)"
+  gh release upload "$TAG" "$ARCHIVE" --clobber
+else
+  echo "📦 create release $TAG with first asset"
+  gh release create "$TAG" "$ARCHIVE" --title "$TAG" --generate-notes --latest
+fi
+
+echo "✅ pushed: $ARCHIVE → release $TAG"
+'''
+
+[tasks."push:win"]
+description = "Windows native build (vp + vp-app + WebView2Loader.dll) を GitHub Release に upload — Windows machine 上で実行"
+depends = ["win:release"]
+run = '''
+set -euo pipefail
+ROOT="$(pwd)"
+
+VERSION=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+TAG="v$VERSION"
+echo "📦 push:win for $TAG (depends on win:release)"
+
+VP_EXE="target/x86_64-pc-windows-gnu/release/vp.exe"
+VP_APP_EXE="target/x86_64-pc-windows-gnu/release/vp-app.exe"
+[ -f "$VP_EXE" ] || { echo "❌ vp.exe not found at $VP_EXE" >&2; exit 1; }
+[ -f "$VP_APP_EXE" ] || { echo "❌ vp-app.exe not found at $VP_APP_EXE" >&2; exit 1; }
+
+# WebView2Loader.dll (build script で生成、 path は webview2-com-sys-* hash 込み)
+WEBVIEW2_DLL=$(find "target/x86_64-pc-windows-gnu/release/build" \
+  -path "*/webview2-com-sys-*/out/x64/WebView2Loader.dll" -print -quit 2>/dev/null || true)
+if [ -z "$WEBVIEW2_DLL" ] || [ ! -f "$WEBVIEW2_DLL" ]; then
+  echo "❌ WebView2Loader.dll not found in target/x86_64-pc-windows-gnu/release/build" >&2
+  exit 1
+fi
+
+# Archive (zip、 staging dir 経由で flat な構造に)
+DIST="$ROOT/target/dist"
+mkdir -p "$DIST"
+ARCHIVE="$DIST/vp-$VERSION-x86_64-pc-windows-gnu.zip"
+STAGING="$DIST/staging-win"
+rm -rf "$STAGING"
+mkdir -p "$STAGING"
+cp "$VP_EXE" "$STAGING/"
+cp "$VP_APP_EXE" "$STAGING/"
+cp "$WEBVIEW2_DLL" "$STAGING/"
+echo "📦 archive: $ARCHIVE"
+(cd "$STAGING" && zip -q "$ARCHIVE" vp.exe vp-app.exe WebView2Loader.dll)
+rm -rf "$STAGING"
+ls -lh "$ARCHIVE"
+
+# Upload (create release if missing、 既存なら --clobber)
+if gh release view "$TAG" >/dev/null 2>&1; then
+  echo "📤 upload to existing release $TAG (--clobber)"
+  gh release upload "$TAG" "$ARCHIVE" --clobber
+else
+  echo "📦 create release $TAG with first asset"
+  gh release create "$TAG" "$ARCHIVE" --title "$TAG" --generate-notes --latest
+fi
+
+echo "✅ pushed: $ARCHIVE → release $TAG"
+'''
+
