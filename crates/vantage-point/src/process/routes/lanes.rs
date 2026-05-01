@@ -93,6 +93,8 @@ pub async fn list_handler(State(state): State<Arc<AppState>>) -> impl IntoRespon
                 pid: None, // Pane (HD) 不在 = client 側で Inactive 判定の signal
                 cwd: entry.path.clone(),
                 worker_status: None,
+                // Phase 1a: tmux address は activate 時に Vec で populate (Inactive Worker は 0 entry)
+                tmux: Vec::new(),
             };
             // git status を best-effort で populate (branch 表示の連動)
             let path = std::path::Path::new(&entry.path);
@@ -297,6 +299,8 @@ pub async fn create_handler(
         cwd,
         // create 時点では git 状態は registry に保存しない、 GET 時に都度 worker_status() で取得
         worker_status: None,
+        // Phase 1a: tmux address は spawn 結果から Vec に push (Step 0/1e で配線)
+        tmux: Vec::new(),
     };
 
     {

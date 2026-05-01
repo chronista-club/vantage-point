@@ -57,6 +57,40 @@ pub enum LaneStand {
     TheHand,
 }
 
+/// tmux session の起動 mode (Phase 1a: Lane → tmux registry の foundation)
+///
+/// `LaneInfo.tmux` の `mode` field で「実際に tmux で起動できたか」を区別する。
+/// init_script は `tmux new-session -A -s ${SLUG} 'claude -c || claude' || (claude -c || claude)`
+/// の形 (Option 1 inline cmd、idempotent)。tmux 不在環境などで外側 fallback に降格した
+/// 場合は `PtySlotFallback` を立てる。
+///
+/// 関連 memory: vp_mailbox_monitor_agent_inbox + vp_lane_init_script (Phase 1)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TmuxMode {
+    /// tmux session 起動 + claude 注入が成功 → send-keys で agent 間連携可能
+    Tmux,
+    /// tmux 不在 / 起動失敗 → 外側 `||` で素 claude にフォールバック
+    PtySlotFallback,
+}
+
+/// Lane の tmux address (Phase 1a: deterministic derivation で agent が引ける)
+///
+/// session 名は `LaneAddress::tmux_session_name(stand)` で deterministic に決まる。
+/// 例: lead@vantage-point (HD) → `"hd-lead-vantage-point"`
+///
+/// `mode` で fallback 検出可能 (実 spawn 結果に基づき SP が populate)。
+///
+/// `stand` field は **どの Stand の tmux か** を表現 (1 Lane に複数 Stand を立てる
+/// 将来想定: HD + TH 並立、 future custom Stand 等)。 Phase 1 MVP は通常 1 entry だが、
+/// 型として複数対応可能。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TmuxLaneAddress {
+    pub stand: LaneStand,
+    pub session: String,
+    pub mode: TmuxMode,
+}
+
 /// Lane の state machine 状態 (Phase A4-2b では Running 固定で pre-populate)
 ///
 /// 注意: 「ccws disk dir 存在 + Pane 不在」 は **Lane state ではなく `pid: None` で表現する** 設計。
@@ -101,6 +135,41 @@ impl LaneAddress {
             name: Some(name.into()),
         }
     }
+
+    /// Phase 1a: tmux session 名を deterministic に導出する。
+    ///
+    /// 形式: `{stand_short}-{lane_label}-{project}` を sanitize ([A-Za-z0-9_-] 以外は '-')。
+    /// - stand_short: HD → "hd"、TH → "th"
+    /// - lane_label: Lead → "lead"、Worker(Some(name)) → name、Worker(None) → "unnamed"
+    ///
+    /// 例:
+    /// - `LaneAddress::lead("vantage-point")` + HD → `"hd-lead-vantage-point"`
+    /// - `LaneAddress::worker("vantage-point", "sub")` + HD → `"hd-sub-vantage-point"`
+    /// - `LaneAddress` に `.` `@` 等 → `-` に置換
+    ///
+    /// agent (Claude CLI on HD) はこの関数の戻り値を `tmux send-keys -t <session>` の
+    /// 宛先として使う。`/api/lanes` の cache 値とも一致する (deterministic)。
+    pub fn tmux_session_name(&self, stand: LaneStand) -> String {
+        let stand_short = match stand {
+            LaneStand::HeavensDoor => "hd",
+            LaneStand::TheHand => "th",
+        };
+        let lane_label: &str = match (&self.kind, self.name.as_deref()) {
+            (LaneKind::Lead, _) => "lead",
+            (LaneKind::Worker, Some(n)) => n,
+            (LaneKind::Worker, None) => "unnamed",
+        };
+        let raw = format!("{}-{}-{}", stand_short, lane_label, self.project);
+        raw.chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                    c
+                } else {
+                    '-'
+                }
+            })
+            .collect()
+    }
 }
 
 impl fmt::Display for LaneAddress {
@@ -132,6 +201,14 @@ pub struct LaneInfo {
     /// `/api/lanes` 応答時に lazy 取得 (registry には保存しない、 git 状態は volatile)。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker_status: Option<crate::ccws::commands::WorkerStatus>,
+    /// Phase 1a: Lane に attach した Stand ごとの tmux session address (deterministic)。
+    /// SP push 経由で TheWorld cache に流れる (agent から `/api/lanes` で resolve)。
+    ///
+    /// **複数 entry 想定**: 1 Lane に複数 Stand を並立させる将来 (HD + TH、 future custom Stand) に
+    /// 対応するため `Vec`。 Phase 1 MVP は通常 0 or 1 entry。 順序は spawn 順を表現。
+    /// `panes` の論理 ID 管理は tmux 側に委譲 (1 session 内 split は tmux native 機能)。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tmux: Vec<TmuxLaneAddress>,
 }
 
 /// Lane Pool — Lead/Worker registry
@@ -225,6 +302,9 @@ impl LanePool {
             cwd,
             // Lead は git workspace 持たない (= project root が cwd)、 worker_status は None
             worker_status: None,
+            // Phase 1a: tmux address は spawn 結果から Vec に push (Step 0/1e で配線)
+            // 通常 1 Stand = 1 entry、 将来 HD+TH 並立で 2 entry になる想定
+            tmux: Vec::new(),
         };
         pool.lanes.insert(addr, info);
         pool
@@ -522,5 +602,149 @@ mod tests {
         assert!(LanePool::parse_address("/lead").is_none()); // project 空
         assert!(LanePool::parse_address("vp/foo").is_none()); // 未知 kind
         assert!(LanePool::parse_address("vp/worker/").is_none()); // worker name 空
+    }
+
+    // ========================================================================
+    // Phase 1a — Lane → tmux session address resolution
+    // ========================================================================
+
+    #[test]
+    fn tmux_session_name_lead_hd() {
+        // Lead Lane + Heaven's Door → "hd-lead-{project}"
+        let addr = LaneAddress::lead("vantage-point");
+        assert_eq!(
+            addr.tmux_session_name(LaneStand::HeavensDoor),
+            "hd-lead-vantage-point"
+        );
+    }
+
+    #[test]
+    fn tmux_session_name_worker_hd() {
+        // Worker(name) + HD → "hd-{name}-{project}"
+        let addr = LaneAddress::worker("vantage-point", "sub");
+        assert_eq!(
+            addr.tmux_session_name(LaneStand::HeavensDoor),
+            "hd-sub-vantage-point"
+        );
+    }
+
+    #[test]
+    fn tmux_session_name_lead_th() {
+        // The Hand stand → prefix "th-"
+        let addr = LaneAddress::lead("vp");
+        assert_eq!(addr.tmux_session_name(LaneStand::TheHand), "th-lead-vp");
+    }
+
+    #[test]
+    fn tmux_session_name_sanitize_special_chars() {
+        // project 名に '.' 等の tmux session 名で escape 必要な文字 → '-' に置換
+        let addr = LaneAddress {
+            project: "creo.memories".to_string(),
+            kind: LaneKind::Lead,
+            name: None,
+        };
+        assert_eq!(
+            addr.tmux_session_name(LaneStand::HeavensDoor),
+            "hd-lead-creo-memories"
+        );
+    }
+
+    #[test]
+    fn tmux_session_name_unnamed_worker_fallback() {
+        // Worker(name=None) は仕様上想定外だが defensive に "unnamed" にフォールバック
+        let addr = LaneAddress {
+            project: "vp".to_string(),
+            kind: LaneKind::Worker,
+            name: None,
+        };
+        assert_eq!(
+            addr.tmux_session_name(LaneStand::HeavensDoor),
+            "hd-unnamed-vp"
+        );
+    }
+
+    #[test]
+    fn tmux_lane_address_serde_snake_case_mode_and_stand() {
+        // TmuxMode + LaneStand の serde は snake_case で wire 形式に揃う (TheWorld registry payload 用)
+        let t = TmuxLaneAddress {
+            stand: LaneStand::HeavensDoor,
+            session: "hd-lead-vp".to_string(),
+            mode: TmuxMode::Tmux,
+        };
+        let json = serde_json::to_string(&t).unwrap();
+        assert!(json.contains("\"mode\":\"tmux\""), "got: {}", json);
+        assert!(json.contains("\"stand\":\"heavens_door\""), "got: {}", json);
+
+        let fb = TmuxLaneAddress {
+            stand: LaneStand::TheHand,
+            session: "th-lead-vp".to_string(),
+            mode: TmuxMode::PtySlotFallback,
+        };
+        let json2 = serde_json::to_string(&fb).unwrap();
+        assert!(
+            json2.contains("\"mode\":\"pty_slot_fallback\""),
+            "got: {}",
+            json2
+        );
+        assert!(json2.contains("\"stand\":\"the_hand\""), "got: {}", json2);
+    }
+
+    #[test]
+    fn lane_info_tmux_field_empty_vec_serde_omitted() {
+        // tmux が空 Vec なら skip_serializing_if で wire 形式から省略 → 古 client と互換
+        let info = LaneInfo {
+            address: LaneAddress::lead("vp"),
+            kind: LaneKind::Lead,
+            name: None,
+            state: LaneState::Running,
+            stand: LaneStand::HeavensDoor,
+            created_at: "2026-05-01T00:00:00Z".to_string(),
+            pid: None,
+            cwd: "/tmp".to_string(),
+            worker_status: None,
+            tmux: Vec::new(),
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(
+            !json.contains("\"tmux\""),
+            "tmux should be omitted when empty: {}",
+            json
+        );
+    }
+
+    #[test]
+    fn lane_info_tmux_field_multi_stand_serde_round_trip() {
+        // Phase 1a multi-stand 設計: 1 Lane が 複数 Stand 並立 (HD + TH) で
+        // 複数 tmux session を持つケースを serde round-trip で検証
+        let original = LaneInfo {
+            address: LaneAddress::lead("vp"),
+            kind: LaneKind::Lead,
+            name: None,
+            state: LaneState::Running,
+            stand: LaneStand::HeavensDoor,
+            created_at: "2026-05-01T00:00:00Z".to_string(),
+            pid: None,
+            cwd: "/tmp".to_string(),
+            worker_status: None,
+            tmux: vec![
+                TmuxLaneAddress {
+                    stand: LaneStand::HeavensDoor,
+                    session: "hd-lead-vp".to_string(),
+                    mode: TmuxMode::Tmux,
+                },
+                TmuxLaneAddress {
+                    stand: LaneStand::TheHand,
+                    session: "th-lead-vp".to_string(),
+                    mode: TmuxMode::Tmux,
+                },
+            ],
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let restored: LaneInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.tmux.len(), 2);
+        assert_eq!(restored.tmux[0].stand, LaneStand::HeavensDoor);
+        assert_eq!(restored.tmux[1].stand, LaneStand::TheHand);
+        assert_eq!(restored.tmux[0].session, "hd-lead-vp");
+        assert_eq!(restored.tmux[1].session, "th-lead-vp");
     }
 }
