@@ -182,6 +182,65 @@ impl fmt::Display for LaneAddress {
     }
 }
 
+/// Phase 2 (Step E): エンティティ lifecycle の diff event を表現する generic ADT。
+///
+/// - `I` = identifier 型 (削除時のみ必要、 例: `LaneAddress`)
+/// - `P` = payload 型 (add/update 時の full state、 例: `LaneInfo`)
+///
+/// SP の caller で event 発生 → AppState の broadcast channel に publish →
+/// `spawn_registry_keepalive` の subscriber が QUIC registry channel で TheWorld に push、
+/// 各 cache を realtime sync する primitive。
+///
+/// wire format: internally tagged JSON
+/// ```json
+/// {"kind": "add", "payload": {...}}
+/// {"kind": "remove", "id": {...}}
+/// {"kind": "update", "payload": {...}}
+/// ```
+///
+/// QUIC channel は ordered (single connection) なので、 register snapshot → diff の順序保証あり。
+/// 将来 `Diff<PaneId, PaneInfo>` / `Diff<StandKind, StandInfo>` 等の type alias で reuse 可能。
+///
+/// 関連 memory: Phase 1 完成 (mem_1Cac2YvnAhaVRCJemidtkx) の「残作業: Phase 2 Step E」に該当。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum Diff<I, P> {
+    /// 新規追加 (Lane spawn 完了 / Pane create 等、 full payload で挿入)
+    Add { payload: P },
+    /// 削除 (Lane destroy / Pane close 等、 id のみで identify)
+    Remove { id: I },
+    /// 更新 (state 変更 / pid 更新 / restart 完了 等、 full payload で replace)
+    Update { payload: P },
+}
+
+/// Phase 2: Lane lifecycle 用の Diff alias。 SP の lane_pool 変更を TheWorld に伝える。
+pub type LaneDiff = Diff<LaneAddress, LaneInfo>;
+
+/// Phase 2 (Step E): SP の system 系 lifecycle event を 1 つの broadcast bus で配信。
+///
+/// caller (lane_spawn_actor / routes/* / lifecycle monitor / restart_lane 等) が
+/// `state.system_event_tx.send(SystemEvent::*)` で publish、
+/// `spawn_registry_keepalive` subscriber が QUIC registry channel 経由で TheWorld に流す。
+///
+/// scope ごとに variant 分け、 内部に該当 Diff を内包。 将来 Pane / Stand 等は
+/// variant 追加で扱える central event bus pattern (Erlang event manager 風)。
+///
+/// wire format: internally tagged JSON で、 内側は Diff の `kind` も二重 tag:
+/// ```json
+/// {"scope": "lane", "kind": "add", "payload": {...}}
+/// {"scope": "lane", "kind": "remove", "id": {...}}
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "scope")]
+pub enum SystemEvent {
+    /// Lane lifecycle diff (Phase 2 Step E)
+    Lane(LaneDiff),
+    // 将来 variant 追加候補:
+    //   Pane(Diff<PaneId, PaneInfo>),       // Phase 7 (Pane Revival)
+    //   Stand(Diff<StandKind, StandInfo>),  // 各 Stand の lifecycle
+    //   Process(Diff<ProcessKey, RunningProcess>),  // Process registry diff
+}
+
 impl TmuxLaneAddress {
     /// Phase 1e: spawn 成功時の tmux address を生成する helper。
     ///
@@ -781,5 +840,104 @@ mod tests {
         assert_eq!(restored.tmux[1].stand, LaneStand::TheHand);
         assert_eq!(restored.tmux[0].session, "hd-lead-vp");
         assert_eq!(restored.tmux[1].session, "th-lead-vp");
+    }
+
+    // ========================================================================
+    // Phase 2 (Step E) — Lane lifecycle diff push (SystemEvent + Diff<I, P>)
+    // ========================================================================
+
+    #[test]
+    fn lane_diff_add_serde_round_trip() {
+        // Diff::Add { payload: LaneInfo } の wire 形式 + decode
+        let info = LaneInfo {
+            address: LaneAddress::worker("vp", "sub"),
+            kind: LaneKind::Worker,
+            name: Some("sub".to_string()),
+            state: LaneState::Running,
+            stand: LaneStand::HeavensDoor,
+            created_at: "2026-05-01T00:00:00Z".to_string(),
+            pid: Some(12345),
+            cwd: "/tmp".to_string(),
+            worker_status: None,
+            tmux: vec![TmuxLaneAddress {
+                stand: LaneStand::HeavensDoor,
+                session: "hd-sub-vp".to_string(),
+                mode: TmuxMode::Tmux,
+            }],
+        };
+        let diff: LaneDiff = Diff::Add {
+            payload: info.clone(),
+        };
+        let json = serde_json::to_string(&diff).unwrap();
+        assert!(json.contains("\"kind\":\"add\""), "got: {}", json);
+        assert!(json.contains("\"payload\""), "got: {}", json);
+
+        let restored: LaneDiff = serde_json::from_str(&json).unwrap();
+        match restored {
+            Diff::Add { payload } => {
+                assert_eq!(payload.address, info.address);
+                assert_eq!(payload.tmux.len(), 1);
+            }
+            _ => panic!("expected Diff::Add"),
+        }
+    }
+
+    #[test]
+    fn lane_diff_remove_serde_round_trip() {
+        // Diff::Remove { id: LaneAddress } で id のみ送る wire 形式
+        let addr = LaneAddress::worker("vp", "osc");
+        let diff: LaneDiff = Diff::Remove { id: addr.clone() };
+        let json = serde_json::to_string(&diff).unwrap();
+        assert!(json.contains("\"kind\":\"remove\""), "got: {}", json);
+        assert!(json.contains("\"id\""), "got: {}", json);
+
+        let restored: LaneDiff = serde_json::from_str(&json).unwrap();
+        match restored {
+            Diff::Remove { id } => assert_eq!(id, addr),
+            _ => panic!("expected Diff::Remove"),
+        }
+    }
+
+    #[test]
+    fn system_event_lane_serde_flattens_inner_diff() {
+        // SystemEvent::Lane(LaneDiff) の wire 形式は
+        // {"scope": "lane", "kind": "add", "payload": {...}} のように
+        // outer scope tag + inner Diff tag が同 level に flatten される。
+        let info = LaneInfo {
+            address: LaneAddress::lead("vp"),
+            kind: LaneKind::Lead,
+            name: None,
+            state: LaneState::Running,
+            stand: LaneStand::HeavensDoor,
+            created_at: "2026-05-01T00:00:00Z".to_string(),
+            pid: None,
+            cwd: "/tmp".to_string(),
+            worker_status: None,
+            tmux: Vec::new(),
+        };
+        let event = SystemEvent::Lane(Diff::Add {
+            payload: info.clone(),
+        });
+        let json = serde_json::to_string(&event).unwrap();
+        // outer: scope tag
+        assert!(
+            json.contains("\"scope\":\"lane\""),
+            "scope tag missing, got: {}",
+            json
+        );
+        // inner: Diff::kind tag が同 level に flatten される (serde internally tagged の挙動)
+        assert!(
+            json.contains("\"kind\":\"add\""),
+            "inner kind missing, got: {}",
+            json
+        );
+
+        let restored: SystemEvent = serde_json::from_str(&json).unwrap();
+        match restored {
+            SystemEvent::Lane(Diff::Add { payload }) => {
+                assert_eq!(payload.address, info.address);
+            }
+            _ => panic!("expected SystemEvent::Lane(Diff::Add)"),
+        }
     }
 }
