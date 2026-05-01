@@ -61,6 +61,11 @@ jobs:
   check-windows:
     name: Check (Windows)
     runs-on: windows-latest
+    # CI 時間短縮 (2026-05-01): PR では skip、 main push (= merge 後 + 直 commit) のみで
+    # regression 検証。 vp-app は Mac 主軸 (memory MEMORY.md "2026-04-26 移行") で
+    # Windows backend (PR #219) は backlog 扱い。 branch protection は既に optional
+    # (Format + Clippy + Test のみ required) なので merge blocking 影響なし。
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v4
 
