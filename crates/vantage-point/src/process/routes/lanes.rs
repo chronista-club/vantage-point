@@ -250,7 +250,12 @@ pub async fn create_handler(
     // PtySlot::spawn は openpty + spawn_command の OS syscall でブロッキング。
     // Phase review fix #2: tokio worker thread を占有しないよう spawn_blocking でラップ。
     // Phase 4-X の ccws clone と同じ pattern。
-    let cmd = crate::process::stand_spawner::build_stand_command(stand, std::path::Path::new(&cwd));
+    // Phase 1e: addr を渡して HD spec の tmux session 名導出に使う
+    let cmd = crate::process::stand_spawner::build_stand_command(
+        stand,
+        &addr,
+        std::path::Path::new(&cwd),
+    );
     let cwd_for_spawn = cwd.clone();
     // Phase 5-D: spawn_with_fallback で `claude --continue` 早期 exit 時に空 args で retry。
     let spawn_result = tokio::task::spawn_blocking(move || {
@@ -299,8 +304,14 @@ pub async fn create_handler(
         cwd,
         // create 時点では git 状態は registry に保存しない、 GET 時に都度 worker_status() で取得
         worker_status: None,
-        // Phase 1a: tmux address は spawn 結果から Vec に push (Step 0/1e で配線)
-        tmux: Vec::new(),
+        // Phase 1e: spawn 成功時のみ tmux address を populate
+        tmux: if matches!(lane_state, crate::process::lanes_state::LaneState::Running) {
+            vec![crate::process::lanes_state::TmuxLaneAddress::for_spawn(
+                &addr, stand,
+            )]
+        } else {
+            Vec::new()
+        },
     };
 
     {

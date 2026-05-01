@@ -20,7 +20,7 @@
 //!
 //! Phase 6-F で `LlmProfile` preset を増やすだけで複数 LLM 対応できる shape を確立。
 
-use super::lanes_state::LaneStand;
+use super::lanes_state::{LaneAddress, LaneStand};
 use super::stand_spawner::StandCommand;
 
 /// Lane (PTY) 上で発動する Stand 能力。
@@ -33,7 +33,10 @@ pub trait LaneStandSpec {
     fn name(&self) -> &str;
 
     /// PtySlot 起動用 command を構築。
-    fn build(&self) -> StandCommand;
+    ///
+    /// Phase 1e: `addr` を受け取って tmux session 名を導出 (HD は副舞台 = tmux session を立てる)。
+    /// addr 不要な spec (TH 等) は `_addr` で受け流せる。
+    fn build(&self, addr: &LaneAddress) -> StandCommand;
 }
 
 /// TH 🤚 = 舞台を立てる能力 ─ 素 shell PTY (login mode)。
@@ -47,7 +50,9 @@ impl LaneStandSpec for TheHand {
         "the_hand"
     }
 
-    fn build(&self) -> StandCommand {
+    fn build(&self, _addr: &LaneAddress) -> StandCommand {
+        // TH は素 shell なので addr (tmux session 名) は使わない。 Phase 2 で TH 用
+        // init_script (vp_lane_init_script Phase 1) を扱う時に addr を活用予定。
         StandCommand {
             program: shell_path(),
             args: vec!["-l".to_string()],
@@ -102,13 +107,44 @@ impl LlmProfile {
     ///
     /// 末尾 `\n` は PTY 入力として行確定する (== Enter)。
     pub fn cli_invocation(&self) -> String {
+        format!("{}\n", self.invocation_chain())
+    }
+
+    /// Phase 1e: tmux session でラップした invocation を組立。
+    ///
+    /// shell の中で更に tmux session を立てて、 その内側で LLM CLI を起動する形:
+    /// ```text
+    /// tmux new-session -A -s {session} 'claude --continue || claude' || (claude --continue || claude)
+    /// ```
+    ///
+    /// - **副舞台 (tmux session)**: agent が `tmux send-keys -t {session}` で他 Lane の HD に
+    ///   入力をリレーできる。 `LaneInfo.tmux` 経由で session 名が引ける。
+    /// - **外側 `||`**: tmux 不在環境では shell 直で `claude --continue || claude` に降格 (PtySlotFallback mode)。
+    /// - **内側 `'...'`**: tmux session 内 pane の起動 cmd。 `||` chain は shell に委譲済の既存挙動を維持。
+    ///
+    /// 関連 memory: `mem_1Cac2YvnAhaVRCJemidtkx` (Phase 1 milestone) の design 確定軸。
+    pub fn cli_invocation_tmux_wrapped(&self, tmux_session: &str) -> String {
+        let inner = self.invocation_chain();
+        // 副舞台 (tmux) 起動成功 → 内側 cmd で LLM auto-launch、 失敗 → 外側 fallback
+        format!(
+            "tmux new-session -A -s {session} '{inner}' || ({inner})\n",
+            session = tmux_session,
+            inner = inner
+        )
+    }
+
+    /// 内部 helper: `cli + args` を `||` chain で結合した shell 式 (末尾 `\n` なし)。
+    ///
+    /// 例: `args=["--continue"], fallback_args=Some([])` → `"claude --continue || claude"`。
+    /// `cli_invocation` (素 shell) と `cli_invocation_tmux_wrapped` (副舞台あり) で共有。
+    fn invocation_chain(&self) -> String {
         let primary = self.format_invocation(&self.args);
         match &self.fallback_args {
             Some(fb) => {
                 let fallback = self.format_invocation(fb);
-                format!("{} || {}\n", primary, fallback)
+                format!("{} || {}", primary, fallback)
             }
-            None => format!("{}\n", primary),
+            None => primary,
         }
     }
 
@@ -147,15 +183,19 @@ impl LaneStandSpec for LlmStand {
         &self.profile.name
     }
 
-    fn build(&self) -> StandCommand {
-        // Phase 6-E (Slice 2, shell-hosted): TH 借用で `$SHELL -l` を立て、
-        // initial_input で LLM CLI を auto-launch。 fallback は profile.cli_invocation()
-        // が `||` chain として shell に流す。 `/exit` で claude を抜けると shell prompt に
-        // 戻る (Lane death ではない) ─ memory mental model の「役者が降りても舞台は残る」。
-        let mut cmd = TheHand.build();
-        cmd.initial_input = Some(self.profile.cli_invocation());
-        // fallback_args は shell-hosted では使わない (shell が retry する)。
-        // shell 自体の spawn 失敗 fallback は TheHand と同じく None。
+    fn build(&self, addr: &LaneAddress) -> StandCommand {
+        // Phase 1e (副舞台付き shell-hosted): TH 借用で shell を立て、 その中で
+        // tmux session を立てる二段構造。
+        //
+        // - 舞台 (shell) ←→ 副舞台 (tmux session) ←→ 役者 (claude)
+        // - tmux 不在 → 舞台 ←→ 役者 (副舞台なし、 send-keys 不可、 PtySlotFallback mode)
+        //
+        // 副舞台 (tmux) があれば agent が `tmux send-keys` で他 Lane の HD に入力を
+        // リレーできる。 tmux 不在環境では shell 内 `||` で素 claude にフォールバック。
+        // session 名 derivation は HD prefix を仮定 (将来 Gemini Stand 等で別 prefix 化)。
+        let mut cmd = TheHand.build(addr);
+        let session = addr.tmux_session_name(LaneStand::HeavensDoor);
+        cmd.initial_input = Some(self.profile.cli_invocation_tmux_wrapped(&session));
         cmd.fallback_args = None;
         cmd
     }
@@ -193,6 +233,11 @@ fn shell_path() -> String {
 mod tests {
     use super::*;
 
+    /// テスト用 LaneAddress factory。 build(&addr) signature に渡す。
+    fn test_addr() -> LaneAddress {
+        LaneAddress::lead("vp")
+    }
+
     #[test]
     fn the_hand_name_is_wire_compat() {
         // HTTP `/api/lanes` JSON 互換: "the_hand" 文字列を維持。
@@ -201,7 +246,7 @@ mod tests {
 
     #[test]
     fn the_hand_builds_shell_login() {
-        let cmd = TheHand.build();
+        let cmd = TheHand.build(&test_addr());
         assert!(
             cmd.program.contains("zsh") || cmd.program.contains("bash"),
             "shell expected zsh/bash, got {}",
@@ -209,39 +254,60 @@ mod tests {
         );
         assert_eq!(cmd.args, vec!["-l".to_string()]);
         assert!(cmd.fallback_args.is_none());
+        // TH は addr (tmux session 名) を使わない、 initial_input なし
+        assert!(cmd.initial_input.is_none());
     }
 
     #[test]
-    fn llm_stand_heavens_door_is_shell_hosted() {
+    fn llm_stand_heavens_door_uses_tmux_wrapped_invocation() {
+        // Phase 1e: HD initial_input は tmux session でラップされた invocation
         let stand = LlmStand::heavens_door();
         assert_eq!(stand.name(), "anthropic-claude-continue");
-        let cmd = stand.build();
-        // Slice 2: shell-hosted ─ program は shell、 LLM CLI は initial_input に
+        let cmd = stand.build(&test_addr());
+        // shell-hosted (program は shell)
         assert!(
             cmd.program.contains("zsh") || cmd.program.contains("bash"),
             "shell-hosted: program=zsh/bash 想定、 got {}",
             cmd.program
         );
         assert_eq!(cmd.args, vec!["-l".to_string()]);
-        // shell-hosted では shell 自体の fallback はなし (shell が retry を担当)
+        // shell-hosted では shell 自体の fallback はなし (shell が retry 担当)
         assert!(cmd.fallback_args.is_none());
+
         let input = cmd.initial_input.expect("HD は initial_input 必須");
-        assert_eq!(input, "claude --continue || claude\n");
+        // Phase 1e: tmux new-session で副舞台を立てる + 不在環境では `||` で素 claude
+        assert!(
+            input.starts_with("tmux new-session -A -s hd-lead-vp"),
+            "Phase 1e: tmux session ラッパ必須、 got: {}",
+            input
+        );
+        assert!(
+            input.contains("'claude --continue || claude'"),
+            "内側 LLM 起動 cmd (tmux pane の cmd) 必須、 got: {}",
+            input
+        );
+        assert!(
+            input.contains("|| (claude --continue || claude)"),
+            "外側 fallback (tmux 不在環境用) 必須、 got: {}",
+            input
+        );
+        assert!(input.ends_with('\n'), "PTY 入力は改行で行確定");
     }
 
     #[test]
     fn lane_stand_adapter_dispatches_correctly() {
         // wire format LaneStand から trait object への adapter が機能する
+        let addr = test_addr();
         let hd_spec = LaneStand::HeavensDoor.to_spec();
         assert_eq!(hd_spec.name(), "anthropic-claude-continue");
-        let hd_cmd = hd_spec.build();
-        // Slice 2: HD は shell-hosted
+        let hd_cmd = hd_spec.build(&addr);
+        // HD は shell-hosted + tmux wrapped (Phase 1e)
         assert!(hd_cmd.program.contains("zsh") || hd_cmd.program.contains("bash"));
         assert!(hd_cmd.initial_input.is_some());
 
         let th_spec = LaneStand::TheHand.to_spec();
         assert_eq!(th_spec.name(), "the_hand");
-        let th_cmd = th_spec.build();
+        let th_cmd = th_spec.build(&addr);
         assert!(th_cmd.program.contains("zsh") || th_cmd.program.contains("bash"));
         // TH は initial_input なし (素 shell)
         assert!(th_cmd.initial_input.is_none());
@@ -277,5 +343,32 @@ mod tests {
             fallback_args: None,
         };
         assert_eq!(p.cli_invocation(), "foo\n");
+    }
+
+    #[test]
+    fn cli_invocation_tmux_wrapped_with_fallback() {
+        // Phase 1e: tmux session でラップした invocation が正しく組立される
+        let p = LlmProfile::anthropic_continue();
+        let wrapped = p.cli_invocation_tmux_wrapped("hd-lead-vantage-point");
+        assert_eq!(
+            wrapped,
+            "tmux new-session -A -s hd-lead-vantage-point 'claude --continue || claude' || (claude --continue || claude)\n"
+        );
+    }
+
+    #[test]
+    fn cli_invocation_tmux_wrapped_without_fallback() {
+        // fallback 無し profile も tmux でラップされ、 内側は cli only に
+        let p = LlmProfile {
+            name: "bare".to_string(),
+            provider: "test".to_string(),
+            cli: "foo".to_string(),
+            args: vec![],
+            fallback_args: None,
+        };
+        assert_eq!(
+            p.cli_invocation_tmux_wrapped("hd-lead-vp"),
+            "tmux new-session -A -s hd-lead-vp 'foo' || (foo)\n"
+        );
     }
 }

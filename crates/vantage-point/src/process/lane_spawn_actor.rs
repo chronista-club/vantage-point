@@ -177,9 +177,14 @@ async fn handle_cmd(cmd: LaneCmd, pool: Arc<RwLock<LanePool>>, semaphore: Arc<Se
     // spawn_with_fallback は内部で std::thread::sleep(800ms) を呼ぶ sync 関数。
     // tokio worker を block しないよう spawn_blocking で隔離する。
     let cwd_for_blocking = cwd.clone();
+    // Phase 1e: build_stand_command が addr を要求するので clone を closure に move
+    let addr_for_blocking = addr.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let cmd_built =
-            super::stand_spawner::build_stand_command(stand, Path::new(&cwd_for_blocking));
+        let cmd_built = super::stand_spawner::build_stand_command(
+            stand,
+            &addr_for_blocking,
+            Path::new(&cwd_for_blocking),
+        );
         super::stand_spawner::spawn_with_fallback(&cwd_for_blocking, &cmd_built, 80, 24)
     })
     .await;
@@ -230,8 +235,12 @@ async fn handle_cmd(cmd: LaneCmd, pool: Arc<RwLock<LanePool>>, semaphore: Arc<Se
         cwd,
         // 起動時点では git 状態取得しない (list_handler 側で必要時に enrich)。
         worker_status: None,
-        // Phase 1a: tmux address は spawn 結果から Vec に push (Step 0/1e で配線)
-        tmux: Vec::new(),
+        // Phase 1e: spawn 成功時のみ tmux address を populate
+        tmux: if matches!(state, super::lanes_state::LaneState::Running) {
+            vec![super::lanes_state::TmuxLaneAddress::for_spawn(&addr, stand)]
+        } else {
+            Vec::new()
+        },
     };
     let mut pool_write = pool.write().await;
     if pool_write.get(&addr).is_some() {
