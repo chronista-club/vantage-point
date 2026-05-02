@@ -153,11 +153,28 @@ async fn list_available_stands() -> anyhow::Result<Vec<StandInfo>> {
 mod tests {
     use super::*;
 
+    /// `mise --version` が動くか check。 CI (GitHub Actions ubuntu-latest 等) では mise 未 install
+    /// なので、 test を graceful skip するための gate。 dev 環境 (mise 必須の VP toolchain) では真。
+    fn mise_available() -> bool {
+        std::process::Command::new("mise")
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+
     /// install root 経由で `mise tasks ls --json` が走り、 vp:stand:* が 3 つ以上返ること。
     /// (PR-A で hd / shell / tmux 3 task を install root に置いた、 dogfood 中の追加 task は
     /// 環境依存だが 3 つ以上は保証)
+    /// CI 環境 (mise 未 install) では skip。
     #[tokio::test]
     async fn list_available_stands_returns_pr_a_three_tasks() {
+        if !mise_available() {
+            eprintln!("skipping: mise not in PATH (CI 環境想定)");
+            return;
+        }
         let stands = list_available_stands()
             .await
             .expect("install root + mise が動く環境では成功するはず");
@@ -169,8 +186,13 @@ mod tests {
     }
 
     /// description が空文字でなく、 PR-A の `#MISE description=` が読まれていること。
+    /// CI 環境 (mise 未 install) では skip。
     #[tokio::test]
     async fn stand_description_populated_from_task_metadata() {
+        if !mise_available() {
+            eprintln!("skipping: mise not in PATH (CI 環境想定)");
+            return;
+        }
         let stands = list_available_stands()
             .await
             .expect("install root + mise が動く環境では成功するはず");
