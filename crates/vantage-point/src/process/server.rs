@@ -18,7 +18,7 @@ use super::capabilities::{CapabilityConfig, ProcessCapabilities};
 use super::hub::Hub;
 use super::pty::PtyManager;
 use super::routes::{
-    health, lanes, permission, project_feed, prompt, update, world, ws, ws_terminal,
+    health, lanes, permission, project_feed, prompt, stands, update, world, ws, ws_terminal,
 };
 use super::session::SessionManager;
 use super::state::AppState;
@@ -431,6 +431,8 @@ pub async fn run(
         )
         // Lane の Lead Stand restart (PtySlot kill + 同 stand で respawn)
         .route("/api/lanes/restart", post(lanes::restart_handler))
+        // doc 11 §4.1 PR-C: 利用可能な Stand 一覧 (sidebar の + Add Worker dropdown 用)
+        .route("/api/stands", get(stands::list_handler))
         .route("/api/show", post(health::show_handler))
         .route(
             "/api/msgbox/remote_deliver",

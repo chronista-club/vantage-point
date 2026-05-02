@@ -230,6 +230,24 @@ struct LanesResponse {
     lanes: Vec<LaneInfo>,
 }
 
+/// doc 11 PR-C: `GET /api/stands` の 1 entry。
+///
+/// SP 側 `process::routes::stands::StandInfo` と wire 互換 (snake_case 統一済)。
+#[derive(Debug, Clone, serde::Serialize, Deserialize)]
+pub struct StandInfo {
+    /// `vp:stand:{name}` の name 部分 (例: `"hd"` / `"shell"` / `"tmux"`)
+    pub name: String,
+    /// task ファイル先頭の `#MISE description="..."` の値
+    #[serde(default)]
+    pub description: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct StandsResponse {
+    #[serde(default)]
+    stands: Vec<StandInfo>,
+}
+
 impl TheWorldClient {
     /// ポート指定で IPv4 loopback に向ける
     pub fn new(port: u16) -> Self {
@@ -344,8 +362,15 @@ impl TheWorldClient {
 
     /// Phase 3-A: SP に Worker Lane を create (`POST /api/lanes`)。
     /// `branch` 指定時は SP が `ccws new <name> <branch>` で worker dir を作成して spawn する。
+    /// `stand` 指定時は SP が `mise run vp:stand:{stand}` で specified stand を起動する
+    /// (doc 11 PR-C、 None なら SP-side default = config.default_stand_or_hd())。
     /// `base_url` は SP の URL (例: `http://127.0.0.1:33002`) を指定。
-    pub async fn create_worker_lane(&self, name: &str, branch: Option<&str>) -> Result<()> {
+    pub async fn create_worker_lane(
+        &self,
+        name: &str,
+        branch: Option<&str>,
+        stand: Option<&str>,
+    ) -> Result<()> {
         let url = format!("{}/api/lanes", self.base_url);
         let mut body = serde_json::json!({
             "kind": "worker",
@@ -354,6 +379,9 @@ impl TheWorldClient {
         if let Some(b) = branch {
             body["branch"] = serde_json::Value::String(b.to_string());
         }
+        if let Some(s) = stand {
+            body["stand"] = serde_json::Value::String(s.to_string());
+        }
         let resp = self.client.post(&url).json(&body).send().await?;
         if !resp.status().is_success() {
             let status = resp.status();
@@ -361,6 +389,20 @@ impl TheWorldClient {
             anyhow::bail!("create_worker_lane HTTP {}: {}", status, text);
         }
         Ok(())
+    }
+
+    /// doc 11 PR-C: SP の `GET /api/stands` で利用可能な Stand 一覧を取得。
+    /// sidebar の `+ Add Worker` で stand dropdown を populate するための data source。
+    pub async fn list_stands(&self) -> Result<Vec<StandInfo>> {
+        let url = format!("{}/api/stands", self.base_url);
+        let resp = self.client.get(&url).send().await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("list_stands HTTP {}: {}", status, text);
+        }
+        let body: StandsResponse = resp.json().await?;
+        Ok(body.stands)
     }
 
     /// Phase 4-A: SP の Worker Lane を削除 (`DELETE /api/lanes?address=<addr>`)。
