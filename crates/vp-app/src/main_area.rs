@@ -339,10 +339,16 @@ body{overflow:hidden;}
       allowProposedApi: true,
       convertEol: true,
       scrollback: 5000,
-      cursorBlink: true,
+      // cursorBlink + smoothScroll は WebGL renderer の frame budget を圧迫し、
+      // 高速 scroll 時に frame skip → 「正しい column 位置に古い文字が残る」
+      // 形の ghost char を発生させる。 PR #247 (WebGL + Unicode11Addon) で
+      // CJK width drift は解消したが、 fast scroll 限定の frame skip は別因子。
+      //  - cursorBlink=false: blink animation の常時 frame consume を停止
+      //  - smoothScrollDuration=0: 80ms smooth scroll path を無効化、 discrete jump に
+      cursorBlink: false,
       cursorStyle: 'bar',
       cursorWidth: 2,
-      smoothScrollDuration: 80,
+      smoothScrollDuration: 0,
       // fontLigatures は DOM renderer と相性が悪く、 ligature 想定の 2 cell 幅 protect が
       // cell update を skip させて ghost char (mem_1CaVpvsBKR3ckieRXo1nwr) の主因になる疑い。
       // VP は @xterm/addon-ligatures を load していないため、 true でも合字描画は事実上 no-op、
