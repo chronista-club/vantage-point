@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+#MISE description="VP Stand: bare login shell (Layer 0、 旧 TheHand)"
+# VP env (caller が設定):
+#   VP_CWD     = Lane の working directory
+#   VP_SESSION = tmux session 名 (使わない)
+#   VP_PROJECT = project 名
+#   VP_LANE    = lane label
+# VP-specific metadata (VP が parse):
+#VP icon="🤚"
+#VP layer=0
+
+set -euo pipefail
+
+# 素 login shell に切替。 mise / volta / nvm 等の PATH を rc 経由で取り込む。
+exec "${SHELL:-/bin/zsh}" -l

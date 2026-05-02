@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+#MISE description="VP Stand: Heaven's Door — Claude TUI auto-launch with tmux 副舞台 (Layer 2)"
+# VP env (caller が設定):
+#   VP_CWD     = Lane の working directory (tmux session の cwd に使う)
+#   VP_SESSION = tmux session 名
+#   VP_PROJECT = project 名
+#   VP_LANE    = lane label
+# VP-specific metadata:
+#VP icon="📖"
+#VP layer=2
+
+set -euo pipefail
+
+# tmux server config (xterm.js 描画相性、 PR #243)
+tmux start-server 2>/dev/null || true
+tmux set-option -g focus-events on 2>/dev/null || true
+tmux set-option -g escape-time 0 2>/dev/null || true
+tmux set-option -ga terminal-overrides ',xterm-256color:Tc' 2>/dev/null || true
+
+# tmux 副舞台 + claude auto-launch:
+#   内側 'claude --continue || claude'
+#     → --continue 失敗時 (session corrupt 等) は新規 session で再試行
+#   外側 || (claude --continue || claude)
+#     → tmux 不在環境では shell 直で素 claude にフォールバック
+exec tmux new-session -A -c "$VP_CWD" -s "$VP_SESSION" \
+    'claude --continue || claude' \
+    || (claude --continue || claude)
