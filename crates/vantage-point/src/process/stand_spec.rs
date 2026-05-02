@@ -310,7 +310,7 @@ mod tests {
             input
         );
         assert!(
-            input.contains("tmux new-session -A -c '/tmp' -s hd-lead-vp"),
+            input.contains("tmux new-session -A -c '/tmp' -s vp-vp-lead-hd"),
             "Phase 1e: tmux session ラッパ + cwd 明示 (-c) 必須、 got: {}",
             input
         );
@@ -384,7 +384,7 @@ mod tests {
         // 完全一致でなく contains で柔軟にチェック (option 順序や追加に robust)。
         let p = LlmProfile::anthropic_continue();
         let wrapped =
-            p.cli_invocation_tmux_wrapped("hd-lead-vantage-point", "/Users/foo/repos/bar");
+            p.cli_invocation_tmux_wrapped("vp-vantage-point-lead-hd", "/Users/foo/repos/bar");
 
         // tmux server config (xterm.js 描画相性)
         assert!(
@@ -412,7 +412,7 @@ mod tests {
         // tmux server 共有時の cwd 継承罠を防ぐため、 session 単位で cwd 明示が必須。
         assert!(
             wrapped.contains(
-                "tmux new-session -A -c '/Users/foo/repos/bar' -s hd-lead-vantage-point 'claude --continue || claude'"
+                "tmux new-session -A -c '/Users/foo/repos/bar' -s vp-vantage-point-lead-hd 'claude --continue || claude'"
             ),
             "session 起動 + cwd 明示 + 内側 cmd 必須: {}",
             wrapped
@@ -435,10 +435,10 @@ mod tests {
             args: vec![],
             fallback_args: None,
         };
-        let wrapped = p.cli_invocation_tmux_wrapped("hd-lead-vp", "/tmp");
+        let wrapped = p.cli_invocation_tmux_wrapped("vp-vp-lead-hd", "/tmp");
         assert!(wrapped.contains("tmux start-server"), "got: {}", wrapped);
         assert!(
-            wrapped.contains("tmux new-session -A -c '/tmp' -s hd-lead-vp 'foo'"),
+            wrapped.contains("tmux new-session -A -c '/tmp' -s vp-vp-lead-hd 'foo'"),
             "got: {}",
             wrapped
         );
@@ -451,7 +451,7 @@ mod tests {
         // 通常の project_dir / ccws workspace path には quote 不要だが、 robust に。
         let p = LlmProfile::anthropic_continue();
         // cwd に `'` を含むケース (例: `/tmp/foo's bar`)
-        let wrapped = p.cli_invocation_tmux_wrapped("hd-lead-x", "/tmp/foo's bar");
+        let wrapped = p.cli_invocation_tmux_wrapped("vp-x-lead-hd", "/tmp/foo's bar");
         // `/tmp/foo's bar` → `/tmp/foo'\''s bar` でシングルクォート閉じ→escape→再開
         assert!(
             wrapped.contains("-c '/tmp/foo'\\''s bar'"),

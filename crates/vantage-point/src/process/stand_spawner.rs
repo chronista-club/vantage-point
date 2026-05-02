@@ -156,7 +156,7 @@ mod tests {
             input
         );
         assert!(
-            input.contains("tmux new-session -A -c '/tmp' -s hd-lead-vp"),
+            input.contains("tmux new-session -A -c '/tmp' -s vp-vp-lead-hd"),
             "Phase 1e: tmux session ラッパ + cwd 明示 (-c) 必須、 got: {}",
             input
         );
