@@ -45,6 +45,12 @@ pub struct StandCommand {
     /// `||` chain は shell に retry を任せる ─ memory `mem_1CaVnfJRgWtuRgZD9yQSoV`
     /// の「lifecycle の違いが直感的」 原則の体現 (役者 lifecycle と舞台 lifecycle が独立)。
     pub initial_input: Option<String>,
+    /// Phase doc 11 (PR-B): mise task 経路で起動する時の追加環境変数。
+    ///
+    /// `mise run vp:stand:hd` を呼ぶ時、 task 内で参照する VP_CWD / VP_SESSION /
+    /// VP_PROJECT / VP_LANE を spawn 時の child process env として注入。
+    /// 旧 LlmStand / TheHand 経路では空 Vec で挙動変化なし。
+    pub env: Vec<(String, String)>,
 }
 
 /// 早期 exit 検知の wait 時間 (ms)。 観測 (gfp-cad で `claude --continue` が 2ms で exit) より十分な値。
@@ -61,7 +67,7 @@ pub fn spawn_with_fallback(
     cols: u16,
     rows: u16,
 ) -> Result<(PtySlot, broadcast::Receiver<Vec<u8>>)> {
-    let (mut slot, rx) = PtySlot::spawn(cwd, &cmd.program, &cmd.args, cols, rows)?;
+    let (mut slot, rx) = PtySlot::spawn(cwd, &cmd.program, &cmd.args, &cmd.env, cols, rows)?;
 
     // primary が早期 exit するか peek
     std::thread::sleep(std::time::Duration::from_millis(EARLY_EXIT_CHECK_MS));
@@ -100,7 +106,7 @@ pub fn spawn_with_fallback(
     drop(slot); // 死亡 slot を Drop で kill+wait
     drop(rx);
 
-    let (mut slot, rx) = PtySlot::spawn(cwd, &cmd.program, fb_args, cols, rows)?;
+    let (mut slot, rx) = PtySlot::spawn(cwd, &cmd.program, fb_args, &cmd.env, cols, rows)?;
     // fallback 経路でも initial_input を書き込む (shell-hosted Stand での一貫性)。
     if let Some(input) = cmd.initial_input.as_deref()
         && let Err(e) = slot.write(input.as_bytes())
