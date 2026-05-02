@@ -107,7 +107,7 @@ body{overflow:hidden;}
 #lane-host{position:absolute;inset:0;}
 .lane-pane{position:absolute;inset:0;display:none;}
 .lane-pane.active{display:block;}
-.lane-pane .lane-term{padding:12px;height:100%;width:100%;box-sizing:border-box;}
+.lane-pane .lane-term{padding:0;height:100%;width:100%;box-sizing:border-box;}
 /* どの Lane も無い時の placeholder (active class で表示制御、 default は表示) */
 #lane-empty{position:absolute;inset:0;display:none;place-items:center;color:var(--color-text-tertiary);text-align:center;}
 #lane-empty.active{display:grid;}
