@@ -6,6 +6,7 @@ pub mod lanes;
 pub mod permission;
 pub mod project_feed;
 pub mod prompt;
+pub mod stands;
 pub mod update;
 pub mod world;
 pub mod ws;

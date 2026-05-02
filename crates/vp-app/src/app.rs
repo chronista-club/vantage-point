@@ -394,9 +394,13 @@ const SIDEBAR_HTML: &str = concat!(
   // R5: 失敗時 inline error 表示用 (path → error 文字列)。 success/cancel 時 delete。
   const addWorkerErrors = new Map();
   // R5: submit 中の form を disable するため pending 状態を track (path → bool)。
-  // また失敗後の再 submit に備え、 ユーザの入力値を保存しておく (path → {name, branch})。
+  // また失敗後の再 submit に備え、 ユーザの入力値を保存しておく (path → {name, branch, stand})。
   const addWorkerPending = new Set();
   const addWorkerInputs = new Map();
+  // doc 11 PR-C: 利用可能 Stand 一覧の cache (path → Array<{name, description}>)。
+  // stands:fetch の result が AppEvent::StandsResult → window.handleStandsResult で push back され、
+  // ここに保存。 同 project の form を再 expand した時 cached value を即表示できる。
+  const addWorkerStands = new Map();
 
   // ipc 送信 wrapper (window.ipc は wry が提供)
   function send(msg) {
@@ -794,14 +798,22 @@ const SIDEBAR_HTML: &str = concat!(
           const addForm = document.createElement('div');
           addForm.className = 'vp-add-worker-form';
           // R5: 入力値を addWorkerInputs から復元 (失敗後の再 submit / re-render を跨ぐため)。
-          const savedInputs = addWorkerInputs.get(p.path) || {name: '', branch: ''};
+          // doc 11 PR-C: stand 選択も同様に保存 (default は空 = SP-side default = "hd")。
+          const savedInputs = addWorkerInputs.get(p.path) || {name: '', branch: '', stand: ''};
           const escAttr = (s) => String(s || '')
             .replace(/&/g, '&amp;').replace(/"/g, '&quot;')
             .replace(/</g, '&lt;').replace(/>/g, '&gt;');
           const isPending = addWorkerPending.has(p.path);
+          // doc 11 PR-C: stand dropdown ─ stands:fetch result が来るまで 「読み込み中…」 placeholder。
+          //  cache 済 (= 同 project で前回 fetch した値) があれば即 populate。
+          const cachedStands = addWorkerStands.get(p.path);
+          const standOptions = cachedStands
+            ? cachedStands.map(s => '<option value="' + escAttr(s.name) + '"' + (s.name === savedInputs.stand ? ' selected' : '') + '>' + escAttr(s.name) + (s.description ? ' — ' + escAttr(s.description) : '') + '</option>').join('')
+            : '<option value="" disabled selected>読み込み中…</option>';
           addForm.innerHTML =
             '<input type="text" class="creo-input" placeholder="worker name (例: feat-api)" data-field="name" value="' + escAttr(savedInputs.name) + '">' +
             '<input type="text" class="creo-input" placeholder="branch 任意 (省略時は <user>/<name> auto-derive)" data-field="branch" value="' + escAttr(savedInputs.branch) + '">' +
+            '<select class="creo-input" data-field="stand" title="Stand 種類 (vp:stand:* mise task)">' + standOptions + '</select>' +
             '<div class="vp-add-worker-error" data-role="error" style="display:none;"></div>' +
             '<div class="vp-add-worker-actions">' +
               '<button class="creo-btn" data-variant="secondary" data-size="sm" data-action="cancel">Cancel</button>' +
@@ -822,6 +834,9 @@ const SIDEBAR_HTML: &str = concat!(
             addForm.classList.add('expanded');
             const nameInput = addForm.querySelector('input[data-field="name"]');
             if (nameInput) setTimeout(() => nameInput.focus(), 50);
+            // doc 11 PR-C: stand 一覧を fetch (cache 済なら refetch して 30 秒 TTL を更新)。
+            //  result は AppEvent::StandsResult → window.handleStandsResult → addWorkerStands cache 更新 + dropdown re-populate。
+            send({t: 'stands:fetch', path: p.path});
           });
           const cancelBtn = addForm.querySelector('button[data-action="cancel"]');
           const submitBtn = addForm.querySelector('button[data-action="submit"]');
@@ -832,12 +847,15 @@ const SIDEBAR_HTML: &str = concat!(
             addForm.classList.remove('expanded');
           };
           // R5: input 値を即時保存 (再 render でも復元できるように)
+          // doc 11 PR-C: stand 選択も保存 (空文字なら SP-side default に lane:add_worker side で fallback)
           const persistInputs = () => {
             const nameInput = addForm.querySelector('input[data-field="name"]');
             const branchInput = addForm.querySelector('input[data-field="branch"]');
+            const standSelect = addForm.querySelector('select[data-field="stand"]');
             addWorkerInputs.set(p.path, {
               name: (nameInput && nameInput.value) || '',
               branch: (branchInput && branchInput.value) || '',
+              stand: (standSelect && standSelect.value) || '',
             });
           };
           const showError = (msg) => {
@@ -858,8 +876,11 @@ const SIDEBAR_HTML: &str = concat!(
             if (addWorkerPending.has(p.path)) return; // double-click guard
             const nameInput = addForm.querySelector('input[data-field="name"]');
             const branchInput = addForm.querySelector('input[data-field="branch"]');
+            const standSelect = addForm.querySelector('select[data-field="stand"]');
             const nameVal = (nameInput && nameInput.value || '').trim();
             const branchVal = (branchInput && branchInput.value || '').trim();
+            // doc 11 PR-C: stand 選択値 (空 / "読み込み中…" 状態は null = SP-side default にフォールバック)
+            const standVal = (standSelect && standSelect.value || '').trim();
             if (!nameVal) {
               // R5: 空文字 submit は silent return せず inline error 表示
               showError('Worker name は必須です');
@@ -874,12 +895,23 @@ const SIDEBAR_HTML: &str = concat!(
               submitBtn.disabled = true;
               submitBtn.textContent = '作成中…';
             }
-            send({t: 'lane:add_worker', path: p.path, name: nameVal, branch: branchVal || null});
+            send({
+              t: 'lane:add_worker',
+              path: p.path,
+              name: nameVal,
+              branch: branchVal || null,
+              stand: standVal || null,
+            });
             // 結果は AppEvent::WorkerCreateResult → window.handleAddWorkerResult で受信。
             // success → form 閉じる、 error → form 開いたまま inline error 表示。
           };
           if (cancelBtn) cancelBtn.addEventListener('click', closeForm);
           if (submitBtn) submitBtn.addEventListener('click', submit);
+          // doc 11 PR-C: stand select 変更を persistInputs で保存
+          const standSelectEl = addForm.querySelector('select[data-field="stand"]');
+          if (standSelectEl) {
+            standSelectEl.addEventListener('change', persistInputs);
+          }
           addForm.querySelectorAll('input').forEach(inp => {
             inp.addEventListener('input', () => {
               persistInputs();
@@ -1070,6 +1102,21 @@ const SIDEBAR_HTML: &str = concat!(
     }
     // state 既存値で再 render → 新しい form 状態 (error / pending / inputs) が反映される
     if (state) applyState(state);
+  };
+
+  // doc 11 PR-C: stands:fetch result を受領、 cache に保存して dropdown を populate するため再 render。
+  //   msg = { project_path, stands: [{name, description}], error: null|string }
+  //   error が Some なら fetch 失敗、 cache は空 array で更新 (dropdown は disabled になる)。
+  window.handleStandsResult = function(msg) {
+    if (!msg || typeof msg.project_path !== 'string') return;
+    const path = msg.project_path;
+    const stands = Array.isArray(msg.stands) ? msg.stands : [];
+    addWorkerStands.set(path, stands);
+    if (msg.error) {
+      console.warn('[vp-app] /api/stands fetch error for', path, ':', msg.error);
+    }
+    // 既存 form の dropdown が「読み込み中…」のままなら再 render で実 stand 一覧に置換
+    if (addWorkerOpen.has(path) && state) applyState(state);
   };
 
   // uptime を 1 秒ごとに自更新 (state.activity.world_started_at から計算)
@@ -1872,9 +1919,13 @@ struct SidebarIpcOutcome {
     /// `(name, path)` を返し、 caller が `spawn_sp_start` を呼ぶ。
     /// dedup は caller の `sp_spawn_triggered: HashSet<String>` (path key) で行う。
     sp_spawn_request: Option<(String, String)>,
-    /// Phase 3-A: Worker Lane 作成要求 `(project_path, name, branch)`。
+    /// Phase 3-A: Worker Lane 作成要求 `(project_path, name, branch, stand)`。
     /// caller が project の SP port を解決して `client.create_worker_lane` を呼ぶ。
-    add_worker_request: Option<(String, String, Option<String>)>,
+    /// `stand` は doc 11 PR-C で追加 (None なら SP-side default)。
+    add_worker_request: Option<(String, String, Option<String>, Option<String>)>,
+    /// doc 11 PR-C: 利用可能 Stand 一覧 fetch 要求 `(project_path)`。
+    /// caller が SP port を解決して `client.list_stands` を呼ぶ → `AppEvent::StandsResult` で push back。
+    list_stands_request: Option<String>,
     /// Phase 4-A: Worker Lane 削除要求 `(project_path, address)`。
     /// caller が SP port を解決して `client.delete_lane` を呼ぶ。
     delete_lane_request: Option<(String, String)>,
@@ -1979,8 +2030,21 @@ fn handle_sidebar_ipc(
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
                 .map(|s| s.to_string());
+            // doc 11 PR-C: stand 指定 (sidebar dropdown から)。 None なら SP-side default。
+            let stand = parsed
+                .get("stand")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string());
             if !path.is_empty() && !name.is_empty() {
-                out.add_worker_request = Some((path.to_string(), name, branch));
+                out.add_worker_request = Some((path.to_string(), name, branch, stand));
+            }
+        }
+        "stands:fetch" => {
+            // doc 11 PR-C: sidebar の + Add Worker form 開閉時に利用可能 Stand 一覧を取得。
+            // caller (event loop) で SP port 解決 → client.list_stands → window.handleStandsResult で push back。
+            if !path.is_empty() {
+                out.list_stands_request = Some(path.to_string());
             }
         }
         "stand:select" => {
@@ -2509,6 +2573,24 @@ pub fn run() -> anyhow::Result<()> {
                     tracing::warn!("sidebar handleAddWorkerResult 失敗: {}", e);
                 }
             }
+            Event::UserEvent(AppEvent::StandsResult {
+                project_path,
+                stands,
+                error,
+            }) => {
+                // doc 11 PR-C: + Add Worker form の dropdown を populate するための push back。
+                let payload = serde_json::json!({
+                    "project_path": project_path,
+                    "stands": stands,
+                    "error": error,
+                });
+                let payload_str = serde_json::to_string(&payload)
+                    .unwrap_or_else(|_| "{}".to_string());
+                let script = format!("window.handleStandsResult({})", payload_str);
+                if let Err(e) = sidebar.evaluate_script(&script) {
+                    tracing::warn!("sidebar handleStandsResult 失敗: {}", e);
+                }
+            }
             Event::UserEvent(AppEvent::ActivityUpdate(snap)) => {
                 sidebar_state.activity = snap;
                 push_sidebar_state(&sidebar, &sidebar_state);
@@ -2775,7 +2857,8 @@ pub fn run() -> anyhow::Result<()> {
                     }
                 }
                 // Phase 3-A: Worker Lane 作成要求 (sidebar の + Add Worker から)
-                if let Some((project_path, name, branch)) = outcome.add_worker_request {
+                // doc 11 PR-C: stand 指定 を tuple 4 番目に追加 (None なら SP-side default)
+                if let Some((project_path, name, branch, stand)) = outcome.add_worker_request {
                     let sp_port = sidebar_state
                         .processes
                         .iter()
@@ -2785,6 +2868,7 @@ pub fn run() -> anyhow::Result<()> {
                         let proxy = async_action_proxy.clone();
                         let name_clone = name.clone();
                         let branch_clone = branch.clone();
+                        let stand_clone = stand.clone();
                         let path_clone = project_path.clone();
                         thread::Builder::new()
                             .name(format!("create-worker-{}", name))
@@ -2809,6 +2893,7 @@ pub fn run() -> anyhow::Result<()> {
                                         .create_worker_lane(
                                             &name_clone,
                                             branch_clone.as_deref(),
+                                            stand_clone.as_deref(),
                                         )
                                         .await
                                     {
@@ -2861,6 +2946,72 @@ pub fn run() -> anyhow::Result<()> {
                     } else {
                         tracing::warn!(
                             "lane:add_worker: SP port unknown for path={} (skip)",
+                            project_path
+                        );
+                    }
+                }
+
+                // doc 11 PR-C: 利用可能 Stand 一覧 fetch 要求 (sidebar の + Add Worker 開閉から)
+                if let Some(project_path) = outcome.list_stands_request {
+                    let sp_port = sidebar_state
+                        .processes
+                        .iter()
+                        .find(|p| p.path == project_path)
+                        .and_then(|p| p.port);
+                    if let Some(port) = sp_port {
+                        let proxy = async_action_proxy.clone();
+                        let path_clone = project_path.clone();
+                        thread::Builder::new()
+                            .name(format!("list-stands-{}", port))
+                            .spawn(move || {
+                                let rt =
+                                    match tokio::runtime::Builder::new_current_thread()
+                                        .enable_all()
+                                        .build()
+                                    {
+                                        Ok(rt) => rt,
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                "list-stands tokio runtime: {}",
+                                                e
+                                            );
+                                            return;
+                                        }
+                                    };
+                                rt.block_on(async {
+                                    let client = TheWorldClient::new(port);
+                                    match client.list_stands().await {
+                                        Ok(stands) => {
+                                            tracing::debug!(
+                                                "stands listed: project={} count={}",
+                                                path_clone,
+                                                stands.len()
+                                            );
+                                            let _ = proxy.send_event(AppEvent::StandsResult {
+                                                project_path: path_clone,
+                                                stands,
+                                                error: None,
+                                            });
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                "list_stands failed: project={}: {}",
+                                                path_clone,
+                                                e
+                                            );
+                                            let _ = proxy.send_event(AppEvent::StandsResult {
+                                                project_path: path_clone,
+                                                stands: Vec::new(),
+                                                error: Some(e.to_string()),
+                                            });
+                                        }
+                                    }
+                                });
+                            })
+                            .ok();
+                    } else {
+                        tracing::warn!(
+                            "stands:fetch: SP port unknown for path={} (skip)",
                             project_path
                         );
                     }
