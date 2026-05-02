@@ -157,7 +157,83 @@ fi
 echo "✅ SP all-kill 完了"
 echo ""
 echo "ℹ️  TheWorld が動いていれば、 expand 等で auto-spawn が走り次回 register。"
-echo "   完全 fresh start したい場合は: VP_FORCE_RESTART_DAEMON=1 VP_FORCE_RESTART_SP=1 mise run app"
+echo "   tmux session も含めた完全 fresh start は: mise run nuke && mise run app"
+"""
+
+# tmux session は SP / daemon を kill しても tmux server に保持され続けるため、
+# `tmux new-session -A -c {cwd}` で attach 経路に乗ると古い cwd を引き継ぐ罠がある。
+# (commit 1556868 で `-c` を追加したが、 fix 適用前に作成済 session には反映されない)
+# `nuke` は SP / daemon に加えて Lane tmux session (vp-*/hd-*/th-* prefix) も kill して、
+# 次回 `mise run app` で全 lane を fix 済 path で再生成させる。
+# 対象外: TUI mode (`vp start`) が作る `{project}-vp` suffix 形式の session — `tmux.rs::session_name`
+# が `start.rs` で `-c {project_dir}` 付きで作成しており、 cwd 継承罠の罹患対象ではないため。
+[tasks.nuke]
+description = "Lane tmux session + SP + daemon を完全 kill (HD/TH lane の cwd stale 解消)。"
+run = """
+set -euo pipefail
+
+ROOT="$(pwd)"
+VP_BIN="$ROOT/target/release/vp"
+
+echo "💣 Vantage Point 完全リセット開始..."
+echo ""
+
+# ── [1/3] SP プロセスを kill (sp-kill task と同等処理を inline 展開) ──────────
+echo "🔄 [1/3] 全 SP プロセス検出..."
+SP_PIDS=$(pgrep -f 'vp sp start' 2>/dev/null || true)
+if [ -z "$SP_PIDS" ]; then
+  echo "   ℹ️  実行中の SP プロセスはありません"
+else
+  echo "   📋 検出した SP:"
+  ps -p $SP_PIDS -o pid,etime,start,command 2>/dev/null | sed 's/^/      /' | head -20 || true
+  echo "   🛑 SIGTERM 送信..."
+  kill -TERM $SP_PIDS 2>/dev/null || true
+  sleep 2
+  REMAINING=$(pgrep -f 'vp sp start' 2>/dev/null || true)
+  if [ -n "$REMAINING" ]; then
+    echo "   🔨 残存に SIGKILL: $REMAINING"
+    kill -KILL $REMAINING 2>/dev/null || true
+    sleep 1
+  fi
+  echo "   ✅ SP kill 完了"
+fi
+echo ""
+
+# ── [2/3] VP-managed tmux session を kill ─────────────────────────────────────
+# 命名 convention (lanes_state.rs::tmux_session_name):
+#   vp-{project}-{lane}-{stand}
+#   e.g. vp-vantage-point-lead-hd, vp-vantage-point-sub-hd, vp-vp-lead-th
+# `vp-` prefix で user 自前 tmux session (project 名そのまま等) と確実分離。
+# 旧 prefix (hd-*/th-*) は legacy: rename 前に作成済 session の cleanup のため併記する
+# (新形式では生成されないので残しても害なし、 migration 完了後も safe)。
+echo "🔄 [2/3] VP-managed tmux session 検出 (vp-* prefix、 legacy hd-*/th-* 含む)..."
+VP_SESSIONS=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -E '^(vp-|hd-|th-)' || true)
+if [ -z "$VP_SESSIONS" ]; then
+  echo "   ℹ️  VP-managed tmux session はありません"
+else
+  echo "   📋 kill 対象:"
+  echo "$VP_SESSIONS" | sed 's/^/      /'
+  echo "$VP_SESSIONS" | while IFS= read -r s; do
+    [ -n "$s" ] && tmux kill-session -t "$s" 2>/dev/null || true
+  done
+  echo "   ✅ tmux session kill 完了"
+fi
+echo ""
+
+# ── [3/3] TheWorld daemon を停止 ──────────────────────────────────────────────
+echo "🔄 [3/3] TheWorld daemon 停止..."
+if [ -x "$VP_BIN" ]; then
+  "$VP_BIN" daemon stop 2>/dev/null && echo "   ✅ daemon stop 完了" \
+    || echo "   ℹ️  daemon は既に停止しているか、 reach 不能"
+else
+  echo "   ⚠️  vp binary 不在 ($VP_BIN) — daemon stop スキップ"
+  echo "      build 済なら 'mise run daemon:build' 後に再実行してください"
+fi
+echo ""
+
+echo "💥 完全リセット完了。"
+echo ""
+echo "ℹ️  再起動: mise run app"
 """
 
 [tasks.win]

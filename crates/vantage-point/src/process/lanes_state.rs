@@ -77,7 +77,7 @@ pub enum TmuxMode {
 /// Lane の tmux address (Phase 1a: deterministic derivation で agent が引ける)
 ///
 /// session 名は `LaneAddress::tmux_session_name(stand)` で deterministic に決まる。
-/// 例: lead@vantage-point (HD) → `"hd-lead-vantage-point"`
+/// 例: lead@vantage-point (HD) → `"vp-vantage-point-lead-hd"`
 ///
 /// `mode` で fallback 検出可能 (実 spawn 結果に基づき SP が populate)。
 ///
@@ -138,14 +138,16 @@ impl LaneAddress {
 
     /// Phase 1a: tmux session 名を deterministic に導出する。
     ///
-    /// 形式: `{stand_short}-{lane_label}-{project}` を sanitize ([A-Za-z0-9_-] 以外は '-')。
-    /// - stand_short: HD → "hd"、TH → "th"
+    /// 形式: `vp-{project}-{lane_label}-{stand_short}` を sanitize ([A-Za-z0-9_-] 以外は '-')。
+    /// - `vp-` prefix: VP 管理 session の owner mark (user 自前 session と確実に分離)
+    /// - project: lexicographic sort で project 単位にまとまる (`tmux ls` 視認性 ↑)
     /// - lane_label: Lead → "lead"、Worker(Some(name)) → name、Worker(None) → "unnamed"
+    /// - stand_short: HD → "hd"、TH → "th" (suffix なので将来 `gemini` / `opus` 等の追加も自然)
     ///
     /// 例:
-    /// - `LaneAddress::lead("vantage-point")` + HD → `"hd-lead-vantage-point"`
-    /// - `LaneAddress::worker("vantage-point", "sub")` + HD → `"hd-sub-vantage-point"`
-    /// - `LaneAddress` に `.` `@` 等 → `-` に置換
+    /// - `LaneAddress::lead("vantage-point")` + HD → `"vp-vantage-point-lead-hd"`
+    /// - `LaneAddress::worker("vantage-point", "sub")` + HD → `"vp-vantage-point-sub-hd"`
+    /// - `LaneAddress` の `.` `@` 等 → `-` に置換
     ///
     /// agent (Claude CLI on HD) はこの関数の戻り値を `tmux send-keys -t <session>` の
     /// 宛先として使う。`/api/lanes` の cache 値とも一致する (deterministic)。
@@ -159,7 +161,7 @@ impl LaneAddress {
             (LaneKind::Worker, Some(n)) => n,
             (LaneKind::Worker, None) => "unnamed",
         };
-        let raw = format!("{}-{}-{}", stand_short, lane_label, self.project);
+        let raw = format!("vp-{}-{}-{}", self.project, lane_label, stand_short);
         raw.chars()
             .map(|c| {
                 if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
@@ -704,29 +706,29 @@ mod tests {
 
     #[test]
     fn tmux_session_name_lead_hd() {
-        // Lead Lane + Heaven's Door → "hd-lead-{project}"
+        // Lead Lane + Heaven's Door → "vp-{project}-lead-hd"
         let addr = LaneAddress::lead("vantage-point");
         assert_eq!(
             addr.tmux_session_name(LaneStand::HeavensDoor),
-            "hd-lead-vantage-point"
+            "vp-vantage-point-lead-hd"
         );
     }
 
     #[test]
     fn tmux_session_name_worker_hd() {
-        // Worker(name) + HD → "hd-{name}-{project}"
+        // Worker(name) + HD → "vp-{project}-{name}-hd"
         let addr = LaneAddress::worker("vantage-point", "sub");
         assert_eq!(
             addr.tmux_session_name(LaneStand::HeavensDoor),
-            "hd-sub-vantage-point"
+            "vp-vantage-point-sub-hd"
         );
     }
 
     #[test]
     fn tmux_session_name_lead_th() {
-        // The Hand stand → prefix "th-"
+        // The Hand stand → suffix "-th"
         let addr = LaneAddress::lead("vp");
-        assert_eq!(addr.tmux_session_name(LaneStand::TheHand), "th-lead-vp");
+        assert_eq!(addr.tmux_session_name(LaneStand::TheHand), "vp-vp-lead-th");
     }
 
     #[test]
@@ -739,7 +741,7 @@ mod tests {
         };
         assert_eq!(
             addr.tmux_session_name(LaneStand::HeavensDoor),
-            "hd-lead-creo-memories"
+            "vp-creo-memories-lead-hd"
         );
     }
 
@@ -753,7 +755,7 @@ mod tests {
         };
         assert_eq!(
             addr.tmux_session_name(LaneStand::HeavensDoor),
-            "hd-unnamed-vp"
+            "vp-vp-unnamed-hd"
         );
     }
 
@@ -762,7 +764,7 @@ mod tests {
         // TmuxMode + LaneStand の serde は snake_case で wire 形式に揃う (TheWorld registry payload 用)
         let t = TmuxLaneAddress {
             stand: LaneStand::HeavensDoor,
-            session: "hd-lead-vp".to_string(),
+            session: "vp-vp-lead-hd".to_string(),
             mode: TmuxMode::Tmux,
         };
         let json = serde_json::to_string(&t).unwrap();
@@ -771,7 +773,7 @@ mod tests {
 
         let fb = TmuxLaneAddress {
             stand: LaneStand::TheHand,
-            session: "th-lead-vp".to_string(),
+            session: "vp-vp-lead-th".to_string(),
             mode: TmuxMode::PtySlotFallback,
         };
         let json2 = serde_json::to_string(&fb).unwrap();
@@ -823,12 +825,12 @@ mod tests {
             tmux: vec![
                 TmuxLaneAddress {
                     stand: LaneStand::HeavensDoor,
-                    session: "hd-lead-vp".to_string(),
+                    session: "vp-vp-lead-hd".to_string(),
                     mode: TmuxMode::Tmux,
                 },
                 TmuxLaneAddress {
                     stand: LaneStand::TheHand,
-                    session: "th-lead-vp".to_string(),
+                    session: "vp-vp-lead-th".to_string(),
                     mode: TmuxMode::Tmux,
                 },
             ],
@@ -838,8 +840,8 @@ mod tests {
         assert_eq!(restored.tmux.len(), 2);
         assert_eq!(restored.tmux[0].stand, LaneStand::HeavensDoor);
         assert_eq!(restored.tmux[1].stand, LaneStand::TheHand);
-        assert_eq!(restored.tmux[0].session, "hd-lead-vp");
-        assert_eq!(restored.tmux[1].session, "th-lead-vp");
+        assert_eq!(restored.tmux[0].session, "vp-vp-lead-hd");
+        assert_eq!(restored.tmux[1].session, "vp-vp-lead-th");
     }
 
     // ========================================================================
@@ -861,7 +863,7 @@ mod tests {
             worker_status: None,
             tmux: vec![TmuxLaneAddress {
                 stand: LaneStand::HeavensDoor,
-                session: "hd-sub-vp".to_string(),
+                session: "vp-vp-sub-hd".to_string(),
                 mode: TmuxMode::Tmux,
             }],
         };
