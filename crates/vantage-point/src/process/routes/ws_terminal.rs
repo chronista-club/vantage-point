@@ -138,10 +138,34 @@ async fn handle_terminal_socket_lane(
     // Phase 2.x-c: scrollback 付きで attach。 initial bytes を先送してから
     // broadcast loop に入る (atomicity: subscribe_with_scrollback 内で snapshot+subscribe を
     // 同一 ring lock 下で行う、 重複も取りこぼしも無し)。
+    //
+    // doc 11 PR-D 後 fix (2026-05-03): tmux-hosted lane (`stand` = "hd" / "tmux") では
+    // PtySlot scrollback ring buffer の dump を skip する。 理由:
+    // - tmux pane は alt-screen mode で claude TUI redraw frame が大量に発生、
+    //   scrollback ring に redraw 履歴が蓄積される。 reattach 時にこれを replay すると、
+    //   古い viewport size 前提の cursor positioning が新 viewport で wrap して
+    //   「同 line を 多重複製で render」 する文字化け bug が発生 (user 報告 2026-05-03)。
+    // - tmux 自身が pane content を保持しており、 client 接続 + resize trigger で
+    //   フル redraw を発信する。 PtySlot scrollback と二重持ちで害悪。
+    // - bare login shell (`stand` = "shell" 等) は tmux 経由しないので scrollback 価値あり、
+    //   こちらは従来通り replay する。
     let (mut rx, initial_bytes) = {
         let pool = state.lane_pool.read().await;
+        let stand_name = pool.get(&addr).map(|info| info.stand.clone());
         match pool.subscribe_with_scrollback(&addr) {
-            Some(pair) => pair,
+            Some((rx, bytes)) => {
+                let is_tmux_hosted = matches!(stand_name.as_deref(), Some("hd") | Some("tmux"));
+                if is_tmux_hosted {
+                    tracing::debug!(
+                        "/ws/terminal lane attach: tmux-hosted (stand={:?})、 scrollback {} bytes を skip (tmux redraw に委譲)",
+                        stand_name,
+                        bytes.len()
+                    );
+                    (rx, Vec::new())
+                } else {
+                    (rx, bytes)
+                }
+            }
             None => {
                 tracing::warn!(
                     "/ws/terminal lane attach: lane not found or no PtySlot: {}",
