@@ -291,10 +291,10 @@ pub async fn create_handler(
         &addr,
         std::path::Path::new(&cwd),
     );
-    let cwd_for_spawn = cwd.clone();
     // Phase 5-D: spawn_with_fallback で `claude --continue` 早期 exit 時に空 args で retry。
+    // PR-D: cwd は cmd.cwd (install root) に集約、 引数からは削除。
     let spawn_result = tokio::task::spawn_blocking(move || {
-        crate::process::stand_spawner::spawn_with_fallback(&cwd_for_spawn, &cmd, 80, 24)
+        crate::process::stand_spawner::spawn_with_fallback(&cmd, 80, 24)
     })
     .await
     .map_err(|e| {

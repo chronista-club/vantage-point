@@ -10,6 +10,8 @@
 
 pub mod capabilities;
 pub(crate) mod hub;
+/// VP install root の runtime 解決 (doc 11 PR-D / Z 系統)
+pub(crate) mod install_root;
 /// Lane subcommand types (LaneCmd) — Mailbox actor 経由の Lane 操作 Cmd (I-b、 2026-04-30)
 pub(crate) mod lane_cmd;
 /// Lane spawn actor — `LaneCmd` を recv して Semaphore で gate しつつ Lane を spawn (I-b、 2026-04-30)

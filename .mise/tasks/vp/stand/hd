@@ -20,8 +20,10 @@ tmux set-option -ga terminal-overrides ',xterm-256color:Tc' 2>/dev/null || true
 # tmux 副舞台 + claude auto-launch:
 #   内側 'claude --continue || claude'
 #     → --continue 失敗時 (session corrupt 等) は新規 session で再試行
-#   外側 || (claude --continue || claude)
-#     → tmux 不在環境では shell 直で素 claude にフォールバック
+#   外側 || (cd "$VP_CWD" && (claude --continue || claude))
+#     → tmux 不在環境では shell 直で素 claude にフォールバック。
+#       doc 11 PR-D (Z 系統): spawn cwd は VP install root なので、 fallback 経路では
+#       明示的に project dir に cd してから claude を起動する。
 exec tmux new-session -A -c "$VP_CWD" -s "$VP_SESSION" \
     'claude --continue || claude' \
-    || (claude --continue || claude)
+    || (cd "$VP_CWD" && (claude --continue || claude))

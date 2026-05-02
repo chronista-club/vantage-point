@@ -11,5 +11,9 @@
 
 set -euo pipefail
 
+# doc 11 PR-D (Z 系統): spawn cwd は VP install root に固定されるため、 user が期待する
+# project dir に切り替えてから shell を起動する。
+cd "$VP_CWD"
+
 # 素 login shell に切替。 mise / volta / nvm 等の PATH を rc 経由で取り込む。
 exec "${SHELL:-/bin/zsh}" -l

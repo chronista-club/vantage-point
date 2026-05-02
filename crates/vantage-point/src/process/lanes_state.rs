@@ -343,9 +343,8 @@ impl LanePool {
         );
 
         // Phase 5-D: spawn_with_fallback で `claude --continue` 早期 exit 時に空 args で retry。
-        let (state, pid) = match crate::process::stand_spawner::spawn_with_fallback(
-            &cwd, &cmd, 80, 24,
-        ) {
+        // PR-D: cwd は cmd.cwd (install root) に集約、 引数からは削除。
+        let (state, pid) = match crate::process::stand_spawner::spawn_with_fallback(&cmd, 80, 24) {
             Ok((slot, _rx)) => {
                 let pid = slot.pid();
                 tracing::info!(
@@ -524,7 +523,7 @@ impl LanePool {
             addr,
             std::path::Path::new(&cwd),
         );
-        match crate::process::stand_spawner::spawn_with_fallback(&cwd, &cmd, 80, 24) {
+        match crate::process::stand_spawner::spawn_with_fallback(&cmd, 80, 24) {
             Ok((slot, _rx)) => {
                 let pid = slot.pid();
                 self.pty_slots

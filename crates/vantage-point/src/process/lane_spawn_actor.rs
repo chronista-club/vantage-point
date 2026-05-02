@@ -193,7 +193,7 @@ async fn handle_cmd(
             &addr_for_blocking,
             Path::new(&cwd_for_blocking),
         );
-        super::stand_spawner::spawn_with_fallback(&cwd_for_blocking, &cmd_built, 80, 24)
+        super::stand_spawner::spawn_with_fallback(&cmd_built, 80, 24)
     })
     .await;
 

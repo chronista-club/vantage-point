@@ -32,7 +32,7 @@ use tokio::sync::broadcast;
 use super::lanes_state::{LaneAddress, LaneKind};
 use crate::daemon::pty_slot::PtySlot;
 
-/// Stand spawn 用 command (binary + args + env + 任意の初期入力)
+/// Stand spawn 用 command (binary + args + env + cwd + 任意の初期入力)
 #[derive(Debug, Clone)]
 pub struct StandCommand {
     pub program: String,
@@ -51,6 +51,16 @@ pub struct StandCommand {
     /// `mise run vp:stand:{name}` の child process env として注入、 task 内で
     /// `"$VP_CWD"` / `"$VP_SESSION"` 等で参照される (quoting 規約 doc 11 §3.3)。
     pub env: Vec<(String, String)>,
+    /// doc 11 (PR-D / Z 系統): spawn 時の cwd。
+    ///
+    /// PR-D 以前は spawn_with_fallback の引数で受け取っていたが、 cwd 解決ロジック
+    /// (install root vs project_dir fallback) を build_stand_command 内に集約するため
+    /// StandCommand 自身に持たせた。 PtySlot::spawn は `cmd.cwd` を `current_dir()` に渡す。
+    ///
+    /// - mise task 経路 (PR-B 以降): VP install root (= `.mise/tasks/vp/stand/` の住処)
+    ///   ─ user の project dir は env `VP_CWD` で task に渡される。
+    /// - install root 解決失敗時 (degraded fallback): project_dir
+    pub cwd: String,
 }
 
 /// 早期 exit 検知の wait 時間 (ms)。 PR-B 後は dead path だが defensive に維持。
@@ -60,12 +70,15 @@ const EARLY_EXIT_CHECK_MS: u64 = 800;
 ///
 /// PR-B 後は mise task 経路で fallback / initial_input は None 固定、 dead path だが
 /// 既存 code shape を維持 (shell tinkering で task 経由しない直接 spawn の保険)。
+///
+/// PR-D (Z 系統): `cwd` は `cmd.cwd` から取得 (build_stand_command で install root に
+/// 解決済み)。 caller は project_dir を別経路 (VP_CWD env) で扱う。
 pub fn spawn_with_fallback(
-    cwd: &str,
     cmd: &StandCommand,
     cols: u16,
     rows: u16,
 ) -> Result<(PtySlot, broadcast::Receiver<Vec<u8>>)> {
+    let cwd = cmd.cwd.as_str();
     let (mut slot, rx) = PtySlot::spawn(cwd, &cmd.program, &cmd.args, &cmd.env, cols, rows)?;
 
     // primary が早期 exit するか peek
@@ -132,8 +145,12 @@ fn lane_label(addr: &LaneAddress) -> &str {
 ///
 /// - `stand_name`: task 名 `vp:stand:{name}` の `name` 部分 (例: `"hd"` / `"shell"` / `"tmux"`)
 /// - `addr`: `VP_SESSION` / `VP_PROJECT` / `VP_LANE` env 導出
-/// - `project_dir`: `VP_CWD` env、 PtySlot::spawn の cwd 引数経由で mise の cascade lookup の起点
-///   (project_dir に `.mise/tasks/vp/stand/{name}` が居れば workspace default を override)
+/// - `project_dir`: `VP_CWD` env、 task 内で tmux session の cwd / fallback 経路の cd 先に使用
+///
+/// PR-D (Z 系統): spawn cwd は **VP install root** に固定 (`.mise/tasks/vp/stand/` の住処)。
+/// mise の filesystem cascade で task が必ず見つかるよう、 user の project_dir ではなく
+/// install root を cwd にする。 install root 解決失敗時は project_dir に fallback (= 旧 PR-B
+/// 挙動に degrade)、 ただし `mise tasks ls` で task が見えない project では spawn 失敗。
 ///
 /// 旧 `LaneStand` enum + `LaneStandSpec` trait dispatch は廃止 (stand_spec.rs 全削除)。
 pub fn build_stand_command(
@@ -142,7 +159,15 @@ pub fn build_stand_command(
     project_dir: &Path,
 ) -> StandCommand {
     let session = addr.tmux_session_name(stand_name);
-    let cwd_str = project_dir.to_string_lossy().to_string();
+    let project_cwd = project_dir.to_string_lossy().to_string();
+
+    // PR-D: spawn cwd は install root、 task は env VP_CWD で project を受け取る。
+    // 解決失敗時は project_dir fallback (= 旧 PR-B 挙動)、 警告 log は install_root 内で emit 済。
+    let spawn_cwd = match super::install_root::locate_install_root() {
+        Some(root) => root.to_string_lossy().to_string(),
+        None => project_cwd.clone(),
+    };
+
     StandCommand {
         program: "mise".into(),
         args: vec!["run".into(), format!("vp:stand:{}", stand_name)],
@@ -150,11 +175,12 @@ pub fn build_stand_command(
         fallback_args: None,
         initial_input: None,
         env: vec![
-            ("VP_CWD".into(), cwd_str),
+            ("VP_CWD".into(), project_cwd),
             ("VP_SESSION".into(), session),
             ("VP_PROJECT".into(), addr.project.clone()),
             ("VP_LANE".into(), lane_label(addr).into()),
         ],
+        cwd: spawn_cwd,
     }
 }
 
@@ -171,6 +197,14 @@ mod tests {
         assert_eq!(cmd.args, vec!["run".to_string(), "vp:stand:hd".to_string()]);
         assert!(cmd.fallback_args.is_none());
         assert!(cmd.initial_input.is_none());
+        // PR-D (Z 系統): spawn cwd は VP install root (cargo test 環境では workspace root)
+        assert!(
+            std::path::Path::new(&cmd.cwd)
+                .join(".mise/tasks/vp/stand/hd")
+                .exists(),
+            "spawn cwd は install root のはず、 got: {}",
+            cmd.cwd
+        );
     }
 
     /// VP_* env が doc 11 §3.3 通りに injected されていること。

@@ -325,17 +325,54 @@ deprecation 期間後 (1 release later) は migration table 削除。
 
 ### 3.8 per-project override
 
-`mise.toml` / `.mise/tasks/` の cascade を活用、 VP 側は **無改修**で動作:
+> **PR-D (2026-05-03 改訂)**: 旧設計の filesystem cascade ベース override は破綻、 VP_PROJECT env による explicit dispatch に移行。
+
+#### 旧設計の問題 (PR-D 以前)
+
+mise の filesystem-tree cascade を活用、 VP 側は無改修で動作する想定だった:
 
 ```
 ~/repos/creo-memories/.mise/tasks/vp/stand/hd  ← project local override
-~/repos/vantage-point/.mise/tasks/vp/stand/hd  ← workspace default (本 doc の 3.2.3)
-~/.config/mise/tasks/stand/hd               ← global fallback (任意)
+~/repos/vantage-point/.mise/tasks/vp/stand/hd  ← workspace default
+~/.config/mise/tasks/vp/stand/hd               ← global fallback (任意)
 ```
 
-mise が `cd project_dir && mise run vp:stand:hd` を実行する時、 上から順に lookup して **最初に見つけたもの**を実行する。
+しかし dogfood で発覚: **mise の cascade は cwd → `/` の上方向のみ**、 sibling project 間 (vantage-point と creo-memories) は見えない。 vantage-point ローカルの task は他 project の cwd からは discover されず、 `mise ERROR no task vp:stand:hd found` で spawn 失敗した (PR #257 dogfood、 2026-05-02)。
 
-例: creo-memories project で HD lane 起動時に rails console + claude を一緒に起動したい場合、 project の `.mise/tasks/vp/stand/hd` を `exec tmux new-session ... 'rails c | claude --continue || claude'` のように書くだけで済む。 VP コアの改修不要。
+#### PR-D (Z 系統): VP install root を spawn cwd に固定
+
+VP は `crate::process::install_root::locate_install_root()` で **install root** (= `.mise/tasks/vp/stand/` の住処) を runtime 解決し、 `mise run vp:stand:{name}` の **spawn cwd を install root に固定**する。 user の project dir は env `VP_CWD` で task に渡され、 task script が `tmux new-session -c "$VP_CWD"` 等で runtime cwd を補正する。
+
+```
+binary 配置 → install root の解決
+─────────────────────────────────────
+target/release/vp        → walk-up で repo root
+~/.cargo/bin/vp          → fallback (env / CARGO_MANIFEST_DIR)
+.app/Contents/MacOS/vp   → .app/Contents/Resources/ (.dmg 配布想定)
+env VP_INSTALL_ROOT      → 直接指定 (test / 配布 packaging script 用)
+```
+
+#### per-project override は VP_PROJECT で explicit dispatch
+
+cascade による override は廃止、 各 task script 内で `case "$VP_PROJECT" in` 分岐を書く方式に移行。
+
+例: creo-memories project の HD lane で rails console を併走したい場合 ─
+
+```bash
+# .mise/tasks/vp/stand/hd (vantage-point install root)
+case "$VP_PROJECT" in
+  creo-memories)
+    exec tmux new-session -A -c "$VP_CWD" -s "$VP_SESSION" \
+      'rails c | claude --continue || claude'
+    ;;
+  *)
+    exec tmux new-session -A -c "$VP_CWD" -s "$VP_SESSION" \
+      'claude --continue || claude'
+    ;;
+esac
+```
+
+trade-off: cascade の暗黙的優先順位を捨てる代わりに、 dispatch logic が **1 ファイルに集約**されて読みやすい / debug しやすい。 install root は single source of truth、 `~/.config/mise/tasks/` への展開や user による project local 設置等の install state divergence が発生しない。
 
 ---
 
