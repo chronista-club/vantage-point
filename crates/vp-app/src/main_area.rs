@@ -242,6 +242,21 @@ body{overflow:hidden;}
     include_str!("../assets/addon-unicode11.js"),
     r#"
 </script>
+<script>
+"#,
+    include_str!("../assets/addon-image.js"),
+    r#"
+</script>
+<script>
+"#,
+    include_str!("../assets/addon-progress.js"),
+    r#"
+</script>
+<script>
+"#,
+    include_str!("../assets/addon-web-links.js"),
+    r#"
+</script>
 <!-- VP-101 Phase A2: creo-ui-editor-host bundle (SolidJS + EditorLayer + tokens auto-discover).
      Ctrl+Shift+E で activate、font / theme / spacing 等を runtime 編集。
      Build: cd crates/vp-app/web-bundle && bun install && bun run build。 -->
@@ -371,6 +386,17 @@ body{overflow:hidden;}
       console.warn('[xterm:' + address + '] Unicode11Addon load failed:', e);
     }
 
+    // Image addon (sixel + iTerm IIP + kitty graphics inline image protocol)。
+    //  公式 docs より: WebGL Addon の **前に** load することで fast render path を獲得 (framebuffer 直叩き)。
+    //  順序を守らないと DOM fallback に degrade。 Claude が generate する chart / mermaid / matplotlib を
+    //  terminal 内 inline で表示できる ─ 「Canvas + TUI、 両者並列」 (CLAUDE.md コアコンセプト) を補完。
+    try {
+      const imageAddon = new ImageAddon.ImageAddon();
+      term.loadAddon(imageAddon);
+    } catch (e) {
+      console.warn('[xterm:' + address + '] ImageAddon load failed:', e);
+    }
+
     // WebGL renderer (per-instance、 個別に context 持つ)
     //  Phase 5-D 実験完了 (2026-05-02): DOM renderer でも ghost char 再現 → WebGL 起因ではなく
     //  DOM cell recycling + Unicode width drift の組合せが原因と判明。 WebGL は frame ごとに
@@ -389,6 +415,33 @@ body{overflow:hidden;}
       } catch (e) {
         console.warn('[xterm:' + address + '] WebGL unavailable:', e);
       }
+    }
+
+    // Progress addon (OSC 9;4 ConEmu progress sequence)。
+    //  shell tool / build script (cargo, bun, npm) や Claude CLI が emit する progress 状態
+    //  (state: 0=remove/1=normal/2=error/3=indeterminate/4=warning、 value: 0-100) を event 化。
+    //  creo-ui の `.creo-progress[data-variant][data-indeterminate]` (creo-components.css:1903-2021)
+    //  に state mapping が完全一致 → CSS 既存資産で即視覚化可。
+    //  MVP: console.log で event を確認、 後続 PR で sidebar wire (現状は capture のみ)。
+    try {
+      const progressAddon = new ProgressAddon.ProgressAddon();
+      term.loadAddon(progressAddon);
+      progressAddon.onChange((p) => {
+        console.log('[osc9;4:' + address + '] state=' + p.state + ' value=' + p.value);
+      });
+    } catch (e) {
+      console.warn('[xterm:' + address + '] ProgressAddon load failed:', e);
+    }
+
+    // Web links addon (URL 自動 link 化、 cmd+click で外部ブラウザに open)。
+    //  default handler は window.open ─ wry/tao の WebView では tao の navigation handler が
+    //  intercept する想定。 WebView 内遷移なら custom handler で IPC 経由 Mac native open に置換。
+    //  MVP: default handler、 dogfood で挙動を観察してから wire 方針を決める。
+    try {
+      const webLinksAddon = new WebLinksAddon.WebLinksAddon();
+      term.loadAddon(webLinksAddon);
+    } catch (e) {
+      console.warn('[xterm:' + address + '] WebLinksAddon load failed:', e);
     }
 
     term.open(tdiv);
