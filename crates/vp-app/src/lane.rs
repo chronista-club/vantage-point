@@ -146,29 +146,10 @@ impl From<&LaneAddressWire> for LaneAddress {
     }
 }
 
-/// Lane で起動する Stand (LaneStand)
-///
-/// architecture: Lane と Stand は 1:1。Lane あたり 1 つの Stand が起動する。
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub enum LaneStand {
-    /// HD 📖 Heaven's Door — Claude CLI (default)
-    /// memory rule: Lead/Worker の default は HD (Claude CLI)
-    #[default]
-    HeavensDoor,
-    /// TH ✋ The Hand — 素 shell (zsh / bash 等)
-    TheHand,
-    // 将来: GoldExperience(GeConfig) — eval-as-pane
-    // 将来: PaisleyPark(PpConfig) — canvas 直 mount?
-}
-
-impl fmt::Display for LaneStand {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            LaneStand::HeavensDoor => write!(f, "HD"),
-            LaneStand::TheHand => write!(f, "TH"),
-        }
-    }
-}
+// `LaneStand` enum は doc 11 PR-B で削除。 stand 識別子は wire 経由で String として
+// 受け取る (`crate::client::LaneInfo.stand: String`)、 vp-app 内では直接文字列で扱う。
+// 表示用 mapping (旧 Display impl の "HD" / "TH") は app.rs の standDisplayName JS 関数に
+// 集約 (`hd` / `shell` / `tmux` / その他 fallback)。
 
 #[cfg(test)]
 mod tests {
@@ -196,11 +177,9 @@ mod tests {
         assert_ne!(a, c);
     }
 
-    #[test]
-    fn lane_stand_default_is_hd() {
-        // architecture rule: Lane の default Stand は HD (Claude CLI)
-        assert_eq!(LaneStand::default(), LaneStand::HeavensDoor);
-    }
+    // 旧 lane_stand_default_is_hd test は doc 11 PR-B で廃止。
+    // default の概念は config.toml (`default_stand`) + handler-side の
+    // `Config::default_stand_or_hd()` に移ったため、 vp-app crate test では検証しない。
 
     /// R-0 wire compat: `LaneAddressWire::key()` は旧 `app.rs::lane_address_key` と
     /// byte-for-byte 同一でなければならない (JS 側 `laneAddressKey()` の active 比較で使うため)。

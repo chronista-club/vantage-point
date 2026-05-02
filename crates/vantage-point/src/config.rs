@@ -47,6 +47,15 @@ pub struct Config {
     #[serde(default)]
     pub claude_cli_path: Option<String>,
 
+    /// Lane 作成時の default Stand 名 (例: "hd" / "shell" / "tmux")。
+    ///
+    /// `mise run vp:stand:{name}` の `name` 部分を指定。 None なら "hd" fallback
+    /// (`Config::default_stand_or_hd()` 経由)。
+    ///
+    /// doc 11 §3 (Stand init_script system / mise task 路線)、 PR-B 対応。
+    #[serde(default)]
+    pub default_stand: Option<String>,
+
     /// Projects configuration
     #[serde(default)]
     pub projects: Vec<ProjectConfig>,
@@ -158,6 +167,14 @@ impl Config {
     /// Get config file path (for display)
     pub fn config_path() -> PathBuf {
         config_file_path()
+    }
+
+    /// Default Stand 名 (config 未指定なら "hd" fallback)。
+    ///
+    /// `mise run vp:stand:{name}` の `name` 部分。 lane 作成時 (sidebar UI / HTTP API /
+    /// LanePool::with_lead 等) で stand 指定が無い場合の選択値。
+    pub fn default_stand_or_hd(&self) -> &str {
+        self.default_stand.as_deref().unwrap_or("hd")
     }
 
     /// Resolve project directory from various sources
@@ -345,6 +362,7 @@ mod tests {
             default_project_dir: Some("/home/user/projects/main".to_string()),
             default_port: 33001,
             claude_cli_path: None,
+            default_stand: None,
             projects: vec![ProjectConfig {
                 name: "vantage-point".to_string(),
                 path: "/path/to/vantage-point".to_string(),

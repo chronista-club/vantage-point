@@ -26,8 +26,34 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::super::lanes_state::{LaneAddress, LaneInfo, LaneKind, LanePool, LaneStand, LaneState};
+use super::super::lanes_state::{LaneAddress, LaneInfo, LaneKind, LanePool, LaneState};
 use super::super::state::AppState;
+
+/// doc 11 §3.7 (PR-B 移行期 1 release): 旧 wire string を 新 stand_name に migrate。
+///
+///   "heavens_door" → "hd"
+///   "the_hand"     → "shell"
+///   その他は as-is (新 stand 名 / 任意の `vp:stand:*` task 名を accept)
+///
+/// 旧名で来た時は deprecation warn を log、 dogfood で旧 client が居なくなったら
+/// (1 release 後) 本関数自体を削除する。
+pub(crate) fn migrate_legacy_stand(s: &str) -> &str {
+    match s {
+        "heavens_door" => {
+            tracing::warn!(
+                "legacy stand 'heavens_door' detected, please migrate to 'hd' (doc 11 §3.7)"
+            );
+            "hd"
+        }
+        "the_hand" => {
+            tracing::warn!(
+                "legacy stand 'the_hand' detected, please migrate to 'shell' (doc 11 §3.7)"
+            );
+            "shell"
+        }
+        other => other,
+    }
+}
 
 /// REST response: `GET /api/lanes` の JSON shape
 #[derive(Debug, Serialize)]
@@ -88,7 +114,7 @@ pub async fn list_handler(State(state): State<Arc<AppState>>) -> impl IntoRespon
                 kind: LaneKind::Worker,
                 name: Some(entry.name.clone()),
                 state: LaneState::default(), // Pane 不在の表現は pid: None に集約 (state は default Running)
-                stand: LaneStand::HeavensDoor, // default、 activate 時に上書き可
+                stand: "hd".to_string(), // default、 activate 時に上書き可 (doc 11 PR-B で String 化)
                 created_at: chrono::Utc::now().to_rfc3339(),
                 pid: None, // Pane (HD) 不在 = client 側で Inactive 判定の signal
                 cwd: entry.path.clone(),
@@ -166,10 +192,19 @@ pub async fn create_handler(
         .unwrap_or("unknown")
         .to_string();
     let addr = LaneAddress::worker(&project_id, &req.name);
-    let stand = match req.stand.as_deref() {
-        Some("the_hand") | Some("th") => LaneStand::TheHand,
-        _ => LaneStand::HeavensDoor, // default HD
-    };
+    // doc 11 PR-B: stand 識別子 String 化、 wire format の旧名 (heavens_door / the_hand) は
+    // migrate_legacy_stand で 1 release shim 経由で吸収。 未指定なら config の
+    // `default_stand` (未設定なら "hd" fallback)。
+    //
+    // Config::load() は他 handler でも ad-hoc に呼ばれており (server.rs:49, mcp.rs:2577 等)、
+    // SSOT は config.toml ファイル自体。 AppState に持たせない pattern を踏襲。
+    let config = crate::config::Config::load().unwrap_or_default();
+    let stand: String = req
+        .stand
+        .as_deref()
+        .map(migrate_legacy_stand)
+        .map(str::to_string)
+        .unwrap_or_else(|| config.default_stand_or_hd().to_string());
 
     // 重複チェック (早期 return)
     {
@@ -252,7 +287,7 @@ pub async fn create_handler(
     // Phase 4-X の ccws clone と同じ pattern。
     // Phase 1e: addr を渡して HD spec の tmux session 名導出に使う
     let cmd = crate::process::stand_spawner::build_stand_command(
-        stand,
+        &stand,
         &addr,
         std::path::Path::new(&cwd),
     );
@@ -274,7 +309,7 @@ pub async fn create_handler(
             let mut pool = state.lane_pool.write().await;
             pool.insert_pty_slot(addr.clone(), slot);
             tracing::info!(
-                "Worker Lane spawned: addr={} stand={:?} cwd={} pid={}",
+                "Worker Lane spawned: addr={} stand={} cwd={} pid={}",
                 addr,
                 stand,
                 cwd,
@@ -298,7 +333,7 @@ pub async fn create_handler(
         kind: LaneKind::Worker,
         name: Some(req.name.clone()),
         state: lane_state,
-        stand,
+        stand: stand.clone(),
         created_at: chrono::Utc::now().to_rfc3339(),
         pid,
         cwd,
@@ -307,7 +342,7 @@ pub async fn create_handler(
         // Phase 1e: spawn 成功時のみ tmux address を populate
         tmux: if matches!(lane_state, crate::process::lanes_state::LaneState::Running) {
             vec![crate::process::lanes_state::TmuxLaneAddress::for_spawn(
-                &addr, stand,
+                &addr, &stand,
             )]
         } else {
             Vec::new()
@@ -571,5 +606,25 @@ mod tests {
         // PR #228 review fix (#4): `..` 連続が git ref として無効になるのを防ぐ
         assert_eq!(sanitize_for_branch("a..b"), "a-b");
         assert_eq!(sanitize_for_branch("v1.2.3"), "v1-2-3");
+    }
+
+    /// doc 11 §3.7 / §4.2 wire compat: 旧 `heavens_door` / `the_hand` を新 `hd` / `shell` に migrate。
+    #[test]
+    fn migrate_legacy_stand_translates_old_names() {
+        assert_eq!(migrate_legacy_stand("heavens_door"), "hd");
+        assert_eq!(migrate_legacy_stand("the_hand"), "shell");
+    }
+
+    /// 新 stand 名 / 任意の `vp:stand:*` task 名は as-is で通る。
+    #[test]
+    fn migrate_legacy_stand_passes_through_modern_names() {
+        assert_eq!(migrate_legacy_stand("hd"), "hd");
+        assert_eq!(migrate_legacy_stand("shell"), "shell");
+        assert_eq!(migrate_legacy_stand("tmux"), "tmux");
+        // user 定義 task 名 (例: `vp:stand:opus-xhigh`) も通る
+        assert_eq!(migrate_legacy_stand("opus-xhigh"), "opus-xhigh");
+        assert_eq!(migrate_legacy_stand("gemini"), "gemini");
+        // 空文字も as-is (handler 側で default fallback 経路に乗る)
+        assert_eq!(migrate_legacy_stand(""), "");
     }
 }

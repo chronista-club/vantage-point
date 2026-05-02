@@ -636,7 +636,7 @@ pub async fn world_list_lanes(
     State(state): State<Arc<AppState>>,
     axum::extract::Query(query): axum::extract::Query<LanesQuery>,
 ) -> impl IntoResponse {
-    use crate::process::lanes_state::{LaneKind, LaneStand};
+    use crate::process::lanes_state::LaneKind;
 
     let Some(world) = &state.world else {
         return (
@@ -669,12 +669,12 @@ pub async fn world_list_lanes(
             })
         })
         .filter(|l| {
+            // doc 11 PR-B: l.stand は String 化、 query.stand と直接比較。
+            // 旧 wire 名 ("heavens_door" / "the_hand") を query で投げる古 client への
+            // 互換性は migrate_legacy_stand 経由で吸収。
             query.stand.as_deref().is_none_or(|s| {
-                let stand_str = match l.stand {
-                    LaneStand::HeavensDoor => "heavens_door",
-                    LaneStand::TheHand => "the_hand",
-                };
-                stand_str == s
+                let normalized = crate::process::routes::lanes::migrate_legacy_stand(s);
+                l.stand == normalized
             })
         })
         .cloned()

@@ -174,7 +174,7 @@ async fn handle_cmd(
     }
 
     tracing::info!(
-        "Lane spawn requested: addr={} cwd={} stand={:?}",
+        "Lane spawn requested: addr={} cwd={} stand={}",
         addr,
         cwd,
         stand
@@ -186,9 +186,10 @@ async fn handle_cmd(
     let cwd_for_blocking = cwd.clone();
     // Phase 1e: build_stand_command が addr を要求するので clone を closure に move
     let addr_for_blocking = addr.clone();
+    let stand_for_blocking = stand.clone();
     let result = tokio::task::spawn_blocking(move || {
         let cmd_built = super::stand_spawner::build_stand_command(
-            stand,
+            &stand_for_blocking,
             &addr_for_blocking,
             Path::new(&cwd_for_blocking),
         );
@@ -236,7 +237,7 @@ async fn handle_cmd(
         kind: LaneKind::Worker,
         name: Some(name),
         state,
-        stand,
+        stand: stand.clone(),
         created_at: chrono::Utc::now().to_rfc3339(),
         pid,
         cwd,
@@ -244,7 +245,9 @@ async fn handle_cmd(
         worker_status: None,
         // Phase 1e: spawn 成功時のみ tmux address を populate
         tmux: if matches!(state, super::lanes_state::LaneState::Running) {
-            vec![super::lanes_state::TmuxLaneAddress::for_spawn(&addr, stand)]
+            vec![super::lanes_state::TmuxLaneAddress::for_spawn(
+                &addr, &stand,
+            )]
         } else {
             Vec::new()
         },
@@ -280,7 +283,6 @@ async fn handle_cmd(
 mod tests {
     use super::*;
     use crate::capability::msgbox::{Message, Router};
-    use crate::process::lanes_state::LaneStand;
 
     /// max_concurrent=0 は 1 に丸められること。 Semaphore::new(0) を踏むと永久 block するため
     /// runtime に到達しないことを serde 側ではなく actor 側で防ぐ contract test。
@@ -301,7 +303,7 @@ mod tests {
             project_id: "test".to_string(),
             name: "msg-zero".to_string(),
             cwd: "/nonexistent/path/for/test".to_string(),
-            stand: LaneStand::HeavensDoor,
+            stand: "hd".to_string(),
         };
         let msg = Message::new("test", "lane-spawn", MessageKind::Direct).with_payload(&cmd);
         let _ = handle.send(msg).await;

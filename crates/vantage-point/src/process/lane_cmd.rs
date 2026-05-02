@@ -34,7 +34,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::lanes_state::LaneStand;
+// doc 11 PR-B: LaneStand enum 削除、 stand は String 化 (mise task 名 "hd" / "shell" 等)。
 
 /// Lane に対する操作 Cmd。 Mailbox actor (`lane-spawn@<project>`) が recv し、
 /// 内部 Semaphore で gate された worker pool で 1 つずつ実行する。
@@ -57,8 +57,9 @@ pub enum LaneCmd {
         name: String,
         /// 起動 cwd (典型: `~/.local/share/ccws/<repo>-<name>/`)
         cwd: String,
-        /// LaneStand (HD or TH、 default は HD)
-        stand: LaneStand,
+        /// Stand 名 (`vp:stand:{name}` task の name 部分、 例: "hd" / "shell" / "tmux")。
+        /// doc 11 PR-B で String 化、 旧 LaneStand enum 廃止。
+        stand: String,
     },
 }
 
@@ -74,7 +75,7 @@ mod tests {
             project_id: "vantage-point".to_string(),
             name: "msg-test".to_string(),
             cwd: "/tmp/ccws/vantage-point-msg-test".to_string(),
-            stand: LaneStand::HeavensDoor,
+            stand: "hd".to_string(),
         };
         let json = serde_json::to_string(&cmd).unwrap();
         // tag は "kind"、 variant 名は snake_case (= "spawn_lane")
@@ -91,7 +92,7 @@ mod tests {
             } => {
                 assert_eq!(project_id, "vantage-point");
                 assert_eq!(name, "msg-test");
-                assert_eq!(stand, LaneStand::HeavensDoor);
+                assert_eq!(stand, "hd");
             }
         }
     }

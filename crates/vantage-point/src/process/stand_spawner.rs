@@ -1,66 +1,65 @@
-//! StandSpawner — LaneStand selection に応じた process command 構築
+//! StandSpawner — Stand 名 (`vp:stand:{name}` task) に応じた process command 構築
 //!
 //! 関連 memory:
 //! - `mem_1CaTpCQH8iLJ2PasRcPjHv` (Architecture v4: Process recursive、9 component minimum)
-//! - `mem_1CaSmvKgsX2AQxRYFYgNM3` (Lead pane shell — TheHand path)
+//! - `mem_1CaSmvKgsX2AQxRYFYgNM3` (Lead pane shell — TheHand path、 PR-B 後は vp:stand:shell)
 //!
 //! ## 役割
 //!
-//! Lane (Session kind の Process) を起動する時、内部の Worker (Stand) を spawn するための
-//! command を LaneStand 別に構築する。
+//! Lane (Session kind の Process) を起動する時、 内部の Stand を spawn するための command を
+//! 構築する。 doc 11 (Stand init_script system) PR-B 以降は **mise task に統一** ─
+//! `mise run vp:stand:{name}` を 1 経路で叩き、 task の中で tmux setup / shell exec / LLM
+//! auto-launch を担当する file-based init_script 設計。
 //!
-//! - `HeavensDoor` (HD): `claude --continue` (fallback `claude`)
-//! - `TheHand` (TH): `$SHELL -l` (login shell、 mise / dev tooling PATH を rc 経由で取り込み)
+//! - `hd`    → `vp:stand:hd`    (Layer 2: tmux + claude auto-launch、 旧 HeavensDoor)
+//! - `shell` → `vp:stand:shell` (Layer 0: bare login shell、 旧 TheHand)
+//! - `tmux`  → `vp:stand:tmux`  (Layer 1: tmux session attach、 LLM なし)
+//! - 任意の `vp:stand:*` task ─ project local override / 将来 stand 追加に対応
 //!
-//! ## Phase
+//! ## VP_* 環境変数
 //!
-//! - A5-1 (今): command 構築 fn のみ (この module)
-//! - A5-2: `PtySlot::spawn` 連動 (`LanePool::with_lead` を実 PTY 化)
-//! - A5-3: spawn 結果から pid を `LaneInfo` に書き戻し
+//! mise task は以下の env を VP から受け取る (doc 11 §3.3):
+//! - `VP_CWD`     : project directory (= `cwd` 引数)
+//! - `VP_SESSION` : tmux session 名 (deterministic、 `addr.tmux_session_name(stand_name)`)
+//! - `VP_PROJECT` : `addr.project`
+//! - `VP_LANE`    : lane label (`lead` / worker name / `unnamed`)
 
 use std::path::Path;
 
 use anyhow::Result;
 use tokio::sync::broadcast;
 
-use super::lanes_state::{LaneAddress, LaneStand};
+use super::lanes_state::{LaneAddress, LaneKind};
 use crate::daemon::pty_slot::PtySlot;
 
-/// Stand spawn 用 command (binary + args + 任意の初期入力)
+/// Stand spawn 用 command (binary + args + env + 任意の初期入力)
 #[derive(Debug, Clone)]
 pub struct StandCommand {
     pub program: String,
     pub args: Vec<String>,
-    /// Phase 5-D: primary spawn が早期 exit した時に試す fallback args。
-    ///  HD の `--continue` が前 session corrupt 等で起動しない時に空 args (= 新規 session) で再試行。
-    ///  `None` なら fallback 無し (= 失敗 = error 返却)。
-    ///
-    /// Phase 6-E (Slice 2) 以降: shell-hosted Stand では shell 自体は早期 exit しないため
-    /// 実質 dead path。 ただし shell spawn 自体の防御として field 自体は維持。
+    /// Phase 5-D の遺産: primary spawn が早期 exit した時に試す fallback args。
+    ///  PR-B 後は mise task が早期 exit せず PTY を take over するので実質 dead path、
+    ///  ただし shell spawn 自体の防御として field 自体は維持。 None = fallback なし。
     pub fallback_args: Option<Vec<String>>,
-    /// Phase 6-E (Slice 2): spawn 直後に PTY に書き込む初期入力 (shell-hosted Stand 用)。
+    /// Phase 6-E の遺産: spawn 直後に PTY に書き込む初期入力。
     ///
-    /// 例: `LlmStand` 経由の HD は `program="zsh", args=["-l"]` で shell を立て、
-    /// `initial_input = Some("claude --continue || claude\n")` で auto-launch。
-    /// `||` chain は shell に retry を任せる ─ memory `mem_1CaVnfJRgWtuRgZD9yQSoV`
-    /// の「lifecycle の違いが直感的」 原則の体現 (役者 lifecycle と舞台 lifecycle が独立)。
+    /// PR-B 後は mise task が直接 PTY を take over するため None 固定。 旧 LlmStand /
+    /// TheHand 経路では shell + initial_input で auto-launch していた。
     pub initial_input: Option<String>,
-    /// Phase doc 11 (PR-B): mise task 経路で起動する時の追加環境変数。
+    /// doc 11 (PR-B): mise task に渡す環境変数。
     ///
-    /// `mise run vp:stand:hd` を呼ぶ時、 task 内で参照する VP_CWD / VP_SESSION /
-    /// VP_PROJECT / VP_LANE を spawn 時の child process env として注入。
-    /// 旧 LlmStand / TheHand 経路では空 Vec で挙動変化なし。
+    /// `mise run vp:stand:{name}` の child process env として注入、 task 内で
+    /// `"$VP_CWD"` / `"$VP_SESSION"` 等で参照される (quoting 規約 doc 11 §3.3)。
     pub env: Vec<(String, String)>,
 }
 
-/// 早期 exit 検知の wait 時間 (ms)。 観測 (gfp-cad で `claude --continue` が 2ms で exit) より十分な値。
-///  小さすぎると検知漏れ、 大きすぎると spawn 全体の latency 悪化。 800ms は経験則的 sweet spot。
+/// 早期 exit 検知の wait 時間 (ms)。 PR-B 後は dead path だが defensive に維持。
 const EARLY_EXIT_CHECK_MS: u64 = 800;
 
 /// `StandCommand` を spawn、 primary が `EARLY_EXIT_CHECK_MS` 以内に死んだら fallback で retry。
 ///
-/// Phase 5-D: `claude --continue` failure (例: session corrupt) → `claude` (新規 session) で
-///  Lane を救済する。 caller (lanes.rs / lanes_state.rs) は通常の `PtySlot::spawn` 同様に使える。
+/// PR-B 後は mise task 経路で fallback / initial_input は None 固定、 dead path だが
+/// 既存 code shape を維持 (shell tinkering で task 経由しない直接 spawn の保険)。
 pub fn spawn_with_fallback(
     cwd: &str,
     cmd: &StandCommand,
@@ -73,8 +72,7 @@ pub fn spawn_with_fallback(
     std::thread::sleep(std::time::Duration::from_millis(EARLY_EXIT_CHECK_MS));
 
     if slot.is_alive() {
-        // Phase 6-E (Slice 2): shell-hosted Stand の auto-launch ─ initial_input を PTY に書く。
-        // 失敗は warn のみ (spawn 自体は成功している)、 shell prompt は user に表示される。
+        // initial_input は PR-B 後 None 固定、 でも defensive に維持。
         if let Some(input) = cmd.initial_input.as_deref()
             && let Err(e) = slot.write(input.as_bytes())
         {
@@ -89,7 +87,6 @@ pub fn spawn_with_fallback(
     }
 
     let Some(fb_args) = cmd.fallback_args.as_ref() else {
-        // fallback 無し → primary 死亡をそのまま error に格上げ (caller graceful degrade)
         anyhow::bail!(
             "Stand spawn early-exit (no fallback): program={} args={:?}",
             cmd.program,
@@ -103,11 +100,10 @@ pub fn spawn_with_fallback(
         cmd.program
     );
 
-    drop(slot); // 死亡 slot を Drop で kill+wait
+    drop(slot);
     drop(rx);
 
     let (mut slot, rx) = PtySlot::spawn(cwd, &cmd.program, fb_args, &cmd.env, cols, rows)?;
-    // fallback 経路でも initial_input を書き込む (shell-hosted Stand での一貫性)。
     if let Some(input) = cmd.initial_input.as_deref()
         && let Err(e) = slot.write(input.as_bytes())
     {
@@ -120,71 +116,114 @@ pub fn spawn_with_fallback(
     Ok((slot, rx))
 }
 
-/// LaneStand に応じた spawn command を構築
+/// LaneAddress の lane label を導出 (Lead → "lead"、 Worker(name) → name、 Worker(None) → "unnamed")
+fn lane_label(addr: &LaneAddress) -> &str {
+    match (&addr.kind, addr.name.as_deref()) {
+        (LaneKind::Lead, _) => "lead",
+        (LaneKind::Worker, Some(n)) => n,
+        (LaneKind::Worker, None) => "unnamed",
+    }
+}
+
+/// Stand 名に応じた spawn command を構築 (doc 11 PR-B、 mise task 経路)。
 ///
-/// Phase 6-E (VP-107): 内部実装を `LaneStandSpec` trait dispatch に委譲。
-/// wire format (`LaneStand` enum) は維持しつつ、 `to_spec()` adapter で trait object
-/// に変換、 `build()` を呼ぶ流れに統一。
+/// `mise run vp:stand:{stand_name}` を呼び、 mise task が tmux + shell + LLM auto-launch を
+/// 担当する file-based init_script 設計に統一。
 ///
-/// Phase 1e: `addr` を受け取って HD spec の tmux session 名導出に使う。
-/// TH spec は addr 未使用 (将来 init_script 対応で活用予定)。
+/// - `stand_name`: task 名 `vp:stand:{name}` の `name` 部分 (例: `"hd"` / `"shell"` / `"tmux"`)
+/// - `addr`: `VP_SESSION` / `VP_PROJECT` / `VP_LANE` env 導出
+/// - `project_dir`: `VP_CWD` env、 PtySlot::spawn の cwd 引数経由で mise の cascade lookup の起点
+///   (project_dir に `.mise/tasks/vp/stand/{name}` が居れば workspace default を override)
 ///
-/// `cwd` は HD spec の `tmux new-session -c {cwd}` で pane の working directory を
-/// 明示するために使う (tmux server 共有時の cwd 継承罠を回避)。 TH spec は未使用。
-pub fn build_stand_command(stand: LaneStand, addr: &LaneAddress, cwd: &Path) -> StandCommand {
-    let cwd_str = cwd.to_string_lossy();
-    stand.to_spec().build(addr, &cwd_str)
+/// 旧 `LaneStand` enum + `LaneStandSpec` trait dispatch は廃止 (stand_spec.rs 全削除)。
+pub fn build_stand_command(
+    stand_name: &str,
+    addr: &LaneAddress,
+    project_dir: &Path,
+) -> StandCommand {
+    let session = addr.tmux_session_name(stand_name);
+    let cwd_str = project_dir.to_string_lossy().to_string();
+    StandCommand {
+        program: "mise".into(),
+        args: vec!["run".into(), format!("vp:stand:{}", stand_name)],
+        // mise task は早期 exit せず PTY を take over するので fallback / initial_input は None。
+        fallback_args: None,
+        initial_input: None,
+        env: vec![
+            ("VP_CWD".into(), cwd_str),
+            ("VP_SESSION".into(), session),
+            ("VP_PROJECT".into(), addr.project.clone()),
+            ("VP_LANE".into(), lane_label(addr).into()),
+        ],
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // wire-compat regression test: `LaneStand` enum 経由でも shell-hosted 挙動が保たれる。
-    // 詳細な trait impl 単位 test は `stand_spec` module に存在。
-
-    /// Phase 1e: HD は shell + initial_input で `tmux new-session ... 'claude --continue || claude' || ...` を auto-launch。
-    /// 副舞台 (tmux) を立てて agent の send-keys 経路を確保。
+    /// build_stand_command が `mise run vp:stand:hd` の form を返すこと。
     #[test]
-    fn heavens_door_is_shell_hosted_with_tmux_wrapped_invocation() {
+    fn build_stand_command_returns_mise_invocation() {
         let addr = LaneAddress::lead("vp");
-        let cmd = build_stand_command(LaneStand::HeavensDoor, &addr, Path::new("/tmp"));
-        assert!(
-            cmd.program.contains("zsh") || cmd.program.contains("bash"),
-            "HD は shell-hosted (program=zsh/bash 想定)、 got {}",
-            cmd.program
-        );
-        assert_eq!(cmd.args, vec!["-l".to_string()]);
-        let input = cmd.initial_input.expect("HD は initial_input 必須");
-        assert!(
-            input.starts_with("tmux start-server"),
-            "Phase 1e + xterm.js 相性改善: tmux server config 必須、 got: {}",
-            input
-        );
-        assert!(
-            input.contains("tmux new-session -A -c '/tmp' -s vp-vp-lead-hd"),
-            "Phase 1e: tmux session ラッパ + cwd 明示 (-c) 必須、 got: {}",
-            input
-        );
-        assert!(input.contains("'claude --continue || claude'"));
-        assert!(
-            input.contains("|| (claude --continue || claude)"),
-            "外側 fallback (tmux 不在環境) 必須"
-        );
-        assert!(input.ends_with('\n'), "PTY 入力は改行で行確定");
+        let cmd = build_stand_command("hd", &addr, Path::new("/tmp"));
+        assert_eq!(cmd.program, "mise");
+        assert_eq!(cmd.args, vec!["run".to_string(), "vp:stand:hd".to_string()]);
+        assert!(cmd.fallback_args.is_none());
+        assert!(cmd.initial_input.is_none());
     }
 
+    /// VP_* env が doc 11 §3.3 通りに injected されていること。
     #[test]
-    fn the_hand_uses_shell_login() {
-        let addr = LaneAddress::lead("vp");
-        let cmd = build_stand_command(LaneStand::TheHand, &addr, Path::new("/tmp"));
-        assert!(
-            cmd.program.contains("zsh") || cmd.program.contains("bash"),
-            "shell expected zsh/bash, got {}",
-            cmd.program
+    fn build_stand_command_injects_vp_env() {
+        let addr = LaneAddress::worker("vantage-point", "sub");
+        let cmd = build_stand_command("hd", &addr, Path::new("/work/vp"));
+
+        let env: std::collections::HashMap<_, _> = cmd.env.iter().cloned().collect();
+        assert_eq!(env.get("VP_CWD").map(String::as_str), Some("/work/vp"));
+        assert_eq!(
+            env.get("VP_SESSION").map(String::as_str),
+            Some("vp-vantage-point-sub-hd")
         );
-        assert_eq!(cmd.args, vec!["-l".to_string()]);
-        // 素 shell は auto-launch なし
-        assert!(cmd.initial_input.is_none());
+        assert_eq!(
+            env.get("VP_PROJECT").map(String::as_str),
+            Some("vantage-point")
+        );
+        assert_eq!(env.get("VP_LANE").map(String::as_str), Some("sub"));
+    }
+
+    /// stand_name は task 名にそのまま埋め込まれる (新規 stand の追加耐性)。
+    #[test]
+    fn build_stand_command_passes_arbitrary_stand_name() {
+        let addr = LaneAddress::lead("vp");
+        let cmd = build_stand_command("opus-xhigh", &addr, Path::new("/tmp"));
+        assert_eq!(
+            cmd.args,
+            vec!["run".to_string(), "vp:stand:opus-xhigh".to_string()]
+        );
+        // tmux_session_name にも stand_name そのまま入る
+        let env: std::collections::HashMap<_, _> = cmd.env.iter().cloned().collect();
+        assert_eq!(
+            env.get("VP_SESSION").map(String::as_str),
+            Some("vp-vp-lead-opus-xhigh")
+        );
+    }
+
+    /// Lead lane の VP_LANE は "lead"、 Worker(None) は "unnamed"。
+    #[test]
+    fn build_stand_command_lane_label_variants() {
+        let lead = LaneAddress::lead("vp");
+        let cmd = build_stand_command("hd", &lead, Path::new("/tmp"));
+        let env: std::collections::HashMap<_, _> = cmd.env.iter().cloned().collect();
+        assert_eq!(env.get("VP_LANE").map(String::as_str), Some("lead"));
+
+        let unnamed = LaneAddress {
+            project: "vp".into(),
+            kind: LaneKind::Worker,
+            name: None,
+        };
+        let cmd = build_stand_command("hd", &unnamed, Path::new("/tmp"));
+        let env: std::collections::HashMap<_, _> = cmd.env.iter().cloned().collect();
+        assert_eq!(env.get("VP_LANE").map(String::as_str), Some("unnamed"));
     }
 }
