@@ -379,11 +379,17 @@ pub async fn run(
                 max_concurrent
             );
             for entry in workers {
+                // doc 11 PR-B: stand は String 化、 default は config の `default_stand`
+                // (未設定なら "hd" fallback)。
+                let default_stand = crate::config::Config::load()
+                    .unwrap_or_default()
+                    .default_stand_or_hd()
+                    .to_string();
                 let cmd = super::lane_cmd::LaneCmd::SpawnLane {
                     project_id: workers_project_id.clone(),
                     name: entry.name.clone(),
                     cwd: entry.path.clone(),
-                    stand: super::lanes_state::LaneStand::default(),
+                    stand: default_stand,
                 };
                 if let Err(e) = bootstrap_handle.send_to("lane-spawn", &cmd).await {
                     tracing::warn!(

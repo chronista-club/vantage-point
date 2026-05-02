@@ -24,10 +24,10 @@ pub(crate) mod retained;
 mod routes;
 mod server;
 mod session;
-/// StandSpawner — LaneStand 別の spawn command 構築 (Architecture v4 A5-1)
+/// StandSpawner — Stand 名 → mise task spawn command 構築 (doc 11 PR-B)
 pub(crate) mod stand_spawner;
-/// LaneStandSpec trait — 舞台-役者-演目 metaphor の Layer 2 (Phase 6-E、 VP-107)
-pub(crate) mod stand_spec;
+// stand_spec module は doc 11 PR-B で削除 (LaneStandSpec trait / TheHand / LlmStand 全廃、
+// `mise run vp:stand:{name}` 1 経路に集約)。
 pub(crate) mod state;
 pub(crate) mod tmux_actor;
 pub mod topic;

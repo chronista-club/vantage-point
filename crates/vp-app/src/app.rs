@@ -964,11 +964,19 @@ const SIDEBAR_HTML: &str = concat!(
   // 旧: nf-fa-compass の Unicode codepoint を .nf-icon span に textContent
   // 新: Phosphor icon name を iconify-icon 要素に attribute、 default = regular weight。
   const STAND_GLYPH = {
+    // doc 11 PR-B: Lane Stand 名 = mise task `vp:stand:{name}` の name 部分そのまま。
+    hd: 'ph:book-open',           // Heaven's Door (Layer 2 = tmux + claude auto-launch)
+    shell: 'ph:terminal-window',  // Shell (Layer 0 = bare login shell、 旧 The Hand)
+    tmux: 'ph:presentation',      // Tmux session attach のみ (Layer 1)
+    // legacy wire format 名は migrate_legacy_stand 側で吸収するが、 vp-app が古 daemon に
+    // 接続した時の transition 期間用に display 側でも吸収する (1 release 後に削除)。
+    heavens_door: 'ph:book-open',
+    the_hand: 'ph:terminal-window',
+    // Project scope の Stand (PP / GE / HP) は将来 Lane の中身ではないが、 sidebar の
+    // 別 row に同じ STAND_GLYPH を使うので key 維持。
     paisley_park: 'ph:compass',
     gold_experience: 'ph:plant',
     hermit_purple: 'ph:plug',
-    heavens_door: 'ph:book-open',
-    the_hand: 'ph:terminal-window',
   };
   // Phase 5-D: state 別 glyph + class 統合 map (色覚多様性 a11y 対応、 purple-haze HIG B4)。
   //  glyph 列は Nerd Font Font Awesome (web_assets::NERD_FONT_CSS で .nf-icon class 提供)。
@@ -991,8 +999,14 @@ const SIDEBAR_HTML: &str = concat!(
   // Sprint 2-2: Stand display name (Architecture v4 metaphor)
   function standDisplayName(stand) {
     switch (stand) {
+      // doc 11 PR-B: 新 stand 名 (mise task name と一致)
+      case 'hd': return "Heaven's Door";
+      case 'shell': return 'Shell';
+      case 'tmux': return 'Tmux';
+      // legacy wire 名 (migrate_legacy_stand 側で吸収するが、 古 daemon 接続時の表示用)
       case 'heavens_door': return "Heaven's Door";
       case 'the_hand': return 'The Hand';
+      // Project scope の Stand
       case 'paisley_park': return 'Paisley Park';
       case 'gold_experience': return 'Gold Experience';
       case 'hermit_purple': return 'Hermit Purple';
