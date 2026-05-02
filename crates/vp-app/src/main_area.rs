@@ -237,6 +237,11 @@ body{overflow:hidden;}
     include_str!("../assets/addon-webgl.min.js"),
     r#"
 </script>
+<script>
+"#,
+    include_str!("../assets/addon-unicode11.min.js"),
+    r#"
+</script>
 <!-- VP-101 Phase A2: creo-ui-editor-host bundle (SolidJS + EditorLayer + tokens auto-discover).
      Ctrl+Shift+E で activate、font / theme / spacing 等を runtime 編集。
      Build: cd crates/vp-app/web-bundle && bun install && bun run build。 -->
@@ -347,12 +352,25 @@ body{overflow:hidden;}
     const fitAddon = new FitAddon.FitAddon();
     term.loadAddon(fitAddon);
 
+    // Unicode 11 width tables (mem_1CaVpvsBKR3ckieRXo1nwr ghost char 調査の co-factor)。
+    //  xterm.js v5.5.0 default は Unicode 6 width table で、 CJK 拡張 / box-drawing / 絵文字の
+    //  cell 幅計算が tmux 側 (modern Unicode 想定) と drift する。 結果 cell の物理 index と
+    //  論理 cell index がずれて、 古い cell の content が DOM 上に取り残される。
+    //  Unicode11Addon を load + activeVersion = '11' で width table を最新に揃える。
+    try {
+      const u11 = new Unicode11Addon.Unicode11Addon();
+      term.loadAddon(u11);
+      term.unicode.activeVersion = '11';
+    } catch (e) {
+      console.warn('[xterm:' + address + '] Unicode11Addon load failed:', e);
+    }
+
     // WebGL renderer (per-instance、 個別に context 持つ)
-    // Phase 5-D 実験 (ghost char 調査): WebGL の dirty cell tracking で文字幅再計算後に古い cells が
-    //  clear されない疑惑検証中。 一時的に DOM renderer fallback で再現するか確認。
-    //  → 再現しなければ WebGL 起因確定、 dispose 戦略 or canvas 移行を検討。
-    //  → 再現するなら xterm.js core or wcwidth 起因、 別調査。
-    const VP_USE_WEBGL = false; // TEMPORARY for ghost char repro test
+    //  Phase 5-D 実験完了 (2026-05-02): DOM renderer でも ghost char 再現 → WebGL 起因ではなく
+    //  DOM cell recycling + Unicode width drift の組合せが原因と判明。 WebGL は frame ごとに
+    //  canvas 全描画する性質上、 cell recycling 起因の残骸が原理的に発生しない → 復活が正解。
+    //  GPU context loss (Mac で別 app 切替時に起きうる) は onContextLoss で dispose → DOM fallback。
+    const VP_USE_WEBGL = true;
     let webglAddon = null;
     if (VP_USE_WEBGL) {
       try {
