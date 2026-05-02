@@ -17,13 +17,21 @@ tmux set-option -g focus-events on 2>/dev/null || true
 tmux set-option -g escape-time 0 2>/dev/null || true
 tmux set-option -ga terminal-overrides ',xterm-256color:Tc' 2>/dev/null || true
 
-# tmux 副舞台 + claude auto-launch:
-#   内側 'claude --continue || claude'
-#     → --continue 失敗時 (session corrupt 等) は新規 session で再試行
-#   外側 || (cd "$VP_CWD" && (claude --continue || claude))
-#     → tmux 不在環境では shell 直で素 claude にフォールバック。
-#       doc 11 PR-D (Z 系統): spawn cwd は VP install root なので、 fallback 経路では
-#       明示的に project dir に cd してから claude を起動する。
+# tmux 副舞台 + claude auto-launch + 終了後 shell fallback:
+#
+#   tmux command:
+#     'claude --continue || claude; exec $SHELL -l'
+#       1. claude --continue で前 session を resume、 失敗時は claude (新規) で再試行
+#       2. claude 終了後 (e.g. /exit) は exec で login shell に切替えて tmux session 内に
+#          bash/zsh prompt を維持 ─ user は `claude -c` で復帰 / `zsh` 別起動 / `exit` で
+#          明示終了 等を自由に選べる (旧 LlmStand 経路の outer shell 体験を tmux session 内に
+#          閉じ込めた形、 PR-B 移行で消えた layer の代替実装)。
+#
+#   外側 || fallback (tmux 不在環境):
+#     cd "$VP_CWD" && (claude --continue || claude)
+#     ─ shell 上で素 claude を起動。 doc 11 PR-D (Z 系統) で spawn cwd は VP install
+#       root なので、 明示的に project dir に cd してから claude を起動する。
+LOGIN_SHELL="${SHELL:-/bin/zsh}"
 exec tmux new-session -A -c "$VP_CWD" -s "$VP_SESSION" \
-    'claude --continue || claude' \
+    "claude --continue || claude; exec $LOGIN_SHELL -l" \
     || (cd "$VP_CWD" && (claude --continue || claude))
