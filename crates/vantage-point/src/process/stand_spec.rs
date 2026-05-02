@@ -66,6 +66,8 @@ impl LaneStandSpec for TheHand {
             fallback_args: None,
             // 素 shell は user 入力待ちのまま。 auto-launch なし。
             initial_input: None,
+            // doc 11 (PR-B 移行期): 旧 LlmStand / TheHand 経路は env 注入なし。
+            env: Vec::new(),
         }
     }
 }
