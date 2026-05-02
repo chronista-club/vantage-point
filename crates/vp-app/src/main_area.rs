@@ -92,7 +92,7 @@ pub const MAIN_AREA_HTML: &str = concat!(
 </style>
 <style>
 "#,
-    include_str!("../assets/xterm.min.css"),
+    include_str!("../assets/xterm.css"),
     r#"
 html,body{margin:0;padding:0;height:100%;width:100%;background:var(--color-surface-bg-base);color:var(--color-text-primary);font-family:var(--typography-family-sans);}
 body{overflow:hidden;}
@@ -224,22 +224,22 @@ body{overflow:hidden;}
 <div id="editor-root"></div>
 <script>
 "#,
-    include_str!("../assets/xterm.min.js"),
+    include_str!("../assets/xterm.js"),
     r#"
 </script>
 <script>
 "#,
-    include_str!("../assets/addon-fit.min.js"),
+    include_str!("../assets/addon-fit.js"),
     r#"
 </script>
 <script>
 "#,
-    include_str!("../assets/addon-webgl.min.js"),
+    include_str!("../assets/addon-webgl.js"),
     r#"
 </script>
 <script>
 "#,
-    include_str!("../assets/addon-unicode11.min.js"),
+    include_str!("../assets/addon-unicode11.js"),
     r#"
 </script>
 <!-- VP-101 Phase A2: creo-ui-editor-host bundle (SolidJS + EditorLayer + tokens auto-discover).
