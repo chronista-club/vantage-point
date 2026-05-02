@@ -78,8 +78,8 @@ v1 は `Stand` struct + preset constructor (`Stand::heavens_door()` 等) で表�
 
 VP は既に mise を heavy に使っている:
 
-- `mise.toml` の `[tasks.app]` `[tasks.nuke]` `[tasks."push:mac"]` `[tasks."push:win"]`
-- user の dogfood loop が `mise run app` 起点
+- `mise.toml` の `[tasks."vp:app"]` `[tasks."vp:daemon:stop"]` `[tasks."push:mac"]` `[tasks."push:win"]`
+- user の dogfood loop が `mise run vp:app` 起点 (build → stop → start 一発)
 - `mise.toml` の Rust toolchain / tools 管理
 
 つまり mise = **VP 開発のオーケストレーション層として既に確立**。 Stand 起動をここに載せるのは layer 整合的。
@@ -476,13 +476,20 @@ dogfood verification: PR-A merge 後、 user の terminal で `mise run vp:stand
 
 `vp:stand:*` を起点に、 VP の周辺 task を `vp:*` namespace で順次整理していける素地を作る。 Phase 1 では `vp:stand:*` のみ着手、 後続は機が熟したものから個別 PR で。
 
-| namespace | 用途 | 例 (将来) |
+| namespace | 用途 | 例 |
 |---|---|---|
 | `vp:stand:*` | Lane で発動する Stand (本 doc) | `vp:stand:hd` / `vp:stand:shell` / `vp:stand:tmux` / `vp:stand:opus` |
+| `vp:app:*` | GUI (vp-app: Rust + wry + xterm.js + creo-ui) | `vp:app:build` / `vp:app:start` / `vp:app:stop` / `vp:app` (build + stop + start alias) |
+| `vp:daemon:*` | daemon binary (vp-cli = vp、 TheWorld + CLI) | `vp:daemon:build` / `vp:daemon:start` / `vp:daemon:stop` (cascade kill: SP + tmux 含む) / `vp:daemon` |
+| `vp:sys:*` | システム管理 (個別 process の sniper kill 系) | `vp:sys:sp-kill` (SP のみ kill、 daemon 維持) |
 | `vp:lane:*` | Lane orchestration (起動/停止/list) | `vp:lane:list` / `vp:lane:kill` |
 | `vp:dev:*` | 開発 helper | `vp:dev:fmt` / `vp:dev:test` / `vp:dev:bench` |
 | `vp:debug:*` | デバッグ task | `vp:debug:tmux-ls` / `vp:debug:capture` |
 | `vp:release:*` | release / ship 関連 (既存 push:mac/win を移行候補) | `vp:release:mac` / `vp:release:notes` |
+
+cascade vs sniper の使い分け:
+- `vp:daemon:stop` (cascade kill) ─ daemon + 背負ってる subsystem 全部 (SP + Lane tmux session) を一括停止。 「VP 開発環境シャットダウン」 用。
+- `vp:sys:sp-kill` (sniper kill) ─ SP だけ叩き直す。 daemon は維持 (再起動が重い: TheWorld registry / SurrealDB / QUIC channel reinit) ので、 binary 入替後の re-register / ghost SP cleanup 用。
 
 `vp:` 1 段の root namespace で grep 可能 (`mise tasks ls | grep '^vp:'` で VP 関連 task 全列挙)。 これは **VP の裏 CLI** として、 既存 Rust CLI (compiled) と並ぶ scripted layer になる。
 
