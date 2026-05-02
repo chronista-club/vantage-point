@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+#MISE description="VP Stand: tmux session attached、 LLM なし (Layer 1)"
+# VP env (caller が設定):
+#   VP_CWD     = Lane の working directory (tmux session の cwd に使う)
+#   VP_SESSION = tmux session 名
+#   VP_PROJECT = project 名
+#   VP_LANE    = lane label
+# VP-specific metadata:
+#VP icon="🎭"
+#VP layer=1
+
+set -euo pipefail
+
+# tmux server config (xterm.js 描画相性、 PR #243 で確立した内容を踏襲)
+tmux start-server 2>/dev/null || true
+tmux set-option -g focus-events on 2>/dev/null || true
+tmux set-option -g escape-time 0 2>/dev/null || true
+tmux set-option -ga terminal-overrides ',xterm-256color:Tc' 2>/dev/null || true
+
+# tmux session 起動 / attach (`-A`)。 cwd は明示 (PR #244 の継承罠回避)。
+exec tmux new-session -A -c "$VP_CWD" -s "$VP_SESSION"
