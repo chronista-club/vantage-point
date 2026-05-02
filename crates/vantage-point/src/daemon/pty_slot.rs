@@ -257,7 +257,8 @@ mod tests {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
         let cwd = std::env::temp_dir().to_string_lossy().to_string();
 
-        let (slot, mut rx) = PtySlot::spawn(&cwd, &shell, &[], &[], 80, 24).expect("PTY spawn に失敗");
+        let (slot, mut rx) =
+            PtySlot::spawn(&cwd, &shell, &[], &[], 80, 24).expect("PTY spawn に失敗");
 
         // PIDが取得できること
         assert!(slot.pid() > 0 || slot.pid() == 0); // CI環境では0の可能性
