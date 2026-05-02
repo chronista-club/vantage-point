@@ -338,7 +338,11 @@ body{overflow:hidden;}
       cursorStyle: 'bar',
       cursorWidth: 2,
       smoothScrollDuration: 80,
-      fontLigatures: true
+      // fontLigatures は DOM renderer と相性が悪く、 ligature 想定の 2 cell 幅 protect が
+      // cell update を skip させて ghost char (mem_1CaVpvsBKR3ckieRXo1nwr) の主因になる疑い。
+      // VP は @xterm/addon-ligatures を load していないため、 true でも合字描画は事実上 no-op、
+      // off にしても表示に変化なし (cell tracking オーバーヘッドだけ消える)。
+      fontLigatures: false
     });
     const fitAddon = new FitAddon.FitAddon();
     term.loadAddon(fitAddon);
