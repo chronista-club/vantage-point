@@ -1,0 +1,593 @@
+# 12. Stand architecture — Layer-Stand Composition Model (LSCM)
+
+> **Status**: target architecture (現実装は移行元、 §9 catalog の "現実装 vs target" を参照)
+> **Date**: 2026-05-04
+> **Pair memories**:
+> - LSCM Presence Model (11 axiom): `mem_1CagCMmSTLEGxoAwXgcJvH`
+> - LSCM Catalog (8 Stand): `mem_1CagCQjUUp4GxdRoxFhEiD`
+> **Predecessor**: [doc 11 — Stand init_script system](./11-stand-init-script-system.md)
+> **Successors (planned)**: doc 13 (Paisley Park 復活設計)、 doc 14 (Thin View アーキテクチャ)
+
+---
+
+## §0. Glossary — 用語衝突の disambiguation
+
+VP では "Layer" という単語が複数の文脈で使われていた。 doc 12 では下記 3 義を厳密に分離する:
+
+| 用語 | 意味 | 出典 |
+|------|------|------|
+| **Layer** (canonical) | LSCM の address-bearing container (World / Project / Lane) | 本 doc |
+| **tier** | PTY 階層 (旧 `#VP layer=N`、 0=shell / 1=tmux / 2=hd) | `crates/vantage-point/src/process/stand_metadata.rs` |
+| **Stack** | Protocol stack (旧 4-Layer Roadmap、 1 Physical / 2 Transport / 3 App Address / 4 Federation) | creo memory `mem_1CaVeQEKXd8U2XHn75RD4M` |
+
+**本 doc 内での "Layer" は LSCM canonical のみ**。 PR-pre1 (terminology cleanup) で `#VP layer=N` → `#VP tier=N` rename + 4-Layer Roadmap の "Layer" → "Stack" rename を別 PR で実施する。
+
+---
+
+## §1. 背景と問題意識
+
+### doc 11 で固まったもの
+
+[doc 11](./11-stand-init-script-system.md) で **Stand の起動方法** が確定した: mise task 1 ファイル = 1 Stand、 metadata-driven (`#VP icon=`, `#VP layer=`、 PR-pre1 で `tier=` に rename)、 `vp:stand:*` namespace。 これにより Lane 起動の declarative path が成立。
+
+### 残った宙ぶらりん
+
+doc 11 は **Stand の "起動"** を扱ったが、 **Stand の "構造"** は未整理だった:
+
+- Stand 同士の関係は?
+- どの Stand が project に属し、 どの Stand が Lane に属し、 どの Stand が world に属するのか?
+- Stand の概念上の階層と実装上の actor 位置はどう対応するのか?
+- Stand 間通信の address syntax は?
+- Pane (UI 上の Stand 表示領域) は Stand とどう関係するのか?
+
+### PP 復活で顕在化した
+
+PP (Paisley Park = Information Navigator) を VP-42 で廃止 (`commit 7f88357`) して以降、 PP の "場所" が宙に浮いた。 復活させる際に「Project に置くか / Lane に置くか / 二重持ちか」 の議論が起こり、 Stand 概念のブレが顕在化した。
+
+VP-42 廃止の真の教訓は「Canvas が UI と State を混在させていた」 ─ 本 doc はこの混在を **概念的に分離** する装置を立てる。
+
+---
+
+## §2. 定義 — Layer-Stand Composition Model (LSCM)
+
+### 中心命題
+
+> **Stand に階層色を付けず、 Layer (address-bearing container) が必要な Stand を保持する**
+
+これは OOP の inheritance ではなく **composition** の関係。 Stand は portable entity、 Layer が container として機能し、 Stand の context (cwd / supervisor / scope) を提供する。
+
+### 三要素
+
+| 概念 | 定義 |
+|------|------|
+| **Layer** | address を持つ container。 World / Project / Lane の 3 kind。 Layer instance が階層 tree を成す。 自分が必要な Stand を保持する |
+| **Stand** | portable entity (色なし)。 任意の Layer に保持されうる。 保持される Layer から context (cwd / supervisor / scope) を得る |
+| **保持関係** | Layer → Stand (composition、 lifecycle 連動、 supervisor tree) |
+
+### 哲学的背景
+
+LSCM は以下の design pattern と同型:
+
+- **Composition over Inheritance** (Gang of Four): Stand に "Lane" や "Project" を inheritance させない
+- **Entity-Component-System (ECS)**: Layer = entity、 Stand = component、 保持 = composition
+- **Erlang/OTP supervisor tree**: Layer = supervisor、 Stand = supervised child
+- **Plan 9 "filesystem as universal namespace"**: Layer = directory、 Stand = file in directory
+
+---
+
+## §3. Layer — 3 kind と階層 tree (A2 / A9)
+
+### A2: Layer 階層と address
+
+> **Layer は World / Project / Lane の 3 kind、 Layer instance が階層 tree を成す、 Layer は address (path-like) を持つ**
+
+### A9: Layer は独自 dir 空間
+
+> **Layer は独自 dir 空間を持つ**:
+> - World Layer = global config dir (`~/.config/vp/`、 `~/.local/share/vp/`)
+> - Project Layer = project root dir
+> - Lane Layer = working tree (Lead Lane = project root、 Worker Lane = ccws clone)
+
+**dir 共有は filesystem 上の作業場所の共有であり、 Stand 間 memory 共有を意味しない** (A6 を継承)。 dir = "world" であって "channel" ではない (Plan 9 thinking)。
+
+### Layer kind table
+
+| kind | address pattern | dir | 例 |
+|------|----------------|-----|-----|
+| World | `world` (singleton) | `~/.config/vp/`、 `~/.local/share/vp/` | `world` |
+| Project | `{project}` | project root dir | `vp`、 `creo`、 `bikeboy` |
+| Lane | `{project}/{lane}` | working tree | `vp/lead`、 `vp/sub1` |
+
+### A11: Lead Lane の特殊性
+
+> **Project Layer は Lead Lane を代表 Lane として持つ。 Project Stand は Lead Lane supervisor tree に住む** (実装 hint、 制約は A3 + catalog が SSOT)
+
+Lead Lane = project root dir に住む lane = project の代表。 Worker Lane (ccws clone) は Lead Lane の sibling。
+
+### Layer tree (Mermaid)
+
+```mermaid
+graph TB
+    W[World Layer<br/>address: world<br/>dir: ~/.config/vp/]
+    W --> P1[Project Layer<br/>address: vp<br/>dir: ~/repos/vantage-point/]
+    W --> P2[Project Layer<br/>address: creo<br/>dir: ~/repos/creo-memories/]
+    P1 --> L1[Lane Layer<br/>address: vp/lead<br/>dir: project root]
+    P1 --> L2[Lane Layer<br/>address: vp/sub1<br/>dir: ccws clone]
+    P2 --> L3[Lane Layer<br/>address: creo/lead<br/>dir: project root]
+```
+
+---
+
+## §4. Stand と保持関係 (A1 / A3)
+
+### A1: Stand = portable entity
+
+> **Stand は portable entity (色なし)、 Layer に保持されることで context を得る**
+
+Stand 種 (PP / HD / GE / etc.) 自体は階層所属を持たない。 階層は **保持する Layer 側の属性**。
+
+### A3: 保持の規則と catalog 制約
+
+> **Layer は任意の Stand を保持可、 1 Layer = N Stand 保持可、 同 Stand 種が複数 Layer に保持されることも可** (例: PP は各 Lane に独立 instance)。
+>
+> **ただし各 Stand 種の許容居住 Layer pattern は catalog で定められる ─ catalog の "保持 layer pattern" 列が cardinality と layer kind の制約 SSOT**
+
+これにより catalog (§9) は単なる inventory ではなく、 **axiom 制約の formal source** となる。
+
+### "保持" の 4 機能
+
+Layer が Stand を保持するとき、 以下の 4 機能を提供する:
+
+| 機能 | 内容 |
+|------|------|
+| Lifecycle | Layer 起動 → Stand spawn、 Layer 終了 → Stand 終了 (cascade) |
+| Address resolution | `{stand}@{layer}` を Layer registry で解決 |
+| State ownership | Stand state は Layer supervisor が管理 |
+| Routing | Stand 間 message は Layer registry 経由 (Mailbox / Topic) |
+
+### Stand-Layer 保持関係 (Mermaid)
+
+```mermaid
+graph LR
+    subgraph WL[World Layer]
+        TW[TheWorld 👑]
+        WS[Whitesnake 🐍]
+        HP[Hermit Purple 🍇]
+    end
+    subgraph PL[Project Layer vp]
+        SP[Star Platinum ⭐]
+    end
+    subgraph LL1[Lane vp/lead]
+        PP1[PP 🧭]
+        HD1[HD 📖]
+        GE1[GE 🌿]
+        TH1[The Hand 🤚]
+    end
+    subgraph LL2[Lane vp/sub1]
+        PP2[PP 🧭]
+        HD2[HD 📖]
+        GE2[GE 🌿]
+        TH2[The Hand 🤚]
+    end
+    WL --> PL
+    PL --> LL1
+    PL --> LL2
+```
+
+---
+
+## §5. 交信 — Stand Network (A4 / A6 / A7)
+
+### A4: Stand address — hybrid canonical
+
+Stand address grammar は **2 表記の hybrid canonical**:
+
+| 用途 | 表記 | 例 |
+|------|------|-----|
+| 概念用語 (本 doc / 設計議論) | `{stand}@{layer_path}` | `pp@vp/lead` |
+| wire format (実装 / mailbox) | `{stand}.{lane}@{project}` | `pp.lead@vp` |
+| 変換 library | `address::canonicalize()` / `address::display()` | 双方向変換集約 |
+
+wire format は既存 `creo/event.rs::ActorRef` を維持し、 概念議論では path-like 表記を使う。 Federation で `@host` 拡張 (§12 参照)。
+
+**Validation** (`msgbox_registry.rs`): actor 名は英数字 + `_` のみ、 TTL 48h、 GC sweep 5min。
+
+**Reserved actors**: `heavens_door`, `paisley_park`, `gold_experience`, `protocol`, `agent`, `mcp`
+
+### A6: CSP — share nothing memory
+
+> **Stand network は CSP (share nothing memory)**
+
+Stand 同士は memory を共有しない。 通信は channel (mailbox / topic) で copy 渡し。 Erlang の "share nothing" + Go CSP の合成。
+
+ただし **filesystem (Layer dir) は world として共有可能** ─ in-band channel と out-of-band filesystem を分離 (A9 参照)。
+
+### A7: 二様通信 — Actor face + CSP face
+
+| face | 用途 | 実装 |
+|------|------|------|
+| **Actor face** (direct) | 1:1 named address、 命令、 リクエスト | `msgbox` capability (`{stand}.{lane}@{project}`) |
+| **CSP face** (broadcast) | 1:N pub/sub、 state propagation、 fan-out | `Unison TopicRouter` (`canvas/lane/lead/*` 等) |
+
+両者は補完的。 Actor face = "誰" を answer する layer、 CSP face = "どう繋がるか" を answer する layer。
+
+### Stand network 図
+
+```
+[Actor face — identity]                [CSP face — interaction]
+direct mailbox address                 broadcast topic channel
+
+Stand A                                 Stand A
+   │                                       │ publish
+   ▼ msg_send                              ▼
+hd@vp/lead  ←───────  Stand B          ┌─────────────────┐
+Mailbox                                 │ canvas/lane/    │
+                                        │ lead/content    │ topic
+                                        └─────────────────┘
+                                         │  │  │ subscribe
+                                         ▼  ▼  ▼
+                                        Stand B / C / D
+                                        + Pane (network 外)
+```
+
+---
+
+## §6. 可視 — Pane (A5 / A8)
+
+### A5: Pane は GUI 責務、 Stand を bind する view
+
+> **Pane は GUI 責務、 Stand を bind する view**
+
+Pane = GUI 上で Stand を可視化する rectangle (vp-app WebView 内の領域、 wry standalone window、 etc.)。 ユーザーが自由に配置・toggle・resize 可能。
+
+### A8: Pane は network 外
+
+> **Pane は network 外** (subscriber/sender だが node ではない)
+
+Stand は Pane の存在を知らない。 Pane は Stand に subscribe + send する **anonymous edge consumer**。 Stand network の整合性は Pane に依存しない (旧 VP-42 Canvas が UI と State を混在させた失敗の構造的回避)。
+
+### binding API
+
+```
+pane.bind(stand_address, scope)
+   - stand_address: 物理的 message 投送先 (例: pp@vp/lead)
+   - scope: Pane の context (例: lane:lead-hd)
+
+pane.send(stand_address, message)
+pane.subscribe(stand_address, topic)
+```
+
+### Reference: PP creo-memory-pane
+
+PR-ε で実装する PP の典型 use case (`mem_1Ca8xHcMf9sFBB2VHUpHzZ` 参照):
+
+- **サイドバー** = PP 常駐フィード (lead Claude が `remember` / `search` / `get_*` するたびにカード追加・結果表示)
+- **Canvas (Pane)** = 検索 UI + memory 本文展開 (`get_*` で auto-display)
+- **双方向** = lead ↔ VP (UI 操作で context 注入)
+- **MCP 中継** = VP が creo-memories を wrap する MCP サーバを兼ねる
+
+---
+
+## §7. 内部実装 — Trait 設計 (β Soft 案、 暫定)
+
+### Stand には 2 種類ある
+
+VP 現実装の観察より:
+
+| 種類 | 実体 | 例 |
+|------|------|-----|
+| **In-process Stand** | Rust struct (SP daemon 内 actor) | TheWorld、 Whitesnake、 HP、 SP |
+| **Process Stand** | mise task で外部 process spawn | HD、 shell、 tmux、 GE |
+
+両者を unified に host するために `HostedStand` enum で wrap する。
+
+### β Soft 案 (推奨 default)
+
+```rust
+// Layer trait (host 側の契約)
+trait Layer: Send + Sync {
+    fn address(&self) -> LayerAddress;
+    fn kind(&self) -> LayerKind;        // World / Project / Lane
+    fn dir(&self) -> &Path;
+    fn host(&mut self, stand: HostedStand) -> Result<StandHandle>;
+    fn registry(&self) -> &StandRegistry;
+}
+
+// Stand core trait (能力 sub-trait なし、 色を付けない)
+trait Stand: Send + Sync {
+    fn name(&self) -> &'static str;
+    fn icon(&self) -> &'static str;
+    async fn start(&mut self, ctx: LayerContext) -> Result<()>;
+    async fn stop(&mut self) -> Result<()>;
+    async fn handle(&mut self, msg: StandMessage) -> StandResponse;
+}
+
+// 能力は Mailbox message variant で表現
+enum StandMessage {
+    Navigate(NavigateReq),
+    Store(StoreReq),
+    Run(RunReq),
+    Assist(AssistReq),
+    // 新能力 = 新 variant 追加で増える
+}
+
+// In-process と Process を unified host
+enum HostedStand {
+    InProc(Box<dyn Stand>),
+    Process(MiseTaskHandle),
+}
+```
+
+### 設計理由
+
+- **能力 sub-trait なし** → A1 portability 維持 (色を付けない)
+- **HostedStand enum** → in-process と process を統一 API、 doc 11 mise task path と整合
+- **能力 = message variant** → 新能力追加が enum 拡張で済む、 mailbox semantics と整合 (A6/A7)
+
+### 候補比較
+
+| 案 | trait 縛り | 評価 |
+|----|----------|------|
+| α Hard | sub-trait で能力契約 (`Navigator: Stand`、 `Persistence: Stand`) | compile-time safety 最強だが LSCM の "色なし" を侵食 |
+| **β Soft (default)** | Layer trait + Stand core trait のみ、 能力は message variant | 推奨 |
+| γ No | trait なし、 declarative + dyn | plugin friendly だが型安全弱い |
+
+**α / γ trade-off の精緻化は §13 Open Questions に保留。**
+
+---
+
+## §8. Lifecycle
+
+### Layer ↔ Stand の保持関係 (A6 + A9)
+
+| Phase | Layer 側 | Stand 側 |
+|-------|---------|---------|
+| spawn | Layer instance 生成 (dir 確保 / supervisor 起動) | 保持 Stand 群を spawn |
+| run | Stand を route / supervise | message 処理、 state 管理 |
+| destroy | 保持 Stand を全て先に shutdown (LIFO) | graceful stop、 state persist or discard |
+
+### 階層 cascade
+
+```
+TheWorld destroy
+   ↓ (cascade)
+全 Project Layer destroy
+   ↓ (cascade)
+全 Lane Layer destroy
+   ↓ (cascade)
+全 Lane Stand destroy
+```
+
+逆方向 (起動) は World → Project → Lane の topological order。
+
+### A6 share nothing と A9 dir 共有の関係
+
+- **memory** は CSP で share nothing (A6)
+- **filesystem (Layer dir)** は共有可能 (Stand から見ると "world"、 not "channel")
+- Stand 同士が dir 経由で間接通信することは技術的に可能だが、 これは構造化通信ではなく "out-of-band" として扱う
+
+### Lead Lane の特殊性 (A11 補足)
+
+- Lead Lane = Project supervisor (Project Stand のホスト)
+- Lead Lane destroy = Project Layer destroy (project 全体終了)
+- Worker Lane destroy = 単独 Lane destroy (Project は生き残る)
+
+---
+
+## §9. Stand Catalog
+
+### Catalog 表
+
+| Stand | description | 保持 layer pattern | 概念 address | wire format | Hub federation? | 現実装 vs target |
+|-------|-------------|-------------------|------------|-------------|----------------|----------------|
+| TheWorld 👑 | Process Manager | `world` | `theworld@world` | `theworld@world` | ✅ (host id 的) | 現状 = target |
+| Whitesnake 🐍 | Persistence | `world` | `whitesnake@world` | `whitesnake@world` | ❌ (per-machine DB) | 現状 = target |
+| Hermit Purple 🍇 | External IF (MIDI/MCP/tmux) | `world` | `hp@world` | `hp@world` | ✅ | target = world、 現状 = Project capability、 **PR-α** |
+| Star Platinum ⭐ | Project Core | `{project}` | `sp@vp` | `sp@vp` | ✅ | 現状 = target |
+| Paisley Park 🧭 | Information Navigator | `{project}/{lane}` | `pp@vp/lead` | `pp.lead@vp` | ✅ | target = Lane instance、 現状 = Project actor、 **PR-β** |
+| Heaven's Door 📖 | Coding Assistant | `{project}/{lane}` | `hd@vp/lead` | `hd.lead@vp` | ✅ | 現状 = target (Lane mise task) |
+| Gold Experience 🌿 | Code Runner | `{project}/{lane}` | `ge@vp/lead` | `ge.lead@vp` | ❌ (security) | target = Lane instance、 現状 = Project actor、 **PR-γ** |
+| The Hand 🤚 | Shell Terminal | `{project}/{lane}` | `hand@vp/lead` | `hand.lead@vp` | ❌ (local shell) | 現状 = target (Lane mise task) |
+
+**分布**: World 3 / Project 1 / Lane 4 ─ 全 8 Stand
+**Hub federation 対象**: 5 Stand (TheWorld / SP / PP / HD / HP)
+
+### 後続 PR roadmap
+
+doc 12 起草後、 catalog の "target vs 現実装" gap を埋める PR 連鎖 + B2 rename PR:
+
+| PR | 内容 | 規模 |
+|----|------|------|
+| **PR-pre1** | terminology cleanup (`#VP layer=N` → `#VP tier=N`、 mem_1CaVeQ "4-Layer" → "4-Stack" update、 doc 11 update) | S |
+| PR-α | HP を Project capability から World daemon に移管 | M |
+| PR-β | PP を Project actor から Lane instance 化 | L |
+| PR-γ | GE を Project actor から Lane instance 化 | M |
+| PR-δ | Lane Layer supervisor 整備 (SP 内 Lane registry、 host API) | M |
+| PR-ε | PP に creo-memory-pane 機能実装 (`mem_1Ca8xHcMf9sFBB2VHUpHzZ` の実体化) | M |
+| PR-ζ (Phase 8) | Hub federation (`@host` 拡張、 VP publish 5 Stand) | L |
+
+---
+
+## §10. 既存実装との対応
+
+### codebase 対応
+
+| LSCM 概念 | 既存実装 |
+|----------|---------|
+| Layer = container | (将来) `Layer` trait + `LayerRegistry`、 現状は `ProcessCapabilities` / `ProjectStandsState` / `LanesState` に分散 |
+| Stand catalog | `crates/vantage-point/src/stands.rs` の `StandAlias` 定数 (現状 8 個) |
+| In-process Stand | `crates/vantage-point/src/capability/*.rs` (whitesnake / msgbox / etc.) |
+| Process Stand | `.mise/tasks/vp/stand/{hd,shell,tmux}` (doc 11 mise task) |
+| Mailbox | `crates/vantage-point/src/capability/msgbox.rs` + `msgbox_registry.rs` |
+| TopicRouter | `crates/vantage-point/src/process/topic_router.rs` |
+| RetainedStore | `crates/vantage-point/src/process/retained.rs` |
+| Lane = clone dir | `crates/vp-cli/src/ccws/` (worker workspace management) |
+| D11 path key | `running_processes` HashMap key = 正規化パス (memory MEMORY.md D11 参照) |
+
+### Lane manifest (Phase 6.5) との接続
+
+`mem_1CaVeQEKXd8U2XHn75RD4M` Phase 6.5 の Lane manifest (`[add] / [remove] / [override]`) は LSCM の **"Layer が保持する Stand 群を declare する操作"** そのもの。 LSCM が確定したことで manifest の意味が「Layer の Stand 構成 declarative config」 として明確化された。
+
+### doc 11 mise task 経路との整合
+
+doc 11 で確立した「Stand 追加 = mise task 1 ファイル」 は LSCM では **Process Stand の追加 path**。 In-process Stand は Rust struct として `capability/` に追加される別 path。 両者は `HostedStand` enum で unified に Layer に host される。
+
+---
+
+## §11. doc 系列内の位置
+
+```
+doc 11 (起動方法)        ─→  doc 12 (構造、 本書)        ─→  doc 13 (PP 復活、 予告)
+                                                          ─→  doc 14 (Thin View、 予告)
+```
+
+| doc | 役割 | status |
+|-----|------|------|
+| 11 | Stand init_script system (mise task で Stand を起動する規約) | 完了 (2026-05-03) |
+| **12** | **Stand architecture (LSCM = Stand の構造定義)** | **本書 (2026-05-04)** |
+| 13 | Paisley Park 復活設計 (PR-β/δ/ε の technical design、 creo-memory-pane 実体化) | planned |
+| 14 | Thin View アーキテクチャ (#102 の本格設計、 TUI/NSView dumb client 化) | planned |
+
+doc 13 と 14 は doc 12 の axiom + catalog を前提として、 PP / Thin View の各論を扱う。
+
+---
+
+## §12. Federation — Phase 8-9 への射程 (A10)
+
+### A10: Federation は opt-in
+
+> **Federation は opt-in、 Hub 障害時 machine-local 継続**
+
+VP は machine-local で完結する。 Federation は他マシンの Stand と reach する際の opt-in 機能。
+
+### 4-Stack モデル (旧 4-Layer Roadmap)
+
+`mem_1CaVeQEKXd8U2XHn75RD4M` の 4-Layer モデルを 4-Stack に rename:
+
+| Stack | 内容 | LSCM との対応 |
+|-------|------|--------------|
+| Stack 1 (Physical) | ccws clone + XDG scoping + Lane manifest | A9 (Layer dir 空間) |
+| Stack 2 (Transport) | port (32xxx/33xxx/34xxx)、 Unison QUIC、 mailbox transport | A6/A7 internal detail |
+| Stack 3 (Application Address) | TheWorld registry (machine-local resolution) | A4 wire format |
+| Stack 4 (Federation) | Hub registry (`@host` 拡張) | A4 + A10 |
+
+### Hub spec との接続
+
+`mem_1CaVeTysipdgVHoxwxUcPj` (chronista-club Atlas) で定義された Hub federation spec:
+
+- `chronista-hub/docs/spec/world-tree.kdl` の `vp-actor` resource (canonical_name + lane + stand enum)
+- ownership: "index-only" (= VP が primary SSOT、 Hub は navigation cache)
+- Identity 委譲: Creo ID SSOT、 Hub は `usr_id` (EntId) で stable mirror
+- Event sync: at-least-once、 HMAC-SHA256、 idempotency 24h
+
+### Federation 対象 = 2 段階 subset (X-prime)
+
+```
+LSCM catalog (8)
+   │
+   ├── Whitesnake          ❌ federation 不要 (per-machine DB)
+   ├── The Hand            ❌ federation 不要 (local shell)
+   │
+   └── 他 6 ─→ Hub spec enum (6、 受け入れ max)
+                  │
+                  ├── GE 🌿            ❌ VP publish しない (security: cross-machine code execution)
+                  └── 他 5 ─→ VP publish 対象 (TheWorld/SP/PP/HD/HP)
+```
+
+| 集合 | 数 | 内容 |
+|------|---|------|
+| LSCM catalog | 8 | 全 Stand |
+| Hub spec enum (受け入れ max) | 6 | LSCM から Whitesnake / The Hand を omit (machine-local-only) |
+| VP publish 対象 (実 federation) | **5** | Hub spec から GE を omit (security) |
+
+### GE security rationale
+
+Ruby VM (GE) の cross-machine dispatch は **arbitrary code execution の attack surface 最大化**:
+- federation 越しの code 実行は ssh より緩い path で trust boundary を crossing
+- sandbox / capability cap が整うまで publish しない判断
+- **将来拡張**: VP 側 publish guard を緩めるだけで Hub spec 変更不要で GE federation を enable 可能
+
+---
+
+## §13. Open Questions
+
+doc 12 は target architecture を確定するが、 以下は **後続議論** で詰める / 別 doc で扱う。
+
+### Address grammar (A4 拡張)
+
+- **Q-1**: 将来 wire format も `{stand}@{layer_path}` 形式に統一する migration を行うか? (現 hybrid → full LSCM)
+
+### Stand identity / lifecycle (axiom A12-A20 候補、 Purple Haze 提案)
+
+- **Q-2**: 同種 Stand 複数 instance の identity = `(kind, layer_path)` の組で一意 (A12 案)
+- **Q-3**: Layer 間 Stand migration protocol = drain → snapshot → relocate → restore の 4-step (A13 案)
+- **Q-4**: 動的 spawn / kill = Layer の lifecycle event として規定 (A14 案)
+- **Q-5**: 親 Layer destroy 時の child Stand cleanup = LIFO order shutdown (A15 案)
+- **Q-6**: Address resolution scope chain = cwd Layer から root に向け ascending lookup (A16 案、 shadowing 許容)
+- **Q-7**: Mailbox registry の `(layer_path, actor)` key 拡張 (現 `(project, actor)` から、 A17 案)
+- **Q-8**: R/R primitive = ephemeral process として別 axiom 化 (A18 案)
+- **Q-9**: Layer hierarchy = immutable after creation (A19 案、 移籍は destroy + new create)
+- **Q-10**: Discovery 3 modal = static config / Hub manifest / mDNS (A20 案)
+
+### Catalog 拡張
+
+- **Q-11**: catalog hardcode vs runtime registry pattern (doc 11 mise task 経路との整合)
+- **Q-12**: catalog 漏れ Stand 候補の取扱い:
+  - Smart Canvas (VP-76 R3 新 Stand 候補)
+  - EventBus / Mailbox / MsgboxRouter / ProtocolCapability (現 implicit network)
+  - AgentCapability (HD と独立)、 MidiCapability (HP と独立)
+  - UpdateCapability (self-update)
+  - ProcessRunner / Ruby VM (GE のサブシステム)
+  - FileWatcher / TmuxActor / PtyManager / SessionManager / DaemonRegistry / Bonjour
+  - Watchdog Lane / Daily Journal Lane / Roadmap Lane (Meta Lane 5 種)
+
+### Trait 設計
+
+- **Q-13**: α (Hard sub-trait) / β (Soft、 default) / γ (No 縛り) の最終決定 ─ §7 で β 推奨だが trade-off 精緻化要
+
+### 忘却領域 (Purple Haze 抉り出し)
+
+- **Q-14**: Security / Trust boundary (3rd party plugin Stand の sandbox / capability cap)
+- **Q-15**: Observability (Stand 自己診断 = `mem_1CabUfFmMr9dHC4wMtZeAy`、 OTel span との bind)
+- **Q-16**: Migration / Versioning (LSCM schema_version、 axiom 拡張時の policy)
+- **Q-17**: Accessibility / I18n (Pane の a11y hint、 Stand UI metadata)
+- **Q-18**: Resource / Quota (Layer per limit、 Stand per Layer limit、 total limit)
+- **Q-19**: Failure semantics (Stand crash 時の Layer cascade、 supervisor restart strategy)
+- **Q-20**: Time / Causality (cross-layer causation の閉包)
+- **Q-21**: Backward compat (LSCM 導入時の旧 ActorRef alias policy)
+- **Q-22**: Testability (Layer composition test 戦略、 mock layer / in-memory layer)
+- **Q-23**: Tombstone / GC (Stand individual の tombstone 概念、 Hub spec G4 との対応)
+
+### Pane / Task 関連
+
+- **Q-24**: Pane = Task 昇格時 (doc 07 §4.4) の network 観測者化と A8 「Pane は network 外」 の整合
+- **Q-25**: Smart Canvas (VP-76 R3) catalog 入りか Lane scope の Pane 機能か
+
+---
+
+## 関連 memory (creo-memories)
+
+### vp Atlas
+
+- `mem_1CagCMmSTLEGxoAwXgcJvH` — **LSCM Presence Model (11 axiom)、 本 doc の axiom SSOT**
+- `mem_1CagCQjUUp4GxdRoxFhEiD` — **LSCM Catalog (8 Stand)、 本 doc §9 の SSOT**
+- `mem_1CaVeQEKXd8U2XHn75RD4M` — VP Roadmap Phase 5→9 (4-Stack roadmap、 Lane manifest、 federation)
+- `mem_1Ca8xHcMf9sFBB2VHUpHzZ` — VP creo-memory-pane 設計方針 (PR-ε 対象、 §6 reference)
+- `mem_1CaBRBdh1PGop2iGLAnwSY` — Mailbox Cross-Process Address (A4 wire format の現実装)
+
+### chronista-club Atlas
+
+- `mem_1CaVeTysipdgVHoxwxUcPj` — Chronista Hub × VP Federation (Hub side、 §12 spec 整合)
+
+---
+
+## 起草経緯 (本 session 要約)
+
+1. PP 復活 (#102 Thin View) を C 路線で進める方針確定
+2. Stand 概念の悩み (Project / Lane / 二重持ち) を Stand 色付け→ Layer 保持に転換
+3. Stand 種 8 個の階層を catalog で訂正 (HP=World、 PP=Lane、 GE=Lane)
+4. LSCM (Layer-Stand Composition Model) を最終確定
+5. team-b review (Moody Blues + Purple Haze 並列) で P0 4 件発見
+6. P0 全件確定 → doc 12 起草
+
+本 doc は target architecture。 後続 PR (PR-pre1 / α / β / γ / δ / ε / ζ) で実装、 後続 doc (13 PP 復活 / 14 Thin View) で各論を扱う。
