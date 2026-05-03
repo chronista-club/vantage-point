@@ -2,23 +2,29 @@
 //!
 //! Capability システムを Process に統合するモジュール。
 //! EventBus、Registry、各Capabilityの初期化と連携を担当。
+//!
+//! ## LSCM 境界 (PR-α-2 / VP-112、 doc 12 §9)
+//!
+//! - **Project 階層 Stand**: 本 module の `ProcessCapabilities` が host (Protocol / Agent / 等)
+//! - **World 階層 Stand**: `crate::daemon::world_capabilities::WorldCapabilities` が host
+//!   - Hermit Purple 🍇 (`MidiCapability`) は **PR-α-2 で本 module から World に移管完了**
+//!   - 旧 `ProcessCapabilities.midi` field / `CapabilityConfig.midi_config` field は削除済
+//!   - mailbox address `midi@{project}` (旧) → `hp@world` (新、 PR-α-3 で全 caller migration)
 
-#[cfg(feature = "midi")]
-use crate::capability::MidiCapability;
 use crate::capability::core::Capability;
 use crate::capability::msgbox_remote::RemoteRoutingClient;
 use crate::capability::{
     AgentCapability, CapabilityContext, CapabilityRegistry, EventBus, MsgboxRouter,
     ProtocolCapability, Whitesnake,
 };
-#[cfg(feature = "midi")]
-use crate::midi::MidiConfig;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
 /// Process Capability Manager
 ///
-/// Process で使用する全ての Capability を管理する。
+/// Process (= LSCM Project Layer) で使用する Capability を管理する。 LSCM doc 12 §9 catalog の
+/// Project 階層 Stand のみ host。 World 階層 Stand (HP / Whitesnake / Update / TheWorld) は
+/// `crate::daemon::world_capabilities::WorldCapabilities` 側に移管 (PR-α-2 完了)。
 pub struct ProcessCapabilities {
     /// イベントバス（全Capability共有）
     pub event_bus: Arc<EventBus>,
@@ -30,18 +36,12 @@ pub struct ProcessCapabilities {
     pub protocol: Arc<RwLock<ProtocolCapability>>,
     /// Agent Capability（Claude Agent統合）
     pub agent: Arc<RwLock<AgentCapability>>,
-    /// MIDI Capability（オプション、feature = "midi" 有効時のみ）
-    #[cfg(feature = "midi")]
-    pub midi: Option<Arc<RwLock<MidiCapability>>>,
 }
 
 /// Capability 初期化設定
 pub struct CapabilityConfig {
     /// プロジェクトディレクトリ
     pub project_dir: String,
-    /// MIDI設定（feature = "midi" 有効時のみ）
-    #[cfg(feature = "midi")]
-    pub midi_config: Option<MidiConfig>,
     /// 永続化バックエンド（Msgbox persistent メッセージ用）
     ///
     /// Some の場合、MsgboxRouter が persistent メッセージを DISC に保存し、
@@ -86,24 +86,12 @@ impl ProcessCapabilities {
         agent.set_event_bus(event_bus.clone());
         let agent = Arc::new(RwLock::new(agent));
 
-        // MIDI Capability（feature = "midi" 有効時のみ）
-        #[cfg(feature = "midi")]
-        let midi = if let Some(midi_config) = config.midi_config {
-            let mut midi_cap = MidiCapability::with_config(midi_config);
-            midi_cap.set_event_bus(event_bus.clone());
-            Some(Arc::new(RwLock::new(midi_cap)))
-        } else {
-            None
-        };
-
         Self {
             event_bus,
             msgbox_router,
             registry,
             protocol,
             agent,
-            #[cfg(feature = "midi")]
-            midi,
         }
     }
 
@@ -127,20 +115,6 @@ impl ProcessCapabilities {
             agent.initialize(&ctx).await?;
         }
 
-        // MIDI Capability 初期化と監視開始（feature = "midi" 有効時のみ）
-        #[cfg(feature = "midi")]
-        if let Some(ref midi) = self.midi {
-            let midi_msgbox = self.msgbox_router.register("midi").await;
-            let ctx = CapabilityContext::new().with_msgbox(midi_msgbox);
-            let mut midi = midi.write().await;
-            midi.initialize(&ctx).await?;
-            // MidiConfigからport_indexを取得して監視開始
-            let port_index = midi.config().port_index;
-            if let Err(e) = midi.start_monitoring(port_index).await {
-                tracing::warn!("Failed to start MIDI monitoring: {}", e);
-            }
-        }
-
         tracing::info!(
             "All capabilities initialized (msgbox addresses: {:?})",
             self.msgbox_router.addresses().await
@@ -158,13 +132,6 @@ impl ProcessCapabilities {
 
     /// 全 Capability をシャットダウン
     pub async fn shutdown(&self) -> anyhow::Result<()> {
-        // MIDI Capability シャットダウン（feature = "midi" 有効時のみ）
-        #[cfg(feature = "midi")]
-        if let Some(ref midi) = self.midi {
-            let mut midi = midi.write().await;
-            let _ = midi.shutdown().await;
-        }
-
         // Agent Capability シャットダウン
         {
             let mut agent = self.agent.write().await;
@@ -215,26 +182,12 @@ impl ProcessCapabilities {
             }
         })
     }
-
-    /// MIDI 監視を開始（feature = "midi" 有効時のみ）
-    #[cfg(feature = "midi")]
-    pub async fn start_midi_monitoring(&self, port_index: Option<usize>) -> anyhow::Result<()> {
-        if let Some(ref midi) = self.midi {
-            let mut midi = midi.write().await;
-            midi.start_monitoring(port_index).await?;
-            tracing::info!("MIDI monitoring started");
-        }
-        Ok(())
-    }
-
-    /// MIDI 監視の stub (feature = "midi" 無効時)
-    #[cfg(not(feature = "midi"))]
-    pub async fn start_midi_monitoring(&self, _port_index: Option<usize>) -> anyhow::Result<()> {
-        Ok(())
-    }
 }
 
 /// CapabilityEvent を ProcessMessage に変換
+///
+/// 注: PR-α-2 (VP-112) で MidiCapability を World daemon に移管したため、 SP (Project) の
+/// EventBus は MIDI event を受け取らない。 旧 `t if t.starts_with("midi.")` 分岐は不要なので削除。
 fn capability_event_to_process_message(
     event: &crate::capability::CapabilityEvent,
 ) -> crate::protocol::ProcessMessage {
@@ -276,18 +229,6 @@ fn capability_event_to_process_message(
             }
         }
 
-        // MIDI イベント
-        t if t.starts_with("midi.") => {
-            // MIDI イベントはデバッグ情報として送信
-            ProcessMessage::DebugInfo {
-                level: crate::protocol::DebugMode::Detail,
-                category: "midi".to_string(),
-                message: event.event_type.clone(),
-                data: Some(event.payload.clone()),
-                tags: vec!["midi".to_string(), "capability".to_string()],
-            }
-        }
-
         // Capability 状態変更
         "capability.initialized" | "capability.state_changed" => ProcessMessage::DebugInfo {
             level: crate::protocol::DebugMode::Simple,
@@ -316,33 +257,17 @@ mod tests {
     async fn test_process_capabilities_new() {
         let config = CapabilityConfig {
             project_dir: "/tmp/test".to_string(),
-            midi_config: None,
             whitesnake: None,
             remote_routing: None,
         };
 
-        let caps = ProcessCapabilities::new(config).await;
-        assert!(caps.midi.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_process_capabilities_with_midi() {
-        let config = CapabilityConfig {
-            project_dir: "/tmp/test".to_string(),
-            midi_config: Some(MidiConfig::default()),
-            whitesnake: None,
-            remote_routing: None,
-        };
-
-        let caps = ProcessCapabilities::new(config).await;
-        assert!(caps.midi.is_some());
+        let _caps = ProcessCapabilities::new(config).await;
     }
 
     #[tokio::test]
     async fn test_process_capabilities_initialize() {
         let config = CapabilityConfig {
             project_dir: "/tmp/test".to_string(),
-            midi_config: None,
             whitesnake: None,
             remote_routing: None,
         };

@@ -704,14 +704,37 @@ pub async fn run_world(port: u16) -> Result<()> {
     // PR-α-1 (VP-111): World 階層 Stand を 1 instance ずつ生成して、 AppState 既存 field と
     // WorldCapabilities container の両方に share させる。 二重生成すると msgbox registry や
     // whitesnake DB connection が並走する。
+    //
+    // PR-α-2 (VP-112): MidiCapability を World 階層に移管。 feature = "midi" 有効時は
+    // `with_midi` で host 化、 無効時は `new` で空 placeholder のまま。 CLI flag
+    // `vp daemon --midi` 経路は PR-α-3 で整備予定、 暫定 default config。
     let msgbox_registry = Arc::new(crate::capability::MsgboxRegistry::new());
     let world_whitesnake = crate::capability::Whitesnake::file_backed_for_port(port);
-    let world_capabilities = Arc::new(crate::daemon::world_capabilities::WorldCapabilities::new(
-        world_cap.clone(),
-        update_cap.clone(),
-        msgbox_registry.clone(),
-        world_whitesnake.clone(),
-    ));
+    let world_capabilities = {
+        #[cfg(feature = "midi")]
+        {
+            let midi_config = crate::midi::MidiConfig::default();
+            Arc::new(
+                crate::daemon::world_capabilities::WorldCapabilities::with_midi(
+                    world_cap.clone(),
+                    update_cap.clone(),
+                    msgbox_registry.clone(),
+                    world_whitesnake.clone(),
+                    midi_config,
+                )
+                .await?,
+            )
+        }
+        #[cfg(not(feature = "midi"))]
+        {
+            Arc::new(crate::daemon::world_capabilities::WorldCapabilities::new(
+                world_cap.clone(),
+                update_cap.clone(),
+                msgbox_registry.clone(),
+                world_whitesnake.clone(),
+            ))
+        }
+    };
 
     // Create minimal state for world mode
     let state = Arc::new(AppState {
@@ -726,8 +749,6 @@ pub async fn run_world(port: u16) -> Result<()> {
         capabilities: Arc::new(
             ProcessCapabilities::new(CapabilityConfig {
                 project_dir: String::new(),
-                #[cfg(feature = "midi")]
-                midi_config: None,
                 whitesnake: None,     // World モードは永続 msgbox 不要
                 remote_routing: None, // World モードは cross-Process forward 不要
             })

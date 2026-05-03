@@ -82,34 +82,20 @@ pub fn execute(opts: StartOptions) -> Result<()> {
 
     tracing::info!("Project dir: {}", resolved.dir);
 
-    // MIDI 設定 (feature = "midi" 有効時のみ)
-    #[cfg(feature = "midi")]
-    let midi_config = midi.as_ref().map(|midi_arg| {
-        let mut config = crate::midi::MidiConfig::default();
-        config
-            .note_actions
-            .insert(36, crate::midi::MidiAction::OpenWebUI { port: None });
-        config
-            .note_actions
-            .insert(37, crate::midi::MidiAction::CancelChat { port: None });
-        config
-            .note_actions
-            .insert(38, crate::midi::MidiAction::ResetSession { port: None });
-
-        if let Ok(idx) = midi_arg.parse::<usize>() {
-            config.port_index = Some(idx);
-        } else {
-            config.port_pattern = Some(midi_arg.clone());
-        }
-        config
-    });
-    #[cfg(not(feature = "midi"))]
+    // PR-α-2 (VP-112): MidiCapability を World daemon に移管したため、 `vp start --midi` flag
+    // は SP (Project) には渡さない。 PR-α-3 で `vp daemon --midi` (or config.toml) 経路に
+    // rewire 予定、 現状は warning log + ignored で graceful degrade。
+    if midi.is_some() {
+        tracing::warn!(
+            "vp start --midi flag は PR-α-2 で `vp daemon` 側 (World) に移管中。 \
+             現状 World daemon は MidiConfig::default() を使う、 flag 内容は無視 (PR-α-3 で \
+             daemon CLI flag に rewire 予定)。"
+        );
+    }
     let _ = midi;
 
     let cap_config = CapabilityConfig {
         project_dir: resolved.dir.clone(),
-        #[cfg(feature = "midi")]
-        midi_config,
         whitesnake: None,     // server.rs 側でポート別に注入
         remote_routing: None, // server.rs 側でポート別に注入
     };

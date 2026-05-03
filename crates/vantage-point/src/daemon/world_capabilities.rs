@@ -74,6 +74,50 @@ impl WorldCapabilities {
             midi: None,
         }
     }
+
+    /// MidiCapability を host した状態で構築 (PR-α-2、 feature = "midi")。
+    ///
+    /// LSCM doc 12 §9 の Hermit Purple 🍇 = World 階層 target を実現。 旧 `ProcessCapabilities.midi`
+    /// (Project 階層) の経路を World daemon (`run_world`) に移管。
+    ///
+    /// 内部で `MidiCapability::with_config` → `initialize` → `start_monitoring` を実行し、
+    /// `midi: Some(...)` 状態で構築する。 監視 start に失敗した場合は warning log して
+    /// graceful degrade (構築自体は成功、 midi 監視タスクなしで継続)。
+    ///
+    /// CLI flag `vp daemon --midi` の経路は PR-α-3 で整備予定、 現状は caller (run_world) が
+    /// `MidiConfig::default()` を渡す形。
+    #[cfg(feature = "midi")]
+    pub async fn with_midi(
+        process_manager: Arc<RwLock<ProcessManagerCapability>>,
+        update: Arc<RwLock<UpdateCapability>>,
+        msgbox_registry: Arc<MsgboxRegistry>,
+        whitesnake: Whitesnake,
+        midi_config: crate::midi::MidiConfig,
+    ) -> anyhow::Result<Self> {
+        use crate::capability::core::{Capability, CapabilityContext};
+
+        let mut wc = Self::new(process_manager, update, msgbox_registry, whitesnake);
+
+        // MidiCapability を host (PR-α-2)
+        let mut midi_cap = MidiCapability::with_config(midi_config);
+        let ctx = CapabilityContext::new();
+        midi_cap
+            .initialize(&ctx)
+            .await
+            .map_err(|e| anyhow::anyhow!("MidiCapability initialize failed: {}", e))?;
+
+        // 監視開始 (port_index は config から)
+        let port_index = midi_cap.config().port_index;
+        if let Err(e) = midi_cap.start_monitoring(port_index).await {
+            tracing::warn!(
+                "MidiCapability start_monitoring failed (graceful degrade): {}",
+                e
+            );
+        }
+
+        wc.midi = Some(Arc::new(RwLock::new(midi_cap)));
+        Ok(wc)
+    }
 }
 
 #[cfg(test)]
