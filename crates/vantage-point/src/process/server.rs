@@ -638,7 +638,13 @@ pub async fn run(
 /// WorldモードでProcessサーバーを起動
 /// 複数のProject Processを管理するための専用モード
 /// Daemon（PTY管理 QUIC サーバー）も統合して起動する
-pub async fn run_world(port: u16) -> Result<()> {
+///
+/// `midi_config` (feature = "midi") は `vp daemon start --midi <arg>` で構築される MidiConfig。
+/// `None` なら `MidiConfig::default()` を使う (PR-α-4 / VP-114 で復活した CLI 経路)。
+pub async fn run_world(
+    port: u16,
+    #[cfg(feature = "midi")] midi_config: Option<crate::midi::MidiConfig>,
+) -> Result<()> {
     use crate::capability::core::{Capability, CapabilityContext};
     use crate::daemon::process;
 
@@ -707,21 +713,22 @@ pub async fn run_world(port: u16) -> Result<()> {
     //
     // PR-α-2 (VP-112): MidiCapability を World 階層に移管。 feature = "midi" 有効時は
     // `with_midi` で host 化、 無効時は `new` で空 placeholder のまま。
-    // CLI flag `vp daemon --midi` 経路は **VP-114 (PR-α-4) で整備予定** (現状 default config 固定、
-    // ユーザーが非 default port を指定する手段が一時的に閉塞中)。
+    //
+    // PR-α-4 (VP-114): `vp daemon start --midi <arg>` で構築された MidiConfig を受け取り、
+    // None なら `MidiConfig::default()` (= PR-α-2/3 後の既存挙動と同じ port auto-pick) で fallback。
     let msgbox_registry = Arc::new(crate::capability::MsgboxRegistry::new());
     let world_whitesnake = crate::capability::Whitesnake::file_backed_for_port(port);
     let world_capabilities = {
         #[cfg(feature = "midi")]
         {
-            let midi_config = crate::midi::MidiConfig::default();
+            let resolved_midi_config = midi_config.unwrap_or_default();
             Arc::new(
                 crate::daemon::world_capabilities::WorldCapabilities::with_midi(
                     world_cap.clone(),
                     update_cap.clone(),
                     msgbox_registry.clone(),
                     world_whitesnake.clone(),
-                    midi_config,
+                    resolved_midi_config,
                     port, // PR-α-3 (VP-113): mailbox register の port
                 )
                 .await?,
