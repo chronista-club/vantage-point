@@ -9,3 +9,4 @@ pub mod protocol;
 pub mod pty_slot;
 pub mod registry;
 pub mod server;
+pub mod world_capabilities;

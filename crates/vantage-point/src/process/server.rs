@@ -322,6 +322,8 @@ pub async fn run(
         project_stands: Arc::new(RwLock::new(
             super::project_stands_state::ProjectStandsPool::new(),
         )),
+        // PR-α-1 (VP-111): SP モードでは WorldCapabilities を持たない (World mode 専用)
+        world_capabilities: None,
     });
 
     // Phase review fix #2: LanePool::with_lead は内部で PtySlot::spawn (openpty + spawn_command)
@@ -699,6 +701,18 @@ pub async fn run_world(port: u16) -> Result<()> {
     // TopicRouter（World モードでは Hub ブリッジ不要だが、AppState の必須フィールド）
     let topic_router = Arc::new(TopicRouter::new());
 
+    // PR-α-1 (VP-111): World 階層 Stand を 1 instance ずつ生成して、 AppState 既存 field と
+    // WorldCapabilities container の両方に share させる。 二重生成すると msgbox registry や
+    // whitesnake DB connection が並走する。
+    let msgbox_registry = Arc::new(crate::capability::MsgboxRegistry::new());
+    let world_whitesnake = crate::capability::Whitesnake::file_backed_for_port(port);
+    let world_capabilities = Arc::new(crate::daemon::world_capabilities::WorldCapabilities::new(
+        world_cap.clone(),
+        update_cap.clone(),
+        msgbox_registry.clone(),
+        world_whitesnake.clone(),
+    ));
+
     // Create minimal state for world mode
     let state = Arc::new(AppState {
         hub,
@@ -720,7 +734,7 @@ pub async fn run_world(port: u16) -> Result<()> {
             .await,
         ),
         world: Some(world_cap.clone()),
-        msgbox_registry: Some(Arc::new(crate::capability::MsgboxRegistry::new())),
+        msgbox_registry: Some(msgbox_registry),
         update: Some(update_cap.clone()),
         interactive_agent: Arc::new(RwLock::new(None)),
         pty_manager: Arc::new(tokio::sync::Mutex::new(PtyManager::new())),
@@ -739,7 +753,7 @@ pub async fn run_world(port: u16) -> Result<()> {
         mcp_msgbox: None,   // World モードでは MCP Msgbox 不要
         vpdb: vpdb.clone(), // World モードでも DB 参照あり
         // TheWorld もポート別ディレクトリで分離
-        whitesnake: crate::capability::Whitesnake::file_backed_for_port(port),
+        whitesnake: world_whitesnake,
         // Phase A4-2b: World モードでは Lane / Project Stand を持たない (空 Pool で AppState を満たす)
         // 多 scope architecture: World は App scope の component、Lane/ProjectStand は Project scope
         lane_pool: Arc::new(RwLock::new(super::lanes_state::LanePool::new())),
@@ -748,6 +762,8 @@ pub async fn run_world(port: u16) -> Result<()> {
         project_stands: Arc::new(RwLock::new(
             super::project_stands_state::ProjectStandsPool::new(),
         )),
+        // PR-α-1 (VP-111): World 階層 Stand container (LSCM doc 12 §3 / §9)
+        world_capabilities: Some(world_capabilities),
     });
 
     let app = Router::new()
