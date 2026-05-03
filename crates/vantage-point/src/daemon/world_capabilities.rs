@@ -29,9 +29,7 @@ use tokio::sync::RwLock;
 
 #[cfg(feature = "midi")]
 use crate::capability::MidiCapability;
-use crate::capability::{
-    MsgboxRegistry, ProcessManagerCapability, UpdateCapability, Whitesnake,
-};
+use crate::capability::{MsgboxRegistry, ProcessManagerCapability, UpdateCapability, Whitesnake};
 
 /// World 階層 Stand container。
 ///
