@@ -29,31 +29,11 @@ use serde_json::json;
 use super::super::lanes_state::{LaneAddress, LaneInfo, LaneKind, LanePool, LaneState};
 use super::super::state::AppState;
 
-/// doc 11 §3.7 (PR-B 移行期 1 release): 旧 wire string を 新 stand_name に migrate。
-///
-///   "heavens_door" → "hd"
-///   "the_hand"     → "shell"
-///   その他は as-is (新 stand 名 / 任意の `vp:stand:*` task 名を accept)
-///
-/// 旧名で来た時は deprecation warn を log、 dogfood で旧 client が居なくなったら
-/// (1 release 後) 本関数自体を削除する。
-pub(crate) fn migrate_legacy_stand(s: &str) -> &str {
-    match s {
-        "heavens_door" => {
-            tracing::warn!(
-                "legacy stand 'heavens_door' detected, please migrate to 'hd' (doc 11 §3.7)"
-            );
-            "hd"
-        }
-        "the_hand" => {
-            tracing::warn!(
-                "legacy stand 'the_hand' detected, please migrate to 'shell' (doc 11 §3.7)"
-            );
-            "shell"
-        }
-        other => other,
-    }
-}
+// doc 11 §3.7 の `migrate_legacy_stand` shim は 2026-05-03 削除済。 PR #257 の
+// stand 識別子 String 化と同タイミングで導入した「heavens_door / the_hand → hd / shell」
+// migration shim を 1 release 期間 deprecation warn 付きで accept していたが、
+// VP は user 1 人 + ccws worker のみで vp-app + daemon が常に同 binary で deploy される
+// 構成のため、 外部 client が旧 wire format で来る window が実質ゼロと判断、 即削除。
 
 /// REST response: `GET /api/lanes` の JSON shape
 #[derive(Debug, Serialize)]
@@ -192,9 +172,8 @@ pub async fn create_handler(
         .unwrap_or("unknown")
         .to_string();
     let addr = LaneAddress::worker(&project_id, &req.name);
-    // doc 11 PR-B: stand 識別子 String 化、 wire format の旧名 (heavens_door / the_hand) は
-    // migrate_legacy_stand で 1 release shim 経由で吸収。 未指定なら config の
-    // `default_stand` (未設定なら "hd" fallback)。
+    // doc 11 PR-B: stand 識別子 String 化。 wire format は新 stand 名 (hd / shell / tmux 等)
+    // をそのまま受け取る。 未指定なら config の `default_stand` (未設定なら "hd" fallback)。
     //
     // Config::load() は他 handler でも ad-hoc に呼ばれており (server.rs:49, mcp.rs:2577 等)、
     // SSOT は config.toml ファイル自体。 AppState に持たせない pattern を踏襲。
@@ -202,7 +181,6 @@ pub async fn create_handler(
     let stand: String = req
         .stand
         .as_deref()
-        .map(migrate_legacy_stand)
         .map(str::to_string)
         .unwrap_or_else(|| config.default_stand_or_hd().to_string());
 
@@ -608,23 +586,6 @@ mod tests {
         assert_eq!(sanitize_for_branch("v1.2.3"), "v1-2-3");
     }
 
-    /// doc 11 §3.7 / §4.2 wire compat: 旧 `heavens_door` / `the_hand` を新 `hd` / `shell` に migrate。
-    #[test]
-    fn migrate_legacy_stand_translates_old_names() {
-        assert_eq!(migrate_legacy_stand("heavens_door"), "hd");
-        assert_eq!(migrate_legacy_stand("the_hand"), "shell");
-    }
-
-    /// 新 stand 名 / 任意の `vp:stand:*` task 名は as-is で通る。
-    #[test]
-    fn migrate_legacy_stand_passes_through_modern_names() {
-        assert_eq!(migrate_legacy_stand("hd"), "hd");
-        assert_eq!(migrate_legacy_stand("shell"), "shell");
-        assert_eq!(migrate_legacy_stand("tmux"), "tmux");
-        // user 定義 task 名 (例: `vp:stand:opus-xhigh`) も通る
-        assert_eq!(migrate_legacy_stand("opus-xhigh"), "opus-xhigh");
-        assert_eq!(migrate_legacy_stand("gemini"), "gemini");
-        // 空文字も as-is (handler 側で default fallback 経路に乗る)
-        assert_eq!(migrate_legacy_stand(""), "");
-    }
+    // doc 11 §3.7 の `migrate_legacy_stand` test 2 件 (translates_old_names /
+    // passes_through_modern_names) は 2026-05-03 削除済 (shim 自体が削除されたため)。
 }
