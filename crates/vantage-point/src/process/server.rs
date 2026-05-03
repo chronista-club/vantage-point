@@ -721,6 +721,7 @@ pub async fn run_world(port: u16) -> Result<()> {
                     msgbox_registry.clone(),
                     world_whitesnake.clone(),
                     midi_config,
+                    port, // PR-α-3 (VP-113): mailbox register の port
                 )
                 .await?,
             )
