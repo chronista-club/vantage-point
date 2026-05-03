@@ -249,9 +249,13 @@ pub async fn diagnose_handler(State(state): State<Arc<AppState>>) -> Json<serde_
         let agent = state.capabilities.agent.read().await;
         reports.push(agent.diagnose());
     }
-    // MIDI Capability (Hermit Purple 🍇、feature 有効時)
+    // MIDI Capability (Hermit Purple 🍇、feature 有効時、 PR-α-2 で World 階層に移管)
+    // World mode の AppState のみ world_capabilities が Some、 SP mode では None なので skip。
+    // SP 側からの diagnose は PR-α-3 で cross-process forward (`hp@world` mailbox query) に rewire 予定。
     #[cfg(feature = "midi")]
-    if let Some(ref midi) = state.capabilities.midi {
+    if let Some(ref world_caps) = state.world_capabilities
+        && let Some(ref midi) = world_caps.midi
+    {
         let midi = midi.read().await;
         reports.push(midi.diagnose());
     }
@@ -324,13 +328,15 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
             },
         );
 
-        // 🍇 Hermit Purple（MIDI）— Capability 有無 (feature = "midi" 有効時のみ active)
+        // 🍇 Hermit Purple（MIDI）— PR-α-2 で World 階層に移管。 World mode のみ host、
+        // SP mode の health endpoint からは「未集約」 として報告 (α-3 で cross-process query 経由に rewire)。
         #[cfg(feature = "midi")]
-        let midi_status = if state.capabilities.midi.is_some() {
-            "active"
-        } else {
-            "disabled"
-        };
+        let midi_status = state
+            .world_capabilities
+            .as_ref()
+            .and_then(|wc| wc.midi.as_ref())
+            .map(|_| "active")
+            .unwrap_or("disabled");
         #[cfg(not(feature = "midi"))]
         let midi_status = "disabled";
         map.insert(
