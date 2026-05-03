@@ -139,26 +139,43 @@ async fn handle_terminal_socket_lane(
     // broadcast loop に入る (atomicity: subscribe_with_scrollback 内で snapshot+subscribe を
     // 同一 ring lock 下で行う、 重複も取りこぼしも無し)。
     //
-    // doc 11 PR-D 後 fix (2026-05-03): tmux-hosted lane (`stand` = "hd" / "tmux") では
-    // PtySlot scrollback ring buffer の dump を skip する。 理由:
+    // VP-108 (PR #260 後継): tmux 経由 lane は PtySlot scrollback ring buffer の dump を
+    // skip する。 判定は task ファイル冒頭の `#VP layer=N` メタデータ駆動 (`layer >= 1` =
+    // tmux 経由)、 内蔵 stand 名 hardcode は廃止。 user 独自 stand (例: `zellij`) も
+    // task ファイルに `#VP layer=1` を書けば自動的に skip 経路に入る。
+    //
+    // 経緯:
     // - tmux pane は alt-screen mode で claude TUI redraw frame が大量に発生、
     //   scrollback ring に redraw 履歴が蓄積される。 reattach 時にこれを replay すると、
     //   古い viewport size 前提の cursor positioning が新 viewport で wrap して
     //   「同 line を 多重複製で render」 する文字化け bug が発生 (user 報告 2026-05-03)。
     // - tmux 自身が pane content を保持しており、 client 接続 + resize trigger で
     //   フル redraw を発信する。 PtySlot scrollback と二重持ちで害悪。
-    // - bare login shell (`stand` = "shell" 等) は tmux 経由しないので scrollback 価値あり、
+    // - bare login shell (= layer=0) は tmux 経由しないので scrollback 価値あり、
     //   こちらは従来通り replay する。
     let (mut rx, initial_bytes) = {
         let pool = state.lane_pool.read().await;
         let stand_name = pool.get(&addr).map(|info| info.stand.clone());
         match pool.subscribe_with_scrollback(&addr) {
             Some((rx, bytes)) => {
-                let is_tmux_hosted = matches!(stand_name.as_deref(), Some("hd") | Some("tmux"));
-                if is_tmux_hosted {
+                // stand metadata を install root から resolve (file 不在時は default = layer 0)。
+                // install root は OnceLock cache、 file read は ~50 行のシェルスクリプト 1 つ
+                // なので attach 毎の cost は無視できる。
+                let metadata = stand_name
+                    .as_deref()
+                    .and_then(|name| {
+                        crate::process::install_root::locate_install_root().map(|root| {
+                            crate::process::stand_metadata::StandMetadata::from_install_root(
+                                root, name,
+                            )
+                        })
+                    })
+                    .unwrap_or_default();
+                if metadata.is_tmux_hosted() {
                     tracing::debug!(
-                        "/ws/terminal lane attach: tmux-hosted (stand={:?})、 scrollback {} bytes を skip (tmux redraw に委譲)",
+                        "/ws/terminal lane attach: tmux-hosted (stand={:?} layer={})、 scrollback {} bytes を skip (tmux redraw に委譲)",
                         stand_name,
+                        metadata.layer,
                         bytes.len()
                     );
                     (rx, Vec::new())
