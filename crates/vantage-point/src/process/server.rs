@@ -706,8 +706,9 @@ pub async fn run_world(port: u16) -> Result<()> {
     // whitesnake DB connection が並走する。
     //
     // PR-α-2 (VP-112): MidiCapability を World 階層に移管。 feature = "midi" 有効時は
-    // `with_midi` で host 化、 無効時は `new` で空 placeholder のまま。 CLI flag
-    // `vp daemon --midi` 経路は PR-α-3 で整備予定、 暫定 default config。
+    // `with_midi` で host 化、 無効時は `new` で空 placeholder のまま。
+    // CLI flag `vp daemon --midi` 経路は **VP-114 (PR-α-4) で整備予定** (現状 default config 固定、
+    // ユーザーが非 default port を指定する手段が一時的に閉塞中)。
     let msgbox_registry = Arc::new(crate::capability::MsgboxRegistry::new());
     let world_whitesnake = crate::capability::Whitesnake::file_backed_for_port(port);
     let world_capabilities = {
