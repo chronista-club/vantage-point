@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#MISE description="VP Stand: tmux session attached、 LLM なし (Layer 1)"
+#MISE description="VP Stand: tmux session attached、 LLM なし (Tier 1)"
 # VP env (caller が設定):
 #   VP_CWD     = Lane の working directory (tmux session の cwd に使う)
 #   VP_SESSION = tmux session 名
@@ -7,7 +7,7 @@
 #   VP_LANE    = lane label
 # VP-specific metadata:
 #VP icon="🎭"
-#VP layer=1
+#VP tier=1
 
 set -euo pipefail
 

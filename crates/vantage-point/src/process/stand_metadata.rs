@@ -1,10 +1,11 @@
 //! Stand metadata reader — `.mise/tasks/vp/stand/{name}` task ファイル冒頭の
-//! `#VP key=value` コメント行を parse して構造化する (VP-108 / doc 11 follow-up #2)。
+//! `#VP key=value` コメント行を parse して構造化する (VP-108 / doc 11 follow-up #2、
+//! VP-110 で `layer` → `tier` rename)。
 //!
 //! ## なぜ自前 parser か
 //!
 //! mise は `#MISE description=...` のような `#MISE` prefix のみ解釈する。 VP 固有の
-//! metadata (例: `layer`、 `icon`) は VP が責任を持って読む必要があり、 task ファイルを
+//! metadata (例: `tier`、 `icon`) は VP が責任を持って読む必要があり、 task ファイルを
 //! 直接読んで自前 parse する。
 //!
 //! ## 期待する書式
@@ -13,14 +14,19 @@
 //! #!/usr/bin/env bash
 //! #MISE description="VP Stand: Heaven's Door — Claude TUI auto-launch"
 //! #VP icon="📖"
-//! #VP layer=2
+//! #VP tier=2
 //! ```
 //!
-//! → `StandMetadata { layer: 2, icon: Some("📖") }`
+//! → `StandMetadata { tier: 2, icon: Some("📖") }`
+//!
+//! ## 用語注 (LSCM Layer との衝突回避、 doc 12 §0 Glossary 参照)
+//!
+//! `tier` は **PTY 階層** を表し、 LSCM の Layer (World/Project/Lane = address-bearing
+//! container) とは別概念。 旧 `#VP layer=N` は VP-110 で `#VP tier=N` に rename された。
 //!
 //! ## forward-compat
 //!
-//! 不明 key は静かに無視、 値の parse 失敗 (例: `layer=foo`) も静かに無視 (default 維持)。
+//! 不明 key は静かに無視、 値の parse 失敗 (例: `tier=foo`) も静かに無視 (default 維持)。
 //! task ファイル作者が将来 `#VP capabilities=...` 等を実験的に書いても、 古い VP バイナリで
 //! panic にならない (Postel の法則)。
 
@@ -28,17 +34,17 @@ use std::path::Path;
 
 /// Stand 1 つ分の VP 固有 metadata。
 ///
-/// **layer の意味** (VP-108、 PR #260 後継):
+/// **tier の意味** (VP-108、 PR #260 後継、 VP-110 で `layer` → `tier` rename):
 /// - 0 = bare login shell (tmux 経由なし、 PtySlot scrollback dump を replay する)
 /// - 1 = tmux session attached (LLM なし)
 /// - 2 = LLM TUI in tmux
 ///
-/// `layer >= 1` で「tmux 経由 lane」 と判定し、 `/ws/terminal` attach 時に
+/// `tier >= 1` で「tmux 経由 lane」 と判定し、 `/ws/terminal` attach 時に
 /// PtySlot scrollback dump を skip する (tmux の自動 redraw に委譲)。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StandMetadata {
-    /// `#VP layer=N` (省略時 0)
-    pub layer: u8,
+    /// `#VP tier=N` (省略時 0)
+    pub tier: u8,
     /// `#VP icon="..."` (省略時 None)
     pub icon: Option<String>,
 }
@@ -62,9 +68,9 @@ impl StandMetadata {
             let key = key.trim();
             let value = value.trim().trim_matches(|c: char| c == '"' || c == '\'');
             match key {
-                "layer" => {
+                "tier" => {
                     if let Ok(n) = value.parse::<u8>() {
-                        out.layer = n;
+                        out.tier = n;
                     }
                 }
                 "icon" => {
@@ -78,9 +84,9 @@ impl StandMetadata {
 
     /// VP install root + stand 名から task ファイルを読んで parse。
     ///
-    /// I/O エラー (file 不在 / 権限なし等) は default (= layer=0、 icon=None) を返し、
+    /// I/O エラー (file 不在 / 権限なし等) は default (= tier=0、 icon=None) を返し、
     /// caller は graceful degrade する設計。 file が無い stand 名を渡された場合も
-    /// default が返るので、 caller 側で「layer=0 として扱う」 = 「scrollback replay する」 が
+    /// default が返るので、 caller 側で「tier=0 として扱う」 = 「scrollback replay する」 が
     /// 安全側の挙動になる。
     pub fn from_install_root(install_root: &Path, name: &str) -> Self {
         let path = install_root
@@ -104,10 +110,10 @@ impl StandMetadata {
 
     /// 「tmux 経由で render される lane」 か。
     ///
-    /// `layer >= 1` を条件にする。 `ws_terminal.rs` の attach 時 scrollback skip 判定 +
+    /// `tier >= 1` を条件にする。 `ws_terminal.rs` の attach 時 scrollback skip 判定 +
     /// 将来の同種分岐 (例: resize 戦略の差し替え) で使う。
     pub fn is_tmux_hosted(&self) -> bool {
-        self.layer >= 1
+        self.tier >= 1
     }
 }
 
@@ -116,25 +122,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn from_script_hd_layer2_with_icon() {
+    fn from_script_hd_tier2_with_icon() {
         let script = r#"#!/usr/bin/env bash
 #MISE description="VP Stand: Heaven's Door"
 #VP icon="📖"
-#VP layer=2
+#VP tier=2
 
 set -euo pipefail
 "#;
         let m = StandMetadata::from_script(script);
-        assert_eq!(m.layer, 2);
+        assert_eq!(m.tier, 2);
         assert_eq!(m.icon.as_deref(), Some("📖"));
         assert!(m.is_tmux_hosted());
     }
 
     #[test]
-    fn from_script_tmux_layer1() {
-        let script = "#VP layer=1\n#VP icon=\"🎭\"\n";
+    fn from_script_tmux_tier1() {
+        let script = "#VP tier=1\n#VP icon=\"🎭\"\n";
         let m = StandMetadata::from_script(script);
-        assert_eq!(m.layer, 1);
+        assert_eq!(m.tier, 1);
         assert_eq!(m.icon.as_deref(), Some("🎭"));
         assert!(m.is_tmux_hosted());
     }
@@ -147,7 +153,7 @@ set -euo pipefail
 exec ${SHELL:-/bin/zsh} -l
 "#;
         let m = StandMetadata::from_script(script);
-        assert_eq!(m.layer, 0);
+        assert_eq!(m.tier, 0);
         assert_eq!(m.icon, None);
         assert!(!m.is_tmux_hosted());
     }
@@ -159,27 +165,27 @@ exec ${SHELL:-/bin/zsh} -l
     }
 
     #[test]
-    fn from_script_invalid_layer_value_ignored() {
+    fn from_script_invalid_tier_value_ignored() {
         // 不正値は静かに無視 (forward-compat)、 default 維持
-        let script = "#VP layer=foo\n#VP icon=\"x\"\n";
+        let script = "#VP tier=foo\n#VP icon=\"x\"\n";
         let m = StandMetadata::from_script(script);
-        assert_eq!(m.layer, 0);
+        assert_eq!(m.tier, 0);
         assert_eq!(m.icon.as_deref(), Some("x"));
     }
 
     #[test]
     fn from_script_unknown_key_ignored() {
         // 未知 key は無視するが、 既知 key の処理は止めない (forward-compat)
-        let script = "#VP capabilities=foo,bar\n#VP layer=2\n";
+        let script = "#VP capabilities=foo,bar\n#VP tier=2\n";
         let m = StandMetadata::from_script(script);
-        assert_eq!(m.layer, 2);
+        assert_eq!(m.tier, 2);
         assert_eq!(m.icon, None);
     }
 
     #[test]
     fn from_script_order_independent() {
-        let a = StandMetadata::from_script("#VP icon=\"a\"\n#VP layer=2\n");
-        let b = StandMetadata::from_script("#VP layer=2\n#VP icon=\"a\"\n");
+        let a = StandMetadata::from_script("#VP icon=\"a\"\n#VP tier=2\n");
+        let b = StandMetadata::from_script("#VP tier=2\n#VP icon=\"a\"\n");
         assert_eq!(a, b);
     }
 
@@ -197,15 +203,15 @@ exec ${SHELL:-/bin/zsh} -l
     #[test]
     fn from_script_vp_prefix_strict() {
         // `#VPxxx` のような prefix は対象外 (`#VP ` の空白を要求)
-        let m = StandMetadata::from_script("#VPlayer=2\n#VPx layer=2\n");
-        assert_eq!(m.layer, 0);
+        let m = StandMetadata::from_script("#VPtier=2\n#VPx tier=2\n");
+        assert_eq!(m.tier, 0);
     }
 
     #[test]
     fn from_script_indented_lines_accepted() {
         // 行頭の空白は trim_start で許容 (実用上 indent された script を想定)
-        let m = StandMetadata::from_script("    #VP layer=2\n");
-        assert_eq!(m.layer, 2);
+        let m = StandMetadata::from_script("    #VP tier=2\n");
+        assert_eq!(m.tier, 2);
     }
 
     #[test]
@@ -220,7 +226,7 @@ exec ${SHELL:-/bin/zsh} -l
             .unwrap()
             .to_path_buf();
         let m = StandMetadata::from_install_root(&workspace_root, "hd");
-        assert_eq!(m.layer, 2, "hd は layer=2 のはず: {:?}", m);
+        assert_eq!(m.tier, 2, "hd は tier=2 のはず: {:?}", m);
         assert!(m.icon.is_some(), "hd は icon があるはず: {:?}", m);
     }
 
@@ -234,7 +240,7 @@ exec ${SHELL:-/bin/zsh} -l
             .unwrap()
             .to_path_buf();
         let m = StandMetadata::from_install_root(&workspace_root, "tmux");
-        assert_eq!(m.layer, 1, "tmux は layer=1 のはず: {:?}", m);
+        assert_eq!(m.tier, 1, "tmux は tier=1 のはず: {:?}", m);
     }
 
     #[test]
@@ -247,7 +253,7 @@ exec ${SHELL:-/bin/zsh} -l
             .unwrap()
             .to_path_buf();
         let m = StandMetadata::from_install_root(&workspace_root, "shell");
-        assert_eq!(m.layer, 0, "shell は layer 不在 = 0 のはず: {:?}", m);
+        assert_eq!(m.tier, 0, "shell は tier 不在 = 0 のはず: {:?}", m);
         assert!(!m.is_tmux_hosted());
     }
 
@@ -261,7 +267,7 @@ exec ${SHELL:-/bin/zsh} -l
             .unwrap()
             .to_path_buf();
         let m = StandMetadata::from_install_root(&workspace_root, "nonexistent-stand-xyz");
-        // graceful degrade: default = layer 0、 = scrollback replay 側 (安全側挙動)
+        // graceful degrade: default = tier 0、 = scrollback replay 側 (安全側挙動)
         assert_eq!(m, StandMetadata::default());
         assert!(!m.is_tmux_hosted());
     }

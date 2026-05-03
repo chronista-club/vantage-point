@@ -173,9 +173,9 @@ async fn handle_terminal_socket_lane(
                     .unwrap_or_default();
                 if metadata.is_tmux_hosted() {
                     tracing::debug!(
-                        "/ws/terminal lane attach: tmux-hosted (stand={:?} layer={})、 scrollback {} bytes を skip (tmux redraw に委譲)",
+                        "/ws/terminal lane attach: tmux-hosted (stand={:?} tier={})、 scrollback {} bytes を skip (tmux redraw に委譲)",
                         stand_name,
-                        metadata.layer,
+                        metadata.tier,
                         bytes.len()
                     );
                     (rx, Vec::new())

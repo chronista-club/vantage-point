@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#MISE description="VP Stand: Heaven's Door — Claude TUI auto-launch with tmux 副舞台 (Layer 2)"
+#MISE description="VP Stand: Heaven's Door — Claude TUI auto-launch with tmux 副舞台 (Tier 2)"
 # VP env (caller が設定):
 #   VP_CWD     = Lane の working directory (tmux session の cwd に使う)
 #   VP_SESSION = tmux session 名
@@ -7,7 +7,7 @@
 #   VP_LANE    = lane label
 # VP-specific metadata:
 #VP icon="📖"
-#VP layer=2
+#VP tier=2
 
 set -euo pipefail
 
@@ -25,7 +25,7 @@ tmux set-option -ga terminal-overrides ',xterm-256color:Tc' 2>/dev/null || true
 #       2. claude 終了後 (e.g. /exit) は exec で login shell に切替えて tmux session 内に
 #          bash/zsh prompt を維持 ─ user は `claude -c` で復帰 / `zsh` 別起動 / `exit` で
 #          明示終了 等を自由に選べる (旧 LlmStand 経路の outer shell 体験を tmux session 内に
-#          閉じ込めた形、 PR-B 移行で消えた layer の代替実装)。
+#          閉じ込めた形、 PR-B 移行で消えた tier の代替実装)。
 #
 #   外側 || fallback (tmux 不在環境):
 #     cd "$VP_CWD" && (claude --continue || claude)
