@@ -84,8 +84,14 @@ impl WorldCapabilities {
     /// `midi: Some(...)` 状態で構築する。 監視 start に失敗した場合は warning log して
     /// graceful degrade (構築自体は成功、 midi 監視タスクなしで継続)。
     ///
-    /// CLI flag `vp daemon --midi` の経路は PR-α-3 で整備予定、 現状は caller (run_world) が
-    /// `MidiConfig::default()` を渡す形。
+    /// PR-α-3 (VP-113): mailbox address `hermit_purple@world` を `msgbox_registry` に
+    /// register する。 cross-process forward で SP から `hp@world` (or `hermit_purple@world`)
+    /// に reach 可能になる。 `world_port` 引数は World daemon (TheWorld) の port 番号、
+    /// register entry の port field に使う。
+    ///
+    /// 注: 現実装の `MsgboxRegistry` は `(project_name, actor)` key で管理。 World scope を
+    /// 表現するため pseudo project name `"world"` を使う (LSCM Open Question Q-7
+    /// `(layer_path, actor)` 拡張までの暫定 HACK)。
     #[cfg(feature = "midi")]
     pub async fn with_midi(
         process_manager: Arc<RwLock<ProcessManagerCapability>>,
@@ -93,10 +99,11 @@ impl WorldCapabilities {
         msgbox_registry: Arc<MsgboxRegistry>,
         whitesnake: Whitesnake,
         midi_config: crate::midi::MidiConfig,
+        world_port: u16,
     ) -> anyhow::Result<Self> {
         use crate::capability::core::{Capability, CapabilityContext};
 
-        let mut wc = Self::new(process_manager, update, msgbox_registry, whitesnake);
+        let mut wc = Self::new(process_manager, update, msgbox_registry.clone(), whitesnake);
 
         // MidiCapability を host (PR-α-2)
         let mut midi_cap = MidiCapability::with_config(midi_config);
@@ -112,6 +119,23 @@ impl WorldCapabilities {
             tracing::warn!(
                 "MidiCapability start_monitoring failed (graceful degrade): {}",
                 e
+            );
+        }
+
+        // PR-α-3 (VP-113): mailbox `hermit_purple@world` を register
+        // cross-process forward で SP から reach 可能にする (LSCM doc 12 §5)
+        if let Err(e) = msgbox_registry
+            .register("hermit_purple", "world", world_port)
+            .await
+        {
+            tracing::warn!(
+                "hermit_purple@world register failed (graceful degrade): {}",
+                e
+            );
+        } else {
+            tracing::info!(
+                "Mailbox registered: hermit_purple@world (port={})",
+                world_port
             );
         }
 
