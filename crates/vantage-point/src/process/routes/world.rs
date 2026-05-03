@@ -670,12 +670,9 @@ pub async fn world_list_lanes(
         })
         .filter(|l| {
             // doc 11 PR-B: l.stand は String 化、 query.stand と直接比較。
-            // 旧 wire 名 ("heavens_door" / "the_hand") を query で投げる古 client への
-            // 互換性は migrate_legacy_stand 経由で吸収。
-            query.stand.as_deref().is_none_or(|s| {
-                let normalized = crate::process::routes::lanes::migrate_legacy_stand(s);
-                l.stand == normalized
-            })
+            // legacy migration shim (heavens_door / the_hand) は 2026-05-03 削除済 (PR #257
+            // → 即削除)、 wire 上は新 stand 名のみ accept。
+            query.stand.as_deref().is_none_or(|s| l.stand == s)
         })
         .cloned()
         .collect();

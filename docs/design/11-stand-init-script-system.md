@@ -301,27 +301,21 @@ pub fn tmux_session_name(&self, stand_name: &str) -> String {
 
 stand_name そのものを文字列で渡す。 `Stand` struct も struct 内 metadata も wire には含めない (icon / description は VP が `mise tasks ls --json` で別経路で取得)。
 
-#### input (deprecation 期間 1 release)
+#### input (legacy shim 削除済 2026-05-03)
 
-旧 string `"heavens_door"` / `"the_hand"` を accept しつつ deprecation log:
+> **2026-05-03 改訂**: 当初は 1 release 期間の deprecation shim として `"heavens_door"` → `"hd"` / `"the_hand"` → `"shell"` の `migrate_legacy_stand` 関数を accept していたが、 **VP は user 1 人 + ccws worker のみで vp-app + daemon が常に同 binary で deploy される構成のため、 外部 client が旧 wire format で来る window が実質ゼロ**と判断、 PR #257 と同 day に shim を削除した。
+>
+> wire 上は新 stand 名 (`hd` / `shell` / `tmux` / 任意 `vp:stand:*` task 名) のみ accept、 旧名は **400 Bad Request** または default fallback (= `config.default_stand_or_hd()` = "hd") に乗る。
 
-```rust
-fn migrate_legacy_stand(s: &str) -> &str {
-    match s {
-        "heavens_door" => {
-            tracing::warn!("legacy stand 'heavens_door' detected, please migrate to 'hd'");
-            "hd"
-        }
-        "the_hand" => {
-            tracing::warn!("legacy stand 'the_hand' detected, please migrate to 'shell'");
-            "shell"
-        }
-        other => other,
-    }
-}
+新 wire format で `stand` field は task 名そのまま:
+
+```json
+{"kind": "worker", "name": "feat-api", "stand": "hd"}
+{"kind": "worker", "name": "feat-api", "stand": "shell"}
+{"kind": "worker", "name": "feat-api", "stand": "opus-xhigh"}  // user 定義 stand
 ```
 
-deprecation 期間後 (1 release later) は migration table 削除。
+`stand` 省略時は server-side で `config.default_stand_or_hd()` (config 未設定なら `"hd"`) が適用される。
 
 ### 3.8 per-project override
 
@@ -403,7 +397,7 @@ dogfood verification: PR-A merge 後、 user の terminal で `mise run vp:stand
 | `crates/vantage-point/src/process/stand_spawner.rs` | `build_stand_command(stand_name: &str, ...)` の signature 変更、 旧 `LaneStand` 引数を文字列に |
 | `crates/vantage-point/src/process/lanes_state.rs` | `LaneStand` enum **削除**、 `LaneInfo.stand: String`、 `tmux_session_name(&str)` |
 | `crates/vantage-point/src/daemon/pty_slot.rs` 等 | `StandCommand` に `env: Vec<(String, String)>` field 追加、 `PtySlot::spawn_with_env` 経路 |
-| HTTP API (`routes/lanes.rs`) | `migrate_legacy_stand` 適用、 deprecation log |
+| HTTP API (`routes/lanes.rs`) | wire 形式は新 stand 名直接 accept (legacy shim は 2026-05-03 削除済) |
 | vp-app sidebar (lanes JSON 受領側) | stand を文字列で扱う、 icon は `mise tasks ls --json` 経由で別取得 (新 endpoint `/api/stands` 検討) |
 | 既存 test 全 rewrite | enum 経由 → 文字列 stand_name 経由に |
 

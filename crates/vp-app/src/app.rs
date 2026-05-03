@@ -1000,10 +1000,7 @@ const SIDEBAR_HTML: &str = concat!(
     hd: 'ph:book-open',           // Heaven's Door (Layer 2 = tmux + claude auto-launch)
     shell: 'ph:terminal-window',  // Shell (Layer 0 = bare login shell、 旧 The Hand)
     tmux: 'ph:presentation',      // Tmux session attach のみ (Layer 1)
-    // legacy wire format 名は migrate_legacy_stand 側で吸収するが、 vp-app が古 daemon に
-    // 接続した時の transition 期間用に display 側でも吸収する (1 release 後に削除)。
-    heavens_door: 'ph:book-open',
-    the_hand: 'ph:terminal-window',
+    // legacy wire 名 (heavens_door / the_hand) の display fallback は 2026-05-03 削除済。
     // Project scope の Stand (PP / GE / HP) は将来 Lane の中身ではないが、 sidebar の
     // 別 row に同じ STAND_GLYPH を使うので key 維持。
     paisley_park: 'ph:compass',
@@ -1035,9 +1032,8 @@ const SIDEBAR_HTML: &str = concat!(
       case 'hd': return "Heaven's Door";
       case 'shell': return 'Shell';
       case 'tmux': return 'Tmux';
-      // legacy wire 名 (migrate_legacy_stand 側で吸収するが、 古 daemon 接続時の表示用)
-      case 'heavens_door': return "Heaven's Door";
-      case 'the_hand': return 'The Hand';
+      // legacy wire 名 (heavens_door / the_hand) の display fallback は 2026-05-03 削除済
+      // (server-side shim も同時 remove、 wire 上は新 stand 名のみ流通する状態)。
       // Project scope の Stand
       case 'paisley_park': return 'Paisley Park';
       case 'gold_experience': return 'Gold Experience';
