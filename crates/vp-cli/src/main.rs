@@ -256,7 +256,18 @@ fn main() -> Result<()> {
         Commands::File(cmd) => commands::file::execute(cmd, &config),
 
         Commands::Daemon { port, command } => {
-            let cmd = command.unwrap_or(commands::daemon::DaemonCommands::Start { port });
+            // subcommand 省略時 (`vp daemon --port N`) は Start にフォールバック。
+            // PR-α-4 (VP-114) で `--midi` flag が追加されたが、 後方互換 path のため None で省略。
+            let cmd = command.unwrap_or({
+                #[cfg(feature = "midi")]
+                {
+                    commands::daemon::DaemonCommands::Start { port, midi: None }
+                }
+                #[cfg(not(feature = "midi"))]
+                {
+                    commands::daemon::DaemonCommands::Start { port }
+                }
+            });
             commands::daemon::execute(cmd)
         }
         Commands::Sp(cmd) => commands::sp::execute(cmd, &config),
