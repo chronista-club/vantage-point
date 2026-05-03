@@ -15,7 +15,7 @@ VP の Lane spawn 機構を **`LaneStand` enum (`HeavensDoor` / `TheHand`)** か
 - Stand の実体 = mise task (`vp:stand:{name}`)、 ファイル配置 (`.mise/tasks/vp/stand/`)
 - VP_* 環境変数の規約 (cwd / session / project / lane を mise task に渡す)
 - task discovery (`mise tasks ls --json`) と sidebar 表示への接続
-- Layer 区分 (shell / tmux / hd) と 3 preset task の中身
+- Tier 区分 (shell / tmux / hd) と 3 preset task の中身
 - per-project override のしくみ (mise の cascade を活用、 VP 側は無改修)
 - wire format (HTTP API での stand 識別) の migration plan
 
@@ -103,7 +103,7 @@ vantage-point/
 │       └── stand/
 │           ├── hd            # Bash, Heaven's Door (Claude TUI auto-launch)
 │           ├── shell         # Bash, bare shell (旧 TheHand 相当)
-│           ├── tmux          # Bash, tmux session attach のみ (Layer 1)
+│           ├── tmux          # Bash, tmux session attach のみ (Tier 1)
 │           ├── opus.rb       # Ruby, Claude Opus 4.7 xhigh (将来例)
 │           └── README.md     # 命名規則 / VP_* env 仕様 / metadata convention
 ├── mise.toml                 # 既存 (app, nuke, push:mac) は維持
@@ -115,36 +115,36 @@ vantage-point/
 
 - shebang で interpreter 指定 (`#!/usr/bin/env bash` / `ruby` / `python`)
 - 先頭コメントで `#MISE description="..."` を mise が parse
-- VP 専用 metadata は `#VP icon="..."` `#VP layer=2` で自前 parse
+- VP 専用 metadata は `#VP icon="..."` `#VP tier=2` で自前 parse
 - 末尾に `exec tmux ...` 等で PTY を直接 take over (background 不要)
 
-### 3.2 Layer 区分 (JoJo 演目 metaphor)
+### 3.2 Tier 区分 (JoJo 演目 metaphor)
 
-| Layer | task | init 動作 | 比喩 | 用途 |
+| Tier | task | init 動作 | 比喩 | 用途 |
 |-------|------|-----------|------|------|
 | 0 | `vp:stand:shell` | `exec $SHELL -l` のみ | 舞台の床 | shell tinkering、 一時的作業 |
 | 1 | `vp:stand:tmux` | tmux server 起動 + new-session attach | 副舞台を仕込む | 監視 / 別 lane からの send-keys 受け / log tail |
 | 2 | `vp:stand:hd` | tmux + claude auto-launch | 役者を呼ぶ | AI 駆動の主作業 (現 HeavensDoor) |
 
-#### 3.2.1 `.mise/tasks/vp/stand/shell` (Layer 0)
+#### 3.2.1 `.mise/tasks/vp/stand/shell` (Tier 0)
 
 ```bash
 #!/usr/bin/env bash
 #MISE description="Bare login shell (旧 TheHand)"
 #VP icon="🤚"
-#VP layer=0
+#VP tier=0
 
 set -euo pipefail
 exec "${SHELL:-/bin/zsh}" -l
 ```
 
-#### 3.2.2 `.mise/tasks/vp/stand/tmux` (Layer 1)
+#### 3.2.2 `.mise/tasks/vp/stand/tmux` (Tier 1)
 
 ```bash
 #!/usr/bin/env bash
-#MISE description="tmux session attached, no LLM (Layer 1)"
+#MISE description="tmux session attached, no LLM (Tier 1)"
 #VP icon="🎭"
-#VP layer=1
+#VP tier=1
 
 set -euo pipefail
 
@@ -156,13 +156,13 @@ tmux set-option -ga terminal-overrides ',xterm-256color:Tc' 2>/dev/null || true
 exec tmux new-session -A -c "$VP_CWD" -s "$VP_SESSION"
 ```
 
-#### 3.2.3 `.mise/tasks/vp/stand/hd` (Layer 2、 現 HeavensDoor 相当)
+#### 3.2.3 `.mise/tasks/vp/stand/hd` (Tier 2、 現 HeavensDoor 相当)
 
 ```bash
 #!/usr/bin/env bash
 #MISE description="Heaven's Door — Claude TUI auto-launch with tmux 副舞台"
 #VP icon="📖"
-#VP layer=2
+#VP tier=2
 
 set -euo pipefail
 
@@ -186,7 +186,7 @@ exec tmux new-session -A -c "$VP_CWD" -s "$VP_SESSION" \
 #!/usr/bin/env ruby
 #MISE description="Claude with Opus 4.7 xhigh thinking"
 #VP icon="🧠"
-#VP layer=2
+#VP tier=2
 
 cwd     = ENV.fetch('VP_CWD')
 session = ENV.fetch('VP_SESSION')
@@ -380,9 +380,9 @@ PR-A と PR-B を分ける理由 = 1 PR = 1 仮説原則。 task ファイル群
 
 | File | Change |
 |------|--------|
-| `.mise/tasks/vp/stand/hd` (新規) | Layer 2 preset (HD 相当) |
-| `.mise/tasks/vp/stand/shell` (新規) | Layer 0 preset (TH 相当) |
-| `.mise/tasks/vp/stand/tmux` (新規) | Layer 1 preset (新規) |
+| `.mise/tasks/vp/stand/hd` (新規) | Tier 2 preset (HD 相当) |
+| `.mise/tasks/vp/stand/shell` (新規) | Tier 0 preset (TH 相当) |
+| `.mise/tasks/vp/stand/tmux` (新規) | Tier 1 preset (新規) |
 | `.mise/tasks/vp/stand/README.md` (新規) | 命名規則 / VP_* env 仕様 / `#VP` metadata convention |
 | `mise.toml` の `[tasks_dir]` 等 | 必要なら指定 (mise default で `.mise/tasks/` を読むはずなので変更不要が見込み) |
 
@@ -412,7 +412,7 @@ dogfood verification: PR-A merge 後、 user の terminal で `mise run vp:stand
 
 ### 4.2 Test plan
 
-| Layer | Test |
+| Tier | Test |
 |-------|------|
 | **standalone** | `mise run vp:stand:hd` を user の terminal で実行 → tmux + claude が起動するか |
 | **standalone** | `mise run vp:stand:shell` → bare shell 起動 |

@@ -33,12 +33,14 @@ quoting 規約: task 内では `"$VP_CWD"` のように **必ず double-quote**�
 
 - `#MISE description="..."` ─ mise が parse、 `mise tasks ls --json` の description field に出る
 - `#VP icon="📖"` ─ VP が parse、 sidebar 表示に使う (1 文字 emoji)
-- `#VP layer=N` ─ VP が parse、 Layer 区分 (0=shell / 1=tmux / 2=hd)
+- `#VP tier=N` ─ VP が parse、 PTY tier 区分 (0=shell / 1=tmux / 2=hd)
 
-## Layer 区分 (JoJo 演目 metaphor)
+> **用語注**: `tier` は **PTY 階層** を表す (LSCM Layer = World/Project/Lane の container とは別概念、 [doc 12 §0 Glossary](../../../../docs/design/12-stand-architecture.md) 参照)。 旧 `#VP layer=N` は VP-110 で `#VP tier=N` に rename された。
 
-| Layer | task | 動作 | 比喩 |
-|-------|------|------|------|
+## Tier 区分 (JoJo 演目 metaphor)
+
+| Tier | task | 動作 | 比喩 |
+|------|------|------|------|
 | 0 | `vp:stand:shell` | bare login shell | 舞台の床 |
 | 1 | `vp:stand:tmux` | tmux session attached、 LLM なし | 副舞台を仕込む |
 | 2 | `vp:stand:hd` | tmux + Claude auto-launch | 役者を呼ぶ |
@@ -48,15 +50,15 @@ quoting 規約: task 内では `"$VP_CWD"` のように **必ず double-quote**�
 各 task は VP を経由せずに単独実行できる:
 
 ```sh
-# Layer 0: 単に shell を起動 (現在の shell が exec で置き換わる)
+# Tier 0: 単に shell を起動 (現在の shell が exec で置き換わる)
 VP_CWD=/tmp VP_SESSION=test VP_PROJECT=test VP_LANE=lead \
   mise run vp:stand:shell
 
-# Layer 1: tmux session に attach
+# Tier 1: tmux session に attach
 VP_CWD=/tmp VP_SESSION=vp-test-lead-tx VP_PROJECT=test VP_LANE=lead \
   mise run vp:stand:tmux
 
-# Layer 2: tmux + claude auto-launch
+# Tier 2: tmux + claude auto-launch
 VP_CWD=$(pwd) VP_SESSION=vp-test-lead-hd VP_PROJECT=test VP_LANE=lead \
   mise run vp:stand:hd
 ```
@@ -81,7 +83,7 @@ mise の cascade を活用、 VP 側の改修不要:
 
 1. `.mise/tasks/vp/stand/{name}` でファイル作成 (拡張子は任意、 shebang で interpreter 指定可)
 2. shebang (`#!/usr/bin/env bash` / `ruby` / `python`)
-3. 先頭に `#MISE description=...` `#VP icon="..."` `#VP layer=N` を記述
+3. 先頭に `#MISE description=...` `#VP icon="..."` `#VP tier=N` を記述
 4. VP env (`VP_CWD`, `VP_SESSION`, `VP_PROJECT`, `VP_LANE`) を読み取って必要な処理を実行
 5. `chmod +x .mise/tasks/vp/stand/{name}` で実行可能に
 6. `mise run vp:stand:{name}` で standalone 動作確認
@@ -92,7 +94,7 @@ mise の cascade を活用、 VP 側の改修不要:
 #!/usr/bin/env ruby
 #MISE description="Claude with Opus 4.7 xhigh thinking"
 #VP icon="🧠"
-#VP layer=2
+#VP tier=2
 
 cwd     = ENV.fetch('VP_CWD')
 session = ENV.fetch('VP_SESSION')
