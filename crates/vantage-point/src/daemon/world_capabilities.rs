@@ -11,18 +11,23 @@
 //! - **MsgboxRegistry**: cross-Process actor mailbox routing (Phase 3)
 //! - **Whitesnake 🐍** (`Whitesnake`): file-backed persistence wrapper
 //! - **Hermit Purple 🍇** (`MidiCapability`、 Option): external IF (MIDI/MCP/tmux)。
-//!   PR-α-2 で `ProcessCapabilities` から移管予定、 現状 (PR-α-1) は None placeholder。
+//!   PR-α-2 で `ProcessCapabilities` から移管完了、 PR-α-3 で mailbox `hermit_purple@world`
+//!   register 完了。 `with_midi` 経由で `Some(...)` host、 `new` のみだと None。
 //!
-//! ## PR 段階
+//! ## 実装状態 (PR-α 完了後)
 //!
-//! - **PR-α-1** (本 commit、 VP-111): struct 新設、 既存 World 階層 instance を集約 view。
-//!   `AppState.world_capabilities` field に Some で注入 (既存散乱 field は keep、 重複許容)。
-//! - PR-α-2: `MidiCapability` を `ProcessCapabilities` から取り外し、 本 struct の `midi`
-//!   field に host。 mailbox address `midi@{project}` → `hp@world` 移行。
-//! - PR-α-3: caller migration (CLI `vp midi` / vp-app sidebar / 既存 AppState 重複 field 整理)。
+//! - PR-α-1 (VP-111 ✅): struct 新設、 既存 World 階層 instance を集約 view、
+//!   `AppState.world_capabilities` field に Some で注入。
+//! - PR-α-2 (VP-112 ✅): `MidiCapability` を `ProcessCapabilities` から取り外し、 本 struct の
+//!   `midi` field に host。 mailbox 移管 prep 完了 (`hp@world` register 含む)。
+//! - PR-α-3 (VP-113 ✅): mailbox `hermit_purple@world` を `msgbox_registry` に register、
+//!   CLI `vp midi monitor` を World daemon (port 32000) 経由に rewire。
+//! - PR-α-4 (VP-114): `vp daemon start --midi` flag 追加で MidiConfig CLI 経路復活 (planned)。
+//! - 後続 cleanup: AppState 既存 field (`world` / `msgbox_registry` / `update` / `whitesnake`)
+//!   と本 struct の重複保持を整理 (現状は意図的 HACK、 LSCM A6 share-nothing 整合は β 以降で)。
 //!
 //! 関連: doc 12 (`docs/design/12-stand-architecture.md` §3 Layer + §9 Catalog)、
-//! Linear VP-109 (parent epic) / VP-111 (本 PR)。
+//! Linear VP-109 (parent epic)、 VP-111/112/113/114 (sub-issue)。
 
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -49,16 +54,21 @@ pub struct WorldCapabilities {
     pub whitesnake: Whitesnake,
 
     /// Hermit Purple 🍇 — external IF (MIDI/MCP/tmux)。
-    /// PR-α-2 で `ProcessCapabilities.midi` から移管予定、 現状 None placeholder。
+    /// PR-α-2 (VP-112) で `ProcessCapabilities.midi` から移管完了。
+    /// `WorldCapabilities::with_midi` 経由で構築すると `Some(...)` で host、
+    /// `WorldCapabilities::new` だけだと None placeholder。
     #[cfg(feature = "midi")]
     pub midi: Option<Arc<RwLock<MidiCapability>>>,
 }
 
 impl WorldCapabilities {
-    /// 既存 instance を集約して新規構築。
+    /// 既存 instance を集約して新規構築 (midi なし版、 feature gate 無効時 / test 用)。
     ///
-    /// PR-α-1: `run_world` で散乱していた World 階層 capability 群の集約 view を提供。
-    /// 既存挙動への影響なし (AppState 既存 field は keep、 本 struct は parallel に保持される)。
+    /// PR-α-1 (VP-111): `run_world` で散乱していた World 階層 capability 群の集約 view を提供。
+    /// AppState 既存 field (`world` / `msgbox_registry` / `update` / `whitesnake`) と本 struct の
+    /// 重複保持は意図的 HACK (LSCM A6 share-nothing 整合は β 以降で整理予定)。
+    ///
+    /// midi を host したい場合は `with_midi` を使う (feature = "midi")。
     pub fn new(
         process_manager: Arc<RwLock<ProcessManagerCapability>>,
         update: Arc<RwLock<UpdateCapability>>,
@@ -163,6 +173,9 @@ mod tests {
         let _ = &wc.whitesnake;
 
         #[cfg(feature = "midi")]
-        assert!(wc.midi.is_none(), "PR-α-1 では midi は None placeholder");
+        assert!(
+            wc.midi.is_none(),
+            "new() では midi は None (with_midi() を使うと Some)"
+        );
     }
 }

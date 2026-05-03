@@ -83,13 +83,13 @@ pub fn execute(opts: StartOptions) -> Result<()> {
     tracing::info!("Project dir: {}", resolved.dir);
 
     // PR-α-2 (VP-112): MidiCapability を World daemon に移管したため、 `vp start --midi` flag
-    // は SP (Project) には渡さない。 PR-α-3 で `vp daemon --midi` (or config.toml) 経路に
-    // rewire 予定、 現状は warning log + ignored で graceful degrade。
+    // は SP (Project) には渡さない。 PR-α-4 (VP-114) で `vp daemon --midi` (or config.toml)
+    // 経路に rewire 予定、 現状は warning log + ignored で graceful degrade。
     if midi.is_some() {
         tracing::warn!(
-            "vp start --midi flag は PR-α-2 で `vp daemon` 側 (World) に移管中。 \
-             現状 World daemon は MidiConfig::default() を使う、 flag 内容は無視 (PR-α-3 で \
-             daemon CLI flag に rewire 予定)。"
+            "vp start --midi flag は PR-α-2 で `vp daemon` 側 (World) に移管済。 \
+             現状 World daemon は MidiConfig::default() を使う、 flag 内容は無視 \
+             (PR-α-4 / VP-114 で `vp daemon --midi` flag に rewire 予定)。"
         );
     }
     let _ = midi;

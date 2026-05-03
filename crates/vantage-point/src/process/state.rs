@@ -163,12 +163,12 @@ pub(crate) struct AppState {
     /// Project scope の Stand pool (PP / GE / HP) — Phase A4-2b minimum、skeleton
     /// 関連 memory: 「多 scope architecture」rule (2026-04-27)
     pub project_stands: Arc<RwLock<super::project_stands_state::ProjectStandsPool>>,
-    /// World 階層 Stand container (LSCM、 PR-α-1 / VP-111)。
+    /// World 階層 Stand container (LSCM、 PR-α series / VP-109)。
     ///
     /// World mode (`run_world`) でのみ Some、 SP mode (`run`) では None。
-    /// PR-α-1 段階では既存 World 階層 field (world / msgbox_registry / update / whitesnake)
-    /// と重複保持、 PR-α-2/α-3 で gradual に集約予定。
-    /// 関連: doc 12 §3 / §9、 Linear VP-109 / VP-111
+    /// PR-α 完了後も既存 World 階層 field (world / msgbox_registry / update / whitesnake)
+    /// と重複保持 (意図的 HACK、 LSCM A6 share-nothing 整合は β 以降の cleanup PR で整理予定)。
+    /// 関連: doc 12 §3 / §9、 Linear VP-109 (epic) / VP-111/112/113 ✅ / VP-114 (planned)
     pub world_capabilities: Option<Arc<crate::daemon::world_capabilities::WorldCapabilities>>,
 }
 
