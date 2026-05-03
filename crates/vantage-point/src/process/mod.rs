@@ -26,6 +26,8 @@ pub(crate) mod retained;
 mod routes;
 mod server;
 mod session;
+/// Stand metadata reader — `.mise/tasks/vp/stand/{name}` 冒頭の `#VP key=value` を parse (VP-108)
+pub(crate) mod stand_metadata;
 /// StandSpawner — Stand 名 → mise task spawn command 構築 (doc 11 PR-B)
 pub(crate) mod stand_spawner;
 // stand_spec module は doc 11 PR-B で削除 (LaneStandSpec trait / TheHand / LlmStand 全廃、
