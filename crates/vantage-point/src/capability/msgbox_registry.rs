@@ -736,9 +736,9 @@ mod tests {
 
     #[test]
     fn test_parse_address_invalid_lane_char_rejected() {
-        // `pp..lead@vp` 連続 dot → split_once で先頭 dot が空 lane を生成 → EmptyLane
-        // (split_once は最初の `.` で分割するので、 `pp..lead` → ("pp", ".lead") となり
-        //  lane = ".lead" が validate_lane で reject される)
+        // `pp..lead@vp` 連続 dot → split_once で先頭 dot で分割 → ("pp", ".lead") →
+        // lane = ".lead"、先頭の `.` が invalid char → InvalidLaneChar
+        // (split_once は最初の `.` で分割するので `pp..lead` → ("pp", ".lead") となる)
         assert_eq!(
             parse_address("pp..lead@vp"),
             Err(AddressError::InvalidLaneChar)
