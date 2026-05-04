@@ -382,7 +382,7 @@ TheWorld destroy
 |-------|-------------|-------------------|------------|-------------|----------------|----------------|
 | TheWorld 👑 | Process Manager | `world` | `theworld@world` | `theworld@world` | ✅ (host id 的) | 現状 = target |
 | Whitesnake 🐍 | Persistence | `world` | `whitesnake@world` | `whitesnake@world` | ❌ (per-machine DB) | 現状 = target |
-| Hermit Purple 🍇 | External IF (MIDI/MCP/tmux) | `world` | `hp@world` | `hp@world` | ✅ | target = world、 現状 = Project capability、 **PR-α** |
+| Hermit Purple 🍇 | External IF (MIDI/MCP/tmux) | `world` | `hp@world` | `hp@world` (実装は `hermit_purple@world`) | ✅ | ✅ **target = 現状** (PR-α 完了 2026-05-04、 `WorldCapabilities.midi` で host) |
 | Star Platinum ⭐ | Project Core | `{project}` | `sp@vp` | `sp@vp` | ✅ | 現状 = target |
 | Paisley Park 🧭 | Information Navigator | `{project}/{lane}` | `pp@vp/lead` | `pp.lead@vp` | ✅ | target = Lane instance、 現状 = Project actor、 **PR-β** |
 | Heaven's Door 📖 | Coding Assistant | `{project}/{lane}` | `hd@vp/lead` | `hd.lead@vp` | ✅ | 現状 = target (Lane mise task) |
@@ -396,15 +396,17 @@ TheWorld destroy
 
 doc 12 起草後、 catalog の "target vs 現実装" gap を埋める PR 連鎖 + B2 rename PR:
 
-| PR | 内容 | 規模 |
-|----|------|------|
-| **PR-pre1** | terminology cleanup (`#VP layer=N` → `#VP tier=N`、 mem_1CaVeQ "4-Layer" → "4-Stack" update、 doc 11 update) | S |
-| PR-α | HP を Project capability から World daemon に移管 | M |
-| PR-β | PP を Project actor から Lane instance 化 | L |
-| PR-γ | GE を Project actor から Lane instance 化 | M |
-| PR-δ | Lane Layer supervisor 整備 (SP 内 Lane registry、 host API) | M |
-| PR-ε | PP に creo-memory-pane 機能実装 (`mem_1Ca8xHcMf9sFBB2VHUpHzZ` の実体化) | M |
-| PR-ζ (Phase 8) | Hub federation (`@host` 拡張、 VP publish 5 Stand) | L |
+| PR | 内容 | 規模 | Status |
+|----|------|------|--------|
+| **PR-pre1** | terminology cleanup (`#VP layer=N` → `#VP tier=N`、 mem_1CaVeQ "4-Layer" → "4-Stack" update、 doc 11 update) | S | ✅ done (#264、 VP-110) |
+| **PR-α** | HP を Project capability から World daemon に移管 | M (実 4 sub-PR) | ✅ done (#265-#269、 VP-111/112/113/115/114) |
+| PR-β | PP を Project actor から Lane instance 化 | L | ⏳ next (origin 願い直結) |
+| PR-γ | GE を Project actor から Lane instance 化 | M | ⏳ |
+| PR-δ | Lane Layer supervisor 整備 (SP 内 Lane registry、 host API) | M | ⏳ |
+| PR-ε | PP に creo-memory-pane 機能実装 (`mem_1Ca8xHcMf9sFBB2VHUpHzZ` の実体化) | M | ⏳ origin 願い 3 本実現 |
+| PR-ζ (Phase 8) | Hub federation (`@host` 拡張、 VP publish 5 Stand) | L | ⏳ |
+
+**PR-α 実体験** (2026-05-04 完了): 当初 M 規模見積を 4 sub-PR + 1 cleanup PR (VP-111 受け皿 / VP-112 物理移管 / VP-113 caller migration / VP-115 cleanup / VP-114 CLI 経路復活) に分割して着地。 milestone memory `mem_1CagThezKS1sV9t4LAFfBq` 参照。 doc 11 (9 PR 連鎖) と並ぶ architectural milestone。
 
 ---
 
@@ -414,11 +416,12 @@ doc 12 起草後、 catalog の "target vs 現実装" gap を埋める PR 連鎖
 
 | LSCM 概念 | 既存実装 |
 |----------|---------|
-| Layer = container | (将来) `Layer` trait + `LayerRegistry`、 現状は `ProcessCapabilities` / `ProjectStandsState` / `LanesState` に分散 |
+| Layer = container | (将来) `Layer` trait + `LayerRegistry`、 現状は `WorldCapabilities` (PR-α-1 で新設) / `ProcessCapabilities` / `ProjectStandsState` / `LanesState` に分散。 World 階層だけは struct 化済、 Project / Lane は β 以降で `Layer` trait に統一予定 |
 | Stand catalog | `crates/vantage-point/src/stands.rs` の `StandAlias` 定数 (現状 8 個) |
 | In-process Stand | `crates/vantage-point/src/capability/*.rs` (whitesnake / msgbox / etc.) |
+| **World 階層 Stand container** | `crates/vantage-point/src/daemon/world_capabilities.rs` (PR-α-1 / VP-111 で新設、 `WorldCapabilities` struct で `process_manager` / `update` / `msgbox_registry` / `whitesnake` / `midi` を host) |
 | Process Stand | `.mise/tasks/vp/stand/{hd,shell,tmux}` (doc 11 mise task) |
-| Mailbox | `crates/vantage-point/src/capability/msgbox.rs` + `msgbox_registry.rs` |
+| Mailbox | `crates/vantage-point/src/capability/msgbox.rs` + `msgbox_registry.rs` (Q-7 暫定 HACK: pseudo project name `"world"` で World scope 表現) |
 | TopicRouter | `crates/vantage-point/src/process/topic_router.rs` |
 | RetainedStore | `crates/vantage-point/src/process/retained.rs` |
 | Lane = clone dir | `crates/vp-cli/src/ccws/` (worker workspace management) |
@@ -525,6 +528,7 @@ doc 12 は target architecture を確定するが、 以下は **後続議論** 
 - **Q-5**: 親 Layer destroy 時の child Stand cleanup = LIFO order shutdown (A15 案)
 - **Q-6**: Address resolution scope chain = cwd Layer から root に向け ascending lookup (A16 案、 shadowing 許容)
 - **Q-7**: Mailbox registry の `(layer_path, actor)` key 拡張 (現 `(project, actor)` から、 A17 案)
+  - **2026-05-04 実体験 (PR-α-3 / VP-113)**: `MidiCapability` を World 階層に host する際、 現 `MsgboxRegistry` は `(project_name, actor)` key で管理されているため、 World scope を表現するための **暫定 HACK として pseudo project name `"world"`** を使用。 `world_capabilities.rs::with_midi` 内 `msgbox_registry.register("hermit_purple", "world", world_port)` 呼び出しで具体化。 LSCM 公理上は `(layer_path, actor)` (例: `World/, hermit_purple`) が正だが、 短期的に動かすため pseudo namespace で凌いでいる状態。 Q-7 を解いた段階で pseudo project name 全部の sweep が必要 (`hermit_purple@world` に reach する caller も全て update)。
 - **Q-8**: R/R primitive = ephemeral process として別 axiom 化 (A18 案)
 - **Q-9**: Layer hierarchy = immutable after creation (A19 案、 移籍は destroy + new create)
 - **Q-10**: Discovery 3 modal = static config / Hub manifest / mDNS (A20 案)
@@ -535,11 +539,12 @@ doc 12 は target architecture を確定するが、 以下は **後続議論** 
 - **Q-12**: catalog 漏れ Stand 候補の取扱い:
   - Smart Canvas (VP-76 R3 新 Stand 候補)
   - EventBus / Mailbox / MsgboxRouter / ProtocolCapability (現 implicit network)
-  - AgentCapability (HD と独立)、 MidiCapability (HP と独立)
-  - UpdateCapability (self-update)
+  - AgentCapability (HD と独立)
+  - UpdateCapability (self-update、 PR-α-1 で `WorldCapabilities.update` field 化済 = catalog 候補に格上げ可能)
   - ProcessRunner / Ruby VM (GE のサブシステム)
   - FileWatcher / TmuxActor / PtyManager / SessionManager / DaemonRegistry / Bonjour
   - Watchdog Lane / Daily Journal Lane / Roadmap Lane (Meta Lane 5 種)
+  - ~~MidiCapability (HP と独立)~~ — **2026-05-04 PR-α 完了で解消**: HP catalog entry の実装本体 = `MidiCapability` であることが明確化、 別 Stand として独立する必要なし。 §9 catalog の HP 行参照。
 
 ### Trait 設計
 
@@ -571,6 +576,9 @@ doc 12 は target architecture を確定するが、 以下は **後続議論** 
 
 - `mem_1CagCMmSTLEGxoAwXgcJvH` — **LSCM Presence Model (11 axiom)、 本 doc の axiom SSOT**
 - `mem_1CagCQjUUp4GxdRoxFhEiD` — **LSCM Catalog (8 Stand)、 本 doc §9 の SSOT**
+- `mem_1CagThezKS1sV9t4LAFfBq` — **doc 12 LSCM PR-α series 完了 milestone (2026-05-04)、 6 PR 連鎖の architectural snapshot**
+- `mem_1CagReS5cn8CwZC8PstfET` — VP LSCM session milestone (PR-α 完了時点の grand recap、 origin 願いまでの distance plot)
+- `mem_1CagvdVHD4kq44oFG66w35` — Auto-merge × squash race feedback rule (PR-α-3 経験から lift up、 review round 中の auto-merge disable 運用)
 - `mem_1CaVeQEKXd8U2XHn75RD4M` — VP Roadmap Phase 5→9 (4-Stack roadmap、 Lane manifest、 federation)
 - `mem_1Ca8xHcMf9sFBB2VHUpHzZ` — VP creo-memory-pane 設計方針 (PR-ε 対象、 §6 reference)
 - `mem_1CaBRBdh1PGop2iGLAnwSY` — Mailbox Cross-Process Address (A4 wire format の現実装)
@@ -591,3 +599,14 @@ doc 12 は target architecture を確定するが、 以下は **後続議論** 
 6. P0 全件確定 → doc 12 起草
 
 本 doc は target architecture。 後続 PR (PR-pre1 / α / β / γ / δ / ε / ζ) で実装、 後続 doc (13 PP 復活 / 14 Thin View) で各論を扱う。
+
+## 起草後 update (2026-05-04)
+
+PR-pre1 + PR-α 完了に伴う反映:
+
+- §9 後続 PR roadmap table: PR-pre1 / PR-α を ✅ done に
+- §9 Stand Catalog 表 (HP 行): "target = world、 現状 = Project capability、 PR-α" → "target = 現状 (PR-α 完了 2026-05-04)"
+- §10 codebase 対応: `WorldCapabilities` struct (PR-α-1 で新設) を追加、 Layer = container 行を refine
+- §13 Q-7: PR-α-3 で観測した pseudo project name `"world"` HACK の実体験を追記
+- §13 Q-12: catalog 漏れ list から `MidiCapability (HP と独立)` を打消し (PR-α 完了で HP 実装本体と判明)、 `UpdateCapability` を WorldCapabilities.update field 化済として catalog 候補に格上げ可能と注記
+- 関連 memory section: PR-α completion milestone (`mem_1CagThezKS1sV9t4LAFfBq`) + session snapshot (`mem_1CagReS5cn8CwZC8PstfET`) + auto-merge race feedback (`mem_1CagvdVHD4kq44oFG66w35`) を追加
