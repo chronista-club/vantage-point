@@ -806,7 +806,9 @@ pub fn resolve_content_command(
         return command;
     }
     match content_type {
-        Some("agent") | Some("hd") => Some("claude".to_string()),
+        // PR-pre2 (VP-118): "hd" → "echoes" rename。 旧 "hd" は legacy session 互換のため
+        // 一時的に維持、 PR-β-4 cleanup で削除予定。
+        Some("agent") | Some("hd") | Some("echoes") | Some("ec") => Some("claude".to_string()),
         Some("canvas") | Some("pp") => None, // TODO: PP ビュー起動コマンド（将来実装）
         Some("shell") | Some("th") | None => None, // デフォルトシェル
         Some(_) => None,

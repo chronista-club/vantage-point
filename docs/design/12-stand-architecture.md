@@ -159,13 +159,13 @@ graph LR
     end
     subgraph LL1[Lane vp/lead]
         PP1[PP 🧭]
-        HD1[HD 📖]
+        EC1[Echoes 💬]
         GE1[GE 🌿]
         TH1[The Hand 🤚]
     end
     subgraph LL2[Lane vp/sub1]
         PP2[PP 🧭]
-        HD2[HD 📖]
+        EC2[Echoes 💬]
         GE2[GE 🌿]
         TH2[The Hand 🤚]
     end
@@ -192,7 +192,7 @@ wire format は既存 `creo/event.rs::ActorRef` を維持し、 概念議論で�
 
 **Validation** (`msgbox_registry.rs`): actor 名は英数字 + `_` のみ、 TTL 48h、 GC sweep 5min。
 
-**Reserved actors**: `heavens_door`, `paisley_park`, `gold_experience`, `protocol`, `agent`, `mcp`
+**Reserved actors**: `echoes`, `paisley_park`, `gold_experience`, `protocol`, `agent`, `mcp` (PR-pre2 / VP-118 で `heavens_door` → `echoes` rename)
 
 ### A6: CSP — share nothing memory
 
@@ -385,12 +385,12 @@ TheWorld destroy
 | Hermit Purple 🍇 | External IF (MIDI/MCP/tmux) | `world` | `hp@world` | `hp@world` (実装は `hermit_purple@world`) | ✅ | ✅ **target = 現状** (PR-α 完了 2026-05-04、 `WorldCapabilities.midi` で host) |
 | Star Platinum ⭐ | Project Core | `{project}` | `sp@vp` | `sp@vp` | ✅ | 現状 = target |
 | Paisley Park 🧭 | Information Navigator | `{project}/{lane}` | `pp@vp/lead` | `pp.lead@vp` | ✅ | target = Lane instance、 現状 = Project actor、 **PR-β** |
-| Heaven's Door 📖 | Coding Assistant | `{project}/{lane}` | `hd@vp/lead` | `hd.lead@vp` | ✅ | 現状 = target (Lane mise task) |
+| Echoes 💬 | Coding Assistant | `{project}/{lane}` | `echoes@vp/lead` | `echoes.lead@vp` | ✅ | 現状 = target (Lane mise task)。 PR-pre2 (VP-118) で Heaven's Door 📖 → Echoes 💬 rename (zsh→tmux→claude chain spawn が Echoes Act 1/2/3 進化と完璧 fit、 terminal echo 構造とも literal に一致)。 |
 | Gold Experience 🌿 | Code Runner | `{project}/{lane}` | `ge@vp/lead` | `ge.lead@vp` | ❌ (security) | target = Lane instance、 現状 = Project actor、 **PR-γ** |
 | The Hand 🤚 | Shell Terminal | `{project}/{lane}` | `hand@vp/lead` | `hand.lead@vp` | ❌ (local shell) | 現状 = target (Lane mise task) |
 
 **分布**: World 3 / Project 1 / Lane 4 ─ 全 8 Stand
-**Hub federation 対象**: 5 Stand (TheWorld / SP / PP / HD / HP)
+**Hub federation 対象**: 5 Stand (TheWorld / SP / PP / Echoes / HP)
 
 ### 後続 PR roadmap
 

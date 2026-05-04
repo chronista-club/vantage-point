@@ -47,12 +47,13 @@ pub struct Config {
     #[serde(default)]
     pub claude_cli_path: Option<String>,
 
-    /// Lane 作成時の default Stand 名 (例: "hd" / "shell" / "tmux")。
+    /// Lane 作成時の default Stand 名 (例: "echoes" / "shell" / "tmux")。
     ///
-    /// `mise run vp:stand:{name}` の `name` 部分を指定。 None なら "hd" fallback
-    /// (`Config::default_stand_or_hd()` 経由)。
+    /// `mise run vp:stand:{name}` の `name` 部分を指定。 None なら "echoes" fallback
+    /// (`Config::default_stand_or_echoes()` 経由)。
     ///
     /// doc 11 §3 (Stand init_script system / mise task 路線)、 PR-B 対応。
+    /// PR-pre2 (VP-118): "hd" → "echoes" rename (Stand metaphor + identifier sweep)。
     #[serde(default)]
     pub default_stand: Option<String>,
 
@@ -169,12 +170,15 @@ impl Config {
         config_file_path()
     }
 
-    /// Default Stand 名 (config 未指定なら "hd" fallback)。
+    /// Default Stand 名 (config 未指定なら "echoes" fallback)。
     ///
     /// `mise run vp:stand:{name}` の `name` 部分。 lane 作成時 (sidebar UI / HTTP API /
     /// LanePool::with_lead 等) で stand 指定が無い場合の選択値。
-    pub fn default_stand_or_hd(&self) -> &str {
-        self.default_stand.as_deref().unwrap_or("hd")
+    ///
+    /// PR-pre2 (VP-118): rename `default_stand_or_hd` → `default_stand_or_echoes`、
+    /// fallback "hd" → "echoes" (HD → Echoes rename の一環)。
+    pub fn default_stand_or_echoes(&self) -> &str {
+        self.default_stand.as_deref().unwrap_or("echoes")
     }
 
     /// Resolve project directory from various sources

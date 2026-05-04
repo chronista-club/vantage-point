@@ -30,7 +30,7 @@ use super::super::lanes_state::{LaneAddress, LaneInfo, LaneKind, LanePool, LaneS
 use super::super::state::AppState;
 
 // doc 11 §3.7 の `migrate_legacy_stand` shim は 2026-05-03 削除済。 PR #257 の
-// stand 識別子 String 化と同タイミングで導入した「heavens_door / the_hand → hd / shell」
+// stand 識別子 String 化と同タイミングで導入した「heavens_door / the_hand → echoes / shell」 (PR-pre2 で hd → echoes)
 // migration shim を 1 release 期間 deprecation warn 付きで accept していたが、
 // VP は user 1 人 + ccws worker のみで vp-app + daemon が常に同 binary で deploy される
 // 構成のため、 外部 client が旧 wire format で来る window が実質ゼロと判断、 即削除。
@@ -94,7 +94,7 @@ pub async fn list_handler(State(state): State<Arc<AppState>>) -> impl IntoRespon
                 kind: LaneKind::Worker,
                 name: Some(entry.name.clone()),
                 state: LaneState::default(), // Pane 不在の表現は pid: None に集約 (state は default Running)
-                stand: "hd".to_string(), // default、 activate 時に上書き可 (doc 11 PR-B で String 化)
+                stand: "echoes".to_string(), // default、 activate 時に上書き可 (doc 11 PR-B で String 化、 PR-pre2 で "hd" → "echoes")
                 created_at: chrono::Utc::now().to_rfc3339(),
                 pid: None, // Pane (HD) 不在 = client 側で Inactive 判定の signal
                 cwd: entry.path.clone(),
@@ -172,8 +172,9 @@ pub async fn create_handler(
         .unwrap_or("unknown")
         .to_string();
     let addr = LaneAddress::worker(&project_id, &req.name);
-    // doc 11 PR-B: stand 識別子 String 化。 wire format は新 stand 名 (hd / shell / tmux 等)
-    // をそのまま受け取る。 未指定なら config の `default_stand` (未設定なら "hd" fallback)。
+    // doc 11 PR-B: stand 識別子 String 化。 wire format は新 stand 名 (echoes / shell / tmux 等)
+    // をそのまま受け取る。 未指定なら config の `default_stand` (未設定なら "echoes" fallback、
+    // PR-pre2 / VP-118 で "hd" → "echoes" rename)。
     //
     // Config::load() は他 handler でも ad-hoc に呼ばれており (server.rs:49, mcp.rs:2577 等)、
     // SSOT は config.toml ファイル自体。 AppState に持たせない pattern を踏襲。
@@ -182,7 +183,7 @@ pub async fn create_handler(
         .stand
         .as_deref()
         .map(str::to_string)
-        .unwrap_or_else(|| config.default_stand_or_hd().to_string());
+        .unwrap_or_else(|| config.default_stand_or_echoes().to_string());
 
     // 重複チェック (早期 return)
     {

@@ -564,7 +564,7 @@ mod tests {
         ws.extract("pp", "pane/side", &"Side content")
             .await
             .unwrap();
-        ws.extract("hd", "session/abc", &"HD session")
+        ws.extract("echoes", "session/abc", &"Echoes session")
             .await
             .unwrap();
 
@@ -572,8 +572,8 @@ mod tests {
         let pp_discs = ws.list_discs("pp").await.unwrap();
         assert_eq!(pp_discs.len(), 2);
 
-        let hd_discs = ws.list_discs("hd").await.unwrap();
-        assert_eq!(hd_discs.len(), 1);
+        let echoes_discs = ws.list_discs("echoes").await.unwrap();
+        assert_eq!(echoes_discs.len(), 1);
     }
 
     #[tokio::test]

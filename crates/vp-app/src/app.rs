@@ -798,7 +798,7 @@ const SIDEBAR_HTML: &str = concat!(
           const addForm = document.createElement('div');
           addForm.className = 'vp-add-worker-form';
           // R5: 入力値を addWorkerInputs から復元 (失敗後の再 submit / re-render を跨ぐため)。
-          // doc 11 PR-C: stand 選択も同様に保存 (default は空 = SP-side default = "hd")。
+          // doc 11 PR-C: stand 選択も同様に保存 (default は空 = SP-side default = "echoes"、 PR-pre2 で "hd" → "echoes")。
           const savedInputs = addWorkerInputs.get(p.path) || {name: '', branch: '', stand: ''};
           const escAttr = (s) => String(s || '')
             .replace(/&/g, '&amp;').replace(/"/g, '&quot;')
@@ -997,9 +997,11 @@ const SIDEBAR_HTML: &str = concat!(
   // 新: Phosphor icon name を iconify-icon 要素に attribute、 default = regular weight。
   const STAND_GLYPH = {
     // doc 11 PR-B: Lane Stand 名 = mise task `vp:stand:{name}` の name 部分そのまま。
-    hd: 'ph:book-open',           // Heaven's Door (Layer 2 = tmux + claude auto-launch)
-    shell: 'ph:terminal-window',  // Shell (Layer 0 = bare login shell、 旧 The Hand)
-    tmux: 'ph:presentation',      // Tmux session attach のみ (Layer 1)
+    // PR-pre2 (VP-118): hd → echoes rename (Heaven's Door 📖 → Echoes 💬)。
+    echoes: 'ph:chat-circle',     // Echoes (Tier 2 = tmux + claude auto-launch)
+    hd: 'ph:chat-circle',         // legacy alias (echoes 旧名)、 sidebar の古い state 残骸 fallback 用
+    shell: 'ph:terminal-window',  // Shell (Tier 0 = bare login shell、 旧 The Hand)
+    tmux: 'ph:presentation',      // Tmux session attach のみ (Tier 1)
     // legacy wire 名 (heavens_door / the_hand) の display fallback は 2026-05-03 削除済。
     // Project scope の Stand (PP / GE / HP) は将来 Lane の中身ではないが、 sidebar の
     // 別 row に同じ STAND_GLYPH を使うので key 維持。
@@ -1029,7 +1031,9 @@ const SIDEBAR_HTML: &str = concat!(
   function standDisplayName(stand) {
     switch (stand) {
       // doc 11 PR-B: 新 stand 名 (mise task name と一致)
-      case 'hd': return "Heaven's Door";
+      // PR-pre2 (VP-118): hd → echoes rename
+      case 'echoes': return 'Echoes';
+      case 'hd': return "Echoes"; // legacy alias、 旧 state 残骸 fallback (Heaven's Door 表記)
       case 'shell': return 'Shell';
       case 'tmux': return 'Tmux';
       // legacy wire 名 (heavens_door / the_hand) の display fallback は 2026-05-03 削除済

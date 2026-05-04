@@ -20,14 +20,14 @@
 //! ```json
 //! {
 //!   "stands": [
-//!     {"name": "hd",    "description": "VP Stand: Heaven's Door — ..."},
+//!     {"name": "echoes", "description": "VP Stand: Echoes — ..."},
 //!     {"name": "shell", "description": "VP Stand: bare login shell ..."},
 //!     {"name": "tmux",  "description": "VP Stand: tmux session attached ..."}
 //!   ]
 //! }
 //! ```
 //!
-//! `name` は `vp:stand:{name}` の `{name}` 部分そのまま (例: `"hd"` / `"shell"`)、
+//! `name` は `vp:stand:{name}` の `{name}` 部分そのまま (例: `"echoes"` / `"shell"` / `"tmux"`、 PR-pre2 で hd → echoes rename)、
 //! sidebar が POST `/api/lanes` の `stand` field にそのまま使える形式。
 
 use std::sync::{LazyLock, Mutex};
@@ -39,7 +39,7 @@ use serde::{Deserialize, Serialize};
 /// Sidebar 側に返す stand 1 entry の schema。
 #[derive(Debug, Clone, Serialize)]
 pub struct StandInfo {
-    /// `vp:stand:{name}` の name 部分 (例: `"hd"` / `"shell"` / `"tmux"`)
+    /// `vp:stand:{name}` の name 部分 (例: `"echoes"` / `"shell"` / `"tmux"`)
     pub name: String,
     /// task ファイル先頭の `#MISE description="..."` の値 (空文字も許容)
     pub description: String,
@@ -180,7 +180,11 @@ mod tests {
             .expect("install root + mise が動く環境では成功するはず");
         let names: std::collections::HashSet<&str> =
             stands.iter().map(|s| s.name.as_str()).collect();
-        assert!(names.contains("hd"), "hd stand 不在: got {:?}", names);
+        assert!(
+            names.contains("echoes"),
+            "echoes stand 不在: got {:?}",
+            names
+        );
         assert!(names.contains("shell"), "shell stand 不在: got {:?}", names);
         assert!(names.contains("tmux"), "tmux stand 不在: got {:?}", names);
     }
@@ -196,11 +200,14 @@ mod tests {
         let stands = list_available_stands()
             .await
             .expect("install root + mise が動く環境では成功するはず");
-        let hd = stands.iter().find(|s| s.name == "hd").expect("hd 不在");
+        let echoes = stands
+            .iter()
+            .find(|s| s.name == "echoes")
+            .expect("echoes 不在");
         assert!(
-            hd.description.contains("Heaven"),
-            "hd.description に Heaven 含まれない: {:?}",
-            hd.description
+            echoes.description.contains("Echoes"),
+            "echoes.description に Echoes 含まれない: {:?}",
+            echoes.description
         );
     }
 }

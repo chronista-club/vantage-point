@@ -188,19 +188,23 @@ pub fn build_stand_command(
 mod tests {
     use super::*;
 
-    /// build_stand_command が `mise run vp:stand:hd` の form を返すこと。
+    /// build_stand_command が `mise run vp:stand:echoes` の form を返すこと。
+    /// PR-pre2 (VP-118) で hd → echoes rename。
     #[test]
     fn build_stand_command_returns_mise_invocation() {
         let addr = LaneAddress::lead("vp");
-        let cmd = build_stand_command("hd", &addr, Path::new("/tmp"));
+        let cmd = build_stand_command("echoes", &addr, Path::new("/tmp"));
         assert_eq!(cmd.program, "mise");
-        assert_eq!(cmd.args, vec!["run".to_string(), "vp:stand:hd".to_string()]);
+        assert_eq!(
+            cmd.args,
+            vec!["run".to_string(), "vp:stand:echoes".to_string()]
+        );
         assert!(cmd.fallback_args.is_none());
         assert!(cmd.initial_input.is_none());
         // PR-D (Z 系統): spawn cwd は VP install root (cargo test 環境では workspace root)
         assert!(
             std::path::Path::new(&cmd.cwd)
-                .join(".mise/tasks/vp/stand/hd")
+                .join(".mise/tasks/vp/stand/echoes")
                 .exists(),
             "spawn cwd は install root のはず、 got: {}",
             cmd.cwd

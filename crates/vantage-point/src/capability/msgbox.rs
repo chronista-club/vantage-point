@@ -996,13 +996,13 @@ mod tests {
     async fn test_addresses() {
         let router = Router::new();
 
-        let _a = router.register("hd").await;
+        let _a = router.register("echoes").await;
         let _b = router.register("pp").await;
         let _c = router.register("ge").await;
 
         let mut addrs = router.addresses().await;
         addrs.sort();
-        assert_eq!(addrs, vec!["ge", "hd", "pp"]);
+        assert_eq!(addrs, vec!["echoes", "ge", "pp"]);
 
         router.shutdown();
     }

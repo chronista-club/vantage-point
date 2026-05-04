@@ -235,7 +235,7 @@ struct LanesResponse {
 /// SP 側 `process::routes::stands::StandInfo` と wire 互換 (snake_case 統一済)。
 #[derive(Debug, Clone, serde::Serialize, Deserialize)]
 pub struct StandInfo {
-    /// `vp:stand:{name}` の name 部分 (例: `"hd"` / `"shell"` / `"tmux"`)
+    /// `vp:stand:{name}` の name 部分 (例: `"echoes"` / `"shell"` / `"tmux"`、 PR-pre2 で hd → echoes rename)
     pub name: String,
     /// task ファイル先頭の `#MISE description="..."` の値
     #[serde(default)]
@@ -363,7 +363,7 @@ impl TheWorldClient {
     /// Phase 3-A: SP に Worker Lane を create (`POST /api/lanes`)。
     /// `branch` 指定時は SP が `ccws new <name> <branch>` で worker dir を作成して spawn する。
     /// `stand` 指定時は SP が `mise run vp:stand:{stand}` で specified stand を起動する
-    /// (doc 11 PR-C、 None なら SP-side default = config.default_stand_or_hd())。
+    /// (doc 11 PR-C、 None なら SP-side default = config.default_stand_or_echoes())。
     /// `base_url` は SP の URL (例: `http://127.0.0.1:33002`) を指定。
     pub async fn create_worker_lane(
         &self,

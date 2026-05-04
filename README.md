@@ -11,7 +11,7 @@ README は work in progress、詳細は `docs/` 配下。
 
 ## Core concepts
 
-- **Lane** — canonical address `hd.{lane}@{project}` が tmux session、
+- **Lane** — canonical address `echoes.{lane}@{project}` が tmux session、
   Claude agent、Mailbox actor、deterministic port range を一意に束ねる
 - **Command Palette (⌘K)** — 全 Lane / app action への fuzzy jump
 - **Design Inspector (⌘⇧I)** — Sidebar token (padding, opacity 等) を
@@ -22,7 +22,7 @@ README は work in progress、詳細は `docs/` 配下。
   Lane × role port が透過的固定、bookmark 可能
 
 内部 codename は JoJo's Bizarre Adventure のスタンド:
-TheWorld (daemon) / Star Platinum (Project) / Heaven's Door (Agent) /
+TheWorld (daemon) / Star Platinum (Project) / Echoes (Agent、 旧 Heaven's Door) /
 Paisley Park (Navigator) / Gold Experience (Runner) 等。
 
 ## License

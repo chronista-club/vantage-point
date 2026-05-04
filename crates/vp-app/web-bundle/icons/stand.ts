@@ -7,8 +7,10 @@
 
 import type { IconName } from 'creo-ui-icons-web'
 
+// PR-pre2 (VP-118): heavens_door → echoes rename。
+// emoji 📖 → 💬、 icon 'ph:book-open' → 'ph:chat-circle' (prompt/response 対話型)。
 export type StandKind =
-  | 'heavens_door'
+  | 'echoes'
   | 'paisley_park'
   | 'gold_experience'
   | 'hermit_purple'
@@ -22,10 +24,10 @@ export interface StandIconSet {
 }
 
 export const STAND_ICON: Record<StandKind, StandIconSet> = {
-  heavens_door: {
-    default: 'ph:book-open',
-    active: 'ph:book-open-fill',
-    disabled: 'ph:book-open-thin',
+  echoes: {
+    default: 'ph:chat-circle',
+    active: 'ph:chat-circle-fill',
+    disabled: 'ph:chat-circle-thin',
   },
   paisley_park: {
     default: 'ph:compass',

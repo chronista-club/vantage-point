@@ -26,8 +26,12 @@ pub fn default_aliases() -> HashMap<String, String> {
         ("pp.route", "project/pp/command/route"),
         ("sc.item.added", "project/sc/state/item-added"),
         ("sc.item.updated", "project/sc/state/item-updated"),
-        ("hd.message", "project/hd/notify/message"),
-        ("hd.session.started", "project/hd/lifecycle/session-started"),
+        // PR-pre2 (VP-118): hd → echoes rename (Heaven's Door → Echoes)
+        ("echoes.message", "project/echoes/notify/message"),
+        (
+            "echoes.session.started",
+            "project/echoes/lifecycle/session-started",
+        ),
         ("user.click", "user/user/command/click"),
         ("user.focus", "user/user/state/focus-changed"),
         ("build.done", "project/ge/state/build-done"),
@@ -59,8 +63,8 @@ mod tests {
             Some("project/sc/state/item-added")
         );
         assert_eq!(
-            a.get("hd.session.started").map(String::as_str),
-            Some("project/hd/lifecycle/session-started")
+            a.get("echoes.session.started").map(String::as_str),
+            Some("project/echoes/lifecycle/session-started")
         );
     }
 

@@ -50,7 +50,7 @@ doc 12 で Stand catalog に PP 行が **target = Lane instance / 現実装 = Pr
 
 ### 既存 codebase rule の supersede 明示 (P0-1)
 
-2026-04-27 時点で `crates/vantage-point/src/process/lanes_state.rs:5-14` および `project_stands_state.rs:1-17` に「**Lane scope = HD/TH 専用、 PP/GE/HP は Project scope**」 という rule が comment として書き込まれている。 既存 `ProjectStandsPool` には `paisley_park: PaisleyParkState` field が存在し、 PP は Project scope の data model として実装されている。
+2026-04-27 時点で `crates/vantage-point/src/process/lanes_state.rs:5-14` および `project_stands_state.rs:1-17` に「**Lane scope = Echoes/TH 専用、 PP/GE/HP は Project scope**」 (rename 前は HD/TH) という rule が comment として書き込まれている。 既存 `ProjectStandsPool` には `paisley_park: PaisleyParkState` field が存在し、 PP は Project scope の data model として実装されている。
 
 doc 12 LSCM catalog §9 で PP target = Lane instance を明記したことで、 上記 2026-04-27 rule は **明示的に supersede** された。 PR-β-2 (PP 物理移管) の definition of done に「両 file の 2026-04-27 rule 言及を update + `PaisleyParkState` を `LaneCapabilities` 配下に移管」 を含める。
 
@@ -73,7 +73,7 @@ PP の実装は Lane 階層を hard-code しない。 `MidiCapability` 移管 (P
 VP-42 廃止の教訓を構造化:
 
 - **State**: PP が "情報の流れ" を持つ (CSP face で broadcast、 RetainedStore に保持)
-- **UI surface**: Smart Canvas / HD Chat / Inline / Modal / Dev Panel は PP 指揮下の **rendering target**、 PP 自体は背後 logic
+- **UI surface**: Smart Canvas / Echoes Chat / Inline / Modal / Dev Panel は PP 指揮下の **rendering target**、 PP 自体は背後 logic
 
 A6 (share nothing memory) により PP と Surface は memory 共有せず、 TopicRouter (CSP face) で接続される。 UI を差し替えても PP は無傷、 PP を refactor しても UI は逆向きに依存しない。
 
@@ -85,13 +85,13 @@ doc 12 §9 catalog で `description = Information Navigator` だが、 mem `mem_
 |----|------|
 | Stand codename (内部) | Paisley Park 🧭 |
 | Public 機能名 | **Information Router** |
-| Surface 名 (public) | Smart Canvas / HD Chat / Inline / Modal / Dev Panel |
+| Surface 名 (public) | Smart Canvas / Echoes Chat / Inline / Modal / Dev Panel |
 
-### P5: HD と PP は同 Lane で 1:1 (← A3 + A11、 mem_1CZCgpQpf5n8fy8F3BMfJj)
+### P5: Echoes と PP は同 Lane で 1:1 (← A3 + A11、 mem_1CZCgpQpf5n8fy8F3BMfJj)
 
-LSCM A3 の "1 Layer = N Stand 保持可" を Lane に apply: 1 Lane が 1 HD + 1 PP を保持。 HD と PP は **同じ Lane address で並列 host** されるので、 pairing は別途 ID を持たない (Lane address 自体が pairing key)。
+LSCM A3 の "1 Layer = N Stand 保持可" を Lane に apply: 1 Lane が 1 Echoes + 1 PP を保持。 Echoes と PP は **同じ Lane address で並列 host** されるので、 pairing は別途 ID を持たない (Lane address 自体が pairing key)。
 
-旧 design (`mem_1CZCgpQpf5n8fy8F3BMfJj`) の「HD のペアリング ID で自分の PP を特定」 は、 LSCM では **HD の Lane address ≡ PP の Lane address** で自動成立。 「`mcp__show` の送り先」 は HD と同 Lane の PP (`pp.{lane}@{project}`)。
+旧 design (`mem_1CZCgpQpf5n8fy8F3BMfJj`) の「HD のペアリング ID で自分の PP を特定」 は、 LSCM では **Echoes の Lane address ≡ PP の Lane address** で自動成立。 「`mcp__show` の送り先」 は Echoes と同 Lane の PP (`pp.{lane}@{project}`)。
 
 ---
 
@@ -120,20 +120,20 @@ graph TB
         SP[Star Platinum ⭐]
     end
     subgraph LL1[Lane 'vp/lead']
-        HD1[HD 📖]
+        EC1[Echoes 💬]
         PP1[PP 🧭]
         GE1[GE 🌿]
         TH1[Hand 🤚]
     end
     subgraph LL2[Lane 'vp/sub1']
-        HD2[HD 📖]
+        EC2[Echoes 💬]
         PP2[PP 🧭]
     end
     WL --> PL
     PL --> LL1
     PL --> LL2
-    HD1 -.same Lane = pairing.- PP1
-    HD2 -.same Lane = pairing.- PP2
+    EC1 -.same Lane = pairing.- PP1
+    EC2 -.same Lane = pairing.- PP2
 ```
 
 破線は **同 Lane host 関係 = pairing**、 別途の pairing ID は不要 (P5 の言い換え)。
@@ -149,7 +149,7 @@ PP は受信した「情報」 を以下のルールで surface に routing す�
 | 情報 kind | 出力先 surface | 性質 |
 |----------|--------------|------|
 | Reference doc (long-lived) | Smart Canvas (pin) | 永続表示、 user 任意 close |
-| AI 応答 (conversational) | HD Chat | HD pane 内 inline |
+| AI 応答 (conversational) | Echoes Chat | Echoes pane 内 inline |
 | Search result (ephemeral) | Smart Canvas (transient) | 一時表示、 次の routing で消える |
 | Error (critical) | Modal | block 系、 user 確認必須 |
 | Error (non-critical) | Inline (status bar) | non-block、 通知のみ |
@@ -177,7 +177,7 @@ PP は **passive (名指し受信)** と **active (subscriber)** の両形で in
 
 | 経路 | mode | 形 | 例 |
 |------|-----|----|-----|
-| MCP tool call | P | `mcp__show` / `mcp__clear` (caller Lane に自動解決) | HD 内 Claude が `mcp__show("# Hello")` |
+| MCP tool call | P | `mcp__show` / `mcp__clear` (caller Lane に自動解決) | Echoes 内 Claude が `mcp__show("# Hello")` |
 | Mailbox direct | P | `pp.{lane}@{project}` send | 別 Stand から `pp.lead@vp` に push |
 | HTTP API | P | `POST /api/pp/{action}` (vp-app から) | Sidebar UI 操作 |
 | TopicRouter subscribe | A | 他 Stand の event topic を subscribe | `process/build/event/completed` を listen → Inline 通知 |
@@ -204,7 +204,7 @@ origin 願いの core: lead Claude の creo MCP 呼び出しを VP が中継し�
 
 ```mermaid
 sequenceDiagram
-    participant CC as lead Claude (HD)
+    participant CC as lead Claude (Echoes)
     participant VP as VP MCP Proxy<br/>(SP host)
     participant CM as creo-memories<br/>(upstream)
     participant PP as PP (Lane)
@@ -225,21 +225,21 @@ sequenceDiagram
     PP->>CC: inject (next tool response の context として返す)
 ```
 
-**MCP 中継は SP (Project Stand) で実装、 PP は Lane instance** ─ MCP boundary は project 単位だが、 PP は Lane 単位で feed を split する。 caller HD の Lane address を MCP request envelope から取得して route する。
+**MCP 中継は SP (Project Stand) で実装、 PP は Lane instance** ─ MCP boundary は project 単位だが、 PP は Lane 単位で feed を split する。 caller Echoes の Lane address を MCP request envelope から取得して route する。
 
-> **⚠ caller Lane resolution path 未確定 (P0-2)**: 現実装の `ShowParams` (`mcp.rs:26-49`) には `lane` field がなく、 `/api/show` handler (`routes/health.rs:379-387`) は lane filter なしで全 broadcast。 「caller HD の Lane address を MCP envelope から取得」 path は spec のみで実装が未整備。 解決案 (env / param) は §10 Q-5 で扱う、 PR-β-3 caller migration の hard prerequisite。
+> **⚠ caller Lane resolution path 未確定 (P0-2)**: 現実装の `ShowParams` (`mcp.rs:26-49`) には `lane` field がなく、 `/api/show` handler (`routes/health.rs:379-387`) は lane filter なしで全 broadcast。 「caller Echoes の Lane address を MCP envelope から取得」 path は spec のみで実装が未整備。 解決案 (env / param) は §10 Q-5 で扱う、 PR-β-3 caller migration の hard prerequisite。
 
 ---
 
-## §6. HD ↔ PP pairing
+## §6. Echoes ↔ PP pairing
 
 ### 自動 spawn rule (← mem_1CZCgpQpf5n8fy8F3BMfJj 改訂版)
 
 | トリガー | 動作 |
 |---------|------|
-| Lane 起動 (= HD spawn) | 同 Lane に PP 自動 spawn (**default**、 user opt-out 可能) |
-| HD が `mcp__show` 呼出 (PP なし state) | PP を lazy spawn してから routing (旧 design memory 互換) |
-| HD が `mcp__show` 呼出 (PP 既存) | routing |
+| Lane 起動 (= Echoes spawn) | 同 Lane に PP 自動 spawn (**default**、 user opt-out 可能) |
+| Echoes が `mcp__show` 呼出 (PP なし state) | PP を lazy spawn してから routing (旧 design memory 互換) |
+| Echoes が `mcp__show` 呼出 (PP 既存) | routing |
 | user が Cmd+D で Pane 追加 | Lane 内に PP Pane 追加、 既存 PP の surface に bind |
 | Lane destroy | PP 自動終了 (cascade、 A3 lifecycle) |
 
@@ -280,7 +280,7 @@ trait Surface {
 | Surface | 配置 | 性質 | implementing component |
 |---------|------|------|----------------------|
 | **Smart Canvas** | vp-app WebView (主領域 or Lane Pane) | 永続 + 検索 UI + 本文詳細 | `creo-ui` 経由 (CreoUI render client) |
-| **HD Chat** | HD Pane 内 inline | conversational AI 応答 | HD Pane 拡張 (claude session) |
+| **Echoes Chat** | Echoes Pane 内 inline | conversational AI 応答 | Echoes Pane 拡張 (claude session) |
 | **Inline** | TUI status bar / vp-app status bar | non-block 通知 | crossterm + SwiftUI status |
 | **Modal** | vp-app modal layer | block 系 critical | SwiftUI sheet |
 | **Dev Panel** | vp-app sub window | tool use log / debug | SwiftUI panel (debug build only) |
@@ -316,11 +316,11 @@ origin 願いの「気持ちよくリアルタイム連携」 = 双方向。 逆
 |-------------|--------|
 | Sidebar カードを pin | PP が pin 状態を RetainedStore に保持、 Canvas に固定表示 |
 | Canvas で memory focus | PP が next MCP response の context resource として inject |
-| Tag 編集 | PP が `mcp__update_memory` を caller HD 経由で実行 (caller agency 維持) |
+| Tag 編集 | PP が `mcp__update_memory` を caller Echoes 経由で実行 (caller agency 維持) |
 
-**Tag 編集の caller agency 原則** (← A6 share nothing + A7 Actor face、 本 doc で確定): VP が直接 creo-memories を mutate せず、 必ず HD (= lead Claude) を経由する。 Stand 越境の write 権限を「ユーザーが見ているエージェント」 に集約させる security model。 元 memory `mem_1Ca8xHcMf9sFBB2VHUpHzZ` の「VP → lead 方向の具体: Focus / Pin / Tag / 全部？」 は未確定として残されていたが、 doc 13 で **Tag 編集を caller agency 経由で確定** (Pin / Focus は §8 user action table 参照)。
+**Tag 編集の caller agency 原則** (← A6 share nothing + A7 Actor face、 本 doc で確定): VP が直接 creo-memories を mutate せず、 必ず Echoes (= lead Claude) を経由する。 Stand 越境の write 権限を「ユーザーが見ているエージェント」 に集約させる security model。 元 memory `mem_1Ca8xHcMf9sFBB2VHUpHzZ` の「VP → lead 方向の具体: Focus / Pin / Tag / 全部？」 は未確定として残されていたが、 doc 13 で **Tag 編集を caller agency 経由で確定** (Pin / Focus は §8 user action table 参照)。
 
-なお HD が idle (no pending tool call) 状態時の inject 先 semantics は §10 Q-10 で扱う。 LSCM 全体で適用すべき security 原則として doc 12 §13 への back-port (A12 候補) も検討中。
+なお Echoes が idle (no pending tool call) 状態時の inject 先 semantics は §10 Q-10 で扱う。 LSCM 全体で適用すべき security 原則として doc 12 §13 への back-port (A12 候補) も検討中。
 
 ### MVP scope (PR-ε)
 
@@ -381,10 +381,10 @@ PR-β 開始前 (および各 sub-PR 開始前) に確定すべき残点。 P0 =
 | Q-4: Hub federation 公開範囲 | P2 | 暫定: state stream のみ |
 | **Q-5**: caller Lane resolution path (env 注入 vs param 拡張) | **P0** | PR-β-3 hard prerequisite |
 | **Q-6**: address grammar `.{lane}` sub-suffix 拡張 | **P0** | PR-β-1 hard prerequisite |
-| **Q-7**: `interactive_agent` vs Lane HD 整理 | **P0** | PR-β-2 物理移管時 |
+| **Q-7**: `interactive_agent` vs Lane Echoes 整理 | **P0** | PR-β-2 物理移管時 |
 | Q-8: Topic 命名規約 4→5 階層拡張 | P1 | doc 12 §5 update PR (並列) |
 | Q-9: Active subscriber loop 検出 | P1 | PR-ε 実装で具体化 |
-| Q-10: HD idle 時の context inject 先 | P1 | PR-ε 実装で具体化 |
+| Q-10: Echoes idle 時の context inject 先 | P1 | PR-ε 実装で具体化 |
 | Q-11: SP restart vs Lane PP lifecycle 連動 | P1 | PR-β-2 dogfood で観察 |
 
 ### Q-1: Worker Lane の PP を spawn するか?
@@ -392,7 +392,7 @@ PR-β 開始前 (および各 sub-PR 開始前) に確定すべき残点。 P0 =
 P5 では 1 Lane = 1 PP を default 化したが、 ccws Worker Lane (sub1 etc.) で PP を **常時 spawn** するか、 **on-demand** か?
 
 - **常時**: 一貫した Lane geography、 user 期待値が予測可能。 ただし resource 重複 (8 Worker = 8 PP)
-- **on-demand**: HD が初めて `mcp__show` 呼んだ時に lazy spawn。 resource 節約だが、 first call latency
+- **on-demand**: Echoes が初めて `mcp__show` 呼んだ時に lazy spawn。 resource 節約だが、 first call latency
 
 **暫定**: 常時 spawn (一貫性優先)、 PR-β 実装時に dogfood 観察で見直し。
 
@@ -426,9 +426,9 @@ doc 12 §9 で PP は Hub federation 対象 (✅)。 ただし、 surface routin
 
 ### Q-5: caller Lane resolution path (P0、 PR-β-3 hard prerequisite)
 
-MCP 中継経路 (§5) で「caller HD の Lane address を MCP request envelope から取得して route する」 と declare したが、 現実装の `ShowParams` (`mcp.rs:26`) と `/api/show` handler (`routes/health.rs:379`) には Lane 識別子を渡す経路がない。
+MCP 中継経路 (§5) で「caller Echoes の Lane address を MCP request envelope から取得して route する」 と declare したが、 現実装の `ShowParams` (`mcp.rs:26`) と `/api/show` handler (`routes/health.rs:379`) には Lane 識別子を渡す経路がない。
 
-- **案 A (env 注入)**: HD spawn 時に `VP_LANE_ADDRESS=lead@vp` を env で MCP subprocess に注入 → MCP server 起動時に env から read、 全 tool call の implicit context として保持
+- **案 A (env 注入)**: Echoes spawn 時に `VP_LANE_ADDRESS=lead@vp` を env で MCP subprocess に注入 → MCP server 起動時に env から read、 全 tool call の implicit context として保持
 - **案 B (param 拡張)**: `ShowParams` 等に `lane: Option<String>` 追加、 unset = caller default (= MCP server 起動時の env)
 
 **暫定推奨**: **案 A** (env 注入、 既存 `VP_PROCESS_PORT` pattern と整合、 MCP tool 全部に lane 引数追加する必要なし)。 PR-β-3 caller migration の前提作業。
@@ -443,12 +443,12 @@ doc 12 §13 Q-7 (Mailbox registry の `(layer_path, actor)` key 拡張) は **re
 
 **hard prerequisite**: PR-β-1 LaneCapabilities 受け皿 struct 新設の前に、 address grammar 拡張だけ単独 PR (PR-β-0?) で先行着地が cleanest。 もしくは PR-β-1 内に inline 実装。
 
-### Q-7: `interactive_agent` (Project scope) と Lane HD (PTY 経由) の関係整理 (P0)
+### Q-7: `interactive_agent` (Project scope) と Lane Echoes (PTY 経由) の関係整理 (P0)
 
-現実装 `state.rs:124` に `interactive_agent: Arc<RwLock<Option<InteractiveClaudeAgent>>>` (Project scope の in-process Claude SDK 経由 HD) があり、 一方 `lane_pool.pty_slots[lane]` に各 Lane の HD process (tmux 経由 claude CLI) も別エンティティとして立つ。 PP が pair する HD は後者だが、 前者の存在 / 役割が doc 12 §9 catalog で整理されていない。
+現実装 `state.rs:124` に `interactive_agent: Arc<RwLock<Option<InteractiveClaudeAgent>>>` (Project scope の in-process Claude SDK 経由 Echoes) があり、 一方 `lane_pool.pty_slots[lane]` に各 Lane の Echoes process (tmux 経由 claude CLI) も別エンティティとして立つ。 PP が pair する Echoes は後者だが、 前者の存在 / 役割が doc 12 §9 catalog で整理されていない。
 
-- **暫定**: PP pair 対象 = Lane HD (PTY 経由)。 `interactive_agent` (in-process) は cleanup PR で別 Stand に格上げするか削除するかを別途判断
-- **doc 12 back-port**: §13 Q-12 catalog 漏れ list に「`interactive_agent` (HD と独立 / 同体?)」 追加候補
+- **暫定**: PP pair 対象 = Lane Echoes (PTY 経由)。 `interactive_agent` (in-process) は cleanup PR で別 Stand に格上げするか削除するかを別途判断
+- **doc 12 back-port**: §13 Q-12 catalog 漏れ list に「`interactive_agent` (Echoes と独立 / 同体?)」 追加候補
 
 ### Q-8: Topic 命名規約 4 → 5 階層拡張 (P1、 doc 12 §5 back-port 候補)
 
@@ -464,13 +464,13 @@ doc 12 §13 Q-7 (Mailbox registry の `(layer_path, actor)` key 拡張) は **re
 
 §4 動作モード H で「PP 自身の broadcast を再 subscribe して再 broadcast する loop」 の防御が未定。 publisher tag (= broadcast に source actor を埋め込み、 PP 自身が source の event は subscribe path で skip) で防げるが、 実装方式は PR-ε で具体化する。
 
-### Q-10: HD idle 時の context inject 先 (P1)
+### Q-10: Echoes idle 時の context inject 先 (P1)
 
-§8 Tag 編集を「caller HD 経由」 と確定したが、 HD が idle (no pending tool call) 状態時に inject 先がない問題。
+§8 Tag 編集を「caller Echoes 経由」 と確定したが、 Echoes が idle (no pending tool call) 状態時に inject 先がない問題。
 
-- **案 A**: PP が pending operation を Whitesnake (Lane scope persistent) に持ち、 次の HD tool call 時に MCP middleware が context 注入
-- **案 B**: HD 不在時は user UI 上で operation を queue 表示、 user が「次の対話で送る」 を明示確認
-- **案 C**: rejection (HD idle 時は Tag 編集 disabled、 UI で grayed out)
+- **案 A**: PP が pending operation を Whitesnake (Lane scope persistent) に持ち、 次の Echoes tool call 時に MCP middleware が context 注入
+- **案 B**: Echoes 不在時は user UI 上で operation を queue 表示、 user が「次の対話で送る」 を明示確認
+- **案 C**: rejection (Echoes idle 時は Tag 編集 disabled、 UI で grayed out)
 
 **暫定**: **案 A** (queue + middleware injection) が最低限の UX を保つ。 PR-ε 実装で詳細詰める。
 

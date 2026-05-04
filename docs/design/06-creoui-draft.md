@@ -684,3 +684,7 @@ VP-73 成功条件:
 
 - **2026-04-21 v0** — 初版起案 (VP 側 draft)。creo-memories 側 review 待ち。
 - **2026-04-22 v1** — §4.1 CreoUI 粒度を **C (Component 単位)** で確定。`ContainerUI` 将来枠として言及。§11.1 を closed に変更。
+
+---
+
+> **archive 注記 (2026-05-04、 PR-pre2 / VP-118)**: 本 doc 内の `"hd"` stand 名は当時の表記。 Stand metaphor は **Echoes 💬** / actor 名は `echoes` に rename 済 (旧 `"hd"`)。 active SSOT は doc 12 §9 catalog。

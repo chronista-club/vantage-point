@@ -38,7 +38,7 @@ function App() {
 // を vp-app 内で確立する debug overlay。 不要になったら削除する。
 function IconPocPanel() {
   const stands: StandKind[] = [
-    'heavens_door',
+    'echoes', // PR-pre2 (VP-118): 旧 heavens_door
     'paisley_park',
     'gold_experience',
     'hermit_purple',

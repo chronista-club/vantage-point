@@ -350,9 +350,9 @@ pub struct TmuxSplitParams {
         description = "Command to run in the new pane (e.g. 'claude --dangerously-skip-permissions'). Defaults to shell."
     )]
     pub command: Option<String>,
-    /// コンテンツ種別: "shell" (The Hand ✋), "agent"/"hd" (Heaven's Door 📖), "canvas"/"pp" (Paisley Park 🧭)
+    /// コンテンツ種別: "shell" (The Hand ✋), "agent"/"echoes" (Echoes 💬、 旧 HD 📖), "canvas"/"pp" (Paisley Park 🧭)
     #[schemars(
-        description = "Content type for the new pane: 'shell' (The Hand, default shell), 'agent'/'hd' (Heaven's Door, Claude CLI), 'canvas'/'pp' (Paisley Park). Overridden by 'command' if both specified."
+        description = "Content type for the new pane: 'shell' (The Hand, default shell), 'agent'/'echoes' (Echoes 💬, Claude CLI; 'hd' legacy alias), 'canvas'/'pp' (Paisley Park). Overridden by 'command' if both specified."
     )]
     pub content_type: Option<String>,
 }

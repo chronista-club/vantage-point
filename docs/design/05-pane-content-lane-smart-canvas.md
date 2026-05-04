@@ -291,3 +291,7 @@ Sidebar で各 Worker Lane に `[peek]` / `[mirror to lead]` / `[destroy]` 操�
 
 ### 実装 Phase
 v0.15 (R0-R3) → v0.16 (PP/HD Requiem) → v0.17 (TH + User event) → v0.18 (Snapshot + Cross-device)
+
+---
+
+> **archive 注記 (2026-05-04、 PR-pre2 / VP-118)**: 本 doc 内の `Heaven's Door 📖` / `heavens-door` は当時の表記。 Stand metaphor は **Echoes 💬** / actor 名は `echoes` に rename 済。 active SSOT は doc 12 §9 catalog + doc 13 (PP 復活設計)。

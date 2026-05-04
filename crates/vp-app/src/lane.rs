@@ -179,7 +179,8 @@ mod tests {
 
     // 旧 lane_stand_default_is_hd test は doc 11 PR-B で廃止。
     // default の概念は config.toml (`default_stand`) + handler-side の
-    // `Config::default_stand_or_hd()` に移ったため、 vp-app crate test では検証しない。
+    // `Config::default_stand_or_echoes()` (PR-pre2 で "hd" → "echoes" rename) に移ったため、
+    // vp-app crate test では検証しない。
 
     /// R-0 wire compat: `LaneAddressWire::key()` は旧 `app.rs::lane_address_key` と
     /// byte-for-byte 同一でなければならない (JS 側 `laneAddressKey()` の active 比較で使うため)。

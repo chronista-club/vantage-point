@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
-#MISE description="VP Stand: Heaven's Door — Claude TUI auto-launch with tmux 副舞台 (Tier 2)"
+#MISE description="VP Stand: Echoes — Claude TUI auto-launch with tmux 副舞台 (Tier 2)"
+# PR-pre2 (VP-118): Heaven's Door 📖 → Echoes 💬 rename。 zsh → tmux → claude の
+# chain spawn が Echoes Act 1/2/3 進化と完璧 fit、 terminal echo 構造とも literal に一致。
 # VP env (caller が設定):
 #   VP_CWD     = Lane の working directory (tmux session の cwd に使う)
 #   VP_SESSION = tmux session 名
 #   VP_PROJECT = project 名
 #   VP_LANE    = lane label
 # VP-specific metadata:
-#VP icon="📖"
+#VP icon="💬"
 #VP tier=2
 
 set -euo pipefail
