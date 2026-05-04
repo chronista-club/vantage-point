@@ -176,6 +176,21 @@ pub enum AddressError {
     InvalidProjectChar,
     #[error("project name must not be all-numeric (conflicts with port format)")]
     NumericProject,
+    /// PR-β-0 (VP-117): Lane sub-suffix grammar 拡張で導入。
+    /// `pp.lead@vp` 形式で lane 部分が空 (例: `pp.@vp`)。
+    #[error("lane sub-suffix must not be empty")]
+    EmptyLane,
+    /// `pp..lead@vp` 等の lane 部分に invalid char。
+    #[error("lane sub-suffix contains invalid character (allowed: a-zA-Z0-9_-)")]
+    InvalidLaneChar,
+    /// `pp.lead` (no `@`) のように Local form で lane を指定。
+    /// Local form は同一 Process 内 mailbox routing で lane 概念がない。
+    #[error("lane sub-suffix not allowed in local address (use `actor.lane@project`)")]
+    LaneNotAllowedInLocal,
+    /// `pp.lead@33003` のように Port form で lane を指定。
+    /// Port form は port 直指定で lane 概念がない (lane 付きは project 形式で表現)。
+    #[error("lane sub-suffix not allowed in port address (use `actor.lane@project`)")]
+    LaneNotAllowedInPort,
 }
 
 /// Actor 名を検証
@@ -190,6 +205,23 @@ pub fn validate_actor(actor: &str) -> Result<(), AddressError> {
         .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
     {
         return Err(AddressError::InvalidActorChar);
+    }
+    Ok(())
+}
+
+/// Lane sub-suffix を検証 (PR-β-0 / VP-117)
+///
+/// ルール: 非空、`[a-zA-Z0-9_-]+` (actor と同 charset)。
+/// `actor.lane@project` 形式で `lane` 部分の検証に使う。
+pub fn validate_lane(lane: &str) -> Result<(), AddressError> {
+    if lane.is_empty() {
+        return Err(AddressError::EmptyLane);
+    }
+    if !lane
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(AddressError::InvalidLaneChar);
     }
     Ok(())
 }
@@ -222,7 +254,16 @@ pub enum ResolvedAddress {
     /// Port 直指定
     Port { actor: String, port: u16 },
     /// Project name lookup 必要
-    Project { actor: String, project: String },
+    ///
+    /// PR-β-0 (VP-117): `lane` field を追加。 `pp.lead@vp` のような
+    /// sub-suffix 付き wire format を parse すると `lane: Some("lead")`、
+    /// 旧来の `pp@vp` 形式は `lane: None` で後方互換。
+    /// doc 13 §3 (LSCM application doc) 参照。
+    Project {
+        actor: String,
+        lane: Option<String>,
+        project: String,
+    },
 }
 
 impl ResolvedAddress {
@@ -241,19 +282,43 @@ impl ResolvedAddress {
 /// 形式:
 /// - `agent` → Local
 /// - `agent@33003` → Port (suffix が u16 数値)
-/// - `agent@vantage-point` → Project (suffix が文字列)
+/// - `agent@vantage-point` → Project (suffix が文字列、 lane = None)
+/// - `agent.lane@vantage-point` → Project (sub-suffix 付き、 lane = Some(...))
+///
+/// PR-β-0 (VP-117): `actor.lane@project` sub-suffix grammar を追加。
+/// `actor.lane` 形式は **Project 形式専用**、 Local (`agent.lane`) や Port
+/// (`agent.lane@33003`) では reject (lane 概念がない address kind のため)。
+/// doc 12 §5 + doc 13 §3 (LSCM application doc) 参照。
 pub fn parse_address(address: &str) -> Result<ResolvedAddress, AddressError> {
     match address.split_once('@') {
         None => {
+            // Local form。 sub-suffix 付き (`pp.lead`) は意味がないため reject。
+            if address.contains('.') {
+                // actor 名に `.` が含まれる = sub-suffix 形式の意図 → Local では不可
+                return Err(AddressError::LaneNotAllowedInLocal);
+            }
             validate_actor(address)?;
             Ok(ResolvedAddress::Local {
                 actor: address.to_string(),
             })
         }
-        Some((actor, locator)) => {
+        Some((actor_part, locator)) => {
+            // sub-suffix grammar: `actor.lane` を split
+            let (actor, lane) = match actor_part.split_once('.') {
+                Some((a, l)) => (a, Some(l)),
+                None => (actor_part, None),
+            };
+
             validate_actor(actor)?;
+            if let Some(l) = lane {
+                validate_lane(l)?;
+            }
+
             // locator が u16 数値なら port、それ以外は project
             if let Ok(port) = locator.parse::<u16>() {
+                if lane.is_some() {
+                    return Err(AddressError::LaneNotAllowedInPort);
+                }
                 Ok(ResolvedAddress::Port {
                     actor: actor.to_string(),
                     port,
@@ -262,6 +327,7 @@ pub fn parse_address(address: &str) -> Result<ResolvedAddress, AddressError> {
                 validate_project(locator)?;
                 Ok(ResolvedAddress::Project {
                     actor: actor.to_string(),
+                    lane: lane.map(|s| s.to_string()),
                     project: locator.to_string(),
                 })
             }
@@ -568,6 +634,7 @@ mod tests {
             parse_address("agent@vantage-point").unwrap(),
             ResolvedAddress::Project {
                 actor: "agent".to_string(),
+                lane: None,
                 project: "vantage-point".to_string(),
             }
         );
@@ -575,6 +642,7 @@ mod tests {
             parse_address("mcp@creo-memories").unwrap(),
             ResolvedAddress::Project {
                 actor: "mcp".to_string(),
+                lane: None,
                 project: "creo-memories".to_string(),
             }
         );
@@ -602,8 +670,137 @@ mod tests {
             parse_address("agent@anycreative.tech").unwrap(),
             ResolvedAddress::Project {
                 actor: "agent".to_string(),
+                lane: None,
                 project: "anycreative.tech".to_string(),
             }
+        );
+    }
+
+    // =============================================================================
+    // PR-β-0 (VP-117): sub-suffix grammar `actor.lane@project` の test 群
+    // =============================================================================
+
+    #[test]
+    fn test_parse_address_with_lane_sub_suffix() {
+        // 正常系: pp.lead@vp / hd.sub1@vp
+        assert_eq!(
+            parse_address("pp.lead@vp").unwrap(),
+            ResolvedAddress::Project {
+                actor: "pp".to_string(),
+                lane: Some("lead".to_string()),
+                project: "vp".to_string(),
+            }
+        );
+        assert_eq!(
+            parse_address("hd.sub1@vp").unwrap(),
+            ResolvedAddress::Project {
+                actor: "hd".to_string(),
+                lane: Some("sub1".to_string()),
+                project: "vp".to_string(),
+            }
+        );
+        // lane 名に `_` `-` 数字許容
+        assert_eq!(
+            parse_address("pp.worker_2@creo-memories").unwrap(),
+            ResolvedAddress::Project {
+                actor: "pp".to_string(),
+                lane: Some("worker_2".to_string()),
+                project: "creo-memories".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_address_lane_in_local_form_rejected() {
+        // Local form (no `@`) で lane 指定は不可 (lane 概念なし)
+        assert_eq!(
+            parse_address("pp.lead"),
+            Err(AddressError::LaneNotAllowedInLocal)
+        );
+    }
+
+    #[test]
+    fn test_parse_address_lane_in_port_form_rejected() {
+        // Port form で lane 指定は不可 (lane 概念なし、 lane 付きは project 形式で表現)
+        assert_eq!(
+            parse_address("pp.lead@33003"),
+            Err(AddressError::LaneNotAllowedInPort)
+        );
+    }
+
+    #[test]
+    fn test_parse_address_empty_lane_rejected() {
+        // `pp.@vp` lane 部分が空
+        assert_eq!(parse_address("pp.@vp"), Err(AddressError::EmptyLane));
+    }
+
+    #[test]
+    fn test_parse_address_invalid_lane_char_rejected() {
+        // `pp..lead@vp` 連続 dot → split_once で先頭 dot で分割 → ("pp", ".lead") →
+        // lane = ".lead"、先頭の `.` が invalid char → InvalidLaneChar
+        // (split_once は最初の `.` で分割するので `pp..lead` → ("pp", ".lead") となる)
+        assert_eq!(
+            parse_address("pp..lead@vp"),
+            Err(AddressError::InvalidLaneChar)
+        );
+        // lane に invalid char (`.` `/` `@`)
+        assert_eq!(
+            parse_address("pp.lead/x@vp"),
+            Err(AddressError::InvalidLaneChar)
+        );
+    }
+
+    #[test]
+    fn test_parse_address_back_compat_no_lane() {
+        // 後方互換: `pp@vp` → lane = None で既存挙動維持
+        assert_eq!(
+            parse_address("pp@vp").unwrap(),
+            ResolvedAddress::Project {
+                actor: "pp".to_string(),
+                lane: None,
+                project: "vp".to_string(),
+            }
+        );
+        // PR-α-3 で確立した World scope HACK `hp@world`
+        assert_eq!(
+            parse_address("hp@world").unwrap(),
+            ResolvedAddress::Project {
+                actor: "hp".to_string(),
+                lane: None,
+                project: "world".to_string(),
+            }
+        );
+        // hermit_purple@world (PR-α-3 mailbox register と同形)
+        assert_eq!(
+            parse_address("hermit_purple@world").unwrap(),
+            ResolvedAddress::Project {
+                actor: "hermit_purple".to_string(),
+                lane: None,
+                project: "world".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_validate_lane_directly() {
+        // lane validation の直接 test
+        assert_eq!(super::validate_lane("lead"), Ok(()));
+        assert_eq!(super::validate_lane("sub1"), Ok(()));
+        assert_eq!(super::validate_lane("worker_2"), Ok(()));
+        assert_eq!(super::validate_lane("a-b"), Ok(()));
+
+        assert_eq!(super::validate_lane(""), Err(AddressError::EmptyLane));
+        assert_eq!(
+            super::validate_lane("a.b"),
+            Err(AddressError::InvalidLaneChar)
+        );
+        assert_eq!(
+            super::validate_lane("a@b"),
+            Err(AddressError::InvalidLaneChar)
+        );
+        assert_eq!(
+            super::validate_lane("a/b"),
+            Err(AddressError::InvalidLaneChar)
         );
     }
 
