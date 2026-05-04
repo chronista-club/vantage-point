@@ -321,7 +321,7 @@ impl LanePool {
         Self::default()
     }
 
-    /// Project 起動時に Lead Lane を 1 つ pre-populate (HD default)
+    /// Project 起動時に Lead Lane を 1 つ pre-populate (Echoes default)
     ///
     /// **A5-2**: stand_spawner で command 構築 → PtySlot::spawn で実 process 起動。
     /// spawn 失敗時は graceful degrade (state=Dead、 pty_slots に entry なし) で
@@ -331,10 +331,11 @@ impl LanePool {
         let cwd = cwd.into();
         let mut pool = Self::new();
         let addr = LaneAddress::lead(&project_id);
-        // doc 11 PR-B: default stand は "hd" 固定 (config.default_stand での per-user 化は
+        // doc 11 PR-B: default stand は "echoes" 固定 (config.default_stand での per-user 化は
         // 後続 PR、 LanePool::with_lead は config を持たないため)。
         // user 設定がある場合の経路は HTTP API / lane_spawn_actor 経由で stand を明示指定する。
-        let stand_name = "hd";
+        // PR-pre2 (VP-118): "hd" → "echoes" rename。 mise task `vp:stand:echoes` (旧 hd)。
+        let stand_name = "echoes";
 
         let cmd = crate::process::stand_spawner::build_stand_command(
             stand_name,
@@ -645,7 +646,7 @@ mod tests {
         let lanes = pool.list();
         assert_eq!(lanes.len(), 1);
         assert_eq!(lanes[0].kind, LaneKind::Lead);
-        assert_eq!(lanes[0].stand, "hd"); // default は "hd" (旧 LaneStand::HeavensDoor)
+        assert_eq!(lanes[0].stand, "echoes"); // default は "echoes" (PR-pre2 で "hd" → "echoes" rename)
     }
 
     #[test]

@@ -27,7 +27,7 @@
 //! }
 //! ```
 //!
-//! `name` は `vp:stand:{name}` の `{name}` 部分そのまま (例: `"hd"` / `"shell"`)、
+//! `name` は `vp:stand:{name}` の `{name}` 部分そのまま (例: `"echoes"` / `"shell"` / `"tmux"`、 PR-pre2 で hd → echoes rename)、
 //! sidebar が POST `/api/lanes` の `stand` field にそのまま使える形式。
 
 use std::sync::{LazyLock, Mutex};
