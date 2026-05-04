@@ -176,7 +176,16 @@ impl RemoteRoutingClient {
         match resolved {
             ResolvedAddress::Local { .. } => None,
             ResolvedAddress::Port { actor, port } => Some(format!("{}@p{}", actor, port)),
-            ResolvedAddress::Project { actor, project } => Some(format!("{}@n{}", actor, project)),
+            // PR-β-0 (VP-117): lane sub-suffix が付く場合は cache key に lane も含める。
+            // 同 project / 同 actor でも lane が違えば別 entry として cache 分離。
+            ResolvedAddress::Project {
+                actor,
+                lane,
+                project,
+            } => Some(match lane {
+                Some(l) => format!("{}.{}@n{}", actor, l, project),
+                None => format!("{}@n{}", actor, project),
+            }),
         }
     }
 
@@ -227,7 +236,11 @@ impl RemoteRoutingClient {
                     self.world_base_url, actor, port
                 )
             }
-            ResolvedAddress::Project { actor, project } => {
+            ResolvedAddress::Project {
+                actor,
+                lane: _, // PR-β-0 (VP-117): lane は registry-side では未対応 (Q-7 で扱う)、 lookup は actor/project のみ
+                project,
+            } => {
                 format!(
                     "{}/api/world/msgbox/lookup?actor={}&project_name={}",
                     self.world_base_url, actor, project
@@ -443,6 +456,7 @@ mod tests {
         let client = make_client();
         let addr = ResolvedAddress::Project {
             actor: "agent".to_string(),
+            lane: None,
             project: "vantage-point".to_string(),
         };
         assert!(client.is_local(&addr));
@@ -453,6 +467,7 @@ mod tests {
         let client = make_client();
         let addr = ResolvedAddress::Project {
             actor: "agent".to_string(),
+            lane: None,
             project: "creo-memories".to_string(),
         };
         assert!(!client.is_local(&addr));
@@ -513,11 +528,26 @@ mod tests {
     async fn test_cache_key_project_format() {
         let addr = ResolvedAddress::Project {
             actor: "agent".to_string(),
+            lane: None,
             project: "vantage-point".to_string(),
         };
         assert_eq!(
             RemoteRoutingClient::cache_key(&addr),
             Some("agent@nvantage-point".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cache_key_project_with_lane() {
+        // PR-β-0 (VP-117): lane sub-suffix が付く Project address の cache key
+        let addr = ResolvedAddress::Project {
+            actor: "pp".to_string(),
+            lane: Some("lead".to_string()),
+            project: "vp".to_string(),
+        };
+        assert_eq!(
+            RemoteRoutingClient::cache_key(&addr),
+            Some("pp.lead@nvp".to_string())
         );
     }
 
