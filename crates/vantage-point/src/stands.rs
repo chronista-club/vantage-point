@@ -79,13 +79,17 @@ pub const PAISLEY_PARK: StandAlias = StandAlias {
     emoji: "🧭",
 };
 
-/// コーディングアシスタント能力 — Claude CLI オーケストレーター（岸辺露伴の「読み書き」）
-pub const HEAVENS_DOOR: StandAlias = StandAlias {
+/// コーディングアシスタント能力 — Claude CLI オーケストレーター
+///
+/// PR-pre2 (VP-118): Heaven's Door (岸辺露伴の「読み書き」) → Echoes (広瀬康一) に rename。
+/// 動機: zsh → tmux → claude の chain spawn が Echoes Act 1/2/3 進化と完璧 fit、
+/// terminal の echo (反響) 構造とも literal に一致。 emoji 💬 = prompt/response 対話型。
+pub const ECHOES: StandAlias = StandAlias {
     id: "agent",
     functional_name: "Coding Assistant",
-    stand_name: "Heaven's Door",
-    short: "HD",
-    emoji: "📖",
+    stand_name: "Echoes",
+    short: "EC",
+    emoji: "💬",
 };
 
 /// コード実行能力 — 動的生命注入エンジン（Ruby VM / ProcessRunner）
@@ -132,7 +136,7 @@ pub const ALL: &[&StandAlias] = &[
     &STAR_PLATINUM,
     &GOLD_EXPERIENCE,
     &PAISLEY_PARK,
-    &HEAVENS_DOOR,
+    &ECHOES,
     &THE_HAND,
     &HERMIT_PURPLE,
     &WHITESNAKE,

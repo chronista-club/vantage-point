@@ -692,9 +692,9 @@ mod tests {
             }
         );
         assert_eq!(
-            parse_address("hd.sub1@vp").unwrap(),
+            parse_address("echoes.sub1@vp").unwrap(),
             ResolvedAddress::Project {
-                actor: "hd".to_string(),
+                actor: "echoes".to_string(),
                 lane: Some("sub1".to_string()),
                 project: "vp".to_string(),
             }

@@ -1,6 +1,7 @@
 # 11: Stand init_script system (mise task 路線)
 
-> **Status**: draft v2 (2026-05-02、 mise file-based task 路線に rewrite)
+> **Status**: completed (2026-05-03、 9 PR 連鎖で landed)。 PR-pre2 (VP-118) で `vp:stand:hd` → `vp:stand:echoes` rename、 本 doc 内 `hd` 表記は historical record として維持 (新 stand 名は `echoes`、 詳細は doc 12 §9 catalog 参照)。
+> **Status (旧)**: draft v2 (2026-05-02、 mise file-based task 路線に rewrite)
 > **Extends**: `mem_1CabUx6FLaRgoK2unJvk6q` (VP Lane init_script で scripted Stand entrypoint を一般化、 2026-04-29 design intent)
 > **Supersedes**: 現行 `LaneStand` enum (HeavensDoor / TheHand) の二分構造、 および本 doc の v1 (Rust hard-code preset 案 ─ Section 5 Alternatives に縮約)
 > **Out of scope**: 複数 Stand の同時稼働 (= split lane)、 Stand 状態 telemetry (Mailbox / discovery 側で扱う)、 任意 user script の sandboxing (single-user dev tool 前提)

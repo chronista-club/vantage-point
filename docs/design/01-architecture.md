@@ -334,3 +334,7 @@ path = "/path/to/vantage-point"
 ---
 
 *更新日: 2026-03-10*
+
+---
+
+> **archive 注記 (2026-05-04、 PR-pre2 / VP-118)**: 本 doc 内の `Heaven's Door 📖` は当時の表記。 Stand metaphor は **Echoes 💬** に rename 済 (zsh→tmux→claude chain spawn が Echoes Act 1/2/3 進化と完璧 fit、 terminal echo 構造とも literal に一致)。 active SSOT は doc 12 §9 catalog。

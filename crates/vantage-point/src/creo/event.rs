@@ -24,7 +24,7 @@ pub struct ActorRef {
 }
 
 impl ActorRef {
-    /// `hd.lead@vantage-point` 形式の正規化文字列を返す。
+    /// `echoes.lead@vantage-point` 形式の正規化文字列を返す (PR-pre2 で hd → echoes rename)。
     pub fn canonical(&self) -> String {
         format!("{}.{}@{}", self.stand, self.lane, self.project)
     }
@@ -83,7 +83,7 @@ mod tests {
 
     fn sample_actor() -> ActorRef {
         ActorRef {
-            stand: "hd".into(),
+            stand: "echoes".into(),
             lane: "lead".into(),
             project: "vantage-point".into(),
         }
@@ -100,13 +100,13 @@ mod tests {
 
     #[test]
     fn actor_ref_canonical() {
-        assert_eq!(sample_actor().canonical(), "hd.lead@vantage-point");
+        assert_eq!(sample_actor().canonical(), "echoes.lead@vantage-point");
     }
 
     #[test]
     fn new_event_uses_uuid_v7() {
         let ev = Event::new(
-            "project/hd/notify/message",
+            "project/echoes/notify/message",
             sample_actor(),
             sample_content(),
         );

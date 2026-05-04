@@ -135,3 +135,7 @@ typealias PaneLayoutMap = [UUID: LayoutRule]
 - `apple/VantagePoint/Sources/CanvasRepresentable.swift` — 既存 canvas
 - `crates/vantage-point/src/stands.rs` — Stand メタファー根拠
 - `TopicRouter` — Unison v2、canvas content 配信経路
+
+---
+
+> **archive 注記 (2026-05-04、 PR-pre2 / VP-118)**: 本 doc 内の `Heaven's Door 📖` / `agent` arm は当時の表記。 Stand metaphor は **Echoes 💬** に rename 済。 active SSOT は doc 12 §9 catalog + doc 13。

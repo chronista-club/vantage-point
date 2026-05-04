@@ -225,9 +225,9 @@ exec ${SHELL:-/bin/zsh} -l
             .parent()
             .unwrap()
             .to_path_buf();
-        let m = StandMetadata::from_install_root(&workspace_root, "hd");
-        assert_eq!(m.tier, 2, "hd は tier=2 のはず: {:?}", m);
-        assert!(m.icon.is_some(), "hd は icon があるはず: {:?}", m);
+        let m = StandMetadata::from_install_root(&workspace_root, "echoes");
+        assert_eq!(m.tier, 2, "echoes は tier=2 のはず: {:?}", m);
+        assert!(m.icon.is_some(), "echoes は icon があるはず: {:?}", m);
     }
 
     #[test]

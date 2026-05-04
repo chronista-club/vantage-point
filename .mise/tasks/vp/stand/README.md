@@ -8,7 +8,7 @@ VP の Lane spawn 機構が呼び出す mise file-based task。 各 Stand を **
 
 | Path | Task 名 | Command |
 |------|---------|---------|
-| `.mise/tasks/vp/stand/hd` | `vp:stand:hd` | `mise run vp:stand:hd` |
+| `.mise/tasks/vp/stand/echoes` | `vp:stand:echoes` | `mise run vp:stand:echoes` (旧 `hd`、 PR-pre2/VP-118 で rename) |
 | `.mise/tasks/vp/stand/shell` | `vp:stand:shell` | `mise run vp:stand:shell` |
 | `.mise/tasks/vp/stand/tmux` | `vp:stand:tmux` | `mise run vp:stand:tmux` |
 
@@ -32,8 +32,8 @@ quoting 規約: task 内では `"$VP_CWD"` のように **必ず double-quote**�
 各ファイルの先頭コメントに以下を含める:
 
 - `#MISE description="..."` ─ mise が parse、 `mise tasks ls --json` の description field に出る
-- `#VP icon="📖"` ─ VP が parse、 sidebar 表示に使う (1 文字 emoji)
-- `#VP tier=N` ─ VP が parse、 PTY tier 区分 (0=shell / 1=tmux / 2=hd)
+- `#VP icon="💬"` ─ VP が parse、 sidebar 表示に使う (1 文字 emoji)
+- `#VP tier=N` ─ VP が parse、 PTY tier 区分 (0=shell / 1=tmux / 2=echoes)
 
 > **用語注**: `tier` は **PTY 階層** を表す (LSCM Layer = World/Project/Lane の container とは別概念、 [doc 12 §0 Glossary](../../../../docs/design/12-stand-architecture.md) 参照)。 旧 `#VP layer=N` は VP-110 で `#VP tier=N` に rename された。
 
@@ -43,7 +43,7 @@ quoting 規約: task 内では `"$VP_CWD"` のように **必ず double-quote**�
 |------|------|------|------|
 | 0 | `vp:stand:shell` | bare login shell | 舞台の床 |
 | 1 | `vp:stand:tmux` | tmux session attached、 LLM なし | 副舞台を仕込む |
-| 2 | `vp:stand:hd` | tmux + Claude auto-launch | 役者を呼ぶ |
+| 2 | `vp:stand:echoes` | tmux + Claude auto-launch (zsh→tmux→claude が Echoes Act 1/2/3) | 役者を呼ぶ |
 
 ## Standalone test
 
@@ -58,9 +58,9 @@ VP_CWD=/tmp VP_SESSION=test VP_PROJECT=test VP_LANE=lead \
 VP_CWD=/tmp VP_SESSION=vp-test-lead-tx VP_PROJECT=test VP_LANE=lead \
   mise run vp:stand:tmux
 
-# Tier 2: tmux + claude auto-launch
-VP_CWD=$(pwd) VP_SESSION=vp-test-lead-hd VP_PROJECT=test VP_LANE=lead \
-  mise run vp:stand:hd
+# Tier 2: tmux + claude auto-launch (Echoes 💬)
+VP_CWD=$(pwd) VP_SESSION=vp-test-lead-echoes VP_PROJECT=test VP_LANE=lead \
+  mise run vp:stand:echoes
 ```
 
 実行後、 起動した tmux session を抜ける時は通常通り `Ctrl-b d` で detach、 kill する場合は別 terminal から `tmux kill-session -t vp-test-lead-tx` 等。
@@ -70,12 +70,12 @@ VP_CWD=$(pwd) VP_SESSION=vp-test-lead-hd VP_PROJECT=test VP_LANE=lead \
 mise の cascade を活用、 VP 側の改修不要:
 
 ```
-~/repos/creo-memories/.mise/tasks/vp/stand/hd  ← project-local override (もしあれば優先)
-~/repos/vantage-point/.mise/tasks/vp/stand/hd  ← workspace default (本ディレクトリ)
+~/repos/creo-memories/.mise/tasks/vp/stand/echoes  ← project-local override (もしあれば優先)
+~/repos/vantage-point/.mise/tasks/vp/stand/echoes  ← workspace default (本ディレクトリ)
 ~/.config/mise/tasks/vp/stand/hd               ← global fallback (もしあれば)
 ```
 
-各 project の workflow に合わせて Stand を override できる。 例えば creo-memories project で「HD lane では rails console + claude を一緒に起動」 したい場合、 project の `.mise/tasks/vp/stand/hd` を作ってそこで rails+claude を起動する script に置き換える。
+各 project の workflow に合わせて Stand を override できる。 例えば creo-memories project で「Echoes lane では rails console + claude を一緒に起動」 したい場合、 project の `.mise/tasks/vp/stand/echoes` を作ってそこで rails+claude を起動する script に置き換える。
 
 ## 追加 Stand の作り方
 

@@ -224,3 +224,7 @@ vp-app (WS client) ──tcp──► TheWorld :32000/ws/terminal ──► PtyS
 - VP-93 を Step 2a / 2b / 2c のサブ issue に分解 (または inline TODO として track)
 - Step 2a 実装から着手 — `mako/vp-93-*` branch
 - WS endpoint の詳細 protocol が固まってきたら `docs/spec/` に別出し検討
+
+---
+
+> **archive 注記 (2026-05-04、 PR-pre2 / VP-118)**: 本 doc title `vp-app-hd-bridge` の `HD` は当時の `Heaven's Door` 表記。 Stand metaphor は **Echoes 💬** に rename 済 (Stand 名 + actor 名 + mise task file 全 sweep)。 active SSOT は doc 12 §9 catalog。 file rename はせず historical record として維持。

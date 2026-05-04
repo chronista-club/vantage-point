@@ -382,10 +382,10 @@ pub async fn run(
             );
             for entry in workers {
                 // doc 11 PR-B: stand は String 化、 default は config の `default_stand`
-                // (未設定なら "hd" fallback)。
+                // (未設定なら "echoes" fallback、 PR-pre2 / VP-118 で "hd" → "echoes")。
                 let default_stand = crate::config::Config::load()
                     .unwrap_or_default()
-                    .default_stand_or_hd()
+                    .default_stand_or_echoes()
                     .to_string();
                 let cmd = super::lane_cmd::LaneCmd::SpawnLane {
                     project_id: workers_project_id.clone(),

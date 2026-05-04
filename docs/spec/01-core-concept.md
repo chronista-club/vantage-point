@@ -72,7 +72,7 @@ VP の 1st ビューは「プロジェクト選択 → TUI → AI 対話」。
 | REQ1.3 | 設定ファイル (`config.toml`) で複数プロジェクトを管理できる | Must |
 | REQ1.4 | `vp ps` で稼働中プロセスを一覧できる | Must |
 
-### R2: AI との対話（📖 Heaven's Door — Coding Assistant）
+### R2: AI との対話（💬 Echoes — Coding Assistant、 旧 Heaven's Door 📖）
 
 | ID | 要件 | 優先度 |
 |----|------|--------|
@@ -141,7 +141,7 @@ VP の 1st ビューは「プロジェクト選択 → TUI → AI 対話」。
 ```
 TheWorld 👑 (Process Manager / 常駐デーモン)
   └── Star Platinum ⭐ (Project Core / TUI 統合ビュー)
-        ├── Heaven's Door 📖 (Coding Assistant / Claude CLI)
+        ├── Echoes 💬 (Coding Assistant / Claude CLI、 旧 Heaven's Door 📖)
         ├── Paisley Park 🧭 (Information Navigator / Canvas)
         ├── Gold Experience 🌿 (Code Runner / 動的実行)
         └── Hermit Purple 🍇 (External Control / MIDI・tmux・MCP)
@@ -159,7 +159,7 @@ TheWorld 👑 (Process Manager / 常駐デーモン)
 
 | 入力 | 状態 | Stand |
 |------|------|-------|
-| テキスト入力（TUI） | 実装済み | 📖 Heaven's Door |
+| テキスト入力（TUI） | 実装済み | 💬 Echoes |
 | MIDI コントローラー | 実装済み（LPD8） | 🍇 Hermit Purple |
 | tmux 連携 | 実装済み | 🍇 Hermit Purple |
 | MCP サーバー | 実装済み | 🍇 Hermit Purple |
