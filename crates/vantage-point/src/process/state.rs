@@ -161,15 +161,22 @@ pub(crate) struct AppState {
     /// 将来 Pane / Stand / Process 等の lifecycle event も同 bus に variant 追加で乗せる。
     pub system_event_tx: tokio::sync::broadcast::Sender<super::lanes_state::SystemEvent>,
     /// Project scope の Stand pool (PP / GE / HP) — Phase A4-2b minimum、skeleton
-    /// 関連 memory: 「多 scope architecture」rule (2026-04-27)
+    /// 関連 memory: 「多 scope architecture」rule (2026-04-27、 PR-pre2/PR-β-2 で supersede 予定)
     pub project_stands: Arc<RwLock<super::project_stands_state::ProjectStandsPool>>,
     /// World 階層 Stand container (LSCM、 PR-α series / VP-109)。
     ///
     /// World mode (`run_world`) でのみ Some、 SP mode (`run`) では None。
     /// PR-α 完了後も既存 World 階層 field (world / msgbox_registry / update / whitesnake)
     /// と重複保持 (意図的 HACK、 LSCM A6 share-nothing 整合は β 以降の cleanup PR で整理予定)。
-    /// 関連: doc 12 §3 / §9、 Linear VP-109 (epic) / VP-111/112/113 ✅ / VP-114 (planned)
+    /// 関連: doc 12 §3 / §9、 Linear VP-109 (epic) / VP-111/112/113/114/115 ✅
     pub world_capabilities: Option<Arc<crate::daemon::world_capabilities::WorldCapabilities>>,
+    /// Lane 階層 Stand container pool (LSCM、 PR-β-1 / VP-119、 受け皿)。
+    ///
+    /// SP mode (`run`) でのみ Some、 World mode (`run_world`) では None。
+    /// PR-β-1 では **空 HashMap で初期化**、 既存 `lane_pool` / `project_stands` とは並立。
+    /// PR-β-2 で PP を `project_stands.paisley_park` から本 pool の各 Lane entry に物理移管予定。
+    /// 関連: doc 12 §9 catalog、 doc 13 §3 / §9 / §10 Q-7、 Linear VP-109 (epic) / VP-119 (本 PR)
+    pub lane_capabilities: Option<Arc<RwLock<super::lane_capabilities::LaneCapabilitiesPool>>>,
 }
 
 impl AppState {

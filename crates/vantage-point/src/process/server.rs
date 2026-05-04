@@ -324,6 +324,11 @@ pub async fn run(
         )),
         // PR-α-1 (VP-111): SP モードでは WorldCapabilities を持たない (World mode 専用)
         world_capabilities: None,
+        // PR-β-1 (VP-119): SP モードで LaneCapabilities pool 受け皿を Some で初期化。
+        // 物理移管 (PP) は PR-β-2、 本 PR では空 HashMap で構築のみ。
+        lane_capabilities: Some(Arc::new(RwLock::new(
+            super::lane_capabilities::LaneCapabilitiesPool::new(),
+        ))),
     });
 
     // Phase review fix #2: LanePool::with_lead は内部で PtySlot::spawn (openpty + spawn_command)
@@ -794,6 +799,8 @@ pub async fn run_world(
         )),
         // PR-α-1 (VP-111): World 階層 Stand container (LSCM doc 12 §3 / §9)
         world_capabilities: Some(world_capabilities),
+        // PR-β-1 (VP-119): World mode では LaneCapabilities を持たない (Lane scope は SP per project)
+        lane_capabilities: None,
     });
 
     let app = Router::new()
