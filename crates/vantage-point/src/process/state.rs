@@ -170,12 +170,14 @@ pub(crate) struct AppState {
     /// と重複保持 (意図的 HACK、 LSCM A6 share-nothing 整合は β 以降の cleanup PR で整理予定)。
     /// 関連: doc 12 §3 / §9、 Linear VP-109 (epic) / VP-111/112/113/114/115 ✅
     pub world_capabilities: Option<Arc<crate::daemon::world_capabilities::WorldCapabilities>>,
-    /// Lane 階層 Stand container pool (LSCM、 PR-β-1 / VP-119、 受け皿)。
+    /// Lane 階層 Stand container pool (LSCM、 PR-β-2 / VP-120 で PP 物理移管完了)。
     ///
     /// SP mode (`run`) でのみ Some、 World mode (`run_world`) では None。
-    /// PR-β-1 では **空 HashMap で初期化**、 既存 `lane_pool` / `project_stands` とは並立。
-    /// PR-β-2 で PP を `project_stands.paisley_park` から本 pool の各 Lane entry に物理移管予定。
-    /// 関連: doc 12 §9 catalog、 doc 13 §3 / §9 / §10 Q-7、 Linear VP-109 (epic) / VP-119 (本 PR)
+    /// PR-β-1 (VP-119) で空 HashMap 受け皿として新設、 PR-β-2 (VP-120) で PP を
+    /// `project_stands.paisley_park` から本 pool の各 Lane entry に **物理移管完了**
+    /// (Lane あたり独立 PaisleyParkState instance、 cardinality 1 → N)。
+    /// 既存 `lane_pool` / `project_stands` とは並立 (gradual migration、 PR-γ で GE も移管予定)。
+    /// 関連: doc 12 §9 catalog、 doc 13 §3 / §9 / §10 Q-7、 Linear VP-109 (epic) / VP-119 / VP-120
     pub lane_capabilities: Option<Arc<RwLock<super::lane_capabilities::LaneCapabilitiesPool>>>,
 }
 
