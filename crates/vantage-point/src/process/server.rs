@@ -341,11 +341,31 @@ pub async fn run(
     // ペイン状態をディスクから復元（前回 Process 終了時の状態 → RetainedStore）
     state.restore_pane_contents().await;
 
+    // PR-β-2 (VP-120): Lead Lane の LaneCapabilities entry を populate (LanePool::with_lead と同期)。
+    // PR-β-1 で空 HashMap だった lane_capabilities pool に、 Lead Lane の独立 PaisleyParkState を host。
+    // doc 13 §6 自動 spawn rule = Lane 起動時に PP 同時 spawn (default) を default で実現。
+    if let Some(lc_pool) = state.lane_capabilities.as_ref() {
+        let lead_addr = super::lanes_state::LaneAddress::lead(&project_name_for_remote);
+        let default_stand = crate::config::Config::load()
+            .unwrap_or_default()
+            .default_stand_or_echoes()
+            .to_string();
+        lc_pool
+            .write()
+            .await
+            .populate_lane(lead_addr, default_stand);
+        tracing::info!(
+            "PR-β-2: LaneCapabilities pool に Lead Lane populate (project={}, PP host 化)",
+            project_name_for_remote
+        );
+    }
+
     // (I-b、 2026-04-30) Lane spawn actor を起動し、 既存 ccws workers を Cmd 化して投入。
     // 旧 PR #228 の sync `populate_workers_from_disk` 経路を Mailbox actor + Semaphore に置換。
     // - actor は `lane-spawn` mailbox を recv し、 `Arc<Semaphore::new(N)>` で gate しつつ並列実行
     // - bootstrap は ccws workers をスキャンして `LaneCmd::SpawnLane` を投入 (= 1 回限りの seed)
     // - N=config.startup.max_concurrent_lane_spawn (default 1、 dogfood で計測 log を集計して tweak)
+    // PR-β-2 (VP-120): lane_capabilities pool clone も渡し、 Worker spawn 時に populate_lane する。
     {
         let lane_spawn_handle = state
             .capabilities
@@ -359,7 +379,8 @@ pub async fn run(
         super::lane_spawn_actor::spawn(
             lane_spawn_handle,
             state.lane_pool.clone(),
-            state.system_event_tx.clone(), // Phase 2 (Step E): system event central bus
+            state.lane_capabilities.clone(), // PR-β-2 (VP-120): Worker spawn 時に populate_lane する
+            state.system_event_tx.clone(),   // Phase 2 (Step E): system event central bus
             max_concurrent,
             shutdown_token.clone(),
         );

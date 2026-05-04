@@ -52,6 +52,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::capability::msgbox::{Handle, MessageKind};
 
+use super::lane_capabilities::LaneCapabilitiesPool;
 use super::lane_cmd::LaneCmd;
 use super::lanes_state::{Diff, LaneAddress, LaneInfo, LaneKind, LanePool, LaneState, SystemEvent};
 
@@ -59,9 +60,14 @@ use super::lanes_state::{Diff, LaneAddress, LaneInfo, LaneKind, LanePool, LaneSt
 /// `lane-spawn` mailbox から `LaneCmd` を recv して並列度制限付きで Lane を spawn する。
 ///
 /// `tokio::spawn` で background task 化されるため、 caller は即 return する。
+///
+/// PR-β-2 (VP-120): `lane_capabilities_pool: Option<Arc<RwLock<LaneCapabilitiesPool>>>` 引数を追加。
+/// Worker spawn 成功時に `populate_lane` を呼んで Lane あたり独立 PaisleyParkState を host する。
+/// World mode (= None) ではこの populate 経路は走らない (= Lane scope は SP per project)。
 pub fn spawn(
     handle: Handle,
     lane_pool: Arc<RwLock<LanePool>>,
+    lane_capabilities_pool: Option<Arc<RwLock<LaneCapabilitiesPool>>>,
     system_event_tx: tokio::sync::broadcast::Sender<SystemEvent>,
     max_concurrent: usize,
     shutdown: CancellationToken,
@@ -112,11 +118,12 @@ pub fn spawn(
                     };
                     let sem = semaphore.clone();
                     let pool = lane_pool.clone();
+                    let lc_pool = lane_capabilities_pool.clone();
                     let tx = system_event_tx.clone();
                     // permit 取得を含めて worker task で実行 → recv loop は次の msg を即受領可能。
                     // 結果として「N 本まで permit 待ち + 実行、 残りは queue で待機」 の挙動。
                     tokio::spawn(async move {
-                        handle_cmd(cmd, pool, tx, sem).await;
+                        handle_cmd(cmd, pool, lc_pool, tx, sem).await;
                     });
                 }
             }
@@ -125,9 +132,13 @@ pub fn spawn(
 }
 
 /// 単一 `LaneCmd` を処理。 Semaphore permit を acquire してから heavy spawn を実行。
+///
+/// PR-β-2 (VP-120): `lane_capabilities_pool` 引数 (Option) を追加、 spawn 成功時に
+/// `populate_lane` を呼んで Worker Lane あたり独立 PaisleyParkState を host する。
 async fn handle_cmd(
     cmd: LaneCmd,
     pool: Arc<RwLock<LanePool>>,
+    lane_capabilities_pool: Option<Arc<RwLock<LaneCapabilitiesPool>>>,
     system_event_tx: tokio::sync::broadcast::Sender<SystemEvent>,
     semaphore: Arc<Semaphore>,
 ) {
@@ -267,6 +278,18 @@ async fn handle_cmd(
     pool_write.insert(info.clone());
     drop(pool_write); // write lock 解放してから publish (deadlock 回避 + subscriber が即取れる)
 
+    // PR-β-2 (VP-120): Worker Lane spawn 完了 → LaneCapabilities pool に entry 追加
+    // (Lane あたり独立 PaisleyParkState を host、 doc 13 §6 自動 spawn rule = default)。
+    // None は World mode (Lane scope なし) で発生、 SP mode では常に Some。
+    if let Some(lc_pool) = lane_capabilities_pool.as_ref() {
+        lc_pool.write().await.populate_lane(addr.clone(), &stand);
+        tracing::debug!(
+            "PR-β-2: LaneCapabilities pool に Worker Lane populate (addr={}, stand={})",
+            addr,
+            stand
+        );
+    }
+
     // Phase 2 (Step E): Worker spawn 完了を SystemEvent::Lane(Diff::Add) で TheWorld に push。
     // QUIC registry channel 経由で realtime sync。 失敗は warn のみ (best-effort、
     // SP lane_pool が SSOT、 reconnect 時に register snapshot で必ず再構築される)。
@@ -295,7 +318,8 @@ mod tests {
         let shutdown = CancellationToken::new();
 
         // 0 を渡しても 1 に丸めて起動するはず (= タイムアウトせずに actor 起動 + shutdown 完了)
-        spawn(handle.clone(), pool, tx, 0, shutdown.clone());
+        // PR-β-2 (VP-120): lane_capabilities_pool = None で test (Lane scope なしの動作確認)
+        spawn(handle.clone(), pool, None, tx, 0, shutdown.clone());
 
         // SpawnLane を投入しても fallback 経路 (cwd 不在) で graceful degrade するはず。
         // 重要なのは「actor が動いて shutdown で終了する」 こと。
@@ -303,7 +327,7 @@ mod tests {
             project_id: "test".to_string(),
             name: "msg-zero".to_string(),
             cwd: "/nonexistent/path/for/test".to_string(),
-            stand: "hd".to_string(),
+            stand: "echoes".to_string(),
         };
         let msg = Message::new("test", "lane-spawn", MessageKind::Direct).with_payload(&cmd);
         let _ = handle.send(msg).await;
@@ -325,7 +349,8 @@ mod tests {
         let (tx, _rx) = tokio::sync::broadcast::channel::<SystemEvent>(8);
         let shutdown = CancellationToken::new();
 
-        spawn(handle.clone(), pool.clone(), tx, 1, shutdown.clone());
+        // PR-β-2 (VP-120): lane_capabilities_pool = None で test
+        spawn(handle.clone(), pool.clone(), None, tx, 1, shutdown.clone());
 
         // Notification kind を投入 → ignore されるはず
         let msg = Message::new("test", "lane-spawn", MessageKind::Notification)
