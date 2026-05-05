@@ -287,15 +287,15 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
     let stands = if state.terminal_token != "WORLD_DISABLED" {
         let mut map = std::collections::HashMap::new();
 
-        // 📖 Heaven's Door（Agent）— interactive_agent の有無で判定
-        let hd_status = {
+        // 💬 Echoes (Coding Assistant) — interactive_agent の有無で判定
+        let echoes_status = {
             let agent = state.interactive_agent.read().await;
             if agent.is_some() { "active" } else { "idle" }
         };
         map.insert(
-            "heavens_door".to_string(),
+            "echoes".to_string(),
             StandStatus {
-                status: hd_status,
+                status: echoes_status,
                 detail: None,
             },
         );

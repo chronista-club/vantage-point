@@ -278,13 +278,16 @@ async fn handle_cmd(
     pool_write.insert(info.clone());
     drop(pool_write); // write lock 解放してから publish (deadlock 回避 + subscriber が即取れる)
 
-    // PR-β-2 (VP-120): Worker Lane spawn 完了 → LaneCapabilities pool に entry 追加
+    // Worker Lane spawn 完了 → LaneCapabilities pool に entry 追加
     // (Lane あたり独立 PaisleyParkState を host、 doc 13 §6 自動 spawn rule = default)。
     // None は World mode (Lane scope なし) で発生、 SP mode では常に Some。
-    if let Some(lc_pool) = lane_capabilities_pool.as_ref() {
+    // Dead state では populate しない (cascade lifecycle、 上の tmux: vec![] と同型 guard)。
+    if matches!(state, LaneState::Running)
+        && let Some(lc_pool) = lane_capabilities_pool.as_ref()
+    {
         lc_pool.write().await.populate_lane(addr.clone(), &stand);
         tracing::debug!(
-            "PR-β-2: LaneCapabilities pool に Worker Lane populate (addr={}, stand={})",
+            "LaneCapabilities pool に Worker Lane populate (addr={}, stand={})",
             addr,
             stand
         );

@@ -184,7 +184,7 @@ fn sp_status(project_dir: &str, config: &Config) -> Result<()> {
                         .and_then(|s| s.as_str())
                         .unwrap_or("unknown");
                     let icon = match name.as_str() {
-                        "heavens_door" => "📖 Heaven's Door (HD)",
+                        "echoes" => "💬 Echoes",
                         "paisley_park" => "🧭 Paisley Park (PP)",
                         "gold_experience" => "🌿 Gold Experience (GE)",
                         "hermit_purple" => "🍇 Hermit Purple (HP)",
