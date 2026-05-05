@@ -153,7 +153,7 @@ PP は受信した「情報」 を以下のルールで surface に routing す�
 | Search result (ephemeral) | Smart Canvas (transient) | 一時表示、 次の routing で消える |
 | Error (critical) | Modal | block 系、 user 確認必須 |
 | Error (non-critical) | Inline (status bar) | non-block、 通知のみ |
-| Memory surface (creo) | Smart Canvas (pin option) | creo memory 関連 (PR-ε で実装) |
+| Memory surface (creo) | Smart Canvas (creo memory pin) | creo memory を Canvas content kind として render (PR-ε で実装、 VP-121 で sidebar feed 統合確定) |
 | Tool use log | Dev Panel | 開発モード時のみ |
 | Progress (build/test) | Inline (progress bar) | 進行中 indicator |
 
@@ -179,7 +179,7 @@ PP は **passive (名指し受信)** と **active (subscriber)** の両形で in
 |------|-----|----|-----|
 | MCP tool call | P | `mcp__show` / `mcp__clear` (caller Lane に自動解決) | Echoes 内 Claude が `mcp__show("# Hello")` |
 | Mailbox direct | P | `pp.{lane}@{project}` send | 別 Stand から `pp.lead@vp` に push |
-| HTTP API | P | `POST /api/pp/{action}` (vp-app から) | Sidebar UI 操作 |
+| HTTP API | P | `POST /api/pp/{action}` (vp-app から) | Canvas UI 操作 (pin/focus/tag 等、 VP-121 で sidebar 廃止 → Canvas 統合) |
 | TopicRouter subscribe | A | 他 Stand の event topic を subscribe | `process/build/event/completed` を listen → Inline 通知 |
 | External watcher | A | filesystem / process / hub event を Mailbox 経由で受信 | build watcher → PP → Inline progress bar |
 
@@ -189,18 +189,17 @@ PP は topic で broadcast:
 
 | Topic | 用途 | Subscriber |
 |-------|------|------------|
-| `pp/lane/{lane}/surface/canvas` | Smart Canvas content 更新 | WebView Canvas |
+| `pp/lane/{lane}/surface/canvas` | Smart Canvas content 更新 (creo memory 含む全 content kind) | WebView Canvas |
 | `pp/lane/{lane}/surface/inline` | Inline status 更新 | TUI / vp-app status bar |
 | `pp/lane/{lane}/surface/modal` | Modal 通知 | vp-app modal layer |
-| `pp/lane/{lane}/feed` | 常駐フィード (creo activity) | Sidebar PP feed |
 
 **RetainedStore 連携**: state category (`pp/lane/{lane}/surface/canvas`) は最新値を保持、 Canvas 後発接続時に最新 content が即取得できる (RetainedStore 実装は doc 12 §10 codebase 対応表 + A7 CSP face 参照)。
 
 > **⚠ Topic 命名規約 ambiguity (P1-8)**: doc 12 §5 命名規約 `{scope}/{capability}/{category}/{detail}` は 4 階層、 上記 doc 13 例 `pp/lane/{lane}/surface/canvas` は 5 階層で Lane 軸が中間に挿入されている。 規約厳密化は §10 Q-8 で扱う、 暫定として Lane 軸を含む 5 階層を許容する。
 
-### MCP 中継経路 (← mem_1Ca8xHcMf9sFBB2VHUpHzZ)
+### MCP 中継経路 (← mem_1Ca8xHcMf9sFBB2VHUpHzZ、 VP-121 で sidebar feed 廃止 → Canvas 1 surface)
 
-origin 願いの core: lead Claude の creo MCP 呼び出しを VP が中継して Sidebar / Canvas に流す。
+origin 願いの core: lead Claude の creo MCP 呼び出しを VP が中継して Smart Canvas に流す (creo memory を Canvas content kind として render)。
 
 ```mermaid
 sequenceDiagram
@@ -208,24 +207,24 @@ sequenceDiagram
     participant VP as VP MCP Proxy<br/>(SP host)
     participant CM as creo-memories<br/>(upstream)
     participant PP as PP (Lane)
-    participant UI as Surface<br/>(Sidebar/Canvas)
+    participant Canvas as Smart Canvas<br/>(WebView)
 
     CC->>VP: tool call (remember/search/get_*)
     VP->>CM: forward to upstream
     CM-->>VP: response
     VP-->>CC: response
     VP->>PP: Mailbox (pp.{lane}@{project}) — activity event
-    PP->>PP: rule table → surface 判定
-    PP->>UI: TopicRouter broadcast (pp/lane/{lane}/feed)
-    UI->>UI: render card
+    PP->>PP: rule table → Canvas content kind 判定
+    PP->>Canvas: TopicRouter broadcast (pp/lane/{lane}/surface/canvas)
+    Canvas->>Canvas: creo memory を content kind として render
 
-    Note over UI,VP: 逆方向
-    UI->>VP: HTTP API (pin/focus/tag)
+    Note over Canvas,VP: 逆方向
+    Canvas->>VP: HTTP API (pin/focus/tag、 Canvas UI 上)
     VP->>PP: Mailbox (pp.{lane}@{project})
     PP->>CC: inject (next tool response の context として返す)
 ```
 
-**MCP 中継は SP (Project Stand) で実装、 PP は Lane instance** ─ MCP boundary は project 単位だが、 PP は Lane 単位で feed を split する。 caller Echoes の Lane address を MCP request envelope から取得して route する。
+**MCP 中継は SP (Project Stand) で実装、 PP は Lane instance** ─ MCP boundary は project 単位だが、 PP は Lane 単位で Canvas content を split する。 caller Echoes の Lane address を MCP request envelope から取得して route する。
 
 > **⚠ caller Lane resolution path 未確定 (P0-2)**: 現実装の `ShowParams` (`mcp.rs:26-49`) には `lane` field がなく、 `/api/show` handler (`routes/health.rs:379-387`) は lane filter なしで全 broadcast。 「caller Echoes の Lane address を MCP envelope から取得」 path は spec のみで実装が未整備。 解決案 (env / param) は §10 Q-5 で扱う、 PR-β-3 caller migration の hard prerequisite。
 
@@ -291,22 +290,24 @@ user が「次回起動時もこの Canvas pin を維持したい」 のよう�
 
 ---
 
-## §8. creo-memory-pane (PR-ε) — PP 上の代表 use case
+## §8. creo memory in Canvas (PR-ε) — PP 上の代表 use case
+
+> **VP-121 simplification (2026-05-05)**: 旧版で「creo-memory-pane」 として独立 surface (sidebar feed + Smart Canvas の 2 surface broadcast) として設計されていたが、 user 提案により **Smart Canvas の content kind として inlining** に simplify。 sidebar feed 廃止、 Canvas 1 surface に集約。
 
 ### 配置
 
-PR-ε で実装する creo-memory-pane は **PP の Information Router 機能の 1 instance**、 PP 自体ではない。 PP からみて:
+PR-ε で実装する creo memory feature は **Smart Canvas の content kind**、 PP 自体ではない。 PP からみて: lead Claude の creo activity (remember / search / get) を Smart Canvas に「creo memory」 という content kind として render する router 機能。
 
-- **Sidebar feed** (常駐): `pp/lane/{lane}/feed` topic に lead Claude の creo activity (remember/search/get) を card として broadcast
-- **Smart Canvas (検索 UI + 本文詳細)**: `pp/lane/{lane}/surface/canvas` topic に creo memory body を broadcast、 Canvas で render
+- **Smart Canvas (creo memory render)**: `pp/lane/{lane}/surface/canvas` topic に creo memory を broadcast、 Canvas で content kind 別 (timeline / search results / detail body) に render
+- **独立 surface 廃止**: 旧設計の sidebar feed (常駐 creo activity card) は廃止、 Canvas に統合。 sidebar feed は元来 §5 出力面 table の subscriber 欄に `pp/lane/{lane}/feed` topic として存在、 VP-121 で topic ごと削除 (§5 参照)。 §7 Surface table は 5 Surface のまま不変 (sidebar feed は formal Surface 列挙には元々含まれていなかった)。
 
-### 反応 event mapping (← mem_1Ca8xHcMf9sFBB2VHUpHzZ)
+### 反応 event mapping (← mem_1Ca8xHcMf9sFBB2VHUpHzZ、 VP-121 で Canvas 1 surface に統合)
 
 | MCP tool call | PP 動作 |
 |--------------|--------|
-| `remember` | feed topic に新着カード broadcast (Sidebar アニメーション) |
-| `search` | feed topic に結果リスト broadcast (Sidebar 一時表示、 pin 可) |
-| `get_*` | canvas topic に本文 broadcast (Canvas 自動展開) |
+| `remember` | canvas topic に新着 creo memory を broadcast (Canvas timeline content kind に追加表示) |
+| `search` | canvas topic に検索結果 list を broadcast (Canvas search-results content kind、 pin で memory detail に切替可) |
+| `get_*` | canvas topic に本文 broadcast (Canvas memory-detail content kind で展開) |
 
 ### 双方向同期
 
@@ -314,7 +315,7 @@ origin 願いの「気持ちよくリアルタイム連携」 = 双方向。 逆
 
 | user action | PP 動作 |
 |-------------|--------|
-| Sidebar カードを pin | PP が pin 状態を RetainedStore に保持、 Canvas に固定表示 |
+| Canvas timeline カードを pin | PP が pin 状態を RetainedStore に保持、 Canvas memory-detail に固定切替 |
 | Canvas で memory focus | PP が next MCP response の context resource として inject |
 | Tag 編集 | PP が `mcp__update_memory` を caller Echoes 経由で実行 (caller agency 維持) |
 
@@ -324,11 +325,12 @@ origin 願いの「気持ちよくリアルタイム連携」 = 双方向。 逆
 
 ### MVP scope (PR-ε)
 
-PR-ε で実装する最小 scope:
-1. Sidebar feed (remember/search の card 追加、 Smart Canvas pin 連携)
-2. Canvas での memory 本文展開 (get_* auto-display)
-3. Pin / Focus の RetainedStore 保持
-4. Tag 編集 (caller agency 経由)
+PR-ε で実装する最小 scope (VP-121 simplification 後):
+1. Smart Canvas content kind として「creo memory」 を追加 (timeline / search-results / memory-detail の 3 view)
+2. remember / search で Canvas timeline 自動更新 (旧 sidebar feed 機能を Canvas に統合)
+3. get_* で Canvas memory-detail に本文展開
+4. Pin / Focus の RetainedStore 保持 (Canvas 永続)
+5. Tag 編集 (caller agency 経由、 §8 上記)
 
 Out-of-scope (Post-PR-ε):
 - AI-driven routing (PP 動作モード A、 Phase 7.5)
@@ -345,7 +347,7 @@ doc 12 §9 で plot された PR-β/δ/ε を本 doc で技術設計確定:
 |----|------------------|------|------|------|
 | **PR-β** | TBD | PP を Project actor から Lane instance 化 (catalog §9 SSOT に揃える) | L | PR-α 完了 |
 | **PR-δ** | TBD | Lane Layer supervisor 整備 (SP 内 Lane registry、 host API、 LaneCapabilities) | M | PR-β 完了 |
-| **PR-ε** | TBD | PP に creo-memory-pane 機能実装 (本 doc §8) | M | PR-δ 完了 |
+| **PR-ε** | TBD | Smart Canvas に「creo memory」 content kind 追加 (本 doc §8、 VP-121 で creo-memory-pane → Canvas 統合に simplify) | M (旧 L) | PR-δ 完了 |
 
 ### PR-β sub-issue 分割案 (PR-α 経験を踏襲)
 
@@ -365,7 +367,7 @@ LSCM 公理を守るため、 各 PR で以下 invariant を test 化:
 
 - PR-β: `pp@{project}/{lane}` address が解決できる + Lane destroy で PP 終了
 - PR-δ: LaneCapabilities が PP 含めて N Stand を host できる generic interface
-- PR-ε: MCP 中継経路で creo activity が `pp/lane/{lane}/feed` topic に到達
+- PR-ε: MCP 中継経路で creo activity が `pp/lane/{lane}/surface/canvas` topic に到達 (creo memory content kind として Canvas に render、 旧 feed topic は VP-121 で廃止)
 
 ---
 
@@ -398,10 +400,10 @@ P5 では 1 Lane = 1 PP を default 化したが、 ccws Worker Lane (sub1 etc.)
 
 ### Q-2: Lead Lane の PP は project 代表か、 Lane 局所か?
 
-A11 では Lead Lane = project 代表だが、 PP の context は Lane 局所。 例: Lead Lane PP の Sidebar feed が "vp project 全体" の creo activity を集約するか、 "vp/lead Lane" のみか?
+A11 では Lead Lane = project 代表だが、 PP の context は Lane 局所。 例: Lead Lane PP の Smart Canvas が "vp project 全体" の creo activity を集約するか、 "vp/lead Lane" のみか?
 
 - **vp/lead** のみ ─ A1 portable + Lane 居住の自然な解
-- **project 全体集約** ─ user 期待値 (1 sidebar で全部見たい) と一致するが、 cross-Lane state share を生む (A6 違反の risk)
+- **project 全体集約** ─ user 期待値 (1 Canvas で全部見たい) と一致するが、 cross-Lane state share を生む (A6 違反の risk)
 
 **暫定**: vp/lead のみ。 project 集約 view は将来の `pp@{project}` (= Project Stand 上に集約 router) として別途設計。
 
@@ -426,7 +428,7 @@ doc 12 §9 で PP は Hub federation 対象 (✅)。 ただし、 surface routin
 
 ### Q-5: caller Lane resolution path (PR-β-3 skip により未解決のまま LATER)
 
-**status update (PR-β-2 / VP-120)**: PR-β-2 着手時 grep 検証で `PaisleyParkState` の実 caller (canvas routes / show handler / mcp 等) がゼロと判明、 PR-β-3 (caller migration) が skip された。 本 Q-5 (caller の Lane address 解決) は将来 caller が生まれた時 (= PR-ε creo-memory-pane で `mcp__show` が PP 経由になる時) に再 visit。 当面は env 注入 (案 A) を推奨として保留。
+**status update (PR-β-2 / VP-120)**: PR-β-2 着手時 grep 検証で `PaisleyParkState` の実 caller (canvas routes / show handler / mcp 等) がゼロと判明、 PR-β-3 (caller migration) が skip された。 本 Q-5 (caller の Lane address 解決) は将来 caller が生まれた時 (= PR-ε で Smart Canvas に creo memory content kind を追加し、 `mcp__show` 系が PP 経由になる時) に再 visit。 当面は env 注入 (案 A) を推奨として保留。
 
 MCP 中継経路 (§5) で「caller Echoes の Lane address を MCP request envelope から取得して route する」 と declare したが、 現実装の `ShowParams` (`mcp.rs:26`) と `/api/show` handler (`routes/health.rs:379`) には Lane 識別子を渡す経路がない。
 
@@ -495,7 +497,7 @@ doc 11 (起動)         ─→  doc 12 (構造)        ─→  doc 13 (PP 配置
 |-----|------|------|
 | 11 | Stand init_script system (mise task で Stand を起動) | 完了 (2026-05-03) |
 | 12 | LSCM (Stand の構造定義) | 完了 (2026-05-04) |
-| **13** | **Paisley Park 復活 (LSCM 上での PP 配置 + creo-memory-pane)** | **本書 (2026-05-04)** |
+| **13** | **Paisley Park 復活 (LSCM 上での PP 配置 + creo memory in Canvas)** | **本書 (2026-05-04 起草、 2026-05-05 VP-121 で simplify)** |
 | 14 | Thin View アーキテクチャ (#102 の本格設計、 TUI/NSView dumb client 化) | planned |
 
 doc 13 と doc 14 は LSCM 公理を foundation として、 各 Stand 種 (PP / View) の具体配置を定める **applicaton doc**。 共通点は「公理を再定義せず、 公理の自然な instantiation として組み立てる」 アプローチ。
