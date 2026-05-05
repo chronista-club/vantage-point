@@ -179,7 +179,7 @@ PP は **passive (名指し受信)** と **active (subscriber)** の両形で in
 |------|-----|----|-----|
 | MCP tool call | P | `mcp__show` / `mcp__clear` (caller Lane に自動解決) | Echoes 内 Claude が `mcp__show("# Hello")` |
 | Mailbox direct | P | `pp.{lane}@{project}` send | 別 Stand から `pp.lead@vp` に push |
-| HTTP API | P | `POST /api/pp/{action}` (vp-app から) | Sidebar UI 操作 |
+| HTTP API | P | `POST /api/pp/{action}` (vp-app から) | Canvas UI 操作 (pin/focus/tag 等、 VP-121 で sidebar 廃止 → Canvas 統合) |
 | TopicRouter subscribe | A | 他 Stand の event topic を subscribe | `process/build/event/completed` を listen → Inline 通知 |
 | External watcher | A | filesystem / process / hub event を Mailbox 経由で受信 | build watcher → PP → Inline progress bar |
 
@@ -299,7 +299,7 @@ user が「次回起動時もこの Canvas pin を維持したい」 のよう�
 PR-ε で実装する creo memory feature は **Smart Canvas の content kind**、 PP 自体ではない。 PP からみて: lead Claude の creo activity (remember / search / get) を Smart Canvas に「creo memory」 という content kind として render する router 機能。
 
 - **Smart Canvas (creo memory render)**: `pp/lane/{lane}/surface/canvas` topic に creo memory を broadcast、 Canvas で content kind 別 (timeline / search results / detail body) に render
-- **独立 surface 廃止**: 旧設計の sidebar feed (常駐 creo activity card) は廃止、 Canvas に統合 (Surface 数 5 → 4 に削減、 §7 参照)
+- **独立 surface 廃止**: 旧設計の sidebar feed (常駐 creo activity card) は廃止、 Canvas に統合。 sidebar feed は元来 §5 出力面 table の subscriber 欄に `pp/lane/{lane}/feed` topic として存在、 VP-121 で topic ごと削除 (§5 参照)。 §7 Surface table は 5 Surface のまま不変 (sidebar feed は formal Surface 列挙には元々含まれていなかった)。
 
 ### 反応 event mapping (← mem_1Ca8xHcMf9sFBB2VHUpHzZ、 VP-121 で Canvas 1 surface に統合)
 
