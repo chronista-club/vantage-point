@@ -190,7 +190,7 @@ pub struct LaneInfo {
     /// "spawning" | "running" | "exiting" | "dead"
     #[serde(default)]
     pub state: String,
-    /// "heavens_door" | "the_hand"
+    /// "echoes" | "shell"
     #[serde(default)]
     pub stand: String,
     #[serde(default)]
