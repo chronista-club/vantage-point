@@ -45,8 +45,10 @@ DerivedData/
 /dist/
 
 
-# Per-user MCP overlay (add extra servers without leaking credentials)
-.mcp.local.json
+# MCP servers — per-developer 管理 (CC は .mcp.local.json overlay 未対応のため、
+# .mcp.json 自体を gitignore して各自で auth state を持つ。 共有 baseline が
+# 必要になった時点で minimal subset の commit を再検討)
+.mcp.json
 
 # vp-app dev log (mise win task の stderr redirect 先)
 vp-*.log
