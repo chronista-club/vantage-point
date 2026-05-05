@@ -349,15 +349,15 @@ doc 12 §9 で plot された PR-β/δ/ε を本 doc で技術設計確定:
 
 ### PR-β sub-issue 分割案 (PR-α 経験を踏襲)
 
-PR-α の 3 sub-issue (受け皿 → 物理移管 → caller migration) pattern を踏襲、 ただし **prerequisite PR (PR-β-0)** を 1 本前置:
+PR-α の 3 sub-issue (受け皿 → 物理移管 → caller migration) pattern を踏襲、 ただし **prerequisite PR (PR-β-0)** を 1 本前置。 PR-β-2 着手前の grep 検証で **PaisleyParkState の実 caller がゼロ** と判明 (data model 予約のみの skeleton)、 doc 13 §9 PR-β series を当初 5 sub → **4 sub に縮小** (PR-β-3 caller migration を skip):
 
-| sub-issue | scope | prerequisite |
-|----------|------|--------------|
-| **PR-β-0** | address grammar 拡張 (`{actor}.{lane}@{project}` parser、 §10 Q-6) | なし |
-| PR-β-1 | LaneCapabilities 受け皿 struct 新設、 既存挙動への影響ゼロ | PR-β-0 完了 |
-| PR-β-2 | PP を ProjectStands から LaneCapabilities に物理移管 + 2026-04-27 rule comment update (§1 P0-1) | PR-β-1 完了、 §10 Q-7 暫定確定 |
-| PR-β-3 | caller migration (`mcp__show` を Lane PP 経由に rewire) | PR-β-2 完了、 §10 Q-5 暫定確定 |
-| PR-β-4 (cleanup) | catalog §9 row 更新 (target = 現状、 description: Information Navigator → Information Router)、 doc 12 §10 既存実装表 update | PR-β-3 完了 |
+| sub-issue | scope | status | prerequisite |
+|----------|------|--------|--------------|
+| **PR-β-0** | address grammar 拡張 (`{actor}.{lane}@{project}` parser、 §10 Q-6) | ✅ Done (#272、 VP-117) | なし |
+| **PR-β-1** | LaneCapabilities 受け皿 struct 新設、 既存挙動への影響ゼロ | ✅ Done (#274、 VP-119) | PR-β-0 完了 |
+| **PR-β-2** | PP 物理移管 (ProjectStands → LaneCapabilities) + 2026-04-27 rule comment supersede (§1 P0-1) + cardinality 1 → N | ✅ Done (#275、 VP-120) | PR-β-1 完了、 §10 Q-7 暫定確定 |
+| ~~PR-β-3~~ | ~~caller migration~~ | ⏭️ skip (caller ゼロと判明) | — |
+| **PR-β-4** (cleanup) | catalog §9 row 更新 (target = 現状、 description: Information Navigator → Information Router)、 doc 12 §10 既存実装表 update、 legacy `hd` alias 削除 (`routes/health.rs` / vp-app) | planned | PR-β-2 完了 |
 
 ### 各 PR の boundary 担保
 
@@ -379,7 +379,7 @@ PR-β 開始前 (および各 sub-PR 開始前) に確定すべき残点。 P0 =
 | Q-2: Lead Lane PP の代表性 (project 集約 vs 局所) | P2 | 暫定: Lane 局所 |
 | Q-3: Smart Canvas の配置 (Pane vs WebView 主) | P2 | 暫定: WebView 主 + Pane opt-in |
 | Q-4: Hub federation 公開範囲 | P2 | 暫定: state stream のみ |
-| **Q-5**: caller Lane resolution path (env 注入 vs param 拡張) | **P0** | PR-β-3 hard prerequisite |
+| ~~Q-5~~: caller Lane resolution path (env 注入 vs param 拡張) | LATER | PR-β-3 skip により未解決、 PR-ε で再 visit |
 | **Q-6**: address grammar `.{lane}` sub-suffix 拡張 | **P0** | PR-β-1 hard prerequisite |
 | **Q-7**: `interactive_agent` vs Lane Echoes 整理 | **P0** | PR-β-2 物理移管時 |
 | Q-8: Topic 命名規約 4→5 階層拡張 | P1 | doc 12 §5 update PR (並列) |
@@ -424,7 +424,9 @@ doc 12 §9 で PP は Hub federation 対象 (✅)。 ただし、 surface routin
 
 **暫定**: 公開 scope = state stream のみ、 surface routing は per-machine。 PR-ζ (Hub federation) で正式化。
 
-### Q-5: caller Lane resolution path (P0、 PR-β-3 hard prerequisite)
+### Q-5: caller Lane resolution path (PR-β-3 skip により未解決のまま LATER)
+
+**status update (PR-β-2 / VP-120)**: PR-β-2 着手時 grep 検証で `PaisleyParkState` の実 caller (canvas routes / show handler / mcp 等) がゼロと判明、 PR-β-3 (caller migration) が skip された。 本 Q-5 (caller の Lane address 解決) は将来 caller が生まれた時 (= PR-ε creo-memory-pane で `mcp__show` が PP 経由になる時) に再 visit。 当面は env 注入 (案 A) を推奨として保留。
 
 MCP 中継経路 (§5) で「caller Echoes の Lane address を MCP request envelope から取得して route する」 と declare したが、 現実装の `ShowParams` (`mcp.rs:26`) と `/api/show` handler (`routes/health.rs:379`) には Lane 識別子を渡す経路がない。
 

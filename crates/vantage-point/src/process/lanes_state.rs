@@ -3,15 +3,25 @@
 //! 関連 memory:
 //! - `mem_1CaSrCxysdGaaSsN4Dvxth` (VP Architecture: 3 段 Stand scope + Lane semantic)
 //! - `mem_1CaSsN7xj69aVQtLPQFJxQ` (SP-as-Project-Master: 9 component minimum)
-//! - 「多 scope architecture + protocol/msg 連携」rule (2026-04-27 確定):
-//!   Lane scope に attach するのは **HD と TH のみ**。PP/GE/HP は Project scope (`project_stands_state` 参照)。
+//! - **2026-04-27 rule** (旧):「Lane scope に attach するのは HD と TH のみ。PP/GE/HP は Project scope」
+//!   → **doc 12 LSCM (VP-109、 2026-05-04) で明示的に supersede**。 LSCM では Layer container
+//!   (World / Project / Lane) が必要な Stand を抱える composition モデルで、 各 Stand の居住可能
+//!   Layer は doc 12 §9 catalog の「保持 layer pattern」 列が SSOT。
+//! - PR-pre2 (VP-118 / 2026-05-04): HD → Echoes rename。
+//! - PR-β-2 (VP-120 / 2026-05-04): PP を Project → Lane に物理移管 (`LaneCapabilities.paisley_park`)。
 //!
-//! ## architecture: Lane scope は HD/TH 専用
+//! ## architecture (LSCM 確定 + PR-β-2 後)
 //!
-//! Project scope の Stand (PP/GE/HP) は別 module (`project_stands_state.rs`) で管理。
-//! Lane は **Lead/Worker の PTY セッション** に集中:
-//! - Lead   1 / project (固定)、LaneStand = HD or TH
-//! - Worker 0..n / project (可変、ccws clone)、LaneStand = HD or TH
+//! Lane scope に host する Stand:
+//! - Echoes 💬 (旧 HD) — Lane mise task PtySlot で立つ (= LaneCapabilities では host しない)
+//! - The Hand 🤚 — Lane mise task PtySlot で立つ (= 同上)
+//! - Paisley Park 🧭 — `LaneCapabilities.paisley_park` (PR-β-2 で Lane あたり 1 instance に物理移管)
+//! - Gold Experience 🌿 (planned PR-γ で Lane 移管予定)
+//!
+//! Project scope の Stand pool (`project_stands_state.rs`) は GE / HP のみ host (PR-β-2 後)。
+//! Lane は **Lead/Worker の PTY セッション + Stand container** に集中:
+//! - Lead   1 / project (固定)、stand = "echoes" / "shell" / "tmux"
+//! - Worker 0..n / project (可変、ccws clone)、stand 同上
 //!
 //! ## Phase A4-2b スコープ
 //!
