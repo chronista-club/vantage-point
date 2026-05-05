@@ -121,7 +121,7 @@ pub struct CreateLaneReq {
     pub kind: String,
     /// Worker name (人間可読、 LaneAddress.name に入る)
     pub name: String,
-    /// LaneStand: "heavens_door" (default) or "the_hand"
+    /// LaneStand: "echoes" (default) or "shell"
     #[serde(default)]
     pub stand: Option<String>,
     /// 既存 worktree path。 Some なら直接 cwd として使う、 None なら branch 指定で ccws clone を実行する。

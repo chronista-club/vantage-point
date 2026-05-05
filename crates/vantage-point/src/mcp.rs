@@ -256,9 +256,9 @@ pub struct AddWorkerParams {
         description = "ccws clone する branch 名 (省略可)。 省略時は server が `git config user.name` から `<user>/<name>` を auto-derive。"
     )]
     pub branch: Option<String>,
-    /// Optional Lane Stand. Defaults to "heavens_door".
+    /// Optional Lane Stand. Defaults to "echoes".
     #[schemars(
-        description = "Lane Stand 種類: 'heavens_door' (default、 Claude CLI) or 'the_hand' (shell)。"
+        description = "Lane Stand 種類: 'echoes' (default、 Claude CLI) or 'shell' (shell)。"
     )]
     pub stand: Option<String>,
 }
