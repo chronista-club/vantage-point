@@ -581,6 +581,17 @@ fn execute_ws(cmd: WsCommands) -> Result<()> {
             {
                 eprintln!("  msgbox: unregister skipped ({e})");
             }
+            // VP-124: SP-aware delete を試みる (orchestration: PTY kill + tmux kill +
+            // ccws workspace rm + SystemEvent broadcast を 1 HTTP call で完結)。
+            // --all は filesystem-only fallback (一括削除は SP 経由する意味なし、 個別 Lane
+            // address が必要なため)。 SP 不在 / failure なら現挙動 (ws::remove_worker fs-only)
+            // に fallback して compat 維持。
+            if let Some(ref worker_name) = name
+                && !all
+                && try_sp_delete_worker(worker_name)
+            {
+                return Ok(());
+            }
             ws::remove_worker(name.as_deref(), all, force).map_err(|e| anyhow::anyhow!(e))
         }
         WsCommands::Status => ws::status_workers().map_err(|e| anyhow::anyhow!(e)),
@@ -701,6 +712,77 @@ fn unregister_worker_actor(worker_name: &str) -> Result<()> {
         Ok(())
     } else {
         Err(anyhow::anyhow!("unregister failed: {}", resp.status()))
+    }
+}
+
+/// VP-124 Phase 1: SP-aware Worker Lane delete を試みる helper。
+///
+/// `vp ws rm <name>` (= 個別削除) で呼ばれ、 parent SP が稼働中なら HTTP DELETE 経由で
+/// `delete_lane_orchestrated` を発火 (= PTY kill + tmux kill + ccws rm + SystemEvent broadcast を
+/// SP 側で atomically 実行)。 SP 不在 / API failure なら false 返して filesystem-only fallback
+/// (= 現挙動の `ws::remove_worker`) に委譲。
+///
+/// best-effort: 中間 failure (SP unreachable, network error 等) は warn print して false。
+/// SP 200 OK のみ true、 SP 4xx / 5xx は failure 扱い。
+fn try_sp_delete_worker(worker_name: &str) -> bool {
+    let (project_name, port) = match resolve_parent_project() {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("  SP delete skipped (parent project resolve failed: {e})");
+            return false;
+        }
+    };
+
+    // address 構築: `<project>/worker/<name>`、 URL encoding は `/` のみ (slug は ASCII safe)。
+    let address = format!("{project_name}/worker/{worker_name}");
+    let address_enc = address.replace('/', "%2F");
+    let url = format!("http://[::1]:{port}/api/lanes?address={address_enc}&cleanup=true");
+
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("  SP delete skipped (http client build failed: {e})");
+            return false;
+        }
+    };
+
+    match client.delete(&url).send() {
+        Ok(resp) if resp.status().is_success() => {
+            // body は DeletedLaneInfo JSON、 user 向けに要点だけ要約
+            let summary = resp
+                .json::<serde_json::Value>()
+                .ok()
+                .map(|v| {
+                    let pid = v.get("pid").and_then(|p| p.as_u64()).unwrap_or(0);
+                    let tmux_killed = v
+                        .get("tmux_killed")
+                        .and_then(|t| t.as_bool())
+                        .unwrap_or(false);
+                    let cleanup = v
+                        .get("cleanup")
+                        .and_then(|c| c.as_str())
+                        .unwrap_or("(skipped)")
+                        .to_string();
+                    format!("pid={pid} tmux_killed={tmux_killed} cleanup={cleanup}")
+                })
+                .unwrap_or_else(|| "(no body)".to_string());
+            eprintln!("削除: {address} (SP orchestrated: {summary})");
+            true
+        }
+        Ok(resp) => {
+            eprintln!(
+                "  SP delete failed (status={}), falling back to fs-only",
+                resp.status()
+            );
+            false
+        }
+        Err(e) => {
+            eprintln!("  SP unreachable ({e}), falling back to fs-only");
+            false
+        }
     }
 }
 
