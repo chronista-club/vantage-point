@@ -1176,6 +1176,41 @@ impl VantageMcp {
         rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<ListLanesParams>,
     ) -> Result<CallToolResult, McpError> {
         let process_url = self.process_url.lock().await.clone();
+
+        // project name は /api/health から (= delete_worker と同型 pattern)。
+        // 旧実装 (`lanes_in.first().get("project")`) は SP 起動直後 lanes 空の race
+        // window で `"unknown"` fallback → `gold_experience@unknown` 等の偽 address を
+        // 返す bug があり、 PR-β-4 review feedback (`feedback_jsonschema_field_scope`)
+        // 同様 contract 強度のため authoritative source `/api/health.project_dir` に統一。
+        let health = self
+            .client
+            .get(format!("{}/api/health", process_url))
+            .timeout(Duration::from_secs(5))
+            .send()
+            .await
+            .map_err(|e| McpError::internal_error(format!("SP に到達できません: {}", e), None))?
+            .json::<serde_json::Value>()
+            .await
+            .map_err(|e| {
+                McpError::internal_error(format!("/api/health parse 失敗: {}", e), None)
+            })?;
+        let project_dir = health
+            .get("project_dir")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                McpError::internal_error("/api/health に project_dir なし".to_string(), None)
+            })?;
+        let project = std::path::Path::new(project_dir)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .ok_or_else(|| {
+                McpError::internal_error(
+                    format!("project_dir basename 取得失敗: {}", project_dir),
+                    None,
+                )
+            })?
+            .to_string();
+
         let resp = self
             .client
             .get(format!("{}/api/lanes", process_url))
@@ -1192,15 +1227,6 @@ impl VantageMcp {
             .and_then(|v| v.as_array())
             .cloned()
             .unwrap_or_default();
-
-        // project name を任意の lane address から抽出 (全 Lane 同 project 前提)
-        let project = lanes_in
-            .first()
-            .and_then(|l| l.get("address"))
-            .and_then(|a| a.get("project"))
-            .and_then(|p| p.as_str())
-            .map(String::from)
-            .unwrap_or_else(|| "unknown".to_string());
 
         // フィルタ + mailbox_addresses 注入
         let mut lanes_out: Vec<serde_json::Value> = Vec::new();

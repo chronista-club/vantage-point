@@ -452,6 +452,8 @@ pub async fn delete_lane_orchestrated(
 
     // Phase 2b: ccws workspace dir cleanup (best-effort、 cleanup=true 時のみ)。
     // 既存挙動踏襲、 直 lib call (`crate::ccws::commands::remove_worker_in`)。
+    // 注意: `spawn_blocking` closure は `repo_name` / `name` のみ move、 `addr` は capture
+    // されないので後続 match arm の `tracing` で参照可能 (= compile time 保証)。
     let cleanup_status = if cleanup && let Some(name) = info.address.name.clone() {
         let repo_name = std::path::Path::new(&state.project_dir)
             .file_name()
