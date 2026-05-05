@@ -263,6 +263,39 @@ pub struct AddWorkerParams {
     pub stand: Option<String>,
 }
 
+/// Parameters for the delete_worker tool (VP-124 Phase 1).
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct DeleteWorkerParams {
+    /// Worker name to delete.
+    #[schemars(
+        description = "Worker name to delete (例: 'keystage', 'feat-api')。 Lane address の `<project>/worker/<name>` の `<name>` 部分。"
+    )]
+    pub name: String,
+
+    /// Whether to also remove the ccws workspace dir.
+    #[schemars(
+        description = "ccws workspace dir も削除するか (default: true)。 false で SP pool + tmux session のみ kill、 dir 残置 (debug / forensic 用途)。"
+    )]
+    #[serde(default)]
+    pub cleanup: Option<bool>,
+}
+
+/// Parameters for the list_lanes tool (VP-124 Phase 1).
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ListLanesParams {
+    /// Lane kind filter.
+    #[schemars(description = "Lane kind フィルタ: 'lead' or 'worker'。 省略時は両方含む。")]
+    #[serde(default)]
+    pub kind: Option<String>,
+
+    /// Lane state filter.
+    #[schemars(
+        description = "Lane state フィルタ: 'running' / 'spawning' / 'exiting' / 'dead'。 省略時は全状態。"
+    )]
+    #[serde(default)]
+    pub state: Option<String>,
+}
+
 /// Parameters for the eval_ruby tool
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct EvalRubyParams {
@@ -1021,6 +1054,214 @@ impl VantageMcp {
         let cwd = parsed.get("cwd").and_then(|v| v.as_str()).unwrap_or("?");
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
             format!("Worker Lane created: {}\n  cwd: {}", addr, cwd),
+        )]))
+    }
+
+    /// Delete a Worker Lane in the current project (VP-124 Phase 1).
+    ///
+    /// 3-step orchestration を 1 call で完結: SP pool removal + child PTY kill + tmux session kill +
+    /// (optional) ccws workspace dir cleanup。 server-side `delete_lane_orchestrated` への薄い HTTP
+    /// wrapper、 cwd ベースで自動的に local SP と project を解決。
+    #[tool(
+        description = "Delete a Worker Lane in the current project. SP pool removal + child PTY kill + tmux session kill + ccws workspace dir cleanup を 1 call で完結 (= 旧来の手動 3 step `ccws rm` + `tmux kill-session` + `curl -X DELETE` を置換)。 cwd ベースで local SP を自動解決、 cleanup=false で dir 残置 (debug 用途)。 Lead Lane は削除不可 (architecture rule、 SP shutdown が path)。"
+    )]
+    async fn delete_worker(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<DeleteWorkerParams>,
+    ) -> Result<CallToolResult, McpError> {
+        if params.name.trim().is_empty() {
+            return Err(McpError::invalid_params(
+                "name は必須です (空文字不可)".to_string(),
+                None,
+            ));
+        }
+
+        // SP の project name を /api/health から取得 (project_dir basename = project name)。
+        // address 構築のため必要、 add_worker と異なり POST body に name 1 つだけ渡せば SP 側で
+        // project 補完される pattern が使えない (DELETE は full address を query で受ける design)。
+        let process_url = self.process_url.lock().await.clone();
+        let health = self
+            .client
+            .get(format!("{}/api/health", process_url))
+            .timeout(Duration::from_secs(5))
+            .send()
+            .await
+            .map_err(|e| McpError::internal_error(format!("SP に到達できません: {}", e), None))?
+            .json::<serde_json::Value>()
+            .await
+            .map_err(|e| {
+                McpError::internal_error(format!("/api/health parse 失敗: {}", e), None)
+            })?;
+        let project_dir = health
+            .get("project_dir")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                McpError::internal_error("/api/health に project_dir なし".to_string(), None)
+            })?;
+        let project_name = std::path::Path::new(project_dir)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .ok_or_else(|| {
+                McpError::internal_error(
+                    format!("project_dir の basename 取得失敗: {}", project_dir),
+                    None,
+                )
+            })?;
+
+        let address = format!("{}/worker/{}", project_name, params.name);
+        let cleanup = params.cleanup.unwrap_or(true);
+
+        // reqwest 0.12 の RequestBuilder.query は &[(impl Serialize, impl Serialize)] を取るが、
+        // `&str` の tuple slice の type 推論が出ないので manual percent-encoding で URL 構築。
+        // address 内の `/` は `%2F` にする以外は ASCII safe (project name / worker name は git
+        // branch 互換 slug のため英数 + dash + underscore のみ)。
+        let address_enc = address.replace('/', "%2F");
+        let url = format!(
+            "{}/api/lanes?address={}&cleanup={}",
+            process_url, address_enc, cleanup
+        );
+        let resp = self
+            .client
+            .delete(&url)
+            .timeout(Duration::from_secs(30))
+            .send()
+            .await
+            .map_err(|e| {
+                McpError::internal_error(format!("DELETE /api/lanes 失敗: {}", e), None)
+            })?;
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(McpError::internal_error(
+                format!("SP DELETE /api/lanes {}: {}", status, text),
+                None,
+            ));
+        }
+
+        // 成功 body は DeletedLaneInfo JSON。 human 向けに要点だけ要約。
+        let parsed: serde_json::Value =
+            serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
+        let pid = parsed
+            .get("pid")
+            .and_then(|v| v.as_u64())
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "(no pid)".to_string());
+        let tmux_killed = parsed
+            .get("tmux_killed")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let cleanup_status = parsed
+            .get("cleanup")
+            .and_then(|v| v.as_str())
+            .unwrap_or("(skipped)");
+
+        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+            format!(
+                "Worker Lane deleted: {}\n  pid: {} (killed)\n  tmux_killed: {}\n  cleanup: {}",
+                address, pid, tmux_killed, cleanup_status
+            ),
+        )]))
+    }
+
+    /// List Lanes in the current project with comprehensive routing info (VP-124 Phase 1).
+    ///
+    /// Lead Lane Echoes が「lane を operate するすべての座標」 を 1 call で取得するための tool。
+    /// GET /api/lanes wrapper、 各 Lane に mailbox_addresses (per-Lane Stands の wire address)、
+    /// top-level に project_addresses + world_addresses を synthesize。
+    #[tool(
+        description = "List all Lanes (Lead + Workers) in the current project with comprehensive routing info. Each Lane returns: address, kind, state, stand, pid, cwd, tmux session, worker_status, AND mailbox_addresses (= wire-ready addresses for `msg_send` / `msg_broadcast` / Canvas display routing 経由)。 Top-level also returns project_addresses (e.g. gold_experience) and world_addresses (e.g. hermit_purple)。 Use this to discover Workers, decide deletion targets, pick mailbox routes for msg_send (`echoes.<lane>@<project>`) or Canvas display (`paisley_park.<lane>@<project>`)。 Replaces multi-step `vp ps` + `curl /api/lanes` + `msg_list_actors`。"
+    )]
+    async fn list_lanes(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<ListLanesParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let process_url = self.process_url.lock().await.clone();
+        let resp = self
+            .client
+            .get(format!("{}/api/lanes", process_url))
+            .timeout(Duration::from_secs(5))
+            .send()
+            .await
+            .map_err(|e| McpError::internal_error(format!("SP に到達できません: {}", e), None))?
+            .json::<serde_json::Value>()
+            .await
+            .map_err(|e| McpError::internal_error(format!("/api/lanes parse 失敗: {}", e), None))?;
+
+        let lanes_in = resp
+            .get("lanes")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        // project name を任意の lane address から抽出 (全 Lane 同 project 前提)
+        let project = lanes_in
+            .first()
+            .and_then(|l| l.get("address"))
+            .and_then(|a| a.get("project"))
+            .and_then(|p| p.as_str())
+            .map(String::from)
+            .unwrap_or_else(|| "unknown".to_string());
+
+        // フィルタ + mailbox_addresses 注入
+        let mut lanes_out: Vec<serde_json::Value> = Vec::new();
+        for mut lane in lanes_in.into_iter() {
+            // kind / state filter
+            if let Some(k) = &params.kind
+                && lane.get("kind").and_then(|v| v.as_str()) != Some(k.as_str())
+            {
+                continue;
+            }
+            if let Some(s) = &params.state
+                && lane.get("state").and_then(|v| v.as_str()) != Some(s.as_str())
+            {
+                continue;
+            }
+
+            // mailbox_addresses 計算 (= per-Lane Stands の wire address)。
+            // primary stand (echoes / shell) + paisley_park (PR-β-2 後 Lane 毎 always host)。
+            let stand = lane
+                .get("stand")
+                .and_then(|v| v.as_str())
+                .unwrap_or("echoes")
+                .to_string();
+            let lane_label = match lane.get("kind").and_then(|v| v.as_str()) {
+                Some("lead") => "lead".to_string(),
+                Some("worker") => lane
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unnamed")
+                    .to_string(),
+                _ => "unknown".to_string(),
+            };
+            let primary_addr = format!("{}.{}@{}", stand, lane_label, project);
+            let pp_addr = format!("paisley_park.{}@{}", lane_label, project);
+
+            // map 型: actor 名 → wire address (AI agent が役割で pick できる)
+            let mailbox = serde_json::json!({
+                stand: primary_addr,
+                "paisley_park": pp_addr,
+            });
+
+            if let Some(obj) = lane.as_object_mut() {
+                obj.insert("mailbox_addresses".to_string(), mailbox);
+            }
+            lanes_out.push(lane);
+        }
+
+        // top-level に project / world Stand addresses を synthesize
+        let result = serde_json::json!({
+            "project": project,
+            "lanes": lanes_out,
+            "project_addresses": {
+                "gold_experience": format!("gold_experience@{}", project),
+            },
+            "world_addresses": {
+                "hermit_purple": "hermit_purple@world",
+            },
+        });
+
+        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+            serde_json::to_string_pretty(&result).unwrap_or_default(),
         )]))
     }
 

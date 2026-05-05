@@ -26,7 +26,9 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::super::lanes_state::{LaneAddress, LaneInfo, LaneKind, LanePool, LaneState};
+use super::super::lanes_state::{
+    Diff, LaneAddress, LaneInfo, LaneKind, LanePool, LaneState, SystemEvent,
+};
 use super::super::state::AppState;
 
 // doc 11 §3.7 の `migrate_legacy_stand` shim は 2026-05-03 削除済。 PR #257 の
@@ -351,14 +353,164 @@ fn default_cleanup() -> bool {
     true
 }
 
+/// VP-124 Phase 1: Lane delete orchestration の戻り値。
+///
+/// 全 trigger (HTTP DELETE / MCP `delete_worker` / `vp ws rm` CLI) が共有する成功 payload。
+#[derive(Debug, Serialize)]
+pub struct DeletedLaneInfo {
+    /// Display 形 ("<project>/worker/<name>")
+    pub address: String,
+    /// PtySlot drop 直前の child pid (= killed)
+    pub pid: Option<u32>,
+    /// tmux session を kill できたか (best-effort、 不存在なら false)
+    pub tmux_killed: bool,
+    /// ccws workspace cleanup の結果 (None = cleanup=false で skip)
+    pub cleanup_status: Option<String>,
+}
+
+/// VP-124 Phase 1: Lane delete orchestration の error。
+///
+/// HTTP handler はこれを 4xx ステータスに mapping。 MCP / CLI も同じ enum を消費。
+#[derive(Debug, thiserror::Error)]
+pub enum DeleteLaneError {
+    /// architecture rule: Lead Lane は project lifetime 紐付きのため削除不可。
+    #[error("Lead Lane is fixed per project and cannot be deleted (use SP shutdown instead)")]
+    LeadCannotBeDeleted,
+    /// LanePool に該当 address の entry なし (idempotent re-call で発生)。
+    #[error("Lane not found: {0}")]
+    LaneNotFound(LaneAddress),
+}
+
+/// VP-124 Phase 1: Lane delete の 3-step orchestration を関数化。
+///
+/// 全 trigger (HTTP DELETE / MCP `delete_worker` / `vp ws rm` CLI / future Phase 3 FSEvents
+/// watcher) が共有する core logic。 既存 `delete_handler` から extract、 同時に **欠落していた
+/// tmux session kill + SystemEvent broadcast を補完** (= bug fix 兼 refactor)。
+///
+/// ## 動作
+///
+/// 1. **architecture rule check**: Lead は削除拒否 (`DeleteLaneError::LeadCannotBeDeleted`)
+/// 2. **Phase 1 (in-memory authoritative mutation)**: `LanePool::remove` で LaneInfo + PtySlot を
+///    drop (PtySlot::Drop で child kill + wait)
+/// 3. **Phase 2a (tmux container cleanup)**: `tmux::kill_session` で PTY container 削除
+///    (best-effort、 既存挙動では欠落していた → orphan tmux session の根本原因)
+/// 4. **Phase 2b (filesystem cleanup)**: `cleanup=true` なら `ccws::remove_worker_in` で workspace
+///    dir 削除 (best-effort、 既存挙動踏襲)
+/// 5. **Phase 3 (broadcast)**: `SystemEvent::Lane(Diff::Remove)` を broadcast → sidebar 即時反映
+///    (既存挙動では欠落していた → sidebar refresh 不全の根本原因)
+///
+/// ## 契約
+///
+/// - **idempotent**: 二度呼ばれても 2 回目は `LaneNotFound` を返す、 sidebar 状態に矛盾なし
+/// - **best-effort cleanup**: tmux / ccws 失敗は warn log のみ、 LanePool 削除は authoritative success
+/// - **失敗時**: Phase 1 で fail (Lead / NotFound) なら early return、 Phase 2 以降の partial failure
+///   は `DeletedLaneInfo` の field で結果を伝える
+///
+/// 関連: VP-124 (PR-Phase 1 設計)、 mem_1CaTpCQH8iLJ2PasRcPjHv (Architecture v4: Lane lifecycle)
+pub async fn delete_lane_orchestrated(
+    state: &Arc<AppState>,
+    addr: LaneAddress,
+    cleanup: bool,
+) -> Result<DeletedLaneInfo, DeleteLaneError> {
+    // architecture rule: Lead Lane は project lifetime 紐付きのため削除不可
+    if matches!(addr.kind, LaneKind::Lead) {
+        return Err(DeleteLaneError::LeadCannotBeDeleted);
+    }
+
+    // Phase 1: in-memory authoritative state mutation。
+    // PtySlot は LanePool 内部で保持されており、 remove() の戻り値 LaneInfo と一緒に
+    // pool 外へ移動 → drop されるタイミングで child kill + wait される (PtySlot::Drop)。
+    let info = {
+        let mut pool = state.lane_pool.write().await;
+        pool.remove(&addr)
+            .ok_or(DeleteLaneError::LaneNotFound(addr.clone()))?
+    };
+    let pid = info.pid;
+
+    tracing::info!(
+        "Lane delete orchestrated: addr={} pid={:?} (PtySlot dropped → child killed)",
+        addr,
+        pid
+    );
+
+    // Phase 2a: tmux session cleanup (best-effort)。
+    // info.tmux は spawn 成功時に populate された session 情報、 各 entry の `session` 名で
+    // `tmux kill-session -t <name>` を実行。 既存挙動では欠落していた → keystage 削除時の
+    // orphan tmux session bug の根本原因 (= 本 PR で fix)。
+    // for ループで全 entry に kill_session 副作用を実行 (= 短絡しない)、 結果を OR 合成。
+    // `.any()` だと short-circuit で副作用 path が変わるため避ける。
+    let mut tmux_killed = false;
+    for t in &info.tmux {
+        let killed = crate::tmux::kill_session(&t.session);
+        if killed {
+            tracing::info!("tmux session killed: {}", t.session);
+        } else {
+            tracing::warn!("tmux session kill failed (or did not exist): {}", t.session);
+        }
+        tmux_killed = tmux_killed || killed;
+    }
+
+    // Phase 2b: ccws workspace dir cleanup (best-effort、 cleanup=true 時のみ)。
+    // 既存挙動踏襲、 直 lib call (`crate::ccws::commands::remove_worker_in`)。
+    let cleanup_status = if cleanup && let Some(name) = info.address.name.clone() {
+        let repo_name = std::path::Path::new(&state.project_dir)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+        let result = tokio::task::spawn_blocking(move || {
+            crate::ccws::commands::remove_worker_in(&repo_name, &name)
+        })
+        .await;
+        match result {
+            Ok(Ok(())) => {
+                tracing::info!("ccws remove 成功: {}", addr);
+                Some("cleaned".to_string())
+            }
+            Ok(Err(e)) => {
+                tracing::warn!(
+                    "ccws remove 失敗 (lane は削除済、 dir 残置): {}: {}",
+                    addr,
+                    e
+                );
+                Some("dir_retained_remove_failed".to_string())
+            }
+            Err(e) => {
+                tracing::warn!("ccws task join: {}", e);
+                Some("dir_retained_join_failed".to_string())
+            }
+        }
+    } else {
+        None
+    };
+
+    // Phase 3: SystemEvent::Lane(Diff::Remove) broadcast → sidebar 即時反映。
+    // 既存挙動では欠落していた → sidebar refresh 不全 bug の根本原因 (= 本 PR で fix)。
+    // send 失敗 (= subscriber 全 drop) は warn のみ、 LanePool 削除は既に成功してるので
+    // authoritative state は問題なし。
+    if let Err(e) = state
+        .system_event_tx
+        .send(SystemEvent::Lane(Diff::Remove { id: addr.clone() }))
+    {
+        tracing::warn!(
+            "SystemEvent::Lane(Diff::Remove) broadcast failed: addr={} err={}",
+            addr,
+            e
+        );
+    }
+
+    Ok(DeletedLaneInfo {
+        address: addr.to_string(),
+        pid,
+        tmux_killed,
+        cleanup_status,
+    })
+}
+
 /// `DELETE /api/lanes?address=<addr>&cleanup=true` — Lane destroy (Phase 4-A) + ccws workspace cleanup (Phase 4-B)
 ///
-/// 動作:
-/// 1. address parse (LanePool::parse_address で逆変換)
-/// 2. Lead は削除拒否 (400) — Project lifetime 紐付き
-/// 3. LanePool::remove で LaneInfo + PtySlot を drop (PtySlot::Drop で child kill + wait)
-/// 4. cleanup=true (default) なら `ccws rm <name> --force` を subprocess 実行 (PtySlot drop 後 = file handle 解放後)
-/// 5. 200 OK with deleted info + cleanup status
+/// VP-124 Phase 1 で `delete_lane_orchestrated` に core logic を抽出済み。 本 handler は
+/// HTTP request parse + error → status code mapping の薄い adapter として残る。
 ///
 /// 関連 memory: mem_1CaTpCQH8iLJ2PasRcPjHv (Architecture v4: Lane lifecycle)
 pub async fn delete_handler(
@@ -372,83 +524,24 @@ pub async fn delete_handler(
         ));
     };
 
-    // Lead は削除拒否 — Project per Lead 1 つ固定の architecture rule
-    if matches!(addr.kind, LaneKind::Lead) {
-        return Err((
-            StatusCode::BAD_REQUEST,
+    match delete_lane_orchestrated(&state, addr, q.cleanup).await {
+        Ok(info) => Ok((
+            StatusCode::OK,
             Json(json!({
-                "error": "Lead Lane is fixed per project and cannot be deleted (use SP shutdown instead)"
+                "deleted": info.address,
+                "pid": info.pid,
+                "tmux_killed": info.tmux_killed,
+                "cleanup": info.cleanup_status,
             })),
-        ));
+        )),
+        Err(e @ DeleteLaneError::LeadCannotBeDeleted) => Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": e.to_string()})),
+        )),
+        Err(e @ DeleteLaneError::LaneNotFound(_)) => {
+            Err((StatusCode::NOT_FOUND, Json(json!({"error": e.to_string()}))))
+        }
     }
-
-    // Worker name (= ccws workspace name) を保持
-    let worker_name = addr.name.clone();
-
-    let removed = {
-        let mut pool = state.lane_pool.write().await;
-        pool.remove(&addr)
-    };
-
-    let info = match removed {
-        Some(i) => i,
-        None => {
-            return Err((
-                StatusCode::NOT_FOUND,
-                Json(json!({"error": format!("Lane not found: {}", addr)})),
-            ));
-        }
-    };
-
-    tracing::info!(
-        "Worker Lane deleted: addr={} pid={:?} (PtySlot dropped → child killed)",
-        addr,
-        info.pid
-    );
-
-    // Phase 4-X: ccws workspace dir cleanup を直 lib call に。 旧 subprocess (`Command::new("ccws")`) 撤去。
-    let cleanup_result = if q.cleanup
-        && let Some(name) = worker_name
-    {
-        let repo_name = std::path::Path::new(&state.project_dir)
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("unknown")
-            .to_string();
-        let result = tokio::task::spawn_blocking(move || {
-            crate::ccws::commands::remove_worker_in(&repo_name, &name)
-        })
-        .await;
-        match result {
-            Ok(Ok(())) => {
-                tracing::info!("ccws remove 成功: {}", addr);
-                Some("cleaned")
-            }
-            Ok(Err(e)) => {
-                tracing::warn!(
-                    "ccws remove 失敗 (lane は削除済、 dir 残置): {}: {}",
-                    addr,
-                    e
-                );
-                Some("dir_retained_remove_failed")
-            }
-            Err(e) => {
-                tracing::warn!("ccws task join: {}", e);
-                Some("dir_retained_join_failed")
-            }
-        }
-    } else {
-        None
-    };
-
-    Ok((
-        StatusCode::OK,
-        Json(json!({
-            "deleted": addr.to_string(),
-            "pid": info.pid,
-            "cleanup": cleanup_result,
-        })),
-    ))
 }
 
 /// `POST /api/lanes/restart?address=<addr>` request の query
