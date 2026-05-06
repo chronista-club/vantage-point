@@ -117,9 +117,10 @@ pub struct HermitPurpleState {
 
 /// Project scope の Stand pool (GE/HP を集約、 PR-β-2 で PP は Lane 移管済)
 ///
-/// PR-β-2 (VP-120): `paisley_park` field を **削除**、 PP は `LaneCapabilities.paisley_park`
-/// で Lane あたり独立 instance に物理移管。 残る GE / HP は Project あたり 1 instance、
-/// PR-γ で GE も Lane 移管予定。
+/// PR-β-2 (VP-120): `paisley_park` field を **削除**、 PP は `LaneCapabilities.registry`
+/// (PR-δ-2 / VP-136 で `LaneStandRegistry` 経由 host に進化、 wrapper struct =
+/// `PaisleyParkStand`) で Lane あたり独立 instance に物理移管。 残る GE / HP は
+/// Project あたり 1 instance、 PR-γ で GE も Lane 移管予定。
 #[derive(Debug, Default)]
 pub struct ProjectStandsPool {
     pub gold_experience: GoldExperienceState,
