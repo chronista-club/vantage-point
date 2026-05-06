@@ -1365,6 +1365,208 @@ impl ProcessManagerCapability {
             let _ = &current; // current のライフタイムを明示（コンパイラ最適化防止用ではなく意図表示）
         }
     }
+
+    /// VP-129 MVP: ccws root を watch して worker dir 削除を SP DELETE に bridge する FSEvents watcher。
+    ///
+    /// **「folder = Lane 空間」 axiom の物理実装**。 user が Finder / `rm -rf` で worker dir を
+    /// 削除した時、 OS の file system event (Mac → FSEvents、 Linux → inotify) → notify crate
+    /// → 本 watcher が dirname を parse → project 解決 → SP `DELETE /api/lanes` 自動発火、
+    /// sidebar / tmux / PtySlot が cascade で同期 cleanup される。
+    ///
+    /// D10 Reconciliation arch の **3rd path 拡張**: Push (QUIC heartbeat) + Pull (port scan) +
+    /// **FSEvents (本 method)** の 3-trigger model 完成。
+    ///
+    /// MVP scope (= 別 ticket で safety net 追加候補):
+    /// - self-loop 防止: scope 外 (= SP 経由削除も Remove event 発火、 二重 DELETE 走るが SP 側
+    ///   404 で no-op、 log noise 許容)
+    /// - spawn race: scope 外 (= 既存 spawn semaphore + atomic LanePool insert で吸収)
+    /// - 詳細 EventKind 区別: Remove(_) 全 variant accept (= Mac FSEvents は RemoveKind 区別が薄い)
+    pub async fn run_ccws_watcher(
+        world: Arc<RwLock<Self>>,
+        shutdown_token: tokio_util::sync::CancellationToken,
+    ) {
+        use notify::{EventKind, RecursiveMode, Watcher};
+
+        // workers_dir 解決 (= ~/.local/share/ccws/)。 不在なら作成 (= 後の worker spawn でも必要)。
+        let workers_dir = match crate::ccws::config::workers_dir() {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::warn!("ccws watcher: workers_dir 解決失敗 (skip): {}", e);
+                return;
+            }
+        };
+        if !workers_dir.exists()
+            && let Err(e) = std::fs::create_dir_all(&workers_dir)
+        {
+            tracing::warn!(
+                "ccws watcher: workers_dir create 失敗 (skip、 path={}): {}",
+                workers_dir.display(),
+                e
+            );
+            return;
+        }
+
+        // notify event は std::sync::mpsc 風 closure callback で来る。 async loop で処理する
+        // ため tokio mpsc に bridge (file_watcher.rs:379 と同型 pattern)。
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<notify::Event>();
+        let mut watcher =
+            match notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
+                if let Ok(event) = res {
+                    let _ = tx.send(event);
+                }
+            }) {
+                Ok(w) => w,
+                Err(e) => {
+                    tracing::warn!("ccws watcher: recommended_watcher 構築失敗 (skip): {}", e);
+                    return;
+                }
+            };
+
+        if let Err(e) = watcher.watch(&workers_dir, RecursiveMode::NonRecursive) {
+            tracing::warn!(
+                "ccws watcher: watch 開始失敗 (path={}, err={})",
+                workers_dir.display(),
+                e
+            );
+            return;
+        }
+
+        tracing::info!(
+            "ccws watcher 起動 (path={}、 mode=NonRecursive、 trigger=Remove → SP DELETE)",
+            workers_dir.display()
+        );
+
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .expect("reqwest Client 構築失敗");
+
+        loop {
+            tokio::select! {
+                _ = shutdown_token.cancelled() => {
+                    tracing::info!("ccws watcher: shutdown signal、 停止");
+                    break;
+                }
+                event_opt = rx.recv() => {
+                    let Some(event) = event_opt else { break }; // channel closed
+                    if !matches!(event.kind, EventKind::Remove(_)) {
+                        continue;
+                    }
+                    Self::handle_ccws_remove_event(&world, &client, &workers_dir, &event).await;
+                }
+            }
+        }
+
+        drop(watcher); // 明示 drop で watching 停止 (scope 終端でも自動だが意図表示)
+        tracing::info!("ccws watcher 終了");
+    }
+
+    /// VP-129 MVP: Remove event 1 件を処理。 dirname → project 解決 → SP DELETE call。
+    /// `run_ccws_watcher` の inner、 各 path を独立処理。
+    async fn handle_ccws_remove_event(
+        world: &Arc<RwLock<Self>>,
+        client: &reqwest::Client,
+        workers_dir: &std::path::Path,
+        event: &notify::Event,
+    ) {
+        for path in &event.paths {
+            // workers_dir 直下の dir のみ対象 (= 子孫 file の Remove は無関係)
+            let Some(parent) = path.parent() else {
+                continue;
+            };
+            if parent != workers_dir {
+                continue;
+            }
+            let Some(dirname) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+
+            // project 解決 = config.projects に対する longest prefix match
+            // (例: "vantage-point-keystage" で project name が "vantage" / "vantage-point" の
+            //  両方 match した場合、 longest = "vantage-point" を採用)
+            let resolved = {
+                let world_read = world.read().await;
+                let Some(config) = world_read.config.as_ref() else {
+                    continue;
+                };
+                let parent_proj = config
+                    .projects
+                    .iter()
+                    .filter(|p| dirname.starts_with(&format!("{}-", p.name)))
+                    .max_by_key(|p| p.name.len());
+                match parent_proj {
+                    Some(p) => Some((p.name.clone(), p.path.clone())),
+                    None => {
+                        tracing::debug!(
+                            "ccws watcher: parent project 解決失敗 (skip) dirname={}",
+                            dirname
+                        );
+                        None
+                    }
+                }
+            };
+            let Some((project_name, project_path)) = resolved else {
+                continue;
+            };
+            let worker_name = match dirname.strip_prefix(&format!("{}-", project_name)) {
+                Some(w) if !w.is_empty() => w.to_string(),
+                _ => continue,
+            };
+
+            // SP port 取得 (= running_processes registry)。 `project_path` は config の
+            // String 型で持たれているので Path 変換してから normalize する。
+            let port = {
+                let world_read = world.read().await;
+                let procs = world_read.running_processes.read().await;
+                let key = normalize_path_key(std::path::Path::new(&project_path));
+                procs.get(&key).map(|p| p.port)
+            };
+            let Some(port) = port else {
+                tracing::debug!(
+                    "ccws watcher: SP not running for project={} (skip) worker={}",
+                    project_name,
+                    worker_name
+                );
+                continue;
+            };
+
+            // SP DELETE /api/lanes (cleanup=false、 dir は既に gone)。 self-loop case
+            // (= SP 経由で削除されて dir が消えた → watcher が Remove 検知 → 本 DELETE 発火)
+            // は SP 側で 404 (Lane not found) 返却、 log debug 落ち。
+            let address = format!("{}/worker/{}", project_name, worker_name);
+            let address_enc = address.replace('/', "%2F");
+            let url = format!(
+                "http://[::1]:{}/api/lanes?address={}&cleanup=false",
+                port, address_enc
+            );
+            tracing::info!(
+                "ccws watcher: dir removed → SP DELETE 発火 (project={}, worker={}, port={})",
+                project_name,
+                worker_name,
+                port
+            );
+            match client.delete(&url).send().await {
+                Ok(r) if r.status().is_success() => {
+                    tracing::info!("ccws watcher: SP DELETE 成功 ({})", address);
+                }
+                Ok(r) => {
+                    tracing::debug!(
+                        "ccws watcher: SP DELETE non-success (likely self-loop or already deleted): status={}, address={}",
+                        r.status(),
+                        address
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "ccws watcher: SP DELETE 失敗 (port={}, address={}): {}",
+                        port,
+                        address,
+                        e
+                    );
+                }
+            }
+        }
+    }
 }
 
 impl Default for ProcessManagerCapability {

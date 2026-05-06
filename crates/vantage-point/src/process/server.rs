@@ -968,6 +968,14 @@ pub async fn run_world(
         shutdown_token.clone(),
     ));
 
+    // VP-129 MVP: ccws root FSEvents watcher 起動。 user の Finder / `rm -rf` で worker dir
+    // を削除した時、 OS file system event → SP `DELETE /api/lanes` 自動発火 (= D10 Reconciliation
+    // の 3rd path 拡張、 Push QUIC + Pull port scan + FSEvents の 3-trigger model 完成)。
+    let _ccws_watcher = tokio::spawn(ProcessManagerCapability::run_ccws_watcher(
+        world_cap.clone(),
+        shutdown_token.clone(),
+    ));
+
     // LIVE SELECT → 通知ブリッジ（VP-21 Phase 4）
     // processes テーブルの変更を検知して DistributedNotification に変換
     // DB 切断でストリームが終了した場合は再接続ループで自律復帰する
