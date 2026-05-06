@@ -343,11 +343,22 @@ Out-of-scope (Post-PR-ε):
 
 doc 12 §9 で plot された PR-β/δ/ε を本 doc で技術設計確定:
 
-| PR | Linear (起票予定) | scope | 規模 | 依存 |
-|----|------------------|------|------|------|
-| **PR-β** | TBD | PP を Project actor から Lane instance 化 (catalog §9 SSOT に揃える) | L | PR-α 完了 |
-| **PR-δ** | TBD | Lane Layer supervisor 整備 (SP 内 Lane registry、 host API、 LaneCapabilities) | M | PR-β 完了 |
+| PR | Linear / status | scope | 規模 | 依存 |
+|----|----------------|------|------|------|
+| **PR-β** | VP-119 / 120 / 122 ✅ Done (#274 / #275 / #277) | PP を Project actor から Lane instance 化 (catalog §9 SSOT に揃える) | L | PR-α 完了 |
+| **PR-δ** | VP-135 / 136 / 137 / 138 ✅ Done (#288 / #289 / #290 / #291) | Lane Layer supervisor 整備 (LaneStand trait + LaneStandRegistry generic interface 化、 「N Stand host」 invariant 確立) | M | PR-β 完了 |
 | **PR-ε** | TBD | Smart Canvas に「creo memory」 content kind 追加 (本 doc §8、 VP-121 で creo-memory-pane → Canvas 統合に simplify) | M (旧 L) | PR-δ 完了 |
+
+### PR-δ sub-issue 分割実績 (PR-α / PR-β 経験を踏襲、 4 sub 全完)
+
+PR-α (3 sub) / PR-β (4 sub) と同型 pattern。 PR-δ-2 着手前 grep で `LaneCapabilities.paisley_park` の production caller がゼロと確認 (PR-β-2 と同 argument)、 b 路線 aggressive replace で進めて caller migration sub-PR を skip:
+
+| sub-issue | scope | status | prerequisite |
+|----------|------|--------|--------------|
+| **PR-δ-1** | LaneStand trait + LaneStandRegistry 受け皿 (既存挙動影響ゼロ) | ✅ Done (#288、 VP-135) | PR-β 完了 |
+| **PR-δ-2** | PP を `PaisleyParkStand` (LaneStand impl) に rewire + LaneCapabilities 統合 (caller ゼロ前提 aggressive replace) | ✅ Done (#289、 VP-136) | PR-δ-1 完了 |
+| **PR-δ-3** | mock Stand B + 「N Stand host」 invariant test 4 件 (`#[cfg(test)]` 限定、 production 影響ゼロ) | ✅ Done (#290、 VP-137) | PR-δ-2 完了 |
+| **PR-δ-4** (cleanup) | module-level doc roadmap update + lane_stand 命名規約 doc 明示化 (2 namespace 分離) + 本 §9 catalog 更新 | ✅ Done (#291、 VP-138) | PR-δ-3 完了 |
 
 ### PR-β sub-issue 分割案 (PR-α 経験を踏襲)
 
@@ -365,8 +376,8 @@ PR-α の 3 sub-issue (受け皿 → 物理移管 → caller migration) pattern 
 
 LSCM 公理を守るため、 各 PR で以下 invariant を test 化:
 
-- PR-β: `pp@{project}/{lane}` address が解決できる + Lane destroy で PP 終了
-- PR-δ: LaneCapabilities が PP 含めて N Stand を host できる generic interface
+- PR-β: `pp@{project}/{lane}` address が解決できる + Lane destroy で PP 終了 ✅
+- PR-δ: LaneCapabilities が PP 含めて N Stand を host できる generic interface ✅ (PR-δ-3 / VP-137 / #290 で 4 invariant test 着地: 共存 / 両方向state独立 / per-Lane独立 / remove独立)
 - PR-ε: MCP 中継経路で creo activity が `pp/lane/{lane}/surface/canvas` topic に到達 (creo memory content kind として Canvas に render、 旧 feed topic は VP-121 で廃止)
 
 ---

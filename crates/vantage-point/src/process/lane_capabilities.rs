@@ -20,15 +20,18 @@
 //!   Lane あたり独立 instance host (cardinality 1 → N)。
 //! - PR-δ-1 (VP-135 ✅、 #288): `LaneStand` trait + `LaneStandRegistry` 受け皿新設、
 //!   既存挙動への影響ゼロ。
-//! - PR-δ-2 (VP-136 ✅、 本 PR): **PP を `PaisleyParkStand` (LaneStand impl) に rewire** +
+//! - PR-δ-2 (VP-136 ✅、 #289): **PP を `PaisleyParkStand` (LaneStand impl) に rewire** +
 //!   `paisley_park` hardcoded field を削除、 `registry: LaneStandRegistry` で N Stand host に統一。
 //!   production caller ゼロを着手前 grep で確認 (PR-β-2 と同じ argument)、 b 路線 aggressive replace。
-//! - PR-δ-3 (planned): mock Stand B + 「N Stand host」 invariant test 強化。
-//! - PR-δ-4 (planned): cleanup、 doc 13 §9 catalog 更新、 invariant test 行 update。
+//! - PR-δ-3 (VP-137 ✅、 #290): mock Stand B + 「N Stand host」 invariant test 4 件追加
+//!   (`lane_capabilities.rs` tests module 内、 production binary 影響ゼロ)。
+//! - PR-δ-4 (VP-138 ✅、 本 PR): cleanup — module-level doc roadmap update +
+//!   lane_stand.rs 命名規約 doc fix + doc 13 §9 catalog 更新。
 //!
 //! 関連: doc 12 (`docs/design/12-stand-architecture.md` §9 Catalog)、
 //! doc 13 (`docs/design/13-paisley-park-revival.md` §3 / §9)、
-//! Linear VP-109 (parent epic)、 VP-119 / VP-120 (PR-β series)、 VP-135 / VP-136 (PR-δ series)。
+//! Linear VP-109 (parent epic)、 VP-119 / VP-120 (PR-β series)、
+//! VP-135 / VP-136 / VP-137 / VP-138 (PR-δ series)。
 
 use std::collections::HashMap;
 use std::sync::Arc;
