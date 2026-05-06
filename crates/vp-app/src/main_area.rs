@@ -97,10 +97,31 @@ pub const MAIN_AREA_HTML: &str = concat!(
 html,body{margin:0;padding:0;height:100%;width:100%;background:var(--color-surface-bg-base);color:var(--color-text-primary);font-family:var(--typography-family-sans);}
 body{overflow:hidden;}
 #host{position:relative;width:100%;height:100%;}
-.pane{position:absolute;inset:0;display:none;}
-.pane.active{display:block;}
-/* Phase 2.5 bug fix: position:relative を付けると inset:0 が効かなくなり pane-terminal が 0x0 に潰れる。
-   .pane が既に position:absolute なので containing block 機能は十分、 padding 0 だけ追加で OK。 */
+/* VP-140 (PR-ε-1): 3D Frame Layout Engine 化。 旧 `.pane{display:none} + .pane.active{display:block}`
+   による visibility gating を廃止、 left/top/width/height/opacity を JS (Frame Engine renderer.ts) で
+   制御する形に inversion。 Pane は分割で生まれるのではなく、 frame 全体に対する transform を持つ
+   独立 portable object として配置される (LSCM 公理 A1 と同型構造)。
+   `.active` class は legacy 互換 (sendSlotRect / showLane gate) のため renderer が primary pane に
+   付け替える、 表示制御自体は opacity が司る。 transition 速度は creo-ui-editor-host の token として
+   `--frame-transition-ms` で runtime 編集可能 (Ctrl+Shift+E)。 */
+:root{
+  --frame-transition-ms:220ms;
+  --frame-transition-easing:cubic-bezier(.2,.8,.2,1);
+}
+.pane{
+  position:absolute;
+  left:0;top:0;width:100%;height:100%;
+  opacity:0;
+  pointer-events:none;
+  transition:
+    top var(--frame-transition-ms) var(--frame-transition-easing),
+    left var(--frame-transition-ms) var(--frame-transition-easing),
+    width var(--frame-transition-ms) var(--frame-transition-easing),
+    height var(--frame-transition-ms) var(--frame-transition-easing),
+    opacity calc(var(--frame-transition-ms) * 0.82) ease;
+  will-change:top,left,width,height,opacity;
+}
+.pane.active{pointer-events:auto;}
 .pane.terminal{padding:0;}
 /* Phase 2.5: per-Lane instance container. lane-host が pane-terminal 全領域を埋め、
    各 .lane-pane が absolute で重なる。 active のみ display:block。 */
@@ -113,23 +134,21 @@ body{overflow:hidden;}
 #lane-empty.active{display:grid;}
 #lane-empty h1{font-weight:400;font-size:1.1rem;margin:0;}
 #lane-empty p{margin:.25rem 0 0;font-size:.85rem;}
-.pane.canvas{display:none;place-items:center;}
-.pane.canvas.active{display:grid;}
+/* VP-140: display:none/active gate 廃止、 always display:grid。 visibility は opacity (Frame Engine) が司る. */
+.pane.canvas{display:grid;place-items:center;}
 .pane.canvas main{text-align:center;}
 .pane.canvas h1{font-weight:500;font-size:1.6rem;margin:0 0 .25rem;color:var(--color-text-primary);}
 .pane.canvas p{color:var(--color-text-tertiary);margin:0;font-size:.9rem;}
 .pane.canvas .brand{color:var(--color-brand-primary);}
 .pane.preview iframe{width:100%;height:100%;border:0;background:#fff;}
 /* Phase 5-A: Project-scope Stand placeholder panes (PP/GE/HP) */
-.pane.stand{display:none;place-items:center;}
-.pane.stand.active{display:grid;}
+.pane.stand{display:grid;place-items:center;}
 .pane.stand main{text-align:center;max-width:520px;padding:0 24px;}
 .pane.stand h1{font-weight:500;font-size:1.6rem;margin:0 0 .5rem;color:var(--color-text-primary);}
 .pane.stand p{color:var(--color-text-tertiary);margin:.25rem 0;font-size:.95rem;}
 .pane.stand .sub{font-size:.85rem;color:var(--color-text-tertiary);opacity:.85;margin-top:1rem;line-height:1.6;}
 .pane.stand .brand{color:var(--color-brand-primary);}
-.pane.empty{display:none;place-items:center;}
-.pane.empty.active{display:grid;}
+.pane.empty{display:grid;place-items:center;}
 .pane.empty main{text-align:center;color:var(--color-text-tertiary);}
 .pane.empty h1{font-weight:400;font-size:1.1rem;margin:0;}
 .pane.empty p{margin:.25rem 0 0;font-size:.85rem;}
@@ -169,7 +188,7 @@ body{overflow:hidden;}
        VP-100 γ-light: ResizeObserver が slot rect を IPC で送る (Phase 4+ で native overlay 同期に使う)。 -->
   <!-- Phase 2.5 (per-Lane instance): pane-terminal 内に lane-host を置き、
        Lane ごとに xterm.js + WebSocket instance を mount。 active な 1 つだけ display:block。 -->
-  <div class="pane terminal" id="pane-terminal" data-kind="terminal">
+  <div class="pane terminal" id="pane-terminal" data-kind="terminal" data-pane-id="echoes">
     <div id="lane-host"></div>
     <!-- empty placeholder: どの Lane も無い時に出す -->
     <div id="lane-empty" class="lane-empty active">
@@ -179,40 +198,40 @@ body{overflow:hidden;}
       </main>
     </div>
   </div>
-  <div class="pane canvas" id="pane-canvas" data-kind="canvas">
+  <div class="pane canvas" id="pane-canvas" data-kind="canvas" data-pane-id="canvas">
     <main>
       <h1>Canvas pane</h1>
       <p>Phase 2 — <span class="brand">Creo UI mint-dark</span> を全ペイン統一で適用</p>
     </main>
   </div>
-  <div class="pane preview" id="pane-preview" data-kind="preview">
+  <div class="pane preview" id="pane-preview" data-kind="preview" data-pane-id="preview">
     <iframe id="preview-frame" src="about:blank" sandbox="allow-same-origin allow-scripts"></iframe>
   </div>
   <!-- Phase 5-A: Project-scope Stand placeholder panes (PP/GE/HP)。
        click action は Phase 3-B で導入した sidebar の vp-project-stand-row から発火、
        将来 (Phase 6+) で Canvas 実描画 / Ruby eval / MIDI 制御を bind する予定。 -->
-  <div class="pane stand" id="pane-paisley-park" data-kind="paisley_park">
+  <div class="pane stand" id="pane-paisley-park" data-kind="paisley_park" data-pane-id="pp">
     <main>
       <h1>🧭 Paisley Park</h1>
       <p>Information Navigator — Canvas / Markdown / HTML / 画像</p>
       <p class="sub">Phase 6+ で <span class="brand">/api/show 結合</span>、 file watch 連動、 layered Canvas を実装予定</p>
     </main>
   </div>
-  <div class="pane stand" id="pane-gold-experience" data-kind="gold_experience">
+  <div class="pane stand" id="pane-gold-experience" data-kind="gold_experience" data-pane-id="ge">
     <main>
       <h1>🌿 Gold Experience</h1>
       <p>Code Runner — 動的生命注入エンジン</p>
       <p class="sub">Phase 6+ で <span class="brand">Ruby eval / process_runner</span> 結合、 inline result preview を実装予定</p>
     </main>
   </div>
-  <div class="pane stand" id="pane-hermit-purple" data-kind="hermit_purple">
+  <div class="pane stand" id="pane-hermit-purple" data-kind="hermit_purple" data-pane-id="hp">
     <main>
       <h1>🍇 Hermit Purple</h1>
       <p>External Control — MIDI / MCP / tmux</p>
       <p class="sub">Phase 6+ で <span class="brand">MIDI lpd8 / MCP server / tmux session</span> 接続パネルを実装予定</p>
     </main>
   </div>
-  <div class="pane empty active" id="pane-empty" data-kind="empty">
+  <div class="pane empty active" id="pane-empty" data-kind="empty" data-pane-id="empty">
     <main>
       <h1>No pane selected</h1>
       <p>sidebar から pane を選択してください</p>

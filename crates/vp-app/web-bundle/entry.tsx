@@ -23,6 +23,98 @@ import { render } from 'solid-js/web'
 import { EditorHostProvider, EditorLayer } from 'creo-ui-editor-host'
 import { CreoIcon } from 'creo-ui-icons-web'
 import { STAND_ICON, type StandKind } from './icons/stand'
+import { FrameEngine, type PaneId } from './frame-engine'
+import { DEFAULT_SCENES, EMPTY_SCENE, generateAllFocusScenes } from './scenes'
+import { attachRenderer } from './renderer'
+import { attachKeybindings } from './keybindings'
+
+// ===== VP-140 / PR-ε-1: 3D Frame Layout Engine init =====
+// EditorLayer mount より前に Pane / Scene を register しておき、 DOMContentLoaded で
+// default Scene を apply する。 setActivePane bridge も window に登録 (legacy 互換)。
+//
+// data-pane-id 規約 (main_area.rs HTML 側で付与):
+//   echoes  → pane-terminal      (Echoes Stand = lane terminal host)
+//   pp      → pane-paisley-park  (Paisley Park 🧭 / Information Router)
+//   canvas  → pane-canvas        (汎用 Canvas surface placeholder)
+//   ge      → pane-gold-experience (Gold Experience 🌿)
+//   hp      → pane-hermit-purple   (Hermit Purple 🍇)
+//   preview → pane-preview        (iframe preview)
+//   empty   → pane-empty          (no selection)
+const FRAME_PANE_IDS: PaneId[] = ['echoes', 'pp', 'canvas', 'ge', 'hp', 'preview', 'empty']
+const FOCUSABLE_PANE_IDS: PaneId[] = ['echoes', 'pp', 'canvas', 'ge', 'hp', 'preview']
+
+const frameEngine = new FrameEngine()
+FRAME_PANE_IDS.forEach((id) => frameEngine.registerPane({ id, kind: id }))
+DEFAULT_SCENES.forEach((s) => frameEngine.registerScene(s))
+frameEngine.registerScene(EMPTY_SCENE)
+generateAllFocusScenes(FOCUSABLE_PANE_IDS).forEach((s) => frameEngine.registerScene(s))
+
+// DOM 反映 + keybindings hook
+attachRenderer(frameEngine, document)
+attachKeybindings(frameEngine, window)
+
+// ===== legacy setActivePane bridge =====
+// 既存 main_area.rs JS が定義する window.setActivePane を wrap して、
+// 旧 logic (showLane / preview iframe src 切替 / sendSlotRect) を保ったまま
+// Frame Engine に Scene 切替を発火させる。
+const KIND_TO_PANE: Record<string, PaneId> = {
+  terminal: 'echoes',
+  canvas: 'canvas',
+  paisley_park: 'pp',
+  gold_experience: 'ge',
+  hermit_purple: 'hp',
+  preview: 'preview',
+  empty: 'empty',
+}
+
+interface SetActivePaneInfo {
+  kind?: string | null
+  pane_id?: string | null
+  preview_url?: string | null
+}
+
+const installSetActivePaneBridge = (): void => {
+  const w = window as unknown as {
+    setActivePane?: (info: SetActivePaneInfo | null) => void
+  }
+  const original = w.setActivePane
+  w.setActivePane = (info) => {
+    // 旧 logic を先に呼ぶ (showLane / preview iframe / sendSlotRect 等)
+    if (typeof original === 'function') {
+      try {
+        original(info)
+      } catch (e) {
+        console.warn('[frame-engine] legacy setActivePane error', e)
+      }
+    }
+    // Frame Engine に Scene を発火
+    if (!info || !info.kind || info.kind === 'empty') {
+      frameEngine.applyScene('empty')
+      return
+    }
+    const paneId = KIND_TO_PANE[info.kind]
+    if (!paneId) {
+      console.warn('[frame-engine] unknown kind for setActivePane:', info.kind)
+      frameEngine.applyScene('empty')
+      return
+    }
+    frameEngine.applyScene(`${paneId}-focus`)
+  }
+}
+
+// 起動時 default Scene apply
+const applyDefaultScene = (): void => {
+  installSetActivePaneBridge()
+  frameEngine.applyScene('lead-focus')
+}
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', applyDefaultScene, { once: true })
+} else {
+  applyDefaultScene()
+}
+
+// DevTools 検査用 (window.vpFrame.applyScene('side-review') 等で手動 trigger 可能)
+;(window as unknown as { vpFrame: FrameEngine }).vpFrame = frameEngine
 
 function App() {
   return (
