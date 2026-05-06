@@ -242,7 +242,23 @@ async fn handle_terminal_socket_lane(
                     );
                     continue;
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    // VP-132: PtySlot drop で broadcast 終了 → WS にも明示 Close frame 送信。
+                    // client (vp-app) の auto-reconnect (PR #218) が Close 受信で発火、
+                    // 新 PtySlot に attach し直す。 旧実装の silent break では WS が TCP
+                    // 維持で client は dead と認識せず、 Lane Restart 後 Pane refresh 不全
+                    // の bug を生んでいた (= VP-131 server-side fix と組で UI 復活経路完成)。
+                    //
+                    // architectural invariant: PtySlot lifecycle = WS lifecycle、 PtySlot drop
+                    // 検出時は WS にも Close 通知義務がある。 send 失敗は ignore (= もう client が
+                    // disconnect してる場合等、 best-effort)。
+                    tracing::info!(
+                        "/ws/terminal lane={} broadcast closed (PtySlot dropped)、 WS Close 送信",
+                        send_addr
+                    );
+                    let _ = sender.send(Message::Close(None)).await;
+                    break;
+                }
             }
         }
     });
