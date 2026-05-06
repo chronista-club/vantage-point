@@ -1019,6 +1019,13 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
   // 初期化完了を Rust に通知 (Phase 2.5: legacy `sendResize()` は撤去、 Lane 個別の WS が resize 通知する)
   window.ipc.postMessage(JSON.stringify({t:'ready'}));
 
+  // VP-140: lane catch-up 要求 — 起動 race で WebView HTML load 完了前に Rust 側 ensureLane が
+  // silent drop された場合の救済。 ここは inline IIFE 内 (DOMContentLoaded 直後と等価のタイミング)
+  // で実行されるので、 JS 側 window.ensureLane が既に定義済 = Rust 側 evaluate_script が成功する。
+  // Rust 側は AppEvent::LanesEnsureAll を受けて全 project の lanes_by_project を walk + ensureLane 再発行。
+  // idempotent (laneInstances.has なら no-op) なので、 既に ensured 済の lane は影響なし。
+  window.ipc.postMessage(JSON.stringify({t:'lanes:ensure-all'}));
+
   // DevTools console から laneInstances を手動検査できるよう露出
   window.__vpLanes = laneInstances;
 
