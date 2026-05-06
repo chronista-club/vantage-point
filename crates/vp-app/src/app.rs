@@ -2677,6 +2677,43 @@ pub fn run() -> anyhow::Result<()> {
                 }
                 push_sidebar_state(&sidebar, &sidebar_state);
             }
+            // VP-140: JS 側が DOMContentLoaded 後に送る lane catch-up 要求。
+            // 起動 race で silent drop された ensureLane を再発行する (WebView HTML load 完了
+            // 後なので、 evaluate_script は確実に実行される)。 idempotent (ensureLane 内で既存なら no-op)。
+            Event::UserEvent(AppEvent::LanesEnsureAll) => {
+                let mut total_lanes = 0usize;
+                for (project_path, lanes) in sidebar_state.lanes_by_project.clone().iter() {
+                    let sp_port = sidebar_state
+                        .processes
+                        .iter()
+                        .find(|p| &p.path == project_path)
+                        .and_then(|p| p.port);
+                    let Some(port) = sp_port else {
+                        tracing::warn!(
+                            "LanesEnsureAll: SP port unknown for {} (skip)",
+                            project_path
+                        );
+                        continue;
+                    };
+                    for lane in lanes {
+                        // Phase 5-E: pid:null = disk-only Lane は WS 確立対象外
+                        if lane.pid.is_none() {
+                            continue;
+                        }
+                        lane_js::ensure_lane(&main_view, &lane.address.key(), port);
+                        total_lanes += 1;
+                    }
+                }
+                // 現在 active な Lane を再度 show する (lane-empty placeholder を解除する保険)
+                if let Some(addr) = &sidebar_state.active_lane_address {
+                    lane_js::show_lane(&main_view, Some(addr));
+                }
+                tracing::info!(
+                    "LanesEnsureAll: re-issued ensureLane for {} lane(s), active={:?}",
+                    total_lanes,
+                    sidebar_state.active_lane_address
+                );
+            }
             Event::UserEvent(AppEvent::LanesError {
                 process_path,
                 message,

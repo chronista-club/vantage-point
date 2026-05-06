@@ -81,6 +81,12 @@ pub enum AppEvent {
         stands: Vec<crate::client::StandInfo>,
         error: Option<String>,
     },
+    /// VP-140: main_area JS が DOMContentLoaded 後に送る lane catch-up 要求。
+    /// 起動初期の `evaluate_script` race (WebView HTML 未 load 時に Rust 側 ensureLane 発行が
+    /// silent drop される) の救済策として、 JS 側が ready になったタイミングで Rust に再発行を
+    /// 要求する。 Rust は `sidebar_state.lanes_by_project` 全 lane に対して ensureLane + 現在
+    /// active lane に showLane を再発行する (idempotent)。
+    LanesEnsureAll,
 }
 
 /// xterm.js から IPC で送られてきた JSON メッセージを処理
@@ -102,6 +108,12 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
         Some("in") | Some("resize") | Some("ready") => {
             // Phase 2.x-d: Lane WS が直接 SP に送信するので Rust 経路は使わない。
             // 旧 single-term の互換のため受け取りは続けるが silent no-op。
+        }
+        Some("lanes:ensure-all") => {
+            // VP-140: JS 側が DOMContentLoaded 後に送る lane catch-up 要求。
+            // 起動 race で silent drop された ensureLane を再発行させるための signal。
+            tracing::info!("[ipc] lanes:ensure-all (JS DOMContentLoaded catch-up)");
+            let _ = proxy.send_event(AppEvent::LanesEnsureAll);
         }
         Some("copy") => {
             // navigator.clipboard が使えなかった時の fallback: arboard で OS clipboard 直書き
