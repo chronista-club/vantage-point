@@ -115,7 +115,7 @@ pub struct ProcessManagerCapability {
     previously_running: Arc<RwLock<HashMap<String, RunningProcess>>>,
     /// Phase 1b: 各 Project の Lane registry（キー: 正規化パス）—
     /// SP が register payload に lanes を載せて push、 disconnect で全 Lane drop。
-    /// agent (HD on Claude CLI) が `GET /api/lanes` で resolve するための cache。
+    /// agent (Echoes on Claude CLI) が `GET /api/lanes` で resolve するための cache。
     #[allow(clippy::type_complexity)]
     lane_registry: Arc<RwLock<HashMap<String, Vec<crate::process::lanes_state::LaneInfo>>>>,
     /// 設定
