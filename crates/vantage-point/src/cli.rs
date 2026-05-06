@@ -145,9 +145,15 @@ pub fn force_kill(pid: u32) {
 #[cfg(not(unix))]
 pub fn force_kill(_pid: u32) {}
 
-/// Default port range to scan for instances
+/// Default port range to scan for instances.
+///
+/// VP-133 (2026-05-06) で 33010 → 33024 に拡張 (= 25 ports、 上限 max)。 旧 11 ports
+/// では同時開発 project が増えると枯渇 + start_process の port allocator が「searching for
+/// available port」 で別 port 選択 → multi-port spawn を誘発するリスクが上昇していた。
+/// 25 まで拡張で実用 project 数 (~10-15) に対し十分な margin を確保、 reconcile dedup と
+/// 組合せて安定運用へ。
 pub const PORT_RANGE_START: u16 = 33000;
-pub const PORT_RANGE_END: u16 = 33010;
+pub const PORT_RANGE_END: u16 = 33024;
 
 /// TheWorld（Daemon 統合）のデフォルトポート
 pub const WORLD_PORT: u16 = 32000;

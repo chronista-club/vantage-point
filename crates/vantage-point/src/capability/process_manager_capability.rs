@@ -581,6 +581,72 @@ impl ProcessManagerCapability {
     }
 
     /// Processを起動
+    /// VP-133 MVP: 指定 path に対して live SP が存在するか port range scan で確認。
+    ///
+    /// `running_processes` registry を bypass し、 `PORT_RANGE_START..=END` を直接 GET
+    /// `/api/health` で query、 response の `project_dir` を `normalize_path_key` で正規化して
+    /// `project_path` と match する SP を返す。
+    ///
+    /// **用途**: `start_process` で false positive 切断検知後の auto-spawn 重複を防ぐ
+    /// dedup check。 registry が誤って空になっても、 ports は実 SP の listen 状態を反映する
+    /// ので、 port scan が source of truth として機能する。
+    ///
+    /// **同 logic は `refresh_process_status` Phase 2 (line ~1045) でも使われているが、
+    /// あちらは ghost detection / 自動 register の higher-level loop**。 本 helper は
+    /// 「ある path に SP が live か」 の単純 query に絞り、 caller が分岐判断する形。
+    async fn find_running_sp_at_path(
+        &self,
+        project_path: &std::path::Path,
+    ) -> Option<RunningProcess> {
+        let target_key = normalize_path_key(project_path);
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(500))
+            .build()
+            .ok()?;
+
+        for port in crate::cli::PORT_RANGE_START..=crate::cli::PORT_RANGE_END {
+            let url = format!("http://[::1]:{}/api/health", port);
+            let Ok(resp) = client.get(&url).send().await else {
+                continue;
+            };
+            if !resp.status().is_success() {
+                continue;
+            }
+            let Ok(json) = resp.json::<serde_json::Value>().await else {
+                continue;
+            };
+
+            let project_dir = json
+                .get("project_dir")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if project_dir.is_empty() {
+                continue;
+            }
+
+            let key = normalize_path_key(std::path::Path::new(project_dir));
+            if key != target_key {
+                continue;
+            }
+
+            // path match — 既存 SP を return
+            let pid = json.get("pid").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            let project_name = std::path::Path::new(project_dir)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown")
+                .to_string();
+            return Some(RunningProcess {
+                project_name,
+                port,
+                pid,
+                project_path: project_path.to_path_buf(),
+                tmux_session: None,
+            });
+        }
+        None
+    }
+
     pub async fn start_process(&self, project_name: &str) -> CapabilityResult<RunningProcess> {
         let vp_path = self.vp_binary_path.clone().ok_or_else(|| {
             CapabilityError::InitializationFailed("vp binary not found".to_string())
@@ -614,6 +680,34 @@ impl ProcessManagerCapability {
                     project_name
                 )));
             }
+        }
+
+        // VP-133 MVP: dedup port scan check ─ false positive 切断検知 (= QUIC heartbeat 一時失敗
+        // 等で running_processes registry が誤って空になる) 後の auto-spawn を防ぐ。 registry
+        // bypass で port 直 scan + path match を確認、 既存 SP 発見なら spawn skip + 再 register。
+        //
+        // 旧挙動 (= dedup check 不在) では、 false positive で registry 空 → start_process →
+        // 旧 SP alive のまま新 port で spawn → multi-port 並走 → Health monitor が 30 秒毎に
+        // ghost detect → 互殺 ping-pong cycle が永続化していた (VP-133 root cause)。
+        if let Some(existing) = self.find_running_sp_at_path(&project.path).await {
+            tracing::info!(
+                "start_process: dedup check で既存 SP 発見 → spawn skip + re-register \
+                 (project={}, port={}, pid={})",
+                project_name,
+                existing.port,
+                existing.pid
+            );
+            {
+                let mut projects = self.projects.write().await;
+                if let Some(p) = projects.get_mut(&key) {
+                    p.process_status = ProcessStatus::Running;
+                }
+            }
+            {
+                let mut procs = self.running_processes.write().await;
+                procs.insert(key.clone(), existing.clone());
+            }
+            return Ok(existing);
         }
 
         // 状態を更新
