@@ -318,6 +318,32 @@ const SIDEBAR_HTML: &str = concat!(
   .vp-restart-dialog button:hover{background:var(--color-surface-bg-emphasis);color:var(--color-text-primary);}
   .vp-restart-dialog button[data-variant="danger"]{background:var(--color-warning-subtle,rgba(255,107,107,.12));color:var(--color-warning,#ff6b6b);border-color:var(--color-warning-subtle,rgba(255,107,107,.32));}
   .vp-restart-dialog button[data-variant="danger"]:hover{background:var(--color-warning,#ff6b6b);color:var(--color-surface-bg-base);}
+
+  /* VP-128 Phase 2: Lane row right-click context menu (singleton popup) */
+  .vp-context-menu{position:fixed;display:none;min-width:180px;background:var(--color-surface-bg-base);border:1px solid var(--color-surface-border,#1f2233);border-radius:var(--radius-md,6px);box-shadow:0 8px 24px rgba(0,0,0,.4);z-index:9999;padding:4px 0;font-size:12px;}
+  .vp-context-menu.visible{display:block;}
+  .vp-context-menu .menu-item{padding:6px 14px;cursor:pointer;color:var(--color-text-secondary);transition:background .1s ease,color .1s ease;display:flex;align-items:center;gap:8px;}
+  .vp-context-menu .menu-item:hover{background:var(--color-surface-bg-emphasis);color:var(--color-text-primary);}
+  .vp-context-menu .menu-item[data-variant="danger"]:hover{background:var(--color-warning,#ff6b6b);color:var(--color-surface-bg-base);}
+  .vp-context-menu .menu-item .menu-icon{width:14px;text-align:center;font-family:'VPMono',monospace;color:var(--color-text-tertiary);}
+  .vp-context-menu .menu-item:hover .menu-icon{color:inherit;}
+  .vp-context-menu .menu-divider{height:1px;background:var(--color-surface-border,#1f2233);margin:4px 0;opacity:0.4;}
+
+  /* VP-128 Phase 2: Worker delete confirmation dialog (clone of vp-restart-dialog pattern + dirty warning) */
+  .vp-delete-dialog{padding:0;border:1px solid var(--color-surface-border,#1f2233);border-radius:var(--radius-md,8px);background:var(--color-surface-bg-base);color:var(--color-text-primary);font-family:inherit;font-size:13px;min-width:340px;max-width:480px;box-shadow:0 8px 32px rgba(0,0,0,.5);}
+  .vp-delete-dialog::backdrop{background:rgba(0,0,0,.5);backdrop-filter:blur(2px);}
+  .vp-delete-dialog .body{padding:16px 20px 12px 20px;}
+  .vp-delete-dialog .title{font-weight:600;margin:0 0 8px 0;font-size:14px;}
+  .vp-delete-dialog .detail{margin:0;color:var(--color-text-secondary);font-size:12px;line-height:1.5;}
+  .vp-delete-dialog .target{margin:10px 0 0 0;font-family:'VPMono',monospace;font-size:11px;color:var(--color-text-tertiary);padding:6px 8px;background:var(--color-surface-bg-emphasis);border-radius:var(--radius-sm,4px);}
+  .vp-delete-dialog .branch{margin:6px 0 0 0;font-family:'VPMono',monospace;font-size:11px;color:var(--color-text-tertiary);}
+  .vp-delete-dialog .dirty-warning{display:none;margin:10px 0 0 0;padding:8px 10px;background:var(--color-warning-subtle,rgba(255,107,107,.12));border:1px solid var(--color-warning-subtle,rgba(255,107,107,.32));border-radius:var(--radius-sm,4px);color:var(--color-warning,#ff6b6b);font-size:11px;line-height:1.5;}
+  .vp-delete-dialog .dirty-warning.visible{display:block;}
+  .vp-delete-dialog .actions{display:flex;justify-content:flex-end;gap:8px;padding:8px 20px 16px 20px;}
+  .vp-delete-dialog button{padding:5px 14px;border-radius:var(--radius-sm,6px);border:1px solid var(--color-surface-border,#1f2233);background:transparent;color:var(--color-text-secondary);font-family:inherit;font-size:12px;cursor:pointer;transition:background .12s ease,color .12s ease,border-color .12s ease;}
+  .vp-delete-dialog button:hover{background:var(--color-surface-bg-emphasis);color:var(--color-text-primary);}
+  .vp-delete-dialog button[data-variant="danger"]{background:var(--color-warning-subtle,rgba(255,107,107,.12));color:var(--color-warning,#ff6b6b);border-color:var(--color-warning-subtle,rgba(255,107,107,.32));}
+  .vp-delete-dialog button[data-variant="danger"]:hover{background:var(--color-warning,#ff6b6b);color:var(--color-surface-bg-base);}
 </style></head>
 <body>
   <!-- Phase 5-C minimal: section header "Projects" は冗長 (sidebar = projects と自明) → 削除。
@@ -369,6 +395,26 @@ const SIDEBAR_HTML: &str = concat!(
     <div class="actions">
       <button type="button" data-action="cancel">Cancel</button>
       <button type="button" data-action="ok" data-variant="danger">Restart</button>
+    </div>
+  </dialog>
+  <!-- VP-128 Phase 2: Lane row right-click context menu (singleton popup、 表示は showContextMenu から) -->
+  <div id="vp-context-menu" class="vp-context-menu">
+    <div class="menu-item" data-action="restart"><span class="menu-icon"></span><span>Restart Lead Stand</span></div>
+    <div class="menu-divider" data-role="worker-only"></div>
+    <div class="menu-item" data-action="delete" data-variant="danger" data-role="worker-only"><span class="menu-icon">×</span><span>Delete worker...</span></div>
+  </div>
+  <!-- VP-128 Phase 2: Worker delete 確認 dialog (Phase 1 delete_lane_orchestrated path、 dirty 警告含む) -->
+  <dialog id="vp-delete-dialog" class="vp-delete-dialog">
+    <div class="body">
+      <p class="title">Delete worker?</p>
+      <p class="detail">この worker Lane を完全に削除します (PTY kill + tmux session kill + ccws workspace dir 削除 + sidebar 反映)。 取り消し不可。</p>
+      <p class="target" id="delete-dialog-target"></p>
+      <p class="branch" id="delete-dialog-branch"></p>
+      <p class="dirty-warning" id="delete-dialog-dirty">⚠ Uncommitted changes が残っています。 削除すると失われます。</p>
+    </div>
+    <div class="actions">
+      <button type="button" data-action="cancel">Cancel</button>
+      <button type="button" data-action="ok" data-variant="danger">Delete</button>
     </div>
   </dialog>
 <!-- Phase E1 (R5): iconify-icon Web Component を register し、 SIDEBAR 内で
@@ -435,6 +481,87 @@ const SIDEBAR_HTML: &str = concat!(
     dlg.addEventListener('cancel', () => { restartTarget = null; }); // Esc キー
   });
 
+  // VP-128 Phase 2: Lane row right-click context menu (singleton popup、 表示は showContextMenu から)。
+  //  hover icon (× / restart) は keep (= fast path)、 right-click は alternative safer path
+  //  (delete に confirm modal を挟む UX、 dirty 警告含む)。
+  let contextMenuLane = null;
+  function showContextMenu(x, y, lane) {
+    const menu = document.getElementById('vp-context-menu');
+    if (!menu) return;
+    contextMenuLane = lane;
+    // viewport 境界を超えたら左 / 上に flip (popup が画面外に出ないよう)
+    const rect = {w: 200, h: lane.isWorker ? 80 : 30}; // 概算 (worker は divider + delete 含む)
+    const px = (x + rect.w > window.innerWidth) ? Math.max(0, window.innerWidth - rect.w - 4) : x;
+    const py = (y + rect.h > window.innerHeight) ? Math.max(0, window.innerHeight - rect.h - 4) : y;
+    menu.style.left = px + 'px';
+    menu.style.top = py + 'px';
+    // worker-only items (divider + delete) は Lead では非表示
+    menu.querySelectorAll('[data-role="worker-only"]').forEach(el => {
+      el.style.display = lane.isWorker ? '' : 'none';
+    });
+    menu.classList.add('visible');
+  }
+  function hideContextMenu() {
+    const menu = document.getElementById('vp-context-menu');
+    if (menu) menu.classList.remove('visible');
+    contextMenuLane = null;
+  }
+  document.addEventListener('DOMContentLoaded', () => {
+    const menu = document.getElementById('vp-context-menu');
+    if (!menu) return;
+    menu.addEventListener('click', (e) => {
+      const item = e.target.closest('.menu-item');
+      if (!item || !contextMenuLane) return;
+      const action = item.getAttribute('data-action');
+      const lane = contextMenuLane;
+      hideContextMenu();
+      if (action === 'restart') {
+        showRestartDialog(lane.path, lane.address);
+      } else if (action === 'delete' && lane.isWorker) {
+        showDeleteDialog(lane.path, lane.address, lane.name || '', lane.branch || '', !!lane.dirty);
+      }
+    });
+    // 外側 click で hide (mousedown で先取り、 Lane row click と被らないよう capture: false)
+    document.addEventListener('click', (e) => {
+      if (!menu.classList.contains('visible')) return;
+      if (!menu.contains(e.target)) hideContextMenu();
+    });
+    // Esc で hide
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && menu.classList.contains('visible')) hideContextMenu();
+    });
+  });
+
+  // VP-128 Phase 2: Worker delete 確認 dialog (delete_lane_orchestrated path、 dirty 警告含む)。
+  //  hover × button (= 即削除) と並ぶ alternative safer path、 right-click → Delete からのみ呼出。
+  let deleteTarget = null;
+  function showDeleteDialog(path, address, name, branch, dirty) {
+    deleteTarget = {path: path, address: address};
+    const tgt = document.getElementById('delete-dialog-target');
+    if (tgt) tgt.textContent = address;
+    const br = document.getElementById('delete-dialog-branch');
+    if (br) br.textContent = branch ? ('branch: ' + branch) : '';
+    const warn = document.getElementById('delete-dialog-dirty');
+    if (warn) {
+      if (dirty) warn.classList.add('visible');
+      else warn.classList.remove('visible');
+    }
+    const dlg = document.getElementById('vp-delete-dialog');
+    if (dlg && dlg.showModal) dlg.showModal();
+  }
+  document.addEventListener('DOMContentLoaded', () => {
+    const dlg = document.getElementById('vp-delete-dialog');
+    if (!dlg) return;
+    const cancelBtn = dlg.querySelector('button[data-action="cancel"]');
+    const okBtn = dlg.querySelector('button[data-action="ok"]');
+    if (cancelBtn) cancelBtn.addEventListener('click', () => { dlg.close(); deleteTarget = null; });
+    if (okBtn) okBtn.addEventListener('click', () => {
+      if (deleteTarget) send({t: 'lane:delete', path: deleteTarget.path, address: deleteTarget.address});
+      dlg.close();
+      deleteTarget = null;
+    });
+    dlg.addEventListener('cancel', () => { deleteTarget = null; });
+  });
 
   // unix 時刻 ISO → "Xh Ym ago" 風文字列
   function formatStartedAt(iso) {
@@ -761,6 +888,21 @@ const SIDEBAR_HTML: &str = concat!(
             //  Pane spawn (Activate) は将来別 UI で。 ここでは noop で逃がす。
             if (laneInactive) return;
             send({t: 'lane:select', path: p.path, address: addr});
+          });
+          // VP-128 Phase 2: Lane row right-click → context menu (Restart + Delete for Worker、 Restart only for Lead)。
+          //  inactive Lane も restart は意味あるので menu 自体は表示。 hover icon と同 path だが
+          //  delete は modal で confirm + dirty 警告を挟む安全な path。
+          row.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            showContextMenu(e.clientX, e.clientY, {
+              path: p.path,
+              address: addr,
+              isWorker: isWorker,
+              name: lane.name || (lane.address && lane.address.name) || null,
+              branch: (lane.worker_status && lane.worker_status.branch) || null,
+              dirty: !!(lane.worker_status && lane.worker_status.dirty),
+            });
           });
           content.appendChild(row);
         }
@@ -3123,18 +3265,20 @@ mod sidebar_html_tests {
     //! Bundle font / serve handler のテストは `web_assets` module 側に分離。
     use super::*;
 
-    /// HTML サイズが「font binary 誤 embedded の早期検知 tripwire」 (< 210KB) に収まる。
+    /// HTML サイズが「font binary 誤 embedded の早期検知 tripwire」 (< 220KB) に収まる。
     ///
-    /// WKWebView の実 hard limit は数 MB 単位なので 210KB に hard 制限の意味はない。
+    /// WKWebView の実 hard limit は数 MB 単位なので 220KB に hard 制限の意味はない。
     /// 「font binary (1〜数 MB) が誤って HTML に inline されたら即超える」 という defensive
     /// tripwire として保守的サイズ。 PR #228 で sidebar 機能 (Inactive Worker dim、 Add
     /// Worker UI、 disk-scan merge 等) が legitimate に増加 → 200KB から 210KB に緩和
-    /// (2026-04-30)。 sidebar HTML 別 file 化 (include_bytes! 経由) は別 sprint で。
+    /// (2026-04-30)。 VP-128 Phase 2 で context menu + delete dialog 追加 (+7KB) →
+    /// 210KB から 220KB に緩和 (2026-05-06)。 sidebar HTML 別 file 化 (include_bytes! 経由)
+    /// は別 sprint で。
     #[test]
     fn html_size_under_wkwebview_limit() {
         let size = SIDEBAR_HTML.len();
         assert!(
-            size < 210_000,
+            size < 220_000,
             "SIDEBAR_HTML size {} bytes exceeds WKWebView safe range — \
              check that no font binary got embedded in HTML",
             size
