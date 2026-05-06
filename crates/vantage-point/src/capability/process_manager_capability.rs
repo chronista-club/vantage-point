@@ -1015,7 +1015,12 @@ impl ProcessManagerCapability {
     }
 
     /// ポートスキャンでProcessを見つける
+    ///
+    /// `/api/health` の `project_dir` を `normalize_path_key` で正規化して比較し、
+    /// symlink / trailing slash 等の path variation を吸収する。 VP-134 で
+    /// `find_running_sp_at_path` (VP-133) と symmetry 復元。
     async fn find_process_port(&self, project_path: &std::path::Path) -> Option<u16> {
+        let target_key = normalize_path_key(project_path);
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_millis(500))
             .build()
@@ -1027,7 +1032,7 @@ impl ProcessManagerCapability {
                 && resp.status().is_success()
                 && let Ok(json) = resp.json::<serde_json::Value>().await
                 && let Some(dir) = json.get("project_dir").and_then(|v| v.as_str())
-                && std::path::Path::new(dir) == project_path
+                && normalize_path_key(std::path::Path::new(dir)) == target_key
             {
                 return Some(port);
             }
