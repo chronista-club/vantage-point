@@ -21,10 +21,10 @@
 //!
 //! | sub-PR | scope | status |
 //! |--------|------|--------|
-//! | PR-δ-1 | LaneStand trait + LaneStandRegistry 受け皿 (本 PR) | in progress |
-//! | PR-δ-2 | PP を LaneStand impl に rewire + LaneCapabilities 統合 | planned |
-//! | PR-δ-3 | mock Stand B test + 「N Stand host」 invariant test | planned |
-//! | PR-δ-4 | cleanup (catalog 更新、 doc 13 §9 invariant test 行 update) | planned |
+//! | PR-δ-1 | LaneStand trait + LaneStandRegistry 受け皿 | ✅ Done (#288、 VP-135) |
+//! | PR-δ-2 | PP を LaneStand impl に rewire + LaneCapabilities 統合 | ✅ Done (#289、 VP-136) |
+//! | PR-δ-3 | mock Stand B test + 「N Stand host」 invariant test | ✅ Done (#290、 VP-137) |
+//! | PR-δ-4 | cleanup (catalog 更新、 命名規約 doc 明示化、 stale 表記 sweep) | ✅ Done (本 PR、 VP-138) |
 //!
 //! ## 関連
 //!
@@ -60,8 +60,11 @@ use std::sync::Arc;
 pub trait LaneStand: Any + Send + Sync + 'static {
     /// stand_kind ID (例: `"paisley_park"` / `"gold_experience"` / `"mock_b"`)。
     ///
-    /// `stands.rs` の `StandAlias.id` と同じ命名規約 (snake_case、 安定キー)。
-    /// Registry の HashMap key として使われる。
+    /// `stands.rs` の `StandAlias.id` とは **別 namespace**: `StandAlias.id` は外部 API
+    /// パス (例: `PAISLEY_PARK.id = "canvas"`) 用で、 こちらは Registry の HashMap key として
+    /// 使われる **内部 Stand ID**。 snake_case の安定キーという規約は共通だが、 値は乖離する
+    /// (例: PP は `StandAlias.id = "canvas"` vs `stand_kind() = "paisley_park"`)。
+    /// PR-δ-4 (VP-138) で 2 namespace 意図的分離を明示化。
     fn stand_kind(&self) -> &'static str;
 
     /// `&dyn Any` への型強制 (downcast 用)。
