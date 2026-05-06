@@ -116,7 +116,49 @@ impl LaneCapabilitiesPool {
 
 #[cfg(test)]
 mod tests {
+    use std::any::Any;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    use super::super::lane_stand::LaneStand;
     use super::*;
+
+    /// PR-δ-3 (VP-137): test-only mock Stand。 「LaneCapabilities が PP 含めて N Stand を host
+    /// できる generic interface」 invariant (doc 13 §9 boundary) を真の test に格上げするための
+    /// 2 つ目の Stand impl。 production binary には登場しない (`#[cfg(test)]` 限定)。
+    ///
+    /// minimal counter state (`AtomicU32`) を持つだけの passive Stand、 caller が
+    /// `increment()` を呼ぶごとに value が +1 される。 PaisleyParkStand とは state shape
+    /// (RwLock<PaisleyParkState> vs AtomicU32) が異なるので「型が違う 2 Stand 共存」 の
+    /// invariant test 素材として最適。
+    struct MockStandB {
+        counter: AtomicU32,
+    }
+
+    impl MockStandB {
+        fn new() -> Self {
+            Self {
+                counter: AtomicU32::new(0),
+            }
+        }
+
+        fn increment(&self) -> u32 {
+            self.counter.fetch_add(1, Ordering::SeqCst) + 1
+        }
+
+        fn value(&self) -> u32 {
+            self.counter.load(Ordering::SeqCst)
+        }
+    }
+
+    impl LaneStand for MockStandB {
+        fn stand_kind(&self) -> &'static str {
+            "mock_b"
+        }
+
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
 
     #[test]
     fn lane_capabilities_new_populates_paisley_park() {
@@ -241,5 +283,153 @@ mod tests {
 
         // 二度目の remove は None
         assert!(pool.remove_lane(&addr).is_none());
+    }
+
+    // ========================================================================
+    // PR-δ-3 (VP-137) — 「N Stand host」 invariant tests
+    //
+    // doc 13 §9 boundary invariant 「LaneCapabilities が PP 含めて N Stand を
+    // host できる generic interface」 を、 LaneCapabilities lifecycle context での
+    // 2 Stand 共存 + 状態独立性 + per-Lane 独立性 + remove 独立性で test 化。
+    // ========================================================================
+
+    /// PR-δ-3 (VP-137): LaneCapabilities が PP + MockStandB を **同時に host できる**
+    /// invariant。 new() 直後の registry は PP 1 件、 MockStandB を insert すると count = 2、
+    /// 両 Stand が typed access 可能。
+    #[test]
+    fn lane_capabilities_hosts_pp_and_mock_b_simultaneously() {
+        let mut lc = LaneCapabilities::new(LaneAddress::lead("vp"), "echoes");
+        assert_eq!(
+            lc.registry.count(),
+            1,
+            "new() 直後は PP のみ (cardinality 1)"
+        );
+
+        // 2 つ目の Stand を insert
+        lc.registry.insert(Arc::new(MockStandB::new()));
+
+        assert_eq!(
+            lc.registry.count(),
+            2,
+            "MockStandB insert 後は PP + MockStandB の 2 Stand 共存"
+        );
+        assert!(
+            lc.registry
+                .get_typed::<PaisleyParkStand>("paisley_park")
+                .is_some(),
+            "PP は依然として typed access 可能"
+        );
+        assert!(
+            lc.registry.get_typed::<MockStandB>("mock_b").is_some(),
+            "MockStandB も typed access 可能"
+        );
+    }
+
+    /// PR-δ-3 (VP-137): PP と MockStandB の **state が完全に独立** している invariant。
+    /// MockStandB.increment() が PP state を変化させない、 PP content set が
+    /// MockStandB.value() を変化させない、 cross-Stand state share なし (doc 12 A6 整合)。
+    #[tokio::test]
+    async fn lane_capabilities_pp_and_mock_b_states_are_independent() {
+        let mut lc = LaneCapabilities::new(LaneAddress::lead("vp"), "echoes");
+        lc.registry.insert(Arc::new(MockStandB::new()));
+
+        let pp = lc
+            .registry
+            .get_typed::<PaisleyParkStand>("paisley_park")
+            .expect("PP host 不在");
+        let mock_b = lc
+            .registry
+            .get_typed::<MockStandB>("mock_b")
+            .expect("MockStandB host 不在");
+
+        // MockStandB を 3 回 increment、 PP には触らない
+        mock_b.increment();
+        mock_b.increment();
+        mock_b.increment();
+
+        assert_eq!(mock_b.value(), 3, "MockStandB の counter は increment 反映");
+        assert!(
+            pp.state().read().await.content.is_none(),
+            "MockStandB.increment() は PP content に影響しない (state 独立)"
+        );
+
+        // PP に content set、 MockStandB には触らない
+        pp.state().write().await.content = Some("pp-canvas".to_string());
+
+        assert_eq!(
+            pp.state().read().await.content.as_deref(),
+            Some("pp-canvas"),
+            "PP content set が反映"
+        );
+        assert_eq!(
+            mock_b.value(),
+            3,
+            "PP content set は MockStandB.counter に影響しない (state 独立)"
+        );
+    }
+
+    /// PR-δ-3 (VP-137): 異なる Lane の MockStandB が **独立 instance** である invariant。
+    /// Lane A の counter increment が Lane B に影響しない (cardinality 1 → N が
+    /// MockStandB でも成立)、 PR-β-2 PP 独立性 invariant の generic 拡張。
+    #[test]
+    fn lane_capabilities_mock_b_independent_per_lane() {
+        let mut lane_a = LaneCapabilities::new(LaneAddress::lead("vp"), "echoes");
+        let mut lane_b = LaneCapabilities::new(LaneAddress::worker("vp", "sub"), "echoes");
+
+        lane_a.registry.insert(Arc::new(MockStandB::new()));
+        lane_b.registry.insert(Arc::new(MockStandB::new()));
+
+        let mock_a = lane_a
+            .registry
+            .get_typed::<MockStandB>("mock_b")
+            .expect("Lane A MockStandB");
+        let mock_b = lane_b
+            .registry
+            .get_typed::<MockStandB>("mock_b")
+            .expect("Lane B MockStandB");
+
+        // Lane A だけ 5 回 increment
+        for _ in 0..5 {
+            mock_a.increment();
+        }
+
+        assert_eq!(mock_a.value(), 5, "Lane A counter は 5");
+        assert_eq!(
+            mock_b.value(),
+            0,
+            "Lane B counter は 0 のまま (instance 独立、 cross-Lane share なし)"
+        );
+    }
+
+    /// PR-δ-3 (VP-137): MockStandB を `registry.remove("mock_b")` で削除しても **PP は残存**
+    /// する invariant。 cardinality は 2 → 1 に戻り、 PP typed access は依然成立。
+    /// PR-δ-1 `registry_remove_does_not_affect_other_stands` の Lane lifecycle 版。
+    #[test]
+    fn lane_capabilities_remove_mock_b_keeps_pp() {
+        let mut lc = LaneCapabilities::new(LaneAddress::lead("vp"), "echoes");
+        lc.registry.insert(Arc::new(MockStandB::new()));
+        assert_eq!(lc.registry.count(), 2, "insert 後は 2 Stand");
+
+        let removed = lc.registry.remove("mock_b");
+        assert!(
+            removed.is_some(),
+            "MockStandB は registry に存在したので Some"
+        );
+
+        assert_eq!(
+            lc.registry.count(),
+            1,
+            "remove 後は cardinality 1 (PP のみ)"
+        );
+        assert!(
+            lc.registry
+                .get_typed::<PaisleyParkStand>("paisley_park")
+                .is_some(),
+            "PP は MockStandB remove の影響を受けず残存"
+        );
+        assert!(
+            lc.registry.get_typed::<MockStandB>("mock_b").is_none(),
+            "MockStandB は削除済"
+        );
     }
 }
