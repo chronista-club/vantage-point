@@ -19,6 +19,21 @@
  * 出力: ../assets/editor-host.bundle.js (vp-app の Rust 側で include_str!)
  */
 
+// VP-140 diagnostic: bundle が parse + execute されたことを最速で confirm する。
+// import 後のいかなる runtime error があっても、 この 1 行は console に出る。
+console.info('[vp-bundle] booting (VP-140 diagnostic)')
+;(window as unknown as { vpBundleStatus?: Record<string, boolean> }).vpBundleStatus = {
+  booted: true,
+  importsResolved: false,
+  vpFrameSet: false,
+}
+window.addEventListener('error', (e) => {
+  console.error('[vp-bundle] window.error', e.message, e.filename, e.lineno, e.error)
+})
+window.addEventListener('unhandledrejection', (e) => {
+  console.error('[vp-bundle] unhandledrejection', e.reason)
+})
+
 import { render } from 'solid-js/web'
 import { EditorHostProvider, EditorLayer } from 'creo-ui-editor-host'
 import { CreoIcon } from 'creo-ui-icons-web'
@@ -27,6 +42,9 @@ import { FrameEngine, type PaneId } from './frame-engine'
 import { DEFAULT_SCENES, EMPTY_SCENE, generateAllFocusScenes } from './scenes'
 import { attachRenderer } from './renderer'
 import { attachKeybindings } from './keybindings'
+
+console.info('[vp-bundle] imports resolved')
+;(window as unknown as { vpBundleStatus?: Record<string, boolean> }).vpBundleStatus!.importsResolved = true
 
 // ===== VP-140 / PR-ε-1: 3D Frame Layout Engine init =====
 // EditorLayer mount より前に Pane / Scene を register しておき、 DOMContentLoaded で
@@ -105,7 +123,13 @@ const installSetActivePaneBridge = (): void => {
 // 起動時 default Scene apply
 const applyDefaultScene = (): void => {
   installSetActivePaneBridge()
-  frameEngine.applyScene('lead-focus')
+  const ok = frameEngine.applyScene('lead-focus')
+  const paneCount = document.querySelectorAll('[data-pane-id]').length
+  // 診断 log: Frame Engine が apply された事実と、 data-pane-id 要素の存在を確認できるようにする。
+  // user 環境で 「画面が黒い」 等の issue 時に DevTools console で path を即時切り分けできるよう常時出力。
+  console.info(
+    `[frame-engine] applied default scene = lead-focus (ok=${ok}); panes detected = ${paneCount}`,
+  )
 }
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', applyDefaultScene, { once: true })
@@ -115,6 +139,8 @@ if (document.readyState === 'loading') {
 
 // DevTools 検査用 (window.vpFrame.applyScene('side-review') 等で手動 trigger 可能)
 ;(window as unknown as { vpFrame: FrameEngine }).vpFrame = frameEngine
+;(window as unknown as { vpBundleStatus?: Record<string, boolean> }).vpBundleStatus!.vpFrameSet = true
+console.info('[vp-bundle] vpFrame attached to window — bundle init complete')
 
 function App() {
   return (

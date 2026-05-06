@@ -188,7 +188,11 @@ body{overflow:hidden;}
        VP-100 γ-light: ResizeObserver が slot rect を IPC で送る (Phase 4+ で native overlay 同期に使う)。 -->
   <!-- Phase 2.5 (per-Lane instance): pane-terminal 内に lane-host を置き、
        Lane ごとに xterm.js + WebSocket instance を mount。 active な 1 つだけ display:block。 -->
-  <div class="pane terminal" id="pane-terminal" data-kind="terminal" data-pane-id="echoes">
+  <!-- VP-140 fail-safe: pane-terminal は Frame Engine が apply される前から visible にしておく。
+       inline opacity:1 を CSS .pane{opacity:0} default より優先させ、 Frame Engine 不在 / 起動失敗時も
+       少なくとも Echoes terminal は見える状態を保つ (= echoes が default visible 約束)。
+       Frame Engine 起動後は inline style.opacity を engine が上書きする (lead-focus:1 / pp-focus:0)。 -->
+  <div class="pane terminal" id="pane-terminal" data-kind="terminal" data-pane-id="echoes" style="opacity:1;pointer-events:auto;background:#3a1a1a;">
     <div id="lane-host"></div>
     <!-- empty placeholder: どの Lane も無い時に出す -->
     <div id="lane-empty" class="lane-empty active">
@@ -231,7 +235,8 @@ body{overflow:hidden;}
       <p class="sub">Phase 6+ で <span class="brand">MIDI lpd8 / MCP server / tmux session</span> 接続パネルを実装予定</p>
     </main>
   </div>
-  <div class="pane empty active" id="pane-empty" data-kind="empty" data-pane-id="empty">
+  <!-- VP-140: 旧 active class を削除 (Frame Engine の empty Scene が opacity 制御するため)。 -->
+  <div class="pane empty" id="pane-empty" data-kind="empty" data-pane-id="empty">
     <main>
       <h1>No pane selected</h1>
       <p>sidebar から pane を選択してください</p>
@@ -285,6 +290,22 @@ body{overflow:hidden;}
     r#"
 </script>
 <script>
+// VP-140 inline diagnostic: bundle 失敗時でも script tag 自体は別なので、 こちらが先行 OR 並行 で動く。
+// window.vpBundleStatus に bundle 到達 stage を残す (DevTools console から runtime 検査用)。
+window.vpBundleStatus = window.vpBundleStatus || { booted: false, importsResolved: false, vpFrameSet: false };
+window.vpBundleProbe = function() {
+  return {
+    bundleStatus: window.vpBundleStatus,
+    vpFrameDefined: typeof window.vpFrame !== 'undefined',
+    setActivePaneDefined: typeof window.setActivePane === 'function',
+    ensureLaneDefined: typeof window.ensureLane === 'function',
+    showLaneDefined: typeof window.showLane === 'function',
+    laneInstancesSize: window.__vpLanes ? window.__vpLanes.size : 'no __vpLanes',
+    paneCount: document.querySelectorAll('[data-pane-id]').length,
+    paneTerminalOpacity: getComputedStyle(document.querySelector('#pane-terminal')).opacity,
+  };
+};
+console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() in console)');
 (function() {
   // Creo tokens から xterm.js theme を構築 (全 Lane instance で共有)。
   // OKLCH 値は xterm.js の内部 color parser が直接解釈できないので、
