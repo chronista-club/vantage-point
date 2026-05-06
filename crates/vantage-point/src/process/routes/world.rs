@@ -606,7 +606,7 @@ pub async fn world_msgbox_list(
 }
 
 // =============================================================================
-// Lane Registry — Phase 1c: agent (HD on Claude CLI) が tmux session 名を引く
+// Lane Registry — Phase 1c: agent (Echoes on Claude CLI) が tmux session 名を引く
 // =============================================================================
 
 /// Phase 1c: Lane filter query
@@ -616,20 +616,20 @@ pub struct LanesQuery {
     pub project: Option<String>,
     /// Lane name filter — Lead は "lead"、 Worker は name (例: "sub")
     pub lane: Option<String>,
-    /// Stand kind filter — "heavens_door" or "the_hand"
+    /// Stand kind filter — "echoes" or "shell"
     pub stand: Option<String>,
 }
 
 /// GET /api/world/lanes — Phase 1c: Currents の Lane → tmux session resolver
 ///
 /// SP が QUIC registry channel で push した lanes (`LaneInfo` の Vec) を全 project に
-/// 渡って flatten + filter で返す。 agent (HD on Claude CLI) はこの response を見て
+/// 渡って flatten + filter で返す。 agent (Echoes on Claude CLI) はこの response を見て
 /// `vp tmux send-keys -t <session>` の宛先を決める。
 ///
 /// query parameter:
 /// - `project=<name>`: 特定 project のみ
 /// - `lane=<name>`: 特定 Lane のみ ("lead" or worker name)
-/// - `stand=<heavens_door|the_hand>`: 特定 Stand のみ (LaneInfo.stand に match)
+/// - `stand=<echoes|shell>`: 特定 Stand のみ (LaneInfo.stand に match)
 ///
 /// disconnect された SP の Lane は registry から消えるので、 response = Currents 限定。
 pub async fn world_list_lanes(
