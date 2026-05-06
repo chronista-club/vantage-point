@@ -19,6 +19,7 @@
 //! - WS /ws/terminal の lane param 強化 (A4-2d)
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::{
     Json,
@@ -556,13 +557,20 @@ pub struct RestartLaneQuery {
     pub address: String,
 }
 
+/// VP-131: restart の透過 retry 設定。 tmux kill + spawn の race / transient failure を
+/// 吸収するため exponential backoff で 3 attempts まで自動 retry。 user click 1 回で
+/// 「auto retry」 が走り、 dogfood UX で「Restart したら確実に Echoes 復活する」 を担保。
+const RESTART_MAX_ATTEMPTS: u32 = 3;
+const RESTART_BACKOFF_MS: [u64; 2] = [200, 500]; // attempt 0→1: 200ms、 attempt 1→2: 500ms
+
 /// `POST /api/lanes/restart?address=<addr>` — Lane の Lead Stand restart
 ///
 /// 動作:
 /// 1. address parse (LanePool::parse_address で逆変換)
-/// 2. LanePool::restart_lane で 既存 PtySlot kill (Drop で child wait) → 同 stand で respawn
-/// 3. vp-app の WS は PR #218 (auto-reconnect) で透過的に新 PtySlot に attach し直す
-/// 4. 200 OK with new pid / 500 on spawn 失敗 (LaneInfo は state=Dead に遷移)
+/// 2. LanePool::restart_lane で 既存 PtySlot kill + tmux kill (VP-131) → 同 stand で respawn
+/// 3. spawn 失敗時は exponential backoff で **最大 3 attempts まで透過 retry** (VP-131)
+/// 4. vp-app の WS は PR #218 (auto-reconnect) で透過的に新 PtySlot に attach し直す
+/// 5. 200 OK with new pid + attempts / 500 on 全 attempts 失敗 (LaneInfo は state=Dead に遷移)
 pub async fn restart_handler(
     State(state): State<Arc<AppState>>,
     Query(q): Query<RestartLaneQuery>,
@@ -574,25 +582,65 @@ pub async fn restart_handler(
         ));
     };
 
-    let pid = {
-        let mut pool = state.lane_pool.write().await;
-        match pool.restart_lane(&addr) {
-            Ok(()) => pool.get(&addr).and_then(|i| i.pid).unwrap_or(0),
-            Err(e) => {
-                return Err((
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"error": e.to_string()})),
+    // VP-131: 透過 retry with exponential backoff。 各 attempt 間で write lock を release して
+    // 他 handler を blocking しない設計、 tokio::time::sleep で async wait。
+    let mut last_err: Option<anyhow::Error> = None;
+    for attempt in 0..RESTART_MAX_ATTEMPTS {
+        let result = {
+            let mut pool = state.lane_pool.write().await;
+            pool.restart_lane(&addr)
+        };
+
+        match result {
+            Ok(()) => {
+                let pid = state
+                    .lane_pool
+                    .read()
+                    .await
+                    .get(&addr)
+                    .and_then(|i| i.pid)
+                    .unwrap_or(0);
+                tracing::info!(
+                    "Lane restart OK: addr={} new_pid={} attempts={}",
+                    addr,
+                    pid,
+                    attempt + 1
+                );
+                return Ok((
+                    StatusCode::OK,
+                    Json(json!({
+                        "restarted": addr.to_string(),
+                        "pid": pid,
+                        "attempts": attempt + 1,
+                    })),
                 ));
             }
+            Err(e) => {
+                tracing::warn!(
+                    "Lane restart attempt {}/{} failed: addr={} err={}",
+                    attempt + 1,
+                    RESTART_MAX_ATTEMPTS,
+                    addr,
+                    e
+                );
+                last_err = Some(e);
+                if attempt < RESTART_MAX_ATTEMPTS - 1 {
+                    let backoff = RESTART_BACKOFF_MS[attempt as usize];
+                    tokio::time::sleep(Duration::from_millis(backoff)).await;
+                }
+            }
         }
-    };
+    }
 
-    tracing::info!("Lane restart OK: addr={} new_pid={}", addr, pid);
-    Ok((
-        StatusCode::OK,
+    // 全 attempts 失敗 → LaneInfo.state は restart_lane 内で既に Dead 化済み
+    let err_msg = last_err
+        .map(|e| e.to_string())
+        .unwrap_or_else(|| "unknown restart failure".to_string());
+    Err((
+        StatusCode::INTERNAL_SERVER_ERROR,
         Json(json!({
-            "restarted": addr.to_string(),
-            "pid": pid,
+            "error": err_msg,
+            "attempts": RESTART_MAX_ATTEMPTS,
         })),
     ))
 }

@@ -523,9 +523,30 @@ impl LanePool {
             .ok_or_else(|| anyhow::anyhow!("Lane not found: {}", addr))?;
         let cwd = info.cwd.clone();
         let stand = info.stand.clone();
+        // VP-131 fix: tmux session 名を事前に capture して step 1.5 で kill する。
+        // PtySlot drop だけだと mise が起動した detached tmux session が tmux server
+        // 配下で生存継続、 同名 session 残存のまま respawn すると `tmux new-session` 衝突で
+        // mise task `vp:stand:<name>` が即 fail (= `[lost tty] / ERROR task failed`)。
+        // VP-124 Phase 1 で `delete_lane_orchestrated` には同型 fix 済、 restart path も補完。
+        let tmux_sessions: Vec<String> = info.tmux.iter().map(|t| t.session.clone()).collect();
 
         // step 1: 既存 PtySlot を drop (Drop で child.kill() + child.wait() = zombie 解消)
         let _ = self.pty_slots.remove(addr);
+
+        // step 1.5 (VP-131): tmux session を kill して name 衝突を避ける (best-effort、
+        // 不存在 / 既 kill 済は false 戻り = no-op)。 PtySlot drop と respawn の間に挟むことで
+        // `tmux new-session -d -s <name>` が衝突せず succeed する。
+        for session in &tmux_sessions {
+            let killed = crate::tmux::kill_session(session);
+            if killed {
+                tracing::info!("restart_lane: tmux session killed: {}", session);
+            } else {
+                tracing::debug!(
+                    "restart_lane: tmux session kill returned false (already gone?): {}",
+                    session
+                );
+            }
+        }
 
         // step 2: 同 stand で respawn (Phase 5-D: spawn_with_fallback で early-exit retry)
         // doc 11 PR-B: stand は String 化 (旧 enum 廃止)
