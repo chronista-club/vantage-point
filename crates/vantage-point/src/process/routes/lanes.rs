@@ -1,18 +1,21 @@
-//! Lane REST API — Phase A4-2b minimum (read-only)
+//! Lane REST API — GET / POST / DELETE / restart 実装済 (VP-124 Phase 1 完了時点)
 //!
 //! 関連 memory:
 //! - `mem_1CaSsN7xj69aVQtLPQFJxQ` (SP-as-Project-Master: 9 component minimum)
+//! - VP-124 Phase 1 (Lane Lifecycle delete orchestration、 `delete_lane_orchestrated`)
 //!
-//! ## Phase A4-2b 実装
+//! ## 実装済
 //!
-//! - `GET /api/lanes` — `LanePool` の list を JSON 返却
+//! - `GET /api/lanes` — `LanePool` の list + disk-scan で Inactive Worker merge
+//! - `POST /api/lanes` — Worker Lane create (Phase 3-A: ccws clone + PtySlot spawn)
+//! - `DELETE /api/lanes?address=<addr>&cleanup=true` — Lane destroy + cleanup
+//!   (VP-124 Phase 1 で `delete_lane_orchestrated` に core 抽出、 全 trigger 共有)
+//! - `POST /api/lanes/restart?address=<addr>` — Lead Stand restart (Phase A5)
 //!
-//! ## 後 phase
+//! ## 未実装 (後 phase)
 //!
-//! - POST /api/lanes (A4-4: Worker Lane create)
-//! - DELETE /api/lanes/{addr} (A4-4: destroy)
-//! - GET /api/lanes/{addr} (A4-4: 1 件取得、addr の URL encoding 確定後)
-//! - PUT /api/lanes/{addr}/stand (A5: Stand 切替)
+//! - GET /api/lanes/{addr} (1 件取得、 addr URL encoding path 確定後)
+//! - PUT /api/lanes/{addr}/stand (Stand 切替)
 //! - WS /ws/terminal の lane param 強化 (A4-2d)
 
 use std::sync::Arc;
