@@ -18,7 +18,9 @@ pub(crate) mod lane_capabilities;
 pub(crate) mod lane_cmd;
 /// Lane spawn actor — `LaneCmd` を recv して Semaphore で gate しつつ Lane を spawn (I-b、 2026-04-30)
 pub(crate) mod lane_spawn_actor;
-/// Lane state types (LaneAddress / LaneStand / LanePool 等) — Lane scope の data model
+/// Lane に host される Stand の minimal marker trait + Registry (PR-δ-1、 VP-135)
+pub(crate) mod lane_stand;
+/// Lane state types (LaneAddress / LanePool 等) — Lane scope の data model
 pub(crate) mod lanes_state;
 pub mod process_runner;
 /// Project scope の Stand pool (PP / GE / HP)
