@@ -9,14 +9,15 @@
 //!   Layer は doc 12 §9 catalog の「保持 layer pattern」 列が SSOT。
 //! - PR-pre2 (VP-118 / 2026-05-04): HD → Echoes rename。
 //! - PR-β-2 (VP-120 / 2026-05-04): PP を Project → Lane に物理移管 (`LaneCapabilities.paisley_park`)。
+//! - PR-δ-2 (VP-136 / 2026-05-06): PP を `LaneStandRegistry` 経由 host へ rewire (`LaneCapabilities.registry`)。
 //!
-//! ## architecture (LSCM 確定 + PR-β-2 後)
+//! ## architecture (LSCM 確定 + PR-δ-2 後)
 //!
 //! Lane scope に host する Stand:
 //! - Echoes 💬 (旧 HD) — Lane mise task PtySlot で立つ (= LaneCapabilities では host しない)
 //! - The Hand 🤚 — Lane mise task PtySlot で立つ (= 同上)
-//! - Paisley Park 🧭 — `LaneCapabilities.paisley_park` (PR-β-2 で Lane あたり 1 instance に物理移管)
-//! - Gold Experience 🌿 (planned PR-γ で Lane 移管予定)
+//! - Paisley Park 🧭 — `LaneCapabilities.registry` 内 PaisleyParkStand (PR-δ-2 で trait-based host へ rewire、 Lane あたり 1 instance)
+//! - Gold Experience 🌿 (planned PR-γ で Lane 移管予定、 LaneStand impl 追加)
 //!
 //! Project scope の Stand pool (`project_stands_state.rs`) は GE / HP のみ host (PR-β-2 後)。
 //! Lane は **Lead/Worker の PTY セッション + Stand container** に集中:

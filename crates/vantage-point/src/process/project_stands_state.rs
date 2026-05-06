@@ -8,8 +8,11 @@
 //! - PR-β-2 (VP-120 / 2026-05-04): **PP を Project → Lane に物理移管**、 本 struct から
 //!   `paisley_park` field を削除。 PR-γ (planned) で GE も Lane 移管予定、 完了後に
 //!   ProjectStandsPool 自体が空 (= 削除可能) になる予想。
+//! - PR-δ-2 (VP-136 / 2026-05-06): PP を **`LaneStand` trait impl 化** (PaisleyParkStand)、
+//!   `LaneCapabilities` の hardcoded field から `LaneStandRegistry` 経由 host に置換。
+//!   doc 13 §9 boundary invariant 「N Stand を host できる generic interface」 を実現。
 //!
-//! ## 現状 (PR-β-2 後)
+//! ## 現状 (PR-δ-2 後)
 //!
 //! Project scope に残る Stand:
 //! - GE 🌿 Gold Experience — Code Runner (1 / project、 PR-γ で Lane 移管予定)
@@ -17,24 +20,24 @@
 //!   ただし HermitPurpleState skeleton は本 pool に残存)
 //!
 //! Lane 移管完了済:
-//! - PP 🧭 Paisley Park — `LaneCapabilities.paisley_park` (PR-β-2 / VP-120)
+//! - PP 🧭 Paisley Park — `LaneCapabilities.registry` で host (PR-δ-2)、
+//!   wrapper struct = `PaisleyParkStand` (LaneStand trait impl)
 //!
 //! Phase A4-2b の skeleton という位置付けは継続、 各 state は最小実装。
 //! 実 Stand 操作 (Ruby eval / MIDI 制御) は既存 routes/handler 経由で動いており、
 //! ここはそれらを Project scope の概念として位置付けるための data model。
 
+use std::any::Any;
+
 use serde::{Deserialize, Serialize};
+use tokio::sync::RwLock;
+
+use super::lane_stand::LaneStand;
 
 /// PP (Paisley Park) — Canvas content store (PR-β-2 (VP-120) で Lane あたり 1 instance に物理移管)
 ///
-/// PR-β-2 以降 `LaneCapabilities.paisley_park` で host (Lane あたり独立 instance、
-/// doc 12 §9 catalog `target = Lane instance` を実現)。 struct 定義自体は本 module に
-/// 残存 (LaneCapabilities が `use` する型として)。 将来 GE / HP も Lane 移管完了後に
-/// ProjectStandsPool 全体が空になる予想で、 そのタイミングで struct も別 module に move 検討。
-///
-/// 旧 caller (Canvas 関連 routes `/api/canvas/...`) は実装上 access していなかった
-/// (PR-β-2 grep 検証で field caller ゼロ確認)、 PR-β-3 の caller migration が trivial
-/// (= 空) と判明したため doc 13 §9 PR-β series roadmap も 5 sub → 4 sub に縮小。
+/// PR-β-2 で Lane 移管、 PR-δ-2 (VP-136) で `PaisleyParkStand` wrapper 経由 host に進化。
+/// data model 自体は変わらず content + content_type の serde 直列化可能 struct。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PaisleyParkState {
     /// Canvas 表示中の content (HTML/MD/markdown body)
@@ -43,6 +46,52 @@ pub struct PaisleyParkState {
     /// content の MIME (例: "text/html", "text/markdown")
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_type: Option<String>,
+}
+
+/// PaisleyParkStand — `PaisleyParkState` を `LaneStand` trait に適合させる wrapper (PR-δ-2、 VP-136)。
+///
+/// PR-δ-1 (VP-135) で新設の `LaneStand` trait の **最初の impl**。 internal mutability 用に
+/// `RwLock<PaisleyParkState>` を持ち、 caller は `state()` accessor 経由で Read/Write する。
+///
+/// `stand_kind() = "paisley_park"` を ID として Registry の HashMap key に使われる。
+///
+/// ## 関連
+///
+/// - PR-δ-1 (#288 / VP-135) — `LaneStand` trait + `LaneStandRegistry` 受け皿
+/// - PR-δ-2 (本 PR / VP-136) — PP impl + LaneCapabilities 統合
+/// - doc 13 §9 boundary invariant 「N Stand を host できる generic interface」 への path
+pub struct PaisleyParkStand {
+    state: RwLock<PaisleyParkState>,
+}
+
+impl PaisleyParkStand {
+    /// 新規構築 (state は default = content/content_type 共に None)。
+    pub fn new() -> Self {
+        Self {
+            state: RwLock::new(PaisleyParkState::default()),
+        }
+    }
+
+    /// internal `RwLock<PaisleyParkState>` への参照 (caller が Read/Write する)。
+    pub fn state(&self) -> &RwLock<PaisleyParkState> {
+        &self.state
+    }
+}
+
+impl Default for PaisleyParkStand {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl LaneStand for PaisleyParkStand {
+    fn stand_kind(&self) -> &'static str {
+        "paisley_park"
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
 
 /// GE (Gold Experience) — Code Runner state (1 / project)
