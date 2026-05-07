@@ -60,8 +60,7 @@ console.info('[vp-bundle] imports resolved')
 //
 // data-frame-id 規約 (main_area.rs HTML 側で付与):
 //   echoes  → pane-terminal      (Echoes Stand = lane terminal host)
-//   pp      → pane-paisley-park  (Paisley Park 🧭 / Information Router)
-//   canvas  → pane-canvas        (汎用 Canvas surface placeholder)
+//   pp      → pane-paisley-park  (Paisley Park 🧭 / Information Router、 PP body = Smart Canvas surface)
 //   ge      → pane-gold-experience (Gold Experience 🌿)
 //   hp      → pane-hermit-purple   (Hermit Purple 🍇)
 //   preview → pane-preview        (iframe preview)
@@ -69,8 +68,12 @@ console.info('[vp-bundle] imports resolved')
 // 注: 旧 data-pane-id (main_area.rs inline JS が Lane address 等に書き換える native overlay sync 用)
 // と attribute を分離。 同名にすると Lane click で legacy 側が hijack して Frame Engine の Scene lookup が
 // undefined → HIDDEN_TRANSFORM で pane が見えなくなる回帰を起こすため (VP-141 fix)。
-const FRAME_PANE_IDS: PaneId[] = ['echoes', 'pp', 'canvas', 'ge', 'hp', 'preview', 'empty']
-const FOCUSABLE_PANE_IDS: PaneId[] = ['echoes', 'pp', 'canvas', 'ge', 'hp', 'preview']
+//
+// VP-142 cleanup (PR-ε-4): legacy "canvas" pane 削除。 VP-42 era の placeholder だったが、 PR-ε-3 で
+// PP body (`pane-paisley-park` 内 `<div id="pp-content">`) が Smart Canvas surface を物理化したため
+// vestigial。 doc 13 §10 Q-3 (Smart Canvas 配置) も WebView 主 = PP body で確定済。
+const FRAME_PANE_IDS: PaneId[] = ['echoes', 'pp', 'ge', 'hp', 'preview', 'empty']
+const FOCUSABLE_PANE_IDS: PaneId[] = ['echoes', 'pp', 'ge', 'hp', 'preview']
 
 const frameEngine = new FrameEngine()
 FRAME_PANE_IDS.forEach((id) => frameEngine.registerPane({ id, kind: id }))
@@ -95,12 +98,12 @@ attachKeybindings(frameEngine, window)
 // - kind != terminal (PP/GE/HP click 等) は Lane を跨がない fixed-Pane focus、 laneScenes は更新しない
 const KIND_TO_PANE: Record<string, PaneId> = {
   terminal: 'echoes',
-  canvas: 'canvas',
   paisley_park: 'pp',
   gold_experience: 'ge',
   hermit_purple: 'hp',
   preview: 'preview',
   empty: 'empty',
+  // VP-142 cleanup: legacy "canvas" kind 削除 (Smart Canvas surface = PP body に物理化済)
 }
 
 interface SetActivePaneInfo {

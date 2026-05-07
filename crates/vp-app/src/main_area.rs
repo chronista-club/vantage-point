@@ -17,8 +17,6 @@
 //! │ ┌──────────────────────────────────────┐ │
 //! │ │ pane-terminal (xterm.js, agent/shell) │ │
 //! │ │ ────────────────────────────────────  │ │
-//! │ │ pane-canvas   (Canvas placeholder)    │ │
-//! │ │ ────────────────────────────────────  │ │
 //! │ │ pane-preview  (iframe)                │ │
 //! │ │ ────────────────────────────────────  │ │
 //! │ │ pane-empty    (no selection)          │ │
@@ -42,8 +40,9 @@ use serde::{Deserialize, Serialize};
 /// Rust から main area JS に渡す active pane の payload
 #[derive(Debug, Clone, Serialize)]
 pub struct ActivePaneInfo<'a> {
-    /// Pane kind ("agent" | "canvas" | "preview" | "shell" | null)
-    /// null = 何も active でない (空状態を表示)
+    /// Pane kind ("terminal" | "preview" | "paisley_park" | "gold_experience" | "hermit_purple" | "empty" | null)
+    /// null = 何も active でない (空状態を表示)。
+    /// VP-142 cleanup (PR-ε-4): legacy "canvas" kind 削除 (PR-ε-3 で PP body が Smart Canvas surface 物理化)
     pub kind: Option<&'a str>,
     pub pane_id: Option<&'a str>,
     /// Preview kind の URL (preview kind 以外では None)
@@ -137,7 +136,7 @@ body{overflow:hidden;}
 /* VP-141 (PR-ε-2): Pane header chrome — pane に「ヘッダ + body」 構造を持たせる共通 chrome。
    icon + Stand 名 + breadcrumb + actions (Clear 等) を提供。 terminal pane (Echoes、 xterm.js
    full-bleed) は header なしで除外。 .pane-header と .pane-body は両方 position:absolute なので
-   .pane.canvas/stand/empty の display:grid context から opt-out される (centering は body 側の
+   .pane.stand/empty の display:grid context から opt-out される (centering は body 側の
    `.center` modifier で個別制御)。 */
 .pane-header{
   position:absolute;
@@ -204,11 +203,8 @@ body{overflow:hidden;}
 .pp-content hr{border:0;border-top:1px solid var(--color-border-subtle);margin:1rem 0;}
 .pp-placeholder{color:var(--color-text-tertiary);font-style:italic;}
 /* VP-140: display:none/active gate 廃止、 always display:grid。 visibility は opacity (Frame Engine) が司る. */
-.pane.canvas{display:grid;place-items:center;}
-.pane.canvas main{text-align:center;}
-.pane.canvas h1{font-weight:500;font-size:1.6rem;margin:0 0 .25rem;color:var(--color-text-primary);}
-.pane.canvas p{color:var(--color-text-tertiary);margin:0;font-size:.9rem;}
-.pane.canvas .brand{color:var(--color-brand-primary);}
+/* VP-142 cleanup: .pane.canvas rules 削除 (pane-canvas HTML element 削除に伴い)。
+   PP body が Smart Canvas surface を物理化したため pane-canvas は vestigial。 */
 .pane.preview iframe{width:100%;height:100%;border:0;background:#fff;}
 /* Phase 5-A: Project-scope Stand placeholder panes (PP/GE/HP) */
 .pane.stand{display:grid;place-items:center;}
@@ -278,21 +274,11 @@ body{overflow:hidden;}
       </main>
     </div>
   </div>
-  <div class="pane canvas" id="pane-canvas" data-kind="canvas" data-frame-id="canvas">
-    <div class="pane-header">
-      <div class="pane-title">
-        <span class="pane-icon">📐</span>
-        <span class="pane-name">Canvas</span>
-        <span class="pane-breadcrumb">Smart Canvas</span>
-      </div>
-    </div>
-    <div class="pane-body center">
-      <main>
-        <h1>Canvas pane</h1>
-        <p>Phase 2 — <span class="brand">Creo UI mint-dark</span> を全ペイン統一で適用</p>
-      </main>
-    </div>
-  </div>
+  <!-- VP-142 cleanup (PR-ε-4): legacy `pane-canvas` placeholder を削除済。
+       VP-42 era の「汎用 Canvas surface」 placeholder だったが、 PR-ε-3 で PP body
+       (`pane-paisley-park` 内 `<div id="pp-content">`) が Smart Canvas surface を物理化
+       したため vestigial。 doc 13 §10 Q-3 (= Smart Canvas 配置) も PR-ε-3 で確定済。 -->
+
   <div class="pane preview" id="pane-preview" data-kind="preview" data-frame-id="preview">
     <div class="pane-header">
       <div class="pane-title">
@@ -1055,11 +1041,11 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
 
   // ========= Architecture v4: Lane / Stand 切替 API =========
   // Rust → JS で active Lane / Stand を切替。kind が null の場合は empty 状態を表示。
-  // payload: {kind: "terminal"|"canvas"|"preview"|"paisley_park"|"gold_experience"|"hermit_purple"|null, pane_id, preview_url}
+  // payload: {kind: "terminal"|"preview"|"paisley_park"|"gold_experience"|"hermit_purple"|null, pane_id, preview_url}
   // Phase 5-A: Project-scope Stand (PP/GE/HP) を click 可能 pane として追加。
+  // VP-142 cleanup: legacy "canvas" kind 削除 (pane-canvas placeholder 廃止に伴い)。
   const KIND_TO_PANE = {
     terminal: 'pane-terminal',
-    canvas: 'pane-canvas',
     preview: 'pane-preview',
     paisley_park: 'pane-paisley-park',
     gold_experience: 'pane-gold-experience',
