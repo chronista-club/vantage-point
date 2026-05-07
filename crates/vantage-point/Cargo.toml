@@ -66,15 +66,15 @@ schemars = "1"
 unison = { workspace = true }
 
 # GUI stack (feature = "gui" 有効時のみ有効化)
-tao = { version = "0.34", optional = true }
-muda = { version = "0.17", optional = true }
-tray-icon = { version = "0.21", optional = true }
+tao = { version = "0.35", optional = true }
+muda = { version = "0.19", optional = true }
+tray-icon = { version = "0.23", optional = true }
 
 # Open URLs in system browser
 open = "5"
 
 # Configuration
-toml = "0.8"
+toml = "1.1"
 dirs = "6"
 
 # Log file writer (Win GUI subsystem では stderr が NUL 化されるので、
@@ -82,7 +82,7 @@ dirs = "6"
 tracing-appender = "0.2"
 
 # MIDI input (feature = "midi" 有効時のみ、ALSA 依存回避のため optional)
-midir = { version = "0.10", optional = true }
+midir = { version = "0.11", optional = true }
 
 # UUID generation (v7 for time-ordered Event ids; serde for wire format)
 uuid = { version = "1", features = ["v4", "v7", "serde"] }
@@ -91,11 +91,11 @@ uuid = { version = "1", features = ["v4", "v7", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 
 # mDNS Service Discovery (Bonjour)
-mdns-sd = "0.18"
+mdns-sd = "0.19"
 
 # Hostname
 hostname = "0.4"
-libc = "0.2.178"
+libc = "0.2.186"
 
 # Low-level socket control (IPV6_V6ONLY=0 を Windows でも明示設定するために必要。
 # tokio::net::TcpSocket には set_only_v6 が無いので socket2 経由で setsockopt する)
@@ -111,7 +111,7 @@ portable-pty = "0.9"
 base64 = "0.22"
 
 # WebSocket client (for Canvas Lane bridge to other Processes)
-tokio-tungstenite = "0.26"
+tokio-tungstenite = "0.29"
 
 # File system watcher (for trace log → WebSocket broadcast)
 notify = "8"
@@ -128,7 +128,7 @@ regex = "1"
 vp-db = { path = "../vp-db" }
 
 # Terminal emulation (VT parser + grid state)
-alacritty_terminal = "0.25"
+alacritty_terminal = "0.26"
 vte = "0.15"
 
 # TUI framework
@@ -179,7 +179,7 @@ objc2-core-graphics = { version = "0.3", features = ["CGColor", "CGContext"] }
 # Note: PrintWindow / PRINT_WINDOW_FLAGS は 0.61 で `Win32::Storage::Xps` 配下にある
 # (Win32 metadata の API set 分類による。 Print = 印刷 API group)
 [target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.61", features = [
+windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_HiDpi",
