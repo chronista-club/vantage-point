@@ -9359,6 +9359,7 @@ dependencies = [
  "serde_json",
  "shell-words",
  "tao",
+ "tempfile",
  "tokio",
  "tokio-tungstenite 0.29.0",
  "toml 1.1.2+spec-1.1.0",

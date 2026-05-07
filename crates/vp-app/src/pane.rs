@@ -134,6 +134,14 @@ pub struct SidebarState {
     /// `unread_notifications` (履歴 count) と分離した「現在の活動状態」 表現。
     #[serde(default)]
     pub awaiting_input: std::collections::HashMap<String, bool>,
+    /// VP-143: per-Lane の cc session display name (`/rename` で設定された custom-title)。
+    /// Key: Lane address、 Value: title 文字列。
+    /// `~/.claude/projects/<encoded-cwd>/<latest>.jsonl` の `custom-title` entry を polling
+    /// で抽出して populate (`session_title` module + `session_title_poller`)。
+    /// `/rename` 未実行 lane は entry なし → JS 側で branch 名 fallback。
+    /// disk persist 不要 (起動時に再 resolve)、 skip_serializing で軽量化。
+    #[serde(default)]
+    pub session_titles: std::collections::HashMap<String, String>,
 }
 
 /// Phase 5-A: Project-scope Stand の active selection (sidebar の row click で発火)

@@ -83,3 +83,6 @@ rfd = "0.17"
 # tracing-appender が Unix-only と解釈される bug を 2026-04-29 観測、 末尾移動で修正)。
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"

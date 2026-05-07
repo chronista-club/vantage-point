@@ -87,6 +87,11 @@ pub enum AppEvent {
     /// 要求する。 Rust は `sidebar_state.lanes_by_project` 全 lane に対して ensureLane + 現在
     /// active lane に showLane を再発行する (idempotent)。
     LanesEnsureAll,
+    /// VP-143: 全 lane の cc session display name (custom-title) を再 resolve する周期 tick。
+    /// `tokio::spawn` で 5s 間隔の background task が proxy 経由で send。 main thread は
+    /// `sidebar_state.lanes_by_project` を walk して `session_title::resolve_title_for_cwd` を
+    /// 呼び、 結果を `sidebar_state.session_titles` に diff/update + sidebar に push back する。
+    ResolveSessionTitles,
 }
 
 /// xterm.js から IPC で送られてきた JSON メッセージを処理
