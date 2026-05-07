@@ -2742,21 +2742,23 @@ pub struct PortLayoutParams {
 #[tool_handler]
 impl rmcp::ServerHandler for VantageMcp {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo {
-            instructions: Some(
-                "Vantage Point Process - Display rich content (markdown, HTML, images) in a browser viewer. \
-                 Use 'capture_canvas' to take a PNG screenshot of the Canvas (viewable with Read tool), \
-                 'show' to display content, 'clear' to clear panes, \
-                 'close_pane' to close a pane, 'toggle_pane' to toggle panel visibility, \
-                 'permission' to request user approval, 'restart' to restart the Process, \
-                 'watch_file' to monitor a log file in real-time, and 'unwatch_file' to stop monitoring.\n\n\
-                 When using 'show', prefer content_type='markdown' as the default format. \
-                 Markdown renders well in the Canvas and is easy to read. \
-                 Use content_type='html' only when you need precise visual layout (dashboards, diagrams with colors, interactive elements).".into()
-            ),
-            capabilities: ServerCapabilities::builder().enable_tools().build(),
-            ..Default::default()
-        }
+        // rmcp 1.6 で ServerInfo は #[non_exhaustive] になり struct expression (= `ServerInfo { ... ..Default::default() }`)
+        // が外部 crate から使えなくなった。 `Default::default()` で base instance を作ってから pub field を mutate
+        // する pattern で API contract を満たす (= 公式が future-compatible として用意してる upgrade path)。
+        let mut info = ServerInfo::default();
+        info.instructions = Some(
+            "Vantage Point Process - Display rich content (markdown, HTML, images) in a browser viewer. \
+             Use 'capture_canvas' to take a PNG screenshot of the Canvas (viewable with Read tool), \
+             'show' to display content, 'clear' to clear panes, \
+             'close_pane' to close a pane, 'toggle_pane' to toggle panel visibility, \
+             'permission' to request user approval, 'restart' to restart the Process, \
+             'watch_file' to monitor a log file in real-time, and 'unwatch_file' to stop monitoring.\n\n\
+             When using 'show', prefer content_type='markdown' as the default format. \
+             Markdown renders well in the Canvas and is easy to read. \
+             Use content_type='html' only when you need precise visual layout (dashboards, diagrams with colors, interactive elements).".into()
+        );
+        info.capabilities = ServerCapabilities::builder().enable_tools().build();
+        info
     }
 }
 

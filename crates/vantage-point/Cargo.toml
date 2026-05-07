@@ -59,7 +59,7 @@ urlencoding = "2"
 reqwest = { workspace = true }
 
 # MCP (Model Context Protocol)
-rmcp = { version = "0.16", features = ["server", "transport-io"] }
+rmcp = { version = "1.6", features = ["server", "transport-io"] }
 schemars = "1"
 
 # QUIC protocol (Unison)
