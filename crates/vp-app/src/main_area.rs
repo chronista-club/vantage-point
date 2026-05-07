@@ -106,6 +106,11 @@ body{overflow:hidden;}
 :root{
   --frame-transition-ms:220ms;
   --frame-transition-easing:cubic-bezier(.2,.8,.2,1);
+  /* VP-143: Echoes terminal (xterm.js) の font size。 creo-ui-editor-host (Ctrl+Shift+E) で
+     runtime 調整可能。 JS 側 createLaneInstance がこの値を読んで `new Terminal({fontSize})` を
+     構築、 observer が document.documentElement style 変更を捕捉して全 terminal に setter +
+     fitAddon.fit() で伝播 → 既存 lane terminal も即時反映される。 */
+  --terminal-font-size:16;
 }
 .pane{
   position:absolute;
@@ -493,9 +498,14 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
     container.appendChild(tdiv);
     host.appendChild(container);
 
+    // VP-143: --terminal-font-size CSS variable から読み取り (creo-ui-editor-host 経由 runtime 編集対応)。
+    // 不正値 / 未設定時は fallback 16 (default)。
+    const initialFontSize = parseFloat(
+      getComputedStyle(document.documentElement).getPropertyValue('--terminal-font-size')
+    ) || 16;
     const term = new Terminal({
       fontFamily: monoFamily,
-      fontSize: 13,
+      fontSize: initialFontSize,
       lineHeight: 1.15,
       letterSpacing: 0,
       theme: theme,
@@ -1002,6 +1012,33 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
     laneInstances.delete(address);
     dbg('[lane:' + address + '] removed');
   };
+
+  // ========= VP-143: --terminal-font-size の runtime 反映 (creo-ui-editor-host 連携) =========
+  // creo-ui-editor-host (Ctrl+Shift+E で activate) が token slider 等で document.documentElement
+  // の inline style を setProperty('--terminal-font-size', ...) で書き換えると、 MutationObserver
+  // が style 属性変更を検知して全 xterm instance に term.options.fontSize setter で反映 +
+  // fitAddon.fit() で grid 再計算 + WS resize 通知で PTY 側にも cols/rows 伝達。
+  // → user は editor で値変更すると即時に全 lane terminal が新 font size に追従。
+  let lastTerminalFontSize = parseFloat(
+    getComputedStyle(document.documentElement).getPropertyValue('--terminal-font-size')
+  ) || 16;
+  const fontSizeObserver = new MutationObserver(() => {
+    const current = parseFloat(
+      getComputedStyle(document.documentElement).getPropertyValue('--terminal-font-size')
+    ) || 16;
+    if (current === lastTerminalFontSize) return;
+    lastTerminalFontSize = current;
+    for (const [, info] of laneInstances) {
+      try {
+        info.term.options.fontSize = current;
+        info.fitAddon.fit();
+        if (info.conn && info.conn.ws && info.conn.ws.readyState === WebSocket.OPEN) {
+          info.conn.ws.send(JSON.stringify({type:'resize', cols: info.term.cols, rows: info.term.rows}));
+        }
+      } catch (_) { /* noop on individual lane failure */ }
+    }
+  });
+  fontSizeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['style'] });
 
   // Phase 2.x-d: 旧 onPtyData shim も terminal::build_output_script と一緒に撤去済。
   // Lane WebSocket が直接 term.write するので Rust 経路の出力は存在しない。
