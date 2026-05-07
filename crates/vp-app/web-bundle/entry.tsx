@@ -42,6 +42,7 @@ import { FrameEngine, type PaneId } from './frame-engine'
 import { DEFAULT_SCENES, EMPTY_SCENE, generateAllFocusScenes } from './scenes'
 import { attachRenderer } from './renderer'
 import { attachKeybindings } from './keybindings'
+import { renderPP, clearPP, appendPP } from './pp'
 
 console.info('[vp-bundle] imports resolved')
 ;(window as unknown as { vpBundleStatus?: Record<string, boolean> }).vpBundleStatus!.importsResolved = true
@@ -141,6 +142,40 @@ if (document.readyState === 'loading') {
 ;(window as unknown as { vpFrame: FrameEngine }).vpFrame = frameEngine
 ;(window as unknown as { vpBundleStatus?: Record<string, boolean> }).vpBundleStatus!.vpFrameSet = true
 console.info('[vp-bundle] vpFrame attached to window — bundle init complete')
+
+// ===== VP-141 / PR-ε-2: PP markdown render API =====
+// window.vpPP で PP body の renderPP / clearPP / appendPP を公開。 PR-ε-3 で /ws/show 経由
+// mcp__show が来た時の inject point として使う。 DevTools console から手動 trigger 可能:
+//   window.vpPP.renderPP("# Hello\n\n**bold**")
+;(window as unknown as { vpPP: { renderPP: typeof renderPP; clearPP: typeof clearPP; appendPP: typeof appendPP } }).vpPP = {
+  renderPP,
+  clearPP,
+  appendPP,
+}
+
+// ===== Pane action button delegation =====
+// 各 pane の `[data-action]` button を click delegation で hook。 S2 では Clear のみ実装、
+// data-target 属性で対象 surface を識別 (`pp` = Paisley Park body)。 将来的に Pin / Lane 切替
+// 等を追加する場合も同 delegation で wire 可能。
+document.addEventListener(
+  'click',
+  (event) => {
+    const target = event.target as HTMLElement | null
+    const btn = target?.closest('[data-action]') as HTMLElement | null
+    if (!btn) return
+    const action = btn.dataset.action
+    const dataTarget = btn.dataset.target
+    if (action === 'clear') {
+      if (dataTarget === 'pp') {
+        clearPP()
+      } else {
+        console.warn('[vp-bundle] clear: unknown target', dataTarget)
+      }
+    }
+  },
+  // bubbling で取る (capture せず) — pane-header 内 button click は default で bubble する
+  false,
+)
 
 function App() {
   return (
