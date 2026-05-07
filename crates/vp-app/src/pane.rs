@@ -128,6 +128,12 @@ pub struct SidebarState {
     /// disk persist 不要 (session 起動で 0 から)、 skip_serializing で軽量化。
     #[serde(default)]
     pub unread_notifications: std::collections::HashMap<String, u32>,
+    /// Lane が cc の input 待ち状態かどうか (OSC 99 final-chunk 受信 = true)。
+    /// Key: Lane address、 Value: true なら sidebar 行右端に黄 dot + pulse 表示。
+    /// `OscNotification` event で `insert(addr, true)`、 `lane:select` で対応 Lane を `remove`。
+    /// `unread_notifications` (履歴 count) と分離した「現在の活動状態」 表現。
+    #[serde(default)]
+    pub awaiting_input: std::collections::HashMap<String, bool>,
 }
 
 /// Phase 5-A: Project-scope Stand の active selection (sidebar の row click で発火)
