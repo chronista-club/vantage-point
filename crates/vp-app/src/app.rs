@@ -267,11 +267,10 @@ const SIDEBAR_HTML: &str = concat!(
   .vp-add-worker{display:flex;align-items:center;gap:6px;padding:5px 8px 5px 14px;border-radius:var(--radius-sm,6px);cursor:pointer;color:var(--color-text-secondary);font-size:11px;transition:background .12s ease,color .12s ease;}
   .vp-add-worker:hover{background:var(--color-surface-bg-emphasis);color:var(--color-brand-primary);}
   .vp-add-worker .icon{color:var(--color-brand-primary);}
-  /* Phase 5-D Sprint C: Lane HD notification は 既存 status dot (.state) を兼用。
-     unread あれば pulse animation で「気付き」 を伝える。 status (running/idle/dead 等) と
-     attention (unread あり) を 1 indicator に統合 = 視覚 noise 最小、 cognitive load 最小。 */
-  .vp-lane-row .state.has-unread .nf-icon{animation:vp-pulse 1.5s ease-in-out infinite;filter:drop-shadow(0 0 3px currentColor);}
-  @keyframes vp-pulse{0%,100%{opacity:1;transform:scale(1);}50%{opacity:0.55;transform:scale(0.85);}}
+  /* Lane 行右端の awaiting_input dot (OSC 99 = cc が入力待ち時のみ表示)。
+     lifecycle indicator は廃止、 「Running ↔ AwaitingInput」 の binary に絞った設計。
+     pulse は載せず単色固定 = 作業中の周辺視野で控え目に「呼ばれている」 を伝える。 */
+  .vp-lane-awaiting{margin-left:auto;width:8px;height:8px;border-radius:50%;background:var(--color-status-warning,#d49b3f);flex-shrink:0;}
   .vp-add-worker .icon{width:18px;text-align:center;}
   .vp-add-worker-form{margin:0 8px 6px 14px;display:flex;flex-direction:column;gap:6px;max-height:0;opacity:0;overflow:hidden;transition:max-height .22s ease,opacity .22s ease,margin-top .22s ease;margin-top:0;pointer-events:none;}
   .vp-add-worker-form.expanded{max-height:160px;opacity:1;margin-top:-2px;pointer-events:auto;}
@@ -783,21 +782,12 @@ const SIDEBAR_HTML: &str = concat!(
           const label = document.createElement('span');
           label.className = 'label';
           label.textContent = laneLabel(lane);
-          const stateMark = document.createElement('span');
-          stateMark.className = 'state';
-          stateMark.innerHTML = stateGlyphHTML(lane.state);
-          // Phase 5-D Sprint C P2.1+P2.2: Lane HD notification dot (binary 表示)。
-          //  count は出さず「有る / 無い」 だけを伝える。 行頭に置いて視線最初の位置で気付ける。
-          //  state.unread_notifications (lane address → count) を Rust が OSC 99 受信時に push、
-          //  user が Lane に switch すると 0 reset。 active lane では increment skip (即読扱い)。
-          const unreadMap = (state && state.unread_notifications) || {};
-          const unread = (unreadMap[addr] | 0);
-          if (unread > 0) {
-            const dot = document.createElement('span');
-            dot.className = 'vp-lane-notification';
-            dot.title = unread + ' unread notification(s) from HD';
-            row.appendChild(dot);
-          }
+          // OSC 99 由来の「Claude 入力待ち」 表示。 lifecycle (running 等) は表示せず、
+          //  awaiting_input が立っている Lane だけ行右端に黄 dot を 1 個出す。
+          //  state.awaiting_input (lane address → bool) を Rust が OSC 99 受信時に push、
+          //  user が Lane に switch すると remove (= dot 消える)。 active lane は skip (即読扱い)。
+          const awaitingMap = (state && state.awaiting_input) || {};
+          const isAwaiting = !!awaitingMap[addr];
           row.appendChild(standIcon);
           row.appendChild(label);
           // Phase 5-D: Worker のみ git 状態 subtitle (branch · ahead/behind · dirty/merged)
@@ -849,11 +839,14 @@ const SIDEBAR_HTML: &str = concat!(
             }
             if (hasContent) row.appendChild(meta);
           }
-          // Phase 5-E: Inactive (pid:null = disk-only) Lane は Pane 不在のため、
-          //  state glyph (running 等の状態色) を出さない。 LaneState は default("running") で
-          //  埋まるが、 実体 (PtySlot) が無い以上 「running」 主張は嘘になる。
-          //  glyph 非表示 + row dim で 「Lane は在るが Pane は休眠」 を視覚化する。
-          if (!laneInactive) row.appendChild(stateMark);
+          // 行右端 (margin-left:auto) に awaiting_input 黄 dot を固定配置。 Inactive Lane (pid:null)
+          //  は cc が動いていないので awaiting_input flag も立たない前提だが念のため除外。
+          if (!laneInactive && isAwaiting) {
+            const awaitingDot = document.createElement('span');
+            awaitingDot.className = 'vp-lane-awaiting';
+            awaitingDot.title = 'Claude is waiting for input';
+            row.appendChild(awaitingDot);
+          }
           // Lane Lead Stand restart icon (Lead/Worker 共通、 hover で出現、 click → confirm dialog)
           //  destructive action (claude 等の child 強制 kill + respawn) なので
           //  showRestartDialog で OK/Cancel 1 step 挟む。
@@ -2250,6 +2243,10 @@ fn handle_sidebar_ipc(
             if state.unread_notifications.remove(address).is_some() {
                 out.changed = true;
             }
+            // awaiting_input も同タイミングで reset (= user が Lane を開いたら入力待ち通知を消す)。
+            if state.awaiting_input.remove(address).is_some() {
+                out.changed = true;
+            }
             // Phase 5-A: Lane と Stand は排他なので active_stand を clear
             if state.active_stand.is_some() {
                 state.active_stand = None;
@@ -2500,6 +2497,8 @@ pub fn run() -> anyhow::Result<()> {
                         .entry(lane.clone())
                         .or_insert(0);
                     *count += 1;
+                    // 「入力待ち」 状態 = 行右端に黄 dot を表示。 active 切替で reset される。
+                    sidebar_state.awaiting_input.insert(lane.clone(), true);
                     tracing::info!("osc:notification lane={} code={} unread={}", lane, code, *count);
                     push_sidebar_state(&sidebar, &sidebar_state);
                 }
