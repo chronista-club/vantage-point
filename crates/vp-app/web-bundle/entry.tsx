@@ -38,7 +38,7 @@ import { render } from 'solid-js/web'
 import { EditorHostProvider, EditorLayer } from 'creo-ui-editor-host'
 import { CreoIcon } from 'creo-ui-icons-web'
 import { STAND_ICON, type StandKind } from './icons/stand'
-import { FrameEngine, type PaneId } from './frame-engine'
+import { FrameEngine, type PaneId, type SceneId } from './frame-engine'
 import { DEFAULT_SCENES, EMPTY_SCENE, generateAllFocusScenes } from './scenes'
 import { attachRenderer } from './renderer'
 import { attachKeybindings } from './keybindings'
@@ -51,7 +51,7 @@ console.info('[vp-bundle] imports resolved')
 // EditorLayer mount より前に Pane / Scene を register しておき、 DOMContentLoaded で
 // default Scene を apply する。 setActivePane bridge も window に登録 (legacy 互換)。
 //
-// data-pane-id 規約 (main_area.rs HTML 側で付与):
+// data-frame-id 規約 (main_area.rs HTML 側で付与):
 //   echoes  → pane-terminal      (Echoes Stand = lane terminal host)
 //   pp      → pane-paisley-park  (Paisley Park 🧭 / Information Router)
 //   canvas  → pane-canvas        (汎用 Canvas surface placeholder)
@@ -59,6 +59,9 @@ console.info('[vp-bundle] imports resolved')
 //   hp      → pane-hermit-purple   (Hermit Purple 🍇)
 //   preview → pane-preview        (iframe preview)
 //   empty   → pane-empty          (no selection)
+// 注: 旧 data-pane-id (main_area.rs inline JS が Lane address 等に書き換える native overlay sync 用)
+// と attribute を分離。 同名にすると Lane click で legacy 側が hijack して Frame Engine の Scene lookup が
+// undefined → HIDDEN_TRANSFORM で pane が見えなくなる回帰を起こすため (VP-141 fix)。
 const FRAME_PANE_IDS: PaneId[] = ['echoes', 'pp', 'canvas', 'ge', 'hp', 'preview', 'empty']
 const FOCUSABLE_PANE_IDS: PaneId[] = ['echoes', 'pp', 'canvas', 'ge', 'hp', 'preview']
 
@@ -72,10 +75,17 @@ generateAllFocusScenes(FOCUSABLE_PANE_IDS).forEach((s) => frameEngine.registerSc
 attachRenderer(frameEngine, document)
 attachKeybindings(frameEngine, window)
 
-// ===== legacy setActivePane bridge =====
+// ===== legacy setActivePane bridge + per-Lane Scene state =====
 // 既存 main_area.rs JS が定義する window.setActivePane を wrap して、
 // 旧 logic (showLane / preview iframe src 切替 / sendSlotRect) を保ったまま
 // Frame Engine に Scene 切替を発火させる。
+//
+// per-Lane Scene state preservation (VP-141 follow-up):
+// - 各 Lane が独立に「最後にいた Scene」 を覚える Map
+// - kind=terminal Lane 切替時に旧 Lane の Scene を save、 新 Lane の保存済 Scene (or default lead-focus)
+//   を restore する → user が Lane を跨いでも Side Review / PP Overlay 等の layout 選択が記憶される
+// - onSceneChange listener で manual Scene 切替 (Cmd+Shift+N) も active Lane の state に反映
+// - kind != terminal (PP/GE/HP click 等) は Lane を跨がない fixed-Pane focus、 laneScenes は更新しない
 const KIND_TO_PANE: Record<string, PaneId> = {
   terminal: 'echoes',
   canvas: 'canvas',
@@ -91,6 +101,20 @@ interface SetActivePaneInfo {
   pane_id?: string | null
   preview_url?: string | null
 }
+
+/** 現 active Lane の address (Lane 跨ぎの save+restore base). null = まだ Lane click していない. */
+let activeLaneAddress: string | null = null
+/** Lane address → 最後にその Lane が table に乗っていた SceneId. */
+const laneScenes = new Map<string, SceneId>()
+
+// onSceneChange で active Lane の Scene state を継続 update。
+// bridge 内で applyScene を呼ぶ場合も含めて全 Scene 切替で fire するが、 同じ値を再 set しても
+// 害なし (idempotent)、 manual hotkey 切替時にも自然に反映される。
+frameEngine.onSceneChange((sceneId) => {
+  if (activeLaneAddress && sceneId !== 'empty') {
+    laneScenes.set(activeLaneAddress, sceneId)
+  }
+})
 
 const installSetActivePaneBridge = (): void => {
   const w = window as unknown as {
@@ -111,6 +135,24 @@ const installSetActivePaneBridge = (): void => {
       frameEngine.applyScene('empty')
       return
     }
+    // kind=terminal: Lane 切替判定 + 保存済 Scene の restore
+    if (info.kind === 'terminal' && info.pane_id) {
+      const newLane = info.pane_id
+      // Lane が変わった場合、 旧 Lane の現 Scene を save (`onSceneChange` でも save される筈だが
+      // 二重 set は idempotent、 timing race に対する保険として明示)
+      if (activeLaneAddress && activeLaneAddress !== newLane) {
+        const currentScene = frameEngine.getCurrentSceneId()
+        if (currentScene && currentScene !== 'empty') {
+          laneScenes.set(activeLaneAddress, currentScene)
+        }
+      }
+      activeLaneAddress = newLane
+      // 保存済 Scene を restore、 初訪問 Lane は lead-focus を default にする
+      const target = laneScenes.get(newLane) ?? 'lead-focus'
+      frameEngine.applyScene(target)
+      return
+    }
+    // kind != terminal (PP/GE/HP/canvas/preview click 等): fixed-Pane focus、 Lane state は更新しない
     const paneId = KIND_TO_PANE[info.kind]
     if (!paneId) {
       console.warn('[frame-engine] unknown kind for setActivePane:', info.kind)
@@ -121,12 +163,15 @@ const installSetActivePaneBridge = (): void => {
   }
 }
 
+// DevTools 検査用 (window.vpLaneScenes で per-Lane state を inspect 可能)
+;(window as unknown as { vpLaneScenes: Map<string, SceneId> }).vpLaneScenes = laneScenes
+
 // 起動時 default Scene apply
 const applyDefaultScene = (): void => {
   installSetActivePaneBridge()
   const ok = frameEngine.applyScene('lead-focus')
-  const paneCount = document.querySelectorAll('[data-pane-id]').length
-  // 診断 log: Frame Engine が apply された事実と、 data-pane-id 要素の存在を確認できるようにする。
+  const paneCount = document.querySelectorAll('[data-frame-id]').length
+  // 診断 log: Frame Engine が apply された事実と、 data-frame-id 要素の存在を確認できるようにする。
   // user 環境で 「画面が黒い」 等の issue 時に DevTools console で path を即時切り分けできるよう常時出力。
   console.info(
     `[frame-engine] applied default scene = lead-focus (ok=${ok}); panes detected = ${paneCount}`,

@@ -2,8 +2,14 @@
  * Frame Engine の Scene change を DOM に apply する renderer。
  *
  * VP-140 / PR-ε-1。 純 action layer ─ engine.onSceneChange の listener として登録され、
- * `<div class="pane" data-pane-id="...">` element に対して left/top/width/height/opacity/z-index
+ * `<div class="pane" data-frame-id="...">` element に対して left/top/width/height/opacity/z-index
  * を inline style で書き込む。
+ *
+ * 注: attribute は **`data-frame-id`** (Frame Engine 専用、 値 = "echoes" / "pp" / "canvas" 等の
+ * scene key)。 legacy `data-pane-id` (= main_area.rs inline JS が `setActiveImpl` で動的に Lane address
+ * 等に書き換える、 γ-light native overlay sync 用) とは別軸。 同じ attribute だと Lane click で
+ * legacy 側が hijack して Frame Engine の Scene lookup が undefined → HIDDEN_TRANSFORM になり pane
+ * が見えなくなる回帰が出るため、 attribute を分離 (VP-141 fix)。
  *
  * CSS transform scale ではなく left/top/width/height を採用した理由:
  * - xterm.js は scale された container 内では blurry に render される (DOM resolution と GPU
@@ -32,12 +38,12 @@ export function attachRenderer(
   root: ParentNode = document,
 ): () => void {
   const apply = (_id: string, scene: Scene): void => {
-    const elements = root.querySelectorAll<HTMLElement>('.pane[data-pane-id]');
+    const elements = root.querySelectorAll<HTMLElement>('.pane[data-frame-id]');
     let primaryEl: HTMLElement | null = null;
     let primaryZ = -Infinity;
 
     elements.forEach((el) => {
-      const paneId = el.dataset.paneId as PaneId | undefined;
+      const paneId = el.dataset.frameId as PaneId | undefined;
       if (!paneId) return;
       const t = scene.panes[paneId] ?? HIDDEN_TRANSFORM;
       writePaneStyle(el, t);
