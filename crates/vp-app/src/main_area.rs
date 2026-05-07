@@ -1176,11 +1176,17 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
   }, true);
 
   // DOM ready 後に pending pane を flush
+  // VP-142 (PR-ε-3): flush は `window.setActivePane(pendingPane)` 経由で行う (= bridge を通す)。
+  // setActiveImpl 直叩きだと entry.tsx で wrap した setActivePane bridge を bypass し、
+  // setWantedLane (show-subscriber) や applyScene (Frame Engine) が fire しないため、 auto-select Lane の
+  // show-subscriber が永続的に未接続のままになる回帰を起こす。 domReady=true になっているので window.setActivePane
+  // 内の buffering 分岐は再 hit しない (= 無限再帰なし)。
   window.addEventListener('DOMContentLoaded', () => {
     domReady = true;
     if (pendingPane !== null) {
-      setActiveImpl(pendingPane);
+      const flush = pendingPane;
       pendingPane = null;
+      window.setActivePane(flush);
     }
   });
 })();
