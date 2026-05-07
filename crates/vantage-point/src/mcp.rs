@@ -314,6 +314,14 @@ pub struct EvalRubyParams {
     pub pane_id: Option<String>,
 }
 
+/// Parameters for the port_roles tool (no args、 placeholder for schemars→rmcp 1.6 compat).
+///
+/// schemars 1.x は `Parameters<()>` を `{const: null}` schema として generate するが、
+/// rmcp 1.6 + MCP spec は inputSchema に `{type: "object"}` を必須化。 空 struct で
+/// `{type: "object", properties: {}}` を生成させて MCP client validation を通過させる。
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct PortRolesParams {}
+
 /// Parameters for the run_ruby tool
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct RunRubyParams {
@@ -2650,7 +2658,11 @@ if bestId > 0 { print(bestId) }
     )]
     async fn port_roles(
         &self,
-        _params: rmcp::handler::server::wrapper::Parameters<()>,
+        // VP-XXX (rmcp 1.6 follow-up): `Parameters<()>` は schemars 1.x で `{const: null}` schema を
+        // 生成 → rmcp 1.6 が MCP spec 厳格 check で reject (`tools[18].inputSchema.type` expected
+        // `"object"`)。 空 struct (`PortRolesParams`) で `{type: "object", properties: {}}` 形式を
+        // 生成させて MCP client の zod validation を通過させる。
+        _params: rmcp::handler::server::wrapper::Parameters<PortRolesParams>,
     ) -> Result<CallToolResult, McpError> {
         let layout = crate::port_layout::PortLayout::default();
         let mut out = format!("Role offsets (lane_size={}):\n", layout.lane_size);
