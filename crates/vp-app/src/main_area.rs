@@ -106,11 +106,16 @@ body{overflow:hidden;}
 :root{
   --frame-transition-ms:220ms;
   --frame-transition-easing:cubic-bezier(.2,.8,.2,1);
-  /* VP-143: Echoes terminal (xterm.js) の font size。 creo-ui-editor-host (Ctrl+Shift+E) で
-     runtime 調整可能。 JS 側 createLaneInstance がこの値を読んで `new Terminal({fontSize})` を
-     構築、 observer が document.documentElement style 変更を捕捉して全 terminal に setter +
-     fitAddon.fit() で伝播 → 既存 lane terminal も即時反映される。 */
+  /* VP-143: Echoes terminal (xterm.js) の Live Token 群。 creo-ui-editor-host (Ctrl+Shift+E)
+     で runtime 調整可能。 JS 側 createLaneInstance が値を読んで `new Terminal({...})` を構築、
+     MutationObserver が documentElement style 変更を捕捉して全 terminal に setter +
+     fitAddon.fit() + WS resize 通知で伝播 → 既存 lane terminal も即時反映。
+     default は旧 hardcoded 値と同じなので既存挙動への regression なし。 */
   --terminal-font-size:16;
+  --terminal-line-height:1.15;
+  --terminal-letter-spacing:0;
+  --terminal-font-family:"JetBrainsMono Nerd Font", "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
+  --terminal-cursor-style:bar; /* "bar" / "block" / "underline" */
 }
 .pane{
   position:absolute;
@@ -467,6 +472,30 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
   const monoFamily = (css.getPropertyValue('--typography-family-mono') || '').trim()
     || '"JetBrainsMono Nerd Font", "Cascadia Code", "SF Mono", Menlo, Consolas, monospace';
 
+  // ========= VP-143 Live Token 群 (terminal): default 値 + reader / validator =========
+  // CSS variable から読取、 不正値や未設定時は fallback (= 旧 hardcoded 値) に縮退。
+  // documentElement style の MutationObserver でも同 logic を再利用するため関数化。
+  const TERMINAL_FONT_SIZE_FALLBACK = 16;
+  const TERMINAL_LINE_HEIGHT_FALLBACK = 1.15;
+  const TERMINAL_LETTER_SPACING_FALLBACK = 0;
+  const TERMINAL_CURSOR_STYLE_FALLBACK = 'bar';
+  const TERMINAL_CURSOR_STYLES = new Set(['bar', 'block', 'underline']);
+  function readTerminalTokens() {
+    const cs = getComputedStyle(document.documentElement);
+    const fontSize = parseFloat(cs.getPropertyValue('--terminal-font-size'));
+    const lineHeight = parseFloat(cs.getPropertyValue('--terminal-line-height'));
+    const letterSpacing = parseFloat(cs.getPropertyValue('--terminal-letter-spacing'));
+    const fontFamilyRaw = (cs.getPropertyValue('--terminal-font-family') || '').trim();
+    const cursorRaw = (cs.getPropertyValue('--terminal-cursor-style') || '').trim().toLowerCase();
+    return {
+      fontSize: Number.isFinite(fontSize) && fontSize > 0 ? fontSize : TERMINAL_FONT_SIZE_FALLBACK,
+      lineHeight: Number.isFinite(lineHeight) && lineHeight > 0 ? lineHeight : TERMINAL_LINE_HEIGHT_FALLBACK,
+      letterSpacing: Number.isFinite(letterSpacing) ? letterSpacing : TERMINAL_LETTER_SPACING_FALLBACK,
+      fontFamily: fontFamilyRaw || monoFamily,
+      cursorStyle: TERMINAL_CURSOR_STYLES.has(cursorRaw) ? cursorRaw : TERMINAL_CURSOR_STYLE_FALLBACK,
+    };
+  }
+
   // ========= Phase 2.5: per-Lane instance registry =========
   // Lane address → {term, fitAddon, ws, container, ro, webglAddon}
   // Architecture v4: Lane = Session Process なので 1 Lane に 1 xterm.js + 1 WebSocket。
@@ -498,16 +527,14 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
     container.appendChild(tdiv);
     host.appendChild(container);
 
-    // VP-143: --terminal-font-size CSS variable から読み取り (creo-ui-editor-host 経由 runtime 編集対応)。
-    // 不正値 / 未設定時は fallback 16 (default)。
-    const initialFontSize = parseFloat(
-      getComputedStyle(document.documentElement).getPropertyValue('--terminal-font-size')
-    ) || 16;
+    // VP-143 Live Token 群: --terminal-{font-size,line-height,letter-spacing,font-family,cursor-style}
+    // を CSS variable から読取 (creo-ui-editor-host 経由 runtime 編集対応)。 旧 hardcoded 値は fallback。
+    const tokens = readTerminalTokens();
     const term = new Terminal({
-      fontFamily: monoFamily,
-      fontSize: initialFontSize,
-      lineHeight: 1.15,
-      letterSpacing: 0,
+      fontFamily: tokens.fontFamily,
+      fontSize: tokens.fontSize,
+      lineHeight: tokens.lineHeight,
+      letterSpacing: tokens.letterSpacing,
       theme: theme,
       allowProposedApi: true,
       convertEol: true,
@@ -519,7 +546,7 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
       //  - cursorBlink=false: blink animation の常時 frame consume を停止
       //  - smoothScrollDuration=0: 80ms smooth scroll path を無効化、 discrete jump に
       cursorBlink: false,
-      cursorStyle: 'bar',
+      cursorStyle: tokens.cursorStyle,
       cursorWidth: 2,
       smoothScrollDuration: 0,
       // fontLigatures は DOM renderer と相性が悪く、 ligature 想定の 2 cell 幅 protect が
@@ -1013,32 +1040,47 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
     dbg('[lane:' + address + '] removed');
   };
 
-  // ========= VP-143: --terminal-font-size の runtime 反映 (creo-ui-editor-host 連携) =========
-  // creo-ui-editor-host (Ctrl+Shift+E で activate) が token slider 等で document.documentElement
-  // の inline style を setProperty('--terminal-font-size', ...) で書き換えると、 MutationObserver
-  // が style 属性変更を検知して全 xterm instance に term.options.fontSize setter で反映 +
-  // fitAddon.fit() で grid 再計算 + WS resize 通知で PTY 側にも cols/rows 伝達。
-  // → user は editor で値変更すると即時に全 lane terminal が新 font size に追従。
-  let lastTerminalFontSize = parseFloat(
-    getComputedStyle(document.documentElement).getPropertyValue('--terminal-font-size')
-  ) || 16;
-  const fontSizeObserver = new MutationObserver(() => {
-    const current = parseFloat(
-      getComputedStyle(document.documentElement).getPropertyValue('--terminal-font-size')
-    ) || 16;
-    if (current === lastTerminalFontSize) return;
-    lastTerminalFontSize = current;
+  // ========= VP-143: terminal Live Token 群の runtime 反映 (creo-ui-editor-host 連携) =========
+  // creo-ui-editor-host (Ctrl+Shift+E で activate) が token slider/input 等で document.documentElement
+  // の inline style を setProperty('--terminal-{font-size,line-height,letter-spacing,font-family,cursor-style}', ...)
+  // で書き換えると、 MutationObserver が style 属性変更を検知して 5 token を全 xterm instance に伝播:
+  //   - term.options setter で値反映 (xterm.js は init-time 受取 API だが setter も同等の runtime API)
+  //   - fitAddon.fit() で grid 再計算 (font size / line height 変更で cell 寸法が変わる)
+  //   - WS resize 通知で PTY 側にも cols/rows 伝達 (= SIGWINCH 相当)
+  // → user は editor で値変更すると即時に全 lane terminal が追従。 5 token のうち diff があるものだけ
+  // 反映する (= 不要な fitAddon.fit を避ける)。 cursorStyle は grid 寸法に影響しないので fit 不要だが、
+  // 残り 4 token のいずれかが変わったら fit 必要 ─ 簡素化のため diff があれば fit する pattern で良い。
+  let lastTokens = readTerminalTokens();
+  const tokenObserver = new MutationObserver(() => {
+    const current = readTerminalTokens();
+    const fontSizeChanged = current.fontSize !== lastTokens.fontSize;
+    const lineHeightChanged = current.lineHeight !== lastTokens.lineHeight;
+    const letterSpacingChanged = current.letterSpacing !== lastTokens.letterSpacing;
+    const fontFamilyChanged = current.fontFamily !== lastTokens.fontFamily;
+    const cursorStyleChanged = current.cursorStyle !== lastTokens.cursorStyle;
+    const anyChanged =
+      fontSizeChanged || lineHeightChanged || letterSpacingChanged || fontFamilyChanged || cursorStyleChanged;
+    if (!anyChanged) return;
+    lastTokens = current;
+    // grid 寸法に影響する 4 token のいずれか変更があれば fit 必要、 cursorStyle のみは fit 不要
+    const needsFit = fontSizeChanged || lineHeightChanged || letterSpacingChanged || fontFamilyChanged;
     for (const [, info] of laneInstances) {
       try {
-        info.term.options.fontSize = current;
-        info.fitAddon.fit();
-        if (info.conn && info.conn.ws && info.conn.ws.readyState === WebSocket.OPEN) {
-          info.conn.ws.send(JSON.stringify({type:'resize', cols: info.term.cols, rows: info.term.rows}));
+        if (fontSizeChanged) info.term.options.fontSize = current.fontSize;
+        if (lineHeightChanged) info.term.options.lineHeight = current.lineHeight;
+        if (letterSpacingChanged) info.term.options.letterSpacing = current.letterSpacing;
+        if (fontFamilyChanged) info.term.options.fontFamily = current.fontFamily;
+        if (cursorStyleChanged) info.term.options.cursorStyle = current.cursorStyle;
+        if (needsFit) {
+          info.fitAddon.fit();
+          if (info.conn && info.conn.ws && info.conn.ws.readyState === WebSocket.OPEN) {
+            info.conn.ws.send(JSON.stringify({type:'resize', cols: info.term.cols, rows: info.term.rows}));
+          }
         }
       } catch (_) { /* noop on individual lane failure */ }
     }
   });
-  fontSizeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['style'] });
+  tokenObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['style'] });
 
   // Phase 2.x-d: 旧 onPtyData shim も terminal::build_output_script と一緒に撤去済。
   // Lane WebSocket が直接 term.write するので Rust 経路の出力は存在しない。
