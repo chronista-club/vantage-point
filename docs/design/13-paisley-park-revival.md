@@ -347,7 +347,7 @@ doc 12 §9 で plot された PR-β/δ/ε を本 doc で技術設計確定:
 |----|----------------|------|------|------|
 | **PR-β** | VP-119 / 120 / 122 ✅ Done (#274 / #275 / #277) | PP を Project actor から Lane instance 化 (catalog §9 SSOT に揃える) | L | PR-α 完了 |
 | **PR-δ** | VP-135 / 136 / 137 / 138 ✅ Done (#288 / #289 / #290 / #291) | Lane Layer supervisor 整備 (LaneStand trait + LaneStandRegistry generic interface 化、 「N Stand host」 invariant 確立) | M | PR-β 完了 |
-| **PR-ε** | TBD | Smart Canvas に「creo memory」 content kind 追加 (本 doc §8、 VP-121 で creo-memory-pane → Canvas 統合に simplify) | M (旧 L) | PR-δ 完了 |
+| **PR-ε** | VP-140 / 141 / 142 ✅ Done (#292 / #293 + #294 / #298 + #299 cleanup) | Smart Canvas に「creo memory」 content kind 追加 (本 doc §8、 VP-121 で creo-memory-pane → Canvas 統合に simplify) ─ origin goal **B 達成** (mcp__show → PP body markdown 表示 pipeline 物理化) | M (旧 L) | PR-δ 完了 |
 
 ### PR-δ sub-issue 分割実績 (PR-α / PR-β 経験を踏襲、 4 sub 全完)
 
@@ -370,7 +370,19 @@ PR-α の 3 sub-issue (受け皿 → 物理移管 → caller migration) pattern 
 | **PR-β-1** | LaneCapabilities 受け皿 struct 新設、 既存挙動への影響ゼロ | ✅ Done (#274、 VP-119) | PR-β-0 完了 |
 | **PR-β-2** | PP 物理移管 (ProjectStands → LaneCapabilities) + 2026-04-27 rule comment supersede (§1 P0-1) + cardinality 1 → N | ✅ Done (#275、 VP-120) | PR-β-1 完了、 §10 Q-7 暫定確定 |
 | ~~PR-β-3~~ | ~~caller migration~~ | ⏭️ skip (caller ゼロと判明) | — |
-| **PR-β-4** (cleanup) | catalog §9 row 更新 (target = 現状、 description: Information Navigator → Information Router)、 doc 12 §10 既存実装表 update、 legacy `hd` alias 削除 (`routes/health.rs` / vp-app) | planned | PR-β-2 完了 |
+| **PR-β-4** (cleanup) | catalog §9 row 更新 (target = 現状、 description: Information Navigator → Information Router)、 doc 12 §10 既存実装表 update、 legacy `hd` alias 削除 (`routes/health.rs` / vp-app) | ✅ Done (#277、 VP-122) | PR-β-2 完了 |
+
+### PR-ε sub-issue 分割実績 (PR-δ pattern 踏襲、 4 sub 全完で B 達成)
+
+PR-δ (4 sub) と同型 pattern。 origin goal **B 達成** (= 何某かの markdown が Canvas に表示) への直線 path、 各 sub-PR が独立に landing して narrative chain 形成:
+
+| sub-issue | scope | status | prerequisite |
+|----------|------|--------|--------------|
+| **PR-ε-1** | 3D Frame Layout Engine 受け皿 + 4 default Scene + Ctrl+Shift+1..4 keybinding。 Pane を **subdivision (= 親領域分割)** から **portable object + Scene-driven** に inversion (§7 Surface 群を独立 object 配置の前提構築) | ✅ Done (#292、 VP-140) | PR-δ 完了 |
+| **PR-ε-2** | Pane chrome 共通化 (icon + name + breadcrumb + actions slot、 5 pane) + PP body に markdown render 領域物理化 (`marked@18` 同梱) + `window.vpPP.renderPP/clearPP/appendPP` 公開 API | ✅ Done (#293、 VP-141) | PR-ε-1 完了 |
+| (#294 follow-up) | data-frame-id rename + per-Lane Scene state preservation (Lane 跨ぎで layout 記憶) | ✅ Done (#294、 VP-141 follow-up) | PR-ε-2 完了 |
+| **PR-ε-3** | show-subscriber 新設 + bridge bypass fix = origin goal **B 達成** (mcp__show → /api/show → state.hub.broadcast → /ws → vpPP.renderPP → #pp-content の 6 段 pipeline 物理化) | ✅ Done (#298、 VP-142) | PR-ε-2 完了 |
+| **PR-ε-4** (cleanup) | 本 §9 catalog update + §10 Q-3/Q-5 確定化 + legacy `pane-canvas` placeholder 削除 (PP body が Smart Canvas surface を物理化したので vestigial) | ✅ Done (本 PR) | PR-ε-3 完了 |
 
 ### 各 PR の boundary 担保
 
@@ -390,14 +402,14 @@ PR-β 開始前 (および各 sub-PR 開始前) に確定すべき残点。 P0 =
 |---|---------|--------|
 | Q-1: Worker Lane PP spawn (常時 vs on-demand) | P2 | 暫定確定、 dogfood で見直し |
 | Q-2: Lead Lane PP の代表性 (project 集約 vs 局所) | P2 | 暫定: Lane 局所 |
-| Q-3: Smart Canvas の配置 (Pane vs WebView 主) | P2 | 暫定: WebView 主 + Pane opt-in |
+| **Q-3**: Smart Canvas の配置 (Pane vs WebView 主) | **✅ 確定** | **PR-ε-3 (#298) で WebView 主 = `pane-paisley-park` 内 `<div id="pp-content">` で物理化**。 Pane opt-in (Cmd+D 等で Pane 内に PP 配置) は future work、 PR-ε-4 cleanup で `pane-canvas` placeholder を削除して曖昧さ排除 |
 | Q-4: Hub federation 公開範囲 | P2 | 暫定: state stream のみ |
-| ~~Q-5~~: caller Lane resolution path (env 注入 vs param 拡張) | LATER | PR-β-3 skip により未解決、 PR-ε で再 visit |
+| **Q-5**: caller Lane resolution path | **✅ 実質解決** | **PR-ε-3 で `setWantedLane(address)` pattern で解決**。 setActivePane bridge が Lane click 時に「subscribe したい Lane」 を slot に保持、 ensureLane wrap が race recovery で auto connect する event-driven design。 当初 plan の env 注入 / param 拡張は未採用 (= JS 側 client state で完結) |
 | **Q-6**: address grammar `.{lane}` sub-suffix 拡張 | **P0** | PR-β-1 hard prerequisite |
 | **Q-7**: `interactive_agent` vs Lane Echoes 整理 | **P0** | PR-β-2 物理移管時 |
 | Q-8: Topic 命名規約 4→5 階層拡張 | P1 | doc 12 §5 update PR (並列) |
-| Q-9: Active subscriber loop 検出 | P1 | PR-ε 実装で具体化 |
-| Q-10: Echoes idle 時の context inject 先 | P1 | PR-ε 実装で具体化 |
+| Q-9: Active subscriber loop 検出 | P1 | PR-ε-3 では Passive subscribe (= 受信のみ、 自分の broadcast を再 subscribe しない) のため不要。 Active mode (= PP が他 Stand event を listen して能動 push) 実装時に再検討 |
+| Q-10: Echoes idle 時の context inject 先 | P1 | PR-ε-3 では未対応 (Tag 編集等の双方向書き込み機能を v1 では実装せず)。 §8 Out-of-scope 通り future work |
 | Q-11: SP restart vs Lane PP lifecycle 連動 | P1 | PR-β-2 dogfood で観察 |
 
 ### Q-1: Worker Lane の PP を spawn するか?
