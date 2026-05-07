@@ -253,7 +253,14 @@ body{overflow:hidden;}
 </head>
 <body>
 <div id="host">
-  <!-- 各 .pane は data-kind を持つ。data-pane-id は active pane 切替時に Rust が動的に設定。
+  <!-- 各 .pane の attribute 規約 (VP-141 で 2 attribute に分離):
+       - data-kind="..."    : 静的 (HTML hardcode、 「terminal」「paisley_park」 等の kind classification)
+       - data-frame-id="..." : 静的 (HTML hardcode、 Frame Engine の Scene lookup key、 「echoes」「pp」 等)
+       - data-pane-id="..." : 動的 (active pane 切替時に main_area inline JS `setActiveImpl` が Lane address
+                              等で setAttribute、 VP-100 γ-light native overlay sync 用 / Phase 4+ 同期 target)
+       Frame Engine と legacy native overlay sync の attribute を分離しているのは、 Lane click で
+       legacy 側 setAttribute が Frame Engine の static attribute を hijack して Scene lookup undefined
+       → HIDDEN_TRANSFORM 適用 → pane が見えなくなる回帰を防ぐため (VP-141 fix)。
        VP-100 γ-light: ResizeObserver が slot rect を IPC で送る (Phase 4+ で native overlay 同期に使う)。 -->
   <!-- Phase 2.5 (per-Lane instance): pane-terminal 内に lane-host を置き、
        Lane ごとに xterm.js + WebSocket instance を mount。 active な 1 つだけ display:block。 -->
@@ -261,7 +268,7 @@ body{overflow:hidden;}
        inline opacity:1 を CSS .pane{opacity:0} default より優先させ、 Frame Engine 不在 / 起動失敗時も
        少なくとも Echoes terminal は見える状態を保つ (= echoes が default visible 約束)。
        Frame Engine 起動後は inline style.opacity を engine が上書きする (lead-focus:1 / pp-focus:0)。 -->
-  <div class="pane terminal" id="pane-terminal" data-kind="terminal" data-pane-id="echoes" style="opacity:1;pointer-events:auto;background:#3a1a1a;">
+  <div class="pane terminal" id="pane-terminal" data-kind="terminal" data-frame-id="echoes" style="opacity:1;pointer-events:auto;background:#3a1a1a;">
     <div id="lane-host"></div>
     <!-- empty placeholder: どの Lane も無い時に出す -->
     <div id="lane-empty" class="lane-empty active">
@@ -271,7 +278,7 @@ body{overflow:hidden;}
       </main>
     </div>
   </div>
-  <div class="pane canvas" id="pane-canvas" data-kind="canvas" data-pane-id="canvas">
+  <div class="pane canvas" id="pane-canvas" data-kind="canvas" data-frame-id="canvas">
     <div class="pane-header">
       <div class="pane-title">
         <span class="pane-icon">📐</span>
@@ -286,7 +293,7 @@ body{overflow:hidden;}
       </main>
     </div>
   </div>
-  <div class="pane preview" id="pane-preview" data-kind="preview" data-pane-id="preview">
+  <div class="pane preview" id="pane-preview" data-kind="preview" data-frame-id="preview">
     <div class="pane-header">
       <div class="pane-title">
         <span class="pane-icon">🔍</span>
@@ -301,7 +308,7 @@ body{overflow:hidden;}
   <!-- Phase 5-A: Project-scope Stand placeholder panes (PP/GE/HP)。
        click action は Phase 3-B で導入した sidebar の vp-project-stand-row から発火、
        将来 (Phase 6+) で Canvas 実描画 / Ruby eval / MIDI 制御を bind する予定。 -->
-  <div class="pane stand" id="pane-paisley-park" data-kind="paisley_park" data-pane-id="pp">
+  <div class="pane stand" id="pane-paisley-park" data-kind="paisley_park" data-frame-id="pp">
     <div class="pane-header">
       <div class="pane-title">
         <span class="pane-icon">🧭</span>
@@ -320,7 +327,7 @@ body{overflow:hidden;}
       </div>
     </div>
   </div>
-  <div class="pane stand" id="pane-gold-experience" data-kind="gold_experience" data-pane-id="ge">
+  <div class="pane stand" id="pane-gold-experience" data-kind="gold_experience" data-frame-id="ge">
     <div class="pane-header">
       <div class="pane-title">
         <span class="pane-icon">🌿</span>
@@ -335,7 +342,7 @@ body{overflow:hidden;}
       </main>
     </div>
   </div>
-  <div class="pane stand" id="pane-hermit-purple" data-kind="hermit_purple" data-pane-id="hp">
+  <div class="pane stand" id="pane-hermit-purple" data-kind="hermit_purple" data-frame-id="hp">
     <div class="pane-header">
       <div class="pane-title">
         <span class="pane-icon">🍇</span>
@@ -351,7 +358,7 @@ body{overflow:hidden;}
     </div>
   </div>
   <!-- VP-140: 旧 active class を削除 (Frame Engine の empty Scene が opacity 制御するため)。 -->
-  <div class="pane empty" id="pane-empty" data-kind="empty" data-pane-id="empty">
+  <div class="pane empty" id="pane-empty" data-kind="empty" data-frame-id="empty">
     <main>
       <h1>No pane selected</h1>
       <p>sidebar から pane を選択してください</p>
@@ -416,7 +423,7 @@ window.vpBundleProbe = function() {
     ensureLaneDefined: typeof window.ensureLane === 'function',
     showLaneDefined: typeof window.showLane === 'function',
     laneInstancesSize: window.__vpLanes ? window.__vpLanes.size : 'no __vpLanes',
-    paneCount: document.querySelectorAll('[data-pane-id]').length,
+    paneCount: document.querySelectorAll('[data-frame-id]').length,
     paneTerminalOpacity: getComputedStyle(document.querySelector('#pane-terminal')).opacity,
   };
 };
@@ -1068,7 +1075,10 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
     document.querySelectorAll('.pane').forEach(el => {
       const isActive = (el.id === targetId);
       el.classList.toggle('active', isActive);
-      // 動的に data-pane-id を設定 (γ-light: native overlay が pane_id で照合する想定)
+      // 動的に data-pane-id を設定 (γ-light: native overlay が pane_id で照合する想定)。
+      // 注: Frame Engine の static `data-frame-id` (= "echoes" / "pp" 等の Scene lookup key) とは
+      // 別 attribute。 同名にすると Lane click でこの動的書き換えが Frame Engine の attribute を
+      // hijack して Scene lookup undefined → HIDDEN_TRANSFORM で pane が見えなくなる (VP-141 fix)。
       if (isActive && info && info.pane_id) {
         el.setAttribute('data-pane-id', info.pane_id);
       } else if (isActive) {

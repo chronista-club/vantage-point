@@ -51,7 +51,7 @@ console.info('[vp-bundle] imports resolved')
 // EditorLayer mount より前に Pane / Scene を register しておき、 DOMContentLoaded で
 // default Scene を apply する。 setActivePane bridge も window に登録 (legacy 互換)。
 //
-// data-pane-id 規約 (main_area.rs HTML 側で付与):
+// data-frame-id 規約 (main_area.rs HTML 側で付与):
 //   echoes  → pane-terminal      (Echoes Stand = lane terminal host)
 //   pp      → pane-paisley-park  (Paisley Park 🧭 / Information Router)
 //   canvas  → pane-canvas        (汎用 Canvas surface placeholder)
@@ -59,6 +59,9 @@ console.info('[vp-bundle] imports resolved')
 //   hp      → pane-hermit-purple   (Hermit Purple 🍇)
 //   preview → pane-preview        (iframe preview)
 //   empty   → pane-empty          (no selection)
+// 注: 旧 data-pane-id (main_area.rs inline JS が Lane address 等に書き換える native overlay sync 用)
+// と attribute を分離。 同名にすると Lane click で legacy 側が hijack して Frame Engine の Scene lookup が
+// undefined → HIDDEN_TRANSFORM で pane が見えなくなる回帰を起こすため (VP-141 fix)。
 const FRAME_PANE_IDS: PaneId[] = ['echoes', 'pp', 'canvas', 'ge', 'hp', 'preview', 'empty']
 const FOCUSABLE_PANE_IDS: PaneId[] = ['echoes', 'pp', 'canvas', 'ge', 'hp', 'preview']
 
@@ -125,8 +128,8 @@ const installSetActivePaneBridge = (): void => {
 const applyDefaultScene = (): void => {
   installSetActivePaneBridge()
   const ok = frameEngine.applyScene('lead-focus')
-  const paneCount = document.querySelectorAll('[data-pane-id]').length
-  // 診断 log: Frame Engine が apply された事実と、 data-pane-id 要素の存在を確認できるようにする。
+  const paneCount = document.querySelectorAll('[data-frame-id]').length
+  // 診断 log: Frame Engine が apply された事実と、 data-frame-id 要素の存在を確認できるようにする。
   // user 環境で 「画面が黒い」 等の issue 時に DevTools console で path を即時切り分けできるよう常時出力。
   console.info(
     `[frame-engine] applied default scene = lead-focus (ok=${ok}); panes detected = ${paneCount}`,
