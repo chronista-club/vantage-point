@@ -268,7 +268,7 @@ body{overflow:hidden;}
        inline opacity:1 を CSS .pane{opacity:0} default より優先させ、 Frame Engine 不在 / 起動失敗時も
        少なくとも Echoes terminal は見える状態を保つ (= echoes が default visible 約束)。
        Frame Engine 起動後は inline style.opacity を engine が上書きする (lead-focus:1 / pp-focus:0)。 -->
-  <div class="pane terminal" id="pane-terminal" data-kind="terminal" data-frame-id="echoes" style="opacity:1;pointer-events:auto;background:#3a1a1a;">
+  <div class="pane terminal" id="pane-terminal" data-kind="terminal" data-frame-id="echoes" style="opacity:1;pointer-events:auto;">
     <div id="lane-host"></div>
     <!-- empty placeholder: どの Lane も無い時に出す -->
     <div id="lane-empty" class="lane-empty active">
