@@ -79,10 +79,9 @@ description = "vp-app GUI を停止 (`vp app stop` の thin wrapper、 daemon / 
 run = "exec $HOME/.cargo/bin/vp app stop"
 
 [tasks."app"]
-description = "vp-app を build → stop (running があれば) → start (JS / Rust 編集後の reload 頻発パターン)"
+description = "vp-app を build → 既存 app stop → app start (daemon は touch しない、 daemon 再起動は `mise run daemon`)"
 run = """
 set -euo pipefail
-mise run daemon:build
 mise run app:build
 # stop は running 不在でも success にする (chain breaking 回避)
 mise run app:stop 2>/dev/null || echo "(running app なし、 stop はスキップ)"
@@ -214,12 +213,20 @@ echo "ℹ️  再起動: mise run app"
 """
 
 [tasks."daemon"]
-description = "vp binary を build → daemon を background spawn (build foreground、 spawn 即 exit)"
-depends = ["daemon:build", "daemon:start"]
+description = "vp binary を build → 既存 daemon を cascade stop → daemon を background spawn (full restart、 `mise run daemon && mise run app` で諸々再起動)"
+run = """
+set -euo pipefail
+mise run daemon:build
+# stop は running 不在でも success にする (chain breaking 回避)。
+# daemon:stop は cascade kill = daemon + SP + Lane tmux session 全停止 (= 旧 nuke 相当)。
+mise run daemon:stop 2>/dev/null || echo "(running daemon なし、 stop はスキップ)"
+mise run daemon:start
+"""
 
-# 注: `app:restart` / `daemon:restart` は意図的に提供しない。
+# 注: `app:restart` / `daemon:restart` という名前の task は意図的に提供しない。
 # user 指示「restart いらない、 build -> start -> stop が cli で回ってから」 (2026-04-30)
-# に従い、 合成は user 責任で `mise run app:stop && mise run app` のように並べる方針。
+# に従い、 top-level の `app` / `daemon` 自体が build→stop→start を内蔵する pattern に揃えた
+# (2026-05-07)。 完全 fresh start は `mise run daemon && mise run app` で 2 command。
 
 # =============================================================================
 # sys:* ─ システム管理 (個別プロセスの sniper kill 系)
