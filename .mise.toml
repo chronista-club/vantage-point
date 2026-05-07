@@ -28,115 +28,134 @@ run = "cargo test"
 # Mac 主軸が vp-app (Rust GUI: wry+tao+xterm.js+creo-ui) に移行済 (mem_1CaSjEz55wBuy3JdU14LCS)、
 # Swift app (apple/VantagePoint) も同時に削除。
 #
-# 2026-05-02 namespace 統一 (PR #253 の `vp:*` 規約 + doc 11 §8):
-#   旧 [tasks.app] / [tasks."app:stop"]              → vp:app:*
-#   旧 [tasks.daemon] / [tasks."daemon:build/stop"]  → vp:daemon:*
-#   旧 [tasks.sp-kill] / [tasks.nuke]                → vp:sys:* (nuke は vp:daemon:stop に吸収)
-# `mise run vp:app` (Rust GUI) を使うこと。
+# Naming history:
+#   2026-05-02 PR #253 で `vp:app:*` / `vp:daemon:*` / `vp:sys:*` の `vp:` prefix 規約 (doc 11 §8) を導入
+#   2026-05-07 で prefix を撤回、 `app:*` / `daemon:*` / `sys:*` に simplify (.mise.toml が project-scoped
+#     で動く以上 vp: prefix 冗長、 user 体感 `mise run vp:app` → `mise run app` の短縮を優先)
+# 2026-05-07 同時変更: cargo build → cargo install --path に切替、 binary は `~/.cargo/bin/` (PATH) に
+#   配置して codesign 付与 + shell `vp` コマンドと mise task 系で source 共通化 (dual source drift 防止)。
+# `mise run app` (Rust GUI) を使うこと。 注: `vp:stand:*` (file-based tasks at `.mise/tasks/vp/stand/`)
+# は別系統で rename 対象外。 doc 11 で確立した init script chain を物理 path 含めて維持。
 
 # =============================================================================
-# vp:app:* ─ GUI (vp-app crate: Rust + wry + xterm.js + creo-ui)
+# app:* ─ GUI (vp-app crate: Rust + wry + xterm.js + creo-ui)
 # =============================================================================
 #
 # 注意: vp-app は assets/ 以下の JS / xterm.js / main_area.rs 内 inline JS を
 #   `include_str!` で binary に baked-in する build モデル。 ソース編集後は必ず
-#   `mise run vp:app:build` (or `mise run vp:app`) を経由しないと反映されない。
+#   `mise run app:build` (or `mise run app`) を経由しないと反映されない。
 #   `vp app stop && vp app start` の relaunch だけでは古いバイナリが走り続ける。
 
-[tasks."vp:app:build"]
-description = "vp-app GUI binary を release build (assets / inline JS は include_str! で baked-in、 JS 編集後必須)"
+[tasks."app:build"]
+description = "vp-app GUI binary を release build + ~/.cargo/bin に install (codesign 付与、 PATH 経由でも fresh)"
 run = """
 set -euo pipefail
-echo "🔨 Building vp-app (release)..."
-cargo build --release -p vp-app
-echo "✅ Built: $VANTAGE_ROOT/target/release/vp-app"
+echo "🔨 Building vp-app (release) + install to ~/.cargo/bin..."
+# cargo install --path で codesign 付き binary を $CARGO_HOME/bin (PATH) に配置。
+# cp だと codesign が剥がれて macOS に kill される (CLAUDE.md feedback 参照) ため install 経由必須。
+# build artifact (target/) も副産物として生成される ─ shell の `vp` も `mise run` 系も同じ source。
+cargo install --path crates/vp-app
+echo "✅ Installed: $HOME/.cargo/bin/vp-app"
 """
 
-[tasks."vp:app:start"]
-description = "vp-app GUI を起動 (`vp app start`、 spawn + 即 exit、 vp-app + vp binary 前提)"
+[tasks."app:start"]
+description = "vp-app GUI を起動 (`vp app start`、 spawn + 即 exit、 ~/.cargo/bin/vp{,-app} 前提)"
 run = """
 set -euo pipefail
-VP_APP_BIN="$VANTAGE_ROOT/target/release/vp-app"
-VP_BIN="$VANTAGE_ROOT/target/release/vp"
-[ -x "$VP_APP_BIN" ] || { echo "❌ vp-app binary not found: $VP_APP_BIN — 先に 'mise run vp:app:build'" >&2; exit 1; }
-[ -x "$VP_BIN" ]     || { echo "❌ vp binary not found: $VP_BIN — 先に 'mise run vp:daemon:build'" >&2; exit 1; }
+VP_APP_BIN="$HOME/.cargo/bin/vp-app"
+VP_BIN="$HOME/.cargo/bin/vp"
+[ -x "$VP_APP_BIN" ] || { echo "❌ vp-app binary not found: $VP_APP_BIN — 先に 'mise run app:build'" >&2; exit 1; }
+[ -x "$VP_BIN" ]     || { echo "❌ vp binary not found: $VP_BIN — 先に 'mise run daemon:build'" >&2; exit 1; }
 
-# `vp app start` に VP_APP_BIN env を渡して target/release/vp-app を直接 spawn
-# (cargo install --path crates/vp-app の毎回挟みを回避、 dogfood loop を高速化)。
-# vp app start は spawn + 親即 exit、 mise task もここで終了する (= 「素直に起動して終了」)。
+# 2026-05-07 single source of truth 統一: `~/.cargo/bin/` の codesign 済 binary を使う
+# (旧: target/release から spawn してたが、 shell の vp と dual source で drift する罠あり)。
+# `vp app start` に VP_APP_BIN env で binary path を明示、 vp は spawn + 親即 exit。
 # ログ観察は `mise run logs` で 3 file (daemon / app tracing / app stdout) を集約 tail。
 exec env VP_APP_BIN="$VP_APP_BIN" "$VP_BIN" app start
 """
 
-[tasks."vp:app:stop"]
+[tasks."app:stop"]
 description = "vp-app GUI を停止 (`vp app stop` の thin wrapper、 daemon / tmux / SP は触らない)"
-run = "exec $VANTAGE_ROOT/target/release/vp app stop"
+run = "exec $HOME/.cargo/bin/vp app stop"
 
-[tasks."vp:app"]
-description = "vp-app を build → stop (running があれば) → start (JS / Rust 編集後の reload 頻発パターン)"
+[tasks."app"]
+description = "vp-app を build → 既存 app stop → app start (daemon は touch しない、 daemon 再起動は `mise run daemon`)"
 run = """
 set -euo pipefail
-mise run vp:daemon:build
-mise run vp:app:build
+mise run app:build
 # stop は running 不在でも success にする (chain breaking 回避)
-mise run vp:app:stop 2>/dev/null || echo "(running app なし、 stop はスキップ)"
-mise run vp:app:start
+mise run app:stop 2>/dev/null || echo "(running app なし、 stop はスキップ)"
+mise run app:start
 """
 
 # =============================================================================
-# vp:daemon:* ─ daemon binary (vp-cli = vp binary、 TheWorld + CLI subcommands)
+# daemon:* ─ daemon binary (vp-cli = vp binary、 TheWorld + CLI subcommands)
 # =============================================================================
 #
 # `vp daemon start` は SP / tmux session の owner。 stop は cascade で背負ってる
 # subsystem 全部 (SP プロセス + Lane tmux session + daemon 本体) を一括停止する。
 
-[tasks."vp:daemon:build"]
-description = "vp binary (vp-cli: TheWorld daemon + CLI commands) を release build"
+[tasks."daemon:build"]
+description = "vp binary (vp-cli: TheWorld daemon + CLI commands) を release build + ~/.cargo/bin に install"
 run = """
 set -euo pipefail
-echo "🔨 Building vp-cli (vp binary = daemon + CLI subcommands)..."
-cargo build --release -p vp-cli
-echo "✅ Built: $VANTAGE_ROOT/target/release/vp"
+echo "🔨 Building vp-cli (vp binary) + install to ~/.cargo/bin..."
+# cargo install --path で codesign 付きで $CARGO_HOME/bin に配置。
+# shell `vp ps` 等と mise task 系で source 共通化、 dual source drift 防止。
+cargo install --path crates/vp-cli
+echo "✅ Installed: $HOME/.cargo/bin/vp"
 """
 
-[tasks."vp:daemon:start"]
-description = "TheWorld daemon を foreground 起動 (`vp daemon start` blocking、 Ctrl+C で停止)"
+[tasks."daemon:start"]
+description = "TheWorld daemon を background spawn (nohup detach、 task は即 exit、 log は logs task で tail)"
 run = """
 set -euo pipefail
 LOG_DIR="${VP_LOG_DIR:-$HOME/Library/Logs/Vantage}"
 mkdir -p "$LOG_DIR"
 export VP_DAEMON_LOG_FILE="$LOG_DIR/daemon.kdl.log"
+DAEMON_STDOUT_LOG="$LOG_DIR/daemon.stdout.log"
+touch "$VP_DAEMON_LOG_FILE" "$DAEMON_STDOUT_LOG"
 
-VP_BIN="$VANTAGE_ROOT/target/release/vp"
-[ -x "$VP_BIN" ] || { echo "❌ vp binary not found: $VP_BIN — 先に 'mise run vp:daemon:build'" >&2; exit 1; }
+VP_BIN="$HOME/.cargo/bin/vp"
+[ -x "$VP_BIN" ] || { echo "❌ vp binary not found: $VP_BIN — 先に 'mise run daemon:build'" >&2; exit 1; }
 
-echo "📝 daemon log: $VP_DAEMON_LOG_FILE"
-echo "🚀 Starting daemon (vp daemon start、 foreground blocking、 Ctrl+C で停止)..."
-echo "─────────────────────────────────────────────────"
-# 既存 daemon が居る場合は user が事前に `mise run vp:daemon:stop` で止めるか、
-# `vp daemon stop && mise run vp:daemon:start` のように合成する。 restart は CLI に持たない方針
+# 既存 daemon が居る場合は user が事前に `mise run daemon:stop` で止めるか、
+# `vp daemon stop && mise run daemon:start` のように合成する。 restart は CLI に持たない方針
 # (user 指示: 「restart いらない、 build -> start -> stop が cli で回ってから」 2026-04-30)。
-exec "$VP_BIN" daemon start
+#
+# 2026-05-07 background detach 化 (旧: foreground blocking で task が log tail まで持っていた):
+#   user 指示「task 自体はバックエンドで daemon 立てたら終了するようにして欲しい」
+#   nohup + & + disown で controlling tty / parent process group から切り離して spawn、
+#   structured log は VP_DAEMON_LOG_FILE (tracing 経由 KDL)、 stdout/stderr (panic 等) は別 file。
+#   Log 観察は `mise run logs` で 3+1 file を tail。
+echo "📝 daemon log: $VP_DAEMON_LOG_FILE"
+echo "📝 daemon stdout: $DAEMON_STDOUT_LOG"
+echo "🚀 Spawning daemon (nohup + disown、 task 即 exit)..."
+nohup "$VP_BIN" daemon start </dev/null >>"$DAEMON_STDOUT_LOG" 2>&1 &
+DAEMON_PID=$!
+disown || true  # bash は内蔵、 sh だと no-op (失敗しても無視)
+echo "✅ daemon spawned (PID=$DAEMON_PID)"
+echo "ℹ️  tail: mise run logs"
 """
 
 # tmux session は SP / daemon を kill しても tmux server に保持され続けるため、
 # `tmux new-session -A -c {cwd}` で attach 経路に乗ると古い cwd を引き継ぐ罠がある。
 # (commit 1556868 で `-c` を追加したが、 fix 適用前に作成済 session には反映されない)
-# `vp:daemon:stop` は SP / daemon に加えて Lane tmux session (vp-*/hd-*/th-* prefix) も kill して、
-# 次回 `mise run vp:app` で全 lane を fix 済 path で再生成させる。
+# `daemon:stop` は SP / daemon に加えて Lane tmux session (vp-*/hd-*/th-* prefix) も kill して、
+# 次回 `mise run app` で全 lane を fix 済 path で再生成させる。
 # 対象外: TUI mode (`vp start`) が作る `{project}-vp` suffix 形式の session — `tmux.rs::session_name`
 # が `start.rs` で `-c {project_dir}` 付きで作成しており、 cwd 継承罠の罹患対象ではないため。
-[tasks."vp:daemon:stop"]
+[tasks."daemon:stop"]
 description = "TheWorld daemon + 裏で動く SP プロセス + Lane tmux session を一括停止 (旧 nuke 相当)"
 run = """
 set -euo pipefail
 
-VP_BIN="$VANTAGE_ROOT/target/release/vp"
+VP_BIN="$HOME/.cargo/bin/vp"
 
 echo "💣 Vantage Point daemon + 関連プロセス停止 (cascade kill)..."
 echo ""
 
-# ── [1/3] SP プロセスを kill (vp:sys:sp-kill 同等処理を inline 展開) ──────────
+# ── [1/3] SP プロセスを kill (sys:sp-kill 同等処理を inline 展開) ──────────
 echo "🔄 [1/3] 全 SP プロセス検出..."
 SP_PIDS=$(pgrep -f 'vp sp start' 2>/dev/null || true)
 if [ -z "$SP_PIDS" ]; then
@@ -185,31 +204,39 @@ if [ -x "$VP_BIN" ]; then
     || echo "   ℹ️  daemon は既に停止しているか、 reach 不能"
 else
   echo "   ⚠️  vp binary 不在 ($VP_BIN) — daemon stop スキップ"
-  echo "      build 済なら 'mise run vp:daemon:build' 後に再実行してください"
+  echo "      build 済なら 'mise run daemon:build' 後に再実行してください"
 fi
 echo ""
 
 echo "💥 daemon + 関連プロセス停止完了。"
-echo "ℹ️  再起動: mise run vp:app"
+echo "ℹ️  再起動: mise run app"
 """
 
-[tasks."vp:daemon"]
-description = "vp binary を build → daemon start (foreground)"
-depends = ["vp:daemon:build", "vp:daemon:start"]
+[tasks."daemon"]
+description = "vp binary を build → 既存 daemon を cascade stop → daemon を background spawn (full restart、 `mise run daemon && mise run app` で諸々再起動)"
+run = """
+set -euo pipefail
+mise run daemon:build
+# stop は running 不在でも success にする (chain breaking 回避)。
+# daemon:stop は cascade kill = daemon + SP + Lane tmux session 全停止 (= 旧 nuke 相当)。
+mise run daemon:stop 2>/dev/null || echo "(running daemon なし、 stop はスキップ)"
+mise run daemon:start
+"""
 
-# 注: `vp:app:restart` / `vp:daemon:restart` は意図的に提供しない。
+# 注: `app:restart` / `daemon:restart` という名前の task は意図的に提供しない。
 # user 指示「restart いらない、 build -> start -> stop が cli で回ってから」 (2026-04-30)
-# に従い、 合成は user 責任で `mise run vp:app:stop && mise run vp:app` のように並べる方針。
+# に従い、 top-level の `app` / `daemon` 自体が build→stop→start を内蔵する pattern に揃えた
+# (2026-05-07)。 完全 fresh start は `mise run daemon && mise run app` で 2 command。
 
 # =============================================================================
-# vp:sys:* ─ システム管理 (個別プロセスの sniper kill 系)
+# sys:* ─ システム管理 (個別プロセスの sniper kill 系)
 # =============================================================================
 #
-# `vp:daemon:stop` は cascade kill (daemon + 全 SP + tmux)、 全停止用。
-# 一方 `vp:sys:sp-kill` は SP だけ叩き直す sniper kill。 daemon は維持したまま
+# `daemon:stop` は cascade kill (daemon + 全 SP + tmux)、 全停止用。
+# 一方 `sys:sp-kill` は SP だけ叩き直す sniper kill。 daemon は維持したまま
 # binary 入替後の re-register / ghost SP cleanup に使う (daemon 再起動は重い)。
 
-[tasks."vp:sys:sp-kill"]
+[tasks."sys:sp-kill"]
 description = "全 SP (vp sp start ...) を graceful kill (daemon は維持、 ghost SP cleanup や binary 入替時)"
 run = """
 set -euo pipefail
@@ -245,15 +272,15 @@ fi
 echo "✅ SP all-kill 完了"
 echo ""
 echo "ℹ️  TheWorld が動いていれば、 expand 等で auto-spawn が走り次回 register。"
-echo "   完全 fresh start は: mise run vp:daemon:stop && mise run vp:app"
+echo "   完全 fresh start は: mise run daemon:stop && mise run app"
 """
 
 # =============================================================================
-# logs ─ daemon + vp-app の log を 3 file 同時 tail
+# logs ─ daemon + vp-app の log を 4 file 同時 tail
 # =============================================================================
 
 [tasks.logs]
-description = "Tail VP logs (daemon + app tracing + app stdout) — terminal で常時 stream 表示"
+description = "Tail VP logs (daemon + daemon stdout + app tracing + app stdout) — terminal で常時 stream 表示"
 run = """
 set -euo pipefail
 LOG_DIR="${VP_LOG_DIR:-$HOME/Library/Logs/Vantage}"
@@ -261,14 +288,15 @@ mkdir -p "$LOG_DIR"
 
 # 必要な log file が無くてもエラーにならないように先に touch
 # (新規 process が立ち上がる前に tail -F が file を見つけられるように)
-touch "$LOG_DIR/daemon.kdl.log" "$LOG_DIR/app.kdl.log" "$LOG_DIR/app.stdout.log"
+touch "$LOG_DIR/daemon.kdl.log" "$LOG_DIR/daemon.stdout.log" "$LOG_DIR/app.kdl.log" "$LOG_DIR/app.stdout.log"
 
-echo "📝 Tailing 3 files:"
-echo "   daemon.kdl.log   (TheWorld + SP)"
-echo "   app.kdl.log      (vp-app tracing)"
-echo "   app.stdout.log   (vp-app stdout/panic)"
+echo "📝 Tailing 4 files:"
+echo "   daemon.kdl.log     (TheWorld + SP tracing、 KDL structured)"
+echo "   daemon.stdout.log  (daemon stdout/stderr、 panic 等の chaotic 出力)"
+echo "   app.kdl.log        (vp-app tracing、 KDL structured)"
+echo "   app.stdout.log     (vp-app stdout/panic)"
 echo "─────────────────────────────────────────────────"
-exec tail -F "$LOG_DIR/daemon.kdl.log" "$LOG_DIR/app.kdl.log" "$LOG_DIR/app.stdout.log"
+exec tail -F "$LOG_DIR/daemon.kdl.log" "$LOG_DIR/daemon.stdout.log" "$LOG_DIR/app.kdl.log" "$LOG_DIR/app.stdout.log"
 """
 
 [tasks.win]

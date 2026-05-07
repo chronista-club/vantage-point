@@ -118,7 +118,7 @@ pub fn ensure_daemon_ready(world_url: &str) -> Result<()> {
     {
         // Phase 5-D fix: setsid(2) で 新 session leader 化 → controlling tty / parent process group
         // から完全切り離し。 これが無いと vp-app (parent) が pkill SIGTERM で死んだ時、 child の
-        // TheWorld も SIGHUP 巻き添えで死亡 → `mr vp:app` ごとに TheWorld 再起動 = sidebar の
+        // TheWorld も SIGHUP 巻き添えで死亡 → `mise run app` ごとに TheWorld 再起動 = sidebar の
         // Started time が 0sec にリセットされる bug が発生していた (2026-04-29 観測)。
         //
         // Windows は CREATE_NEW_PROCESS_GROUP + DETACHED_PROCESS で同等効果を得てる (上)。
