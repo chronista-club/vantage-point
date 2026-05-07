@@ -134,6 +134,75 @@ body{overflow:hidden;}
 #lane-empty.active{display:grid;}
 #lane-empty h1{font-weight:400;font-size:1.1rem;margin:0;}
 #lane-empty p{margin:.25rem 0 0;font-size:.85rem;}
+/* VP-141 (PR-ε-2): Pane header chrome — pane に「ヘッダ + body」 構造を持たせる共通 chrome。
+   icon + Stand 名 + breadcrumb + actions (Clear 等) を提供。 terminal pane (Echoes、 xterm.js
+   full-bleed) は header なしで除外。 .pane-header と .pane-body は両方 position:absolute なので
+   .pane.canvas/stand/empty の display:grid context から opt-out される (centering は body 側の
+   `.center` modifier で個別制御)。 */
+.pane-header{
+  position:absolute;
+  top:0;left:0;right:0;height:28px;
+  display:flex;
+  align-items:center;
+  gap:8px;
+  padding:0 10px;
+  font-size:12px;
+  background:var(--color-surface-bg-raised);
+  border-bottom:1px solid var(--color-border-subtle);
+  user-select:none;
+  -webkit-app-region:drag;
+  z-index:1;
+}
+.pane-header .pane-title{
+  flex:1;
+  display:flex;
+  align-items:center;
+  gap:6px;
+  color:var(--color-text-primary);
+  min-width:0;
+}
+.pane-header .pane-icon{flex-shrink:0;font-size:14px;}
+.pane-header .pane-name{font-weight:500;}
+.pane-header .pane-breadcrumb{color:var(--color-text-tertiary);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.pane-header .pane-actions{
+  display:flex;
+  gap:4px;
+  -webkit-app-region:no-drag;
+}
+.pane-header .pane-action-btn{
+  cursor:pointer;
+  padding:2px 8px;
+  font-size:11px;
+  background:transparent;
+  border:1px solid var(--color-border-subtle);
+  border-radius:4px;
+  color:var(--color-text-secondary);
+  font-family:inherit;
+}
+.pane-header .pane-action-btn:hover{background:var(--color-surface-bg-elevated);color:var(--color-text-primary);}
+.pane-body{
+  position:absolute;
+  top:28px;left:0;right:0;bottom:0;
+  overflow:auto;
+}
+.pane-body.center{display:grid;place-items:center;}
+.pane-body iframe{width:100%;height:100%;border:0;background:#fff;}
+/* PP markdown render 領域 (PR-ε-3 で mcp__show 経由 markdown が流れ込む rendering target) */
+.pp-content{padding:16px 20px;color:var(--color-text-primary);font-size:13px;line-height:1.6;}
+.pp-content h1{font-size:1.6rem;font-weight:500;margin:0 0 .5rem;color:var(--color-text-primary);}
+.pp-content h2{font-size:1.3rem;font-weight:500;margin:1.2rem 0 .5rem;}
+.pp-content h3{font-size:1.1rem;font-weight:500;margin:1rem 0 .4rem;}
+.pp-content p{margin:.5rem 0;color:var(--color-text-secondary);}
+.pp-content code{background:var(--color-surface-bg-raised);padding:1px 5px;border-radius:3px;font-family:var(--typography-family-mono);font-size:.9em;}
+.pp-content pre{background:var(--color-surface-bg-raised);padding:12px;border-radius:6px;overflow-x:auto;}
+.pp-content pre code{background:transparent;padding:0;}
+.pp-content a{color:var(--color-brand-primary);}
+.pp-content ul,.pp-content ol{padding-left:1.5em;margin:.5rem 0;}
+.pp-content blockquote{border-left:3px solid var(--color-brand-primary-subtle);margin:.5rem 0;padding:0 1em;color:var(--color-text-tertiary);}
+.pp-content table{border-collapse:collapse;margin:.5rem 0;}
+.pp-content th,.pp-content td{border:1px solid var(--color-border-subtle);padding:4px 8px;}
+.pp-content hr{border:0;border-top:1px solid var(--color-border-subtle);margin:1rem 0;}
+.pp-placeholder{color:var(--color-text-tertiary);font-style:italic;}
 /* VP-140: display:none/active gate 廃止、 always display:grid。 visibility は opacity (Frame Engine) が司る. */
 .pane.canvas{display:grid;place-items:center;}
 .pane.canvas main{text-align:center;}
@@ -203,37 +272,83 @@ body{overflow:hidden;}
     </div>
   </div>
   <div class="pane canvas" id="pane-canvas" data-kind="canvas" data-pane-id="canvas">
-    <main>
-      <h1>Canvas pane</h1>
-      <p>Phase 2 — <span class="brand">Creo UI mint-dark</span> を全ペイン統一で適用</p>
-    </main>
+    <div class="pane-header">
+      <div class="pane-title">
+        <span class="pane-icon">📐</span>
+        <span class="pane-name">Canvas</span>
+        <span class="pane-breadcrumb">Smart Canvas</span>
+      </div>
+    </div>
+    <div class="pane-body center">
+      <main>
+        <h1>Canvas pane</h1>
+        <p>Phase 2 — <span class="brand">Creo UI mint-dark</span> を全ペイン統一で適用</p>
+      </main>
+    </div>
   </div>
   <div class="pane preview" id="pane-preview" data-kind="preview" data-pane-id="preview">
-    <iframe id="preview-frame" src="about:blank" sandbox="allow-same-origin allow-scripts"></iframe>
+    <div class="pane-header">
+      <div class="pane-title">
+        <span class="pane-icon">🔍</span>
+        <span class="pane-name">Preview</span>
+        <span class="pane-breadcrumb" id="preview-breadcrumb">about:blank</span>
+      </div>
+    </div>
+    <div class="pane-body">
+      <iframe id="preview-frame" src="about:blank" sandbox="allow-same-origin allow-scripts"></iframe>
+    </div>
   </div>
   <!-- Phase 5-A: Project-scope Stand placeholder panes (PP/GE/HP)。
        click action は Phase 3-B で導入した sidebar の vp-project-stand-row から発火、
        将来 (Phase 6+) で Canvas 実描画 / Ruby eval / MIDI 制御を bind する予定。 -->
   <div class="pane stand" id="pane-paisley-park" data-kind="paisley_park" data-pane-id="pp">
-    <main>
-      <h1>🧭 Paisley Park</h1>
-      <p>Information Navigator — Canvas / Markdown / HTML / 画像</p>
-      <p class="sub">Phase 6+ で <span class="brand">/api/show 結合</span>、 file watch 連動、 layered Canvas を実装予定</p>
-    </main>
+    <div class="pane-header">
+      <div class="pane-title">
+        <span class="pane-icon">🧭</span>
+        <span class="pane-name">Paisley Park</span>
+        <span class="pane-breadcrumb" id="pp-breadcrumb">Information Router</span>
+      </div>
+      <div class="pane-actions">
+        <button class="pane-action-btn" data-action="clear" data-target="pp" title="Clear PP body content">Clear</button>
+      </div>
+    </div>
+    <div class="pane-body">
+      <!-- VP-141: PR-ε-3 で mcp__show 経由 markdown が流れ込む rendering target。
+           initial state は placeholder、 window.vpPP.renderPP(content) で innerHTML が差し替わる。 -->
+      <div class="pp-content" id="pp-content">
+        <p class="pp-placeholder">Information Router — markdown / HTML / 画像 を表示する surface (PR-ε-3 で mcp__show 経路から content が流れ込む)</p>
+      </div>
+    </div>
   </div>
   <div class="pane stand" id="pane-gold-experience" data-kind="gold_experience" data-pane-id="ge">
-    <main>
-      <h1>🌿 Gold Experience</h1>
-      <p>Code Runner — 動的生命注入エンジン</p>
-      <p class="sub">Phase 6+ で <span class="brand">Ruby eval / process_runner</span> 結合、 inline result preview を実装予定</p>
-    </main>
+    <div class="pane-header">
+      <div class="pane-title">
+        <span class="pane-icon">🌿</span>
+        <span class="pane-name">Gold Experience</span>
+        <span class="pane-breadcrumb">Code Runner</span>
+      </div>
+    </div>
+    <div class="pane-body center">
+      <main>
+        <p>動的生命注入エンジン</p>
+        <p class="sub">Phase 6+ で <span class="brand">Ruby eval / process_runner</span> 結合、 inline result preview を実装予定</p>
+      </main>
+    </div>
   </div>
   <div class="pane stand" id="pane-hermit-purple" data-kind="hermit_purple" data-pane-id="hp">
-    <main>
-      <h1>🍇 Hermit Purple</h1>
-      <p>External Control — MIDI / MCP / tmux</p>
-      <p class="sub">Phase 6+ で <span class="brand">MIDI lpd8 / MCP server / tmux session</span> 接続パネルを実装予定</p>
-    </main>
+    <div class="pane-header">
+      <div class="pane-title">
+        <span class="pane-icon">🍇</span>
+        <span class="pane-name">Hermit Purple</span>
+        <span class="pane-breadcrumb">External Control</span>
+      </div>
+    </div>
+    <div class="pane-body center">
+      <main>
+        <p>MIDI / MCP / tmux</p>
+        <p class="sub">Phase 6+ で <span class="brand">MIDI lpd8 / MCP server / tmux session</span> 接続パネルを実装予定</p>
+      </main>
+    </div>
   </div>
   <!-- VP-140: 旧 active class を削除 (Frame Engine の empty Scene が opacity 制御するため)。 -->
   <div class="pane empty" id="pane-empty" data-kind="empty" data-pane-id="empty">

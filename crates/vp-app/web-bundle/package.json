@@ -12,6 +12,7 @@
     "creo-ui-editor-host": "^0.4.0",
     "creo-ui-icons-web": "file:../../../../creo-ui/packages/icons-web",
     "iconify-icon": "^3.0.2",
+    "marked": "^18.0.3",
     "solid-js": "^1.9.0"
   },
   "devDependencies": {
