@@ -43,6 +43,13 @@ import { DEFAULT_SCENES, EMPTY_SCENE, generateAllFocusScenes } from './scenes'
 import { attachRenderer } from './renderer'
 import { attachKeybindings } from './keybindings'
 import { renderPP, clearPP, appendPP } from './pp'
+import {
+  connectShowWs,
+  disconnectShowWs,
+  getLanePort,
+  getShowSubscriberStatus,
+  setWantedLane,
+} from './show-subscriber'
 
 console.info('[vp-bundle] imports resolved')
 ;(window as unknown as { vpBundleStatus?: Record<string, boolean> }).vpBundleStatus!.importsResolved = true
@@ -135,7 +142,7 @@ const installSetActivePaneBridge = (): void => {
       frameEngine.applyScene('empty')
       return
     }
-    // kind=terminal: Lane 切替判定 + 保存済 Scene の restore
+    // kind=terminal: Lane 切替判定 + 保存済 Scene の restore + show-subscriber 付替
     if (info.kind === 'terminal' && info.pane_id) {
       const newLane = info.pane_id
       // Lane が変わった場合、 旧 Lane の現 Scene を save (`onSceneChange` でも save される筈だが
@@ -147,6 +154,11 @@ const installSetActivePaneBridge = (): void => {
         }
       }
       activeLaneAddress = newLane
+      // VP-142 (PR-ε-3): 新 Lane の SP port に show-subscriber を付替。 mcp__show 経由 broadcast を
+      // PP body に流すための WS 接続。 setWantedLane は registry に port があれば即 connect、 なければ
+      // wanted slot を保持して後で ensureLane wrap が race recovery で auto connect する (startup
+      // auto-select で registry 未 populate のタイミング救済)。
+      setWantedLane(newLane)
       // 保存済 Scene を restore、 初訪問 Lane は lead-focus を default にする
       const target = laneScenes.get(newLane) ?? 'lead-focus'
       frameEngine.applyScene(target)
@@ -165,6 +177,24 @@ const installSetActivePaneBridge = (): void => {
 
 // DevTools 検査用 (window.vpLaneScenes で per-Lane state を inspect 可能)
 ;(window as unknown as { vpLaneScenes: Map<string, SceneId> }).vpLaneScenes = laneScenes
+
+// DevTools 検査用 (VP-142): show-subscriber state を window 経由で inspect / 手動制御可能に。
+//   window.vpShow.status()         → { port, readyState, registrySize }
+//   window.vpShow.connect(33002)    → 任意 port に接続
+//   window.vpShow.disconnect()      → close
+;(window as unknown as {
+  vpShow: {
+    status: typeof getShowSubscriberStatus
+    connect: typeof connectShowWs
+    disconnect: typeof disconnectShowWs
+    getLanePort: typeof getLanePort
+  }
+}).vpShow = {
+  status: getShowSubscriberStatus,
+  connect: connectShowWs,
+  disconnect: disconnectShowWs,
+  getLanePort,
+}
 
 // 起動時 default Scene apply
 const applyDefaultScene = (): void => {
