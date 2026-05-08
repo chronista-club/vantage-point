@@ -23,6 +23,29 @@ use crate::capability::whitesnake::Whitesnake;
 const MAILBOX_NAMESPACE: &str = "msgbox";
 /// 永続化メッセージの key prefix（`msg/{id}`）
 const MAILBOX_KEY_PREFIX: &str = "msg/";
+
+/// Default lane segment — v1 forward-compat 用 (VP-147)
+///
+/// v3.1 syntax で lane 未指定 (`agent@vantage-point`) を受信した時の解釈先。
+/// 同 default が SP 起動時の各 Stand actor の register 先 (= lead lane) と一致する。
+pub const DEFAULT_LANE: &str = "lead";
+
+/// Inbox HashMap key を生成 (Router::boxes 用、 VP-147)
+///
+/// format: `<actor>#<lane_path>` (separator `#` は actor / lane charset 不在で collision-free)。
+/// lane が空なら `<actor>#lead` (= DEFAULT_LANE)、 multi-segment は `/` 連結。
+///
+/// 例:
+/// - `inbox_key("agent", &[])` → `"agent#lead"` (v1 forward-compat)
+/// - `inbox_key("agent", &["lead".into()])` → `"agent#lead"` (v3.1 explicit、 上と等価)
+/// - `inbox_key("agent", &["worker".into(), "objrec".into()])` → `"agent#worker/objrec"`
+pub fn inbox_key(actor: &str, lane: &[String]) -> String {
+    if lane.is_empty() {
+        format!("{}#{}", actor, DEFAULT_LANE)
+    } else {
+        format!("{}#{}", actor, lane.join("/"))
+    }
+}
 /// デフォルト TTL（48 時間、ミリ秒）
 const DEFAULT_TTL_MS: u64 = 48 * 3600 * 1000;
 /// GC スイープ間隔（ミリ秒）
@@ -625,11 +648,31 @@ impl Router {
     /// `routing_loop` を介さないため remote forward の二重ループを起こさない。
     /// 受信側で permanent 化済み（送信側 Process が永続化済み）なのでここでは ack 不要。
     pub async fn deliver_local(&self, msg: Message) -> Result<(), Error> {
+        // v3.1: msg.to を parse_address 経由で (actor, lane) に解決し、
+        // inbox_key で内部 key 引きする (= routing_loop と同 path、 VP-147)
+        let key = match parse_address(&msg.to) {
+            Ok(Address::Local { actor }) | Ok(Address::Port { actor, .. }) => {
+                inbox_key(&actor, &[])
+            }
+            Ok(Address::Project { actor, lane, .. }) => inbox_key(&actor, &lane),
+            Err(e) => {
+                tracing::debug!(
+                    "Router::deliver_local: address parse error to='{}' err={}",
+                    msg.to,
+                    e
+                );
+                return Err(Error::BoxNotFound {
+                    address: msg.to.clone(),
+                });
+            }
+        };
+
         let boxes = self.boxes.read().await;
-        let Some(tx) = boxes.get(&msg.to) else {
+        let Some(tx) = boxes.get(&key) else {
             tracing::debug!(
-                "Router::deliver_local: 宛先 '{}' が見つからない（from: {}）",
+                "Router::deliver_local: 宛先 '{}' (key={}) が見つからない（from: {}）",
                 msg.to,
+                key,
                 msg.from
             );
             return Err(Error::BoxNotFound {
@@ -757,23 +800,35 @@ impl Router {
                                 continue;
                             }
 
-                            // ローカル配信: actor 名のみで box を引く（@... は剥がす）
-                            let local_actor = match &resolved {
-                                Address::Local { actor }
-                                | Address::Port { actor, .. }
-                                | Address::Project { actor, .. } => actor.clone(),
+                            // ローカル配信: (actor, lane) で box を引く (v3.1、 VP-147)
+                            // - Address::Local / Port は lane 概念なし → lead lane 解釈
+                            // - Address::Project は lane field を直接利用 (空なら lead inject)
+                            let (local_actor, local_lane): (&str, &[String]) = match &resolved {
+                                Address::Local { actor } | Address::Port { actor, .. } => {
+                                    (actor.as_str(), &[])
+                                }
+                                Address::Project { actor, lane, .. } => {
+                                    (actor.as_str(), lane.as_slice())
+                                }
                             };
+                            let local_key = inbox_key(local_actor, local_lane);
 
                             let boxes = boxes.read().await;
-                            if let Some(tx) = boxes.get(&local_actor) {
+                            if let Some(tx) = boxes.get(&local_key) {
                                 if let Err(e) = tx.try_send(msg.clone()) {
                                     tracing::warn!(
                                         "Router: {} 宛の配信失敗: {}",
-                                        local_actor,
+                                        local_key,
                                         e
                                     );
                                 }
                             } else {
+                                // VP-147 PR-P2-1 known limitation: Worker spawn → SystemEvent::Lane(Diff::Add)
+                                // publish → spawn_msgbox_lane_lifecycle_hook の register_lane 完了
+                                // までの race window で msg を投函すると、 ここで silent drop される。
+                                // 現状 (PR-P2-1) は MCP / user 操作経由でしか Worker addr 宛は来ないため
+                                // observable bug は出ないが、 PR-P2-2 で `msg_send` が Worker addr を
+                                // 受け付けたら短時間 retry queue 等の対策を検討。
                                 tracing::debug!(
                                     "Router: 宛先 '{}' が見つからない（from: {}）",
                                     msg.to,
@@ -791,17 +846,36 @@ impl Router {
         }
     }
 
-    /// 新しい Msgbox を登録し、ハンドルを返す
+    /// 新しい Msgbox を登録し、ハンドルを返す (v1 forward-compat、 lead lane 固定)
+    ///
+    /// 内部 key は `<actor>#lead` で生成され、 v3.1 の `agent@vp` (lane 未指定) /
+    /// `agent@vp/lead` 両方の dispatch を受ける。 worker lane に register したい場合は
+    /// [`Router::register_lane`] を使う。
     pub async fn register(&self, address: impl Into<String>) -> Handle {
         let address = address.into();
+        self.register_lane_inner(&address, &[]).await
+    }
+
+    /// per-lane に Msgbox を登録 (v3.1、 VP-147)
+    ///
+    /// `lane` が空なら lead lane 扱い (= [`Router::register`] と等価)、
+    /// `["worker", "objrec"]` 等 multi-segment は worker lane の inbox 作成。
+    /// 同 actor でも lane が違えば独立 box (= cross-lane で msg は 混線しない)。
+    pub async fn register_lane(&self, actor: impl Into<String>, lane: &[String]) -> Handle {
+        let actor = actor.into();
+        self.register_lane_inner(&actor, lane).await
+    }
+
+    async fn register_lane_inner(&self, actor: &str, lane: &[String]) -> Handle {
+        let key = inbox_key(actor, lane);
         let (tx, rx) = mpsc::channel::<Message>(256);
 
-        self.boxes.write().await.insert(address.clone(), tx);
+        self.boxes.write().await.insert(key.clone(), tx);
 
-        tracing::debug!("Router: '{}' を登録", address);
+        tracing::debug!("Router: '{}' を登録 (key={})", actor, key);
 
         Handle {
-            address,
+            address: actor.to_string(),
             router_tx: self.router_tx.clone(),
             rx: Arc::new(tokio::sync::Mutex::new(rx)),
             stash: Arc::new(tokio::sync::Mutex::new(std::collections::VecDeque::new())),
@@ -852,19 +926,63 @@ impl Router {
         Ok(restored)
     }
 
-    /// Msgbox を登録解除
+    /// Msgbox を登録解除 (lead lane 固定、 v1 forward-compat)
     pub async fn unregister(&self, address: &str) {
-        if self.boxes.write().await.remove(address).is_some() {
-            tracing::debug!("Router: '{}' を登録解除", address);
+        self.unregister_lane(address, &[]).await;
+    }
+
+    /// per-lane Msgbox を登録解除 (v3.1、 VP-147)
+    pub async fn unregister_lane(&self, actor: &str, lane: &[String]) {
+        let key = inbox_key(actor, lane);
+        if self.boxes.write().await.remove(&key).is_some() {
+            tracing::debug!("Router: '{}' を登録解除 (key={})", actor, key);
         }
     }
 
-    /// 登録済みアドレス一覧を取得
+    /// 指定 lane 配下の全 actor inbox を一括登録解除 (lane delete 時用、 VP-147)
+    ///
+    /// `lane = ["worker", "objrec"]` で `<*>#worker/objrec` 形式の box を全削除。
+    /// 戻り値: 削除された box 数。
+    pub async fn unregister_all_at_lane(&self, lane: &[String]) -> usize {
+        if lane.is_empty() {
+            return 0; // lead lane の一括削除は危険なため拒否
+        }
+        let suffix = format!("#{}", lane.join("/"));
+        let mut boxes = self.boxes.write().await;
+        let before = boxes.len();
+        boxes.retain(|key, _| !key.ends_with(&suffix));
+        let removed = before - boxes.len();
+        if removed > 0 {
+            tracing::debug!(
+                "Router: lane '{}' 配下の {} 件を一括登録解除",
+                lane.join("/"),
+                removed
+            );
+        }
+        removed
+    }
+
+    /// 登録済み actor 名一覧を取得 (lead lane のみ、 v1 forward-compat)
+    ///
+    /// worker lane の actor は除外される。 全 internal key を取得するには
+    /// [`Router::inbox_keys`] を使う。 caller (broadcast / TheWorld register) の
+    /// 意味維持のため、 actor 名を suffix `#lead` で filter + strip して返す。
     pub async fn addresses(&self) -> Vec<String> {
+        let suffix = format!("#{}", DEFAULT_LANE);
+        self.boxes
+            .read()
+            .await
+            .keys()
+            .filter_map(|key| key.strip_suffix(&suffix).map(|s| s.to_string()))
+            .collect()
+    }
+
+    /// 全 internal inbox key 一覧 (= `<actor>#<lane_path>` 形式、 v3.1 debug 用)
+    pub async fn inbox_keys(&self) -> Vec<String> {
         self.boxes.read().await.keys().cloned().collect()
     }
 
-    /// 登録済みアドレス数を取得
+    /// 登録済み box 数を取得 (全 lane 合算)
     pub async fn count(&self) -> usize {
         self.boxes.read().await.len()
     }
@@ -1512,5 +1630,189 @@ mod tests {
         assert_eq!(remaining.len(), 1);
         let stored: Message = remaining[0].extract().unwrap();
         assert_eq!(stored.payload_as::<String>().unwrap(), "valid");
+    }
+
+    // =========================================================================
+    // VP-147 Phase 2: per-lane mailbox tests
+    // =========================================================================
+
+    #[test]
+    fn test_inbox_key_format() {
+        // lane 空 → default lane "lead" inject
+        assert_eq!(inbox_key("agent", &[]), "agent#lead");
+        // lane 単一 segment → そのまま
+        assert_eq!(inbox_key("agent", &["lead".to_string()]), "agent#lead");
+        assert_eq!(
+            inbox_key("notify", &["worker".to_string()]),
+            "notify#worker"
+        );
+        // multi-segment lane
+        assert_eq!(
+            inbox_key("agent", &["worker".to_string(), "objrec".to_string()]),
+            "agent#worker/objrec"
+        );
+        // wildcard actor も同 format
+        assert_eq!(inbox_key("*", &["lead".to_string()]), "*#lead");
+    }
+
+    #[tokio::test]
+    async fn test_register_lane_and_send() {
+        let router = Router::new();
+
+        // worker lane の agent inbox を register
+        let worker_handle = router
+            .register_lane("agent", &["worker".to_string(), "objrec".to_string()])
+            .await;
+        let lead_handle = router.register("agent").await;
+
+        // worker lane 宛て (v3.1 syntax)
+        let msg_to_worker = Message::new(
+            "lead-sender",
+            "agent@vantage-point/worker/objrec",
+            MessageKind::Direct,
+        )
+        .with_payload(&"to worker");
+        router.deliver_local(msg_to_worker).await.unwrap();
+
+        // lead lane 宛て (v1 syntax、 default lead inject)
+        let msg_to_lead = Message::new("worker-sender", "agent@vantage-point", MessageKind::Direct)
+            .with_payload(&"to lead");
+        router.deliver_local(msg_to_lead).await.unwrap();
+
+        // Worker handle で worker 宛のみ受信
+        let recv_worker = worker_handle.recv().await.unwrap();
+        assert_eq!(recv_worker.payload_as::<String>().unwrap(), "to worker");
+
+        // Lead handle で lead 宛のみ受信
+        let recv_lead = lead_handle.recv().await.unwrap();
+        assert_eq!(recv_lead.payload_as::<String>().unwrap(), "to lead");
+
+        router.shutdown();
+    }
+
+    #[tokio::test]
+    async fn test_v1_forward_compat_lane_implicit_eq_lead_explicit() {
+        // v1 `agent@vp` (lane 未指定) と v3.1 `agent@vp/lead` (lane 明示) が同 box に届く
+        let router = Router::new();
+        let handle = router.register("agent").await;
+
+        // v1 syntax
+        let msg_v1 =
+            Message::new("from-x", "agent@vantage-point", MessageKind::Direct).with_payload(&"v1");
+        router.deliver_local(msg_v1).await.unwrap();
+        let r1 = handle.recv().await.unwrap();
+        assert_eq!(r1.payload_as::<String>().unwrap(), "v1");
+
+        // v3.1 explicit lead (= forward-compat 等価)
+        let msg_v3 = Message::new("from-y", "agent@vantage-point/lead", MessageKind::Direct)
+            .with_payload(&"v3-lead");
+        router.deliver_local(msg_v3).await.unwrap();
+        let r2 = handle.recv().await.unwrap();
+        assert_eq!(r2.payload_as::<String>().unwrap(), "v3-lead");
+
+        router.shutdown();
+    }
+
+    #[tokio::test]
+    async fn test_lane_isolation_cross_lane_msg_not_delivered() {
+        // 同 actor で lead / worker 両方 register、 worker 宛 msg は lead box に来ない
+        let router = Router::new();
+        let lead_handle = router.register("agent").await;
+        let _worker_handle = router.register_lane("agent", &["worker".to_string()]).await;
+
+        // worker 宛 msg
+        let msg = Message::new("from", "agent@vantage-point/worker", MessageKind::Direct)
+            .with_payload(&"to worker only");
+        router.deliver_local(msg).await.unwrap();
+
+        // lead handle で recv tryout → タイムアウト (= worker に届くので lead は受信なし)
+        let lead_result =
+            tokio::time::timeout(std::time::Duration::from_millis(100), lead_handle.recv()).await;
+        assert!(
+            lead_result.is_err(),
+            "lead lane should not receive worker msg"
+        );
+
+        router.shutdown();
+    }
+
+    #[tokio::test]
+    async fn test_unregister_all_at_lane() {
+        let router = Router::new();
+        let _h1 = router
+            .register_lane("agent", &["worker".to_string(), "objrec".to_string()])
+            .await;
+        let _h2 = router
+            .register_lane("notify", &["worker".to_string(), "objrec".to_string()])
+            .await;
+        let _h3 = router.register("agent").await; // lead lane (削除対象外)
+
+        assert_eq!(router.count().await, 3);
+
+        // worker/objrec 配下を一括 unregister
+        let removed = router
+            .unregister_all_at_lane(&["worker".to_string(), "objrec".to_string()])
+            .await;
+        assert_eq!(removed, 2);
+        assert_eq!(router.count().await, 1); // lead は残る
+
+        // 残りは lead lane の agent
+        let keys = router.inbox_keys().await;
+        assert_eq!(keys, vec!["agent#lead".to_string()]);
+
+        router.shutdown();
+    }
+
+    #[tokio::test]
+    async fn test_unregister_all_at_lane_rejects_empty_lane() {
+        // lead lane 一括削除は危険なため拒否 (= lane: &[] で no-op、 戻り値 0)
+        let router = Router::new();
+        let _h1 = router.register("agent").await;
+        let _h2 = router.register("notify").await;
+
+        let removed = router.unregister_all_at_lane(&[]).await;
+        assert_eq!(removed, 0);
+        assert_eq!(router.count().await, 2);
+
+        router.shutdown();
+    }
+
+    #[tokio::test]
+    async fn test_addresses_returns_lead_actors_only() {
+        // addresses() は lead lane の actor 名のみ (= broadcast / TheWorld register caller の意味維持)
+        let router = Router::new();
+        let _lead_a = router.register("agent").await;
+        let _lead_b = router.register("notify").await;
+        let _worker_a = router.register_lane("agent", &["worker".to_string()]).await;
+
+        let mut addrs = router.addresses().await;
+        addrs.sort();
+        assert_eq!(addrs, vec!["agent".to_string(), "notify".to_string()]);
+
+        // inbox_keys は全 list
+        let mut keys = router.inbox_keys().await;
+        keys.sort();
+        assert_eq!(
+            keys,
+            vec![
+                "agent#lead".to_string(),
+                "agent#worker".to_string(),
+                "notify#lead".to_string(),
+            ]
+        );
+
+        router.shutdown();
+    }
+
+    #[tokio::test]
+    async fn test_register_lane_with_empty_lane_eq_register_default() {
+        // register_lane(actor, &[]) は register(actor) と等価 (= default lead lane)
+        let router = Router::new();
+        let _h = router.register_lane("agent", &[]).await;
+
+        let keys = router.inbox_keys().await;
+        assert_eq!(keys, vec!["agent#lead".to_string()]);
+
+        router.shutdown();
     }
 }
