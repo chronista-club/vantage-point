@@ -1190,8 +1190,11 @@ pub async fn run_world(
                 ev = lan_event_rx.recv() => {
                     match ev {
                         Some(crate::lan_discovery::LanEvent::Discovered(world)) => {
-                            // disk I/O は別 spawn_blocking task に切り出して event loop を塞がない
-                            tokio::task::spawn_blocking(move || {
+                            // VP-149 Moody Blues fix #1 (Score 82): spawn_blocking を `.await` で
+                            // serialize し、 disk I/O 中に他 event を fire しない (= file write race
+                            // 解消、 partial TOML を find_by_host 等が読む risk 排除)。 同時に Issue #2
+                            // (shutdown 後 inflight write) も event loop break で fire 停止して緩和。
+                            let _ = tokio::task::spawn_blocking(move || {
                                 let mut book = match crate::commands::lan::AddressBook::load() {
                                     Ok(b) => b,
                                     Err(e) => {
@@ -1209,10 +1212,12 @@ pub async fn run_world(
                                         e
                                     );
                                 }
-                            });
+                            })
+                            .await;
                         }
                         Some(crate::lan_discovery::LanEvent::Removed { instance_name }) => {
-                            tokio::task::spawn_blocking(move || {
+                            // VP-149 Moody Blues fix #1: 同じく `.await` で serialize
+                            let _ = tokio::task::spawn_blocking(move || {
                                 let mut book = match crate::commands::lan::AddressBook::load() {
                                     Ok(b) => b,
                                     Err(e) => {
@@ -1238,7 +1243,8 @@ pub async fn run_world(
                                         );
                                     }
                                 }
-                            });
+                            })
+                            .await;
                         }
                         None => {
                             tracing::debug!("LAN event listener: channel closed");
