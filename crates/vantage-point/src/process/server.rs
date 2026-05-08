@@ -621,6 +621,17 @@ pub async fn run(
     //         が壊れたまま user が気付かない問題の解消。
     spawn_lane_lifecycle_monitor(state.lane_pool.clone(), shutdown_token.clone());
 
+    // VP-147 Phase 2: per-lane mailbox lifecycle hook
+    //   SystemEvent::Lane(Diff::Add) 受信 → 対応 stand actor を Worker lane で register_lane
+    //   SystemEvent::Lane(Diff::Remove) 受信 → 同 lane 配下を unregister_all_at_lane で一括 cleanup
+    //   Lead lane は capabilities.rs / server.rs で既に lead lane register 済 (= forward-compat)、
+    //   この hook は **Worker lane の addr** のみ対象 (= LaneKind::Worker filter)。
+    spawn_msgbox_lane_lifecycle_hook(
+        state.capabilities.msgbox_router.clone(),
+        state.system_event_tx.subscribe(),
+        shutdown_token.clone(),
+    );
+
     // メニューバーアプリに起動完了を通知
     crate::notify::post_process_changed(port, "started");
 
@@ -1197,6 +1208,96 @@ fn spawn_lane_lifecycle_monitor(
                     "Lane lifecycle monitor: {} lane(s) marked Dead this tick",
                     transitioned
                 );
+            }
+        }
+    });
+}
+
+/// VP-147 Phase 2: per-lane mailbox lifecycle hook
+///
+/// SystemEvent::Lane(Diff::Add | Diff::Remove) を subscribe し、 Worker lane の
+/// stand actor を msgbox Router に register_lane / unregister_all_at_lane する。
+///
+/// ## design
+///
+/// - **Lead lane の hook は無し**: capabilities.rs / server.rs で既に lead lane register
+///   済 (= forward-compat、 lane: vec![] = "lead" inject)。 重複防止のため filter。
+/// - **Worker lane の actor**: `LaneInfo.stand` (例 "echoes") を actor 名として register_lane
+///   する。 spawn 成功 (= state == Running) のみ対象、 Dead は skip。
+/// - **Diff::Remove**: lane delete API endpoint が publish。 unregister_all_at_lane で
+///   同 lane 配下の全 actor inbox を一括削除 (= 1 lane = 1 stand actor の現実装でも、
+///   将来 multi-actor lane にも対応可能な generic path)。
+///
+/// ## shutdown
+///
+/// `shutdown_token.cancelled()` で graceful 終了。 broadcast::Receiver は SP shutdown で
+/// drop され、 recv() が Closed を返して loop 終了。
+fn spawn_msgbox_lane_lifecycle_hook(
+    msgbox_router: Arc<crate::capability::msgbox::Router>,
+    mut system_event_rx: tokio::sync::broadcast::Receiver<super::lanes_state::SystemEvent>,
+    shutdown: CancellationToken,
+) {
+    use super::lanes_state::{Diff, LaneAddress, LaneKind, LaneState, SystemEvent};
+
+    /// LaneAddress から lane_path Vec<String> を導出
+    fn lane_path(addr: &LaneAddress) -> Vec<String> {
+        match (&addr.kind, &addr.name) {
+            (LaneKind::Lead, _) => vec!["lead".to_string()],
+            (LaneKind::Worker, Some(name)) => vec!["worker".to_string(), name.clone()],
+            (LaneKind::Worker, None) => vec!["worker".to_string(), "unnamed".to_string()],
+        }
+    }
+
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = shutdown.cancelled() => {
+                    tracing::debug!("Msgbox lane lifecycle hook: shutdown");
+                    return;
+                }
+                ev = system_event_rx.recv() => {
+                    match ev {
+                        Ok(SystemEvent::Lane(Diff::Add { payload })) => {
+                            // Lead lane は skip (= 既存 lead register と重複防止)
+                            if matches!(payload.address.kind, LaneKind::Lead) {
+                                continue;
+                            }
+                            // Dead state は skip (spawn 失敗 = mailbox 不要)
+                            if !matches!(payload.state, LaneState::Running) {
+                                continue;
+                            }
+                            let path = lane_path(&payload.address);
+                            msgbox_router.register_lane(&payload.stand, &path).await;
+                            tracing::debug!(
+                                "Msgbox lane lifecycle hook: register_lane stand={} lane={}",
+                                payload.stand,
+                                path.join("/")
+                            );
+                        }
+                        Ok(SystemEvent::Lane(Diff::Remove { id })) => {
+                            // Lead lane の一括削除は危険のため filter (= unregister_all_at_lane も内部 reject)
+                            if matches!(id.kind, LaneKind::Lead) {
+                                continue;
+                            }
+                            let path = lane_path(&id);
+                            let removed = msgbox_router.unregister_all_at_lane(&path).await;
+                            tracing::debug!(
+                                "Msgbox lane lifecycle hook: unregister_all_at_lane lane={} removed={}",
+                                path.join("/"),
+                                removed
+                            );
+                        }
+                        Ok(_) => continue, // 他 SystemEvent は無視
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                            tracing::warn!("Msgbox lane lifecycle hook: lagged by {} events", n);
+                            continue;
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            tracing::debug!("Msgbox lane lifecycle hook: event bus closed");
+                            return;
+                        }
+                    }
+                }
             }
         }
     });
