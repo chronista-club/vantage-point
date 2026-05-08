@@ -35,7 +35,7 @@ VP-143 (#304) ship 後の 2026-05-08 dogfood で、 vantage-point/lead と creo-
 
 ```
 address  = (actor "@")? location
-actor    = [a-zA-Z0-9_-]+        // 省略時 default = "agent"
+actor    = [a-zA-Z0-9_-]+ | "*"  // 省略時 default = "agent"、 `*` は broadcast wildcard (reserved)
 location = (world "/")? project ("/" lane)?
 world    = world-segment ("." world-segment)*    // DNS-like
 project  = [a-zA-Z0-9_-]+                         // reserved: "world" = system project
