@@ -92,6 +92,15 @@ pub enum AppEvent {
     /// `sidebar_state.lanes_by_project` を walk して `session_title::resolve_title_for_cwd` を
     /// 呼び、 結果を `sidebar_state.session_titles` に diff/update + sidebar に push back する。
     ResolveSessionTitles,
+    /// VP-147 PR-P2-3: 全 lane の mailbox inbox 状況を再 resolve する周期 tick。
+    /// `spawn_lane_inbox_poller` (5s 間隔) が proxy 経由で send。 main thread は
+    /// `sidebar_state.lanes_by_project` を walk して各 lane の MessageState を build し、
+    /// `sidebar_state.lane_inboxes` に diff/update + sidebar に push back する。
+    /// Phase 2 (icon visibility のみ) では active Lane に対して placeholder MessageState
+    /// (= 0 件 default) を populate し、 sidebar UI で `.vp-message-icon` を表示するための
+    /// signal として機能。 unread_count / has_persistent / last_msg_ts の actual 値は
+    /// 後続 PR で backend peek API + Whitesnake query を実装して populate。
+    ResolveLaneInboxes,
 }
 
 /// xterm.js から IPC で送られてきた JSON メッセージを処理
