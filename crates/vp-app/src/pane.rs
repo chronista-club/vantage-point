@@ -140,7 +140,10 @@ pub struct SidebarState {
     /// で抽出して populate (`session_title` module + `session_title_poller`)。
     /// `/rename` 未実行 lane は entry なし → JS 側で branch 名 fallback。
     /// disk persist 不要 (起動時に再 resolve)、 skip_serializing で軽量化。
-    #[serde(default)]
+    #[serde(
+        default,
+        skip_serializing_if = "std::collections::HashMap::is_empty"
+    )]
     pub session_titles: std::collections::HashMap<String, String>,
 }
 
