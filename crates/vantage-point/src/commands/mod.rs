@@ -8,6 +8,7 @@ pub mod daemon;
 pub mod db;
 pub mod file;
 pub mod hd;
+pub mod lan;
 pub mod mailbox;
 #[cfg(feature = "midi")]
 pub mod midi;
