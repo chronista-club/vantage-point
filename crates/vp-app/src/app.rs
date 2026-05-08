@@ -230,7 +230,10 @@ const SIDEBAR_HTML: &str = concat!(
 
   /* Architecture v4: Lane row (Project → Lane → Stand 階層の中段) */
   /* R5 (2026-04-30): Lane 行も project block と整合的に角ばった (radius 0)。 */
-  .vp-lane-row{display:flex;align-items:center;gap:6px;padding:5px 8px 5px 14px;border-radius:0;cursor:pointer;transition:background .1s ease;font-size:12px;}
+  /* VP-143: 2 行 row。 1 行目は既存子要素 (icon/label/meta/awaiting dot/restart/delete)、
+     2 行目 (`.vp-lane-line2`) は session display name (cc `/rename` で設定された custom-title)。
+     flex-wrap で 2 行目を 100% 幅で改行、 既存 1 行目 layout は無干渉。 */
+  .vp-lane-row{display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:5px 8px 5px 14px;border-radius:0;cursor:pointer;transition:background .1s ease;font-size:12px;}
   .vp-lane-row:hover{background:var(--color-surface-bg-emphasis);}
   /* R5 (2026-04-30): active Lane (= 表示中の FirstResponder) を右端 2px の accent bar で表現。 */
   .vp-lane-row.active{background:var(--color-brand-primary-subtle);color:var(--color-brand-primary);font-weight:500;box-shadow:inset -2px 0 0 0 var(--color-brand-primary);}
@@ -267,6 +270,15 @@ const SIDEBAR_HTML: &str = concat!(
   .vp-add-worker{display:flex;align-items:center;gap:6px;padding:5px 8px 5px 14px;border-radius:var(--radius-sm,6px);cursor:pointer;color:var(--color-text-secondary);font-size:11px;transition:background .12s ease,color .12s ease;}
   .vp-add-worker:hover{background:var(--color-surface-bg-emphasis);color:var(--color-brand-primary);}
   .vp-add-worker .icon{color:var(--color-brand-primary);}
+  /* VP-143: Lane row 2 行目 (session display name)。 flex-basis:100% で改行確保、
+     1 行目より 1 段下 + dimmed font-size + tertiary color = 重み降ろした補助情報。
+     icon (18px) + gap (6px) + padding-left 14px = 38px から少し前 (= 22px) で indent、
+     row 自体の右 padding は確保しつつ ellipsis で長 title を省略する。
+     active row では brand 色寄りに、 empty placeholder ("—") は更に dim。 */
+  .vp-lane-line2{flex-basis:100%;font-size:10px;color:var(--color-text-tertiary);padding-left:22px;margin-top:-1px;line-height:1.3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:'VPMono',monospace;}
+  .vp-lane-line2.empty{opacity:0.4;}
+  .vp-lane-row.active .vp-lane-line2{color:var(--color-brand-primary);opacity:0.7;}
+
   /* Lane 行右端の awaiting_input dot (OSC 99 = cc が入力待ち時のみ表示)。
      lifecycle indicator は廃止、 「Running ↔ AwaitingInput」 の binary に絞った設計。
      pulse は載せず単色固定 = 作業中の周辺視野で控え目に「呼ばれている」 を伝える。 */
@@ -873,6 +885,24 @@ const SIDEBAR_HTML: &str = concat!(
             });
             row.appendChild(delBtn);
           }
+          // VP-143: 2 行目 = session display name (cc `/rename` で設定された custom-title)。
+          //  Rust 側 session_title_poller が 5s ごとに `~/.claude/projects/<encoded-cwd>/<latest>.jsonl`
+          //  を read、 SidebarState.session_titles[address] に store。 ここでは map から拾うだけ。
+          //  未設定 lane は dimmed "—" placeholder = /rename していないことの visual hint。
+          //  flex-wrap:wrap (.vp-lane-row) で 100% 幅 div が自動改行、 既存 1 行目に無干渉。
+          const sessionTitlesMap = (state && state.session_titles) || {};
+          const line2 = document.createElement('div');
+          line2.className = 'vp-lane-line2';
+          const customTitle = sessionTitlesMap[addr];
+          if (customTitle && customTitle.length > 0) {
+            line2.textContent = customTitle;
+            line2.title = customTitle; // tooltip で full text
+          } else {
+            line2.textContent = '—';
+            line2.classList.add('empty');
+            line2.title = '/rename で session 名を設定すると 2 行目に表示されます';
+          }
+          row.appendChild(line2);
           row.addEventListener('click', (e) => {
             e.stopPropagation();
             // Phase 5-E: Inactive Lane (pid:null) は SP 側に PtySlot が存在しない。
@@ -1971,6 +2001,46 @@ fn spawn_activity_poller(proxy: EventLoopProxy<AppEvent>) {
         });
 }
 
+/// VP-143: 5s 間隔で `AppEvent::ResolveSessionTitles` を fire する background poller。
+///
+/// task 自体は state を持たず、 ただ tick を main thread に届ける役割。 main thread の
+/// handler が `sidebar_state.lanes_by_project` を walk して
+/// `session_title::resolve_title_for_cwd` を呼び、 結果を `session_titles` map に diff/update
+/// + sidebar に push する。
+///
+/// `proxy.send_event` 失敗 (= EventLoop 終了) で task を終了する。 polling 周期は
+/// `spawn_activity_poller` と揃えた 5s (`/rename` 反映までの max latency)。 file watch
+/// (notify crate) に切り替えればリアルタイム化可能だが、 現時点は 1 lane / 1 cwd 仮定下では
+/// polling で十分 (read-only mtime check + 末尾 grep のみ、 CPU 影響 minimal)。
+fn spawn_session_title_poller(proxy: EventLoopProxy<AppEvent>) {
+    let _ = thread::Builder::new()
+        .name("session-title-poller".into())
+        .spawn(move || {
+            let rt = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt,
+                Err(e) => {
+                    tracing::warn!("session title poller tokio runtime 作成失敗: {}", e);
+                    return;
+                }
+            };
+            rt.block_on(async move {
+                let mut tick = tokio::time::interval(Duration::from_secs(5));
+                // tokio::time::interval は 1 回目即発火、 起動 burst を避けるため空打ち skip
+                tick.tick().await;
+                loop {
+                    tick.tick().await;
+                    if proxy.send_event(AppEvent::ResolveSessionTitles).is_err() {
+                        tracing::debug!("EventLoop 終了、session title poller も終了");
+                        break;
+                    }
+                }
+            });
+        });
+}
+
 /// `/api/health` + `/api/world/projects` + `/api/world/processes` を集約して
 /// `ActivitySnapshot` を組み立てる。各 endpoint 失敗時は default で穏当に通す。
 async fn collect_activity(client: &TheWorldClient) -> ActivitySnapshot {
@@ -2370,6 +2440,8 @@ pub fn run() -> anyhow::Result<()> {
     spawn_processes_fetch(event_loop.create_proxy());
     // VP-95: Activity widget の定期更新 (5s 間隔)
     spawn_activity_poller(event_loop.create_proxy());
+    // VP-143: cc session display name (custom-title) の 5s 周期 resolve
+    spawn_session_title_poller(event_loop.create_proxy());
 
     // Sidebar
     let sidebar_ipc_proxy = event_loop.create_proxy();
@@ -2500,6 +2572,50 @@ pub fn run() -> anyhow::Result<()> {
                     // 「入力待ち」 状態 = 行右端に黄 dot を表示。 active 切替で reset される。
                     sidebar_state.awaiting_input.insert(lane.clone(), true);
                     tracing::info!("osc:notification lane={} code={} unread={}", lane, code, *count);
+                    push_sidebar_state(&sidebar, &sidebar_state);
+                }
+            }
+            Event::UserEvent(AppEvent::ResolveSessionTitles) => {
+                // VP-143: 全 lane の cwd を walk → cc custom-title resolve → diff → sidebar に push。
+                //  poller (`spawn_session_title_poller`) が 5s 間隔で tick を送ってここに来る。
+                //  resolve は read-only file I/O (ディレクトリ列挙 + 末尾 grep) なので
+                //  数 lane × 数 ms 程度、 main thread blocking は無視できる範囲。
+                let mut changed = false;
+                let mut current_keys: std::collections::HashSet<String> =
+                    std::collections::HashSet::new();
+                for lanes in sidebar_state.lanes_by_project.values() {
+                    for lane in lanes {
+                        let address = lane.address.key();
+                        current_keys.insert(address.clone());
+                        let cwd = std::path::Path::new(&lane.cwd);
+                        let resolved = crate::session_title::resolve_title_for_cwd(cwd);
+                        let prev = sidebar_state.session_titles.get(&address).cloned();
+                        match (resolved, prev) {
+                            (Some(new_title), Some(old)) if old == new_title => {}
+                            (None, None) => {}
+                            (Some(new_title), _) => {
+                                sidebar_state.session_titles.insert(address, new_title);
+                                changed = true;
+                            }
+                            (None, Some(_)) => {
+                                sidebar_state.session_titles.remove(&address);
+                                changed = true;
+                            }
+                        }
+                    }
+                }
+                // 既に消えた lane の stale entry 掃除
+                let stale: Vec<String> = sidebar_state
+                    .session_titles
+                    .keys()
+                    .filter(|k| !current_keys.contains(k.as_str()))
+                    .cloned()
+                    .collect();
+                for k in stale {
+                    sidebar_state.session_titles.remove(&k);
+                    changed = true;
+                }
+                if changed {
                     push_sidebar_state(&sidebar, &sidebar_state);
                 }
             }

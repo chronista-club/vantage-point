@@ -19,6 +19,7 @@ pub mod main_area;
 pub mod menu;
 pub mod pane;
 pub mod session_state;
+pub mod session_title;
 pub mod settings;
 pub mod shell_detect;
 pub mod terminal;
