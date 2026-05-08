@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
 use crate::capability::msgbox::Message;
-use crate::capability::msgbox_registry::{ActorEntry, ResolvedAddress};
+use crate::capability::msgbox_registry::{ActorEntry, Address};
 
 /// Lookup cache の TTL（30 秒）
 const LOOKUP_CACHE_TTL: Duration = Duration::from_secs(30);
@@ -158,11 +158,16 @@ impl RemoteRoutingClient {
     }
 
     /// アドレスが local（自 Process）を指しているか判定
-    pub fn is_local(&self, resolved: &ResolvedAddress) -> bool {
+    ///
+    /// v3.1: `Address::Project { world, project, .. }` で world: Some(_) は federated remote、
+    /// world: None かつ project = self project のみ local とみなす。
+    pub fn is_local(&self, resolved: &Address) -> bool {
         match resolved {
-            ResolvedAddress::Local { .. } => true,
-            ResolvedAddress::Port { port, .. } => *port == self.local_port,
-            ResolvedAddress::Project { project, .. } => project == &self.local_project,
+            Address::Local { .. } => true,
+            Address::Port { port, .. } => *port == self.local_port,
+            Address::Project { world, project, .. } => {
+                world.is_none() && project == &self.local_project
+            }
         }
     }
 
@@ -172,20 +177,31 @@ impl RemoteRoutingClient {
     }
 
     /// Cache key を生成
-    fn cache_key(resolved: &ResolvedAddress) -> Option<String> {
+    ///
+    /// v3.1: world / lane segments を含めて cache 分離。
+    /// format: `<actor>@n[<world>/]<project>[/<lane>...]`
+    fn cache_key(resolved: &Address) -> Option<String> {
         match resolved {
-            ResolvedAddress::Local { .. } => None,
-            ResolvedAddress::Port { actor, port } => Some(format!("{}@p{}", actor, port)),
-            // PR-β-0 (VP-117): lane sub-suffix が付く場合は cache key に lane も含める。
-            // 同 project / 同 actor でも lane が違えば別 entry として cache 分離。
-            ResolvedAddress::Project {
+            Address::Local { .. } => None,
+            Address::Port { actor, port } => Some(format!("{}@p{}", actor, port)),
+            Address::Project {
                 actor,
-                lane,
+                world,
                 project,
-            } => Some(match lane {
-                Some(l) => format!("{}.{}@n{}", actor, l, project),
-                None => format!("{}@n{}", actor, project),
-            }),
+                lane,
+            } => {
+                let mut location = String::new();
+                if let Some(w) = world {
+                    location.push_str(w);
+                    location.push('/');
+                }
+                location.push_str(project);
+                for seg in lane {
+                    location.push('/');
+                    location.push_str(seg);
+                }
+                Some(format!("{}@n{}", actor, location))
+            }
         }
     }
 
@@ -211,10 +227,7 @@ impl RemoteRoutingClient {
     }
 
     /// TheWorld registry で actor を lookup（cache 経由、必要時 HTTP）
-    pub async fn lookup(
-        &self,
-        resolved: &ResolvedAddress,
-    ) -> Result<ActorEntry, RemoteRoutingError> {
+    pub async fn lookup(&self, resolved: &Address) -> Result<ActorEntry, RemoteRoutingError> {
         // 1. Cache lookup
         if let Some(key) = Self::cache_key(resolved)
             && let Some(entry) = self.cache_get(&key).await
@@ -224,22 +237,23 @@ impl RemoteRoutingClient {
 
         // 2. HTTP lookup
         let url = match resolved {
-            ResolvedAddress::Local { .. } => {
+            Address::Local { .. } => {
                 return Err(RemoteRoutingError::InvalidAddress(
                     "local address cannot be looked up remotely".to_string(),
                 ));
             }
-            // actor / project は validate 済み（[a-zA-Z0-9_.-]）で URL 安全文字のみ
-            ResolvedAddress::Port { actor, port } => {
+            // actor / project は validate 済み（[a-zA-Z0-9_-]）で URL 安全文字のみ
+            Address::Port { actor, port } => {
                 format!(
                     "{}/api/world/msgbox/lookup?actor={}&port={}",
                     self.world_base_url, actor, port
                 )
             }
-            ResolvedAddress::Project {
+            Address::Project {
                 actor,
-                lane: _, // PR-β-0 (VP-117): lane は registry-side では未対応 (Q-7 で扱う)、 lookup は actor/project のみ
+                world: _, // v3.1 federated world は Phase 3+ で resolve、 self world のみ lookup 可
                 project,
+                lane: _, // lane は registry-side では未対応 (LSCM Q-7)、 lookup は actor/project のみ
             } => {
                 format!(
                     "{}/api/world/msgbox/lookup?actor={}&project_name={}",
@@ -296,7 +310,7 @@ impl RemoteRoutingClient {
     /// 3. exponential backoff で最大 5 回リトライ
     pub async fn forward(
         &self,
-        resolved: &ResolvedAddress,
+        resolved: &Address,
         msg: Message,
     ) -> Result<(), RemoteRoutingError> {
         let entry = self.lookup(resolved).await?;
@@ -425,7 +439,7 @@ mod tests {
     #[test]
     fn test_is_local_with_local_address() {
         let client = make_client();
-        let addr = ResolvedAddress::Local {
+        let addr = Address::Local {
             actor: "agent".to_string(),
         };
         assert!(client.is_local(&addr));
@@ -434,7 +448,7 @@ mod tests {
     #[test]
     fn test_is_local_with_matching_port() {
         let client = make_client();
-        let addr = ResolvedAddress::Port {
+        let addr = Address::Port {
             actor: "agent".to_string(),
             port: 33003,
         };
@@ -444,7 +458,7 @@ mod tests {
     #[test]
     fn test_is_local_with_different_port() {
         let client = make_client();
-        let addr = ResolvedAddress::Port {
+        let addr = Address::Port {
             actor: "agent".to_string(),
             port: 33000,
         };
@@ -454,10 +468,11 @@ mod tests {
     #[test]
     fn test_is_local_with_matching_project() {
         let client = make_client();
-        let addr = ResolvedAddress::Project {
+        let addr = Address::Project {
             actor: "agent".to_string(),
-            lane: None,
+            world: None,
             project: "vantage-point".to_string(),
+            lane: vec![],
         };
         assert!(client.is_local(&addr));
     }
@@ -465,10 +480,24 @@ mod tests {
     #[test]
     fn test_is_local_with_different_project() {
         let client = make_client();
-        let addr = ResolvedAddress::Project {
+        let addr = Address::Project {
             actor: "agent".to_string(),
-            lane: None,
+            world: None,
             project: "creo-memories".to_string(),
+            lane: vec![],
+        };
+        assert!(!client.is_local(&addr));
+    }
+
+    #[test]
+    fn test_is_local_with_federated_world_is_remote() {
+        // v3.1: world: Some(_) は federated remote、 self world でも remote 扱い
+        let client = make_client();
+        let addr = Address::Project {
+            actor: "agent".to_string(),
+            world: Some("mako.chronista.club".to_string()),
+            project: "vantage-point".to_string(),
+            lane: vec!["lead".to_string()],
         };
         assert!(!client.is_local(&addr));
     }
@@ -476,7 +505,7 @@ mod tests {
     #[tokio::test]
     async fn test_lookup_local_address_returns_invalid() {
         let client = make_client();
-        let addr = ResolvedAddress::Local {
+        let addr = Address::Local {
             actor: "agent".to_string(),
         };
         let result = client.lookup(&addr).await;
@@ -506,7 +535,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_cache_key_local_returns_none() {
-        let addr = ResolvedAddress::Local {
+        let addr = Address::Local {
             actor: "agent".to_string(),
         };
         assert!(RemoteRoutingClient::cache_key(&addr).is_none());
@@ -514,7 +543,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_cache_key_port_format() {
-        let addr = ResolvedAddress::Port {
+        let addr = Address::Port {
             actor: "agent".to_string(),
             port: 33003,
         };
@@ -525,11 +554,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_cache_key_project_format() {
-        let addr = ResolvedAddress::Project {
+    async fn test_cache_key_project_format_no_lane() {
+        let addr = Address::Project {
             actor: "agent".to_string(),
-            lane: None,
+            world: None,
             project: "vantage-point".to_string(),
+            lane: vec![],
         };
         assert_eq!(
             RemoteRoutingClient::cache_key(&addr),
@@ -538,16 +568,47 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_cache_key_project_with_lane() {
-        // PR-β-0 (VP-117): lane sub-suffix が付く Project address の cache key
-        let addr = ResolvedAddress::Project {
+    async fn test_cache_key_project_with_single_lane() {
+        // v3.1: location path 形式 cache key (= `<actor>@n<project>/<lane>`)
+        let addr = Address::Project {
             actor: "pp".to_string(),
-            lane: Some("lead".to_string()),
+            world: None,
             project: "vp".to_string(),
+            lane: vec!["lead".to_string()],
         };
         assert_eq!(
             RemoteRoutingClient::cache_key(&addr),
-            Some("pp.lead@nvp".to_string())
+            Some("pp@nvp/lead".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cache_key_project_with_multilevel_lane() {
+        // v3.1: multi-level lane segments も cache key に展開
+        let addr = Address::Project {
+            actor: "agent".to_string(),
+            world: None,
+            project: "vantage-point".to_string(),
+            lane: vec!["worker".to_string(), "objrec".to_string()],
+        };
+        assert_eq!(
+            RemoteRoutingClient::cache_key(&addr),
+            Some("agent@nvantage-point/worker/objrec".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cache_key_project_with_world() {
+        // v3.1: world prefix も cache key に展開、 federated remote 区別
+        let addr = Address::Project {
+            actor: "agent".to_string(),
+            world: Some("mako.chronista.club".to_string()),
+            project: "vantage-point".to_string(),
+            lane: vec!["lead".to_string()],
+        };
+        assert_eq!(
+            RemoteRoutingClient::cache_key(&addr),
+            Some("agent@nmako.chronista.club/vantage-point/lead".to_string())
         );
     }
 
