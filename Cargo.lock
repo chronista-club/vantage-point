@@ -9265,6 +9265,7 @@ dependencies = [
  "clap",
  "crossterm",
  "dirs",
+ "flume",
  "futures",
  "glob",
  "hostname",

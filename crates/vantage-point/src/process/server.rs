@@ -1134,6 +1134,128 @@ pub async fn run_world(
         }
     };
 
+    // VP-149: daemon 起動時 1-shot LAN discover + AddressBook auto-populate (best-effort)
+    // 失敗は warn のみ (= LAN 探索不能でも World 起動継続)。
+    {
+        match tokio::task::spawn_blocking(|| crate::lan_discovery::discover(3000)).await {
+            Ok(Ok(worlds)) => {
+                if !worlds.is_empty() {
+                    let mut book = match crate::commands::lan::AddressBook::load() {
+                        Ok(b) => b,
+                        Err(e) => {
+                            tracing::warn!("AddressBook load 失敗 (auto-populate skip): {}", e);
+                            crate::commands::lan::AddressBook::default()
+                        }
+                    };
+                    for w in &worlds {
+                        // self を含める (= mdns broadcast に self も resolve される) は
+                        // alias collision で last-write-wins、 user 視点で実害なし。
+                        book.auto_upsert_from_discovered(w);
+                    }
+                    if let Err(e) = book.save() {
+                        tracing::warn!("AddressBook auto-populate save 失敗: {}", e);
+                    } else {
+                        tracing::info!(
+                            "AddressBook auto-populate: {} world(s) (1-shot discover)",
+                            worlds.len()
+                        );
+                    }
+                }
+            }
+            Ok(Err(e)) => tracing::warn!("LAN 1-shot discover 失敗: {}", e),
+            Err(e) => tracing::warn!("LAN 1-shot discover join 失敗: {}", e),
+        }
+    }
+
+    // VP-149: continuous mDNS browse 起動 (= ServiceResolved / ServiceRemoved を listen)
+    // tokio::sync::mpsc で event を bg task に流し、 AddressBook を reactive に upsert/remove。
+    // ContinuousBrowser は scope 内 (run_world 関数内) で keep alive、 graceful shutdown 後の
+    // scope exit で Drop → mDNS daemon shutdown → bg thread 終了。
+    let (lan_event_tx, mut lan_event_rx) = tokio::sync::mpsc::channel(64);
+    let _lan_browser = match crate::lan_discovery::start_continuous_browse(lan_event_tx) {
+        Ok(b) => Some(b),
+        Err(e) => {
+            tracing::warn!("mDNS continuous browse 起動失敗 (auto-add 無効化): {}", e);
+            None
+        }
+    };
+    let lan_event_shutdown = shutdown_token.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = lan_event_shutdown.cancelled() => {
+                    tracing::debug!("LAN event listener: shutdown");
+                    break;
+                }
+                ev = lan_event_rx.recv() => {
+                    match ev {
+                        Some(crate::lan_discovery::LanEvent::Discovered(world)) => {
+                            // VP-149 Moody Blues fix #1 (Score 82): spawn_blocking を `.await` で
+                            // serialize し、 disk I/O 中に他 event を fire しない (= file write race
+                            // 解消、 partial TOML を find_by_host 等が読む risk 排除)。 同時に Issue #2
+                            // (shutdown 後 inflight write) も event loop break で fire 停止して緩和。
+                            let _ = tokio::task::spawn_blocking(move || {
+                                let mut book = match crate::commands::lan::AddressBook::load() {
+                                    Ok(b) => b,
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            "AddressBook load 失敗 (auto-upsert skip): {}",
+                                            e
+                                        );
+                                        return;
+                                    }
+                                };
+                                book.auto_upsert_from_discovered(&world);
+                                if let Err(e) = book.save() {
+                                    tracing::warn!(
+                                        "AddressBook auto-upsert save 失敗: {}",
+                                        e
+                                    );
+                                }
+                            })
+                            .await;
+                        }
+                        Some(crate::lan_discovery::LanEvent::Removed { instance_name }) => {
+                            // VP-149 Moody Blues fix #1: 同じく `.await` で serialize
+                            let _ = tokio::task::spawn_blocking(move || {
+                                let mut book = match crate::commands::lan::AddressBook::load() {
+                                    Ok(b) => b,
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            "AddressBook load 失敗 (auto-remove skip): {}",
+                                            e
+                                        );
+                                        return;
+                                    }
+                                };
+                                let removed = book.auto_remove_by_instance_name(&instance_name);
+                                if removed > 0 {
+                                    if let Err(e) = book.save() {
+                                        tracing::warn!(
+                                            "AddressBook auto-remove save 失敗: {}",
+                                            e
+                                        );
+                                    } else {
+                                        tracing::info!(
+                                            "AddressBook auto-remove: instance={} removed={}",
+                                            instance_name,
+                                            removed
+                                        );
+                                    }
+                                }
+                            })
+                            .await;
+                        }
+                        None => {
+                            tracing::debug!("LAN event listener: channel closed");
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    });
+
     // Serve with graceful shutdown
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
