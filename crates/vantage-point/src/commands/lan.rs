@@ -10,9 +10,13 @@
 //! | command | 動作 |
 //! |---------|------|
 //! | `vp lan discover [--timeout 3000]` | mDNS で 同 LAN の VP world を列挙 (timeout ms) |
-//! | `vp lan add <alias> [--from-discover]` | address book に entry 追加 |
+//! | `vp lan add <alias>` | mDNS discover 結果から alias で address book に entry 追加 |
 //! | `vp lan list` | address book 内 entries 列挙 |
 //! | `vp lan remove <alias>` | address book から削除 |
+//!
+//! **manual entry mode** (= mDNS なしで host/port 直接入力) は P3-3 以降で必要に応じて
+//! 別 subcommand 化 (例: `vp lan add-manual`) する path を予定。 flag-based mode switch は
+//! clap の `bool` default_value_t 制約で fragile になるため避ける。
 //!
 //! ## address book format (`~/.config/vp/addresses.toml`)
 //!
@@ -30,7 +34,6 @@ use anyhow::{Context, Result};
 use clap::Subcommand;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::time::Duration;
 
 use crate::lan_discovery;
 
@@ -48,9 +51,6 @@ pub enum LanCommands {
     Add {
         /// alias 名 (例: "macbook-a")
         alias: String,
-        /// mDNS discover で hostname を解決して登録 (= --from-discover、 既定 ON)
-        #[arg(long, default_value_t = true)]
-        from_discover: bool,
         /// 列挙の timeout (ms、 default 3000ms)
         #[arg(long, default_value_t = 3000)]
         timeout: u64,
@@ -143,11 +143,7 @@ impl AddressBook {
 pub fn handle_lan_command(cmd: LanCommands) -> Result<()> {
     match cmd {
         LanCommands::Discover { timeout } => discover_print(timeout),
-        LanCommands::Add {
-            alias,
-            from_discover,
-            timeout,
-        } => add_entry(&alias, from_discover, timeout),
+        LanCommands::Add { alias, timeout } => add_entry(&alias, timeout),
         LanCommands::List => list_book(),
         LanCommands::Remove { alias } => remove_entry(&alias),
     }
@@ -171,12 +167,9 @@ fn discover_print(timeout_ms: u64) -> Result<()> {
     Ok(())
 }
 
-fn add_entry(alias: &str, from_discover: bool, timeout_ms: u64) -> Result<()> {
+fn add_entry(alias: &str, timeout_ms: u64) -> Result<()> {
     if alias.is_empty() {
         anyhow::bail!("alias must not be empty");
-    }
-    if !from_discover {
-        anyhow::bail!("manual entry creation は未対応 (= --from-discover で mDNS 経由のみ)");
     }
     println!(
         "LAN discover (timeout {}ms) で alias={} を解決中...",
@@ -253,12 +246,6 @@ pub async fn handle_lan_command_async(cmd: LanCommands) -> Result<()> {
     tokio::task::spawn_blocking(move || handle_lan_command(cmd))
         .await
         .with_context(|| "spawn_blocking join 失敗")?
-}
-
-// 借用警告抑制 (= Duration import は signature では未使用、 pubkey field expansion で利用予定)
-#[allow(dead_code)]
-fn _unused_duration_marker() -> Duration {
-    Duration::from_millis(0)
 }
 
 #[cfg(test)]
