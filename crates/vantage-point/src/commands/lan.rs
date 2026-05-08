@@ -150,6 +150,44 @@ impl AddressBook {
             self.worlds.push(entry);
         }
     }
+
+    /// VP-149: mDNS [`DiscoveredWorld`] から AddressEntry を導出して auto-upsert
+    ///
+    /// alias 生成 rule: instance_name (例: `macbook-a._vp._tcp.local.`) の先頭 segment
+    /// (`macbook-a`) を採用。 collision (= 同 alias の別 machine) は last-write-wins。
+    /// last_seen は呼び出し時の UTC で更新、 discovered_via = `"mDNS"` 固定。
+    pub fn auto_upsert_from_discovered(&mut self, world: &crate::lan_discovery::DiscoveredWorld) {
+        // instance_name の先頭 segment を alias 化 (例: `macbook-a._vp._tcp.local.` → `macbook-a`)
+        let alias = world
+            .instance_name
+            .split('.')
+            .next()
+            .unwrap_or(&world.instance_name)
+            .to_string();
+        if alias.is_empty() {
+            return;
+        }
+        let entry = AddressEntry {
+            alias,
+            hostname: world.hostname.trim_end_matches('.').to_string(),
+            port: world.port,
+            pubkey: world.pubkey.clone(),
+            discovered_via: "mDNS".to_string(),
+            last_seen: chrono::Utc::now().to_rfc3339(),
+        };
+        self.upsert(entry);
+    }
+
+    /// VP-149: mDNS instance_name 由来 alias で entry を削除 (= ServiceRemoved 連動)
+    ///
+    /// 戻り値: 削除した entry 数 (0 or 1)。 alias は instance_name の先頭 segment。
+    pub fn auto_remove_by_instance_name(&mut self, instance_name: &str) -> usize {
+        let alias = instance_name.split('.').next().unwrap_or(instance_name);
+        if alias.is_empty() {
+            return 0;
+        }
+        self.remove(alias)
+    }
 }
 
 /// `vp lan` subcommand handler
@@ -333,6 +371,55 @@ mod tests {
     fn address_book_path_uses_config_dir() {
         let path = AddressBook::path();
         assert!(path.ends_with("addresses.toml"));
+    }
+
+    #[test]
+    fn auto_upsert_from_discovered_uses_instance_name_segment() {
+        // VP-149: instance_name 先頭 segment が alias になる (= `macbook-a._vp._tcp.local.` → `macbook-a`)
+        let world = crate::lan_discovery::DiscoveredWorld {
+            hostname: "macbook-a.local.".to_string(),
+            instance_name: "macbook-a._vp._tcp.local.".to_string(),
+            port: 32000,
+            pubkey: "pending".to_string(),
+            version: "v3".to_string(),
+            properties: std::collections::HashMap::new(),
+        };
+        let mut book = AddressBook::default();
+        book.auto_upsert_from_discovered(&world);
+        assert_eq!(book.worlds.len(), 1);
+        let entry = &book.worlds[0];
+        assert_eq!(entry.alias, "macbook-a");
+        assert_eq!(entry.hostname, "macbook-a.local"); // 末尾 `.` trim 済
+        assert_eq!(entry.port, 32000);
+        assert_eq!(entry.discovered_via, "mDNS");
+
+        // 同 instance_name で再 upsert (= ServiceResolved 重複) は last-write-wins
+        let mut world2 = world.clone();
+        world2.port = 32100; // port 変化
+        book.auto_upsert_from_discovered(&world2);
+        assert_eq!(book.worlds.len(), 1);
+        assert_eq!(book.worlds[0].port, 32100);
+    }
+
+    #[test]
+    fn auto_remove_by_instance_name_uses_alias_segment() {
+        // VP-149: ServiceRemoved event で instance_name 由来 alias を削除
+        let mut book = AddressBook::default();
+        book.upsert(AddressEntry {
+            alias: "macbook-a".to_string(),
+            hostname: "macbook-a.local".to_string(),
+            port: 32000,
+            pubkey: "pending".to_string(),
+            discovered_via: "mDNS".to_string(),
+            last_seen: "2026-05-09T00:00:00Z".to_string(),
+        });
+        let removed = book.auto_remove_by_instance_name("macbook-a._vp._tcp.local.");
+        assert_eq!(removed, 1);
+        assert!(book.worlds.is_empty());
+
+        // 不在 instance_name は 0 返却
+        let removed = book.auto_remove_by_instance_name("nonexistent._vp._tcp.local.");
+        assert_eq!(removed, 0);
     }
 
     #[test]
