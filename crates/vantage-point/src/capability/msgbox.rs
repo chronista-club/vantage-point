@@ -823,6 +823,12 @@ impl Router {
                                     );
                                 }
                             } else {
+                                // VP-147 PR-P2-1 known limitation: Worker spawn → SystemEvent::Lane(Diff::Add)
+                                // publish → spawn_msgbox_lane_lifecycle_hook の register_lane 完了
+                                // までの race window で msg を投函すると、 ここで silent drop される。
+                                // 現状 (PR-P2-1) は MCP / user 操作経由でしか Worker addr 宛は来ないため
+                                // observable bug は出ないが、 PR-P2-2 で `msg_send` が Worker addr を
+                                // 受け付けたら短時間 retry queue 等の対策を検討。
                                 tracing::debug!(
                                     "Router: 宛先 '{}' が見つからない（from: {}）",
                                     msg.to,

@@ -945,6 +945,14 @@ async fn handle_msg_ack(
 /// 送信元（`from`）自身は除外する。宛先ごとに個別の Message を生成して
 /// `Router::deliver_local` で配信。部分失敗は `failures` に記録し、
 /// 全体としては成功レスポンスを返す（best-effort delivery）。
+///
+/// ## VP-147 PR-P2-1 scope
+///
+/// 配信対象は `addresses()` (= **lead lane の actor のみ**) に限定。 Worker lane の
+/// actor inbox (例: `agent#worker/objrec`) には届かない。 これは broadcast の意味を
+/// 「同 process 内の主たる actor 群」 に絞る意図的仕様 (= 起動 stand 群 への通知)。
+/// Worker lane への broadcast を将来必要とする場合は、 `inbox_keys()` を使う overload
+/// を別途用意する path を検討する (= 別 PR / spec doc 追記)。
 async fn handle_msg_broadcast(
     state: &AppState,
     payload: serde_json::Value,
