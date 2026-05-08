@@ -85,10 +85,11 @@ pub fn extract_custom_title(jsonl: &Path) -> Option<String> {
             Ok(v) => v,
             Err(_) => continue,
         };
-        if v.get("type").and_then(|t| t.as_str()) == Some("custom-title") {
-            if let Some(title) = v.get("customTitle").and_then(|t| t.as_str()) {
-                last_title = Some(title.to_string());
-            }
+        if v.get("type").and_then(|t| t.as_str()) != Some("custom-title") {
+            continue;
+        }
+        if let Some(title) = v.get("customTitle").and_then(|t| t.as_str()) {
+            last_title = Some(title.to_string());
         }
     }
     last_title
