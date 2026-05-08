@@ -136,6 +136,8 @@ macbook.local              → mDNS local (LAN)
 | `lane-spawn` / `sp-bootstrap` | infra reserved |
 | `*` | broadcast (special、 actor wildcard) |
 
+> **TheWorld registry visibility (VP-147 PR-P2-2)**: 全 reserved actor (`agent` / `notify` / `mcp` / `protocol`) は SP 起動時に self-process register 後、 TheWorld 中央 registry にも一括 landed する。 これにより cross-process address (例 `mcp@<other-project>` / `notify@<other-project>`) の forward が registry lookup で解決され、 silent drop は発生しない。 旧実装 (PR-P2-2 以前) では mcp/notify が registry snapshot タイミングより後に register されており、 cross-process forward が registry miss で silent drop していた dogfood gap (= `mem_1CapRAtpCpahQGn8nW2fmT` 1)。 なお `lane-spawn` / `sp-bootstrap` は infra-local actor のため TheWorld registry には登録しない (cross-process forward は将来拡張、 現在未実装)。
+
 ### reserved project
 
 | project | 役割 |
