@@ -351,12 +351,14 @@ mod tests {
 
         // 末尾 `.` なしで match
         assert_eq!(
-            book.find_by_host("macbook-a.local").map(|e| e.alias.as_str()),
+            book.find_by_host("macbook-a.local")
+                .map(|e| e.alias.as_str()),
             Some("macbook-a")
         );
         // 末尾 `.` ありでも match (= mDNS form でも OK)
         assert_eq!(
-            book.find_by_host("macbook-a.local.").map(|e| e.alias.as_str()),
+            book.find_by_host("macbook-a.local.")
+                .map(|e| e.alias.as_str()),
             Some("macbook-a")
         );
         // 不在 host は None
