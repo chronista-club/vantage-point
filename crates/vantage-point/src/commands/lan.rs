@@ -122,6 +122,19 @@ impl AddressBook {
         self.worlds.iter().find(|w| w.alias == alias)
     }
 
+    /// hostname で entry 検索 (VP-148 PR-P3-3: cross-machine forward の resolver で使用)
+    ///
+    /// v3.1 syntax の `Address::Project::world` segment (例 `macbook-a.local`) を
+    /// AddressBook の `entry.hostname` と equality match。 末尾 `.` の有無は両側で
+    /// 正規化 (= P3-2 の add_entry 時点で `trim_end_matches('.')` 済み、 caller も
+    /// 末尾 `.` 抜きで渡す前提)。
+    pub fn find_by_host(&self, host: &str) -> Option<&AddressEntry> {
+        let normalized = host.trim_end_matches('.');
+        self.worlds
+            .iter()
+            .find(|w| w.hostname.trim_end_matches('.') == normalized)
+    }
+
     /// alias で entry 削除 (戻り値: 削除した entry 数)
     pub fn remove(&mut self, alias: &str) -> usize {
         let before = self.worlds.len();
@@ -320,5 +333,35 @@ mod tests {
     fn address_book_path_uses_config_dir() {
         let path = AddressBook::path();
         assert!(path.ends_with("addresses.toml"));
+    }
+
+    #[test]
+    fn find_by_host_normalizes_trailing_dot() {
+        // VP-148 PR-P3-3: cross-machine forward の resolver path で trailing `.` 揺れを吸収。
+        // book.entry.hostname と find_by_host(host) の両方で末尾 `.` を trim して match。
+        let mut book = AddressBook::default();
+        book.upsert(AddressEntry {
+            alias: "macbook-a".to_string(),
+            hostname: "macbook-a.local".to_string(), // P3-2 の add で `.` trim 済前提
+            port: 32000,
+            pubkey: "pending".to_string(),
+            discovered_via: "mDNS".to_string(),
+            last_seen: "2026-05-09T00:00:00Z".to_string(),
+        });
+
+        // 末尾 `.` なしで match
+        assert_eq!(
+            book.find_by_host("macbook-a.local")
+                .map(|e| e.alias.as_str()),
+            Some("macbook-a")
+        );
+        // 末尾 `.` ありでも match (= mDNS form でも OK)
+        assert_eq!(
+            book.find_by_host("macbook-a.local.")
+                .map(|e| e.alias.as_str()),
+            Some("macbook-a")
+        );
+        // 不在 host は None
+        assert!(book.find_by_host("macbook-b.local").is_none());
     }
 }
