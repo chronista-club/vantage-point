@@ -81,38 +81,12 @@ pub async fn run(
         tracing::warn!("Failed to initialize capabilities: {}", e);
     }
 
-    // Msgbox Phase 3 Step 2b: TheWorld registry に actor を一括 register
-    // initialize() 後の addresses を登録対象とする
-    {
-        let addresses = capabilities.msgbox_router.addresses().await;
-        let project_name = project_name_for_remote.clone();
-        let world_port = crate::cli::WORLD_PORT;
-        tokio::spawn(async move {
-            // TheWorld 起動完了を少し待つ（ベストエフォート）
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            let failed = crate::capability::msgbox_remote::register_actors_to_world(
-                world_port,
-                &project_name,
-                port,
-                &addresses,
-            )
-            .await;
-            if failed.is_empty() {
-                tracing::info!(
-                    "Msgbox: {} 件の actor を TheWorld registry に登録 (project={}, port={})",
-                    addresses.len(),
-                    project_name,
-                    port
-                );
-            } else {
-                tracing::warn!(
-                    "Msgbox: {} 件 register 失敗（TheWorld 未起動の可能性）: {:?}",
-                    failed.len(),
-                    failed
-                );
-            }
-        });
-    }
+    // VP-147 PR-P2-2 (gap 1): TheWorld registry への actor register snapshot は
+    // 全 lead lane actor (= protocol / agent / mcp / notify) を register した後に行う。
+    // 旧実装 (= snapshot を mcp/notify register 前) では mcp/notify が registry 未登録 →
+    // cross-process `mcp@<other>` 送信が silent drop していた dogfood gap
+    // (creo memory `mem_1CapRAtpCpahQGn8nW2fmT`)。
+    // snapshot 実体は notify bridge 設定後 (= AppState 構築直前) に移動済。
 
     // Shutdown 時の TheWorld unregister（cancellation token で発火）
     {
@@ -212,6 +186,7 @@ pub async fn run(
     };
 
     // MCP 用 Msgbox ハンドルを登録（VP-24）
+    // VP-147 PR-P2-2 (gap 1): mcp / notify register は addresses() snapshot より前で実行する必要あり。
     let mcp_msgbox = capabilities.msgbox_router.register("mcp").await;
 
     // Notification ブリッジ: Msgbox "notify" → DistributedNotification（VP-24）
@@ -263,6 +238,43 @@ pub async fn run(
                         }
                     }
                 }
+            }
+        });
+    }
+
+    // VP-147 PR-P2-2 (gap 1): TheWorld registry への actor register snapshot を実行。
+    // 上の mcp / notify register が完了した後で snapshot を取るため、 4 actor 全て
+    // (protocol / agent / mcp / notify) が TheWorld registry に landed する。
+    // 旧実装ではこの snapshot を上の `register("mcp") / register("notify")` より前で取得
+    // しており、 cross-process `mcp@<other>` / `notify@<other>` 送信が silent drop
+    // (= forward 失敗 in_registry = false) していた。
+    {
+        let addresses = capabilities.msgbox_router.addresses().await;
+        let project_name = project_name_for_remote.clone();
+        let world_port = crate::cli::WORLD_PORT;
+        tokio::spawn(async move {
+            // TheWorld 起動完了を少し待つ（ベストエフォート）
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            let failed = crate::capability::msgbox_remote::register_actors_to_world(
+                world_port,
+                &project_name,
+                port,
+                &addresses,
+            )
+            .await;
+            if failed.is_empty() {
+                tracing::info!(
+                    "Msgbox: {} 件の actor を TheWorld registry に登録 (project={}, port={})",
+                    addresses.len(),
+                    project_name,
+                    port
+                );
+            } else {
+                tracing::warn!(
+                    "Msgbox: {} 件 register 失敗（TheWorld 未起動の可能性）: {:?}",
+                    failed.len(),
+                    failed
+                );
             }
         });
     }
