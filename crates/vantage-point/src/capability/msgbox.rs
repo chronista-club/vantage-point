@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{RwLock, mpsc};
 
-use crate::capability::msgbox_registry::{ResolvedAddress, parse_address};
+use crate::capability::msgbox_registry::{Address, parse_address};
 use crate::capability::msgbox_remote::RemoteRoutingClient;
 use crate::capability::whitesnake::Whitesnake;
 
@@ -535,13 +535,13 @@ impl Router {
 
     /// Remote forward 専用 worker task
     ///
-    /// routing_loop から `(ResolvedAddress, Message)` を受け取り、
+    /// routing_loop から `(Address, Message)` を受け取り、
     /// `RemoteRoutingClient::forward` を呼ぶ。
     /// unbounded で受けて routing_loop 側を絶対ブロックさせない。
     /// エラー時は warn ログのみ（persistent message は送信側で永続化済みなので
     /// 再起動で復元される設計）。
     async fn remote_forward_loop(
-        mut rx: mpsc::Receiver<(ResolvedAddress, Message)>,
+        mut rx: mpsc::Receiver<(Address, Message)>,
         client: RemoteRoutingClient,
         shutdown: tokio_util::sync::CancellationToken,
     ) {
@@ -573,7 +573,7 @@ impl Router {
 
         // Remote forward 用 bounded channel（cap=10000、メモリ無防備防止）+ worker task
         let remote_tx = remote.as_ref().map(|client| {
-            let (tx, rx) = mpsc::channel::<(ResolvedAddress, Message)>(REMOTE_FORWARD_QUEUE_CAP);
+            let (tx, rx) = mpsc::channel::<(Address, Message)>(REMOTE_FORWARD_QUEUE_CAP);
             let shutdown_remote = shutdown.clone();
             tokio::spawn(Self::remote_forward_loop(
                 rx,
@@ -693,7 +693,7 @@ impl Router {
         shutdown: tokio_util::sync::CancellationToken,
         whitesnake: Option<Whitesnake>,
         remote: Option<RemoteRoutingClient>,
-        remote_tx: Option<mpsc::Sender<(ResolvedAddress, Message)>>,
+        remote_tx: Option<mpsc::Sender<(Address, Message)>>,
     ) {
         loop {
             tokio::select! {
@@ -759,9 +759,9 @@ impl Router {
 
                             // ローカル配信: actor 名のみで box を引く（@... は剥がす）
                             let local_actor = match &resolved {
-                                ResolvedAddress::Local { actor }
-                                | ResolvedAddress::Port { actor, .. }
-                                | ResolvedAddress::Project { actor, .. } => actor.clone(),
+                                Address::Local { actor }
+                                | Address::Port { actor, .. }
+                                | Address::Project { actor, .. } => actor.clone(),
                             };
 
                             let boxes = boxes.read().await;
