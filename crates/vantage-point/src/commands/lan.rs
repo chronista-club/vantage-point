@@ -334,4 +334,32 @@ mod tests {
         let path = AddressBook::path();
         assert!(path.ends_with("addresses.toml"));
     }
+
+    #[test]
+    fn find_by_host_normalizes_trailing_dot() {
+        // VP-148 PR-P3-3: cross-machine forward の resolver path で trailing `.` 揺れを吸収。
+        // book.entry.hostname と find_by_host(host) の両方で末尾 `.` を trim して match。
+        let mut book = AddressBook::default();
+        book.upsert(AddressEntry {
+            alias: "macbook-a".to_string(),
+            hostname: "macbook-a.local".to_string(), // P3-2 の add で `.` trim 済前提
+            port: 32000,
+            pubkey: "pending".to_string(),
+            discovered_via: "mDNS".to_string(),
+            last_seen: "2026-05-09T00:00:00Z".to_string(),
+        });
+
+        // 末尾 `.` なしで match
+        assert_eq!(
+            book.find_by_host("macbook-a.local").map(|e| e.alias.as_str()),
+            Some("macbook-a")
+        );
+        // 末尾 `.` ありでも match (= mDNS form でも OK)
+        assert_eq!(
+            book.find_by_host("macbook-a.local.").map(|e| e.alias.as_str()),
+            Some("macbook-a")
+        );
+        // 不在 host は None
+        assert!(book.find_by_host("macbook-b.local").is_none());
+    }
 }
