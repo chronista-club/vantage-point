@@ -122,6 +122,19 @@ impl AddressBook {
         self.worlds.iter().find(|w| w.alias == alias)
     }
 
+    /// hostname で entry 検索 (VP-148 PR-P3-3: cross-machine forward の resolver で使用)
+    ///
+    /// v3.1 syntax の `Address::Project::world` segment (例 `macbook-a.local`) を
+    /// AddressBook の `entry.hostname` と equality match。 末尾 `.` の有無は両側で
+    /// 正規化 (= P3-2 の add_entry 時点で `trim_end_matches('.')` 済み、 caller も
+    /// 末尾 `.` 抜きで渡す前提)。
+    pub fn find_by_host(&self, host: &str) -> Option<&AddressEntry> {
+        let normalized = host.trim_end_matches('.');
+        self.worlds
+            .iter()
+            .find(|w| w.hostname.trim_end_matches('.') == normalized)
+    }
+
     /// alias で entry 削除 (戻り値: 削除した entry 数)
     pub fn remove(&mut self, alias: &str) -> usize {
         let before = self.worlds.len();

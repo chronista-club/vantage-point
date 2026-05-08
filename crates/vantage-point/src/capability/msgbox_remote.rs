@@ -305,14 +305,27 @@ impl RemoteRoutingClient {
 
     /// 解決済みアドレスにメッセージを forward（retry 付き）
     ///
-    /// 1. TheWorld で lookup（cache）→ ActorEntry
-    /// 2. msg.to を actor 名のみ、msg.from を `actor@local_project` に正規化
-    /// 3. exponential backoff で最大 5 回リトライ
+    /// 1. **same-machine** (`Address::Project { world: None, .. }` 等): TheWorld で lookup
+    ///    （cache）→ ActorEntry → `http_forward("[::1]", entry.port, ...)` で local HTTP
+    /// 2. **cross-machine LAN** (VP-148 PR-P3-3、 `Address::Project { world: Some(host), .. }`):
+    ///    AddressBook (= `~/.config/vp/addresses.toml`) で `host` を hostname lookup →
+    ///    `http_forward(entry.hostname, entry.port, ...)` で cross-machine HTTP forward
+    /// 3. msg.to を actor 名のみ、msg.from を `actor@local_project` に正規化
+    /// 4. exponential backoff で最大 5 回リトライ
     pub async fn forward(
         &self,
         resolved: &Address,
         msg: Message,
     ) -> Result<(), RemoteRoutingError> {
+        // VP-148 PR-P3-3: world: Some(host) の federated address は AddressBook lookup 経路へ
+        if let Address::Project {
+            world: Some(host), ..
+        } = resolved
+        {
+            return self.forward_cross_machine(host, resolved, msg).await;
+        }
+
+        // same-machine (= 既存 path): TheWorld registry lookup → http_forward localhost
         let entry = self.lookup(resolved).await?;
         let target_port = entry.port;
         let target_project = entry.project_name.clone();
@@ -329,7 +342,7 @@ impl RemoteRoutingClient {
         let mut delay = Duration::from_secs(1);
         let mut last_err: Option<String> = None;
         for attempt in 0..FORWARD_MAX_RETRIES {
-            match http_forward(target_port, &normalized).await {
+            match http_forward("[::1]", target_port, &normalized).await {
                 Ok(()) => {
                     if attempt > 0 {
                         tracing::debug!(
@@ -349,6 +362,88 @@ impl RemoteRoutingClient {
                         FORWARD_MAX_RETRIES,
                         normalized.to,
                         target_project,
+                        reason
+                    );
+                    last_err = Some(reason);
+                    if attempt < FORWARD_MAX_RETRIES - 1 {
+                        tokio::time::sleep(delay).await;
+                        delay = (delay * 2).min(Duration::from_secs(16));
+                    }
+                }
+            }
+        }
+
+        Err(RemoteRoutingError::ForwardFailed {
+            port: target_port,
+            reason: last_err.unwrap_or_else(|| "unknown".to_string()),
+        })
+    }
+
+    /// VP-148 PR-P3-3: cross-machine LAN forward (= AddressBook lookup + cross-machine HTTP)
+    ///
+    /// `host` は v3.1 syntax の world segment (例 `macbook-a.local`、 dot 必須)。
+    /// AddressBook の hostname と equality match で entry 取得、 hostname:port に HTTP POST。
+    /// hub query (= dot 含む FQDN で `.local` 以外) は Phase 4+ で別 path、 本 PR では
+    /// AddressBook miss 時に `ActorNotFound` エラーで返却。
+    async fn forward_cross_machine(
+        &self,
+        host: &str,
+        resolved: &Address,
+        msg: Message,
+    ) -> Result<(), RemoteRoutingError> {
+        // AddressBook を毎回 disk read (cache は後続 PR で追加)
+        let book = crate::commands::lan::AddressBook::load()
+            .map_err(|e| RemoteRoutingError::LookupFailed(format!("address book load: {}", e)))?;
+        let entry = book
+            .find_by_host(host)
+            .ok_or_else(|| RemoteRoutingError::ActorNotFound {
+                actor: format!(
+                    "{} (cross-machine host '{}' not in address book、 `vp lan add` で登録要)",
+                    resolved.actor_or_unknown(),
+                    host
+                ),
+            })?;
+        let target_host = entry.hostname.clone();
+        let target_port = entry.port;
+
+        let actor_only = resolved.actor_or_unknown().to_string();
+        let mut normalized = msg.clone();
+        normalized.to = actor_only;
+        normalized.from = self.normalize_from(&normalized.from).await;
+
+        // 既存 same-machine path と同じ exponential backoff
+        let mut delay = Duration::from_secs(1);
+        let mut last_err: Option<String> = None;
+        for attempt in 0..FORWARD_MAX_RETRIES {
+            match http_forward(&target_host, target_port, &normalized).await {
+                Ok(()) => {
+                    if attempt > 0 {
+                        tracing::debug!(
+                            "Router: cross-machine forward 成功 (retry {}) to={} via {}:{}",
+                            attempt + 1,
+                            normalized.to,
+                            target_host,
+                            target_port
+                        );
+                    } else {
+                        tracing::debug!(
+                            "Router: cross-machine forward to={} via {}:{} ok",
+                            normalized.to,
+                            target_host,
+                            target_port
+                        );
+                    }
+                    return Ok(());
+                }
+                Err(e) => {
+                    let reason = e.to_string();
+                    tracing::warn!(
+                        "Router: cross-machine forward 試行 {}/{} 失敗 to={} host={} port={} reason={}",
+                        attempt + 1,
+                        FORWARD_MAX_RETRIES,
+                        normalized.to,
+                        target_host,
+                        target_port,
                         reason
                     );
                     last_err = Some(reason);
@@ -401,8 +496,14 @@ impl RemoteRoutingClient {
 }
 
 /// HTTP fallback で remote_deliver を呼ぶ（Step 2 暫定 — Step 2b で Unison QUIC へ）
-async fn http_forward(target_port: u16, msg: &Message) -> anyhow::Result<()> {
-    let url = format!("http://[::1]:{}/api/msgbox/remote_deliver", target_port);
+///
+/// VP-148 PR-P3-3: `target_host` 引数で cross-machine forward に対応 (= 既存 same-machine
+/// caller は `"[::1]"` を渡す、 LAN cross-machine caller は AddressBook の hostname を渡す)。
+async fn http_forward(target_host: &str, target_port: u16, msg: &Message) -> anyhow::Result<()> {
+    let url = format!(
+        "http://{}:{}/api/msgbox/remote_deliver",
+        target_host, target_port
+    );
     let mut req = reqwest::Client::builder()
         .timeout(Duration::from_secs(3))
         .build()?
