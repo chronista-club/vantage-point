@@ -241,6 +241,11 @@ const SIDEBAR_HTML: &str = concat!(
      Active/Inactive 概念は Project 集約だが、 個別行も視覚的に区別する。 italic で「待機中」感を出す。 */
   .vp-lane-row.inactive{color:color-mix(in oklch, var(--color-text-secondary), transparent 45%);font-style:italic;}
   .vp-lane-row.inactive .vp-stand-icon{opacity:0.55;}
+  /* VP-147 PR-P2-3: mailbox message icon (Echoes icon の右隣に配置) */
+  /*   未読なし (= default) は薄い tertiary、 未読あり (= unread class) で brand-primary 強調 */
+  .vp-lane-row .vp-message-icon{font-size:12px;color:var(--color-text-tertiary);opacity:0.55;cursor:default;}
+  .vp-lane-row .vp-message-icon-unread{color:var(--color-brand-primary);opacity:1;}
+  .vp-lane-row.inactive .vp-message-icon{opacity:0.35;}
   .vp-lane-row.inactive .worker-meta{opacity:0.7;}
   /* Phase 5-C polish: var(--typography-family-icon) は specificity で .nf-icon を上書きするため
      direct 'VPMono' 宣言に固定。 width:18px は Lane row レイアウト固有なので保持。 */
@@ -801,6 +806,22 @@ const SIDEBAR_HTML: &str = concat!(
           const awaitingMap = (state && state.awaiting_input) || {};
           const isAwaiting = !!awaitingMap[addr];
           row.appendChild(standIcon);
+          // VP-147 PR-P2-3: Echoes icon の右隣に mailbox message icon を配置。
+          //  state.lane_inboxes[addr] (= MessageState) が存在する Lane (= mailbox infra が
+          //  active) で表示。 unread_count > 0 で `ph:envelope-fill` (注目色)、 0 で
+          //  `ph:envelope` (薄い tertiary)。 click は Phase 2 では tooltip のみ (= future
+          //  msg detail panel)。 entry 不在 lane (= mailbox 未登録 / 死) では非表示。
+          const inboxesMap = (state && state.lane_inboxes) || {};
+          const inboxState = inboxesMap[addr];
+          if (inboxState) {
+            const msgIcon = document.createElement('iconify-icon');
+            const unread = (inboxState.unread_count | 0);
+            msgIcon.className = 'icon vp-message-icon' + (unread > 0 ? ' vp-message-icon-unread' : '');
+            msgIcon.setAttribute('icon', unread > 0 ? 'ph:envelope-fill' : 'ph:envelope');
+            // tooltip: mailbox address (sidebar lane label と統合、 v3.1 syntax 想定)
+            msgIcon.title = 'mailbox: ' + addr + (unread > 0 ? ' (' + unread + ' unread)' : '');
+            row.appendChild(msgIcon);
+          }
           row.appendChild(label);
           // Phase 5-D: Worker のみ git 状態 subtitle (branch · ahead/behind · dirty/merged)
           if (isWorker && lane.worker_status) {
@@ -2041,6 +2062,41 @@ fn spawn_session_title_poller(proxy: EventLoopProxy<AppEvent>) {
         });
 }
 
+/// VP-147 PR-P2-3: 5s 間隔で `AppEvent::ResolveLaneInboxes` を fire する background poller。
+///
+/// `spawn_session_title_poller` と同 pattern (tokio current_thread runtime + interval tick)。
+/// main thread が `sidebar_state.lanes_by_project` を walk して各 lane の MessageState を
+/// build し、 sidebar に push back する trigger となる。 Phase 2 PR-P2-3 では default 値の
+/// placeholder を populate し、 sidebar UI で `.vp-message-icon` 表示の signal として動く。
+/// 後続 PR で backend peek API + Whitesnake query を実装して actual 値を populate する。
+fn spawn_lane_inbox_poller(proxy: EventLoopProxy<AppEvent>) {
+    let _ = thread::Builder::new()
+        .name("lane-inbox-poller".into())
+        .spawn(move || {
+            let rt = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt,
+                Err(e) => {
+                    tracing::warn!("lane inbox poller tokio runtime 作成失敗: {}", e);
+                    return;
+                }
+            };
+            rt.block_on(async move {
+                let mut tick = tokio::time::interval(Duration::from_secs(5));
+                tick.tick().await;
+                loop {
+                    tick.tick().await;
+                    if proxy.send_event(AppEvent::ResolveLaneInboxes).is_err() {
+                        tracing::debug!("EventLoop 終了、lane inbox poller も終了");
+                        break;
+                    }
+                }
+            });
+        });
+}
+
 /// `/api/health` + `/api/world/projects` + `/api/world/processes` を集約して
 /// `ActivitySnapshot` を組み立てる。各 endpoint 失敗時は default で穏当に通す。
 async fn collect_activity(client: &TheWorldClient) -> ActivitySnapshot {
@@ -2442,6 +2498,8 @@ pub fn run() -> anyhow::Result<()> {
     spawn_activity_poller(event_loop.create_proxy());
     // VP-143: cc session display name (custom-title) の 5s 周期 resolve
     spawn_session_title_poller(event_loop.create_proxy());
+    // VP-147 PR-P2-3: per-Lane mailbox inbox 状況の 5s 周期 resolve (sidebar message icon 用 signal)
+    spawn_lane_inbox_poller(event_loop.create_proxy());
 
     // Sidebar
     let sidebar_ipc_proxy = event_loop.create_proxy();
@@ -2613,6 +2671,46 @@ pub fn run() -> anyhow::Result<()> {
                     .collect();
                 for k in stale {
                     sidebar_state.session_titles.remove(&k);
+                    changed = true;
+                }
+                if changed {
+                    push_sidebar_state(&sidebar, &sidebar_state);
+                }
+            }
+            Event::UserEvent(AppEvent::ResolveLaneInboxes) => {
+                // VP-147 PR-P2-3: 全 lane の mailbox inbox 状況を resolve → sidebar に push。
+                //  poller (`spawn_lane_inbox_poller`) が 5s 間隔で tick を送ってここに来る。
+                //  Phase 2 (icon visibility のみ) では default MessageState を populate して
+                //  sidebar UI で `.vp-message-icon` 表示の signal とする。 backend peek API
+                //  + Whitesnake query は後続 PR で実装、 actual 値で MessageState を populate。
+                use crate::pane::MessageState;
+                let mut changed = false;
+                let mut current_keys: std::collections::HashSet<String> =
+                    std::collections::HashSet::new();
+                for lanes in sidebar_state.lanes_by_project.values() {
+                    for lane in lanes {
+                        let address = lane.address.key();
+                        current_keys.insert(address.clone());
+                        // Phase 2 placeholder: default MessageState (= unread_count 0、 has_persistent false)
+                        // 既存 entry が無い (= 初回 tick or 新規 lane) 場合のみ insert、 上書きしない。
+                        // 後続 PR で backend peek API を叩いて actual 値で update する。
+                        if let std::collections::hash_map::Entry::Vacant(e) =
+                            sidebar_state.lane_inboxes.entry(address)
+                        {
+                            e.insert(MessageState::default());
+                            changed = true;
+                        }
+                    }
+                }
+                // 既に消えた lane の stale entry 掃除
+                let stale: Vec<String> = sidebar_state
+                    .lane_inboxes
+                    .keys()
+                    .filter(|k| !current_keys.contains(k.as_str()))
+                    .cloned()
+                    .collect();
+                for k in stale {
+                    sidebar_state.lane_inboxes.remove(&k);
                     changed = true;
                 }
                 if changed {
@@ -3419,18 +3517,19 @@ mod sidebar_html_tests {
 
     /// HTML サイズが「font binary 誤 embedded の早期検知 tripwire」 (< 220KB) に収まる。
     ///
-    /// WKWebView の実 hard limit は数 MB 単位なので 220KB に hard 制限の意味はない。
+    /// WKWebView の実 hard limit は数 MB 単位なので 221KB に hard 制限の意味はない。
     /// 「font binary (1〜数 MB) が誤って HTML に inline されたら即超える」 という defensive
     /// tripwire として保守的サイズ。 PR #228 で sidebar 機能 (Inactive Worker dim、 Add
     /// Worker UI、 disk-scan merge 等) が legitimate に増加 → 200KB から 210KB に緩和
     /// (2026-04-30)。 VP-128 Phase 2 で context menu + delete dialog 追加 (+7KB) →
-    /// 210KB から 220KB に緩和 (2026-05-06)。 sidebar HTML 別 file 化 (include_bytes! 経由)
-    /// は別 sprint で。
+    /// 210KB から 220KB に緩和 (2026-05-06)。 VP-147 PR-P2-3 で sidebar message icon
+    /// (mailbox visibility) 追加 (+~1KB) → 220KB から 221KB に緩和 (2026-05-08)。
+    /// sidebar HTML 別 file 化 (include_bytes! 経由) は別 sprint で。
     #[test]
     fn html_size_under_wkwebview_limit() {
         let size = SIDEBAR_HTML.len();
         assert!(
-            size < 220_000,
+            size < 221_000,
             "SIDEBAR_HTML size {} bytes exceeds WKWebView safe range — \
              check that no font binary got embedded in HTML",
             size

@@ -142,6 +142,37 @@ pub struct SidebarState {
     /// disk persist 不要 (起動時に再 resolve)、 skip_serializing で軽量化。
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub session_titles: std::collections::HashMap<String, String>,
+    /// VP-147 PR-P2-3: per-Lane の mailbox inbox 状況。
+    /// Key: Lane address (Display 形 `"<project>/lead"`)、 Value: [`MessageState`]。
+    /// `spawn_lane_inbox_poller` (5s 間隔) が `AppEvent::ResolveLaneInboxes` を発火、
+    /// main thread が active Lane に対して MessageState を populate する。
+    /// JS 側は entry が存在する Lane に `.vp-message-icon` を render (Echoes icon の右隣)。
+    /// disk persist 不要、 skip_serializing で軽量化。
+    /// Phase 2 PR-P2-3 では unread_count / has_persistent / last_msg_ts は default 値、
+    /// icon visibility のみ用途。 actual peek 値は後続 PR で backend API 経由で populate。
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub lane_inboxes: std::collections::HashMap<String, MessageState>,
+}
+
+/// per-Lane mailbox inbox の summary state (VP-147 PR-P2-3)
+///
+/// sidebar UI で `.vp-message-icon` 表示と tooltip rendering に使う minimal struct。
+/// Phase 2 PR-P2-3 (icon visibility) では default 値で populate、 actual 値は後続 PR で
+/// backend peek API (`Router::inbox_state(actor, lane)`) を実装して populate する。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MessageState {
+    /// 未読 message 数 (= inbox queue 内の未消費 msg count)
+    /// Phase 2 PR-P2-3 では default 0、 後続 PR で backend counter から populate。
+    #[serde(default)]
+    pub unread_count: u32,
+    /// 永続化メッセージの存在 (= Whitesnake に persist された未消費 msg があるか)
+    /// Phase 2 PR-P2-3 では default false、 後続 PR で Whitesnake query から populate。
+    #[serde(default)]
+    pub has_persistent: bool,
+    /// 最新 msg の timestamp (ISO 8601、 Display 用)
+    /// Phase 2 PR-P2-3 では default None、 後続 PR で history tracker から populate。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_msg_ts: Option<String>,
 }
 
 /// Phase 5-A: Project-scope Stand の active selection (sidebar の row click で発火)
