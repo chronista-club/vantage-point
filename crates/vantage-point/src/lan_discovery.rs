@@ -112,9 +112,11 @@ pub fn announce(
         properties,
     )?
     .enable_addr_auto();
+    // Moody Blues fix #1 (Score 78): full_name は ServiceInfo が内部で escape する fullname を
+    // 採用する (= 手動 format で `.` escape を漏らすと unregister 時 NotFound になる潜在 bug)。
+    let full_name = info.get_fullname().to_string();
     daemon.register(info)?;
 
-    let full_name = format!("{}.{}", instance_name, SERVICE_TYPE);
     tracing::info!(
         "mDNS announce: instance={} host={} port={} pubkey={}",
         instance_name,
@@ -127,9 +129,12 @@ pub fn announce(
 
 /// 同 LAN 上の VP world を `timeout_ms` 以内に列挙
 ///
-/// blocking call。 `mdns-sd` の `browse` で query を broadcast、 `ServiceResolved` event を
-/// 集約して [`DiscoveredWorld`] list を返す。 重複 entry (= 同 instance_name) は最後の値に
-/// 上書きされる。
+/// **blocking call** (= `recv_timeout` loop)。 async context (tokio runtime) から
+/// 直接呼ぶと worker thread を block するため、 `tokio::task::spawn_blocking` で
+/// wrap して呼ぶこと。 同期 caller (= P3-2 CLI、 std thread) からは直接 OK。
+///
+/// `mdns-sd` の `browse` で query を broadcast、 `ServiceResolved` event を集約して
+/// [`DiscoveredWorld`] list を返す。 重複 entry (= 同 instance_name) は最後の値に上書きされる。
 pub fn discover(timeout_ms: u64) -> Result<Vec<DiscoveredWorld>, mdns_sd::Error> {
     let daemon = ServiceDaemon::new()?;
     let receiver = daemon.browse(SERVICE_TYPE)?;
