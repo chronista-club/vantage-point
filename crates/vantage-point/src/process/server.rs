@@ -1110,6 +1110,30 @@ pub async fn run_world(
         shutdown_for_signal.cancel();
     });
 
+    // VP-148 PR-P3-1: mDNS で `_vp._tcp.local.` を announce、 同 LAN 上の他 VP world に可視化。
+    // instance_name は hostname 由来で衝突回避、 port は World API port。 pubkey は P3-4 で
+    // Ed25519 fingerprint に置換、 現状は placeholder。 戻り値の MdnsAnnouncer は serve 終了
+    // (= graceful shutdown) で scope exit、 Drop で自動 deregister + daemon shutdown。
+    let mdns_instance_name = hostname::get()
+        .ok()
+        .and_then(|h| h.into_string().ok())
+        .map(|h| h.trim_end_matches(".local").to_string())
+        .unwrap_or_else(|| format!("vp-world-{}", port));
+    let _mdns_announcer = match crate::lan_discovery::announce(
+        &mdns_instance_name,
+        port,
+        crate::lan_discovery::PUBKEY_PLACEHOLDER,
+    ) {
+        Ok(a) => Some(a),
+        Err(e) => {
+            tracing::warn!(
+                "mDNS announce 失敗 (LAN discovery 不能、 World 起動継続): {}",
+                e
+            );
+            None
+        }
+    };
+
     // Serve with graceful shutdown
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
@@ -1117,6 +1141,10 @@ pub async fn run_world(
             tracing::info!("World graceful shutdown initiated");
         })
         .await?;
+
+    // VP-148 PR-P3-1: graceful shutdown 後、 _mdns_announcer が drop されて deregister。
+    // explicit drop なしでも OK だが、 順序を明示するため log だけ出す。
+    tracing::debug!("mDNS announcer dropping (deregister via Drop trait)");
 
     // クリーンアップ
     health_monitor.abort();

@@ -21,6 +21,7 @@ pub mod creo;
 pub mod daemon;
 pub mod discovery;
 pub mod file_watcher;
+pub mod lan_discovery;
 pub mod mcp;
 #[cfg(feature = "midi")]
 pub mod midi;
