@@ -2693,7 +2693,10 @@ pub fn run() -> anyhow::Result<()> {
                         current_keys.insert(address.clone());
                         // Phase 2 placeholder: default MessageState (= unread_count 0、 has_persistent false)
                         // 既存 entry が無い (= 初回 tick or 新規 lane) 場合のみ insert、 上書きしない。
-                        // 後続 PR で backend peek API を叩いて actual 値で update する。
+                        // TODO 後続 PR (Phase 2.5): backend peek API を叩いて actual 値で update。
+                        //   `Vacant` ガードを `entry().and_modify(|s| *s = fetched).or_insert_with(...)`
+                        //   に書き換えて、 既存 entry の `unread_count` 等を refresh する。 現状 (Phase 2)
+                        //   は actual 値が無いので Vacant のみ insert で sufficient (icon visibility のみ)。
                         if let std::collections::hash_map::Entry::Vacant(e) =
                             sidebar_state.lane_inboxes.entry(address)
                         {
@@ -2851,6 +2854,9 @@ pub fn run() -> anyhow::Result<()> {
                 for addr in &removed_addrs {
                     tracing::info!("Lane removed (LanesLoaded diff): {}", addr);
                     lane_js::remove_lane(&main_view, addr);
+                    // VP-147 PR-P2-3 Moody Blues fix #1: lane delete 検出時に lane_inboxes
+                    // も即時 cleanup (= 5s polling tick 待たずに stale state 解消)。
+                    sidebar_state.lane_inboxes.remove(addr);
                 }
                 sidebar_state.lanes_by_project.insert(process_path, lanes);
                 // Phase 2.5: per-Lane instance — このプロジェクトの SP port を引いて
