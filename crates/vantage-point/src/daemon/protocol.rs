@@ -208,6 +208,58 @@ pub struct HealthResponse {
 }
 
 // =============================================================================
+// world-process Channel (VP-154 PR-2)
+// =============================================================================
+
+/// VP-154 PR-2: Process lifecycle event (= World が SP の register/unregister を broadcast)
+///
+/// World 内側 hub の data plane を Unison Topic 経由で expose するための event 型。
+/// Daemon の registry channel handler が SP register/unregister を受信したタイミングで、
+/// `DaemonState.process_lifecycle_tx` に publish。 "world-process" channel の
+/// subscribe handler が broadcast::Receiver から取り出して client に send_event で push。
+///
+/// ## Topic semantics (= 将来 TopicRouter migration の予定)
+///
+/// 現状は wire 上の serde tag (= `kind: "add" | "remove"`) と project_path で区別。
+/// 将来的には `world/process/state/<project>` (retained) + `world/process/event` (transient)
+/// の Topic 名で SP の TopicRouter と対称化予定 (= 別 PR scope)。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ProcessLifecycleEvent {
+    /// SP が register された (= 新 Process が World 配下に加わった)
+    Add {
+        /// 正規化済 project path (= HashMap key と同じ form)
+        project_path: String,
+        /// 表示用 project name (例: `creo-memories`)
+        project_name: String,
+        /// SP の HTTP/QUIC port (例: 33000)
+        port: u16,
+        /// SP プロセス PID
+        pid: u32,
+    },
+    /// SP が unregister された (= QUIC 切断 or 明示 unregister)
+    Remove {
+        /// 正規化済 project path
+        project_path: String,
+    },
+}
+
+/// VP-154 PR-2: Process snapshot 1 entry (= "world-process" list method の応答 payload)
+///
+/// 既存 `RunningProcess` の wire 公開版。 内部 path 型 (PathBuf) を String 化して serde_json
+/// で safe に network 越しに送れる形にする。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProcessSnapshot {
+    pub project_path: String,
+    pub project_name: String,
+    pub port: u16,
+    pub pid: u32,
+    /// tmux session 名 (= SP register 時に渡された場合のみ Some)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tmux_session: Option<String>,
+}
+
+// =============================================================================
 // デフォルト値関数
 // =============================================================================
 
@@ -356,5 +408,70 @@ mod tests {
         let deserialized: KillPaneRequest = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.session_id, "my-session");
         assert_eq!(deserialized.pane_id, 42);
+    }
+
+    #[test]
+    fn test_process_lifecycle_event_add_serialize() {
+        // VP-154 PR-2: Add variant の wire 形 (= snake_case tag "add" + project_path/name/port/pid)
+        let event = ProcessLifecycleEvent::Add {
+            project_path: "/Users/x/projects/creo".to_string(),
+            project_name: "creo-memories".to_string(),
+            port: 33000,
+            pid: 12345,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"kind\":\"add\""), "got: {}", json);
+        assert!(
+            json.contains("\"project_name\":\"creo-memories\""),
+            "got: {}",
+            json
+        );
+        assert!(json.contains("\"port\":33000"), "got: {}", json);
+
+        let restored: ProcessLifecycleEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored, event);
+    }
+
+    #[test]
+    fn test_process_lifecycle_event_remove_serialize() {
+        // VP-154 PR-2: Remove variant は project_path のみ (= 切断検出経路でも publish される)
+        let event = ProcessLifecycleEvent::Remove {
+            project_path: "/Users/x/projects/creo".to_string(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"kind\":\"remove\""), "got: {}", json);
+        assert!(!json.contains("project_name"), "got: {}", json);
+
+        let restored: ProcessLifecycleEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored, event);
+    }
+
+    #[test]
+    fn test_process_snapshot_serialize_with_tmux() {
+        let snap = ProcessSnapshot {
+            project_path: "/x".to_string(),
+            project_name: "vp".to_string(),
+            port: 33002,
+            pid: 99,
+            tmux_session: Some("vp-session".to_string()),
+        };
+        let json = serde_json::to_string(&snap).unwrap();
+        assert!(json.contains("tmux_session"), "got: {}", json);
+        let restored: ProcessSnapshot = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored, snap);
+    }
+
+    #[test]
+    fn test_process_snapshot_omits_tmux_when_none() {
+        // skip_serializing_if で None 時は wire に出さない (= tmux_session field 不在)
+        let snap = ProcessSnapshot {
+            project_path: "/x".to_string(),
+            project_name: "vp".to_string(),
+            port: 33002,
+            pid: 99,
+            tmux_session: None,
+        };
+        let json = serde_json::to_string(&snap).unwrap();
+        assert!(!json.contains("tmux_session"), "got: {}", json);
     }
 }
