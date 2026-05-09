@@ -315,6 +315,11 @@ pub struct LanePool {
     /// `Mutex` wrap は PtySlot が Send-only (内部 Box<dyn Write+Send> 等) で Sync でないため、
     /// AppState が `Arc<RwLock<LanePool>>` で thread-shared に必要
     pty_slots: HashMap<LaneAddress, std::sync::Mutex<crate::daemon::pty_slot::PtySlot>>,
+    /// Stage 1 (ADR-0001): 各 Lane の Rust 側 alacritty Term<T> attach。
+    /// pty_slots と lifecycle 同期: with_lead で spawn、 remove で drop abort。
+    /// task は spawn_blocking で 1 Lane = 1 task、 broadcast::Receiver を消費。
+    /// MVP: Lead Lane のみ attach。 Worker spawn 経路 (insert_pty_slot) は別 PR で配線予定。
+    term_attaches: HashMap<LaneAddress, crate::terminal::term_attach::TermAttach>,
 }
 
 impl std::fmt::Debug for LanePool {
@@ -357,7 +362,7 @@ impl LanePool {
         // Phase 5-D: spawn_with_fallback で `claude --continue` 早期 exit 時に空 args で retry。
         // PR-D: cwd は cmd.cwd (install root) に集約、 引数からは削除。
         let (state, pid) = match crate::process::stand_spawner::spawn_with_fallback(&cmd, 80, 24) {
-            Ok((slot, _rx)) => {
+            Ok((slot, term_rx)) => {
                 let pid = slot.pid();
                 tracing::info!(
                     "Lane spawned: addr={} stand={} program={} args={:?} pid={}",
@@ -369,6 +374,12 @@ impl LanePool {
                 );
                 pool.pty_slots
                     .insert(addr.clone(), std::sync::Mutex::new(slot));
+                // Stage 1 (ADR-0001): Rust 側 alacritty Term<T> attach を起動。
+                // term_rx は spawn_with_fallback の戻り値 (= broadcast::channel 作成と同時の
+                // initial_rx)、 reader_task が start する前に subscribe 済 = race フリー。
+                let term_attach =
+                    crate::terminal::term_attach::TermAttach::spawn(term_rx, 80, 24);
+                pool.term_attaches.insert(addr.clone(), term_attach);
                 (LaneState::Running, Some(pid))
             }
             Err(e) => {
@@ -454,6 +465,9 @@ impl LanePool {
     pub fn remove(&mut self, addr: &LaneAddress) -> Option<LaneInfo> {
         // Phase 4-A: PtySlot も一緒に drop (= child kill 経由でプロセス停止)
         // PtySlot::Drop が child.kill() + child.wait() を呼ぶので zombie 防止。
+        // Stage 1 (ADR-0001): TermAttach も同期 drop (JoinHandle::abort で task 終了)。
+        // 順序: term_attaches → pty_slots → lanes (broadcast::Sender は pty_slots が保持)。
+        self.term_attaches.remove(addr);
         self.pty_slots.remove(addr);
         self.lanes.remove(addr)
     }
@@ -644,6 +658,7 @@ impl LanePool {
     }
 
     /// 既存 Lane の PtySlot を resize する。
+    /// Stage 1 (ADR-0001): TermAttach も並走 resize (= alacritty Term<T> grid を同期)。
     pub fn resize_lane(&self, addr: &LaneAddress, cols: u16, rows: u16) -> anyhow::Result<()> {
         let slot_mutex = self
             .pty_slots
@@ -652,7 +667,12 @@ impl LanePool {
         let slot = slot_mutex
             .lock()
             .map_err(|_| anyhow::anyhow!("PtySlot mutex poisoned: {}", addr))?;
-        slot.resize(cols, rows)
+        slot.resize(cols, rows)?;
+        // attach 不在 (= spawn 失敗 / 未配線 Worker 経路) は静かに skip
+        if let Some(term_attach) = self.term_attaches.get(addr) {
+            term_attach.resize(cols, rows);
+        }
+        Ok(())
     }
 }
 
