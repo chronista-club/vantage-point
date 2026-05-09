@@ -414,6 +414,12 @@ impl RemoteRoutingClient {
         let world_port = entry.port; // remote TheWorld daemon port (= 32000)
 
         // hop 2: remote TheWorld に project + actor を query して SP port を取得
+        //
+        // Moody Blues fix #2 (Score 77): hop 2 は **1-shot 3s timeout** で retry なし、
+        // hop 3 (= http_forward retry loop) と非対称。 remote TheWorld が 起動中 / GC pause
+        // 等で一時不応答だと、 sender が即 LookupFailed / ActorNotFound で fail する。
+        // dogfood 段階では許容、 dogfood で実害 (= short outage で msg lost) が出たら別 PR で
+        // 簡易 retry (max 3 回、 1s/2s backoff) を hop 2 にも追加する path 残し。
         let remote_world_url = format!("http://{}:{}", target_host, world_port);
         let sp_entry = lookup_via_world_url(&remote_world_url, resolved).await?;
         let sp_port = sp_entry.port;
@@ -533,11 +539,15 @@ async fn lookup_via_world_url(
                 "local address cannot be looked up via remote world".to_string(),
             ));
         }
-        Address::Port { actor, port } => {
-            format!(
-                "{}/api/world/msgbox/lookup?actor={}&port={}",
-                world_base_url, actor, port
-            )
+        Address::Port { .. } => {
+            // Moody Blues fix #1 (Score 78): Port form の `port` field は sender 機視点の
+            // ローカル port 番号、 remote machine 上の registry では同 port が別 process / 不在の
+            // 可能性が高い。 cross-machine context で port lookup は意味的に成立しないため
+            // fail-fast (= silent な semantics 違反より明示的 error)。
+            return Err(RemoteRoutingError::InvalidAddress(
+                "Port form address cannot be looked up via remote world (port is sender-local)"
+                    .to_string(),
+            ));
         }
         Address::Project { actor, project, .. } => {
             format!(
