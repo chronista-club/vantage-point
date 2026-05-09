@@ -8,6 +8,7 @@
 //! request() メソッドでリクエスト/レスポンスを行う。
 
 use anyhow::{Context, Result};
+use unison::network::MessageType;
 use unison::{ProtocolClient, UnisonChannel};
 
 use super::protocol::*;
@@ -19,10 +20,11 @@ pub const DAEMON_QUIC_PORT: u16 = 32000;
 
 /// Daemon への Unison チャネルクライアント
 ///
-/// 3つの永続チャネルを保持し、用途別にリクエストをルーティングする:
+/// 4つの永続チャネルを保持し、用途別にリクエストをルーティングする:
 /// - session_ch: セッション作成・一覧・アタッチ・デタッチ
 /// - terminal_ch: ペイン作成・入出力・リサイズ・終了
 /// - system_ch: ヘルスチェック・シャットダウン
+/// - world_process_ch: VP-154 PR-2 — Process lifecycle (list / subscribe)
 pub struct DaemonClient {
     /// Session チャネル（セッション作成・一覧・アタッチ・デタッチ）
     session_ch: UnisonChannel,
@@ -30,6 +32,9 @@ pub struct DaemonClient {
     terminal_ch: UnisonChannel,
     /// System チャネル（ヘルスチェック・シャットダウン）
     system_ch: UnisonChannel,
+    /// VP-154 PR-2: world-process チャネル（Process snapshot / lifecycle stream）
+    /// open 失敗時は None (= TheWorld が古い binary で channel 不在のとき silent fallback)。
+    world_process_ch: Option<UnisonChannel>,
     /// 接続先アドレス（表示・デバッグ用に保持）
     addr: String,
 }
@@ -61,11 +66,24 @@ impl DaemonClient {
                         .open_channel("system")
                         .await
                         .map_err(|e| anyhow::anyhow!("system チャネルオープン失敗: {}", e))?;
+                    // VP-154 PR-2: world-process は best-effort オープン (= 古い daemon で
+                    // channel 不在なら None で fallback、 list/subscribe 呼び出し時 error 化)。
+                    let world_process_ch = match client.open_channel("world-process").await {
+                        Ok(ch) => Some(ch),
+                        Err(e) => {
+                            tracing::debug!(
+                                "world-process チャネル不在 (古い daemon バイナリ?): {}",
+                                e
+                            );
+                            None
+                        }
+                    };
 
                     return Ok(Self {
                         session_ch,
                         terminal_ch,
                         system_ch,
+                        world_process_ch,
                         addr,
                     });
                 }
@@ -300,6 +318,71 @@ impl DaemonClient {
     /// 接続先アドレスを取得する
     pub fn addr(&self) -> &str {
         &self.addr
+    }
+
+    // =========================================================================
+    // VP-154 PR-2: world-process 操作
+    // =========================================================================
+
+    /// world-process.list — 現在の Process snapshot を取得する。
+    ///
+    /// 古い daemon バイナリで channel 不在なら error。 caller は `vp daemon stop && start`
+    /// でバイナリ更新を促すか、 `/api/health` の stands field に fallback する。
+    pub async fn world_processes_list(&self) -> Result<Vec<ProcessSnapshot>> {
+        let ch = self.world_process_ch.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("world-process チャネル不在 (= daemon バイナリが古い、 PR-2 未反映)")
+        })?;
+        let resp = ch
+            .request("list", serde_json::json!({}))
+            .await
+            .map_err(|e| anyhow::anyhow!("world-process.list 失敗: {}", e))?;
+        let processes: Vec<ProcessSnapshot> = serde_json::from_value(resp["processes"].clone())
+            .context("world-process.list レスポンスの processes パースに失敗")?;
+        Ok(processes)
+    }
+
+    /// world-process.subscribe — 現在の subscriber stream を確立し、 lifecycle event を
+    /// `recv()` で取り出すための reference を返す。
+    ///
+    /// caller は返された channel reference に対して `recv().await` を loop で呼んで
+    /// `ProcessLifecycleEvent` を取得する。 channel 不在は error。
+    /// subscribe ack は内部で 1 回 request() で確認、 失敗時は error。
+    pub async fn world_processes_subscribe(&self) -> Result<&UnisonChannel> {
+        let ch = self.world_process_ch.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("world-process チャネル不在 (= daemon バイナリが古い、 PR-2 未反映)")
+        })?;
+        ch.request("subscribe", serde_json::json!({}))
+            .await
+            .map_err(|e| anyhow::anyhow!("world-process.subscribe 失敗: {}", e))?;
+        Ok(ch)
+    }
+
+    /// subscribe stream から次の lifecycle event を取得する helper。
+    ///
+    /// `recv()` は internal の Event queue から ProtocolMessage を取り出し、
+    /// method = "event" で来た payload を `ProcessLifecycleEvent` に decode する。
+    /// 想定外の method (= 別 event 種別) は warn + skip する design (= 将来 拡張可能性)。
+    pub async fn world_processes_recv_event(ch: &UnisonChannel) -> Result<ProcessLifecycleEvent> {
+        loop {
+            let msg = ch
+                .recv()
+                .await
+                .map_err(|e| anyhow::anyhow!("world-process recv 失敗: {}", e))?;
+            if msg.msg_type != MessageType::Event {
+                tracing::debug!("world-process 想定外 msg_type を skip: {:?}", msg.msg_type);
+                continue;
+            }
+            if msg.method != "event" {
+                tracing::warn!("world-process 想定外 event method を skip: {}", msg.method);
+                continue;
+            }
+            let payload = msg
+                .payload_as_value()
+                .map_err(|e| anyhow::anyhow!("event payload パース失敗: {}", e))?;
+            let event: ProcessLifecycleEvent =
+                serde_json::from_value(payload).context("ProcessLifecycleEvent decode に失敗")?;
+            return Ok(event);
+        }
     }
 }
 

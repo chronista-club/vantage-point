@@ -42,6 +42,15 @@ pub enum DaemonCommands {
     Stop,
     /// TheWorld の状態確認
     Status,
+    /// VP-154 PR-2.5: world-process channel 経由で Process snapshot / lifecycle を観察
+    ///
+    /// `vp daemon processes` で list (= snapshot 1 回出力)、 `--watch` で subscribe stream
+    /// に切り替えて register/unregister/disconnect を realtime に表示する。 dogfood debug 用。
+    Processes {
+        /// snapshot のみ表示せず、 lifecycle event を realtime stream する
+        #[arg(long)]
+        watch: bool,
+    },
 }
 
 /// `vp daemon` (= `vp world`) を実行
@@ -53,6 +62,7 @@ pub fn execute(cmd: DaemonCommands) -> Result<()> {
         DaemonCommands::Start { port } => start(port),
         DaemonCommands::Stop => stop(),
         DaemonCommands::Status => status(),
+        DaemonCommands::Processes { watch } => processes(watch),
     }
 }
 
@@ -107,6 +117,76 @@ fn stop() -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// VP-154 PR-2.5: `vp daemon processes [--watch]` 実装。
+///
+/// world-process Unison channel に接続して list (snapshot) を出力。 `--watch` 時は subscribe に
+/// 進んで `register/unregister/disconnect` の lifecycle event を Ctrl-C まで stream する。
+fn processes(watch: bool) -> Result<()> {
+    use crate::daemon::client::DaemonClient;
+    use crate::daemon::protocol::ProcessLifecycleEvent;
+
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(async move {
+        let client = DaemonClient::connect(crate::cli::WORLD_PORT, 3)
+            .await
+            .map_err(|e| {
+                anyhow::anyhow!("TheWorld 接続失敗: {} (= `vp daemon start` で起動済か?)", e)
+            })?;
+
+        // snapshot を最初に出す (= list / watch 共通の冒頭)
+        let snapshot = client.world_processes_list().await?;
+        println!(
+            "📋 World 配下 Process snapshot ({} entries)",
+            snapshot.len()
+        );
+        if snapshot.is_empty() {
+            println!("  (= まだ SP register なし)");
+        } else {
+            for p in &snapshot {
+                let tmux = p
+                    .tmux_session
+                    .as_deref()
+                    .map(|s| format!(" tmux={}", s))
+                    .unwrap_or_default();
+                println!(
+                    "  • {} (port={}, pid={}{}, path={})",
+                    p.project_name, p.port, p.pid, tmux, p.project_path
+                );
+            }
+        }
+
+        if !watch {
+            return Ok::<(), anyhow::Error>(());
+        }
+
+        println!("\n👁️  --watch: lifecycle event を Ctrl-C まで stream します");
+        let ch = client.world_processes_subscribe().await?;
+        loop {
+            match DaemonClient::world_processes_recv_event(ch).await {
+                Ok(ProcessLifecycleEvent::Add {
+                    project_path,
+                    project_name,
+                    port,
+                    pid,
+                }) => {
+                    println!(
+                        "➕ Add: {} (port={}, pid={}, path={})",
+                        project_name, port, pid, project_path
+                    );
+                }
+                Ok(ProcessLifecycleEvent::Remove { project_path }) => {
+                    println!("➖ Remove: {}", project_path);
+                }
+                Err(e) => {
+                    eprintln!("⚠️  stream 終了: {}", e);
+                    break;
+                }
+            }
+        }
+        Ok(())
+    })
 }
 
 fn status() -> Result<()> {
