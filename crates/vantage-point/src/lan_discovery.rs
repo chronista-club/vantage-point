@@ -120,9 +120,10 @@ pub fn announce(
     pubkey: &str,
 ) -> Result<MdnsAnnouncer, mdns_sd::Error> {
     let daemon = ServiceDaemon::new()?;
-    // VP-153: macOS Bonjour LocalHostName を真の source of truth とする (= ComputerName 由来の
-    // `hostname::get()` は OS Bonjour と乖離して dialog trigger)。 fallback は "unknown"。
-    let local_host = os_local_hostname().unwrap_or_else(|| "unknown".to_string());
+    // VP-153: macOS Bonjour LocalHostName を真の source of truth とする。 Moody Blues fix #2
+    // (Score 77): fallback を `format!("vp-{}", port)` で port-base 一意化、 同 LAN 多台 fallback
+    // 時の host 衝突回避 (= 旧 `"unknown"` だと全台同 host で再 collision)。
+    let local_host = os_local_hostname().unwrap_or_else(|| format!("vp-{}", port));
     // mDNS hostname は末尾 `.` 必須、 `<localhostname>.local.` 形式
     let host_for_mdns = format!("{}.local.", local_host);
 

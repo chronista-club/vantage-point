@@ -1114,9 +1114,14 @@ pub async fn run_world(
     // instance_name は hostname 由来で衝突回避、 port は World API port。 pubkey は P3-4 で
     // Ed25519 fingerprint に置換、 現状は placeholder。 戻り値の MdnsAnnouncer は serve 終了
     // (= graceful shutdown) で scope exit、 Drop で自動 deregister + daemon shutdown。
-    // VP-153: macOS LocalHostName と同期させる (= host と一致で OS Bonjour 衝突回避)
-    let mdns_instance_name =
-        crate::lan_discovery::os_local_hostname().unwrap_or_else(|| format!("vp-world-{}", port));
+    // VP-153: macOS LocalHostName と同期 (= host と一致で OS Bonjour 衝突回避)。
+    // Moody Blues fix #1 (Score 82): scutil shell-out は同期 blocking call、
+    // tokio async context で `spawn_blocking` wrap で worker thread 占有を回避。
+    let mdns_instance_name = tokio::task::spawn_blocking(crate::lan_discovery::os_local_hostname)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| format!("vp-{}", port));
     let _mdns_announcer = match crate::lan_discovery::announce(
         &mdns_instance_name,
         port,
