@@ -24,6 +24,42 @@ use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
 use std::collections::HashMap;
 use std::time::Duration;
 
+/// VP-153: mDNS announce で使う hostname を OS の **Bonjour LocalHostName** から取得
+///
+/// macOS の hostname 三重構造:
+/// - **ComputerName**: GUI 表示用 (例 `mito-mac`)
+/// - **HostName**: `hostname` command 用 (typically 未設定 / `.local.` 付き)
+/// - **LocalHostName**: Bonjour 専用 (例 `mito-mac-2`、 collision で auto-rename)
+///
+/// `hostname::get()` (= POSIX `gethostname(3)`) は macOS で ComputerName 由来を返すため、
+/// OS Bonjour daemon が持つ LocalHostName と乖離 → mDNS register 時に衝突 → user dialog。
+/// fix: macOS では `scutil --get LocalHostName` を shell-out で実時刻 LocalHostName 取得、
+/// その他 OS では `hostname::get()` で fallback (= cross-platform 互換)。
+#[cfg(target_os = "macos")]
+pub fn os_local_hostname() -> Option<String> {
+    std::process::Command::new("scutil")
+        .args(["--get", "LocalHostName"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn os_local_hostname() -> Option<String> {
+    hostname::get()
+        .ok()
+        .and_then(|h| h.into_string().ok())
+        .map(|s| {
+            s.trim_end_matches(".local")
+                .trim_end_matches('.')
+                .to_string()
+        })
+        .filter(|s| !s.is_empty())
+}
+
 /// VP world の mDNS service type (`_vp._tcp.local.`)
 pub const SERVICE_TYPE: &str = "_vp._tcp.local.";
 
@@ -84,18 +120,12 @@ pub fn announce(
     pubkey: &str,
 ) -> Result<MdnsAnnouncer, mdns_sd::Error> {
     let daemon = ServiceDaemon::new()?;
-    let hostname = hostname::get()
-        .ok()
-        .and_then(|h| h.into_string().ok())
-        .unwrap_or_else(|| "unknown".to_string());
-    // mDNS hostname は末尾 `.` 必須、 `.local.` を suffix にする
-    let host_for_mdns = if hostname.ends_with('.') {
-        hostname.clone()
-    } else if hostname.ends_with(".local") {
-        format!("{}.", hostname)
-    } else {
-        format!("{}.local.", hostname)
-    };
+    // VP-153: macOS Bonjour LocalHostName を真の source of truth とする。 Moody Blues fix #2
+    // (Score 77): fallback を `format!("vp-{}", port)` で port-base 一意化、 同 LAN 多台 fallback
+    // 時の host 衝突回避 (= 旧 `"unknown"` だと全台同 host で再 collision)。
+    let local_host = os_local_hostname().unwrap_or_else(|| format!("vp-{}", port));
+    // mDNS hostname は末尾 `.` 必須、 `<localhostname>.local.` 形式
+    let host_for_mdns = format!("{}.local.", local_host);
 
     let mut properties: HashMap<String, String> = HashMap::new();
     properties.insert("pubkey".to_string(), pubkey.to_string());
