@@ -644,6 +644,29 @@ pub async fn run(
         shutdown_token.clone(),
     );
 
+    // VP-154 PR-1: SP も自身を mDNS で broadcast (= per-project unique instance)。
+    // instance_name は `sp-<project>-<localhost>` 形式 (例: `sp-creo-ui-mito-mac-4`)、
+    // TXT record に `kind=sp` + `project=<name>` + `port=<sp_port>` を含める。
+    // World announce (= `world-<localhost>`) と instance namespace が分離、 collision なし。
+    // 戻り値の MdnsAnnouncer は serve 終了 (= graceful shutdown) で scope exit、 Drop で auto deregister。
+    let _sp_mdns_announcer = match crate::lan_discovery::announce(
+        crate::lan_discovery::AnnounceKind::Sp {
+            project: project_name_for_remote.clone(),
+        },
+        port,
+        crate::lan_discovery::PUBKEY_PLACEHOLDER,
+    ) {
+        Ok(a) => Some(a),
+        Err(e) => {
+            tracing::warn!(
+                "mDNS announce 失敗 (SP {} LAN discovery 不能、 起動継続): {}",
+                project_name_for_remote,
+                e
+            );
+            None
+        }
+    };
+
     // メニューバーアプリに起動完了を通知
     crate::notify::post_process_changed(port, "started");
 
@@ -659,6 +682,9 @@ pub async fn run(
             tracing::info!("Graceful shutdown initiated");
         })
         .await?;
+
+    // VP-154 PR-1: graceful shutdown 後、 _sp_mdns_announcer が drop されて deregister。
+    tracing::debug!("SP mDNS announcer dropping (deregister via Drop trait)");
 
     // QUIC Registry 切断で TheWorld が即時除去するため、明示的 unregister は不要
     // （spawn_registry_keepalive の shutdown handler が unregister を送信済み）
@@ -1114,16 +1140,11 @@ pub async fn run_world(
     // instance_name は hostname 由来で衝突回避、 port は World API port。 pubkey は P3-4 で
     // Ed25519 fingerprint に置換、 現状は placeholder。 戻り値の MdnsAnnouncer は serve 終了
     // (= graceful shutdown) で scope exit、 Drop で自動 deregister + daemon shutdown。
-    // VP-153: macOS LocalHostName と同期 (= host と一致で OS Bonjour 衝突回避)。
-    // Moody Blues fix #1 (Score 82): scutil shell-out は同期 blocking call、
-    // tokio async context で `spawn_blocking` wrap で worker thread 占有を回避。
-    let mdns_instance_name = tokio::task::spawn_blocking(crate::lan_discovery::os_local_hostname)
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| format!("vp-{}", port));
+    // VP-154 PR-1: World announce は `AnnounceKind::World` で `world-{localhost}` instance に。
+    // VP-153 Layer 2 (= 過去 announce stale entry との self collision) は instance prefix で
+    // OS LocalHostName と異なる namespace になり 自然解消。
     let _mdns_announcer = match crate::lan_discovery::announce(
-        &mdns_instance_name,
+        crate::lan_discovery::AnnounceKind::World,
         port,
         crate::lan_discovery::PUBKEY_PLACEHOLDER,
     ) {
