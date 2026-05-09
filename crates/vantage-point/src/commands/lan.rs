@@ -63,6 +63,22 @@ pub enum LanCommands {
         /// 削除対象 alias
         alias: String,
     },
+    /// VP-154 chore: stale entry 一掃 (= 過去 LocalHostName churn 由来の累積掃除)
+    ///
+    /// `last_seen` が threshold より古い entry を削除。 mDNS goodbye 漏れや LocalHostName
+    /// auto-increment 由来の累積に対処する手動 reset。 dogfood で 「book がゴチャゴチャ」 を感じたら
+    /// 実行、 PR-3.5 (= advertise_hostname 固定) と組み合わせて使う想定。
+    Prune {
+        /// 削除 threshold (例: `1h` / `30m` / `1d` / `7d`)、 default `1h`
+        #[arg(long, default_value = "1h")]
+        older_than: String,
+        /// 全 entry 削除 (= `older_than` 無視)
+        #[arg(long)]
+        all: bool,
+        /// 削除対象を表示するだけ (= 実行せず preview)
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 /// address book 1 entry
@@ -309,7 +325,107 @@ pub fn handle_lan_command(cmd: LanCommands) -> Result<()> {
         LanCommands::Add { alias, timeout } => add_entry(&alias, timeout),
         LanCommands::List => list_book(),
         LanCommands::Remove { alias } => remove_entry(&alias),
+        LanCommands::Prune {
+            older_than,
+            all,
+            dry_run,
+        } => prune_entries(&older_than, all, dry_run),
     }
+}
+
+/// VP-154 chore: simple duration parser — `1h` / `30m` / `1d` / `7d` 形式を `chrono::Duration` に
+///
+/// humantime crate は dep 追加せず inline 実装。 末尾 1 文字を unit、 残りを number として解釈:
+/// - `s`: 秒、 `m`: 分、 `h`: 時間、 `d`: 日
+fn parse_duration(s: &str) -> anyhow::Result<chrono::Duration> {
+    let s = s.trim();
+    if s.len() < 2 {
+        anyhow::bail!(
+            "duration format invalid: `{}` (例: `1h` / `30m` / `1d` / `7d`)",
+            s
+        );
+    }
+    let (num_part, unit) = s.split_at(s.len() - 1);
+    let n: i64 = num_part
+        .parse()
+        .map_err(|e| anyhow::anyhow!("duration の数値部 `{}` parse 失敗: {}", num_part, e))?;
+    match unit {
+        "s" => Ok(chrono::Duration::seconds(n)),
+        "m" => Ok(chrono::Duration::minutes(n)),
+        "h" => Ok(chrono::Duration::hours(n)),
+        "d" => Ok(chrono::Duration::days(n)),
+        _ => anyhow::bail!(
+            "duration unit `{}` 未対応 (= s/m/h/d のみ、 例: `1h` / `7d`)",
+            unit
+        ),
+    }
+}
+
+fn prune_entries(older_than: &str, all: bool, dry_run: bool) -> Result<()> {
+    let mut book = AddressBook::load()?;
+    let initial_count = book.worlds.len();
+    if initial_count == 0 {
+        println!("(address book empty、 nothing to prune)");
+        return Ok(());
+    }
+
+    let cutoff_label;
+    let to_remove: Vec<String> = if all {
+        cutoff_label = "ALL".to_string();
+        book.worlds.iter().map(|w| w.alias.clone()).collect()
+    } else {
+        let duration = parse_duration(older_than)?;
+        let cutoff = chrono::Utc::now() - duration;
+        cutoff_label = format!(
+            "older than {} (cutoff = {})",
+            older_than,
+            cutoff.to_rfc3339()
+        );
+        book.worlds
+            .iter()
+            .filter(|w| {
+                // last_seen が parse 不能なら「不明 = 古いものとして prune 対象」 扱い
+                chrono::DateTime::parse_from_rfc3339(&w.last_seen)
+                    .map(|t| t < cutoff)
+                    .unwrap_or(true)
+            })
+            .map(|w| w.alias.clone())
+            .collect()
+    };
+
+    if to_remove.is_empty() {
+        println!(
+            "({}: 削除対象 entry なし、 全 {} 件 fresh)",
+            cutoff_label, initial_count
+        );
+        return Ok(());
+    }
+
+    println!(
+        "prune target ({}): {} entries",
+        cutoff_label,
+        to_remove.len()
+    );
+    for alias in &to_remove {
+        println!("  - {}", alias);
+    }
+
+    if dry_run {
+        println!("(--dry-run、 実行せず終了。 disk への変更なし)");
+        return Ok(());
+    }
+
+    let mut removed_count = 0usize;
+    for alias in &to_remove {
+        removed_count += book.remove(alias);
+    }
+    book.save()?;
+    println!(
+        "removed {} entries、 残り {} entries",
+        removed_count,
+        book.worlds.len()
+    );
+    Ok(())
 }
 
 fn discover_print(timeout_ms: u64) -> Result<()> {
@@ -802,5 +918,37 @@ last_seen = "2026-05-09T00:00:00Z"
         };
         book.auto_upsert_from_discovered(&unknown);
         assert!(book.worlds.is_empty(), "未知 kind は forward compat skip");
+    }
+
+    // =========================================================================
+    // VP-154 chore: parse_duration + prune logic
+    // =========================================================================
+
+    #[test]
+    fn parse_duration_supports_smhd_units() {
+        assert_eq!(
+            parse_duration("30s").unwrap(),
+            chrono::Duration::seconds(30)
+        );
+        assert_eq!(parse_duration("5m").unwrap(), chrono::Duration::minutes(5));
+        assert_eq!(parse_duration("2h").unwrap(), chrono::Duration::hours(2));
+        assert_eq!(parse_duration("7d").unwrap(), chrono::Duration::days(7));
+    }
+
+    #[test]
+    fn parse_duration_rejects_invalid_format() {
+        assert!(parse_duration("").is_err());
+        assert!(parse_duration("h").is_err()); // 数値部不在
+        assert!(parse_duration("1y").is_err()); // 未対応 unit
+        assert!(parse_duration("abc").is_err()); // 数値 parse 失敗
+    }
+
+    #[test]
+    fn parse_duration_handles_whitespace() {
+        // 前後 whitespace は trim される (= user typo 救済)
+        assert_eq!(
+            parse_duration("  1h  ").unwrap(),
+            chrono::Duration::hours(1)
+        );
     }
 }
