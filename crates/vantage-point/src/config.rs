@@ -69,6 +69,32 @@ pub struct Config {
     /// SP startup behavior — Worker spawn の concurrency 制限等 (I-b、 2026-04-30)
     #[serde(default)]
     pub startup: StartupConfig,
+
+    /// VP-154 PR-3.5: LAN networking config (= mDNS / hub federation の挙動を tweak)
+    #[serde(default)]
+    pub network: NetworkConfig,
+}
+
+/// VP-154 PR-3.5: LAN networking config — mDNS advertise の identity 安定化が主目的。
+///
+/// macOS LocalHostName が boot 時に collision 検出で auto-increment (`mito-mac` →
+/// `mito-mac-3`) しても、 VP の LAN 識別子 (= `world-mito-mac` 等の mDNS instance_name)
+/// を **config で固定** することで、 LAN 上の他 device から見た VP identity が不変になる。
+///
+/// SRV record の target hostname (= 接続解決のための A record 参照) は OS 現在値を使い続けるので、
+/// 接続自体は OS rename にも追従する。 これで `instance_name 安定 + 接続動的` の両立。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct NetworkConfig {
+    /// mDNS advertise の instance_name に使う hostname を強制指定 (例: `"mito-mac"`)。
+    ///
+    /// `Some(name)` なら `world-{name}` / `sp-{project}-{name}` で advertise、
+    /// `None` (default) なら旧挙動 (= `scutil --get LocalHostName` から取得)。
+    ///
+    /// 用途: macOS LocalHostName auto-increment (= boot 時 collision 検出由来) で
+    /// LAN identity が揺れる問題を回避。 同 instance_name の再 advertise は mDNS protocol の
+    /// TTL refresh として処理されるので、 cache 上の entry は merge されて累積しない。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub advertise_hostname: Option<String>,
 }
 
 /// SP startup behavior config (I-b、 2026-04-30)。
@@ -376,6 +402,7 @@ mod tests {
             }],
             ports: None,
             startup: StartupConfig::default(),
+            network: NetworkConfig::default(),
         };
 
         let toml = toml::to_string_pretty(&config).unwrap();
@@ -384,5 +411,39 @@ mod tests {
         let parsed: Config = toml::from_str(&toml).unwrap();
         assert_eq!(parsed.default_port, 33001);
         assert_eq!(parsed.projects.len(), 1);
+    }
+
+    #[test]
+    fn test_network_config_default_is_empty() {
+        // VP-154 PR-3.5: default config に network section 不在でも問題なく load
+        let config: Config = toml::from_str("").unwrap();
+        assert!(config.network.advertise_hostname.is_none());
+    }
+
+    #[test]
+    fn test_network_config_advertise_hostname_loads() {
+        // VP-154 PR-3.5: `[network] advertise_hostname = "mito-mac"` が toml から正しく読める
+        let raw = r#"
+[network]
+advertise_hostname = "mito-mac"
+"#;
+        let config: Config = toml::from_str(raw).unwrap();
+        assert_eq!(
+            config.network.advertise_hostname.as_deref(),
+            Some("mito-mac")
+        );
+    }
+
+    #[test]
+    fn test_network_config_round_trip() {
+        // serialize → parse round-trip で advertise_hostname が保持される
+        let mut config = Config::default();
+        config.network.advertise_hostname = Some("mito-mac".to_string());
+        let raw = toml::to_string_pretty(&config).unwrap();
+        let parsed: Config = toml::from_str(&raw).unwrap();
+        assert_eq!(
+            parsed.network.advertise_hostname.as_deref(),
+            Some("mito-mac")
+        );
     }
 }

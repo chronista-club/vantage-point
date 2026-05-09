@@ -141,28 +141,38 @@ impl Drop for MdnsAnnouncer {
     }
 }
 
-/// mDNS で `_vp._tcp.local.` を announce する (VP-154 PR-1: kind-aware)
+/// mDNS で `_vp._tcp.local.` を announce する (VP-154 PR-1: kind-aware、 PR-3.5: identity override)
 ///
 /// - `kind`: [`AnnounceKind::World`] (= machine anchor) or [`AnnounceKind::Sp { project }`] (= project SP)
 /// - `port`: API port (= World は 32000、 SP は 33000+)
 /// - `pubkey`: TXT record の pubkey field (= P3-4 まで [`PUBKEY_PLACEHOLDER`])
+/// - `identity_hostname_override`: VP-154 PR-3.5 — instance_name 生成に使う hostname を config 固定
+///   (例: `Some("mito-mac")`)、 macOS LocalHostName auto-increment 由来の identity 揺れを回避。
+///   `None` なら旧挙動 (= OS LocalHostName から取得)。
 ///
-/// instance_name は kind から自動生成 (= `world-{localhost}` / `sp-{project}-{localhost}`)、
+/// instance_name は kind + identity_host から自動生成 (= `world-{identity}` / `sp-{project}-{identity}`)、
 /// TXT record に `kind` (= `"world"` / `"sp"`) と project (Sp のみ) を含める。
+/// SRV record の target hostname は **OS 現在 LocalHostName** を使う (= 接続解決は OS rename にも追従)。
 /// 戻り値の [`MdnsAnnouncer`] が drop された時点で deregister される。
 pub fn announce(
     kind: AnnounceKind,
     port: u16,
     pubkey: &str,
+    identity_hostname_override: Option<&str>,
 ) -> Result<MdnsAnnouncer, mdns_sd::Error> {
     let daemon = ServiceDaemon::new()?;
-    // VP-153: macOS Bonjour LocalHostName を真の source of truth とする。 Moody Blues fix #2
-    // (Score 77): fallback を `format!("vp-{}", port)` で port-base 一意化、 同 LAN 多台 fallback
-    // 時の host 衝突回避 (= 旧 `"unknown"` だと全台同 host で再 collision)。
-    let local_host = os_local_hostname().unwrap_or_else(|| format!("vp-{}", port));
-    // mDNS hostname は末尾 `.` 必須、 `<localhostname>.local.` 形式
-    let host_for_mdns = format!("{}.local.", local_host);
-    let instance_name = kind.instance_name(&local_host);
+    // VP-153: macOS Bonjour LocalHostName を真の source of truth とする (= SRV target 用)。
+    // Moody Blues fix #2 (Score 77): fallback を `format!("vp-{}", port)` で port-base 一意化、
+    // 同 LAN 多台 fallback 時の host 衝突回避 (= 旧 `"unknown"` だと全台同 host で再 collision)。
+    let os_host = os_local_hostname().unwrap_or_else(|| format!("vp-{}", port));
+    // SRV target = OS 現在値 (= 接続解決は OS rename 追従)
+    let host_for_mdns = format!("{}.local.", os_host);
+    // VP-154 PR-3.5: instance_name 用 host は config override を優先 (= LAN identity 安定化)、
+    // None なら OS 現在値で旧挙動と互換。
+    let identity_host = identity_hostname_override
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| os_host.clone());
+    let instance_name = kind.instance_name(&identity_host);
 
     let mut properties: HashMap<String, String> = HashMap::new();
     properties.insert("kind".to_string(), kind.kind_str().to_string());
@@ -189,11 +199,12 @@ pub fn announce(
     daemon.register(info)?;
 
     tracing::info!(
-        "mDNS announce: kind={} instance={} host={} port={} pubkey={}",
+        "mDNS announce: kind={} instance={} srv_target={} port={} identity_override={} pubkey={}",
         kind.kind_str(),
         instance_name,
         host_for_mdns,
         port,
+        identity_hostname_override.unwrap_or("(none, OS LocalHostName)"),
         pubkey
     );
     Ok(MdnsAnnouncer { daemon, full_name })
@@ -441,6 +452,37 @@ mod tests {
         .into_iter()
         .collect();
         assert_eq!(names.len(), 3);
+    }
+
+    #[test]
+    fn announce_kind_world_instance_name_uses_identity_override() {
+        // VP-154 PR-3.5: identity_hostname_override が渡された場合、 instance_name は
+        // OS LocalHostName ではなく override 値で生成。 OS が `mito-mac-3` に increment しても
+        // override が `mito-mac` なら advertise は `world-mito-mac` で固定。
+        let kind = AnnounceKind::World;
+        assert_eq!(
+            kind.instance_name("mito-mac"),
+            "world-mito-mac",
+            "override 値で instance_name 生成"
+        );
+        // OS 値とは独立 (= 同 kind で別 host 渡せば別 name)
+        assert_ne!(
+            kind.instance_name("mito-mac"),
+            kind.instance_name("mito-mac-3")
+        );
+    }
+
+    #[test]
+    fn announce_kind_sp_instance_name_uses_identity_override() {
+        // SP も同じ pattern で override 効く (= per-project SP advertise の identity 安定化)
+        let kind = AnnounceKind::Sp {
+            project: "creo-ui".to_string(),
+        };
+        assert_eq!(
+            kind.instance_name("mito-mac"),
+            "sp-creo-ui-mito-mac",
+            "override 値で SP instance_name 生成"
+        );
     }
 
     #[test]

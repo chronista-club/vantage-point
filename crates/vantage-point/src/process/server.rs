@@ -654,6 +654,11 @@ pub async fn run(
     // shell-out) を呼ぶ sync blocking call、 tokio async context から直接 call せず
     // `spawn_blocking` で wrap して worker thread 占有を回避 (= VP-153 fix と整合)。
     let project_for_announce = project_name_for_remote.clone();
+    // VP-154 PR-3.5: config の advertise_hostname を読んで announce に渡す。
+    // OS LocalHostName auto-increment 由来の identity 揺れを config 固定で吸収。
+    let identity_override_for_announce = crate::config::Config::load()
+        .ok()
+        .and_then(|c| c.network.advertise_hostname);
     let _sp_mdns_announcer = match tokio::task::spawn_blocking(move || {
         crate::lan_discovery::announce(
             crate::lan_discovery::AnnounceKind::Sp {
@@ -661,6 +666,7 @@ pub async fn run(
             },
             port,
             crate::lan_discovery::PUBKEY_PLACEHOLDER,
+            identity_override_for_announce.as_deref(),
         )
     })
     .await
@@ -1163,11 +1169,18 @@ pub async fn run_world(
     //
     // Moody Blues fix #1 (Score 82): announce() は内部で sync `scutil` shell-out、
     // `spawn_blocking` で wrap して tokio worker thread 占有を回避。
+    //
+    // VP-154 PR-3.5: config の advertise_hostname を読んで instance_name 安定化。
+    // OS LocalHostName auto-increment 由来の identity 揺れを config 固定で吸収。
+    let identity_override_for_world = crate::config::Config::load()
+        .ok()
+        .and_then(|c| c.network.advertise_hostname);
     let _mdns_announcer = match tokio::task::spawn_blocking(move || {
         crate::lan_discovery::announce(
             crate::lan_discovery::AnnounceKind::World,
             port,
             crate::lan_discovery::PUBKEY_PLACEHOLDER,
+            identity_override_for_world.as_deref(),
         )
     })
     .await
