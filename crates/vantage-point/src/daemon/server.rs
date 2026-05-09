@@ -12,7 +12,8 @@ use unison::network::{MessageType, NetworkError, ProtocolServer, channel::Unison
 
 use super::protocol::{
     AttachRequest, ChannelMessage, CreatePaneRequest, CreateSessionRequest, DetachRequest,
-    KillPaneRequest, ReadOutputRequest, ResizeRequest, WriteRequest,
+    KillPaneRequest, ProcessLifecycleEvent, ProcessSnapshot, ReadOutputRequest, ResizeRequest,
+    WriteRequest,
 };
 use super::pty_slot::PtySlot;
 use super::registry::{PaneKind, SessionRegistry};
@@ -50,10 +51,18 @@ pub struct DaemonState {
     #[allow(clippy::type_complexity)]
     pub lane_registry:
         Option<Arc<RwLock<HashMap<String, Vec<crate::process::lanes_state::LaneInfo>>>>>,
+    /// VP-154 PR-2: Process lifecycle event broadcast bus (= "world-process" channel の data plane)
+    ///
+    /// registry channel handler が SP register/unregister を受信したタイミングで `send` し、
+    /// "world-process" subscribe handler の broadcast::Receiver が pump して client に
+    /// `send_event` で push する経路。 capacity 64 = SP 同時 register が短時間に集中しても
+    /// drop しない buffer (= 既存 system_event_tx と同サイズ)。
+    pub process_lifecycle_tx: tokio::sync::broadcast::Sender<ProcessLifecycleEvent>,
 }
 
 impl Default for DaemonState {
     fn default() -> Self {
+        let (process_lifecycle_tx, _) = tokio::sync::broadcast::channel(64);
         Self {
             registry: Arc::new(RwLock::new(SessionRegistry::default())),
             pty_slots: Arc::new(Mutex::new(HashMap::new())),
@@ -62,6 +71,7 @@ impl Default for DaemonState {
             running_processes: None,
             projects: None,
             lane_registry: None,
+            process_lifecycle_tx,
         }
     }
 }
@@ -742,6 +752,148 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
         .await;
 
     // =========================================================================
+    // world-process Channel (VP-154 PR-2)
+    //
+    // World 内側 hub の data plane を Unison 経由で expose。
+    //   - `list`      : RPC、 現在の running_processes snapshot を JSON で返す
+    //   - `subscribe` : push stream、 register/unregister/disconnect の lifecycle event を
+    //                   `send_event("event", ProcessLifecycleEvent)` で client に realtime push
+    //
+    // 経路: SP register/heartbeat (QUIC Push) → registry channel → process_lifecycle_tx broadcast
+    //       → 本 channel の subscribe handler → client (vp-app / 別 World / 将来 hub gateway)。
+    //
+    // SSOT 規約: Unison-first。 既存 HTTP /api/health の stands field は legacy fallback として
+    // 温存するが、 新規 control plane の主経路は本 channel に集約。
+    // =========================================================================
+    if let Some(ref running_processes) = state.running_processes {
+        let running_processes_snapshot = running_processes.clone();
+        let process_lifecycle_tx_for_channel = state.process_lifecycle_tx.clone();
+        server
+            .register_channel("world-process", {
+                move |_ctx, stream| {
+                    let running_processes = running_processes_snapshot.clone();
+                    let process_lifecycle_tx = process_lifecycle_tx_for_channel.clone();
+                    async move {
+                        let channel = UnisonChannel::new(stream);
+                        loop {
+                            let msg = match channel.recv().await {
+                                Ok(msg) => msg,
+                                Err(_) => break,
+                            };
+
+                            if msg.msg_type != MessageType::Request {
+                                continue;
+                            }
+
+                            let method = msg.method.clone();
+                            let request_id = msg.id;
+
+                            match method.as_str() {
+                                "list" => {
+                                    let snapshot: Vec<ProcessSnapshot> = running_processes
+                                        .read()
+                                        .await
+                                        .values()
+                                        .map(|p| ProcessSnapshot {
+                                            project_path: p
+                                                .project_path
+                                                .to_string_lossy()
+                                                .to_string(),
+                                            project_name: p.project_name.clone(),
+                                            port: p.port,
+                                            pid: p.pid,
+                                            tmux_session: p.tmux_session.clone(),
+                                        })
+                                        .collect();
+                                    if channel
+                                        .send_response(
+                                            request_id,
+                                            "list",
+                                            serde_json::json!({"processes": snapshot}),
+                                        )
+                                        .await
+                                        .is_err()
+                                    {
+                                        break;
+                                    }
+                                }
+                                "subscribe" => {
+                                    // ack 応答 (= subscribe 受け付け確認)
+                                    if channel
+                                        .send_response(
+                                            request_id,
+                                            "subscribe",
+                                            serde_json::json!({"status": "ok"}),
+                                        )
+                                        .await
+                                        .is_err()
+                                    {
+                                        break;
+                                    }
+                                    // event push loop。 client 切断 (= channel send 失敗) で break、
+                                    // broadcast lag は警告のみ (= 監視 client は独自に sync 必要)。
+                                    let mut rx = process_lifecycle_tx.subscribe();
+                                    loop {
+                                        match rx.recv().await {
+                                            Ok(event) => {
+                                                let payload = match serde_json::to_value(&event) {
+                                                    Ok(v) => v,
+                                                    Err(e) => {
+                                                        tracing::warn!(
+                                                            "world-process event serialize 失敗: {}",
+                                                            e
+                                                        );
+                                                        continue;
+                                                    }
+                                                };
+                                                if channel
+                                                    .send_event("event", payload)
+                                                    .await
+                                                    .is_err()
+                                                {
+                                                    break;
+                                                }
+                                            }
+                                            Err(
+                                                tokio::sync::broadcast::error::RecvError::Lagged(n),
+                                            ) => {
+                                                tracing::warn!(
+                                                    "world-process subscribe lagged: {} events dropped",
+                                                    n
+                                                );
+                                            }
+                                            Err(
+                                                tokio::sync::broadcast::error::RecvError::Closed,
+                                            ) => break,
+                                        }
+                                    }
+                                    // subscribe loop 終了 = client 切断 → channel 自体も終わる
+                                    break;
+                                }
+                                _ => {
+                                    let _ = channel
+                                        .send_response(
+                                            request_id,
+                                            &method,
+                                            serde_json::json!({
+                                                "error": format!(
+                                                    "不明なメソッド: world-process.{}",
+                                                    method
+                                                )
+                                            }),
+                                        )
+                                        .await;
+                                }
+                            }
+                        }
+                        Ok(())
+                    }
+                }
+            })
+            .await;
+    }
+
+    // =========================================================================
     // Registry Channel（SP 自己登録 — QUIC 永続接続による即時登録・即時死亡検出）
     // =========================================================================
     if let Some(ref running_processes) = state.running_processes {
@@ -749,12 +901,15 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
         let projects = state.projects.clone();
         // Phase 1b: lane_registry も capture (register payload の lanes を cache する)
         let lane_registry = state.lane_registry.clone();
+        // VP-154 PR-2: lifecycle event を broadcast する Sender (= "world-process" subscriber へ)
+        let process_lifecycle_tx = state.process_lifecycle_tx.clone();
         server
             .register_channel("registry", {
                 move |_ctx, stream| {
                     let running_processes = running_processes.clone();
                     let projects = projects.clone();
                     let lane_registry = lane_registry.clone();
+                    let process_lifecycle_tx = process_lifecycle_tx.clone();
                     async move {
                         let channel = UnisonChannel::new(stream);
                         let mut registered_name: Option<String> = None;
@@ -851,6 +1006,16 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                         path_key
                                     );
 
+                                    // VP-154 PR-2: lifecycle event を broadcast (= "world-process"
+                                    // subscriber に push)。 receiver 不在は OK (= 誰も subscribe して
+                                    // ない時は send が SendError を返すが無視)。
+                                    let _ = process_lifecycle_tx.send(ProcessLifecycleEvent::Add {
+                                        project_path: path_key.clone(),
+                                        project_name: project_name.clone(),
+                                        port,
+                                        pid,
+                                    });
+
                                     if channel
                                         .send_response(
                                             request_id,
@@ -885,6 +1050,15 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                         tracing::info!(
                                             "Registry: SP 登録解除 (key={})",
                                             path_key
+                                        );
+
+                                        // VP-154 PR-2: 明示 unregister 経由の lifecycle event。
+                                        // 切断検知 (= channel 切断による Drop パス) も別途 publish が
+                                        // 必要 (= 後続の disconnect handler で対応)。
+                                        let _ = process_lifecycle_tx.send(
+                                            ProcessLifecycleEvent::Remove {
+                                                project_path: path_key.clone(),
+                                            },
                                         );
                                     } else {
                                         tracing::debug!(
@@ -1081,6 +1255,15 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                     name
                                 );
 
+                                // VP-154 PR-2: 切断由来の lifecycle remove event。 明示
+                                // unregister と異なり、 ここは QUIC 切断検出 (= D10 Push パスの
+                                // 即時死亡検出) を世界に伝える経路。
+                                let _ = process_lifecycle_tx.send(
+                                    ProcessLifecycleEvent::Remove {
+                                        project_path: name.clone(),
+                                    },
+                                );
+
                                 // メニューバーアプリに通知
                                 if let Some(port) = registered_port {
                                     crate::notify::post_process_changed(
@@ -1117,6 +1300,61 @@ mod tests {
         assert!(
             state.started_at.elapsed().as_secs() < 1,
             "started_at が現在時刻から離れすぎている"
+        );
+    }
+
+    #[test]
+    fn test_daemon_state_has_process_lifecycle_tx() {
+        // VP-154 PR-2: DaemonState::new() で process_lifecycle_tx が初期化されてる (= capacity 64)
+        let state = DaemonState::new();
+        // subscribe できる = Sender が active
+        let _rx = state.process_lifecycle_tx.subscribe();
+        // 既存 receiver は 1 (= 上で作った _rx)
+        assert_eq!(state.process_lifecycle_tx.receiver_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_process_lifecycle_broadcast_add_remove() {
+        // VP-154 PR-2: registry channel が publish した event が subscribe で受信できる
+        let state = DaemonState::new();
+        let mut rx = state.process_lifecycle_tx.subscribe();
+
+        let add = ProcessLifecycleEvent::Add {
+            project_path: "/x".to_string(),
+            project_name: "creo".to_string(),
+            port: 33000,
+            pid: 1,
+        };
+        state.process_lifecycle_tx.send(add.clone()).unwrap();
+
+        let received = rx.recv().await.unwrap();
+        assert_eq!(received, add);
+
+        let remove = ProcessLifecycleEvent::Remove {
+            project_path: "/x".to_string(),
+        };
+        state.process_lifecycle_tx.send(remove.clone()).unwrap();
+
+        let received = rx.recv().await.unwrap();
+        assert_eq!(received, remove);
+    }
+
+    #[tokio::test]
+    async fn test_process_lifecycle_broadcast_no_subscriber_is_ok() {
+        // subscriber 不在で send しても error にならず安全 (= 既存 .send() の `let _ =` 経路と整合)
+        // broadcast::Sender は no-receiver で SendError を返すが、 Sender 自体は alive。
+        let state = DaemonState::new();
+        let event = ProcessLifecycleEvent::Add {
+            project_path: "/x".to_string(),
+            project_name: "vp".to_string(),
+            port: 33002,
+            pid: 99,
+        };
+        // receiver 不在 → SendError (= caller 側で `let _ =` で無視されてる)
+        let result = state.process_lifecycle_tx.send(event);
+        assert!(
+            result.is_err(),
+            "subscriber 不在では SendError が想定通り返る"
         );
     }
 
