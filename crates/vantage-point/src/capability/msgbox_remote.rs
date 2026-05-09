@@ -385,13 +385,20 @@ impl RemoteRoutingClient {
     /// AddressBook の hostname と equality match で entry 取得、 hostname:port に HTTP POST。
     /// hub query (= dot 含む FQDN で `.local` 以外) は Phase 4+ で別 path、 本 PR では
     /// AddressBook miss 時に `ActorNotFound` エラーで返却。
+    ///
+    /// VP-150 fix: cross-machine forward は **2 hop** で resolve する。
+    /// hop 1: AddressBook で host → `<host>:<world_port>` (= remote TheWorld daemon)、
+    /// hop 2: remote TheWorld の `/api/world/msgbox/lookup` で project + actor → SP port、
+    /// hop 3: 取得した SP port に `http_forward(host, sp_port, msg)` で actual deliver。
+    /// 旧実装 (= PR-P3-3、 #312) は hop 2 を欠落させて TheWorld port (32000) に直接 POST して
+    /// いたため、 receiver が `/api/msgbox/remote_deliver` endpoint を持たず 404 で fail。
     async fn forward_cross_machine(
         &self,
         host: &str,
         resolved: &Address,
         msg: Message,
     ) -> Result<(), RemoteRoutingError> {
-        // AddressBook を毎回 disk read (cache は後続 PR で追加)
+        // hop 1: AddressBook で host → world_port を取得
         let book = crate::commands::lan::AddressBook::load()
             .map_err(|e| RemoteRoutingError::LookupFailed(format!("address book load: {}", e)))?;
         let entry = book
@@ -404,8 +411,14 @@ impl RemoteRoutingClient {
                 ),
             })?;
         let target_host = entry.hostname.clone();
-        let target_port = entry.port;
+        let world_port = entry.port; // remote TheWorld daemon port (= 32000)
 
+        // hop 2: remote TheWorld に project + actor を query して SP port を取得
+        let remote_world_url = format!("http://{}:{}", target_host, world_port);
+        let sp_entry = lookup_via_world_url(&remote_world_url, resolved).await?;
+        let sp_port = sp_entry.port;
+
+        // hop 3: SP port に actual deliver
         let actor_only = resolved.actor_or_unknown().to_string();
         let mut normalized = msg.clone();
         normalized.to = actor_only;
@@ -415,22 +428,26 @@ impl RemoteRoutingClient {
         let mut delay = Duration::from_secs(1);
         let mut last_err: Option<String> = None;
         for attempt in 0..FORWARD_MAX_RETRIES {
-            match http_forward(&target_host, target_port, &normalized).await {
+            match http_forward(&target_host, sp_port, &normalized).await {
                 Ok(()) => {
                     if attempt > 0 {
                         tracing::debug!(
-                            "Router: cross-machine forward 成功 (retry {}) to={} via {}:{}",
+                            "Router: cross-machine forward 成功 (retry {}) to={} via {}:{} (sp_port resolved via {}:{})",
                             attempt + 1,
                             normalized.to,
                             target_host,
-                            target_port
+                            sp_port,
+                            target_host,
+                            world_port
                         );
                     } else {
                         tracing::debug!(
-                            "Router: cross-machine forward to={} via {}:{} ok",
+                            "Router: cross-machine forward to={} via {}:{} (sp_port resolved via {}:{}) ok",
                             normalized.to,
                             target_host,
-                            target_port
+                            sp_port,
+                            target_host,
+                            world_port
                         );
                     }
                     return Ok(());
@@ -438,12 +455,12 @@ impl RemoteRoutingClient {
                 Err(e) => {
                     let reason = e.to_string();
                     tracing::warn!(
-                        "Router: cross-machine forward 試行 {}/{} 失敗 to={} host={} port={} reason={}",
+                        "Router: cross-machine forward 試行 {}/{} 失敗 to={} host={} sp_port={} reason={}",
                         attempt + 1,
                         FORWARD_MAX_RETRIES,
                         normalized.to,
                         target_host,
-                        target_port,
+                        sp_port,
                         reason
                     );
                     last_err = Some(reason);
@@ -456,7 +473,7 @@ impl RemoteRoutingClient {
         }
 
         Err(RemoteRoutingError::ForwardFailed {
-            port: target_port,
+            port: sp_port,
             reason: last_err.unwrap_or_else(|| "unknown".to_string()),
         })
     }
@@ -493,6 +510,76 @@ impl RemoteRoutingClient {
             from.to_string()
         }
     }
+}
+
+/// VP-150: 任意 base URL の TheWorld registry に `/api/world/msgbox/lookup` query を投げる
+///
+/// cross-machine forward の **hop 2** で使う。 self の TheWorld (= `RemoteRoutingClient::lookup`
+/// の `self.world_base_url` 固定 path) と異なり、 remote `<host>:<world_port>` を base に
+/// 同 endpoint を query する。 戻り値の `ActorEntry.port` が **remote machine 上の SP port**
+/// で、 caller (= `forward_cross_machine`) がそれに対して `http_forward` する。
+///
+/// cache 不在: cross-machine の lookup result は host 別で keyed する必要があり、 既存
+/// `lookup_cache` (= self-world 想定) と分離が必要。 PR-P3-3 と同じく毎回 query を
+/// 許容する design (= dogfood 段階 perf 後送り)。 将来的には `(host, actor, project)`
+/// キーの cache を追加する path 残し。
+async fn lookup_via_world_url(
+    world_base_url: &str,
+    resolved: &Address,
+) -> Result<ActorEntry, RemoteRoutingError> {
+    let url = match resolved {
+        Address::Local { .. } => {
+            return Err(RemoteRoutingError::InvalidAddress(
+                "local address cannot be looked up via remote world".to_string(),
+            ));
+        }
+        Address::Port { actor, port } => {
+            format!(
+                "{}/api/world/msgbox/lookup?actor={}&port={}",
+                world_base_url, actor, port
+            )
+        }
+        Address::Project { actor, project, .. } => {
+            format!(
+                "{}/api/world/msgbox/lookup?actor={}&project_name={}",
+                world_base_url, actor, project
+            )
+        }
+    };
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .map_err(|e| RemoteRoutingError::LookupFailed(e.to_string()))?;
+
+    let resp =
+        client.get(&url).send().await.map_err(|e| {
+            RemoteRoutingError::LookupFailed(format!("cross-machine lookup: {}", e))
+        })?;
+
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        let actor_name = resolved.actor_or_unknown().to_string();
+        return Err(RemoteRoutingError::ActorNotFound { actor: actor_name });
+    }
+
+    if !resp.status().is_success() {
+        return Err(RemoteRoutingError::LookupFailed(format!(
+            "cross-machine lookup HTTP {}",
+            resp.status()
+        )));
+    }
+
+    #[derive(serde::Deserialize)]
+    struct LookupResponse {
+        entry: ActorEntry,
+    }
+
+    let body: LookupResponse = resp
+        .json()
+        .await
+        .map_err(|e| RemoteRoutingError::LookupFailed(format!("decode: {}", e)))?;
+
+    Ok(body.entry)
 }
 
 /// HTTP fallback で remote_deliver を呼ぶ（Step 2 暫定 — Step 2b で Unison QUIC へ）
