@@ -153,16 +153,36 @@ impl AddressBook {
 
     /// VP-149: mDNS [`DiscoveredWorld`] から AddressEntry を導出して auto-upsert
     ///
-    /// alias 生成 rule: instance_name (例: `macbook-a._vp._tcp.local.`) の先頭 segment
-    /// (`macbook-a`) を採用。 collision (= 同 alias の別 machine) は last-write-wins。
+    /// alias 生成 rule: instance_name (例: `world-mito-mac-4`) の先頭 segment 直後の suffix
+    /// (= `mito-mac-4`) を採用。 collision (= 同 alias の別 machine) は last-write-wins。
     /// last_seen は呼び出し時の UTC で更新、 discovered_via = `"mDNS"` 固定。
+    ///
+    /// VP-154 PR-1 Moody Blues fix #2 (Score 78): TXT record `kind=world` のみ upsert する。
+    /// SP entry (= `kind=sp`、 instance `sp-<project>-<host>`) は AddressBook 構造を 2 軸化する
+    /// PR-3 (= `project_ports` HashMap 追加) まで filter で除外、 既存 entry の汚染回避。
     pub fn auto_upsert_from_discovered(&mut self, world: &crate::lan_discovery::DiscoveredWorld) {
-        // instance_name の先頭 segment を alias 化 (例: `macbook-a._vp._tcp.local.` → `macbook-a`)
-        let alias = world
+        // VP-154 PR-1: kind != "world" は filter (= SP entry は AddressBook book に入れない)。
+        // TXT record `kind` 不在は v3.1 (VP-148/149) からの旧 entry 互換、 default で world 扱い。
+        let kind = world
+            .properties
+            .get("kind")
+            .map(|s| s.as_str())
+            .unwrap_or("world");
+        if kind != "world" {
+            return;
+        }
+        // instance_name の先頭 segment を取って alias 化:
+        // - VP-154+: `world-mito-mac-4._vp._tcp.local.` → segment[0] = `world-mito-mac-4`
+        //           ここから `world-` prefix を strip して `mito-mac-4` を alias
+        // - VP-149-: `mito-mac-4._vp._tcp.local.` → segment[0] = `mito-mac-4` (= 旧 entry 互換)
+        let first_segment = world
             .instance_name
             .split('.')
             .next()
-            .unwrap_or(&world.instance_name)
+            .unwrap_or(&world.instance_name);
+        let alias = first_segment
+            .strip_prefix("world-")
+            .unwrap_or(first_segment)
             .to_string();
         if alias.is_empty() {
             return;
@@ -374,8 +394,8 @@ mod tests {
     }
 
     #[test]
-    fn auto_upsert_from_discovered_uses_instance_name_segment() {
-        // VP-149: instance_name 先頭 segment が alias になる (= `macbook-a._vp._tcp.local.` → `macbook-a`)
+    fn auto_upsert_from_discovered_legacy_no_kind_field() {
+        // VP-149 旧 entry 互換: TXT record に kind 不在 → world 扱いで upsert
         let world = crate::lan_discovery::DiscoveredWorld {
             hostname: "macbook-a.local.".to_string(),
             instance_name: "macbook-a._vp._tcp.local.".to_string(),
@@ -387,15 +407,70 @@ mod tests {
         let mut book = AddressBook::default();
         book.auto_upsert_from_discovered(&world);
         assert_eq!(book.worlds.len(), 1);
-        let entry = &book.worlds[0];
-        assert_eq!(entry.alias, "macbook-a");
-        assert_eq!(entry.hostname, "macbook-a.local"); // 末尾 `.` trim 済
-        assert_eq!(entry.port, 32000);
-        assert_eq!(entry.discovered_via, "mDNS");
+        assert_eq!(book.worlds[0].alias, "macbook-a");
+    }
 
-        // 同 instance_name で再 upsert (= ServiceResolved 重複) は last-write-wins
+    #[test]
+    fn auto_upsert_from_discovered_world_kind_strips_prefix() {
+        // VP-154 PR-1: instance `world-mito-mac-4` の `world-` prefix を strip して alias `mito-mac-4`
+        let mut props = std::collections::HashMap::new();
+        props.insert("kind".to_string(), "world".to_string());
+        let world = crate::lan_discovery::DiscoveredWorld {
+            hostname: "mito-mac-4.local.".to_string(),
+            instance_name: "world-mito-mac-4._vp._tcp.local.".to_string(),
+            port: 32000,
+            pubkey: "pending".to_string(),
+            version: "v3".to_string(),
+            properties: props,
+        };
+        let mut book = AddressBook::default();
+        book.auto_upsert_from_discovered(&world);
+        assert_eq!(book.worlds.len(), 1);
+        let entry = &book.worlds[0];
+        assert_eq!(entry.alias, "mito-mac-4"); // `world-` prefix strip 済
+        assert_eq!(entry.hostname, "mito-mac-4.local");
+        assert_eq!(entry.port, 32000);
+    }
+
+    #[test]
+    fn auto_upsert_from_discovered_sp_kind_filtered() {
+        // VP-154 PR-1 Moody Blues fix #2 (Score 78): kind=sp は AddressBook に upsert しない
+        // (= 「book には world のみ」 invariant、 SP entry は PR-3 で project_ports field に入る path)
+        let mut props = std::collections::HashMap::new();
+        props.insert("kind".to_string(), "sp".to_string());
+        props.insert("project".to_string(), "creo-ui".to_string());
+        let world = crate::lan_discovery::DiscoveredWorld {
+            hostname: "mito-mac-4.local.".to_string(),
+            instance_name: "sp-creo-ui-mito-mac-4._vp._tcp.local.".to_string(),
+            port: 33005,
+            pubkey: "pending".to_string(),
+            version: "v3".to_string(),
+            properties: props,
+        };
+        let mut book = AddressBook::default();
+        book.auto_upsert_from_discovered(&world);
+        assert!(
+            book.worlds.is_empty(),
+            "SP entry should not be upserted to book"
+        );
+    }
+
+    #[test]
+    fn auto_upsert_from_discovered_last_write_wins() {
+        let mut props = std::collections::HashMap::new();
+        props.insert("kind".to_string(), "world".to_string());
+        let world = crate::lan_discovery::DiscoveredWorld {
+            hostname: "mito-mac-4.local.".to_string(),
+            instance_name: "world-mito-mac-4._vp._tcp.local.".to_string(),
+            port: 32000,
+            pubkey: "pending".to_string(),
+            version: "v3".to_string(),
+            properties: props,
+        };
+        let mut book = AddressBook::default();
+        book.auto_upsert_from_discovered(&world);
         let mut world2 = world.clone();
-        world2.port = 32100; // port 変化
+        world2.port = 32100;
         book.auto_upsert_from_discovered(&world2);
         assert_eq!(book.worlds.len(), 1);
         assert_eq!(book.worlds[0].port, 32100);

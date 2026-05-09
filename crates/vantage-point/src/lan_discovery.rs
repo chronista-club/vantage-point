@@ -63,6 +63,40 @@ pub fn os_local_hostname() -> Option<String> {
 /// VP world の mDNS service type (`_vp._tcp.local.`)
 pub const SERVICE_TYPE: &str = "_vp._tcp.local.";
 
+/// mDNS announce の kind (VP-154 PR-1)
+///
+/// instance_name と TXT record `kind` field を 内部生成、 caller は kind だけ渡す。
+/// `World` = machine identity anchor (1 machine 1 個)、 `Sp` = project-scoped data plane
+/// (各 project 1 個、 cross-machine forward は SP に直接 1 hop で deliver する設計)。
+#[derive(Debug, Clone)]
+pub enum AnnounceKind {
+    /// TheWorld daemon (= machine identity anchor、 control plane)
+    World,
+    /// SP (= project-scoped data plane、 mDNS browse で project 単位 resolve)
+    Sp { project: String },
+}
+
+impl AnnounceKind {
+    /// instance_name 生成: `world-<localhost>` or `sp-<project>-<localhost>`
+    ///
+    /// VP-153 Layer 2 problem 自然解決: instance が OS LocalHostName と **異なる** prefix
+    /// (= `world-` / `sp-`) を持つため、 Bonjour 自身の hostname collision に至らず OS dialog 出ない。
+    fn instance_name(&self, local_host: &str) -> String {
+        match self {
+            Self::World => format!("world-{}", local_host),
+            Self::Sp { project } => format!("sp-{}-{}", project, local_host),
+        }
+    }
+
+    /// TXT record の `kind` field 値 (= `"world"` or `"sp"`)
+    fn kind_str(&self) -> &str {
+        match self {
+            Self::World => "world",
+            Self::Sp { .. } => "sp",
+        }
+    }
+}
+
 /// pubkey TXT record の placeholder (PR-P3-4 で actual Ed25519 fingerprint に置換)
 pub const PUBKEY_PLACEHOLDER: &str = "pending";
 
@@ -107,15 +141,17 @@ impl Drop for MdnsAnnouncer {
     }
 }
 
-/// mDNS で `_vp._tcp.local.` を announce する
+/// mDNS で `_vp._tcp.local.` を announce する (VP-154 PR-1: kind-aware)
 ///
-/// - `instance_name`: service の display name (= machine name や user choice)
-/// - `port`: TheWorld API port
+/// - `kind`: [`AnnounceKind::World`] (= machine anchor) or [`AnnounceKind::Sp { project }`] (= project SP)
+/// - `port`: API port (= World は 32000、 SP は 33000+)
 /// - `pubkey`: TXT record の pubkey field (= P3-4 まで [`PUBKEY_PLACEHOLDER`])
 ///
+/// instance_name は kind から自動生成 (= `world-{localhost}` / `sp-{project}-{localhost}`)、
+/// TXT record に `kind` (= `"world"` / `"sp"`) と project (Sp のみ) を含める。
 /// 戻り値の [`MdnsAnnouncer`] が drop された時点で deregister される。
 pub fn announce(
-    instance_name: &str,
+    kind: AnnounceKind,
     port: u16,
     pubkey: &str,
 ) -> Result<MdnsAnnouncer, mdns_sd::Error> {
@@ -126,8 +162,13 @@ pub fn announce(
     let local_host = os_local_hostname().unwrap_or_else(|| format!("vp-{}", port));
     // mDNS hostname は末尾 `.` 必須、 `<localhostname>.local.` 形式
     let host_for_mdns = format!("{}.local.", local_host);
+    let instance_name = kind.instance_name(&local_host);
 
     let mut properties: HashMap<String, String> = HashMap::new();
+    properties.insert("kind".to_string(), kind.kind_str().to_string());
+    if let AnnounceKind::Sp { project } = &kind {
+        properties.insert("project".to_string(), project.clone());
+    }
     properties.insert("pubkey".to_string(), pubkey.to_string());
     properties.insert("port".to_string(), port.to_string());
     properties.insert("version".to_string(), PROTOCOL_VERSION.to_string());
@@ -135,7 +176,7 @@ pub fn announce(
     // IP は daemon が auto-detect (`enable_addr_auto`)、 第 4 引数は空文字列で OK。
     let info = ServiceInfo::new(
         SERVICE_TYPE,
-        instance_name,
+        &instance_name,
         &host_for_mdns,
         "",
         port,
@@ -148,7 +189,8 @@ pub fn announce(
     daemon.register(info)?;
 
     tracing::info!(
-        "mDNS announce: instance={} host={} port={} pubkey={}",
+        "mDNS announce: kind={} instance={} host={} port={} pubkey={}",
+        kind.kind_str(),
         instance_name,
         host_for_mdns,
         port,
@@ -359,6 +401,46 @@ mod tests {
     fn protocol_version_matches_mailbox_v3() {
         // docs/spec/mailbox-address-v3.md の v3 と整合
         assert_eq!(PROTOCOL_VERSION, "v3");
+    }
+
+    #[test]
+    fn announce_kind_world_instance_name() {
+        // VP-154 PR-1: World は `world-<localhost>` (= LocalHostName 直接 announce ではないので
+        // OS Bonjour 自身の hostname と collision しない、 VP-153 Layer 2 自然解消)
+        let kind = AnnounceKind::World;
+        assert_eq!(kind.instance_name("mito-mac-4"), "world-mito-mac-4");
+        assert_eq!(kind.kind_str(), "world");
+    }
+
+    #[test]
+    fn announce_kind_sp_instance_name() {
+        // VP-154 PR-1: SP は `sp-<project>-<localhost>` (= per-project unique instance)
+        let kind = AnnounceKind::Sp {
+            project: "creo-ui".to_string(),
+        };
+        assert_eq!(kind.instance_name("mito-mac-4"), "sp-creo-ui-mito-mac-4");
+        assert_eq!(kind.kind_str(), "sp");
+    }
+
+    #[test]
+    fn announce_kind_world_and_sp_dont_collide() {
+        // 同 LocalHostName で World + 複数 SP が同時 announce しても instance_name は全 unique
+        let world = AnnounceKind::World;
+        let sp1 = AnnounceKind::Sp {
+            project: "creo-ui".to_string(),
+        };
+        let sp2 = AnnounceKind::Sp {
+            project: "vantage-point".to_string(),
+        };
+        let host = "mito-mac-4";
+        let names: std::collections::HashSet<String> = [
+            world.instance_name(host),
+            sp1.instance_name(host),
+            sp2.instance_name(host),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(names.len(), 3);
     }
 
     #[test]
