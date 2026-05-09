@@ -649,17 +649,34 @@ pub async fn run(
     // TXT record に `kind=sp` + `project=<name>` + `port=<sp_port>` を含める。
     // World announce (= `world-<localhost>`) と instance namespace が分離、 collision なし。
     // 戻り値の MdnsAnnouncer は serve 終了 (= graceful shutdown) で scope exit、 Drop で auto deregister。
-    let _sp_mdns_announcer = match crate::lan_discovery::announce(
-        crate::lan_discovery::AnnounceKind::Sp {
-            project: project_name_for_remote.clone(),
-        },
-        port,
-        crate::lan_discovery::PUBKEY_PLACEHOLDER,
-    ) {
-        Ok(a) => Some(a),
-        Err(e) => {
+    //
+    // Moody Blues fix #1 (Score 82): announce() は内部で `os_local_hostname()` (= scutil
+    // shell-out) を呼ぶ sync blocking call、 tokio async context から直接 call せず
+    // `spawn_blocking` で wrap して worker thread 占有を回避 (= VP-153 fix と整合)。
+    let project_for_announce = project_name_for_remote.clone();
+    let _sp_mdns_announcer = match tokio::task::spawn_blocking(move || {
+        crate::lan_discovery::announce(
+            crate::lan_discovery::AnnounceKind::Sp {
+                project: project_for_announce,
+            },
+            port,
+            crate::lan_discovery::PUBKEY_PLACEHOLDER,
+        )
+    })
+    .await
+    {
+        Ok(Ok(a)) => Some(a),
+        Ok(Err(e)) => {
             tracing::warn!(
                 "mDNS announce 失敗 (SP {} LAN discovery 不能、 起動継続): {}",
+                project_name_for_remote,
+                e
+            );
+            None
+        }
+        Err(e) => {
+            tracing::warn!(
+                "mDNS announce spawn_blocking join 失敗 (SP {}): {}",
                 project_name_for_remote,
                 e
             );
@@ -1143,17 +1160,28 @@ pub async fn run_world(
     // VP-154 PR-1: World announce は `AnnounceKind::World` で `world-{localhost}` instance に。
     // VP-153 Layer 2 (= 過去 announce stale entry との self collision) は instance prefix で
     // OS LocalHostName と異なる namespace になり 自然解消。
-    let _mdns_announcer = match crate::lan_discovery::announce(
-        crate::lan_discovery::AnnounceKind::World,
-        port,
-        crate::lan_discovery::PUBKEY_PLACEHOLDER,
-    ) {
-        Ok(a) => Some(a),
-        Err(e) => {
+    //
+    // Moody Blues fix #1 (Score 82): announce() は内部で sync `scutil` shell-out、
+    // `spawn_blocking` で wrap して tokio worker thread 占有を回避。
+    let _mdns_announcer = match tokio::task::spawn_blocking(move || {
+        crate::lan_discovery::announce(
+            crate::lan_discovery::AnnounceKind::World,
+            port,
+            crate::lan_discovery::PUBKEY_PLACEHOLDER,
+        )
+    })
+    .await
+    {
+        Ok(Ok(a)) => Some(a),
+        Ok(Err(e)) => {
             tracing::warn!(
                 "mDNS announce 失敗 (LAN discovery 不能、 World 起動継続): {}",
                 e
             );
+            None
+        }
+        Err(e) => {
+            tracing::warn!("mDNS announce spawn_blocking join 失敗 (World): {}", e);
             None
         }
     };
