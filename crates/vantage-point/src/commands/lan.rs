@@ -481,6 +481,55 @@ mod tests {
     }
 
     #[test]
+    fn address_book_serializes_round_trip_with_project_ports() {
+        // VP-154 PR-3 (Moody Blues Issue #2): project_ports populated 状態の round-trip 検証。
+        // TOML 1.0 仕様で `[[world]]` array element 内 HashMap は inline table
+        // (`project_ports = {creo-ui = 33005}`) として serialize される (= `[world.project_ports]`
+        // サブセクション形式は array of tables 制約で使えない)。 toml 1.1 crate の挙動が
+        // 期待通りで、 disk persistence の forward / backward が破綻しないことを保証する。
+        let mut book = AddressBook::default();
+        let mut entry = make_entry("mito-mac-4", "mito-mac-4.local", 32000);
+        entry.project_ports.insert("creo-ui".to_string(), 33005);
+        entry
+            .project_ports
+            .insert("vantage-point".to_string(), 33002);
+        book.upsert(entry);
+
+        let raw = toml::to_string_pretty(&book).unwrap();
+        let parsed: AddressBook = toml::from_str(&raw).unwrap();
+        assert_eq!(parsed.worlds, book.worlds);
+        assert_eq!(parsed.worlds[0].project_ports.get("creo-ui"), Some(&33005));
+        assert_eq!(
+            parsed.worlds[0].project_ports.get("vantage-point"),
+            Some(&33002)
+        );
+    }
+
+    #[test]
+    fn address_book_loads_old_schema_without_project_ports() {
+        // VP-154 PR-3 (Moody Blues Issue #2): 旧 schema (= v3.1 / VP-148/149) で書かれた
+        // `addresses.toml` を新 binary で load する際、 `project_ports` field 不在でも
+        // `#[serde(default)]` で空 HashMap として deserialize される forward-compat 確認。
+        // migration なしで旧 entry が動き続ける invariant の test 化。
+        let raw = r#"
+[[world]]
+alias = "old-entry"
+hostname = "old-entry.local"
+port = 32000
+pubkey = "pending"
+discovered_via = "mDNS"
+last_seen = "2026-05-09T00:00:00Z"
+"#;
+        let book: AddressBook = toml::from_str(raw).expect("旧 schema parse 成功");
+        assert_eq!(book.worlds.len(), 1);
+        assert_eq!(book.worlds[0].alias, "old-entry");
+        assert!(
+            book.worlds[0].project_ports.is_empty(),
+            "旧 entry は project_ports 不在 → 空 HashMap で load"
+        );
+    }
+
+    #[test]
     fn address_book_path_uses_config_dir() {
         let path = AddressBook::path();
         assert!(path.ends_with("addresses.toml"));
