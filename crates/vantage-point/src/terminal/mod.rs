@@ -9,6 +9,7 @@
 //! ```
 
 pub(crate) mod state;
+pub(crate) mod term_attach;
 
 #[cfg(target_os = "macos")]
 pub mod renderer;
