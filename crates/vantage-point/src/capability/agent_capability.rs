@@ -69,8 +69,6 @@ pub struct AgentCapability {
     current_task: Option<tokio::task::JoinHandle<()>>,
     /// キャンセル用チャンネル
     cancel_tx: Option<mpsc::Sender<()>>,
-    /// Mailbox 受信 loop タスク (initialize で spawn、shutdown で abort)
-    msgbox_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl AgentCapability {
@@ -83,7 +81,6 @@ impl AgentCapability {
             event_bus: None,
             current_task: None,
             cancel_tx: None,
-            msgbox_task: None,
         }
     }
 
@@ -96,7 +93,6 @@ impl AgentCapability {
             event_bus: None,
             current_task: None,
             cancel_tx: None,
-            msgbox_task: None,
         }
     }
 
@@ -393,17 +389,14 @@ impl Capability for AgentCapability {
     fn diagnose(&self) -> crate::capability::DiagnosticReport {
         // run_state は async なので read() 結果を待てない (diagnose は sync trait method)。
         // 同期読みだけ — current_task / event_bus の状態は sync で判断可能。
+        // VP-157: msgbox_recv_active は廃止 (= AgentCapability の専属 consumer 削除、
+        // agent box の owner は AppState.agent_msgbox_lead に移管された)。
         let details = serde_json::json!({
             "working_dir": self.config.working_dir,
             "model": self.config.model,
             "has_event_bus": self.event_bus.is_some(),
             "has_current_task": self.current_task.is_some(),
-            "msgbox_recv_active": self
-                .msgbox_task
-                .as_ref()
-                .map(|t| !t.is_finished())
-                .unwrap_or(false),
-            "stand_metaphor": "Heaven's Door",
+            "stand_metaphor": "Echoes",
         });
         crate::capability::DiagnosticReport::with_details(
             self.name(),
@@ -424,38 +417,12 @@ impl Capability for AgentCapability {
             self.config.working_dir = Some(dir.to_string());
         }
 
-        // Mailbox 受信 loop を spawn（ctx.msgbox() が設定されていれば）
-        // 受信メッセージは CapabilityEvent として EventBus に emit し、
-        // 他レイヤー（tmux / WebSocket / Native App）が観測可能にする。
-        if let Some(handle) = ctx.msgbox().cloned() {
-            let event_bus = self.event_bus.clone();
-            let task = tokio::spawn(async move {
-                tracing::info!("AgentCapability msgbox recv loop started");
-                while let Some(msg) = handle.recv().await {
-                    tracing::debug!(
-                        "AgentCapability received msg: id={} from={} kind={:?}",
-                        msg.id,
-                        msg.from,
-                        msg.kind
-                    );
-                    // EventBus へ配信（他レイヤー観測用、業務処理は未着手）
-                    if let Some(ref bus) = event_bus {
-                        let event =
-                            CapabilityEvent::new("agent.msgbox.received", "agent-capability")
-                                .with_payload(&serde_json::json!({
-                                    "id": msg.id,
-                                    "from": msg.from,
-                                    "to": msg.to,
-                                    "kind": format!("{:?}", msg.kind),
-                                    "payload": msg.payload,
-                                }));
-                        bus.emit(event).await;
-                    }
-                }
-                tracing::info!("AgentCapability msgbox recv loop ended (handle closed)");
-            });
-            self.msgbox_task = Some(task);
-        }
+        // VP-157: agent box の専属 consumer を廃止 (= observer 化)。
+        // 旧: ctx.msgbox().recv() loop で agent#lead の msg を消費 → EventBus emit
+        // 新: agent box の owner は AppState.agent_msgbox_lead に移管、 lead Claude session
+        //     (= MCP tool host) が直接 recv する。 sidebar / Native App notification 等の
+        //     EventBus 経路が必要な場合は、 別 trigger (= 他 capability の lifecycle event 等) で
+        //     EventBus に emit する設計に再構成 (= VP-159 H1 framework で整理予定)。
 
         self.state = CapabilityState::Idle;
 
@@ -478,10 +445,7 @@ impl Capability for AgentCapability {
         // 実行中のタスクをキャンセル
         self.cancel().await?;
 
-        // Mailbox 受信 loop を停止
-        if let Some(task) = self.msgbox_task.take() {
-            task.abort();
-        }
+        // VP-157: msgbox_task 廃止のため、 stop 対象は cancel() の current_task のみ。
 
         self.state = CapabilityState::Stopped;
         Ok(())

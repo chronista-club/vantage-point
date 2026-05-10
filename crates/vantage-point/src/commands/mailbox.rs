@@ -50,6 +50,9 @@ pub enum MailboxCommands {
         /// Sender 絞り込み (Some なら 該当 from の msg のみ受信)
         #[arg(short, long)]
         from: Option<String>,
+        /// VP-157: 受信先 lane (default "lead")。 worker lane は VP-159 で対応予定。
+        #[arg(short = 'L', long, default_value = "lead")]
+        lane: String,
     },
     /// SP の msgbox に message を送信 (Phase 1a 補助、 ad-hoc test 用)
     Send {
@@ -79,6 +82,9 @@ pub enum MailboxCommands {
         /// Sender 絞り込み
         #[arg(short, long)]
         from: Option<String>,
+        /// VP-157: 受信先 lane (default "lead")
+        #[arg(short = 'L', long, default_value = "lead")]
+        lane: String,
         /// inner watch exit 後の re-spawn 待機秒数
         #[arg(long, default_value_t = 2)]
         restart_delay: u64,
@@ -88,9 +94,12 @@ pub enum MailboxCommands {
 /// Entry point — main.rs から呼び出される。
 pub async fn run(cmd: MailboxCommands) -> Result<()> {
     match cmd {
-        MailboxCommands::Watch { url, timeout, from } => {
-            watch(&url, timeout, from.as_deref()).await
-        }
+        MailboxCommands::Watch {
+            url,
+            timeout,
+            from,
+            lane,
+        } => watch(&url, timeout, from.as_deref(), &lane).await,
         MailboxCommands::Send {
             url,
             to,
@@ -101,8 +110,9 @@ pub async fn run(cmd: MailboxCommands) -> Result<()> {
             url,
             timeout,
             from,
+            lane,
             restart_delay,
-        } => watch_supervised(&url, timeout, from.as_deref(), restart_delay).await,
+        } => watch_supervised(&url, timeout, from.as_deref(), &lane, restart_delay).await,
     }
 }
 
@@ -112,6 +122,7 @@ async fn watch_supervised(
     url: &str,
     timeout_secs: u64,
     from_filter: Option<&str>,
+    lane: &str,
     restart_delay_secs: u64,
 ) -> Result<()> {
     let mut iteration = 0u64;
@@ -125,7 +136,7 @@ async fn watch_supervised(
             iteration, url, timeout_secs
         );
 
-        let watch_fut = watch(url, timeout_secs, from_filter);
+        let watch_fut = watch(url, timeout_secs, from_filter, lane);
         tokio::pin!(watch_fut);
 
         tokio::select! {
@@ -164,7 +175,7 @@ async fn watch_supervised(
     }
 }
 
-async fn watch(url: &str, timeout_secs: u64, from_filter: Option<&str>) -> Result<()> {
+async fn watch(url: &str, timeout_secs: u64, from_filter: Option<&str>, lane: &str) -> Result<()> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(timeout_secs + 5)) // server timeout + buffer
         .build()
@@ -172,8 +183,8 @@ async fn watch(url: &str, timeout_secs: u64, from_filter: Option<&str>) -> Resul
     let endpoint = format!("{}/api/msgbox/recv", url.trim_end_matches('/'));
 
     eprintln!(
-        "[vp mailbox watch] subscribed to {} (timeout={}s, from={:?})",
-        endpoint, timeout_secs, from_filter
+        "[vp mailbox watch] subscribed to {} (timeout={}s, from={:?}, lane={})",
+        endpoint, timeout_secs, from_filter, lane
     );
 
     let ctrl_c = tokio::signal::ctrl_c();
@@ -187,7 +198,7 @@ async fn watch(url: &str, timeout_secs: u64, from_filter: Option<&str>) -> Resul
                 eprintln!("[vp mailbox watch] ctrl-c received, exiting");
                 return Ok(());
             }
-            result = poll_recv(&client, &endpoint, timeout_secs, from_filter) => {
+            result = poll_recv(&client, &endpoint, timeout_secs, from_filter, lane) => {
                 match result {
                     Ok(Some(msg_json)) => {
                         // Print one JSON line per message (line-buffered for Monitor downstream).
@@ -228,10 +239,12 @@ async fn poll_recv(
     endpoint: &str,
     timeout_secs: u64,
     from_filter: Option<&str>,
+    lane: &str,
 ) -> Result<Option<serde_json::Value>> {
     let body = serde_json::json!({
         "timeout": timeout_secs,
         "from": from_filter,
+        "lane": lane,
     });
 
     let resp = client

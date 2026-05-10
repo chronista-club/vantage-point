@@ -97,9 +97,10 @@ impl ProcessCapabilities {
 
     /// 全 Capability を初期化
     pub async fn initialize(&self) -> anyhow::Result<()> {
-        // 各 Capability に Msgbox を登録
+        // VP-157: agent box の register は server.rs に移管 (= AppState.agent_msgbox_lead が
+        // 唯一の Handle owner、 AgentCapability は observer に降格)。 Protocol のみ従来通り
+        // Capability 専属 consumer として register。
         let protocol_msgbox = self.msgbox_router.register("protocol").await;
-        let agent_msgbox = self.msgbox_router.register("agent").await;
 
         // Protocol Capability 初期化
         {
@@ -108,9 +109,9 @@ impl ProcessCapabilities {
             protocol.initialize(&ctx).await?;
         }
 
-        // Agent Capability 初期化
+        // Agent Capability 初期化 (VP-157: msgbox 渡しなし = observer 化)
         {
-            let ctx = CapabilityContext::new().with_msgbox(agent_msgbox);
+            let ctx = CapabilityContext::new();
             let mut agent = self.agent.write().await;
             agent.initialize(&ctx).await?;
         }

@@ -185,9 +185,13 @@ pub async fn run(
         }
     };
 
-    // MCP 用 Msgbox ハンドルを登録（VP-24）
-    // VP-147 PR-P2-2 (gap 1): mcp / notify register は addresses() snapshot より前で実行する必要あり。
-    let mcp_msgbox = capabilities.msgbox_router.register("mcp").await;
+    // VP-157: agent box の lead Handle を server で 1 回 register、 AppState が唯一の owner に。
+    // 旧 `register("mcp")` は廃止 (= mcp box → agent box に統合、 truth source 一本化)。
+    // AgentCapability の専属 consumer も VP-157 で削除済 (= observer 化)、 ここで生成した
+    // Handle が agent#lead box の唯一の receiver。
+    // VP-147 PR-P2-2 (gap 1): notify register は addresses() snapshot より前で実行する必要あり、
+    // 同じ理由で agent register もこの位置で行う。
+    let agent_msgbox_lead = capabilities.msgbox_router.register("agent").await;
 
     // Notification ブリッジ: Msgbox "notify" → DistributedNotification（VP-24）
     // Msgbox に送られた Notification メッセージを macOS DistributedNotification に変換
@@ -307,7 +311,7 @@ pub async fn run(
         topic_router,
         canvas_senders: Arc::new(tokio::sync::Mutex::new(Vec::new())),
         started_at: chrono::Utc::now().to_rfc3339(),
-        mcp_msgbox: Some(mcp_msgbox),
+        agent_msgbox_lead: Some(agent_msgbox_lead),
         vpdb,
         // ポート別ディレクトリで分離（複数プロセスの namespace 衝突を防ぐ）
         // run() 冒頭で作成した Whitesnake を共有（Msgbox persistent と同一インスタンス）
@@ -878,8 +882,8 @@ pub async fn run_world(
         topic_router,
         canvas_senders: Arc::new(tokio::sync::Mutex::new(Vec::new())),
         started_at: chrono::Utc::now().to_rfc3339(),
-        mcp_msgbox: None,   // World モードでは MCP Msgbox 不要
-        vpdb: vpdb.clone(), // World モードでも DB 参照あり
+        agent_msgbox_lead: None, // VP-157: World モードでは agent box 不要 (= SP per project だけが持つ)
+        vpdb: vpdb.clone(),      // World モードでも DB 参照あり
         // TheWorld もポート別ディレクトリで分離
         whitesnake: world_whitesnake,
         // Phase A4-2b: World モードでは Lane / Project Stand を持たない (空 Pool で AppState を満たす)
