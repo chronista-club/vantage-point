@@ -836,7 +836,7 @@ pub async fn start_unison_server(
 // Msgbox ハンドラー (VP-24)
 // =============================================================================
 
-/// Msgbox にメッセージを送信
+/// Msgbox にメッセージを送信 (VP-157: agent box 経由に統一)
 async fn handle_msg_send(
     state: &AppState,
     payload: serde_json::Value,
@@ -852,20 +852,25 @@ async fn handle_msg_send(
     let to = msg.to.clone();
     let msg_id = msg.id.clone();
 
-    // MCP 用ハンドルがあればそれを使い、なければ直接 router 経由
-    if let Some(ref mcp_msgbox) = state.mcp_msgbox {
-        mcp_msgbox
-            .send(msg)
-            .await
-            .map_err(|e| format!("Msgbox send failed: {}", e))?;
-    } else {
-        return Err("MCP msgbox not initialized".to_string());
-    }
+    // VP-157: agent#lead box の Handle 経由で send (= router に流す point は同じ、
+    // mcp box 廃止で agent_msgbox_lead が唯一の lead-side Handle)。
+    let agent_msgbox_lead = state
+        .agent_msgbox_lead
+        .as_ref()
+        .ok_or_else(|| "agent#lead msgbox not initialized".to_string())?;
+    agent_msgbox_lead
+        .send(msg)
+        .await
+        .map_err(|e| format!("Msgbox send failed: {}", e))?;
 
     Ok(serde_json::json!({"status": "ok", "to": to, "id": msg_id}))
 }
 
 /// Msgbox からメッセージを受信（タイムアウト付き、Selective Receive）
+///
+/// VP-157: lane param で受信先 box を選択 (default `lead`)。 lane=lead は
+/// `agent_msgbox_lead` Handle を使う。 worker lane の per-lane mailbox 受信は
+/// VP-159 (Stand/Service framework) で対応予定、 本 PR では未対応で err 返却。
 ///
 /// from フィルタ指定時は `recv_matching` を使い、フィルタ不一致メッセージを
 /// stash に退避する（メッセージロスなし）。
@@ -882,20 +887,35 @@ async fn handle_msg_recv(
         .get("from")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
+    // VP-157: lane param (default "lead")
+    let lane = payload
+        .get("lane")
+        .and_then(|v| v.as_str())
+        .unwrap_or("lead")
+        .to_string();
 
-    let mcp_msgbox = state
-        .mcp_msgbox
+    if lane != "lead" {
+        return Err(format!(
+            "lane='{}' is not yet supported in this PR (= worker lane mailbox は VP-159 で対応予定)",
+            lane
+        ));
+    }
+
+    let agent_msgbox_lead = state
+        .agent_msgbox_lead
         .as_ref()
-        .ok_or_else(|| "MCP msgbox not initialized".to_string())?;
+        .ok_or_else(|| "agent#lead msgbox not initialized".to_string())?;
 
     // タイムアウト付きで受信を試行（Selective Receive でメッセージロスなし）
     let result = tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), async {
         if let Some(filter) = from_filter {
             // Selective Receive: フィルタ不一致メッセージは stash に退避
-            mcp_msgbox.recv_matching(move |m| m.from == filter).await
+            agent_msgbox_lead
+                .recv_matching(move |m| m.from == filter)
+                .await
         } else {
             // フィルタなし: 通常の recv（stash 優先）
-            mcp_msgbox.recv().await
+            agent_msgbox_lead.recv().await
         }
     })
     .await;
@@ -931,11 +951,11 @@ async fn handle_msg_ack(
         .ok_or_else(|| "id required".to_string())?
         .to_string();
 
-    let mcp_msgbox = state
-        .mcp_msgbox
+    let agent_msgbox_lead = state
+        .agent_msgbox_lead
         .as_ref()
-        .ok_or_else(|| "MCP msgbox not initialized".to_string())?;
-    mcp_msgbox.ack(&id).await;
+        .ok_or_else(|| "agent#lead msgbox not initialized".to_string())?;
+    agent_msgbox_lead.ack(&id).await;
 
     Ok(serde_json::json!({"status": "ok", "id": id}))
 }

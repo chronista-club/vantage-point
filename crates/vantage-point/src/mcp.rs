@@ -145,7 +145,7 @@ pub struct MsgAckParams {
     pub id: String,
 }
 
-/// Parameters for msg_recv tool (VP-24)
+/// Parameters for msg_recv tool (VP-24, VP-157 で lane 追加)
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct MsgRecvParams {
     /// 受信タイムアウト（秒）
@@ -157,6 +157,12 @@ pub struct MsgRecvParams {
     /// 送信元フィルタ
     #[schemars(description = "Only receive messages from this address (optional filter)")]
     pub from: Option<String>,
+
+    /// VP-157: 受信先 lane (default "lead")。 worker lane は VP-159 で対応予定。
+    #[schemars(
+        description = "Receive from this lane's agent box (default: 'lead'). Worker lane support is planned in VP-159."
+    )]
+    pub lane: Option<String>,
 }
 
 /// Parameters for msg_directory tool (VP-65: cross-process actor discovery)
@@ -2375,7 +2381,8 @@ if bestId > 0 { print(bestId) }
             _ => MessageKind::Direct,
         };
 
-        let mut msg = crate::capability::msgbox::Message::new("mcp", &params.to, kind)
+        // VP-157: from = "agent" (= 正規 lead address、 旧 "mcp" は廃止)
+        let mut msg = crate::capability::msgbox::Message::new("agent", &params.to, kind)
             .with_payload(&params.payload);
 
         if let Some(reply_to) = params.reply_to {
@@ -2521,19 +2528,21 @@ if bestId > 0 { print(bestId) }
         )]))
     }
 
-    /// Receive a message from the MCP msgbox
+    /// Receive a message from the agent#&lt;lane&gt; box (VP-157: lane-aware)
     #[tool(
-        description = "Receive a message from the MCP msgbox. Waits up to timeout seconds for a message. Returns immediately if a message is already queued. Use this for inter-agent communication."
+        description = "Receive a message from this project's agent#<lane> box (default lane='lead'). Waits up to timeout seconds for a message. Returns immediately if a message is already queued. Use this for inter-lane communication. The agent box is the canonical lead address (= sender writes to 'agent@<project>')."
     )]
     async fn msg_recv(
         &self,
         rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<MsgRecvParams>,
     ) -> Result<CallToolResult, McpError> {
         let timeout = params.timeout.unwrap_or(5).min(30);
+        let lane = params.lane.unwrap_or_else(|| "lead".to_string());
 
         let payload = serde_json::json!({
             "timeout": timeout,
             "from": params.from,
+            "lane": lane,
         });
 
         let resp = self.quic_call("msg_recv", payload).await?;

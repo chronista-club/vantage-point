@@ -145,8 +145,12 @@ pub(crate) struct AppState {
     pub canvas_senders: Arc<tokio::sync::Mutex<Vec<tokio::sync::mpsc::Sender<serde_json::Value>>>>,
     /// プロセス起動時刻（ISO 8601）
     pub started_at: String,
-    /// MCP 用 Msgbox ハンドル（VP-24: MCP → Capability への Msgbox 配信）
-    pub mcp_msgbox: Option<Handle>,
+    /// Lead lane の agent box ハンドル (VP-156/VP-157: mcp box 廃止 + agent 一本化)
+    ///
+    /// 旧 `mcp_msgbox` の置き換え。 `agent#lead` box の唯一の Handle を保持し、
+    /// MCP tool / `vp mailbox watch` 経由の send/recv は本フィールドを通す。
+    /// AgentCapability の専属 consumer は VP-157 で廃止 (= observer 化)、 box の owner は本 AppState。
+    pub agent_msgbox_lead: Option<Handle>,
     /// SurrealDB クライアント（VP-21: 状態管理の DB 統一）
     pub vpdb: Option<vp_db::SharedVpDb>,
     /// Whitesnake 🐍 — 汎用永続化レイヤー

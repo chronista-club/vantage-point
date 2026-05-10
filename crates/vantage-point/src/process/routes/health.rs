@@ -183,10 +183,10 @@ pub async fn msgbox_send_handler(
         msg = msg.persistent();
     }
     let msg_id = msg.id.clone();
-    let Some(ref mcp) = state.mcp_msgbox else {
-        return Json(serde_json::json!({"error": "MCP msgbox not initialized"}));
+    let Some(ref agent_lead) = state.agent_msgbox_lead else {
+        return Json(serde_json::json!({"error": "agent#lead msgbox not initialized"}));
     };
-    match mcp.send(msg).await {
+    match agent_lead.send(msg).await {
         Ok(()) => Json(serde_json::json!({"status": "ok", "id": msg_id, "to": req.to})),
         Err(e) => Json(serde_json::json!({"error": e.to_string()})),
     }
@@ -194,7 +194,9 @@ pub async fn msgbox_send_handler(
 
 /// Msgbox 受信 debug endpoint (動作確認用)
 ///
-/// state.mcp_msgbox の Handle から 1 件 recv する。
+/// VP-157: lane param で受信先 box を選択 (default `lead`)。 lane=lead は
+/// `agent_msgbox_lead` Handle を使う。 worker lane は VP-159 で対応予定、
+/// 本 PR では未対応で err 返却。
 /// recv() 内で history.mark_received が走るため、/api/diagnose の recent
 /// で state: "received" + received_at_ms を観測できる。
 #[derive(serde::Deserialize, Default)]
@@ -205,6 +207,9 @@ pub struct MsgboxRecvRequest {
     /// from フィルタ（指定時は recv_matching）
     #[serde(default)]
     pub from: Option<String>,
+    /// VP-157: 受信先 lane (default "lead")。 worker lane は未対応。
+    #[serde(default)]
+    pub lane: Option<String>,
 }
 
 pub async fn msgbox_recv_handler(
@@ -212,13 +217,19 @@ pub async fn msgbox_recv_handler(
     Json(req): Json<MsgboxRecvRequest>,
 ) -> Json<serde_json::Value> {
     let timeout_secs = req.timeout.unwrap_or(2).min(30);
-    let Some(ref mcp) = state.mcp_msgbox else {
-        return Json(serde_json::json!({"error": "MCP msgbox not initialized"}));
+    let lane = req.lane.as_deref().unwrap_or("lead");
+    if lane != "lead" {
+        return Json(serde_json::json!({
+            "error": format!("lane='{}' is not yet supported in this PR (= worker lane は VP-159 で対応予定)", lane)
+        }));
+    }
+    let Some(ref agent_lead) = state.agent_msgbox_lead else {
+        return Json(serde_json::json!({"error": "agent#lead msgbox not initialized"}));
     };
     let result = tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), async {
         match req.from {
-            Some(filter) => mcp.recv_matching(move |m| m.from == filter).await,
-            None => mcp.recv().await,
+            Some(filter) => agent_lead.recv_matching(move |m| m.from == filter).await,
+            None => agent_lead.recv().await,
         }
     })
     .await;
