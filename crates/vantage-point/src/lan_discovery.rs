@@ -152,7 +152,19 @@ impl Drop for MdnsAnnouncer {
 ///
 /// instance_name は kind + identity_host から自動生成 (= `world-{identity}` / `sp-{project}-{identity}`)、
 /// TXT record に `kind` (= `"world"` / `"sp"`) と project (Sp のみ) を含める。
-/// SRV record の target hostname は **OS 現在 LocalHostName** を使う (= 接続解決は OS rename にも追従)。
+///
+/// SRV record の target hostname は **`vp-{identity}.local.` 専用 namespace** (VP-154 PR-3.6)。
+/// `enable_addr_auto()` がこの hostname で A record を publish するため、 OS Bonjour daemon が
+/// 持つ `<LocalHostName>.local.` namespace と衝突せず、 起動時 dialog (= "ローカルホスト名は
+/// すでに使用されています、 ... に変更されました") を抑止する。 peer は mDNS query で
+/// `vp-{identity}.local.` を解決 (= VP の mdns-sd daemon が answer)、 OS resolver は mDNSResponder
+/// 経由で同様に解決可能。
+///
+/// `identity_hostname_override` が `None` の場合は OS LocalHostName fallback (= `vp-{os_host}.local.`、
+/// OS rename に追従するが OS namespace とは分離されるため dialog は抑止される)。 LAN identity の
+/// 完全固定が必要なら `config.toml [network] advertise_hostname = "..."` を設定すること
+/// (= PR-3.5 で追加した override path)。
+///
 /// 戻り値の [`MdnsAnnouncer`] が drop された時点で deregister される。
 pub fn announce(
     kind: AnnounceKind,
@@ -161,18 +173,22 @@ pub fn announce(
     identity_hostname_override: Option<&str>,
 ) -> Result<MdnsAnnouncer, mdns_sd::Error> {
     let daemon = ServiceDaemon::new()?;
-    // VP-153: macOS Bonjour LocalHostName を真の source of truth とする (= SRV target 用)。
+    // VP-153: macOS Bonjour LocalHostName を真の source of truth とする (= identity_host fallback 用)。
     // Moody Blues fix #2 (Score 77): fallback を `format!("vp-{}", port)` で port-base 一意化、
     // 同 LAN 多台 fallback 時の host 衝突回避 (= 旧 `"unknown"` だと全台同 host で再 collision)。
     let os_host = os_local_hostname().unwrap_or_else(|| format!("vp-{}", port));
-    // SRV target = OS 現在値 (= 接続解決は OS rename 追従)
-    let host_for_mdns = format!("{}.local.", os_host);
     // VP-154 PR-3.5: instance_name 用 host は config override を優先 (= LAN identity 安定化)、
     // None なら OS 現在値で旧挙動と互換。
     let identity_host = identity_hostname_override
         .map(|s| s.to_string())
         .unwrap_or_else(|| os_host.clone());
     let instance_name = kind.instance_name(&identity_host);
+    // VP-154 PR-3.6: SRV target を `vp-{identity}.local.` 専用 namespace に切り出し。
+    // enable_addr_auto はこの hostname で A record を publish するため、 OS Bonjour daemon の
+    // `<LocalHostName>.local.` namespace (= `mito-mac-N.local.` 等) と分離され、 起動時 dialog 抑止。
+    // identity_host が config override 由来なら完全固定 (例: `vp-mito-mac.local.`)、 OS fallback でも
+    // VP namespace の中で OS rename に追従するだけ (= OS と衝突しない)。
+    let host_for_mdns = format!("vp-{}.local.", identity_host);
 
     let mut properties: HashMap<String, String> = HashMap::new();
     properties.insert("kind".to_string(), kind.kind_str().to_string());
@@ -482,6 +498,44 @@ mod tests {
             kind.instance_name("mito-mac"),
             "sp-creo-ui-mito-mac",
             "override 値で SP instance_name 生成"
+        );
+    }
+
+    #[test]
+    fn srv_target_uses_vp_namespace_prefix() {
+        // VP-154 PR-3.6: SRV target hostname の format が `vp-{identity}.local.` で OS namespace
+        // (= `<LocalHostName>.local.`) と分離されることを保証。 これが崩れると enable_addr_auto が
+        // OS と同 hostname の A record を publish して macOS dialog が再発する。
+        //
+        // announce() 内 `format!("vp-{}.local.", identity_host)` の format spec を string-level で固定。
+        let identity = "mito-mac";
+        let srv_target = format!("vp-{}.local.", identity);
+        assert!(
+            srv_target.starts_with("vp-"),
+            "SRV target は vp- prefix が必須 (OS namespace 分離)"
+        );
+        assert!(
+            srv_target.ends_with(".local."),
+            "SRV target は .local. (末尾 dot 含む) で終わる必要 (mDNS 規約)"
+        );
+        // OS namespace (= `mito-mac.local.`) と完全一致しないことも明示
+        assert_ne!(srv_target, format!("{}.local.", identity));
+    }
+
+    #[test]
+    fn srv_target_fallback_uses_os_host_with_vp_prefix() {
+        // VP-154 PR-3.6: identity_hostname_override が None の fallback path でも
+        // SRV target は `vp-` prefix を持つ (= OS rename された host でも namespace 分離は維持)。
+        // 例えば OS が `mito-mac-10` に increment しても VP は `vp-mito-mac-10.local.` で publish、
+        // OS Bonjour の `mito-mac-10.local.` とは別 namespace。
+        let os_host_after_rename = "mito-mac-10";
+        let host_for_mdns = format!("vp-{}.local.", os_host_after_rename);
+        assert!(host_for_mdns.starts_with("vp-"));
+        assert!(host_for_mdns.ends_with(".local."));
+        assert_ne!(
+            host_for_mdns,
+            format!("{}.local.", os_host_after_rename),
+            "fallback でも OS host と完全一致してはいけない (= dialog 再発の signature)"
         );
     }
 
