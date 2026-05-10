@@ -451,7 +451,7 @@ impl RemoteRoutingClient {
                     ),
                 })?;
         tracing::debug!(
-            "Router: PR-4 1-hop forward (local cache hit) host={} project={} sp_port={}",
+            "Router: PR-4 1-hop forward (address book hit) host={} project={} sp_port={}",
             host,
             project,
             sp_port
