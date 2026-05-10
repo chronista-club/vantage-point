@@ -99,7 +99,11 @@ pub enum LayerScope {
 /// 想定 (= PR-γ で Lane に migrate されたら entity bound 化)、 その際は両 trait impl も可能。
 pub trait Stand: Any + Send + Sync + 'static {
     /// actor 名 (例: `"agent"` / `"protocol"`)。 mailbox address の actor 部分と一致する。
-    fn name(&self) -> &str;
+    ///
+    /// `name` ではなく `actor_name` という命名は、 既存 `Capability::name()` (default method、
+    /// `info().name` を clone する shortcut) との衝突回避のため (PR-2 着手時に発覚、 PR-1 で
+    /// `name()` で landed したが caller 皆無で rename safe)。
+    fn actor_name(&self) -> &str;
 
     /// actor の lifecycle / address scope (= LSCM 公理)。
     fn layer_scope(&self) -> LayerScope;
@@ -127,7 +131,10 @@ pub trait Stand: Any + Send + Sync + 'static {
 /// 現実に合わせて追加する。
 pub trait Service: Any + Send + Sync + 'static {
     /// service 名 (例: `"notify"` / `"hermit_purple"`)。 mailbox address の actor 部分と一致する。
-    fn name(&self) -> &str;
+    ///
+    /// `Stand::actor_name()` と同じ命名規約 (= 既存 `Capability::name()` 衝突回避、 PR-2 で
+    /// rename された後)。
+    fn actor_name(&self) -> &str;
 
     /// service の lifecycle / address scope。 多くは `Project`、 `hermit_purple` のみ `World`。
     fn layer_scope(&self) -> LayerScope;
@@ -147,7 +154,7 @@ mod tests {
     }
 
     impl Stand for FixtureStand {
-        fn name(&self) -> &str {
+        fn actor_name(&self) -> &str {
             self.name
         }
         fn layer_scope(&self) -> LayerScope {
@@ -165,7 +172,7 @@ mod tests {
     }
 
     impl Service for FixtureService {
-        fn name(&self) -> &str {
+        fn actor_name(&self) -> &str {
             self.name
         }
         fn layer_scope(&self) -> LayerScope {
@@ -182,7 +189,7 @@ mod tests {
             name: "agent",
             scope: LayerScope::Project,
         };
-        assert_eq!(s.name(), "agent");
+        assert_eq!(s.actor_name(), "agent");
         assert_eq!(s.layer_scope(), LayerScope::Project);
     }
 
@@ -192,7 +199,7 @@ mod tests {
             name: "notify",
             scope: LayerScope::Project,
         };
-        assert_eq!(s.name(), "notify");
+        assert_eq!(s.actor_name(), "notify");
         assert_eq!(s.layer_scope(), LayerScope::Project);
     }
 
@@ -247,6 +254,45 @@ mod tests {
             scope: LayerScope::Project,
         });
         assert_eq!(stand.layer_scope(), service.layer_scope());
-        assert_ne!(stand.name(), service.name());
+        assert_ne!(stand.actor_name(), service.actor_name());
+    }
+
+    #[test]
+    fn n_distinct_stands_coexist_in_collection() {
+        // PR-2 invariant (PR-δ-3 同型): 異なる name / scope の N 個 Stand impl が同じ
+        // Vec<Box<dyn Stand>> で共存できる事 (= PR-4 supervisor 統一の foundation)。
+        // 実 impl (AgentCapability / ProtocolCapability) を fixture で代理、 actor_name と
+        // layer_scope の組合わせで supervisor が dispatch / filter できる pattern を検証。
+        let stands: Vec<Box<dyn Stand>> = vec![
+            Box::new(FixtureStand {
+                name: "agent",
+                scope: LayerScope::Project,
+            }),
+            Box::new(FixtureStand {
+                name: "protocol",
+                scope: LayerScope::Project,
+            }),
+            Box::new(FixtureStand {
+                name: "hermit_purple",
+                scope: LayerScope::World,
+            }),
+        ];
+        assert_eq!(stands.len(), 3);
+
+        // name が distinct で取り出せる
+        let names: Vec<&str> = stands.iter().map(|s| s.actor_name()).collect();
+        assert_eq!(names, vec!["agent", "protocol", "hermit_purple"]);
+
+        // layer_scope で filter できる (= PR-4 supervisor が scope 別に dispatch する pattern)
+        let project_count = stands
+            .iter()
+            .filter(|s| s.layer_scope() == LayerScope::Project)
+            .count();
+        let world_count = stands
+            .iter()
+            .filter(|s| s.layer_scope() == LayerScope::World)
+            .count();
+        assert_eq!(project_count, 2, "Project scope の Stand は 2 個");
+        assert_eq!(world_count, 1, "World scope の Stand は 1 個");
     }
 }
