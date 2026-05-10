@@ -307,9 +307,10 @@ impl RemoteRoutingClient {
     ///
     /// 1. **same-machine** (`Address::Project { world: None, .. }` 等): TheWorld で lookup
     ///    （cache）→ ActorEntry → `http_forward("[::1]", entry.port, ...)` で local HTTP
-    /// 2. **cross-machine LAN** (VP-148 PR-P3-3、 `Address::Project { world: Some(host), .. }`):
-    ///    AddressBook (= `~/.config/vp/addresses.toml`) で `host` を hostname lookup →
-    ///    `http_forward(entry.hostname, entry.port, ...)` で cross-machine HTTP forward
+    /// 2. **cross-machine LAN** (VP-154 PR-4、 `Address::Project { world: Some(host), .. }`):
+    ///    AddressBook (= `~/.config/vp/addresses.toml`) で `host` + `project` を 1-hop 解決 →
+    ///    `http_forward(entry.hostname, sp_port, ...)` で cross-machine HTTP forward (fail-fast、
+    ///    local cache miss は `ActorNotFound` 即返却、 詳細 [`Self::forward_cross_machine`])
     /// 3. msg.to を actor 名のみ、msg.from を `actor@local_project` に正規化
     /// 4. exponential backoff で最大 5 回リトライ
     pub async fn forward(
@@ -379,26 +380,37 @@ impl RemoteRoutingClient {
         })
     }
 
-    /// VP-148 PR-P3-3: cross-machine LAN forward (= AddressBook lookup + cross-machine HTTP)
+    /// VP-154 PR-4: cross-machine LAN forward — **1-hop direct forward** (fail-fast)
     ///
     /// `host` は v3.1 syntax の world segment (例 `macbook-a.local`、 dot 必須)。
-    /// AddressBook の hostname と equality match で entry 取得、 hostname:port に HTTP POST。
-    /// hub query (= dot 含む FQDN で `.local` 以外) は Phase 4+ で別 path、 本 PR では
-    /// AddressBook miss 時に `ActorNotFound` エラーで返却。
+    /// AddressBook の hostname と equality match で entry 取得、 SP port は **local cache** から
+    /// 解決 (= mDNS auto-discover で populate された [`AddressEntry::project_ports`])、 SP port に
+    /// 直接 HTTP POST。 hub query (= dot 含む FQDN で `.local` 以外) は Phase 4+ で別 path、 本 PR
+    /// では AddressBook miss 時に `ActorNotFound` エラーで返却。
     ///
-    /// VP-150 fix: cross-machine forward は **2 hop** で resolve する。
-    /// hop 1: AddressBook で host → `<host>:<world_port>` (= remote TheWorld daemon)、
-    /// hop 2: remote TheWorld の `/api/world/msgbox/lookup` で project + actor → SP port、
-    /// hop 3: 取得した SP port に `http_forward(host, sp_port, msg)` で actual deliver。
-    /// 旧実装 (= PR-P3-3、 #312) は hop 2 を欠落させて TheWorld port (32000) に直接 POST して
-    /// いたため、 receiver が `/api/msgbox/remote_deliver` endpoint を持たず 404 で fail。
+    /// ## hop 構造の歴史
+    ///
+    /// - PR-P3-3 (#312): hop 2 を欠落させて TheWorld port に直接 POST → 404 で fail (VP-150)
+    /// - VP-150 fix (#314): **2-hop** 構造に修正。 hop 2 = remote TheWorld の lookup endpoint で
+    ///   SP port 解決、 hop 3 = SP port に actual deliver
+    /// - VP-154 PR-4 (本実装): **1-hop direct forward** に圧縮。 PR-3 で導入された
+    ///   [`AddressEntry::project_ports`] HashMap を [`AddressBook::find_sp_port`] で引いて
+    ///   network query 1 回節約。 fail-fast 設計 = local cache miss は即 `ActorNotFound`、
+    ///   user が `vp lan discover` で手動 trigger or mDNS auto-populate を待つ。
+    ///
+    /// ## fail-fast trade-off
+    ///
+    /// silent fallback (= miss 時に旧 2-hop 復帰) と異なり、 cache miss が **観測可能 surface** に
+    /// なる。 mDNS populate 遅延 / 新規 SP advertise 未着の状態を user に明示信号として返す。
+    /// dogfood で実害が頻出すれば PR-4.5 で fallback path (= [`lookup_via_world_url`] 復活) を
+    /// 追加する想定で、 当該関数は `#[allow(dead_code)]` retain している。
     async fn forward_cross_machine(
         &self,
         host: &str,
         resolved: &Address,
         msg: Message,
     ) -> Result<(), RemoteRoutingError> {
-        // hop 1: AddressBook で host → world_port を取得
+        // hop 1 (local): AddressBook で host → entry (= hostname + project_ports)
         let book = crate::commands::lan::AddressBook::load()
             .map_err(|e| RemoteRoutingError::LookupFailed(format!("address book load: {}", e)))?;
         let entry = book
@@ -411,20 +423,41 @@ impl RemoteRoutingClient {
                 ),
             })?;
         let target_host = entry.hostname.clone();
-        let world_port = entry.port; // remote TheWorld daemon port (= 32000)
 
-        // hop 2: remote TheWorld に project + actor を query して SP port を取得
-        //
-        // Moody Blues fix #2 (Score 77): hop 2 は **1-shot 3s timeout** で retry なし、
-        // hop 3 (= http_forward retry loop) と非対称。 remote TheWorld が 起動中 / GC pause
-        // 等で一時不応答だと、 sender が即 LookupFailed / ActorNotFound で fail する。
-        // dogfood 段階では許容、 dogfood で実害 (= short outage で msg lost) が出たら別 PR で
-        // 簡易 retry (max 3 回、 1s/2s backoff) を hop 2 にも追加する path 残し。
-        let remote_world_url = format!("http://{}:{}", target_host, world_port);
-        let sp_entry = lookup_via_world_url(&remote_world_url, resolved).await?;
-        let sp_port = sp_entry.port;
+        // VP-154 PR-4: project を resolved Address から抽出。 federated form 以外は本関数の
+        // contract 違反 (= forward() で Address::Project { world: Some(_), .. } のみ dispatch)、
+        // defensive guard で fail-fast。
+        let project = match resolved {
+            Address::Project { project, .. } => project.as_str(),
+            _ => {
+                return Err(RemoteRoutingError::InvalidAddress(
+                    "forward_cross_machine called with non-Project address (= contract violation)"
+                        .to_string(),
+                ));
+            }
+        };
 
-        // hop 3: SP port に actual deliver
+        // VP-154 PR-4: SP port を local AddressBook から 1-hop 解決 (= mDNS auto-discover で
+        // populate 済み)、 miss なら ActorNotFound で fail-fast (= silent 2-hop fallback なし)。
+        let sp_port =
+            book.find_sp_port(host, project)
+                .ok_or_else(|| RemoteRoutingError::ActorNotFound {
+                    actor: format!(
+                        "{} (project '{}' SP port not in address book entry for host '{}'、 \
+                     mDNS populate 待ち or `vp lan discover` で手動 trigger 推奨)",
+                        resolved.actor_or_unknown(),
+                        project,
+                        host
+                    ),
+                })?;
+        tracing::debug!(
+            "Router: PR-4 1-hop forward (local cache hit) host={} project={} sp_port={}",
+            host,
+            project,
+            sp_port
+        );
+
+        // hop network: SP port に actual deliver
         let actor_only = resolved.actor_or_unknown().to_string();
         let mut normalized = msg.clone();
         normalized.to = actor_only;
@@ -438,22 +471,18 @@ impl RemoteRoutingClient {
                 Ok(()) => {
                     if attempt > 0 {
                         tracing::debug!(
-                            "Router: cross-machine forward 成功 (retry {}) to={} via {}:{} (sp_port resolved via {}:{})",
+                            "Router: cross-machine forward 成功 (retry {}) to={} via {}:{}",
                             attempt + 1,
                             normalized.to,
                             target_host,
-                            sp_port,
-                            target_host,
-                            world_port
+                            sp_port
                         );
                     } else {
                         tracing::debug!(
-                            "Router: cross-machine forward to={} via {}:{} (sp_port resolved via {}:{}) ok",
+                            "Router: cross-machine forward to={} via {}:{} ok",
                             normalized.to,
                             target_host,
-                            sp_port,
-                            target_host,
-                            world_port
+                            sp_port
                         );
                     }
                     return Ok(());
@@ -520,15 +549,21 @@ impl RemoteRoutingClient {
 
 /// VP-150: 任意 base URL の TheWorld registry に `/api/world/msgbox/lookup` query を投げる
 ///
-/// cross-machine forward の **hop 2** で使う。 self の TheWorld (= `RemoteRoutingClient::lookup`
+/// VP-154 PR-4 で `forward_cross_machine` から呼ばれなくなったため `#[allow(dead_code)]`。
+/// PR-4 fail-fast 設計で dogfood 中に cache miss 実害が頻出した場合、 PR-4.5 で
+/// fallback path (= 1-hop miss → 2-hop 復帰) として復活させる想定で **意図的に retain**。
+/// 削除した場合は git history (commit `c17fb3f` 直前) から復元すれば最低限の再実装で済む。
+///
+/// (旧 doc) cross-machine forward の **hop 2** で使う。 self の TheWorld (= `RemoteRoutingClient::lookup`
 /// の `self.world_base_url` 固定 path) と異なり、 remote `<host>:<world_port>` を base に
 /// 同 endpoint を query する。 戻り値の `ActorEntry.port` が **remote machine 上の SP port**
-/// で、 caller (= `forward_cross_machine`) がそれに対して `http_forward` する。
+/// で、 caller がそれに対して `http_forward` する。
 ///
 /// cache 不在: cross-machine の lookup result は host 別で keyed する必要があり、 既存
 /// `lookup_cache` (= self-world 想定) と分離が必要。 PR-P3-3 と同じく毎回 query を
 /// 許容する design (= dogfood 段階 perf 後送り)。 将来的には `(host, actor, project)`
 /// キーの cache を追加する path 残し。
+#[allow(dead_code)]
 async fn lookup_via_world_url(
     world_base_url: &str,
     resolved: &Address,
