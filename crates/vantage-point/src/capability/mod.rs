@@ -26,6 +26,7 @@ pub mod params;
 pub mod process_manager_capability;
 pub mod protocol_capability;
 pub mod registry;
+pub mod stand_service;
 pub mod update_capability;
 pub mod whitesnake;
 
@@ -43,5 +44,6 @@ pub use process_manager_capability::{
 };
 pub use protocol_capability::ProtocolCapability;
 pub use registry::CapabilityRegistry;
+pub use stand_service::{LayerScope, Service, Stand};
 pub use update_capability::UpdateCapability;
 pub use whitesnake::Whitesnake;
