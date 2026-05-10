@@ -112,7 +112,7 @@ body{overflow:hidden;}
      fitAddon.fit() + WS resize 通知で伝播 → 既存 lane terminal も即時反映。
      default は旧 hardcoded 値と同じなので既存挙動への regression なし。 */
   --terminal-font-size:16;
-  --terminal-line-height:1.15;
+  --terminal-line-height:1.27;
   --terminal-letter-spacing:0;
   --terminal-font-family:'VPMono35', 'VPMono', 'JetBrainsMono Nerd Font', 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace;
   --terminal-cursor-style:bar; /* "bar" / "block" / "underline" */
@@ -386,6 +386,11 @@ body{overflow:hidden;}
 </script>
 <script>
 "#,
+    include_str!("../assets/addon-unicode-graphemes.js"),
+    r#"
+</script>
+<script>
+"#,
     include_str!("../assets/addon-image.js"),
     r#"
 </script>
@@ -527,68 +532,38 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
     container.appendChild(tdiv);
     host.appendChild(container);
 
-    // VP-143 Live Token 群: --terminal-{font-size,line-height,letter-spacing,font-family,cursor-style}
-    // を CSS variable から読取 (creo-ui-editor-host 経由 runtime 編集対応)。 旧 hardcoded 値は fallback。
+    // VP-162 baseline (2026-05-10、 user request):
+    //   drift / ghost char 調査のため、 Terminal options + 全 addon を **完全 minimum** に reset。
+    //   この状態で「きちんと描画されるか」 を確認 → 1 つずつ active 化して drift 再現する要素を特定。
+    //   過去 PR #247 / Phase 5-D / mem_1CaVpvsBKR3ckieRXo1nwr の累積 fix が multi-factor で
+    //   原因特定不能になったため、 systematic isolation で再 derive する experimental approach。
     const tokens = readTerminalTokens();
     const term = new Terminal({
       fontFamily: tokens.fontFamily,
       fontSize: tokens.fontSize,
-      lineHeight: tokens.lineHeight,
-      letterSpacing: tokens.letterSpacing,
+      lineHeight: tokens.lineHeight,    // V4+ visual axis (default 1.27、 Live Token で 1.0-1.5 調整可)
+      cursorStyle: tokens.cursorStyle,  // V4+ visual axis (default 'bar'、 Live Token で bar/block/underline 切替可)
+      scrollSensitivity: 5,             // trackpad で適度 (5 確定 2026-05-11)、 mouse wheel は xterm.js 内部 limitation で 1 行扱い、 page scroll は Shift+PgUp/PgDn で代替
+      smoothScrollDuration: 0,          // discrete jump、 PR #247 ghost char 抑制 (= smooth 125ms + 高速 scroll で cell update skip → fragment 残骸)、 V4+ で再証明 (2026-05-11)
+      scrollback: 5000,                 // history buffer (drift 無罪確認 2026-05-11、 default 1000 でも drift 再現 → scrollback は origin ではない)
       theme: theme,
-      allowProposedApi: true,
-      convertEol: true,
-      scrollback: 5000,
-      // cursorBlink + smoothScroll は WebGL renderer の frame budget を圧迫し、
-      // 高速 scroll 時に frame skip → 「正しい column 位置に古い文字が残る」
-      // 形の ghost char を発生させる。 PR #247 (WebGL + Unicode11Addon) で
-      // CJK width drift は解消したが、 fast scroll 限定の frame skip は別因子。
-      //  - cursorBlink=false: blink animation の常時 frame consume を停止
-      //  - smoothScrollDuration=0: 80ms smooth scroll path を無効化、 discrete jump に
-      cursorBlink: false,
-      cursorStyle: tokens.cursorStyle,
-      cursorWidth: 2,
-      smoothScrollDuration: 0,
-      // fontLigatures は DOM renderer と相性が悪く、 ligature 想定の 2 cell 幅 protect が
-      // cell update を skip させて ghost char (mem_1CaVpvsBKR3ckieRXo1nwr) の主因になる疑い。
-      // VP は @xterm/addon-ligatures を load していないため、 true でも合字描画は事実上 no-op、
-      // off にしても表示に変化なし (cell tracking オーバーヘッドだけ消える)。
-      fontLigatures: false
     });
+
+    // === FitAddon = 描画 prerequisite (baseline で確定 2026-05-10) ===
+    // xterm.js は term.open(tdiv) 時に container 現 size から cols/rows 計算、
+    // .lane-term は flex layout で size 確定が fitAddon.fit() 後 → これ無しだと
+    // canvas/DOM が 0 描画 = 「コンソール表示されない」 状態。 baseline 必須。
+    // line 624 ほか 6 箇所で fitAddon.fit() を参照、 ResizeObserver / Live Token 反映でも依存。
     const fitAddon = new FitAddon.FitAddon();
     term.loadAddon(fitAddon);
 
-    // Unicode 11 width tables (mem_1CaVpvsBKR3ckieRXo1nwr ghost char 調査の co-factor)。
-    //  xterm.js v5.5.0 default は Unicode 6 width table で、 CJK 拡張 / box-drawing / 絵文字の
-    //  cell 幅計算が tmux 側 (modern Unicode 想定) と drift する。 結果 cell の物理 index と
-    //  論理 cell index がずれて、 古い cell の content が DOM 上に取り残される。
-    //  Unicode11Addon を load + activeVersion = '11' で width table を最新に揃える。
-    try {
-      const u11 = new Unicode11Addon.Unicode11Addon();
-      term.loadAddon(u11);
-      term.unicode.activeVersion = '11';
-    } catch (e) {
-      console.warn('[xterm:' + address + '] Unicode11Addon load failed:', e);
-    }
-
-    // Image addon (sixel + iTerm IIP + kitty graphics inline image protocol)。
-    //  公式 docs より: WebGL Addon の **前に** load することで fast render path を獲得 (framebuffer 直叩き)。
-    //  順序を守らないと DOM fallback に degrade。 Claude が generate する chart / mermaid / matplotlib を
-    //  terminal 内 inline で表示できる ─ 「Canvas + TUI、 両者並列」 (CLAUDE.md コアコンセプト) を補完。
-    try {
-      const imageAddon = new ImageAddon.ImageAddon();
-      term.loadAddon(imageAddon);
-    } catch (e) {
-      console.warn('[xterm:' + address + '] ImageAddon load failed:', e);
-    }
-
-    // WebGL renderer (per-instance、 個別に context 持つ)
-    //  Phase 5-D 実験完了 (2026-05-02): DOM renderer でも ghost char 再現 → WebGL 起因ではなく
-    //  DOM cell recycling + Unicode width drift の組合せが原因と判明。 WebGL は frame ごとに
-    //  canvas 全描画する性質上、 cell recycling 起因の残骸が原理的に発生しない → 復活が正解。
-    //  GPU context loss (Mac で別 app 切替時に起きうる) は onContextLoss で dispose → DOM fallback。
-    const VP_USE_WEBGL = true;
+    // === WebglAddon = baseline 高速 renderer (V4 確定 2026-05-10、 user 方針) ===
+    // user 方針「基本 WebGL 描画」 を反映、 V3 (= DOM renderer) で drift 不再現を観察した上で
+    // V4 で WebGL active 化。 過去 Phase 5-D (2026-05-02) で「WebGL 復活が正解」 と判断、 frame
+    // 毎 canvas 全描画で cell recycling 起因 ghost char が原理的に発生しない property が再評価対象。
+    // GPU context loss (Mac で別 app 切替時) は onContextLoss で dispose → DOM fallback。
     let webglAddon = null;
+    const VP_USE_WEBGL = true;
     if (VP_USE_WEBGL) {
       try {
         webglAddon = new WebglAddon.WebglAddon();
@@ -602,12 +577,41 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
       }
     }
 
-    // Progress addon (OSC 9;4 ConEmu progress sequence)。
+    // === DISABLED for baseline (drift 再現性確認後、 1 つずつ active 化) ===
+    //
+    // Terminal options (drift 観察後 必要なものを再追加):
+    //   letterSpacing: tokens.letterSpacing,     // Live Token (default 0)、 xterm.js default = 0 で同じ
+    //   allowProposedApi: true,                  // addon API access、 addon enable と pair
+    //   cursorBlink: false,                      // PR #247 frame budget save、 xterm.js default = false で同じ
+    //   cursorWidth: 2,                          // bar cursor 太め、 default = 1 (= thin)
+    //   fontLigatures: false,                    // mem_1CaVpvsBKR3ckieRXo1nwr cell tracking 抑制、 xterm.js default = false で同じ
+    //
+    // === Unicode11Addon + UnicodeGraphemesAddon = Unicode 15 grapheme cluster (V6 試行 2026-05-11) ===
+    //  Unicode11Addon: width table 補正 (Unicode 11、 emoji / CJK 拡張 / box-drawing の cell width)
+    //  UnicodeGraphemesAddon: grapheme cluster 認識 (Unicode 15、 ZWJ sequence + skin tone +
+    //    variation selector を 1 unit として render)。 ⚠️ experimental addon、 dogfood で問題出たら disable
+    //  両 addon を register、 activeVersion = '15' で graphemes 優先 (= 11 は fallback)。
+    try {
+      const u11 = new Unicode11Addon.Unicode11Addon();
+      term.loadAddon(u11);
+    } catch (e) {
+      console.warn('[xterm:' + address + '] Unicode11Addon load failed:', e);
+    }
+    try {
+      const ug = new UnicodeGraphemesAddon.UnicodeGraphemesAddon();
+      term.loadAddon(ug);
+      term.unicode.activeVersion = '15-graphemes';
+    } catch (e) {
+      console.warn('[xterm:' + address + '] UnicodeGraphemesAddon load failed:', e);
+      // Fallback: Unicode 11 (= width table のみ、 grapheme 不対応)
+      try { term.unicode.activeVersion = '11'; } catch (_) {}
+    }
+
+    // === ProgressAddon = OSC 9;4 ConEmu progress event capture (V4+ enhancer) ===
     //  shell tool / build script (cargo, bun, npm) や Claude CLI が emit する progress 状態
     //  (state: 0=remove/1=normal/2=error/3=indeterminate/4=warning、 value: 0-100) を event 化。
-    //  creo-ui の `.creo-progress[data-variant][data-indeterminate]` (creo-components.css:1903-2021)
-    //  に state mapping が完全一致 → CSS 既存資産で即視覚化可。
-    //  MVP: console.log で event を確認、 後続 PR で sidebar wire (現状は capture のみ)。
+    //  creo-ui の `.creo-progress[data-variant][data-indeterminate]` に state mapping が完全一致 →
+    //  CSS 既存資産で即視覚化可。 MVP: console.log で event を確認、 後続 PR で sidebar wire。
     try {
       const progressAddon = new ProgressAddon.ProgressAddon();
       term.loadAddon(progressAddon);
@@ -618,7 +622,7 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
       console.warn('[xterm:' + address + '] ProgressAddon load failed:', e);
     }
 
-    // Web links addon (URL 自動 link 化、 cmd+click で外部ブラウザに open)。
+    // === WebLinksAddon = URL auto-link + cmd+click handler (V4+ enhancer) ===
     //  default handler は window.open ─ wry/tao の WebView では tao の navigation handler が
     //  intercept する想定。 WebView 内遷移なら custom handler で IPC 経由 Mac native open に置換。
     //  MVP: default handler、 dogfood で挙動を観察してから wire 方針を決める。
@@ -628,6 +632,29 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
     } catch (e) {
       console.warn('[xterm:' + address + '] WebLinksAddon load failed:', e);
     }
+
+    // Addons (final state、 VP-162 baseline 確定 2026-05-11):
+    //   ✅ FitAddon          — baseline 必須 (描画 prerequisite)
+    //   ✅ WebglAddon        — baseline 必須 (高速 GPU 描画、 PR #247 ghost char 抑制 defender)
+    //   ✅ Unicode11Addon    — V5 active 確定 (drift / ghost char 不再現 + box-drawing column 揃い)
+    //   ✅ ProgressAddon     — V4+ enhancer
+    //   ✅ WebLinksAddon     — V4+ enhancer
+    //   ❌ ImageAddon        — VP-162 で不要判定 (2026-05-11、 = archaeology trace below)
+    //
+    // === drift 真犯人 (= archaeology trace、 2026-05-11) ===
+    //   convertEol: true — drift origin 確定:
+    //     V4+++ で 4 件一括復帰した時 drift 再演、 1 件ずつ revert isolation で convertEol が真犯人と判明。
+    //     仮説では「単純な \n → \r\n 変換、 cell rendering 不介入」 だったが、 実際は xterm.js の
+    //     write buffer + cell index 計算と相互作用で drift 起こす (= 推測、 真因は upstream issue 候補)。
+    //     modern shell (zsh / bash) は \r\n standard で disable で問題なし、 legacy shell の
+    //     \n only output 対策が必要な時のみ revisit。
+    //
+    // === 不要判定 (= archaeology trace、 2026-05-11) ===
+    //   ImageAddon — VP-162 で不要判定:
+    //     VP architecture は「Canvas (= PP) で視る、 TUI で操る」、 image 表示は PP body markdown
+    //     pipeline (doc 13 PR-ε で landed) が主路線、 terminal 内 inline (sixel/iTerm IIP/kitty
+    //     graphics) は副次的。 claude も markdown ![...](data:...) で emit が主、 protocol-level
+    //     emit は rare。 復帰 cost 低い (= try/catch 1 block) ので必要時のみ revisit。
 
     term.open(tdiv);
     // 実験: terminal textarea の autocomplete を **on** に。 browser の autofill が typed commands を
