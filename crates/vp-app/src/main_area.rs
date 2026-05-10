@@ -114,7 +114,7 @@ body{overflow:hidden;}
   --terminal-font-size:16;
   --terminal-line-height:1.15;
   --terminal-letter-spacing:0;
-  --terminal-font-family:"JetBrainsMono Nerd Font", "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
+  --terminal-font-family:'VPMono', 'JetBrainsMono Nerd Font', 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace;
   --terminal-cursor-style:bar; /* "bar" / "block" / "underline" */
 }
 .pane{
@@ -470,7 +470,7 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
   };
   probe.remove();
   const monoFamily = (css.getPropertyValue('--typography-family-mono') || '').trim()
-    || '"JetBrainsMono Nerd Font", "Cascadia Code", "SF Mono", Menlo, Consolas, monospace';
+    || `'VPMono', 'JetBrainsMono Nerd Font', 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace`;
 
   // ========= VP-143 Live Token 群 (terminal): default 値 + reader / validator =========
   // CSS variable から読取、 不正値や未設定時は fallback (= 旧 hardcoded 値) に縮退。
