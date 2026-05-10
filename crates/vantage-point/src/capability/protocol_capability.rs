@@ -12,6 +12,7 @@ use crate::capability::core::{
     CapabilityState,
 };
 use crate::capability::eventbus::FilteredSubscription;
+use crate::capability::stand_service::{LayerScope, Stand};
 use crate::protocol::{ProtocolMessage, ToAcp, ToAgUi, VantageEvent};
 use async_trait::async_trait;
 use std::any::Any;
@@ -331,6 +332,32 @@ impl ProtocolRouter {
 }
 
 // =============================================================================
+// VP-159 PR-2: Stand trait impl
+// =============================================================================
+
+/// `ProtocolCapability` を VP-159 `Stand` (= ECS entity bound actor) として登録する impl。
+///
+/// `ProtocolCapability` は **consumer 化** された Stand (= `register("protocol")` で mailbox
+/// 所有 + recv loop で AG-UI / ACP / Vantage transport bridge)。 VP-157 で observer 化された
+/// `AgentCapability` と非対称な pattern だが、 PR-2 段階では両者を Stand trait の minimal
+/// marker (name / layer_scope / as_any) として揃え、 pattern 形式化は PR-4 supervisor 統一時に
+/// trait 拡張で行う。
+impl Stand for ProtocolCapability {
+    fn actor_name(&self) -> &str {
+        "protocol"
+    }
+
+    fn layer_scope(&self) -> LayerScope {
+        // SP-local (= 1 Process per project)
+        LayerScope::Project
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+// =============================================================================
 // Tests
 // =============================================================================
 
@@ -441,5 +468,14 @@ mod tests {
             }
             _ => panic!("Expected SynergyActivated event"),
         }
+    }
+
+    #[test]
+    fn protocol_capability_implements_stand() {
+        // VP-159 PR-2: ProtocolCapability が Stand trait を満たす事を sig level で確認
+        let cap = ProtocolCapability::new();
+        let stand: &dyn Stand = &cap;
+        assert_eq!(stand.actor_name(), "protocol");
+        assert_eq!(stand.layer_scope(), LayerScope::Project);
     }
 }
