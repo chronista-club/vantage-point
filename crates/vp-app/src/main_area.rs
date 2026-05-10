@@ -546,6 +546,7 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
       scrollSensitivity: 5,             // trackpad で適度 (5 確定 2026-05-11)、 mouse wheel は xterm.js 内部 limitation で 1 行扱い、 page scroll は Shift+PgUp/PgDn で代替
       smoothScrollDuration: 0,          // discrete jump、 PR #247 ghost char 抑制 (= smooth 125ms + 高速 scroll で cell update skip → fragment 残骸)、 V4+ で再証明 (2026-05-11)
       scrollback: 5000,                 // history buffer (drift 無罪確認 2026-05-11、 default 1000 でも drift 再現 → scrollback は origin ではない)
+      allowProposedApi: true,           // Unicode11Addon 等の proposed API 利用許可 (V8.2 復帰 2026-05-11、 V6 baseline reset で削除した silent regression を fix)
       theme: theme,
     });
 
@@ -556,6 +557,34 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
     // line 624 ほか 6 箇所で fitAddon.fit() を参照、 ResizeObserver / Live Token 反映でも依存。
     const fitAddon = new FitAddon.FitAddon();
     term.loadAddon(fitAddon);
+
+    // === Unicode11Addon + UnicodeGraphemesAddon = Unicode 15 grapheme cluster + width 補正 ===
+    //  ⚠️ load 順序が critical: WebglAddon load の **前** に widthProvider を確定する必要がある。
+    //  理由: WebGL renderer は loadAddon 時に widthProvider を読んで glyph atlas を事前構築、
+    //  後から activeVersion を切替えても atlas は古い width のまま (= upstream design limitation)。
+    //  ⚠️ allowProposedApi: true (Terminal options) と pair 必須。 V6 baseline reset で proposed API
+    //  gate を閉じた時、 2 addon とも silent fail で drift + 1 cell 幅の同時症状発生 (= V7/V8.1/V8.2
+    //  経由で path 探索後、 V8.3 で `allowProposedApi: true` 復帰、 V9 で graphemes も再 enable)。
+    //
+    //  Unicode11Addon: width table 補正 (Unicode 11、 emoji / CJK 拡張 / box-drawing の cell width)
+    //  UnicodeGraphemesAddon: grapheme cluster 認識 (Unicode 15、 ZWJ + skin tone + variation selector)
+    //  activeVersion は graphemes が '15-graphemes' で u11 の '11' を上書き、 widthProvider を確定。
+    try {
+      const u11 = new Unicode11Addon.Unicode11Addon();
+      term.loadAddon(u11);
+      term.unicode.activeVersion = '11';
+    } catch (e) {
+      console.warn('[xterm:' + address + '] Unicode11Addon load failed:', e);
+    }
+    try {
+      const ug = new UnicodeGraphemesAddon.UnicodeGraphemesAddon();
+      term.loadAddon(ug);
+      term.unicode.activeVersion = '15-graphemes';
+    } catch (e) {
+      console.warn('[xterm:' + address + '] UnicodeGraphemesAddon load failed:', e);
+      // Fallback: Unicode 11 (= width table のみ、 grapheme 不対応)
+      try { term.unicode.activeVersion = '11'; } catch (_) {}
+    }
 
     // === WebglAddon = baseline 高速 renderer (V4 確定 2026-05-10、 user 方針) ===
     // user 方針「基本 WebGL 描画」 を反映、 V3 (= DOM renderer) で drift 不再現を観察した上で
@@ -581,32 +610,12 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
     //
     // Terminal options (drift 観察後 必要なものを再追加):
     //   letterSpacing: tokens.letterSpacing,     // Live Token (default 0)、 xterm.js default = 0 で同じ
-    //   allowProposedApi: true,                  // addon API access、 addon enable と pair
     //   cursorBlink: false,                      // PR #247 frame budget save、 xterm.js default = false で同じ
     //   cursorWidth: 2,                          // bar cursor 太め、 default = 1 (= thin)
     //   fontLigatures: false,                    // mem_1CaVpvsBKR3ckieRXo1nwr cell tracking 抑制、 xterm.js default = false で同じ
     //
-    // === Unicode11Addon + UnicodeGraphemesAddon = Unicode 15 grapheme cluster (V6 試行 2026-05-11) ===
-    //  Unicode11Addon: width table 補正 (Unicode 11、 emoji / CJK 拡張 / box-drawing の cell width)
-    //  UnicodeGraphemesAddon: grapheme cluster 認識 (Unicode 15、 ZWJ sequence + skin tone +
-    //    variation selector を 1 unit として render)。 ⚠️ experimental addon、 dogfood で問題出たら disable
-    //  両 addon を register、 activeVersion = '15' で graphemes 優先 (= 11 は fallback)。
-    try {
-      const u11 = new Unicode11Addon.Unicode11Addon();
-      term.loadAddon(u11);
-    } catch (e) {
-      console.warn('[xterm:' + address + '] Unicode11Addon load failed:', e);
-    }
-    try {
-      const ug = new UnicodeGraphemesAddon.UnicodeGraphemesAddon();
-      term.loadAddon(ug);
-      term.unicode.activeVersion = '15-graphemes';
-    } catch (e) {
-      console.warn('[xterm:' + address + '] UnicodeGraphemesAddon load failed:', e);
-      // Fallback: Unicode 11 (= width table のみ、 grapheme 不対応)
-      try { term.unicode.activeVersion = '11'; } catch (_) {}
-    }
-
+    //   (allowProposedApi: true は V8.2 で Terminal options 本体に復帰、 Unicode11Addon と pair 必須)
+    //
     // === ProgressAddon = OSC 9;4 ConEmu progress event capture (V4+ enhancer) ===
     //  shell tool / build script (cargo, bun, npm) や Claude CLI が emit する progress 状態
     //  (state: 0=remove/1=normal/2=error/3=indeterminate/4=warning、 value: 0-100) を event 化。
@@ -633,13 +642,14 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
       console.warn('[xterm:' + address + '] WebLinksAddon load failed:', e);
     }
 
-    // Addons (final state、 VP-162 baseline 確定 2026-05-11):
-    //   ✅ FitAddon          — baseline 必須 (描画 prerequisite)
-    //   ✅ WebglAddon        — baseline 必須 (高速 GPU 描画、 PR #247 ghost char 抑制 defender)
-    //   ✅ Unicode11Addon    — V5 active 確定 (drift / ghost char 不再現 + box-drawing column 揃い)
-    //   ✅ ProgressAddon     — V4+ enhancer
-    //   ✅ WebLinksAddon     — V4+ enhancer
-    //   ❌ ImageAddon        — VP-162 で不要判定 (2026-05-11、 = archaeology trace below)
+    // Addons (final state、 VP-162 V9 baseline 候補 2026-05-11、 dogfood 検証中):
+    //   ✅ FitAddon              — baseline 必須 (描画 prerequisite、 load 順序 1st)
+    //   ✅ Unicode11Addon        — width table 補正 (load 順序 2nd、 activeVersion '11')
+    //   ✅ UnicodeGraphemesAddon — grapheme cluster 認識 (load 順序 3rd、 activeVersion '15-graphemes')
+    //   ✅ WebglAddon            — 高速 GPU 描画 (load 順序 4th、 Unicode 15 widthProvider で atlas 構築)
+    //   ✅ ProgressAddon         — V4+ enhancer
+    //   ✅ WebLinksAddon         — V4+ enhancer
+    //   ❌ ImageAddon            — VP-162 で不要判定 (2026-05-11、 = archaeology trace below)
     //
     // === drift 真犯人 (= archaeology trace、 2026-05-11) ===
     //   convertEol: true — drift origin 確定:
@@ -648,6 +658,15 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
     //     write buffer + cell index 計算と相互作用で drift 起こす (= 推測、 真因は upstream issue 候補)。
     //     modern shell (zsh / bash) は \r\n standard で disable で問題なし、 legacy shell の
     //     \n only output 対策が必要な時のみ revisit。
+    //
+    //   allowProposedApi: false (= V6 baseline reset の silent regression) — V7-V8.2 で発見遅延:
+    //     V6 で「Terminal options 1 件ずつ active 化」 で削除した allowProposedApi が、 Unicode11Addon
+    //     + UnicodeGraphemesAddon (= 両方 proposed API) を silent fail させていた。 V6 → V7 (graphemes
+    //     disable) → V8.1 (Unicode11 復帰 + activeVersion '11') → V8.2 (load 順序修正) でも emoji 1 cell
+    //     幅と drift が残存、 V8.3 で `allowProposedApi: true` 復帰して両症状を解消。 V7 で UnicodeGraphemes
+    //     を「wrap drift 主犯」 と判定したが、 真犯人は proposed API gate の方だった (= V9 で再 enable
+    //     して drift 不再現を検証)。 教訓: **proposed addon を使う時は allowProposedApi: true と必ず pair、
+    //     baseline reset で削除しない**。
     //
     // === 不要判定 (= archaeology trace、 2026-05-11) ===
     //   ImageAddon — VP-162 で不要判定:
