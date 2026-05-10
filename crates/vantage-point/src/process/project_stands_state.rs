@@ -8,7 +8,7 @@
 //! - PR-β-2 (VP-120 / 2026-05-04): **PP を Project → Lane に物理移管**、 本 struct から
 //!   `paisley_park` field を削除。 PR-γ (planned) で GE も Lane 移管予定、 完了後に
 //!   ProjectStandsPool 自体が空 (= 削除可能) になる予想。
-//! - PR-δ-2 (VP-136 / 2026-05-06): PP を **`LaneStand` trait impl 化** (PaisleyParkStand)、
+//! - PR-δ-2 (VP-136 / 2026-05-06): PP を **`LaneStandHost` trait impl 化** (PaisleyParkStand)、
 //!   `LaneCapabilities` の hardcoded field から `LaneStandRegistry` 経由 host に置換。
 //!   doc 13 §9 boundary invariant 「N Stand を host できる generic interface」 を実現。
 //!
@@ -21,7 +21,7 @@
 //!
 //! Lane 移管完了済:
 //! - PP 🧭 Paisley Park — `LaneCapabilities.registry` で host (PR-δ-2)、
-//!   wrapper struct = `PaisleyParkStand` (LaneStand trait impl)
+//!   wrapper struct = `PaisleyParkStand` (LaneStandHost trait impl)
 //!
 //! Phase A4-2b の skeleton という位置付けは継続、 各 state は最小実装。
 //! 実 Stand 操作 (Ruby eval / MIDI 制御) は既存 routes/handler 経由で動いており、
@@ -32,7 +32,7 @@ use std::any::Any;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
-use super::lane_stand::LaneStand;
+use super::lane_stand::LaneStandHost;
 
 /// PP (Paisley Park) — Canvas content store (PR-β-2 (VP-120) で Lane あたり 1 instance に物理移管)
 ///
@@ -48,16 +48,16 @@ pub struct PaisleyParkState {
     pub content_type: Option<String>,
 }
 
-/// PaisleyParkStand — `PaisleyParkState` を `LaneStand` trait に適合させる wrapper (PR-δ-2、 VP-136)。
+/// PaisleyParkStand — `PaisleyParkState` を `LaneStandHost` trait に適合させる wrapper (PR-δ-2、 VP-136)。
 ///
-/// PR-δ-1 (VP-135) で新設の `LaneStand` trait の **最初の impl**。 internal mutability 用に
+/// PR-δ-1 (VP-135) で新設の `LaneStandHost` trait の **最初の impl**。 internal mutability 用に
 /// `RwLock<PaisleyParkState>` を持ち、 caller は `state()` accessor 経由で Read/Write する。
 ///
 /// `stand_kind() = "paisley_park"` を ID として Registry の HashMap key に使われる。
 ///
 /// ## 関連
 ///
-/// - PR-δ-1 (#288 / VP-135) — `LaneStand` trait + `LaneStandRegistry` 受け皿
+/// - PR-δ-1 (#288 / VP-135) — `LaneStandHost` trait + `LaneStandRegistry` 受け皿
 /// - PR-δ-2 (本 PR / VP-136) — PP impl + LaneCapabilities 統合
 /// - doc 13 §9 boundary invariant 「N Stand を host できる generic interface」 への path
 pub struct PaisleyParkStand {
@@ -84,7 +84,7 @@ impl Default for PaisleyParkStand {
     }
 }
 
-impl LaneStand for PaisleyParkStand {
+impl LaneStandHost for PaisleyParkStand {
     fn stand_kind(&self) -> &'static str {
         "paisley_park"
     }

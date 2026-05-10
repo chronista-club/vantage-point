@@ -9,7 +9,7 @@
 //!   `LanePool` の各 Lane entry の PtySlot で扱う、 doc 13 §10 Q-7 暫定確定)
 //! - **Paisley Park 🧭** (`PaisleyParkStand`): PR-δ-2 (VP-136) で **`LaneStandRegistry` 経由 host** へ進化、
 //!   Lane あたり独立 instance (= 1 → N cardinality)
-//! - **Gold Experience 🌿** (planned): PR-γ で同様に Lane instance 化、 LaneStand impl 追加予定
+//! - **Gold Experience 🌿** (planned): PR-γ で同様に Lane instance 化、 LaneStandHost impl 追加予定
 //! - **The Hand 🤚** = mise task 経由の PtySlot で立つ (LaneCapabilities では host しない)
 //!
 //! ## 実装状態
@@ -18,9 +18,9 @@
 //!   `paisley_park: None` placeholder。
 //! - PR-β-2 (VP-120 ✅、 #275): PP 物理移管、 `paisley_park: Some(Arc::new(RwLock::new(default)))` で
 //!   Lane あたり独立 instance host (cardinality 1 → N)。
-//! - PR-δ-1 (VP-135 ✅、 #288): `LaneStand` trait + `LaneStandRegistry` 受け皿新設、
+//! - PR-δ-1 (VP-135 ✅、 #288): `LaneStandHost` trait + `LaneStandRegistry` 受け皿新設、
 //!   既存挙動への影響ゼロ。
-//! - PR-δ-2 (VP-136 ✅、 #289): **PP を `PaisleyParkStand` (LaneStand impl) に rewire** +
+//! - PR-δ-2 (VP-136 ✅、 #289): **PP を `PaisleyParkStand` (LaneStandHost impl) に rewire** +
 //!   `paisley_park` hardcoded field を削除、 `registry: LaneStandRegistry` で N Stand host に統一。
 //!   production caller ゼロを着手前 grep で確認 (PR-β-2 と同じ argument)、 b 路線 aggressive replace。
 //! - PR-δ-3 (VP-137 ✅、 #290): mock Stand B + 「N Stand host」 invariant test 4 件追加
@@ -122,7 +122,7 @@ mod tests {
     use std::any::Any;
     use std::sync::atomic::{AtomicU32, Ordering};
 
-    use super::super::lane_stand::LaneStand;
+    use super::super::lane_stand::LaneStandHost;
     use super::*;
 
     /// PR-δ-3 (VP-137): test-only mock Stand。 「LaneCapabilities が PP 含めて N Stand を host
@@ -153,7 +153,7 @@ mod tests {
         }
     }
 
-    impl LaneStand for MockStandB {
+    impl LaneStandHost for MockStandB {
         fn stand_kind(&self) -> &'static str {
             "mock_b"
         }
