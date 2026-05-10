@@ -211,11 +211,19 @@ impl AddressBook {
             slot.last_seen = chrono::Utc::now().to_rfc3339();
             return;
         }
-        // stub entry: alias は hostname の先頭 segment から推定 (= `mito-mac-4.local` → `mito-mac-4`)
-        let alias = normalized_host
+        // stub entry: alias は hostname の先頭 segment から推定 (= `mito-mac-4.local` → `mito-mac-4`)。
+        // VP-154 PR-3.6 後は SRV target が `vp-{identity}.local.` namespace になっているため、
+        // `vp-` prefix を strip して world kind の alias 導出 (= `world-` strip) と整合させる
+        // (= 同一 machine の world entry と SP stub entry が別 alias で重複登録されないように)。
+        // `strip_prefix` で 1 回のみ削除 (= world 側 line 269 と対称、 万一 user が
+        // `advertise_hostname = "vp-..."` と設定しても二重 strip しない安全動作)。
+        let first_segment = normalized_host
             .split('.')
             .next()
-            .unwrap_or(&normalized_host)
+            .unwrap_or(&normalized_host);
+        let alias = first_segment
+            .strip_prefix("vp-")
+            .unwrap_or(first_segment)
             .to_string();
         if alias.is_empty() {
             return;
@@ -798,6 +806,23 @@ last_seen = "2026-05-09T00:00:00Z"
         assert_eq!(stub.port, 0); // stub world port
         assert_eq!(stub.pubkey, "pending");
         assert_eq!(stub.project_ports.get("creo-ui"), Some(&33005));
+    }
+
+    #[test]
+    fn record_sp_port_stub_alias_strips_vp_prefix() {
+        // VP-154 PR-3.6: SRV target が `vp-{identity}.local.` namespace になった後の
+        // stub alias 導出。 hostname `vp-mito-mac-4.local` から `vp-` を strip して `mito-mac-4` を得る
+        // (= world kind の alias 導出と整合、 同一 machine で別 alias 重複登録を防ぐ)。
+        let mut book = AddressBook::default();
+        book.record_sp_port("vp-mito-mac-4.local", "creo-ui", 33005);
+        assert_eq!(book.worlds.len(), 1);
+        let stub = &book.worlds[0];
+        assert_eq!(
+            stub.alias, "mito-mac-4",
+            "vp- prefix が strip されて world alias と一致"
+        );
+        // hostname 自体は stripped せず (= forward 先 URL に正しい A record name を使う)
+        assert_eq!(stub.hostname, "vp-mito-mac-4.local");
     }
 
     #[test]
