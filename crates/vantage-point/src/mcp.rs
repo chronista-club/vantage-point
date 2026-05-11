@@ -483,6 +483,70 @@ pub struct PermissionRequestPayload {
 
 /// MCP → Process 通信クライアント
 ///
+/// この `vp mcp` プロセスが属する Lane (VP-166 PR-4)。
+///
+/// cwd から判定する: cwd が `~/.local/share/ccws/<parent>-<name>` なら worker `<name>`、
+/// それ以外（= repo path）なら lead。`msg_recv` の default lane / `msg_send` の `from` /
+/// `list_lanes` の `is_self` 付与に使う。
+#[derive(Debug, Clone)]
+pub struct SelfLane {
+    /// `"lead"` or `"<worker-name>"`（flat 名）
+    pub lane_name: String,
+    /// worker context のとき `Some(parent project 名)`、lead context のとき `None`
+    pub worker_parent: Option<String>,
+}
+
+impl SelfLane {
+    /// cwd から SelfLane を判定（VP-166 PR-4）。失敗時（cwd 取れない / config 読めない 等）は lead 扱い。
+    pub fn detect() -> Self {
+        let lead = || SelfLane {
+            lane_name: "lead".to_string(),
+            worker_parent: None,
+        };
+        let Ok(cwd) = std::env::current_dir() else {
+            return lead();
+        };
+        let Ok(home) = std::env::var("HOME") else {
+            return lead();
+        };
+        let ccws_root = std::path::PathBuf::from(&home).join(".local/share/ccws");
+        if !cwd.starts_with(&ccws_root) {
+            return lead(); // 通常 project の cwd = lead
+        }
+        let Some(dirname) = cwd.file_name().and_then(|n| n.to_str()) else {
+            return lead();
+        };
+        // config から parent project を最長一致で resolve (`<parent>-<name>` の <parent> 部分)
+        let Ok(config) = crate::config::Config::load() else {
+            return lead();
+        };
+        let Some(parent) = config
+            .projects
+            .iter()
+            .filter(|p| dirname.starts_with(&format!("{}-", p.name)))
+            .max_by_key(|p| p.name.len())
+        else {
+            return lead();
+        };
+        match dirname.strip_prefix(&format!("{}-", parent.name)) {
+            Some(name) if !name.is_empty() => SelfLane {
+                lane_name: name.to_string(),
+                worker_parent: Some(parent.name.clone()),
+            },
+            _ => lead(),
+        }
+    }
+
+    /// `msg_send` の `from` フィールド値: lead は `"agent"`（bare、cross-process forward 時に
+    /// `normalize_from` で `agent@<project>` になる）、worker は `"agent@<parent>/<name>"`。
+    pub fn from_address(&self) -> String {
+        match &self.worker_parent {
+            Some(parent) => format!("agent@{}/{}", parent, self.lane_name),
+            None => "agent".to_string(),
+        }
+    }
+}
+
 /// Unison QUIC で Process と通信する。
 /// process チャネルは lazy 接続し、persistent に保持。
 /// Ruby / capture / permission 等の未対応メソッドは HTTP フォールバック。
@@ -495,6 +559,8 @@ pub struct VantageMcp {
     process_port: Arc<Mutex<u16>>,
     /// Unison "process" チャネル（lazy 接続、canvas 操作も含む）
     process_channel: Arc<Mutex<Option<Arc<unison::network::channel::UnisonChannel>>>>,
+    /// この MCP プロセスが属する Lane（cwd 由来、VP-166 PR-4）
+    self_lane: SelfLane,
     tool_router: ToolRouter<Self>,
 }
 
@@ -505,6 +571,7 @@ impl Clone for VantageMcp {
             process_url: self.process_url.clone(),
             process_port: self.process_port.clone(),
             process_channel: self.process_channel.clone(),
+            self_lane: self.self_lane.clone(),
             tool_router: Self::tool_router(),
         }
     }
@@ -518,6 +585,7 @@ impl VantageMcp {
             process_url: Arc::new(Mutex::new(format!("http://[::1]:{}", process_port))),
             process_port: Arc::new(Mutex::new(process_port)),
             process_channel: Arc::new(Mutex::new(None)),
+            self_lane: SelfLane::detect(),
             tool_router: Self::tool_router(),
         }
     }
@@ -1323,9 +1391,14 @@ impl VantageMcp {
                 "agent": format!("agent@{}{}", project, lane_suffix),
                 "canvas": format!("canvas@{}{}", project, lane_suffix),
             });
+            // VP-166 PR-4: この MCP プロセスの lane と一致する entry に `is_self` を付与
+            // (SP は caller を知らないので MCP 側で post-process)。agent は自分の entry を
+            // 見つけて mailbox_addresses["agent"] = 自分の正規アドレス、を読める。
+            let is_self = lane_label == self.self_lane.lane_name;
 
             if let Some(obj) = lane.as_object_mut() {
                 obj.insert("mailbox_addresses".to_string(), mailbox);
+                obj.insert("is_self".to_string(), serde_json::Value::Bool(is_self));
             }
             lanes_out.push(lane);
         }
@@ -2423,8 +2496,12 @@ if bestId > 0 { print(bestId) }
             _ => MessageKind::Direct,
         };
 
-        // VP-157: from = "agent" (= 正規 lead address、 旧 "mcp" は廃止)
-        let mut msg = crate::capability::msgbox::Message::new("agent", &params.to, kind)
+        // VP-157: from = "agent"（= lead の正規 address、 旧 "mcp" は廃止）。
+        // VP-166 PR-4: worker context なら from = "agent@<parent>/<name>"（= 自 lane の address。
+        // bare "agent" だと cross-process forward で送信元 SP の `normalize_from` が間違った
+        // project でスタンプしうる — VP-165 の from 汚染の一因。最初から正しい from を付ける）。
+        let from = self.self_lane.from_address();
+        let mut msg = crate::capability::msgbox::Message::new(&from, &params.to, kind)
             .with_payload(&params.payload);
 
         if let Some(reply_to) = params.reply_to {
@@ -2576,7 +2653,12 @@ if bestId > 0 { print(bestId) }
         rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<MsgRecvParams>,
     ) -> Result<CallToolResult, McpError> {
         let timeout = params.timeout.unwrap_or(5).min(30);
-        let lane = params.lane.unwrap_or_else(|| "lead".to_string());
+        // VP-166 PR-4: lane 省略時は自 lane を default に（worker context なら自分の worker 名、
+        // lead context なら "lead"）。これで worker の Echoes が `msg_recv`（lane 省略）を叩くと
+        // 自分の `agent#<name>` box を読む（lead の box を盗まない）。
+        let lane = params
+            .lane
+            .unwrap_or_else(|| self.self_lane.lane_name.clone());
         let stand = params.stand.unwrap_or_else(|| "agent".to_string());
 
         let payload = serde_json::json!({
@@ -2968,6 +3050,22 @@ fn rpc_response_error(resp: &serde_json::Value) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_self_lane_from_address() {
+        // VP-166 PR-4: lead は bare "agent"、worker は "agent@<parent>/<name>"
+        let lead = SelfLane {
+            lane_name: "lead".to_string(),
+            worker_parent: None,
+        };
+        assert_eq!(lead.from_address(), "agent");
+
+        let worker = SelfLane {
+            lane_name: "chore".to_string(),
+            worker_parent: Some("vantage-point".to_string()),
+        };
+        assert_eq!(worker.from_address(), "agent@vantage-point/chore");
+    }
 
     #[test]
     fn test_rpc_response_error_detection() {
