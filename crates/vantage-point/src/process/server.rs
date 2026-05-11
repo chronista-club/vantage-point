@@ -36,19 +36,21 @@ pub async fn run(
     mut cap_config: CapabilityConfig,
 ) -> Result<()> {
     let project_dir = cap_config.project_dir.clone();
+    let config_for_init = crate::config::Config::load().unwrap_or_default();
 
-    // Whitesnake をポート別ディレクトリで早期初期化（Msgbox persistence で使用）
-    let whitesnake = crate::capability::Whitesnake::file_backed_for_port(port);
+    // VP-165 (doc 17 決定B): Whitesnake を project slug 別ディレクトリで早期初期化
+    // （Msgbox persistence で使用）。旧 port-keyed (`discs/{port}/`) は port が
+    // project リスト変更で reshuffle する不安定 ID だったため `discs/p_{slug}/` に。
+    let whitesnake = crate::capability::Whitesnake::file_backed_for_project(
+        &crate::resolve::project_slug(&project_dir, &config_for_init),
+    );
     cap_config.whitesnake = Some(whitesnake.clone());
 
     // Msgbox Phase 3: cross-Process routing 用 RemoteRoutingClient を注入
     // - project_name は project_dir から解決
     // - local_port = この Process の port
-    let project_name_for_remote = crate::resolve::project_name_from_path(
-        &project_dir,
-        &crate::config::Config::load().unwrap_or_default(),
-    )
-    .to_string();
+    let project_name_for_remote =
+        crate::resolve::project_name_from_path(&project_dir, &config_for_init).to_string();
     let remote_client = crate::capability::msgbox_remote::RemoteRoutingClient::new(
         crate::cli::WORLD_PORT,
         project_name_for_remote.clone(),
@@ -791,7 +793,9 @@ pub async fn run_world(
     // PR-α-4 (VP-114): `vp daemon start --midi <arg>` で構築された MidiConfig を受け取り、
     // None なら `MidiConfig::default()` (= PR-α-2/3 後の既存挙動と同じ port auto-pick) で fallback。
     let msgbox_registry = Arc::new(crate::capability::MsgboxRegistry::new());
-    let world_whitesnake = crate::capability::Whitesnake::file_backed_for_port(port);
+    // VP-165 (doc 17 決定B): World daemon の Whitesnake は固定キー `discs/world/`
+    // （旧 `file_backed_for_port(32000)` は world_port も override 可能なので port-keyed をやめた）。
+    let world_whitesnake = crate::capability::Whitesnake::file_backed_for_world();
     let world_capabilities = {
         #[cfg(feature = "midi")]
         {

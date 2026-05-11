@@ -163,7 +163,7 @@ mod tests {
         let pmc = Arc::new(RwLock::new(ProcessManagerCapability::new()));
         let upd = Arc::new(RwLock::new(UpdateCapability::new()));
         let registry = Arc::new(MsgboxRegistry::new());
-        let ws = Whitesnake::file_backed_for_port(32099);
+        let ws = Whitesnake::in_memory();
 
         let wc = WorldCapabilities::new(pmc, upd, registry, ws);
         // smoke test: construct succeeds without panic、 各 field が存在
