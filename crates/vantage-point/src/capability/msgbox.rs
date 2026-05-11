@@ -1625,6 +1625,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_flat_worker_lane_box_vp166() {
+        // VP-166 PR-2: worker lane の box は flat name (`agent#chore`、`worker/` prefix なし)。
+        // lifecycle hook が `register_lane("agent", &["chore"])` で作る形を検証:
+        // - 戻り Handle で `agent@<project>/chore` 宛 msg を recv できる
+        // - lead box (`agent#lead`) には worker 宛 msg が来ない (cross-lane isolation)
+        // - `agent@<project>/chore` の box key は `agent#chore` (flat)
+        let router = Router::new();
+        let chore_handle = router.register_lane("agent", &["chore".to_string()]).await;
+        // Handle.address は actor 名 ("agent")、box key は inbox_key で agent#chore（lane を encode）
+        assert_eq!(chore_handle.address(), "agent");
+        let lead_handle = router.register("agent").await; // box key `agent#lead`
+
+        // worker `chore` 宛 (flat lane segment)
+        let msg_to_chore = Message::new("sender", "agent@vantage-point/chore", MessageKind::Direct)
+            .with_payload(&"hi chore");
+        router.deliver_local(msg_to_chore).await.unwrap();
+        // lead 宛
+        let msg_to_lead = Message::new("sender", "agent@vantage-point", MessageKind::Direct)
+            .with_payload(&"hi lead");
+        router.deliver_local(msg_to_lead).await.unwrap();
+
+        let r_chore = chore_handle.recv().await.unwrap();
+        assert_eq!(r_chore.payload_as::<String>().unwrap(), "hi chore");
+        let r_lead = lead_handle.recv().await.unwrap();
+        assert_eq!(r_lead.payload_as::<String>().unwrap(), "hi lead");
+
+        // chore box には lead 宛は来ない / lead box には chore 宛は来ない（もう両方 recv 済なので空）
+        let leftover_chore =
+            tokio::time::timeout(std::time::Duration::from_millis(50), chore_handle.recv()).await;
+        assert!(leftover_chore.is_err(), "chore box should be empty now");
+
+        // unregister_all_at_lane(["chore"]) で agent#chore が消える（agent#lead は残る）
+        let removed = router.unregister_all_at_lane(&["chore".to_string()]).await;
+        assert_eq!(removed, 1, "only agent#chore should be removed");
+
+        router.shutdown();
+    }
+
+    #[tokio::test]
     async fn test_v1_forward_compat_lane_implicit_eq_lead_explicit() {
         // v1 `agent@vp` (lane 未指定) と v3.1 `agent@vp/lead` (lane 明示) が同 box に届く
         let router = Router::new();

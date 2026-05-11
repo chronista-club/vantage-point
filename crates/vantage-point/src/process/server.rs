@@ -615,6 +615,7 @@ pub async fn run(
     //   この hook は **Worker lane の addr** のみ対象 (= LaneKind::Worker filter)。
     spawn_msgbox_lane_lifecycle_hook(
         state.capabilities.msgbox_router.clone(),
+        state.lane_stand_boxes.clone(), // VP-166 PR-2: 戻り Handle をここに保持
         state.system_event_tx.subscribe(),
         shutdown_token.clone(),
     );
@@ -1420,20 +1421,23 @@ fn spawn_lane_lifecycle_monitor(
     });
 }
 
-/// VP-147 Phase 2: per-lane mailbox lifecycle hook
+/// VP-147 Phase 2 / VP-166 PR-2: per-lane mailbox lifecycle hook
 ///
-/// SystemEvent::Lane(Diff::Add | Diff::Remove) を subscribe し、 Worker lane の
-/// stand actor を msgbox Router に register_lane / unregister_all_at_lane する。
+/// `SystemEvent::Lane(Diff::Add | Diff::Remove)` を subscribe し、 Worker lane の mailbox box を
+/// msgbox Router に register / unregister する。 register の戻り `Handle` は `lane_stand_boxes`
+/// に保持して **rx を生かす**（= Worker box 宛 msg が「配信失敗」で捨てられないようにする。
+/// recv 経路はこの map から Handle を clone して recv する — PR-3）。
 ///
-/// ## design
+/// ## design（VP-166 設計 doc 16）
 ///
-/// - **Lead lane の hook は無し**: capabilities.rs / server.rs で既に lead lane register
-///   済 (= forward-compat、 lane: vec![] = "lead" inject)。 重複防止のため filter。
-/// - **Worker lane の actor**: `LaneInfo.stand` (例 "echoes") を actor 名として register_lane
-///   する。 spawn 成功 (= state == Running) のみ対象、 Dead は skip。
-/// - **Diff::Remove**: lane delete API endpoint が publish。 unregister_all_at_lane で
-///   同 lane 配下の全 actor inbox を一括削除 (= 1 lane = 1 stand actor の現実装でも、
-///   将来 multi-actor lane にも対応可能な generic path)。
+/// - **Lead lane は skip**: lead の `agent#lead` box は capabilities.rs / server.rs で既に register
+///   済（VP-157）。重複防止のため filter。
+/// - **Worker lane の box**: `agent#<name>` で register（actor 名は `stands.rs` の **`id` 体系**
+///   = `ECHOES.id` = `"agent"`。JoJo 名 `LaneInfo.stand`（"echoes" 等）は **使わない**）。lane path は
+///   flat（`["<name>"]`、`worker/` prefix なし）。spawn 成功（= state == Running）のみ対象、 Dead は skip。
+///   `canvas#<name>` box（PP / Canvas 宛）は PR-5 で追加。
+/// - **Diff::Remove**: lane delete API endpoint が publish。 `unregister_all_at_lane` で同 lane 配下の
+///   全 box（`agent#<name>` / 将来 `canvas#<name>`）を一括削除 + `lane_stand_boxes` から該当 entry を除去。
 ///
 /// ## shutdown
 ///
@@ -1441,17 +1445,19 @@ fn spawn_lane_lifecycle_monitor(
 /// drop され、 recv() が Closed を返して loop 終了。
 fn spawn_msgbox_lane_lifecycle_hook(
     msgbox_router: Arc<crate::capability::msgbox::Router>,
+    lane_stand_boxes: Arc<RwLock<HashMap<(String, String), crate::capability::msgbox::Handle>>>,
     mut system_event_rx: tokio::sync::broadcast::Receiver<super::lanes_state::SystemEvent>,
     shutdown: CancellationToken,
 ) {
     use super::lanes_state::{Diff, LaneAddress, LaneKind, LaneState, SystemEvent};
 
-    /// LaneAddress から lane_path Vec<String> を導出
-    fn lane_path(addr: &LaneAddress) -> Vec<String> {
+    /// LaneAddress から flat な lane 名を導出（VP-166: `worker/` prefix 廃止、worker は名前そのまま）。
+    /// lead は `"lead"`（ただし lead は hook で skip されるので Diff::Remove の filter 用途のみ）。
+    fn lane_name_of(addr: &LaneAddress) -> String {
         match (&addr.kind, &addr.name) {
-            (LaneKind::Lead, _) => vec!["lead".to_string()],
-            (LaneKind::Worker, Some(name)) => vec!["worker".to_string(), name.clone()],
-            (LaneKind::Worker, None) => vec!["worker".to_string(), "unnamed".to_string()],
+            (LaneKind::Lead, _) => "lead".to_string(),
+            (LaneKind::Worker, Some(name)) => name.clone(),
+            (LaneKind::Worker, None) => "unnamed".to_string(),
         }
     }
 
@@ -1465,7 +1471,7 @@ fn spawn_msgbox_lane_lifecycle_hook(
                 ev = system_event_rx.recv() => {
                     match ev {
                         Ok(SystemEvent::Lane(Diff::Add { payload })) => {
-                            // Lead lane は skip (= 既存 lead register と重複防止)
+                            // Lead lane は skip (= 既存 `agent#lead` register と重複防止)
                             if matches!(payload.address.kind, LaneKind::Lead) {
                                 continue;
                             }
@@ -1473,12 +1479,20 @@ fn spawn_msgbox_lane_lifecycle_hook(
                             if !matches!(payload.state, LaneState::Running) {
                                 continue;
                             }
-                            let path = lane_path(&payload.address);
-                            msgbox_router.register_lane(&payload.stand, &path).await;
+                            let lane_name = lane_name_of(&payload.address);
+                            // VP-166: coding-assistant inbox を `agent#<lane>` で register（id 体系、
+                            // JoJo 名 `payload.stand` は使わない）。戻り Handle を保持して rx を生かす。
+                            let handle = msgbox_router
+                                .register_lane("agent", std::slice::from_ref(&lane_name))
+                                .await;
+                            lane_stand_boxes
+                                .write()
+                                .await
+                                .insert((lane_name.clone(), "agent".to_string()), handle);
                             tracing::debug!(
-                                "Msgbox lane lifecycle hook: register_lane stand={} lane={}",
-                                payload.stand,
-                                path.join("/")
+                                "Msgbox lane lifecycle hook: register agent#{} (stand={})",
+                                lane_name,
+                                payload.stand
                             );
                         }
                         Ok(SystemEvent::Lane(Diff::Remove { id })) => {
@@ -1486,11 +1500,17 @@ fn spawn_msgbox_lane_lifecycle_hook(
                             if matches!(id.kind, LaneKind::Lead) {
                                 continue;
                             }
-                            let path = lane_path(&id);
-                            let removed = msgbox_router.unregister_all_at_lane(&path).await;
+                            let lane_name = lane_name_of(&id);
+                            let removed = msgbox_router
+                                .unregister_all_at_lane(std::slice::from_ref(&lane_name))
+                                .await;
+                            lane_stand_boxes
+                                .write()
+                                .await
+                                .retain(|(ln, _), _| ln != &lane_name);
                             tracing::debug!(
-                                "Msgbox lane lifecycle hook: unregister_all_at_lane lane={} removed={}",
-                                path.join("/"),
+                                "Msgbox lane lifecycle hook: unregister lane={} removed={}",
+                                lane_name,
                                 removed
                             );
                         }
