@@ -43,6 +43,9 @@
 
 use std::any::Any;
 
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
+
 /// actor の lifecycle / address 範囲を表現する layer enum (LSCM 公理: World / Project / Lane)。
 ///
 /// VP の 3 層 architecture (`docs/design/12-stand-architecture.md` LSCM):
@@ -141,6 +144,28 @@ pub trait Service: Any + Send + Sync + 'static {
 
     /// `&dyn Any` への型強制 (downcast 用)。
     fn as_any(&self) -> &dyn Any;
+}
+
+/// 持続的 recv loop を起動できる `Service` の super-trait (VP-159 PR-4b)。
+///
+/// `Service` の中で **`tokio::spawn` で background recv loop を起動できる** actor が impl する:
+/// - `NotificationActor` (= `notify` mailbox の Notification msg 処理)
+/// - `LaneSpawnActor` (= `lane-spawn` mailbox の `LaneCmd::SpawnLane` 処理)
+///
+/// 一方、 `MidiCapability` (= Hermit Purple 🍇) のような「**instance hold + 内部 `monitor_task`
+/// field**」 pattern の Service は本 trait を impl **しない** (= consume pattern に fit しない、
+/// `WorldCapabilities.midi` で instance を保持する必要があるため)。 MIDI の正しい abstraction
+/// は dynamic routing vision 確定後に再設計 (= design-spark `mem_1CavFi5D1aMSpEkas89SvQ` 参照)。
+///
+/// `ActorRegistry::spawn_service<S: SpawnableService>` が spawn 統合 + JoinHandle 保持する際の
+/// trait bound。 PR-5 supervisor 統一で JoinHandle 経由の abort / await を activate する foundation。
+pub trait SpawnableService: Service {
+    /// recv loop を `tokio::spawn` で起動し、 `JoinHandle<()>` を返す。 `self` は consume される。
+    ///
+    /// `shutdown_token.cancelled()` で loop 終了、 channel close (= recv が None) でも終了。
+    /// 返り値の `JoinHandle` を `ActorRegistry` が保持し、 supervisor 統一 (PR-5) で
+    /// abort / await できる設計。
+    fn spawn_loop(self, shutdown: CancellationToken) -> JoinHandle<()>;
 }
 
 #[cfg(test)]

@@ -34,8 +34,9 @@
 use std::collections::HashMap;
 
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 
-use super::stand_service::{LayerScope, Service, Stand};
+use super::stand_service::{LayerScope, Service, SpawnableService, Stand};
 
 /// actor の種類 (= Stand か Service か)。
 ///
@@ -128,6 +129,30 @@ impl ActorRegistry {
             scope: stand.layer_scope(),
             kind: ActorKind::Stand,
             task: None,
+        };
+        self.entries.insert(name, entry);
+    }
+
+    /// `SpawnableService` を spawn し registry に register する (= spawn 統合、 PR-4b)。
+    ///
+    /// `service.spawn_loop(shutdown)` で background recv loop を起動し、 返り値の `JoinHandle<()>`
+    /// を `ActorRegistryEntry.task` に保持する。 PR-5 supervisor 統一で JoinHandle 経由の
+    /// abort / await を activate する foundation。 同 name の existing entry は上書き
+    /// (= caller の責務で重複 spawn を回避)。
+    ///
+    /// `service` は consume される (= `spawn_loop` の `self` 引数)。 instance を後で query
+    /// する必要がある actor (= `MidiCapability` 等の hold pattern) は本 method ではなく
+    /// `register_service(&service)` で metadata only register する。
+    pub fn spawn_service<S: SpawnableService>(&mut self, service: S, shutdown: CancellationToken) {
+        let name = service.actor_name().to_string();
+        let scope = service.layer_scope();
+        // spawn_loop は self consume するため、 name / scope を先に取得してから起動する。
+        let task = service.spawn_loop(shutdown);
+        let entry = ActorRegistryEntry {
+            name: name.clone(),
+            scope,
+            kind: ActorKind::Service,
+            task: Some(task),
         };
         self.entries.insert(name, entry);
     }
@@ -367,5 +392,82 @@ mod tests {
 
         let all: Vec<&ActorRegistryEntry> = r.entries().collect();
         assert_eq!(all.len(), 2);
+    }
+
+    /// test fixture: minimal `SpawnableService` impl (= shutdown を待つだけの loop)
+    struct FixtureSpawnableService {
+        name: &'static str,
+        scope: LayerScope,
+    }
+
+    impl Service for FixtureSpawnableService {
+        fn actor_name(&self) -> &str {
+            self.name
+        }
+        fn layer_scope(&self) -> LayerScope {
+            self.scope
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
+
+    impl SpawnableService for FixtureSpawnableService {
+        fn spawn_loop(self, shutdown: CancellationToken) -> JoinHandle<()> {
+            tokio::spawn(async move {
+                shutdown.cancelled().await;
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn spawn_service_registers_with_task() {
+        // VP-159 PR-4b invariant: spawn_service で task (= JoinHandle) が attach される事
+        let mut r = ActorRegistry::new();
+        let shutdown = CancellationToken::new();
+        r.spawn_service(
+            FixtureSpawnableService {
+                name: "notify",
+                scope: LayerScope::Project,
+            },
+            shutdown.clone(),
+        );
+        assert_eq!(r.len(), 1);
+        let entry = r.get("notify").expect("notify entry exists");
+        assert_eq!(entry.name, "notify");
+        assert_eq!(entry.kind, ActorKind::Service);
+        assert!(
+            entry.task.is_some(),
+            "spawn_service で task が attach される"
+        );
+        shutdown.cancel(); // background task を停止
+    }
+
+    #[tokio::test]
+    async fn spawned_service_and_registered_stand_coexist() {
+        // VP-159 PR-4b invariant: spawn_service (task あり) と register_stand (task なし) が
+        // 1 registry で coexist できる事 (= PR-4b で notify (spawned Service) + agent (Stand)
+        // が同 registry で host される path を fixture で代理検証)。
+        let mut r = ActorRegistry::new();
+        let shutdown = CancellationToken::new();
+        r.register_stand(&FixtureStand {
+            name: "agent",
+            scope: LayerScope::Project,
+        });
+        r.spawn_service(
+            FixtureSpawnableService {
+                name: "notify",
+                scope: LayerScope::Project,
+            },
+            shutdown.clone(),
+        );
+        assert_eq!(r.len(), 2);
+        // Stand は task なし (= register_stand)、 spawned Service は task あり (= spawn_service)
+        assert!(r.get("agent").unwrap().task.is_none(), "Stand は task なし");
+        assert!(
+            r.get("notify").unwrap().task.is_some(),
+            "spawned Service は task あり"
+        );
+        shutdown.cancel();
     }
 }

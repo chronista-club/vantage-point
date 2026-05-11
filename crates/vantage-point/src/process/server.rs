@@ -193,14 +193,20 @@ pub async fn run(
     // 同じ理由で agent register もこの位置で行う。
     let agent_msgbox_lead = capabilities.msgbox_router.register("agent").await;
 
-    // Notification ブリッジ: Msgbox "notify" → DistributedNotification（VP-24、 VP-159 PR-3 で struct 化）
-    // inline 実装 (旧 server.rs:196-247) を `NotificationActor` に集約、 Service trait 形式登録。
+    // VP-159 PR-4b: Stand / Service actor の supervisor 受け皿。 SP-local Service (= notify /
+    // lane-spawn) を `spawn_service` 経由で起動・register、 JoinHandle を保持。 World scope の
+    // MidiCapability metadata register は dynamic routing vision 確定後 (cf. design-spark
+    // mem_1CavFi5D1aMSpEkas89SvQ)、 PR-5 supervisor 統一で JoinHandle 経由 abort を activate。
+    let mut actor_registry = crate::capability::ActorRegistry::new();
+
+    // Notification ブリッジ: Msgbox "notify" → DistributedNotification（VP-24、 PR-3 struct 化 / PR-4b ActorRegistry 経由）
     // 通信経路 / msg flow / payload schema は完全互換、 shutdown token で停止可能。
     {
         let notify_handle = capabilities.msgbox_router.register("notify").await;
-        let notify_actor =
-            super::notification_actor::NotificationActor::new(notify_handle, project_dir.clone());
-        notify_actor.spawn(shutdown_token.clone());
+        actor_registry.spawn_service(
+            super::notification_actor::NotificationActor::new(notify_handle, project_dir.clone()),
+            shutdown_token.clone(),
+        );
     }
 
     // VP-147 PR-P2-2 (gap 1): TheWorld registry への actor register snapshot を実行。
@@ -251,6 +257,8 @@ pub async fn run(
         pending_permissions: Arc::new(RwLock::new(HashMap::new())),
         pending_prompts: Arc::new(RwLock::new(HashMap::new())),
         capabilities,
+        // VP-159 PR-4b: notify を spawn_service 済の ActorRegistry を move (= lane-spawn は AppState 構築後に追加)
+        actor_registry: Arc::new(RwLock::new(actor_registry)),
         world: None,
         msgbox_registry: None, // SP モードでは TheWorld registry 不要
         update: None,
@@ -349,15 +357,18 @@ pub async fn run(
             .unwrap_or_default()
             .startup
             .max_concurrent_lane_spawn as usize;
-        // VP-159 PR-3: struct 経由 (= ECS 純度回復、 actor を struct で表現)
-        super::lane_spawn_actor::LaneSpawnActor::new(
-            lane_spawn_handle,
-            state.lane_pool.clone(),
-            state.lane_capabilities.clone(), // PR-β-2 (VP-120): Worker spawn 時に populate_lane する
-            state.system_event_tx.clone(),   // Phase 2 (Step E): system event central bus
-            max_concurrent,
-        )
-        .spawn(shutdown_token.clone());
+        // VP-159 PR-4b: ActorRegistry 経由で spawn + register (= JoinHandle を registry が保持、
+        // PR-5 supervisor 統一で abort / await を activate)。 通信経路 / Semaphore gate / race guard は完全互換。
+        state.actor_registry.write().await.spawn_service(
+            super::lane_spawn_actor::LaneSpawnActor::new(
+                lane_spawn_handle,
+                state.lane_pool.clone(),
+                state.lane_capabilities.clone(), // PR-β-2 (VP-120): Worker spawn 時に populate_lane する
+                state.system_event_tx.clone(),   // Phase 2 (Step E): system event central bus
+                max_concurrent,
+            ),
+            shutdown_token.clone(),
+        );
 
         // bootstrap sender: 別 address `sp-bootstrap` で send_to するため、 `lane-spawn` の
         // recv 流路を actor が独占維持できる (= register 同 address は tx 上書き仕様のため)。
@@ -823,6 +834,9 @@ pub async fn run_world(
             })
             .await,
         ),
+        // VP-159 PR-4b: World mode では空で構築 (= World scope actor の register は後続 PR、
+        // MidiCapability metadata register は dynamic routing vision 確定後)
+        actor_registry: Arc::new(RwLock::new(crate::capability::ActorRegistry::new())),
         world: Some(world_cap.clone()),
         msgbox_registry: Some(msgbox_registry),
         update: Some(update_cap.clone()),

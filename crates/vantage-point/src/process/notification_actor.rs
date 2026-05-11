@@ -1,11 +1,16 @@
 //! Notification bridge actor — `notify` mailbox から Msgbox Notification msg を受信し、
 //! macOS DistributedNotification に変換する Service actor。
 //!
-//! ## 設計 (VP-159 PR-3、 2026-05-11)
+//! ## 設計 (VP-159 PR-3 → PR-4b、 2026-05-11)
 //!
-//! VP-24 で導入された Msgbox "notify" actor の inline 実装 (旧 `server.rs:196-247`) を struct
-//! 化、 Service trait に形式登録。 既存挙動は完全互換 (= 通信経路 / msg flow / payload schema は
-//! 不変)、 caller は `server.rs` で `NotificationActor::new()` + `spawn()` 経由に更新。
+//! - **PR-3**: VP-24 で導入された Msgbox "notify" actor の inline 実装 (旧 `server.rs:196-247`) を
+//!   struct 化、 `Service` trait に形式登録 (= ECS 純度回復、 actor を struct で表現)。
+//! - **PR-4b**: `SpawnableService` super-trait を impl (= `spawn(self, shutdown)` →
+//!   `spawn_loop(self, shutdown) -> JoinHandle<()>` に統一)、 caller は `server.rs` で
+//!   `ActorRegistry::spawn_service` 経由に集約 (= JoinHandle を ActorRegistry が保持、
+//!   PR-5 supervisor 統一の foundation)。
+//!
+//! 既存挙動は完全互換 (= 通信経路 / msg flow / payload schema は不変)。
 //!
 //! ## 役割
 //!
@@ -20,16 +25,17 @@
 //! ## 関連
 //!
 //! - VP-24 (Mailbox core) — original 設計
-//! - VP-159 PR-3 — Service trait 形式登録 (= ECS 純度回復、 actor を struct で表現)
+//! - VP-159 PR-3 — Service trait 形式登録 / PR-4b — SpawnableService + ActorRegistry 経由
 //! - parent epic: VP-156 (Mailbox routing 統一)
 //! - PR-2 同型 pattern: `AgentCapability` / `ProtocolCapability` (impl Stand)
 
 use std::any::Any;
 
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::capability::msgbox::{Handle, MessageKind};
-use crate::capability::stand_service::{LayerScope, Service};
+use crate::capability::stand_service::{LayerScope, Service, SpawnableService};
 
 /// Notification bridge Service (= Msgbox `notify` → DistributedNotification)。
 ///
@@ -50,11 +56,30 @@ impl NotificationActor {
             project_dir,
         }
     }
+}
 
-    /// recv loop を `tokio::spawn` で起動する。 `self` は consume されて background task 内に move。
+impl Service for NotificationActor {
+    fn actor_name(&self) -> &str {
+        "notify"
+    }
+
+    fn layer_scope(&self) -> LayerScope {
+        // SP-local Service (= 1 Project per Process、 cross-machine forward は msgbox_remote 経由)
+        LayerScope::Project
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl SpawnableService for NotificationActor {
+    /// recv loop を `tokio::spawn` で起動し、 `JoinHandle<()>` を返す。 `self` は consume される。
     ///
     /// shutdown_token.cancelled() で loop 終了、 channel close (= recv が None) でも終了。
-    pub fn spawn(self, shutdown: CancellationToken) {
+    /// VP-159 PR-4b: 旧 `spawn(self, shutdown)` (= 戻り値なし) を `spawn_loop(self, shutdown)
+    /// -> JoinHandle<()>` に統一、 ActorRegistry が JoinHandle を保持する path を開く。
+    fn spawn_loop(self, shutdown: CancellationToken) -> JoinHandle<()> {
         tokio::spawn(async move {
             loop {
                 tokio::select! {
@@ -98,21 +123,6 @@ impl NotificationActor {
                     }
                 }
             }
-        });
-    }
-}
-
-impl Service for NotificationActor {
-    fn actor_name(&self) -> &str {
-        "notify"
-    }
-
-    fn layer_scope(&self) -> LayerScope {
-        // SP-local Service (= 1 Project per Process、 cross-machine forward は msgbox_remote 経由)
-        LayerScope::Project
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
+        })
     }
 }
