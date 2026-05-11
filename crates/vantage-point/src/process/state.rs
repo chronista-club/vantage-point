@@ -158,6 +158,16 @@ pub(crate) struct AppState {
     /// MCP tool / `vp mailbox watch` 経由の send/recv は本フィールドを通す。
     /// AgentCapability の専属 consumer は VP-157 で廃止 (= observer 化)、 box の owner は本 AppState。
     pub agent_msgbox_lead: Option<Handle>,
+    /// Per-(lane, stand) の Worker lane mailbox Handle (VP-166)。
+    ///
+    /// key = (lane name, stand 名)。 lane name は `"lead"` or `"<worker-name>"` の flat 名、
+    /// stand は `"echoes"` / `"paisley_park"`。 lane lifecycle hook (`Diff::Add`) が
+    /// `register_lane` の戻り Handle をここに保持して rx を生かす (= Worker box 宛 msg が
+    /// 配信失敗で捨てられないようにする)、 `Diff::Remove` で除去。 recv 経路
+    /// (`handle_msg_recv` / `msgbox_recv_handler`) は本 map から Handle を clone して recv する
+    /// (= read guard を await 跨ぎで持たないため)。 PR-1 (受け皿) では空、 PR-2 以降で
+    /// lifecycle hook が populate する。 設計: `docs/design/16-worker-lane-mailbox-recv.md`
+    pub lane_stand_boxes: Arc<RwLock<HashMap<(String, String), Handle>>>,
     /// SurrealDB クライアント（VP-21: 状態管理の DB 統一）
     pub vpdb: Option<vp_db::SharedVpDb>,
     /// Whitesnake 🐍 — 汎用永続化レイヤー
