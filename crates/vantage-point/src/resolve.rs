@@ -6,7 +6,6 @@
 
 use anyhow::{Result, bail};
 
-use crate::cli::{PORT_RANGE_END, PORT_RANGE_START};
 use crate::config::Config;
 
 /// ターゲット解決結果
@@ -209,67 +208,39 @@ pub fn find_available_port() -> Option<u16> {
     crate::discovery::find_available_port()
 }
 
-/// ポートが利用可能かバインドして確認 (wildcard bind + connect-test、 dual-stack 対応)
+/// VP-165 (doc 17 決定C): project 名から SP port を解決し、新規 slot 割当なら config に永続化。
 ///
-/// 旧 LOCALHOST bind は SP が wildcard bound 時に false positive (= dual-stack の specific
-/// over wildcard 仕様で success してしまう、 bikeboy 2026-04-29 観測) → SP server と同じ
-/// wildcard bind で test し、 connect 経由で listening process 検出も併用。
-fn is_port_available(port: u16) -> bool {
-    use std::net::{Ipv6Addr, SocketAddrV6, TcpListener};
-    let v6_wild = TcpListener::bind(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, port, 0, 0)).is_ok();
-    let v4_wild = TcpListener::bind(("0.0.0.0", port)).is_ok();
-    if !v6_wild || !v4_wild {
-        return false;
+/// `Config::load()` → [`Config::resolve_sp_port`]（`port` override or `ensure_slot` → flat slot）
+/// → 新規 slot 割当があれば `save()`（save 失敗は warn のみ — port 自体は正しい）。slot は
+/// config 永続なので、project リスト変更でも既存 project の port は不変。project が config に
+/// 未登録なら `Err`（caller 側で `find_available_port` 等に fallback）。
+pub fn sp_port_for_project(name: &str) -> Result<u16> {
+    let mut config = Config::load().unwrap_or_default();
+    let had_slot = config.resolve_slot_by_name(name).is_some();
+    let port = config.resolve_sp_port(name)?;
+    // 新規 slot 割当があれば config に永続化（save 失敗は warn のみ — port 自体は正しい）
+    if !had_slot
+        && config.resolve_slot_by_name(name).is_some()
+        && let Err(e) = config.save()
+    {
+        tracing::warn!("VP-165: slot の config 永続化に失敗（port={port} は正しい）: {e}");
     }
-    std::net::TcpStream::connect_timeout(
-        &format!("[::1]:{}", port).parse().unwrap(),
-        std::time::Duration::from_millis(50),
-    )
-    .is_err()
+    Ok(port)
 }
 
-/// Configured ターゲットのポートを決定
+/// Configured ターゲットのポートを決定（VP-165 (doc 17 決定C): flat stable slot 方式）
 ///
-/// config にプロジェクト固有のポート設定があればそれを使い、
-/// なければ index ベースで割り当てる（33000 + index）。
-/// 割り当てポートが他プロセスに占有されている場合は空きポートにフォールバックする。
+/// `index` から project 名を引いて [`sp_port_for_project`] に委譲。slot は config 永続なので
+/// project リスト変更でも既存 project の port は不変（旧: `PORT_RANGE_START + index` の位置依存
+/// で、 project 追加/削除のたびに全 SP の port が雪崩シフトしていた = VP-165 の根）。
 pub fn port_for_configured(index: usize, config: &Config) -> Result<u16> {
-    // プロジェクト固有のポート設定を優先（明示指定は衝突チェックしない）
-    if let Some(project) = config.projects.get(index)
-        && let Some(port) = project.port
-    {
-        return Ok(port);
-    }
-
-    let max_projects = (PORT_RANGE_END - PORT_RANGE_START + 1) as usize;
-    if index >= max_projects {
-        bail!(
-            "Project index {} exceeds port range. Max {} projects supported.",
-            index,
-            max_projects
-        );
-    }
-
-    let preferred = PORT_RANGE_START + index as u16;
-
-    // 優先ポートが利用可能ならそのまま使う
-    if is_port_available(preferred) {
-        return Ok(preferred);
-    }
-
-    // 占有されている場合はレンジ内で空きポートを探す
-    tracing::info!(
-        "Port {} is occupied, searching for available port",
-        preferred
-    );
-    find_available_port().ok_or_else(|| {
-        anyhow::anyhow!(
-            "Port {} is in use and no other ports available in range {}-{}",
-            preferred,
-            PORT_RANGE_START,
-            PORT_RANGE_END
-        )
-    })
+    let name = config
+        .projects
+        .get(index)
+        .ok_or_else(|| anyhow::anyhow!("project index {} out of range", index))?
+        .name
+        .clone();
+    sp_port_for_project(&name)
 }
 
 #[cfg(test)]
