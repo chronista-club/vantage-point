@@ -2360,7 +2360,7 @@ if bestId > 0 { print(bestId) }
 
     /// Send a message to a msgbox address
     #[tool(
-        description = "Send a message to a VP Msgbox address. Use this for inter-agent communication (replaces ccwire). Available addresses: 'agent', 'protocol', 'midi', 'notify'."
+        description = "Send a message to a VP Msgbox address. Use this for inter-agent communication (replaces ccwire). Local actors: 'agent' (Echoes lead), 'protocol', 'notify'. World actor: 'hermit_purple@world' (MIDI / external control). Cross-process: 'agent@<project>' — call msg_directory first to discover available addresses across all VP processes. All messages are persisted (VP-158, no opt-in needed)."
     )]
     async fn msg_send(
         &self,
