@@ -493,6 +493,34 @@ impl Handle {
 // Router — メッセージルーティング
 // =============================================================================
 
+/// VP-165 (doc 17 決定D): msg の `to`/`from` の両端がどちらも「`local_project` でない既知
+/// project」を指すか。true なら、その msg は `local_project` の Whitesnake に居る理由がない
+/// （= 旧 port-keyed dir の残骸 / 手動編集 / project rename 由来の混入）→ `restore_pending`
+/// で skip すべき。
+///
+/// 判定: `to` も `from` も `parse_address` で `Address::Project { world: None, project, .. }`
+/// に解決でき、かつ `project != local`（または federated remote = `world: Some(_)`）の時のみ
+/// true。bare（`Address::Local`）/ port form / parse error は「自 project かもしれない」扱い
+/// → false（= conservative、誤って skip しない）。これにより、自 project が send した forward
+/// （`from` = bare or 自 project）も、受信した msg（`to` = bare or 自 project）も決して skip
+/// されない。
+fn msg_is_foreign_to_local(msg: &Message, local_project: &str) -> bool {
+    fn is_foreign(addr: &str, local: &str) -> bool {
+        match parse_address(addr) {
+            Ok(Address::Project {
+                world: None,
+                project,
+                ..
+            }) => project != local,
+            // federated remote（別 world）も「自 project でない」
+            Ok(Address::Project { world: Some(_), .. }) => true,
+            // bare（Local）/ port form / parse error → 自 project かもしれない → not foreign
+            _ => false,
+        }
+    }
+    is_foreign(&msg.to, local_project) && is_foreign(&msg.from, local_project)
+}
+
 /// メッセージルーター
 ///
 /// 全 Msgbox を管理し、メッセージを宛先に配信する。
@@ -870,16 +898,26 @@ impl Router {
     ///
     /// Process 起動時に全 Stand の registration が完了した後で呼ぶ。
     /// 戻り値は再投入したメッセージ数。
+    ///
+    /// VP-165 (doc 17 決定D): project-keyed Whitesnake（PR-2）になった後も、旧 port-keyed
+    /// dir からの migration 残骸 / 手動編集 / project rename で別 project の DISC が紛れ込む
+    /// 可能性に対する安全弁を持つ。`to`/`from` の両端がどちらも「自 project でない既知
+    /// project」を指す msg は、自 project の Whitesnake に居る理由がない（forward なら
+    /// `from` は bare or 自 project、local 配送なら `to` は bare or 自 project）→ skip + warn
+    /// （汚染した `from` での再 forward を防ぐ）。`remote` 未設定（World モード / テスト）の
+    /// 場合は local_project が不明なので guard はかけない（従来どおり全件復元）。
     pub async fn restore_pending(&self) -> anyhow::Result<usize> {
         let Some(ws) = &self.whitesnake else {
             return Ok(0);
         };
+        let local_project = self.remote.as_ref().map(|r| r.local_project().to_string());
 
         let discs = ws
             .list_by_prefix(MAILBOX_NAMESPACE, MAILBOX_KEY_PREFIX)
             .await?;
         let mut restored = 0;
         let mut expired = 0;
+        let mut skipped_foreign = 0;
         for disc in discs {
             match disc.extract::<Message>() {
                 Ok(msg) => {
@@ -888,6 +926,20 @@ impl Router {
                         let key = format!("{}{}", MAILBOX_KEY_PREFIX, msg.id);
                         let _ = ws.remove(MAILBOX_NAMESPACE, &key).await;
                         expired += 1;
+                        continue;
+                    }
+                    // VP-165 (D): 異 project の msg は復元しない（汚染遮断の安全弁）
+                    if let Some(local) = &local_project
+                        && msg_is_foreign_to_local(&msg, local)
+                    {
+                        tracing::warn!(
+                            "Msgbox: restore skip — 異 project の msg (id={} to={} from={} local={})",
+                            msg.id,
+                            msg.to,
+                            msg.from,
+                            local
+                        );
+                        skipped_foreign += 1;
                         continue;
                     }
                     if let Err(e) = self.router_tx.send(msg).await {
@@ -902,8 +954,13 @@ impl Router {
             }
         }
 
-        if restored > 0 || expired > 0 {
-            tracing::info!("Router: 復元={} 件 / 期限切れ削除={} 件", restored, expired);
+        if restored > 0 || expired > 0 || skipped_foreign > 0 {
+            tracing::info!(
+                "Router: 復元={} 件 / 期限切れ削除={} 件 / 異 project skip={} 件",
+                restored,
+                expired,
+                skipped_foreign
+            );
         }
         Ok(restored)
     }
@@ -1785,6 +1842,88 @@ mod tests {
 
         let keys = router.inbox_keys().await;
         assert_eq!(keys, vec!["agent#lead".to_string()]);
+
+        router.shutdown();
+    }
+
+    // =========================================================================
+    // VP-165 (D): restore_pending の異 project guard
+    // =========================================================================
+
+    #[test]
+    fn msg_is_foreign_to_local_logic() {
+        // arg 順は Message::new(from, to, kind)。closure は (to, from) で読みやすく
+        let m = |to: &str, from: &str| Message::new(from, to, MessageKind::Direct);
+        // 両端が別 project → foreign（= 自 project の Whitesnake に居る理由がない）
+        assert!(msg_is_foreign_to_local(
+            &m("agent@otherproj", "agent@anotherproj"),
+            "myproj"
+        ));
+        // to が自 project → not foreign（受信した msg）
+        assert!(!msg_is_foreign_to_local(
+            &m("agent@myproj", "agent@anotherproj"),
+            "myproj"
+        ));
+        // from が自 project → not foreign（自 project が send した forward）
+        assert!(!msg_is_foreign_to_local(
+            &m("agent@otherproj", "agent@myproj"),
+            "myproj"
+        ));
+        // to が bare → not foreign（自 project 宛かも）
+        assert!(!msg_is_foreign_to_local(
+            &m("agent", "agent@otherproj"),
+            "myproj"
+        ));
+        // from が bare → not foreign（normalize 前の forward 起点）
+        assert!(!msg_is_foreign_to_local(
+            &m("agent@otherproj", "agent"),
+            "myproj"
+        ));
+        // lane 付きでも project 部で判定
+        assert!(msg_is_foreign_to_local(
+            &m("agent@otherproj/lead", "agent@anotherproj/worker/x"),
+            "myproj"
+        ));
+        assert!(!msg_is_foreign_to_local(
+            &m("agent@myproj/lead", "agent@otherproj"),
+            "myproj"
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_restore_pending_skips_foreign_project_msgs() {
+        let ws = Whitesnake::in_memory();
+        // 旧 port-keyed dir の残骸を模す: 両端が別 project の msg を直接 Whitesnake に書く
+        let foreign = Message::new("agent@anotherproj", "agent@otherproj", MessageKind::Direct)
+            .with_payload(&"leaked");
+        ws.extract(
+            MAILBOX_NAMESPACE,
+            &format!("{}{}", MAILBOX_KEY_PREFIX, foreign.id),
+            &foreign,
+        )
+        .await
+        .unwrap();
+        // 自 project 宛の正当な msg も書く
+        let mine = Message::new("agent", "target", MessageKind::Direct).with_payload(&"legit");
+        ws.extract(
+            MAILBOX_NAMESPACE,
+            &format!("{}{}", MAILBOX_KEY_PREFIX, mine.id),
+            &mine,
+        )
+        .await
+        .unwrap();
+
+        let router = Router::with_persistence_and_remote(
+            ws.clone(),
+            crate::capability::msgbox_remote::RemoteRoutingClient::new(32000, "myproj", 33000),
+        );
+        let target = router.register("target").await;
+
+        let restored = router.restore_pending().await.unwrap();
+        assert_eq!(restored, 1, "foreign は skip、自 project 宛 1 件だけ復元");
+
+        let got = target.recv().await.unwrap();
+        assert_eq!(got.payload_as::<String>().unwrap(), "legit");
 
         router.shutdown();
     }
