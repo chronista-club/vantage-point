@@ -82,13 +82,10 @@ pub struct Message {
     pub reply_to: Option<String>,
     /// メッセージID
     pub id: String,
-    /// 永続化フラグ（true の場合、Process 再起動後も生存）
-    #[serde(default)]
-    pub persistent: bool,
     /// 失効時刻（Unix epoch ミリ秒）
     ///
-    /// persistent メッセージのみ有効。`now_ms()` 超過で GC 対象。
-    /// None の場合、送信時に `DEFAULT_TTL_MS` (48h) が自動適用される。
+    /// `now_ms()` 超過で GC 対象。 None の場合、送信時に `DEFAULT_TTL_MS` (48h) が自動適用される。
+    /// VP-158: 全 msg 永続化が default のため `persistent` flag は廃止、 TTL は全 msg に適用。
     #[serde(default)]
     pub expires_at: Option<u64>,
     /// 明示 ack モード（true の場合、recv での自動 ack を無効化）
@@ -124,7 +121,6 @@ impl Message {
             timestamp: now_ms(),
             reply_to: None,
             id: uuid::Uuid::new_v4().to_string(),
-            persistent: false,
             expires_at: None,
             manual_ack: false,
         }
@@ -142,16 +138,7 @@ impl Message {
         self
     }
 
-    /// 永続化フラグを設定（Process 再起動後も生存）
-    ///
-    /// Router が Whitesnake で構築されている場合のみ実効。
-    /// `with_persistence()` で作られた Router 以外では no-op（in-memory 配信）。
-    pub fn persistent(mut self) -> Self {
-        self.persistent = true;
-        self
-    }
-
-    /// TTL を秒単位で設定（persistent メッセージの失効時刻を now + secs に）
+    /// TTL を秒単位で設定（失効時刻を now + secs に。 VP-158: 全 msg に適用）
     pub fn with_ttl_secs(mut self, secs: u64) -> Self {
         self.expires_at = Some(now_ms().saturating_add(secs.saturating_mul(1000)));
         self
@@ -379,7 +366,7 @@ impl Handle {
         if let Some(ref m) = msg {
             self.history.mark_received(&m.id).await;
         }
-        self.ack_if_persistent(msg.as_ref()).await;
+        self.ack_unless_manual(msg.as_ref()).await;
         msg
     }
 
@@ -408,7 +395,7 @@ impl Handle {
             if let Some(pos) = stash.iter().position(&predicate) {
                 let msg = stash.remove(pos);
                 drop(stash);
-                self.ack_if_persistent(msg.as_ref()).await;
+                self.ack_unless_manual(msg.as_ref()).await;
                 return msg;
             }
         }
@@ -426,7 +413,7 @@ impl Handle {
                 if let Some(pos) = stash.iter().position(&predicate) {
                     let msg = stash.remove(pos);
                     drop(stash);
-                    self.ack_if_persistent(msg.as_ref()).await;
+                    self.ack_unless_manual(msg.as_ref()).await;
                     return msg;
                 }
             }
@@ -455,7 +442,7 @@ impl Handle {
                 }
                 Some(msg) => {
                     if predicate(&msg) {
-                        self.ack_if_persistent(Some(&msg)).await;
+                        self.ack_unless_manual(Some(&msg)).await;
                         return Some(msg);
                     }
                     // 条件不一致 → stash に即書き込み（rx ロック解放後なので安全）
@@ -466,13 +453,13 @@ impl Handle {
         }
     }
 
-    /// persistent メッセージの受信完了を永続ストアに反映（DISC 削除 = ack）
+    /// 受信完了を永続ストアに反映（DISC 削除 = ack）。 VP-158: 全 msg 永続化が default。
     ///
-    /// `manual_ack: true` のメッセージは自動 ack せず、受信側が `ack()` を
-    /// 明示呼び出しするまで DISC を保持する。
-    async fn ack_if_persistent(&self, msg: Option<&Message>) {
+    /// `manual_ack: true` のメッセージは自動 ack せず、 受信側が `ack()` を明示呼び出しするまで
+    /// DISC を保持する（= at-least-once delivery、 受信後の処理中クラッシュで再配信）。
+    async fn ack_unless_manual(&self, msg: Option<&Message>) {
         let Some(msg) = msg else { return };
-        if !msg.persistent || msg.manual_ack {
+        if msg.manual_ack {
             return;
         }
         self.ack_by_id(&msg.id).await;
@@ -728,8 +715,7 @@ impl Router {
 
     /// ルーティングループ — Router に届いたメッセージを宛先に配信
     ///
-    /// persistent メッセージは配信前に Whitesnake に保存。
-    /// 受信側の recv() で ack（DISC 削除）される。
+    /// VP-158: 全 msg を配信前に Whitesnake に保存、 受信側の recv() で ack（DISC 削除）。
     async fn routing_loop(
         mut router_rx: mpsc::Receiver<Message>,
         boxes: Arc<RwLock<HashMap<String, mpsc::Sender<Message>>>>,
@@ -747,19 +733,15 @@ impl Router {
                 msg = router_rx.recv() => {
                     match msg {
                         Some(mut msg) => {
-                            // persistent なら配信前に永続化
-                            if msg.persistent && let Some(ws) = &whitesnake {
+                            // VP-158: 全 msg を配信前に Whitesnake に永続化（= 「on-memory」 概念排除）
+                            if let Some(ws) = &whitesnake {
                                 // TTL 未設定ならデフォルト（48h）を適用
                                 if msg.expires_at.is_none() {
                                     msg.expires_at = Some(now_ms().saturating_add(DEFAULT_TTL_MS));
                                 }
                                 let key = format!("{}{}", MAILBOX_KEY_PREFIX, msg.id);
                                 if let Err(e) = ws.extract(MAILBOX_NAMESPACE, &key, &msg).await {
-                                    tracing::warn!(
-                                        "Router: persistent 保存失敗 id={} err={}",
-                                        msg.id,
-                                        e
-                                    );
+                                    tracing::warn!("Router: msg 永続化失敗 id={} err={}", msg.id, e);
                                 }
                             }
 
@@ -1320,22 +1302,21 @@ mod tests {
     }
 
     // =========================================================================
-    // 永続化テスト (opt-in persistent + Whitesnake)
+    // 永続化テスト (= 全 msg 永続化が default、 VP-158)
     // =========================================================================
 
     #[tokio::test]
-    async fn test_persistent_message_survives_router_restart() {
+    async fn test_message_survives_router_restart() {
         let ws = Whitesnake::in_memory();
 
-        // --- 第1ラウンド: persistent 送信 → recv 前に Router 消失 ---
+        // --- 第1ラウンド: 送信 → recv 前に Router 消失 ---
         {
             let router = Router::with_persistence(ws.clone());
             let sender = router.register("sender").await;
             let _target = router.register("target").await;
 
             let msg = Message::new("sender", "target", MessageKind::Request)
-                .with_payload(&"persistent-payload")
-                .persistent();
+                .with_payload(&"persistent-payload");
             sender.send(msg).await.unwrap();
 
             // routing_loop による永続化完了を待機
@@ -1346,11 +1327,7 @@ mod tests {
 
         // Whitesnake に 1 件残っているはず（未 recv なので未 ack）
         let pending = ws.list_by_prefix("msgbox", "msg/").await.unwrap();
-        assert_eq!(
-            pending.len(),
-            1,
-            "persistent メッセージが Whitesnake に残る"
-        );
+        assert_eq!(pending.len(), 1, "msg が Whitesnake に残る");
 
         // --- 第2ラウンド: 新しい Router で restore_pending → recv ---
         let router2 = Router::with_persistence(ws.clone());
@@ -1361,7 +1338,6 @@ mod tests {
 
         let msg = target2.recv().await.unwrap();
         assert_eq!(msg.payload_as::<String>().unwrap(), "persistent-payload");
-        assert!(msg.persistent);
 
         // recv 完了で ack → Whitesnake から削除
         tokio::time::sleep(tokio::time::Duration::from_millis(30)).await;
@@ -1372,41 +1348,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_ephemeral_message_not_persisted() {
-        let ws = Whitesnake::in_memory();
-        let router = Router::with_persistence(ws.clone());
-        let sender = router.register("sender").await;
-        let target = router.register("target").await;
-
-        // persistent フラグなしで送信（デフォルト ephemeral）
-        sender.send_to("target", &"ephemeral").await.unwrap();
-
-        let msg = target.recv().await.unwrap();
-        assert!(!msg.persistent);
-        assert_eq!(msg.payload_as::<String>().unwrap(), "ephemeral");
-
-        // Whitesnake には何も保存されない
-        let stored = ws.list_by_prefix("msgbox", "msg/").await.unwrap();
-        assert_eq!(stored.len(), 0);
-
-        router.shutdown();
-    }
-
-    #[tokio::test]
-    async fn test_persistent_without_whitesnake_is_noop() {
-        // Whitesnake なしの Router では persistent フラグは無視される
+    async fn test_message_without_whitesnake_in_memory_only() {
+        // Whitesnake なしの Router では in-memory のみで配信される
         let router = Router::new();
         let sender = router.register("sender").await;
         let target = router.register("target").await;
 
         let msg = Message::new("sender", "target", MessageKind::Direct)
-            .with_payload(&"would-be-persistent")
-            .persistent();
+            .with_payload(&"would-be-persistent");
         sender.send(msg).await.unwrap();
 
         // 通常通り配信される（in-memory のみ）
         let received = target.recv().await.unwrap();
-        assert!(received.persistent);
         assert_eq!(
             received.payload_as::<String>().unwrap(),
             "would-be-persistent"
@@ -1424,17 +1377,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_persistent_builder_sets_flag() {
-        let msg = Message::new("a", "b", MessageKind::Direct).persistent();
-        assert!(msg.persistent);
-
-        let msg2 = Message::new("a", "b", MessageKind::Direct);
-        assert!(!msg2.persistent);
-    }
-
-    #[tokio::test]
-    async fn test_persistent_field_serde_default() {
-        // 旧バージョンの JSON（persistent フィールドなし）をデコードできる
+    async fn test_message_serde_minimal_fields() {
+        // 旧バージョンの JSON（追加 field なし）をデコードできる
         let json = r#"{
             "from": "a",
             "to": "b",
@@ -1445,7 +1389,6 @@ mod tests {
             "id": "test-id"
         }"#;
         let msg: Message = serde_json::from_str(json).unwrap();
-        assert!(!msg.persistent, "persistent が無い JSON はデフォルト false");
         assert!(msg.expires_at.is_none(), "expires_at デフォルト None");
         assert!(!msg.manual_ack, "manual_ack デフォルト false");
     }
@@ -1486,10 +1429,8 @@ mod tests {
         let sender = router.register("sender").await;
         let _target = router.register("target").await;
 
-        // TTL を明示せず persistent 送信
-        let msg = Message::new("sender", "target", MessageKind::Direct)
-            .with_payload(&"no-ttl")
-            .persistent();
+        // TTL を明示せず送信
+        let msg = Message::new("sender", "target", MessageKind::Direct).with_payload(&"no-ttl");
         sender.send(msg).await.unwrap();
 
         // routing_loop による永続化完了を待機
@@ -1517,14 +1458,12 @@ mod tests {
         // 事前に期限切れメッセージを DISC に直接書き込み
         let mut expired_msg =
             Message::new("a", "target", MessageKind::Direct).with_payload(&"expired");
-        expired_msg.persistent = true;
         expired_msg.expires_at = Some(now_ms().saturating_sub(1000)); // 1 秒前に失効
         let key = format!("msg/{}", expired_msg.id);
         ws.extract("msgbox", &key, &expired_msg).await.unwrap();
 
         // 有効なメッセージも 1 件
         let mut valid_msg = Message::new("a", "target", MessageKind::Direct).with_payload(&"valid");
-        valid_msg.persistent = true;
         valid_msg.expires_at = Some(now_ms() + 60_000); // 1 分後失効
         let valid_id = valid_msg.id.clone();
         let key2 = format!("msg/{}", valid_msg.id);
@@ -1558,7 +1497,6 @@ mod tests {
 
         let msg = Message::new("sender", "target", MessageKind::Request)
             .with_payload(&"needs-ack")
-            .persistent()
             .manual_ack();
         sender.send(msg).await.unwrap();
 
@@ -1581,15 +1519,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_auto_ack_still_works_by_default() {
-        // 既存の persistent（manual_ack なし）は従来通り auto-ack
+        // manual_ack なし msg は従来通り auto-ack
         let ws = Whitesnake::in_memory();
         let router = Router::with_persistence(ws.clone());
         let sender = router.register("sender").await;
         let target = router.register("target").await;
 
-        let msg = Message::new("sender", "target", MessageKind::Direct)
-            .with_payload(&"auto")
-            .persistent();
+        let msg = Message::new("sender", "target", MessageKind::Direct).with_payload(&"auto");
         sender.send(msg).await.unwrap();
 
         let _received = target.recv().await.unwrap();
@@ -1609,7 +1545,6 @@ mod tests {
         for i in 0..2 {
             let mut m =
                 Message::new("a", "b", MessageKind::Direct).with_payload(&format!("expired-{}", i));
-            m.persistent = true;
             m.expires_at = Some(now_ms().saturating_sub(1000));
             ws.extract("msgbox", &format!("msg/{}", m.id), &m)
                 .await
@@ -1617,7 +1552,6 @@ mod tests {
         }
         // 有効 × 1
         let mut valid = Message::new("a", "b", MessageKind::Direct).with_payload(&"valid");
-        valid.persistent = true;
         valid.expires_at = Some(now_ms() + 60_000);
         ws.extract("msgbox", &format!("msg/{}", valid.id), &valid)
             .await

@@ -118,21 +118,15 @@ pub struct MsgSendParams {
     #[schemars(description = "Reply-to message ID for threaded conversations")]
     pub reply_to: Option<String>,
 
-    /// 永続化フラグ（Process 再起動後も生存）
+    /// TTL（秒）— msg の有効期限（VP-158: 全 msg 永続化が default）
     #[schemars(
-        description = "If true, persist the message across Process restarts (opt-in). Default: false (ephemeral, in-memory only)."
-    )]
-    pub persistent: Option<bool>,
-
-    /// TTL（秒）— persistent メッセージの有効期限
-    #[schemars(
-        description = "TTL in seconds for persistent messages. Default: 172800 (48h). Ignored when persistent is false."
+        description = "TTL in seconds for the message. Default: 172800 (48h). All messages are persisted across Process restarts (VP-158, no opt-in needed)."
     )]
     pub ttl_secs: Option<u64>,
 
     /// 明示 ack モード
     #[schemars(
-        description = "If true, persistent messages are NOT auto-acked on recv; receiver must call ack() explicitly. Useful for at-least-once delivery with crash resilience during message processing."
+        description = "If true, the message is NOT auto-acked on recv; receiver must call ack() explicitly. Useful for at-least-once delivery with crash resilience during message processing."
     )]
     pub manual_ack: Option<bool>,
 }
@@ -194,7 +188,7 @@ pub struct MsgBroadcastParams {
 pub struct MsgThreadParams {
     /// スレッドを辿る起点のメッセージID
     #[schemars(
-        description = "Message ID to trace the reply_to chain from. Returns all messages in the thread (root + all descendants), sorted by timestamp. Only works for persistent messages."
+        description = "Message ID to trace the reply_to chain from. Returns all messages in the thread (root + all descendants), sorted by timestamp."
     )]
     pub id: String,
 }
@@ -2389,10 +2383,7 @@ if bestId > 0 { print(bestId) }
             msg = msg.with_reply_to(reply_to);
         }
 
-        // opt-in 永続化フラグ
-        if params.persistent.unwrap_or(false) {
-            msg = msg.persistent();
-        }
+        // VP-158: 全 msg 永続化が default のため persistent flag 廃止 (= 「on-memory」 概念排除)
 
         // opt-in TTL
         if let Some(secs) = params.ttl_secs {
@@ -2554,7 +2545,7 @@ if bestId > 0 { print(bestId) }
 
     /// Acknowledge a message explicitly (for manual_ack mode)
     #[tool(
-        description = "Explicitly acknowledge a persistent message received with manual_ack=true. Removes the message from the persistent store. No-op for auto-ack messages (they are acked automatically on recv)."
+        description = "Explicitly acknowledge a message received with manual_ack=true. Removes the message from the persistent store. No-op for auto-ack messages (they are acked automatically on recv)."
     )]
     async fn msg_ack(
         &self,
@@ -2594,7 +2585,7 @@ if bestId > 0 { print(bestId) }
 
     /// Get the full thread (reply_to chain) for a given message
     #[tool(
-        description = "Trace the reply_to chain from a given message and return all messages in the thread (root + all descendants), sorted by timestamp. Only works for persistent messages (sent with persistent=true)."
+        description = "Trace the reply_to chain from a given message and return all messages in the thread (root + all descendants), sorted by timestamp."
     )]
     async fn msg_thread(
         &self,

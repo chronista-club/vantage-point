@@ -168,8 +168,6 @@ pub struct MsgboxSendRequest {
     pub from: String,
     #[serde(default)]
     pub payload: serde_json::Value,
-    #[serde(default)]
-    pub persistent: bool,
 }
 
 pub async fn msgbox_send_handler(
@@ -179,9 +177,7 @@ pub async fn msgbox_send_handler(
     use crate::capability::msgbox::{Message, MessageKind};
     let mut msg = Message::new(req.from, req.to.clone(), MessageKind::Direct);
     msg.payload = req.payload;
-    if req.persistent {
-        msg = msg.persistent();
-    }
+    // VP-158: 全 msg 永続化が default のため persistent flag 廃止
     let msg_id = msg.id.clone();
     let Some(ref agent_lead) = state.agent_msgbox_lead else {
         return Json(serde_json::json!({"error": "agent#lead msgbox not initialized"}));
