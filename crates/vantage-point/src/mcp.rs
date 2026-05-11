@@ -681,24 +681,54 @@ impl VantageMcp {
         client.connect(&addr).await.map_err(|e| {
             McpError::internal_error(format!("Unison connect error ({}): {}", addr, e), None)
         })?;
-        let channel = Arc::new(client.open_channel(channel_name).await.map_err(|e| {
-            McpError::internal_error(
-                format!("Unison {} channel error: {}", channel_name, e),
-                None,
-            )
-        })?);
+        // unison 内部の request timeout は default 30s。 `quic_call_with_timeout` の outer
+        // timeout (msg_recv で server_timeout + buffer = 最大 35s) より長く取らないと
+        // unison 側が先に発火してしまうので、 余裕を持って 60s に引き上げる (VP-163)。
+        let channel = Arc::new(
+            client
+                .open_channel(channel_name)
+                .await
+                .map_err(|e| {
+                    McpError::internal_error(
+                        format!("Unison {} channel error: {}", channel_name, e),
+                        None,
+                    )
+                })?
+                .with_request_timeout(std::time::Duration::from_secs(60)),
+        );
 
         *guard = Some(Arc::clone(&channel));
         Ok(channel)
     }
 
-    /// Unison QUIC の "process" チャネルでメソッドを呼び出す
+    /// Unison QUIC の "process" チャネルでメソッドを呼び出す（outer timeout = 5s）
     ///
-    /// 接続失敗時はチャネルをリセットして1回リトライする。
+    /// 接続失敗 / タイムアウト時はチャネルをリセットして1回リトライする。
     async fn quic_call(
         &self,
         method: &str,
         payload: serde_json::Value,
+    ) -> Result<serde_json::Value, McpError> {
+        self.quic_call_with_timeout(method, payload, std::time::Duration::from_secs(5))
+            .await
+    }
+
+    /// Unison QUIC の "process" チャネル呼び出し（outer timeout 指定可）
+    ///
+    /// `msg_recv` のように **server 側が長時間ブロックする** method では、 outer timeout を
+    /// server 側 timeout より長く取らないと client が先に諦め、 チャネルを reset → 空振り
+    /// リトライ → 同一 box への recv 二重発火 → msg ロスにつながる (VP-163)。 そういう
+    /// method は呼び出し側で `server_timeout + buffer` を渡すこと。
+    ///
+    /// また、 server ハンドラが `Err(e)` を返した場合、 unison は専用 error frame を持たない
+    /// ため `unison_server.rs` の dispatch loop が **成功フレームに `{"error": "<msg>"}` を詰めて**
+    /// 返してくる。 これをそのまま素通しすると `msg_send` 等が「成功」と誤報するので (VP-163)、
+    /// その形のレスポンスは `McpError` に変換する。
+    async fn quic_call_with_timeout(
+        &self,
+        method: &str,
+        payload: serde_json::Value,
+        timeout: std::time::Duration,
     ) -> Result<serde_json::Value, McpError> {
         use crate::trace_log::{TraceEntry, new_trace_id, write_trace};
 
@@ -720,26 +750,10 @@ impl VantageMcp {
             .await?;
 
         // タイムアウト付きリクエスト（Process 再起動時のハング防止）
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            channel.request(method, payload.clone()),
-        )
-        .await;
+        let result = tokio::time::timeout(timeout, channel.request(method, payload.clone())).await;
 
-        match result {
-            Ok(Ok(resp)) => {
-                write_trace(
-                    &TraceEntry::new(
-                        "quic",
-                        &tid,
-                        "response",
-                        "INFO",
-                        format!("process.{} OK", method),
-                    )
-                    .with_elapsed(start.elapsed().as_millis() as u64),
-                );
-                Ok(resp)
-            }
+        let resp = match result {
+            Ok(Ok(resp)) => resp,
             Ok(Err(e)) => {
                 // チャネルエラー: リセットしてリトライ
                 tracing::warn!("QUIC process.{} failed, retrying: {}", method, e);
@@ -748,23 +762,20 @@ impl VantageMcp {
                 let channel = self
                     .get_quic_channel(&self.process_channel, "process")
                     .await?;
-                tokio::time::timeout(
-                    std::time::Duration::from_secs(5),
-                    channel.request(method, payload),
-                )
-                .await
-                .map_err(|_| {
-                    McpError::internal_error(
-                        format!("QUIC process.{} retry timed out", method),
-                        None,
-                    )
-                })?
-                .map_err(|e| {
-                    McpError::internal_error(
-                        format!("QUIC process.{} retry failed: {}", method, e),
-                        None,
-                    )
-                })
+                tokio::time::timeout(timeout, channel.request(method, payload))
+                    .await
+                    .map_err(|_| {
+                        McpError::internal_error(
+                            format!("QUIC process.{} retry timed out", method),
+                            None,
+                        )
+                    })?
+                    .map_err(|e| {
+                        McpError::internal_error(
+                            format!("QUIC process.{} retry failed: {}", method, e),
+                            None,
+                        )
+                    })?
             }
             Err(_) => {
                 // タイムアウト: 古い接続をリセットしてリトライ
@@ -774,25 +785,52 @@ impl VantageMcp {
                 let channel = self
                     .get_quic_channel(&self.process_channel, "process")
                     .await?;
-                tokio::time::timeout(
-                    std::time::Duration::from_secs(5),
-                    channel.request(method, payload),
-                )
-                .await
-                .map_err(|_| {
-                    McpError::internal_error(
-                        format!("QUIC process.{} retry timed out", method),
-                        None,
-                    )
-                })?
-                .map_err(|e| {
-                    McpError::internal_error(
-                        format!("QUIC process.{} retry failed: {}", method, e),
-                        None,
-                    )
-                })
+                tokio::time::timeout(timeout, channel.request(method, payload))
+                    .await
+                    .map_err(|_| {
+                        McpError::internal_error(
+                            format!("QUIC process.{} retry timed out", method),
+                            None,
+                        )
+                    })?
+                    .map_err(|e| {
+                        McpError::internal_error(
+                            format!("QUIC process.{} retry failed: {}", method, e),
+                            None,
+                        )
+                    })?
             }
+        };
+
+        // server ハンドラの Err は `{"error": "<msg>"}` の単一キー object で返ってくる (VP-163)
+        if let Some(err_msg) = rpc_response_error(&resp) {
+            write_trace(
+                &TraceEntry::new(
+                    "quic",
+                    &tid,
+                    "response",
+                    "ERROR",
+                    format!("process.{} error: {}", method, err_msg),
+                )
+                .with_elapsed(start.elapsed().as_millis() as u64),
+            );
+            return Err(McpError::internal_error(
+                format!("process.{}: {}", method, err_msg),
+                None,
+            ));
         }
+
+        write_trace(
+            &TraceEntry::new(
+                "quic",
+                &tid,
+                "response",
+                "INFO",
+                format!("process.{} OK", method),
+            )
+            .with_elapsed(start.elapsed().as_millis() as u64),
+        );
+        Ok(resp)
     }
 
     /// Process ポートを再解決し、変わっていれば URL を更新してリトライ用 URL を返す
@@ -2536,7 +2574,15 @@ if bestId > 0 { print(bestId) }
             "lane": lane,
         });
 
-        let resp = self.quic_call("msg_recv", payload).await?;
+        // VP-163: server 側は最大 `timeout` 秒ブロックするので、 outer timeout は +5s 余裕を持たせる。
+        // (旧: quic_call 固定 5s で timeout>=5 が必ず空振りリトライ + msg ロスしていた)
+        let resp = self
+            .quic_call_with_timeout(
+                "msg_recv",
+                payload,
+                std::time::Duration::from_secs(timeout + 5),
+            )
+            .await?;
 
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
             serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "null".to_string()),
@@ -2891,4 +2937,72 @@ async fn self_register_if_worker() {
         "vp mcp self-register: {actor}@{} → port {}",
         parent.name, process.port
     );
+}
+
+/// QUIC "process" チャネルのレスポンスが server ハンドラの Err かどうか判定する (VP-163)。
+///
+/// unison は専用の error frame を持たないため、 `unison_server.rs` の dispatch loop は
+/// ハンドラの `Err(e)` を **成功フレームに `{"error": "<msg>"}` を詰めて** 返す。
+/// その形 (= 単一キー `"error"` で値が string) なら err message を返す。 それ以外は `None`。
+/// (`{"error": ..., "to": ...}` のような複数キーや非 string は対象外 — 通常の payload)
+fn rpc_response_error(resp: &serde_json::Value) -> Option<&str> {
+    let obj = resp.as_object()?;
+    if obj.len() != 1 {
+        return None;
+    }
+    obj.get("error")?.as_str()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_rpc_response_error_detection() {
+        // server ハンドラの Err 形式 → err message を取り出す
+        assert_eq!(
+            rpc_response_error(
+                &serde_json::json!({"error": "自分自身('agent')への送信はできません"})
+            ),
+            Some("自分自身('agent')への送信はできません")
+        );
+        assert_eq!(
+            rpc_response_error(&serde_json::json!({"error": "不明なメソッド: process.foo"})),
+            Some("不明なメソッド: process.foo")
+        );
+
+        // 通常の成功 payload は対象外
+        assert_eq!(
+            rpc_response_error(&serde_json::json!({"status": "ok", "id": "x"})),
+            None
+        );
+        assert_eq!(
+            rpc_response_error(&serde_json::json!({"message": null, "reason": "timeout"})),
+            None
+        );
+        assert_eq!(
+            rpc_response_error(&serde_json::json!({"message": {"id": "x"}})),
+            None
+        );
+
+        // 複数キーで "error" を含んでも、 これは err frame ではない (= HTTP handler 等の形)
+        assert_eq!(
+            rpc_response_error(&serde_json::json!({"error": "x", "to": "agent"})),
+            None
+        );
+
+        // "error" が非 string、 object 以外
+        assert_eq!(rpc_response_error(&serde_json::json!({"error": 42})), None);
+        assert_eq!(
+            rpc_response_error(&serde_json::json!({"error": {"nested": true}})),
+            None
+        );
+        assert_eq!(
+            rpc_response_error(&serde_json::json!("just a string")),
+            None
+        );
+        assert_eq!(rpc_response_error(&serde_json::json!(null)), None);
+        assert_eq!(rpc_response_error(&serde_json::json!([1, 2, 3])), None);
+        assert_eq!(rpc_response_error(&serde_json::json!({})), None);
+    }
 }
