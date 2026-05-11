@@ -152,11 +152,17 @@ pub struct MsgRecvParams {
     #[schemars(description = "Only receive messages from this address (optional filter)")]
     pub from: Option<String>,
 
-    /// VP-157: 受信先 lane (default "lead")。 worker lane は VP-159 で対応予定。
+    /// VP-166: 受信先 lane (default "lead"、flat 名: "lead" or "<worker-name>")
     #[schemars(
-        description = "Receive from this lane's agent box (default: 'lead'). Worker lane support is planned in VP-159."
+        description = "Receive from this lane (default: 'lead', or a worker name like 'chore'). Reads the lane's `<stand>#<lane>` box."
     )]
     pub lane: Option<String>,
+
+    /// VP-166: 受信先 stand (default "agent" = coding-assistant inbox)
+    #[schemars(
+        description = "Which inbox of the lane to receive from: 'agent' (default, = the lane's Claude session inbox) or 'canvas' (= the lane's Paisley Park / Canvas inbox; canvas box wiring is planned)."
+    )]
+    pub stand: Option<String>,
 }
 
 /// Parameters for msg_directory tool (VP-65: cross-process actor discovery)
@@ -2561,9 +2567,9 @@ if bestId > 0 { print(bestId) }
         )]))
     }
 
-    /// Receive a message from the agent#&lt;lane&gt; box (VP-157: lane-aware)
+    /// Receive a message from a lane's mailbox (VP-166: (lane, stand)-aware)
     #[tool(
-        description = "Receive a message from this project's agent#<lane> box (default lane='lead'). Waits up to timeout seconds for a message. Returns immediately if a message is already queued. Use this for inter-lane communication. The agent box is the canonical lead address (= sender writes to 'agent@<project>')."
+        description = "Receive a message from a lane's mailbox in this project. Params: `lane` (default 'lead', or a worker name like 'chore') and `stand` (default 'agent' = the lane's Claude session inbox; 'canvas' = the lane's Paisley Park / Canvas inbox). Reads box `<stand>#<lane>` (e.g. `agent#lead` for the lead's inbox, `agent#chore` for worker 'chore'). Waits up to timeout seconds; returns immediately if a message is queued. Use this for inter-lane communication. Senders write to `agent@<project>` (lead) / `agent@<project>/<name>` (worker)."
     )]
     async fn msg_recv(
         &self,
@@ -2571,11 +2577,13 @@ if bestId > 0 { print(bestId) }
     ) -> Result<CallToolResult, McpError> {
         let timeout = params.timeout.unwrap_or(5).min(30);
         let lane = params.lane.unwrap_or_else(|| "lead".to_string());
+        let stand = params.stand.unwrap_or_else(|| "agent".to_string());
 
         let payload = serde_json::json!({
             "timeout": timeout,
             "from": params.from,
             "lane": lane,
+            "stand": stand,
         });
 
         // VP-163: server 側は最大 `timeout` 秒ブロックするので、 outer timeout は +5s 余裕を持たせる。

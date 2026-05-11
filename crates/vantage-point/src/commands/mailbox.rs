@@ -50,7 +50,7 @@ pub enum MailboxCommands {
         /// Sender 絞り込み (Some なら 該当 from の msg のみ受信)
         #[arg(short, long)]
         from: Option<String>,
-        /// VP-157: 受信先 lane (default "lead")。 worker lane は VP-159 で対応予定。
+        /// 受信先 lane (default "lead"、flat 名: "lead" or "<worker-name>"。VP-166 で worker lane 対応)。stand は "agent" 固定（coding-assistant inbox）
         #[arg(short = 'L', long, default_value = "lead")]
         lane: String,
     },
@@ -82,7 +82,7 @@ pub enum MailboxCommands {
         /// Sender 絞り込み
         #[arg(short, long)]
         from: Option<String>,
-        /// VP-157: 受信先 lane (default "lead")
+        /// 受信先 lane (default "lead"、flat 名: "lead" or "<worker-name>"。VP-166 で worker lane 対応)
         #[arg(short = 'L', long, default_value = "lead")]
         lane: String,
         /// inner watch exit 後の re-spawn 待機秒数

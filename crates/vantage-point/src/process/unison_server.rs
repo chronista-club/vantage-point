@@ -872,9 +872,11 @@ async fn handle_msg_send(
 
 /// Msgbox からメッセージを受信（タイムアウト付き、Selective Receive）
 ///
-/// VP-157: lane param で受信先 box を選択 (default `lead`)。 lane=lead は
-/// `agent_msgbox_lead` Handle を使う。 worker lane の per-lane mailbox 受信は
-/// VP-159 (Stand/Service framework) で対応予定、 本 PR では未対応で err 返却。
+/// VP-166: `lane` (default `lead`、flat 名: `lead` or `<worker-name>`) + `stand`
+/// (default `agent` = coding-assistant inbox; `canvas` = PP/Canvas inbox、box 配線は PR-5) で
+/// 受信先 box を選択。 `(lead, agent)` は既存の `state.agent_msgbox_lead` (= `agent#lead` box、
+/// VP-157)、 それ以外は `state.lane_stand_boxes[(lane, stand)]` (= lane lifecycle hook が PR-2 で
+/// populate) から Handle を clone する（read guard を await 跨ぎで持たないため）。
 ///
 /// from フィルタ指定時は `recv_matching` を使い、フィルタ不一致メッセージを
 /// stash に退避する（メッセージロスなし）。
@@ -891,35 +893,47 @@ async fn handle_msg_recv(
         .get("from")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
-    // VP-157: lane param (default "lead")
+    // VP-157/VP-166: lane (default "lead"、flat 名) + stand (default "agent")
     let lane = payload
         .get("lane")
         .and_then(|v| v.as_str())
         .unwrap_or("lead")
         .to_string();
+    let stand = payload
+        .get("stand")
+        .and_then(|v| v.as_str())
+        .unwrap_or("agent")
+        .to_string();
 
-    if lane != "lead" {
-        return Err(format!(
-            "lane='{}' is not yet supported in this PR (= worker lane mailbox は VP-159 で対応予定)",
-            lane
-        ));
-    }
-
-    let agent_msgbox_lead = state
-        .agent_msgbox_lead
-        .as_ref()
-        .ok_or_else(|| "agent#lead msgbox not initialized".to_string())?;
+    // 受信先 Handle を解決 (VP-166)
+    let handle = if lane == "lead" && stand == "agent" {
+        state
+            .agent_msgbox_lead
+            .clone()
+            .ok_or_else(|| "agent#lead msgbox not initialized".to_string())?
+    } else {
+        state
+            .lane_stand_boxes
+            .read()
+            .await
+            .get(&(lane.clone(), stand.clone()))
+            .cloned()
+            .ok_or_else(|| {
+                format!(
+                    "no mailbox for lane='{}' stand='{}' (worker '{}' running? canvas box wiring is PR-5)",
+                    lane, stand, lane
+                )
+            })?
+    };
 
     // タイムアウト付きで受信を試行（Selective Receive でメッセージロスなし）
     let result = tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), async {
         if let Some(filter) = from_filter {
             // Selective Receive: フィルタ不一致メッセージは stash に退避
-            agent_msgbox_lead
-                .recv_matching(move |m| m.from == filter)
-                .await
+            handle.recv_matching(move |m| m.from == filter).await
         } else {
             // フィルタなし: 通常の recv（stash 優先）
-            agent_msgbox_lead.recv().await
+            handle.recv().await
         }
     })
     .await;
