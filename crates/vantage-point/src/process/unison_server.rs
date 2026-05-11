@@ -845,8 +845,12 @@ async fn handle_msg_send(
         serde_json::from_value(payload).map_err(|e| format!("Invalid Message: {}", e))?;
 
     // 自分自身への送信を拒否
+    // ('agent' は自 SP の lead box そのもの。 他 lead 宛は 'agent@<project>' 形式を使う)
     if msg.to == msg.from {
-        return Err(format!("自分自身('{}')への送信はできません", msg.to));
+        return Err(format!(
+            "自己宛送信は不可: '{}' は自分の lead box です（from='{}'）。他 lead 宛は 'agent@<project>' 形式を使ってください",
+            msg.to, msg.from
+        ));
     }
 
     let to = msg.to.clone();
