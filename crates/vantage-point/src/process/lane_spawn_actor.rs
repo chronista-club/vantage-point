@@ -1,5 +1,5 @@
 //! Lane spawn actor — `LaneCmd::SpawnLane` を Mailbox 経由で受信し、 内部 Semaphore で
-//! 並列度を gate しつつ `stand_spawner::spawn_with_fallback` で Lane を spawn する actor。
+//! 並列度を gate しつつ `stand_spawner::spawn_with_fallback` で Lane を spawn する Service actor。
 //!
 //! ## 背景 (I-b、 2026-04-30)
 //!
@@ -11,6 +11,13 @@
 //! 本 actor は user 提案 (2026-04-30) を実装したもの:
 //! - 「SP は一気に claude cli 叩くから、 最大数設定して、 順次、 Pane を復活させたいね」
 //! - 「Cmd にして tokio channel で recv、 CommandRunner で常時 N 動かす、 cmd type で queue 振り分け」
+//!
+//! ## VP-159 PR-3 (2026-05-11) — struct 化 + Service trait 登録
+//!
+//! 既存 `pub fn spawn(...)` 経路を `LaneSpawnActor` struct に集約、 Service trait に形式登録
+//! (= ECS 純度回復、 actor を struct で表現)。 通信経路 / msg flow / Semaphore gate /
+//! race guard / payload schema 等の挙動は完全互換、 caller (= server.rs) は
+//! `LaneSpawnActor::new()` + `spawn()` 経由に更新。
 //!
 //! ## 設計
 //!
@@ -41,8 +48,11 @@
 //!
 //! - 設計 spec: memory `mem_1CaZiXoUVvZ4hSrYtVSW8R` (I-b design spark, 2026-04-30)
 //! - Cmd 定義: `super::lane_cmd::LaneCmd`
-//! - 旧 sync 経路: `super::lanes_state::LanePool::populate_workers_from_disk` (本 PR で削除)
+//! - VP-159 PR-3 — Service trait 形式登録 (= ECS 純度回復)
+//! - parent epic: VP-156 (Mailbox routing 統一)
+//! - PR-2 同型 pattern: `AgentCapability` / `ProtocolCapability` (impl Stand)
 
+use std::any::Any;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
@@ -51,84 +61,132 @@ use tokio::sync::{RwLock, Semaphore};
 use tokio_util::sync::CancellationToken;
 
 use crate::capability::msgbox::{Handle, MessageKind};
+use crate::capability::stand_service::{LayerScope, Service};
 
 use super::lane_capabilities::LaneCapabilitiesPool;
 use super::lane_cmd::LaneCmd;
 use super::lanes_state::{Diff, LaneAddress, LaneInfo, LaneKind, LanePool, LaneState, SystemEvent};
 
-/// Mailbox actor を起動する。 internal に `Arc<Semaphore::new(max_concurrent)>` を持ち、
-/// `lane-spawn` mailbox から `LaneCmd` を recv して並列度制限付きで Lane を spawn する。
+/// Lane spawn Service (= `lane-spawn` mailbox から `LaneCmd::SpawnLane` を recv、
+/// 並列度 N で gate しつつ Lane を spawn する infra actor)。
 ///
-/// `tokio::spawn` で background task 化されるため、 caller は即 return する。
+/// SP-local Service (= 1 Project per Process)、 mailbox handle + dependencies を保持し、
+/// `spawn(shutdown)` で background recv loop を `tokio::spawn` 起動する。
 ///
-/// PR-β-2 (VP-120): `lane_capabilities_pool: Option<Arc<RwLock<LaneCapabilitiesPool>>>` 引数を追加。
-/// Worker spawn 成功時に `populate_lane` を呼んで Lane あたり独立 PaisleyParkState を host する。
-/// World mode (= None) ではこの populate 経路は走らない (= Lane scope は SP per project)。
-pub fn spawn(
+/// PR-β-2 (VP-120): `lane_capabilities_pool: Option<...>` で Worker spawn 成功時に
+/// `populate_lane` を呼び、 Lane あたり独立 PaisleyParkState を host する。
+pub struct LaneSpawnActor {
     handle: Handle,
     lane_pool: Arc<RwLock<LanePool>>,
     lane_capabilities_pool: Option<Arc<RwLock<LaneCapabilitiesPool>>>,
     system_event_tx: tokio::sync::broadcast::Sender<SystemEvent>,
     max_concurrent: usize,
-    shutdown: CancellationToken,
-) {
-    // max_concurrent=0 は意味的に「全 spawn を block」 だが事故 config の可能性が高い。
-    // Semaphore::new(0) は永久 block するため、 1 に丸めて warn する (= sequential)。
-    let n = if max_concurrent == 0 {
-        tracing::warn!(
-            "Lane spawn actor: max_concurrent=0 は無効、 1 に丸めます (config 確認推奨)"
-        );
-        1
-    } else {
-        max_concurrent
-    };
-    let semaphore = Arc::new(Semaphore::new(n));
-    let address = handle.address().to_string();
+}
 
-    tokio::spawn(async move {
-        tracing::info!(
-            "Lane spawn actor 起動: address={} max_concurrent={}",
-            address,
-            n
-        );
-        loop {
-            tokio::select! {
-                _ = shutdown.cancelled() => {
-                    tracing::info!("Lane spawn actor: shutdown");
-                    break;
-                }
-                msg = handle.recv() => {
-                    let Some(msg) = msg else {
-                        tracing::info!("Lane spawn actor: channel closed");
+impl LaneSpawnActor {
+    /// 新しい `LaneSpawnActor` を構築する。
+    ///
+    /// `max_concurrent=0` は意味的に「全 spawn を block」 だが事故 config の可能性が高いため、
+    /// `spawn()` 内で 1 に丸めて warn する (= sequential、 `Semaphore::new(0)` の永久 block 回避)。
+    pub fn new(
+        handle: Handle,
+        lane_pool: Arc<RwLock<LanePool>>,
+        lane_capabilities_pool: Option<Arc<RwLock<LaneCapabilitiesPool>>>,
+        system_event_tx: tokio::sync::broadcast::Sender<SystemEvent>,
+        max_concurrent: usize,
+    ) -> Self {
+        Self {
+            handle,
+            lane_pool,
+            lane_capabilities_pool,
+            system_event_tx,
+            max_concurrent,
+        }
+    }
+
+    /// recv loop を `tokio::spawn` で起動する。 `self` は consume されて background task 内に move。
+    ///
+    /// shutdown_token.cancelled() で loop 終了、 channel close (= recv が None) でも終了。
+    pub fn spawn(self, shutdown: CancellationToken) {
+        let n = if self.max_concurrent == 0 {
+            tracing::warn!(
+                "Lane spawn actor: max_concurrent=0 は無効、 1 に丸めます (config 確認推奨)"
+            );
+            1
+        } else {
+            self.max_concurrent
+        };
+        let semaphore = Arc::new(Semaphore::new(n));
+        let address = self.handle.address().to_string();
+
+        let Self {
+            handle,
+            lane_pool,
+            lane_capabilities_pool,
+            system_event_tx,
+            ..
+        } = self;
+
+        tokio::spawn(async move {
+            tracing::info!(
+                "Lane spawn actor 起動: address={} max_concurrent={}",
+                address,
+                n
+            );
+            loop {
+                tokio::select! {
+                    _ = shutdown.cancelled() => {
+                        tracing::info!("Lane spawn actor: shutdown");
                         break;
-                    };
-                    if msg.kind != MessageKind::Direct {
-                        tracing::debug!(
-                            "Lane spawn actor: 非 Direct メッセージを無視 kind={:?}",
-                            msg.kind
-                        );
-                        continue;
                     }
-                    let Some(cmd) = msg.payload_as::<LaneCmd>() else {
-                        tracing::warn!(
-                            "Lane spawn actor: payload を LaneCmd として parse 失敗 (msg.id={})",
-                            msg.id
-                        );
-                        continue;
-                    };
-                    let sem = semaphore.clone();
-                    let pool = lane_pool.clone();
-                    let lc_pool = lane_capabilities_pool.clone();
-                    let tx = system_event_tx.clone();
-                    // permit 取得を含めて worker task で実行 → recv loop は次の msg を即受領可能。
-                    // 結果として「N 本まで permit 待ち + 実行、 残りは queue で待機」 の挙動。
-                    tokio::spawn(async move {
-                        handle_cmd(cmd, pool, lc_pool, tx, sem).await;
-                    });
+                    msg = handle.recv() => {
+                        let Some(msg) = msg else {
+                            tracing::info!("Lane spawn actor: channel closed");
+                            break;
+                        };
+                        if msg.kind != MessageKind::Direct {
+                            tracing::debug!(
+                                "Lane spawn actor: 非 Direct メッセージを無視 kind={:?}",
+                                msg.kind
+                            );
+                            continue;
+                        }
+                        let Some(cmd) = msg.payload_as::<LaneCmd>() else {
+                            tracing::warn!(
+                                "Lane spawn actor: payload を LaneCmd として parse 失敗 (msg.id={})",
+                                msg.id
+                            );
+                            continue;
+                        };
+                        let sem = semaphore.clone();
+                        let pool = lane_pool.clone();
+                        let lc_pool = lane_capabilities_pool.clone();
+                        let tx = system_event_tx.clone();
+                        // permit 取得を含めて worker task で実行 → recv loop は次の msg を即受領可能。
+                        // 結果として「N 本まで permit 待ち + 実行、 残りは queue で待機」 の挙動。
+                        tokio::spawn(async move {
+                            handle_cmd(cmd, pool, lc_pool, tx, sem).await;
+                        });
+                    }
                 }
             }
-        }
-    });
+        });
+    }
+}
+
+impl Service for LaneSpawnActor {
+    fn actor_name(&self) -> &str {
+        "lane-spawn"
+    }
+
+    fn layer_scope(&self) -> LayerScope {
+        // SP-local Service (= 1 Project per Process、 cross-machine forward は msgbox_remote 経由)
+        LayerScope::Project
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
 
 /// 単一 `LaneCmd` を処理。 Semaphore permit を acquire してから heavy spawn を実行。
@@ -322,7 +380,8 @@ mod tests {
 
         // 0 を渡しても 1 に丸めて起動するはず (= タイムアウトせずに actor 起動 + shutdown 完了)
         // PR-β-2 (VP-120): lane_capabilities_pool = None で test (Lane scope なしの動作確認)
-        spawn(handle.clone(), pool, None, tx, 0, shutdown.clone());
+        // VP-159 PR-3: struct 経由 (LaneSpawnActor::new + spawn)
+        LaneSpawnActor::new(handle.clone(), pool, None, tx, 0).spawn(shutdown.clone());
 
         // SpawnLane を投入しても fallback 経路 (cwd 不在) で graceful degrade するはず。
         // 重要なのは「actor が動いて shutdown で終了する」 こと。
@@ -353,7 +412,8 @@ mod tests {
         let shutdown = CancellationToken::new();
 
         // PR-β-2 (VP-120): lane_capabilities_pool = None で test
-        spawn(handle.clone(), pool.clone(), None, tx, 1, shutdown.clone());
+        // VP-159 PR-3: struct 経由 (LaneSpawnActor::new + spawn)
+        LaneSpawnActor::new(handle.clone(), pool.clone(), None, tx, 1).spawn(shutdown.clone());
 
         // Notification kind を投入 → ignore されるはず
         let msg = Message::new("test", "lane-spawn", MessageKind::Notification)
