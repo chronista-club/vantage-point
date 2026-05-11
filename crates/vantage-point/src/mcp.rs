@@ -2914,29 +2914,68 @@ impl rmcp::ServerHandler for VantageMcp {
     }
 }
 
+/// worker context のとき parent project の path を config から引く（VP-165 (A)）。
+///
+/// lead context（`worker_parent = None`）or parent が config に無い なら `None`。
+fn worker_parent_path(self_lane: &SelfLane, config: &crate::config::Config) -> Option<String> {
+    let parent_name = self_lane.worker_parent.as_ref()?;
+    config
+        .projects
+        .iter()
+        .find(|p| &p.name == parent_name)
+        .map(|p| p.path.clone())
+}
+
 /// Process ポートを解決（MCP 通信先の決定）
 ///
-/// 優先度チェーン:
+/// VP-165 (doc 17 決定A): **discovery（= TheWorld、reconciliation の真実源）で live port を
+/// 引くのを最優先**にする。`VP_PROCESS_PORT` env は tmux セッション作成時の snapshot で、
+/// port reshuffle（config の project リスト変更）に追従しない → stale を踏むと別 project の
+/// SP に msg を投げ、その SP の `local_project` で `from` が汚染される（VP-165 dogfood 症状 (1)）。
+/// env は discovery 一時障害時の fallback に格下げ。
+///
+/// 優先度:
 /// 1. 明示的なポート引数（Some で指定された場合）
-/// 2. 環境変数 `VP_PROCESS_PORT`（tmux セッション起動時に注入）
-/// 3. `find_for_cwd()` による cwd ベースの自動解決
-/// 4. デフォルトポート 33000（互換性フォールバック）
+/// 2. discovery:
+///    - worker context（cwd = `~/.local/share/ccws/<parent>-<name>`）→ parent project の path を
+///      config から引いて `find_by_project`。worker の cwd は登録 project path 配下でないので
+///      `find_for_cwd` は効かない
+///    - lead context → `find_for_cwd`（cwd 一致 or 配下の running SP）
+/// 3. `VP_PROCESS_PORT` env（discovery 障害 / parent SP 未起動 時の fast path、reshuffle 後は古い可能性）
+/// 4. デフォルトポート 33000
 async fn resolve_process_port(explicit_port: Option<u16>) -> u16 {
     // 1. 明示的なポート指定
     if let Some(port) = explicit_port {
         return port;
     }
 
-    // 2. 環境変数 VP_PROCESS_PORT
+    // 2. discovery で live port を引く
+    let self_lane = SelfLane::detect();
+    match &self_lane.worker_parent {
+        Some(_) => {
+            // worker: parent project の SP を discovery で解決
+            if let Some(parent_path) = crate::config::Config::load()
+                .ok()
+                .as_ref()
+                .and_then(|c| worker_parent_path(&self_lane, c))
+                && let Some(info) = crate::discovery::find_by_project(&parent_path).await
+            {
+                return info.port;
+            }
+        }
+        None => {
+            // lead: cwd 一致（or 配下）の running SP
+            if let Some(info) = crate::discovery::find_for_cwd().await {
+                return info.port;
+            }
+        }
+    }
+
+    // 3. VP_PROCESS_PORT env（fallback、reshuffle 後は古い可能性あり）
     if let Ok(env_port) = std::env::var("VP_PROCESS_PORT")
         && let Ok(port) = env_port.parse::<u16>()
     {
         return port;
-    }
-
-    // 3. cwd ベースの自動解決（TheWorld API 経由）
-    if let Some(process_info) = crate::discovery::find_for_cwd().await {
-        return process_info.port;
     }
 
     // 4. フォールバック
@@ -3065,6 +3104,43 @@ mod tests {
             worker_parent: Some("vantage-point".to_string()),
         };
         assert_eq!(worker.from_address(), "agent@vantage-point/chore");
+    }
+
+    #[test]
+    fn test_worker_parent_path_resolution() {
+        use crate::config::{Config, ProjectConfig};
+        let mut cfg = Config::default();
+        cfg.projects.push(ProjectConfig {
+            name: "vantage-point".to_string(),
+            path: "/Users/x/repos/vantage-point".to_string(),
+            port: None,
+            enabled: true,
+            slot: None,
+        });
+
+        // worker → parent の path
+        let worker = SelfLane {
+            lane_name: "chore".to_string(),
+            worker_parent: Some("vantage-point".to_string()),
+        };
+        assert_eq!(
+            worker_parent_path(&worker, &cfg).as_deref(),
+            Some("/Users/x/repos/vantage-point")
+        );
+
+        // lead context → None（worker_parent が無い）
+        let lead = SelfLane {
+            lane_name: "lead".to_string(),
+            worker_parent: None,
+        };
+        assert_eq!(worker_parent_path(&lead, &cfg), None);
+
+        // config に無い parent → None
+        let unknown = SelfLane {
+            lane_name: "x".to_string(),
+            worker_parent: Some("not-in-config".to_string()),
+        };
+        assert_eq!(worker_parent_path(&unknown, &cfg), None);
     }
 
     #[test]
