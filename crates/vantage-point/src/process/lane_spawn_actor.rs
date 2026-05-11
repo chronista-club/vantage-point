@@ -12,12 +12,15 @@
 //! - 「SP は一気に claude cli 叩くから、 最大数設定して、 順次、 Pane を復活させたいね」
 //! - 「Cmd にして tokio channel で recv、 CommandRunner で常時 N 動かす、 cmd type で queue 振り分け」
 //!
-//! ## VP-159 PR-3 (2026-05-11) — struct 化 + Service trait 登録
+//! ## VP-159 PR-3 → PR-4b (2026-05-11) — struct 化 + Service + SpawnableService
 //!
-//! 既存 `pub fn spawn(...)` 経路を `LaneSpawnActor` struct に集約、 Service trait に形式登録
-//! (= ECS 純度回復、 actor を struct で表現)。 通信経路 / msg flow / Semaphore gate /
-//! race guard / payload schema 等の挙動は完全互換、 caller (= server.rs) は
-//! `LaneSpawnActor::new()` + `spawn()` 経由に更新。
+//! - **PR-3**: 既存 `pub fn spawn(...)` 経路を `LaneSpawnActor` struct に集約、 `Service` trait に
+//!   形式登録 (= ECS 純度回復、 actor を struct で表現)。
+//! - **PR-4b**: `SpawnableService` super-trait を impl (= `spawn(self)` → `spawn_loop(self) ->
+//!   JoinHandle<()>` に統一)、 caller (= server.rs) は `ActorRegistry::spawn_service` 経由に集約
+//!   (= JoinHandle を ActorRegistry が保持、 PR-5 supervisor 統一の foundation)。
+//!
+//! 通信経路 / msg flow / Semaphore gate / race guard / payload schema 等の挙動は完全互換。
 //!
 //! ## 設計
 //!
@@ -58,10 +61,11 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use tokio::sync::{RwLock, Semaphore};
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::capability::msgbox::{Handle, MessageKind};
-use crate::capability::stand_service::{LayerScope, Service};
+use crate::capability::stand_service::{LayerScope, Service, SpawnableService};
 
 use super::lane_capabilities::LaneCapabilitiesPool;
 use super::lane_cmd::LaneCmd;
@@ -103,11 +107,32 @@ impl LaneSpawnActor {
             max_concurrent,
         }
     }
+}
 
-    /// recv loop を `tokio::spawn` で起動する。 `self` は consume されて background task 内に move。
+impl Service for LaneSpawnActor {
+    fn actor_name(&self) -> &str {
+        "lane-spawn"
+    }
+
+    fn layer_scope(&self) -> LayerScope {
+        // SP-local Service (= 1 Project per Process、 cross-machine forward は msgbox_remote 経由)
+        LayerScope::Project
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl SpawnableService for LaneSpawnActor {
+    /// recv loop を `tokio::spawn` で起動し、 `JoinHandle<()>` を返す。 `self` は consume される。
     ///
     /// shutdown_token.cancelled() で loop 終了、 channel close (= recv が None) でも終了。
-    pub fn spawn(self, shutdown: CancellationToken) {
+    /// VP-159 PR-4b: 旧 `spawn(self, shutdown)` (= 戻り値なし) を `spawn_loop` に統一、
+    /// ActorRegistry が JoinHandle を保持する path を開く。 max_concurrent=0 は意味的に
+    /// 「全 spawn を block」 だが事故 config の可能性が高い、 1 に丸めて warn する
+    /// (= sequential、 Semaphore::new(0) の永久 block 回避)。
+    fn spawn_loop(self, shutdown: CancellationToken) -> JoinHandle<()> {
         let n = if self.max_concurrent == 0 {
             tracing::warn!(
                 "Lane spawn actor: max_concurrent=0 は無効、 1 に丸めます (config 確認推奨)"
@@ -170,22 +195,7 @@ impl LaneSpawnActor {
                     }
                 }
             }
-        });
-    }
-}
-
-impl Service for LaneSpawnActor {
-    fn actor_name(&self) -> &str {
-        "lane-spawn"
-    }
-
-    fn layer_scope(&self) -> LayerScope {
-        // SP-local Service (= 1 Project per Process、 cross-machine forward は msgbox_remote 経由)
-        LayerScope::Project
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
+        })
     }
 }
 
@@ -381,7 +391,7 @@ mod tests {
         // 0 を渡しても 1 に丸めて起動するはず (= タイムアウトせずに actor 起動 + shutdown 完了)
         // PR-β-2 (VP-120): lane_capabilities_pool = None で test (Lane scope なしの動作確認)
         // VP-159 PR-3: struct 経由 (LaneSpawnActor::new + spawn)
-        LaneSpawnActor::new(handle.clone(), pool, None, tx, 0).spawn(shutdown.clone());
+        LaneSpawnActor::new(handle.clone(), pool, None, tx, 0).spawn_loop(shutdown.clone());
 
         // SpawnLane を投入しても fallback 経路 (cwd 不在) で graceful degrade するはず。
         // 重要なのは「actor が動いて shutdown で終了する」 こと。
@@ -413,7 +423,7 @@ mod tests {
 
         // PR-β-2 (VP-120): lane_capabilities_pool = None で test
         // VP-159 PR-3: struct 経由 (LaneSpawnActor::new + spawn)
-        LaneSpawnActor::new(handle.clone(), pool.clone(), None, tx, 1).spawn(shutdown.clone());
+        LaneSpawnActor::new(handle.clone(), pool.clone(), None, tx, 1).spawn_loop(shutdown.clone());
 
         // Notification kind を投入 → ignore されるはず
         let msg = Message::new("test", "lane-spawn", MessageKind::Notification)

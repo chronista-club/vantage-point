@@ -19,7 +19,7 @@ use super::topic_router::TopicRouter;
 use crate::agent::InteractiveClaudeAgent;
 use crate::agui::AgUiEvent;
 use crate::capability::msgbox::Handle;
-use crate::capability::{ProcessManagerCapability, UpdateCapability};
+use crate::capability::{ActorRegistry, ProcessManagerCapability, UpdateCapability};
 use crate::file_watcher::FileWatcherManager;
 use crate::mcp::PermissionResponse;
 use crate::process::topic::TopicPattern;
@@ -114,6 +114,13 @@ pub(crate) struct AppState {
     pub pending_prompts: Arc<RwLock<HashMap<String, PendingPrompt>>>,
     /// Capability system (Agent, MIDI, Protocol)
     pub capabilities: Arc<ProcessCapabilities>,
+    /// VP-159 PR-4b: Stand / Service actor の supervisor 受け皿。
+    ///
+    /// SP mode で notify / lane-spawn を `spawn_service` 経由で起動・register、 JoinHandle を保持。
+    /// World mode では空で構築 (= World scope actor の register は後続 PR、 MidiCapability の
+    /// metadata register は dynamic routing vision 確定後、 cf. design-spark `mem_1CavFi5D1aMSpEkas89SvQ`)。
+    /// PR-5 supervisor 統一で JoinHandle 経由の abort / await を activate する foundation。
+    pub actor_registry: Arc<RwLock<ActorRegistry>>,
     /// World capability for managing multiple processes (optional, only for world mode)
     pub world: Option<Arc<RwLock<ProcessManagerCapability>>>,
     /// Msgbox actor registry — TheWorld のみ保持（Msgbox Phase 3: cross-Process routing）
