@@ -347,6 +347,29 @@ impl Config {
         Ok(())
     }
 
+    /// VP-165 (doc 17 決定C): project の SP port を解決する（flat stable slot 方式）。
+    ///
+    /// 優先度: `port` 明示 override → 無ければ `ensure_slot`（未割当なら次の空き slot を割当、
+    /// `self` を mutate）→ `PORT_RANGE_START + slot`。slot は config 永続なので、project リスト
+    /// 変更でも既存 project の port は不変（旧 `port_for_configured` の `PORT_RANGE_START + index`
+    /// 位置依存とは違う）。
+    ///
+    /// 注: 新規 slot 割当時に `self` が mutate されるので、caller は `save()` で永続化すること
+    /// （[`crate::resolve::sp_port_for_project`] が load → 本 method → save をまとめている）。
+    /// project が config に未登録なら `Err`（caller 側で `find_available_port` 等に fallback）。
+    pub fn resolve_sp_port(&mut self, name: &str) -> Result<u16> {
+        if let Some(p) = self
+            .projects
+            .iter()
+            .find(|p| p.name == name)
+            .and_then(|p| p.port)
+        {
+            return Ok(p);
+        }
+        let slot = self.ensure_slot(name, None)?;
+        Ok(crate::cli::PORT_RANGE_START + slot)
+    }
+
     /// パスを正規化（相対パス→絶対パス変換）
     pub fn normalize_path(path: &std::path::Path) -> String {
         if path.is_absolute() {
@@ -445,5 +468,67 @@ advertise_hostname = "mito-mac"
             parsed.network.advertise_hostname.as_deref(),
             Some("mito-mac")
         );
+    }
+
+    #[test]
+    fn resolve_sp_port_override_then_slot_and_position_independent() {
+        let mk = |name: &str, port: Option<u16>| ProjectConfig {
+            name: name.to_string(),
+            path: format!("/repos/{name}"),
+            port,
+            enabled: true,
+            slot: None,
+        };
+        let mut cfg = Config::default();
+        cfg.projects.push(mk("a", Some(33099))); // port 明示 override
+        cfg.projects.push(mk("b", None));
+        cfg.projects.push(mk("c", None));
+
+        // a: override が最優先、slot は触らない
+        assert_eq!(cfg.resolve_sp_port("a").unwrap(), 33099);
+        assert_eq!(
+            cfg.projects.iter().find(|p| p.name == "a").unwrap().slot,
+            None
+        );
+
+        // b: 最初の空き slot 0 → port = PORT_RANGE_START
+        assert_eq!(
+            cfg.resolve_sp_port("b").unwrap(),
+            crate::cli::PORT_RANGE_START
+        );
+        assert_eq!(
+            cfg.projects.iter().find(|p| p.name == "b").unwrap().slot,
+            Some(0)
+        );
+        // 再呼び出しは同じ（mutate 済み、idempotent）
+        assert_eq!(
+            cfg.resolve_sp_port("b").unwrap(),
+            crate::cli::PORT_RANGE_START
+        );
+
+        // c: 次の空き slot 1 → port = PORT_RANGE_START + 1
+        assert_eq!(
+            cfg.resolve_sp_port("c").unwrap(),
+            crate::cli::PORT_RANGE_START + 1
+        );
+
+        // project リストの先頭に新 project を挿入しても b/c の slot は不変（= 位置非依存）
+        cfg.projects.insert(0, mk("z", None));
+        assert_eq!(
+            cfg.projects.iter().find(|p| p.name == "b").unwrap().slot,
+            Some(0)
+        );
+        assert_eq!(
+            cfg.projects.iter().find(|p| p.name == "c").unwrap().slot,
+            Some(1)
+        );
+        // z は次の空き slot 2
+        assert_eq!(
+            cfg.resolve_sp_port("z").unwrap(),
+            crate::cli::PORT_RANGE_START + 2
+        );
+
+        // 未登録 project → Err
+        assert!(cfg.resolve_sp_port("not-registered").is_err());
     }
 }
