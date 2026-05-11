@@ -1215,7 +1215,7 @@ impl VantageMcp {
     /// GET /api/lanes wrapper、 各 Lane に mailbox_addresses (per-Lane Stands の wire address)、
     /// top-level に project_addresses + world_addresses を synthesize。
     #[tool(
-        description = "List all Lanes (Lead + Workers) in the current project with comprehensive routing info. Each Lane returns: address, kind, state, stand, pid, cwd, tmux session, worker_status, AND mailbox_addresses (= wire-ready addresses for `msg_send` / `msg_broadcast` / Canvas display routing 経由)。 Top-level also returns project_addresses (e.g. gold_experience) and world_addresses (e.g. hermit_purple)。 Use this to discover Workers, decide deletion targets, pick mailbox routes for msg_send (`echoes.<lane>@<project>`) or Canvas display (`paisley_park.<lane>@<project>`)。 Replaces multi-step `vp ps` + `curl /api/lanes` + `msg_list_actors`。"
+        description = "List all Lanes (Lead + Workers) in the current project with comprehensive routing info. Each Lane returns: address, kind, state, stand, pid, cwd, tmux session, worker_status, AND mailbox_addresses (= wire-ready addresses for `msg_send` / `msg_broadcast`)。 Each lane's mailbox_addresses has two entries: `agent` (= the lane's Claude session inbox, e.g. `agent@vantage-point` for lead or `agent@vantage-point/chore` for worker 'chore') and `canvas` (= the lane's Canvas / Paisley Park inbox, e.g. `canvas@vantage-point/chore`)。 Top-level also returns project_addresses (e.g. `gold_experience@<project>`) and world_addresses (e.g. `hermit_purple@world`)。 Use this to discover Workers, decide deletion targets, pick mailbox routes for msg_send。 Replaces multi-step `vp ps` + `curl /api/lanes`。"
     )]
     async fn list_lanes(
         &self,
@@ -1289,13 +1289,15 @@ impl VantageMcp {
                 continue;
             }
 
-            // mailbox_addresses 計算 (= per-Lane Stands の wire address)。
-            // primary stand (echoes / shell) + paisley_park (PR-β-2 後 Lane 毎 always host)。
-            let stand = lane
-                .get("stand")
-                .and_then(|v| v.as_str())
-                .unwrap_or("echoes")
-                .to_string();
+            // mailbox_addresses 計算 (= per-Lane の wire address。VP-166 設計 doc 16)。
+            //
+            // 各 Lane (lead / worker) は 2 つの box を持つ:
+            //   - `agent#<lane>`  = その lane の Claude session 宛 (= coding-assistant inbox)
+            //   - `canvas#<lane>` = その lane の Canvas / PP 宛 (PR-5 で配線)
+            // actor 名は `stands.rs` の `id` 体系 (`ECHOES.id = "agent"` / `PAISLEY_PARK.id = "canvas"`)。
+            // JoJo 愛称 (`echoes` / `paisley_park`) は表示専用なので wire には出さない。
+            // wire syntax は `<stand-id>@<project>/<lane>` (lead は `/lane` 省略可)。
+            // 旧実装の `<JoJo名>.<lane>@<project>` (`.` 区切り) は `parse_address` で弾かれる不正形だった。
             let lane_label = match lane.get("kind").and_then(|v| v.as_str()) {
                 Some("lead") => "lead".to_string(),
                 Some("worker") => lane
@@ -1305,13 +1307,15 @@ impl VantageMcp {
                     .to_string(),
                 _ => "unknown".to_string(),
             };
-            let primary_addr = format!("{}.{}@{}", stand, lane_label, project);
-            let pp_addr = format!("paisley_park.{}@{}", lane_label, project);
-
-            // map 型: actor 名 → wire address (AI agent が役割で pick できる)
+            // lead は `agent@<project>` (lane 省略 = lead)、worker は `agent@<project>/<name>`
+            let lane_suffix = if lane_label == "lead" {
+                String::new()
+            } else {
+                format!("/{}", lane_label)
+            };
             let mailbox = serde_json::json!({
-                stand: primary_addr,
-                "paisley_park": pp_addr,
+                "agent": format!("agent@{}{}", project, lane_suffix),
+                "canvas": format!("canvas@{}{}", project, lane_suffix),
             });
 
             if let Some(obj) = lane.as_object_mut() {

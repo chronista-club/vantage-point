@@ -134,6 +134,13 @@ pub fn validate_worker_name(name: &str) -> Result<(), String> {
             "invalid worker name: '{name}'. Must start with an alphanumeric character."
         ));
     }
+    // VP-166: `lead` は lead lane の予約名 (mailbox box key `<stand>#lead` と衝突するため)。
+    // worker 名として使えない。設計: docs/design/16-worker-lane-mailbox-recv.md
+    if name == "lead" {
+        return Err(
+            "invalid worker name: 'lead' is reserved for the lead lane. Pick another name.".into(),
+        );
+    }
     Ok(())
 }
 
@@ -190,6 +197,16 @@ mod tests {
     fn leading_separator_rejected() {
         assert!(validate_worker_name("-leading").is_err());
         assert!(validate_worker_name("_leading").is_err());
+    }
+
+    #[test]
+    fn lead_name_rejected() {
+        // VP-166: `lead` は lead lane の予約名 (mailbox box key `<stand>#lead` と衝突)
+        assert!(validate_worker_name("lead").is_err());
+        // 部分一致や派生名は OK (= `lead` 完全一致のみ禁止)
+        assert!(validate_worker_name("leader").is_ok());
+        assert!(validate_worker_name("my-lead").is_ok());
+        assert!(validate_worker_name("lead-fix").is_ok());
     }
 
     // --- load_config (KDL parsing) ---
