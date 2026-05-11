@@ -277,6 +277,8 @@ pub async fn run(
         canvas_senders: Arc::new(tokio::sync::Mutex::new(Vec::new())),
         started_at: chrono::Utc::now().to_rfc3339(),
         agent_msgbox_lead: Some(agent_msgbox_lead),
+        // VP-166 PR-1: Worker lane mailbox Handle の受け皿（空）。 PR-2 以降で lane lifecycle hook が populate。
+        lane_stand_boxes: Arc::new(RwLock::new(HashMap::new())),
         vpdb,
         // ポート別ディレクトリで分離（複数プロセスの namespace 衝突を防ぐ）
         // run() 冒頭で作成した Whitesnake を共有（Msgbox persistent と同一インスタンス）
@@ -855,7 +857,9 @@ pub async fn run_world(
         canvas_senders: Arc::new(tokio::sync::Mutex::new(Vec::new())),
         started_at: chrono::Utc::now().to_rfc3339(),
         agent_msgbox_lead: None, // VP-157: World モードでは agent box 不要 (= SP per project だけが持つ)
-        vpdb: vpdb.clone(),      // World モードでも DB 参照あり
+        // VP-166 PR-1: World モードは lane を持たないので空のまま
+        lane_stand_boxes: Arc::new(RwLock::new(HashMap::new())),
+        vpdb: vpdb.clone(), // World モードでも DB 参照あり
         // TheWorld もポート別ディレクトリで分離
         whitesnake: world_whitesnake,
         // Phase A4-2b: World モードでは Lane / Project Stand を持たない (空 Pool で AppState を満たす)
