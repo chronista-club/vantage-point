@@ -334,6 +334,149 @@ enum HostedStand {
 
 **α / γ trade-off の精緻化は §13 Open Questions に保留。**
 
+→ **VP-159 (2026-05) で実装は β Soft 案を採らず、 i 路線 minimal で確定。 actual な trait 体系は §7.5 参照。**
+
+---
+
+## §7.5. VP-159 実装 (2026-05-11) — i 路線 minimal で確定した trait 体系
+
+§7 の β Soft 案 (= `Stand` core trait に `start` / `stop` / `handle` method を持たせる) は
+**採用せず**、 VP-159 (PR-1〜PR-5、 #326〜#331+) で **i 路線 minimal** (= passive marker から
+段階的拡張) で実装した。 本 §7.5 が actual な trait 体系の SSOT。
+
+### Stand / Service / SpawnableService trait
+
+VP-24 original 設計意図「Stand に component bolt-on で msgbox 使える」 を、 actor を 2 系統に
+分離する形で formalize (= ECS 純度回復):
+
+| trait | 意味 | 例 | landed PR |
+|-------|------|-----|-----------|
+| `Stand` | ECS entity bound actor | `agent` (Echoes 💬)、 `protocol` (ProtocolCapability) | PR-2 (#327) |
+| `Service` | singleton infra actor | `notify`、 `lane-spawn`、 `hermit_purple` 🍇 | PR-3 (#329) |
+| `SpawnableService: Service` | 持続的 recv loop を起動できる Service | `NotificationActor`、 `LaneSpawnActor` | PR-4b (#331) |
+
+```rust
+// crates/vantage-point/src/capability/stand_service.rs
+pub enum LayerScope { World, Project, Lane }  // LSCM 3 層 (§3)
+
+pub trait Stand: Any + Send + Sync + 'static {
+    fn actor_name(&self) -> &str;        // mailbox address の actor 部分と一致
+    fn layer_scope(&self) -> LayerScope;
+    fn as_any(&self) -> &dyn Any;        // downcast 用 (Any 慣用句)
+}
+
+pub trait Service: Any + Send + Sync + 'static {
+    fn actor_name(&self) -> &str;
+    fn layer_scope(&self) -> LayerScope;
+    fn as_any(&self) -> &dyn Any;
+}
+
+pub trait SpawnableService: Service {
+    fn spawn_loop(self, shutdown: CancellationToken) -> JoinHandle<()>;
+}
+```
+
+**i 路線 minimal の意義**: PR-1 で passive marker (= `actor_name` / `layer_scope` / `as_any` のみ)
+を landed、 lifecycle method (`spawn_loop`) は PR-4b で `SpawnableService` super-trait として追加。
+§7 β Soft 案の `start` / `stop` / `handle` は採用せず — actor ごとに observer / consumer / hold
+pattern が異なる現実 (= `AgentCapability` は EventBus observer、 `NotificationActor` は mailbox
+consumer、 `MidiCapability` は instance hold + 内部 `monitor_task`) に合わせて、 trait を strict に
+しすぎない設計。 `Service` trait に `spawn_loop` を直接追加すると `MidiCapability` (= consume 不適)
+が compile error になるため、 `SpawnableService: Service` super-trait に分離 (= consume 適合 actor
+のみ impl)。
+
+### ActorRegistry — supervisor 受け皿
+
+```rust
+// crates/vantage-point/src/capability/actor_registry.rs
+pub enum ActorKind { Stand, Service }
+
+pub struct ActorRegistryEntry {
+    name: String, scope: LayerScope, kind: ActorKind,
+    task: Option<JoinHandle<()>>,  // spawn_service で attach、 register_* では None
+}
+
+pub struct ActorRegistry {
+    entries: HashMap<String, ActorRegistryEntry>,
+}
+
+impl ActorRegistry {
+    pub fn spawn_service<S: SpawnableService>(&mut self, service: S, shutdown: CancellationToken);  // spawn + JoinHandle 保持
+    pub fn register_service<S: Service>(&mut self, service: &S);  // metadata only
+    pub fn register_stand<S: Stand>(&mut self, stand: &S);
+    pub fn list_by_scope(&self, scope: LayerScope) -> Vec<&ActorRegistryEntry>;
+    pub fn list_by_kind(&self, kind: ActorKind) -> Vec<&ActorRegistryEntry>;
+}
+```
+
+- **SP mode**: `AppState.actor_registry` で `notify` / `lane-spawn` を `spawn_service` 経由で起動・register
+- **World mode**: 空で構築 (= World scope actor = `hermit_purple` の register は後続 PR、 cf. §7.6)
+- PR-5 段階では JoinHandle を保持するだけ、 supervisor 機能 (= abort / await / restart) の activate は将来
+
+### Stand / Service の現状一覧
+
+| actor | trait | scope | spawn pattern | host location |
+|-------|-------|-------|---------------|---------------|
+| `agent` (Echoes 💬) | Stand | Project | EventBus observer (VP-157、 spawn loop なし) | `ProcessCapabilities` |
+| `protocol` | Stand | Project | mailbox consumer | `ProcessCapabilities` |
+| `notify` | SpawnableService | Project | mailbox consumer (spawn_loop) | `AppState.actor_registry` (PR-4b) |
+| `lane-spawn` | SpawnableService | Project | mailbox consumer (spawn_loop、 Semaphore-gated) | `AppState.actor_registry` (PR-4b) |
+| `hermit_purple` 🍇 | Service (not Spawnable) | World | instance hold + monitor_task | `WorldCapabilities.midi` |
+| `paisley_park` 🧭 (将来) | LaneStandHost (marker、 PR-δ-1) | Lane | — | `LaneCapabilities` (PR-β) |
+| `gold_experience` 🌿 (将来) | (skeleton) | Project (将来 Lane) | — | `ProjectStandsPool` (skeleton) |
+
+> `paisley_park` / `gold_experience` の `Stand` impl は将来 PR-γ で Lane scope に migrate される
+> 時に行う (= 元 roadmap)。 `hermit_purple` の `SpawnableService` 化 (= consume pattern) は MIDI
+> dynamic routing vision 確定後に再設計 (= design-spark `mem_1CavFi5D1aMSpEkas89SvQ`)。
+
+## §7.6. actor じゃないもの — init code と別 abstraction
+
+「actor」 condition = **(a)** 持続的 loop + **(b)** owned mailbox (= MsgboxRouter `register`) +
+**(c)** lifecycle (= 起動→動作→shutdown) + **(d)** address 責任 (= 特定 address msg の処理 owner)。
+4 つ全部満たすものが VP-159 の `Stand` / `Service` trait の対象。 満たさないものは別扱い:
+
+### sp-bootstrap — init code (= mailbox を経由するが actor じゃない)
+
+`server.rs` の SP startup で `register("sp-bootstrap")` で handle 取得 → ccws workers 件数分
+`send_to("lane-spawn", ...)` を投入 → handle drop。 recv loop も lifecycle もない **一過性 sender**。
+mailbox を経由する init code であって actor ではない (= 4 condition のうち (a)(b)(c)(d) すべて欠如)。
+VP-159 PR-3 で「actor 性質を持つのは `notify` / `lane-spawn` / `hermit_purple` の 3 つ、 `sp-bootstrap`
+は除外」 と確定。
+
+### TmuxActor — mpsc-based actor (= mailbox-based じゃない別 abstraction)
+
+`process/tmux_actor.rs`、 tmux 透過統合 (Issue #90) の core component。 actor 4 condition のうち
+**(a) 持続的 loop は満たす** が、 **(b) owned mailbox は `tokio::sync::mpsc::Receiver`** であって
+VP の `MsgboxRouter` ではない、 **(d) address 責任も `MsgboxRouter` に register せず `TmuxHandle`
+direct call**。 → **「actor pattern だが mailbox-based ではない別 abstraction」**。 役割: tmux shell
+command (`split-window` / `capture-pane` / `kill-pane` 等) の async wrapper + agent metadata
+(= pane_id → agent name mapping) の stateful manager。 VP-159 scope outside、 mailbox-based に
+統合するなら別 epic (= 「all actor を MsgboxRouter 経由に集約」)。
+
+## §7.7. 通信 primitive 使い分け guideline
+
+VP の通信 primitive と使い分け:
+
+| primitive | 用途 | 使うもの |
+|-----------|------|---------|
+| **Mailbox (`MsgboxRouter`)** | address-bound actor 間通信 (= `register("name")` で address 所有) | `Stand` / `SpawnableService` (= agent / protocol / notify / lane-spawn / hermit_purple) |
+| **EventBus (broadcast)** | observer pattern (= 1 event を複数 subscriber に配信) | `AgentCapability` の notification 受信 (VP-157 observer 化)、 `CapabilityEvent` 配信 |
+| **TopicRouter (topic 購読)** | topic ベースの pub/sub (= `{scope}/{capability}/{category}/{detail}`) | Canvas / pane_contents / RetainedStore |
+| **mpsc (internal channel)** | 自己完結 actor の internal command queue | `TmuxActor` (= tmux command queue)、 `ProcessRunner` (= Ruby VM 系) |
+| **Unison QUIC** | cross-Process 通信 (= SP ↔ TheWorld) | `SystemEvent` push / registry channel / process チャネル |
+
+判断基準:
+- **address に対する責任を持つ actor** → Mailbox (= `MsgboxRouter` register、 = `Stand` / `Service` trait の対象)
+- **broadcast したい event** → EventBus
+- **topic 購読 model** → TopicRouter
+- **自己完結する internal queue** (= 外部から address で reach する必要がない) → mpsc
+- **process 跨ぎ** → Unison QUIC
+
+**「actor であるべきものだけ actor」** — 4 condition (= 持続 loop / owned mailbox / lifecycle /
+address 責任) を満たさないものは Mailbox actor にせず、 init code (= `sp-bootstrap`) や別
+abstraction (= `TmuxActor`) として明示する。 trait impl は「対象が trait の condition を満たすか」
+を critical に判断する (= VP-159 PR-3 で `sp-bootstrap` を audit して除外したのが典型例)。
+
 ---
 
 ## §8. Lifecycle
