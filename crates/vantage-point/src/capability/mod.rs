@@ -13,6 +13,7 @@
 //!
 //! - [docs/spec/05-process-capability.md](../../../docs/spec/05-process-capability.md)
 
+pub mod actor_registry;
 pub mod agent_capability;
 pub mod core;
 pub mod eventbus;
@@ -30,6 +31,7 @@ pub mod stand_service;
 pub mod update_capability;
 pub mod whitesnake;
 
+pub use actor_registry::{ActorKind, ActorRegistry, ActorRegistryEntry};
 pub use agent_capability::AgentCapability;
 pub use core::{
     CapabilityContext, CapabilityEvent, CapabilityInfo, CapabilityState, DiagnosticReport,
