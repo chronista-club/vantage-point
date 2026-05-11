@@ -193,57 +193,14 @@ pub async fn run(
     // 同じ理由で agent register もこの位置で行う。
     let agent_msgbox_lead = capabilities.msgbox_router.register("agent").await;
 
-    // Notification ブリッジ: Msgbox "notify" → DistributedNotification（VP-24）
-    // Msgbox に送られた Notification メッセージを macOS DistributedNotification に変換
-    // shutdown token で停止可能
+    // Notification ブリッジ: Msgbox "notify" → DistributedNotification（VP-24、 VP-159 PR-3 で struct 化）
+    // inline 実装 (旧 server.rs:196-247) を `NotificationActor` に集約、 Service trait 形式登録。
+    // 通信経路 / msg flow / payload schema は完全互換、 shutdown token で停止可能。
     {
         let notify_handle = capabilities.msgbox_router.register("notify").await;
-        let project_dir_clone = project_dir.clone();
-        let shutdown = shutdown_token.clone();
-        tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    _ = shutdown.cancelled() => {
-                        tracing::info!("Notification bridge: shutdown");
-                        break;
-                    }
-                    msg = notify_handle.recv() => {
-                        match msg {
-                            Some(msg) if msg.kind == crate::capability::msgbox::MessageKind::Notification => {
-                                let project = msg
-                                    .payload
-                                    .get("project")
-                                    .and_then(|v| v.as_str())
-                                    .filter(|s| !s.is_empty())
-                                    .unwrap_or_else(|| {
-                                        project_dir_clone
-                                            .rsplit('/')
-                                            .find(|s| !s.is_empty())
-                                            .unwrap_or("unknown")
-                                    })
-                                    .to_string();
-                                let message = msg
-                                    .payload
-                                    .get("message")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("完了")
-                                    .to_string();
-                                // path: 通知元のターミナルパス（Lane 単位通知用）
-                                let path = msg
-                                    .payload
-                                    .get("path")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or(&project_dir_clone)
-                                    .to_string();
-                                crate::notify::post_cc_notification(&project, &message, &path);
-                            }
-                            Some(_) => {} // 非 Notification メッセージは無視
-                            None => break, // チャネル閉鎖
-                        }
-                    }
-                }
-            }
-        });
+        let notify_actor =
+            super::notification_actor::NotificationActor::new(notify_handle, project_dir.clone());
+        notify_actor.spawn(shutdown_token.clone());
     }
 
     // VP-147 PR-P2-2 (gap 1): TheWorld registry への actor register snapshot を実行。
@@ -392,14 +349,15 @@ pub async fn run(
             .unwrap_or_default()
             .startup
             .max_concurrent_lane_spawn as usize;
-        super::lane_spawn_actor::spawn(
+        // VP-159 PR-3: struct 経由 (= ECS 純度回復、 actor を struct で表現)
+        super::lane_spawn_actor::LaneSpawnActor::new(
             lane_spawn_handle,
             state.lane_pool.clone(),
             state.lane_capabilities.clone(), // PR-β-2 (VP-120): Worker spawn 時に populate_lane する
             state.system_event_tx.clone(),   // Phase 2 (Step E): system event central bus
             max_concurrent,
-            shutdown_token.clone(),
-        );
+        )
+        .spawn(shutdown_token.clone());
 
         // bootstrap sender: 別 address `sp-bootstrap` で send_to するため、 `lane-spawn` の
         // recv 流路を actor が独占維持できる (= register 同 address は tx 上書き仕様のため)。

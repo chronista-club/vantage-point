@@ -295,4 +295,49 @@ mod tests {
         assert_eq!(project_count, 2, "Project scope の Stand は 2 個");
         assert_eq!(world_count, 1, "World scope の Stand は 1 個");
     }
+
+    #[test]
+    fn n_distinct_services_coexist_in_collection() {
+        // PR-3 invariant (PR-2 同型): 異なる name / scope の N 個 Service impl が同じ
+        // Vec<Box<dyn Service>> で共存できる事 (= PR-4 supervisor 統一の foundation)。
+        // 実 impl (MidiCapability / NotificationActor / LaneSpawnActor) を fixture で代理、
+        // 3 actor の actor_name + layer_scope を 1 collection で host できる pattern を検証。
+        let services: Vec<Box<dyn Service>> = vec![
+            Box::new(FixtureService {
+                name: "notify",
+                scope: LayerScope::Project,
+            }),
+            Box::new(FixtureService {
+                name: "lane-spawn",
+                scope: LayerScope::Project,
+            }),
+            Box::new(FixtureService {
+                name: "hermit_purple",
+                scope: LayerScope::World,
+            }),
+        ];
+        assert_eq!(services.len(), 3);
+
+        // actor_name が distinct で取り出せる (= sp-bootstrap は actor じゃないので含めない)
+        let names: Vec<&str> = services.iter().map(|s| s.actor_name()).collect();
+        assert_eq!(names, vec!["notify", "lane-spawn", "hermit_purple"]);
+
+        // layer_scope で filter できる (= PR-4 supervisor が scope 別に dispatch する pattern)
+        let project_count = services
+            .iter()
+            .filter(|s| s.layer_scope() == LayerScope::Project)
+            .count();
+        let world_count = services
+            .iter()
+            .filter(|s| s.layer_scope() == LayerScope::World)
+            .count();
+        assert_eq!(
+            project_count, 2,
+            "Project scope の Service は 2 個 (= notify + lane-spawn)"
+        );
+        assert_eq!(
+            world_count, 1,
+            "World scope の Service は 1 個 (= hermit_purple)"
+        );
+    }
 }
