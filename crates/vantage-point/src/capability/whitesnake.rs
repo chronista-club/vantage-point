@@ -408,16 +408,33 @@ impl Whitesnake {
         Self::new(Arc::new(FileBackend::default_dir()))
     }
 
-    /// ポート別ディレクトリのファイルバックエンドで作成
+    /// project slug 別ディレクトリのファイルバックエンドで作成（VP-165 / doc 17 決定B）
     ///
-    /// 複数プロセスが同一の namespace/key に同時書き込みするのを防ぐ。
-    /// Process は port で一意なので、`discs/{port}/` 配下を専用領域として使う。
-    pub fn file_backed_for_port(port: u16) -> Self {
+    /// 旧 `file_backed_for_port(port)` は port を専用領域の ID に使っていたが、port は
+    /// project リスト変更で reshuffle する不安定 ID（VP-165）。本当の不変条件は
+    /// 「1 project あたり同時 1 SP」なので、project の slug（= 安定 ID）で
+    /// `discs/p_{slug}/` 配下を専用領域にする。port を継いだ別 project が前 project の
+    /// 永続 msg を読む事故（`restore_pending` 経由の `from` 汚染）を構造的に防ぐ。
+    /// slug の導出は [`crate::resolve::project_slug`]。
+    pub fn file_backed_for_project(project_slug: &str) -> Self {
         let dir = dirs::config_dir()
             .unwrap_or_else(|| PathBuf::from("/tmp"))
             .join("vantage")
             .join("discs")
-            .join(port.to_string());
+            .join(format!("p_{}", project_slug));
+        Self::new(Arc::new(FileBackend::new(dir)))
+    }
+
+    /// TheWorld（World daemon）専用ディレクトリのファイルバックエンドで作成
+    ///
+    /// 旧実装は `file_backed_for_port(32000)` だったが、World daemon の port も
+    /// override 可能（`config.ports.world_port`）なので固定キー `discs/world/` に。
+    pub fn file_backed_for_world() -> Self {
+        let dir = dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("/tmp"))
+            .join("vantage")
+            .join("discs")
+            .join("world");
         Self::new(Arc::new(FileBackend::new(dir)))
     }
 
