@@ -603,9 +603,14 @@ impl Router {
     /// unbounded で受けて routing_loop 側を絶対ブロックさせない。
     /// エラー時は warn ログのみ（persistent message は送信側で永続化済みなので
     /// 再起動で復元される設計）。
+    ///
+    /// VP-164 / doc 18 決定α/β: forward 成功時、 sender 側 Whitesnake の msg に
+    /// `forwarded_at` を立てて upsert する。 これにより `restore_pending` (PR-3) が
+    /// 「forward 済 msg」 を skip でき、 SP restart の重複再配信を遮断する。
     async fn remote_forward_loop(
         mut rx: mpsc::Receiver<(Address, Message)>,
         client: RemoteRoutingClient,
+        whitesnake: Option<Whitesnake>,
         shutdown: tokio_util::sync::CancellationToken,
     ) {
         loop {
@@ -616,15 +621,47 @@ impl Router {
                 }
                 item = rx.recv() => {
                     let Some((resolved, msg)) = item else { break };
-                    if let Err(e) = client.forward(&resolved, msg).await {
-                        tracing::warn!(
-                            "Router: remote forward 失敗 to='{}' err={}",
-                            resolved.actor_or_unknown(),
-                            e
-                        );
+                    match client.forward(&resolved, msg.clone()).await {
+                        Ok(()) => {
+                            // VP-164 PR-2: forward 成功 → sender WS に forwarded_at を立てる
+                            Self::mark_forwarded(&whitesnake, &msg).await;
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "Router: remote forward 失敗 to='{}' err={}",
+                                resolved.actor_or_unknown(),
+                                e
+                            );
+                        }
                     }
                 }
             }
+        }
+    }
+
+    /// VP-164 / doc 18 決定α/β: forward 成功時に sender 側 Whitesnake の msg を
+    /// `forwarded_at = now_ms()` で upsert する helper。
+    ///
+    /// - `whitesnake` が `None` (= 永続化なしモード) なら no-op
+    /// - `ws.extract` は同 key で idempotent upsert (= 既存仕様)、 flag 更新も安全
+    /// - 失敗時は warn のみ (= 次の restart で再 forward 可能、 既存挙動と等価以下)
+    ///
+    /// 切り出した理由: unit test で「成功時に flag が立つ / 永続化なしで no-op」 を
+    /// 直接検証可能にするため。 `remote_forward_loop` 全体は実 HTTP 経路を含み
+    /// integration test が複雑。
+    async fn mark_forwarded(whitesnake: &Option<Whitesnake>, msg: &Message) {
+        let Some(ws) = whitesnake else {
+            return;
+        };
+        let mut forwarded = msg.clone();
+        forwarded.forwarded_at = Some(now_ms());
+        let key = format!("{}{}", MAILBOX_KEY_PREFIX, forwarded.id);
+        if let Err(e) = ws.extract(MAILBOX_NAMESPACE, &key, &forwarded).await {
+            tracing::warn!(
+                "Router: forwarded_at 更新失敗 id={} err={}",
+                forwarded.id,
+                e
+            );
         }
     }
 
@@ -635,12 +672,15 @@ impl Router {
         let shutdown = tokio_util::sync::CancellationToken::new();
 
         // Remote forward 用 bounded channel（cap=10000、メモリ無防備防止）+ worker task
+        // VP-164 PR-2: forward 成功時に sender 側 WS の msg に forwarded_at を立てるため
+        // whitesnake を loop に渡す (= 永続化なしモードでは no-op)
         let remote_tx = remote.as_ref().map(|client| {
             let (tx, rx) = mpsc::channel::<(Address, Message)>(REMOTE_FORWARD_QUEUE_CAP);
             let shutdown_remote = shutdown.clone();
             tokio::spawn(Self::remote_forward_loop(
                 rx,
                 client.clone(),
+                whitesnake.clone(),
                 shutdown_remote,
             ));
             tx
@@ -1992,6 +2032,51 @@ mod tests {
         // 他既存 field も既存 default で復元される
         assert_eq!(msg.expires_at, None);
         assert!(!msg.manual_ack);
+    }
+
+    // VP-164 / doc 18 PR-2: forward 成功時に sender 側 WS の msg に forwarded_at が
+    // 立つ事を検証する unit test。 mark_forwarded helper を直接呼んで挙動を確認、
+    // remote_forward_loop 全体 (= 実 HTTP 経路) の integration test は別 phase で。
+
+    #[tokio::test]
+    async fn test_mark_forwarded_updates_flag_in_whitesnake() {
+        let ws = Whitesnake::in_memory();
+        let msg = Message::new("agent@vp", "agent@creo", MessageKind::Direct)
+            .with_payload(&"cross-process hello");
+        assert_eq!(msg.forwarded_at, None, "送信時点では未配信");
+
+        // routing_loop の永続化を模す: 元 msg を WS に書く
+        let key = format!("{}{}", MAILBOX_KEY_PREFIX, msg.id);
+        ws.extract(MAILBOX_NAMESPACE, &key, &msg).await.unwrap();
+
+        // mark_forwarded で flag を立てる (= remote_forward_loop の Ok(()) 経路を直接呼ぶ)
+        Router::mark_forwarded(&Some(ws.clone()), &msg).await;
+
+        // WS から読み戻して forwarded_at が立っている事を確認
+        let discs = ws
+            .list_by_prefix(MAILBOX_NAMESPACE, MAILBOX_KEY_PREFIX)
+            .await
+            .unwrap();
+        assert_eq!(discs.len(), 1, "msg は 1 件のみ (= idempotent upsert)");
+        let stored: Message = discs[0].extract().unwrap();
+        assert_eq!(stored.id, msg.id);
+        assert!(
+            stored.forwarded_at.is_some(),
+            "forward 成功で forwarded_at が立つ"
+        );
+        assert_eq!(
+            stored.consumed_at, None,
+            "consumed_at は Phase 2 まで未設定"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_mark_forwarded_no_op_without_whitesnake() {
+        // 永続化なしモード (= Whitesnake が None) では mark_forwarded は no-op、
+        // panic / error せず即 return する事を確認。 with_remote() 等のテスト構成保証。
+        let msg = Message::new("agent", "target", MessageKind::Direct);
+        Router::mark_forwarded(&None, &msg).await;
+        // 到達 = no panic、 副作用なし
     }
 
     #[test]
