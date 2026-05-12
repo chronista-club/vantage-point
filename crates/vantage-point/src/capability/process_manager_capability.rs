@@ -100,6 +100,19 @@ pub fn normalize_path_key(path: &std::path::Path) -> String {
     Config::normalize_path(path)
 }
 
+/// VP-165 PR-5b: `start_process` 内 `wait_for_health` の判定結果
+#[derive(Debug)]
+enum HealthCheckResult {
+    /// `/api/health` の `project_dir` が期待値と一致 → 自分の SP が立った
+    Ours,
+    /// `/api/health` は応答したが `project_dir` が別 project → 外部衝突 (auto-reassign trigger)
+    WrongProject(String),
+    /// timeout だが port は listening = 非 VP プロセス占有 (auto-reassign trigger)
+    Occupied,
+    /// timeout かつ port も応答せず = SP crashed or never started
+    Timeout,
+}
+
 /// Conductor Capability
 #[derive(Clone)]
 pub struct ProcessManagerCapability {
@@ -710,7 +723,7 @@ impl ProcessManagerCapability {
             return Ok(existing);
         }
 
-        // 状態を更新
+        // 状態を Starting に
         {
             let mut projects = self.projects.write().await;
             if let Some(p) = projects.get_mut(&key) {
@@ -718,42 +731,109 @@ impl ProcessManagerCapability {
             }
         }
 
-        // vp sp start を子プロセスとして実行
-        let project_path_str = project.path.to_string_lossy();
-        let mut cmd = Command::new(&vp_path);
-        cmd.args(["sp", "start", "-C", &project_path_str]);
-        cmd.current_dir(&project.path);
-
-        // バックグラウンドで起動
-        let child = cmd
-            .spawn()
-            .map_err(|e| CapabilityError::Other(format!("Failed to start vp: {}", e)))?;
-
-        let pid = child.id().unwrap_or(0);
-
-        // ポートが listen ready になるまで polling で待つ。
+        // VP-165 PR-5b: TheWorld が port allocation の authority。
+        // - `sp_port_for_project` で slot ベースの port を解決 (新規割当なら config 永続)
+        // - `vp sp start -p <port>` で port を明示渡し
+        // - `wait_for_health(port, &path)` で `/api/health` の project_dir 一致を確認
+        // - 外部衝突 (別 project SP / 非 VP process) なら 1 回きり auto-reassign + retry
         //
-        // 旧実装は固定 sleep(1500ms) + 1-shot scan で、 cold start (SurrealDB lock retry /
-        // dyld load 等) で SP の `/api/health` が 1.5s 直後にちょうど ready になる場合に
-        // refused/timeout を取りこぼして即 fail していた (PR #228 後の dogfood で
-        // unison-kdl / object-records が連続失敗)。
-        //
-        // 新実装: 800ms 待 → scan → miss なら 500ms backoff で max 10s 再試行。
-        // 起動が早い case (~1s) では旧 1500ms 固定より速く抜ける、 遅い case (~3-5s) でも
-        // 確実に catch。 (I-a 対症 fix、 2026-04-30、 user 提案 (I-b) concurrency 化は別 sprint)。
-        let port = self
-            .wait_for_process_port(
-                &project.path,
-                std::time::Duration::from_millis(800),
-                std::time::Duration::from_millis(500),
-                std::time::Duration::from_secs(10),
-            )
-            .await
-            .ok_or_else(|| {
-                CapabilityError::Other(
-                    "Failed to find Process port within 10s startup timeout".to_string(),
+        // 旧 (PR-5 まで): `vp sp start -C <path>` (-p 無し) → 子の resolve_port が slot 解決 →
+        // TheWorld が `wait_for_process_port` で range scan で discover、 だった。 PR-5b で
+        // TheWorld が port を明示所有する形に整理。
+        let project_path_str = project.path.to_string_lossy().to_string();
+        let max_attempts = 2; // 初回 + auto-reassign 後 1 回
+        let mut attempt = 0;
+        let (port, pid) = loop {
+            attempt += 1;
+
+            // port 解決 (slot ベース、 新規割当なら config 永続)。 失敗時は find_available_port に fallback
+            let port = match crate::resolve::sp_port_for_project(project_name) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!(
+                        "VP-165: sp_port_for_project('{}') 失敗: {} → find_available_port にフォールバック",
+                        project_name,
+                        e
+                    );
+                    crate::resolve::find_available_port().ok_or_else(|| {
+                        CapabilityError::Other(format!(
+                            "VP-165: port 解決失敗かつ空き port もなし ({})",
+                            e
+                        ))
+                    })?
+                }
+            };
+
+            // vp sp start を子プロセスとして実行 (-p で port 明示)
+            let mut cmd = Command::new(&vp_path);
+            cmd.args([
+                "sp",
+                "start",
+                "-C",
+                &project_path_str,
+                "-p",
+                &port.to_string(),
+            ]);
+            cmd.current_dir(&project.path);
+            let child = cmd
+                .spawn()
+                .map_err(|e| CapabilityError::Other(format!("Failed to start vp: {}", e)))?;
+            let pid = child.id().unwrap_or(0);
+
+            // health 確認 (port 既知なので range scan 不要)
+            let health = self
+                .wait_for_health(
+                    port,
+                    &project.path,
+                    std::time::Duration::from_millis(800),
+                    std::time::Duration::from_millis(500),
+                    std::time::Duration::from_secs(10),
                 )
-            })?;
+                .await;
+
+            match health {
+                HealthCheckResult::Ours => break (port, pid),
+                HealthCheckResult::WrongProject(actual) => {
+                    if attempt >= max_attempts {
+                        return Err(CapabilityError::Other(format!(
+                            "VP-165: port {} は別 project SP ({}) が占有、 auto-reassign 後も解消せず",
+                            port, actual
+                        )));
+                    }
+                    let new_port = self.auto_reassign_slot(project_name, port).await?;
+                    tracing::info!(
+                        "VP-165 retry: project '{}' を新 port {} で再 spawn",
+                        project_name,
+                        new_port
+                    );
+                    // child は port bind に失敗してすぐ exit するはず。 念のため kill は
+                    // しない (vp sp start 側の collision check が bail で抜ける)。
+                    continue;
+                }
+                HealthCheckResult::Occupied => {
+                    if attempt >= max_attempts {
+                        return Err(CapabilityError::Other(format!(
+                            "VP-165: port {} が外部 process に占有、 auto-reassign 後も解消せず",
+                            port
+                        )));
+                    }
+                    let new_port = self.auto_reassign_slot(project_name, port).await?;
+                    tracing::info!(
+                        "VP-165 retry: project '{}' を新 port {} で再 spawn (旧 {} は外部占有)",
+                        project_name,
+                        new_port,
+                        port
+                    );
+                    continue;
+                }
+                HealthCheckResult::Timeout => {
+                    return Err(CapabilityError::Other(format!(
+                        "VP-165: SP startup timeout (port={}, project='{}')",
+                        port, project_name
+                    )));
+                }
+            }
+        };
 
         let running_process = RunningProcess {
             project_name: project_name.to_string(),
@@ -1041,47 +1121,154 @@ impl ProcessManagerCapability {
         None
     }
 
-    /// SP startup port が listen ready になるまで polling で待つ。
+    /// VP-165 PR-5b: 既知 port の `/api/health` を poll し、`project_dir` 一致を確認する。
     ///
-    /// `start_process` の補助。 旧固定 sleep(1500ms) + 1-shot scan が cold start で
-    /// 取りこぼしていた問題への対症 fix ((I-a) 2026-04-30)。
+    /// 旧 `wait_for_process_port` は range scan (33000-33024 を全部 GET して path 一致を探す)
+    /// だったが、PR-5b で `start_process` が `-p <port>` で port を明示渡しするようになり、
+    /// 既知 port の health を直 poll すれば足りる。さらに「health が別 project の dir を返す」
+    /// = 別 project の SP が同 port にいる（外部衝突）ケースも区別できるようになり、
+    /// auto-reassign の trigger になる。
     ///
-    /// - `initial_delay`: 最初の scan までの待機。 SP が axum listen + `/api/health`
-    ///   route 準備完了する最低時間 (典型 ~800ms)。
-    /// - `poll_interval`: miss 時の retry 間隔 (典型 500ms)。
-    /// - `total_timeout`: 諦めるまでの total 時間 (典型 10s)。 timeout 超で `None`。
-    ///
-    /// 計測 log: 解決時に `tracing::info!` で elapsed ms を出す。 dogfood で cold start
-    /// 分布を観察して将来 (I-b) concurrency 化の N 値決定に使う想定。
-    async fn wait_for_process_port(
+    /// - `initial_delay` ~800ms: SP が axum listen + `/api/health` 準備完了するまでの最低時間
+    /// - `poll_interval` ~500ms: retry 間隔
+    /// - `total_timeout` ~10s: 諦めるまでの total
+    async fn wait_for_health(
         &self,
-        project_path: &std::path::Path,
+        port: u16,
+        expected_path: &std::path::Path,
         initial_delay: std::time::Duration,
         poll_interval: std::time::Duration,
         total_timeout: std::time::Duration,
-    ) -> Option<u16> {
+    ) -> HealthCheckResult {
         let start = std::time::Instant::now();
         tokio::time::sleep(initial_delay).await;
 
+        let url = format!("http://[::1]:{}/api/health", port);
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(2))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+        let expected_normalized = Config::normalize_path(expected_path);
+
         loop {
-            if let Some(port) = self.find_process_port(project_path).await {
-                tracing::info!(
-                    "SP startup port resolved in {}ms (project_path={})",
-                    start.elapsed().as_millis(),
-                    project_path.display()
+            if let Ok(resp) = client.get(&url).send().await
+                && resp.status().is_success()
+                && let Ok(json) = resp.json::<serde_json::Value>().await
+                && let Some(actual_dir) = json.get("project_dir").and_then(|v| v.as_str())
+            {
+                let actual_normalized = Config::normalize_path(std::path::Path::new(actual_dir));
+                if actual_normalized == expected_normalized {
+                    tracing::info!(
+                        "SP startup health verified in {}ms (port={}, project_path={})",
+                        start.elapsed().as_millis(),
+                        port,
+                        expected_path.display()
+                    );
+                    return HealthCheckResult::Ours;
+                }
+                // 別 project の SP が同 port にいる = 外部衝突 (auto-reassign trigger)
+                tracing::warn!(
+                    "Health 不一致: port={} expected={} actual={} ({}ms 経過)",
+                    port,
+                    expected_normalized,
+                    actual_normalized,
+                    start.elapsed().as_millis()
                 );
-                return Some(port);
+                return HealthCheckResult::WrongProject(actual_normalized);
             }
             if start.elapsed() >= total_timeout {
+                // timeout: 何かが port を握ってるか (Occupied) / 誰も応答しないか (Timeout)
+                let occupied = std::net::TcpStream::connect_timeout(
+                    &format!("[::1]:{}", port).parse().unwrap(),
+                    std::time::Duration::from_millis(200),
+                )
+                .is_ok();
                 tracing::warn!(
-                    "SP startup port resolution timeout after {}ms (project_path={})",
+                    "SP startup health timeout after {}ms (port={}, occupied={})",
                     start.elapsed().as_millis(),
-                    project_path.display()
+                    port,
+                    occupied
                 );
-                return None;
+                return if occupied {
+                    HealthCheckResult::Occupied
+                } else {
+                    HealthCheckResult::Timeout
+                };
             }
             tokio::time::sleep(poll_interval).await;
         }
+    }
+
+    /// VP-165 PR-5b: 外部衝突時の slot 自動再割当 (1 回きり、 config 永続)
+    ///
+    /// `wait_for_health` が `WrongProject` / `Occupied` を返した時に呼ぶ。
+    /// 旧 slot を解放 → 「現 slot でなく、他 project に未割当で、port が listening でない」
+    /// slot を探して force-assign → config save。これで「外部衝突という実イベントに対して、
+    /// その 1 project だけ 1 回きり別 slot に退避 + 永続」が実現する (config 編集による
+    /// cascading shift とは別物 = bounded migration)。
+    ///
+    /// 25 slot 全部塞がってる極端な場合は Err で、 caller (`start_process`) が retry を諦める。
+    async fn auto_reassign_slot(
+        &self,
+        project_name: &str,
+        occupied_port: u16,
+    ) -> CapabilityResult<u16> {
+        let mut config = Config::load().map_err(|e| {
+            CapabilityError::Other(format!("VP-165 reassign: config load 失敗: {}", e))
+        })?;
+
+        let layout = config.port_layout();
+        let max_projects = layout.max_projects;
+        let used = config.used_slots();
+        let current_slot = config.resolve_slot_by_name(project_name);
+
+        // 候補: 現 slot でない & 他 project に未割当 & port が listening でない
+        let new_slot = (0..max_projects).find(|s| {
+            Some(*s) != current_slot
+                && !used.contains(s)
+                && std::net::TcpStream::connect_timeout(
+                    &format!("[::1]:{}", crate::cli::PORT_RANGE_START + s)
+                        .parse()
+                        .unwrap(),
+                    std::time::Duration::from_millis(100),
+                )
+                .is_err()
+        });
+
+        let new_slot = new_slot.ok_or_else(|| {
+            CapabilityError::Other(format!(
+                "VP-165 auto-reassign: 空き slot なし (max_projects={}, occupied port={})",
+                max_projects, occupied_port
+            ))
+        })?;
+
+        // 旧 slot を解放してから新 slot を force-assign (ensure_slot は preferred が used 中だと
+        // err なので、 unassign → ensure の順)
+        if current_slot.is_some() {
+            let _ = config.unassign_slot(project_name);
+        }
+        config
+            .ensure_slot(project_name, Some(new_slot))
+            .map_err(|e| {
+                CapabilityError::Other(format!(
+                    "VP-165 reassign: slot {} assign 失敗: {}",
+                    new_slot, e
+                ))
+            })?;
+        config.save().map_err(|e| {
+            CapabilityError::Other(format!("VP-165 reassign: config save 失敗: {}", e))
+        })?;
+
+        let new_port = crate::cli::PORT_RANGE_START + new_slot;
+        tracing::warn!(
+            "VP-165 auto-reassign: project '{}' slot {:?} → {}, port {} → {} (config 永続化済み)",
+            project_name,
+            current_slot,
+            new_slot,
+            occupied_port,
+            new_port
+        );
+        Ok(new_port)
     }
 
     /// 全 Process の状態を更新（PID liveness check + ポートスキャン Reconciliation）
