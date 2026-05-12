@@ -94,6 +94,29 @@ pub struct Message {
     /// 受信後の処理中クラッシュで再配信したいパターン向け。
     #[serde(default)]
     pub manual_ack: bool,
+    /// forward 成功時刻（Unix epoch ミリ秒、 VP-164 / doc 18）
+    ///
+    /// cross-process msg の sender 側 lifecycle 用。
+    /// - `Some(_)` = receiver の box に到達済（= `Router::remote_forward_loop` が Ok(()) を受けた）
+    /// - `None` = 未配信（= routing_loop に乗ってる or restart で復元すべき）
+    ///
+    /// PR-3 で `restore_pending` がこの field を見て `Some(_)` を skip し、 SP restart の
+    /// 重複再配信を遮断する。 local 配信では sender == receiver で意味なし、 cross-process
+    /// forward のみ PR-2 で更新される。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forwarded_at: Option<u64>,
+    /// recv 完了時刻（Unix epoch ミリ秒、 VP-164 / doc 18）
+    ///
+    /// receiver が `recv()` で取り出して ack した時に更新。 Phase 1（= 本 PR を含む VP-164
+    /// 一連の sub-PR）では schema 追加のみで経路は実装せず、 Phase 2（= VP-161
+    /// cross-machine replay 連動）で receiver → sender の 2nd ack 経路を追加して更新する。
+    ///
+    /// VP-161 の「未配信」 定義の foundation:
+    /// - `forwarded_at == None` = 完全に未配信 → `restore_pending` で再投入
+    /// - `forwarded_at != None && consumed_at == None` = 届いたが consume されてない → 別経路で replay
+    /// - `forwarded_at != None && consumed_at != None` = 完了 → GC 対象
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consumed_at: Option<u64>,
 }
 
 /// メッセージ種別
@@ -123,6 +146,8 @@ impl Message {
             id: uuid::Uuid::new_v4().to_string(),
             expires_at: None,
             manual_ack: false,
+            forwarded_at: None,
+            consumed_at: None,
         }
     }
 
@@ -1926,5 +1951,69 @@ mod tests {
         assert_eq!(got.payload_as::<String>().unwrap(), "legit");
 
         router.shutdown();
+    }
+
+    // VP-164 / doc 18 PR-1: Message struct に forwarded_at + consumed_at を追加した時の
+    // schema 互換性検証。 既存 expires_at と同型 pattern (Option<u64> + serde(default) +
+    // skip_serializing_if) で、 既存 DISC との後方互換 + forward-compat serialize を保証する。
+
+    #[test]
+    fn test_message_serde_round_trip_with_lifecycle_flags() {
+        // 両 flag を設定 → JSON 経由 → 値が完全保持される
+        let mut msg = Message::new("agent@vp", "agent@creo", MessageKind::Direct);
+        msg.forwarded_at = Some(1_700_000_000_000);
+        msg.consumed_at = Some(1_700_000_000_500);
+
+        let json = serde_json::to_string(&msg).unwrap();
+        let restored: Message = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.forwarded_at, Some(1_700_000_000_000));
+        assert_eq!(restored.consumed_at, Some(1_700_000_000_500));
+        assert_eq!(restored.id, msg.id);
+    }
+
+    #[test]
+    fn test_message_legacy_json_parse_yields_none_flags() {
+        // 旧 schema (= forwarded_at / consumed_at 無し) の DISC を deserialize した時、
+        // 両 flag が None になる事を確認。 既存 DISC との後方互換の core 保証。
+        let legacy_json = serde_json::json!({
+            "from": "agent",
+            "to": "target",
+            "kind": "direct",
+            "payload": null,
+            "timestamp": 1_600_000_000_000u64,
+            "reply_to": null,
+            "id": "legacy-msg-id"
+        });
+
+        let msg: Message = serde_json::from_value(legacy_json).unwrap();
+        assert_eq!(msg.forwarded_at, None);
+        assert_eq!(msg.consumed_at, None);
+        // 他既存 field も既存 default で復元される
+        assert_eq!(msg.expires_at, None);
+        assert!(!msg.manual_ack);
+    }
+
+    #[test]
+    fn test_message_skip_serializing_if_none_omits_fields() {
+        // 両 flag が None の時、 serialize 後 JSON に field が出現しない事を確認。
+        // 既存 DISC との wire format 完全一致 = 旧 reader が新 msg を読めても無関係 field が
+        // 流入しない (= forward-compat serialize)。
+        let msg = Message::new("agent", "target", MessageKind::Direct);
+        assert_eq!(msg.forwarded_at, None);
+        assert_eq!(msg.consumed_at, None);
+
+        let json = serde_json::to_value(&msg).unwrap();
+        let obj = json
+            .as_object()
+            .expect("Message は object として serialize");
+        assert!(
+            !obj.contains_key("forwarded_at"),
+            "None の forwarded_at は skip_serializing_if で omit される"
+        );
+        assert!(
+            !obj.contains_key("consumed_at"),
+            "None の consumed_at は skip_serializing_if で omit される"
+        );
     }
 }
