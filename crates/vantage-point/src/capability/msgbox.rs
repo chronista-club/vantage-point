@@ -52,6 +52,13 @@ const DEFAULT_TTL_MS: u64 = 48 * 3600 * 1000;
 const GC_INTERVAL_MS: u64 = 5 * 60 * 1000;
 /// Remote forward queue 容量（メモリ無防備防止、Phase 3 Step 2）
 const REMOTE_FORWARD_QUEUE_CAP: usize = 10_000;
+/// VP-164 / doc 18 PR-3 決定ε: legacy msg migration の grace period (5min、 ミリ秒)
+///
+/// PR-1 で `forwarded_at` field が schema 追加されたが、 それ以前から sender 側 Whitesnake に
+/// 残存していた msg は flag 無しで、 restore_pending では未配信扱いになり再 forward される。
+/// `timestamp + LEGACY_GRACE_MS < now_ms()` の msg は legacy 扱いで保守的に `forwarded_at` を
+/// 立てて再 forward を抑制する。 grace 内 (= 直近 send) は通常 restore (= crash recover を残す)。
+const LEGACY_GRACE_MS: u64 = 5 * 60 * 1000;
 
 /// 現在時刻（Unix epoch ミリ秒）
 fn now_ms() -> u64 {
@@ -983,6 +990,8 @@ impl Router {
         let mut restored = 0;
         let mut expired = 0;
         let mut skipped_foreign = 0;
+        let mut skipped_forwarded = 0;
+        let mut migrated_legacy = 0;
         for disc in discs {
             match disc.extract::<Message>() {
                 Ok(msg) => {
@@ -1007,6 +1016,48 @@ impl Router {
                         skipped_foreign += 1;
                         continue;
                     }
+                    // VP-164 (ε) PR-3: legacy msg の保守的 migration
+                    // PR-1 schema 追加前から残存している forwarded_at == None の古い msg は
+                    // restart で何度も再 forward されている可能性が高い。 grace 外 (= 直近の
+                    // crash recover 想定外) の場合は保守的に forwarded_at マーク + skip。
+                    // grace 内 (= 直近 send) はそのまま通常 restore (= crash recover を残す)。
+                    if msg.forwarded_at.is_none()
+                        && msg.timestamp.saturating_add(LEGACY_GRACE_MS) < now_ms()
+                    {
+                        let mut migrated = msg.clone();
+                        migrated.forwarded_at = Some(now_ms());
+                        let key = format!("{}{}", MAILBOX_KEY_PREFIX, migrated.id);
+                        match ws.extract(MAILBOX_NAMESPACE, &key, &migrated).await {
+                            Ok(()) => {
+                                tracing::info!(
+                                    "Msgbox: legacy msg を forwarded_at マーク (id={} ts={} → 再 forward 抑制)",
+                                    migrated.id,
+                                    migrated.timestamp
+                                );
+                                migrated_legacy += 1;
+                                continue;
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "Msgbox: legacy migration 更新失敗 id={} err={} (= 通常 restore に fall-through)",
+                                    migrated.id,
+                                    e
+                                );
+                                // fall-through で通常 restore (= 重複再配信は許容、 次回 retry)
+                            }
+                        }
+                    }
+                    // VP-164 (γ) PR-3: forward 済 msg は再投入しない (= 重複再配信遮断の本丸)
+                    if msg.forwarded_at.is_some() {
+                        tracing::debug!(
+                            "Msgbox: restore skip — forwarded 済 (id={} to={} forwarded_at={:?})",
+                            msg.id,
+                            msg.to,
+                            msg.forwarded_at
+                        );
+                        skipped_forwarded += 1;
+                        continue;
+                    }
                     if let Err(e) = self.router_tx.send(msg).await {
                         tracing::warn!("Router: 復元したメッセージの再投入失敗: {}", e);
                         break;
@@ -1019,12 +1070,19 @@ impl Router {
             }
         }
 
-        if restored > 0 || expired > 0 || skipped_foreign > 0 {
+        if restored > 0
+            || expired > 0
+            || skipped_foreign > 0
+            || skipped_forwarded > 0
+            || migrated_legacy > 0
+        {
             tracing::info!(
-                "Router: 復元={} 件 / 期限切れ削除={} 件 / 異 project skip={} 件",
+                "Router: 復元={} 件 / 期限切れ削除={} 件 / 異 project skip={} 件 / forwarded skip={} 件 / legacy migration={} 件",
                 restored,
                 expired,
-                skipped_foreign
+                skipped_foreign,
+                skipped_forwarded,
+                migrated_legacy
             );
         }
         Ok(restored)
@@ -2032,6 +2090,113 @@ mod tests {
         // 他既存 field も既存 default で復元される
         assert_eq!(msg.expires_at, None);
         assert!(!msg.manual_ack);
+    }
+
+    // VP-164 / doc 18 PR-3: restore_pending の forwarded_at skip + legacy migration を
+    // 検証する unit test 群。 既存 test_restore_pending_skips_foreign_project_msgs と
+    // 同型 pattern で、 in-memory Whitesnake に直接 DISC を書いて挙動確認。
+
+    #[tokio::test]
+    async fn test_restore_pending_skips_forwarded_msgs() {
+        // forwarded_at が立った msg は restore で skip される (= PR-2 で flag が立った
+        // 状態を模す、 重複再配信遮断の本丸)
+        let ws = Whitesnake::in_memory();
+        let mut forwarded =
+            Message::new("agent", "target", MessageKind::Direct).with_payload(&"already delivered");
+        forwarded.forwarded_at = Some(now_ms());
+        ws.extract(
+            MAILBOX_NAMESPACE,
+            &format!("{}{}", MAILBOX_KEY_PREFIX, forwarded.id),
+            &forwarded,
+        )
+        .await
+        .unwrap();
+        // 比較対象: forwarded_at == None の通常 msg (= 通常 restore される)
+        let pending = Message::new("agent", "target", MessageKind::Direct).with_payload(&"pending");
+        ws.extract(
+            MAILBOX_NAMESPACE,
+            &format!("{}{}", MAILBOX_KEY_PREFIX, pending.id),
+            &pending,
+        )
+        .await
+        .unwrap();
+
+        let router = Router::with_persistence(ws.clone());
+        let target = router.register("target").await;
+
+        let restored = router.restore_pending().await.unwrap();
+        assert_eq!(restored, 1, "forwarded は skip、 pending のみ 1 件 restore");
+
+        let got = target.recv().await.unwrap();
+        assert_eq!(got.payload_as::<String>().unwrap(), "pending");
+
+        router.shutdown();
+    }
+
+    #[tokio::test]
+    async fn test_restore_pending_migrates_legacy_msg_outside_grace() {
+        // forwarded_at == None && timestamp が grace 外 (= > 5min 前) の legacy msg は
+        // 保守的に mark + skip される (= 再 forward 抑制、 dogfood で過去滞留分の cleanup)
+        let ws = Whitesnake::in_memory();
+        let mut legacy =
+            Message::new("agent", "target", MessageKind::Direct).with_payload(&"legacy stuck msg");
+        legacy.forwarded_at = None;
+        // grace 外 (= 10min 前) の timestamp を直接設定
+        legacy.timestamp = now_ms().saturating_sub(10 * 60 * 1000);
+        let key = format!("{}{}", MAILBOX_KEY_PREFIX, legacy.id);
+        ws.extract(MAILBOX_NAMESPACE, &key, &legacy).await.unwrap();
+
+        let router = Router::with_persistence(ws.clone());
+        let _target = router.register("target").await;
+
+        let restored = router.restore_pending().await.unwrap();
+        assert_eq!(
+            restored, 0,
+            "legacy は migration で mark + skip、 restore しない"
+        );
+
+        // WS から読み戻して forwarded_at が立っている事を確認 (= 次回 restart でも skip される)
+        let discs = ws
+            .list_by_prefix(MAILBOX_NAMESPACE, MAILBOX_KEY_PREFIX)
+            .await
+            .unwrap();
+        assert_eq!(discs.len(), 1);
+        let stored: Message = discs[0].extract().unwrap();
+        assert!(
+            stored.forwarded_at.is_some(),
+            "legacy migration で forwarded_at が立つ"
+        );
+
+        router.shutdown();
+    }
+
+    #[tokio::test]
+    async fn test_restore_pending_restores_legacy_msg_inside_grace() {
+        // forwarded_at == None && timestamp が grace 内 (= 直近 5min 以内) の msg は
+        // 通常 restore される (= 直近 crash recover を残す safety side)
+        let ws = Whitesnake::in_memory();
+        let recent =
+            Message::new("agent", "target", MessageKind::Direct).with_payload(&"recent send");
+        // Message::new で timestamp は now_ms() (= grace 内)、 forwarded_at は None
+        assert_eq!(recent.forwarded_at, None);
+        ws.extract(
+            MAILBOX_NAMESPACE,
+            &format!("{}{}", MAILBOX_KEY_PREFIX, recent.id),
+            &recent,
+        )
+        .await
+        .unwrap();
+
+        let router = Router::with_persistence(ws.clone());
+        let target = router.register("target").await;
+
+        let restored = router.restore_pending().await.unwrap();
+        assert_eq!(restored, 1, "grace 内 legacy は通常 restore");
+
+        let got = target.recv().await.unwrap();
+        assert_eq!(got.payload_as::<String>().unwrap(), "recent send");
+
+        router.shutdown();
     }
 
     // VP-164 / doc 18 PR-2: forward 成功時に sender 側 WS の msg に forwarded_at が
