@@ -3,7 +3,7 @@
 > **対象 Issue**: [VP-165](https://linear.app/chronista/issue/VP-165) — ポート割当が project リスト変更で不安定 + Whitesnake が port-keyed → 永続 msg がプロジェクト跨ぎで継承される / from 汚染
 > **親 Epic**: [VP-156](https://linear.app/chronista/issue/VP-156) — Mailbox routing 統一 + 永続化 first-class
 > **関連設計**: [14-mailbox-address-v3.md](14-mailbox-address-v3.md)（`normalize_from` / address syntax）/ [16-worker-lane-mailbox-recv.md](16-worker-lane-mailbox-recv.md)（決定E の `from` 修正と射程が重なる）/ [15-auto-spawn-triggers.md](15-auto-spawn-triggers.md)（SP spawn 経路 / VP-155）/ [01-architecture.md](01-architecture.md)（Reconciliation / port scheme）
-> **Status**: Draft 確定（redesign 版 — (C) = **TheWorld が port allocation の唯一の authority になる**。flat stable slot を既存 `config.rs` 機構で永続化。`port_layout` 階層型 / TheWorld-as-reverse-proxy は本設計のスコープ外＝別 arc）
+> **Status**: ✅ **Implemented**（2026-05-12、PR-1〜PR-5b/PR-6 全 land。詳細は §Implementation 参照）。残り任意 follow-up は §残り 参照。`port_layout` 階層型 / TheWorld-as-reverse-proxy は本設計のスコープ外＝別 arc
 
 ## Abstract
 
@@ -130,17 +130,27 @@ for disc in discs {
 
 「汚染遮断（config いじらず効く）」→「reshuffle 停止」→「掃除」の順。
 
-| PR | 内容 | 規模 |
+| PR | 内容 | 状態 |
 | -- | -- | -- |
-| **PR-1** | 設計 doc（本ファイル）のみ。VP-165 の「設計の受け皿」 | doc only |
-| **PR-1b（任意 / 後回し可）** | 死コード削除: `commands/start.rs` の legacy `vp start` 経路（`execute` / `StartOptions` / `ResolvedProject` / `resolve_project` / `resolve_from_dir` / `resolve_from_target` / `resolve_port` / 未使用 `run_headless`/`run_browser`/`run_gui`/`run_tui_mode`/`run_tui` / それらにしか呼ばれない `ensure_sp_running` 等）を削除（caller ゼロを build で検証。`spawn_sp_detached`/`create_tmux_session`/`try_create_tmux_claude`/`collect_mise_env`/`wait_for_ready`/`is_server_responding`/`is_sp_for_project_responding` 等の生きてる helper は残す）。cascading + build 検証必須なので独立 PR。PR-6 cleanup に寄せても可 | 純削除（要 build 検証） |
-| **PR-2** | **(B) 配線**: `Whitesnake::file_backed_for_project(slug)` + `discs/world/`、`server.rs:41`/`:794` の caller 切替、`file_backed_for_port` 削除。任意で旧 dir 一回 migration。dogfood: SP restart で msg が正しく restore / 旧 dir が読まれない | ~10 行 + 削除 |
-| **PR-3** | **(D) guard**: `restore_pending` に project 境界 guard（skip + warn）。Router に `local_project` 配線。回帰テスト: 異 project DISC が restore されない / bare msg は restore / 自 project 宛・発は restore | ~15 行 |
-| **PR-4** | **(A) 配線**: `resolve_process_port` を parent→discovery 優先に。`VP_PROCESS_PORT` を project_dir 照合付き fast path に格下げ。QUIC reset も同経路。回帰テスト: worker cwd → 正しい parent SP port / stale env を踏まない / lead cwd は従来通り。dogfood: reshuffle 後 worker `msg_send` の `from` が正しい | 小 |
-| **PR-5** | **(C) 配線**: `Config::sp_port_for_project` 追加（`ensure_slot` ラッパ）。`start_process` が port を決め `-p` で spawn、`wait_for_health` で待つ（`wait_for_process_port` の range scan 削除）。`/api/world/port_for` endpoint（`routes/world.rs`）。`commands/sp.rs::resolve_port` は「TheWorld に聞く」に。`spawn_sp_detached` の port param を全 caller で `None` に → `tui/app.rs` の `port_for_configured` 呼び出し削除。`resolve::port_for_configured` 削除（`find_project_index` の port 用途も消える — 他用途が残るか確認の上）。`start_process` 内に外部衝突 auto-reassign。`max_projects` を flat range 由来（25）に。回帰テスト: config に project 追加で既存 slot/port 不変 / 外部占有時に次の空き slot に退避+永続 / `projects[].port` override が効く。dogfood: project を 1 つ足して既存 port が動かないことを `vp ps`/`msg_directory` で確認 | 新規 ~30-40 行 + 削除複数 |
-| **PR-6（任意）** | cleanup: `cli.rs::scan_instances`（`vp ps`）/ `tray.rs::scan_instances` を `discovery::list`（TheWorld query）に → range scan ループ削除。`find_available_port` の役割整理（slot scheme 下では「次の空き slot」が正解、無関係 port への fallback は廃止 or 明示エラー化）。`PORT_RANGE_*` を「slot 上限定数 + Pull-scan 範囲」に役割明記。module doc / `port_layout.rs` との関係を doc に。VP-165 close | 純削除中心 |
+| **PR-1** ([#341](https://github.com/chronista-club/vantage-point/pull/341)) | 設計 doc（本ファイル）のみ。VP-165 の「設計の受け皿」 | ✅ landed `fff270e` |
+| **PR-1b** ([#342](https://github.com/chronista-club/vantage-point/pull/342)) | 死コード削除: `commands/start.rs` の legacy `vp start` 経路（`execute` / `StartOptions` / `ResolvedProject` / `resolve_project` / `resolve_from_dir` / `resolve_from_target` / `resolve_port` / `run_headless`/`run_browser`/`run_gui`/`run_tui_mode`/`run_tui` / `ensure_sp_running` 等）を削除（caller ゼロを build で検証。`spawn_sp_detached`/`create_tmux_session`/`try_create_tmux_claude`/`collect_mise_env`/`wait_for_ready`/`is_server_responding`/`is_sp_for_project_responding` は残す） | ✅ landed `97eaf76` (-630 line) |
+| **PR-2** ([#343](https://github.com/chronista-club/vantage-point/pull/343)) | **(B) 配線**: `Whitesnake::file_backed_for_project(slug)` + `discs/world/`、`server.rs:41`/`:794` の caller 切替、`file_backed_for_port` 削除。`resolve::project_slug` 追加 + テスト 3 件 | ✅ landed `2a0ded7` |
+| **PR-3** ([#344](https://github.com/chronista-club/vantage-point/pull/344)) | **(D) guard**: `restore_pending` に project 境界 guard（skip + warn）。`msg_is_foreign_to_local` helper + テスト 2 件（判定マトリクス + skip 動作） | ✅ landed `efb7855` |
+| **PR-4** ([#345](https://github.com/chronista-club/vantage-point/pull/345)) | **(A) 配線**: `resolve_process_port` を parent→discovery 優先に。`worker_parent_path` helper + テスト 3 件。`VP_PROCESS_PORT` env は fallback に格下げ | ✅ landed `531165a` |
+| **PR-5** ([#346](https://github.com/chronista-club/vantage-point/pull/346)) | **(C) 配線 第一段**: `Config::resolve_sp_port` 追加（`port` override → `ensure_slot` → `PORT_RANGE_START + slot`）。`resolve::sp_port_for_project` が load→resolve→save。`port_for_configured` を slot 経由に rewrite + 旧 index ベース実装削除 + テスト | ✅ landed `e2eaa1f` |
+| **PR-5b/PR-6** ([#347](https://github.com/chronista-club/vantage-point/pull/347)) | **(C) 配線 完成形**: `start_process` (TheWorld) が `sp_port_for_project` で port 事前解決 → `vp sp start -p <port>` で明示渡し → `wait_for_health(port, &path)` で `/api/health` の `project_dir` 一致確認（旧 `wait_for_process_port` range scan を replace）。`HealthCheckResult` enum で外部衝突を区別 → `auto_reassign_slot` で 1 回きり別 slot に退避 + config 永続 → retry。`/api/world/port_for?project=<name>` endpoint 新設 | ✅ landed `3168c70` |
 
 → PR-2/3/4（汚染遮断、config いじらず効く）が先、PR-5（(C)、影響広い）が後。PR-5 で reshuffle が止まり (A)(B)(D) は安全弁になるが、外部衝突 auto-reassign の存在を考えると 4 つ全部入れる価値あり。(ε) LAN `AddressBook` の port キャッシュ無効化は別 issue（VP-154/161 系）。
+
+### 残り（任意 follow-up — VP-165 close blocker ではない）
+
+PR-5b/PR-6 (#347) で doc 17 §決定 (A)(B)(C)(D) は全 land。残るのは「TheWorld single authority」モデルの周辺整備:
+
+- **`commands/sp.rs::resolve_port` を `/api/world/port_for` 経由に切替**: 現状は in-process で `crate::resolve::sp_port_for_project` を直接呼ぶ。TheWorld 起動 → endpoint 問い合わせの方が「single authority」原則の clean な物理表現（`vp sp start` を `-p` 無しで CLI から叩いた時の path）
+- **QUIC reset 時の port 再解決**: `mcp.rs` `auto_start` 経路の `find_for_cwd` も決定A 同様に worker 対応（cwd → parent project → discovery）に
+- **`vp ps` / tray の `scan_instances`**: `discovery::list`（TheWorld query）に置換 → range scan ループ削除。 ただし「TheWorld 未起動時は何も見えなくなる」 trade-off がある（現状は scan で SP が見える）
+- **`PORT_RANGE_*` の役割明文化** (`cli.rs` doc): 「slot 上限定数 + Pull-scan 範囲」とコメント
+- **(ε) LAN `AddressBook` の port キャッシュ無効化**: VP-154/161 federation epic の射程。`peer:32000` 経由（β、§将来拡張 step 2）に進めば自然に消滅する
 
 ## 将来拡張 — TheWorld を machine の単一 front door にする arc（本設計はその step 1）
 
