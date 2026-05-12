@@ -289,10 +289,11 @@ pub async fn create_handler(
         )
     })?;
     let (lane_state, pid) = match spawn_result {
-        Ok((slot, _rx)) => {
+        Ok((slot, term_rx)) => {
             let pid = slot.pid();
             let mut pool = state.lane_pool.write().await;
-            pool.insert_pty_slot(addr.clone(), slot);
+            // Stage 1 (ADR-0001): TermAttach も同時 spawn (race フリー、 Lead 経路と統一)
+            pool.insert_pty_slot(addr.clone(), slot, term_rx);
             tracing::info!(
                 "Worker Lane spawned: addr={} stand={} cwd={} pid={}",
                 addr,
