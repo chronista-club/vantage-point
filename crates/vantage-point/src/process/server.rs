@@ -964,6 +964,8 @@ pub async fn run_world(
         )
         .route("/api/world/msgbox/lookup", get(world::world_msgbox_lookup))
         .route("/api/world/msgbox/list", get(world::world_msgbox_list))
+        // VP-165 PR-6: slot ベース SP port resolver (decision C 完成、TheWorld を port authority に)
+        .route("/api/world/port_for", get(world::world_port_for))
         // Update API routes (vp CLI)
         .route("/api/update/check", get(update::update_check))
         .route("/api/update/apply", post(update::update_apply))
