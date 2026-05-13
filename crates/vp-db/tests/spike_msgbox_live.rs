@@ -57,7 +57,11 @@ async fn make_test_db() -> Surreal<Any> {
         .await
         .expect("kv-mem connect");
     db.use_ns("vp").use_db("vp").await.expect("use_ns/db");
-    db.query(MSGS_SCHEMA).await.expect("schema").check().expect("schema check");
+    db.query(MSGS_SCHEMA)
+        .await
+        .expect("schema")
+        .check()
+        .expect("schema check");
     db
 }
 
@@ -141,7 +145,9 @@ async fn q1_live_select_with_param_binding() {
         }
         Ok(Some(Err(e))) => panic!("❌ Q1: stream error {}", e),
         Ok(None) => panic!("❌ Q1: stream closed before notification"),
-        Err(_) => panic!("❌ Q1: timeout — notification 来ず (= $bind が WHERE 内で動かない可能性)"),
+        Err(_) => {
+            panic!("❌ Q1: timeout — notification 来ず (= $bind が WHERE 内で動かない可能性)")
+        }
     }
 }
 
@@ -161,7 +167,9 @@ async fn q2_live_filter_dropout_event_semantics() {
 
     // LIVE SELECT 開始
     let mut stream = db
-        .query("LIVE SELECT * FROM msgs WHERE status='active' AND to_actor='agent' AND to_lane='lead'")
+        .query(
+            "LIVE SELECT * FROM msgs WHERE status='active' AND to_actor='agent' AND to_lane='lead'",
+        )
         .await
         .expect("LIVE SELECT")
         .stream::<surrealdb::Notification<serde_json::Value>>(0)
@@ -247,7 +255,14 @@ async fn q3_atomic_claim_race_free() {
 
     // 10 row insert (claim 候補)
     for i in 0..10 {
-        insert_msg(&db, &format!("claim-{}", i), "agent", "lead", "claim-target").await;
+        insert_msg(
+            &db,
+            &format!("claim-{}", i),
+            "agent",
+            "lead",
+            "claim-target",
+        )
+        .await;
     }
 
     let db = std::sync::Arc::new(db);
@@ -295,7 +310,8 @@ async fn q3_atomic_claim_race_free() {
     }
 
     // 結果収集 + row_id 抽出 (= SurrealDB の record id は様々な形を取りうる、 1 件目で debug print)
-    let mut claimed_by: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut claimed_by: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
     let mut debug_printed = false;
     for t in tasks {
         if let Ok(Some((consumer_id, row))) = t.await {
@@ -309,7 +325,7 @@ async fn q3_atomic_claim_race_free() {
             } else if let Some(s) = row["id"]["String"].as_str() {
                 s.to_string()
             } else {
-                row["id"].to_string()  // fallback: full JSON serialize
+                row["id"].to_string() // fallback: full JSON serialize
             };
             let prev = claimed_by.insert(row_id.clone(), consumer_id.clone());
             if let Some(prev_cid) = prev {
@@ -321,8 +337,15 @@ async fn q3_atomic_claim_race_free() {
         }
     }
 
-    println!("✅ Q3: {} row claimed by unique consumers (race-free)", claimed_by.len());
-    assert!(claimed_by.len() <= 10, "claim 数 が 10 を超えた: {}", claimed_by.len());
+    println!(
+        "✅ Q3: {} row claimed by unique consumers (race-free)",
+        claimed_by.len()
+    );
+    assert!(
+        claimed_by.len() <= 10,
+        "claim 数 が 10 を超えた: {}",
+        claimed_by.len()
+    );
     assert!(claimed_by.len() > 0, "1 row も claim されなかった");
 }
 
@@ -340,7 +363,8 @@ async fn q4_throughput_latency() {
     let db = Arc::new(make_test_db().await);
 
     // consumer task: LIVE stream を subscribe、 受信 ts を記録
-    let received: Arc<tokio::sync::Mutex<Vec<(u64, u64)>>> = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+    let received: Arc<tokio::sync::Mutex<Vec<(u64, u64)>>> =
+        Arc::new(tokio::sync::Mutex::new(Vec::new()));
     let received_clone = received.clone();
     let db_consumer = db.clone();
     let consumer = tokio::spawn(async move {
@@ -406,7 +430,10 @@ async fn q4_throughput_latency() {
     if avg < 50.0 {
         println!("✅ Q4 PASSED: avg latency < 50ms");
     } else {
-        println!("⚠️ Q4 PARTIAL: avg latency >= 50ms ({})、 Phase 2 で performance tuning", avg);
+        println!(
+            "⚠️ Q4 PARTIAL: avg latency >= 50ms ({})、 Phase 2 で performance tuning",
+            avg
+        );
     }
 
     // 60 件以上受信していれば LIVE delivery 機構として OK (= 100 全件は LIVE buffer 依存)
@@ -523,12 +550,21 @@ async fn q5_concurrent_producer_consumer_gc() {
     if c_err == 0 && g_err == 0 {
         println!("✅ Q5 PASSED: 3 concurrent query で error なし");
     } else {
-        println!("⚠️ Q5 PARTIAL: error 発生 (consumer={} gc={})", c_err, g_err);
+        println!(
+            "⚠️ Q5 PARTIAL: error 発生 (consumer={} gc={})",
+            c_err, g_err
+        );
     }
 
     assert!(prod_count > 0, "producer が 1 件も insert できず");
-    assert!(c_err < prod_count / 5, "consumer error rate が producer の 20% 超");
-    assert!(g_err < prod_count / 5, "gc error rate が producer の 20% 超");
+    assert!(
+        c_err < prod_count / 5,
+        "consumer error rate が producer の 20% 超"
+    );
+    assert!(
+        g_err < prod_count / 5,
+        "gc error rate が producer の 20% 超"
+    );
 }
 
 // =============================================================================
@@ -566,7 +602,9 @@ async fn q6_index_with_archived_bloat() {
 
     // LIVE SELECT 開始 (active filter)
     let mut stream = db
-        .query("LIVE SELECT * FROM msgs WHERE status='active' AND to_actor='agent' AND to_lane='lead'")
+        .query(
+            "LIVE SELECT * FROM msgs WHERE status='active' AND to_actor='agent' AND to_lane='lead'",
+        )
         .await
         .expect("LIVE")
         .stream::<surrealdb::Notification<serde_json::Value>>(0)
@@ -584,11 +622,20 @@ async fn q6_index_with_archived_bloat() {
 
     match result {
         Ok(Some(Ok(notif))) => {
-            println!("Q6: 1000 archived + 1 active LIVE latency = {}ms (action={:?})", latency, notif.action);
+            println!(
+                "Q6: 1000 archived + 1 active LIVE latency = {}ms (action={:?})",
+                latency, notif.action
+            );
             if latency < 100 {
-                println!("✅ Q6 PASSED: active filter が archived bloat に影響されず ({}ms < 100ms)", latency);
+                println!(
+                    "✅ Q6 PASSED: active filter が archived bloat に影響されず ({}ms < 100ms)",
+                    latency
+                );
             } else {
-                println!("⚠️ Q6 PARTIAL: latency {}ms、 index 性能要 verify in Phase 2", latency);
+                println!(
+                    "⚠️ Q6 PARTIAL: latency {}ms、 index 性能要 verify in Phase 2",
+                    latency
+                );
             }
         }
         _ => panic!("❌ Q6: notification 受信せず (archived bloat で LIVE 詰まりの可能性)"),
@@ -619,7 +666,10 @@ async fn q7_live_stream_reconnect() {
         insert_msg(&db, "q7-1", "agent", "lead", "first").await;
 
         let result = timeout(Duration::from_secs(1), stream.next()).await;
-        assert!(matches!(result, Ok(Some(Ok(_)))), "1 回目 notification 来ず");
+        assert!(
+            matches!(result, Ok(Some(Ok(_)))),
+            "1 回目 notification 来ず"
+        );
         println!("Q7 round 1: stream open + notification OK");
         // stream は scope 終了で drop
     }
@@ -639,12 +689,17 @@ async fn q7_live_stream_reconnect() {
         let result = timeout(Duration::from_secs(1), stream.next()).await;
         match result {
             Ok(Some(Ok(notif))) => {
-                println!("✅ Q7 round 2: reconnect (drop + reopen) で新 notification OK (id={})", notif.data["id"]);
+                println!(
+                    "✅ Q7 round 2: reconnect (drop + reopen) で新 notification OK (id={})",
+                    notif.data["id"]
+                );
             }
             _ => panic!("❌ Q7: reconnect 後の notification 来ず"),
         }
     }
 
     println!("✅ Q7 PASSED: LIVE stream drop + reopen で normal operation");
-    println!("Note: embedded での「切断 trigger」 は明示的 None / Err 経路がなく、 stream drop = 終了。 Phase 2 で remote SurrealDB との切断 (= connection loss) は別 integration test 要");
+    println!(
+        "Note: embedded での「切断 trigger」 は明示的 None / Err 経路がなく、 stream drop = 終了。 Phase 2 で remote SurrealDB との切断 (= connection loss) は別 integration test 要"
+    );
 }
