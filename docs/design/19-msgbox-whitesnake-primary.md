@@ -262,6 +262,8 @@ flowchart TB
 | Pure polling (= c 案) | latency 上限、 idle DB load 持続、 moat 効果薄い |
 | LIVE + b fallback ハイブリッド | 同上、 fallback 哲学 |
 
+**用語の定義**: 「fallback」 = LIVE が動いている間に並走する **別 path** (= b 案 / c 案のように LIVE と並列稼働する notification 経路) を指す。 一方、 LIVE が一時的に切断された時の **reconnect + catch-up** は fallback ではなく **reconnect resilience の一部** として扱う (= 詳細 「Reconnect 戦略」 + 「Reconnect 投資項目」 表参照)。 §4.6 fail tolerance の「LIVE/catch-up で resume」 もこの reconnect resilience の意味で使用。
+
 ### §4.3 Per-actor consumer model (= mpsc → DB stream + concurrent recv first-class)
 
 #### Handle API (= 完全互換維持)
@@ -644,7 +646,7 @@ UPDATE msgs SET status='dead_letter', status_at=$now
 
 -- 2. active → archived (消費済 1h 経過)
 UPDATE msgs SET status='archived', status_at=$now
-  WHERE status='active' AND consumed_at + 3600000 < $now;
+  WHERE status='active' AND consumed_at IS NOT NULL AND consumed_at + 3600000 < $now;
 
 -- 3. stale claim 再取得
 UPDATE msgs SET claim_id=NULL, claimed_at=NULL
@@ -837,15 +839,22 @@ flowchart LR
 
 - 旧 msg 全件を `list_by_prefix("msgbox", "msg/")` で取得
 - 各 msg を `parse_address(to)` で parsed field 補填
-- `status='active'` で `INSERT msgs`
+- **status 決定の条件分岐** (= consumed/forwarded 状態を保ったまま移行、 Moody Blues Issue 5 対応):
+  - `consumed_at IS NOT NULL` → `status='archived'` で INSERT (= 既に消費済、 audit log へ直接)
+  - `consumed_at IS NULL AND forwarded_at IS NOT NULL` → `status='active'` で INSERT (= cross-process で送信済だが consume 未確認、 restore_pending 相当の再試行を許す)
+  - その他 (= 未送信 or local 未消費) → `status='active'` で INSERT
+  - `is_expired()` → `status='dead_letter'` で INSERT (= 既に失効、 manual replay 待ち)
 - 失敗 msg は warn log + 隔離 (= 別 KDL ファイル、 manual recovery 余地)
 - migration 完了後、 旧 DISC 削除
 
-### dual write 期間 (= Phase 3)
+> **TODO** (= Phase 3 PR 作成時に判断): migration 対象 msg 数が **N 件 (例: 10,000) 超** の場合、 起動 1-shot だと cold-start latency が増大する。 background migration task (= 起動後 chunk 単位で並走 migrate) に切替検討。 solo dogfood 規模 (= ~100 msg) では問題にならないが、 multi-user 展開時に再評価。
+
+### dual write 期間 (= Phase 3、 過渡状態の安全弁)
 
 - 新規 msg を **mpsc + 新 DB 両方** に write
 - consumer は **mpsc のみ** 読む (= 既存挙動維持)
 - 動作確認後 Phase 4 で consumer を DB primary に切替
+- **Note**: mpsc は **廃止予定**、 dual write 期間は **behavioral parity 確認のための過渡状態**。 Phase 5 (PR-6/7) で mpsc を完全削除し、 §2 結論先出しの「mpsc 廃止」 を物理的に完遂する (= §8 Phase 5 break point)。
 
 ### cross-machine LAN forward 互換
 

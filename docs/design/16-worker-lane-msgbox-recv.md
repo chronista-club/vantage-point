@@ -3,7 +3,9 @@
 > **対象 Issue**: [VP-166](https://linear.app/chronista/issue/VP-166) — worker-lane msgbox の recv 経路を実装
 > **親 Epic**: [VP-156](https://linear.app/chronista/issue/VP-156) — Msgbox routing 統一 + 永続化 first-class
 > **関連設計**: [14-msgbox-address-v3.md](14-msgbox-address-v3.md)（v3.1 address syntax）/ [13-paisley-park-revival.md](13-paisley-park-revival.md)（`canvas#<lane>` box の consumer 側）/ [12-stand-architecture.md](12-stand-architecture.md) / [03-msgbox-vs-ccwire.md](03-msgbox-vs-ccwire.md) / [07-lane-as-process.md](07-lane-as-process.md)
-> **Status**: Draft 確定（box = lane × stand の 2 軸 / address = `<stand-id>@<project>/<lane>` / `stands.rs` の `id` 体系維持＝rename ゼロ）
+> **Status**: Draft 確定 (doc 19 landing で Superseded 予定 — box / register_lane / per-stand mpsc box は doc 19 Phase 2〜5 で廃止)
+>
+> **Note**: 本 doc は `Router::boxes` + `register_lane` + per-stand mpsc box を前提とする設計。 [doc 19 (VP-169)](19-msgbox-whitesnake-primary.md) は §4.5 でこれら全てを廃止 (= DB row field 化)、 §4.3 で mpsc を完全廃止する。 doc 19 Phase 1 spike (= SurrealDB LIVE Query feasibility) が working なら本 doc の PR-2〜PR-5 は doc 19 Phase 2〜5 に吸収される。 spike NG (= LIVE not working) なら本 doc 設計が再活性化、 doc 19 撤回となる。
 
 ## Abstract
 

@@ -22,6 +22,7 @@
 
 - **scope**: actor 間の point-to-point messaging
 - **transport**: 同一 Process 内 = mpsc、cross-Process = TheWorld registry + HTTP forward
+  - **Note**: doc 19 (VP-169) で **Whitesnake = primary substrate** に統一予定。 mpsc は Phase 4 完了時点で obsolete、 Phase 5 で完全削除。 本 doc の mpsc 記述は historical context として残置 (= ccwire 役割境界の起点記録)。
 - **特徴**: 永続化（Whitesnake）、TTL、manual_ack、retry、auth、address parser
 - **Phase 完了状況**:
   - Phase 1 (#140): opt-in persistent
