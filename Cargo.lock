@@ -9393,6 +9393,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "dirs",
+ "futures",
  "serde",
  "serde_json",
  "surrealdb",
