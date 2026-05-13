@@ -346,7 +346,7 @@ async fn q3_atomic_claim_race_free() {
         "claim 数 が 10 を超えた: {}",
         claimed_by.len()
     );
-    assert!(claimed_by.len() > 0, "1 row も claim されなかった");
+    assert!(!claimed_by.is_empty(), "1 row も claim されなかった");
 }
 
 // =============================================================================
