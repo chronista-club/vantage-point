@@ -254,7 +254,7 @@ Sidebar で各 Worker Lane に `[peek]` / `[mirror to lead]` / `[destroy]` 操�
 
 ## 15. Requiem Architecture Evolution (事後追記 2026-04-21)
 
-本 doc 起草後の深掘り議論で、4 層モデルに **event-sourced reactive Stand Ensemble** としての昇華が起きた。全 Stand を actor 化、mailbox / event bus / state を 1 つの event stream に統一。
+本 doc 起草後の深掘り議論で、4 層モデルに **event-sourced reactive Stand Ensemble** としての昇華が起きた。全 Stand を actor 化、msgbox / event bus / state を 1 つの event stream に統一。
 
 **核心原則**: "Everything is events"
 - PP = Information Router (routing を event で publish する特化 Stand)

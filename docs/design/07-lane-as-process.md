@@ -139,7 +139,7 @@ graph LR
 cockpit レイアウトの trade-off を支える 3 つのルール:
 
 1. **Status / 詳細情報は常時非表示** — Project/Lane の設定、meta data、health 指標など **static な情報** は Right Drawer に畳み、必要な時だけ slide-in で呼び出す。常時表示すると scan cost が増え、肝心な流れが埋もれる。
-2. **XS event stream は常時表示** — R/R causation・log・Mailbox 流入などの **動的な流れ** は Bottom Console で固定し、開発者が「何が起きているか」を peripheral vision で把握できるようにする。
+2. **XS event stream は常時表示** — R/R causation・log・Msgbox 流入などの **動的な流れ** は Bottom Console で固定し、開発者が「何が起きているか」を peripheral vision で把握できるようにする。
 3. **情報密度の 4 階層を役割分担** — region ごとに扱う粒度を固定して、**どこを見れば何が分かるか** を一意にする:
 
    | region | 情報粒度 | 役割 |
@@ -325,12 +325,12 @@ Lane 階層を運用する際の **3 原則**。§4.1-4.4 の構造的規約に�
 
 #### 原則 3: Lane 間連携 = VP actor msg (msg_send / msg_recv)
 
-- **Lead ↔ Worker 通信は VP-24 Mailbox 経由** (`msg_send` / `msg_recv`)
+- **Lead ↔ Worker 通信は VP-24 Msgbox 経由** (`msg_send` / `msg_recv`)
 - **ccwire は不要** (現状 session 登録も非必須)
 - **cross-project も同じ address 形式**:
   - `lead@vantage-point` ↔ `lead@creo-memories`
   - `worker-vp-73@vantage-point` ↔ `worker-creo-101@creo-memories`
-  - address = `{actor}@{project}` の統一 schema (§Mailbox address 仕様)
+  - address = `{actor}@{project}` の統一 schema (§Msgbox address 仕様)
 - `persistent: true` + TTL 付きで **非同期連携** (相手 session が idle でも届く、次回起動時に recv 可能)
 - **実地例**: 2026-04-23 の creo-memories hand-off (CREO-101) がこの pattern の production 事例:
   - VP 側 Worker が `lead@creo-memories` に `msg_send` で handoff memo 送信

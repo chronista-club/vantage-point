@@ -2,7 +2,7 @@
 
 ## 背景
 
-2026-04-18 に messaging を VP Mailbox に完全委譲する決定（[`03-mailbox-vs-ccwire.md`](03-mailbox-vs-ccwire.md)）。
+2026-04-18 に messaging を VP Msgbox に完全委譲する決定（[`03-msgbox-vs-ccwire.md`](03-msgbox-vs-ccwire.md)）。
 ccwire は単なる「セッション登録簿」から **並列開発メッシュの semantic 管理層** に役割を再定義する。
 
 2026-04-21 から VP を外部ユーザにも使ってもらい始めるため、新 identity を spec として固定する（実装は段階的）。
@@ -68,7 +68,7 @@ vp ccwire export > ccwire.toml          # 現状を toml で書き出し
 vp ccwire macro split-send <pane-id> "<keys>"
 vp ccwire macro capture-after <pane-id> "<keys>" --wait 500ms
 
-# Dispatch（mailbox との橋渡し、convenience）
+# Dispatch（msgbox との橋渡し、convenience）
 vp ccwire dispatch worker-1 "質問内容"   # → msg_send to: "worker-1@..."
 ```
 
@@ -101,10 +101,10 @@ pane = 2
 follow = "tail -f /tmp/vp.log"
 ```
 
-## Mailbox actor address との関係
+## Msgbox actor address との関係
 
-- `worker-1` (semantic role + 連番) ↔ mailbox actor `worker-1@vantage-point`
-- ccwire spawn 時に actor 名を自動採番、mailbox に register
+- `worker-1` (semantic role + 連番) ↔ msgbox actor `worker-1@vantage-point`
+- ccwire spawn 時に actor 名を自動採番、msgbox に register
 - `vp ccwire dispatch worker-1 "..."` は内部で `msg_send(to: "worker-1@vantage-point", payload: ...)`
 
 ## 既存 ccwire DB との互換
@@ -119,7 +119,7 @@ follow = "tail -f /tmp/vp.log"
 |-------|------|---------|---------|
 | **0** | この spec doc を main に置く | v0.11.x | なし |
 | **1** | D 実装: pane registry + role 付与 + query | v0.12.0 | なし（追加） |
-| **2** | A 実装: spawn-worker + ccws 連動 + Mailbox 統合 | v0.12.0 / v0.13.0 | なし |
+| **2** | A 実装: spawn-worker + ccws 連動 + Msgbox 統合 | v0.12.0 / v0.13.0 | なし |
 | **3** | B 実装: ccwire.toml + apply/diff | v0.13.0 | なし |
 | **4** | C 実装: workflow macro + Hooks 連携 | v0.13.0 / v0.14.0 | なし |
 
@@ -130,5 +130,5 @@ VP 内の `crates/vantage-point/src/ccwire.rs` は **既存機能（register / h
 
 ## 関連
 
-- [03-mailbox-vs-ccwire.md](03-mailbox-vs-ccwire.md) — 役割分離の前提
+- [03-msgbox-vs-ccwire.md](03-msgbox-vs-ccwire.md) — 役割分離の前提
 - [`docs/decisions/2026-04-19-strategy-summary.md`](../decisions/2026-04-19-strategy-summary.md) — 戦略総まとめ

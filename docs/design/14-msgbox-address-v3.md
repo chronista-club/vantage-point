@@ -1,8 +1,8 @@
-# Design 14: Mailbox address v3.1 — How
+# Design 14: Msgbox address v3.1 — How
 
 > **Status**: Draft (VP-144 Epic、 Phase 0 SDG)
-> **Spec**: [docs/spec/mailbox-address-v3.md](../spec/mailbox-address-v3.md) (Why + What)
-> **Guide**: [docs/guide/mailbox-address-usage.md](../guide/mailbox-address-usage.md) (Usage)
+> **Spec**: [docs/spec/msgbox-address-v3.md](../spec/msgbox-address-v3.md) (Why + What)
+> **Guide**: [docs/guide/msgbox-address-usage.md](../guide/msgbox-address-usage.md) (Usage)
 
 本 doc は v3.1 の **How** を規定する。 syntax / identity model は spec を参照、 sample 利用例は guide を参照。 本 doc は実装側の決定事項に集中する。
 
@@ -13,7 +13,7 @@
 address parse 後、 **location 部分の resolve** を以下の順序で fall-through する。 1 pass、 simple。
 
 ```
-1. location 不在        → self process mailbox (= local dispatch、 即時)
+1. location 不在        → self process msgbox (= local dispatch、 即時)
 2. location = project   → self world、 TheWorld registry に問い合わせて port lookup
 3. location = host/...  → host を resolve:
    a. host が "<machine>.local" 形 (.local TLD)  → mDNS query (Phase 3)
@@ -86,7 +86,7 @@ address parse 後、 **location 部分の resolve** を以下の順序で fall-t
 
 ### 同 world 内 (= self process / same machine) の encrypt skip
 
-- trust boundary 内では encrypt skip 可 (= performance、 既存 in-memory mailbox で encrypt 不要)
+- trust boundary 内では encrypt skip 可 (= performance、 既存 in-memory msgbox で encrypt 不要)
 - LAN / Internet では mandatory encrypt
 - v3.1 parser が address 解析後の resolve 結果に応じて encrypt path を auto select
 
@@ -228,18 +228,18 @@ Phase 1 で parser 拡張時、 v1 syntax を v3.1 として解釈する rule:
 
 ### lane segment 明示時の routing
 
-- Phase 2 で per-lane mailbox 物理化 (`MailboxRouter` を `(actor, project, lane_path)` キー)
-- v1 既存 mailbox は spawn 時に `(actor, project, vec!["lead"])` キーへ migration
-- worker lane spawn で新 mailbox 自動 register、 lane delete で cleanup
+- Phase 2 で per-lane msgbox 物理化 (`MsgboxRouter` を `(actor, project, lane_path)` キー)
+- v1 既存 msgbox は spawn 時に `(actor, project, vec!["lead"])` キーへ migration
+- worker lane spawn で新 msgbox 自動 register、 lane delete で cleanup
 
 ### gap 1-4 の物理 fix
 
 | gap | Phase | fix 内容 |
 |-----|-------|----------|
 | 1. mcp registry 非対称 | Phase 2 | reserved actor (`mcp` 含む) を per-process で registry 公開、 forward 失敗時 error 明示 |
-| 2. MCP recv inbox 固定 | Phase 2 | `msg_recv` に `actor` param 追加、 任意 inbox 観察可、 default は `agent` (= `mcp` から変更) |
+| 2. MCP recv msgbox 固定 | Phase 2 | `msg_recv` に `actor` param 追加、 任意 msgbox 観察可、 default は `agent` (= `mcp` から変更) |
 | 3. 2 namespace 混乱 | Phase 1 | parser で location 統合、 sidebar lane label と address 統合 |
-| 4. cross-process recv observation | Phase 2 | per-lane mailbox + sidebar Echoes 横 message icon、 sidebar UI = primary observation path |
+| 4. cross-process recv observation | Phase 2 | per-lane msgbox + sidebar Echoes 横 message icon、 sidebar UI = primary observation path |
 
 ---
 
@@ -247,22 +247,22 @@ Phase 1 で parser 拡張時、 v1 syntax を v3.1 として解釈する rule:
 
 ### Phase 0: SDG ドキュメント (本 doc + spec + guide) — VP-145
 
-scope: `docs/spec/mailbox-address-v3.md` + `docs/design/14-mailbox-address-v3.md` (本 doc) + `docs/guide/mailbox-address-usage.md`
+scope: `docs/spec/msgbox-address-v3.md` + `docs/design/14-msgbox-address-v3.md` (本 doc) + `docs/guide/msgbox-address-usage.md`
 
 deliverable: 3 file merged、 後続 Phase の議論 base 確立
 
 ### Phase 1: Parser 拡張 — VP-146
 
-scope: `crates/vantage-point/src/mailbox/address.rs` 等で v3.1 syntax 受け付け
+scope: `crates/vantage-point/src/msgbox/address.rs` 等で v3.1 syntax 受け付け
 
 deliverable: 全 sample address parse OK、 v1 互換維持、 unit tests 10+ cases (t-wada 流テストピラミッド)
 
-### Phase 2: per-lane mailbox + sidebar Echoes 横 icon — VP-147
+### Phase 2: per-lane msgbox + sidebar Echoes 横 icon — VP-147
 
 scope:
-- `MailboxRouter` を `(actor, project, lane_path)` キー化
-- `SidebarState.lane_inboxes: HashMap<lane_addr, MessageState>` 追加
-- `spawn_lane_inbox_poller` (5s polling)、 `AppEvent::ResolveLaneInboxes`
+- `MsgboxRouter` を `(actor, project, lane_path)` キー化
+- `SidebarState.lane_msgboxes: HashMap<lane_addr, MessageState>` 追加
+- `spawn_lane_msgbox_poller` (5s polling)、 `AppEvent::ResolveLaneMsgboxes`
 - sidebar `.vp-message-icon` を Echoes icon の右隣に配置 (未読あり = filled、 なし = 表示なし)
 
 deliverable: dogfood で 2 lane 間 msg 視認、 gap 1+2+4 解消
@@ -320,10 +320,10 @@ VP v3.1 は **自前 protocol 設計を最小化** し、 既存 protocol idiom 
 
 ## 関連
 
-- **Spec**: [docs/spec/mailbox-address-v3.md](../spec/mailbox-address-v3.md)
-- **Guide**: [docs/guide/mailbox-address-usage.md](../guide/mailbox-address-usage.md)
+- **Spec**: [docs/spec/msgbox-address-v3.md](../spec/msgbox-address-v3.md)
+- **Guide**: [docs/guide/msgbox-address-usage.md](../guide/msgbox-address-usage.md)
 - **Linear Epic**: [VP-144](https://linear.app/chronista/issue/VP-144)
 - **Phase sub-issues**: [VP-145](https://linear.app/chronista/issue/VP-145) [VP-146](https://linear.app/chronista/issue/VP-146) [VP-147](https://linear.app/chronista/issue/VP-147) [VP-148](https://linear.app/chronista/issue/VP-148)
 - **dogfood gap**: `mem_1CapRAtpCpahQGn8nW2fmT`
-- **VP-24 Mailbox core**: `mem_1CZA6PxWEnKSwC5tCbm7bF`
-- **Mailbox + Monitor agent inbox** (predecessor): `mem_1CabUu1biCwMFjsX5oEoG9`
+- **VP-24 Msgbox core**: `mem_1CZA6PxWEnKSwC5tCbm7bF`
+- **Msgbox + Monitor agent msgbox** (predecessor): `mem_1CabUu1biCwMFjsX5oEoG9`

@@ -165,7 +165,7 @@ PP は受信した「情報」 を以下のルールで surface に routing す�
 - **A (Active)**: event 監視、 能動 push (例: build 完了 → 自動で Inline 表示)
 - **H (Hybrid)**: MVP Passive → v2 Active 追加
 
-**本 doc で確定** (元 memory `mem_1CaGv48H8tBuJYjE5axrbM` では継続論点として残置だったが、 doc 13 で解決): **H** (MVP は P、 PR-ε 後の Phase で A 追加)。 A1 portable entity 原則に従い、 PP の "監視対象 event" は外部 (Mailbox / TopicRouter subscription) から注入。 PP 自身の broadcast を再 subscribe する loop 検出は publisher tag で防御 (実装詳細は §10 Q-9 参照)。
+**本 doc で確定** (元 memory `mem_1CaGv48H8tBuJYjE5axrbM` では継続論点として残置だったが、 doc 13 で解決): **H** (MVP は P、 PR-ε 後の Phase で A 追加)。 A1 portable entity 原則に従い、 PP の "監視対象 event" は外部 (Msgbox / TopicRouter subscription) から注入。 PP 自身の broadcast を再 subscribe する loop 検出は publisher tag で防御 (実装詳細は §10 Q-9 参照)。
 
 ---
 
@@ -178,10 +178,10 @@ PP は **passive (名指し受信)** と **active (subscriber)** の両形で in
 | 経路 | mode | 形 | 例 |
 |------|-----|----|-----|
 | MCP tool call | P | `mcp__show` / `mcp__clear` (caller Lane に自動解決) | Echoes 内 Claude が `mcp__show("# Hello")` |
-| Mailbox direct | P | `pp.{lane}@{project}` send | 別 Stand から `pp.lead@vp` に push |
+| Msgbox direct | P | `pp.{lane}@{project}` send | 別 Stand から `pp.lead@vp` に push |
 | HTTP API | P | `POST /api/pp/{action}` (vp-app から) | Canvas UI 操作 (pin/focus/tag 等、 VP-121 で sidebar 廃止 → Canvas 統合) |
 | TopicRouter subscribe | A | 他 Stand の event topic を subscribe | `process/build/event/completed` を listen → Inline 通知 |
-| External watcher | A | filesystem / process / hub event を Mailbox 経由で受信 | build watcher → PP → Inline progress bar |
+| External watcher | A | filesystem / process / hub event を Msgbox 経由で受信 | build watcher → PP → Inline progress bar |
 
 ### 出力面 (CSP face、 ← A7)
 
@@ -213,14 +213,14 @@ sequenceDiagram
     VP->>CM: forward to upstream
     CM-->>VP: response
     VP-->>CC: response
-    VP->>PP: Mailbox (pp.{lane}@{project}) — activity event
+    VP->>PP: Msgbox (pp.{lane}@{project}) — activity event
     PP->>PP: rule table → Canvas content kind 判定
     PP->>Canvas: TopicRouter broadcast (pp/lane/{lane}/surface/canvas)
     Canvas->>Canvas: creo memory を content kind として render
 
     Note over Canvas,VP: 逆方向
     Canvas->>VP: HTTP API (pin/focus/tag、 Canvas UI 上)
-    VP->>PP: Mailbox (pp.{lane}@{project})
+    VP->>PP: Msgbox (pp.{lane}@{project})
     PP->>CC: inject (next tool response の context として返す)
 ```
 
@@ -464,7 +464,7 @@ MCP 中継経路 (§5) で「caller Echoes の Lane address を MCP request enve
 
 現実装の `validate_actor` (`msgbox_registry.rs:184-194`) は actor 名に `.` を **reject**、 `parse_address` (line 245-270) も `{actor}.{lane}@{project}` grammar を認識しない。 doc 12 / 13 で declare した wire format `pp.lead@vp` は実装に存在しない grammar。
 
-doc 12 §13 Q-7 (Mailbox registry の `(layer_path, actor)` key 拡張) は **registry-side** の話、 本 Q-6 は **parser-side** の grammar 拡張で別軸。
+doc 12 §13 Q-7 (Msgbox registry の `(layer_path, actor)` key 拡張) は **registry-side** の話、 本 Q-6 は **parser-side** の grammar 拡張で別軸。
 
 - **案**: `validate_actor` を `actor` と `actor.lane` の両形を許容、 `parse_address` で sub-suffix を切り出して `(actor, lane, project)` triple を返す形に拡張
 

@@ -1,9 +1,9 @@
-# Mailbox address v3.1 — federated identity + simple syntax
+# Msgbox address v3.1 — federated identity + simple syntax
 
 > **Status**: Draft (VP-144 Epic、 Phase 0 SDG)
 > **Linear**: [VP-144](https://linear.app/chronista/issue/VP-144)
-> **Supersedes**: `creo-memories: project_mailbox_address_spec.md` (v1、 2026-04-19)
-> **Phase 0 (本 doc)**: Why + What。 How は [docs/design/14-mailbox-address-v3.md](../design/14-mailbox-address-v3.md)、 Usage は [docs/guide/mailbox-address-usage.md](../guide/mailbox-address-usage.md)
+> **Supersedes**: `creo-memories: project_msgbox_address_spec.md` (v1、 2026-04-19)
+> **Phase 0 (本 doc)**: Why + What。 How は [docs/design/14-msgbox-address-v3.md](../design/14-msgbox-address-v3.md)、 Usage は [docs/guide/msgbox-address-usage.md](../guide/msgbox-address-usage.md)
 
 ---
 
@@ -14,9 +14,9 @@ VP-143 (#304) ship 後の 2026-05-08 dogfood で、 vantage-point/lead と creo-
 | # | gap | 結果 |
 |---|-----|------|
 | 1 | `mcp` actor の registry 非対称 | self-process 内では存在するが TheWorld registry 未登録 → cross-process `mcp@<other>` 送信は forward 失敗 (silent drop) |
-| 2 | MCP `msg_recv` の inbox scope 固定 | self process の `mcp` actor inbox 限定、 他 actor (`agent` / `notify` / `protocol`) は MCP tool で観察不可 |
-| 3 | lane address (`<project>/<lane>`) と actor address (`<actor>@<project>`) の **2 namespace 混乱** | user が `vantage-point/echoes` を mailbox address と誤認 → parse error、 mental model split |
-| 4 | cross-process recv observation gap | `agent` inbox に msg deliver 完了しても receiver 側で即時検知不可、 sidebar UI / CLI watch 経路必要 |
+| 2 | MCP `msg_recv` の msgbox scope 固定 | self process の `mcp` actor msgbox 限定、 他 actor (`agent` / `notify` / `protocol`) は MCP tool で観察不可 |
+| 3 | lane address (`<project>/<lane>`) と actor address (`<actor>@<project>`) の **2 namespace 混乱** | user が `vantage-point/echoes` を msgbox address と誤認 → parse error、 mental model split |
+| 4 | cross-process recv observation gap | `agent` msgbox に msg deliver 完了しても receiver 側で即時検知不可、 sidebar UI / CLI watch 経路必要 |
 
 加えて user vision: **将来的にマシンだけじゃなく、 他の LAN の PC や、 hub.chronista.club 経由でアドレス解決して、 ネット経由で msg 交換したい**。
 
@@ -24,7 +24,7 @@ VP-143 (#304) ship 後の 2026-05-08 dogfood で、 vantage-point/lead と creo-
 
 - **simplicity**: `<actor>@<location>` 1 syntax に集約、 入力負担最小、 認知コスト 1 個
 - **federated**: process / machine / LAN / Internet の 4 layer 全てを同 syntax で表現
-- **2 namespace 解消**: lane address と actor address を統合、 sidebar の lane label がそのまま mailbox address として使える
+- **2 namespace 解消**: lane address と actor address を統合、 sidebar の lane label がそのまま msgbox address として使える
 - **dogfood-driven**: 既存 protocol idiom (SMTP / DNS / Matrix / Nostr) を mash-up、 自前 protocol 設計を最小化
 
 ---
@@ -63,7 +63,7 @@ agent @ mako.chronista.club / vantage-point / worker / objrec
 
 | 階層 | 役割 |
 |------|------|
-| **actor** | 受信 inbox の役割 (= "誰が読むか"、 default = `agent`) |
+| **actor** | 受信 msgbox の役割 (= "誰が読むか"、 default = `agent`) |
 | **world** | identity namespace (= machine / user / hub、 host segment) |
 | **project** | VP project (= self world に register された project name、 reserved: `world`) |
 | **lane** | lane within project (= multi-level、 `worker/objrec` 等) |
@@ -72,8 +72,8 @@ agent @ mako.chronista.club / vantage-point / worker / objrec
 
 | address | layer | meaning | resolve |
 |---------|-------|---------|---------|
-| `agent` | self process | mailbox-local | direct dispatch |
-| `vantage-point/lead` | same machine | self world、 lead lane の agent inbox | TheWorld registry (port lookup) |
+| `agent` | self process | msgbox-local | direct dispatch |
+| `vantage-point/lead` | same machine | self world、 lead lane の agent msgbox | TheWorld registry (port lookup) |
 | `notify@vantage-point/lead` | same machine | OS notification trigger | local routing |
 | `mako/vantage-point/lead` | Internet via hub | mako world、 hub-resolved | `hub.chronista.club` query (Phase 4+) |
 | `mako.chronista.club/vantage-point/lead` | Internet (explicit hub URL) | full FQDN | hub URL inline |
@@ -86,7 +86,7 @@ agent @ mako.chronista.club / vantage-point / worker / objrec
 
 - **default actor = `agent`** で省略可、 sidebar の lane label そのものが address として使える
 - 入力 UX: `vp msg send vantage-point/lead "hello"` → 自動で `agent@vantage-point/lead` 解釈
-- mental model: 「sidebar に出ている文字列 = mailbox address」 (= 統合)
+- mental model: 「sidebar に出ている文字列 = msgbox address」 (= 統合)
 
 ### email idiom との parallel
 
@@ -131,7 +131,7 @@ macbook.local              → mDNS local (LAN)
 |-------|------|
 | `agent` (default) | inter-agent generic comm (= Claude / human) |
 | `notify` | OS notification trigger (DistributedNotification 等) |
-| `mcp` | MCP server self inbox |
+| `mcp` | MCP server self msgbox |
 | `protocol` | system protocol (control plane) |
 | `lane-spawn` / `sp-bootstrap` | infra reserved |
 | `*` | broadcast (special、 actor wildcard) |
@@ -168,7 +168,7 @@ macbook.local              → mDNS local (LAN)
 | v3.1 syntax | 動作 |
 |-------------|------|
 | `<location>` のみ (= actor 省略) | default actor = `agent`、 v3.1 新文法 |
-| `<actor>@<project>/<lane>` | per-lane mailbox routing (Phase 2 で物理化) |
+| `<actor>@<project>/<lane>` | per-lane msgbox routing (Phase 2 で物理化) |
 | `<host>/<project>/<lane>` | cross-world routing (Phase 3 で LAN、 Phase 4+ で hub) |
 
 ### migration phase
@@ -177,7 +177,7 @@ macbook.local              → mDNS local (LAN)
 |-------|------|-----------|
 | **Phase 0** (本 doc) | SDG 3 file 整備 | [VP-145](https://linear.app/chronista/issue/VP-145) |
 | **Phase 1** | Parser 拡張 + actor optional | [VP-146](https://linear.app/chronista/issue/VP-146) |
-| **Phase 2** | per-lane mailbox + sidebar Echoes 横 icon | [VP-147](https://linear.app/chronista/issue/VP-147) |
+| **Phase 2** | per-lane msgbox + sidebar Echoes 横 icon | [VP-147](https://linear.app/chronista/issue/VP-147) |
 | **Phase 3** | mDNS resolver — LAN MVP 完成 | [VP-148](https://linear.app/chronista/issue/VP-148) |
 | Phase 4 | hub MVP (chronista.club) | (placeholder) |
 | Phase 5 | Ruby DSL / CLI / sidebar UI 全面 v3 対応 | (placeholder) |
@@ -224,10 +224,10 @@ LAN MVP (Phase 0-3) 完成後に Phase 4+ の planning session で sub-issue 化
 
 ## 関連
 
-- **Design**: [docs/design/14-mailbox-address-v3.md](../design/14-mailbox-address-v3.md) (How)
-- **Usage**: [docs/guide/mailbox-address-usage.md](../guide/mailbox-address-usage.md) (Usage)
+- **Design**: [docs/design/14-msgbox-address-v3.md](../design/14-msgbox-address-v3.md) (How)
+- **Usage**: [docs/guide/msgbox-address-usage.md](../guide/msgbox-address-usage.md) (Usage)
 - **Linear Epic**: [VP-144](https://linear.app/chronista/issue/VP-144)
-- **VP-24 Mailbox core**: `mem_1CZA6PxWEnKSwC5tCbm7bF`
-- **Mailbox + Monitor agent inbox** (predecessor design): `mem_1CabUu1biCwMFjsX5oEoG9`
+- **VP-24 Msgbox core**: `mem_1CZA6PxWEnKSwC5tCbm7bF`
+- **Msgbox + Monitor agent msgbox** (predecessor design): `mem_1CabUu1biCwMFjsX5oEoG9`
 - **dogfood gap 詳細**: `mem_1CapRAtpCpahQGn8nW2fmT`
 - **VP-143 完了** (本 spec の trigger): `mem_1CapFaggT8iy1XxMKAgUqA`

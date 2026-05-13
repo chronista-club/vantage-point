@@ -1,16 +1,16 @@
-# Mailbox vs ccwire — 役割分離 (2026-04-19)
+# Msgbox vs ccwire — 役割分離 (2026-04-19)
 
 ## 結論
 
 | 機能 | 担当 | 場所 |
 |------|------|------|
-| **Actor 間 messaging（cross-Process 含む）** | VP Mailbox | `crates/vantage-point/src/capability/mailbox*.rs` |
+| **Actor 間 messaging（cross-Process 含む）** | VP Msgbox | `crates/vantage-point/src/capability/msgbox*.rs` |
 | **tmux session のライフサイクル追跡** | ccwire | `crates/vantage-point/src/ccwire.rs` + `~/repos/claude-plugin-ccwire` |
 | **tmux pane operation（split/capture/send-keys）** | VP `tmux_actor` | `crates/vantage-point/src/process/tmux_actor.rs` |
 
 ## 経緯
 
-2026-04-18 当初は「ccwire 完全削除 + mailbox に統一」を計画
+2026-04-18 当初は「ccwire 完全削除 + msgbox に統一」を計画
 （決定: `mem_1CaB6nfYtxWhmpKemXWoUw`、Path C: `mem_1CaBDETcyDY5YKeYpXBf2j`）。
 
 しかし ccwire の **tmux session tracking** には独自価値があり、
@@ -18,10 +18,11 @@
 
 ## 役割境界
 
-### Mailbox（messaging primitive）
+### Msgbox（messaging primitive）
 
 - **scope**: actor 間の point-to-point messaging
 - **transport**: 同一 Process 内 = mpsc、cross-Process = TheWorld registry + HTTP forward
+  - **Note**: doc 19 (VP-169) で **Whitesnake = primary substrate** に統一予定。 mpsc は Phase 4 完了時点で obsolete、 Phase 5 で完全削除。 本 doc の mpsc 記述は historical context として残置 (= ccwire 役割境界の起点記録)。
 - **特徴**: 永続化（Whitesnake）、TTL、manual_ack、retry、auth、address parser
 - **Phase 完了状況**:
   - Phase 1 (#140): opt-in persistent
@@ -38,7 +39,7 @@
 - **進化方向**: tmux 機能フル活用（pane orchestration / metadata / monitor / hooks）
 - **削除対象**:
   - `claude-plugin-ccwire` の `wire-send` / `wire-receive` / `wire-status`（messaging 機能）
-  - これらは VP mailbox に統合済み
+  - これらは VP msgbox に統合済み
 
 ### tmux_actor / `vp tmux`（tmux primitive）
 
@@ -53,7 +54,7 @@
 | 別 CC セッションにメッセージ送信 | `wire-send` | MCP `msg_send` |
 | tmux session の一覧確認 | `wire-sessions` | `vp ccwire sessions` (将来) or 進化版 ccwire CLI |
 | pane 分割 | tmux 直接 / `vp tmux split` | `vp tmux split` |
-| エージェントへの状態通知 | （未対応） | `vp mailbox send to=notify` |
+| エージェントへの状態通知 | （未対応） | `vp msgbox send to=notify` |
 
 ## 移行方針
 
@@ -63,6 +64,6 @@
 
 ## 関連 PR
 
-- #140 / #144: Mailbox Phase 1 / Phase 2
-- #146 / #147 / #148: Mailbox Phase 3 Step 1 / 2a / 2b
+- #140 / #144: Msgbox Phase 1 / Phase 2
+- #146 / #147 / #148: Msgbox Phase 3 Step 1 / 2a / 2b
 - (本 PR): ccwire 役割明示
