@@ -143,7 +143,7 @@ Layer が Stand を保持するとき、 以下の 4 機能を提供する:
 | Lifecycle | Layer 起動 → Stand spawn、 Layer 終了 → Stand 終了 (cascade) |
 | Address resolution | `{stand}@{layer}` を Layer registry で解決 |
 | State ownership | Stand state は Layer supervisor が管理 |
-| Routing | Stand 間 message は Layer registry 経由 (Mailbox / Topic) |
+| Routing | Stand 間 message は Layer registry 経由 (Msgbox / Topic) |
 
 ### Stand-Layer 保持関係 (Mermaid)
 
@@ -185,7 +185,7 @@ Stand address grammar は **2 表記の hybrid canonical**:
 | 用途 | 表記 | 例 |
 |------|------|-----|
 | 概念用語 (本 doc / 設計議論) | `{stand}@{layer_path}` | `pp@vp/lead` |
-| wire format (実装 / mailbox) | `{stand}.{lane}@{project}` | `pp.lead@vp` |
+| wire format (実装 / msgbox) | `{stand}.{lane}@{project}` | `pp.lead@vp` |
 | 変換 library | `address::canonicalize()` / `address::display()` | 双方向変換集約 |
 
 wire format は既存 `creo/event.rs::ActorRef` を維持し、 概念議論では path-like 表記を使う。 Federation で `@host` 拡張 (§12 参照)。
@@ -198,7 +198,7 @@ wire format は既存 `creo/event.rs::ActorRef` を維持し、 概念議論で�
 
 > **Stand network は CSP (share nothing memory)**
 
-Stand 同士は memory を共有しない。 通信は channel (mailbox / topic) で copy 渡し。 Erlang の "share nothing" + Go CSP の合成。
+Stand 同士は memory を共有しない。 通信は channel (msgbox / topic) で copy 渡し。 Erlang の "share nothing" + Go CSP の合成。
 
 ただし **filesystem (Layer dir) は world として共有可能** ─ in-band channel と out-of-band filesystem を分離 (A9 参照)。
 
@@ -215,13 +215,13 @@ Stand 同士は memory を共有しない。 通信は channel (mailbox / topic)
 
 ```
 [Actor face — identity]                [CSP face — interaction]
-direct mailbox address                 broadcast topic channel
+direct msgbox address                 broadcast topic channel
 
 Stand A                                 Stand A
    │                                       │ publish
    ▼ msg_send                              ▼
 hd@vp/lead  ←───────  Stand B          ┌─────────────────┐
-Mailbox                                 │ canvas/lane/    │
+Msgbox                                 │ canvas/lane/    │
                                         │ lead/content    │ topic
                                         └─────────────────┘
                                          │  │  │ subscribe
@@ -302,7 +302,7 @@ trait Stand: Send + Sync {
     async fn handle(&mut self, msg: StandMessage) -> StandResponse;
 }
 
-// 能力は Mailbox message variant で表現
+// 能力は Msgbox message variant で表現
 enum StandMessage {
     Navigate(NavigateReq),
     Store(StoreReq),
@@ -322,7 +322,7 @@ enum HostedStand {
 
 - **能力 sub-trait なし** → A1 portability 維持 (色を付けない)
 - **HostedStand enum** → in-process と process を統一 API、 doc 11 mise task path と整合
-- **能力 = message variant** → 新能力追加が enum 拡張で済む、 mailbox semantics と整合 (A6/A7)
+- **能力 = message variant** → 新能力追加が enum 拡張で済む、 msgbox semantics と整合 (A6/A7)
 
 ### 候補比較
 
@@ -360,7 +360,7 @@ VP-24 original 設計意図「Stand に component bolt-on で msgbox 使える�
 pub enum LayerScope { World, Project, Lane }  // LSCM 3 層 (§3)
 
 pub trait Stand: Any + Send + Sync + 'static {
-    fn actor_name(&self) -> &str;        // mailbox address の actor 部分と一致
+    fn actor_name(&self) -> &str;        // msgbox address の actor 部分と一致
     fn layer_scope(&self) -> LayerScope;
     fn as_any(&self) -> &dyn Any;        // downcast 用 (Any 慣用句)
 }
@@ -379,7 +379,7 @@ pub trait SpawnableService: Service {
 **i 路線 minimal の意義**: PR-1 で passive marker (= `actor_name` / `layer_scope` / `as_any` のみ)
 を landed、 lifecycle method (`spawn_loop`) は PR-4b で `SpawnableService` super-trait として追加。
 §7 β Soft 案の `start` / `stop` / `handle` は採用せず — actor ごとに observer / consumer / hold
-pattern が異なる現実 (= `AgentCapability` は EventBus observer、 `NotificationActor` は mailbox
+pattern が異なる現実 (= `AgentCapability` は EventBus observer、 `NotificationActor` は msgbox
 consumer、 `MidiCapability` は instance hold + 内部 `monitor_task`) に合わせて、 trait を strict に
 しすぎない設計。 `Service` trait に `spawn_loop` を直接追加すると `MidiCapability` (= consume 不適)
 が compile error になるため、 `SpawnableService: Service` super-trait に分離 (= consume 適合 actor
@@ -418,9 +418,9 @@ impl ActorRegistry {
 | actor | trait | scope | spawn pattern | host location |
 |-------|-------|-------|---------------|---------------|
 | `agent` (Echoes 💬) | Stand | Project | EventBus observer (VP-157、 spawn loop なし) | `ProcessCapabilities` |
-| `protocol` | Stand | Project | mailbox consumer | `ProcessCapabilities` |
-| `notify` | SpawnableService | Project | mailbox consumer (spawn_loop) | `AppState.actor_registry` (PR-4b) |
-| `lane-spawn` | SpawnableService | Project | mailbox consumer (spawn_loop、 Semaphore-gated) | `AppState.actor_registry` (PR-4b) |
+| `protocol` | Stand | Project | msgbox consumer | `ProcessCapabilities` |
+| `notify` | SpawnableService | Project | msgbox consumer (spawn_loop) | `AppState.actor_registry` (PR-4b) |
+| `lane-spawn` | SpawnableService | Project | msgbox consumer (spawn_loop、 Semaphore-gated) | `AppState.actor_registry` (PR-4b) |
 | `hermit_purple` 🍇 | Service (not Spawnable) | World | instance hold + monitor_task | `WorldCapabilities.midi` |
 | `paisley_park` 🧭 (将来) | LaneStandHost (marker、 PR-δ-1) | Lane | — | `LaneCapabilities` (PR-β) |
 | `gold_experience` 🌿 (将来) | (skeleton) | Project (将来 Lane) | — | `ProjectStandsPool` (skeleton) |
@@ -431,26 +431,26 @@ impl ActorRegistry {
 
 ## §7.6. actor じゃないもの — init code と別 abstraction
 
-「actor」 condition = **(a)** 持続的 loop + **(b)** owned mailbox (= MsgboxRouter `register`) +
+「actor」 condition = **(a)** 持続的 loop + **(b)** owned msgbox (= MsgboxRouter `register`) +
 **(c)** lifecycle (= 起動→動作→shutdown) + **(d)** address 責任 (= 特定 address msg の処理 owner)。
 4 つ全部満たすものが VP-159 の `Stand` / `Service` trait の対象。 満たさないものは別扱い:
 
-### sp-bootstrap — init code (= mailbox を経由するが actor じゃない)
+### sp-bootstrap — init code (= msgbox を経由するが actor じゃない)
 
 `server.rs` の SP startup で `register("sp-bootstrap")` で handle 取得 → ccws workers 件数分
 `send_to("lane-spawn", ...)` を投入 → handle drop。 recv loop も lifecycle もない **一過性 sender**。
-mailbox を経由する init code であって actor ではない (= 4 condition のうち (a)(b)(c)(d) すべて欠如)。
+msgbox を経由する init code であって actor ではない (= 4 condition のうち (a)(b)(c)(d) すべて欠如)。
 VP-159 PR-3 で「actor 性質を持つのは `notify` / `lane-spawn` / `hermit_purple` の 3 つ、 `sp-bootstrap`
 は除外」 と確定。
 
-### TmuxActor — mpsc-based actor (= mailbox-based じゃない別 abstraction)
+### TmuxActor — mpsc-based actor (= msgbox-based じゃない別 abstraction)
 
 `process/tmux_actor.rs`、 tmux 透過統合 (Issue #90) の core component。 actor 4 condition のうち
-**(a) 持続的 loop は満たす** が、 **(b) owned mailbox は `tokio::sync::mpsc::Receiver`** であって
+**(a) 持続的 loop は満たす** が、 **(b) owned msgbox は `tokio::sync::mpsc::Receiver`** であって
 VP の `MsgboxRouter` ではない、 **(d) address 責任も `MsgboxRouter` に register せず `TmuxHandle`
-direct call**。 → **「actor pattern だが mailbox-based ではない別 abstraction」**。 役割: tmux shell
+direct call**。 → **「actor pattern だが msgbox-based ではない別 abstraction」**。 役割: tmux shell
 command (`split-window` / `capture-pane` / `kill-pane` 等) の async wrapper + agent metadata
-(= pane_id → agent name mapping) の stateful manager。 VP-159 scope outside、 mailbox-based に
+(= pane_id → agent name mapping) の stateful manager。 VP-159 scope outside、 msgbox-based に
 統合するなら別 epic (= 「all actor を MsgboxRouter 経由に集約」)。
 
 ## §7.7. 通信 primitive 使い分け guideline
@@ -459,21 +459,21 @@ VP の通信 primitive と使い分け:
 
 | primitive | 用途 | 使うもの |
 |-----------|------|---------|
-| **Mailbox (`MsgboxRouter`)** | address-bound actor 間通信 (= `register("name")` で address 所有) | `Stand` / `SpawnableService` (= agent / protocol / notify / lane-spawn / hermit_purple) |
+| **Msgbox (`MsgboxRouter`)** | address-bound actor 間通信 (= `register("name")` で address 所有) | `Stand` / `SpawnableService` (= agent / protocol / notify / lane-spawn / hermit_purple) |
 | **EventBus (broadcast)** | observer pattern (= 1 event を複数 subscriber に配信) | `AgentCapability` の notification 受信 (VP-157 observer 化)、 `CapabilityEvent` 配信 |
 | **TopicRouter (topic 購読)** | topic ベースの pub/sub (= `{scope}/{capability}/{category}/{detail}`) | Canvas / pane_contents / RetainedStore |
 | **mpsc (internal channel)** | 自己完結 actor の internal command queue | `TmuxActor` (= tmux command queue)、 `ProcessRunner` (= Ruby VM 系) |
 | **Unison QUIC** | cross-Process 通信 (= SP ↔ TheWorld) | `SystemEvent` push / registry channel / process チャネル |
 
 判断基準:
-- **address に対する責任を持つ actor** → Mailbox (= `MsgboxRouter` register、 = `Stand` / `Service` trait の対象)
+- **address に対する責任を持つ actor** → Msgbox (= `MsgboxRouter` register、 = `Stand` / `Service` trait の対象)
 - **broadcast したい event** → EventBus
 - **topic 購読 model** → TopicRouter
 - **自己完結する internal queue** (= 外部から address で reach する必要がない) → mpsc
 - **process 跨ぎ** → Unison QUIC
 
-**「actor であるべきものだけ actor」** — 4 condition (= 持続 loop / owned mailbox / lifecycle /
-address 責任) を満たさないものは Mailbox actor にせず、 init code (= `sp-bootstrap`) や別
+**「actor であるべきものだけ actor」** — 4 condition (= 持続 loop / owned msgbox / lifecycle /
+address 責任) を満たさないものは Msgbox actor にせず、 init code (= `sp-bootstrap`) や別
 abstraction (= `TmuxActor`) として明示する。 trait impl は「対象が trait の condition を満たすか」
 を critical に判断する (= VP-159 PR-3 で `sp-bootstrap` を audit して除外したのが典型例)。
 
@@ -564,7 +564,7 @@ doc 12 起草後、 catalog の "target vs 現実装" gap を埋める PR 連鎖
 | In-process Stand | `crates/vantage-point/src/capability/*.rs` (whitesnake / msgbox / etc.) |
 | **World 階層 Stand container** | `crates/vantage-point/src/daemon/world_capabilities.rs` (PR-α-1 / VP-111 で新設、 `WorldCapabilities` struct で `process_manager` / `update` / `msgbox_registry` / `whitesnake` / `midi` を host) |
 | Process Stand | `.mise/tasks/vp/stand/{hd,shell,tmux}` (doc 11 mise task) |
-| Mailbox | `crates/vantage-point/src/capability/msgbox.rs` + `msgbox_registry.rs` (Q-7 暫定 HACK: pseudo project name `"world"` で World scope 表現) |
+| Msgbox | `crates/vantage-point/src/capability/msgbox.rs` + `msgbox_registry.rs` (Q-7 暫定 HACK: pseudo project name `"world"` で World scope 表現) |
 | TopicRouter | `crates/vantage-point/src/process/topic_router.rs` |
 | RetainedStore | `crates/vantage-point/src/process/retained.rs` |
 | Lane = clone dir | `crates/vp-cli/src/ccws/` (worker workspace management) |
@@ -613,7 +613,7 @@ VP は machine-local で完結する。 Federation は他マシンの Stand と 
 | Stack | 内容 | LSCM との対応 |
 |-------|------|--------------|
 | Stack 1 (Physical) | ccws clone + XDG scoping + Lane manifest | A9 (Layer dir 空間) |
-| Stack 2 (Transport) | port (32xxx/33xxx/34xxx)、 Unison QUIC、 mailbox transport | A6/A7 internal detail |
+| Stack 2 (Transport) | port (32xxx/33xxx/34xxx)、 Unison QUIC、 msgbox transport | A6/A7 internal detail |
 | Stack 3 (Application Address) | TheWorld registry (machine-local resolution) | A4 wire format |
 | Stack 4 (Federation) | Hub registry (`@host` 拡張) | A4 + A10 |
 
@@ -670,7 +670,7 @@ doc 12 は target architecture を確定するが、 以下は **後続議論** 
 - **Q-4**: 動的 spawn / kill = Layer の lifecycle event として規定 (A14 案)
 - **Q-5**: 親 Layer destroy 時の child Stand cleanup = LIFO order shutdown (A15 案)
 - **Q-6**: Address resolution scope chain = cwd Layer から root に向け ascending lookup (A16 案、 shadowing 許容)
-- **Q-7**: Mailbox registry の `(layer_path, actor)` key 拡張 (現 `(project, actor)` から、 A17 案)
+- **Q-7**: Msgbox registry の `(layer_path, actor)` key 拡張 (現 `(project, actor)` から、 A17 案)
   - **2026-05-04 実体験 (PR-α-3 / VP-113)**: `MidiCapability` を World 階層に host する際、 現 `MsgboxRegistry` は `(project_name, actor)` key で管理されているため、 World scope を表現するための **暫定 HACK として pseudo project name `"world"`** を使用。 `world_capabilities.rs::with_midi` 内 `msgbox_registry.register("hermit_purple", "world", world_port)` 呼び出しで具体化。 LSCM 公理上は `(layer_path, actor)` (例: `World/, hermit_purple`) が正だが、 短期的に動かすため pseudo namespace で凌いでいる状態。 Q-7 を解いた段階で pseudo project name 全部の sweep が必要 (`hermit_purple@world` に reach する caller も全て update)。
 - **Q-8**: R/R primitive = ephemeral process として別 axiom 化 (A18 案)
 - **Q-9**: Layer hierarchy = immutable after creation (A19 案、 移籍は destroy + new create)
@@ -681,7 +681,7 @@ doc 12 は target architecture を確定するが、 以下は **後続議論** 
 - **Q-11**: catalog hardcode vs runtime registry pattern (doc 11 mise task 経路との整合)
 - **Q-12**: catalog 漏れ Stand 候補の取扱い:
   - Smart Canvas (VP-76 R3 新 Stand 候補)
-  - EventBus / Mailbox / MsgboxRouter / ProtocolCapability (現 implicit network)
+  - EventBus / Msgbox / MsgboxRouter / ProtocolCapability (現 implicit network)
   - AgentCapability (HD と独立)
   - UpdateCapability (self-update、 PR-α-1 で `WorldCapabilities.update` field 化済 = catalog 候補に格上げ可能)
   - ProcessRunner / Ruby VM (GE のサブシステム)
@@ -724,7 +724,7 @@ doc 12 は target architecture を確定するが、 以下は **後続議論** 
 - `mem_1CagvdVHD4kq44oFG66w35` — Auto-merge × squash race feedback rule (PR-α-3 経験から lift up、 review round 中の auto-merge disable 運用)
 - `mem_1CaVeQEKXd8U2XHn75RD4M` — VP Roadmap Phase 5→9 (4-Stack roadmap、 Lane manifest、 federation)
 - `mem_1Ca8xHcMf9sFBB2VHUpHzZ` — VP creo-memory-pane 設計方針 (PR-ε 対象、 §6 reference)
-- `mem_1CaBRBdh1PGop2iGLAnwSY` — Mailbox Cross-Process Address (A4 wire format の現実装)
+- `mem_1CaBRBdh1PGop2iGLAnwSY` — Msgbox Cross-Process Address (A4 wire format の現実装)
 
 ### chronista-club Atlas
 

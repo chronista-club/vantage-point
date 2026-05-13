@@ -138,7 +138,7 @@ vp-app (GUI client)                            vantage-point (server / daemon)
 
 - `docs/design/09-osc-notification-capture.md` (PR #232 で merge): S2/S3 で sidebar に `notifications_by_lane` field 追加 + Lane row tint UI 追加が進行中。 これは **R-2 の sidebar IPC dispatcher と直接 collision**: sequencing 注意。
 - `docs/design/06-creoui-draft.md` / `07-lane-as-process.md`: 中長期で vp-app 側に `Event` consumer 追加が要る予定。 R-2 の dispatcher を切り出しておくと、 後で `event_dispatcher.rs` を 1 module 追加するだけで済む。
-- `docs/design/04-ccwire-redesign.md` / `03-mailbox-vs-ccwire.md`: vp-app 内の ccwire usage は薄い、 conflict なし。
+- `docs/design/04-ccwire-redesign.md` / `03-msgbox-vs-ccwire.md`: vp-app 内の ccwire usage は薄い、 conflict なし。
 
 ### 1.4 in-flight worker lane / open PR との衝突
 
@@ -712,7 +712,7 @@ S2 worker lane が main に landed する前に R-2 を着手すると、 worker
 ### 6.3 design docs
 
 - `docs/design/01-architecture.md`
-- `docs/design/03-mailbox-vs-ccwire.md`
+- `docs/design/03-msgbox-vs-ccwire.md`
 - `docs/design/04-ccwire-redesign.md`
 - `docs/design/06-creoui-draft.md` (R0 Event schema)
 - `docs/design/07-lane-as-process.md` (VP-77 v0.3)
@@ -726,7 +726,7 @@ S2 worker lane が main に landed する前に R-2 を着手すると、 worker
 - `802918e` — fix(vp-app): EnvFilter で vp_app target が silent 化する Phase 5-D 回帰を修正 (= PR #235、 R-1 の出元)
 - `658be02` — chore(vp-app): OSC handler に structured key=value debug log を追加 (PR #233)
 - `ff222ec` — docs(design): OSC notification capture pipeline (PR #232、 S2/S3 worker lane の親)
-- `160b91e` — feat(vantage-point): SP startup を Mailbox actor 経由に置換 (PR #231、 I-b 2/3 + 3/3)
+- `160b91e` — feat(vantage-point): SP startup を Msgbox actor 経由に置換 (PR #231、 I-b 2/3 + 3/3)
 - `1298be5` — feat(vantage-point, Phase 6-E, VP-107): LaneStandSpec trait + shell-hosted Lane (PR #216)
 
 ### 6.5 in-flight (未着地、 sequencing 注意)

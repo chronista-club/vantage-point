@@ -4,7 +4,7 @@
 > **Status (旧)**: draft v2 (2026-05-02、 mise file-based task 路線に rewrite)
 > **Extends**: `mem_1CabUx6FLaRgoK2unJvk6q` (VP Lane init_script で scripted Stand entrypoint を一般化、 2026-04-29 design intent)
 > **Supersedes**: 現行 `LaneStand` enum (HeavensDoor / TheHand) の二分構造、 および本 doc の v1 (Rust hard-code preset 案 ─ Section 5 Alternatives に縮約)
-> **Out of scope**: 複数 Stand の同時稼働 (= split lane)、 Stand 状態 telemetry (Mailbox / discovery 側で扱う)、 任意 user script の sandboxing (single-user dev tool 前提)
+> **Out of scope**: 複数 Stand の同時稼働 (= split lane)、 Stand 状態 telemetry (Msgbox / discovery 側で扱う)、 任意 user script の sandboxing (single-user dev tool 前提)
 
 ---
 
@@ -23,7 +23,7 @@ VP の Lane spawn 機構を **`LaneStand` enum (`HeavensDoor` / `TheHand`)** か
 決めないこと:
 - mise が config.toml で sandbox を作る話 (single-user dev tool 前提で skip)
 - 複数 Stand の同時稼働 / 動的切替
-- Stand 別の特殊権限 (Mailbox や Capability 別管理は別 layer の話)
+- Stand 別の特殊権限 (Msgbox や Capability 別管理は別 layer の話)
 
 本 spec は **Phase 1 deliverable** で、 確定後 PR-A (`.mise/tasks/vp/stand/` ファイル群追加) → PR-B (VP コアを `mise run vp:stand:{name}` 呼出に切替、 enum 廃止) の 2 PR で実装する。
 

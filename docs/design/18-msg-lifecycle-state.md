@@ -1,8 +1,8 @@
 # 18. msg lifecycle state — forwarded / consumed flag による cross-process 重複再配信遮断
 
 > **対象 Issue**: [VP-164](https://linear.app/chronista/issue/VP-164) — SP restart で永続 cross-process msg が（重複）再配信される（受信側 ack-back 欠如、 restore_pending 再 forward）
-> **親 Epic**: [VP-156](https://linear.app/chronista/issue/VP-156) — Mailbox routing 統一 + 永続化 first-class
-> **関連設計**: [17-port-stability-and-mailbox-isolation.md](17-port-stability-and-mailbox-isolation.md)（決定D `restore_pending` の project 境界 guard）/ [16-worker-lane-mailbox-recv.md](16-worker-lane-mailbox-recv.md)（VP-166 で実装した recv path）/ [14-mailbox-address-v3.md](14-mailbox-address-v3.md)（address syntax / `normalize_from`）
+> **親 Epic**: [VP-156](https://linear.app/chronista/issue/VP-156) — Msgbox routing 統一 + 永続化 first-class
+> **関連設計**: [17-port-stability-and-msgbox-isolation.md](17-port-stability-and-msgbox-isolation.md)（決定D `restore_pending` の project 境界 guard）/ [16-worker-lane-msgbox-recv.md](16-worker-lane-msgbox-recv.md)（VP-166 で実装した recv path）/ [14-msgbox-address-v3.md](14-msgbox-address-v3.md)（address syntax / `normalize_from`）
 > **関連 Issue**: [VP-158](https://linear.app/chronista/issue/VP-158)（全 msg 永続化、 PR #325、 本設計の前提）/ [VP-161](https://linear.app/chronista/issue/VP-161)（cross-machine replay、 Phase 2 で foundation 提供）
 > **Status**: **Draft**（2026-05-12 作成、 PR-pre1 として doc-only commit 予定）
 
@@ -65,7 +65,7 @@ async fn remote_forward_loop(mut rx, client, shutdown) {
 }
 ```
 
-forward 成功は receiver の inbox に投函成功（= HTTP 200 受信）を意味するが、 sender 側 Whitesnake には何のマークも書かれない。 `routing_loop`（msgbox.rs:771）で `ws.extract` 永続化された msg は **forward 後も Pending と区別不能**。
+forward 成功は receiver の msgbox に投函成功（= HTTP 200 受信）を意味するが、 sender 側 Whitesnake には何のマークも書かれない。 `routing_loop`（msgbox.rs:771）で `ws.extract` 永続化された msg は **forward 後も Pending と区別不能**。
 
 ### (β) ack-back の wire は既にある（activate されていない）
 
@@ -338,5 +338,5 @@ sender 側 handler が `ws.extract` で `consumed_at` 更新。 これで msg �
 - **既存滞留 msg**: migration（決定ε）で grace 外を後追い mark、 grace 内は再送許容（= dogfood で挙動確認後、 grace 閾値を tune）
 - **WS namespace 変更なし**: 既存 `discs/p_{slug}/msg/{id}` をそのまま使用、 layout 変更は将来 hierarchical 化（任意 follow-up）
 - **wire format 変更なし**: receiver の `{"status": "delivered"}` response 維持、 Phase 2 で `consumed` endpoint 追加時に明文化
-- **docs/CLAUDE.md 影響**: 「mailbox の挙動」 セクションがあれば flag lifecycle を明記、 既存 dogfood feedback memory に「forwarded_at の挙動」 を追記
+- **docs/CLAUDE.md 影響**: 「msgbox の挙動」 セクションがあれば flag lifecycle を明記、 既存 dogfood feedback memory に「forwarded_at の挙動」 を追記
 - **下流影響**: VP-161（cross-machine replay）の前提が整う、 VP-156 epic の「永続化 first-class」 が `Message` lifecycle 観点でも完成形に近づく

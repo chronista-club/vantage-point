@@ -147,7 +147,7 @@ enum SpDesiredState {
 ## 7. 関連
 
 - **Linear**: [VP-155](https://linear.app/chronista/issue/VP-155) (= 本 doc の origin issue)
-- **Linear**: [VP-154](https://linear.app/chronista/issue/VP-154) (= Mailbox v3.1 routing topology Option B' epic)
+- **Linear**: [VP-154](https://linear.app/chronista/issue/VP-154) (= Msgbox v3.1 routing topology Option B' epic)
 - **Memory**: `mem_1CaTpCQH8iLJ2PasRcPjHv` (= TheWorld が SP lifecycle を持つ Architecture v4)
 - **Memory**: `mem_1CZ2Skaeyy8xWMVfyFMVo5` (= D10 Reconciliation アーキテクチャ)
 - **PR**: #318 (= VP-154 PR-2.5 dogfood で本 issue を発見)
