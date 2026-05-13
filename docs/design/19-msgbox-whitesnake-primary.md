@@ -233,7 +233,7 @@ flowchart TB
     Open --> Loop{stream.next?}
     Loop -->|Ok msg| Process[process + ack<br/>last_seen_ts = msg.ts]
     Process --> Loop
-    Loop -->|Err / Close| Catchup[catch-up query<br/>SELECT * WHERE<br/>status='active' AND<br/>consumed_at IS NULL AND<br/>ts &gt; last_seen_ts<br/>ORDER BY ts ASC]
+    Loop -->|Err / Close| Catchup[catch-up query<br/>SELECT * WHERE<br/>status='active' AND<br/>consumed_at IS NULL AND<br/>ts, id &gt; last_seen_ts, last_seen_id<br/>= lexicographic compound<br/>ORDER BY ts ASC, id ASC]
     Catchup --> ProcessAll[全件 process]
     ProcessAll --> Backoff[exp backoff<br/>1/2/4/8/16/60s]
     Backoff --> Open
@@ -248,8 +248,8 @@ flowchart TB
 
 | 項目 | 実装 |
 |---|---|
-| **last_seen_ts 保持** | consumer task の local state、 LIVE stream open 時に bind |
-| **catch-up query** | reconnect 後に `WHERE consumed_at IS NULL AND ts > last_seen_ts` で順序保証付き取得 |
+| **last_seen_ts + last_seen_id 保持** | consumer task の local state、 同 ms collision 回避のため `(ts, id)` の **lexicographic 複合 cursor** で保持 (= Purple Haze F10) |
+| **catch-up query** | reconnect 後に `WHERE consumed_at IS NULL AND (ts > $last_ts OR (ts = $last_ts AND id > $last_id))` で順序保証付き取得 (= 同 ts collision 取りこぼし防止) |
 | **exp backoff** | 1/2/4/8/16/60s 上限 |
 | **observability** | `vp msgbox status` に「reconnecting attempt N (last success T)」 を露出、 silent fail 防止 |
 | **CI test** | spike PR で SurrealDB connection 強制切断 → catch-up 成功までの integration test |
@@ -800,15 +800,34 @@ consumer side (= lane Claude / Stand / Service):
 
 ## §6 Open Questions (= Phase 1 spike で答える + user 確定済)
 
-### Phase 1 spike (= half day) で確認
+### Phase 1 spike (= 1-2 day) で確認
+
+#### コア破綻 break point (= 不可なら epic 撤回)
 
 | Q | 期待動作 | 不可なら |
 |---|---|---|
-| **Q1** | SurrealDB embedded で `LIVE SELECT` が working | epic 撤回、 別 substrate (SQLite + LISTEN/NOTIFY 等) |
-| **Q2** | LIVE filter 脱落 (= UPDATE で WHERE 外れる) が DELETE event 通知 | client filter 再評価で shim |
-| **Q3** | atomic claim (`UPDATE ... LIMIT 1 RETURN AFTER`) が race-free | transaction で wrap |
-| **Q4** | 100 msg/sec で latency < 50ms 達成 | performance tuning (= index 拡充、 batch insert) |
+| **Q1** | SurrealDB v3.0.4 embedded で `LIVE SELECT` が working、 **`$bind` 込み** で WHERE 内 param 解決 (= v3.0+ 公式 fix 済の実機確認) | epic 撤回、 別 substrate (SQLite + LISTEN/NOTIFY 等) |
+| **Q2** | LIVE filter 脱落 (= UPDATE で WHERE 外れる) の event semantics: DELETE / UPDATE / no event のどれか実機確認 (= Purple Haze F3 known unknown) | DELETE 来る → plan のまま / UPDATE 来る → consumer 側 claim 試行で判別 / no event → polling fallback 復活 (= 「fallback なし」 哲学を spike 結果で reweight) |
+| **Q3** | atomic claim (`UPDATE ... LIMIT 1 RETURN AFTER`) が race-free、 100 並行 task で同 row 取り合い test (= Purple Haze F4 MVCC write skew 検証) | BEGIN/COMMIT transaction wrap を obligatory に、 latency budget 再計算 |
+
+#### 性能 / index break point (= 値次第で設計微調整)
+
+| Q | 期待動作 | 不可なら |
+|---|---|---|
+| **Q4** | 100 msg/sec で latency < 50ms 達成 (= cargo bench + criterion で実機 number) | performance tuning (= index 拡充、 batch insert、 GC interval 調整) |
 | **Q5** | 3 concurrent query (producer + consumer + GC) の lock contention | GC を nightly に shift |
+| **Q6** | `recv_idx (status, to_actor, to_lane, consumed_at)` で **active filter** が大量 archived row scan に堕ちないか (= partial index 機能の有無 / 性能、 Purple Haze F6) | partial index 不可なら archived を separate table に分離検討、 もしくは Phase 5 で `msgs_archive` table に move 復活 |
+| **Q7** | LIVE stream embedded の **切断 trigger** (= shutdown 以外で `None` が返る条件) と reconnect 挙動 (= Purple Haze F11) | embedded 特化 reconnect 戦略再設計 (= polling fallback の最小限導入余地) |
+
+#### 設計 robustness 補強 (= spike で SDG 追記材料)
+
+| Q | 期待動作 | 不可なら |
+|---|---|---|
+| **Q8** | ack-back HTTP `consume-ack` の **冪等性** (= 同 msg_id 2 度 POST で sender row が壊れないか、 Purple Haze F12) | sender 側 handler に「`consumed_at` 既 set ならスキップ」 guard 追加 |
+| **Q9** | migration **1-shot in-flight** (= migration 中の新規 msg を新 schema に正しく載せられるか、 Purple Haze F7) | dual write 期間中の 3 経路 in-flight handling を Sequence で明示 |
+| **Q10** | sender SP 永続消失時の **receiver row 終状態** (= archived 移行と orphan handling、 Purple Haze F5) | §4.6 fail tolerance 表に case 追記、 ack-back retry queue overflow policy 明示 |
+| **Q11** | `ConsumerMeta { lane }` の **死せる Lane entry 永続蓄積** (= LSCM ⟂ 主張の observability 漏れ、 Purple Haze F8) | LSCM の Lane lifecycle 通知 hook で TTL 内 cleanup、 もしくは `started_at + 7d < now` で観測除外 |
+| **Q12** | `Predicate enum to_where_clause` の **`$bind` 経由のみ** (= SQL injection 防御、 Purple Haze F9) | string concat 禁止 + nested AND/OR の bind 名衝突 test、 `peek_all_unconsumed` の N round trip 性能を bench |
 
 ### user 確定済 (= 2026-05-13 hearing)
 
@@ -818,6 +837,7 @@ consumer side (= lane Claude / Stand / Service):
 | **Q7 dead_letter auto replay** | **manual only** (= `vp msgbox replay <id>`、 auto retry なし) |
 | **Q8 retention** | **archive / dead_letter 両方永久保存** (= GC は移行のみ、 DELETE なし) |
 | **Q9 改善 1 PR 同梱** | **SDG と同 PR で用語 sweep 同梱** (= 本 PR-pre1) |
+| **Q10 LIVE QUERY 採用 + topology** | **採用確定、 当面 single-node 運用** (= 公式 single-node 制限を踏まえても LIVE QUERY を使い続ける意思、 cluster 化は VP-future として別 epic、 Purple Haze F1 verify 後の user 確認 2026-05-13) |
 
 ---
 
@@ -902,6 +922,7 @@ gantt
 |---|---|
 | **ECS actor DNA** (1 actor = 1 msgbox = serial ordered FIFO per consumer) | `mem_1CatjVq5NUsjn1EHjRcaPG` の DNA 確認、 broadcast / mpmc 化は逆 evolutionary |
 | **Whitesnake = primary store** (本 epic で強化) | VP-158 design intent の完全物理化 |
+| **LIVE substrate = SurrealDB embedded single-node 限定** | 公式制限 (= [LIVE SELECT docs](https://surrealdb.com/docs/surrealql/statements/live) 「single-node deployments」 明示、 multi-node は active development 中)。 VP の embedded usage では現状問題なし、 将来 cluster 化 path を採る時は本 epic の前提変化を再評価 (= Purple Haze F1) |
 | **48h default TTL** | VP-158 で確立、 user expectation 安定 |
 | **parse_address / Address enum / v3.1 BNF** | Phase 1 で確立、 alias 共存も validate 済 |
 | **TheWorld registry HTTP API** | Phase 3 で安定、 actor discovery の唯一 source |
