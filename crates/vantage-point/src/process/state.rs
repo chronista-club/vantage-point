@@ -169,7 +169,7 @@ pub(crate) struct AppState {
     /// lifecycle hook が populate する。 設計: `docs/design/16-worker-lane-mailbox-recv.md`
     pub lane_stand_boxes: Arc<RwLock<HashMap<(String, String), Handle>>>,
     /// SurrealDB クライアント（VP-21: 状態管理の DB 統一）
-    pub vpdb: Option<vp_db::SharedVpDb>,
+    pub vpdb: Option<crate::db::SharedVpDb>,
     /// Whitesnake 🐍 — 汎用永続化レイヤー
     pub whitesnake: crate::capability::Whitesnake,
     /// Lane Pool (Lead/Worker registry) — Lane scope の Stand container

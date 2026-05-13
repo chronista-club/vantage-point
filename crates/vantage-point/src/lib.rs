@@ -9,6 +9,8 @@
 pub mod agent;
 pub mod agui;
 pub mod capability;
+// VP-172: 旧 vp-db crate を本 crate に物理 merge (2026-05-14)。 旧 `vp_db::` import は `crate::db::` で参照。
+pub mod db;
 // Phase 4-X (2026-04-27): ccws lib を vp-cli から移動。 server (lanes.rs) から直接 lib call、
 // subprocess 経路を撤去。 vp-cli の bin (ccws + vp ws) は `vantage_point::ccws` を経由する。
 pub mod ccws;

@@ -7,7 +7,7 @@
 use anyhow::Result;
 use clap::Subcommand;
 
-use vp_db as db;
+use crate::db;
 
 /// SurrealDB サブコマンド
 #[derive(Subcommand)]
