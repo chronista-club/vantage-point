@@ -129,7 +129,7 @@ DEFINE TABLE msgs SCHEMAFULL;
 DEFINE FIELD id           ON msgs TYPE string;             -- msg uuid (row id)
 DEFINE FIELD ts           ON msgs TYPE number;             -- timestamp ms (ordering 主軸)
 DEFINE FIELD kind         ON msgs TYPE string;             -- direct/notification/request/response
-DEFINE FIELD payload      ON msgs TYPE object;             -- JSON object
+DEFINE FIELD payload      ON msgs TYPE object FLEXIBLE;    -- JSON object (= FLEXIBLE 必須、 SCHEMAFULL での nested JSON 受入、 VP-170 spike F-B 確定)
 DEFINE FIELD reply_to     ON msgs TYPE option<string>;     -- thread 用
 
 -- routing target (= denormalized for indexed query)
@@ -179,14 +179,20 @@ LIVE SELECT * FROM msgs
   ORDER BY ts ASC, id ASC
   LIMIT 1;
 
--- atomic claim (= concurrent recv で race-free)
-UPDATE msgs
-  SET claim_id=$consumer_id, claimed_at=$now
-  WHERE status='active' AND to_actor=$actor AND to_lane=$lane
-    AND consumed_at IS NULL
-    AND (claim_id IS NULL OR claimed_at + 30000 < $now)
-  ORDER BY ts ASC, id ASC LIMIT 1
-  RETURN AFTER;
+-- atomic claim (= concurrent recv で race-free、 VP-170 spike Q3 で transaction wrap 確定)
+-- 注: SurrealDB v3.0.4 では UPDATE statement に ORDER BY / LIMIT が syntax 不可
+-- Phase 2 PR-1 で path A (transaction wrap、 default) / B (DEFINE FUNCTION) / C (CAS) を最終確定。
+-- 以下は path A example (= spike report doc 20 §4 参照):
+BEGIN;
+LET $candidates = SELECT * FROM msgs
+    WHERE status='active' AND to_actor=$actor AND to_lane=$lane
+      AND consumed_at IS NONE
+      AND (claim_id IS NONE OR claimed_at + 30000 < $now)
+    ORDER BY ts ASC, id ASC LIMIT 1;
+LET $target_id = $candidates[0].id;
+UPDATE $target_id SET claim_id=$consumer_id, claimed_at=$now;
+COMMIT;
+RETURN $target_id;
 
 -- consume 完了
 UPDATE msgs SET consumed_at=$now WHERE id=$id;
@@ -264,6 +270,15 @@ flowchart TB
 
 **用語の定義**: 「fallback」 = LIVE が動いている間に並走する **別 path** (= b 案 / c 案のように LIVE と並列稼働する notification 経路) を指す。 一方、 LIVE が一時的に切断された時の **reconnect + catch-up** は fallback ではなく **reconnect resilience の一部** として扱う (= 詳細 「Reconnect 戦略」 + 「Reconnect 投資項目」 表参照)。 §4.6 fail tolerance の「LIVE/catch-up で resume」 もこの reconnect resilience の意味で使用。
 
+#### VP-170 spike Q2 finding: filter 脱落時の secondary signal
+
+spike Q2 で **UPDATE で WHERE 脱落時 LIVE notification 来ない** ことが判明 (= 詳細 [spike report doc 20 §3](20-spike-report.md))。 SurrealDB v3.0.4 の LIVE は **INSERT のみ notify**、 UPDATE で WHERE 外に出た既存 row は何も通知しない。 結果:
+
+- **正の影響**: consumer が claim → consume → `UPDATE consumed_at=now` した時、 他 consumer の LIVE 誤起動なし (= claim race 確率↓)
+- **負の影響**: observer pattern (= §4.3 Pattern C、 consume せず watch) で「**消費完了**」 イベントを観測する path が消える
+
+→ observer 用 **secondary signal** として、 SP 内 `tokio::sync::broadcast` (= for "msg consumed" event) を §4.3 Pattern C 実装時に追加。 これは LIVE の **補完 path** であり、 fallback ではなく observer の物理化。 sidebar UI / `vp msgbox watch` で active inbox の lifecycle 観測に使う。
+
 ### §4.3 Per-actor consumer model (= mpsc → DB stream + concurrent recv first-class)
 
 #### Handle API (= 完全互換維持)
@@ -298,15 +313,21 @@ VP の future expansion (= parallel worker / job dispatch / fan-out work pool) �
 ##### atomic claim 機構
 
 ```rust
+// VP-170 spike Q3 finding: UPDATE ... ORDER BY ... LIMIT は v3.0.4 で syntax 不可。
+// Phase 2 PR-1 で path A (= transaction wrap、 default) / B (DEFINE FUNCTION) / C (CAS) を確定。
+// 以下は path A example、 race-free verification + bench は Phase 2 で。
 async fn atomic_claim(&self) -> Option<Message> {
     let sql = r#"
-        UPDATE msgs
-          SET claim_id = $consumer_id, claimed_at = $now
-          WHERE status='active' AND to_actor = $actor AND to_lane = $lane
-            AND consumed_at IS NULL
-            AND (claim_id IS NULL OR claimed_at + 30000 < $now)
-          ORDER BY ts ASC LIMIT 1
-          RETURN AFTER
+        BEGIN;
+        LET $candidates = SELECT * FROM msgs
+            WHERE status='active' AND to_actor = $actor AND to_lane = $lane
+              AND consumed_at IS NONE
+              AND (claim_id IS NONE OR claimed_at + 30000 < $now)
+            ORDER BY ts ASC, id ASC LIMIT 1;
+        LET $target_id = $candidates[0].id;
+        UPDATE $target_id SET claim_id = $consumer_id, claimed_at = $now;
+        COMMIT;
+        RETURN $target_id;
     "#;
     self.whitesnake.db.query(sql)
         .bind(("consumer_id", &self.consumer_id))
@@ -555,7 +576,9 @@ POST /api/msgbox/consume-ack
 Body: { msg_id: string, consumed_at: number }
 ```
 
-受信側 consumer が `UPDATE consumed_at` した直後、 receiver SP が sender SP にこの POST を送る。 sender SP は自 DB の sender row を `UPDATE consumed_at` + LIVE で観測者 (sidebar 等) に notify。 → VP-164 Phase 2 (`consumed_at` 経路) が **このレベルで自然完結**。
+受信側 consumer が `UPDATE consumed_at` した直後、 receiver SP が sender SP にこの POST を送る。 sender SP は自 DB の sender row を `UPDATE consumed_at` + 同 SP 内 broadcast (= §4.2 Q2 finding 用 secondary signal) で観測者 (sidebar 等) に notify。 → VP-164 Phase 2 (`consumed_at` 経路) が **このレベルで自然完結**。
+
+**重要 (= VP-170 spike Q2 finding)**: LIVE 経由の自然伝播は **不可** (= UPDATE で WHERE 脱落時 LIVE event なし)。 cross-process consume 完了の通知は **HTTP POST が唯一の経路**、 ack-back retry queue の resilience が **強制 essential**。 LIVE のみに依存した cross-SP notification 設計は v3.0.4 では成立しない (= 既存設計と整合、 設計矛盾なし)。
 
 ##### 3. fail tolerance
 
@@ -804,11 +827,11 @@ consumer side (= lane Claude / Stand / Service):
 
 #### コア破綻 break point (= 不可なら epic 撤回)
 
-| Q | 期待動作 | 不可なら |
-|---|---|---|
-| **Q1** | SurrealDB v3.0.4 embedded で `LIVE SELECT` が working、 **`$bind` 込み** で WHERE 内 param 解決 (= v3.0+ 公式 fix 済の実機確認) | epic 撤回、 別 substrate (SQLite + LISTEN/NOTIFY 等) |
-| **Q2** | LIVE filter 脱落 (= UPDATE で WHERE 外れる) の event semantics: DELETE / UPDATE / no event のどれか実機確認 (= Purple Haze F3 known unknown) | DELETE 来る → plan のまま / UPDATE 来る → consumer 側 claim 試行で判別 / no event → polling fallback 復活 (= 「fallback なし」 哲学を spike 結果で reweight) |
-| **Q3** | atomic claim (`UPDATE ... LIMIT 1 RETURN AFTER`) が race-free、 100 並行 task で同 row 取り合い test (= Purple Haze F4 MVCC write skew 検証) | BEGIN/COMMIT transaction wrap を obligatory に、 latency budget 再計算 |
+| Q | 期待動作 | 不可なら | spike 結果 |
+|---|---|---|---|
+| **Q1** | SurrealDB v3.0.4 embedded で `LIVE SELECT` が working、 **`$bind` 込み** で WHERE 内 param 解決 (= v3.0+ 公式 fix 済の実機確認) | epic 撤回、 別 substrate (SQLite + LISTEN/NOTIFY 等) | **✅ PASSED** ([VP-170 doc 20 §2](20-spike-report.md)) |
+| **Q2** | LIVE filter 脱落 (= UPDATE で WHERE 外れる) の event semantics: DELETE / UPDATE / no event のどれか実機確認 (= Purple Haze F3 known unknown) | DELETE 来る → plan のまま / UPDATE 来る → consumer 側 claim 試行で判別 / no event → polling fallback 復活 (= 「fallback なし」 哲学を spike 結果で reweight) | **⚠️ no event** (= §4.2 secondary signal 追加、 §4.6 ack-back HTTP path 強制、 [doc 20 §3](20-spike-report.md)) |
+| **Q3** | atomic claim (`UPDATE ... LIMIT 1 RETURN AFTER`) が race-free、 100 並行 task で同 row 取り合い test (= Purple Haze F4 MVCC write skew 検証) | BEGIN/COMMIT transaction wrap を obligatory に、 latency budget 再計算 | **❌ syntax 不可** (= UPDATE ORDER BY LIMIT が v3.0.4 で不可、 transaction wrap pattern (path A) に SDG §4.1 主 query 修正済、 [doc 20 §4](20-spike-report.md)) |
 
 #### 性能 / index break point (= 値次第で設計微調整)
 
