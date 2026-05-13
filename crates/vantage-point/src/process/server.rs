@@ -168,9 +168,9 @@ pub async fn run(
     // single-writer の前提下で World (= この Process) がオープン中は他 Process は
     // 同じ DB を開けないため、SP 独立起動時はエラー時に DB なし継続する fallback は
     // 残しておく (dogfooding / 将来の "vp start -p N" 併用で有用)。
-    let vpdb: Option<vp_db::SharedVpDb> = {
-        let data_dir = vp_db::db_data_dir();
-        match vp_db::VpDb::connect_embedded(&data_dir).await {
+    let vpdb: Option<crate::db::SharedVpDb> = {
+        let data_dir = crate::db::db_data_dir();
+        match crate::db::VpDb::connect_embedded(&data_dir).await {
             Ok(db) => {
                 if let Err(e) = db.define_schema().await {
                     tracing::warn!("SP: SurrealDB スキーマ定義失敗（DB なしで継続）: {}", e);
@@ -750,9 +750,9 @@ pub async fn run_world(
 
     // SurrealDB (embedded) に接続してスキーマ定義
     // surrealkv backend で in-process DB を開く。外部 `surreal` バイナリ不要。
-    let vpdb: Option<vp_db::SharedVpDb> = {
-        let data_dir = vp_db::db_data_dir();
-        match vp_db::VpDb::connect_embedded(&data_dir).await {
+    let vpdb: Option<crate::db::SharedVpDb> = {
+        let data_dir = crate::db::db_data_dir();
+        match crate::db::VpDb::connect_embedded(&data_dir).await {
             Ok(db) => {
                 if let Err(e) = db.define_schema().await {
                     tracing::warn!("SurrealDB スキーマ定義失敗: {}", e);
@@ -1081,9 +1081,9 @@ pub async fn run_world(
                                         .unwrap_or("unknown");
 
                                     let event = match action {
-                                        vp_db::Action::Create => "started",
-                                        vp_db::Action::Update => "updated",
-                                        vp_db::Action::Delete => "stopped",
+                                        crate::db::Action::Create => "started",
+                                        crate::db::Action::Update => "updated",
+                                        crate::db::Action::Delete => "stopped",
                                         _ => "changed",
                                     };
 

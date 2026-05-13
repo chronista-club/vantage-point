@@ -9292,6 +9292,7 @@ dependencies = [
  "serde",
  "serde_json",
  "socket2",
+ "surrealdb",
  "tao",
  "tempfile",
  "thiserror 2.0.18",
@@ -9311,7 +9312,6 @@ dependencies = [
  "unison-kdl 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "urlencoding",
  "uuid",
- "vp-db",
  "vte",
  "windows 0.62.2",
 ]
@@ -9384,22 +9384,6 @@ dependencies = [
  "tokio",
  "tracing",
  "vantage-point",
-]
-
-[[package]]
-name = "vp-db"
-version = "0.17.0"
-dependencies = [
- "anyhow",
- "chrono",
- "dirs",
- "futures",
- "serde",
- "serde_json",
- "surrealdb",
- "tempfile",
- "tokio",
- "tracing",
 ]
 
 [[package]]
