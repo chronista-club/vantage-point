@@ -1,8 +1,8 @@
-# 17. Port 安定化 + Mailbox の project 跨ぎ汚染遮断
+# 17. Port 安定化 + Msgbox の project 跨ぎ汚染遮断
 
 > **対象 Issue**: [VP-165](https://linear.app/chronista/issue/VP-165) — ポート割当が project リスト変更で不安定 + Whitesnake が port-keyed → 永続 msg がプロジェクト跨ぎで継承される / from 汚染
-> **親 Epic**: [VP-156](https://linear.app/chronista/issue/VP-156) — Mailbox routing 統一 + 永続化 first-class
-> **関連設計**: [14-mailbox-address-v3.md](14-mailbox-address-v3.md)（`normalize_from` / address syntax）/ [16-worker-lane-mailbox-recv.md](16-worker-lane-mailbox-recv.md)（決定E の `from` 修正と射程が重なる）/ [15-auto-spawn-triggers.md](15-auto-spawn-triggers.md)（SP spawn 経路 / VP-155）/ [01-architecture.md](01-architecture.md)（Reconciliation / port scheme）
+> **親 Epic**: [VP-156](https://linear.app/chronista/issue/VP-156) — Msgbox routing 統一 + 永続化 first-class
+> **関連設計**: [14-msgbox-address-v3.md](14-msgbox-address-v3.md)（`normalize_from` / address syntax）/ [16-worker-lane-msgbox-recv.md](16-worker-lane-msgbox-recv.md)（決定E の `from` 修正と射程が重なる）/ [15-auto-spawn-triggers.md](15-auto-spawn-triggers.md)（SP spawn 経路 / VP-155）/ [01-architecture.md](01-architecture.md)（Reconciliation / port scheme）
 > **Status**: ✅ **Implemented**（2026-05-12、PR-1〜PR-5b/PR-6 全 land。詳細は §Implementation 参照）。残り任意 follow-up は §残り 参照。`port_layout` 階層型 / TheWorld-as-reverse-proxy は本設計のスコープ外＝別 arc
 
 ## Abstract
@@ -75,7 +75,7 @@ ccws worker dir（`~/.local/share/ccws/<parent>-<name>`）は登録 project の 
 `file_backed_for_port(port)` → `file_backed_for_project(slug)` = `discs/p_{slug}/`（`p_` prefix で旧 numeric dir と区別）。key は project の slug（`ProjectConfig.name` を `[a-zA-Z0-9_-]` 以外を `_` に置換、空/重複時は path hash fallback）。全 namespace（`msgbox` / sessions / 他）を `discs/p_{slug}/` 配下に。`world_whitesnake`（`server.rs:794`）は `discs/world/` 固定（port 32000 由来をやめる）。
 
 - 「1 project 同時 1 SP」前提: reshuffle/auto-reassign で transient に同 project の SP が 2 つ走る病的状態でも両者が `discs/p_{slug}/` を共有（port-keyed だと別 dir で逆に状態が分裂する）。同 project 2 SP 防止は既存 guard（`is_sp_for_project_responding`）に委ねる。
-- Migration: 旧 `discs/{port}/` dir は孤児化。data はほぼ mailbox msg（TTL 48h）+ session 状態なので、移行初回に session 履歴が一瞬空に見える程度で実害軽微。best-effort で「起動時に旧 `discs/{自分の今の port}/` が存在し新 dir が空なら mv」する一回きり migration は任意（PR で判断）。
+- Migration: 旧 `discs/{port}/` dir は孤児化。data はほぼ msgbox msg（TTL 48h）+ session 状態なので、移行初回に session 履歴が一瞬空に見える程度で実害軽微。best-effort で「起動時に旧 `discs/{自分の今の port}/` が存在し新 dir が空なら mv」する一回きり migration は任意（PR で判断）。
 
 ### 決定C: TheWorld が port allocation の唯一の authority になる
 
@@ -156,7 +156,7 @@ PR-5b/PR-6 (#347) で doc 17 §決定 (A)(B)(C)(D) は全 land。残るのは「
 
 (C) で「TheWorld が port allocation の唯一の authority」になるのは、より大きい arc の **step 1**:
 
-- **step 2（別 arc / 別 doc）**: クロスマシン通信を **`peer:32000` 経由**にする。今は mDNS が各 SP を advertise（`sp-X-host`）し、remote が target SP の port を解決して直結（= (ε) のクロスマシン版 + LAN に N port 露出 + mDNS が N record/machine → A record collision 苦闘の源、VP-154 PR-3.6）。代わりに mDNS は `_vp-world._tcp` を **1 machine 1 record** → remote は `host:32000` に投げる → 相手の TheWorld が `running_processes` map で target SP を引いて localhost forward。**HTTP all the way**（既存の mailbox `http_forward` chain にリンクが 1 本＝相手の TheWorld が増えるだけ。QUIC を WAN に出さない / QUIC relay 不要）。効果: firewall 1 port/machine / mDNS record 1/machine（collision 激減）/ auth 境界 1 箇所 / **remote が SP port を一切 cache しない → (ε) が消滅** / VP-154 federation epic と `lan.rs` の `AddressBook` を*痩せさせる*（`host → project → sp_port` の 3 段 map が `host → 到達可能か` だけに）。
+- **step 2（別 arc / 別 doc）**: クロスマシン通信を **`peer:32000` 経由**にする。今は mDNS が各 SP を advertise（`sp-X-host`）し、remote が target SP の port を解決して直結（= (ε) のクロスマシン版 + LAN に N port 露出 + mDNS が N record/machine → A record collision 苦闘の源、VP-154 PR-3.6）。代わりに mDNS は `_vp-world._tcp` を **1 machine 1 record** → remote は `host:32000` に投げる → 相手の TheWorld が `running_processes` map で target SP を引いて localhost forward。**HTTP all the way**（既存の msgbox `http_forward` chain にリンクが 1 本＝相手の TheWorld が増えるだけ。QUIC を WAN に出さない / QUIC relay 不要）。効果: firewall 1 port/machine / mDNS record 1/machine（collision 激減）/ auth 境界 1 箇所 / **remote が SP port を一切 cache しない → (ε) が消滅** / VP-154 federation epic と `lan.rs` の `AddressBook` を*痩せさせる*（`host → project → sp_port` の 3 段 map が `host → 到達可能か` だけに）。
 - **step 3（さらに長期 / VP-102 Thin View 領域）**: TheWorld を *全 traffic* の reverse proxy に（`32000/p/<name>/...` で SP に proxy、SP は ephemeral / unix socket）。port 問題が*消滅*し bookmark/Canvas URL も完全安定。だが TheWorld が全 traffic SPOF / QUIC・WS proxy のコスト。本設計の (C)（TheWorld が port table を持つ）はこの未来の**前提条件**でもある（reverse proxy にするなら「TheWorld が path→port を管理」が要る。ephemeral port にするのも「`-p :0` で spawn → SP が QUIC self-register で port 報告 → table 更新」に切り替え、slot 永続をやめれば table が vestigial になり削除も簡単）。
 
 → step 2 の設計（β: `peer:32000` 経由、`/api/world/msgbox/forward` の API、auth/policy、VP-154 との合流、`AddressBook` の縮退）は creo の design-spark memory に切る（後で VP-154 epic 配下の issue に昇格できる種）。**本 doc には詰め込まない**（VP-165 がブロートしないように）。
@@ -169,7 +169,7 @@ PR-5b/PR-6 (#347) で doc 17 §決定 (A)(B)(C)(D) は全 land。残るのは「
 | port スキーム | **flat stable slot**（`port = PORT_RANGE_START + slot`、slot は config 永続）。階層型 `PortLayout` は触らない | `vp ps`/discovery/`is_port_available` の flat-range 前提を壊さず最小で reshuffle を止められる。既存 `ensure_slot`/`next_free_slot` をそのまま再利用（新規コード最小）。階層型（lane/role サブ port）は別 goal・別 epic |
 | slot は「絶対」か「希望」か | **希望**: config 編集では動かないが、外部プロセスが port を握ってたら*その 1 project だけ 1 回きり*別 slot に退避 + 永続化 | 「予測可能性」と「現実の port 衝突への耐性」の両立。今の問題は cascading shift であって「たまに 1 回動く」ではない。territory 内自己衝突は構造上起きない（slot が一意）ので、起きるのは「入口 port を外部が握る」時だけ |
 | 外部衝突時にサイレント別 port フォールバックするか | **しない**。auto-reassign（次の空き slot、永続）か、それも無理ならエラー | 無関係 port への fallback が「SP が想定外 port に行く → bookmark/Canvas URL/`from`/discovery cache 全部ズレる」元凶の一つ |
-| Whitesnake の key | **project slug**（`discs/p_{slug}/`、全 namespace）。`world_whitesnake` は `discs/world/` | port は reshuffle で動く不安定 ID。本当の不変条件は「1 project 1 SP」。slug は人間が読めて debug しやすい（path hash より良い、空/重複時のみ hash fallback）。mailbox だけ分けるより一貫。ただし (D) があれば漏れの実害は止まるので (B) は構造整理の位置付け |
+| Whitesnake の key | **project slug**（`discs/p_{slug}/`、全 namespace）。`world_whitesnake` は `discs/world/` | port は reshuffle で動く不安定 ID。本当の不変条件は「1 project 1 SP」。slug は人間が読めて debug しやすい（path hash より良い、空/重複時のみ hash fallback）。msgbox だけ分けるより一貫。ただし (D) があれば漏れの実害は止まるので (B) は構造整理の位置付け |
 | restore_pending の guard | **project 境界 guard**（自 project 宛/発 or bare のみ復元、それ以外 skip + warn） | migration 残骸/手動編集/(B) の漏れの安全弁。VP-164 の一部にも効く |
 | worker MCP の SP port 解決 | **parent project → discovery 再解決を `VP_PROCESS_PORT` env より優先**。env は project_dir 照合付き fast path | worker は cwd から「誰の worker か」を確実に知れる。discovery が reconciliation の真実源。env snapshot は stale-prone |
 | クロスマシン通信 | **将来は `peer:32000`（相手の TheWorld）経由**（β）。本 doc では決定 C の step 1 のみ実装、step 2 は design-spark に切る | firewall 1 port / mDNS 1 record / auth 1 箇所 / (ε) 消滅 / HTTP all the way（新サブシステムじゃなく forward chain にリンク 1 本）/ local の「TheWorld が machine を持つ」決定の自然な延長 |
@@ -182,7 +182,7 @@ PR-5b/PR-6 (#347) で doc 17 §決定 (A)(B)(C)(D) は全 land。残るのは「
 - **SP は ephemeral port + Push-only discovery**: (C) が完全消滅するが Pull fallback（range scan の自律復帰）が死ぬ → resilience の belt-and-suspenders を失う。slot-table ~30 行を消す代わりに redirect endpoint + 弱った Pull で net deletion か微妙。step 3（reverse proxy）の一部としてなら検討余地。
 - **TheWorld を全 traffic の reverse proxy（即座に）**: port 問題は消えるが TheWorld 全 traffic SPOF / QUIC・WS proxy コスト / VP-102 Thin View 領域の別 epic。本設計の (C) はその前提条件として先に入れる。
 - **外部衝突時にサイレント別 port フォールバック（現状維持）**: SP が想定外 port に → 汚染・reshuffle の二次原因。→ auto-reassign（永続）かエラー。
-- **mailbox namespace だけ project-keyed（他は port-keyed）**: 中途半端（session 状態等も分裂）。→ 全面。
+- **msgbox namespace だけ project-keyed（他は port-keyed）**: 中途半端（session 状態等も分裂）。→ 全面。
 - **`VP_PROCESS_PORT` 完全廃止**: discovery 一時障害時の fast path を失う。→ project_dir 照合付きヒントに格下げ。
 - **(D) で異 project DISC 即物理削除**: 攻めすぎ（migration 中の誤判定で消す risk）。→ まず skip + warn。
 
@@ -212,11 +212,11 @@ PR-5b/PR-6 (#347) で doc 17 §決定 (A)(B)(C)(D) は全 land。残るのは「
 - **`VP_PROCESS_PORT` env の意味が変わる**（mandatory な真実 → project_dir 照合付き fast path ヒント）。tmux への注入は残す。
 - **`vp ps` の実装が変わる**（PR-6: port range scan → TheWorld query。TheWorld 未起動なら空を返す — 既に discovery モジュールがその挙動）。
 - **外部プログラムが VP の port range を握ってた場合の挙動が変わる**（サイレント別 port → auto-reassign + 永続 or エラー）。これは改善。
-- 関連 issue: VP-164（restart 重複再配信 — (D) guard が部分的に効くが ack-back は別）/ VP-166 doc 16 決定E（worker の `from` — (A) と重なる、どちらの PR が担うか impl 時調整）/ VP-147（per-lane mailbox、`from` 汚染の一因として言及）/ VP-156 epic / VP-155（SP auto-spawn trigger 集約 — (C) の port allocation はその `start_process`/`SpSupervisor` の領域、直交かつ前方互換）/ VP-154/161（federation — (ε) と §将来拡張 step 2）。
+- 関連 issue: VP-164（restart 重複再配信 — (D) guard が部分的に効くが ack-back は別）/ VP-166 doc 16 決定E（worker の `from` — (A) と重なる、どちらの PR が担うか impl 時調整）/ VP-147（per-lane msgbox、`from` 汚染の一因として言及）/ VP-156 epic / VP-155（SP auto-spawn trigger 集約 — (C) の port allocation はその `start_process`/`SpSupervisor` の領域、直交かつ前方互換）/ VP-154/161（federation — (ε) と §将来拡張 step 2）。
 
 ## 関連
 
 - Linear: [VP-165](https://linear.app/chronista/issue/VP-165)（本設計の対象）/ [VP-156](https://linear.app/chronista/issue/VP-156) epic / [VP-164](https://linear.app/chronista/issue/VP-164) / [VP-163](https://linear.app/chronista/issue/VP-163)（発見元）/ [VP-147](https://linear.app/chronista/issue/VP-147) / [VP-155](https://linear.app/chronista/issue/VP-155)（SP spawn 経路）
-- 設計: [14-mailbox-address-v3.md](14-mailbox-address-v3.md)（`normalize_from` / address）/ [16-worker-lane-mailbox-recv.md](16-worker-lane-mailbox-recv.md)（決定E の `from`）/ [15-auto-spawn-triggers.md](15-auto-spawn-triggers.md)（SP spawn）/ [01-architecture.md](01-architecture.md)（Reconciliation / port scheme）
+- 設計: [14-msgbox-address-v3.md](14-msgbox-address-v3.md)（`normalize_from` / address）/ [16-worker-lane-msgbox-recv.md](16-worker-lane-msgbox-recv.md)（決定E の `from`）/ [15-auto-spawn-triggers.md](15-auto-spawn-triggers.md)（SP spawn）/ [01-architecture.md](01-architecture.md)（Reconciliation / port scheme）
 - creo-memories: `mem_1Caw21f5K1Ha19DFDr5Evp`（本 SDG の記録、redesign 版で supersede）/ `mem_1CaKCbNE24KTQDuf9x4Eim`（VP Port Management Phase 1 — 階層型 PortLayout、本設計スコープ外だが slot インフラの出自）/ VP-163 milestone `mem_1Cavm9QRE3uNSDnP5XWYBL`（(A)(B) の発見記録）/ §将来拡張 step 2 の design-spark（クロスマシン front-door、本 doc 改訂と同時に作成）
 - code: `crates/vantage-point/src/capability/whitesnake.rs`（`file_backed_for_port` → `file_backed_for_project`）/ `crates/vantage-point/src/capability/msgbox.rs`（`restore_pending`:873 / `routing_loop`）/ `crates/vantage-point/src/capability/msgbox_remote.rs`（`normalize_from`:521 / `RemoteRoutingClient.local_project` / `is_local`）/ `crates/vantage-point/src/process/server.rs`（`:41` `:74` `:794` Whitesnake/RemoteRoutingClient 注入）/ `crates/vantage-point/src/capability/process_manager_capability.rs`（`start_process`:650 / `wait_for_process_port`:1056 / `find_running_sp_at_path`）/ `crates/vantage-point/src/commands/sp.rs`（`resolve_port`:258）/ `crates/vantage-point/src/resolve.rs`（`port_for_configured`:207 / `find_available_port`）/ `crates/vantage-point/src/config.rs`（`ProjectConfig.slot`:159 / `ProjectConfig.port` / `ensure_slot` / `next_free_slot` / `find_project_index`:236）/ `crates/vantage-point/src/port_layout.rs`（階層型 — 触らない、参照のみ）/ `crates/vantage-point/src/mcp.rs`（`resolve_process_port`:2924 / `resolve_parent_project` / `self_register_if_worker`）/ `crates/vantage-point/src/discovery.rs`（`find_by_project` / `list`）/ `crates/vantage-point/src/process/routes/world.rs`（`/api/world/start_process` / 新 `/api/world/port_for`）/ `crates/vantage-point/src/cli.rs`（`scan_instances`:171 / `PORT_RANGE_*`）/ `crates/vantage-point/src/commands/start.rs`（legacy `execute` 経路削除 / `ensure_sp_running`/`spawn_sp_detached` は残す）/ `crates/vantage-point/src/commands/lan.rs`（`AddressBook.record_sp_port` — (ε) §将来拡張）

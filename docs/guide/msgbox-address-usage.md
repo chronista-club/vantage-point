@@ -1,8 +1,8 @@
-# Guide: Mailbox address v3.1 — Usage
+# Guide: Msgbox address v3.1 — Usage
 
 > **Status**: Draft (VP-144 Epic、 Phase 0 SDG)
-> **Spec**: [docs/spec/mailbox-address-v3.md](../spec/mailbox-address-v3.md) (Why + What)
-> **Design**: [docs/design/14-mailbox-address-v3.md](../design/14-mailbox-address-v3.md) (How)
+> **Spec**: [docs/spec/msgbox-address-v3.md](../spec/msgbox-address-v3.md) (Why + What)
+> **Design**: [docs/design/14-msgbox-address-v3.md](../design/14-msgbox-address-v3.md) (How)
 
 本 doc は v3.1 address の **使い方** を集約する。 構文の正確な定義は spec、 実装側決定は design を参照。 ここでは **dogfood で打って動く form** を中心に置く。
 
@@ -36,7 +36,7 @@ actor                            project           lane (multi-segment 可)
 # 同 machine、 vantage-point の lead lane に送信 (default actor = agent)
 vp msg send vantage-point/lead "hello"
 
-# 同 machine、 vantage-point の lead lane の agent inbox を watch
+# 同 machine、 vantage-point の lead lane の agent msgbox を watch
 vp msg watch vantage-point/lead
 
 # actor 明示 (= notification address)
@@ -238,7 +238,7 @@ Error: actor 'mcp' not registered for cross-process delivery on world 'creo-memo
 
 ### gap 2 fix: MCP recv で他 actor 観察 (Phase 2 以降)
 
-**before (v1)**: MCP `msg_recv` は self process の `mcp` actor inbox 限定、 他 actor (`agent` / `notify` 等) は recv 不可。
+**before (v1)**: MCP `msg_recv` は self process の `mcp` actor msgbox 限定、 他 actor (`agent` / `notify` 等) は recv 不可。
 
 **after (v3.1)**: `msg_recv` に `actor` param 追加。
 
@@ -246,7 +246,7 @@ Error: actor 'mcp' not registered for cross-process delivery on world 'creo-memo
 # default は agent (= 旧 v1 の `mcp` から変更、 inter-agent comm が default)
 vp msg recv
 
-# notify actor inbox を観察
+# notify actor msgbox を観察
 vp msg recv --actor notify
 
 # 任意 actor
@@ -255,7 +255,7 @@ vp msg recv --actor protocol
 
 ### gap 3 fix: 2 namespace 統合 (Phase 1 以降)
 
-**before (v1)**: `vantage-point/lead` (sidebar lane label) を mailbox address と誤認 → `actor name contains invalid character` parse error。
+**before (v1)**: `vantage-point/lead` (sidebar lane label) を msgbox address と誤認 → `actor name contains invalid character` parse error。
 
 **after (v3.1)**: `vantage-point/lead` を valid address として解釈 (= `agent@vantage-point/lead` shorthand)。 sidebar label と address が **同 syntax**。
 
@@ -402,7 +402,7 @@ A. **見えない** (Phase 4+)。 payload は receiver pubkey で NaCl `crypto_b
 
 ## 関連
 
-- **Spec**: [docs/spec/mailbox-address-v3.md](../spec/mailbox-address-v3.md)
-- **Design**: [docs/design/14-mailbox-address-v3.md](../design/14-mailbox-address-v3.md)
+- **Spec**: [docs/spec/msgbox-address-v3.md](../spec/msgbox-address-v3.md)
+- **Design**: [docs/design/14-msgbox-address-v3.md](../design/14-msgbox-address-v3.md)
 - **Linear Epic**: [VP-144](https://linear.app/chronista/issue/VP-144)
 - **Phase sub-issues**: [VP-145](https://linear.app/chronista/issue/VP-145) [VP-146](https://linear.app/chronista/issue/VP-146) [VP-147](https://linear.app/chronista/issue/VP-147) [VP-148](https://linear.app/chronista/issue/VP-148)
