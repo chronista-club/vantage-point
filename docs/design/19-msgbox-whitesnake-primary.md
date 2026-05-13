@@ -835,12 +835,12 @@ consumer side (= lane Claude / Stand / Service):
 
 #### 性能 / index break point (= 値次第で設計微調整)
 
-| Q | 期待動作 | 不可なら |
-|---|---|---|
-| **Q4** | 100 msg/sec で latency < 50ms 達成 (= cargo bench + criterion で実機 number) | performance tuning (= index 拡充、 batch insert、 GC interval 調整) |
-| **Q5** | 3 concurrent query (producer + consumer + GC) の lock contention | GC を nightly に shift |
-| **Q6** | `recv_idx (status, to_actor, to_lane, consumed_at)` で **active filter** が大量 archived row scan に堕ちないか (= partial index 機能の有無 / 性能、 Purple Haze F6) | partial index 不可なら archived を separate table に分離検討、 もしくは Phase 5 で `msgs_archive` table に move 復活 |
-| **Q7** | LIVE stream embedded の **切断 trigger** (= shutdown 以外で `None` が返る条件) と reconnect 挙動 (= Purple Haze F11) | embedded 特化 reconnect 戦略再設計 (= polling fallback の最小限導入余地) |
+| Q | 期待動作 | 不可なら | spike 結果 |
+|---|---|---|---|
+| **Q4** | 100 msg/sec で latency < 50ms 達成 (= cargo bench + criterion で実機 number) | performance tuning (= index 拡充、 batch insert、 GC interval 調整) | **✅ PASSED** (avg 3.2ms / p99 5ms = target を 10x クリア、 [doc 20 §5](20-spike-report.md)) |
+| **Q5** | 3 concurrent query (producer + consumer + GC) の lock contention | GC を nightly に shift | **✅ PASSED** (producer/consumer/gc 各 50 件 err=0、 [doc 20 §5](20-spike-report.md)) |
+| **Q6** | `recv_idx (status, to_actor, to_lane, consumed_at)` で **active filter** が大量 archived row scan に堕ちないか (= partial index 機能の有無 / 性能、 Purple Haze F6) | partial index 不可なら archived を separate table に分離検討、 もしくは Phase 5 で `msgs_archive` table に move 復活 | **✅ PASSED** (1000 archived + 1 active で latency 5ms、 partial index 不要、 [doc 20 §5](20-spike-report.md)) |
+| **Q7** | LIVE stream embedded の **切断 trigger** (= shutdown 以外で `None` が返る条件) と reconnect 挙動 (= Purple Haze F11) | embedded 特化 reconnect 戦略再設計 (= polling fallback の最小限導入余地) | **✅ PASSED** (stream drop + reopen normal operation、 remote LAN drop は Phase 2 integration test、 [doc 20 §5](20-spike-report.md)) |
 
 #### 設計 robustness 補強 (= spike で SDG 追記材料)
 

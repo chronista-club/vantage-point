@@ -232,16 +232,63 @@ race-free だが retry loop 必要。 latency 増。
 
 ---
 
-## §5 Q4-Q7 carry-over (= Phase 2 移行判断後に追加検証)
+## §5 Q4-Q7 結果 (= 同 session で追加検証、 全 ✅ PASSED)
 
-| Q | 内容 | carry-over 理由 |
-|---|---|---|
-| **Q4** | 100 msg/sec で latency < 50ms | Q3 syntax fix 後でないと bench 設計が dependent |
-| **Q5** | 3 concurrent query (producer + consumer + GC) lock contention | Q3 path A/B/C 確定後の benchmark |
-| **Q6** | recv_idx で active filter が大量 archived row scan に堕ちないか | partial index 機能調査 + 1000 row 蓄積 bench |
-| **Q7** | LIVE stream embedded の切断 trigger と reconnect | shutdown 経路 + reconnect resilience integration test |
+### Q4: 100 msg/sec で end-to-end latency ✅ PASSED
 
-これらは Q3 path 確定後の Phase 2 開発中に実機 dogfood で観測する方が efficient。 spike PR で扱うより Phase 2 PR-1 / PR-2 の context で行う。
+100 msg を 10ms 間隔で insert、 LIVE stream で受信、 send_ts → recv_ts の latency を実機計測:
+
+```
+count=100 avg=3.2ms p50=3ms p99=5ms max=5ms
+```
+
+target < 50ms を **10 倍以上** クリア。 SurrealDB embedded LIVE Query は想定を大幅に上回る低 latency。
+
+### Q5: 3 concurrent (producer + consumer + GC) ✅ PASSED
+
+2 sec 並列実行:
+
+```
+producer=50 consumer=50 (err=0) gc=50 (err=0)
+```
+
+3 concurrent task で **error なし、 deadlock なし、 lock contention 影響なし**。
+
+### Q6: 1000 archived row 下の active LIVE latency ✅ PASSED
+
+1000 archived row を pre-load 後に 1 active row insert:
+
+```
+1000 archived + 1 active LIVE latency = 5ms
+```
+
+archived bloat に影響されず、 active filter LIVE は high speed 維持。 **partial index 機能なくても問題なし** (= SurrealDB の B-tree index が status 列 leading で正しく pruning している)。
+
+### Q7: LIVE stream drop + reopen ✅ PASSED
+
+stream を意図的に drop して reopen、 新 INSERT の notification を catch できるか:
+
+```
+Round 1: stream open + notification OK
+Round 2: reconnect (drop + reopen) で新 notification OK
+```
+
+embedded での「切断」 = stream drop と等価、 reopen で normal operation。
+
+**Note**: embedded には明示的 None / Err 経路がなく、 stream drop = 終了。 remote SurrealDB との connection loss は **Phase 2 で別 integration test 要** (= mock or real network drop scenario)。
+
+### Q4-Q7 総評
+
+全 ✅ PASSED + 性能が想定以上。 SDG §4.2 「LIVE Query primary、 fallback なし、 reconnect resilience に投資」 path の **実機 validation 完了**。
+
+| Q | target | actual | margin |
+|---|---|---|---|
+| Q4 latency | < 50ms | avg 3.2ms / p99 5ms | **10x 余裕** |
+| Q5 concurrent error | < 5% | 0% | **完全** |
+| Q6 archived bloat | < 100ms | 5ms | **20x 余裕** |
+| Q7 reconnect | works | works | **OK** |
+
+これで spike PR scope (Q1-Q7) は **完了**、 Phase 2 着手 GO に追加証拠。
 
 ---
 
