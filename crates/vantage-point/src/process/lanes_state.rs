@@ -315,6 +315,11 @@ pub struct LanePool {
     /// `Mutex` wrap は PtySlot が Send-only (内部 Box<dyn Write+Send> 等) で Sync でないため、
     /// AppState が `Arc<RwLock<LanePool>>` で thread-shared に必要
     pty_slots: HashMap<LaneAddress, std::sync::Mutex<crate::daemon::pty_slot::PtySlot>>,
+    /// Stage 1 (ADR-0001): 各 Lane の Rust 側 alacritty Term<T> attach。
+    /// pty_slots と lifecycle 同期: with_lead で spawn、 remove で drop abort。
+    /// task は spawn_blocking で 1 Lane = 1 task、 broadcast::Receiver を消費。
+    /// MVP: Lead Lane のみ attach。 Worker spawn 経路 (insert_pty_slot) は別 PR で配線予定。
+    term_attaches: HashMap<LaneAddress, crate::terminal::term_attach::TermAttach>,
 }
 
 impl std::fmt::Debug for LanePool {
@@ -357,7 +362,7 @@ impl LanePool {
         // Phase 5-D: spawn_with_fallback で `claude --continue` 早期 exit 時に空 args で retry。
         // PR-D: cwd は cmd.cwd (install root) に集約、 引数からは削除。
         let (state, pid) = match crate::process::stand_spawner::spawn_with_fallback(&cmd, 80, 24) {
-            Ok((slot, _rx)) => {
+            Ok((slot, term_rx)) => {
                 let pid = slot.pid();
                 tracing::info!(
                     "Lane spawned: addr={} stand={} program={} args={:?} pid={}",
@@ -367,8 +372,9 @@ impl LanePool {
                     cmd.args,
                     pid
                 );
-                pool.pty_slots
-                    .insert(addr.clone(), std::sync::Mutex::new(slot));
+                // Stage 1 (ADR-0001): PtySlot insert と TermAttach spawn を 1 関数に集約。
+                // term_rx は initial_rx (= reader_task start 前に取得) なので race フリー。
+                pool.insert_pty_slot(addr.clone(), slot, term_rx);
                 (LaneState::Running, Some(pid))
             }
             Err(e) => {
@@ -446,14 +452,30 @@ impl LanePool {
         self.lanes.insert(info.address.clone(), info);
     }
 
-    /// Phase 3-A: 既に spawn 済の PtySlot を Lane address 紐付けで insert (Worker create で使う)
-    pub fn insert_pty_slot(&mut self, addr: LaneAddress, slot: crate::daemon::pty_slot::PtySlot) {
-        self.pty_slots.insert(addr, std::sync::Mutex::new(slot));
+    /// Phase 3-A: 既に spawn 済の PtySlot を Lane address 紐付けで insert (Worker create で使う)。
+    ///
+    /// Stage 1 (ADR-0001): TermAttach も同期 spawn する。 `term_rx` は spawn_with_fallback の
+    /// 戻り値 (= broadcast::channel 作成と同時の initial_rx)、 reader_task が start する前に
+    /// subscribe 済 = race フリー。 既存 entry があれば HashMap::insert で replace、
+    /// 旧 TermAttach は Drop で handle.abort() (= restart 経路の再 attach に対応)。
+    pub fn insert_pty_slot(
+        &mut self,
+        addr: LaneAddress,
+        slot: crate::daemon::pty_slot::PtySlot,
+        term_rx: tokio::sync::broadcast::Receiver<Vec<u8>>,
+    ) {
+        self.pty_slots
+            .insert(addr.clone(), std::sync::Mutex::new(slot));
+        let term_attach = crate::terminal::term_attach::TermAttach::spawn(term_rx, 80, 24);
+        self.term_attaches.insert(addr, term_attach);
     }
 
     pub fn remove(&mut self, addr: &LaneAddress) -> Option<LaneInfo> {
         // Phase 4-A: PtySlot も一緒に drop (= child kill 経由でプロセス停止)
         // PtySlot::Drop が child.kill() + child.wait() を呼ぶので zombie 防止。
+        // Stage 1 (ADR-0001): TermAttach も同期 drop (JoinHandle::abort で task 終了)。
+        // 順序: term_attaches → pty_slots → lanes (broadcast::Sender は pty_slots が保持)。
+        self.term_attaches.remove(addr);
         self.pty_slots.remove(addr);
         self.lanes.remove(addr)
     }
@@ -531,7 +553,11 @@ impl LanePool {
         // VP-124 Phase 1 で `delete_lane_orchestrated` には同型 fix 済、 restart path も補完。
         let tmux_sessions: Vec<String> = info.tmux.iter().map(|t| t.session.clone()).collect();
 
-        // step 1: 既存 PtySlot を drop (Drop で child.kill() + child.wait() = zombie 解消)
+        // step 1: 既存 PtySlot + TermAttach を drop (Drop で child.kill() + child.wait() = zombie 解消)。
+        // Stage 1 (ADR-0001): 順序は LanePool::remove と一致 (term_attaches → pty_slots、
+        // broadcast::Sender は pty_slots が保持なので task は次 iter で Closed 検知して exit)。
+        // step 2 が Err でも term_attaches に死んだ entry が残らない (= lifecycle clean)。
+        self.term_attaches.remove(addr);
         let _ = self.pty_slots.remove(addr);
 
         // step 1.5 (VP-131): tmux session を kill して name 衝突を避ける (best-effort、
@@ -557,10 +583,10 @@ impl LanePool {
             std::path::Path::new(&cwd),
         );
         match crate::process::stand_spawner::spawn_with_fallback(&cmd, 80, 24) {
-            Ok((slot, _rx)) => {
+            Ok((slot, term_rx)) => {
                 let pid = slot.pid();
-                self.pty_slots
-                    .insert(addr.clone(), std::sync::Mutex::new(slot));
+                // Stage 1 (ADR-0001): PtySlot insert + TermAttach 再 spawn を集約。
+                self.insert_pty_slot(addr.clone(), slot, term_rx);
                 if let Some(info) = self.lanes.get_mut(addr) {
                     info.state = LaneState::Running;
                     info.pid = Some(pid);
@@ -644,6 +670,7 @@ impl LanePool {
     }
 
     /// 既存 Lane の PtySlot を resize する。
+    /// Stage 1 (ADR-0001): TermAttach も並走 resize (= alacritty Term<T> grid を同期)。
     pub fn resize_lane(&self, addr: &LaneAddress, cols: u16, rows: u16) -> anyhow::Result<()> {
         let slot_mutex = self
             .pty_slots
@@ -652,7 +679,12 @@ impl LanePool {
         let slot = slot_mutex
             .lock()
             .map_err(|_| anyhow::anyhow!("PtySlot mutex poisoned: {}", addr))?;
-        slot.resize(cols, rows)
+        slot.resize(cols, rows)?;
+        // attach 不在 (= spawn 失敗 / 未配線 Worker 経路) は静かに skip
+        if let Some(term_attach) = self.term_attaches.get(addr) {
+            term_attach.resize(cols, rows);
+        }
+        Ok(())
     }
 }
 

@@ -278,8 +278,10 @@ async fn handle_cmd(
 
     let elapsed_ms = started.elapsed().as_millis() as u64;
 
-    let (state, pid, slot_opt) = match result {
-        Ok(Ok((slot, _rx))) => {
+    // Stage 1 (ADR-0001): TermAttach 配線のため term_rx を tuple に保持して await 跨ぎで持ち越す。
+    // initial_rx (= reader_task start 前の Receiver) を pool.insert_pty_slot まで届ける = race フリー。
+    let (state, pid, slot_rx_opt) = match result {
+        Ok(Ok((slot, term_rx))) => {
             let pid = slot.pid();
             tracing::info!(
                 "Lane spawn completed: addr={} pid={} elapsed_ms={}",
@@ -287,7 +289,7 @@ async fn handle_cmd(
                 pid,
                 elapsed_ms
             );
-            (LaneState::Running, Some(pid), Some(slot))
+            (LaneState::Running, Some(pid), Some((slot, term_rx)))
         }
         Ok(Err(e)) => {
             tracing::warn!(
@@ -337,11 +339,12 @@ async fn handle_cmd(
             "Lane spawn actor: race lost (post-spawn) addr={}、 spawn 済 slot を drop",
             addr
         );
-        // slot_opt は scope 終端で drop されるので明示的処理不要。
+        // slot_rx_opt は scope 終端で drop されるので明示的処理不要。
         return;
     }
-    if let Some(slot) = slot_opt {
-        pool_write.insert_pty_slot(addr.clone(), slot);
+    if let Some((slot, term_rx)) = slot_rx_opt {
+        // Stage 1 (ADR-0001): TermAttach も同時に spawn (race フリー、 Lead 経路と統一)
+        pool_write.insert_pty_slot(addr.clone(), slot, term_rx);
     }
     pool_write.insert(info.clone());
     drop(pool_write); // write lock 解放してから publish (deadlock 回避 + subscriber が即取れる)
