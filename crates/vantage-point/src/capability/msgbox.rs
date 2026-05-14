@@ -905,12 +905,12 @@ impl Router {
                                     );
                                 }
                             } else {
-                                // VP-147 PR-P2-1 known limitation: Worker spawn → SystemEvent::Lane(Diff::Add)
-                                // publish → spawn_msgbox_lane_lifecycle_hook の register_lane 完了
-                                // までの race window で msg を投函すると、 ここで silent drop される。
-                                // 現状 (PR-P2-1) は MCP / user 操作経由でしか Worker addr 宛は来ないため
-                                // observable bug は出ないが、 PR-P2-2 で `msg_send` が Worker addr を
-                                // 受け付けたら短時間 retry queue 等の対策を検討。
+                                // VP-178 (Phase 4) 以降: 旧 `spawn_msgbox_lane_lifecycle_hook` 経由の
+                                // lane_stand_boxes register は廃止済 (= Worker addr 宛 msg routing は
+                                // WhitesnakeStore に委譲)。 本 Router 経路に到達した Worker addr msg は
+                                // ここで silent drop されるが、 producer は VP-177 (PR-5) で全廃済のため
+                                // 通常 path では到達しない。 mpsc Router struct 自体は Phase 5 (VP-179)
+                                // で物理削除予定。
                                 tracing::debug!(
                                     "Router: 宛先 '{}' が見つからない（from: {}）",
                                     msg.to,
