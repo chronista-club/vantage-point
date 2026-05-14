@@ -281,7 +281,12 @@ pub async fn run(
         agent_msgbox_lead: Some(agent_msgbox_lead),
         // VP-166 PR-1: Worker lane mailbox Handle の受け皿（空）。 PR-2 以降で lane lifecycle hook が populate。
         lane_stand_boxes: Arc::new(RwLock::new(HashMap::new())),
-        vpdb,
+        vpdb: vpdb.clone(),
+        // VP-174 (Phase 3 PR-2): vpdb 接続から WhitesnakeStore を build。 vpdb が None なら None。
+        // Phase 3 PR-3/PR-4 で producer/consumer がこの field を使うが、 本 PR では「配線のみ」。
+        msgbox_store: vpdb.as_ref().map(|db| {
+            crate::capability::WhitesnakeStore::new(std::sync::Arc::new(db.inner().clone()))
+        }),
         // ポート別ディレクトリで分離（複数プロセスの namespace 衝突を防ぐ）
         // run() 冒頭で作成した Whitesnake を共有（Msgbox persistent と同一インスタンス）
         whitesnake: whitesnake.clone(),
@@ -865,6 +870,10 @@ pub async fn run_world(
         // VP-166 PR-1: World モードは lane を持たないので空のまま
         lane_stand_boxes: Arc::new(RwLock::new(HashMap::new())),
         vpdb: vpdb.clone(), // World モードでも DB 参照あり
+        // VP-174: World モードでも msgbox_store を build (= 将来 World 階層 actor が使う余地)
+        msgbox_store: vpdb.as_ref().map(|db| {
+            crate::capability::WhitesnakeStore::new(std::sync::Arc::new(db.inner().clone()))
+        }),
         // TheWorld もポート別ディレクトリで分離
         whitesnake: world_whitesnake,
         // Phase A4-2b: World モードでは Lane / Project Stand を持たない (空 Pool で AppState を満たす)

@@ -170,6 +170,13 @@ pub(crate) struct AppState {
     pub lane_stand_boxes: Arc<RwLock<HashMap<(String, String), Handle>>>,
     /// SurrealDB クライアント（VP-21: 状態管理の DB 統一）
     pub vpdb: Option<crate::db::SharedVpDb>,
+    /// VP-169 Whitesnake-primary msgbox store (= Phase 3 PR-2、 VP-174)
+    ///
+    /// `Some` の場合、 producer (= Phase 3 PR-3 で wire) / consumer (= Phase 3 PR-4 で wire)
+    /// が本 store 経由で msg を扱う。 `vpdb` が Some の時 SP 起動時に同 DB 接続から build。
+    /// 既存 mpsc Router (= `capabilities.msgbox_router`) と並走、 Phase 5 で mpsc 削除予定。
+    /// 関連: docs/design/19-msgbox-whitesnake-primary.md / docs/design/20-spike-report.md
+    pub msgbox_store: Option<crate::capability::WhitesnakeStore>,
     /// Whitesnake 🐍 — 汎用永続化レイヤー
     pub whitesnake: crate::capability::Whitesnake,
     /// Lane Pool (Lead/Worker registry) — Lane scope の Stand container
