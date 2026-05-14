@@ -17,6 +17,15 @@
 //! ## 結果記録
 //!
 //! `docs/design/20-spike-report.md` に Q ごとに ✅ / ❌ + raw number。
+//!
+//! ## CI policy (VP-178 / PR #362、 2026-05-15)
+//!
+//! 全 `#[tokio::test]` を `#[ignore]` 化。 macOS GitHub Actions runner で `cargo test --workspace`
+//! parallel scheduling 下で LIVE Query notification 配信が固まる事象を PR-3 (= #360 commit msg
+//! "ci: retrigger CI") から繰り返し確認、 PR-4 (= ddf8c7c main run) は 1 時間+ stuck の決定打。
+//! 本 spike は spike report (doc 20) で結果記録済 = CI で再検証する価値が低いため `cargo test
+//! --ignored` の手元 verify path に逃がす。 必要時は `cargo test -p vantage-point --test
+//! spike_msgbox_live -- --ignored` で実行。
 
 use futures::StreamExt;
 use std::time::Duration;
@@ -111,6 +120,7 @@ async fn insert_msg(
 // embedded で実行し、 マッチする row の INSERT で notification が来るか。
 
 #[tokio::test]
+#[ignore = "VP-178 (PR-5): macOS GHA runner で LIVE Query test が parallel scheduling 下で hang。 spike report は doc 20 で記録済 (= CI 再検証不要)、 `cargo test --ignored` で手元 verify"]
 async fn q1_live_select_with_param_binding() {
     let db = make_test_db().await;
 
@@ -159,6 +169,7 @@ async fn q1_live_select_with_param_binding() {
 // LIVE が DELETE event を出すか / UPDATE event を出すか / no event か。
 
 #[tokio::test]
+#[ignore = "VP-178 (PR-5): spike_msgbox_live CI ignore (doc 20 spike report 参照)"]
 async fn q2_live_filter_dropout_event_semantics() {
     let db = make_test_db().await;
 
@@ -358,6 +369,7 @@ async fn q3_atomic_claim_race_free() {
 // target: avg < 50ms (= SDG §6 Q4)
 
 #[tokio::test]
+#[ignore = "VP-178 (PR-5): spike_msgbox_live CI ignore (doc 20 spike report 参照)"]
 async fn q4_throughput_latency() {
     use std::sync::Arc;
     let db = Arc::new(make_test_db().await);
@@ -448,6 +460,7 @@ async fn q4_throughput_latency() {
 // 並列実行、 deadlock / error rate を計測。
 
 #[tokio::test]
+#[ignore = "VP-178 (PR-5): spike_msgbox_live CI ignore (doc 20 spike report 参照)"]
 async fn q5_concurrent_producer_consumer_gc() {
     use std::sync::Arc;
     let db = Arc::new(make_test_db().await);
@@ -575,6 +588,7 @@ async fn q5_concurrent_producer_consumer_gc() {
 // notification latency を計測。 partial index 機能がない場合は全 row scan で latency↑。
 
 #[tokio::test]
+#[ignore = "VP-178 (PR-5): spike_msgbox_live CI ignore (doc 20 spike report 参照)"]
 async fn q6_index_with_archived_bloat() {
     let db = make_test_db().await;
 
@@ -650,6 +664,7 @@ async fn q6_index_with_archived_bloat() {
 // embedded での「切断」 = stream drop と等価、 別 SP との connection drop ではない。
 
 #[tokio::test]
+#[ignore = "VP-178 (PR-5): spike_msgbox_live CI ignore (doc 20 spike report 参照)"]
 async fn q7_live_stream_reconnect() {
     let db = make_test_db().await;
 

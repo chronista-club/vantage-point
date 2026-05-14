@@ -201,12 +201,16 @@ pub async fn run(
     // mem_1CavFi5D1aMSpEkas89SvQ)、 PR-5 supervisor 統一で JoinHandle 経由 abort を activate。
     let mut actor_registry = crate::capability::ActorRegistry::new();
 
-    // Notification ブリッジ: Msgbox "notify" → DistributedNotification（VP-24、 PR-3 struct 化 / PR-4b ActorRegistry 経由）
-    // 通信経路 / msg flow / payload schema は完全互換、 shutdown token で停止可能。
+    // Notification ブリッジ: Msgbox "notify" → DistributedNotification
+    // VP-177 (Phase 3 PR-5): WhitesnakeStore.claim polling に rewire。 旧 register("notify") は
+    // 廃止 (= producer mpsc 経路も停止、 全 notify msg は msgs table 経由)。
     {
-        let notify_handle = capabilities.msgbox_router.register("notify").await;
+        // VP-177: msgbox_store from vpdb (= AppState 構築前なので直接 build)
+        let notify_store = vpdb.as_ref().map(|db| {
+            crate::capability::WhitesnakeStore::new(std::sync::Arc::new(db.inner().clone()))
+        });
         actor_registry.spawn_service(
-            super::notification_actor::NotificationActor::new(notify_handle, project_dir.clone()),
+            super::notification_actor::NotificationActor::new(notify_store, project_dir.clone()),
             shutdown_token.clone(),
         );
     }
@@ -357,11 +361,8 @@ pub async fn run(
     // - N=config.startup.max_concurrent_lane_spawn (default 1、 dogfood で計測 log を集計して tweak)
     // PR-β-2 (VP-120): lane_capabilities pool clone も渡し、 Worker spawn 時に populate_lane する。
     {
-        let lane_spawn_handle = state
-            .capabilities
-            .msgbox_router
-            .register("lane-spawn")
-            .await;
+        // VP-177 (Phase 3 PR-5): WhitesnakeStore に rewire (= 旧 register("lane-spawn") 廃止)
+        let lane_spawn_store = state.msgbox_store.clone();
         let max_concurrent = crate::config::Config::load()
             .unwrap_or_default()
             .startup
@@ -370,7 +371,7 @@ pub async fn run(
         // PR-5 supervisor 統一で abort / await を activate)。 通信経路 / Semaphore gate / race guard は完全互換。
         state.actor_registry.write().await.spawn_service(
             super::lane_spawn_actor::LaneSpawnActor::new(
-                lane_spawn_handle,
+                lane_spawn_store,
                 state.lane_pool.clone(),
                 state.lane_capabilities.clone(), // PR-β-2 (VP-120): Worker spawn 時に populate_lane する
                 state.system_event_tx.clone(),   // Phase 2 (Step E): system event central bus

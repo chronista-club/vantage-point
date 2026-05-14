@@ -858,30 +858,19 @@ async fn handle_msg_send(
     let to = msg.to.clone();
     let msg_id = msg.id.clone();
 
-    // VP-157: agent#lead box の Handle 経由で send (= router に流す point は同じ、
-    // mcp box 廃止で agent_msgbox_lead が唯一の lead-side Handle)。
-    let agent_msgbox_lead = state
-        .agent_msgbox_lead
+    // VP-177 (Phase 3 PR-5): producer mpsc write 廃止、 WhitesnakeStore.insert が唯一の write path。
+    // 旧 dual write (PR-3 で導入、 PR-4 で消滅予定の bridge) は本 PR で削除完了。
+    // consumer (= handle_msg_recv / msgbox_recv_handler / NotificationActor / LaneSpawnActor)
+    // は全て WhitesnakeStore.claim polling に rewire 済 (PR-4 + PR-5)、 mpsc Router は
+    // dead code 状態 (= Phase 5 cleanup で register("agent") + agent_msgbox_lead field ごと撤去)。
+    let store = state
+        .msgbox_store
         .as_ref()
-        .ok_or_else(|| "agent#lead msgbox not initialized".to_string())?;
-
-    // VP-175 (Phase 3 PR-3): dual write bridge — 旧 mpsc Router + 新 WhitesnakeStore 両方に write
-    // PR-4 で consumer 全切替後、 本 PR の dual write は「DB write のみ」 に簡素化される
-    // (= 「bridge for 1 PR cycle」、 永続 dual write ではない)
-    if let Some(store) = &state.msgbox_store
-        && let Err(e) = store.insert(&msg).await
-    {
-        tracing::warn!(
-            "VP-175 producer dual write to msgbox_store failed (id={}): {}",
-            msg.id,
-            e
-        );
-    }
-
-    agent_msgbox_lead
-        .send(msg)
+        .ok_or_else(|| "msgbox_store not initialized".to_string())?;
+    store
+        .insert(&msg)
         .await
-        .map_err(|e| format!("Msgbox send failed: {}", e))?;
+        .map_err(|e| format!("Msgbox insert failed: {}", e))?;
 
     Ok(serde_json::json!({"status": "ok", "to": to, "id": msg_id}))
 }

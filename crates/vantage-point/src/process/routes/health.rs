@@ -180,23 +180,14 @@ pub async fn msgbox_send_handler(
     msg.payload = req.payload;
     // VP-158: 全 msg 永続化が default のため persistent flag 廃止
     let msg_id = msg.id.clone();
-    let Some(ref agent_lead) = state.agent_msgbox_lead else {
-        return Json(serde_json::json!({"error": "agent#lead msgbox not initialized"}));
+
+    // VP-177 (Phase 3 PR-5): producer mpsc write 廃止、 WhitesnakeStore.insert が唯一の write path。
+    // 詳細は unison_server.rs::handle_msg_send 同様 (Phase 5 で agent_msgbox_lead field 撤去予定)。
+    let store = match &state.msgbox_store {
+        Some(s) => s,
+        None => return Json(serde_json::json!({"error": "msgbox_store not initialized"})),
     };
-
-    // VP-175 (Phase 3 PR-3): dual write bridge — 旧 mpsc + 新 WhitesnakeStore 両方に write
-    // PR-4 で consumer 全切替後、 本 PR の dual write は「DB write のみ」 に簡素化
-    if let Some(store) = &state.msgbox_store
-        && let Err(e) = store.insert(&msg).await
-    {
-        tracing::warn!(
-            "VP-175 producer dual write to msgbox_store failed (id={}): {}",
-            msg.id,
-            e
-        );
-    }
-
-    match agent_lead.send(msg).await {
+    match store.insert(&msg).await {
         Ok(()) => Json(serde_json::json!({"status": "ok", "id": msg_id, "to": req.to})),
         Err(e) => Json(serde_json::json!({"error": e.to_string()})),
     }
@@ -450,7 +441,11 @@ pub async fn show_handler(
 ///
 /// 別 Process の `RemoteRoutingClient::forward` から呼ばれる。
 /// 認証: `VP_REGISTRY_TOKEN` 環境変数設定時は Bearer header 検証。
-/// 配信: ローカル MsgboxRouter の `deliver_local` に渡す。
+///
+/// VP-177 (Phase 3 PR-5): WhitesnakeStore.insert を唯一の配信 path に変更
+/// (= 旧 mpsc Router.deliver_local 廃止)。 inbound msg は DB に積まれ、 consumer
+/// 側 (NotificationActor / LaneSpawnActor / handle_msg_recv / msgbox_recv_handler)
+/// が WhitesnakeStore.claim polling で取り出す。
 pub async fn msgbox_remote_deliver_handler(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
@@ -470,41 +465,28 @@ pub async fn msgbox_remote_deliver_handler(
         }
     }
 
-    // VP-175 (Phase 3 PR-3): cross-process inbound msg も dual write
-    // mpsc 配信 (= 既存 consumer 動作) + DB insert (= PR-4 consumer 切替準備)
-    if let Some(store) = &state.msgbox_store
-        && let Err(e) = store.insert(&msg).await
-    {
-        tracing::warn!(
-            "VP-175 cross-process inbound dual write failed (id={}): {}",
-            msg.id,
-            e
-        );
-    }
-
-    // ローカル配信
-    match state
-        .capabilities
-        .msgbox_router
-        .deliver_local(msg.clone())
-        .await
-    {
-        Ok(()) => (
-            axum::http::StatusCode::OK,
-            Json(serde_json::json!({"status": "delivered", "to": msg.to})),
-        ),
-        Err(crate::capability::msgbox::Error::BoxNotFound { ref address }) => (
-            axum::http::StatusCode::NOT_FOUND,
+    // VP-177 (Phase 3 PR-5): WhitesnakeStore.insert が唯一の配信 path。
+    // msgbox_store 未配線時は ServiceUnavailable (= 旧 BoxNotFound 相当の体外応答)。
+    let Some(store) = &state.msgbox_store else {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
             Json(serde_json::json!({
-                "error": format!("msgbox address not found: {}", address),
+                "error": "msgbox_store not initialized",
                 "to": msg.to,
             })),
+        );
+    };
+    let to = msg.to.clone();
+    match store.insert(&msg).await {
+        Ok(()) => (
+            axum::http::StatusCode::OK,
+            Json(serde_json::json!({"status": "delivered", "to": to})),
         ),
         Err(e) => (
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
             Json(serde_json::json!({
-                "error": format!("msgbox router unavailable: {}", e),
-                "to": msg.to,
+                "error": format!("msgbox insert failed: {}", e),
+                "to": to,
             })),
         ),
     }
