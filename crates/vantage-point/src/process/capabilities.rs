@@ -97,14 +97,12 @@ impl ProcessCapabilities {
 
     /// 全 Capability を初期化
     pub async fn initialize(&self) -> anyhow::Result<()> {
-        // VP-157: agent box の register は server.rs に移管 (= AppState.agent_msgbox_lead が
-        // 唯一の Handle owner、 AgentCapability は observer に降格)。 Protocol のみ従来通り
-        // Capability 専属 consumer として register。
-        let protocol_msgbox = self.msgbox_router.register("protocol").await;
-
-        // Protocol Capability 初期化
+        // VP-178 (Phase 4): protocol_msgbox 廃止 — ProtocolCapability::initialize は
+        // `_ctx` 未使用 (= msgbox 経由の subscription 経路を持たない observer) のため、
+        // register("protocol") を呼んで dead Handle を握る意味がなくなった。 全 Capability
+        // は msgbox なしの empty context で初期化。
         {
-            let ctx = CapabilityContext::new().with_msgbox(protocol_msgbox);
+            let ctx = CapabilityContext::new();
             let mut protocol = self.protocol.write().await;
             protocol.initialize(&ctx).await?;
         }
@@ -116,10 +114,7 @@ impl ProcessCapabilities {
             agent.initialize(&ctx).await?;
         }
 
-        tracing::info!(
-            "All capabilities initialized (msgbox addresses: {:?})",
-            self.msgbox_router.addresses().await
-        );
+        tracing::info!("All capabilities initialized");
 
         // 永続化メッセージを復元（Whitesnake 有効時のみ）
         match self.msgbox_router.restore_pending().await {

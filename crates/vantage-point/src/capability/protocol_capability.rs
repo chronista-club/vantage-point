@@ -337,11 +337,11 @@ impl ProtocolRouter {
 
 /// `ProtocolCapability` を VP-159 `Stand` (= ECS entity bound actor) として登録する impl。
 ///
-/// `ProtocolCapability` は **consumer 化** された Stand (= `register("protocol")` で mailbox
-/// 所有 + recv loop で AG-UI / ACP / Vantage transport bridge)。 VP-157 で observer 化された
-/// `AgentCapability` と非対称な pattern だが、 PR-2 段階では両者を Stand trait の minimal
-/// marker (name / layer_scope / as_any) として揃え、 pattern 形式化は PR-4 supervisor 統一時に
-/// trait 拡張で行う。
+/// 役割: AG-UI / ACP / Vantage transport bridge。 VP-178 (Phase 4) 以降、
+/// `register("protocol")` 経由の mailbox 所有は廃止 (= `initialize` の `_ctx` 未使用)、
+/// `AgentCapability` と同じく observer pattern として揃った。 Stand trait の minimal
+/// marker (name / layer_scope / as_any) のみ実装、 pattern 形式化は PR-4 supervisor
+/// 統一時に trait 拡張で行う。
 impl Stand for ProtocolCapability {
     fn actor_name(&self) -> &str {
         "protocol"

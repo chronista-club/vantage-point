@@ -391,7 +391,9 @@ impl Capability for AgentCapability {
         // run_state は async なので read() 結果を待てない (diagnose は sync trait method)。
         // 同期読みだけ — current_task / event_bus の状態は sync で判断可能。
         // VP-157: msgbox_recv_active は廃止 (= AgentCapability の専属 consumer 削除、
-        // agent box の owner は AppState.agent_msgbox_lead に移管された)。
+        // observer 化)。 VP-178 (Phase 4): agent box owner だった
+        // `AppState.agent_msgbox_lead` も撤去、 全 msg routing は `msgbox_store`
+        // (= WhitesnakeStore) 経由に統一済。
         let details = serde_json::json!({
             "working_dir": self.config.working_dir,
             "model": self.config.model,
@@ -420,10 +422,11 @@ impl Capability for AgentCapability {
 
         // VP-157: agent box の専属 consumer を廃止 (= observer 化)。
         // 旧: ctx.msgbox().recv() loop で agent#lead の msg を消費 → EventBus emit
-        // 新: agent box の owner は AppState.agent_msgbox_lead に移管、 lead Claude session
-        //     (= MCP tool host) が直接 recv する。 sidebar / Native App notification 等の
-        //     EventBus 経路が必要な場合は、 別 trigger (= 他 capability の lifecycle event 等) で
-        //     EventBus に emit する設計に再構成 (= VP-159 H1 framework で整理予定)。
+        // 中継: agent box の owner は AppState.agent_msgbox_lead に移管
+        // 新 (VP-178 Phase 4): mpsc Router 経路を全廃、 msg routing は `msgbox_store`
+        //     (= WhitesnakeStore.claim polling) に統一。 EventBus 経路が必要な場合は
+        //     別 trigger (= 他 capability の lifecycle event 等) で emit する設計に再構成
+        //     (= VP-159 H1 framework で整理予定)。
 
         self.state = CapabilityState::Idle;
 
