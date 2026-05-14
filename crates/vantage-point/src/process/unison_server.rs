@@ -556,7 +556,6 @@ pub async fn start_unison_server(
                             "msg_recv" => handle_msg_recv(&state, payload).await,
                             "msg_peers" => handle_msg_peers(&state).await,
                             "msg_ack" => handle_msg_ack(&state, payload).await,
-                            "msg_broadcast" => handle_msg_broadcast(&state, payload).await,
                             "msg_thread" => handle_msg_thread(&state, payload).await,
                             _ => Err(format!("不明なメソッド: process.{}", method)),
                         };
@@ -859,10 +858,8 @@ async fn handle_msg_send(
     let msg_id = msg.id.clone();
 
     // VP-177 (Phase 3 PR-5): producer mpsc write 廃止、 WhitesnakeStore.insert が唯一の write path。
-    // 旧 dual write (PR-3 で導入、 PR-4 で消滅予定の bridge) は本 PR で削除完了。
-    // consumer (= handle_msg_recv / msgbox_recv_handler / NotificationActor / LaneSpawnActor)
-    // は全て WhitesnakeStore.claim polling に rewire 済 (PR-4 + PR-5)、 mpsc Router は
-    // dead code 状態 (= Phase 5 cleanup で register("agent") + agent_msgbox_lead field ごと撤去)。
+    // VP-178 (Phase 4): mpsc Router 経路の dead Handle / field / lifecycle hook を全廃。
+    // mpsc Router struct 自体は Phase 5 で物理削除予定 (= VP-179)。
     let store = state
         .msgbox_store
         .as_ref()
@@ -875,16 +872,15 @@ async fn handle_msg_send(
     Ok(serde_json::json!({"status": "ok", "to": to, "id": msg_id}))
 }
 
-/// Msgbox からメッセージを受信（タイムアウト付き、Selective Receive）
+/// Msgbox からメッセージを受信（タイムアウト付き、polling-based claim）
 ///
 /// VP-166: `lane` (default `lead`、flat 名: `lead` or `<worker-name>`) + `stand`
-/// (default `agent` = coding-assistant inbox; `canvas` = PP/Canvas inbox、box 配線は PR-5) で
-/// 受信先 box を選択。 `(lead, agent)` は既存の `state.agent_msgbox_lead` (= `agent#lead` box、
-/// VP-157)、 それ以外は `state.lane_stand_boxes[(lane, stand)]` (= lane lifecycle hook が PR-2 で
-/// populate) から Handle を clone する（read guard を await 跨ぎで持たないため）。
+/// (default `agent` = coding-assistant inbox; `canvas` = PP/Canvas inbox) で受信先を選択。
+/// VP-176 (Phase 3 PR-4): mpsc Handle.recv を `WhitesnakeStore.claim(stand, lane, consumer_id)`
+/// polling に rewire 済 (= mailbox Handle / lane_stand_boxes 経由は VP-178 Phase 4 で全廃)。
 ///
-/// from フィルタ指定時は `recv_matching` を使い、フィルタ不一致メッセージを
-/// stash に退避する（メッセージロスなし）。
+/// from フィルタ指定時は post-claim release on mismatch で実装 (= claim 済 msg を
+/// `release_claim` で戻して次の候補へ、 メッセージロスなし)。
 async fn handle_msg_recv(
     state: &AppState,
     payload: serde_json::Value,
@@ -998,65 +994,6 @@ async fn handle_msg_ack(
         .map_err(|e| format!("mark_consumed failed: {}", e))?;
 
     Ok(serde_json::json!({"status": "ok", "id": id}))
-}
-
-/// Broadcast — 登録済み全 actor にメッセージを投函
-///
-/// 送信元（`from`）自身は除外する。宛先ごとに個別の Message を生成して
-/// `Router::deliver_local` で配信。部分失敗は `failures` に記録し、
-/// 全体としては成功レスポンスを返す（best-effort delivery）。
-///
-/// ## VP-147 PR-P2-1 scope
-///
-/// 配信対象は `addresses()` (= **lead lane の actor のみ**) に限定。 Worker lane の
-/// actor inbox (例: `agent#worker/objrec`) には届かない。 これは broadcast の意味を
-/// 「同 process 内の主たる actor 群」 に絞る意図的仕様 (= 起動 stand 群 への通知)。
-/// Worker lane への broadcast を将来必要とする場合は、 `inbox_keys()` を使う overload
-/// を別途用意する path を検討する (= 別 PR / spec doc 追記)。
-async fn handle_msg_broadcast(
-    state: &AppState,
-    payload: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    use crate::capability::msgbox::{Message, MessageKind};
-
-    let content = payload
-        .get("content")
-        .cloned()
-        .ok_or_else(|| "content field is required".to_string())?;
-
-    let kind = match payload.get("kind").and_then(|v| v.as_str()) {
-        Some("direct") => MessageKind::Direct,
-        Some("request") => MessageKind::Request,
-        Some("response") => MessageKind::Response,
-        _ => MessageKind::Notification,
-    };
-
-    let from = payload
-        .get("from")
-        .and_then(|v| v.as_str())
-        .unwrap_or("mcp")
-        .to_string();
-
-    let addresses = state.capabilities.msgbox_router.addresses().await;
-    let mut sent = 0usize;
-    let mut failures: Vec<serde_json::Value> = Vec::new();
-
-    for to in addresses.iter() {
-        if to == &from {
-            continue; // 送信元自身には届けない
-        }
-        let msg = Message::new(&from, to, kind.clone()).with_payload(&content);
-        match state.capabilities.msgbox_router.deliver_local(msg).await {
-            Ok(_) => sent += 1,
-            Err(e) => failures.push(serde_json::json!({"to": to, "error": e.to_string()})),
-        }
-    }
-
-    Ok(serde_json::json!({
-        "status": "ok",
-        "sent": sent,
-        "failures": failures,
-    }))
 }
 
 /// Thread — reply_to チェーンに連なる全メッセージを返す

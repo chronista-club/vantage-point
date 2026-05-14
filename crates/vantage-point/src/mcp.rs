@@ -175,20 +175,6 @@ pub struct MsgDirectoryParams {
     pub project_name: Option<String>,
 }
 
-/// Parameters for msg_broadcast tool
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-pub struct MsgBroadcastParams {
-    /// ブロードキャスト本文（JSON）
-    #[schemars(description = "Message payload (JSON value) to broadcast to all peers")]
-    pub content: serde_json::Value,
-
-    /// メッセージ種別
-    #[schemars(
-        description = "Message kind: 'notification' (default), 'direct', 'request', 'response'"
-    )]
-    pub kind: Option<String>,
-}
-
 /// Parameters for msg_thread tool
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct MsgThreadParams {
@@ -1289,7 +1275,7 @@ impl VantageMcp {
     /// GET /api/lanes wrapper、 各 Lane に mailbox_addresses (per-Lane Stands の wire address)、
     /// top-level に project_addresses + world_addresses を synthesize。
     #[tool(
-        description = "List all Lanes (Lead + Workers) in the current project with comprehensive routing info. Each Lane returns: address, kind, state, stand, pid, cwd, tmux session, worker_status, AND mailbox_addresses (= wire-ready addresses for `msg_send` / `msg_broadcast`)。 Each lane's mailbox_addresses has two entries: `agent` (= the lane's Claude session inbox, e.g. `agent@vantage-point` for lead or `agent@vantage-point/chore` for worker 'chore') and `canvas` (= the lane's Canvas / Paisley Park inbox, e.g. `canvas@vantage-point/chore`)。 Top-level also returns project_addresses (e.g. `gold_experience@<project>`) and world_addresses (e.g. `hermit_purple@world`)。 Use this to discover Workers, decide deletion targets, pick mailbox routes for msg_send。 Replaces multi-step `vp ps` + `curl /api/lanes`。"
+        description = "List all Lanes (Lead + Workers) in the current project with comprehensive routing info. Each Lane returns: address, kind, state, stand, pid, cwd, tmux session, worker_status, AND mailbox_addresses (= wire-ready addresses for `msg_send`)。 Each lane's mailbox_addresses has two entries: `agent` (= the lane's Claude session inbox, e.g. `agent@vantage-point` for lead or `agent@vantage-point/chore` for worker 'chore') and `canvas` (= the lane's Canvas / Paisley Park inbox, e.g. `canvas@vantage-point/chore`)。 Top-level also returns project_addresses (e.g. `gold_experience@<project>`) and world_addresses (e.g. `hermit_purple@world`)。 Use this to discover Workers, decide deletion targets, pick mailbox routes for msg_send。 Replaces multi-step `vp ps` + `curl /api/lanes`。"
     )]
     async fn list_lanes(
         &self,
@@ -2698,28 +2684,6 @@ if bestId > 0 { print(bestId) }
 
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
             format!("Acked message {}", params.id),
-        )]))
-    }
-
-    /// Broadcast a message to all registered peers
-    #[tool(
-        description = "Broadcast a message to every registered peer (except self). Best-effort delivery; returns {sent, failures}."
-    )]
-    async fn msg_broadcast(
-        &self,
-        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<MsgBroadcastParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let mut payload = serde_json::json!({
-            "content": params.content,
-        });
-        if let Some(kind) = params.kind {
-            payload["kind"] = serde_json::Value::String(kind);
-        }
-
-        let resp = self.quic_call("msg_broadcast", payload).await?;
-        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-            serde_json::to_string_pretty(&resp)
-                .unwrap_or_else(|_| "broadcast complete".to_string()),
         )]))
     }
 

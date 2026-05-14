@@ -181,8 +181,8 @@ pub async fn msgbox_send_handler(
     // VP-158: 全 msg 永続化が default のため persistent flag 廃止
     let msg_id = msg.id.clone();
 
-    // VP-177 (Phase 3 PR-5): producer mpsc write 廃止、 WhitesnakeStore.insert が唯一の write path。
-    // 詳細は unison_server.rs::handle_msg_send 同様 (Phase 5 で agent_msgbox_lead field 撤去予定)。
+    // VP-177 (Phase 3 PR-5) → VP-178 (Phase 4): producer mpsc write 全廃、
+    // WhitesnakeStore.insert が唯一の write path。
     let store = match &state.msgbox_store {
         Some(s) => s,
         None => return Json(serde_json::json!({"error": "msgbox_store not initialized"})),
@@ -196,23 +196,21 @@ pub async fn msgbox_send_handler(
 /// Msgbox 受信 debug endpoint (動作確認用 / `vp mailbox watch` の long-poll source)
 ///
 /// VP-166: `lane` (default `lead`、flat 名: `lead` or `<worker-name>`) + `stand` (default `agent`
-/// = coding-assistant inbox; `canvas` = PP/Canvas inbox、box 配線は PR-5) で受信先 box を選択。
-/// `(lead, agent)` は既存の `state.agent_msgbox_lead` (= `agent#lead`、VP-157)、 それ以外は
-/// `state.lane_stand_boxes[(lane, stand)]` (= lane lifecycle hook が PR-2 で populate) から Handle を clone。
-/// recv() 内で history.mark_received が走るため、/api/diagnose の recent
-/// で state: "received" + received_at_ms を観測できる。
+/// = coding-assistant inbox; `canvas` = PP/Canvas inbox) で受信先を選択。
+/// VP-176 (Phase 3 PR-4): mpsc Handle.recv は廃止、 `WhitesnakeStore.claim(stand, lane,
+/// consumer_id)` polling に rewire 済。 from filter は post-claim release on mismatch で実装。
 #[derive(serde::Deserialize, Default)]
 pub struct MsgboxRecvRequest {
     /// タイムアウト秒（デフォルト 2 秒、最大 30 秒）
     #[serde(default)]
     pub timeout: Option<u64>,
-    /// from フィルタ（指定時は recv_matching）
+    /// from フィルタ（指定時は post-claim release on mismatch）
     #[serde(default)]
     pub from: Option<String>,
     /// 受信先 lane (default "lead"、flat 名: "lead" or "<worker-name>")
     #[serde(default)]
     pub lane: Option<String>,
-    /// VP-166: 受信先 stand (default "agent" = coding-assistant inbox。"canvas" は PR-5)
+    /// VP-166: 受信先 stand (default "agent" = coding-assistant inbox; `canvas` は PP/Canvas)
     #[serde(default)]
     pub stand: Option<String>,
 }
@@ -225,9 +223,8 @@ pub async fn msgbox_recv_handler(
     let lane = req.lane.as_deref().unwrap_or("lead").to_string();
     let stand = req.stand.as_deref().unwrap_or("agent").to_string();
 
-    // VP-176 (Phase 3 PR-4): External consumer switch — WhitesnakeStore polling-based claim
-    // 旧 mpsc Handle::recv は dead code 状態 (Phase 5 で削除)、 既存 Handle field (= agent_msgbox_lead /
-    // lane_stand_boxes) は internal consumer (= protocol/lane_spawn) 用に残置 (Phase 4/5 で順次切替)
+    // VP-176 (Phase 3 PR-4) → VP-178 (Phase 4): WhitesnakeStore polling-based claim 単一経路。
+    // 旧 mpsc Handle / agent_msgbox_lead / lane_stand_boxes field は VP-178 で全廃済。
     let store = match &state.msgbox_store {
         Some(s) => s,
         None => return Json(serde_json::json!({"error": "msgbox_store not initialized"})),

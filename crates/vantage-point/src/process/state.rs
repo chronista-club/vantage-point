@@ -18,7 +18,6 @@ use super::tmux_actor::TmuxHandle;
 use super::topic_router::TopicRouter;
 use crate::agent::InteractiveClaudeAgent;
 use crate::agui::AgUiEvent;
-use crate::capability::msgbox::Handle;
 use crate::capability::{ActorRegistry, ProcessManagerCapability, UpdateCapability};
 use crate::file_watcher::FileWatcherManager;
 use crate::mcp::PermissionResponse;
@@ -152,22 +151,6 @@ pub(crate) struct AppState {
     pub canvas_senders: Arc<tokio::sync::Mutex<Vec<tokio::sync::mpsc::Sender<serde_json::Value>>>>,
     /// プロセス起動時刻（ISO 8601）
     pub started_at: String,
-    /// Lead lane の agent box ハンドル (VP-156/VP-157: mcp box 廃止 + agent 一本化)
-    ///
-    /// 旧 `mcp_msgbox` の置き換え。 `agent#lead` box の唯一の Handle を保持し、
-    /// MCP tool / `vp mailbox watch` 経由の send/recv は本フィールドを通す。
-    /// AgentCapability の専属 consumer は VP-157 で廃止 (= observer 化)、 box の owner は本 AppState。
-    pub agent_msgbox_lead: Option<Handle>,
-    /// Per-(lane, stand) の Worker lane mailbox Handle (VP-166)。
-    ///
-    /// key = (lane name, stand 名)。 lane name は `"lead"` or `"<worker-name>"` の flat 名、
-    /// stand は `"echoes"` / `"paisley_park"`。 lane lifecycle hook (`Diff::Add`) が
-    /// `register_lane` の戻り Handle をここに保持して rx を生かす (= Worker box 宛 msg が
-    /// 配信失敗で捨てられないようにする)、 `Diff::Remove` で除去。 recv 経路
-    /// (`handle_msg_recv` / `msgbox_recv_handler`) は本 map から Handle を clone して recv する
-    /// (= read guard を await 跨ぎで持たないため)。 PR-1 (受け皿) では空、 PR-2 以降で
-    /// lifecycle hook が populate する。 設計: `docs/design/16-worker-lane-mailbox-recv.md`
-    pub lane_stand_boxes: Arc<RwLock<HashMap<(String, String), Handle>>>,
     /// SurrealDB クライアント（VP-21: 状態管理の DB 統一）
     pub vpdb: Option<crate::db::SharedVpDb>,
     /// VP-169 Whitesnake-primary msgbox store (= Phase 3 PR-2、 VP-174)
