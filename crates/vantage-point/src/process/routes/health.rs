@@ -12,6 +12,7 @@
 
 use std::sync::Arc;
 
+use crate::capability::MsgboxStore; // VP-175: dual write 用 trait method (insert) を scope に
 use serde::Deserialize;
 
 use axum::{
@@ -182,6 +183,19 @@ pub async fn msgbox_send_handler(
     let Some(ref agent_lead) = state.agent_msgbox_lead else {
         return Json(serde_json::json!({"error": "agent#lead msgbox not initialized"}));
     };
+
+    // VP-175 (Phase 3 PR-3): dual write bridge — 旧 mpsc + 新 WhitesnakeStore 両方に write
+    // PR-4 で consumer 全切替後、 本 PR の dual write は「DB write のみ」 に簡素化
+    if let Some(store) = &state.msgbox_store
+        && let Err(e) = store.insert(&msg).await
+    {
+        tracing::warn!(
+            "VP-175 producer dual write to msgbox_store failed (id={}): {}",
+            msg.id,
+            e
+        );
+    }
+
     match agent_lead.send(msg).await {
         Ok(()) => Json(serde_json::json!({"status": "ok", "id": msg_id, "to": req.to})),
         Err(e) => Json(serde_json::json!({"error": e.to_string()})),
@@ -436,6 +450,18 @@ pub async fn msgbox_remote_deliver_handler(
                 Json(serde_json::json!({"error": "invalid registry token"})),
             );
         }
+    }
+
+    // VP-175 (Phase 3 PR-3): cross-process inbound msg も dual write
+    // mpsc 配信 (= 既存 consumer 動作) + DB insert (= PR-4 consumer 切替準備)
+    if let Some(store) = &state.msgbox_store
+        && let Err(e) = store.insert(&msg).await
+    {
+        tracing::warn!(
+            "VP-175 cross-process inbound dual write failed (id={}): {}",
+            msg.id,
+            e
+        );
     }
 
     // ローカル配信
