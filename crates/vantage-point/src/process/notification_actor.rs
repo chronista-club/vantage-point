@@ -30,29 +30,42 @@
 //! - PR-2 同型 pattern: `AgentCapability` / `ProtocolCapability` (impl Stand)
 
 use std::any::Any;
+use std::time::Duration;
 
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::capability::msgbox::{Handle, MessageKind};
+use crate::capability::MsgboxStore;
+use crate::capability::msgbox::MessageKind;
+use crate::capability::msgbox_v2::WhitesnakeStore;
 use crate::capability::stand_service::{LayerScope, Service, SpawnableService};
 
 /// Notification bridge Service (= Msgbox `notify` → DistributedNotification)。
 ///
-/// SP-local Service (= 1 Project per Process)。 `notify` mailbox handle と project root
-/// directory を保持し、 `spawn()` で background recv loop を起動する。
+/// SP-local Service (= 1 Project per Process)。 `WhitesnakeStore` 経由で notify msg を
+/// poll し、 macOS DistributedNotification に変換する。
+///
+/// ## VP-177 (Phase 3 PR-5) refactor
+///
+/// 旧: `register("notify")` Handle.recv() mpsc loop
+/// 新: `WhitesnakeStore::claim("notify", "lead", ...)` polling (= 100ms interval)
+///
+/// `Option<WhitesnakeStore>` = None なら recv 経路なし、 shutdown 待ちで idle。
 pub struct NotificationActor {
-    /// `notify` mailbox handle (= `register("notify")` で取得)
-    handle: Handle,
+    /// VP-177: WhitesnakeStore (= Phase 3 PR-5 で mpsc Handle から rewire)
+    msgbox_store: Option<WhitesnakeStore>,
     /// project root directory (= payload `path` field の fallback で使う)
     project_dir: String,
 }
 
 impl NotificationActor {
     /// 新しい `NotificationActor` を構築する。
-    pub fn new(handle: Handle, project_dir: String) -> Self {
+    ///
+    /// VP-177 (Phase 3 PR-5): 旧 `new(handle, project_dir)` → `new(store, project_dir)` に
+    /// signature 変更。 caller (= server.rs) が `state.msgbox_store.clone()` を渡す。
+    pub fn new(msgbox_store: Option<WhitesnakeStore>, project_dir: String) -> Self {
         Self {
-            handle,
+            msgbox_store,
             project_dir,
         }
     }
@@ -81,15 +94,23 @@ impl SpawnableService for NotificationActor {
     /// -> JoinHandle<()>` に統一、 ActorRegistry が JoinHandle を保持する path を開く。
     fn spawn_loop(self, shutdown: CancellationToken) -> JoinHandle<()> {
         tokio::spawn(async move {
+            // VP-177: msgbox_store なし = recv 経路なし、 shutdown 待ち
+            let Some(store) = self.msgbox_store.as_ref() else {
+                tracing::info!("Notification bridge: msgbox_store なし、 shutdown 待ち");
+                shutdown.cancelled().await;
+                return;
+            };
+            let consumer_id = format!("notify-{}", std::process::id());
+            tracing::info!("Notification bridge 起動 (= WhitesnakeStore claim polling)");
             loop {
                 tokio::select! {
                     _ = shutdown.cancelled() => {
                         tracing::info!("Notification bridge: shutdown");
                         break;
                     }
-                    msg = self.handle.recv() => {
-                        match msg {
-                            Some(msg) if msg.kind == MessageKind::Notification => {
+                    _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                        match store.claim("notify", "lead", &consumer_id).await {
+                            Ok(Some(msg)) if msg.kind == MessageKind::Notification => {
                                 let project = msg
                                     .payload
                                     .get("project")
@@ -108,7 +129,6 @@ impl SpawnableService for NotificationActor {
                                     .and_then(|v| v.as_str())
                                     .unwrap_or("完了")
                                     .to_string();
-                                // path: 通知元のターミナルパス（Lane 単位通知用）
                                 let path = msg
                                     .payload
                                     .get("path")
@@ -116,9 +136,23 @@ impl SpawnableService for NotificationActor {
                                     .unwrap_or(&self.project_dir)
                                     .to_string();
                                 crate::notify::post_cc_notification(&project, &message, &path);
+                                // manual_ack でなければ即 mark_consumed (= mpsc Handle::recv 互換)
+                                if !msg.manual_ack
+                                    && let Err(e) = store.mark_consumed(&msg.id).await
+                                {
+                                    tracing::warn!("VP-177 notify mark_consumed failed (id={}): {}", msg.id, e);
+                                }
                             }
-                            Some(_) => {} // 非 Notification メッセージは無視
-                            None => break, // チャネル閉鎖
+                            Ok(Some(other_msg)) => {
+                                // 非 Notification: claim 済なので即 release (= 他 consumer 不在だが念のため)
+                                if let Err(e) = store.release_claim(&other_msg.id).await {
+                                    tracing::warn!("VP-177 notify release_claim failed: {}", e);
+                                }
+                            }
+                            Ok(None) => {} // 候補なし、 polling 継続
+                            Err(e) => {
+                                tracing::warn!("VP-177 notify claim failed: {}", e);
+                            }
                         }
                     }
                 }
