@@ -23,6 +23,7 @@ pub mod midi_capability;
 pub mod msgbox;
 pub mod msgbox_registry;
 pub mod msgbox_remote;
+pub mod msgbox_v2;
 pub mod params;
 pub mod process_manager_capability;
 pub mod protocol_capability;
@@ -41,6 +42,7 @@ pub use eventbus::EventBus;
 pub use midi_capability::MidiCapability;
 pub use msgbox::{Handle, Message, MessageKind, Router as MsgboxRouter};
 pub use msgbox_registry::{ActorEntry, Registry as MsgboxRegistry};
+pub use msgbox_v2::{MsgboxStats, MsgboxStore, WhitesnakeStore};
 pub use process_manager_capability::{
     ProcessManagerCapability, ProcessStatus, ProjectInfo, RunningProcess, normalize_path_key,
 };
