@@ -72,8 +72,10 @@ impl VpDb {
         Ok(Self { db })
     }
 
-    /// kv-mem (in-memory) で接続（テスト用）
-    #[cfg(test)]
+    /// kv-mem (in-memory) で接続（テスト用、 integration test からも利用可）
+    ///
+    /// VP-174 (Phase 3 PR-2) で `#[cfg(test)]` 除去、 integration test (= `tests/*.rs`) からも
+    /// 呼べるように pub 化。 production code は `connect_embedded` を使う。
     pub async fn connect_mem() -> Result<Self> {
         let db = surrealdb::engine::any::connect("mem://").await?;
         db.use_ns(NS).use_db(DB_NAME).await?;
