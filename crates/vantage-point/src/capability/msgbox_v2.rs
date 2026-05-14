@@ -205,45 +205,71 @@ impl MsgboxStore for WhitesnakeStore {
         Ok(())
     }
 
+    /// VP-173 mini-spike で確定した path C (= 2-step + CAS pattern):
+    /// SurrealDB v3.0.4 では `LET $x = SELECT ...; RETURN $x;` の subquery 結果が
+    /// null になる (= path A 不可)。 `SELECT *` で full row 取得 → caller で id 抽出 →
+    /// `UPDATE type::record('msgs', $id) WHERE claim_id IS NONE` で CAS。
+    /// race-free 性質は WHERE 句の atomic 評価 + 1 statement UPDATE で担保。
+    ///
+    /// 戻り値:
+    /// - `Ok(Some(msg))`: claim 成功
+    /// - `Ok(None)`: 候補なし or 他 consumer が先に取った (= caller retry)
     async fn claim(&self, actor: &str, lane: &str, consumer_id: &str) -> Result<Option<Message>> {
         let now = now_ms();
+        // Step 1: 候補 SELECT (= full row、 SurrealDB v3 で `SELECT id` は idiom error)
         let mut res = self
             .db
             .query(
-                r#"
-                BEGIN;
-                LET $candidates = SELECT * FROM msgs
-                    WHERE status='active' AND to_actor = $actor AND to_lane = $lane
-                      AND consumed_at IS NONE
-                      AND (claim_id IS NONE OR claimed_at + 30000 < $now)
-                    ORDER BY ts ASC, id ASC LIMIT 1;
-                LET $target_id = $candidates[0].id;
-                UPDATE $target_id SET claim_id = $cid, claimed_at = $now;
-                COMMIT;
-                RETURN $candidates[0];
-                "#,
+                "SELECT * FROM msgs
+                     WHERE status='active' AND to_actor = $actor AND to_lane = $lane
+                       AND consumed_at IS NONE
+                       AND (claim_id IS NONE OR claimed_at + 30000 < $now)
+                     ORDER BY ts ASC, id ASC LIMIT 1;",
             )
             .bind(("actor", actor.to_string()))
             .bind(("lane", lane.to_string()))
-            .bind(("cid", consumer_id.to_string()))
             .bind(("now", now))
             .await
-            .map_err(|e| anyhow::anyhow!("msgbox_v2 claim failed: {}", e))?;
-
-        // RETURN $candidates[0] は最終 statement、 take(0) で取得
-        let row: Option<serde_json::Value> = res
+            .map_err(|e| anyhow::anyhow!("msgbox_v2 claim select failed: {}", e))?;
+        let rows: Vec<serde_json::Value> = res
             .take(0)
-            .map_err(|e| anyhow::anyhow!("msgbox_v2 claim take failed: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("msgbox_v2 claim select take failed: {}", e))?;
+        if rows.is_empty() {
+            return Ok(None); // 候補なし
+        }
 
-        let Some(row_value) = row else {
-            return Ok(None);
-        };
-        if row_value.is_null() {
+        // id field "msgs:`<local-id>`" 形式から local id 抽出
+        let id_full = rows[0]["id"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("msgbox_v2 claim: id field is not a string"))?;
+        let local_id = id_full
+            .strip_prefix("msgs:")
+            .map(|s| s.trim_matches('`').to_string())
+            .unwrap_or_else(|| id_full.to_string());
+
+        // Step 2: CAS UPDATE (= claim_id IS NONE or stale なら成功、 updated.is_empty() で空振り判定)
+        let now2 = now_ms();
+        let mut res2 = self
+            .db
+            .query(
+                "UPDATE type::record('msgs', $id) SET claim_id=$cid, claimed_at=$now
+                     WHERE claim_id IS NONE OR claimed_at + 30000 < $now;",
+            )
+            .bind(("id", local_id.clone()))
+            .bind(("cid", consumer_id.to_string()))
+            .bind(("now", now2))
+            .await
+            .map_err(|e| anyhow::anyhow!("msgbox_v2 claim update failed: {}", e))?;
+        let updated: Vec<serde_json::Value> = res2
+            .take(0)
+            .map_err(|e| anyhow::anyhow!("msgbox_v2 claim update take failed: {}", e))?;
+        if updated.is_empty() {
+            // 他 consumer が先に取った → caller side で retry
             return Ok(None);
         }
 
-        // SurrealDB row → Message に hydrate
-        let msg = Self::row_to_message(&row_value)?;
+        // claim 成功 → updated[0] を Message に hydrate
+        let msg = Self::row_to_message(&updated[0])?;
         Ok(Some(msg))
     }
 
@@ -432,13 +458,9 @@ mod tests {
         assert!(world.is_none());
     }
 
-    /// Phase 3 carry-over (= spike Q3 finding と同じ):
-    /// SurrealDB v3.0.4 で `BEGIN; LET $candidates = SELECT ... LIMIT 1; LET $target_id =
-    /// $candidates[0].id; ...` の subquery extraction が想定通り動かない (= target_id が null)。
-    /// Phase 3 PR (= claim 機構導入) で path A/B/C のうち working な path を確定、 race-free
-    /// verification + bench を実機で。 詳細 `docs/design/20-spike-report.md` §4 (Q3 partial)。
+    /// VP-173 で確定した path C (= 2-step + CAS) で claim 完全動作確認。
+    /// Phase 2 PR-1 では #[ignore] だったが、 mini-spike で working path 確定 → enable。
     #[tokio::test]
-    #[ignore = "Phase 3 carry-over: spike Q3 と同じく $candidates[0].id 抽出が動かない (doc 20 §4)"]
     async fn test_claim_and_mark_consumed() {
         let store = make_test_store().await;
 
