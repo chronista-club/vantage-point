@@ -80,6 +80,7 @@ async fn seed_msgs(db: &Surreal<Any>, n: usize) {
 
 /// A1: 元 SDG 例 (= VP-171 で null だった)
 #[tokio::test]
+#[ignore = "Phase 3 mini-spike investigation: cargo test --ignored で実行、 CI 非依存"]
 async fn path_a1_original_subquery() {
     let db = make_db().await;
     seed_msgs(&db, 3).await;
@@ -107,6 +108,7 @@ async fn path_a1_original_subquery() {
 
 /// A2: SELECT VALUE id で id-only array 取得 → UPDATE
 #[tokio::test]
+#[ignore = "Phase 3 mini-spike investigation: cargo test --ignored で実行、 CI 非依存"]
 async fn path_a2_select_value_id() {
     let db = make_db().await;
     seed_msgs(&db, 3).await;
@@ -132,6 +134,7 @@ async fn path_a2_select_value_id() {
 
 /// A3: ONLY keyword で single record (wrap 外し)
 #[tokio::test]
+#[ignore = "Phase 3 mini-spike investigation: cargo test --ignored で実行、 CI 非依存"]
 async fn path_a3_only_keyword() {
     let db = make_db().await;
     seed_msgs(&db, 3).await;
@@ -160,6 +163,7 @@ async fn path_a3_only_keyword() {
 
 /// A4: inline subquery in UPDATE (= 中間 LET 不要)
 #[tokio::test]
+#[ignore = "Phase 3 mini-spike investigation: cargo test --ignored で実行、 CI 非依存"]
 async fn path_a4_inline_subquery() {
     let db = make_db().await;
     seed_msgs(&db, 3).await;
@@ -188,6 +192,7 @@ async fn path_a4_inline_subquery() {
 
 /// A5: $candidates の type 確認 (= debug 用)
 #[tokio::test]
+#[ignore = "Phase 3 mini-spike investigation: cargo test --ignored で実行、 CI 非依存"]
 async fn path_a5_debug_candidates_shape() {
     let db = make_db().await;
     seed_msgs(&db, 3).await;
@@ -215,6 +220,7 @@ async fn path_a5_debug_candidates_shape() {
 // =============================================================================
 
 #[tokio::test]
+#[ignore = "Phase 3 mini-spike investigation: cargo test --ignored で実行、 CI 非依存"]
 async fn path_b_define_function() {
     let db = make_db().await;
     seed_msgs(&db, 3).await;
@@ -252,6 +258,7 @@ async fn path_b_define_function() {
 // =============================================================================
 
 #[tokio::test]
+#[ignore = "Phase 3 mini-spike investigation: cargo test --ignored で実行、 CI 非依存"]
 async fn path_c_cas() {
     let db = make_db().await;
     seed_msgs(&db, 3).await;
@@ -312,6 +319,7 @@ async fn path_c_cas() {
 
 /// Path C の record id 形式を debug
 #[tokio::test]
+#[ignore = "Phase 3 mini-spike investigation: cargo test --ignored で実行、 CI 非依存"]
 async fn path_c_id_format() {
     let db = make_db().await;
     seed_msgs(&db, 1).await;
@@ -337,6 +345,7 @@ async fn path_c_id_format() {
 ///
 /// 結果: 5 unique row が unique consumer に配分 + 95 task は空振り想定。
 #[tokio::test]
+#[ignore = "Phase 3 mini-spike investigation: cargo test --ignored で実行、 CI 非依存"]
 async fn race_path_c_cas() {
     let db = Arc::new(make_db().await);
     seed_msgs(&db, 5).await;
@@ -409,6 +418,7 @@ async fn race_path_c_cas() {
 }
 
 #[tokio::test]
+#[ignore = "Phase 3 mini-spike investigation: cargo test --ignored で実行、 CI 非依存"]
 async fn race_path_b_function() {
     let db = Arc::new(make_db().await);
     seed_msgs(&db, 5).await;
