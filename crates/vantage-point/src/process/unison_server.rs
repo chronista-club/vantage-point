@@ -12,6 +12,8 @@
 
 use std::sync::Arc;
 
+use crate::capability::MsgboxStore; // VP-175: dual write 用 trait method (insert) を scope に
+
 use serde::{Deserialize, Serialize};
 use unison::network::channel::UnisonChannel;
 use unison::network::{MessageType, ProtocolServer};
@@ -862,6 +864,20 @@ async fn handle_msg_send(
         .agent_msgbox_lead
         .as_ref()
         .ok_or_else(|| "agent#lead msgbox not initialized".to_string())?;
+
+    // VP-175 (Phase 3 PR-3): dual write bridge — 旧 mpsc Router + 新 WhitesnakeStore 両方に write
+    // PR-4 で consumer 全切替後、 本 PR の dual write は「DB write のみ」 に簡素化される
+    // (= 「bridge for 1 PR cycle」、 永続 dual write ではない)
+    if let Some(store) = &state.msgbox_store
+        && let Err(e) = store.insert(&msg).await
+    {
+        tracing::warn!(
+            "VP-175 producer dual write to msgbox_store failed (id={}): {}",
+            msg.id,
+            e
+        );
+    }
+
     agent_msgbox_lead
         .send(msg)
         .await
