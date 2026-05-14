@@ -233,41 +233,59 @@ pub async fn msgbox_recv_handler(
     let timeout_secs = req.timeout.unwrap_or(2).min(30);
     let lane = req.lane.as_deref().unwrap_or("lead").to_string();
     let stand = req.stand.as_deref().unwrap_or("agent").to_string();
-    // 受信先 Handle を解決 (VP-166)
-    let handle = if lane == "lead" && stand == "agent" {
-        match &state.agent_msgbox_lead {
-            Some(h) => h.clone(),
-            None => {
-                return Json(serde_json::json!({"error": "agent#lead msgbox not initialized"}));
-            }
-        }
-    } else {
-        match state
-            .lane_stand_boxes
-            .read()
-            .await
-            .get(&(lane.clone(), stand.clone()))
-            .cloned()
-        {
-            Some(h) => h,
-            None => {
-                return Json(serde_json::json!({
-                    "error": format!("no mailbox for lane='{}' stand='{}' (worker running? canvas box wiring is PR-5)", lane, stand)
-                }));
-            }
-        }
+
+    // VP-176 (Phase 3 PR-4): External consumer switch — WhitesnakeStore polling-based claim
+    // 旧 mpsc Handle::recv は dead code 状態 (Phase 5 で削除)、 既存 Handle field (= agent_msgbox_lead /
+    // lane_stand_boxes) は internal consumer (= protocol/lane_spawn) 用に残置 (Phase 4/5 で順次切替)
+    let store = match &state.msgbox_store {
+        Some(s) => s,
+        None => return Json(serde_json::json!({"error": "msgbox_store not initialized"})),
     };
-    let result = tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), async {
-        match req.from {
-            Some(filter) => handle.recv_matching(move |m| m.from == filter).await,
-            None => handle.recv().await,
+
+    let consumer_id = format!(
+        "msgbox_recv-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4().simple()
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+
+    loop {
+        match store.claim(&stand, &lane, &consumer_id).await {
+            Ok(Some(msg)) => {
+                // from filter: 不一致なら release して次の候補へ
+                if let Some(ref filter) = req.from
+                    && msg.from != *filter
+                {
+                    if let Err(e) = store.release_claim(&msg.id).await {
+                        tracing::warn!(
+                            "VP-176 release_claim failed (id={}): {} — 30s stale claim 経由で復帰",
+                            msg.id,
+                            e
+                        );
+                    }
+                    continue;
+                }
+
+                // manual_ack でなければ即 mark_consumed
+                if !msg.manual_ack
+                    && let Err(e) = store.mark_consumed(&msg.id).await
+                {
+                    tracing::warn!("VP-176 mark_consumed failed (id={}): {}", msg.id, e);
+                }
+                return Json(serde_json::json!({"status": "ok", "message": msg}));
+            }
+            Ok(None) => {
+                // 候補なし、 polling 継続
+            }
+            Err(e) => {
+                return Json(serde_json::json!({"error": format!("claim failed: {}", e)}));
+            }
         }
-    })
-    .await;
-    match result {
-        Ok(Some(msg)) => Json(serde_json::json!({"status": "ok", "message": msg})),
-        Ok(None) => Json(serde_json::json!({"status": "closed", "message": null})),
-        Err(_) => Json(serde_json::json!({"status": "timeout", "message": null})),
+
+        if std::time::Instant::now() >= deadline {
+            return Json(serde_json::json!({"status": "timeout", "message": null}));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
 }
 

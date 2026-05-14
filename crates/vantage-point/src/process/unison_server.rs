@@ -921,47 +921,60 @@ async fn handle_msg_recv(
         .unwrap_or("agent")
         .to_string();
 
-    // 受信先 Handle を解決 (VP-166)
-    let handle = if lane == "lead" && stand == "agent" {
-        state
-            .agent_msgbox_lead
-            .clone()
-            .ok_or_else(|| "agent#lead msgbox not initialized".to_string())?
-    } else {
-        state
-            .lane_stand_boxes
-            .read()
-            .await
-            .get(&(lane.clone(), stand.clone()))
-            .cloned()
-            .ok_or_else(|| {
-                format!(
-                    "no mailbox for lane='{}' stand='{}' (worker '{}' running? canvas box wiring is PR-5)",
-                    lane, stand, lane
-                )
-            })?
-    };
+    // VP-176 (Phase 3 PR-4): WhitesnakeStore polling-based claim に切替
+    // 旧 mpsc Handle::recv は dead code 状態 (Phase 5 で削除)
+    let store = state.msgbox_store.as_ref().ok_or_else(|| {
+        "msgbox_store not initialized (VP-174 で SP startup 配線済のはず)".to_string()
+    })?;
 
-    // タイムアウト付きで受信を試行（Selective Receive でメッセージロスなし）
-    let result = tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), async {
-        if let Some(filter) = from_filter {
-            // Selective Receive: フィルタ不一致メッセージは stash に退避
-            handle.recv_matching(move |m| m.from == filter).await
-        } else {
-            // フィルタなし: 通常の recv（stash 優先）
-            handle.recv().await
-        }
-    })
-    .await;
+    // consumer_id: unique per recv 試行 (= msg_recv handler の単発呼び出し identifier)
+    let consumer_id = format!(
+        "msg_recv-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4().simple()
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
 
-    match result {
-        Ok(Some(msg)) => {
-            let value =
-                serde_json::to_value(&msg).map_err(|e| format!("Serialize error: {}", e))?;
-            Ok(serde_json::json!({"message": value}))
+    // Polling-based claim loop with from filter (= post-claim release on mismatch)
+    loop {
+        match store.claim(&stand, &lane, &consumer_id).await {
+            Ok(Some(msg)) => {
+                // from filter: 不一致なら release して次の候補へ
+                if let Some(ref filter) = from_filter
+                    && msg.from != *filter
+                {
+                    if let Err(e) = store.release_claim(&msg.id).await {
+                        tracing::warn!(
+                            "VP-176 release_claim failed (id={}): {} — 30s stale claim 経由で復帰",
+                            msg.id,
+                            e
+                        );
+                    }
+                    continue;
+                }
+
+                // manual_ack でなければ即 mark_consumed (= mpsc Handle::recv 互換)
+                if !msg.manual_ack
+                    && let Err(e) = store.mark_consumed(&msg.id).await
+                {
+                    tracing::warn!("VP-176 mark_consumed failed (id={}): {}", msg.id, e);
+                }
+                let value =
+                    serde_json::to_value(&msg).map_err(|e| format!("Serialize error: {}", e))?;
+                return Ok(serde_json::json!({"message": value}));
+            }
+            Ok(None) => {
+                // 候補なし、 polling 継続
+            }
+            Err(e) => {
+                return Err(format!("msgbox_store claim failed: {}", e));
+            }
         }
-        Ok(None) => Ok(serde_json::json!({"message": null, "reason": "msgbox closed"})),
-        Err(_) => Ok(serde_json::json!({"message": null, "reason": "timeout"})),
+
+        if std::time::Instant::now() >= deadline {
+            return Ok(serde_json::json!({"message": null, "reason": "timeout"}));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
 }
 
@@ -985,11 +998,15 @@ async fn handle_msg_ack(
         .ok_or_else(|| "id required".to_string())?
         .to_string();
 
-    let agent_msgbox_lead = state
-        .agent_msgbox_lead
+    // VP-176 (Phase 3 PR-4): WhitesnakeStore::mark_consumed に切替
+    let store = state
+        .msgbox_store
         .as_ref()
-        .ok_or_else(|| "agent#lead msgbox not initialized".to_string())?;
-    agent_msgbox_lead.ack(&id).await;
+        .ok_or_else(|| "msgbox_store not initialized".to_string())?;
+    store
+        .mark_consumed(&id)
+        .await
+        .map_err(|e| format!("mark_consumed failed: {}", e))?;
 
     Ok(serde_json::json!({"status": "ok", "id": id}))
 }

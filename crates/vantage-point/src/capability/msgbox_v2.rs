@@ -81,6 +81,12 @@ pub trait MsgboxStore: Send + Sync {
     /// msg_id を consumed_at = now で mark (SDG §4.7)
     async fn mark_consumed(&self, msg_id: &str) -> Result<()>;
 
+    /// claim を release (= claim_id / claimed_at を NONE に戻す、 VP-176)
+    ///
+    /// 用途: from filter で claim 後に「不一致 → 他 consumer に譲る」 場合に呼ぶ。
+    /// 30s stale timeout を待たずに即座に再 claim 可能化。
+    async fn release_claim(&self, msg_id: &str) -> Result<()>;
+
     /// status 別 row 数を取得 (`vp msgbox status` 用)
     async fn stats(&self) -> Result<MsgboxStats>;
 }
@@ -283,6 +289,17 @@ impl MsgboxStore for WhitesnakeStore {
             .map_err(|e| anyhow::anyhow!("msgbox_v2 mark_consumed failed: {}", e))?
             .check()
             .map_err(|e| anyhow::anyhow!("msgbox_v2 mark_consumed check failed: {}", e))?;
+        Ok(())
+    }
+
+    async fn release_claim(&self, msg_id: &str) -> Result<()> {
+        self.db
+            .query("UPDATE type::record('msgs', $id) SET claim_id = NONE, claimed_at = NONE")
+            .bind(("id", msg_id.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("msgbox_v2 release_claim failed: {}", e))?
+            .check()
+            .map_err(|e| anyhow::anyhow!("msgbox_v2 release_claim check failed: {}", e))?;
         Ok(())
     }
 
@@ -502,5 +519,46 @@ mod tests {
             .await
             .expect("claim");
         assert!(claimed.is_none(), "msg がない時 None を返すはず");
+    }
+
+    /// VP-176 (Phase 3 PR-4): release_claim で claim を戻して再 claim 可能性確認
+    #[tokio::test]
+    async fn test_release_claim_allows_reclaim() {
+        let store = make_test_store().await;
+
+        // 1 msg insert
+        let mut msg = Message::new("agent@vp/lead", "agent@vp/lead", MessageKind::Direct)
+            .with_payload(&serde_json::json!({ "text": "release-test" }));
+        msg.id = "release-msg-1".to_string();
+        store.insert(&msg).await.expect("insert");
+
+        // consumer A が claim
+        let claimed_a = store
+            .claim("agent", "lead", "consumer-A")
+            .await
+            .expect("claim A");
+        assert!(claimed_a.is_some(), "A claim 成功");
+        let claimed_a_msg = claimed_a.unwrap();
+
+        // 同じ msg を B が試みる → 失敗 (= A が持ってる)
+        let claimed_b1 = store
+            .claim("agent", "lead", "consumer-B")
+            .await
+            .expect("claim B1");
+        assert!(claimed_b1.is_none(), "B は A が claim 中で取れない");
+
+        // A が release_claim
+        store
+            .release_claim(&claimed_a_msg.id)
+            .await
+            .expect("release");
+
+        // B が再 claim → 今度は成功
+        let claimed_b2 = store
+            .claim("agent", "lead", "consumer-B")
+            .await
+            .expect("claim B2");
+        assert!(claimed_b2.is_some(), "release 後 B が claim 可能");
+        assert_eq!(claimed_b2.unwrap().id, "release-msg-1");
     }
 }
