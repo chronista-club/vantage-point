@@ -20,12 +20,18 @@
 //!   JoinHandle<()>` に統一)、 caller (= server.rs) は `ActorRegistry::spawn_service` 経由に集約
 //!   (= JoinHandle を ActorRegistry が保持、 PR-5 supervisor 統一の foundation)。
 //!
-//! 通信経路 / msg flow / Semaphore gate / race guard / payload schema 等の挙動は完全互換。
+//! ## VP-177 PR-5 (2026-05-14) — recv path を WhitesnakeStore.claim polling に rewire
+//!
+//! 旧 `msgbox_router.register("lane-spawn")` 経由の mpsc `Handle::recv()` を廃止し、
+//! `WhitesnakeStore.claim("lane-spawn", "lead", consumer_id)` polling (100ms interval) に
+//! 切替。 `Option<WhitesnakeStore> = None` の場合は recv 経路 idle で gracefully degrade。
+//! 通信経路の入口が DB-backed claim になっただけで、 Semaphore gate / race guard / payload
+//! schema 等の actor 内部挙動は完全互換。
 //!
 //! ## 設計
 //!
-//! - **address**: `lane-spawn` (= `msgbox_router.register("lane-spawn")`)、 cross-Process
-//!   namespacing は TheWorld registry layer が解決
+//! - **address**: `lane-spawn` (= `WhitesnakeStore.claim("lane-spawn", "lead", ...)`)、
+//!   cross-Process namespacing は TheWorld registry layer が解決
 //! - **wire format**: `LaneCmd::SpawnLane{...}` (= `crate::process::lane_cmd`)、 serde tag="kind"
 //! - **concurrency**: `Arc<Semaphore::new(max_concurrent)>` で permit gate、 各 Cmd は
 //!   `tokio::spawn` で並列処理されるが Semaphore で同時実行上限を制御

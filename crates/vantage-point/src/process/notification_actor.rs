@@ -136,10 +136,13 @@ impl SpawnableService for NotificationActor {
                                     .unwrap_or(&self.project_dir)
                                     .to_string();
                                 crate::notify::post_cc_notification(&project, &message, &path);
-                                // manual_ack でなければ即 mark_consumed (= mpsc Handle::recv 互換)
-                                if !msg.manual_ack
-                                    && let Err(e) = store.mark_consumed(&msg.id).await
-                                {
+                                // VP-177 PR-5: notify は fire-and-forget semantic (= post 後に
+                                // consumer 側で ack する経路が存在しない)。 旧 mpsc Handle::recv は
+                                // pop = 消費完了で manual_ack 概念が不在だったため、 WhitesnakeStore
+                                // 移植時に msg.manual_ack を尊重すると 30s stale claim loop で再 claim
+                                // → post_cc_notification 重複発火する。 よって manual_ack に関わらず
+                                // **常に** mark_consumed を呼ぶ (Round 1 review Issue #1)。
+                                if let Err(e) = store.mark_consumed(&msg.id).await {
                                     tracing::warn!("VP-177 notify mark_consumed failed (id={}): {}", msg.id, e);
                                 }
                             }
