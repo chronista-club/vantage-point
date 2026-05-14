@@ -230,6 +230,78 @@ race-free だが retry loop 必要。 latency 増。
 - §4.1 主 query example を transaction wrap (= path A) に rewrite、 ただし Phase 2 で path A/B/C 比較後に最終確定する旨を note
 - §4.3 atomic_claim 実装例 (`Handle::atomic_claim()`) を Phase 2 で実装と同時に確定、 SDG では「Phase 2 で path A/B/C のいずれかを選択」 と placeholder
 
+### VP-173 mini-spike 結果 (= 2026-05-14 追記、 path C 確定)
+
+Phase 3 PR-1 (VP-173) で 3 path を実機 verify、 **path C (2-step + CAS) 確定**:
+
+| Path | 結果 | 詳細 |
+|---|---|---|
+| **A1** (元 SDG 例) | ❌ `row = None` | `LET $candidates = SELECT ...; LET $target_id = $candidates[0].id;` で `$target_id` が null になる、 SurrealDB v3.0.4 で **subquery 結果が後続 LET に渡らない** |
+| **A2** (`SELECT VALUE id`) | ❌ Parse error | "Missing order idiom `ts`" — v3.0.4 で `SELECT VALUE id` syntax 不可 |
+| **A3** (FETCH keyword) | ❌ Parse error | syntax 試行錯誤、 working form 不明 |
+| **A4** (inline subquery) | ❌ Parse error | A2 と同じ idiom error |
+| **A5** (debug `$candidates`) | ❌ `null` | **重要 finding**: `LET $x = SELECT ...; RETURN $x;` で `$x` が null = subquery 結果保持 不可 |
+| **B** (DEFINE FUNCTION) | ❌ `row = None` | function 内も同じ subquery 問題 |
+| **C** (2-step + CAS) | ✅ **WORKING** | `SELECT *` で full row 取得 → caller で id 抽出 → `UPDATE type::record('msgs', $id) WHERE claim_id IS NONE` で CAS |
+
+### Path C race-free verification
+
+5 row × 100 並行 consumer + retry loop で:
+
+```
+✅ Path C race-free: 5 unique rows claimed by unique consumers
+```
+
+= race condition 0、 work pool として全 row 正しく配分。
+
+### Path C confirmed working form
+
+```rust
+// Step 1: SELECT * (= SurrealDB v3 で `SELECT id` は idiom error、 full row 取得)
+let rows: Vec<Value> = db.query(
+    "SELECT * FROM msgs
+         WHERE status='active' AND to_actor = $actor AND to_lane = $lane
+           AND consumed_at IS NONE
+           AND (claim_id IS NONE OR claimed_at + 30000 < $now)
+         ORDER BY ts ASC, id ASC LIMIT 1;"
+).bind(...).await?.take(0)?;
+
+if rows.is_empty() { return Ok(None); }
+
+// Step 2: id field は "msgs:`<local-id>`" 形式、 local id 抽出
+let id_full = rows[0]["id"].as_str()?;  // "msgs:`msg-0`"
+let local_id = id_full
+    .strip_prefix("msgs:")
+    .map(|s| s.trim_matches('`'))
+    .unwrap_or(id_full);
+
+// Step 3: CAS UPDATE
+let updated: Vec<Value> = db.query(
+    "UPDATE type::record('msgs', $id) SET claim_id=$cid, claimed_at=$now
+         WHERE claim_id IS NONE OR claimed_at + 30000 < $now;"
+).bind(("id", local_id))
+ .bind(("cid", consumer_id))
+ .bind(("now", now))
+ .await?.take(0)?;
+
+if updated.is_empty() { return Ok(None); }  // 他 consumer が先に取った → caller retry
+// claim 成功
+```
+
+### Phase 3 PR-1 で WhitesnakeStore::claim 完全実装
+
+VP-173 で path C を `crates/vantage-point/src/capability/msgbox_v2.rs::claim` に実装、 `test_claim_and_mark_consumed` の #[ignore] 解除。 **4/4 test passing 状態に到達**。
+
+### SurrealDB v3.0.4 の structural limit (= mini-spike 副次 finding)
+
+1. `LET $x = SELECT ...; ... $x ...` で subquery 結果が **後続 statement に正しく渡らない** (= Path A1/A5 で確認、 公式 docs 記述なし)
+2. `SELECT VALUE field` syntax は **idiom error** (= Path A2/A4、 v3 で挙動変更?)
+3. `SELECT id` は **reserved word 扱い** で idiom error、 `SELECT *` 必須
+4. `UPDATE ... ORDER BY LIMIT` 直接不可 (= 既知)
+5. `id` field は string `msgs:\`<local-id>\`` 形式、 `type::record('msgs', $local_id)` で record id 再構築要
+
+これらは SurrealDB v3 公式 docs に明示なし、 spike で実機 verify した structural truth。 将来 SurrealDB upgrade で解消する可能性あり、 その際は path A (subquery + transaction) を再評価する余地。
+
 ---
 
 ## §5 Q4-Q7 結果 (= 同 session で追加検証、 全 ✅ PASSED)
