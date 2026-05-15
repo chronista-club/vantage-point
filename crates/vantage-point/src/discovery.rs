@@ -380,7 +380,7 @@ async fn connect_and_register(
 
     // register リクエスト送信
     let resp = channel
-        .request::<serde_json::Value, serde_json::Value>("register", &agent_card.clone())
+        .request::<serde_json::Value, serde_json::Value>("register", agent_card)
         .await
         .map_err(|e| format!("register リクエスト失敗: {}", e))?;
 

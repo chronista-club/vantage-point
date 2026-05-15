@@ -810,7 +810,11 @@ impl VantageMcp {
             .await?;
 
         // タイムアウト付きリクエスト（Process 再起動時のハング防止）
-        let result = tokio::time::timeout(timeout, channel.request(method, &payload.clone())).await;
+        let result = tokio::time::timeout(
+            timeout,
+            channel.request::<serde_json::Value, serde_json::Value>(method, &payload),
+        )
+        .await;
 
         let resp = match result {
             Ok(Ok(resp)) => resp,
@@ -822,20 +826,23 @@ impl VantageMcp {
                 let channel = self
                     .get_quic_channel(&self.process_channel, "process")
                     .await?;
-                tokio::time::timeout(timeout, channel.request(method, &payload))
-                    .await
-                    .map_err(|_| {
-                        McpError::internal_error(
-                            format!("QUIC process.{} retry timed out", method),
-                            None,
-                        )
-                    })?
-                    .map_err(|e| {
-                        McpError::internal_error(
-                            format!("QUIC process.{} retry failed: {}", method, e),
-                            None,
-                        )
-                    })?
+                tokio::time::timeout(
+                    timeout,
+                    channel.request::<serde_json::Value, serde_json::Value>(method, &payload),
+                )
+                .await
+                .map_err(|_| {
+                    McpError::internal_error(
+                        format!("QUIC process.{} retry timed out", method),
+                        None,
+                    )
+                })?
+                .map_err(|e| {
+                    McpError::internal_error(
+                        format!("QUIC process.{} retry failed: {}", method, e),
+                        None,
+                    )
+                })?
             }
             Err(_) => {
                 // タイムアウト: 古い接続をリセットしてリトライ
@@ -845,20 +852,23 @@ impl VantageMcp {
                 let channel = self
                     .get_quic_channel(&self.process_channel, "process")
                     .await?;
-                tokio::time::timeout(timeout, channel.request(method, &payload))
-                    .await
-                    .map_err(|_| {
-                        McpError::internal_error(
-                            format!("QUIC process.{} retry timed out", method),
-                            None,
-                        )
-                    })?
-                    .map_err(|e| {
-                        McpError::internal_error(
-                            format!("QUIC process.{} retry failed: {}", method, e),
-                            None,
-                        )
-                    })?
+                tokio::time::timeout(
+                    timeout,
+                    channel.request::<serde_json::Value, serde_json::Value>(method, &payload),
+                )
+                .await
+                .map_err(|_| {
+                    McpError::internal_error(
+                        format!("QUIC process.{} retry timed out", method),
+                        None,
+                    )
+                })?
+                .map_err(|e| {
+                    McpError::internal_error(
+                        format!("QUIC process.{} retry failed: {}", method, e),
+                        None,
+                    )
+                })?
             }
         };
 
