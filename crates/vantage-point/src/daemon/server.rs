@@ -7,8 +7,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
+use club_unison::network::{MessageType, NetworkError, ProtocolServer, channel::UnisonChannel};
 use tokio::sync::{Mutex, RwLock};
-use unison::network::{MessageType, NetworkError, ProtocolServer, channel::UnisonChannel};
 
 use super::protocol::{
     AttachRequest, ChannelMessage, CreatePaneRequest, CreateSessionRequest, DetachRequest,
@@ -581,11 +581,11 @@ async fn send_channel_response(
 ) -> Result<(), NetworkError> {
     match response {
         ChannelMessage::Response { id, payload } => {
-            channel.send_response(id, method, payload).await
+            channel.send_response(id, method, &payload).await
         }
         ChannelMessage::Error { id, message } => {
             channel
-                .send_response(id, method, serde_json::json!({"error": message}))
+                .send_response(id, method, &serde_json::json!({"error": message}))
                 .await
         }
         // Event やその他の型はそのまま送信
@@ -809,7 +809,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                         .send_response(
                                             request_id,
                                             "list",
-                                            serde_json::json!({"processes": snapshot}),
+                                            &serde_json::json!({"processes": snapshot}),
                                         )
                                         .await
                                         .is_err()
@@ -823,7 +823,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                         .send_response(
                                             request_id,
                                             "subscribe",
-                                            serde_json::json!({"status": "ok"}),
+                                            &serde_json::json!({"status": "ok"}),
                                         )
                                         .await
                                         .is_err()
@@ -847,7 +847,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                                     }
                                                 };
                                                 if channel
-                                                    .send_event("event", payload)
+                                                    .send_event("event", &payload)
                                                     .await
                                                     .is_err()
                                                 {
@@ -875,7 +875,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                         .send_response(
                                             request_id,
                                             &method,
-                                            serde_json::json!({
+                                            &serde_json::json!({
                                                 "error": format!(
                                                     "不明なメソッド: world-process.{}",
                                                     method
@@ -1020,7 +1020,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                         .send_response(
                                             request_id,
                                             "register",
-                                            serde_json::json!({"status": "ok"}),
+                                            &serde_json::json!({"status": "ok"}),
                                         )
                                         .await
                                         .is_err()
@@ -1069,7 +1069,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                         .send_response(
                                             request_id,
                                             "unregister",
-                                            serde_json::json!({"status": "ok"}),
+                                            &serde_json::json!({"status": "ok"}),
                                         )
                                         .await;
                                     break; // チャネル終了
@@ -1079,7 +1079,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                         .send_response(
                                             request_id,
                                             "heartbeat",
-                                            serde_json::json!({"status": "ok"}),
+                                            &serde_json::json!({"status": "ok"}),
                                         )
                                         .await
                                         .is_err()
@@ -1104,7 +1104,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                         .send_response(
                                             request_id,
                                             "list",
-                                            serde_json::json!({"processes": list}),
+                                            &serde_json::json!({"processes": list}),
                                         )
                                         .await
                                         .is_err()
@@ -1140,7 +1140,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                         .send_response(
                                             request_id,
                                             "lanes/add",
-                                            serde_json::json!({"status": "ok"}),
+                                            &serde_json::json!({"status": "ok"}),
                                         )
                                         .await
                                         .is_err()
@@ -1171,7 +1171,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                         .send_response(
                                             request_id,
                                             "lanes/remove",
-                                            serde_json::json!({"status": "ok"}),
+                                            &serde_json::json!({"status": "ok"}),
                                         )
                                         .await
                                         .is_err()
@@ -1204,7 +1204,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                         .send_response(
                                             request_id,
                                             "lanes/update",
-                                            serde_json::json!({"status": "ok"}),
+                                            &serde_json::json!({"status": "ok"}),
                                         )
                                         .await
                                         .is_err()
@@ -1217,7 +1217,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                         .send_response(
                                             request_id,
                                             &method,
-                                            serde_json::json!({
+                                            &serde_json::json!({
                                                 "error": format!("不明なメソッド: registry.{}", method)
                                             }),
                                         )

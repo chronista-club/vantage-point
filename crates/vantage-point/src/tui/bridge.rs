@@ -60,7 +60,7 @@ pub fn spawn_terminal_bridge(
                 let addr = format!("[::1]:{}", quic_port);
 
                 // 接続（リトライ付き）
-                let client = match unison::ProtocolClient::new_default() {
+                let client = match club_unison::ProtocolClient::new_default() {
                     Ok(c) => c,
                     Err(e) => {
                         let _ = event_tx
@@ -98,9 +98,8 @@ pub fn spawn_terminal_bridge(
 
                 // 認証
                 match channel
-                    .request(
-                        "auth",
-                        serde_json::json!({"token": terminal_token}),
+                    .request::<serde_json::Value, serde_json::Value>(
+                        "auth", &serde_json::json!({"token": terminal_token}),
                     )
                     .await
                 {
@@ -172,15 +171,13 @@ pub fn spawn_terminal_bridge(
                                     }
                                 }
                                 Some(BridgeCommand::Resize { cols, rows }) => {
-                                    let _ = channel.request(
-                                        "resize",
-                                        serde_json::json!({"cols": cols, "rows": rows}),
+                                    let _ = channel.request::<serde_json::Value, serde_json::Value>(
+                                        "resize", &serde_json::json!({"cols": cols, "rows": rows}),
                                     ).await;
                                 }
                                 Some(BridgeCommand::CreateSession { cols, rows, command }) => {
-                                    match channel.request(
-                                        "create_session",
-                                        serde_json::json!({
+                                    match channel.request::<serde_json::Value, serde_json::Value>(
+                                        "create_session", &serde_json::json!({
                                             "cols": cols,
                                             "rows": rows,
                                             "command": command,
@@ -205,9 +202,8 @@ pub fn spawn_terminal_bridge(
                                     }
                                 }
                                 Some(BridgeCommand::SwitchSession(session_id)) => {
-                                    match channel.request(
-                                        "switch_session",
-                                        serde_json::json!({"session_id": session_id}),
+                                    match channel.request::<serde_json::Value, serde_json::Value>(
+                                        "switch_session", &serde_json::json!({"session_id": session_id}),
                                     ).await {
                                         Ok(resp) => {
                                             if let Some(sid) = resp.get("session_id").and_then(|v| v.as_str()) {
@@ -228,7 +224,7 @@ pub fn spawn_terminal_bridge(
                                         "horizontal": horizontal,
                                         "command": command,
                                     });
-                                    match channel.request("tmux_split", payload).await {
+                                    match channel.request::<serde_json::Value, serde_json::Value>("tmux_split", &payload).await {
                                         Ok(_) => {}
                                         Err(e) => {
                                             tracing::warn!("tmux_split 失敗: {}", e);

@@ -1,6 +1,6 @@
+use club_kdl::KdlDeserialize;
 use std::path::{Path, PathBuf};
 use std::{env, fs, io};
-use unison_kdl::KdlDeserialize;
 
 const CONFIG_FILE: &str = ".claude/worker-files.kdl";
 
@@ -98,7 +98,7 @@ pub fn load_config(repo_root: &Path) -> Result<WorkerConfig, String> {
         ));
     }
     let content = fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
-    let raw: RawConfig = unison_kdl::from_str(&content).map_err(|e| e.to_string())?;
+    let raw: RawConfig = club_kdl::from_str(&content).map_err(|e| e.to_string())?;
     Ok(raw.into())
 }
 

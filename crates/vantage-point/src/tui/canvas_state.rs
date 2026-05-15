@@ -130,7 +130,7 @@ pub fn spawn_canvas_receiver(
             let quic_port = port + crate::process::unison_server::QUIC_PORT_OFFSET;
             let addr = format!("[::1]:{}", quic_port);
 
-            let client = match unison::ProtocolClient::new_default() {
+            let client = match club_unison::ProtocolClient::new_default() {
                 Ok(c) => c,
                 Err(_) => return,
             };

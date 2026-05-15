@@ -40,6 +40,12 @@ jobs:
           # LFS pointer ではなく実 binary を pull 必須 (FONT_ASSETS bytes.len() > 1MB assert)
           lfs: true
 
+      # VP-180 (2026-05-15): club-unison v0.7.0 が build script で protoc を要求
+      # (= buffa::Message / ProtoCodec を生成するため)。 macOS GHA runner には
+      # 未インストールのため brew で入れる必要。
+      - name: Install protoc (for club-unison build script)
+        run: brew install protobuf
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -68,6 +74,12 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v4
+
+      # VP-180: club-unison v0.7.0 が build script で protoc を要求
+      - name: Install protoc (for club-unison build script)
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
