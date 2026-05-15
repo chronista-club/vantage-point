@@ -165,18 +165,22 @@ pub async fn run(
     }
 
     // SurrealDB (embedded) に接続
-    // single-writer の前提下で World (= この Process) がオープン中は他 Process は
-    // 同じ DB を開けないため、SP 独立起動時はエラー時に DB なし継続する fallback は
-    // 残しておく (dogfooding / 将来の "vp start -p N" 併用で有用)。
+    // VP-182: SP は project slug 別の独立 DB ディレクトリ (`db/sp_{slug}/`) を使う。
+    // 旧実装は World と同一 `db/` を共有していたため surrealkv の OS 排他ロックで
+    // 衝突し、 SP 側が `vpdb = None` に陥って msgbox_store が初期化されない regression
+    // が発生していた (VP-179 で msg routing が WhitesnakeStore 単一経路化した結果顕在化)。
+    // ディレクトリ分離で LOCK 衝突を構造的に解消。 接続失敗時の DB なし fallback は
+    // 保険として残す。
     let vpdb: Option<crate::db::SharedVpDb> = {
-        let data_dir = crate::db::db_data_dir();
+        let slug = crate::resolve::project_slug(&project_dir, &config_for_init);
+        let data_dir = crate::db::db_data_dir_for_project(&slug);
         match crate::db::VpDb::connect_embedded(&data_dir).await {
             Ok(db) => {
                 if let Err(e) = db.define_schema().await {
                     tracing::warn!("SP: SurrealDB スキーマ定義失敗（DB なしで継続）: {}", e);
                     None
                 } else {
-                    tracing::info!("SP: SurrealDB 接続成功 (embedded)");
+                    tracing::info!("SP: SurrealDB 接続成功 (embedded: {})", data_dir.display());
                     Some(std::sync::Arc::new(db))
                 }
             }
@@ -713,8 +717,10 @@ pub async fn run_world(
 
     // SurrealDB (embedded) に接続してスキーマ定義
     // surrealkv backend で in-process DB を開く。外部 `surreal` バイナリ不要。
+    // VP-182: World は `db/world/` 専用ディレクトリを使う (= SP の `db/sp_{slug}/` と
+    // 分離、 surrealkv OS 排他ロックの衝突を回避)。
     let vpdb: Option<crate::db::SharedVpDb> = {
-        let data_dir = crate::db::db_data_dir();
+        let data_dir = crate::db::db_data_dir_for_world();
         match crate::db::VpDb::connect_embedded(&data_dir).await {
             Ok(db) => {
                 if let Err(e) = db.define_schema().await {
