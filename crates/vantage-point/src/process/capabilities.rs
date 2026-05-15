@@ -14,8 +14,8 @@
 use crate::capability::core::Capability;
 use crate::capability::msgbox_remote::RemoteRoutingClient;
 use crate::capability::{
-    AgentCapability, CapabilityContext, CapabilityRegistry, EventBus, MsgboxRouter,
-    ProtocolCapability, Whitesnake,
+    AgentCapability, CapabilityContext, CapabilityRegistry, EventBus, ProtocolCapability,
+    Whitesnake,
 };
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -25,11 +25,12 @@ use tokio::sync::RwLock;
 /// Process (= LSCM Project Layer) で使用する Capability を管理する。 LSCM doc 12 §9 catalog の
 /// Project 階層 Stand のみ host。 World 階層 Stand (HP / Whitesnake / Update / TheWorld) は
 /// `crate::daemon::world_capabilities::WorldCapabilities` 側に移管 (PR-α-2 完了)。
+///
+/// VP-179 (Phase 5): `msgbox_router` field 撤去。 msg routing は `AppState.msgbox_store`
+/// (= WhitesnakeStore) に統一済 (VP-169 epic 完了)。
 pub struct ProcessCapabilities {
     /// イベントバス（全Capability共有）
     pub event_bus: Arc<EventBus>,
-    /// メールボックスルーター（1:1 ポイントツーポイント通信）
-    pub msgbox_router: Arc<MsgboxRouter>,
     /// Capability レジストリ
     pub registry: Arc<RwLock<CapabilityRegistry>>,
     /// Protocol Capability（WebSocket/stdio配信用）
@@ -39,38 +40,27 @@ pub struct ProcessCapabilities {
 }
 
 /// Capability 初期化設定
+///
+/// VP-179 (Phase 5): `whitesnake` / `remote_routing` field は MsgboxRouter 廃止に伴い
+/// 配線経路としては未使用 (= AppState 側で直接 wire される)。 互換性のため signature は維持。
 pub struct CapabilityConfig {
     /// プロジェクトディレクトリ
     pub project_dir: String,
-    /// 永続化バックエンド（Msgbox persistent メッセージ用）
-    ///
-    /// Some の場合、MsgboxRouter が persistent メッセージを DISC に保存し、
-    /// Process 再起動後に `restore_pending()` で復元する。
+    /// 永続化バックエンド (= AppState.whitesnake に wire される、 Capability 初期化には未使用)
     pub whitesnake: Option<Whitesnake>,
-    /// Remote routing client（Msgbox Phase 3: cross-Process actor messaging）
-    ///
-    /// Some の場合、`@{port}` / `@{project}` 形式のアドレスを TheWorld registry で
-    /// 解決し、target Process に forward する。None の場合は Process-local 配信のみ。
+    /// Remote routing client (= msgbox_remote 配信 path、 Capability 初期化には未使用)
     pub remote_routing: Option<RemoteRoutingClient>,
 }
 
 impl ProcessCapabilities {
     /// 新しい ProcessCapabilities を作成・初期化
     pub async fn new(config: CapabilityConfig) -> Self {
+        // VP-179 (Phase 5): MsgboxRouter 構築を撤去。 config.whitesnake / config.remote_routing
+        // は AppState 側で直接 wire される。
+        let _ = (&config.whitesnake, &config.remote_routing);
+
         // EventBus を作成
         let event_bus = Arc::new(EventBus::new());
-
-        // MsgboxRouter を作成
-        // - Whitesnake 注入: persistent メッセージ対応
-        // - RemoteRoutingClient 注入: cross-Process forward 対応（Phase 3 Step 2）
-        let msgbox_router = Arc::new(
-            match (config.whitesnake.clone(), config.remote_routing.clone()) {
-                (Some(ws), Some(remote)) => MsgboxRouter::with_persistence_and_remote(ws, remote),
-                (Some(ws), None) => MsgboxRouter::with_persistence(ws),
-                (None, Some(remote)) => MsgboxRouter::with_remote(remote),
-                (None, None) => MsgboxRouter::new(),
-            },
-        );
 
         // Registry を作成
         let ctx = CapabilityContext::new().with_config(serde_json::json!({
@@ -88,7 +78,6 @@ impl ProcessCapabilities {
 
         Self {
             event_bus,
-            msgbox_router,
             registry,
             protocol,
             agent,
@@ -97,17 +86,14 @@ impl ProcessCapabilities {
 
     /// 全 Capability を初期化
     pub async fn initialize(&self) -> anyhow::Result<()> {
-        // VP-178 (Phase 4): protocol_msgbox 廃止 — ProtocolCapability::initialize は
-        // `_ctx` 未使用 (= msgbox 経由の subscription 経路を持たない observer) のため、
-        // register("protocol") を呼んで dead Handle を握る意味がなくなった。 全 Capability
-        // は msgbox なしの empty context で初期化。
+        // VP-178 (Phase 4) / VP-179 (Phase 5): msgbox 経路を持たない empty context で
+        // 各 Capability を初期化。 Protocol / Agent は observer 化済 (= subscription
+        // 経路なし、 EventBus のみ使う)。
         {
             let ctx = CapabilityContext::new();
             let mut protocol = self.protocol.write().await;
             protocol.initialize(&ctx).await?;
         }
-
-        // Agent Capability 初期化 (VP-157: msgbox 渡しなし = observer 化)
         {
             let ctx = CapabilityContext::new();
             let mut agent = self.agent.write().await;
@@ -115,14 +101,6 @@ impl ProcessCapabilities {
         }
 
         tracing::info!("All capabilities initialized");
-
-        // 永続化メッセージを復元（Whitesnake 有効時のみ）
-        match self.msgbox_router.restore_pending().await {
-            Ok(0) => {}
-            Ok(n) => tracing::info!("Msgbox: {} 件の永続メッセージを復元", n),
-            Err(e) => tracing::warn!("Msgbox: 永続メッセージ復元失敗: {}", e),
-        }
-
         Ok(())
     }
 
@@ -139,9 +117,6 @@ impl ProcessCapabilities {
             let mut protocol = self.protocol.write().await;
             let _ = protocol.shutdown().await;
         }
-
-        // MsgboxRouter シャットダウン
-        self.msgbox_router.shutdown();
 
         tracing::info!("All capabilities shut down");
         Ok(())

@@ -152,12 +152,14 @@ pub struct HealthResponse {
 }
 
 /// VP-83 Phase 2.5 準備: Msgbox 内部 state を dump する debug endpoint。
-/// Mailbox に登録されている address 一覧を返し、Lead/Worker 間 msg flow の疎通確認に使う。
-pub async fn msgbox_debug_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
-    let addresses = state.capabilities.msgbox_router.addresses().await;
+///
+/// VP-179 (Phase 5): mpsc Router 廃止に伴い、 in-memory address registry は消失。
+/// msgs table 経由の discovery は別 epic で実装予定 (= `SELECT DISTINCT to_addr FROM msgs`)。
+/// 現状は空 vec を返す互換 shim。
+pub async fn msgbox_debug_handler(State(_state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     Json(serde_json::json!({
-        "addresses": addresses,
-        "count": addresses.len(),
+        "addresses": Vec::<String>::new(),
+        "count": 0,
     }))
 }
 
@@ -308,18 +310,16 @@ pub async fn diagnose_handler(State(state): State<Arc<AppState>>) -> Json<serde_
         reports.push(midi.diagnose());
     }
 
-    // Mailbox (Router 自体は Capability trait 外だが、integration layer として
-    // 診断対象に含める)
-    let msgbox_addresses = state.capabilities.msgbox_router.addresses().await;
-    let msgbox_recent = state.capabilities.msgbox_router.recent_history(3).await;
-
+    // VP-179 (Phase 5): mpsc Router 廃止に伴い、 in-memory addresses + recent_history は消失。
+    // diagnose に msg layer info を含める場合は msgs table 経由 (= `SELECT DISTINCT to_addr`
+    // + 直近 row 数) で実装 (= 別 epic)。 現状は空 stub。
     Json(serde_json::json!({
         "count": reports.len(),
         "reports": reports,
         "msgbox": {
-            "addresses": msgbox_addresses,
-            "count": msgbox_addresses.len(),
-            "recent": msgbox_recent,
+            "addresses": Vec::<String>::new(),
+            "count": 0,
+            "recent": Vec::<serde_json::Value>::new(),
         },
     }))
 }

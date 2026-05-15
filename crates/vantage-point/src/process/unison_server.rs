@@ -964,9 +964,12 @@ async fn handle_msg_recv(
 }
 
 /// 登録済み Msgbox アドレス一覧を返す
-async fn handle_msg_peers(state: &AppState) -> Result<serde_json::Value, String> {
-    let addresses = state.capabilities.msgbox_router.addresses().await;
-    Ok(serde_json::json!({"addresses": addresses}))
+///
+/// VP-179 (Phase 5): mpsc Router の `addresses()` は廃止済 (= 全 register caller が
+/// VP-178 Phase 4 で撤去)。 msgs table 経由の discovery が必要な場合は別 epic で
+/// SQL `SELECT DISTINCT to_addr FROM msgs` を実装。 現状は空 vec を返す互換 shim。
+async fn handle_msg_peers(_state: &AppState) -> Result<serde_json::Value, String> {
+    Ok(serde_json::json!({"addresses": Vec::<String>::new()}))
 }
 
 /// 明示 ack — persistent メッセージを永続ストアから削除
