@@ -3,6 +3,10 @@
 //! embedded mode に移行したため、DB は TheWorld Process のライフサイクルと
 //! 一緒に上がる (別 daemon は不要)。ここでは主に path 確認・初期化・スキーマ
 //! 適用に絞った utility を提供する。
+//!
+//! VP-182: DB ディレクトリが World (`db/world/`) と per-SP (`db/sp_{slug}/`) に
+//! 分離されたため、 本コマンドは **World DB** を対象とする。 per-SP DB の確認が
+//! 必要になった場合は `--project <slug>` option を別途追加する (= 別 issue)。
 
 use anyhow::Result;
 use clap::Subcommand;
@@ -25,7 +29,7 @@ pub fn execute(cmd: DbCommands) -> Result<()> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    let data_dir = db::db_data_dir();
+    let data_dir = db::db_data_dir_for_world();
 
     match cmd {
         DbCommands::Init => rt.block_on(async {

@@ -37,12 +37,36 @@ const NS: &str = "vp";
 /// SurrealDB のデータベース名
 const DB_NAME: &str = "vp";
 
-/// SurrealDB のデータディレクトリ (デフォルト: `$XDG_CONFIG_HOME/vantage/db`)
-pub fn db_data_dir() -> PathBuf {
+/// SurrealDB データディレクトリの root (`$XDG_CONFIG_HOME/vantage/db`)
+///
+/// VP-182: `dirs::config_dir()` が None の環境 (= sandbox 等) では `$HOME/.config`
+/// を挟んでから `/tmp` に落とす。 `/tmp` は OS 再起動でクリアされ projects /
+/// msgs が silent に消えるため、 home 配下を優先 fallback に使う。
+fn db_root() -> PathBuf {
     dirs::config_dir()
+        .or_else(|| dirs::home_dir().map(|h| h.join(".config")))
         .unwrap_or_else(|| PathBuf::from("/tmp"))
         .join("vantage")
         .join("db")
+}
+
+/// World daemon (TheWorld) 専用の DB ディレクトリ (`.../vantage/db/world`)
+///
+/// VP-182: surrealkv は OS レベル排他ロック (`try_lock_exclusive`) を持つため、
+/// World と SP が同一ディレクトリを open すると LOCK 衝突で 2 番目が失敗する。
+/// World は `projects` / `processes` テーブルを保持する専用 DB を `db/world/` に分離。
+pub fn db_data_dir_for_world() -> PathBuf {
+    db_root().join("world")
+}
+
+/// Project (SP / Star Platinum) 専用の DB ディレクトリ (`.../vantage/db/sp_{slug}`)
+///
+/// VP-182: 各 SP は project slug 別の独立 DB ディレクトリを使う。 doc 19 §4.6 の
+/// 「各 SP は自分の DB に write」 設計をディレクトリ分離で物理化し、 World との
+/// surrealkv LOCK 衝突を構造的に解消する。 cross-process forward は受信側 SP の
+/// DB に書く設計 (doc 19 §4.6) なので per-SP 分離と整合する。
+pub fn db_data_dir_for_project(slug: &str) -> PathBuf {
+    db_root().join(format!("sp_{}", slug))
 }
 
 /// VP のデータベースクライアント
@@ -544,12 +568,30 @@ mod tests {
     }
 
     #[test]
-    fn test_db_data_dir() {
-        let dir = db_data_dir();
+    fn test_db_data_dir_world_and_project_separated() {
+        let world = db_data_dir_for_world();
+        let proj = db_data_dir_for_project("vantage-point");
+
+        // 両方とも vantage/db 配下
         assert!(
-            dir.to_string_lossy().contains("vantage"),
-            "データディレクトリに 'vantage' が含まれていない: {}",
-            dir.display()
+            world.to_string_lossy().contains("vantage"),
+            "World DB dir に 'vantage' が含まれていない: {}",
+            world.display()
+        );
+        // VP-182: World と SP の DB ディレクトリは別であること (= surrealkv LOCK 衝突回避)
+        assert_ne!(
+            world, proj,
+            "World と project の DB ディレクトリは分離されているべき"
+        );
+        assert!(
+            world.ends_with("world"),
+            "World DB dir は 'world' で終わるべき: {}",
+            world.display()
+        );
+        assert!(
+            proj.ends_with("sp_vantage-point"),
+            "project DB dir は 'sp_<slug>' 形式であるべき: {}",
+            proj.display()
         );
     }
 

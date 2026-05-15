@@ -276,10 +276,14 @@ async fn send(url: &str, to: &str, body: &str, from: &str) -> Result<()> {
     let client = reqwest::Client::new();
     let endpoint = format!("{}/api/msgbox/send", url.trim_end_matches('/'));
 
+    // VP-182: server 側 `MsgboxSendRequest` は `payload` (= object) を期待する。
+    // 旧実装は `body` (= string) を送っていたが、 `#[serde(default)]` で無視され
+    // payload が NULL になり、 msgs schema の `payload TYPE object` で coerce 失敗していた。
+    // CLI は ad-hoc test 用なので body string を `{"text": ...}` object に wrap して送る。
     let payload = serde_json::json!({
         "from": from,
         "to": to,
-        "body": body,
+        "payload": { "text": body },
     });
 
     let resp = client
