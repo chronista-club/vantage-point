@@ -40,9 +40,9 @@ jobs:
           # LFS pointer ではなく実 binary を pull 必須 (FONT_ASSETS bytes.len() > 1MB assert)
           lfs: true
 
-      # VP-180 (2026-05-15): club-unison v0.7.0 が build script で protoc を要求
-      # (= buffa::Message / ProtoCodec を生成するため)。 macOS GHA runner には
-      # 未インストールのため brew で入れる必要。
+      # VP-180 (2026-05-15) で導入: club-unison v0.7.0+ の build script が protoc を要求
+      # (= buffa::Message / ProtoCodec を生成するため、 v0.9 の wire format pivot 以降は
+      # buffa-build が主役)。 macOS GHA runner には未インストールのため brew で入れる必要。
       - name: Install protoc (for club-unison build script)
         run: brew install protobuf
 
@@ -75,7 +75,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # VP-180: club-unison v0.7.0 が build script で protoc を要求
+      # VP-180 で導入: club-unison v0.7.0+ の build script が protoc を要求 (buffa-build 経由)
       - name: Install protoc (for club-unison build script)
         uses: arduino/setup-protoc@v3
         with:
