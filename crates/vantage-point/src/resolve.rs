@@ -174,6 +174,22 @@ pub fn project_name_from_path(project_dir: &str, config: &Config) -> String {
         .to_string()
 }
 
+/// FNV-1a 64-bit hash。
+///
+/// VP-182: `project_slug` の非 ASCII fallback で使う。 標準 `DefaultHasher` は
+/// 「no stability guarantees on future Rust versions」 (std doc 明記) のため、
+/// Rust バージョン更新で出力が変わると DB ディレクトリ名 (`db/sp_{slug}/`) が
+/// ズレて msgbox 履歴が孤立する。 FNV-1a は仕様固定の決定的アルゴリズムなので
+/// 永続データ key の安定性を保証できる。
+fn fnv1a_64(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325; // FNV offset basis
+    for &b in bytes {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3); // FNV prime
+    }
+    hash
+}
+
 /// project を Whitesnake のディレクトリ等で使える安定 slug に変換する（VP-165 / doc 17 決定B）。
 ///
 /// `project_name_from_path` の結果を `[a-zA-Z0-9_-]` のみに sanitize（それ以外は `_`）。
@@ -192,12 +208,11 @@ pub fn project_slug(project_dir: &str, config: &Config) -> String {
             }
         })
         .collect();
-    // 安定 alnum が無い（空 or 全部 '_'/'-'）なら path の hash を fallback に
+    // 安定 alnum が無い（空 or 全部 '_'/'-'）なら path の hash を fallback に。
+    // VP-182: DefaultHasher は Rust バージョン間で出力不安定のため FNV-1a に変更。
     if !sanitized.chars().any(|c| c.is_ascii_alphanumeric()) {
-        use std::hash::{Hash, Hasher};
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        Config::normalize_path(std::path::Path::new(project_dir)).hash(&mut h);
-        format!("h{:016x}", h.finish())
+        let normalized = Config::normalize_path(std::path::Path::new(project_dir));
+        format!("h{:016x}", fnv1a_64(normalized.as_bytes()))
     } else {
         sanitized
     }

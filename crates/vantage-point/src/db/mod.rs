@@ -38,8 +38,13 @@ const NS: &str = "vp";
 const DB_NAME: &str = "vp";
 
 /// SurrealDB データディレクトリの root (`$XDG_CONFIG_HOME/vantage/db`)
+///
+/// VP-182: `dirs::config_dir()` が None の環境 (= sandbox 等) では `$HOME/.config`
+/// を挟んでから `/tmp` に落とす。 `/tmp` は OS 再起動でクリアされ projects /
+/// msgs が silent に消えるため、 home 配下を優先 fallback に使う。
 fn db_root() -> PathBuf {
     dirs::config_dir()
+        .or_else(|| dirs::home_dir().map(|h| h.join(".config")))
         .unwrap_or_else(|| PathBuf::from("/tmp"))
         .join("vantage")
         .join("db")
