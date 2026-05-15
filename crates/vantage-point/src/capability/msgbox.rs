@@ -54,7 +54,7 @@ pub struct Message {
     pub id: String,
     /// 失効時刻（Unix epoch ミリ秒）
     ///
-    /// `now_ms()` 超過で GC 対象。 None の場合、送信時に默认 48h が自動適用される。
+    /// `now_ms()` 超過で GC 対象。 None の場合、送信時にデフォルト 48h が自動適用される。
     /// VP-158: 全 msg 永続化が default のため `persistent` flag は廃止、 TTL は全 msg に適用。
     #[serde(default)]
     pub expires_at: Option<u64>,
