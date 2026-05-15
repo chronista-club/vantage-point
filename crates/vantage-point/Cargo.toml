@@ -38,7 +38,7 @@ tracing-subscriber = { workspace = true }
 clap = { workspace = true }
 
 # Phase 4-X: ccws lib (vp-cli から移動) — Worker workspace 管理
-unison-kdl = { workspace = true }
+club-kdl = { workspace = true }
 glob = { workspace = true }
 
 # Error handling
@@ -62,8 +62,8 @@ reqwest = { workspace = true }
 rmcp = { version = "1.6", features = ["server", "transport-io"] }
 schemars = "1"
 
-# QUIC protocol (Unison)
-unison = { workspace = true }
+# QUIC protocol (club-unison、 旧 unison。 v0.7.0 で crates.io 公開 + rename)
+club-unison = { workspace = true }
 
 # GUI stack (feature = "gui" 有効時のみ有効化)
 tao = { version = "0.35", optional = true }

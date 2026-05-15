@@ -275,7 +275,7 @@ pub fn spawn_registry_keepalive(
                         tokio::select! {
                             _ = interval.tick() => {
                                 if conn.channel
-                                    .request("heartbeat", serde_json::json!({}))
+                                    .request::<serde_json::Value, serde_json::Value>("heartbeat", &serde_json::json!({}))
                                     .await
                                     .is_err()
                                 {
@@ -297,7 +297,7 @@ pub fn spawn_registry_keepalive(
                                         };
                                         if conn
                                             .channel
-                                            .request(method, serde_json::to_value(&diff).unwrap_or_default())
+                                            .request::<serde_json::Value, serde_json::Value>(method, &serde_json::to_value(&diff).unwrap_or_default())
                                             .await
                                             .is_err()
                                         {
@@ -323,7 +323,7 @@ pub fn spawn_registry_keepalive(
                             _ = shutdown.cancelled() => {
                                 // グレースフル unregister
                                 let _ = conn.channel
-                                    .request("unregister", serde_json::json!({}))
+                                    .request::<serde_json::Value, serde_json::Value>("unregister", &serde_json::json!({}))
                                     .await;
                                 tracing::info!("Registry: QUIC 登録解除 (shutdown)");
                                 return;
@@ -355,16 +355,16 @@ pub fn spawn_registry_keepalive(
 /// チャネルと一緒に保持する必要がある。
 struct RegistryConnection {
     /// QUIC 接続の所有権（drop されないように保持）
-    _client: unison::ProtocolClient,
+    _client: club_unison::ProtocolClient,
     /// registry チャネル（heartbeat / unregister に使用）
-    channel: unison::UnisonChannel,
+    channel: club_unison::UnisonChannel,
 }
 
 /// TheWorld の "registry" チャネルに接続し、register リクエストを送信する
 async fn connect_and_register(
     agent_card: &serde_json::Value,
 ) -> Result<RegistryConnection, String> {
-    let client = unison::ProtocolClient::new_default()
+    let client = club_unison::ProtocolClient::new_default()
         .map_err(|e| format!("QUIC client 作成失敗: {}", e))?;
 
     let addr = format!("[::1]:{}", WORLD_PORT);
@@ -380,7 +380,7 @@ async fn connect_and_register(
 
     // register リクエスト送信
     let resp = channel
-        .request("register", agent_card.clone())
+        .request::<serde_json::Value, serde_json::Value>("register", &agent_card.clone())
         .await
         .map_err(|e| format!("register リクエスト失敗: {}", e))?;
 

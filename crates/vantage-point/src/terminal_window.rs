@@ -310,8 +310,8 @@ const MAX_RECONNECT_ATTEMPTS: u32 = 10;
 async fn connect_and_auth(
     addr: &str,
     terminal_token: &str,
-) -> Option<unison::network::channel::UnisonChannel> {
-    let client = match unison::ProtocolClient::new_default() {
+) -> Option<club_unison::network::channel::UnisonChannel> {
+    let client = match club_unison::ProtocolClient::new_default() {
         Ok(c) => c,
         Err(e) => {
             tracing::error!("ProtocolClient 作成失敗: {}", e);
@@ -332,7 +332,10 @@ async fn connect_and_auth(
 
     // 認証: トークンを送信
     match channel
-        .request("auth", serde_json::json!({"token": terminal_token}))
+        .request::<serde_json::Value, serde_json::Value>(
+            "auth",
+            &serde_json::json!({"token": terminal_token}),
+        )
         .await
     {
         Ok(resp) => {
@@ -353,7 +356,7 @@ async fn connect_and_auth(
 /// チャネルを使った双方向 I/O ループ。切断時に false を返す（リコネクト可）。
 /// EventLoop が閉じた場合は true を返す（終了）。
 async fn run_bridge_loop(
-    channel: &unison::network::channel::UnisonChannel,
+    channel: &club_unison::network::channel::UnisonChannel,
     bridge_rx: &mut tokio::sync::mpsc::Receiver<PtyInputCommand>,
     proxy: &EventLoopProxy<TerminalEvent>,
 ) -> bool {
@@ -379,9 +382,8 @@ async fn run_bridge_loop(
                         }
                     }
                     Some(PtyInputCommand::Resize { cols, rows }) => {
-                        let _ = channel.request(
-                            "resize",
-                            serde_json::json!({"cols": cols, "rows": rows}),
+                        let _ = channel.request::<serde_json::Value, serde_json::Value>(
+                            "resize", &serde_json::json!({"cols": cols, "rows": rows}),
                         ).await;
                     }
                     None => return true, // input チャネル終了

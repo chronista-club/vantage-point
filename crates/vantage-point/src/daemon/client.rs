@@ -8,8 +8,8 @@
 //! request() メソッドでリクエスト/レスポンスを行う。
 
 use anyhow::{Context, Result};
-use unison::network::MessageType;
-use unison::{ProtocolClient, UnisonChannel};
+use club_unison::network::MessageType;
+use club_unison::{ProtocolClient, UnisonChannel};
 
 use super::protocol::*;
 #[allow(unused_imports)]
@@ -121,7 +121,7 @@ impl DaemonClient {
         })?;
         let resp = self
             .session_ch
-            .request("create", payload)
+            .request::<serde_json::Value, serde_json::Value>("create", &payload)
             .await
             .map_err(|e| anyhow::anyhow!("session.create 失敗: {}", e))?;
         serde_json::from_value(resp).context("session.create レスポンスのパースに失敗")
@@ -131,7 +131,7 @@ impl DaemonClient {
     pub async fn list_sessions(&self) -> Result<Vec<SessionInfo>> {
         let resp = self
             .session_ch
-            .request("list", serde_json::json!({}))
+            .request::<serde_json::Value, serde_json::Value>("list", &serde_json::json!({}))
             .await
             .map_err(|e| anyhow::anyhow!("session.list 失敗: {}", e))?;
         let list: ListSessionsResponse =
@@ -156,7 +156,7 @@ impl DaemonClient {
             session_id: session_id.to_string(),
         })?;
         self.session_ch
-            .request("attach", payload)
+            .request::<serde_json::Value, serde_json::Value>("attach", &payload)
             .await
             .map_err(|e| anyhow::anyhow!("session.attach 失敗: {}", e))?;
         Ok(())
@@ -168,7 +168,7 @@ impl DaemonClient {
             session_id: session_id.to_string(),
         })?;
         self.session_ch
-            .request("detach", payload)
+            .request::<serde_json::Value, serde_json::Value>("detach", &payload)
             .await
             .map_err(|e| anyhow::anyhow!("session.detach 失敗: {}", e))?;
         Ok(())
@@ -194,7 +194,7 @@ impl DaemonClient {
         })?;
         let resp = self
             .terminal_ch
-            .request("create_pane", payload)
+            .request::<serde_json::Value, serde_json::Value>("create_pane", &payload)
             .await
             .map_err(|e| anyhow::anyhow!("terminal.create_pane 失敗: {}", e))?;
         let pane_resp: CreatePaneResponse = serde_json::from_value(resp)
@@ -214,7 +214,7 @@ impl DaemonClient {
             data: encoded,
         })?;
         self.terminal_ch
-            .request("write", payload)
+            .request::<serde_json::Value, serde_json::Value>("write", &payload)
             .await
             .map_err(|e| anyhow::anyhow!("terminal.write 失敗: {}", e))?;
         Ok(())
@@ -235,7 +235,7 @@ impl DaemonClient {
             rows,
         })?;
         self.terminal_ch
-            .request("resize", payload)
+            .request::<serde_json::Value, serde_json::Value>("resize", &payload)
             .await
             .map_err(|e| anyhow::anyhow!("terminal.resize 失敗: {}", e))?;
         Ok(())
@@ -258,7 +258,7 @@ impl DaemonClient {
         })?;
         let resp = self
             .terminal_ch
-            .request("read_output", payload)
+            .request::<serde_json::Value, serde_json::Value>("read_output", &payload)
             .await
             .map_err(|e| anyhow::anyhow!("terminal.read_output 失敗: {}", e))?;
 
@@ -284,7 +284,7 @@ impl DaemonClient {
             pane_id,
         })?;
         self.terminal_ch
-            .request("kill_pane", payload)
+            .request::<serde_json::Value, serde_json::Value>("kill_pane", &payload)
             .await
             .map_err(|e| anyhow::anyhow!("terminal.kill_pane 失敗: {}", e))?;
         Ok(())
@@ -298,7 +298,7 @@ impl DaemonClient {
     pub async fn health(&self) -> Result<HealthResponse> {
         let resp = self
             .system_ch
-            .request("health", serde_json::json!({}))
+            .request::<serde_json::Value, serde_json::Value>("health", &serde_json::json!({}))
             .await
             .map_err(|e| anyhow::anyhow!("system.health 失敗: {}", e))?;
         let health: HealthResponse =
@@ -309,7 +309,7 @@ impl DaemonClient {
     /// Daemon をシャットダウンする
     pub async fn shutdown(&self) -> Result<()> {
         self.system_ch
-            .request("shutdown", serde_json::json!({}))
+            .request::<serde_json::Value, serde_json::Value>("shutdown", &serde_json::json!({}))
             .await
             .map_err(|e| anyhow::anyhow!("system.shutdown 失敗: {}", e))?;
         Ok(())
@@ -333,7 +333,7 @@ impl DaemonClient {
             anyhow::anyhow!("world-process チャネル不在 (= daemon バイナリが古い、 PR-2 未反映)")
         })?;
         let resp = ch
-            .request("list", serde_json::json!({}))
+            .request::<serde_json::Value, serde_json::Value>("list", &serde_json::json!({}))
             .await
             .map_err(|e| anyhow::anyhow!("world-process.list 失敗: {}", e))?;
         let processes: Vec<ProcessSnapshot> = serde_json::from_value(resp["processes"].clone())
@@ -351,7 +351,7 @@ impl DaemonClient {
         let ch = self.world_process_ch.as_ref().ok_or_else(|| {
             anyhow::anyhow!("world-process チャネル不在 (= daemon バイナリが古い、 PR-2 未反映)")
         })?;
-        ch.request("subscribe", serde_json::json!({}))
+        ch.request::<serde_json::Value, serde_json::Value>("subscribe", &serde_json::json!({}))
             .await
             .map_err(|e| anyhow::anyhow!("world-process.subscribe 失敗: {}", e))?;
         Ok(ch)

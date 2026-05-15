@@ -944,13 +944,42 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "36f64beae40a84da1b4b26ff2761a5b895c12adc41dc25aaee1c4f2bbfe97a6e"
 
 [[package]]
-name = "bstr"
-version = "1.12.1"
+name = "buffa"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "63044e1ae8e69f3b5a92c736ca6269b8d12fa7efe39bf34ddb06d102cf0e2cab"
+checksum = "5fb26cf6d5fa531c242d47df5d6bad0e379c26dcfa0270680a028d09030f7f1a"
 dependencies = [
- "memchr",
+ "bytes",
+ "hashbrown 0.15.5",
+ "once_cell",
  "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "buffa-build"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f798954a267d9995e9c7fba33ca03fda81f3bf1d4f63b0429b2d4aed759b3ea"
+dependencies = [
+ "buffa",
+ "buffa-codegen",
+ "tempfile",
+]
+
+[[package]]
+name = "buffa-codegen"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b8f1742cc45062edd1df41e7cbf56dd87388638472ddcff39ab5828214e67dc"
+dependencies = [
+ "buffa",
+ "prettyplease",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -1403,6 +1432,71 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bde03770d3df201d4fb868f2c9c59e66a3e4e2bd06692a0fe701e7103c7e84d4"
 dependencies = [
  "error-code",
+]
+
+[[package]]
+name = "club-kdl"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f819b6f47e3b3b8bf2191bda5fa44211cdee209af2627a277a53083554ec022d"
+dependencies = [
+ "club-kdl-derive",
+ "kdl",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "club-kdl-derive"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0c0b27c07cacd2447021fc2ba320b267dfbddef5cf59d7ded9c8f1d4e3717396"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "club-unison"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eac32f74ffa89d984175fd37dc3db09829b6cbe9ece8ef7bd79ac3574e54cc88"
+dependencies = [
+ "anyhow",
+ "async-stream",
+ "bincode 1.3.3",
+ "buffa",
+ "buffa-build",
+ "bytes",
+ "cgp",
+ "cgp-component",
+ "chrono",
+ "club-kdl",
+ "convert_case 0.6.0",
+ "crc32fast",
+ "futures-util",
+ "indexmap",
+ "kdl",
+ "miette",
+ "proc-macro2",
+ "quinn",
+ "quote",
+ "rcgen",
+ "rkyv",
+ "rustls",
+ "rustls-pemfile",
+ "scc",
+ "serde",
+ "serde_json",
+ "syn 2.0.117",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "webpki-roots 0.26.11",
+ "zstd",
 ]
 
 [[package]]
@@ -3035,19 +3129,6 @@ name = "glob"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
-
-[[package]]
-name = "globset"
-version = "0.4.18"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "52dfc19153a48bde0cbd630453615c8151bce3a5adfac7a0aebfbf0a1e1f57e3"
-dependencies = [
- "aho-corasick",
- "bstr",
- "log",
- "regex-automata",
- "regex-syntax",
-]
 
 [[package]]
 name = "gobject-sys"
@@ -6899,41 +6980,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rust-embed"
-version = "8.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "04113cb9355a377d83f06ef1f0a45b8ab8cd7d8b1288160717d66df5c7988d27"
-dependencies = [
- "rust-embed-impl",
- "rust-embed-utils",
- "walkdir",
-]
-
-[[package]]
-name = "rust-embed-impl"
-version = "8.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da0902e4c7c8e997159ab384e6d0fc91c221375f6894346ae107f47dd0f3ccaa"
-dependencies = [
- "proc-macro2",
- "quote",
- "rust-embed-utils",
- "syn 2.0.117",
- "walkdir",
-]
-
-[[package]]
-name = "rust-embed-utils"
-version = "8.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5bcdef0be6fe7f6fa333b1073c949729274b05f123a0ad7efcb8efd878e5c3b1"
-dependencies = [
- "globset",
- "sha2",
- "walkdir",
-]
-
-[[package]]
 name = "rust-stemmers"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9087,88 +9133,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
 
 [[package]]
-name = "unison"
-version = "0.3.3"
-source = "git+https://github.com/chronista-club/unison.git?tag=v0.3.3#fd33f8231198097f4b58eb9da993455ca1a37fac"
-dependencies = [
- "anyhow",
- "async-stream",
- "bincode 1.3.3",
- "bytes",
- "cgp",
- "cgp-component",
- "chrono",
- "convert_case 0.6.0",
- "crc32fast",
- "futures-util",
- "indexmap",
- "kdl",
- "miette",
- "proc-macro2",
- "quinn",
- "quote",
- "rcgen",
- "rkyv",
- "rust-embed",
- "rustls",
- "rustls-pemfile",
- "scc",
- "serde",
- "serde_json",
- "syn 2.0.117",
- "tempfile",
- "thiserror 1.0.69",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "unison-kdl 0.3.0 (git+https://github.com/chronista-club/unison-kdl.git)",
- "uuid",
- "zstd",
-]
-
-[[package]]
-name = "unison-kdl"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "677c544dd0c819bdcd05714b4d449377419fdedbea28aba2efce94f69c8adefc"
-dependencies = [
- "kdl",
- "thiserror 2.0.18",
- "unison-kdl-derive 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
-]
-
-[[package]]
-name = "unison-kdl"
-version = "0.3.0"
-source = "git+https://github.com/chronista-club/unison-kdl.git#830dec2a68c9858e025c813049c8d302aecdfd89"
-dependencies = [
- "kdl",
- "thiserror 2.0.18",
- "unison-kdl-derive 0.3.0 (git+https://github.com/chronista-club/unison-kdl.git)",
-]
-
-[[package]]
-name = "unison-kdl-derive"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b9601e82df75eb9f8fcfdbf2af24206a771727b75cb176531ebc5e1f66f3c85"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.117",
-]
-
-[[package]]
-name = "unison-kdl-derive"
-version = "0.3.0"
-source = "git+https://github.com/chronista-club/unison-kdl.git#830dec2a68c9858e025c813049c8d302aecdfd89"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.117",
-]
-
-[[package]]
 name = "untrusted"
 version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9263,6 +9227,8 @@ dependencies = [
  "base64",
  "chrono",
  "clap",
+ "club-kdl",
+ "club-unison",
  "crossterm",
  "dirs",
  "flume",
@@ -9308,8 +9274,6 @@ dependencies = [
  "tui-markdown",
  "tui-scrollview",
  "unicode-normalization",
- "unison",
- "unison-kdl 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "urlencoding",
  "uuid",
  "vte",
@@ -9747,6 +9711,24 @@ name = "webpki-root-certs"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "804f18a4ac2676ffb4e8b5b5fa9ae38af06df08162314f96a68d2a363e21a8ca"
+dependencies = [
+ "rustls-pki-types",
+]
+
+[[package]]
+name = "webpki-roots"
+version = "0.26.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "521bc38abb08001b01866da9f51eb7c5d647a19260e00054a8c7fd5f9e57f7a9"
+dependencies = [
+ "webpki-roots 1.0.7",
+]
+
+[[package]]
+name = "webpki-roots"
+version = "1.0.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "52f5ee44c96cf55f1b349600768e3ece3a8f26010c05265ab73f945bb1a2eb9d"
 dependencies = [
  "rustls-pki-types",
 ]

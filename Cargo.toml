@@ -41,11 +41,11 @@ reqwest = { version = "0.13", default-features = false, features = ["json", "str
 futures = "0.3"
 tokio-stream = "0.1"
 
-# QUIC protocol (Unison)
-unison = { git = "https://github.com/chronista-club/unison.git", tag = "v0.3.3" }
+# QUIC protocol (club-unison、 旧 unison。 2026-05-15 crates.io 公開 v0.7.0 に追随)
+club-unison = "0.7"
 
-# KDL parsing (Unison KDL helper)
-unison-kdl = "0.3"
+# KDL parsing (club-kdl、 旧 unison-kdl。 v0.5.0 で rename + crates.io 移行)
+club-kdl = "0.5"
 
 # Glob patterns (vp-ccws / Stone Free)
 glob = "0.3"

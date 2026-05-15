@@ -14,9 +14,9 @@ use std::sync::Arc;
 
 use crate::capability::MsgboxStore; // VP-175: dual write 用 trait method (insert) を scope に
 
+use club_unison::network::channel::UnisonChannel;
+use club_unison::network::{MessageType, ProtocolServer};
 use serde::{Deserialize, Serialize};
-use unison::network::channel::UnisonChannel;
-use unison::network::{MessageType, ProtocolServer};
 
 use tokio::sync::broadcast;
 
@@ -352,7 +352,7 @@ async fn handle_process_list(state: &AppState) -> Result<serde_json::Value, Stri
 /// create_session / switch_session / list_sessions / close_session / resize
 async fn handle_terminal_control(
     state: &AppState,
-    msg: &unison::network::ProtocolMessage,
+    msg: &club_unison::network::ProtocolMessage,
     _channel: &UnisonChannel,
     current_session_id: &mut Option<String>,
     terminal_rx: &mut Option<broadcast::Receiver<ProcessMessage>>,
@@ -592,7 +592,7 @@ pub async fn start_unison_server(
                         };
 
                         if channel
-                            .send_response(request_id, &method, response)
+                            .send_response(request_id, &method, &response)
                             .await
                             .is_err()
                         {
@@ -633,7 +633,7 @@ pub async fn start_unison_server(
                             .send_response(
                                 auth_msg.id,
                                 "auth",
-                                serde_json::json!({"error": "invalid token"}),
+                                &serde_json::json!({"error": "invalid token"}),
                             )
                             .await;
                         return Ok(());
@@ -645,7 +645,7 @@ pub async fn start_unison_server(
                         .send_response(
                             auth_msg.id,
                             "auth",
-                            serde_json::json!({
+                            &serde_json::json!({
                                 "status": "ok",
                                 "sessions": sessions,
                             }),
@@ -684,7 +684,7 @@ pub async fn start_unison_server(
                                         Ok(ProcessMessage::TerminalReady) => {
                                             let _ = channel.send_event(
                                                 "terminal_ready",
-                                                serde_json::json!({}),
+                                                &serde_json::json!({}),
                                             ).await;
                                         }
                                         Ok(ProcessMessage::TerminalExited) => {
@@ -692,7 +692,7 @@ pub async fn start_unison_server(
                                             tracing::info!("Terminal セッション終了 (EOF): {:?}", current_session_id);
                                             let _ = channel.send_event(
                                                 "session_ended",
-                                                serde_json::json!({"session_id": current_session_id}),
+                                                &serde_json::json!({"session_id": current_session_id}),
                                             ).await;
                                             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                                             break;
@@ -702,7 +702,7 @@ pub async fn start_unison_server(
                                             tracing::info!("Terminal broadcast closed: {:?}", current_session_id);
                                             let _ = channel.send_event(
                                                 "session_ended",
-                                                serde_json::json!({"session_id": current_session_id}),
+                                                &serde_json::json!({"session_id": current_session_id}),
                                             ).await;
                                             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                                             break;
@@ -743,7 +743,7 @@ pub async fn start_unison_server(
                                                 &mut terminal_rx,
                                             ).await;
                                             if let Some(r) = resp {
-                                                let _ = channel.send_response(msg.id, &msg.method, r).await;
+                                                let _ = channel.send_response(msg.id, &msg.method, &r).await;
                                             }
                                         }
                                         Err(_) => break,
@@ -760,7 +760,7 @@ pub async fn start_unison_server(
                                         &mut terminal_rx,
                                     ).await;
                                     if let Some(r) = resp {
-                                        let _ = channel.send_response(msg.id, &msg.method, r).await;
+                                        let _ = channel.send_response(msg.id, &msg.method, &r).await;
                                     }
                                 }
                                 Err(_) => break,
@@ -790,7 +790,7 @@ pub async fn start_unison_server(
 
                     while let Some((_topic, msg)) = rx.recv().await {
                         let json = serde_json::to_value(&msg).unwrap_or_default();
-                        if channel.send_event("pane", json).await.is_err() {
+                        if channel.send_event("pane", &json).await.is_err() {
                             break;
                         }
                     }

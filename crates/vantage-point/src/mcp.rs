@@ -544,7 +544,7 @@ pub struct VantageMcp {
     /// Process の HTTP ポート番号（QUIC = port + QUIC_PORT_OFFSET）
     process_port: Arc<Mutex<u16>>,
     /// Unison "process" チャネル（lazy 接続、canvas 操作も含む）
-    process_channel: Arc<Mutex<Option<Arc<unison::network::channel::UnisonChannel>>>>,
+    process_channel: Arc<Mutex<Option<Arc<club_unison::network::channel::UnisonChannel>>>>,
     /// この MCP プロセスが属する Lane（cwd 由来、VP-166 PR-4）
     self_lane: SelfLane,
     tool_router: ToolRouter<Self>,
@@ -721,9 +721,9 @@ impl VantageMcp {
     /// チャネルが未接続または切断済みの場合、新規接続して返す。
     async fn get_quic_channel(
         &self,
-        channel_slot: &Arc<Mutex<Option<Arc<unison::network::channel::UnisonChannel>>>>,
+        channel_slot: &Arc<Mutex<Option<Arc<club_unison::network::channel::UnisonChannel>>>>,
         channel_name: &str,
-    ) -> Result<Arc<unison::network::channel::UnisonChannel>, McpError> {
+    ) -> Result<Arc<club_unison::network::channel::UnisonChannel>, McpError> {
         let mut guard = channel_slot.lock().await;
 
         // 既存チャネルがあれば再利用
@@ -736,7 +736,7 @@ impl VantageMcp {
         let quic_port = port + crate::process::unison_server::QUIC_PORT_OFFSET;
         let addr = format!("[::1]:{}", quic_port);
 
-        let client = unison::ProtocolClient::new_default()
+        let client = club_unison::ProtocolClient::new_default()
             .map_err(|e| McpError::internal_error(format!("Unison client error: {}", e), None))?;
         client.connect(&addr).await.map_err(|e| {
             McpError::internal_error(format!("Unison connect error ({}): {}", addr, e), None)
@@ -810,7 +810,7 @@ impl VantageMcp {
             .await?;
 
         // タイムアウト付きリクエスト（Process 再起動時のハング防止）
-        let result = tokio::time::timeout(timeout, channel.request(method, payload.clone())).await;
+        let result = tokio::time::timeout(timeout, channel.request(method, &payload.clone())).await;
 
         let resp = match result {
             Ok(Ok(resp)) => resp,
@@ -822,7 +822,7 @@ impl VantageMcp {
                 let channel = self
                     .get_quic_channel(&self.process_channel, "process")
                     .await?;
-                tokio::time::timeout(timeout, channel.request(method, payload))
+                tokio::time::timeout(timeout, channel.request(method, &payload))
                     .await
                     .map_err(|_| {
                         McpError::internal_error(
@@ -845,7 +845,7 @@ impl VantageMcp {
                 let channel = self
                     .get_quic_channel(&self.process_channel, "process")
                     .await?;
-                tokio::time::timeout(timeout, channel.request(method, payload))
+                tokio::time::timeout(timeout, channel.request(method, &payload))
                     .await
                     .map_err(|_| {
                         McpError::internal_error(
