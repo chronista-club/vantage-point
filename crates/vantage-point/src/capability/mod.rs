@@ -40,7 +40,9 @@ pub use core::{
 pub use eventbus::EventBus;
 #[cfg(feature = "midi")]
 pub use midi_capability::MidiCapability;
-pub use msgbox::{Handle, Message, MessageKind, Router as MsgboxRouter};
+// VP-179 (Phase 5): Handle / Router は msgbox.rs から物理削除済 (VP-169 epic 完了)。
+// Message / MessageKind は msgs table 経由の routing で全 module が使う公共 data type。
+pub use msgbox::{Message, MessageKind};
 pub use msgbox_registry::{ActorEntry, Registry as MsgboxRegistry};
 pub use msgbox_v2::{MsgboxStats, MsgboxStore, WhitesnakeStore};
 pub use process_manager_capability::{

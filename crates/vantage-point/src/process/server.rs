@@ -207,42 +207,11 @@ pub async fn run(
         );
     }
 
-    // VP-147 PR-P2-2 (gap 1): TheWorld registry への actor register snapshot を実行。
-    // 上の mcp / notify register が完了した後で snapshot を取るため、 4 actor 全て
-    // (protocol / agent / mcp / notify) が TheWorld registry に landed する。
-    // 旧実装ではこの snapshot を上の `register("mcp") / register("notify")` より前で取得
-    // しており、 cross-process `mcp@<other>` / `notify@<other>` 送信が silent drop
-    // (= forward 失敗 in_registry = false) していた。
-    {
-        let addresses = capabilities.msgbox_router.addresses().await;
-        let project_name = project_name_for_remote.clone();
-        let world_port = crate::cli::WORLD_PORT;
-        tokio::spawn(async move {
-            // TheWorld 起動完了を少し待つ（ベストエフォート）
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            let failed = crate::capability::msgbox_remote::register_actors_to_world(
-                world_port,
-                &project_name,
-                port,
-                &addresses,
-            )
-            .await;
-            if failed.is_empty() {
-                tracing::info!(
-                    "Msgbox: {} 件の actor を TheWorld registry に登録 (project={}, port={})",
-                    addresses.len(),
-                    project_name,
-                    port
-                );
-            } else {
-                tracing::warn!(
-                    "Msgbox: {} 件 register 失敗（TheWorld 未起動の可能性）: {:?}",
-                    failed.len(),
-                    failed
-                );
-            }
-        });
-    }
+    // VP-179 (Phase 5): TheWorld registry への actor register snapshot は廃止。
+    // 旧実装は mpsc MsgboxRouter の `addresses()` (= register("agent") 等で蓄積された
+    // address list) を TheWorld に flat 登録していたが、 全 register caller が VP-178
+    // (Phase 4) で撤去済のため空 vec を渡す no-op に成り下がっていた。 cross-process
+    // forward が必要な場合は msgs table 経由の discovery (= 別 epic) を検討。
 
     let state = Arc::new(AppState {
         hub,
@@ -369,13 +338,11 @@ pub async fn run(
             shutdown_token.clone(),
         );
 
-        // bootstrap sender: 別 address `sp-bootstrap` で send_to するため、 `lane-spawn` の
-        // recv 流路を actor が独占維持できる (= register 同 address は tx 上書き仕様のため)。
-        let bootstrap_handle = state
-            .capabilities
-            .msgbox_router
-            .register("sp-bootstrap")
-            .await;
+        // VP-179 (Phase 5): bootstrap sender も WhitesnakeStore.insert に rewire。
+        // 旧 mpsc Handle::send_to は廃止、 msgs table に SpawnLane cmd を insert →
+        // LaneSpawnActor が `claim("lane-spawn", "lead", ...)` polling で取り出す
+        // (= VP-177 PR-5 と同型 path)。
+        let bootstrap_store = state.msgbox_store.clone();
         let workers_project_id = std::path::Path::new(&state.project_dir)
             .file_name()
             .and_then(|s| s.to_str())
@@ -403,12 +370,25 @@ pub async fn run(
                     cwd: entry.path.clone(),
                     stand: default_stand,
                 };
-                if let Err(e) = bootstrap_handle.send_to("lane-spawn", &cmd).await {
+                // msgs table に直接 insert (= Message::new(from="sp-bootstrap", to="lane-spawn"))。
+                // LaneSpawnActor の claim polling で取り上げられて handle_cmd される。
+                if let Some(store) = &bootstrap_store {
+                    use crate::capability::MsgboxStore;
+                    use crate::capability::msgbox::{Message, MessageKind};
+                    let msg = Message::new("sp-bootstrap", "lane-spawn", MessageKind::Direct)
+                        .with_payload(&cmd);
+                    if let Err(e) = store.insert(&msg).await {
+                        tracing::warn!(
+                            "SP startup bootstrap: msgbox_store insert 失敗 name={} cwd={} err={}",
+                            entry.name,
+                            entry.path,
+                            e
+                        );
+                    }
+                } else {
                     tracing::warn!(
-                        "SP startup bootstrap: send_to('lane-spawn') 失敗 name={} cwd={} err={}",
-                        entry.name,
-                        entry.path,
-                        e
+                        "SP startup bootstrap: msgbox_store 未配線、 Worker spawn skip name={}",
+                        entry.name
                     );
                 }
             }

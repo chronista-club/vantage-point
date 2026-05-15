@@ -10,7 +10,6 @@
 //! - **非同期**: 全ての操作はasyncで実行可能
 //! - **イベント駆動**: EventBusを通じて能力間で通信
 
-use crate::capability::msgbox::Handle;
 use crate::capability::params::CapabilityParams;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -297,8 +296,6 @@ impl CapabilityEvent {
 pub struct CapabilityContext {
     /// イベント送信用チャンネル
     event_sender: Option<tokio::sync::mpsc::Sender<CapabilityEvent>>,
-    /// Msgbox ハンドル（1:1 ポイントツーポイント通信）
-    msgbox: Option<Handle>,
     /// 設定値（能力固有の設定を格納）
     config: serde_json::Value,
     /// 共有データストア（能力間でデータを共有）
@@ -310,7 +307,6 @@ impl CapabilityContext {
     pub fn new() -> Self {
         Self {
             event_sender: None,
-            msgbox: None,
             config: serde_json::Value::Object(Default::default()),
             shared_data: Arc::new(tokio::sync::RwLock::new(Default::default())),
         }
@@ -319,12 +315,6 @@ impl CapabilityContext {
     /// イベント送信チャンネルを設定
     pub fn with_event_sender(mut self, sender: tokio::sync::mpsc::Sender<CapabilityEvent>) -> Self {
         self.event_sender = Some(sender);
-        self
-    }
-
-    /// Msgbox ハンドルを設定
-    pub fn with_msgbox(mut self, msgbox: Handle) -> Self {
-        self.msgbox = Some(msgbox);
         self
     }
 
@@ -343,11 +333,6 @@ impl CapabilityContext {
                 .map_err(|e| CapabilityError::EventError(e.to_string()))?;
         }
         Ok(())
-    }
-
-    /// Msgbox ハンドルを取得
-    pub fn msgbox(&self) -> Option<&Handle> {
-        self.msgbox.as_ref()
     }
 
     /// 設定値を取得
