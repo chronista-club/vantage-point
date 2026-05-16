@@ -25,7 +25,6 @@
 //! project name="creo-memories" path="/Users/makoto/repos/creo-memories"
 //! ```
 
-use std::io::Write;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
@@ -45,6 +44,10 @@ pub struct ProjectEntry {
     /// `enabled=#false` の時だけ projects.kdl に明記される想定。
     #[kdl(property)]
     pub enabled: Option<bool>,
+    /// Port slot (VP-165: deterministic port layout)。 一度割り当てたら永続。
+    /// 未割当の project は省略 (= `None`)。
+    #[kdl(property)]
+    pub slot: Option<u16>,
 }
 
 impl ProjectEntry {
@@ -87,7 +90,19 @@ impl ProjectsFile {
     }
 
     /// projects.kdl に書き出す。 atomic write (temp → rename) で partial read を防ぐ。
+    ///
+    /// テスト環境では no-op (= 本番 `~/.config/vp/projects.kdl` の破壊防止)。
+    /// 全ての projects.kdl write 経路 (`persist_projects` / `persist_projects_kdl`) は
+    /// 本メソッドを通るため、 ここで cfg(test) ガードすれば write 経路全体が test 安全。
+    #[cfg(test)]
     pub fn save(&self) -> Result<()> {
+        Ok(())
+    }
+
+    /// projects.kdl に書き出す。 atomic write (temp → rename) で partial read を防ぐ。
+    #[cfg(not(test))]
+    pub fn save(&self) -> Result<()> {
+        use std::io::Write;
         let path = projects_file_path();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
@@ -125,11 +140,13 @@ mod tests {
                     name: "vantage-point".to_string(),
                     path: "/Users/makoto/repos/vantage-point".to_string(),
                     enabled: None,
+                    slot: Some(2),
                 },
                 ProjectEntry {
                     name: "creo-memories".to_string(),
                     path: "/Users/makoto/repos/creo-memories".to_string(),
                     enabled: Some(false),
+                    slot: None,
                 },
             ],
         };
@@ -143,6 +160,9 @@ mod tests {
         // enabled: 省略 → is_enabled() = true、 明示 false は保持
         assert!(back.projects[0].is_enabled());
         assert!(!back.projects[1].is_enabled());
+        // slot: VP-165 port layout、 round-trip で保持されること
+        assert_eq!(back.projects[0].slot, Some(2));
+        assert_eq!(back.projects[1].slot, None);
     }
 
     /// 空 ProjectsFile の round-trip

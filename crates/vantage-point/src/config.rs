@@ -58,7 +58,12 @@ pub struct Config {
     pub default_stand: Option<String>,
 
     /// Projects configuration
-    #[serde(default)]
+    ///
+    /// VP-188: SSOT は `~/.config/vp/projects.kdl`。 `Config::load()` が projects.kdl を
+    /// 読んで本 field を populate する。 `skip_serializing` で `Config::save()` (config.toml)
+    /// には書き出さない (= 二重 SSOT 防止)。 `default` は legacy config.toml の
+    /// `[[projects]]` seed 読み込み互換のため維持。 永続化は `persist_projects_kdl()`。
+    #[serde(default, skip_serializing)]
     pub projects: Vec<ProjectConfig>,
 
     /// Port layout overrides (optional、default は PortLayout::default())
@@ -183,25 +188,47 @@ impl Config {
         };
 
         // VP-188: projects.kdl が SSOT。 存在すれば config.projects を置換。
-        let projects_file = crate::projects_file::ProjectsFile::load()
-            .map_err(|e| anyhow::anyhow!("projects.kdl 読み込み失敗: {}", e))?;
+        // projects.kdl が無ければ config.toml の [[projects]] (legacy seed) をそのまま使う。
         if crate::projects_file::projects_file_path().exists() {
+            let projects_file = crate::projects_file::ProjectsFile::load()
+                .map_err(|e| anyhow::anyhow!("projects.kdl 読み込み失敗: {}", e))?;
             config.projects = projects_file
                 .projects
                 .iter()
                 .map(|e| ProjectConfig {
                     name: e.name.clone(),
                     path: e.path.clone(),
-                    // port / slot は projects.kdl 管轄外 (= port_layout が slug から
-                    // deterministic に計算する)。 enabled は projects.kdl の値。
+                    // port は port_layout が slot から deterministic に計算する。
+                    // enabled / slot は projects.kdl の値 (= projects.kdl が SSOT)。
                     port: None,
                     enabled: e.is_enabled(),
-                    slot: None,
+                    slot: e.slot,
                 })
                 .collect();
         }
 
         Ok(config)
+    }
+
+    /// `config.projects` を projects.kdl に書き出す (VP-188)。
+    ///
+    /// VP-165 の slot 永続化 (= `resolve::sp_port_for_project` の `ensure_slot`)
+    /// 等、 `config.projects` を mutate した後に呼ぶ。 projects の SSOT は
+    /// projects.kdl なので、 `Config::save()` (config.toml) ではなく本 helper を使う。
+    pub fn persist_projects_kdl(&self) -> Result<()> {
+        let pf = crate::projects_file::ProjectsFile {
+            projects: self
+                .projects
+                .iter()
+                .map(|p| crate::projects_file::ProjectEntry {
+                    name: p.name.clone(),
+                    path: p.path.clone(),
+                    enabled: if p.enabled { None } else { Some(false) },
+                    slot: p.slot,
+                })
+                .collect(),
+        };
+        pf.save()
     }
 
     /// Save config to XDG config file
@@ -460,7 +487,16 @@ mod tests {
 
         let parsed: Config = toml::from_str(&toml).unwrap();
         assert_eq!(parsed.default_port, 33001);
-        assert_eq!(parsed.projects.len(), 1);
+        // VP-188: projects は #[serde(skip_serializing)] で config.toml に書き出されない
+        // (= SSOT は projects.kdl)。 serialize → parse 後は空になるのが正しい。
+        assert!(
+            parsed.projects.is_empty(),
+            "projects は config.toml に serialize されないはず (VP-188)"
+        );
+        assert!(
+            !toml.contains("[[projects]]"),
+            "config.toml に [[projects]] が出てはいけない (VP-188)"
+        );
     }
 
     #[test]

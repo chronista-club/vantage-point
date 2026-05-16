@@ -54,6 +54,10 @@ pub struct ProjectInfo {
     /// SP 自動起動の有効/無効
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+    /// Port slot (VP-165: deterministic port layout)。 一度割り当てたら永続。
+    /// VP-188: SSOT は projects.kdl。 capability は load/persist で round-trip するのみ。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot: Option<u16>,
 }
 
 fn default_enabled() -> bool {
@@ -203,8 +207,9 @@ impl ProcessManagerCapability {
                     name: project.name.clone(),
                     path: project.path.clone().into(),
                     process_status: ProcessStatus::Stopped,
-                    port: None, // port は動的割当 (port_layout が slug から計算)
+                    port: None, // port は動的割当 (port_layout が slot から計算)
                     enabled: project.enabled,
+                    slot: project.slot,
                 },
             );
         }
@@ -219,7 +224,7 @@ impl ProcessManagerCapability {
     ///
     /// `project_order` の順序で `ProjectsFile` を組み立てて atomic write する。
     /// add / delete / rename / reorder / set_enabled の各操作後に呼ぶ。
-    #[cfg(not(test))]
+    /// test 環境では `ProjectsFile::save()` が no-op なので本番ファイルを破壊しない。
     async fn persist_projects(&self) -> CapabilityResult<()> {
         let projects = self.projects.read().await;
         let order = self.project_order.read().await;
@@ -233,6 +238,7 @@ impl ProcessManagerCapability {
                         path: p.path.to_string_lossy().to_string(),
                         // enabled=true は省略 (= projects.kdl をミニマムに)、 false のみ明記
                         enabled: if p.enabled { None } else { Some(false) },
+                        slot: p.slot,
                     })
             })
             .collect();
@@ -240,13 +246,6 @@ impl ProcessManagerCapability {
         pf.save().map_err(|e| {
             CapabilityError::InitializationFailed(format!("projects.kdl 書き込み失敗: {}", e))
         })
-    }
-
-    /// テスト環境では本番の projects.kdl を書き換えない（データ破壊防止、 旧
-    /// `persist_to_config_fallback` の cfg(test) no-op を踏襲）。
-    #[cfg(test)]
-    async fn persist_projects(&self) -> CapabilityResult<()> {
-        Ok(())
     }
 
     /// vpバイナリを検索
@@ -328,6 +327,7 @@ impl ProcessManagerCapability {
                         process_status: ProcessStatus::Stopped,
                         port: project.port,
                         enabled: project.enabled,
+                        slot: project.slot,
                     })
                     .name
                     == project.name
@@ -368,6 +368,7 @@ impl ProcessManagerCapability {
             process_status: ProcessStatus::Stopped,
             port: None,
             enabled: true,
+            slot: None, // 新規 project は slot 未割当 (= SP 初回起動時に resolve が割当)
         };
 
         {
@@ -1150,8 +1151,9 @@ impl ProcessManagerCapability {
                     new_slot, e
                 ))
             })?;
-        config.save().map_err(|e| {
-            CapabilityError::Other(format!("VP-165 reassign: config save 失敗: {}", e))
+        // VP-188: slot 永続化先は projects.kdl (config.toml ではない)。
+        config.persist_projects_kdl().map_err(|e| {
+            CapabilityError::Other(format!("VP-165 reassign: projects.kdl save 失敗: {}", e))
         })?;
 
         let new_port = crate::cli::PORT_RANGE_START + new_slot;
@@ -1798,6 +1800,7 @@ mod tests {
             process_status: ProcessStatus::Stopped,
             port: Some(33005),
             enabled: true,
+            slot: None,
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains("33005"));
@@ -1809,6 +1812,7 @@ mod tests {
             process_status: ProcessStatus::Stopped,
             port: None,
             enabled: true,
+            slot: None,
         };
         let json_no_port = serde_json::to_string(&info_no_port).unwrap();
         assert!(!json_no_port.contains("port"));
