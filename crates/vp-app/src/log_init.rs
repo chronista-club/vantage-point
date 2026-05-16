@@ -24,8 +24,8 @@
 //! 確実に redirect が効かない。
 //!
 //! 解決: tracing-appender で **file に直接書き込む**。
-//! Path: `%LOCALAPPDATA%\VantagePoint-dev\app.kdl.log` (Win)
-//!       `~/.local/share/vantage-point-dev/app.kdl.log` (Linux/Mac fallback)
+//! VP-192: log dir は macOS `~/Library/Logs/Vantage/`、 Win/Linux は
+//! `vp_data_dir()/logs/` (Win `%LOCALAPPDATA%\vp\logs\`、 Linux `~/.local/share/vp/logs/`)。
 //!
 //! mise run win の polling tail が同 file を見る。
 
@@ -51,21 +51,16 @@ pub fn init_tracing() -> LogInitResult {
     // macOS では `~/Library/Logs/Vantage/` に統一。
     // mise run logs / Console.app / TheWorld daemon log と同じ dir で一緒に tail できる。
     // Win/Linux は既存挙動を維持 (Phase B で揃える)。
+    // VP-192: macOS は Console.app / daemon log と一緒に tail できるよう
+    // `~/Library/Logs/Vantage/` 据え置き。 Win/Linux は config/data パス一本化に
+    // 合わせて `vp_data_dir()/logs/` 配下に統一 (旧 `data_local_dir()/VantagePoint*`)。
     let log_dir = if cfg!(target_os = "macos") {
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join("Library/Logs/Vantage")
     } else {
-        // Win: `%LOCALAPPDATA%\VantagePoint(-dev)\Logs\`
-        let app_dir = if cfg!(debug_assertions) {
-            "VantagePoint-dev"
-        } else {
-            "VantagePoint"
-        };
-        dirs::data_local_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(app_dir)
-            .join("Logs")
+        // Win: `%LOCALAPPDATA%\vp\logs\`、 Linux: `~/.local/share/vp/logs/`
+        crate::paths::vp_data_dir().join("logs")
     };
     let _ = std::fs::create_dir_all(&log_dir);
     let file_appender = tracing_appender::rolling::never(&log_dir, "app.kdl.log");

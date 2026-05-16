@@ -1,9 +1,10 @@
 //! ユーザー設定の永続化 (VP-100 follow-up)
 //!
-//! `~/.config/vantage/vp-app.toml` (Linux), `~/Library/Application Support/vantage/vp-app.toml` (macOS),
-//! `%APPDATA%\vantage\vp-app.toml` (Windows) に TOML で保存する。
+//! VP-192: `vp_config_dir()` 配下に TOML で保存する。
+//! `~/.config/vp/vp-app.toml` (Linux), `~/Library/Application Support/vp/vp-app.toml` (macOS),
+//! `%APPDATA%\vp\vp-app.toml` (Windows)。
 //!
-//! `vp` daemon 側が使う `~/.config/vantage/config.toml` とは別ファイル
+//! `vp` daemon 側が使う `vp_config_dir()/config.toml` とは別ファイル
 //! (vp-app 固有の UI 設定なので分離)。
 //!
 //! 例:
@@ -39,14 +40,16 @@ pub struct Settings {
 
 impl Settings {
     /// Settings ファイルのフルパスを返す
+    ///
+    /// VP-192: vp-app.toml は設定ファイルなので `vp_config_dir()` 配下。
     pub fn path() -> Option<PathBuf> {
-        dirs::config_dir().map(|d| d.join("vantage").join(SETTINGS_FILE))
+        Some(crate::paths::vp_config_dir().join(SETTINGS_FILE))
     }
 
     /// 設定ファイルを読み込む。存在しなければ `Default`。
     pub fn load() -> Self {
         let Some(p) = Self::path() else {
-            tracing::warn!("config_dir 取得失敗、Settings::default() を使用");
+            tracing::warn!("config dir 取得失敗、Settings::default() を使用");
             return Self::default();
         };
         if !p.exists() {

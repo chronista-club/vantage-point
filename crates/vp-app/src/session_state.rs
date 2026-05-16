@@ -16,16 +16,17 @@
 //!
 //! ## file path
 //!
-//! - macOS:  `~/Library/Application Support/vantage/session-state.json`
-//! - Linux:  `~/.config/vantage/session-state.json`
-//! - Windows: `%APPDATA%\vantage\session-state.json`
+//! VP-192: session 状態は生成データなので `vp_data_dir()` 配下。
+//! - macOS:  `~/Library/Application Support/vp/session-state.json`
+//! - Linux:  `~/.local/share/vp/session-state.json`
+//! - Windows: `%LOCALAPPDATA%\vp\session-state.json`
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-/// JSON file 名 (ディレクトリは `dirs::config_dir() + "vantage"`)
+/// JSON file 名 (ディレクトリは `vp_data_dir()`)
 const SESSION_FILE: &str = "session-state.json";
 
 /// Per-project UI state ─ project path がキー。
@@ -56,9 +57,12 @@ pub struct SessionState {
 }
 
 impl SessionState {
-    /// 永続 file の絶対 path。 `dirs` crate が config_dir 取得失敗なら `None`。
+    /// 永続 file の絶対 path。
+    ///
+    /// VP-192: session 状態は生成データなので `vp_data_dir()` 配下。
+    /// `Option` を維持するのは既存 caller (`load`/`save`) との互換のため。
     pub fn path() -> Option<PathBuf> {
-        dirs::config_dir().map(|d| d.join("vantage").join(SESSION_FILE))
+        Some(crate::paths::vp_data_dir().join(SESSION_FILE))
     }
 
     /// 設定 file を読み込む。 不在 / 壊れた JSON は default を返す (起動を阻害しない)。

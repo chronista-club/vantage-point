@@ -18,6 +18,7 @@ pub mod log_init;
 pub mod main_area;
 pub mod menu;
 pub mod pane;
+pub mod paths;
 pub mod session_state;
 pub mod session_title;
 pub mod settings;
