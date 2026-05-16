@@ -127,6 +127,57 @@ impl ProjectsFile {
     }
 }
 
+/// `dir_path` が `pf` に未登録なら `ProjectEntry` を追加する純粋ロジック。
+///
+/// 登録したら `true`、 既に同 path が登録済みなら `false` (idempotent)。
+/// fs / cwd に触らないので単体テストできる。
+fn register_dir_into(pf: &mut ProjectsFile, dir_path: &str, name: &str) -> bool {
+    if pf.projects.iter().any(|p| p.path == dir_path) {
+        return false;
+    }
+    pf.projects.push(ProjectEntry {
+        name: name.to_string(),
+        path: dir_path.to_string(),
+        enabled: None,
+        slot: None,
+    });
+    true
+}
+
+impl ProjectsFile {
+    /// 起点ディレクトリを project として projects.kdl に登録する (未登録なら)。
+    ///
+    /// VP-189 follow-up: VP のメンタルモデルは「起点ディレクトリ → そこから SP が
+    /// 立ち上がる」。 `vp app start` / `vp sp start` は「この起点ディレクトリで
+    /// 開発を始める」 という明示アクションなので、 そのとき起点 dir を project として
+    /// 登録する。 これで「まっさら状態 → projects 0 件 → サイドバー (no projects)」 を
+    /// 救済し、 通常運用でも起点 dir で起動するだけで project が増えていく。
+    ///
+    /// `dir` はそのまま (正規化のみ) project になる ── git repo root への丸めや
+    /// git 判定はしない。 D11「正規化ディレクトリパスが Process の一意キー」 +
+    /// 「起点ディレクトリ = project」 のメンタルモデルに忠実な形。 既に登録済み
+    /// (正規化 path 一致) なら何もしない (idempotent)。
+    ///
+    /// 戻り値: 新規登録したら `Some(project_name)`、 何もしなければ `None`。
+    pub fn ensure_dir_registered(dir: &std::path::Path) -> Result<Option<String>> {
+        // 他の project entry と比較可能なよう正規化パスに揃える。
+        let dir_path = crate::config::Config::normalize_path(dir);
+        let name = std::path::Path::new(&dir_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("project")
+            .to_string();
+
+        let mut pf = ProjectsFile::load()?;
+        if register_dir_into(&mut pf, &dir_path, &name) {
+            pf.save()?;
+            Ok(Some(name))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -172,5 +223,33 @@ mod tests {
         let kdl = club_kdl::to_string_pretty(&pf).expect("serialize");
         let back: ProjectsFile = club_kdl::from_str(&kdl).unwrap_or_default();
         assert_eq!(back.projects.len(), 0);
+    }
+
+    /// VP-189: 起点ディレクトリの新規登録と重複スキップ (register_dir_into 純粋ロジック)
+    #[test]
+    fn register_dir_into_adds_new_and_skips_duplicate() {
+        let mut pf = ProjectsFile::default();
+        // 新規登録 → true、 entry 追加
+        assert!(register_dir_into(
+            &mut pf,
+            "/repos/vantage-point",
+            "vantage-point"
+        ));
+        assert_eq!(pf.projects.len(), 1);
+        assert_eq!(pf.projects[0].name, "vantage-point");
+        assert_eq!(pf.projects[0].path, "/repos/vantage-point");
+        // enabled / slot は省略 (None) で登録される
+        assert!(pf.projects[0].enabled.is_none());
+        assert!(pf.projects[0].slot.is_none());
+        // 同 path の再登録 → false、 件数不変 (idempotent)
+        assert!(!register_dir_into(&mut pf, "/repos/vantage-point", "別名"));
+        assert_eq!(pf.projects.len(), 1);
+        // 別 path → true、 件数増加
+        assert!(register_dir_into(
+            &mut pf,
+            "/repos/creo-memories",
+            "creo-memories"
+        ));
+        assert_eq!(pf.projects.len(), 2);
     }
 }

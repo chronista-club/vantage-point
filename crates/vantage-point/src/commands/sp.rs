@@ -73,6 +73,17 @@ fn sp_start(
     debug: Option<DebugModeArg>,
     config: &Config,
 ) -> Result<()> {
+    // VP-189 follow-up: 起点ディレクトリを project として登録 (未登録なら)。
+    // 「起点 dir → SP」 のメンタルモデル: 全 SP 起動経路 (GUI / vp sp start 直 /
+    // daemon spawn) がこの sp_start に収束するため、 ここ 1 点で漏れなく登録できる。
+    match crate::projects_file::ProjectsFile::ensure_dir_registered(std::path::Path::new(
+        project_dir,
+    )) {
+        Ok(Some(name)) => println!("📁 project を登録しました: {name}"),
+        Ok(None) => {}
+        Err(e) => tracing::warn!("project 自動登録に失敗 (SP 起動は続行): {e}"),
+    }
+
     let mut port = explicit_port.unwrap_or_else(|| resolve_port(project_dir, config));
     let debug_mode = debug.map(DebugMode::from).unwrap_or_default();
 
