@@ -118,7 +118,7 @@ impl ProcessStatus {
 /// Process info (Architecture v4: 旧 ProjectInfo の Process abstraction 化)
 ///
 /// TheWorld `/api/world/projects` レスポンス要素を Process として扱う。
-#[derive(Debug, Clone, serde::Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, Deserialize)]
 pub struct ProcessInfo {
     /// Process kind (default Runtime: TheWorld response 互換)
     #[serde(default)]
@@ -453,5 +453,40 @@ impl TheWorldClient {
 impl Default for TheWorldClient {
     fn default() -> Self {
         Self::with_base_url(default_base_url())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// daemon は `/api/world/projects` を `process_status` キーで送る。
+    /// `ProcessInfo.state` の `#[serde(alias = "process_status")]` で受けられること。
+    #[test]
+    fn process_info_deserializes_process_status_alias() {
+        let json = r#"{"name":"vp","path":"/repos/vp","process_status":"running"}"#;
+        let info: ProcessInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(info.state, ProcessStatus::Running);
+    }
+
+    /// `process_status` が無い JSON は default の Stopped になること (= 安全側)。
+    #[test]
+    fn process_info_defaults_to_stopped_when_status_absent() {
+        let json = r#"{"name":"vp","path":"/repos/vp"}"#;
+        let info: ProcessInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(info.state, ProcessStatus::Stopped);
+    }
+
+    /// WebView の sidebar JS は `p.state` を読む。 serialize は primary キー
+    /// `state` で出る (alias は deserialize 専用で serialize には影響しない)。
+    #[test]
+    fn process_info_serializes_as_state_key() {
+        let info = ProcessInfo {
+            state: ProcessStatus::Running,
+            ..ProcessInfo::default()
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains(r#""state":"running""#), "got: {json}");
+        assert!(!json.contains("process_status"), "got: {json}");
     }
 }
