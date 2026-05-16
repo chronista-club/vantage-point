@@ -255,6 +255,13 @@ pub fn spawn_registry_keepalive(
         let mut event_rx = system_event_tx.subscribe();
 
         loop {
+            // VP-187 round 1 review: shutdown と QUIC 切断 event が同時に発火した場合、
+            // 内側 select! が conn_ev arm を選ぶと外側 loop を 1 周回して余分な
+            // connect_and_register を試みる。 外側 loop 先頭で shutdown を確認して
+            // 余分な再接続試行 (= log ノイズ) を防ぐ。
+            if shutdown.is_cancelled() {
+                return;
+            }
             // TheWorld に QUIC 接続
             match connect_and_register(&agent_card).await {
                 Ok(conn) => {
@@ -270,6 +277,11 @@ pub fn spawn_registry_keepalive(
                     // conn（ProtocolClient + UnisonChannel）はこのスコープで保持
                     let mut interval = tokio::time::interval(Duration::from_secs(15));
                     interval.tick().await; // 最初の tick をスキップ
+
+                    // VP-187: connection event hook。 QUIC connection drop を即座に検知し、
+                    // 15 秒周期の heartbeat 失敗を待たずに再接続へ抜ける。 heartbeat は
+                    // keepalive (= SP → TheWorld registry の生存通知) として維持。
+                    let mut conn_events = conn._client.subscribe_connection_events();
 
                     loop {
                         tokio::select! {
@@ -318,6 +330,21 @@ pub fn spawn_registry_keepalive(
                                         tracing::info!("Registry: SystemEvent channel closed、 keepalive 終了");
                                         return;
                                     }
+                                }
+                            }
+                            conn_ev = conn_events.recv() => {
+                                // VP-187: QUIC connection lifecycle event。 Disconnected を
+                                // 受けたら即座に内側 loop を抜けて外側 loop で再接続する。
+                                // Connected (= 接続済) / Lagged / Closed は無視 — Closed は
+                                // client drop 時のみで、 その場合 heartbeat も失敗するため
+                                // 外側 loop の再接続に自然合流する。
+                                use unison::network::ClientConnectionEvent;
+                                if let Ok(ClientConnectionEvent::Disconnected { reason }) = conn_ev {
+                                    tracing::warn!(
+                                        "Registry: QUIC 切断検知 ({}) → 即再接続",
+                                        reason
+                                    );
+                                    break;
                                 }
                             }
                             _ = shutdown.cancelled() => {
