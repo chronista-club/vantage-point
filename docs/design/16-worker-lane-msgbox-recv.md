@@ -3,9 +3,9 @@
 > **対象 Issue**: [VP-166](https://linear.app/chronista/issue/VP-166) — worker-lane msgbox の recv 経路を実装
 > **親 Epic**: [VP-156](https://linear.app/chronista/issue/VP-156) — Msgbox routing 統一 + 永続化 first-class
 > **関連設計**: [14-msgbox-address-v3.md](14-msgbox-address-v3.md)（v3.1 address syntax）/ [13-paisley-park-revival.md](13-paisley-park-revival.md)（`canvas#<lane>` box の consumer 側）/ [12-stand-architecture.md](12-stand-architecture.md) / [03-msgbox-vs-ccwire.md](03-msgbox-vs-ccwire.md) / [07-lane-as-process.md](07-lane-as-process.md)
-> **Status**: Draft 確定 (doc 19 landing で Superseded 予定 — box / register_lane / per-stand mpsc box は doc 19 Phase 2〜5 で廃止)
+> **Status**: **Superseded by [doc 19](19-msgbox-whitesnake-primary.md) (VP-169)** — `Router::boxes` / `register_lane` / `unregister_lane` / per-stand mpsc box は doc 19 epic (Phase 5 完了, commit `445190c`) で全廃済。 本 doc は historical reference として docs/design/ に残置する。
 >
-> **Note**: 本 doc は `Router::boxes` + `register_lane` + per-stand mpsc box を前提とする設計。 [doc 19 (VP-169)](19-msgbox-whitesnake-primary.md) は §4.5 でこれら全てを廃止 (= DB row field 化)、 §4.3 で mpsc を完全廃止する。 doc 19 Phase 1 spike (= SurrealDB LIVE Query feasibility) が working なら本 doc の PR-2〜PR-5 は doc 19 Phase 2〜5 に吸収される。 spike NG (= LIVE not working) なら本 doc 設計が再活性化、 doc 19 撤回となる。
+> **Superseded note**: 本 doc は `Router::boxes` + `register_lane` + per-stand mpsc box (= lane × stand の 2 軸 box key) を前提とする設計だった。 doc 19 (VP-169) で **mpsc substrate を完全廃止**し、 Whitesnake (SurrealDB embedded) を primary store に揃えた。 具体的には: ① per-lane 軸は HashMap key ではなく `msgs` table の DB row field (`to_actor` / `to_lane`) になり (doc 19 §4.5)、 ② `register_lane` / `unregister_lane` API は不要になって廃止 (doc 19 §4.5 副次効果)、 ③ worker-lane の recv 経路は consumer が自分の `WHERE to_lane=$mine` で LIVE SELECT を打つ形に置き換わった。 本 doc が解決しようとした「worker-lane msgbox が送れない・配送されない・受け取れない」 問題は、 box concept そのものの廃止によって root から解消された。 doc 19 epic は Phase 1 spike (SurrealDB LIVE Query feasibility) が PASSED したため全 Phase 完走した (= 本 doc 末尾の「spike NG なら本 doc 再活性化」 という分岐は発生しなかった)。 本 doc の決定 A〜E / PR-1b〜PR-6 は doc 19 §4 に吸収されている。
 
 ## Abstract
 
