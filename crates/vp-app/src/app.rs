@@ -2235,9 +2235,13 @@ fn handle_sidebar_ipc(
             // DOM は既に user click で toggle 済なので、Rust state を silently sync するだけ。
             // `out.changed` は立てない (rebuild すると flash する)。
             //
-            // Architecture v4 auto-spawn: expand=true で state==dead の project は
-            // 「user が current として designate した dead project」 として扱い、
-            // SP auto-spawn を request する (mem_1CaTpCQH8iLJ2PasRcPjHv: SP lifecycle は TheWorld 責務)。
+            // auto-spawn: expand=true で state==stopped の project は
+            // 「user が current として designate した未起動 project」 として扱い、
+            // SP auto-spawn を request する (SP lifecycle は TheWorld 責務)。
+            //
+            // 条件の "stopped" は client::ProcessStatus::as_str() と一致させること。
+            // 旧 ProcessState の "dead" 語彙から ProcessStatus の "stopped" へ移行した
+            // (VP-189) 際にこの条件の追従が漏れ、 auto-spawn が発火しなくなっていた。
             if let Some(p) = state.processes.iter_mut().find(|p| p.path == path) {
                 let new_state = parsed
                     .get("expanded")
@@ -2254,7 +2258,7 @@ fn handle_sidebar_ipc(
                     session.set_project_expanded(path.to_string(), new_state);
                     session.save();
                 }
-                if new_state && p.state.as_deref() == Some("dead") {
+                if new_state && p.state.as_deref() == Some("stopped") {
                     out.sp_spawn_request = Some((p.name.clone(), p.path.clone()));
                 }
                 // Phase 5-D fix: accordion を閉じた = 「retry したい」signal と解釈、
