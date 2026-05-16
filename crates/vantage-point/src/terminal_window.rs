@@ -310,13 +310,13 @@ const MAX_RECONNECT_ATTEMPTS: u32 = 10;
 async fn connect_and_auth(
     addr: &str,
     terminal_token: &str,
-) -> Option<club_unison::network::channel::UnisonChannel> {
+) -> Option<unison::network::channel::UnisonChannel> {
     // VP-184: Builder API 移行 (dev default を明示、 PR-3 で mesh keypair に差し替え)。
-    let client = match club_unison::network::quic::QuicClient::builder()
-        .trust_anchors(club_unison::network::TrustAnchors::SkipVerification)
+    let client = match unison::network::quic::QuicClient::builder()
+        .trust_anchors(unison::network::TrustAnchors::SkipVerification)
         .build()
     {
-        Ok(transport) => club_unison::ProtocolClient::new(transport),
+        Ok(transport) => unison::ProtocolClient::new(transport),
         Err(e) => {
             tracing::error!("ProtocolClient 作成失敗: {}", e);
             return None;
@@ -360,7 +360,7 @@ async fn connect_and_auth(
 /// チャネルを使った双方向 I/O ループ。切断時に false を返す（リコネクト可）。
 /// EventLoop が閉じた場合は true を返す（終了）。
 async fn run_bridge_loop(
-    channel: &club_unison::network::channel::UnisonChannel,
+    channel: &unison::network::channel::UnisonChannel,
     bridge_rx: &mut tokio::sync::mpsc::Receiver<PtyInputCommand>,
     proxy: &EventLoopProxy<TerminalEvent>,
 ) -> bool {

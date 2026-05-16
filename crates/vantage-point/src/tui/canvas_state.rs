@@ -131,11 +131,11 @@ pub fn spawn_canvas_receiver(
             let addr = format!("[::1]:{}", quic_port);
 
             // VP-184: Builder API 移行 (dev default を明示、 PR-3 で mesh keypair に差し替え)。
-            let client = match club_unison::network::quic::QuicClient::builder()
-                .trust_anchors(club_unison::network::TrustAnchors::SkipVerification)
+            let client = match unison::network::quic::QuicClient::builder()
+                .trust_anchors(unison::network::TrustAnchors::SkipVerification)
                 .build()
             {
-                Ok(transport) => club_unison::ProtocolClient::new(transport),
+                Ok(transport) => unison::ProtocolClient::new(transport),
                 Err(e) => {
                     tracing::error!("Canvas QUIC クライアント作成失敗: {}", e);
                     return;

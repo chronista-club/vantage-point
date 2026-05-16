@@ -7,8 +7,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-use club_unison::network::{MessageType, NetworkError, ProtocolServer, channel::UnisonChannel};
 use tokio::sync::{Mutex, RwLock};
+use unison::network::quic::QuicServer;
+use unison::network::{
+    CertSource, MessageType, NetworkError, ProtocolServer, channel::UnisonChannel,
+};
 
 use super::protocol::{
     AttachRequest, ChannelMessage, CreatePaneRequest, CreateSessionRequest, DetachRequest,
@@ -1282,9 +1285,22 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
     }
 
     // サーバー起動
+    // VP-185: listen は内部で QuicServer::new() (= cert なし固定) を使うため、
+    // CertSource を明示するには QuicServer::builder 経由が必須。 daemon は shutdown
+    // 連携を持たない (= listen が永久 block する設計) ため start() を使う。
+    // PR-3 で cert_source を InternalMeshKeypair の server 半分に差し替える。
     tracing::info!("Daemon Unison QUIC サーバー起動: {}", addr);
-    if let Err(e) = server.listen(&addr).await {
-        tracing::error!("Daemon Unison サーバー起動失敗: {}", e);
+    let server = Arc::new(server);
+    let mut quic = QuicServer::builder(server)
+        .cert_source(CertSource::dev_localhost())
+        .build();
+    if let Err(e) = quic.bind(&addr).await {
+        tracing::error!("Daemon Unison サーバー bind 失敗: {}", e);
+        return;
+    }
+    tracing::info!("Daemon Unison QUIC listening on {:?}", quic.local_addr());
+    if let Err(e) = quic.start().await {
+        tracing::error!("Daemon Unison サーバーエラー: {}", e);
     }
 }
 
