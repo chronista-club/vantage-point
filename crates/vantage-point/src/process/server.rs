@@ -501,6 +501,10 @@ pub async fn run(
             "/api/world/projects/remove",
             post(world::world_remove_project),
         )
+        .route(
+            "/api/world/projects/reload",
+            post(world::world_reload_projects),
+        )
         .route("/api/world/processes", get(world::world_list_processes))
         .route("/api/world/lanes", get(world::world_list_lanes))
         .route(
@@ -885,6 +889,10 @@ pub async fn run_world(
         .route(
             "/api/world/projects/remove",
             post(world::world_remove_project),
+        )
+        .route(
+            "/api/world/projects/reload",
+            post(world::world_reload_projects),
         )
         .route("/api/world/processes", get(world::world_list_processes))
         .route("/api/world/lanes", get(world::world_list_lanes))

@@ -161,6 +161,33 @@ fn prune_ghosts_with<F: Fn(&str) -> bool>(pf: &mut ProjectsFile, dir_exists: F) 
     removed
 }
 
+/// 稼働中の daemon (TheWorld) に projects.kdl の reload を通知する (best-effort)。
+///
+/// VP-189: `ProjectsFile::sync` が projects.kdl を書き換えても、 既に稼働している
+/// daemon は in-memory projects を保持したままで乖離する。 `POST /api/world/projects/reload`
+/// を叩いて daemon に projects.kdl を読み直させる。
+///
+/// daemon が動いていなければ黙って無視する (= 次回 daemon 起動時の `load_config` で
+/// projects.kdl が読まれるため取りこぼしにならない)。 テスト環境では no-op。
+#[cfg(test)]
+fn notify_daemon_reload() {}
+
+/// 稼働中の daemon (TheWorld) に projects.kdl の reload を通知する (best-effort)。
+#[cfg(not(test))]
+fn notify_daemon_reload() {
+    let url = format!(
+        "http://[::1]:{}/api/world/projects/reload",
+        crate::cli::WORLD_PORT
+    );
+    if let Ok(client) = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build()
+    {
+        // best-effort: daemon 不在・エラーは無視 (projects.kdl 自体は更新済)。
+        let _ = client.post(&url).send();
+    }
+}
+
 /// [`ProjectsFile::sync`] の結果サマリ。
 #[derive(Debug, Default)]
 pub struct SyncOutcome {
@@ -217,6 +244,8 @@ impl ProjectsFile {
 
         if outcome.changed() {
             pf.save()?;
+            // 稼働中 daemon に projects.kdl の変更を伝える (best-effort)。
+            notify_daemon_reload();
         }
         Ok(outcome)
     }
