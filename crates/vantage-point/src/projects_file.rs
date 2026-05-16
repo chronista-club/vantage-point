@@ -103,6 +103,11 @@ impl ProjectsFile {
     #[cfg(not(test))]
     pub fn save(&self) -> Result<()> {
         use std::io::Write;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        /// atomic write の temp file 名を経路ごとにユニークにする連番。
+        static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
         let path = projects_file_path();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
@@ -113,7 +118,17 @@ impl ProjectsFile {
         // atomic write: 同一ディレクトリの temp file に書いて rename。
         // rename は同一ファイルシステム内で atomic、 reader は古い or 新しいファイルの
         // どちらか一方を必ず読む (= 中途半端な内容を読まない)。
-        let tmp = path.with_extension("kdl.tmp");
+        //
+        // temp file 名は (pid + 連番) でユニークにする ── 固定名だと複数の write 経路
+        // (`persist_projects` / `persist_projects_kdl` / `sync`) が並行で save した
+        // とき同じ temp を奪い合い、 先に rename した側が temp を消すので後発の rename が
+        // ENOENT で失敗する race になる (VP-189 dogfood で daemon 起動直後の slot 永続化が
+        // 確定的に罹患)。 経路ごとに専用 temp を持てば rename は最後の書き手が atomic に勝つ。
+        let tmp = path.with_file_name(format!(
+            "projects.kdl.{}.{}.tmp",
+            std::process::id(),
+            TMP_SEQ.fetch_add(1, Ordering::Relaxed),
+        ));
         {
             let mut f = std::fs::File::create(&tmp)
                 .with_context(|| format!("projects.kdl temp 作成失敗: {}", tmp.display()))?;
@@ -121,8 +136,11 @@ impl ProjectsFile {
                 .context("projects.kdl temp 書き込み失敗")?;
             f.sync_all().context("projects.kdl temp fsync 失敗")?;
         }
-        std::fs::rename(&tmp, &path)
-            .with_context(|| format!("projects.kdl rename 失敗: {}", path.display()))?;
+        if let Err(e) = std::fs::rename(&tmp, &path) {
+            // rename にコケたら temp が残るので掃除 (leak 防止)。
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e).with_context(|| format!("projects.kdl rename 失敗: {}", path.display()));
+        }
         Ok(())
     }
 }
