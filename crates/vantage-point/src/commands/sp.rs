@@ -76,6 +76,11 @@ fn sp_start(
     // VP-189 follow-up: projects.kdl を sync (起点 dir 登録 + ghost 除去)。
     // 「起点 dir → SP」 のメンタルモデル: 全 SP 起動経路 (GUI / vp sp start 直 /
     // daemon spawn) がこの sp_start に収束するため、 ここ 1 点で漏れなく同期できる。
+    //
+    // 注: daemon が複数 SP を並行 spawn する場合 (max_concurrent_lane_spawn > 1)、
+    // 各 vp sp start が projects.kdl を load → save するため write 競合がありうる。
+    // 現状 default=1 (sequential) なので実害なし。 並列化する際は projects.kdl への
+    // 排他制御 (file lock 等) を検討すること。
     match crate::projects_file::ProjectsFile::sync(Some(std::path::Path::new(project_dir))) {
         Ok(outcome) => {
             if let Some(name) = &outcome.added {

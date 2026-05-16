@@ -13,7 +13,7 @@
 //! ## 設計
 //!
 //! - SSOT = `~/.config/vp/projects.kdl` (KDL 形式、 VP の club-kdl 資産と統一)
-//! - config.toml とは責務分離: config.toml は人間が編集する global 設定、
+//! - config.kdl とは責務分離: config.kdl は人間が編集する global 設定、
 //!   projects.kdl は VP が全権を持つ (= ファイル全体を serialize し直してよい)
 //! - node 出現順 = sidebar 並び順 (= 明示 order field 不要)
 //! - 書き込みは atomic write (temp file → rename) で partial read を防ぐ
