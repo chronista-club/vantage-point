@@ -73,15 +73,19 @@ fn sp_start(
     debug: Option<DebugModeArg>,
     config: &Config,
 ) -> Result<()> {
-    // VP-189 follow-up: 起点ディレクトリを project として登録 (未登録なら)。
+    // VP-189 follow-up: projects.kdl を sync (起点 dir 登録 + ghost 除去)。
     // 「起点 dir → SP」 のメンタルモデル: 全 SP 起動経路 (GUI / vp sp start 直 /
-    // daemon spawn) がこの sp_start に収束するため、 ここ 1 点で漏れなく登録できる。
-    match crate::projects_file::ProjectsFile::ensure_dir_registered(std::path::Path::new(
-        project_dir,
-    )) {
-        Ok(Some(name)) => println!("📁 project を登録しました: {name}"),
-        Ok(None) => {}
-        Err(e) => tracing::warn!("project 自動登録に失敗 (SP 起動は続行): {e}"),
+    // daemon spawn) がこの sp_start に収束するため、 ここ 1 点で漏れなく同期できる。
+    match crate::projects_file::ProjectsFile::sync(Some(std::path::Path::new(project_dir))) {
+        Ok(outcome) => {
+            if let Some(name) = &outcome.added {
+                println!("📁 project を登録しました: {name}");
+            }
+            for name in &outcome.removed {
+                println!("🧹 ghost project を除去: {name}");
+            }
+        }
+        Err(e) => tracing::warn!("projects.kdl の sync に失敗 (SP 起動は続行): {e}"),
     }
 
     let mut port = explicit_port.unwrap_or_else(|| resolve_port(project_dir, config));

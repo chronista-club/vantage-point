@@ -144,37 +144,81 @@ fn register_dir_into(pf: &mut ProjectsFile, dir_path: &str, name: &str) -> bool 
     true
 }
 
-impl ProjectsFile {
-    /// 起点ディレクトリを project として projects.kdl に登録する (未登録なら)。
-    ///
-    /// VP-189 follow-up: VP のメンタルモデルは「起点ディレクトリ → そこから SP が
-    /// 立ち上がる」。 `vp app start` / `vp sp start` は「この起点ディレクトリで
-    /// 開発を始める」 という明示アクションなので、 そのとき起点 dir を project として
-    /// 登録する。 これで「まっさら状態 → projects 0 件 → サイドバー (no projects)」 を
-    /// 救済し、 通常運用でも起点 dir で起動するだけで project が増えていく。
-    ///
-    /// `dir` はそのまま (正規化のみ) project になる ── git repo root への丸めや
-    /// git 判定はしない。 D11「正規化ディレクトリパスが Process の一意キー」 +
-    /// 「起点ディレクトリ = project」 のメンタルモデルに忠実な形。 既に登録済み
-    /// (正規化 path 一致) なら何もしない (idempotent)。
-    ///
-    /// 戻り値: 新規登録したら `Some(project_name)`、 何もしなければ `None`。
-    pub fn ensure_dir_registered(dir: &std::path::Path) -> Result<Option<String>> {
-        // 他の project entry と比較可能なよう正規化パスに揃える。
-        let dir_path = crate::config::Config::normalize_path(dir);
-        let name = std::path::Path::new(&dir_path)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("project")
-            .to_string();
-
-        let mut pf = ProjectsFile::load()?;
-        if register_dir_into(&mut pf, &dir_path, &name) {
-            pf.save()?;
-            Ok(Some(name))
+/// `pf` から「`dir_exists` が `false` を返す path」 の entry を除去する純粋ロジック。
+///
+/// 除去した project 名を出現順で返す。 dir 実在判定 (`dir_exists`) を注入式に
+/// したので fs 非依存で単体テストできる。
+fn prune_ghosts_with<F: Fn(&str) -> bool>(pf: &mut ProjectsFile, dir_exists: F) -> Vec<String> {
+    let mut removed = Vec::new();
+    pf.projects.retain(|p| {
+        if dir_exists(&p.path) {
+            true
         } else {
-            Ok(None)
+            removed.push(p.name.clone());
+            false
         }
+    });
+    removed
+}
+
+/// [`ProjectsFile::sync`] の結果サマリ。
+#[derive(Debug, Default)]
+pub struct SyncOutcome {
+    /// 新規登録した起点 project 名 (起動時 sync で起点 dir が未登録だった場合)。
+    pub added: Option<String>,
+    /// ghost (dir 実在せず) として除去した project 名。
+    pub removed: Vec<String>,
+}
+
+impl SyncOutcome {
+    /// projects.kdl に変更があったか。
+    pub fn changed(&self) -> bool {
+        self.added.is_some() || !self.removed.is_empty()
+    }
+}
+
+impl ProjectsFile {
+    /// projects.kdl を現実と同期する (VP-189 follow-up)。
+    ///
+    /// 2 つの操作を 1 回の load → save にまとめる:
+    ///
+    /// 1. **起点 dir の登録** — `start_dir` が `Some` なら、 その起点ディレクトリを
+    ///    project として登録 (未登録なら)。 VP のメンタルモデル「起点ディレクトリ →
+    ///    そこから SP が立ち上がる」 に沿い、 `vp app start` / `vp sp start` で
+    ///    起点 dir を VP に追加する (起動アクション = project 追加)。 `dir` は
+    ///    そのまま (正規化のみ) project になる ── git repo root への丸めや git 判定は
+    ///    しない (D11「正規化ディレクトリパスが Process の一意キー」)。
+    /// 2. **ghost 除去** — path が実在しない (dir が削除/移動された) ghost project を
+    ///    projects.kdl から除去する。 サイドバーに出るが開けない死に entry を掃除。
+    ///
+    /// `vp sync` (明示コマンド) は `start_dir = None` で呼び ghost 除去のみ。 起動時
+    /// (`vp app start` / `vp sp start`) は起点 dir を渡し「追加 + 除去」 を同時に行う。
+    /// 変更があったときだけ save する (= projects.kdl への無駄な書き込みを避ける)。
+    pub fn sync(start_dir: Option<&std::path::Path>) -> Result<SyncOutcome> {
+        let mut pf = ProjectsFile::load()?;
+        let mut outcome = SyncOutcome::default();
+
+        // 1. 起点 dir を登録 (起動時 sync のみ)。
+        if let Some(dir) = start_dir {
+            // 他の project entry と比較可能なよう正規化パスに揃える。
+            let dir_path = crate::config::Config::normalize_path(dir);
+            let name = std::path::Path::new(&dir_path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("project")
+                .to_string();
+            if register_dir_into(&mut pf, &dir_path, &name) {
+                outcome.added = Some(name);
+            }
+        }
+
+        // 2. ghost 除去: path が実在しない (ディレクトリでない) entry を落とす。
+        outcome.removed = prune_ghosts_with(&mut pf, |path| std::path::Path::new(path).is_dir());
+
+        if outcome.changed() {
+            pf.save()?;
+        }
+        Ok(outcome)
     }
 }
 
@@ -251,5 +295,55 @@ mod tests {
             "creo-memories"
         ));
         assert_eq!(pf.projects.len(), 2);
+    }
+
+    /// VP-189: ghost project (dir 実在せず) のみ除去する (prune_ghosts_with 純粋ロジック)
+    #[test]
+    fn prune_ghosts_with_removes_only_nonexistent_dirs() {
+        let mut pf = ProjectsFile {
+            projects: vec![
+                ProjectEntry {
+                    name: "alive-a".into(),
+                    path: "/repos/a".into(),
+                    enabled: None,
+                    slot: Some(0),
+                },
+                ProjectEntry {
+                    name: "ghost".into(),
+                    path: "/repos/gone".into(),
+                    enabled: None,
+                    slot: Some(1),
+                },
+                ProjectEntry {
+                    name: "alive-b".into(),
+                    path: "/repos/b".into(),
+                    enabled: None,
+                    slot: None,
+                },
+            ],
+        };
+        // "/repos/gone" だけ実在しない扱い
+        let removed = prune_ghosts_with(&mut pf, |path| path != "/repos/gone");
+        assert_eq!(removed, vec!["ghost".to_string()]);
+        // 生存 entry は出現順を保って残る
+        assert_eq!(pf.projects.len(), 2);
+        assert_eq!(pf.projects[0].name, "alive-a");
+        assert_eq!(pf.projects[1].name, "alive-b");
+    }
+
+    /// VP-189: 全 dir が実在すれば何も除去しない
+    #[test]
+    fn prune_ghosts_with_keeps_all_when_all_exist() {
+        let mut pf = ProjectsFile {
+            projects: vec![ProjectEntry {
+                name: "a".into(),
+                path: "/repos/a".into(),
+                enabled: None,
+                slot: None,
+            }],
+        };
+        let removed = prune_ghosts_with(&mut pf, |_| true);
+        assert!(removed.is_empty());
+        assert_eq!(pf.projects.len(), 1);
     }
 }
