@@ -241,6 +241,9 @@ fn main() -> Result<()> {
     // CLIパース（tracingより先に）
     let cli = Cli::parse();
 
+    // VP-192: 旧 config/data パスからの冪等なデータ移行 (config 読み込み前に 1 回)
+    vantage_point::config::migrate_legacy_paths();
+
     // Load config
     let config = Config::load().unwrap_or_default();
 
