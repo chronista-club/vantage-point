@@ -181,16 +181,12 @@ impl ProcessManagerCapability {
     /// 設定を読み込み
     ///
     /// VP-188: registered projects の SSOT を embedded DB → `~/.config/vp/projects.kdl`
-    /// に移行。 projects.kdl から読み込んで HashMap に同期する。 DB / config.toml の
-    /// projects 経路は撤去 (= VP-182 の「DB dir 変更で projects 消失」 regression を
-    /// 構造的に解消、 council 2026-05-16)。 global 設定 (network 等) は引き続き config.toml。
+    /// に移行。 `Config::load()` が projects.kdl を `config.projects` にマージするため
+    /// (= read 経路を 1 本化)、 ここは `config.projects` から HashMap に同期する。
+    /// VP-182 の「DB dir 変更で projects 消失」 regression を構造的に解消 (council 2026-05-16)。
     pub async fn load_config(&mut self) -> CapabilityResult<()> {
         let config = Config::load().map_err(|e| {
             CapabilityError::InitializationFailed(format!("Failed to load config: {}", e))
-        })?;
-
-        let projects_file = crate::projects_file::ProjectsFile::load().map_err(|e| {
-            CapabilityError::InitializationFailed(format!("projects.kdl 読み込み失敗: {}", e))
         })?;
 
         let mut projects = self.projects.write().await;
@@ -198,17 +194,17 @@ impl ProcessManagerCapability {
         projects.clear();
         order.clear();
 
-        for entry in &projects_file.projects {
-            let key = normalize_path_key(&PathBuf::from(&entry.path));
+        for project in &config.projects {
+            let key = normalize_path_key(&PathBuf::from(&project.path));
             order.push(key.clone());
             projects.insert(
                 key,
                 ProjectInfo {
-                    name: entry.name.clone(),
-                    path: entry.path.clone().into(),
+                    name: project.name.clone(),
+                    path: project.path.clone().into(),
                     process_status: ProcessStatus::Stopped,
                     port: None, // port は動的割当 (port_layout が slug から計算)
-                    enabled: entry.is_enabled(),
+                    enabled: project.enabled,
                 },
             );
         }
@@ -317,7 +313,7 @@ impl ProcessManagerCapability {
         procs.values().cloned().collect()
     }
 
-    /// config.toml を再読み込みして projects を更新（新規プロジェクトの動的追加対応）
+    /// projects を再読み込みして HashMap を更新（新規プロジェクトの動的追加対応、 VP-188: projects.kdl 経由）
     pub async fn reload_config(&self) {
         if let Ok(config) = Config::load() {
             let mut projects = self.projects.write().await;
@@ -346,7 +342,7 @@ impl ProcessManagerCapability {
         }
     }
 
-    /// プロジェクトを追加（+ DB / config.toml に永続化）
+    /// プロジェクトを追加（+ projects.kdl に永続化、 VP-188）
     pub async fn add_project(&self, name: &str, path: &str) -> CapabilityResult<ProjectInfo> {
         // 名前バリデーション
         if name.trim().is_empty() {
@@ -393,7 +389,7 @@ impl ProcessManagerCapability {
         Ok(info)
     }
 
-    /// プロジェクトを削除（+ DB / config.toml に永続化）
+    /// プロジェクトを削除（+ projects.kdl に永続化、 VP-188）
     pub async fn remove_project(&self, path: &str) -> CapabilityResult<()> {
         let key = normalize_path_key(&PathBuf::from(path));
 
@@ -425,7 +421,7 @@ impl ProcessManagerCapability {
         Ok(())
     }
 
-    /// プロジェクト名を変更（+ DB / config.toml に永続化）
+    /// プロジェクト名を変更（+ projects.kdl に永続化、 VP-188）
     pub async fn rename_project(&self, path: &str, new_name: &str) -> CapabilityResult<()> {
         if new_name.trim().is_empty() {
             return Err(CapabilityError::Other(
@@ -476,7 +472,7 @@ impl ProcessManagerCapability {
         Ok(())
     }
 
-    /// プロジェクトの並び順を更新（+ DB / config.toml に永続化）
+    /// プロジェクトの並び順を更新（+ projects.kdl に永続化、 VP-188）
     pub async fn reorder_projects(&self, paths: &[String]) -> CapabilityResult<()> {
         // raw paths を正規化して HashMap キーと一致させる
         let normalized: Vec<String> = paths

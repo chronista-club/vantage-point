@@ -767,7 +767,7 @@ fn run_project_select_for_multi(
     let projects = config.projects.clone();
 
     if projects.is_empty() {
-        anyhow::bail!("プロジェクトが登録されていません。config.toml に追加してください。");
+        anyhow::bail!("プロジェクトが登録されていません。vp-app の + Add で追加してください。");
     }
 
     let mut list_state = ListState::default();

@@ -165,15 +165,42 @@ fn default_enabled() -> bool {
 
 impl Config {
     /// Load config from XDG config file
+    ///
+    /// VP-188: registered projects の SSOT は `~/.config/vp/projects.kdl` に移行。
+    /// config.toml をパースした後、 projects.kdl が存在すれば `projects` field を
+    /// **projects.kdl の内容で上書き** する。 これで `config.projects` を読む全
+    /// caller (resolve / TUI / ccws / reload_config) が無改修で projects.kdl を
+    /// SSOT として参照できる。 projects.kdl が無ければ config.toml の `[[projects]]`
+    /// (= legacy seed) をそのまま使う。
     pub fn load() -> Result<Self> {
         let path = config_file_path();
 
-        if !path.exists() {
-            return Ok(Self::default());
+        let mut config: Config = if path.exists() {
+            let content = std::fs::read_to_string(&path)?;
+            toml::from_str(&content)?
+        } else {
+            Self::default()
+        };
+
+        // VP-188: projects.kdl が SSOT。 存在すれば config.projects を置換。
+        let projects_file = crate::projects_file::ProjectsFile::load()
+            .map_err(|e| anyhow::anyhow!("projects.kdl 読み込み失敗: {}", e))?;
+        if crate::projects_file::projects_file_path().exists() {
+            config.projects = projects_file
+                .projects
+                .iter()
+                .map(|e| ProjectConfig {
+                    name: e.name.clone(),
+                    path: e.path.clone(),
+                    // port / slot は projects.kdl 管轄外 (= port_layout が slug から
+                    // deterministic に計算する)。 enabled は projects.kdl の値。
+                    port: None,
+                    enabled: e.is_enabled(),
+                    slot: None,
+                })
+                .collect();
         }
 
-        let content = std::fs::read_to_string(&path)?;
-        let config: Config = toml::from_str(&content)?;
         Ok(config)
     }
 
