@@ -870,7 +870,7 @@ consumer side (= lane Claude / Stand / Service):
 
 | 論点 | 確定事項 |
 |---|---|
-| **embedded DB single-writer 衝突** | surrealkv は **per-directory の OS レベル排他ロック** (`try_lock_exclusive`) を持つ。 World daemon と SP が同一 embedded DB dir (`~/Library/Application Support/vantage/db/`) を open すると衝突し、 先に LOCK を取った World が勝ち、 SP の `connect_embedded` が失敗 → `vpdb = None` → `msgbox_store = None` で msgbox が全死する。 対処として **World は `db/world/`、 SP は `db/sp_{slug}/`** にディレクトリを分離する (VP-182 / PR #367)。 §4.5 の「Whitesnake = primary store」 「LIVE substrate = SurrealDB embedded single-node 限定」 という前提は維持されるが、 **「単一マシン上で World daemon と複数 SP が同居する」 という VP の常駐構成では、 process ごとに DB directory を物理分離しないと embedded DB を共有 open できない** という制約を踏まえる必要がある。 doc 17 (B) `discs/p_{slug}/` の project-keyed 化と同系統の措置だが、 こちらは **World ⟂ SP の process 境界** に対する分離。 関連: doc 17 §決定B / `crates/vantage-point/src/db/mod.rs` (`world_db_dir` / `sp_db_dir`) |
+| **embedded DB single-writer 衝突** | surrealkv は **per-directory の OS レベル排他ロック** (`try_lock_exclusive`) を持つ。 World daemon と SP が同一 embedded DB dir (`~/Library/Application Support/vantage/db/`) を open すると衝突し、 先に LOCK を取った World が勝ち、 SP の `connect_embedded` が失敗 → `vpdb = None` → `msgbox_store = None` で msgbox が全死する。 対処として **World は `db/world/`、 SP は `db/sp_{slug}/`** にディレクトリを分離する (VP-182 / PR #367)。 §4.5 の「Whitesnake = primary store」 「LIVE substrate = SurrealDB embedded single-node 限定」 という前提は維持されるが、 **「単一マシン上で World daemon と複数 SP が同居する」 という VP の常駐構成では、 process ごとに DB directory を物理分離しないと embedded DB を共有 open できない** という制約を踏まえる必要がある。 doc 17 (B) `discs/p_{slug}/` の project-keyed 化と同系統の措置だが、 こちらは **World ⟂ SP の process 境界** に対する分離。 関連: doc 17 §決定B / `crates/vantage-point/src/db/mod.rs` (`db_data_dir_for_world` / `db_data_dir_for_project`) |
 
 ---
 
