@@ -34,11 +34,9 @@ jobs:
     name: Clippy + Test
     runs-on: macos-latest
     steps:
+      # font (.ttf) は通常 git blob 管理に移行済 (LFS budget 超過のため)。
+      # checkout はデフォルトで font 実体がそのまま取れる (lfs フェッチ不要)。
       - uses: actions/checkout@v4
-        with:
-          # web_assets test が font binary の sig + size を検査するため、
-          # LFS pointer ではなく実 binary を pull 必須 (FONT_ASSETS bytes.len() > 1MB assert)
-          lfs: true
 
       # VP-180 (2026-05-15) で導入: club-unison v0.7.0+ の build script が protoc を要求
       # (= buffa::Message / ProtoCodec を生成するため、 v0.9 の wire format pivot 以降は
