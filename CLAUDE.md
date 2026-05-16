@@ -119,7 +119,12 @@ cargo clippy --workspace --all-targets    # Lint
 
 ## 設定・ポート
 
-- 設定ファイル: `~/.config/vantage/config.toml`
+- config / data パスは OS 判定を `dirs` クレートに委ねて一本化（VP-192）。ディレクトリ名は全 OS で `vp`。
+  - **config** (`config_dir()` = `vp_config_dir()`): macOS `~/Library/Application Support/vp/`、Linux `~/.config/vp/`、Windows `%APPDATA%\vp\`
+  - **data** (`data_dir()` = `vp_data_dir()`): macOS `~/Library/Application Support/vp/`、Linux `~/.local/share/vp/`、Windows `%LOCALAPPDATA%\vp\`
+  - 設定ファイル: `vp_config_dir()/config.toml`（例: macOS `~/Library/Application Support/vp/config.toml`）
+  - DB / DISC / ログ等の生成データは `vp_data_dir()` 配下（Windows %APPDATA% は roaming 同期で DB 破損リスクがあるため data は %LOCALAPPDATA%）
+  - 起動時に旧パス（`~/.config/vp/`、`dirs::config_dir()/vantage/`）からの冪等なデータ移行を実施（`migrate_legacy_paths()`、旧データは残す）
 - ポート割り当て:
   - TheWorld: 32000 (HTTP + QUIC)
   - Project: 33000〜33010 (HTTP + WS)

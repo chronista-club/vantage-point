@@ -254,11 +254,10 @@ impl FileBackend {
     }
 
     /// VP のデフォルトディレクトリを使用
+    ///
+    /// VP-192: DISC は生成データなので `vp_data_dir()/discs` 配下。
     pub fn default_dir() -> Self {
-        let dir = dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("/tmp"))
-            .join("vantage")
-            .join("discs");
+        let dir = crate::config::vp_data_dir().join("discs");
         Self::new(dir)
     }
 
@@ -417,9 +416,8 @@ impl Whitesnake {
     /// 永続 msg を読む事故（`restore_pending` 経由の `from` 汚染）を構造的に防ぐ。
     /// slug の導出は [`crate::resolve::project_slug`]。
     pub fn file_backed_for_project(project_slug: &str) -> Self {
-        let dir = dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("/tmp"))
-            .join("vantage")
+        // VP-192: DISC は生成データなので `vp_data_dir()/discs` 配下。
+        let dir = crate::config::vp_data_dir()
             .join("discs")
             .join(format!("p_{}", project_slug));
         Self::new(Arc::new(FileBackend::new(dir)))
@@ -430,11 +428,8 @@ impl Whitesnake {
     /// 旧実装は `file_backed_for_port(32000)` だったが、World daemon の port も
     /// override 可能（`config.ports.world_port`）なので固定キー `discs/world/` に。
     pub fn file_backed_for_world() -> Self {
-        let dir = dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("/tmp"))
-            .join("vantage")
-            .join("discs")
-            .join("world");
+        // VP-192: DISC は生成データなので `vp_data_dir()/discs` 配下。
+        let dir = crate::config::vp_data_dir().join("discs").join("world");
         Self::new(Arc::new(FileBackend::new(dir)))
     }
 

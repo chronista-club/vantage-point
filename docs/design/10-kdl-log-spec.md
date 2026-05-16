@@ -1,9 +1,22 @@
 # 10: KDL log emission spec v0
 
-> **Status**: draft (stage 1 of `mem_1CaaLAtsYRhWgpPhnrvaVd` execution snapshot)
+> **Status**: draft — stage 1 spec (未実装、2026-05-16 VP-191 棚卸しで確認)
 > **Extends**: architectural canon `mem_1CaSiJkD9HATDY2srrv6D4` (VP Observability Stack 設計決定, 2026-04-27)
 > **Implements**: Phase B precondition — Phase B (`KdlFormatter` を `vantage-core` に昇格) が安全に実装できるよう、 emission の正規 format を**先に**確定する役割
 > **Out of scope**: viewer (TUI / Canvas) の UI 仕様、 SurrealDB sink の schema (両方とも architectural canon 側で確定済 / 未着手)
+
+> **実装状況 NOTE (2026-05-16、VP-191 棚卸し)**: 現状コードとの突き合わせ結果:
+>
+> - **`vantage-core` crate は未存在** — `crates/` 配下は `vantage-point` / `vp-app` / `vp-cli` /
+>   `vp-mdast` / `vp-mdast-wasm` のみ。本 spec が前提とする Phase B (`KdlFormatter` の vantage-core 昇格) は未着手。
+> - **`KdlFormatter` は `vp-app` ローカルにのみ存在** (`crates/vp-app/src/log_format.rs`)。
+>   vp-app は `log_init.rs` 経由でこれを適用済 (= §2 表の "vp-app" 行は実装済)。
+> - **daemon / project SP は依然 `tracing_subscriber::fmt()` default** — `cli.rs` の `init_tracing`
+>   (現状 line 352 前後、本文の `cli.rs:346` は当時の行番号) は KDL formatter を未適用。
+>   `.kdl.log` 拡張子なのに中身が plain tracing という §2 末尾の misleading 状態は **未解消**。
+>
+> 結論: 本 spec は **stage 1 draft の format 規定として有効**だが、daemon/SP への展開と
+> vantage-core 昇格 (stage 2) は未実装。本文の format 仕様自体は現行 vp-app 実装と整合しており修正不要。
 
 ---
 

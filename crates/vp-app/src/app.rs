@@ -52,7 +52,7 @@ const SIDEBAR_WIDTH: f64 = 280.0;
 /// 優先順位 (1Password 風の挙動):
 /// 1. `VP_DEVELOPER_MODE` env var が `1`/`true`/`yes`/`on` → 強制 ON
 /// 2. `VP_DEVELOPER_MODE` env var が `0`/`false`/`no`/`off` → 強制 OFF
-/// 3. Settings ファイル (`~/.config/vantage/vp-app.toml` 等) の `developer_mode` フィールド
+/// 3. Settings ファイル (`vp_config_dir()/vp-app.toml`) の `developer_mode` フィールド
 /// 4. それ以外 (未設定) → `cfg!(debug_assertions)` (debug ビルドは ON、release は OFF)
 ///
 /// 起動後の runtime 切替 (View → Developer Mode メニュー) は app.rs の event loop で
@@ -2442,6 +2442,9 @@ pub fn run() -> anyhow::Result<()> {
     //   tracing init を `crate::log_init::init_tracing()` に切り出し済。
     //   filter resilience (PR #235) + appender + KdlFormatter wiring + 起動ログを内包。
     let _log = crate::log_init::init_tracing();
+
+    // VP-192: 旧 config/data パスからの冪等なデータ移行 (Settings/SessionState 読み込み前)
+    crate::paths::migrate_legacy_paths();
 
     let event_loop = EventLoopBuilder::<AppEvent>::with_user_event().build();
 

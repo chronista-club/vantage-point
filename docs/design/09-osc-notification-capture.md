@@ -1,9 +1,23 @@
 # 09: OSC notification capture pipeline (vp-app)
 
-> **Status**: in-progress (S1 done @ PR #221, S2 / S3 active in this worker lane)
+> **Status**: 部分実装 — S1 done + 簡易版 S2/S3 実装 (2026-05-16、VP-191 棚卸し)
 > **Worker lane**: `vantage-point-vp-osc-pipeline`
 > **Branch**: `mako/osc-pipeline-s2`
 > **Related memory** (main session local): `~/.claude/projects/-Users-makoto-repos-vantage-point/memory/osc_notification_capture.md`
+
+> **実装状況 NOTE (2026-05-16、VP-191 棚卸し)**: 現状コード (`crates/vp-app/`) との突き合わせ結果:
+>
+> | 項目 | 状態 | 根拠 |
+> |------|------|------|
+> | OSC 9 / 99 / 777 handler を xterm.js layer に登録 | ✅ 実装済 | `main_area.rs` `registerOscHandler(9/99/777/52)` |
+> | OSC 99 metadata parse (`i=`/`d=`/`p=` key) | ✅ 実装済 | `main_area.rs` の `[osc99-keys:...]` debug 出力 |
+> | sidebar Lane row への入力待ち表示 | ✅ 実装済 (簡易版) | OSC 99 受信 → `SidebarState.awaiting_input: HashMap<String,bool>` → Lane 行右端の黄 dot (`app.rs`)。VP-142 / PR #303 |
+> | Lane row click で clear | ✅ 実装済 | `app.rs` lane select 時に `awaiting_input.remove(address)` |
+> | **本 doc 仕様の `LaneNotification` store (title/body/action/urgency)** | ❌ 未実装 | 実装は boolean flag (`awaiting_input`) に簡略化。本 doc の `notifications_by_lane` / `lane:notify` IPC / id-based accumulator / tooltip は採用されず |
+>
+> 結論: **S1 (capture) + 簡易版 S2/S3 (boolean awaiting_input dot) が実装済**。本 doc の
+> 詳細仕様 (multi-chunk accumulator + title/body store + tooltip UI) は採用されず、より軽量な
+> boolean flag 路線に置き換わった。S4 以降 (DistributedNotification fan-out 等) は引き続き未着手。
 
 ---
 

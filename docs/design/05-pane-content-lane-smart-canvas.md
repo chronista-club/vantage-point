@@ -27,7 +27,7 @@ Project      (vantage-point)
 
 | Stand | Content type | 説明 |
 |-------|--------------|------|
-| Heaven's Door 📖 | `heavens-door` (mode: chat / tui) | Claude CLI (GUI chat 版追加、session 共有で切替) |
+| Echoes 💬 | `echoes` (mode: chat / tui) | Claude CLI (GUI chat 版追加、session 共有で切替) |
 | The Hand ✋ | `bare-shell` | 素 PTY (CC なし) |
 | Paisley Park 🧭 | `smart-canvas` | Items + pin + memory 統合 workspace |
 | Gold Experience 🌿 | `ruby-repl` | Ruby VM 対話環境 (将来) |
@@ -61,7 +61,7 @@ Canvas は items array を保持、各 item:
 
 ---
 
-## 4. HD 2 モード (Chat / TUI)
+## 4. Echoes 2 モード (Chat / TUI)
 
 ユーザー好みで選択、session_id 共有で無縫切替:
 
@@ -105,7 +105,7 @@ Pane は **content_ref のみ保持**、Content は独立オブジェクト:
 | Content type | Pane 内 | Lane 内 | Project 間 |
 |-------------|---------|---------|-----------|
 | Smart Canvas | ✅ | ✅ | ⚠ tags reset |
-| HD | ✅ 同 Lane | ⚠ worker_dir 調整 | ❌ codebase 違い |
+| Echoes | ✅ 同 Lane | ⚠ worker_dir 調整 | ❌ codebase 違い |
 | The Hand | ✅ | ⚠ cwd 再設定 | ⚠ |
 
 ### Orphan 管理
@@ -122,7 +122,7 @@ Pane は **content_ref のみ保持**、Content は独立オブジェクト:
 - Content: items / session / PTY buffer / layout (mirror 同期)
 - View: scroll / zoom / focus (per-Pane 独立)
 
-### 特殊: HD Cross-mode Mirror
+### 特殊: Echoes Cross-mode Mirror
 Pane A = Chat mode、Pane B = TUI mode、同 session を両方で見る。
 
 ### 制限
@@ -142,8 +142,8 @@ Pane A = Chat mode、Pane B = TUI mode、同 session を両方で見る。
 
 ### Canonical + Alias の 2 層
 
-- Canonical: `{stand}.{lane}@{project}` (例: `hd.lead@vp`)
-- Alias: `agent@vp` → `hd.lead@vp`、`worker-VP-10@vp` → `hd.worker-VP-10@vp`
+- Canonical: `{stand}.{lane}@{project}` (例: `echoes.lead@vp`)
+- Alias: `agent@vp` → `echoes.lead@vp`、`worker-VP-10@vp` → `echoes.worker-VP-10@vp`
 - alias は永久互換、canonical は拡張性
 
 ### Linear 命名統一
@@ -166,7 +166,7 @@ Issue "VP-10" → worker "VP-10" → branch "mako/vp-10-..." → address "worker
 - Lead Pane tree + Contents: eager
 - Worker Lane: **lazy** (sidebar click で activate)
 - Orphan Contents: lazy
-- HD messages (> last 50): lazy scroll
+- Echoes messages (> last 50): lazy scroll
 
 ### Tombstone
 - soft-delete 7 日、undo 可能
@@ -211,7 +211,7 @@ Sidebar で各 Worker Lane に `[peek]` / `[mirror to lead]` / `[destroy]` 操�
 | **P2** | Smart Canvas backend (items store + event bus) | High |
 | **P3** | Smart Canvas frontend (Masonry grid + Card component) | High |
 | **P4** | Migration / Mirror implementation | Med |
-| **P5** | HD Chat mode UI (SwiftUI) | High |
+| **P5** | Echoes Chat mode UI (creo-ui WebView) | High |
 | **P6** | Memory 統合 (双方向 sync、search UI) | Med |
 | **P7** | Canvas brain (layout suggest, adaptive) | Low |
 | **P8** | Cross-Lane peek / share UX | Med |
@@ -271,7 +271,7 @@ Sidebar で各 Worker Lane に `[peek]` / `[mirror to lead]` / `[destroy]` 操�
 | D-3 | PP naming | Paisley Park keep / public "Information Router" |
 | D-4 | PP 動作モード | Hybrid (MVP Passive → v2 Active → v3 AI-driven) |
 | D-5 | The Hand routing | Surface + Permission Gate |
-| D-6 | Requiem 命名 | Selective (PP/Whitesnake/HD のみ) |
+| D-6 | Requiem 命名 | Selective (PP/Whitesnake/Echoes のみ) |
 | D-7 | Causation UI | B+C (Dev Panel 常駐 + on-demand "why?") |
 | D-8 | Event topic schema | Hybrid canonical (Unison match) + alias |
 | D-9 | User event 粒度 | Medium + opt-in Fine |
@@ -290,8 +290,17 @@ Sidebar で各 Worker Lane に `[peek]` / `[mirror to lead]` / `[destroy]` 操�
 - CreoUI handoff: `mem_1CaFLjx1ATHBeDDkW9sY8B` (nexus から)
 
 ### 実装 Phase
-v0.15 (R0-R3) → v0.16 (PP/HD Requiem) → v0.17 (TH + User event) → v0.18 (Snapshot + Cross-device)
+v0.15 (R0-R3) → v0.16 (PP/Echoes Requiem) → v0.17 (TH + User event) → v0.18 (Snapshot + Cross-device)
+
+### R0-R3 進捗 (2026-05-16 時点、VP-191 棚卸し)
+
+| Phase | Linear | Status | 備考 |
+|-------|--------|--------|------|
+| R0 — Event schema (CreoContent + causation + topics) | VP-73 | ✅ Done (PR #167, 2026-05-03) | event 構造体 + CreoUI co-design 着地 |
+| R1 — Event bus + Whitesnake event log | VP-74 | 🔄 In Progress | Whitesnake-primary refactor (VP-169 / doc 19) が event store の実体化を前進させた |
+| R2 — Stand actor runtime (subscribe/publish) | VP-75 | ⏸ Backlog | Stand/Service trait 化 (VP-159) が runtime 受け皿を準備中 |
+| R3 — Smart Canvas (new Stand, green field) | VP-76 | ❌ Canceled (2026-05-06) | Smart Canvas は doc 13 PP 復活設計 (PR-ε series) に統合され green-field 路線は破棄 |
 
 ---
 
-> **archive 注記 (2026-05-04、 PR-pre2 / VP-118)**: 本 doc 内の `Heaven's Door 📖` / `heavens-door` は当時の表記。 Stand metaphor は **Echoes 💬** / actor 名は `echoes` に rename 済。 active SSOT は doc 12 §9 catalog + doc 13 (PP 復活設計)。
+> **rename 注記 (2026-05-04、 PR-pre2 / VP-118)**: VP の Coding Assistant Stand は `Heaven's Door 📖` → **Echoes 💬** / actor 名 `heavens-door` → `echoes` に rename 済。 本 doc 本文は 2026-05-16 (VP-191 棚卸し) で Echoes 表記に同期済。 active SSOT は doc 12 §9 catalog + doc 13 (PP 復活設計)。

@@ -1,8 +1,8 @@
 # VP-SPEC-003: セルフアップデート
 
-> **Status**: Draft
+> **Status**: 未整理 Draft — 一部実装済 (2026-05-16、VP-191 棚卸し時点)
 > **Created**: 2025-12-16
-> **Updated**: 2026-03-10
+> **Updated**: 2026-05-16
 
 ---
 
@@ -10,6 +10,26 @@
 
 VP エコシステム（`vp` CLI + VantagePoint.app）のオートアップデート機能。
 TheWorld が更新を検知し、ユーザー確認後に自動更新・再起動を行う。
+
+---
+
+## 実装状況サマリ (2026-05-16、VP-191 棚卸し)
+
+本 spec は **未整理 Draft**。要件は当初構想のまま残っており、現状コードとの突き合わせは未完。
+確認済の実装状況は下記の通り:
+
+| 領域 | 状態 | 根拠 |
+|------|------|------|
+| `vp update [--check]` CLI | ✅ 実装済 | `commands/update.rs` + `capability/update_capability.rs` (GitHub Releases API でチェック・ダウンロード・置換) |
+| HTTP update routes (`/api/update/check` / `apply` / `rollback` / `restart` / `mac-check`) | ✅ 実装済 | `process/routes/update.rs` |
+| GitHub Releases 比較 (`CARGO_PKG_VERSION`) | ✅ 実装済 | `UpdateCapability::check_update` |
+| VantagePoint.app 更新ダイアログ (REQ-UPDATE-002) | ⏳ 未整理 | vp-app は wry 移行済、Sparkle 前提の REQ-UPDATE-004 は要再設計 |
+| TheWorld 起動時自動チェック (REQ-UPDATE-001) | ⏳ 未確認 | 起動フックの有無は要調査 |
+| graceful 再起動フロー (REQ-UPDATE-005) | ⏳ 未整理 | route は存在するが REQ の全項目の充足は未検証 |
+
+> **注意**: 下記 REQ-UPDATE-001〜006 は当初構想 (2025-12) のままで、checkbox は当時のもの。
+> REQ-UPDATE-004 の "Sparkle フレームワーク" は vp-app の SwiftUI→wry 移行 (2026-04-26) で前提が変わったため再設計が必要。
+> 本 spec の正式整理は別 Phase で行う。
 
 ---
 

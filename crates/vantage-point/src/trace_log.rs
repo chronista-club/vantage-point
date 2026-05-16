@@ -3,11 +3,10 @@
 //! MCP プロセスと Process プロセスの両方から同一ファイルに
 //! JSON Lines 形式でログを書き出す。
 //!
-//! ログファイル: `~/.config/vantage/logs/debug.log`
+//! ログファイル: `vp_data_dir()/logs/debug.log`
 
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 
@@ -93,11 +92,10 @@ pub fn new_trace_id() -> String {
 /// ログファイルのパスを返す
 ///
 /// ディレクトリが存在しない場合は自動作成する。
-/// パス: `~/.config/vantage/logs/debug.log`
-/// （macOS でも `~/.config` を使用し、VP の設定パスと統一する）
-pub fn log_file_path() -> Option<PathBuf> {
-    let home = dirs::home_dir()?;
-    let log_dir = home.join(".config").join("vantage").join("logs");
+/// パス: `vp_data_dir()/logs/debug.log`
+/// VP-192: ログは生成データなので `vp_data_dir()` 配下に統一。
+pub fn log_file_path() -> Option<std::path::PathBuf> {
+    let log_dir = crate::config::vp_data_dir().join("logs");
 
     // ディレクトリがなければ作成
     if !log_dir.exists()

@@ -1,3 +1,5 @@
+> **ARCHIVED (2026-05-16)**: 本 doc は Windows/WSL + portable-pty 前提の設計。2026-04-26 の Mac 主軸移行 (vp-app = wry + xterm.js + creo-ui) で無効化された。本 doc は歴史的記録。
+
 # vp-app ↔ HD bridge 設計
 
 **Status**: reviewed (2026-04-24) — Option D 確定、Q1-Q5 合意済

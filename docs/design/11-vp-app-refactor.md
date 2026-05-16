@@ -1,11 +1,19 @@
 # 11: vp-app holistic architecture refactor — purple-haze proposal (2026-05-01)
 
-> **Status**: design draft (8 必須 + 2 任意 PR roadmap、 R-1 着手 ready は PR #235 main landing 後)
+> **Status**: 未採用 proposal (2026-05-16、VP-191 棚卸し時点)
 > **Author**: team-bucciarati::purple-haze (research-only agent、 1200 行 raw 提案)
 > **Synthesis memory**: creo `mem_1CaaaDoXHZvhR46ZfLN6jx` (圧縮版 v2 plan、 意思決定 sheet)
 > **Trigger**: PR #235 review で user が「app.rs 3126 行は重い、 整理した方が良い」 と発言 → main の 5 段 plan (`mem_1CaaYnQDGoYeckjX2TDCnd` v1) を叩き台として holistic 再設計
 > **Position**: main 5 段 plan を **「採用 + 修正 + 拡張」**。 5 段は局所的に正しいが、 vantage-core 未着手 / Requiem 進行 / 内部 boundary 不揃い という 3 つの「より深い亀裂」 を見落としている。 本 proposal はそれを縫合する。
 > **Implementation freeze**: 本 proposal の reference 実装は **着手しない**。 user の review + main の判断を待つ。
+
+> **採否 status NOTE (2026-05-16、VP-191 棚卸し)**: 本 proposal は **対象 crate は現 vp-app
+> (`crates/vp-app/` = wry + xterm.js + creo-ui) で正しい** が、提案された R-0〜R-7 の refactor は
+> **大半が未採用のまま**。確認時点で `app.rs` は 3601 行 (起草時 3126 行から逆に増加)、
+> `main_area.rs` は 1307 行に拡大しており、app.rs 分割 (R-2/R-3/R-4/R-5) は実行されていない。
+> R-1 系の `log_init.rs` は crate 内に存在するが、これが本 proposal 由来か独立着手かは未確定。
+> 本 doc は **採用判断待ちの設計提案** として保持。実際に refactor へ進む際は app.rs の現状
+> (3601 行) に合わせて区画 audit (§1.1.1) を取り直す必要がある。
 
 ---
 

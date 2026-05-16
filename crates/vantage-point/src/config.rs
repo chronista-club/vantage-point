@@ -1,8 +1,5 @@
 //! Configuration management
 //!
-//! Config file location: ~/.config/vp/config.kdl
-//! 全プラットフォームで ~/.config/vp/ を使用（XDG準拠）
-//!
 //! ## VP-189: config.toml → config.kdl 統一
 //!
 //! VP の設定ファイルは元々 TOML だったが、 projects.kdl (VP-188) / ccws の
@@ -13,24 +10,69 @@
 //!   書き戻さない (= `KdlSerialize` 不要、 `KdlDeserialize` のみ)。
 //! - registered projects は projects.kdl が SSOT (VP-188)。 config.kdl には出さない。
 //! - kebab-case のキー名 (`default-port` 等) を採用。
+//!
+//! ## VP-192: config / data パスの OS 判定統一
+//!
+//! ディレクトリ名は全 OS で `vp` に統一。 OS 判定は `dirs` クレートに委ねる。
+//!
+//! | 種別 | API | macOS | Linux | Windows |
+//! |------|-----|-------|-------|---------|
+//! | config | `vp_config_dir()` | `~/Library/Application Support/vp/` | `~/.config/vp/` | `%APPDATA%\vp\` |
+//! | data   | `vp_data_dir()`   | `~/Library/Application Support/vp/` | `~/.local/share/vp/` | `%LOCALAPPDATA%\vp\` |
+//!
+//! 設定ファイルは `vp_config_dir()/config.kdl`。 DB / DISC / セッション状態 /
+//! ログ等の生成データは `vp_data_dir()` 配下に置く。 Windows の `%APPDATA%` は
+//! roaming で同期対象になり DB 破損リスクがあるため、 data は `%LOCALAPPDATA%`
+//! (= `dirs::data_local_dir()`) を使う。
+//!
+//! 旧パス (`~/.config/vp/` / `dirs::config_dir()/vantage/`) からの移行は
+//! [`migrate_legacy_paths`] が起動時に 1 回だけ冪等に行う。
 
 use anyhow::Result;
 use club_kdl::KdlDeserialize;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// Config directory for vp (~/.config/vp/)
-/// 全プラットフォームで統一（macOS/Linux）
-pub fn config_dir() -> PathBuf {
-    dirs::home_dir()
+/// VP の config ディレクトリ (OS 別)。
+///
+/// `dirs::config_dir()` に OS 判定を委ね、 末尾に `vp` を付ける。
+/// macOS: `~/Library/Application Support/vp/`、 Linux: `~/.config/vp/`、
+/// Windows: `%APPDATA%\vp\`。 `dirs` が None を返す環境 (sandbox 等) では
+/// `$HOME/.config` を fallback に使う。
+pub fn vp_config_dir() -> PathBuf {
+    dirs::config_dir()
+        .or_else(|| dirs::home_dir().map(|h| h.join(".config")))
         .unwrap_or_else(|| PathBuf::from("."))
-        .join(".config")
         .join("vp")
 }
 
-/// Data directory for vp (same as config_dir for simplicity)
+/// VP の data ディレクトリ (OS 別)。
+///
+/// `dirs::data_local_dir()` に OS 判定を委ね、 末尾に `vp` を付ける。
+/// macOS: `~/Library/Application Support/vp/`、 Linux: `~/.local/share/vp/`、
+/// Windows: `%LOCALAPPDATA%\vp\`。 `dirs` が None を返す環境では
+/// `$HOME/.local/share` を fallback に使う。
+///
+/// DB / DISC / ログ等の生成データはこちらに置く (config と分離)。
+pub fn vp_data_dir() -> PathBuf {
+    dirs::data_local_dir()
+        .or_else(|| dirs::home_dir().map(|h| h.join(".local").join("share")))
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("vp")
+}
+
+/// Config directory for vp。
+///
+/// VP-192: 実体は [`vp_config_dir`] に委譲 (caller は無改修)。
+pub fn config_dir() -> PathBuf {
+    vp_config_dir()
+}
+
+/// Data directory for vp。
+///
+/// VP-192: config とは別ディレクトリ (`vp_data_dir()`) を返すよう変更。
 pub fn data_dir() -> PathBuf {
-    config_dir()
+    vp_data_dir()
 }
 
 /// Scripts directory for Lua scripts
@@ -38,7 +80,92 @@ pub fn scripts_dir() -> PathBuf {
     config_dir().join("scripts")
 }
 
-/// Config file path (`~/.config/vp/config.kdl`)
+/// 旧 config/data パスから新パスへの冪等なデータ移行 (VP-192)。
+///
+/// VP は過去 config/data の置き場所が複数 (`~/.config/vp/` 直書き、
+/// `dirs::config_dir()/vantage/`) に分裂していた。 OS 判定を `dirs` に委ねる形へ
+/// 一本化したため、 旧パスのデータが孤立しないよう起動時に 1 回だけコピーする。
+///
+/// 設計:
+/// - **コピー (move ではない)**。 旧データは残す = ロールバック安全。 旧データ削除は
+///   別 issue (VP-193) の担当。
+/// - **冪等**。 新パスに既にデータがあれば skip。 何度呼んでも安全。
+/// - 失敗しても起動を阻害しない (warn ログのみ)。
+///
+/// main 初期化の早い段階で 1 回呼ぶこと。
+pub fn migrate_legacy_paths() {
+    // config: 旧 `~/.config/vp/` → 新 `vp_config_dir()`
+    if let Some(home) = dirs::home_dir() {
+        let legacy_config = home.join(".config").join("vp");
+        migrate_dir_if_needed(&legacy_config, &vp_config_dir(), "config");
+    }
+
+    // data: 旧 `dirs::config_dir()/vantage/` → 新 `vp_data_dir()`
+    if let Some(cfg) = dirs::config_dir() {
+        let legacy_data = cfg.join("vantage");
+        migrate_dir_if_needed(&legacy_data, &vp_data_dir(), "data");
+    }
+}
+
+/// `legacy` ディレクトリの中身を `target` にコピーする (冪等ヘルパー)。
+///
+/// - `target` が存在して空でなければ skip (= 移行済み)。
+/// - `legacy` が存在しない、 または `legacy == target` (同一パス) なら skip。
+/// - コピーは再帰的。 失敗は warn ログのみで握り潰す (起動を止めない)。
+fn migrate_dir_if_needed(legacy: &std::path::Path, target: &std::path::Path, label: &str) {
+    // 旧パスと新パスが同一 (= 既に正規パス) なら何もしない。
+    if legacy == target {
+        return;
+    }
+    // 旧データが無ければ移行不要。
+    if !legacy.is_dir() {
+        return;
+    }
+    // 新パスに既にデータがあれば移行済みとみなす (冪等)。
+    if dir_has_entries(target) {
+        return;
+    }
+    tracing::info!(
+        "VP-192 path migration ({}): {} → {}",
+        label,
+        legacy.display(),
+        target.display()
+    );
+    if let Err(e) = copy_dir_recursive(legacy, target) {
+        tracing::warn!(
+            "VP-192 path migration ({}) 失敗 ({} → {}): {} — 旧パスのまま継続",
+            label,
+            legacy.display(),
+            target.display(),
+            e
+        );
+    }
+}
+
+/// ディレクトリが存在し、 かつ 1 つ以上のエントリを持つか。
+fn dir_has_entries(dir: &std::path::Path) -> bool {
+    std::fs::read_dir(dir)
+        .map(|mut it| it.next().is_some())
+        .unwrap_or(false)
+}
+
+/// `src` の中身を `dst` に再帰コピーする。 `dst` は無ければ作成。
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_recursive(&from, &to)?;
+        } else {
+            std::fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
+}
+
+/// Config file path (`config_dir()/config.kdl` ── VP-189 で config.toml から移行)
 fn config_file_path() -> PathBuf {
     config_dir().join("config.kdl")
 }
@@ -532,6 +659,142 @@ startup {
         assert_eq!(config.startup.max_concurrent_lane_spawn, 3);
         // projects は config.kdl に出さない (#[kdl(skip)]、 SSOT は projects.kdl)
         assert!(config.projects.is_empty());
+    }
+
+    #[test]
+    fn test_vp_config_dir_ends_with_vp() {
+        // VP-192: config dir は OS によらず末尾が `vp`
+        let dir = vp_config_dir();
+        assert!(
+            dir.ends_with("vp"),
+            "vp_config_dir は 'vp' で終わるべき: {}",
+            dir.display()
+        );
+    }
+
+    #[test]
+    fn test_vp_data_dir_ends_with_vp() {
+        // VP-192: data dir も末尾が `vp`
+        let dir = vp_data_dir();
+        assert!(
+            dir.ends_with("vp"),
+            "vp_data_dir は 'vp' で終わるべき: {}",
+            dir.display()
+        );
+    }
+
+    #[test]
+    fn test_config_dir_delegates_to_vp_config_dir() {
+        // VP-192: config_dir() は vp_config_dir() に委譲
+        assert_eq!(config_dir(), vp_config_dir());
+    }
+
+    #[test]
+    fn test_data_dir_delegates_to_vp_data_dir() {
+        // VP-192: data_dir() は vp_data_dir() に委譲
+        assert_eq!(data_dir(), vp_data_dir());
+    }
+
+    #[test]
+    fn test_copy_dir_recursive_copies_nested() {
+        // 再帰コピーが nested file/dir を保持する
+        let tmp = std::env::temp_dir().join(format!("vp192_copy_{}", std::process::id()));
+        let src = tmp.join("src");
+        let dst = tmp.join("dst");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(src.join("sub")).unwrap();
+        std::fs::write(src.join("a.txt"), "hello").unwrap();
+        std::fs::write(src.join("sub").join("b.txt"), "world").unwrap();
+
+        copy_dir_recursive(&src, &dst).unwrap();
+
+        assert_eq!(std::fs::read_to_string(dst.join("a.txt")).unwrap(), "hello");
+        assert_eq!(
+            std::fs::read_to_string(dst.join("sub").join("b.txt")).unwrap(),
+            "world"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_migrate_dir_if_needed_idempotent() {
+        // VP-192: migration は冪等 — 新パスに既存データがあれば旧データで上書きしない
+        let tmp = std::env::temp_dir().join(format!("vp192_mig_{}", std::process::id()));
+        let legacy = tmp.join("legacy");
+        let target = tmp.join("target");
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        // 旧パスに古いデータ、新パスに既存データを置く
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("data.txt"), "OLD").unwrap();
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("data.txt"), "NEW").unwrap();
+
+        // 1 回目: 新パスに中身があるので skip されるはず
+        migrate_dir_if_needed(&legacy, &target, "test");
+        assert_eq!(
+            std::fs::read_to_string(target.join("data.txt")).unwrap(),
+            "NEW",
+            "既存データがあれば移行 skip (冪等)"
+        );
+
+        // 2 回目: 何度呼んでも変わらない
+        migrate_dir_if_needed(&legacy, &target, "test");
+        assert_eq!(
+            std::fs::read_to_string(target.join("data.txt")).unwrap(),
+            "NEW"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_migrate_dir_if_needed_copies_to_empty_target() {
+        // VP-192: 新パスが空 (or 不在) なら旧データをコピーし、旧データは残す
+        let tmp = std::env::temp_dir().join(format!("vp192_migc_{}", std::process::id()));
+        let legacy = tmp.join("legacy");
+        let target = tmp.join("target");
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("data.txt"), "OLD").unwrap();
+        // target は不在
+
+        migrate_dir_if_needed(&legacy, &target, "test");
+
+        assert_eq!(
+            std::fs::read_to_string(target.join("data.txt")).unwrap(),
+            "OLD",
+            "新パスへコピーされる"
+        );
+        assert!(
+            legacy.join("data.txt").exists(),
+            "旧データは残る (move ではなく copy)"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_migrate_dir_if_needed_same_path_noop() {
+        // legacy == target なら何もしない
+        let tmp = std::env::temp_dir().join(format!("vp192_migs_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("data.txt"), "X").unwrap();
+        // パニックしないこと、データが壊れないことを確認
+        migrate_dir_if_needed(&tmp, &tmp, "test");
+        assert_eq!(std::fs::read_to_string(tmp.join("data.txt")).unwrap(), "X");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_migrate_dir_if_needed_missing_legacy_noop() {
+        // 旧パスが存在しなければ何もしない
+        let tmp = std::env::temp_dir().join(format!("vp192_migm_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let legacy = tmp.join("nonexistent");
+        let target = tmp.join("target");
+        migrate_dir_if_needed(&legacy, &target, "test");
+        assert!(!target.exists(), "旧データ不在なら新パスは作られない");
     }
 
     /// VP-189: 実運用で最も多い形 — network section だけの最小 config.kdl
