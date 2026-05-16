@@ -61,11 +61,11 @@ pub fn spawn_terminal_bridge(
 
                 // 接続（リトライ付き）
                 // VP-184: Builder API 移行 (dev default を明示、 PR-3 で mesh keypair に差し替え)。
-                let client = match club_unison::network::quic::QuicClient::builder()
-                    .trust_anchors(club_unison::network::TrustAnchors::SkipVerification)
+                let client = match unison::network::quic::QuicClient::builder()
+                    .trust_anchors(unison::network::TrustAnchors::SkipVerification)
                     .build()
                 {
-                    Ok(transport) => club_unison::ProtocolClient::new(transport),
+                    Ok(transport) => unison::ProtocolClient::new(transport),
                     Err(e) => {
                         let _ = event_tx
                             .send(BridgeEvent::Error(format!("QUIC client 作成失敗: {}", e)));

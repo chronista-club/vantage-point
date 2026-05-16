@@ -544,7 +544,7 @@ pub struct VantageMcp {
     /// Process の HTTP ポート番号（QUIC = port + QUIC_PORT_OFFSET）
     process_port: Arc<Mutex<u16>>,
     /// Unison "process" チャネル（lazy 接続、canvas 操作も含む）
-    process_channel: Arc<Mutex<Option<Arc<club_unison::network::channel::UnisonChannel>>>>,
+    process_channel: Arc<Mutex<Option<Arc<unison::network::channel::UnisonChannel>>>>,
     /// この MCP プロセスが属する Lane（cwd 由来、VP-166 PR-4）
     self_lane: SelfLane,
     tool_router: ToolRouter<Self>,
@@ -721,9 +721,9 @@ impl VantageMcp {
     /// チャネルが未接続または切断済みの場合、新規接続して返す。
     async fn get_quic_channel(
         &self,
-        channel_slot: &Arc<Mutex<Option<Arc<club_unison::network::channel::UnisonChannel>>>>,
+        channel_slot: &Arc<Mutex<Option<Arc<unison::network::channel::UnisonChannel>>>>,
         channel_name: &str,
-    ) -> Result<Arc<club_unison::network::channel::UnisonChannel>, McpError> {
+    ) -> Result<Arc<unison::network::channel::UnisonChannel>, McpError> {
         let mut guard = channel_slot.lock().await;
 
         // 既存チャネルがあれば再利用
@@ -738,11 +738,11 @@ impl VantageMcp {
 
         // VP-184: Builder API 移行。 dev default (= SkipVerification) を明示的に渡す。
         // PR-3 で trust_anchors を InternalMeshKeypair の client 半分に差し替える。
-        let transport = club_unison::network::quic::QuicClient::builder()
-            .trust_anchors(club_unison::network::TrustAnchors::SkipVerification)
+        let transport = unison::network::quic::QuicClient::builder()
+            .trust_anchors(unison::network::TrustAnchors::SkipVerification)
             .build()
             .map_err(|e| McpError::internal_error(format!("Unison client error: {}", e), None))?;
-        let client = club_unison::ProtocolClient::new(transport);
+        let client = unison::ProtocolClient::new(transport);
         client.connect(&addr).await.map_err(|e| {
             McpError::internal_error(format!("Unison connect error ({}): {}", addr, e), None)
         })?;

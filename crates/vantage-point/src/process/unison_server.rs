@@ -14,9 +14,10 @@ use std::sync::Arc;
 
 use crate::capability::MsgboxStore; // VP-175: dual write 用 trait method (insert) を scope に
 
-use club_unison::network::channel::UnisonChannel;
-use club_unison::network::{MessageType, ProtocolServer};
 use serde::{Deserialize, Serialize};
+use unison::network::channel::UnisonChannel;
+use unison::network::quic::QuicServer;
+use unison::network::{CertSource, MessageType, ProtocolServer};
 
 use tokio::sync::broadcast;
 
@@ -352,7 +353,7 @@ async fn handle_process_list(state: &AppState) -> Result<serde_json::Value, Stri
 /// create_session / switch_session / list_sessions / close_session / resize
 async fn handle_terminal_control(
     state: &AppState,
-    msg: &club_unison::network::ProtocolMessage,
+    msg: &unison::network::ProtocolMessage,
     _channel: &UnisonChannel,
     current_session_id: &mut Option<String>,
     terminal_rx: &mut Option<broadcast::Receiver<ProcessMessage>>,
@@ -804,7 +805,7 @@ pub async fn start_unison_server(
         })
         .await;
 
-    // サーバー起動（spawn_listen でバックグラウンド起動）
+    // サーバー起動
     tracing::info!("Starting Unison QUIC server on {}", addr);
     {
         use crate::trace_log::{TraceEntry, write_trace};
@@ -816,20 +817,36 @@ pub async fn start_unison_server(
             format!("QUIC server starting on {}", addr),
         ));
     }
-    match server.spawn_listen(&addr).await {
-        Ok(handle) => {
-            let _ = ready_tx.send(()); // バインド完了通知
-            tracing::info!("Unison QUIC server listening on {}", handle.local_addr());
-            // Process shutdown を待ってからグレースフルシャットダウン
-            state.shutdown_token.cancelled().await;
-            if let Err(e) = handle.shutdown().await {
-                tracing::error!("QUIC server shutdown error: {}", e);
-            }
-        }
-        Err(e) => {
-            tracing::error!("Unison QUIC server failed to start: {}", e);
-            let _ = ready_tx.send(()); // エラーでも通知（ブロック防止）
-        }
+
+    // VP-185: spawn_listen は内部で QuicServer::new() (= cert なし固定) を使うため、
+    // server 側で CertSource を明示するには QuicServer::builder 経由が必須。
+    // PR-2 は dev default (CertSource::dev_localhost()) を明示、 PR-3 で
+    // InternalMeshKeypair の server 半分に差し替える。
+    let server = std::sync::Arc::new(server);
+    let mut quic = QuicServer::builder(server)
+        .cert_source(CertSource::dev_localhost())
+        .build();
+    if let Err(e) = quic.bind(&addr).await {
+        tracing::error!("Unison QUIC server failed to bind: {}", e);
+        let _ = ready_tx.send(()); // エラーでも通知（ブロック防止）
+        return;
+    }
+    let _ = ready_tx.send(()); // バインド完了通知
+    tracing::info!("Unison QUIC server listening on {:?}", quic.local_addr());
+
+    // 旧 spawn_listen の ServerHandle::shutdown 連携を自前再実装:
+    // state.shutdown_token (CancellationToken) → oneshot::Receiver に bridge し、
+    // start_with_shutdown に渡す (= graceful shutdown を維持)。
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    {
+        let token = state.shutdown_token.clone();
+        tokio::spawn(async move {
+            token.cancelled().await;
+            let _ = shutdown_tx.send(());
+        });
+    }
+    if let Err(e) = quic.start_with_shutdown(shutdown_rx).await {
+        tracing::error!("Unison QUIC server error: {}", e);
     }
 }
 

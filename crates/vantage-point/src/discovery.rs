@@ -355,9 +355,9 @@ pub fn spawn_registry_keepalive(
 /// チャネルと一緒に保持する必要がある。
 struct RegistryConnection {
     /// QUIC 接続の所有権（drop されないように保持）
-    _client: club_unison::ProtocolClient,
+    _client: unison::ProtocolClient,
     /// registry チャネル（heartbeat / unregister に使用）
-    channel: club_unison::UnisonChannel,
+    channel: unison::UnisonChannel,
 }
 
 /// TheWorld の "registry" チャネルに接続し、register リクエストを送信する
@@ -365,11 +365,11 @@ async fn connect_and_register(
     agent_card: &serde_json::Value,
 ) -> Result<RegistryConnection, String> {
     // VP-184: Builder API 移行 (dev default を明示、 PR-3 で mesh keypair に差し替え)。
-    let transport = club_unison::network::quic::QuicClient::builder()
-        .trust_anchors(club_unison::network::TrustAnchors::SkipVerification)
+    let transport = unison::network::quic::QuicClient::builder()
+        .trust_anchors(unison::network::TrustAnchors::SkipVerification)
         .build()
         .map_err(|e| format!("QUIC client 作成失敗: {}", e))?;
-    let client = club_unison::ProtocolClient::new(transport);
+    let client = unison::ProtocolClient::new(transport);
 
     let addr = format!("[::1]:{}", WORLD_PORT);
     client
