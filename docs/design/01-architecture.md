@@ -126,7 +126,7 @@ Hub（broadcast::channel）の上に乗る Topic ベースのメッセージル�
 | セグメント | 値の例 | 説明 |
 |-----------|--------|------|
 | scope | `process` | 常に `process` |
-| capability | `paisley-park`, `echoes`, `star-platinum`, `terminal`, `debug` | Stand 対応 |
+| capability | `paisley-park`, `heavens-door`, `star-platinum`, `terminal`, `debug` | Stand 対応 (**注**: topic 文字列は `heavens-door` のまま、Stand メタファー名のみ Echoes に rename 済) |
 | category | `command`, `state`, `event`, `data`, `log`, `trace` | メッセージ種別 |
 | detail | pane_id, session_id 等 | メッセージ固有 |
 
