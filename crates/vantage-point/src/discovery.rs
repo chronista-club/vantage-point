@@ -271,6 +271,11 @@ pub fn spawn_registry_keepalive(
                     let mut interval = tokio::time::interval(Duration::from_secs(15));
                     interval.tick().await; // 最初の tick をスキップ
 
+                    // VP-187: connection event hook。 QUIC connection drop を即座に検知し、
+                    // 15 秒周期の heartbeat 失敗を待たずに再接続へ抜ける。 heartbeat は
+                    // keepalive (= SP → TheWorld registry の生存通知) として維持。
+                    let mut conn_events = conn._client.subscribe_connection_events();
+
                     loop {
                         tokio::select! {
                             _ = interval.tick() => {
@@ -318,6 +323,21 @@ pub fn spawn_registry_keepalive(
                                         tracing::info!("Registry: SystemEvent channel closed、 keepalive 終了");
                                         return;
                                     }
+                                }
+                            }
+                            conn_ev = conn_events.recv() => {
+                                // VP-187: QUIC connection lifecycle event。 Disconnected を
+                                // 受けたら即座に内側 loop を抜けて外側 loop で再接続する。
+                                // Connected (= 接続済) / Lagged / Closed は無視 — Closed は
+                                // client drop 時のみで、 その場合 heartbeat も失敗するため
+                                // 外側 loop の再接続に自然合流する。
+                                use unison::network::ClientConnectionEvent;
+                                if let Ok(ClientConnectionEvent::Disconnected { reason }) = conn_ev {
+                                    tracing::warn!(
+                                        "Registry: QUIC 切断検知 ({}) → 即再接続",
+                                        reason
+                                    );
+                                    break;
                                 }
                             }
                             _ = shutdown.cancelled() => {
