@@ -71,49 +71,54 @@ impl ProcessKind {
 
 /// Process state (全 ProcessKind 共通 state machine、Architecture v4 Idea 2)
 ///
-/// `lanes_state::LaneState` (Spawning/Running/Exiting/Dead) を superset 包含し、
-/// 全 ProcessKind に共通の state 軸として extend。
+/// daemon `/api/world/projects` の `process_status` の wire mirror。
+///
+/// daemon 側 `capability::process_manager_capability::ProcessStatus`
+/// (Stopped/Starting/Running/Stopping/Error) と 1:1 対応させる。
+/// **state の SSOT は daemon** ── vp-app は join で上書きせず、 この値をそのまま使う。
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ProcessState {
-    /// 起動中 (Stand process spawn 中、ccws clone 中など)
-    Spawning,
-    /// 動作中 (PTY I/O 流れる、HTTP server listen 中)
+pub enum ProcessStatus {
+    /// SP 未起動 (停止中、 まだ起動していない)。
+    /// default を Stopped にしているのは「未確認 = 停止扱い」が安全側のため
+    /// (= 起動済と誤表示して loading spinner が永久に回る事故を防ぐ)。
     #[default]
+    Stopped,
+    /// 起動処理中 (SP spawn 中)
+    Starting,
+    /// 稼働中 (HTTP server listen 中)
     Running,
-    /// 待機 (input 待ち、idle で work していない)
-    Idle,
-    /// 処理中 (active task ありで busy)
-    Working,
-    /// 一時停止 (suspended、resume 可能)
-    Pausing,
-    /// 終了中 (graceful shutdown)
-    Exiting,
-    /// 終了済 (process 死亡、auto-respawn or removed)
-    Dead,
+    /// 停止処理中 (graceful shutdown)
+    Stopping,
+    /// エラー
+    Error,
 }
 
-impl ProcessState {
+impl ProcessStatus {
     /// snake_case string representation (sidebar JS / log での state badge match 用)
     pub fn as_str(&self) -> &'static str {
         match self {
-            ProcessState::Spawning => "spawning",
-            ProcessState::Running => "running",
-            ProcessState::Idle => "idle",
-            ProcessState::Working => "working",
-            ProcessState::Pausing => "pausing",
-            ProcessState::Exiting => "exiting",
-            ProcessState::Dead => "dead",
+            ProcessStatus::Stopped => "stopped",
+            ProcessStatus::Starting => "starting",
+            ProcessStatus::Running => "running",
+            ProcessStatus::Stopping => "stopping",
+            ProcessStatus::Error => "error",
         }
+    }
+
+    /// SP が生きている (稼働 or 過渡) か。 sidebar の currents 振り分け用。
+    pub fn is_alive(&self) -> bool {
+        matches!(
+            self,
+            ProcessStatus::Starting | ProcessStatus::Running | ProcessStatus::Stopping
+        )
     }
 }
 
 /// Process info (Architecture v4: 旧 ProjectInfo の Process abstraction 化)
 ///
 /// TheWorld `/api/world/projects` レスポンス要素を Process として扱う。
-/// kind / state field は v4 で追加、現状の TheWorld response に未含 (default で Runtime/Running)。
-/// Sprint 2+ で TheWorld 側に kind/state を含める対応。
-#[derive(Debug, Clone, serde::Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, Deserialize)]
 pub struct ProcessInfo {
     /// Process kind (default Runtime: TheWorld response 互換)
     #[serde(default)]
@@ -124,9 +129,11 @@ pub struct ProcessInfo {
     /// running の場合の port (Runtime のみ Some、Sprint 1 では旧 ProjectInfo と互換)
     #[serde(default)]
     pub port: Option<u16>,
-    /// Process state (default Running)
-    #[serde(default)]
-    pub state: ProcessState,
+    /// Process state ── daemon `/api/world/projects` の `process_status` が SSOT。
+    /// daemon は `process_status` キーで送るため `alias` で受け、 WebView へは
+    /// `state` キーで serialize する (sidebar JS が `p.state` を読む)。
+    #[serde(default, alias = "process_status")]
+    pub state: ProcessStatus,
 }
 
 // `pub type ProjectInfo = ProcessInfo;` alias は Phase 1a 完了で全 caller が ProcessInfo に移行、削除。
@@ -446,5 +453,40 @@ impl TheWorldClient {
 impl Default for TheWorldClient {
     fn default() -> Self {
         Self::with_base_url(default_base_url())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// daemon は `/api/world/projects` を `process_status` キーで送る。
+    /// `ProcessInfo.state` の `#[serde(alias = "process_status")]` で受けられること。
+    #[test]
+    fn process_info_deserializes_process_status_alias() {
+        let json = r#"{"name":"vp","path":"/repos/vp","process_status":"running"}"#;
+        let info: ProcessInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(info.state, ProcessStatus::Running);
+    }
+
+    /// `process_status` が無い JSON は default の Stopped になること (= 安全側)。
+    #[test]
+    fn process_info_defaults_to_stopped_when_status_absent() {
+        let json = r#"{"name":"vp","path":"/repos/vp"}"#;
+        let info: ProcessInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(info.state, ProcessStatus::Stopped);
+    }
+
+    /// WebView の sidebar JS は `p.state` を読む。 serialize は primary キー
+    /// `state` で出る (alias は deserialize 専用で serialize には影響しない)。
+    #[test]
+    fn process_info_serializes_as_state_key() {
+        let info = ProcessInfo {
+            state: ProcessStatus::Running,
+            ..ProcessInfo::default()
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains(r#""state":"running""#), "got: {json}");
+        assert!(!json.contains("process_status"), "got: {json}");
     }
 }

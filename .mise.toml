@@ -65,7 +65,7 @@ set -euo pipefail
 VP_APP_BIN="$HOME/.cargo/bin/vp-app"
 VP_BIN="$HOME/.cargo/bin/vp"
 [ -x "$VP_APP_BIN" ] || { echo "❌ vp-app binary not found: $VP_APP_BIN — 先に 'mise run app:build'" >&2; exit 1; }
-[ -x "$VP_BIN" ]     || { echo "❌ vp binary not found: $VP_BIN — 先に 'mise run daemon:build'" >&2; exit 1; }
+[ -x "$VP_BIN" ]     || { echo "❌ vp binary not found: $VP_BIN — 先に 'mise run cli:build'" >&2; exit 1; }
 
 # 2026-05-07 single source of truth 統一: `~/.cargo/bin/` の codesign 済 binary を使う
 # (旧: target/release から spawn してたが、 shell の vp と dual source で drift する罠あり)。
@@ -89,13 +89,15 @@ mise run app:start
 """
 
 # =============================================================================
-# daemon:* ─ daemon binary (vp-cli = vp binary、 TheWorld + CLI subcommands)
+# cli:* / daemon:* ─ vp binary (vp-cli = vp binary、 TheWorld + CLI subcommands)
 # =============================================================================
 #
+# cli:build は vp binary 自体の build/install (daemon / sp / app / sync 等 全 CLI)。
+# daemon:* は TheWorld daemon プロセスのライフサイクル。
 # `vp daemon start` は SP / tmux session の owner。 stop は cascade で背負ってる
 # subsystem 全部 (SP プロセス + Lane tmux session + daemon 本体) を一括停止する。
 
-[tasks."daemon:build"]
+[tasks."cli:build"]
 description = "vp binary (vp-cli: TheWorld daemon + CLI commands) を release build + ~/.cargo/bin に install"
 run = """
 set -euo pipefail
@@ -117,7 +119,7 @@ DAEMON_STDOUT_LOG="$LOG_DIR/daemon.stdout.log"
 touch "$VP_DAEMON_LOG_FILE" "$DAEMON_STDOUT_LOG"
 
 VP_BIN="$HOME/.cargo/bin/vp"
-[ -x "$VP_BIN" ] || { echo "❌ vp binary not found: $VP_BIN — 先に 'mise run daemon:build'" >&2; exit 1; }
+[ -x "$VP_BIN" ] || { echo "❌ vp binary not found: $VP_BIN — 先に 'mise run cli:build'" >&2; exit 1; }
 
 # 既存 daemon が居る場合は user が事前に `mise run daemon:stop` で止めるか、
 # `vp daemon stop && mise run daemon:start` のように合成する。 restart は CLI に持たない方針
@@ -204,7 +206,7 @@ if [ -x "$VP_BIN" ]; then
     || echo "   ℹ️  daemon は既に停止しているか、 reach 不能"
 else
   echo "   ⚠️  vp binary 不在 ($VP_BIN) — daemon stop スキップ"
-  echo "      build 済なら 'mise run daemon:build' 後に再実行してください"
+  echo "      build 済なら 'mise run cli:build' 後に再実行してください"
 fi
 echo ""
 
@@ -216,7 +218,7 @@ echo "ℹ️  再起動: mise run app"
 description = "vp binary を build → 既存 daemon を cascade stop → daemon を background spawn (full restart、 `mise run daemon && mise run app` で諸々再起動)"
 run = """
 set -euo pipefail
-mise run daemon:build
+mise run cli:build
 # stop は running 不在でも success にする (chain breaking 回避)。
 # daemon:stop は cascade kill = daemon + SP + Lane tmux session 全停止 (= 旧 nuke 相当)。
 mise run daemon:stop 2>/dev/null || echo "(running daemon なし、 stop はスキップ)"

@@ -625,8 +625,10 @@ const SIDEBAR_HTML: &str = concat!(
   //     Currents = 上記以外すべて (spawning / running / idle / working / pausing / exiting)
   //   触ると state が遷移し (例: dead → spawning)、 自然に Currents 側に上がる UX。
   //   各セクションは空ならヘッダごと描画しない (累計 0 のラベル違和感を避ける)。
+  // Currents = SP が生きている (starting / running / stopping)。
+  // それ以外 (stopped / error / 未定義) は stopped セクションに振り分ける。
   function isProcessAlive(state) {
-    return !!state && state !== 'dead';
+    return state === 'starting' || state === 'running' || state === 'stopping';
   }
   function renderProjects(projects) {
     const root = document.getElementById('projects');
@@ -749,26 +751,36 @@ const SIDEBAR_HTML: &str = concat!(
       // Architecture v4 (mem_1CaTpCQH8iLJ2PasRcPjHv): Project → Lane → Stand に統一。
       // 旧 vp-app local の Pane data model は撤去、 SP `/api/lanes` が SSOT。
       const lanes = (state && state.lanes_by_project && state.lanes_by_project[p.path]) || [];
-      const isRunning = p.state === 'running';
       const activeAddr = (state && state.active_lane_address) || null;
 
-      if (!isRunning) {
-        // SP 未起動 — accordion を開いた瞬間 (= toggle expand=true) に Rust 側が auto-spawn する。
-        // user は何もせずに待つだけで OK (mem: TheWorld が SP lifecycle を持つ Architecture v4)。
+      // 個々の遷移を daemon の process_status (stopped/starting/running/stopping/error)
+      // に対応させる。 旧実装は p.state を `=== 'running'` の二値でしか見ず、
+      // SP 未起動 (stopped) の project まで `lanes.length === 0` 分岐に落として
+      // 「📡 loading lanes…」 を永久表示するバグがあった (= SP は永遠に起動しないので
+      // spinner が止まらない)。 hintText が決まれば hint を出し、 null なら lane 行を描画。
+      let hintText = null;
+      if (!p.state || p.state === 'stopped') {
+        // SP 未起動 — accordion を開いた瞬間 (toggle expand=true) に Rust 側が auto-spawn。
+        hintText = p.expanded
+          ? '⏳ SP starting…'
+          : '💤 SP stopped — open to spawn';
+      } else if (p.state === 'starting') {
+        hintText = '⏳ SP starting…';
+      } else if (p.state === 'stopping') {
+        hintText = '⏳ SP stopping…';
+      } else if (p.state === 'error') {
+        hintText = '⚠️ SP error — restart で復帰';
+      } else if (lanes.length === 0) {
+        // running だが Lane fetch 結果がまだ — ここだけが本当の「ロード中」。
+        hintText = '📡 loading lanes…';
+      }
+
+      if (hintText !== null) {
         const hint = document.createElement('div');
         hint.className = 'vp-empty-hint';
         hint.style.cssText = 'padding:6px 12px 6px 20px;font-size:11px;color:var(--color-text-tertiary);font-style:italic;';
-        hint.textContent = p.expanded
-          ? '⏳ SP starting…'
-          : '💤 SP stopped — open to spawn';
+        hint.textContent = hintText;
         content.appendChild(hint);
-      } else if (lanes.length === 0) {
-        // SP は running だが Lane fetch 結果がまだ / 取得失敗
-        const loading = document.createElement('div');
-        loading.className = 'vp-empty-hint';
-        loading.style.cssText = 'padding:6px 12px 6px 20px;font-size:11px;color:var(--color-text-tertiary);font-style:italic;';
-        loading.textContent = '📡 loading lanes…';
-        content.appendChild(loading);
       } else {
         // Phase 5-C minimal: Project Stands (PP/GE/HP) は sidebar からオミット。
         // section header (PROJECT STANDS / LANES) も冗長になるため削除。
@@ -1756,14 +1768,14 @@ fn spawn_processes_fetch(proxy: EventLoopProxy<AppEvent>) {
                                 std::collections::HashMap::new()
                             }
                         };
-                        // ProcessInfo に port + state を merge
+                        // ProcessInfo に port を merge。
+                        // state は daemon の process_status が SSOT ── join で上書き
+                        // しない (旧実装は running list の有無で Running/Dead を上書き
+                        // していたが、 add_project 経路が join を通らず default state が
+                        // 露出するバグの温床だった)。
                         for p in &mut processes {
                             if let Some(&port) = port_by_name.get(&p.name) {
                                 p.port = Some(port);
-                                p.state = crate::client::ProcessState::Running;
-                            } else {
-                                // running list 未掲載 = stopped (Architecture v4: ProcessState::Dead で代用、Sprint 後半で Stopped 追加検討)
-                                p.state = crate::client::ProcessState::Dead;
                             }
                         }
                         let running_count = processes.iter().filter(|p| p.port.is_some()).count();
@@ -1992,12 +2004,10 @@ fn spawn_activity_poller(proxy: EventLoopProxy<AppEvent>) {
                                         .collect(),
                                     Err(_) => std::collections::HashMap::new(),
                                 };
+                            // state は daemon の process_status が SSOT ── port のみ merge。
                             for p in &mut processes {
                                 if let Some(&port) = port_by_name.get(&p.name) {
                                     p.port = Some(port);
-                                    p.state = crate::client::ProcessState::Running;
-                                } else {
-                                    p.state = crate::client::ProcessState::Dead;
                                 }
                             }
                             let running_count =

@@ -35,6 +35,25 @@ pub fn execute(cmd: AppCommands) -> Result<()> {
 /// (`setsid` 相当) で child を新しい process group に分離 ── parent shell が
 /// SIGHUP / exit しても child は生存し続ける (D12: daemon lifecycle 独立性)。
 fn start(project_id: Option<usize>) -> Result<()> {
+    // VP-189 follow-up: project_id 未指定 = cwd を起点に開く意図。 projects.kdl を
+    // sync (起点 dir 登録 + ghost 除去) し、 GUI 起動前にサイドバーへ最低 1 件出す
+    // (空サイドバーだと project を開く手段が無く詰むため)。
+    if project_id.is_none()
+        && let Ok(cwd) = std::env::current_dir()
+    {
+        match crate::projects_file::ProjectsFile::sync(Some(&cwd)) {
+            Ok(outcome) => {
+                if let Some(name) = &outcome.added {
+                    println!("📁 project を登録しました: {name}");
+                }
+                for name in &outcome.removed {
+                    println!("🧹 ghost project を除去: {name}");
+                }
+            }
+            Err(e) => eprintln!("⚠️  projects.kdl の sync に失敗 (起動は続行): {e}"),
+        }
+    }
+
     let bin = find_vp_app_binary().context(
         "vp-app binary not found. \
          Build it first: 'cargo build --release -p vp-app' \

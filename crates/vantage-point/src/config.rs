@@ -1,8 +1,17 @@
 //! Configuration management
 //!
-//! VP の config / data の置き場所を OS 判定込みで一本化する (VP-192)。
+//! ## VP-189: config.toml → config.kdl 統一
 //!
-//! ## パス方針 (council + dogfood 調査 2026-05-16)
+//! VP の設定ファイルは元々 TOML だったが、 projects.kdl (VP-188) / ccws の
+//! worker-files.kdl 等、 周辺の設定は既に KDL に揃っていた。 config 本体だけ
+//! TOML で取り残されていたのを KDL に統一し、 club-kdl 資産を一本化する。
+//!
+//! - config.kdl は **人間が編集する read-only な global 設定**。 VP 自身は
+//!   書き戻さない (= `KdlSerialize` 不要、 `KdlDeserialize` のみ)。
+//! - registered projects は projects.kdl が SSOT (VP-188)。 config.kdl には出さない。
+//! - kebab-case のキー名 (`default-port` 等) を採用。
+//!
+//! ## VP-192: config / data パスの OS 判定統一
 //!
 //! ディレクトリ名は全 OS で `vp` に統一。 OS 判定は `dirs` クレートに委ねる。
 //!
@@ -11,14 +20,16 @@
 //! | config | `vp_config_dir()` | `~/Library/Application Support/vp/` | `~/.config/vp/` | `%APPDATA%\vp\` |
 //! | data   | `vp_data_dir()`   | `~/Library/Application Support/vp/` | `~/.local/share/vp/` | `%LOCALAPPDATA%\vp\` |
 //!
-//! DB / DISC / セッション状態 / ログ等の生成データは `vp_data_dir()` 配下に置く。
-//! Windows の `%APPDATA%` は roaming で同期対象になり DB 破損リスクがあるため、
-//! data は `%LOCALAPPDATA%` (= `dirs::data_local_dir()`) を使う。
+//! 設定ファイルは `vp_config_dir()/config.kdl`。 DB / DISC / セッション状態 /
+//! ログ等の生成データは `vp_data_dir()` 配下に置く。 Windows の `%APPDATA%` は
+//! roaming で同期対象になり DB 破損リスクがあるため、 data は `%LOCALAPPDATA%`
+//! (= `dirs::data_local_dir()`) を使う。
 //!
 //! 旧パス (`~/.config/vp/` / `dirs::config_dir()/vantage/`) からの移行は
 //! [`migrate_legacy_paths`] が起動時に 1 回だけ冪等に行う。
 
 use anyhow::Result;
+use club_kdl::KdlDeserialize;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -154,25 +165,36 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::
     Ok(())
 }
 
-/// Config file path
+/// Config file path (`config_dir()/config.kdl` ── VP-189 で config.toml から移行)
 fn config_file_path() -> PathBuf {
-    config_dir().join("config.toml")
+    config_dir().join("config.kdl")
 }
 
 /// Vantage Process configuration
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+///
+/// config.kdl は document スタイルの KDL。 各 scalar 設定は document 直下の
+/// 単一引数 node (`default-port 33000` 等)、 section は子 node (`network { ... }`)。
+#[derive(Debug, Clone, Serialize, Deserialize, Default, KdlDeserialize)]
+#[kdl(document)]
 pub struct Config {
     /// Default project directory for Claude agent
     #[serde(default)]
+    #[kdl(child, name = "default-project-dir", unwrap_arg)]
     pub default_project_dir: Option<String>,
 
     /// Default port for vp
+    ///
+    /// 注: KDL derive の field-level `default` は型の `Default` 固定 (u16 → 0)。
+    /// config.kdl に `default-port` node が無いと 0 になるため、 `Config::load()`
+    /// が 0 を検出して `default_port()` (33000) に補正する。
     #[serde(default = "default_port")]
+    #[kdl(child, name = "default-port", unwrap_arg, default)]
     pub default_port: u16,
 
     /// Claude CLIのフルパス（mise/asdf等のGUI非対応環境用）
     /// 例: "/Users/user/.local/share/mise/installs/node/22.21.1/bin/claude"
     #[serde(default)]
+    #[kdl(child, name = "claude-cli-path", unwrap_arg)]
     pub claude_cli_path: Option<String>,
 
     /// Lane 作成時の default Stand 名 (例: "echoes" / "shell" / "tmux")。
@@ -183,28 +205,35 @@ pub struct Config {
     /// doc 11 §3 (Stand init_script system / mise task 路線)、 PR-B 対応。
     /// PR-pre2 (VP-118): "hd" → "echoes" rename (Stand metaphor + identifier sweep)。
     #[serde(default)]
+    #[kdl(child, name = "default-stand", unwrap_arg)]
     pub default_stand: Option<String>,
 
     /// Projects configuration
     ///
     /// VP-188: SSOT は `~/.config/vp/projects.kdl`。 `Config::load()` が projects.kdl を
-    /// 読んで本 field を populate する。 `skip_serializing` で `Config::save()` (config.toml)
-    /// には書き出さない (= 二重 SSOT 防止)。 `default` は legacy config.toml の
-    /// `[[projects]]` seed 読み込み互換のため維持。 永続化は `persist_projects_kdl()`。
+    /// 読んで本 field を populate する。 config.kdl には一切出さない (`#[kdl(skip)]`、
+    /// = 二重 SSOT 防止)。 永続化は `persist_projects_kdl()`。
     #[serde(default, skip_serializing)]
+    #[kdl(skip)]
     pub projects: Vec<ProjectConfig>,
 
     /// Port layout overrides (optional、default は PortLayout::default())
-    /// VP Port Management Phase 1: config で layout 定数を変更可能に
+    ///
+    /// VP-189: port layout の上書きは advanced 機能で dogfood でも未使用のため、
+    /// config.kdl からは設定不可とした (`#[kdl(skip)]`)。 必要になった時点で
+    /// 専用機構を足す (= config.kdl は「ミニマムな global 設定」に保つ方針)。
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[kdl(skip)]
     pub ports: Option<PortLayoutOverrides>,
 
     /// SP startup behavior — Worker spawn の concurrency 制限等 (I-b、 2026-04-30)
     #[serde(default)]
+    #[kdl(child, default)]
     pub startup: StartupConfig,
 
     /// VP-154 PR-3.5: LAN networking config (= mDNS / hub federation の挙動を tweak)
     #[serde(default)]
+    #[kdl(child, default)]
     pub network: NetworkConfig,
 }
 
@@ -216,7 +245,8 @@ pub struct Config {
 ///
 /// SRV record の target hostname (= 接続解決のための A record 参照) は OS 現在値を使い続けるので、
 /// 接続自体は OS rename にも追従する。 これで `instance_name 安定 + 接続動的` の両立。
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, KdlDeserialize)]
+#[kdl(name = "network")]
 pub struct NetworkConfig {
     /// mDNS advertise の instance_name に使う hostname を強制指定 (例: `"mito-mac"`)。
     ///
@@ -227,6 +257,7 @@ pub struct NetworkConfig {
     /// LAN identity が揺れる問題を回避。 同 instance_name の再 advertise は mDNS protocol の
     /// TTL refresh として処理されるので、 cache 上の entry は merge されて累積しない。
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[kdl(child, name = "advertise-hostname", unwrap_arg)]
     pub advertise_hostname: Option<String>,
 }
 
@@ -237,11 +268,16 @@ pub struct NetworkConfig {
 /// 制限値を tweak、 default は **1** (= 完全 sequential、 dogfood の視覚 pop 体験 +
 /// Claude CLI rate-limit 安全)。 計測 log (`Lane spawn completed: ... elapsed=`) を
 /// dogfood で集計して N 値を実証的に上げる方針。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, KdlDeserialize)]
+#[kdl(name = "startup")]
 pub struct StartupConfig {
     /// 同時 Lane spawn 数の上限 (= Mailbox actor 内部 `Semaphore::new(N)`)。
     /// default 1 = sequential。
+    ///
+    /// 注: `default-port` と同様、 KDL field-level `default` は u32 → 0 になる。
+    /// `Config::load()` が 0 を検出して 1 に補正する。
     #[serde(default = "default_max_concurrent_lane_spawn")]
+    #[kdl(child, name = "max-concurrent-lane-spawn", unwrap_arg, default)]
     pub max_concurrent_lane_spawn: u32,
 }
 
@@ -297,26 +333,33 @@ fn default_enabled() -> bool {
 }
 
 impl Config {
-    /// Load config from XDG config file
+    /// Load config from XDG config file (`~/.config/vp/config.kdl`)
     ///
-    /// VP-188: registered projects の SSOT は `~/.config/vp/projects.kdl` に移行。
-    /// config.toml をパースした後、 projects.kdl が存在すれば `projects` field を
-    /// **projects.kdl の内容で上書き** する。 これで `config.projects` を読む全
-    /// caller (resolve / TUI / ccws / reload_config) が無改修で projects.kdl を
-    /// SSOT として参照できる。 projects.kdl が無ければ config.toml の `[[projects]]`
-    /// (= legacy seed) をそのまま使う。
+    /// VP-189: config 形式を KDL に統一。 config.kdl が無い / 空なら `Config::default()`。
+    ///
+    /// VP-188: registered projects の SSOT は `~/.config/vp/projects.kdl`。
+    /// config.kdl をパースした後、 projects.kdl が存在すれば `projects` field を
+    /// **projects.kdl の内容で populate** する。 これで `config.projects` を読む全
+    /// caller (resolve / TUI / ccws / reload_config) が projects.kdl を SSOT として
+    /// 参照できる。
     pub fn load() -> Result<Self> {
         let path = config_file_path();
 
         let mut config: Config = if path.exists() {
             let content = std::fs::read_to_string(&path)?;
-            toml::from_str(&content)?
+            if content.trim().is_empty() {
+                Self::default()
+            } else {
+                club_kdl::from_str(&content)
+                    .map_err(|e| anyhow::anyhow!("config.kdl パース失敗: {}", e))?
+            }
         } else {
             Self::default()
         };
 
-        // VP-188: projects.kdl が SSOT。 存在すれば config.projects を置換。
-        // projects.kdl が無ければ config.toml の [[projects]] (legacy seed) をそのまま使う。
+        config.apply_load_defaults();
+
+        // VP-188: projects.kdl が SSOT。 存在すれば config.projects を populate。
         if crate::projects_file::projects_file_path().exists() {
             let projects_file = crate::projects_file::ProjectsFile::load()
                 .map_err(|e| anyhow::anyhow!("projects.kdl 読み込み失敗: {}", e))?;
@@ -338,6 +381,21 @@ impl Config {
         Ok(config)
     }
 
+    /// KDL field-level `default` の限界 (型 `Default` 固定 = 0) を補正する。
+    ///
+    /// club-kdl の `#[kdl(..., default)]` は node 不在時に **型の `Default`** を使う。
+    /// `default_port: u16` / `max_concurrent_lane_spawn: u32` は本来 33000 / 1 が
+    /// default だが、 KDL parse 直後は 0 になる。 `Config::load()` が KDL parse 後に
+    /// 本メソッドで 0 を検出して意味のある値に補正する。
+    fn apply_load_defaults(&mut self) {
+        if self.default_port == 0 {
+            self.default_port = default_port();
+        }
+        if self.startup.max_concurrent_lane_spawn == 0 {
+            self.startup.max_concurrent_lane_spawn = default_max_concurrent_lane_spawn();
+        }
+    }
+
     /// `config.projects` を projects.kdl に書き出す (VP-188)。
     ///
     /// VP-165 の slot 永続化 (= `resolve::sp_port_for_project` の `ensure_slot`)
@@ -357,20 +415,6 @@ impl Config {
                 .collect(),
         };
         pf.save()
-    }
-
-    /// Save config to XDG config file
-    pub fn save(&self) -> Result<()> {
-        let path = config_file_path();
-
-        // Create config directory if needed
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-
-        let content = toml::to_string_pretty(self)?;
-        std::fs::write(&path, content)?;
-        Ok(())
     }
 
     /// Get config file path (for display)
@@ -582,6 +626,41 @@ impl Config {
 mod tests {
     use super::*;
 
+    /// VP-189: 全 section を含む config.kdl が正しく parse される
+    #[test]
+    fn test_full_config_kdl_parses() {
+        let kdl = r#"
+default-project-dir "/home/user/projects/main"
+default-port 33001
+claude-cli-path "/opt/claude/bin/claude"
+default-stand "echoes"
+network {
+    advertise-hostname "mito-mac"
+}
+startup {
+    max-concurrent-lane-spawn 3
+}
+"#;
+        let config: Config = club_kdl::from_str(kdl).expect("config.kdl parse");
+        assert_eq!(
+            config.default_project_dir.as_deref(),
+            Some("/home/user/projects/main")
+        );
+        assert_eq!(config.default_port, 33001);
+        assert_eq!(
+            config.claude_cli_path.as_deref(),
+            Some("/opt/claude/bin/claude")
+        );
+        assert_eq!(config.default_stand.as_deref(), Some("echoes"));
+        assert_eq!(
+            config.network.advertise_hostname.as_deref(),
+            Some("mito-mac")
+        );
+        assert_eq!(config.startup.max_concurrent_lane_spawn, 3);
+        // projects は config.kdl に出さない (#[kdl(skip)]、 SSOT は projects.kdl)
+        assert!(config.projects.is_empty());
+    }
+
     #[test]
     fn test_vp_config_dir_ends_with_vp() {
         // VP-192: config dir は OS によらず末尾が `vp`
@@ -718,83 +797,63 @@ mod tests {
         assert!(!target.exists(), "旧データ不在なら新パスは作られない");
     }
 
+    /// VP-189: 実運用で最も多い形 — network section だけの最小 config.kdl
     #[test]
-    fn test_default_config_from_toml() {
-        // serde default uses default_port() function
-        let config: Config = toml::from_str("").unwrap();
-        assert_eq!(config.default_port, 33000);
-        assert!(config.default_project_dir.is_none());
-        assert!(config.projects.is_empty());
-    }
-
-    #[test]
-    fn test_config_serialization() {
-        let config = Config {
-            default_project_dir: Some("/home/user/projects/main".to_string()),
-            default_port: 33001,
-            claude_cli_path: None,
-            default_stand: None,
-            projects: vec![ProjectConfig {
-                name: "vantage-point".to_string(),
-                path: "/path/to/vantage-point".to_string(),
-                port: Some(33000),
-                enabled: true,
-                slot: Some(0),
-            }],
-            ports: None,
-            startup: StartupConfig::default(),
-            network: NetworkConfig::default(),
-        };
-
-        let toml = toml::to_string_pretty(&config).unwrap();
-        println!("{}", toml);
-
-        let parsed: Config = toml::from_str(&toml).unwrap();
-        assert_eq!(parsed.default_port, 33001);
-        // VP-188: projects は #[serde(skip_serializing)] で config.toml に書き出されない
-        // (= SSOT は projects.kdl)。 serialize → parse 後は空になるのが正しい。
-        assert!(
-            parsed.projects.is_empty(),
-            "projects は config.toml に serialize されないはず (VP-188)"
-        );
-        assert!(
-            !toml.contains("[[projects]]"),
-            "config.toml に [[projects]] が出てはいけない (VP-188)"
-        );
-    }
-
-    #[test]
-    fn test_network_config_default_is_empty() {
-        // VP-154 PR-3.5: default config に network section 不在でも問題なく load
-        let config: Config = toml::from_str("").unwrap();
-        assert!(config.network.advertise_hostname.is_none());
-    }
-
-    #[test]
-    fn test_network_config_advertise_hostname_loads() {
-        // VP-154 PR-3.5: `[network] advertise_hostname = "mito-mac"` が toml から正しく読める
-        let raw = r#"
-[network]
-advertise_hostname = "mito-mac"
+    fn test_minimal_config_kdl_parses() {
+        let kdl = r#"
+network {
+    advertise-hostname "mito-mac"
+}
 "#;
-        let config: Config = toml::from_str(raw).unwrap();
+        let config: Config = club_kdl::from_str(kdl).expect("minimal config.kdl parse");
         assert_eq!(
             config.network.advertise_hostname.as_deref(),
             Some("mito-mac")
         );
+        assert!(config.default_project_dir.is_none());
+        // default-port node 不在 → KDL field default は 0 (load の post-process で 33000)
+        assert_eq!(config.default_port, 0);
+        // startup node 不在 → StartupConfig::default() で max=1
+        assert_eq!(config.startup.max_concurrent_lane_spawn, 1);
     }
 
+    /// VP-189: section を 1 つも持たない空 config.kdl でも parse できる
     #[test]
-    fn test_network_config_round_trip() {
-        // serialize → parse round-trip で advertise_hostname が保持される
-        let mut config = Config::default();
-        config.network.advertise_hostname = Some("mito-mac".to_string());
-        let raw = toml::to_string_pretty(&config).unwrap();
-        let parsed: Config = toml::from_str(&raw).unwrap();
-        assert_eq!(
-            parsed.network.advertise_hostname.as_deref(),
-            Some("mito-mac")
-        );
+    fn test_comment_only_config_kdl_parses() {
+        let config: Config = club_kdl::from_str("// 空 config\n").expect("comment-only parse");
+        assert!(config.default_project_dir.is_none());
+        assert!(config.network.advertise_hostname.is_none());
+        assert!(config.projects.is_empty());
+    }
+
+    /// VP-189: KDL field default (型 Default = 0) を意味のある値に補正する
+    #[test]
+    fn test_apply_load_defaults_corrects_zero_values() {
+        let mut config = Config {
+            default_port: 0,
+            startup: StartupConfig {
+                max_concurrent_lane_spawn: 0,
+            },
+            ..Config::default()
+        };
+        config.apply_load_defaults();
+        assert_eq!(config.default_port, 33000);
+        assert_eq!(config.startup.max_concurrent_lane_spawn, 1);
+    }
+
+    /// VP-189: 既に有効な値が入っていれば apply_load_defaults は上書きしない
+    #[test]
+    fn test_apply_load_defaults_preserves_explicit_values() {
+        let mut config = Config {
+            default_port: 33005,
+            startup: StartupConfig {
+                max_concurrent_lane_spawn: 4,
+            },
+            ..Config::default()
+        };
+        config.apply_load_defaults();
+        assert_eq!(config.default_port, 33005);
+        assert_eq!(config.startup.max_concurrent_lane_spawn, 4);
     }
 
     #[test]

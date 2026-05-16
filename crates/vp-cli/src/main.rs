@@ -12,7 +12,7 @@
 //!   VANTAGE_DEBUG=none|simple|detail  # デバッグ表示モード
 //!   VANTAGE_PROJECT_DIR=/path/to/project  # デフォルトプロジェクトディレクトリ
 //!
-//! Config file: ~/.config/vp/config.toml
+//! Config file: ~/.config/vp/config.kdl
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -49,6 +49,8 @@ enum Commands {
     /// 稼働中のインスタンス一覧
     #[command(alias = "list")]
     Ps,
+    /// projects.kdl を現実と同期 — ghost project (dir 実在せず) を除去
+    Sync,
     /// 設定と登録済みプロジェクトを表示
     Config,
     /// MCPサーバーとして起動（stdio JSON-RPC）
@@ -257,6 +259,7 @@ fn main() -> Result<()> {
     match command {
         Commands::RestartAll => commands::restart_all::execute(),
         Commands::Ps => cli::list_instances(&config),
+        Commands::Sync => commands::sync::execute(),
         Commands::Config => commands::config::execute(&config),
         Commands::Mcp => {
             let rt = tokio::runtime::Runtime::new()?;

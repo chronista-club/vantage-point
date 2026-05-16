@@ -419,6 +419,26 @@ pub async fn world_refresh(State(state): State<Arc<AppState>>) -> impl IntoRespo
     }
 }
 
+/// POST /api/world/projects/reload — projects.kdl を再読み込みして in-memory に反映
+///
+/// VP-189: `vp sync` / 起動時 sync (`vp app start` / `vp sp start`) が projects.kdl を
+/// 書き換えた後、 稼働中 daemon の in-memory projects を projects.kdl と同期させる
+/// ための通知エンドポイント。 `reload_config()` が add (起点 dir 登録) と remove
+/// (ghost project 除去) を双方向に反映する。
+pub async fn world_reload_projects(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let Some(world) = &state.world else {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "World not available"})),
+        );
+    };
+    world.read().await.reload_config().await;
+    (
+        axum::http::StatusCode::OK,
+        Json(serde_json::json!({"status": "reloaded"})),
+    )
+}
+
 // =============================================================================
 // Msgbox Registry — Phase 3: cross-Process actor messaging
 // =============================================================================

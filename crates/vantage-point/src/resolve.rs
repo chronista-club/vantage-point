@@ -243,7 +243,8 @@ pub fn sp_port_for_project(name: &str) -> Result<u16> {
         && config.resolve_slot_by_name(name).is_some()
         && let Err(e) = config.persist_projects_kdl()
     {
-        tracing::warn!("VP-165: slot の projects.kdl 永続化に失敗（port={port} は正しい）: {e}");
+        // {e:#} で anyhow の error chain 全体を出す (= 末尾の OS エラーまで見える)。
+        tracing::warn!("VP-165: slot の projects.kdl 永続化に失敗（port={port} は正しい）: {e:#}");
     }
     Ok(port)
 }

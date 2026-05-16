@@ -312,34 +312,59 @@ impl ProcessManagerCapability {
         procs.values().cloned().collect()
     }
 
-    /// projects を再読み込みして HashMap を更新（新規プロジェクトの動的追加対応、 VP-188: projects.kdl 経由）
+    /// projects を projects.kdl と同期する（VP-188: projects.kdl 経由、 VP-189: 双方向同期）。
+    ///
+    /// projects.kdl にある project は in-memory に追加、 projects.kdl から消えた
+    /// project は in-memory からも除去する。 後者は VP-189 の ghost project cleanup
+    /// (= `vp sync` / 起動時 sync の projects.kdl 書き換え) を daemon の in-memory
+    /// 状態に伝播させるための双方向同期。
+    ///
+    /// ただし **running process を持つ project は projects.kdl から消えていても残す**
+    /// ── 稼働中 SP の取りこぼし防止 (安全側)。 ghost project は dir 消失で SP が
+    /// 起動不可なので、 通常は running と ghost が両立しない。
     pub async fn reload_config(&self) {
-        if let Ok(config) = Config::load() {
-            let mut projects = self.projects.write().await;
-            let mut order = self.project_order.write().await;
-            for project in &config.projects {
-                let key = normalize_path_key(&PathBuf::from(&project.path));
-                if projects
-                    .entry(key.clone())
-                    .or_insert_with(|| ProjectInfo {
-                        name: project.name.clone(),
-                        path: project.path.clone().into(),
-                        process_status: ProcessStatus::Stopped,
-                        port: project.port,
-                        enabled: project.enabled,
-                        slot: project.slot,
-                    })
-                    .name
-                    == project.name
-                {
-                    // 新規追加の場合のみ order に追加
-                    if !order.contains(&key) {
-                        order.push(key);
-                    }
-                }
+        let Ok(config) = Config::load() else {
+            return;
+        };
+
+        // running process の key を先に取得 (projects/order の write lock との入れ子回避)。
+        let running: std::collections::HashSet<String> = {
+            let procs = self.running_processes.read().await;
+            procs.keys().cloned().collect()
+        };
+
+        let mut projects = self.projects.write().await;
+        let mut order = self.project_order.write().await;
+
+        // projects.kdl 由来の key 集合 (= 除去判定の基準)。
+        let kdl_keys: std::collections::HashSet<String> = config
+            .projects
+            .iter()
+            .map(|p| normalize_path_key(&PathBuf::from(&p.path)))
+            .collect();
+
+        // add: projects.kdl の各 project を in-memory に反映 (未登録なら追加)。
+        for project in &config.projects {
+            let key = normalize_path_key(&PathBuf::from(&project.path));
+            projects.entry(key.clone()).or_insert_with(|| ProjectInfo {
+                name: project.name.clone(),
+                path: project.path.clone().into(),
+                process_status: ProcessStatus::Stopped,
+                port: project.port,
+                enabled: project.enabled,
+                slot: project.slot,
+            });
+            if !order.contains(&key) {
+                order.push(key);
             }
-            tracing::info!("Config reloaded: {} projects", projects.len());
         }
+
+        // remove: projects.kdl から消えた entry を in-memory からも除去。
+        // ただし running process を持つ key は残す (稼働中 SP を取りこぼさない)。
+        projects.retain(|key, _| kdl_keys.contains(key) || running.contains(key));
+        order.retain(|key| projects.contains_key(key));
+
+        tracing::info!("Config reloaded: {} projects", projects.len());
     }
 
     /// プロジェクトを追加（+ projects.kdl に永続化、 VP-188）
