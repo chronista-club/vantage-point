@@ -31,6 +31,7 @@ pub mod notify;
 pub mod platform;
 pub mod port_layout;
 pub mod process;
+pub mod projects_file;
 pub mod protocol;
 pub mod resolve;
 pub mod screenshot;

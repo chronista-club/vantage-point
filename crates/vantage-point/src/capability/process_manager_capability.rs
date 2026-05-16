@@ -54,6 +54,10 @@ pub struct ProjectInfo {
     /// SP 自動起動の有効/無効
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+    /// Port slot (VP-165: deterministic port layout)。 一度割り当てたら永続。
+    /// VP-188: SSOT は projects.kdl。 capability は load/persist で round-trip するのみ。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot: Option<u16>,
 }
 
 fn default_enabled() -> bool {
@@ -180,85 +184,68 @@ impl ProcessManagerCapability {
 
     /// 設定を読み込み
     ///
-    /// DB が接続済みなら DB → HashMap 同期。
-    /// DB が未接続なら config.toml → HashMap。
-    /// 初回起動時（DB 空）は config.toml → DB マイグレーションも実行。
+    /// VP-188: registered projects の SSOT を embedded DB → `~/.config/vp/projects.kdl`
+    /// に移行。 `Config::load()` が projects.kdl を `config.projects` にマージするため
+    /// (= read 経路を 1 本化)、 ここは `config.projects` から HashMap に同期する。
+    /// VP-182 の「DB dir 変更で projects 消失」 regression を構造的に解消 (council 2026-05-16)。
     pub async fn load_config(&mut self) -> CapabilityResult<()> {
         let config = Config::load().map_err(|e| {
             CapabilityError::InitializationFailed(format!("Failed to load config: {}", e))
         })?;
 
-        // DB があれば DB から読む + config.toml からマイグレーション
-        if let Some(ref db) = self.vpdb {
-            // DB の既存プロジェクトを取得
-            let db_projects = db.list_projects().await.unwrap_or_default();
+        let mut projects = self.projects.write().await;
+        let mut order = self.project_order.write().await;
+        projects.clear();
+        order.clear();
 
-            if db_projects.is_empty() && !config.projects.is_empty() {
-                // 初回マイグレーション: config.toml → DB
-                tracing::info!(
-                    "config.toml → DB マイグレーション: {} projects",
-                    config.projects.len()
-                );
-                for (i, project) in config.projects.iter().enumerate() {
-                    // 正規化パスで DB に保存（add_project と統一）
-                    let normalized = normalize_path_key(&PathBuf::from(&project.path));
-                    if let Err(e) = db
-                        .upsert_project(&project.name, &normalized, i as i64)
-                        .await
-                    {
-                        tracing::warn!("DB マイグレーション失敗 ({}): {}", project.name, e);
-                    }
-                }
-            }
-
-            // DB → HashMap 同期
-            let db_projects = db.list_projects().await.unwrap_or_default();
-            let mut projects = self.projects.write().await;
-            let mut order = self.project_order.write().await;
-            projects.clear();
-            order.clear();
-
-            for row in &db_projects {
-                let name = row["name"].as_str().unwrap_or("").to_string();
-                let path = row["path"].as_str().unwrap_or("").to_string();
-                let key = normalize_path_key(&PathBuf::from(&path));
-                order.push(key.clone());
-                projects.insert(
-                    key,
-                    ProjectInfo {
-                        name,
-                        path: path.into(),
-                        process_status: ProcessStatus::Stopped,
-                        port: None, // DB には port を持たない（動的割当）
-                        enabled: true,
-                    },
-                );
-            }
-        } else {
-            // DB 未接続: config.toml から読む（従来通り）
-            let mut projects = self.projects.write().await;
-            let mut order = self.project_order.write().await;
-            projects.clear();
-            order.clear();
-
-            for project in &config.projects {
-                let key = normalize_path_key(&PathBuf::from(&project.path));
-                order.push(key.clone());
-                projects.insert(
-                    key,
-                    ProjectInfo {
-                        name: project.name.clone(),
-                        path: project.path.clone().into(),
-                        process_status: ProcessStatus::Stopped,
-                        port: project.port,
-                        enabled: project.enabled,
-                    },
-                );
-            }
+        for project in &config.projects {
+            let key = normalize_path_key(&PathBuf::from(&project.path));
+            order.push(key.clone());
+            projects.insert(
+                key,
+                ProjectInfo {
+                    name: project.name.clone(),
+                    path: project.path.clone().into(),
+                    process_status: ProcessStatus::Stopped,
+                    port: None, // port は動的割当 (port_layout が slot から計算)
+                    enabled: project.enabled,
+                    slot: project.slot,
+                },
+            );
         }
+        drop(projects);
+        drop(order);
 
         self.config = Some(config);
         Ok(())
+    }
+
+    /// 現在の projects HashMap を projects.kdl に書き出す (VP-188)。
+    ///
+    /// `project_order` の順序で `ProjectsFile` を組み立てて atomic write する。
+    /// add / delete / rename / reorder / set_enabled の各操作後に呼ぶ。
+    /// test 環境では `ProjectsFile::save()` が no-op なので本番ファイルを破壊しない。
+    async fn persist_projects(&self) -> CapabilityResult<()> {
+        let projects = self.projects.read().await;
+        let order = self.project_order.read().await;
+        let entries: Vec<crate::projects_file::ProjectEntry> = order
+            .iter()
+            .filter_map(|key| {
+                projects
+                    .get(key)
+                    .map(|p| crate::projects_file::ProjectEntry {
+                        name: p.name.clone(),
+                        path: p.path.to_string_lossy().to_string(),
+                        // enabled=true は省略 (= projects.kdl をミニマムに)、 false のみ明記
+                        enabled: if p.enabled { None } else { Some(false) },
+                        slot: p.slot,
+                    })
+            })
+            .collect();
+        let pf = crate::projects_file::ProjectsFile { projects: entries };
+        pf.save().map_err(|e| {
+            CapabilityError::InitializationFailed(format!("projects.kdl 書き込み失敗: {}", e))
+        })
     }
 
     /// vpバイナリを検索
@@ -325,7 +312,7 @@ impl ProcessManagerCapability {
         procs.values().cloned().collect()
     }
 
-    /// config.toml を再読み込みして projects を更新（新規プロジェクトの動的追加対応）
+    /// projects を再読み込みして HashMap を更新（新規プロジェクトの動的追加対応、 VP-188: projects.kdl 経由）
     pub async fn reload_config(&self) {
         if let Ok(config) = Config::load() {
             let mut projects = self.projects.write().await;
@@ -340,6 +327,7 @@ impl ProcessManagerCapability {
                         process_status: ProcessStatus::Stopped,
                         port: project.port,
                         enabled: project.enabled,
+                        slot: project.slot,
                     })
                     .name
                     == project.name
@@ -354,7 +342,7 @@ impl ProcessManagerCapability {
         }
     }
 
-    /// プロジェクトを追加（+ DB / config.toml に永続化）
+    /// プロジェクトを追加（+ projects.kdl に永続化、 VP-188）
     pub async fn add_project(&self, name: &str, path: &str) -> CapabilityResult<ProjectInfo> {
         // 名前バリデーション
         if name.trim().is_empty() {
@@ -380,9 +368,10 @@ impl ProcessManagerCapability {
             process_status: ProcessStatus::Stopped,
             port: None,
             enabled: true,
+            slot: None, // 新規 project は slot 未割当 (= SP 初回起動時に resolve が割当)
         };
 
-        let sort_order = {
+        {
             let mut projects = self.projects.write().await;
             if projects.contains_key(&key) {
                 return Err(CapabilityError::Other(format!(
@@ -391,25 +380,17 @@ impl ProcessManagerCapability {
                 )));
             }
             projects.insert(key.clone(), info.clone());
-            projects.len() as i64 - 1
-        };
+        }
         // 順序リストに末尾追加
         self.project_order.write().await.push(key.clone());
 
-        // DB に書き込み（正規化パスで保存）
-        if let Some(ref db) = self.vpdb
-            && let Err(e) = db.upsert_project(name, &key, sort_order).await
-        {
-            tracing::warn!("DB project 追加失敗: {}", e);
-        }
-
-        // DB 未接続時は config.toml にフォールバック
-        self.persist_to_config_fallback().await;
+        // VP-188: projects.kdl に永続化
+        self.persist_projects().await?;
 
         Ok(info)
     }
 
-    /// プロジェクトを削除（+ DB / config.toml に永続化）
+    /// プロジェクトを削除（+ projects.kdl に永続化、 VP-188）
     pub async fn remove_project(&self, path: &str) -> CapabilityResult<()> {
         let key = normalize_path_key(&PathBuf::from(path));
 
@@ -435,20 +416,13 @@ impl ProcessManagerCapability {
         // 順序リストからも削除
         self.project_order.write().await.retain(|k| k != &key);
 
-        // DB から削除（正規化パスで削除）
-        if let Some(ref db) = self.vpdb
-            && let Err(e) = db.delete_project(&key).await
-        {
-            tracing::warn!("DB project 削除失敗: {}", e);
-        }
-
-        // DB 未接続時は config.toml にフォールバック
-        self.persist_to_config_fallback().await;
+        // VP-188: projects.kdl に永続化
+        self.persist_projects().await?;
 
         Ok(())
     }
 
-    /// プロジェクト名を変更（+ DB / config.toml に永続化）
+    /// プロジェクト名を変更（+ projects.kdl に永続化、 VP-188）
     pub async fn rename_project(&self, path: &str, new_name: &str) -> CapabilityResult<()> {
         if new_name.trim().is_empty() {
             return Err(CapabilityError::Other(
@@ -470,20 +444,13 @@ impl ProcessManagerCapability {
             }
         }
 
-        // DB を更新（正規化パスで更新）
-        if let Some(ref db) = self.vpdb
-            && let Err(e) = db.update_project_name(&key, new_name).await
-        {
-            tracing::warn!("DB project 名前変更失敗: {}", e);
-        }
-
-        // DB 未接続時は config.toml にフォールバック
-        self.persist_to_config_fallback().await;
+        // VP-188: projects.kdl に永続化
+        self.persist_projects().await?;
 
         Ok(())
     }
 
-    /// プロジェクトの enabled/disabled を切り替え（+ config.toml に永続化）
+    /// プロジェクトの enabled/disabled を切り替え（+ projects.kdl に永続化）
     pub async fn set_project_enabled(&self, path: &str, enabled: bool) -> CapabilityResult<()> {
         let key = normalize_path_key(&PathBuf::from(path));
 
@@ -499,13 +466,14 @@ impl ProcessManagerCapability {
             }
         }
 
-        self.persist_to_config_fallback().await;
+        // VP-188: projects.kdl に永続化
+        self.persist_projects().await?;
         tracing::info!("Project enabled={}: {}", enabled, path);
 
         Ok(())
     }
 
-    /// プロジェクトの並び順を更新（+ DB / config.toml に永続化）
+    /// プロジェクトの並び順を更新（+ projects.kdl に永続化、 VP-188）
     pub async fn reorder_projects(&self, paths: &[String]) -> CapabilityResult<()> {
         // raw paths を正規化して HashMap キーと一致させる
         let normalized: Vec<String> = paths
@@ -515,82 +483,10 @@ impl ProcessManagerCapability {
         // 順序リストを更新
         *self.project_order.write().await = normalized.clone();
 
-        // DB を更新（正規化パスで更新）
-        if let Some(ref db) = self.vpdb
-            && let Err(e) = db.reorder_projects(&normalized).await
-        {
-            tracing::warn!("DB project 並び替え失敗: {}", e);
-        }
-
-        // DB 未接続時は config.toml にフォールバック
-        self.persist_to_config_fallback().await;
+        // VP-188: projects.kdl に永続化
+        self.persist_projects().await?;
 
         Ok(())
-    }
-
-    /// DB が未接続の場合に config.toml に永続化するフォールバック（project_order の順序で書き出す）
-    #[cfg(not(test))]
-    async fn persist_to_config_fallback(&self) {
-        if self.vpdb.is_some() {
-            // DB 接続中は DB が source of truth なのでスキップ
-            return;
-        }
-
-        let order = self.project_order.read().await.clone();
-        let projects = self.projects.read().await;
-
-        let mut config = Config::load().unwrap_or_default();
-        config.projects = order
-            .iter()
-            .filter_map(|key| {
-                projects.get(key).map(|info| {
-                    // 既存 config の slot を継承 (port management Phase 1)
-                    let slot = config
-                        .projects
-                        .iter()
-                        .find(|p| p.name == info.name)
-                        .and_then(|p| p.slot);
-                    crate::config::ProjectConfig {
-                        name: info.name.clone(),
-                        path: info.path.to_string_lossy().to_string(),
-                        port: info.port,
-                        enabled: info.enabled,
-                        slot,
-                    }
-                })
-            })
-            .collect();
-
-        // order に含まれないプロジェクトも末尾に追加
-        let order_set: std::collections::HashSet<&String> = order.iter().collect();
-        for (key, info) in projects.iter() {
-            if !order_set.contains(key) {
-                let slot = config
-                    .projects
-                    .iter()
-                    .find(|p| p.name == info.name)
-                    .and_then(|p| p.slot);
-                config.projects.push(crate::config::ProjectConfig {
-                    name: info.name.clone(),
-                    path: info.path.to_string_lossy().to_string(),
-                    port: info.port,
-                    enabled: info.enabled,
-                    slot,
-                });
-            }
-        }
-
-        if let Err(e) = config.save() {
-            tracing::error!("config.toml 永続化失敗: {}", e);
-        } else {
-            tracing::info!("config.toml 永続化完了: {} projects", config.projects.len());
-        }
-    }
-
-    /// テスト環境では config.toml を書き換えない（データ破壊防止）
-    #[cfg(test)]
-    async fn persist_to_config_fallback(&self) {
-        // no-op: テスト時は本番の config.toml に触れない
     }
 
     /// Processを起動
@@ -1255,8 +1151,9 @@ impl ProcessManagerCapability {
                     new_slot, e
                 ))
             })?;
-        config.save().map_err(|e| {
-            CapabilityError::Other(format!("VP-165 reassign: config save 失敗: {}", e))
+        // VP-188: slot 永続化先は projects.kdl (config.toml ではない)。
+        config.persist_projects_kdl().map_err(|e| {
+            CapabilityError::Other(format!("VP-165 reassign: projects.kdl save 失敗: {}", e))
         })?;
 
         let new_port = crate::cli::PORT_RANGE_START + new_slot;
@@ -1903,6 +1800,7 @@ mod tests {
             process_status: ProcessStatus::Stopped,
             port: Some(33005),
             enabled: true,
+            slot: None,
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains("33005"));
@@ -1914,6 +1812,7 @@ mod tests {
             process_status: ProcessStatus::Stopped,
             port: None,
             enabled: true,
+            slot: None,
         };
         let json_no_port = serde_json::to_string(&info_no_port).unwrap();
         assert!(!json_no_port.contains("port"));
