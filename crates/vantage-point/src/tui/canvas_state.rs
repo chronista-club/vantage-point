@@ -136,7 +136,10 @@ pub fn spawn_canvas_receiver(
                 .build()
             {
                 Ok(transport) => club_unison::ProtocolClient::new(transport),
-                Err(_) => return,
+                Err(e) => {
+                    tracing::error!("Canvas QUIC クライアント作成失敗: {}", e);
+                    return;
+                }
             };
 
             let mut attempts = 0;

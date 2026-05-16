@@ -8,8 +8,7 @@
 //! request() メソッドでリクエスト/レスポンスを行う。
 
 use anyhow::{Context, Result};
-use club_unison::network::quic::QuicClient;
-use club_unison::network::{MessageType, TrustAnchors};
+use club_unison::network::MessageType;
 use club_unison::{ProtocolClient, UnisonChannel};
 
 use super::protocol::*;
@@ -48,8 +47,8 @@ impl DaemonClient {
     pub async fn connect(port: u16, retries: u32) -> Result<Self> {
         let addr = format!("[::1]:{}", port);
         // VP-184: Builder API 移行 (dev default を明示、 PR-3 で mesh keypair に差し替え)。
-        let transport = QuicClient::builder()
-            .trust_anchors(TrustAnchors::SkipVerification)
+        let transport = club_unison::network::quic::QuicClient::builder()
+            .trust_anchors(club_unison::network::TrustAnchors::SkipVerification)
             .build()
             .context("QUIC クライアントの作成に失敗")?;
         let client = ProtocolClient::new(transport);
