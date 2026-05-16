@@ -255,6 +255,13 @@ pub fn spawn_registry_keepalive(
         let mut event_rx = system_event_tx.subscribe();
 
         loop {
+            // VP-187 round 1 review: shutdown と QUIC 切断 event が同時に発火した場合、
+            // 内側 select! が conn_ev arm を選ぶと外側 loop を 1 周回して余分な
+            // connect_and_register を試みる。 外側 loop 先頭で shutdown を確認して
+            // 余分な再接続試行 (= log ノイズ) を防ぐ。
+            if shutdown.is_cancelled() {
+                return;
+            }
             // TheWorld に QUIC 接続
             match connect_and_register(&agent_card).await {
                 Ok(conn) => {
