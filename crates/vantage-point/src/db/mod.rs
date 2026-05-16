@@ -14,7 +14,6 @@
 //! ## テーブル設計
 //!
 //! - `processes`: プロセス状態（QUIC Registry + HTTP polling 代替）
-//! - `projects`: プロジェクト一覧（config.toml 代替）
 //! - `msgbox`: cross-process メッセージング
 //! - `pane_contents`: Canvas ペイン状態
 //! - `stand_status`: Stand ステータス
@@ -54,7 +53,8 @@ fn db_root() -> PathBuf {
 ///
 /// VP-182: surrealkv は OS レベル排他ロック (`try_lock_exclusive`) を持つため、
 /// World と SP が同一ディレクトリを open すると LOCK 衝突で 2 番目が失敗する。
-/// World は `projects` / `processes` テーブルを保持する専用 DB を `db/world/` に分離。
+/// World は `processes` テーブルを保持する専用 DB を `db/world/` に分離。
+/// (VP-188: 旧 `projects` テーブルは projects.kdl に移行済)
 pub fn db_data_dir_for_world() -> PathBuf {
     db_root().join("world")
 }
@@ -131,74 +131,10 @@ impl VpDb {
         &self.db
     }
 
-    // =========================================================================
-    // Projects CRUD
-    // =========================================================================
-
-    /// プロジェクト一覧を取得（sort_order 順）
-    pub async fn list_projects(&self) -> Result<Vec<serde_json::Value>> {
-        let mut result = self
-            .db
-            .query("SELECT * FROM projects ORDER BY sort_order ASC")
-            .await
-            .map_err(|e| anyhow::anyhow!("projects 取得失敗: {}", e))?;
-        let records: Vec<serde_json::Value> = result.take(0)?;
-        Ok(records)
-    }
-
-    /// プロジェクトを追加（UPSERT: 同じ path なら更新）
-    pub async fn upsert_project(&self, name: &str, path: &str, sort_order: i64) -> Result<()> {
-        self.db
-            .query("INSERT INTO projects { name: $name, path: $path, sort_order: $sort_order } ON DUPLICATE KEY UPDATE name = $input.name, sort_order = $input.sort_order")
-            .bind(("name", name.to_string()))
-            .bind(("path", path.to_string()))
-            .bind(("sort_order", sort_order))
-            .await
-            .map_err(|e| anyhow::anyhow!("project upsert 失敗: {}", e))?
-            .check()
-            .map_err(|e| anyhow::anyhow!("project upsert エラー: {}", e))?;
-        Ok(())
-    }
-
-    /// プロジェクトを削除（path で特定）
-    pub async fn delete_project(&self, path: &str) -> Result<()> {
-        self.db
-            .query("DELETE FROM projects WHERE path = $path")
-            .bind(("path", path.to_string()))
-            .await
-            .map_err(|e| anyhow::anyhow!("project 削除失敗: {}", e))?
-            .check()
-            .map_err(|e| anyhow::anyhow!("project 削除エラー: {}", e))?;
-        Ok(())
-    }
-
-    /// プロジェクト名を更新
-    pub async fn update_project_name(&self, path: &str, new_name: &str) -> Result<()> {
-        self.db
-            .query("UPDATE projects SET name = $name WHERE path = $path")
-            .bind(("path", path.to_string()))
-            .bind(("name", new_name.to_string()))
-            .await
-            .map_err(|e| anyhow::anyhow!("project 名前変更失敗: {}", e))?
-            .check()
-            .map_err(|e| anyhow::anyhow!("project 名前変更エラー: {}", e))?;
-        Ok(())
-    }
-
-    /// プロジェクトの並び順を一括更新
-    pub async fn reorder_projects(&self, paths: &[String]) -> Result<()> {
-        for (i, path) in paths.iter().enumerate() {
-            self.db
-                .query("UPDATE projects SET sort_order = $order WHERE path = $path")
-                .bind(("path", path.clone()))
-                .bind(("order", i as i64))
-                .await
-                .map_err(|e| anyhow::anyhow!("project 並び順更新失敗: {}", e))?
-                .check()
-                .map_err(|e| anyhow::anyhow!("project 並び順エラー: {}", e))?;
-        }
-        Ok(())
-    }
+    // VP-188: Projects CRUD は撤去。 registered projects の SSOT は embedded DB から
+    // `~/.config/vp/projects.kdl` に移行 (= VP-182 の「DB dir 変更で projects 消失」
+    // regression を構造的に解消、 council 2026-05-16)。 projects 永続化は
+    // `crate::projects_file::ProjectsFile` が担う。
 
     // =========================================================================
     // Processes CRUD
@@ -400,20 +336,6 @@ impl VpDb {
         Ok(stream)
     }
 
-    /// projects テーブルの LIVE SELECT を開始
-    ///
-    /// 現時点では未使用（将来: Native App への projects 変更通知に利用予定）
-    #[allow(dead_code)]
-    pub async fn live_projects(&self) -> Result<surrealdb::method::Stream<Vec<serde_json::Value>>> {
-        let stream = self
-            .db
-            .select("projects")
-            .live()
-            .await
-            .map_err(|e| anyhow::anyhow!("LIVE SELECT projects 失敗: {}", e))?;
-        Ok(stream)
-    }
-
     /// プロジェクトの全 Stand ステータスを取得
     pub async fn list_stand_status(&self, project_path: &str) -> Result<Vec<serde_json::Value>> {
         let mut result = self
@@ -449,12 +371,8 @@ DEFINE FIELD IF NOT EXISTS stands ON processes TYPE option<object> FLEXIBLE;
 DEFINE FIELD IF NOT EXISTS tmux_session ON processes TYPE option<string>;
 DEFINE INDEX IF NOT EXISTS idx_processes_path ON processes COLUMNS project_path UNIQUE;
 
--- プロジェクト一覧（config.toml 代替）
-DEFINE TABLE IF NOT EXISTS projects SCHEMAFULL;
-DEFINE FIELD IF NOT EXISTS name ON projects TYPE string;
-DEFINE FIELD IF NOT EXISTS path ON projects TYPE string;
-DEFINE FIELD IF NOT EXISTS sort_order ON projects TYPE int;
-DEFINE INDEX IF NOT EXISTS idx_projects_path ON projects COLUMNS path UNIQUE;
+-- VP-188: projects テーブルは撤去。 registered projects の SSOT は
+-- ~/.config/vp/projects.kdl に移行 (crate::projects_file)。
 
 -- Msgbox（cross-process メッセージング）
 DEFINE TABLE IF NOT EXISTS msgbox SCHEMAFULL;
@@ -637,74 +555,8 @@ mod tests {
         assert_eq!(records[0]["kind"], "notification");
     }
 
-    // =========================================================================
-    // Projects CRUD テスト
-    // =========================================================================
-
-    #[tokio::test]
-    async fn test_projects_crud() {
-        let db = make_test_db().await;
-
-        // 追加
-        db.upsert_project("vp", "/Users/test/repos/vp", 0)
-            .await
-            .unwrap();
-        db.upsert_project("creo", "/Users/test/repos/creo", 1)
-            .await
-            .unwrap();
-
-        // 一覧
-        let projects = db.list_projects().await.unwrap();
-        assert_eq!(projects.len(), 2);
-        assert_eq!(projects[0]["name"], "vp");
-        assert_eq!(projects[1]["name"], "creo");
-
-        // 名前変更
-        db.update_project_name("/Users/test/repos/vp", "vantage-point")
-            .await
-            .unwrap();
-        let projects = db.list_projects().await.unwrap();
-        assert_eq!(projects[0]["name"], "vantage-point");
-
-        // 削除
-        db.delete_project("/Users/test/repos/creo").await.unwrap();
-        let projects = db.list_projects().await.unwrap();
-        assert_eq!(projects.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn test_projects_reorder() {
-        let db = make_test_db().await;
-
-        db.upsert_project("a", "/a", 0).await.unwrap();
-        db.upsert_project("b", "/b", 1).await.unwrap();
-        db.upsert_project("c", "/c", 2).await.unwrap();
-
-        // b, c, a の順に並び替え
-        db.reorder_projects(&["/b".to_string(), "/c".to_string(), "/a".to_string()])
-            .await
-            .unwrap();
-
-        let projects = db.list_projects().await.unwrap();
-        assert_eq!(projects[0]["name"], "b");
-        assert_eq!(projects[1]["name"], "c");
-        assert_eq!(projects[2]["name"], "a");
-    }
-
-    #[tokio::test]
-    async fn test_projects_upsert_idempotent() {
-        let db = make_test_db().await;
-
-        db.upsert_project("vp", "/repos/vp", 0).await.unwrap();
-        // 同じ path で再度 upsert → 名前が更新される
-        db.upsert_project("vantage-point", "/repos/vp", 0)
-            .await
-            .unwrap();
-
-        let projects = db.list_projects().await.unwrap();
-        assert_eq!(projects.len(), 1);
-        assert_eq!(projects[0]["name"], "vantage-point");
-    }
+    // VP-188: Projects CRUD テストは撤去 (= projects は projects.kdl に移行、
+    // crate::projects_file 側の round-trip test でカバー)。
 
     // =========================================================================
     // Processes CRUD テスト
@@ -1138,16 +990,5 @@ mod tests {
             .live_processes()
             .await
             .expect("live_processes ストリームの開始が失敗してはいけない");
-    }
-
-    /// kv-mem で live_projects を開始してストリームが取得できる（接続確認）
-    #[tokio::test]
-    async fn test_live_projects_stream_connects() {
-        let db = make_test_db().await;
-
-        let _stream = db
-            .live_projects()
-            .await
-            .expect("live_projects ストリームの開始が失敗してはいけない");
     }
 }

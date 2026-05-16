@@ -52,3 +52,4 @@ DerivedData/
 
 # vp-app dev log (mise win task の stderr redirect 先)
 vp-*.log
+history.txt
