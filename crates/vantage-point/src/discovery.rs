@@ -364,8 +364,12 @@ struct RegistryConnection {
 async fn connect_and_register(
     agent_card: &serde_json::Value,
 ) -> Result<RegistryConnection, String> {
-    let client = club_unison::ProtocolClient::new_default()
+    // VP-184: Builder API 移行 (dev default を明示、 PR-3 で mesh keypair に差し替え)。
+    let transport = club_unison::network::quic::QuicClient::builder()
+        .trust_anchors(club_unison::network::TrustAnchors::SkipVerification)
+        .build()
         .map_err(|e| format!("QUIC client 作成失敗: {}", e))?;
+    let client = club_unison::ProtocolClient::new(transport);
 
     let addr = format!("[::1]:{}", WORLD_PORT);
     client
