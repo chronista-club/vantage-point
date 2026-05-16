@@ -130,9 +130,16 @@ pub fn spawn_canvas_receiver(
             let quic_port = port + crate::process::unison_server::QUIC_PORT_OFFSET;
             let addr = format!("[::1]:{}", quic_port);
 
-            let client = match club_unison::ProtocolClient::new_default() {
-                Ok(c) => c,
-                Err(_) => return,
+            // VP-184: Builder API 移行 (dev default を明示、 PR-3 で mesh keypair に差し替え)。
+            let client = match club_unison::network::quic::QuicClient::builder()
+                .trust_anchors(club_unison::network::TrustAnchors::SkipVerification)
+                .build()
+            {
+                Ok(transport) => club_unison::ProtocolClient::new(transport),
+                Err(e) => {
+                    tracing::error!("Canvas QUIC クライアント作成失敗: {}", e);
+                    return;
+                }
             };
 
             let mut attempts = 0;

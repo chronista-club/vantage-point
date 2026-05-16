@@ -311,8 +311,12 @@ async fn connect_and_auth(
     addr: &str,
     terminal_token: &str,
 ) -> Option<club_unison::network::channel::UnisonChannel> {
-    let client = match club_unison::ProtocolClient::new_default() {
-        Ok(c) => c,
+    // VP-184: Builder API 移行 (dev default を明示、 PR-3 で mesh keypair に差し替え)。
+    let client = match club_unison::network::quic::QuicClient::builder()
+        .trust_anchors(club_unison::network::TrustAnchors::SkipVerification)
+        .build()
+    {
+        Ok(transport) => club_unison::ProtocolClient::new(transport),
         Err(e) => {
             tracing::error!("ProtocolClient 作成失敗: {}", e);
             return None;

@@ -736,8 +736,13 @@ impl VantageMcp {
         let quic_port = port + crate::process::unison_server::QUIC_PORT_OFFSET;
         let addr = format!("[::1]:{}", quic_port);
 
-        let client = club_unison::ProtocolClient::new_default()
+        // VP-184: Builder API 移行。 dev default (= SkipVerification) を明示的に渡す。
+        // PR-3 で trust_anchors を InternalMeshKeypair の client 半分に差し替える。
+        let transport = club_unison::network::quic::QuicClient::builder()
+            .trust_anchors(club_unison::network::TrustAnchors::SkipVerification)
+            .build()
             .map_err(|e| McpError::internal_error(format!("Unison client error: {}", e), None))?;
+        let client = club_unison::ProtocolClient::new(transport);
         client.connect(&addr).await.map_err(|e| {
             McpError::internal_error(format!("Unison connect error ({}): {}", addr, e), None)
         })?;
