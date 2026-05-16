@@ -7,12 +7,12 @@ use crate::config::Config;
 /// `vp config` を実行
 ///
 /// TheWorld 接続時は API からプロジェクト一覧を取得。
-/// 未接続時は config.toml にフォールバック。
+/// 未接続時は config / projects.kdl にフォールバック。
 pub fn execute(config: &Config) -> Result<()> {
     println!("Config file: {}", Config::config_path().display());
     println!();
 
-    // TheWorld API からプロジェクト一覧を取得（フォールバック: config.toml）
+    // TheWorld API からプロジェクト一覧を取得（フォールバック: projects.kdl）
     let (projects, source) = match fetch_projects_from_theworld() {
         Some(projects) => (projects, "TheWorld API"),
         None => {
@@ -21,7 +21,7 @@ pub fn execute(config: &Config) -> Result<()> {
                 .iter()
                 .map(|p| (p.name.clone(), p.path.clone()))
                 .collect();
-            (projects, "config.toml (TheWorld offline)")
+            (projects, "projects.kdl (TheWorld offline)")
         }
     };
 

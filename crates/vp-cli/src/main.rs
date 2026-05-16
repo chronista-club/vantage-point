@@ -12,7 +12,7 @@
 //!   VANTAGE_DEBUG=none|simple|detail  # デバッグ表示モード
 //!   VANTAGE_PROJECT_DIR=/path/to/project  # デフォルトプロジェクトディレクトリ
 //!
-//! Config file: ~/.config/vp/config.toml
+//! Config file: ~/.config/vp/config.kdl
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
