@@ -2,7 +2,7 @@
 
 > **Status**: Active
 > **Created**: 2025-12-16
-> **Updated**: 2026-03-10
+> **Updated**: 2026-05-16
 
 ---
 
@@ -18,9 +18,11 @@ Process が保持する「能力（Capability / Stand）」システムと、MID
 
 ```
 Phase 1: トレイト型（現在）— 内部能力を Capability トレイトで整理
-Phase 2: プロトコル型 — 能力間通信を TopicRouter ベースに
+Phase 2: プロトコル型（完了, VP-169）— 能力間通信を WhitesnakeStore（SurrealDB embedded）ベースに
 Phase 3: プラグイン型（将来）— WASM で能力を動的ロード
 ```
+
+> **Phase 2 補足**: 当初は msgbox を in-memory `TopicRouter` ベースで設計していたが、 VP-169 epic（doc 19、 Phase 5 完了 / commit `445190c`）で msgbox substrate を **`WhitesnakeStore`（SurrealDB embedded primary）** に統一した。 mpsc ベースの `Router` / `Handle` は物理削除済。 `TopicRouter` 自体は Canvas / pane content の broadcast 配信用途で引き続き存在する（`process/topic_router.rs`）が、 msgbox（能力間メッセージング）は WhitesnakeStore primary。
 
 ### REQ-CAP-001: Capability トレイト
 
@@ -45,6 +47,22 @@ Phase 3: プラグイン型（将来）— WASM で能力を動的ロード
 - [x] 型安全なイベント定義・購読・発火
 - [x] broadcast による複数購読者配信
 - [x] 非同期対応
+
+### REQ-CAP-004: msgbox v2（WhitesnakeStore）
+
+**実装**: `crates/vantage-point/src/capability/msgbox_v2.rs`（`MsgboxStore` trait + `WhitesnakeStore` impl）
+
+VP-169 epic（doc 19、 Phase 5 完了 / commit `445190c`）で確立した能力間メッセージング substrate。 旧 mpsc `Router` / `Handle` を物理削除し、 SurrealDB embedded を primary store に統一した。
+
+- [x] `MsgboxStore` trait — DB primary な msgbox operations を定義
+- [x] `WhitesnakeStore` — SurrealDB embedded（`msgs` table）で trait を impl
+- [x] msg lifecycle を status field（`active` / `dead_letter` / `archived`）で表現、 1 table 永続
+- [x] concurrent recv first-class — atomic claim 機構 + stale claim timeout
+- [x] selective receive を WHERE predicate で表現（旧 Erlang stash 廃止）
+- [x] `MsgboxStats` — status 別 row 数（`vp msgbox status` 用）
+- [x] cross-process forward は両 SP DB write + ack-back HTTP（trace field で audit trail）
+
+> **DB ディレクトリ**: SP は `db/sp_{slug}/`、 World daemon は `db/world/` に物理分離（VP-182 / PR #367、 surrealkv の single-writer 排他ロック対策）。 詳細は doc 19 §6。
 
 ---
 
@@ -134,8 +152,10 @@ vp midi ports              # ポート一覧
 
 ### REQ-CAP-020: Canvas / TUI 連携
 
-- [ ] MIDI イベントが TopicRouter 経由で配信される
+- [ ] MIDI イベントが TopicRouter 経由で配信される（realtime broadcast 用途のため TopicRouter のまま）
 - [ ] TUI / Canvas で MIDI 状態を表示できる
+
+> **Note**: 能力間の **msgbox メッセージング** は VP-169（doc 19）で `WhitesnakeStore`（SurrealDB embedded primary）に統一済。 一方、 MIDI / Canvas 状態の realtime broadcast 配信は引き続き `TopicRouter` を用いる（永続化不要・低レイテンシ要求のため）。 「msgbox = WhitesnakeStore primary」 と「realtime broadcast = TopicRouter」 を混同しないこと。
 
 ### REQ-CAP-021: Claude Agent 連携
 
@@ -148,4 +168,5 @@ vp midi ports              # ポート一覧
 ## References
 
 - `design/02-capability-evolution.md` (VP-DESIGN-002) — 進化システム設計
+- `design/19-msgbox-whitesnake-primary.md` (VP-169) — msgbox v2 / WhitesnakeStore 設計（Phase 2 プロトコル型の実体）
 - `crates/vantage-point/src/capability/` — 実装

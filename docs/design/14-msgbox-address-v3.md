@@ -228,9 +228,11 @@ Phase 1 で parser 拡張時、 v1 syntax を v3.1 として解釈する rule:
 
 ### lane segment 明示時の routing
 
-- Phase 2 で per-lane msgbox 物理化 (`MsgboxRouter` を `(actor, project, lane_path)` キー)
-- v1 既存 msgbox は spawn 時に `(actor, project, vec!["lead"])` キーへ migration
-- worker lane spawn で新 msgbox 自動 register、 lane delete で cleanup
+> **Supersede note (= [doc 19](19-msgbox-whitesnake-primary.md) / VP-169)**: 以下の `MsgboxRouter` を `(actor, project, lane_path)` でキー化する HashMap-based 設計は **VP-169 で廃止**された。 msgbox は Whitesnake (SurrealDB embedded) primary に揃い、 per-lane 軸は HashMap key ではなく `msgs` table の DB row field (`to_actor` / `to_lane`) になった (doc 19 §4.5)。 `register` / `unregister` 機構も不要になり廃止。 address syntax / parser (本 doc §7 上段 + spec) は現行のまま有効。
+
+- ~~Phase 2 で per-lane msgbox 物理化 (`MsgboxRouter` を `(actor, project, lane_path)` キー)~~ → VP-169 で DB row field 化
+- ~~v1 既存 msgbox は spawn 時に `(actor, project, vec!["lead"])` キーへ migration~~ → VP-169 で box concept 廃止
+- ~~worker lane spawn で新 msgbox 自動 register、 lane delete で cleanup~~ → VP-169 で register/unregister 廃止、 consumer が `WHERE to_lane=$mine` で LIVE SELECT
 
 ### gap 1-4 の物理 fix
 
@@ -259,8 +261,10 @@ deliverable: 全 sample address parse OK、 v1 互換維持、 unit tests 10+ ca
 
 ### Phase 2: per-lane msgbox + sidebar Echoes 横 icon — VP-147
 
+> **Supersede note (= [doc 19](19-msgbox-whitesnake-primary.md) / VP-169)**: `MsgboxRouter` の `(actor, project, lane_path)` キー化は VP-169 で廃止。 per-lane は DB row field 化 (`msgs` table の `to_actor` / `to_lane`)。 sidebar 側の lane msgbox 観測 (`SidebarState.lane_msgboxes` / poller) は引き続き有効。
+
 scope:
-- `MsgboxRouter` を `(actor, project, lane_path)` キー化
+- ~~`MsgboxRouter` を `(actor, project, lane_path)` キー化~~ → VP-169 で `msgs` table の DB row field 化
 - `SidebarState.lane_msgboxes: HashMap<lane_addr, MessageState>` 追加
 - `spawn_lane_msgbox_poller` (5s polling)、 `AppEvent::ResolveLaneMsgboxes`
 - sidebar `.vp-message-icon` を Echoes icon の右隣に配置 (未読あり = filled、 なし = 表示なし)
