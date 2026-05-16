@@ -229,7 +229,10 @@ fn execute_slot(cmd: SlotCommands) -> Result<()> {
         SlotCommands::Assign { project, slot } => {
             let mut config = Config::load().unwrap_or_default();
             let assigned = config.ensure_slot(&project, slot)?;
-            config.save().context("failed to save config.toml")?;
+            // VP-188: slot の SSOT は projects.kdl (config.toml ではない)。
+            config
+                .persist_projects_kdl()
+                .context("failed to save projects.kdl")?;
             let layout = config.port_layout();
             let base = layout.project_base(assigned).unwrap();
             println!(
@@ -241,7 +244,10 @@ fn execute_slot(cmd: SlotCommands) -> Result<()> {
         SlotCommands::Unassign { project } => {
             let mut config = Config::load().unwrap_or_default();
             config.unassign_slot(&project)?;
-            config.save().context("failed to save config.toml")?;
+            // VP-188: slot の SSOT は projects.kdl (config.toml ではない)。
+            config
+                .persist_projects_kdl()
+                .context("failed to save projects.kdl")?;
             println!("unassigned slot from '{}'", project);
             Ok(())
         }
