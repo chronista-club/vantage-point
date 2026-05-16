@@ -1,3 +1,5 @@
+> **ARCHIVED (2026-05-16)**: 本 ccwire Phase 0 spec は実装されず消却された。ccwire モジュールは msgbox に統合され廃止。本 doc は歴史的記録。
+
 # ccwire リデザイン仕様 (2026-04-19)
 
 ## 背景

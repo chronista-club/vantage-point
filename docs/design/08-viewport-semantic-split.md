@@ -1,7 +1,14 @@
 # Viewport Semantic Split (VP-83 Phase 2)
 
-> **Status**: Draft (2026-04-24)
+> **Status**: Superseded — 設計原則のみ参照価値あり (2026-05-16、VP-191 棚卸し)
 > **Previous**: Phase 1 Sidebar Disclosure (refinement 1-55 完了、main `dad21dd` / `fdf4a42` / `8981109`)
+
+> **実装状況 NOTE (2026-05-16、VP-191 棚卸し)**: 本 doc は **SwiftUI ネイティブアプリ前提** の設計
+> (`apple/VantagePoint/Sources/VPPaneContainer.swift` 等を参照)。2026-04-26 の Mac 主軸移行で
+> vp-app は **wry + xterm.js + creo-ui** 構成 (`crates/vp-app/`) に置き換わり、`apple/VantagePoint/`
+> ディレクトリは消滅した。本 doc の `indirect enum PaneNode` / `LayoutKind` / `@SceneStorage` 等の
+> Swift 実装仕様は無効。「データと表示ルールの分離」「Lead Pane = tree root」という **設計原則** のみ
+> 現 vp-app でも参照価値があり、Phase 2.1-2.5 の実装計画はいずれも未着手のまま破棄された。
 
 ## 設計原則
 
@@ -18,7 +25,7 @@
 ### Pane tree — Lead が root
 
 ```
-Lead Pane (HD agent lead、project ごとに 1 つ、root)
+Lead Pane (Echoes agent lead、project ごとに 1 つ、root)
 ├── Child Pane (any kind)
 ├── Child Pane (any kind)
 └── Child Pane (any kind)
@@ -38,7 +45,7 @@ indirect enum PaneNode: Identifiable, Equatable {
 
 | kind | Stand metaphor | content |
 |------|----------------|---------|
-| `agent` | Heaven's Door 📖 | Claude CLI TUI (tmux / TerminalRepresentable) |
+| `agent` | Echoes 💬 | Claude CLI TUI (tmux / TerminalRepresentable) |
 | `canvas` | Paisley Park 🧭 | Markdown / HTML / 画像 (CanvasRepresentable) |
 | `preview` | Paisley Park 拡張 | file / image / URL preview |
 | `shell` | 将来 | 素 zsh / fish PTY |
@@ -138,4 +145,4 @@ typealias PaneLayoutMap = [UUID: LayoutRule]
 
 ---
 
-> **archive 注記 (2026-05-04、 PR-pre2 / VP-118)**: 本 doc 内の `Heaven's Door 📖` / `agent` arm は当時の表記。 Stand metaphor は **Echoes 💬** に rename 済。 active SSOT は doc 12 §9 catalog + doc 13。
+> **rename 注記 (2026-05-04、 PR-pre2 / VP-118)**: VP の Coding Assistant Stand は `Heaven's Door 📖` → **Echoes 💬** に rename 済。 本 doc 本文は 2026-05-16 (VP-191 棚卸し) で Echoes 表記に同期済。 active SSOT は doc 12 §9 catalog + doc 13。

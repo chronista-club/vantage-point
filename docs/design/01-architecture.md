@@ -55,7 +55,7 @@ Process (Star Platinum ⭐)
 │   └── terminal_token (UUID v4 認証)
 │
 ├── Capabilities (ProcessCapabilities)
-│   ├── AgentCapability      📖 Heaven's Door (REQ2)
+│   ├── AgentCapability      💬 Echoes (REQ2)
 │   ├── ProtocolCapability   🧭 Paisley Park (REQ3)
 │   ├── MidiCapability       🍇 Hermit Purple (REQ5)
 │   └── BonjourCapability    (mDNS 発見)
@@ -83,6 +83,12 @@ Process (Star Platinum ⭐)
 | Client ↔ Process | HTTP REST | Request-Response | コントロール API | REQ6.2 |
 | Client ↔ Process | WebSocket | Pub-Sub | Canvas 更新 | REQ3.1 |
 | Process ↔ TheWorld | HTTP REST | Heartbeat | 自己登録・発見 | REQ6.1, REQ6.4 |
+
+> **Whitesnake 🐍 = primary event store (VP-169)**: msgbox は VP-169 (PR #364, 2026-05-15) で
+> **Whitesnake-primary** に refactor 済。in-memory mpsc queue を完全廃止し、
+> 全 actor 間メッセージは Whitesnake（DISC 永続化レイヤー / SurrealDB backend）を
+> 唯一の truth source とする。lifecycle flag 群の二重管理を解消し、audit trail と
+> time-travel debug を first-class 化。詳細は `19-msgbox-whitesnake-primary.md`。
 
 ### D2: メッセージフロー（Canvas Show の例）
 
@@ -120,7 +126,7 @@ Hub（broadcast::channel）の上に乗る Topic ベースのメッセージル�
 | セグメント | 値の例 | 説明 |
 |-----------|--------|------|
 | scope | `process` | 常に `process` |
-| capability | `paisley-park`, `heavens-door`, `star-platinum`, `terminal`, `debug` | Stand 対応 |
+| capability | `paisley-park`, `echoes`, `star-platinum`, `terminal`, `debug` | Stand 対応 |
 | category | `command`, `state`, `event`, `data`, `log`, `trace` | メッセージ種別 |
 | detail | pane_id, session_id 等 | メッセージ固有 |
 
@@ -194,7 +200,7 @@ QUIC オフセット: 0（TCP/UDP は同一ポート番号で共存可能）
   │ └── 過去セッション一覧 (JSONL 解析)
   ▼
 PTY ターミナル画面
-  ├── Header: ⭐ プロジェクト名 | 🧭 Canvas 状態 | 📖 AI 状態
+  ├── Header: ⭐ プロジェクト名 | 🧭 Canvas 状態 | 💬 AI 状態
   ├── Body:   alacritty_terminal GridSnapshot → ratatui Widget
   └── Footer: アクションショートカット一覧
 ```
@@ -333,8 +339,8 @@ path = "/path/to/vantage-point"
 
 ---
 
-*更新日: 2026-03-10*
+*更新日: 2026-05-16*
 
 ---
 
-> **archive 注記 (2026-05-04、 PR-pre2 / VP-118)**: 本 doc 内の `Heaven's Door 📖` は当時の表記。 Stand metaphor は **Echoes 💬** に rename 済 (zsh→tmux→claude chain spawn が Echoes Act 1/2/3 進化と完璧 fit、 terminal echo 構造とも literal に一致)。 active SSOT は doc 12 §9 catalog。
+> **rename 注記 (2026-05-04、 PR-pre2 / VP-118)**: VP の Coding Assistant Stand は `Heaven's Door 📖` → **Echoes 💬** に rename 済 (zsh→tmux→claude chain spawn が Echoes Act 1/2/3 進化と完璧 fit、 terminal echo 構造とも literal に一致)。 本 doc 本文は 2026-05-16 (VP-191 棚卸し) で Echoes 表記に同期済。 active SSOT は doc 12 §9 catalog。
