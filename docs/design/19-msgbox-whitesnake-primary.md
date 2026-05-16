@@ -1,8 +1,8 @@
 # doc 19: msgbox Whitesnake-primary refactor (mpsc 廃止 + audit moat 強化)
 
-> **Status**: Drafted (PR-pre1)
+> **Status**: Implemented (Phase 5 完了, commit `445190c` / VP-179 / PR #364)
 > **Linear**: [VP-169](https://linear.app/chronista/issue/VP-169) (parent: VP-156)
-> **Date**: 2026-05-13
+> **Date**: 2026-05-13 (Drafted) / 2026-05-15 (Phase 5 land)
 > **Author**: Mako (= Chronista solo dev)
 > **Related**: doc 14 (msgbox-address-v3) / doc 16 (worker-lane-msgbox-recv) / doc 17 (port-stability-and-msgbox-isolation) / doc 18 (msg-lifecycle-state)
 > **Supersedes layer**: VP-24 (mailbox core) / VP-156 (routing 統一) の architectural substrate 部分のみ。 DNA (= ECS actor、 1 actor = 1 msgbox、 serial ordered FIFO) は維持。
@@ -221,6 +221,8 @@ SELECT to_actor, to_lane, count() AS pending
 | e | `payload` は object | YES (= JSON native、 内部 SELECT も可) |
 | f | composite index | `recv_idx (status, to_actor, to_lane, consumed_at)` |
 | g | ts 衝突 tiebreak | `ORDER BY ts ASC, id ASC` |
+
+> **DB directory 分離 (= VP-182 / PR #367)**: `msgs` table を持つ embedded DB は、 surrealkv の single-writer 制約 (= `try_lock_exclusive`) により World daemon と SP が同一 dir を共有 open できない。 SP は `db/sp_{slug}/`、 World は `db/world/` に物理分離する。 詳細は §6「当初 Open Questions から漏れていた事実」 を参照。
 
 ### §4.2 Notification (= SurrealDB LIVE Query primary + reconnect investment)
 
@@ -862,6 +864,14 @@ consumer side (= lane Claude / Stand / Service):
 | **Q9 改善 1 PR 同梱** | **SDG と同 PR で用語 sweep 同梱** (= 本 PR-pre1) |
 | **Q10 LIVE QUERY 採用 + topology** | **採用確定、 当面 single-node 運用** (= 公式 single-node 制限を踏まえても LIVE QUERY を使い続ける意思、 cluster 化は VP-future として別 epic、 Purple Haze F1 verify 後の user 確認 2026-05-13) |
 
+### 当初 Open Questions から漏れていた事実 (= VP-182 / PR #367、 implementation 後の dogfood で発覚)
+
+> **decision log**: 本 SDG 起草時には未検知だった embedded DB の **single-writer 制約**。 VP-169 epic 完了後の dogfood で `msgbox_store not initialized` エラーが発生し、 `vp msg send/recv` が全死した。 team-b holistic review で root cause が確定したため、 decision log として明記する。
+
+| 論点 | 確定事項 |
+|---|---|
+| **embedded DB single-writer 衝突** | surrealkv は **per-directory の OS レベル排他ロック** (`try_lock_exclusive`) を持つ。 World daemon と SP が同一 embedded DB dir (`~/Library/Application Support/vantage/db/`) を open すると衝突し、 先に LOCK を取った World が勝ち、 SP の `connect_embedded` が失敗 → `vpdb = None` → `msgbox_store = None` で msgbox が全死する。 対処として **World は `db/world/`、 SP は `db/sp_{slug}/`** にディレクトリを分離する (VP-182 / PR #367)。 §4.5 の「Whitesnake = primary store」 「LIVE substrate = SurrealDB embedded single-node 限定」 という前提は維持されるが、 **「単一マシン上で World daemon と複数 SP が同居する」 という VP の常駐構成では、 process ごとに DB directory を物理分離しないと embedded DB を共有 open できない** という制約を踏まえる必要がある。 doc 17 (B) `discs/p_{slug}/` の project-keyed 化と同系統の措置だが、 こちらは **World ⟂ SP の process 境界** に対する分離。 関連: doc 17 §決定B / `crates/vantage-point/src/db/mod.rs` (`db_data_dir_for_world` / `db_data_dir_for_project`) |
+
 ---
 
 ## §7 Migration plan
@@ -979,12 +989,13 @@ gantt
 
 ### code
 
-- `crates/vantage-point/src/capability/msgbox.rs` (= 主 substrate、 本 epic で大改造)
-- `crates/vantage-point/src/capability/msgbox_remote.rs` (= remote forward、 trace 追加のみ)
+- `crates/vantage-point/src/capability/msgbox_v2.rs` (= **WhitesnakeStore host**。 `MsgboxStore` trait + `WhitesnakeStore` impl + `MsgboxStats`。 本 epic で確立した DB primary substrate の本体。 Phase 5 で msgbox.rs から旧 `Router`/`Handle` が物理削除された後、 ここが唯一の substrate)
+- `crates/vantage-point/src/capability/msgbox.rs` (= 旧 mpsc `Router`/`Handle` は Phase 5 / commit `445190c` で物理削除済、 現在は `Message` struct + helper のみ残置)
+- `crates/vantage-point/src/capability/msgbox_remote.rs` (= remote forward、 trace 追加済)
 - `crates/vantage-point/src/capability/msgbox_registry.rs` (= parse_address、 触らない)
-- `crates/vantage-point/src/capability/whitesnake.rs` (= DB wrapper、 LIVE Query API 追加)
-- `crates/vantage-point/src/commands/mailbox.rs` (= CLI、 用語 sweep)
-- `crates/vantage-point/src/mcp.rs` (= MCP tool、 description sweep)
+- `crates/vantage-point/src/capability/whitesnake.rs` (= DB wrapper、 LIVE Query API 追加済)
+- `crates/vantage-point/src/commands/mailbox.rs` (= CLI、 用語 sweep 済)
+- `crates/vantage-point/src/mcp.rs` (= MCP tool、 description sweep 済)
 
 ---
 
