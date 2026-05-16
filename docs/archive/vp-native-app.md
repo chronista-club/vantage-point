@@ -1,3 +1,5 @@
+> **ARCHIVED (2026-05-16)**: 本 doc の ratatui NSView Backend 自作案は採用されなかった。現 vp-app は wry + xterm.js + creo-ui 構成。本 doc は歴史的記録。
+
 # VP ネイティブアプリ化 設計書
 
 > **Status**: Draft

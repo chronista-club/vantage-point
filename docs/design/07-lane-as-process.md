@@ -64,6 +64,11 @@ Lane は生まれ、育ち、成熟し、死ぬ。死は喪失ではなく記憶
 
 ### 2.5 Size scale — 5-tier Lane taxonomy
 
+> **実装状況 NOTE (2026-05-16、VP-191 棚卸し)**: 本節の 5-tier size taxonomy (XL/L/M/S/XS) は
+> **未実装の設計仕様**。現行コード (`lanes_state.rs`) の `LaneKind` は `Lead` / `Worker` の 2 値のみで、
+> tier / size field は持たない。Pane = Task (S tier) 昇格や R/R = XS tier の event 化も未着手。
+> 5-tier の認知モデル alignment は VP-82 が追う将来仕様。
+
 Lane / Task / R/R を **単一の size スケール** で語る。Linear estimate (Fibonacci) と 1:1 対応させ、
 「どの粒度で動いているか」を全レイヤーで一意に指示できるようにする。
 
@@ -163,8 +168,15 @@ cockpit レイアウトの trade-off を支える 3 つのルール:
 
 ## 3. Lane State Machine
 
-> **⚠️ 意味論上の注意** (v0.2 追記):
-> 現行コードに存在する `LaneStatus::Connected / Connecting / Disconnected` は **WebSocket 接続状態** を意味しており、本節の `LanePhase` (Sprout / Active / Building / ...) とは **直交する別概念**。
+> **実装状況 NOTE (2026-05-16、VP-191 棚卸し)**: 本節の 7-state `LanePhase`
+> (Sprout / Active / Building / InReview / Hibernated / Destroyed / Reborn) は **未実装の設計仕様**。
+> 現行コード (`lanes_state.rs`) が持つのは `enum LaneState { Spawning, Running, Exiting, Dead }`
+> の 4-state — Lane の **物理プロセス lifecycle** (spawn → graceful degrade to Dead) を表す。
+> 本節の Linear status 連動・Hibernated・Reborn は未着手で、VP-78 が実装 issue として追う。
+> 下記 v0.2 の意味論注記も、`LaneStatus::Connected/...` 型自体が現行コードに存在せず歴史的記述。
+
+> **⚠️ 意味論上の注意** (v0.2 追記、歴史的記述):
+> 当時のコードに存在した `LaneStatus::Connected / Connecting / Disconnected` は **WebSocket 接続状態** を意味しており、本節の `LanePhase` (Sprout / Active / Building / ...) とは **直交する別概念**。
 >
 > 単純 s/Lane/Movement/ migration 時は両者を分離する必要がある:
 > - 現行 `LaneStatus` → `ConnectionStatus` or `WsStatus` に rename (意味明確化)
