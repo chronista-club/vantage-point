@@ -4,7 +4,20 @@
 
 Vantage Point（`vp`）は Rust製の **AI ネイティブ開発環境**。
 Claude CLI をエンジンとして、TUI コンソール・Canvas（WebView）・外部コントロールを統合した開発体験を提供する。
-Mac App Store で配布予定（有料 + Free プランの可能性あり）。
+OSS（MIT/Apache-2.0 dual ライセンス）として公開。配布は `.dmg` 直配布（GitHub Releases）/ Homebrew tap / `cargo install` の三本柱。Mac/Win/Linux 対応。
+
+<!--
+配布方針メモ — Mac App Store ではなく直接配布（2026-04-18 OSS 化決定で App Store 配布を見送り）:
+
+VP のような Claude Code / Gemini CLI 連携アプリは Mac App Store で配布できない。
+理由 = 外部プロセスの spawn・任意コマンドの実行・ファイルシステム全域へのアクセスが
+App Sandbox 要件に反するため（iTerm2 / VS Code 等の開発ツールが軒並み App Store 外
+なのと同じ）。加えて OSS ライセンスと App Store 規約・IAP（アプリ内課金）の相性も悪い。
+→ Developer ID 署名 + notarization 済みの `.dmg` を直接配布するのが定石。
+
+旧方針（2026-03-13）は App Store + サブスク課金だったが、2026-04-18 の OSS 化決定で
+転換。詳細は creo-memories `mem_1CaB5PmdWNfPPVR1UkFYLC`（配布戦略の転換）を参照。
+-->
 
 ### プロジェクト方針
 
