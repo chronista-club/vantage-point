@@ -124,13 +124,14 @@ async fn run_tui_console(session_name: &str) -> Result<()> {
                 // config のプロジェクト名と一致すれば Lead、それ以外は Worker
                 // 簡易判定: ハイフン分割で最後のセグメントがプロジェクト名でなければ Worker
                 if without_vp.contains('-') {
-                    // ccws ワーカー名は {parent}-{worker} 形式
+                    // lane ワーカー名は {parent}-{worker} 形式
                     // ただし vantage-point のようにプロジェクト名自体にハイフンが含まれる場合もある
-                    // tmux セッション名が ccws ディレクトリ名ベースかどうかで判定
-                    let ccws_dir = dirs::home_dir()
-                        .map(|h| h.join(".local/share/ccws").join(without_vp))
+                    // tmux セッション名が lane ディレクトリ名ベースかどうかで判定
+                    let lane_dir = crate::lane::config::workers_dir()
+                        .ok()
+                        .map(|d| d.join(without_vp))
                         .unwrap_or_default();
-                    if ccws_dir.is_dir() {
+                    if lane_dir.is_dir() {
                         " proj-worker "
                     } else {
                         " proj-lead "

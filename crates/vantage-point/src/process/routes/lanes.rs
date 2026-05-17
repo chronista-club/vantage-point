@@ -7,7 +7,7 @@
 //! ## 実装済
 //!
 //! - `GET /api/lanes` — `LanePool` の list + disk-scan で Inactive Worker merge
-//! - `POST /api/lanes` — Worker Lane create (Phase 3-A: ccws clone + PtySlot spawn)
+//! - `POST /api/lanes` — Worker Lane create (Phase 3-A: lane clone + PtySlot spawn)
 //! - `DELETE /api/lanes?address=<addr>&cleanup=true` — Lane destroy + cleanup
 //!   (VP-124 Phase 1 で `delete_lane_orchestrated` に core 抽出、 全 trigger 共有)
 //! - `POST /api/lanes/restart?address=<addr>` — Lead Stand restart (Phase A5)
@@ -38,7 +38,7 @@ use super::super::state::AppState;
 // doc 11 §3.7 の `migrate_legacy_stand` shim は 2026-05-03 削除済。 PR #257 の
 // stand 識別子 String 化と同タイミングで導入した「heavens_door / the_hand → echoes / shell」 (PR-pre2 で hd → echoes)
 // migration shim を 1 release 期間 deprecation warn 付きで accept していたが、
-// VP は user 1 人 + ccws worker のみで vp-app + daemon が常に同 binary で deploy される
+// VP は user 1 人 + lane worker のみで vp-app + daemon が常に同 binary で deploy される
 // 構成のため、 外部 client が旧 wire format で来る window が実質ゼロと判断、 即削除。
 
 /// REST response: `GET /api/lanes` の JSON shape
@@ -53,7 +53,7 @@ pub struct LanesResponse {
 /// Phase 5-D: Worker Lane に対しては `cwd` から git 状態 (`WorkerStatus`) を populate。
 /// registry には保存せず、 GET 時に都度 `worker_status()` を呼ぶ (volatile + 5-7 git subprocess)。
 ///
-/// Phase 5-E: in-memory LanePool に居ない ccws Worker dir も disk scan で merge して `pid: None` で
+/// Phase 5-E: in-memory LanePool に居ない lane Worker dir も disk scan で merge して `pid: None` で
 /// emit (Pane 不在を pid で表現、 LaneState には変更を加えない)。 防御パスのため fail-soft。
 /// Active/Inactive は Project 集約として client (sidebar) 側で `lanes.every(pid != null)` で判定する設計。
 /// CURRENTS Project (= SP 起動中) のみが /api/lanes に応答するので、 disk scan 対象が自動 enforce される。
@@ -67,12 +67,12 @@ pub async fn list_handler(State(state): State<Arc<AppState>>) -> impl IntoRespon
         if matches!(lane.kind, crate::process::lanes_state::LaneKind::Worker) {
             let path = std::path::Path::new(&lane.cwd);
             if path.exists() && path.join(".git").exists() {
-                lane.worker_status = Some(crate::ccws::commands::worker_status(path));
+                lane.worker_status = Some(crate::lane::commands::worker_status(path));
             }
         }
     }
 
-    // Phase 5-E: ccws workers_dir を disk scan して、 LanePool に居ない Worker を pid: None で merge
+    // Phase 5-E: lane workers_dir を disk scan して、 LanePool に居ない Worker を pid: None で merge
     let project_id = std::path::Path::new(&state.project_dir)
         .file_name()
         .and_then(|s| s.to_str())
@@ -89,7 +89,7 @@ pub async fn list_handler(State(state): State<Arc<AppState>>) -> impl IntoRespon
                 }
             })
             .collect();
-        let inactive = crate::ccws::commands::list_workers_for_repo(&project_id);
+        let inactive = crate::lane::commands::list_workers_for_repo(&project_id);
         for entry in inactive {
             if existing_names.contains(&entry.name) {
                 continue; // in-memory 優先、 disk 側 skip
@@ -111,7 +111,7 @@ pub async fn list_handler(State(state): State<Arc<AppState>>) -> impl IntoRespon
             // git status を best-effort で populate (branch 表示の連動)
             let path = std::path::Path::new(&entry.path);
             if path.exists() && path.join(".git").exists() {
-                info.worker_status = Some(crate::ccws::commands::worker_status(path));
+                info.worker_status = Some(crate::lane::commands::worker_status(path));
             }
             lanes.push(info);
         }
@@ -120,7 +120,7 @@ pub async fn list_handler(State(state): State<Arc<AppState>>) -> impl IntoRespon
     Json(LanesResponse { lanes })
 }
 
-/// `POST /api/lanes` request body (Phase 3-A: Worker Lane create + ccws clone)
+/// `POST /api/lanes` request body (Phase 3-A: Worker Lane create + lane clone)
 #[derive(Debug, Deserialize)]
 pub struct CreateLaneReq {
     /// "worker" のみ受付 (Lead は project ごと固定)
@@ -130,27 +130,27 @@ pub struct CreateLaneReq {
     /// LaneStand: "echoes" (default) or "shell"
     #[serde(default)]
     pub stand: Option<String>,
-    /// 既存 worktree path。 Some なら直接 cwd として使う、 None なら branch 指定で ccws clone を実行する。
+    /// 既存 worktree path。 Some なら直接 cwd として使う、 None なら branch 指定で lane clone を実行する。
     #[serde(default)]
     pub cwd: Option<String>,
-    /// Phase 3-A: ccws clone する branch 名。 cwd が None で branch が Some の時、
-    /// `ccws new <name> <branch>` を SP 内で実行して worker dir を作成、 そこに Lane を spawn する。
+    /// Phase 3-A: lane clone する branch 名。 cwd が None で branch が Some の時、
+    /// `vp lane new <name> <branch>` を SP 内で実行して worker dir を作成、 そこに Lane を spawn する。
     #[serde(default)]
     pub branch: Option<String>,
 }
 
-/// `POST /api/lanes` — Worker Lane create (Phase 3-A: ccws clone + PtySlot spawn)
+/// `POST /api/lanes` — Worker Lane create (Phase 3-A: lane clone + PtySlot spawn)
 ///
 /// 流れ:
 /// 1. 入力 validation (kind == "worker", name 非空)
 /// 2. cwd 決定:
 ///    - `req.cwd` Some → そのまま使う
-///    - `req.branch` Some → `ccws new <name> <branch>` subprocess で worker dir 作成
+///    - `req.branch` Some → `vp lane new <name> <branch>` subprocess で worker dir 作成
 ///    - 両方 None → state.project_dir (= Lead と同じ dir) を share (legacy fallback)
 /// 3. PtySlot::spawn で実 PTY 起動 (LaneStand 別 command builder 経由)
 /// 4. LanePool に insert (state=Running、 pid 付き)
 ///
-/// 関連 memory: mem_1CaTpCQH8iLJ2PasRcPjHv (Architecture v4: Lane = Session Process + ccws clone 連動)
+/// 関連 memory: mem_1CaTpCQH8iLJ2PasRcPjHv (Architecture v4: Lane = Session Process + lane clone 連動)
 pub async fn create_handler(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CreateLaneReq>,
@@ -204,14 +204,14 @@ pub async fn create_handler(
         }
     }
 
-    // Phase 4-X / R5: cwd 決定 ── 優先順位 explicit cwd > ccws clone (branch 明示 or auto-derive)。
+    // Phase 4-X / R5: cwd 決定 ── 優先順位 explicit cwd > lane clone (branch 明示 or auto-derive)。
     //
     // 旧 fallback (`else { state.project_dir }` で Lead と同 worktree を share) は撤廃。
     // 理由: UI から name="sub" だけ入力した場合、 silent に Lead と同 dir を共有してしまい、
     // 「Worker = 隔離 worktree」の mental model が崩れていた (race condition の温床)。
     //
     // 新規約: branch が None の時は `git config user.name` から prefix を取り、
-    // `<user>/<sanitized-name>` 形式の branch を auto-derive して必ず ccws clone を実行する。
+    // `<user>/<sanitized-name>` 形式の branch を auto-derive して必ず lane clone を実行する。
     // explicit に同 dir を share したい場合は API caller が `cwd` を明示的に指定する。
     let cwd = if let Some(c) = req.cwd {
         c
@@ -227,7 +227,7 @@ pub async fn create_handler(
         let name = req.name.clone();
         let branch_for_log = branch.clone();
         let result = tokio::task::spawn_blocking(move || {
-            crate::ccws::commands::new_worker_in(
+            crate::lane::commands::new_worker_in(
                 std::path::Path::new(&project_dir),
                 &name,
                 &branch,
@@ -238,11 +238,11 @@ pub async fn create_handler(
         .map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("ccws task join: {}", e)})),
+                Json(json!({"error": format!("lane task join: {}", e)})),
             )
         })?;
         let path_buf = result.map_err(|e| {
-            // ccws::commands::new_worker_in は worker dir 既存 + force=false の時に
+            // lane::commands::new_worker_in は worker dir 既存 + force=false の時に
             // 「ワーカー '<name>' は既に存在します」を返す。 UI で input 下に表示するため
             // CONFLICT を返し、 error message をそのまま流す。
             let msg = e.to_string();
@@ -254,12 +254,12 @@ pub async fn create_handler(
             (
                 status,
                 Json(json!({
-                    "error": format!("ccws clone failed (branch={}): {}", branch_for_log, msg)
+                    "error": format!("lane clone failed (branch={}): {}", branch_for_log, msg)
                 })),
             )
         })?;
         tracing::info!(
-            "Worker Lane ccws clone: name={} branch={} dir={}",
+            "Worker Lane clone: name={} branch={} dir={}",
             req.name,
             branch_for_log,
             path_buf.display()
@@ -269,7 +269,7 @@ pub async fn create_handler(
 
     // PtySlot::spawn は openpty + spawn_command の OS syscall でブロッキング。
     // Phase review fix #2: tokio worker thread を占有しないよう spawn_blocking でラップ。
-    // Phase 4-X の ccws clone と同じ pattern。
+    // Phase 4-X の lane clone と同じ pattern。
     // Phase 1e: addr を渡して HD spec の tmux session 名導出に使う
     let cmd = crate::process::stand_spawner::build_stand_command(
         &stand,
@@ -348,7 +348,7 @@ pub async fn create_handler(
 pub struct DeleteLaneQuery {
     /// Display 形 ("<project>/lead" / "<project>/worker/<name>")
     pub address: String,
-    /// Phase 4-B: ccws workspace の dir も rm するか (default true)。
+    /// Phase 4-B: lane workspace の dir も rm するか (default true)。
     /// false の場合 PtySlot だけ kill して dir 残置 (= debug / forensic 用途)。
     #[serde(default = "default_cleanup")]
     pub cleanup: bool,
@@ -369,7 +369,7 @@ pub struct DeletedLaneInfo {
     pub pid: Option<u32>,
     /// tmux session を kill できたか (best-effort、 不存在なら false)
     pub tmux_killed: bool,
-    /// ccws workspace cleanup の結果 (None = cleanup=false で skip)
+    /// lane workspace cleanup の結果 (None = cleanup=false で skip)
     pub cleanup_status: Option<String>,
 }
 
@@ -399,7 +399,7 @@ pub enum DeleteLaneError {
 ///    drop (PtySlot::Drop で child kill + wait)
 /// 3. **Phase 2a (tmux container cleanup)**: `tmux::kill_session` で PTY container 削除
 ///    (best-effort、 既存挙動では欠落していた → orphan tmux session の根本原因)
-/// 4. **Phase 2b (filesystem cleanup)**: `cleanup=true` なら `ccws::remove_worker_in` で workspace
+/// 4. **Phase 2b (filesystem cleanup)**: `cleanup=true` なら `lane::remove_worker_in` で workspace
 ///    dir 削除 (best-effort、 既存挙動踏襲)
 /// 5. **Phase 3 (broadcast)**: `SystemEvent::Lane(Diff::Remove)` を broadcast → sidebar 即時反映
 ///    (既存挙動では欠落していた → sidebar refresh 不全の根本原因)
@@ -407,7 +407,7 @@ pub enum DeleteLaneError {
 /// ## 契約
 ///
 /// - **idempotent**: 二度呼ばれても 2 回目は `LaneNotFound` を返す、 sidebar 状態に矛盾なし
-/// - **best-effort cleanup**: tmux / ccws 失敗は warn log のみ、 LanePool 削除は authoritative success
+/// - **best-effort cleanup**: tmux / lane 失敗は warn log のみ、 LanePool 削除は authoritative success
 /// - **失敗時**: Phase 1 で fail (Lead / NotFound) なら early return、 Phase 2 以降の partial failure
 ///   は `DeletedLaneInfo` の field で結果を伝える
 ///
@@ -455,8 +455,8 @@ pub async fn delete_lane_orchestrated(
         tmux_killed = tmux_killed || killed;
     }
 
-    // Phase 2b: ccws workspace dir cleanup (best-effort、 cleanup=true 時のみ)。
-    // 既存挙動踏襲、 直 lib call (`crate::ccws::commands::remove_worker_in`)。
+    // Phase 2b: lane workspace dir cleanup (best-effort、 cleanup=true 時のみ)。
+    // 既存挙動踏襲、 直 lib call (`crate::lane::commands::remove_worker_in`)。
     // 注意: `spawn_blocking` closure は `repo_name` / `name` のみ move、 `addr` は capture
     // されないので後続 match arm の `tracing` で参照可能 (= compile time 保証)。
     let cleanup_status = if cleanup && let Some(name) = info.address.name.clone() {
@@ -466,24 +466,24 @@ pub async fn delete_lane_orchestrated(
             .unwrap_or("unknown")
             .to_string();
         let result = tokio::task::spawn_blocking(move || {
-            crate::ccws::commands::remove_worker_in(&repo_name, &name)
+            crate::lane::commands::remove_worker_in(&repo_name, &name)
         })
         .await;
         match result {
             Ok(Ok(())) => {
-                tracing::info!("ccws remove 成功: {}", addr);
+                tracing::info!("lane remove 成功: {}", addr);
                 Some("cleaned".to_string())
             }
             Ok(Err(e)) => {
                 tracing::warn!(
-                    "ccws remove 失敗 (lane は削除済、 dir 残置): {}: {}",
+                    "lane remove 失敗 (lane は削除済、 dir 残置): {}: {}",
                     addr,
                     e
                 );
                 Some("dir_retained_remove_failed".to_string())
             }
             Err(e) => {
-                tracing::warn!("ccws task join: {}", e);
+                tracing::warn!("lane task join: {}", e);
                 Some("dir_retained_join_failed".to_string())
             }
         }
@@ -514,7 +514,7 @@ pub async fn delete_lane_orchestrated(
     })
 }
 
-/// `DELETE /api/lanes?address=<addr>&cleanup=true` — Lane destroy (Phase 4-A) + ccws workspace cleanup (Phase 4-B)
+/// `DELETE /api/lanes?address=<addr>&cleanup=true` — Lane destroy (Phase 4-A) + lane workspace cleanup (Phase 4-B)
 ///
 /// VP-124 Phase 1 で `delete_lane_orchestrated` に core logic を抽出済み。 本 handler は
 /// HTTP request parse + error → status code mapping の薄い adapter として残る。

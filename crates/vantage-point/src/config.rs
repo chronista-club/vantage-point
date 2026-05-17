@@ -2,7 +2,7 @@
 //!
 //! ## VP-189: config.toml → config.kdl 統一
 //!
-//! VP の設定ファイルは元々 TOML だったが、 projects.kdl (VP-188) / ccws の
+//! VP の設定ファイルは元々 TOML だったが、 projects.kdl (VP-188) / lane の
 //! worker-files.kdl 等、 周辺の設定は既に KDL に揃っていた。 config 本体だけ
 //! TOML で取り残されていたのを KDL に統一し、 club-kdl 資産を一本化する。
 //!
@@ -105,6 +105,9 @@ pub fn migrate_legacy_paths() {
         let legacy_data = cfg.join("vantage");
         migrate_dir_if_needed(&legacy_data, &vp_data_dir(), "data");
     }
+
+    // lane: 旧 `~/.local/share/ccws/` → 新 `vp_data_dir()/lanes/` (VP-196 Phase 2)
+    crate::lane::config::migrate_legacy_lanes_dir();
 }
 
 /// `legacy` ディレクトリの中身を `target` にコピーする (冪等ヘルパー)。
@@ -340,7 +343,7 @@ impl Config {
     /// VP-188: registered projects の SSOT は `~/.config/vp/projects.kdl`。
     /// config.kdl をパースした後、 projects.kdl が存在すれば `projects` field を
     /// **projects.kdl の内容で populate** する。 これで `config.projects` を読む全
-    /// caller (resolve / TUI / ccws / reload_config) が projects.kdl を SSOT として
+    /// caller (resolve / TUI / lane / reload_config) が projects.kdl を SSOT として
     /// 参照できる。
     pub fn load() -> Result<Self> {
         let path = config_file_path();

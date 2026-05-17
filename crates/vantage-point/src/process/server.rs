@@ -261,7 +261,7 @@ pub async fn run(
         // Worker Lane の動的 create は A4-4、Stand spawn 連動は A5 で実装。
         //
         // (I-b、 2026-04-30): Worker auto-spawn は AppState 構築後に Mailbox actor 経由で実施。
-        // 旧 PR #228 の `populate_workers_from_disk` sync 経路は削除し、 ccws workers を
+        // 旧 PR #228 の `populate_workers_from_disk` sync 経路は削除し、 lane workers を
         // `LaneCmd::SpawnLane` Cmd 化して `lane-spawn` mailbox に投入する設計に移行
         // (= concurrency 制御を `Arc<Semaphore::new(N)>` で表現、 N=config.startup.max_concurrent_lane_spawn)。
         // 詳細は run() 内 lane_spawn_actor wiring 参照。
@@ -316,10 +316,10 @@ pub async fn run(
         );
     }
 
-    // (I-b、 2026-04-30) Lane spawn actor を起動し、 既存 ccws workers を Cmd 化して投入。
+    // (I-b、 2026-04-30) Lane spawn actor を起動し、 既存 lane workers を Cmd 化して投入。
     // 旧 PR #228 の sync `populate_workers_from_disk` 経路を Mailbox actor + Semaphore に置換。
     // - actor は `lane-spawn` mailbox を recv し、 `Arc<Semaphore::new(N)>` で gate しつつ並列実行
-    // - bootstrap は ccws workers をスキャンして `LaneCmd::SpawnLane` を投入 (= 1 回限りの seed)
+    // - bootstrap は lane workers をスキャンして `LaneCmd::SpawnLane` を投入 (= 1 回限りの seed)
     // - N=config.startup.max_concurrent_lane_spawn (default 1、 dogfood で計測 log を集計して tweak)
     // PR-β-2 (VP-120): lane_capabilities pool clone も渡し、 Worker spawn 時に populate_lane する。
     {
@@ -352,7 +352,7 @@ pub async fn run(
             .and_then(|s| s.to_str())
             .unwrap_or("unknown")
             .to_string();
-        let workers = crate::ccws::commands::list_workers_for_repo(&workers_project_id);
+        let workers = crate::lane::commands::list_workers_for_repo(&workers_project_id);
         let total = workers.len();
         if total > 0 {
             tracing::info!(
@@ -398,7 +398,7 @@ pub async fn run(
             }
         } else {
             tracing::info!(
-                "SP startup bootstrap: ccws workers なし (project_id={})",
+                "SP startup bootstrap: lane workers なし (project_id={})",
                 workers_project_id
             );
         }
@@ -1005,10 +1005,10 @@ pub async fn run_world(
         shutdown_token.clone(),
     ));
 
-    // VP-129 MVP: ccws root FSEvents watcher 起動。 user の Finder / `rm -rf` で worker dir
+    // VP-129 MVP: lane root FSEvents watcher 起動。 user の Finder / `rm -rf` で worker dir
     // を削除した時、 OS file system event → SP `DELETE /api/lanes` 自動発火 (= D10 Reconciliation
     // の 3rd path 拡張、 Push QUIC + Pull port scan + FSEvents の 3-trigger model 完成)。
-    let _ccws_watcher = tokio::spawn(ProcessManagerCapability::run_ccws_watcher(
+    let _lane_watcher = tokio::spawn(ProcessManagerCapability::run_lane_watcher(
         world_cap.clone(),
         shutdown_token.clone(),
     ));

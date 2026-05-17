@@ -102,18 +102,64 @@ pub fn load_config(repo_root: &Path) -> Result<WorkerConfig, String> {
     Ok(raw.into())
 }
 
-/// Get the workers data directory (XDG_DATA_HOME compliant)
+/// Lane データディレクトリを返す。
+///
+/// VP-196 Phase 2: 旧 `~/.local/share/ccws/` から `vp_data_dir()/lanes/` へ移行。
+/// VP-192 で確立した data path SSOT (`vp_data_dir()`) 配下に統一する。
+/// - macOS: `~/Library/Application Support/vp/lanes/`
+/// - Linux: `~/.local/share/vp/lanes/`
+///
+/// `VP_LANES_DIR` 環境変数で明示上書き可能。
 pub fn workers_dir() -> Result<PathBuf, String> {
-    if let Ok(dir) = env::var("CCWS_WORKERS_DIR") {
+    if let Ok(dir) = env::var("VP_LANES_DIR") {
         return Ok(PathBuf::from(dir));
     }
-    let data = env::var("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            let home = env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-            PathBuf::from(home).join(".local/share")
-        });
-    Ok(data.join("ccws"))
+    Ok(crate::config::vp_data_dir().join("lanes"))
+}
+
+/// 旧 lane データディレクトリ (`~/.local/share/ccws/`) から新パスへの冪等な移行。
+///
+/// VP-196 Phase 2: lane 環境の置き場所を `vp_data_dir()/lanes/` に移す。
+/// 旧パスが存在し新パスが無ければ、ディレクトリごと `rename` (move) する。
+/// - `rename` は同一 volume なら atomic かつ瞬時。
+/// - 冪等: 新パスが既にあれば skip。何度呼んでも安全。
+/// - 失敗は warn ログのみ (起動を阻害しない)。
+/// - `VP_LANES_DIR` で明示上書き中はユーザー管理下なので触らない。
+///
+/// 起動時 (`migrate_legacy_paths()`) に 1 回呼ぶこと。
+pub fn migrate_legacy_lanes_dir() {
+    if env::var("VP_LANES_DIR").is_ok() {
+        return;
+    }
+    let Ok(new_dir) = workers_dir() else {
+        return;
+    };
+    if new_dir.exists() {
+        return;
+    }
+    // 旧パスは HOME ベースの固定 `~/.local/share/ccws/` (移行前 workers_dir の default)。
+    let Some(home) = dirs::home_dir() else {
+        return;
+    };
+    let legacy = home.join(".local/share/ccws");
+    if !legacy.is_dir() {
+        return;
+    }
+    if let Some(parent) = new_dir.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    match fs::rename(&legacy, &new_dir) {
+        Ok(()) => tracing::info!(
+            "VP-196 lane migration: {} → {}",
+            legacy.display(),
+            new_dir.display()
+        ),
+        Err(e) => tracing::warn!(
+            "VP-196 lane migration 失敗 (skip): {} → {}: {e}",
+            legacy.display(),
+            new_dir.display(),
+        ),
+    }
 }
 
 /// Validate that a worker name is safe (allowlist: alphanumeric, hyphen, underscore)
@@ -213,7 +259,7 @@ mod tests {
 
     /// Create a unique temp dir per test to avoid parallel test collisions
     fn test_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("ccws-test-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("lane-test-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir); // clean up leftover state
         dir
     }

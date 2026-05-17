@@ -219,7 +219,7 @@ pub fn list_workers() -> Result<(), String> {
     Ok(())
 }
 
-/// disk 上で発見された Worker 環境 1 件 (ccws Worker dir の structured view、 SP /api/lanes 用)。
+/// disk 上で発見された Worker 環境 1 件 (lane Worker dir の structured view、 SP /api/lanes 用)。
 ///
 /// PtySlot 起動の有無は問わない (= disk 存在のみ示す)。 lanes.rs:list_handler で
 /// in-memory LanePool に居ない Worker を `LaneState::Inactive` として merge する時の中間 type。
@@ -236,8 +236,8 @@ pub struct InactiveWorkerEntry {
 
 /// repo_name の prefix を持つ Worker dir を `workers_dir` から走査して返す (SP /api/lanes 用)。
 ///
-/// 「基本は通らない防御パス」: 通常 ccws clone は POST /api/lanes 経由で生成され、 同 session 内なら
-/// LanePool に登録されている。 ただし vp-app crash 後の残骸 / 別 session での `ccws new` 等で
+/// 「基本は通らない防御パス」: 通常 lane clone は POST /api/lanes 経由で生成され、 同 session 内なら
+/// LanePool に登録されている。 ただし vp-app crash 後の残骸 / 別 session での `vp lane new` 等で
 /// disk に存在するが LanePool に居ない Worker が出ることがあり、 それを sidebar に inactive 状態で
 /// surface するため。 click で activate (= POST /api/lanes に cwd 指定で attach) する想定。
 ///
@@ -299,7 +299,7 @@ pub fn worker_path(name: &str) -> Result<(), String> {
         }
     }
     Err(format!(
-        "ワーカー '{name}' が見つかりません。`ccws ls` で一覧を確認してください。"
+        "ワーカー '{name}' が見つかりません。`vp lane ls` で一覧を確認してください。"
     ))
 }
 
@@ -338,7 +338,7 @@ pub fn remove_worker(name: Option<&str>, all: bool, force: bool) -> Result<(), S
         }
     }
     Err(format!(
-        "ワーカー '{name}' が見つかりません。`ccws ls` で一覧を確認してください。"
+        "ワーカー '{name}' が見つかりません。`vp lane ls` で一覧を確認してください。"
     ))
 }
 
@@ -346,7 +346,7 @@ pub fn remove_worker(name: Option<&str>, all: bool, force: bool) -> Result<(), S
 pub fn status_workers() -> Result<(), String> {
     let workers_dir = config::workers_dir()?;
     if !workers_dir.exists() {
-        eprintln!("ワーカーはありません。`ccws new <name> <branch>` で作成できます。");
+        eprintln!("ワーカーはありません。`vp lane new <name> <branch>` で作成できます。");
         return Ok(());
     }
 
@@ -377,7 +377,7 @@ pub fn status_workers() -> Result<(), String> {
     }
 
     if !found {
-        eprintln!("ワーカーはありません。`ccws new <name> <branch>` で作成できます。");
+        eprintln!("ワーカーはありません。`vp lane new <name> <branch>` で作成できます。");
     }
 
     Ok(())
@@ -435,7 +435,7 @@ pub fn cleanup_workers(force: bool) -> Result<(), String> {
     }
 
     if !force {
-        eprintln!("\n実際に削除するには `ccws cleanup --force` を実行してください。");
+        eprintln!("\n実際に削除するには `vp lane cleanup --force` を実行してください。");
         return Ok(());
     }
 
@@ -771,7 +771,7 @@ mod tests {
 
     /// Create a unique temp dir per test to avoid parallel test collisions
     fn test_dir(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("ccws-cmd-test-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("lane-cmd-test-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir

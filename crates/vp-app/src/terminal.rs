@@ -65,7 +65,7 @@ pub enum AppEvent {
     OscNotification { lane: String, code: u32 },
     /// R5 Worker create flow: Add Worker form が送信した `lane:add_worker` の結果を sidebar に
     /// push back する。 `error` Some の時 form 下に inline error 表示、 None の時 form を閉じる。
-    /// 例: 名前重複 (CONFLICT)、 ccws clone 失敗、 SP 未起動 等。
+    /// 例: 名前重複 (CONFLICT)、 lane clone 失敗、 SP 未起動 等。
     WorkerCreateResult {
         project_path: String,
         name: String,

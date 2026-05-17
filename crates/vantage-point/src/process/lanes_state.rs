@@ -22,7 +22,7 @@
 //! Project scope の Stand pool (`project_stands_state.rs`) は GE / HP のみ host (PR-β-2 後)。
 //! Lane は **Lead/Worker の PTY セッション + Stand container** に集中:
 //! - Lead   1 / project (固定)、stand = "echoes" / "shell" / "tmux"
-//! - Worker 0..n / project (可変、ccws clone)、stand 同上
+//! - Worker 0..n / project (可変、lane clone)、stand 同上
 //!
 //! ## Phase A4-2b スコープ
 //!
@@ -40,7 +40,7 @@ use serde::{Deserialize, Serialize};
 pub enum LaneKind {
     /// 1 / project (固定)、LaneStand = HD or TH
     Lead,
-    /// 0..n / project (可変、ccws cloned worktree)、LaneStand = HD or TH
+    /// 0..n / project (可変、lane cloned worktree)、LaneStand = HD or TH
     Worker,
 }
 
@@ -98,7 +98,7 @@ pub struct TmuxLaneAddress {
 
 /// Lane の state machine 状態 (Phase A4-2b では Running 固定で pre-populate)
 ///
-/// 注意: 「ccws disk dir 存在 + Pane 不在」 は **Lane state ではなく `pid: None` で表現する** 設計。
+/// 注意: 「lane disk dir 存在 + Pane 不在」 は **Lane state ではなく `pid: None` で表現する** 設計。
 /// Active/Inactive 概念は Project 集約 (sidebar 側 client-side computed) として扱い、 Lane state には混ぜない。
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -286,10 +286,10 @@ pub struct LaneInfo {
     pub pid: Option<u32>,
     pub cwd: String,
     /// Phase 5-D: Worker のみ embed (Lead は git workspace を持たない設計)。
-    /// `cwd` から `ccws::commands::worker_status()` を呼んで populate。
+    /// `cwd` から `lane::commands::worker_status()` を呼んで populate。
     /// `/api/lanes` 応答時に lazy 取得 (registry には保存しない、 git 状態は volatile)。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub worker_status: Option<crate::ccws::commands::WorkerStatus>,
+    pub worker_status: Option<crate::lane::commands::WorkerStatus>,
     /// Phase 1a: Lane に attach した Stand ごとの tmux session address (deterministic)。
     /// SP push 経由で TheWorld cache に流れる (agent から `/api/lanes` で resolve)。
     ///

@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 ///
 /// 例:
 /// - `/Users/makoto/repos/vantage-point` → `-Users-makoto-repos-vantage-point`
-/// - `/Users/makoto/.local/share/ccws/foo` → `-Users-makoto--local-share-ccws-foo` (`.local` の dot 由来で `--`)
+/// - `/Users/makoto/.config/vp/foo` → `-Users-makoto--config-vp-foo` (`.config` の dot 由来で `--`)
 pub fn encode_cwd(cwd: &Path) -> String {
     cwd.to_string_lossy()
         .chars()
@@ -117,9 +117,9 @@ mod tests {
 
     #[test]
     fn encode_cwd_handles_dotted_segments() {
-        // `.local` の dot 由来で連続 dash `--local` になる (claude CLI 慣例)
-        let p = Path::new("/Users/makoto/.local/share/ccws/foo");
-        assert_eq!(encode_cwd(p), "-Users-makoto--local-share-ccws-foo");
+        // `.config` の dot 由来で連続 dash `--config` になる (claude CLI 慣例)
+        let p = Path::new("/Users/makoto/.config/vp/foo");
+        assert_eq!(encode_cwd(p), "-Users-makoto--config-vp-foo");
     }
 
     #[test]

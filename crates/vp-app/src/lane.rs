@@ -5,7 +5,7 @@
 //! ## 構造 (memory rule)
 //!
 //! - **Lead Lane** (Project あたり 1 つ固定) ─ 中身は `LaneStand` (HD default | TH)
-//! - **Worker Lane** (Project あたり n 個) ─ ccws cloned worktree、中身は `LaneStand`
+//! - **Worker Lane** (Project あたり n 個) ─ lane cloned worktree、中身は `LaneStand`
 //!
 //! ## 表示形 (人間可読)
 //!
@@ -19,7 +19,7 @@ use std::fmt;
 pub enum LaneKind {
     /// Project あたり 1 つ固定
     Lead,
-    /// Project あたり n 個 (ccws cloned worktree)
+    /// Project あたり n 個 (lane cloned worktree)
     Worker,
 }
 

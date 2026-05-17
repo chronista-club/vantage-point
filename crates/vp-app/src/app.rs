@@ -237,7 +237,7 @@ const SIDEBAR_HTML: &str = concat!(
   .vp-lane-row:hover{background:var(--color-surface-bg-emphasis);}
   /* R5 (2026-04-30): active Lane (= 表示中の FirstResponder) を右端 2px の accent bar で表現。 */
   .vp-lane-row.active{background:var(--color-brand-primary-subtle);color:var(--color-brand-primary);font-weight:500;box-shadow:inset -2px 0 0 0 var(--color-brand-primary);}
-  /* Phase 5-E (2026-04-30): Pane (HD) 不在 = pid:null の Lane (= ccws disk artifact) を dim 表示。
+  /* Phase 5-E (2026-04-30): Pane (HD) 不在 = pid:null の Lane (= lane disk artifact) を dim 表示。
      Active/Inactive 概念は Project 集約だが、 個別行も視覚的に区別する。 italic で「待機中」感を出す。 */
   .vp-lane-row.inactive{color:color-mix(in oklch, var(--color-text-secondary), transparent 45%);font-style:italic;}
   .vp-lane-row.inactive .vp-stand-icon{opacity:0.55;}
@@ -423,7 +423,7 @@ const SIDEBAR_HTML: &str = concat!(
   <dialog id="vp-delete-dialog" class="vp-delete-dialog">
     <div class="body">
       <p class="title">Delete worker?</p>
-      <p class="detail">この worker Lane を完全に削除します (PTY kill + tmux session kill + ccws workspace dir 削除 + sidebar 反映)。 取り消し不可。</p>
+      <p class="detail">この worker Lane を完全に削除します (PTY kill + tmux session kill + lane workspace dir 削除 + sidebar 反映)。 取り消し不可。</p>
       <p class="target" id="delete-dialog-target"></p>
       <p class="branch" id="delete-dialog-branch"></p>
       <p class="dirty-warning" id="delete-dialog-dirty">⚠ Uncommitted changes が残っています。 削除すると失われます。</p>
@@ -793,7 +793,7 @@ const SIDEBAR_HTML: &str = concat!(
           // 構成: [stand glyph (Nerd Font 単色)] [label] ... [state circle] [× (worker only)]
           // 旧 separate Stand child row は削除、 Stand 識別は 行頭 glyph で表現。
           const row = document.createElement('div');
-          // Phase 5-E: Pane (HD) 不在 = pid:null は disk-only Lane (ccws workspace dir のみ)、 dim 表示。
+          // Phase 5-E: Pane (HD) 不在 = pid:null は disk-only Lane (lane workspace dir のみ)、 dim 表示。
           //  isActive と inactive は排他ではない (active selection は user 側、 inactive は process state)。
           const laneInactive = (lane.pid == null);
           row.className = 'vp-lane-row' + (isActive ? ' active' : '') + (laneInactive ? ' inactive' : '');
@@ -963,7 +963,7 @@ const SIDEBAR_HTML: &str = concat!(
           content.appendChild(row);
         }
 
-        // Phase 3-A: + Add Worker button + inline form (POST /api/lanes + ccws clone 連動)
+        // Phase 3-A: + Add Worker button + inline form (POST /api/lanes + lane clone 連動)
         // 2026-04-29 scope tightening: active Lane を含む project だけに表示する。
         //  全 project に並ぶと redundant、 user が今 focus してる project 1 件への
         //  操作を CTA する方が自然。 active が無い / 別 project に移ると form が消える。
@@ -989,7 +989,7 @@ const SIDEBAR_HTML: &str = concat!(
           const addWorker = document.createElement('div');
           addWorker.className = 'vp-add-worker';
           // Phase 5-C minimal: ラベルは "+" のみ (hover で title tooltip)
-          addWorker.title = 'Add Worker (ccws clone)';
+          addWorker.title = 'Add Worker (lane clone)';
           addWorker.innerHTML =
             '<span class="icon">+</span>' +
             '<span class="label">Add Worker</span>';
@@ -2886,7 +2886,7 @@ pub fn run() -> anyhow::Result<()> {
                 if let Some(port) = sp_port_for_project {
                     if let Some(lanes_for_proj) = sidebar_state.lanes_by_project.get(&path_key) {
                         for lane in lanes_for_proj {
-                            // Phase 5-E: pid:null = disk-only Lane (ccws workspace dir のみ、 PtySlot 不在)。
+                            // Phase 5-E: pid:null = disk-only Lane (lane workspace dir のみ、 PtySlot 不在)。
                             //  ensureLane で WS 接続するとサーバ側が「lane not found」 を返し、
                             //  xterm.js が 1006 切断 → 500ms reconnect → 無限ループ に入る。
                             //  Activate 済 Lane (pid あり) のみ WS 確立対象とする。
