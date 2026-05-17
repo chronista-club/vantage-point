@@ -25,7 +25,7 @@ use vantage_point::mcp;
 use commands::file::FileCommands;
 
 // Phase 2.x-e: 旧 worker Lane crate を vp-cli の lib に統合。
-// 標準 bin (src/bin/ccws.rs) と main.rs (vp) の両方が `vp_cli::lane` を共有。
+// `vp` binary が `vp lane` サブコマンド経由で `vp_cli::lane` lib を使う。
 #[cfg(feature = "midi")]
 use commands::midi::MidiCommands;
 use commands::pane::PaneCommands;

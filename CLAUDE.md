@@ -81,7 +81,7 @@ vantage-point/
 ├── crates/
 │   ├── vantage-point/   # server lib (TheWorld + SP の HTTP/WS server)
 │   ├── vp-app/          # Rust GUI (wry + tao + xterm.js + creo-ui) — Mac 主軸 (2026-04-26 移行)
-│   ├── vp-cli/          # CLI binary (vp / ccws、 lane lib も内包)
+│   ├── vp-cli/          # CLI binary (vp、 lane lib も内包)
 │   ├── vp-db/           # SurrealDB embedded wrapper
 │   └── vp-mdast{,-wasm}/ # Markdown AST parser
 ├── docs/
