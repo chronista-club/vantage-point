@@ -115,9 +115,9 @@ enum Commands {
     #[command(subcommand)]
     Db(commands::db::DbCommands),
 
-    /// Stone Free 🧵 — worker workspace 管理（旧 ccws、Phase 1 で統合）
-    #[command(subcommand, alias = "workspace")]
-    Ws(WsCommands),
+    /// Stone Free 🧵 — worker Lane 管理（旧 ccws、Phase 1 で統合）
+    #[command(subcommand, alias = "ws", alias = "workspace")]
+    Lane(LaneCommands),
 
     /// Port Layout — deterministic 透過的固定 port の計算・表示
     #[command(subcommand)]
@@ -173,9 +173,9 @@ enum Commands {
     },
 }
 
-/// Stone Free worker workspace コマンド（vp-ccws library への薄い wrapper）
+/// Stone Free worker Lane コマンド（vp-ccws library への薄い wrapper）
 #[derive(Subcommand)]
-enum WsCommands {
+enum LaneCommands {
     /// 新しい worker 環境を作成（clone + symlink + setup）
     New {
         /// Worker 名
@@ -217,7 +217,7 @@ enum WsCommands {
     },
     /// Worker actor を TheWorld msgbox registry に (再) 登録
     ///
-    /// Worker 作成時 (`vp ws new`) に一度 register されるが、TheWorld 再起動で
+    /// Worker 作成時 (`vp lane new`) に一度 register されるが、TheWorld 再起動で
     /// registry が memory-reset するため再登録が必要。本コマンドで手動再登録 or
     /// 起動スクリプトから呼び出して整合性を維持する。
     Register {
@@ -292,7 +292,7 @@ fn main() -> Result<()> {
         Commands::Midi(cmd) => commands::midi::execute(cmd),
         Commands::Db(cmd) => commands::db::execute(cmd),
 
-        Commands::Ws(cmd) => execute_ws(cmd),
+        Commands::Lane(cmd) => execute_lane(cmd),
         Commands::Port(cmd) => commands::port::execute(cmd),
         Commands::App(cmd) => commands::app::execute(cmd),
         Commands::Shot {
@@ -555,16 +555,16 @@ fn execute_shot(
     Ok(())
 }
 
-/// Stone Free 🧵 worker workspace 操作を vp-ccws library に委譲
+/// Stone Free 🧵 worker Lane 操作を vp-ccws library に委譲
 ///
 /// Phase 2 追加: worker 作成/削除時に TheWorld の msgbox registry に
 /// `worker-{name}@{project}` actor を register/unregister（best-effort、
 /// TheWorld 未起動でも workspace 操作自体は成功させる）。
-fn execute_ws(cmd: WsCommands) -> Result<()> {
+fn execute_lane(cmd: LaneCommands) -> Result<()> {
     use ccws::commands as ws;
 
     match cmd {
-        WsCommands::New {
+        LaneCommands::New {
             name,
             branch,
             force,
@@ -576,7 +576,7 @@ fn execute_ws(cmd: WsCommands) -> Result<()> {
             }
             Ok(())
         }
-        WsCommands::Fork {
+        LaneCommands::Fork {
             name,
             branch,
             force,
@@ -587,9 +587,9 @@ fn execute_ws(cmd: WsCommands) -> Result<()> {
             }
             Ok(())
         }
-        WsCommands::Ls => ws::list_workers().map_err(|e| anyhow::anyhow!(e)),
-        WsCommands::Path { name } => ws::worker_path(&name).map_err(|e| anyhow::anyhow!(e)),
-        WsCommands::Rm { name, all, force } => {
+        LaneCommands::Ls => ws::list_workers().map_err(|e| anyhow::anyhow!(e)),
+        LaneCommands::Path { name } => ws::worker_path(&name).map_err(|e| anyhow::anyhow!(e)),
+        LaneCommands::Rm { name, all, force } => {
             // 先に unregister（削除後だと parent SP 不明になる可能性）
             if let Some(ref worker_name) = name
                 && let Err(e) = unregister_worker_actor(worker_name)
@@ -609,10 +609,12 @@ fn execute_ws(cmd: WsCommands) -> Result<()> {
             }
             ws::remove_worker(name.as_deref(), all, force).map_err(|e| anyhow::anyhow!(e))
         }
-        WsCommands::Status => ws::status_workers().map_err(|e| anyhow::anyhow!(e)),
-        WsCommands::Cleanup { force } => ws::cleanup_workers(force).map_err(|e| anyhow::anyhow!(e)),
-        WsCommands::Register { name } => register_worker_actor(&name),
-        WsCommands::Resync => resync_all_workers(),
+        LaneCommands::Status => ws::status_workers().map_err(|e| anyhow::anyhow!(e)),
+        LaneCommands::Cleanup { force } => {
+            ws::cleanup_workers(force).map_err(|e| anyhow::anyhow!(e))
+        }
+        LaneCommands::Register { name } => register_worker_actor(&name),
+        LaneCommands::Resync => resync_all_workers(),
     }
 }
 
@@ -674,7 +676,7 @@ fn register_worker_from_dirname(
     register_worker_actor_with_context(&parent.name, process.port, worker_name)
 }
 
-/// Worker actor を TheWorld msgbox registry に登録 (cwd ベース — ws new 等の内部用)
+/// Worker actor を TheWorld msgbox registry に登録 (cwd ベース — lane new 等の内部用)
 ///
 /// actor format: `worker-{name}` (例: `worker-VP-10`)
 fn register_worker_actor(worker_name: &str) -> Result<()> {
@@ -732,7 +734,7 @@ fn unregister_worker_actor(worker_name: &str) -> Result<()> {
 
 /// VP-124 Phase 1: SP-aware Worker Lane delete を試みる helper。
 ///
-/// `vp ws rm <name>` (= 個別削除) で呼ばれ、 parent SP が稼働中なら HTTP DELETE 経由で
+/// `vp lane rm <name>` (= 個別削除) で呼ばれ、 parent SP が稼働中なら HTTP DELETE 経由で
 /// `delete_lane_orchestrated` を発火 (= PTY kill + tmux kill + ccws rm + SystemEvent broadcast を
 /// SP 側で atomically 実行)。 SP 不在 / API failure なら false 返して filesystem-only fallback
 /// (= 現挙動の `ws::remove_worker`) に委譲。
