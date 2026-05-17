@@ -1,7 +1,7 @@
 {
   "name": "vp-app-web-bundle",
   "version": "0.0.1",
-  "description": "vp-app WebView 用 JS bundle (SolidJS + creo-ui-editor-host)",
+  "description": "vp-app WebView 用 JS bundle (SolidJS + @chronista-club/creoui-editor-host)",
   "private": true,
   "type": "module",
   "scripts": {
@@ -9,8 +9,8 @@
     "build:dev": "bun run build.mjs --dev"
   },
   "dependencies": {
-    "creo-ui-editor-host": "^0.4.0",
-    "creo-ui-icons-web": "file:../../../../creo-ui/packages/icons-web",
+    "@chronista-club/creoui-editor-host": "file:../../../../creoui/packages/editor-host",
+    "creoui-icons-web": "file:../../../../creoui/packages/icons-web",
     "iconify-icon": "^3.0.2",
     "marked": "^18.0.3",
     "solid-js": "^1.9.0"

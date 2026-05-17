@@ -1,4 +1,4 @@
-// VP Mailbox glyph mapping (creo-ui-icons-web の VP-domain alias)。
+// VP Mailbox glyph mapping (creoui-icons-web の VP-domain alias)。
 //
 // Mailbox = ECS 的メッセージング primitive (VP-24)。 inbox / send /
 // broadcast / notify 等の semantic action を icon で表現。
@@ -7,7 +7,7 @@
 // 参考 memory: feedback_creo_ui_icon_dual_axis.md (2026-04-29)
 // 参考 spec: project_mailbox_address_spec.md、 vp_mailbox_monitor_agent_inbox.md
 
-import type { IconName } from 'creo-ui-icons-web'
+import type { IconName } from 'creoui-icons-web'
 
 export type MailboxAction =
   | 'inbox'      // 受信箱 (incoming messages)

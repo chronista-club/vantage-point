@@ -1,4 +1,4 @@
-// VP TheWorld / Process glyph mapping (creo-ui-icons-web の VP-domain alias)。
+// VP TheWorld / Process glyph mapping (creoui-icons-web の VP-domain alias)。
 //
 // TheWorld = 常駐 daemon (Process Manager)、 SP (Star Platinum) = 各 project 用 server。
 // process state を icon で表現: running / spawning / stopped / error / restarting。
@@ -7,7 +7,7 @@
 // 参考: D10 Reconciliation アーキテクチャ (Push QUIC + Pull port scan)、
 //        D12 daemon lifecycle 独立性 (setsid で process group 分離)
 
-import type { IconName } from 'creo-ui-icons-web'
+import type { IconName } from 'creoui-icons-web'
 
 export type ProcessState =
   | 'running'      // up + healthy

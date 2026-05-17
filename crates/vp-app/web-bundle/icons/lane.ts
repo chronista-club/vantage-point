@@ -1,4 +1,4 @@
-// VP Lane glyph mapping (creo-ui-icons-web の VP-domain alias)。
+// VP Lane glyph mapping (creoui-icons-web の VP-domain alias)。
 //
 // Lane = Stand 配下で稼働する個別実行単位。 Lead Lane (project lead 1 体) +
 // Worker Lane (Issue 別 ccws worker 群) の構成。
@@ -7,7 +7,7 @@
 // 参考 memory: feedback_creo_ui_icon_dual_axis.md (2026-04-29)
 // 参考 spec: project_lane_as_process.md (Lead Autonomy L0〜L3)
 
-import type { IconName } from 'creo-ui-icons-web'
+import type { IconName } from 'creoui-icons-web'
 
 export type LaneKind =
   | 'lead'         // Lead Lane (project lead、 master agent)
