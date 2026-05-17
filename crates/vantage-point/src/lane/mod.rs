@@ -1,10 +1,10 @@
-//! ccws (Stone Free 🧵) — Git clone-based worker workspace manager
+//! lane (Stone Free 🧵) — Git clone-based worker workspace manager
 //!
-//! ## Phase 2.x-e (2026-04-27): vp-ccws crate を vp-cli に統合
+//! ## Phase 2.x-e (2026-04-27): 旧 worker Lane crate を vp-cli に統合
 //!
-//! 旧 `vp-ccws` は独立 crate (lib + bin) だったが、 workspace 内 caller が
+//! 旧 worker Lane crate は独立 crate (lib + bin) だったが、 workspace 内 caller が
 //! vp-cli のみだったため、 vp-cli に取り込んで「浮いてる crate」 を 1 つ削減。
-//! 後方互換のため `ccws` 標準 binary は `crates/vp-cli/src/bin/ccws.rs` に残置。
+//! 後方互換のため標準 binary は `crates/vp-cli/src/bin/ccws.rs` に残置。
 //!
 //! ## Library API
 //!

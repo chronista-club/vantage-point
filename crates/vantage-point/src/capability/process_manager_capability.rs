@@ -1480,7 +1480,7 @@ impl ProcessManagerCapability {
         }
     }
 
-    /// VP-129 MVP: ccws root を watch して worker dir 削除を SP DELETE に bridge する FSEvents watcher。
+    /// VP-129 MVP: lane root を watch して worker dir 削除を SP DELETE に bridge する FSEvents watcher。
     ///
     /// **「folder = Lane 空間」 axiom の物理実装**。 user が Finder / `rm -rf` で worker dir を
     /// 削除した時、 OS の file system event (Mac → FSEvents、 Linux → inotify) → notify crate
@@ -1495,17 +1495,17 @@ impl ProcessManagerCapability {
     ///   404 で no-op、 log noise 許容)
     /// - spawn race: scope 外 (= 既存 spawn semaphore + atomic LanePool insert で吸収)
     /// - 詳細 EventKind 区別: Remove(_) 全 variant accept (= Mac FSEvents は RemoveKind 区別が薄い)
-    pub async fn run_ccws_watcher(
+    pub async fn run_lane_watcher(
         world: Arc<RwLock<Self>>,
         shutdown_token: tokio_util::sync::CancellationToken,
     ) {
         use notify::{EventKind, RecursiveMode, Watcher};
 
-        // workers_dir 解決 (= ~/.local/share/ccws/)。 不在なら作成 (= 後の worker spawn でも必要)。
-        let workers_dir = match crate::ccws::config::workers_dir() {
+        // workers_dir 解決 (= vp_data_dir()/lanes/)。 不在なら作成 (= 後の worker spawn でも必要)。
+        let workers_dir = match crate::lane::config::workers_dir() {
             Ok(d) => d,
             Err(e) => {
-                tracing::warn!("ccws watcher: workers_dir 解決失敗 (skip): {}", e);
+                tracing::warn!("lane watcher: workers_dir 解決失敗 (skip): {}", e);
                 return;
             }
         };
@@ -1513,7 +1513,7 @@ impl ProcessManagerCapability {
             && let Err(e) = std::fs::create_dir_all(&workers_dir)
         {
             tracing::warn!(
-                "ccws watcher: workers_dir create 失敗 (skip、 path={}): {}",
+                "lane watcher: workers_dir create 失敗 (skip、 path={}): {}",
                 workers_dir.display(),
                 e
             );
@@ -1531,14 +1531,14 @@ impl ProcessManagerCapability {
             }) {
                 Ok(w) => w,
                 Err(e) => {
-                    tracing::warn!("ccws watcher: recommended_watcher 構築失敗 (skip): {}", e);
+                    tracing::warn!("lane watcher: recommended_watcher 構築失敗 (skip): {}", e);
                     return;
                 }
             };
 
         if let Err(e) = watcher.watch(&workers_dir, RecursiveMode::NonRecursive) {
             tracing::warn!(
-                "ccws watcher: watch 開始失敗 (path={}, err={})",
+                "lane watcher: watch 開始失敗 (path={}, err={})",
                 workers_dir.display(),
                 e
             );
@@ -1546,7 +1546,7 @@ impl ProcessManagerCapability {
         }
 
         tracing::info!(
-            "ccws watcher 起動 (path={}、 mode=NonRecursive、 trigger=Remove → SP DELETE)",
+            "lane watcher 起動 (path={}、 mode=NonRecursive、 trigger=Remove → SP DELETE)",
             workers_dir.display()
         );
 
@@ -1558,7 +1558,7 @@ impl ProcessManagerCapability {
         loop {
             tokio::select! {
                 _ = shutdown_token.cancelled() => {
-                    tracing::info!("ccws watcher: shutdown signal、 停止");
+                    tracing::info!("lane watcher: shutdown signal、 停止");
                     break;
                 }
                 event_opt = rx.recv() => {
@@ -1566,18 +1566,18 @@ impl ProcessManagerCapability {
                     if !matches!(event.kind, EventKind::Remove(_)) {
                         continue;
                     }
-                    Self::handle_ccws_remove_event(&world, &client, &workers_dir, &event).await;
+                    Self::handle_lane_remove_event(&world, &client, &workers_dir, &event).await;
                 }
             }
         }
 
         drop(watcher); // 明示 drop で watching 停止 (scope 終端でも自動だが意図表示)
-        tracing::info!("ccws watcher 終了");
+        tracing::info!("lane watcher 終了");
     }
 
     /// VP-129 MVP: Remove event 1 件を処理。 dirname → project 解決 → SP DELETE call。
-    /// `run_ccws_watcher` の inner、 各 path を独立処理。
-    async fn handle_ccws_remove_event(
+    /// `run_lane_watcher` の inner、 各 path を独立処理。
+    async fn handle_lane_remove_event(
         world: &Arc<RwLock<Self>>,
         client: &reqwest::Client,
         workers_dir: &std::path::Path,
@@ -1612,7 +1612,7 @@ impl ProcessManagerCapability {
                     Some(p) => Some((p.name.clone(), p.path.clone())),
                     None => {
                         tracing::debug!(
-                            "ccws watcher: parent project 解決失敗 (skip) dirname={}",
+                            "lane watcher: parent project 解決失敗 (skip) dirname={}",
                             dirname
                         );
                         None
@@ -1637,7 +1637,7 @@ impl ProcessManagerCapability {
             };
             let Some(port) = port else {
                 tracing::debug!(
-                    "ccws watcher: SP not running for project={} (skip) worker={}",
+                    "lane watcher: SP not running for project={} (skip) worker={}",
                     project_name,
                     worker_name
                 );
@@ -1654,25 +1654,25 @@ impl ProcessManagerCapability {
                 port, address_enc
             );
             tracing::info!(
-                "ccws watcher: dir removed → SP DELETE 発火 (project={}, worker={}, port={})",
+                "lane watcher: dir removed → SP DELETE 発火 (project={}, worker={}, port={})",
                 project_name,
                 worker_name,
                 port
             );
             match client.delete(&url).send().await {
                 Ok(r) if r.status().is_success() => {
-                    tracing::info!("ccws watcher: SP DELETE 成功 ({})", address);
+                    tracing::info!("lane watcher: SP DELETE 成功 ({})", address);
                 }
                 Ok(r) => {
                     tracing::debug!(
-                        "ccws watcher: SP DELETE non-success (likely self-loop or already deleted): status={}, address={}",
+                        "lane watcher: SP DELETE non-success (likely self-loop or already deleted): status={}, address={}",
                         r.status(),
                         address
                     );
                 }
                 Err(e) => {
                     tracing::warn!(
-                        "ccws watcher: SP DELETE 失敗 (port={}, address={}): {}",
+                        "lane watcher: SP DELETE 失敗 (port={}, address={}): {}",
                         port,
                         address,
                         e

@@ -1,7 +1,7 @@
 // VP Lane glyph mapping (creoui-icons-web の VP-domain alias)。
 //
 // Lane = Stand 配下で稼働する個別実行単位。 Lead Lane (project lead 1 体) +
-// Worker Lane (Issue 別 ccws worker 群) の構成。
+// Worker Lane (Issue 別 worker 群) の構成。
 // state-driven: default = regular, active = fill。
 //
 // 参考 memory: feedback_creo_ui_icon_dual_axis.md (2026-04-29)
@@ -11,7 +11,7 @@ import type { IconName } from 'creoui-icons-web'
 
 export type LaneKind =
   | 'lead'         // Lead Lane (project lead、 master agent)
-  | 'worker'       // Worker Lane (ccws worker、 Issue 専属)
+  | 'worker'       // Worker Lane (worker、 Issue 専属)
   | 'init_script'  // init_script で起動した scripted Stand
   | 'idle'         // sleeping / awaiting Lane
   | 'meta'         // Meta Lane (catalog / inspect 用)

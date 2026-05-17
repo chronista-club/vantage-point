@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 use std::process::ExitCode;
 // Phase 2.x-e: 旧 vp-ccws crate を vp-cli の lib に統合済。
-use vp_cli::ccws::commands;
+use vp_cli::lane::commands;
 
 #[derive(Parser)]
 #[command(

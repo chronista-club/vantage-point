@@ -24,13 +24,13 @@ use vantage_point::mcp;
 
 use commands::file::FileCommands;
 
-// Phase 2.x-e: vp-ccws crate を vp-cli の lib に統合。
-// `ccws` 標準 bin (src/bin/ccws.rs) と main.rs (vp) の両方が `vp_cli::ccws` を共有。
+// Phase 2.x-e: 旧 worker Lane crate を vp-cli の lib に統合。
+// 標準 bin (src/bin/ccws.rs) と main.rs (vp) の両方が `vp_cli::lane` を共有。
 #[cfg(feature = "midi")]
 use commands::midi::MidiCommands;
 use commands::pane::PaneCommands;
 use commands::tmux::TmuxCommands;
-use vp_cli::ccws;
+use vp_cli::lane;
 
 #[derive(Parser)]
 #[command(name = "vp")]
@@ -115,7 +115,7 @@ enum Commands {
     #[command(subcommand)]
     Db(commands::db::DbCommands),
 
-    /// Stone Free 🧵 — worker Lane 管理（旧 ccws、Phase 1 で統合）
+    /// Stone Free 🧵 — worker Lane 管理（旧 vp ws、Phase 1 で統合）
     #[command(subcommand, alias = "ws", alias = "workspace")]
     Lane(LaneCommands),
 
@@ -173,7 +173,7 @@ enum Commands {
     },
 }
 
-/// Stone Free worker Lane コマンド（vp-ccws library への薄い wrapper）
+/// Stone Free worker Lane コマンド（lane library への薄い wrapper）
 #[derive(Subcommand)]
 enum LaneCommands {
     /// 新しい worker 環境を作成（clone + symlink + setup）
@@ -224,7 +224,7 @@ enum LaneCommands {
         /// Worker 名 (親 project は cwd から推測)
         name: String,
     },
-    /// ccws ls の全 Worker を registry に一括再登録 (sync)
+    /// lane ls の全 Worker を registry に一括再登録 (sync)
     Resync,
     /// 全 worker の状態表示
     Status,
@@ -555,13 +555,13 @@ fn execute_shot(
     Ok(())
 }
 
-/// Stone Free 🧵 worker Lane 操作を vp-ccws library に委譲
+/// Stone Free 🧵 worker Lane 操作を lane library に委譲
 ///
 /// Phase 2 追加: worker 作成/削除時に TheWorld の msgbox registry に
 /// `worker-{name}@{project}` actor を register/unregister（best-effort、
 /// TheWorld 未起動でも workspace 操作自体は成功させる）。
 fn execute_lane(cmd: LaneCommands) -> Result<()> {
-    use ccws::commands as ws;
+    use lane::commands as ws;
 
     match cmd {
         LaneCommands::New {
@@ -597,7 +597,7 @@ fn execute_lane(cmd: LaneCommands) -> Result<()> {
                 eprintln!("  msgbox: unregister skipped ({e})");
             }
             // VP-124: SP-aware delete を試みる (orchestration: PTY kill + tmux kill +
-            // ccws workspace rm + SystemEvent broadcast を 1 HTTP call で完結)。
+            // lane workspace rm + SystemEvent broadcast を 1 HTTP call で完結)。
             // --all は filesystem-only fallback (一括削除は SP 経由する意味なし、 個別 Lane
             // address が必要なため)。 SP 不在 / failure なら現挙動 (ws::remove_worker fs-only)
             // に fallback して compat 維持。
@@ -618,14 +618,14 @@ fn execute_lane(cmd: LaneCommands) -> Result<()> {
     }
 }
 
-/// ccws ls の全 Worker を registry に一括再登録。
+/// lane ls の全 Worker を registry に一括再登録。
 /// parent project は **config から最長一致** で解決 (cwd 不要)。
 fn resync_all_workers() -> Result<()> {
     use std::fs;
-    let home = std::env::var("HOME").map_err(|_| anyhow::anyhow!("HOME env 未設定"))?;
-    let workers_dir = std::path::PathBuf::from(home).join(".local/share/ccws");
+    let workers_dir =
+        lane::config::workers_dir().map_err(|e| anyhow::anyhow!("lane dir 解決失敗: {e}"))?;
     if !workers_dir.exists() {
-        println!("No ccws workers found at {}", workers_dir.display());
+        println!("No lane workers found at {}", workers_dir.display());
         return Ok(());
     }
     let config = vantage_point::config::Config::load()
@@ -735,7 +735,7 @@ fn unregister_worker_actor(worker_name: &str) -> Result<()> {
 /// VP-124 Phase 1: SP-aware Worker Lane delete を試みる helper。
 ///
 /// `vp lane rm <name>` (= 個別削除) で呼ばれ、 parent SP が稼働中なら HTTP DELETE 経由で
-/// `delete_lane_orchestrated` を発火 (= PTY kill + tmux kill + ccws rm + SystemEvent broadcast を
+/// `delete_lane_orchestrated` を発火 (= PTY kill + tmux kill + lane rm + SystemEvent broadcast を
 /// SP 側で atomically 実行)。 SP 不在 / API failure なら false 返して filesystem-only fallback
 /// (= 現挙動の `ws::remove_worker`) に委譲。
 ///
@@ -805,7 +805,7 @@ fn try_sp_delete_worker(worker_name: &str) -> bool {
 
 /// 現在の repo root から parent project 名と SP port を導出
 fn resolve_parent_project() -> Result<(String, u16)> {
-    let repo_root = ccws::config::find_repo_root()
+    let repo_root = lane::config::find_repo_root()
         .map_err(|e| anyhow::anyhow!("find_repo_root failed: {}", e))?;
     let project_name = repo_root
         .file_name()

@@ -29,7 +29,7 @@
 //! discriminate、 各 variant の field は `snake_case` rename。 例:
 //! ```json
 //! {"kind": "spawn_lane", "project_id": "vantage-point", "name": "msg-test",
-//!  "cwd": "/Users/.../ccws/vantage-point-msg-test", "stand": "echoes"}
+//!  "cwd": "/Users/.../lanes/vantage-point-msg-test", "stand": "echoes"}
 //! ```
 
 use serde::{Deserialize, Serialize};
@@ -51,12 +51,12 @@ pub enum LaneCmd {
     /// **1 Worker = 1 SpawnLane Cmd** に分解して Mailbox actor に流す。 actor が
     /// Semaphore で gate しつつ並列処理する design。
     SpawnLane {
-        /// LaneAddress.project の値 (= ccws repo prefix と一致する project_id、
+        /// LaneAddress.project の値 (= lane repo prefix と一致する project_id、
         /// `routes/lanes.rs::create_handler` の derivation と整合)
         project_id: String,
         /// Worker name (LaneAddress.name に入る)
         name: String,
-        /// 起動 cwd (典型: `~/.local/share/ccws/<repo>-<name>/`)
+        /// 起動 cwd (典型: `vp_data_dir()/lanes/<repo>-<name>/`)
         cwd: String,
         /// Stand 名 (`vp:stand:{name}` task の name 部分、 例: "echoes" / "shell" / "tmux")。
         /// doc 11 PR-B で String 化、 旧 LaneStand enum 廃止。
@@ -76,7 +76,7 @@ mod tests {
         let cmd = LaneCmd::SpawnLane {
             project_id: "vantage-point".to_string(),
             name: "msg-test".to_string(),
-            cwd: "/tmp/ccws/vantage-point-msg-test".to_string(),
+            cwd: "/tmp/lanes/vantage-point-msg-test".to_string(),
             stand: "echoes".to_string(),
         };
         let json = serde_json::to_string(&cmd).unwrap();

@@ -235,7 +235,7 @@ pub struct SwitchLaneParams {
     pub lane: String,
 }
 
-/// Parameters for the add_worker tool (R5: ccws clone + Worker Lane spawn).
+/// Parameters for the add_worker tool (R5: lane clone + Worker Lane spawn).
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct AddWorkerParams {
     /// Worker name. Used as the `name` field of the Lane address (`<project>/worker/<name>`).
@@ -245,7 +245,7 @@ pub struct AddWorkerParams {
     pub name: String,
     /// Optional branch. If omitted, server auto-derives `<git-user>/<sanitized-name>`.
     #[schemars(
-        description = "ccws clone する branch 名 (省略可)。 省略時は server が `git config user.name` から `<user>/<name>` を auto-derive。"
+        description = "Lane clone する branch 名 (省略可)。 省略時は server が `git config user.name` から `<user>/<name>` を auto-derive。"
     )]
     pub branch: Option<String>,
     /// Optional Lane Stand. Defaults to "echoes".
@@ -264,9 +264,9 @@ pub struct DeleteWorkerParams {
     )]
     pub name: String,
 
-    /// Whether to also remove the ccws workspace dir.
+    /// Whether to also remove the lane workspace dir.
     #[schemars(
-        description = "ccws workspace dir も削除するか (default: true)。 false で SP pool + tmux session のみ kill、 dir 残置 (debug / forensic 用途)。"
+        description = "Lane workspace dir も削除するか (default: true)。 false で SP pool + tmux session のみ kill、 dir 残置 (debug / forensic 用途)。"
     )]
     #[serde(default)]
     pub cleanup: Option<bool>,
@@ -471,7 +471,7 @@ pub struct PermissionRequestPayload {
 ///
 /// この `vp mcp` プロセスが属する Lane (VP-166 PR-4)。
 ///
-/// cwd から判定する: cwd が `~/.local/share/ccws/<parent>-<name>` なら worker `<name>`、
+/// cwd から判定する: cwd が `vp_data_dir()/lanes/<parent>-<name>` なら worker `<name>`、
 /// それ以外（= repo path）なら lead。`msg_recv` の default lane / `msg_send` の `from` /
 /// `list_lanes` の `is_self` 付与に使う。
 #[derive(Debug, Clone)]
@@ -492,11 +492,10 @@ impl SelfLane {
         let Ok(cwd) = std::env::current_dir() else {
             return lead();
         };
-        let Ok(home) = std::env::var("HOME") else {
+        let Ok(lanes_root) = crate::lane::config::workers_dir() else {
             return lead();
         };
-        let ccws_root = std::path::PathBuf::from(&home).join(".local/share/ccws");
-        if !cwd.starts_with(&ccws_root) {
+        if !cwd.starts_with(&lanes_root) {
             return lead(); // 通常 project の cwd = lead
         }
         let Some(dirname) = cwd.file_name().and_then(|n| n.to_str()) else {
@@ -1111,13 +1110,13 @@ impl VantageMcp {
         }
     }
 
-    /// R5: 現 project の SP に Worker Lane を新規作成 (ccws clone + PtySlot spawn)。
+    /// R5: 現 project の SP に Worker Lane を新規作成 (lane clone + PtySlot spawn)。
     ///
     /// - cwd ベースで自動的に local SP を解決 (`self.process_url`)。
     /// - branch 省略時は server 側で `<git-user>/<sanitized-name>` を auto-derive。
-    /// - 名前重複は HTTP 409 CONFLICT、 ccws clone 失敗は 500 で返ってくる。
+    /// - 名前重複は HTTP 409 CONFLICT、 lane clone 失敗は 500 で返ってくる。
     #[tool(
-        description = "Create a new Worker Lane in the current project (ccws clone + spawn). Resolves the local SP via cwd. If `branch` is omitted, the server auto-derives `<git-user>/<sanitized-name>`. Returns the Lane address `<project>/worker/<name>` on success. Use this to spawn isolated parallel work (e.g. feature branches, exploratory experiments)."
+        description = "Create a new Worker Lane in the current project (lane clone + spawn). Resolves the local SP via cwd. If `branch` is omitted, the server auto-derives `<git-user>/<sanitized-name>`. Returns the Lane address `<project>/worker/<name>` on success. Use this to spawn isolated parallel work (e.g. feature branches, exploratory experiments)."
     )]
     async fn add_worker(
         &self,
@@ -1144,7 +1143,7 @@ impl VantageMcp {
             .client
             .post(&url)
             .json(&body)
-            .timeout(Duration::from_secs(60)) // ccws clone は 数 sec ~ 数 10 sec かかる
+            .timeout(Duration::from_secs(60)) // lane clone は 数 sec ~ 数 10 sec かかる
             .send()
             .await
             .map_err(|e| McpError::internal_error(format!("SP に到達できません: {}", e), None))?;
@@ -1181,10 +1180,10 @@ impl VantageMcp {
     /// Delete a Worker Lane in the current project (VP-124 Phase 1).
     ///
     /// 3-step orchestration を 1 call で完結: SP pool removal + child PTY kill + tmux session kill +
-    /// (optional) ccws workspace dir cleanup。 server-side `delete_lane_orchestrated` への薄い HTTP
+    /// (optional) lane workspace dir cleanup。 server-side `delete_lane_orchestrated` への薄い HTTP
     /// wrapper、 cwd ベースで自動的に local SP と project を解決。
     #[tool(
-        description = "Delete a Worker Lane in the current project. SP pool removal + child PTY kill + tmux session kill + ccws workspace dir cleanup を 1 call で完結 (= 旧来の手動 3 step `ccws rm` + `tmux kill-session` + `curl -X DELETE` を置換)。 cwd ベースで local SP を自動解決、 cleanup=false で dir 残置 (debug 用途)。 Lead Lane は削除不可 (architecture rule、 SP shutdown が path)。"
+        description = "Delete a Worker Lane in the current project. SP pool removal + child PTY kill + tmux session kill + lane workspace dir cleanup を 1 call で完結 (= 旧来の手動 3 step `vp lane rm` + `tmux kill-session` + `curl -X DELETE` を置換)。 cwd ベースで local SP を自動解決、 cleanup=false で dir 残置 (debug 用途)。 Lead Lane は削除不可 (architecture rule、 SP shutdown が path)。"
     )]
     async fn delete_worker(
         &self,
@@ -2916,7 +2915,7 @@ fn worker_parent_path(self_lane: &SelfLane, config: &crate::config::Config) -> O
 /// 優先度:
 /// 1. 明示的なポート引数（Some で指定された場合）
 /// 2. discovery:
-///    - worker context（cwd = `~/.local/share/ccws/<parent>-<name>`）→ parent project の path を
+///    - worker context（cwd = `vp_data_dir()/lanes/<parent>-<name>`）→ parent project の path を
 ///      config から引いて `find_by_project`。worker の cwd は登録 project path 配下でないので
 ///      `find_for_cwd` は効かない
 ///    - lead context → `find_for_cwd`（cwd 一致 or 配下の running SP）
@@ -2972,7 +2971,7 @@ pub async fn run_mcp_server(process_port: Option<u16>) -> anyhow::Result<()> {
     // Resolve the actual port to use
     let resolved_port = resolve_process_port(process_port).await;
 
-    // VP-83: Worker self-register — cwd が ccws Worker dir なら、起動時に
+    // VP-83: Worker self-register — cwd が lane Worker dir なら、起動時に
     // TheWorld msgbox registry に worker-{name}@{project} を登録する。
     // Worker の Claude CLI (MCP server) が自分を名乗る = Worker 責務の体現。
     self_register_if_worker().await;
@@ -2989,7 +2988,7 @@ pub async fn run_mcp_server(process_port: Option<u16>) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Worker の自己登録 — cwd が `~/.local/share/ccws/{project}-{worker}` パターンなら、
+/// Worker の自己登録 — cwd が `vp_data_dir()/lanes/{project}-{worker}` パターンなら、
 /// parent project を config の最長一致で決定、TheWorld に worker-{name}@{project} 登録。
 ///
 /// Worker 側の責務 (user 提案 2026-04-25): Worker が自分で名乗る = push model。
@@ -2999,13 +2998,12 @@ async fn self_register_if_worker() {
         Ok(p) => p,
         Err(_) => return,
     };
-    // ccws dir prefix か確認
-    let home = match std::env::var("HOME") {
-        Ok(h) => h,
+    // lane dir prefix か確認
+    let lanes_root = match crate::lane::config::workers_dir() {
+        Ok(d) => d,
         Err(_) => return,
     };
-    let ccws_root = std::path::PathBuf::from(&home).join(".local/share/ccws");
-    if !cwd.starts_with(&ccws_root) {
+    if !cwd.starts_with(&lanes_root) {
         return; // Worker でない (通常 project の cwd)
     }
     let dirname = match cwd.file_name().and_then(|n| n.to_str()) {

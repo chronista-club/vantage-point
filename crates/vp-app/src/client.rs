@@ -211,7 +211,7 @@ pub struct LaneInfo {
     pub worker_status: Option<WorkerStatusWire>,
 }
 
-/// Phase 5-D: vantage-point 側 `ccws::commands::WorkerStatus` の wire shape。
+/// Phase 5-D: vantage-point 側 `lane::commands::WorkerStatus` の wire shape。
 /// sidebar Worker row に branch / dirty / ahead / behind / merge 状態を表示。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct WorkerStatusWire {
@@ -368,7 +368,7 @@ impl TheWorldClient {
     }
 
     /// Phase 3-A: SP に Worker Lane を create (`POST /api/lanes`)。
-    /// `branch` 指定時は SP が `ccws new <name> <branch>` で worker dir を作成して spawn する。
+    /// `branch` 指定時は SP が `vp lane new <name> <branch>` で worker dir を作成して spawn する。
     /// `stand` 指定時は SP が `mise run vp:stand:{stand}` で specified stand を起動する
     /// (doc 11 PR-C、 None なら SP-side default = config.default_stand_or_echoes())。
     /// `base_url` は SP の URL (例: `http://127.0.0.1:33002`) を指定。
