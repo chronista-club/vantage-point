@@ -10,12 +10,6 @@ description = "Vantage Point CLI — AI ネイティブ開発環境の CLI エ�
 name = "vp"
 path = "src/main.rs"
 
-# Phase 2.x-e: 旧 vp-ccws crate を統合。 後方互換 (CLAUDE.md 等で `ccws new` 等を常用) のため
-# `ccws` 標準 binary を vp-cli から提供。 中身は `vp_cli::ccws` lib を呼ぶだけ。
-[[bin]]
-name = "ccws"
-path = "src/bin/ccws.rs"
-
 [lib]
 name = "vp_cli"
 path = "src/lib.rs"

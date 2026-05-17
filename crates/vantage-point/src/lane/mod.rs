@@ -4,7 +4,7 @@
 //!
 //! 旧 worker Lane crate は独立 crate (lib + bin) だったが、 workspace 内 caller が
 //! vp-cli のみだったため、 vp-cli に取り込んで「浮いてる crate」 を 1 つ削減。
-//! 後方互換のため標準 binary は `crates/vp-cli/src/bin/ccws.rs` に残置。
+//! VP-196 Phase 2 で旧 `ccws` 標準 binary を retire、 操作は `vp lane` サブコマンドに一本化。
 //!
 //! ## Library API
 //!
