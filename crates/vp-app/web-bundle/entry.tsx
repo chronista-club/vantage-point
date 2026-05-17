@@ -1,12 +1,12 @@
 /**
  * vp-app WebView 用 entry point.
  *
- * SolidJS + creo-ui-editor-host を bundle して、main WebView の `<div id="editor-root">`
+ * SolidJS + @chronista-club/creoui-editor-host を bundle して、main WebView の `<div id="editor-root">`
  * に EditorLayer を mount する。
  *
- * 起動: Ctrl+Shift+E で Editor Mode が toggle される (creo-ui-editor-host の default keybind)。
+ * 起動: Ctrl+Shift+E で Editor Mode が toggle される (@chronista-club/creoui-editor-host の default keybind)。
  *
- * 主要 features (creo-ui-editor-host から継承):
+ * 主要 features (@chronista-club/creoui-editor-host から継承):
  * - DOM auto-discover: 既知の CSS 変数 (--typography-family-mono など) を自動 bind
  * - DevTools Console REPL: window.creoEditor.slider(...) 等で field 動的追加
  * - URL shareable state: #creo=... で URL 1 本で共有
@@ -35,8 +35,8 @@ window.addEventListener('unhandledrejection', (e) => {
 })
 
 import { render } from 'solid-js/web'
-import { EditorHostProvider, EditorLayer } from 'creo-ui-editor-host'
-import { CreoIcon } from 'creo-ui-icons-web'
+import { EditorHostProvider, EditorLayer } from '@chronista-club/creoui-editor-host'
+import { CreoIcon } from 'creoui-icons-web'
 import { STAND_ICON, type StandKind } from './icons/stand'
 import { FrameEngine, type PaneId, type SceneId } from './frame-engine'
 import { DEFAULT_SCENES, EMPTY_SCENE, generateAllFocusScenes } from './scenes'
@@ -263,7 +263,7 @@ function App() {
   )
 }
 
-// R3-c POC: creo-ui-icons-web → iconify-icon Web Component → WKWebView の経路を E2E 実証する panel。
+// R3-c POC: creoui-icons-web → iconify-icon Web Component → WKWebView の経路を E2E 実証する panel。
 // 各 Stand を default + active の 2 weight で並べ、 Phosphor 6 weight 切替が WKWebView で render
 // されることを目視確認する。 sidebar の Nerd Font を置換するわけではなく、 「SVG icon が動く」事実
 // を vp-app 内で確立する debug overlay。 不要になったら削除する。
@@ -293,7 +293,7 @@ function IconPocPanel() {
         'align-items': 'center',
         'box-shadow': '0 2px 8px rgba(0,0,0,0.3)',
       }}
-      title="R3-c POC: creo-ui-icons-web 動作確認 (Stand × default + active)"
+      title="R3-c POC: creoui-icons-web 動作確認 (Stand × default + active)"
     >
       {stands.map((s) => (
         <span style={{ display: 'inline-flex', gap: '2px' }}>
