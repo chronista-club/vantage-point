@@ -135,15 +135,14 @@ html,body{margin:0;height:100%;background:var(--color-surface-bg-subtle);
 .vp-lane-line2.empty{opacity:0.5;}
 .vp-lane-row.active .vp-lane-line2{color:var(--color-brand-primary);opacity:0.7;}
 
-/* Add Wing フォーム (Project accordion 内、 Lane ツリーの下) */
-.vp-add-wing{padding:4px var(--spacing-sm,8px) 6px 14px;}
-.vp-add-wing-trigger{width:100%;padding:5px 8px;
-  border:1px solid var(--color-surface-border,#1f2233);background:transparent;
-  color:var(--color-text-tertiary);border-radius:var(--radius-sm,6px);cursor:pointer;
-  font-size:11px;font-family:inherit;transition:background .12s ease,color .12s ease;}
-.vp-add-wing-trigger:hover{background:var(--color-surface-bg-emphasis);
-  color:var(--color-text-secondary);}
-.vp-add-wing-form{display:flex;flex-direction:column;gap:5px;}
+/* Add Wing — active project summary 右上の「+」 + 展開フォーム */
+.vp-proj-addwing{margin-left:auto;display:inline-flex;align-items:center;padding:2px;
+  border:none;background:transparent;color:var(--color-text-tertiary);cursor:pointer;
+  border-radius:3px;flex:0 0 auto;transition:background .12s ease,color .12s ease;}
+.vp-proj-addwing:hover,.vp-proj-addwing.open{
+  background:var(--color-surface-bg-emphasis);color:var(--color-brand-primary);}
+.vp-add-wing-form{display:flex;flex-direction:column;gap:5px;
+  padding:4px var(--spacing-sm,8px) 6px 14px;}
 .vp-add-wing-input{padding:5px 8px;border:1px solid var(--color-surface-border,#1f2233);
   background:var(--color-surface-bg-base);color:var(--color-text-primary);
   border-radius:var(--radius-sm,6px);font-family:inherit;font-size:11px;

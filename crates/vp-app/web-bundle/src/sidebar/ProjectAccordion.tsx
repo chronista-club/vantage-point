@@ -1,15 +1,19 @@
 /**
  * Project (= Runtime Process) 1 件を accordion で描画する component。
  *
- * v1.0 柱 2 PR-2。 旧 SIDEBAR_HTML の `renderProjectAccordion` を SolidJS に port。
+ * v1.0 柱 2。 旧 SIDEBAR_HTML の `renderProjectAccordion` を SolidJS に port。
  * native `<details>` で expand/collapse、 開閉時に `process:toggle` IPC を送って
  * Rust 側 state に永続化する。 展開時の内容は SP state に応じた hint、 または Lane 行。
+ *
+ * PR-3: active project (= 現在 active な Lane を含む project) の summary 右上に
+ * 「+」アイコンを出し、 click で Add Wing フォームを開閉する。
  */
-import { For, Show } from 'solid-js'
+import { For, Show, createSignal } from 'solid-js'
 import { CreoIcon } from 'creoui-icons-web'
 import type { ProcessPaneState } from '../generated/ProcessPaneState'
 import { sidebar } from './store'
 import { sendIpc } from './ipc'
+import { laneAddressKey } from './lane'
 import { LaneRow } from './LaneRow'
 import { AddWing } from './AddWing'
 
@@ -33,6 +37,13 @@ function hintFor(proc: ProcessPaneState, laneCount: number): string | null {
 export function ProjectAccordion(props: { proc: ProcessPaneState }) {
   const lanes = () => sidebar.lanes_by_project[props.proc.path] ?? []
   const hint = () => hintFor(props.proc, lanes().length)
+  // active project = 現在 active な Lane を含む project。 Add Wing の「+」はこの時だけ出す。
+  const isActiveProject = () => {
+    const a = sidebar.active_lane_address
+    return a != null && lanes().some((l) => laneAddressKey(l) === a)
+  }
+
+  const [addWingOpen, setAddWingOpen] = createSignal(false)
 
   // native toggle → process:toggle IPC。 store 由来の open 反映で発火した場合は
   // 値が一致するので IPC を送らない (echo loop 防止)。
@@ -48,6 +59,21 @@ export function ProjectAccordion(props: { proc: ProcessPaneState }) {
       <summary class="vp-proj-summary">
         <CreoIcon name={props.proc.expanded ? 'ph:folder-open' : 'ph:folder'} size={14} />
         <span class="vp-proj-name">{props.proc.name}</span>
+        <Show when={isActiveProject()}>
+          <button
+            class="vp-proj-addwing"
+            classList={{ open: addWingOpen() }}
+            title="Add Wing"
+            onClick={(e) => {
+              // summary click は <details> を toggle するので止める。
+              e.preventDefault()
+              e.stopPropagation()
+              setAddWingOpen((v) => !v)
+            }}
+          >
+            <CreoIcon name="ph:plus" size={12} />
+          </button>
+        </Show>
       </summary>
       <div class="vp-proj-content">
         <Show
@@ -57,7 +83,12 @@ export function ProjectAccordion(props: { proc: ProcessPaneState }) {
               <For each={lanes()}>
                 {(lane) => <LaneRow lane={lane} projectPath={props.proc.path} />}
               </For>
-              <AddWing projectPath={props.proc.path} />
+              <Show when={addWingOpen()}>
+                <AddWing
+                  projectPath={props.proc.path}
+                  onClose={() => setAddWingOpen(false)}
+                />
+              </Show>
             </>
           }
         >
