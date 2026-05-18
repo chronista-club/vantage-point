@@ -19,6 +19,10 @@ use serde::Deserialize;
 //   client.rs は consumer として use で bring-into-scope する。
 use crate::lane::LaneAddressWire;
 
+// v1.0 柱 2 PR-1: ts-rs で sidebar wire 型を TS に export (test build 時のみ)。
+#[cfg(test)]
+use ts_rs::TS;
+
 /// TheWorld の既定ポート
 pub const DEFAULT_WORLD_PORT: u16 = 32000;
 
@@ -187,6 +191,7 @@ struct ProcessesResponse {
 /// UI 表示 (sidebar の Lane 行) に必要な field のみ。
 /// Serialize は SidebarState 経由で webview / disk persistence に流れるため必要。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(test, derive(TS), ts(export, export_to = "web-bundle/src/generated/"))]
 pub struct LaneInfo {
     pub address: LaneAddressWire,
     /// "lead" | "worker"
@@ -214,6 +219,7 @@ pub struct LaneInfo {
 /// Phase 5-D: vantage-point 側 `lane::commands::WorkerStatus` の wire shape。
 /// sidebar Worker row に branch / dirty / ahead / behind / merge 状態を表示。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(test, derive(TS), ts(export, export_to = "web-bundle/src/generated/"))]
 pub struct WorkerStatusWire {
     #[serde(default)]
     pub branch: Option<String>,

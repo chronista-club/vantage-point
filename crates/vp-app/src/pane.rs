@@ -21,8 +21,16 @@
 
 use serde::{Deserialize, Serialize};
 
+// v1.0 柱 2 PR-1: ts-rs で Rust → TS 型を生成 (sidebar bundle 用)。
+// `#[cfg_attr(test, ...)]` で test build 時のみ `TS` derive を効かせ、
+// `cargo test -p vp-app` で `web-bundle/src/generated/*.ts` を export する。
+// 生成 path 詳細 → `pane.rs::ts_rs_export` test module 参照。
+#[cfg(test)]
+use ts_rs::TS;
+
 /// プロジェクト単位の sidebar accordion 状態 (Architecture v4: Process kind=Runtime)
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(test, derive(TS), ts(export, export_to = "web-bundle/src/generated/"))]
 pub struct ProcessPaneState {
     /// 正規化パス (HashMap key 兼)
     pub path: String,
@@ -56,6 +64,7 @@ impl ProcessPaneState {
 /// sidebar 上部 widget slot に表示する widget の種類
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
+#[cfg_attr(test, derive(TS), ts(export, export_to = "web-bundle/src/generated/"))]
 pub enum WidgetKind {
     /// D — Activity / Stand Status (MVP)
     #[default]
@@ -71,6 +80,7 @@ pub enum WidgetKind {
 /// 5-10 秒間隔で Rust 側が `/api/health` + `/api/world/projects` +
 /// `/api/world/processes` を fetch して更新、sidebar に push する。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(test, derive(TS), ts(export, export_to = "web-bundle/src/generated/"))]
 pub struct ActivitySnapshot {
     /// TheWorld daemon 到達可否
     pub world_online: bool,
@@ -88,6 +98,7 @@ pub struct ActivitySnapshot {
 
 /// Sidebar 全体の state (sidebar webview に渡す)
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(test, derive(TS), ts(export, export_to = "web-bundle/src/generated/"))]
 pub struct SidebarState {
     /// Runtime Process (= 旧 "projects") の list
     /// Architecture v4: mem_1CaTpCQH8iLJ2PasRcPjHv、JSON wire は serde alias で互換維持
@@ -160,6 +171,7 @@ pub struct SidebarState {
 /// Phase 2 PR-P2-3 (icon visibility) では default 値で populate、 actual 値は後続 PR で
 /// backend peek API (`Router::inbox_state(actor, lane)`) を実装して populate する。
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(test, derive(TS), ts(export, export_to = "web-bundle/src/generated/"))]
 pub struct MessageState {
     /// 未読 message 数 (= inbox queue 内の未消費 msg count)
     /// Phase 2 PR-P2-3 では default 0、 後続 PR で backend counter から populate。
@@ -177,6 +189,7 @@ pub struct MessageState {
 
 /// Phase 5-A: Project-scope Stand の active selection (sidebar の row click で発火)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(test, derive(TS), ts(export, export_to = "web-bundle/src/generated/"))]
 pub struct ActiveStand {
     pub project_path: String,
     /// `"paisley_park"` | `"gold_experience"` | `"hermit_purple"`
@@ -219,5 +232,25 @@ mod tests {
         assert_eq!(parsed.processes.len(), 1);
         assert_eq!(parsed.processes[0].path, "/x");
         assert!(parsed.processes[0].expanded);
+    }
+
+    /// v1.0 柱 2 PR-1: ts-rs export が `web-bundle/src/generated/` に `.ts` を吐くこと。
+    ///
+    /// `#[ts(export)]` を付けた型は ts-rs が自動 export test を生成するので、
+    /// `cargo test -p vp-app` を回せば binding は必ず最新化される。 本 test は
+    /// 「sidebar push の SSOT 型 = `SidebarState`」 の export 結果が実在することの
+    /// regression guard ── 出力先 path が壊れたら即座に気付ける。
+    #[test]
+    fn ts_rs_export_sidebar_state_generates_file() {
+        // ts-rs の自動生成 export test を明示的に呼んでファイルを書き出す。
+        <SidebarState as TS>::export_all().expect("SidebarState binding export 失敗");
+        let manifest = env!("CARGO_MANIFEST_DIR");
+        let generated =
+            std::path::Path::new(manifest).join("web-bundle/src/generated/SidebarState.ts");
+        assert!(
+            generated.exists(),
+            "SidebarState.ts が生成されていない: {}",
+            generated.display()
+        );
     }
 }

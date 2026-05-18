@@ -14,6 +14,10 @@
 
 use std::fmt;
 
+// v1.0 柱 2 PR-1: ts-rs で sidebar wire 型を TS に export (test build 時のみ)。
+#[cfg(test)]
+use ts_rs::TS;
+
 /// Lane の種別
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LaneKind {
@@ -97,6 +101,7 @@ impl fmt::Display for LaneAddress {
 /// 関連 memory: mem_1CaSugEk1W2vr5TAdfDn5D (多 scope architecture)、
 /// mem_1CaSuu8xMyWqXzLiKHmYdV (使用範囲ベース scope rule)
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(test, derive(TS), ts(export, export_to = "web-bundle/src/generated/"))]
 pub struct LaneAddressWire {
     #[serde(default)]
     pub project: String,

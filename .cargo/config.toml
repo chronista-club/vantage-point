@@ -1,0 +1,19 @@
+# v1.0 柱 2 PR-1: ts-rs の binding 出力先設定。
+#
+# ts-rs は test build 時に `#[cfg_attr(test, derive(TS), ts(export, export_to = "..."))]`
+# 付きの型を TypeScript へ export する。 `export_to` のパスは `TS_RS_EXPORT_DIR` を
+# 基準に解決され、 未設定時の default は `<CARGO_MANIFEST_DIR>/bindings`。
+#
+# cargo の config 探索は「実行時 CWD から上方向」なので、 crate 単位の
+# `crates/vp-app/.cargo/config.toml` は workspace root から `cargo test` した時
+# (CI もこれ) に発見されない。 そのため workspace root の本 file に置き、
+# `TS_RS_EXPORT_DIR` を vp-app crate 直下に固定する。 これで vp-app の各型の
+# `export_to` を `web-bundle/src/generated/...` と crate-root 相対で書ける。
+#
+# NOTE: 現状 ts-rs export を行うのは vp-app crate のみ。 将来別 crate が ts-rs
+# export を追加する場合、 本設定だと出力先が vp-app 配下に固定されてしまうため、
+# その時点で per-crate な解決方法に見直すこと。
+#
+# `relative = true` は本 file の位置 (= workspace root) 相対の意味。
+[env]
+TS_RS_EXPORT_DIR = { value = "crates/vp-app", relative = true }
