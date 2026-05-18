@@ -111,6 +111,44 @@ const SIDEBAR_ASSETS: &[(&str, &[u8], &str)] = &[
     ),
 ];
 
+/// v1.0 柱 2 PR-1: SolidJS + creoui で作り直す新 sidebar の JS bundle。
+/// `crates/vp-app/web-bundle/` で `bun run build` → `assets/sidebar.bundle.js` 生成。
+/// `SIDEBAR_HTML_V2` 内の `<script src="vp-asset://app/sidebar.bundle.js">` で load される。
+const SIDEBAR_BUNDLE_V2: &[u8] = include_bytes!("../assets/sidebar.bundle.js");
+
+/// v1.0 柱 2 PR-1: 新 sidebar (SolidJS) を mount する最小 HTML shell。
+/// 旧 `SIDEBAR_HTML` と違い描画ロジックは持たず、 `sidebar.bundle.js` に全て委ねる。
+/// creoui token (`var(--color-*)`) 解決のため `creo-tokens.css` のみ inline、
+/// component CSS / 実描画の移植は PR-2。 `VP_SIDEBAR_V2=1` の時のみ配信される。
+const SIDEBAR_HTML_V2: &str = concat!(
+    r#"<!doctype html>
+<html lang="ja" data-theme="contrast-dark">
+<head><meta charset="utf-8"><style>"#,
+    include_str!("../assets/creo-tokens.css"),
+    r#"</style></head>
+<body>
+<div id="sidebar-root"></div>
+<script src="vp-asset://app/sidebar.bundle.js"></script>
+</body>
+</html>"#,
+);
+
+/// v1.0 柱 2 PR-1: `VP_SIDEBAR_V2=1` 時に配信する asset 群。
+/// `app/sidebar.html` の中身を新 shell に差し替え、 `app/sidebar.bundle.js` を追加する。
+/// 旧 `SIDEBAR_ASSETS` と排他で webview の custom protocol closure に渡す。
+const SIDEBAR_ASSETS_V2: &[(&str, &[u8], &str)] = &[
+    (
+        "app/sidebar.html",
+        SIDEBAR_HTML_V2.as_bytes(),
+        "text/html; charset=utf-8",
+    ),
+    (
+        "app/sidebar.bundle.js",
+        SIDEBAR_BUNDLE_V2,
+        "application/javascript; charset=utf-8",
+    ),
+];
+
 const SIDEBAR_HTML: &str = concat!(
     r#"<!doctype html>
 <html lang="ja" data-theme="contrast-dark">
@@ -2520,12 +2558,21 @@ pub fn run() -> anyhow::Result<()> {
 
     // Sidebar
     let sidebar_ipc_proxy = event_loop.create_proxy();
+    // v1.0 柱 2 PR-1: VP_SIDEBAR_V2=1 で新 SolidJS sidebar に切替 (dev フラグ、 default は旧 SIDEBAR_HTML)。
+    // const は実行時分岐できないため、 V1/V2 の 2 つの &'static asset table を runtime に選ぶ。
+    let sidebar_assets: &'static [(&'static str, &'static [u8], &'static str)] =
+        if std::env::var_os("VP_SIDEBAR_V2").is_some() {
+            tracing::info!("VP_SIDEBAR_V2 検出 — 新 SolidJS sidebar (PR-1 scaffold) を配信");
+            SIDEBAR_ASSETS_V2
+        } else {
+            SIDEBAR_ASSETS
+        };
     let sidebar = WebViewBuilder::new()
         // Phase 5-C: vp-asset:// custom protocol で bundled font (FONT_ASSETS) + sidebar.html を配信。
-        // serve() に SIDEBAR_ASSETS を渡すと FONT_ASSETS と chain して両方 lookup される。
+        // serve() に sidebar_assets を渡すと FONT_ASSETS と chain して両方 lookup される。
         // HTML 自体も同 scheme から読むことで page origin = vp-asset:// に統一、 font fetch も同一 origin。
-        .with_custom_protocol("vp-asset".to_string(), |id, request| {
-            crate::web_assets::serve(id, request, SIDEBAR_ASSETS)
+        .with_custom_protocol("vp-asset".to_string(), move |id, request| {
+            crate::web_assets::serve(id, request, sidebar_assets)
         })
         .with_url("vp-asset://app/sidebar.html")
         .with_devtools(true) // R5 dev: View → "Open Sidebar DevTools" で Web Inspector 起動可能
@@ -3614,5 +3661,31 @@ mod sidebar_html_tests {
         let (bytes, ct) = r.unwrap();
         assert_eq!(ct, "text/html; charset=utf-8");
         assert_eq!(bytes, SIDEBAR_HTML.as_bytes());
+    }
+
+    /// v1.0 柱 2 PR-1: VP_SIDEBAR_V2 asset table が shell HTML + JS bundle を両方配信できる。
+    #[test]
+    fn sidebar_v2_assets_servable_via_vp_asset() {
+        let html = crate::web_assets::lookup_asset("vp-asset://app/sidebar.html", SIDEBAR_ASSETS_V2);
+        assert!(html.is_some(), "sidebar.html (V2) not lookupable");
+        assert_eq!(html.unwrap().0, SIDEBAR_HTML_V2.as_bytes());
+
+        let js =
+            crate::web_assets::lookup_asset("vp-asset://app/sidebar.bundle.js", SIDEBAR_ASSETS_V2);
+        assert!(js.is_some(), "sidebar.bundle.js not lookupable");
+        assert_eq!(js.unwrap().1, "application/javascript; charset=utf-8");
+    }
+
+    /// v1.0 柱 2 PR-1: V2 shell HTML が SolidJS bundle を mount する骨格を持つ。
+    #[test]
+    fn sidebar_v2_html_mounts_bundle() {
+        assert!(
+            SIDEBAR_HTML_V2.contains(r#"<div id="sidebar-root">"#),
+            "V2 shell に #sidebar-root mount point がない"
+        );
+        assert!(
+            SIDEBAR_HTML_V2.contains("vp-asset://app/sidebar.bundle.js"),
+            "V2 shell が sidebar.bundle.js を load していない"
+        );
     }
 }
