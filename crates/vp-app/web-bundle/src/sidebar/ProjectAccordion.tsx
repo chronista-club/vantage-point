@@ -11,6 +11,7 @@ import type { ProcessPaneState } from '../generated/ProcessPaneState'
 import { sidebar } from './store'
 import { sendIpc } from './ipc'
 import { LaneRow } from './LaneRow'
+import { AddWing } from './AddWing'
 
 /**
  * SP の state に応じた hint 文字列。 `null` を返したら Lane 行を描画する。
@@ -52,9 +53,12 @@ export function ProjectAccordion(props: { proc: ProcessPaneState }) {
         <Show
           when={hint()}
           fallback={
-            <For each={lanes()}>
-              {(lane) => <LaneRow lane={lane} projectPath={props.proc.path} />}
-            </For>
+            <>
+              <For each={lanes()}>
+                {(lane) => <LaneRow lane={lane} projectPath={props.proc.path} />}
+              </For>
+              <AddWing projectPath={props.proc.path} />
+            </>
           }
         >
           <div class="vp-proj-hint">{hint()}</div>

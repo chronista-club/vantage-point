@@ -135,6 +135,30 @@ html,body{margin:0;height:100%;background:var(--color-surface-bg-subtle);
 .vp-lane-line2.empty{opacity:0.5;}
 .vp-lane-row.active .vp-lane-line2{color:var(--color-brand-primary);opacity:0.7;}
 
+/* Add Wing フォーム (Project accordion 内、 Lane ツリーの下) */
+.vp-add-wing{padding:4px var(--spacing-sm,8px) 6px 14px;}
+.vp-add-wing-trigger{width:100%;padding:5px 8px;
+  border:1px solid var(--color-surface-border,#1f2233);background:transparent;
+  color:var(--color-text-tertiary);border-radius:var(--radius-sm,6px);cursor:pointer;
+  font-size:11px;font-family:inherit;transition:background .12s ease,color .12s ease;}
+.vp-add-wing-trigger:hover{background:var(--color-surface-bg-emphasis);
+  color:var(--color-text-secondary);}
+.vp-add-wing-form{display:flex;flex-direction:column;gap:5px;}
+.vp-add-wing-input{padding:5px 8px;border:1px solid var(--color-surface-border,#1f2233);
+  background:var(--color-surface-bg-base);color:var(--color-text-primary);
+  border-radius:var(--radius-sm,6px);font-family:inherit;font-size:11px;
+  box-sizing:border-box;}
+.vp-add-wing-input:focus{outline:none;border-color:var(--color-brand-primary);}
+.vp-add-wing-actions{display:flex;justify-content:flex-end;gap:6px;}
+.vp-add-wing-actions button{padding:3px 10px;
+  border:1px solid var(--color-surface-border,#1f2233);background:transparent;
+  color:var(--color-text-secondary);border-radius:var(--radius-sm,6px);cursor:pointer;
+  font-size:10px;font-family:inherit;transition:background .12s ease,color .12s ease;}
+.vp-add-wing-actions button:hover{background:var(--color-surface-bg-emphasis);
+  color:var(--color-text-primary);}
+.vp-add-wing-actions button.primary{background:var(--color-brand-primary-subtle);
+  color:var(--color-brand-primary);border-color:var(--color-brand-primary-subtle);}
+
 /* World widget (sidebar 最下部、 collapsed 1 行 + expanded 詳細の accordion) */
 .vp-world{flex:0 0 auto;border-top:1px solid var(--color-surface-border,#1f2233);
   background:var(--color-surface-bg-base);}
