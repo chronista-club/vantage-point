@@ -805,6 +805,35 @@ pub async fn start_unison_server(
         })
         .await;
 
+    // --- "lanes" チャネル: wiremsg Stage 1 — TopicRouter 購読で Lane snapshot を push ---
+    // `process/star-platinum/state/#`（現状 lanes、retained）を購読。接続時に retained の
+    // 現 snapshot が初期配信され、以降 LanePool 変化のたび push される（Stage 0 の
+    // LanesSnapshot producer と対）。consumer は vp-app の Unison topic client（Stage 1 後続）。
+    // 設計: creo-memories mem_1CbA198fsHJsoKpu2jDUCv。
+    server
+        .register_channel("lanes", {
+            let state = state.clone();
+            move |_ctx, stream| {
+                let state = state.clone();
+                async move {
+                    let channel = UnisonChannel::new(stream);
+                    let (sub_id, mut rx) = state
+                        .topic_router
+                        .subscribe("process/star-platinum/state/#")
+                        .await;
+                    while let Some((_topic, msg)) = rx.recv().await {
+                        let json = serde_json::to_value(&msg).unwrap_or_default();
+                        if channel.send_event("snapshot", &json).await.is_err() {
+                            break;
+                        }
+                    }
+                    state.topic_router.unsubscribe(sub_id).await;
+                    Ok(())
+                }
+            }
+        })
+        .await;
+
     // サーバー起動
     tracing::info!("Starting Unison QUIC server on {}", addr);
     {

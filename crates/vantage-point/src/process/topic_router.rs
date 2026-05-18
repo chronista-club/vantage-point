@@ -137,6 +137,8 @@ impl TopicRouter {
             ProcessMessage::SwitchLane { .. } => {
                 "process/paisley-park/command/switch-lane".to_string()
             }
+            // wiremsg: Lane 一覧 snapshot。category=state → retained。
+            ProcessMessage::LanesSnapshot { .. } => "process/star-platinum/state/lanes".to_string(),
         }
     }
 
@@ -252,6 +254,15 @@ mod tests {
     fn test_message_to_topic_ping() {
         let topic = TopicRouter::message_to_topic(&ProcessMessage::Ping);
         assert_eq!(topic, "process/star-platinum/event/ping");
+    }
+
+    #[test]
+    fn test_message_to_topic_lanes_snapshot() {
+        // wiremsg: Lane snapshot は state カテゴリ → retained 対象。
+        let msg = ProcessMessage::LanesSnapshot { lanes: vec![] };
+        let topic = TopicRouter::message_to_topic(&msg);
+        assert_eq!(topic, "process/star-platinum/state/lanes");
+        assert!(TopicPath::parse(&topic).is_retained());
     }
 
     #[test]

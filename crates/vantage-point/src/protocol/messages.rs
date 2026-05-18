@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::agui::AgUiEvent;
+use crate::process::lanes_state::LaneInfo;
 
 /// Debug display mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -164,6 +165,13 @@ pub enum ProcessMessage {
         /// 切り替え先の Lane 名（プロジェクト名）
         lane: String,
     },
+    /// wiremsg: SP の Lane 一覧 snapshot（retained state topic）。
+    ///
+    /// LanePool 変化のたび全 list を publish し、`process/star-platinum/state/lanes`
+    /// に retain される（category=state → RetainedStore が最新値を保持）。
+    /// subscriber は subscribe 即値 + 変化で push を受ける。
+    /// 設計: creo-memories `mem_1CbA198fsHJsoKpu2jDUCv`（wiremsg restructure）。
+    LanesSnapshot { lanes: Vec<LaneInfo> },
 }
 
 /// Session information for UI
