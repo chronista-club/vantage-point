@@ -51,7 +51,11 @@ export function ProjectAccordion(props: { proc: ProcessPaneState }) {
       <div class="vp-proj-content">
         <Show
           when={hint()}
-          fallback={<For each={lanes()}>{(lane) => <LaneRow lane={lane} />}</For>}
+          fallback={
+            <For each={lanes()}>
+              {(lane) => <LaneRow lane={lane} projectPath={props.proc.path} />}
+            </For>
+          }
         >
           <div class="vp-proj-hint">{hint()}</div>
         </Show>

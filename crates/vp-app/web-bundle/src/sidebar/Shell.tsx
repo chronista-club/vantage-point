@@ -94,15 +94,16 @@ html,body{margin:0;height:100%;background:var(--color-surface-bg-subtle);
 
 /* Lane 行 */
 .vp-lane-row{display:flex;flex-wrap:wrap;align-items:center;gap:6px;
-  padding:5px var(--spacing-sm,8px) 5px 14px;font-size:12px;
+  padding:5px var(--spacing-sm,8px) 5px 14px;font-size:12px;cursor:pointer;
   transition:background .1s ease;}
+.vp-lane-row:hover{background:var(--color-surface-bg-emphasis);}
 .vp-lane-row + .vp-lane-row{border-top:1px solid
   color-mix(in oklch, var(--color-surface-border,#1f2233), transparent 60%);}
 .vp-lane-row.active{background:var(--color-brand-primary-subtle);
   color:var(--color-brand-primary);font-weight:500;
   box-shadow:inset -2px 0 0 0 var(--color-brand-primary);}
 .vp-lane-row.inactive{color:color-mix(in oklch, var(--color-text-secondary),
-  transparent 45%);font-style:italic;}
+  transparent 45%);font-style:italic;cursor:default;}
 .vp-lane-icon{display:inline-flex;width:18px;justify-content:center;}
 .vp-lane-row.inactive .vp-lane-icon{opacity:0.55;}
 .vp-lane-msg{display:inline-flex;color:var(--color-text-tertiary);opacity:0.55;}

@@ -1,16 +1,17 @@
 /**
- * Lane (Lead / Worker) 1 行の描画 component。
+ * Lane (Lead / Wing) 1 行の描画 component。
  *
- * v1.0 柱 2 PR-2。 旧 SIDEBAR_HTML の `.vp-lane-row` 構築ロジックを SolidJS に port。
- * PR-2 は **読み取り描画のみ** — stand icon / label / worker git meta / awaiting dot /
- * mailbox icon / session title (2 行目)。 click 選択・context menu・restart/delete 操作は
- * PR-3 (操作) で追加する。
+ * v1.0 柱 2。 旧 SIDEBAR_HTML の `.vp-lane-row` 構築ロジックを SolidJS に port。
+ * 描画 (PR-2): stand icon / label / wing git meta / awaiting dot / mailbox icon /
+ * session title (2 行目)。 click 選択 (PR-3): row click → `lane:select` IPC で
+ * main area を当該 Lane に切り替え。 context menu・restart/delete 操作は後続。
  */
 import { Show } from 'solid-js'
 import { CreoIcon } from 'creoui-icons-web'
 import type { LaneInfo } from '../generated/LaneInfo'
 import type { WingStatusWire } from '../generated/WingStatusWire'
 import { sidebar } from './store'
+import { sendIpc } from './ipc'
 import { isWingLane, laneAddressKey, laneLabel, standDisplayName, standIcon } from './lane'
 
 /** Wing Lane の git 状態 (branch · ahead/behind · dirty · merged)。 */
@@ -39,7 +40,7 @@ function WingMeta(props: { ws: WingStatusWire }) {
   )
 }
 
-export function LaneRow(props: { lane: LaneInfo }) {
+export function LaneRow(props: { lane: LaneInfo; projectPath: string }) {
   const addr = () => laneAddressKey(props.lane)
   const isActive = () => sidebar.active_lane_address === addr()
   // Pane (Echoes) 不在 = pid:null は disk-only Lane (workspace dir のみ)、 dim 表示。
@@ -53,8 +54,20 @@ export function LaneRow(props: { lane: LaneInfo }) {
   // cc `/rename` の custom-title (2 行目)。 未設定 lane は dimmed "—"。
   const sessionTitle = () => sidebar.session_titles?.[addr()]
 
+  // row click → main area を当該 Lane に切り替え。 Inactive Lane (pid:null) は SP に
+  // PtySlot が無く、 select すると WS 1006 切断 → reconnect loop に入るためガード
+  // (旧 SIDEBAR_HTML と同じ挙動)。
+  const onSelect = () => {
+    if (isInactive()) return
+    sendIpc({ t: 'lane:select', path: props.projectPath, address: addr() })
+  }
+
   return (
-    <div class="vp-lane-row" classList={{ active: isActive(), inactive: isInactive() }}>
+    <div
+      class="vp-lane-row"
+      classList={{ active: isActive(), inactive: isInactive() }}
+      onClick={onSelect}
+    >
       <Show when={icon()}>
         <span class="vp-lane-icon" title={standDisplayName(props.lane.stand)}>
           <CreoIcon name={icon()!} size={14} />
