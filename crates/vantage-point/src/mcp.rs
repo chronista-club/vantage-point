@@ -1251,6 +1251,13 @@ impl VantageMcp {
             })?;
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
+        // 冪等性: 既に無い Wing の delete (SP は LaneNotFound → 404) は no-op 成功扱い。
+        // 真の異常 (500 等) と区別し、 AI agent が「もう消えてる」と判別できるようにする。
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+                format!("Wing Lane already gone (no-op, idempotent): {}", address),
+            )]));
+        }
         if !status.is_success() {
             return Err(McpError::internal_error(
                 format!("SP DELETE /api/lanes {}: {}", status, text),
