@@ -2,7 +2,10 @@ use club_kdl::KdlDeserialize;
 use std::path::{Path, PathBuf};
 use std::{env, fs, io};
 
-const CONFIG_FILE: &str = ".claude/worker-files.kdl";
+/// Wing 設定ファイル名 (primary)。 Wing workspace に symlink/copy するファイルを定義。
+const CONFIG_FILE: &str = ".claude/wing-files.kdl";
+/// Worker → Wing rename (2026-05-18) 前の旧ファイル名。 legacy fallback で受理する。
+const LEGACY_CONFIG_FILE: &str = ".claude/worker-files.kdl";
 
 #[derive(Debug, KdlDeserialize)]
 #[kdl(name = "symlink")]
@@ -89,9 +92,17 @@ pub fn find_repo_root() -> io::Result<PathBuf> {
     Ok(PathBuf::from(path))
 }
 
-/// Load worker-files.kdl from the repo root
+/// Load wing-files.kdl (legacy: worker-files.kdl) from the repo root.
+///
+/// `.claude/wing-files.kdl` を優先し、 無ければ Worker → Wing rename 前の
+/// `.claude/worker-files.kdl` に legacy fallback する。
 pub fn load_config(repo_root: &Path) -> Result<WingConfig, String> {
-    let config_path = repo_root.join(CONFIG_FILE);
+    let primary = repo_root.join(CONFIG_FILE);
+    let config_path = if primary.exists() {
+        primary
+    } else {
+        repo_root.join(LEGACY_CONFIG_FILE)
+    };
     if !config_path.exists() {
         return Err(format!(
             "{CONFIG_FILE} not found. Create it to define symlinks/copies for wing environments."
@@ -348,6 +359,37 @@ symlink-pattern "**/*.local.*"
 
         let result = load_config(&tmp);
         assert!(result.is_err(), "syntax error should return Err");
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn load_config_wing_files_primary() {
+        // 新ファイル名 `.claude/wing-files.kdl` を読めること。
+        let tmp = test_dir("wing-primary");
+        let _ = fs::create_dir_all(tmp.join(".claude"));
+        fs::write(tmp.join(".claude/wing-files.kdl"), "copy \"x.toml\"\n").unwrap();
+
+        let cfg = load_config(&tmp).unwrap();
+        assert_eq!(cfg.copies, vec!["x.toml"]);
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn load_config_prefers_wing_files_over_legacy() {
+        // wing-files.kdl と 旧 worker-files.kdl が両方ある時、 wing 側を優先。
+        let tmp = test_dir("wing-vs-legacy");
+        let _ = fs::create_dir_all(tmp.join(".claude"));
+        fs::write(tmp.join(".claude/wing-files.kdl"), "symlink \".env\"\n").unwrap();
+        fs::write(
+            tmp.join(".claude/worker-files.kdl"),
+            "symlink \".legacy\"\n",
+        )
+        .unwrap();
+
+        let cfg = load_config(&tmp).unwrap();
+        assert_eq!(cfg.symlinks, vec![".env"], "wing-files.kdl を優先すべき");
 
         let _ = fs::remove_dir_all(&tmp);
     }
