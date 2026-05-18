@@ -1833,8 +1833,8 @@ fn spawn_processes_fetch(proxy: EventLoopProxy<AppEvent>) {
         });
 }
 
-/// 1 回の "lanes" channel 接続セッションの終わり方。
-enum LanesSessionOutcome {
+/// 1 回の Unison channel 接続セッションの終わり方 ("lanes" / "canvas" 購読が共用)。
+enum SubscriptionOutcome {
     /// セッション確立後に切断 (SP restart / channel close)。即再接続の対象。
     Disconnected,
     /// event loop が閉じた (= app 終了)。購読スレッドを畳む。
@@ -1882,8 +1882,8 @@ async fn lanes_subscription_loop(
 
     loop {
         match run_lanes_session(&proxy, &process_path, &addr).await {
-            Ok(LanesSessionOutcome::AppClosing) => return,
-            Ok(LanesSessionOutcome::Disconnected) => {
+            Ok(SubscriptionOutcome::AppClosing) => return,
+            Ok(SubscriptionOutcome::Disconnected) => {
                 // セッション確立後の切断 (SP restart 等)。失敗カウンタをリセットし、
                 // 短い固定 delay を挟んで即再接続する (確立直後の即切断による busy loop を防ぐ)。
                 failures = 0;
@@ -1927,7 +1927,7 @@ async fn run_lanes_session(
     proxy: &EventLoopProxy<AppEvent>,
     process_path: &str,
     addr: &str,
-) -> Result<LanesSessionOutcome, String> {
+) -> Result<SubscriptionOutcome, String> {
     use unison::ProtocolClient;
     use unison::network::MessageType;
     use unison::network::TrustAnchors;
@@ -1956,7 +1956,7 @@ async fn run_lanes_session(
         let msg = match channel.recv().await {
             Ok(m) => m,
             // セッション確立後の切断 (SP 停止 / channel close)。再接続対象。
-            Err(_) => return Ok(LanesSessionOutcome::Disconnected),
+            Err(_) => return Ok(SubscriptionOutcome::Disconnected),
         };
         // SP 側 "lanes" channel は `send_event("snapshot", ...)` で push する。
         if msg.msg_type != MessageType::Event || msg.method != "snapshot" {
@@ -1996,7 +1996,133 @@ async fn run_lanes_session(
             .is_err()
         {
             // event loop が閉じた = app 終了。購読スレッドを畳む。
-            return Ok(LanesSessionOutcome::AppClosing);
+            return Ok(SubscriptionOutcome::AppClosing);
+        }
+    }
+}
+
+/// wiremsg Stage 2 consumer: SP の "canvas" Unison channel を購読し、Canvas (Paisley Park)
+/// ProcessMessage を受信して `AppEvent::CanvasMessage` を emit する。`spawn_lanes_subscription`
+/// と同型（QUIC 購読 + 指数バックオフ再接続）。設計: creo-memories mem_1CbA198fsHJsoKpu2jDUCv。
+fn spawn_canvas_subscription(proxy: EventLoopProxy<AppEvent>, process_path: String, sp_port: u16) {
+    let _ = thread::Builder::new()
+        .name(format!("canvas-sub-{}", sp_port))
+        .spawn(move || {
+            let rt = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt,
+                Err(e) => {
+                    tracing::warn!("canvas-sub tokio runtime: {}", e);
+                    let _ = proxy.send_event(AppEvent::CanvasSubscriptionEnded { process_path });
+                    return;
+                }
+            };
+            rt.block_on(canvas_subscription_loop(proxy, process_path, sp_port));
+        });
+}
+
+/// "canvas" channel への接続 → 購読 → 再接続を司る long-lived ループ。
+async fn canvas_subscription_loop(
+    proxy: EventLoopProxy<AppEvent>,
+    process_path: String,
+    sp_port: u16,
+) {
+    let addr = format!("[::1]:{}", sp_port);
+    const MAX_FAILURES: u32 = 10;
+    let mut failures: u32 = 0;
+
+    loop {
+        match run_canvas_session(&proxy, &process_path, &addr).await {
+            Ok(SubscriptionOutcome::AppClosing) => return,
+            Ok(SubscriptionOutcome::Disconnected) => {
+                failures = 0;
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+            Err(e) => {
+                failures += 1;
+                tracing::warn!(
+                    "canvas subscription failed ({}/{}): project={}: {}",
+                    failures,
+                    MAX_FAILURES,
+                    process_path,
+                    e
+                );
+                if failures >= MAX_FAILURES {
+                    tracing::warn!(
+                        "canvas subscription giving up: project={} (SP unreachable)",
+                        process_path
+                    );
+                    let _ = proxy.send_event(AppEvent::CanvasSubscriptionEnded { process_path });
+                    return;
+                }
+                let delay_ms = std::cmp::min(500u64 << (failures - 1), 16_000);
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            }
+        }
+    }
+}
+
+/// 1 回の "canvas" channel 接続セッション: connect → `open_channel("canvas")` → recv ループ。
+///
+/// "canvas" channel は `process/paisley-park/#` retained topic を購読しており、接続直後に
+/// 現スナップショット（最新 Show 等）が届く。各メッセージは `send_event("pane", <JSON>)` で
+/// 来る（payload = ProcessMessage の生 JSON）。
+async fn run_canvas_session(
+    proxy: &EventLoopProxy<AppEvent>,
+    process_path: &str,
+    addr: &str,
+) -> Result<SubscriptionOutcome, String> {
+    use unison::ProtocolClient;
+    use unison::network::MessageType;
+    use unison::network::TrustAnchors;
+    use unison::network::quic::QuicClient;
+
+    let transport = QuicClient::builder()
+        .trust_anchors(TrustAnchors::SkipVerification)
+        .build()
+        .map_err(|e| format!("QUIC client build: {}", e))?;
+    let client = ProtocolClient::new(transport);
+    client
+        .connect(addr)
+        .await
+        .map_err(|e| format!("connect {}: {}", addr, e))?;
+    let channel = client
+        .open_channel("canvas")
+        .await
+        .map_err(|e| format!("open canvas channel: {}", e))?;
+    tracing::info!(
+        "canvas subscription connected: project={} addr={}",
+        process_path,
+        addr
+    );
+
+    loop {
+        let msg = match channel.recv().await {
+            Ok(m) => m,
+            Err(_) => return Ok(SubscriptionOutcome::Disconnected),
+        };
+        // SP 側 "canvas" channel は `send_event("pane", <ProcessMessage JSON>)` で push する。
+        if msg.msg_type != MessageType::Event || msg.method != "pane" {
+            continue;
+        }
+        let payload = match msg.payload_as_value() {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("canvas payload parse failed: {}", e);
+                continue;
+            }
+        };
+        if proxy
+            .send_event(AppEvent::CanvasMessage {
+                process_path: process_path.to_string(),
+                message: payload,
+            })
+            .is_err()
+        {
+            // event loop が閉じた = app 終了。
+            return Ok(SubscriptionOutcome::AppClosing);
         }
     }
 }
@@ -2754,6 +2880,8 @@ pub fn run() -> anyhow::Result<()> {
     // path をキーにする。購読が再接続上限で諦めると `LanesSubscriptionEnded` で除去され、
     // 次の `ProcessesLoaded` で SP がまだ生きていれば再 spawn される。
     let mut lanes_sub_active: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // wiremsg Stage 2: per-SP の "canvas" Unison 購読 guard (lanes_sub_active と同型)。
+    let mut canvas_sub_active: std::collections::HashSet<String> = std::collections::HashSet::new();
     // VP-100 follow-up (1Password 風): runtime 開発者モード state
     let mut dev_mode = initial_dev_mode;
     // project:add 等の async 操作で event loop に project list 再 fetch を kick するための proxy
@@ -2949,16 +3077,22 @@ pub fn run() -> anyhow::Result<()> {
                         pane_state
                     })
                     .collect();
-                // wiremsg Stage 1: 各 project の SP の "lanes" Unison channel を購読する。
-                // 購読は per-SP に 1 本 (lanes_sub_active で dedup)。retained snapshot が
-                // 接続直後に届き、以降 LanePool 変化のたび push されるので、ここで毎回
-                // 張り直す必要はない (旧 spawn_lanes_fetch は ProcessesLoaded ごとに poll)。
-                // 設計: creo-memories mem_1CbA198fsHJsoKpu2jDUCv。
+                // wiremsg: 各 project の SP の Unison channel を購読する (per-SP 1 本ずつ)。
+                // - Stage 1: "lanes" channel → sidebar Lane ツリー
+                // - Stage 2: "canvas" channel → main area の Paisley Park body
+                // retained topic なので接続直後に現スナップショットが届き、以降変化のたび
+                // push される。設計: creo-memories mem_1CbA198fsHJsoKpu2jDUCv。
                 for (path, port) in &project_ports {
-                    if let Some(sp_port) = port
-                        && lanes_sub_active.insert(path.clone())
-                    {
+                    let Some(sp_port) = port else { continue };
+                    if lanes_sub_active.insert(path.clone()) {
                         spawn_lanes_subscription(
+                            async_action_proxy.clone(),
+                            path.clone(),
+                            *sp_port,
+                        );
+                    }
+                    if canvas_sub_active.insert(path.clone()) {
+                        spawn_canvas_subscription(
                             async_action_proxy.clone(),
                             path.clone(),
                             *sp_port,
@@ -3145,6 +3279,52 @@ pub fn run() -> anyhow::Result<()> {
                     process_path
                 );
                 lanes_sub_active.remove(&process_path);
+            }
+            Event::UserEvent(AppEvent::CanvasMessage {
+                process_path,
+                message,
+            }) => {
+                // wiremsg Stage 2: SP の "canvas" channel から受信した ProcessMessage。
+                // active project の分のみ main area の Paisley Park body に転送する。
+                // active 判定: active_lane_address の project segment == process_path の basename。
+                let active_project = sidebar_state
+                    .active_lane_address
+                    .as_deref()
+                    .and_then(|addr| addr.split('/').next());
+                let msg_project = std::path::Path::new(&process_path)
+                    .file_name()
+                    .and_then(|s| s.to_str());
+                let kind = message.get("type").and_then(|t| t.as_str()).unwrap_or("?");
+                if active_project.is_some() && active_project == msg_project {
+                    match serde_json::to_string(&message) {
+                        Ok(json) => {
+                            let script = format!(
+                                "window.vpCanvas && window.vpCanvas.handleMessage({})",
+                                json
+                            );
+                            if let Err(e) = main_view.evaluate_script(&script) {
+                                tracing::warn!("vpCanvas.handleMessage 失敗: {}", e);
+                            } else {
+                                tracing::info!(
+                                    "CanvasMessage (wiremsg): project={} type={} → PP body へ転送",
+                                    msg_project.unwrap_or("?"),
+                                    kind
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("CanvasMessage serialize 失敗: {}", e);
+                        }
+                    }
+                }
+            }
+            Event::UserEvent(AppEvent::CanvasSubscriptionEnded { process_path }) => {
+                // wiremsg Stage 2: "canvas" 購読が再接続上限で終了。guard から外す。
+                tracing::info!(
+                    "AppEvent::CanvasSubscriptionEnded: project={} (購読 guard 解除)",
+                    process_path
+                );
+                canvas_sub_active.remove(&process_path);
             }
             Event::UserEvent(AppEvent::ProcessesError(msg)) => {
                 let js_msg = serde_json::to_string(&msg).unwrap_or_else(|_| "\"error\"".into());

@@ -106,6 +106,16 @@ pub enum AppEvent {
     /// 次の `ProcessesLoaded` で SP がまだ生きていれば購読が再 spawn される。
     /// 設計: creo-memories mem_1CbA198fsHJsoKpu2jDUCv。
     LanesSubscriptionEnded { process_path: String },
+    /// wiremsg Stage 2: SP の "canvas" Unison channel から受信した Canvas (Paisley Park)
+    /// ProcessMessage 1 件。`message` は ProcessMessage の生 JSON (`{"type":"show",...}` 等)。
+    /// handler は active project の分のみ main_view WebView に転送する。
+    CanvasMessage {
+        process_path: String,
+        message: serde_json::Value,
+    },
+    /// wiremsg Stage 2: "canvas" 購読が再接続上限に達して終了したことを通知する。
+    /// main loop は `canvas_sub_active` から process_path を除去する。
+    CanvasSubscriptionEnded { process_path: String },
 }
 
 /// xterm.js から IPC で送られてきた JSON メッセージを処理
