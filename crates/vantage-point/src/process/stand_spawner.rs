@@ -133,8 +133,8 @@ pub fn spawn_with_fallback(
 fn lane_label(addr: &LaneAddress) -> &str {
     match (&addr.kind, addr.name.as_deref()) {
         (LaneKind::Lead, _) => "lead",
-        (LaneKind::Worker, Some(n)) => n,
-        (LaneKind::Worker, None) => "unnamed",
+        (LaneKind::Wing, Some(n)) => n,
+        (LaneKind::Wing, None) => "unnamed",
     }
 }
 
@@ -214,7 +214,7 @@ mod tests {
     /// VP_* env が doc 11 §3.3 通りに injected されていること。
     #[test]
     fn build_stand_command_injects_vp_env() {
-        let addr = LaneAddress::worker("vantage-point", "sub");
+        let addr = LaneAddress::wing("vantage-point", "sub");
         let cmd = build_stand_command("hd", &addr, Path::new("/work/vp"));
 
         let env: std::collections::HashMap<_, _> = cmd.env.iter().cloned().collect();
@@ -257,7 +257,7 @@ mod tests {
 
         let unnamed = LaneAddress {
             project: "vp".into(),
-            kind: LaneKind::Worker,
+            kind: LaneKind::Wing,
             name: None,
         };
         let cmd = build_stand_command("hd", &unnamed, Path::new("/tmp"));

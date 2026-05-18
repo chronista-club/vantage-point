@@ -1501,20 +1501,20 @@ impl ProcessManagerCapability {
     ) {
         use notify::{EventKind, RecursiveMode, Watcher};
 
-        // workers_dir 解決 (= vp_data_dir()/lanes/)。 不在なら作成 (= 後の worker spawn でも必要)。
-        let workers_dir = match crate::lane::config::workers_dir() {
+        // wings_dir 解決 (= vp_data_dir()/lanes/)。 不在なら作成 (= 後の worker spawn でも必要)。
+        let wings_dir = match crate::lane::config::wings_dir() {
             Ok(d) => d,
             Err(e) => {
-                tracing::warn!("lane watcher: workers_dir 解決失敗 (skip): {}", e);
+                tracing::warn!("lane watcher: wings_dir 解決失敗 (skip): {}", e);
                 return;
             }
         };
-        if !workers_dir.exists()
-            && let Err(e) = std::fs::create_dir_all(&workers_dir)
+        if !wings_dir.exists()
+            && let Err(e) = std::fs::create_dir_all(&wings_dir)
         {
             tracing::warn!(
-                "lane watcher: workers_dir create 失敗 (skip、 path={}): {}",
-                workers_dir.display(),
+                "lane watcher: wings_dir create 失敗 (skip、 path={}): {}",
+                wings_dir.display(),
                 e
             );
             return;
@@ -1536,10 +1536,10 @@ impl ProcessManagerCapability {
                 }
             };
 
-        if let Err(e) = watcher.watch(&workers_dir, RecursiveMode::NonRecursive) {
+        if let Err(e) = watcher.watch(&wings_dir, RecursiveMode::NonRecursive) {
             tracing::warn!(
                 "lane watcher: watch 開始失敗 (path={}, err={})",
-                workers_dir.display(),
+                wings_dir.display(),
                 e
             );
             return;
@@ -1547,7 +1547,7 @@ impl ProcessManagerCapability {
 
         tracing::info!(
             "lane watcher 起動 (path={}、 mode=NonRecursive、 trigger=Remove → SP DELETE)",
-            workers_dir.display()
+            wings_dir.display()
         );
 
         let client = reqwest::Client::builder()
@@ -1566,7 +1566,7 @@ impl ProcessManagerCapability {
                     if !matches!(event.kind, EventKind::Remove(_)) {
                         continue;
                     }
-                    Self::handle_lane_remove_event(&world, &client, &workers_dir, &event).await;
+                    Self::handle_lane_remove_event(&world, &client, &wings_dir, &event).await;
                 }
             }
         }
@@ -1580,15 +1580,15 @@ impl ProcessManagerCapability {
     async fn handle_lane_remove_event(
         world: &Arc<RwLock<Self>>,
         client: &reqwest::Client,
-        workers_dir: &std::path::Path,
+        wings_dir: &std::path::Path,
         event: &notify::Event,
     ) {
         for path in &event.paths {
-            // workers_dir 直下の dir のみ対象 (= 子孫 file の Remove は無関係)
+            // wings_dir 直下の dir のみ対象 (= 子孫 file の Remove は無関係)
             let Some(parent) = path.parent() else {
                 continue;
             };
-            if parent != workers_dir {
+            if parent != wings_dir {
                 continue;
             }
             let Some(dirname) = path.file_name().and_then(|n| n.to_str()) else {

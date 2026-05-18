@@ -20,113 +20,108 @@ fn symlink(src: &Path, dst: &Path) -> std::io::Result<()> {
     }
 }
 
-/// Create a new worker environment
-pub fn new_worker(name: &str, branch: &str, force: bool) -> Result<(), String> {
+/// Create a new wing environment
+pub fn new_wing(name: &str, branch: &str, force: bool) -> Result<(), String> {
     let repo_root = config::find_repo_root().map_err(|e| e.to_string())?;
-    let worker_dir = setup_worker(name, branch, &repo_root, force)?;
-    println!("{}", worker_dir.display());
+    let wing_dir = setup_wing(name, branch, &repo_root, force)?;
+    println!("{}", wing_dir.display());
     Ok(())
 }
 
-/// Phase 4-X: SP-friendly wrapper. `repo_root` を明示的に受け取り、 worker dir の `PathBuf` を返す。
+/// Phase 4-X: SP-friendly wrapper. `repo_root` を明示的に受け取り、 wing dir の `PathBuf` を返す。
 /// stdout への print なし、 lib call として完結。 SP server (lanes.rs) から直接呼ぶ用。
-pub fn new_worker_in(
+pub fn new_wing_in(
     repo_root: &Path,
     name: &str,
     branch: &str,
     force: bool,
 ) -> Result<PathBuf, String> {
-    setup_worker(name, branch, repo_root, force)
+    setup_wing(name, branch, repo_root, force)
 }
 
-/// Phase 4-X: SP-friendly remove (repo_name 明示)。 worker_name 直 + repo_prefix 試行。
-/// `<workers_dir>/<name>` and `<workers_dir>/<repo_name>-<name>` の 2 path を順に試す。
-pub fn remove_worker_in(repo_name: &str, name: &str) -> Result<(), String> {
-    let workers_dir = config::workers_dir()?;
-    config::validate_worker_name(name)?;
-    let worker_dir = workers_dir.join(name);
-    if worker_dir.exists() {
-        fs::remove_dir_all(&worker_dir).map_err(|e| e.to_string())?;
+/// Phase 4-X: SP-friendly remove (repo_name 明示)。 wing_name 直 + repo_prefix 試行。
+/// `<wings_dir>/<name>` and `<wings_dir>/<repo_name>-<name>` の 2 path を順に試す。
+pub fn remove_wing_in(repo_name: &str, name: &str) -> Result<(), String> {
+    let wings_dir = config::wings_dir()?;
+    config::validate_wing_name(name)?;
+    let wing_dir = wings_dir.join(name);
+    if wing_dir.exists() {
+        fs::remove_dir_all(&wing_dir).map_err(|e| e.to_string())?;
         return Ok(());
     }
     let prefixed = format!("{repo_name}-{name}");
-    let prefixed_dir = workers_dir.join(&prefixed);
+    let prefixed_dir = wings_dir.join(&prefixed);
     if prefixed_dir.exists() {
         fs::remove_dir_all(&prefixed_dir).map_err(|e| e.to_string())?;
         return Ok(());
     }
-    Err(format!("worker not found: {} or {}", name, prefixed))
+    Err(format!("wing not found: {} or {}", name, prefixed))
 }
 
-/// Fork current dirty state into a new worker environment
-pub fn fork_worker(name: &str, branch: &str, force: bool) -> Result<(), String> {
+/// Fork current dirty state into a new wing environment
+pub fn fork_wing(name: &str, branch: &str, force: bool) -> Result<(), String> {
     let repo_root = config::find_repo_root().map_err(|e| e.to_string())?;
 
-    // Capture dirty state as a diff BEFORE creating the worker
+    // Capture dirty state as a diff BEFORE creating the wing
     let diff = capture_dirty_diff(&repo_root)?;
 
-    let worker_dir = setup_worker(name, branch, &repo_root, force)?;
+    let wing_dir = setup_wing(name, branch, &repo_root, force)?;
 
-    // Apply the captured diff to the worker
+    // Apply the captured diff to the wing
     if let Some(patch) = diff {
         eprintln!("dirty state を適用中...");
-        apply_patch(&worker_dir, &patch)?;
+        apply_patch(&wing_dir, &patch)?;
     } else {
         eprintln!("フォークする未コミット変更はありません。");
     }
 
-    println!("{}", worker_dir.display());
+    println!("{}", wing_dir.display());
     Ok(())
 }
 
-/// Common worker setup: clone, symlink, branch, post-setup.
-/// Returns the worker directory path.
-fn setup_worker(
-    name: &str,
-    branch: &str,
-    repo_root: &Path,
-    force: bool,
-) -> Result<PathBuf, String> {
-    config::validate_worker_name(name)?;
+/// Common wing setup: clone, symlink, branch, post-setup.
+/// Returns the wing directory path.
+fn setup_wing(name: &str, branch: &str, repo_root: &Path, force: bool) -> Result<PathBuf, String> {
+    config::validate_wing_name(name)?;
 
     let remote_url = config::get_remote_url().map_err(|e| e.to_string())?;
     let cfg = config::load_config(repo_root)?;
-    let workers_dir = config::workers_dir()?;
+    let wings_dir = config::wings_dir()?;
 
     // Auto-prefix with repo name if not already included
     let repo_name = config::repo_name().unwrap_or_default();
     let actual_name = apply_repo_prefix(name, &repo_name);
-    let worker_dir = workers_dir.join(&actual_name);
+    let wing_dir = wings_dir.join(&actual_name);
 
-    // Check existing worker
-    if worker_dir.exists() {
+    // Check existing wing
+    if wing_dir.exists() {
         if !force {
             return Err(format!(
                 "ワーカー '{actual_name}' は既に存在します。上書きするには --force を指定してください。"
             ));
         }
-        eprintln!("既存ワーカーを削除: {}", worker_dir.display());
-        fs::remove_dir_all(&worker_dir).map_err(|e| e.to_string())?;
+        eprintln!("既存ワーカーを削除: {}", wing_dir.display());
+        fs::remove_dir_all(&wing_dir).map_err(|e| e.to_string())?;
     }
 
     // Clone
-    fs::create_dir_all(&workers_dir).map_err(|e| e.to_string())?;
-    eprintln!("{} にクローン中...", worker_dir.display());
+    fs::create_dir_all(&wings_dir).map_err(|e| e.to_string())?;
+    eprintln!("{} にクローン中...", wing_dir.display());
     let repo_root_str = repo_root
         .to_str()
         .ok_or("リポジトリルートのパスが有効な UTF-8 ではありません")?;
-    let worker_dir_str = worker_dir
+    let wing_dir_str = wing_dir
         .to_str()
         .ok_or("ワーカーディレクトリのパスが有効な UTF-8 ではありません")?;
-    run_git(&["clone", "--depth", "1", repo_root_str, worker_dir_str])?;
+    run_git(&["clone", "--depth", "1", repo_root_str, wing_dir_str])?;
 
     // Set remote to GitHub URL
-    run_git_in(&worker_dir, &["remote", "set-url", "origin", &remote_url])?;
+    run_git_in(&wing_dir, &["remote", "set-url", "origin", &remote_url])?;
 
     // Symlinks
     for file in &cfg.symlinks {
         let src = repo_root.join(file);
-        let dst = worker_dir.join(file);
+        let dst = wing_dir.join(file);
         if src.exists() {
             if let Some(parent) = dst.parent() {
                 fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -141,7 +136,7 @@ fn setup_worker(
     // Copies
     for file in &cfg.copies {
         let src = repo_root.join(file);
-        let dst = worker_dir.join(file);
+        let dst = wing_dir.join(file);
         if src.exists() {
             if let Some(parent) = dst.parent() {
                 fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -162,7 +157,7 @@ fn setup_worker(
                 continue;
             }
             if let Ok(rel) = entry.strip_prefix(repo_root) {
-                let dst = worker_dir.join(rel);
+                let dst = wing_dir.join(rel);
                 if !dst.exists() {
                     if let Some(parent) = dst.parent() {
                         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -175,14 +170,14 @@ fn setup_worker(
     }
 
     // Create branch
-    run_git_in(&worker_dir, &["checkout", "-b", branch])?;
+    run_git_in(&wing_dir, &["checkout", "-b", branch])?;
 
     // Post-setup
     if let Some(cmd) = &cfg.post_setup {
         eprintln!("実行中: {cmd}");
         let status = Command::new("sh")
             .args(["-c", cmd])
-            .current_dir(&worker_dir)
+            .current_dir(&wing_dir)
             .status()
             .map_err(|e| e.to_string())?;
 
@@ -191,17 +186,17 @@ fn setup_worker(
         }
     }
 
-    Ok(worker_dir)
+    Ok(wing_dir)
 }
 
-/// List all worker environments
-pub fn list_workers() -> Result<(), String> {
-    let workers_dir = config::workers_dir()?;
-    if !workers_dir.exists() {
+/// List all wing environments
+pub fn list_wings() -> Result<(), String> {
+    let wings_dir = config::wings_dir()?;
+    if !wings_dir.exists() {
         return Ok(());
     }
 
-    let entries = fs::read_dir(&workers_dir).map_err(|e| e.to_string())?;
+    let entries = fs::read_dir(&wings_dir).map_err(|e| e.to_string())?;
 
     for entry in entries.flatten() {
         let path = entry.path();
@@ -219,13 +214,13 @@ pub fn list_workers() -> Result<(), String> {
     Ok(())
 }
 
-/// disk 上で発見された Worker 環境 1 件 (lane Worker dir の structured view、 SP /api/lanes 用)。
+/// disk 上で発見された Wing 環境 1 件 (lane Wing dir の structured view、 SP /api/lanes 用)。
 ///
 /// PtySlot 起動の有無は問わない (= disk 存在のみ示す)。 lanes.rs:list_handler で
-/// in-memory LanePool に居ない Worker を `LaneState::Inactive` として merge する時の中間 type。
+/// in-memory LanePool に居ない Wing を `LaneState::Inactive` として merge する時の中間 type。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct InactiveWorkerEntry {
-    /// repo prefix を剥がした worker 名 (`<repo_name>-<name>` → `<name>`)
+pub struct InactiveWingEntry {
+    /// repo prefix を剥がした wing 名 (`<repo_name>-<name>` → `<name>`)
     pub name: String,
     /// 絶対 path
     pub path: String,
@@ -234,26 +229,26 @@ pub struct InactiveWorkerEntry {
     pub branch: Option<String>,
 }
 
-/// repo_name の prefix を持つ Worker dir を `workers_dir` から走査して返す (SP /api/lanes 用)。
+/// repo_name の prefix を持つ Wing dir を `wings_dir` から走査して返す (SP /api/lanes 用)。
 ///
 /// 「基本は通らない防御パス」: 通常 lane clone は POST /api/lanes 経由で生成され、 同 session 内なら
 /// LanePool に登録されている。 ただし vp-app crash 後の残骸 / 別 session での `vp lane new` 等で
-/// disk に存在するが LanePool に居ない Worker が出ることがあり、 それを sidebar に inactive 状態で
+/// disk に存在するが LanePool に居ない Wing が出ることがあり、 それを sidebar に inactive 状態で
 /// surface するため。 click で activate (= POST /api/lanes に cwd 指定で attach) する想定。
 ///
-/// `workers_dir` 不在時は空 Vec (error にしない、 防御パスのため fail-soft)。
+/// `wings_dir` 不在時は空 Vec (error にしない、 防御パスのため fail-soft)。
 /// `repo_name` empty 時は全 dir に match してしまうため空 Vec。
-pub fn list_workers_for_repo(repo_name: &str) -> Vec<InactiveWorkerEntry> {
+pub fn list_wings_for_repo(repo_name: &str) -> Vec<InactiveWingEntry> {
     if repo_name.is_empty() {
         return Vec::new();
     }
-    let Ok(workers_dir) = config::workers_dir() else {
+    let Ok(wings_dir) = config::wings_dir() else {
         return Vec::new();
     };
-    if !workers_dir.exists() {
+    if !wings_dir.exists() {
         return Vec::new();
     }
-    let Ok(entries) = fs::read_dir(&workers_dir) else {
+    let Ok(entries) = fs::read_dir(&wings_dir) else {
         return Vec::new();
     };
 
@@ -269,11 +264,11 @@ pub fn list_workers_for_repo(repo_name: &str) -> Vec<InactiveWorkerEntry> {
         let Some(stripped) = dir_name.strip_prefix(&prefix) else {
             continue;
         };
-        // worker 名空 (= "<repo_name>-" だけの dir) は無視
+        // wing 名空 (= "<repo_name>-" だけの dir) は無視
         if stripped.is_empty() {
             continue;
         }
-        out.push(InactiveWorkerEntry {
+        out.push(InactiveWingEntry {
             name: stripped.to_string(),
             path: path.to_string_lossy().into_owned(),
             branch: get_branch(&path),
@@ -282,17 +277,17 @@ pub fn list_workers_for_repo(repo_name: &str) -> Vec<InactiveWorkerEntry> {
     out
 }
 
-/// Print the path to a worker
-pub fn worker_path(name: &str) -> Result<(), String> {
-    let workers_dir = config::workers_dir()?;
-    let worker_dir = workers_dir.join(name);
-    if worker_dir.exists() {
-        println!("{}", worker_dir.display());
+/// Print the path to a wing
+pub fn wing_path(name: &str) -> Result<(), String> {
+    let wings_dir = config::wings_dir()?;
+    let wing_dir = wings_dir.join(name);
+    if wing_dir.exists() {
+        println!("{}", wing_dir.display());
         return Ok(());
     }
     // Fallback: try with repo name prefix
     if let Some(repo_name) = config::repo_name() {
-        let prefixed = workers_dir.join(format!("{repo_name}-{name}"));
+        let prefixed = wings_dir.join(format!("{repo_name}-{name}"));
         if prefixed.exists() {
             println!("{}", prefixed.display());
             return Ok(());
@@ -303,34 +298,34 @@ pub fn worker_path(name: &str) -> Result<(), String> {
     ))
 }
 
-/// Remove a worker environment
-pub fn remove_worker(name: Option<&str>, all: bool, force: bool) -> Result<(), String> {
-    let workers_dir = config::workers_dir()?;
+/// Remove a wing environment
+pub fn remove_wing(name: Option<&str>, all: bool, force: bool) -> Result<(), String> {
+    let wings_dir = config::wings_dir()?;
 
     if all {
         if !force {
             return Err("--all には --force が必要です（誤削除防止）".into());
         }
-        if workers_dir.exists() {
-            fs::remove_dir_all(&workers_dir).map_err(|e| e.to_string())?;
+        if wings_dir.exists() {
+            fs::remove_dir_all(&wings_dir).map_err(|e| e.to_string())?;
             eprintln!("全ワーカーを削除しました");
         }
         return Ok(());
     }
 
     let name = name.ok_or("ワーカー名を指定するか --all --force を使用してください")?;
-    config::validate_worker_name(name)?;
+    config::validate_wing_name(name)?;
 
-    let worker_dir = workers_dir.join(name);
-    if worker_dir.exists() {
-        fs::remove_dir_all(&worker_dir).map_err(|e| e.to_string())?;
+    let wing_dir = wings_dir.join(name);
+    if wing_dir.exists() {
+        fs::remove_dir_all(&wing_dir).map_err(|e| e.to_string())?;
         eprintln!("削除: {name}");
         return Ok(());
     }
     // Fallback: try with repo name prefix
     if let Some(repo_name) = config::repo_name() {
         let prefixed_name = format!("{repo_name}-{name}");
-        let prefixed_dir = workers_dir.join(&prefixed_name);
+        let prefixed_dir = wings_dir.join(&prefixed_name);
         if prefixed_dir.exists() {
             fs::remove_dir_all(&prefixed_dir).map_err(|e| e.to_string())?;
             eprintln!("削除: {prefixed_name}");
@@ -342,15 +337,15 @@ pub fn remove_worker(name: Option<&str>, all: bool, force: bool) -> Result<(), S
     ))
 }
 
-/// Show status of all worker environments
-pub fn status_workers() -> Result<(), String> {
-    let workers_dir = config::workers_dir()?;
-    if !workers_dir.exists() {
+/// Show status of all wing environments
+pub fn status_wings() -> Result<(), String> {
+    let wings_dir = config::wings_dir()?;
+    if !wings_dir.exists() {
         eprintln!("ワーカーはありません。`vp lane new <name> <branch>` で作成できます。");
         return Ok(());
     }
 
-    let entries = fs::read_dir(&workers_dir).map_err(|e| e.to_string())?;
+    let entries = fs::read_dir(&wings_dir).map_err(|e| e.to_string())?;
     let mut found = false;
 
     for entry in entries.flatten() {
@@ -383,15 +378,15 @@ pub fn status_workers() -> Result<(), String> {
     Ok(())
 }
 
-/// Remove workers whose branch is merged into main
-pub fn cleanup_workers(force: bool) -> Result<(), String> {
-    let workers_dir = config::workers_dir()?;
-    if !workers_dir.exists() {
+/// Remove wings whose branch is merged into main
+pub fn cleanup_wings(force: bool) -> Result<(), String> {
+    let wings_dir = config::wings_dir()?;
+    if !wings_dir.exists() {
         eprintln!("クリーンアップ対象はありません。");
         return Ok(());
     }
 
-    let entries = fs::read_dir(&workers_dir).map_err(|e| e.to_string())?;
+    let entries = fs::read_dir(&wings_dir).map_err(|e| e.to_string())?;
     let mut to_remove: Vec<(String, std::path::PathBuf)> = Vec::new();
     let mut kept: Vec<(String, String)> = Vec::new();
 
@@ -403,7 +398,7 @@ pub fn cleanup_workers(force: bool) -> Result<(), String> {
 
         let name = entry.file_name().to_string_lossy().to_string();
 
-        // Fetch latest remote state in each worker
+        // Fetch latest remote state in each wing
         let _ = run_git_in(&path, &["fetch", "--quiet"]);
 
         if is_branch_merged(&path) {
@@ -450,7 +445,7 @@ pub fn cleanup_workers(force: bool) -> Result<(), String> {
 
 // --- helpers ---
 
-/// Apply repo name prefix to worker name, avoiding double-prefixing.
+/// Apply repo name prefix to wing name, avoiding double-prefixing.
 /// e.g. ("issue-42", "nexus") → "nexus-issue-42"
 ///      ("nexus-issue-42", "nexus") → "nexus-issue-42"
 pub(crate) fn apply_repo_prefix(name: &str, repo_name: &str) -> String {
@@ -528,10 +523,10 @@ fn capture_dirty_diff(repo_root: &Path) -> Result<Option<String>, String> {
 }
 
 /// Apply a unified diff patch to a directory
-fn apply_patch(worker_dir: &Path, patch: &str) -> Result<(), String> {
+fn apply_patch(wing_dir: &Path, patch: &str) -> Result<(), String> {
     let mut child = Command::new("git")
         .args(["apply", "--allow-empty", "-"])
-        .current_dir(worker_dir)
+        .current_dir(wing_dir)
         .stdin(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -632,21 +627,21 @@ fn get_last_commit(dir: &std::path::Path) -> String {
     }
 }
 
-/// Check if HEAD in the worker dir is merged into origin/main (or origin/master).
+/// Check if HEAD in the wing dir is merged into origin/main (or origin/master).
 ///
-/// A worker is "merged" only if:
+/// A wing is "merged" only if:
 ///   1. HEAD is an ancestor of origin/<main> (merge-base --is-ancestor), AND
-///   2. The worker has diverged (has at least 1 local commit beyond origin/<main>)
+///   2. The wing has diverged (has at least 1 local commit beyond origin/<main>)
 ///
-/// This prevents false positives on freshly-created workers (HEAD == origin/main).
-fn is_branch_merged(worker_dir: &std::path::Path) -> bool {
+/// This prevents false positives on freshly-created wings (HEAD == origin/main).
+fn is_branch_merged(wing_dir: &std::path::Path) -> bool {
     for branch in &["main", "master"] {
         let remote_ref = format!("origin/{branch}");
 
         // Check if HEAD is ancestor of remote main
         let ancestor = Command::new("git")
             .args(["merge-base", "--is-ancestor", "HEAD", &remote_ref])
-            .current_dir(worker_dir)
+            .current_dir(wing_dir)
             .output()
             .ok();
         if !matches!(ancestor, Some(ref o) if o.status.success()) {
@@ -654,9 +649,9 @@ fn is_branch_merged(worker_dir: &std::path::Path) -> bool {
         }
 
         // Guard: skip if HEAD is exactly the same commit as origin/main
-        // (freshly created worker that hasn't diverged yet)
-        let head_sha = git_rev_parse(worker_dir, "HEAD");
-        let remote_sha = git_rev_parse(worker_dir, &remote_ref);
+        // (freshly created wing that hasn't diverged yet)
+        let head_sha = git_rev_parse(wing_dir, "HEAD");
+        let remote_sha = git_rev_parse(wing_dir, &remote_ref);
         if head_sha == remote_sha {
             continue;
         }
@@ -698,12 +693,12 @@ fn get_branch(dir: &std::path::Path) -> Option<String> {
     }
 }
 
-// ── Phase 5-D D1: Worker status (struct 返却、 SP API exposure 用) ───────────
+// ── Phase 5-D D1: Wing status (struct 返却、 SP API exposure 用) ───────────
 
-/// Worker workspace の git 状態 snapshot。 `worker_status(path)` で取得、
+/// Wing workspace の git 状態 snapshot。 `wing_status(path)` で取得、
 /// `/api/lanes` の LaneInfo に embed して sidebar に表示する。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct WorkerStatus {
+pub struct WingStatus {
     /// 現在のブランチ (detached HEAD 時 None)
     pub branch: Option<String>,
     /// `git status --short` の non-empty lines (= 変更ファイル数、 0 なら clean)
@@ -720,15 +715,15 @@ pub struct WorkerStatus {
     pub is_merged: bool,
 }
 
-/// Worker workspace dir から status snapshot を取得 (SP API 用)。 git 関連 subprocess を
-/// 5-7 個並列に呼ぶので 1 回 ~50-100ms 程度。 多数 worker 時は SP 側で並列化検討。
-pub fn worker_status(dir: &Path) -> WorkerStatus {
+/// Wing workspace dir から status snapshot を取得 (SP API 用)。 git 関連 subprocess を
+/// 5-7 個並列に呼ぶので 1 回 ~50-100ms 程度。 多数 wing 時は SP 側で並列化検討。
+pub fn wing_status(dir: &Path) -> WingStatus {
     let branch = get_branch(dir);
     let dirty_count = count_changes(dir);
     let (ahead, behind, has_upstream) = get_ahead_behind_counts(dir);
     let last_commit = get_last_commit(dir);
     let is_merged = is_branch_merged(dir);
-    WorkerStatus {
+    WingStatus {
         branch,
         dirty_count,
         ahead,
@@ -903,9 +898,7 @@ mod tests {
     // --- is_branch_merged ---
 
     /// bare repo → clone 構成で origin/main を持つワーカーを作る
-    fn setup_merged_worker_repos(
-        base: &std::path::Path,
-    ) -> (std::path::PathBuf, std::path::PathBuf) {
+    fn setup_merged_wing_repos(base: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
         // 1. bare repo（origin の代替）を作成
         //    --initial-branch=main で CI runner (init.defaultBranch=master 可能性) でも
         //    origin/HEAD が main に固定されるようにする
@@ -958,57 +951,53 @@ mod tests {
             .output()
             .unwrap();
 
-        // 3. worker repo を bare から clone
-        let worker_repo = base.join("worker");
+        // 3. wing repo を bare から clone
+        let wing_repo = base.join("wing");
         Cmd::new("git")
-            .args([
-                "clone",
-                bare.to_str().unwrap(),
-                worker_repo.to_str().unwrap(),
-            ])
+            .args(["clone", bare.to_str().unwrap(), wing_repo.to_str().unwrap()])
             .output()
             .unwrap();
         Cmd::new("git")
             .args(["config", "user.email", "test@example.com"])
-            .current_dir(&worker_repo)
+            .current_dir(&wing_repo)
             .output()
             .unwrap();
         Cmd::new("git")
             .args(["config", "user.name", "Test"])
-            .current_dir(&worker_repo)
+            .current_dir(&wing_repo)
             .output()
             .unwrap();
 
-        (main_repo, worker_repo)
+        (main_repo, wing_repo)
     }
 
     #[test]
     fn is_branch_merged_returns_true_after_merge() {
         let base = test_dir("merged-true");
-        let (main_repo, worker_repo) = setup_merged_worker_repos(&base);
+        let (main_repo, wing_repo) = setup_merged_wing_repos(&base);
 
-        // worker で feature ブランチを作りコミット
+        // wing で feature ブランチを作りコミット
         Cmd::new("git")
             .args(["checkout", "-b", "feature"])
-            .current_dir(&worker_repo)
+            .current_dir(&wing_repo)
             .output()
             .unwrap();
-        fs::write(worker_repo.join("feature.txt"), "feature work\n").unwrap();
+        fs::write(wing_repo.join("feature.txt"), "feature work\n").unwrap();
         Cmd::new("git")
             .args(["add", "."])
-            .current_dir(&worker_repo)
+            .current_dir(&wing_repo)
             .output()
             .unwrap();
         Cmd::new("git")
             .args(["commit", "-m", "feature commit"])
-            .current_dir(&worker_repo)
+            .current_dir(&wing_repo)
             .output()
             .unwrap();
 
-        // worker の feature を bare に push
+        // wing の feature を bare に push
         Cmd::new("git")
             .args(["push", "origin", "feature"])
-            .current_dir(&worker_repo)
+            .current_dir(&wing_repo)
             .output()
             .unwrap();
 
@@ -1041,17 +1030,17 @@ mod tests {
             .output()
             .unwrap();
 
-        // worker が fetch して origin/main を最新化
-        // worker の HEAD は feature のまま（origin/main より古い）
+        // wing が fetch して origin/main を最新化
+        // wing の HEAD は feature のまま（origin/main より古い）
         Cmd::new("git")
             .args(["fetch", "origin"])
-            .current_dir(&worker_repo)
+            .current_dir(&wing_repo)
             .output()
             .unwrap();
 
-        // worker HEAD は origin/main の祖先 + 分岐あり → merged = true
+        // wing HEAD は origin/main の祖先 + 分岐あり → merged = true
         assert!(
-            is_branch_merged(&worker_repo),
+            is_branch_merged(&wing_repo),
             "merged feature branch should return true"
         );
 
@@ -1061,13 +1050,13 @@ mod tests {
     #[test]
     fn is_branch_merged_returns_false_when_head_equals_origin_main() {
         let base = test_dir("merged-false-fresh");
-        let (_, worker_repo) = setup_merged_worker_repos(&base);
+        let (_, wing_repo) = setup_merged_wing_repos(&base);
 
-        // worker に local commit なし（HEAD == origin/main）
+        // wing に local commit なし（HEAD == origin/main）
         // false-positive ガード: is_branch_merged は false を返すべき
         assert!(
-            !is_branch_merged(&worker_repo),
-            "fresh worker (HEAD == origin/main) should return false"
+            !is_branch_merged(&wing_repo),
+            "fresh wing (HEAD == origin/main) should return false"
         );
 
         let _ = fs::remove_dir_all(&base);

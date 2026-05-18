@@ -194,7 +194,7 @@ struct ProcessesResponse {
 #[cfg_attr(test, derive(TS), ts(export, export_to = "web-bundle/src/generated/"))]
 pub struct LaneInfo {
     pub address: LaneAddressWire,
-    /// "lead" | "worker"
+    /// "lead" | "wing"
     #[serde(default)]
     pub kind: String,
     #[serde(default)]
@@ -211,16 +211,17 @@ pub struct LaneInfo {
     pub pid: Option<u32>,
     #[serde(default)]
     pub cwd: String,
-    /// Phase 5-D: Worker Lane のみ有効、 git workspace の状態 snapshot
-    #[serde(default)]
-    pub worker_status: Option<WorkerStatusWire>,
+    /// Phase 5-D: Wing Lane のみ有効、 git workspace の状態 snapshot。
+    /// `worker_status` は Worker → Wing rename 前の legacy wire field 名 (alias で受理)。
+    #[serde(default, alias = "worker_status")]
+    pub wing_status: Option<WingStatusWire>,
 }
 
-/// Phase 5-D: vantage-point 側 `lane::commands::WorkerStatus` の wire shape。
-/// sidebar Worker row に branch / dirty / ahead / behind / merge 状態を表示。
+/// Phase 5-D: vantage-point 側 `lane::commands::WingStatus` の wire shape。
+/// sidebar Wing row に branch / dirty / ahead / behind / merge 状態を表示。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(test, derive(TS), ts(export, export_to = "web-bundle/src/generated/"))]
-pub struct WorkerStatusWire {
+pub struct WingStatusWire {
     #[serde(default)]
     pub branch: Option<String>,
     #[serde(default)]
@@ -373,12 +374,12 @@ impl TheWorldClient {
         Ok(())
     }
 
-    /// Phase 3-A: SP に Worker Lane を create (`POST /api/lanes`)。
-    /// `branch` 指定時は SP が `vp lane new <name> <branch>` で worker dir を作成して spawn する。
+    /// Phase 3-A: SP に Wing Lane を create (`POST /api/lanes`)。
+    /// `branch` 指定時は SP が `vp lane new <name> <branch>` で wing dir を作成して spawn する。
     /// `stand` 指定時は SP が `mise run vp:stand:{stand}` で specified stand を起動する
     /// (doc 11 PR-C、 None なら SP-side default = config.default_stand_or_echoes())。
     /// `base_url` は SP の URL (例: `http://127.0.0.1:33002`) を指定。
-    pub async fn create_worker_lane(
+    pub async fn create_wing_lane(
         &self,
         name: &str,
         branch: Option<&str>,
@@ -386,7 +387,7 @@ impl TheWorldClient {
     ) -> Result<()> {
         let url = format!("{}/api/lanes", self.base_url);
         let mut body = serde_json::json!({
-            "kind": "worker",
+            "kind": "wing",
             "name": name,
         });
         if let Some(b) = branch {
@@ -399,13 +400,13 @@ impl TheWorldClient {
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            anyhow::bail!("create_worker_lane HTTP {}: {}", status, text);
+            anyhow::bail!("create_wing_lane HTTP {}: {}", status, text);
         }
         Ok(())
     }
 
     /// doc 11 PR-C: SP の `GET /api/stands` で利用可能な Stand 一覧を取得。
-    /// sidebar の `+ Add Worker` で stand dropdown を populate するための data source。
+    /// sidebar の `+ Add Wing` で stand dropdown を populate するための data source。
     pub async fn list_stands(&self) -> Result<Vec<StandInfo>> {
         let url = format!("{}/api/stands", self.base_url);
         let resp = self.client.get(&url).send().await?;
@@ -418,10 +419,10 @@ impl TheWorldClient {
         Ok(body.stands)
     }
 
-    /// Phase 4-A: SP の Worker Lane を削除 (`DELETE /api/lanes?address=<addr>`)。
-    /// `address` は Display 形 (`<project>/worker/<name>`)。 Lead は server 側で 400 で拒否される。
+    /// Phase 4-A: SP の Wing Lane を削除 (`DELETE /api/lanes?address=<addr>`)。
+    /// `address` は Display 形 (`<project>/wing/<name>`)。 Lead は server 側で 400 で拒否される。
     pub async fn delete_lane(&self, address: &str) -> Result<()> {
-        // address は `/` を含むので URL encode する (worker/<name> 部分が path 化されないように)
+        // address は `/` を含むので URL encode する (wing/<name> 部分が path 化されないように)
         let encoded = address
             .replace('%', "%25")
             .replace('&', "%26")

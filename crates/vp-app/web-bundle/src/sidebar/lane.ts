@@ -1,8 +1,12 @@
 /**
- * Lane (Lead / Worker) の表示ヘルパー。
+ * Lane (Lead / Wing) の表示ヘルパー。
  *
  * v1.0 柱 2 PR-2。 旧 SIDEBAR_HTML の `STAND_GLYPH` / `standDisplayName` /
  * `laneLabel` / `laneAddressKey` を SolidJS sidebar 用に port したもの。
+ *
+ * Lane の役割は Lead / Wing の 2 種 (Wing は旧称 Worker)。 SP から来る wire の
+ * `kind` 文字列は legacy `"worker"` も `wing` として扱う (Worker → Wing rename
+ * 前の永続データ / 旧 SP との互換)。
  */
 import type { IconName } from 'creoui-icons-web'
 import type { LaneInfo } from '../generated/LaneInfo'
@@ -50,27 +54,33 @@ export function standDisplayName(stand: string): string {
   }
 }
 
-/** Lane が Worker か (Lead との対)。 */
-export function isWorkerLane(lane: LaneInfo): boolean {
-  return lane.kind === 'worker' || lane.address.kind === 'worker'
+/** Lane kind が Wing か (`"worker"` は legacy alias)。 */
+function isWingKind(kind: string): boolean {
+  return kind === 'wing' || kind === 'worker'
 }
 
-/** Lane の表示ラベル。 Lead はそのまま、 Worker は `Worker: <name>`。 */
+/** Lane が Wing か (Lead との対)。 */
+export function isWingLane(lane: LaneInfo): boolean {
+  return isWingKind(lane.kind) || isWingKind(lane.address.kind)
+}
+
+/** Lane の表示ラベル。 Lead はそのまま、 Wing は `Wing: <name>`。 */
 export function laneLabel(lane: LaneInfo): string {
   const kind = lane.kind || lane.address.kind
   if (kind === 'lead') return 'Lead'
-  if (kind === 'worker') return `Worker: ${lane.name ?? lane.address.name ?? '?'}`
+  if (isWingKind(kind)) return `Wing: ${lane.name ?? lane.address.name ?? '?'}`
   return kind
 }
 
 /**
- * Lane address を Display 形 (`<project>/lead` / `<project>/worker/<name>`) に変換。
+ * Lane address を Display 形 (`<project>/lead` / `<project>/wing/<name>`) に変換。
  * Rust `LaneAddressWire::key()` と完全一致させる (active selection 比較に使うため)。
+ * legacy `"worker"` kind は `wing` に正規化する。
  */
 export function laneAddressKey(lane: LaneInfo): string {
   const a = lane.address
-  if (a.kind === 'worker') {
-    return `${a.project}/worker/${a.name ?? '<unnamed>'}`
+  if (isWingKind(a.kind)) {
+    return `${a.project}/wing/${a.name ?? '<unnamed>'}`
   }
   return `${a.project}/${a.kind || 'lead'}`
 }

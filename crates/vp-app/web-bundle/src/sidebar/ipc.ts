@@ -49,7 +49,7 @@ export type SidebarIpcMsg =
   | { t: 'lane:select'; path: string; address: string }
   | { t: 'lane:delete'; path: string; address: string }
   | { t: 'lane:restart'; path: string; address: string }
-  | { t: 'lane:add_worker'; path: string; name: string; branch?: string; stand?: string }
+  | { t: 'lane:add_wing'; path: string; name: string; branch?: string; stand?: string }
   | { t: 'stands:fetch'; path: string }
   | { t: 'stand:select'; path: string; kind: string }
   | { t: 'project:clone:pickFolder' }

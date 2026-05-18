@@ -5,12 +5,19 @@
 //! ## 構造 (memory rule)
 //!
 //! - **Lead Lane** (Project あたり 1 つ固定) ─ 中身は `LaneStand` (HD default | TH)
-//! - **Worker Lane** (Project あたり n 個) ─ lane cloned worktree、中身は `LaneStand`
+//! - **Wing Lane** (Project あたり n 個) ─ lane cloned worktree、中身は `LaneStand`
 //!
 //! ## 表示形 (人間可読)
 //!
-//! - Lead:   `"vantage-point/lead"`
-//! - Worker: `"vantage-point/worker/foo"`
+//! - Lead: `"vantage-point/lead"`
+//! - Wing: `"vantage-point/wing/foo"`
+//!
+//! ## 命名: Worker → Wing (2026-05-18)
+//!
+//! 旧称は「Worker」。 `Lead` と対になる語として `Wing` に改称 (航空編隊の
+//! flight lead / wingman、 wingman→flight lead の昇進路、 機体部品的な「離散
+//! ユニット」感が Lane の実態に合う)。 永続データ互換のため、 wire `kind` の
+//! parse は legacy `"worker"` も受理して `Wing` に解決する。
 
 use std::fmt;
 
@@ -23,15 +30,15 @@ use ts_rs::TS;
 pub enum LaneKind {
     /// Project あたり 1 つ固定
     Lead,
-    /// Project あたり n 個 (lane cloned worktree)
-    Worker,
+    /// Project あたり n 個 (lane cloned worktree)。 旧称 Worker。
+    Wing,
 }
 
 impl fmt::Display for LaneKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             LaneKind::Lead => write!(f, "lead"),
-            LaneKind::Worker => write!(f, "worker"),
+            LaneKind::Wing => write!(f, "wing"),
         }
     }
 }
@@ -39,13 +46,13 @@ impl fmt::Display for LaneKind {
 /// Lane の address — Pool key として使う 3-tuple
 ///
 /// 表示形 (`Display` 実装):
-/// - Lead:   `"<project>/lead"`         例: `"vantage-point/lead"`
-/// - Worker: `"<project>/worker/<name>"` 例: `"vantage-point/worker/foo"`
+/// - Lead: `"<project>/lead"`         例: `"vantage-point/lead"`
+/// - Wing: `"<project>/wing/<name>"`  例: `"vantage-point/wing/foo"`
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct LaneAddress {
     pub project: String,
     pub kind: LaneKind,
-    /// Worker の場合のみ Some (人間可読)。Lead は None。
+    /// Wing の場合のみ Some (人間可読)。Lead は None。
     pub name: Option<String>,
 }
 
@@ -59,11 +66,11 @@ impl LaneAddress {
         }
     }
 
-    /// Worker Lane を構築 (人間可読 name 必須)
-    pub fn worker(project: impl Into<String>, name: impl Into<String>) -> Self {
+    /// Wing Lane を構築 (人間可読 name 必須)
+    pub fn wing(project: impl Into<String>, name: impl Into<String>) -> Self {
         Self {
             project: project.into(),
-            kind: LaneKind::Worker,
+            kind: LaneKind::Wing,
             name: Some(name.into()),
         }
     }
@@ -78,8 +85,8 @@ impl fmt::Display for LaneAddress {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match (&self.kind, &self.name) {
             (LaneKind::Lead, _) => write!(f, "{}/lead", self.project),
-            (LaneKind::Worker, Some(n)) => write!(f, "{}/worker/{}", self.project, n),
-            (LaneKind::Worker, None) => write!(f, "{}/worker/<unnamed>", self.project),
+            (LaneKind::Wing, Some(n)) => write!(f, "{}/wing/{}", self.project, n),
+            (LaneKind::Wing, None) => write!(f, "{}/wing/<unnamed>", self.project),
         }
     }
 }
@@ -88,7 +95,7 @@ impl fmt::Display for LaneAddress {
 ///
 /// `LaneAddress` (domain enum-based) と区別する役割:
 /// - **`LaneAddressWire`** = JSON 入口、 `kind` を String のまま保持 (vantage-point 側の
-///   "lead"/"worker"/将来の任意値 をそのまま deserialize 受け)
+///   "lead"/"wing"/将来の任意値 をそのまま deserialize 受け)
 /// - **`LaneAddress`** = domain 型、 `LaneKind` enum で型安全な分岐
 ///
 /// 比較・Display には:
@@ -105,7 +112,7 @@ impl fmt::Display for LaneAddress {
 pub struct LaneAddressWire {
     #[serde(default)]
     pub project: String,
-    /// "lead" | "worker"
+    /// "lead" | "wing" ("worker" は legacy alias)
     #[serde(default)]
     pub kind: String,
     #[serde(default)]
@@ -113,10 +120,13 @@ pub struct LaneAddressWire {
 }
 
 impl LaneAddressWire {
-    /// Display 形 (`<project>/lead` / `<project>/worker/<name>`) を文字列で返す。
+    /// Display 形 (`<project>/lead` / `<project>/wing/<name>`) を文字列で返す。
     ///
     /// 旧 `app.rs::lane_address_key` を吸収。 JS 側 `laneAddressKey()` と完全に一致させる
     /// (active 比較に使うため、 byte-for-byte 同一が要件)。
+    ///
+    /// legacy alias `"worker"` も `wing` として正規化する (Worker → Wing rename 前の
+    /// 永続データ / 旧 SP からの wire を壊さない)。
     ///
     /// `LaneAddress::Display` と微妙に挙動が違うことに注意:
     /// - `Wire::key()` は kind string をそのまま保持 (unknown kind "magic" → `"project/magic"`)
@@ -126,8 +136,8 @@ impl LaneAddressWire {
     /// 型安全な domain 表現が要る場面では `LaneAddress::from(&wire).to_string()` を使う。
     pub fn key(&self) -> String {
         match (self.kind.as_str(), self.name.as_deref()) {
-            ("worker", Some(n)) => format!("{}/worker/{}", self.project, n),
-            ("worker", None) => format!("{}/worker/<unnamed>", self.project),
+            ("wing" | "worker", Some(n)) => format!("{}/wing/{}", self.project, n),
+            ("wing" | "worker", None) => format!("{}/wing/<unnamed>", self.project),
             _ => format!("{}/{}", self.project, self.kind),
         }
     }
@@ -137,10 +147,11 @@ impl LaneAddressWire {
 ///
 /// 注意: unknown kind ("magic" 等) は fallback で `LaneKind::Lead` に collapse される
 /// (= 情報損失)。 raw kind 文字列を保ちたい用途では `LaneAddressWire::key()` を直接使う。
+/// legacy alias `"worker"` は `LaneKind::Wing` に解決する。
 impl From<&LaneAddressWire> for LaneAddress {
     fn from(wire: &LaneAddressWire) -> Self {
         let kind = match wire.kind.as_str() {
-            "worker" => LaneKind::Worker,
+            "wing" | "worker" => LaneKind::Wing, // "worker" = legacy alias
             _ => LaneKind::Lead,
         };
         Self {
@@ -166,26 +177,21 @@ mod tests {
         assert_eq!(lead.to_string(), "vantage-point/lead");
         assert!(lead.is_lead());
 
-        let worker = LaneAddress::worker("vantage-point", "foo");
-        assert_eq!(worker.to_string(), "vantage-point/worker/foo");
-        assert!(!worker.is_lead());
+        let wing = LaneAddress::wing("vantage-point", "foo");
+        assert_eq!(wing.to_string(), "vantage-point/wing/foo");
+        assert!(!wing.is_lead());
     }
 
     #[test]
     fn lane_address_eq_hash() {
         // 同じ project/kind/name なら同一視 (HashMap key として使えること)
-        let a = LaneAddress::worker("vp", "foo");
-        let b = LaneAddress::worker("vp", "foo");
+        let a = LaneAddress::wing("vp", "foo");
+        let b = LaneAddress::wing("vp", "foo");
         assert_eq!(a, b);
 
-        let c = LaneAddress::worker("vp", "bar");
+        let c = LaneAddress::wing("vp", "bar");
         assert_ne!(a, c);
     }
-
-    // 旧 lane_stand_default_is_hd test は doc 11 PR-B で廃止。
-    // default の概念は config.kdl (`default-stand`) + handler-side の
-    // `Config::default_stand_or_echoes()` (PR-pre2 で "hd" → "echoes" rename) に移ったため、
-    // vp-app crate test では検証しない。
 
     /// R-0 wire compat: `LaneAddressWire::key()` は旧 `app.rs::lane_address_key` と
     /// byte-for-byte 同一でなければならない (JS 側 `laneAddressKey()` の active 比較で使うため)。
@@ -200,23 +206,35 @@ mod tests {
     }
 
     #[test]
-    fn lane_address_wire_key_worker_named() {
+    fn lane_address_wire_key_wing_named() {
+        let w = LaneAddressWire {
+            project: "vp".into(),
+            kind: "wing".into(),
+            name: Some("foo".into()),
+        };
+        assert_eq!(w.key(), "vp/wing/foo");
+    }
+
+    #[test]
+    fn lane_address_wire_key_wing_unnamed() {
+        let w = LaneAddressWire {
+            project: "vp".into(),
+            kind: "wing".into(),
+            name: None,
+        };
+        assert_eq!(w.key(), "vp/wing/<unnamed>");
+    }
+
+    /// legacy alias: `"worker"` kind は `wing` として正規化される
+    /// (Worker → Wing rename 前の永続データ / 旧 SP wire の互換)。
+    #[test]
+    fn lane_address_wire_key_worker_legacy_normalizes_to_wing() {
         let w = LaneAddressWire {
             project: "vp".into(),
             kind: "worker".into(),
             name: Some("foo".into()),
         };
-        assert_eq!(w.key(), "vp/worker/foo");
-    }
-
-    #[test]
-    fn lane_address_wire_key_worker_unnamed() {
-        let w = LaneAddressWire {
-            project: "vp".into(),
-            kind: "worker".into(),
-            name: None,
-        };
-        assert_eq!(w.key(), "vp/worker/<unnamed>");
+        assert_eq!(w.key(), "vp/wing/foo");
     }
 
     #[test]
@@ -245,15 +263,27 @@ mod tests {
     }
 
     #[test]
-    fn lane_address_from_wire_worker() {
+    fn lane_address_from_wire_wing() {
+        let w = LaneAddressWire {
+            project: "vp".into(),
+            kind: "wing".into(),
+            name: Some("foo".into()),
+        };
+        let addr = LaneAddress::from(&w);
+        assert_eq!(addr.kind, LaneKind::Wing);
+        assert_eq!(addr.name.as_deref(), Some("foo"));
+    }
+
+    /// legacy alias: `"worker"` kind は `LaneKind::Wing` に解決される。
+    #[test]
+    fn lane_address_from_wire_worker_legacy() {
         let w = LaneAddressWire {
             project: "vp".into(),
             kind: "worker".into(),
             name: Some("foo".into()),
         };
         let addr = LaneAddress::from(&w);
-        assert_eq!(addr.kind, LaneKind::Worker);
-        assert_eq!(addr.name.as_deref(), Some("foo"));
+        assert_eq!(addr.kind, LaneKind::Wing);
     }
 
     #[test]

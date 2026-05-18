@@ -492,7 +492,7 @@ impl SelfLane {
         let Ok(cwd) = std::env::current_dir() else {
             return lead();
         };
-        let Ok(lanes_root) = crate::lane::config::workers_dir() else {
+        let Ok(lanes_root) = crate::lane::config::wings_dir() else {
             return lead();
         };
         if !cwd.starts_with(&lanes_root) {
@@ -2999,7 +2999,7 @@ async fn self_register_if_worker() {
         Err(_) => return,
     };
     // lane dir prefix か確認
-    let lanes_root = match crate::lane::config::workers_dir() {
+    let lanes_root = match crate::lane::config::wings_dir() {
         Ok(d) => d,
         Err(_) => return,
     };

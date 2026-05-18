@@ -352,7 +352,7 @@ pub async fn run(
             .and_then(|s| s.to_str())
             .unwrap_or("unknown")
             .to_string();
-        let workers = crate::lane::commands::list_workers_for_repo(&workers_project_id);
+        let workers = crate::lane::commands::list_wings_for_repo(&workers_project_id);
         let total = workers.len();
         if total > 0 {
             tracing::info!(

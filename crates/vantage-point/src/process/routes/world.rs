@@ -683,8 +683,8 @@ pub async fn world_list_lanes(
             query.lane.as_deref().is_none_or(|n| {
                 match (&l.address.kind, l.address.name.as_deref()) {
                     (LaneKind::Lead, _) => n == "lead",
-                    (LaneKind::Worker, Some(name)) => name == n,
-                    (LaneKind::Worker, None) => false,
+                    (LaneKind::Wing, Some(name)) => name == n,
+                    (LaneKind::Wing, None) => false,
                 }
             })
         })
@@ -702,8 +702,8 @@ pub async fn world_list_lanes(
         use std::cmp::Ordering;
         a.address.project.cmp(&b.address.project).then_with(|| {
             match (a.address.kind, b.address.kind) {
-                (LaneKind::Lead, LaneKind::Worker) => Ordering::Less,
-                (LaneKind::Worker, LaneKind::Lead) => Ordering::Greater,
+                (LaneKind::Lead, LaneKind::Wing) => Ordering::Less,
+                (LaneKind::Wing, LaneKind::Lead) => Ordering::Greater,
                 _ => a.created_at.cmp(&b.created_at),
             }
         })

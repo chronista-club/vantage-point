@@ -24,7 +24,7 @@ use vantage_point::mcp;
 
 use commands::file::FileCommands;
 
-// Phase 2.x-e: 旧 worker Lane crate を vp-cli の lib に統合。
+// Phase 2.x-e: 旧 wing Lane crate を vp-cli の lib に統合。
 // `vp` binary が `vp lane` サブコマンド経由で `vp_cli::lane` lib を使う。
 #[cfg(feature = "midi")]
 use commands::midi::MidiCommands;
@@ -115,7 +115,7 @@ enum Commands {
     #[command(subcommand)]
     Db(commands::db::DbCommands),
 
-    /// Stone Free 🧵 — worker Lane 管理（旧 vp ws、Phase 1 で統合）
+    /// Stone Free 🧵 — wing Lane 管理（旧 vp ws、Phase 1 で統合）
     #[command(subcommand, alias = "ws", alias = "workspace")]
     Lane(LaneCommands),
 
@@ -173,62 +173,62 @@ enum Commands {
     },
 }
 
-/// Stone Free worker Lane コマンド（lane library への薄い wrapper）
+/// Stone Free wing Lane コマンド（lane library への薄い wrapper）
 #[derive(Subcommand)]
 enum LaneCommands {
-    /// 新しい worker 環境を作成（clone + symlink + setup）
+    /// 新しい wing 環境を作成（clone + symlink + setup）
     New {
-        /// Worker 名
+        /// Wing 名
         name: String,
         /// 作成するブランチ名
         branch: String,
-        /// 既存 worker を上書き
+        /// 既存 wing を上書き
         #[arg(long, short)]
         force: bool,
     },
-    /// 現在の dirty state を新しい worker 環境に fork
+    /// 現在の dirty state を新しい wing 環境に fork
     Fork {
-        /// Worker 名
+        /// Wing 名
         name: String,
         /// 作成するブランチ名
         branch: String,
-        /// 既存 worker を上書き
+        /// 既存 wing を上書き
         #[arg(long, short)]
         force: bool,
     },
-    /// worker 環境一覧
+    /// wing 環境一覧
     #[command(alias = "list")]
     Ls,
-    /// worker 環境のパスを表示
+    /// wing 環境のパスを表示
     Path {
-        /// Worker 名
+        /// Wing 名
         name: String,
     },
-    /// worker 環境を削除
+    /// wing 環境を削除
     Rm {
-        /// 削除する Worker 名（--all 指定時は不要）
+        /// 削除する Wing 名（--all 指定時は不要）
         name: Option<String>,
-        /// 全 worker を削除
+        /// 全 wing を削除
         #[arg(long)]
         all: bool,
         /// 確認なしで強制削除
         #[arg(long, short)]
         force: bool,
     },
-    /// Worker actor を TheWorld msgbox registry に (再) 登録
+    /// Wing actor を TheWorld msgbox registry に (再) 登録
     ///
-    /// Worker 作成時 (`vp lane new`) に一度 register されるが、TheWorld 再起動で
+    /// Wing 作成時 (`vp lane new`) に一度 register されるが、TheWorld 再起動で
     /// registry が memory-reset するため再登録が必要。本コマンドで手動再登録 or
     /// 起動スクリプトから呼び出して整合性を維持する。
     Register {
-        /// Worker 名 (親 project は cwd から推測)
+        /// Wing 名 (親 project は cwd から推測)
         name: String,
     },
-    /// lane ls の全 Worker を registry に一括再登録 (sync)
+    /// lane ls の全 Wing を registry に一括再登録 (sync)
     Resync,
-    /// 全 worker の状態表示
+    /// 全 wing の状態表示
     Status,
-    /// branch が main に merge 済の worker を削除
+    /// branch が main に merge 済の wing を削除
     Cleanup {
         /// 確認なしで強制削除
         #[arg(long, short)]
@@ -555,10 +555,10 @@ fn execute_shot(
     Ok(())
 }
 
-/// Stone Free 🧵 worker Lane 操作を lane library に委譲
+/// Stone Free 🧵 wing Lane 操作を lane library に委譲
 ///
-/// Phase 2 追加: worker 作成/削除時に TheWorld の msgbox registry に
-/// `worker-{name}@{project}` actor を register/unregister（best-effort、
+/// Phase 2 追加: wing 作成/削除時に TheWorld の msgbox registry に
+/// `wing-{name}@{project}` actor を register/unregister（best-effort、
 /// TheWorld 未起動でも workspace 操作自体は成功させる）。
 fn execute_lane(cmd: LaneCommands) -> Result<()> {
     use lane::commands as ws;
@@ -569,9 +569,9 @@ fn execute_lane(cmd: LaneCommands) -> Result<()> {
             branch,
             force,
         } => {
-            ws::new_worker(&name, &branch, force).map_err(|e| anyhow::anyhow!(e))?;
-            // best-effort: TheWorld に worker actor を register
-            if let Err(e) = register_worker_actor(&name) {
+            ws::new_wing(&name, &branch, force).map_err(|e| anyhow::anyhow!(e))?;
+            // best-effort: TheWorld に wing actor を register
+            if let Err(e) = register_wing_actor(&name) {
                 eprintln!("  msgbox: register skipped ({e})");
             }
             Ok(())
@@ -581,57 +581,55 @@ fn execute_lane(cmd: LaneCommands) -> Result<()> {
             branch,
             force,
         } => {
-            ws::fork_worker(&name, &branch, force).map_err(|e| anyhow::anyhow!(e))?;
-            if let Err(e) = register_worker_actor(&name) {
+            ws::fork_wing(&name, &branch, force).map_err(|e| anyhow::anyhow!(e))?;
+            if let Err(e) = register_wing_actor(&name) {
                 eprintln!("  msgbox: register skipped ({e})");
             }
             Ok(())
         }
-        LaneCommands::Ls => ws::list_workers().map_err(|e| anyhow::anyhow!(e)),
-        LaneCommands::Path { name } => ws::worker_path(&name).map_err(|e| anyhow::anyhow!(e)),
+        LaneCommands::Ls => ws::list_wings().map_err(|e| anyhow::anyhow!(e)),
+        LaneCommands::Path { name } => ws::wing_path(&name).map_err(|e| anyhow::anyhow!(e)),
         LaneCommands::Rm { name, all, force } => {
             // 先に unregister（削除後だと parent SP 不明になる可能性）
-            if let Some(ref worker_name) = name
-                && let Err(e) = unregister_worker_actor(worker_name)
+            if let Some(ref wing_name) = name
+                && let Err(e) = unregister_wing_actor(wing_name)
             {
                 eprintln!("  msgbox: unregister skipped ({e})");
             }
             // VP-124: SP-aware delete を試みる (orchestration: PTY kill + tmux kill +
             // lane workspace rm + SystemEvent broadcast を 1 HTTP call で完結)。
             // --all は filesystem-only fallback (一括削除は SP 経由する意味なし、 個別 Lane
-            // address が必要なため)。 SP 不在 / failure なら現挙動 (ws::remove_worker fs-only)
+            // address が必要なため)。 SP 不在 / failure なら現挙動 (ws::remove_wing fs-only)
             // に fallback して compat 維持。
-            if let Some(ref worker_name) = name
+            if let Some(ref wing_name) = name
                 && !all
-                && try_sp_delete_worker(worker_name)
+                && try_sp_delete_wing(wing_name)
             {
                 return Ok(());
             }
-            ws::remove_worker(name.as_deref(), all, force).map_err(|e| anyhow::anyhow!(e))
+            ws::remove_wing(name.as_deref(), all, force).map_err(|e| anyhow::anyhow!(e))
         }
-        LaneCommands::Status => ws::status_workers().map_err(|e| anyhow::anyhow!(e)),
-        LaneCommands::Cleanup { force } => {
-            ws::cleanup_workers(force).map_err(|e| anyhow::anyhow!(e))
-        }
-        LaneCommands::Register { name } => register_worker_actor(&name),
-        LaneCommands::Resync => resync_all_workers(),
+        LaneCommands::Status => ws::status_wings().map_err(|e| anyhow::anyhow!(e)),
+        LaneCommands::Cleanup { force } => ws::cleanup_wings(force).map_err(|e| anyhow::anyhow!(e)),
+        LaneCommands::Register { name } => register_wing_actor(&name),
+        LaneCommands::Resync => resync_all_wings(),
     }
 }
 
-/// lane ls の全 Worker を registry に一括再登録。
+/// lane ls の全 Wing を registry に一括再登録。
 /// parent project は **config から最長一致** で解決 (cwd 不要)。
-fn resync_all_workers() -> Result<()> {
+fn resync_all_wings() -> Result<()> {
     use std::fs;
-    let workers_dir =
-        lane::config::workers_dir().map_err(|e| anyhow::anyhow!("lane dir 解決失敗: {e}"))?;
-    if !workers_dir.exists() {
-        println!("No lane workers found at {}", workers_dir.display());
+    let wings_dir =
+        lane::config::wings_dir().map_err(|e| anyhow::anyhow!("lane dir 解決失敗: {e}"))?;
+    if !wings_dir.exists() {
+        println!("No lane wings found at {}", wings_dir.display());
         return Ok(());
     }
     let config = vantage_point::config::Config::load()
         .map_err(|e| anyhow::anyhow!("config load failed: {e}"))?;
 
-    let entries = fs::read_dir(&workers_dir)?;
+    let entries = fs::read_dir(&wings_dir)?;
     let mut ok = 0;
     let mut fail = 0;
     for entry in entries.flatten() {
@@ -643,7 +641,7 @@ fn resync_all_workers() -> Result<()> {
             Some(n) => n.to_string(),
             None => continue,
         };
-        match register_worker_from_dirname(&config, &dirname) {
+        match register_wing_from_dirname(&config, &dirname) {
             Ok(()) => ok += 1,
             Err(e) => {
                 eprintln!("  skip {dirname}: {e}");
@@ -655,12 +653,9 @@ fn resync_all_workers() -> Result<()> {
     Ok(())
 }
 
-/// dirname (`{project}-{worker}` format) から parent project を config の最長一致で
+/// dirname (`{project}-{wing}` format) から parent project を config の最長一致で
 /// 決定、SP port を discovery で確認、register API call。
-fn register_worker_from_dirname(
-    config: &vantage_point::config::Config,
-    dirname: &str,
-) -> Result<()> {
+fn register_wing_from_dirname(config: &vantage_point::config::Config, dirname: &str) -> Result<()> {
     // config.projects の name で最長 prefix match の project を探す
     let parent = config
         .projects
@@ -668,29 +663,25 @@ fn register_worker_from_dirname(
         .filter(|p| dirname.starts_with(&format!("{}-", p.name)))
         .max_by_key(|p| p.name.len())
         .ok_or_else(|| anyhow::anyhow!("parent project not found in config"))?;
-    let worker_name = dirname
+    let wing_name = dirname
         .strip_prefix(&format!("{}-", parent.name))
-        .ok_or_else(|| anyhow::anyhow!("worker name extract failed"))?;
+        .ok_or_else(|| anyhow::anyhow!("wing name extract failed"))?;
     let process = vantage_point::discovery::find_by_project_blocking(&parent.path)
         .ok_or_else(|| anyhow::anyhow!("parent SP not running"))?;
-    register_worker_actor_with_context(&parent.name, process.port, worker_name)
+    register_wing_actor_with_context(&parent.name, process.port, wing_name)
 }
 
-/// Worker actor を TheWorld msgbox registry に登録 (cwd ベース — lane new 等の内部用)
+/// Wing actor を TheWorld msgbox registry に登録 (cwd ベース — lane new 等の内部用)
 ///
-/// actor format: `worker-{name}` (例: `worker-VP-10`)
-fn register_worker_actor(worker_name: &str) -> Result<()> {
+/// actor format: `wing-{name}` (例: `wing-VP-10`)
+fn register_wing_actor(wing_name: &str) -> Result<()> {
     let (project_name, port) = resolve_parent_project()?;
-    register_worker_actor_with_context(&project_name, port, worker_name)
+    register_wing_actor_with_context(&project_name, port, wing_name)
 }
 
-/// Worker actor を指定 parent project / port で register (core 実装)
-fn register_worker_actor_with_context(
-    project_name: &str,
-    port: u16,
-    worker_name: &str,
-) -> Result<()> {
-    let actor = format!("worker-{worker_name}");
+/// Wing actor を指定 parent project / port で register (core 実装)
+fn register_wing_actor_with_context(project_name: &str, port: u16, wing_name: &str) -> Result<()> {
+    let actor = format!("wing-{wing_name}");
     let world_port = vantage_point::cli::WORLD_PORT;
     let url = format!("http://[::1]:{world_port}/api/world/msgbox/register");
     let body = serde_json::json!({
@@ -710,10 +701,10 @@ fn register_worker_actor_with_context(
     }
 }
 
-/// Worker actor を TheWorld msgbox registry から解除
-fn unregister_worker_actor(worker_name: &str) -> Result<()> {
+/// Wing actor を TheWorld msgbox registry から解除
+fn unregister_wing_actor(wing_name: &str) -> Result<()> {
     let (project_name, _port) = resolve_parent_project()?;
-    let actor = format!("worker-{worker_name}");
+    let actor = format!("wing-{wing_name}");
     let world_port = vantage_point::cli::WORLD_PORT;
     let url = format!("http://[::1]:{world_port}/api/world/msgbox/unregister");
     let body = serde_json::json!({
@@ -732,16 +723,16 @@ fn unregister_worker_actor(worker_name: &str) -> Result<()> {
     }
 }
 
-/// VP-124 Phase 1: SP-aware Worker Lane delete を試みる helper。
+/// VP-124 Phase 1: SP-aware Wing Lane delete を試みる helper。
 ///
 /// `vp lane rm <name>` (= 個別削除) で呼ばれ、 parent SP が稼働中なら HTTP DELETE 経由で
 /// `delete_lane_orchestrated` を発火 (= PTY kill + tmux kill + lane rm + SystemEvent broadcast を
 /// SP 側で atomically 実行)。 SP 不在 / API failure なら false 返して filesystem-only fallback
-/// (= 現挙動の `ws::remove_worker`) に委譲。
+/// (= 現挙動の `ws::remove_wing`) に委譲。
 ///
 /// best-effort: 中間 failure (SP unreachable, network error 等) は warn print して false。
 /// SP 200 OK のみ true、 SP 4xx / 5xx は failure 扱い。
-fn try_sp_delete_worker(worker_name: &str) -> bool {
+fn try_sp_delete_wing(wing_name: &str) -> bool {
     let (project_name, port) = match resolve_parent_project() {
         Ok(v) => v,
         Err(e) => {
@@ -750,8 +741,8 @@ fn try_sp_delete_worker(worker_name: &str) -> bool {
         }
     };
 
-    // address 構築: `<project>/worker/<name>`、 URL encoding は `/` のみ (slug は ASCII safe)。
-    let address = format!("{project_name}/worker/{worker_name}");
+    // address 構築: `<project>/wing/<name>`、 URL encoding は `/` のみ (slug は ASCII safe)。
+    let address = format!("{project_name}/wing/{wing_name}");
     let address_enc = address.replace('/', "%2F");
     let url = format!("http://[::1]:{port}/api/lanes?address={address_enc}&cleanup=true");
 

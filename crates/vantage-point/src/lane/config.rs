@@ -48,16 +48,16 @@ struct RawConfig {
     post_setup: Option<PostSetup>,
 }
 
-/// Parsed worker config
+/// Parsed wing config
 #[derive(Debug)]
-pub struct WorkerConfig {
+pub struct WingConfig {
     pub symlinks: Vec<String>,
     pub copies: Vec<String>,
     pub symlink_patterns: Vec<String>,
     pub post_setup: Option<String>,
 }
 
-impl From<RawConfig> for WorkerConfig {
+impl From<RawConfig> for WingConfig {
     fn from(raw: RawConfig) -> Self {
         Self {
             symlinks: raw.symlinks.into_iter().map(|e| e.path).collect(),
@@ -90,11 +90,11 @@ pub fn find_repo_root() -> io::Result<PathBuf> {
 }
 
 /// Load worker-files.kdl from the repo root
-pub fn load_config(repo_root: &Path) -> Result<WorkerConfig, String> {
+pub fn load_config(repo_root: &Path) -> Result<WingConfig, String> {
     let config_path = repo_root.join(CONFIG_FILE);
     if !config_path.exists() {
         return Err(format!(
-            "{CONFIG_FILE} not found. Create it to define symlinks/copies for worker environments."
+            "{CONFIG_FILE} not found. Create it to define symlinks/copies for wing environments."
         ));
     }
     let content = fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
@@ -110,7 +110,7 @@ pub fn load_config(repo_root: &Path) -> Result<WorkerConfig, String> {
 /// - Linux: `~/.local/share/vp/lanes/`
 ///
 /// `VP_LANES_DIR` 環境変数で明示上書き可能。
-pub fn workers_dir() -> Result<PathBuf, String> {
+pub fn wings_dir() -> Result<PathBuf, String> {
     if let Ok(dir) = env::var("VP_LANES_DIR") {
         return Ok(PathBuf::from(dir));
     }
@@ -131,13 +131,13 @@ pub fn migrate_legacy_lanes_dir() {
     if env::var("VP_LANES_DIR").is_ok() {
         return;
     }
-    let Ok(new_dir) = workers_dir() else {
+    let Ok(new_dir) = wings_dir() else {
         return;
     };
     if new_dir.exists() {
         return;
     }
-    // 旧パスは HOME ベースの固定 `~/.local/share/ccws/` (移行前 workers_dir の default)。
+    // 旧パスは HOME ベースの固定 `~/.local/share/ccws/` (移行前 wings_dir の default)。
     let Some(home) = dirs::home_dir() else {
         return;
     };
@@ -162,29 +162,29 @@ pub fn migrate_legacy_lanes_dir() {
     }
 }
 
-/// Validate that a worker name is safe (allowlist: alphanumeric, hyphen, underscore)
-pub fn validate_worker_name(name: &str) -> Result<(), String> {
+/// Validate that a wing name is safe (allowlist: alphanumeric, hyphen, underscore)
+pub fn validate_wing_name(name: &str) -> Result<(), String> {
     if name.is_empty() {
-        return Err("worker name cannot be empty".into());
+        return Err("wing name cannot be empty".into());
     }
     if !name
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
     {
         return Err(format!(
-            "invalid worker name: '{name}'. Only [a-zA-Z0-9_-] are allowed."
+            "invalid wing name: '{name}'. Only [a-zA-Z0-9_-] are allowed."
         ));
     }
     if name.starts_with('-') || name.starts_with('_') {
         return Err(format!(
-            "invalid worker name: '{name}'. Must start with an alphanumeric character."
+            "invalid wing name: '{name}'. Must start with an alphanumeric character."
         ));
     }
     // VP-166: `lead` は lead lane の予約名 (mailbox box key `<stand>#lead` と衝突するため)。
-    // worker 名として使えない。設計: docs/design/16-worker-lane-mailbox-recv.md
+    // wing 名として使えない。設計: docs/design/16-wing-lane-mailbox-recv.md
     if name == "lead" {
         return Err(
-            "invalid worker name: 'lead' is reserved for the lead lane. Pick another name.".into(),
+            "invalid wing name: 'lead' is reserved for the lead lane. Pick another name.".into(),
         );
     }
     Ok(())
@@ -214,45 +214,45 @@ pub fn get_remote_url() -> io::Result<String> {
 mod tests {
     use super::*;
 
-    // --- validate_worker_name ---
+    // --- validate_wing_name ---
 
     #[test]
-    fn valid_worker_names() {
-        assert!(validate_worker_name("issue-42").is_ok());
-        assert!(validate_worker_name("feature_login").is_ok());
-        assert!(validate_worker_name("my-repo-fix-123").is_ok());
+    fn valid_wing_names() {
+        assert!(validate_wing_name("issue-42").is_ok());
+        assert!(validate_wing_name("feature_login").is_ok());
+        assert!(validate_wing_name("my-repo-fix-123").is_ok());
     }
 
     #[test]
     fn empty_name_rejected() {
-        assert!(validate_worker_name("").is_err());
+        assert!(validate_wing_name("").is_err());
     }
 
     #[test]
     fn special_chars_rejected() {
-        assert!(validate_worker_name("../etc/passwd").is_err());
-        assert!(validate_worker_name("foo/bar").is_err());
-        assert!(validate_worker_name("foo\\bar").is_err());
-        assert!(validate_worker_name(".hidden").is_err());
-        assert!(validate_worker_name("$(rm -rf)").is_err());
-        assert!(validate_worker_name("foo;bar").is_err());
-        assert!(validate_worker_name("foo bar").is_err());
+        assert!(validate_wing_name("../etc/passwd").is_err());
+        assert!(validate_wing_name("foo/bar").is_err());
+        assert!(validate_wing_name("foo\\bar").is_err());
+        assert!(validate_wing_name(".hidden").is_err());
+        assert!(validate_wing_name("$(rm -rf)").is_err());
+        assert!(validate_wing_name("foo;bar").is_err());
+        assert!(validate_wing_name("foo bar").is_err());
     }
 
     #[test]
     fn leading_separator_rejected() {
-        assert!(validate_worker_name("-leading").is_err());
-        assert!(validate_worker_name("_leading").is_err());
+        assert!(validate_wing_name("-leading").is_err());
+        assert!(validate_wing_name("_leading").is_err());
     }
 
     #[test]
     fn lead_name_rejected() {
         // VP-166: `lead` は lead lane の予約名 (mailbox box key `<stand>#lead` と衝突)
-        assert!(validate_worker_name("lead").is_err());
+        assert!(validate_wing_name("lead").is_err());
         // 部分一致や派生名は OK (= `lead` 完全一致のみ禁止)
-        assert!(validate_worker_name("leader").is_ok());
-        assert!(validate_worker_name("my-lead").is_ok());
-        assert!(validate_worker_name("lead-fix").is_ok());
+        assert!(validate_wing_name("leader").is_ok());
+        assert!(validate_wing_name("my-lead").is_ok());
+        assert!(validate_wing_name("lead-fix").is_ok());
     }
 
     // --- load_config (KDL parsing) ---

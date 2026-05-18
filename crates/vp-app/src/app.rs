@@ -2330,9 +2330,10 @@ fn handle_sidebar_ipc(
                 out.restart_lane_request = Some((path.to_string(), address.to_string()));
             }
         }
-        "lane:add_worker" => {
-            // Phase 3-A: sidebar から Worker Lane 作成要求。 caller (event loop) で
-            // 該当 project の SP port を解決して client.create_worker_lane を呼ぶ。
+        "lane:add_worker" | "lane:add_wing" => {
+            // Phase 3-A: sidebar から Wing Lane 作成要求。 caller (event loop) で
+            // 該当 project の SP port を解決して client.create_wing_lane を呼ぶ。
+            // `lane:add_worker` は Worker → Wing rename 前の legacy IPC 名 (旧 sidebar 用)。
             let name = parsed
                 .get("name")
                 .and_then(|v| v.as_str())
@@ -3352,7 +3353,7 @@ pub fn run() -> anyhow::Result<()> {
                                 rt.block_on(async {
                                     let client = TheWorldClient::new(port);
                                     match client
-                                        .create_worker_lane(
+                                        .create_wing_lane(
                                             &name_clone,
                                             branch_clone.as_deref(),
                                             stand_clone.as_deref(),
@@ -3666,7 +3667,8 @@ mod sidebar_html_tests {
     /// v1.0 柱 2 PR-1: VP_SIDEBAR_V2 asset table が shell HTML + JS bundle を両方配信できる。
     #[test]
     fn sidebar_v2_assets_servable_via_vp_asset() {
-        let html = crate::web_assets::lookup_asset("vp-asset://app/sidebar.html", SIDEBAR_ASSETS_V2);
+        let html =
+            crate::web_assets::lookup_asset("vp-asset://app/sidebar.html", SIDEBAR_ASSETS_V2);
         assert!(html.is_some(), "sidebar.html (V2) not lookupable");
         assert_eq!(html.unwrap().0, SIDEBAR_HTML_V2.as_bytes());
 
