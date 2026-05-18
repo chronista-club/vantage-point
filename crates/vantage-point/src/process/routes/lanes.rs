@@ -50,8 +50,8 @@ pub struct LanesResponse {
 /// `GET /api/lanes` — Lane list を返す
 ///
 /// Phase A4-2b: Lead Lane が 1 つ pre-populate されてる状態を返却。
-/// Phase 5-D: Worker Lane に対しては `cwd` から git 状態 (`WorkerStatus`) を populate。
-/// registry には保存せず、 GET 時に都度 `worker_status()` を呼ぶ (volatile + 5-7 git subprocess)。
+/// Phase 5-D: Worker Lane に対しては `cwd` から git 状態 (`WingStatus`) を populate。
+/// registry には保存せず、 GET 時に都度 `wing_status()` を呼ぶ (volatile + 5-7 git subprocess)。
 ///
 /// Phase 5-E: in-memory LanePool に居ない lane Worker dir も disk scan で merge して `pid: None` で
 /// emit (Pane 不在を pid で表現、 LaneState には変更を加えない)。 防御パスのため fail-soft。
@@ -60,19 +60,19 @@ pub struct LanesResponse {
 pub async fn list_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let pool = state.lane_pool.read().await;
     let mut lanes = pool.list();
-    drop(pool); // git subprocess 中の lock を保たない (worker_status は数 100ms かかる事あり)
+    drop(pool); // git subprocess 中の lock を保たない (wing_status は数 100ms かかる事あり)
 
     // 既存 Worker の git status を populate
     for lane in lanes.iter_mut() {
-        if matches!(lane.kind, crate::process::lanes_state::LaneKind::Worker) {
+        if matches!(lane.kind, crate::process::lanes_state::LaneKind::Wing) {
             let path = std::path::Path::new(&lane.cwd);
             if path.exists() && path.join(".git").exists() {
-                lane.worker_status = Some(crate::lane::commands::worker_status(path));
+                lane.wing_status = Some(crate::lane::commands::wing_status(path));
             }
         }
     }
 
-    // Phase 5-E: lane workers_dir を disk scan して、 LanePool に居ない Worker を pid: None で merge
+    // Phase 5-E: lane wings_dir を disk scan して、 LanePool に居ない Worker を pid: None で merge
     let project_id = std::path::Path::new(&state.project_dir)
         .file_name()
         .and_then(|s| s.to_str())
@@ -82,36 +82,36 @@ pub async fn list_handler(State(state): State<Arc<AppState>>) -> impl IntoRespon
         let existing_names: std::collections::HashSet<String> = lanes
             .iter()
             .filter_map(|l| {
-                if matches!(l.kind, crate::process::lanes_state::LaneKind::Worker) {
+                if matches!(l.kind, crate::process::lanes_state::LaneKind::Wing) {
                     l.name.clone()
                 } else {
                     None
                 }
             })
             .collect();
-        let inactive = crate::lane::commands::list_workers_for_repo(&project_id);
+        let inactive = crate::lane::commands::list_wings_for_repo(&project_id);
         for entry in inactive {
             if existing_names.contains(&entry.name) {
                 continue; // in-memory 優先、 disk 側 skip
             }
-            let addr = LaneAddress::worker(&project_id, &entry.name);
+            let addr = LaneAddress::wing(&project_id, &entry.name);
             let mut info = LaneInfo {
                 address: addr,
-                kind: LaneKind::Worker,
+                kind: LaneKind::Wing,
                 name: Some(entry.name.clone()),
                 state: LaneState::default(), // Pane 不在の表現は pid: None に集約 (state は default Running)
                 stand: "echoes".to_string(), // default、 activate 時に上書き可 (doc 11 PR-B で String 化、 PR-pre2 で "hd" → "echoes")
                 created_at: chrono::Utc::now().to_rfc3339(),
                 pid: None, // Pane (HD) 不在 = client 側で Inactive 判定の signal
                 cwd: entry.path.clone(),
-                worker_status: None,
+                wing_status: None,
                 // Phase 1a: tmux address は activate 時に Vec で populate (Inactive Worker は 0 entry)
                 tmux: Vec::new(),
             };
             // git status を best-effort で populate (branch 表示の連動)
             let path = std::path::Path::new(&entry.path);
             if path.exists() && path.join(".git").exists() {
-                info.worker_status = Some(crate::lane::commands::worker_status(path));
+                info.wing_status = Some(crate::lane::commands::wing_status(path));
             }
             lanes.push(info);
         }
@@ -120,12 +120,12 @@ pub async fn list_handler(State(state): State<Arc<AppState>>) -> impl IntoRespon
     Json(LanesResponse { lanes })
 }
 
-/// `POST /api/lanes` request body (Phase 3-A: Worker Lane create + lane clone)
+/// `POST /api/lanes` request body (Phase 3-A: Wing Lane create + lane clone)
 #[derive(Debug, Deserialize)]
 pub struct CreateLaneReq {
-    /// "worker" のみ受付 (Lead は project ごと固定)
+    /// "wing" を受付 ("worker" は Worker → Wing rename 前の legacy alias)。Lead は project ごと固定。
     pub kind: String,
-    /// Worker name (人間可読、 LaneAddress.name に入る)
+    /// Wing name (人間可読、 LaneAddress.name に入る)
     pub name: String,
     /// LaneStand: "echoes" (default) or "shell"
     #[serde(default)]
@@ -139,10 +139,10 @@ pub struct CreateLaneReq {
     pub branch: Option<String>,
 }
 
-/// `POST /api/lanes` — Worker Lane create (Phase 3-A: lane clone + PtySlot spawn)
+/// `POST /api/lanes` — Wing Lane create (Phase 3-A: lane clone + PtySlot spawn)
 ///
 /// 流れ:
-/// 1. 入力 validation (kind == "worker", name 非空)
+/// 1. 入力 validation (kind == "wing"、 legacy "worker" も可、 name 非空)
 /// 2. cwd 決定:
 ///    - `req.cwd` Some → そのまま使う
 ///    - `req.branch` Some → `vp lane new <name> <branch>` subprocess で worker dir 作成
@@ -155,12 +155,12 @@ pub async fn create_handler(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CreateLaneReq>,
 ) -> Result<(StatusCode, Json<LaneInfo>), (StatusCode, Json<serde_json::Value>)> {
-    // 入力 validation
-    if req.kind != "worker" {
+    // 入力 validation。 "wing" を受付、 "worker" は Worker → Wing rename 前の legacy alias。
+    if req.kind != "wing" && req.kind != "worker" {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(json!({
-                "error": "kind must be 'worker' (Lead is fixed per project)"
+                "error": "kind must be 'wing' (Lead is fixed per project)"
             })),
         ));
     }
@@ -177,7 +177,7 @@ pub async fn create_handler(
         .and_then(|s| s.to_str())
         .unwrap_or("unknown")
         .to_string();
-    let addr = LaneAddress::worker(&project_id, &req.name);
+    let addr = LaneAddress::wing(&project_id, &req.name);
     // doc 11 PR-B: stand 識別子 String 化。 wire format は新 stand 名 (echoes / shell / tmux 等)
     // をそのまま受け取る。 未指定なら config の `default_stand` (未設定なら "echoes" fallback、
     // PR-pre2 / VP-118 で "hd" → "echoes" rename)。
@@ -227,7 +227,7 @@ pub async fn create_handler(
         let name = req.name.clone();
         let branch_for_log = branch.clone();
         let result = tokio::task::spawn_blocking(move || {
-            crate::lane::commands::new_worker_in(
+            crate::lane::commands::new_wing_in(
                 std::path::Path::new(&project_dir),
                 &name,
                 &branch,
@@ -242,7 +242,7 @@ pub async fn create_handler(
             )
         })?;
         let path_buf = result.map_err(|e| {
-            // lane::commands::new_worker_in は worker dir 既存 + force=false の時に
+            // lane::commands::new_wing_in は worker dir 既存 + force=false の時に
             // 「ワーカー '<name>' は既に存在します」を返す。 UI で input 下に表示するため
             // CONFLICT を返し、 error message をそのまま流す。
             let msg = e.to_string();
@@ -316,15 +316,15 @@ pub async fn create_handler(
 
     let info = LaneInfo {
         address: addr.clone(),
-        kind: LaneKind::Worker,
+        kind: LaneKind::Wing,
         name: Some(req.name.clone()),
         state: lane_state,
         stand: stand.clone(),
         created_at: chrono::Utc::now().to_rfc3339(),
         pid,
         cwd,
-        // create 時点では git 状態は registry に保存しない、 GET 時に都度 worker_status() で取得
-        worker_status: None,
+        // create 時点では git 状態は registry に保存しない、 GET 時に都度 wing_status() で取得
+        wing_status: None,
         // Phase 1e: spawn 成功時のみ tmux address を populate
         tmux: if matches!(lane_state, crate::process::lanes_state::LaneState::Running) {
             vec![crate::process::lanes_state::TmuxLaneAddress::for_spawn(
@@ -360,7 +360,7 @@ fn default_cleanup() -> bool {
 
 /// VP-124 Phase 1: Lane delete orchestration の戻り値。
 ///
-/// 全 trigger (HTTP DELETE / MCP `delete_worker` / `vp ws rm` CLI) が共有する成功 payload。
+/// 全 trigger (HTTP DELETE / MCP `delete_wing` / `vp lane rm` CLI) が共有する成功 payload。
 #[derive(Debug, Serialize)]
 pub struct DeletedLaneInfo {
     /// Display 形 ("<project>/worker/<name>")
@@ -388,7 +388,7 @@ pub enum DeleteLaneError {
 
 /// VP-124 Phase 1: Lane delete の 3-step orchestration を関数化。
 ///
-/// 全 trigger (HTTP DELETE / MCP `delete_worker` / `vp ws rm` CLI / future Phase 3 FSEvents
+/// 全 trigger (HTTP DELETE / MCP `delete_wing` / `vp lane rm` CLI / future Phase 3 FSEvents
 /// watcher) が共有する core logic。 既存 `delete_handler` から extract、 同時に **欠落していた
 /// tmux session kill + SystemEvent broadcast を補完** (= bug fix 兼 refactor)。
 ///
@@ -399,7 +399,7 @@ pub enum DeleteLaneError {
 ///    drop (PtySlot::Drop で child kill + wait)
 /// 3. **Phase 2a (tmux container cleanup)**: `tmux::kill_session` で PTY container 削除
 ///    (best-effort、 既存挙動では欠落していた → orphan tmux session の根本原因)
-/// 4. **Phase 2b (filesystem cleanup)**: `cleanup=true` なら `lane::remove_worker_in` で workspace
+/// 4. **Phase 2b (filesystem cleanup)**: `cleanup=true` なら `lane::remove_wing_in` で workspace
 ///    dir 削除 (best-effort、 既存挙動踏襲)
 /// 5. **Phase 3 (broadcast)**: `SystemEvent::Lane(Diff::Remove)` を broadcast → sidebar 即時反映
 ///    (既存挙動では欠落していた → sidebar refresh 不全の根本原因)
@@ -456,7 +456,7 @@ pub async fn delete_lane_orchestrated(
     }
 
     // Phase 2b: lane workspace dir cleanup (best-effort、 cleanup=true 時のみ)。
-    // 既存挙動踏襲、 直 lib call (`crate::lane::commands::remove_worker_in`)。
+    // 既存挙動踏襲、 直 lib call (`crate::lane::commands::remove_wing_in`)。
     // 注意: `spawn_blocking` closure は `repo_name` / `name` のみ move、 `addr` は capture
     // されないので後続 match arm の `tracing` で参照可能 (= compile time 保証)。
     let cleanup_status = if cleanup && let Some(name) = info.address.name.clone() {
@@ -466,7 +466,7 @@ pub async fn delete_lane_orchestrated(
             .unwrap_or("unknown")
             .to_string();
         let result = tokio::task::spawn_blocking(move || {
-            crate::lane::commands::remove_worker_in(&repo_name, &name)
+            crate::lane::commands::remove_wing_in(&repo_name, &name)
         })
         .await;
         match result {
@@ -666,7 +666,7 @@ fn derive_default_branch(repo_root: &std::path::Path, name: &str) -> String {
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .map(|s| sanitize_for_branch(&s))
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "worker".to_string());
+        .unwrap_or_else(|| "wing".to_string());
     format!("{}/{}", prefix, sanitize_for_branch(name))
 }
 

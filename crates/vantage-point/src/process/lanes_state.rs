@@ -40,15 +40,17 @@ use serde::{Deserialize, Serialize};
 pub enum LaneKind {
     /// 1 / project (固定)、LaneStand = HD or TH
     Lead,
-    /// 0..n / project (可変、lane cloned worktree)、LaneStand = HD or TH
-    Worker,
+    /// 0..n / project (可変、lane cloned worktree)、LaneStand = HD or TH。
+    /// 旧称 Worker — wire 互換のため legacy `"worker"` を alias で受理。
+    #[serde(alias = "worker")]
+    Wing,
 }
 
 impl fmt::Display for LaneKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             LaneKind::Lead => write!(f, "lead"),
-            LaneKind::Worker => write!(f, "worker"),
+            LaneKind::Wing => write!(f, "wing"),
         }
     }
 }
@@ -113,13 +115,13 @@ pub enum LaneState {
 /// Lane の address — Pool key
 ///
 /// 表示形 (`Display` 実装):
-/// - Lead:   `"<project>/lead"`         例: `"vp/lead"`
-/// - Worker: `"<project>/worker/<name>"` 例: `"vp/worker/foo"`
+/// - Lead: `"<project>/lead"`         例: `"vp/lead"`
+/// - Wing: `"<project>/wing/<name>"`  例: `"vp/wing/foo"`
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct LaneAddress {
     pub project: String,
     pub kind: LaneKind,
-    /// Worker のみ Some (人間可読、例: "foo")。Lead は None。
+    /// Wing のみ Some (人間可読、例: "foo")。Lead は None。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
 }
@@ -133,10 +135,10 @@ impl LaneAddress {
         }
     }
 
-    pub fn worker(project: impl Into<String>, name: impl Into<String>) -> Self {
+    pub fn wing(project: impl Into<String>, name: impl Into<String>) -> Self {
         Self {
             project: project.into(),
-            kind: LaneKind::Worker,
+            kind: LaneKind::Wing,
             name: Some(name.into()),
         }
     }
@@ -146,12 +148,12 @@ impl LaneAddress {
     /// 形式: `vp-{project}-{lane_label}-{stand_short}` を sanitize ([A-Za-z0-9_-] 以外は '-')。
     /// - `vp-` prefix: VP 管理 session の owner mark (user 自前 session と確実に分離)
     /// - project: lexicographic sort で project 単位にまとまる (`tmux ls` 視認性 ↑)
-    /// - lane_label: Lead → "lead"、Worker(Some(name)) → name、Worker(None) → "unnamed"
+    /// - lane_label: Lead → "lead"、Wing(Some(name)) → name、Wing(None) → "unnamed"
     /// - stand_short: HD → "hd"、TH → "th" (suffix なので将来 `gemini` / `opus` 等の追加も自然)
     ///
     /// 例:
     /// - `LaneAddress::lead("vantage-point")` + HD → `"vp-vantage-point-lead-hd"`
-    /// - `LaneAddress::worker("vantage-point", "sub")` + HD → `"vp-vantage-point-sub-hd"`
+    /// - `LaneAddress::wing("vantage-point", "sub")` + HD → `"vp-vantage-point-sub-hd"`
     /// - `LaneAddress` の `.` `@` 等 → `-` に置換
     ///
     /// agent (Claude CLI on HD) はこの関数の戻り値を `tmux send-keys -t <session>` の
@@ -162,8 +164,8 @@ impl LaneAddress {
         // 旧 TH の "th" は wire format 上では "shell" に rename された (doc 11)。
         let lane_label: &str = match (&self.kind, self.name.as_deref()) {
             (LaneKind::Lead, _) => "lead",
-            (LaneKind::Worker, Some(n)) => n,
-            (LaneKind::Worker, None) => "unnamed",
+            (LaneKind::Wing, Some(n)) => n,
+            (LaneKind::Wing, None) => "unnamed",
         };
         let raw = format!("vp-{}-{}-{}", self.project, lane_label, stand_name);
         raw.chars()
@@ -182,8 +184,8 @@ impl fmt::Display for LaneAddress {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match (&self.kind, &self.name) {
             (LaneKind::Lead, _) => write!(f, "{}/lead", self.project),
-            (LaneKind::Worker, Some(n)) => write!(f, "{}/worker/{}", self.project, n),
-            (LaneKind::Worker, None) => write!(f, "{}/worker/<unnamed>", self.project),
+            (LaneKind::Wing, Some(n)) => write!(f, "{}/wing/{}", self.project, n),
+            (LaneKind::Wing, None) => write!(f, "{}/wing/<unnamed>", self.project),
         }
     }
 }
@@ -285,11 +287,16 @@ pub struct LaneInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
     pub cwd: String,
-    /// Phase 5-D: Worker のみ embed (Lead は git workspace を持たない設計)。
-    /// `cwd` から `lane::commands::worker_status()` を呼んで populate。
+    /// Phase 5-D: Wing のみ embed (Lead は git workspace を持たない設計)。
+    /// `cwd` から `lane::commands::wing_status()` を呼んで populate。
     /// `/api/lanes` 応答時に lazy 取得 (registry には保存しない、 git 状態は volatile)。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub worker_status: Option<crate::lane::commands::WorkerStatus>,
+    /// `worker_status` は Worker → Wing rename 前の legacy wire field 名 (alias で受理)。
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "worker_status"
+    )]
+    pub wing_status: Option<crate::lane::commands::WingStatus>,
     /// Phase 1a: Lane に attach した Stand ごとの tmux session address (deterministic)。
     /// SP push 経由で TheWorld cache に流れる (agent から `/api/lanes` で resolve)。
     ///
@@ -401,7 +408,7 @@ impl LanePool {
             pid,
             cwd,
             // Lead は git workspace 持たない (= project root が cwd)、 worker_status は None
-            worker_status: None,
+            wing_status: None,
             // Phase 1e: spawn 成功時のみ tmux address を populate
             // (spawn 失敗 = Dead → 空 Vec で副舞台不在 signal)
             tmux: if matches!(state, LaneState::Running) {
@@ -431,8 +438,8 @@ impl LanePool {
         v.sort_by(|a, b| {
             use std::cmp::Ordering;
             match (a.kind, b.kind) {
-                (LaneKind::Lead, LaneKind::Worker) => Ordering::Less,
-                (LaneKind::Worker, LaneKind::Lead) => Ordering::Greater,
+                (LaneKind::Lead, LaneKind::Wing) => Ordering::Less,
+                (LaneKind::Wing, LaneKind::Lead) => Ordering::Greater,
                 _ => a.created_at.cmp(&b.created_at).then_with(|| {
                     a.name
                         .as_deref()
@@ -616,15 +623,16 @@ impl LanePool {
         }
     }
 
-    /// Display 形 (`"<project>/lead"` / `"<project>/worker/<name>"`) をパースして LaneAddress を作る。
+    /// Display 形 (`"<project>/lead"` / `"<project>/wing/<name>"`) をパースして LaneAddress を作る。
     /// vp-app の sidebar から `lane:select` IPC の address (= `lane_address_key`) を逆変換するために使う。
+    /// legacy `"worker"` token も `Wing` として受理する (Worker → Wing rename 前の互換)。
     pub fn parse_address(s: &str) -> Option<LaneAddress> {
-        // 形式: "<project>/lead" or "<project>/worker/<name>"
+        // 形式: "<project>/lead" or "<project>/wing/<name>" ("worker" は legacy alias)
         let parts: Vec<&str> = s.splitn(3, '/').collect();
         match parts.as_slice() {
             [project, "lead"] if !project.is_empty() => Some(LaneAddress::lead(*project)),
-            [project, "worker", name] if !project.is_empty() && !name.is_empty() => {
-                Some(LaneAddress::worker(*project, *name))
+            [project, "wing" | "worker", name] if !project.is_empty() && !name.is_empty() => {
+                Some(LaneAddress::wing(*project, *name))
             }
             _ => None,
         }
@@ -693,12 +701,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn lane_address_display_lead_and_worker() {
+    fn lane_address_display_lead_and_wing() {
         assert_eq!(LaneAddress::lead("vp").to_string(), "vp/lead");
-        assert_eq!(
-            LaneAddress::worker("vp", "foo").to_string(),
-            "vp/worker/foo"
-        );
+        assert_eq!(LaneAddress::wing("vp", "foo").to_string(), "vp/wing/foo");
     }
 
     #[tokio::test]
@@ -716,8 +721,10 @@ mod tests {
     #[test]
     fn lane_kind_serde_snake_case() {
         assert_eq!(serde_json::to_string(&LaneKind::Lead).unwrap(), "\"lead\"");
+        assert_eq!(serde_json::to_string(&LaneKind::Wing).unwrap(), "\"wing\"");
+        // legacy alias: Worker → Wing rename 前の wire 値 "worker" も Wing として受理
         let k: LaneKind = serde_json::from_str("\"worker\"").unwrap();
-        assert_eq!(k, LaneKind::Worker);
+        assert_eq!(k, LaneKind::Wing);
     }
 
     // 旧 `lane_stand_only_hd_and_th` / `lane_stand_default_is_heavens_door` test は廃止。
@@ -732,7 +739,7 @@ mod tests {
         assert_eq!(lead, LaneAddress::lead("vp"));
 
         let worker = LanePool::parse_address("vp/worker/foo").unwrap();
-        assert_eq!(worker, LaneAddress::worker("vp", "foo"));
+        assert_eq!(worker, LaneAddress::wing("vp", "foo"));
 
         // CJK / kebab-case project name も通る
         let lead2 = LanePool::parse_address("vantage-point/lead").unwrap();
@@ -759,7 +766,7 @@ mod tests {
     #[test]
     fn tmux_session_name_worker_hd() {
         // Worker(name) + HD → "vp-{project}-{name}-hd"
-        let addr = LaneAddress::worker("vantage-point", "sub");
+        let addr = LaneAddress::wing("vantage-point", "sub");
         assert_eq!(addr.tmux_session_name("hd"), "vp-vantage-point-sub-hd");
     }
 
@@ -787,7 +794,7 @@ mod tests {
         // Worker(name=None) は仕様上想定外だが defensive に "unnamed" にフォールバック
         let addr = LaneAddress {
             project: "vp".to_string(),
-            kind: LaneKind::Worker,
+            kind: LaneKind::Wing,
             name: None,
         };
         assert_eq!(addr.tmux_session_name("hd"), "vp-vp-unnamed-hd");
@@ -831,7 +838,7 @@ mod tests {
             created_at: "2026-05-01T00:00:00Z".to_string(),
             pid: None,
             cwd: "/tmp".to_string(),
-            worker_status: None,
+            wing_status: None,
             tmux: Vec::new(),
         };
         let json = serde_json::to_string(&info).unwrap();
@@ -855,7 +862,7 @@ mod tests {
             created_at: "2026-05-01T00:00:00Z".to_string(),
             pid: None,
             cwd: "/tmp".to_string(),
-            worker_status: None,
+            wing_status: None,
             tmux: vec![
                 TmuxLaneAddress {
                     stand: "hd".to_string(),
@@ -886,15 +893,15 @@ mod tests {
     fn lane_diff_add_serde_round_trip() {
         // Diff::Add { payload: LaneInfo } の wire 形式 + decode
         let info = LaneInfo {
-            address: LaneAddress::worker("vp", "sub"),
-            kind: LaneKind::Worker,
+            address: LaneAddress::wing("vp", "sub"),
+            kind: LaneKind::Wing,
             name: Some("sub".to_string()),
             state: LaneState::Running,
             stand: "hd".to_string(),
             created_at: "2026-05-01T00:00:00Z".to_string(),
             pid: Some(12345),
             cwd: "/tmp".to_string(),
-            worker_status: None,
+            wing_status: None,
             tmux: vec![TmuxLaneAddress {
                 stand: "hd".to_string(),
                 session: "vp-vp-sub-hd".to_string(),
@@ -921,7 +928,7 @@ mod tests {
     #[test]
     fn lane_diff_remove_serde_round_trip() {
         // Diff::Remove { id: LaneAddress } で id のみ送る wire 形式
-        let addr = LaneAddress::worker("vp", "osc");
+        let addr = LaneAddress::wing("vp", "osc");
         let diff: LaneDiff = Diff::Remove { id: addr.clone() };
         let json = serde_json::to_string(&diff).unwrap();
         assert!(json.contains("\"kind\":\"remove\""), "got: {}", json);
@@ -948,7 +955,7 @@ mod tests {
             created_at: "2026-05-01T00:00:00Z".to_string(),
             pid: None,
             cwd: "/tmp".to_string(),
-            worker_status: None,
+            wing_status: None,
             tmux: Vec::new(),
         };
         let event = SystemEvent::Lane(Diff::Add {

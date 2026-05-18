@@ -46,7 +46,7 @@ pub struct SessionState {
     /// project path → UI state (sidebar accordion 等)
     #[serde(default)]
     pub projects: HashMap<String, ProjectUiState>,
-    /// 直前 active Lane の address (Display 形 `"<project>/lead"` / `"<project>/worker/<name>"`)。
+    /// 直前 active Lane の address (Display 形 `"<project>/lead"` / `"<project>/wing/<name>"`)。
     /// 起動後の最初の LanesLoaded で実在 lane と照合して復元される (mismatch なら無視)。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_lane_address: Option<String>,
@@ -77,7 +77,8 @@ impl SessionState {
         }
         match std::fs::read_to_string(&p) {
             Ok(s) => match serde_json::from_str::<SessionState>(&s) {
-                Ok(state) => {
+                Ok(mut state) => {
+                    state.upgrade_lane_addresses();
                     tracing::info!(
                         "SessionState 読込: {} ({} projects, active_lane={:?})",
                         p.display(),
@@ -103,6 +104,18 @@ impl SessionState {
                 );
                 Self::default()
             }
+        }
+    }
+
+    /// Worker → Wing rename (2026-05-18) の migration。
+    /// 旧 session file に `<project>/worker/<name>` 形式の lane address が永続化
+    /// されている場合、 `/worker/` を `/wing/` に置換して正規化する。
+    /// (parse 側も legacy `worker` を受理するが、 active 比較の文字列一致のため)
+    fn upgrade_lane_addresses(&mut self) {
+        if let Some(addr) = &mut self.active_lane_address
+            && addr.contains("/worker/")
+        {
+            *addr = addr.replace("/worker/", "/wing/");
         }
     }
 

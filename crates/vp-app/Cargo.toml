@@ -86,3 +86,9 @@ libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
+
+# v1.0 柱 2 PR-1: Rust → TS 型生成 (sidebar SolidJS bundle 用)。
+# dev-dependency に置き、 `#[cfg_attr(test, derive(TS), ...)]` で test build 時のみ
+# `TS` derive を効かせる。 binding 出力は `cargo test -p vp-app` の export test 経由。
+# `serde-compat` で `#[serde(...)]` attribute (rename_all / alias / default) を尊重する。
+ts-rs = { version = "11", features = ["serde-compat"] }

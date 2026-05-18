@@ -182,7 +182,7 @@ mod tests {
     #[test]
     fn lane_capabilities_with_worker_address() {
         // Worker Lane でも独立 PaisleyParkStand で構築
-        let addr = LaneAddress::worker("vp", "feat-test");
+        let addr = LaneAddress::wing("vp", "feat-test");
         let lc = LaneCapabilities::new(addr.clone(), "shell");
 
         assert_eq!(lc.address, addr);
@@ -199,7 +199,7 @@ mod tests {
     async fn lane_capabilities_pp_instances_are_independent() {
         // PR-β-2 (VP-120) cardinality 1 → N invariant、 PR-δ-2 (VP-136) registry 経由でも維持
         let lead = LaneCapabilities::new(LaneAddress::lead("vp"), "echoes");
-        let worker = LaneCapabilities::new(LaneAddress::worker("vp", "sub"), "echoes");
+        let worker = LaneCapabilities::new(LaneAddress::wing("vp", "sub"), "echoes");
 
         let lead_pp = lead
             .registry
@@ -377,7 +377,7 @@ mod tests {
     #[test]
     fn lane_capabilities_mock_b_independent_per_lane() {
         let mut lane_a = LaneCapabilities::new(LaneAddress::lead("vp"), "echoes");
-        let mut lane_b = LaneCapabilities::new(LaneAddress::worker("vp", "sub"), "echoes");
+        let mut lane_b = LaneCapabilities::new(LaneAddress::wing("vp", "sub"), "echoes");
 
         lane_a.registry.insert(Arc::new(MockStandB::new()));
         lane_b.registry.insert(Arc::new(MockStandB::new()));

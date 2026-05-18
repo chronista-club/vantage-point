@@ -252,7 +252,7 @@ async fn handle_cmd(
         stand,
     } = cmd;
 
-    let addr = LaneAddress::worker(&project_id, &name);
+    let addr = LaneAddress::wing(&project_id, &name);
 
     // 早期 skip: permit 待つ前に既存 entry を check (= 手動 create と被った時の無駄 acquire 削減)
     {
@@ -350,7 +350,7 @@ async fn handle_cmd(
     // を再 check し、 lost race なら spawn 済 slot を drop して zombie reap。
     let info = LaneInfo {
         address: addr.clone(),
-        kind: LaneKind::Worker,
+        kind: LaneKind::Wing,
         name: Some(name),
         state,
         stand: stand.clone(),
@@ -358,7 +358,7 @@ async fn handle_cmd(
         pid,
         cwd,
         // 起動時点では git 状態取得しない (list_handler 側で必要時に enrich)。
-        worker_status: None,
+        wing_status: None,
         // Phase 1e: spawn 成功時のみ tmux address を populate
         tmux: if matches!(state, super::lanes_state::LaneState::Running) {
             vec![super::lanes_state::TmuxLaneAddress::for_spawn(
