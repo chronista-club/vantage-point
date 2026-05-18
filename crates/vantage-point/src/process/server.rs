@@ -583,6 +583,42 @@ pub async fn run(
         shutdown_token.clone(),
     );
 
+    // wiremsg Stage 0: Lane lifecycle event を retained topic に publish する。
+    // `SystemEvent::Lane` を購読し、LanePool の全 list snapshot を
+    // `process/star-platinum/state/lanes`（category=state → RetainedStore で保持）へ流す。
+    // hub.broadcast → Hub→TopicRouter pump → retained。consumer（Stage 1 で vp-app が
+    // subscribe）不在でも no-op で安全。設計: creo-memories mem_1CbA198fsHJsoKpu2jDUCv。
+    {
+        let mut sys_rx = state.system_event_tx.subscribe();
+        let lane_pool = state.lane_pool.clone();
+        let hub = state.hub.clone();
+        let shutdown = shutdown_token.clone();
+        // 起動直後の現 snapshot を 1 度 publish して retained を seed する
+        // （Lead Lane は既に pre-populate 済）。
+        hub.broadcast(crate::protocol::ProcessMessage::LanesSnapshot {
+            lanes: state.lane_pool.read().await.list(),
+        });
+        tokio::spawn(async move {
+            use super::lanes_state::SystemEvent;
+            use tokio::sync::broadcast::error::RecvError;
+            loop {
+                tokio::select! {
+                    _ = shutdown.cancelled() => break,
+                    ev = sys_rx.recv() => match ev {
+                        // Lane lifecycle 変化 / lag → 現 snapshot を全量 publish（idempotent）
+                        Ok(SystemEvent::Lane(_)) | Err(RecvError::Lagged(_)) => {
+                            let lanes = lane_pool.read().await.list();
+                            hub.broadcast(
+                                crate::protocol::ProcessMessage::LanesSnapshot { lanes },
+                            );
+                        }
+                        Err(RecvError::Closed) => break,
+                    },
+                }
+            }
+        });
+    }
+
     // Phase 5-D: Lane lifecycle monitor — child PtySlot (例: `claude --continue`) が
     //   spawn_with_fallback の 800ms early-exit window を抜けた後で死んだ時に、
     //   Lane state を Dead に mark する periodic task。
