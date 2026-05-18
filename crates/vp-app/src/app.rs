@@ -1768,7 +1768,7 @@ fn spawn_menu_event_pump(proxy: EventLoopProxy<AppEvent>) {
 /// `/api/world/processes` (running Process list、port + pid 持つ) を **併行 fetch + join** して、
 /// 各 Process に `port` と `state` を解決した状態で `ProcessesLoaded` event に乗せる。
 ///
-/// これにより handler 側で `if let Some(port) = p.port { spawn_lanes_fetch(...) }` が動く経路完成。
+/// これにより handler 側で `if let Some(port) = p.port { spawn_lanes_subscription(...) }` が動く経路完成。
 fn spawn_processes_fetch(proxy: EventLoopProxy<AppEvent>) {
     let _ = thread::Builder::new()
         .name("processes-fetch".into())
@@ -1833,16 +1833,23 @@ fn spawn_processes_fetch(proxy: EventLoopProxy<AppEvent>) {
         });
 }
 
-/// Phase A4-3b: SP (33000+) の `/api/lanes` を別スレッドで fetch。
-///
-/// 成功/失敗を `AppEvent::LanesLoaded` / `LanesError` として main thread に通知。
-/// ProjectsLoaded handler が各 project の SP に対してこの fn を呼び、
-/// sidebar_state.lanes_by_project に保持する。
-///
-/// 関連 memory: mem_1CaSugEk1W2vr5TAdfDn5D (多 scope: Lane scope は SP per project)
-fn spawn_lanes_fetch(proxy: EventLoopProxy<AppEvent>, process_path: String, sp_port: u16) {
+/// 1 回の "lanes" channel 接続セッションの終わり方。
+enum LanesSessionOutcome {
+    /// セッション確立後に切断 (SP restart / channel close)。即再接続の対象。
+    Disconnected,
+    /// event loop が閉じた (= app 終了)。購読スレッドを畳む。
+    AppClosing,
+}
+
+/// wiremsg Stage 1 consumer: SP の "lanes" Unison channel を購読し、retained Lane
+/// snapshot を受信して `AppEvent::LanesLoaded` を emit する。旧 `spawn_lanes_fetch`
+/// (one-shot HTTP poll) を置換する long-lived 購読。接続が切れたら指数バックオフで
+/// 再接続し、10 連続失敗で諦めて `AppEvent::LanesSubscriptionEnded` を emit する。
+/// SP が同じ project を再 spawn すれば次の `ProcessesLoaded` で購読も再 spawn される。
+/// 設計: creo-memories mem_1CbA198fsHJsoKpu2jDUCv。
+fn spawn_lanes_subscription(proxy: EventLoopProxy<AppEvent>, process_path: String, sp_port: u16) {
     let _ = thread::Builder::new()
-        .name(format!("lanes-fetch-{}", sp_port))
+        .name(format!("lanes-sub-{}", sp_port))
         .spawn(move || {
             let rt = match tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -1851,42 +1858,147 @@ fn spawn_lanes_fetch(proxy: EventLoopProxy<AppEvent>, process_path: String, sp_p
                 Ok(rt) => rt,
                 Err(e) => {
                     let _ = proxy.send_event(AppEvent::LanesError {
-                        process_path,
+                        process_path: process_path.clone(),
                         message: format!("tokio runtime: {}", e),
                     });
+                    let _ = proxy.send_event(AppEvent::LanesSubscriptionEnded { process_path });
                     return;
                 }
             };
-            rt.block_on(async {
-                let client = TheWorldClient::new(sp_port);
-                match client.list_lanes().await {
-                    Ok(lanes) => {
-                        tracing::info!(
-                            "LanesLoaded: project={} port={} ({} lanes)",
-                            process_path,
-                            sp_port,
-                            lanes.len()
-                        );
-                        let _ = proxy.send_event(AppEvent::LanesLoaded {
-                            process_path,
-                            lanes,
-                        });
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            "list_lanes failed: project={} port={}: {}",
-                            process_path,
-                            sp_port,
-                            e
-                        );
-                        let _ = proxy.send_event(AppEvent::LanesError {
-                            process_path,
-                            message: e.to_string(),
-                        });
-                    }
-                }
-            });
+            rt.block_on(lanes_subscription_loop(proxy, process_path, sp_port));
         });
+}
+
+/// "lanes" channel への接続 → 購読 → 再接続を司る long-lived ループ。
+async fn lanes_subscription_loop(
+    proxy: EventLoopProxy<AppEvent>,
+    process_path: String,
+    sp_port: u16,
+) {
+    // QUIC ポート = HTTP ポート (QUIC_PORT_OFFSET = 0、TCP/UDP は同一ポートで共存)。
+    let addr = format!("[::1]:{}", sp_port);
+    const MAX_FAILURES: u32 = 10;
+    let mut failures: u32 = 0;
+
+    loop {
+        match run_lanes_session(&proxy, &process_path, &addr).await {
+            Ok(LanesSessionOutcome::AppClosing) => return,
+            Ok(LanesSessionOutcome::Disconnected) => {
+                // セッション確立後の切断 (SP restart 等)。失敗カウンタをリセットし、
+                // 短い固定 delay を挟んで即再接続する (確立直後の即切断による busy loop を防ぐ)。
+                failures = 0;
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+            Err(e) => {
+                failures += 1;
+                tracing::warn!(
+                    "lanes subscription failed ({}/{}): project={}: {}",
+                    failures,
+                    MAX_FAILURES,
+                    process_path,
+                    e
+                );
+                let _ = proxy.send_event(AppEvent::LanesError {
+                    process_path: process_path.clone(),
+                    message: e,
+                });
+                if failures >= MAX_FAILURES {
+                    tracing::warn!(
+                        "lanes subscription giving up: project={} (SP unreachable)",
+                        process_path
+                    );
+                    let _ = proxy.send_event(AppEvent::LanesSubscriptionEnded { process_path });
+                    return;
+                }
+                // 指数バックオフ 500ms〜16s (TUI→Process reconnect と同じカーブ)。
+                let delay_ms = std::cmp::min(500u64 << (failures - 1), 16_000);
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            }
+        }
+    }
+}
+
+/// 1 回の接続セッション: QUIC connect → `open_channel("lanes")` → recv ループ。
+///
+/// retained topic なので接続直後に現スナップショットが届き、以降 LanePool 変化のたび
+/// push される。`Ok` = セッション確立後の終了 (再接続 or app 終了)、`Err` = 接続 or
+/// channel open に失敗 (失敗カウンタの対象)。
+async fn run_lanes_session(
+    proxy: &EventLoopProxy<AppEvent>,
+    process_path: &str,
+    addr: &str,
+) -> Result<LanesSessionOutcome, String> {
+    use unison::ProtocolClient;
+    use unison::network::MessageType;
+    use unison::network::TrustAnchors;
+    use unison::network::quic::QuicClient;
+
+    let transport = QuicClient::builder()
+        .trust_anchors(TrustAnchors::SkipVerification)
+        .build()
+        .map_err(|e| format!("QUIC client build: {}", e))?;
+    let client = ProtocolClient::new(transport);
+    client
+        .connect(addr)
+        .await
+        .map_err(|e| format!("connect {}: {}", addr, e))?;
+    let channel = client
+        .open_channel("lanes")
+        .await
+        .map_err(|e| format!("open lanes channel: {}", e))?;
+    tracing::info!(
+        "lanes subscription connected: project={} addr={}",
+        process_path,
+        addr
+    );
+
+    loop {
+        let msg = match channel.recv().await {
+            Ok(m) => m,
+            // セッション確立後の切断 (SP 停止 / channel close)。再接続対象。
+            Err(_) => return Ok(LanesSessionOutcome::Disconnected),
+        };
+        // SP 側 "lanes" channel は `send_event("snapshot", ...)` で push する。
+        if msg.msg_type != MessageType::Event || msg.method != "snapshot" {
+            continue;
+        }
+        let payload = match msg.payload_as_value() {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("lanes snapshot payload parse failed: {}", e);
+                continue;
+            }
+        };
+        // payload = ProcessMessage::LanesSnapshot = {"type":"lanes_snapshot","lanes":[...]}。
+        // topic は `process/star-platinum/state/#` の wildcard 購読なので、将来別 message
+        // 種別が同 subtree に publish されても無視する。
+        if payload.get("type").and_then(|t| t.as_str()) != Some("lanes_snapshot") {
+            continue;
+        }
+        let lanes: Vec<crate::client::LaneInfo> =
+            match serde_json::from_value(payload.get("lanes").cloned().unwrap_or_default()) {
+                Ok(lanes) => lanes,
+                Err(e) => {
+                    tracing::warn!("lanes snapshot decode failed: {}", e);
+                    continue;
+                }
+            };
+        tracing::info!(
+            "LanesLoaded (wiremsg): project={} ({} lanes)",
+            process_path,
+            lanes.len()
+        );
+        if proxy
+            .send_event(AppEvent::LanesLoaded {
+                process_path: process_path.to_string(),
+                lanes,
+            })
+            .is_err()
+        {
+            // event loop が閉じた = app 終了。購読スレッドを畳む。
+            return Ok(LanesSessionOutcome::AppClosing);
+        }
+    }
 }
 
 /// Phase 2.5 (per-Lane instance): main_view の JS API を呼ぶ helper 群。
@@ -1961,8 +2073,9 @@ fn spawn_sp_start(proxy: EventLoopProxy<AppEvent>, project_name: String, project
                         );
                         // TheWorld の polling が新 SP を pick up すると、 既存の
                         // spawn_processes_fetch / spawn_activity_poller が ProcessesLoaded を再送、
-                        // その流れで spawn_lanes_fetch が走って sidebar に Lane が出る。
-                        // ここで明示的に再 fetch trigger する必要はない (polling が 5s で拾う)。
+                        // その流れで spawn_lanes_subscription が走って "lanes" channel を購読、
+                        // retained snapshot を受信して sidebar に Lane が出る。
+                        // ここで明示的に trigger する必要はない (polling が 5s で SP を拾う)。
                         let _ = proxy; // 将来 spawn 完了通知 event を入れるなら使う
                     }
                     Err(e) => {
@@ -2559,14 +2672,16 @@ pub fn run() -> anyhow::Result<()> {
 
     // Sidebar
     let sidebar_ipc_proxy = event_loop.create_proxy();
-    // v1.0 柱 2 PR-1: VP_SIDEBAR_V2=1 で新 SolidJS sidebar に切替 (dev フラグ、 default は旧 SIDEBAR_HTML)。
+    // v1.0 柱 2: 新 SolidJS sidebar が default。dev フラグ `VP_SIDEBAR_V2` は卒業し、
+    // 指定なしで新 sidebar を配信する。`VP_SIDEBAR_LEGACY=1` を立てた時のみ旧 SIDEBAR_HTML
+    // に退避できる (rollback escape hatch、 柱2 polish 完了後に旧 path ごと撤去予定)。
     // const は実行時分岐できないため、 V1/V2 の 2 つの &'static asset table を runtime に選ぶ。
     let sidebar_assets: &'static [(&'static str, &'static [u8], &'static str)] =
-        if std::env::var_os("VP_SIDEBAR_V2").is_some() {
-            tracing::info!("VP_SIDEBAR_V2 検出 — 新 SolidJS sidebar (PR-1 scaffold) を配信");
-            SIDEBAR_ASSETS_V2
-        } else {
+        if std::env::var_os("VP_SIDEBAR_LEGACY").is_some() {
+            tracing::info!("VP_SIDEBAR_LEGACY 検出 — 旧 sidebar (SIDEBAR_HTML) を配信");
             SIDEBAR_ASSETS
+        } else {
+            SIDEBAR_ASSETS_V2
         };
     let sidebar = WebViewBuilder::new()
         // Phase 5-C: vp-asset:// custom protocol で bundled font (FONT_ASSETS) + sidebar.html を配信。
@@ -2635,6 +2750,10 @@ pub fn run() -> anyhow::Result<()> {
     // TheWorld 側でも `Process already running` で弾かれるが、 無駄な POST を避ける。
     let mut sp_spawn_triggered: std::collections::HashSet<String> =
         std::collections::HashSet::new();
+    // wiremsg Stage 1: per-SP の "lanes" Unison 購読を 1 本だけ張るための guard。
+    // path をキーにする。購読が再接続上限で諦めると `LanesSubscriptionEnded` で除去され、
+    // 次の `ProcessesLoaded` で SP がまだ生きていれば再 spawn される。
+    let mut lanes_sub_active: std::collections::HashSet<String> = std::collections::HashSet::new();
     // VP-100 follow-up (1Password 風): runtime 開発者モード state
     let mut dev_mode = initial_dev_mode;
     // project:add 等の async 操作で event loop に project list 再 fetch を kick するための proxy
@@ -2830,11 +2949,20 @@ pub fn run() -> anyhow::Result<()> {
                         pane_state
                     })
                     .collect();
-                // Phase A4-3b: 各 project の SP に対して /api/lanes を fetch
-                // (memory mem_1CaSugEk1W2vr5TAdfDn5D: Lane scope は SP per project の所有)
+                // wiremsg Stage 1: 各 project の SP の "lanes" Unison channel を購読する。
+                // 購読は per-SP に 1 本 (lanes_sub_active で dedup)。retained snapshot が
+                // 接続直後に届き、以降 LanePool 変化のたび push されるので、ここで毎回
+                // 張り直す必要はない (旧 spawn_lanes_fetch は ProcessesLoaded ごとに poll)。
+                // 設計: creo-memories mem_1CbA198fsHJsoKpu2jDUCv。
                 for (path, port) in &project_ports {
-                    if let Some(sp_port) = port {
-                        spawn_lanes_fetch(async_action_proxy.clone(), path.clone(), *sp_port);
+                    if let Some(sp_port) = port
+                        && lanes_sub_active.insert(path.clone())
+                    {
+                        spawn_lanes_subscription(
+                            async_action_proxy.clone(),
+                            path.clone(),
+                            *sp_port,
+                        );
                     }
                 }
                 // Phase 2.x-b: dead-respawn fix — SP が "running" になった時点で
@@ -3008,6 +3136,15 @@ pub fn run() -> anyhow::Result<()> {
                     message
                 );
                 // SP 接続失敗 (Project SP 未起動等) — sidebar の lanes_by_project は更新しない
+            }
+            Event::UserEvent(AppEvent::LanesSubscriptionEnded { process_path }) => {
+                // wiremsg Stage 1: "lanes" 購読が再接続上限に達して終了した。
+                // guard から外し、SP が再び現れたら次の `ProcessesLoaded` で購読を再 spawn する。
+                tracing::info!(
+                    "AppEvent::LanesSubscriptionEnded: project={} (購読 guard 解除)",
+                    process_path
+                );
+                lanes_sub_active.remove(&process_path);
             }
             Event::UserEvent(AppEvent::ProcessesError(msg)) => {
                 let js_msg = serde_json::to_string(&msg).unwrap_or_else(|_| "\"error\"".into());
@@ -3212,7 +3349,6 @@ pub fn run() -> anyhow::Result<()> {
                         // JS-side からも先 removeLane を呼ぶ (= xterm + WS 即時 dispose、
                         // server side は polling で sidebar から消える前にこちらが先)
                         lane_js::remove_lane(&main_view, &address);
-                        let proxy = async_action_proxy.clone();
                         let path_clone = project_path.clone();
                         let addr_clone = address.clone();
                         thread::Builder::new()
@@ -3238,11 +3374,9 @@ pub fn run() -> anyhow::Result<()> {
                                                 path_clone,
                                                 addr_clone
                                             );
-                                            spawn_lanes_fetch(
-                                                proxy.clone(),
-                                                path_clone,
-                                                port,
-                                            );
+                                            // wiremsg Stage 1: 明示的な再 fetch は不要。
+                                            // SP が LanePool 変化を "lanes" topic に publish し、
+                                            // 購読側が snapshot を受信して sidebar を更新する。
                                         }
                                         Err(e) => {
                                             tracing::warn!(
@@ -3271,7 +3405,6 @@ pub fn run() -> anyhow::Result<()> {
                         .find(|p| p.path == project_path)
                         .and_then(|p| p.port);
                     if let Some(port) = sp_port {
-                        let proxy = async_action_proxy.clone();
                         let path_clone = project_path.clone();
                         let addr_clone = address.clone();
                         thread::Builder::new()
@@ -3296,9 +3429,9 @@ pub fn run() -> anyhow::Result<()> {
                                                 path_clone,
                                                 addr_clone
                                             );
-                                            // 再 fetch で新 pid / state を sidebar に反映。
+                                            // wiremsg Stage 1: 新 pid / state は SP の
+                                            // "lanes" topic snapshot で購読側に push される。
                                             // WS は PR #218 の auto-reconnect で透過的に新 PtySlot に attach し直す。
-                                            spawn_lanes_fetch(proxy.clone(), path_clone, port);
                                         }
                                         Err(e) => {
                                             tracing::warn!(
@@ -3367,12 +3500,8 @@ pub fn run() -> anyhow::Result<()> {
                                                 name_clone,
                                                 branch_clone
                                             );
-                                            // 即座に lanes を re-fetch して sidebar 反映
-                                            spawn_lanes_fetch(
-                                                proxy.clone(),
-                                                path_clone.clone(),
-                                                port,
-                                            );
+                                            // wiremsg Stage 1: 新 Lane は SP の "lanes"
+                                            // topic snapshot で購読側に push される。
                                             // R5: 成功通知を sidebar に push back (form を閉じる)
                                             let _ = proxy.send_event(
                                                 AppEvent::WorkerCreateResult {

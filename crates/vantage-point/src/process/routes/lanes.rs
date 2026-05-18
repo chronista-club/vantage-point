@@ -340,6 +340,22 @@ pub async fn create_handler(
         pool.insert(info.clone());
     }
 
+    // wiremsg Stage 0: Lane 追加を SystemEvent::Lane(Diff::Add) で発火する。
+    // これを購読する producer (server.rs) が LanePool 全 snapshot を retained topic
+    // (`process/star-platinum/state/lanes`) に republish し、vp-app の "lanes" 購読へ
+    // push される。delete 経路 (delete_lane_orchestrated) は Diff::Remove を発火済だが、
+    // create 経路はこれが欠けており add_wing 後に sidebar が追従しなかった (Stage 1
+    // consumer dogfood で発覚)。
+    if let Err(e) = state.system_event_tx.send(SystemEvent::Lane(Diff::Add {
+        payload: info.clone(),
+    })) {
+        tracing::warn!(
+            "SystemEvent::Lane(Diff::Add) broadcast failed: addr={} err={}",
+            addr,
+            e
+        );
+    }
+
     Ok((StatusCode::CREATED, Json(info)))
 }
 
