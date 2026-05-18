@@ -120,12 +120,12 @@ pub async fn list_handler(State(state): State<Arc<AppState>>) -> impl IntoRespon
     Json(LanesResponse { lanes })
 }
 
-/// `POST /api/lanes` request body (Phase 3-A: Worker Lane create + lane clone)
+/// `POST /api/lanes` request body (Phase 3-A: Wing Lane create + lane clone)
 #[derive(Debug, Deserialize)]
 pub struct CreateLaneReq {
-    /// "worker" のみ受付 (Lead は project ごと固定)
+    /// "wing" を受付 ("worker" は Worker → Wing rename 前の legacy alias)。Lead は project ごと固定。
     pub kind: String,
-    /// Worker name (人間可読、 LaneAddress.name に入る)
+    /// Wing name (人間可読、 LaneAddress.name に入る)
     pub name: String,
     /// LaneStand: "echoes" (default) or "shell"
     #[serde(default)]
@@ -139,10 +139,10 @@ pub struct CreateLaneReq {
     pub branch: Option<String>,
 }
 
-/// `POST /api/lanes` — Worker Lane create (Phase 3-A: lane clone + PtySlot spawn)
+/// `POST /api/lanes` — Wing Lane create (Phase 3-A: lane clone + PtySlot spawn)
 ///
 /// 流れ:
-/// 1. 入力 validation (kind == "worker", name 非空)
+/// 1. 入力 validation (kind == "wing"、 legacy "worker" も可、 name 非空)
 /// 2. cwd 決定:
 ///    - `req.cwd` Some → そのまま使う
 ///    - `req.branch` Some → `vp lane new <name> <branch>` subprocess で worker dir 作成
@@ -155,12 +155,12 @@ pub async fn create_handler(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CreateLaneReq>,
 ) -> Result<(StatusCode, Json<LaneInfo>), (StatusCode, Json<serde_json::Value>)> {
-    // 入力 validation
-    if req.kind != "worker" {
+    // 入力 validation。 "wing" を受付、 "worker" は Worker → Wing rename 前の legacy alias。
+    if req.kind != "wing" && req.kind != "worker" {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(json!({
-                "error": "kind must be 'worker' (Lead is fixed per project)"
+                "error": "kind must be 'wing' (Lead is fixed per project)"
             })),
         ));
     }
@@ -360,7 +360,7 @@ fn default_cleanup() -> bool {
 
 /// VP-124 Phase 1: Lane delete orchestration の戻り値。
 ///
-/// 全 trigger (HTTP DELETE / MCP `delete_worker` / `vp ws rm` CLI) が共有する成功 payload。
+/// 全 trigger (HTTP DELETE / MCP `delete_wing` / `vp lane rm` CLI) が共有する成功 payload。
 #[derive(Debug, Serialize)]
 pub struct DeletedLaneInfo {
     /// Display 形 ("<project>/worker/<name>")
@@ -388,7 +388,7 @@ pub enum DeleteLaneError {
 
 /// VP-124 Phase 1: Lane delete の 3-step orchestration を関数化。
 ///
-/// 全 trigger (HTTP DELETE / MCP `delete_worker` / `vp ws rm` CLI / future Phase 3 FSEvents
+/// 全 trigger (HTTP DELETE / MCP `delete_wing` / `vp lane rm` CLI / future Phase 3 FSEvents
 /// watcher) が共有する core logic。 既存 `delete_handler` から extract、 同時に **欠落していた
 /// tmux session kill + SystemEvent broadcast を補完** (= bug fix 兼 refactor)。
 ///
@@ -666,7 +666,7 @@ fn derive_default_branch(repo_root: &std::path::Path, name: &str) -> String {
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .map(|s| sanitize_for_branch(&s))
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "worker".to_string());
+        .unwrap_or_else(|| "wing".to_string());
     format!("{}/{}", prefix, sanitize_for_branch(name))
 }
 

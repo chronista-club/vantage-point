@@ -152,9 +152,9 @@ pub struct MsgRecvParams {
     #[schemars(description = "Only receive messages from this address (optional filter)")]
     pub from: Option<String>,
 
-    /// VP-166: 受信先 lane (default "lead"、flat 名: "lead" or "<worker-name>")
+    /// VP-166: 受信先 lane (default "lead"、flat 名: "lead" or "<wing-name>")
     #[schemars(
-        description = "Receive from this lane (default: 'lead', or a worker name like 'chore'). Reads the lane's `<stand>#<lane>` box."
+        description = "Receive from this lane (default: 'lead', or a wing name like 'chore'). Reads the lane's `<stand>#<lane>` box."
     )]
     pub lane: Option<String>,
 
@@ -235,12 +235,12 @@ pub struct SwitchLaneParams {
     pub lane: String,
 }
 
-/// Parameters for the add_worker tool (R5: lane clone + Worker Lane spawn).
+/// Parameters for the add_wing tool (R5: lane clone + Wing Lane spawn).
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
-pub struct AddWorkerParams {
-    /// Worker name. Used as the `name` field of the Lane address (`<project>/worker/<name>`).
+pub struct AddWingParams {
+    /// Wing name. Used as the `name` field of the Lane address (`<project>/wing/<name>`).
     #[schemars(
-        description = "Worker name (人間可読の短い slug、 例: 'feat-api', 'sub'). Lane address の `<project>/worker/<name>` 部分になる。"
+        description = "Wing name (人間可読の短い slug、 例: 'feat-api', 'sub'). Lane address の `<project>/wing/<name>` 部分になる。"
     )]
     pub name: String,
     /// Optional branch. If omitted, server auto-derives `<git-user>/<sanitized-name>`.
@@ -255,12 +255,12 @@ pub struct AddWorkerParams {
     pub stand: Option<String>,
 }
 
-/// Parameters for the delete_worker tool (VP-124 Phase 1).
+/// Parameters for the delete_wing tool (VP-124 Phase 1).
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
-pub struct DeleteWorkerParams {
-    /// Worker name to delete.
+pub struct DeleteWingParams {
+    /// Wing name to delete.
     #[schemars(
-        description = "Worker name to delete (例: 'keystage', 'feat-api')。 Lane address の `<project>/worker/<name>` の `<name>` 部分。"
+        description = "Wing name to delete (例: 'keystage', 'feat-api')。 Lane address の `<project>/wing/<name>` の `<name>` 部分。"
     )]
     pub name: String,
 
@@ -276,7 +276,7 @@ pub struct DeleteWorkerParams {
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ListLanesParams {
     /// Lane kind filter.
-    #[schemars(description = "Lane kind フィルタ: 'lead' or 'worker'。 省略時は両方含む。")]
+    #[schemars(description = "Lane kind フィルタ: 'lead' or 'wing'。 省略時は両方含む。")]
     #[serde(default)]
     pub kind: Option<String>,
 
@@ -471,15 +471,15 @@ pub struct PermissionRequestPayload {
 ///
 /// この `vp mcp` プロセスが属する Lane (VP-166 PR-4)。
 ///
-/// cwd から判定する: cwd が `vp_data_dir()/lanes/<parent>-<name>` なら worker `<name>`、
+/// cwd から判定する: cwd が `vp_data_dir()/lanes/<parent>-<name>` なら wing `<name>`、
 /// それ以外（= repo path）なら lead。`msg_recv` の default lane / `msg_send` の `from` /
 /// `list_lanes` の `is_self` 付与に使う。
 #[derive(Debug, Clone)]
 pub struct SelfLane {
-    /// `"lead"` or `"<worker-name>"`（flat 名）
+    /// `"lead"` or `"<wing-name>"`（flat 名）
     pub lane_name: String,
-    /// worker context のとき `Some(parent project 名)`、lead context のとき `None`
-    pub worker_parent: Option<String>,
+    /// wing context のとき `Some(parent project 名)`、lead context のとき `None`
+    pub wing_parent: Option<String>,
 }
 
 impl SelfLane {
@@ -487,7 +487,7 @@ impl SelfLane {
     pub fn detect() -> Self {
         let lead = || SelfLane {
             lane_name: "lead".to_string(),
-            worker_parent: None,
+            wing_parent: None,
         };
         let Ok(cwd) = std::env::current_dir() else {
             return lead();
@@ -516,16 +516,16 @@ impl SelfLane {
         match dirname.strip_prefix(&format!("{}-", parent.name)) {
             Some(name) if !name.is_empty() => SelfLane {
                 lane_name: name.to_string(),
-                worker_parent: Some(parent.name.clone()),
+                wing_parent: Some(parent.name.clone()),
             },
             _ => lead(),
         }
     }
 
     /// `msg_send` の `from` フィールド値: lead は `"agent"`（bare、cross-process forward 時に
-    /// `normalize_from` で `agent@<project>` になる）、worker は `"agent@<parent>/<name>"`。
+    /// `normalize_from` で `agent@<project>` になる）、wing は `"agent@<parent>/<name>"`。
     pub fn from_address(&self) -> String {
-        match &self.worker_parent {
+        match &self.wing_parent {
             Some(parent) => format!("agent@{}/{}", parent, self.lane_name),
             None => "agent".to_string(),
         }
@@ -1110,17 +1110,17 @@ impl VantageMcp {
         }
     }
 
-    /// R5: 現 project の SP に Worker Lane を新規作成 (lane clone + PtySlot spawn)。
+    /// R5: 現 project の SP に Wing Lane を新規作成 (lane clone + PtySlot spawn)。
     ///
     /// - cwd ベースで自動的に local SP を解決 (`self.process_url`)。
     /// - branch 省略時は server 側で `<git-user>/<sanitized-name>` を auto-derive。
     /// - 名前重複は HTTP 409 CONFLICT、 lane clone 失敗は 500 で返ってくる。
     #[tool(
-        description = "Create a new Worker Lane in the current project (lane clone + spawn). Resolves the local SP via cwd. If `branch` is omitted, the server auto-derives `<git-user>/<sanitized-name>`. Returns the Lane address `<project>/worker/<name>` on success. Use this to spawn isolated parallel work (e.g. feature branches, exploratory experiments)."
+        description = "Create a new Wing Lane in the current project (lane clone + spawn). Resolves the local SP via cwd. If `branch` is omitted, the server auto-derives `<git-user>/<sanitized-name>`. Returns the Lane address `<project>/wing/<name>` on success. Use this to spawn isolated parallel work (e.g. feature branches, exploratory experiments)."
     )]
-    async fn add_worker(
+    async fn add_wing(
         &self,
-        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<AddWorkerParams>,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<AddWingParams>,
     ) -> Result<CallToolResult, McpError> {
         if params.name.trim().is_empty() {
             return Err(McpError::invalid_params(
@@ -1129,7 +1129,7 @@ impl VantageMcp {
             ));
         }
         let mut body = serde_json::json!({
-            "kind": "worker",
+            "kind": "wing",
             "name": params.name,
         });
         if let Some(b) = params.branch.as_ref().filter(|s| !s.trim().is_empty()) {
@@ -1167,27 +1167,27 @@ impl VantageMcp {
                 parsed.get("address").and_then(|a| {
                     let proj = a.get("project")?.as_str()?;
                     let nm = a.get("name")?.as_str()?;
-                    Some(format!("{}/worker/{}", proj, nm))
+                    Some(format!("{}/wing/{}", proj, nm))
                 })
             })
-            .unwrap_or_else(|| format!("worker/{}", params.name));
+            .unwrap_or_else(|| format!("wing/{}", params.name));
         let cwd = parsed.get("cwd").and_then(|v| v.as_str()).unwrap_or("?");
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-            format!("Worker Lane created: {}\n  cwd: {}", addr, cwd),
+            format!("Wing Lane created: {}\n  cwd: {}", addr, cwd),
         )]))
     }
 
-    /// Delete a Worker Lane in the current project (VP-124 Phase 1).
+    /// Delete a Wing Lane in the current project (VP-124 Phase 1).
     ///
     /// 3-step orchestration を 1 call で完結: SP pool removal + child PTY kill + tmux session kill +
     /// (optional) lane workspace dir cleanup。 server-side `delete_lane_orchestrated` への薄い HTTP
     /// wrapper、 cwd ベースで自動的に local SP と project を解決。
     #[tool(
-        description = "Delete a Worker Lane in the current project. SP pool removal + child PTY kill + tmux session kill + lane workspace dir cleanup を 1 call で完結 (= 旧来の手動 3 step `vp lane rm` + `tmux kill-session` + `curl -X DELETE` を置換)。 cwd ベースで local SP を自動解決、 cleanup=false で dir 残置 (debug 用途)。 Lead Lane は削除不可 (architecture rule、 SP shutdown が path)。"
+        description = "Delete a Wing Lane in the current project. SP pool removal + child PTY kill + tmux session kill + lane workspace dir cleanup を 1 call で完結 (= 旧来の手動 3 step `vp lane rm` + `tmux kill-session` + `curl -X DELETE` を置換)。 cwd ベースで local SP を自動解決、 cleanup=false で dir 残置 (debug 用途)。 Lead Lane は削除不可 (architecture rule、 SP shutdown が path)。"
     )]
-    async fn delete_worker(
+    async fn delete_wing(
         &self,
-        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<DeleteWorkerParams>,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<DeleteWingParams>,
     ) -> Result<CallToolResult, McpError> {
         if params.name.trim().is_empty() {
             return Err(McpError::invalid_params(
@@ -1197,7 +1197,7 @@ impl VantageMcp {
         }
 
         // SP の project name を /api/health から取得 (project_dir basename = project name)。
-        // address 構築のため必要、 add_worker と異なり POST body に name 1 つだけ渡せば SP 側で
+        // address 構築のため必要、 add_wing と異なり POST body に name 1 つだけ渡せば SP 側で
         // project 補完される pattern が使えない (DELETE は full address を query で受ける design)。
         let process_url = self.process_url.lock().await.clone();
         let health = self
@@ -1228,12 +1228,12 @@ impl VantageMcp {
                 )
             })?;
 
-        let address = format!("{}/worker/{}", project_name, params.name);
+        let address = format!("{}/wing/{}", project_name, params.name);
         let cleanup = params.cleanup.unwrap_or(true);
 
         // reqwest 0.12 の RequestBuilder.query は &[(impl Serialize, impl Serialize)] を取るが、
         // `&str` の tuple slice の type 推論が出ないので manual percent-encoding で URL 構築。
-        // address 内の `/` は `%2F` にする以外は ASCII safe (project name / worker name は git
+        // address 内の `/` は `%2F` にする以外は ASCII safe (project name / wing name は git
         // branch 互換 slug のため英数 + dash + underscore のみ)。
         let address_enc = address.replace('/', "%2F");
         let url = format!(
@@ -1277,7 +1277,7 @@ impl VantageMcp {
 
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
             format!(
-                "Worker Lane deleted: {}\n  pid: {} (killed)\n  tmux_killed: {}\n  cleanup: {}",
+                "Wing Lane deleted: {}\n  pid: {} (killed)\n  tmux_killed: {}\n  cleanup: {}",
                 address, pid, tmux_killed, cleanup_status
             ),
         )]))
@@ -1289,7 +1289,7 @@ impl VantageMcp {
     /// GET /api/lanes wrapper、 各 Lane に mailbox_addresses (per-Lane Stands の wire address)、
     /// top-level に project_addresses + world_addresses を synthesize。
     #[tool(
-        description = "List all Lanes (Lead + Workers) in the current project with comprehensive routing info. Each Lane returns: address, kind, state, stand, pid, cwd, tmux session, worker_status, AND mailbox_addresses (= wire-ready addresses for `msg_send`)。 Each lane's mailbox_addresses has two entries: `agent` (= the lane's Claude session inbox, e.g. `agent@vantage-point` for lead or `agent@vantage-point/chore` for worker 'chore') and `canvas` (= the lane's Canvas / Paisley Park inbox, e.g. `canvas@vantage-point/chore`)。 Top-level also returns project_addresses (e.g. `gold_experience@<project>`) and world_addresses (e.g. `hermit_purple@world`)。 Use this to discover Workers, decide deletion targets, pick mailbox routes for msg_send。 Replaces multi-step `vp ps` + `curl /api/lanes`。"
+        description = "List all Lanes (Lead + Wings) in the current project with comprehensive routing info. Each Lane returns: address, kind, state, stand, pid, cwd, tmux session, wing_status, AND mailbox_addresses (= wire-ready addresses for `msg_send`)。 Each lane's mailbox_addresses has two entries: `agent` (= the lane's Claude session inbox, e.g. `agent@vantage-point` for lead or `agent@vantage-point/chore` for wing 'chore') and `canvas` (= the lane's Canvas / Paisley Park inbox, e.g. `canvas@vantage-point/chore`)。 Top-level also returns project_addresses (e.g. `gold_experience@<project>`) and world_addresses (e.g. `hermit_purple@world`)。 Use this to discover Wings, decide deletion targets, pick mailbox routes for msg_send。 Replaces multi-step `vp ps` + `curl /api/lanes`。"
     )]
     async fn list_lanes(
         &self,
@@ -1297,7 +1297,7 @@ impl VantageMcp {
     ) -> Result<CallToolResult, McpError> {
         let process_url = self.process_url.lock().await.clone();
 
-        // project name は /api/health から (= delete_worker と同型 pattern)。
+        // project name は /api/health から (= delete_wing と同型 pattern)。
         // 旧実装 (`lanes_in.first().get("project")`) は SP 起動直後 lanes 空の race
         // window で `"unknown"` fallback → `gold_experience@unknown` 等の偽 address を
         // 返す bug があり、 PR-β-4 review feedback (`feedback_jsonschema_field_scope`)
@@ -1365,7 +1365,7 @@ impl VantageMcp {
 
             // mailbox_addresses 計算 (= per-Lane の wire address。VP-166 設計 doc 16)。
             //
-            // 各 Lane (lead / worker) は 2 つの box を持つ:
+            // 各 Lane (lead / wing) は 2 つの box を持つ:
             //   - `agent#<lane>`  = その lane の Claude session 宛 (= coding-assistant inbox)
             //   - `canvas#<lane>` = その lane の Canvas / PP 宛 (PR-5 で配線)
             // actor 名は `stands.rs` の `id` 体系 (`ECHOES.id = "agent"` / `PAISLEY_PARK.id = "canvas"`)。
@@ -1374,14 +1374,14 @@ impl VantageMcp {
             // 旧実装の `<JoJo名>.<lane>@<project>` (`.` 区切り) は `parse_address` で弾かれる不正形だった。
             let lane_label = match lane.get("kind").and_then(|v| v.as_str()) {
                 Some("lead") => "lead".to_string(),
-                Some("worker") => lane
+                Some("wing") => lane
                     .get("name")
                     .and_then(|v| v.as_str())
                     .unwrap_or("unnamed")
                     .to_string(),
                 _ => "unknown".to_string(),
             };
-            // lead は `agent@<project>` (lane 省略 = lead)、worker は `agent@<project>/<name>`
+            // lead は `agent@<project>` (lane 省略 = lead)、wing は `agent@<project>/<name>`
             let lane_suffix = if lane_label == "lead" {
                 String::new()
             } else {
@@ -1581,9 +1581,9 @@ impl VantageMcp {
     /// Split the current tmux window to create a new pane.
     ///
     /// tmux split-window で新しいペインを作成する。
-    /// worker 起動や並列 CC セッション作成に使う。
+    /// wing 起動や並列 CC セッション作成に使う。
     #[tool(
-        description = "Split the current tmux window to create a new pane. Use this to spawn parallel workers (e.g. Claude Code sessions, shell commands). Returns the new pane ID."
+        description = "Split the current tmux window to create a new pane. Use this to spawn parallel wings (e.g. Claude Code sessions, shell commands). Returns the new pane ID."
     )]
     async fn tmux_split(
         &self,
@@ -1616,7 +1616,7 @@ impl VantageMcp {
     /// tmux capture-pane で指定ペイン（または全ペイン）のターミナル出力をテキストとして取得する。
     /// AI エージェントが他のペインの状態を把握するのに使う。
     #[tool(
-        description = "Capture tmux pane content as text. If pane_id is omitted, captures all panes in the session. Useful for monitoring worker progress or reading terminal output from other panes."
+        description = "Capture tmux pane content as text. If pane_id is omitted, captures all panes in the session. Useful for monitoring wing progress or reading terminal output from other panes."
     )]
     async fn tmux_capture(
         &self,
@@ -1677,7 +1677,7 @@ impl VantageMcp {
     ///
     /// 全 tmux ペインをキャプチャして Canvas に markdown ダッシュボードとして表示する。
     #[tool(
-        description = "Show a tmux pane dashboard on Canvas. Captures all panes in the current tmux session and displays them as a markdown dashboard. Great for monitoring parallel workers."
+        description = "Show a tmux pane dashboard on Canvas. Captures all panes in the current tmux session and displays them as a markdown dashboard. Great for monitoring parallel wings."
     )]
     async fn tmux_dashboard(&self) -> Result<CallToolResult, McpError> {
         // 全ペインキャプチャ
@@ -2497,7 +2497,7 @@ if bestId > 0 { print(bestId) }
         };
 
         // VP-157: from = "agent"（= lead の正規 address、 旧 "mcp" は廃止）。
-        // VP-166 PR-4: worker context なら from = "agent@<parent>/<name>"（= 自 lane の address。
+        // VP-166 PR-4: wing context なら from = "agent@<parent>/<name>"（= 自 lane の address。
         // bare "agent" だと cross-process forward で送信元 SP の `normalize_from` が間違った
         // project でスタンプしうる — VP-165 の from 汚染の一因。最初から正しい from を付ける）。
         let from = self.self_lane.from_address();
@@ -2646,15 +2646,15 @@ if bestId > 0 { print(bestId) }
 
     /// Receive a message from a lane's mailbox (VP-166: (lane, stand)-aware)
     #[tool(
-        description = "Receive a message from a lane's mailbox in this project. Params: `lane` (default 'lead', or a worker name like 'chore') and `stand` (default 'agent' = the lane's Claude session inbox; 'canvas' = the lane's Paisley Park / Canvas inbox). Reads box `<stand>#<lane>` (e.g. `agent#lead` for the lead's inbox, `agent#chore` for worker 'chore'). Waits up to timeout seconds; returns immediately if a message is queued. Use this for inter-lane communication. Senders write to `agent@<project>` (lead) / `agent@<project>/<name>` (worker)."
+        description = "Receive a message from a lane's mailbox in this project. Params: `lane` (default 'lead', or a wing name like 'chore') and `stand` (default 'agent' = the lane's Claude session inbox; 'canvas' = the lane's Paisley Park / Canvas inbox). Reads box `<stand>#<lane>` (e.g. `agent#lead` for the lead's inbox, `agent#chore` for wing 'chore'). Waits up to timeout seconds; returns immediately if a message is queued. Use this for inter-lane communication. Senders write to `agent@<project>` (lead) / `agent@<project>/<name>` (wing)."
     )]
     async fn msg_recv(
         &self,
         rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<MsgRecvParams>,
     ) -> Result<CallToolResult, McpError> {
         let timeout = params.timeout.unwrap_or(5).min(30);
-        // VP-166 PR-4: lane 省略時は自 lane を default に（worker context なら自分の worker 名、
-        // lead context なら "lead"）。これで worker の Echoes が `msg_recv`（lane 省略）を叩くと
+        // VP-166 PR-4: lane 省略時は自 lane を default に（wing context なら自分の wing 名、
+        // lead context なら "lead"）。これで wing の Echoes が `msg_recv`（lane 省略）を叩くと
         // 自分の `agent#<name>` box を読む（lead の box を盗まない）。
         let lane = params
             .lane
@@ -2819,7 +2819,7 @@ if bestId > 0 { print(bestId) }
             let Some(lb) = layout.lane_base(params.slot, lane) else {
                 continue;
             };
-            let label = if lane == 0 { "Lead" } else { "Worker" };
+            let label = if lane == 0 { "Lead" } else { "Wing" };
             md.push_str(&format!("## Lane {} ({}) — base `{}`\n\n", lane, label, lb));
             for (role, offset) in layout.valid_roles() {
                 if let Some(p) = layout.port(params.slot, lane, &role) {
@@ -2842,8 +2842,8 @@ pub struct PortShowParams {
     /// Project slot (0-based, see port_slot_list for mapping)
     #[schemars(description = "Project slot index (0-19)")]
     pub slot: u16,
-    /// Lane index (0 = Lead, 1+ = Worker)
-    #[schemars(description = "Lane index within project slot (0 = Lead, 1+ = Worker)")]
+    /// Lane index (0 = Lead, 1+ = Wing)
+    #[schemars(description = "Lane index within project slot (0 = Lead, 1+ = Wing)")]
     #[serde(default)]
     pub lane: u16,
     /// Role (agent / dev_server / db_admin / canvas / preview)
@@ -2892,11 +2892,11 @@ impl rmcp::ServerHandler for VantageMcp {
     }
 }
 
-/// worker context のとき parent project の path を config から引く（VP-165 (A)）。
+/// wing context のとき parent project の path を config から引く（VP-165 (A)）。
 ///
-/// lead context（`worker_parent = None`）or parent が config に無い なら `None`。
-fn worker_parent_path(self_lane: &SelfLane, config: &crate::config::Config) -> Option<String> {
-    let parent_name = self_lane.worker_parent.as_ref()?;
+/// lead context（`wing_parent = None`）or parent が config に無い なら `None`。
+fn wing_parent_path(self_lane: &SelfLane, config: &crate::config::Config) -> Option<String> {
+    let parent_name = self_lane.wing_parent.as_ref()?;
     config
         .projects
         .iter()
@@ -2915,8 +2915,8 @@ fn worker_parent_path(self_lane: &SelfLane, config: &crate::config::Config) -> O
 /// 優先度:
 /// 1. 明示的なポート引数（Some で指定された場合）
 /// 2. discovery:
-///    - worker context（cwd = `vp_data_dir()/lanes/<parent>-<name>`）→ parent project の path を
-///      config から引いて `find_by_project`。worker の cwd は登録 project path 配下でないので
+///    - wing context（cwd = `vp_data_dir()/lanes/<parent>-<name>`）→ parent project の path を
+///      config から引いて `find_by_project`。wing の cwd は登録 project path 配下でないので
 ///      `find_for_cwd` は効かない
 ///    - lead context → `find_for_cwd`（cwd 一致 or 配下の running SP）
 /// 3. `VP_PROCESS_PORT` env（discovery 障害 / parent SP 未起動 時の fast path、reshuffle 後は古い可能性）
@@ -2929,13 +2929,13 @@ async fn resolve_process_port(explicit_port: Option<u16>) -> u16 {
 
     // 2. discovery で live port を引く
     let self_lane = SelfLane::detect();
-    match &self_lane.worker_parent {
+    match &self_lane.wing_parent {
         Some(_) => {
-            // worker: parent project の SP を discovery で解決
+            // wing: parent project の SP を discovery で解決
             if let Some(parent_path) = crate::config::Config::load()
                 .ok()
                 .as_ref()
-                .and_then(|c| worker_parent_path(&self_lane, c))
+                .and_then(|c| wing_parent_path(&self_lane, c))
                 && let Some(info) = crate::discovery::find_by_project(&parent_path).await
             {
                 return info.port;
@@ -2971,10 +2971,10 @@ pub async fn run_mcp_server(process_port: Option<u16>) -> anyhow::Result<()> {
     // Resolve the actual port to use
     let resolved_port = resolve_process_port(process_port).await;
 
-    // VP-83: Worker self-register — cwd が lane Worker dir なら、起動時に
-    // TheWorld msgbox registry に worker-{name}@{project} を登録する。
-    // Worker の Claude CLI (MCP server) が自分を名乗る = Worker 責務の体現。
-    self_register_if_worker().await;
+    // VP-83: Wing self-register — cwd が lane Wing dir なら、起動時に
+    // TheWorld msgbox registry に wing-{name}@{project} を登録する。
+    // Wing の Claude CLI (MCP server) が自分を名乗る = Wing 責務の体現。
+    self_register_if_wing().await;
 
     // Note: In MCP mode, we should not use tracing to stdout
     // as it interferes with JSON-RPC communication
@@ -2988,12 +2988,12 @@ pub async fn run_mcp_server(process_port: Option<u16>) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Worker の自己登録 — cwd が `vp_data_dir()/lanes/{project}-{worker}` パターンなら、
-/// parent project を config の最長一致で決定、TheWorld に worker-{name}@{project} 登録。
+/// Wing の自己登録 — cwd が `vp_data_dir()/lanes/{project}-{wing}` パターンなら、
+/// parent project を config の最長一致で決定、TheWorld に wing-{name}@{project} 登録。
 ///
-/// Worker 側の責務 (user 提案 2026-04-25): Worker が自分で名乗る = push model。
-/// SP や TheWorld が Worker を代理登録する pull model は設計違反。
-async fn self_register_if_worker() {
+/// Wing 側の責務 (user 提案 2026-04-25): Wing が自分で名乗る = push model。
+/// SP や TheWorld が Wing を代理登録する pull model は設計違反。
+async fn self_register_if_wing() {
     let cwd = match std::env::current_dir() {
         Ok(p) => p,
         Err(_) => return,
@@ -3004,7 +3004,7 @@ async fn self_register_if_worker() {
         Err(_) => return,
     };
     if !cwd.starts_with(&lanes_root) {
-        return; // Worker でない (通常 project の cwd)
+        return; // Wing でない (通常 project の cwd)
     }
     let dirname = match cwd.file_name().and_then(|n| n.to_str()) {
         Some(n) => n,
@@ -3024,7 +3024,7 @@ async fn self_register_if_worker() {
         Some(p) => p,
         None => return,
     };
-    let worker_name = match dirname.strip_prefix(&format!("{}-", parent.name)) {
+    let wing_name = match dirname.strip_prefix(&format!("{}-", parent.name)) {
         Some(w) => w.to_string(),
         None => return,
     };
@@ -3033,7 +3033,7 @@ async fn self_register_if_worker() {
         // parent SP 未起動 — 今は skip。SP 起動後に user が手動 register or ws resync
         return;
     };
-    let actor = format!("worker-{}", worker_name);
+    let actor = format!("wing-{}", wing_name);
     let world_port = crate::cli::WORLD_PORT;
     let _ = crate::capability::msgbox_remote::register_actor_to_world(
         world_port,
@@ -3069,22 +3069,22 @@ mod tests {
 
     #[test]
     fn test_self_lane_from_address() {
-        // VP-166 PR-4: lead は bare "agent"、worker は "agent@<parent>/<name>"
+        // VP-166 PR-4: lead は bare "agent"、wing は "agent@<parent>/<name>"
         let lead = SelfLane {
             lane_name: "lead".to_string(),
-            worker_parent: None,
+            wing_parent: None,
         };
         assert_eq!(lead.from_address(), "agent");
 
-        let worker = SelfLane {
+        let wing = SelfLane {
             lane_name: "chore".to_string(),
-            worker_parent: Some("vantage-point".to_string()),
+            wing_parent: Some("vantage-point".to_string()),
         };
-        assert_eq!(worker.from_address(), "agent@vantage-point/chore");
+        assert_eq!(wing.from_address(), "agent@vantage-point/chore");
     }
 
     #[test]
-    fn test_worker_parent_path_resolution() {
+    fn test_wing_parent_path_resolution() {
         use crate::config::{Config, ProjectConfig};
         let mut cfg = Config::default();
         cfg.projects.push(ProjectConfig {
@@ -3095,29 +3095,29 @@ mod tests {
             slot: None,
         });
 
-        // worker → parent の path
-        let worker = SelfLane {
+        // wing → parent の path
+        let wing = SelfLane {
             lane_name: "chore".to_string(),
-            worker_parent: Some("vantage-point".to_string()),
+            wing_parent: Some("vantage-point".to_string()),
         };
         assert_eq!(
-            worker_parent_path(&worker, &cfg).as_deref(),
+            wing_parent_path(&wing, &cfg).as_deref(),
             Some("/Users/x/repos/vantage-point")
         );
 
-        // lead context → None（worker_parent が無い）
+        // lead context → None（wing_parent が無い）
         let lead = SelfLane {
             lane_name: "lead".to_string(),
-            worker_parent: None,
+            wing_parent: None,
         };
-        assert_eq!(worker_parent_path(&lead, &cfg), None);
+        assert_eq!(wing_parent_path(&lead, &cfg), None);
 
         // config に無い parent → None
         let unknown = SelfLane {
             lane_name: "x".to_string(),
-            worker_parent: Some("not-in-config".to_string()),
+            wing_parent: Some("not-in-config".to_string()),
         };
-        assert_eq!(worker_parent_path(&unknown, &cfg), None);
+        assert_eq!(wing_parent_path(&unknown, &cfg), None);
     }
 
     #[test]
