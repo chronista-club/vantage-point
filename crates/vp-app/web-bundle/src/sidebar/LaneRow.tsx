@@ -6,7 +6,7 @@
  * session title (2 行目)。 click 選択 (PR-3): row click → `lane:select` IPC で
  * main area を当該 Lane に切り替え。 context menu・restart/delete 操作は後続。
  */
-import { Show } from 'solid-js'
+import { Show, createSignal } from 'solid-js'
 import { CreoIcon } from 'creoui-icons-web'
 import type { LaneInfo } from '../generated/LaneInfo'
 import type { WingStatusWire } from '../generated/WingStatusWire'
@@ -62,11 +62,30 @@ export function LaneRow(props: { lane: LaneInfo; projectPath: string }) {
     sendIpc({ t: 'lane:select', path: props.projectPath, address: addr() })
   }
 
+  // restart は respawn で復帰可能なので即時。 操作ボタンの click は row の
+  // lane:select に伝播させない (stopPropagation)。
+  const onRestart = (e: MouseEvent) => {
+    e.stopPropagation()
+    sendIpc({ t: 'lane:restart', path: props.projectPath, address: addr() })
+  }
+  // delete は破壊的 (PTY kill + tmux kill + workspace dir 削除) なので 2-click 確認:
+  // 1 回目で確認状態、 2 回目で実行。 row から mouse が離れると自動解除。
+  const [confirmDelete, setConfirmDelete] = createSignal(false)
+  const onDelete = (e: MouseEvent) => {
+    e.stopPropagation()
+    if (confirmDelete()) {
+      sendIpc({ t: 'lane:delete', path: props.projectPath, address: addr() })
+    } else {
+      setConfirmDelete(true)
+    }
+  }
+
   return (
     <div
       class="vp-lane-row"
       classList={{ active: isActive(), inactive: isInactive() }}
       onClick={onSelect}
+      onMouseLeave={() => setConfirmDelete(false)}
     >
       <Show when={icon()}>
         <span class="vp-lane-icon" title={standDisplayName(props.lane.stand)}>
@@ -91,6 +110,21 @@ export function LaneRow(props: { lane: LaneInfo; projectPath: string }) {
       </Show>
       <Show when={isAwaiting()}>
         <span class="vp-lane-awaiting" title="Claude is waiting for input" />
+      </Show>
+      <Show when={!isInactive()}>
+        <button class="vp-lane-btn" title="Restart Lane Stand" onClick={onRestart}>
+          <CreoIcon name="ph:arrow-clockwise" size={12} />
+        </button>
+      </Show>
+      <Show when={isWing()}>
+        <button
+          class="vp-lane-btn vp-lane-btn-danger"
+          classList={{ confirming: confirmDelete() }}
+          title={confirmDelete() ? 'もう一度クリックで削除' : 'Delete Wing'}
+          onClick={onDelete}
+        >
+          <CreoIcon name={confirmDelete() ? 'ph:check' : 'ph:x'} size={12} />
+        </button>
       </Show>
       <Show
         when={sessionTitle()}

@@ -118,6 +118,17 @@ html,body{margin:0;height:100%;background:var(--color-surface-bg-subtle);
 .vp-lane-meta .merged{color:var(--color-status-success,#3fb950);}
 .vp-lane-awaiting{margin-left:auto;width:6px;height:6px;border-radius:50%;
   background:var(--color-status-warning,#d49b3f);flex:0 0 auto;}
+/* Lane 操作ボタン (restart / delete、 hover で出現) */
+.vp-lane-btn{margin-left:auto;display:inline-flex;align-items:center;padding:2px;
+  border:none;background:transparent;color:var(--color-text-tertiary);
+  cursor:pointer;opacity:0;border-radius:3px;flex:0 0 auto;
+  transition:opacity .12s ease,background .12s ease,color .12s ease;}
+.vp-lane-btn + .vp-lane-btn{margin-left:2px;}
+.vp-lane-row:hover .vp-lane-btn{opacity:0.65;}
+.vp-lane-btn:hover{opacity:1;background:var(--color-surface-bg-emphasis);}
+.vp-lane-btn-danger:hover{color:#fff;background:var(--color-status-error,#d4444c);}
+.vp-lane-btn-danger.confirming{opacity:1;color:#fff;
+  background:var(--color-status-error,#d4444c);}
 .vp-lane-line2{flex-basis:100%;padding-left:24px;font-size:10px;
   color:var(--color-text-tertiary);overflow:hidden;text-overflow:ellipsis;
   white-space:nowrap;}
