@@ -44,7 +44,8 @@ tokio-stream = "0.1"
 # QUIC protocol。 crates.io package = `club-unison`、 Rust 識別子は `unison` に alias
 # (VP-185: `package` rename で短い識別子を使う、 VP-180 以前の `unison::` 命名に回帰)。
 # v0.8 Builder API / v0.9 wire format pivot (rkyv → buffa) / v0.10 datagram channel。
-unison = { package = "club-unison", version = "0.10" }
+# v1.0.0-rc.1 (VP wiremsg Stage 1 で bump)。
+unison = { package = "club-unison", version = "1.0.0-rc.1" }
 
 # KDL parsing (club-kdl、 旧 unison-kdl。 v0.5.0 で rename + crates.io 移行)
 club-kdl = "0.5"

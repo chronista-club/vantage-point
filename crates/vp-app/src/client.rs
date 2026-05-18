@@ -238,12 +238,6 @@ pub struct WingStatusWire {
     pub is_merged: bool,
 }
 
-#[derive(Debug, Deserialize)]
-struct LanesResponse {
-    #[serde(default)]
-    lanes: Vec<LaneInfo>,
-}
-
 /// doc 11 PR-C: `GET /api/stands` の 1 entry。
 ///
 /// SP 側 `process::routes::stands::StandInfo` と wire 互換 (snake_case 統一済)。
@@ -305,19 +299,6 @@ impl TheWorldClient {
         let url = format!("{}/api/world/processes", self.base_url);
         let resp: ProcessesResponse = self.client.get(&url).send().await?.json().await?;
         Ok(resp.processes)
-    }
-
-    /// SP の `/api/lanes` を呼んで Lane 一覧を取得
-    ///
-    /// 用途: vp-app が project (= SP) ごとに Lane list を fetch して sidebar に反映する
-    /// (A4-3a)。`base_url` に SP の URL (例: `http://127.0.0.1:33000`) を指定して
-    /// この client を作る。同じ struct を World (32000) にも SP (33000+) にも使える。
-    ///
-    /// 関連 memory: mem_1CaSugEk1W2vr5TAdfDn5D (多 scope: Lane scope は SP の所有)
-    pub async fn list_lanes(&self) -> Result<Vec<LaneInfo>> {
-        let url = format!("{}/api/lanes", self.base_url);
-        let resp: LanesResponse = self.client.get(&url).send().await?.json().await?;
-        Ok(resp.lanes)
     }
 
     /// プロジェクトを追加 (POST /api/world/projects)

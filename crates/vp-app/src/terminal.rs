@@ -101,6 +101,11 @@ pub enum AppEvent {
     /// signal として機能。 unread_count / has_persistent / last_msg_ts の actual 値は
     /// 後続 PR で backend peek API + Whitesnake query を実装して populate。
     ResolveLaneInboxes,
+    /// wiremsg Stage 1 consumer: SP の "lanes" Unison channel 購読が再接続上限に達して
+    /// 終了したことを通知する。 main loop は `lanes_sub_active` から process_path を除去し、
+    /// 次の `ProcessesLoaded` で SP がまだ生きていれば購読が再 spawn される。
+    /// 設計: creo-memories mem_1CbA198fsHJsoKpu2jDUCv。
+    LanesSubscriptionEnded { process_path: String },
 }
 
 /// xterm.js から IPC で送られてきた JSON メッセージを処理

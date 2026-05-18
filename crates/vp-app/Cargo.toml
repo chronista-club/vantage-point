@@ -57,6 +57,14 @@ shell-words = "1.1"
 tokio-tungstenite = "0.29"
 futures-util = "0.3"
 
+# wiremsg Stage 1 consumer: SP の "lanes" Unison channel を QUIC 購読する。
+# workspace 共有 (vantage-point server crate と同一版)。設計 mem_1CbA198fsHJsoKpu2jDUCv。
+unison = { workspace = true }
+
+# QUIC (unison) が使う rustls の CryptoProvider をプロセス起動時に install するため
+# 直接依存させる。vp-cli / vantage-point と同じく aws-lc-rs provider を使う。
+rustls = { version = "0.23", features = ["aws-lc-rs"] }
+
 # Terminal clipboard (native OS clipboard fallback for WebView2)
 arboard = "3"
 
