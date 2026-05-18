@@ -16,6 +16,7 @@ import type { ProcessPaneState } from '../generated/ProcessPaneState'
 import { sidebar } from './store'
 import { isRunningProcess } from './classify'
 import { ProjectAccordion } from './ProjectAccordion'
+import { WorldWidget } from './WorldWidget'
 
 /** 1 セクション (稼働中 or 一時停止中) を見出し + Project accordion で描画する。 */
 function ProcSection(props: { label: string; procs: ProcessPaneState[] }) {
@@ -51,16 +52,7 @@ export function Shell() {
         </Show>
       </div>
 
-      <footer class="vp-sidebar-world">
-        <span
-          class="vp-sidebar-world-dot"
-          classList={{ offline: !sidebar.activity.world_online }}
-        />
-        <span>World {sidebar.activity.world_online ? 'online' : 'offline'}</span>
-        <span class="vp-sidebar-world-count">
-          {sidebar.activity.running_process_count} / {sidebar.activity.project_count}
-        </span>
-      </footer>
+      <WorldWidget />
     </div>
   )
 }
@@ -131,14 +123,24 @@ html,body{margin:0;height:100%;background:var(--color-surface-bg-subtle);
 .vp-lane-line2.empty{opacity:0.5;}
 .vp-lane-row.active .vp-lane-line2{color:var(--color-brand-primary);opacity:0.7;}
 
-/* World widget (PR-1 placeholder、 本体描画は後続 increment) */
-.vp-sidebar-world{flex:0 0 auto;display:flex;align-items:center;gap:6px;
-  padding:var(--spacing-xs,4px) var(--spacing-sm,8px);font-size:11px;
-  color:var(--color-text-secondary);
-  border-top:1px solid var(--color-surface-border,#1f2233);}
-.vp-sidebar-world-dot{width:6px;height:6px;border-radius:50%;
+/* World widget (sidebar 最下部、 collapsed 1 行 + expanded 詳細の accordion) */
+.vp-world{flex:0 0 auto;border-top:1px solid var(--color-surface-border,#1f2233);
+  background:var(--color-surface-bg-base);}
+.vp-world-summary{list-style:none;display:flex;align-items:center;gap:6px;
+  padding:var(--spacing-xs,4px) var(--spacing-sm,8px);cursor:pointer;
+  font-size:11px;color:var(--color-text-secondary);user-select:none;}
+.vp-world-summary::-webkit-details-marker{display:none;}
+.vp-world-summary:hover{background:var(--color-surface-bg-emphasis);}
+.vp-world-dot{width:6px;height:6px;border-radius:50%;flex:0 0 auto;
   background:var(--color-status-success,#3fb950);}
-.vp-sidebar-world-dot.offline{background:var(--color-status-error,#d4444c);}
-.vp-sidebar-world-count{margin-left:auto;font-variant-numeric:tabular-nums;
-  color:var(--color-text-tertiary);}
+.vp-world-dot.offline{background:var(--color-status-error,#d4444c);}
+.vp-world-line{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  font-variant-numeric:tabular-nums;}
+.vp-world-detail{padding:var(--spacing-xs,4px) var(--spacing-sm,8px);
+  border-top:1px dashed var(--color-surface-border,#1f2233);}
+.vp-world-stat{display:flex;justify-content:space-between;font-size:11px;
+  padding:1px 0;}
+.vp-world-stat .k{color:var(--color-text-tertiary);}
+.vp-world-stat .v{color:var(--color-text-primary);font-weight:500;
+  font-variant-numeric:tabular-nums;}
 `
