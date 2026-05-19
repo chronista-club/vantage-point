@@ -3,11 +3,10 @@
 //! Provides tools for Claude Code to display content in browser:
 //! - show: Display markdown/html/log content
 //! - clear: Clear a pane
-//! - permission: Handle permission requests for tool execution
 //!
 //! ## 通信レイヤー
 //! process チャネルは Unison QUIC で通信。
-//! Ruby VM / capture / permission 等の一部 API は HTTP フォールバック。
+//! Ruby VM / capture 等の一部 API は HTTP フォールバック。
 
 // running.json 不使用 — discovery モジュール経由
 use rmcp::{
@@ -54,7 +53,6 @@ pub struct ClearParams {
     #[schemars(description = "Pane ID to clear (default: 'main')")]
     pub pane_id: Option<String>,
 }
-
 
 /// Parameters for the restart tool
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -500,7 +498,7 @@ impl SelfLane {
 
 /// Unison QUIC で Process と通信する。
 /// process チャネルは lazy 接続し、persistent に保持。
-/// Ruby / capture / permission 等の未対応メソッドは HTTP フォールバック。
+/// Ruby / capture 等の未対応メソッドは HTTP フォールバック。
 pub struct VantageMcp {
     /// HTTP クライアント（QUIC 未対応の API 用フォールバック）
     client: reqwest::Client,
@@ -2730,7 +2728,7 @@ impl rmcp::ServerHandler for VantageMcp {
              Use 'capture_canvas' to take a PNG screenshot of the Canvas (viewable with Read tool), \
              'show' to display content, 'clear' to clear panes, \
              'close_pane' to close a pane, 'toggle_pane' to toggle panel visibility, \
-             'permission' to request user approval, 'restart' to restart the Process, \
+             'restart' to restart the Process, \
              'watch_file' to monitor a log file in real-time, and 'unwatch_file' to stop monitoring.\n\n\
              When using 'show', prefer content_type='markdown' as the default format. \
              Markdown renders well in the Canvas and is easy to read. \

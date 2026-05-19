@@ -17,9 +17,7 @@ use tower_http::cors::CorsLayer;
 use super::capabilities::{CapabilityConfig, ProcessCapabilities};
 use super::hub::Hub;
 use super::pty::PtyManager;
-use super::routes::{
-    health, lanes, project_feed, prompt, stands, update, world, ws_terminal,
-};
+use super::routes::{health, lanes, project_feed, prompt, stands, update, world, ws_terminal};
 use super::session::SessionManager;
 use super::state::AppState;
 use super::topic_router::TopicRouter;
