@@ -100,3 +100,8 @@ tempfile = "3"
 # `TS` derive を効かせる。 binding 出力は `cargo test -p vp-app` の export test 経由。
 # `serde-compat` で `#[serde(...)]` attribute (rename_all / alias / default) を尊重する。
 ts-rs = { version = "11", features = ["serde-compat"] }
+
+# VP-208 Phase A: sidebar IPC を KDL protocol schema (schema/vp-sidebar.kdl) を
+# SSOT に Rust enum + TS union 生成。 package 名 `club-kdl-codegen` / lib 名 `kdl_codegen`。
+# 生成は `cargo test -p vp-app --test sidebar_ipc_codegen` 経由 (ts-rs と同じ慣習)。
+club-kdl-codegen = "0.9"

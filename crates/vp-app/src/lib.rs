@@ -12,6 +12,8 @@
 pub mod app;
 pub mod client;
 pub mod daemon_launcher;
+/// club-kdl-codegen 生成物 (KDL protocol schema → Rust 型)。 VP-208 Phase A。
+pub mod generated;
 pub mod lane;
 pub mod log_format;
 pub mod log_init;
