@@ -17,9 +17,7 @@ use tower_http::cors::CorsLayer;
 use super::capabilities::{CapabilityConfig, ProcessCapabilities};
 use super::hub::Hub;
 use super::pty::PtyManager;
-use super::routes::{
-    health, lanes, permission, project_feed, prompt, stands, update, world, ws_terminal,
-};
+use super::routes::{health, lanes, project_feed, prompt, stands, update, world, ws_terminal};
 use super::session::SessionManager;
 use super::state::AppState;
 use super::topic_router::TopicRouter;
@@ -225,7 +223,6 @@ pub async fn run(
         shutdown_token: shutdown_token.clone(),
         // Phase A4-2b: lane_pool init で同 var を後続参照するため clone
         project_dir: project_dir.clone(),
-        pending_permissions: Arc::new(RwLock::new(HashMap::new())),
         pending_prompts: Arc::new(RwLock::new(HashMap::new())),
         capabilities,
         // VP-159 PR-4b: notify を spawn_service 済の ActorRegistry を move (= lane-spawn は AppState 構築後に追加)
@@ -468,14 +465,6 @@ pub async fn run(
         .route("/api/process/list", get(health::process_list_handler))
         .route("/api/health", get(health::health_handler))
         .route("/api/shutdown", post(health::shutdown_handler))
-        .route(
-            "/api/permission",
-            post(permission::permission_request_handler),
-        )
-        .route(
-            "/api/permission/{request_id}",
-            get(permission::permission_poll_handler),
-        )
         // User prompt API routes (REQ-PROMPT-001)
         .route("/api/prompt", post(prompt::prompt_request_handler))
         .route(
@@ -842,7 +831,6 @@ pub async fn run_world(
         debug_mode: DebugMode::None,
         shutdown_token: shutdown_token.clone(),
         project_dir: String::new(),
-        pending_permissions: Arc::new(RwLock::new(HashMap::new())),
         pending_prompts: Arc::new(RwLock::new(HashMap::new())),
         capabilities: Arc::new(
             ProcessCapabilities::new(CapabilityConfig {

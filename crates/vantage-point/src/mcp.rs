@@ -3,11 +3,10 @@
 //! Provides tools for Claude Code to display content in browser:
 //! - show: Display markdown/html/log content
 //! - clear: Clear a pane
-//! - permission: Handle permission requests for tool execution
 //!
 //! ## 通信レイヤー
 //! process チャネルは Unison QUIC で通信。
-//! Ruby VM / capture / permission 等の一部 API は HTTP フォールバック。
+//! Ruby VM / capture 等の一部 API は HTTP フォールバック。
 
 // running.json 不使用 — discovery モジュール経由
 use rmcp::{
@@ -19,7 +18,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 
-use crate::protocol::{ChatComponent, ProcessMessage};
+use crate::protocol::ProcessMessage;
 
 /// Parameters for the show tool
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -53,18 +52,6 @@ pub struct ClearParams {
     /// Pane ID to clear
     #[schemars(description = "Pane ID to clear (default: 'main')")]
     pub pane_id: Option<String>,
-}
-
-/// Parameters for the permission tool (Claude CLI --permission-prompt-tool)
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-pub struct PermissionParams {
-    /// Tool name that Claude wants to execute
-    #[schemars(description = "Name of the tool Claude wants to execute")]
-    pub tool_name: String,
-
-    /// Tool input parameters (passed through from Claude CLI)
-    #[schemars(description = "Input parameters for the tool (JSON object)")]
-    pub input: serde_json::Value,
 }
 
 /// Parameters for the restart tool
@@ -444,29 +431,6 @@ pub struct TmuxAgentSendParams {
     pub text: String,
 }
 
-/// Response format for permission tool
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PermissionResponse {
-    /// Behavior: "allow" or "deny"
-    pub behavior: String,
-    /// Updated input parameters (optional, for "allow" response)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub updated_input: Option<serde_json::Value>,
-    /// Message (optional, for "deny" response)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
-}
-
-/// Permission request sent to Process
-#[derive(Debug, Serialize, Deserialize)]
-pub struct PermissionRequestPayload {
-    pub request_id: String,
-    pub tool_name: String,
-    pub input: serde_json::Value,
-    pub timeout_seconds: u32,
-}
-
 /// MCP → Process 通信クライアント
 ///
 /// この `vp mcp` プロセスが属する Lane (VP-166 PR-4)。
@@ -534,7 +498,7 @@ impl SelfLane {
 
 /// Unison QUIC で Process と通信する。
 /// process チャネルは lazy 接続し、persistent に保持。
-/// Ruby / capture / permission 等の未対応メソッドは HTTP フォールバック。
+/// Ruby / capture 等の未対応メソッドは HTTP フォールバック。
 pub struct VantageMcp {
     /// HTTP クライアント（QUIC 未対応の API 用フォールバック）
     client: reqwest::Client,
@@ -2229,130 +2193,6 @@ if bestId > 0 { print(bestId) }
         )]))
     }
 
-    /// Request permission for tool execution from user
-    ///
-    /// This tool is called by Claude CLI via --permission-prompt-tool flag.
-    /// It sends a permission request to the WebUI and waits for user response.
-    /// HTTP ポーリングベースのため QUIC 化は別タスク。
-    #[tool(
-        description = "Request permission for tool execution from user. Returns JSON with 'behavior' (allow/deny) and optional 'updatedInput' or 'message'."
-    )]
-    async fn permission(
-        &self,
-        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<PermissionParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let request_id = uuid::Uuid::new_v4().to_string();
-        let timeout_seconds: u32 = 60; // 60 seconds timeout
-
-        // Create the ChatComponent for permission request
-        let component = ChatComponent::PermissionRequest {
-            request_id: request_id.clone(),
-            tool_name: params.tool_name.clone(),
-            description: None,
-            input: params.input.clone(),
-            timeout_seconds,
-        };
-
-        // Create the ProcessMessage
-        let message = ProcessMessage::ChatComponent {
-            component,
-            interactive: true,
-        };
-
-        let url = self.process_url.lock().await;
-
-        // First, send the permission request to the Process
-        let send_result = self
-            .client
-            .post(format!("{}/api/permission", *url))
-            .json(&message)
-            .send()
-            .await;
-
-        if let Err(e) = send_result {
-            return Err(McpError::internal_error(
-                format!(
-                    "Failed to send permission request to Process: {}. Is vp running?",
-                    e
-                ),
-                None,
-            ));
-        }
-
-        let send_resp = send_result.unwrap();
-        if !send_resp.status().is_success() {
-            return Err(McpError::internal_error(
-                format!(
-                    "Process returned error on permission request: {}",
-                    send_resp.status()
-                ),
-                None,
-            ));
-        }
-
-        // Now poll for the response with timeout
-        let poll_url = format!("{}/api/permission/{}", *url, request_id);
-        let timeout = Duration::from_secs(timeout_seconds as u64);
-        let poll_interval = Duration::from_millis(500);
-        let start = std::time::Instant::now();
-
-        loop {
-            if start.elapsed() > timeout {
-                // Timeout - deny by default
-                let response = PermissionResponse {
-                    behavior: "deny".to_string(),
-                    updated_input: None,
-                    message: Some("Permission request timed out".to_string()),
-                };
-                return Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-                    serde_json::to_string(&response).unwrap(),
-                )]));
-            }
-
-            // Poll for response
-            let poll_result = self.client.get(&poll_url).send().await;
-
-            match poll_result {
-                Ok(resp) if resp.status() == reqwest::StatusCode::OK => {
-                    // Got a response
-                    match resp.json::<PermissionResponse>().await {
-                        Ok(permission_resp) => {
-                            return Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-                                serde_json::to_string(&permission_resp).unwrap(),
-                            )]));
-                        }
-                        Err(e) => {
-                            return Err(McpError::internal_error(
-                                format!("Failed to parse permission response: {}", e),
-                                None,
-                            ));
-                        }
-                    }
-                }
-                Ok(resp) if resp.status() == reqwest::StatusCode::NOT_FOUND => {
-                    // Response not ready yet, continue polling
-                }
-                Ok(resp) if resp.status() == reqwest::StatusCode::ACCEPTED => {
-                    // Still waiting for user response
-                }
-                Ok(resp) => {
-                    return Err(McpError::internal_error(
-                        format!("Unexpected response from Process: {}", resp.status()),
-                        None,
-                    ));
-                }
-                Err(e) => {
-                    return Err(McpError::internal_error(
-                        format!("Failed to poll permission response: {}", e),
-                        None,
-                    ));
-                }
-            }
-
-            tokio::time::sleep(poll_interval).await;
-        }
-    }
-
     /// Restart the Vantage Point Process
     ///
     /// This tool restarts the Process process while preserving session state.
@@ -2888,7 +2728,7 @@ impl rmcp::ServerHandler for VantageMcp {
              Use 'capture_canvas' to take a PNG screenshot of the Canvas (viewable with Read tool), \
              'show' to display content, 'clear' to clear panes, \
              'close_pane' to close a pane, 'toggle_pane' to toggle panel visibility, \
-             'permission' to request user approval, 'restart' to restart the Process, \
+             'restart' to restart the Process, \
              'watch_file' to monitor a log file in real-time, and 'unwatch_file' to stop monitoring.\n\n\
              When using 'show', prefer content_type='markdown' as the default format. \
              Markdown renders well in the Canvas and is easy to read. \
