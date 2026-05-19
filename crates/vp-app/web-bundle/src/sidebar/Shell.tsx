@@ -15,6 +15,7 @@ import { For, Show, createMemo } from 'solid-js'
 import type { ProcessPaneState } from '../generated/ProcessPaneState'
 import { sidebar } from './store'
 import { isRunningProcess } from './classify'
+import { LaneContextMenu } from './LaneContextMenu'
 import { ProjectAccordion } from './ProjectAccordion'
 import { WorldWidget } from './WorldWidget'
 
@@ -53,6 +54,9 @@ export function Shell() {
       </div>
 
       <WorldWidget />
+
+      {/* Lane 行の右クリック context menu (singleton、 VP-204 PR-1)。 */}
+      <LaneContextMenu />
     </div>
   )
 }
@@ -118,17 +122,6 @@ html,body{margin:0;height:100%;background:var(--color-surface-bg-subtle);
 .vp-lane-meta .merged{color:var(--color-status-success,#3fb950);}
 .vp-lane-awaiting{margin-left:auto;width:6px;height:6px;border-radius:50%;
   background:var(--color-status-warning,#d49b3f);flex:0 0 auto;}
-/* Lane 操作ボタン (restart / delete、 hover で出現) */
-.vp-lane-btn{margin-left:auto;display:inline-flex;align-items:center;padding:2px;
-  border:none;background:transparent;color:var(--color-text-tertiary);
-  cursor:pointer;opacity:0;border-radius:3px;flex:0 0 auto;
-  transition:opacity .12s ease,background .12s ease,color .12s ease;}
-.vp-lane-btn + .vp-lane-btn{margin-left:2px;}
-.vp-lane-row:hover .vp-lane-btn{opacity:0.65;}
-.vp-lane-btn:hover{opacity:1;background:var(--color-surface-bg-emphasis);}
-.vp-lane-btn-danger:hover{color:#fff;background:var(--color-status-error,#d4444c);}
-.vp-lane-btn-danger.confirming{opacity:1;color:#fff;
-  background:var(--color-status-error,#d4444c);}
 .vp-lane-line2{flex-basis:100%;padding-left:24px;font-size:10px;
   color:var(--color-text-tertiary);overflow:hidden;text-overflow:ellipsis;
   white-space:nowrap;}
@@ -178,4 +171,24 @@ html,body{margin:0;height:100%;background:var(--color-surface-bg-subtle);
 .vp-world-stat .k{color:var(--color-text-tertiary);}
 .vp-world-stat .v{color:var(--color-text-primary);font-weight:500;
   font-variant-numeric:tabular-nums;}
+
+/* Lane 行 右クリック context menu (VP-204 PR-1、 singleton popup) */
+.vp-ctx-backdrop{position:fixed;inset:0;z-index:9998;}
+.vp-ctx-menu{position:fixed;z-index:9999;min-width:180px;
+  background:var(--color-surface-bg-base);
+  border:1px solid var(--color-surface-border,#1f2233);
+  border-radius:var(--radius-md,6px);box-shadow:0 8px 24px rgba(0,0,0,.4);
+  padding:4px 0;font-size:12px;user-select:none;}
+.vp-ctx-header{padding:4px 14px 6px;font-size:10px;
+  color:var(--color-text-tertiary);
+  border-bottom:1px solid var(--color-surface-border,#1f2233);
+  margin-bottom:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.vp-ctx-item{padding:6px 14px;cursor:pointer;display:flex;align-items:center;
+  gap:8px;color:var(--color-text-secondary);
+  transition:background .1s ease,color .1s ease;}
+.vp-ctx-item:hover{background:var(--color-surface-bg-emphasis);
+  color:var(--color-text-primary);}
+.vp-ctx-item.danger:hover{background:var(--color-status-error,#d4444c);color:#fff;}
+.vp-ctx-item.danger.confirming{background:var(--color-status-error,#d4444c);
+  color:#fff;}
 `
