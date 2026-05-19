@@ -13,6 +13,7 @@ import { CreoIcon } from 'creoui-icons-web'
 import type { ProcessPaneState } from '../generated/ProcessPaneState'
 import { sidebar } from './store'
 import { sendIpc } from './ipc'
+import { openContextMenu, type ContextMenuItem } from './ContextMenu'
 import { laneAddressKey } from './lane'
 import { LaneRow } from './LaneRow'
 import { AddWing } from './AddWing'
@@ -54,9 +55,22 @@ export function ProjectAccordion(props: { proc: ProcessPaneState }) {
     }
   }
 
+  // 📁 project ヘッダの右クリック → project context menu。
+  // Delete project は PR-2 (process:delete fullstack) で追加予定。
+  const onSummaryContextMenu = (e: MouseEvent) => {
+    const items: ContextMenuItem[] = [
+      {
+        label: 'Restart project',
+        icon: 'ph:arrow-clockwise',
+        onSelect: () => sendIpc({ t: 'process:restart', path: props.proc.path }),
+      },
+    ]
+    openContextMenu(props.proc.name, items, e.clientX, e.clientY)
+  }
+
   return (
     <details class="vp-proj" open={props.proc.expanded} onToggle={onToggle}>
-      <summary class="vp-proj-summary">
+      <summary class="vp-proj-summary" onContextMenu={onSummaryContextMenu}>
         <CreoIcon name={props.proc.expanded ? 'ph:folder-open' : 'ph:folder'} size={14} />
         <span class="vp-proj-name">{props.proc.name}</span>
         <Show when={isActiveProject()}>

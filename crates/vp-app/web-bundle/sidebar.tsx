@@ -19,6 +19,10 @@ console.info('[vp-sidebar] booting (v1.0 柱2 PR-1 scaffold)')
 // Rust は webview build 直後から window.renderSidebarState を呼びうるため。
 installIpcBridge()
 
+// native WebView の context menu (Reload / Inspect / AutoFill) を抑制する。
+// sidebar の右クリックは独自 ContextMenu に一本化する (VP-204 PR-1)。
+document.addEventListener('contextmenu', (e) => e.preventDefault())
+
 // shell layout CSS を注入 (creoui token は SIDEBAR_HTML_V2 が inline 済)。
 const style = document.createElement('style')
 style.textContent = SHELL_CSS
