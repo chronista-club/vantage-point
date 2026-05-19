@@ -20,7 +20,6 @@ use crate::agent::InteractiveClaudeAgent;
 use crate::agui::AgUiEvent;
 use crate::capability::{ActorRegistry, ProcessManagerCapability, UpdateCapability};
 use crate::file_watcher::FileWatcherManager;
-use crate::mcp::PermissionResponse;
 use crate::process::topic::TopicPattern;
 use crate::protocol::{Content, DebugMode, ProcessMessage};
 
@@ -29,14 +28,6 @@ use crate::protocol::{Content, DebugMode, ProcessMessage};
 pub(crate) struct PaneState {
     pub content: Content,
     pub title: Option<String>,
-}
-
-/// Pending permission request entry
-pub(crate) struct PendingPermission {
-    /// Original input from the permission request (needed for "allow" response)
-    pub original_input: serde_json::Value,
-    /// Response once user has responded (None = still waiting)
-    pub response: Option<PermissionResponse>,
 }
 
 /// Pending user prompt request entry (REQ-PROMPT-001 to REQ-PROMPT-005)
@@ -107,8 +98,6 @@ pub(crate) struct AppState {
     pub shutdown_token: CancellationToken,
     /// Project directory for Claude agent
     pub project_dir: String,
-    /// Pending permission requests: request_id -> response channel
-    pub pending_permissions: Arc<RwLock<HashMap<String, PendingPermission>>>,
     /// Pending user prompts: request_id -> response (REQ-PROMPT-001)
     pub pending_prompts: Arc<RwLock<HashMap<String, PendingPrompt>>>,
     /// Capability system (Agent, MIDI, Protocol)

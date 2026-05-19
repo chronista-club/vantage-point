@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 
-use crate::protocol::{ChatComponent, ProcessMessage};
+use crate::protocol::ProcessMessage;
 
 /// Parameters for the show tool
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -55,17 +55,6 @@ pub struct ClearParams {
     pub pane_id: Option<String>,
 }
 
-/// Parameters for the permission tool (Claude CLI --permission-prompt-tool)
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-pub struct PermissionParams {
-    /// Tool name that Claude wants to execute
-    #[schemars(description = "Name of the tool Claude wants to execute")]
-    pub tool_name: String,
-
-    /// Tool input parameters (passed through from Claude CLI)
-    #[schemars(description = "Input parameters for the tool (JSON object)")]
-    pub input: serde_json::Value,
-}
 
 /// Parameters for the restart tool
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -442,29 +431,6 @@ pub struct TmuxAgentSendParams {
     /// 送信するテキスト（改行はそのまま送信される）
     #[schemars(description = "Text to send to the pane (newlines are sent as-is)")]
     pub text: String,
-}
-
-/// Response format for permission tool
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PermissionResponse {
-    /// Behavior: "allow" or "deny"
-    pub behavior: String,
-    /// Updated input parameters (optional, for "allow" response)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub updated_input: Option<serde_json::Value>,
-    /// Message (optional, for "deny" response)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
-}
-
-/// Permission request sent to Process
-#[derive(Debug, Serialize, Deserialize)]
-pub struct PermissionRequestPayload {
-    pub request_id: String,
-    pub tool_name: String,
-    pub input: serde_json::Value,
-    pub timeout_seconds: u32,
 }
 
 /// MCP → Process 通信クライアント
@@ -2227,130 +2193,6 @@ if bestId > 0 { print(bestId) }
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
             result,
         )]))
-    }
-
-    /// Request permission for tool execution from user
-    ///
-    /// This tool is called by Claude CLI via --permission-prompt-tool flag.
-    /// It sends a permission request to the WebUI and waits for user response.
-    /// HTTP ポーリングベースのため QUIC 化は別タスク。
-    #[tool(
-        description = "Request permission for tool execution from user. Returns JSON with 'behavior' (allow/deny) and optional 'updatedInput' or 'message'."
-    )]
-    async fn permission(
-        &self,
-        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<PermissionParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let request_id = uuid::Uuid::new_v4().to_string();
-        let timeout_seconds: u32 = 60; // 60 seconds timeout
-
-        // Create the ChatComponent for permission request
-        let component = ChatComponent::PermissionRequest {
-            request_id: request_id.clone(),
-            tool_name: params.tool_name.clone(),
-            description: None,
-            input: params.input.clone(),
-            timeout_seconds,
-        };
-
-        // Create the ProcessMessage
-        let message = ProcessMessage::ChatComponent {
-            component,
-            interactive: true,
-        };
-
-        let url = self.process_url.lock().await;
-
-        // First, send the permission request to the Process
-        let send_result = self
-            .client
-            .post(format!("{}/api/permission", *url))
-            .json(&message)
-            .send()
-            .await;
-
-        if let Err(e) = send_result {
-            return Err(McpError::internal_error(
-                format!(
-                    "Failed to send permission request to Process: {}. Is vp running?",
-                    e
-                ),
-                None,
-            ));
-        }
-
-        let send_resp = send_result.unwrap();
-        if !send_resp.status().is_success() {
-            return Err(McpError::internal_error(
-                format!(
-                    "Process returned error on permission request: {}",
-                    send_resp.status()
-                ),
-                None,
-            ));
-        }
-
-        // Now poll for the response with timeout
-        let poll_url = format!("{}/api/permission/{}", *url, request_id);
-        let timeout = Duration::from_secs(timeout_seconds as u64);
-        let poll_interval = Duration::from_millis(500);
-        let start = std::time::Instant::now();
-
-        loop {
-            if start.elapsed() > timeout {
-                // Timeout - deny by default
-                let response = PermissionResponse {
-                    behavior: "deny".to_string(),
-                    updated_input: None,
-                    message: Some("Permission request timed out".to_string()),
-                };
-                return Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-                    serde_json::to_string(&response).unwrap(),
-                )]));
-            }
-
-            // Poll for response
-            let poll_result = self.client.get(&poll_url).send().await;
-
-            match poll_result {
-                Ok(resp) if resp.status() == reqwest::StatusCode::OK => {
-                    // Got a response
-                    match resp.json::<PermissionResponse>().await {
-                        Ok(permission_resp) => {
-                            return Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-                                serde_json::to_string(&permission_resp).unwrap(),
-                            )]));
-                        }
-                        Err(e) => {
-                            return Err(McpError::internal_error(
-                                format!("Failed to parse permission response: {}", e),
-                                None,
-                            ));
-                        }
-                    }
-                }
-                Ok(resp) if resp.status() == reqwest::StatusCode::NOT_FOUND => {
-                    // Response not ready yet, continue polling
-                }
-                Ok(resp) if resp.status() == reqwest::StatusCode::ACCEPTED => {
-                    // Still waiting for user response
-                }
-                Ok(resp) => {
-                    return Err(McpError::internal_error(
-                        format!("Unexpected response from Process: {}", resp.status()),
-                        None,
-                    ));
-                }
-                Err(e) => {
-                    return Err(McpError::internal_error(
-                        format!("Failed to poll permission response: {}", e),
-                        None,
-                    ));
-                }
-            }
-
-            tokio::time::sleep(poll_interval).await;
-        }
     }
 
     /// Restart the Vantage Point Process
