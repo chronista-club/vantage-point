@@ -1031,6 +1031,12 @@ pub async fn run_world(
         shutdown_token.clone(),
     ));
 
+    // 起動時設定の復帰: enabled な project の SP を自動起動（VP-207）。
+    // daemon restart 後に working set を復元する。1 回限りの startup タスク。
+    let _autostart = tokio::spawn(ProcessManagerCapability::autostart_enabled_projects(
+        world_cap.clone(),
+    ));
+
     // VP-129 MVP: lane root FSEvents watcher 起動。 user の Finder / `rm -rf` で worker dir
     // を削除した時、 OS file system event → SP `DELETE /api/lanes` 自動発火 (= D10 Reconciliation
     // の 3rd path 拡張、 Push QUIC + Pull port scan + FSEvents の 3-trigger model 完成)。

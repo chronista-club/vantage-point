@@ -1361,6 +1361,68 @@ impl ProcessManagerCapability {
         Ok(())
     }
 
+    /// 起動時設定の復帰: TheWorld 起動時に `enabled` な project の SP を自動起動する。
+    ///
+    /// daemon restart 後に working set を復元する (VP-207)。 TheWorld 起動時に
+    /// バックグラウンドタスクとして 1 回だけ spawn される。
+    /// 1. 5 秒待機 — QUIC 自己登録 + 初期スキャンが `running_processes` を埋める猶予
+    /// 2. `refresh_process_status` で稼働中 SP をポートスキャン把握
+    /// 3. `enabled == true` かつ未稼働の project を収集
+    /// 4. 各 project を `start_process` で起動 (300ms ずらして burst 回避)
+    ///
+    /// 検出漏れがあっても `vp sp start` 側の collision check が bail するので
+    /// 二重起動は安全。 lock 規律は `run_health_monitor` を踏襲する。
+    pub async fn autostart_enabled_projects(world: Arc<RwLock<Self>>) {
+        // QUIC 自己登録 + 初期スキャンが running_processes を埋める猶予。
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+
+        // 稼働中 SP をポートスキャンで把握（read ガードは即解放）。
+        {
+            let w = world.read().await;
+            if let Err(e) = w.refresh_process_status().await {
+                tracing::warn!("autostart: 初期スキャン失敗: {}", e);
+            }
+        }
+
+        // enabled かつ未稼働の project 名を収集。
+        let targets: Vec<String> = {
+            let w = world.read().await;
+            let projects = w.projects.read().await;
+            let running = w.running_processes.read().await;
+            projects
+                .values()
+                .filter(|p| p.enabled)
+                .filter(|p| !running.contains_key(&normalize_path_key(&p.path)))
+                .map(|p| p.name.clone())
+                .collect()
+        };
+
+        if targets.is_empty() {
+            tracing::info!("autostart: 起動対象なし（全 enabled project が稼働中）");
+            return;
+        }
+        tracing::info!(
+            "autostart: {} project の SP を起動: {:?}",
+            targets.len(),
+            targets
+        );
+
+        // start_process は内部で sleep + ポートスキャンするため、read ガードを
+        // 保持せず clone した cap で呼ぶ（run_health_monitor と同じ規律）。
+        for name in &targets {
+            let world_cap = {
+                let w = world.read().await;
+                w.clone()
+            };
+            match world_cap.start_process(name).await {
+                Ok(p) => tracing::info!("autostart: '{}' 起動成功（port {}）", name, p.port),
+                Err(e) => tracing::warn!("autostart: '{}' 起動失敗: {}", name, e),
+            }
+            // burst を避けて少しずらす。
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        }
+    }
+
     /// ヘルスモニター: 定期的に PID 生存確認 + クラッシュ検知 + 自動再起動
     ///
     /// TheWorld 起動時にバックグラウンドタスクとして spawn される。
