@@ -12,8 +12,10 @@
  *   World widget 本体は後続 increment。
  */
 import { For, Show, createMemo } from 'solid-js'
+import { CreoIcon } from 'creoui-icons-web'
 import type { ProcessPaneState } from '../generated/ProcessPaneState'
 import { sidebar } from './store'
+import { sendIpc } from './ipc'
 import { isRunningProcess } from './classify'
 import { ContextMenu } from './ContextMenu'
 import { ProjectAccordion } from './ProjectAccordion'
@@ -41,7 +43,17 @@ export function Shell() {
 
   return (
     <div class="vp-sidebar-shell">
-      <header class="vp-sidebar-header">Vantage Point</header>
+      <header class="vp-sidebar-header">
+        <span class="vp-sidebar-title">Vantage Point</span>
+        {/* project 追加: process:add IPC → Rust 側 native folder picker → 登録 (VP-203)。 */}
+        <button
+          class="vp-sidebar-add"
+          title="プロジェクトを追加"
+          onClick={() => sendIpc({ t: 'process:add' })}
+        >
+          <CreoIcon name="ph:plus" size={13} />
+        </button>
+      </header>
 
       <div class="vp-sidebar-list">
         <Show
@@ -70,9 +82,16 @@ html,body{margin:0;height:100%;background:var(--color-surface-bg-subtle);
   color:var(--color-text-primary);font-family:'VPMono',monospace;font-size:12px;
   line-height:1.4;overflow:hidden;}
 .vp-sidebar-shell{display:flex;flex-direction:column;height:100%;}
-.vp-sidebar-header{flex:0 0 auto;padding:var(--spacing-sm,8px);font-size:11px;
+.vp-sidebar-header{flex:0 0 auto;display:flex;align-items:center;gap:6px;
+  padding:var(--spacing-sm,8px);font-size:11px;
   font-weight:500;color:var(--color-text-secondary);
   border-bottom:1px solid var(--color-surface-border,#1f2233);user-select:none;}
+.vp-sidebar-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.vp-sidebar-add{margin-left:auto;display:inline-flex;align-items:center;padding:2px;
+  border:none;background:transparent;color:var(--color-text-tertiary);cursor:pointer;
+  border-radius:3px;flex:0 0 auto;transition:background .12s ease,color .12s ease;}
+.vp-sidebar-add:hover{background:var(--color-surface-bg-emphasis);
+  color:var(--color-brand-primary);}
 .vp-sidebar-list{flex:1;overflow-y:auto;padding:var(--spacing-xs,4px) 0;}
 .vp-sidebar-empty{padding:var(--spacing-sm,8px);color:var(--color-text-tertiary);
   font-size:11px;}
