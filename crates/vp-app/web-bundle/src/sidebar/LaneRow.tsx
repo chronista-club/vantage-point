@@ -5,7 +5,7 @@
  * 描画 (PR-2): stand icon / label / wing git meta / awaiting dot / mailbox icon /
  * session title (2 行目)。 click 選択 (PR-3): row click → `lane:select` IPC で
  * main area を当該 Lane に切り替え。 右クリック操作 (restart / delete) は
- * LaneContextMenu に集約 (VP-204 PR-1)。
+ * ContextMenu に集約 (VP-204 PR-1)。
  */
 import { Show } from 'solid-js'
 import { CreoIcon } from 'creoui-icons-web'
