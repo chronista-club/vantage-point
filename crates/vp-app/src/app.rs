@@ -1555,7 +1555,8 @@ fn resolve_default_project_root(
 ///
 /// rfd の picker は blocking なので別スレッドで実行。folder 選択後:
 /// 1. `client.add_project(name, path)` を呼ぶ (TheWorld の `/api/world/projects` POST)
-/// 2. 成功なら `client.list_projects()` で再取得 → `AppEvent::ProcessesLoaded`
+/// 2. `client.start_process(name)` で SP を起動し、即「稼働中」にする (VP-203)
+/// 3. `client.list_projects()` で再取得 → `AppEvent::ProcessesLoaded`
 ///
 /// User キャンセル / API 失敗時は何もしない (sidebar は変化しない)。
 /// `initial_dir` が `Some` なら picker の初期表示ディレクトリに設定。
@@ -1600,7 +1601,12 @@ fn spawn_add_project_picker(
                     tracing::warn!("add_project API 失敗: {}", e);
                     return;
                 }
-                tracing::info!("add_project 成功 → projects 再 fetch");
+                // VP-203: 登録後に SP を起動し即「稼働中」にする。起動に失敗しても
+                // 登録自体は成功しているので、sidebar 反映 (list_projects) は続行する。
+                if let Err(e) = client.start_process(&name).await {
+                    tracing::warn!("add_project 後の start_process 失敗: {}", e);
+                }
+                tracing::info!("add_project + start_process 完了 → projects 再 fetch");
                 match client.list_projects().await {
                     Ok(projects) => {
                         let _ = proxy.send_event(AppEvent::ProcessesLoaded(projects));
