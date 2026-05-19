@@ -1517,8 +1517,29 @@ version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "88dd9d9177c8fb6c15f68ce34c1c96d6e23a75aa8015b547840ad732488509c7"
 dependencies = [
- "club-kdl-derive",
+ "club-kdl-derive 0.5.1",
  "kdl",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "club-kdl"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "106c0c48de4525a87a302dd42271030df772a66510c6d8af0d19d359548e1f77"
+dependencies = [
+ "club-kdl-derive 0.9.0",
+ "kdl",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "club-kdl-codegen"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "31c13a0decd2eae39daf0605b94d1148668bac0024998002c289fddb75a9ffe5"
+dependencies = [
+ "club-kdl 0.9.0",
  "thiserror 2.0.18",
 ]
 
@@ -1527,6 +1548,17 @@ name = "club-kdl-derive"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cfd2cea257dfdd7f8418db9b5fb8ef74cea09a4710f204c9b380952ab61438de"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "club-kdl-derive"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aa7f078e3907d1ff5e7ff667e8563d55cddad8817b195481f98fc8be8b407b04"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1547,7 +1579,7 @@ dependencies = [
  "cgp",
  "cgp-component",
  "chrono",
- "club-kdl",
+ "club-kdl 0.5.1",
  "convert_case 0.11.0",
  "crc32fast",
  "futures-util",
@@ -9487,7 +9519,7 @@ dependencies = [
  "base64",
  "chrono",
  "clap",
- "club-kdl",
+ "club-kdl 0.5.1",
  "club-unison",
  "crossterm",
  "dirs",
@@ -9572,6 +9604,7 @@ dependencies = [
  "arboard",
  "base64",
  "chrono",
+ "club-kdl-codegen",
  "club-unison",
  "dirs",
  "futures-util",

@@ -1,0 +1,70 @@
+// vp-app sidebar IPC protocol schema — SSOT (VP-208 Phase A)
+//
+// sidebar webview (SolidJS) → Rust の IPC メッセージ `SidebarIpcMsg` を、
+// この KDL を唯一の真実として club-kdl-codegen で生成する:
+//
+//   - Rust enum  → crates/vp-app/src/generated/sidebar_ipc.rs  (`IpcEnvelope`)
+//   - TS union   → crates/vp-app/web-bundle/src/generated/SidebarIpc.ts
+//
+// 生成は `cargo test -p vp-app --test sidebar_ipc_codegen` で走る
+// (tests/sidebar_ipc_codegen.rs)。 手書き側 (web-bundle/src/sidebar/ipc.ts の
+// `SidebarIpcMsg` / app.rs の `handle_sidebar_ipc`) の移行は PR-2 / PR-3。
+//
+// 全 request は client → server。 serde tag フィールド名 = "t"。
+
+protocol "sidebar" version="1.0.0" {
+    namespace "vp.sidebar"
+
+    // channel "ipc": envelope="t" で全 request を束ねる discriminated union
+    // (`IpcEnvelope`) を生成する。 transient = request ごとに完結 (response 無し)。
+    channel "ipc" from="client" lifetime="transient" envelope="t" {
+        // Currents セクションの project accordion 開閉 (+ SP auto-spawn 連動)
+        request "process:toggle" {
+            field "path" type="string"
+            field "expanded" type="bool"
+        }
+        // Currents の drag-and-drop 並び替え通知
+        request "process:reorder" {
+            field "order" type="array<string>"
+        }
+        // Process restart 要求
+        request "process:restart" {
+            field "path" type="string"
+        }
+        // sidebar の project 追加ボタン (fieldless)
+        request "process:add" {}
+        // Lane row click → main area に対応 pane を表示
+        request "lane:select" {
+            field "path" type="string"
+            field "address" type="string"
+        }
+        // Worker Lane 削除要求
+        request "lane:delete" {
+            field "path" type="string"
+            field "address" type="string"
+        }
+        // Lane Lead Stand restart 要求
+        request "lane:restart" {
+            field "path" type="string"
+            field "address" type="string"
+        }
+        // Wing Lane 作成要求 (branch / stand は optional)
+        request "lane:add_wing" {
+            field "path" type="string"
+            field "name" type="string"
+            field "branch" type="string" optional=#true
+            field "stand" type="string" optional=#true
+        }
+        // + Add Worker form の利用可能 Stand 一覧 fetch
+        request "stands:fetch" {
+            field "path" type="string"
+        }
+        // Project-scope Stand row click → main area に対応 pane を表示
+        request "stand:select" {
+            field "path" type="string"
+            field "kind" type="string"
+        }
+        // Clone 用フォルダ picker を開く要求 (fieldless)
+        request "project:clone:pickFolder" {}
+    }
+}
