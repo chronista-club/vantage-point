@@ -18,7 +18,7 @@ use super::capabilities::{CapabilityConfig, ProcessCapabilities};
 use super::hub::Hub;
 use super::pty::PtyManager;
 use super::routes::{
-    health, lanes, permission, project_feed, prompt, stands, update, world, ws, ws_terminal,
+    health, lanes, permission, project_feed, prompt, stands, update, world, ws_terminal,
 };
 use super::session::SessionManager;
 use super::state::AppState;
@@ -409,7 +409,9 @@ pub async fn run(
         .route("/canvas", get(health::canvas_handler))
         .route("/vendor/{filename}", get(health::vendor_handler))
         .route("/wasm/{filename}", get(health::wasm_handler))
-        .route("/ws", get(ws::ws_handler))
+        // wiremsg Stage 3: `/ws` endpoint は撤去済。Canvas が Stage 2 で "canvas" topic 購読に
+        // 移行した結果 `/ws` の接続 client が消滅 (= dead)。chat/permission の双方向経路も
+        // Echoes が tmux+claude に移行して以降 unused。
         // Canvas Project Feed 集約 WebSocket（全 Process のメッセージを Project Feed でラップして中継）
         // 注: URL `/ws/lanes` は外部互換のため維持。内部命名は `project_feed` (mem_1CaSsN7xj69aVQtLPQFJxQ 命名整理)
         .route("/ws/lanes", get(project_feed::project_feed_ws_handler))
