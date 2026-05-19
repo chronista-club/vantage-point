@@ -142,14 +142,19 @@ pub const FONT_ASSETS: &[(&str, &[u8], &str)] = &[
 ];
 
 /// `<style>` 内に取り込む CSS。 .nf-icon class を VPMono family で固定 (var() 経由しない)。
-/// 実体は `assets/nerd-font.css` ── `app.rs` 側 `SIDEBAR_HTML` も同 file を `include_str!` で取り込み、
-/// **single source of truth** を保つ (両方が同じ bytes を見る)。
+/// 実体は `assets/nerd-font.css`。
+///
+/// NOTE: 旧 `SIDEBAR_HTML` 撤去 (VP-208) で現状 production consumer 無し。
+/// nerd-font subsystem 全体の整理は follow-up。
 pub const NERD_FONT_CSS: &str = include_str!("../assets/nerd-font.css");
 
 /// `<script>` 冒頭に取り込む JS。 全 32 variant を fetch + FontFace 登録、 完了後 state 再 apply。
 /// VPMono と VPMono35 の 2 family を同時 register、 CSS で family 名選択するだけで切替可能。
 /// Promise.all で並列 fetch、 ~32 リクエスト同時飛ばし → load 時間を短縮 (sequential 版より ~10x 高速)。
-/// 実体は `assets/nerd-font-loader.js` ── `app.rs` 側 `SIDEBAR_HTML` も同 file を `include_str!` で取り込む。
+/// 実体は `assets/nerd-font-loader.js`。
+///
+/// NOTE: 旧 `SIDEBAR_HTML` 撤去 (VP-208) で現状 production consumer 無し。
+/// nerd-font subsystem 全体の整理は follow-up。
 pub const NERD_FONT_LOADER_JS: &str = include_str!("../assets/nerd-font-loader.js");
 
 /// `vp-asset://` URI から bundled asset を lookup。 webview-specific HTML 等を `extra` に積めば
