@@ -1133,24 +1133,28 @@ struct SidebarIpcOutcome {
 }
 
 /// sidebar webview から IPC で受け取った JSON を解釈し、`SidebarState` を mutate。
+///
+/// VP-208 PR-3: 旧 手 JSON parse (`parsed.get("t")` の文字列 match) を、 KDL schema
+/// (`schema/vp-sidebar.kdl`) から生成した `IpcEnvelope` enum での typed dispatch に
+/// 置き換えた。 wire ↔ Rust の drift は schema を SSOT にすることで解消される。
 fn handle_sidebar_ipc(
     msg: &str,
     state: &mut SidebarState,
     session: &mut SessionState,
 ) -> SidebarIpcOutcome {
+    use crate::generated::sidebar_ipc::IpcEnvelope;
+
     let mut out = SidebarIpcOutcome::default();
-    let parsed: serde_json::Value = match serde_json::from_str(msg) {
+    let envelope: IpcEnvelope = match serde_json::from_str(msg) {
         Ok(v) => v,
         Err(e) => {
-            tracing::warn!("sidebar IPC JSON パース失敗: {}", e);
+            tracing::warn!("sidebar IPC のデシリアライズ失敗: {} (msg={})", e, msg);
             return out;
         }
     };
-    let t = parsed.get("t").and_then(|v| v.as_str()).unwrap_or("");
-    let path = parsed.get("path").and_then(|v| v.as_str()).unwrap_or("");
 
-    match t {
-        "process:toggle" => {
+    match envelope {
+        IpcEnvelope::ProcessToggle(m) => {
             // VP-101 Phase A1.b: native <details> が IPC で `expanded` の新状態を渡してくる。
             // DOM は既に user click で toggle 済なので、Rust state を silently sync するだけ。
             // `out.changed` は立てない (rebuild すると flash する)。
@@ -1162,20 +1166,17 @@ fn handle_sidebar_ipc(
             // 条件の "stopped" は client::ProcessStatus::as_str() と一致させること。
             // 旧 ProcessState の "dead" 語彙から ProcessStatus の "stopped" へ移行した
             // (VP-189) 際にこの条件の追従が漏れ、 auto-spawn が発火しなくなっていた。
-            if let Some(p) = state.processes.iter_mut().find(|p| p.path == path) {
-                let new_state = parsed
-                    .get("expanded")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(!p.expanded);
+            if let Some(p) = state.processes.iter_mut().find(|p| p.path == m.path) {
+                let new_state = m.expanded;
                 if p.expanded != new_state {
                     p.expanded = new_state;
                     tracing::debug!(
                         "process:toggle {} → expanded={} (silent sync)",
-                        path,
+                        m.path,
                         p.expanded
                     );
                     // session 永続化: vp-app 再起動時に accordion 状態を復元
-                    session.set_project_expanded(path.to_string(), new_state);
+                    session.set_project_expanded(m.path.clone(), new_state);
                     session.save();
                 }
                 if new_state && p.state.as_deref() == Some("stopped") {
@@ -1189,77 +1190,61 @@ fn handle_sidebar_ipc(
                 }
             }
         }
-        "lane:delete" => {
+        IpcEnvelope::LaneDelete(m) => {
             // Phase 4-A: Worker Lane 削除要求。 caller (event loop) で SP port を解決して
             // client.delete_lane を呼ぶ。 active Lane を消した場合は active_lane_address を unset。
-            let address = parsed.get("address").and_then(|v| v.as_str()).unwrap_or("");
-            if !path.is_empty() && !address.is_empty() {
-                out.delete_lane_request = Some((path.to_string(), address.to_string()));
+            if !m.path.is_empty() && !m.address.is_empty() {
                 // active だった Lane が消えるなら preemptively clear (UI 反映を待たず)
-                if state.active_lane_address.as_deref() == Some(address) {
+                if state.active_lane_address.as_deref() == Some(m.address.as_str()) {
                     state.active_lane_address = None;
                     out.changed = true;
                     out.active_changed = true;
                 }
+                out.delete_lane_request = Some((m.path, m.address));
             }
         }
-        "lane:restart" => {
+        IpcEnvelope::LaneRestart(m) => {
             // sidebar の restart icon → confirm dialog OK の連鎖。 caller が SP port を
             // 解決して `client.restart_lane` を呼ぶ。 active Lane を restart した場合は
             // WS が onclose → reconnect で新 PtySlot に attach し直す (PR #218)。
-            let address = parsed.get("address").and_then(|v| v.as_str()).unwrap_or("");
-            if !path.is_empty() && !address.is_empty() {
-                out.restart_lane_request = Some((path.to_string(), address.to_string()));
+            if !m.path.is_empty() && !m.address.is_empty() {
+                out.restart_lane_request = Some((m.path, m.address));
             }
         }
-        "lane:add_worker" | "lane:add_wing" => {
+        IpcEnvelope::LaneAddWing(m) => {
             // Phase 3-A: sidebar から Wing Lane 作成要求。 caller (event loop) で
             // 該当 project の SP port を解決して client.create_wing_lane を呼ぶ。
-            // `lane:add_worker` は Worker → Wing rename 前の legacy IPC 名 (旧 sidebar 用)。
-            let name = parsed
-                .get("name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let branch = parsed
-                .get("branch")
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-                .map(|s| s.to_string());
-            // doc 11 PR-C: stand 指定 (sidebar dropdown から)。 None なら SP-side default。
-            let stand = parsed
-                .get("stand")
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-                .map(|s| s.to_string());
-            if !path.is_empty() && !name.is_empty() {
-                out.add_worker_request = Some((path.to_string(), name, branch, stand));
+            // doc 11 PR-C: branch / stand は optional。 空文字は None に畳んで
+            // SP-side default にフォールバックさせる。
+            let branch = m.branch.filter(|s| !s.is_empty());
+            let stand = m.stand.filter(|s| !s.is_empty());
+            if !m.path.is_empty() && !m.name.is_empty() {
+                out.add_worker_request = Some((m.path, m.name, branch, stand));
             }
         }
-        "stands:fetch" => {
+        IpcEnvelope::StandsFetch(m) => {
             // doc 11 PR-C: sidebar の + Add Worker form 開閉時に利用可能 Stand 一覧を取得。
             // caller (event loop) で SP port 解決 → client.list_stands → window.handleStandsResult で push back。
-            if !path.is_empty() {
-                out.list_stands_request = Some(path.to_string());
+            if !m.path.is_empty() {
+                out.list_stands_request = Some(m.path);
             }
         }
-        "stand:select" => {
+        IpcEnvelope::StandSelect(m) => {
             // Phase 5-A: Project-scope Stand row click → main area に対応 pane を表示
             // (Lane と mutually exclusive、 active_lane_address は preemptively clear)
-            let kind = parsed.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-            if path.is_empty() || kind.is_empty() {
+            if m.path.is_empty() || m.kind.is_empty() {
                 tracing::warn!("stand:select with empty path/kind: {}", msg);
                 return out;
             }
             let new_stand = ActiveStand {
-                project_path: path.to_string(),
-                kind: kind.to_string(),
+                project_path: m.path.clone(),
+                kind: m.kind.clone(),
             };
             // 既に同じ Stand が active なら no-op
             if state.active_stand.as_ref() == Some(&new_stand) {
                 return out;
             }
-            tracing::info!("stand:select project={} kind={}", path, kind);
+            tracing::info!("stand:select project={} kind={}", m.path, m.kind);
             state.active_stand = Some(new_stand);
             // Lane を排他で clear (= main area の active 軸を Stand に切替)
             if state.active_lane_address.is_some() {
@@ -1268,44 +1253,47 @@ fn handle_sidebar_ipc(
             out.changed = true;
             out.active_changed = true;
         }
-        "lane:select" => {
+        IpcEnvelope::LaneSelect(m) => {
             // Architecture v4: Lane row click → `address` (Display 形 "<project>/lead") を受信
-            let address = parsed.get("address").and_then(|v| v.as_str()).unwrap_or("");
-            if address.is_empty() {
+            if m.address.is_empty() {
                 tracing::warn!("lane:select with empty address: {}", msg);
                 return out;
             }
             // 念のため: 該当 project の lanes_by_project に address が存在することを確認
             let lanes_exist = state
                 .lanes_by_project
-                .get(path)
-                .map(|lanes| lanes.iter().any(|l| l.address.key() == address))
+                .get(m.path.as_str())
+                .map(|lanes| lanes.iter().any(|l| l.address.key() == m.address))
                 .unwrap_or(false);
             if !lanes_exist {
                 tracing::warn!(
                     "lane:select 対象 lane が見つからない: path={} address={}",
-                    path,
-                    address
+                    m.path,
+                    m.address
                 );
                 return out;
             }
-            if state.active_lane_address.as_deref() != Some(address) {
-                state.active_lane_address = Some(address.to_string());
-                tracing::info!("lane:select {} address={}", path, address);
+            if state.active_lane_address.as_deref() != Some(m.address.as_str()) {
+                state.active_lane_address = Some(m.address.clone());
+                tracing::info!("lane:select {} address={}", m.path, m.address);
                 out.changed = true;
                 out.active_changed = true;
                 // session 永続化: vp-app 再起動時に直前 active Lane を復元
-                session.active_lane_address = Some(address.to_string());
+                session.active_lane_address = Some(m.address.clone());
                 session.save();
             }
             // Phase 5-D Sprint C P2.1: Lane 切替時に対象 Lane の unread notification を 0 reset。
             //  user が Lane 開いた = 通知に応答した、 とみなして badge を消す。
             //  active 切替が無くても reset は走る (= 同 Lane を click 連打しても badge 消えるべき)。
-            if state.unread_notifications.remove(address).is_some() {
+            if state
+                .unread_notifications
+                .remove(m.address.as_str())
+                .is_some()
+            {
                 out.changed = true;
             }
             // awaiting_input も同タイミングで reset (= user が Lane を開いたら入力待ち通知を消す)。
-            if state.awaiting_input.remove(address).is_some() {
+            if state.awaiting_input.remove(m.address.as_str()).is_some() {
                 out.changed = true;
             }
             // Phase 5-A: Lane と Stand は排他なので active_stand を clear
@@ -1315,43 +1303,37 @@ fn handle_sidebar_ipc(
                 out.active_changed = true;
             }
         }
-        "process:reorder" => {
+        IpcEnvelope::ProcessReorder(m) => {
             // Currents セクションを drag-and-drop で並び替えた時の通知。
             // payload: `{"t":"process:reorder","order":["/path/a","/path/b",...]}`。
             // session_state に保存し、 次回起動時 + 現在の sidebar push に反映。
-            let Some(arr) = parsed.get("order").and_then(|v| v.as_array()) else {
-                tracing::warn!("process:reorder: order array が無い: {}", msg);
-                return out;
-            };
-            let order: Vec<String> = arr
-                .iter()
-                .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                .collect();
-            tracing::info!("process:reorder: {} entries", order.len());
-            session.currents_order = Some(order.clone());
+            tracing::info!("process:reorder: {} entries", m.order.len());
+            session.currents_order = Some(m.order.clone());
             session.save();
             // SidebarState にも反映 (次回 push で JS 側 sort に使う)
-            state.currents_order = Some(order);
+            state.currents_order = Some(m.order);
             // changed フラグは立てない (DOM 順は user 操作で既に変わっている、
             // re-push で flash するのを避ける)。 次回 push 時に新 order が乗る。
         }
-        "process:restart" => {
+        IpcEnvelope::ProcessRestart(m) => {
             // Phase 5-C: project name (from p.path → leaf name) を抽出して async restart に投げる。
             // path は normalized full path、 SP の API は project name で識別する。
-            if path.is_empty() {
+            if m.path.is_empty() {
                 tracing::warn!("process:restart with empty path: {}", msg);
                 return out;
             }
-            let project_name = std::path::Path::new(path)
+            let project_name = std::path::Path::new(&m.path)
                 .file_name()
                 .and_then(|s| s.to_str())
-                .unwrap_or(path)
+                .unwrap_or(m.path.as_str())
                 .to_string();
-            tracing::info!("process:restart {} (project_name={})", path, project_name);
+            tracing::info!("process:restart {} (project_name={})", m.path, project_name);
             out.restart_process_request = Some(project_name);
         }
-        other => {
-            tracing::debug!("sidebar IPC: 未知の type {:?}", other);
+        // process:add / project:clone:pickFolder は `AppEvent::SidebarIpc` の
+        // dispatch 段で picker ルートに分岐済 (handle_sidebar_ipc には到達しない)。
+        IpcEnvelope::ProcessAdd | IpcEnvelope::ProjectClonePickFolder => {
+            tracing::debug!("sidebar IPC: picker 経路の message が handle_sidebar_ipc に到達");
         }
     }
     out
