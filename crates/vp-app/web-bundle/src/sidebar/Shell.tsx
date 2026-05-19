@@ -15,7 +15,7 @@ import { For, Show, createMemo } from 'solid-js'
 import type { ProcessPaneState } from '../generated/ProcessPaneState'
 import { sidebar } from './store'
 import { isRunningProcess } from './classify'
-import { LaneContextMenu } from './LaneContextMenu'
+import { ContextMenu } from './ContextMenu'
 import { ProjectAccordion } from './ProjectAccordion'
 import { WorldWidget } from './WorldWidget'
 
@@ -55,8 +55,8 @@ export function Shell() {
 
       <WorldWidget />
 
-      {/* Lane 行の右クリック context menu (singleton、 VP-204 PR-1)。 */}
-      <LaneContextMenu />
+      {/* 右クリック context menu (Lane 行 / project ヘッダ 共通、 singleton、 VP-204 PR-1)。 */}
+      <ContextMenu />
     </div>
   )
 }

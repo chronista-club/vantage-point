@@ -13,7 +13,7 @@ import type { LaneInfo } from '../generated/LaneInfo'
 import type { WingStatusWire } from '../generated/WingStatusWire'
 import { sidebar } from './store'
 import { sendIpc } from './ipc'
-import { laneHasContextActions, openLaneContextMenu } from './LaneContextMenu'
+import { openContextMenu, type ContextMenuItem } from './ContextMenu'
 import { isWingLane, laneAddressKey, laneLabel, standDisplayName, standIcon } from './lane'
 
 /** Wing Lane の git 状態 (branch · ahead/behind · dirty · merged)。 */
@@ -64,13 +64,34 @@ export function LaneRow(props: { lane: LaneInfo; projectPath: string }) {
     sendIpc({ t: 'lane:select', path: props.projectPath, address: addr() })
   }
 
-  // 右クリック → context menu (restart / delete)。 Lane 操作は LaneContextMenu に
-  // 一本化 (VP-204 PR-1 で inline hover ボタンを撤去)。 操作対象が無い Lane
-  // (inactive Lead — project 削除は PR-2) では menu を開かない。
+  // 右クリック → context menu。 Lane 操作は ContextMenu に一本化 (VP-204 PR-1 で
+  // inline hover ボタンを撤去)。 操作対象が無い Lane (inactive Lead — project 削除は
+  // PR-2) は items 空 → openContextMenu が no-op。
   const onContextMenu = (e: MouseEvent) => {
-    if (!laneHasContextActions(props.lane)) return
-    e.preventDefault()
-    openLaneContextMenu(props.lane, props.projectPath, e.clientX, e.clientY)
+    const lane = props.lane
+    const wing = isWingLane(lane)
+    const active = lane.pid != null
+    const items: ContextMenuItem[] = []
+    if (active) {
+      items.push({
+        label: `Restart ${wing ? 'Wing' : 'Lead'} Stand`,
+        icon: 'ph:arrow-clockwise',
+        onSelect: () =>
+          sendIpc({ t: 'lane:restart', path: props.projectPath, address: addr() }),
+      })
+    }
+    if (wing) {
+      // delete は破壊的 (PTY kill + tmux kill + workspace dir 削除) なので 2-click 確認。
+      items.push({
+        label: 'Delete Wing',
+        icon: 'ph:trash',
+        danger: true,
+        confirm: { label: 'もう一度クリックで削除', icon: 'ph:check' },
+        onSelect: () =>
+          sendIpc({ t: 'lane:delete', path: props.projectPath, address: addr() }),
+      })
+    }
+    openContextMenu(laneLabel(lane), items, e.clientX, e.clientY)
   }
 
   return (
