@@ -52,7 +52,7 @@ TheWorld 👑 (Process Manager / 常駐デーモン)
 |---------|------|
 | CLI / Process | Rust (Tokio, Axum, Clap) |
 | WebView | wry + tao |
-| Frontend | HTML/JS (WebSocket) |
+| Frontend | SolidJS + xterm.js + creo-ui (vp-app web-bundle) |
 | Agent | Claude CLI + MCP |
 | MIDI | midir |
 
@@ -61,17 +61,14 @@ TheWorld 👑 (Process Manager / 常駐デーモン)
 ### システム構成
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                    VP CLI (vp)                       │
-├─────────────────────────────────────────────────────┤
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐ │
-│  │   Agent     │  │    MIDI     │  │   WebView   │ │
-│  │  Service    │  │   Service   │  │   Server    │ │
-│  │ Claude CLI  │  │   midir     │  │ Axum + wry  │ │
-│  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘ │
-│         └────────────────┼────────────────┘         │
-│                   Session Manager                    │
-└─────────────────────────────────────────────────────┘
+vp-app (GUI: wry+tao)   vp (CLI)
+        └────────┬───────┘
+                 │ HTTP + QUIC
+        TheWorld 👑 :32000          ← Process Manager (常駐 daemon)
+                 │ spawn + reconcile (Push/Pull 二重パス)
+     ┌───────────┼───────────┐
+   SP :33000   SP :33001   ...      ← Star Platinum ⭐ (project ごと)
+     └ Stands: Echoes 💬 / Paisley Park 🧭 / Gold Experience 🌿 / Hermit Purple 🍇
 ```
 
 ## プロジェクト構造
@@ -82,12 +79,11 @@ vantage-point/
 │   ├── vantage-point/   # server lib (TheWorld + SP の HTTP/WS server)
 │   ├── vp-app/          # Rust GUI (wry + tao + xterm.js + creo-ui) — Mac 主軸 (2026-04-26 移行)
 │   ├── vp-cli/          # CLI binary (vp、 lane lib も内包)
-│   ├── vp-db/           # SurrealDB embedded wrapper
-│   └── vp-mdast{,-wasm}/ # Markdown AST parser
+│   └── vp-mdast{,-wasm}/ # Markdown AST parser (+ wasm binding)
 ├── docs/
 │   ├── spec/            # 仕様書
 │   ├── design/          # 設計書
-│   └── development/     # 開発ガイド
+│   └── guide/           # 開発ガイド
 └── .claude/             # Claude Code設定
 ```
 
@@ -220,24 +216,17 @@ state.send_debug_detail("category", "メッセージ", serde_json::json!({"key":
 - `CGWindowListCopyWindowInfo`（`swift -e`）でウィンドウ ID を取得
 - プロセス名は `"Vantage Point"`（スペースあり）で照合
 
-## プロジェクト管理（Linear）
+## プロジェクト管理（creo-memories）
 
-| 項目 | 値 | ID |
-|------|-----|-----|
-| **プロジェクト** | [Vantage Point](https://linear.app/chronista/project/vantage-point-d0b78d9cb67e) | `bf267a40-0080-4544-ad89-2536bfdb7807` |
-| **チーム** | Vantage Point (VP) | `35a88eb9-94b2-4255-939e-23dba9678ffd` |
+task 管理は creo-memories に一本化（Linear は不使用、2026-05-19 確定）。GitHub Issues も使わない。
 
 ### ルール
 
-- **Issue 管理は Linear に一元化**（GitHub Issues は使わない）
-- Issue 作成: `save_issue(team: "Vantage Point", project: "Vantage Point")` を指定
-- ブランチ名: Linear が生成する `mako/vp-XX-...` 形式を使用
-- PR: `Closes VP-XX` でマージ時に Linear Issue を自動クローズ
-- ステータス: 実装開始 → In Progress、完了 → Done
-- 優先度: 1=Urgent, 2=High, 3=Medium, 4=Low
+- **task = memory**: `remember` で起票（atlas は `CLAUDE.local.md` 参照）。`status`（active=TODO/進行中, done=完了）で lifecycle 管理、priority は tag（`priority:high|medium|low`）
+- ブランチ名: `mako/{slug}` 形式（task memory の slug から推論）
+- PR: `gh` で作成。関連 task memory の ID を PR 本文に記載
+- 他プロジェクト横断の task は creo-memories の shared context に集約
 
 ## クロスプロジェクト協業（MARU x VP）
 
-MARU（ESP32-S3物理コントローラ）との連携開発。creo-memoriesで `category: "cross-project"` + `from: "vp"` で記録。
-
-設計ドキュメント: [docs/plans/archive/2026-02-15-cross-project-collab-design.md](docs/plans/archive/2026-02-15-cross-project-collab-design.md)
+MARU（ESP32-S3物理コントローラ）との連携開発。設計・経緯は creo-memories に記録（`category: "cross-project"` + `from: "vp"`）。
