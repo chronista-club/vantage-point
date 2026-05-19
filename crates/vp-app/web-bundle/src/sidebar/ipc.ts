@@ -12,6 +12,7 @@
  */
 import { applySidebarState } from './store'
 import type { SidebarState } from '../generated/SidebarState'
+import type { IpcEnvelope } from '../generated/SidebarIpc'
 
 /** wry が webview に注入する IPC channel。 */
 interface WryIpc {
@@ -35,27 +36,14 @@ declare global {
 }
 
 /**
- * sidebar → Rust の IPC メッセージ (Rust 側 `handle_sidebar_ipc` が受ける 11 種)。
+ * 型付き postMessage wrapper。
  *
- * すべて `{ t: <種別>, ... }` の discriminated union。 Rust 側はこれに対応する enum を
- * 持たず手で JSON parse しているため、 ここは手書き union とする
- * (Rust 側 enum 化 + ts-rs 生成は将来の改善余地、 PR-1 scope 外)。
+ * メッセージ型 `IpcEnvelope` (sidebar → Rust の IPC、`{ t: <種別>, ... }` の
+ * discriminated union) は `crates/vp-app/schema/vp-sidebar.kdl` を SSOT に
+ * club-kdl-codegen で生成 (`../generated/SidebarIpc`)。 Rust 側 `handle_sidebar_ipc`
+ * が受ける enum も同じ schema 由来 (VP-208) で、 wire 互換が schema 経由で保証される。
  */
-export type SidebarIpcMsg =
-  | { t: 'process:toggle'; path: string; expanded: boolean }
-  | { t: 'process:reorder'; order: string[] }
-  | { t: 'process:restart'; path: string }
-  | { t: 'process:add' }
-  | { t: 'lane:select'; path: string; address: string }
-  | { t: 'lane:delete'; path: string; address: string }
-  | { t: 'lane:restart'; path: string; address: string }
-  | { t: 'lane:add_wing'; path: string; name: string; branch?: string; stand?: string }
-  | { t: 'stands:fetch'; path: string }
-  | { t: 'stand:select'; path: string; kind: string }
-  | { t: 'project:clone:pickFolder' }
-
-/** 型付き postMessage wrapper。 */
-export function sendIpc(msg: SidebarIpcMsg): void {
+export function sendIpc(msg: IpcEnvelope): void {
   const ipc = window.ipc
   if (!ipc) {
     console.warn('[vp-sidebar] window.ipc 未注入 — メッセージを破棄:', msg)
