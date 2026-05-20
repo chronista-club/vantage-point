@@ -234,6 +234,8 @@ pub async fn run(
         project_dir: project_dir.clone(),
         pending_prompts: Arc::new(RwLock::new(HashMap::new())),
         capabilities,
+        // R3: wire cross-process delivery の宛先分類用 — 解決済 project 名
+        project_name: project_name_for_remote.clone(),
         // VP-159 PR-4b: notify を spawn_service 済の ActorRegistry を move (= lane-spawn は AppState 構築後に追加)
         actor_registry: Arc::new(RwLock::new(actor_registry)),
         world: None,
@@ -445,6 +447,11 @@ pub async fn run(
         .route(
             "/api/msgbox/remote_deliver",
             post(health::msgbox_remote_deliver_handler),
+        )
+        // R3: cross-process wire delivery — 他 SP からの forward 受信口
+        .route(
+            "/api/wire/remote-deliver",
+            post(health::wire_remote_deliver_handler),
         )
         .route("/api/msgbox/debug", get(health::msgbox_debug_handler))
         .route("/api/msgbox/send", post(health::msgbox_send_handler))
@@ -853,6 +860,8 @@ pub async fn run_world(
         debug_mode: DebugMode::None,
         shutdown_token: shutdown_token.clone(),
         project_dir: String::new(),
+        // R3: World mode は cross-process forward の対象外 (= 自 project を持たない)
+        project_name: String::new(),
         pending_prompts: Arc::new(RwLock::new(HashMap::new())),
         capabilities: Arc::new(
             ProcessCapabilities::new(CapabilityConfig {

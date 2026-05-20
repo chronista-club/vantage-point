@@ -31,6 +31,7 @@ pub mod registry;
 pub mod stand_service;
 pub mod update_capability;
 pub mod whitesnake;
+pub mod wire_remote;
 pub mod wiremsg_store;
 
 pub use actor_registry::{ActorKind, ActorRegistry, ActorRegistryEntry};
@@ -56,3 +57,5 @@ pub use update_capability::UpdateCapability;
 pub use whitesnake::Whitesnake;
 // Phase A ①: wiremsg threaded inbox store (msgs table と並存、 設計 mem_1CbD9H1KGQykBaFG8XXVsn)
 pub use wiremsg_store::{ParticipantStatus, WireMessage, WireNotifier, WiremsgStore};
+// R3: wire cross-process delivery (宛先分類 + best-effort forward、 設計 mem_1CbDLrECNZiNEZqjySLfSB)
+pub use wire_remote::{WireRecipients, classify_recipients, forward_to_remote};
