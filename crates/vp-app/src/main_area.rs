@@ -599,6 +599,7 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
     // 毎 canvas 全描画で cell recycling 起因 ghost char が原理的に発生しない property が再評価対象。
     // GPU context loss (Mac で別 app 切替時) は onContextLoss で dispose → DOM fallback。
     let webglAddon = null;
+    let webglCleanup = null;
     const VP_USE_WEBGL = true;
     if (VP_USE_WEBGL) {
       try {
@@ -608,6 +609,18 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
           console.warn('[xterm:' + address + '] WebGL context loss — DOM fallback');
           webglAddon.dispose();
         });
+        // glyph atlas 破損の自動復旧。 GPU context loss を伴わない silent な atlas
+        // corruption (= 文字化けが mr app まで治らない症状) を、 app が foreground
+        // に戻った時に clearTextureAtlas で atlas を作り直して wipe する。 corruption
+        // の trigger (GPU 切替 / sleep-wake / メモリ圧) は app の background 化と
+        // 相関するため、 visible 復帰時の再構築が実効的。 真の context loss は上の
+        // onContextLoss で dispose → DOM fallback されるため別経路。
+        const onVisible = () => {
+          if (document.visibilityState !== 'visible') return;
+          try { webglAddon.clearTextureAtlas(); } catch (_) {}
+        };
+        document.addEventListener('visibilitychange', onVisible);
+        webglCleanup = () => document.removeEventListener('visibilitychange', onVisible);
       } catch (e) {
         console.warn('[xterm:' + address + '] WebGL unavailable:', e);
       }
@@ -1037,7 +1050,7 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
     });
     ro.observe(container);
 
-    return { term, fitAddon, conn, container, ro, webglAddon };
+    return { term, fitAddon, conn, container, ro, webglAddon, webglCleanup };
   }
 
   window.ensureLane = function(address, port) {
@@ -1083,6 +1096,7 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
       }
       if (info.conn.ws) info.conn.ws.close();
       info.ro.disconnect();
+      if (info.webglCleanup) { try { info.webglCleanup(); } catch (_) {} }
       if (info.webglAddon) { try { info.webglAddon.dispose(); } catch (_) {} }
       info.term.dispose();
       info.container.remove();
