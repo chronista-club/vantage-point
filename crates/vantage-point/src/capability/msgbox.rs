@@ -78,6 +78,20 @@ pub struct Message {
     /// receiver が claim → mark_consumed した時に更新。 msgs table の同名 field に persisted。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub consumed_at: Option<u64>,
+    /// 親メッセージ ID（wiremsg threading、 Phase A ①）
+    ///
+    /// `None` = thread の root。 `Some(id)` = その id への返信。
+    /// 既存 `reply_to` (= 旧 Mailbox の thread 用) とは別物: `prev` は wiremsg の
+    /// thread tree 用 field で、 `messages` table の `prev` record link に対応する。
+    /// wiremsg 以外の msg では常に `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prev: Option<String>,
+    /// 所属 thread の root メッセージ ID（wiremsg threading、 Phase A ①）
+    ///
+    /// `messages` table の `thread_id` に対応。 root メッセージは自分自身の id を持つ。
+    /// reply は返信先の `thread_id` を継承する。 wiremsg 以外の msg では `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
 }
 
 /// メッセージ種別
@@ -109,7 +123,34 @@ impl Message {
             manual_ack: false,
             forwarded_at: None,
             consumed_at: None,
+            prev: None,
+            thread_id: None,
         }
+    }
+
+    /// このメッセージを wiremsg thread の root に確定する（Phase A ①）
+    ///
+    /// `prev = None`、 `thread_id = 自分の id` をセットして返す。
+    /// `wire_send`（新規 thread）で使う。 `id` は `Message::new` 時点で確定済なので
+    /// それを self-reference にする。
+    pub fn as_thread_root(mut self) -> Self {
+        self.prev = None;
+        self.thread_id = Some(self.id.clone());
+        self
+    }
+
+    /// このメッセージを wiremsg thread の reply に確定する（Phase A ①）
+    ///
+    /// `prev = 返信先 id`、 `thread_id = 返信先から継承した root id` をセットして返す。
+    /// `wire_send`（`reply_to` 指定時）で使う。
+    pub fn as_thread_reply(
+        mut self,
+        prev_id: impl Into<String>,
+        thread_id: impl Into<String>,
+    ) -> Self {
+        self.prev = Some(prev_id.into());
+        self.thread_id = Some(thread_id.into());
+        self
     }
 
     /// ペイロードを設定
@@ -209,5 +250,38 @@ mod tests {
 
         let m2 = Message::new("a", "b", MessageKind::Direct).manual_ack();
         assert!(m2.manual_ack);
+    }
+
+    /// Message::new 時点では prev / thread_id は None
+    #[test]
+    fn new_has_no_thread_fields() {
+        let msg = Message::new("a", "b", MessageKind::Direct);
+        assert!(msg.prev.is_none());
+        assert!(msg.thread_id.is_none());
+    }
+
+    /// as_thread_root は prev=None、 thread_id=自 id（self-reference）
+    #[test]
+    fn as_thread_root_sets_self_reference() {
+        let msg = Message::new("a", "b", MessageKind::Direct).as_thread_root();
+        assert!(msg.prev.is_none(), "root の prev は None");
+        assert_eq!(
+            msg.thread_id.as_deref(),
+            Some(msg.id.as_str()),
+            "root の thread_id は自分自身の id"
+        );
+    }
+
+    /// as_thread_reply は prev=返信先、 thread_id=継承した root id
+    #[test]
+    fn as_thread_reply_inherits_thread_id() {
+        let reply = Message::new("a", "b", MessageKind::Direct)
+            .as_thread_reply("parent-msg-id", "root-msg-id");
+        assert_eq!(reply.prev.as_deref(), Some("parent-msg-id"));
+        assert_eq!(
+            reply.thread_id.as_deref(),
+            Some("root-msg-id"),
+            "reply は返信先の thread_id を継承（自 id ではない）"
+        );
     }
 }

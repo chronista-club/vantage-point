@@ -172,6 +172,36 @@ pub struct MsgThreadParams {
     pub id: String,
 }
 
+/// Parameters for wire_send tool (Phase A ①: threaded wiremsg inbox)
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct WireSendParams {
+    /// 宛先 agent address 群
+    #[schemars(
+        description = "Destination agent addresses (e.g. ['agent@vantage-point', 'agent@vantage-point/chore']). At least one recipient is expected for a new thread."
+    )]
+    pub to: Vec<String>,
+
+    /// メッセージ本文（任意 JSON object）
+    #[schemars(description = "Message body as a JSON object.")]
+    pub body: serde_json::Value,
+
+    /// 返信先メッセージID（指定すると既存 thread への reply になる）
+    #[schemars(
+        description = "If set, this message is a reply within the existing thread of the given message ID (a wire message id returned by a previous wire_send / wire_recv). If omitted, a new thread is started."
+    )]
+    pub reply_to: Option<String>,
+}
+
+/// Parameters for wire_recv tool (Phase A ①: threaded wiremsg inbox)
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct WireRecvParams {
+    /// 受信タイムアウト（秒）
+    #[schemars(
+        description = "Timeout in seconds to wait for unread messages (default: 5, max: 30). Returns immediately if unread messages exist."
+    )]
+    pub timeout: Option<u64>,
+}
+
 /// Parameters for the watch_file tool
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct WatchFileParams {
@@ -2560,6 +2590,65 @@ if bestId > 0 { print(bestId) }
         let resp = self.quic_call("msg_thread", payload).await?;
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
             serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "thread retrieved".to_string()),
+        )]))
+    }
+
+    // =========================================================================
+    // wiremsg — threaded inbox (Phase A ①、 設計 mem_1CbD9H1KGQykBaFG8XXVsn)
+    //
+    // 既存 msg_send/msg_recv (= claim-based Mailbox) と並存する threading 対応 inbox。
+    // wire_send は新規 thread の root を作るか、 reply_to 指定で既存 thread に返信する。
+    // wire_recv は呼び出し agent の参加 thread の未読 message を long-poll で取得する。
+    // =========================================================================
+
+    /// Send a wiremsg (new thread, or a reply when reply_to is set)
+    #[tool(
+        description = "Send a threaded wire message. Without `reply_to`, starts a NEW thread (root message). With `reply_to` (a wire message id), posts a REPLY into that message's thread. Recipients receive the message as unread; the sender does not see their own root message. Use wire_recv to read replies. This is the threaded inbox (Phase A ①); it coexists with msg_send."
+    )]
+    async fn wire_send(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<WireSendParams>,
+    ) -> Result<CallToolResult, McpError> {
+        // from は msg_send と同じく self_lane から導出 (lead は "agent"、 wing は "agent@<parent>/<name>")
+        let from = self.self_lane.from_address();
+        let payload = serde_json::json!({
+            "from": from,
+            "to": params.to,
+            "body": params.body,
+            "reply_to": params.reply_to,
+        });
+        let resp = self.quic_call("wire_send", payload).await?;
+        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+            serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "wire message sent".to_string()),
+        )]))
+    }
+
+    /// Receive unread wiremsg messages from this agent's threads
+    #[tool(
+        description = "Receive unread messages from all wire threads this agent participates in. Waits up to `timeout` seconds (default 5, max 30); returns immediately if unread messages exist. Each returned message has `id`, `thread_id`, `prev`, `from`, `to`, `body`, `created_at`. Reading advances this agent's read cursor so messages are not re-delivered. This is the threaded inbox (Phase A ①); it coexists with msg_recv."
+    )]
+    async fn wire_recv(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<WireRecvParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let timeout = params.timeout.unwrap_or(5).min(30);
+        // agent は msg_send の from と同じ self_lane 由来 address
+        let agent = self.self_lane.from_address();
+        let payload = serde_json::json!({
+            "agent": agent,
+            "timeout": timeout,
+        });
+        // server 側が最大 `timeout` 秒ブロックするので、 outer timeout は +5s 余裕を持たせる
+        // (msg_recv と同じ理由 — VP-163)
+        let resp = self
+            .quic_call_with_timeout(
+                "wire_recv",
+                payload,
+                std::time::Duration::from_secs(timeout + 5),
+            )
+            .await?;
+        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+            serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "null".to_string()),
         )]))
     }
 

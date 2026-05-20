@@ -31,6 +31,7 @@ pub mod registry;
 pub mod stand_service;
 pub mod update_capability;
 pub mod whitesnake;
+pub mod wiremsg_store;
 
 pub use actor_registry::{ActorKind, ActorRegistry, ActorRegistryEntry};
 pub use agent_capability::AgentCapability;
@@ -53,3 +54,5 @@ pub use registry::CapabilityRegistry;
 pub use stand_service::{LayerScope, Service, Stand};
 pub use update_capability::UpdateCapability;
 pub use whitesnake::Whitesnake;
+// Phase A ①: wiremsg threaded inbox store (msgs table と並存、 設計 mem_1CbD9H1KGQykBaFG8XXVsn)
+pub use wiremsg_store::{ParticipantStatus, WireMessage, WireNotifier, WiremsgStore};

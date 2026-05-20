@@ -465,6 +465,41 @@ DEFINE FIELD IF NOT EXISTS trace ON msgs TYPE array DEFAULT [];
 -- 主 query path index (SDG §4.1)
 DEFINE INDEX IF NOT EXISTS recv_idx ON msgs FIELDS status, to_actor, to_lane, consumed_at;
 DEFINE INDEX IF NOT EXISTS status_idx ON msgs FIELDS status, expires_at;
+
+-- =========================================================================
+-- wiremsg threaded inbox (Phase A ①、 設計 memory mem_1CbD9H1KGQykBaFG8XXVsn)
+-- =========================================================================
+-- 既存 msgs table (= Mailbox の claim-based inbox) と並走する threading 対応 inbox。
+-- `wire_send` / `wire_recv` が直接 long-poll する store。 TopicRouter は介さない。
+--
+-- 設計判断: `thread_id` / `prev` は record link ではなく plain string (= message
+-- の local id) で保持する。 理由:
+--   1. 既存 msgs table の `id` / `reply_to` も plain string で、 同型を踏襲
+--   2. record-link traversal を query で使うと migration / 部分適用で壊れやすい
+--      (creo-memories mem: 「migration の data-UPDATE 句は record-link traversal を避ける」)
+-- `created_at` / `read_cursor` も datetime ではなく epoch ms (number) で保持
+-- (= msgs.ts と同じ表現、 cursor 比較を素直な数値比較にする)。
+DEFINE TABLE IF NOT EXISTS wire_messages SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS id ON wire_messages TYPE string;
+DEFINE FIELD IF NOT EXISTS thread_id ON wire_messages TYPE string;
+DEFINE FIELD IF NOT EXISTS prev ON wire_messages TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS from_addr ON wire_messages TYPE string;
+DEFINE FIELD IF NOT EXISTS to_addrs ON wire_messages TYPE array<string>;
+DEFINE FIELD IF NOT EXISTS body ON wire_messages TYPE object FLEXIBLE;
+DEFINE FIELD IF NOT EXISTS created_at ON wire_messages TYPE number;
+DEFINE INDEX IF NOT EXISTS wire_thread_idx ON wire_messages FIELDS thread_id, created_at;
+
+-- thread 参加者 + 既読カーソル (plain table、 graph edge ではない)
+DEFINE TABLE IF NOT EXISTS thread_participant SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS thread ON thread_participant TYPE string;
+DEFINE FIELD IF NOT EXISTS agent ON thread_participant TYPE string;
+-- 最後に読んだ message の created_at (epoch ms)。 NONE = 全 message 未読。
+DEFINE FIELD IF NOT EXISTS read_cursor ON thread_participant TYPE option<number>;
+DEFINE FIELD IF NOT EXISTS status ON thread_participant TYPE string DEFAULT 'active';
+DEFINE FIELD IF NOT EXISTS updated_at ON thread_participant TYPE number;
+-- (thread, agent) で一意
+DEFINE INDEX IF NOT EXISTS thread_participant_uniq ON thread_participant FIELDS thread, agent UNIQUE;
+DEFINE INDEX IF NOT EXISTS thread_participant_agent_idx ON thread_participant FIELDS agent, status;
 "#;
 
 // =============================================================================

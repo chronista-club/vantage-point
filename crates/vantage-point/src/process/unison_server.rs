@@ -558,6 +558,9 @@ pub async fn start_unison_server(
                             "msg_peers" => handle_msg_peers(&state).await,
                             "msg_ack" => handle_msg_ack(&state, payload).await,
                             "msg_thread" => handle_msg_thread(&state, payload).await,
+                            // wiremsg threaded inbox (Phase A ①)
+                            "wire_send" => handle_wire_send(&state, payload).await,
+                            "wire_recv" => handle_wire_recv(&state, payload).await,
                             _ => Err(format!("不明なメソッド: process.{}", method)),
                         };
 
@@ -1128,4 +1131,166 @@ async fn handle_msg_thread(
             .map_err(|e| format!("Serialize: {}", e))?,
         "count": result.len(),
     }))
+}
+
+// =============================================================================
+// wiremsg threaded inbox ハンドラー (Phase A ①、 設計 mem_1CbD9H1KGQykBaFG8XXVsn)
+// =============================================================================
+
+/// wiremsg を送信する (= 新規 thread の root、 または `reply_to` 指定で reply)
+///
+/// payload: `{ from, to: [..], body, reply_to? }`
+///
+/// Operations (Phase A ① 仕様):
+/// - `reply_to` なし → `WiremsgStore::send_root` (root message + participant 作成)
+/// - `reply_to` あり → `WiremsgStore::send_reply` (reply message + 新規 participant upsert)
+/// - 送信後、 notify 対象の待機中 `wire_recv` を `WireNotifier` で起こす:
+///   - root: 受信者 (= `to`) を notify
+///   - reply: **送信者を除く** thread 参加者 (`status != left`) を notify
+async fn handle_wire_send(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let store = state
+        .wiremsg_store
+        .as_ref()
+        .ok_or_else(|| "wiremsg_store not initialized".to_string())?;
+
+    let from = payload
+        .get("from")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "wire_send: 'from' required".to_string())?
+        .to_string();
+    let to: Vec<String> = payload
+        .get("to")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+    // body は任意 JSON。 省略時は空 object。
+    let body = payload
+        .get("body")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    let reply_to = payload
+        .get("reply_to")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    match reply_to {
+        // ---- reply ----
+        Some(prev_id) => {
+            let msg = store
+                .send_reply(&from, &to, body, &prev_id)
+                .await
+                .map_err(|e| format!("wire_send (reply) failed: {e}"))?;
+            // 送信者を除く thread 参加者 (left 除外) を notify
+            let participants = store
+                .thread_participants(&msg.thread_id, true)
+                .await
+                .map_err(|e| format!("wire_send participants lookup failed: {e}"))?;
+            for agent in participants.iter().filter(|a| **a != from) {
+                state.wire_notifier.notify(agent).await;
+            }
+            Ok(serde_json::json!({
+                "status": "ok",
+                "id": msg.id,
+                "thread_id": msg.thread_id,
+                "prev": msg.prev,
+                "notified": participants.iter().filter(|a| **a != from).count(),
+            }))
+        }
+        // ---- new thread (root) ----
+        None => {
+            let msg = store
+                .send_root(&from, &to, body)
+                .await
+                .map_err(|e| format!("wire_send (root) failed: {e}"))?;
+            // 受信者 (= to、 送信者自身は除く) を notify
+            for agent in to.iter().filter(|a| **a != from) {
+                state.wire_notifier.notify(agent).await;
+            }
+            Ok(serde_json::json!({
+                "status": "ok",
+                "id": msg.id,
+                "thread_id": msg.thread_id,
+                "prev": serde_json::Value::Null,
+                "notified": to.iter().filter(|a| **a != from).count(),
+            }))
+        }
+    }
+}
+
+/// wiremsg を受信する (= 呼び出し agent の参加 thread の未読 message を long-poll で取得)
+///
+/// payload: `{ agent, timeout? }`
+///
+/// Operations (Phase A ① 仕様):
+/// 1. `agent` の参加 thread から `created_at > read_cursor` の未読 message を取得
+/// 2. 未読があれば返却 → 取得した最新 message の `created_at` まで cursor を前進
+///    (`now` ではなく — fetch 中着信の取りこぼし race を回避)
+/// 3. 未読が無ければ `WireNotifier` で待機 (timeout あり)、 notify で起床して再 poll
+///
+/// 取りこぼし防止のため、 `notified()` future を **store poll の前に** 生成する
+/// (= `WireNotifier` の struct doc 参照)。
+async fn handle_wire_recv(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let store = state
+        .wiremsg_store
+        .as_ref()
+        .ok_or_else(|| "wiremsg_store not initialized".to_string())?;
+
+    let agent = payload
+        .get("agent")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "wire_recv: 'agent' required".to_string())?
+        .to_string();
+    // timeout は msg_recv と同じ default 5s / max 30s
+    let timeout_secs = payload
+        .get("timeout")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(5)
+        .min(30);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+
+    loop {
+        // 取りこぼし防止: poll の前に待機 future を準備しておく
+        // (poll と await の隙間に来た wire_send notify も拾えるようにする)
+        let notify = state.wire_notifier.handle(&agent).await;
+        let notified = notify.notified();
+        tokio::pin!(notified);
+
+        // 未読 message を取得 + read_cursor 前進 (store.recv が両方まとめて実施)。
+        // cursor は取得済 message の created_at に合わせる (= fetch 中着信の race 回避)。
+        let unread = store
+            .recv(&agent)
+            .await
+            .map_err(|e| format!("wire_recv failed: {e}"))?;
+
+        if !unread.is_empty() {
+            let value = serde_json::to_value(&unread)
+                .map_err(|e| format!("wire_recv serialize failed: {e}"))?;
+            return Ok(serde_json::json!({
+                "messages": value,
+                "count": unread.len(),
+            }));
+        }
+
+        // 未読なし: deadline まで notify を待つ
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return Ok(serde_json::json!({
+                "messages": [],
+                "count": 0,
+                "reason": "timeout",
+            }));
+        }
+        // notify が来たら再 poll、 timeout したら次ループで deadline 判定 → timeout 返却
+        let _ = tokio::time::timeout(remaining, notified).await;
+    }
 }
