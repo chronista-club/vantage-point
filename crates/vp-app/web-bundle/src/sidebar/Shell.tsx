@@ -11,9 +11,8 @@
  *   操作 (click 選択・context menu・restart/delete・Add Worker form・DnD) は PR-3。
  *   World widget 本体は後続 increment。
  */
-import { For, Show, createMemo } from 'solid-js'
+import { For, Show, createMemo, createSignal } from 'solid-js'
 import { CreoIcon } from 'creoui-icons-web'
-import type { ProcessPaneState } from '../generated/ProcessPaneState'
 import { sidebar } from './store'
 import { sendIpc } from './ipc'
 import { isRunningProcess } from './classify'
@@ -21,25 +20,21 @@ import { ContextMenu } from './ContextMenu'
 import { ProjectAccordion } from './ProjectAccordion'
 import { WorldWidget } from './WorldWidget'
 
-/** 1 セクション (稼働中 or 一時停止中) を見出し + Project accordion で描画する。 */
-function ProcSection(props: { label: string; procs: ProcessPaneState[] }) {
-  return (
-    <Show when={props.procs.length > 0}>
-      <section class="vp-sidebar-section">
-        <div class="vp-sidebar-section-header">
-          <span class="vp-sidebar-section-label">{props.label}</span>
-          <span class="vp-sidebar-section-count">{props.procs.length}</span>
-        </div>
-        <For each={props.procs}>{(proc) => <ProjectAccordion proc={proc} />}</For>
-      </section>
-    </Show>
-  )
-}
-
 export function Shell() {
   // processes を稼働中 / 一時停止中 に分割。 store の processes が変われば再計算される。
   const running = createMemo(() => sidebar.processes.filter(isRunningProcess))
   const paused = createMemo(() => sidebar.processes.filter((p) => !isRunningProcess(p)))
+
+  // 表示中のタブ (稼働中 / 一時停止中)。 localStorage 永続、 default は稼働中。
+  // 15+ project で list が溢れるため、 常に 1 セットだけ表示して crowding を防ぐ。
+  const [tab, setTab] = createSignal<'running' | 'paused'>(
+    localStorage.getItem('vp.sidebar.tab') === 'paused' ? 'paused' : 'running',
+  )
+  const selectTab = (t: 'running' | 'paused') => {
+    setTab(t)
+    localStorage.setItem('vp.sidebar.tab', t)
+  }
+  const shown = createMemo(() => (tab() === 'running' ? running() : paused()))
 
   return (
     <div class="vp-sidebar-shell">
@@ -60,9 +55,35 @@ export function Shell() {
           when={sidebar.processes.length > 0}
           fallback={<div class="vp-sidebar-empty">プロジェクトなし</div>}
         >
-          <ProcSection label="稼働中" procs={running()} />
-          <ProcSection label="一時停止中" procs={paused()} />
+          <Show
+            when={shown().length > 0}
+            fallback={
+              <div class="vp-sidebar-empty">
+                {tab() === 'running' ? '稼働中なし' : '一時停止中なし'}
+              </div>
+            }
+          >
+            <For each={shown()}>{(proc) => <ProjectAccordion proc={proc} />}</For>
+          </Show>
         </Show>
+      </div>
+
+      {/* 稼働中 / 一時停止中 タブ切替 (sidebar 下部、 World widget の上)。 */}
+      <div class="vp-sidebar-tabs">
+        <button
+          class="vp-sidebar-tab"
+          classList={{ active: tab() === 'running' }}
+          onClick={() => selectTab('running')}
+        >
+          稼働中 <span class="vp-sidebar-tab-count">{running().length}</span>
+        </button>
+        <button
+          class="vp-sidebar-tab"
+          classList={{ active: tab() === 'paused' }}
+          onClick={() => selectTab('paused')}
+        >
+          一時停止中 <span class="vp-sidebar-tab-count">{paused().length}</span>
+        </button>
       </div>
 
       <WorldWidget />
@@ -96,12 +117,23 @@ html,body{margin:0;height:100%;background:var(--color-surface-bg-subtle);
 .vp-sidebar-empty{padding:var(--spacing-sm,8px);color:var(--color-text-tertiary);
   font-size:11px;}
 
-/* 稼働中 / 一時停止中 セクション */
-.vp-sidebar-section + .vp-sidebar-section{margin-top:var(--spacing-xs,4px);}
-.vp-sidebar-section-header{display:flex;align-items:center;gap:6px;
-  padding:var(--spacing-sm,8px) var(--spacing-sm,8px) var(--spacing-xs,4px);
-  font-size:10px;color:var(--color-text-tertiary);font-weight:500;user-select:none;}
-.vp-sidebar-section-count{margin-left:auto;font-variant-numeric:tabular-nums;}
+/* 稼働中 / 一時停止中 タブ切替 (sidebar 下部、 World widget の上) */
+.vp-sidebar-tabs{flex:0 0 auto;display:flex;
+  border-top:1px solid var(--color-surface-border,#1f2233);}
+.vp-sidebar-tab{flex:1;display:flex;align-items:center;justify-content:center;gap:5px;
+  padding:6px 4px;border:none;background:transparent;cursor:pointer;
+  font-family:inherit;font-size:11px;color:var(--color-text-tertiary);
+  transition:color .1s ease,background .1s ease,box-shadow .1s ease;}
+.vp-sidebar-tab + .vp-sidebar-tab{
+  border-left:1px solid var(--color-surface-border,#1f2233);}
+.vp-sidebar-tab:hover{background:var(--color-surface-bg-emphasis);
+  color:var(--color-text-secondary);}
+.vp-sidebar-tab.active{color:var(--color-brand-primary);
+  background:var(--color-brand-primary-subtle);
+  box-shadow:inset 0 2px 0 0 var(--color-brand-primary);}
+.vp-sidebar-tab-count{font-size:10px;font-variant-numeric:tabular-nums;
+  color:var(--color-text-tertiary);}
+.vp-sidebar-tab.active .vp-sidebar-tab-count{color:var(--color-brand-primary);}
 
 /* Project accordion */
 .vp-proj{margin:0;}
