@@ -98,6 +98,12 @@ pub(crate) struct AppState {
     pub shutdown_token: CancellationToken,
     /// Project directory for Claude agent
     pub project_dir: String,
+    /// 解決済 project 名 (config の `projects[].name`、 未登録ならディレクトリ名)
+    ///
+    /// R3 (wire cross-process delivery): `wire_send` の宛先分類で「自 SP の project か否か」を
+    /// 判定するのに使う。 `agent@<project>` の `<project>` が本 field と異なれば remote SP。
+    /// World mode では空文字列 (= cross-process forward は SP mode 専用)。
+    pub project_name: String,
     /// Pending user prompts: request_id -> response (REQ-PROMPT-001)
     pub pending_prompts: Arc<RwLock<HashMap<String, PendingPrompt>>>,
     /// Capability system (Agent, MIDI, Protocol)

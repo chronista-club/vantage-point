@@ -1142,12 +1142,15 @@ async fn handle_msg_thread(
 ///
 /// payload: `{ from, to: [..], body, reply_to? }`
 ///
-/// Operations (Phase A ① / R1 仕様):
+/// Operations (Phase A ① / R1 / R3 仕様):
 /// - `reply_to` なし → `WiremsgStore::send_root` (root message を INSERT、 `prev = None`)
 /// - `reply_to` あり → `WiremsgStore::send_reply` (reply message を INSERT、 reply-all 展開)
 /// - 送信後、 notify 対象の待機中 `wire_recv` を `WireNotifier` で起こす:
 ///   - root: 受信者 (= `to`) を notify
 ///   - reply: reply の `to` (= carry-forward 済の参加者集合) を notify
+/// - R3 (cross-process delivery): ローカル INSERT の **後**、 確定した message の `to`
+///   (= reply は carry-forward 済) を `classify_recipients` で振り分け、 `agent@<other-project>`
+///   宛があれば受信側 SP に best-effort で forward する ([`forward_remote_recipients`])。
 async fn handle_wire_send(
     state: &AppState,
     payload: serde_json::Value,
@@ -1193,6 +1196,8 @@ async fn handle_wire_send(
             for agent in &msg.to {
                 state.wire_notifier.notify(agent).await;
             }
+            // R3: reply の to (= carry-forward 済) に remote 宛があれば best-effort forward。
+            forward_remote_recipients(state, &msg).await;
             Ok(serde_json::json!({
                 "status": "ok",
                 "id": msg.id,
@@ -1211,6 +1216,8 @@ async fn handle_wire_send(
             for agent in to.iter().filter(|a| **a != from) {
                 state.wire_notifier.notify(agent).await;
             }
+            // R3: root の to に remote 宛があれば best-effort forward。
+            forward_remote_recipients(state, &msg).await;
             Ok(serde_json::json!({
                 "status": "ok",
                 "id": msg.id,
@@ -1219,6 +1226,32 @@ async fn handle_wire_send(
                 "notified": to.iter().filter(|a| **a != from).count(),
             }))
         }
+    }
+}
+
+/// R3: 確定した wire message の `to` を分類し、 remote 宛があれば best-effort で forward する
+///
+/// `handle_wire_send` の root / reply 両 path から、 ローカル INSERT の **後** に呼ぶ。
+/// message の `to` (reply なら carry-forward 済の参加者集合) を `classify_recipients` で
+/// local / remote に振り分け、 `agent@<other-project>` のような remote 宛があれば受信側 SP に
+/// HTTP forward する。
+///
+/// **best-effort 確定** (決定 `mem_1CbDYnc7GjZkXXWgm9PAfK`): forward 失敗は
+/// `forward_to_remote` 内で log のみ。 `wire_send` 自体は成功で返る (= ローカル INSERT は
+/// 既に完了済)。 retry はしない。
+async fn forward_remote_recipients(state: &AppState, msg: &crate::capability::WireMessage) {
+    // 自 project が未確定 (World mode 等) なら cross-process forward しない。
+    if state.project_name.is_empty() {
+        return;
+    }
+    let recipients = crate::capability::classify_recipients(&msg.to, &state.project_name);
+    if recipients.has_remote() {
+        crate::capability::forward_to_remote(
+            crate::cli::WORLD_PORT,
+            &recipients.remote_projects,
+            msg,
+        )
+        .await;
     }
 }
 

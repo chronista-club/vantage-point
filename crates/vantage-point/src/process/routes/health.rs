@@ -489,6 +489,68 @@ pub async fn msgbox_remote_deliver_handler(
     }
 }
 
+/// POST /api/wire/remote-deliver - cross-process wire delivery 受信 (R3)
+///
+/// 他 SP の `wire_remote::forward_to_remote` から呼ばれる。 forward された [`WireMessage`]
+/// 全体を受け取り、 自分の `wire_messages` accumulation に取り込む。
+///
+/// ## 取り込みの性質 (決定 `mem_1CbDYnc7GjZkXXWgm9PAfK`)
+///
+/// - **冪等** — 同一 `id` が既にあれば二重 INSERT せずスキップ ([`WiremsgStore::receive_forwarded`])。
+///   best-effort forward の二重着信でエラーにしない。
+/// - **`local_seq` は受信側で採番** — origin SP の `local_seq` は受信側では無意味なので
+///   受信側 accumulation で振り直す。 origin の `id` (uuidv7) は thread の `prev` 解決の
+///   ために保持する。
+/// - **`agent_cursor` は触らない** — 受信側 agent が `wire_recv` で読めば cursor は自然に
+///   前進する。 本 handler は message 本体の取り込みのみ。
+///
+/// 取り込み後、 受信側で待機中の `wire_recv` を `WireNotifier` で起こす (= cross-process でも
+/// long-poll が即時起床する)。
+///
+/// `wiremsg_store` 未配線時は ServiceUnavailable。
+pub async fn wire_remote_deliver_handler(
+    State(state): State<Arc<AppState>>,
+    Json(msg): Json<crate::capability::WireMessage>,
+) -> impl IntoResponse {
+    let Some(store) = &state.wiremsg_store else {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "error": "wiremsg_store not initialized",
+                "id": msg.id,
+            })),
+        );
+    };
+
+    match store.receive_forwarded(&msg).await {
+        Ok((stored, inserted)) => {
+            // 新規取り込み時のみ、 受信側 agent の待機中 wire_recv を起こす。
+            // (既存スキップ時は既に届け済 = notify 不要)
+            if inserted {
+                for agent in &stored.to {
+                    state.wire_notifier.notify(agent).await;
+                }
+            }
+            (
+                axum::http::StatusCode::OK,
+                Json(serde_json::json!({
+                    "status": "delivered",
+                    "id": stored.id,
+                    // 二重 forward を冪等に吸収したかどうか (caller の log / 確認用)
+                    "inserted": inserted,
+                })),
+            )
+        }
+        Err(e) => (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "error": format!("wire receive_forwarded failed: {}", e),
+                "id": msg.id,
+            })),
+        ),
+    }
+}
+
 /// POST /api/toggle-pane - Toggle side panel visibility
 pub async fn toggle_pane_handler(
     State(state): State<Arc<AppState>>,
