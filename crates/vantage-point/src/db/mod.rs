@@ -467,30 +467,44 @@ DEFINE INDEX IF NOT EXISTS recv_idx ON msgs FIELDS status, to_actor, to_lane, co
 DEFINE INDEX IF NOT EXISTS status_idx ON msgs FIELDS status, expires_at;
 
 -- =========================================================================
--- wiremsg threaded inbox (Phase A ①、 設計 memory mem_1CbD9H1KGQykBaFG8XXVsn)
+-- wiremsg threaded inbox (Phase A ① / R1、 設計 memory mem_1CbDLrECNZiNEZqjySLfSB)
 -- =========================================================================
 -- 既存 msgs table (= Mailbox の claim-based inbox) と並走する threading 対応 inbox。
 -- `wire_send` / `wire_recv` が直接 long-poll する store。 TopicRouter は介さない。
 --
--- 設計判断: `thread_id` / `prev` は record link ではなく plain string (= message
--- の local id) で保持する。 理由:
+-- 設計判断: `prev` は record link ではなく plain string (= message の local id) で
+-- 保持する。 理由:
 --   1. 既存 msgs table の `id` / `reply_to` も plain string で、 同型を踏襲
 --   2. record-link traversal を query で使うと migration / 部分適用で壊れやすい
 --      (creo-memories mem: 「migration の data-UPDATE 句は record-link traversal を避ける」)
 -- `created_at` も datetime ではなく epoch ms (number) で保持
--- (= msgs.ts と同じ表現、 cursor 比較を素直な数値比較にする)。
+-- (= msgs.ts と同じ表現、 thread 内表示順の比較を素直な数値比較にする)。
+--
+-- R1 (決定 thread_id 全廃 / cursor local-seq 化):
+--   - `thread_id` field を全廃。 thread 構造は `prev` (parent-pointer forest) 一本。
+--     thread の識別子が要る場面では root message の id (`prev` を辿った先) を使う。
+--   - `local_seq` を追加。 ローカル accumulation の厳密単調 ingestion 順序 (number)。
+--     各 SP は自分の accumulation の唯一の writer なので厳密単調。 cursor 比較は
+--     この `local_seq` で行う (`created_at` は同一 ms 衝突や clock skew で取りこぼす)。
+-- 既存 DB の旧 schema 残骸を除去 (thread_id field / wire_thread_idx index)。
+-- wiremsg は Phase A 新設で deployed data はごく僅か。
+REMOVE INDEX IF EXISTS wire_thread_idx ON wire_messages;
+REMOVE FIELD IF EXISTS thread_id ON wire_messages;
 DEFINE TABLE IF NOT EXISTS wire_messages SCHEMAFULL;
 DEFINE FIELD IF NOT EXISTS id ON wire_messages TYPE string;
-DEFINE FIELD IF NOT EXISTS thread_id ON wire_messages TYPE string;
 DEFINE FIELD IF NOT EXISTS prev ON wire_messages TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS from_addr ON wire_messages TYPE string;
 DEFINE FIELD IF NOT EXISTS to_addrs ON wire_messages TYPE array<string>;
 DEFINE FIELD IF NOT EXISTS body ON wire_messages TYPE object FLEXIBLE;
 DEFINE FIELD IF NOT EXISTS created_at ON wire_messages TYPE number;
-DEFINE INDEX IF NOT EXISTS wire_thread_idx ON wire_messages FIELDS thread_id, created_at;
+-- ローカル accumulation の厳密単調 ingestion 順序。 cursor 比較の基準。
+DEFINE FIELD IF NOT EXISTS local_seq ON wire_messages TYPE number;
+-- 主 query path index: 「agent 宛 message を cursor 超過で引く」 (to ベース配送)。
+-- 旧 wire_thread_idx (thread_id, created_at) の置き換え (moody #4)。
+DEFINE INDEX IF NOT EXISTS wire_to_seq_idx ON wire_messages FIELDS to_addrs, local_seq;
 
 -- per-agent 単一 cursor (決定 III)。 1 agent 1 行 = O(agents)。
--- `last_read` = 最後に読んだ message の created_at (epoch ms)。 NONE = 全 message 未読。
+-- `last_read` = 最後に読んだ message の local_seq。 NONE = 全 message 未読。
 -- 配送は wire_messages.to_addrs から創発する (= to ベース配送)。
 DEFINE TABLE IF NOT EXISTS agent_cursor SCHEMAFULL;
 DEFINE FIELD IF NOT EXISTS agent ON agent_cursor TYPE string;
@@ -501,6 +515,8 @@ DEFINE INDEX IF NOT EXISTS agent_cursor_uniq ON agent_cursor FIELDS agent UNIQUE
 -- thread 参加の sparse 例外表 (決定 III)。 status ∈ {muted, left} の行のみ持つ。
 -- default (active) は行を持たない — active 参加は wire_messages.to_addrs から創発。
 -- 行数 = O(mute・leave 回数)。
+-- R1: `thread` field は thread の root message id (`prev` を辿った先)。
+-- thread_id 全廃のため denormalize copy ではなく root id そのものを使う。
 DEFINE TABLE IF NOT EXISTS thread_participant SCHEMAFULL;
 DEFINE FIELD IF NOT EXISTS thread ON thread_participant TYPE string;
 DEFINE FIELD IF NOT EXISTS agent ON thread_participant TYPE string;

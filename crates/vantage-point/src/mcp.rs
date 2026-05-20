@@ -2580,7 +2580,7 @@ if bestId > 0 { print(bestId) }
 
     /// Get the full thread (reply_to chain) for a given message
     #[tool(
-        description = "[DEPRECATED — use wire_recv; threading (thread_id / prev) is built into wire messages, so no separate thread-trace call is needed. msg_* is being retired in redesign Phase C.] Trace the reply_to chain from a given message and return all messages in the thread (root + all descendants), sorted by timestamp."
+        description = "[DEPRECATED — use wire_recv; threading (the prev pointer) is built into wire messages, so no separate thread-trace call is needed. msg_* is being retired in redesign Phase C.] Trace the reply_to chain from a given message and return all messages in the thread (root + all descendants), sorted by timestamp."
     )]
     async fn msg_thread(
         &self,
@@ -2625,7 +2625,7 @@ if bestId > 0 { print(bestId) }
 
     /// Receive unread wiremsg messages from this agent's threads
     #[tool(
-        description = "Receive unread messages from all wire threads this agent participates in. Waits up to `timeout` seconds (default 5, max 30); returns immediately if unread messages exist. Each returned message has `id`, `thread_id`, `prev`, `from`, `to`, `body`, `created_at`. Reading advances this agent's read cursor so messages are not re-delivered. This is the PRIMARY channel for inter-agent communication — it replaces the deprecated msg_recv."
+        description = "Receive unread messages from all wire threads this agent participates in. Waits up to `timeout` seconds (default 5, max 30); returns immediately if unread messages exist. Each returned message has `id`, `prev`, `from`, `to`, `body`, `created_at`, `local_seq`. A thread is identified by its root message id (follow `prev` to the message whose `prev` is null). Reading advances this agent's read cursor so messages are not re-delivered. This is the PRIMARY channel for inter-agent communication — it replaces the deprecated msg_recv."
     )]
     async fn wire_recv(
         &self,

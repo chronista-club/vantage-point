@@ -215,6 +215,15 @@ pub async fn run(
     // (Phase 4) で撤去済のため空 vec を渡す no-op に成り下がっていた。 cross-process
     // forward が必要な場合は msgs table 経由の discovery (= 別 epic) を検討。
 
+    // Phase A ① / R1: wiremsg threaded inbox store。 msgs table と並存。
+    // R1 で `WiremsgStore::new` は async (起動時に local_seq 採番を math::max で復元)。
+    let wiremsg_store = match vpdb.as_ref() {
+        Some(db) => Some(
+            crate::capability::WiremsgStore::new(std::sync::Arc::new(db.inner().clone())).await?,
+        ),
+        None => None,
+    };
+
     let state = Arc::new(AppState {
         hub,
         sessions: Arc::new(RwLock::new(sessions)),
@@ -250,10 +259,8 @@ pub async fn run(
         msgbox_store: vpdb.as_ref().map(|db| {
             crate::capability::WhitesnakeStore::new(std::sync::Arc::new(db.inner().clone()))
         }),
-        // Phase A ①: wiremsg threaded inbox store。 msgs table と並存。
-        wiremsg_store: vpdb.as_ref().map(|db| {
-            crate::capability::WiremsgStore::new(std::sync::Arc::new(db.inner().clone()))
-        }),
+        // Phase A ① / R1: wiremsg threaded inbox store (上で async build 済)。
+        wiremsg_store,
         // Phase A ①: wiremsg long-poll の in-process notifier
         wire_notifier: crate::capability::WireNotifier::new(),
         // ポート別ディレクトリで分離（複数プロセスの namespace 衝突を防ぐ）
@@ -829,6 +836,15 @@ pub async fn run_world(
         }
     };
 
+    // Phase A ① / R1: World モードでも wiremsg store を build (= 将来 World 階層 actor 用)。
+    // R1 で `WiremsgStore::new` は async (起動時に local_seq 採番を math::max で復元)。
+    let wiremsg_store = match vpdb.as_ref() {
+        Some(db) => Some(
+            crate::capability::WiremsgStore::new(std::sync::Arc::new(db.inner().clone())).await?,
+        ),
+        None => None,
+    };
+
     // Create minimal state for world mode
     let state = Arc::new(AppState {
         hub,
@@ -871,10 +887,8 @@ pub async fn run_world(
         msgbox_store: vpdb.as_ref().map(|db| {
             crate::capability::WhitesnakeStore::new(std::sync::Arc::new(db.inner().clone()))
         }),
-        // Phase A ①: World モードでも wiremsg store を build (= 将来 World 階層 actor 用)
-        wiremsg_store: vpdb.as_ref().map(|db| {
-            crate::capability::WiremsgStore::new(std::sync::Arc::new(db.inner().clone()))
-        }),
+        // Phase A ① / R1: World モードでも wiremsg store を build (上で async build 済)
+        wiremsg_store,
         wire_notifier: crate::capability::WireNotifier::new(),
         // TheWorld もポート別ディレクトリで分離
         whitesnake: world_whitesnake,
