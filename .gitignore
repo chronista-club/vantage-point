@@ -1,6 +1,9 @@
 # Rust
 /target/
 
+# Node — bundle 各所の依存（web-bundle / sidebar-bundle 等）。 どの階層でも除外
+node_modules/
+
 # Xcode
 .build/
 .swiftpm/
