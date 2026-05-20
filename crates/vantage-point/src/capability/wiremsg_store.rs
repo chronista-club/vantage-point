@@ -1,7 +1,22 @@
-//! wiremsg threaded inbox store (Phase A ①、 設計 memory `mem_1CbD9H1KGQykBaFG8XXVsn`)
+//! wiremsg threaded inbox store (設計 memory `mem_1CbDLrECNZiNEZqjySLfSB` 決定 III)
 //!
 //! agent 間メッセージング「wiremsg」の inbox 実体。 既存 [`WhitesnakeStore`] (= msgs table,
 //! claim-based Mailbox) と **並存** する threading 対応 store。 撤去は後続 Phase。
+//!
+//! ## per-reader state = per-agent 単一 cursor (決定 III)
+//!
+//! per-reader state を irreducible な最小核に絞る (「derive できるものは store しない」):
+//!
+//! - **cursor は per-agent 単一** — `agent_cursor { agent, last_read }`、 1 agent 1 行
+//!   (O(agents))。 旧 `thread_participant.read_cursor` (per thread×agent、 O(agents×threads))
+//!   を廃止。
+//! - **配送は `to` ベース** — `fetch_unread(agent)` = `wire_messages` で
+//!   `agent ∈ to_addrs` AND `created_at > last_read`。 旧 participation ベース
+//!   (`thread_participant` を引いて thread ごとに引く) を廃止。
+//! - **`thread_participant` は sparse 例外表** — `status` ∈ {muted, left} の行のみ持つ。
+//!   default (active) は行を持たない。 active 参加は message の `to_addrs` から創発。
+//! - **derive されるもの** — per-thread unread 数 ([`unread_count_by_thread`](WiremsgStore::unread_count_by_thread))、
+//!   active 参加者 ([`thread_participants`](WiremsgStore::thread_participants))。
 //!
 //! ## 設計判断
 //!
@@ -10,7 +25,7 @@
 //! - **record link を query で辿らない**: `thread_id` / `prev` は plain string (= message
 //!   の local id) で保持。 既存 msgs table の `id` / `reply_to` も plain string で同型、
 //!   record-link traversal は migration 部分適用で壊れやすい (creo-memories の教訓)。
-//! - **`created_at` / `read_cursor` は epoch ms (number)**: 既存 msgs.ts と同じ表現に揃え、
+//! - **`created_at` / `last_read` は epoch ms (number)**: 既存 msgs.ts と同じ表現に揃え、
 //!   cursor 比較を素直な数値比較にする (datetime serialize の罠回避)。
 //! - **id は uuidv7**: 時刻順 sortable id (= ULID 相当)。 `uuid` crate の `now_v7()`。
 //!
@@ -18,7 +33,8 @@
 //!
 //! - `wire_messages`: thread に属する message 本体 (`thread_id` / `prev` / `from_addr` /
 //!   `to_addrs` / `body` / `created_at`)
-//! - `thread_participant`: (thread, agent) ごとの参加情報 + 既読 cursor (plain table)
+//! - `agent_cursor`: per-agent 単一既読 cursor (`agent` / `last_read`)
+//! - `thread_participant`: mute/left の sparse 例外表 (`thread` / `agent` / `status`)
 //!
 //! schema は `db/mod.rs` の `SCHEMA_SQL` で define 済。
 
@@ -113,11 +129,16 @@ impl WireMessage {
 // ParticipantStatus
 // =============================================================================
 
-/// thread 参加者の状態 (`thread_participant.status`)
+/// thread 参加の sparse 例外表 (`thread_participant.status`) が取りうる状態
+///
+/// 決定 III: `thread_participant` は mute/left の sparse 例外表に縮小された。
+/// default (active) は **行を持たない** ため、 行が存在する = `Muted` か `Left`。
+/// `Active` は「行が無い」状態の論理的対概念として残す (mute/leave 操作 tool を
+/// 足す後続 Phase で enum → 文字列の変換が要れば拡張する)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ParticipantStatus {
-    /// 参加中 (notify / recv 対象)
+    /// 参加中 (例外表に行を持たない default 状態)
     Active,
     /// ミュート中 (recv 対象だが notify は鳴らさない想定、 操作 tool は後続 Phase)
     Muted,
@@ -125,28 +146,14 @@ pub enum ParticipantStatus {
     Left,
 }
 
-impl ParticipantStatus {
-    /// DB の `status` 文字列から復元する (未知値は `Active` 扱い)
-    ///
-    /// 逆向き (= enum → 文字列) は現状 DB 書き込みが literal `'active'` で足りるため
-    /// 持たない。 mute / leave の操作 tool を足す後続 Phase で必要になれば追加する。
-    fn parse(s: &str) -> Self {
-        match s {
-            "muted" => ParticipantStatus::Muted,
-            "left" => ParticipantStatus::Left,
-            _ => ParticipantStatus::Active,
-        }
-    }
-}
-
 // =============================================================================
 // WiremsgStore — SurrealDB embedded impl
 // =============================================================================
 
-/// wiremsg threaded inbox の store (Phase A ①)
+/// wiremsg threaded inbox の store (決定 III — per-agent 単一 cursor)
 ///
 /// 既存 [`WhitesnakeStore`](super::WhitesnakeStore) と同じく `Surreal<Any>` を共有して
-/// 持つ。 `wire_messages` / `thread_participant` の 2 table を扱う。
+/// 持つ。 `wire_messages` / `agent_cursor` / `thread_participant` の 3 table を扱う。
 #[derive(Clone)]
 pub struct WiremsgStore {
     db: Arc<Surreal<Any>>,
@@ -169,11 +176,12 @@ impl WiremsgStore {
 
     /// 新規 thread (root message) を送信
     ///
-    /// Operations (Phase A ① 仕様):
+    /// Operations (決定 III):
     /// 1. `wire_messages` に root message (`prev=None`、 `thread_id`=自分) を INSERT
-    /// 2. participant 作成:
-    ///    - **送信者**: `read_cursor` = その message の `created_at` (= 起点既読)
-    ///    - **受信者**: `read_cursor = None` (= 起点を未読として届ける、 仕様の重要点)
+    ///
+    /// participant 行は作らない。 配送は `to_addrs` から創発し、 既読判定は
+    /// per-agent `agent_cursor` が担う。 送信者は `from` であり `to` に居ないので、
+    /// `to` フィルタ配送で自動的に自分の root を未読として見ない (= sender cursor 処理不要)。
     ///
     /// 戻り値: INSERT した root [`WireMessage`] (caller が notify / id 通知に使う)。
     pub async fn send_root(
@@ -184,28 +192,21 @@ impl WiremsgStore {
     ) -> Result<WireMessage> {
         let msg = WireMessage::new_root(from, to.to_vec(), body);
         self.insert_message(&msg).await?;
-
-        // 送信者は起点を既読扱い (read_cursor = root の created_at)
-        self.upsert_participant(&msg.thread_id, from, Some(msg.created_at))
-            .await?;
-        // 受信者は read_cursor=None — None でないと起点 message が既読扱いになるバグ
-        for recipient in to {
-            if recipient == from {
-                continue; // 自己宛は送信者の participant で既に処理済
-            }
-            self.upsert_participant(&msg.thread_id, recipient, None)
-                .await?;
-        }
         Ok(msg)
     }
 
-    /// 既存 thread への reply を送信
+    /// 既存 thread への reply を送信 (reply-all、 REQ-THREAD-005)
     ///
-    /// Operations (Phase A ① 仕様):
+    /// Operations (決定 III):
     /// 1. `prev` = 返信先 message を `wire_messages` から取得し `thread_id` を継承
-    /// 2. reply message を INSERT
-    /// 3. 新規 agent (= `from` + `to` のうち未参加) の participant を upsert (`read_cursor=None`)
-    ///    既存 participant の cursor / status は触らない
+    /// 2. `to` を **その thread の現参加者集合** に展開する (reply-all):
+    ///    - 参加者集合 = thread 内全 message の `from` ∪ `to_addrs`
+    ///    - `left` の agent を除外
+    ///    - caller 指定の `to` (新規参加者追加用) も union
+    ///    - 送信者自身 (`from`) は `to` から除外 (= 自分の reply を未読で見ない)
+    /// 3. 展開した `to` で reply message を INSERT
+    ///
+    /// participation 行を持たなくても、 `to` 展開により thread 参加者が受信を継続できる。
     ///
     /// 戻り値: INSERT した reply [`WireMessage`]。
     /// `prev_id` の message が存在しなければ `Err`。
@@ -221,18 +222,49 @@ impl WiremsgStore {
             anyhow::anyhow!("wiremsg send_reply: prev message '{prev_id}' not found")
         })?;
 
-        let msg = WireMessage::new_reply(from, to.to_vec(), body, prev_id, &prev_msg.thread_id);
-        self.insert_message(&msg).await?;
-
-        // 新規 agent の participant のみ upsert (read_cursor=None)。
-        // upsert_participant_if_absent は既存 row を触らないので cursor / status が保たれる。
-        self.upsert_participant_if_absent(&msg.thread_id, from)
+        // reply-all 展開: thread の現参加者 ∪ caller 指定 to、 left 除外、 from 除外
+        let expanded_to = self
+            .expand_reply_recipients(&prev_msg.thread_id, from, to)
             .await?;
-        for recipient in to {
-            self.upsert_participant_if_absent(&msg.thread_id, recipient)
-                .await?;
-        }
+
+        let msg = WireMessage::new_reply(from, expanded_to, body, prev_id, &prev_msg.thread_id);
+        self.insert_message(&msg).await?;
         Ok(msg)
+    }
+
+    /// reply の `to` を thread の現参加者集合に展開する (reply-all)
+    ///
+    /// 参加者集合 = thread 内全 message の `from` ∪ `to_addrs`、 ∪ caller 指定 `extra`。
+    /// `left` の agent と 送信者自身 (`from`) を除外する。 結果は安定順序 (BTreeSet)。
+    async fn expand_reply_recipients(
+        &self,
+        thread_id: &str,
+        from: &str,
+        extra: &[String],
+    ) -> Result<Vec<String>> {
+        use std::collections::BTreeSet;
+
+        // thread 内全 message を引き、 from / to_addrs を集める
+        let msgs = self.messages_after(thread_id, None).await?;
+        let mut set: BTreeSet<String> = BTreeSet::new();
+        for m in &msgs {
+            set.insert(m.from.clone());
+            for t in &m.to {
+                set.insert(t.clone());
+            }
+        }
+        // caller 指定 (新規参加者追加用) を union
+        for e in extra {
+            set.insert(e.clone());
+        }
+        // left の agent を除外
+        let left = self.left_agents(thread_id).await?;
+        for l in &left {
+            set.remove(l);
+        }
+        // 送信者自身は to に入れない (= 自分の reply を未読で見ない)
+        set.remove(from);
+        Ok(set.into_iter().collect())
     }
 
     // -------------------------------------------------------------------------
@@ -241,34 +273,32 @@ impl WiremsgStore {
 
     /// 指定 agent の未読 message を 1 回分取得 (long-poll はしない、 caller がループ制御)
     ///
-    /// agent の参加 thread (`status != left`) から `created_at > read_cursor`
-    /// (`read_cursor = None` なら全件) の message を `created_at` 昇順で取得する。
+    /// `to` ベース配送 (決定 III): `wire_messages` で `agent ∈ to_addrs` AND
+    /// `created_at > last_read` (`last_read = None` なら全件) の message を `created_at`
+    /// 昇順で取得する。 agent が `left` した thread の message は除外する。
     ///
-    /// 取得後、 caller は [`advance_cursor`](Self::advance_cursor) で cursor を
+    /// 取得後、 caller は [`advance_cursor`](Self::advance_cursor) で agent の単一 cursor を
     /// **取得した最新 message の `created_at`** に前進させること (`now` ではなく — fetch 中
     /// 着信の取りこぼし race を避けるため)。 本メソッドは cursor を変更しない。
     pub async fn fetch_unread(&self, agent: &str) -> Result<Vec<WireMessage>> {
-        // 1. agent の参加 thread と read_cursor を取得 (left は除外)
-        let participants = self.list_active_participants(agent).await?;
-        if participants.is_empty() {
-            return Ok(Vec::new());
+        // 1. agent の per-agent cursor (last_read) を取得
+        let last_read = self.get_cursor(agent).await?;
+        // 2. agent ∈ to_addrs かつ cursor 超過の message を取得
+        let mut out = self.messages_to_after(agent, last_read).await?;
+        // 3. agent が left した thread の message を除外
+        let left_threads = self.left_threads(agent).await?;
+        if !left_threads.is_empty() {
+            out.retain(|m| !left_threads.contains(&m.thread_id));
         }
-
-        let mut out: Vec<WireMessage> = Vec::new();
-        for (thread_id, read_cursor) in participants {
-            // 2. thread 内の cursor 超過 message を取得
-            let msgs = self.messages_after(&thread_id, read_cursor).await?;
-            out.extend(msgs);
-        }
-        // 3. 全 thread 横断で created_at 昇順に整列
+        // 4. created_at 昇順に整列
         out.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
         Ok(out)
     }
 
-    /// `wire_recv` 1 回分の store 操作: 未読取得 + read_cursor 前進をまとめて行う
+    /// `wire_recv` 1 回分の store 操作: 未読取得 + per-agent cursor 前進をまとめて行う
     ///
-    /// [`fetch_unread`](Self::fetch_unread) で未読を取得し、 thread ごとに
-    /// 「取得した最新 message の `created_at`」 まで cursor を前進させる。
+    /// [`fetch_unread`](Self::fetch_unread) で未読を取得し、 単一 cursor を
+    /// 「取得した最新 message の `created_at`」 まで前進させる。
     /// 未読が空なら cursor は触らない。
     ///
     /// cursor を `now` ではなく **取得済 message の `created_at`** に合わせるのが要点
@@ -278,76 +308,106 @@ impl WiremsgStore {
         if unread.is_empty() {
             return Ok(unread);
         }
-        // thread ごとに取得済 message の created_at 最大値を求める
-        let mut thread_max: HashMap<String, u64> = HashMap::new();
-        for m in &unread {
-            let e = thread_max.entry(m.thread_id.clone()).or_insert(0);
-            if m.created_at > *e {
-                *e = m.created_at;
-            }
-        }
-        for (thread_id, cursor) in thread_max {
-            self.advance_cursor(&thread_id, agent, cursor).await?;
-        }
+        // 取得済 message の created_at 最大値まで単一 cursor を前進
+        let max = unread.iter().map(|m| m.created_at).max().unwrap_or(0);
+        self.advance_cursor(agent, max).await?;
         Ok(unread)
     }
 
-    /// 指定 agent の指定 thread の read_cursor を前進させる
+    /// 指定 agent の per-agent cursor (`last_read`) を前進させる
     ///
     /// `cursor` は [`fetch_unread`](Self::fetch_unread) で取得した最新 message の
     /// `created_at` を渡す。 既存 cursor より小さい値は無視 (= 後退させない)。
-    pub async fn advance_cursor(&self, thread_id: &str, agent: &str, cursor: u64) -> Result<()> {
+    /// 行が無ければ作成する。
+    pub async fn advance_cursor(&self, agent: &str, cursor: u64) -> Result<()> {
         let now = now_ms();
-        // read_cursor IS NONE または read_cursor < cursor のときだけ前進
-        self.db
-            .query(
-                "UPDATE thread_participant
-                     SET read_cursor = $cursor, updated_at = $now
-                     WHERE thread = $thread AND agent = $agent
-                       AND (read_cursor IS NONE OR read_cursor < $cursor);",
-            )
-            .bind(("thread", thread_id.to_string()))
-            .bind(("agent", agent.to_string()))
-            .bind(("cursor", cursor))
-            .bind(("now", now))
-            .await
-            .map_err(|e| anyhow::anyhow!("wiremsg advance_cursor failed: {e}"))?
-            .check()
-            .map_err(|e| anyhow::anyhow!("wiremsg advance_cursor check failed: {e}"))?;
+        // 既存行があれば前進 (last_read IS NONE または last_read < cursor のときだけ)、
+        // 無ければ作成する。 SurrealDB の複合 key UPSERT 制約のため SELECT → UPDATE/CREATE。
+        let existing = self.find_cursor_record_id(agent).await?;
+        match existing {
+            Some(rid) => {
+                self.db
+                    .query(
+                        "UPDATE type::record('agent_cursor', $rid)
+                             SET last_read = $cursor, updated_at = $now
+                             WHERE last_read IS NONE OR last_read < $cursor;",
+                    )
+                    .bind(("rid", rid))
+                    .bind(("cursor", cursor))
+                    .bind(("now", now))
+                    .await
+                    .map_err(|e| anyhow::anyhow!("wiremsg advance_cursor update failed: {e}"))?
+                    .check()
+                    .map_err(|e| {
+                        anyhow::anyhow!("wiremsg advance_cursor update check failed: {e}")
+                    })?;
+            }
+            None => {
+                self.db
+                    .query(
+                        "CREATE agent_cursor CONTENT {
+                             agent: $agent, last_read: $cursor, updated_at: $now
+                         };",
+                    )
+                    .bind(("agent", agent.to_string()))
+                    .bind(("cursor", cursor))
+                    .bind(("now", now))
+                    .await
+                    .map_err(|e| anyhow::anyhow!("wiremsg advance_cursor create failed: {e}"))?
+                    .check()
+                    .map_err(|e| {
+                        anyhow::anyhow!("wiremsg advance_cursor create check failed: {e}")
+                    })?;
+            }
+        }
         Ok(())
     }
 
-    /// 指定 thread の参加者 address 群を返す (`wire_send` reply の notify 対象決定用)
+    /// 指定 agent の per-thread 未読数を derive して返す (「derive できるものは store しない」)
     ///
-    /// `exclude_left = true` なら `status = left` の participant を除外する。
+    /// [`fetch_unread`](Self::fetch_unread) と同じ未読集合を `thread_id` で GROUP BY
+    /// した count。 未読 0 の thread は HashMap に現れない。
+    pub async fn unread_count_by_thread(&self, agent: &str) -> Result<HashMap<String, u64>> {
+        let unread = self.fetch_unread(agent).await?;
+        let mut counts: HashMap<String, u64> = HashMap::new();
+        for m in &unread {
+            *counts.entry(m.thread_id.clone()).or_insert(0) += 1;
+        }
+        Ok(counts)
+    }
+
+    /// 指定 thread の参加者 address 群を derive して返す (`wire_send` reply の notify 対象決定用)
+    ///
+    /// 参加者集合は thread 内全 message の `from` ∪ `to_addrs` から創発する (決定 III、
+    /// active 参加は table を持たない)。 `exclude_left = true` なら `thread_participant`
+    /// の sparse 例外表で `status = left` の agent を除外する。 結果は安定順序。
     pub async fn thread_participants(
         &self,
         thread_id: &str,
         exclude_left: bool,
     ) -> Result<Vec<String>> {
-        let mut res = self
-            .db
-            .query("SELECT agent, status FROM thread_participant WHERE thread = $thread;")
-            .bind(("thread", thread_id.to_string()))
-            .await
-            .map_err(|e| anyhow::anyhow!("wiremsg thread_participants failed: {e}"))?;
-        let rows: Vec<serde_json::Value> = res
-            .take(0)
-            .map_err(|e| anyhow::anyhow!("wiremsg thread_participants take failed: {e}"))?;
+        use std::collections::BTreeSet;
 
-        let mut agents = Vec::new();
-        for row in rows {
-            let agent = row["agent"].as_str().unwrap_or_default().to_string();
-            if agent.is_empty() {
-                continue;
+        // thread 内全 message から from / to_addrs を集める
+        let msgs = self.messages_after(thread_id, None).await?;
+        let mut set: BTreeSet<String> = BTreeSet::new();
+        for m in &msgs {
+            if !m.from.is_empty() {
+                set.insert(m.from.clone());
             }
-            let status = ParticipantStatus::parse(row["status"].as_str().unwrap_or("active"));
-            if exclude_left && status == ParticipantStatus::Left {
-                continue;
+            for t in &m.to {
+                if !t.is_empty() {
+                    set.insert(t.clone());
+                }
             }
-            agents.push(agent);
         }
-        Ok(agents)
+        // sparse 例外表で left を除外
+        if exclude_left {
+            for l in self.left_agents(thread_id).await? {
+                set.remove(&l);
+            }
+        }
+        Ok(set.into_iter().collect())
     }
 
     // -------------------------------------------------------------------------
@@ -440,146 +500,122 @@ impl WiremsgStore {
         rows.iter().map(Self::row_to_message).collect()
     }
 
-    /// participant を upsert する (cursor を明示指定する版)
+    /// `agent ∈ to_addrs` かつ `created_at > cursor` の message を昇順で取得
+    /// (`cursor = None` なら全件)
     ///
-    /// `(thread, agent)` で一意なので、 既存があれば `read_cursor` / `status` を更新、
-    /// 無ければ新規作成する。 `wire_send` (root) で使う。
-    /// `read_cursor` は引数で渡された値で**上書き**する (送信者 = Some、 受信者 = None)。
-    async fn upsert_participant(
+    /// `to` ベース配送の中核 query (決定 III)。 `to_addrs CONTAINS $agent` で
+    /// agent 宛 message を引く。
+    async fn messages_to_after(
         &self,
-        thread_id: &str,
         agent: &str,
-        read_cursor: Option<u64>,
-    ) -> Result<()> {
-        let now = now_ms();
-        // 既存有無を確認 (UNIQUE index 前提)。 SurrealDB の UPSERT は record id 指定が
-        // 要るが thread_participant は複合 key なので、 SELECT → UPDATE / CREATE で実装。
-        let existing = self.find_participant_record_id(thread_id, agent).await?;
-        match existing {
-            Some(rid) => {
+        cursor: Option<u64>,
+    ) -> Result<Vec<WireMessage>> {
+        // cursor IS NONE と cursor 指定で query を分岐 (= bind の None を WHERE で扱うと
+        // SurrealDB の比較が意図せぬ挙動になりうるため、 明示的に 2 query に分ける)。
+        let mut res = match cursor {
+            Some(c) => {
                 self.db
                     .query(
-                        "UPDATE type::thing('thread_participant', $rid)
-                             SET read_cursor = $cursor, status = 'active', updated_at = $now;",
+                        "SELECT * FROM wire_messages
+                             WHERE to_addrs CONTAINS $agent AND created_at > $cursor
+                             ORDER BY created_at ASC, id ASC;",
                     )
-                    .bind(("rid", rid))
-                    .bind(("cursor", read_cursor))
-                    .bind(("now", now))
+                    .bind(("agent", agent.to_string()))
+                    .bind(("cursor", c))
                     .await
-                    .map_err(|e| anyhow::anyhow!("wiremsg upsert_participant update failed: {e}"))?
-                    .check()
-                    .map_err(|e| {
-                        anyhow::anyhow!("wiremsg upsert_participant update check failed: {e}")
-                    })?;
             }
             None => {
                 self.db
                     .query(
-                        "CREATE thread_participant CONTENT {
-                             thread: $thread, agent: $agent, read_cursor: $cursor,
-                             status: 'active', updated_at: $now
-                         };",
+                        "SELECT * FROM wire_messages
+                             WHERE to_addrs CONTAINS $agent
+                             ORDER BY created_at ASC, id ASC;",
                     )
-                    .bind(("thread", thread_id.to_string()))
                     .bind(("agent", agent.to_string()))
-                    .bind(("cursor", read_cursor))
-                    .bind(("now", now))
                     .await
-                    .map_err(|e| anyhow::anyhow!("wiremsg upsert_participant create failed: {e}"))?
-                    .check()
-                    .map_err(|e| {
-                        anyhow::anyhow!("wiremsg upsert_participant create check failed: {e}")
-                    })?;
             }
         }
-        Ok(())
-    }
-
-    /// participant が無ければ `read_cursor=None` で作成する (既存は一切触らない)
-    ///
-    /// `wire_send` (reply) で使う。 既存参加者の cursor / status を保つのが目的。
-    async fn upsert_participant_if_absent(&self, thread_id: &str, agent: &str) -> Result<()> {
-        let now = now_ms();
-        if self
-            .find_participant_record_id(thread_id, agent)
-            .await?
-            .is_some()
-        {
-            return Ok(()); // 既存 — 触らない
-        }
-        self.db
-            .query(
-                "CREATE thread_participant CONTENT {
-                     thread: $thread, agent: $agent, read_cursor: NONE,
-                     status: 'active', updated_at: $now
-                 };",
-            )
-            .bind(("thread", thread_id.to_string()))
-            .bind(("agent", agent.to_string()))
-            .bind(("now", now))
-            .await
-            .map_err(|e| anyhow::anyhow!("wiremsg upsert_participant_if_absent failed: {e}"))?
-            .check()
-            .map_err(|e| {
-                anyhow::anyhow!("wiremsg upsert_participant_if_absent check failed: {e}")
-            })?;
-        Ok(())
-    }
-
-    /// `(thread, agent)` の participant の record id (local 部分) を返す
-    async fn find_participant_record_id(
-        &self,
-        thread_id: &str,
-        agent: &str,
-    ) -> Result<Option<String>> {
-        let mut res = self
-            .db
-            .query(
-                "SELECT * FROM thread_participant
-                     WHERE thread = $thread AND agent = $agent LIMIT 1;",
-            )
-            .bind(("thread", thread_id.to_string()))
-            .bind(("agent", agent.to_string()))
-            .await
-            .map_err(|e| anyhow::anyhow!("wiremsg find_participant failed: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("wiremsg messages_to_after failed: {e}"))?;
         let rows: Vec<serde_json::Value> = res
             .take(0)
-            .map_err(|e| anyhow::anyhow!("wiremsg find_participant take failed: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("wiremsg messages_to_after take failed: {e}"))?;
+        rows.iter().map(Self::row_to_message).collect()
+    }
+
+    /// 指定 agent の per-agent cursor (`last_read`) を返す (行が無ければ `None` = 未読)
+    async fn get_cursor(&self, agent: &str) -> Result<Option<u64>> {
+        let mut res = self
+            .db
+            .query("SELECT last_read FROM agent_cursor WHERE agent = $agent LIMIT 1;")
+            .bind(("agent", agent.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("wiremsg get_cursor failed: {e}"))?;
+        let rows: Vec<serde_json::Value> = res
+            .take(0)
+            .map_err(|e| anyhow::anyhow!("wiremsg get_cursor take failed: {e}"))?;
+        Ok(rows.first().and_then(|row| row["last_read"].as_u64()))
+    }
+
+    /// 指定 agent の `agent_cursor` の record id (local 部分) を返す
+    async fn find_cursor_record_id(&self, agent: &str) -> Result<Option<String>> {
+        let mut res = self
+            .db
+            .query("SELECT id FROM agent_cursor WHERE agent = $agent LIMIT 1;")
+            .bind(("agent", agent.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("wiremsg find_cursor failed: {e}"))?;
+        let rows: Vec<serde_json::Value> = res
+            .take(0)
+            .map_err(|e| anyhow::anyhow!("wiremsg find_cursor take failed: {e}"))?;
         match rows.first() {
             Some(row) => Ok(Some(Self::extract_record_local_id(
                 &row["id"],
-                "thread_participant",
+                "agent_cursor",
             ))),
             None => Ok(None),
         }
     }
 
-    /// agent が参加中 (`status != left`) の (thread_id, read_cursor) 一覧を返す
-    async fn list_active_participants(&self, agent: &str) -> Result<Vec<(String, Option<u64>)>> {
+    /// 指定 agent が `left` した thread の id 集合を返す (sparse 例外表 query)
+    async fn left_threads(&self, agent: &str) -> Result<std::collections::HashSet<String>> {
         let mut res = self
             .db
             .query(
-                "SELECT thread, read_cursor, status FROM thread_participant
-                     WHERE agent = $agent AND status != 'left';",
+                "SELECT thread FROM thread_participant
+                     WHERE agent = $agent AND status = 'left';",
             )
             .bind(("agent", agent.to_string()))
             .await
-            .map_err(|e| anyhow::anyhow!("wiremsg list_active_participants failed: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("wiremsg left_threads failed: {e}"))?;
         let rows: Vec<serde_json::Value> = res
             .take(0)
-            .map_err(|e| anyhow::anyhow!("wiremsg list_active_participants take failed: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("wiremsg left_threads take failed: {e}"))?;
+        Ok(rows
+            .iter()
+            .filter_map(|row| row["thread"].as_str().map(|s| s.to_string()))
+            .filter(|s| !s.is_empty())
+            .collect())
+    }
 
-        let mut out = Vec::new();
-        for row in rows {
-            let thread = row["thread"].as_str().unwrap_or_default().to_string();
-            if thread.is_empty() {
-                continue;
-            }
-            // read_cursor は number または null
-            let cursor = row["read_cursor"].as_u64();
-            out.push((thread, cursor));
-        }
-        Ok(out)
+    /// 指定 thread で `left` した agent の address 集合を返す (sparse 例外表 query)
+    async fn left_agents(&self, thread_id: &str) -> Result<std::collections::HashSet<String>> {
+        let mut res = self
+            .db
+            .query(
+                "SELECT agent FROM thread_participant
+                     WHERE thread = $thread AND status = 'left';",
+            )
+            .bind(("thread", thread_id.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("wiremsg left_agents failed: {e}"))?;
+        let rows: Vec<serde_json::Value> = res
+            .take(0)
+            .map_err(|e| anyhow::anyhow!("wiremsg left_agents take failed: {e}"))?;
+        Ok(rows
+            .iter()
+            .filter_map(|row| row["agent"].as_str().map(|s| s.to_string()))
+            .filter(|s| !s.is_empty())
+            .collect())
     }
 
     /// SurrealDB record id (`tb:<local>` 形式 or object) から local 部分を抽出
@@ -706,10 +742,15 @@ mod tests {
             DEFINE FIELD created_at ON wire_messages TYPE number;
             DEFINE INDEX wire_thread_idx ON wire_messages FIELDS thread_id, created_at;
 
+            DEFINE TABLE agent_cursor SCHEMAFULL;
+            DEFINE FIELD agent ON agent_cursor TYPE string;
+            DEFINE FIELD last_read ON agent_cursor TYPE option<number>;
+            DEFINE FIELD updated_at ON agent_cursor TYPE number;
+            DEFINE INDEX agent_cursor_uniq ON agent_cursor FIELDS agent UNIQUE;
+
             DEFINE TABLE thread_participant SCHEMAFULL;
             DEFINE FIELD thread ON thread_participant TYPE string;
             DEFINE FIELD agent ON thread_participant TYPE string;
-            DEFINE FIELD read_cursor ON thread_participant TYPE option<number>;
             DEFINE FIELD status ON thread_participant TYPE string DEFAULT 'active';
             DEFINE FIELD updated_at ON thread_participant TYPE number;
             DEFINE INDEX thread_participant_uniq ON thread_participant FIELDS thread, agent UNIQUE;
@@ -752,7 +793,11 @@ mod tests {
         assert_ne!(reply.id, reply.thread_id, "reply の id は thread_id と別物");
     }
 
-    /// send_root: 受信者は read_cursor=None (= 起点 message が未読として届く)
+    // -------------------------------------------------------------------------
+    // send_root / fetch / cursor — to ベース配送 + per-agent cursor (決定 III)
+    // -------------------------------------------------------------------------
+
+    /// send_root: 受信者は起点 message を未読として受け取る (to ベース配送)
     #[tokio::test]
     async fn send_root_recipient_sees_root_message() {
         let store = make_test_store().await;
@@ -761,14 +806,14 @@ mod tests {
             .await
             .expect("send_root");
 
-        // 受信者 bob は起点 message を未読として受け取れる
+        // 受信者 bob は起点 message を未読として受け取れる (cursor 行なし = 全件未読)
         let unread = store.fetch_unread("bob@vp").await.expect("fetch bob");
         assert_eq!(unread.len(), 1, "起点 message が未読で 1 件届く");
         assert_eq!(unread[0].id, root.id);
         assert_eq!(unread[0].body, body("hello bob"));
     }
 
-    /// send_root: 送信者は read_cursor=root.created_at (= 自分のメッセージは既読)
+    /// send_root: 送信者は to に居ないため自分の root を未読として見ない
     #[tokio::test]
     async fn send_root_sender_does_not_see_own_message() {
         let store = make_test_store().await;
@@ -777,7 +822,7 @@ mod tests {
             .await
             .expect("send_root");
 
-        // 送信者 alice には未読なし (起点を既読扱い)
+        // 送信者 alice は from であり to に居ない → to フィルタで未読 0
         let unread = store.fetch_unread("alice@vp").await.expect("fetch alice");
         assert!(unread.is_empty(), "送信者は自分の root message を読まない");
     }
@@ -786,7 +831,7 @@ mod tests {
     #[tokio::test]
     async fn cursor_advances_and_message_not_redelivered() {
         let store = make_test_store().await;
-        let root = store
+        store
             .send_root("alice@vp", &["bob@vp".to_string()], body("once"))
             .await
             .expect("send_root");
@@ -794,10 +839,10 @@ mod tests {
         let unread = store.fetch_unread("bob@vp").await.expect("fetch 1");
         assert_eq!(unread.len(), 1);
 
-        // cursor を取得した最新 message の created_at に前進
+        // per-agent cursor を取得した最新 message の created_at に前進
         let last = unread.last().unwrap();
         store
-            .advance_cursor(&last.thread_id, "bob@vp", last.created_at)
+            .advance_cursor("bob@vp", last.created_at)
             .await
             .expect("advance");
 
@@ -807,11 +852,9 @@ mod tests {
             again.is_empty(),
             "cursor 前進後は同じ message を再配信しない"
         );
-        // unused 変数の linter 回避
-        assert_eq!(root.thread_id, last.thread_id);
     }
 
-    /// recv() は未読取得 + cursor 前進をまとめて行う (= wire_recv の store 操作)
+    /// recv() は未読取得 + per-agent cursor 前進をまとめて行う
     #[tokio::test]
     async fn recv_fetches_then_advances_cursor() {
         let store = make_test_store().await;
@@ -829,9 +872,9 @@ mod tests {
         assert!(second.is_empty(), "recv 後は cursor が前進し再配信されない");
     }
 
-    /// recv() は複数 thread の cursor を thread ごとに正しく前進させる
+    /// recv() は単一 cursor で複数 thread の未読をまとめて drain する
     #[tokio::test]
-    async fn recv_advances_each_thread_independently() {
+    async fn recv_drains_multiple_threads_with_single_cursor() {
         let store = make_test_store().await;
         store
             .send_root("alice@vp", &["bob@vp".to_string()], body("t1"))
@@ -846,13 +889,9 @@ mod tests {
         let first = store.recv("bob@vp").await.expect("recv 1");
         assert_eq!(first.len(), 2, "2 thread 分の未読");
 
-        // 再 recv で両 thread とも空 (= 各 thread の cursor が前進している)
+        // 再 recv で空 (= 単一 cursor が両 thread の最新まで前進している)
         let second = store.recv("bob@vp").await.expect("recv 2");
-        assert!(second.is_empty(), "両 thread の cursor が前進し再配信なし");
-
-        // reply が来たら recv で拾える (= cursor が reply 以前で止まっている)
-        let t1_msgs = store.recv("alice@vp").await;
-        assert!(t1_msgs.is_ok());
+        assert!(second.is_empty(), "単一 cursor 前進で再配信なし");
     }
 
     /// reply: thread 参加者が reply を未読として受け取る
@@ -865,12 +904,7 @@ mod tests {
             .expect("send_root");
 
         // bob が root を読んで cursor 前進
-        let bob_unread = store.fetch_unread("bob@vp").await.expect("bob fetch 1");
-        let last = bob_unread.last().unwrap();
-        store
-            .advance_cursor(&last.thread_id, "bob@vp", last.created_at)
-            .await
-            .expect("bob advance");
+        let _ = store.recv("bob@vp").await.expect("bob recv root");
 
         // alice が reply
         let reply = store
@@ -881,44 +915,78 @@ mod tests {
         assert_eq!(reply.prev.as_deref(), Some(root.id.as_str()));
 
         // bob は reply を未読として受け取る
-        let bob_unread2 = store.fetch_unread("bob@vp").await.expect("bob fetch 2");
-        assert_eq!(bob_unread2.len(), 1, "reply 1 件が未読で届く");
-        assert_eq!(bob_unread2[0].id, reply.id);
+        let bob_unread = store.fetch_unread("bob@vp").await.expect("bob fetch 2");
+        assert_eq!(bob_unread.len(), 1, "reply 1 件が未読で届く");
+        assert_eq!(bob_unread[0].id, reply.id);
     }
 
-    /// reply: 送信者 (alice) は自分の reply を読まない (cursor が root で止まっていても
-    /// 自分の reply は既読 cursor より前 — ではなく、 alice の cursor は root.created_at の
-    /// まま。 reply.created_at > root.created_at なので alice にも reply が見える)。
+    /// reply: 送信者は to に展開されないため、自分の reply を未読として見ない
     ///
-    /// → 仕様: reply の cursor は送信者分も前進させない (root のみ前進)。 そのため
-    ///   alice には自分の reply が「未読」として見える。 これは仕様通り (= reply の
-    ///   participant upsert は新規 agent のみ、 cursor は触らない)。
-    ///   notify 対象から「送信者を除く」ことで二重通知は防ぐ。 recv では見える。
+    /// 決定 III の意図的変更 — 旧モデルでは sender cursor が前進せず自分の reply が
+    /// 見えていた (quirk)。 to ベース配送では sender は to に入らないので見えない。
+    /// これは quirk の除去で **より正しい**。
     #[tokio::test]
-    async fn reply_sender_cursor_not_advanced() {
+    async fn reply_sender_does_not_see_own_reply() {
         let store = make_test_store().await;
         let root = store
             .send_root("alice@vp", &["bob@vp".to_string()], body("q"))
             .await
             .expect("send_root");
-        let reply = store
+        store
             .send_reply("alice@vp", &["bob@vp".to_string()], body("a"), &root.id)
             .await
             .expect("send_reply");
 
-        // alice の cursor は root.created_at のまま → reply は未読として見える
+        // alice は from であり、reply-all 展開でも from は to から除外される
         let alice_unread = store.fetch_unread("alice@vp").await.expect("alice fetch");
-        assert_eq!(
-            alice_unread.len(),
-            1,
-            "reply の cursor は前進しないので送信者にも reply が見える"
+        assert!(
+            alice_unread.is_empty(),
+            "送信者は自分の reply を未読として見ない (to に居ないため)"
         );
-        assert_eq!(alice_unread[0].id, reply.id);
     }
 
-    /// reply: thread に新規参加した agent は read_cursor=None で全 message を受け取る
+    /// reply-all: reply の to は thread の現参加者集合に展開される (REQ-THREAD-005)
     #[tokio::test]
-    async fn reply_new_participant_sees_full_thread() {
+    async fn reply_expands_to_thread_participants() {
+        let store = make_test_store().await;
+        // alice が bob・carol 宛に root
+        let root = store
+            .send_root(
+                "alice@vp",
+                &["bob@vp".to_string(), "carol@vp".to_string()],
+                body("root"),
+            )
+            .await
+            .expect("send_root");
+
+        // bob が reply。 to に carol を明示しなくても reply-all で carol に届く
+        let reply = store
+            .send_reply("bob@vp", &[], body("reply"), &root.id)
+            .await
+            .expect("send_reply");
+        // 展開後の to: thread 参加者 (alice, bob, carol) から from=bob を除く
+        assert!(reply.to.contains(&"alice@vp".to_string()), "alice に展開");
+        assert!(reply.to.contains(&"carol@vp".to_string()), "carol に展開");
+        assert!(
+            !reply.to.contains(&"bob@vp".to_string()),
+            "from は to に含めない"
+        );
+
+        // carol は participation 行を持たなくても reply を受信できる
+        let carol_unread = store.fetch_unread("carol@vp").await.expect("carol fetch");
+        assert!(
+            carol_unread.iter().any(|m| m.id == reply.id),
+            "reply-all 展開で carol が reply を受信"
+        );
+    }
+
+    /// reply: thread に途中参加した agent は参加時点以降の message のみ受信する
+    ///
+    /// 決定 III の意図的変更 — 旧モデルでは新規参加者が read_cursor=None で thread
+    /// 全体 (root 含む) を受け取っていた。 to ベース配送では reply の to に入った
+    /// 時点以降の message のみ受信する。 参加前 backlog は wire_thread query の責務。
+    #[tokio::test]
+    async fn reply_new_participant_sees_messages_from_join() {
         let store = make_test_store().await;
         let root = store
             .send_root("alice@vp", &["bob@vp".to_string()], body("root"))
@@ -936,15 +1004,18 @@ mod tests {
             .await
             .expect("send_reply");
 
-        // carol は read_cursor=None なので root + reply の 2 件を受け取る
+        // carol は reply の to に入った → reply のみ受信。 root (参加前) は受信しない
         let carol_unread = store.fetch_unread("carol@vp").await.expect("carol fetch");
         assert_eq!(
             carol_unread.len(),
-            2,
-            "新規参加者は thread 全 message を受け取る"
+            1,
+            "途中参加者は参加時点以降の message のみ受信"
         );
-        assert_eq!(carol_unread[0].id, root.id, "1 件目は root");
-        assert_eq!(carol_unread[1].id, reply.id, "2 件目は reply");
+        assert_eq!(carol_unread[0].id, reply.id, "受信するのは reply");
+        assert!(
+            !carol_unread.iter().any(|m| m.id == root.id),
+            "参加前の root は受信しない"
+        );
     }
 
     /// send_reply: 存在しない prev_id を指定したら Err
@@ -957,7 +1028,35 @@ mod tests {
         assert!(result.is_err(), "存在しない prev は Err");
     }
 
-    /// thread_participants: exclude_left で left 参加者を除外
+    // -------------------------------------------------------------------------
+    // thread_participant — sparse 例外表 (left のみ行を持つ)
+    // -------------------------------------------------------------------------
+
+    /// thread_participants: 参加者集合は message の from / to_addrs から創発する
+    #[tokio::test]
+    async fn thread_participants_derived_from_messages() {
+        let store = make_test_store().await;
+        let root = store
+            .send_root(
+                "alice@vp",
+                &["bob@vp".to_string(), "carol@vp".to_string()],
+                body("x"),
+            )
+            .await
+            .expect("send_root");
+
+        // 例外表に行が一切無くても、参加者は message から導出される
+        let all = store
+            .thread_participants(&root.thread_id, false)
+            .await
+            .expect("all");
+        assert_eq!(all.len(), 3, "from + to_addrs = alice/bob/carol の 3 名");
+        assert!(all.contains(&"alice@vp".to_string()));
+        assert!(all.contains(&"bob@vp".to_string()));
+        assert!(all.contains(&"carol@vp".to_string()));
+    }
+
+    /// thread_participants: exclude_left で sparse 例外表の left 行を除外
     #[tokio::test]
     async fn thread_participants_excludes_left() {
         let store = make_test_store().await;
@@ -970,14 +1069,19 @@ mod tests {
             .await
             .expect("send_root");
 
-        // carol を left に
+        // carol の left 行を sparse 例外表に CREATE する
         store
             .db()
-            .query("UPDATE thread_participant SET status = 'left' WHERE agent = 'carol@vp';")
+            .query(
+                "CREATE thread_participant CONTENT {
+                     thread: $thread, agent: 'carol@vp', status: 'left', updated_at: 0
+                 };",
+            )
+            .bind(("thread", root.thread_id.clone()))
             .await
-            .expect("set left")
+            .expect("create left")
             .check()
-            .expect("set left check");
+            .expect("create left check");
 
         let all = store
             .thread_participants(&root.thread_id, false)
@@ -993,23 +1097,28 @@ mod tests {
         assert!(!active.contains(&"carol@vp".to_string()));
     }
 
-    /// left した agent は fetch_unread の対象から外れる
+    /// left した agent は fetch_unread の対象から外れる (sparse 例外表モデル)
     #[tokio::test]
     async fn left_agent_does_not_fetch() {
         let store = make_test_store().await;
-        store
+        let root = store
             .send_root("alice@vp", &["bob@vp".to_string()], body("x"))
             .await
             .expect("send_root");
 
-        // bob を left に
+        // bob の left 行を sparse 例外表に CREATE する
         store
             .db()
-            .query("UPDATE thread_participant SET status = 'left' WHERE agent = 'bob@vp';")
+            .query(
+                "CREATE thread_participant CONTENT {
+                     thread: $thread, agent: 'bob@vp', status: 'left', updated_at: 0
+                 };",
+            )
+            .bind(("thread", root.thread_id.clone()))
             .await
-            .expect("set left")
+            .expect("create left")
             .check()
-            .expect("set left check");
+            .expect("create left check");
 
         let unread = store.fetch_unread("bob@vp").await.expect("fetch");
         assert!(
@@ -1017,6 +1126,49 @@ mod tests {
             "left した agent は message を受け取らない"
         );
     }
+
+    /// reply-all 展開は left した agent を除外する
+    #[tokio::test]
+    async fn reply_expansion_excludes_left() {
+        let store = make_test_store().await;
+        let root = store
+            .send_root(
+                "alice@vp",
+                &["bob@vp".to_string(), "carol@vp".to_string()],
+                body("root"),
+            )
+            .await
+            .expect("send_root");
+
+        // carol が left
+        store
+            .db()
+            .query(
+                "CREATE thread_participant CONTENT {
+                     thread: $thread, agent: 'carol@vp', status: 'left', updated_at: 0
+                 };",
+            )
+            .bind(("thread", root.thread_id.clone()))
+            .await
+            .expect("create left")
+            .check()
+            .expect("create left check");
+
+        // bob が reply — reply-all 展開でも carol (left) は to に入らない
+        let reply = store
+            .send_reply("bob@vp", &[], body("reply"), &root.id)
+            .await
+            .expect("send_reply");
+        assert!(
+            !reply.to.contains(&"carol@vp".to_string()),
+            "left した agent は reply-all 展開から除外される"
+        );
+        assert!(reply.to.contains(&"alice@vp".to_string()), "alice は残る");
+    }
+
+    // -------------------------------------------------------------------------
+    // fetch_unread — 横断 / 空 / unread_count derive
+    // -------------------------------------------------------------------------
 
     /// 複数 thread にまたがる未読が created_at 昇順で返る
     #[tokio::test]
@@ -1035,33 +1187,122 @@ mod tests {
 
         let unread = store.fetch_unread("bob@vp").await.expect("fetch");
         assert_eq!(unread.len(), 2, "2 thread 分の未読");
-        // created_at 昇順
         assert!(
             unread[0].created_at <= unread[1].created_at,
             "created_at 昇順で整列"
         );
     }
 
-    /// fetch_unread で参加 thread が無い agent は空 vec
+    /// fetch_unread で宛先になったことが無い agent は空 vec
     #[tokio::test]
-    async fn fetch_unread_no_participation_is_empty() {
+    async fn fetch_unread_no_messages_is_empty() {
         let store = make_test_store().await;
         let unread = store.fetch_unread("stranger@vp").await.expect("fetch");
         assert!(unread.is_empty());
     }
 
+    /// unread_count_by_thread: 未読を thread_id で GROUP BY した count を derive
+    #[tokio::test]
+    async fn unread_count_by_thread_derives_per_thread() {
+        let store = make_test_store().await;
+        // thread t1: root + reply の 2 件が bob 宛
+        let t1 = store
+            .send_root("alice@vp", &["bob@vp".to_string()], body("t1-root"))
+            .await
+            .expect("t1");
+        store
+            .send_reply(
+                "alice@vp",
+                &["bob@vp".to_string()],
+                body("t1-reply"),
+                &t1.id,
+            )
+            .await
+            .expect("t1 reply");
+        // thread t2: root の 1 件が bob 宛
+        let t2 = store
+            .send_root("carol@vp", &["bob@vp".to_string()], body("t2-root"))
+            .await
+            .expect("t2");
+
+        let counts = store
+            .unread_count_by_thread("bob@vp")
+            .await
+            .expect("unread count");
+        assert_eq!(counts.get(&t1.thread_id).copied(), Some(2), "t1 は 2 件");
+        assert_eq!(counts.get(&t2.thread_id).copied(), Some(1), "t2 は 1 件");
+
+        // recv で drain した後は未読 0 → HashMap は空
+        let _ = store.recv("bob@vp").await.expect("drain");
+        let after = store
+            .unread_count_by_thread("bob@vp")
+            .await
+            .expect("unread count after");
+        assert!(after.is_empty(), "drain 後は未読 thread なし");
+    }
+
+    // -------------------------------------------------------------------------
+    // advance_cursor — 単一 cursor の前進規律
+    // -------------------------------------------------------------------------
+
+    /// advance_cursor は per-agent 単一 cursor を後退させない
+    #[tokio::test]
+    async fn advance_cursor_does_not_regress() {
+        let store = make_test_store().await;
+        let root = store
+            .send_root("alice@vp", &["bob@vp".to_string()], body("x"))
+            .await
+            .expect("send_root");
+
+        // 大きい値 (= 遠未来の epoch ms) に前進
+        let far_future = root.created_at + 1_000_000;
+        store
+            .advance_cursor("bob@vp", far_future)
+            .await
+            .expect("advance big");
+        // 小さい値で再前進を試みる
+        store
+            .advance_cursor("bob@vp", 1)
+            .await
+            .expect("advance small");
+
+        // cursor が 1 に後退していないこと → root は依然既読 (未読 0)
+        let unread = store.fetch_unread("bob@vp").await.expect("fetch");
+        assert!(unread.is_empty(), "cursor は後退しない");
+    }
+
+    /// advance_cursor は agent_cursor 行が無ければ作成する
+    #[tokio::test]
+    async fn advance_cursor_creates_row_if_absent() {
+        let store = make_test_store().await;
+        store
+            .send_root("alice@vp", &["bob@vp".to_string()], body("x"))
+            .await
+            .expect("send_root");
+
+        // cursor 行が無い状態でいきなり advance
+        store
+            .advance_cursor("bob@vp", now_ms() + 1_000_000)
+            .await
+            .expect("advance creates row");
+
+        // 行が作られ cursor が効いている → 未読 0
+        let unread = store.fetch_unread("bob@vp").await.expect("fetch");
+        assert!(unread.is_empty(), "cursor 行が作成され未読が drain される");
+    }
+
+    // -------------------------------------------------------------------------
+    // WireNotifier — 取りこぼし防止
+    // -------------------------------------------------------------------------
+
     /// WireNotifier: notified() future を先に生成しておけば後続 notify を拾える
-    /// (= 取りこぼし防止プロトコル: handle → notified() → poll → await の順)
     #[tokio::test]
     async fn wire_notifier_future_before_notify_is_caught() {
         let notifier = WireNotifier::new();
-        // step 1-2: handle 取得 → 待機 future 先生成
         let handle = notifier.handle("bob@vp").await;
         let fut = handle.notified();
         tokio::pin!(fut);
-        // future 生成後に notify (= poll と await の隙間に来た送信を模擬)
         notifier.notify("bob@vp").await;
-        // future が完了する (取りこぼしなし)
         tokio::time::timeout(std::time::Duration::from_millis(500), fut)
             .await
             .expect("future 生成後の notify は捕捉される");
@@ -1074,35 +1315,8 @@ mod tests {
         let handle = notifier.handle("bob@vp").await;
         let fut = handle.notified();
         tokio::pin!(fut);
-        // carol 宛 notify では bob は起きない
         notifier.notify("carol@vp").await;
         let result = tokio::time::timeout(std::time::Duration::from_millis(150), fut).await;
         assert!(result.is_err(), "別 agent への notify では起床しない");
-    }
-
-    /// advance_cursor は cursor を後退させない
-    #[tokio::test]
-    async fn advance_cursor_does_not_regress() {
-        let store = make_test_store().await;
-        let root = store
-            .send_root("alice@vp", &["bob@vp".to_string()], body("x"))
-            .await
-            .expect("send_root");
-
-        // 大きい値 (= 遠未来の epoch ms) に前進。 root.created_at より十分大きく取る。
-        let far_future = root.created_at + 1_000_000;
-        store
-            .advance_cursor(&root.thread_id, "bob@vp", far_future)
-            .await
-            .expect("advance big");
-        // 小さい値で再前進を試みる
-        store
-            .advance_cursor(&root.thread_id, "bob@vp", 1)
-            .await
-            .expect("advance small");
-
-        // cursor が 1 に後退していないこと → root は依然既読 (未読 0)
-        let unread = store.fetch_unread("bob@vp").await.expect("fetch");
-        assert!(unread.is_empty(), "cursor は後退しない");
     }
 }

@@ -1,10 +1,11 @@
-//! Phase A ① integration test — wiremsg threaded inbox を実 schema (VpDb) で verify
+//! integration test — wiremsg threaded inbox を実 schema (VpDb) で verify
 //!
-//! `WiremsgStore` の unit test は msgbox_v2 / wiremsg_store の inline test schema を使うが、
+//! `WiremsgStore` の unit test は wiremsg_store の inline test schema を使うが、
 //! 本 test は `VpDb::define_schema()` 経由 (= db/mod.rs SCHEMA_SQL) で wire_messages /
-//! thread_participant table が正しく define され、 threading 操作が通ることを確認する。
+//! agent_cursor / thread_participant table が正しく define され、 threading 操作が
+//! 通ることを確認する。
 //!
-//! 設計 memory: mem_1CbD9H1KGQykBaFG8XXVsn
+//! 設計 memory: mem_1CbDLrECNZiNEZqjySLfSB (決定 III — per-agent 単一 cursor)
 
 use std::sync::Arc;
 
@@ -86,9 +87,12 @@ async fn schema_sql_cursor_semantics() {
     assert!(bob2.is_empty(), "cursor 前進後は再配信なし");
 }
 
-/// SCHEMA_SQL 経由で thread 新規参加者が thread 全体を受け取る
+/// SCHEMA_SQL 経由で thread 途中参加者は参加時点以降の message のみ受け取る
+///
+/// 決定 III: to ベース配送のため、 reply の to に入った carol は reply のみ受信し、
+/// 参加前の root は受信しない (参加前 backlog は wire_thread query の責務)。
 #[tokio::test]
-async fn schema_sql_new_participant_full_thread() {
+async fn schema_sql_new_participant_sees_messages_from_join() {
     let store = make_store().await;
     let root = store
         .send_root("alice@vp", &["bob@vp".to_string()], body("root"))
@@ -104,9 +108,42 @@ async fn schema_sql_new_participant_full_thread() {
         .await
         .expect("send_reply");
 
-    // carol は新規参加 (read_cursor=None) なので root + reply の 2 件
+    // carol は reply の to に入った時点以降 = reply の 1 件のみ
     let carol = store.recv("carol@vp").await.expect("carol recv");
-    assert_eq!(carol.len(), 2, "新規参加者は thread 全 message を受け取る");
-    assert_eq!(carol[0].id, root.id);
-    assert_eq!(carol[1].id, reply.id);
+    assert_eq!(
+        carol.len(),
+        1,
+        "途中参加者は参加時点以降の message のみ受信"
+    );
+    assert_eq!(carol[0].id, reply.id, "受信するのは reply");
+    assert!(carol[0].id != root.id, "参加前の root は受信しない");
+}
+
+/// SCHEMA_SQL 経由で reply-all 展開 (REQ-THREAD-005) が動く
+#[tokio::test]
+async fn schema_sql_reply_all_expansion() {
+    let store = make_store().await;
+    let root = store
+        .send_root(
+            "alice@vp",
+            &["bob@vp".to_string(), "carol@vp".to_string()],
+            body("root"),
+        )
+        .await
+        .expect("send_root");
+
+    // bob が to を空指定で reply — reply-all 展開で alice/carol に届く
+    let reply = store
+        .send_reply("bob@vp", &[], body("reply"), &root.id)
+        .await
+        .expect("send_reply");
+    assert!(reply.to.contains(&"alice@vp".to_string()), "alice に展開");
+    assert!(reply.to.contains(&"carol@vp".to_string()), "carol に展開");
+    assert!(!reply.to.contains(&"bob@vp".to_string()), "from は除外");
+
+    let carol = store.recv("carol@vp").await.expect("carol recv");
+    assert!(
+        carol.iter().any(|m| m.id == reply.id),
+        "carol が reply-all で reply を受信"
+    );
 }

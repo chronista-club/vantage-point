@@ -477,7 +477,7 @@ DEFINE INDEX IF NOT EXISTS status_idx ON msgs FIELDS status, expires_at;
 --   1. 既存 msgs table の `id` / `reply_to` も plain string で、 同型を踏襲
 --   2. record-link traversal を query で使うと migration / 部分適用で壊れやすい
 --      (creo-memories mem: 「migration の data-UPDATE 句は record-link traversal を避ける」)
--- `created_at` / `read_cursor` も datetime ではなく epoch ms (number) で保持
+-- `created_at` も datetime ではなく epoch ms (number) で保持
 -- (= msgs.ts と同じ表現、 cursor 比較を素直な数値比較にする)。
 DEFINE TABLE IF NOT EXISTS wire_messages SCHEMAFULL;
 DEFINE FIELD IF NOT EXISTS id ON wire_messages TYPE string;
@@ -489,12 +489,21 @@ DEFINE FIELD IF NOT EXISTS body ON wire_messages TYPE object FLEXIBLE;
 DEFINE FIELD IF NOT EXISTS created_at ON wire_messages TYPE number;
 DEFINE INDEX IF NOT EXISTS wire_thread_idx ON wire_messages FIELDS thread_id, created_at;
 
--- thread 参加者 + 既読カーソル (plain table、 graph edge ではない)
+-- per-agent 単一 cursor (決定 III)。 1 agent 1 行 = O(agents)。
+-- `last_read` = 最後に読んだ message の created_at (epoch ms)。 NONE = 全 message 未読。
+-- 配送は wire_messages.to_addrs から創発する (= to ベース配送)。
+DEFINE TABLE IF NOT EXISTS agent_cursor SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS agent ON agent_cursor TYPE string;
+DEFINE FIELD IF NOT EXISTS last_read ON agent_cursor TYPE option<number>;
+DEFINE FIELD IF NOT EXISTS updated_at ON agent_cursor TYPE number;
+DEFINE INDEX IF NOT EXISTS agent_cursor_uniq ON agent_cursor FIELDS agent UNIQUE;
+
+-- thread 参加の sparse 例外表 (決定 III)。 status ∈ {muted, left} の行のみ持つ。
+-- default (active) は行を持たない — active 参加は wire_messages.to_addrs から創発。
+-- 行数 = O(mute・leave 回数)。
 DEFINE TABLE IF NOT EXISTS thread_participant SCHEMAFULL;
 DEFINE FIELD IF NOT EXISTS thread ON thread_participant TYPE string;
 DEFINE FIELD IF NOT EXISTS agent ON thread_participant TYPE string;
--- 最後に読んだ message の created_at (epoch ms)。 NONE = 全 message 未読。
-DEFINE FIELD IF NOT EXISTS read_cursor ON thread_participant TYPE option<number>;
 DEFINE FIELD IF NOT EXISTS status ON thread_participant TYPE string DEFAULT 'active';
 DEFINE FIELD IF NOT EXISTS updated_at ON thread_participant TYPE number;
 -- (thread, agent) で一意
