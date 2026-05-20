@@ -250,6 +250,12 @@ pub async fn run(
         msgbox_store: vpdb.as_ref().map(|db| {
             crate::capability::WhitesnakeStore::new(std::sync::Arc::new(db.inner().clone()))
         }),
+        // Phase A ①: wiremsg threaded inbox store。 msgs table と並存。
+        wiremsg_store: vpdb.as_ref().map(|db| {
+            crate::capability::WiremsgStore::new(std::sync::Arc::new(db.inner().clone()))
+        }),
+        // Phase A ①: wiremsg long-poll の in-process notifier
+        wire_notifier: crate::capability::WireNotifier::new(),
         // ポート別ディレクトリで分離（複数プロセスの namespace 衝突を防ぐ）
         // run() 冒頭で作成した Whitesnake を共有（Msgbox persistent と同一インスタンス）
         whitesnake: whitesnake.clone(),
@@ -865,6 +871,11 @@ pub async fn run_world(
         msgbox_store: vpdb.as_ref().map(|db| {
             crate::capability::WhitesnakeStore::new(std::sync::Arc::new(db.inner().clone()))
         }),
+        // Phase A ①: World モードでも wiremsg store を build (= 将来 World 階層 actor 用)
+        wiremsg_store: vpdb.as_ref().map(|db| {
+            crate::capability::WiremsgStore::new(std::sync::Arc::new(db.inner().clone()))
+        }),
+        wire_notifier: crate::capability::WireNotifier::new(),
         // TheWorld もポート別ディレクトリで分離
         whitesnake: world_whitesnake,
         // Phase A4-2b: World モードでは Lane / Project Stand を持たない (空 Pool で AppState を満たす)

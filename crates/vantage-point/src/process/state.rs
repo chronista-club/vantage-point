@@ -149,6 +149,16 @@ pub(crate) struct AppState {
     /// 既存 mpsc Router (= `capabilities.msgbox_router`) と並走、 Phase 5 で mpsc 削除予定。
     /// 関連: docs/design/19-msgbox-whitesnake-primary.md / docs/design/20-spike-report.md
     pub msgbox_store: Option<crate::capability::WhitesnakeStore>,
+    /// Phase A ①: wiremsg threaded inbox store (= `wire_send` / `wire_recv` の実体)
+    ///
+    /// `msgbox_store` と並存する threading 対応 inbox。 `vpdb` が `Some` の時に同 DB 接続から
+    /// build する。 TopicRouter は介さず、 `wire_recv` がこの store を直接 long-poll する。
+    /// 設計 memory: `mem_1CbD9H1KGQykBaFG8XXVsn`。
+    pub wiremsg_store: Option<crate::capability::WiremsgStore>,
+    /// Phase A ①: wiremsg long-poll の SP 内 in-process 起床機構
+    ///
+    /// `wire_send` が宛先 agent を notify、 待機中の `wire_recv` を起こす。
+    pub wire_notifier: crate::capability::WireNotifier,
     /// Whitesnake 🐍 — 汎用永続化レイヤー
     pub whitesnake: crate::capability::Whitesnake,
     /// Lane Pool (Lead/Worker registry) — Lane scope の Stand container

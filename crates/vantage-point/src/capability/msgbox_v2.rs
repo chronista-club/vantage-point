@@ -373,6 +373,10 @@ impl WhitesnakeStore {
             manual_ack: row["manual_ack"].as_bool().unwrap_or(false),
             forwarded_at: row["forwarded_at"].as_u64(),
             consumed_at: row["consumed_at"].as_u64(),
+            // Phase A ①: msgs table (= 旧 Mailbox inbox) は wiremsg の threading field を
+            // 持たない。 wiremsg は別 table (wire_messages) で扱う。
+            prev: None,
+            thread_id: None,
         })
     }
 }
