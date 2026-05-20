@@ -5,7 +5,7 @@
 //! agent_cursor / thread_participant table が正しく define され、 threading 操作が
 //! 通ることを確認する。
 //!
-//! 設計 memory: mem_1CbDLrECNZiNEZqjySLfSB (決定 III — per-agent 単一 cursor)
+//! 設計 memory: mem_1CbDLrECNZiNEZqjySLfSB (R1 — cursor local-seq 化 / thread_id 全廃)
 
 use std::sync::Arc;
 
@@ -13,10 +13,14 @@ use vantage_point::capability::WiremsgStore;
 use vantage_point::db::VpDb;
 
 /// kv-mem で VpDb 接続 + SCHEMA_SQL define + WiremsgStore build
+///
+/// R1: `WiremsgStore::new` は async (起動時に local_seq 採番を `math::max` で復元)。
 async fn make_store() -> WiremsgStore {
     let db = VpDb::connect_mem().await.expect("kv-mem connect");
     db.define_schema().await.expect("schema define");
     WiremsgStore::new(Arc::new(db.inner().clone()))
+        .await
+        .expect("WiremsgStore::new")
 }
 
 fn body(text: &str) -> serde_json::Value {
@@ -36,7 +40,7 @@ async fn schema_sql_root_send_recv() {
     assert_eq!(unread.len(), 1, "起点 message が未読で届く");
     assert_eq!(unread[0].id, root.id);
     assert!(unread[0].prev.is_none(), "root の prev は None");
-    assert_eq!(unread[0].thread_id, root.id, "root の thread_id は自 id");
+    assert_eq!(unread[0].local_seq, 1, "最初の message の local_seq は 1");
 }
 
 /// SCHEMA_SQL 経由で reply の thread 継続が動く
@@ -56,7 +60,7 @@ async fn schema_sql_reply_threading() {
         .send_reply("alice@vp", &["bob@vp".to_string()], body("a"), &root.id)
         .await
         .expect("send_reply");
-    assert_eq!(reply.thread_id, root.thread_id, "reply は同 thread");
+    // R1: thread_id 全廃 — thread の連続は prev 一本で表す
     assert_eq!(reply.prev.as_deref(), Some(root.id.as_str()), "prev = root");
 
     // bob は reply を未読として受け取る

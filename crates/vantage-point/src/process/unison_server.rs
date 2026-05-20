@@ -1141,12 +1141,12 @@ async fn handle_msg_thread(
 ///
 /// payload: `{ from, to: [..], body, reply_to? }`
 ///
-/// Operations (Phase A ① 仕様):
-/// - `reply_to` なし → `WiremsgStore::send_root` (root message + participant 作成)
-/// - `reply_to` あり → `WiremsgStore::send_reply` (reply message + 新規 participant upsert)
+/// Operations (Phase A ① / R1 仕様):
+/// - `reply_to` なし → `WiremsgStore::send_root` (root message を INSERT、 `prev = None`)
+/// - `reply_to` あり → `WiremsgStore::send_reply` (reply message を INSERT、 reply-all 展開)
 /// - 送信後、 notify 対象の待機中 `wire_recv` を `WireNotifier` で起こす:
 ///   - root: 受信者 (= `to`) を notify
-///   - reply: **送信者を除く** thread 参加者 (`status != left`) を notify
+///   - reply: reply の `to` (= carry-forward 済の参加者集合) を notify
 async fn handle_wire_send(
     state: &AppState,
     payload: serde_json::Value,
@@ -1187,20 +1187,17 @@ async fn handle_wire_send(
                 .send_reply(&from, &to, body, &prev_id)
                 .await
                 .map_err(|e| format!("wire_send (reply) failed: {e}"))?;
-            // 送信者を除く thread 参加者 (left 除外) を notify
-            let participants = store
-                .thread_participants(&msg.thread_id, true)
-                .await
-                .map_err(|e| format!("wire_send participants lookup failed: {e}"))?;
-            for agent in participants.iter().filter(|a| **a != from) {
+            // notify 対象 = reply の to。 send_reply の carry-forward で確定済の参加者集合で、
+            // 送信者と left は既に除外済。 thread 全走査は不要 (prev carry-forward の帰結)。
+            for agent in &msg.to {
                 state.wire_notifier.notify(agent).await;
             }
             Ok(serde_json::json!({
                 "status": "ok",
                 "id": msg.id,
-                "thread_id": msg.thread_id,
                 "prev": msg.prev,
-                "notified": participants.iter().filter(|a| **a != from).count(),
+                "local_seq": msg.local_seq,
+                "notified": msg.to.len(),
             }))
         }
         // ---- new thread (root) ----
@@ -1216,8 +1213,8 @@ async fn handle_wire_send(
             Ok(serde_json::json!({
                 "status": "ok",
                 "id": msg.id,
-                "thread_id": msg.thread_id,
                 "prev": serde_json::Value::Null,
+                "local_seq": msg.local_seq,
                 "notified": to.iter().filter(|a| **a != from).count(),
             }))
         }
@@ -1228,10 +1225,10 @@ async fn handle_wire_send(
 ///
 /// payload: `{ agent, timeout? }`
 ///
-/// Operations (Phase A ① 仕様):
-/// 1. `agent` の参加 thread から `created_at > read_cursor` の未読 message を取得
-/// 2. 未読があれば返却 → 取得した最新 message の `created_at` まで cursor を前進
-///    (`now` ではなく — fetch 中着信の取りこぼし race を回避)
+/// Operations (Phase A ① / R1 仕様):
+/// 1. `agent` 宛 (`to_addrs ∋ agent`) で `local_seq > read_cursor` の未読 message を取得
+/// 2. 未読があれば返却 → 取得した最新 message の `local_seq` まで cursor を前進
+///    (R1: cursor は厳密単調な local_seq。 同一 ms 衝突や clock skew で取りこぼさない)
 /// 3. 未読が無ければ `WireNotifier` で待機 (timeout あり)、 notify で起床して再 poll
 ///
 /// 取りこぼし防止のため、 `notified()` future を **store poll の前に** 生成する
@@ -1266,7 +1263,7 @@ async fn handle_wire_recv(
         tokio::pin!(notified);
 
         // 未読 message を取得 + read_cursor 前進 (store.recv が両方まとめて実施)。
-        // cursor は取得済 message の created_at に合わせる (= fetch 中着信の race 回避)。
+        // cursor は取得済 message の local_seq 最大値に合わせる (R1: 厳密単調で取りこぼし無し)。
         let unread = store
             .recv(&agent)
             .await
