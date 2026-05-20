@@ -202,6 +202,16 @@ pub struct WireRecvParams {
     pub timeout: Option<u64>,
 }
 
+/// Parameters for wire_thread tool (R2: ancestor-chain 取得)
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct WireThreadParams {
+    /// 系譜を辿る起点となる wire message id
+    #[schemars(
+        description = "The wire message id (returned by a previous wire_send / wire_recv) to trace ancestors from."
+    )]
+    pub message_id: String,
+}
+
 /// Parameters for the watch_file tool
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct WatchFileParams {
@@ -2647,6 +2657,23 @@ if bestId > 0 { print(bestId) }
                 std::time::Duration::from_secs(timeout + 5),
             )
             .await?;
+        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+            serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "null".to_string()),
+        )]))
+    }
+
+    /// Trace the ancestor-chain (lineage) of a wire message
+    #[tool(
+        description = "Return the ancestor-chain (lineage from the thread root down to the given message) of a wire message. Each returned message has `id`, `prev`, `from`, `to`, `body`, `created_at`, `local_seq`, and the array is ordered root-first (chronological). This is READ-ONLY: it does NOT advance the wire_recv read cursor, so it is safe to call repeatedly. Use it to fetch backlog / context when you join a thread partway through (e.g. after receiving a reply via wire_recv and needing the messages that led up to it). It returns only the lineage of the given message, not the full branch tree; since each message carries its `prev`, the result collapses cleanly into a linear (or tree) view."
+    )]
+    async fn wire_thread(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<WireThreadParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let payload = serde_json::json!({
+            "message_id": params.message_id,
+        });
+        let resp = self.quic_call("wire_thread", payload).await?;
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
             serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "null".to_string()),
         )]))

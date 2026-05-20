@@ -558,9 +558,10 @@ pub async fn start_unison_server(
                             "msg_peers" => handle_msg_peers(&state).await,
                             "msg_ack" => handle_msg_ack(&state, payload).await,
                             "msg_thread" => handle_msg_thread(&state, payload).await,
-                            // wiremsg threaded inbox (Phase A ①)
+                            // wiremsg threaded inbox (Phase A ①、 R2 で wire_thread 追加)
                             "wire_send" => handle_wire_send(&state, payload).await,
                             "wire_recv" => handle_wire_recv(&state, payload).await,
+                            "wire_thread" => handle_wire_thread(&state, payload).await,
                             _ => Err(format!("不明なメソッド: process.{}", method)),
                         };
 
@@ -1290,4 +1291,43 @@ async fn handle_wire_recv(
         // notify が来たら再 poll、 timeout したら次ループで deadline 判定 → timeout 返却
         let _ = tokio::time::timeout(remaining, notified).await;
     }
+}
+
+/// wiremsg の ancestor-chain (系譜) を取得する (R2、 設計 mem_1CbDLrECNZiNEZqjySLfSB)
+///
+/// payload: `{ message_id }`
+///
+/// 指定 message から `prev` を root まで辿った **系譜** (root-first・chronological) を
+/// 返す。 `wire_recv` の増分 drain とは対の read-only tool で、 cursor を一切触らない
+/// (冪等)。 thread に途中参加した agent が backlog (= 文脈) を取得する用途。
+///
+/// 戻り値: `{ status: "ok", messages: [..], count: <n> }`。
+/// `message_id` の message が存在しなければ `Err`。
+async fn handle_wire_thread(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let store = state
+        .wiremsg_store
+        .as_ref()
+        .ok_or_else(|| "wiremsg_store not initialized".to_string())?;
+
+    let message_id = payload
+        .get("message_id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "wire_thread: 'message_id' required".to_string())?
+        .to_string();
+
+    // ancestor-chain (root-first) を取得。 cursor は触らない (read-only)。
+    let chain = store
+        .ancestor_chain(&message_id)
+        .await
+        .map_err(|e| format!("wire_thread failed: {e}"))?;
+    let value =
+        serde_json::to_value(&chain).map_err(|e| format!("wire_thread serialize failed: {e}"))?;
+    Ok(serde_json::json!({
+        "status": "ok",
+        "messages": value,
+        "count": chain.len(),
+    }))
 }

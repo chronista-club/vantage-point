@@ -151,3 +151,50 @@ async fn schema_sql_reply_all_expansion() {
         "carol が reply-all で reply を受信"
     );
 }
+
+/// SCHEMA_SQL 経由で wire_thread (ancestor_chain) が動く — 途中参加者の backlog 取得
+///
+/// R2 (mem_1CbDLrECNZiNEZqjySLfSB): thread に途中参加した agent が、 受け取った
+/// message に至る系譜 (root-first) を read-only で引けることを実 schema で確認する。
+#[tokio::test]
+async fn schema_sql_wire_thread_ancestor_chain() {
+    let store = make_store().await;
+    let root = store
+        .send_root("alice@vp", &["bob@vp".to_string()], body("root"))
+        .await
+        .expect("send_root");
+    let r1 = store
+        .send_reply("bob@vp", &[], body("r1"), &root.id)
+        .await
+        .expect("r1");
+    // alice が carol を新規に巻き込んで reply
+    let r2 = store
+        .send_reply(
+            "alice@vp",
+            &["bob@vp".to_string(), "carol@vp".to_string()],
+            body("r2"),
+            &r1.id,
+        )
+        .await
+        .expect("r2");
+
+    // carol は r2 のみ未読で受信する (参加前の root / r1 は受信しない)
+    let carol = store.recv("carol@vp").await.expect("carol recv");
+    assert_eq!(carol.len(), 1, "途中参加者は参加時点以降のみ受信");
+
+    // carol が wire_thread (ancestor_chain) で r2 に至る backlog を取得
+    let chain = store.ancestor_chain(&r2.id).await.expect("ancestor_chain");
+    let ids: Vec<&str> = chain.iter().map(|m| m.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        vec![root.id.as_str(), r1.id.as_str(), r2.id.as_str()],
+        "系譜は root-first (chronological) で root→r1→r2"
+    );
+
+    // wire_thread は read-only — carol の cursor を前進させない (再 recv は依然空)
+    let carol_again = store.recv("carol@vp").await.expect("carol recv 2");
+    assert!(
+        carol_again.is_empty(),
+        "ancestor_chain は cursor を触らない (read-only)"
+    );
+}

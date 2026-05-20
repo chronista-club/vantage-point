@@ -469,30 +469,81 @@ impl WiremsgStore {
         }
     }
 
+    /// prev chain walk の循環防止上限 (現実の thread 深さを十分超える値)
+    const WALK_MAX_DEPTH: usize = 10_000;
+
+    /// 指定 message id から `prev` を `None` まで辿り、 道中の message を収集する
+    /// (`ancestor_chain` / `walk_to_root` の共通 walk helper、 R2 で重複排除)
+    ///
+    /// 返り順は **leaf-first** — 起点 message が先頭、 root が末尾。 呼び元が要求順に
+    /// 並べ替える (`ancestor_chain` は reverse して root-first にする)。
+    ///
+    /// 防御的挙動: prev chain が断裂して親 message が見つからない場合は、 そこまで収集
+    /// した分を返す (`ancestor_chain` の「辿れた分を返す」 / `walk_to_root` の
+    /// 「辿れた最後を root とみなす」 がともにこの挙動から導かれる)。 起点 message 自体が
+    /// 存在しなければ空 vec を返す (呼び元が Err 判定する)。
+    async fn collect_prev_chain(&self, message_id: &str) -> Result<Vec<WireMessage>> {
+        let mut chain: Vec<WireMessage> = Vec::new();
+        let mut current = message_id.to_string();
+        // prev chain を辿る。 循環 / 過剰な深さは上限で打ち切る。
+        for _ in 0..Self::WALK_MAX_DEPTH {
+            let msg = match self.get_message(&current).await? {
+                Some(m) => m,
+                // 親が見つからない (起点不在 or prev chain 断裂) → 収集済みを返す
+                None => break,
+            };
+            let prev = msg.prev.clone();
+            chain.push(msg);
+            match prev {
+                None => break,
+                Some(p) => current = p,
+            }
+        }
+        Ok(chain)
+    }
+
     /// 指定 message id から `prev` を `None` まで辿り、 thread の root message id を返す
     ///
     /// R1: `thread_id` 全廃の代替 — 「thread の識別子」が要る場面では root message の id
     /// を使う。 `send_reply` の left 判定 / `unread_count_by_thread` の GROUP BY key
-    /// として使われる。 R2 の `wire_thread` (ancestor-walk tool) もこの walk を再利用する想定。
+    /// として使われる。 R2 で `ancestor_chain` と walk ロジックを共通化した
+    /// ([`collect_prev_chain`])。
     ///
     /// 自身が root (`prev = None`) なら自身の id をそのまま返す。 prev chain が壊れて
     /// 親 message が見つからない場合は、 辿れた最後の id を root とみなす (= 防御的)。
     pub async fn walk_to_root(&self, message_id: &str) -> Result<String> {
-        let mut current = message_id.to_string();
-        // prev chain を辿る。 循環防止に上限を設ける (現実の thread 深さを十分超える値)。
-        for _ in 0..10_000 {
-            let msg = match self.get_message(&current).await? {
-                Some(m) => m,
-                // 親が見つからない (prev chain 断裂) → 辿れた最後を root とみなす
-                None => return Ok(current),
-            };
-            match msg.prev {
-                None => return Ok(current),
-                Some(prev) => current = prev,
-            }
+        let chain = self.collect_prev_chain(message_id).await?;
+        // chain は leaf-first。 末尾が「辿れた最後」 = root とみなす要素。
+        // chain が空 (= 起点 message が存在しない) なら起点 id をそのまま返す
+        // (循環時 / 既存挙動と整合 — root id が引けないとき起点を返す)。
+        Ok(chain
+            .last()
+            .map(|m| m.id.clone())
+            .unwrap_or_else(|| message_id.to_string()))
+    }
+
+    /// 指定 message から `prev` を root まで辿った **ancestor-chain (系譜)** を返す (R2)
+    ///
+    /// `wire_thread` tool の中核。 thread に途中参加した agent が backlog (= 受け取った
+    /// message に至る文脈) を取得するための read-only な走査。 `wire_recv` の増分 drain
+    /// とは対で、 **cursor を一切触らない** (read-only・冪等)。
+    ///
+    /// 返り順は **root-first** — root が先頭、 指定 message が末尾 (= chronological)。
+    /// 「全枝ツリー」 は返さない (子孫は含まない) — agent が要るのは指定 message に至る
+    /// 系譜のみ。
+    ///
+    /// edge: 指定 message が存在しなければ `Err`。 prev chain が断裂して親 message が
+    /// 見つからない場合は、 そこまで収集した分を root-first で返す
+    /// ([`collect_prev_chain`] の防御的挙動と整合)。
+    pub async fn ancestor_chain(&self, message_id: &str) -> Result<Vec<WireMessage>> {
+        let mut chain = self.collect_prev_chain(message_id).await?;
+        // chain が空 = 指定 message 自体が存在しない → Err
+        if chain.is_empty() {
+            anyhow::bail!("wiremsg ancestor_chain: message '{message_id}' not found");
         }
-        // 異常 (循環 or 過剰な深さ) — 辿れた最後の id を返す
-        Ok(current)
+        // collect_prev_chain は leaf-first。 root-first (= chronological) に反転する。
+        chain.reverse();
+        Ok(chain)
     }
 
     /// `agent ∈ to_addrs` かつ `local_seq > cursor` の message を `local_seq` 昇順で取得
@@ -1173,6 +1224,159 @@ mod tests {
             "多段 reply の root は thread の起点"
         );
         assert_eq!(store.walk_to_root(&r1.id).await.expect("walk r1"), root.id,);
+    }
+
+    // -------------------------------------------------------------------------
+    // ancestor_chain — R2: 指定 message から root までの系譜 (wire_thread の中核)
+    // -------------------------------------------------------------------------
+
+    /// ancestor_chain: root message 単体は自身のみ 1 件返す
+    #[tokio::test]
+    async fn ancestor_chain_of_root_is_self_only() {
+        let store = make_test_store().await;
+        let root = store
+            .send_root("alice@vp", &["bob@vp".to_string()], body("root"))
+            .await
+            .expect("root");
+        let chain = store.ancestor_chain(&root.id).await.expect("chain");
+        assert_eq!(chain.len(), 1, "root の系譜は自身のみ");
+        assert_eq!(chain[0].id, root.id);
+    }
+
+    /// ancestor_chain: 多段 reply から root までの系譜を root-first で返す
+    ///
+    /// R2: 返り順は root が先頭・指定 message が末尾 (= chronological)。
+    #[tokio::test]
+    async fn ancestor_chain_returns_root_first_chronological() {
+        let store = make_test_store().await;
+        let root = store
+            .send_root("alice@vp", &["bob@vp".to_string()], body("root"))
+            .await
+            .expect("root");
+        let r1 = store
+            .send_reply("bob@vp", &[], body("r1"), &root.id)
+            .await
+            .expect("r1");
+        let r2 = store
+            .send_reply("alice@vp", &[], body("r2"), &r1.id)
+            .await
+            .expect("r2");
+
+        let chain = store.ancestor_chain(&r2.id).await.expect("chain");
+        // root → r1 → r2 の順 (root-first)
+        let ids: Vec<&str> = chain.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec![root.id.as_str(), r1.id.as_str(), r2.id.as_str()],
+            "系譜は root 先頭・指定 message 末尾の chronological 順"
+        );
+        // local_seq も昇順 (chronological の裏付け)
+        assert!(
+            chain[0].local_seq < chain[1].local_seq && chain[1].local_seq < chain[2].local_seq,
+            "root-first は local_seq 昇順と整合"
+        );
+    }
+
+    /// ancestor_chain: 中間 message を起点にするとそこまでの系譜のみ返す (子孫は含まない)
+    #[tokio::test]
+    async fn ancestor_chain_from_middle_excludes_descendants() {
+        let store = make_test_store().await;
+        let root = store
+            .send_root("alice@vp", &["bob@vp".to_string()], body("root"))
+            .await
+            .expect("root");
+        let r1 = store
+            .send_reply("bob@vp", &[], body("r1"), &root.id)
+            .await
+            .expect("r1");
+        // r1 の子孫 r2 を作る。 r1 起点の系譜には r2 は含まれない
+        let _r2 = store
+            .send_reply("alice@vp", &[], body("r2"), &r1.id)
+            .await
+            .expect("r2");
+
+        let chain = store.ancestor_chain(&r1.id).await.expect("chain");
+        let ids: Vec<&str> = chain.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec![root.id.as_str(), r1.id.as_str()],
+            "中間 message の系譜は root→自身のみ (子孫は含まない)"
+        );
+    }
+
+    /// ancestor_chain: 存在しない message id は Err
+    #[tokio::test]
+    async fn ancestor_chain_missing_message_errors() {
+        let store = make_test_store().await;
+        let result = store.ancestor_chain("nonexistent-id").await;
+        assert!(result.is_err(), "存在しない message は Err");
+    }
+
+    /// ancestor_chain: prev chain が壊れて親が見つからない場合は辿れた分を返す (防御的)
+    ///
+    /// R2: `walk_to_root` の既存の防御的挙動と整合 — prev chain 断裂時は
+    /// そこまで収集した分を root-first で返す。
+    #[tokio::test]
+    async fn ancestor_chain_broken_prev_returns_collected_so_far() {
+        let store = make_test_store().await;
+        // root を作り、 その後 root レコードを削除して prev chain を断裂させる
+        let root = store
+            .send_root("alice@vp", &["bob@vp".to_string()], body("root"))
+            .await
+            .expect("root");
+        let r1 = store
+            .send_reply("bob@vp", &[], body("r1"), &root.id)
+            .await
+            .expect("r1");
+        // root レコードを物理削除 → r1.prev が dangling になる
+        store
+            .db()
+            .query("DELETE type::record('wire_messages', $id);")
+            .bind(("id", root.id.clone()))
+            .await
+            .expect("delete root")
+            .check()
+            .expect("delete root check");
+
+        // r1 起点: r1 自身は引けるが prev (= root) が見つからない → r1 のみ返す
+        let chain = store.ancestor_chain(&r1.id).await.expect("chain");
+        let ids: Vec<&str> = chain.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec![r1.id.as_str()],
+            "prev chain 断裂時は辿れた分のみ返す (防御的)"
+        );
+    }
+
+    /// ancestor_chain は read-only — agent_cursor を一切前進させない (冪等)
+    ///
+    /// R2: `wire_thread` は `wire_recv` と対で、 cursor を触らない read-only tool。
+    #[tokio::test]
+    async fn ancestor_chain_does_not_touch_cursor() {
+        let store = make_test_store().await;
+        let root = store
+            .send_root("alice@vp", &["bob@vp".to_string()], body("root"))
+            .await
+            .expect("root");
+        let r1 = store
+            .send_reply("alice@vp", &["bob@vp".to_string()], body("r1"), &root.id)
+            .await
+            .expect("r1");
+
+        // bob の未読は root + r1 の 2 件
+        let before = store.fetch_unread("bob@vp").await.expect("before");
+        assert_eq!(before.len(), 2, "ancestor_chain 呼出前は未読 2 件");
+
+        // ancestor_chain を複数回呼んでも cursor は不変
+        let _ = store.ancestor_chain(&r1.id).await.expect("chain 1");
+        let _ = store.ancestor_chain(&r1.id).await.expect("chain 2");
+
+        let after = store.fetch_unread("bob@vp").await.expect("after");
+        assert_eq!(
+            after.len(),
+            2,
+            "ancestor_chain は read-only — cursor を前進させない"
+        );
     }
 
     // -------------------------------------------------------------------------
