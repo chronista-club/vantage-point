@@ -1146,7 +1146,7 @@ async fn handle_msg_thread(
 /// - `reply_to` あり → `WiremsgStore::send_reply` (reply message を INSERT、 reply-all 展開)
 /// - 送信後、 notify 対象の待機中 `wire_recv` を `WireNotifier` で起こす:
 ///   - root: 受信者 (= `to`) を notify
-///   - reply: **送信者を除く** thread 参加者 (`status != left`) を notify
+///   - reply: reply の `to` (= carry-forward 済の参加者集合) を notify
 async fn handle_wire_send(
     state: &AppState,
     payload: serde_json::Value,
@@ -1187,28 +1187,17 @@ async fn handle_wire_send(
                 .send_reply(&from, &to, body, &prev_id)
                 .await
                 .map_err(|e| format!("wire_send (reply) failed: {e}"))?;
-            // R1: thread_id 全廃 — thread の root id は prev を辿って得る。
-            // notify 対象の thread_participants と応答の thread_id 両方で使う。
-            let root_id = store
-                .walk_to_root(&msg.id)
-                .await
-                .map_err(|e| format!("wire_send root walk failed: {e}"))?;
-            // 送信者を除く thread 参加者 (left 除外) を notify
-            let participants = store
-                .thread_participants(&root_id, true)
-                .await
-                .map_err(|e| format!("wire_send participants lookup failed: {e}"))?;
-            for agent in participants.iter().filter(|a| **a != from) {
+            // notify 対象 = reply の to。 send_reply の carry-forward で確定済の参加者集合で、
+            // 送信者と left は既に除外済。 thread 全走査は不要 (prev carry-forward の帰結)。
+            for agent in &msg.to {
                 state.wire_notifier.notify(agent).await;
             }
             Ok(serde_json::json!({
                 "status": "ok",
                 "id": msg.id,
-                // thread_id = thread root message の id (R1: prev を辿った先)
-                "thread_id": root_id,
                 "prev": msg.prev,
                 "local_seq": msg.local_seq,
-                "notified": participants.iter().filter(|a| **a != from).count(),
+                "notified": msg.to.len(),
             }))
         }
         // ---- new thread (root) ----
@@ -1224,8 +1213,6 @@ async fn handle_wire_send(
             Ok(serde_json::json!({
                 "status": "ok",
                 "id": msg.id,
-                // root message の thread_id は自分自身の id (prev = None)
-                "thread_id": msg.id,
                 "prev": serde_json::Value::Null,
                 "local_seq": msg.local_seq,
                 "notified": to.iter().filter(|a| **a != from).count(),

@@ -15,8 +15,7 @@
 //!   (`thread_participant` を引いて thread ごとに引く) を廃止。
 //! - **`thread_participant` は sparse 例外表** — `status` ∈ {muted, left} の行のみ持つ。
 //!   default (active) は行を持たない。 active 参加は message の `to_addrs` から創発。
-//! - **derive されるもの** — per-thread unread 数 ([`unread_count_by_thread`](WiremsgStore::unread_count_by_thread))、
-//!   active 参加者 ([`thread_participants`](WiremsgStore::thread_participants))。
+//! - **derive されるもの** — per-thread unread 数 ([`unread_count_by_thread`](WiremsgStore::unread_count_by_thread))。
 //!
 //! ## R1 — cursor local-seq 化 / thread_id 全廃
 //!
@@ -412,43 +411,6 @@ impl WiremsgStore {
         Ok(counts)
     }
 
-    /// 指定 thread (root message id) の参加者 address 群を derive して返す
-    ///
-    /// 参加者集合は thread 内全 message の `from` ∪ `to_addrs` から創発する (決定 III、
-    /// active 参加は table を持たない)。 `exclude_left = true` なら `thread_participant`
-    /// の sparse 例外表で `status = left` の agent を除外する。 結果は安定順序。
-    ///
-    /// R1: 引数 `root_id` は thread root message の id (旧 `thread_id`)。 thread 内の
-    /// message 走査は [`thread_messages`](Self::thread_messages) (`prev` forest walk)。
-    pub async fn thread_participants(
-        &self,
-        root_id: &str,
-        exclude_left: bool,
-    ) -> Result<Vec<String>> {
-        use std::collections::BTreeSet;
-
-        // thread 内全 message から from / to_addrs を集める
-        let msgs = self.thread_messages(root_id).await?;
-        let mut set: BTreeSet<String> = BTreeSet::new();
-        for m in &msgs {
-            if !m.from.is_empty() {
-                set.insert(m.from.clone());
-            }
-            for t in &m.to {
-                if !t.is_empty() {
-                    set.insert(t.clone());
-                }
-            }
-        }
-        // sparse 例外表で left を除外
-        if exclude_left {
-            for l in self.left_agents(root_id).await? {
-                set.remove(&l);
-            }
-        }
-        Ok(set.into_iter().collect())
-    }
-
     // -------------------------------------------------------------------------
     // 内部 helper
     // -------------------------------------------------------------------------
@@ -510,10 +472,8 @@ impl WiremsgStore {
     /// 指定 message id から `prev` を `None` まで辿り、 thread の root message id を返す
     ///
     /// R1: `thread_id` 全廃の代替 — 「thread の識別子」が要る場面では root message の id
-    /// を使う。 `send_reply` の left 判定 / `unread_count_by_thread` の GROUP BY key /
-    /// `thread_participants` の起点 message として再利用される。 `wire_send` handler も
-    /// reply 応答の thread root id を返すために使う。
-    /// R2 の `wire_thread` (ancestor-walk tool) もこの walk を再利用する想定。
+    /// を使う。 `send_reply` の left 判定 / `unread_count_by_thread` の GROUP BY key
+    /// として使われる。 R2 の `wire_thread` (ancestor-walk tool) もこの walk を再利用する想定。
     ///
     /// 自身が root (`prev = None`) なら自身の id をそのまま返す。 prev chain が壊れて
     /// 親 message が見つからない場合は、 辿れた最後の id を root とみなす (= 防御的)。
@@ -533,35 +493,6 @@ impl WiremsgStore {
         }
         // 異常 (循環 or 過剰な深さ) — 辿れた最後の id を返す
         Ok(current)
-    }
-
-    /// thread (root message id) に属する全 message を `created_at` 昇順で返す
-    ///
-    /// R1: `thread_id` 全廃のため `WHERE thread_id = X` は使えない。 全 message を引き、
-    /// 各 message の root を [`walk_to_root`](Self::walk_to_root) で求めて `root_id` 一致を
-    /// filter する。 wiremsg の thread は小規模 (agent 間の会話) を想定しており、 全件
-    /// 走査のコストは許容範囲。 大規模化したら index 付き query への最適化を検討する。
-    async fn thread_messages(&self, root_id: &str) -> Result<Vec<WireMessage>> {
-        let mut res = self
-            .db
-            .query("SELECT * FROM wire_messages ORDER BY created_at ASC, id ASC;")
-            .await
-            .map_err(|e| anyhow::anyhow!("wiremsg thread_messages failed: {e}"))?;
-        let rows: Vec<serde_json::Value> = res
-            .take(0)
-            .map_err(|e| anyhow::anyhow!("wiremsg thread_messages take failed: {e}"))?;
-        let all: Vec<WireMessage> = rows
-            .iter()
-            .map(Self::row_to_message)
-            .collect::<Result<_>>()?;
-        // root が一致する message だけ残す
-        let mut out = Vec::new();
-        for m in all {
-            if self.walk_to_root(&m.id).await? == root_id {
-                out.push(m);
-            }
-        }
-        Ok(out)
     }
 
     /// `agent ∈ to_addrs` かつ `local_seq > cursor` の message を `local_seq` 昇順で取得
@@ -1247,90 +1178,6 @@ mod tests {
     // -------------------------------------------------------------------------
     // thread_participant — sparse 例外表 (left のみ行を持つ)
     // -------------------------------------------------------------------------
-
-    /// thread_participants: 参加者集合は message の from / to_addrs から創発する
-    #[tokio::test]
-    async fn thread_participants_derived_from_messages() {
-        let store = make_test_store().await;
-        let root = store
-            .send_root(
-                "alice@vp",
-                &["bob@vp".to_string(), "carol@vp".to_string()],
-                body("x"),
-            )
-            .await
-            .expect("send_root");
-
-        // 例外表に行が一切無くても、参加者は message から導出される
-        let all = store
-            .thread_participants(&root.id, false)
-            .await
-            .expect("all");
-        assert_eq!(all.len(), 3, "from + to_addrs = alice/bob/carol の 3 名");
-        assert!(all.contains(&"alice@vp".to_string()));
-        assert!(all.contains(&"bob@vp".to_string()));
-        assert!(all.contains(&"carol@vp".to_string()));
-    }
-
-    /// thread_participants: reply で巻き込んだ参加者も message 走査で集まる
-    #[tokio::test]
-    async fn thread_participants_includes_reply_joiners() {
-        let store = make_test_store().await;
-        let root = store
-            .send_root("alice@vp", &["bob@vp".to_string()], body("root"))
-            .await
-            .expect("root");
-        // carol を reply で巻き込む
-        store
-            .send_reply(
-                "alice@vp",
-                &["bob@vp".to_string(), "carol@vp".to_string()],
-                body("reply"),
-                &root.id,
-            )
-            .await
-            .expect("reply");
-        let all = store
-            .thread_participants(&root.id, false)
-            .await
-            .expect("all");
-        assert_eq!(
-            all.len(),
-            3,
-            "root + reply の全 message から alice/bob/carol"
-        );
-        assert!(all.contains(&"carol@vp".to_string()), "reply joiner も含む");
-    }
-
-    /// thread_participants: exclude_left で sparse 例外表の left 行を除外
-    #[tokio::test]
-    async fn thread_participants_excludes_left() {
-        let store = make_test_store().await;
-        let root = store
-            .send_root(
-                "alice@vp",
-                &["bob@vp".to_string(), "carol@vp".to_string()],
-                body("x"),
-            )
-            .await
-            .expect("send_root");
-
-        // carol の left 行を sparse 例外表に CREATE する (thread = root id)
-        mark_left(&store, &root.id, "carol@vp").await;
-
-        let all = store
-            .thread_participants(&root.id, false)
-            .await
-            .expect("all");
-        assert_eq!(all.len(), 3, "exclude_left=false なら全 3 名");
-
-        let active = store
-            .thread_participants(&root.id, true)
-            .await
-            .expect("active");
-        assert_eq!(active.len(), 2, "exclude_left=true なら carol を除く 2 名");
-        assert!(!active.contains(&"carol@vp".to_string()));
-    }
 
     /// reply-all 展開は left した agent を除外する (send 側 left 強制、 R1)
     ///
