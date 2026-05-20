@@ -30,6 +30,16 @@ export interface ProcessRestart {
   path: string;
 }
 
+/** Request "process:stop" */
+export interface ProcessStop {
+  path: string;
+}
+
+/** Request "process:delete" */
+export interface ProcessDelete {
+  path: string;
+}
+
 /** Request "process:add" — empty payload */
 export interface ProcessAdd {}
 
@@ -81,6 +91,8 @@ export interface IpcChannelRequestTypes {
   ProcessToggle: { request: ProcessToggle; response: void };
   ProcessReorder: { request: ProcessReorder; response: void };
   ProcessRestart: { request: ProcessRestart; response: void };
+  ProcessStop: { request: ProcessStop; response: void };
+  ProcessDelete: { request: ProcessDelete; response: void };
   ProcessAdd: { request: ProcessAdd; response: void };
   LaneSelect: { request: LaneSelect; response: void };
   LaneDelete: { request: LaneDelete; response: void };
@@ -102,6 +114,8 @@ export const IpcChannelMeta = {
     ProcessToggle: { request: "process:toggle" as const, response: "void" as const },
     ProcessReorder: { request: "process:reorder" as const, response: "void" as const },
     ProcessRestart: { request: "process:restart" as const, response: "void" as const },
+    ProcessStop: { request: "process:stop" as const, response: "void" as const },
+    ProcessDelete: { request: "process:delete" as const, response: "void" as const },
     ProcessAdd: { request: "process:add" as const, response: "void" as const },
     LaneSelect: { request: "lane:select" as const, response: "void" as const },
     LaneDelete: { request: "lane:delete" as const, response: "void" as const },
@@ -119,6 +133,8 @@ export type IpcEnvelope =
   | ({ t: "process:toggle" } & ProcessToggle)
   | ({ t: "process:reorder" } & ProcessReorder)
   | ({ t: "process:restart" } & ProcessRestart)
+  | ({ t: "process:stop" } & ProcessStop)
+  | ({ t: "process:delete" } & ProcessDelete)
   | ({ t: "process:add" } & ProcessAdd)
   | ({ t: "lane:select" } & LaneSelect)
   | ({ t: "lane:delete" } & LaneDelete)

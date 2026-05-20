@@ -1126,6 +1126,14 @@ struct SidebarIpcOutcome {
     /// Phase 5-C: Process restart 要求 `(project_name)`。
     /// caller が TheWorld の `/api/world/processes/{name}/restart` を呼ぶ。
     restart_process_request: Option<String>,
+    /// Process stop 要求 `(project_name)`。
+    /// caller が TheWorld の `/api/world/processes/{name}/stop` を呼ぶ。
+    /// project は registered のまま (一時停止中 tab へ移る)。
+    stop_process_request: Option<String>,
+    /// Project delete 要求 `(project_name, project_path)`。
+    /// caller が SP を stop してから `/api/world/projects/remove` を呼ぶ。
+    /// `project_name` は stop 用、 `project_path` は remove 用 (registry key)。
+    delete_project_request: Option<(String, String)>,
     /// Phase 5-D fix: SP auto-spawn dedup HashSet から path を release する要求。
     /// 「accordion を閉じる」 = 「ユーザが retry を望んでいる」 と解釈、 失敗ループの
     /// dedup deadlock を抜けられるようにする。 caller は `sp_spawn_triggered.remove(path)` を呼ぶ。
@@ -1329,6 +1337,36 @@ fn handle_sidebar_ipc(
                 .to_string();
             tracing::info!("process:restart {} (project_name={})", m.path, project_name);
             out.restart_process_request = Some(project_name);
+        }
+        IpcEnvelope::ProcessStop(m) => {
+            // SP を停止する (project は registered のまま → 一時停止中 tab へ)。
+            // restart と同様 path の leaf name を project name として扱う。
+            if m.path.is_empty() {
+                tracing::warn!("process:stop with empty path: {}", msg);
+                return out;
+            }
+            let project_name = std::path::Path::new(&m.path)
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or(m.path.as_str())
+                .to_string();
+            tracing::info!("process:stop {} (project_name={})", m.path, project_name);
+            out.stop_process_request = Some(project_name);
+        }
+        IpcEnvelope::ProcessDelete(m) => {
+            // project を完全に削除 (SP 停止 + projects.kdl から unregister)。
+            // UI 側で 2-click 確認済。 stop 用に project_name、 remove 用に path を渡す。
+            if m.path.is_empty() {
+                tracing::warn!("process:delete with empty path: {}", msg);
+                return out;
+            }
+            let project_name = std::path::Path::new(&m.path)
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or(m.path.as_str())
+                .to_string();
+            tracing::info!("process:delete {} (project_name={})", m.path, project_name);
+            out.delete_project_request = Some((project_name, m.path));
         }
         // process:add / project:clone:pickFolder は `AppEvent::SidebarIpc` の
         // dispatch 段で picker ルートに分岐済 (handle_sidebar_ipc には到達しない)。
@@ -2124,6 +2162,114 @@ pub fn run() -> anyhow::Result<()> {
                                         tracing::warn!(
                                             "restart_process failed for {}: {}",
                                             project_name_clone,
+                                            e
+                                        );
+                                    }
+                                }
+                            });
+                        })
+                        .ok();
+                }
+                // Process stop 要求 (project context menu の Stop project から)。
+                // restart と同じく current-thread runtime を立てて async client を回す。
+                if let Some(project_name) = outcome.stop_process_request {
+                    let proxy = async_action_proxy.clone();
+                    let project_name_clone = project_name.clone();
+                    thread::Builder::new()
+                        .name(format!("stop-{}", project_name))
+                        .spawn(move || {
+                            let rt = match tokio::runtime::Builder::new_current_thread()
+                                .enable_all()
+                                .build()
+                            {
+                                Ok(rt) => rt,
+                                Err(e) => {
+                                    tracing::warn!("stop_process tokio runtime: {}", e);
+                                    return;
+                                }
+                            };
+                            rt.block_on(async move {
+                                let client = crate::client::TheWorldClient::new(32000);
+                                match client.stop_process(&project_name_clone).await {
+                                    Ok(()) => {
+                                        tracing::info!("stop_process OK: {}", project_name_clone);
+                                        // 完了 → projects 再 fetch → 一時停止中 tab へ反映
+                                        if let Ok(projects) = client.list_projects().await {
+                                            let _ = proxy
+                                                .send_event(AppEvent::ProcessesLoaded(projects));
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            "stop_process failed for {}: {}",
+                                            project_name_clone,
+                                            e
+                                        );
+                                    }
+                                }
+                            });
+                        })
+                        .ok();
+                }
+                // Project delete 要求 (project context menu の Delete project から、
+                // UI で 2-click 確認済)。 daemon の remove_project は稼働中 SP があると
+                // エラーになるため、 先に stop → grace → remove と chain する
+                // (restart_process が capability 内でやっているのと同じ順序)。
+                if let Some((project_name, project_path)) = outcome.delete_project_request {
+                    let proxy = async_action_proxy.clone();
+                    thread::Builder::new()
+                        .name(format!("delete-project-{}", project_name))
+                        .spawn(move || {
+                            let rt = match tokio::runtime::Builder::new_current_thread()
+                                .enable_all()
+                                .build()
+                            {
+                                Ok(rt) => rt,
+                                Err(e) => {
+                                    tracing::warn!("delete_project tokio runtime: {}", e);
+                                    return;
+                                }
+                            };
+                            rt.block_on(async move {
+                                let client = crate::client::TheWorldClient::new(32000);
+                                // stop は best-effort: SP が未起動 (= 一時停止中) なら
+                                // 「No running Process」 エラーが返るが、 続行して remove する。
+                                match client.stop_process(&project_name).await {
+                                    Ok(()) => {
+                                        tracing::info!(
+                                            "delete: stop_process OK: {}",
+                                            project_name
+                                        );
+                                        // shutdown 伝播 + port release を待つ grace period
+                                        tokio::time::sleep(
+                                            std::time::Duration::from_millis(500),
+                                        )
+                                        .await;
+                                    }
+                                    Err(e) => {
+                                        tracing::info!(
+                                            "delete: stop_process skipped for {} (continuing): {}",
+                                            project_name,
+                                            e
+                                        );
+                                    }
+                                }
+                                match client.remove_project(&project_path).await {
+                                    Ok(()) => {
+                                        tracing::info!(
+                                            "remove_project OK: {}",
+                                            project_path
+                                        );
+                                        // 完了 → projects 再 fetch → sidebar から除去
+                                        if let Ok(projects) = client.list_projects().await {
+                                            let _ = proxy
+                                                .send_event(AppEvent::ProcessesLoaded(projects));
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            "remove_project failed for {}: {}",
+                                            project_path,
                                             e
                                         );
                                     }

@@ -31,6 +31,16 @@ protocol "sidebar" version="1.0.0" {
         request "process:restart" {
             field "path" type="string"
         }
+        // Process stop 要求 (SP を停止。 project は registered のまま →
+        // 一時停止中 tab へ移動。 enabled フラグは不変、 SP プロセスだけ落とす)
+        request "process:stop" {
+            field "path" type="string"
+        }
+        // Project delete 要求 (SP 停止 + projects.kdl から unregister。
+        // 破壊的なので UI 側で 2-click 確認済。 repo ディレクトリ自体は消さない)
+        request "process:delete" {
+            field "path" type="string"
+        }
         // sidebar の project 追加ボタン (fieldless)
         request "process:add" {}
         // Lane row click → main area に対応 pane を表示

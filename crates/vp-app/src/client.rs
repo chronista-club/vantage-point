@@ -355,6 +355,42 @@ impl TheWorldClient {
         Ok(())
     }
 
+    /// SP (Project Process) を停止する (POST /api/world/processes/{name}/stop)。
+    ///
+    /// project は registered のまま (`enabled` フラグ不変) — SP プロセスだけ落とす。
+    /// stop 後は `process_status = Stopped` になり、 sidebar の「一時停止中」 tab へ移る。
+    pub async fn stop_process(&self, project_name: &str) -> Result<()> {
+        let url = format!(
+            "{}/api/world/processes/{}/stop",
+            self.base_url, project_name
+        );
+        let resp = self.client.post(&url).send().await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("stop_process HTTP {}: {}", status, text);
+        }
+        Ok(())
+    }
+
+    /// project を登録解除する (POST /api/world/projects/remove)。
+    ///
+    /// サーバ側 `RemoveProjectRequest`: `{ path: String }`。 `projects.kdl` からも
+    /// 永続的に除かれる。 daemon の `remove_project` は **稼働中 SP があるとエラー**を
+    /// 返すため、 caller は先に `stop_process` を呼んでおくこと (repo ディレクトリ
+    /// 自体は削除しない)。
+    pub async fn remove_project(&self, path: &str) -> Result<()> {
+        let url = format!("{}/api/world/projects/remove", self.base_url);
+        let body = serde_json::json!({ "path": path });
+        let resp = self.client.post(&url).json(&body).send().await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("remove_project HTTP {}: {}", status, text);
+        }
+        Ok(())
+    }
+
     /// Phase 3-A: SP に Wing Lane を create (`POST /api/lanes`)。
     /// `branch` 指定時は SP が `vp lane new <name> <branch>` で wing dir を作成して spawn する。
     /// `stand` 指定時は SP が `mise run vp:stand:{stand}` で specified stand を起動する

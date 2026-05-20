@@ -102,11 +102,13 @@ fn regenerates_sidebar_ipc_bindings() {
     assert!(ts_file.contains("export type IpcEnvelope ="));
     assert!(ts_file.contains("({ t: \"project:clone:pickFolder\" } & ProjectClonePickFolder)"));
 
-    // schema の全 11 request の wire 名が Rust / TS 双方に出ていること。
+    // schema の全 13 request の wire 名が Rust / TS 双方に出ていること。
     for wire in [
         "process:toggle",
         "process:reorder",
         "process:restart",
+        "process:stop",
+        "process:delete",
         "process:add",
         "lane:select",
         "lane:delete",

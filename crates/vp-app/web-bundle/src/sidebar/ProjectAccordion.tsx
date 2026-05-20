@@ -56,16 +56,35 @@ export function ProjectAccordion(props: { proc: ProcessPaneState }) {
   }
 
   // 📁 project ヘッダの右クリック → project context menu。
-  // Delete project は PR-2 (process:delete fullstack) で追加予定。
+  //   - Restart project: 常時
+  //   - Stop project: SP 稼働中のみ (port は running 時だけ Some)。 停止すると
+  //     project は registered のまま「一時停止中」 tab へ移る。
+  //   - Delete project: 常時。 破壊的 (projects.kdl から unregister) なので 2-click 確認。
   const onSummaryContextMenu = (e: MouseEvent) => {
+    const proc = props.proc
+    const spRunning = proc.port != null
     const items: ContextMenuItem[] = [
       {
         label: 'Restart project',
         icon: 'ph:arrow-clockwise',
-        onSelect: () => sendIpc({ t: 'process:restart', path: props.proc.path }),
+        onSelect: () => sendIpc({ t: 'process:restart', path: proc.path }),
       },
     ]
-    openContextMenu(props.proc.name, items, e.clientX, e.clientY)
+    if (spRunning) {
+      items.push({
+        label: 'Stop project',
+        icon: 'ph:stop',
+        onSelect: () => sendIpc({ t: 'process:stop', path: proc.path }),
+      })
+    }
+    items.push({
+      label: 'Delete project',
+      icon: 'ph:trash',
+      danger: true,
+      confirm: { label: 'もう一度クリックで削除', icon: 'ph:check' },
+      onSelect: () => sendIpc({ t: 'process:delete', path: proc.path }),
+    })
+    openContextMenu(proc.name, items, e.clientX, e.clientY)
   }
 
   return (
