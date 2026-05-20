@@ -94,6 +94,19 @@ enum Commands {
     #[command(subcommand)]
     Mailbox(commands::mailbox::MailboxCommands),
 
+    /// directmsg — tmux send-keys ベースの直接メッセージ（緊急 / ephemeral 用、wiremsg の補助）
+    ///
+    /// 宛先 lane の tmux session に直接テキストを send-keys する。SP / DB 非依存。
+    Directmsg {
+        /// 宛先 lane address（"<project>/lead" または "<project>/wing/<name>"）
+        lane: String,
+        /// 送信テキスト
+        text: String,
+        /// 末尾に Enter を付けない
+        #[arg(long)]
+        no_enter: bool,
+    },
+
     /// LAN address book — mDNS で 同 LAN 上の VP world を discover + 永続化 (VP-148 PR-P3-2)
     ///
     /// `vp lan discover` で 列挙、 `vp lan add <alias>` で `~/.config/vp/addresses.toml` に追加、
@@ -317,6 +330,11 @@ fn main() -> Result<()> {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(commands::mailbox::run(cmd))
         }
+        Commands::Directmsg {
+            lane,
+            text,
+            no_enter,
+        } => commands::directmsg::run(&lane, &text, !no_enter),
         Commands::Lan(cmd) => commands::lan::handle_lan_command(cmd),
     }
 }

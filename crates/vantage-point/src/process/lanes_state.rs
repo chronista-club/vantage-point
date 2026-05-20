@@ -158,26 +158,44 @@ impl LaneAddress {
     ///
     /// agent (Claude CLI on HD) はこの関数の戻り値を `tmux send-keys -t <session>` の
     /// 宛先として使う。`/api/lanes` の cache 値とも一致する (deterministic)。
-    pub fn tmux_session_name(&self, stand_name: &str) -> String {
-        // stand_name は `vp:stand:{name}` の name 部分そのまま (例: "hd" / "shell" / "tmux")。
-        // 旧 enum dispatch (HeavensDoor → "hd"、 TheHand → "th") は廃止。
-        // 旧 TH の "th" は wire format 上では "shell" に rename された (doc 11)。
+    /// tmux session 名の stand を除いた prefix。形式 `vp-{project}-{lane_label}-`。
+    ///
+    /// stand を指定せず session を prefix 一致で引きたい用途（`vp directmsg` 等）に使う。
+    /// sanitize は per-char なので、`tmux_session_prefix()` は必ず `tmux_session_name()` の
+    /// 戻り値の prefix に一致する。
+    pub fn tmux_session_prefix(&self) -> String {
         let lane_label: &str = match (&self.kind, self.name.as_deref()) {
             (LaneKind::Lead, _) => "lead",
             (LaneKind::Wing, Some(n)) => n,
             (LaneKind::Wing, None) => "unnamed",
         };
-        let raw = format!("vp-{}-{}-{}", self.project, lane_label, stand_name);
-        raw.chars()
-            .map(|c| {
-                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                    c
-                } else {
-                    '-'
-                }
-            })
-            .collect()
+        sanitize_tmux_name(&format!("vp-{}-{}-", self.project, lane_label))
     }
+
+    pub fn tmux_session_name(&self, stand_name: &str) -> String {
+        // stand_name は `vp:stand:{name}` の name 部分そのまま (例: "hd" / "shell" / "tmux")。
+        // 旧 enum dispatch (HeavensDoor → "hd"、 TheHand → "th") は廃止。
+        // 旧 TH の "th" は wire format 上では "shell" に rename された (doc 11)。
+        // prefix + sanitize 済 stand の連結 (sanitize は per-char なので分配可能)。
+        format!(
+            "{}{}",
+            self.tmux_session_prefix(),
+            sanitize_tmux_name(stand_name)
+        )
+    }
+}
+
+/// tmux session 名に使えない文字 ([A-Za-z0-9_-] 以外) を '-' に置換する。
+fn sanitize_tmux_name(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect()
 }
 
 impl fmt::Display for LaneAddress {
