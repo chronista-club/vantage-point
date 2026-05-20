@@ -1290,7 +1290,7 @@ impl VantageMcp {
     /// GET /api/lanes wrapper、 各 Lane に mailbox_addresses (per-Lane Stands の wire address)、
     /// top-level に project_addresses + world_addresses を synthesize。
     #[tool(
-        description = "List all Lanes (Lead + Wings) in the current project with comprehensive routing info. Each Lane returns: address, kind, state, stand, pid, cwd, tmux session, wing_status, AND mailbox_addresses (= wire-ready addresses for `msg_send`)。 Each lane's mailbox_addresses has two entries: `agent` (= the lane's Claude session inbox, e.g. `agent@vantage-point` for lead or `agent@vantage-point/chore` for wing 'chore') and `canvas` (= the lane's Canvas / Paisley Park inbox, e.g. `canvas@vantage-point/chore`)。 Top-level also returns project_addresses (e.g. `gold_experience@<project>`) and world_addresses (e.g. `hermit_purple@world`)。 Use this to discover Wings, decide deletion targets, pick mailbox routes for msg_send。 Replaces multi-step `vp ps` + `curl /api/lanes`。"
+        description = "List all Lanes (Lead + Wings) in the current project with comprehensive routing info. Each Lane returns: address, kind, state, stand, pid, cwd, tmux session, wing_status, AND mailbox_addresses (= wire-ready addresses for `wire_send`)。 Each lane's mailbox_addresses has two entries: `agent` (= the lane's Claude session inbox, e.g. `agent@vantage-point` for lead or `agent@vantage-point/chore` for wing 'chore') and `canvas` (= the lane's Canvas / Paisley Park inbox, e.g. `canvas@vantage-point/chore`)。 Top-level also returns project_addresses (e.g. `gold_experience@<project>`) and world_addresses (e.g. `hermit_purple@world`)。 Use this to discover Wings, decide deletion targets, pick wire routes for wire_send。 Replaces multi-step `vp ps` + `curl /api/lanes`。"
     )]
     async fn list_lanes(
         &self,
@@ -2358,7 +2358,7 @@ if bestId > 0 { print(bestId) }
 
     /// Send a message to a msgbox address
     #[tool(
-        description = "Send a message to a VP Msgbox address. Use this for inter-agent communication (replaces ccwire). Local actors: 'agent' (Echoes lead), 'protocol', 'notify'. World actor: 'hermit_purple@world' (MIDI / external control). Cross-process: 'agent@<project>' — call msg_directory first to discover available addresses across all VP processes. All messages are persisted (VP-158, no opt-in needed)."
+        description = "[DEPRECATED — use wire_send for inter-agent communication. msg_* is being retired in redesign Phase C; it is kept only for strangler-pattern coexistence.] Send a message to a VP Msgbox address. Local actors: 'agent' (Echoes lead), 'protocol', 'notify'. World actor: 'hermit_purple@world' (MIDI / external control). Cross-process: 'agent@<project>' — call msg_directory first to discover available addresses across all VP processes. All messages are persisted (VP-158, no opt-in needed)."
     )]
     async fn msg_send(
         &self,
@@ -2411,7 +2411,7 @@ if bestId > 0 { print(bestId) }
 
     /// List registered msgbox addresses
     #[tool(
-        description = "List all registered Msgbox addresses in the current Process. Shows which capabilities and agents have active msgboxes."
+        description = "[DEPRECATED — msg_* is being retired in redesign Phase C.] List all registered Msgbox addresses in the current Process. Shows which capabilities and agents have active msgboxes."
     )]
     async fn msg_peers(&self) -> Result<CallToolResult, McpError> {
         let resp = self.quic_call("msg_peers", serde_json::json!({})).await?;
@@ -2423,7 +2423,7 @@ if bestId > 0 { print(bestId) }
 
     /// Cross-process actor directory (VP-65)
     #[tool(
-        description = "List all registered actors across all VP processes via TheWorld registry. Returns project_name → [actors] mapping. Use this to discover available addresses (e.g. 'agent@creo-memories') before calling msg_send. Optionally filter by project_name."
+        description = "[DEPRECATED — msg_* is being retired in redesign Phase C; the cross-process discovery successor for wire_* is not yet decided.] List all registered actors across all VP processes via TheWorld registry. Returns project_name → [actors] mapping. Optionally filter by project_name."
     )]
     async fn msg_directory(
         &self,
@@ -2523,7 +2523,7 @@ if bestId > 0 { print(bestId) }
 
     /// Receive a message from a lane's mailbox (VP-166: (lane, stand)-aware)
     #[tool(
-        description = "Receive a message from a lane's mailbox in this project. Params: `lane` (default 'lead', or a wing name like 'chore') and `stand` (default 'agent' = the lane's Claude session inbox; 'canvas' = the lane's Paisley Park / Canvas inbox). Reads box `<stand>#<lane>` (e.g. `agent#lead` for the lead's inbox, `agent#chore` for wing 'chore'). Waits up to timeout seconds; returns immediately if a message is queued. Use this for inter-lane communication. Senders write to `agent@<project>` (lead) / `agent@<project>/<name>` (wing)."
+        description = "[DEPRECATED — use wire_recv for inter-agent communication. msg_* is being retired in redesign Phase C; it is kept only for strangler-pattern coexistence.] Receive a message from a lane's mailbox in this project. Params: `lane` (default 'lead', or a wing name like 'chore') and `stand` (default 'agent' = the lane's Claude session inbox; 'canvas' = the lane's Paisley Park / Canvas inbox). Reads box `<stand>#<lane>` (e.g. `agent#lead` for the lead's inbox, `agent#chore` for wing 'chore'). Waits up to timeout seconds; returns immediately if a message is queued. Senders write to `agent@<project>` (lead) / `agent@<project>/<name>` (wing)."
     )]
     async fn msg_recv(
         &self,
@@ -2562,7 +2562,7 @@ if bestId > 0 { print(bestId) }
 
     /// Acknowledge a message explicitly (for manual_ack mode)
     #[tool(
-        description = "Explicitly acknowledge a message received with manual_ack=true. Removes the message from the persistent store. No-op for auto-ack messages (they are acked automatically on recv)."
+        description = "[DEPRECATED — wire_recv has no explicit ack; the per-agent read cursor advances automatically on receive. msg_* is being retired in redesign Phase C.] Explicitly acknowledge a message received with manual_ack=true. Removes the message from the persistent store. No-op for auto-ack messages (they are acked automatically on recv)."
     )]
     async fn msg_ack(
         &self,
@@ -2580,7 +2580,7 @@ if bestId > 0 { print(bestId) }
 
     /// Get the full thread (reply_to chain) for a given message
     #[tool(
-        description = "Trace the reply_to chain from a given message and return all messages in the thread (root + all descendants), sorted by timestamp."
+        description = "[DEPRECATED — use wire_recv; threading (thread_id / prev) is built into wire messages, so no separate thread-trace call is needed. msg_* is being retired in redesign Phase C.] Trace the reply_to chain from a given message and return all messages in the thread (root + all descendants), sorted by timestamp."
     )]
     async fn msg_thread(
         &self,
@@ -2603,7 +2603,7 @@ if bestId > 0 { print(bestId) }
 
     /// Send a wiremsg (new thread, or a reply when reply_to is set)
     #[tool(
-        description = "Send a threaded wire message. Without `reply_to`, starts a NEW thread (root message). With `reply_to` (a wire message id), posts a REPLY into that message's thread. Recipients receive the message as unread; the sender does not see their own root message. Use wire_recv to read replies. This is the threaded inbox (Phase A ①); it coexists with msg_send."
+        description = "Send a threaded wire message. Without `reply_to`, starts a NEW thread (root message). With `reply_to` (a wire message id), posts a REPLY into that message's thread. Recipients receive the message as unread; the sender does not see their own root message. Use wire_recv to read replies. This is the PRIMARY channel for inter-agent communication — it replaces the deprecated msg_send."
     )]
     async fn wire_send(
         &self,
@@ -2625,7 +2625,7 @@ if bestId > 0 { print(bestId) }
 
     /// Receive unread wiremsg messages from this agent's threads
     #[tool(
-        description = "Receive unread messages from all wire threads this agent participates in. Waits up to `timeout` seconds (default 5, max 30); returns immediately if unread messages exist. Each returned message has `id`, `thread_id`, `prev`, `from`, `to`, `body`, `created_at`. Reading advances this agent's read cursor so messages are not re-delivered. This is the threaded inbox (Phase A ①); it coexists with msg_recv."
+        description = "Receive unread messages from all wire threads this agent participates in. Waits up to `timeout` seconds (default 5, max 30); returns immediately if unread messages exist. Each returned message has `id`, `thread_id`, `prev`, `from`, `to`, `body`, `created_at`. Reading advances this agent's read cursor so messages are not re-delivered. This is the PRIMARY channel for inter-agent communication — it replaces the deprecated msg_recv."
     )]
     async fn wire_recv(
         &self,
