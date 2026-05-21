@@ -1,4 +1,4 @@
-//! Notification bridge actor — `notify` mailbox から Msgbox Notification msg を受信し、
+//! Notification bridge actor — `notify@<project>` wire address に届いた message を受信し、
 //! macOS DistributedNotification に変換する Service actor。
 //!
 //! ## 設計 (VP-159 PR-3 → PR-4b、 2026-05-11)
@@ -10,24 +10,36 @@
 //!   `ActorRegistry::spawn_service` 経由に集約 (= JoinHandle を ActorRegistry が保持、
 //!   PR-5 supervisor 統一の foundation)。
 //!
-//! 既存挙動は完全互換 (= 通信経路 / msg flow / payload schema は不変)。
+//! ## wiremsg R4 (group B 移行、 2026-05-21) — recv path を wire accumulation に rewire
+//!
+//! 旧 `WhitesnakeStore.claim("notify", "lead", ...)` の 100ms polling を廃止し、
+//! wire accumulation (`WiremsgStore`) の per-agent cursor recv に切替。 actor は
+//! `notify@<project>` を wire address として `WiremsgStore::recv` し、 `WireNotifier`
+//! の long-poll で起床する (= `handle_wire_recv` と同型の取りこぼし防止プロトコル)。
+//!
+//! - 旧 msgbox は `claim → mark_consumed` の destructive 消費だったが、 wire は
+//!   per-agent cursor 前進 (非破壊) なので mark_consumed / release_claim は不要。
+//! - 旧 `MessageKind::Notification` での型区別は廃止 — `notify@<project>` 宛は全て
+//!   notification 扱い、 body から `project` / `message` / `path` を抽出する。
+//! - producer は `wire_send(to=["notify@<project>"], ...)` (= agent / cross-process
+//!   forward 経由)。 旧 `msg_send(to="notify")` 経路は R5 で msgbox 撤去とともに廃止。
 //!
 //! ## 役割
 //!
-//! - Msgbox address `notify` の Notification msg を recv
-//! - payload (`project` / `message` / `path`) を抽出 (= project_dir fallback あり)
+//! - wire address `notify@<project>` 宛 message を recv
+//! - body (`project` / `message` / `path`) を抽出 (= project_dir fallback あり)
 //! - `crate::notify::post_cc_notification` で macOS DistributedNotification 配信
 //!
 //! ## shutdown
 //!
-//! `shutdown_token.cancelled()` で recv loop 終了 (= 既存挙動と完全互換)。
+//! `shutdown_token.cancelled()` で recv loop 終了。
 //!
 //! ## 関連
 //!
 //! - VP-24 (Mailbox core) — original 設計
 //! - VP-159 PR-3 — Service trait 形式登録 / PR-4b — SpawnableService + ActorRegistry 経由
+//! - wiremsg 再設計 R4 — group B (本 actor + `lane_spawn_actor`) を wire accumulation に移行
 //! - parent epic: VP-156 (Mailbox routing 統一)
-//! - PR-2 同型 pattern: `AgentCapability` / `ProtocolCapability` (impl Stand)
 
 use std::any::Any;
 use std::time::Duration;
@@ -35,37 +47,46 @@ use std::time::Duration;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::capability::MsgboxStore;
-use crate::capability::msgbox::MessageKind;
-use crate::capability::msgbox_v2::WhitesnakeStore;
 use crate::capability::stand_service::{LayerScope, Service, SpawnableService};
+use crate::capability::{WireNotifier, WiremsgStore};
 
-/// Notification bridge Service (= Msgbox `notify` → DistributedNotification)。
+/// notify recv の fallback poll 間隔。 wire_send / cross-process forward 受信は
+/// 必ず `WireNotifier::notify` を呼ぶので通常は即時起床する。 この sleep は
+/// notify を取りこぼした場合の安全網 (= 最悪でもこの間隔で recv が回る)。
+const IDLE_POLL: Duration = Duration::from_secs(5);
+
+/// Notification bridge Service (= wire `notify@<project>` → DistributedNotification)。
 ///
-/// SP-local Service (= 1 Project per Process)。 `WhitesnakeStore` 経由で notify msg を
-/// poll し、 macOS DistributedNotification に変換する。
+/// SP-local Service (= 1 Project per Process)。 `WiremsgStore` の per-agent cursor recv で
+/// notify message を取得し、 macOS DistributedNotification に変換する。
 ///
-/// ## VP-177 (Phase 3 PR-5) refactor
-///
-/// 旧: `register("notify")` Handle.recv() mpsc loop
-/// 新: `WhitesnakeStore::claim("notify", "lead", ...)` polling (= 100ms interval)
-///
-/// `Option<WhitesnakeStore>` = None なら recv 経路なし、 shutdown 待ちで idle。
+/// `wiremsg_store = None` (= vpdb 未接続) なら recv 経路なし、 shutdown 待ちで idle。
 pub struct NotificationActor {
-    /// VP-177: WhitesnakeStore (= Phase 3 PR-5 で mpsc Handle から rewire)
-    msgbox_store: Option<WhitesnakeStore>,
-    /// project root directory (= payload `path` field の fallback で使う)
+    /// wiremsg R4: wire accumulation store (= 旧 `WhitesnakeStore` から rewire)
+    wiremsg_store: Option<WiremsgStore>,
+    /// wiremsg R4: long-poll 起床用 in-process notifier (`AppState` と共有)
+    wire_notifier: WireNotifier,
+    /// wire address の project segment (`notify@<project>`)
+    project: String,
+    /// project root directory (= body `path` field の fallback で使う)
     project_dir: String,
 }
 
 impl NotificationActor {
     /// 新しい `NotificationActor` を構築する。
     ///
-    /// VP-177 (Phase 3 PR-5): 旧 `new(handle, project_dir)` → `new(store, project_dir)` に
-    /// signature 変更。 caller (= server.rs) が `state.msgbox_store.clone()` を渡す。
-    pub fn new(msgbox_store: Option<WhitesnakeStore>, project_dir: String) -> Self {
+    /// wiremsg R4: 旧 `new(store, project_dir)` → `new(wiremsg_store, wire_notifier,
+    /// project, project_dir)` に signature 変更。 caller (= server.rs) が wire 系を渡す。
+    pub fn new(
+        wiremsg_store: Option<WiremsgStore>,
+        wire_notifier: WireNotifier,
+        project: String,
+        project_dir: String,
+    ) -> Self {
         Self {
-            msgbox_store,
+            wiremsg_store,
+            wire_notifier,
+            project,
             project_dir,
         }
     }
@@ -77,7 +98,7 @@ impl Service for NotificationActor {
     }
 
     fn layer_scope(&self) -> LayerScope {
-        // SP-local Service (= 1 Project per Process、 cross-machine forward は msgbox_remote 経由)
+        // SP-local Service (= 1 Project per Process、 cross-machine forward は wire_remote 経由)
         LayerScope::Project
     }
 
@@ -89,77 +110,94 @@ impl Service for NotificationActor {
 impl SpawnableService for NotificationActor {
     /// recv loop を `tokio::spawn` で起動し、 `JoinHandle<()>` を返す。 `self` は consume される。
     ///
-    /// shutdown_token.cancelled() で loop 終了、 channel close (= recv が None) でも終了。
-    /// VP-159 PR-4b: 旧 `spawn(self, shutdown)` (= 戻り値なし) を `spawn_loop(self, shutdown)
-    /// -> JoinHandle<()>` に統一、 ActorRegistry が JoinHandle を保持する path を開く。
+    /// shutdown_token.cancelled() で loop 終了。 VP-159 PR-4b で `spawn_loop` に統一、
+    /// ActorRegistry が JoinHandle を保持する。
     fn spawn_loop(self, shutdown: CancellationToken) -> JoinHandle<()> {
         tokio::spawn(async move {
-            // VP-177: msgbox_store なし = recv 経路なし、 shutdown 待ち
-            let Some(store) = self.msgbox_store.as_ref() else {
-                tracing::info!("Notification bridge: msgbox_store なし、 shutdown 待ち");
+            let Self {
+                wiremsg_store,
+                wire_notifier,
+                project,
+                project_dir,
+            } = self;
+
+            // wiremsg_store なし = recv 経路なし、 shutdown 待ち
+            let Some(store) = wiremsg_store else {
+                tracing::info!("Notification bridge: wiremsg_store なし、 shutdown 待ち");
                 shutdown.cancelled().await;
                 return;
             };
-            let consumer_id = format!("notify-{}", std::process::id());
-            tracing::info!("Notification bridge 起動 (= WhitesnakeStore claim polling)");
+            let address = format!("notify@{}", project);
+            tracing::info!(
+                "Notification bridge 起動 (= wire accumulation recv、 address={})",
+                address
+            );
+
             loop {
-                tokio::select! {
-                    _ = shutdown.cancelled() => {
-                        tracing::info!("Notification bridge: shutdown");
-                        break;
-                    }
-                    _ = tokio::time::sleep(Duration::from_millis(100)) => {
-                        match store.claim("notify", "lead", &consumer_id).await {
-                            Ok(Some(msg)) if msg.kind == MessageKind::Notification => {
-                                let project = msg
-                                    .payload
-                                    .get("project")
-                                    .and_then(|v| v.as_str())
-                                    .filter(|s| !s.is_empty())
-                                    .unwrap_or_else(|| {
-                                        self.project_dir
-                                            .rsplit('/')
-                                            .find(|s| !s.is_empty())
-                                            .unwrap_or("unknown")
-                                    })
-                                    .to_string();
-                                let message = msg
-                                    .payload
-                                    .get("message")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("完了")
-                                    .to_string();
-                                let path = msg
-                                    .payload
-                                    .get("path")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or(&self.project_dir)
-                                    .to_string();
-                                crate::notify::post_cc_notification(&project, &message, &path);
-                                // VP-177 PR-5: notify は fire-and-forget semantic (= post 後に
-                                // consumer 側で ack する経路が存在しない)。 旧 mpsc Handle::recv は
-                                // pop = 消費完了で manual_ack 概念が不在だったため、 WhitesnakeStore
-                                // 移植時に msg.manual_ack を尊重すると 30s stale claim loop で再 claim
-                                // → post_cc_notification 重複発火する。 よって manual_ack に関わらず
-                                // **常に** mark_consumed を呼ぶ (Round 1 review Issue #1)。
-                                if let Err(e) = store.mark_consumed(&msg.id).await {
-                                    tracing::warn!("VP-177 notify mark_consumed failed (id={}): {}", msg.id, e);
-                                }
-                            }
-                            Ok(Some(other_msg)) => {
-                                // 非 Notification: claim 済なので即 release (= 他 consumer 不在だが念のため)
-                                if let Err(e) = store.release_claim(&other_msg.id).await {
-                                    tracing::warn!("VP-177 notify release_claim failed: {}", e);
-                                }
-                            }
-                            Ok(None) => {} // 候補なし、 polling 継続
-                            Err(e) => {
-                                tracing::warn!("VP-177 notify claim failed: {}", e);
-                            }
+                if shutdown.is_cancelled() {
+                    break;
+                }
+                // 取りこぼし防止プロトコル (WireNotifier doc 参照):
+                // handle → notified future を store.recv の前に生成する。
+                let notify = wire_notifier.handle(&address).await;
+                let notified = notify.notified();
+
+                let msgs = match store.recv(&address).await {
+                    Ok(m) => m,
+                    Err(e) => {
+                        tracing::warn!("notify wire recv failed: {}", e);
+                        tokio::select! {
+                            _ = shutdown.cancelled() => break,
+                            _ = tokio::time::sleep(IDLE_POLL) => {}
                         }
+                        continue;
                     }
+                };
+
+                if msgs.is_empty() {
+                    // 未読なし → notify (= wire_send) か fallback timeout まで待機
+                    tokio::select! {
+                        _ = shutdown.cancelled() => break,
+                        _ = notified => {}
+                        _ = tokio::time::sleep(IDLE_POLL) => {}
+                    }
+                    continue;
+                }
+
+                for msg in &msgs {
+                    post_notification(&msg.body, &project_dir);
                 }
             }
+            tracing::info!("Notification bridge: shutdown");
         })
     }
+}
+
+/// wire message の body から通知 field を抽出し、 DistributedNotification を配信する。
+///
+/// body は `{ project, message, path }` の JSON object 想定。 各 field 欠落時は
+/// 旧 msgbox 実装と同じ fallback (project_dir から project 名導出 / "完了" / project_dir)。
+fn post_notification(body: &serde_json::Value, project_dir: &str) {
+    let project = body
+        .get("project")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| {
+            project_dir
+                .rsplit('/')
+                .find(|s| !s.is_empty())
+                .unwrap_or("unknown")
+        })
+        .to_string();
+    let message = body
+        .get("message")
+        .and_then(|v| v.as_str())
+        .unwrap_or("完了")
+        .to_string();
+    let path = body
+        .get("path")
+        .and_then(|v| v.as_str())
+        .unwrap_or(project_dir)
+        .to_string();
+    crate::notify::post_cc_notification(&project, &message, &path);
 }
