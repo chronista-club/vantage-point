@@ -45,3 +45,15 @@ export { sidebar }
 export function applySidebarState(next: SidebarState): void {
   setSidebarStore(reconcile(next))
 }
+
+/**
+ * `currents_order` だけを即時更新する (#124 D&D の楽観更新)。
+ *
+ * Rust の `process:reorder` ハンドラは re-push しない設計なので、 drop 直後に
+ * ここでローカル store を更新しないと、 次の `SidebarState` push まで並びが
+ * 変わらない (ポーリング待ちのタイムラグ)。 Rust は同じ order を永続化するため、
+ * 次の push 時には値が一致し reconcile が no-op になる (flash しない)。
+ */
+export function setCurrentsOrder(order: string[]): void {
+  setSidebarStore('currents_order', order)
+}

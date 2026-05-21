@@ -16,14 +16,20 @@ import { CreoIcon } from 'creoui-icons-web'
 import { sidebar } from './store'
 import { sendIpc } from './ipc'
 import { isRunningProcess } from './classify'
+import { resolveProjectOrder } from './dnd'
 import { ContextMenu } from './ContextMenu'
 import { ProjectAccordion } from './ProjectAccordion'
 import { WorldWidget } from './WorldWidget'
 
 export function Shell() {
-  // processes を稼働中 / 一時停止中 に分割。 store の processes が変われば再計算される。
-  const running = createMemo(() => sidebar.processes.filter(isRunningProcess))
-  const paused = createMemo(() => sidebar.processes.filter((p) => !isRunningProcess(p)))
+  // D&D 並べ替え順 (`currents_order`) を適用してから 稼働中 / 一時停止中 に分割する。
+  // `currents_order` は Rust が `process:reorder` で永続化する並び順 — これを読まないと
+  // 並べ替え結果が re-push で消えてしまう (#124)。
+  const ordered = createMemo(() =>
+    resolveProjectOrder(sidebar.processes, sidebar.currents_order),
+  )
+  const running = createMemo(() => ordered().filter(isRunningProcess))
+  const paused = createMemo(() => ordered().filter((p) => !isRunningProcess(p)))
 
   // 表示中のタブ (稼働中 / 一時停止中)。 localStorage 永続、 default は稼働中。
   // 15+ project で list が溢れるため、 常に 1 セットだけ表示して crowding を防ぐ。
@@ -150,6 +156,14 @@ html,body{margin:0;height:100%;background:var(--color-surface-bg-subtle);
 .vp-proj-hint{padding:6px 12px 6px 20px;font-size:11px;
   color:var(--color-text-tertiary);font-style:italic;}
 
+/* Project D&D 並べ替え (#124) — summary を掴んで他 Project の上下に落とす。
+   draggable は details 要素 (.vp-proj) に付く (WebKit の summary 活性化対策)。
+   dragging = 掴み中を半透明、 drop-before/after = 挿入先を brand 色の線で示す。 */
+.vp-proj-summary{cursor:grab;}
+.vp-proj.dragging{opacity:.4;}
+.vp-proj.drop-before{box-shadow:inset 0 2px 0 0 var(--color-brand-primary);}
+.vp-proj.drop-after{box-shadow:inset 0 -2px 0 0 var(--color-brand-primary);}
+
 /* Lane 行 */
 .vp-lane-row{display:flex;flex-wrap:wrap;align-items:center;gap:6px;
   padding:5px var(--spacing-sm,8px) 5px 14px;font-size:12px;cursor:pointer;
@@ -182,12 +196,15 @@ html,body{margin:0;height:100%;background:var(--color-surface-bg-subtle);
 .vp-lane-line2.empty{opacity:0.5;}
 .vp-lane-row.active .vp-lane-line2{color:var(--color-brand-primary);opacity:0.7;}
 
-/* Add Wing — active project summary 右上の「+」 + 展開フォーム */
-.vp-proj-addwing{margin-left:auto;display:inline-flex;align-items:center;padding:2px;
-  border:none;background:transparent;color:var(--color-text-tertiary);cursor:pointer;
-  border-radius:3px;flex:0 0 auto;transition:background .12s ease,color .12s ease;}
-.vp-proj-addwing:hover,.vp-proj-addwing.open{
+/* Add Wing「+」(active project) / Start「▶」(一時停止中 project) — summary 右端の
+   action ボタン。 レイアウトは共通、 Start は起動 affordance として常時 brand 色。 */
+.vp-proj-addwing,.vp-proj-start{margin-left:auto;display:inline-flex;align-items:center;
+  padding:2px;border:none;background:transparent;color:var(--color-text-tertiary);
+  cursor:pointer;border-radius:3px;flex:0 0 auto;
+  transition:background .12s ease,color .12s ease;}
+.vp-proj-addwing:hover,.vp-proj-addwing.open,.vp-proj-start:hover{
   background:var(--color-surface-bg-emphasis);color:var(--color-brand-primary);}
+.vp-proj-start{color:var(--color-brand-primary);}
 .vp-add-wing-form{display:flex;flex-direction:column;gap:5px;
   padding:4px var(--spacing-sm,8px) 6px 14px;}
 .vp-add-wing-input{padding:5px 8px;border:1px solid var(--color-surface-border,#1f2233);
