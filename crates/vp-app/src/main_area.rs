@@ -898,8 +898,16 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
           term.write('\x1b[32m[lane:' + address + '] reconnected\x1b[0m\r\n');
         }
         conn.retryCount = 0;
-        try { fitAddon.fit(); } catch (_) {}
-        sendResize();
+        // active (可視) な lane のみ fit + resize 通知。 hidden lane (display:none)
+        //  で fit すると container clientWidth=0 → 極小 dims になり、 sendResize で
+        //  tmux session を 9×3 に潰す (tmux window-size latest)。 sidebar は全 project
+        //  分の lane を ensureLane → WS 接続するので、 ガード無しだと表示してない
+        //  project の Stand まで縮む。 headless lane は resize を送らず spawn 時 size
+        //  (tmux new-session -x120 -y48) を保つ。 ResizeObserver / showLane と同じ active ガード。
+        if (container.classList.contains('active')) {
+          try { fitAddon.fit(); } catch (_) {}
+          sendResize();
+        }
       };
       // 別 listener で input buffer flush ─ ws.onopen (property-based) と並走できる
       // (addEventListener は property assignment を override しない)。 PR #224 等で
