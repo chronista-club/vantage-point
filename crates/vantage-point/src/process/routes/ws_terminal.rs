@@ -153,7 +153,7 @@ async fn handle_terminal_socket_lane(
     //   フル redraw を発信する。 PtySlot scrollback と二重持ちで害悪。
     // - bare login shell (= layer=0) は tmux 経由しないので scrollback 価値あり、
     //   こちらは従来通り replay する。
-    let (mut rx, initial_bytes) = {
+    let (mut rx, initial_bytes, is_tmux_hosted) = {
         let pool = state.lane_pool.read().await;
         let stand_name = pool.get(&addr).map(|info| info.stand.clone());
         match pool.subscribe_with_scrollback(&addr) {
@@ -171,16 +171,17 @@ async fn handle_terminal_socket_lane(
                         })
                     })
                     .unwrap_or_default();
-                if metadata.is_tmux_hosted() {
+                let is_tmux_hosted = metadata.is_tmux_hosted();
+                if is_tmux_hosted {
                     tracing::debug!(
                         "/ws/terminal lane attach: tmux-hosted (stand={:?} tier={})、 scrollback {} bytes を skip (tmux redraw に委譲)",
                         stand_name,
                         metadata.tier,
                         bytes.len()
                     );
-                    (rx, Vec::new())
+                    (rx, Vec::new(), true)
                 } else {
-                    (rx, bytes)
+                    (rx, bytes, false)
                 }
             }
             None => {
@@ -215,9 +216,17 @@ async fn handle_terminal_socket_lane(
         return;
     }
 
-    // 初期 resize は client 側 cols/rows で更新 (xterm.js が ready 時 sendResize するが
-    // 念のため query param 値で同期しておく)
-    {
+    // 初期 resize: query param の cols/rows で PtySlot を同期する。
+    //
+    // ただし **tmux-hosted lane (layer >= 1) は attach 時 resize を skip** する。
+    // tmux は `window-size latest` で「最後に attach した client」 に session size を
+    // 追従させるため、 headless lane に vp-app の hidden xterm.js (sidebar は全 project
+    // 分の lane を ensureLane する。 非表示 pane は `display:none` で fit → container
+    // clientWidth=0 → 極小 dims) が attach すると、 query param 経由でも tmux session が
+    // 9×3 に潰れる。 tmux-hosted lane の size は spawn 時の `tmux new-session -x120 -y48`
+    // を初期値に、 以降は **可視 client の Resize 制御メッセージのみ**で駆動する
+    // (attach だけでは変えない)。 bare shell (layer 0) は従来どおり query param で同期。
+    if !is_tmux_hosted {
         let pool = state.lane_pool.read().await;
         if let Err(e) = pool.resize_lane(&addr, params.cols, params.rows) {
             tracing::debug!("初期 resize 失敗 (continue): {}", e);
