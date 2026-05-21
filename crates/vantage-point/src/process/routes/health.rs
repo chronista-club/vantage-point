@@ -441,8 +441,8 @@ pub async fn show_handler(
 ///
 /// VP-177 (Phase 3 PR-5): WhitesnakeStore.insert を唯一の配信 path に変更
 /// (= 旧 mpsc Router.deliver_local 廃止)。 inbound msg は DB に積まれ、 consumer
-/// 側 (NotificationActor / LaneSpawnActor / handle_msg_recv / msgbox_recv_handler)
-/// が WhitesnakeStore.claim polling で取り出す。
+/// 側 (NotificationActor / LaneSpawnActor / msgbox_recv_handler) が
+/// WhitesnakeStore.claim polling で取り出す。
 pub async fn msgbox_remote_deliver_handler(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
