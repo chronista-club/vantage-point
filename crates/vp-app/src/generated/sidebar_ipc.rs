@@ -22,6 +22,16 @@ pub struct ProcessRestart {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProcessStop {
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProcessDelete {
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProcessAdd;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -77,6 +87,10 @@ pub enum IpcEnvelope {
     ProcessReorder(ProcessReorder),
     #[serde(rename = "process:restart")]
     ProcessRestart(ProcessRestart),
+    #[serde(rename = "process:stop")]
+    ProcessStop(ProcessStop),
+    #[serde(rename = "process:delete")]
+    ProcessDelete(ProcessDelete),
     #[serde(rename = "process:add")]
     ProcessAdd,
     #[serde(rename = "lane:select")]
