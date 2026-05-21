@@ -8,9 +8,12 @@
 //!
 //! `Message` / `MessageKind` は **公共財** として複数 module で使用:
 //! - `msgbox_v2::WhitesnakeStore` (msgs table insert/claim payload)
-//! - `mcp::msg_send` / `notification_actor` / `lane_spawn_actor`
-//! - `unison_server::handle_msg_send` / `routes/health::msgbox_send_handler`
+//! - `notification_actor` / `lane_spawn_actor`
+//! - `routes/health::msgbox_send_handler`
 //! - `msgbox_remote::RemoteRoutingClient` (cross-process forward)
+//!
+//! 注: `msg_*` MCP tool / QUIC handler は wiremsg 再設計 R5-1 で撤去済 (= 後続は `wire_*`)。
+//! msgbox store 本体・HTTP route はまだ残存。
 //!
 //! 実際の routing は `WhitesnakeStore` (= SurrealDB msgs table) が単一経路。
 //!

@@ -84,94 +84,6 @@ pub struct ClosePaneParams {
     pub pane_id: String,
 }
 
-/// Parameters for msg_send tool (VP-24)
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-pub struct MsgSendParams {
-    /// 宛先アドレス
-    #[schemars(description = "Destination msgbox address (e.g. 'agent', 'protocol', 'notify')")]
-    pub to: String,
-
-    /// メッセージ本文（JSON）
-    #[schemars(description = "Message payload as JSON value")]
-    pub payload: serde_json::Value,
-
-    /// メッセージ種別
-    #[schemars(
-        description = "Message kind: 'direct' (default), 'notification', 'request', 'response'"
-    )]
-    pub kind: Option<String>,
-
-    /// 返信先メッセージID（スレッド用）
-    #[schemars(description = "Reply-to message ID for threaded conversations")]
-    pub reply_to: Option<String>,
-
-    /// TTL（秒）— msg の有効期限（VP-158: 全 msg 永続化が default）
-    #[schemars(
-        description = "TTL in seconds for the message. Default: 172800 (48h). All messages are persisted across Process restarts (VP-158, no opt-in needed)."
-    )]
-    pub ttl_secs: Option<u64>,
-
-    /// 明示 ack モード
-    #[schemars(
-        description = "If true, the message is NOT auto-acked on recv; receiver must call ack() explicitly. Useful for at-least-once delivery with crash resilience during message processing."
-    )]
-    pub manual_ack: Option<bool>,
-}
-
-/// Parameters for msg_ack tool (明示 ack)
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-pub struct MsgAckParams {
-    /// ack 対象のメッセージID
-    #[schemars(description = "Message ID to acknowledge (received from msg_recv)")]
-    pub id: String,
-}
-
-/// Parameters for msg_recv tool (VP-24, VP-157 で lane 追加)
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-pub struct MsgRecvParams {
-    /// 受信タイムアウト（秒）
-    #[schemars(
-        description = "Timeout in seconds to wait for a message (default: 5, max: 30). Returns immediately if a message is already queued."
-    )]
-    pub timeout: Option<u64>,
-
-    /// 送信元フィルタ
-    #[schemars(description = "Only receive messages from this address (optional filter)")]
-    pub from: Option<String>,
-
-    /// VP-166: 受信先 lane (default "lead"、flat 名: "lead" or "<wing-name>")
-    #[schemars(
-        description = "Receive from this lane (default: 'lead', or a wing name like 'chore'). Reads the lane's `<stand>#<lane>` box."
-    )]
-    pub lane: Option<String>,
-
-    /// VP-166: 受信先 stand (default "agent" = coding-assistant inbox)
-    #[schemars(
-        description = "Which inbox of the lane to receive from: 'agent' (default, = the lane's Claude session inbox) or 'canvas' (= the lane's Paisley Park / Canvas inbox; canvas box wiring is planned)."
-    )]
-    pub stand: Option<String>,
-}
-
-/// Parameters for msg_directory tool (VP-65: cross-process actor discovery)
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-pub struct MsgDirectoryParams {
-    /// project_name フィルタ（省略時は全プロジェクト）
-    #[schemars(
-        description = "Filter by project name (e.g. 'creo-memories'). If omitted, returns all registered actors across all projects."
-    )]
-    pub project_name: Option<String>,
-}
-
-/// Parameters for msg_thread tool
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-pub struct MsgThreadParams {
-    /// スレッドを辿る起点のメッセージID
-    #[schemars(
-        description = "Message ID to trace the reply_to chain from. Returns all messages in the thread (root + all descendants), sorted by timestamp."
-    )]
-    pub id: String,
-}
-
 /// Parameters for wire_send tool (Phase A ①: threaded wiremsg inbox)
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct WireSendParams {
@@ -476,7 +388,7 @@ pub struct TmuxAgentSendParams {
 /// この `vp mcp` プロセスが属する Lane (VP-166 PR-4)。
 ///
 /// cwd から判定する: cwd が `vp_data_dir()/lanes/<parent>-<name>` なら wing `<name>`、
-/// それ以外（= repo path）なら lead。`msg_recv` の default lane / `msg_send` の `from` /
+/// それ以外（= repo path）なら lead。`wire_send` / `wire_recv` の `from` 導出 /
 /// `list_lanes` の `is_self` 付与に使う。
 #[derive(Debug, Clone)]
 pub struct SelfLane {
@@ -526,8 +438,8 @@ impl SelfLane {
         }
     }
 
-    /// `msg_send` の `from` フィールド値: lead は `"agent"`（bare、cross-process forward 時に
-    /// `normalize_from` で `agent@<project>` になる）、wing は `"agent@<parent>/<name>"`。
+    /// `wire_send` / `wire_recv` の `from` フィールド値: lead は `"agent"`（bare、cross-process
+    /// forward 時に `normalize_from` で `agent@<project>` になる）、wing は `"agent@<parent>/<name>"`。
     pub fn from_address(&self) -> String {
         match &self.wing_parent {
             Some(parent) => format!("agent@{}/{}", parent, self.lane_name),
@@ -750,7 +662,7 @@ impl VantageMcp {
             McpError::internal_error(format!("Unison connect error ({}): {}", addr, e), None)
         })?;
         // unison 内部の request timeout は default 30s。 `quic_call_with_timeout` の outer
-        // timeout (msg_recv で server_timeout + buffer = 最大 35s) より長く取らないと
+        // timeout (wire_recv で server_timeout + buffer = 最大 35s) より長く取らないと
         // unison 側が先に発火してしまうので、 余裕を持って 60s に引き上げる (VP-163)。
         let channel = Arc::new(
             client
@@ -783,14 +695,14 @@ impl VantageMcp {
 
     /// Unison QUIC の "process" チャネル呼び出し（outer timeout 指定可）
     ///
-    /// `msg_recv` のように **server 側が長時間ブロックする** method では、 outer timeout を
+    /// `wire_recv` のように **server 側が長時間ブロックする** method では、 outer timeout を
     /// server 側 timeout より長く取らないと client が先に諦め、 チャネルを reset → 空振り
-    /// リトライ → 同一 box への recv 二重発火 → msg ロスにつながる (VP-163)。 そういう
+    /// リトライ → 同一 thread の recv 二重発火 → msg ロスにつながる (VP-163)。 そういう
     /// method は呼び出し側で `server_timeout + buffer` を渡すこと。
     ///
     /// また、 server ハンドラが `Err(e)` を返した場合、 unison は専用 error frame を持たない
     /// ため `unison_server.rs` の dispatch loop が **成功フレームに `{"error": "<msg>"}` を詰めて**
-    /// 返してくる。 これをそのまま素通しすると `msg_send` 等が「成功」と誤報するので (VP-163)、
+    /// 返してくる。 これをそのまま素通しすると 呼び出し側が「成功」と誤報するので (VP-163)、
     /// その形のレスポンスは `McpError` に変換する。
     async fn quic_call_with_timeout(
         &self,
@@ -2363,263 +2275,23 @@ if bestId > 0 { print(bestId) }
     }
 
     // =========================================================================
-    // Msgbox ツール (VP-24)
-    // =========================================================================
-
-    /// Send a message to a msgbox address
-    #[tool(
-        description = "[DEPRECATED — use wire_send for inter-agent communication. msg_* is being retired in redesign Phase C; it is kept only for strangler-pattern coexistence.] Send a message to a VP Msgbox address. Local actors: 'agent' (Echoes lead), 'protocol', 'notify'. World actor: 'hermit_purple@world' (MIDI / external control). Cross-process: 'agent@<project>' — call msg_directory first to discover available addresses across all VP processes. All messages are persisted (VP-158, no opt-in needed)."
-    )]
-    async fn msg_send(
-        &self,
-        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<MsgSendParams>,
-    ) -> Result<CallToolResult, McpError> {
-        use crate::capability::msgbox::MessageKind;
-
-        let kind = match params.kind.as_deref() {
-            Some("notification") => MessageKind::Notification,
-            Some("request") => MessageKind::Request,
-            Some("response") => MessageKind::Response,
-            _ => MessageKind::Direct,
-        };
-
-        // VP-157: from = "agent"（= lead の正規 address、 旧 "mcp" は廃止）。
-        // VP-166 PR-4: wing context なら from = "agent@<parent>/<name>"（= 自 lane の address。
-        // bare "agent" だと cross-process forward で送信元 SP の `normalize_from` が間違った
-        // project でスタンプしうる — VP-165 の from 汚染の一因。最初から正しい from を付ける）。
-        let from = self.self_lane.from_address();
-        let mut msg = crate::capability::msgbox::Message::new(&from, &params.to, kind)
-            .with_payload(&params.payload);
-
-        if let Some(reply_to) = params.reply_to {
-            msg = msg.with_reply_to(reply_to);
-        }
-
-        // VP-158: 全 msg 永続化が default のため persistent flag 廃止 (= 「on-memory」 概念排除)
-
-        // opt-in TTL
-        if let Some(secs) = params.ttl_secs {
-            msg = msg.with_ttl_secs(secs);
-        }
-
-        // opt-in 明示 ack モード
-        if params.manual_ack.unwrap_or(false) {
-            msg = msg.manual_ack();
-        }
-
-        let msg_id = msg.id.clone();
-
-        // QUIC 経由で Process の Msgbox に送信
-        let payload = serde_json::to_value(&msg)
-            .map_err(|e| McpError::internal_error(format!("Serialize error: {}", e), None))?;
-        self.quic_call("msg_send", payload).await?;
-
-        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-            format!("Message sent to '{}' (id: {})", params.to, msg_id),
-        )]))
-    }
-
-    /// List registered msgbox addresses
-    #[tool(
-        description = "[DEPRECATED — msg_* is being retired in redesign Phase C.] List all registered Msgbox addresses in the current Process. Shows which capabilities and agents have active msgboxes."
-    )]
-    async fn msg_peers(&self) -> Result<CallToolResult, McpError> {
-        let resp = self.quic_call("msg_peers", serde_json::json!({})).await?;
-
-        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-            serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "[]".to_string()),
-        )]))
-    }
-
-    /// Cross-process actor directory (VP-65)
-    #[tool(
-        description = "[DEPRECATED — msg_* is being retired in redesign Phase C; the cross-process discovery successor for wire_* is not yet decided.] List all registered actors across all VP processes via TheWorld registry. Returns project_name → [actors] mapping. Optionally filter by project_name."
-    )]
-    async fn msg_directory(
-        &self,
-        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<MsgDirectoryParams>,
-    ) -> Result<CallToolResult, McpError> {
-        // TheWorld の HTTP API 経由で actor 一覧を取得
-        let world_port = crate::cli::WORLD_PORT;
-        let url = match params.project_name.as_deref() {
-            Some(p) => format!(
-                "http://[::1]:{}/api/world/msgbox/list?project_name={}",
-                world_port,
-                urlencoding::encode(p)
-            ),
-            None => format!("http://[::1]:{}/api/world/msgbox/list", world_port),
-        };
-
-        let client = reqwest::Client::new();
-        let resp = match client.get(&url).send().await {
-            Ok(r) if r.status().is_success() => r,
-            Ok(r) => {
-                let status = r.status();
-                let text = r.text().await.unwrap_or_default();
-                return Err(McpError::internal_error(
-                    format!("TheWorld API error: {} {}", status, text),
-                    None,
-                ));
-            }
-            Err(e) => {
-                return Err(McpError::internal_error(
-                    format!("Failed to reach TheWorld: {}", e),
-                    None,
-                ));
-            }
-        };
-
-        let body: serde_json::Value = match resp.json().await {
-            Ok(v) => v,
-            Err(e) => {
-                return Err(McpError::internal_error(
-                    format!("Failed to parse TheWorld response: {}", e),
-                    None,
-                ));
-            }
-        };
-
-        // entries を project_name → [actors] にグループ化
-        let entries = body
-            .get("entries")
-            .and_then(|v| v.as_array())
-            .cloned()
-            .unwrap_or_default();
-
-        let mut by_project: std::collections::BTreeMap<String, (u16, Vec<String>)> =
-            std::collections::BTreeMap::new();
-        for entry in &entries {
-            let project = entry
-                .get("project_name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let actor = entry
-                .get("actor")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let port = entry.get("port").and_then(|v| v.as_u64()).unwrap_or(0) as u16;
-            if project.is_empty() || actor.is_empty() {
-                continue;
-            }
-            let entry = by_project.entry(project).or_insert((port, Vec::new()));
-            entry.0 = port;
-            entry.1.push(actor);
-        }
-
-        let directory: serde_json::Value = by_project
-            .into_iter()
-            .map(|(project, (port, actors))| {
-                (
-                    project,
-                    serde_json::json!({
-                        "port": port,
-                        "actors": actors,
-                    }),
-                )
-            })
-            .collect::<serde_json::Map<_, _>>()
-            .into();
-
-        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-            serde_json::to_string_pretty(&serde_json::json!({
-                "count": entries.len(),
-                "directory": directory,
-            }))
-            .unwrap_or_else(|_| "{}".to_string()),
-        )]))
-    }
-
-    /// Receive a message from a lane's mailbox (VP-166: (lane, stand)-aware)
-    #[tool(
-        description = "[DEPRECATED — use wire_recv for inter-agent communication. msg_* is being retired in redesign Phase C; it is kept only for strangler-pattern coexistence.] Receive a message from a lane's mailbox in this project. Params: `lane` (default 'lead', or a wing name like 'chore') and `stand` (default 'agent' = the lane's Claude session inbox; 'canvas' = the lane's Paisley Park / Canvas inbox). Reads box `<stand>#<lane>` (e.g. `agent#lead` for the lead's inbox, `agent#chore` for wing 'chore'). Waits up to timeout seconds; returns immediately if a message is queued. Senders write to `agent@<project>` (lead) / `agent@<project>/<name>` (wing)."
-    )]
-    async fn msg_recv(
-        &self,
-        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<MsgRecvParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let timeout = params.timeout.unwrap_or(5).min(30);
-        // VP-166 PR-4: lane 省略時は自 lane を default に（wing context なら自分の wing 名、
-        // lead context なら "lead"）。これで wing の Echoes が `msg_recv`（lane 省略）を叩くと
-        // 自分の `agent#<name>` box を読む（lead の box を盗まない）。
-        let lane = params
-            .lane
-            .unwrap_or_else(|| self.self_lane.lane_name.clone());
-        let stand = params.stand.unwrap_or_else(|| "agent".to_string());
-
-        let payload = serde_json::json!({
-            "timeout": timeout,
-            "from": params.from,
-            "lane": lane,
-            "stand": stand,
-        });
-
-        // VP-163: server 側は最大 `timeout` 秒ブロックするので、 outer timeout は +5s 余裕を持たせる。
-        // (旧: quic_call 固定 5s で timeout>=5 が必ず空振りリトライ + msg ロスしていた)
-        let resp = self
-            .quic_call_with_timeout(
-                "msg_recv",
-                payload,
-                std::time::Duration::from_secs(timeout + 5),
-            )
-            .await?;
-
-        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-            serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "null".to_string()),
-        )]))
-    }
-
-    /// Acknowledge a message explicitly (for manual_ack mode)
-    #[tool(
-        description = "[DEPRECATED — wire_recv has no explicit ack; the per-agent read cursor advances automatically on receive. msg_* is being retired in redesign Phase C.] Explicitly acknowledge a message received with manual_ack=true. Removes the message from the persistent store. No-op for auto-ack messages (they are acked automatically on recv)."
-    )]
-    async fn msg_ack(
-        &self,
-        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<MsgAckParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let payload = serde_json::json!({
-            "id": params.id,
-        });
-        self.quic_call("msg_ack", payload).await?;
-
-        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-            format!("Acked message {}", params.id),
-        )]))
-    }
-
-    /// Get the full thread (reply_to chain) for a given message
-    #[tool(
-        description = "[DEPRECATED — use wire_recv; threading (the prev pointer) is built into wire messages, so no separate thread-trace call is needed. msg_* is being retired in redesign Phase C.] Trace the reply_to chain from a given message and return all messages in the thread (root + all descendants), sorted by timestamp."
-    )]
-    async fn msg_thread(
-        &self,
-        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<MsgThreadParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let payload = serde_json::json!({ "id": params.id });
-        let resp = self.quic_call("msg_thread", payload).await?;
-        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-            serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "thread retrieved".to_string()),
-        )]))
-    }
-
-    // =========================================================================
     // wiremsg — threaded inbox (Phase A ①、 設計 mem_1CbD9H1KGQykBaFG8XXVsn)
     //
-    // 既存 msg_send/msg_recv (= claim-based Mailbox) と並存する threading 対応 inbox。
+    // agent 間メッセージングの正規 channel (threading 対応 inbox)。
+    // 旧 msgbox (`msg_*`) は wiremsg 再設計 R5-1 で MCP tool / QUIC handler を撤去済み。
     // wire_send は新規 thread の root を作るか、 reply_to 指定で既存 thread に返信する。
     // wire_recv は呼び出し agent の参加 thread の未読 message を long-poll で取得する。
     // =========================================================================
 
     /// Send a wiremsg (new thread, or a reply when reply_to is set)
     #[tool(
-        description = "Send a threaded wire message. Without `reply_to`, starts a NEW thread (root message). With `reply_to` (a wire message id), posts a REPLY into that message's thread. Recipients receive the message as unread; the sender does not see their own root message. Use wire_recv to read replies. This is the PRIMARY channel for inter-agent communication — it replaces the deprecated msg_send."
+        description = "Send a threaded wire message. Without `reply_to`, starts a NEW thread (root message). With `reply_to` (a wire message id), posts a REPLY into that message's thread. Recipients receive the message as unread; the sender does not see their own root message. Use wire_recv to read replies. This is the PRIMARY channel for inter-agent communication."
     )]
     async fn wire_send(
         &self,
         rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<WireSendParams>,
     ) -> Result<CallToolResult, McpError> {
-        // from は msg_send と同じく self_lane から導出 (lead は "agent"、 wing は "agent@<parent>/<name>")
+        // from は self_lane から導出 (lead は "agent"、 wing は "agent@<parent>/<name>")
         let from = self.self_lane.from_address();
         let payload = serde_json::json!({
             "from": from,
@@ -2635,14 +2307,14 @@ if bestId > 0 { print(bestId) }
 
     /// Receive unread wiremsg messages from this agent's threads
     #[tool(
-        description = "Receive unread messages from all wire threads this agent participates in. Waits up to `timeout` seconds (default 5, max 30); returns immediately if unread messages exist. Each returned message has `id`, `prev`, `from`, `to`, `body`, `created_at`, `local_seq`. A thread is identified by its root message id (follow `prev` to the message whose `prev` is null). Reading advances this agent's read cursor so messages are not re-delivered. This is the PRIMARY channel for inter-agent communication — it replaces the deprecated msg_recv."
+        description = "Receive unread messages from all wire threads this agent participates in. Waits up to `timeout` seconds (default 5, max 30); returns immediately if unread messages exist. Each returned message has `id`, `prev`, `from`, `to`, `body`, `created_at`, `local_seq`. A thread is identified by its root message id (follow `prev` to the message whose `prev` is null). Reading advances this agent's read cursor so messages are not re-delivered. This is the PRIMARY channel for inter-agent communication."
     )]
     async fn wire_recv(
         &self,
         rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<WireRecvParams>,
     ) -> Result<CallToolResult, McpError> {
         let timeout = params.timeout.unwrap_or(5).min(30);
-        // agent は msg_send の from と同じ self_lane 由来 address
+        // agent は wire_send の from と同じ self_lane 由来 address
         let agent = self.self_lane.from_address();
         let payload = serde_json::json!({
             "agent": agent,
@@ -2683,7 +2355,7 @@ if bestId > 0 { print(bestId) }
     // VP Port Management (VP-83 refinement, memory: mem_1CaKCbNE24KTQDuf9x4Eim)
     //
     // Deterministic port layout に基づき、slot × lane × role から port / URL
-    // を透過的に計算して返す。HD agent は msg_send 結果の URL を WebFetch で
+    // を透過的に計算して返す。agent は問い合わせた URL を WebFetch で
     // 読み込む等、自律 workflow で port を問い合わせできる。
     // ========================================================================
 
