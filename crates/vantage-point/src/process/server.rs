@@ -73,33 +73,9 @@ pub async fn run(
         tracing::warn!("Failed to initialize capabilities: {}", e);
     }
 
-    // VP-147 PR-P2-2 (gap 1): TheWorld registry への actor register snapshot は
-    // 全 lead lane actor (= protocol / agent / mcp / notify) を register した後に行う。
-    // 旧実装 (= snapshot を mcp/notify register 前) では mcp/notify が registry 未登録 →
-    // cross-process `mcp@<other>` 送信が silent drop していた dogfood gap
-    // (creo memory `mem_1CapRAtpCpahQGn8nW2fmT`)。
-    // snapshot 実体は notify bridge 設定後 (= AppState 構築直前) に移動済。
-
-    // Shutdown 時の TheWorld unregister（cancellation token で発火）
-    {
-        let shutdown_for_unreg = shutdown_token.clone();
-        tokio::spawn(async move {
-            shutdown_for_unreg.cancelled().await;
-            if let Err(e) = crate::capability::msgbox_remote::unregister_process_from_world(
-                crate::cli::WORLD_PORT,
-                port,
-            )
-            .await
-            {
-                tracing::warn!("Msgbox: TheWorld unregister failed: {}", e);
-            } else {
-                tracing::info!(
-                    "Msgbox: TheWorld registry から port={} 配下を unregister",
-                    port
-                );
-            }
-        });
-    }
+    // wiremsg R5-4: 旧 msgbox の registry サブシステム (TheWorld registry への actor
+    // register / unregister) は撤去済。 wire の cross-process delivery は TheWorld の
+    // project registry (project → SP port) を使う別経路で、 msgbox registry には依存しない。
 
     let hub = Hub::new();
 
@@ -235,7 +211,6 @@ pub async fn run(
         // VP-159 PR-4b: notify を spawn_service 済の ActorRegistry を move (= lane-spawn は AppState 構築後に追加)
         actor_registry: Arc::new(RwLock::new(actor_registry)),
         world: None,
-        msgbox_registry: None, // SP モードでは TheWorld registry 不要
         update: None,
         interactive_agent: Arc::new(RwLock::new(None)),
         pty_manager: Arc::new(tokio::sync::Mutex::new(PtyManager::new())),
@@ -809,7 +784,7 @@ pub async fn run_world(
     let topic_router = Arc::new(TopicRouter::new());
 
     // PR-α-1 (VP-111): World 階層 Stand を 1 instance ずつ生成して、 AppState 既存 field と
-    // WorldCapabilities container の両方に share させる。 二重生成すると msgbox registry や
+    // WorldCapabilities container の両方に share させる。 二重生成すると
     // whitesnake DB connection が並走する。
     //
     // PR-α-2 (VP-112): MidiCapability を World 階層に移管。 feature = "midi" 有効時は
@@ -817,7 +792,6 @@ pub async fn run_world(
     //
     // PR-α-4 (VP-114): `vp daemon start --midi <arg>` で構築された MidiConfig を受け取り、
     // None なら `MidiConfig::default()` (= PR-α-2/3 後の既存挙動と同じ port auto-pick) で fallback。
-    let msgbox_registry = Arc::new(crate::capability::MsgboxRegistry::new());
     // VP-165 (doc 17 決定B): World daemon の Whitesnake は固定キー `discs/world/`
     // （旧 `file_backed_for_port(32000)` は world_port も override 可能なので port-keyed をやめた）。
     let world_whitesnake = crate::capability::Whitesnake::file_backed_for_world();
@@ -829,10 +803,8 @@ pub async fn run_world(
                 crate::daemon::world_capabilities::WorldCapabilities::with_midi(
                     world_cap.clone(),
                     update_cap.clone(),
-                    msgbox_registry.clone(),
                     world_whitesnake.clone(),
                     resolved_midi_config,
-                    port, // PR-α-3 (VP-113): mailbox register の port
                 )
                 .await?,
             )
@@ -842,7 +814,6 @@ pub async fn run_world(
             Arc::new(crate::daemon::world_capabilities::WorldCapabilities::new(
                 world_cap.clone(),
                 update_cap.clone(),
-                msgbox_registry.clone(),
                 world_whitesnake.clone(),
             ))
         }
@@ -879,7 +850,6 @@ pub async fn run_world(
         // MidiCapability metadata register は dynamic routing vision 確定後)
         actor_registry: Arc::new(RwLock::new(crate::capability::ActorRegistry::new())),
         world: Some(world_cap.clone()),
-        msgbox_registry: Some(msgbox_registry),
         update: Some(update_cap.clone()),
         interactive_agent: Arc::new(RwLock::new(None)),
         pty_manager: Arc::new(tokio::sync::Mutex::new(PtyManager::new())),
@@ -987,21 +957,6 @@ pub async fn run_world(
             "/api/world/processes/unregister",
             post(world::world_unregister_process),
         )
-        // Msgbox Registry (Phase 3: cross-Process actor messaging)
-        .route(
-            "/api/world/msgbox/register",
-            post(world::world_msgbox_register),
-        )
-        .route(
-            "/api/world/msgbox/unregister",
-            post(world::world_msgbox_unregister),
-        )
-        .route(
-            "/api/world/msgbox/unregister-process",
-            post(world::world_msgbox_unregister_process),
-        )
-        .route("/api/world/msgbox/lookup", get(world::world_msgbox_lookup))
-        .route("/api/world/msgbox/list", get(world::world_msgbox_list))
         // VP-165 PR-6: slot ベース SP port resolver (decision C 完成、TheWorld を port authority に)
         .route("/api/world/port_for", get(world::world_port_for))
         // Update API routes (vp CLI)
