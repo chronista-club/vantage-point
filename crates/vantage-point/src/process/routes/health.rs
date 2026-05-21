@@ -12,7 +12,6 @@
 
 use std::sync::Arc;
 
-use crate::capability::MsgboxStore; // VP-175: dual write 用 trait method (insert) を scope に
 use serde::Deserialize;
 
 use axum::{
@@ -334,60 +333,6 @@ pub async fn show_handler(
     // 明示的なキャッシュは不要。Hub に broadcast するだけ。
     state.hub.broadcast(msg);
     Json(serde_json::json!({"status": "ok"}))
-}
-
-/// POST /api/msgbox/remote_deliver - Cross-Process forward 受信（Msgbox Phase 3 Step 2）
-///
-/// 別 Process の `RemoteRoutingClient::forward` から呼ばれる。
-/// 認証: `VP_REGISTRY_TOKEN` 環境変数設定時は Bearer header 検証。
-///
-/// VP-177 (Phase 3 PR-5): WhitesnakeStore.insert を唯一の配信 path に変更
-/// (= 旧 mpsc Router.deliver_local 廃止)。 inbound msg は DB に積まれ、 consumer
-/// 側が WhitesnakeStore.claim polling で取り出す。
-pub async fn msgbox_remote_deliver_handler(
-    State(state): State<Arc<AppState>>,
-    headers: axum::http::HeaderMap,
-    Json(msg): Json<crate::capability::Message>,
-) -> impl IntoResponse {
-    // Auth 検証
-    if let Some(expected) = crate::capability::msgbox_remote::registry_token() {
-        let provided = headers
-            .get(axum::http::header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.strip_prefix("Bearer "));
-        if provided != Some(expected.as_str()) {
-            return (
-                axum::http::StatusCode::UNAUTHORIZED,
-                Json(serde_json::json!({"error": "invalid registry token"})),
-            );
-        }
-    }
-
-    // VP-177 (Phase 3 PR-5): WhitesnakeStore.insert が唯一の配信 path。
-    // msgbox_store 未配線時は ServiceUnavailable (= 旧 BoxNotFound 相当の体外応答)。
-    let Some(store) = &state.msgbox_store else {
-        return (
-            axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({
-                "error": "msgbox_store not initialized",
-                "to": msg.to,
-            })),
-        );
-    };
-    let to = msg.to.clone();
-    match store.insert(&msg).await {
-        Ok(()) => (
-            axum::http::StatusCode::OK,
-            Json(serde_json::json!({"status": "delivered", "to": to})),
-        ),
-        Err(e) => (
-            axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({
-                "error": format!("msgbox insert failed: {}", e),
-                "to": to,
-            })),
-        ),
-    }
 }
 
 /// POST /api/wire/remote-deliver - cross-process wire delivery 受信 (R3)

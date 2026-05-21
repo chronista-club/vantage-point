@@ -148,18 +148,14 @@ pub(crate) struct AppState {
     pub started_at: String,
     /// SurrealDB クライアント（VP-21: 状態管理の DB 統一）
     pub vpdb: Option<crate::db::SharedVpDb>,
-    /// VP-169 Whitesnake-primary msgbox store (= Phase 3 PR-2、 VP-174)
-    ///
-    /// `Some` の場合、 producer (= Phase 3 PR-3 で wire) / consumer (= Phase 3 PR-4 で wire)
-    /// が本 store 経由で msg を扱う。 `vpdb` が Some の時 SP 起動時に同 DB 接続から build。
-    /// 既存 mpsc Router (= `capabilities.msgbox_router`) と並走、 Phase 5 で mpsc 削除予定。
-    /// 関連: docs/design/19-msgbox-whitesnake-primary.md / docs/design/20-spike-report.md
-    pub msgbox_store: Option<crate::capability::WhitesnakeStore>,
     /// Phase A ①: wiremsg threaded inbox store (= `wire_send` / `wire_recv` の実体)
     ///
-    /// `msgbox_store` と並存する threading 対応 inbox。 `vpdb` が `Some` の時に同 DB 接続から
-    /// build する。 TopicRouter は介さず、 `wire_recv` がこの store を直接 long-poll する。
+    /// `vpdb` が `Some` の時に同 DB 接続から build する。 TopicRouter は介さず、
+    /// `wire_recv` がこの store を直接 long-poll する。
     /// 設計 memory: `mem_1CbD9H1KGQykBaFG8XXVsn`。
+    ///
+    /// wiremsg R5-3: 旧 `msgbox_store` (= `WhitesnakeStore`、 msgs table) は撤去済。
+    /// msg messaging はこの wiremsg store に一本化。
     pub wiremsg_store: Option<crate::capability::WiremsgStore>,
     /// Phase A ①: wiremsg long-poll の SP 内 in-process 起床機構
     ///
