@@ -475,9 +475,9 @@ pub async fn run(
             "/api/wire/remote-deliver",
             post(health::wire_remote_deliver_handler),
         )
-        .route("/api/msgbox/debug", get(health::msgbox_debug_handler))
-        .route("/api/msgbox/send", post(health::msgbox_send_handler))
-        .route("/api/msgbox/recv", post(health::msgbox_recv_handler))
+        // wiremsg R5-2: wire accumulation 経路の HTTP 入口 (旧 /api/msgbox/* を置換)
+        .route("/api/wire/send", post(health::wire_send_handler))
+        .route("/api/wire/recv", post(health::wire_recv_handler))
         .route("/api/diagnose", get(health::diagnose_handler))
         .route("/api/toggle-pane", post(health::toggle_pane_handler))
         .route("/api/split-pane", post(health::split_pane_handler))

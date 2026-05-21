@@ -151,131 +151,33 @@ pub struct HealthResponse {
     pub stands: Option<std::collections::HashMap<String, StandStatus>>,
 }
 
-/// VP-83 Phase 2.5 準備: Msgbox 内部 state を dump する debug endpoint。
+/// POST /api/wire/send - wire accumulation への送信 HTTP 入口
 ///
-/// VP-179 (Phase 5): mpsc Router 廃止に伴い、 in-memory address registry は消失。
-/// msgs table 経由の discovery は別 epic で実装予定 (= `SELECT DISTINCT to_addr FROM msgs`)。
-/// 現状は空 vec を返す互換 shim。
-pub async fn msgbox_debug_handler(State(_state): State<Arc<AppState>>) -> Json<serde_json::Value> {
-    Json(serde_json::json!({
-        "addresses": Vec::<String>::new(),
-        "count": 0,
-    }))
-}
-
-/// VP-83: HTTP msg send — CLI から直接 msg を送る動作確認用 endpoint。
-/// POST body: {"to": "worker-xxx@project", "from": "mcp", "payload": "..."}
-#[derive(serde::Deserialize)]
-pub struct MsgboxSendRequest {
-    pub to: String,
-    pub from: String,
-    #[serde(default)]
-    pub payload: serde_json::Value,
-}
-
-pub async fn msgbox_send_handler(
+/// `vp wire` CLI / `wire_*` MCP tool と同じ wire accumulation 経路の HTTP 版。
+/// QUIC dispatch の `wire_send` と同一の [`handle_wire_send`] を呼ぶ薄い wrapper。
+/// payload: `{from, to: [String], body: JSON, reply_to?: String}`。
+pub async fn wire_send_handler(
     State(state): State<Arc<AppState>>,
-    Json(req): Json<MsgboxSendRequest>,
+    Json(payload): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
-    use crate::capability::msgbox::{Message, MessageKind};
-    let mut msg = Message::new(req.from, req.to.clone(), MessageKind::Direct);
-    msg.payload = req.payload;
-    // VP-158: 全 msg 永続化が default のため persistent flag 廃止
-    let msg_id = msg.id.clone();
-
-    // VP-177 (Phase 3 PR-5) → VP-178 (Phase 4): producer mpsc write 全廃、
-    // WhitesnakeStore.insert が唯一の write path。
-    let store = match &state.msgbox_store {
-        Some(s) => s,
-        None => return Json(serde_json::json!({"error": "msgbox_store not initialized"})),
-    };
-    match store.insert(&msg).await {
-        Ok(()) => Json(serde_json::json!({"status": "ok", "id": msg_id, "to": req.to})),
-        Err(e) => Json(serde_json::json!({"error": e.to_string()})),
+    match crate::process::unison_server::handle_wire_send(&state, payload).await {
+        Ok(v) => Json(v),
+        Err(e) => Json(serde_json::json!({"status": "error", "error": e})),
     }
 }
 
-/// Msgbox 受信 debug endpoint (動作確認用 / `vp mailbox watch` の long-poll source)
+/// POST /api/wire/recv - wire accumulation からの long-poll 受信 HTTP 入口
 ///
-/// VP-166: `lane` (default `lead`、flat 名: `lead` or `<worker-name>`) + `stand` (default `agent`
-/// = coding-assistant inbox; `canvas` = PP/Canvas inbox) で受信先を選択。
-/// VP-176 (Phase 3 PR-4): mpsc Handle.recv は廃止、 `WhitesnakeStore.claim(stand, lane,
-/// consumer_id)` polling に rewire 済。 from filter は post-claim release on mismatch で実装。
-#[derive(serde::Deserialize, Default)]
-pub struct MsgboxRecvRequest {
-    /// タイムアウト秒（デフォルト 2 秒、最大 30 秒）
-    #[serde(default)]
-    pub timeout: Option<u64>,
-    /// from フィルタ（指定時は post-claim release on mismatch）
-    #[serde(default)]
-    pub from: Option<String>,
-    /// 受信先 lane (default "lead"、flat 名: "lead" or "<worker-name>")
-    #[serde(default)]
-    pub lane: Option<String>,
-    /// VP-166: 受信先 stand (default "agent" = coding-assistant inbox; `canvas` は PP/Canvas)
-    #[serde(default)]
-    pub stand: Option<String>,
-}
-
-pub async fn msgbox_recv_handler(
+/// `vp wire watch` CLI / `wire_recv` MCP tool と同じ wire accumulation 経路の HTTP 版。
+/// QUIC dispatch の `wire_recv` と同一の [`handle_wire_recv`] を呼ぶ薄い wrapper。
+/// payload: `{agent: String, timeout?: u64}` → `{messages: [WireMessage...], count}`。
+pub async fn wire_recv_handler(
     State(state): State<Arc<AppState>>,
-    Json(req): Json<MsgboxRecvRequest>,
+    Json(payload): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
-    let timeout_secs = req.timeout.unwrap_or(2).min(30);
-    let lane = req.lane.as_deref().unwrap_or("lead").to_string();
-    let stand = req.stand.as_deref().unwrap_or("agent").to_string();
-
-    // VP-176 (Phase 3 PR-4) → VP-178 (Phase 4): WhitesnakeStore polling-based claim 単一経路。
-    // 旧 mpsc Handle / agent_msgbox_lead / lane_stand_boxes field は VP-178 で全廃済。
-    let store = match &state.msgbox_store {
-        Some(s) => s,
-        None => return Json(serde_json::json!({"error": "msgbox_store not initialized"})),
-    };
-
-    let consumer_id = format!(
-        "msgbox_recv-{}-{}",
-        std::process::id(),
-        uuid::Uuid::new_v4().simple()
-    );
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
-
-    loop {
-        match store.claim(&stand, &lane, &consumer_id).await {
-            Ok(Some(msg)) => {
-                // from filter: 不一致なら release して次の候補へ
-                if let Some(ref filter) = req.from
-                    && msg.from != *filter
-                {
-                    if let Err(e) = store.release_claim(&msg.id).await {
-                        tracing::warn!(
-                            "VP-176 release_claim failed (id={}): {} — 30s stale claim 経由で復帰",
-                            msg.id,
-                            e
-                        );
-                    }
-                    continue;
-                }
-
-                // manual_ack でなければ即 mark_consumed
-                if !msg.manual_ack
-                    && let Err(e) = store.mark_consumed(&msg.id).await
-                {
-                    tracing::warn!("VP-176 mark_consumed failed (id={}): {}", msg.id, e);
-                }
-                return Json(serde_json::json!({"status": "ok", "message": msg}));
-            }
-            Ok(None) => {
-                // 候補なし、 polling 継続
-            }
-            Err(e) => {
-                return Json(serde_json::json!({"error": format!("claim failed: {}", e)}));
-            }
-        }
-
-        if std::time::Instant::now() >= deadline {
-            return Json(serde_json::json!({"status": "timeout", "message": null}));
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    match crate::process::unison_server::handle_wire_recv(&state, payload).await {
+        Ok(v) => Json(v),
+        Err(e) => Json(serde_json::json!({"status": "error", "error": e})),
     }
 }
 
@@ -441,8 +343,7 @@ pub async fn show_handler(
 ///
 /// VP-177 (Phase 3 PR-5): WhitesnakeStore.insert を唯一の配信 path に変更
 /// (= 旧 mpsc Router.deliver_local 廃止)。 inbound msg は DB に積まれ、 consumer
-/// 側 (NotificationActor / LaneSpawnActor / msgbox_recv_handler) が
-/// WhitesnakeStore.claim polling で取り出す。
+/// 側が WhitesnakeStore.claim polling で取り出す。
 pub async fn msgbox_remote_deliver_handler(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,

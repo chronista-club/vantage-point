@@ -89,10 +89,10 @@ enum Commands {
     #[command(subcommand)]
     Hd(commands::hd::HdCommands),
 
-    /// Mailbox actor messaging — Phase 1a で `watch` (long-poll subscribe) と `send` を提供。
-    /// Claude Code Monitor の subscription source として使う想定 (vp_mailbox_monitor_agent_inbox.md)。
+    /// wire accumulation messaging — `watch` (long-poll subscribe) / `send` / `watch-supervised` を提供。
+    /// Claude Code Monitor の subscription source として使う想定 (wiremsg R5-2)。
     #[command(subcommand)]
-    Mailbox(commands::mailbox::MailboxCommands),
+    Wire(commands::wire::WireCommands),
 
     /// directmsg — tmux send-keys ベースの直接メッセージ（緊急 / ephemeral 用、wiremsg の補助）
     ///
@@ -326,9 +326,9 @@ fn main() -> Result<()> {
             output, window, index, title, list, rect, region, series, interval, count, duration,
             output_dir, layout,
         ),
-        Commands::Mailbox(cmd) => {
+        Commands::Wire(cmd) => {
             let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(commands::mailbox::run(cmd))
+            rt.block_on(commands::wire::run(cmd))
         }
         Commands::Directmsg {
             lane,
