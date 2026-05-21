@@ -20,18 +20,21 @@
 //!   JoinHandle<()>` に統一)、 caller (= server.rs) は `ActorRegistry::spawn_service` 経由に集約
 //!   (= JoinHandle を ActorRegistry が保持、 PR-5 supervisor 統一の foundation)。
 //!
-//! ## VP-177 PR-5 (2026-05-14) — recv path を WhitesnakeStore.claim polling に rewire
+//! ## wiremsg R4 (group B 移行、 2026-05-21) — recv path を wire accumulation に rewire
 //!
-//! 旧 `msgbox_router.register("lane-spawn")` 経由の mpsc `Handle::recv()` を廃止し、
-//! `WhitesnakeStore.claim("lane-spawn", "lead", consumer_id)` polling (100ms interval) に
-//! 切替。 `Option<WhitesnakeStore> = None` の場合は recv 経路 idle で gracefully degrade。
-//! 通信経路の入口が DB-backed claim になっただけで、 Semaphore gate / race guard / payload
-//! schema 等の actor 内部挙動は完全互換。
+//! 旧 `WhitesnakeStore.claim("lane-spawn", "lead", consumer_id)` の 100ms polling を廃止し、
+//! wire accumulation (`WiremsgStore`) の per-agent cursor recv に切替。 actor は
+//! `lane-spawn@<project>` を wire address として `WiremsgStore::recv` し、 `WireNotifier`
+//! の long-poll で起床する。 producer (= `sp-bootstrap`) も `WiremsgStore::send_root` +
+//! `WireNotifier::notify` に rewire (server.rs)。 `Option<WiremsgStore> = None` の場合は
+//! recv 経路 idle で gracefully degrade。 旧 msgbox の `claim → mark_consumed` destructive
+//! 消費は wire の per-agent cursor 前進 (非破壊) に置き換わり、 mark_consumed は不要。
+//! Semaphore gate / race guard / `handle_cmd` の内部挙動は完全互換。
 //!
 //! ## 設計
 //!
-//! - **address**: `lane-spawn` (= `WhitesnakeStore.claim("lane-spawn", "lead", ...)`)、
-//!   cross-Process namespacing は TheWorld registry layer が解決
+//! - **address**: `lane-spawn@<project>` (= wire accumulation address、 `WiremsgStore::recv`)。
+//!   producer は同 Process の `sp-bootstrap@<project>` (server.rs の bootstrap loop)
 //! - **wire format**: `LaneCmd::SpawnLane{...}` (= `crate::process::lane_cmd`)、 serde tag="kind"
 //! - **concurrency**: `Arc<Semaphore::new(max_concurrent)>` で permit gate、 各 Cmd は
 //!   `tokio::spawn` で並列処理されるが Semaphore で同時実行上限を制御
@@ -70,14 +73,17 @@ use tokio::sync::{RwLock, Semaphore};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::capability::MsgboxStore;
-use crate::capability::msgbox::MessageKind;
-use crate::capability::msgbox_v2::WhitesnakeStore;
 use crate::capability::stand_service::{LayerScope, Service, SpawnableService};
+use crate::capability::{WireNotifier, WiremsgStore};
 
 use super::lane_capabilities::LaneCapabilitiesPool;
 use super::lane_cmd::LaneCmd;
 use super::lanes_state::{Diff, LaneAddress, LaneInfo, LaneKind, LanePool, LaneState, SystemEvent};
+
+/// lane-spawn recv の fallback poll 間隔。 wire_send / cross-process forward 受信は
+/// 必ず `WireNotifier::notify` を呼ぶので通常は即時起床する。 この sleep は notify を
+/// 取りこぼした場合の安全網 (= 最悪でもこの間隔で recv が回る)。
+const IDLE_POLL: Duration = Duration::from_secs(5);
 
 /// Lane spawn Service (= `lane-spawn` mailbox から `LaneCmd::SpawnLane` を recv、
 /// 並列度 N で gate しつつ Lane を spawn する infra actor)。
@@ -88,8 +94,12 @@ use super::lanes_state::{Diff, LaneAddress, LaneInfo, LaneKind, LanePool, LaneSt
 /// PR-β-2 (VP-120): `lane_capabilities_pool: Option<...>` で Worker spawn 成功時に
 /// `populate_lane` を呼び、 Lane あたり独立 PaisleyParkState を host する。
 pub struct LaneSpawnActor {
-    /// VP-177 (Phase 3 PR-5): WhitesnakeStore claim polling に rewire (= 旧 Handle 削除)
-    msgbox_store: Option<WhitesnakeStore>,
+    /// wiremsg R4: wire accumulation store (= 旧 `WhitesnakeStore` から rewire)
+    wiremsg_store: Option<WiremsgStore>,
+    /// wiremsg R4: long-poll 起床用 in-process notifier (`AppState` と共有)
+    wire_notifier: WireNotifier,
+    /// wire address の project segment (`lane-spawn@<project>`)
+    project: String,
     lane_pool: Arc<RwLock<LanePool>>,
     lane_capabilities_pool: Option<Arc<RwLock<LaneCapabilitiesPool>>>,
     system_event_tx: tokio::sync::broadcast::Sender<SystemEvent>,
@@ -99,20 +109,24 @@ pub struct LaneSpawnActor {
 impl LaneSpawnActor {
     /// 新しい `LaneSpawnActor` を構築する。
     ///
-    /// VP-177 (Phase 3 PR-5): 旧 `handle: Handle` → `msgbox_store: Option<WhitesnakeStore>` に
-    /// signature 変更。 caller (= server.rs) が vpdb 接続から build した store を渡す。
+    /// wiremsg R4: 旧 `new(msgbox_store, ...)` → `new(wiremsg_store, wire_notifier,
+    /// project, ...)` に signature 変更。 caller (= server.rs) が wire 系を渡す。
     ///
     /// `max_concurrent=0` は意味的に「全 spawn を block」 だが事故 config の可能性が高いため、
     /// `spawn()` 内で 1 に丸めて warn する (= sequential、 `Semaphore::new(0)` の永久 block 回避)。
     pub fn new(
-        msgbox_store: Option<WhitesnakeStore>,
+        wiremsg_store: Option<WiremsgStore>,
+        wire_notifier: WireNotifier,
+        project: String,
         lane_pool: Arc<RwLock<LanePool>>,
         lane_capabilities_pool: Option<Arc<RwLock<LaneCapabilitiesPool>>>,
         system_event_tx: tokio::sync::broadcast::Sender<SystemEvent>,
         max_concurrent: usize,
     ) -> Self {
         Self {
-            msgbox_store,
+            wiremsg_store,
+            wire_notifier,
+            project,
             lane_pool,
             lane_capabilities_pool,
             system_event_tx,
@@ -156,7 +170,9 @@ impl SpawnableService for LaneSpawnActor {
         let semaphore = Arc::new(Semaphore::new(n));
 
         let Self {
-            msgbox_store,
+            wiremsg_store,
+            wire_notifier,
+            project,
             lane_pool,
             lane_capabilities_pool,
             system_event_tx,
@@ -164,71 +180,72 @@ impl SpawnableService for LaneSpawnActor {
         } = self;
 
         tokio::spawn(async move {
-            // VP-177: msgbox_store なし = recv 経路なし、 shutdown 待ち
-            let Some(store) = msgbox_store else {
-                tracing::warn!("Lane spawn actor: msgbox_store なし、 shutdown 待ち");
+            // wiremsg R4: wiremsg_store なし = recv 経路なし、 shutdown 待ち
+            let Some(store) = wiremsg_store else {
+                tracing::warn!("Lane spawn actor: wiremsg_store なし、 shutdown 待ち");
                 shutdown.cancelled().await;
                 return;
             };
-            let consumer_id = format!("lane-spawn-{}", std::process::id());
+            let address = format!("lane-spawn@{}", project);
             tracing::info!(
-                "Lane spawn actor 起動 (= claim polling)、 max_concurrent={}",
+                "Lane spawn actor 起動 (= wire accumulation recv、 address={}, max_concurrent={})",
+                address,
                 n
             );
             loop {
-                let msg = tokio::select! {
-                    _ = shutdown.cancelled() => {
-                        tracing::info!("Lane spawn actor: shutdown");
-                        return;
-                    }
-                    _ = tokio::time::sleep(Duration::from_millis(100)) => {
-                        match store.claim("lane-spawn", "lead", &consumer_id).await {
-                            Ok(Some(m)) => m,
-                            Ok(None) => continue,
-                            Err(e) => {
-                                tracing::warn!("VP-177 lane-spawn claim failed: {}", e);
-                                continue;
-                            }
+                if shutdown.is_cancelled() {
+                    tracing::info!("Lane spawn actor: shutdown");
+                    return;
+                }
+                // 取りこぼし防止プロトコル (WireNotifier doc 参照):
+                // handle → notified future を store.recv の前に生成する。
+                let notify = wire_notifier.handle(&address).await;
+                let notified = notify.notified();
+
+                let msgs = match store.recv(&address).await {
+                    Ok(m) => m,
+                    Err(e) => {
+                        tracing::warn!("lane-spawn wire recv failed: {}", e);
+                        tokio::select! {
+                            _ = shutdown.cancelled() => return,
+                            _ = tokio::time::sleep(IDLE_POLL) => {}
                         }
+                        continue;
                     }
                 };
-                if msg.kind != MessageKind::Direct {
-                    tracing::debug!(
-                        "Lane spawn actor: 非 Direct メッセージを無視 kind={:?}",
-                        msg.kind
-                    );
-                    if !msg.manual_ack
-                        && let Err(e) = store.mark_consumed(&msg.id).await
-                    {
-                        tracing::warn!("VP-177 lane-spawn mark_consumed failed: {}", e);
+
+                if msgs.is_empty() {
+                    // 未読なし → notify (= wire_send) か fallback timeout まで待機
+                    tokio::select! {
+                        _ = shutdown.cancelled() => return,
+                        _ = notified => {}
+                        _ = tokio::time::sleep(IDLE_POLL) => {}
                     }
                     continue;
                 }
-                let Some(cmd) = msg.payload_as::<LaneCmd>() else {
-                    tracing::warn!(
-                        "Lane spawn actor: payload を LaneCmd として parse 失敗 (msg.id={})",
-                        msg.id
-                    );
-                    if !msg.manual_ack
-                        && let Err(e) = store.mark_consumed(&msg.id).await
-                    {
-                        tracing::warn!("VP-177 lane-spawn mark_consumed failed: {}", e);
-                    }
-                    continue;
-                };
-                // VP-177: 処理 OK の msg は mark_consumed (= mpsc auto-ack 互換)
-                if !msg.manual_ack
-                    && let Err(e) = store.mark_consumed(&msg.id).await
-                {
-                    tracing::warn!("VP-177 lane-spawn mark_consumed failed: {}", e);
+
+                for msg in msgs {
+                    // body は `LaneCmd` (serde tag="kind") の JSON object。 parse 失敗 =
+                    // 想定外 message、 log して skip (cursor は recv で既に前進済)。
+                    let cmd = match serde_json::from_value::<LaneCmd>(msg.body.clone()) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            tracing::warn!(
+                                "Lane spawn actor: body を LaneCmd として parse 失敗 (msg.id={}): {}",
+                                msg.id,
+                                e
+                            );
+                            continue;
+                        }
+                    };
+                    let sem = semaphore.clone();
+                    let pool = lane_pool.clone();
+                    let lc_pool = lane_capabilities_pool.clone();
+                    let tx = system_event_tx.clone();
+                    tokio::spawn(async move {
+                        handle_cmd(cmd, pool, lc_pool, tx, sem).await;
+                    });
                 }
-                let sem = semaphore.clone();
-                let pool = lane_pool.clone();
-                let lc_pool = lane_capabilities_pool.clone();
-                let tx = system_event_tx.clone();
-                tokio::spawn(async move {
-                    handle_cmd(cmd, pool, lc_pool, tx, sem).await;
-                });
             }
         })
     }
@@ -421,11 +438,9 @@ mod tests {
     /// max_concurrent=0 は 1 に丸められること。 Semaphore::new(0) を踏むと永久 block するため
     /// runtime に到達しないことを serde 側ではなく actor 側で防ぐ contract test。
     ///
-    /// VP-177 (Phase 3 PR-5): msgbox_store = None で test (= recv 経路 idle、 0 → 1
-    /// 丸め contract は WhitesnakeStore の有無と無関係に検証可能)。 旧 mpsc 版は
-    /// Router.send で SpawnLane を流して /nonexistent/path で graceful degrade も
-    /// 同時検証していたが、 WhitesnakeStore 経路では DB insert が要るので
-    /// msgbox_v2 unit test 側で別途担保 (= 重複検証を避ける)。
+    /// wiremsg R4: wiremsg_store = None で test (= recv 経路 idle、 0 → 1 丸め contract は
+    /// store の有無と無関係に検証可能)。 wire recv 経路の実挙動は WiremsgStore の
+    /// unit test 側で別途担保 (= 重複検証を避ける)。
     #[tokio::test]
     async fn spawn_zero_concurrent_does_not_hang() {
         let pool = Arc::new(RwLock::new(LanePool::new()));
@@ -434,8 +449,17 @@ mod tests {
 
         // 0 を渡しても 1 に丸めて起動するはず (= タイムアウトせずに actor 起動 + shutdown 完了)
         // PR-β-2 (VP-120): lane_capabilities_pool = None で test (Lane scope なしの動作確認)
-        // VP-177 (Phase 3 PR-5): msgbox_store = None (= recv 経路 idle、 shutdown のみ検証)
-        LaneSpawnActor::new(None, pool, None, tx, 0).spawn_loop(shutdown.clone());
+        // wiremsg R4: wiremsg_store = None (= recv 経路 idle、 shutdown のみ検証)
+        LaneSpawnActor::new(
+            None,
+            WireNotifier::new(),
+            "test".to_string(),
+            pool,
+            None,
+            tx,
+            0,
+        )
+        .spawn_loop(shutdown.clone());
 
         // shutdown して terminate を確認 (= 永久 block 回避)
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -446,13 +470,9 @@ mod tests {
 
     /// actor 起動 → shutdown 完了の smoke test。
     ///
-    /// VP-177 (Phase 3 PR-5): 旧「非 Direct メッセージは ignore」 test は mpsc Handle
-    /// 経由で Router.send で Notification を流して pool 0 を確認していた。
-    /// WhitesnakeStore 経路では payload に kind 区別が DB schema 側で混在しないため
-    /// (= msgbox_send で MessageKind を payload に同梱)、 該 ignore 検証は msgbox_v2
-    /// 側の unit test に統合済 (`spawn_loop` 入口の `MessageKind::Direct` guard は
-    /// 関数 body の 1 行で実質 dead-code 化していないことを cargo check が保証)。
-    /// ここでは shutdown contract のみ smoke 検証。
+    /// wiremsg R4: wiremsg_store = None で recv 経路 idle、 shutdown contract のみ
+    /// smoke 検証。 wire body の LaneCmd parse / graceful degrade は WiremsgStore の
+    /// unit test 側で担保。
     #[tokio::test]
     async fn actor_shuts_down_cleanly() {
         let pool = Arc::new(RwLock::new(LanePool::new()));
@@ -460,8 +480,17 @@ mod tests {
         let shutdown = CancellationToken::new();
 
         // PR-β-2 (VP-120): lane_capabilities_pool = None で test
-        // VP-177 (Phase 3 PR-5): msgbox_store = None で test (= recv 経路 idle)
-        LaneSpawnActor::new(None, pool.clone(), None, tx, 1).spawn_loop(shutdown.clone());
+        // wiremsg R4: wiremsg_store = None で test (= recv 経路 idle)
+        LaneSpawnActor::new(
+            None,
+            WireNotifier::new(),
+            "test".to_string(),
+            pool.clone(),
+            None,
+            tx,
+            1,
+        )
+        .spawn_loop(shutdown.clone());
 
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         // pool は空のまま (= recv 経路なしで何も起こらない)
