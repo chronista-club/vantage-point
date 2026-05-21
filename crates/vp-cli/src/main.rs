@@ -228,17 +228,6 @@ enum LaneCommands {
         #[arg(long, short)]
         force: bool,
     },
-    /// Wing actor を TheWorld msgbox registry に (再) 登録
-    ///
-    /// Wing 作成時 (`vp lane new`) に一度 register されるが、TheWorld 再起動で
-    /// registry が memory-reset するため再登録が必要。本コマンドで手動再登録 or
-    /// 起動スクリプトから呼び出して整合性を維持する。
-    Register {
-        /// Wing 名 (親 project は cwd から推測)
-        name: String,
-    },
-    /// lane ls の全 Wing を registry に一括再登録 (sync)
-    Resync,
     /// 全 wing の状態表示
     Status,
     /// branch が main に merge 済の wing を削除
@@ -575,9 +564,8 @@ fn execute_shot(
 
 /// Stone Free 🧵 wing Lane 操作を lane library に委譲
 ///
-/// Phase 2 追加: wing 作成/削除時に TheWorld の msgbox registry に
-/// `wing-{name}@{project}` actor を register/unregister（best-effort、
-/// TheWorld 未起動でも workspace 操作自体は成功させる）。
+/// wiremsg R5-4: 旧 msgbox の registry サブシステム (wing 作成/削除時の
+/// `wing-{name}@{project}` actor register/unregister) は撤去済。
 fn execute_lane(cmd: LaneCommands) -> Result<()> {
     use lane::commands as ws;
 
@@ -588,10 +576,6 @@ fn execute_lane(cmd: LaneCommands) -> Result<()> {
             force,
         } => {
             ws::new_wing(&name, &branch, force).map_err(|e| anyhow::anyhow!(e))?;
-            // best-effort: TheWorld に wing actor を register
-            if let Err(e) = register_wing_actor(&name) {
-                eprintln!("  msgbox: register skipped ({e})");
-            }
             Ok(())
         }
         LaneCommands::Fork {
@@ -600,20 +584,11 @@ fn execute_lane(cmd: LaneCommands) -> Result<()> {
             force,
         } => {
             ws::fork_wing(&name, &branch, force).map_err(|e| anyhow::anyhow!(e))?;
-            if let Err(e) = register_wing_actor(&name) {
-                eprintln!("  msgbox: register skipped ({e})");
-            }
             Ok(())
         }
         LaneCommands::Ls => ws::list_wings().map_err(|e| anyhow::anyhow!(e)),
         LaneCommands::Path { name } => ws::wing_path(&name).map_err(|e| anyhow::anyhow!(e)),
         LaneCommands::Rm { name, all, force } => {
-            // 先に unregister（削除後だと parent SP 不明になる可能性）
-            if let Some(ref wing_name) = name
-                && let Err(e) = unregister_wing_actor(wing_name)
-            {
-                eprintln!("  msgbox: unregister skipped ({e})");
-            }
             // VP-124: SP-aware delete を試みる (orchestration: PTY kill + tmux kill +
             // lane workspace rm + SystemEvent broadcast を 1 HTTP call で完結)。
             // --all は filesystem-only fallback (一括削除は SP 経由する意味なし、 個別 Lane
@@ -629,115 +604,6 @@ fn execute_lane(cmd: LaneCommands) -> Result<()> {
         }
         LaneCommands::Status => ws::status_wings().map_err(|e| anyhow::anyhow!(e)),
         LaneCommands::Cleanup { force } => ws::cleanup_wings(force).map_err(|e| anyhow::anyhow!(e)),
-        LaneCommands::Register { name } => register_wing_actor(&name),
-        LaneCommands::Resync => resync_all_wings(),
-    }
-}
-
-/// lane ls の全 Wing を registry に一括再登録。
-/// parent project は **config から最長一致** で解決 (cwd 不要)。
-fn resync_all_wings() -> Result<()> {
-    use std::fs;
-    let wings_dir =
-        lane::config::wings_dir().map_err(|e| anyhow::anyhow!("lane dir 解決失敗: {e}"))?;
-    if !wings_dir.exists() {
-        println!("No lane wings found at {}", wings_dir.display());
-        return Ok(());
-    }
-    let config = vantage_point::config::Config::load()
-        .map_err(|e| anyhow::anyhow!("config load failed: {e}"))?;
-
-    let entries = fs::read_dir(&wings_dir)?;
-    let mut ok = 0;
-    let mut fail = 0;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-        let dirname = match path.file_name().and_then(|n| n.to_str()) {
-            Some(n) => n.to_string(),
-            None => continue,
-        };
-        match register_wing_from_dirname(&config, &dirname) {
-            Ok(()) => ok += 1,
-            Err(e) => {
-                eprintln!("  skip {dirname}: {e}");
-                fail += 1;
-            }
-        }
-    }
-    eprintln!("resync: {ok} ok, {fail} skipped");
-    Ok(())
-}
-
-/// dirname (`{project}-{wing}` format) から parent project を config の最長一致で
-/// 決定、SP port を discovery で確認、register API call。
-fn register_wing_from_dirname(config: &vantage_point::config::Config, dirname: &str) -> Result<()> {
-    // config.projects の name で最長 prefix match の project を探す
-    let parent = config
-        .projects
-        .iter()
-        .filter(|p| dirname.starts_with(&format!("{}-", p.name)))
-        .max_by_key(|p| p.name.len())
-        .ok_or_else(|| anyhow::anyhow!("parent project not found in config"))?;
-    let wing_name = dirname
-        .strip_prefix(&format!("{}-", parent.name))
-        .ok_or_else(|| anyhow::anyhow!("wing name extract failed"))?;
-    let process = vantage_point::discovery::find_by_project_blocking(&parent.path)
-        .ok_or_else(|| anyhow::anyhow!("parent SP not running"))?;
-    register_wing_actor_with_context(&parent.name, process.port, wing_name)
-}
-
-/// Wing actor を TheWorld msgbox registry に登録 (cwd ベース — lane new 等の内部用)
-///
-/// actor format: `wing-{name}` (例: `wing-VP-10`)
-fn register_wing_actor(wing_name: &str) -> Result<()> {
-    let (project_name, port) = resolve_parent_project()?;
-    register_wing_actor_with_context(&project_name, port, wing_name)
-}
-
-/// Wing actor を指定 parent project / port で register (core 実装)
-fn register_wing_actor_with_context(project_name: &str, port: u16, wing_name: &str) -> Result<()> {
-    let actor = format!("wing-{wing_name}");
-    let world_port = vantage_point::cli::WORLD_PORT;
-    let url = format!("http://[::1]:{world_port}/api/world/msgbox/register");
-    let body = serde_json::json!({
-        "actor": actor,
-        "project_name": project_name,
-        "port": port,
-    });
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(2))
-        .build()?;
-    let resp = client.post(&url).json(&body).send()?;
-    if resp.status().is_success() {
-        eprintln!("  msgbox: registered {actor}@{project_name} (port {port})");
-        Ok(())
-    } else {
-        Err(anyhow::anyhow!("register failed: {}", resp.status()))
-    }
-}
-
-/// Wing actor を TheWorld msgbox registry から解除
-fn unregister_wing_actor(wing_name: &str) -> Result<()> {
-    let (project_name, _port) = resolve_parent_project()?;
-    let actor = format!("wing-{wing_name}");
-    let world_port = vantage_point::cli::WORLD_PORT;
-    let url = format!("http://[::1]:{world_port}/api/world/msgbox/unregister");
-    let body = serde_json::json!({
-        "actor": actor,
-        "project_name": project_name,
-    });
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(2))
-        .build()?;
-    let resp = client.post(&url).json(&body).send()?;
-    if resp.status().is_success() {
-        eprintln!("  msgbox: unregistered {actor}@{project_name}");
-        Ok(())
-    } else {
-        Err(anyhow::anyhow!("unregister failed: {}", resp.status()))
     }
 }
 

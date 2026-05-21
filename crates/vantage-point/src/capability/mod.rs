@@ -20,8 +20,6 @@ pub mod eventbus;
 pub mod evolution;
 #[cfg(feature = "midi")]
 pub mod midi_capability;
-pub mod msgbox_registry;
-pub mod msgbox_remote;
 pub mod params;
 pub mod process_manager_capability;
 pub mod protocol_capability;
@@ -40,10 +38,8 @@ pub use core::{
 pub use eventbus::EventBus;
 #[cfg(feature = "midi")]
 pub use midi_capability::MidiCapability;
-// wiremsg R5-3: 旧 msgbox store 本体 (msgbox_v2 / msgbox) を撤去。 msg messaging は
-// wiremsg (`wiremsg_store` / `wire_remote`) に移行済。 `msgbox_remote` の registry 系
-// (register_* / unregister_* / registry_token) のみ wing actor discovery 用に存続。
-pub use msgbox_registry::{ActorEntry, Registry as MsgboxRegistry};
+// wiremsg R5-4: 旧 msgbox の registry サブシステム (`msgbox_registry` / `msgbox_remote`) を
+// 完全撤去。 msg messaging は wiremsg (`wiremsg_store` / `wire_remote`) に移行済。
 pub use process_manager_capability::{
     ProcessManagerCapability, ProcessStatus, ProjectInfo, RunningProcess, normalize_path_key,
 };

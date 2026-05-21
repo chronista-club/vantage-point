@@ -117,8 +117,6 @@ pub(crate) struct AppState {
     pub actor_registry: Arc<RwLock<ActorRegistry>>,
     /// World capability for managing multiple processes (optional, only for world mode)
     pub world: Option<Arc<RwLock<ProcessManagerCapability>>>,
-    /// Msgbox actor registry — TheWorld のみ保持（Msgbox Phase 3: cross-Process routing）
-    pub msgbox_registry: Option<Arc<crate::capability::MsgboxRegistry>>,
     /// Update capability for version checking (optional, only for world mode)
     pub update: Option<Arc<RwLock<UpdateCapability>>>,
     /// Interactive Claude agent (stream-json mode for structured communication)
@@ -178,7 +176,7 @@ pub(crate) struct AppState {
     /// World 階層 Stand container (LSCM、 PR-α series / VP-109)。
     ///
     /// World mode (`run_world`) でのみ Some、 SP mode (`run`) では None。
-    /// PR-α 完了後も既存 World 階層 field (world / msgbox_registry / update / whitesnake)
+    /// PR-α 完了後も既存 World 階層 field (world / update / whitesnake)
     /// と重複保持 (意図的 HACK、 LSCM A6 share-nothing 整合は β 以降の cleanup PR で整理予定)。
     /// 関連: doc 12 §3 / §9、 Linear VP-109 (epic) / VP-111/112/113/114/115 ✅
     pub world_capabilities: Option<Arc<crate::daemon::world_capabilities::WorldCapabilities>>,

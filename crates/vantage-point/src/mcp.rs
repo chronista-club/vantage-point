@@ -2606,10 +2606,8 @@ pub async fn run_mcp_server(process_port: Option<u16>) -> anyhow::Result<()> {
     // Resolve the actual port to use
     let resolved_port = resolve_process_port(process_port).await;
 
-    // VP-83: Wing self-register — cwd が lane Wing dir なら、起動時に
-    // TheWorld msgbox registry に wing-{name}@{project} を登録する。
-    // Wing の Claude CLI (MCP server) が自分を名乗る = Wing 責務の体現。
-    self_register_if_wing().await;
+    // wiremsg R5-4: 旧 msgbox の registry サブシステム (Wing self-register) は撤去済。
+    // wire の cross-process delivery は TheWorld の project registry を使う別経路。
 
     // Note: In MCP mode, we should not use tracing to stdout
     // as it interferes with JSON-RPC communication
@@ -2621,67 +2619,6 @@ pub async fn run_mcp_server(process_port: Option<u16>) -> anyhow::Result<()> {
     service.waiting().await?;
 
     Ok(())
-}
-
-/// Wing の自己登録 — cwd が `vp_data_dir()/lanes/{project}-{wing}` パターンなら、
-/// parent project を config の最長一致で決定、TheWorld に wing-{name}@{project} 登録。
-///
-/// Wing 側の責務 (user 提案 2026-04-25): Wing が自分で名乗る = push model。
-/// SP や TheWorld が Wing を代理登録する pull model は設計違反。
-async fn self_register_if_wing() {
-    let cwd = match std::env::current_dir() {
-        Ok(p) => p,
-        Err(_) => return,
-    };
-    // lane dir prefix か確認
-    let lanes_root = match crate::lane::config::wings_dir() {
-        Ok(d) => d,
-        Err(_) => return,
-    };
-    if !cwd.starts_with(&lanes_root) {
-        return; // Wing でない (通常 project の cwd)
-    }
-    let dirname = match cwd.file_name().and_then(|n| n.to_str()) {
-        Some(n) => n,
-        None => return,
-    };
-    // config から parent project を最長一致で resolve
-    let config = match crate::config::Config::load() {
-        Ok(c) => c,
-        Err(_) => return,
-    };
-    let parent = match config
-        .projects
-        .iter()
-        .filter(|p| dirname.starts_with(&format!("{}-", p.name)))
-        .max_by_key(|p| p.name.len())
-    {
-        Some(p) => p,
-        None => return,
-    };
-    let wing_name = match dirname.strip_prefix(&format!("{}-", parent.name)) {
-        Some(w) => w.to_string(),
-        None => return,
-    };
-    // parent SP の port を discovery で取得
-    let Some(process) = crate::discovery::find_by_project_blocking(&parent.path) else {
-        // parent SP 未起動 — 今は skip。SP 起動後に user が手動 register or ws resync
-        return;
-    };
-    let actor = format!("wing-{}", wing_name);
-    let world_port = crate::cli::WORLD_PORT;
-    let _ = crate::capability::msgbox_remote::register_actor_to_world(
-        world_port,
-        &parent.name,
-        process.port,
-        &actor,
-    )
-    .await;
-    // stderr に出して MCP stdio (stdout) に干渉しないように
-    eprintln!(
-        "vp mcp self-register: {actor}@{} → port {}",
-        parent.name, process.port
-    );
 }
 
 /// QUIC "process" チャネルのレスポンスが server ハンドラの Err かどうか判定する (VP-163)。
