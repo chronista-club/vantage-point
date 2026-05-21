@@ -879,6 +879,35 @@ pub async fn start_unison_server(
 // wiremsg threaded inbox ハンドラー (Phase A ①、 設計 mem_1CbD9H1KGQykBaFG8XXVsn)
 // =============================================================================
 
+/// wire message の `body` を JSON object に正規化する。
+///
+/// MCP client が `body` の schema (typeless な `serde_json::Value`) を string と
+/// 解釈し、 JSON object を文字列化して送ってくることがある。 string で来た場合は
+/// JSON として parse し直して救済する。 最終的に object でなければ Err —
+/// `wire_messages.body` は SurrealDB 上 `TYPE object` なので、 ここで弾く方が
+/// SurrealDB の coerce エラーより分かりやすい。
+fn coerce_wire_body(raw: Option<serde_json::Value>) -> Result<serde_json::Value, String> {
+    let body = match raw {
+        // 省略時は空 object。
+        None => return Ok(serde_json::json!({})),
+        // string で来たら JSON として parse し直す (typeless schema の救済)。
+        Some(serde_json::Value::String(s)) => serde_json::from_str::<serde_json::Value>(&s)
+            .map_err(|e| {
+                format!(
+                    "wire_send: body は JSON object であるべきですが、 string で受信し \
+                     JSON としても parse できません: {e}"
+                )
+            })?,
+        Some(v) => v,
+    };
+    if !body.is_object() {
+        return Err(format!(
+            "wire_send: body は JSON object であるべきですが object でない値を受信しました ({body})"
+        ));
+    }
+    Ok(body)
+}
+
 /// wiremsg を送信する (= 新規 thread の root、 または `reply_to` 指定で reply)
 ///
 /// payload: `{ from, to: [..], body, reply_to? }`
@@ -915,11 +944,9 @@ pub(crate) async fn handle_wire_send(
                 .collect()
         })
         .unwrap_or_default();
-    // body は任意 JSON。 省略時は空 object。
-    let body = payload
-        .get("body")
-        .cloned()
-        .unwrap_or_else(|| serde_json::json!({}));
+    // body は JSON object。 MCP client が typeless な body schema を string と
+    // 解釈し JSON 文字列で送ってくることがあるため、 coerce_wire_body で正規化する。
+    let body = coerce_wire_body(payload.get("body").cloned())?;
     let reply_to = payload
         .get("reply_to")
         .and_then(|v| v.as_str())
@@ -1104,4 +1131,50 @@ pub(crate) async fn handle_wire_thread(
         "messages": value,
         "count": chain.len(),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::coerce_wire_body;
+    use serde_json::json;
+
+    #[test]
+    fn coerce_body_passes_object_through() {
+        let got = coerce_wire_body(Some(json!({"text": "hi", "n": 1}))).unwrap();
+        assert_eq!(got, json!({"text": "hi", "n": 1}));
+    }
+
+    #[test]
+    fn coerce_body_none_is_empty_object() {
+        assert_eq!(coerce_wire_body(None).unwrap(), json!({}));
+    }
+
+    #[test]
+    fn coerce_body_parses_json_string_into_object() {
+        // MCP client が JSON object を文字列化して送ってくるケースの救済。
+        let raw = Some(json!(r#"{"text": "hi", "n": 1}"#));
+        assert_eq!(
+            coerce_wire_body(raw).unwrap(),
+            json!({"text": "hi", "n": 1})
+        );
+    }
+
+    #[test]
+    fn coerce_body_rejects_non_json_string() {
+        let err = coerce_wire_body(Some(json!("just text"))).unwrap_err();
+        assert!(err.contains("JSON"), "err={err}");
+    }
+
+    #[test]
+    fn coerce_body_rejects_json_string_of_non_object() {
+        // JSON としては valid だが object でない (array)。
+        let err = coerce_wire_body(Some(json!("[1, 2, 3]"))).unwrap_err();
+        assert!(err.contains("object"), "err={err}");
+    }
+
+    #[test]
+    fn coerce_body_rejects_bare_array() {
+        let err = coerce_wire_body(Some(json!([1, 2, 3]))).unwrap_err();
+        assert!(err.contains("object"), "err={err}");
+    }
 }

@@ -93,8 +93,17 @@ pub struct WireSendParams {
     )]
     pub to: Vec<String>,
 
-    /// メッセージ本文（任意 JSON object）
-    #[schemars(description = "Message body as a JSON object.")]
+    /// メッセージ本文（JSON object）
+    //
+    // `serde_json::Value` のまま JsonSchema を導出すると type 無しの schema になり、
+    // MCP client が body を string と解釈して JSON 文字列で送ってしまう (= SurrealDB
+    // の `wire_messages.body TYPE object` で reject される)。 `with` で object 型の
+    // schema を明示し、 client に object を送らせる。 Rust 型は Value のまま保持し、
+    // string で来た場合は handle_wire_send の coerce_wire_body が救済する。
+    #[schemars(
+        description = "Message body as a JSON object.",
+        with = "std::collections::HashMap<String, serde_json::Value>"
+    )]
     pub body: serde_json::Value,
 
     /// 返信先メッセージID（指定すると既存 thread への reply になる）
