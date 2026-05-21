@@ -34,6 +34,10 @@ tmux set-option -ga terminal-overrides ',xterm-256color:Tc' 2>/dev/null || true
 #     ─ shell 上で素 claude を起動。 doc 11 PR-D (Z 系統) で spawn cwd は VP install
 #       root なので、 明示的に project dir に cd してから claude を起動する。
 LOGIN_SHELL="${SHELL:-/bin/zsh}"
-exec tmux new-session -A -c "$VP_CWD" -s "$VP_SESSION" \
+# -x 120 -y 48: session の初期サイズ。 client 未 attach (headless) でも極小
+# (9×3) に張り付かず claude が実用サイズで動く。 vp-app で表示すると attach
+# client サイズへ resize される (tmux window-size latest)。 新規 session のみ
+# 有効で、 -A で既存 session に attach する場合は無視される。
+exec tmux new-session -A -x 120 -y 48 -c "$VP_CWD" -s "$VP_SESSION" \
     "claude --continue || claude; exec $LOGIN_SHELL -l" \
     || (cd "$VP_CWD" && (claude --continue || claude))
