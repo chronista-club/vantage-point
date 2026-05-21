@@ -10,7 +10,6 @@ pub mod directmsg;
 pub mod file;
 pub mod hd;
 pub mod lan;
-pub mod mailbox;
 #[cfg(feature = "midi")]
 pub mod midi;
 pub mod pane;
@@ -24,3 +23,4 @@ pub mod sync;
 pub mod tmux;
 pub mod tui;
 pub mod update;
+pub mod wire;

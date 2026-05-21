@@ -9,11 +9,12 @@
 //! `Message` / `MessageKind` は **公共財** として複数 module で使用:
 //! - `msgbox_v2::WhitesnakeStore` (msgs table insert/claim payload)
 //! - `notification_actor` / `lane_spawn_actor`
-//! - `routes/health::msgbox_send_handler`
+//! - `routes/health::msgbox_remote_deliver_handler` (cross-process forward 受信)
 //! - `msgbox_remote::RemoteRoutingClient` (cross-process forward)
 //!
-//! 注: `msg_*` MCP tool / QUIC handler は wiremsg 再設計 R5-1 で撤去済 (= 後続は `wire_*`)。
-//! msgbox store 本体・HTTP route はまだ残存。
+//! 注: `msg_*` MCP tool / QUIC handler は wiremsg 再設計 R5-1 で、 `vp mailbox` CLI と
+//! `/api/msgbox/send|recv|debug` HTTP route は R5-2 で撤去済 (= 後続は `wire_*`)。
+//! msgbox store 本体・`/api/msgbox/remote_deliver` route は R5-3 まで残存。
 //!
 //! 実際の routing は `WhitesnakeStore` (= SurrealDB msgs table) が単一経路。
 //!

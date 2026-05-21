@@ -892,7 +892,7 @@ pub async fn start_unison_server(
 /// - R3 (cross-process delivery): ローカル INSERT の **後**、 確定した message の `to`
 ///   (= reply は carry-forward 済) を `classify_recipients` で振り分け、 `agent@<other-project>`
 ///   宛があれば受信側 SP に best-effort で forward する ([`forward_remote_recipients`])。
-async fn handle_wire_send(
+pub(crate) async fn handle_wire_send(
     state: &AppState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
@@ -1008,7 +1008,7 @@ async fn forward_remote_recipients(state: &AppState, msg: &crate::capability::Wi
 ///
 /// 取りこぼし防止のため、 `notified()` future を **store poll の前に** 生成する
 /// (= `WireNotifier` の struct doc 参照)。
-async fn handle_wire_recv(
+pub(crate) async fn handle_wire_recv(
     state: &AppState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
@@ -1077,7 +1077,7 @@ async fn handle_wire_recv(
 ///
 /// 戻り値: `{ status: "ok", messages: [..], count: <n> }`。
 /// `message_id` の message が存在しなければ `Err`。
-async fn handle_wire_thread(
+pub(crate) async fn handle_wire_thread(
     state: &AppState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
