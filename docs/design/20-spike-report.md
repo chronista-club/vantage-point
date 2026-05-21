@@ -1,6 +1,8 @@
 # doc 20: VP-170 Phase 1 spike report — SurrealDB LIVE Query feasibility (Q1-Q3 結果)
 
-> **Status**: Phase 1 spike core Q1-Q3 完了、 Q4-Q7 は Phase 2 移行判断後に追加検証
+> **改訂 (2026-05-21)**: 本 spike が feasibility 検証した doc 19 の Whitesnake-primary msgbox は、 その後の **wiremsg 再設計 (R1〜R6、 PR #406〜#420) で全廃**された。 本 doc は doc 19 epic の Phase 1 spike の historical reference として残置する。 SurrealDB LIVE Query の検証結果自体は技術 reference として有効だが、 `msgs` table / msgbox 実装への言及は撤去済。
+
+> **Status**: Phase 1 spike core Q1-Q3 完了 (doc 19 epic は wiremsg 再設計で全廃、 本 doc は historical reference)
 > **Linear**: [VP-170](https://linear.app/chronista/issue/VP-170) (parent: [VP-169](https://linear.app/chronista/issue/VP-169))
 > **Date**: 2026-05-14
 > **SurrealDB version**: v3.0.4 (= `Cargo.lock` 確認済、 embedded `kv-mem` で実機検証)

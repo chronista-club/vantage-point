@@ -1,5 +1,7 @@
 # Lane-as-Process 規約 — Lane の StandActor 化 + Lead Autonomy Level (VP-77 draft)
 
+> **改訂 note (2026-05-21)**: 本 doc 中の「msgbox」 はいずれも agent 間 messaging の概念呼称。 messaging 基盤は 2026-05 の wiremsg 再設計 (R1〜R6) で実装が全面置換された (`wire_send` / `wire_recv` / `wire_thread`、 `vp wire` CLI)。 per-actor inbox という概念は wiremsg の per-agent cursor で継承されている。 address 形式 (`{actor}@{project}`) も継承。 構造体 field 名 (`msgbox_topic` 等) は draft 段階の sketch。
+
 > **Status**: Draft v0.3 (2026-04-23)
 > **Type**: 規約 (convention / protocol) の追加 — 物理レイヤー新設ではない
 > **Linear**: [VP-77](https://linear.app/chronista/issue/VP-77) (parent: [VP-72](https://linear.app/chronista/issue/VP-72) Requiem Architecture)
@@ -335,18 +337,20 @@ Lane 階層を運用する際の **3 原則**。§4.1-4.4 の構造的規約に�
   - **L1 Steward 以上で Lead が meta work を自走することで「Lead を空ける」運用が意味を持つ**
 - "Lead を空ける" の意訳 = **"Lead が dispatch 役に徹する"** (worker を回す、自分は具体 issue を持たない)
 
-#### 原則 3: Lane 間連携 = VP actor msg (msg_send / msg_recv)
+#### 原則 3: Lane 間連携 = VP actor msg (wire_send / wire_recv)
 
-- **Lead ↔ Worker 通信は VP-24 Msgbox 経由** (`msg_send` / `msg_recv`)
-- **ccwire は不要** (現状 session 登録も非必須)
+> **改訂 note (2026-05-21)**: 当初 VP-24 Msgbox を前提に書かれたが、 messaging 基盤は 2026-05 の wiremsg 再設計 (R1〜R6) で全面置換された。 `msg_send` / `msg_recv` → `wire_send` / `wire_recv` に読み替えること。 address 形式 (`{actor}@{project}`) は wiremsg がそのまま継承。
+
+- **Lead ↔ Worker 通信は wiremsg 経由** (`wire_send` / `wire_recv`)
+- **ccwire は廃止済** (旧 session 登録も非必須)
 - **cross-project も同じ address 形式**:
   - `lead@vantage-point` ↔ `lead@creo-memories`
   - `worker-vp-73@vantage-point` ↔ `worker-creo-101@creo-memories`
-  - address = `{actor}@{project}` の統一 schema (§Msgbox address 仕様)
-- `persistent: true` + TTL 付きで **非同期連携** (相手 session が idle でも届く、次回起動時に recv 可能)
+  - address = `{actor}@{project}` の統一 schema (§wire address 仕様)
+- wiremsg は wire accumulation で **非同期連携** (相手 session が idle でも wire に追記され、 次回起動時に cursor を進めて recv 可能)
 - **実地例**: 2026-04-23 の creo-memories hand-off (CREO-101) がこの pattern の production 事例:
-  - VP 側 Worker が `lead@creo-memories` に `msg_send` で handoff memo 送信
-  - creo-memories 側 Lead が next session 開始時に `msg_recv` で受信
+  - VP 側 Worker が `lead@creo-memories` に handoff memo を送信
+  - creo-memories 側 Lead が next session 開始時に受信
   - 双方の session が並行稼働していなくても成立
 
 #### 3 原則の相互補完
@@ -946,7 +950,7 @@ agent 発見:
   - §4.5 **運用原則** (user 追加 2026-04-23):
     - 1 Issue = 1 Worker Lane (M tier 処理単位)
     - Lead Lane は Project meta task 用に空ける (L1 Steward 前提)
-    - Lane 間連携 = VP actor msg (msg_send/msg_recv)、cross-project も同 address 形式
+    - Lane 間連携 = VP actor msg (wire_send/wire_recv)、cross-project も同 address 形式
   - §5.5 **Request/Response as XS process** (causation edge = 1 R/R、events と processes の isomorphism)
   - §9.4 **Pane-level snapshot** (Mortality を Pane にも再帰適用、`size: "S"` tag 推奨)
 - **2026-04-23 v0.3 (更新)** — §2.6 Screen Geography を cockpit 完成形に拡充 (VP-83 合流):

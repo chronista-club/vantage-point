@@ -1,8 +1,13 @@
-# Design 14: Msgbox address v3.1 — How
+# Design 14: Wire address v3.1 — How
 
-> **Status**: Draft (VP-144 Epic、 Phase 0 SDG)
-> **Spec**: [docs/spec/msgbox-address-v3.md](../spec/msgbox-address-v3.md) (Why + What)
-> **Guide**: [docs/guide/msgbox-address-usage.md](../guide/msgbox-address-usage.md) (Usage)
+> **改訂 (2026-05-21)**: 旧 msgbox 実装は 2026-05 の wiremsg 再設計 (R1〜R6、 PR #406〜#420) で全廃された。
+> 本 doc の **address resolve cascade / identity model / hub / 暗号 / NAT traversal / federation 設計は wiremsg がそのまま継承**しており現行有効。
+> ただし §7 の `MsgboxRouter` を key 化する旧実装記述・`msg_recv` への actor param 追加といった **実装詳細は撤去済 msgbox 固有**。 wiremsg では cross-process 配送が `wire_remote` 経由 (best-effort)、 recv が per-agent cursor (`wire_recv`) に置き換わっている。
+> Phase 3+ の mDNS / hub / federation は wiremsg 上での将来計画として有効。
+
+> **Status**: 設計は現行有効 (wiremsg が継承)。 旧称 "Msgbox address v3.1" (VP-144 Epic、 Phase 0 SDG)。
+> **Spec**: [docs/spec/wire-address-v3.md](../spec/wire-address-v3.md) (Why + What)
+> **Guide**: [docs/guide/wire-address-usage.md](../guide/wire-address-usage.md) (Usage)
 
 本 doc は v3.1 の **How** を規定する。 syntax / identity model は spec を参照、 sample 利用例は guide を参照。 本 doc は実装側の決定事項に集中する。
 
@@ -13,7 +18,7 @@
 address parse 後、 **location 部分の resolve** を以下の順序で fall-through する。 1 pass、 simple。
 
 ```
-1. location 不在        → self process msgbox (= local dispatch、 即時)
+1. location 不在        → self process inbox (= local dispatch、 即時)
 2. location = project   → self world、 TheWorld registry に問い合わせて port lookup
 3. location = host/...  → host を resolve:
    a. host が "<machine>.local" 形 (.local TLD)  → mDNS query (Phase 3)
@@ -86,7 +91,7 @@ address parse 後、 **location 部分の resolve** を以下の順序で fall-t
 
 ### 同 world 内 (= self process / same machine) の encrypt skip
 
-- trust boundary 内では encrypt skip 可 (= performance、 既存 in-memory msgbox で encrypt 不要)
+- trust boundary 内では encrypt skip 可 (= performance、 同 process 内 wire 配送で encrypt 不要)
 - LAN / Internet では mandatory encrypt
 - v3.1 parser が address 解析後の resolve 結果に応じて encrypt path を auto select
 
@@ -138,7 +143,9 @@ LAN MVP (Phase 0-3) では QUIC over loopback + LAN の 2 transport で完結、
 
 ## 5. Reliability & Delivery
 
-### delivery 種別
+> **改訂 note (2026-05-21)**: 以下の `ephemeral` / `persistent` / `manual_ack` の 3 delivery flag は撤去済 msgbox 固有の semantics。 wiremsg 再設計 (R1〜R6) では delivery モデルが **per-agent 単一 cursor の accumulation** に置き換わった: message は wire に追記され、 受信側は自分の cursor を進めて未読を取得する (`wire_recv`)、 ack flag は不要。 cross-process 配送は `wire_remote` 経由の best-effort (R3)。 cross-world (hub / federation) の将来計画は引き続き有効。
+
+### delivery 種別 (旧 msgbox、 historical)
 
 | 種別 | 説明 | 既存 v1 | v3.1 |
 |------|------|---------|------|
@@ -229,6 +236,8 @@ Phase 1 で parser 拡張時、 v1 syntax を v3.1 として解釈する rule:
 ### lane segment 明示時の routing
 
 > **Supersede note (= [doc 19](19-msgbox-whitesnake-primary.md) / VP-169)**: 以下の `MsgboxRouter` を `(actor, project, lane_path)` でキー化する HashMap-based 設計は **VP-169 で廃止**された。 msgbox は Whitesnake (SurrealDB embedded) primary に揃い、 per-lane 軸は HashMap key ではなく `msgs` table の DB row field (`to_actor` / `to_lane`) になった (doc 19 §4.5)。 `register` / `unregister` 機構も不要になり廃止。 address syntax / parser (本 doc §7 上段 + spec) は現行のまま有効。
+>
+> **さらに改訂 (2026-05-21)**: VP-169 の Whitesnake msgbox 自体も wiremsg 再設計 (R1〜R6) で全廃された。 現行の per-lane 配送は wire accumulation の per-agent cursor (`wire_recv`) で実現される。 doc 19 / `msgs` table への言及は historical。 address syntax / parser のみ現行有効。
 
 - ~~Phase 2 で per-lane msgbox 物理化 (`MsgboxRouter` を `(actor, project, lane_path)` キー)~~ → VP-169 で DB row field 化
 - ~~v1 既存 msgbox は spawn 時に `(actor, project, vec!["lead"])` キーへ migration~~ → VP-169 で box concept 廃止
@@ -236,12 +245,14 @@ Phase 1 で parser 拡張時、 v1 syntax を v3.1 として解釈する rule:
 
 ### gap 1-4 の物理 fix
 
+> **改訂 note (2026-05-21)**: 以下の gap 1/2/4 の fix 内容は撤去済 msgbox 固有の実装記述。 wiremsg では cross-process 配送が `wire_remote` の best-effort (R3)、 recv が per-agent cursor (`wire_recv`、 任意 actor の inbox を指定可能) に置き換わっている。 gap 3 (2 namespace 統合) は address syntax の話なので現行有効。
+
 | gap | Phase | fix 内容 |
 |-----|-------|----------|
 | 1. mcp registry 非対称 | Phase 2 | reserved actor (`mcp` 含む) を per-process で registry 公開、 forward 失敗時 error 明示 |
-| 2. MCP recv msgbox 固定 | Phase 2 | `msg_recv` に `actor` param 追加、 任意 msgbox 観察可、 default は `agent` (= `mcp` から変更) |
+| 2. MCP recv inbox 固定 | Phase 2 | recv に `actor` param 追加、 任意 inbox 観察可、 default は `agent` (= `mcp` から変更) |
 | 3. 2 namespace 混乱 | Phase 1 | parser で location 統合、 sidebar lane label と address 統合 |
-| 4. cross-process recv observation | Phase 2 | per-lane msgbox + sidebar Echoes 横 message icon、 sidebar UI = primary observation path |
+| 4. cross-process recv observation | Phase 2 | per-lane inbox + sidebar Echoes 横 message icon、 sidebar UI = primary observation path |
 
 ---
 
@@ -249,24 +260,25 @@ Phase 1 で parser 拡張時、 v1 syntax を v3.1 として解釈する rule:
 
 ### Phase 0: SDG ドキュメント (本 doc + spec + guide) — VP-145
 
-scope: `docs/spec/msgbox-address-v3.md` + `docs/design/14-msgbox-address-v3.md` (本 doc) + `docs/guide/msgbox-address-usage.md`
+scope: `docs/spec/wire-address-v3.md` + `docs/design/14-wire-address-v3.md` (本 doc) + `docs/guide/wire-address-usage.md`
 
 deliverable: 3 file merged、 後続 Phase の議論 base 確立
 
 ### Phase 1: Parser 拡張 — VP-146
 
-scope: `crates/vantage-point/src/msgbox/address.rs` 等で v3.1 syntax 受け付け
+scope: wire address parser (現行は `crates/vantage-point/src/capability/wire_remote.rs` 周辺) で v3.1 syntax 受け付け
 
 deliverable: 全 sample address parse OK、 v1 互換維持、 unit tests 10+ cases (t-wada 流テストピラミッド)
 
-### Phase 2: per-lane msgbox + sidebar Echoes 横 icon — VP-147
+### Phase 2: per-lane inbox + sidebar Echoes 横 icon — VP-147
 
-> **Supersede note (= [doc 19](19-msgbox-whitesnake-primary.md) / VP-169)**: `MsgboxRouter` の `(actor, project, lane_path)` キー化は VP-169 で廃止。 per-lane は DB row field 化 (`msgs` table の `to_actor` / `to_lane`)。 sidebar 側の lane msgbox 観測 (`SidebarState.lane_msgboxes` / poller) は引き続き有効。
+> **Supersede note (= [doc 19](19-msgbox-whitesnake-primary.md) / VP-169)**: `MsgboxRouter` の `(actor, project, lane_path)` キー化は VP-169 で廃止。 per-lane は DB row field 化。
+>
+> **さらに改訂 (2026-05-21)**: VP-169 msgbox 自体も wiremsg 再設計で全廃。 per-lane 配送は wire accumulation の per-agent cursor に置き換わった。 sidebar 側の lane inbox 観測 (`SidebarState` の poller) は引き続き有効。
 
 scope:
-- ~~`MsgboxRouter` を `(actor, project, lane_path)` キー化~~ → VP-169 で `msgs` table の DB row field 化
-- `SidebarState.lane_msgboxes: HashMap<lane_addr, MessageState>` 追加
-- `spawn_lane_msgbox_poller` (5s polling)、 `AppEvent::ResolveLaneMsgboxes`
+- per-lane 配送 → wiremsg では wire address (`<actor>@<project>/<lane>`) の cursor recv で実現
+- sidebar の lane inbox state + poller
 - sidebar `.vp-message-icon` を Echoes icon の右隣に配置 (未読あり = filled、 なし = 表示なし)
 
 deliverable: dogfood で 2 lane 間 msg 視認、 gap 1+2+4 解消
@@ -279,7 +291,7 @@ scope:
 - address book: `~/.config/vp/addresses.toml`
 - LAN cross-machine msg: QUIC over LAN、 NaCl encrypt + Ed25519 sign
 
-deliverable: macbook-a と macbook-b で `vp msg send agent@macbook-b/vantage-point/lead "hello"` が動く
+deliverable: macbook-a と macbook-b で `vp wire send --to agent@macbook-b/vantage-point/lead --body "hello"` が動く
 
 ### Phase 4-6 (placeholder、 LAN MVP 完成後 planning)
 
@@ -324,8 +336,8 @@ VP v3.1 は **自前 protocol 設計を最小化** し、 既存 protocol idiom 
 
 ## 関連
 
-- **Spec**: [docs/spec/msgbox-address-v3.md](../spec/msgbox-address-v3.md)
-- **Guide**: [docs/guide/msgbox-address-usage.md](../guide/msgbox-address-usage.md)
+- **Spec**: [docs/spec/wire-address-v3.md](../spec/wire-address-v3.md)
+- **Guide**: [docs/guide/wire-address-usage.md](../guide/wire-address-usage.md)
 - **Linear Epic**: [VP-144](https://linear.app/chronista/issue/VP-144)
 - **Phase sub-issues**: [VP-145](https://linear.app/chronista/issue/VP-145) [VP-146](https://linear.app/chronista/issue/VP-146) [VP-147](https://linear.app/chronista/issue/VP-147) [VP-148](https://linear.app/chronista/issue/VP-148)
 - **dogfood gap**: `mem_1CapRAtpCpahQGn8nW2fmT`

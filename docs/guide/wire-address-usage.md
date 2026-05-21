@@ -1,8 +1,13 @@
-# Guide: Msgbox address v3.1 — Usage
+# Guide: Wire address v3.1 — Usage
 
-> **Status**: Draft (VP-144 Epic、 Phase 0 SDG)
-> **Spec**: [docs/spec/msgbox-address-v3.md](../spec/msgbox-address-v3.md) (Why + What)
-> **Design**: [docs/design/14-msgbox-address-v3.md](../design/14-msgbox-address-v3.md) (How)
+> **改訂 (2026-05-21)**: 旧 msgbox 実装は 2026-05 の wiremsg 再設計 (R1〜R6、 PR #406〜#420) で全廃された。
+> 本 doc の **address syntax (`<actor>@<location>`) は wiremsg がそのまま継承**しており現行有効。
+> ただし CLI は `vp msg` → **`vp wire`** に、 MCP tool は `msg_send` / `msg_recv` → **`wire_send` / `wire_recv` / `wire_thread`** に置き換わった。 本 doc の CLI / MCP example は現行の wiremsg 系コマンドに更新済。
+> Ruby DSL / mDNS / hub の example はいずれも将来計画 (Phase 3+) であり、 syntax は wiremsg 上で有効。
+
+> **Status**: address syntax は現行有効 (wiremsg が継承)。 旧称 "Msgbox address v3.1" (VP-144 Epic、 Phase 0 SDG)。
+> **Spec**: [docs/spec/wire-address-v3.md](../spec/wire-address-v3.md) (Why + What)
+> **Design**: [docs/design/14-wire-address-v3.md](../design/14-wire-address-v3.md) (How)
 
 本 doc は v3.1 address の **使い方** を集約する。 構文の正確な定義は spec、 実装側決定は design を参照。 ここでは **dogfood で打って動く form** を中心に置く。
 
@@ -28,32 +33,35 @@ actor                            project           lane (multi-segment 可)
 
 ---
 
-## 2. CLI examples (`vp msg`)
+## 2. CLI examples (`vp wire`)
+
+> `vp wire` は wiremsg 再設計 (R5-2) で旧 `vp mailbox` を置換した CLI。 `watch` (long-poll subscribe) / `send` を提供する。
 
 ### 2.1 基本: send / watch
 
 ```bash
 # 同 machine、 vantage-point の lead lane に送信 (default actor = agent)
-vp msg send vantage-point/lead "hello"
+vp wire send --to vantage-point/lead --body "hello"
 
-# 同 machine、 vantage-point の lead lane の agent msgbox を watch
-vp msg watch vantage-point/lead
+# 同 machine、 vantage-point の lead lane の agent inbox を watch
+# (受信 message を 1 行 JSON で stdout に出力、 Claude Code Monitor の subscription source 想定)
+vp wire watch --agent agent@vantage-point/lead
 
 # actor 明示 (= notification address)
-vp msg send notify@vantage-point/lead "build done"
+vp wire send --to notify@vantage-point/lead --body "build done"
 
 # project broadcast (lane 全 actor)
-vp msg send '*@vantage-point/lead' "全員へ通知"
+vp wire send --to '*@vantage-point/lead' --body "全員へ通知"
 ```
 
 ### 2.2 cross-process (= 同 machine 別 project)
 
 ```bash
-# self world 内 cross-process (= 別 project process)
-vp msg send creo-memories/lead "hello from vantage-point"
+# self world 内 cross-process (= 別 project process、 wire R3 の best-effort forward)
+vp wire send --to creo-memories/lead --body "hello from vantage-point"
 
 # v1 syntax (互換、 default lane = lead)
-vp msg send agent@creo-memories "v1 形式 (互換動作)"
+vp wire send --to agent@creo-memories --body "v1 形式 (互換動作)"
 ```
 
 ### 2.3 LAN cross-machine (Phase 3 で valid)
@@ -70,11 +78,11 @@ vp world list --lan
 # address book に追加
 vp world add macbook-b
 
-# LAN msg send
-vp msg send agent@macbook-b/vantage-point/lead "hello from macbook-a"
+# LAN wire send
+vp wire send --to agent@macbook-b/vantage-point/lead --body "hello from macbook-a"
 
 # explicit FQDN
-vp msg send agent@macbook-b.local/vantage-point/lead "explicit mDNS"
+vp wire send --to agent@macbook-b.local/vantage-point/lead --body "explicit mDNS"
 ```
 
 ### 2.4 Internet via hub (Phase 4 で valid)
@@ -84,11 +92,11 @@ vp msg send agent@macbook-b.local/vantage-point/lead "explicit mDNS"
 vp world add mako@chronista.club
 # → hub に query、 alias 'mako' の pubkey + endpoint を address book に保存
 
-# Internet msg send
-vp msg send agent@mako/vantage-point/lead "hello via hub"
+# Internet wire send
+vp wire send --to agent@mako/vantage-point/lead --body "hello via hub"
 
 # explicit hub URL
-vp msg send agent@mako.chronista.club/vantage-point/lead "FQDN explicit"
+vp wire send --to agent@mako.chronista.club/vantage-point/lead --body "FQDN explicit"
 ```
 
 ---
@@ -218,55 +226,48 @@ vp world trust remove <alias>
 
 ## 6. Trouble-shooting (= dogfood gap 解消の使い方)
 
-### gap 1 fix: silent drop の解消 (Phase 2 以降)
+> **改訂 note (2026-05-21)**: gap 1/2 はもともと旧 msgbox の `mcp` actor 周りの問題。 wiremsg では `mcp` reserved 名が `agent` に統合され、 inter-agent comm は一律 `agent` actor。 cross-process 配送は `wire_remote` の best-effort forward (R3) で、 forward 不能時は明示的 error を返す方針 (silent drop なし) は継承されている。 recv は `wire_recv` の per-agent cursor。
 
-**before (v1)**:
+### gap 1 fix: silent drop の解消
+
+**before (旧 msgbox)**:
 ```bash
-$ vp msg send mcp@creo-memories "test"
-Message sent to 'mcp@creo-memories' (id: ...)
+$ vp wire send --to mcp@creo-memories --body "test"
 # ← ack 返るが、 実際は forward 失敗で deliver されず (silent drop)
 ```
 
-**after (v3.1)**:
-```bash
-$ vp msg send mcp@creo-memories "test"
-Error: actor 'mcp' not registered for cross-process delivery on world 'creo-memories'
-       (mcp is per-process ad-hoc; use 'agent@creo-memories' for cross-process inter-agent comm)
-```
+**after (wiremsg)**: cross-process forward 不能時は明示的 error。 inter-agent comm は `mcp` ではなく `agent@creo-memories` を使う (wiremsg では `mcp` reserved 名は `agent` に統合済)。
 
 → **明示的 error**、 silent drop なし。 sender が即座に address ミスに気付ける。
 
-### gap 2 fix: MCP recv で他 actor 観察 (Phase 2 以降)
+### gap 2 fix: 他 actor inbox の観察
 
-**before (v1)**: MCP `msg_recv` は self process の `mcp` actor msgbox 限定、 他 actor (`agent` / `notify` 等) は recv 不可。
+**before (旧 msgbox)**: MCP recv は self process の `mcp` actor inbox 限定、 他 actor は recv 不可。
 
-**after (v3.1)**: `msg_recv` に `actor` param 追加。
+**after (wiremsg)**: `wire_recv` は呼び出し agent の wire address (= 自 lane 由来) の cursor を進めて未読を取得。 CLI で任意 actor の inbox を watch する場合は:
 
 ```bash
-# default は agent (= 旧 v1 の `mcp` から変更、 inter-agent comm が default)
-vp msg recv
+# agent inbox を watch (inter-agent comm の default)
+vp wire watch --agent agent@vantage-point/lead
 
-# notify actor msgbox を観察
-vp msg recv --actor notify
-
-# 任意 actor
-vp msg recv --actor protocol
+# notify actor inbox を観察
+vp wire watch --agent notify@vantage-point/lead
 ```
 
-### gap 3 fix: 2 namespace 統合 (Phase 1 以降)
+### gap 3 fix: 2 namespace 統合
 
-**before (v1)**: `vantage-point/lead` (sidebar lane label) を msgbox address と誤認 → `actor name contains invalid character` parse error。
+**before (旧 msgbox)**: `vantage-point/lead` (sidebar lane label) を wire address と誤認 → `actor name contains invalid character` parse error。
 
 **after (v3.1)**: `vantage-point/lead` を valid address として解釈 (= `agent@vantage-point/lead` shorthand)。 sidebar label と address が **同 syntax**。
 
 ```bash
-$ vp msg send vantage-point/lead "hello"
-Message sent to 'agent@vantage-point/lead' (id: ...)
+$ vp wire send --to vantage-point/lead --body "hello"
+# → agent@vantage-point/lead として解釈される
 ```
 
-### gap 4 fix: cross-process recv の visualization (Phase 2 以降)
+### gap 4 fix: cross-process recv の visualization
 
-**before (v1)**: 別 lane から `agent@<self>` に送信 → receiver は MCP recv で見えない、 CLI watch で観察必要。
+**before (旧 msgbox)**: 別 lane から `agent@<self>` に送信 → receiver は MCP recv で見えない、 CLI watch で観察必要。
 
 **after (v3.1)**: vp-app sidebar の Echoes icon 右隣に **未読 message icon** が出現、 click で tooltip 表示。
 
@@ -306,7 +307,7 @@ $ vp world add macbook-b
 
 **macbook-a**:
 ```bash
-$ vp msg send agent@macbook-b/vantage-point/lead "hello from A"
+$ vp wire send --to agent@macbook-b/vantage-point/lead --body "hello from A"
 Message sent (id: 01h...)
 ```
 
@@ -314,7 +315,7 @@ Message sent (id: 01h...)
 
 **macbook-b**:
 ```bash
-$ vp msg watch agent@vantage-point/lead
+$ vp wire watch --agent agent@vantage-point/lead
 [2026-05-08 07:00:01] from agent@macbook-a/vantage-point/lead:
   payload: "hello from A"
   signed: ed25519:6f3e... (verified ✓)
@@ -344,14 +345,16 @@ worker lane で実装中の Claude が「lead lane の Claude に lint result �
 ```bash
 # worker Claude が実行
 $ cargo clippy --workspace 2>&1 | tee /tmp/clippy.txt
-$ vp msg send agent@vantage-point/lead "$(cat /tmp/clippy.txt)" --kind notification
+$ vp wire send --to agent@vantage-point/lead --body "$(cat /tmp/clippy.txt)"
 ```
+
+> MCP 経由なら worker Claude は `wire_send` tool を直接呼ぶ (CLI 不要)。
 
 ### 同 machine の vantage-point/lead lane で
 
-- vp-app sidebar の Lead row に 📨 icon 表示 (Phase 2 で path 6 物理化)
+- vp-app sidebar の Lead row に 📨 icon 表示
 - click → tooltip で「from agent@vantage-point/worker/code-1、 2 min ago、 lint result preview」
-- lead Claude が `vp msg recv --actor agent` で取得、 内容に応じて指示
+- lead Claude が `wire_recv` (MCP tool) で取得、 内容に応じて指示
 
 ### Ruby DSL 版 (Phase 5)
 
@@ -402,7 +405,7 @@ A. **見えない** (Phase 4+)。 payload は receiver pubkey で NaCl `crypto_b
 
 ## 関連
 
-- **Spec**: [docs/spec/msgbox-address-v3.md](../spec/msgbox-address-v3.md)
-- **Design**: [docs/design/14-msgbox-address-v3.md](../design/14-msgbox-address-v3.md)
+- **Spec**: [docs/spec/wire-address-v3.md](../spec/wire-address-v3.md)
+- **Design**: [docs/design/14-wire-address-v3.md](../design/14-wire-address-v3.md)
 - **Linear Epic**: [VP-144](https://linear.app/chronista/issue/VP-144)
 - **Phase sub-issues**: [VP-145](https://linear.app/chronista/issue/VP-145) [VP-146](https://linear.app/chronista/issue/VP-146) [VP-147](https://linear.app/chronista/issue/VP-147) [VP-148](https://linear.app/chronista/issue/VP-148)

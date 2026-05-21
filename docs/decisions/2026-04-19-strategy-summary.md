@@ -1,5 +1,7 @@
 # VP 戦略決定総まとめ (2026-04-19)
 
+> **改訂 note (2026-05-21)**: 本 doc は 2026-04-19 時点の戦略記録 (歴史的記録)。 §2 で「messaging は VP Mailbox に委譲」 と決めた messaging 基盤 (msgbox) は、 その後 **2026-05 の wiremsg 再設計 (R1〜R6、 PR #406〜#420) で全面置換**された。 現行の agent 間 messaging は wiremsg (`wire_send` / `wire_recv` / `wire_thread` MCP tool、 `vp wire` CLI)。 「VP Mailbox」「mailbox」「msgbox」 の記述は当時の呼称として読むこと。 ccwire / `vp tmux` の役割分離方針自体は影響なし。
+
 2026-04-18 + 2026-04-19 の 2 セッションで確定した戦略決定の総決算。
 
 ## 1. Positioning
