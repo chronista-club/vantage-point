@@ -1,5 +1,7 @@
 # 12. Stand architecture — Layer-Stand Composition Model (LSCM)
 
+> **改訂 note (2026-05-21)**: 本 doc 中の「msgbox」「`msgbox_registry.rs`」「`MsgboxRouter`」 はいずれも 2026-05 の **wiremsg 再設計 (R1〜R6、 PR #406〜#420) で全廃**された旧 messaging 実装。 現行の agent 間 messaging は wiremsg (`wire_send` / `wire_recv` / `wire_thread`、 `vp wire` CLI、 `wiremsg_store.rs` / `wire_remote.rs`)。 wire address は `<actor>@<project>[/<wing>]` (slash 区切り、 [doc 14](14-wire-address-v3.md) 参照)。 §9 catalog 等の「actor」「channel で copy 渡し」 という Stand 間通信の **概念モデル自体は有効** — substrate が msgbox → wiremsg に置き換わっただけ。
+
 > **Status**: target architecture (現実装は移行元、 §9 catalog の "現実装 vs target" を参照)
 > **Date**: 2026-05-04
 > **Pair memories**:
@@ -215,13 +217,13 @@ Stand 同士は memory を共有しない。 通信は channel (msgbox / topic) 
 
 ```
 [Actor face — identity]                [CSP face — interaction]
-direct msgbox address                 broadcast topic channel
+direct wire address                   broadcast topic channel
 
 Stand A                                 Stand A
    │                                       │ publish
-   ▼ msg_send                              ▼
-hd@vp/lead  ←───────  Stand B          ┌─────────────────┐
-Msgbox                                 │ canvas/lane/    │
+   ▼ wire_send                             ▼
+agent@vp/lead  ←──────  Stand B        ┌─────────────────┐
+wire inbox                             │ canvas/lane/    │
                                         │ lead/content    │ topic
                                         └─────────────────┘
                                          │  │  │ subscribe

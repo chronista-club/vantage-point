@@ -188,7 +188,7 @@ vp snapshot diff "before-refactor" current
 - Content の直接操作は不可
 
 ### 3 アクセスモード
-1. **Message** (default): `msg_send` / `msg_recv`
+1. **Message** (default): `wire_send` / `wire_recv`
 2. **Peek** (read-only): `lane_peek(lane_id)` → snapshot
 3. **Share / Mirror** (read-write): `content_attach(from_worker, to_lead_pane)`
 
@@ -254,7 +254,7 @@ Sidebar で各 Worker Lane に `[peek]` / `[mirror to lead]` / `[destroy]` 操�
 
 ## 15. Requiem Architecture Evolution (事後追記 2026-04-21)
 
-本 doc 起草後の深掘り議論で、4 層モデルに **event-sourced reactive Stand Ensemble** としての昇華が起きた。全 Stand を actor 化、msgbox / event bus / state を 1 つの event stream に統一。
+本 doc 起草後の深掘り議論で、4 層モデルに **event-sourced reactive Stand Ensemble** としての昇華が起きた。全 Stand を actor 化、wire (agent 間 messaging) / event bus / state を 1 つの event stream に統一。
 
 **核心原則**: "Everything is events"
 - PP = Information Router (routing を event で publish する特化 Stand)

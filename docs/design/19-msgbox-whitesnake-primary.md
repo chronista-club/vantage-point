@@ -1,6 +1,8 @@
 # doc 19: msgbox Whitesnake-primary refactor (mpsc 廃止 + audit moat 強化)
 
-> **Status**: Implemented (Phase 5 完了, commit `445190c` / VP-179 / PR #364)
+> **改訂 (2026-05-21)**: 本 doc が実装した Whitesnake-primary msgbox (`MsgboxStore` / `WhitesnakeStore` / `msgs` table / cross-process forward / `MsgboxRegistry`) は、 その後の **wiremsg 再設計 (R1〜R6、 PR #406〜#420) で全廃**された。 wiremsg は per-agent 単一 cursor の wire accumulation モデルで、 message は wire に追記され受信側が cursor を進めて未読を取得する (`wire_send` / `wire_recv` / `wire_thread`)。 `msgs` / `msgbox` table、 `msg_*` MCP tool、 `vp mailbox` CLI はいずれも撤去済。 本 doc は VP-169 時点の msgbox 実装の **historical reference** として残置する。 address モデル (`<actor>@<location>`) は wiremsg がそのまま継承 ([doc 14](14-wire-address-v3.md) 参照)。
+
+> **Status**: Superseded by wiremsg 再設計 (2026-05)。 旧: Implemented (Phase 5 完了, commit `445190c` / VP-179 / PR #364)
 > **Linear**: [VP-169](https://linear.app/chronista/issue/VP-169) (parent: VP-156)
 > **Date**: 2026-05-13 (Drafted) / 2026-05-15 (Phase 5 land)
 > **Author**: Mako (= Chronista solo dev)

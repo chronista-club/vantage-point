@@ -626,7 +626,7 @@ Co-design の戻しボール。creo-memories 側で decide / iterate しても�
 ### 11.5 ActorRef の表現
 - VP 側は `{stand, lane, project}` の 3 tuple
 - creo-memories 側でも同形式で OK か (cross-system で一致させたい)
-- ↔ Msgbox address `{stand}.{lane}@{project}` (VP-24) と alias 関係にある
+- ↔ wire address `<actor>@<project>[/<wing>]` (wiremsg、 旧 VP-24 Msgbox を再設計、 [doc 14](14-wire-address-v3.md)) と alias 関係にある
 
 ### 11.6 causation の multi-parent 化時期
 - R0 は single parent

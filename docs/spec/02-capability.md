@@ -18,11 +18,11 @@ Process が保持する「能力（Capability / Stand）」システムと、MID
 
 ```
 Phase 1: トレイト型（現在）— 内部能力を Capability トレイトで整理
-Phase 2: プロトコル型（完了, VP-169）— 能力間通信を WhitesnakeStore（SurrealDB embedded）ベースに
+Phase 2: プロトコル型（完了）— 能力間 / agent 間通信を wiremsg（wire accumulation）ベースに
 Phase 3: プラグイン型（将来）— WASM で能力を動的ロード
 ```
 
-> **Phase 2 補足**: 当初は msgbox を in-memory `TopicRouter` ベースで設計していたが、 VP-169 epic（doc 19、 Phase 5 完了 / commit `445190c`）で msgbox substrate を **`WhitesnakeStore`（SurrealDB embedded primary）** に統一した。 mpsc ベースの `Router` / `Handle` は物理削除済。 `TopicRouter` 自体は Canvas / pane content の broadcast 配信用途で引き続き存在する（`process/topic_router.rs`）が、 msgbox（能力間メッセージング）は WhitesnakeStore primary。
+> **Phase 2 補足**: agent 間メッセージング基盤は数次の再設計を経ている。 当初は in-memory `TopicRouter` ベース → VP-169（doc 19）で `WhitesnakeStore`（SurrealDB embedded primary）→ 最終的に 2026-05 の **wiremsg 再設計（R1〜R6、 PR #406〜#420）** で per-agent cursor の wire accumulation モデルに統一された。 旧 msgbox 実装（`MsgboxStore` / `WhitesnakeStore` / `msgs` table / `MsgboxRegistry`）は全廃済。 現行の能力間 / agent 間メッセージングは wiremsg（`wire_send` / `wire_recv` / `wire_thread`）。 `TopicRouter` 自体は Canvas / pane content の broadcast 配信用途で引き続き存在する（`process/topic_router.rs`）。
 
 ### REQ-CAP-001: Capability トレイト
 
@@ -48,21 +48,20 @@ Phase 3: プラグイン型（将来）— WASM で能力を動的ロード
 - [x] broadcast による複数購読者配信
 - [x] 非同期対応
 
-### REQ-CAP-004: msgbox v2（WhitesnakeStore）
+### REQ-CAP-004: wiremsg（wire accumulation）
 
-**実装**: `crates/vantage-point/src/capability/msgbox_v2.rs`（`MsgboxStore` trait + `WhitesnakeStore` impl）
+**実装**: `crates/vantage-point/src/capability/wiremsg_store.rs` + `wire_remote.rs`、 CLI は `commands/wire.rs`
 
-VP-169 epic（doc 19、 Phase 5 完了 / commit `445190c`）で確立した能力間メッセージング substrate。 旧 mpsc `Router` / `Handle` を物理削除し、 SurrealDB embedded を primary store に統一した。
+> **改訂 (2026-05-21)**: 本要件はもともと「msgbox v2（WhitesnakeStore）」 として VP-169 epic（doc 19）の `MsgboxStore` / `WhitesnakeStore` / `msgs` table を指していたが、 2026-05 の **wiremsg 再設計（R1〜R6、 PR #406〜#420）** で msgbox substrate が全廃され、 per-agent cursor の **wire accumulation** モデルに置き換わった。 旧 msgbox 実装（`MsgboxStore` / `WhitesnakeStore` / `msgs` / `msgbox` table / `MsgboxRegistry` / `vp mailbox`）は撤去済。 doc 19 / doc 16-18 は msgbox 設計の historical reference。
 
-- [x] `MsgboxStore` trait — DB primary な msgbox operations を定義
-- [x] `WhitesnakeStore` — SurrealDB embedded（`msgs` table）で trait を impl
-- [x] msg lifecycle を status field（`active` / `dead_letter` / `archived`）で表現、 1 table 永続
-- [x] concurrent recv first-class — atomic claim 機構 + stale claim timeout
-- [x] selective receive を WHERE predicate で表現（旧 Erlang stash 廃止）
-- [x] `MsgboxStats` — status 別 row 数（`vp msgbox status` 用）
-- [x] cross-process forward は両 SP DB write + ack-back HTTP（trace field で audit trail）
+wiremsg は agent 間メッセージングの substrate。 message は per-agent の wire に追記され、 受信側は自分の cursor を進めて未読を取得する。
 
-> **DB ディレクトリ**: SP は `db/sp_{slug}/`、 World daemon は `db/world/` に物理分離（VP-182 / PR #367、 surrealkv の single-writer 排他ロック対策）。 詳細は doc 19 §6。
+- [x] wire accumulation — message を wire に追記、 per-agent 単一 cursor で未読取得
+- [x] threading — `wire_send` の `reply_to` で thread 化、 `wire_thread` で ancestor-chain 取得
+- [x] cross-process forward — `wire_remote` 経由の best-effort delivery（R3）
+- [x] MCP tool — `wire_send` / `wire_recv` / `wire_thread`
+- [x] CLI — `vp wire watch`（long-poll subscribe）/ `vp wire send`
+- [x] address モデル — `<actor>@<project>[/<wing>]`（[doc 14](../design/14-wire-address-v3.md)、 旧 msgbox address v3.1 を継承）
 
 ---
 
@@ -155,7 +154,7 @@ vp midi ports              # ポート一覧
 - [ ] MIDI イベントが TopicRouter 経由で配信される（realtime broadcast 用途のため TopicRouter のまま）
 - [ ] TUI / Canvas で MIDI 状態を表示できる
 
-> **Note**: 能力間の **msgbox メッセージング** は VP-169（doc 19）で `WhitesnakeStore`（SurrealDB embedded primary）に統一済。 一方、 MIDI / Canvas 状態の realtime broadcast 配信は引き続き `TopicRouter` を用いる（永続化不要・低レイテンシ要求のため）。 「msgbox = WhitesnakeStore primary」 と「realtime broadcast = TopicRouter」 を混同しないこと。
+> **Note**: 能力間 / agent 間の **メッセージング** は 2026-05 の wiremsg 再設計（R1〜R6）で wire accumulation に統一済（REQ-CAP-004 参照）。 一方、 MIDI / Canvas 状態の realtime broadcast 配信は引き続き `TopicRouter` を用いる（永続化不要・低レイテンシ要求のため）。 「wiremsg = agent 間 messaging」 と「realtime broadcast = TopicRouter」 を混同しないこと。
 
 ### REQ-CAP-021: Claude Agent 連携
 
@@ -168,5 +167,6 @@ vp midi ports              # ポート一覧
 ## References
 
 - `design/02-capability-evolution.md` (VP-DESIGN-002) — 進化システム設計
-- `design/19-msgbox-whitesnake-primary.md` (VP-169) — msgbox v2 / WhitesnakeStore 設計（Phase 2 プロトコル型の実体）
+- `design/14-wire-address-v3.md` — wire address モデル（Phase 2 プロトコル型 = wiremsg の address 仕様）
+- `design/19-msgbox-whitesnake-primary.md` (VP-169) — 旧 msgbox v2 / WhitesnakeStore 設計（wiremsg 再設計で全廃、 historical reference）
 - `crates/vantage-point/src/capability/` — 実装

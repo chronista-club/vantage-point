@@ -2,8 +2,10 @@
 
 > **対象 Issue**: [VP-164](https://linear.app/chronista/issue/VP-164) — SP restart で永続 cross-process msg が（重複）再配信される（受信側 ack-back 欠如、 restore_pending 再 forward）
 > **親 Epic**: [VP-156](https://linear.app/chronista/issue/VP-156) — Msgbox routing 統一 + 永続化 first-class
-> **関連設計**: [17-port-stability-and-msgbox-isolation.md](17-port-stability-and-msgbox-isolation.md)（決定D `restore_pending` の project 境界 guard）/ [16-worker-lane-msgbox-recv.md](16-worker-lane-msgbox-recv.md)（VP-166 で実装した recv path）/ [14-msgbox-address-v3.md](14-msgbox-address-v3.md)（address syntax / `normalize_from`）
+> **関連設計**: [17-port-stability-and-msgbox-isolation.md](17-port-stability-and-msgbox-isolation.md)（決定D `restore_pending` の project 境界 guard）/ [16-worker-lane-msgbox-recv.md](16-worker-lane-msgbox-recv.md)（VP-166 で実装した recv path）/ [14-wire-address-v3.md](14-wire-address-v3.md)（address syntax / `normalize_from`）
 > **関連 Issue**: [VP-158](https://linear.app/chronista/issue/VP-158)（全 msg 永続化、 PR #325、 本設計の前提）/ [VP-161](https://linear.app/chronista/issue/VP-161)（cross-machine replay、 Phase 2 で foundation 提供）
+> **改訂 (2026-05-21)**: 本 doc を superseded した doc 19 (Whitesnake-primary msgbox) 自体も、 その後の **wiremsg 再設計 (R1〜R6、 PR #406〜#420) で全廃**された。 wiremsg は per-agent cursor accumulation のため `forwarded_at` / `consumed_at` flag や `msgs` table を持たず、 cross-process 重複再配信問題は別 model で構造的に解消されている。 本 doc は historical reference として残置。
+
 > **Status**: **Superseded by [doc 19](19-msgbox-whitesnake-primary.md)** — 本 doc の `forwarded_at` / `consumed_at` schema は doc 19 §4.1 の `msgs` table schema に統合され、 VP-169 epic（Phase 5 完了, commit `445190c`）で実装された。 本 doc は VP-164 の起点となった lifecycle state 設計の historical reference として残置する。
 >
 > **Superseded note**: 本 doc は `Message` struct に `forwarded_at` / `consumed_at` の dual flag を足して cross-process 重複再配信を遮断する設計だった。 doc 19 (VP-169) で mpsc substrate を Whitesnake-primary に揃えた際、 これらの flag は `msgs` table の `forwarded_at` / `consumed_at` field として schema に統合された（doc 19 §4.1）。 本 doc が依拠していた `Router::remote_forward_loop` / `restore_pending` / mpsc `Router` は doc 19 Phase 5 で物理削除済のため、 本 doc の決定α〜ε（特に `restore_pending` の skip guard）は DB primary 化によって構造的に置き換わった（= status field + claim 機構 + ack-back HTTP path、 doc 19 §4.6〜§4.8）。 VP-164 が解決しようとした「SP restart で永続 cross-process msg が重複再配信される」 症状は、 doc 19 epic で root 解消されている。

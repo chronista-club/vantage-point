@@ -84,11 +84,13 @@ Process (Star Platinum ⭐)
 | Client ↔ Process | WebSocket | Pub-Sub | Canvas 更新 | REQ3.1 |
 | Process ↔ TheWorld | HTTP REST | Heartbeat | 自己登録・発見 | REQ6.1, REQ6.4 |
 
-> **Whitesnake 🐍 = primary event store (VP-169)**: msgbox は VP-169 (PR #364, 2026-05-15) で
-> **Whitesnake-primary** に refactor 済。in-memory mpsc queue を完全廃止し、
-> 全 actor 間メッセージは Whitesnake（DISC 永続化レイヤー / SurrealDB backend）を
-> 唯一の truth source とする。lifecycle flag 群の二重管理を解消し、audit trail と
-> time-travel debug を first-class 化。詳細は `19-msgbox-whitesnake-primary.md`。
+> **agent 間 messaging = wiremsg (2026-05 再設計)**: agent 間メッセージング基盤は
+> 旧 msgbox（VP-24 → VP-169 Whitesnake-primary）から **wiremsg** に全面再設計された
+> (R1〜R6、PR #406〜#420)。wiremsg は per-agent 単一 cursor の wire accumulation
+> モデルで、message は wire に追記され受信側が cursor を進めて未読を取得する
+> (`wire_send` / `wire_recv` / `wire_thread` MCP tool、`vp wire` CLI)。
+> 旧 msgbox 実装（`MsgboxStore` / `WhitesnakeStore` / `msgs` table / `vp mailbox`）は撤去済。
+> 旧 msgbox 設計の経緯は `19-msgbox-whitesnake-primary.md`（historical reference）。
 
 ### D2: メッセージフロー（Canvas Show の例）
 
