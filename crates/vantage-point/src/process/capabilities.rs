@@ -12,7 +12,6 @@
 //!   - mailbox address `midi@{project}` (旧) → `hp@world` (新、 PR-α-3 で全 caller migration)
 
 use crate::capability::core::Capability;
-use crate::capability::msgbox_remote::RemoteRoutingClient;
 use crate::capability::{
     AgentCapability, CapabilityContext, CapabilityRegistry, EventBus, ProtocolCapability,
     Whitesnake,
@@ -26,8 +25,8 @@ use tokio::sync::RwLock;
 /// Project 階層 Stand のみ host。 World 階層 Stand (HP / Whitesnake / Update / TheWorld) は
 /// `crate::daemon::world_capabilities::WorldCapabilities` 側に移管 (PR-α-2 完了)。
 ///
-/// VP-179 (Phase 5): `msgbox_router` field 撤去。 msg routing は `AppState.msgbox_store`
-/// (= WhitesnakeStore) に統一済 (VP-169 epic 完了)。
+/// VP-179 (Phase 5): `msgbox_router` field 撤去。 wiremsg R5-3 で旧 msgbox store も
+/// 撤去済、 msg messaging は `AppState.wiremsg_store` に一本化。
 pub struct ProcessCapabilities {
     /// イベントバス（全Capability共有）
     pub event_bus: Arc<EventBus>,
@@ -41,23 +40,22 @@ pub struct ProcessCapabilities {
 
 /// Capability 初期化設定
 ///
-/// VP-179 (Phase 5): `whitesnake` / `remote_routing` field は MsgboxRouter 廃止に伴い
-/// 配線経路としては未使用 (= AppState 側で直接 wire される)。 互換性のため signature は維持。
+/// VP-179 (Phase 5): `whitesnake` field は MsgboxRouter 廃止に伴い配線経路としては
+/// 未使用 (= AppState 側で直接 wire される)。 互換性のため signature は維持。
+/// wiremsg R5-3: 旧 `remote_routing` field (msgbox forward) は撤去済。
 pub struct CapabilityConfig {
     /// プロジェクトディレクトリ
     pub project_dir: String,
     /// 永続化バックエンド (= AppState.whitesnake に wire される、 Capability 初期化には未使用)
     pub whitesnake: Option<Whitesnake>,
-    /// Remote routing client (= msgbox_remote 配信 path、 Capability 初期化には未使用)
-    pub remote_routing: Option<RemoteRoutingClient>,
 }
 
 impl ProcessCapabilities {
     /// 新しい ProcessCapabilities を作成・初期化
     pub async fn new(config: CapabilityConfig) -> Self {
-        // VP-179 (Phase 5): MsgboxRouter 構築を撤去。 config.whitesnake / config.remote_routing
-        // は AppState 側で直接 wire される。
-        let _ = (&config.whitesnake, &config.remote_routing);
+        // VP-179 (Phase 5): MsgboxRouter 構築を撤去。 config.whitesnake は
+        // AppState 側で直接 wire される。
+        let _ = &config.whitesnake;
 
         // EventBus を作成
         let event_bus = Arc::new(EventBus::new());
@@ -229,7 +227,6 @@ mod tests {
         let config = CapabilityConfig {
             project_dir: "/tmp/test".to_string(),
             whitesnake: None,
-            remote_routing: None,
         };
 
         let _caps = ProcessCapabilities::new(config).await;
@@ -240,7 +237,6 @@ mod tests {
         let config = CapabilityConfig {
             project_dir: "/tmp/test".to_string(),
             whitesnake: None,
-            remote_routing: None,
         };
 
         let caps = ProcessCapabilities::new(config).await;

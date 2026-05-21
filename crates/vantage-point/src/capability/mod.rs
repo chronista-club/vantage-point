@@ -20,10 +20,8 @@ pub mod eventbus;
 pub mod evolution;
 #[cfg(feature = "midi")]
 pub mod midi_capability;
-pub mod msgbox;
 pub mod msgbox_registry;
 pub mod msgbox_remote;
-pub mod msgbox_v2;
 pub mod params;
 pub mod process_manager_capability;
 pub mod protocol_capability;
@@ -42,11 +40,10 @@ pub use core::{
 pub use eventbus::EventBus;
 #[cfg(feature = "midi")]
 pub use midi_capability::MidiCapability;
-// VP-179 (Phase 5): Handle / Router は msgbox.rs から物理削除済 (VP-169 epic 完了)。
-// Message / MessageKind は msgs table 経由の routing で全 module が使う公共 data type。
-pub use msgbox::{Message, MessageKind};
+// wiremsg R5-3: 旧 msgbox store 本体 (msgbox_v2 / msgbox) を撤去。 msg messaging は
+// wiremsg (`wiremsg_store` / `wire_remote`) に移行済。 `msgbox_remote` の registry 系
+// (register_* / unregister_* / registry_token) のみ wing actor discovery 用に存続。
 pub use msgbox_registry::{ActorEntry, Registry as MsgboxRegistry};
-pub use msgbox_v2::{MsgboxStats, MsgboxStore, WhitesnakeStore};
 pub use process_manager_capability::{
     ProcessManagerCapability, ProcessStatus, ProjectInfo, RunningProcess, normalize_path_key,
 };

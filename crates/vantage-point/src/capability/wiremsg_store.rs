@@ -1,7 +1,8 @@
 //! wiremsg threaded inbox store (設計 memory `mem_1CbDLrECNZiNEZqjySLfSB`)
 //!
-//! agent 間メッセージング「wiremsg」の inbox 実体。 既存 [`WhitesnakeStore`] (= msgs table,
-//! claim-based Mailbox) と **並存** する threading 対応 store。 撤去は後続 Phase。
+//! agent 間メッセージング「wiremsg」の inbox 実体。 threading 対応 store。
+//! wiremsg R5-3 で旧 msgbox store (`WhitesnakeStore` / msgs table, claim-based Mailbox)
+//! は撤去され、 msg messaging はこの store に一本化済。
 //!
 //! ## per-reader state = per-agent 単一 cursor (決定 III)
 //!
@@ -174,8 +175,8 @@ pub enum ParticipantStatus {
 
 /// wiremsg threaded inbox の store (決定 III — per-agent 単一 cursor)
 ///
-/// 既存 [`WhitesnakeStore`](super::WhitesnakeStore) と同じく `Surreal<Any>` を共有して
-/// 持つ。 `wire_messages` / `agent_cursor` / `thread_participant` の 3 table を扱う。
+/// `Surreal<Any>` を共有して持つ。 `wire_messages` / `agent_cursor` /
+/// `thread_participant` の 3 table を扱う。
 ///
 /// `seq` は accumulation の `local_seq` 採番器。 各 SP は自分の accumulation の唯一の
 /// writer なので、 INSERT 毎の `fetch_add(1)` で厳密単調な ingestion 順序が得られる。

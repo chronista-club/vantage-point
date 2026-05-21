@@ -44,17 +44,9 @@ pub async fn run(
     );
     cap_config.whitesnake = Some(whitesnake.clone());
 
-    // Msgbox Phase 3: cross-Process routing 用 RemoteRoutingClient を注入
-    // - project_name は project_dir から解決
-    // - local_port = この Process の port
+    // project_name は project_dir から解決（AppState / lane pool 等で使用）
     let project_name_for_remote =
         crate::resolve::project_name_from_path(&project_dir, &config_for_init).to_string();
-    let remote_client = crate::capability::msgbox_remote::RemoteRoutingClient::new(
-        crate::cli::WORLD_PORT,
-        project_name_for_remote.clone(),
-        port,
-    );
-    cap_config.remote_routing = Some(remote_client);
 
     // rustls 0.23+ は CryptoProvider の明示的な設定が必要
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
@@ -260,11 +252,6 @@ pub async fn run(
         canvas_senders: Arc::new(tokio::sync::Mutex::new(Vec::new())),
         started_at: chrono::Utc::now().to_rfc3339(),
         vpdb: vpdb.clone(),
-        // VP-174 (Phase 3 PR-2): vpdb 接続から WhitesnakeStore を build。 vpdb が None なら None。
-        // Phase 3 PR-3/PR-4 で producer/consumer がこの field を使うが、 本 PR では「配線のみ」。
-        msgbox_store: vpdb.as_ref().map(|db| {
-            crate::capability::WhitesnakeStore::new(std::sync::Arc::new(db.inner().clone()))
-        }),
         // Phase A ① / R1: wiremsg threaded inbox store (上で async build 済)。
         wiremsg_store,
         // Phase A ①: wiremsg long-poll の in-process notifier
@@ -466,10 +453,6 @@ pub async fn run(
         // doc 11 §4.1 PR-C: 利用可能な Stand 一覧 (sidebar の + Add Worker dropdown 用)
         .route("/api/stands", get(stands::list_handler))
         .route("/api/show", post(health::show_handler))
-        .route(
-            "/api/msgbox/remote_deliver",
-            post(health::msgbox_remote_deliver_handler),
-        )
         // R3: cross-process wire delivery — 他 SP からの forward 受信口
         .route(
             "/api/wire/remote-deliver",
@@ -888,8 +871,7 @@ pub async fn run_world(
         capabilities: Arc::new(
             ProcessCapabilities::new(CapabilityConfig {
                 project_dir: String::new(),
-                whitesnake: None,     // World モードは永続 msgbox 不要
-                remote_routing: None, // World モードは cross-Process forward 不要
+                whitesnake: None, // World モードは永続 msgbox 不要
             })
             .await,
         ),
@@ -914,10 +896,6 @@ pub async fn run_world(
         canvas_senders: Arc::new(tokio::sync::Mutex::new(Vec::new())),
         started_at: chrono::Utc::now().to_rfc3339(),
         vpdb: vpdb.clone(), // World モードでも DB 参照あり
-        // VP-174: World モードでも msgbox_store を build (= 将来 World 階層 actor が使う余地)
-        msgbox_store: vpdb.as_ref().map(|db| {
-            crate::capability::WhitesnakeStore::new(std::sync::Arc::new(db.inner().clone()))
-        }),
         // Phase A ① / R1: World モードでも wiremsg store を build (上で async build 済)
         wiremsg_store,
         wire_notifier: crate::capability::WireNotifier::new(),

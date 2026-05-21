@@ -427,44 +427,9 @@ DEFINE FIELD IF NOT EXISTS read ON notifications TYPE bool DEFAULT false;
 DEFINE FIELD IF NOT EXISTS created_at ON notifications TYPE datetime DEFAULT time::now();
 
 -- =========================================================================
--- VP-169 msgs (Whitesnake-primary msgbox、 SDG doc 19 §4.1)
+-- wiremsg R5-3: 旧 VP-169 msgs table (Whitesnake-primary msgbox) は撤去。
+-- msg messaging は下記 wiremsg threaded inbox (messages table) に一本化済。
 -- =========================================================================
--- Phase 2 PR-1 で受け皿 schema 追加。 既存 msgbox table (= 旧 mpsc + DISC hybrid) と並走、
--- Phase 5 で旧 msgbox 削除。 SDG §4.8 status field lifecycle (active/dead_letter/archived)。
-DEFINE TABLE IF NOT EXISTS msgs SCHEMAFULL;
-DEFINE FIELD IF NOT EXISTS id ON msgs TYPE string;
-DEFINE FIELD IF NOT EXISTS ts ON msgs TYPE number;
-DEFINE FIELD IF NOT EXISTS kind ON msgs TYPE string DEFAULT 'direct';
-DEFINE FIELD IF NOT EXISTS payload ON msgs TYPE object FLEXIBLE;
-DEFINE FIELD IF NOT EXISTS reply_to ON msgs TYPE option<string>;
--- routing target (= denormalized for indexed query)
-DEFINE FIELD IF NOT EXISTS to_addr ON msgs TYPE string;
-DEFINE FIELD IF NOT EXISTS to_actor ON msgs TYPE string;
-DEFINE FIELD IF NOT EXISTS to_lane ON msgs TYPE string;
-DEFINE FIELD IF NOT EXISTS to_project ON msgs TYPE option<string>;
-DEFINE FIELD IF NOT EXISTS to_world ON msgs TYPE option<string>;
--- routing source
-DEFINE FIELD IF NOT EXISTS from_addr ON msgs TYPE string;
-DEFINE FIELD IF NOT EXISTS from_actor ON msgs TYPE string;
-DEFINE FIELD IF NOT EXISTS from_lane ON msgs TYPE string;
-DEFINE FIELD IF NOT EXISTS from_project ON msgs TYPE option<string>;
-DEFINE FIELD IF NOT EXISTS from_world ON msgs TYPE option<string>;
--- lifecycle markers (VP-164 schema 継承)
-DEFINE FIELD IF NOT EXISTS expires_at ON msgs TYPE option<number>;
-DEFINE FIELD IF NOT EXISTS manual_ack ON msgs TYPE bool DEFAULT false;
-DEFINE FIELD IF NOT EXISTS forwarded_at ON msgs TYPE option<number>;
-DEFINE FIELD IF NOT EXISTS consumed_at ON msgs TYPE option<number>;
--- status field (SDG §4.8)
-DEFINE FIELD IF NOT EXISTS status ON msgs TYPE string DEFAULT 'active';
-DEFINE FIELD IF NOT EXISTS status_at ON msgs TYPE number;
--- concurrent recv claim (SDG §4.3)
-DEFINE FIELD IF NOT EXISTS claim_id ON msgs TYPE option<string>;
-DEFINE FIELD IF NOT EXISTS claimed_at ON msgs TYPE option<number>;
--- audit trail (SDG §4.10、 改善 8 吸収)
-DEFINE FIELD IF NOT EXISTS trace ON msgs TYPE array DEFAULT [];
--- 主 query path index (SDG §4.1)
-DEFINE INDEX IF NOT EXISTS recv_idx ON msgs FIELDS status, to_actor, to_lane, consumed_at;
-DEFINE INDEX IF NOT EXISTS status_idx ON msgs FIELDS status, expires_at;
 
 -- =========================================================================
 -- wiremsg threaded inbox (Phase A ① / R1、 設計 memory mem_1CbDLrECNZiNEZqjySLfSB)
