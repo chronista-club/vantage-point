@@ -211,17 +211,11 @@ pub async fn diagnose_handler(State(state): State<Arc<AppState>>) -> Json<serde_
         reports.push(midi.diagnose());
     }
 
-    // VP-179 (Phase 5): mpsc Router 廃止に伴い、 in-memory addresses + recent_history は消失。
-    // diagnose に msg layer info を含める場合は msgs table 経由 (= `SELECT DISTINCT to_addr`
-    // + 直近 row 数) で実装 (= 別 epic)。 現状は空 stub。
+    // wiremsg R6: 旧 msgbox は R5 で全廃。 diagnose の `"msgbox"` は常に空 stub だったため
+    // キーごと撤去した。 将来 wire 層の diagnose が要れば wiremsg_store 経由で新規に足す。
     Json(serde_json::json!({
         "count": reports.len(),
         "reports": reports,
-        "msgbox": {
-            "addresses": Vec::<String>::new(),
-            "count": 0,
-            "recent": Vec::<serde_json::Value>::new(),
-        },
     }))
 }
 
