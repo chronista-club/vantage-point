@@ -4,7 +4,8 @@
 //! Axum HTTP サーバーと並行して起動し、同じ Hub.broadcast() パターンで
 //! WebSocket クライアントにメッセージを配信する。
 //!
-//! ポート: HTTP port + 100 (例: 33000 -> 33100)
+//! ポート: HTTP と同一ポート番号を使う。 HTTP は TCP・QUIC は UDP で OS レベルの
+//! ポート名前空間が独立しているため衝突しない (`QUIC_PORT_OFFSET = 0`)。
 //!
 //! "process" チャネルですべての操作を統一:
 //! - show / clear / toggle_pane / split_pane / close_pane

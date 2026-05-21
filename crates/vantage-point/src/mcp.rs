@@ -646,21 +646,18 @@ impl VantageMcp {
             return Ok(Arc::clone(ch));
         }
 
-        // 新規接続
+        // 新規接続。 startup 時に解決した process_port は、 discovery 一時障害や SP
+        // 未起動のタイミングだと 33000 fallback を掴んでいることがある。 connect に
+        // 失敗したら discovery で port を引き直し、 1 回だけリトライする (stale port
+        // self-heal — HTTP 経路の try_reconnect と対称)。
         let port = *self.process_port.lock().await;
-        let quic_port = port + crate::process::unison_server::QUIC_PORT_OFFSET;
-        let addr = format!("[::1]:{}", quic_port);
-
-        // VP-184: Builder API 移行。 dev default (= SkipVerification) を明示的に渡す。
-        // PR-3 で trust_anchors を InternalMeshKeypair の client 半分に差し替える。
-        let transport = unison::network::quic::QuicClient::builder()
-            .trust_anchors(unison::network::TrustAnchors::SkipVerification)
-            .build()
-            .map_err(|e| McpError::internal_error(format!("Unison client error: {}", e), None))?;
-        let client = unison::ProtocolClient::new(transport);
-        client.connect(&addr).await.map_err(|e| {
-            McpError::internal_error(format!("Unison connect error ({}): {}", addr, e), None)
-        })?;
+        let client = match connect_quic(&quic_addr(port)).await {
+            Ok(client) => client,
+            Err(first_err) => match self.rediscover_process_port().await {
+                Some(fresh_port) => connect_quic(&quic_addr(fresh_port)).await?,
+                None => return Err(first_err),
+            },
+        };
         // unison 内部の request timeout は default 30s。 `quic_call_with_timeout` の outer
         // timeout (wire_recv で server_timeout + buffer = 最大 35s) より長く取らないと
         // unison 側が先に発火してしまうので、 余裕を持って 60s に引き上げる (VP-163)。
@@ -823,24 +820,34 @@ impl VantageMcp {
         Ok(resp)
     }
 
-    /// Process ポートを再解決し、変わっていれば URL を更新してリトライ用 URL を返す
+    /// discovery で Process port を引き直し、 startup 時の値と違えば `process_port` /
+    /// `process_url` を更新して新 port を返す。 変わらなければ `None`。
     ///
-    /// 接続失敗時に呼ばれる。discovery で cwd に一致する
-    /// Process を検索し、現在の URL と異なる場合のみリトライ URL を返す。
-    async fn try_reconnect(&self, endpoint: &str) -> Option<String> {
-        let process_info = crate::discovery::find_for_cwd().await?;
-        let new_base = format!("http://[::1]:{}", process_info.port);
-
-        let mut current = self.process_url.lock().await;
-        if *current != new_base {
-            *current = new_base.clone();
-            *self.process_port.lock().await = process_info.port;
-            // ポートが変わったので QUIC チャネルもリセット
-            *self.process_channel.lock().await = None;
-            Some(format!("{}{}", new_base, endpoint))
-        } else {
-            None
+    /// startup 時の [`resolve_process_port`] は discovery 一時障害 / SP 未起動の
+    /// タイミングだと 33000 fallback を掴む。 接続失敗時にこれを呼んで self-heal する。
+    /// 注: `process_channel` は touch しない — channel lock を保持する
+    /// [`Self::get_quic_channel`] からも呼ばれるため (deadlock 回避)。 channel の
+    /// 張り直しは呼び出し側の責務。
+    async fn rediscover_process_port(&self) -> Option<u16> {
+        let info = crate::discovery::find_for_cwd().await?;
+        let mut port_guard = self.process_port.lock().await;
+        if *port_guard == info.port {
+            return None;
         }
+        *port_guard = info.port;
+        *self.process_url.lock().await = format!("http://[::1]:{}", info.port);
+        Some(info.port)
+    }
+
+    /// Process ポートを再解決し、変わっていれば URL を更新してリトライ用 URL を返す。
+    ///
+    /// HTTP 経路の接続失敗時に呼ばれる。 port 解決は [`Self::rediscover_process_port`]
+    /// に集約。 port が変わった時のみ QUIC チャネルもリセットしてリトライ URL を返す。
+    async fn try_reconnect(&self, endpoint: &str) -> Option<String> {
+        let new_port = self.rediscover_process_port().await?;
+        // ポートが変わったので QUIC チャネルもリセット
+        *self.process_channel.lock().await = None;
+        Some(format!("http://[::1]:{}{}", new_port, endpoint))
     }
 
     /// label または pane_id を受け取り、(pane_id, 表示名) を返す
@@ -2595,6 +2602,30 @@ async fn resolve_process_port(explicit_port: Option<u16>) -> u16 {
     33000
 }
 
+/// Process port から QUIC 接続先アドレスを組み立てる ([::1] = IPv6 loopback)。
+fn quic_addr(process_port: u16) -> String {
+    format!(
+        "[::1]:{}",
+        process_port + crate::process::unison_server::QUIC_PORT_OFFSET
+    )
+}
+
+/// QUIC transport を組み立て、 `addr` へ接続済みの [`unison::ProtocolClient`] を返す。
+///
+/// VP-184: QuicClient builder。 dev default (= SkipVerification) を明示的に渡す。
+/// PR-3 で trust_anchors を InternalMeshKeypair の client 半分に差し替える。
+async fn connect_quic(addr: &str) -> Result<unison::ProtocolClient, McpError> {
+    let transport = unison::network::quic::QuicClient::builder()
+        .trust_anchors(unison::network::TrustAnchors::SkipVerification)
+        .build()
+        .map_err(|e| McpError::internal_error(format!("Unison client error: {}", e), None))?;
+    let client = unison::ProtocolClient::new(transport);
+    client.connect(addr).await.map_err(|e| {
+        McpError::internal_error(format!("Unison connect error ({}): {}", addr, e), None)
+    })?;
+    Ok(client)
+}
+
 /// Run the MCP server over stdio
 pub async fn run_mcp_server(process_port: Option<u16>) -> anyhow::Result<()> {
     // rustls 0.23+ は CryptoProvider の明示的な設定が必要（QUIC 接続用）
@@ -2653,6 +2684,13 @@ mod tests {
             wing_parent: Some("vantage-point".to_string()),
         };
         assert_eq!(wing.from_address(), "agent@vantage-point/chore");
+    }
+
+    #[test]
+    fn test_quic_addr_format() {
+        // QUIC_PORT_OFFSET = 0 — process port がそのまま QUIC port になる。
+        assert_eq!(quic_addr(33003), "[::1]:33003");
+        assert_eq!(quic_addr(33000), "[::1]:33000");
     }
 
     #[test]
