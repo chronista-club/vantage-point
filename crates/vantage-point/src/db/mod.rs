@@ -14,7 +14,6 @@
 //! ## テーブル設計
 //!
 //! - `processes`: プロセス状態（QUIC Registry + HTTP polling 代替）
-//! - `msgbox`: cross-process メッセージング
 //! - `pane_contents`: Canvas ペイン状態
 //! - `stand_status`: Stand ステータス
 //! - `prompts`: User Prompt
@@ -371,16 +370,9 @@ DEFINE INDEX IF NOT EXISTS idx_processes_path ON processes COLUMNS project_path 
 -- VP-188: projects テーブルは撤去。 registered projects の SSOT は
 -- ~/.config/vp/projects.kdl に移行 (crate::projects_file)。
 
--- Msgbox（cross-process メッセージング）
-DEFINE TABLE IF NOT EXISTS msgbox SCHEMAFULL;
-DEFINE FIELD IF NOT EXISTS from_addr ON msgbox TYPE string;
-DEFINE FIELD IF NOT EXISTS to_addr ON msgbox TYPE string;
-DEFINE FIELD IF NOT EXISTS kind ON msgbox TYPE string;
-DEFINE FIELD IF NOT EXISTS payload ON msgbox TYPE object FLEXIBLE;
-DEFINE FIELD IF NOT EXISTS reply_to ON msgbox TYPE option<string>;
-DEFINE FIELD IF NOT EXISTS delivered ON msgbox TYPE bool DEFAULT false;
-DEFINE FIELD IF NOT EXISTS created_at ON msgbox TYPE datetime DEFAULT time::now();
-DEFINE INDEX IF NOT EXISTS idx_to ON msgbox COLUMNS to_addr, delivered;
+-- wiremsg R6: 旧 msgbox table (VP-169 以前の cross-process メッセージング) は撤去。
+-- agent 間通信は wiremsg (下記 wire_messages table) に一本化済。
+-- R5-3 で VP-169 msgs table、 R6 で本 table を撤去し msgbox 系が完全消滅した。
 
 -- =========================================================================
 -- SP 固有テーブル（project_path でフィルタ — D11 準拠）
@@ -550,36 +542,6 @@ mod tests {
     async fn test_define_schema_mem() {
         let db = make_test_db().await;
         assert!(db.health().await, "ヘルスチェック失敗");
-    }
-
-    #[tokio::test]
-    async fn test_msgbox_crud_mem() {
-        let db = make_test_db().await;
-
-        // メッセージ送信
-        db.inner()
-            .query(
-                "INSERT INTO msgbox {
-                    from_addr: 'mcp',
-                    to_addr: 'notify',
-                    kind: 'notification',
-                    payload: { message: 'テスト完了' },
-                    delivered: false,
-                    created_at: time::now()
-                }",
-            )
-            .await
-            .unwrap();
-
-        // 未配信メッセージを取得
-        let mut result = db
-            .inner()
-            .query("SELECT * FROM msgbox WHERE to_addr = 'notify' AND delivered = false")
-            .await
-            .unwrap();
-        let records: Vec<serde_json::Value> = result.take(0).unwrap();
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0]["kind"], "notification");
     }
 
     // VP-188: Projects CRUD テストは撤去 (= projects は projects.kdl に移行、
@@ -930,77 +892,6 @@ mod tests {
         let creo_statuses = db.list_stand_status("/repos/creo").await.unwrap();
         assert_eq!(creo_statuses.len(), 1);
         assert_eq!(creo_statuses[0]["status"], "stopped");
-    }
-
-    // =========================================================================
-    // Msgbox 配信フローテスト
-    // =========================================================================
-
-    /// delivered=false で INSERT → 取得できる
-    /// delivered=true に UPDATE → 未配信一覧から消える
-    #[tokio::test]
-    async fn test_msgbox_delivered_flag() {
-        let db = make_test_db().await;
-
-        // 未配信メッセージを挿入（RETURN AFTER で挿入後レコードを取得）
-        let mut result = db
-            .inner()
-            .query(
-                "INSERT INTO msgbox {
-                    from_addr: 'mcp',
-                    to_addr: 'notify',
-                    kind: 'notification',
-                    payload: { message: '配信テスト' },
-                    delivered: false,
-                    created_at: time::now()
-                } RETURN AFTER",
-            )
-            .await
-            .unwrap();
-        let inserted: Vec<serde_json::Value> = result.take(0).unwrap();
-        assert_eq!(inserted.len(), 1);
-        let msg_id = inserted[0]["id"].as_str().unwrap().to_string();
-
-        // 未配信一覧に含まれる
-        let mut result = db
-            .inner()
-            .query("SELECT * FROM msgbox WHERE to_addr = 'notify' AND delivered = false")
-            .await
-            .unwrap();
-        let pending: Vec<serde_json::Value> = result.take(0).unwrap();
-        assert_eq!(pending.len(), 1, "未配信メッセージが1件あるはず");
-
-        // delivered=true に更新（type::record はレコード ID を RecordId 型に変換する SurrealDB v2 の関数）
-        db.inner()
-            .query("UPDATE type::record($id) SET delivered = true")
-            .bind(("id", msg_id))
-            .await
-            .unwrap()
-            .check()
-            .unwrap();
-
-        // 未配信一覧から消える
-        let mut result = db
-            .inner()
-            .query("SELECT * FROM msgbox WHERE to_addr = 'notify' AND delivered = false")
-            .await
-            .unwrap();
-        let pending: Vec<serde_json::Value> = result.take(0).unwrap();
-        assert_eq!(
-            pending.len(),
-            0,
-            "配信済みメッセージは未配信一覧に出てはいけない"
-        );
-
-        // delivered=true のレコードは全件取得では見える
-        let mut result = db
-            .inner()
-            .query("SELECT * FROM msgbox WHERE to_addr = 'notify'")
-            .await
-            .unwrap();
-        let all: Vec<serde_json::Value> = result.take(0).unwrap();
-        assert_eq!(all.len(), 1);
-        assert_eq!(all[0]["delivered"], true);
     }
 
     // =========================================================================
