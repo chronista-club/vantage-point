@@ -307,7 +307,10 @@ async fn handle_cmd(
             &addr_for_blocking,
             Path::new(&cwd_for_blocking),
         );
-        super::stand_spawner::spawn_with_fallback(&cmd_built, 80, 24)
+        // PTY 初期 winsize 120x48: xterm.js が fitAddon で実サイズに resize する
+        // までの初期値 + headless Stand の作業サイズ。 classic 80x24 は VP の広い
+        // terminal には狭く、 claude TUI の reflow ジャンプも大きいため 120x48。
+        super::stand_spawner::spawn_with_fallback(&cmd_built, 120, 48)
     })
     .await;
 
