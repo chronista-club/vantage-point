@@ -69,6 +69,12 @@ export function ProjectAccordion(props: { proc: ProcessPaneState }) {
   // (`isRunningProcess`) と揃える。 Start ボタンと context menu の出し分けに使う。
   const isPaused = () => !isRunningProcess(props.proc)
 
+  // Add Wing「+」を出す条件。 isActiveProject だけだと、 一度 active にした project を
+  // Stop した後も active_lane_address / lanes_by_project が残る (SP 停止で自動クリア
+  // されない) ため、 停止中でも true になりうる。 稼働中であることを明示的に AND して、
+  // 停止中 project に「+」と Start「▶」が同居する / 失敗する Add Wing を開けるのを防ぐ。
+  const showAddWing = () => isActiveProject() && !isPaused()
+
   // 📁 project ヘッダの右クリック → project context menu。
   //   - 一時停止中: Start project (restart_process は dead な project も起こす)
   //   - 稼働中: Restart project + Stop project (SP が listen 中 = port あり の時のみ)
@@ -197,7 +203,7 @@ export function ProjectAccordion(props: { proc: ProcessPaneState }) {
       <summary class="vp-proj-summary" onContextMenu={onSummaryContextMenu}>
         <CreoIcon name={props.proc.expanded ? 'ph:folder-open' : 'ph:folder'} size={14} />
         <span class="vp-proj-name">{props.proc.name}</span>
-        <Show when={isActiveProject()}>
+        <Show when={showAddWing()}>
           <button
             class="vp-proj-addwing"
             classList={{ open: addWingOpen() }}
@@ -212,8 +218,8 @@ export function ProjectAccordion(props: { proc: ProcessPaneState }) {
             <CreoIcon name="ph:plus" size={12} />
           </button>
         </Show>
-        {/* 一時停止中 project の起動 affordance。 isActiveProject (= 稼働中) と
-            isPaused は排他なので Add Wing「+」と同居しない。 */}
+        {/* 一時停止中 project の起動 affordance。 「+」(showAddWing) は稼働中限定
+            なので、 停止中のこの「▶」とは同居しない。 */}
         <Show when={isPaused()}>
           <button
             class="vp-proj-start"
