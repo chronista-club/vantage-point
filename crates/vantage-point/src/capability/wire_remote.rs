@@ -20,14 +20,16 @@
 //!
 //! - **calculations** (純粋): [`classify_recipients`] — `to` の各アドレスを self-project と
 //!   突き合わせて local / remote に振り分ける。 [`parse_project`] — アドレスから project
-//!   segment を抽出。 いずれも I/O を持たず unit test 可能。
-//! - **actions** (I/O): [`forward_to_remote`] / [`lookup_sp_port`] — TheWorld への port
-//!   lookup と受信 SP への HTTP POST。
+//!   segment を抽出。 [`sp_port_from_config`] — `Config` から project の SP port を算出。
+//!   いずれも I/O を持たず unit test 可能。
+//! - **actions** (I/O): [`forward_to_remote`] / [`lookup_sp_port`] — config からの port
+//!   解決 (local-first、 miss 時のみ TheWorld へ HTTP) と受信 SP への HTTP POST。
 
 use std::collections::BTreeSet;
 use std::time::Duration;
 
 use crate::capability::WireMessage;
+use crate::config::Config;
 
 /// cross-process forward / port lookup の HTTP timeout
 ///
@@ -103,20 +105,47 @@ impl WireRecipients {
     }
 }
 
+/// `Config` から project の SP port を read-only で算出する (Tier 2′、 純粋関数)
+///
+/// port は `port` 明示 override → `slot` から `PORT_RANGE_START + slot` の順で決まる
+/// ([`Config::resolve_sp_port`] と同じ式の read-only 版 — `ensure_slot` を呼ばず slot を
+/// 新規割当しない)。 slot 未割当 (= project 未登録 / 一度も起動していない) なら `None`。
+///
+/// VP-165 の flat stable slot 方式により port は config から決定的に定まり、 slot は一度
+/// 割り当てたら不変。 よって SP は TheWorld に問い合わせず、 共有ファイル (`projects.kdl`)
+/// を読むだけで同じ答えに辿り着ける。
+fn sp_port_from_config(config: &Config, project: &str) -> Option<u16> {
+    let p = config.projects.iter().find(|p| p.name == project)?;
+    if let Some(port) = p.port {
+        return Some(port); // 明示 override が最優先
+    }
+    p.slot.map(|slot| crate::cli::PORT_RANGE_START + slot)
+}
+
 // =============================================================================
-// actions — TheWorld port lookup + 受信 SP への HTTP forward (best-effort)
+// actions — port 解決 (local-first) + 受信 SP への HTTP forward (best-effort)
 // =============================================================================
 
-/// TheWorld (`:32000`) に project 名 → SP port を問い合わせる
+/// project 名 → SP port を解決する (Tier 2′: local-first)
 ///
-/// `GET /api/world/port_for?project=<name>` を叩く。 msgbox の TheWorld lookup と同じく
-/// TheWorld を single source of truth として port を解決する。 TheWorld 側は config の
-/// slot から port を決めるため、 対象 SP が稼働中かどうかは問わない (= 稼働判定は後続の
-/// HTTP POST 失敗で best-effort に吸収される)。
+/// VP-165 の flat stable slot 方式により port は config (`projects.kdl`) から決定的に
+/// 定まり、 slot は一度割り当てたら不変。 `projects.kdl` は全プロセス共有のローカル
+/// ファイルなので、 まず [`sp_port_from_config`] でネットワーク往復ゼロで解決する。
 ///
-/// best-effort: lookup 失敗 (TheWorld 不在 / project 未登録) は `Err` を返し、 caller が
-/// log のみ行う。
+/// local miss (project 未登録 / slot 未割当) のときだけ TheWorld (`:32000`) の
+/// `GET /api/world/port_for?project=<name>` に fallback する。 TheWorld は slot の唯一の
+/// writer なので、 新規 slot 割当が要るケースはそちらに委ねる。
+///
+/// 対象 SP が稼働中かどうかは問わない (= 稼働判定は後続の HTTP POST 失敗で best-effort に
+/// 吸収される)。 best-effort: 解決失敗は `Err` を返し、 caller が log のみ行う。
 pub async fn lookup_sp_port(world_port: u16, project: &str) -> anyhow::Result<u16> {
+    // Tier 2′: まず共有 config からローカル read-only 解決 (network 往復ゼロ)。
+    if let Ok(config) = Config::load()
+        && let Some(port) = sp_port_from_config(&config, project)
+    {
+        return Ok(port);
+    }
+    // local miss: TheWorld に HTTP fallback (新規 slot 割当はそちらに委ねる)。
     let url = format!(
         "http://[::1]:{}/api/world/port_for?project={}",
         world_port, project
@@ -365,30 +394,87 @@ mod tests {
         assert!(!r.has_remote());
     }
 
+    // ----- sp_port_from_config (Tier 2′ local 解決) -----
+
+    /// テスト用 ProjectConfig を組み立てる
+    fn mk_proj(name: &str, port: Option<u16>, slot: Option<u16>) -> crate::config::ProjectConfig {
+        crate::config::ProjectConfig {
+            name: name.to_string(),
+            path: format!("/repos/{name}"),
+            port,
+            enabled: true,
+            slot,
+        }
+    }
+
+    /// slot 割当済み project → port = PORT_RANGE_START + slot
+    #[test]
+    fn sp_port_from_config_resolves_by_slot() {
+        let mut cfg = Config::default();
+        cfg.projects.push(mk_proj("nexus", None, Some(3)));
+        assert_eq!(
+            sp_port_from_config(&cfg, "nexus"),
+            Some(crate::cli::PORT_RANGE_START + 3)
+        );
+    }
+
+    /// port 明示 override は slot より優先される
+    #[test]
+    fn sp_port_from_config_override_wins_over_slot() {
+        let mut cfg = Config::default();
+        cfg.projects.push(mk_proj("pinned", Some(33099), Some(3)));
+        assert_eq!(sp_port_from_config(&cfg, "pinned"), Some(33099));
+    }
+
+    /// config に無い project → None (HTTP fallback に回る)
+    #[test]
+    fn sp_port_from_config_unknown_project_is_none() {
+        let cfg = Config::default();
+        assert_eq!(sp_port_from_config(&cfg, "ghost"), None);
+    }
+
+    /// port も slot も未設定の project → None (slot 未割当 = 一度も起動していない)
+    #[test]
+    fn sp_port_from_config_unassigned_slot_is_none() {
+        let mut cfg = Config::default();
+        cfg.projects.push(mk_proj("fresh", None, None));
+        assert_eq!(sp_port_from_config(&cfg, "fresh"), None);
+    }
+
     // ----- best-effort 失敗パス -----
 
-    /// best-effort: TheWorld が居ない (接続不能) と forward_to_remote は panic せず
+    /// best-effort: lookup も forward も失敗する状況で forward_to_remote は panic せず
     /// 静かに戻る (= caller の wire_send を失敗にしない)
     ///
-    /// port 0 は接続できない (= lookup_sp_port が即 Err)。 forward_to_remote は log のみで
-    /// 正常終了することを確認する (返り値が無い = 失敗しても呼び元に伝播しない契約)。
+    /// config に存在しない project 名を使い、 Tier 2′ の local 解決を miss させて HTTP
+    /// fallback に倒す。 world_port = 0 は接続不能なので lookup_sp_port は即 Err。
+    /// forward_to_remote は log のみで正常終了する (返り値が無い = 失敗を呼び元に伝播しない)。
     #[tokio::test]
     async fn forward_to_remote_swallows_lookup_failure() {
+        // config に必ず無い名前 → sp_port_from_config が None → HTTP fallback 経路へ。
+        let absent = "__vp_test_absent_project__";
         let msg = WireMessage::new_root(
             "agent@vantage-point",
-            vec!["agent@creo-memories".to_string()],
+            vec![format!("agent@{absent}")],
             serde_json::json!({ "text": "hi" }),
         );
         // world_port = 0 は接続不能 → lookup_sp_port が Err。
         // forward_to_remote は best-effort なので panic せず戻る。
-        forward_to_remote(0, &["creo-memories".to_string()], &msg).await;
+        forward_to_remote(0, &[absent.to_string()], &msg).await;
         // ここに到達 = 失敗が呼び元に伝播していない (best-effort 契約を満たす)
     }
 
-    /// best-effort: lookup_sp_port 自体も到達不能 world に対し Err を返す (panic しない)
+    /// best-effort: local miss → 到達不能な world への HTTP fallback も Err を返す
+    /// (panic しない)
+    ///
+    /// config に無い project 名で Tier 2′ の local 解決を miss させ、 world_port = 0 への
+    /// HTTP fallback が Err になることを確認する。
     #[tokio::test]
     async fn lookup_sp_port_unreachable_world_returns_err() {
-        let result = lookup_sp_port(0, "creo-memories").await;
-        assert!(result.is_err(), "接続不能な world への lookup は Err");
+        let result = lookup_sp_port(0, "__vp_test_absent_project__").await;
+        assert!(
+            result.is_err(),
+            "local miss + 接続不能 world への lookup は Err"
+        );
     }
 }
