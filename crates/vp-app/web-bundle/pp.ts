@@ -8,9 +8,10 @@
  * 設計の核:
  * - 純 action layer (DOM 操作のみ)、 state は持たない (PP の RetainedStore 連動は S3+)
  * - `marked` を sync mode (default) で使用、 戻り値は string なので `as string` で narrow
- * - XSS 対策 (DOMPurify 等) は S2 では未導入: 本 PR では caller = mcp__show 経由の信頼できる
- *   source のみ (= 開発者自身の Claude session)、 外部 untrusted input が入る段階 (PR-ε-3 以降で
- *   サードパーティ webhook 等) で sanitize 層追加を検討
+ * - markdown / text は caller (= mcp__show 経由、 開発者自身の Claude session) 信頼前提で
+ *   innerHTML 直挿し。 html (content_type=html) は `<iframe srcdoc sandbox="allow-scripts">`
+ *   に隔離する — script は実行できるが opaque origin で親 document / cookie / storage に
+ *   触れない。 外部 untrusted な markdown/text を扱う段階で sanitize 層 (DOMPurify 等) を検討
  *
  * 公開 API (entry.tsx で window.vpPP に attach):
  * - `renderPP(content, contentType?)`: PP body を上書き render
@@ -36,7 +37,12 @@ function toHtml(content: string, contentType: ContentType): string {
     return marked.parse(content) as string
   }
   if (contentType === 'html') {
-    return content
+    // raw HTML は sandbox iframe (srcdoc) に隔離して render する。
+    // innerHTML 直挿しだと <script> が実行されず <style> も PP 外へ漏れるため。
+    // srcdoc 属性値に埋めるので & と " をエスケープ — & を先に処理する
+    // (逆順だと " 由来の &quot; の & が二重エスケープされる)。
+    const escaped = content.replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+    return `<iframe class="pp-html-frame" sandbox="allow-scripts" srcdoc="${escaped}"></iframe>`
   }
   // text: HTML escape して <pre> 風に出す
   const span = document.createElement('span')
@@ -52,6 +58,9 @@ export function renderPP(content: string, contentType: ContentType = 'markdown')
     return
   }
   target.innerHTML = toHtml(content, contentType)
+  // html は iframe を PP pane いっぱいに広げるため container を full-bleed に切り替える。
+  // markdown / text は通常の padding 付き flow に戻す。
+  target.classList.toggle('pp-content-html', contentType === 'html')
 }
 
 /** PP body を空にする (Clear button 等から呼ばれる). */
@@ -59,6 +68,8 @@ export function clearPP(): void {
   const target = getTarget()
   if (!target) return
   target.innerHTML = ''
+  // html render 時に付けた full-bleed class を戻す。
+  target.classList.remove('pp-content-html')
 }
 
 /**

@@ -213,6 +213,10 @@ body{overflow:hidden;}
 .pp-content th,.pp-content td{border:1px solid var(--color-border-subtle);padding:4px 8px;}
 .pp-content hr{border:0;border-top:1px solid var(--color-border-subtle);margin:1rem 0;}
 .pp-placeholder{color:var(--color-text-tertiary);font-style:italic;}
+/* content_type=html: sandbox iframe を PP pane いっぱいに広げる。
+   renderPP が container に .pp-content-html を付与し full-bleed に切り替える。 */
+.pp-content.pp-content-html{padding:0;height:100%;}
+.pp-html-frame{width:100%;height:100%;border:0;display:block;background:#fff;}
 /* VP-140: display:none/active gate 廃止、 always display:grid。 visibility は opacity (Frame Engine) が司る. */
 /* VP-142 cleanup: .pane.canvas rules 削除 (pane-canvas HTML element 削除に伴い)。
    PP body が Smart Canvas surface を物理化したため pane-canvas は vestigial。 */
