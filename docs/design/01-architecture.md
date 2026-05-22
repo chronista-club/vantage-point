@@ -3,7 +3,7 @@
 > **Status**: Active
 > **Created**: 2025-12-16
 > **Updated**: 2026-03-10
-> **Version**: 0.8.2
+> **Version**: 0.18.0
 > **Implements**: VP-SPEC-001 (REQ1〜REQ7)
 
 ---
@@ -30,10 +30,11 @@ VP のシステムは 2 層構造: **TheWorld**（グローバルデーモン）
      ┌─────────────────┼─────────────────┐
      ▼                 ▼                 ▼
 ┌──────────┐    ┌──────────┐    ┌──────────┐
-│ Process 0│    │ Process 1│    │ Process N│
-│ port     │    │ port     │    │ port     │
-│ 33000    │    │ 33001    │    │ 33000+N  │
+│ Process  │    │ Process  │    │ Process  │
+│ slot 0   │    │ slot 1   │    │ slot K   │
+│ 33000    │    │ 33001    │    │ 33000+K  │
 └──────────┘    └──────────┘    └──────────┘
+        (port = 33000 + slot、slot は projects.kdl に永続)
 ```
 
 ---
@@ -154,7 +155,7 @@ discovery::list()
   ├── 1st: TheWorld API (port 32000) → /api/world/processes
   │        Success → ProcessInfo[] を返却
   │
-  └── 2nd: HTTP スキャン (port 33000〜33010)
+  └── 2nd: HTTP スキャン (port 33000〜33024)
            各ポートの /api/health を順次チェック
            → terminal_token, project_dir を取得
 ```
@@ -176,14 +177,19 @@ pub struct ProcessInfo {
 
 ## Port Assignment (REQ6.3)
 
-```
-TheWorld:   32000 (HTTP + QUIC)
-Process 0:  33000 (HTTP + QUIC)
-Process 1:  33001 (HTTP + QUIC)
-  ...
-Process N:  33000+N (HTTP + QUIC)
+VP-165 の **flat stable slot 方式**: Process の port は登録順（位置）ではなく、
+projects.kdl に永続化された `slot` から決定的に算出する。
 
-上限: 33010（11 プロジェクト同時稼働）
+```
+TheWorld:        32000 (HTTP + QUIC)
+Process(slot 0): 33000 (HTTP + QUIC)
+Process(slot 1): 33001 (HTTP + QUIC)
+  ...
+Process(slot K): 33000+K (HTTP + QUIC)
+
+port = PORT_RANGE_START (33000) + slot
+slot: projects.kdl に永続。一度割り当てたら不変（project リスト変更でも port は動かない）
+      未割当 project には次の空き slot を割り当てる（config を mutate）
 QUIC オフセット: 0（TCP/UDP は同一ポート番号で共存可能）
 ```
 
@@ -318,14 +324,17 @@ QUIC 接続は lazy + 1 回リトライ。失敗時は HTTP フォールバッ�
 
 ## Configuration
 
-**場所**: `~/.config/vantage/config.toml`
+設定ファイルは KDL 形式（VP-189 で TOML から移行）。config / data パスは
+`dirs` クレートに OS 判定を委ね、ディレクトリ名は全 OS で `vp`。
 
-```toml
-default_port = 33000
+- **global 設定**: `vp_config_dir()/config.kdl`
+  （macOS `~/Library/Application Support/vp/`、Linux `~/.config/vp/`、Windows `%APPDATA%\vp\`）
+- **登録プロジェクトの SSOT**: `vp_config_dir()/projects.kdl`（VP-188、`slot` を含む）
+- **生成データ** (DB / DISC / セッション状態 / ログ): `vp_data_dir()` 配下
 
-[[projects]]
-name = "vantage-point"
-path = "/path/to/vantage-point"
+```kdl
+// projects.kdl
+project "vantage-point" path="/path/to/vantage-point" slot=0
 ```
 
 ---

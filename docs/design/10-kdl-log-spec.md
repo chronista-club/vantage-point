@@ -71,7 +71,7 @@ Layer 1 source  → Layer 2 aggregator (DB)  → Layer 3 viewer (tail / TUI / Ca
 |-----------|---------------------|--------------|-----------|
 | **daemon** (`vp daemon` / `vp world`) | `crates/vantage-point/src/cli.rs:346-437` (`init_tracing`) | `tracing_subscriber::fmt()` default — `2026-04-30T... INFO target Registry: SP '...' 登録` | `KdlFormatter` (本 spec) を `vantage-core` 経由で適用 |
 | **vp-app** (Mac GUI) | `crates/vp-app/src/log_format.rs:36-82` (`KdlFormatter`) + `crates/vp-app/src/app.rs:2159` で layer 設定 | KDL **風** 1-line — `info ts="..." target="..." key=val "msg"` (kdl-rs 未検証) | 同 `KdlFormatter` を `vantage-core` 経由で reuse、 round-trip 検証あり |
-| **project SP** (`vp start` のサーバ本体) | `crates/vantage-point/src/cli.rs:346` (`init_tracing` を共有、 別 process として起動) | daemon と同じく `tracing_subscriber::fmt()` default | 同 `KdlFormatter` を適用 |
+| **project SP** (`vp sp start` のサーバ本体) | `crates/vantage-point/src/cli.rs:346` (`init_tracing` を共有、 別 process として起動) | daemon と同じく `tracing_subscriber::fmt()` default | 同 `KdlFormatter` を適用 |
 
 > 現状、 daemon と project SP は同じ `init_tracing` を呼ぶが、 ファイル名は分かれる: daemon = `~/Library/Logs/Vantage/daemon.kdl.log`、 project SP = `~/Library/Logs/Vantage/project-{slug}.kdl.log` (architectural canon § log file 命名)。 中身が plain tracing なのに `.kdl.log` を名乗っているのは misleading で、 これも本 spec が解消する。
 

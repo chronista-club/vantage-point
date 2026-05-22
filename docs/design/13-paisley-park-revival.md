@@ -286,6 +286,10 @@ trait Surface {
 | **Modal** | vp-app modal layer | block 系 critical | SwiftUI sheet |
 | **Dev Panel** | vp-app sub window | tool use log / debug | SwiftUI panel (debug build only) |
 
+### Smart Canvas の content_type:html render (PR #426)
+
+Smart Canvas で `content_type:html` を render する際は、生 HTML を `<iframe srcdoc sandbox="allow-scripts">` に隔離して描画する。fresh document なので `<script>` が実行でき、`<style>` も PP 外へ漏れず完全隔離される（innerHTML 直挿しでは script 不実行・style 漏洩で `show` tool の謳う interactive elements を満たせなかった）。`allow-same-origin` は付けず、opaque origin で親 document / cookie / storage に触れない。markdown / text は通常 flow のまま render。
+
 ### Surface 切替 — PP の RetainedStore で永続
 
 user が「次回起動時もこの Canvas pin を維持したい」 のような期待 ─ TopicRouter category=state の topic は RetainedStore で永続化 (doc 12 §5)。 PP は Lane shutdown 前に pin state を Whitesnake (DB) に書き出し、 Lane spawn 時に restore。
@@ -505,7 +509,7 @@ doc 12 §13 Q-7 (Msgbox registry の `(layer_path, actor)` key 拡張) は **reg
 
 ### Q-11: SP restart vs Lane PP lifecycle 連動 (P1)
 
-`vp restart` (= SP 再起動) 時に各 Lane の PP は ① SP cascade で全 destroy → 再 spawn ② Lane 単位で independent 維持 のどちらか。 RetainedStore の状態 (pin / focus) が Lane scope 永続層 (Whitesnake) で生存するため、 SP cascade destroy + Whitesnake からの restore で UX 上問題ないと予想。
+`vp sp restart` (= SP 再起動) 時に各 Lane の PP は ① SP cascade で全 destroy → 再 spawn ② Lane 単位で independent 維持 のどちらか。 RetainedStore の状態 (pin / focus) が Lane scope 永続層 (Whitesnake) で生存するため、 SP cascade destroy + Whitesnake からの restore で UX 上問題ないと予想。
 
 **暫定**: SP cascade で全 destroy + Whitesnake restore (Whitesnake は World scope なので SP 再起動に巻き込まれない)。 dogfood で実観察。
 

@@ -67,9 +67,9 @@ VP の 1st ビューは「プロジェクト選択 → TUI → AI 対話」。
 
 | ID | 要件 | 優先度 |
 |----|------|--------|
-| REQ1.1 | `vp start [N]` でプロジェクトの Process を起動できる | Must |
+| REQ1.1 | `vp sp start` でプロジェクトの Process を起動できる | Must |
 | REQ1.2 | TUI 起動時にセッション選択（前回続行 / 新規 / 過去一覧）ができる | Must |
-| REQ1.3 | 設定ファイル (`config.toml`) で複数プロジェクトを管理できる | Must |
+| REQ1.3 | 設定ファイル (`config.kdl` / `projects.kdl`) で複数プロジェクトを管理できる | Must |
 | REQ1.4 | `vp ps` で稼働中プロセスを一覧できる | Must |
 
 ### R2: AI との対話（💬 Echoes — Coding Assistant、 旧 Heaven's Door 📖）
@@ -113,7 +113,7 @@ VP の 1st ビューは「プロジェクト選択 → TUI → AI 対話」。
 |----|------|--------|
 | REQ6.1 | 常駐デーモンとして全 Process のライフサイクルを管理する | Must |
 | REQ6.2 | Process の起動・停止・再起動を API 経由で操作できる | Must |
-| REQ6.3 | ポート自動割当（33000〜33010）で複数プロジェクトが共存できる | Must |
+| REQ6.3 | ポート自動割当（slot ベース、`33000 + slot`）で複数プロジェクトが共存できる | Must |
 | REQ6.4 | プロセス発見はインメモリ管理（ファイルキャッシュ不使用） | Must |
 
 ### R7: Mac ネイティブ体験

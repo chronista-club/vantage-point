@@ -57,7 +57,7 @@ Lane は生まれ、育ち、成熟し、死ぬ。死は喪失ではなく記憶
 | **Lane** | 目的を持つ有限時間の process unit。Identity を持つ Living Actor |
 | **LaneId** | Lane の一意識別子。**UUID v7** (`lane-{uuid7}` 形式を推奨)。Event.id と同じ time-ordered 性質で causation chain 参加 |
 | **Lead Lane** | Project Root Lane。Project 作成時に自動生成、project 削除時のみ destroy。Meta task の responsibility holder |
-| **Worker Lane** | Linear issue 1 つに対応する実装 context。`vp ws new` で create |
+| **Worker Lane** | Linear issue 1 つに対応する実装 context。`vp lane new` で create |
 | **Meta Lane** | Issue に紐付かない常駐 / 周期 Lane (Daily Journal 等) |
 | **Sub-Lane** | Worker Lane 内の細分化 (issue を複数 phase に分割) |
 | **Lane State** | state machine の現在位置 (Sprout / Active / Building / InReview / Hibernated / Destroyed / Reborn) |
@@ -189,7 +189,7 @@ cockpit レイアウトの trade-off を支える 3 つのルール:
 
 ```mermaid
 stateDiagram-v2
-  [*] --> Sprout: vp ws new / Linear "In Progress"
+  [*] --> Sprout: vp lane new / Linear "In Progress"
   Sprout --> Active: first activity
   Active --> Building: first commit
   Building --> InReview: PR open
@@ -210,7 +210,7 @@ stateDiagram-v2
 
 | 遷移 | Trigger | 副作用 |
 |------|---------|--------|
-| `* → Sprout` | `vp ws new` / Linear "In Progress" | ccws clone 作成、msgbox 登録 (VP-69) |
+| `* → Sprout` | `vp lane new` / Linear "In Progress" | ccws clone 作成、msgbox 登録 (VP-69) |
 | `Sprout → Active` | 最初の event 発行 | actor 起動 |
 | `Active → Building` | 最初の commit | build status subscribe 開始 |
 | `Building → InReview` | PR open (GitHub webhook) | review queue Meta Lane に enqueue |

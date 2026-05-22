@@ -63,14 +63,14 @@ claude auth
 
 ### 4. 設定ファイル
 
-```bash
-mkdir -p ~/.config/vantage
-cat > ~/.config/vantage/config.toml << 'EOF'
-default_port = 33000
+設定は KDL 形式。config / data パスは `dirs` クレートに OS 判定を委ね、
+ディレクトリ名は全 OS で `vp`（macOS は `~/Library/Application Support/vp/`）。
+登録プロジェクトの SSOT は `projects.kdl`。
 
-[[projects]]
-name = "vantage-point"
-path = "/path/to/vantage-point"
+```bash
+mkdir -p "$HOME/Library/Application Support/vp"
+cat > "$HOME/Library/Application Support/vp/projects.kdl" << 'EOF'
+project "vantage-point" path="/path/to/vantage-point" slot=0
 EOF
 ```
 
@@ -89,8 +89,8 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 
 # 実行
-cargo run -p vp-cli -- start             # TUI 起動
-cargo run -p vp-cli -- start -d simple   # デバッグモード
+cargo run -p vp-cli -- sp start             # SP サーバー起動
+cargo run -p vp-cli -- sp start -d simple   # デバッグモード
 
 # インストール（バイナリ更新）
 cargo install --path crates/vp-cli

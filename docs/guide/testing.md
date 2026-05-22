@@ -158,16 +158,18 @@ async fn test_async_capability() {
 ### 現在の状況
 
 ```
-モジュール                    テスト数
+モジュール                    テスト数（目安）
 ─────────────────────────────────────
 protocol/                    ~30
-capability/                  ~50
-process/                       ~15
-world/                       ~10
-その他                        ~10
+capability/                  ~170
+process/                     ~150
+daemon/                      ~40
+その他                        多数
 ─────────────────────────────────────
-合計                          114+
+合計（workspace cargo test）  ~690
 ```
+
+> 数値は目安。正確な数は `cargo test --workspace` の `test result:` 行を集計して確認する。
 
 ### カバレッジ計測（オプション）
 

@@ -86,7 +86,7 @@ States: Creating → Active ⇄ Idle → Hibernated → Destroyed
 ```
 
 - **Lead Lane**: Project 作成時に自動、Project 削除時のみ destroy
-- **Worker Lane**: `vp ws new` で create、`vp ws rm` で destroy
+- **Worker Lane**: `vp lane new` で create、`vp lane rm` で destroy
 - **Hibernated ≠ Destroyed** — "消してないが今使ってない" 状態
 - **Resume**: Lead eager / Worker lazy
 

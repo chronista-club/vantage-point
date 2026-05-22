@@ -37,8 +37,14 @@ ID 体系: `VP-SPEC-NNN` / `VP-DESIGN-NNN` / `VP-GUIDE-NNN`
 |-------------|------|
 | [04-ag-ui-requirements.md](./archive/04-ag-ui-requirements.md) | AG-UI 未採用 |
 | [03-agent-protocol-unification.md](./archive/03-agent-protocol-unification.md) | AG-UI 前提の設計 |
+| [08-viewport-semantic-split.md](./archive/08-viewport-semantic-split.md) | self-superseded |
+| [16-worker-lane-msgbox-recv.md](./archive/16-worker-lane-msgbox-recv.md) | msgbox → wiremsg 再設計で陳腐化 |
+| [18-msg-lifecycle-state.md](./archive/18-msg-lifecycle-state.md) | msgbox → wiremsg 再設計で陳腐化 |
+| [19-msgbox-whitesnake-primary.md](./archive/19-msgbox-whitesnake-primary.md) | msgbox → wiremsg 再設計で陳腐化（historical reference） |
+| [20-spike-report.md](./archive/20-spike-report.md) | spike 完了・self-superseded |
+| [dogfooding-v0.13.0.md](./archive/dogfooding-v0.13.0.md) | 旧バージョンの dogfooding 記録 |
 
 ## プロジェクト情報
 
-- **バージョン**: 0.8.2
-- **ライセンス**: Proprietary
+- **バージョン**: 0.18.0
+- **ライセンス**: MIT OR Apache-2.0（dual）

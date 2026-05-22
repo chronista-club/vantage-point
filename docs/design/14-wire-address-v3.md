@@ -19,7 +19,11 @@ address parse 後、 **location 部分の resolve** を以下の順序で fall-t
 
 ```
 1. location 不在        → self process inbox (= local dispatch、 即時)
-2. location = project   → self world、 TheWorld registry に問い合わせて port lookup
+2. location = project   → self world、 SP port を解決:
+   2′. config (projects.kdl) の slot から local read-only 解決 (Tier 2′、 PR #425)
+       — `sp_port_from_config` で port = PORT_RANGE_START + slot をネットワーク往復ゼロで算出
+   2.  local miss (project 未登録 / slot 未割当) のときだけ TheWorld (:32000) へ HTTP fallback
+       — `GET /api/world/port_for?project=<name>`。 TheWorld は slot の唯一の writer
 3. location = host/...  → host を resolve:
    a. host が "<machine>.local" 形 (.local TLD)  → mDNS query (Phase 3)
    b. host が "<seg>" (single segment、 dot 不在) → mDNS first、 失敗時 hub query (Phase 4)
