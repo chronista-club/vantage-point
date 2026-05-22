@@ -46,5 +46,5 @@ ID 体系: `VP-SPEC-NNN` / `VP-DESIGN-NNN` / `VP-GUIDE-NNN`
 
 ## プロジェクト情報
 
-- **バージョン**: 0.18.0
+- **バージョン**: 0.19.0
 - **ライセンス**: MIT OR Apache-2.0（dual）

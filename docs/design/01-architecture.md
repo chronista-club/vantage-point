@@ -3,7 +3,7 @@
 > **Status**: Active
 > **Created**: 2025-12-16
 > **Updated**: 2026-03-10
-> **Version**: 0.18.0
+> **Version**: 0.19.0
 > **Implements**: VP-SPEC-001 (REQ1〜REQ7)
 
 ---
