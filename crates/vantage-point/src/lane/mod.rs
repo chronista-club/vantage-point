@@ -17,5 +17,6 @@
 //! - `status_workers()`
 //! - `cleanup_workers(force)`
 
+pub mod claude_trust;
 pub mod commands;
 pub mod config;
