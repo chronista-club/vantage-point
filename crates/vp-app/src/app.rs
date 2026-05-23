@@ -1181,9 +1181,14 @@ pub fn run() -> anyhow::Result<()> {
     // muda の MenuEvent を main loop に橋渡しする thread を起動
     spawn_menu_event_pump(event_loop.create_proxy());
 
+    // 最低サイズを明示しないと、 何らかの要因 (前回 resize / macOS window state restoration /
+    // 親プロセス由来の resize event 等) でウィンドウが極端に狭まったとき、 sidebar (固定 280px)
+    // が幅を食って main pane が縦長 strip に圧縮される (v0.19.0 dogfood で発覚)。
+    // SIDEBAR_WIDTH (280) + 余裕ある main 領域 = 800 を下限に固定する。
     let window = WindowBuilder::new()
         .with_title("Vantage Point")
         .with_inner_size(LogicalSize::new(1200.0, 800.0))
+        .with_min_inner_size(LogicalSize::new(800.0, 500.0))
         .build(&event_loop)?;
 
     // Terminal backend 選択 (VP-93 Step 2a + auto-launch)
