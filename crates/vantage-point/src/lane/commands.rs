@@ -1,3 +1,4 @@
+use super::claude_trust;
 use super::config;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -184,6 +185,13 @@ fn setup_wing(name: &str, branch: &str, repo_root: &Path, force: bool) -> Result
         if !status.success() {
             return Err(format!("post-setup 失敗: {cmd}"));
         }
+    }
+
+    // Claude Code の folder trust dialog を pre-skip。 VP-managed lane は信頼領域
+    // なので毎回 user 承認は冗長。 詳細は [`claude_trust`] module 冒頭を参照。
+    // best-effort: 失敗しても wing 作成全体は失敗にしない (= 旧挙動で dialog が出るだけ)。
+    if let Err(e) = claude_trust::pre_grant_trust(&wing_dir) {
+        eprintln!("⚠ Claude trust pre-grant 失敗 (dialog は出る): {e}");
     }
 
     Ok(wing_dir)
