@@ -1204,7 +1204,10 @@ pub fn run() -> anyhow::Result<()> {
     //    詳細は event loop の Resized handler 側コメント。
     let window = WindowBuilder::new()
         .with_title("Vantage Point")
-        .with_inner_size(LogicalSize::new(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT))
+        .with_inner_size(LogicalSize::new(
+            DEFAULT_WINDOW_WIDTH,
+            DEFAULT_WINDOW_HEIGHT,
+        ))
         .with_min_inner_size(LogicalSize::new(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT))
         .build(&event_loop)?;
 
@@ -1250,7 +1253,7 @@ pub fn run() -> anyhow::Result<()> {
         .with_devtools(true) // R5 dev: View → "Open Sidebar DevTools" で Web Inspector 起動可能
         .with_bounds(Rect {
             position: LogicalPosition::new(0.0, 0.0).into(),
-            size: WryLogicalSize::new(SIDEBAR_WIDTH, 800.0).into(),
+            size: WryLogicalSize::new(SIDEBAR_WIDTH, DEFAULT_WINDOW_HEIGHT).into(),
         })
         .with_ipc_handler(move |req| {
             // sidebar からのクリック等を main thread に飛ばす (state mutation は main で)
@@ -1271,7 +1274,8 @@ pub fn run() -> anyhow::Result<()> {
         .with_html(MAIN_AREA_HTML)
         .with_bounds(Rect {
             position: LogicalPosition::new(SIDEBAR_WIDTH, 0.0).into(),
-            size: WryLogicalSize::new(1200.0 - SIDEBAR_WIDTH, 800.0).into(),
+            size: WryLogicalSize::new(DEFAULT_WINDOW_WIDTH - SIDEBAR_WIDTH, DEFAULT_WINDOW_HEIGHT)
+                .into(),
         })
         .with_devtools(true)
         .with_ipc_handler(move |req| {
