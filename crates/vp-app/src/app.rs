@@ -51,6 +51,17 @@ use crate::terminal::{self, AppEvent};
 /// Sidebar の固定幅 (LogicalPixel)
 const SIDEBAR_WIDTH: f64 = 280.0;
 
+/// 起動時の window default size (LogicalPixel)。 with_inner_size と clamp 矯正後の値で
+/// 共用するため定数化。
+const DEFAULT_WINDOW_WIDTH: f64 = 1200.0;
+const DEFAULT_WINDOW_HEIGHT: f64 = 800.0;
+
+/// 最低 window size (LogicalPixel)。 SIDEBAR_WIDTH (280) + 余裕ある main 領域 (820+) を
+/// 構造的に確保。 これ未満になる window は使用に耐えないため、 OS の min 制約 (drag 防止)
+/// と起動時 clamp (state restoration 後の矯正) の両方で下限として参照する。
+const MIN_WINDOW_WIDTH: f64 = 1100.0;
+const MIN_WINDOW_HEIGHT: f64 = 700.0;
+
 /// 開発者モード判定 (起動時の初期値計算に使用、runtime 切替は menu 経由)
 ///
 /// 優先順位 (1Password 風の挙動):
@@ -1181,33 +1192,21 @@ pub fn run() -> anyhow::Result<()> {
     // muda の MenuEvent を main loop に橋渡しする thread を起動
     spawn_menu_event_pump(event_loop.create_proxy());
 
-    // 最低サイズと初回 size 強制矯正 — sidebar (固定 280px) 圧縮 bug の構造的防御。
+    // 最低サイズ + 起動時 size 強制矯正 — sidebar (固定 280px) 圧縮 bug の構造的防御。
     //
-    // 1. `with_min_inner_size(1100, 700)`: SIDEBAR_WIDTH (280) + 余裕ある main 領域
-    //    (820+) を構造的に確保する下限。 v0.19.0 + #427 で 800 に設定したが、 macOS
-    //    state restoration が前回 session の 940x1488 等を復元するケース (logical で
-    //    min 800 内に収まる「狭い縦長」) が dogfood で再発 → 1100 まで引き上げ。
-    // 2. build 直後の clamp: 上記 min 制約が macOS の `restorableState` 復元前に
-    //    効かないケース (Cocoa の restore order が late) を bypass するため、 build
-    //    直後に `inner_size()` を取り、 min 未満なら `set_inner_size(1200, 800)` で
-    //    強制的に default に揃え直す。 user が手動で大きく resize した状態は保つ。
+    // 1. `with_min_inner_size`: SIDEBAR_WIDTH + 余裕ある main 領域を構造的に確保する OS
+    //    レベル下限 (NSWindow.setMinSize)。 手動 drag による narrow 化を防ぐ。
+    // 2. 起動時 clamp: macOS state restoration は `applicationDidFinishLaunching` 後の
+    //    async phase で `restorableState` を frame に反映するため、 build 直後の同期
+    //    `inner_size()` チェックは race する (#428 Moody Blues Issue #1 で発覚)。
+    //    EventLoop が走り始めた**最初の Resized event** (= restoration 適用後) で
+    //    min 未満を検出して `set_inner_size(DEFAULT)` で force-resize する経路に移行。
+    //    詳細は event loop の Resized handler 側コメント。
     let window = WindowBuilder::new()
         .with_title("Vantage Point")
-        .with_inner_size(LogicalSize::new(1200.0, 800.0))
-        .with_min_inner_size(LogicalSize::new(1100.0, 700.0))
+        .with_inner_size(LogicalSize::new(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT))
+        .with_min_inner_size(LogicalSize::new(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT))
         .build(&event_loop)?;
-    {
-        let scale = window.scale_factor();
-        let logical = window.inner_size().to_logical::<f64>(scale);
-        if logical.width < 1100.0 || logical.height < 700.0 {
-            tracing::info!(
-                "vp-app: 起動時 window size が min 未満 ({}x{}) → 1200x800 に矯正",
-                logical.width,
-                logical.height
-            );
-            window.set_inner_size(LogicalSize::new(1200.0, 800.0));
-        }
-    }
 
     // Terminal backend 選択 (VP-93 Step 2a + auto-launch)
     // - VP_TERMINAL_MODE=local: 明示 opt-out で in-proc portable-pty
@@ -1318,6 +1317,12 @@ pub fn run() -> anyhow::Result<()> {
     // project:add 等の async 操作で event loop に project list 再 fetch を kick するための proxy
     let async_action_proxy = event_loop.create_proxy();
 
+    // 起動時 size clamp 用 once-flag。 macOS state restoration の `restorableState` は
+    // EventLoop 起動後の async phase で frame に反映され、 初回の `WindowEvent::Resized`
+    // として届く。 この flag が false のうちに来た Resized が「restoration 適用直後」と
+    // みなして min 制約と照合し、 必要なら force-resize する (#428 Moody Blues Issue #1)。
+    let mut initial_size_clamp_done = false;
+
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
 
@@ -1333,7 +1338,31 @@ pub fn run() -> anyhow::Result<()> {
                 event: WindowEvent::Resized(size),
                 ..
             } => {
-                update_pane_bounds(&sidebar, &main_view, size, window.scale_factor());
+                let scale = window.scale_factor();
+                // 初回 Resized = macOS state restoration 適用後の frame。 min 未満なら
+                // force-resize して default に揃える (#428 Moody Blues Issue #1 fix)。
+                // 2 回目以降は user resize / clamp 由来の通常 resize として update_pane_bounds 走らせる。
+                if !initial_size_clamp_done {
+                    initial_size_clamp_done = true;
+                    let logical = size.to_logical::<f64>(scale);
+                    if logical.width < MIN_WINDOW_WIDTH || logical.height < MIN_WINDOW_HEIGHT {
+                        tracing::info!(
+                            "vp-app: 起動時 window size ({}x{}) が min 未満 → {}x{} に矯正",
+                            logical.width,
+                            logical.height,
+                            DEFAULT_WINDOW_WIDTH,
+                            DEFAULT_WINDOW_HEIGHT
+                        );
+                        window.set_inner_size(LogicalSize::new(
+                            DEFAULT_WINDOW_WIDTH,
+                            DEFAULT_WINDOW_HEIGHT,
+                        ));
+                        // set_inner_size → 後続 Resized event で update_pane_bounds が正しく走る。
+                        // この event は restoration の小 size なので bounds 更新 skip。
+                        return;
+                    }
+                }
+                update_pane_bounds(&sidebar, &main_view, size, scale);
             }
             // Phase 2.x-d: AppEvent::Output / XtermReady は撤去済 (per-Lane browser native WS へ移行)。
             // 関連の `xterm_ready` / `pending` / `PENDING_MAX` も一括削除。
