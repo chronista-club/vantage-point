@@ -1181,15 +1181,33 @@ pub fn run() -> anyhow::Result<()> {
     // muda の MenuEvent を main loop に橋渡しする thread を起動
     spawn_menu_event_pump(event_loop.create_proxy());
 
-    // 最低サイズを明示しないと、 何らかの要因 (前回 resize / macOS window state restoration /
-    // 親プロセス由来の resize event 等) でウィンドウが極端に狭まったとき、 sidebar (固定 280px)
-    // が幅を食って main pane が縦長 strip に圧縮される (v0.19.0 dogfood で発覚)。
-    // SIDEBAR_WIDTH (280) + 余裕ある main 領域 = 800 を下限に固定する。
+    // 最低サイズと初回 size 強制矯正 — sidebar (固定 280px) 圧縮 bug の構造的防御。
+    //
+    // 1. `with_min_inner_size(1100, 700)`: SIDEBAR_WIDTH (280) + 余裕ある main 領域
+    //    (820+) を構造的に確保する下限。 v0.19.0 + #427 で 800 に設定したが、 macOS
+    //    state restoration が前回 session の 940x1488 等を復元するケース (logical で
+    //    min 800 内に収まる「狭い縦長」) が dogfood で再発 → 1100 まで引き上げ。
+    // 2. build 直後の clamp: 上記 min 制約が macOS の `restorableState` 復元前に
+    //    効かないケース (Cocoa の restore order が late) を bypass するため、 build
+    //    直後に `inner_size()` を取り、 min 未満なら `set_inner_size(1200, 800)` で
+    //    強制的に default に揃え直す。 user が手動で大きく resize した状態は保つ。
     let window = WindowBuilder::new()
         .with_title("Vantage Point")
         .with_inner_size(LogicalSize::new(1200.0, 800.0))
-        .with_min_inner_size(LogicalSize::new(800.0, 500.0))
+        .with_min_inner_size(LogicalSize::new(1100.0, 700.0))
         .build(&event_loop)?;
+    {
+        let scale = window.scale_factor();
+        let logical = window.inner_size().to_logical::<f64>(scale);
+        if logical.width < 1100.0 || logical.height < 700.0 {
+            tracing::info!(
+                "vp-app: 起動時 window size が min 未満 ({}x{}) → 1200x800 に矯正",
+                logical.width,
+                logical.height
+            );
+            window.set_inner_size(LogicalSize::new(1200.0, 800.0));
+        }
+    }
 
     // Terminal backend 選択 (VP-93 Step 2a + auto-launch)
     // - VP_TERMINAL_MODE=local: 明示 opt-out で in-proc portable-pty
