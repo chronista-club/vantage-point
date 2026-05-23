@@ -43,12 +43,14 @@ allowed-tools: Bash, Read, Edit, Grep, Glob, AskUserQuestion
 
 1. `git tag v{VERSION}`
 2. `git push origin v{VERSION}`
-3. ローカルでリリースビルド: `cargo build --release --target aarch64-apple-darwin -p vantage-point`
+3. ローカルでリリースビルド: `cargo build --release --target aarch64-apple-darwin -p vp-cli`
+   （`vp` バイナリは `crates/vp-cli` 産。`vantage-point` は server lib なので注意）
 4. `gh release create v{VERSION} target/aarch64-apple-darwin/release/vp --title "v{VERSION}" --generate-notes --latest`
 
 ## Step 7: インストール & 検証
 
-1. `cargo install --path crates/vantage-point` でローカルインストール
+1. `cargo install --path crates/vp-cli --target aarch64-apple-darwin --force` でローカルインストール
+   （Step 6 のビルド成果物を再利用するため `--target` を一致させる。`--force` で同一バージョンでも置換）
 2. `vp --version` でバージョン確認（期待値: {VERSION}）
 3. `gh release view v{VERSION}` でリリースが正しく作成されたか確認
 
