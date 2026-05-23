@@ -113,7 +113,7 @@ pub fn load_config(repo_root: &Path) -> Result<WingConfig, String> {
     Ok(raw.into())
 }
 
-/// Lane データディレクトリを返す。
+/// Lane データディレクトリを返す (= legacy global path、 PR 4 で削除予定)。
 ///
 /// VP-196 Phase 2: 旧 `~/.local/share/ccws/` から `vp_data_dir()/lanes/` へ移行。
 /// VP-192 で確立した data path SSOT (`vp_data_dir()`) 配下に統一する。
@@ -121,11 +121,68 @@ pub fn load_config(repo_root: &Path) -> Result<WingConfig, String> {
 /// - Linux: `~/.local/share/vp/lanes/`
 ///
 /// `VP_LANES_DIR` 環境変数で明示上書き可能。
+///
+/// **project-local lane refactor (進行中)**: 新規 lane は [`project_lanes_dir`] が
+/// 返す `<repo>/.vp/lanes/` に配置する。 この関数は CLI dual-read の legacy 側で
+/// しばらく残る (= PR 4 cleanup で削除)。
 pub fn wings_dir() -> Result<PathBuf, String> {
     if let Ok(dir) = env::var("VP_LANES_DIR") {
         return Ok(PathBuf::from(dir));
     }
     Ok(crate::config::vp_data_dir().join("lanes"))
+}
+
+/// Project-local lane root を返す: `<repo_root>/.vp/lanes/`。
+///
+/// project-local lane refactor PR 1: 新 lane の正規 path。
+/// - path に空白を含まない (= 旧 `~/Library/Application Support/vp/lanes/` の課題解消)
+/// - project 所属が path 階層で明示される (= repo prefix `<repo>-<name>` が不要)
+/// - 親 repo の `.claude.json` trust が hierarchical に継承される (= claude folder
+///   trust dialog が pre-grant なしで自動 skip)
+pub fn project_lanes_dir(repo_root: &Path) -> PathBuf {
+    repo_root.join(".vp").join("lanes")
+}
+
+/// `<repo>/.gitignore` に `.vp/` ignore entry を idempotent に追記する。
+///
+/// project-local lane refactor: lane workspace は nested git clone なので、 parent repo
+/// から見ると untracked dir として `git status` に出てしまう。 これを抑制するため、
+/// `vp lane new` 起動時に best-effort で `.gitignore` に `.vp/` を追記する。
+///
+/// 挙動:
+/// - `.gitignore` 不在なら新規作成 (header コメント付き)
+/// - 既に `.vp/` または `.vp` の行があれば skip (= idempotent)
+/// - 失敗時は Err を返す (caller 側で best-effort 扱いするかは判断)
+pub fn ensure_vp_gitignored(repo_root: &Path) -> Result<(), String> {
+    let gi_path = repo_root.join(".gitignore");
+
+    let existing = match fs::read_to_string(&gi_path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(format!(".gitignore 読み込み失敗: {e}")),
+    };
+
+    // 既に `.vp/` (末尾 slash 有無 / 行頭 `/` 有無) を ignore してれば skip
+    let already_ignored = existing
+        .lines()
+        .map(|l| l.split('#').next().unwrap_or("").trim())
+        .any(|l| matches!(l, ".vp" | ".vp/" | "/.vp" | "/.vp/"));
+    if already_ignored {
+        return Ok(());
+    }
+
+    // 既存末尾の改行を保証してから append
+    let mut new_content = existing;
+    if !new_content.is_empty() && !new_content.ends_with('\n') {
+        new_content.push('\n');
+    }
+    if !new_content.is_empty() {
+        new_content.push('\n');
+    }
+    new_content.push_str("# Vantage Point lane workspaces (project-local lane refactor)\n");
+    new_content.push_str(".vp/\n");
+
+    fs::write(&gi_path, new_content).map_err(|e| format!(".gitignore 書込失敗: {e}"))
 }
 
 /// 旧 lane データディレクトリ (`~/.local/share/ccws/`) から新パスへの冪等な移行。
@@ -372,6 +429,121 @@ symlink-pattern "**/*.local.*"
 
         let cfg = load_config(&tmp).unwrap();
         assert_eq!(cfg.copies, vec!["x.toml"]);
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    // --- project_lanes_dir ---
+
+    #[test]
+    fn project_lanes_dir_under_repo_root() {
+        let repo = PathBuf::from("/tmp/some-repo");
+        assert_eq!(project_lanes_dir(&repo), repo.join(".vp").join("lanes"));
+    }
+
+    #[test]
+    fn project_lanes_dir_handles_trailing_slash_in_input() {
+        // PathBuf::join は trailing slash を自然に扱う
+        let repo = PathBuf::from("/tmp/some-repo/");
+        assert_eq!(project_lanes_dir(&repo), repo.join(".vp").join("lanes"));
+    }
+
+    // --- ensure_vp_gitignored ---
+
+    #[test]
+    fn ensure_vp_gitignored_creates_new_file() {
+        let tmp = test_dir("gi-new");
+        let _ = fs::create_dir_all(&tmp);
+
+        ensure_vp_gitignored(&tmp).unwrap();
+        let content = fs::read_to_string(tmp.join(".gitignore")).unwrap();
+        assert!(content.contains(".vp/"));
+        assert!(content.contains("# Vantage Point"));
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn ensure_vp_gitignored_appends_to_existing() {
+        let tmp = test_dir("gi-append");
+        let _ = fs::create_dir_all(&tmp);
+        fs::write(tmp.join(".gitignore"), "/target\nnode_modules/\n").unwrap();
+
+        ensure_vp_gitignored(&tmp).unwrap();
+        let content = fs::read_to_string(tmp.join(".gitignore")).unwrap();
+        assert!(content.contains("/target"), "既存 entry 保持");
+        assert!(content.contains("node_modules/"), "既存 entry 保持");
+        assert!(content.contains(".vp/"), ".vp/ 追記");
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn ensure_vp_gitignored_idempotent_when_already_present() {
+        let tmp = test_dir("gi-idempotent");
+        let _ = fs::create_dir_all(&tmp);
+        let original = "/target\n.vp/\nnode_modules/\n";
+        fs::write(tmp.join(".gitignore"), original).unwrap();
+
+        ensure_vp_gitignored(&tmp).unwrap();
+        let content = fs::read_to_string(tmp.join(".gitignore")).unwrap();
+        assert_eq!(content, original, "既存 .vp/ があれば content 不変");
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn ensure_vp_gitignored_recognizes_variant_forms() {
+        // `.vp`, `.vp/`, `/.vp`, `/.vp/` 全て idempotent
+        for entry in [".vp", ".vp/", "/.vp", "/.vp/"] {
+            let slug = entry.replace('/', "_").replace('.', "");
+            let tmp = test_dir(&format!("gi-variant-{slug}"));
+            let _ = fs::create_dir_all(&tmp);
+            let original = format!("/target\n{entry}\n");
+            fs::write(tmp.join(".gitignore"), &original).unwrap();
+
+            ensure_vp_gitignored(&tmp).unwrap();
+            let content = fs::read_to_string(tmp.join(".gitignore")).unwrap();
+            assert_eq!(
+                content, original,
+                "{entry} は既存 ignore とみなし content 不変であるべき"
+            );
+            let _ = fs::remove_dir_all(&tmp);
+        }
+    }
+
+    #[test]
+    fn ensure_vp_gitignored_handles_missing_trailing_newline() {
+        let tmp = test_dir("gi-no-trail-nl");
+        let _ = fs::create_dir_all(&tmp);
+        // 末尾改行なし
+        fs::write(tmp.join(".gitignore"), "/target").unwrap();
+
+        ensure_vp_gitignored(&tmp).unwrap();
+        let content = fs::read_to_string(tmp.join(".gitignore")).unwrap();
+        assert!(content.starts_with("/target\n"), "既存末尾に改行を補う");
+        assert!(content.contains(".vp/"), ".vp/ 追記");
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn ensure_vp_gitignored_ignores_commented_vp_line() {
+        // `# .vp/` のような comment 行は ignore とみなさない (= 追記する)
+        let tmp = test_dir("gi-commented");
+        let _ = fs::create_dir_all(&tmp);
+        fs::write(tmp.join(".gitignore"), "/target\n# .vp/\n").unwrap();
+
+        ensure_vp_gitignored(&tmp).unwrap();
+        let content = fs::read_to_string(tmp.join(".gitignore")).unwrap();
+        // comment 行は残ったまま、 加えて real entry を追記
+        assert!(content.contains("# .vp/"));
+        let real_entries = content
+            .lines()
+            .map(|l| l.split('#').next().unwrap_or("").trim())
+            .filter(|l| matches!(*l, ".vp/" | ".vp"))
+            .count();
+        assert_eq!(real_entries, 1, ".vp/ real entry を 1 行追記");
 
         let _ = fs::remove_dir_all(&tmp);
     }

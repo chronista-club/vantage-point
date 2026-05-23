@@ -89,7 +89,10 @@ pub async fn list_handler(State(state): State<Arc<AppState>>) -> impl IntoRespon
                 }
             })
             .collect();
-        let inactive = crate::lane::commands::list_wings_for_repo(&project_id);
+        // project-local lane refactor PR 1: list_wings_for_repo は repo_root を受け取り、
+        // <repo>/.vp/lanes/<name> + legacy global path の dual-read を行う。
+        let inactive =
+            crate::lane::commands::list_wings_for_repo(std::path::Path::new(&state.project_dir));
         for entry in inactive {
             if existing_names.contains(&entry.name) {
                 continue; // in-memory 優先、 disk 側 skip
@@ -243,7 +246,7 @@ pub async fn create_handler(
         })?;
         let path_buf = result.map_err(|e| {
             // lane::commands::new_wing_in は worker dir 既存 + force=false の時に
-            // 「ワーカー '<name>' は既に存在します」を返す。 UI で input 下に表示するため
+            // 「ウィング '<name>' は既に存在します」を返す。 UI で input 下に表示するため
             // CONFLICT を返し、 error message をそのまま流す。
             let msg = e.to_string();
             let status = if msg.contains("既に存在") || msg.contains("already exists") {
@@ -476,13 +479,11 @@ pub async fn delete_lane_orchestrated(
     // 注意: `spawn_blocking` closure は `repo_name` / `name` のみ move、 `addr` は capture
     // されないので後続 match arm の `tracing` で参照可能 (= compile time 保証)。
     let cleanup_status = if cleanup && let Some(name) = info.address.name.clone() {
-        let repo_name = std::path::Path::new(&state.project_dir)
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("unknown")
-            .to_string();
+        // project-local lane refactor PR 1: remove_wing_in は repo_root: &Path を受け取る。
+        // sidebar delete trigger は dual-read で project-local + legacy global 両 path 対応。
+        let repo_root = std::path::PathBuf::from(&state.project_dir);
         let result = tokio::task::spawn_blocking(move || {
-            crate::lane::commands::remove_wing_in(&repo_name, &name)
+            crate::lane::commands::remove_wing_in(&repo_root, &name)
         })
         .await;
         match result {

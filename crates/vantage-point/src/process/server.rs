@@ -333,7 +333,9 @@ pub async fn run(
             .and_then(|s| s.to_str())
             .unwrap_or("unknown")
             .to_string();
-        let workers = crate::lane::commands::list_wings_for_repo(&workers_project_id);
+        // project-local lane refactor PR 1: list_wings_for_repo は repo_root: &Path を受け取る。
+        let workers =
+            crate::lane::commands::list_wings_for_repo(std::path::Path::new(&state.project_dir));
         let total = workers.len();
         if total > 0 {
             tracing::info!(
