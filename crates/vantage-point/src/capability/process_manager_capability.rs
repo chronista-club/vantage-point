@@ -1552,34 +1552,25 @@ impl ProcessManagerCapability {
     /// D10 Reconciliation arch の **3rd path 拡張**: Push (QUIC heartbeat) + Pull (port scan) +
     /// **FSEvents (本 method)** の 3-trigger model 完成。
     ///
-    /// ## project-local lane refactor PR 4c
+    /// ## project-local lane refactor PR 4c → hot-reload
     ///
-    /// PR 1 で wing 配置が `<repo>/.vp/lanes/<name>` に移行したのを受けて、 旧 logic
-    /// (= 単一 legacy global path watch + `<repo>-<name>` prefix parsing) を撤去し、
-    /// `config.projects` の **各 project の `.vp/lanes/` を `Vec<watch>` で N path 同時監視**
-    /// する形に書き直した。 dirname 解析は撤去、 [`resolve_lane_event`] で完全 path-based
-    /// resolution。
+    /// PR 4c で `config.projects` の各 project の `.vp/lanes/` を `Vec<watch>` で N path
+    /// 同時監視に書き直し、 本 PR で **5s tick polling-based の動的 hot-reload** を追加。
+    /// 起動後に projects.kdl 経由で新規 project が register/unregister されると、
+    /// 次の tick (= 最大 5s 遅延) で watch list を sync する。
     ///
     /// MVP scope (= 別 ticket で safety net 追加候補):
-    /// - 動的 project add/remove: scope 外 (= startup snapshot で固定、 後 PR で hot-reload 検討)
     /// - self-loop 防止: scope 外 (= SP 経由削除も Remove event 発火、 二重 DELETE 走るが SP 側
     ///   404 で no-op、 log noise 許容)
     /// - spawn race: scope 外 (= 既存 spawn semaphore + atomic LanePool insert で吸収)
     /// - 詳細 EventKind 区別: Remove(_) 全 variant accept (= Mac FSEvents は RemoveKind 区別が薄い)
+    /// - event-based hot-reload: scope 外 (= polling で十分、 PR 1 の `build_lanes_snapshot`
+    ///   periodic と同 cadence で user の mental model 一致)
     pub async fn run_lane_watcher(
         world: Arc<RwLock<Self>>,
         shutdown_token: tokio_util::sync::CancellationToken,
     ) {
-        use notify::{EventKind, RecursiveMode, Watcher};
-
-        // 起動時 snapshot: config.projects から `.vp/lanes/` path map を build。
-        // 動的 project 追加は本 PR scope 外 (= TODO: project register event を購読して
-        // path_map を hot-reload)。
-        let path_map = Self::build_lane_watch_path_map(&world).await;
-        if path_map.is_empty() {
-            tracing::info!("lane watcher: 監視対象 project なし (skip 起動)");
-            return;
-        }
+        use notify::EventKind;
 
         // notify event は std::sync::mpsc 風 closure callback で来る。 async loop で処理する
         // ため tokio mpsc に bridge (file_watcher.rs:379 と同型 pattern)。
@@ -1597,44 +1588,19 @@ impl ProcessManagerCapability {
                 }
             };
 
-        // 各 project の `.vp/lanes/` を watch。 dir 不在は best-effort で create
-        // (= wing がまだ作られてない project でも先に watch を arm する)。
-        let mut watched_count = 0usize;
-        for (watch_path, (project_name, _)) in &path_map {
-            if !watch_path.exists()
-                && let Err(e) = std::fs::create_dir_all(watch_path)
-            {
-                tracing::warn!(
-                    "lane watcher: dir create 失敗 (skip) project={} path={}: {}",
-                    project_name,
-                    watch_path.display(),
-                    e
-                );
-                continue;
+        // 起動時 snapshot を arm。 0 project でも loop は起動し、 periodic tick で
+        // 後から register された project を pick up する (= hot-reload 動作)。
+        let mut path_map = Self::build_lane_watch_path_map(&world).await;
+        let mut watched: std::collections::HashSet<std::path::PathBuf> =
+            std::collections::HashSet::new();
+        for (path, (name, _)) in &path_map {
+            if Self::arm_watch_path(&mut watcher, path, name) {
+                watched.insert(path.clone());
             }
-            if let Err(e) = watcher.watch(watch_path, RecursiveMode::NonRecursive) {
-                tracing::warn!(
-                    "lane watcher: watch 開始失敗 (skip) project={} path={}: {}",
-                    project_name,
-                    watch_path.display(),
-                    e
-                );
-                continue;
-            }
-            watched_count += 1;
-            tracing::info!(
-                "lane watcher: project={} path={} 監視開始",
-                project_name,
-                watch_path.display()
-            );
-        }
-        if watched_count == 0 {
-            tracing::warn!("lane watcher: 全 project で watch 失敗、 watcher 起動 abort");
-            return;
         }
         tracing::info!(
-            "lane watcher 起動完了 (project={} 件、 mode=NonRecursive、 trigger=Remove → SP DELETE)",
-            watched_count
+            "lane watcher 起動 (初期 {} project arm 済、 mode=NonRecursive、 trigger=Remove → SP DELETE)",
+            watched.len()
         );
 
         let client = reqwest::Client::builder()
@@ -1642,11 +1608,41 @@ impl ProcessManagerCapability {
             .build()
             .expect("reqwest Client 構築失敗");
 
+        // 5s tick で projects.kdl 経由の register/unregister を hot-reload。
+        let mut hot_reload = tokio::time::interval(std::time::Duration::from_secs(5));
+        hot_reload.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
         loop {
             tokio::select! {
                 _ = shutdown_token.cancelled() => {
                     tracing::info!("lane watcher: shutdown signal、 停止");
                     break;
+                }
+                _ = hot_reload.tick() => {
+                    // diff 計算 → 差分のみ unwatch/watch
+                    let new_map = Self::build_lane_watch_path_map(&world).await;
+                    let new_paths: std::collections::HashSet<std::path::PathBuf> =
+                        new_map.keys().cloned().collect();
+                    let (to_add, to_remove) = compute_watch_diff(&watched, &new_paths);
+                    for path in &to_remove {
+                        use notify::Watcher;
+                        let _ = watcher.unwatch(path);
+                        watched.remove(path);
+                        tracing::info!(
+                            "lane watcher: project unwatch (= unregister 検出) path={}",
+                            path.display()
+                        );
+                    }
+                    for path in &to_add {
+                        let name = new_map
+                            .get(path)
+                            .map(|(n, _)| n.as_str())
+                            .unwrap_or("unknown");
+                        if Self::arm_watch_path(&mut watcher, path, name) {
+                            watched.insert(path.clone());
+                        }
+                    }
+                    path_map = new_map;
                 }
                 event_opt = rx.recv() => {
                     let Some(event) = event_opt else { break }; // channel closed
@@ -1660,6 +1656,42 @@ impl ProcessManagerCapability {
 
         drop(watcher); // 明示 drop で watching 停止 (scope 終端でも自動だが意図表示)
         tracing::info!("lane watcher 終了");
+    }
+
+    /// 1 project の `.vp/lanes/` を arm する helper (`run_lane_watcher` の inner)。
+    /// dir 不在なら best-effort で create + `watch()` 試行。 成功すれば true を返す。
+    fn arm_watch_path(
+        watcher: &mut notify::RecommendedWatcher,
+        path: &std::path::Path,
+        project_name: &str,
+    ) -> bool {
+        use notify::{RecursiveMode, Watcher};
+        if !path.exists()
+            && let Err(e) = std::fs::create_dir_all(path)
+        {
+            tracing::warn!(
+                "lane watcher: dir create 失敗 (skip) project={} path={}: {}",
+                project_name,
+                path.display(),
+                e
+            );
+            return false;
+        }
+        if let Err(e) = watcher.watch(path, RecursiveMode::NonRecursive) {
+            tracing::warn!(
+                "lane watcher: watch 開始失敗 (skip) project={} path={}: {}",
+                project_name,
+                path.display(),
+                e
+            );
+            return false;
+        }
+        tracing::info!(
+            "lane watcher: project={} path={} 監視開始",
+            project_name,
+            path.display()
+        );
+        true
     }
 
     /// `config.projects` から `<repo>/.vp/lanes/` path → (project_name, project_path) の
@@ -1771,6 +1803,22 @@ fn resolve_lane_event(
         return None;
     }
     Some((project_name.clone(), project_path.clone(), wing_name))
+}
+
+/// lane watcher hot-reload の純粋 diff 計算。 `current` (= 現在 arm 済 path 集合) と
+/// `new` (= 期待 path 集合 = `build_lane_watch_path_map` の最新 keys) から、
+/// `(to_add, to_remove)` を返す。
+///
+/// - `to_add` = `new` にあって `current` に無い (= 新規 register された project)
+/// - `to_remove` = `current` にあって `new` に無い (= unregister された project)
+/// - I/O なしの pure fn (= test しやすい、 `notify::Watcher` mock 不要)
+fn compute_watch_diff(
+    current: &std::collections::HashSet<std::path::PathBuf>,
+    new: &std::collections::HashSet<std::path::PathBuf>,
+) -> (Vec<std::path::PathBuf>, Vec<std::path::PathBuf>) {
+    let to_add: Vec<_> = new.difference(current).cloned().collect();
+    let to_remove: Vec<_> = current.difference(new).cloned().collect();
+    (to_add, to_remove)
 }
 
 impl Default for ProcessManagerCapability {
@@ -1944,6 +1992,79 @@ mod tests {
                 "wing-x".to_string()
             ))
         );
+    }
+
+    // --- compute_watch_diff (hot-reload pure helper) ---
+
+    fn make_path_set(paths: &[&str]) -> std::collections::HashSet<std::path::PathBuf> {
+        paths.iter().map(std::path::PathBuf::from).collect()
+    }
+
+    fn sort_paths(mut v: Vec<std::path::PathBuf>) -> Vec<std::path::PathBuf> {
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn compute_watch_diff_initial_arm_all_new() {
+        // 起動直後: current 空、 new に N project → 全部 to_add
+        let current = std::collections::HashSet::new();
+        let new = make_path_set(&["/a/.vp/lanes", "/b/.vp/lanes"]);
+        let (to_add, to_remove) = compute_watch_diff(&current, &new);
+        assert_eq!(
+            sort_paths(to_add),
+            vec![
+                std::path::PathBuf::from("/a/.vp/lanes"),
+                std::path::PathBuf::from("/b/.vp/lanes"),
+            ]
+        );
+        assert!(to_remove.is_empty());
+    }
+
+    #[test]
+    fn compute_watch_diff_full_drain_when_new_empty() {
+        // 全 project unregister: current に N、 new 空 → 全部 to_remove
+        let current = make_path_set(&["/a/.vp/lanes", "/b/.vp/lanes"]);
+        let new = std::collections::HashSet::new();
+        let (to_add, to_remove) = compute_watch_diff(&current, &new);
+        assert!(to_add.is_empty());
+        assert_eq!(
+            sort_paths(to_remove),
+            vec![
+                std::path::PathBuf::from("/a/.vp/lanes"),
+                std::path::PathBuf::from("/b/.vp/lanes"),
+            ]
+        );
+    }
+
+    #[test]
+    fn compute_watch_diff_steady_state_no_change() {
+        // 完全 match: 変化なし
+        let current = make_path_set(&["/a/.vp/lanes", "/b/.vp/lanes"]);
+        let new = make_path_set(&["/a/.vp/lanes", "/b/.vp/lanes"]);
+        let (to_add, to_remove) = compute_watch_diff(&current, &new);
+        assert!(to_add.is_empty());
+        assert!(to_remove.is_empty());
+    }
+
+    #[test]
+    fn compute_watch_diff_mixed_add_and_remove() {
+        // a が消えて c が追加: to_add=[c]、 to_remove=[a]、 b は維持
+        let current = make_path_set(&["/a/.vp/lanes", "/b/.vp/lanes"]);
+        let new = make_path_set(&["/b/.vp/lanes", "/c/.vp/lanes"]);
+        let (to_add, to_remove) = compute_watch_diff(&current, &new);
+        assert_eq!(to_add, vec![std::path::PathBuf::from("/c/.vp/lanes")]);
+        assert_eq!(to_remove, vec![std::path::PathBuf::from("/a/.vp/lanes")]);
+    }
+
+    #[test]
+    fn compute_watch_diff_both_empty_yields_empty() {
+        // edge: 両方空 (= projects 0 状態) → no-op
+        let current = std::collections::HashSet::new();
+        let new = std::collections::HashSet::new();
+        let (to_add, to_remove) = compute_watch_diff(&current, &new);
+        assert!(to_add.is_empty());
+        assert!(to_remove.is_empty());
     }
 
     #[tokio::test]
