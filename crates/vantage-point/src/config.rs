@@ -106,8 +106,9 @@ pub fn migrate_legacy_paths() {
         migrate_dir_if_needed(&legacy_data, &vp_data_dir(), "data");
     }
 
-    // lane: 旧 `~/.local/share/ccws/` → 新 `vp_data_dir()/lanes/` (VP-196 Phase 2)
-    crate::lane::config::migrate_legacy_lanes_dir();
+    // project-local lane refactor PR 4b: 旧 `~/.local/share/ccws/` → `vp_data_dir()/lanes/`
+    // の `migrate_legacy_lanes_dir()` は削除済。 lane は `<repo>/.vp/lanes/` (project-local)
+    // 配置に移行したため、 global lane dir 自体が概念として撤去された。
 }
 
 /// `legacy` ディレクトリの中身を `target` にコピーする (冪等ヘルパー)。
