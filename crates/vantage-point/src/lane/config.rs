@@ -1,6 +1,6 @@
 use club_kdl::KdlDeserialize;
 use std::path::{Path, PathBuf};
-use std::{env, fs, io};
+use std::{fs, io};
 
 /// Wing 設定ファイル名 (primary)。 Wing workspace に symlink/copy するファイルを定義。
 const CONFIG_FILE: &str = ".claude/wing-files.kdl";
@@ -113,28 +113,9 @@ pub fn load_config(repo_root: &Path) -> Result<WingConfig, String> {
     Ok(raw.into())
 }
 
-/// Lane データディレクトリを返す (= legacy global path、 PR 4 で削除予定)。
-///
-/// VP-196 Phase 2: 旧 `~/.local/share/ccws/` から `vp_data_dir()/lanes/` へ移行。
-/// VP-192 で確立した data path SSOT (`vp_data_dir()`) 配下に統一する。
-/// - macOS: `~/Library/Application Support/vp/lanes/`
-/// - Linux: `~/.local/share/vp/lanes/`
-///
-/// `VP_LANES_DIR` 環境変数で明示上書き可能。
-///
-/// **project-local lane refactor (進行中)**: 新規 lane は [`project_lanes_dir`] が
-/// 返す `<repo>/.vp/lanes/` に配置する。 この関数は CLI dual-read の legacy 側で
-/// しばらく残る (= PR 4 cleanup で削除)。
-pub fn wings_dir() -> Result<PathBuf, String> {
-    if let Ok(dir) = env::var("VP_LANES_DIR") {
-        return Ok(PathBuf::from(dir));
-    }
-    Ok(crate::config::vp_data_dir().join("lanes"))
-}
-
 /// Project-local lane root を返す: `<repo_root>/.vp/lanes/`。
 ///
-/// project-local lane refactor PR 1: 新 lane の正規 path。
+/// project-local lane refactor PR 1: lane の正規 path。
 /// - path に空白を含まない (= 旧 `~/Library/Application Support/vp/lanes/` の課題解消)
 /// - project 所属が path 階層で明示される (= repo prefix `<repo>-<name>` が不要)
 /// - 親 repo の `.claude.json` trust が hierarchical に継承される (= claude folder
@@ -183,51 +164,6 @@ pub fn ensure_vp_gitignored(repo_root: &Path) -> Result<(), String> {
     new_content.push_str(".vp/\n");
 
     fs::write(&gi_path, new_content).map_err(|e| format!(".gitignore 書込失敗: {e}"))
-}
-
-/// 旧 lane データディレクトリ (`~/.local/share/ccws/`) から新パスへの冪等な移行。
-///
-/// VP-196 Phase 2: lane 環境の置き場所を `vp_data_dir()/lanes/` に移す。
-/// 旧パスが存在し新パスが無ければ、ディレクトリごと `rename` (move) する。
-/// - `rename` は同一 volume なら atomic かつ瞬時。
-/// - 冪等: 新パスが既にあれば skip。何度呼んでも安全。
-/// - 失敗は warn ログのみ (起動を阻害しない)。
-/// - `VP_LANES_DIR` で明示上書き中はユーザー管理下なので触らない。
-///
-/// 起動時 (`migrate_legacy_paths()`) に 1 回呼ぶこと。
-pub fn migrate_legacy_lanes_dir() {
-    if env::var("VP_LANES_DIR").is_ok() {
-        return;
-    }
-    let Ok(new_dir) = wings_dir() else {
-        return;
-    };
-    if new_dir.exists() {
-        return;
-    }
-    // 旧パスは HOME ベースの固定 `~/.local/share/ccws/` (移行前 wings_dir の default)。
-    let Some(home) = dirs::home_dir() else {
-        return;
-    };
-    let legacy = home.join(".local/share/ccws");
-    if !legacy.is_dir() {
-        return;
-    }
-    if let Some(parent) = new_dir.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    match fs::rename(&legacy, &new_dir) {
-        Ok(()) => tracing::info!(
-            "VP-196 lane migration: {} → {}",
-            legacy.display(),
-            new_dir.display()
-        ),
-        Err(e) => tracing::warn!(
-            "VP-196 lane migration 失敗 (skip): {} → {}: {e}",
-            legacy.display(),
-            new_dir.display(),
-        ),
-    }
 }
 
 /// Validate that a wing name is safe (allowlist: alphanumeric, hyphen, underscore)

@@ -39,17 +39,17 @@ pub fn new_wing_in(
     setup_wing(name, branch, repo_root, force)
 }
 
-/// Phase 4-X: SP-friendly remove。 repo_root を明示的に受け取り、 project-local 新 path +
-/// legacy global path の dual-read で wing dir を解決して削除する。
+/// Phase 4-X: SP-friendly remove。 repo_root を明示的に受け取り、 project-local 新 path で
+/// wing dir を解決して削除する。
 ///
 /// project-local lane refactor PR 1: `repo_name: &str` → `repo_root: &Path` に signature
 /// 変更。 caller (sidebar 経由 DELETE 等) は state.project_dir を直接渡せる。
+/// PR 4b: legacy global path dual-read 削除、 project-local 一本に。
 pub fn remove_wing_in(repo_root: &Path, name: &str) -> Result<(), String> {
     config::validate_wing_name(name)?;
-    let Some(wing_dir) = find_wing_dir_dual(repo_root, name) else {
-        let repo_name = repo_root.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let Some(wing_dir) = find_wing_dir(repo_root, name) else {
         return Err(format!(
-            "wing not found: '{name}' (looked in {}/.vp/lanes/, legacy global path with prefix '{repo_name}-')",
+            "wing not found: '{name}' (looked in {}/.vp/lanes/)",
             repo_root.display()
         ));
     };
@@ -78,12 +78,11 @@ pub fn fork_wing(name: &str, branch: &str, force: bool) -> Result<(), String> {
 }
 
 /// Common wing setup: clone, symlink, branch, post-setup.
-/// Returns the wing directory path.
+/// Returns the wing directory path。
 ///
-/// project-local lane refactor PR 1: 新 lane の配置先を `<repo_root>/.vp/lanes/<name>` に
-/// 切替。 旧 `<wings_dir>/<repo>-<name>` (global path + repo prefix) は CLI dual-read で
-/// 読めるが、 新規作成は project-local 一本。 parent repo の `.gitignore` に `.vp/` を
-/// best-effort で追記して nested git clone を隠蔽する。
+/// project-local lane refactor: 新 lane の配置先は `<repo_root>/.vp/lanes/<name>`。
+/// parent repo の `.gitignore` に `.vp/` を best-effort で追記して nested git clone を
+/// 隠蔽する。
 fn setup_wing(name: &str, branch: &str, repo_root: &Path, force: bool) -> Result<PathBuf, String> {
     config::validate_wing_name(name)?;
 
@@ -99,8 +98,6 @@ fn setup_wing(name: &str, branch: &str, repo_root: &Path, force: bool) -> Result
     let wings_dir = config::project_lanes_dir(repo_root);
     let wing_dir = wings_dir.join(name);
 
-    // Check existing wing (新 path のみ。 legacy global path との conflict は dual-read 経由で
-    // user に見える + 別 path なので衝突しない)
     if wing_dir.exists() {
         if !force {
             return Err(format!(
@@ -201,38 +198,19 @@ fn setup_wing(name: &str, branch: &str, repo_root: &Path, force: bool) -> Result
     Ok(wing_dir)
 }
 
-/// List all wing environments (dual-read: cwd repo の project-local + legacy global)。
+/// List all wing environments under cwd の `<repo>/.vp/lanes/`。
 ///
-/// project-local lane refactor PR 1: cwd が git repo の場合、 `<repo>/.vp/lanes/` を
-/// 先に列挙し、 続けて legacy global path も列挙する (= 移行期の overview)。
+/// project-local lane refactor PR 4b: legacy global path 列挙を削除、 cwd の repo
+/// の project-local のみ表示。 cwd が git repo でない場合は空出力 (= 既存挙動と同様)。
 pub fn list_wings() -> Result<(), String> {
-    // 1. cwd の project-local
-    if let Ok(repo_root) = config::find_repo_root() {
-        let pl_dir = config::project_lanes_dir(&repo_root);
-        if pl_dir.exists()
-            && let Ok(entries) = fs::read_dir(&pl_dir)
-        {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if !path.is_dir() {
-                    continue;
-                }
-                let name = entry.file_name();
-                let name = name.to_string_lossy();
-                let branch = get_branch(&path).unwrap_or_else(|| "-".to_string());
-                println!("{name}\t{branch}\t{}", path.display());
-            }
-        }
-    }
-
-    // 2. legacy global (PR 4 cleanup で削除予定)
-    let Ok(wings_dir) = config::wings_dir() else {
+    let Ok(repo_root) = config::find_repo_root() else {
         return Ok(());
     };
-    if !wings_dir.exists() {
+    let pl_dir = config::project_lanes_dir(&repo_root);
+    if !pl_dir.exists() {
         return Ok(());
     }
-    let entries = fs::read_dir(&wings_dir).map_err(|e| e.to_string())?;
+    let entries = fs::read_dir(&pl_dir).map_err(|e| e.to_string())?;
     for entry in entries.flatten() {
         let path = entry.path();
         if !path.is_dir() {
@@ -243,7 +221,6 @@ pub fn list_wings() -> Result<(), String> {
         let branch = get_branch(&path).unwrap_or_else(|| "-".to_string());
         println!("{name}\t{branch}\t{}", path.display());
     }
-
     Ok(())
 }
 
@@ -253,7 +230,7 @@ pub fn list_wings() -> Result<(), String> {
 /// in-memory LanePool に居ない Wing を `LaneState::Inactive` として merge する時の中間 type。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct InactiveWingEntry {
-    /// repo prefix を剥がした wing 名 (`<repo_name>-<name>` → `<name>`)
+    /// wing 名 (= `<repo>/.vp/lanes/<name>` の `<name>` 部分)
     pub name: String,
     /// 絶対 path
     pub path: String,
@@ -262,14 +239,10 @@ pub struct InactiveWingEntry {
     pub branch: Option<String>,
 }
 
-/// repo に紐づく Wing dir を disk scan して返す (SP /api/lanes 用)。
+/// repo に紐づく Wing dir を `<repo>/.vp/lanes/` から disk scan して返す (SP /api/lanes 用)。
 ///
-/// project-local lane refactor PR 1: `repo_name: &str` → `repo_root: &Path` に signature
-/// 変更し、 dual-read で両 path を列挙する:
-/// 1. `<repo_root>/.vp/lanes/<name>` (= 新 path、 prefix 不要)
-/// 2. `<wings_dir>/<repo_name>-<name>` (= legacy global path、 PR 4 cleanup で削除)
-///
-/// 重複時 (= 新旧両方に同名 dir): project-local 優先 (legacy 側を skip)。
+/// project-local lane refactor PR 4b: legacy global path scan + dedup logic を削除、
+/// project-local のみ列挙に simplify。
 ///
 /// 「基本は通らない防御パス」: 通常 lane clone は POST /api/lanes 経由で生成され、 同 session 内なら
 /// LanePool に登録されている。 ただし vp-app crash 後の残骸 / 別 session での `vp lane new` 等で
@@ -279,63 +252,18 @@ pub struct InactiveWingEntry {
 /// fail-soft (= 防御パスのため read error は空 Vec 扱い)。
 pub fn list_wings_for_repo(repo_root: &Path) -> Vec<InactiveWingEntry> {
     let mut out = Vec::new();
-    let mut seen_names: std::collections::HashSet<String> = std::collections::HashSet::new();
-
-    // 1. project-local: <repo>/.vp/lanes/<name>
     let pl_dir = config::project_lanes_dir(repo_root);
-    if let Ok(entries) = fs::read_dir(&pl_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.is_dir() {
-                continue;
-            }
-            let dir_name = entry.file_name();
-            let dir_name = dir_name.to_string_lossy().into_owned();
-            seen_names.insert(dir_name.clone());
-            out.push(InactiveWingEntry {
-                name: dir_name,
-                path: path.to_string_lossy().into_owned(),
-                branch: get_branch(&path),
-            });
-        }
-    }
-
-    // 2. legacy global: <wings_dir>/<repo_name>-<name> (PR 4 cleanup で削除予定)
-    let Some(repo_name) = repo_root.file_name().and_then(|n| n.to_str()) else {
+    let Ok(entries) = fs::read_dir(&pl_dir) else {
         return out;
     };
-    if repo_name.is_empty() {
-        return out;
-    }
-    let Ok(wings_dir) = config::wings_dir() else {
-        return out;
-    };
-    if !wings_dir.exists() {
-        return out;
-    }
-    let Ok(entries) = fs::read_dir(&wings_dir) else {
-        return out;
-    };
-    let prefix = format!("{repo_name}-");
     for entry in entries.flatten() {
         let path = entry.path();
         if !path.is_dir() {
             continue;
         }
         let dir_name = entry.file_name();
-        let dir_name = dir_name.to_string_lossy();
-        let Some(stripped) = dir_name.strip_prefix(&prefix) else {
-            continue;
-        };
-        if stripped.is_empty() {
-            continue;
-        }
-        // 新 path 側に同名 lane があれば legacy は skip (project-local 優先)
-        if seen_names.contains(stripped) {
-            continue;
-        }
         out.push(InactiveWingEntry {
-            name: stripped.to_string(),
+            name: dir_name.to_string_lossy().into_owned(),
             path: path.to_string_lossy().into_owned(),
             branch: get_branch(&path),
         });
@@ -343,53 +271,37 @@ pub fn list_wings_for_repo(repo_root: &Path) -> Vec<InactiveWingEntry> {
     out
 }
 
-/// Print the path to a wing (dual-read: project-local 優先、 legacy global fallback)。
+/// Print the path to a wing。
+///
+/// project-local lane refactor PR 4b: legacy global path fallback 削除、 cwd の repo
+/// の `<repo>/.vp/lanes/<name>` のみ lookup。 cwd が git repo でない場合は error。
 pub fn wing_path(name: &str) -> Result<(), String> {
-    // cwd の repo を起点に dual-read
-    if let Ok(repo_root) = config::find_repo_root()
-        && let Some(found) = find_wing_dir_dual(&repo_root, name)
-    {
-        println!("{}", found.display());
-        return Ok(());
-    }
-    // cwd が git repo でない場合: legacy global path のみ ad-hoc lookup
-    if let Ok(wings_dir) = config::wings_dir() {
-        let direct = wings_dir.join(name);
-        if direct.is_dir() {
-            println!("{}", direct.display());
-            return Ok(());
-        }
-    }
-    Err(format!(
-        "ウィング '{name}' が見つかりません。`vp lane ls` で一覧を確認してください。"
-    ))
+    let repo_root = config::find_repo_root().map_err(|e| e.to_string())?;
+    let Some(found) = find_wing_dir(&repo_root, name) else {
+        return Err(format!(
+            "ウィング '{name}' が見つかりません。`vp lane ls` で一覧を確認してください。"
+        ));
+    };
+    println!("{}", found.display());
+    Ok(())
 }
 
-/// Remove a wing environment (dual-read: project-local 優先、 legacy global fallback)。
+/// Remove a wing environment。
+///
+/// project-local lane refactor PR 4b: legacy global path fallback 削除、 cwd の repo
+/// の `<repo>/.vp/lanes/<name>` のみ対象。 cwd が git repo でない場合は error。
 pub fn remove_wing(name: Option<&str>, all: bool, force: bool) -> Result<(), String> {
+    let repo_root = config::find_repo_root().map_err(|e| e.to_string())?;
+    let pl_dir = config::project_lanes_dir(&repo_root);
+
     if all {
         if !force {
             return Err("--all には --force が必要です（誤削除防止）".into());
         }
-        let mut removed_any = false;
-        // 1. cwd の project-local 全削除
-        if let Ok(repo_root) = config::find_repo_root() {
-            let pl_dir = config::project_lanes_dir(&repo_root);
-            if pl_dir.exists() {
-                fs::remove_dir_all(&pl_dir).map_err(|e| e.to_string())?;
-                eprintln!("project-local ウィング全削除: {}", pl_dir.display());
-                removed_any = true;
-            }
-        }
-        // 2. legacy global 全削除 (PR 4 cleanup で削除予定)
-        if let Ok(wings_dir) = config::wings_dir()
-            && wings_dir.exists()
-        {
-            fs::remove_dir_all(&wings_dir).map_err(|e| e.to_string())?;
-            eprintln!("legacy global ウィング全削除: {}", wings_dir.display());
-            removed_any = true;
-        }
-        if !removed_any {
+        if pl_dir.exists() {
+            fs::remove_dir_all(&pl_dir).map_err(|e| e.to_string())?;
+            eprintln!("project-local ウィング全削除: {}", pl_dir.display());
+        } else {
             eprintln!("削除対象のウィングはありませんでした");
         }
         return Ok(());
@@ -398,16 +310,7 @@ pub fn remove_wing(name: Option<&str>, all: bool, force: bool) -> Result<(), Str
     let name = name.ok_or("ウィング名を指定するか --all --force を使用してください")?;
     config::validate_wing_name(name)?;
 
-    // dual-read で発見した path を削除 (cwd が git repo でなければ legacy のみ)
-    let found = if let Ok(repo_root) = config::find_repo_root() {
-        find_wing_dir_dual(&repo_root, name)
-    } else if let Ok(wings_dir) = config::wings_dir() {
-        let direct = wings_dir.join(name);
-        if direct.is_dir() { Some(direct) } else { None }
-    } else {
-        None
-    };
-    let Some(wing_dir) = found else {
+    let Some(wing_dir) = find_wing_dir(&repo_root, name) else {
         return Err(format!(
             "ウィング '{name}' が見つかりません。`vp lane ls` で一覧を確認してください。"
         ));
@@ -417,11 +320,12 @@ pub fn remove_wing(name: Option<&str>, all: bool, force: bool) -> Result<(), Str
     Ok(())
 }
 
-/// Show status of all wing environments (dual-read: cwd repo の project-local + legacy global)。
+/// Show status of all wing environments under cwd の `<repo>/.vp/lanes/`。
+///
+/// project-local lane refactor PR 4b: legacy global block 削除、 project-local 一本に。
 pub fn status_wings() -> Result<(), String> {
     let mut found = false;
 
-    // 1. cwd の project-local
     if let Ok(repo_root) = config::find_repo_root() {
         let pl_dir = config::project_lanes_dir(&repo_root);
         if pl_dir.exists()
@@ -438,21 +342,6 @@ pub fn status_wings() -> Result<(), String> {
         }
     }
 
-    // 2. legacy global
-    if let Ok(wings_dir) = config::wings_dir()
-        && wings_dir.exists()
-        && let Ok(entries) = fs::read_dir(&wings_dir)
-    {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.is_dir() || !path.join(".git").exists() {
-                continue;
-            }
-            found = true;
-            print_wing_status_row(&path, &entry.file_name().to_string_lossy());
-        }
-    }
-
     if !found {
         eprintln!("ウィングはありません。`vp lane new <name> <branch>` で作成できます。");
     }
@@ -460,12 +349,13 @@ pub fn status_wings() -> Result<(), String> {
     Ok(())
 }
 
-/// Remove wings whose branch is merged into main (dual-read 両 path 対象)
+/// Remove wings whose branch is merged into main (cwd の `<repo>/.vp/lanes/` 対象)。
+///
+/// project-local lane refactor PR 4b: legacy global block 削除、 project-local 一本に。
 pub fn cleanup_wings(force: bool) -> Result<(), String> {
     let mut to_remove: Vec<(String, std::path::PathBuf)> = Vec::new();
     let mut kept: Vec<(String, String)> = Vec::new();
 
-    // 1. cwd の project-local
     if let Ok(repo_root) = config::find_repo_root() {
         let pl_dir = config::project_lanes_dir(&repo_root);
         if pl_dir.exists()
@@ -474,16 +364,6 @@ pub fn cleanup_wings(force: bool) -> Result<(), String> {
             for entry in entries.flatten() {
                 classify_wing_for_cleanup(entry, &mut to_remove, &mut kept);
             }
-        }
-    }
-
-    // 2. legacy global
-    if let Ok(wings_dir) = config::wings_dir()
-        && wings_dir.exists()
-        && let Ok(entries) = fs::read_dir(&wings_dir)
-    {
-        for entry in entries.flatten() {
-            classify_wing_for_cleanup(entry, &mut to_remove, &mut kept);
         }
     }
 
@@ -520,7 +400,7 @@ pub fn cleanup_wings(force: bool) -> Result<(), String> {
     Ok(())
 }
 
-/// `status_wings` 内の 1 wing 行表示 helper (project-local / legacy 両 path で共有)
+/// `status_wings` 内の 1 wing 行表示 helper
 fn print_wing_status_row(path: &Path, name: &str) {
     let branch = get_branch(path).unwrap_or_else(|| "-".to_string());
     let changes = count_changes(path);
@@ -534,7 +414,7 @@ fn print_wing_status_row(path: &Path, name: &str) {
     println!("{name}\t{branch}\t{changes_str}\t{ahead_behind}\t{last_commit}");
 }
 
-/// `cleanup_wings` 内の 1 wing 分類 helper (project-local / legacy 両 path で共有)
+/// `cleanup_wings` 内の 1 wing 分類 helper
 fn classify_wing_for_cleanup(
     entry: fs::DirEntry,
     to_remove: &mut Vec<(String, std::path::PathBuf)>,
@@ -559,27 +439,14 @@ fn classify_wing_for_cleanup(
     }
 }
 
-/// dual-read で wing dir を解決する: project-local 優先、 legacy global 2 form (直 / `<repo>-<name>` prefix) fallback。
+/// `<repo>/.vp/lanes/<name>` の wing dir を返す。 dir 不在なら None。
 ///
-/// project-local lane refactor PR 1: lane の lookup を 1 箇所に集約。 wing_path / remove_wing / remove_wing_in が共有。
-fn find_wing_dir_dual(repo_root: &Path, name: &str) -> Option<PathBuf> {
-    // 1. project-local: <repo>/.vp/lanes/<name>
-    let project_local = config::project_lanes_dir(repo_root).join(name);
-    if project_local.is_dir() {
-        return Some(project_local);
-    }
-    // 2. legacy global path (PR 4 で削除予定)
-    let wings_dir = config::wings_dir().ok()?;
-    let direct = wings_dir.join(name);
-    if direct.is_dir() {
-        return Some(direct);
-    }
-    let repo_name = repo_root.file_name().and_then(|n| n.to_str())?;
-    let prefixed = wings_dir.join(format!("{repo_name}-{name}"));
-    if prefixed.is_dir() {
-        return Some(prefixed);
-    }
-    None
+/// project-local lane refactor PR 4b: PR 1 で導入した `find_wing_dir_dual` の legacy
+/// global path fallback (= step 2/3) を削除し、 project-local 一本に simplify。
+/// wing_path / remove_wing / remove_wing_in が共有。
+fn find_wing_dir(repo_root: &Path, name: &str) -> Option<PathBuf> {
+    let dir = config::project_lanes_dir(repo_root).join(name);
+    if dir.is_dir() { Some(dir) } else { None }
 }
 
 // --- helpers ---
@@ -1141,186 +1008,62 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
     }
 
-    // --- find_wing_dir_dual (project-local lane refactor PR 1) ---
+    // --- find_wing_dir (project-local lane refactor PR 4b: legacy global path 撤去) ---
 
-    /// 共通 fixture: temp 領域に偽 repo + project-local lane dir を作る (.git なし、 dir 検出のみ)
-    fn setup_dual_fixture(slug: &str) -> (PathBuf, PathBuf) {
-        let repo = test_dir(&format!("dual-{slug}"));
+    /// 共通 fixture: temp 領域に偽 repo + project-local lane dir (.vp/lanes/) を作る。
+    fn setup_pl_fixture(slug: &str) -> (PathBuf, PathBuf) {
+        let repo = test_dir(&format!("pl-{slug}"));
         let pl = repo.join(".vp").join("lanes");
         fs::create_dir_all(&pl).unwrap();
         (repo, pl)
     }
 
     #[test]
-    #[serial_test::serial(vp_lanes_env)]
-    fn find_wing_dir_dual_prefers_project_local() {
-        // 同名 lane が新旧両 path に居れば project-local を返す
-        let (repo, pl) = setup_dual_fixture("prefer-pl");
-        let pl_wing = pl.join("foo");
-        fs::create_dir_all(&pl_wing).unwrap();
+    fn find_wing_dir_returns_project_local() {
+        let (repo, pl) = setup_pl_fixture("found");
+        let wing = pl.join("foo");
+        fs::create_dir_all(&wing).unwrap();
 
-        // legacy global path にも同名 (`<repo>-foo`) を仕込む
-        let global = test_dir("dual-prefer-pl-global");
-        fs::create_dir_all(&global).unwrap();
-        let repo_name = repo.file_name().unwrap().to_string_lossy().into_owned();
-        let legacy_wing = global.join(format!("{repo_name}-foo"));
-        fs::create_dir_all(&legacy_wing).unwrap();
-        // SAFETY: テストプロセス内シングルスレッドで env を握る。 並列テスト同士の干渉は test_dir
-        // の unique slug + 各 test が serial に env を上書きするため許容。
-        unsafe {
-            std::env::set_var("VP_LANES_DIR", &global);
-        }
+        let resolved = find_wing_dir(&repo, "foo");
+        assert_eq!(resolved.as_deref(), Some(wing.as_path()));
 
-        let resolved = find_wing_dir_dual(&repo, "foo");
-        assert_eq!(resolved.as_deref(), Some(pl_wing.as_path()));
-
-        unsafe {
-            std::env::remove_var("VP_LANES_DIR");
-        }
         let _ = fs::remove_dir_all(&repo);
-        let _ = fs::remove_dir_all(&global);
     }
 
     #[test]
-    #[serial_test::serial(vp_lanes_env)]
-    fn find_wing_dir_dual_falls_back_to_legacy_direct() {
-        // project-local に無い + legacy global の直 dir に居る場合
-        let (repo, _pl) = setup_dual_fixture("legacy-direct");
-        let global = test_dir("dual-legacy-direct-global");
-        fs::create_dir_all(&global).unwrap();
-        let legacy_wing = global.join("bar"); // prefix なしの直 dir
-        fs::create_dir_all(&legacy_wing).unwrap();
-        unsafe {
-            std::env::set_var("VP_LANES_DIR", &global);
-        }
-
-        let resolved = find_wing_dir_dual(&repo, "bar");
-        assert_eq!(resolved.as_deref(), Some(legacy_wing.as_path()));
-
-        unsafe {
-            std::env::remove_var("VP_LANES_DIR");
-        }
-        let _ = fs::remove_dir_all(&repo);
-        let _ = fs::remove_dir_all(&global);
-    }
-
-    #[test]
-    #[serial_test::serial(vp_lanes_env)]
-    fn find_wing_dir_dual_falls_back_to_legacy_prefixed() {
-        // project-local に無い + legacy direct に無い + legacy prefix にある
-        let (repo, _pl) = setup_dual_fixture("legacy-prefix");
-        let global = test_dir("dual-legacy-prefix-global");
-        fs::create_dir_all(&global).unwrap();
-        let repo_name = repo.file_name().unwrap().to_string_lossy().into_owned();
-        let legacy_wing = global.join(format!("{repo_name}-baz"));
-        fs::create_dir_all(&legacy_wing).unwrap();
-        unsafe {
-            std::env::set_var("VP_LANES_DIR", &global);
-        }
-
-        let resolved = find_wing_dir_dual(&repo, "baz");
-        assert_eq!(resolved.as_deref(), Some(legacy_wing.as_path()));
-
-        unsafe {
-            std::env::remove_var("VP_LANES_DIR");
-        }
-        let _ = fs::remove_dir_all(&repo);
-        let _ = fs::remove_dir_all(&global);
-    }
-
-    #[test]
-    #[serial_test::serial(vp_lanes_env)]
-    fn find_wing_dir_dual_returns_none_when_nowhere() {
-        let (repo, _pl) = setup_dual_fixture("none");
-        let global = test_dir("dual-none-global");
-        fs::create_dir_all(&global).unwrap();
-        unsafe {
-            std::env::set_var("VP_LANES_DIR", &global);
-        }
-
-        let resolved = find_wing_dir_dual(&repo, "missing");
+    fn find_wing_dir_returns_none_when_missing() {
+        let (repo, _pl) = setup_pl_fixture("missing");
+        let resolved = find_wing_dir(&repo, "absent");
         assert!(resolved.is_none());
-
-        unsafe {
-            std::env::remove_var("VP_LANES_DIR");
-        }
         let _ = fs::remove_dir_all(&repo);
-        let _ = fs::remove_dir_all(&global);
     }
 
-    // --- list_wings_for_repo (dual-read 後の挙動) ---
+    // --- list_wings_for_repo (PR 4b: project-local 一本) ---
 
     #[test]
-    #[serial_test::serial(vp_lanes_env)]
-    fn list_wings_for_repo_lists_both_paths_with_dedup() {
-        let (repo, pl) = setup_dual_fixture("list-both");
-        // project-local: foo (with .git for branch detect)
+    fn list_wings_for_repo_lists_project_local_only() {
+        let (repo, pl) = setup_pl_fixture("list");
         fs::create_dir_all(pl.join("foo").join(".git")).unwrap();
-        // project-local: shared (同名で legacy 側にも置く → project-local 優先)
-        fs::create_dir_all(pl.join("shared").join(".git")).unwrap();
-
-        let global = test_dir("dual-list-both-global");
-        fs::create_dir_all(&global).unwrap();
-        let repo_name = repo.file_name().unwrap().to_string_lossy().into_owned();
-        // legacy: <repo>-bar + <repo>-shared (shared は project-local 側が勝つ)
-        fs::create_dir_all(global.join(format!("{repo_name}-bar"))).unwrap();
-        fs::create_dir_all(global.join(format!("{repo_name}-shared"))).unwrap();
-        // 関係ない repo の lane は出ない
-        fs::create_dir_all(global.join("other-repo-baz")).unwrap();
-        unsafe {
-            std::env::set_var("VP_LANES_DIR", &global);
-        }
+        fs::create_dir_all(pl.join("bar").join(".git")).unwrap();
 
         let mut listed: Vec<String> = list_wings_for_repo(&repo)
             .into_iter()
             .map(|e| e.name)
             .collect();
         listed.sort();
-        assert_eq!(listed, vec!["bar", "foo", "shared"]);
+        assert_eq!(listed, vec!["bar", "foo"]);
 
-        // shared の path は project-local 側であること
-        let shared = list_wings_for_repo(&repo)
-            .into_iter()
-            .find(|e| e.name == "shared")
-            .expect("shared が出ない");
-        assert!(
-            shared.path.contains("/.vp/lanes/shared"),
-            "shared は project-local が勝つべき: {}",
-            shared.path
-        );
-
-        unsafe {
-            std::env::remove_var("VP_LANES_DIR");
-        }
         let _ = fs::remove_dir_all(&repo);
-        let _ = fs::remove_dir_all(&global);
     }
 
     #[test]
-    #[serial_test::serial(vp_lanes_env)]
-    fn list_wings_for_repo_handles_missing_project_local_dir() {
-        // <repo>/.vp/lanes が存在しなくても legacy global は読める
+    fn list_wings_for_repo_returns_empty_when_dir_missing() {
+        // <repo>/.vp/lanes が無い場合は空 Vec (= read error は fail-soft)
         let repo = test_dir("list-no-pl");
         fs::create_dir_all(&repo).unwrap();
-        let global = test_dir("list-no-pl-global");
-        fs::create_dir_all(&global).unwrap();
-        let repo_name = repo.file_name().unwrap().to_string_lossy().into_owned();
-        fs::create_dir_all(global.join(format!("{repo_name}-only-legacy"))).unwrap();
-        unsafe {
-            std::env::set_var("VP_LANES_DIR", &global);
-        }
-
-        let listed: Vec<String> = list_wings_for_repo(&repo)
-            .into_iter()
-            .map(|e| e.name)
-            .collect();
-        assert_eq!(listed, vec!["only-legacy"]);
-
-        unsafe {
-            std::env::remove_var("VP_LANES_DIR");
-        }
+        let listed = list_wings_for_repo(&repo);
+        assert!(listed.is_empty());
         let _ = fs::remove_dir_all(&repo);
-        let _ = fs::remove_dir_all(&global);
     }
 
     #[test]
