@@ -116,31 +116,15 @@ async fn run_tui_console(session_name: &str) -> Result<()> {
             .split(frame.area());
 
             // ヘッダー（ロール + セッション名 — ステータスは NSView 側に委譲）
-            // セッション名パターンで Lead/Worker を判定:
+            // session name パターンで Lead/Wing を判定:
             //   {project}-vp → proj-lead
-            //   {project}-{id}-vp → proj-worker
-            let role_label = {
-                let without_vp = session_name.strip_suffix("-vp").unwrap_or(session_name);
-                // config のプロジェクト名と一致すれば Lead、それ以外は Worker
-                // 簡易判定: ハイフン分割で最後のセグメントがプロジェクト名でなければ Worker
-                if without_vp.contains('-') {
-                    // lane ウィング名は {parent}-{wing} 形式 (legacy global path 規約)
-                    // ただし vantage-point のようにプロジェクト名自体にハイフンが含まれる場合もある
-                    // tmux セッション名が lane ディレクトリ名ベースかどうかで判定
-                    let lane_dir = crate::lane::config::wings_dir()
-                        .ok()
-                        .map(|d| d.join(without_vp))
-                        .unwrap_or_default();
-                    if lane_dir.is_dir() {
-                        " proj-worker "
-                    } else {
-                        " proj-lead "
-                    }
-                } else {
-                    " proj-lead "
-                }
-            };
-            let (role_fg, role_bg) = if role_label.contains("worker") {
+            //   {project}-{id}-vp → proj-wing
+            //
+            // project-local lane refactor PR 4d: 旧 legacy global path lookup
+            // (`wings_dir().join(<flat-name>).is_dir()`) を撤去し、 `config.projects` に
+            // longest-prefix match + project-local `<repo>/.vp/lanes/<wing>` 存在 check に。
+            let role_label = detect_tui_role_label(session_name);
+            let (role_fg, role_bg) = if role_label.contains("wing") {
                 (Color::Rgb(11, 17, 32), Color::Rgb(163, 190, 140)) // 緑系
             } else {
                 (Color::Rgb(11, 17, 32), Color::Rgb(136, 192, 208)) // 青系
@@ -340,10 +324,147 @@ fn mouse_to_sgr(mouse: &crossterm::event::MouseEvent) -> String {
     }
 }
 
+/// session_name から role label (`" proj-lead "` or `" proj-wing "`) を判定する。
+///
+/// project-local lane refactor PR 4d で legacy `wings_dir()` lookup を撤去し、
+/// `config.projects` への longest-prefix match + `<repo>/.vp/lanes/<wing>` 存在 check
+/// に切替。 失敗時は安全側で `" proj-lead "` (= 既存挙動)。
+fn detect_tui_role_label(session_name: &str) -> &'static str {
+    let without_vp = session_name.strip_suffix("-vp").unwrap_or(session_name);
+    // ハイフン無しは確実に project 名そのもの → Lead
+    if !without_vp.contains('-') {
+        return " proj-lead ";
+    }
+    let Ok(config) = crate::config::Config::load() else {
+        return " proj-lead ";
+    };
+    if is_project_local_wing(without_vp, &config.projects, |p| p.is_dir()) {
+        " proj-wing "
+    } else {
+        " proj-lead "
+    }
+}
+
+/// pure: session 名 body (= `-vp` 剥がし済) が project-local wing として実在するか判定。
+///
+/// `projects` から `body` に matching する longest prefix の project を探し、
+/// wing 名 (= body の prefix 剥がし残り) で `<project_path>/.vp/lanes/<wing>` を構築。
+/// `dir_exists` callback でその dir が実在するかを判定 (= test で mock 可能)。
+///
+/// 戻り値: true if project-local wing として実在、 false otherwise (= Lead 扱い)。
+fn is_project_local_wing(
+    body: &str,
+    projects: &[crate::config::ProjectConfig],
+    dir_exists: impl Fn(&std::path::Path) -> bool,
+) -> bool {
+    let Some(parent) = projects
+        .iter()
+        .filter(|p| body.starts_with(&format!("{}-", p.name)))
+        .max_by_key(|p| p.name.len())
+    else {
+        return false;
+    };
+    let Some(wing_name) = body.strip_prefix(&format!("{}-", parent.name)) else {
+        return false;
+    };
+    if wing_name.is_empty() {
+        return false;
+    }
+    let wing_dir = std::path::PathBuf::from(&parent.path)
+        .join(".vp")
+        .join("lanes")
+        .join(wing_name);
+    dir_exists(&wing_dir)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+
+    // --- is_project_local_wing (project-local lane refactor PR 4d) ---
+
+    fn make_project(name: &str, path: &str) -> crate::config::ProjectConfig {
+        crate::config::ProjectConfig {
+            name: name.to_string(),
+            path: path.to_string(),
+            port: None,
+            enabled: true,
+            slot: None,
+        }
+    }
+
+    #[test]
+    fn is_pl_wing_happy_path() {
+        let projects = vec![make_project(
+            "creo-memories",
+            "/Users/makoto/repos/creo-memories",
+        )];
+        let exists = |p: &std::path::Path| {
+            p == std::path::Path::new("/Users/makoto/repos/creo-memories/.vp/lanes/or-integration")
+        };
+        assert!(is_project_local_wing(
+            "creo-memories-or-integration",
+            &projects,
+            exists
+        ));
+    }
+
+    #[test]
+    fn is_pl_wing_returns_false_when_dir_missing() {
+        let projects = vec![make_project(
+            "creo-memories",
+            "/Users/makoto/repos/creo-memories",
+        )];
+        let exists = |_: &std::path::Path| false; // 全ての dir 不在
+        assert!(!is_project_local_wing(
+            "creo-memories-or-integration",
+            &projects,
+            exists
+        ));
+    }
+
+    #[test]
+    fn is_pl_wing_uses_longest_prefix_match() {
+        // project 名にハイフン含む: "vp" と "vantage-point" 両方 match する body に対し、
+        // longest = "vantage-point" を採用すべき
+        let projects = vec![
+            make_project("vp", "/vp"),
+            make_project("vantage-point", "/vantage-point"),
+        ];
+        let exists =
+            |p: &std::path::Path| p == std::path::Path::new("/vantage-point/.vp/lanes/keystage");
+        assert!(is_project_local_wing(
+            "vantage-point-keystage",
+            &projects,
+            exists
+        ));
+    }
+
+    #[test]
+    fn is_pl_wing_returns_false_for_pure_project_name() {
+        // body = project 名そのもの (= lead context) は wing として match しない
+        let projects = vec![make_project("vp", "/vp")];
+        let exists = |_: &std::path::Path| true;
+        // "vp" は "vp-" prefix に match しないので false
+        assert!(!is_project_local_wing("vp", &projects, exists));
+    }
+
+    #[test]
+    fn is_pl_wing_returns_false_when_no_project_matches() {
+        // body の prefix にどの project 名も match しない
+        let projects = vec![make_project("foo", "/foo")];
+        let exists = |_: &std::path::Path| true;
+        assert!(!is_project_local_wing("bar-baz", &projects, exists));
+    }
+
+    #[test]
+    fn is_pl_wing_returns_false_for_empty_wing_name() {
+        // body = "<project>-" (= prefix だけで wing 名空) は false
+        let projects = vec![make_project("vp", "/vp")];
+        let exists = |_: &std::path::Path| true;
+        assert!(!is_project_local_wing("vp-", &projects, exists));
+    }
 
     /// テスト用ヘルパー: MouseEvent を生成
     fn make_mouse(kind: MouseEventKind, col: u16, row: u16) -> MouseEvent {
