@@ -1886,9 +1886,8 @@ mod tests {
             "creo-memories",
             "/Users/makoto/repos/creo-memories",
         )]);
-        let path = std::path::Path::new(
-            "/Users/makoto/repos/creo-memories/.vp/lanes/or-integration",
-        );
+        let path =
+            std::path::Path::new("/Users/makoto/repos/creo-memories/.vp/lanes/or-integration");
         let resolved = resolve_lane_event(path, &map);
         assert_eq!(
             resolved,
@@ -1916,11 +1915,7 @@ mod tests {
     fn resolve_lane_event_skips_dotfile_wing_name() {
         // `.git` や `.DS_Store` の Remove event (lane dir 内部からの伝播) を skip。
         // NonRecursive watch で arrive する可能性は低いが防御で。
-        let map = make_path_map(&[(
-            "/repo/.vp/lanes",
-            "repo",
-            "/repo",
-        )]);
+        let map = make_path_map(&[("/repo/.vp/lanes", "repo", "/repo")]);
         let path = std::path::Path::new("/repo/.vp/lanes/.DS_Store");
         assert_eq!(resolve_lane_event(path, &map), None);
     }
@@ -1943,7 +1938,11 @@ mod tests {
         let resolved = resolve_lane_event(path_b, &map);
         assert_eq!(
             resolved,
-            Some(("repo-b".to_string(), "/repo-b".to_string(), "wing-x".to_string()))
+            Some((
+                "repo-b".to_string(),
+                "/repo-b".to_string(),
+                "wing-x".to_string()
+            ))
         );
     }
 
