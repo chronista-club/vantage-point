@@ -124,7 +124,7 @@ async fn run_tui_console(session_name: &str) -> Result<()> {
                 // config のプロジェクト名と一致すれば Lead、それ以外は Worker
                 // 簡易判定: ハイフン分割で最後のセグメントがプロジェクト名でなければ Worker
                 if without_vp.contains('-') {
-                    // lane ワーカー名は {parent}-{worker} 形式
+                    // lane ウィング名は {parent}-{wing} 形式 (legacy global path 規約)
                     // ただし vantage-point のようにプロジェクト名自体にハイフンが含まれる場合もある
                     // tmux セッション名が lane ディレクトリ名ベースかどうかで判定
                     let lane_dir = crate::lane::config::wings_dir()
