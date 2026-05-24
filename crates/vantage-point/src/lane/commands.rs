@@ -588,22 +588,6 @@ fn find_wing_dir_dual(repo_root: &Path, name: &str) -> Option<PathBuf> {
 
 // --- helpers ---
 
-/// Apply repo name prefix to wing name, avoiding double-prefixing.
-/// e.g. ("issue-42", "nexus") → "nexus-issue-42"
-///      ("nexus-issue-42", "nexus") → "nexus-issue-42"
-///
-/// project-local lane refactor PR 1: setup_wing 内 prefix 不要化で production 経路から外れた。
-/// PR 2 (`SelfLane::detect` / wire address resolve 更新) で legacy global path 関連 logic と
-/// まとめて削除予定 (PR 1 cleanup 範囲外、 test fixture のみ参照中)。
-#[allow(dead_code)]
-pub(crate) fn apply_repo_prefix(name: &str, repo_name: &str) -> String {
-    if !repo_name.is_empty() && !name.starts_with(&format!("{repo_name}-")) {
-        format!("{repo_name}-{name}")
-    } else {
-        name.to_string()
-    }
-}
-
 /// Capture uncommitted changes (staged + unstaged + untracked) as a combined diff.
 /// Returns None if there are no changes.
 fn capture_dirty_diff(repo_root: &Path) -> Result<Option<String>, String> {
@@ -956,40 +940,6 @@ mod tests {
             .current_dir(dir)
             .output()
             .unwrap();
-    }
-
-    // --- apply_repo_prefix ---
-
-    #[test]
-    fn prefix_added_when_missing() {
-        assert_eq!(apply_repo_prefix("issue-42", "nexus"), "nexus-issue-42");
-    }
-
-    #[test]
-    fn prefix_not_doubled() {
-        assert_eq!(
-            apply_repo_prefix("nexus-issue-42", "nexus"),
-            "nexus-issue-42"
-        );
-    }
-
-    #[test]
-    fn prefix_empty_repo_name() {
-        assert_eq!(apply_repo_prefix("issue-42", ""), "issue-42");
-    }
-
-    #[test]
-    fn prefix_exact_repo_name_without_dash() {
-        // "nexus" != "nexus-" prefix, so it gets prefixed
-        assert_eq!(apply_repo_prefix("nexus", "nexus"), "nexus-nexus");
-    }
-
-    #[test]
-    fn prefix_partial_match_not_confused() {
-        // "nexus-pro" starts with "nexus-" so no double prefix
-        assert_eq!(apply_repo_prefix("nexus-pro", "nexus"), "nexus-pro");
-        // "nexuspro" does NOT start with "nexus-" so it gets prefixed
-        assert_eq!(apply_repo_prefix("nexuspro", "nexus"), "nexus-nexuspro");
     }
 
     // --- capture_dirty_diff ---
