@@ -47,17 +47,18 @@ pub struct LanesResponse {
     pub lanes: Vec<LaneInfo>,
 }
 
-/// `GET /api/lanes` — Lane list を返す
+/// SP の全 Lane snapshot を build する (LanePool + disk-scan Inactive Wing merge)。
 ///
-/// Phase A4-2b: Lead Lane が 1 つ pre-populate されてる状態を返却。
+/// HTTP `GET /api/lanes` と QUIC `lanes_snapshot` 両 publish 経路で **同一 logic**
+/// を共有するための helper。 project-local lane refactor PR 1 で `vp lane new` が
+/// disk-only wing を作るようになったので、 LanePool だけ見ると user 視点で「いるのに
+/// 見えない」 wing が発生する。 disk-scan で `pid: None` Inactive として merge する。
+///
 /// Phase 5-D: Worker Lane に対しては `cwd` から git 状態 (`WingStatus`) を populate。
-/// registry には保存せず、 GET 時に都度 `wing_status()` を呼ぶ (volatile + 5-7 git subprocess)。
-///
-/// Phase 5-E: in-memory LanePool に居ない lane Worker dir も disk scan で merge して `pid: None` で
-/// emit (Pane 不在を pid で表現、 LaneState には変更を加えない)。 防御パスのため fail-soft。
-/// Active/Inactive は Project 集約として client (sidebar) 側で `lanes.every(pid != null)` で判定する設計。
-/// CURRENTS Project (= SP 起動中) のみが /api/lanes に応答するので、 disk scan 対象が自動 enforce される。
-pub async fn list_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+/// registry には保存せず、 build 時に都度 `wing_status()` を呼ぶ (volatile + 5-7 git subprocess)。
+/// Phase 5-E: LanePool に居ない lane Worker dir も disk scan で merge して `pid: None` で emit。
+/// Active/Inactive は client 側で `lane.pid != null` で判定する設計。
+pub async fn build_lanes_snapshot(state: &AppState) -> Vec<LaneInfo> {
     let pool = state.lane_pool.read().await;
     let mut lanes = pool.list();
     drop(pool); // git subprocess 中の lock を保たない (wing_status は数 100ms かかる事あり)
@@ -120,6 +121,15 @@ pub async fn list_handler(State(state): State<Arc<AppState>>) -> impl IntoRespon
         }
     }
 
+    lanes
+}
+
+/// `GET /api/lanes` — Lane list を返す
+///
+/// 実 logic は [`build_lanes_snapshot`] に集約 (QUIC lanes_snapshot publish 経路と共有)。
+/// CURRENTS Project (= SP 起動中) のみが /api/lanes に応答するので、 disk scan 対象が自動 enforce される。
+pub async fn list_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let lanes = build_lanes_snapshot(&state).await;
     Json(LanesResponse { lanes })
 }
 

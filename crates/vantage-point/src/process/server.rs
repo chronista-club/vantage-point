@@ -583,24 +583,42 @@ pub async fn run(
     // subscribe）不在でも no-op で安全。設計: creo-memories mem_1CbA198fsHJsoKpu2jDUCv。
     {
         let mut sys_rx = state.system_event_tx.subscribe();
-        let lane_pool = state.lane_pool.clone();
+        let state_for_pub = state.clone();
         let hub = state.hub.clone();
         let shutdown = shutdown_token.clone();
         // 起動直後の現 snapshot を 1 度 publish して retained を seed する
         // （Lead Lane は既に pre-populate 済）。
+        // project-local lane refactor PR 1: build_lanes_snapshot で disk-scan Inactive Wing
+        // も含める (= HTTP /api/lanes と同一 logic、 sidebar QUIC 経路でも Inactive 表示)。
         hub.broadcast(crate::protocol::ProcessMessage::LanesSnapshot {
-            lanes: state.lane_pool.read().await.list(),
+            lanes: super::routes::lanes::build_lanes_snapshot(&state_for_pub).await,
         });
         tokio::spawn(async move {
             use super::lanes_state::SystemEvent;
             use tokio::sync::broadcast::error::RecvError;
+            // project-local lane refactor PR 1: CLI `vp lane new` は SystemEvent::Lane を
+            // fire しない (= 直 fs op、 SP 経由しない)。 disk-only wing を sidebar に届ける
+            // safety net として 5s periodic tick で snapshot 再 publish する。
+            // (FSEvents-based lane watcher の project-local 拡張は後 PR の範囲)
+            let mut periodic = tokio::time::interval(std::time::Duration::from_secs(5));
+            periodic.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 tokio::select! {
                     _ = shutdown.cancelled() => break,
+                    _ = periodic.tick() => {
+                        let lanes = super::routes::lanes::build_lanes_snapshot(
+                            &state_for_pub,
+                        ).await;
+                        hub.broadcast(
+                            crate::protocol::ProcessMessage::LanesSnapshot { lanes },
+                        );
+                    }
                     ev = sys_rx.recv() => match ev {
                         // Lane lifecycle 変化 / lag → 現 snapshot を全量 publish（idempotent）
                         Ok(SystemEvent::Lane(_)) | Err(RecvError::Lagged(_)) => {
-                            let lanes = lane_pool.read().await.list();
+                            let lanes = super::routes::lanes::build_lanes_snapshot(
+                                &state_for_pub,
+                            ).await;
                             hub.broadcast(
                                 crate::protocol::ProcessMessage::LanesSnapshot { lanes },
                             );
