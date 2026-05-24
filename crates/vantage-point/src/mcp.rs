@@ -396,9 +396,15 @@ pub struct TmuxAgentSendParams {
 ///
 /// この `vp mcp` プロセスが属する Lane (VP-166 PR-4)。
 ///
-/// cwd から判定する: cwd が `vp_data_dir()/lanes/<parent>-<name>` なら wing `<name>`、
+/// cwd から判定する: cwd が `<repo>/.vp/lanes/<name>` 以下なら wing `<name>`、
 /// それ以外（= repo path）なら lead。`wire_send` / `wire_recv` の `from` 導出 /
 /// `list_lanes` の `is_self` 付与に使う。
+///
+/// project-local lane refactor PR 2: 旧 `<wings_dir>/<parent>-<name>`
+/// (global path + repo prefix) detection は撤去。 PR 1 で wing 配置が
+/// `<repo>/.vp/lanes/<name>` に移行し、 legacy global path は user の mv 後
+/// empty。 PR 4 で legacy 関連 code 全削除予定なので、 ここも先行して
+/// project-local 一本に揃える。
 #[derive(Debug, Clone)]
 pub struct SelfLane {
     /// `"lead"` or `"<wing-name>"`（flat 名）
@@ -408,7 +414,12 @@ pub struct SelfLane {
 }
 
 impl SelfLane {
-    /// cwd から SelfLane を判定（VP-166 PR-4）。失敗時（cwd 取れない / config 読めない 等）は lead 扱い。
+    /// cwd から SelfLane を判定。 失敗時（cwd 取れない / config 読めない 等）は lead 扱い。
+    ///
+    /// 1. cwd ancestors を walk して `.vp/lanes/<name>` pattern を探す
+    ///    (= [`detect_project_local_wing`] の純粋関数で test 可能)
+    /// 2. 見つかれば repo_root を config.projects[].path と完全一致で resolve → parent 確定
+    /// 3. どちらか失敗 → lead fallback
     pub fn detect() -> Self {
         let lead = || SelfLane {
             lane_name: "lead".to_string(),
@@ -417,33 +428,22 @@ impl SelfLane {
         let Ok(cwd) = std::env::current_dir() else {
             return lead();
         };
-        let Ok(lanes_root) = crate::lane::config::wings_dir() else {
+        let Some((wing_name, repo_root)) = detect_project_local_wing(&cwd) else {
             return lead();
         };
-        if !cwd.starts_with(&lanes_root) {
-            return lead(); // 通常 project の cwd = lead
-        }
-        let Some(dirname) = cwd.file_name().and_then(|n| n.to_str()) else {
-            return lead();
-        };
-        // config から parent project を最長一致で resolve (`<parent>-<name>` の <parent> 部分)
         let Ok(config) = crate::config::Config::load() else {
             return lead();
         };
-        let Some(parent) = config
+        let parent = config
             .projects
             .iter()
-            .filter(|p| dirname.starts_with(&format!("{}-", p.name)))
-            .max_by_key(|p| p.name.len())
-        else {
-            return lead();
-        };
-        match dirname.strip_prefix(&format!("{}-", parent.name)) {
-            Some(name) if !name.is_empty() => SelfLane {
-                lane_name: name.to_string(),
-                wing_parent: Some(parent.name.clone()),
+            .find(|p| std::path::Path::new(&p.path) == repo_root.as_path());
+        match parent {
+            Some(p) => SelfLane {
+                lane_name: wing_name,
+                wing_parent: Some(p.name.clone()),
             },
-            _ => lead(),
+            None => lead(), // wing dir 検出済だが config に repo 未登録 → 安全 fallback
         }
     }
 
@@ -455,6 +455,31 @@ impl SelfLane {
             None => "agent".to_string(),
         }
     }
+}
+
+/// cwd ancestors を walk して `<repo>/.vp/lanes/<name>` pattern を探す純粋関数。
+///
+/// 戻り値: `Some((wing_name, repo_root))` if 見つかれば、 そうでなければ `None`。
+/// - wing dir 直下 / 任意の子孫 cwd 両対応 (= ancestor 走査)
+/// - 最初に match した ancestor (= 最も深い wing) を採用
+/// - I/O なしの pure fn (test しやすい、 mock cwd 不要)
+fn detect_project_local_wing(cwd: &std::path::Path) -> Option<(String, std::path::PathBuf)> {
+    for ancestor in cwd.ancestors() {
+        let parent = ancestor.parent()?;
+        let grandparent = parent.parent()?;
+        if parent.file_name().and_then(|n| n.to_str()) == Some("lanes")
+            && grandparent.file_name().and_then(|n| n.to_str()) == Some(".vp")
+        {
+            let wing_name = ancestor.file_name()?.to_str()?.to_string();
+            // wing 名は `validate_wing_name` 通過済が前提。 但し `.` 等 dotfile は除外。
+            if wing_name.starts_with('.') || wing_name.is_empty() {
+                return None;
+            }
+            let repo_root = grandparent.parent()?.to_path_buf();
+            return Some((wing_name, repo_root));
+        }
+    }
+    None
 }
 
 /// Unison QUIC で Process と通信する。
@@ -2693,6 +2718,78 @@ mod tests {
             wing_parent: Some("vantage-point".to_string()),
         };
         assert_eq!(wing.from_address(), "agent@vantage-point/chore");
+    }
+
+    // --- detect_project_local_wing (project-local lane refactor PR 2) ---
+
+    #[test]
+    fn detect_pl_wing_finds_wing_dir_itself() {
+        use std::path::{Path, PathBuf};
+        let cwd = Path::new("/Users/makoto/repos/creo-memories/.vp/lanes/or-integration");
+        let result = detect_project_local_wing(cwd);
+        assert_eq!(
+            result,
+            Some((
+                "or-integration".to_string(),
+                PathBuf::from("/Users/makoto/repos/creo-memories"),
+            ))
+        );
+    }
+
+    #[test]
+    fn detect_pl_wing_finds_wing_from_nested_subdir() {
+        use std::path::{Path, PathBuf};
+        // wing 配下の任意の階層から呼んでも親 wing が見つかる
+        let cwd =
+            Path::new("/Users/makoto/repos/creo-memories/.vp/lanes/or-integration/apps/server/src");
+        let result = detect_project_local_wing(cwd);
+        assert_eq!(
+            result,
+            Some((
+                "or-integration".to_string(),
+                PathBuf::from("/Users/makoto/repos/creo-memories"),
+            ))
+        );
+    }
+
+    #[test]
+    fn detect_pl_wing_returns_none_for_plain_repo_cwd() {
+        // 通常の repo cwd (= lead context) は detect されない
+        let cwd = std::path::Path::new("/Users/makoto/repos/creo-memories");
+        assert_eq!(detect_project_local_wing(cwd), None);
+    }
+
+    #[test]
+    fn detect_pl_wing_returns_none_for_random_path() {
+        let cwd = std::path::Path::new("/tmp/random/dir");
+        assert_eq!(detect_project_local_wing(cwd), None);
+    }
+
+    #[test]
+    fn detect_pl_wing_ignores_lanes_without_vp_grandparent() {
+        // `/foo/lanes/bar` だけだと `.vp` 親が無いので match しない
+        let cwd = std::path::Path::new("/foo/lanes/bar");
+        assert_eq!(detect_project_local_wing(cwd), None);
+    }
+
+    #[test]
+    fn detect_pl_wing_ignores_dotfile_wing_names() {
+        // `.vp/lanes/.hidden` のような dot 始まり wing 名は除外 (= validate_wing_name 同等)
+        let cwd = std::path::Path::new("/repo/.vp/lanes/.hidden");
+        assert_eq!(detect_project_local_wing(cwd), None);
+    }
+
+    #[test]
+    fn detect_pl_wing_innermost_wins_for_nested_vp_lanes() {
+        // 病的 case: wing 配下にさらに `.vp/lanes/<inner>` がある (= nested vp 構成)
+        // ancestor は cwd から root へ走るので、 最も深い (= innermost) wing が選ばれる
+        use std::path::{Path, PathBuf};
+        let cwd = Path::new("/outer/.vp/lanes/A/.vp/lanes/B");
+        let result = detect_project_local_wing(cwd);
+        assert_eq!(
+            result,
+            Some(("B".to_string(), PathBuf::from("/outer/.vp/lanes/A")))
+        );
     }
 
     #[test]
