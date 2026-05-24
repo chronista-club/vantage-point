@@ -448,7 +448,7 @@ pub async fn world_reload_projects(State(state): State<Arc<AppState>>) -> impl I
 pub struct LanesQuery {
     /// Project name filter (LaneAddress.project)
     pub project: Option<String>,
-    /// Lane name filter — Lead は "lead"、 Worker は name (例: "sub")
+    /// Lane name filter — Lead は "lead"、 Wing は name (例: "sub")
     pub lane: Option<String>,
     /// Stand kind filter — "echoes" or "shell"
     pub stand: Option<String>,
@@ -462,7 +462,7 @@ pub struct LanesQuery {
 ///
 /// query parameter:
 /// - `project=<name>`: 特定 project のみ
-/// - `lane=<name>`: 特定 Lane のみ ("lead" or worker name)
+/// - `lane=<name>`: 特定 Lane のみ ("lead" or wing name)
 /// - `stand=<echoes|shell>`: 特定 Stand のみ (LaneInfo.stand に match)
 ///
 /// disconnect された SP の Lane は registry から消えるので、 response = Currents 限定。
@@ -511,7 +511,7 @@ pub async fn world_list_lanes(
         .cloned()
         .collect();
 
-    // 順序: project 名昇順 → 同 project 内は Lead 先 → 続いて Worker (created_at 昇順)
+    // 順序: project 名昇順 → 同 project 内は Lead 先 → 続いて Wing (created_at 昇順)
     lanes.sort_by(|a, b| {
         use std::cmp::Ordering;
         a.address.project.cmp(&b.address.project).then_with(|| {

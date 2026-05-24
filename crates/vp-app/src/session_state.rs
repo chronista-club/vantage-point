@@ -35,7 +35,7 @@ pub struct ProjectUiState {
     /// sidebar accordion 開閉状態
     #[serde(default)]
     pub expanded: bool,
-    // 将来 field 候補: per-project の Worker form expanded、 lane custom order 等
+    // 将来 field 候補: per-project の Wing form expanded、 lane custom order 等
 }
 
 /// vp-app 全体の session UI state。

@@ -55,7 +55,7 @@ pub enum ProcessKind {
     /// Runtime (= Project Process) 扱い (serde default)。
     #[default]
     Runtime,
-    /// PTY session を持つ stream-based process (= Lane: Lead / Worker)
+    /// PTY session を持つ stream-based process (= Lane: Lead / Wing)
     Session,
     /// 機能 service を提供する worker process (= Stand: HD / TH / PP / GE / HP)
     Worker,

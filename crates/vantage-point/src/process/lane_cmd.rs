@@ -4,7 +4,7 @@
 //! 常時 N 動かす、 cmd type で queue 振り分け」 を VP の **Mailbox actor address**
 //! (例: `lane-spawn@<project>`) + Mailbox `Message::with_payload` で表現。
 //! 各 Cmd の処理は actor 内の `tokio::sync::Semaphore::new(N)` で gate された
-//! worker pool で並列実行。
+//! worker pool で並列実行 (= 内部 tokio worker pool、 Lane の wing とは別概念)。
 //!
 //! ## 関連
 //!
@@ -15,7 +15,7 @@
 //! ## Cmd type 別 actor address (将来拡張)
 //!
 //! 「cmd の type によって、 動作 queue を振り分け」 (= user 提案) を VP では
-//! **actor address ごとに別 mailbox + 別 worker pool** で表現する。
+//! **actor address ごとに別 mailbox + 別 tokio worker pool** で表現する。
 //!
 //! - `lane-spawn@<project>`: 重い Claude CLI 起動、 N=1 推奨 (rate-limit 安全)
 //! - `pane-tmux@<project>`: tmux 操作 (将来)、 N=多並列可能
@@ -38,23 +38,23 @@ use serde::{Deserialize, Serialize};
 // PR-pre2 (VP-118) で "hd" → "echoes" rename)。
 
 /// Lane に対する操作 Cmd。 Mailbox actor (`lane-spawn@<project>`) が recv し、
-/// 内部 Semaphore で gate された worker pool で 1 つずつ実行する。
+/// 内部 Semaphore で gate された tokio worker pool で 1 つずつ実行する。
 ///
 /// 今 phase (I-b minimum) では `SpawnLane` のみ。 将来拡張 (`KillLane` /
 /// `RestartLane` / `SwitchStand` 等) は別 sprint で variant 追加。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum LaneCmd {
-    /// Worker Lane を spawn (= stand_spawner で PtySlot 起動 + LanePool insert)。
+    /// Wing Lane を spawn (= stand_spawner で PtySlot 起動 + LanePool insert)。
     ///
-    /// 旧 `LanePool::populate_workers_from_disk` が同期 loop で呼んでいた spawn を、
-    /// **1 Worker = 1 SpawnLane Cmd** に分解して Mailbox actor に流す。 actor が
-    /// Semaphore で gate しつつ並列処理する design。
+    /// 旧 `LanePool::populate_workers_from_disk` (= 旧 Worker 名称時代の API、 既に削除済) が
+    /// 同期 loop で呼んでいた spawn を、 **1 Wing = 1 SpawnLane Cmd** に分解して
+    /// Mailbox actor に流す。 actor が Semaphore で gate しつつ並列処理する design。
     SpawnLane {
         /// LaneAddress.project の値 (= lane repo prefix と一致する project_id、
         /// `routes/lanes.rs::create_handler` の derivation と整合)
         project_id: String,
-        /// Worker name (LaneAddress.name に入る)
+        /// Wing name (LaneAddress.name に入る)
         name: String,
         /// 起動 cwd (典型: `vp_data_dir()/lanes/<repo>-<name>/`)
         cwd: String,

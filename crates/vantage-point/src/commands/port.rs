@@ -25,7 +25,7 @@ pub enum PortCommands {
         /// Project slot を直接指定 (config を無視した raw 計算)
         #[arg(long)]
         slot: Option<u16>,
-        /// Lane index (0 = Lead, 1+ = Worker)
+        /// Lane index (0 = Lead, 1+ = Wing)
         #[arg(long, default_value_t = 0)]
         lane: u16,
         /// Role 名 (agent / dev_server / db_admin / canvas / preview)
@@ -177,7 +177,7 @@ fn print_layout(layout: &PortLayout, slot: u16) {
         let Some(lb) = layout.lane_base(slot, lane) else {
             continue;
         };
-        let label = if lane == 0 { "Lead" } else { "Worker" };
+        let label = if lane == 0 { "Lead" } else { "Wing" };
         println!("  Lane {} ({}) — base {}", lane, label, lb);
         for (role, offset) in layout.valid_roles() {
             if let Some(p) = layout.port(slot, lane, &role) {

@@ -3,7 +3,8 @@
 //!
 //! ## 背景 (I-b、 2026-04-30)
 //!
-//! PR #228 で landed した `LanePool::populate_workers_from_disk` は SP 起動時に Worker N 本を
+//! PR #228 で landed した `LanePool::populate_workers_from_disk` (= 旧 Worker 名称時代、
+//! 削除済) は SP 起動時に Wing N 本を
 //! **直列 sync ループ** で spawn していた。 内部の `spawn_with_fallback` が `EARLY_EXIT_CHECK_MS
 //! = 800ms` の `std::thread::sleep` で executor を block するため、 N 本で `800ms × N` の
 //! 累積待ち → SP の axum listen ready が遅延する設計上の問題があった。
@@ -43,7 +44,7 @@
 //! - **race guard**: permit 待ち中に手動 `POST /api/lanes` で同 addr が create された場合、
 //!   spawn 完了後の `pool.write()` で再 check し、 lost race なら spawn 済 PtySlot を drop で zombie reap
 //! - **graceful degrade**: spawn 失敗 = `LaneState::Dead` + pid:None で record (= 既存
-//!   `populate_workers_from_disk` と同じ contract、 sidebar の disk-scan fallback と整合)
+//!   旧 `populate_workers_from_disk` と同じ contract、 sidebar の disk-scan fallback と整合)
 //!
 //! ## 計測 log (dogfood で N 値決定の足場)
 //!
@@ -53,7 +54,7 @@
 //!
 //! ## shutdown
 //!
-//! `shutdown_token.cancelled()` で recv loop 終了。 in-flight worker task は detach (= 自然完了)
+//! `shutdown_token.cancelled()` で recv loop 終了。 in-flight tokio task は detach (= 自然完了)
 //! で graceful。 max_concurrent 個までの待機時間を許容する trade-off。
 //!
 //! ## 関連
@@ -91,7 +92,7 @@ const IDLE_POLL: Duration = Duration::from_secs(5);
 /// SP-local Service (= 1 Project per Process)、 mailbox handle + dependencies を保持し、
 /// `spawn(shutdown)` で background recv loop を `tokio::spawn` 起動する。
 ///
-/// PR-β-2 (VP-120): `lane_capabilities_pool: Option<...>` で Worker spawn 成功時に
+/// PR-β-2 (VP-120): `lane_capabilities_pool: Option<...>` で Wing spawn 成功時に
 /// `populate_lane` を呼び、 Lane あたり独立 PaisleyParkState を host する。
 pub struct LaneSpawnActor {
     /// wiremsg R4: wire accumulation store (= 旧 `WhitesnakeStore` から rewire)
@@ -254,7 +255,7 @@ impl SpawnableService for LaneSpawnActor {
 /// 単一 `LaneCmd` を処理。 Semaphore permit を acquire してから heavy spawn を実行。
 ///
 /// PR-β-2 (VP-120): `lane_capabilities_pool` 引数 (Option) を追加、 spawn 成功時に
-/// `populate_lane` を呼んで Worker Lane あたり独立 PaisleyParkState を host する。
+/// `populate_lane` を呼んで Wing Lane あたり独立 PaisleyParkState を host する。
 async fn handle_cmd(
     cmd: LaneCmd,
     pool: Arc<RwLock<LanePool>>,
@@ -313,7 +314,7 @@ async fn handle_cmd(
     let started = Instant::now();
 
     // spawn_with_fallback は内部で std::thread::sleep(800ms) を呼ぶ sync 関数。
-    // tokio worker を block しないよう spawn_blocking で隔離する。
+    // tokio worker thread を block しないよう spawn_blocking で隔離する。
     let cwd_for_blocking = cwd.clone();
     // Phase 1e: build_stand_command が addr を要求するので clone を closure に move
     let addr_for_blocking = addr.clone();
@@ -404,7 +405,7 @@ async fn handle_cmd(
     pool_write.insert(info.clone());
     drop(pool_write); // write lock 解放してから publish (deadlock 回避 + subscriber が即取れる)
 
-    // Worker Lane spawn 完了 → LaneCapabilities pool に entry 追加
+    // Wing Lane spawn 完了 → LaneCapabilities pool に entry 追加
     // (Lane あたり独立 PaisleyParkState を host、 doc 13 §6 自動 spawn rule = default)。
     // None は World mode (Lane scope なし) で発生、 SP mode では常に Some。
     // Dead state では populate しない (cascade lifecycle、 上の tmux: vec![] と同型 guard)。
@@ -413,13 +414,13 @@ async fn handle_cmd(
     {
         lc_pool.write().await.populate_lane(addr.clone(), &stand);
         tracing::debug!(
-            "LaneCapabilities pool に Worker Lane populate (addr={}, stand={})",
+            "LaneCapabilities pool に Wing Lane populate (addr={}, stand={})",
             addr,
             stand
         );
     }
 
-    // Phase 2 (Step E): Worker spawn 完了を SystemEvent::Lane(Diff::Add) で TheWorld に push。
+    // Phase 2 (Step E): Wing spawn 完了を SystemEvent::Lane(Diff::Add) で TheWorld に push。
     // QUIC registry channel 経由で realtime sync。 失敗は warn のみ (best-effort、
     // SP lane_pool が SSOT、 reconnect 時に register snapshot で必ず再構築される)。
     if let Err(e) = system_event_tx.send(SystemEvent::Lane(Diff::Add { payload: info })) {

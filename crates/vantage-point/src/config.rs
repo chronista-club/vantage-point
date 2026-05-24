@@ -229,7 +229,7 @@ pub struct Config {
     #[kdl(skip)]
     pub ports: Option<PortLayoutOverrides>,
 
-    /// SP startup behavior — Worker spawn の concurrency 制限等 (I-b、 2026-04-30)
+    /// SP startup behavior — Wing spawn の concurrency 制限等 (I-b、 2026-04-30)
     #[serde(default)]
     #[kdl(child, default)]
     pub startup: StartupConfig,
@@ -266,7 +266,7 @@ pub struct NetworkConfig {
 
 /// SP startup behavior config (I-b、 2026-04-30)。
 ///
-/// Mailbox actor (`lane-spawn@<project>`) で Worker spawn を Cmd 化した上で、
+/// Mailbox actor (`lane-spawn@<project>`) で Wing spawn を Cmd 化した上で、
 /// 内部 Semaphore で同時実行数を gate する。 `max_concurrent_lane_spawn` で
 /// 制限値を tweak、 default は **1** (= 完全 sequential、 dogfood の視覚 pop 体験 +
 /// Claude CLI rate-limit 安全)。 計測 log (`Lane spawn completed: ... elapsed=`) を

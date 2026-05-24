@@ -57,7 +57,7 @@ pub struct TerminalQuery {
     /// 作業ディレクトリ (Spawn mode のみ、 default: $HOME)
     #[serde(default)]
     pub cwd: Option<String>,
-    /// Lane address (Phase 2 attach mode、 例: `"vantage-point/lead"` / `"vp/worker/foo"`)。
+    /// Lane address (Phase 2 attach mode、 例: `"vantage-point/lead"` / `"vp/wing/foo"`)。
     /// Some なら既存 LanePool の PtySlot に attach、 None なら従来の Spawn mode。
     #[serde(default)]
     pub lane: Option<String>,

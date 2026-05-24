@@ -9,15 +9,15 @@
 //! ## sidebar 描画
 //!
 //! - Project (= Runtime Process) accordion: `ProcessPaneState`
-//! - Lane (= Session Process / Lead/Worker): `SidebarState.lanes_by_project` (SP fetch 結果)
-//! - Stand (= Worker Process / HD/TH/...): Lane の中身として並列 row
+//! - Lane (= Session Process / Lead/Wing): `SidebarState.lanes_by_project` (SP fetch 結果)
+//! - Stand (= Stand worker process / HD/TH/...): Lane の中身として並列 row
 //!
 //! つまり Pane は廃止、 階層は **Project → Lane → Stand** に統一。
 //!
 //! ## active selection
 //!
 //! `SidebarState.active_lane_address` で 1 つだけ active な Lane を持つ。
-//! 形式は Lane address の Display 表現 (`"<project>/lead"` / `"<project>/worker/<name>"`)。
+//! 形式は Lane address の Display 表現 (`"<project>/lead"` / `"<project>/wing/<name>"`、 legacy "worker" alias 受理)。
 
 use serde::{Deserialize, Serialize};
 
