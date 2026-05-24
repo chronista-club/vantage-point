@@ -1152,6 +1152,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(vp_lanes_env)]
     fn find_wing_dir_dual_prefers_project_local() {
         // 同名 lane が新旧両 path に居れば project-local を返す
         let (repo, pl) = setup_dual_fixture("prefer-pl");
@@ -1181,6 +1182,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(vp_lanes_env)]
     fn find_wing_dir_dual_falls_back_to_legacy_direct() {
         // project-local に無い + legacy global の直 dir に居る場合
         let (repo, _pl) = setup_dual_fixture("legacy-direct");
@@ -1203,6 +1205,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(vp_lanes_env)]
     fn find_wing_dir_dual_falls_back_to_legacy_prefixed() {
         // project-local に無い + legacy direct に無い + legacy prefix にある
         let (repo, _pl) = setup_dual_fixture("legacy-prefix");
@@ -1226,6 +1229,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(vp_lanes_env)]
     fn find_wing_dir_dual_returns_none_when_nowhere() {
         let (repo, _pl) = setup_dual_fixture("none");
         let global = test_dir("dual-none-global");
@@ -1247,6 +1251,7 @@ mod tests {
     // --- list_wings_for_repo (dual-read 後の挙動) ---
 
     #[test]
+    #[serial_test::serial(vp_lanes_env)]
     fn list_wings_for_repo_lists_both_paths_with_dedup() {
         let (repo, pl) = setup_dual_fixture("list-both");
         // project-local: foo (with .git for branch detect)
@@ -1292,6 +1297,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(vp_lanes_env)]
     fn list_wings_for_repo_handles_missing_project_local_dir() {
         // <repo>/.vp/lanes が存在しなくても legacy global は読める
         let repo = test_dir("list-no-pl");

@@ -1592,7 +1592,7 @@ dependencies = [
  "rcgen",
  "rustls",
  "rustls-pemfile",
- "scc",
+ "scc 3.7.1",
  "serde",
  "serde_json",
  "syn 2.0.117",
@@ -7441,12 +7441,21 @@ dependencies = [
 
 [[package]]
 name = "scc"
+version = "2.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "46e6f046b7fef48e2660c57ed794263155d713de679057f2d0c169bfc6e756cc"
+dependencies = [
+ "sdd 3.0.10",
+]
+
+[[package]]
+name = "scc"
 version = "3.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5bcd12b6caff5213cc3c03123cde8c3db5e413008a63b0c0ba35e6275825ea92"
 dependencies = [
  "saa",
- "sdd",
+ "sdd 4.8.6",
 ]
 
 [[package]]
@@ -7507,6 +7516,12 @@ dependencies = [
  "salsa20",
  "sha2 0.10.9",
 ]
+
+[[package]]
+name = "sdd"
+version = "3.0.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "490dcfcbfef26be6800d11870ff2df8774fa6e86d047e3e8c8a76b25655e41ca"
 
 [[package]]
 name = "sdd"
@@ -7725,6 +7740,32 @@ dependencies = [
  "cfg-if",
  "libc",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "serial_test"
+version = "3.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "911bd979bf1070a3f3aa7b691a3b3e9968f339ceeec89e08c280a8a22207a32f"
+dependencies = [
+ "futures-executor",
+ "futures-util",
+ "log",
+ "once_cell",
+ "parking_lot",
+ "scc 2.4.0",
+ "serial_test_derive",
+]
+
+[[package]]
+name = "serial_test_derive"
+version = "3.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0a7d91949b85b0d2fb687445e448b40d322b6b3e4af6b44a29b21d9a5f33e6d9"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -9549,6 +9590,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "serial_test",
  "socket2",
  "surrealdb",
  "tao",

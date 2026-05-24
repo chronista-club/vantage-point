@@ -1542,17 +1542,26 @@ impl ProcessManagerCapability {
         }
     }
 
-    /// VP-129 MVP: lane root を watch して worker dir 削除を SP DELETE に bridge する FSEvents watcher。
+    /// VP-129: lane root を watch して wing dir 削除を SP DELETE に bridge する FSEvents watcher。
     ///
-    /// **「folder = Lane 空間」 axiom の物理実装**。 user が Finder / `rm -rf` で worker dir を
+    /// **「folder = Lane 空間」 axiom の物理実装**。 user が Finder / `rm -rf` で wing dir を
     /// 削除した時、 OS の file system event (Mac → FSEvents、 Linux → inotify) → notify crate
-    /// → 本 watcher が dirname を parse → project 解決 → SP `DELETE /api/lanes` 自動発火、
-    /// sidebar / tmux / PtySlot が cascade で同期 cleanup される。
+    /// → 本 watcher が path → project 解決 → SP `DELETE /api/lanes` 自動発火、 sidebar /
+    /// tmux / PtySlot が cascade で同期 cleanup される。
     ///
     /// D10 Reconciliation arch の **3rd path 拡張**: Push (QUIC heartbeat) + Pull (port scan) +
     /// **FSEvents (本 method)** の 3-trigger model 完成。
     ///
+    /// ## project-local lane refactor PR 4c
+    ///
+    /// PR 1 で wing 配置が `<repo>/.vp/lanes/<name>` に移行したのを受けて、 旧 logic
+    /// (= 単一 legacy global path watch + `<repo>-<name>` prefix parsing) を撤去し、
+    /// `config.projects` の **各 project の `.vp/lanes/` を `Vec<watch>` で N path 同時監視**
+    /// する形に書き直した。 dirname 解析は撤去、 [`resolve_lane_event`] で完全 path-based
+    /// resolution。
+    ///
     /// MVP scope (= 別 ticket で safety net 追加候補):
+    /// - 動的 project add/remove: scope 外 (= startup snapshot で固定、 後 PR で hot-reload 検討)
     /// - self-loop 防止: scope 外 (= SP 経由削除も Remove event 発火、 二重 DELETE 走るが SP 側
     ///   404 で no-op、 log noise 許容)
     /// - spawn race: scope 外 (= 既存 spawn semaphore + atomic LanePool insert で吸収)
@@ -1563,22 +1572,12 @@ impl ProcessManagerCapability {
     ) {
         use notify::{EventKind, RecursiveMode, Watcher};
 
-        // wings_dir 解決 (= vp_data_dir()/lanes/)。 不在なら作成 (= 後の worker spawn でも必要)。
-        let wings_dir = match crate::lane::config::wings_dir() {
-            Ok(d) => d,
-            Err(e) => {
-                tracing::warn!("lane watcher: wings_dir 解決失敗 (skip): {}", e);
-                return;
-            }
-        };
-        if !wings_dir.exists()
-            && let Err(e) = std::fs::create_dir_all(&wings_dir)
-        {
-            tracing::warn!(
-                "lane watcher: wings_dir create 失敗 (skip、 path={}): {}",
-                wings_dir.display(),
-                e
-            );
+        // 起動時 snapshot: config.projects から `.vp/lanes/` path map を build。
+        // 動的 project 追加は本 PR scope 外 (= TODO: project register event を購読して
+        // path_map を hot-reload)。
+        let path_map = Self::build_lane_watch_path_map(&world).await;
+        if path_map.is_empty() {
+            tracing::info!("lane watcher: 監視対象 project なし (skip 起動)");
             return;
         }
 
@@ -1598,18 +1597,44 @@ impl ProcessManagerCapability {
                 }
             };
 
-        if let Err(e) = watcher.watch(&wings_dir, RecursiveMode::NonRecursive) {
-            tracing::warn!(
-                "lane watcher: watch 開始失敗 (path={}, err={})",
-                wings_dir.display(),
-                e
+        // 各 project の `.vp/lanes/` を watch。 dir 不在は best-effort で create
+        // (= wing がまだ作られてない project でも先に watch を arm する)。
+        let mut watched_count = 0usize;
+        for (watch_path, (project_name, _)) in &path_map {
+            if !watch_path.exists()
+                && let Err(e) = std::fs::create_dir_all(watch_path)
+            {
+                tracing::warn!(
+                    "lane watcher: dir create 失敗 (skip) project={} path={}: {}",
+                    project_name,
+                    watch_path.display(),
+                    e
+                );
+                continue;
+            }
+            if let Err(e) = watcher.watch(watch_path, RecursiveMode::NonRecursive) {
+                tracing::warn!(
+                    "lane watcher: watch 開始失敗 (skip) project={} path={}: {}",
+                    project_name,
+                    watch_path.display(),
+                    e
+                );
+                continue;
+            }
+            watched_count += 1;
+            tracing::info!(
+                "lane watcher: project={} path={} 監視開始",
+                project_name,
+                watch_path.display()
             );
+        }
+        if watched_count == 0 {
+            tracing::warn!("lane watcher: 全 project で watch 失敗、 watcher 起動 abort");
             return;
         }
-
         tracing::info!(
-            "lane watcher 起動 (path={}、 mode=NonRecursive、 trigger=Remove → SP DELETE)",
-            wings_dir.display()
+            "lane watcher 起動完了 (project={} 件、 mode=NonRecursive、 trigger=Remove → SP DELETE)",
+            watched_count
         );
 
         let client = reqwest::Client::builder()
@@ -1628,7 +1653,7 @@ impl ProcessManagerCapability {
                     if !matches!(event.kind, EventKind::Remove(_)) {
                         continue;
                     }
-                    Self::handle_lane_remove_event(&world, &client, &wings_dir, &event).await;
+                    Self::handle_lane_remove_event(&world, &client, &path_map, &event).await;
                 }
             }
         }
@@ -1637,56 +1662,36 @@ impl ProcessManagerCapability {
         tracing::info!("lane watcher 終了");
     }
 
-    /// VP-129 MVP: Remove event 1 件を処理。 dirname → project 解決 → SP DELETE call。
+    /// `config.projects` から `<repo>/.vp/lanes/` path → (project_name, project_path) の
+    /// HashMap を build する。 起動 snapshot 用 (= 動的更新は scope 外)。
+    async fn build_lane_watch_path_map(
+        world: &Arc<RwLock<Self>>,
+    ) -> std::collections::HashMap<std::path::PathBuf, (String, String)> {
+        let mut map = std::collections::HashMap::new();
+        let world_read = world.read().await;
+        let Some(config) = world_read.config.as_ref() else {
+            return map;
+        };
+        for proj in &config.projects {
+            let project_root = std::path::PathBuf::from(&proj.path);
+            let lanes_dir = project_root.join(".vp").join("lanes");
+            map.insert(lanes_dir, (proj.name.clone(), proj.path.clone()));
+        }
+        map
+    }
+
+    /// VP-129: Remove event 1 件を処理。 path → project 解決 → SP DELETE call。
     /// `run_lane_watcher` の inner、 各 path を独立処理。
     async fn handle_lane_remove_event(
         world: &Arc<RwLock<Self>>,
         client: &reqwest::Client,
-        wings_dir: &std::path::Path,
+        path_map: &std::collections::HashMap<std::path::PathBuf, (String, String)>,
         event: &notify::Event,
     ) {
         for path in &event.paths {
-            // wings_dir 直下の dir のみ対象 (= 子孫 file の Remove は無関係)
-            let Some(parent) = path.parent() else {
+            let Some((project_name, project_path, wing_name)) = resolve_lane_event(path, path_map)
+            else {
                 continue;
-            };
-            if parent != wings_dir {
-                continue;
-            }
-            let Some(dirname) = path.file_name().and_then(|n| n.to_str()) else {
-                continue;
-            };
-
-            // project 解決 = config.projects に対する longest prefix match
-            // (例: "vantage-point-keystage" で project name が "vantage" / "vantage-point" の
-            //  両方 match した場合、 longest = "vantage-point" を採用)
-            let resolved = {
-                let world_read = world.read().await;
-                let Some(config) = world_read.config.as_ref() else {
-                    continue;
-                };
-                let parent_proj = config
-                    .projects
-                    .iter()
-                    .filter(|p| dirname.starts_with(&format!("{}-", p.name)))
-                    .max_by_key(|p| p.name.len());
-                match parent_proj {
-                    Some(p) => Some((p.name.clone(), p.path.clone())),
-                    None => {
-                        tracing::debug!(
-                            "lane watcher: parent project 解決失敗 (skip) dirname={}",
-                            dirname
-                        );
-                        None
-                    }
-                }
-            };
-            let Some((project_name, project_path)) = resolved else {
-                continue;
-            };
-            let worker_name = match dirname.strip_prefix(&format!("{}-", project_name)) {
-                Some(w) if !w.is_empty() => w.to_string(),
-                _ => continue,
             };
 
             // SP port 取得 (= running_processes registry)。 `project_path` は config の
@@ -1699,9 +1704,9 @@ impl ProcessManagerCapability {
             };
             let Some(port) = port else {
                 tracing::debug!(
-                    "lane watcher: SP not running for project={} (skip) worker={}",
+                    "lane watcher: SP not running for project={} (skip) wing={}",
                     project_name,
-                    worker_name
+                    wing_name
                 );
                 continue;
             };
@@ -1709,16 +1714,18 @@ impl ProcessManagerCapability {
             // SP DELETE /api/lanes (cleanup=false、 dir は既に gone)。 self-loop case
             // (= SP 経由で削除されて dir が消えた → watcher が Remove 検知 → 本 DELETE 発火)
             // は SP 側で 404 (Lane not found) 返却、 log debug 落ち。
-            let address = format!("{}/worker/{}", project_name, worker_name);
+            // address は新 wing form (`<project>/wing/<name>`、 SP 側 parse_address は legacy
+            // `worker` も alias で受理)。
+            let address = format!("{}/wing/{}", project_name, wing_name);
             let address_enc = address.replace('/', "%2F");
             let url = format!(
                 "http://[::1]:{}/api/lanes?address={}&cleanup=false",
                 port, address_enc
             );
             tracing::info!(
-                "lane watcher: dir removed → SP DELETE 発火 (project={}, worker={}, port={})",
+                "lane watcher: dir removed → SP DELETE 発火 (project={}, wing={}, port={})",
                 project_name,
-                worker_name,
+                wing_name,
                 port
             );
             match client.delete(&url).send().await {
@@ -1743,6 +1750,27 @@ impl ProcessManagerCapability {
             }
         }
     }
+}
+
+/// lane Remove event 1 path を解決する純粋関数。 `path_map` (= `<.vp/lanes path>` → `(project_name,
+/// project_path)`) から parent match で project を逆引きし、 path の file_name を wing 名として
+/// 返す。
+///
+/// 戻り値: `Some((project_name, project_path, wing_name))` if 完全 match。 そうでなければ `None`。
+/// - dotfile / 空 wing 名は skip (= `.git` 内ファイル等の伝播除外)
+/// - path_map に登録されてない project 配下の path は skip
+/// - I/O なしの pure fn (= test しやすい、 mock 不要)
+fn resolve_lane_event(
+    path: &std::path::Path,
+    path_map: &std::collections::HashMap<std::path::PathBuf, (String, String)>,
+) -> Option<(String, String, String)> {
+    let parent = path.parent()?;
+    let (project_name, project_path) = path_map.get(parent)?;
+    let wing_name = path.file_name()?.to_str()?.to_string();
+    if wing_name.is_empty() || wing_name.starts_with('.') {
+        return None;
+    }
+    Some((project_name.clone(), project_path.clone(), wing_name))
 }
 
 impl Default for ProcessManagerCapability {
@@ -1834,6 +1862,89 @@ mod tests {
     fn test_world_capability_new() {
         let cap = ProcessManagerCapability::new();
         assert_eq!(cap.state(), CapabilityState::Uninitialized);
+    }
+
+    // --- resolve_lane_event (project-local lane refactor PR 4c) ---
+
+    fn make_path_map(
+        entries: &[(&str, &str, &str)],
+    ) -> std::collections::HashMap<std::path::PathBuf, (String, String)> {
+        let mut m = std::collections::HashMap::new();
+        for (lanes_dir, project_name, project_path) in entries {
+            m.insert(
+                std::path::PathBuf::from(lanes_dir),
+                (project_name.to_string(), project_path.to_string()),
+            );
+        }
+        m
+    }
+
+    #[test]
+    fn resolve_lane_event_happy_path() {
+        let map = make_path_map(&[(
+            "/Users/makoto/repos/creo-memories/.vp/lanes",
+            "creo-memories",
+            "/Users/makoto/repos/creo-memories",
+        )]);
+        let path = std::path::Path::new(
+            "/Users/makoto/repos/creo-memories/.vp/lanes/or-integration",
+        );
+        let resolved = resolve_lane_event(path, &map);
+        assert_eq!(
+            resolved,
+            Some((
+                "creo-memories".to_string(),
+                "/Users/makoto/repos/creo-memories".to_string(),
+                "or-integration".to_string(),
+            ))
+        );
+    }
+
+    #[test]
+    fn resolve_lane_event_unknown_parent_returns_none() {
+        let map = make_path_map(&[(
+            "/Users/makoto/repos/creo-memories/.vp/lanes",
+            "creo-memories",
+            "/Users/makoto/repos/creo-memories",
+        )]);
+        // 知らない project 配下の path
+        let path = std::path::Path::new("/Users/makoto/repos/other-repo/.vp/lanes/foo");
+        assert_eq!(resolve_lane_event(path, &map), None);
+    }
+
+    #[test]
+    fn resolve_lane_event_skips_dotfile_wing_name() {
+        // `.git` や `.DS_Store` の Remove event (lane dir 内部からの伝播) を skip。
+        // NonRecursive watch で arrive する可能性は低いが防御で。
+        let map = make_path_map(&[(
+            "/repo/.vp/lanes",
+            "repo",
+            "/repo",
+        )]);
+        let path = std::path::Path::new("/repo/.vp/lanes/.DS_Store");
+        assert_eq!(resolve_lane_event(path, &map), None);
+    }
+
+    #[test]
+    fn resolve_lane_event_skips_when_no_parent() {
+        // ルート `/` は parent なし → None
+        let map = make_path_map(&[("/repo/.vp/lanes", "repo", "/repo")]);
+        let path = std::path::Path::new("/");
+        assert_eq!(resolve_lane_event(path, &map), None);
+    }
+
+    #[test]
+    fn resolve_lane_event_multiple_projects_match_correct_one() {
+        let map = make_path_map(&[
+            ("/repo-a/.vp/lanes", "repo-a", "/repo-a"),
+            ("/repo-b/.vp/lanes", "repo-b", "/repo-b"),
+        ]);
+        let path_b = std::path::Path::new("/repo-b/.vp/lanes/wing-x");
+        let resolved = resolve_lane_event(path_b, &map);
+        assert_eq!(
+            resolved,
+            Some(("repo-b".to_string(), "/repo-b".to_string(), "wing-x".to_string()))
+        );
     }
 
     #[tokio::test]
