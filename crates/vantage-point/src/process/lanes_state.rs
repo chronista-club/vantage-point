@@ -1,4 +1,4 @@
-//! Lane state types — SP が持つ Lane (Lead/Worker) の data model
+//! Lane state types — SP が持つ Lane (Lead/Wing) の data model
 //!
 //! 関連 memory:
 //! - `mem_1CaSrCxysdGaaSsN4Dvxth` (VP Architecture: 3 段 Stand scope + Lane semantic)
@@ -20,14 +20,14 @@
 //! - Gold Experience 🌿 (planned PR-γ で Lane 移管予定、 LaneStand impl 追加)
 //!
 //! Project scope の Stand pool (`project_stands_state.rs`) は GE / HP のみ host (PR-β-2 後)。
-//! Lane は **Lead/Worker の PTY セッション + Stand container** に集中:
-//! - Lead   1 / project (固定)、stand = "echoes" / "shell" / "tmux"
-//! - Worker 0..n / project (可変、lane clone)、stand 同上
+//! Lane は **Lead/Wing の PTY セッション + Stand container** に集中:
+//! - Lead 1 / project (固定)、stand = "echoes" / "shell" / "tmux"
+//! - Wing 0..n / project (可変、lane clone)、stand 同上
 //!
 //! ## Phase A4-2b スコープ
 //!
 //! `LanePool::with_lead` で Lead Lane 1 つ pre-populate。
-//! Worker create / destroy / Stand 切替は A4-4 / A5 で実装。
+//! Wing create / destroy / Stand 切替は A4-4 / A5 で実装。
 
 use std::collections::HashMap;
 use std::fmt;
@@ -325,7 +325,7 @@ pub struct LaneInfo {
     pub tmux: Vec<TmuxLaneAddress>,
 }
 
-/// Lane Pool — Lead/Worker registry
+/// Lane Pool — Lead/Wing registry
 ///
 /// memory rule: Lane scope は HD/TH 専用。Project scope の Stand は別 module。
 ///
@@ -343,7 +343,7 @@ pub struct LanePool {
     /// Stage 1 (ADR-0001): 各 Lane の Rust 側 alacritty Term<T> attach。
     /// pty_slots と lifecycle 同期: with_lead で spawn、 remove で drop abort。
     /// task は spawn_blocking で 1 Lane = 1 task、 broadcast::Receiver を消費。
-    /// MVP: Lead Lane のみ attach。 Worker spawn 経路 (insert_pty_slot) は別 PR で配線予定。
+    /// MVP: Lead Lane のみ attach。 Wing spawn 経路 (insert_pty_slot) は別 PR で配線予定。
     term_attaches: HashMap<LaneAddress, crate::terminal::term_attach::TermAttach>,
 }
 
@@ -425,7 +425,7 @@ impl LanePool {
             created_at: chrono::Utc::now().to_rfc3339(),
             pid,
             cwd,
-            // Lead は git workspace 持たない (= project root が cwd)、 worker_status は None
+            // Lead は git workspace 持たない (= project root が cwd)、 wing_status は None
             wing_status: None,
             // Phase 1e: spawn 成功時のみ tmux address を populate
             // (spawn 失敗 = Dead → 空 Vec で副舞台不在 signal)
@@ -439,7 +439,7 @@ impl LanePool {
         pool
     }
 
-    /// Lane 一覧を **Lead 先頭、 続いて Worker を生成順 (created_at 昇順)** で返す。
+    /// Lane 一覧を **Lead 先頭、 続いて Wing を生成順 (created_at 昇順)** で返す。
     ///
     /// 内部 `lanes` は `HashMap` のため iter 順は non-deterministic (process ごとに異なる
     /// hash seed)。 sidebar の表示要件 「Root/Lead が一番上、 その下は生成時順」 を満たす
@@ -477,7 +477,7 @@ impl LanePool {
         self.lanes.insert(info.address.clone(), info);
     }
 
-    /// Phase 3-A: 既に spawn 済の PtySlot を Lane address 紐付けで insert (Worker create で使う)。
+    /// Phase 3-A: 既に spawn 済の PtySlot を Lane address 紐付けで insert (Wing create で使う)。
     ///
     /// Stage 1 (ADR-0001): TermAttach も同期 spawn する。 `term_rx` は spawn_with_fallback の
     /// 戻り値 (= broadcast::channel 作成と同時の initial_rx)、 reader_task が start する前に
@@ -706,7 +706,7 @@ impl LanePool {
             .lock()
             .map_err(|_| anyhow::anyhow!("PtySlot mutex poisoned: {}", addr))?;
         slot.resize(cols, rows)?;
-        // attach 不在 (= spawn 失敗 / 未配線 Worker 経路) は静かに skip
+        // attach 不在 (= spawn 失敗 / 未配線 Wing 経路) は静かに skip
         if let Some(term_attach) = self.term_attaches.get(addr) {
             term_attach.resize(cols, rows);
         }
@@ -782,8 +782,8 @@ mod tests {
     }
 
     #[test]
-    fn tmux_session_name_worker_hd() {
-        // Worker(name) + HD → "vp-{project}-{name}-hd"
+    fn tmux_session_name_wing_hd() {
+        // Wing(name) + HD → "vp-{project}-{name}-hd"
         let addr = LaneAddress::wing("vantage-point", "sub");
         assert_eq!(addr.tmux_session_name("hd"), "vp-vantage-point-sub-hd");
     }
@@ -808,8 +808,8 @@ mod tests {
     }
 
     #[test]
-    fn tmux_session_name_unnamed_worker_fallback() {
-        // Worker(name=None) は仕様上想定外だが defensive に "unnamed" にフォールバック
+    fn tmux_session_name_unnamed_wing_fallback() {
+        // Wing(name=None) は仕様上想定外だが defensive に "unnamed" にフォールバック
         let addr = LaneAddress {
             project: "vp".to_string(),
             kind: LaneKind::Wing,

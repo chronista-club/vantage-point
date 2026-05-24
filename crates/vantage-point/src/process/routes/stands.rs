@@ -4,7 +4,7 @@
 //!
 //! VP install root の `.mise/tasks/vp/stand/{name}` に居る task ファイル群を
 //! `mise tasks ls --json` 経由で discovery し、 stand 名と description を返す。
-//! sidebar の `+ Add Worker` で stand dropdown 表示するための data source。
+//! sidebar の `+ Add Wing` で stand dropdown 表示するための data source。
 //!
 //! ## キャッシュ
 //!

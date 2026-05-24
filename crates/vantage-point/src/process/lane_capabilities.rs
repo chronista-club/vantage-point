@@ -1,6 +1,6 @@
 //! Lane 階層 Stand container (LSCM、 doc 12 §3 / §9 / doc 13 §3 参照)
 //!
-//! Lane (Lead/Worker) あたり 1 instance、 SP per Project で host。 LSCM (Layer-Stand
+//! Lane (Lead/Wing) あたり 1 instance、 SP per Project で host。 LSCM (Layer-Stand
 //! Composition Model) の **Lane Layer 実体** = "Lane が必要な Stand を抱える" の物理表現。
 //!
 //! ## host する Stand (target、 doc 12 §9 catalog)
@@ -46,7 +46,7 @@ use super::project_stands_state::PaisleyParkStand;
 /// Echoes / The Hand は mise task PtySlot 経由なので本 struct には host しない
 /// (`LanePool` の各 Lane entry の PtySlot で扱う、 doc 13 §10 Q-7 暫定確定)。
 pub struct LaneCapabilities {
-    /// Lane の identity (Lead / Worker、 project 名 + name)
+    /// Lane の identity (Lead / Wing、 project 名 + name)
     pub address: LaneAddress,
 
     /// mise task 名 (例: `"echoes"` / `"shell"` / `"tmux"`、 PR-pre2 で `"hd"` → `"echoes"` rename)。
@@ -84,7 +84,7 @@ impl LaneCapabilities {
 /// Lane scope Stand pool — SP per Project で 1 instance、 各 Lane の `LaneCapabilities` を集約。
 ///
 /// PR-β-1 (VP-119) で空 HashMap 受け皿として新設、 PR-β-2 (VP-120) で `LanePool::with_lead`
-/// と `lane_spawn_actor` (Worker spawn 経路) から populate される lifecycle と sync。
+/// と `lane_spawn_actor` (Wing spawn 経路) から populate される lifecycle と sync。
 /// 既存 `LanePool` (`lanes_state.rs`) とは並立、 PR-δ-4 cleanup PR で整合性 review 予定。
 #[derive(Default)]
 pub struct LaneCapabilitiesPool {
@@ -103,7 +103,7 @@ impl LaneCapabilitiesPool {
 
     /// PR-β-2 (VP-120): Lane spawn 時に LaneCapabilities entry を populate。
     ///
-    /// `LanePool::with_lead` / `lane_spawn_actor` (Worker spawn) から呼ばれて、 Lane あたり
+    /// `LanePool::with_lead` / `lane_spawn_actor` (Wing spawn) から呼ばれて、 Lane あたり
     /// 独立 PaisleyParkState を持つ entry を HashMap に挿入する。 同じ address で重複 insert
     /// した場合は overwrite (= idempotent、 restart / respawn 経路で安全)。
     pub fn populate_lane(&mut self, address: LaneAddress, stand: impl Into<String>) {
@@ -180,8 +180,8 @@ mod tests {
     }
 
     #[test]
-    fn lane_capabilities_with_worker_address() {
-        // Worker Lane でも独立 PaisleyParkStand で構築
+    fn lane_capabilities_with_wing_address() {
+        // Wing Lane でも独立 PaisleyParkStand で構築
         let addr = LaneAddress::wing("vp", "feat-test");
         let lc = LaneCapabilities::new(addr.clone(), "shell");
 
@@ -191,7 +191,7 @@ mod tests {
             lc.registry
                 .get_typed::<PaisleyParkStand>("paisley_park")
                 .is_some(),
-            "Worker Lane も独立 PaisleyParkStand を持つ"
+            "Wing Lane も独立 PaisleyParkStand を持つ"
         );
     }
 
@@ -199,18 +199,18 @@ mod tests {
     async fn lane_capabilities_pp_instances_are_independent() {
         // PR-β-2 (VP-120) cardinality 1 → N invariant、 PR-δ-2 (VP-136) registry 経由でも維持
         let lead = LaneCapabilities::new(LaneAddress::lead("vp"), "echoes");
-        let worker = LaneCapabilities::new(LaneAddress::wing("vp", "sub"), "echoes");
+        let wing = LaneCapabilities::new(LaneAddress::wing("vp", "sub"), "echoes");
 
         let lead_pp = lead
             .registry
             .get_typed::<PaisleyParkStand>("paisley_park")
             .expect("Lead PP");
-        let worker_pp = worker
+        let wing_pp = wing
             .registry
             .get_typed::<PaisleyParkStand>("paisley_park")
-            .expect("Worker PP");
+            .expect("Wing PP");
 
-        // Lead に content set しても Worker に伝播しないこと
+        // Lead に content set しても Wing に伝播しないこと
         lead_pp.state().write().await.content = Some("lead-canvas".to_string());
 
         assert_eq!(
@@ -218,8 +218,8 @@ mod tests {
             Some("lead-canvas")
         );
         assert!(
-            worker_pp.state().read().await.content.is_none(),
-            "Worker PP は Lead PP と独立 (cross-Lane state share なし、 doc 12 A6)"
+            wing_pp.state().read().await.content.is_none(),
+            "Wing PP は Lead PP と独立 (cross-Lane state share なし、 doc 12 A6)"
         );
     }
 

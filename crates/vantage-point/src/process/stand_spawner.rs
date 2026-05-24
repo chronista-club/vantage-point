@@ -22,7 +22,7 @@
 //! - `VP_CWD`     : project directory (= `cwd` 引数)
 //! - `VP_SESSION` : tmux session 名 (deterministic、 `addr.tmux_session_name(stand_name)`)
 //! - `VP_PROJECT` : `addr.project`
-//! - `VP_LANE`    : lane label (`lead` / worker name / `unnamed`)
+//! - `VP_LANE`    : lane label (`lead` / wing name / `unnamed`)
 
 use std::path::Path;
 
@@ -129,7 +129,7 @@ pub fn spawn_with_fallback(
     Ok((slot, rx))
 }
 
-/// LaneAddress の lane label を導出 (Lead → "lead"、 Worker(name) → name、 Worker(None) → "unnamed")
+/// LaneAddress の lane label を導出 (Lead → "lead"、 Wing(name) → name、 Wing(None) → "unnamed")
 fn lane_label(addr: &LaneAddress) -> &str {
     match (&addr.kind, addr.name.as_deref()) {
         (LaneKind::Lead, _) => "lead",
@@ -247,7 +247,7 @@ mod tests {
         );
     }
 
-    /// Lead lane の VP_LANE は "lead"、 Worker(None) は "unnamed"。
+    /// Lead lane の VP_LANE は "lead"、 Wing(None) は "unnamed"。
     #[test]
     fn build_stand_command_lane_label_variants() {
         let lead = LaneAddress::lead("vp");

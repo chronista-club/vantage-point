@@ -877,14 +877,14 @@ struct SidebarIpcOutcome {
     /// `(name, path)` を返し、 caller が `spawn_sp_start` を呼ぶ。
     /// dedup は caller の `sp_spawn_triggered: HashSet<String>` (path key) で行う。
     sp_spawn_request: Option<(String, String)>,
-    /// Phase 3-A: Worker Lane 作成要求 `(project_path, name, branch, stand)`。
-    /// caller が project の SP port を解決して `client.create_worker_lane` を呼ぶ。
+    /// Phase 3-A: Wing Lane 作成要求 `(project_path, name, branch, stand)`。
+    /// caller が project の SP port を解決して `client.create_wing_lane` を呼ぶ。
     /// `stand` は doc 11 PR-C で追加 (None なら SP-side default)。
-    add_worker_request: Option<(String, String, Option<String>, Option<String>)>,
+    add_wing_request: Option<(String, String, Option<String>, Option<String>)>,
     /// doc 11 PR-C: 利用可能 Stand 一覧 fetch 要求 `(project_path)`。
     /// caller が SP port を解決して `client.list_stands` を呼ぶ → `AppEvent::StandsResult` で push back。
     list_stands_request: Option<String>,
-    /// Phase 4-A: Worker Lane 削除要求 `(project_path, address)`。
+    /// Phase 4-A: Wing Lane 削除要求 `(project_path, address)`。
     /// caller が SP port を解決して `client.delete_lane` を呼ぶ。
     delete_lane_request: Option<(String, String)>,
     /// Lane Lead Stand restart 要求 `(project_path, address)`。
@@ -966,7 +966,7 @@ fn handle_sidebar_ipc(
             }
         }
         IpcEnvelope::LaneDelete(m) => {
-            // Phase 4-A: Worker Lane 削除要求。 caller (event loop) で SP port を解決して
+            // Phase 4-A: Wing Lane 削除要求。 caller (event loop) で SP port を解決して
             // client.delete_lane を呼ぶ。 active Lane を消した場合は active_lane_address を unset。
             if !m.path.is_empty() && !m.address.is_empty() {
                 // active だった Lane が消えるなら preemptively clear (UI 反映を待たず)
@@ -994,11 +994,11 @@ fn handle_sidebar_ipc(
             let branch = m.branch.filter(|s| !s.is_empty());
             let stand = m.stand.filter(|s| !s.is_empty());
             if !m.path.is_empty() && !m.name.is_empty() {
-                out.add_worker_request = Some((m.path, m.name, branch, stand));
+                out.add_wing_request = Some((m.path, m.name, branch, stand));
             }
         }
         IpcEnvelope::StandsFetch(m) => {
-            // doc 11 PR-C: sidebar の + Add Worker form 開閉時に利用可能 Stand 一覧を取得。
+            // doc 11 PR-C: sidebar の + Add Wing form 開閉時に利用可能 Stand 一覧を取得。
             // caller (event loop) で SP port 解決 → client.list_stands → window.handleStandsResult で push back。
             if !m.path.is_empty() {
                 out.list_stands_request = Some(m.path);
@@ -1797,10 +1797,10 @@ pub fn run() -> anyhow::Result<()> {
                     tracing::warn!("sidebar renderError 失敗: {}", e);
                 }
             }
-            // R5 Worker create flow: spawn_blocking thread からの結果を sidebar に push back。
-            // success → form を閉じる + addWorkerOpen から削除。
+            // R5 Wing create flow: spawn_blocking thread からの結果を sidebar に push back。
+            // success → form を閉じる + addWingOpen から削除。
             // error → form 下に inline error 表示 + form は開いたまま (再 submit 可能)。
-            Event::UserEvent(AppEvent::WorkerCreateResult {
+            Event::UserEvent(AppEvent::WingCreateResult {
                 project_path,
                 name,
                 error,
@@ -1812,9 +1812,9 @@ pub fn run() -> anyhow::Result<()> {
                 });
                 let payload_str = serde_json::to_string(&payload)
                     .unwrap_or_else(|_| "{}".to_string());
-                let script = format!("window.handleAddWorkerResult({})", payload_str);
+                let script = format!("window.handleAddWingResult({})", payload_str);
                 if let Err(e) = sidebar.evaluate_script(&script) {
-                    tracing::warn!("sidebar handleAddWorkerResult 失敗: {}", e);
+                    tracing::warn!("sidebar handleAddWingResult 失敗: {}", e);
                 }
             }
             Event::UserEvent(AppEvent::StandsResult {
@@ -1822,7 +1822,7 @@ pub fn run() -> anyhow::Result<()> {
                 stands,
                 error,
             }) => {
-                // doc 11 PR-C: + Add Worker form の dropdown を populate するための push back。
+                // doc 11 PR-C: + Add Wing form の dropdown を populate するための push back。
                 let payload = serde_json::json!({
                     "project_path": project_path,
                     "stands": stands,
@@ -2090,7 +2090,7 @@ pub fn run() -> anyhow::Result<()> {
                         })
                         .ok();
                 }
-                // Phase 4-A: Worker Lane 削除要求 (sidebar の × button から)
+                // Phase 4-A: Wing Lane 削除要求 (sidebar の × button から)
                 if let Some((project_path, address)) = outcome.delete_lane_request {
                     let sp_port = sidebar_state
                         .processes
@@ -2204,9 +2204,9 @@ pub fn run() -> anyhow::Result<()> {
                         );
                     }
                 }
-                // Phase 3-A: Worker Lane 作成要求 (sidebar の + Add Worker から)
+                // Phase 3-A: Wing Lane 作成要求 (sidebar の + Add Wing から)
                 // doc 11 PR-C: stand 指定 を tuple 4 番目に追加 (None なら SP-side default)
-                if let Some((project_path, name, branch, stand)) = outcome.add_worker_request {
+                if let Some((project_path, name, branch, stand)) = outcome.add_wing_request {
                     let sp_port = sidebar_state
                         .processes
                         .iter()
@@ -2219,7 +2219,7 @@ pub fn run() -> anyhow::Result<()> {
                         let stand_clone = stand.clone();
                         let path_clone = project_path.clone();
                         thread::Builder::new()
-                            .name(format!("create-worker-{}", name))
+                            .name(format!("create-wing-{}", name))
                             .spawn(move || {
                                 let rt =
                                     match tokio::runtime::Builder::new_current_thread()
@@ -2229,7 +2229,7 @@ pub fn run() -> anyhow::Result<()> {
                                         Ok(rt) => rt,
                                         Err(e) => {
                                             tracing::warn!(
-                                                "create-worker tokio runtime: {}",
+                                                "create-wing tokio runtime: {}",
                                                 e
                                             );
                                             return;
@@ -2247,7 +2247,7 @@ pub fn run() -> anyhow::Result<()> {
                                     {
                                         Ok(()) => {
                                             tracing::info!(
-                                                "Worker Lane created: project={} name={} branch={:?}",
+                                                "Wing Lane created: project={} name={} branch={:?}",
                                                 path_clone,
                                                 name_clone,
                                                 branch_clone
@@ -2256,7 +2256,7 @@ pub fn run() -> anyhow::Result<()> {
                                             // topic snapshot で購読側に push される。
                                             // R5: 成功通知を sidebar に push back (form を閉じる)
                                             let _ = proxy.send_event(
-                                                AppEvent::WorkerCreateResult {
+                                                AppEvent::WingCreateResult {
                                                     project_path: path_clone,
                                                     name: name_clone,
                                                     error: None,
@@ -2266,17 +2266,17 @@ pub fn run() -> anyhow::Result<()> {
                                         Err(e) => {
                                             // R5: 失敗通知を sidebar に push back (form 下に
                                             // inline error 表示)。 server からは
-                                            // "create_worker_lane HTTP <code>: <body>" 形式で
+                                            // "create_wing_lane HTTP <code>: <body>" 形式で
                                             // 返ってくるので、 そのまま流す (UI 側で trim)。
                                             let msg = format!("{}", e);
                                             tracing::warn!(
-                                                "create_worker_lane failed: project={} name={}: {}",
+                                                "create_wing_lane failed: project={} name={}: {}",
                                                 path_clone,
                                                 name_clone,
                                                 msg
                                             );
                                             let _ = proxy.send_event(
-                                                AppEvent::WorkerCreateResult {
+                                                AppEvent::WingCreateResult {
                                                     project_path: path_clone,
                                                     name: name_clone,
                                                     error: Some(msg),
@@ -2289,13 +2289,13 @@ pub fn run() -> anyhow::Result<()> {
                             .ok();
                     } else {
                         tracing::warn!(
-                            "lane:add_worker: SP port unknown for path={} (skip)",
+                            "lane:add_wing: SP port unknown for path={} (skip)",
                             project_path
                         );
                     }
                 }
 
-                // doc 11 PR-C: 利用可能 Stand 一覧 fetch 要求 (sidebar の + Add Worker 開閉から)
+                // doc 11 PR-C: 利用可能 Stand 一覧 fetch 要求 (sidebar の + Add Wing 開閉から)
                 if let Some(project_path) = outcome.list_stands_request {
                     let sp_port = sidebar_state
                         .processes

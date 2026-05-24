@@ -6,8 +6,8 @@
 //!
 //! ## 実装済
 //!
-//! - `GET /api/lanes` — `LanePool` の list + disk-scan で Inactive Worker merge
-//! - `POST /api/lanes` — Worker Lane create (Phase 3-A: lane clone + PtySlot spawn)
+//! - `GET /api/lanes` — `LanePool` の list + disk-scan で Inactive Wing merge
+//! - `POST /api/lanes` — Wing Lane create (Phase 3-A: lane clone + PtySlot spawn)
 //! - `DELETE /api/lanes?address=<addr>&cleanup=true` — Lane destroy + cleanup
 //!   (VP-124 Phase 1 で `delete_lane_orchestrated` に core 抽出、 全 trigger 共有)
 //! - `POST /api/lanes/restart?address=<addr>` — Lead Stand restart (Phase A5)
@@ -38,7 +38,7 @@ use super::super::state::AppState;
 // doc 11 §3.7 の `migrate_legacy_stand` shim は 2026-05-03 削除済。 PR #257 の
 // stand 識別子 String 化と同タイミングで導入した「heavens_door / the_hand → echoes / shell」 (PR-pre2 で hd → echoes)
 // migration shim を 1 release 期間 deprecation warn 付きで accept していたが、
-// VP は user 1 人 + lane worker のみで vp-app + daemon が常に同 binary で deploy される
+// VP は user 1 人 + lane wing のみで vp-app + daemon が常に同 binary で deploy される
 // 構成のため、 外部 client が旧 wire format で来る window が実質ゼロと判断、 即削除。
 
 /// REST response: `GET /api/lanes` の JSON shape
@@ -54,16 +54,16 @@ pub struct LanesResponse {
 /// disk-only wing を作るようになったので、 LanePool だけ見ると user 視点で「いるのに
 /// 見えない」 wing が発生する。 disk-scan で `pid: None` Inactive として merge する。
 ///
-/// Phase 5-D: Worker Lane に対しては `cwd` から git 状態 (`WingStatus`) を populate。
+/// Phase 5-D: Wing Lane に対しては `cwd` から git 状態 (`WingStatus`) を populate。
 /// registry には保存せず、 build 時に都度 `wing_status()` を呼ぶ (volatile + 5-7 git subprocess)。
-/// Phase 5-E: LanePool に居ない lane Worker dir も disk scan で merge して `pid: None` で emit。
+/// Phase 5-E: LanePool に居ない lane Wing dir も disk scan で merge して `pid: None` で emit。
 /// Active/Inactive は client 側で `lane.pid != null` で判定する設計。
 pub async fn build_lanes_snapshot(state: &AppState) -> Vec<LaneInfo> {
     let pool = state.lane_pool.read().await;
     let mut lanes = pool.list();
     drop(pool); // git subprocess 中の lock を保たない (wing_status は数 100ms かかる事あり)
 
-    // 既存 Worker の git status を populate
+    // 既存 Wing の git status を populate
     for lane in lanes.iter_mut() {
         if matches!(lane.kind, crate::process::lanes_state::LaneKind::Wing) {
             let path = std::path::Path::new(&lane.cwd);
@@ -73,7 +73,7 @@ pub async fn build_lanes_snapshot(state: &AppState) -> Vec<LaneInfo> {
         }
     }
 
-    // Phase 5-E: lane wings_dir を disk scan して、 LanePool に居ない Worker を pid: None で merge
+    // Phase 5-E: lane wings_dir を disk scan して、 LanePool に居ない Wing を pid: None で merge
     let project_id = std::path::Path::new(&state.project_dir)
         .file_name()
         .and_then(|s| s.to_str())
@@ -109,7 +109,7 @@ pub async fn build_lanes_snapshot(state: &AppState) -> Vec<LaneInfo> {
                 pid: None, // Pane (HD) 不在 = client 側で Inactive 判定の signal
                 cwd: entry.path.clone(),
                 wing_status: None,
-                // Phase 1a: tmux address は activate 時に Vec で populate (Inactive Worker は 0 entry)
+                // Phase 1a: tmux address は activate 時に Vec で populate (Inactive Wing は 0 entry)
                 tmux: Vec::new(),
             };
             // git status を best-effort で populate (branch 表示の連動)
@@ -147,7 +147,7 @@ pub struct CreateLaneReq {
     #[serde(default)]
     pub cwd: Option<String>,
     /// Phase 3-A: lane clone する branch 名。 cwd が None で branch が Some の時、
-    /// `vp lane new <name> <branch>` を SP 内で実行して worker dir を作成、 そこに Lane を spawn する。
+    /// `vp lane new <name> <branch>` を SP 内で実行して wing dir を作成、 そこに Lane を spawn する。
     #[serde(default)]
     pub branch: Option<String>,
 }
@@ -158,7 +158,7 @@ pub struct CreateLaneReq {
 /// 1. 入力 validation (kind == "wing"、 legacy "worker" も可、 name 非空)
 /// 2. cwd 決定:
 ///    - `req.cwd` Some → そのまま使う
-///    - `req.branch` Some → `vp lane new <name> <branch>` subprocess で worker dir 作成
+///    - `req.branch` Some → `vp lane new <name> <branch>` subprocess で wing dir 作成
 ///    - 両方 None → state.project_dir (= Lead と同じ dir) を share (legacy fallback)
 /// 3. PtySlot::spawn で実 PTY 起動 (LaneStand 別 command builder 経由)
 /// 4. LanePool に insert (state=Running、 pid 付き)
@@ -221,7 +221,7 @@ pub async fn create_handler(
     //
     // 旧 fallback (`else { state.project_dir }` で Lead と同 worktree を share) は撤廃。
     // 理由: UI から name="sub" だけ入力した場合、 silent に Lead と同 dir を共有してしまい、
-    // 「Worker = 隔離 worktree」の mental model が崩れていた (race condition の温床)。
+    // 「Wing = 隔離 worktree」の mental model が崩れていた (race condition の温床)。
     //
     // 新規約: branch が None の時は `git config user.name` から prefix を取り、
     // `<user>/<sanitized-name>` 形式の branch を auto-derive して必ず lane clone を実行する。
@@ -255,7 +255,7 @@ pub async fn create_handler(
             )
         })?;
         let path_buf = result.map_err(|e| {
-            // lane::commands::new_wing_in は worker dir 既存 + force=false の時に
+            // lane::commands::new_wing_in は wing dir 既存 + force=false の時に
             // 「ウィング '<name>' は既に存在します」を返す。 UI で input 下に表示するため
             // CONFLICT を返し、 error message をそのまま流す。
             let msg = e.to_string();
@@ -272,7 +272,7 @@ pub async fn create_handler(
             )
         })?;
         tracing::info!(
-            "Worker Lane clone: name={} branch={} dir={}",
+            "Wing Lane clone: name={} branch={} dir={}",
             req.name,
             branch_for_log,
             path_buf.display()
@@ -281,7 +281,7 @@ pub async fn create_handler(
     };
 
     // PtySlot::spawn は openpty + spawn_command の OS syscall でブロッキング。
-    // Phase review fix #2: tokio worker thread を占有しないよう spawn_blocking でラップ。
+    // Phase review fix #2: tokio worker thread (= async executor の OS thread) を占有しないよう spawn_blocking でラップ。
     // Phase 4-X の lane clone と同じ pattern。
     // Phase 1e: addr を渡して HD spec の tmux session 名導出に使う
     let cmd = crate::process::stand_spawner::build_stand_command(
@@ -308,7 +308,7 @@ pub async fn create_handler(
             // Stage 1 (ADR-0001): TermAttach も同時 spawn (race フリー、 Lead 経路と統一)
             pool.insert_pty_slot(addr.clone(), slot, term_rx);
             tracing::info!(
-                "Worker Lane spawned: addr={} stand={} cwd={} pid={}",
+                "Wing Lane spawned: addr={} stand={} cwd={} pid={}",
                 addr,
                 stand,
                 cwd,
@@ -318,7 +318,7 @@ pub async fn create_handler(
         }
         Err(e) => {
             tracing::warn!(
-                "Worker Lane spawn failed (graceful degrade to Dead): addr={} cwd={}: {}",
+                "Wing Lane spawn failed (graceful degrade to Dead): addr={} cwd={}: {}",
                 addr,
                 cwd,
                 e
@@ -375,7 +375,7 @@ pub async fn create_handler(
 /// `DELETE /api/lanes?address=<addr>` request の query
 #[derive(Debug, Deserialize)]
 pub struct DeleteLaneQuery {
-    /// Display 形 ("<project>/lead" / "<project>/worker/<name>")
+    /// Display 形 ("<project>/lead" / "<project>/wing/<name>"、 legacy "worker" alias 受理)
     pub address: String,
     /// Phase 4-B: lane workspace の dir も rm するか (default true)。
     /// false の場合 PtySlot だけ kill して dir 残置 (= debug / forensic 用途)。
@@ -392,7 +392,7 @@ fn default_cleanup() -> bool {
 /// 全 trigger (HTTP DELETE / MCP `delete_wing` / `vp lane rm` CLI) が共有する成功 payload。
 #[derive(Debug, Serialize)]
 pub struct DeletedLaneInfo {
-    /// Display 形 ("<project>/worker/<name>")
+    /// Display 形 ("<project>/wing/<name>")
     pub address: String,
     /// PtySlot drop 直前の child pid (= killed)
     pub pid: Option<u32>,
@@ -581,7 +581,7 @@ pub async fn delete_handler(
 /// `POST /api/lanes/restart?address=<addr>` request の query
 #[derive(Debug, Deserialize)]
 pub struct RestartLaneQuery {
-    /// Display 形 ("<project>/lead" / "<project>/worker/<name>")
+    /// Display 形 ("<project>/lead" / "<project>/wing/<name>"、 legacy "worker" alias 受理)
     pub address: String,
 }
 
@@ -673,12 +673,12 @@ pub async fn restart_handler(
     ))
 }
 
-/// Worker name から default branch を auto-derive する。
+/// Wing name から default branch を auto-derive する。
 ///
 /// 形式: `<git-user>/<sanitized-name>`。
 ///
 /// - `git-user` は `git config user.name` (repo local > global の標準解決) を lowercase + sanitize したもの。
-///   取得失敗・空・sanitize 後 empty なら fallback `worker` prefix を使う。
+///   取得失敗・空・sanitize 後 empty なら fallback `wing` prefix を使う。
 /// - `sanitized-name` は `sanitize_for_branch` で git ref 制約に合わせる。
 ///
 /// 例: user="Mako", name="sub" → `mako/sub`

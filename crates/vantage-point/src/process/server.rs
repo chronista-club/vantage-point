@@ -237,10 +237,11 @@ pub async fn run(
         whitesnake: whitesnake.clone(),
         // Phase A4-2b: Lane scope の Stand pool — Lead Lane 1 つ pre-populate
         // memory rule: 多 scope architecture (App/Project/Lane/Pane)、HD/TH は Lane scope。
-        // Worker Lane の動的 create は A4-4、Stand spawn 連動は A5 で実装。
+        // Wing Lane の動的 create は A4-4、Stand spawn 連動は A5 で実装。
         //
-        // (I-b、 2026-04-30): Worker auto-spawn は AppState 構築後に Mailbox actor 経由で実施。
-        // 旧 PR #228 の `populate_workers_from_disk` sync 経路は削除し、 lane workers を
+        // (I-b、 2026-04-30): Wing auto-spawn は AppState 構築後に Mailbox actor 経由で実施。
+        // 旧 PR #228 の `populate_workers_from_disk` (= 旧 Worker 名称時代、 削除済) sync 経路は
+        // 削除し、 lane wings を
         // `LaneCmd::SpawnLane` Cmd 化して `lane-spawn` mailbox に投入する設計に移行
         // (= concurrency 制御を `Arc<Semaphore::new(N)>` で表現、 N=config.startup.max_concurrent_lane_spawn)。
         // 詳細は run() 内 lane_spawn_actor wiring 参照。
@@ -267,7 +268,7 @@ pub async fn run(
     });
 
     // Phase review fix #2: LanePool::with_lead は内部で PtySlot::spawn (openpty + spawn_command)
-    // で OS syscall ブロッキング → spawn_blocking で tokio worker thread を保護。
+    // で OS syscall ブロッキング → spawn_blocking で tokio worker thread (= tokio runtime の OS thread) を保護。
     // でも... AppState 既に構築済なので restructure したいけど不可。 代替:
     // with_lead 自体は sync だが state 構築段階で `tokio::task::block_in_place` も使えない。
     // 結果的に SP 起動時 1 回だけの呼び出しなので影響は軽微。 review 指摘は記録、 現実装維持。
@@ -295,12 +296,13 @@ pub async fn run(
         );
     }
 
-    // (I-b、 2026-04-30) Lane spawn actor を起動し、 既存 lane workers を Cmd 化して投入。
-    // 旧 PR #228 の sync `populate_workers_from_disk` 経路を Mailbox actor + Semaphore に置換。
+    // (I-b、 2026-04-30) Lane spawn actor を起動し、 既存 lane wings を Cmd 化して投入。
+    // 旧 PR #228 の sync `populate_workers_from_disk` (= 旧 Worker 名称時代の API、 削除済)
+    // 経路を Mailbox actor + Semaphore に置換。
     // - actor は `lane-spawn` mailbox を recv し、 `Arc<Semaphore::new(N)>` で gate しつつ並列実行
-    // - bootstrap は lane workers をスキャンして `LaneCmd::SpawnLane` を投入 (= 1 回限りの seed)
+    // - bootstrap は lane wings をスキャンして `LaneCmd::SpawnLane` を投入 (= 1 回限りの seed)
     // - N=config.startup.max_concurrent_lane_spawn (default 1、 dogfood で計測 log を集計して tweak)
-    // PR-β-2 (VP-120): lane_capabilities pool clone も渡し、 Worker spawn 時に populate_lane する。
+    // PR-β-2 (VP-120): lane_capabilities pool clone も渡し、 Wing spawn 時に populate_lane する。
     {
         // wiremsg R4: wire accumulation store + notifier に rewire (= 旧 WhitesnakeStore.claim 廃止)
         let lane_spawn_store = state.wiremsg_store.clone();
@@ -316,7 +318,7 @@ pub async fn run(
                 state.wire_notifier.clone(), // wiremsg R4: long-poll 起床
                 project_name_for_remote.clone(), // wiremsg R4: `lane-spawn@<project>` の project
                 state.lane_pool.clone(),
-                state.lane_capabilities.clone(), // PR-β-2 (VP-120): Worker spawn 時に populate_lane する
+                state.lane_capabilities.clone(), // PR-β-2 (VP-120): Wing spawn 時に populate_lane する
                 state.system_event_tx.clone(),   // Phase 2 (Step E): system event central bus
                 max_concurrent,
             ),
@@ -328,23 +330,23 @@ pub async fn run(
         let bootstrap_store = state.wiremsg_store.clone();
         let bootstrap_from = format!("sp-bootstrap@{}", project_name_for_remote);
         let lane_spawn_addr = format!("lane-spawn@{}", project_name_for_remote);
-        let workers_project_id = std::path::Path::new(&state.project_dir)
+        let wings_project_id = std::path::Path::new(&state.project_dir)
             .file_name()
             .and_then(|s| s.to_str())
             .unwrap_or("unknown")
             .to_string();
         // project-local lane refactor PR 1: list_wings_for_repo は repo_root: &Path を受け取る。
-        let workers =
+        let wings =
             crate::lane::commands::list_wings_for_repo(std::path::Path::new(&state.project_dir));
-        let total = workers.len();
+        let total = wings.len();
         if total > 0 {
             tracing::info!(
-                "SP startup bootstrap: {} 本の Worker SpawnLane Cmd を投入 (project_id={}, max_concurrent={})",
+                "SP startup bootstrap: {} 本の Wing SpawnLane Cmd を投入 (project_id={}, max_concurrent={})",
                 total,
-                workers_project_id,
+                wings_project_id,
                 max_concurrent
             );
-            for entry in workers {
+            for entry in wings {
                 // doc 11 PR-B: stand は String 化、 default は config の `default_stand`
                 // (未設定なら "echoes" fallback、 PR-pre2 / VP-118 で "hd" → "echoes")。
                 let default_stand = crate::config::Config::load()
@@ -352,7 +354,7 @@ pub async fn run(
                     .default_stand_or_echoes()
                     .to_string();
                 let cmd = super::lane_cmd::LaneCmd::SpawnLane {
-                    project_id: workers_project_id.clone(),
+                    project_id: wings_project_id.clone(),
                     name: entry.name.clone(),
                     cwd: entry.path.clone(),
                     stand: default_stand,
@@ -389,15 +391,15 @@ pub async fn run(
                     }
                 } else {
                     tracing::warn!(
-                        "SP startup bootstrap: wiremsg_store 未配線、 Worker spawn skip name={}",
+                        "SP startup bootstrap: wiremsg_store 未配線、 Wing spawn skip name={}",
                         entry.name
                     );
                 }
             }
         } else {
             tracing::info!(
-                "SP startup bootstrap: lane workers なし (project_id={})",
-                workers_project_id
+                "SP startup bootstrap: lane wings なし (project_id={})",
+                wings_project_id
             );
         }
     }
@@ -417,8 +419,8 @@ pub async fn run(
         // `?lane=<address>` で既存 LanePool の PtySlot に subscribe + write 経路を貼る。
         // 関連 memory: mem_1CaTpCQH8iLJ2PasRcPjHv (Lane = Session Process)
         .route("/ws/terminal", get(ws_terminal::ws_terminal_handler))
-        // Phase A4-2b: Lane (Lead/Worker) lifecycle の REST endpoint
-        // GET: list、 POST: Worker create (A6 minimum)
+        // Phase A4-2b: Lane (Lead/Wing) lifecycle の REST endpoint
+        // GET: list、 POST: Wing create (A6 minimum)
         .route(
             "/api/lanes",
             get(lanes::list_handler)
@@ -427,7 +429,7 @@ pub async fn run(
         )
         // Lane の Lead Stand restart (PtySlot kill + 同 stand で respawn)
         .route("/api/lanes/restart", post(lanes::restart_handler))
-        // doc 11 §4.1 PR-C: 利用可能な Stand 一覧 (sidebar の + Add Worker dropdown 用)
+        // doc 11 §4.1 PR-C: 利用可能な Stand 一覧 (sidebar の + Add Wing dropdown 用)
         .route("/api/stands", get(stands::list_handler))
         .route("/api/show", post(health::show_handler))
         // R3: cross-process wire delivery — 他 SP からの forward 受信口
@@ -648,7 +650,7 @@ pub async fn run(
     //
     // Moody Blues fix #1 (Score 82): announce() は内部で `os_local_hostname()` (= scutil
     // shell-out) を呼ぶ sync blocking call、 tokio async context から直接 call せず
-    // `spawn_blocking` で wrap して worker thread 占有を回避 (= VP-153 fix と整合)。
+    // `spawn_blocking` で wrap して tokio worker thread 占有を回避 (= VP-153 fix と整合)。
     let project_for_announce = project_name_for_remote.clone();
     // VP-154 PR-3.5: config の advertise_hostname を読んで announce に渡す。
     // OS LocalHostName auto-increment 由来の identity 揺れを config 固定で吸収。
@@ -1046,7 +1048,7 @@ pub async fn run_world(
         world_cap.clone(),
     ));
 
-    // VP-129 MVP: lane root FSEvents watcher 起動。 user の Finder / `rm -rf` で worker dir
+    // VP-129 MVP: lane root FSEvents watcher 起動。 user の Finder / `rm -rf` で wing dir
     // を削除した時、 OS file system event → SP `DELETE /api/lanes` 自動発火 (= D10 Reconciliation
     // の 3rd path 拡張、 Push QUIC + Pull port scan + FSEvents の 3-trigger model 完成)。
     let _lane_watcher = tokio::spawn(ProcessManagerCapability::run_lane_watcher(
