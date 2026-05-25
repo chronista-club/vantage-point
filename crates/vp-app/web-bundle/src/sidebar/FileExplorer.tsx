@@ -19,7 +19,7 @@
  * - 受信: `window.vpFiles.handleListResult({ address, entries, truncated })`
  * - 起動 API: `window.vpFilePicker.open(address)` (LaneRow / Cmd+F handler が呼ぶ)
  */
-import { For, Show, createMemo, createSignal, onCleanup, onMount } from 'solid-js'
+import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from 'solid-js'
 import { sidebar } from './store'
 import { sendIpc } from './ipc'
 import { laneAddressKey } from './lane'
@@ -180,6 +180,14 @@ export function FileExplorer() {
     query() ? buildFuzzyView(entries(), query()) : buildTreeView(entries(), expanded()),
   )
 
+  // 検索 input への ref。 `<Show>` で動的 mount された後に明示的に focus する。
+  // wry の WKWebView では動的 insert 後の HTML `autofocus` 属性が効かない場合があり
+  // (moody-blues PR 2 review Issue 2)、 createEffect + setTimeout(0) で focus を保証する。
+  let inputRef: HTMLInputElement | undefined
+  // 結果 body への ref。 selectedIndex 変化時の scrollIntoView で使う
+  // (moody-blues PR 2 review Issue 1: 100 件 fuzzy list で ↓ 連打すると選択が viewport 外に消える)。
+  let bodyRef: HTMLDivElement | undefined
+
   onMount(() => {
     window.vpFilePicker = { open }
     window.vpFiles = { handleListResult }
@@ -187,6 +195,22 @@ export function FileExplorer() {
   onCleanup(() => {
     if (window.vpFilePicker?.open === open) window.vpFilePicker = undefined
     if (window.vpFiles?.handleListResult === handleListResult) window.vpFiles = undefined
+  })
+
+  // picker が visible になったら input に focus。 0ms setTimeout で次 tick に移し、
+  // WKWebView の動的 DOM insert 後でも安定的に focus が当たるようにする。
+  createEffect(() => {
+    if (!visible()) return
+    setTimeout(() => inputRef?.focus(), 0)
+  })
+
+  // selectedIndex が動いたら対応する .vp-fe-row.selected を viewport 内に scroll。
+  // `block: 'nearest'` で最小スクロール量に抑える (上 / 下どちらの方向移動でも自然)。
+  createEffect(() => {
+    selectedIndex() // track
+    if (!visible() || !bodyRef) return
+    const sel = bodyRef.querySelector('.vp-fe-row.selected') as HTMLElement | null
+    sel?.scrollIntoView({ block: 'nearest' })
   })
 
   const activate = (entry: Entry) => {
@@ -238,11 +262,11 @@ export function FileExplorer() {
         <div class="vp-fe-panel" onClick={(e) => e.stopPropagation()}>
           <div class="vp-fe-header">
             <input
+              ref={inputRef}
               class="vp-fe-search"
               type="text"
               placeholder="ファイル名で検索 (空でツリー)..."
               value={query()}
-              autofocus
               onInput={(e) => {
                 setQuery(e.currentTarget.value)
                 setSelectedIndex(0)
@@ -265,7 +289,7 @@ export function FileExplorer() {
               <span class="vp-fe-warn">20,000+ entries — truncated</span>
             </Show>
           </div>
-          <div class="vp-fe-body">
+          <div class="vp-fe-body" ref={bodyRef}>
             <Show when={loading()}>
               <div class="vp-fe-empty">loading…</div>
             </Show>
