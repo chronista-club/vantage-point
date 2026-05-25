@@ -20,6 +20,7 @@
  * - 起動 API: `window.vpFilePicker.open(address)` (LaneRow / Cmd+F handler が呼ぶ)
  */
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from 'solid-js'
+import { CreoIcon } from 'creoui-icons-web'
 import { sidebar } from './store'
 import { sendIpc } from './ipc'
 import { laneAddressKey } from './lane'
@@ -56,6 +57,10 @@ const [loading, setLoading] = createSignal(false)
 const [query, setQuery] = createSignal('')
 const [expanded, setExpanded] = createSignal<Set<string>>(new Set())
 const [selectedIndex, setSelectedIndex] = createSignal(0)
+// ピン留めモード: true の間は file 選択後も picker を閉じない (連続選択用)。
+// pin を off にする (true → false) 操作自体が close の trigger も兼ねる
+// (user 仕様「外すと close」)。 picker を新規 open するたびに false にリセット。
+const [pinned, setPinned] = createSignal(false)
 
 /**
  * address (= LaneAddressWire::key() 形式) を持つ Lane が属する project path を
@@ -87,6 +92,7 @@ function open(address: string): void {
   setExpanded(new Set())
   setSelectedIndex(0)
   setLoading(true)
+  setPinned(false) // 新規 open 時はピン留めを必ずリセット (前回の pin が持ち越されない)
   setVisible(true)
   sendIpc({ t: 'files:list', path: projectPath, address })
 }
@@ -231,7 +237,25 @@ export function FileExplorer() {
       return
     }
     sendIpc({ t: 'files:open', path: projectPath, address, rel_path: entry.rel_path })
-    dismiss()
+    if (pinned()) {
+      // ピン留め中は picker を閉じず、 連続選択しやすいよう検索 input に focus を戻す。
+      setTimeout(() => inputRef?.focus(), 0)
+    } else {
+      dismiss()
+    }
+  }
+
+  // ピンを on/off する。 on→off の遷移は user 仕様「外すと close」に従って dismiss も呼ぶ
+  // (= ピンボタンが close 兼トグルを兼ねる)。 off→on は単に pin 状態に切り替えるだけ。
+  const togglePin = () => {
+    const wasPinned = pinned()
+    setPinned(!wasPinned)
+    if (wasPinned) {
+      dismiss()
+    } else {
+      // pin on にしたら検索 input に focus を戻す (キーボード操作中の流れを切らない)
+      setTimeout(() => inputRef?.focus(), 0)
+    }
   }
 
   const onKeyDown = (e: KeyboardEvent) => {
@@ -272,6 +296,15 @@ export function FileExplorer() {
                 setSelectedIndex(0)
               }}
             />
+            <button
+              class="vp-fe-pin"
+              classList={{ active: pinned() }}
+              onClick={togglePin}
+              title={pinned() ? 'ピン留め解除 (= 閉じる)' : 'ピン留め (auto close 無効)'}
+              type="button"
+            >
+              <CreoIcon name={pinned() ? 'ph:push-pin-fill' : 'ph:push-pin'} size={14} />
+            </button>
             <button
               class="vp-fe-close"
               onClick={dismiss}
@@ -350,6 +383,14 @@ export const FILE_EXPLORER_CSS = `
   background:var(--color-surface-bg-subtle);color:var(--color-text-primary);
   border-radius:var(--radius-sm,6px);font-family:inherit;font-size:12px;}
 .vp-fe-search:focus{outline:none;border-color:var(--color-brand-primary);}
+.vp-fe-pin{display:inline-flex;align-items:center;padding:3px 5px;
+  border:none;background:transparent;color:var(--color-text-tertiary);
+  cursor:pointer;border-radius:3px;
+  transition:background .12s ease,color .12s ease;}
+.vp-fe-pin:hover{background:var(--color-surface-bg-emphasis);
+  color:var(--color-text-primary);}
+.vp-fe-pin.active{color:var(--color-brand-primary);
+  background:var(--color-brand-primary-subtle);}
 .vp-fe-close{border:none;background:transparent;color:var(--color-text-tertiary);
   font-size:14px;cursor:pointer;padding:0 6px;border-radius:3px;}
 .vp-fe-close:hover{background:var(--color-surface-bg-emphasis);
