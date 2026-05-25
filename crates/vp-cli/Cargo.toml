@@ -31,3 +31,9 @@ reqwest = { workspace = true }
 serde_json = { workspace = true }
 # Phase 4-X: lane lib は vantage-point に移動済、 vp-cli から直 deps は不要
 # (vantage-point 経由で transitively 利用)
+
+[dev-dependencies]
+# VP-13 sub-scope B: vp-cli smoke test 用 (= `vp` binary を起動して assert)
+assert_cmd = "2"
+predicates = "3"
+tempfile = "3.27.0"
