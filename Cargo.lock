@@ -1797,17 +1797,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "creo-md"
-version = "0.1.0"
-source = "git+https://github.com/chronista-club/creo-views#d0a40e7909b6177341d7e627d586522fbb88c305"
-dependencies = [
- "markdown",
- "serde",
- "serde_json",
- "ts-rs 12.0.1",
-]
-
-[[package]]
 name = "critical-section"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4620,15 +4609,6 @@ name = "maplit"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3e2e65a1a2e43cfcb47a895c4c8b10d1f4a61097f9f254f183aee60cad9c651d"
-
-[[package]]
-name = "markdown"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a5cab8f2cadc416a82d2e783a1946388b31654d391d1c7d92cc1f03e295b1deb"
-dependencies = [
- "unicode-id",
-]
 
 [[package]]
 name = "markup5ever"
@@ -7610,17 +7590,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "serde-wasm-bindgen"
-version = "0.6.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8302e169f0eddcc139c70f139d19d6467353af16f9fce27e8c30158036a1e16b"
-dependencies = [
- "js-sys",
- "serde",
- "wasm-bindgen",
-]
-
-[[package]]
 name = "serde_core"
 version = "1.0.228"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9219,17 +9188,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4994acea2522cd2b3b85c1d9529a55991e3ad5e25cdcd3de9d505972c4379424"
 dependencies = [
  "thiserror 2.0.18",
- "ts-rs-macros 11.1.0",
-]
-
-[[package]]
-name = "ts-rs"
-version = "12.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "756050066659291d47a554a9f558125db17428b073c5ffce1daf5dcb0f7231d8"
-dependencies = [
- "thiserror 2.0.18",
- "ts-rs-macros 12.0.1",
+ "ts-rs-macros",
 ]
 
 [[package]]
@@ -9237,18 +9196,6 @@ name = "ts-rs-macros"
 version = "11.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ee6ff59666c9cbaec3533964505d39154dc4e0a56151fdea30a09ed0301f62e2"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.117",
- "termcolor",
-]
-
-[[package]]
-name = "ts-rs-macros"
-version = "12.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "38d90eea51bc7988ef9e674bf80a85ba6804739e535e9cab48e4bb34a8b652aa"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -9361,12 +9308,6 @@ name = "unicase"
 version = "2.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dbc4bc3a9f746d862c45cb89d705aa10f187bb96c76001afab07a0d35ce60142"
-
-[[package]]
-name = "unicode-id"
-version = "0.3.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "70ba288e709927c043cbe476718d37be306be53fb1fafecd0dbe36d072be2580"
 
 [[package]]
 name = "unicode-ident"
@@ -9627,7 +9568,7 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "tray-icon",
- "ts-rs 11.1.0",
+ "ts-rs",
  "uuid",
  "wry",
 ]
@@ -9644,23 +9585,6 @@ dependencies = [
  "tokio",
  "tracing",
  "vantage-point",
-]
-
-[[package]]
-name = "vp-mdast"
-version = "0.19.0"
-dependencies = [
- "creo-md",
-]
-
-[[package]]
-name = "vp-mdast-wasm"
-version = "0.19.0"
-dependencies = [
- "creo-md",
- "serde-wasm-bindgen",
- "serde_json",
- "wasm-bindgen",
 ]
 
 [[package]]

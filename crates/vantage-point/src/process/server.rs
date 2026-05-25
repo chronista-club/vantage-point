@@ -408,7 +408,8 @@ pub async fn run(
         .route("/", get(health::index_handler))
         .route("/canvas", get(health::canvas_handler))
         .route("/vendor/{filename}", get(health::vendor_handler))
-        .route("/wasm/{filename}", get(health::wasm_handler))
+        // 旧 `.route("/wasm/{filename}", ...)` (vp-mdast-wasm 配信) は 2026-05-25 削除
+        // (= frontend は marked + creoui-editor-host に移行済、 dead endpoint)。
         // wiremsg Stage 3: `/ws` endpoint は撤去済。Canvas が Stage 2 で "canvas" topic 購読に
         // 移行した結果 `/ws` の接続 client が消滅 (= dead)。chat/permission の双方向経路も
         // Echoes が tmux+claude に移行して以降 unused。

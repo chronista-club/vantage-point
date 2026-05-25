@@ -668,63 +668,10 @@ pub async fn vendor_handler(Path(filename): Path<String>) -> impl IntoResponse {
     }
 }
 
-/// GET /wasm/{filename} — WASM モジュール配信
-///
-/// vp-mdast-wasm のビルド成果物を配信。
-/// dev モードではファイルシステムから読み込み、本番は埋め込み。
-pub async fn wasm_handler(Path(filename): Path<String>) -> impl IntoResponse {
-    let content_type = if filename.ends_with(".wasm") {
-        "application/wasm"
-    } else if filename.ends_with(".js") {
-        "application/javascript; charset=utf-8"
-    } else {
-        "application/octet-stream"
-    };
-
-    let body = load_wasm_file(&filename);
-    match body {
-        Some(bytes) => (
-            [
-                (header::CONTENT_TYPE, content_type),
-                (
-                    header::CACHE_CONTROL,
-                    if is_dev_mode() {
-                        "no-store"
-                    } else {
-                        "public, max-age=86400"
-                    },
-                ),
-            ],
-            bytes,
-        )
-            .into_response(),
-        None => (axum::http::StatusCode::NOT_FOUND, "WASM file not found").into_response(),
-    }
-}
-
-/// WASM ファイルを読み込む
-fn load_wasm_file(filename: &str) -> Option<Vec<u8>> {
-    // セキュリティ: パストラバーサル防止（vendor_handler と同一ルール）
-    if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
-        return None;
-    }
-
-    if is_dev_mode() {
-        let path = web_dir().join("wasm").join(filename);
-        std::fs::read(&path).ok()
-    } else {
-        // 本番: 埋め込み
-        match filename {
-            "vp_mdast_wasm_bg.wasm" => {
-                Some(include_bytes!("../../../../../web/wasm/vp_mdast_wasm_bg.wasm").to_vec())
-            }
-            "vp_mdast_wasm.js" => {
-                Some(include_bytes!("../../../../../web/wasm/vp_mdast_wasm.js").to_vec())
-            }
-            _ => None,
-        }
-    }
-}
+// 旧 GET /wasm/{filename} (vp-mdast-wasm 配信 endpoint) は 2026-05-25 削除。
+// frontend (vp-app web-bundle) は `marked` (npm) + `@chronista-club/creoui-editor-host`
+// に markdown rendering を移行済で、 vp_mdast_wasm 関連 asset は dead 化していた。
+// vp-mdast / vp-mdast-wasm crate + web/wasm/ asset (482KB) と共に撤去。
 
 /// POST /api/shutdown - Graceful shutdown
 pub async fn shutdown_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
