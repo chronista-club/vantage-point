@@ -1109,3 +1109,49 @@ pub async fn process_list_handler(State(state): State<Arc<AppState>>) -> impl In
         "processes": processes,
     }))
 }
+
+#[cfg(test)]
+mod tests {
+    //! VP-13 sub-scope E: health.rs route の Axum oneshot smoke test。
+
+    use super::*;
+    use axum::Router;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use axum::routing::get;
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn health_handler_returns_200_with_stands_field() {
+        let state = crate::process::state::build_test_app_state(None).await;
+        let app = Router::new()
+            .route("/api/health", get(health_handler))
+            .with_state(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body_bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        // HealthResponse の必須 field を verify (= 構造変更 regression net)
+        assert_eq!(body.get("status").and_then(|v| v.as_str()), Some("ok"));
+        assert!(body.get("version").is_some(), "version field 必須");
+        assert!(body.get("pid").is_some(), "pid field 必須");
+        assert!(body.get("project_dir").is_some(), "project_dir field 必須");
+        assert!(body.get("started_at").is_some(), "started_at field 必須");
+        // stands は test 用 AppState では terminal_token == "test" なので
+        // "WORLD_DISABLED" 分岐に入らず populate される
+        assert!(
+            body.get("stands").is_some(),
+            "stands field 必須 (= Stand status map)"
+        );
+    }
+}

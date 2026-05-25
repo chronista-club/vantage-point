@@ -764,3 +764,41 @@ mod tests {
     // doc 11 §3.7 の `migrate_legacy_stand` test 2 件 (translates_old_names /
     // passes_through_modern_names) は 2026-05-03 削除済 (shim 自体が削除されたため)。
 }
+
+#[cfg(test)]
+mod route_smoke_tests {
+    //! VP-13 sub-scope E: lanes.rs route の Axum oneshot smoke test。
+    //!
+    //! 既存 `mod tests` (= helpers / sanitize_for_branch test 等) とは別 mod で配線、
+    //! Medium 層 route test を Section 区切りで分離。
+
+    use super::*;
+    use axum::Router;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use axum::routing::get;
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn list_handler_returns_200_with_lanes_field() {
+        let state = crate::process::state::build_test_app_state(None).await;
+        let app = Router::new()
+            .route("/api/lanes", get(list_handler))
+            .with_state(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/lanes")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body_bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert!(body.get("lanes").map(|v| v.is_array()).unwrap_or(false));
+    }
+}
