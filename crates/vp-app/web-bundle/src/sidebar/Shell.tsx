@@ -18,6 +18,7 @@ import { sendIpc } from './ipc'
 import { isRunningProcess } from './classify'
 import { resolveProjectOrder } from './dnd'
 import { ContextMenu } from './ContextMenu'
+import { FileExplorer, FILE_EXPLORER_CSS } from './FileExplorer'
 import { ProjectAccordion } from './ProjectAccordion'
 import { WorldWidget } from './WorldWidget'
 
@@ -96,6 +97,11 @@ export function Shell() {
 
       {/* 右クリック context menu (Lane 行 / project ヘッダ 共通、 singleton、 VP-204 PR-1)。 */}
       <ContextMenu />
+
+      {/* File Explorer overlay picker (singleton)。 LaneRow のフォルダボタン or Cmd+F で
+          window.vpFilePicker.open(address) を呼ぶと、 lane workdir 全体を被せる overlay が
+          出現してファイルを選べる。 選択すると Canvas (PP) に投げて dismiss する ephemeral。 */}
+      <FileExplorer />
     </div>
   )
 }
@@ -262,4 +268,15 @@ html,body{margin:0;height:100%;background:var(--color-surface-bg-subtle);
 .vp-ctx-item.danger:hover{background:var(--color-status-error,#d4444c);color:#fff;}
 .vp-ctx-item.danger.confirming{background:var(--color-status-error,#d4444c);
   color:#fff;}
+
+/* Lane row のフォルダピッカー起動ボタン (FileExplorer overlay を開く trigger) */
+.vp-lane-files-btn{display:inline-flex;align-items:center;padding:1px 3px;
+  border:none;background:transparent;color:var(--color-text-tertiary);
+  cursor:pointer;border-radius:3px;flex:0 0 auto;opacity:0.55;
+  transition:background .12s ease,color .12s ease,opacity .12s ease;}
+.vp-lane-row:hover .vp-lane-files-btn{opacity:1;}
+.vp-lane-files-btn:hover{background:var(--color-surface-bg-emphasis);
+  color:var(--color-brand-primary);}
+.vp-lane-row.inactive .vp-lane-files-btn{opacity:0.35;}
+${FILE_EXPLORER_CSS}
 `

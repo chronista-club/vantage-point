@@ -12,12 +12,15 @@
 import { render } from 'solid-js/web'
 import { Shell, SHELL_CSS } from './src/sidebar/Shell'
 import { installIpcBridge } from './src/sidebar/ipc'
+import { installSidebarKeybindings } from './src/sidebar/keybindings'
 
 console.info('[vp-sidebar] booting (v1.0 柱2 PR-1 scaffold)')
 
 // IPC bridge は component mount より前に登録する。
 // Rust は webview build 直後から window.renderSidebarState を呼びうるため。
 installIpcBridge()
+// Sidebar 専用ショートカット (Cmd+F → File Explorer overlay) を登録。
+installSidebarKeybindings()
 
 // native WebView の context menu (Reload / Inspect / AutoFill) を抑制する。
 // sidebar の右クリックは独自 ContextMenu に一本化する (VP-204 PR-1)。

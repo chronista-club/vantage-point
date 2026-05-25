@@ -106,6 +106,18 @@ export function LaneRow(props: { lane: LaneInfo; projectPath: string }) {
           <CreoIcon name={icon()!} size={14} />
         </span>
       </Show>
+      {/* File Explorer 起動ボタン: lane workdir に対して overlay picker を開く (Cmd+F と同じ動作)。 */}
+      <button
+        class="vp-lane-files-btn"
+        type="button"
+        title="ファイルを開く (Cmd+F)"
+        onClick={(e) => {
+          e.stopPropagation()
+          window.vpFilePicker?.open(addr())
+        }}
+      >
+        <CreoIcon name="ph:folder-open" size={12} />
+      </button>
       <Show when={inbox()}>
         <span
           class="vp-lane-msg"
