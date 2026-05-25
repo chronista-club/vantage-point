@@ -578,3 +578,115 @@ pub async fn world_port_for(
             .into_response(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! VP-13 sub-scope E: world.rs route の Axum oneshot smoke test。
+    //!
+    //! `crate::process::state::build_test_app_state` で minimal AppState を構築し、
+    //! `world` field が None / Some の 503 / 200 path をそれぞれ verify する。
+    //!
+    //! 注意: AppState は `pub(crate)`、 fixture も `pub(crate)` なので integration test
+    //! (`crates/vantage-point/tests/`) からは触れず、 本 inline tests でのみ run。
+
+    use super::*;
+    use axum::Router;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use axum::routing::get;
+    use tower::ServiceExt; // oneshot
+
+    fn router_for_list_projects(state: std::sync::Arc<AppState>) -> Router {
+        Router::new()
+            .route("/api/world/projects", get(world_list_projects))
+            .with_state(state)
+    }
+
+    fn router_for_list_processes(state: std::sync::Arc<AppState>) -> Router {
+        Router::new()
+            .route("/api/world/processes", get(world_list_processes))
+            .with_state(state)
+    }
+
+    #[tokio::test]
+    async fn world_list_projects_returns_503_when_world_none() {
+        let state = crate::process::state::build_test_app_state(None).await;
+        let app = router_for_list_projects(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/world/projects")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn world_list_projects_returns_200_with_empty_list_when_world_some() {
+        // 空の ProcessManagerCapability を build (= projects 0 件)
+        let world = std::sync::Arc::new(tokio::sync::RwLock::new(
+            crate::capability::ProcessManagerCapability::new(),
+        ));
+        let state = crate::process::state::build_test_app_state(Some(world)).await;
+        let app = router_for_list_projects(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/world/projects")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body_bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        // 0 件でも `projects` field は array で返る
+        assert!(body.get("projects").map(|v| v.is_array()).unwrap_or(false));
+    }
+
+    #[tokio::test]
+    async fn world_list_processes_returns_503_when_world_none() {
+        let state = crate::process::state::build_test_app_state(None).await;
+        let app = router_for_list_processes(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/world/processes")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn world_list_processes_returns_200_with_empty_list_when_world_some() {
+        let world = std::sync::Arc::new(tokio::sync::RwLock::new(
+            crate::capability::ProcessManagerCapability::new(),
+        ));
+        let state = crate::process::state::build_test_app_state(Some(world)).await;
+        let app = router_for_list_processes(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/world/processes")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body_bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert!(body.get("processes").map(|v| v.is_array()).unwrap_or(false));
+    }
+}

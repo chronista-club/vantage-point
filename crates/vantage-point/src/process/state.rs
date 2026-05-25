@@ -376,3 +376,71 @@ impl AppState {
         }
     }
 }
+
+// --- VP-13 sub-scope E: Medium 層 route test 用 fixture ---
+
+/// Test 用の minimal AppState builder。 各 field は default / None / in-memory mock で構築、
+/// `world` のみ caller が optional に指定 (= 503 path / 200 path 切り替え)。
+///
+/// 用途: `crates/vantage-point/src/process/routes/` の各 handler を Axum oneshot で
+/// smoke test する際の shared fixture。 重い field (vpdb / wiremsg_store / lane_capabilities)
+/// は None、 `whitesnake` は `Whitesnake::in_memory()` で軽量化。
+///
+/// Note: `pub(crate)` のため `crates/vantage-point/src/` 内 inline `#[cfg(test)]` mod
+/// からのみ使用可。 integration test (`crates/vantage-point/tests/`) は別 crate なので
+/// 不可 (= 必要なら pub 化検討、 PR 4b cleanup philosophy に従い API surface 拡大は控えめに)。
+#[cfg(test)]
+pub(crate) async fn build_test_app_state(
+    world: Option<Arc<RwLock<ProcessManagerCapability>>>,
+) -> Arc<AppState> {
+    use super::capabilities::CapabilityConfig;
+    use super::lane_capabilities::LaneCapabilitiesPool;
+    use super::lanes_state::LanePool;
+    use super::project_stands_state::ProjectStandsPool;
+    use crate::capability::{Whitesnake, WireNotifier};
+    use crate::protocol::DebugMode;
+
+    let capabilities = Arc::new(
+        ProcessCapabilities::new(CapabilityConfig {
+            project_dir: String::new(),
+            whitesnake: None,
+        })
+        .await,
+    );
+
+    Arc::new(AppState {
+        hub: Hub::new(),
+        sessions: Arc::new(RwLock::new(SessionManager::new())),
+        cancel_token: Arc::new(RwLock::new(CancellationToken::new())),
+        debug_mode: DebugMode::None,
+        shutdown_token: CancellationToken::new(),
+        project_dir: String::new(),
+        project_name: String::new(),
+        pending_prompts: Arc::new(RwLock::new(HashMap::new())),
+        capabilities,
+        actor_registry: Arc::new(RwLock::new(ActorRegistry::new())),
+        world,
+        update: None,
+        interactive_agent: Arc::new(RwLock::new(None)),
+        pty_manager: Arc::new(tokio::sync::Mutex::new(PtyManager::new())),
+        port: 0,
+        file_watchers: Arc::new(tokio::sync::Mutex::new(FileWatcherManager::new())),
+        terminal_token: "test".to_string(),
+        tmux: Arc::new(tokio::sync::Mutex::new(None)),
+        tmux_session_name: String::new(),
+        process_registry: Arc::new(tokio::sync::Mutex::new(ProcessRegistry::new())),
+        screenshot_waiters: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+        topic_router: Arc::new(TopicRouter::new()),
+        canvas_senders: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+        started_at: chrono::Utc::now().to_rfc3339(),
+        vpdb: None,
+        wiremsg_store: None,
+        wire_notifier: WireNotifier::new(),
+        whitesnake: Whitesnake::in_memory(),
+        lane_pool: Arc::new(RwLock::new(LanePool::new())),
+        system_event_tx: tokio::sync::broadcast::channel::<super::lanes_state::SystemEvent>(64).0,
+        project_stands: Arc::new(RwLock::new(ProjectStandsPool::new())),
+        world_capabilities: None,
+        lane_capabilities: Some(Arc::new(RwLock::new(LaneCapabilitiesPool::new()))),
+    })
+}
