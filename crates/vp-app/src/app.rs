@@ -905,6 +905,14 @@ struct SidebarIpcOutcome {
     /// 「accordion を閉じる」 = 「ユーザが retry を望んでいる」 と解釈、 失敗ループの
     /// dedup deadlock を抜けられるようにする。 caller は `sp_spawn_triggered.remove(path)` を呼ぶ。
     sp_spawn_release: Option<String>,
+    /// Sidebar File Explorer: `files:list` 要求 `(project_path, address)`。
+    /// caller (event loop) で lane cwd を解決して `file_explorer::list_entries` を
+    /// blocking thread で実行 → `AppEvent::FilesListResult` で push back。
+    files_list_request: Option<(String, String)>,
+    /// Sidebar File Explorer: `files:open` 要求 `(project_path, address, rel_path)`。
+    /// caller (event loop) で lane cwd を解決して `file_explorer::open_file` を
+    /// blocking thread で実行 → `AppEvent::FilesOpenResult` で push back。
+    files_open_request: Option<(String, String, String)>,
 }
 
 /// sidebar webview から IPC で受け取った JSON を解釈し、`SidebarState` を mutate。
@@ -1140,8 +1148,39 @@ fn handle_sidebar_ipc(
         IpcEnvelope::ProcessAdd | IpcEnvelope::ProjectClonePickFolder => {
             tracing::debug!("sidebar IPC: picker 経路の message が handle_sidebar_ipc に到達");
         }
+        IpcEnvelope::FilesList(m) => {
+            // Sidebar File Explorer: lane workdir 配下を walk して entries を返す要求。
+            // caller (event loop) で SidebarState から cwd を解決して blocking thread で実行する。
+            if !m.path.is_empty() && !m.address.is_empty() {
+                out.files_list_request = Some((m.path, m.address));
+            }
+        }
+        IpcEnvelope::FilesOpen(m) => {
+            // Sidebar File Explorer: 選択されたファイルを Canvas (PP) に表示する要求。
+            // rel_path は workdir 相対 (TS 側で list_entries の戻り値そのまま投げる想定)。
+            if !m.path.is_empty() && !m.address.is_empty() && !m.rel_path.is_empty() {
+                out.files_open_request = Some((m.path, m.address, m.rel_path));
+            }
+        }
     }
     out
+}
+
+/// SidebarState の `lanes_by_project` から (project_path, address) の組に
+/// 対応する Lane の workdir 絶対パスを引く。 見つからなければ `None`。
+///
+/// File Explorer の `files:list` / `files:open` で使う。 address は
+/// `LaneAddressWire::key()` 形式 (= `lane:select` 等で使われている wire 文字列)。
+fn lookup_lane_cwd(
+    state: &SidebarState,
+    project_path: &str,
+    address: &str,
+) -> Option<std::path::PathBuf> {
+    let lanes = state.lanes_by_project.get(project_path)?;
+    lanes
+        .iter()
+        .find(|l| l.address.key() == address)
+        .map(|l| std::path::PathBuf::from(&l.cwd))
 }
 
 // R-0 (`docs/design/11-vp-app-refactor.md` § 3.0a / `mem_1CaaaDoXHZvhR46ZfLN6jx`):
@@ -1835,6 +1874,48 @@ pub fn run() -> anyhow::Result<()> {
                     tracing::warn!("sidebar handleStandsResult 失敗: {}", e);
                 }
             }
+            // Sidebar File Explorer: walk 結果を sidebar webview に push back。
+            // JS 側 (`FileExplorer.tsx`) が `window.vpFiles.handleListResult` で受信。
+            Event::UserEvent(AppEvent::FilesListResult {
+                address,
+                entries,
+                truncated,
+            }) => {
+                let payload = serde_json::json!({
+                    "address": address,
+                    "entries": entries,
+                    "truncated": truncated,
+                });
+                let payload_str =
+                    serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string());
+                let script = format!(
+                    "window.vpFiles && window.vpFiles.handleListResult({})",
+                    payload_str
+                );
+                if let Err(e) = sidebar.evaluate_script(&script) {
+                    tracing::warn!("sidebar vpFiles.handleListResult 失敗: {}", e);
+                }
+            }
+            // Sidebar File Explorer: file 読み込み結果を Canvas (PP) に inject。
+            // 既存 MCP `show` ルートを QUIC を経由せず WebView 直注入 (= ephemeral / local-only) で
+            // 再現するため、 `ProcessMessage::Show` 相当の JSON を main_view にそのまま渡す。
+            Event::UserEvent(AppEvent::FilesOpenResult { content }) => {
+                let msg = serde_json::json!({
+                    "type": "show",
+                    "pane_id": "main",
+                    "content": content,
+                    "append": false,
+                });
+                let msg_str =
+                    serde_json::to_string(&msg).unwrap_or_else(|_| "{}".to_string());
+                let script = format!(
+                    "window.vpCanvas && window.vpCanvas.handleMessage({})",
+                    msg_str
+                );
+                if let Err(e) = main_view.evaluate_script(&script) {
+                    tracing::warn!("main_view vpCanvas.handleMessage (files:open) 失敗: {}", e);
+                }
+            }
             Event::UserEvent(AppEvent::ActivityUpdate(snap)) => {
                 sidebar_state.activity = snap;
                 push_sidebar_state(&sidebar, &sidebar_state);
@@ -2358,6 +2439,66 @@ pub fn run() -> anyhow::Result<()> {
                             "stands:fetch: SP port unknown for path={} (skip)",
                             project_path
                         );
+                    }
+                }
+
+                // Sidebar File Explorer: lane workdir 配下を walk して entries を返す要求。
+                // walk は I/O blocking のため main thread で実行せず、 dedicated thread に逃す。
+                // 結果は AppEvent::FilesListResult で event loop に戻して sidebar に push back。
+                if let Some((project_path, address)) = outcome.files_list_request {
+                    match lookup_lane_cwd(&sidebar_state, &project_path, &address) {
+                        Some(cwd) => {
+                            let proxy = async_action_proxy.clone();
+                            let addr_clone = address.clone();
+                            thread::Builder::new()
+                                .name(format!("files-list-{}", address))
+                                .spawn(move || {
+                                    let (entries, truncated) =
+                                        crate::file_explorer::list_entries(&cwd);
+                                    let _ = proxy.send_event(AppEvent::FilesListResult {
+                                        address: addr_clone,
+                                        entries,
+                                        truncated,
+                                    });
+                                })
+                                .ok();
+                        }
+                        None => {
+                            tracing::warn!(
+                                "files:list: lane cwd unknown for path={} address={} (skip)",
+                                project_path,
+                                address
+                            );
+                        }
+                    }
+                }
+
+                // Sidebar File Explorer: 選択されたファイルを Canvas (PP) に表示する要求。
+                // file 読み込み + base64 (画像) も blocking thread に逃す。 結果の Content JSON は
+                // AppEvent::FilesOpenResult で main thread に戻して main_view へ inject。
+                if let Some((project_path, address, rel_path)) = outcome.files_open_request {
+                    match lookup_lane_cwd(&sidebar_state, &project_path, &address) {
+                        Some(cwd) => {
+                            let proxy = async_action_proxy.clone();
+                            let rel_clone = rel_path.clone();
+                            thread::Builder::new()
+                                .name(format!("files-open-{}", address))
+                                .spawn(move || {
+                                    let content =
+                                        crate::file_explorer::open_file(&cwd, &rel_clone);
+                                    let _ = proxy
+                                        .send_event(AppEvent::FilesOpenResult { content });
+                                })
+                                .ok();
+                        }
+                        None => {
+                            tracing::warn!(
+                                "files:open: lane cwd unknown for path={} address={} rel_path={} (skip)",
+                                project_path,
+                                address,
+                                rel_path
+                            );
+                        }
                     }
                 }
             }

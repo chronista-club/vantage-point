@@ -12,6 +12,9 @@
 pub mod app;
 pub mod client;
 pub mod daemon_launcher;
+/// Sidebar File Explorer (overlay picker) — lane workdir walk + ファイル open。
+/// files:list / files:open IPC (`schema/vp-sidebar.kdl`) の Rust 側実装。
+pub mod file_explorer;
 /// club-kdl-codegen 生成物 (KDL protocol schema → Rust 型)。 VP-208 Phase A。
 pub mod generated;
 pub mod lane;

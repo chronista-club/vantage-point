@@ -84,6 +84,11 @@ tracing-appender = "0.2"
 # Native folder picker (project 追加用、cross-platform)
 rfd = "0.17"
 
+# Sidebar File Explorer (overlay picker): lane workdir を walk して .gitignore を
+# 尊重した entries を列挙するために使う。 WalkBuilder で hidden / .gitignore /
+# .git/exclude をデフォルト除外、 target / node_modules 等は post-filter で潰す。
+ignore = "0.4"
+
 # Phase 5-D fix: daemon_launcher で setsid(2) を呼ぶため (Unix で TheWorld を真の daemon 化、
 #  vp-app 死亡時に SIGHUP 巻き添えで TheWorld も死ぬ問題の修正)。
 # **重要**: target-specific section は file 末尾に置くこと。 途中に置くと TOML 仕様で

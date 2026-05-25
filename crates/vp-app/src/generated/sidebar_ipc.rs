@@ -76,6 +76,19 @@ pub struct StandSelect {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectClonePickFolder;
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FilesList {
+    pub path: String,
+    pub address: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FilesOpen {
+    pub path: String,
+    pub address: String,
+    pub rel_path: String,
+}
+
 /// Envelope enum for channel "ipc" — a discriminated union over its
 /// requests, internally tagged by the "t" field.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -107,4 +120,8 @@ pub enum IpcEnvelope {
     StandSelect(StandSelect),
     #[serde(rename = "project:clone:pickFolder")]
     ProjectClonePickFolder,
+    #[serde(rename = "files:list")]
+    FilesList(FilesList),
+    #[serde(rename = "files:open")]
+    FilesOpen(FilesOpen),
 }
