@@ -177,6 +177,11 @@ pub fn open_file(workdir: &Path, rel_path: &str) -> serde_json::Value {
             }
         }
         FileKind::Image => {
+            // SVG を含む全画像を **`<img src="data:...;base64,...">` でラップ** して
+            // `Content::Html` に流す。 raw SVG を `Content::Html` に直接渡すと
+            // `pp.ts:33-51` の sandbox iframe (`sandbox="allow-scripts"`) 経由で
+            // SVG 内 `<script>` が実行可能になるため。 `<img>` タグの data URI 経由 SVG では
+            // ブラウザ仕様により script 実行されないので、 この経路なら XSS 経路を閉じられる。
             let mime = image_mime_for(rel_path);
             let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
             let title = html_escape_minimal(rel_path);
@@ -238,6 +243,10 @@ fn classify_extension(rel_path: &str) -> FileKind {
     }
 }
 
+/// 画像拡張子 → MIME。 **`classify_extension` の `FileKind::Image` arm に登録した
+/// 拡張子と完全に同期させること**: 片方にだけ追加すると `image_mime_for` の fallback
+/// (`application/octet-stream`) に落ちて `<img>` 描画が silent 失敗する。 将来 `avif`
+/// 等を追加する際は両関数で必ず両対応する。
 fn image_mime_for(rel_path: &str) -> &'static str {
     let lower = rel_path.to_ascii_lowercase();
     if lower.ends_with(".png") {
@@ -271,15 +280,25 @@ fn html_escape_minimal(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
-/// `rel_path` が workdir 配下に閉じている (= traversal / 絶対パス無し) ことを確認。
+/// `rel_path` が workdir 配下に閉じている (= traversal / 絶対パス / hidden file 無し) ことを確認。
+///
+/// hidden file (`.foo` / `.env` 等) は `list_entries` が `WalkBuilder.hidden(true)` で
+/// 除外するのと **同じ policy** を `open_file` 側でも適用する。 list policy と open policy
+/// が乖離していると IPC 直叩きで `.env` 等を読めてしまうため (moody-blues レビュー指摘)、
+/// component 単位で先頭 `.` を含むものを reject する。 `.gitignore` 等を将来 user 操作で
+/// 開けるようにする場合は、 ここで明示的 allow-list を作るのが筋。
 fn safe_rel_path(rel: &str) -> Option<PathBuf> {
     let path = Path::new(rel);
     if path.is_absolute() {
         return None;
     }
     for c in path.components() {
-        if !matches!(c, Component::Normal(_)) {
-            return None;
+        let Component::Normal(name) = c else {
+            return None; // .. / root / prefix / curdir を弾く
+        };
+        let n = name.to_str()?;
+        if n.starts_with('.') {
+            return None; // hidden file / dir 一律 reject (list policy と整合)
         }
     }
     if path.as_os_str().is_empty() {
@@ -468,6 +487,28 @@ mod tests {
         assert!(
             md.contains("Unsupported"),
             "traversal を unsupported に降格していない"
+        );
+    }
+
+    #[test]
+    fn open_rejects_hidden_file_by_direct_path() {
+        // moody-blues レビュー Issue 2: list は hidden(true) で除外するのに open が
+        // 素通りしていた問題の回帰防止。 IPC 直叩きで `.env` 等を読めないこと。
+        let tmp = tempfile::tempdir().unwrap();
+        touch(tmp.path(), ".env", b"SECRET=top");
+        let v = open_file(tmp.path(), ".env");
+        let md = v["markdown"].as_str().expect("markdown field");
+        assert!(
+            md.contains("Unsupported"),
+            "hidden file が path 直指定で読めてしまった"
+        );
+        // hidden dir 配下も同様
+        touch(tmp.path(), ".secrets/key", b"abc");
+        let v = open_file(tmp.path(), ".secrets/key");
+        let md = v["markdown"].as_str().expect("markdown field");
+        assert!(
+            md.contains("Unsupported"),
+            "hidden dir 配下が読めてしまった"
         );
     }
 
