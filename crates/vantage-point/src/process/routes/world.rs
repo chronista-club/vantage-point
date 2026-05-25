@@ -579,7 +579,6 @@ pub async fn world_port_for(
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     //! VP-13 sub-scope E: world.rs route の Axum oneshot smoke test。
