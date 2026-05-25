@@ -272,6 +272,10 @@ html,body{margin:0;height:100%;background:var(--color-surface-bg-subtle);
 .vp-ctx-item.danger.confirming{background:var(--color-status-error,#d4444c);
   color:#fff;}
 
+/* FileExplorer overlay の z-index は ContextMenu (.vp-ctx-backdrop=9998 / .vp-ctx-menu=9999)
+   より上に置く。 ContextMenu は position:fixed で WebView 全体を起点とするため、 overlay の
+   z-index が低いと picker 上に context menu が突き抜けて描画される
+   (moody-blues PR #439 final review Issue 1、 dogfood で実機目撃済)。 */
 /* Lane row のフォルダピッカー起動ボタン (FileExplorer overlay を開く trigger) */
 .vp-lane-files-btn{display:inline-flex;align-items:center;padding:1px 3px;
   border:none;background:transparent;color:var(--color-text-tertiary);
