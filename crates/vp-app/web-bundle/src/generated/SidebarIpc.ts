@@ -83,6 +83,19 @@ export interface StandSelect {
 /** Request "project:clone:pickFolder" — empty payload */
 export interface ProjectClonePickFolder {}
 
+/** Request "files:list" */
+export interface FilesList {
+  path: string;
+  address: string;
+}
+
+/** Request "files:open" */
+export interface FilesOpen {
+  path: string;
+  address: string;
+  rel_path: string;
+}
+
 /** Event name → 生成 interface の map for "ipc" (= type-narrowing 用) */
 export type IpcChannelEventTypes = Record<string, never>;
 
@@ -101,6 +114,8 @@ export interface IpcChannelRequestTypes {
   StandsFetch: { request: StandsFetch; response: void };
   StandSelect: { request: StandSelect; response: void };
   ProjectClonePickFolder: { request: ProjectClonePickFolder; response: void };
+  FilesList: { request: FilesList; response: void };
+  FilesOpen: { request: FilesOpen; response: void };
 }
 
 /** Channel metadata for "ipc" (= Phase 2 runtime SDK 用 type-narrowing 入力) */
@@ -124,6 +139,8 @@ export const IpcChannelMeta = {
     StandsFetch: { request: "stands:fetch" as const, response: "void" as const },
     StandSelect: { request: "stand:select" as const, response: "void" as const },
     ProjectClonePickFolder: { request: "project:clone:pickFolder" as const, response: "void" as const },
+    FilesList: { request: "files:list" as const, response: "void" as const },
+    FilesOpen: { request: "files:open" as const, response: "void" as const },
   } as const,
   __types: undefined as unknown as { events: IpcChannelEventTypes; requests: IpcChannelRequestTypes },
 } as const;
@@ -142,6 +159,8 @@ export type IpcEnvelope =
   | ({ t: "lane:add_wing" } & LaneAddWing)
   | ({ t: "stands:fetch" } & StandsFetch)
   | ({ t: "stand:select" } & StandSelect)
-  | ({ t: "project:clone:pickFolder" } & ProjectClonePickFolder);
+  | ({ t: "project:clone:pickFolder" } & ProjectClonePickFolder)
+  | ({ t: "files:list" } & FilesList)
+  | ({ t: "files:open" } & FilesOpen);
 
 

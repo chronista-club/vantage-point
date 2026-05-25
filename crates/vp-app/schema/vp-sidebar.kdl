@@ -76,5 +76,18 @@ protocol "sidebar" version="1.0.0" {
         }
         // Clone 用フォルダ picker を開く要求 (fieldless)
         request "project:clone:pickFolder" {}
+        // File picker: lane workdir 配下を walk して entries を返却。
+        // 結果は server → client へ window.vpFiles.handleListResult(...) で push (transient channel のため返信枠なし)。
+        request "files:list" {
+            field "path" type="string"
+            field "address" type="string"
+        }
+        // File picker: 選択されたファイルを Canvas (Paisley Park) に表示。
+        // Rust 側で拡張子に応じて Markdown/Log/Html を組み立て、 main_view へ Show を inject。
+        request "files:open" {
+            field "path" type="string"
+            field "address" type="string"
+            field "rel_path" type="string"
+        }
     }
 }
