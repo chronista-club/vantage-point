@@ -61,6 +61,11 @@ const [selectedIndex, setSelectedIndex] = createSignal(0)
 // pin を off にする (true → false) 操作自体が close の trigger も兼ねる
 // (user 仕様「外すと close」)。 picker を新規 open するたびに false にリセット。
 const [pinned, setPinned] = createSignal(false)
+// 「root auto-expand を実施するか」 の 1-shot flag。 picker を新規 open するたびに true に
+// リセットし、 1 回目の `handleListResult` で消費する。 これにより rapid-click 等で
+// 同一 lane の files:list 結果が複数届いた時に user の expand 操作を後着 result が
+// 上書きするのを防ぐ (moody-blues PR #439 final review Issue 2)。
+const [pendingAutoExpand, setPendingAutoExpand] = createSignal(true)
 
 /**
  * address (= LaneAddressWire::key() 形式) を持つ Lane が属する project path を
@@ -93,28 +98,38 @@ function open(address: string): void {
   setSelectedIndex(0)
   setLoading(true)
   setPinned(false) // 新規 open 時はピン留めを必ずリセット (前回の pin が持ち越されない)
+  setPendingAutoExpand(true) // 次回の handleListResult で root auto-expand を実施するよう arm
   setVisible(true)
   sendIpc({ t: 'files:list', path: projectPath, address })
 }
 
 function dismiss(): void {
   setVisible(false)
+  // dismiss 後に IPC 結果が遅れて到着しても無視できるよう loading を寝かせる。
+  // (handleListResult 先頭の visible() ガードと合わせて二重防御。)
+  setLoading(false)
 }
 
 function handleListResult(result: ListResult): void {
+  // dismiss 後の遅延到着結果は捨てる: invisible state で signal を書き換えるのを防ぐ
+  // (moody-blues PR #439 final review Issue 3)。
+  if (!visible()) return
   // 他 lane の結果が遅れて届く race を避ける: current target 以外は捨てる。
   if (result.address !== targetAddress()) return
   setEntries(result.entries)
   setTruncated(result.truncated)
   setLoading(false)
   setSelectedIndex(0)
-  // 最初から「ツリー 1 階層展開」 状態にする: root level の dir (rel_path に "/" を含まない dir)
-  // を全部 expanded に入れる。 user 体感「最初から一覧欲しい」 (PR #439 dogfood feedback) — 全て
-  // collapsed だと "▶ crates" だけ並んで中身が見えず、 picker が空っぽに感じるため。
-  const rootDirs = result.entries
-    .filter((e) => e.kind === 'dir' && !e.rel_path.includes('/'))
-    .map((e) => e.rel_path)
-  setExpanded(new Set(rootDirs))
+  // root auto-expand は picker open ごとに **初回 result のみ** 実施する。 同一 lane で
+  // rapid-click した時、 2 回目以降の result が user の expand/collapse 操作を
+  // 上書きする副作用を回避 (moody-blues PR #439 final review Issue 2)。
+  if (pendingAutoExpand()) {
+    setPendingAutoExpand(false)
+    const rootDirs = result.entries
+      .filter((e) => e.kind === 'dir' && !e.rel_path.includes('/'))
+      .map((e) => e.rel_path)
+    setExpanded(new Set(rootDirs))
+  }
 }
 
 /**
@@ -378,7 +393,7 @@ export function FileExplorer() {
 
 /** Shell.tsx の SHELL_CSS に concat して inject する CSS。 */
 export const FILE_EXPLORER_CSS = `
-.vp-file-explorer{position:absolute;inset:0;z-index:50;display:flex;}
+.vp-file-explorer{position:absolute;inset:0;z-index:10000;display:flex;}
 .vp-fe-backdrop{position:absolute;inset:0;background:rgba(0,0,0,.45);}
 .vp-fe-panel{position:relative;display:flex;flex-direction:column;width:100%;
   background:var(--color-surface-bg-base);
