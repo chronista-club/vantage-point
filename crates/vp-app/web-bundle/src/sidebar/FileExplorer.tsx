@@ -108,6 +108,13 @@ function handleListResult(result: ListResult): void {
   setTruncated(result.truncated)
   setLoading(false)
   setSelectedIndex(0)
+  // 最初から「ツリー 1 階層展開」 状態にする: root level の dir (rel_path に "/" を含まない dir)
+  // を全部 expanded に入れる。 user 体感「最初から一覧欲しい」 (PR #439 dogfood feedback) — 全て
+  // collapsed だと "▶ crates" だけ並んで中身が見えず、 picker が空っぽに感じるため。
+  const rootDirs = result.entries
+    .filter((e) => e.kind === 'dir' && !e.rel_path.includes('/'))
+    .map((e) => e.rel_path)
+  setExpanded(new Set(rootDirs))
 }
 
 /**

@@ -117,7 +117,10 @@ html,body{margin:0;height:100%;background:var(--color-surface-bg-subtle);
 /* SolidJS mount point。 height chain (html→body→#sidebar-root→shell) を繋ぐ。
    この規則が無いと shell が content 高さに collapse し、 window 下部に gap が出る。 */
 #sidebar-root{height:100%;}
-.vp-sidebar-shell{display:flex;flex-direction:column;height:100%;}
+/* position:relative は FileExplorer overlay の inset:0 を sidebar 領域に閉じるために必要。
+   無いと overlay が viewport 基準になり、 sidebar 外の領域 (= ContextMenu と重なる場所) に
+   描画されて検索 input が見えなくなる (PR #439 dogfood feedback)。 */
+.vp-sidebar-shell{position:relative;display:flex;flex-direction:column;height:100%;}
 .vp-sidebar-header{flex:0 0 auto;display:flex;align-items:center;gap:6px;
   padding:var(--spacing-sm,8px);font-size:11px;
   font-weight:500;color:var(--color-text-secondary);
