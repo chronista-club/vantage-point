@@ -6,8 +6,10 @@
 //!
 //! ## 実装済
 //!
-//! - `GET /api/lanes` — `LanePool` の list + disk-scan で Inactive Wing merge
-//! - `POST /api/lanes` — Wing Lane create (Phase 3-A: lane clone + PtySlot spawn)
+//! - `GET /api/lanes` — `LanePool` の list (F.8 B Convergent で disk-scan merge 撤去、
+//!   disk-only Lane は lane watcher / SP bootstrap で auto-spawn 経由 active 化)
+//! - `POST /api/lanes` — Wing Lane create (Phase 3-A: lane clone + PtySlot spawn、
+//!   F.8 B Convergent で spawn 失敗時の disk dir rollback ポリシー追加)
 //! - `DELETE /api/lanes?address=<addr>&cleanup=true` — Lane destroy + cleanup
 //!   (VP-124 Phase 1 で `delete_lane_orchestrated` に core 抽出、 全 trigger 共有)
 //! - `POST /api/lanes/restart?address=<addr>` — Lead Stand restart (Phase A5)
@@ -47,17 +49,31 @@ pub struct LanesResponse {
     pub lanes: Vec<LaneInfo>,
 }
 
-/// SP の全 Lane snapshot を build する (LanePool + disk-scan Inactive Wing merge)。
+/// SP の全 Lane snapshot を build する (LanePool 由来のみ、 disk-only は乗せない)。
 ///
 /// HTTP `GET /api/lanes` と QUIC `lanes_snapshot` 両 publish 経路で **同一 logic**
-/// を共有するための helper。 project-local lane refactor PR 1 で `vp lane new` が
-/// disk-only wing を作るようになったので、 LanePool だけ見ると user 視点で「いるのに
-/// 見えない」 wing が発生する。 disk-scan で `pid: None` Inactive として merge する。
+/// を共有するための helper。
+///
+/// ## F.8 B Convergent (2026-05-26): disk-only Lane の表示廃止
+///
+/// 旧版は LanePool に居ない wing dir を disk-scan で `pid: None, state: Running` として
+/// merge し sidebar に italic dim で表示していた。これは **中間状態 (= disk dir はあるが
+/// LanePool に居ない)** を可視化する設計だったが、 click 不可 / Activate 経路なしで
+/// 「死に体」 として user 体験を悪化させていた。
+///
+/// 新版では:
+/// - sidebar に表示される Lane は **LanePool 由来のみ** (= 必ず active 化を試みた結果)
+/// - disk dir 発見 → SP 起動時 bootstrap (server.rs) or lane watcher Create event
+///   (capability/process_manager_capability.rs `handle_lane_create_event`) で
+///   auto-spawn → LanePool 経由で sidebar に出る
+/// - spawn 失敗時は LanePool に `LaneState::Dead` で record される (= 失敗が見える)
+///
+/// この変更で「disk dir はあるが sidebar に出ない」 ケースが理論上一瞬発生するが、
+/// lane watcher が即座に POST /api/lanes を発火して spawn → LanePool entry が即追加
+/// される (= convergence、 user 視点では遅延 ms 単位)。
 ///
 /// Phase 5-D: Wing Lane に対しては `cwd` から git 状態 (`WingStatus`) を populate。
 /// registry には保存せず、 build 時に都度 `wing_status()` を呼ぶ (volatile + 5-7 git subprocess)。
-/// Phase 5-E: LanePool に居ない lane Wing dir も disk scan で merge して `pid: None` で emit。
-/// Active/Inactive は client 側で `lane.pid != null` で判定する設計。
 pub async fn build_lanes_snapshot(state: &AppState) -> Vec<LaneInfo> {
     let pool = state.lane_pool.read().await;
     let mut lanes = pool.list();
@@ -65,59 +81,11 @@ pub async fn build_lanes_snapshot(state: &AppState) -> Vec<LaneInfo> {
 
     // 既存 Wing の git status を populate
     for lane in lanes.iter_mut() {
-        if matches!(lane.kind, crate::process::lanes_state::LaneKind::Wing) {
+        if matches!(lane.kind, LaneKind::Wing) {
             let path = std::path::Path::new(&lane.cwd);
             if path.exists() && path.join(".git").exists() {
                 lane.wing_status = Some(crate::lane::commands::wing_status(path));
             }
-        }
-    }
-
-    // Phase 5-E: lane wings_dir を disk scan して、 LanePool に居ない Wing を pid: None で merge
-    let project_id = std::path::Path::new(&state.project_dir)
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("")
-        .to_string();
-    if !project_id.is_empty() {
-        let existing_names: std::collections::HashSet<String> = lanes
-            .iter()
-            .filter_map(|l| {
-                if matches!(l.kind, crate::process::lanes_state::LaneKind::Wing) {
-                    l.name.clone()
-                } else {
-                    None
-                }
-            })
-            .collect();
-        // project-local lane refactor PR 1: list_wings_for_repo は repo_root を受け取り、
-        // <repo>/.vp/lanes/<name> + legacy global path の dual-read を行う。
-        let inactive =
-            crate::lane::commands::list_wings_for_repo(std::path::Path::new(&state.project_dir));
-        for entry in inactive {
-            if existing_names.contains(&entry.name) {
-                continue; // in-memory 優先、 disk 側 skip
-            }
-            let addr = LaneAddress::wing(&project_id, &entry.name);
-            let mut info = LaneInfo {
-                address: addr,
-                kind: LaneKind::Wing,
-                name: Some(entry.name.clone()),
-                state: LaneState::default(), // Pane 不在の表現は pid: None に集約 (state は default Running)
-                stand: "echoes".to_string(), // default、 activate 時に上書き可 (doc 11 PR-B で String 化、 PR-pre2 で "hd" → "echoes")
-                created_at: chrono::Utc::now().to_rfc3339(),
-                pid: None, // Pane (HD) 不在 = client 側で Inactive 判定の signal
-                cwd: entry.path.clone(),
-                wing_status: None,
-                // Phase 1a: tmux address は activate 時に Vec で populate (Inactive Wing は 0 entry)
-                tmux: Vec::new(),
-            };
-            // git status を best-effort で populate (branch 表示の連動)
-            let path = std::path::Path::new(&entry.path);
-            if path.exists() && path.join(".git").exists() {
-                info.wing_status = Some(crate::lane::commands::wing_status(path));
-            }
-            lanes.push(info);
         }
     }
 
@@ -226,8 +194,11 @@ pub async fn create_handler(
     // 新規約: branch が None の時は `git config user.name` から prefix を取り、
     // `<user>/<sanitized-name>` 形式の branch を auto-derive して必ず lane clone を実行する。
     // explicit に同 dir を share したい場合は API caller が `cwd` を明示的に指定する。
-    let cwd = if let Some(c) = req.cwd {
-        c
+    // F.8 B Convergent: cwd 決定経路を tag 付き で track。 spawn 失敗時の rollback 可否を判定する。
+    // - `lane clone` 経路 (= 自分が作った disk dir): spawn 失敗時 rollback (disk dir 削除)
+    // - `explicit cwd` 経路 (= user / watcher が既存 dir を渡してきた): rollback しない (= dir 保護)
+    let (cwd, was_lane_cloned) = if let Some(c) = req.cwd {
+        (c, false)
     } else {
         let branch = req
             .branch
@@ -277,7 +248,7 @@ pub async fn create_handler(
             branch_for_log,
             path_buf.display()
         );
-        path_buf.to_string_lossy().into_owned()
+        (path_buf.to_string_lossy().into_owned(), true)
     };
 
     // PtySlot::spawn は openpty + spawn_command の OS syscall でブロッキング。
@@ -317,8 +288,41 @@ pub async fn create_handler(
             (LaneState::Running, Some(pid))
         }
         Err(e) => {
+            // F.8 B Convergent: spawn 失敗時の rollback ポリシー
+            // - was_lane_cloned=true (自分で disk dir を作った): rollback で dir 削除 + 500 早期 return
+            //   (= 中間状態 disk-only Lane を残さない)
+            // - was_lane_cloned=false (explicit cwd): dir は user / watcher 由来なので保護、
+            //   Dead state で LanePool に record (= sidebar に失敗が見える、 後で手動 retry 可能)
+            if was_lane_cloned {
+                tracing::warn!(
+                    "Wing Lane spawn failed → rollback (lane clone で作った disk dir を削除): addr={} cwd={}: {}",
+                    addr,
+                    cwd,
+                    e
+                );
+                let cwd_for_rm = cwd.clone();
+                let rm_result =
+                    tokio::task::spawn_blocking(move || std::fs::remove_dir_all(&cwd_for_rm)).await;
+                match rm_result {
+                    Ok(Ok(())) => tracing::info!("rollback: disk dir 削除成功 cwd={}", cwd),
+                    Ok(Err(rm_err)) => tracing::warn!(
+                        "rollback: disk dir 削除失敗 (orphan dir 残置) cwd={}: {}",
+                        cwd,
+                        rm_err
+                    ),
+                    Err(join_err) => {
+                        tracing::warn!("rollback: rm task join 失敗 cwd={}: {}", cwd, join_err)
+                    }
+                }
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({
+                        "error": format!("Wing Lane spawn failed (rollback executed): {}", e)
+                    })),
+                ));
+            }
             tracing::warn!(
-                "Wing Lane spawn failed (graceful degrade to Dead): addr={} cwd={}: {}",
+                "Wing Lane spawn failed (explicit cwd、 Dead で record): addr={} cwd={}: {}",
                 addr,
                 cwd,
                 e

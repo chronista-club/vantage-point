@@ -1646,10 +1646,19 @@ impl ProcessManagerCapability {
                 }
                 event_opt = rx.recv() => {
                     let Some(event) = event_opt else { break }; // channel closed
-                    if !matches!(event.kind, EventKind::Remove(_)) {
-                        continue;
+                    match event.kind {
+                        EventKind::Remove(_) => {
+                            Self::handle_lane_remove_event(&world, &client, &path_map, &event).await;
+                        }
+                        EventKind::Create(_) => {
+                            // F.8 B Convergent: SP 起動後に CLI / 外部で `.vp/lanes/<name>`
+                            // dir が増えた時、 SP に POST /api/lanes (cwd 明示) で spawn を依頼。
+                            // 「disk dir があるが LanePool に居ない」 中間状態 (= disk-only Lane)
+                            // を恒久化させない、 lifecycle 自動 convergence。
+                            Self::handle_lane_create_event(&world, &client, &path_map, &event).await;
+                        }
+                        _ => {} // Modify / Access 等は無視
                     }
-                    Self::handle_lane_remove_event(&world, &client, &path_map, &event).await;
                 }
             }
         }
@@ -1774,6 +1783,100 @@ impl ProcessManagerCapability {
                         "lane watcher: SP DELETE 失敗 (port={}, address={}): {}",
                         port,
                         address,
+                        e
+                    );
+                }
+            }
+        }
+    }
+
+    /// F.8 B Convergent: lane Create event を 1 path 処理。 path → project + wing_name 解決 →
+    /// SP POST /api/lanes (kind=wing, name=<wing>, cwd=<existing_dir>) で auto-spawn を依頼する。
+    ///
+    /// `run_lane_watcher` の inner、 sibling は `handle_lane_remove_event` (Remove 時の SP DELETE)。
+    /// 設計対称性: Remove → DELETE / Create → POST で「dir 状態と LanePool 状態を一致させる」
+    /// convergence loop を成立させる (= disk-only Lane を恒久化しない)。
+    ///
+    /// 競合 case:
+    /// - sidebar `+` で作成中に Create event fired → SP 側 LanePool 重複チェックで CONFLICT
+    ///   が返り、 watcher 側はそれを debug log で受ける (= silent OK)
+    /// - SP 起動時 bootstrap で既に同 wing が SpawnLane Cmd 投入済 → 上記同様 CONFLICT で no-op
+    async fn handle_lane_create_event(
+        world: &Arc<RwLock<Self>>,
+        client: &reqwest::Client,
+        path_map: &std::collections::HashMap<std::path::PathBuf, (String, String)>,
+        event: &notify::Event,
+    ) {
+        for path in &event.paths {
+            // dir のみ対象 (= `.vp/lanes/<name>` の new dir、 単発ファイルは無視)
+            if !path.is_dir() {
+                continue;
+            }
+            let Some((project_name, project_path, wing_name)) = resolve_lane_event(path, path_map)
+            else {
+                continue;
+            };
+
+            // SP port 取得 (= running_processes registry)
+            let port = {
+                let world_read = world.read().await;
+                let procs = world_read.running_processes.read().await;
+                let key = normalize_path_key(std::path::Path::new(&project_path));
+                procs.get(&key).map(|p| p.port)
+            };
+            let Some(port) = port else {
+                tracing::debug!(
+                    "lane watcher: SP not running for project={} (skip create) wing={}",
+                    project_name,
+                    wing_name
+                );
+                continue;
+            };
+
+            // SP POST /api/lanes (cwd 明示で既存 dir を再利用、 new_wing_in skip 経路)。
+            // body 構築は serde_json::json! で minimal、 wire 互換は CreateLaneReq (routes/lanes.rs) と一致。
+            let url = format!("http://[::1]:{}/api/lanes", port);
+            let body = serde_json::json!({
+                "kind": "wing",
+                "name": wing_name,
+                "cwd": path.to_string_lossy(),
+            });
+            tracing::info!(
+                "lane watcher: dir created → SP POST 発火 (project={}, wing={}, port={})",
+                project_name,
+                wing_name,
+                port
+            );
+            match client.post(&url).json(&body).send().await {
+                Ok(r) if r.status().is_success() => {
+                    tracing::info!(
+                        "lane watcher: SP POST 成功 (project={}, wing={})",
+                        project_name,
+                        wing_name
+                    );
+                }
+                Ok(r) if r.status() == reqwest::StatusCode::CONFLICT => {
+                    // 競合: sidebar `+` or bootstrap で既に Lane 作成済。 silent OK。
+                    tracing::debug!(
+                        "lane watcher: SP POST CONFLICT (= 既に Lane あり、 silent OK) project={} wing={}",
+                        project_name,
+                        wing_name
+                    );
+                }
+                Ok(r) => {
+                    tracing::warn!(
+                        "lane watcher: SP POST non-success status={} project={} wing={}",
+                        r.status(),
+                        project_name,
+                        wing_name
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "lane watcher: SP POST 失敗 (port={}, project={}, wing={}): {}",
+                        port,
+                        project_name,
+                        wing_name,
                         e
                     );
                 }
