@@ -57,3 +57,18 @@ export function openAddWingFor(projectPath: string): boolean {
 export const [deleteHintVisible, setDeleteHintVisible] = createSignal(false)
 /** hint bar に表示する label (= "delete wing: foo/wing/bar" 等)。 */
 export const [deleteHintLabel, setDeleteHintLabel] = createSignal('')
+
+// =============================================================================
+// `l` directive — Lane number switcher mode (v0.6 / PR 447)
+// =============================================================================
+//
+// `Cmd hold l` 発火で「lane number mode」 に突入: 5 秒以内に 1-9 を modifier なしで打つと、
+// visible lane (= expanded project の中) を上から N 番目で lane:select 発火。 mode 中は
+// hint bar (= sidebar 下端) に「Press 1-9 / Esc to cancel」 を表示。
+//
+// state は module-scope (= 1 sidebar に対して singleton)。
+
+/** lane number mode hint bar の visible state。 Shell.tsx で render。 */
+export const [laneSelectHintVisible, setLaneSelectHintVisible] = createSignal(false)
+/** lane number mode hint bar に表示する候補 lane の一覧 (= "1. project/lead  2. project/wing/foo  ...")。 */
+export const [laneSelectHintLabel, setLaneSelectHintLabel] = createSignal('')

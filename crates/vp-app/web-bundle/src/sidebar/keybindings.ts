@@ -14,13 +14,17 @@ import { installDirectiveHandler } from '../shortcuts/chord'
 import {
   deleteHintLabel,
   deleteHintVisible,
+  laneSelectHintLabel,
+  laneSelectHintVisible,
   openAddWingFor,
   setDeleteHintLabel,
   setDeleteHintVisible,
+  setLaneSelectHintLabel,
+  setLaneSelectHintVisible,
 } from './directive-state'
 
 // hint 信号は keybindings 利用者 (Shell.tsx) からも参照されるので re-export。
-export { deleteHintLabel, deleteHintVisible }
+export { deleteHintLabel, deleteHintVisible, laneSelectHintLabel, laneSelectHintVisible }
 
 declare global {
   interface Window {
@@ -211,7 +215,117 @@ export function dispatchDirective(key: string): void {
     window.vpLanePicker?.open?.()
     return
   }
+  // PR 447 `l` (lane number switcher mode): mode 突入 → 5 秒以内に 1-9 数字キーで visible lane 切替。
+  if (key === 'l') {
+    enterLaneSelectMode()
+    return
+  }
   console.debug('[directive] sidebar 側で未実装:', key)
+}
+
+// =============================================================================
+// `l` directive — Lane number switcher mode (v0.6 / PR 447)
+// =============================================================================
+
+const LANE_SELECT_MODE_MS = 5000
+
+interface VisibleLane {
+  path: string
+  address: string
+  label: string
+}
+
+let laneSelectModeTimer: ReturnType<typeof setTimeout> | null = null
+let laneSelectModeTargets: VisibleLane[] = []
+
+/** expanded project の lane を上から flat list で収集 (= 1-9 で indexing する候補)。 */
+function collectVisibleLanes(): VisibleLane[] {
+  const out: VisibleLane[] = []
+  const map = sidebar.lanes_by_project ?? {}
+  for (const proc of sidebar.processes) {
+    if (!proc.expanded) continue // collapse 中はスキップ (= user の「colaps で開いているもの」)
+    const lanes = map[proc.path] ?? []
+    const projectName = proc.path.split('/').pop() ?? proc.path
+    for (const lane of lanes) {
+      const addr = laneAddressKey(lane)
+      const kind = lane.kind || lane.address.kind
+      const name = lane.name ?? lane.address.name ?? ''
+      const label =
+        kind === 'lead' ? `${projectName} / Lead` : `${projectName} / Wing: ${name}`
+      out.push({ path: proc.path, address: addr, label })
+    }
+  }
+  return out
+}
+
+function exitLaneSelectMode(): void {
+  setLaneSelectHintVisible(false)
+  setLaneSelectHintLabel('')
+  laneSelectModeTargets = []
+  if (laneSelectModeTimer !== null) {
+    clearTimeout(laneSelectModeTimer)
+    laneSelectModeTimer = null
+  }
+  window.removeEventListener('keydown', laneNumberHandler, true)
+}
+
+function laneNumberHandler(e: KeyboardEvent): void {
+  // input / textarea / contenteditable にフォーカス時は数字入力を妨げない (= mode abort)
+  const target = e.target as HTMLElement | null
+  if (target) {
+    const tag = target.tagName
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || target.isContentEditable) {
+      exitLaneSelectMode()
+      return
+    }
+  }
+  // Esc で abort
+  if (e.key === 'Escape') {
+    e.preventDefault()
+    exitLaneSelectMode()
+    return
+  }
+  // 1-9 で switch
+  if (e.key >= '1' && e.key <= '9') {
+    e.preventDefault()
+    const n = parseInt(e.key, 10) - 1
+    const target = laneSelectModeTargets[n]
+    if (target) {
+      sendIpc({ t: 'lane:select', path: target.path, address: target.address })
+    }
+    exitLaneSelectMode()
+    return
+  }
+  // 修飾キー単体 (Meta / Control / Shift / Alt) keydown は mode を keep する (= user が押し続けるだけ)
+  if (e.key === 'Meta' || e.key === 'Control' || e.key === 'Shift' || e.key === 'Alt') {
+    return
+  }
+  // それ以外のキーは mode abort (= 通常 input に通す)
+  exitLaneSelectMode()
+}
+
+function enterLaneSelectMode(): void {
+  const targets = collectVisibleLanes()
+  if (targets.length === 0) {
+    console.debug('[directive l] visible lane なし、 mode skip')
+    return
+  }
+  laneSelectModeTargets = targets
+  // hint label: "1. project/lead  2. project/wing/foo  ..."、 9 件で truncate
+  const label = targets
+    .slice(0, 9)
+    .map((t, i) => `${i + 1}. ${t.label}`)
+    .join('   ')
+  setLaneSelectHintLabel(label)
+  setLaneSelectHintVisible(true)
+
+  // 既存 timer / listener があれば clear (= 連打対応)
+  if (laneSelectModeTimer !== null) clearTimeout(laneSelectModeTimer)
+  window.removeEventListener('keydown', laneNumberHandler, true)
+
+  // 数字キー listener install (capture phase で chord listener より先に取る)
+  window.addEventListener('keydown', laneNumberHandler, true)
+  laneSelectModeTimer = setTimeout(exitLaneSelectMode, LANE_SELECT_MODE_MS)
 }
 
 export function installSidebarKeybindings(): void {

@@ -1,6 +1,6 @@
 # VP ショートカット規約 (Shortcut Convention)
 
-> **status: draft v0.5** — 2026-05-27 update。 v0.4 (= 棚卸し + Layer C 拡充 + 不採用 directive 宣言) を base に、 lane 操作 directive (`r`/`n`/`s`/`d`) を PR 445 で実装完了して確定 directive (§C.2) に昇格。
+> **status: draft v0.6** — 2026-05-27 update。 v0.5 (= lane 操作 directive `r/n/s/d` を §C.2 昇格) を base に、 meta directive `?` (cheatsheet) を実装して §C.2 確定昇格。 chord.ts に shift 例外 (= shift + symbol は通す、 shift + letter は reject) を追加して `Cmd hold ?` (= Cmd+Shift+/) を実現。
 >
 > 主な変更 (v0.3 → v0.4):
 > 1. §C.2 (確定 directive) に `e` / `g` / `h` / `w` を昇格 (v0.3 予約 → v0.4 確定)
@@ -183,6 +183,8 @@ user 概念 (前 turn で提示):
 | `Cmd hold n` | `n` (new wing) | focus-transferring | active project (= active_lane / active_stand の project) の AddWing form を keyboard で open (= sidebar 内 ProjectAccordion の form を expand) | PR 445 |
 | `Cmd hold s` | `s` (switch) | focus-transferring | Lane / project switcher picker overlay を open (LanePicker.tsx、 fuzzy 検索 + flat list)。 lane 選択で `lane:select`、 project 選択で `process:toggle` (= accordion expand) | PR 445 |
 | `Cmd hold d` | `d` (delete) | context polymorphic | 2-click confirm 内蔵: 1 回目で pending state + sidebar 下端 hint bar 表示、 1 秒以内 2 回目で execute (active_lane の Wing → `lane:delete`、 active_stand → `process:delete`)、 timeout で abort | PR 445 |
+| `Cmd hold l` | `l` (lane number switcher mode) | focus-transferring (mode) | **mode-based directive**: ⌘ hold l で mode 突入 (= sidebar 下端に hint bar)、 **5 秒以内に modifier なし 1-9 単発キー** で `collectVisibleLanes()` (= expanded project の中の lane を上から flat list) の N 番目を `lane:select`。 Esc / 他キー / timeout で abort。 input フォーカス時は数字入力を妨げない (= mode abort) | PR 447 |
+| `Cmd hold ?` | `?` (meta cheatsheet) | focus-preserving | 全 directive 一覧 + 不採用 / 予約 / Avoid list を **markdown table** で Canvas (PP) に表示。 **規約上で唯一 shift 入りの directive** (= `Cmd+Shift+/` → keydown event の `e.key === '?'`)、 chord.ts の shift 例外 (= shift + symbol は通す) で実現 | PR 447 |
 
 ### C.3 予約 directive (v0.4 文法に基づく、 実装は別 PR)
 
@@ -191,9 +193,7 @@ user 概念 (前 turn で提示):
 | `Cmd hold t` | `t` | focus-preserving | active lane の cc session の rename (= `/rename` 等価) |
 | `Cmd hold m` | `m` | focus-transferring | mailbox 経由 messaging picker |
 | `Cmd hold a` | `a` | focus-preserving | stopped project の SP を auto-spawn 起動 |
-| `Cmd hold l` | `l` | focus-transferring | Lane list dedicated panel を open (将来 — v1.0 では既存 sidebar が常時 visible なため低優先度) |
 | `Cmd hold o` | `o` | focus-transferring | generic open picker (URL / lane / external doc 等) |
-| `Cmd hold ?` | `?` (meta) | focus-preserving | cheatsheet (= 本規約 doc の Layer C を Canvas に markdown 表示) |
 
 ### C.4 既存単発 shortcut (規約 v0.4 と整合)
 
@@ -369,6 +369,7 @@ dispatch 判定は **main view の Scene state** (`frameEngine.getCurrentSceneId
 
 | date | version | section | change | PR |
 |------|---------|---------|--------|----|
+| 2026-05-27 | v0.6 draft | §C.2 / §C.3 / Layer D | (1) `?` (meta cheatsheet) を §C.2 確定昇格、 chord.ts に shift 例外 (= shift + symbol は通す、 letter のみ reject)。 (2) `l` の意味を「lane panel 予約」 から **「lane number switcher mode」** に再定義 → §C.2 確定昇格: ⌘ hold l で mode 突入、 modifier なし 1-9 で expanded project 内 lane を上から N 番目で切替 (mode-based directive、 5 秒 timeout)。 (3) cheatsheet markdown を Rust 静的生成、 `AppEvent::DirectiveInject` で PP に inject | PR 447 |
 | 2026-05-27 | v0.5 draft | §C.2 / §C.3 | `r` / `n` / `s` / `d` を確定 directive に昇格 (PR 445 で実装、 sidebar 側 polymorphic dispatch + LanePicker.tsx 新規 + 2-click confirm hint bar)。 §C.3 から 4 entry を移動、 残り予約は `t/m/a/l/o/?` | PR 445 |
 | 2026-05-27 | v0.4 §C.2 | `e` / `g` / `h` / `w` を「v0.4 予定」 から **実装済 (PR #444)** に reclassify | PR 445 (同梱) |
 | 2026-05-26 | v0.4 draft | §C / §D / §A.1 | 既存 shortcut の完全棚卸し + Layer C 拡充 (`e/g/h/w` を確定 directive に昇格、 `s/n/r/d/t/m/a/o/?` を予約 directive に整理) + undocumented (`Ctrl+Shift+C` 等) を §C.4 に明示化 + 新規 §C.6「不採用 directive」 (= `c` clear 不採用を invariant 宣言) + §D.7 「context polymorphism dispatch table」 | PR 442 |

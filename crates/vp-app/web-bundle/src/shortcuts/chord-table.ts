@@ -77,4 +77,17 @@ export const DIRECTIVE_TABLE: Record<string, DirectiveEntry> = {
       'delete focused entity with 2-click confirm (1 秒以内に 2 回目で execute、 timeout で abort)',
     semantic: 'focus-preserving',
   },
+  // v0.6 (PR 447) — lane number switcher mode (= v0.4 §C.3 で予約していた `l` (lane panel) を再定義)
+  l: {
+    description:
+      'lane number switcher mode: ⌘ hold l で mode 突入、 5 秒以内に 1-9 で expanded project 内 lane を上から N 番目で lane:select',
+    semantic: 'focus-transferring',
+  },
+  // v0.6 (PR 447) で実装 — meta directive
+  // `Cmd hold ?` = `Cmd+Shift+/` keydown。 規約上で唯一 shift 入りの directive (= chord.ts の shift 例外)。
+  '?': {
+    description:
+      'cheatsheet — 全 directive 一覧を Canvas (PP) に markdown table で表示 (focus-preserving)',
+    semantic: 'focus-preserving',
+  },
 }

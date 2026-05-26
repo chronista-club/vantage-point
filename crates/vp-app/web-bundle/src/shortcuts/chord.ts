@@ -32,13 +32,21 @@ export function installDirectiveHandler(ctx: DirectiveContext): () => void {
     const mod = isMac ? e.metaKey : e.ctrlKey
 
     if (!mod) return
-    // Shift / Alt の組合せは別 layer (layout 系等) なので directive 対象外
-    if (e.shiftKey || e.altKey) return
+    // Alt 修飾は terminal の Opt+letter 入力 (π 等) と被るので reject。
+    if (e.altKey) return
     // Modifier 自身の keydown (Meta / Control) は skip
     if (e.key === 'Meta' || e.key === 'Control') return
 
-    const key = e.key.toLowerCase()
-    if (key.length !== 1) return // 1 文字キーのみ directive 対象
+    const rawKey = e.key
+    if (rawKey.length !== 1) return // 1 文字キーのみ directive 対象
+    const key = rawKey.toLowerCase()
+
+    // Shift 修飾の扱い:
+    // - shift + alphanumeric letter (例: ⌘+Shift+F) は **layout / visual 系** の領域 (Ctrl+Shift+digit
+    //   と類比) なので directive としては reject (= 別 handler に通す)
+    // - shift + symbol (例: ⌘+Shift+/ で `?`) は directive 候補として通す (= 規約 v0.6 `?` cheatsheet)。
+    //   `?` は本質的に Shift+/ でしか入力できないため、 唯一の許可 path
+    if (e.shiftKey && /^[a-z0-9]$/.test(key)) return
 
     if (DIRECTIVE_TABLE[key]) {
       e.preventDefault()
