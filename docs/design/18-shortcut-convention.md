@@ -1,8 +1,17 @@
 # VP ショートカット規約 (Shortcut Convention)
 
-> **status: draft v0.3** — 2026-05-26 起草。 dogfood feedback で **binding は変動** することを前提に、 **操作体系 (invariant) と modifier binding (mutable) を疎結合に分離** する layered 構造で記述する。
+> **status: draft v0.4** — 2026-05-26 update。 v0.3 (= directive 集合 + Cmd hold 単発キー) を base に、 棚卸し + Layer C 拡充 + undocumented 明示化を実施。
 >
-> v0.3 で **chord 2 段 state machine 設計を破棄**、 「**operative directive (動詞) の集合**」 + **`Cmd hold + 単発キー` で各 directive を発火** という Vim operator / Emacs prefix 系の単純な design に再構築 (= user の flow 視点「Cmd hold f → 操作 → Cmd hold p」 を素直に表現)。
+> 主な変更 (v0.3 → v0.4):
+> 1. §C.2 (確定 directive) に `e` / `g` / `h` / `w` を昇格 (v0.3 予約 → v0.4 確定)
+> 2. §C.3 (予約 directive) に `s` / `n` / `r` / `d` / `t` / `m` / `a` / `o` / `?` を整理
+> 3. §C.4 (既存単発) に `Ctrl+Shift+C` global fallback を追記 (undocumented gap 解消)
+> 4. **新規 §C.6 — 不採用 directive list**: shortcut で操作しない動作 (= `c` clear 等 destructive action) を明記
+> 5. §D に新サブセクション "**context polymorphism dispatch table**" 追加 (`r` / `d` の Scene 依存 dispatch を例示)
+> 6. §A.1 panel-local 例に「picker / AddWing form」 を明示
+> 7. §C.1 に未使用 letter (= 将来予約候補) を「reserved unused」 として明記
+>
+> v0.3 の core (= directive 集合 + Cmd hold + 単発キー、 3 layer 疎結合) は keep。 文法 / 実装方針 / Avoid List は variable。
 
 ---
 
@@ -57,7 +66,7 @@ VP の操作は **動詞 (directive) の集合** + **その挙動軸 (semantics)
 |----|----|-----------|-----|
 | `focus-preserving` | 投げる | 自分の focus を keep、 別 pane に command / content を投擲 | `p` を main view focus 中に打つ → PP に content 送信、 focus は cc に戻る |
 | `focus-transferring` | 移動する | focus 自体を別 pane に移す | `f` で File Explorer overlay 表示 + sidebar focus へ移動 |
-| `panel-local` | panel 内操作 | 既に panel に focus がある状態の選択 / 確定操作 | picker 内 `p` = "現在 selected file を PP へ" |
+| `panel-local` | panel 内操作 | 既に panel に focus がある状態の選択 / 確定操作 | picker 内 `p` = "現在 selected file を PP へ" / FileExplorer の `↑↓ / Enter / Esc` / AddWing form の `Enter / Esc` |
 | `layout` | UI structure | Scene / pane の切替 / resize | `Ctrl+Shift+1..4` |
 | `system` | OS 標準 | undo / redo / cut / copy / paste 等 | `Cmd+C` 他 |
 
@@ -139,48 +148,82 @@ user 概念 (前 turn で提示):
 | letter | 意味 | 主挙動 |
 |--------|------|--------|
 | `f` | **f**ile | File Explorer overlay (sidebar) を open + focus 移動 |
-| `l` | **l**ane | Lane list panel (sidebar) を open + focus 移動 (v1.0 では既存 sidebar の lane list が常時 visible なので no-op 寄り、 将来 dedicated panel) |
-| `r` | **r**ecord / **r**estart | (TBD) context dependent: lane focus 中なら lane restart 等 |
-| `o` | **o**pen | (TBD) generic open |
-| `c` | **c**lear / **c**lose | (TBD) clear current panel content 等 |
-| `n` | **n**ew | (legacy: `Cmd+N` 単発 = New Window menu accelerator) |
-| `s` | **s**ave / **s**witch | (TBD) |
+| `l` | **l**ane | Lane list panel (dedicated) を open + focus 移動 (v1.0 では既存 sidebar の lane list が常時 visible なので no-op 寄り、 将来 dedicated panel) |
+| `n` | **n**ew | new wing 作成 prompt (= sidebar "+ Add Wing" form を起動) |
+| `s` | **s**elect / **s**witch | Lane / project 切替 picker (active lane を選ぶ overlay) |
+| `r` | **r**estart | context: project focus → process:restart、 lane focus → lane:restart |
+| `d` | **d**elete | focused entity 削除 (2-click confirm 内蔵) |
+| `t` | **t**itle | session rename (= cc の /rename と等価) |
+| `m` | **m**ailbox | mailbox 経由 messaging picker |
+| `a` | **a**ctivate | stopped project の SP 起動 |
+| `o` | **o**pen | generic open (URL / lane / etc 別 picker) |
+| `?` | meta | 全 directive を Canvas に markdown table で render (cheatsheet) |
 
-### C.2 確定 directive (v1.0 で実装するもの)
+#### 不採用 letter (= shortcut では操作しない、 v0.4 で明示確定)
 
-| binding | directive | 意味 (context dispatch) |
-|---------|-----------|-------------------------|
-| `Cmd hold f` | `f` (file) | **どこから打っても** sidebar の File Explorer overlay を open + sidebar focus へ移動 |
-| `Cmd hold p` | `p` (PP) | **File Explorer picker visible 中なら**: 選択中 file を PP (Canvas) に送る + picker は pin 状態に関係なく **連続選択を許す** (= dismiss しない) |
+| letter | 意味 | 理由 |
+|--------|------|------|
+| `c` | clear / close | destructive action (= 何かを消す) は 1 押し misfire リスクが高い。 明示的な UI button 経由のみ。 詳細は §C.6 |
 
-### C.3 予約 directive (v1.0 文法に基づく、 実装は別 PR)
+#### 未使用 letter (= 将来予約候補、 まだ意味割当なし)
 
-| binding | directive | 意味 |
-|---------|-----------|------|
-| `Cmd hold e` | `e` | focus を Echoes 入力欄に移動 |
-| `Cmd hold g` | `g` | focus を Gold Experience 表示に移動 |
-| `Cmd hold h` | `h` | focus を Hermit Purple に移動 |
-| `Cmd hold l` | `l` | Lane list panel (dedicated) を open |
-| `Cmd hold r` | `r` | (context) lane focus 中 → lane restart |
-| `Cmd hold c` | `c` | (context) PP focus 中 → PP clear、 Echoes focus 中 → cc clear |
-| `Cmd hold w` | `w` | TheWorld status を Canvas (PP) に表示 |
+`b` `i` `j` `k` `q` `u` `v` `x` `y` `z` (10 letters)。 新 directive 追加時はこの中から選ぶか、 既存 letter の polymorphism 拡張を検討。
 
-### C.4 既存単発 shortcut (規約 v1.0 と整合)
+### C.2 確定 directive (v0.4 時点で実装済 / 実装予定)
+
+| binding | directive | semantic | 意味 (context dispatch) | 実装状況 |
+|---------|-----------|----------|-------------------------|---------|
+| `Cmd hold f` | `f` (file) | focus-transferring | **どこから打っても** sidebar の File Explorer overlay を open + sidebar focus へ移動 | PR #441 merged |
+| `Cmd hold p` | `p` (PP) | panel-local | **File Explorer picker visible 中なら**: 選択中 file を PP (Canvas) に送る + picker は pin 状態に関係なく **連続選択を許す** (= dismiss しない) | PR #441 merged |
+| `Cmd hold e` | `e` (Echoes) | focus-transferring | active lane の Echoes 入力欄 (= cc) に focus + 必要なら Scene を `lead-focus` に切替 | v0.4 予定 (= PR 443) |
+| `Cmd hold g` | `g` (Gold Experience) | focus-transferring | active lane の GE output に focus + Scene を `ge-focus` (or 同等) に切替 | v0.4 予定 |
+| `Cmd hold h` | `h` (Hermit Purple) | focus-transferring | active lane の HP に focus + Scene を `hp-focus` に切替 | v0.4 予定 |
+| `Cmd hold w` | `w` (TheWorld) | focus-preserving | TheWorld status (= process list / health) を PP (Canvas) に show。 focus は元の panel に残る | v0.4 予定 |
+
+### C.3 予約 directive (v0.4 文法に基づく、 実装は別 PR)
+
+| binding | directive | semantic | 意味 |
+|---------|-----------|----------|------|
+| `Cmd hold s` | `s` | focus-transferring | Lane / project 切替 picker (= active lane を選ぶ overlay、 File Explorer 類似 UX) |
+| `Cmd hold n` | `n` | focus-transferring | new wing 作成 prompt (= sidebar の "+ Add Wing" form を keyboard で起動) |
+| `Cmd hold r` | `r` | context polymorphic | project focus 中 → process:restart、 lane focus 中 → lane:restart (詳細 §D.7) |
+| `Cmd hold d` | `d` | context polymorphic | focused entity 削除 (2-click confirm)。 lane focus → wing 削除、 project focus → project remove |
+| `Cmd hold t` | `t` | focus-preserving | active lane の cc session の rename (= `/rename` 等価) |
+| `Cmd hold m` | `m` | focus-transferring | mailbox 経由 messaging picker |
+| `Cmd hold a` | `a` | focus-preserving | stopped project の SP を auto-spawn 起動 |
+| `Cmd hold l` | `l` | focus-transferring | Lane list dedicated panel を open (将来 — v1.0 では既存 sidebar が常時 visible なため低優先度) |
+| `Cmd hold o` | `o` | focus-transferring | generic open picker (URL / lane / external doc 等) |
+| `Cmd hold ?` | `?` (meta) | focus-preserving | cheatsheet (= 本規約 doc の Layer C を Canvas に markdown 表示) |
+
+### C.4 既存単発 shortcut (規約 v0.4 と整合)
 
 | key | 用途 | 状態 |
 |-----|------|------|
-| `Cmd+N` | New Window (muda menu) | **既存 keep** — `n` は directive にも予約候補だが、 当面 menu accelerator 専用 |
+| `Cmd+N` | New Window (muda menu) | **既存 keep** — `n` は directive 予約 (§C.3) と棲み分け: menu accelerator は `Cmd+N` 単発、 directive は `Cmd hold n` (= 結果として同 keydown event だが、 dispatch 順は menu accelerator が先) |
 | `Cmd+W` / `Cmd+Q` | Close Window / Quit (predefined) | **既存 keep** (system) |
 | `Cmd+C/V/X/Z/A` 等 | Edit menu predefined | **既存 keep** (system) |
-| `Ctrl+Shift+1..4` | Scene 切替 (web-bundle/keybindings.ts) | **既存 keep** (layout) |
+| `Ctrl+Shift+1..4` | Scene 切替 (`web-bundle/keybindings.ts`) | **既存 keep** (layout) |
 | `Ctrl+Shift+] / [` | Scene cyclic | **既存 keep** (layout) |
+| **`Ctrl+Shift+C`** (`main_area.rs:1303-1319`) | active lane の selection copy (global fallback listener) | **既存 keep** — v0.4 で明示化 (= undocumented gap 解消)。 lane individual handler が捕り逃した場合の system-level clipboard copy fallback、 規約 system カテゴリに属する |
+| `Ctrl+Insert` / `Shift+Insert` (xterm.js) | terminal context での copy / paste | **既存 keep** (system) — terminal は xterm.js native handler で上書き、 詳細は §D.6 |
 
 ### C.5 Legacy / 互換 shortcut
 
 | key | 状態 |
 |-----|------|
-| `Cmd+F` (sidebar focus 中の File Explorer 起動、 PR #439 で実装) | 規約 v1.0 で **`f` directive にそのまま昇格** — 文字 binding は変わらない、 但し挙動が「sidebar focus 中のみ」 から「どこからでも」 に拡張。 旧 code path は generalize される |
+| `Cmd+F` (sidebar focus 中の File Explorer 起動、 PR #439 で実装) | 規約 v0.3 で **`f` directive にそのまま昇格** — 文字 binding は変わらない、 但し挙動が「sidebar focus 中のみ」 から「どこからでも」 に拡張。 旧 code path は generalize される |
 | sidebar の `📁` button (LaneRow) | 恒久的 keep (discoverability + mouse 派 user 救済) |
+
+### C.6 不採用 directive (= shortcut で操作しない動作、 v0.4 で明示確定)
+
+shortcut として **採用しない** 動作を明示する。 これらは「将来 directive 化してはいけない」 ことを規約として宣言する section。
+
+| letter / 動作 | 不採用理由 | 代替手段 |
+|---|---|---|
+| `c` (clear / close) | **destructive action は 1 押し misfire のリスクが高い**。 PP clear / Echoes session clear / lane wing 削除等を keyboard 1 動作で行うと、 隣のキーとの押し間違いで content が失われる。 user は「焦らず使用感を確かめる」 VP 方針と整合 | 明示的な UI button (PP の `data-action="clear"` button 等)、 もしくは `Cmd hold d` (delete) の 2-click confirm path |
+| (TBD) | (将来追加される候補) | (将来) |
+
+不採用宣言は **規約 v0.4 以降の invariant**。 不採用宣言を覆す (= 採用に転じる) には Layer A 級の decision が必要 (= creo-memories memory + 本 doc 大幅改訂)。
 
 ---
 
@@ -261,11 +304,33 @@ File Explorer overlay 内で user が `Cmd hold p` を打った場合の挙動:
 
 これは picker 内の独立 listener として実装する (sidebar 全体 listener とは別)。 もしくは picker 内で `window.vpFilePicker.sendSelectedToPP()` 等の API を expose して、 directive dispatcher から呼ぶ。
 
-### D.6 menu との関係
+### D.6 menu との関係 + terminal (xterm.js) との関係
 
 - directive は muda menu accelerator として表現できない (= `Cmd+letter` 単発と同じ key event だが、 menu accelerator は OS-level で WebView より先に発火するため、 menu accelerator に登録した key は WebView listener に届かない)
 - **directive 用 letter は menu accelerator に bind しない**: `Cmd+N` (= menu accelerator) は keep、 `Cmd+F` / `Cmd+P` 等 directive 用 letter は **menu accelerator なし**
 - menu item は **chord-less で残し** (mouse 派 user 救済)、 title に「(⌘ hold f)」 等の hint を併記
+
+**terminal (xterm.js) 領域**:
+- terminal pane の keydown は xterm.js の `CustomKeyEventHandler` で **上書きされ得る** (= `main_area.rs:1025-1045` 参照)
+- 主な override: `Ctrl+Insert` / `Shift+Insert` (clipboard)、 terminal selection 中の `Ctrl+C` (= copy semantics の context-aware fallback)
+- これらは規約 system カテゴリで keep。 directive listener は capture phase で取るため、 directive 用 letter (`f` / `p` / `e` / ...) は xterm.js より先に preventDefault される
+
+### D.7 context polymorphism dispatch table
+
+`r` / `d` 等の context dependent directive は、 「どの panel / Scene に focus があるか」 で挙動を分岐する。 dispatch 判定の SSOT を以下に明示:
+
+| directive | context (= focused panel / Scene) | 動作 |
+|---|---|---|
+| `r` | active panel が **project header / SP scope** (Scene: `lead-focus` 等) | `process:restart` IPC を送信 |
+| `r` | active panel が **lane / Echoes** (Scene: `pp-overlay` 等) | `lane:restart` IPC を送信 |
+| `d` | sidebar focus + lane row selected | `lane:delete` IPC (2-click confirm) |
+| `d` | sidebar focus + project header selected | `process:delete` IPC (2-click confirm) |
+| `d` | picker visible 中 | (TBD) selected file の delete (= 危険、 v0.4 では no-op) |
+| `p` | File Explorer picker visible | selected file を Canvas へ送る (panel-local) |
+| `p` | cc 入力欄 focus 中 | (TBD、 v0.4 では未実装) cc 内容を PP に送る |
+| `p` | その他 | no-op + debug log |
+
+dispatch 判定は **main view の Scene state** (`frameEngine.getCurrentSceneId()`) + **sidebar の active_lane / active_stand** + **picker visibility** の 3 軸を組み合わせる。 詳細実装は各 directive PR で確定。
 
 ---
 
@@ -304,7 +369,8 @@ File Explorer overlay 内で user が `Cmd hold p` を打った場合の挙動:
 
 | date | version | section | change | PR |
 |------|---------|---------|--------|----|
-| 2026-05-26 | v0.3 draft | (full) | chord 2 段 state machine 設計を破棄、 「directive 集合 + Cmd hold 単発キー」 に再構築。 user の flow 視点 (`Cmd hold f → 操作 → Cmd hold p`) を素直に表現 | (本 commit) |
+| 2026-05-26 | v0.4 draft | §C / §D / §A.1 | 既存 shortcut の完全棚卸し + Layer C 拡充 (`e/g/h/w` を確定 directive に昇格、 `s/n/r/d/t/m/a/o/?` を予約 directive に整理) + undocumented (`Ctrl+Shift+C` 等) を §C.4 に明示化 + 新規 §C.6「不採用 directive」 (= `c` clear 不採用を invariant 宣言) + §D.7 「context polymorphism dispatch table」 | PR 442 |
+| 2026-05-26 | v0.3 draft | (full) | chord 2 段 state machine 設計を破棄、 「directive 集合 + Cmd hold 単発キー」 に再構築。 user の flow 視点 (`Cmd hold f → 操作 → Cmd hold p`) を素直に表現 | PR #441 |
 | 2026-05-26 | v0.2 draft | (full) | 2 layer 構造 (invariant / mutable 分離) | (前 commit、 同 PR で上書き) |
 | 2026-05-26 | v0.1 draft | (full) | 初版起草 (single layer、 superseded by v0.2) | (前 commit、 同 PR で上書き) |
 
@@ -314,12 +380,16 @@ File Explorer overlay 内で user が `Cmd hold p` を打った場合の挙動:
 
 - PR #439: File Explorer overlay picker (Rust IPC + UI)
 - PR #440: File Explorer follow-up (z-index / race guard)
-- PR #441 (予定): 本規約 v1.0 と Layer C の `f` / `p` directive 実装
+- PR #441: 規約 v0.3 + Layer C `f` / `p` directive 実装 (merged)
+- PR 442 (本 update): 規約 v0.4 doc only update (棚卸し + Layer C 拡充 + `c` 不採用宣言)
+- PR 443 (予定): `e` / `g` / `h` / `w` directive 実装 (Stand focus 系)
+- PR 444 (予定): lane 操作 directive `s` / `n` / `r` / `d` 実装 (context polymorphism)
+- PR 445 (予定): `?` directive (cheatsheet)
+- PR 446+ (余力で): `t` / `m` / `a` / `l` / `o` 逐次
 
 将来の創発 (ideas / TBD):
-- `meta` directive `?` の cheatsheet 実装
-- `e` / `g` / `h` directive (Stand focus / send) 実装
 - mouse / drag-drop で directive を発火する equivalent path
 - multi-lane targeting (= 別 lane の PP に投げる、 prefix-key で lane number 指定 等)
 - accessibility (sticky-key で directive 発火サポート確認)
 - picker context-aware な `p` の挙動: pin 状態とどう integrative にするか
+- 未使用 letter (`b/i/j/k/q/u/v/x/y/z`) への directive 割当 (= 必要が出てから)
