@@ -337,6 +337,11 @@ body{overflow:hidden;}
       <div class="pp-content" id="pp-content">
         <p class="pp-placeholder">Information Router — markdown / HTML / 画像 を表示する surface (PR-ε-3 で mcp__show 経路から content が流れ込む)</p>
       </div>
+      <!-- doc 19 PP Canvas Stack Model: bottom history strip。 SolidJS HistoryStrip component が
+           entry.tsx の mountHistoryStrip() で #pp-history-strip 内に render する。 mcp__show
+           投入ごとに canvas.items に push され、 strip 上に thumbnail (icon + 8-char title + ✕)
+           として並ぶ。 cursor が指す cell は brand color frame で強調。 -->
+      <div class="pp-history-strip" id="pp-history-strip"></div>
     </div>
   </div>
   <div class="pane stand" id="pane-gold-experience" data-kind="gold_experience" data-frame-id="ge">
