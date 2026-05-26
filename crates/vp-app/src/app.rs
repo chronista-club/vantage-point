@@ -183,9 +183,7 @@ fn spawn_menu_event_pump(proxy: EventLoopProxy<AppEvent>) {
 ///
 /// `list_processes` 側のみエラーなら空 map 扱い (= port は config 値のまま) で degrade、
 /// `list_projects` 側エラーは bubble up する。
-async fn fetch_projects_with_ports(
-    client: &TheWorldClient,
-) -> anyhow::Result<Vec<ProcessInfo>> {
+async fn fetch_projects_with_ports(client: &TheWorldClient) -> anyhow::Result<Vec<ProcessInfo>> {
     let (proj_res, run_res) = tokio::join!(client.list_projects(), client.list_processes());
     let mut processes = proj_res?;
     let port_by_name: std::collections::HashMap<String, u16> = match run_res {
