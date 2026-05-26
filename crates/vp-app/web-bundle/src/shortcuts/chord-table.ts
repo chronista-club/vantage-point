@@ -26,11 +26,12 @@ export interface DirectiveEntry {
 }
 
 /**
- * 確定 directive registry (v0.3)。 新しい directive 追加時はここに 1 行足す + 規約 doc Layer C も更新。
+ * 確定 directive registry (v0.5)。 新しい directive 追加時はここに 1 行足す + 規約 doc Layer C も更新。
  *
  * key は **小文字 1 文字**。 user が打つ `Cmd hold + <letter>` keydown event の `e.key.toLowerCase()` で照合する。
  */
 export const DIRECTIVE_TABLE: Record<string, DirectiveEntry> = {
+  // v0.3 (PR #441) で実装
   f: {
     description: 'File Explorer overlay (sidebar) を open + focus 移動',
     semantic: 'focus-transferring',
@@ -40,6 +41,7 @@ export const DIRECTIVE_TABLE: Record<string, DirectiveEntry> = {
       'send current/selected to PP (file picker visible 中なら選択 file を Canvas に投擲、 picker は dismiss しない)',
     semantic: 'panel-local',
   },
+  // v0.4 (PR #444) で実装 — Stand focus 系
   e: {
     description: 'focus to Echoes (= active lane の cc 入力欄、 Scene を echoes-focus に切替)',
     semantic: 'focus-transferring',
@@ -54,6 +56,25 @@ export const DIRECTIVE_TABLE: Record<string, DirectiveEntry> = {
   },
   w: {
     description: 'TheWorld status (= daemon health + process list) を PP に markdown で表示',
+    semantic: 'focus-preserving',
+  },
+  // v0.5 (PR 445) で実装 — lane 操作系
+  r: {
+    description:
+      'restart context polymorphic: active_lane あり → lane:restart、 active_stand あり → process:restart',
+    semantic: 'focus-preserving',
+  },
+  n: {
+    description: 'active project の AddWing form を keyboard で open',
+    semantic: 'focus-transferring',
+  },
+  s: {
+    description: 'Lane / project switcher picker overlay (fuzzy + list)',
+    semantic: 'focus-transferring',
+  },
+  d: {
+    description:
+      'delete focused entity with 2-click confirm (1 秒以内に 2 回目で execute、 timeout で abort)',
     semantic: 'focus-preserving',
   },
 }

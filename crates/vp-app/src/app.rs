@@ -1955,8 +1955,8 @@ pub fn run() -> anyhow::Result<()> {
                         tracing::info!("directive p: send selected to PP");
                     }
                 }
-                // `e` / `g` / `h`: Stand focus 系 (focus-transferring)。 main view 内の frame engine
-                // に `<paneId>-focus` Scene 切替を発火させる。 Scene id は entry.tsx の
+                // PR #444: `e` / `g` / `h`: Stand focus 系 (focus-transferring)。 main view 内の
+                // frame engine に `<paneId>-focus` Scene 切替を発火させる。 Scene id は entry.tsx の
                 // `generateAllFocusScenes(FOCUSABLE_PANE_IDS)` で `echoes-focus` / `ge-focus` /
                 // `hp-focus` 等が生成されている前提。
                 "e" => {
@@ -2022,6 +2022,30 @@ pub fn run() -> anyhow::Result<()> {
                             });
                         })
                         .ok();
+                }
+                // PR 445: `r` / `n` / `d` は sidebar 側 dispatcher が context (active_lane / active_stand)
+                // を判定して sendIpc / 内部関数呼び出しを行う。 Rust 側は trigger を sidebar に渡すだけ。
+                // sidebar 内発火と同じ `dispatchDirective` を経由する (= window.vpSidebar.fireDirective)。
+                "r" | "n" | "d" => {
+                    let script = format!(
+                        "window.vpSidebar && window.vpSidebar.fireDirective && window.vpSidebar.fireDirective('{}')",
+                        key
+                    );
+                    if let Err(e) = sidebar.evaluate_script(&script) {
+                        tracing::warn!("directive {}: sidebar inject 失敗: {}", key, e);
+                    } else {
+                        tracing::info!("directive {}: forwarded to sidebar dispatcher", key);
+                    }
+                }
+                // PR 445: `s` (Lane / project switcher picker) は LanePicker.tsx の overlay を open。
+                "s" => {
+                    if let Err(e) = sidebar.evaluate_script(
+                        "window.vpLanePicker && window.vpLanePicker.open && window.vpLanePicker.open()",
+                    ) {
+                        tracing::warn!("directive s: sidebar inject 失敗: {}", e);
+                    } else {
+                        tracing::info!("directive s: lane picker opened");
+                    }
                 }
                 other => {
                     tracing::debug!("directive: 未実装 key = {}", other);

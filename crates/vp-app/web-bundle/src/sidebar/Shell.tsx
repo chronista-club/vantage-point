@@ -18,7 +18,9 @@ import { sendIpc } from './ipc'
 import { isRunningProcess } from './classify'
 import { resolveProjectOrder } from './dnd'
 import { ContextMenu } from './ContextMenu'
+import { deleteHintLabel, deleteHintVisible } from './keybindings'
 import { FileExplorer, FILE_EXPLORER_CSS } from './FileExplorer'
+import { LanePicker, LANE_PICKER_CSS } from './LanePicker'
 import { ProjectAccordion } from './ProjectAccordion'
 import { WorldWidget } from './WorldWidget'
 
@@ -102,6 +104,19 @@ export function Shell() {
           window.vpFilePicker.open(address) を呼ぶと、 lane workdir 全体を被せる overlay が
           出現してファイルを選べる。 選択すると Canvas (PP) に投げて dismiss する ephemeral。 */}
       <FileExplorer />
+
+      {/* PR 445 `s` directive: Lane / project switcher picker overlay (singleton)。
+          Cmd hold s で window.vpLanePicker.open() が呼ばれて出現、 lane / project を fuzzy 検索 + 選択。 */}
+      <LanePicker />
+
+      {/* PR 445 `d` directive: 2-click delete confirm hint bar。 pending state 中だけ
+          sidebar 下端に表示、 1 秒以内に 2 回目で execute、 timeout で auto-dismiss。 */}
+      <Show when={deleteHintVisible()}>
+        <div class="vp-delete-hint">
+          <span class="vp-delete-hint-icon">⚠️</span>
+          <span class="vp-delete-hint-label">{deleteHintLabel()}</span>
+        </div>
+      </Show>
     </div>
   )
 }
@@ -286,4 +301,5 @@ html,body{margin:0;height:100%;background:var(--color-surface-bg-subtle);
   color:var(--color-brand-primary);}
 .vp-lane-row.inactive .vp-lane-files-btn{opacity:0.35;}
 ${FILE_EXPLORER_CSS}
+${LANE_PICKER_CSS}
 `

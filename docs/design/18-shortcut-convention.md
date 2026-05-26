@@ -1,6 +1,6 @@
 # VP ショートカット規約 (Shortcut Convention)
 
-> **status: draft v0.4** — 2026-05-26 update。 v0.3 (= directive 集合 + Cmd hold 単発キー) を base に、 棚卸し + Layer C 拡充 + undocumented 明示化を実施。
+> **status: draft v0.5** — 2026-05-27 update。 v0.4 (= 棚卸し + Layer C 拡充 + 不採用 directive 宣言) を base に、 lane 操作 directive (`r`/`n`/`s`/`d`) を PR 445 で実装完了して確定 directive (§C.2) に昇格。
 >
 > 主な変更 (v0.3 → v0.4):
 > 1. §C.2 (確定 directive) に `e` / `g` / `h` / `w` を昇格 (v0.3 予約 → v0.4 確定)
@@ -178,16 +178,16 @@ user 概念 (前 turn で提示):
 | `Cmd hold e` | `e` (Echoes) | focus-transferring | active lane の Echoes 入力欄 (= cc) に focus + 必要なら Scene を `lead-focus` に切替 | v0.4 予定 (= PR 443) |
 | `Cmd hold g` | `g` (Gold Experience) | focus-transferring | active lane の GE output に focus + Scene を `ge-focus` (or 同等) に切替 | v0.4 予定 |
 | `Cmd hold h` | `h` (Hermit Purple) | focus-transferring | active lane の HP に focus + Scene を `hp-focus` に切替 | v0.4 予定 |
-| `Cmd hold w` | `w` (TheWorld) | focus-preserving | TheWorld status (= process list / health) を PP (Canvas) に show。 focus は元の panel に残る | v0.4 予定 |
+| `Cmd hold w` | `w` (TheWorld) | focus-preserving | TheWorld status (= process list / health) を PP (Canvas) に show。 focus は元の panel に残る | PR #444 |
+| `Cmd hold r` | `r` (restart) | context polymorphic | active_lane → `lane:restart` IPC、 active_stand → `process:restart` IPC、 どちらもなければ no-op (詳細 §D.7) | PR 445 |
+| `Cmd hold n` | `n` (new wing) | focus-transferring | active project (= active_lane / active_stand の project) の AddWing form を keyboard で open (= sidebar 内 ProjectAccordion の form を expand) | PR 445 |
+| `Cmd hold s` | `s` (switch) | focus-transferring | Lane / project switcher picker overlay を open (LanePicker.tsx、 fuzzy 検索 + flat list)。 lane 選択で `lane:select`、 project 選択で `process:toggle` (= accordion expand) | PR 445 |
+| `Cmd hold d` | `d` (delete) | context polymorphic | 2-click confirm 内蔵: 1 回目で pending state + sidebar 下端 hint bar 表示、 1 秒以内 2 回目で execute (active_lane の Wing → `lane:delete`、 active_stand → `process:delete`)、 timeout で abort | PR 445 |
 
 ### C.3 予約 directive (v0.4 文法に基づく、 実装は別 PR)
 
 | binding | directive | semantic | 意味 |
 |---------|-----------|----------|------|
-| `Cmd hold s` | `s` | focus-transferring | Lane / project 切替 picker (= active lane を選ぶ overlay、 File Explorer 類似 UX) |
-| `Cmd hold n` | `n` | focus-transferring | new wing 作成 prompt (= sidebar の "+ Add Wing" form を keyboard で起動) |
-| `Cmd hold r` | `r` | context polymorphic | project focus 中 → process:restart、 lane focus 中 → lane:restart (詳細 §D.7) |
-| `Cmd hold d` | `d` | context polymorphic | focused entity 削除 (2-click confirm)。 lane focus → wing 削除、 project focus → project remove |
 | `Cmd hold t` | `t` | focus-preserving | active lane の cc session の rename (= `/rename` 等価) |
 | `Cmd hold m` | `m` | focus-transferring | mailbox 経由 messaging picker |
 | `Cmd hold a` | `a` | focus-preserving | stopped project の SP を auto-spawn 起動 |
@@ -369,6 +369,8 @@ dispatch 判定は **main view の Scene state** (`frameEngine.getCurrentSceneId
 
 | date | version | section | change | PR |
 |------|---------|---------|--------|----|
+| 2026-05-27 | v0.5 draft | §C.2 / §C.3 | `r` / `n` / `s` / `d` を確定 directive に昇格 (PR 445 で実装、 sidebar 側 polymorphic dispatch + LanePicker.tsx 新規 + 2-click confirm hint bar)。 §C.3 から 4 entry を移動、 残り予約は `t/m/a/l/o/?` | PR 445 |
+| 2026-05-27 | v0.4 §C.2 | `e` / `g` / `h` / `w` を「v0.4 予定」 から **実装済 (PR #444)** に reclassify | PR 445 (同梱) |
 | 2026-05-26 | v0.4 draft | §C / §D / §A.1 | 既存 shortcut の完全棚卸し + Layer C 拡充 (`e/g/h/w` を確定 directive に昇格、 `s/n/r/d/t/m/a/o/?` を予約 directive に整理) + undocumented (`Ctrl+Shift+C` 等) を §C.4 に明示化 + 新規 §C.6「不採用 directive」 (= `c` clear 不採用を invariant 宣言) + §D.7 「context polymorphism dispatch table」 | PR 442 |
 | 2026-05-26 | v0.3 draft | (full) | chord 2 段 state machine 設計を破棄、 「directive 集合 + Cmd hold 単発キー」 に再構築。 user の flow 視点 (`Cmd hold f → 操作 → Cmd hold p`) を素直に表現 | PR #441 |
 | 2026-05-26 | v0.2 draft | (full) | 2 layer 構造 (invariant / mutable 分離) | (前 commit、 同 PR で上書き) |

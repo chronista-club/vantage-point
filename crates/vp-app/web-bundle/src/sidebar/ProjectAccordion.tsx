@@ -8,7 +8,7 @@
  * PR-3: active project (= 現在 active な Lane を含む project) の summary 右上に
  * 「+」アイコンを出し、 click で Add Wing フォームを開閉する。
  */
-import { For, Show, createSignal } from 'solid-js'
+import { For, Show, createSignal, onCleanup, onMount } from 'solid-js'
 import { CreoIcon } from 'creoui-icons-web'
 import type { ProcessPaneState } from '../generated/ProcessPaneState'
 import { sidebar } from './store'
@@ -18,6 +18,7 @@ import { isRunningProcess } from './classify'
 import { laneAddressKey } from './lane'
 import { LaneRow } from './LaneRow'
 import { AddWing } from './AddWing'
+import { registerAddWingOpenSetter } from './directive-state'
 import {
   clearDrag,
   commitProjectReorder,
@@ -55,6 +56,13 @@ export function ProjectAccordion(props: { proc: ProcessPaneState }) {
   }
 
   const [addWingOpen, setAddWingOpen] = createSignal(false)
+  // PR 445 `n` directive: keyboard で AddWing form を open するため、 ProjectAccordion 内 local
+  // signal を **module-scope registry** に export する。 directive 発火時に registry から
+  // setter を引いて open する経路 (= directive-state.ts::openAddWingFor)。
+  onMount(() => {
+    const unreg = registerAddWingOpenSetter(props.proc.path, (open) => setAddWingOpen(open))
+    onCleanup(unreg)
+  })
 
   // native toggle → process:toggle IPC。 store 由来の open 反映で発火した場合は
   // 値が一致するので IPC を送らない (echo loop 防止)。
