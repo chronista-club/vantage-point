@@ -40,4 +40,20 @@ export const DIRECTIVE_TABLE: Record<string, DirectiveEntry> = {
       'send current/selected to PP (file picker visible 中なら選択 file を Canvas に投擲、 picker は dismiss しない)',
     semantic: 'panel-local',
   },
+  e: {
+    description: 'focus to Echoes (= active lane の cc 入力欄、 Scene を echoes-focus に切替)',
+    semantic: 'focus-transferring',
+  },
+  g: {
+    description: 'focus to Gold Experience output (Scene を ge-focus に切替)',
+    semantic: 'focus-transferring',
+  },
+  h: {
+    description: 'focus to Hermit Purple (Scene を hp-focus に切替)',
+    semantic: 'focus-transferring',
+  },
+  w: {
+    description: 'TheWorld status (= daemon health + process list) を PP に markdown で表示',
+    semantic: 'focus-preserving',
+  },
 }

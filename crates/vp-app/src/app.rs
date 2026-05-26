@@ -1183,6 +1183,32 @@ fn lookup_lane_cwd(
         .map(|l| std::path::PathBuf::from(&l.cwd))
 }
 
+/// `w` directive (= 規約 v0.4 §C.2 "TheWorld status to PP") 用の markdown formatter。
+/// TheWorld client `list_projects()` で取得した process 一覧を Canvas (PP) で見やすい
+/// table に整形する。 docs/design/18-shortcut-convention.md `w` directive 参照。
+fn format_theworld_status(processes: &[crate::client::ProcessInfo]) -> String {
+    let mut md = String::from("# 🌍 TheWorld Status\n\n");
+    md.push_str("**Daemon**: running (port 32000)\n\n");
+    md.push_str(&format!("## Processes ({} total)\n\n", processes.len()));
+    if processes.is_empty() {
+        md.push_str("_(no processes registered)_\n");
+        return md;
+    }
+    md.push_str("| name | state | port | path |\n|---|---|---|---|\n");
+    for p in processes {
+        md.push_str(&format!(
+            "| {} | {} | {} | `{}` |\n",
+            p.name,
+            p.state.as_str(),
+            p.port
+                .map(|x| x.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            p.path,
+        ));
+    }
+    md
+}
+
 // R-0 (`docs/design/11-vp-app-refactor.md` § 3.0a / `mem_1CaaaDoXHZvhR46ZfLN6jx`):
 //   旧 `lane_address_key(&LaneAddressWire) -> String` 関数は `lane.rs::LaneAddressWire::key()`
 //   メソッドに移管 (G2 解消、 3 重実装の 1 元化)。 caller は `wire.key()` で同等の文字列を取れる。
@@ -1929,10 +1955,101 @@ pub fn run() -> anyhow::Result<()> {
                         tracing::info!("directive p: send selected to PP");
                     }
                 }
+                // `e` / `g` / `h`: Stand focus 系 (focus-transferring)。 main view 内の frame engine
+                // に `<paneId>-focus` Scene 切替を発火させる。 Scene id は entry.tsx の
+                // `generateAllFocusScenes(FOCUSABLE_PANE_IDS)` で `echoes-focus` / `ge-focus` /
+                // `hp-focus` 等が生成されている前提。
+                "e" => {
+                    if let Err(err) = main_view.evaluate_script(
+                        "window.vpFrame && window.vpFrame.applyScene('echoes-focus')",
+                    ) {
+                        tracing::warn!("directive e: main_view inject 失敗: {}", err);
+                    } else {
+                        tracing::info!("directive e: focus to Echoes");
+                    }
+                }
+                "g" => {
+                    if let Err(err) = main_view.evaluate_script(
+                        "window.vpFrame && window.vpFrame.applyScene('ge-focus')",
+                    ) {
+                        tracing::warn!("directive g: main_view inject 失敗: {}", err);
+                    } else {
+                        tracing::info!("directive g: focus to Gold Experience");
+                    }
+                }
+                "h" => {
+                    if let Err(err) = main_view.evaluate_script(
+                        "window.vpFrame && window.vpFrame.applyScene('hp-focus')",
+                    ) {
+                        tracing::warn!("directive h: main_view inject 失敗: {}", err);
+                    } else {
+                        tracing::info!("directive h: focus to Hermit Purple");
+                    }
+                }
+                // `w` (TheWorld status): focus-preserving。 TheWorld client から projects 一覧を
+                // blocking fetch → markdown を整形 → AppEvent::DirectiveInject で main thread に
+                // 戻して main_view の PP body に inject。 focus は元の panel に残る。
+                "w" => {
+                    let proxy = async_action_proxy.clone();
+                    thread::Builder::new()
+                        .name("directive-w-theworld-status".to_string())
+                        .spawn(move || {
+                            let rt = match tokio::runtime::Builder::new_current_thread()
+                                .enable_all()
+                                .build()
+                            {
+                                Ok(rt) => rt,
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "directive w: tokio runtime build 失敗: {}",
+                                        e
+                                    );
+                                    return;
+                                }
+                            };
+                            rt.block_on(async move {
+                                let client = crate::client::TheWorldClient::new(32000);
+                                let body = match client.list_projects().await {
+                                    Ok(processes) => format_theworld_status(&processes),
+                                    Err(e) => format!(
+                                        "# 🌍 TheWorld Status\n\n**Error**: failed to fetch — {e}"
+                                    ),
+                                };
+                                let content =
+                                    serde_json::json!({ "markdown": body });
+                                let _ = proxy
+                                    .send_event(AppEvent::DirectiveInject { content });
+                            });
+                        })
+                        .ok();
+                }
                 other => {
                     tracing::debug!("directive: 未実装 key = {}", other);
                 }
             },
+            // VP shortcut directive 由来の Canvas inject。 `w` directive (TheWorld status) 等の
+            // blocking I/O 結果を main_view の PP body に投げ込む。 FilesOpenResult と同じ
+            // `vpCanvas.handleMessage({type:'show',content:...})` shape で送る。
+            Event::UserEvent(AppEvent::DirectiveInject { content }) => {
+                let msg = serde_json::json!({
+                    "type": "show",
+                    "pane_id": "main",
+                    "content": content,
+                    "append": false,
+                });
+                let msg_str =
+                    serde_json::to_string(&msg).unwrap_or_else(|_| "{}".to_string());
+                let script = format!(
+                    "window.vpCanvas && window.vpCanvas.handleMessage({})",
+                    msg_str
+                );
+                if let Err(e) = main_view.evaluate_script(&script) {
+                    tracing::warn!(
+                        "main_view vpCanvas.handleMessage (directive inject) 失敗: {}",
+                        e
+                    );
+                }
+            }
             // Sidebar File Explorer: file 読み込み結果を Canvas (PP) に inject。
             // 既存 MCP `show` ルートを QUIC を経由せず WebView 直注入 (= ephemeral / local-only) で
             // 再現するため、 `ProcessMessage::Show` 相当の JSON を main_view にそのまま渡す。

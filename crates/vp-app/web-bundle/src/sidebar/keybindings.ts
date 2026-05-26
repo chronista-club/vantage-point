@@ -34,6 +34,17 @@ export function installSidebarKeybindings(): void {
         }
         return
       }
+      if (key === 'e' || key === 'g' || key === 'h' || key === 'w') {
+        // v0.4 規約: e/g/h/w (Stand focus / TheWorld status) は **main view focus 限定**。
+        // sidebar 側からの cross-WebView focus shift は cross-WebView focus 復帰 bridge
+        // と同じレイヤーの将来課題なので、 v0.4 では no-op + debug log。
+        // user が sidebar から main view (Stand) に飛びたい場合は、 まず Cmd hold f で
+        // picker 開いて Esc で閉じる (= main view に focus 戻る) → 改めて Cmd hold e/g/h/w
+        console.debug(
+          `[directive ${key}] sidebar focus 中: v0.4 では main view focus 限定`,
+        )
+        return
+      }
       console.debug('[directive] sidebar 側で未実装:', key)
     },
   })

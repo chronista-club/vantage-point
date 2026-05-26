@@ -127,6 +127,11 @@ pub enum AppEvent {
     /// `"p"` → 既存 picker visible なら send-selected を inject)。 sidebar 側 directive は
     /// Rust 経由せず direct に sidebar 内で完結する (= main view 専用 bridge)。
     DirectiveFire { key: String },
+    /// VP shortcut directive 由来の Canvas (PP) inject。 blocking I/O (例: `w` directive で
+    /// TheWorld status fetch) を経て markdown / log / html 等を生成した結果を main_view に注入する。
+    /// 規約 v0.4 §C.2 で `w` directive を実装する際の push back path。 caller は
+    /// `window.vpCanvas.handleMessage({type:'show',content,...})` を evaluate_script で呼ぶ。
+    DirectiveInject { content: serde_json::Value },
     /// wiremsg Stage 2: SP の "canvas" Unison channel から受信した Canvas (Paisley Park)
     /// ProcessMessage 1 件。`message` は ProcessMessage の生 JSON (`{"type":"show",...}` 等)。
     /// handler は active project の分のみ main_view WebView に転送する。
