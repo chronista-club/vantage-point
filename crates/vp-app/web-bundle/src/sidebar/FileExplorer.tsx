@@ -39,8 +39,15 @@ interface ListResult {
 
 declare global {
   interface Window {
-    /** sidebar 外 (Cmd+F handler / LaneRow フォルダボタン) から picker を起動する。 */
-    vpFilePicker?: { open(address: string): void }
+    /**
+     * sidebar 外 (directive `f` handler / LaneRow フォルダボタン / Rust bridge) から picker を起動する API。
+     * - `open(address)`: lane の workdir で picker を open (= directive `f` の主動作)
+     * - `sendSelectedToPP()`: picker visible 中の selected file を Canvas に投擲 (= directive `p` の picker context 動作、 picker は dismiss しない)
+     */
+    vpFilePicker?: {
+      open(address: string): void
+      sendSelectedToPP(): void
+    }
     /** Rust → JS: files:list の結果を sidebar に push back する受け口。 */
     vpFiles?: { handleListResult(result: ListResult): void }
   }
@@ -216,8 +223,31 @@ export function FileExplorer() {
   // (moody-blues PR 2 review Issue 1: 100 件 fuzzy list で ↓ 連打すると選択が viewport 外に消える)。
   let bodyRef: HTMLDivElement | undefined
 
+  /**
+   * Directive `p` (= "send current/selected to PP") の picker context 実装。
+   * picker visible + selected が file の時に file を Canvas に投げる。 ピン留めの有無に
+   * かかわらず picker は **dismiss しない** (= 規約 v0.3 §C.2 "連続選択を許す")。
+   * 投擲後は input に focus を戻し、 user が次の選択 / 検索 input 操作にすぐ進めるようにする。
+   */
+  const sendSelectedToPP = () => {
+    if (!visible()) return
+    const items = view()
+    const item = items[selectedIndex()]
+    if (!item || item.entry.kind !== 'file') return
+    const address = targetAddress()
+    const projectPath = resolveProjectPath(address)
+    if (!projectPath) return
+    sendIpc({
+      t: 'files:open',
+      path: projectPath,
+      address,
+      rel_path: item.entry.rel_path,
+    })
+    setTimeout(() => inputRef?.focus(), 0)
+  }
+
   onMount(() => {
-    window.vpFilePicker = { open }
+    window.vpFilePicker = { open, sendSelectedToPP }
     window.vpFiles = { handleListResult }
   })
   onCleanup(() => {

@@ -1,36 +1,40 @@
 /**
- * Sidebar WebView 専用のキーボードショートカット。
+ * Sidebar WebView 専用のキーボードショートカット (= VP 規約 v0.3 directive dispatcher、 sidebar 側)。
  *
- * - **Cmd+F (Mac) / Ctrl+F (他 OS)**: active lane を root として File Explorer overlay
- *   を開く (`window.vpFilePicker.open(address)`)。 input / textarea / contenteditable に
- *   フォーカス時は noop (二重起動 + テキスト find 干渉を回避)。
- *
- * main WebView (terminal / Canvas) は独立した window object を持ち、 ここで attach した
- * keydown listener は影響しない (WebView ごとに JS world が分離)。
+ * sidebar 上の `Cmd hold + <key>` keydown を `installDirectiveHandler` で捕捉して、 key ごとに
+ * sidebar 内 API を direct に呼ぶ (Rust 経由なし)。 同じ directive は main view からも発火可能だが、
+ * main view 側は IPC bridge で Rust に投げ、 Rust が sidebar に evaluate_script で inject する
+ * (web-bundle/keybindings.ts の main view side を参照)。
  */
 import { sidebar } from './store'
+import { installDirectiveHandler } from '../shortcuts/chord'
 
 export function installSidebarKeybindings(): void {
-  window.addEventListener('keydown', (e) => {
-    const isMac = navigator.platform.toUpperCase().includes('MAC')
-    const mod = isMac ? e.metaKey : e.ctrlKey
-    if (!mod || e.shiftKey || e.altKey) return
-    if (e.key.toLowerCase() !== 'f') return
-
-    // input / textarea / contenteditable にフォーカス時は preventDefault しない。
-    // FileExplorer 内検索 input でテキスト find / 全選択 と被るのを避ける。
-    const target = e.target as HTMLElement | null
-    if (target) {
-      const tag = target.tagName
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || target.isContentEditable) return
-    }
-
-    const address = sidebar.active_lane_address
-    if (!address) {
-      console.debug('[sidebar-keys] Cmd+F: active lane なし、 picker open skip')
-      return
-    }
-    e.preventDefault()
-    window.vpFilePicker?.open(address)
+  installDirectiveHandler({
+    exec: (key) => {
+      if (key === 'f') {
+        // `f` directive = File Explorer overlay を open + sidebar focus 移動。
+        // (sidebar の場合、 既に sidebar focus 中なので「移動」 部分は no-op、 open のみ)
+        const address = sidebar.active_lane_address
+        if (!address) {
+          console.debug('[directive f] active lane なし、 picker open skip')
+          return
+        }
+        window.vpFilePicker?.open(address)
+        return
+      }
+      if (key === 'p') {
+        // `p` directive = send current/selected to PP。
+        // sidebar 側の責務: File Explorer picker visible 中なら selected file を Canvas に投擲。
+        // picker visible でない時は no-op (= 将来 lane-row focus context 等で別挙動を加える余地)。
+        if (window.vpFilePicker?.sendSelectedToPP) {
+          window.vpFilePicker.sendSelectedToPP()
+        } else {
+          console.debug('[directive p] no current selection to send (picker not visible)')
+        }
+        return
+      }
+      console.debug('[directive] sidebar 側で未実装:', key)
+    },
   })
 }

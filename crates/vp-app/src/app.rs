@@ -1896,6 +1896,43 @@ pub fn run() -> anyhow::Result<()> {
                     tracing::warn!("sidebar vpFiles.handleListResult 失敗: {}", e);
                 }
             }
+            // VP 規約 v0.3 directive (main view 側 bridge)。 main view で `Cmd hold + key` 発火
+            // → `directive:fire` IPC が Rust に届く → ここで key ごとに sidebar API を inject。
+            // `f` = File Explorer overlay を open (active lane が無ければ skip)、
+            // `p` = picker visible 中の selected file を Canvas に投擲。
+            // 詳細は docs/design/18-shortcut-convention.md Layer D 参照。
+            Event::UserEvent(AppEvent::DirectiveFire { key }) => match key.as_str() {
+                "f" => match sidebar_state.active_lane_address.as_deref() {
+                    Some(addr) => {
+                        let addr_json =
+                            serde_json::to_string(addr).unwrap_or_else(|_| "\"\"".into());
+                        let script = format!(
+                            "window.vpFilePicker && window.vpFilePicker.open({})",
+                            addr_json
+                        );
+                        if let Err(e) = sidebar.evaluate_script(&script) {
+                            tracing::warn!("directive f: sidebar inject 失敗: {}", e);
+                        } else {
+                            tracing::info!("directive f: picker open for {}", addr);
+                        }
+                    }
+                    None => {
+                        tracing::warn!("directive f: active lane なし、 skip");
+                    }
+                },
+                "p" => {
+                    if let Err(e) = sidebar.evaluate_script(
+                        "window.vpFilePicker && window.vpFilePicker.sendSelectedToPP && window.vpFilePicker.sendSelectedToPP()"
+                    ) {
+                        tracing::warn!("directive p: sidebar inject 失敗: {}", e);
+                    } else {
+                        tracing::info!("directive p: send selected to PP");
+                    }
+                }
+                other => {
+                    tracing::debug!("directive: 未実装 key = {}", other);
+                }
+            },
             // Sidebar File Explorer: file 読み込み結果を Canvas (PP) に inject。
             // 既存 MCP `show` ルートを QUIC を経由せず WebView 直注入 (= ephemeral / local-only) で
             // 再現するため、 `ProcessMessage::Show` 相当の JSON を main_view にそのまま渡す。
@@ -2553,6 +2590,36 @@ pub fn run() -> anyhow::Result<()> {
                         }
                         Err(e) => {
                             tracing::warn!("Cmd+N: current_exe() failed: {}", e);
+                        }
+                    }
+                } else if id == menu_ids.open_file {
+                    // Cmd+O: File menu → "Open File..." accelerator。 active lane の workdir に
+                    // 対して File Explorer overlay picker を sidebar に開かせる。
+                    //
+                    // menu accelerator は OS-level で global に発火するため、 Pane (terminal /
+                    // Canvas) focus 中の Cmd+O でも到達する (これが要件の本質)。 active lane が
+                    // ない (= 未選択) 時は no-op + warn log。
+                    match sidebar_state.active_lane_address.as_deref() {
+                        Some(addr) => {
+                            // sidebar 側の `window.vpFilePicker.open(address)` を呼ぶ。
+                            // 文字列は JSON エンコードして address に特殊文字が混ざっても安全に。
+                            let addr_json = serde_json::to_string(addr)
+                                .unwrap_or_else(|_| "\"\"".into());
+                            let script = format!(
+                                "window.vpFilePicker && window.vpFilePicker.open({})",
+                                addr_json
+                            );
+                            if let Err(e) = sidebar.evaluate_script(&script) {
+                                tracing::warn!(
+                                    "Cmd+O: sidebar vpFilePicker.open inject 失敗: {}",
+                                    e
+                                );
+                            } else {
+                                tracing::info!("Cmd+O: File Explorer opened for {}", addr);
+                            }
+                        }
+                        None => {
+                            tracing::warn!("Cmd+O: active lane なし、 picker open skip");
                         }
                     }
                 } else if id == menu_ids.developer_mode {

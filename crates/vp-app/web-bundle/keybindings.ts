@@ -1,12 +1,14 @@
 /**
- * Frame Engine の Scene 切替 keybinding。
+ * Frame Engine の Scene 切替 keybinding + VP shortcut directive bridge (main view 側)。
  *
- * VP-140 / PR-ε-1。 **Ctrl+Shift+1..4** で 4 default Scene を即時切替、
- * **Ctrl+Shift+] / [** で cyclic next/prev。
+ * 2 つの責務:
+ * 1. **Scene hotkey** — VP-140 / PR-ε-1: Ctrl+Shift+1..4 / Ctrl+Shift+] / [ で Frame Engine の
+ *    Scene 切替 (`attachKeybindings`)
+ * 2. **VP shortcut directive bridge** — 規約 v0.3: `Cmd hold + <key>` を捕捉して
+ *    `directive:fire` IPC で Rust に投げる (`installMainViewDirectiveBridge`)。 main view からは
+ *    sidebar の `window.vpFilePicker` に直接 access できないため Rust 経由で sidebar に inject。
  *
- * Scene 自体は entry.tsx で register されている前提 (本 module は engine.applyScene を呼ぶだけ)。
- *
- * 修飾子の選択 (案 B、 cross-platform 一貫):
+ * 修飾子の選択 (Scene hotkey、 案 B、 cross-platform 一貫):
  * - macOS は **Cmd+Shift+3/4** を screenshot に予約しており、 system level で先 hook される
  *   (NSEvent global monitor)。 WebView の keydown には never reach するので Cmd+Shift+ 数字は使えない。
  * - 案 B 採用: Ctrl+Shift+1..4 で全 platform 一貫 + macOS の screenshot と衝突なし。
@@ -18,6 +20,7 @@
  */
 
 import type { FrameEngine, SceneId } from './frame-engine';
+import { installDirectiveHandler } from './src/shortcuts/chord';
 
 /**
  * Ctrl+Shift+N → Scene id mapping。
@@ -34,7 +37,7 @@ const SCENE_HOTKEY_BY_CODE: Record<string, SceneId> = {
 };
 
 /**
- * window 等の EventTarget に keydown listener を attach。
+ * window 等の EventTarget に Scene hotkey listener を attach。
  *
  * @returns unsubscribe 関数
  */
@@ -72,4 +75,36 @@ export function attachKeybindings(
   return () => {
     target.removeEventListener('keydown', handler, true);
   };
+}
+
+interface WryIpc {
+  postMessage(msg: string): void;
+}
+
+declare global {
+  interface Window {
+    ipc?: WryIpc;
+  }
+}
+
+/**
+ * Main view 側 directive dispatcher (= VP 規約 v0.3 directive、 main view 側 bridge)。
+ *
+ * `Cmd hold + <key>` keydown を捕捉して、 IPC (`directive:fire`) で Rust に投げる。
+ * Rust 側 (`app.rs` の `AppEvent::DirectiveFire` arm) が key ごとに dispatch して
+ * `sidebar.evaluate_script` で sidebar API (`window.vpFilePicker.open` 等) を inject する。
+ *
+ * 戻り値: uninstall 関数。
+ */
+export function installMainViewDirectiveBridge(): () => void {
+  return installDirectiveHandler({
+    exec: (key) => {
+      const ipc = window.ipc;
+      if (!ipc) {
+        console.warn('[directive bridge] window.ipc 未注入 — 破棄:', key);
+        return;
+      }
+      ipc.postMessage(JSON.stringify({ t: 'directive:fire', key }));
+    },
+  });
 }
