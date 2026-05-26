@@ -57,8 +57,8 @@ pub enum ProcessKind {
     Runtime,
     /// PTY session を持つ stream-based process (= Lane: Lead / Wing)
     Session,
-    /// 機能 service を提供する worker process (= Stand: HD / TH / PP / GE / HP)
-    Worker,
+    /// 機能 service を提供する Stand process (= Echoes / Shell / PP / GE / HP)
+    Stand,
 }
 
 impl ProcessKind {
@@ -68,7 +68,7 @@ impl ProcessKind {
             ProcessKind::Supervisor => "👑 TheWorld",
             ProcessKind::Runtime => "⭐ Star Platinum",
             ProcessKind::Session => "📍 Lane",
-            ProcessKind::Worker => "🦾 Stand",
+            ProcessKind::Stand => "🦾 Stand",
         }
     }
 }
@@ -212,8 +212,7 @@ pub struct LaneInfo {
     #[serde(default)]
     pub cwd: String,
     /// Phase 5-D: Wing Lane のみ有効、 git workspace の状態 snapshot。
-    /// `worker_status` は Worker → Wing rename 前の legacy wire field 名 (alias で受理)。
-    #[serde(default, alias = "worker_status")]
+    #[serde(default)]
     pub wing_status: Option<WingStatusWire>,
 }
 

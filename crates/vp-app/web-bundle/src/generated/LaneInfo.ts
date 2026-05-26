@@ -25,6 +25,5 @@ state: string,
 stand: string, created_at: string, pid: number | null, cwd: string, 
 /**
  * Phase 5-D: Wing Lane のみ有効、 git workspace の状態 snapshot。
- * `worker_status` は Worker → Wing rename 前の legacy wire field 名 (alias で受理)。
  */
 wing_status: WingStatusWire | null, };

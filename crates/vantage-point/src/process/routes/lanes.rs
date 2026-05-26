@@ -136,7 +136,7 @@ pub async fn list_handler(State(state): State<Arc<AppState>>) -> impl IntoRespon
 /// `POST /api/lanes` request body (Phase 3-A: Wing Lane create + lane clone)
 #[derive(Debug, Deserialize)]
 pub struct CreateLaneReq {
-    /// "wing" を受付 ("worker" は Worker → Wing rename 前の legacy alias)。Lead は project ごと固定。
+    /// "wing" を受付。 Lead は project ごと固定。
     pub kind: String,
     /// Wing name (人間可読、 LaneAddress.name に入る)
     pub name: String,
@@ -155,7 +155,7 @@ pub struct CreateLaneReq {
 /// `POST /api/lanes` — Wing Lane create (Phase 3-A: lane clone + PtySlot spawn)
 ///
 /// 流れ:
-/// 1. 入力 validation (kind == "wing"、 legacy "worker" も可、 name 非空)
+/// 1. 入力 validation (kind == "wing"、 name 非空)
 /// 2. cwd 決定:
 ///    - `req.cwd` Some → そのまま使う
 ///    - `req.branch` Some → `vp lane new <name> <branch>` subprocess で wing dir 作成
@@ -168,8 +168,8 @@ pub async fn create_handler(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CreateLaneReq>,
 ) -> Result<(StatusCode, Json<LaneInfo>), (StatusCode, Json<serde_json::Value>)> {
-    // 入力 validation。 "wing" を受付、 "worker" は Worker → Wing rename 前の legacy alias。
-    if req.kind != "wing" && req.kind != "worker" {
+    // 入力 validation。 "wing" のみ受付 (Lead は project ごと固定で create 不可)。
+    if req.kind != "wing" {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(json!({
@@ -375,7 +375,7 @@ pub async fn create_handler(
 /// `DELETE /api/lanes?address=<addr>` request の query
 #[derive(Debug, Deserialize)]
 pub struct DeleteLaneQuery {
-    /// Display 形 ("<project>/lead" / "<project>/wing/<name>"、 legacy "worker" alias 受理)
+    /// Display 形 ("<project>/lead" / "<project>/wing/<name>")
     pub address: String,
     /// Phase 4-B: lane workspace の dir も rm するか (default true)。
     /// false の場合 PtySlot だけ kill して dir 残置 (= debug / forensic 用途)。
@@ -581,7 +581,7 @@ pub async fn delete_handler(
 /// `POST /api/lanes/restart?address=<addr>` request の query
 #[derive(Debug, Deserialize)]
 pub struct RestartLaneQuery {
-    /// Display 形 ("<project>/lead" / "<project>/wing/<name>"、 legacy "worker" alias 受理)
+    /// Display 形 ("<project>/lead" / "<project>/wing/<name>")
     pub address: String,
 }
 

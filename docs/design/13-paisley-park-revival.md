@@ -244,7 +244,7 @@ sequenceDiagram
 | user が Cmd+D で Pane 追加 | Lane 内に PP Pane 追加、 既存 PP の surface に bind |
 | Lane destroy | PP 自動終了 (cascade、 A3 lifecycle) |
 
-default は「Lane 起動時に PP 同時 spawn」 だが、 ccws Worker Lane 等で resource 節約したい場合は opt-out して lazy spawn (= 旧 memory の挙動) に切替可能。 「PP は Lane に居住する Stand 種だが、 Lane が必ず PP を保持する required 制約は catalog SSOT に書かれていない」 ことを尊重し、 axiom レベルの required 化は doc 12 catalog 拡張 (back-port 候補 2: 上界 / 下界 separate 列) に持ち上げる (現 doc 13 では declare せず)。
+default は「Lane 起動時に PP 同時 spawn」 だが、 ccws Wing Lane 等で resource 節約したい場合は opt-out して lazy spawn (= 旧 memory の挙動) に切替可能。 「PP は Lane に居住する Stand 種だが、 Lane が必ず PP を保持する required 制約は catalog SSOT に書かれていない」 ことを尊重し、 axiom レベルの required 化は doc 12 catalog 拡張 (back-port 候補 2: 上界 / 下界 separate 列) に持ち上げる (現 doc 13 では declare せず)。
 
 ### 1:1 vs 1:N
 
@@ -406,7 +406,7 @@ PR-β 開始前 (および各 sub-PR 開始前) に確定すべき残点。 P0 =
 
 | Q | priority | 解決時期 |
 |---|---------|--------|
-| Q-1: Worker Lane PP spawn (常時 vs on-demand) | P2 | 暫定確定、 dogfood で見直し |
+| Q-1: Wing Lane PP spawn (常時 vs on-demand) | P2 | 暫定確定、 dogfood で見直し |
 | Q-2: Lead Lane PP の代表性 (project 集約 vs 局所) | P2 | 暫定: Lane 局所 |
 | **Q-3**: Smart Canvas の配置 (Pane vs WebView 主) | **✅ 確定** | **PR-ε-3 (#298) で WebView 主 = `pane-paisley-park` 内 `<div id="pp-content">` で物理化**。 Pane opt-in (Cmd+D 等で Pane 内に PP 配置) は future work、 PR-ε-4 cleanup で `pane-canvas` placeholder を削除して曖昧さ排除 |
 | Q-4: Hub federation 公開範囲 | P2 | 暫定: state stream のみ |
@@ -418,11 +418,11 @@ PR-β 開始前 (および各 sub-PR 開始前) に確定すべき残点。 P0 =
 | Q-10: Echoes idle 時の context inject 先 | P1 | PR-ε-3 では未対応 (Tag 編集等の双方向書き込み機能を v1 では実装せず)。 §8 Out-of-scope 通り future work |
 | Q-11: SP restart vs Lane PP lifecycle 連動 | P1 | PR-β-2 dogfood で観察 |
 
-### Q-1: Worker Lane の PP を spawn するか?
+### Q-1: Wing Lane の PP を spawn するか?
 
-P5 では 1 Lane = 1 PP を default 化したが、 ccws Worker Lane (sub1 etc.) で PP を **常時 spawn** するか、 **on-demand** か?
+P5 では 1 Lane = 1 PP を default 化したが、 ccws Wing Lane (sub1 etc.) で PP を **常時 spawn** するか、 **on-demand** か?
 
-- **常時**: 一貫した Lane geography、 user 期待値が予測可能。 ただし resource 重複 (8 Worker = 8 PP)
+- **常時**: 一貫した Lane geography、 user 期待値が予測可能。 ただし resource 重複 (8 Wing = 8 PP)
 - **on-demand**: Echoes が初めて `mcp__show` 呼んだ時に lazy spawn。 resource 節約だが、 first call latency
 
 **暫定**: 常時 spawn (一貫性優先)、 PR-β 実装時に dogfood 観察で見直し。

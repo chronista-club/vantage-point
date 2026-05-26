@@ -48,7 +48,7 @@ protocol "sidebar" version="1.0.0" {
             field "path" type="string"
             field "address" type="string"
         }
-        // Worker Lane 削除要求
+        // Wing Lane 削除要求
         request "lane:delete" {
             field "path" type="string"
             field "address" type="string"
@@ -65,7 +65,7 @@ protocol "sidebar" version="1.0.0" {
             field "branch" type="string" optional=#true
             field "stand" type="string" optional=#true
         }
-        // + Add Worker form の利用可能 Stand 一覧 fetch
+        // + Add Wing form の利用可能 Stand 一覧 fetch
         request "stands:fetch" {
             field "path" type="string"
         }

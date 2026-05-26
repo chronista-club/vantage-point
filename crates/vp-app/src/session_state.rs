@@ -77,8 +77,7 @@ impl SessionState {
         }
         match std::fs::read_to_string(&p) {
             Ok(s) => match serde_json::from_str::<SessionState>(&s) {
-                Ok(mut state) => {
-                    state.upgrade_lane_addresses();
+                Ok(state) => {
                     tracing::info!(
                         "SessionState 読込: {} ({} projects, active_lane={:?})",
                         p.display(),
@@ -104,18 +103,6 @@ impl SessionState {
                 );
                 Self::default()
             }
-        }
-    }
-
-    /// Worker → Wing rename (2026-05-18) の migration。
-    /// 旧 session file に `<project>/worker/<name>` 形式の lane address が永続化
-    /// されている場合、 `/worker/` を `/wing/` に置換して正規化する。
-    /// (parse 側も legacy `worker` を受理するが、 active 比較の文字列一致のため)
-    fn upgrade_lane_addresses(&mut self) {
-        if let Some(addr) = &mut self.active_lane_address
-            && addr.contains("/worker/")
-        {
-            *addr = addr.replace("/worker/", "/wing/");
         }
     }
 

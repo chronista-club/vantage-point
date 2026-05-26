@@ -1746,8 +1746,6 @@ impl ProcessManagerCapability {
             // SP DELETE /api/lanes (cleanup=false、 dir は既に gone)。 self-loop case
             // (= SP 経由で削除されて dir が消えた → watcher が Remove 検知 → 本 DELETE 発火)
             // は SP 側で 404 (Lane not found) 返却、 log debug 落ち。
-            // address は新 wing form (`<project>/wing/<name>`、 SP 側 parse_address は legacy
-            // `worker` も alias で受理)。
             let address = format!("{}/wing/{}", project_name, wing_name);
             let address_enc = address.replace('/', "%2F");
             let url = format!(

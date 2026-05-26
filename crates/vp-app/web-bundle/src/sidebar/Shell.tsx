@@ -7,8 +7,8 @@
  *
  * - PR-1: shell layout + Solid store の最小可視化。
  * - PR-2: 稼働中 / 一時停止中 の 2 セクション分割 + Project accordion + Lane ツリー
- *   (stand icon / status / awaiting dot / mailbox icon / worker git meta)。
- *   操作 (click 選択・context menu・restart/delete・Add Worker form・DnD) は PR-3。
+ *   (stand icon / status / awaiting dot / mailbox icon / wing git meta)。
+ *   操作 (click 選択・context menu・restart/delete・Add Wing form・DnD) は PR-3。
  *   World widget 本体は後続 increment。
  */
 import { For, Show, createMemo, createSignal } from 'solid-js'

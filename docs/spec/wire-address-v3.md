@@ -60,7 +60,7 @@ lane-segment  = [a-zA-Z0-9_-]+
 ### 4 階層 (= location 内 + actor)
 
 ```
-agent @ mako.chronista.club / vantage-point / worker / objrec
+agent @ mako.chronista.club / vantage-point / wing / objrec
   ^         ^                      ^             ^
   actor    world identity         project       lane (multi-segment 可)
         (host = machine / user / hub)
@@ -71,7 +71,7 @@ agent @ mako.chronista.club / vantage-point / worker / objrec
 | **actor** | 受信 inbox の役割 (= "誰が読むか"、 default = `agent`) |
 | **world** | identity namespace (= machine / user / hub、 host segment) |
 | **project** | VP project (= self world に register された project name、 reserved: `world`) |
-| **lane** | lane within project (= multi-level、 `worker/objrec` 等) |
+| **lane** | lane within project (= multi-level、 `wing/objrec` 等) |
 
 ### 4 layer matrix
 
