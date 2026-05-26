@@ -18,7 +18,12 @@ import { sendIpc } from './ipc'
 import { isRunningProcess } from './classify'
 import { resolveProjectOrder } from './dnd'
 import { ContextMenu } from './ContextMenu'
-import { deleteHintLabel, deleteHintVisible } from './keybindings'
+import {
+  deleteHintLabel,
+  deleteHintVisible,
+  laneSelectHintLabel,
+  laneSelectHintVisible,
+} from './keybindings'
 import { FileExplorer, FILE_EXPLORER_CSS } from './FileExplorer'
 import { LanePicker, LANE_PICKER_CSS } from './LanePicker'
 import { ProjectAccordion } from './ProjectAccordion'
@@ -115,6 +120,16 @@ export function Shell() {
         <div class="vp-delete-hint">
           <span class="vp-delete-hint-icon">⚠️</span>
           <span class="vp-delete-hint-label">{deleteHintLabel()}</span>
+        </div>
+      </Show>
+
+      {/* PR 447 `l` directive: lane number switcher mode hint bar。 mode 中だけ表示。
+          1-9 のキー押下で expanded project 内 lane を上から N 番目で lane:select。 5 秒 timeout。 */}
+      <Show when={laneSelectHintVisible()}>
+        <div class="vp-lane-select-hint">
+          <span class="vp-lane-select-hint-icon">🔢</span>
+          <span class="vp-lane-select-hint-label">{laneSelectHintLabel()}</span>
+          <span class="vp-lane-select-hint-help">Esc to cancel</span>
         </div>
       </Show>
     </div>

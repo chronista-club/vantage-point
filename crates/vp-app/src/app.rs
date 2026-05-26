@@ -1186,6 +1186,51 @@ fn lookup_lane_cwd(
 /// `w` directive (= 規約 v0.4 §C.2 "TheWorld status to PP") 用の markdown formatter。
 /// TheWorld client `list_projects()` で取得した process 一覧を Canvas (PP) で見やすい
 /// table に整形する。 docs/design/18-shortcut-convention.md `w` directive 参照。
+/// `?` directive (= 規約 v0.6 §C.2 "meta cheatsheet") 用の markdown 静的生成。
+/// 全 directive 一覧 + 不採用 / 予約 / Avoid list を Canvas (PP) に table で表示する。
+///
+/// SSOT は `docs/design/18-shortcut-convention.md`。 内容変更時はこの helper と doc を
+/// **同期して update** する (= 規約 doc が dirty にならないよう、 重要な追加は doc 先)。
+fn build_directive_cheatsheet() -> String {
+    let mut md = String::from("# 🎹 VP Directive Cheatsheet\n\n");
+    md.push_str("規約 v0.6 — directive 集合 + `Cmd hold + <key>` (single-key chord)\n\n");
+    md.push_str("## 確定 directive\n\n");
+    md.push_str("| key | binding | semantic | 動作 |\n|---|---|---|---|\n");
+    md.push_str("| `f` | ⌘ hold f | focus-transferring | File Explorer overlay open |\n");
+    md.push_str("| `p` | ⌘ hold p | panel-local | picker visible → selected file を Canvas へ |\n");
+    md.push_str("| `e` | ⌘ hold e | focus-transferring | Echoes (cc 入力欄) に focus |\n");
+    md.push_str("| `g` | ⌘ hold g | focus-transferring | Gold Experience output に focus |\n");
+    md.push_str("| `h` | ⌘ hold h | focus-transferring | Hermit Purple に focus |\n");
+    md.push_str("| `w` | ⌘ hold w | focus-preserving | TheWorld status を PP に markdown 表示 |\n");
+    md.push_str(
+        "| `r` | ⌘ hold r | focus-preserving (polymorphic) | lane / process restart の context dispatch |\n",
+    );
+    md.push_str(
+        "| `n` | ⌘ hold n | focus-transferring | active project の AddWing form を keyboard で open |\n",
+    );
+    md.push_str(
+        "| `s` | ⌘ hold s | focus-transferring | Lane / project switcher picker overlay |\n",
+    );
+    md.push_str(
+        "| `d` | ⌘ hold d | focus-preserving (polymorphic) | 2-click confirm delete (lane/project) |\n",
+    );
+    md.push_str(
+        "| `l` | ⌘ hold l | focus-transferring (mode) | lane number switcher mode: 5 秒以内に 1-9 で expanded project 内 lane を上から N 番目で切替 |\n",
+    );
+    md.push_str(
+        "| `?` | ⌘ hold ? | focus-preserving (meta) | この cheatsheet を Canvas に表示 |\n\n",
+    );
+    md.push_str("## 不採用 directive (規約 v0.4 invariant 宣言)\n\n");
+    md.push_str("- `c` (clear): 1 押し misfire リスクが高い、 UI button 経由のみ\n\n");
+    md.push_str("## 予約 directive (実装は別 PR)\n\n");
+    md.push_str("- `t` (rename) / `m` (mailbox) / `a` (activate) / `o` (open)\n\n");
+    md.push_str("## Avoid list (= 衝突回避)\n\n");
+    md.push_str("- `Cmd+Shift+3/4/5` (macOS screenshot)、 `Cmd+Space` (Spotlight)、 `Cmd+Tab` (app switcher)\n");
+    md.push_str("- `Ctrl + letter` 単独 (readline / tmux)、 `Opt + letter` (terminal で特殊文字 e.g. π)\n\n");
+    md.push_str("詳細: `docs/design/18-shortcut-convention.md`\n");
+    md
+}
+
 fn format_theworld_status(processes: &[crate::client::ProcessInfo]) -> String {
     let mut md = String::from("# 🌍 TheWorld Status\n\n");
     md.push_str("**Daemon**: running (port 32000)\n\n");
@@ -2046,6 +2091,15 @@ pub fn run() -> anyhow::Result<()> {
                     } else {
                         tracing::info!("directive s: lane picker opened");
                     }
+                }
+                // PR 447: `?` (meta cheatsheet) は markdown を build → AppEvent::DirectiveInject で
+                // main_view の PP body に inject。 focus-preserving (= 元の panel focus は keep)。
+                "?" => {
+                    let content =
+                        serde_json::json!({ "markdown": build_directive_cheatsheet() });
+                    let _ = async_action_proxy
+                        .send_event(AppEvent::DirectiveInject { content });
+                    tracing::info!("directive ?: cheatsheet inject to PP");
                 }
                 other => {
                     tracing::debug!("directive: 未実装 key = {}", other);

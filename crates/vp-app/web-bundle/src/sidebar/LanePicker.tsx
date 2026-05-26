@@ -270,4 +270,15 @@ export const LANE_PICKER_CSS = `
   font-size:11px;}
 .vp-delete-hint-icon{flex:0 0 auto;}
 .vp-delete-hint-label{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+
+/* PR 447 \`l\` directive — lane number switcher mode hint bar (sidebar 下端、 \`d\` hint と排他想定) */
+.vp-lane-select-hint{position:absolute;bottom:0;left:0;right:0;z-index:9100;
+  display:flex;align-items:center;gap:8px;padding:6px 10px;
+  background:var(--color-brand-primary-subtle,#1c2436);
+  color:var(--color-brand-primary,#3fb9d4);
+  border-top:1px solid var(--color-brand-primary,#3fb9d4);
+  font-size:11px;font-variant-numeric:tabular-nums;}
+.vp-lane-select-hint-icon{flex:0 0 auto;}
+.vp-lane-select-hint-label{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.vp-lane-select-hint-help{flex:0 0 auto;opacity:0.7;font-size:10px;}
 `
