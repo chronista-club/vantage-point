@@ -20,14 +20,14 @@ LAN MVP (Phase 0-3) 完成までは、 一部 example は **Phase X 実装後に
 ```
             host (DNS-like、 . で qualify)
             ↓
-agent  @  mako.chronista.club  /  vantage-point  /  worker  /  objrec
+agent  @  mako.chronista.club  /  vantage-point  /  wing  /  objrec
   ↑                                ↑                  ↑
 actor                            project           lane (multi-segment 可)
 (default: agent)
 ```
 
 **最 minimal**: `vantage-point/lead` (= `agent@vantage-point/lead`)
-**最 verbose**: `agent@mako.chronista.club/vantage-point/worker/objrec`
+**最 verbose**: `agent@mako.chronista.club/vantage-point/wing/objrec`
 
 `@` 1 個 + `/` 階層 + `.` host DNS、 三役直交。 sidebar の lane label をそのまま address として使える。
 
@@ -125,7 +125,7 @@ Vp.send_to("agent@mako/vantage-point/lead", { msg: "via hub" })
 # world / project context を fix して address 短縮
 Vp.with_world("mako.chronista.club") do |w|
   w.send_to("agent/vantage-point/lead", payload1)
-  w.send_to("agent/vantage-point/worker/objrec", payload2)
+  w.send_to("agent/vantage-point/wing/objrec", payload2)
   # 同 hub への 2 件、 connection 1 個で済ます
 end
 ```
@@ -217,7 +217,7 @@ vp world trust remove <alias>
 | `*@vantage-point` | ✅ valid | `*@vantage-point/lead` (lane 明示) |
 | `notify@vantage-point` | ✅ valid (default lane) | `notify@vantage-point/lead` |
 | (なかった) | — | `vantage-point/lead` (= actor 省略、 v3.1 新) |
-| (なかった) | — | `vantage-point/worker/objrec` (= per-lane、 v3.1 新) |
+| (なかった) | — | `vantage-point/wing/objrec` (= per-lane、 v3.1 新) |
 | (なかった) | — | `mako/vantage-point/lead` (= cross-world、 v3.1 新) |
 
 **v1 user は何も変更不要**、 v3.1 features は opt-in。
@@ -338,28 +338,28 @@ vantage-point
 
 ### scenario
 
-worker lane で実装中の Claude が「lead lane の Claude に lint result を投げる」 シナリオ。
+wing lane で実装中の Claude が「lead lane の Claude に lint result を投げる」 シナリオ。
 
-### macbook-a の vantage-point/worker/code-1 lane で
+### macbook-a の vantage-point/wing/code-1 lane で
 
 ```bash
-# worker Claude が実行
+# wing Claude が実行
 $ cargo clippy --workspace 2>&1 | tee /tmp/clippy.txt
 $ vp wire send --to agent@vantage-point/lead --body "$(cat /tmp/clippy.txt)"
 ```
 
-> MCP 経由なら worker Claude は `wire_send` tool を直接呼ぶ (CLI 不要)。
+> MCP 経由なら wing Claude は `wire_send` tool を直接呼ぶ (CLI 不要)。
 
 ### 同 machine の vantage-point/lead lane で
 
 - vp-app sidebar の Lead row に 📨 icon 表示
-- click → tooltip で「from agent@vantage-point/worker/code-1、 2 min ago、 lint result preview」
+- click → tooltip で「from agent@vantage-point/wing/code-1、 2 min ago、 lint result preview」
 - lead Claude が `wire_recv` (MCP tool) で取得、 内容に応じて指示
 
 ### Ruby DSL 版 (Phase 5)
 
 ```ruby
-# worker
+# wing
 Vp.send_to("agent@vantage-point/lead", {
   type: "lint_result",
   output: File.read("/tmp/clippy.txt"),

@@ -228,7 +228,7 @@ Phase 1 で parser 拡張時、 v1 syntax を v3.1 として解釈する rule:
 | v3.1 input | internal |
 |------------|----------|
 | `vantage-point/lead` | `Address { actor: "agent", world: None, project: Some("vantage-point"), lane: vec!["lead"] }` |
-| `vantage-point/worker/objrec` | `Address { actor: "agent", ..., lane: vec!["worker", "objrec"] }` |
+| `vantage-point/wing/objrec` | `Address { actor: "agent", ..., lane: vec!["wing", "objrec"] }` |
 | `mako/vantage-point/lead` | `Address { actor: "agent", world: Some("mako"), ... }` |
 | `notify@vantage-point/lead` | `Address { actor: "notify", ... }` |
 
@@ -245,7 +245,7 @@ Phase 1 で parser 拡張時、 v1 syntax を v3.1 として解釈する rule:
 
 - ~~Phase 2 で per-lane msgbox 物理化 (`MsgboxRouter` を `(actor, project, lane_path)` キー)~~ → VP-169 で DB row field 化
 - ~~v1 既存 msgbox は spawn 時に `(actor, project, vec!["lead"])` キーへ migration~~ → VP-169 で box concept 廃止
-- ~~worker lane spawn で新 msgbox 自動 register、 lane delete で cleanup~~ → VP-169 で register/unregister 廃止、 consumer が `WHERE to_lane=$mine` で LIVE SELECT
+- ~~wing lane spawn で新 msgbox 自動 register、 lane delete で cleanup~~ → VP-169 で register/unregister 廃止、 consumer が `WHERE to_lane=$mine` で LIVE SELECT
 
 ### gap 1-4 の物理 fix
 

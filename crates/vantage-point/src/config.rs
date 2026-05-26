@@ -3,7 +3,7 @@
 //! ## VP-189: config.toml → config.kdl 統一
 //!
 //! VP の設定ファイルは元々 TOML だったが、 projects.kdl (VP-188) / lane の
-//! worker-files.kdl 等、 周辺の設定は既に KDL に揃っていた。 config 本体だけ
+//! wing-files.kdl 等、 周辺の設定は既に KDL に揃っていた。 config 本体だけ
 //! TOML で取り残されていたのを KDL に統一し、 club-kdl 資産を一本化する。
 //!
 //! - config.kdl は **人間が編集する read-only な global 設定**。 VP 自身は

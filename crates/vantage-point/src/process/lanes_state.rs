@@ -41,8 +41,6 @@ pub enum LaneKind {
     /// 1 / project (固定)、LaneStand = HD or TH
     Lead,
     /// 0..n / project (可変、lane cloned worktree)、LaneStand = HD or TH。
-    /// 旧称 Worker — wire 互換のため legacy `"worker"` を alias で受理。
-    #[serde(alias = "worker")]
     Wing,
 }
 
@@ -308,12 +306,7 @@ pub struct LaneInfo {
     /// Phase 5-D: Wing のみ embed (Lead は git workspace を持たない設計)。
     /// `cwd` から `lane::commands::wing_status()` を呼んで populate。
     /// `/api/lanes` 応答時に lazy 取得 (registry には保存しない、 git 状態は volatile)。
-    /// `worker_status` は Worker → Wing rename 前の legacy wire field 名 (alias で受理)。
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        alias = "worker_status"
-    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wing_status: Option<crate::lane::commands::WingStatus>,
     /// Phase 1a: Lane に attach した Stand ごとの tmux session address (deterministic)。
     /// SP push 経由で TheWorld cache に流れる (agent から `/api/lanes` で resolve)。
@@ -643,13 +636,11 @@ impl LanePool {
 
     /// Display 形 (`"<project>/lead"` / `"<project>/wing/<name>"`) をパースして LaneAddress を作る。
     /// vp-app の sidebar から `lane:select` IPC の address (= `lane_address_key`) を逆変換するために使う。
-    /// legacy `"worker"` token も `Wing` として受理する (Worker → Wing rename 前の互換)。
     pub fn parse_address(s: &str) -> Option<LaneAddress> {
-        // 形式: "<project>/lead" or "<project>/wing/<name>" ("worker" は legacy alias)
         let parts: Vec<&str> = s.splitn(3, '/').collect();
         match parts.as_slice() {
             [project, "lead"] if !project.is_empty() => Some(LaneAddress::lead(*project)),
-            [project, "wing" | "worker", name] if !project.is_empty() && !name.is_empty() => {
+            [project, "wing", name] if !project.is_empty() && !name.is_empty() => {
                 Some(LaneAddress::wing(*project, *name))
             }
             _ => None,
@@ -740,24 +731,51 @@ mod tests {
     fn lane_kind_serde_snake_case() {
         assert_eq!(serde_json::to_string(&LaneKind::Lead).unwrap(), "\"lead\"");
         assert_eq!(serde_json::to_string(&LaneKind::Wing).unwrap(), "\"wing\"");
-        // legacy alias: Worker → Wing rename 前の wire 値 "worker" も Wing として受理
-        let k: LaneKind = serde_json::from_str("\"worker\"").unwrap();
-        assert_eq!(k, LaneKind::Wing);
     }
 
-    // 旧 `lane_stand_only_hd_and_th` / `lane_stand_default_is_heavens_door` test は廃止。
-    // doc 11 PR-B で `LaneStand` enum 削除、 stand は String 化。 wire format の
-    // legacy 名 ("heavens_door"/"the_hand") は migrate_legacy_stand shim 側で test。
+    #[test]
+    fn lane_kind_serde_worker_rejected() {
+        // Worker → Wing rename 完結後: legacy `"worker"` は serde alias から外れた。
+        // `#[serde(alias = "worker")]` 削除の回帰ガード。
+        // "worker" が LaneKind として deserialize されると旧 SP wire から届いた
+        // stale payload を黙って受理してしまう — それを防ぐ。
+        let result: Result<LaneKind, _> = serde_json::from_str("\"worker\"");
+        assert!(
+            result.is_err(),
+            "\"worker\" は LaneKind として受理されてはならない (alias 削除済)"
+        );
+    }
 
     #[test]
-    fn parse_address_lead_and_worker() {
-        // Phase 2: vp-app が IPC で送る address ("<project>/lead" / "<project>/worker/<name>") を
-        // SP 側で逆変換する。 lane_address_key (vp-app) と完全に対称。
+    fn lane_info_worker_status_alias_rejected() {
+        // `worker_status` serde alias 削除の回帰ガード。
+        // 旧 SP が `worker_status` キーで送ってきても、 新 SP は wing_status: None として扱う
+        // (= 情報損失は許容、 crash やパース失敗より優先)。
+        // `#[serde(default)]` が残っているので unknown field は無視され None になる。
+        let json = r#"{
+            "address": {"project": "vp", "kind": "wing", "name": "foo"},
+            "kind": "wing",
+            "name": "foo",
+            "state": "running",
+            "stand": "echoes",
+            "created_at": "2026-05-26T00:00:00Z",
+            "cwd": "/tmp",
+            "worker_status": {"branch": "main", "ahead": 0, "behind": 0, "is_merged": false, "has_changes": false}
+        }"#;
+        let info: LaneInfo = serde_json::from_str(json).expect("パース自体は成功する");
+        assert!(
+            info.wing_status.is_none(),
+            "worker_status キーは wing_status に流れ込まない (alias 削除済)"
+        );
+    }
+
+    #[test]
+    fn parse_address_lead_and_wing() {
         let lead = LanePool::parse_address("vp/lead").unwrap();
         assert_eq!(lead, LaneAddress::lead("vp"));
 
-        let worker = LanePool::parse_address("vp/worker/foo").unwrap();
-        assert_eq!(worker, LaneAddress::wing("vp", "foo"));
+        let wing = LanePool::parse_address("vp/wing/foo").unwrap();
+        assert_eq!(wing, LaneAddress::wing("vp", "foo"));
 
         // CJK / kebab-case project name も通る
         let lead2 = LanePool::parse_address("vantage-point/lead").unwrap();
@@ -767,7 +785,9 @@ mod tests {
         assert!(LanePool::parse_address("vp").is_none()); // / 無し
         assert!(LanePool::parse_address("/lead").is_none()); // project 空
         assert!(LanePool::parse_address("vp/foo").is_none()); // 未知 kind
-        assert!(LanePool::parse_address("vp/worker/").is_none()); // worker name 空
+        assert!(LanePool::parse_address("vp/wing/").is_none()); // wing name 空
+        // 旧 "worker" token は受理しない
+        assert!(LanePool::parse_address("vp/worker/foo").is_none());
     }
 
     // ========================================================================

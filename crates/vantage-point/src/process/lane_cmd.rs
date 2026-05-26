@@ -47,9 +47,8 @@ use serde::{Deserialize, Serialize};
 pub enum LaneCmd {
     /// Wing Lane を spawn (= stand_spawner で PtySlot 起動 + LanePool insert)。
     ///
-    /// 旧 `LanePool::populate_workers_from_disk` (= 旧 Worker 名称時代の API、 既に削除済) が
-    /// 同期 loop で呼んでいた spawn を、 **1 Wing = 1 SpawnLane Cmd** に分解して
-    /// Mailbox actor に流す。 actor が Semaphore で gate しつつ並列処理する design。
+    /// **1 Wing = 1 SpawnLane Cmd** に分解して Mailbox actor に流し、 actor が Semaphore で
+    /// gate しつつ並列処理する design。
     SpawnLane {
         /// LaneAddress.project の値 (= lane repo prefix と一致する project_id、
         /// `routes/lanes.rs::create_handler` の derivation と整合)

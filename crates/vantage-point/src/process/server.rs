@@ -240,9 +240,7 @@ pub async fn run(
         // Wing Lane の動的 create は A4-4、Stand spawn 連動は A5 で実装。
         //
         // (I-b、 2026-04-30): Wing auto-spawn は AppState 構築後に Mailbox actor 経由で実施。
-        // 旧 PR #228 の `populate_workers_from_disk` (= 旧 Worker 名称時代、 削除済) sync 経路は
-        // 削除し、 lane wings を
-        // `LaneCmd::SpawnLane` Cmd 化して `lane-spawn` mailbox に投入する設計に移行
+        // lane wings を `LaneCmd::SpawnLane` Cmd 化して `lane-spawn` mailbox に投入する
         // (= concurrency 制御を `Arc<Semaphore::new(N)>` で表現、 N=config.startup.max_concurrent_lane_spawn)。
         // 詳細は run() 内 lane_spawn_actor wiring 参照。
         lane_pool: Arc::new(RwLock::new(super::lanes_state::LanePool::with_lead(
@@ -297,8 +295,7 @@ pub async fn run(
     }
 
     // (I-b、 2026-04-30) Lane spawn actor を起動し、 既存 lane wings を Cmd 化して投入。
-    // 旧 PR #228 の sync `populate_workers_from_disk` (= 旧 Worker 名称時代の API、 削除済)
-    // 経路を Mailbox actor + Semaphore に置換。
+    // Mailbox actor + Semaphore で並列 spawn を gate する設計。
     // - actor は `lane-spawn` mailbox を recv し、 `Arc<Semaphore::new(N)>` で gate しつつ並列実行
     // - bootstrap は lane wings をスキャンして `LaneCmd::SpawnLane` を投入 (= 1 回限りの seed)
     // - N=config.startup.max_concurrent_lane_spawn (default 1、 dogfood で計測 log を集計して tweak)

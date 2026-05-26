@@ -3,10 +3,6 @@
  *
  * v1.0 柱 2 PR-2。 旧 SIDEBAR_HTML の `STAND_GLYPH` / `standDisplayName` /
  * `laneLabel` / `laneAddressKey` を SolidJS sidebar 用に port したもの。
- *
- * Lane の役割は Lead / Wing の 2 種 (Wing は旧称 Worker)。 SP から来る wire の
- * `kind` 文字列は legacy `"worker"` も `wing` として扱う (Worker → Wing rename
- * 前の永続データ / 旧 SP との互換)。
  */
 import type { IconName } from 'creoui-icons-web'
 import type { LaneInfo } from '../generated/LaneInfo'
@@ -54,9 +50,9 @@ export function standDisplayName(stand: string): string {
   }
 }
 
-/** Lane kind が Wing か (`"worker"` は legacy alias)。 */
+/** Lane kind が Wing か。 */
 function isWingKind(kind: string): boolean {
-  return kind === 'wing' || kind === 'worker'
+  return kind === 'wing'
 }
 
 /** Lane が Wing か (Lead との対)。 */
@@ -75,7 +71,6 @@ export function laneLabel(lane: LaneInfo): string {
 /**
  * Lane address を Display 形 (`<project>/lead` / `<project>/wing/<name>`) に変換。
  * Rust `LaneAddressWire::key()` と完全一致させる (active selection 比較に使うため)。
- * legacy `"worker"` kind は `wing` に正規化する。
  */
 export function laneAddressKey(lane: LaneInfo): string {
   const a = lane.address

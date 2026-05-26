@@ -3,11 +3,10 @@
 //!
 //! ## 背景 (I-b、 2026-04-30)
 //!
-//! PR #228 で landed した `LanePool::populate_workers_from_disk` (= 旧 Worker 名称時代、
-//! 削除済) は SP 起動時に Wing N 本を
-//! **直列 sync ループ** で spawn していた。 内部の `spawn_with_fallback` が `EARLY_EXIT_CHECK_MS
-//! = 800ms` の `std::thread::sleep` で executor を block するため、 N 本で `800ms × N` の
-//! 累積待ち → SP の axum listen ready が遅延する設計上の問題があった。
+//! 従来 SP 起動時に Wing N 本を **直列 sync ループ** で spawn していた。 内部の
+//! `spawn_with_fallback` が `EARLY_EXIT_CHECK_MS = 800ms` の `std::thread::sleep` で
+//! executor を block するため、 N 本で `800ms × N` の累積待ち → SP の axum listen
+//! ready が遅延する設計上の問題があった。
 //!
 //! 本 actor は user 提案 (2026-04-30) を実装したもの:
 //! - 「SP は一気に claude cli 叩くから、 最大数設定して、 順次、 Pane を復活させたいね」
@@ -43,8 +42,8 @@
 //!   で隔離し、 actor の recv loop と他 task を妨げない
 //! - **race guard**: permit 待ち中に手動 `POST /api/lanes` で同 addr が create された場合、
 //!   spawn 完了後の `pool.write()` で再 check し、 lost race なら spawn 済 PtySlot を drop で zombie reap
-//! - **graceful degrade**: spawn 失敗 = `LaneState::Dead` + pid:None で record (= 既存
-//!   旧 `populate_workers_from_disk` と同じ contract、 sidebar の disk-scan fallback と整合)
+//! - **graceful degrade**: spawn 失敗 = `LaneState::Dead` + pid:None で record
+//!   (= sidebar は Dead entry を dim 表示、 手動 retry 可能)
 //!
 //! ## 計測 log (dogfood で N 値決定の足場)
 //!

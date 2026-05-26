@@ -20,6 +20,6 @@
  */
 export type LaneAddressWire = { project: string, 
 /**
- * "lead" | "wing" ("worker" は legacy alias)
+ * "lead" | "wing"
  */
 kind: string, name: string | null, };

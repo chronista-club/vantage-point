@@ -6,7 +6,7 @@
  * optional branch input → 作成で `lane:add_wing` IPC を送る。
  *
  * follow-up: stand dropdown (`stands:fetch` 連動) と inline error 表示
- * (`handleAddWorkerResult` の wire) は後続。 現状 stand は SP-side default。
+ * (`handleAddWingResult` の wire) は後続。 現状 stand は SP-side default。
  */
 import { createSignal } from 'solid-js'
 import { sendIpc } from './ipc'
