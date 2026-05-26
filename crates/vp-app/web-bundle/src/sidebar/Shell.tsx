@@ -46,7 +46,7 @@ export function Shell() {
   return (
     <div class="vp-sidebar-shell">
       <header class="vp-sidebar-header">
-        <span class="vp-sidebar-title">Vantage Point</span>
+        <span class="vp-sidebar-title">CURRENTs</span>
         {/* project 追加: process:add IPC → Rust 側 native folder picker → 登録 (VP-203)。 */}
         <button
           class="vp-sidebar-add"
