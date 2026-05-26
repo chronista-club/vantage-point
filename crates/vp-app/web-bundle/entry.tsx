@@ -39,7 +39,7 @@ import { EditorHostProvider, EditorLayer } from '@chronista-club/creoui-editor-h
 import { FrameEngine, type PaneId, type SceneId } from './frame-engine'
 import { DEFAULT_SCENES, EMPTY_SCENE, generateAllFocusScenes } from './scenes'
 import { attachRenderer } from './renderer'
-import { attachKeybindings } from './keybindings'
+import { attachKeybindings, installMainViewDirectiveBridge } from './keybindings'
 import { renderPP, clearPP, appendPP } from './pp'
 import { handleMessage as handleCanvasMessage } from './canvas-handler'
 
@@ -76,6 +76,10 @@ generateAllFocusScenes(FOCUSABLE_PANE_IDS).forEach((s) => frameEngine.registerSc
 // DOM 反映 + keybindings hook
 attachRenderer(frameEngine, document)
 attachKeybindings(frameEngine, window)
+// VP 規約 v0.3 directive bridge: main view で `Cmd hold + key` を捕捉して
+// `directive:fire` IPC 経由で Rust → sidebar に inject する。 main view focus 中
+// (terminal / Canvas / cc 入力欄等) でも picker を開けるようにする (= Pane focus 時の Cmd hold f)。
+installMainViewDirectiveBridge()
 
 // ===== legacy setActivePane bridge + per-Lane Scene state =====
 // 既存 main_area.rs JS が定義する window.setActivePane を wrap して、

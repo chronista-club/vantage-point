@@ -14,6 +14,9 @@ use muda::{
 pub struct MenuIds {
     /// File → "New Window" (Cmd+N、 新規 vp-app process を spawn)
     pub new_window: MenuId,
+    /// File → "Open File..." (Cmd+O、 active lane の File Explorer overlay picker を開く)。
+    /// menu accelerator は OS-level で global に動くため、 Pane (terminal/Canvas) focus 中でも発火。
+    pub open_file: MenuId,
     /// View → "Developer Mode" (CheckMenuItem)
     pub developer_mode: MenuId,
     /// View → "Open Developer Tools" (MenuItem、developer_mode == true の時のみ enabled)
@@ -59,11 +62,18 @@ pub fn build_menu_bar(initial_dev_mode: bool) -> MenuHandles {
         true,
         Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyN)),
     );
+    // - "Open File..." (chord ⌘ hold f, p): active lane の workdir を File Explorer overlay
+    //   picker で開く。 規約 v1.0 (docs/design/18-shortcut-convention.md) で chord 主導線を
+    //   採用したため、 menu accelerator (Cmd+O 単発) は持たない。 ただし menu item 自体は
+    //   discoverability のため keep し、 click すれば picker が開く (mouse 派 user 救済)。
+    //   title に chord 文字列を併記して keyboard user にも learning hint を提供する。
+    let open_file_item = MenuItem::new("Open File...  (⌘ hold f, p)", true, None);
     let file_menu = Submenu::with_items(
         "File",
         true,
         &[
             &new_window_item,
+            &open_file_item,
             &PredefinedMenuItem::separator(),
             &PredefinedMenuItem::close_window(Some("Close Window")),
         ],
@@ -123,6 +133,7 @@ pub fn build_menu_bar(initial_dev_mode: bool) -> MenuHandles {
 
     let ids = MenuIds {
         new_window: new_window_item.id().clone(),
+        open_file: open_file_item.id().clone(),
         developer_mode: developer_mode_item.id().clone(),
         open_devtools: open_devtools_item.id().clone(),
         open_sidebar_devtools: open_sidebar_devtools_item.id().clone(),
