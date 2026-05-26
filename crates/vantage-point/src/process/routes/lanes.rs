@@ -780,7 +780,7 @@ mod route_smoke_tests {
     use axum::Router;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
-    use axum::routing::get;
+    use axum::routing::{get, post};
     use tower::ServiceExt;
 
     #[tokio::test]
@@ -804,5 +804,78 @@ mod route_smoke_tests {
             .unwrap();
         let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
         assert!(body.get("lanes").map(|v| v.is_array()).unwrap_or(false));
+    }
+
+    /// F.8 B Convergent: disk-scan merge 撤去後の `build_lanes_snapshot` は
+    /// LanePool が空 → lanes 空を返す (disk dir が何があっても list に乗らない)。
+    /// 旧版は disk-scan で pid: None Inactive Wing を merge していた。
+    #[tokio::test]
+    async fn build_lanes_snapshot_returns_only_lanepool_entries() {
+        let state = crate::process::state::build_test_app_state(None).await;
+        // LanePool は build_test_app_state で空 (LanePool::new()) → 0 件
+        let lanes = build_lanes_snapshot(&state).await;
+        assert!(
+            lanes.is_empty(),
+            "LanePool が空なら disk に何があっても snapshot は空 (disk-scan merge 撤去済)"
+        );
+    }
+
+    /// Worker → Wing rename 完結: `kind="worker"` POST は 400 BAD_REQUEST を返す。
+    /// 旧版は `req.kind != "wing" && req.kind != "worker"` で "worker" を許容していた。
+    #[tokio::test]
+    async fn create_handler_rejects_worker_kind() {
+        let state = crate::process::state::build_test_app_state(None).await;
+        let app = Router::new()
+            .route("/api/lanes", post(create_handler))
+            .with_state(state);
+        let body = serde_json::json!({
+            "kind": "worker",
+            "name": "test-wing"
+        });
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/lanes")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "kind='worker' は 400 を返す (legacy alias 一掃済)"
+        );
+    }
+
+    /// create_handler: name が空文字列の場合は 400 BAD_REQUEST を返す。
+    #[tokio::test]
+    async fn create_handler_rejects_empty_name() {
+        let state = crate::process::state::build_test_app_state(None).await;
+        let app = Router::new()
+            .route("/api/lanes", post(create_handler))
+            .with_state(state);
+        let body = serde_json::json!({
+            "kind": "wing",
+            "name": "   "
+        });
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/lanes")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "name が空白のみの場合は 400"
+        );
     }
 }

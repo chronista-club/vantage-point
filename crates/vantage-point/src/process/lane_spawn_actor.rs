@@ -43,7 +43,7 @@
 //! - **race guard**: permit 待ち中に手動 `POST /api/lanes` で同 addr が create された場合、
 //!   spawn 完了後の `pool.write()` で再 check し、 lost race なら spawn 済 PtySlot を drop で zombie reap
 //! - **graceful degrade**: spawn 失敗 = `LaneState::Dead` + pid:None で record
-//!   (= sidebar の disk-scan fallback と整合)
+//!   (= sidebar は Dead entry を dim 表示、 手動 retry 可能)
 //!
 //! ## 計測 log (dogfood で N 値決定の足場)
 //!

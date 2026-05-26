@@ -734,6 +734,42 @@ mod tests {
     }
 
     #[test]
+    fn lane_kind_serde_worker_rejected() {
+        // Worker → Wing rename 完結後: legacy `"worker"` は serde alias から外れた。
+        // `#[serde(alias = "worker")]` 削除の回帰ガード。
+        // "worker" が LaneKind として deserialize されると旧 SP wire から届いた
+        // stale payload を黙って受理してしまう — それを防ぐ。
+        let result: Result<LaneKind, _> = serde_json::from_str("\"worker\"");
+        assert!(
+            result.is_err(),
+            "\"worker\" は LaneKind として受理されてはならない (alias 削除済)"
+        );
+    }
+
+    #[test]
+    fn lane_info_worker_status_alias_rejected() {
+        // `worker_status` serde alias 削除の回帰ガード。
+        // 旧 SP が `worker_status` キーで送ってきても、 新 SP は wing_status: None として扱う
+        // (= 情報損失は許容、 crash やパース失敗より優先)。
+        // `#[serde(default)]` が残っているので unknown field は無視され None になる。
+        let json = r#"{
+            "address": {"project": "vp", "kind": "wing", "name": "foo"},
+            "kind": "wing",
+            "name": "foo",
+            "state": "running",
+            "stand": "echoes",
+            "created_at": "2026-05-26T00:00:00Z",
+            "cwd": "/tmp",
+            "worker_status": {"branch": "main", "ahead": 0, "behind": 0, "is_merged": false, "has_changes": false}
+        }"#;
+        let info: LaneInfo = serde_json::from_str(json).expect("パース自体は成功する");
+        assert!(
+            info.wing_status.is_none(),
+            "worker_status キーは wing_status に流れ込まない (alias 削除済)"
+        );
+    }
+
+    #[test]
     fn parse_address_lead_and_wing() {
         let lead = LanePool::parse_address("vp/lead").unwrap();
         assert_eq!(lead, LaneAddress::lead("vp"));

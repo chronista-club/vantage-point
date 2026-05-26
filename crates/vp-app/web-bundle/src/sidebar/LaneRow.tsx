@@ -45,7 +45,7 @@ function WingMeta(props: { ws: WingStatusWire }) {
 export function LaneRow(props: { lane: LaneInfo; projectPath: string }) {
   const addr = () => laneAddressKey(props.lane)
   const isActive = () => sidebar.active_lane_address === addr()
-  // Pane (Echoes) 不在 = pid:null は disk-only Lane (workspace dir のみ)、 dim 表示。
+  // F.8 B Convergent: Pane (Echoes) 不在 = pid:null は Dead Lane (spawn 失敗)、 dim 表示。
   const isInactive = () => props.lane.pid == null
   const isWing = () => isWingLane(props.lane)
   const icon = () => standIcon(props.lane.stand, isActive())

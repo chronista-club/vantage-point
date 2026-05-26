@@ -1647,8 +1647,8 @@ pub fn run() -> anyhow::Result<()> {
                             .any(|l| &l.address.key() == *saved)
                     })
                     .cloned();
-                // Phase 5-E: auto-select は pid あり (= Active = Pane 起動済) な Lane のみ対象。
-                //  disk-only Lane (pid:null) を選ぶと WS 確立先が無く 「lane not found」 reconnect ループに陥る。
+                // F.8 B Convergent: auto-select は pid あり (= Active = Pane 起動済) な Lane のみ対象。
+                //  Dead Lane (pid:null、 spawn 失敗) を選ぶと WS 確立先が無く「lane not found」 reconnect ループに陥る。
                 //  Active Lane が 1 件も無ければ auto-select はスキップ (user 明示選択を待つ)。
                 let first_active = lanes.iter().find(|l| l.pid.is_some());
                 let auto_select = !is_secondary
@@ -1699,7 +1699,7 @@ pub fn run() -> anyhow::Result<()> {
                 if let Some(port) = sp_port_for_project {
                     if let Some(lanes_for_proj) = sidebar_state.lanes_by_project.get(&path_key) {
                         for lane in lanes_for_proj {
-                            // Phase 5-E: pid:null = disk-only Lane (lane workspace dir のみ、 PtySlot 不在)。
+                            // F.8 B Convergent: pid:null = Dead Lane (spawn 失敗、 PtySlot 不在)。
                             //  ensureLane で WS 接続するとサーバ側が「lane not found」 を返し、
                             //  xterm.js が 1006 切断 → 500ms reconnect → 無限ループ に入る。
                             //  Activate 済 Lane (pid あり) のみ WS 確立対象とする。
@@ -1745,7 +1745,7 @@ pub fn run() -> anyhow::Result<()> {
                         continue;
                     };
                     for lane in lanes {
-                        // Phase 5-E: pid:null = disk-only Lane は WS 確立対象外
+                        // F.8 B Convergent: pid:null = Dead Lane は WS 確立対象外
                         if lane.pid.is_none() {
                             continue;
                         }
