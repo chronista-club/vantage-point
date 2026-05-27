@@ -3,7 +3,7 @@ import type { ActiveStand } from "./ActiveStand";
 import type { ActivitySnapshot } from "./ActivitySnapshot";
 import type { LaneInfo } from "./LaneInfo";
 import type { MessageState } from "./MessageState";
-import type { ProcessPaneState } from "./ProcessPaneState";
+import type { ProjectPaneState } from "./ProjectPaneState";
 import type { WidgetKind } from "./WidgetKind";
 
 /**
@@ -14,7 +14,7 @@ export type SidebarState = {
  * Runtime Process (= 旧 "projects") の list
  * Architecture v4: mem_1CaTpCQH8iLJ2PasRcPjHv、JSON wire は serde alias で互換維持
  */
-processes: Array<ProcessPaneState>, 
+processes: Array<ProjectPaneState>, 
 /**
  * 現在表示中の widget kind
  */

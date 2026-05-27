@@ -71,7 +71,7 @@ pub(crate) fn resolve_default_project_root(
 /// rfd の picker は blocking なので別スレッドで実行。folder 選択後:
 /// 1. `client.add_project(name, path)` を呼ぶ (TheWorld の `/api/world/projects` POST)
 /// 2. `client.start_process(name)` で SP を起動し、即「稼働中」にする (VP-203)
-/// 3. `fetch_projects_with_ports` で runtime port 付きで再取得 → `AppEvent::ProcessesLoaded`
+/// 3. `fetch_projects_with_ports` で runtime port 付きで再取得 → `AppEvent::ProjectsLoaded`
 ///
 /// User キャンセル / API 失敗時は何もしない (sidebar は変化しない)。
 /// `initial_dir` が `Some` なら picker の初期表示ディレクトリに設定。
@@ -126,7 +126,7 @@ pub(crate) fn spawn_add_project_picker(
                 // restart / stop / delete callback と同じ invariant)。
                 match crate::app::fetch_projects_with_ports(&client).await {
                     Ok(projects) => {
-                        let _ = proxy.send_event(AppEvent::ProcessesLoaded(projects));
+                        let _ = proxy.send_event(AppEvent::ProjectsLoaded(projects));
                     }
                     Err(e) => {
                         tracing::warn!("add_project 後の projects fetch 失敗: {}", e);
@@ -141,7 +141,7 @@ pub(crate) fn spawn_add_project_picker(
 /// 1. `git clone <url> <target>` を実行 (target は override 優先、無ければ
 ///    `<default_root>/<repo_name>`)
 /// 2. 成功なら `add_project` で TheWorld に register
-/// 3. `fetch_projects_with_ports` で runtime port 付きで再取得 → `AppEvent::ProcessesLoaded`
+/// 3. `fetch_projects_with_ports` で runtime port 付きで再取得 → `AppEvent::ProjectsLoaded`
 ///
 /// `target_override` が `Some` ならそれを target とする (user が picker で選択した
 /// folder)。`None` なら `default_root` + repo 名で auto 決定。後者で `default_root`
@@ -217,7 +217,7 @@ pub(crate) fn spawn_clone_project(
                 // runtime port を merge する helper 経由で送る (= add_project picker 経路と同じ invariant)。
                 match crate::app::fetch_projects_with_ports(&client).await {
                     Ok(projects) => {
-                        let _ = proxy.send_event(AppEvent::ProcessesLoaded(projects));
+                        let _ = proxy.send_event(AppEvent::ProjectsLoaded(projects));
                     }
                     Err(e) => {
                         tracing::warn!("clone 後の projects fetch 失敗: {}", e);

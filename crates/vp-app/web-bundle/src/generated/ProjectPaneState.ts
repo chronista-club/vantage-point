@@ -3,7 +3,7 @@
 /**
  * プロジェクト単位の sidebar accordion 状態 (Architecture v4: Process kind=Runtime)
  */
-export type ProcessPaneState = { 
+export type ProjectPaneState = { 
 /**
  * 正規化パス (HashMap key 兼)
  */
