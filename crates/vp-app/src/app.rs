@@ -247,12 +247,7 @@ fn spawn_processes_fetch(proxy: EventLoopProxy<AppEvent>) {
                 let client = TheWorldClient::default();
                 match fetch_projects_with_ports(&client).await {
                     Ok(processes) => {
-                        let running_count = processes.iter().filter(|p| p.port.is_some()).count();
-                        tracing::info!(
-                            "TheWorld Processes: {} 件 (running={} 件)",
-                            processes.len(),
-                            running_count
-                        );
+                        // polling 毎回発火するため log omit (= loop noise)。
                         let _ = proxy.send_event(AppEvent::ProjectsLoaded(processes));
                     }
                     Err(e) => {
@@ -414,11 +409,8 @@ async fn run_lanes_session(
                     continue;
                 }
             };
-        tracing::info!(
-            "LanesLoaded (wiremsg): project={} ({} lanes)",
-            process_path,
-            lanes.len()
-        );
+        // LanesLoaded push (= retained snapshot + delta) は project × frequency で
+        // ループする systematic event なので log omit (= info / debug どちらでも noise)。
         if proxy
             .send_event(AppEvent::LanesLoaded {
                 process_path: process_path.to_string(),
@@ -702,15 +694,8 @@ fn spawn_activity_poller(proxy: EventLoopProxy<AppEvent>) {
                         && snap.world_online
                         && let Ok(projects) = fetch_projects_with_ports(&client).await
                     {
-                        let running_count =
-                            projects.iter().filter(|p| p.port.is_some()).count();
-                        tracing::info!(
-                            "polling re-fetch (online={} running_changed={}): projects={} running={}",
-                            became_online,
-                            running_changed,
-                            projects.len(),
-                            running_count
-                        );
+                        // polling tick で再 fetch → ProjectsLoaded を送るが、 log は omit
+                        // (= loop で noise)。 失敗時のみ warn にして残す。
                         if proxy
                             .send_event(AppEvent::ProjectsLoaded(projects))
                             .is_err()
@@ -1741,11 +1726,7 @@ pub fn run() -> anyhow::Result<()> {
                 process_path,
                 lanes,
             }) => {
-                tracing::info!(
-                    "AppEvent::LanesLoaded handled: project={} count={}",
-                    process_path,
-                    lanes.len()
-                );
+                // ループする event なので log omit (= LanesLoaded push と pair で noise 源)。
                 // Architecture v4: active_lane_address が未設定なら最初の Lane を auto-select。
                 // 「初回起動 → Lead Lane が main area に出る」UX を Lane SSOT で保つ。
                 //
@@ -1847,7 +1828,6 @@ pub fn run() -> anyhow::Result<()> {
             // 起動 race で silent drop された ensureLane を再発行する (WebView HTML load 完了
             // 後なので、 evaluate_script は確実に実行される)。 idempotent (ensureLane 内で既存なら no-op)。
             Event::UserEvent(AppEvent::LanesEnsureAll) => {
-                let mut total_lanes = 0usize;
                 for (project_path, lanes) in sidebar_state.lanes_by_project.clone().iter() {
                     let sp_port = sidebar_state
                         .processes
@@ -1867,18 +1847,13 @@ pub fn run() -> anyhow::Result<()> {
                             continue;
                         }
                         lane_js::ensure_lane(&main_view, &lane.address.key(), port);
-                        total_lanes += 1;
                     }
                 }
                 // 現在 active な Lane を再度 show する (lane-empty placeholder を解除する保険)
                 if let Some(addr) = &sidebar_state.active_lane_address {
                     lane_js::show_lane(&main_view, Some(addr));
                 }
-                tracing::info!(
-                    "LanesEnsureAll: re-issued ensureLane for {} lane(s), active={:?}",
-                    total_lanes,
-                    sidebar_state.active_lane_address
-                );
+                // LanesLoaded のたびに follow up 発火する loop event のため log omit。
             }
             Event::UserEvent(AppEvent::LanesError {
                 process_path,
@@ -1914,7 +1889,6 @@ pub fn run() -> anyhow::Result<()> {
                 let msg_project = std::path::Path::new(&process_path)
                     .file_name()
                     .and_then(|s| s.to_str());
-                let kind = message.get("type").and_then(|t| t.as_str()).unwrap_or("?");
                 if active_project.is_some() && active_project == msg_project {
                     match serde_json::to_string(&message) {
                         Ok(json) => {
@@ -1924,13 +1898,8 @@ pub fn run() -> anyhow::Result<()> {
                             );
                             if let Err(e) = main_view.evaluate_script(&script) {
                                 tracing::warn!("vpCanvas.handleMessage 失敗: {}", e);
-                            } else {
-                                tracing::info!(
-                                    "CanvasMessage (wiremsg): project={} type={} → PP body へ転送",
-                                    msg_project.unwrap_or("?"),
-                                    kind
-                                );
                             }
+                            // message ごとに loop 発火するため成功 log は omit (= warn のみ keep)。
                         }
                         Err(e) => {
                             tracing::warn!("CanvasMessage serialize 失敗: {}", e);
