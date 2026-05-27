@@ -1,14 +1,14 @@
 //! Sidebar 表示用 data model (Architecture v4 Process recursive 移行版)
 //!
 //! 旧版 (~ 2026-04-26) では Mac 由来の `Pane` / `PaneKind` (Agent/Canvas/Preview/Shell) を
-//! ProcessPaneState 内に持っていた。 Architecture v4 (mem_1CaTpCQH8iLJ2PasRcPjHv) で
+//! ProjectPaneState 内に持っていた。 Architecture v4 (mem_1CaTpCQH8iLJ2PasRcPjHv) で
 //! **SP `/api/lanes` が SSOT** になったので、 vp-app local の Pane data model は撤去し、
 //! このファイルは sidebar の accordion 状態 + widget payload + active selection だけを
 //! 保持する役に絞った。
 //!
 //! ## sidebar 描画
 //!
-//! - Project (= Runtime Process) accordion: `ProcessPaneState`
+//! - Project (= Runtime Process) accordion: `ProjectPaneState`
 //! - Lane (= Session Process / Lead/Wing): `SidebarState.lanes_by_project` (SP fetch 結果)
 //! - Stand (= Stand process / Echoes/Shell/...): Lane の中身として並列 row
 //!
@@ -31,7 +31,7 @@ use ts_rs::TS;
 /// プロジェクト単位の sidebar accordion 状態 (Architecture v4: Process kind=Runtime)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS), ts(export, export_to = "web-bundle/src/generated/"))]
-pub struct ProcessPaneState {
+pub struct ProjectPaneState {
     /// 正規化パス (HashMap key 兼)
     pub path: String,
     pub name: String,
@@ -48,14 +48,14 @@ pub struct ProcessPaneState {
     pub port: Option<u16>,
 }
 
-impl ProcessPaneState {
+impl ProjectPaneState {
     /// 新規 project state (accordion は閉じた状態で生成)
     pub fn new(path: impl Into<String>, name: impl Into<String>) -> Self {
         Self {
             path: path.into(),
             name: name.into(),
             expanded: false,
-            state: None, // ProcessesLoaded handler で fetch 後 merge
+            state: None, // ProjectsLoaded handler で fetch 後 merge
             port: None,  // 同上
         }
     }
@@ -103,7 +103,7 @@ pub struct SidebarState {
     /// Runtime Process (= 旧 "projects") の list
     /// Architecture v4: mem_1CaTpCQH8iLJ2PasRcPjHv、JSON wire は serde alias で互換維持
     #[serde(alias = "projects")]
-    pub processes: Vec<ProcessPaneState>,
+    pub processes: Vec<ProjectPaneState>,
     /// 現在表示中の widget kind
     #[serde(default)]
     pub widget: WidgetKind,
@@ -202,7 +202,7 @@ mod tests {
 
     #[test]
     fn process_state_starts_collapsed() {
-        let p = ProcessPaneState::new("/path", "demo");
+        let p = ProjectPaneState::new("/path", "demo");
         assert_eq!(p.path, "/path");
         assert_eq!(p.name, "demo");
         assert!(!p.expanded);
@@ -212,7 +212,7 @@ mod tests {
     #[test]
     fn sidebar_state_serializes_round_trip() {
         let mut s = SidebarState::default();
-        s.processes.push(ProcessPaneState::new("/a", "alpha"));
+        s.processes.push(ProjectPaneState::new("/a", "alpha"));
         s.activity.world_online = true;
         s.activity.project_count = 1;
         s.active_lane_address = Some("alpha/lead".into());

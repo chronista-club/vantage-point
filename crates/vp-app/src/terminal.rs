@@ -23,11 +23,10 @@ use tao::event_loop::EventLoopProxy;
 /// Lane terminals は per-Lane の browser-native WebSocket で input/output を扱う。
 #[derive(Debug, Clone)]
 pub enum AppEvent {
-    /// TheWorld から Project list 取得成功。 AppEvent variant 名は PR 2 で
-    /// `ProjectsLoaded` に rename される予定 (= 本 PR は client wire 型のみ統一)。
-    ProcessesLoaded(Vec<crate::client::ProjectInfo>),
-    /// TheWorld への接続失敗。 PR 2 で `ProjectsError` に rename 予定。
-    ProcessesError(String),
+    /// TheWorld から Project list 取得成功 (= `fetch_projects_with_ports` 経由で runtime port 込み)。
+    ProjectsLoaded(Vec<crate::client::ProjectInfo>),
+    /// TheWorld への接続失敗 (= daemon 未起動 / network エラー)。
+    ProjectsError(String),
     /// VP-95: Activity widget の定期更新 payload
     ActivityUpdate(crate::pane::ActivitySnapshot),
     /// VP-95: sidebar webview からの IPC メッセージ (JSON 文字列、main loop でパース)
@@ -104,7 +103,7 @@ pub enum AppEvent {
     ResolveLaneInboxes,
     /// wiremsg Stage 1 consumer: SP の "lanes" Unison channel 購読が再接続上限に達して
     /// 終了したことを通知する。 main loop は `lanes_sub_active` から process_path を除去し、
-    /// 次の `ProcessesLoaded` で SP がまだ生きていれば購読が再 spawn される。
+    /// 次の `ProjectsLoaded` で SP がまだ生きていれば購読が再 spawn される。
     /// 設計: creo-memories mem_1CbA198fsHJsoKpu2jDUCv。
     LanesSubscriptionEnded { process_path: String },
     /// Sidebar File Explorer: `files:list` の blocking walk 結果を sidebar webview に

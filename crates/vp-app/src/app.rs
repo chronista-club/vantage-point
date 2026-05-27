@@ -39,7 +39,7 @@ use wry::{
 
 use crate::client::{ProjectInfo, TheWorldClient};
 use crate::main_area::{self, ActivePaneInfo, MAIN_AREA_HTML, SlotRect};
-use crate::pane::{ActiveStand, ActivitySnapshot, ProcessPaneState, SidebarState};
+use crate::pane::{ActiveStand, ActivitySnapshot, ProjectPaneState, SidebarState};
 use crate::project_dialog::{
     resolve_default_project_root, spawn_add_project_picker, spawn_clone_path_picker,
     spawn_clone_project,
@@ -177,7 +177,7 @@ fn spawn_menu_event_pump(proxy: EventLoopProxy<AppEvent>) {
 /// `/api/world/processes` (= running, runtime port + pid 持つ) を **併行 fetch + join** して
 /// 各 `ProjectInfo.port` に runtime port を merge した list を返す。
 ///
-/// `list_projects()` を直接呼んでそのまま `ProcessesLoaded` に乗せると、 config に port を
+/// `list_projects()` を直接呼んでそのまま `ProjectsLoaded` に乗せると、 config に port を
 /// 書いていない project (= 大多数) の port が `None` で来てしまい、 sidebar_state.processes
 /// の port を全潰しする。 これが起きると以降の `LanesLoaded` で `ensureLane` が skip され
 /// terminal が表示されなくなる (= restart / stop / delete 後の lead console 消失 bug)。
@@ -209,7 +209,7 @@ pub(crate) async fn fetch_projects_with_ports(
 ///
 /// **Phase A4-3b bug fix (mem_1CaTpCQH8iLJ2PasRcPjHv Architecture v4)**:
 /// `fetch_projects_with_ports` で registered + running を join して、各 Process に
-/// `port` と `state` を解決した状態で `ProcessesLoaded` event に乗せる。
+/// `port` と `state` を解決した状態で `ProjectsLoaded` event に乗せる。
 ///
 /// これにより handler 側で `if let Some(port) = p.port { spawn_lanes_subscription(...) }` が動く経路完成。
 fn spawn_processes_fetch(proxy: EventLoopProxy<AppEvent>) {
@@ -222,7 +222,7 @@ fn spawn_processes_fetch(proxy: EventLoopProxy<AppEvent>) {
             {
                 Ok(rt) => rt,
                 Err(e) => {
-                    let _ = proxy.send_event(AppEvent::ProcessesError(format!(
+                    let _ = proxy.send_event(AppEvent::ProjectsError(format!(
                         "tokio runtime 作成失敗: {}",
                         e
                     )));
@@ -239,11 +239,11 @@ fn spawn_processes_fetch(proxy: EventLoopProxy<AppEvent>) {
                             processes.len(),
                             running_count
                         );
-                        let _ = proxy.send_event(AppEvent::ProcessesLoaded(processes));
+                        let _ = proxy.send_event(AppEvent::ProjectsLoaded(processes));
                     }
                     Err(e) => {
                         tracing::warn!("TheWorld fetch 失敗 (daemon 未起動?): {}", e);
-                        let _ = proxy.send_event(AppEvent::ProcessesError(e.to_string()));
+                        let _ = proxy.send_event(AppEvent::ProjectsError(e.to_string()));
                     }
                 }
             });
@@ -262,7 +262,7 @@ enum SubscriptionOutcome {
 /// snapshot を受信して `AppEvent::LanesLoaded` を emit する。旧 `spawn_lanes_fetch`
 /// (one-shot HTTP poll) を置換する long-lived 購読。接続が切れたら指数バックオフで
 /// 再接続し、10 連続失敗で諦めて `AppEvent::LanesSubscriptionEnded` を emit する。
-/// SP が同じ project を再 spawn すれば次の `ProcessesLoaded` で購読も再 spawn される。
+/// SP が同じ project を再 spawn すれば次の `ProjectsLoaded` で購読も再 spawn される。
 /// 設計: creo-memories mem_1CbA198fsHJsoKpu2jDUCv。
 fn spawn_lanes_subscription(proxy: EventLoopProxy<AppEvent>, process_path: String, sp_port: u16) {
     let _ = thread::Builder::new()
@@ -615,7 +615,7 @@ fn spawn_sp_start(proxy: EventLoopProxy<AppEvent>, project_name: String, project
                             project_path
                         );
                         // TheWorld の polling が新 SP を pick up すると、 既存の
-                        // spawn_processes_fetch / spawn_activity_poller が ProcessesLoaded を再送、
+                        // spawn_processes_fetch / spawn_activity_poller が ProjectsLoaded を再送、
                         // その流れで spawn_lanes_subscription が走って "lanes" channel を購読、
                         // retained snapshot を受信して sidebar に Lane が出る。
                         // ここで明示的に trigger する必要はない (polling が 5s で SP を拾う)。
@@ -642,7 +642,7 @@ fn spawn_sp_start(proxy: EventLoopProxy<AppEvent>, project_name: String, project
 ///
 /// VP-100 follow-up (B1 / MB1 / PH#7): daemon が **後発で online 復帰** した時、
 /// `world_online: false → true` の遷移を検知して `/api/world/projects` を
-/// 再 fetch し `AppEvent::ProcessesLoaded` を再送する。これにより sidebar
+/// 再 fetch し `AppEvent::ProjectsLoaded` を再送する。これにより sidebar
 /// projects accordion が永遠に空のまま、という UX バグを防ぐ。
 /// 起動初回 (`prev_online == None`) では `spawn_processes_fetch` 側が担当するので
 /// 二重 fetch を避けるため transition 検知をスキップする。
@@ -683,7 +683,7 @@ fn spawn_activity_poller(proxy: EventLoopProxy<AppEvent>) {
                     // 再 fetch trigger (Architecture v4 fix、 mem_1CaTpCQH8iLJ2PasRcPjHv):
                     // - daemon online 復帰 (false → true)
                     // - running 数変化 (SP 起動 / 停止)
-                    // どちらも port join 経由で ProcessesLoaded 再送 → sidebar state badge 更新
+                    // どちらも port join 経由で ProjectsLoaded 再送 → sidebar state badge 更新
                     if (became_online || running_changed)
                         && snap.world_online
                         && let Ok(processes) = fetch_projects_with_ports(&client).await
@@ -698,7 +698,7 @@ fn spawn_activity_poller(proxy: EventLoopProxy<AppEvent>) {
                             running_count
                         );
                         if proxy
-                            .send_event(AppEvent::ProcessesLoaded(processes))
+                            .send_event(AppEvent::ProjectsLoaded(processes))
                             .is_err()
                         {
                             break;
@@ -1412,7 +1412,7 @@ pub fn run() -> anyhow::Result<()> {
         std::collections::HashSet::new();
     // wiremsg Stage 1: per-SP の "lanes" Unison 購読を 1 本だけ張るための guard。
     // path をキーにする。購読が再接続上限で諦めると `LanesSubscriptionEnded` で除去され、
-    // 次の `ProcessesLoaded` で SP がまだ生きていれば再 spawn される。
+    // 次の `ProjectsLoaded` で SP がまだ生きていれば再 spawn される。
     let mut lanes_sub_active: std::collections::HashSet<String> = std::collections::HashSet::new();
     // wiremsg Stage 2: per-SP の "canvas" Unison 購読 guard (lanes_sub_active と同型)。
     let mut canvas_sub_active: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -1596,10 +1596,10 @@ pub fn run() -> anyhow::Result<()> {
                     push_sidebar_state(&sidebar, &sidebar_state);
                 }
             }
-            Event::UserEvent(AppEvent::ProcessesLoaded(projects)) => {
+            Event::UserEvent(AppEvent::ProjectsLoaded(projects)) => {
                 // 既存 SidebarState とマージ:
                 //  - 同じ path があれば既存 state を維持 (expanded / panes / active 保持)
-                //  - 新規は ProcessPaneState::new (Lead Agent 1 つ)
+                //  - 新規は ProjectPaneState::new (Lead Agent 1 つ)
                 //  - サーバから消えた project は除外
                 //
                 // VP-101 follow-up: register 後の auto-expand。
@@ -1607,7 +1607,7 @@ pub fn run() -> anyhow::Result<()> {
                 // 「prev (旧 sidebar_state.processes) には port があった、 新 projects には port が無い」
                 // 形の merge は port を不用意に消すので、 sidebar_state の port は新側 (port_by_name 反映済)
                 // で上書きされる。 retroactive ensureLane (= 後段) で None→Some 遷移を補う。
-                let prev: std::collections::HashMap<String, ProcessPaneState> = sidebar_state
+                let prev: std::collections::HashMap<String, ProjectPaneState> = sidebar_state
                     .processes
                     .drain(..)
                     .map(|p| (p.path.clone(), p))
@@ -1621,7 +1621,7 @@ pub fn run() -> anyhow::Result<()> {
                 sidebar_state.processes = projects
                     .into_iter()
                     .map(|p| {
-                        // ProjectInfo.state / .port を ProcessPaneState に merge
+                        // ProjectInfo.state / .port を ProjectPaneState に merge
                         // (sidebar JS が processStateMark で 🟢/🔴 badge 表示に使う、
                         //  port は Phase 2 で lane:select 時の WS 接続先決定に使う)
                         let state_str = p.state.as_str().to_string();
@@ -1633,7 +1633,7 @@ pub fn run() -> anyhow::Result<()> {
                             //   1. session_state に saved 値があれば最優先 (vp-app 再起動の復元)
                             //   2. 上記 None かつ session 中の追加 (= 初回 fetch ではない) なら auto-expand
                             //   3. 初回 fetch の新規は閉じた状態
-                            let mut s = ProcessPaneState::new(p.path.clone(), p.name.clone());
+                            let mut s = ProjectPaneState::new(p.path.clone(), p.name.clone());
                             s.expanded = session_state
                                 .project_expanded(&p.path)
                                 .unwrap_or(!is_initial_load);
@@ -1879,7 +1879,7 @@ pub fn run() -> anyhow::Result<()> {
             }
             Event::UserEvent(AppEvent::LanesSubscriptionEnded { process_path }) => {
                 // wiremsg Stage 1: "lanes" 購読が再接続上限に達して終了した。
-                // guard から外し、SP が再び現れたら次の `ProcessesLoaded` で購読を再 spawn する。
+                // guard から外し、SP が再び現れたら次の `ProjectsLoaded` で購読を再 spawn する。
                 tracing::info!(
                     "AppEvent::LanesSubscriptionEnded: project={} (購読 guard 解除)",
                     process_path
@@ -1932,7 +1932,7 @@ pub fn run() -> anyhow::Result<()> {
                 );
                 canvas_sub_active.remove(&process_path);
             }
-            Event::UserEvent(AppEvent::ProcessesError(msg)) => {
+            Event::UserEvent(AppEvent::ProjectsError(msg)) => {
                 let js_msg = serde_json::to_string(&msg).unwrap_or_else(|_| "\"error\"".into());
                 let script = format!("window.renderError({})", js_msg);
                 if let Err(e) = sidebar.evaluate_script(&script) {
@@ -2318,7 +2318,7 @@ pub fn run() -> anyhow::Result<()> {
                                             fetch_projects_with_ports(&client).await
                                         {
                                             let _ = proxy
-                                                .send_event(AppEvent::ProcessesLoaded(projects));
+                                                .send_event(AppEvent::ProjectsLoaded(projects));
                                         }
                                     }
                                     Err(e) => {
@@ -2363,7 +2363,7 @@ pub fn run() -> anyhow::Result<()> {
                                             fetch_projects_with_ports(&client).await
                                         {
                                             let _ = proxy
-                                                .send_event(AppEvent::ProcessesLoaded(projects));
+                                                .send_event(AppEvent::ProjectsLoaded(projects));
                                         }
                                     }
                                     Err(e) => {
@@ -2434,7 +2434,7 @@ pub fn run() -> anyhow::Result<()> {
                                             fetch_projects_with_ports(&client).await
                                         {
                                             let _ = proxy
-                                                .send_event(AppEvent::ProcessesLoaded(projects));
+                                                .send_event(AppEvent::ProjectsLoaded(projects));
                                         }
                                     }
                                     Err(e) => {

@@ -11,7 +11,7 @@
  * `ProjectAccordion` が drag イベントを、 `Shell` が並び替え描画を、 それぞれ参照する。
  */
 import { createSignal } from 'solid-js'
-import type { ProcessPaneState } from '../generated/ProcessPaneState'
+import type { ProjectPaneState } from '../generated/ProjectPaneState'
 import { sidebar, setCurrentsOrder } from './store'
 import { sendIpc } from './ipc'
 
@@ -41,9 +41,9 @@ export function clearDrag(): void {
  * は入力順を保つ。
  */
 export function resolveProjectOrder(
-  processes: readonly ProcessPaneState[],
+  processes: readonly ProjectPaneState[],
   currentsOrder: readonly string[] | null | undefined,
-): ProcessPaneState[] {
+): ProjectPaneState[] {
   if (!currentsOrder || currentsOrder.length === 0) return [...processes]
   const rank = new Map(currentsOrder.map((path, i) => [path, i]))
   const TAIL = Number.MAX_SAFE_INTEGER

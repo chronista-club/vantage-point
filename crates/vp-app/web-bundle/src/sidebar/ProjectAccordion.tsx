@@ -10,7 +10,7 @@
  */
 import { For, Show, createSignal, onCleanup, onMount } from 'solid-js'
 import { CreoIcon } from 'creoui-icons-web'
-import type { ProcessPaneState } from '../generated/ProcessPaneState'
+import type { ProjectPaneState } from '../generated/ProjectPaneState'
 import { sidebar } from './store'
 import { sendIpc } from './ipc'
 import { openContextMenu, type ContextMenuItem } from './ContextMenu'
@@ -34,7 +34,7 @@ import {
  * 旧 SIDEBAR_HTML のロジックを踏襲 — SP 未起動/過渡/error は spinner で永久ロード
  * 表示にならないよう、 state 別に明示的な hint を返す。
  */
-function hintFor(proc: ProcessPaneState, laneCount: number): string | null {
+function hintFor(proc: ProjectPaneState, laneCount: number): string | null {
   const s = proc.state
   if (!s || s === 'stopped') {
     return proc.expanded ? '⏳ SP starting…' : '💤 SP stopped — open to spawn'
@@ -46,7 +46,7 @@ function hintFor(proc: ProcessPaneState, laneCount: number): string | null {
   return null
 }
 
-export function ProjectAccordion(props: { proc: ProcessPaneState }) {
+export function ProjectAccordion(props: { proc: ProjectPaneState }) {
   const lanes = () => sidebar.lanes_by_project[props.proc.path] ?? []
   const hint = () => hintFor(props.proc, lanes().length)
   // active project = 現在 active な Lane を含む project。 Add Wing の「+」はこの時だけ出す。
