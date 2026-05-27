@@ -21,6 +21,13 @@ use tokio::sync::Mutex;
 use crate::protocol::ProcessMessage;
 
 /// Parameters for the show tool
+///
+/// ## doc 19 PP Canvas Stack Model (2026-05-27)
+///
+/// `append` field は spec から omit。 mcp__show は **canvas に新 item を push** する
+/// semantic に統一されたため、 「既存に追記」 は新 item 化で表現する。
+/// 外部 MCP client が `append: true` を送ってきても serde が unknown field を silent
+/// ignore (= backward compat)、 stack model 上は無効。
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ShowParams {
     /// Content to display
@@ -34,12 +41,12 @@ pub struct ShowParams {
     pub content_type: Option<String>,
 
     /// Pane ID
-    #[schemars(description = "Pane ID to display content in (default: 'main')")]
+    ///
+    /// doc 19 PP Canvas Stack Model: vp-app の canvas-handler は pane_id を無視して
+    /// 全 show を PP body の stack に集約する (= dead field、 backward compat のため
+    /// 残置)。 v2 で削除候補。
+    #[schemars(description = "Pane ID (currently ignored; reserved for future)")]
     pub pane_id: Option<String>,
-
-    /// Append mode
-    #[schemars(description = "Append to existing content instead of replacing")]
-    pub append: Option<bool>,
 
     /// Pane title (for tab display)
     #[schemars(description = "Title for the pane tab. If not provided, the pane_id is used.")]
@@ -1396,7 +1403,6 @@ impl VantageMcp {
         let content_type = params
             .content_type
             .unwrap_or_else(|| "markdown".to_string());
-        let append = params.append.unwrap_or(false);
 
         // content_type → protocol::Content enum 変換
         let content = match content_type.as_str() {
@@ -1406,10 +1412,13 @@ impl VantageMcp {
             _ => crate::protocol::Content::Markdown(params.content),
         };
 
+        // doc 19 PP Canvas Stack Model: append は spec から omit。 protocol layer の
+        // ProcessMessage::Show.append は keep (= wire 互換)、 値は false 固定で送る。
+        // WebView 側 canvas-handler が stack model で新 item として push する。
         let msg = ProcessMessage::Show {
             pane_id: pane_id.clone(),
             content,
-            append,
+            append: false,
             title: params.title,
         };
 

@@ -2141,11 +2141,12 @@ pub fn run() -> anyhow::Result<()> {
             // blocking I/O 結果を main_view の PP body に投げ込む。 FilesOpenResult と同じ
             // `vpCanvas.handleMessage({type:'show',content:...})` shape で送る。
             Event::UserEvent(AppEvent::DirectiveInject { content }) => {
+                // doc 19 PP Canvas Stack Model: append field は omit (= stack push に
+                // 統一)。 pane_id は dead field だが backward compat で keep。
                 let msg = serde_json::json!({
                     "type": "show",
                     "pane_id": "main",
                     "content": content,
-                    "append": false,
                 });
                 let msg_str =
                     serde_json::to_string(&msg).unwrap_or_else(|_| "{}".to_string());
@@ -2164,11 +2165,12 @@ pub fn run() -> anyhow::Result<()> {
             // 既存 MCP `show` ルートを QUIC を経由せず WebView 直注入 (= ephemeral / local-only) で
             // 再現するため、 `ProcessMessage::Show` 相当の JSON を main_view にそのまま渡す。
             Event::UserEvent(AppEvent::FilesOpenResult { content }) => {
+                // doc 19 PP Canvas Stack Model: append field は omit (= stack push に
+                // 統一)。 pane_id は dead field だが backward compat で keep。
                 let msg = serde_json::json!({
                     "type": "show",
                     "pane_id": "main",
                     "content": content,
-                    "append": false,
                 });
                 let msg_str =
                     serde_json::to_string(&msg).unwrap_or_else(|_| "{}".to_string());

@@ -42,6 +42,7 @@ import { attachRenderer } from './renderer'
 import { attachKeybindings, installMainViewDirectiveBridge } from './keybindings'
 import { renderPP, clearPP, appendPP } from './pp'
 import { handleMessage as handleCanvasMessage } from './canvas-handler'
+import { mountHistoryStrip, HISTORY_STRIP_CSS } from './HistoryStrip'
 
 console.info('[vp-bundle] imports resolved')
 ;(window as unknown as { vpBundleStatus?: Record<string, boolean> }).vpBundleStatus!.importsResolved = true
@@ -181,7 +182,13 @@ const installSetActivePaneBridge = (): void => {
   handleMessage: handleCanvasMessage,
 }
 
-// 起動時 default Scene apply
+// doc 19 PP Canvas Stack Model: HistoryStrip CSS を head に注入 + DOMContentLoaded で mount。
+// PP pane の DOM (#pp-history-strip) は main_area.rs HTML 側で保証される。
+const historyStripStyle = document.createElement('style')
+historyStripStyle.textContent = HISTORY_STRIP_CSS
+document.head.appendChild(historyStripStyle)
+
+// 起動時 default Scene apply + HistoryStrip mount
 const applyDefaultScene = (): void => {
   installSetActivePaneBridge()
   const ok = frameEngine.applyScene('lead-focus')
@@ -191,6 +198,8 @@ const applyDefaultScene = (): void => {
   console.info(
     `[frame-engine] applied default scene = lead-focus (ok=${ok}); panes detected = ${paneCount}`,
   )
+  // doc 19: PP body 下の history strip を SolidJS で mount。
+  mountHistoryStrip()
 }
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', applyDefaultScene, { once: true })
