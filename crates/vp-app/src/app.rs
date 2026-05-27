@@ -105,7 +105,9 @@ const SIDEBAR_HTML: &str = concat!(
 <html lang="ja" data-theme="contrast-dark">
 <head><meta charset="utf-8"><style>"#,
     include_str!("../assets/creo-tokens.css"),
-    r#"</style></head>
+    r#"</style><style>"#,
+    include_str!("../assets/vp-tokens.css"),
+    r#"</style><style>body{font-family:var(--vp-font-sans),var(--typography-family-sans);}</style></head>
 <body>
 <div id="sidebar-root"></div>
 <script src="vp-asset://app/sidebar.bundle.js"></script>

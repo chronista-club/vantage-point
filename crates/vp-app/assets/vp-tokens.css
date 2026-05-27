@@ -1,0 +1,21 @@
+/**
+ * Vantage Point ローカル token 拡張 layer。
+ *
+ * VP 独自 "principal" token (`--vp-font-*`) を creo-tokens.css とは独立して宣言する。
+ * 値は Mizolet (= みぞれ / みぞれ mono) のみ。 fallback は **使用箇所** で
+ * `var(--vp-font-sans), var(--typography-family-sans)` のように creo token と並べて
+ * 解決する (2 段 var())。
+ *
+ * 注: var() chain (例: `--vp-font-sans: ..., var(--typography-family-sans);`) は WKWebView
+ * (wry が macOS で使う WebKit) で declaration が invalidate される挙動を確認。 declared 値が
+ * 空文字列に倒れるため、 chain は使わず use site で 2 段に並べる方式を採る (Chrome/Firefox では
+ * chain も動く)。
+ *
+ * Mizolet は一時凌ぎ。 将来ライセンス購入して @font-face で bundle 予定 — その時はこの token は
+ * 維持し、 上に `@font-face { font-family: 'Mizolet'; src: url(...) }` を追加するだけで移行できる
+ * (use site 無改修)。
+ */
+:root {
+  --vp-font-sans: 'Mizolet', 'みぞれ';
+  --vp-font-mono: 'Mizolet-Mono', 'みぞれ 等幅';
+}

@@ -86,6 +86,11 @@ pub const MAIN_AREA_HTML: &str = concat!(
 </style>
 <style>
 "#,
+    include_str!("../assets/vp-tokens.css"),
+    r#"
+</style>
+<style>
+"#,
     include_str!("../assets/creo-components.css"),
     r#"
 </style>
@@ -93,7 +98,7 @@ pub const MAIN_AREA_HTML: &str = concat!(
 "#,
     include_str!("../assets/xterm.css"),
     r#"
-html,body{margin:0;padding:0;height:100%;width:100%;background:var(--color-surface-bg-base);color:var(--color-text-primary);font-family:var(--typography-family-sans);}
+html,body{margin:0;padding:0;height:100%;width:100%;background:var(--color-surface-bg-base);color:var(--color-text-primary);font-family:var(--vp-font-sans),var(--typography-family-sans);}
 body{overflow:hidden;}
 #host{position:relative;width:100%;height:100%;}
 /* VP-140 (PR-ε-1): 3D Frame Layout Engine 化。 旧 `.pane{display:none} + .pane.active{display:block}`
@@ -484,9 +489,13 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
     brightCyan: resolveHex('--terminal-ansi-bright-cyan', '#94E2D5'),
     brightWhite: resolveHex('--terminal-ansi-bright-white', '#FFFFFF')
   };
-  probe.remove();
-  const monoFamily = (css.getPropertyValue('--typography-family-mono') || '').trim()
+  // VP "principal" token + creo fallback を 2 段 var() で probe に当て、 computed font-family を
+  // 完全 resolve させて xterm canvas に渡す stack を得る。 WKWebView は var() chain (declaration
+  // 内 var()) を invalidate するが、 use site で並べる形なら正しく resolve する。
+  probe.style.fontFamily = 'var(--vp-font-mono), var(--typography-family-mono)';
+  const monoFamily = (getComputedStyle(probe).fontFamily || '').trim()
     || `'VPMono35', 'VPMono', 'JetBrainsMono Nerd Font', 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace`;
+  probe.remove();
 
   // ========= VP-143 Live Token 群 (terminal): default 値 + reader / validator =========
   // CSS variable から読取、 不正値や未設定時は fallback (= 旧 hardcoded 値) に縮退。
