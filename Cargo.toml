@@ -45,10 +45,10 @@ tokio-stream = "0.1"
 # (VP-185: `package` rename で短い識別子を使う、 VP-180 以前の `unison::` 命名に回帰)。
 # v0.8 Builder API / v0.9 wire format pivot (rkyv → buffa) / v0.10 datagram channel。
 # v1.0.0-rc.1 (VP wiremsg Stage 1 で bump)。
-unison = { package = "club-unison", version = "1.0.0-rc.1" }
+unison = { package = "club-unison", version = "1.0.0" }
 
 # KDL parsing (club-kdl、 旧 unison-kdl。 v0.5.0 で rename + crates.io 移行)
-club-kdl = "0.5"
+club-kdl = "0.11"
 
 # Glob patterns (lane / Stone Free)
 glob = "0.3"
@@ -57,8 +57,6 @@ glob = "0.3"
 ratatui = { version = "0.30", features = ["crossterm"] }
 crossterm = "0.29"
 
-# Database
-sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
-rusqlite = { version = "0.39", features = ["bundled"] }
-surrealdb = { version = "3.0", default-features = false, features = ["kv-mem", "kv-surrealkv"] }
+# Database (DB は SurrealDB に一本化、 sqlx / rusqlite は dead dep として撤去 — PR 457)
+surrealdb = { version = "3.1", default-features = false, features = ["kv-mem", "kv-surrealkv"] }
 
