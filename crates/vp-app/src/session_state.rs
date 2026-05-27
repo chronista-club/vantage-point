@@ -38,6 +38,12 @@ pub struct ProjectUiState {
     // 将来 field 候補: per-project の Wing form expanded、 lane custom order 等
 }
 
+/// 保存 geometry が valid 判定の閾値 (LogicalPixel)。 これ未満は無視して default に
+/// fallback する (= 破損 / race / 異常 close 由来の極小値ガード)。
+/// `app.rs` 側の `MIN_WINDOW_WIDTH` / `MIN_WINDOW_HEIGHT` と整合させる (= 720x480)。
+pub const GEOMETRY_MIN_WIDTH: f64 = 720.0;
+pub const GEOMETRY_MIN_HEIGHT: f64 = 480.0;
+
 /// 起動時に main window の位置 / サイズ / monitor を復元するための snapshot。
 ///
 /// 単位は **LogicalPixel** (= scale_factor 込みの DPI 補正後座標)。 保存時に
@@ -62,6 +68,19 @@ pub struct WindowGeometry {
     /// primary monitor 内に clamp する。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub monitor: Option<String>,
+}
+
+impl WindowGeometry {
+    /// 保存 geometry が valid か (= 破損 / 異常極小値ガード)。
+    /// 起動時 clamp と被るため、 invalid なら caller 側で None 扱いに fallback。
+    pub fn is_valid(&self) -> bool {
+        self.width >= GEOMETRY_MIN_WIDTH
+            && self.height >= GEOMETRY_MIN_HEIGHT
+            && self.width.is_finite()
+            && self.height.is_finite()
+            && self.x.is_finite()
+            && self.y.is_finite()
+    }
 }
 
 /// vp-app 全体の session UI state。

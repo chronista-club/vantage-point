@@ -1295,7 +1295,12 @@ pub fn run() -> anyhow::Result<()> {
     // position + size + monitor) を起動時に復元できるようにする。 `mut` で keep し、
     // 後段で active_lane_address / projects / currents_order 等の mutate + save にも使う。
     let mut session_state = SessionState::load();
-    let restored_geometry = session_state.window_geometry.clone();
+    // PR #458: invalid geometry (= MIN 未満 / NaN / Inf) は None に fallback して
+    // 起動時 clamp の DEFAULT path に乗せる (= 異常値で window 使用不可になるのを防ぐ)。
+    let restored_geometry = session_state
+        .window_geometry
+        .clone()
+        .filter(|g| g.is_valid());
 
     // 最低サイズ + 起動時 size 強制矯正 — sidebar (固定 280px) 圧縮 bug の構造的防御。
     //
@@ -1438,7 +1443,11 @@ pub fn run() -> anyhow::Result<()> {
     // EventLoop 起動後の async phase で frame に反映され、 初回の `WindowEvent::Resized`
     // として届く。 この flag が false のうちに来た Resized が「restoration 適用直後」と
     // みなして min 制約と照合し、 必要なら force-resize する (#428 Moody Blues Issue #1)。
-    let mut initial_size_clamp_done = false;
+    // PR #458 fix: 保存 geometry を復元した path では起動時 clamp を skip。
+    // 復元値 (with_inner_size apply 済) を macOS state restoration race 由来の小 size で
+    // 上書きしないため、 復元 path 中は最初の Resized event を「正常な user-driven resize」
+    // 扱いにする。 default path (= restored_geometry None) では従来通り clamp logic を走らせる。
+    let mut initial_size_clamp_done = restored_geometry.is_some();
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
