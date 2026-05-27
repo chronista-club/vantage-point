@@ -1222,7 +1222,7 @@ fn build_directive_cheatsheet() -> String {
         "| `l` | ⌘ hold l | focus-transferring (mode) | lane number switcher mode: 5 秒以内に 1-9 で expanded project 内 lane を上から N 番目で切替 |\n",
     );
     md.push_str(
-        "| `?` | ⌘ hold ? | focus-preserving (meta) | この cheatsheet を Canvas に表示 |\n\n",
+        "| `i` | ⌘ hold i | focus-preserving (meta) | この cheatsheet を Canvas に表示 (info) |\n\n",
     );
     md.push_str("## 不採用 directive (規約 v0.4 invariant 宣言)\n\n");
     md.push_str("- `c` (clear): 1 押し misfire リスクが高い、 UI button 経由のみ\n\n");
@@ -2138,14 +2138,19 @@ pub fn run() -> anyhow::Result<()> {
                         tracing::info!("directive s: lane picker opened");
                     }
                 }
-                // PR 447: `?` (meta cheatsheet) は markdown を build → AppEvent::DirectiveInject で
-                // main_view の PP body に inject。 focus-preserving (= 元の panel focus は keep)。
-                "?" => {
+                // PR 447 → PR 454: `i` (info / cheatsheet) は markdown を build →
+                // AppEvent::DirectiveInject で main_view の PP body に inject。
+                // focus-preserving (= 元の panel focus は keep)。
+                //
+                // v0.6 では `?` (= `Cmd+Shift+/`) に bind していたが、 macOS の AppKit が
+                // `Cmd+?` を OS-level で「Help menu search」 用に予約しており keydown が
+                // webview に届かない issue を dogfood で確認。 `i` に rebind した (v0.7)。
+                "i" => {
                     let content =
                         serde_json::json!({ "markdown": build_directive_cheatsheet() });
                     let _ = async_action_proxy
                         .send_event(AppEvent::DirectiveInject { content });
-                    tracing::info!("directive ?: cheatsheet inject to PP");
+                    tracing::info!("directive i: cheatsheet inject to PP");
                 }
                 other => {
                     tracing::debug!("directive: 未実装 key = {}", other);

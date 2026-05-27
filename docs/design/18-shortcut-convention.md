@@ -369,6 +369,7 @@ dispatch 判定は **main view の Scene state** (`frameEngine.getCurrentSceneId
 
 | date | version | section | change | PR |
 |------|---------|---------|--------|----|
+| 2026-05-27 | v0.7 draft | §C.2 / Layer D | meta directive を **`?` → `i` に rebind**。 v0.6 で `Cmd+Shift+/` (= `?`) に bind したが macOS の AppKit が `Cmd+?` を OS-level で「Help menu search」 に予約しており keydown が webview に届かず directive 発火しない issue を dogfood で発見。 `Cmd hold i` (info / cheatsheet) で機能復活。 chord.ts shift 例外は keep (= 将来 shift+symbol 系の余地)。 | PR 454 |
 | 2026-05-27 | v0.6 draft | §C.2 / §C.3 / Layer D | (1) `?` (meta cheatsheet) を §C.2 確定昇格、 chord.ts に shift 例外 (= shift + symbol は通す、 letter のみ reject)。 (2) `l` の意味を「lane panel 予約」 から **「lane number switcher mode」** に再定義 → §C.2 確定昇格: ⌘ hold l で mode 突入、 modifier なし 1-9 で expanded project 内 lane を上から N 番目で切替 (mode-based directive、 5 秒 timeout)。 (3) cheatsheet markdown を Rust 静的生成、 `AppEvent::DirectiveInject` で PP に inject | PR 447 |
 | 2026-05-27 | v0.5 draft | §C.2 / §C.3 | `r` / `n` / `s` / `d` を確定 directive に昇格 (PR 445 で実装、 sidebar 側 polymorphic dispatch + LanePicker.tsx 新規 + 2-click confirm hint bar)。 §C.3 から 4 entry を移動、 残り予約は `t/m/a/l/o/?` | PR 445 |
 | 2026-05-27 | v0.4 §C.2 | `e` / `g` / `h` / `w` を「v0.4 予定」 から **実装済 (PR #444)** に reclassify | PR 445 (同梱) |

@@ -83,11 +83,14 @@ export const DIRECTIVE_TABLE: Record<string, DirectiveEntry> = {
       'lane number switcher mode: ⌘ hold l で mode 突入、 5 秒以内に 1-9 で expanded project 内 lane を上から N 番目で lane:select',
     semantic: 'focus-transferring',
   },
-  // v0.6 (PR 447) で実装 — meta directive
-  // `Cmd hold ?` = `Cmd+Shift+/` keydown。 規約上で唯一 shift 入りの directive (= chord.ts の shift 例外)。
-  '?': {
+  // v0.7 (PR 454) で実装 — meta directive (= info / cheatsheet)
+  //
+  // 当初 v0.6 (PR 447) で `?` (= `Cmd+Shift+/`) に bind したが、 macOS の NSApplication
+  // が `Cmd+?` を OS-level で「Help menu search」 用に予約しており、 keydown が webview に
+  // 届かず directive が発火しない issue を dogfood で発見。 `i` (info) に rebind した。
+  i: {
     description:
-      'cheatsheet — 全 directive 一覧を Canvas (PP) に markdown table で表示 (focus-preserving)',
+      'info / cheatsheet — 全 directive 一覧を Canvas (PP) に markdown table で表示 (focus-preserving)',
     semantic: 'focus-preserving',
   },
 }
