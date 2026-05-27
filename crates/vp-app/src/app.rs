@@ -1291,6 +1291,12 @@ pub fn run() -> anyhow::Result<()> {
     // muda の MenuEvent を main loop に橋渡しする thread を起動
     spawn_menu_event_pump(event_loop.create_proxy());
 
+    // session_state を WindowBuilder より前に load して、 window geometry (= 前回終了時の
+    // position + size + monitor) を起動時に復元できるようにする。 `mut` で keep し、
+    // 後段で active_lane_address / projects / currents_order 等の mutate + save にも使う。
+    let mut session_state = SessionState::load();
+    let restored_geometry = session_state.window_geometry.clone();
+
     // 最低サイズ + 起動時 size 強制矯正 — sidebar (固定 280px) 圧縮 bug の構造的防御。
     //
     // 1. `with_min_inner_size`: SIDEBAR_WIDTH + 余裕ある main 領域を構造的に確保する OS
@@ -1301,14 +1307,23 @@ pub fn run() -> anyhow::Result<()> {
     //    EventLoop が走り始めた**最初の Resized event** (= restoration 適用後) で
     //    min 未満を検出して `set_inner_size(DEFAULT)` で force-resize する経路に移行。
     //    詳細は event loop の Resized handler 側コメント。
-    let window = WindowBuilder::new()
+    // 3. window geometry 復元: `session_state.window_geometry` Some なら前回の size +
+    //    position を apply (= 個別位置)。 None なら default。 monitor 復元は EventLoop
+    //    走り始め後に `available_monitors()` で確認、 disconnect されてれば primary 内に clamp。
+    let mut builder = WindowBuilder::new()
         .with_title("Vantage Point")
-        .with_inner_size(LogicalSize::new(
+        .with_min_inner_size(LogicalSize::new(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT));
+    if let Some(geom) = &restored_geometry {
+        builder = builder
+            .with_inner_size(LogicalSize::new(geom.width, geom.height))
+            .with_position(LogicalPosition::new(geom.x, geom.y));
+    } else {
+        builder = builder.with_inner_size(LogicalSize::new(
             DEFAULT_WINDOW_WIDTH,
             DEFAULT_WINDOW_HEIGHT,
-        ))
-        .with_min_inner_size(LogicalSize::new(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT))
-        .build(&event_loop)?;
+        ));
+    }
+    let window = builder.build(&event_loop)?;
 
     // Terminal backend 選択 (VP-93 Step 2a + auto-launch)
     // - VP_TERMINAL_MODE=local: 明示 opt-out で in-proc portable-pty
@@ -1393,8 +1408,7 @@ pub fn run() -> anyhow::Result<()> {
     // WS から bytes を受けるので、 Rust 側で buffer / flush 同期する必要が無い。
     // VP-95: sidebar 全体 state (projects + widget + activity)
     let mut sidebar_state = SidebarState::default();
-    // session 永続化: 起動を跨いで復元する UI state (expanded / active_lane / currents_order)
-    let mut session_state = SessionState::load();
+    // session_state は WindowBuilder 上で既に load 済 (= window geometry を先に必要)。
     // 直前 active Lane を初回 LanesLoaded で復元するための pending 値。
     // 1 度復元したら None にして、 後続 LanesLoaded で再復元しないように。
     let mut pending_session_active_lane: Option<String> = session_state.active_lane_address.clone();
@@ -1435,6 +1449,44 @@ pub fn run() -> anyhow::Result<()> {
                 ..
             } => {
                 tracing::info!("Window close requested");
+                // window geometry (position + size + monitor) を session_state に save。
+                // 起動時に WindowBuilder で apply されて前回終了時の配置に復元される。
+                let scale = window.scale_factor();
+                let inner = window.inner_size().to_logical::<f64>(scale);
+                match window.outer_position() {
+                    Ok(pos) => {
+                        let logical_pos = pos.to_logical::<f64>(scale);
+                        let monitor_name =
+                            window.current_monitor().and_then(|m| m.name());
+                        session_state.window_geometry = Some(
+                            crate::session_state::WindowGeometry {
+                                width: inner.width,
+                                height: inner.height,
+                                x: logical_pos.x,
+                                y: logical_pos.y,
+                                monitor: monitor_name,
+                            },
+                        );
+                        session_state.save();
+                        tracing::info!(
+                            "session save: window geometry ({}x{} @ {},{}, monitor={:?})",
+                            inner.width,
+                            inner.height,
+                            logical_pos.x,
+                            logical_pos.y,
+                            session_state
+                                .window_geometry
+                                .as_ref()
+                                .and_then(|g| g.monitor.as_deref())
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "outer_position() 取得失敗 (geometry save skip): {}",
+                            e
+                        );
+                    }
+                }
                 *control_flow = ControlFlow::Exit;
             }
             Event::WindowEvent {

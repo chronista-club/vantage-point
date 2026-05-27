@@ -38,6 +38,32 @@ pub struct ProjectUiState {
     // 将来 field 候補: per-project の Wing form expanded、 lane custom order 等
 }
 
+/// 起動時に main window の位置 / サイズ / monitor を復元するための snapshot。
+///
+/// 単位は **LogicalPixel** (= scale_factor 込みの DPI 補正後座標)。 保存時に
+/// `outer_position().to_logical(scale_factor)` で取得し、 復元時に `with_position`
+/// + `with_inner_size` に渡す。 raw physical pixel だと HiDPI 切替で破綻する。
+///
+/// `monitor` は tao の `MonitorHandle::name()` (= OS が提供する display 名、 macOS なら
+/// e.g. "Built-in Retina Display" / "DELL U3415W")。 multi-screen 切断 → 再接続で
+/// 保存 monitor が消失した場合は、 primary monitor 内に clamp して復元する。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WindowGeometry {
+    /// Window inner size width (LogicalPixel)
+    pub width: f64,
+    /// Window inner size height (LogicalPixel)
+    pub height: f64,
+    /// Window outer position x (LogicalPixel、 OS screen 全体での top-left 座標)
+    pub x: f64,
+    /// Window outer position y (LogicalPixel)
+    pub y: f64,
+    /// 保存時 window が居た monitor の name (= tao `MonitorHandle::name()` の戻り値)。
+    /// 復元時に同名 monitor が available なら geometry を尊重、 消失していれば
+    /// primary monitor 内に clamp する。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub monitor: Option<String>,
+}
+
 /// vp-app 全体の session UI state。
 ///
 /// 起動時に `load()` で復元、 IPC mutation 時に `save()` で書き戻す。
@@ -54,6 +80,12 @@ pub struct SessionState {
     /// `None` なら TheWorld の registration 順。 sidebar の DnD で書き込まれる。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub currents_order: Option<Vec<String>>,
+    /// 直前の main window 位置 / サイズ / monitor。 `CloseRequested` で save し、
+    /// 起動時の `WindowBuilder` で `with_position` + `with_inner_size` 経由で復元。
+    /// `None` なら default geometry (= DEFAULT_WINDOW_WIDTH × DEFAULT_WINDOW_HEIGHT、
+    /// OS デフォルト位置)。 multi-screen 復元は `monitor` field 参照。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_geometry: Option<WindowGeometry>,
 }
 
 impl SessionState {
