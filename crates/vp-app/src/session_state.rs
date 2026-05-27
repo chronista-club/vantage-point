@@ -81,6 +81,19 @@ impl WindowGeometry {
             && self.x.is_finite()
             && self.y.is_finite()
     }
+
+    /// Vec を resize する時の placeholder。 invalid な値 (= 0x0) で、 `is_valid()` で reject
+    /// される。 instance index 0 だけ存在する状態で index 2 を save する場合 (= 中間 slot
+    /// が未保存) に slot 1 を埋めるのに使う。
+    pub fn placeholder() -> Self {
+        Self {
+            width: 0.0,
+            height: 0.0,
+            x: 0.0,
+            y: 0.0,
+            monitor: None,
+        }
+    }
 }
 
 /// vp-app 全体の session UI state。
@@ -99,12 +112,27 @@ pub struct SessionState {
     /// `None` なら TheWorld の registration 順。 sidebar の DnD で書き込まれる。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub currents_order: Option<Vec<String>>,
-    /// 直前の main window 位置 / サイズ / monitor。 `CloseRequested` で save し、
-    /// 起動時の `WindowBuilder` で `with_position` + `with_inner_size` 経由で復元。
-    /// `None` なら default geometry (= DEFAULT_WINDOW_WIDTH × DEFAULT_WINDOW_HEIGHT、
-    /// OS デフォルト位置)。 multi-screen 復元は `monitor` field 参照。
+    /// 直前の main window 位置 / サイズ / monitor (= **legacy 単一 slot**)。
+    ///
+    /// PR #459 で `window_geometries` (= Vec) に多 instance 対応として置換予定だが、
+    /// 旧 file format の backward compat のため `Option` field を keep。 `load()` 内で
+    /// `window_geometries` が空 + `window_geometry` Some の時に slot 0 に migrate。
+    ///
+    /// 1-2 release 後に削除候補 (= 既存 save file が新 format に rewrite された後)。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window_geometry: Option<WindowGeometry>,
+
+    /// 各 vp-app instance の window geometry。 配列 index = instance index (= `VP_APP_INSTANCE`
+    /// env)。 0 番目 = primary、 1+ = secondary (= Cmd+N で spawn された window)。
+    ///
+    /// 起動時に self instance index で slot 取得して WindowBuilder に apply。 primary 起動時
+    /// `len() > 1` なら **未起動の secondary を auto-spawn** (= child process で
+    /// `VP_APP_INSTANCE=1..N` 起動)、 これで再起動時に全 window が復元される。
+    ///
+    /// `CloseRequested` で自分の slot を update + save。 Vec の resize は `slot_or_grow()` で
+    /// instance index が範囲外なら自動拡張。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub window_geometries: Vec<WindowGeometry>,
 }
 
 impl SessionState {
@@ -128,7 +156,15 @@ impl SessionState {
         }
         match std::fs::read_to_string(&p) {
             Ok(s) => match serde_json::from_str::<SessionState>(&s) {
-                Ok(state) => {
+                Ok(mut state) => {
+                    // PR #459 migration: 旧 `window_geometry` (Option) → 新
+                    // `window_geometries` (Vec) に移植。 新 file format で save された
+                    // 場合は `window_geometries` 側が priority、 旧 field は ignore。
+                    if state.window_geometries.is_empty()
+                        && let Some(legacy) = state.window_geometry.take()
+                    {
+                        state.window_geometries.push(legacy);
+                    }
                     tracing::info!(
                         "SessionState 読込: {} ({} projects, active_lane={:?})",
                         p.display(),
@@ -190,6 +226,27 @@ impl SessionState {
     /// project の expanded 状態を更新 (entry 無ければ作成)。
     pub fn set_project_expanded(&mut self, path: impl Into<String>, expanded: bool) {
         self.projects.entry(path.into()).or_default().expanded = expanded;
+    }
+
+    /// 指定 instance index (= `VP_APP_INSTANCE` env 値) の geometry を更新する。
+    ///
+    /// Vec が短い場合は **手前の slot を default WindowGeometry で埋めて拡張**。
+    /// 例: index=2 で len()=0 → `[default, default, geom]` で len()=3 に。
+    /// default placeholder は valid 判定で reject されるので、 起動時には ignored。
+    pub fn set_window_geometry(&mut self, instance_index: usize, geom: WindowGeometry) {
+        if instance_index >= self.window_geometries.len() {
+            self.window_geometries
+                .resize_with(instance_index + 1, WindowGeometry::placeholder);
+        }
+        self.window_geometries[instance_index] = geom;
+    }
+
+    /// 指定 instance index の valid geometry を取得 (= 起動時 restore 用)。
+    /// placeholder / invalid / 範囲外なら None。
+    pub fn window_geometry_for(&self, instance_index: usize) -> Option<&WindowGeometry> {
+        self.window_geometries
+            .get(instance_index)
+            .filter(|g| g.is_valid())
     }
 }
 

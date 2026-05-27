@@ -1295,12 +1295,30 @@ pub fn run() -> anyhow::Result<()> {
     // position + size + monitor) を起動時に復元できるようにする。 `mut` で keep し、
     // 後段で active_lane_address / projects / currents_order 等の mutate + save にも使う。
     let mut session_state = SessionState::load();
-    // PR #458: invalid geometry (= MIN 未満 / NaN / Inf) は None に fallback して
-    // 起動時 clamp の DEFAULT path に乗せる (= 異常値で window 使用不可になるのを防ぐ)。
-    let restored_geometry = session_state
-        .window_geometry
-        .clone()
-        .filter(|g| g.is_valid());
+
+    // PR #459: vp-app instance index 判定 (= multi-window 復元)。
+    // 新 env `VP_APP_INSTANCE` (= "0", "1", ...) が primary、 旧 `VP_APP_SECONDARY="1"`
+    // は backward compat で `VP_APP_INSTANCE="1"` 相当に map。 未設定 / "0" = primary。
+    let instance_index: usize = std::env::var("VP_APP_INSTANCE")
+        .ok()
+        .or_else(|| {
+            std::env::var("VP_APP_SECONDARY")
+                .ok()
+                .filter(|v| v == "1")
+                .map(|_| "1".to_string())
+        })
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(0);
+    let is_primary = instance_index == 0;
+    tracing::info!(
+        "vp-app boot: instance_index={} (= {})",
+        instance_index,
+        if is_primary { "primary" } else { "secondary" }
+    );
+
+    // PR #458 + #459: invalid geometry (= MIN 未満 / NaN / Inf) は None に fallback。
+    // multi-window 復元では自分の instance slot から geometry を取得。
+    let restored_geometry = session_state.window_geometry_for(instance_index).cloned();
 
     // 最低サイズ + 起動時 size 強制矯正 — sidebar (固定 280px) 圧縮 bug の構造的防御。
     //
@@ -1329,6 +1347,32 @@ pub fn run() -> anyhow::Result<()> {
         ));
     }
     let window = builder.build(&event_loop)?;
+
+    // PR #459: primary 起動時、 過去の secondary instance (= index 1) の geometry が
+    // valid なら **child process として auto-spawn** する。 これで「2 つ window 開いて
+    // close → 再起動 → 2 つ window 復元」 が動く。 MVP は primary + 1 secondary、
+    // N > 2 (= Cmd+N で 3, 4, ... の window) は future PR で extend 予定。
+    //
+    // env は既存の `VP_APP_SECONDARY="1"` を使う (= Cmd+N の既存 path と一致、 secondary
+    // 側は instance_index=1 として該当 slot を read)。 spawn 失敗は warn して continue
+    // (= primary 起動は阻害しない)。
+    if is_primary && session_state.window_geometry_for(1).is_some() {
+        match std::env::current_exe() {
+            Ok(exe) => match std::process::Command::new(&exe)
+                .env("VP_APP_SECONDARY", "1")
+                .spawn()
+            {
+                Ok(child) => tracing::info!(
+                    "PR #459: auto-spawned secondary instance (pid={}, instance_index=1)",
+                    child.id()
+                ),
+                Err(e) => {
+                    tracing::warn!("PR #459: auto-spawn secondary failed (起動は継続): {}", e)
+                }
+            },
+            Err(e) => tracing::warn!("PR #459: current_exe() 失敗 (auto-spawn skip): {}", e),
+        }
+    }
 
     // Terminal backend 選択 (VP-93 Step 2a + auto-launch)
     // - VP_TERMINAL_MODE=local: 明示 opt-out で in-proc portable-pty
@@ -1449,6 +1493,13 @@ pub fn run() -> anyhow::Result<()> {
     // 扱いにする。 default path (= restored_geometry None) では従来通り clamp logic を走らせる。
     let mut initial_size_clamp_done = restored_geometry.is_some();
 
+    // PR #459 throttled save: window resize / move 中も 500ms throttle で session save。
+    // CloseRequested の force save に依存しない (= `mr app:stop` の SIGTERM kill や crash
+    // でも直近 state が persistent)。 dogfood で「mr app で再起動すると save 走らない」
+    // bug を解消。
+    const GEOMETRY_SAVE_THROTTLE: std::time::Duration = std::time::Duration::from_millis(500);
+    let mut last_geometry_save = std::time::Instant::now() - std::time::Duration::from_secs(1);
+
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
 
@@ -1467,26 +1518,26 @@ pub fn run() -> anyhow::Result<()> {
                         let logical_pos = pos.to_logical::<f64>(scale);
                         let monitor_name =
                             window.current_monitor().and_then(|m| m.name());
-                        session_state.window_geometry = Some(
-                            crate::session_state::WindowGeometry {
-                                width: inner.width,
-                                height: inner.height,
-                                x: logical_pos.x,
-                                y: logical_pos.y,
-                                monitor: monitor_name,
-                            },
-                        );
+                        // PR #459: 自分の instance index の slot に save (multi-window 対応)。
+                        // 旧 single-slot field (window_geometry) は load() の migration で
+                        // window_geometries[0] に移植済 / 新 save では使わない。
+                        let geom = crate::session_state::WindowGeometry {
+                            width: inner.width,
+                            height: inner.height,
+                            x: logical_pos.x,
+                            y: logical_pos.y,
+                            monitor: monitor_name.clone(),
+                        };
+                        session_state.set_window_geometry(instance_index, geom);
                         session_state.save();
                         tracing::info!(
-                            "session save: window geometry ({}x{} @ {},{}, monitor={:?})",
+                            "session save [instance={}]: window geometry ({}x{} @ {},{}, monitor={:?})",
+                            instance_index,
                             inner.width,
                             inner.height,
                             logical_pos.x,
                             logical_pos.y,
-                            session_state
-                                .window_geometry
-                                .as_ref()
-                                .and_then(|g| g.monitor.as_deref())
+                            monitor_name.as_deref()
                         );
                     }
                     Err(e) => {
@@ -1527,6 +1578,55 @@ pub fn run() -> anyhow::Result<()> {
                     }
                 }
                 update_pane_bounds(&sidebar, &main_view, size, scale);
+                // PR #459 throttled save: resize 中も 500ms throttle で geometry save。
+                let now = std::time::Instant::now();
+                if now.duration_since(last_geometry_save) > GEOMETRY_SAVE_THROTTLE
+                    && let Ok(pos) = window.outer_position()
+                {
+                    last_geometry_save = now;
+                    let inner_logical = size.to_logical::<f64>(scale);
+                    let logical_pos = pos.to_logical::<f64>(scale);
+                    let monitor_name = window.current_monitor().and_then(|m| m.name());
+                    session_state.set_window_geometry(
+                        instance_index,
+                        crate::session_state::WindowGeometry {
+                            width: inner_logical.width,
+                            height: inner_logical.height,
+                            x: logical_pos.x,
+                            y: logical_pos.y,
+                            monitor: monitor_name,
+                        },
+                    );
+                    session_state.save();
+                }
+            }
+            Event::WindowEvent {
+                event: WindowEvent::Moved(_),
+                ..
+            } => {
+                // PR #459 throttled save: window 移動中も 500ms throttle で geometry save。
+                // Resized と pair (= drag による size 変更だけでなく位置変更も capture)。
+                let now = std::time::Instant::now();
+                if now.duration_since(last_geometry_save) > GEOMETRY_SAVE_THROTTLE
+                    && let Ok(pos) = window.outer_position()
+                {
+                    last_geometry_save = now;
+                    let scale = window.scale_factor();
+                    let inner = window.inner_size().to_logical::<f64>(scale);
+                    let logical_pos = pos.to_logical::<f64>(scale);
+                    let monitor_name = window.current_monitor().and_then(|m| m.name());
+                    session_state.set_window_geometry(
+                        instance_index,
+                        crate::session_state::WindowGeometry {
+                            width: inner.width,
+                            height: inner.height,
+                            x: logical_pos.x,
+                            y: logical_pos.y,
+                            monitor: monitor_name,
+                        },
+                    );
+                    session_state.save();
+                }
             }
             // Phase 2.x-d: AppEvent::Output / XtermReady は撤去済 (per-Lane browser native WS へ移行)。
             // 関連の `xterm_ready` / `pending` / `PENDING_MAX` も一括削除。
