@@ -1,10 +1,9 @@
 //! ユーザー設定の永続化 (VP-100 follow-up)
 //!
-//! VP-192: `vp_config_dir()` 配下に TOML で保存する。
-//! `~/.config/vp/vp-app.toml` (Linux), `~/Library/Application Support/vp/vp-app.toml` (macOS),
-//! `%APPDATA%\vp\vp-app.toml` (Windows)。
+//! XDG restructure: 全 OS で `vp_config_dir()/vp-app.toml` (= `~/.config/vp/vp-app.toml`、
+//! `$XDG_CONFIG_HOME` 優先)。 macOS の Application Support は廃止。
 //!
-//! `vp` daemon 側が使う `vp_config_dir()/config.toml` とは別ファイル
+//! `vp` daemon 側が使う `vp_config_dir()/config.kdl` とは別ファイル
 //! (vp-app 固有の UI 設定なので分離)。
 //!
 //! 例:

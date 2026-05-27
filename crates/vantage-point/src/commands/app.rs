@@ -161,15 +161,7 @@ fn find_in_path(name: &str) -> Option<PathBuf> {
         .find(|p| p.is_file())
 }
 
-/// macOS: `~/Library/Logs/Vantage/`、その他: `~/.local/state/vantage/logs/`
+/// log 出力先 — XDG state zone 配下 (`vp_log_dir()` = `~/.local/state/vp/log/`)。
 fn log_dir_path() -> PathBuf {
-    if cfg!(target_os = "macos") {
-        dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("Library/Logs/Vantage")
-    } else {
-        dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".local/state/vantage/logs")
-    }
+    crate::config::vp_log_dir()
 }

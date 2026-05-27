@@ -37,10 +37,9 @@ const DB_NAME: &str = "vp";
 
 /// SurrealDB データディレクトリの root (`vp_data_dir()/db`)
 ///
-/// VP-192: config/data パス一本化。 DB は生成データなので `vp_data_dir()`
-/// (macOS `~/Library/Application Support/vp/`、 Linux `~/.local/share/vp/`、
-/// Windows `%LOCALAPPDATA%\vp\`) 配下に置く。 Windows の `%APPDATA%` は roaming
-/// 同期対象で DB 破損リスクがあるため、 data には `%LOCALAPPDATA%` を使う。
+/// XDG restructure: DB は永続 data なので `vp_data_dir()` 配下 (= 全 OS で
+/// `~/.local/share/vp/db/`、 `$XDG_DATA_HOME` 優先)。 macOS の Application
+/// Support / Windows の %APPDATA% は撤去 (= roaming sync で DB 破損 risk 回避)。
 fn db_root() -> PathBuf {
     crate::config::vp_data_dir().join("db")
 }
