@@ -37,7 +37,7 @@ use wry::{
     Rect, WebView, WebViewBuilder, dpi::LogicalPosition, dpi::LogicalSize as WryLogicalSize,
 };
 
-use crate::client::TheWorldClient;
+use crate::client::{ProcessInfo, TheWorldClient};
 use crate::main_area::{self, ActivePaneInfo, MAIN_AREA_HTML, SlotRect};
 use crate::pane::{ActiveStand, ActivitySnapshot, ProcessPaneState, SidebarState};
 use crate::project_dialog::{
@@ -173,12 +173,43 @@ fn spawn_menu_event_pump(proxy: EventLoopProxy<AppEvent>) {
         });
 }
 
+/// `/api/world/projects` (= registered, port は config の静的値のみ) と
+/// `/api/world/processes` (= running, runtime port + pid 持つ) を **併行 fetch + join** して
+/// 各 `ProcessInfo.port` に runtime port を merge した list を返す。
+///
+/// `list_projects()` を直接呼んでそのまま `ProcessesLoaded` に乗せると、 config に port を
+/// 書いていない project (= 大多数) の port が `None` で来てしまい、 sidebar_state.processes
+/// の port を全潰しする。 これが起きると以降の `LanesLoaded` で `ensureLane` が skip され
+/// terminal が表示されなくなる (= restart / stop / delete 後の lead console 消失 bug)。
+/// **全 fetch 経路はこのヘルパ 1 本に集約**して同じ join をかける。
+///
+/// `list_processes` 側のみエラーなら空 map 扱い (= port は config 値のまま) で degrade、
+/// `list_projects` 側エラーは bubble up する。
+pub(crate) async fn fetch_projects_with_ports(
+    client: &TheWorldClient,
+) -> anyhow::Result<Vec<ProcessInfo>> {
+    let (proj_res, run_res) = tokio::join!(client.list_projects(), client.list_processes());
+    let mut processes = proj_res?;
+    let port_by_name: std::collections::HashMap<String, u16> = match run_res {
+        Ok(runs) => runs.into_iter().map(|r| (r.project_name, r.port)).collect(),
+        Err(e) => {
+            tracing::warn!("list_processes 失敗 (port 不明、 config 値のみ): {}", e);
+            std::collections::HashMap::new()
+        }
+    };
+    for p in &mut processes {
+        if let Some(&port) = port_by_name.get(&p.name) {
+            p.port = Some(port);
+        }
+    }
+    Ok(processes)
+}
+
 /// 起動時に TheWorld の Process list を別スレッドで fetch。
 ///
 /// **Phase A4-3b bug fix (mem_1CaTpCQH8iLJ2PasRcPjHv Architecture v4)**:
-/// `/api/world/projects` (registered Process list、port は持たない) と
-/// `/api/world/processes` (running Process list、port + pid 持つ) を **併行 fetch + join** して、
-/// 各 Process に `port` と `state` を解決した状態で `ProcessesLoaded` event に乗せる。
+/// `fetch_projects_with_ports` で registered + running を join して、各 Process に
+/// `port` と `state` を解決した状態で `ProcessesLoaded` event に乗せる。
 ///
 /// これにより handler 側で `if let Some(port) = p.port { spawn_lanes_subscription(...) }` が動く経路完成。
 fn spawn_processes_fetch(proxy: EventLoopProxy<AppEvent>) {
@@ -200,34 +231,8 @@ fn spawn_processes_fetch(proxy: EventLoopProxy<AppEvent>) {
             };
             rt.block_on(async {
                 let client = TheWorldClient::default();
-                // 併行 fetch: registered list + running list
-                let (proj_res, run_res) = tokio::join!(
-                    client.list_projects(),
-                    client.list_processes(),
-                );
-                match proj_res {
-                    Ok(mut processes) => {
-                        // running list から (name → port) map を作って join
-                        let port_by_name: std::collections::HashMap<String, u16> = match run_res {
-                            Ok(runs) => runs.into_iter().map(|r| (r.project_name, r.port)).collect(),
-                            Err(e) => {
-                                tracing::warn!(
-                                    "list_processes (running) 失敗 (port 不明、Lane fetch skip): {}",
-                                    e
-                                );
-                                std::collections::HashMap::new()
-                            }
-                        };
-                        // ProcessInfo に port を merge。
-                        // state は daemon の process_status が SSOT ── join で上書き
-                        // しない (旧実装は running list の有無で Running/Dead を上書き
-                        // していたが、 add_project 経路が join を通らず default state が
-                        // 露出するバグの温床だった)。
-                        for p in &mut processes {
-                            if let Some(&port) = port_by_name.get(&p.name) {
-                                p.port = Some(port);
-                            }
-                        }
+                match fetch_projects_with_ports(&client).await {
+                    Ok(processes) => {
                         let running_count = processes.iter().filter(|p| p.port.is_some()).count();
                         tracing::info!(
                             "TheWorld Processes: {} 件 (running={} 件)",
@@ -679,41 +684,24 @@ fn spawn_activity_poller(proxy: EventLoopProxy<AppEvent>) {
                     // - daemon online 復帰 (false → true)
                     // - running 数変化 (SP 起動 / 停止)
                     // どちらも port join 経由で ProcessesLoaded 再送 → sidebar state badge 更新
-                    if (became_online || running_changed) && snap.world_online {
-                        let (proj_res, run_res) = tokio::join!(
-                            client.list_projects(),
-                            client.list_processes(),
+                    if (became_online || running_changed)
+                        && snap.world_online
+                        && let Ok(processes) = fetch_projects_with_ports(&client).await
+                    {
+                        let running_count =
+                            processes.iter().filter(|p| p.port.is_some()).count();
+                        tracing::info!(
+                            "polling re-fetch (online={} running_changed={}): processes={} running={}",
+                            became_online,
+                            running_changed,
+                            processes.len(),
+                            running_count
                         );
-                        if let Ok(mut processes) = proj_res {
-                            let port_by_name: std::collections::HashMap<String, u16> =
-                                match run_res {
-                                    Ok(runs) => runs
-                                        .into_iter()
-                                        .map(|r| (r.project_name, r.port))
-                                        .collect(),
-                                    Err(_) => std::collections::HashMap::new(),
-                                };
-                            // state は daemon の process_status が SSOT ── port のみ merge。
-                            for p in &mut processes {
-                                if let Some(&port) = port_by_name.get(&p.name) {
-                                    p.port = Some(port);
-                                }
-                            }
-                            let running_count =
-                                processes.iter().filter(|p| p.port.is_some()).count();
-                            tracing::info!(
-                                "polling re-fetch (online={} running_changed={}): processes={} running={}",
-                                became_online,
-                                running_changed,
-                                processes.len(),
-                                running_count
-                            );
-                            if proxy
-                                .send_event(AppEvent::ProcessesLoaded(processes))
-                                .is_err()
-                            {
-                                break;
-                            }
+                        if proxy
+                            .send_event(AppEvent::ProcessesLoaded(processes))
+                            .is_err()
+                        {
+                            break;
                         }
                     }
                 }
@@ -1616,6 +1604,9 @@ pub fn run() -> anyhow::Result<()> {
                 //
                 // VP-101 follow-up: register 後の auto-expand。
                 // auto-select は LanesLoaded 側で扱う (Architecture v4: 真の selection unit は Lane)。
+                // 「prev (旧 sidebar_state.processes) には port があった、 新 projects には port が無い」
+                // 形の merge は port を不用意に消すので、 sidebar_state の port は新側 (port_by_name 反映済)
+                // で上書きされる。 retroactive ensureLane (= 後段) で None→Some 遷移を補う。
                 let prev: std::collections::HashMap<String, ProcessPaneState> = sidebar_state
                     .processes
                     .drain(..)
@@ -1673,6 +1664,45 @@ pub fn run() -> anyhow::Result<()> {
                             path.clone(),
                             *sp_port,
                         );
+                    }
+                }
+                // Retroactive ensureLane: port が None→Some に遷移した project (= 新規 SP up、
+                // race で port 着が遅れた lane 等) について、 既に LanesLoaded 経由で
+                // lanes_by_project に積まれている lane があれば改めて ensureLane を発行する。
+                // これが無いと「port 解決前に LanesLoaded だけ先に届いた」 race で
+                // lane terminal が永続的に出ない状態になる (= restart 後の lead 消失系 bug
+                // の防御層)。 idempotent (laneInstances.has なら no-op)。
+                for (path, port) in &project_ports {
+                    let Some(sp_port) = port else { continue };
+                    let prev_port = prev.get(path).and_then(|s| s.port);
+                    if prev_port.is_some() && prev_port == Some(*sp_port) {
+                        continue; // 既に port 確定済 → 既存 ensureLane で足りる
+                    }
+                    let Some(lanes_for_proj) = sidebar_state.lanes_by_project.get(path) else {
+                        continue; // まだ lane snapshot が届いていない
+                    };
+                    let mut ensured = 0usize;
+                    for lane in lanes_for_proj {
+                        // F.8 B Convergent: pid:null = Dead Lane は WS 確立対象外
+                        if lane.pid.is_none() {
+                            continue;
+                        }
+                        lane_js::ensure_lane(&main_view, &lane.address.key(), *sp_port);
+                        ensured += 1;
+                    }
+                    if ensured > 0 {
+                        tracing::info!(
+                            "retroactive ensureLane: project={} port={} ({} lane)",
+                            path,
+                            sp_port,
+                            ensured
+                        );
+                        // active Lane が同 project にあれば改めて show して empty placeholder を解除
+                        if let Some(addr) = sidebar_state.active_lane_address.as_deref()
+                            && lanes_for_proj.iter().any(|l| l.address.key() == addr)
+                        {
+                            lane_js::show_lane(&main_view, Some(addr));
+                        }
                     }
                 }
                 // Phase 2.x-b: dead-respawn fix — SP が "running" になった時点で
@@ -2279,8 +2309,14 @@ pub fn run() -> anyhow::Result<()> {
                                             "restart_process OK: {}",
                                             project_name_clone
                                         );
-                                        // 完了 → projects 再 fetch → sidebar state badge 更新
-                                        if let Ok(projects) = client.list_projects().await {
+                                        // 完了 → projects 再 fetch → sidebar state badge 更新。
+                                        // 必ず `fetch_projects_with_ports` 経由 (= runtime port merge)
+                                        // で送る。 list_projects() だけだと restart 直後に全 project の
+                                        // port が None で潰れ、 後続 LanesLoaded で ensureLane が
+                                        // 全件 skip され lead terminal が消失する。
+                                        if let Ok(projects) =
+                                            fetch_projects_with_ports(&client).await
+                                        {
                                             let _ = proxy
                                                 .send_event(AppEvent::ProcessesLoaded(projects));
                                         }
@@ -2320,8 +2356,12 @@ pub fn run() -> anyhow::Result<()> {
                                 match client.stop_process(&project_name_clone).await {
                                     Ok(()) => {
                                         tracing::info!("stop_process OK: {}", project_name_clone);
-                                        // 完了 → projects 再 fetch → 一時停止中 tab へ反映
-                                        if let Ok(projects) = client.list_projects().await {
+                                        // 完了 → projects 再 fetch → 一時停止中 tab へ反映。
+                                        // restart と同じく `fetch_projects_with_ports` 経由で
+                                        // 他 project の runtime port を保つ。
+                                        if let Ok(projects) =
+                                            fetch_projects_with_ports(&client).await
+                                        {
                                             let _ = proxy
                                                 .send_event(AppEvent::ProcessesLoaded(projects));
                                         }
@@ -2387,8 +2427,12 @@ pub fn run() -> anyhow::Result<()> {
                                             "remove_project OK: {}",
                                             project_path
                                         );
-                                        // 完了 → projects 再 fetch → sidebar から除去
-                                        if let Ok(projects) = client.list_projects().await {
+                                        // 完了 → projects 再 fetch → sidebar から除去。
+                                        // 削除対象以外の project の runtime port を保つため
+                                        // `fetch_projects_with_ports` 経由で送る。
+                                        if let Ok(projects) =
+                                            fetch_projects_with_ports(&client).await
+                                        {
                                             let _ = proxy
                                                 .send_event(AppEvent::ProcessesLoaded(projects));
                                         }
