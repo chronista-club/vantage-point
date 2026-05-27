@@ -100,7 +100,7 @@ export interface FilesOpen {
 export type IpcChannelEventTypes = Record<string, never>;
 
 /** Request name → { request, response } 生成 interface の map for "ipc" */
-export interface IpcChannelRequestTypes {
+export type IpcChannelRequestTypes = {
   ProcessToggle: { request: ProcessToggle; response: void };
   ProcessReorder: { request: ProcessReorder; response: void };
   ProcessRestart: { request: ProcessRestart; response: void };
@@ -116,7 +116,7 @@ export interface IpcChannelRequestTypes {
   ProjectClonePickFolder: { request: ProjectClonePickFolder; response: void };
   FilesList: { request: FilesList; response: void };
   FilesOpen: { request: FilesOpen; response: void };
-}
+};
 
 /** Channel metadata for "ipc" (= Phase 2 runtime SDK 用 type-narrowing 入力) */
 export const IpcChannelMeta = {
