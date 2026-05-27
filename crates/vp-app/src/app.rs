@@ -1493,6 +1493,13 @@ pub fn run() -> anyhow::Result<()> {
     // 扱いにする。 default path (= restored_geometry None) では従来通り clamp logic を走らせる。
     let mut initial_size_clamp_done = restored_geometry.is_some();
 
+    // PR #459 throttled save: window resize / move 中も 500ms throttle で session save。
+    // CloseRequested の force save に依存しない (= `mr app:stop` の SIGTERM kill や crash
+    // でも直近 state が persistent)。 dogfood で「mr app で再起動すると save 走らない」
+    // bug を解消。
+    const GEOMETRY_SAVE_THROTTLE: std::time::Duration = std::time::Duration::from_millis(500);
+    let mut last_geometry_save = std::time::Instant::now() - std::time::Duration::from_secs(1);
+
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
 
@@ -1571,6 +1578,55 @@ pub fn run() -> anyhow::Result<()> {
                     }
                 }
                 update_pane_bounds(&sidebar, &main_view, size, scale);
+                // PR #459 throttled save: resize 中も 500ms throttle で geometry save。
+                let now = std::time::Instant::now();
+                if now.duration_since(last_geometry_save) > GEOMETRY_SAVE_THROTTLE
+                    && let Ok(pos) = window.outer_position()
+                {
+                    last_geometry_save = now;
+                    let inner_logical = size.to_logical::<f64>(scale);
+                    let logical_pos = pos.to_logical::<f64>(scale);
+                    let monitor_name = window.current_monitor().and_then(|m| m.name());
+                    session_state.set_window_geometry(
+                        instance_index,
+                        crate::session_state::WindowGeometry {
+                            width: inner_logical.width,
+                            height: inner_logical.height,
+                            x: logical_pos.x,
+                            y: logical_pos.y,
+                            monitor: monitor_name,
+                        },
+                    );
+                    session_state.save();
+                }
+            }
+            Event::WindowEvent {
+                event: WindowEvent::Moved(_),
+                ..
+            } => {
+                // PR #459 throttled save: window 移動中も 500ms throttle で geometry save。
+                // Resized と pair (= drag による size 変更だけでなく位置変更も capture)。
+                let now = std::time::Instant::now();
+                if now.duration_since(last_geometry_save) > GEOMETRY_SAVE_THROTTLE
+                    && let Ok(pos) = window.outer_position()
+                {
+                    last_geometry_save = now;
+                    let scale = window.scale_factor();
+                    let inner = window.inner_size().to_logical::<f64>(scale);
+                    let logical_pos = pos.to_logical::<f64>(scale);
+                    let monitor_name = window.current_monitor().and_then(|m| m.name());
+                    session_state.set_window_geometry(
+                        instance_index,
+                        crate::session_state::WindowGeometry {
+                            width: inner.width,
+                            height: inner.height,
+                            x: logical_pos.x,
+                            y: logical_pos.y,
+                            monitor: monitor_name,
+                        },
+                    );
+                    session_state.save();
+                }
             }
             // Phase 2.x-d: AppEvent::Output / XtermReady は撤去済 (per-Lane browser native WS へ移行)。
             // 関連の `xterm_ready` / `pending` / `PENDING_MAX` も一括削除。
