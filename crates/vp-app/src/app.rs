@@ -682,23 +682,24 @@ fn spawn_activity_poller(proxy: EventLoopProxy<AppEvent>) {
                     // - daemon online 復帰 (false → true)
                     // - running 数変化 (SP 起動 / 停止)
                     // どちらも port join 経由で ProcessesLoaded 再送 → sidebar state badge 更新
-                    if (became_online || running_changed) && snap.world_online {
-                        if let Ok(processes) = fetch_projects_with_ports(&client).await {
-                            let running_count =
-                                processes.iter().filter(|p| p.port.is_some()).count();
-                            tracing::info!(
-                                "polling re-fetch (online={} running_changed={}): processes={} running={}",
-                                became_online,
-                                running_changed,
-                                processes.len(),
-                                running_count
-                            );
-                            if proxy
-                                .send_event(AppEvent::ProcessesLoaded(processes))
-                                .is_err()
-                            {
-                                break;
-                            }
+                    if (became_online || running_changed)
+                        && snap.world_online
+                        && let Ok(processes) = fetch_projects_with_ports(&client).await
+                    {
+                        let running_count =
+                            processes.iter().filter(|p| p.port.is_some()).count();
+                        tracing::info!(
+                            "polling re-fetch (online={} running_changed={}): processes={} running={}",
+                            became_online,
+                            running_changed,
+                            processes.len(),
+                            running_count
+                        );
+                        if proxy
+                            .send_event(AppEvent::ProcessesLoaded(processes))
+                            .is_err()
+                        {
+                            break;
                         }
                     }
                 }
@@ -1650,10 +1651,10 @@ pub fn run() -> anyhow::Result<()> {
                             ensured
                         );
                         // active Lane が同 project にあれば改めて show して empty placeholder を解除
-                        if let Some(addr) = sidebar_state.active_lane_address.as_deref() {
-                            if lanes_for_proj.iter().any(|l| l.address.key() == addr) {
-                                lane_js::show_lane(&main_view, Some(addr));
-                            }
+                        if let Some(addr) = sidebar_state.active_lane_address.as_deref()
+                            && lanes_for_proj.iter().any(|l| l.address.key() == addr)
+                        {
+                            lane_js::show_lane(&main_view, Some(addr));
                         }
                     }
                 }
