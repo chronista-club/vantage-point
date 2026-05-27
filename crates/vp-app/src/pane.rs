@@ -43,7 +43,7 @@ pub struct ProcessPaneState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<String>,
     /// SP の listen port (Phase 2: Lane terminal connect で使う)。
-    /// running 時のみ Some、 dead 時は None。 ProcessInfo.port を merge して保持。
+    /// running 時のみ Some、 dead 時は None。 ProjectInfo.port を merge して保持。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub port: Option<u16>,
 }

@@ -23,9 +23,10 @@ use tao::event_loop::EventLoopProxy;
 /// Lane terminals は per-Lane の browser-native WebSocket で input/output を扱う。
 #[derive(Debug, Clone)]
 pub enum AppEvent {
-    /// TheWorld から Process list 取得成功 (Architecture v4: 旧 ProjectsLoaded)
-    ProcessesLoaded(Vec<crate::client::ProcessInfo>),
-    /// TheWorld への接続失敗 (Architecture v4: 旧 ProjectsError)
+    /// TheWorld から Project list 取得成功。 AppEvent variant 名は PR 2 で
+    /// `ProjectsLoaded` に rename される予定 (= 本 PR は client wire 型のみ統一)。
+    ProcessesLoaded(Vec<crate::client::ProjectInfo>),
+    /// TheWorld への接続失敗。 PR 2 で `ProjectsError` に rename 予定。
     ProcessesError(String),
     /// VP-95: Activity widget の定期更新 payload
     ActivityUpdate(crate::pane::ActivitySnapshot),
