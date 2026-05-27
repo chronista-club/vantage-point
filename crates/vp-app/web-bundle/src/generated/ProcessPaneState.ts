@@ -19,6 +19,6 @@ expanded: boolean,
 state?: string | null, 
 /**
  * SP の listen port (Phase 2: Lane terminal connect で使う)。
- * running 時のみ Some、 dead 時は None。 ProcessInfo.port を merge して保持。
+ * running 時のみ Some、 dead 時は None。 ProjectInfo.port を merge して保持。
  */
 port?: number | null, };

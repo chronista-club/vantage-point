@@ -119,18 +119,22 @@ impl ProcessStatus {
     }
 }
 
-/// Process info (Architecture v4: 旧 ProjectInfo の Process abstraction 化)
+/// Project info — `/api/world/projects` レスポンス要素 (= 登録済 path identity)。
 ///
-/// TheWorld `/api/world/projects` レスポンス要素を Process として扱う。
+/// server 側 `ProjectInfo` (`capability::process_manager_capability::ProjectInfo`) と
+/// 命名統一。 「list / identity 系 = Project」 「runtime lifecycle 系 = Process」 の
+/// 階層 SSOT に従い、 vp-app の wire-deserialize 型は本 struct に集約する。
+/// runtime port は `/api/world/processes` (= `RunningProcess`) との join で merge する。
 #[derive(Debug, Clone, Default, serde::Serialize, Deserialize)]
-pub struct ProcessInfo {
+pub struct ProjectInfo {
     /// Process kind (default Runtime: TheWorld response 互換)
     #[serde(default)]
     pub kind: ProcessKind,
     pub name: String,
     /// Runtime kind の場合は git directory binding
     pub path: String,
-    /// running の場合の port (Runtime のみ Some、Sprint 1 では旧 ProjectInfo と互換)
+    /// running の場合の port。 config の静的 port (= projects.kdl) を表す。
+    /// runtime の実ポートは `fetch_projects_with_ports` で `RunningProcess` から merge される。
     #[serde(default)]
     pub port: Option<u16>,
     /// Process state ── daemon `/api/world/projects` の `process_status` が SSOT。
@@ -140,12 +144,9 @@ pub struct ProcessInfo {
     pub state: ProcessStatus,
 }
 
-// `pub type ProjectInfo = ProcessInfo;` alias は Phase 1a 完了で全 caller が ProcessInfo に移行、削除。
-// Architecture v4: mem_1CaTpCQH8iLJ2PasRcPjHv
-
 #[derive(Debug, Deserialize)]
 struct ProjectsResponse {
-    projects: Vec<ProcessInfo>,
+    projects: Vec<ProjectInfo>,
 }
 
 /// `/api/health` の主要 field のみを取り出した軽量レスポンス
@@ -163,12 +164,13 @@ pub struct WorldHealthInfo {
     pub started_at: String,
 }
 
-/// 稼働中 process 情報 (`/api/world/processes` レスポンス要素)
+/// Runtime process 情報 — `/api/world/processes` レスポンス要素 (= SP の lifecycle snapshot)。
 ///
-/// サーバ側 `RunningProcess` (capability/process_manager_capability.rs) の subset。
-/// Activity widget で count にしか使わないので最小限。
+/// server 側 `RunningProcess` (= `capability::process_manager_capability::RunningProcess`) の
+/// subset で、 命名も揃える。 vp-app では Activity widget の count と
+/// `fetch_projects_with_ports` での port join に使う。
 #[derive(Debug, Clone, serde::Deserialize)]
-pub struct RunningProcessInfo {
+pub struct RunningProcess {
     #[serde(default)]
     pub project_name: String,
     #[serde(default)]
@@ -178,7 +180,7 @@ pub struct RunningProcessInfo {
 #[derive(Debug, Deserialize)]
 struct ProcessesResponse {
     #[serde(default)]
-    processes: Vec<RunningProcessInfo>,
+    processes: Vec<RunningProcess>,
 }
 
 // `LaneAddressWire` の定義は `crate::lane::LaneAddressWire` に移管 (R-0、 G2 解消)。
@@ -273,7 +275,7 @@ impl TheWorldClient {
     }
 
     /// プロジェクト一覧を取得
-    pub async fn list_projects(&self) -> Result<Vec<ProcessInfo>> {
+    pub async fn list_projects(&self) -> Result<Vec<ProjectInfo>> {
         let url = format!("{}/api/world/projects", self.base_url);
         let resp: ProjectsResponse = self.client.get(&url).send().await?.json().await?;
         Ok(resp.projects)
@@ -294,7 +296,7 @@ impl TheWorldClient {
     }
 
     /// 稼働中 process 一覧
-    pub async fn list_processes(&self) -> Result<Vec<RunningProcessInfo>> {
+    pub async fn list_processes(&self) -> Result<Vec<RunningProcess>> {
         let url = format!("{}/api/world/processes", self.base_url);
         let resp: ProcessesResponse = self.client.get(&url).send().await?.json().await?;
         Ok(resp.processes)
@@ -484,29 +486,29 @@ mod tests {
     use super::*;
 
     /// daemon は `/api/world/projects` を `process_status` キーで送る。
-    /// `ProcessInfo.state` の `#[serde(alias = "process_status")]` で受けられること。
+    /// `ProjectInfo.state` の `#[serde(alias = "process_status")]` で受けられること。
     #[test]
-    fn process_info_deserializes_process_status_alias() {
+    fn project_info_deserializes_process_status_alias() {
         let json = r#"{"name":"vp","path":"/repos/vp","process_status":"running"}"#;
-        let info: ProcessInfo = serde_json::from_str(json).unwrap();
+        let info: ProjectInfo = serde_json::from_str(json).unwrap();
         assert_eq!(info.state, ProcessStatus::Running);
     }
 
     /// `process_status` が無い JSON は default の Stopped になること (= 安全側)。
     #[test]
-    fn process_info_defaults_to_stopped_when_status_absent() {
+    fn project_info_defaults_to_stopped_when_status_absent() {
         let json = r#"{"name":"vp","path":"/repos/vp"}"#;
-        let info: ProcessInfo = serde_json::from_str(json).unwrap();
+        let info: ProjectInfo = serde_json::from_str(json).unwrap();
         assert_eq!(info.state, ProcessStatus::Stopped);
     }
 
     /// WebView の sidebar JS は `p.state` を読む。 serialize は primary キー
     /// `state` で出る (alias は deserialize 専用で serialize には影響しない)。
     #[test]
-    fn process_info_serializes_as_state_key() {
-        let info = ProcessInfo {
+    fn project_info_serializes_as_state_key() {
+        let info = ProjectInfo {
             state: ProcessStatus::Running,
-            ..ProcessInfo::default()
+            ..ProjectInfo::default()
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains(r#""state":"running""#), "got: {json}");

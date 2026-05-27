@@ -37,7 +37,7 @@ use wry::{
     Rect, WebView, WebViewBuilder, dpi::LogicalPosition, dpi::LogicalSize as WryLogicalSize,
 };
 
-use crate::client::{ProcessInfo, TheWorldClient};
+use crate::client::{ProjectInfo, TheWorldClient};
 use crate::main_area::{self, ActivePaneInfo, MAIN_AREA_HTML, SlotRect};
 use crate::pane::{ActiveStand, ActivitySnapshot, ProcessPaneState, SidebarState};
 use crate::project_dialog::{
@@ -175,7 +175,7 @@ fn spawn_menu_event_pump(proxy: EventLoopProxy<AppEvent>) {
 
 /// `/api/world/projects` (= registered, port は config の静的値のみ) と
 /// `/api/world/processes` (= running, runtime port + pid 持つ) を **併行 fetch + join** して
-/// 各 `ProcessInfo.port` に runtime port を merge した list を返す。
+/// 各 `ProjectInfo.port` に runtime port を merge した list を返す。
 ///
 /// `list_projects()` を直接呼んでそのまま `ProcessesLoaded` に乗せると、 config に port を
 /// 書いていない project (= 大多数) の port が `None` で来てしまい、 sidebar_state.processes
@@ -187,7 +187,7 @@ fn spawn_menu_event_pump(proxy: EventLoopProxy<AppEvent>) {
 /// `list_projects` 側エラーは bubble up する。
 pub(crate) async fn fetch_projects_with_ports(
     client: &TheWorldClient,
-) -> anyhow::Result<Vec<ProcessInfo>> {
+) -> anyhow::Result<Vec<ProjectInfo>> {
     let (proj_res, run_res) = tokio::join!(client.list_projects(), client.list_processes());
     let mut processes = proj_res?;
     let port_by_name: std::collections::HashMap<String, u16> = match run_res {
@@ -1221,7 +1221,7 @@ fn build_directive_cheatsheet() -> String {
     md
 }
 
-fn format_theworld_status(processes: &[crate::client::ProcessInfo]) -> String {
+fn format_theworld_status(processes: &[crate::client::ProjectInfo]) -> String {
     let mut md = String::from("# 🌍 TheWorld Status\n\n");
     md.push_str("**Daemon**: running (port 32000)\n\n");
     md.push_str(&format!("## Processes ({} total)\n\n", processes.len()));
@@ -1621,7 +1621,7 @@ pub fn run() -> anyhow::Result<()> {
                 sidebar_state.processes = projects
                     .into_iter()
                     .map(|p| {
-                        // ProcessInfo.state / .port を ProcessPaneState に merge
+                        // ProjectInfo.state / .port を ProcessPaneState に merge
                         // (sidebar JS が processStateMark で 🟢/🔴 badge 表示に使う、
                         //  port は Phase 2 で lane:select 時の WS 接続先決定に使う)
                         let state_str = p.state.as_str().to_string();
