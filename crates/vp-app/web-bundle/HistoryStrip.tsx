@@ -37,7 +37,7 @@ const CONTENT_TYPE_ICON: Record<string, IconName> = {
 const TITLE_MAX_CHARS = 8
 
 /** title 未指定時に content 先頭を fallback として返す。 */
-function aliasOf(item: CanvasItem): string {
+export function aliasOf(item: CanvasItem): string {
   if (item.title && item.title.trim().length > 0) {
     return item.title.trim()
   }
@@ -46,7 +46,7 @@ function aliasOf(item: CanvasItem): string {
 }
 
 /** 8 chars 以内に truncate、 超えたら "…" を付ける。 codepoint 単位で count。 */
-function truncate(s: string, n: number): string {
+export function truncate(s: string, n: number): string {
   const codepoints = [...s]
   if (codepoints.length <= n) return s
   return codepoints.slice(0, n).join('') + '…'

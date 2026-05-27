@@ -175,6 +175,26 @@ fn spawn_menu_event_pump(proxy: EventLoopProxy<AppEvent>) {
 
 /// `/api/world/projects` (= registered, port は config の静的値のみ) と
 /// `/api/world/processes` (= running, runtime port + pid 持つ) を **併行 fetch + join** して
+/// `ProjectInfo` の list に `RunningProcess` から取り出した runtime port を merge する。
+///
+/// port merge の pure calculation 部分を抽出した関数。 `fetch_projects_with_ports` の
+/// テスト可能なコアロジック。 name 一致で `RunningProcess.port` を inject し、
+/// `running` に無い project は port を変更しない (= config の static port か None のまま)。
+pub(crate) fn merge_ports_from_running(
+    projects: &mut [crate::client::ProjectInfo],
+    running: &[crate::client::RunningProcess],
+) {
+    let port_by_name: std::collections::HashMap<String, u16> = running
+        .iter()
+        .map(|r| (r.project_name.clone(), r.port))
+        .collect();
+    for p in projects.iter_mut() {
+        if let Some(&port) = port_by_name.get(&p.name) {
+            p.port = Some(port);
+        }
+    }
+}
+
 /// 各 `ProjectInfo.port` に runtime port を merge した list を返す。
 ///
 /// `list_projects()` を直接呼んでそのまま `ProjectsLoaded` に乗せると、 config に port を
@@ -189,20 +209,14 @@ pub(crate) async fn fetch_projects_with_ports(
     client: &TheWorldClient,
 ) -> anyhow::Result<Vec<ProjectInfo>> {
     let (proj_res, run_res) = tokio::join!(client.list_projects(), client.list_processes());
-    let mut processes = proj_res?;
-    let port_by_name: std::collections::HashMap<String, u16> = match run_res {
-        Ok(runs) => runs.into_iter().map(|r| (r.project_name, r.port)).collect(),
+    let mut projects = proj_res?;
+    match run_res {
+        Ok(runs) => merge_ports_from_running(&mut projects, &runs),
         Err(e) => {
             tracing::warn!("list_processes 失敗 (port 不明、 config 値のみ): {}", e);
-            std::collections::HashMap::new()
         }
     };
-    for p in &mut processes {
-        if let Some(&port) = port_by_name.get(&p.name) {
-            p.port = Some(port);
-        }
-    }
-    Ok(processes)
+    Ok(projects)
 }
 
 /// 起動時に TheWorld の Process list を別スレッドで fetch。
@@ -686,19 +700,19 @@ fn spawn_activity_poller(proxy: EventLoopProxy<AppEvent>) {
                     // どちらも port join 経由で ProjectsLoaded 再送 → sidebar state badge 更新
                     if (became_online || running_changed)
                         && snap.world_online
-                        && let Ok(processes) = fetch_projects_with_ports(&client).await
+                        && let Ok(projects) = fetch_projects_with_ports(&client).await
                     {
                         let running_count =
-                            processes.iter().filter(|p| p.port.is_some()).count();
+                            projects.iter().filter(|p| p.port.is_some()).count();
                         tracing::info!(
-                            "polling re-fetch (online={} running_changed={}): processes={} running={}",
+                            "polling re-fetch (online={} running_changed={}): projects={} running={}",
                             became_online,
                             running_changed,
-                            processes.len(),
+                            projects.len(),
                             running_count
                         );
                         if proxy
-                            .send_event(AppEvent::ProjectsLoaded(processes))
+                            .send_event(AppEvent::ProjectsLoaded(projects))
                             .is_err()
                         {
                             break;
@@ -2910,6 +2924,107 @@ pub fn run() -> anyhow::Result<()> {
             _ => {}
         }
     });
+}
+
+#[cfg(test)]
+mod port_merge_tests {
+    //! `fetch_projects_with_ports` の core logic (= `merge_ports_from_running`) の unit test。
+    //!
+    //! HTTP 呼び出しを含む `fetch_projects_with_ports` 自体は integration test の領域だが、
+    //! merge logic は pure calculation なので Small Test として検証する。
+
+    use super::*;
+    use crate::client::{ProcessStatus, ProjectInfo, RunningProcess};
+
+    fn make_project(name: &str, port: Option<u16>) -> ProjectInfo {
+        ProjectInfo {
+            name: name.to_string(),
+            path: format!("/repos/{name}"),
+            port,
+            state: ProcessStatus::Running,
+            ..ProjectInfo::default()
+        }
+    }
+
+    fn make_running(name: &str, port: u16) -> RunningProcess {
+        RunningProcess {
+            project_name: name.to_string(),
+            port,
+        }
+    }
+
+    /// 正常系: running list の name と project name が一致した場合に port が inject される。
+    #[test]
+    fn merge_injects_port_for_matched_project() {
+        let mut projects = vec![make_project("vp", None), make_project("creo", None)];
+        let running = vec![make_running("vp", 33000), make_running("creo", 33001)];
+        merge_ports_from_running(&mut projects, &running);
+        assert_eq!(projects[0].port, Some(33000));
+        assert_eq!(projects[1].port, Some(33001));
+    }
+
+    /// 正常系: running list に無い project は port を変更しない (= None のまま)。
+    #[test]
+    fn merge_leaves_unmatched_project_port_unchanged() {
+        let mut projects = vec![make_project("vp", None), make_project("creo", None)];
+        let running = vec![make_running("vp", 33000)]; // creo は running にない
+        merge_ports_from_running(&mut projects, &running);
+        assert_eq!(projects[0].port, Some(33000), "vp は inject される");
+        assert_eq!(projects[1].port, None, "creo は変更されない");
+    }
+
+    /// 正常系: running list が空の場合、全 project の port は変更されない。
+    /// (= list_processes がエラーの場合の degrade path と同等)
+    #[test]
+    fn merge_with_empty_running_leaves_all_ports_unchanged() {
+        let mut projects = vec![make_project("vp", None), make_project("creo", Some(33000))];
+        merge_ports_from_running(&mut projects, &[]);
+        assert_eq!(projects[0].port, None);
+        assert_eq!(
+            projects[1].port,
+            Some(33000),
+            "config の static port は維持"
+        );
+    }
+
+    /// 正常系: project list が空の場合、panic しない。
+    #[test]
+    fn merge_with_empty_projects_is_noop() {
+        let mut projects: Vec<ProjectInfo> = vec![];
+        let running = vec![make_running("vp", 33000)];
+        merge_ports_from_running(&mut projects, &running);
+        assert!(projects.is_empty());
+    }
+
+    /// 正常系: running に同名 project が複数あっても最後 (HashMap 上書き) で一意に決まる。
+    /// 実際の daemon は重複を持たないが、defensive に動作することを確認。
+    #[test]
+    fn merge_with_duplicate_running_entry_picks_one() {
+        let mut projects = vec![make_project("vp", None)];
+        // HashMap なので同名は上書きされる — どちらかが選ばれれば OK
+        let running = vec![make_running("vp", 33000), make_running("vp", 33001)];
+        merge_ports_from_running(&mut projects, &running);
+        assert!(projects[0].port.is_some(), "どちらか一方の port が入る");
+    }
+
+    /// 境界値: port が既に Some の project も running の port で上書きされる。
+    /// (= TheWorld の config port より runtime port が正確)
+    #[test]
+    fn merge_overwrites_existing_config_port_with_runtime_port() {
+        let mut projects = vec![make_project("vp", Some(9999))]; // config に static port
+        let running = vec![make_running("vp", 33000)]; // runtime は別 port
+        merge_ports_from_running(&mut projects, &running);
+        assert_eq!(projects[0].port, Some(33000), "runtime port で上書きされる");
+    }
+
+    /// 異常系: name が大文字小文字違いの場合は match しない (= case-sensitive)。
+    #[test]
+    fn merge_is_case_sensitive() {
+        let mut projects = vec![make_project("VP", None)];
+        let running = vec![make_running("vp", 33000)];
+        merge_ports_from_running(&mut projects, &running);
+        assert_eq!(projects[0].port, None, "大文字小文字違いは match しない");
+    }
 }
 
 #[cfg(test)]

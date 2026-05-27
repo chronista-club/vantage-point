@@ -6,7 +6,9 @@
   "type": "module",
   "scripts": {
     "build": "bun run build.mjs",
-    "build:dev": "bun run build.mjs --dev"
+    "build:dev": "bun run build.mjs --dev",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@chronista-club/creoui-editor-host": "file:../../../../creoui/packages/editor-host",
@@ -18,6 +20,7 @@
   "devDependencies": {
     "esbuild": "^0.25.0",
     "esbuild-plugin-solid": "^0.6.0",
-    "typescript": "^5.9.0"
+    "typescript": "^5.9.0",
+    "vitest": "^3.0.0"
   }
 }

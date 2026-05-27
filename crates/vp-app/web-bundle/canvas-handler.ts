@@ -170,6 +170,21 @@ export function deleteItem(id: string): void {
 }
 
 // ============================================================================
+// テスト専用 API (テストランナーから state を操作するためだけに公開)
+// ============================================================================
+
+/**
+ * module-local singleton state をリセットする。
+ * **テスト専用** — production コードから呼んではいけない。
+ * vitest の beforeEach 等で state 汚染を防ぐために使用。
+ */
+export function _resetForTest(): void {
+  canvasState.items = []
+  canvasState.cursor = null
+  stateListeners.clear()
+}
+
+// ============================================================================
 // dispatchShow: mcp__show / DirectiveInject / FilesOpenResult 等の入口
 // ============================================================================
 

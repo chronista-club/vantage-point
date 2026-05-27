@@ -2893,4 +2893,46 @@ mod tests {
         assert_eq!(rpc_response_error(&serde_json::json!([1, 2, 3])), None);
         assert_eq!(rpc_response_error(&serde_json::json!({})), None);
     }
+
+    // --- ShowParams serde (doc 19 regression guards) ---
+
+    /// doc 19: `append` field は ShowParams から omit 済み。
+    /// 旧クライアントが `append: true` を送っても serde の unknown field として
+    /// silent ignore され、 deserialize が成功すること (= backward compat)。
+    #[test]
+    fn show_params_silently_ignores_append_true() {
+        let json = r#"{"content":"hello","append":true}"#;
+        let params: ShowParams = serde_json::from_str(json).expect("deserialize 失敗");
+        assert_eq!(params.content, "hello");
+        assert!(params.content_type.is_none());
+        assert!(params.pane_id.is_none());
+        assert!(params.title.is_none());
+    }
+
+    /// `append` が無くても (= 新クライアント形式) deserialize が成功すること。
+    #[test]
+    fn show_params_deserializes_without_append() {
+        let json = r#"{"content":"world","content_type":"html","title":"My Page"}"#;
+        let params: ShowParams = serde_json::from_str(json).expect("deserialize 失敗");
+        assert_eq!(params.content, "world");
+        assert_eq!(params.content_type.as_deref(), Some("html"));
+        assert_eq!(params.title.as_deref(), Some("My Page"));
+    }
+
+    /// `append: false` も silent ignore される (= 古い show handler の常時 false 送信経路)。
+    #[test]
+    fn show_params_silently_ignores_append_false() {
+        let json = r#"{"content":"test","append":false,"pane_id":"main"}"#;
+        let params: ShowParams = serde_json::from_str(json).expect("deserialize 失敗");
+        assert_eq!(params.content, "test");
+        assert_eq!(params.pane_id.as_deref(), Some("main"));
+    }
+
+    /// `content` フィールドが必須であることを確認 (= 省略時は deserialize error)。
+    #[test]
+    fn show_params_requires_content_field() {
+        let json = r#"{"content_type":"markdown"}"#;
+        let result: Result<ShowParams, _> = serde_json::from_str(json);
+        assert!(result.is_err(), "content が無くても成功してしまう");
+    }
 }

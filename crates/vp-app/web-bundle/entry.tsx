@@ -236,7 +236,11 @@ document.addEventListener(
     const dataTarget = btn.dataset.target
     if (action === 'clear') {
       if (dataTarget === 'pp') {
-        clearPP()
+        // doc 19 PP Canvas Stack Model: clear は items + cursor + DOM の 3 つを全 reset
+        // する semantic。 `clearPP()` 直叩きだと canvasState (items / cursor) が残り、
+        // strip は表示されたまま main だけ空になる非対称が起きる (= team-b review で発覚)。
+        // canvas-handler の `handleMessage({type:'clear'})` 経路で stack 含めて全 reset する。
+        handleCanvasMessage({ type: 'clear', pane_id: 'main' })
       } else {
         console.warn('[vp-bundle] clear: unknown target', dataTarget)
       }
