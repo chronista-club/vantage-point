@@ -20,6 +20,9 @@
 //!
 //! # message 送信 (ad-hoc test 用)
 //! vp wire send --to agent@vantage-point --body "hello"
+//!
+//! # 1-shot 受信 (= mcp__wire_recv 等価、 long-poll 1 回で抜ける)
+//! vp wire recv --agent agent@vantage-point --timeout 5
 //! ```
 //!
 //! 各 wire message が 1 行 JSON で stdout に flush される。 Claude Code 側で:
@@ -48,6 +51,23 @@ pub enum WireCommands {
         agent: String,
         /// 各 long-poll の timeout 秒数 (server 側 max 30、 default 25)
         #[arg(short, long, default_value_t = 25)]
+        timeout: u64,
+    },
+    /// SP の wire accumulation を 1-shot で受信 (= mcp__wire_recv の CLI pair)。
+    ///
+    /// `watch` と異なり loop しない: long-poll を 1 回だけ実行し、 受信した message 一式を
+    /// 1 行 JSON ({"messages":[...], "count":N}) で stdout に出して即 exit。
+    /// 既読 cursor が進む点は MCP wire_recv と同じ (= 同 message が再配信されない)。
+    /// script / one-off check 用。 continuous な subscription は `watch` を使う。
+    Recv {
+        /// SP の base URL (例: http://127.0.0.1:33002)。 default は Project 0 の SP (33000)。
+        #[arg(short, long, default_value = "http://127.0.0.1:33000")]
+        url: String,
+        /// 受信先 wire address (例: `agent@vantage-point`)。 必須。
+        #[arg(short, long)]
+        agent: String,
+        /// long-poll の timeout 秒数 (server 側 max 30、 default 5、 mcp__wire_recv と同 default)
+        #[arg(short, long, default_value_t = 5)]
         timeout: u64,
     },
     /// SP の wire accumulation に message を送信 (ad-hoc test 用)
@@ -95,6 +115,11 @@ pub async fn run(cmd: WireCommands) -> Result<()> {
             agent,
             timeout,
         } => watch(&url, &agent, timeout).await,
+        WireCommands::Recv {
+            url,
+            agent,
+            timeout,
+        } => recv(&url, &agent, timeout).await,
         WireCommands::Send {
             url,
             to,
@@ -228,6 +253,37 @@ async fn watch(url: &str, agent: &str, timeout_secs: u64) -> Result<()> {
     }
 }
 
+/// 1-shot recv (= mcp__wire_recv 等価)。 long-poll を 1 回実行し、 受信した messages
+/// (timeout 時は空配列) を `{"messages":[...],"count":N}` 形式で stdout に 1 行 JSON で出す。
+///
+/// `watch` と異なり loop しない: 即 exit する。 server timeout (max 30s) を超える待機はせず、
+/// 0 message でも 1 行 `{"messages":[],"count":0}` を出して exit 0 を返す。
+///
+/// 既読 cursor は server 側で `watch` と共通 (= 同 agent address の wire を `watch` も `recv` も
+/// 同じ cursor で読む)。
+async fn recv(url: &str, agent: &str, timeout_secs: u64) -> Result<()> {
+    // server 側 timeout 上限 (= /api/wire/recv handler: 30s 上限) は client 側でも clamp。
+    // mcp__wire_recv と同じ semantic で揃える。
+    let clamped_timeout = timeout_secs.min(30);
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(clamped_timeout + 5)) // server timeout + buffer
+        .build()
+        .context("reqwest client")?;
+    let endpoint = format!("{}/api/wire/recv", url.trim_end_matches('/'));
+
+    let messages = poll_recv(&client, &endpoint, agent, clamped_timeout).await?;
+    let count = messages.len();
+    let payload = serde_json::json!({
+        "messages": messages,
+        "count": count,
+    });
+    println!(
+        "{}",
+        serde_json::to_string(&payload).unwrap_or_else(|_| "{\"messages\":[],\"count\":0}".into())
+    );
+    Ok(())
+}
+
 /// 1 回の long-poll。 受信した wire message の配列を返す (timeout 時は空 vec)。
 async fn poll_recv(
     client: &reqwest::Client,
@@ -295,4 +351,81 @@ async fn send(url: &str, to: &str, body: &str, from: &str, reply_to: Option<&str
     }
     println!("{}", text);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    /// 試験用 wrapper: WireCommands を root subcommand として parse する小さい CLI。
+    #[derive(Parser, Debug)]
+    #[command(name = "vp-wire-test")]
+    struct TestCli {
+        #[command(subcommand)]
+        cmd: WireCommands,
+    }
+
+    #[test]
+    fn recv_requires_agent() {
+        // --agent なしは clap が rejection するはず。
+        let r = TestCli::try_parse_from(["vp-wire-test", "recv"]);
+        assert!(r.is_err(), "expected error when --agent omitted");
+    }
+
+    #[test]
+    fn recv_default_timeout_is_5() {
+        // mcp__wire_recv と同 default (= timeout 5s)。
+        let cli =
+            TestCli::try_parse_from(["vp-wire-test", "recv", "--agent", "agent@vantage-point"])
+                .expect("parse should succeed");
+        match cli.cmd {
+            WireCommands::Recv { timeout, agent, .. } => {
+                assert_eq!(timeout, 5, "default timeout should be 5s");
+                assert_eq!(agent, "agent@vantage-point");
+            }
+            other => panic!("expected Recv variant, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn recv_accepts_explicit_timeout() {
+        let cli = TestCli::try_parse_from([
+            "vp-wire-test",
+            "recv",
+            "--agent",
+            "agent@vantage-point",
+            "--timeout",
+            "10",
+        ])
+        .expect("parse should succeed");
+        match cli.cmd {
+            WireCommands::Recv { timeout, .. } => assert_eq!(timeout, 10),
+            other => panic!("expected Recv variant, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn recv_default_url_points_to_project0_sp() {
+        // Project 0 の SP (33000) が default、 watch / send と同 default に揃える。
+        let cli = TestCli::try_parse_from(["vp-wire-test", "recv", "--agent", "x"])
+            .expect("parse should succeed");
+        match cli.cmd {
+            WireCommands::Recv { url, .. } => assert_eq!(url, "http://127.0.0.1:33000"),
+            other => panic!("expected Recv variant, got {:?}", other),
+        }
+    }
+
+    /// timeout 上限 (server 30s) を超える値を渡しても clap parse は通り (= 機能要件)、
+    /// 実行時に clamp される (recv() impl 内 `.min(30)`)。 ここでは parse の通過だけ確認。
+    #[test]
+    fn recv_parses_oversized_timeout_relies_on_runtime_clamp() {
+        let cli =
+            TestCli::try_parse_from(["vp-wire-test", "recv", "--agent", "x", "--timeout", "300"])
+                .expect("parse should succeed (clamp 是 runtime)");
+        match cli.cmd {
+            WireCommands::Recv { timeout, .. } => assert_eq!(timeout, 300),
+            other => panic!("expected Recv variant, got {:?}", other),
+        }
+    }
 }
