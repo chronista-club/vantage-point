@@ -172,3 +172,46 @@ async fn unknown_route_returns_404() {
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+async fn version_endpoint_git_sha_has_expected_format() {
+    // dogfood 3 で追加: build.rs 改善後の git_sha format を検証。
+    // 受理する pattern:
+    //   - "unknown"                 (= git command 不在 / .git 不在の fallback)
+    //   - 12 桁 hex                  (= clean working tree、 例: "b6ba56f3e7d7")
+    //   - 12 桁 hex + "-dirty"       (= dirty working tree、 例: "c86ec867905b-dirty")
+    let app = vp_nexus::app();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/version")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("oneshot should succeed");
+
+    let body_bytes = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body collect")
+        .to_bytes();
+    let body: serde_json::Value = serde_json::from_slice(&body_bytes).expect("valid JSON");
+    let git_sha = body["git_sha"].as_str().expect("git_sha is string");
+
+    assert!(
+        is_valid_git_sha(git_sha),
+        "git_sha format mismatch: {git_sha:?} (expected 'unknown', 12-hex, or 12-hex+'-dirty')"
+    );
+}
+
+/// dogfood 3 helper: build.rs の git_sha 出力 format を検証する。
+fn is_valid_git_sha(s: &str) -> bool {
+    if s == "unknown" {
+        return true;
+    }
+    let core = s.strip_suffix("-dirty").unwrap_or(s);
+    core.len() == 12 && core.chars().all(|c| c.is_ascii_hexdigit())
+}
