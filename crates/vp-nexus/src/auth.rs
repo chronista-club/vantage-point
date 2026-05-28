@@ -92,12 +92,22 @@ pub async fn refresh_jwks() -> Result<(), reqwest::Error> {
     Ok(())
 }
 
-/// **test 用** — JWKS cache に直接 [`JwkSet`] を注入する。
+/// **test 専用 API** — JWKS cache に直接 [`JwkSet`] を注入する。
 ///
-/// production code から呼び出すべきではない (= 任意 JWKS で verify 可能になり認証が無意味化)。
-/// integration test (= 別 file から `vp_nexus::auth::install_test_jwks(...)` で利用) のために
-/// `pub` で expose している。 `#[cfg(test)]` は library crate 内部 test 限定で integration
-/// test (= `tests/*.rs`) から見えないため、 unconditional pub にしている。
+/// # Security
+///
+/// production binary には **絶対に含めない**。 unconditional `pub` で expose すると
+/// 攻撃者が任意 JWKS を install → 任意 issuer / kid の token で認証 bypass が可能になる
+/// (= security review 指摘、 2026-05-28)。
+///
+/// このため `#[cfg(any(test, feature = "test-utils"))]` で gate し、 release build
+/// (= `cargo build --release -p vp-nexus`、 features 無効化) では **symbol 自体が
+/// compile されない**。
+///
+/// integration test (= `tests/*.rs`) からは `cargo test -p vp-nexus --features test-utils`
+/// で feature を有効化して呼ぶ。 CI workflow も `--features vp-nexus/test-utils` を渡す。
+#[cfg(any(test, feature = "test-utils"))]
+#[doc(hidden)]
 pub async fn install_test_jwks(jwks: JwkSet) {
     *cache().write().await = Some(jwks);
 }
