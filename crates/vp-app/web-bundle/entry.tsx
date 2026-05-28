@@ -227,7 +227,9 @@ document.head.appendChild(creouiMdViewStyle)
 // 配色 / spacing / margin は creoui-md-view の design token に従う (= 上で注入済)。
 const ppFontStyle = document.createElement('style')
 ppFontStyle.textContent = `
-/* pp-content-persist: PP body markdown — みぞれ family を全 text に適用、 code / pre は等幅 */
+/* pp-content-persist: PP body markdown — みぞれ family を全 text に適用、 code / pre は等幅。
+   WebKit で日本語 family 名先頭は resolve 不安定なため、 英字 alias (Mizolet / Mizolet-Mono)
+   を先頭に書き、 日本語 fallback / system-ui に degrade させる。 */
 #pp-content .creo-md,
 #pp-content .creo-md p,
 #pp-content .creo-md li,
@@ -240,12 +242,12 @@ ppFontStyle.textContent = `
 #pp-content .creo-md h6,
 #pp-content .creo-md table,
 #pp-content .creo-md a {
-  font-family: 'みぞれ', 'Mizolet', system-ui, sans-serif;
+  font-family: Mizolet, 'みぞれ', system-ui, sans-serif;
 }
 #pp-content .creo-md code,
 #pp-content .creo-md pre,
 #pp-content .creo-md .creo-md-inline-code {
-  font-family: 'みぞれ 等幅', 'Mizolet-Mono', 'VPMono35', monospace;
+  font-family: 'Mizolet-Mono', 'みぞれ 等幅', 'VPMono35', monospace;
 }
 /* mermaid SVG wrapper の余白 — placeholder 置換後の見栄え */
 #pp-content .creo-md-mermaid { margin: 1em 0; }

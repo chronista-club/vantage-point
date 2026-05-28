@@ -202,8 +202,16 @@ body{overflow:hidden;}
 }
 .pane-body.center{display:grid;place-items:center;}
 .pane-body iframe{width:100%;height:100%;border:0;background:#fff;}
-/* PP markdown render 領域 (PR-ε-3 で mcp__show 経由 markdown が流れ込む rendering target) */
-.pp-content{padding:16px 20px;color:var(--color-text-primary);font-size:13px;line-height:1.6;}
+/* PP markdown render 領域 (PR-ε-3 で mcp__show 経由 markdown が流れ込む rendering target)。
+   pp-content-persist follow-up: font-family を Mizolet 先頭で指定 (= みぞれ system install を
+   WebKit で確実に拾わせる、 日本語 family 名先頭は resolve 不安定)。 font-size / 背景は別 step。 */
+.pp-content{padding:16px 20px;color:var(--color-text-primary);font-size:13px;line-height:1.6;
+  font-family:Mizolet,'みぞれ',system-ui,sans-serif;}
+/* pp-content-persist follow-up: PP pane 全体 (header / breadcrumb / button 等) も みぞれ family へ。
+   pane の他 CSS は触らず font-family のみ override。 */
+#pane-paisley-park,#pane-paisley-park .pane-header,#pane-paisley-park .pane-name,
+#pane-paisley-park .pane-breadcrumb,#pane-paisley-park .pane-action-btn{
+  font-family:Mizolet,'みぞれ',system-ui,sans-serif;}
 .pp-content h1{font-size:1.6rem;font-weight:500;margin:0 0 .5rem;color:var(--color-text-primary);}
 .pp-content h2{font-size:1.3rem;font-weight:500;margin:1.2rem 0 .5rem;}
 .pp-content h3{font-size:1.1rem;font-weight:500;margin:1rem 0 .4rem;}
