@@ -474,6 +474,145 @@ pub async fn canvas_layout_save_handler(
     Json(serde_json::json!({"status": "saved"}))
 }
 
+// =========================================================================
+// PP Canvas Stack Model (lane scope) — pp-content-persist
+// =========================================================================
+// `/api/pp/state` は **lane ごとに独立した PP state** を SurrealDB pane_contents に save/load する。
+// canvas-handler.ts (web-bundle) が 500ms debounce で save、 起動時 / lane 切替時に load を叩く。
+// content / title は legacy field、 主役は stack (= items + cursor) と ui_state。
+
+/// POST /api/pp/state - PP state を SurrealDB pane_contents に upsert。
+///
+/// body schema:
+/// ```json
+/// {
+///   "lane": "wing-foo" | null,
+///   "pane_id": "paisley-park",
+///   "content_type": "markdown",
+///   "content": "...",
+///   "title": "..." | null,
+///   "stack": { "items": [...], "cursor": "...", "capacity": 10 } | null,
+///   "ui_state": { "visible": true, ... } | null
+/// }
+/// ```
+pub async fn pp_state_save_handler(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let Some(vpdb) = state.vpdb.as_ref() else {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"status": "error", "message": "vpdb 未初期化"})),
+        );
+    };
+    // 必須 field — content_type / content / pane_id。 stack/ui_state/title/lane は省略可。
+    let pane_id = match body.get("pane_id").and_then(|v| v.as_str()) {
+        Some(s) if !s.is_empty() => s.to_string(),
+        _ => {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"status": "error", "message": "pane_id 必須"})),
+            );
+        }
+    };
+    let content_type = body
+        .get("content_type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("markdown")
+        .to_string();
+    let content = body
+        .get("content")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let title = body
+        .get("title")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    // lane は string | null。 null/不在/空文字いずれも lead (= None)。
+    let lane = body
+        .get("lane")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+    let stack = body.get("stack").filter(|v| !v.is_null()).cloned();
+    let ui_state = body.get("ui_state").filter(|v| !v.is_null()).cloned();
+    let project_path = state.project_dir.clone();
+    let result = vpdb
+        .upsert_pp_state(
+            &project_path,
+            lane.as_deref(),
+            &pane_id,
+            &content_type,
+            &content,
+            title.as_deref(),
+            stack.as_ref(),
+            ui_state.as_ref(),
+        )
+        .await;
+    match result {
+        Ok(()) => (
+            axum::http::StatusCode::OK,
+            Json(serde_json::json!({"status": "saved"})),
+        ),
+        Err(e) => {
+            tracing::warn!("pp_state upsert 失敗: {}", e);
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"status": "error", "message": e.to_string()})),
+            )
+        }
+    }
+}
+
+/// `/api/pp/state` GET の query parameters
+#[derive(Debug, Deserialize)]
+pub struct PpStateLoadParams {
+    /// lane name (省略 / 空文字なら lead)
+    pub lane: Option<String>,
+    /// pane_id (デフォルト "paisley-park")
+    pub pane_id: Option<String>,
+}
+
+/// GET /api/pp/state?lane=&pane_id= - PP state を pane_contents から 1 件取得。
+///
+/// 不在なら `{ "status": "empty" }` を返す。 caller (canvas-handler.ts) は
+/// 不在を「未保存」 として扱い、 空 state で起動する。
+pub async fn pp_state_load_handler(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(params): axum::extract::Query<PpStateLoadParams>,
+) -> impl IntoResponse {
+    let Some(vpdb) = state.vpdb.as_ref() else {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"status": "error", "message": "vpdb 未初期化"})),
+        );
+    };
+    let pane_id = params.pane_id.unwrap_or_else(|| "paisley-park".to_string());
+    let lane = params.lane.filter(|s| !s.is_empty());
+    let project_path = state.project_dir.clone();
+    match vpdb
+        .load_pp_state(&project_path, lane.as_deref(), &pane_id)
+        .await
+    {
+        Ok(Some(rec)) => (
+            axum::http::StatusCode::OK,
+            Json(serde_json::json!({"status": "ok", "record": rec})),
+        ),
+        Ok(None) => (
+            axum::http::StatusCode::OK,
+            Json(serde_json::json!({"status": "empty"})),
+        ),
+        Err(e) => {
+            tracing::warn!("pp_state load 失敗: {}", e);
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"status": "error", "message": e.to_string()})),
+            )
+        }
+    }
+}
+
 /// POST /api/watch-file - ファイル監視を開始
 pub async fn watch_file_handler(
     State(state): State<Arc<AppState>>,

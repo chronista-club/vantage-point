@@ -223,11 +223,15 @@ impl VpDb {
         content: &str,
         title: Option<&str>,
     ) -> Result<()> {
+        // lane_name='' (= lead sentinel) の row として upsert。 新 schema (lane_name/stack/ui_state) は
+        // ON DUPLICATE KEY UPDATE 句で **触らない** — 旧 caller (= 純粋な content / title 更新)
+        // が PP Canvas Stack の stack / ui_state を巻き戻さないようにする。
         self.db
             .query(
                 "INSERT INTO pane_contents {
                     project_path: $project_path,
                     pane_id: $pane_id,
+                    lane_name: '',
                     content_type: $content_type,
                     content: $content,
                     title: $title,
@@ -248,6 +252,91 @@ impl VpDb {
             .check()
             .map_err(|e| anyhow::anyhow!("pane_content upsert エラー: {}", e))?;
         Ok(())
+    }
+
+    /// PP Canvas Stack Model の lane scope な永続状態を upsert する (= doc 19 + pp-content-persist)。
+    ///
+    /// - `lane_name`: None なら lead (= 内部で `''` sentinel)、 Some(name) なら wing。 UNIQUE INDEX は
+    ///   (project_path, lane_name, pane_id) のため lead/wing は別 record として独立。
+    /// - `stack`: Canvas Stack (= items + cursor + capacity)。 None なら未保存。
+    /// - `ui_state`: visibility/collapsed/サイズ等。 None なら未保存。
+    /// - `content` / `content_type` / `title` は **現在 main pane で render 中の item の reflection**
+    ///   (= 旧 caller 互換)。 stack が主、 content は seek 用 fallback。
+    #[allow(clippy::too_many_arguments)] // pane_contents の field count に追従、 caller (route handler) も flat に展開する
+    pub async fn upsert_pp_state(
+        &self,
+        project_path: &str,
+        lane_name: Option<&str>,
+        pane_id: &str,
+        content_type: &str,
+        content: &str,
+        title: Option<&str>,
+        stack: Option<&serde_json::Value>,
+        ui_state: Option<&serde_json::Value>,
+    ) -> Result<()> {
+        // IPC contract 上は lane_name: Option<&str> を維持しつつ、 DB row では '' sentinel に変換。
+        let lane_sentinel = lane_name.unwrap_or("");
+        self.db
+            .query(
+                "INSERT INTO pane_contents {
+                    project_path: $project_path,
+                    pane_id: $pane_id,
+                    lane_name: $lane_name,
+                    content_type: $content_type,
+                    content: $content,
+                    title: $title,
+                    stack: $stack,
+                    ui_state: $ui_state,
+                    updated_at: time::now()
+                } ON DUPLICATE KEY UPDATE
+                    content_type = $input.content_type,
+                    content = $input.content,
+                    title = $input.title,
+                    stack = $input.stack,
+                    ui_state = $input.ui_state,
+                    updated_at = time::now()",
+            )
+            .bind(("project_path", project_path.to_string()))
+            .bind(("pane_id", pane_id.to_string()))
+            .bind(("lane_name", lane_sentinel.to_string()))
+            .bind(("content_type", content_type.to_string()))
+            .bind(("content", content.to_string()))
+            .bind(("title", title.map(|s| s.to_string())))
+            .bind(("stack", stack.cloned()))
+            .bind(("ui_state", ui_state.cloned()))
+            .await
+            .map_err(|e| anyhow::anyhow!("pp_state upsert 失敗: {}", e))?
+            .check()
+            .map_err(|e| anyhow::anyhow!("pp_state upsert エラー: {}", e))?;
+        Ok(())
+    }
+
+    /// 特定 (project_path, lane_name, pane_id) の PP state を 1 件取得。 不在なら Ok(None)。
+    ///
+    /// 旧 record (= lane_name field なし) は schema DEFAULT '' で self-heal され、 lead として読める。
+    pub async fn load_pp_state(
+        &self,
+        project_path: &str,
+        lane_name: Option<&str>,
+        pane_id: &str,
+    ) -> Result<Option<serde_json::Value>> {
+        let lane_sentinel = lane_name.unwrap_or("");
+        let mut result = self
+            .db
+            .query(
+                "SELECT * FROM pane_contents
+                 WHERE project_path = $path
+                   AND pane_id = $pane_id
+                   AND lane_name = $lane
+                 LIMIT 1",
+            )
+            .bind(("path", project_path.to_string()))
+            .bind(("pane_id", pane_id.to_string()))
+            .bind(("lane", lane_sentinel.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("pp_state load 失敗: {}", e))?;
+        let mut records: Vec<serde_json::Value> = result.take(0)?;
+        Ok(records.pop())
     }
 
     /// プロジェクトの全ペイン状態を取得
@@ -378,15 +467,32 @@ DEFINE INDEX IF NOT EXISTS idx_processes_path ON processes COLUMNS project_path 
 -- SP 固有テーブル（project_path でフィルタ — D11 準拠）
 -- =========================================================================
 
--- Canvas ペイン状態（RetainedStore + JSON 永続化 代替）
+-- Canvas ペイン状態（PP Canvas Stack Model 永続化、 doc 19）
+--
+-- 2026-05-28 [pp-content-persist]:
+--   lane scope 対応 — 旧 idx_pane (project_path, pane_id) を
+--   (project_path, lane_name, pane_id) UNIQUE に置換。 lane_name="" が lead、
+--   "<name>" が wing。 同一 project の lead と wing は **独立した PP state** を持つ。
+--   追加 field:
+--     - lane_name: string DEFAULT ''       — lane scope key (空文字=lead / 非空=wing 名)
+--     - stack:     option<object> FLEXIBLE — Canvas Stack { items: [], cursor: id, capacity: 10 }
+--     - ui_state:  option<object> FLEXIBLE — { visible, collapsed, width, height }
+--   注: lane_name を **option ではなく DEFAULT 空文字** にしたのは、 SurrealDB の UNIQUE INDEX が
+--   NULL 同士を不一致扱いし、 (path, NONE, pane_id) の UNIQUE 制約が成立せず ON DUPLICATE が
+--   発火しないため。 IPC contract 上は lane: string|null を保ち、 Rust 側で null↔'' を変換。
+--   旧 record (lane_name 不在) は schema DEFAULT '' で self-heal してそのまま lead 扱いになる。
+REMOVE INDEX IF EXISTS idx_pane ON pane_contents;
 DEFINE TABLE IF NOT EXISTS pane_contents SCHEMAFULL;
 DEFINE FIELD IF NOT EXISTS project_path ON pane_contents TYPE string;
 DEFINE FIELD IF NOT EXISTS pane_id ON pane_contents TYPE string;
 DEFINE FIELD IF NOT EXISTS content_type ON pane_contents TYPE string;
 DEFINE FIELD IF NOT EXISTS content ON pane_contents TYPE string;
 DEFINE FIELD IF NOT EXISTS title ON pane_contents TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS lane_name ON pane_contents TYPE string DEFAULT '';
+DEFINE FIELD IF NOT EXISTS stack ON pane_contents TYPE option<object> FLEXIBLE;
+DEFINE FIELD IF NOT EXISTS ui_state ON pane_contents TYPE option<object> FLEXIBLE;
 DEFINE FIELD IF NOT EXISTS updated_at ON pane_contents TYPE datetime DEFAULT time::now();
-DEFINE INDEX IF NOT EXISTS idx_pane ON pane_contents COLUMNS project_path, pane_id UNIQUE;
+DEFINE INDEX IF NOT EXISTS idx_pane_lane ON pane_contents COLUMNS project_path, lane_name, pane_id UNIQUE;
 
 -- Stand ステータス
 DEFINE TABLE IF NOT EXISTS stand_status SCHEMAFULL;
@@ -771,6 +877,187 @@ mod tests {
 
         let creo_panes = db.list_pane_contents("/repos/creo").await.unwrap();
         assert_eq!(creo_panes.len(), 1, "Creo のペインは残っている");
+    }
+
+    // =========================================================================
+    // PP Canvas Stack Model (lane scope) — pp-content-persist
+    // =========================================================================
+
+    /// 新 API: lane_name=None (lead) と Some(name) (wing) が独立 record として共存できる
+    #[tokio::test]
+    async fn test_pp_state_lead_and_wing_independent() {
+        let db = make_test_db().await;
+
+        let lead_stack = serde_json::json!({
+            "items": [{"id":"i1","content":"# lead\n","contentType":"markdown","createdAt":"2026-05-28T00:00:00Z"}],
+            "cursor": "i1",
+            "capacity": 10
+        });
+        let wing_stack = serde_json::json!({
+            "items": [{"id":"i2","content":"# wing\n","contentType":"markdown","createdAt":"2026-05-28T00:00:01Z"}],
+            "cursor": "i2",
+            "capacity": 10
+        });
+        let ui =
+            serde_json::json!({"visible": true, "collapsed": false, "width": 480, "height": 720});
+
+        db.upsert_pp_state(
+            "/repos/vp",
+            None,
+            "paisley-park",
+            "markdown",
+            "# lead\n",
+            None,
+            Some(&lead_stack),
+            Some(&ui),
+        )
+        .await
+        .unwrap();
+        db.upsert_pp_state(
+            "/repos/vp",
+            Some("foo"),
+            "paisley-park",
+            "markdown",
+            "# wing\n",
+            None,
+            Some(&wing_stack),
+            Some(&ui),
+        )
+        .await
+        .unwrap();
+
+        // lead 読み込み
+        let lead = db
+            .load_pp_state("/repos/vp", None, "paisley-park")
+            .await
+            .unwrap()
+            .expect("lead record 不在");
+        assert_eq!(
+            lead["lane_name"], "",
+            "lead は lane_name='' sentinel (= None)"
+        );
+        assert_eq!(lead["stack"]["cursor"], "i1");
+
+        // wing 読み込み — lead と独立した record
+        let wing = db
+            .load_pp_state("/repos/vp", Some("foo"), "paisley-park")
+            .await
+            .unwrap()
+            .expect("wing record 不在");
+        assert_eq!(wing["lane_name"], "foo");
+        assert_eq!(wing["stack"]["cursor"], "i2");
+
+        // list_pane_contents は両方見える (project scope)
+        let all = db.list_pane_contents("/repos/vp").await.unwrap();
+        assert_eq!(all.len(), 2, "lead + wing で 2 record");
+    }
+
+    /// upsert_pp_state は同 (project_path, lane_name, pane_id) で stack を上書きする (= roundtrip)
+    #[tokio::test]
+    async fn test_pp_state_upsert_roundtrip() {
+        let db = make_test_db().await;
+        let stack_v1 = serde_json::json!({"items": [], "cursor": null, "capacity": 10});
+        let stack_v2 = serde_json::json!({
+            "items": [{"id":"a","content":"x","contentType":"markdown","createdAt":"2026-05-28T00:00:00Z"}],
+            "cursor": "a",
+            "capacity": 10
+        });
+
+        db.upsert_pp_state(
+            "/repos/vp",
+            None,
+            "paisley-park",
+            "markdown",
+            "",
+            None,
+            Some(&stack_v1),
+            None,
+        )
+        .await
+        .unwrap();
+        db.upsert_pp_state(
+            "/repos/vp",
+            None,
+            "paisley-park",
+            "markdown",
+            "x",
+            None,
+            Some(&stack_v2),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let rec = db
+            .load_pp_state("/repos/vp", None, "paisley-park")
+            .await
+            .unwrap()
+            .expect("record 不在");
+        assert_eq!(rec["stack"]["cursor"], "a");
+        assert_eq!(rec["stack"]["items"][0]["id"], "a");
+
+        // 1 record だけ (UPSERT 冪等)
+        let all = db.list_pane_contents("/repos/vp").await.unwrap();
+        assert_eq!(all.len(), 1);
+    }
+
+    /// 旧 caller (upsert_pane_content) は lane_name=None で row を作る。 stack/ui_state を巻き戻さない。
+    #[tokio::test]
+    async fn test_pp_state_legacy_upsert_keeps_stack() {
+        let db = make_test_db().await;
+        let stack = serde_json::json!({
+            "items": [{"id":"keep","content":"keep","contentType":"markdown","createdAt":"2026-05-28T00:00:00Z"}],
+            "cursor": "keep",
+            "capacity": 10
+        });
+
+        // 新 API で stack を先に保存
+        db.upsert_pp_state(
+            "/repos/vp",
+            None,
+            "paisley-park",
+            "markdown",
+            "keep",
+            Some("t"),
+            Some(&stack),
+            None,
+        )
+        .await
+        .unwrap();
+
+        // 旧 API (content / title だけ更新)。 stack は触らないことを期待
+        db.upsert_pane_content(
+            "/repos/vp",
+            "paisley-park",
+            "markdown",
+            "updated",
+            Some("t2"),
+        )
+        .await
+        .unwrap();
+
+        let rec = db
+            .load_pp_state("/repos/vp", None, "paisley-park")
+            .await
+            .unwrap()
+            .expect("record 不在");
+        assert_eq!(rec["content"], "updated", "content は旧 API で更新される");
+        assert_eq!(rec["title"], "t2");
+        assert_eq!(
+            rec["stack"]["cursor"], "keep",
+            "stack は旧 API で巻き戻されてはいけない"
+        );
+    }
+
+    /// load_pp_state: 不在の (project_path, lane_name, pane_id) は Ok(None)
+    #[tokio::test]
+    async fn test_pp_state_load_missing_returns_none() {
+        let db = make_test_db().await;
+        let v = db
+            .load_pp_state("/repos/vp", None, "missing")
+            .await
+            .unwrap();
+        assert!(v.is_none());
     }
 
     /// title が None → NULL で保存・復元できる

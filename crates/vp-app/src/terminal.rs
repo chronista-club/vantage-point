@@ -142,6 +142,21 @@ pub enum AppEvent {
     /// wiremsg Stage 2: "canvas" 購読が再接続上限に達して終了したことを通知する。
     /// main loop は `canvas_sub_active` から process_path を除去する。
     CanvasSubscriptionEnded { process_path: String },
+    /// pp-content-persist: WebView (canvas-handler.ts) からの PP state save IPC。
+    /// active project の SP `POST /api/pp/state` に reqwest で forward する。
+    /// body は IPC payload の生 JSON (= lane / pane_id / stack / ui_state 等を含む)。
+    PpStateSaveRequest { body: serde_json::Value },
+    /// pp-content-persist: WebView からの PP state load IPC。
+    /// active project の SP `GET /api/pp/state?lane=&pane_id=` を叩き、
+    /// 結果を `pp:state:loaded` として WebView に push back する。
+    PpStateLoadRequest {
+        lane: Option<String>,
+        pane_id: String,
+    },
+    /// pp-content-persist: SP から load した結果を WebView に注入する event。
+    /// `record` は SP response の record (= pane_contents の 1 行 JSON) か null (= empty)。
+    /// app.rs event loop が `window.vpCanvas.handleMessage({type:'pp:state:loaded',...})` で push。
+    PpStateLoaded { record: Option<serde_json::Value> },
 }
 
 /// xterm.js から IPC で送られてきた JSON メッセージを処理
@@ -264,6 +279,27 @@ pub fn handle_ipc_message(msg: &str, proxy: &EventLoopProxy<AppEvent>) {
                     rect,
                 });
             }
+        }
+        Some("pp:state:save") => {
+            // pp-content-persist: WebView (canvas-handler.ts) からの PP state save IPC を
+            // event loop に流す。 実 forward (= reqwest で SP に POST) は app.rs 内で行う。
+            let _ = proxy.send_event(AppEvent::PpStateSaveRequest {
+                body: parsed.clone(),
+            });
+        }
+        Some("pp:state:load") => {
+            // pp-content-persist: WebView からの PP state load IPC。
+            let lane = parsed
+                .get("lane")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string());
+            let pane_id = parsed
+                .get("pane_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("paisley-park")
+                .to_string();
+            let _ = proxy.send_event(AppEvent::PpStateLoadRequest { lane, pane_id });
         }
         other => {
             tracing::debug!("terminal IPC: unknown type {:?}", other);

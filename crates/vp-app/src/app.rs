@@ -180,6 +180,25 @@ fn spawn_menu_event_pump(proxy: EventLoopProxy<AppEvent>) {
 /// port merge の pure calculation 部分を抽出した関数。 `fetch_projects_with_ports` の
 /// テスト可能なコアロジック。 name 一致で `RunningProcess.port` を inject し、
 /// `running` に無い project は port を変更しない (= config の static port か None のまま)。
+/// pp-content-persist: active な lane を host する SP の port を解決する。
+///
+/// active_lane_address (`<project>/lead` or `<project>/wing/<name>`) から、
+/// 対応する project_path の SP port (= ProjectPaneState.port) を引く。
+/// 解決失敗 (= lane 未選択 / SP 未起動 / port None) なら `None`。
+///
+/// caller: `PpStateSaveRequest` / `PpStateLoadRequest` の reqwest forward。
+pub(crate) fn resolve_active_project_port(state: &crate::pane::SidebarState) -> Option<u16> {
+    let active = state.active_lane_address.as_deref()?;
+    for proc in &state.processes {
+        if let Some(lanes) = state.lanes_by_project.get(&proc.path)
+            && lanes.iter().any(|l| l.address.key() == active)
+        {
+            return proc.port;
+        }
+    }
+    None
+}
+
 pub(crate) fn merge_ports_from_running(
     projects: &mut [crate::client::ProjectInfo],
     running: &[crate::client::RunningProcess],
@@ -2075,6 +2094,114 @@ pub fn run() -> anyhow::Result<()> {
                     process_path
                 );
                 canvas_sub_active.remove(&process_path);
+            }
+            Event::UserEvent(AppEvent::PpStateSaveRequest { body }) => {
+                // pp-content-persist: WebView の save IPC を active project の SP に reqwest forward。
+                // active project / port が引けない (= lane 未選択 / SP 未起動) 場合は silent skip
+                // (= user が空状態の canvas を debounce save しようとしただけ、warn する程の事故ではない)。
+                let port = match resolve_active_project_port(&sidebar_state) {
+                    Some(p) => p,
+                    None => {
+                        tracing::debug!(
+                            "pp:state:save skip — active project / port 解決失敗 (lane 未選択 or SP 未起動)"
+                        );
+                        return;
+                    }
+                };
+                tokio::spawn(async move {
+                    let url = format!("http://127.0.0.1:{}/api/pp/state", port);
+                    match reqwest::Client::new().post(&url).json(&body).send().await {
+                        Ok(resp) if resp.status().is_success() => {
+                            tracing::debug!("pp:state:save → SP OK ({})", port);
+                        }
+                        Ok(resp) => {
+                            tracing::warn!(
+                                "pp:state:save SP {} non-2xx: {}",
+                                port,
+                                resp.status()
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!("pp:state:save SP {} reqwest 失敗: {}", port, e);
+                        }
+                    }
+                });
+            }
+            Event::UserEvent(AppEvent::PpStateLoadRequest { lane, pane_id }) => {
+                // pp-content-persist: WebView の load IPC を SP に reqwest GET → 結果を
+                // AppEvent::PpStateLoaded で event loop に戻し、 次の arm で WebView に script push。
+                let port = match resolve_active_project_port(&sidebar_state) {
+                    Some(p) => p,
+                    None => {
+                        tracing::debug!(
+                            "pp:state:load skip — active project / port 解決失敗"
+                        );
+                        return;
+                    }
+                };
+                let load_proxy = async_action_proxy.clone();
+                tokio::spawn(async move {
+                    let mut url = format!(
+                        "http://127.0.0.1:{}/api/pp/state?pane_id={}",
+                        port,
+                        urlencoding::encode(&pane_id)
+                    );
+                    if let Some(name) = lane.as_deref() {
+                        url.push_str(&format!("&lane={}", urlencoding::encode(name)));
+                    }
+                    let record = match reqwest::Client::new().get(&url).send().await {
+                        Ok(resp) if resp.status().is_success() => {
+                            match resp.json::<serde_json::Value>().await {
+                                Ok(v) => v
+                                    .get("record")
+                                    .filter(|r| !r.is_null())
+                                    .cloned(),
+                                Err(e) => {
+                                    tracing::warn!("pp:state:load JSON parse 失敗: {}", e);
+                                    None
+                                }
+                            }
+                        }
+                        Ok(resp) => {
+                            tracing::warn!(
+                                "pp:state:load SP {} non-2xx: {}",
+                                port,
+                                resp.status()
+                            );
+                            None
+                        }
+                        Err(e) => {
+                            tracing::warn!("pp:state:load SP {} reqwest 失敗: {}", port, e);
+                            None
+                        }
+                    };
+                    let _ = load_proxy.send_event(AppEvent::PpStateLoaded { record });
+                });
+            }
+            Event::UserEvent(AppEvent::PpStateLoaded { record }) => {
+                // pp-content-persist: SP から取った PP state を WebView に push back する。
+                // record は pane_contents の 1 行 (stack/ui_state 等を含む) か None (= 未保存)。
+                // WebView 側は `pp:state:loaded` を canvas-handler.handleMessage で受けて
+                // applyPersistedState を呼ぶ。 SurrealDB row の `stack` field のみ取り出して渡す。
+                let stack = record.as_ref().and_then(|r| r.get("stack").cloned());
+                let payload = serde_json::json!({
+                    "type": "pp:state:loaded",
+                    "stack": stack,
+                });
+                match serde_json::to_string(&payload) {
+                    Ok(json) => {
+                        let script = format!(
+                            "window.vpCanvas && window.vpCanvas.handleMessage({})",
+                            json
+                        );
+                        if let Err(e) = main_view.evaluate_script(&script) {
+                            tracing::warn!("pp:state:loaded inject 失敗: {}", e);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("pp:state:loaded serialize 失敗: {}", e);
+                    }
+                }
             }
             Event::UserEvent(AppEvent::ProjectsError(msg)) => {
                 let js_msg = serde_json::to_string(&msg).unwrap_or_else(|_| "\"error\"".into());

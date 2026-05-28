@@ -41,7 +41,11 @@ import { DEFAULT_SCENES, EMPTY_SCENE, generateAllFocusScenes } from './scenes'
 import { attachRenderer } from './renderer'
 import { attachKeybindings, installMainViewDirectiveBridge } from './keybindings'
 import { renderPP, clearPP, appendPP } from './pp'
-import { handleMessage as handleCanvasMessage } from './canvas-handler'
+import {
+  handleMessage as handleCanvasMessage,
+  setActiveLaneName,
+  requestPersistedState,
+} from './canvas-handler'
 import { mountHistoryStrip, HISTORY_STRIP_CSS } from './HistoryStrip'
 
 console.info('[vp-bundle] imports resolved')
@@ -111,6 +115,19 @@ interface SetActivePaneInfo {
 
 /** 現 active Lane の address (Lane 跨ぎの save+restore base). null = まだ Lane click していない. */
 let activeLaneAddress: string | null = null
+
+/**
+ * LaneAddress::Display 形 (`<project>/lead` / `<project>/wing/<name>`) を、
+ * canvas-handler が IPC で使う flat lane_name (`null` = lead, `string` = wing) に翻訳する。
+ * pp-content-persist で lead/wing 別の SurrealDB record を引くための key 整形。
+ */
+function laneNameFromAddress(addr: string | null): string | null {
+  if (!addr) return null
+  if (addr.endsWith('/lead')) return null
+  const m = addr.match(/\/wing\/(.+)$/)
+  if (m) return m[1] ?? null
+  return null
+}
 /** Lane address → 最後にその Lane が table に乗っていた SceneId. */
 const laneScenes = new Map<string, SceneId>()
 
@@ -159,6 +176,12 @@ const installSetActivePaneBridge = (): void => {
       // 保存済 Scene を restore、 初訪問 Lane は lead-focus を default にする
       const target = laneScenes.get(newLane) ?? 'lead-focus'
       frameEngine.applyScene(target)
+      // pp-content-persist: lane 切替時に canvas-handler の lane scope を更新 + Rust に load 要求。
+      // load 結果は `pp:state:loaded` IPC が vpCanvas.handleMessage に push してくる。
+      // LaneAddress::Display 形 (`<project>/lead` or `<project>/wing/<name>`) を flat lane_name に翻訳。
+      const laneName = laneNameFromAddress(newLane)
+      setActiveLaneName(laneName)
+      requestPersistedState(laneName)
       return
     }
     // kind != terminal (PP/GE/HP/canvas/preview click 等): fixed-Pane focus、 Lane state は更新しない

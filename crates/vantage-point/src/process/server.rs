@@ -444,6 +444,12 @@ pub async fn run(
         .route("/api/close-pane", post(health::close_pane_handler))
         .route("/api/watch-file", post(health::watch_file_handler))
         .route("/api/unwatch-file", post(health::unwatch_file_handler))
+        // pp-content-persist: PP Canvas Stack の lane scope な永続化 (SurrealDB pane_contents)。
+        // canvas-handler.ts が 500ms debounce で save、 起動 / lane 切替時に load を fetch。
+        .route(
+            "/api/pp/state",
+            get(health::pp_state_load_handler).post(health::pp_state_save_handler),
+        )
         // tmux ペイン操作（Native App の Cmd+D / Cmd+Shift+D から呼ばれる）
         .route("/api/tmux/split", post(health::tmux_split_handler))
         .route("/api/tmux/close", post(health::tmux_close_handler))
