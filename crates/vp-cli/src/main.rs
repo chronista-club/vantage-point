@@ -218,8 +218,16 @@ enum LaneCommands {
         force: bool,
     },
     /// wing 環境一覧
+    ///
+    /// default は `<name>\t<branch>\t<path>` の tab-separated 簡易出力 (= fs scan、 SP 不要)。
+    /// `--detail` で SP `/api/lanes` を query して MCP `list_lanes` 同等の JSON (= state /
+    /// stand / pid / cwd / wing_status / mailbox_addresses 付き) を出力する (= SP 稼働中のみ)。
     #[command(alias = "list")]
-    Ls,
+    Ls {
+        /// SP `/api/lanes` から MCP list_lanes 同等の詳細 JSON を取得して出力
+        #[arg(long)]
+        detail: bool,
+    },
     /// wing 環境のパスを表示
     Path {
         /// Wing 名
@@ -243,6 +251,15 @@ enum LaneCommands {
         /// 確認なしで強制削除
         #[arg(long, short)]
         force: bool,
+    },
+    /// Canvas の表示 lane を切り替える (= mcp__switch_lane の CLI pair、 TheWorld 経由)
+    ///
+    /// `lane` は project 名 (lane bar に表示される識別子、 例: 'vantage-point', 'creo-memories')。
+    /// TheWorld :32000 が稼働している必要あり。 Canvas WebView がいない / 全 disconnect の場合は
+    /// `clients: 0` だが exit 0 (= server 側で no-op、 status ok)。
+    Switch {
+        /// 切り替え先 lane 名 (= project 名)
+        name: String,
     },
 }
 
@@ -598,7 +615,13 @@ fn execute_lane(cmd: LaneCommands) -> Result<()> {
             ws::fork_wing(&name, &branch, force).map_err(|e| anyhow::anyhow!(e))?;
             Ok(())
         }
-        LaneCommands::Ls => ws::list_wings().map_err(|e| anyhow::anyhow!(e)),
+        LaneCommands::Ls { detail } => {
+            if detail {
+                list_wings_detail()
+            } else {
+                ws::list_wings().map_err(|e| anyhow::anyhow!(e))
+            }
+        }
         LaneCommands::Path { name } => ws::wing_path(&name).map_err(|e| anyhow::anyhow!(e)),
         LaneCommands::Rm { name, all, force } => {
             // VP-124: SP-aware delete を試みる (orchestration: PTY kill + tmux kill +
@@ -616,7 +639,86 @@ fn execute_lane(cmd: LaneCommands) -> Result<()> {
         }
         LaneCommands::Status => ws::status_wings().map_err(|e| anyhow::anyhow!(e)),
         LaneCommands::Cleanup { force } => ws::cleanup_wings(force).map_err(|e| anyhow::anyhow!(e)),
+        LaneCommands::Switch { name } => switch_lane_via_world(&name),
     }
+}
+
+/// `vp lane ls --detail` 実装: 親 SP の `/api/lanes` を query して pretty JSON で出力。
+///
+/// SP 不在 (= TheWorld に未登録 / cwd が repo 外) なら error。 `--detail` を要求した時点で
+/// SP 稼働を前提とする (= fs-only fallback はせず、 明示的に user に SP 未起動を伝える)。
+///
+/// MCP `list_lanes` の mailbox_addresses 計算 / project_addresses synthesis までは
+/// 実装せず、 SP `/api/lanes` の生 JSON を pretty print する (= SP が持つ live state を
+/// 直に出す、 mailbox は SKILL.md doc で計算式を案内する方針)。
+fn list_wings_detail() -> Result<()> {
+    let (_project_name, port) = resolve_parent_project()
+        .map_err(|e| anyhow::anyhow!("SP 解決失敗 (--detail は SP 稼働が前提): {}", e))?;
+    let url = format!("http://[::1]:{}/api/lanes", port);
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .map_err(|e| anyhow::anyhow!("reqwest client build failed: {}", e))?;
+    let resp = client
+        .get(&url)
+        .send()
+        .map_err(|e| anyhow::anyhow!("SP :{} に到達できません: {}", port, e))?;
+    let status = resp.status();
+    let text = resp.text().unwrap_or_default();
+    if !status.is_success() {
+        anyhow::bail!("SP /api/lanes error: {} {}", status, text);
+    }
+    // SP の raw JSON を pretty print。 mailbox_addresses 計算は省略 (上記 doc 参照)。
+    let parsed: serde_json::Value =
+        serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text));
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&parsed).unwrap_or_default()
+    );
+    Ok(())
+}
+
+/// Canvas lane 切り替え CLI 実装 (= mcp__switch_lane と等価)。
+///
+/// TheWorld の `/api/canvas/switch_lane` を POST、 接続中の Canvas WS 全 client に
+/// `{"type":"switch_lane","lane":...}` をブロードキャストする (mcp.rs:1042 と同じ path)。
+fn switch_lane_via_world(name: &str) -> Result<()> {
+    // 軽量 validate (= validate_wing_name と同 character class、 但し空チェックのみ強制)。
+    // lane 名は project name (lead lane) or wing name (= `<project>/wing/<name>`) を想定、
+    // server 側で実在 lane と照合される (= unknown lane は WS 受信側で no-op)。
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("lane name is required (空文字不可)");
+    }
+
+    let url = format!(
+        "http://[::1]:{}/api/canvas/switch_lane",
+        vantage_point::cli::WORLD_PORT
+    );
+    let body = serde_json::json!({ "lane": trimmed });
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| anyhow::anyhow!("reqwest client build failed: {}", e))?;
+
+    let resp = client.post(&url).json(&body).send().map_err(|e| {
+        anyhow::anyhow!(
+            "TheWorld :{} に到達できません: {}",
+            vantage_point::cli::WORLD_PORT,
+            e
+        )
+    })?;
+    let status = resp.status();
+    let text = resp.text().unwrap_or_default();
+    if !status.is_success() {
+        anyhow::bail!("TheWorld API error: {} {}", status, text);
+    }
+    // server は {"status":"ok","lane":"...","clients":N} を返す。 そのまま echo して
+    // caller (script / human) が clients 数を確認できるよう stdout に。
+    println!("{}", text);
+    Ok(())
 }
 
 /// VP-124 Phase 1: SP-aware Wing Lane delete を試みる helper。
