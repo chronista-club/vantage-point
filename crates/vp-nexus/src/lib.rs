@@ -6,6 +6,7 @@
 
 pub mod auth;
 
+use crate::auth::Claims;
 use axum::{Json, Router, routing::get};
 use serde::Serialize;
 
@@ -58,6 +59,18 @@ pub struct CapabilitiesResponse {
     pub protocols: Vec<&'static str>,
 }
 
+/// `/v1/auth/me` response body — 認証済 user の最小 profile。
+///
+/// JWT の Claims (= `sub` / `scope`) を JSON で返す。 client (= vp-cli 等) は
+/// この endpoint を呼んで「現在 login している user」 を確認できる。
+#[derive(Debug, Serialize)]
+pub struct MeResponse {
+    /// user ID (= OIDC `sub` claim、 record の owner field 等に使う)
+    pub sub: String,
+    /// scope (= `"vp:read vp:write"` 等 space-separated、 token に scope なければ `None`)
+    pub scope: Option<String>,
+}
+
 /// `/health` handler — liveness check 兼 service identification
 async fn health() -> Json<HealthResponse> {
     Json(HealthResponse {
@@ -97,6 +110,18 @@ async fn capabilities() -> Json<CapabilitiesResponse> {
     })
 }
 
+/// `/v1/auth/me` handler — 認証済 user の Claims を返す protected route。
+///
+/// axum 0.8 Extractor pattern: signature の `Claims` が JWT verify middleware を
+/// 自動発火する。 token なし / 不正は middleware が 401 を返すため、 handler 本体は
+/// 認証成功 case のみを扱う。
+async fn me(claims: Claims) -> Json<MeResponse> {
+    Json(MeResponse {
+        sub: claims.sub,
+        scope: claims.scope,
+    })
+}
+
 /// Axum Router を構築する。 main / test 共通エントリ。
 pub fn app() -> Router {
     Router::new()
@@ -104,4 +129,5 @@ pub fn app() -> Router {
         .route("/v1/hello", get(hello))
         .route("/v1/version", get(version))
         .route("/v1/capabilities", get(capabilities))
+        .route("/v1/auth/me", get(me))
 }
