@@ -55,7 +55,10 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Test
-        run: cargo test --workspace
+        # vp-nexus の auth_endpoint integration test は `test-utils` feature が required
+        # (= install_test_jwks は production binary に含めない security 要件)。
+        # 他 crate に test-utils feature がなくても無視されるので workspace 全体で OK。
+        run: cargo test --workspace --features vp-nexus/test-utils
 
   # ===========================================
   # Windows ビルド check（VP-87 Phase W0）

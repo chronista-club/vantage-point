@@ -15,6 +15,20 @@ path = "src/main.rs"
 name = "vp_nexus"
 path = "src/lib.rs"
 
+[[test]]
+name = "auth_endpoint"
+# install_test_jwks (= JWKS cache を任意置換できる API、 production exposed なら認証 bypass)
+# を呼ぶ integration test。 production binary には絶対に含めないため、 自己 crate の
+# `test-utils` feature を required にする (= CI / 開発者は --features vp-nexus/test-utils
+# を渡して initialize する、 default では skip)。
+required-features = ["test-utils"]
+
+[features]
+default = []
+# test 専用 API (= install_test_jwks 等) を expose する feature。 production build で
+# 絶対に有効化しない。 CI workflow の test step が --features vp-nexus/test-utils を渡す。
+test-utils = []
+
 [dependencies]
 # 設計方針: vantage-point crate (= 重量 daemon、 SurrealDB / wry / midir 含む) には
 # 意図的に依存しない (= 独立 deploy 可能、 vp daemon が居なくても動く)。
