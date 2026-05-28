@@ -445,6 +445,31 @@ impl WiremsgStore {
         Ok(())
     }
 
+    /// 指定 agent が関与する **最新** wire message を返す (read-only、 cursor 不触り)
+    ///
+    /// 「関与」 = `from_addr == agent` OR `to_addrs CONTAINS agent`。 `flow_progress` の
+    /// 5-state FSM derive (= wing の現状態 = 最新 wmsg の `from` / `body.kind` から推論) で使う。
+    /// 1 件も無ければ `None`。 local_seq DESC LIMIT 1 で取得する。
+    pub async fn latest_msg_for_agent(&self, agent: &str) -> Result<Option<WireMessage>> {
+        let mut res = self
+            .db
+            .query(
+                "SELECT * FROM wire_messages
+                     WHERE from_addr = $agent OR to_addrs CONTAINS $agent
+                     ORDER BY local_seq DESC LIMIT 1;",
+            )
+            .bind(("agent", agent.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("wiremsg latest_msg_for_agent failed: {e}"))?;
+        let rows: Vec<serde_json::Value> = res
+            .take(0)
+            .map_err(|e| anyhow::anyhow!("wiremsg latest_msg_for_agent take failed: {e}"))?;
+        match rows.first() {
+            Some(row) => Ok(Some(Self::row_to_message(row)?)),
+            None => Ok(None),
+        }
+    }
+
     /// 指定 agent の per-thread 未読数を derive して返す (「derive できるものは store しない」)
     ///
     /// [`fetch_unread`](Self::fetch_unread) と同じ未読集合を thread root id で GROUP BY

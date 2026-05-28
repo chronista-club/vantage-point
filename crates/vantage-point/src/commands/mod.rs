@@ -8,6 +8,7 @@ pub mod daemon;
 pub mod db;
 pub mod directmsg;
 pub mod file;
+pub mod flow;
 pub mod hd;
 pub mod lan;
 #[cfg(feature = "midi")]
