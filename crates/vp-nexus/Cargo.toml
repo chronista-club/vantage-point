@@ -1,0 +1,35 @@
+[package]
+name = "vp-nexus"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "VP federation hub — nexus.vantage-point.app server (wiremsg cross-device 中継 / user 設定 sync / LAN 越え announce の起点)"
+
+[[bin]]
+name = "nexus"
+path = "src/main.rs"
+
+[lib]
+name = "vp_nexus"
+path = "src/lib.rs"
+
+[dependencies]
+# 設計方針: vantage-point crate (= 重量 daemon、 SurrealDB / wry / midir 含む) には
+# 意図的に依存しない (= 独立 deploy 可能、 vp daemon が居なくても動く)。
+# workspace.dependencies のみで完結させる。
+axum = { workspace = true }
+tokio = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+
+[dev-dependencies]
+# integration test 用 (= tower::ServiceExt::oneshot pattern、 別 server 起動不要)
+http-body-util = "0.1"

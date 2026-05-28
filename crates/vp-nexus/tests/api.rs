@@ -1,0 +1,89 @@
+//! vp-nexus integration test。
+//!
+//! port を bind せず、 `tower::ServiceExt::oneshot` で Router に直接
+//! request を流し込んで response を検査する (= 既存 VP の test 慣行に
+//! 揃える、 port 衝突 / 待ち時間 0、 parallel test safe)。
+
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
+use http_body_util::BodyExt;
+use tower::ServiceExt;
+
+#[tokio::test]
+async fn health_endpoint_returns_ok_status_and_version() {
+    let app = vp_nexus::app();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("oneshot should succeed");
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body_bytes = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body collect")
+        .to_bytes();
+
+    let body: serde_json::Value = serde_json::from_slice(&body_bytes).expect("valid JSON");
+    assert_eq!(body["status"], "ok");
+    assert_eq!(body["service"], "nexus");
+    // version は Cargo.toml workspace.version (= env!() で compile 時固定) と一致するはず
+    assert_eq!(body["version"], vp_nexus::VERSION);
+}
+
+#[tokio::test]
+async fn hello_endpoint_returns_federation_hub_tagline() {
+    let app = vp_nexus::app();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/hello")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("oneshot should succeed");
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body_bytes = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body collect")
+        .to_bytes();
+
+    let body: serde_json::Value = serde_json::from_slice(&body_bytes).expect("valid JSON");
+    assert_eq!(body["name"], "nexus");
+    assert_eq!(
+        body["tagline"],
+        "VP federation hub at nexus.vantage-point.app"
+    );
+}
+
+#[tokio::test]
+async fn unknown_route_returns_404() {
+    // 後続 task で federation API を増やす際の回帰防止 (= 未登録 path は 404)
+    let app = vp_nexus::app();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/wire/forward")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("oneshot should succeed");
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
