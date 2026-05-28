@@ -41,8 +41,15 @@ import { DEFAULT_SCENES, EMPTY_SCENE, generateAllFocusScenes } from './scenes'
 import { attachRenderer } from './renderer'
 import { attachKeybindings, installMainViewDirectiveBridge } from './keybindings'
 import { renderPP, clearPP, appendPP } from './pp'
-import { handleMessage as handleCanvasMessage } from './canvas-handler'
+import {
+  handleMessage as handleCanvasMessage,
+  setActiveLaneName,
+  requestPersistedState,
+} from './canvas-handler'
 import { mountHistoryStrip, HISTORY_STRIP_CSS } from './HistoryStrip'
+// pp-content-persist follow-up: PP body の markdown renderer を creoui-md-view に置換。
+// esbuild の text loader (build.mjs 設定) で文字列として import し、 head の <style> に注入。
+import CREOUI_MD_VIEW_CSS from 'creoui-md-view/styles.css'
 
 console.info('[vp-bundle] imports resolved')
 ;(window as unknown as { vpBundleStatus?: Record<string, boolean> }).vpBundleStatus!.importsResolved = true
@@ -111,6 +118,19 @@ interface SetActivePaneInfo {
 
 /** 現 active Lane の address (Lane 跨ぎの save+restore base). null = まだ Lane click していない. */
 let activeLaneAddress: string | null = null
+
+/**
+ * LaneAddress::Display 形 (`<project>/lead` / `<project>/wing/<name>`) を、
+ * canvas-handler が IPC で使う flat lane_name (`null` = lead, `string` = wing) に翻訳する。
+ * pp-content-persist で lead/wing 別の SurrealDB record を引くための key 整形。
+ */
+function laneNameFromAddress(addr: string | null): string | null {
+  if (!addr) return null
+  if (addr.endsWith('/lead')) return null
+  const m = addr.match(/\/wing\/(.+)$/)
+  if (m) return m[1] ?? null
+  return null
+}
 /** Lane address → 最後にその Lane が table に乗っていた SceneId. */
 const laneScenes = new Map<string, SceneId>()
 
@@ -159,6 +179,12 @@ const installSetActivePaneBridge = (): void => {
       // 保存済 Scene を restore、 初訪問 Lane は lead-focus を default にする
       const target = laneScenes.get(newLane) ?? 'lead-focus'
       frameEngine.applyScene(target)
+      // pp-content-persist: lane 切替時に canvas-handler の lane scope を更新 + Rust に load 要求。
+      // load 結果は `pp:state:loaded` IPC が vpCanvas.handleMessage に push してくる。
+      // LaneAddress::Display 形 (`<project>/lead` or `<project>/wing/<name>`) を flat lane_name に翻訳。
+      const laneName = laneNameFromAddress(newLane)
+      setActiveLaneName(laneName)
+      requestPersistedState(laneName)
       return
     }
     // kind != terminal (PP/GE/HP/canvas/preview click 等): fixed-Pane focus、 Lane state は更新しない
@@ -187,6 +213,51 @@ const installSetActivePaneBridge = (): void => {
 const historyStripStyle = document.createElement('style')
 historyStripStyle.textContent = HISTORY_STRIP_CSS
 document.head.appendChild(historyStripStyle)
+
+// pp-content-persist follow-up: creoui-md-view base styles を注入。 PP body の markdown を
+// CreoMarkdown で render する際の typography / spacing は本 CSS の `--*` token を期待する
+// (= fallback で system default に degrade)。
+const creouiMdViewStyle = document.createElement('style')
+creouiMdViewStyle.textContent = CREOUI_MD_VIEW_CSS
+document.head.appendChild(creouiMdViewStyle)
+
+// pp-content-persist follow-up: PP body の typography を **みぞれ / みぞれ 等幅** に固定。
+// system install 済の font family を `font-family` 直指定 (= vp-asset:// 経由の font fetch 不要)。
+// Mizolet (英字 family 名) も並記して、 system locale に依らず引けるように。
+// 配色 / spacing / margin は creoui-md-view の design token に従う (= 上で注入済)。
+const ppFontStyle = document.createElement('style')
+ppFontStyle.textContent = `
+/* pp-content-persist: PP body markdown — みぞれ family を全 text に適用、 code / pre は等幅 */
+#pp-content .creo-md,
+#pp-content .creo-md p,
+#pp-content .creo-md li,
+#pp-content .creo-md blockquote,
+#pp-content .creo-md h1,
+#pp-content .creo-md h2,
+#pp-content .creo-md h3,
+#pp-content .creo-md h4,
+#pp-content .creo-md h5,
+#pp-content .creo-md h6,
+#pp-content .creo-md table,
+#pp-content .creo-md a {
+  font-family: 'みぞれ', 'Mizolet', system-ui, sans-serif;
+}
+#pp-content .creo-md code,
+#pp-content .creo-md pre,
+#pp-content .creo-md .creo-md-inline-code {
+  font-family: 'みぞれ 等幅', 'Mizolet-Mono', 'VPMono35', monospace;
+}
+/* mermaid SVG wrapper の余白 — placeholder 置換後の見栄え */
+#pp-content .creo-md-mermaid { margin: 1em 0; }
+#pp-content .creo-md-mermaid svg { max-width: 100%; height: auto; }
+#pp-content .creo-md-mermaid-error {
+  font-family: 'みぞれ 等幅', 'Mizolet-Mono', monospace;
+  color: var(--color-text-secondary, #c66);
+  background: var(--color-surface-bg-subtle, #1a1a22);
+  padding: 8px; border-radius: 4px; white-space: pre-wrap;
+}
+`
+document.head.appendChild(ppFontStyle)
 
 // 起動時 default Scene apply + HistoryStrip mount
 const applyDefaultScene = (): void => {

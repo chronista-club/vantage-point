@@ -84,6 +84,132 @@ function notifyStateChange(): void {
       console.warn('[vp-canvas] state listener error', e)
     }
   }
+  // pp-content-persist: state mutation 直後に 500ms debounce save を schedule。
+  schedulePersist()
+}
+
+// ============================================================================
+// pp-content-persist: SurrealDB pane_contents への lane-scope な永続化
+// ============================================================================
+//
+// IPC contract:
+//   save : window.ipc.postMessage({ t:'pp:state:save', lane, pane_id, stack, ui_state, ... })
+//          → vp-app Rust が POST /api/pp/state を SP に forward (= AppEvent::PpStateSave)
+//   load : window.ipc.postMessage({ t:'pp:state:load', lane, pane_id })
+//          → vp-app Rust が GET /api/pp/state を SP から fetch、 結果を
+//            window.vpCanvas.handleMessage({ type:'pp:state:loaded', stack, ui_state }) で push
+//
+// debounce は 500ms (= window geometry と同じ window) で window.setTimeout を使う。
+// IPC unavailable な環境 (= 単体テスト / dev console) では silent skip。
+
+/** load 結果として canvasState を replace するための external API (= vp-app の loaded 注入用)。 */
+export interface PersistedPpState {
+  items?: CanvasItem[]
+  cursor?: string | null
+}
+
+/** PP に固定された pane_id (doc 19 では 1 instance、 lane scope で UNIQUE を担保)。 */
+const PP_PANE_ID = 'paisley-park'
+
+/** save の debounce window。 spec で 500ms 指定。 */
+const PERSIST_DEBOUNCE_MS = 500
+
+/** 現在 active な lane name。 null = lead、 string = wing 名。 entry.tsx 等が `setActiveLaneName` で更新。 */
+let activeLaneName: string | null = null
+
+let persistTimer: ReturnType<typeof setTimeout> | null = null
+
+/** active lane を更新する (entry.tsx の setActivePane bridge から呼ぶ)。 */
+export function setActiveLaneName(lane: string | null): void {
+  activeLaneName = lane
+}
+
+/** 現在の active lane name の readonly snapshot。 デバッグ用。 */
+export function getActiveLaneName(): string | null {
+  return activeLaneName
+}
+
+/** state mutation 後の 500ms debounce save。 IPC で Rust に投げる。 */
+function schedulePersist(): void {
+  if (persistTimer !== null) {
+    clearTimeout(persistTimer)
+  }
+  persistTimer = setTimeout(() => {
+    persistTimer = null
+    sendPersistNow()
+  }, PERSIST_DEBOUNCE_MS)
+}
+
+/** debounce を待たず即 save (= clear などで stack が空になった瞬間に flush したい場合用)。 */
+function sendPersistNow(): void {
+  const ipc = (window as unknown as { ipc?: { postMessage(msg: string): void } }).ipc
+  if (!ipc || typeof ipc.postMessage !== 'function') {
+    // 単体テスト等 IPC 不在環境では silent skip (= prod では必ず存在する)
+    return
+  }
+  const cursorId = canvasState.cursor
+  const currentItem = cursorId ? canvasState.items.find((i) => i.id === cursorId) ?? null : null
+  const payload = {
+    t: 'pp:state:save',
+    lane: activeLaneName, // null = lead
+    pane_id: PP_PANE_ID,
+    // content / title は legacy field の reflection (主役は stack)。 caller が cursor null
+    // (= 空 canvas) の場合は空文字を入れて schema が要求する non-null 制約を満たす。
+    content_type: currentItem?.contentType ?? 'markdown',
+    content: currentItem?.content ?? '',
+    title: currentItem?.title ?? null,
+    stack: {
+      items: canvasState.items,
+      cursor: canvasState.cursor,
+      capacity: MAX_ITEMS,
+    },
+    // ui_state は将来拡張用。 現状 visibility / collapsed は frame-engine の Scene 側で持つので
+    // ここでは null。 width / height は WebView Frame Engine の slot rect IPC が別経路で持つ。
+    ui_state: null,
+  }
+  try {
+    ipc.postMessage(JSON.stringify(payload))
+  } catch (e) {
+    console.warn('[pp-persist] save IPC failed', e)
+  }
+}
+
+/** vp-app Rust から起動時 / lane 切替時に呼ばれる「state 復元 entry」。 */
+export function applyPersistedState(state: PersistedPpState | null | undefined): void {
+  if (!state) {
+    return
+  }
+  const items = Array.isArray(state.items) ? state.items.slice(0, MAX_ITEMS) : []
+  canvasState.items = items
+  // cursor が items の中に居ない場合は null fallback (= 不整合な保存状態の防御)
+  if (typeof state.cursor === 'string' && items.some((i) => i.id === state.cursor)) {
+    canvasState.cursor = state.cursor
+  } else {
+    canvasState.cursor = items[0]?.id ?? null
+  }
+  renderCurrentMain()
+  // notifyStateChange は schedulePersist を呼ぶが、 復元直後に save を打つ必要は無い (= roundtrip 無駄)。
+  // listener だけ呼ぶ thin path にする。
+  for (const listener of stateListeners) {
+    try {
+      listener()
+    } catch (e) {
+      console.warn('[vp-canvas] state listener error', e)
+    }
+  }
+}
+
+/** load を vp-app Rust にリクエスト。 起動時 / lane 切替時に entry.tsx 等から呼ぶ。 */
+export function requestPersistedState(lane: string | null = activeLaneName): void {
+  const ipc = (window as unknown as { ipc?: { postMessage(msg: string): void } }).ipc
+  if (!ipc || typeof ipc.postMessage !== 'function') {
+    return
+  }
+  try {
+    ipc.postMessage(JSON.stringify({ t: 'pp:state:load', lane, pane_id: PP_PANE_ID }))
+  } catch (e) {
+    console.warn('[pp-persist] load IPC failed', e)
+  }
 }
 
 /** unique id を生成。 crypto.randomUUID() があれば使用、 fallback で random + timestamp。 */
@@ -239,6 +365,11 @@ export function handleMessage(msg: AnyMessage): void {
     canvasState.cursor = null
     clearPP()
     notifyStateChange()
+  } else if (msg.type === 'pp:state:loaded') {
+    // pp-content-persist: vp-app Rust が SP `/api/pp/state` から fetch した state を注入してくる。
+    // 不在 (= 初回起動 / 未保存 lane) なら msg.stack が null なので no-op。
+    const stack = (msg as { stack?: PersistedPpState | null }).stack
+    applyPersistedState(stack ?? null)
   }
   // 他 ProcessMessage variant (ChatChunk / DebugInfo / SessionList 等) は canvas に流さない (no-op)
 }

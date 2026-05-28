@@ -30,6 +30,9 @@ tray-icon = "0.24"
 # HTTP client (TheWorld API)
 reqwest = { workspace = true }
 
+# pp-content-persist: URL encode for /api/pp/state query (lane / pane_id)
+urlencoding = "2"
+
 # Serialization
 serde = { workspace = true }
 serde_json = { workspace = true }
