@@ -71,6 +71,44 @@ async fn hello_endpoint_returns_federation_hub_tagline() {
 }
 
 #[tokio::test]
+async fn version_endpoint_returns_build_info() {
+    let app = vp_nexus::app();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/version")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("oneshot should succeed");
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body_bytes = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body collect")
+        .to_bytes();
+
+    let body: serde_json::Value = serde_json::from_slice(&body_bytes).expect("valid JSON");
+    assert_eq!(body["name"], "nexus");
+    assert_eq!(body["version"], vp_nexus::VERSION);
+
+    // git_sha / built_at は build.rs で埋め込まれる。 wing 内 build なら "unknown"
+    // 以外になるはず (= git CLI 利用可能、 .git も上位 dir に存在)。 ただし
+    // source tarball build / CI cache 等で "unknown" になる可能性も許容するため、
+    // 空でないこと + string であることだけ assert する (= regulation な assertion)。
+    let git_sha = body["git_sha"].as_str().expect("git_sha is string");
+    assert!(!git_sha.is_empty(), "git_sha should not be empty");
+
+    let built_at = body["built_at"].as_str().expect("built_at is string");
+    assert!(!built_at.is_empty(), "built_at should not be empty");
+}
+
+#[tokio::test]
 async fn unknown_route_returns_404() {
     // 後続 task で federation API を増やす際の回帰防止 (= 未登録 path は 404)
     let app = vp_nexus::app();
