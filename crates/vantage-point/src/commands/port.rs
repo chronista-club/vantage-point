@@ -11,6 +11,7 @@
 
 use anyhow::{Context, Result};
 use clap::Subcommand;
+use std::path::PathBuf;
 
 use crate::config::Config;
 use crate::port_layout::PortLayout;
@@ -28,6 +29,9 @@ pub enum PortCommands {
         /// Lane index (0 = Lead, 1+ = Wing)
         #[arg(long, default_value_t = 0)]
         lane: u16,
+        /// Wing name (= lane index を name 解決、 --lane を上書き)
+        #[arg(long)]
+        wing: Option<String>,
         /// Role 名 (agent / dev_server / db_admin / canvas / preview)
         #[arg(long)]
         role: Option<String>,
@@ -40,6 +44,9 @@ pub enum PortCommands {
         slot: Option<u16>,
         #[arg(long, default_value_t = 0)]
         lane: u16,
+        /// Wing name (= lane index を name 解決、 --lane を上書き)
+        #[arg(long)]
+        wing: Option<String>,
         role: String,
     },
     /// Role offset table
@@ -83,9 +90,11 @@ pub fn execute(cmd: PortCommands) -> Result<()> {
             project,
             slot,
             lane,
+            wing,
             role,
         } => {
             let (layout, slot) = resolve_slot(project.as_deref(), slot)?;
+            let lane = resolve_lane(project.as_deref(), wing.as_deref(), lane)?;
             show(&layout, slot, lane, role.as_deref());
             Ok(())
         }
@@ -93,9 +102,11 @@ pub fn execute(cmd: PortCommands) -> Result<()> {
             project,
             slot,
             lane,
+            wing,
             role,
         } => {
             let (layout, slot) = resolve_slot(project.as_deref(), slot)?;
+            let lane = resolve_lane(project.as_deref(), wing.as_deref(), lane)?;
             url_cmd(&layout, slot, lane, &role);
             Ok(())
         }
@@ -112,6 +123,48 @@ pub fn execute(cmd: PortCommands) -> Result<()> {
 fn load_layout() -> Result<PortLayout> {
     let config = Config::load().unwrap_or_default();
     Ok(config.port_layout())
+}
+
+/// `--wing <name>` を lane_index に解決する (= 「目的ベース」 port allocation の核)。
+///
+/// 優先順位:
+/// - `wing` 不在 → 引数 `lane` をそのまま (= 既存挙動、 default 0 = lead)
+/// - `wing` 指定 → repo root を解決 (project 指定があれば projects.kdl、 無ければ cwd)
+///   → `lane::commands::resolve_lane_index_by_wing_name` で alphabetical 順 + 1
+///
+/// 注: 解決は **alphabetical sort + 1** なので、 wing 追加削除で順序が変わる →
+/// port が変動する可能性。 「name 経由 access」 を default にする運用が前提。
+fn resolve_lane(project: Option<&str>, wing: Option<&str>, lane: u16) -> Result<u16> {
+    let Some(wing_name) = wing else {
+        return Ok(lane);
+    };
+    let repo_root = resolve_repo_root(project)
+        .with_context(|| format!("--wing {wing_name} の repo root 解決に失敗"))?;
+    crate::lane::commands::resolve_lane_index_by_wing_name(&repo_root, wing_name)
+        .with_context(|| {
+            format!(
+                "wing '{wing_name}' が repo {} の `.vp/lanes/` に存在しません。`vp lane ls` で確認してください。",
+                repo_root.display()
+            )
+        })
+}
+
+/// repo root を解決する (= `--wing` 経路で wing list を引くため)。
+///
+/// 優先順位:
+/// - `project` 指定 → projects.kdl から path lookup → 該当 path
+/// - 不在 → cwd の `git rev-parse --show-toplevel`
+fn resolve_repo_root(project: Option<&str>) -> Result<PathBuf> {
+    if let Some(name) = project {
+        let config = Config::load().unwrap_or_default();
+        if let Some(p) = config.projects.iter().find(|p| p.name == name) {
+            return Ok(PathBuf::from(&p.path));
+        }
+        anyhow::bail!(
+            "project '{name}' が config に未登録です。`vp config` で確認してください。"
+        );
+    }
+    crate::lane::config::find_repo_root().map_err(Into::into)
 }
 
 /// (project slug or --slot) から slot index 決定 — layout も返す
