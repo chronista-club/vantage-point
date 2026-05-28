@@ -92,8 +92,12 @@ pub async fn refresh_jwks() -> Result<(), reqwest::Error> {
     Ok(())
 }
 
-/// test 用 — JWKS cache に直接 JwkSet を注入する。
-#[cfg(test)]
+/// **test 用** — JWKS cache に直接 [`JwkSet`] を注入する。
+///
+/// production code から呼び出すべきではない (= 任意 JWKS で verify 可能になり認証が無意味化)。
+/// integration test (= 別 file から `vp_nexus::auth::install_test_jwks(...)` で利用) のために
+/// `pub` で expose している。 `#[cfg(test)]` は library crate 内部 test 限定で integration
+/// test (= `tests/*.rs`) から見えないため、 unconditional pub にしている。
 pub async fn install_test_jwks(jwks: JwkSet) {
     *cache().write().await = Some(jwks);
 }
