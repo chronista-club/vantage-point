@@ -16,18 +16,18 @@
 //!
 //! ## file path
 //!
-//! VP-192: session 状態は生成データなので `vp_data_dir()` 配下。
-//! - macOS:  `~/Library/Application Support/vp/session-state.json`
-//! - Linux:  `~/.local/share/vp/session-state.json`
-//! - Windows: `%LOCALAPPDATA%\vp\session-state.json`
+//! XDG restructure: session 状態は runtime state なので XDG state zone 配下に置く。
+//! 全 OS で `~/.local/state/vp/session.json` (`$XDG_STATE_HOME` 優先)。
+//! file 名は旧 `session-state.json` → `session.json` に短縮 (= rename は
+//! `migrate_legacy_paths()` が冪等にやる)。
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-/// JSON file 名 (ディレクトリは `vp_data_dir()`)
-const SESSION_FILE: &str = "session-state.json";
+/// JSON file 名 (ディレクトリは `vp_state_dir()` = `~/.local/state/vp/`)
+const SESSION_FILE: &str = "session.json";
 
 /// Per-project UI state ─ project path がキー。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -138,10 +138,10 @@ pub struct SessionState {
 impl SessionState {
     /// 永続 file の絶対 path。
     ///
-    /// VP-192: session 状態は生成データなので `vp_data_dir()` 配下。
+    /// XDG restructure: session 状態は runtime state なので `vp_state_dir()` 配下。
     /// `Option` を維持するのは既存 caller (`load`/`save`) との互換のため。
     pub fn path() -> Option<PathBuf> {
-        Some(crate::paths::vp_data_dir().join(SESSION_FILE))
+        Some(crate::paths::vp_state_dir().join(SESSION_FILE))
     }
 
     /// 設定 file を読み込む。 不在 / 壊れた JSON は default を返す (起動を阻害しない)。
