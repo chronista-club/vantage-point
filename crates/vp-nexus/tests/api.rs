@@ -5,7 +5,7 @@
 //! 揃える、 port 衝突 / 待ち時間 0、 parallel test safe)。
 
 use axum::body::Body;
-use axum::http::{Request, StatusCode};
+use axum::http::{Method, Request, StatusCode};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
@@ -214,4 +214,53 @@ fn is_valid_git_sha(s: &str) -> bool {
     }
     let core = s.strip_suffix("-dirty").unwrap_or(s);
     core.len() == 12 && core.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// A1d: POST /v1/auth/logout は認証不要で 200 + `{logged_out: true}` を返す
+/// (= stateless logout の ack、 idempotent、 副作用なし)。
+#[tokio::test]
+async fn logout_endpoint_returns_logged_out_true() {
+    let app = vp_nexus::app();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/v1/auth/logout")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("oneshot should succeed");
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body_bytes = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body collect")
+        .to_bytes();
+    let body: serde_json::Value = serde_json::from_slice(&body_bytes).expect("valid JSON");
+    assert_eq!(body["logged_out"], true);
+}
+
+/// A1d: GET /v1/auth/logout は 405 Method Not Allowed を返す
+/// (= POST only、 CSRF 経由の偶発的呼び出し防止)。
+#[tokio::test]
+async fn logout_endpoint_rejects_get_method() {
+    let app = vp_nexus::app();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/v1/auth/logout")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("oneshot should succeed");
+
+    assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
 }
