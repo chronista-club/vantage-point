@@ -247,6 +247,11 @@ ppFontStyle.textContent = `
 #pp-content .creo-md .creo-md-inline-code {
   font-family: 'みぞれ 等幅', 'Mizolet-Mono', 'VPMono35', monospace;
 }
+/* pp-content-persist follow-up: PP body の base font-size を 1 段上げる
+   (= creoui token chain: base → l)。 fallback で 1.125em (= 16→18px 相当)。 */
+#pp-content .creo-md {
+  font-size: var(--typography-size-l, 1.125em);
+}
 /* mermaid SVG wrapper の余白 — placeholder 置換後の見栄え */
 #pp-content .creo-md-mermaid { margin: 1em 0; }
 #pp-content .creo-md-mermaid svg { max-width: 100%; height: auto; }

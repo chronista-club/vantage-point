@@ -3662,6 +3662,11 @@ ${i}`,r.replaceWith(s)}}}}var $7=null;function z7(){if($7){try{$7()}catch(e){con
 #pp-content .creo-md .creo-md-inline-code {
   font-family: '\u307F\u305E\u308C \u7B49\u5E45', 'Mizolet-Mono', 'VPMono35', monospace;
 }
+/* pp-content-persist follow-up: PP body \u306E base font-size \u3092 1 \u6BB5\u4E0A\u3052\u308B
+   (= creoui token chain: base \u2192 l)\u3002 fallback \u3067 1.125em (= 16\u219218px \u76F8\u5F53)\u3002 */
+#pp-content .creo-md {
+  font-size: var(--typography-size-l, 1.125em);
+}
 /* mermaid SVG wrapper \u306E\u4F59\u767D \u2014 placeholder \u7F6E\u63DB\u5F8C\u306E\u898B\u6804\u3048 */
 #pp-content .creo-md-mermaid { margin: 1em 0; }
 #pp-content .creo-md-mermaid svg { max-width: 100%; height: auto; }
