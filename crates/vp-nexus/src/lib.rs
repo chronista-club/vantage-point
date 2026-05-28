@@ -4,6 +4,8 @@
 //! ことで test では Router を直接 oneshot して assertion できる
 //! (= 別 server 起動 / port bind 不要、 test の決定性が上がる)。
 
+pub mod auth;
+
 use axum::{Json, Router, routing::get};
 use serde::Serialize;
 

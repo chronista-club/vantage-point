@@ -18,7 +18,8 @@ path = "src/lib.rs"
 [dependencies]
 # 設計方針: vantage-point crate (= 重量 daemon、 SurrealDB / wry / midir 含む) には
 # 意図的に依存しない (= 独立 deploy 可能、 vp daemon が居なくても動く)。
-# workspace.dependencies のみで完結させる。
+# 原則 workspace.dependencies のみで完結させる、 vp-nexus 固有 (= JWT auth 等) は
+# 専用 dep として追加。
 axum = { workspace = true }
 tokio = { workspace = true }
 tower = { workspace = true }
@@ -29,7 +30,16 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
+# Phase A1a (= dogfood 4): Creo ID JWT verify middleware 用。
+# - jsonwebtoken: JWT decode/verify (RS256 + JWKS 対応)、 vp-nexus 専用
+# - reqwest: JWKS fetch (workspace dep を再利用)
+jsonwebtoken = "9"
+reqwest = { workspace = true }
 
 [dev-dependencies]
 # integration test 用 (= tower::ServiceExt::oneshot pattern、 別 server 起動不要)
 http-body-util = "0.1"
+# Phase A1a JWT verify middleware の unit test 用 (= test 用 RSA keypair 生成 + JWK 構築)
+rsa = "0.9"
+rand = "0.8"
+base64 = "0.22"
