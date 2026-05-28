@@ -442,6 +442,10 @@ pub async fn run(
             "/api/wire/unread-count",
             post(health::wire_unread_count_handler),
         )
+        .route(
+            "/api/wire/latest-msg",
+            post(health::wire_latest_msg_handler),
+        )
         .route("/api/diagnose", get(health::diagnose_handler))
         .route("/api/toggle-pane", post(health::toggle_pane_handler))
         .route("/api/split-pane", post(health::split_pane_handler))

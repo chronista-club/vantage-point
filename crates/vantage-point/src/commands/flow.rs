@@ -385,6 +385,28 @@ async fn progress(format: &str) -> Result<()> {
             .get("wing_status")
             .cloned()
             .unwrap_or(serde_json::Value::Null);
+
+        // 5-state FSM derive (= lead 説示 control surrender model)。
+        // wire_latest_msg + wing_status から flow_state / control_surrender / state_reason を推論。
+        let latest_payload = serde_json::json!({ "agent": agent_addr });
+        let latest_resp = client
+            .post(format!("{}/api/wire/latest-msg", base))
+            .json(&latest_payload)
+            .send()
+            .await;
+        let latest_view = match latest_resp {
+            Ok(r) => match r.json::<serde_json::Value>().await {
+                Ok(j) => j
+                    .get("message")
+                    .and_then(crate::flow::LatestMsgView::from_json),
+                Err(_) => None,
+            },
+            Err(_) => None,
+        };
+        let wing_status_view = crate::flow::WingStatusView::from_json(&wing_status);
+        let fsm =
+            crate::flow::derive_flow_state(latest_view.as_ref(), wing_status_view, &agent_addr);
+
         wings.push(serde_json::json!({
             "name": label,
             "address": agent_addr,
@@ -392,6 +414,10 @@ async fn progress(format: &str) -> Result<()> {
             "cwd": cwd,
             "wing_status": wing_status,
             "unread_wire_count": unread_total,
+            "flow_state": fsm.state,
+            "control_surrender": fsm.control_surrender,
+            "state_reason": fsm.state_reason,
+            "last_state_transition_at": fsm.last_state_transition_at,
         }));
     }
 
@@ -432,8 +458,8 @@ fn print_table(view: &serde_json::Value) {
     }
     println!();
     println!(
-        "{:<24} {:<10} {:>7} {:>7} {:>7} {:>7} {}",
-        "WING", "STATE", "AHEAD", "BEHIND", "DIRTY", "UNREAD", "BRANCH"
+        "{:<24} {:<10} {:<18} {:>7} {:>7} {:>7} {:>7} BRANCH",
+        "WING", "STATE", "MODE", "AHEAD", "BEHIND", "DIRTY", "UNREAD"
     );
     for w in wings {
         let name = w.get("name").and_then(|v| v.as_str()).unwrap_or("?");
@@ -458,9 +484,23 @@ fn print_table(view: &serde_json::Value) {
             .pointer("/wing_status/branch")
             .and_then(|v| v.as_str())
             .unwrap_or("-");
+        // flow_state を emoji label に変換 (= "idle" → "⏸ idle" 等、 FSM 未 derive の wing は "-")
+        let mode_label = w
+            .get("flow_state")
+            .and_then(|v| v.as_str())
+            .and_then(|s| match s {
+                "idle" => Some(crate::flow::FlowState::Idle),
+                "working" => Some(crate::flow::FlowState::Working),
+                "hitl_pending" => Some(crate::flow::FlowState::HitlPending),
+                "completed" => Some(crate::flow::FlowState::Completed),
+                "stuck" => Some(crate::flow::FlowState::Stuck),
+                _ => None,
+            })
+            .map(|s| s.label())
+            .unwrap_or("-");
         println!(
-            "{:<24} {:<10} {:>7} {:>7} {:>7} {:>7} {}",
-            name, state, ahead, behind, dirty, unread, branch
+            "{:<24} {:<10} {:<18} {:>7} {:>7} {:>7} {:>7} {}",
+            name, state, mode_label, ahead, behind, dirty, unread, branch
         );
     }
 }
@@ -489,7 +529,7 @@ mod tests {
         assert!(err.to_string().contains("task_spec ファイル読み込み失敗"));
     }
 
-    /// table 出力は project + wings の最低限を含む
+    /// table 出力は project + wings の最低限を含む (= flow_state MODE column 込み)
     #[test]
     fn print_table_smoke() {
         // smoke: panic しないことだけ確認 (stdout は捕捉しない、 simple coverage)
@@ -511,6 +551,10 @@ mod tests {
                     "is_merged": false,
                 },
                 "unread_wire_count": 3,
+                "flow_state": "hitl_pending",
+                "control_surrender": false,
+                "state_reason": "wing posted question, awaiting lead reply",
+                "last_state_transition_at": 1_000_000_000_000_i64,
             }]
         });
         print_table(&v);

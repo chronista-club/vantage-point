@@ -195,6 +195,21 @@ pub async fn wire_unread_count_handler(
     }
 }
 
+/// POST /api/wire/latest-msg - agent 関与の最新 wire message を取得 (read-only、 cursor 不触り)
+///
+/// 「関与」 = `from_addr == agent` OR `to_addrs CONTAINS agent`。
+/// `flow_progress` の 5-state FSM derive で wing の現状態を判定するために使う。
+/// payload: `{agent: String}` → `{status: "ok", message: WireMessage|null}`。
+pub async fn wire_latest_msg_handler(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    match crate::process::unison_server::handle_wire_latest_msg(&state, payload).await {
+        Ok(v) => Json(v),
+        Err(e) => Json(serde_json::json!({"status": "error", "error": e})),
+    }
+}
+
 /// Stand 自己診断 (2026-04-25 user 発案) — ProcessCapabilities の各 Stand の
 /// diagnose() を集約。side-effect-free、いつでも呼び出し可能。
 ///

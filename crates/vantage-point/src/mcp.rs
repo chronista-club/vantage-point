@@ -1795,6 +1795,24 @@ impl VantageMcp {
                 .get("wing_status")
                 .cloned()
                 .unwrap_or(serde_json::Value::Null);
+
+            // 5-state FSM derive (= 2026-05-28 lead 説示 control surrender model)。
+            // 最新 wire activity + wing_status から flow_state を推論、 control_surrender も derive。
+            let latest_resp = self
+                .quic_call(
+                    "wire_latest_msg",
+                    serde_json::json!({ "agent": agent_addr }),
+                )
+                .await;
+            let latest_view = latest_resp
+                .ok()
+                .as_ref()
+                .and_then(|v| v.get("message"))
+                .and_then(crate::flow::LatestMsgView::from_json);
+            let wing_status_view = crate::flow::WingStatusView::from_json(&wing_status);
+            let fsm =
+                crate::flow::derive_flow_state(latest_view.as_ref(), wing_status_view, &agent_addr);
+
             wings.push(serde_json::json!({
                 "name": lane_label,
                 "address": format!("agent@{}/{}", project, lane.get("name").and_then(|v| v.as_str()).unwrap_or("")),
@@ -1804,6 +1822,10 @@ impl VantageMcp {
                 "wing_status": wing_status,
                 "unread_wire_count": unread_total,
                 "unread_by_thread": by_thread,
+                "flow_state": fsm.state,
+                "control_surrender": fsm.control_surrender,
+                "state_reason": fsm.state_reason,
+                "last_state_transition_at": fsm.last_state_transition_at,
             }));
         }
 

@@ -557,6 +557,8 @@ pub async fn start_unison_server(
                             "wire_thread" => handle_wire_thread(&state, payload).await,
                             // flow_progress 用 read-only 未読 count (cursor 不触り)
                             "wire_unread_count" => handle_wire_unread_count(&state, payload).await,
+                            // flow_progress 5-state FSM derive 用 read-only 最新 wmsg
+                            "wire_latest_msg" => handle_wire_latest_msg(&state, payload).await,
                             _ => Err(format!("不明なメソッド: process.{}", method)),
                         };
 
@@ -1133,6 +1135,40 @@ pub(crate) async fn handle_wire_thread(
         "status": "ok",
         "messages": value,
         "count": chain.len(),
+    }))
+}
+
+/// wiremsg の agent 関与最新 message を取得する (read-only、 cursor 不触り)
+///
+/// payload: `{ agent }`
+///
+/// 「関与」 = `from_addr == agent` OR `to_addrs CONTAINS agent`。
+/// `flow_progress` の 5-state FSM derive で wing の現状態 (= 最新 wmsg の direction + body.kind)
+/// を判定するために使う。
+///
+/// 戻り値: `{ status: "ok", message: <WireMessage|null> }`。 該当無しは null。
+pub(crate) async fn handle_wire_latest_msg(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let store = state
+        .wiremsg_store
+        .as_ref()
+        .ok_or_else(|| "wiremsg_store not initialized".to_string())?;
+
+    let agent = payload
+        .get("agent")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "wire_latest_msg: 'agent' required".to_string())?
+        .to_string();
+
+    let latest = store
+        .latest_msg_for_agent(&agent)
+        .await
+        .map_err(|e| format!("wire_latest_msg failed: {e}"))?;
+    Ok(serde_json::json!({
+        "status": "ok",
+        "message": latest,
     }))
 }
 
