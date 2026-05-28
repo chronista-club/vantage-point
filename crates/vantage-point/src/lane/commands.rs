@@ -271,6 +271,29 @@ pub fn list_wings_for_repo(repo_root: &Path) -> Vec<InactiveWingEntry> {
     out
 }
 
+/// 名前指定の wing の lane_index (= alphabetical 順 + 1) を返す。
+///
+/// 「目的ベース port 解決」 の核 — caller (= `vp port show --wing <name>` 等) が
+/// wing 名から port を引くために使う。
+///
+/// 設計:
+/// - lane_index = lead が 0、 wing は alphabetical sort + 1 (= 一意性確保)
+/// - wing 追加削除で sort 順が変わる → **port が変動する**点に注意
+/// - bookmark / URL 共有は name 経由 access (= `vp port url --wing <name>`) を推奨、
+///   port 番号直書きは非推奨
+/// - 永続 stable port が必要なら別 PR で wing slot registry (`.vp/wings.kdl`) を追加予定
+pub fn resolve_lane_index_by_wing_name(repo_root: &Path, wing_name: &str) -> Option<u16> {
+    let mut names: Vec<String> = list_wings_for_repo(repo_root)
+        .into_iter()
+        .map(|e| e.name)
+        .collect();
+    names.sort();
+    names
+        .iter()
+        .position(|n| n == wing_name)
+        .map(|i| (i + 1) as u16)
+}
+
 /// Print the path to a wing。
 ///
 /// project-local lane refactor PR 4b: legacy global path fallback 削除、 cwd の repo
@@ -1035,6 +1058,41 @@ mod tests {
         let (repo, _pl) = setup_pl_fixture("missing");
         let resolved = find_wing_dir(&repo, "absent");
         assert!(resolved.is_none());
+        let _ = fs::remove_dir_all(&repo);
+    }
+
+    // --- list_wings_for_repo (PR 4b: project-local 一本) ---
+
+    // --- resolve_lane_index_by_wing_name (= 「目的ベース port 解決」 の核) ---
+
+    #[test]
+    fn resolve_lane_index_alphabetical_sort() {
+        // wing が alphabetical sort 順で lane_index 1, 2, 3 に並ぶ
+        let (repo, pl) = setup_pl_fixture("resolve-alpha");
+        fs::create_dir_all(pl.join("charlie").join(".git")).unwrap();
+        fs::create_dir_all(pl.join("alpha").join(".git")).unwrap();
+        fs::create_dir_all(pl.join("bravo").join(".git")).unwrap();
+
+        assert_eq!(resolve_lane_index_by_wing_name(&repo, "alpha"), Some(1));
+        assert_eq!(resolve_lane_index_by_wing_name(&repo, "bravo"), Some(2));
+        assert_eq!(resolve_lane_index_by_wing_name(&repo, "charlie"), Some(3));
+
+        let _ = fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn resolve_lane_index_returns_none_for_missing_wing() {
+        let (repo, pl) = setup_pl_fixture("resolve-missing");
+        fs::create_dir_all(pl.join("foo").join(".git")).unwrap();
+
+        assert_eq!(resolve_lane_index_by_wing_name(&repo, "bar"), None);
+        let _ = fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn resolve_lane_index_returns_none_when_no_wings() {
+        let (repo, _pl) = setup_pl_fixture("resolve-empty");
+        assert_eq!(resolve_lane_index_by_wing_name(&repo, "any"), None);
         let _ = fs::remove_dir_all(&repo);
     }
 

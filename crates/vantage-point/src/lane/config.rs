@@ -2,8 +2,26 @@ use club_kdl::KdlDeserialize;
 use std::path::{Path, PathBuf};
 use std::{fs, io};
 
-/// Wing 設定ファイル名。 Wing workspace に symlink/copy するファイルを定義。
-const CONFIG_FILE: &str = ".claude/wing-files.kdl";
+/// Wing 設定ファイル (新 path = `.vp/` 配下、 VP の永続化 boundary に整合)。
+const WING_CONFIG_NEW: &str = ".vp/wing-files.kdl";
+
+/// Wing 設定ファイル (legacy path = `.claude/` 配下、 deprecation period 受理)。
+const WING_CONFIG_LEGACY: &str = ".claude/wing-files.kdl";
+
+/// Wing 設定不在時に auto-symlink する default file 群。
+///
+/// 選定基準: **gitignored で wing にも必要な per-user / secret file**。
+/// shallow clone (= `git clone --depth 1`) では gitignored file は来ないので、
+/// repo root から symlink して wing dir で同じ実行環境を再現する。
+///
+/// - `.mcp.json` — MCP server 接続定義 (= wing claude も同じ tool 群)
+/// - `CLAUDE.local.md` — per-user の atlas / project memory 設定
+/// - `.env` — secrets (= API keys / DB password 等)
+///
+/// `.mise.toml` / `.tool-versions` は通常 git tracked なので clone で来る、 不要。
+/// `.envrc` / `.claude/settings.local.json` 等は power user 用、 wing-files.kdl
+/// で個別宣言する path。
+const DEFAULT_SYMLINKS: &[&str] = &[".mcp.json", "CLAUDE.local.md", ".env"];
 
 #[derive(Debug, KdlDeserialize)]
 #[kdl(name = "symlink")]
@@ -90,14 +108,62 @@ pub fn find_repo_root() -> io::Result<PathBuf> {
     Ok(PathBuf::from(path))
 }
 
-/// Load wing-files.kdl from the repo root.
-pub fn load_config(repo_root: &Path) -> Result<WingConfig, String> {
-    let config_path = repo_root.join(CONFIG_FILE);
-    if !config_path.exists() {
-        return Err(format!(
-            "{CONFIG_FILE} not found. Create it to define symlinks/copies for wing environments."
-        ));
+/// repo root から wing-files.kdl を探す。
+///
+/// 探索順: 新 path (`.vp/wing-files.kdl`) → legacy path (`.claude/wing-files.kdl`) → None。
+/// legacy hit 時は `tracing::info!` で move hint を出す (= 強制せず deprecation period 中)。
+fn find_wing_config(repo_root: &Path) -> Option<PathBuf> {
+    let new_path = repo_root.join(WING_CONFIG_NEW);
+    if new_path.is_file() {
+        return Some(new_path);
     }
+    let legacy_path = repo_root.join(WING_CONFIG_LEGACY);
+    if legacy_path.is_file() {
+        tracing::info!(
+            "wing-files.kdl: legacy path detected ({}). Consider moving to {} for clarity.",
+            legacy_path.display(),
+            new_path.display()
+        );
+        return Some(legacy_path);
+    }
+    None
+}
+
+/// repo root に実在する default symlink 候補を返す。 不在 file は skip。
+fn default_symlinks(repo_root: &Path) -> Vec<String> {
+    DEFAULT_SYMLINKS
+        .iter()
+        .filter(|name| repo_root.join(name).exists())
+        .map(|s| s.to_string())
+        .collect()
+}
+
+/// wing-files.kdl を読み込む。 不在時は default symlinks を含む空 config を返す
+/// (= zero-config wing 起動)。 parse error のみ Err。
+///
+/// 設計:
+/// - 新 path (`.vp/wing-files.kdl`) 優先、 legacy (`.claude/wing-files.kdl`) も受理
+/// - 両方不在 = repo root の `.mcp.json` / `CLAUDE.local.md` / `.env` を auto-symlink
+/// - 明示宣言ある repo は zero-config に頼らず宣言通り (= default の merge は しない、
+///   explicit override が筋。 default も欲しいなら config に明示書く)
+pub fn load_config(repo_root: &Path) -> Result<WingConfig, String> {
+    let Some(config_path) = find_wing_config(repo_root) else {
+        // Zero-config: repo root の default file 群のみ auto-symlink
+        let symlinks = default_symlinks(repo_root);
+        if !symlinks.is_empty() {
+            tracing::info!(
+                "zero-config wing: auto-symlinking {} default file(s): {}",
+                symlinks.len(),
+                symlinks.join(", ")
+            );
+        }
+        return Ok(WingConfig {
+            symlinks,
+            copies: vec![],
+            symlink_patterns: vec![],
+            post_setup: None,
+        });
+    };
     let content = fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
     let raw: RawConfig = club_kdl::from_str(&content).map_err(|e| e.to_string())?;
     Ok(raw.into())
@@ -259,12 +325,94 @@ mod tests {
     }
 
     #[test]
-    fn load_config_missing_file() {
-        let tmp = test_dir("no-config");
+    fn load_config_returns_empty_when_no_config_and_no_defaults() {
+        // 設定 file 不在 + default 候補 file (.mcp.json 等) も不在 = 空 config を返す
+        let tmp = test_dir("no-config-no-defaults");
         let _ = fs::create_dir_all(&tmp);
-        let result = load_config(&tmp);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("not found"));
+        let cfg = load_config(&tmp).expect("zero-config wing は Ok を返す");
+        assert!(cfg.symlinks.is_empty());
+        assert!(cfg.copies.is_empty());
+        assert!(cfg.symlink_patterns.is_empty());
+        assert!(cfg.post_setup.is_none());
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn load_config_zero_config_auto_symlinks_defaults() {
+        // 設定 file 不在で repo root に default file (.mcp.json / .env 等) が
+        // 実在すれば、 それらが auto-symlink 候補として返る (= zero-config wing)
+        let tmp = test_dir("zero-config-defaults");
+        let _ = fs::create_dir_all(&tmp);
+        fs::write(tmp.join(".mcp.json"), "{}").unwrap();
+        fs::write(tmp.join(".env"), "KEY=value").unwrap();
+        // CLAUDE.local.md は意図的に作らない (= 不在は skip される確認)
+
+        let cfg = load_config(&tmp).unwrap();
+        assert!(cfg.symlinks.contains(&".mcp.json".to_string()));
+        assert!(cfg.symlinks.contains(&".env".to_string()));
+        assert!(
+            !cfg.symlinks.contains(&"CLAUDE.local.md".to_string()),
+            "不在 file は skip"
+        );
+        assert_eq!(cfg.symlinks.len(), 2);
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn load_config_prefers_vp_path_over_claude() {
+        // 新 path (.vp/wing-files.kdl) と legacy path (.claude/wing-files.kdl) の
+        // 両方が存在する場合、 新 path 優先
+        let tmp = test_dir("vp-vs-claude");
+        let _ = fs::create_dir_all(tmp.join(".vp"));
+        let _ = fs::create_dir_all(tmp.join(".claude"));
+        fs::write(tmp.join(".vp/wing-files.kdl"), r#"symlink ".new""#).unwrap();
+        fs::write(tmp.join(".claude/wing-files.kdl"), r#"symlink ".legacy""#).unwrap();
+
+        let cfg = load_config(&tmp).unwrap();
+        assert_eq!(cfg.symlinks, vec![".new"], ".vp 配下が優先される");
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn load_config_falls_back_to_legacy_claude_path() {
+        // .vp/wing-files.kdl 不在で .claude/wing-files.kdl のみあれば legacy fallback
+        let tmp = test_dir("legacy-only");
+        let _ = fs::create_dir_all(tmp.join(".claude"));
+        fs::write(tmp.join(".claude/wing-files.kdl"), r#"symlink ".env""#).unwrap();
+
+        let cfg = load_config(&tmp).unwrap();
+        assert_eq!(cfg.symlinks, vec![".env"]);
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn load_config_vp_path_explicit_does_not_merge_defaults() {
+        // wing-files.kdl が宣言されている場合、 default は merge しない (= explicit override)
+        let tmp = test_dir("explicit-no-merge");
+        let _ = fs::create_dir_all(tmp.join(".vp"));
+        // repo root に .mcp.json (default) を置くが、 config では別 file 宣言
+        fs::write(tmp.join(".mcp.json"), "{}").unwrap();
+        fs::write(tmp.join(".vp/wing-files.kdl"), r#"symlink "custom.toml""#).unwrap();
+
+        let cfg = load_config(&tmp).unwrap();
+        assert_eq!(cfg.symlinks, vec!["custom.toml"]);
+        assert!(
+            !cfg.symlinks.contains(&".mcp.json".to_string()),
+            "default は明示宣言と merge しない"
+        );
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn default_symlinks_filters_nonexistent() {
+        // default 候補のうち実在 file のみ返す helper の単体 test
+        let tmp = test_dir("default-filter");
+        let _ = fs::create_dir_all(&tmp);
+        fs::write(tmp.join(".env"), "X=1").unwrap();
+        // .mcp.json / CLAUDE.local.md は作らない
+
+        let result = default_symlinks(&tmp);
+        assert_eq!(result, vec![".env"]);
         let _ = fs::remove_dir_all(&tmp);
     }
 
