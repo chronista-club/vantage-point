@@ -1,0 +1,53 @@
+//! VP Nexus library — federation hub の router 構築と handler 群
+//!
+//! main.rs は parse + serve だけ薄く保ち、 router 構築をここに寄せる
+//! ことで test では Router を直接 oneshot して assertion できる
+//! (= 別 server 起動 / port bind 不要、 test の決定性が上がる)。
+
+use axum::{Json, Router, routing::get};
+use serde::Serialize;
+
+/// crate version (= Cargo.toml `version.workspace = true` の値が compile 時に展開される)
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// service 識別子 (= /health response の `service` field、 観測 / federation discovery 用)
+pub const SERVICE_NAME: &str = "nexus";
+
+/// `/health` response body
+#[derive(Debug, Serialize)]
+pub struct HealthResponse {
+    pub status: &'static str,
+    pub service: &'static str,
+    pub version: &'static str,
+}
+
+/// `/v1/hello` response body
+#[derive(Debug, Serialize)]
+pub struct HelloResponse {
+    pub name: &'static str,
+    pub tagline: &'static str,
+}
+
+/// `/health` handler — liveness check 兼 service identification
+async fn health() -> Json<HealthResponse> {
+    Json(HealthResponse {
+        status: "ok",
+        service: SERVICE_NAME,
+        version: VERSION,
+    })
+}
+
+/// `/v1/hello` handler — federation hub の名乗り (= 将来 capability advertise を載せる枠)
+async fn hello() -> Json<HelloResponse> {
+    Json(HelloResponse {
+        name: SERVICE_NAME,
+        tagline: "VP federation hub at nexus.vantage-point.app",
+    })
+}
+
+/// Axum Router を構築する。 main / test 共通エントリ。
+pub fn app() -> Router {
+    Router::new()
+        .route("/health", get(health))
+        .route("/v1/hello", get(hello))
+}
