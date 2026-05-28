@@ -23,14 +23,6 @@ name = "auth_endpoint"
 # を渡して initialize する、 default では skip)。
 required-features = ["test-utils"]
 
-[[test]]
-name = "oauth_flow"
-# dogfood 5 retro N11 を最初から適用: OAuth flow の integration test も test-utils
-# feature で gate。 install_test_jwks を使うわけではないが、 将来 mock OAuth server
-# 用 helper を追加するときに同じ規律 (= production binary に test 用 symbol を含めない)
-# を最初から守るため。
-required-features = ["test-utils"]
-
 [features]
 default = []
 # test 専用 API (= install_test_jwks 等) を expose する feature。 production build で
@@ -57,18 +49,11 @@ clap = { workspace = true }
 # - reqwest: JWKS fetch (workspace dep を再利用)
 jsonwebtoken = "9"
 reqwest = { workspace = true }
-# Phase A1c (= dogfood 6): OAuth Authorization Code + PKCE flow (RFC 7636) 用。
-# - sha2: PKCE code_challenge (= SHA-256(verifier) → base64url) 計算
-# - rand: PKCE verifier + CSRF state の高エントロピー生成 (= OsRng)
-# - base64: challenge の URL-safe base64 (no pad) encoding
-# - url: authorize URL の query string 構築 (= form_urlencoded::Serializer)
-sha2 = "0.10"
-rand = "0.8"
-base64 = "0.22"
-url = "2"
 
 [dev-dependencies]
 # integration test 用 (= tower::ServiceExt::oneshot pattern、 別 server 起動不要)
 http-body-util = "0.1"
 # Phase A1a JWT verify middleware の unit test 用 (= test 用 RSA keypair 生成 + JWK 構築)
 rsa = "0.9"
+rand = "0.8"
+base64 = "0.22"

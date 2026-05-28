@@ -5,39 +5,13 @@
 //! (= 別 server 起動 / port bind 不要、 test の決定性が上がる)。
 
 pub mod auth;
-pub mod oauth;
 
 use crate::auth::Claims;
-use crate::oauth::{OAuthConfig, OAuthStateStore};
 use axum::{
     Json, Router,
     routing::{get, post},
 };
 use serde::Serialize;
-use std::sync::Arc;
-
-/// Axum app の共有 state — 全 handler が `State<AppState>` で access 可能。
-///
-/// - `oauth_config`: 起動時に env から load される。 unset 時は `None` で、
-///   `/v1/auth/login` / `/v1/auth/callback` は 503 Service Unavailable を返す。
-/// - `oauth_state_store`: PKCE flow の state ↔ verifier mapping (= in-memory、 TTL 5 分)。
-///
-/// `Default` 実装は config なし + 空 state store (= 既存 test 互換)。
-#[derive(Clone, Default)]
-pub struct AppState {
-    pub oauth_config: Option<Arc<OAuthConfig>>,
-    pub oauth_state_store: Arc<OAuthStateStore>,
-}
-
-impl AppState {
-    /// production / smoke 用 — env から OAuthConfig を load して初期化。
-    pub fn from_env() -> Self {
-        Self {
-            oauth_config: OAuthConfig::from_env().map(Arc::new),
-            oauth_state_store: Arc::new(OAuthStateStore::new()),
-        }
-    }
-}
 
 /// crate version (= Cargo.toml `version.workspace = true` の値が compile 時に展開される)
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -170,28 +144,18 @@ async fn logout() -> Json<LogoutResponse> {
     Json(LogoutResponse { logged_out: true })
 }
 
-/// Axum Router を構築する (= `AppState::default()` で初期化)。 既存 test 互換用。
+/// Axum Router を構築する。 main / test 共通エントリ。
 ///
-/// OAuth flow を有効にするには [`app_with_state`] を直接呼び、 env から load した
-/// `AppState` を渡す。
+/// nexus は protected resource として動作 (= Creo ID JWT を verify する middleware
+/// のみ持ち、 OAuth flow 自体は client (= vp-cli / vp-app / MCP client) が直接 IdP と
+/// PKCE 行う)。 これは RFC 8252 (= OAuth 2.0 for Native Apps) + MCP spec 2025-06 の
+/// Protected Resource Metadata (RFC 9728) pattern と整合する。
 pub fn app() -> Router {
-    app_with_state(AppState::default())
-}
-
-/// Axum Router を任意の [`AppState`] で構築。 main.rs / OAuth 有効化 test から呼ぶ。
-///
-/// axum 0.8 の `Router::with_state(S)` で全 handler が `Handler<T, S>` を要求するが、
-/// `State<AppState>` を signature に持たない handler (= `health` 等) は S 制約なしで
-/// 受け入れられる (= co-exist OK)。
-pub fn app_with_state(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/v1/hello", get(hello))
         .route("/v1/version", get(version))
         .route("/v1/capabilities", get(capabilities))
         .route("/v1/auth/me", get(me))
-        .route("/v1/auth/login", get(crate::oauth::login))
-        .route("/v1/auth/callback", get(crate::oauth::callback))
         .route("/v1/auth/logout", post(logout))
-        .with_state(state)
 }
