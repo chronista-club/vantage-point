@@ -138,10 +138,14 @@ fn migrate_state_subdir(legacy_state: &std::path::Path, new_sessions: &std::path
     if !legacy_state.is_dir() {
         return;
     }
-    let Ok(entries) = std::fs::read_dir(legacy_state) else { return };
+    let Ok(entries) = std::fs::read_dir(legacy_state) else {
+        return;
+    };
     for entry in entries.flatten() {
         let from = entry.path();
-        let Some(name) = from.file_name().and_then(|n| n.to_str()) else { continue };
+        let Some(name) = from.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
         if name.ends_with("-panes.json") || name.ends_with("-canvas-layout.json") {
             delete_file_if_exists(&from);
         } else if name.ends_with(".json") {
@@ -162,11 +166,10 @@ fn move_file_if_exists(from: &std::path::Path, to: &std::path::Path) {
     if let Some(parent) = to.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    if std::fs::rename(from, to).is_err() {
-        if std::fs::copy(from, to).is_ok() {
+    if std::fs::rename(from, to).is_err()
+        && std::fs::copy(from, to).is_ok() {
             let _ = std::fs::remove_file(from);
         }
-    }
 }
 
 fn move_dir_if_exists(from: &std::path::Path, to: &std::path::Path) {
@@ -180,9 +183,7 @@ fn move_dir_if_exists(from: &std::path::Path, to: &std::path::Path) {
     if let Some(parent) = to.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    if std::fs::rename(from, to).is_err()
-        && copy_dir_recursive(from, to).is_ok()
-    {
+    if std::fs::rename(from, to).is_err() && copy_dir_recursive(from, to).is_ok() {
         let _ = std::fs::remove_dir_all(from);
     }
 }
@@ -192,10 +193,14 @@ fn move_dir_contents(from: &std::path::Path, to: &std::path::Path) {
         return;
     }
     let _ = std::fs::create_dir_all(to);
-    let Ok(entries) = std::fs::read_dir(from) else { return };
+    let Ok(entries) = std::fs::read_dir(from) else {
+        return;
+    };
     for entry in entries.flatten() {
         let child_from = entry.path();
-        let Some(name) = child_from.file_name() else { continue };
+        let Some(name) = child_from.file_name() else {
+            continue;
+        };
         let child_to = to.join(name);
         if child_from.is_dir() {
             move_dir_if_exists(&child_from, &child_to);

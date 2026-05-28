@@ -137,24 +137,39 @@ pub fn migrate_legacy_paths() {
         let mac_app_support = home.join("Library/Application Support/vp");
         if mac_app_support.is_dir() {
             // config zone へ
-            move_file_if_exists(&mac_app_support.join("config.kdl"), &new_config.join("config.kdl"));
-            move_file_if_exists(&mac_app_support.join("projects.kdl"), &new_config.join("projects.kdl"));
-            move_file_if_exists(&mac_app_support.join("addresses.toml"), &new_config.join("addresses.toml"));
+            move_file_if_exists(
+                &mac_app_support.join("config.kdl"),
+                &new_config.join("config.kdl"),
+            );
+            move_file_if_exists(
+                &mac_app_support.join("projects.kdl"),
+                &new_config.join("projects.kdl"),
+            );
+            move_file_if_exists(
+                &mac_app_support.join("addresses.toml"),
+                &new_config.join("addresses.toml"),
+            );
             // data zone へ
             move_dir_if_exists(&mac_app_support.join("db"), &new_data.join("db"));
             move_dir_if_exists(&mac_app_support.join("discs"), &new_data.join("discs"));
             // state zone へ (rename: session-state.json → session.json)
-            move_file_if_exists(&mac_app_support.join("session-state.json"), &new_state.join("session.json"));
+            move_file_if_exists(
+                &mac_app_support.join("session-state.json"),
+                &new_state.join("session.json"),
+            );
             // TUI SessionManager: state/{port}.json → sessions/{port}.json
             migrate_state_subdir(&mac_app_support.join("state"), &vp_sessions_dir());
             // log: logs/debug.log → log/debug.log
-            move_file_if_exists(&mac_app_support.join("logs/debug.log"), &new_log.join("debug.log"));
+            move_file_if_exists(
+                &mac_app_support.join("logs/debug.log"),
+                &new_log.join("debug.log"),
+            );
 
             // 廃止 file delete
             for legacy in [
-                "config.toml",       // KDL 統合済
-                "running.json",      // discovery 移行済
-                "vantage.db",        // code 参照ゼロ
+                "config.toml",  // KDL 統合済
+                "running.json", // discovery 移行済
+                "vantage.db",   // code 参照ゼロ
             ] {
                 delete_file_if_exists(&mac_app_support.join(legacy));
             }
@@ -168,10 +183,22 @@ pub fn migrate_legacy_paths() {
         // 世代 3: macOS `~/Library/Logs/Vantage/` から log zone へ
         let mac_log_dir = home.join("Library/Logs/Vantage");
         if mac_log_dir.is_dir() {
-            move_file_if_exists(&mac_log_dir.join("app.kdl.log"), &new_log.join("app.kdl.log"));
-            move_file_if_exists(&mac_log_dir.join("app.stdout.log"), &new_log.join("app.stdout.log"));
-            move_file_if_exists(&mac_log_dir.join("daemon.kdl.log"), &new_log.join("daemon.kdl.log"));
-            move_file_if_exists(&mac_log_dir.join("daemon.stdout.log"), &new_log.join("daemon.stdout.log"));
+            move_file_if_exists(
+                &mac_log_dir.join("app.kdl.log"),
+                &new_log.join("app.kdl.log"),
+            );
+            move_file_if_exists(
+                &mac_log_dir.join("app.stdout.log"),
+                &new_log.join("app.stdout.log"),
+            );
+            move_file_if_exists(
+                &mac_log_dir.join("daemon.kdl.log"),
+                &new_log.join("daemon.kdl.log"),
+            );
+            move_file_if_exists(
+                &mac_log_dir.join("daemon.stdout.log"),
+                &new_log.join("daemon.stdout.log"),
+            );
             // 廃止 (rename 前の遺物)
             for legacy in ["vp-app.kdl.log", "vp-app.stdout.log", "vp-world.kdl.log"] {
                 delete_file_if_exists(&mac_log_dir.join(legacy));
@@ -199,10 +226,14 @@ fn migrate_state_subdir(legacy_state: &std::path::Path, new_sessions: &std::path
     if !legacy_state.is_dir() {
         return;
     }
-    let Ok(entries) = std::fs::read_dir(legacy_state) else { return };
+    let Ok(entries) = std::fs::read_dir(legacy_state) else {
+        return;
+    };
     for entry in entries.flatten() {
         let from = entry.path();
-        let Some(name) = from.file_name().and_then(|n| n.to_str()) else { continue };
+        let Some(name) = from.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
         if name.ends_with("-panes.json") || name.ends_with("-canvas-layout.json") {
             delete_file_if_exists(&from);
         } else if name.ends_with(".json") {
@@ -222,15 +253,14 @@ fn move_file_if_exists(from: &std::path::Path, to: &std::path::Path) {
         delete_file_if_exists(from);
         return;
     }
-    if let Some(parent) = to.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
+    if let Some(parent) = to.parent()
+        && let Err(e) = std::fs::create_dir_all(parent) {
             tracing::warn!(
                 "path migration: parent create 失敗 ({}): {e}",
                 parent.display()
             );
             return;
         }
-    }
     if let Err(e) = std::fs::rename(from, to) {
         // 跨デバイス等で rename 失敗 → copy + remove fallback
         if std::fs::copy(from, to).is_ok() {
@@ -299,15 +329,17 @@ fn move_dir_contents(from: &std::path::Path, to: &std::path::Path, label: &str) 
         return;
     }
     if let Err(e) = std::fs::create_dir_all(to) {
-        tracing::warn!(
-            "path migration ({label}) parent create 失敗: {e}"
-        );
+        tracing::warn!("path migration ({label}) parent create 失敗: {e}");
         return;
     }
-    let Ok(entries) = std::fs::read_dir(from) else { return };
+    let Ok(entries) = std::fs::read_dir(from) else {
+        return;
+    };
     for entry in entries.flatten() {
         let child_from = entry.path();
-        let Some(name) = child_from.file_name() else { continue };
+        let Some(name) = child_from.file_name() else {
+            continue;
+        };
         let child_to = to.join(name);
         if child_from.is_dir() {
             move_dir_if_exists(&child_from, &child_to);
