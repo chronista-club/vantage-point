@@ -160,9 +160,7 @@ fn resolve_repo_root(project: Option<&str>) -> Result<PathBuf> {
         if let Some(p) = config.projects.iter().find(|p| p.name == name) {
             return Ok(PathBuf::from(&p.path));
         }
-        anyhow::bail!(
-            "project '{name}' が config に未登録です。`vp config` で確認してください。"
-        );
+        anyhow::bail!("project '{name}' が config に未登録です。`vp config` で確認してください。");
     }
     crate::lane::config::find_repo_root().map_err(Into::into)
 }
