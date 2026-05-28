@@ -109,6 +109,53 @@ async fn version_endpoint_returns_build_info() {
 }
 
 #[tokio::test]
+async fn capabilities_endpoint_returns_skeleton_with_empty_arrays() {
+    let app = vp_nexus::app();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/capabilities")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("oneshot should succeed");
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body_bytes = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body collect")
+        .to_bytes();
+
+    let body: serde_json::Value = serde_json::from_slice(&body_bytes).expect("valid JSON");
+    assert_eq!(body["service"], "nexus");
+    assert_eq!(body["version"], vp_nexus::VERSION);
+
+    // skeleton 段階: 両 array は存在するが空 (= 後続 task で具体機能を埋めていく前提)
+    let capabilities = body["capabilities"]
+        .as_array()
+        .expect("capabilities should be array");
+    assert_eq!(
+        capabilities.len(),
+        0,
+        "capabilities should be empty at skeleton stage"
+    );
+
+    let protocols = body["protocols"]
+        .as_array()
+        .expect("protocols should be array");
+    assert_eq!(
+        protocols.len(),
+        0,
+        "protocols should be empty at skeleton stage"
+    );
+}
+
+#[tokio::test]
 async fn unknown_route_returns_404() {
     // 後続 task で federation API を増やす際の回帰防止 (= 未登録 path は 404)
     let app = vp_nexus::app();
