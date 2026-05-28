@@ -24,8 +24,8 @@
 //! 確実に redirect が効かない。
 //!
 //! 解決: tracing-appender で **file に直接書き込む**。
-//! VP-192: log dir は macOS `~/Library/Logs/Vantage/`、 Win/Linux は
-//! `vp_data_dir()/logs/` (Win `%LOCALAPPDATA%\vp\logs\`、 Linux `~/.local/share/vp/logs/`)。
+//! XDG restructure: log dir は全 OS で `vp_log_dir()` (= `~/.local/state/vp/log/`、
+//! `$XDG_STATE_HOME` 優先)。 macOS の Application Support / Library/Logs は廃止。
 //!
 //! mise run win の polling tail が同 file を見る。
 
@@ -47,21 +47,11 @@ pub fn init_tracing() -> LogInitResult {
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
 
-    // Phase A (2026-04-27, mem_1CaSiJkD9HATDY2srrv6D4):
-    // macOS では `~/Library/Logs/Vantage/` に統一。
-    // mise run logs / Console.app / TheWorld daemon log と同じ dir で一緒に tail できる。
-    // Win/Linux は既存挙動を維持 (Phase B で揃える)。
-    // VP-192: macOS は Console.app / daemon log と一緒に tail できるよう
-    // `~/Library/Logs/Vantage/` 据え置き。 Win/Linux は config/data パス一本化に
-    // 合わせて `vp_data_dir()/logs/` 配下に統一 (旧 `data_local_dir()/VantagePoint*`)。
-    let log_dir = if cfg!(target_os = "macos") {
-        dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("Library/Logs/Vantage")
-    } else {
-        // Win: `%LOCALAPPDATA%\vp\logs\`、 Linux: `~/.local/share/vp/logs/`
-        crate::paths::vp_data_dir().join("logs")
-    };
+    // XDG restructure: log は state zone 配下に全 OS 統一。
+    // `~/.local/state/vp/log/app.kdl.log` (= `$XDG_STATE_HOME/vp/log/`)。
+    // macOS の `~/Library/Logs/Vantage/` も daemon の `vp_data_dir()/logs/` も廃止、
+    // 全 process の log を `vp_log_dir()` 一極集中。
+    let log_dir = crate::paths::vp_log_dir();
     let _ = std::fs::create_dir_all(&log_dir);
     let file_appender = tracing_appender::rolling::never(&log_dir, "app.kdl.log");
 

@@ -108,10 +108,11 @@ impl SessionManager {
     }
 
     /// Get state file path for a port
+    ///
+    /// XDG restructure: `vp_sessions_dir()/{port}.json` (= `~/.local/state/vp/sessions/`)。
+    /// 旧 `config_dir()/state/{port}.json` から `migrate_legacy_paths()` で自動移行済。
     fn state_path(port: u16) -> PathBuf {
-        crate::config::config_dir()
-            .join("state")
-            .join(format!("{}.json", port))
+        crate::config::vp_sessions_dir().join(format!("{}.json", port))
     }
 
     /// Save state to file
