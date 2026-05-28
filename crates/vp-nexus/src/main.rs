@@ -69,11 +69,7 @@ async fn main() -> Result<()> {
         .parse()
         .with_context(|| format!("invalid listen address: {host}:{port}"))?;
 
-    // env から AppState を組み立てる (= OAuth config を load、 unset なら disable)。
-    // OAuth 機能を有効化するには NEXUS_OAUTH_CLIENT_ID + NEXUS_OAUTH_REDIRECT_URI が必須。
-    let state = vp_nexus::AppState::from_env();
-    let oauth_enabled = state.oauth_config.is_some();
-    let app = vp_nexus::app_with_state(state);
+    let app = vp_nexus::app();
 
     let listener = tokio::net::TcpListener::bind(addr)
         .await
@@ -82,7 +78,6 @@ async fn main() -> Result<()> {
     tracing::info!(
         version = vp_nexus::VERSION,
         %addr,
-        oauth_enabled,
         "nexus listening (= VP federation hub MVP)"
     );
 
