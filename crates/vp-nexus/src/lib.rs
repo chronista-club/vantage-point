@@ -45,6 +45,17 @@ pub struct VersionResponse {
     pub built_at: &'static str,
 }
 
+/// `/v1/capabilities` response body — federation hub の機能 advertise の枠 (= skeleton)。
+/// 後続 task で `capabilities` / `protocols` に具体機能を埋めていく
+/// (= wire-forward / sync-settings / mdns-announce 等が追加される予定)。
+#[derive(Debug, Serialize)]
+pub struct CapabilitiesResponse {
+    pub service: &'static str,
+    pub version: &'static str,
+    pub capabilities: Vec<&'static str>,
+    pub protocols: Vec<&'static str>,
+}
+
 /// `/health` handler — liveness check 兼 service identification
 async fn health() -> Json<HealthResponse> {
     Json(HealthResponse {
@@ -72,10 +83,23 @@ async fn version() -> Json<VersionResponse> {
     })
 }
 
+/// `/v1/capabilities` handler — federation hub の機能 advertise (= skeleton 段階で空 array)。
+/// federation client は本 endpoint を見て「この hub が何の機能を提供しているか」 を
+/// runtime 検知する想定 (= 後続 task で実装される機能ごとに array へ追加)。
+async fn capabilities() -> Json<CapabilitiesResponse> {
+    Json(CapabilitiesResponse {
+        service: SERVICE_NAME,
+        version: VERSION,
+        capabilities: vec![],
+        protocols: vec![],
+    })
+}
+
 /// Axum Router を構築する。 main / test 共通エントリ。
 pub fn app() -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/v1/hello", get(hello))
         .route("/v1/version", get(version))
+        .route("/v1/capabilities", get(capabilities))
 }
