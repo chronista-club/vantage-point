@@ -166,10 +166,9 @@ fn move_file_if_exists(from: &std::path::Path, to: &std::path::Path) {
     if let Some(parent) = to.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    if std::fs::rename(from, to).is_err()
-        && std::fs::copy(from, to).is_ok() {
-            let _ = std::fs::remove_file(from);
-        }
+    if std::fs::rename(from, to).is_err() && std::fs::copy(from, to).is_ok() {
+        let _ = std::fs::remove_file(from);
+    }
 }
 
 fn move_dir_if_exists(from: &std::path::Path, to: &std::path::Path) {

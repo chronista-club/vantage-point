@@ -254,13 +254,14 @@ fn move_file_if_exists(from: &std::path::Path, to: &std::path::Path) {
         return;
     }
     if let Some(parent) = to.parent()
-        && let Err(e) = std::fs::create_dir_all(parent) {
-            tracing::warn!(
-                "path migration: parent create 失敗 ({}): {e}",
-                parent.display()
-            );
-            return;
-        }
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
+        tracing::warn!(
+            "path migration: parent create 失敗 ({}): {e}",
+            parent.display()
+        );
+        return;
+    }
     if let Err(e) = std::fs::rename(from, to) {
         // 跨デバイス等で rename 失敗 → copy + remove fallback
         if std::fs::copy(from, to).is_ok() {
