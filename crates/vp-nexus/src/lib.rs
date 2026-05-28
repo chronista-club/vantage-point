@@ -13,6 +13,14 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// service 識別子 (= /health response の `service` field、 観測 / federation discovery 用)
 pub const SERVICE_NAME: &str = "nexus";
 
+/// build 時の git short SHA (= build.rs で `git rev-parse --short=12 HEAD` から埋め込み)。
+/// git 無し環境 / source tarball build では `"unknown"`。
+pub const GIT_SHA: &str = env!("NEXUS_GIT_SHA");
+
+/// build 時刻 (= build.rs で `date -u +%Y-%m-%dT%H:%M:%SZ` から埋め込み、 RFC3339 UTC)。
+/// 取得失敗時は `"unknown"`。
+pub const BUILT_AT: &str = env!("NEXUS_BUILT_AT");
+
 /// `/health` response body
 #[derive(Debug, Serialize)]
 pub struct HealthResponse {
@@ -26,6 +34,15 @@ pub struct HealthResponse {
 pub struct HelloResponse {
     pub name: &'static str,
     pub tagline: &'static str,
+}
+
+/// `/v1/version` response body — build info (= ops / debug / release verification 用)
+#[derive(Debug, Serialize)]
+pub struct VersionResponse {
+    pub name: &'static str,
+    pub version: &'static str,
+    pub git_sha: &'static str,
+    pub built_at: &'static str,
 }
 
 /// `/health` handler — liveness check 兼 service identification
@@ -45,9 +62,20 @@ async fn hello() -> Json<HelloResponse> {
     })
 }
 
+/// `/v1/version` handler — build info を返す (= deploy 後の version 確認 / git_sha pinning に使う)
+async fn version() -> Json<VersionResponse> {
+    Json(VersionResponse {
+        name: SERVICE_NAME,
+        version: VERSION,
+        git_sha: GIT_SHA,
+        built_at: BUILT_AT,
+    })
+}
+
 /// Axum Router を構築する。 main / test 共通エントリ。
 pub fn app() -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/v1/hello", get(hello))
+        .route("/v1/version", get(version))
 }
