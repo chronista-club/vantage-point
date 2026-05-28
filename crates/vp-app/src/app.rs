@@ -26,7 +26,6 @@
 //! - **γ-light readiness**: main area の slot rect を ResizeObserver 経由で Rust に
 //!   push (`AppEvent::SlotRect`)、Phase 4+ で native overlay の `set_position` 同期に使用
 
-use std::thread;
 use std::time::Duration;
 
 use tao::dpi::LogicalSize;
@@ -159,18 +158,18 @@ fn update_pane_bounds(
 /// muda の `MenuEvent::receiver()` channel を polling して `AppEvent::MenuClicked` に
 /// 変換する pump スレッドを起動する。muda の menu event は global channel (single
 /// receiver) なので 1 thread だけ起動する。
-fn spawn_menu_event_pump(proxy: EventLoopProxy<AppEvent>) {
-    let _ = thread::Builder::new()
-        .name("menu-event-pump".into())
-        .spawn(move || {
-            let rx = muda::MenuEvent::receiver();
-            while let Ok(ev) = rx.recv() {
-                if proxy.send_event(AppEvent::MenuClicked(ev.id)).is_err() {
-                    tracing::debug!("EventLoop 終了、menu pump も終了");
-                    break;
-                }
+///
+/// channel は sync (`rx.recv()` が blocking) なので shared runtime の blocking pool に逃す。
+fn spawn_menu_event_pump(rt_handle: &tokio::runtime::Handle, proxy: EventLoopProxy<AppEvent>) {
+    rt_handle.spawn_blocking(move || {
+        let rx = muda::MenuEvent::receiver();
+        while let Ok(ev) = rx.recv() {
+            if proxy.send_event(AppEvent::MenuClicked(ev.id)).is_err() {
+                tracing::debug!("EventLoop 終了、menu pump も終了");
+                break;
             }
-        });
+        }
+    });
 }
 
 /// `/api/world/projects` (= registered, port は config の静的値のみ) と
@@ -245,37 +244,20 @@ pub(crate) async fn fetch_projects_with_ports(
 /// `port` と `state` を解決した状態で `ProjectsLoaded` event に乗せる。
 ///
 /// これにより handler 側で `if let Some(port) = p.port { spawn_lanes_subscription(...) }` が動く経路完成。
-fn spawn_processes_fetch(proxy: EventLoopProxy<AppEvent>) {
-    let _ = thread::Builder::new()
-        .name("processes-fetch".into())
-        .spawn(move || {
-            let rt = match tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            {
-                Ok(rt) => rt,
-                Err(e) => {
-                    let _ = proxy.send_event(AppEvent::ProjectsError(format!(
-                        "tokio runtime 作成失敗: {}",
-                        e
-                    )));
-                    return;
-                }
-            };
-            rt.block_on(async {
-                let client = TheWorldClient::default();
-                match fetch_projects_with_ports(&client).await {
-                    Ok(processes) => {
-                        // polling 毎回発火するため log omit (= loop noise)。
-                        let _ = proxy.send_event(AppEvent::ProjectsLoaded(processes));
-                    }
-                    Err(e) => {
-                        tracing::warn!("TheWorld fetch 失敗 (daemon 未起動?): {}", e);
-                        let _ = proxy.send_event(AppEvent::ProjectsError(e.to_string()));
-                    }
-                }
-            });
-        });
+fn spawn_processes_fetch(rt_handle: &tokio::runtime::Handle, proxy: EventLoopProxy<AppEvent>) {
+    rt_handle.spawn(async move {
+        let client = TheWorldClient::default();
+        match fetch_projects_with_ports(&client).await {
+            Ok(processes) => {
+                // polling 毎回発火するため log omit (= loop noise)。
+                let _ = proxy.send_event(AppEvent::ProjectsLoaded(processes));
+            }
+            Err(e) => {
+                tracing::warn!("TheWorld fetch 失敗 (daemon 未起動?): {}", e);
+                let _ = proxy.send_event(AppEvent::ProjectsError(e.to_string()));
+            }
+        }
+    });
 }
 
 /// 1 回の Unison channel 接続セッションの終わり方 ("lanes" / "canvas" 購読が共用)。
@@ -292,26 +274,13 @@ enum SubscriptionOutcome {
 /// 再接続し、10 連続失敗で諦めて `AppEvent::LanesSubscriptionEnded` を emit する。
 /// SP が同じ project を再 spawn すれば次の `ProjectsLoaded` で購読も再 spawn される。
 /// 設計: creo-memories mem_1CbA198fsHJsoKpu2jDUCv。
-fn spawn_lanes_subscription(proxy: EventLoopProxy<AppEvent>, process_path: String, sp_port: u16) {
-    let _ = thread::Builder::new()
-        .name(format!("lanes-sub-{}", sp_port))
-        .spawn(move || {
-            let rt = match tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            {
-                Ok(rt) => rt,
-                Err(e) => {
-                    let _ = proxy.send_event(AppEvent::LanesError {
-                        process_path: process_path.clone(),
-                        message: format!("tokio runtime: {}", e),
-                    });
-                    let _ = proxy.send_event(AppEvent::LanesSubscriptionEnded { process_path });
-                    return;
-                }
-            };
-            rt.block_on(lanes_subscription_loop(proxy, process_path, sp_port));
-        });
+fn spawn_lanes_subscription(
+    rt_handle: &tokio::runtime::Handle,
+    proxy: EventLoopProxy<AppEvent>,
+    process_path: String,
+    sp_port: u16,
+) {
+    rt_handle.spawn(lanes_subscription_loop(proxy, process_path, sp_port));
 }
 
 /// "lanes" channel への接続 → 購読 → 再接続を司る long-lived ループ。
@@ -446,23 +415,13 @@ async fn run_lanes_session(
 /// wiremsg Stage 2 consumer: SP の "canvas" Unison channel を購読し、Canvas (Paisley Park)
 /// ProcessMessage を受信して `AppEvent::CanvasMessage` を emit する。`spawn_lanes_subscription`
 /// と同型（QUIC 購読 + 指数バックオフ再接続）。設計: creo-memories mem_1CbA198fsHJsoKpu2jDUCv。
-fn spawn_canvas_subscription(proxy: EventLoopProxy<AppEvent>, process_path: String, sp_port: u16) {
-    let _ = thread::Builder::new()
-        .name(format!("canvas-sub-{}", sp_port))
-        .spawn(move || {
-            let rt = match tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            {
-                Ok(rt) => rt,
-                Err(e) => {
-                    tracing::warn!("canvas-sub tokio runtime: {}", e);
-                    let _ = proxy.send_event(AppEvent::CanvasSubscriptionEnded { process_path });
-                    return;
-                }
-            };
-            rt.block_on(canvas_subscription_loop(proxy, process_path, sp_port));
-        });
+fn spawn_canvas_subscription(
+    rt_handle: &tokio::runtime::Handle,
+    proxy: EventLoopProxy<AppEvent>,
+    process_path: String,
+    sp_port: u16,
+) {
+    rt_handle.spawn(canvas_subscription_loop(proxy, process_path, sp_port));
 }
 
 /// "canvas" channel への接続 → 購読 → 再接続を司る long-lived ループ。
@@ -616,47 +575,38 @@ mod lane_js {
 ///
 /// 重複防止: 呼び出し側が `triggered: HashSet<String>` で path の dedup を担う。
 /// (TheWorld 側でも `Process already running` で弾かれるが、 余計な POST を避けるため。)
-fn spawn_sp_start(proxy: EventLoopProxy<AppEvent>, project_name: String, project_path: String) {
-    let _ = thread::Builder::new()
-        .name(format!("sp-start-{}", project_name))
-        .spawn(move || {
-            let rt = match tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            {
-                Ok(rt) => rt,
-                Err(e) => {
-                    tracing::warn!("sp-start tokio runtime 失敗: {}", e);
-                    return;
-                }
-            };
-            rt.block_on(async {
-                let client = TheWorldClient::default();
-                match client.start_process(&project_name).await {
-                    Ok(()) => {
-                        tracing::info!(
-                            "SP auto-spawn 要求成功: project={} path={}",
-                            project_name,
-                            project_path
-                        );
-                        // TheWorld の polling が新 SP を pick up すると、 既存の
-                        // spawn_processes_fetch / spawn_activity_poller が ProjectsLoaded を再送、
-                        // その流れで spawn_lanes_subscription が走って "lanes" channel を購読、
-                        // retained snapshot を受信して sidebar に Lane が出る。
-                        // ここで明示的に trigger する必要はない (polling が 5s で SP を拾う)。
-                        let _ = proxy; // 将来 spawn 完了通知 event を入れるなら使う
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            "SP auto-spawn 失敗: project={} path={}: {}",
-                            project_name,
-                            project_path,
-                            e
-                        );
-                    }
-                }
-            });
-        });
+fn spawn_sp_start(
+    rt_handle: &tokio::runtime::Handle,
+    proxy: EventLoopProxy<AppEvent>,
+    project_name: String,
+    project_path: String,
+) {
+    rt_handle.spawn(async move {
+        let client = TheWorldClient::default();
+        match client.start_process(&project_name).await {
+            Ok(()) => {
+                tracing::info!(
+                    "SP auto-spawn 要求成功: project={} path={}",
+                    project_name,
+                    project_path
+                );
+                // TheWorld の polling が新 SP を pick up すると、 既存の
+                // spawn_processes_fetch / spawn_activity_poller が ProjectsLoaded を再送、
+                // その流れで spawn_lanes_subscription が走って "lanes" channel を購読、
+                // retained snapshot を受信して sidebar に Lane が出る。
+                // ここで明示的に trigger する必要はない (polling が 5s で SP を拾う)。
+                let _ = proxy; // 将来 spawn 完了通知 event を入れるなら使う
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "SP auto-spawn 失敗: project={} path={}: {}",
+                    project_name,
+                    project_path,
+                    e
+                );
+            }
+        }
+    });
 }
 
 /// VP-95: Activity widget の定期更新。
@@ -671,60 +621,45 @@ fn spawn_sp_start(proxy: EventLoopProxy<AppEvent>, project_name: String, project
 /// projects accordion が永遠に空のまま、という UX バグを防ぐ。
 /// 起動初回 (`prev_online == None`) では `spawn_processes_fetch` 側が担当するので
 /// 二重 fetch を避けるため transition 検知をスキップする。
-fn spawn_activity_poller(proxy: EventLoopProxy<AppEvent>) {
-    let _ = thread::Builder::new()
-        .name("activity-poller".into())
-        .spawn(move || {
-            let rt = match tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
+fn spawn_activity_poller(rt_handle: &tokio::runtime::Handle, proxy: EventLoopProxy<AppEvent>) {
+    rt_handle.spawn(async move {
+        let client = TheWorldClient::default();
+        let mut tick = tokio::time::interval(Duration::from_secs(5));
+        let mut prev_online: Option<bool> = None;
+        let mut prev_running: Option<usize> = None;
+        loop {
+            tick.tick().await;
+            let snap = collect_activity(&client).await;
+            let became_online = matches!(prev_online, Some(false)) && snap.world_online;
+            let running_changed = prev_running.is_some_and(|p| p != snap.running_process_count);
+            prev_online = Some(snap.world_online);
+            prev_running = Some(snap.running_process_count);
+            if proxy
+                .send_event(AppEvent::ActivityUpdate(snap.clone()))
+                .is_err()
             {
-                Ok(rt) => rt,
-                Err(e) => {
-                    tracing::warn!("activity poller tokio runtime 作成失敗: {}", e);
-                    return;
+                tracing::debug!("EventLoop 終了、activity poller も終了");
+                break;
+            }
+            // 再 fetch trigger (Architecture v4 fix、 mem_1CaTpCQH8iLJ2PasRcPjHv):
+            // - daemon online 復帰 (false → true)
+            // - running 数変化 (SP 起動 / 停止)
+            // どちらも port join 経由で ProjectsLoaded 再送 → sidebar state badge 更新
+            if (became_online || running_changed)
+                && snap.world_online
+                && let Ok(projects) = fetch_projects_with_ports(&client).await
+            {
+                // polling tick で再 fetch → ProjectsLoaded を送るが、 log は omit
+                // (= loop で noise)。 失敗時のみ warn にして残す。
+                if proxy
+                    .send_event(AppEvent::ProjectsLoaded(projects))
+                    .is_err()
+                {
+                    break;
                 }
-            };
-            rt.block_on(async move {
-                let client = TheWorldClient::default();
-                let mut tick = tokio::time::interval(Duration::from_secs(5));
-                let mut prev_online: Option<bool> = None;
-                let mut prev_running: Option<usize> = None;
-                loop {
-                    tick.tick().await;
-                    let snap = collect_activity(&client).await;
-                    let became_online = matches!(prev_online, Some(false)) && snap.world_online;
-                    let running_changed =
-                        prev_running.is_some_and(|p| p != snap.running_process_count);
-                    prev_online = Some(snap.world_online);
-                    prev_running = Some(snap.running_process_count);
-                    if proxy
-                        .send_event(AppEvent::ActivityUpdate(snap.clone()))
-                        .is_err()
-                    {
-                        tracing::debug!("EventLoop 終了、activity poller も終了");
-                        break;
-                    }
-                    // 再 fetch trigger (Architecture v4 fix、 mem_1CaTpCQH8iLJ2PasRcPjHv):
-                    // - daemon online 復帰 (false → true)
-                    // - running 数変化 (SP 起動 / 停止)
-                    // どちらも port join 経由で ProjectsLoaded 再送 → sidebar state badge 更新
-                    if (became_online || running_changed)
-                        && snap.world_online
-                        && let Ok(projects) = fetch_projects_with_ports(&client).await
-                    {
-                        // polling tick で再 fetch → ProjectsLoaded を送るが、 log は omit
-                        // (= loop で noise)。 失敗時のみ warn にして残す。
-                        if proxy
-                            .send_event(AppEvent::ProjectsLoaded(projects))
-                            .is_err()
-                        {
-                            break;
-                        }
-                    }
-                }
-            });
-        });
+            }
+        }
+    });
 }
 
 /// VP-143: 5s 間隔で `AppEvent::ResolveSessionTitles` を fire する background poller。
@@ -738,33 +673,19 @@ fn spawn_activity_poller(proxy: EventLoopProxy<AppEvent>) {
 /// `spawn_activity_poller` と揃えた 5s (`/rename` 反映までの max latency)。 file watch
 /// (notify crate) に切り替えればリアルタイム化可能だが、 現時点は 1 lane / 1 cwd 仮定下では
 /// polling で十分 (read-only mtime check + 末尾 grep のみ、 CPU 影響 minimal)。
-fn spawn_session_title_poller(proxy: EventLoopProxy<AppEvent>) {
-    let _ = thread::Builder::new()
-        .name("session-title-poller".into())
-        .spawn(move || {
-            let rt = match tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            {
-                Ok(rt) => rt,
-                Err(e) => {
-                    tracing::warn!("session title poller tokio runtime 作成失敗: {}", e);
-                    return;
-                }
-            };
-            rt.block_on(async move {
-                let mut tick = tokio::time::interval(Duration::from_secs(5));
-                // tokio::time::interval は 1 回目即発火、 起動 burst を避けるため空打ち skip
-                tick.tick().await;
-                loop {
-                    tick.tick().await;
-                    if proxy.send_event(AppEvent::ResolveSessionTitles).is_err() {
-                        tracing::debug!("EventLoop 終了、session title poller も終了");
-                        break;
-                    }
-                }
-            });
-        });
+fn spawn_session_title_poller(rt_handle: &tokio::runtime::Handle, proxy: EventLoopProxy<AppEvent>) {
+    rt_handle.spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(5));
+        // tokio::time::interval は 1 回目即発火、 起動 burst を避けるため空打ち skip
+        tick.tick().await;
+        loop {
+            tick.tick().await;
+            if proxy.send_event(AppEvent::ResolveSessionTitles).is_err() {
+                tracing::debug!("EventLoop 終了、session title poller も終了");
+                break;
+            }
+        }
+    });
 }
 
 /// VP-147 PR-P2-3: 5s 間隔で `AppEvent::ResolveLaneInboxes` を fire する background poller。
@@ -774,32 +695,18 @@ fn spawn_session_title_poller(proxy: EventLoopProxy<AppEvent>) {
 /// build し、 sidebar に push back する trigger となる。 Phase 2 PR-P2-3 では default 値の
 /// placeholder を populate し、 sidebar UI で `.vp-message-icon` 表示の signal として動く。
 /// 後続 PR で backend peek API + Whitesnake query を実装して actual 値を populate する。
-fn spawn_lane_inbox_poller(proxy: EventLoopProxy<AppEvent>) {
-    let _ = thread::Builder::new()
-        .name("lane-inbox-poller".into())
-        .spawn(move || {
-            let rt = match tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            {
-                Ok(rt) => rt,
-                Err(e) => {
-                    tracing::warn!("lane inbox poller tokio runtime 作成失敗: {}", e);
-                    return;
-                }
-            };
-            rt.block_on(async move {
-                let mut tick = tokio::time::interval(Duration::from_secs(5));
-                tick.tick().await;
-                loop {
-                    tick.tick().await;
-                    if proxy.send_event(AppEvent::ResolveLaneInboxes).is_err() {
-                        tracing::debug!("EventLoop 終了、lane inbox poller も終了");
-                        break;
-                    }
-                }
-            });
-        });
+fn spawn_lane_inbox_poller(rt_handle: &tokio::runtime::Handle, proxy: EventLoopProxy<AppEvent>) {
+    rt_handle.spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(5));
+        tick.tick().await;
+        loop {
+            tick.tick().await;
+            if proxy.send_event(AppEvent::ResolveLaneInboxes).is_err() {
+                tracing::debug!("EventLoop 終了、lane inbox poller も終了");
+                break;
+            }
+        }
+    });
 }
 
 /// `/api/health` + `/api/world/projects` + `/api/world/processes` を集約して
@@ -1278,6 +1185,21 @@ pub fn run() -> anyhow::Result<()> {
 
     let event_loop = EventLoopBuilder::<AppEvent>::with_user_event().build();
 
+    // 根治: vp-app 共有 Tokio runtime (multi-thread)。
+    //
+    // tao の event_loop は macOS main thread を専有し、 closure 内には Tokio
+    // runtime context が無いため、 bare `tokio::spawn` を呼ぶと
+    // 「no reactor running」 panic で即死する (= 過去事故、 PP 永続化 #456241e 等)。
+    //
+    // 全 async work はここで作る共有 runtime の `Handle::spawn` に乗せる。
+    // closure / helper 関数には `rt_handle.clone()` を move-capture で配る。
+    // `tokio::spawn` 直書きは `crates/vp-app/.clippy.toml` の
+    // `disallowed-methods` で compile-time block。
+    //
+    // `_rt` は `run()` の戻りまで生存させる (= drop すると runtime が止まる)。
+    let _rt = tokio::runtime::Runtime::new()?;
+    let rt_handle = _rt.handle().clone();
+
     // VP-100 follow-up: 永続設定 + 1Password 風 開発者モード切替
     let mut settings = Settings::load();
     let initial_dev_mode = initial_developer_mode(&settings);
@@ -1307,8 +1229,8 @@ pub fn run() -> anyhow::Result<()> {
         }
     };
 
-    // muda の MenuEvent を main loop に橋渡しする thread を起動
-    spawn_menu_event_pump(event_loop.create_proxy());
+    // muda の MenuEvent を main loop に橋渡しする pump を起動
+    spawn_menu_event_pump(&rt_handle, event_loop.create_proxy());
 
     // session_state を WindowBuilder より前に load して、 window geometry (= 前回終了時の
     // position + size + monitor) を起動時に復元できるようにする。 `mut` で keep し、
@@ -1414,13 +1336,13 @@ pub fn run() -> anyhow::Result<()> {
     }
 
     // TheWorld から project list を非同期 fetch (起動初回)
-    spawn_processes_fetch(event_loop.create_proxy());
+    spawn_processes_fetch(&rt_handle, event_loop.create_proxy());
     // VP-95: Activity widget の定期更新 (5s 間隔)
-    spawn_activity_poller(event_loop.create_proxy());
+    spawn_activity_poller(&rt_handle, event_loop.create_proxy());
     // VP-143: cc session display name (custom-title) の 5s 周期 resolve
-    spawn_session_title_poller(event_loop.create_proxy());
+    spawn_session_title_poller(&rt_handle, event_loop.create_proxy());
     // VP-147 PR-P2-3: per-Lane mailbox inbox 状況の 5s 周期 resolve (sidebar message icon 用 signal)
-    spawn_lane_inbox_poller(event_loop.create_proxy());
+    spawn_lane_inbox_poller(&rt_handle, event_loop.create_proxy());
 
     // Sidebar
     let sidebar_ipc_proxy = event_loop.create_proxy();
@@ -1832,6 +1754,7 @@ pub fn run() -> anyhow::Result<()> {
                     let Some(sp_port) = port else { continue };
                     if lanes_sub_active.insert(path.clone()) {
                         spawn_lanes_subscription(
+                            &rt_handle,
                             async_action_proxy.clone(),
                             path.clone(),
                             *sp_port,
@@ -1839,6 +1762,7 @@ pub fn run() -> anyhow::Result<()> {
                     }
                     if canvas_sub_active.insert(path.clone()) {
                         spawn_canvas_subscription(
+                            &rt_handle,
                             async_action_proxy.clone(),
                             path.clone(),
                             *sp_port,
@@ -2108,7 +2032,7 @@ pub fn run() -> anyhow::Result<()> {
                         return;
                     }
                 };
-                tokio::spawn(async move {
+                rt_handle.spawn(async move {
                     let url = format!("http://127.0.0.1:{}/api/pp/state", port);
                     match reqwest::Client::new().post(&url).json(&body).send().await {
                         Ok(resp) if resp.status().is_success() => {
@@ -2140,7 +2064,7 @@ pub fn run() -> anyhow::Result<()> {
                     }
                 };
                 let load_proxy = async_action_proxy.clone();
-                tokio::spawn(async move {
+                rt_handle.spawn(async move {
                     let mut url = format!(
                         "http://127.0.0.1:{}/api/pp/state?pane_id={}",
                         port,
@@ -2152,10 +2076,7 @@ pub fn run() -> anyhow::Result<()> {
                     let record = match reqwest::Client::new().get(&url).send().await {
                         Ok(resp) if resp.status().is_success() => {
                             match resp.json::<serde_json::Value>().await {
-                                Ok(v) => v
-                                    .get("record")
-                                    .filter(|r| !r.is_null())
-                                    .cloned(),
+                                Ok(v) => v.get("record").filter(|r| !r.is_null()).cloned(),
                                 Err(e) => {
                                     tracing::warn!("pp:state:load JSON parse 失敗: {}", e);
                                     None
@@ -2339,37 +2260,17 @@ pub fn run() -> anyhow::Result<()> {
                 // 戻して main_view の PP body に inject。 focus は元の panel に残る。
                 "w" => {
                     let proxy = async_action_proxy.clone();
-                    thread::Builder::new()
-                        .name("directive-w-theworld-status".to_string())
-                        .spawn(move || {
-                            let rt = match tokio::runtime::Builder::new_current_thread()
-                                .enable_all()
-                                .build()
-                            {
-                                Ok(rt) => rt,
-                                Err(e) => {
-                                    tracing::warn!(
-                                        "directive w: tokio runtime build 失敗: {}",
-                                        e
-                                    );
-                                    return;
-                                }
-                            };
-                            rt.block_on(async move {
-                                let client = crate::client::TheWorldClient::new(32000);
-                                let body = match client.list_projects().await {
-                                    Ok(processes) => format_theworld_status(&processes),
-                                    Err(e) => format!(
-                                        "# 🌍 TheWorld Status\n\n**Error**: failed to fetch — {e}"
-                                    ),
-                                };
-                                let content =
-                                    serde_json::json!({ "markdown": body });
-                                let _ = proxy
-                                    .send_event(AppEvent::DirectiveInject { content });
-                            });
-                        })
-                        .ok();
+                    rt_handle.spawn(async move {
+                        let client = crate::client::TheWorldClient::new(32000);
+                        let body = match client.list_projects().await {
+                            Ok(processes) => format_theworld_status(&processes),
+                            Err(e) => format!(
+                                "# 🌍 TheWorld Status\n\n**Error**: failed to fetch — {e}"
+                            ),
+                        };
+                        let content = serde_json::json!({ "markdown": body });
+                        let _ = proxy.send_event(AppEvent::DirectiveInject { content });
+                    });
                 }
                 // PR 445: `r` / `n` / `d` は sidebar 側 dispatcher が context (active_lane / active_stand)
                 // を判定して sendIpc / 内部関数呼び出しを行う。 Rust 側は trigger を sidebar に渡すだけ。
@@ -2543,7 +2444,7 @@ pub fn run() -> anyhow::Result<()> {
                             name,
                             path
                         );
-                        spawn_sp_start(async_action_proxy.clone(), name, path);
+                        spawn_sp_start(&rt_handle, async_action_proxy.clone(), name, path);
                     } else {
                         tracing::debug!("SP auto-spawn skip (既 trigger): {}", path);
                     }
@@ -2558,103 +2459,63 @@ pub fn run() -> anyhow::Result<()> {
                         path
                     );
                 }
-                // Phase 5-C: Process restart 要求 (sidebar の 🔄 button から)
-                // Phase 5-D fix: bare `tokio::spawn` は wry main thread (= tokio runtime context 無)
-                //   から呼ぶと panic 即死。 他の async handler と同じく
-                //   `thread::Builder::spawn + Builder::new_current_thread + rt.block_on` にする。
+                // Phase 5-C: Process restart 要求 (sidebar の 🔄 button から)。
+                // 全 async work は shared runtime (rt_handle) 経由 — bare `tokio::spawn` は禁止
+                // (.clippy.toml で compile gate)、 tao event loop closure に runtime context が
+                // 無いので必ず `rt_handle.spawn` を使う。
                 if let Some(project_name) = outcome.restart_process_request {
                     let proxy = async_action_proxy.clone();
-                    let project_name_clone = project_name.clone();
-                    thread::Builder::new()
-                        .name(format!("restart-{}", project_name))
-                        .spawn(move || {
-                            let rt = match tokio::runtime::Builder::new_current_thread()
-                                .enable_all()
-                                .build()
-                            {
-                                Ok(rt) => rt,
-                                Err(e) => {
-                                    tracing::warn!("restart_process tokio runtime: {}", e);
-                                    return;
+                    rt_handle.spawn(async move {
+                        // TheWorld port は固定 32000 (vantage_point::cli::WORLD_PORT と同期)
+                        let client = crate::client::TheWorldClient::new(32000);
+                        match client.restart_process(&project_name).await {
+                            Ok(()) => {
+                                tracing::info!("restart_process OK: {}", project_name);
+                                // 完了 → projects 再 fetch → sidebar state badge 更新。
+                                // 必ず `fetch_projects_with_ports` 経由 (= runtime port merge)
+                                // で送る。 list_projects() だけだと restart 直後に全 project の
+                                // port が None で潰れ、 後続 LanesLoaded で ensureLane が
+                                // 全件 skip され lead terminal が消失する。
+                                if let Ok(projects) = fetch_projects_with_ports(&client).await {
+                                    let _ =
+                                        proxy.send_event(AppEvent::ProjectsLoaded(projects));
                                 }
-                            };
-                            rt.block_on(async move {
-                                // TheWorld port は固定 32000 (vantage_point::cli::WORLD_PORT と同期)
-                                let client = crate::client::TheWorldClient::new(32000);
-                                match client.restart_process(&project_name_clone).await {
-                                    Ok(()) => {
-                                        tracing::info!(
-                                            "restart_process OK: {}",
-                                            project_name_clone
-                                        );
-                                        // 完了 → projects 再 fetch → sidebar state badge 更新。
-                                        // 必ず `fetch_projects_with_ports` 経由 (= runtime port merge)
-                                        // で送る。 list_projects() だけだと restart 直後に全 project の
-                                        // port が None で潰れ、 後続 LanesLoaded で ensureLane が
-                                        // 全件 skip され lead terminal が消失する。
-                                        if let Ok(projects) =
-                                            fetch_projects_with_ports(&client).await
-                                        {
-                                            let _ = proxy
-                                                .send_event(AppEvent::ProjectsLoaded(projects));
-                                        }
-                                    }
-                                    Err(e) => {
-                                        tracing::warn!(
-                                            "restart_process failed for {}: {}",
-                                            project_name_clone,
-                                            e
-                                        );
-                                    }
-                                }
-                            });
-                        })
-                        .ok();
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "restart_process failed for {}: {}",
+                                    project_name,
+                                    e
+                                );
+                            }
+                        }
+                    });
                 }
                 // Process stop 要求 (project context menu の Stop project から)。
-                // restart と同じく current-thread runtime を立てて async client を回す。
                 if let Some(project_name) = outcome.stop_process_request {
                     let proxy = async_action_proxy.clone();
-                    let project_name_clone = project_name.clone();
-                    thread::Builder::new()
-                        .name(format!("stop-{}", project_name))
-                        .spawn(move || {
-                            let rt = match tokio::runtime::Builder::new_current_thread()
-                                .enable_all()
-                                .build()
-                            {
-                                Ok(rt) => rt,
-                                Err(e) => {
-                                    tracing::warn!("stop_process tokio runtime: {}", e);
-                                    return;
+                    rt_handle.spawn(async move {
+                        let client = crate::client::TheWorldClient::new(32000);
+                        match client.stop_process(&project_name).await {
+                            Ok(()) => {
+                                tracing::info!("stop_process OK: {}", project_name);
+                                // 完了 → projects 再 fetch → 一時停止中 tab へ反映。
+                                // restart と同じく `fetch_projects_with_ports` 経由で
+                                // 他 project の runtime port を保つ。
+                                if let Ok(projects) = fetch_projects_with_ports(&client).await {
+                                    let _ =
+                                        proxy.send_event(AppEvent::ProjectsLoaded(projects));
                                 }
-                            };
-                            rt.block_on(async move {
-                                let client = crate::client::TheWorldClient::new(32000);
-                                match client.stop_process(&project_name_clone).await {
-                                    Ok(()) => {
-                                        tracing::info!("stop_process OK: {}", project_name_clone);
-                                        // 完了 → projects 再 fetch → 一時停止中 tab へ反映。
-                                        // restart と同じく `fetch_projects_with_ports` 経由で
-                                        // 他 project の runtime port を保つ。
-                                        if let Ok(projects) =
-                                            fetch_projects_with_ports(&client).await
-                                        {
-                                            let _ = proxy
-                                                .send_event(AppEvent::ProjectsLoaded(projects));
-                                        }
-                                    }
-                                    Err(e) => {
-                                        tracing::warn!(
-                                            "stop_process failed for {}: {}",
-                                            project_name_clone,
-                                            e
-                                        );
-                                    }
-                                }
-                            });
-                        })
-                        .ok();
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "stop_process failed for {}: {}",
+                                    project_name,
+                                    e
+                                );
+                            }
+                        }
+                    });
                 }
                 // Project delete 要求 (project context menu の Delete project から、
                 // UI で 2-click 確認済)。 daemon の remove_project は稼働中 SP があると
@@ -2662,70 +2523,45 @@ pub fn run() -> anyhow::Result<()> {
                 // (restart_process が capability 内でやっているのと同じ順序)。
                 if let Some((project_name, project_path)) = outcome.delete_project_request {
                     let proxy = async_action_proxy.clone();
-                    thread::Builder::new()
-                        .name(format!("delete-project-{}", project_name))
-                        .spawn(move || {
-                            let rt = match tokio::runtime::Builder::new_current_thread()
-                                .enable_all()
-                                .build()
-                            {
-                                Ok(rt) => rt,
-                                Err(e) => {
-                                    tracing::warn!("delete_project tokio runtime: {}", e);
-                                    return;
+                    rt_handle.spawn(async move {
+                        let client = crate::client::TheWorldClient::new(32000);
+                        // stop は best-effort: SP が未起動 (= 一時停止中) なら
+                        // 「No running Process」 エラーが返るが、 続行して remove する。
+                        match client.stop_process(&project_name).await {
+                            Ok(()) => {
+                                tracing::info!("delete: stop_process OK: {}", project_name);
+                                // shutdown 伝播 + port release を待つ grace period
+                                tokio::time::sleep(std::time::Duration::from_millis(500))
+                                    .await;
+                            }
+                            Err(e) => {
+                                tracing::info!(
+                                    "delete: stop_process skipped for {} (continuing): {}",
+                                    project_name,
+                                    e
+                                );
+                            }
+                        }
+                        match client.remove_project(&project_path).await {
+                            Ok(()) => {
+                                tracing::info!("remove_project OK: {}", project_path);
+                                // 完了 → projects 再 fetch → sidebar から除去。
+                                // 削除対象以外の project の runtime port を保つため
+                                // `fetch_projects_with_ports` 経由で送る。
+                                if let Ok(projects) = fetch_projects_with_ports(&client).await {
+                                    let _ =
+                                        proxy.send_event(AppEvent::ProjectsLoaded(projects));
                                 }
-                            };
-                            rt.block_on(async move {
-                                let client = crate::client::TheWorldClient::new(32000);
-                                // stop は best-effort: SP が未起動 (= 一時停止中) なら
-                                // 「No running Process」 エラーが返るが、 続行して remove する。
-                                match client.stop_process(&project_name).await {
-                                    Ok(()) => {
-                                        tracing::info!(
-                                            "delete: stop_process OK: {}",
-                                            project_name
-                                        );
-                                        // shutdown 伝播 + port release を待つ grace period
-                                        tokio::time::sleep(
-                                            std::time::Duration::from_millis(500),
-                                        )
-                                        .await;
-                                    }
-                                    Err(e) => {
-                                        tracing::info!(
-                                            "delete: stop_process skipped for {} (continuing): {}",
-                                            project_name,
-                                            e
-                                        );
-                                    }
-                                }
-                                match client.remove_project(&project_path).await {
-                                    Ok(()) => {
-                                        tracing::info!(
-                                            "remove_project OK: {}",
-                                            project_path
-                                        );
-                                        // 完了 → projects 再 fetch → sidebar から除去。
-                                        // 削除対象以外の project の runtime port を保つため
-                                        // `fetch_projects_with_ports` 経由で送る。
-                                        if let Ok(projects) =
-                                            fetch_projects_with_ports(&client).await
-                                        {
-                                            let _ = proxy
-                                                .send_event(AppEvent::ProjectsLoaded(projects));
-                                        }
-                                    }
-                                    Err(e) => {
-                                        tracing::warn!(
-                                            "remove_project failed for {}: {}",
-                                            project_path,
-                                            e
-                                        );
-                                    }
-                                }
-                            });
-                        })
-                        .ok();
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "remove_project failed for {}: {}",
+                                    project_path,
+                                    e
+                                );
+                            }
+                        }
+                    });
                 }
                 // Phase 4-A: Wing Lane 削除要求 (sidebar の × button から)
                 if let Some((project_path, address)) = outcome.delete_lane_request {
@@ -2740,45 +2576,29 @@ pub fn run() -> anyhow::Result<()> {
                         lane_js::remove_lane(&main_view, &address);
                         let path_clone = project_path.clone();
                         let addr_clone = address.clone();
-                        thread::Builder::new()
-                            .name(format!("delete-lane-{}", address))
-                            .spawn(move || {
-                                let rt =
-                                    match tokio::runtime::Builder::new_current_thread()
-                                        .enable_all()
-                                        .build()
-                                    {
-                                        Ok(rt) => rt,
-                                        Err(e) => {
-                                            tracing::warn!("delete-lane runtime: {}", e);
-                                            return;
-                                        }
-                                    };
-                                rt.block_on(async {
-                                    let client = TheWorldClient::new(port);
-                                    match client.delete_lane(&addr_clone).await {
-                                        Ok(()) => {
-                                            tracing::info!(
-                                                "Lane deleted: project={} address={}",
-                                                path_clone,
-                                                addr_clone
-                                            );
-                                            // wiremsg Stage 1: 明示的な再 fetch は不要。
-                                            // SP が LanePool 変化を "lanes" topic に publish し、
-                                            // 購読側が snapshot を受信して sidebar を更新する。
-                                        }
-                                        Err(e) => {
-                                            tracing::warn!(
-                                                "delete_lane failed: project={} address={}: {}",
-                                                path_clone,
-                                                addr_clone,
-                                                e
-                                            );
-                                        }
-                                    }
-                                });
-                            })
-                            .ok();
+                        rt_handle.spawn(async move {
+                            let client = TheWorldClient::new(port);
+                            match client.delete_lane(&addr_clone).await {
+                                Ok(()) => {
+                                    tracing::info!(
+                                        "Lane deleted: project={} address={}",
+                                        path_clone,
+                                        addr_clone
+                                    );
+                                    // wiremsg Stage 1: 明示的な再 fetch は不要。
+                                    // SP が LanePool 変化を "lanes" topic に publish し、
+                                    // 購読側が snapshot を受信して sidebar を更新する。
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "delete_lane failed: project={} address={}: {}",
+                                        path_clone,
+                                        addr_clone,
+                                        e
+                                    );
+                                }
+                            }
+                        });
                     } else {
                         tracing::warn!(
                             "lane:delete: SP port unknown for path={} (skip)",
@@ -2796,44 +2616,29 @@ pub fn run() -> anyhow::Result<()> {
                     if let Some(port) = sp_port {
                         let path_clone = project_path.clone();
                         let addr_clone = address.clone();
-                        thread::Builder::new()
-                            .name(format!("restart-lane-{}", address))
-                            .spawn(move || {
-                                let rt = match tokio::runtime::Builder::new_current_thread()
-                                    .enable_all()
-                                    .build()
-                                {
-                                    Ok(rt) => rt,
-                                    Err(e) => {
-                                        tracing::warn!("restart-lane runtime: {}", e);
-                                        return;
-                                    }
-                                };
-                                rt.block_on(async {
-                                    let client = TheWorldClient::new(port);
-                                    match client.restart_lane(&addr_clone).await {
-                                        Ok(()) => {
-                                            tracing::info!(
-                                                "Lane restarted: project={} address={}",
-                                                path_clone,
-                                                addr_clone
-                                            );
-                                            // wiremsg Stage 1: 新 pid / state は SP の
-                                            // "lanes" topic snapshot で購読側に push される。
-                                            // WS は PR #218 の auto-reconnect で透過的に新 PtySlot に attach し直す。
-                                        }
-                                        Err(e) => {
-                                            tracing::warn!(
-                                                "restart_lane failed: project={} address={}: {}",
-                                                path_clone,
-                                                addr_clone,
-                                                e
-                                            );
-                                        }
-                                    }
-                                });
-                            })
-                            .ok();
+                        rt_handle.spawn(async move {
+                            let client = TheWorldClient::new(port);
+                            match client.restart_lane(&addr_clone).await {
+                                Ok(()) => {
+                                    tracing::info!(
+                                        "Lane restarted: project={} address={}",
+                                        path_clone,
+                                        addr_clone
+                                    );
+                                    // wiremsg Stage 1: 新 pid / state は SP の
+                                    // "lanes" topic snapshot で購読側に push される。
+                                    // WS は PR #218 の auto-reconnect で透過的に新 PtySlot に attach し直す。
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "restart_lane failed: project={} address={}: {}",
+                                        path_clone,
+                                        addr_clone,
+                                        e
+                                    );
+                                }
+                            }
+                        });
                     } else {
                         tracing::warn!(
                             "lane:restart: SP port unknown for path={} (skip)",
@@ -2855,75 +2660,52 @@ pub fn run() -> anyhow::Result<()> {
                         let branch_clone = branch.clone();
                         let stand_clone = stand.clone();
                         let path_clone = project_path.clone();
-                        thread::Builder::new()
-                            .name(format!("create-wing-{}", name))
-                            .spawn(move || {
-                                let rt =
-                                    match tokio::runtime::Builder::new_current_thread()
-                                        .enable_all()
-                                        .build()
-                                    {
-                                        Ok(rt) => rt,
-                                        Err(e) => {
-                                            tracing::warn!(
-                                                "create-wing tokio runtime: {}",
-                                                e
-                                            );
-                                            return;
-                                        }
-                                    };
-                                rt.block_on(async {
-                                    let client = TheWorldClient::new(port);
-                                    match client
-                                        .create_wing_lane(
-                                            &name_clone,
-                                            branch_clone.as_deref(),
-                                            stand_clone.as_deref(),
-                                        )
-                                        .await
-                                    {
-                                        Ok(()) => {
-                                            tracing::info!(
-                                                "Wing Lane created: project={} name={} branch={:?}",
-                                                path_clone,
-                                                name_clone,
-                                                branch_clone
-                                            );
-                                            // wiremsg Stage 1: 新 Lane は SP の "lanes"
-                                            // topic snapshot で購読側に push される。
-                                            // R5: 成功通知を sidebar に push back (form を閉じる)
-                                            let _ = proxy.send_event(
-                                                AppEvent::WingCreateResult {
-                                                    project_path: path_clone,
-                                                    name: name_clone,
-                                                    error: None,
-                                                },
-                                            );
-                                        }
-                                        Err(e) => {
-                                            // R5: 失敗通知を sidebar に push back (form 下に
-                                            // inline error 表示)。 server からは
-                                            // "create_wing_lane HTTP <code>: <body>" 形式で
-                                            // 返ってくるので、 そのまま流す (UI 側で trim)。
-                                            let msg = format!("{}", e);
-                                            tracing::warn!(
-                                                "create_wing_lane failed: project={} name={}: {}",
-                                                path_clone,
-                                                name_clone,
-                                                msg
-                                            );
-                                            let _ = proxy.send_event(
-                                                AppEvent::WingCreateResult {
-                                                    project_path: path_clone,
-                                                    name: name_clone,
-                                                    error: Some(msg),
-                                                },
-                                            );
-                                        }
-                                    }
-                                });
-                            })
-                            .ok();
+                        rt_handle.spawn(async move {
+                            let client = TheWorldClient::new(port);
+                            match client
+                                .create_wing_lane(
+                                    &name_clone,
+                                    branch_clone.as_deref(),
+                                    stand_clone.as_deref(),
+                                )
+                                .await
+                            {
+                                Ok(()) => {
+                                    tracing::info!(
+                                        "Wing Lane created: project={} name={} branch={:?}",
+                                        path_clone,
+                                        name_clone,
+                                        branch_clone
+                                    );
+                                    // wiremsg Stage 1: 新 Lane は SP の "lanes"
+                                    // topic snapshot で購読側に push される。
+                                    // R5: 成功通知を sidebar に push back (form を閉じる)
+                                    let _ = proxy.send_event(AppEvent::WingCreateResult {
+                                        project_path: path_clone,
+                                        name: name_clone,
+                                        error: None,
+                                    });
+                                }
+                                Err(e) => {
+                                    // R5: 失敗通知を sidebar に push back (form 下に
+                                    // inline error 表示)。 server からは
+                                    // "create_wing_lane HTTP <code>: <body>" 形式で
+                                    // 返ってくるので、 そのまま流す (UI 側で trim)。
+                                    let msg = format!("{}", e);
+                                    tracing::warn!(
+                                        "create_wing_lane failed: project={} name={}: {}",
+                                        path_clone,
+                                        name_clone,
+                                        msg
+                                    );
+                                    let _ = proxy.send_event(AppEvent::WingCreateResult {
+                                        project_path: path_clone,
+                                        name: name_clone,
+                                        error: Some(msg),
+                                    });
+                                }
+                            }
+                        });
                     } else {
                         tracing::warn!(
                             "lane:add_wing: SP port unknown for path={} (skip)",
@@ -2942,54 +2724,35 @@ pub fn run() -> anyhow::Result<()> {
                     if let Some(port) = sp_port {
                         let proxy = async_action_proxy.clone();
                         let path_clone = project_path.clone();
-                        thread::Builder::new()
-                            .name(format!("list-stands-{}", port))
-                            .spawn(move || {
-                                let rt =
-                                    match tokio::runtime::Builder::new_current_thread()
-                                        .enable_all()
-                                        .build()
-                                    {
-                                        Ok(rt) => rt,
-                                        Err(e) => {
-                                            tracing::warn!(
-                                                "list-stands tokio runtime: {}",
-                                                e
-                                            );
-                                            return;
-                                        }
-                                    };
-                                rt.block_on(async {
-                                    let client = TheWorldClient::new(port);
-                                    match client.list_stands().await {
-                                        Ok(stands) => {
-                                            tracing::debug!(
-                                                "stands listed: project={} count={}",
-                                                path_clone,
-                                                stands.len()
-                                            );
-                                            let _ = proxy.send_event(AppEvent::StandsResult {
-                                                project_path: path_clone,
-                                                stands,
-                                                error: None,
-                                            });
-                                        }
-                                        Err(e) => {
-                                            tracing::warn!(
-                                                "list_stands failed: project={}: {}",
-                                                path_clone,
-                                                e
-                                            );
-                                            let _ = proxy.send_event(AppEvent::StandsResult {
-                                                project_path: path_clone,
-                                                stands: Vec::new(),
-                                                error: Some(e.to_string()),
-                                            });
-                                        }
-                                    }
-                                });
-                            })
-                            .ok();
+                        rt_handle.spawn(async move {
+                            let client = TheWorldClient::new(port);
+                            match client.list_stands().await {
+                                Ok(stands) => {
+                                    tracing::debug!(
+                                        "stands listed: project={} count={}",
+                                        path_clone,
+                                        stands.len()
+                                    );
+                                    let _ = proxy.send_event(AppEvent::StandsResult {
+                                        project_path: path_clone,
+                                        stands,
+                                        error: None,
+                                    });
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "list_stands failed: project={}: {}",
+                                        path_clone,
+                                        e
+                                    );
+                                    let _ = proxy.send_event(AppEvent::StandsResult {
+                                        project_path: path_clone,
+                                        stands: Vec::new(),
+                                        error: Some(e.to_string()),
+                                    });
+                                }
+                            }
+                        });
                     } else {
                         tracing::warn!(
                             "stands:fetch: SP port unknown for path={} (skip)",
@@ -3006,18 +2769,17 @@ pub fn run() -> anyhow::Result<()> {
                         Some(cwd) => {
                             let proxy = async_action_proxy.clone();
                             let addr_clone = address.clone();
-                            thread::Builder::new()
-                                .name(format!("files-list-{}", address))
-                                .spawn(move || {
-                                    let (entries, truncated) =
-                                        crate::file_explorer::list_entries(&cwd);
-                                    let _ = proxy.send_event(AppEvent::FilesListResult {
-                                        address: addr_clone,
-                                        entries,
-                                        truncated,
-                                    });
-                                })
-                                .ok();
+                            // sync I/O (walk_dir) は spawn_blocking で Tokio runtime の
+                            // dedicated blocking pool に逃す (主 worker thread を専有しない)。
+                            rt_handle.spawn_blocking(move || {
+                                let (entries, truncated) =
+                                    crate::file_explorer::list_entries(&cwd);
+                                let _ = proxy.send_event(AppEvent::FilesListResult {
+                                    address: addr_clone,
+                                    entries,
+                                    truncated,
+                                });
+                            });
                         }
                         None => {
                             tracing::warn!(
@@ -3037,15 +2799,13 @@ pub fn run() -> anyhow::Result<()> {
                         Some(cwd) => {
                             let proxy = async_action_proxy.clone();
                             let rel_clone = rel_path.clone();
-                            thread::Builder::new()
-                                .name(format!("files-open-{}", address))
-                                .spawn(move || {
-                                    let content =
-                                        crate::file_explorer::open_file(&cwd, &rel_clone);
-                                    let _ = proxy
-                                        .send_event(AppEvent::FilesOpenResult { content });
-                                })
-                                .ok();
+                            // sync I/O (file read + base64 encode) は spawn_blocking で
+                            // Tokio runtime の dedicated blocking pool に逃す。
+                            rt_handle.spawn_blocking(move || {
+                                let content =
+                                    crate::file_explorer::open_file(&cwd, &rel_clone);
+                                let _ = proxy.send_event(AppEvent::FilesOpenResult { content });
+                            });
                         }
                         None => {
                             tracing::warn!(

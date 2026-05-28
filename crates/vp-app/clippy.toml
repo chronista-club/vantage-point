@@ -1,0 +1,13 @@
+# vp-app 限定の clippy 規約 (= panic 再発防止 gate)。
+#
+# vp-app は tao の event_loop が macOS main thread を専有し、 closure 内に
+# Tokio runtime context が無い。 そこで bare `tokio::spawn` を呼ぶと
+# 「no reactor running」 panic で即死する (= 過去事故、 PP 永続化 #456241e 等)。
+#
+# 全 async work は `vp_app::app::run()` で作る shared runtime の
+# `rt_handle.spawn(...)` / `rt_handle.spawn_blocking(...)` 経由で投げる。
+# 他 crate (vantage-point / vp-cli 等) には影響なし (= 本 file は vp-app 限定)。
+disallowed-methods = [
+    { path = "tokio::spawn", reason = "vp-app は tao main thread で動き、 event closure 内に Tokio runtime context が無い。 shared runtime の rt_handle.spawn() / rt_handle.spawn_blocking() を使うこと。" },
+    { path = "tokio::task::spawn", reason = "vp-app は tao main thread で動き、 event closure 内に Tokio runtime context が無い。 shared runtime の rt_handle.spawn() / rt_handle.spawn_blocking() を使うこと。" },
+]

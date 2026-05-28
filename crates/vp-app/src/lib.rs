@@ -8,6 +8,19 @@
 //! - `client`: TheWorld daemon HTTP クライアント
 //! - `menu`: muda メニューバー
 //! - `tray`: tray-icon 常駐アイコン
+//!
+//! ## Tokio runtime 規約 (= panic 再発防止 gate)
+//!
+//! vp-app は tao の event_loop が macOS main thread を専有し、 closure 内に Tokio
+//! runtime context が無い。 そこで bare `tokio::spawn` を呼ぶと「no reactor running」
+//! panic で即死する (= 過去事故、 PP 永続化 #456241e 等)。
+//!
+//! 全 async work は `app::run()` で作る shared runtime の
+//! `rt_handle.spawn(...)` / `rt_handle.spawn_blocking(...)` 経由で投げる。
+//! `tokio::spawn` 直書きは `crates/vp-app/clippy.toml` の `disallowed-methods` +
+//! 下記 `#![deny(...)]` で compile-time block (= CI fail)。
+
+#![deny(clippy::disallowed_methods)]
 
 pub mod app;
 pub mod client;
