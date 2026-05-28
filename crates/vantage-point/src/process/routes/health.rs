@@ -180,6 +180,21 @@ pub async fn wire_recv_handler(
     }
 }
 
+/// POST /api/wire/unread-count - per-agent 未読 wire count を取得 (read-only、 cursor 不触り)
+///
+/// `flow_progress` の集約 view に必要。 `wire_recv` を timeout=0 で叩く代替は cursor を
+/// 進めてしまうため、 cursor 不触りの専用 endpoint。
+/// payload: `{agent: String}` → `{status: "ok", total: u64, by_thread: {root_id: count}}`。
+pub async fn wire_unread_count_handler(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    match crate::process::unison_server::handle_wire_unread_count(&state, payload).await {
+        Ok(v) => Json(v),
+        Err(e) => Json(serde_json::json!({"status": "error", "error": e})),
+    }
+}
+
 /// Stand 自己診断 (2026-04-25 user 発案) — ProcessCapabilities の各 Stand の
 /// diagnose() を集約。side-effect-free、いつでも呼び出し可能。
 ///

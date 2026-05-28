@@ -555,6 +555,8 @@ pub async fn start_unison_server(
                             "wire_send" => handle_wire_send(&state, payload).await,
                             "wire_recv" => handle_wire_recv(&state, payload).await,
                             "wire_thread" => handle_wire_thread(&state, payload).await,
+                            // flow_progress 用 read-only 未読 count (cursor 不触り)
+                            "wire_unread_count" => handle_wire_unread_count(&state, payload).await,
                             _ => Err(format!("不明なメソッド: process.{}", method)),
                         };
 
@@ -1131,6 +1133,41 @@ pub(crate) async fn handle_wire_thread(
         "status": "ok",
         "messages": value,
         "count": chain.len(),
+    }))
+}
+
+/// wiremsg の per-agent 未読 count を取得する (read-only、 cursor 不触り)
+///
+/// payload: `{ agent }`
+///
+/// `flow_progress` の集約 view で使う。 `wire_recv` を timeout=0 で叩く代替は cursor を
+/// 進めてしまい flow_progress が destructive になるため、 cursor 不触りの専用 path を提供。
+///
+/// 戻り値: `{ status: "ok", total: <n>, by_thread: { <root_id>: <n>, ... } }`。
+pub(crate) async fn handle_wire_unread_count(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let store = state
+        .wiremsg_store
+        .as_ref()
+        .ok_or_else(|| "wiremsg_store not initialized".to_string())?;
+
+    let agent = payload
+        .get("agent")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "wire_unread_count: 'agent' required".to_string())?
+        .to_string();
+
+    let by_thread = store
+        .unread_count_by_thread(&agent)
+        .await
+        .map_err(|e| format!("wire_unread_count failed: {e}"))?;
+    let total: u64 = by_thread.values().sum();
+    Ok(serde_json::json!({
+        "status": "ok",
+        "total": total,
+        "by_thread": by_thread,
     }))
 }
 

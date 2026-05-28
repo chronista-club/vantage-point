@@ -94,6 +94,14 @@ enum Commands {
     #[command(subcommand)]
     Wire(commands::wire::WireCommands),
 
+    /// dev-flow primitives — Lead × Wing × Memory orchestration の core 操作
+    ///
+    /// `vp flow handoff <name> --task-spec <file or ->` で wing 作成 + wire_send + nudge を atomic に。
+    /// `vp flow progress` で並列 wing の git status + 未読 wire を 1 view で表示。
+    /// MCP tool (`mcp__vantage-point__flow_handoff` / `flow_progress`) と同 semantics。
+    #[command(subcommand)]
+    Flow(commands::flow::FlowCommands),
+
     /// directmsg — tmux send-keys ベースの直接メッセージ（緊急 / ephemeral 用、wiremsg の補助）
     ///
     /// 宛先 lane の tmux session に直接テキストを send-keys する。SP / DB 非依存。
@@ -318,6 +326,10 @@ fn main() -> Result<()> {
         Commands::Wire(cmd) => {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(commands::wire::run(cmd))
+        }
+        Commands::Flow(cmd) => {
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(commands::flow::run(cmd))
         }
         Commands::Directmsg {
             lane,

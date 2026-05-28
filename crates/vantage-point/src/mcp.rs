@@ -243,6 +243,62 @@ pub struct ListLanesParams {
     pub state: Option<String>,
 }
 
+/// Parameters for the flow_handoff tool (dev-flow primitive: handoff in 1 call)
+///
+/// P4 (= 3-step orchestration: add_wing + wire_send + tmux send-keys) を atomic 1 step に圧縮する。
+/// 失敗時は wing 削除で rollback、 dirty state を残さない。
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct FlowHandoffParams {
+    /// Wing name (新規作成する wing の slug)
+    #[schemars(
+        description = "Wing name (例: 'feat-api', 'sub')。 Lane address の `<project>/wing/<name>` 部分。"
+    )]
+    pub name: String,
+
+    /// Optional branch (省略時は SP 側で `<git-user>/<sanitized-name>` を auto-derive)
+    #[schemars(description = "Lane clone する branch (省略時は SP が auto-derive)。")]
+    #[serde(default)]
+    pub branch: Option<String>,
+
+    /// Optional Lane Stand (default: "echoes")
+    #[schemars(description = "Lane Stand: 'echoes' (default、 Claude CLI) or 'shell'。")]
+    #[serde(default)]
+    pub stand: Option<String>,
+
+    /// Task spec — wire_send body の markdown 仕様 (= worker への指示)
+    #[schemars(
+        description = "Worker への markdown 仕様 (= wire body の `task_spec` field)。 多行 markdown 推奨。"
+    )]
+    pub task_spec: String,
+
+    /// Mode: "hitl" (default、 nudge 後応答期待) or "auto" (nudge 後放置)
+    #[schemars(
+        description = "実行モード: 'hitl' (default、 nudge 後 worker からの応答を期待) / 'auto' (nudge 後放置、 完了 wire のみ受信)。"
+    )]
+    #[serde(default)]
+    pub mode: Option<String>,
+
+    /// Nudge enable (default: true)。 false で tmux send-keys を skip。
+    #[schemars(
+        description = "tmux send-keys で wire_recv 受信を促す nudge を発火するか (default: true)。 false で send のみ実行 (= 完全 async)。"
+    )]
+    #[serde(default)]
+    pub nudge: Option<bool>,
+}
+
+/// Parameters for the flow_progress tool (dev-flow primitive: parallel work 集約 view)
+///
+/// P5 (= list_lanes + wire_recv unread + tmux_capture を別々に叩く) を 1 view に。 read-only、 cache OK。
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct FlowProgressParams {
+    /// (現在未使用) 将来 multi-project 拡張時に使う slot
+    #[schemars(
+        description = "(reserved) 将来 multi-project view 拡張用。 現状省略可、 cwd の SP を見る。"
+    )]
+    #[serde(default)]
+    pub project: Option<String>,
+}
+
 /// Parameters for the eval_ruby tool
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct EvalRubyParams {
@@ -1386,6 +1442,380 @@ impl VantageMcp {
             },
         });
 
+        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+            serde_json::to_string_pretty(&result).unwrap_or_default(),
+        )]))
+    }
+
+    // =========================================================================
+    // dev-flow primitives (= Lead × Wing × Memory orchestration の core 操作)
+    //
+    // `flow_handoff`: P4 (add_wing + wire_send + nudge) を atomic 1 step。
+    // `flow_progress`: P5 (list_lanes + per-lane unread count + git status) を集約 1 view。
+    //
+    // 既存 primitives (add_wing / wire_send / tmux_agent_send / list_lanes) はそのまま、
+    // flow_* は composition tool (= 順番に呼んで意味のある orchestration を 1 call 化)。
+    // =========================================================================
+
+    /// flow_handoff: 新 Wing 作成 + 初手 wire_send + nudge を atomic に
+    #[tool(
+        description = "Atomic dev-flow handoff: (1) Wing Lane 新規作成、 (2) task_spec を wire_send (= 初手 thread root)、 (3) `nudge=true` (default) 時は tmux send-keys で wire_recv を促す。 失敗時は wing 削除で rollback。 既存 3 step (add_wing + wire_send + tmux_agent_send) を 1 call に圧縮 (= dev-flow P4 = 'handoff' を 1 call で完結)。"
+    )]
+    async fn flow_handoff(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<FlowHandoffParams>,
+    ) -> Result<CallToolResult, McpError> {
+        if params.name.trim().is_empty() {
+            return Err(McpError::invalid_params(
+                "name は必須です (空文字不可)".to_string(),
+                None,
+            ));
+        }
+        if params.task_spec.trim().is_empty() {
+            return Err(McpError::invalid_params(
+                "task_spec は必須です (空文字不可)".to_string(),
+                None,
+            ));
+        }
+        let mode = params
+            .mode
+            .as_deref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .unwrap_or("hitl")
+            .to_string();
+        if mode != "hitl" && mode != "auto" {
+            return Err(McpError::invalid_params(
+                format!("mode は 'hitl' or 'auto' のみ (got: {})", mode),
+                None,
+            ));
+        }
+        let nudge = params.nudge.unwrap_or(true);
+
+        // ── Step 1: Wing 作成 (= add_wing と同型 path、 HTTP POST /api/lanes) ──
+        let process_url = self.process_url.lock().await.clone();
+        let mut create_body = serde_json::json!({
+            "kind": "wing",
+            "name": params.name,
+        });
+        if let Some(b) = params.branch.as_ref().filter(|s| !s.trim().is_empty()) {
+            create_body["branch"] = serde_json::Value::String(b.clone());
+        }
+        if let Some(s) = params.stand.as_ref().filter(|s| !s.trim().is_empty()) {
+            create_body["stand"] = serde_json::Value::String(s.clone());
+        }
+        let create_url = format!("{}/api/lanes", process_url);
+        let resp = self
+            .client
+            .post(&create_url)
+            .json(&create_body)
+            .timeout(Duration::from_secs(60))
+            .send()
+            .await
+            .map_err(|e| McpError::internal_error(format!("SP に到達できません: {}", e), None))?;
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(McpError::internal_error(
+                format!("SP /api/lanes {}: {}", status, text),
+                None,
+            ));
+        }
+        let lane_info: serde_json::Value =
+            serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
+
+        // address は string 形式 (例: "vantage-point/wing/feat-api") を期待。
+        // 旧 add_wing と同型の fallback 経路で project / name から合成も可能。
+        let project_name = lane_info
+            .pointer("/address/project")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let wing_name = lane_info
+            .pointer("/address/name")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| params.name.clone());
+        let cwd = lane_info
+            .get("cwd")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let derived_branch = lane_info
+            .pointer("/address/branch")
+            .or_else(|| lane_info.get("branch"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+
+        let project_name = match project_name {
+            Some(p) => p,
+            None => {
+                // wing 作成は成功したが address.project が読めない → rollback
+                let _ = self
+                    .flow_rollback_wing(&process_url, "<unknown>", &wing_name)
+                    .await;
+                return Err(McpError::internal_error(
+                    "SP response from /api/lanes に address.project がありません".to_string(),
+                    None,
+                ));
+            }
+        };
+
+        let wing_address = format!("agent@{}/{}", project_name, wing_name);
+        let lane_address = format!("{}/wing/{}", project_name, wing_name);
+
+        // ── Step 2: wire_send (initial task spec を root thread として送信) ──
+        // body は { task_spec, mode, priority?, scope_outs? } 等の自由 schema。
+        // mode を payload に同梱しておくと、 worker 側が後で判断材料に使える。
+        let wire_body = serde_json::json!({
+            "kind": "task",
+            "task_spec": params.task_spec,
+            "mode": mode,
+        });
+        let from = self.self_lane.from_address();
+        let send_payload = serde_json::json!({
+            "from": from,
+            "to": [wing_address.clone()],
+            "body": wire_body,
+            "reply_to": serde_json::Value::Null,
+        });
+        let send_resp = match self.quic_call("wire_send", send_payload).await {
+            Ok(v) => v,
+            Err(e) => {
+                // rollback: wing を削除して dirty state を残さない
+                let _ = self
+                    .flow_rollback_wing(&process_url, &project_name, &wing_name)
+                    .await;
+                return Err(McpError::internal_error(
+                    format!("flow_handoff: wire_send 失敗 (wing rollback 済): {}", e),
+                    None,
+                ));
+            }
+        };
+        let wire_msg_id = send_resp
+            .get("id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+
+        // ── Step 3: nudge — tmux send-keys で worker に wire_recv を促す ──
+        // tmux 経路は best-effort。 nudge 失敗で handoff 全体は失敗扱いにしない
+        // (= wire は届いており worker は自走可、 nudge は immediacy の向上目的)。
+        let mut nudge_status = if nudge { "skipped" } else { "off" }.to_string();
+        if nudge {
+            // tmux pane は lane address ("project/wing/name") で resolve できる
+            // (resolve_pane が tmux_resolve_pane → meta から label 引き)。
+            let nudge_text = "lead から task が届いています。 mcp__vantage-point__wire_recv で確認、 内容に従って着手してください。 質問は wire_send + reply_to で thread 返信。\n".to_string();
+            match self.resolve_pane(&lane_address).await {
+                Ok((pane_id, _display)) => {
+                    let send_keys = self
+                        .quic_call(
+                            "tmux_send_keys",
+                            serde_json::json!({
+                                "pane_id": pane_id,
+                                "keys": nudge_text,
+                            }),
+                        )
+                        .await;
+                    nudge_status = match send_keys {
+                        Ok(_) => "sent".to_string(),
+                        Err(e) => format!("failed (best-effort): {}", e),
+                    };
+                }
+                Err(e) => {
+                    nudge_status = format!("pane resolve failed (best-effort): {}", e);
+                }
+            }
+        }
+
+        let result = serde_json::json!({
+            "wing_address": wing_address,
+            "lane_address": lane_address,
+            "wire_msg_id": wire_msg_id,
+            "wing_dir": cwd,
+            "branch": derived_branch,
+            "mode": mode,
+            "nudge": nudge_status,
+        });
+        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+            serde_json::to_string_pretty(&result).unwrap_or_default(),
+        )]))
+    }
+
+    /// flow_handoff の rollback path: wing 削除 (best-effort、 失敗は log only)
+    ///
+    /// wire_send 失敗時など、 wing 作成は成功したが orchestration の続きが失敗した時に呼ぶ。
+    /// `<project>/wing/<name>` を address 化して DELETE /api/lanes に送る。
+    async fn flow_rollback_wing(
+        &self,
+        process_url: &str,
+        project_name: &str,
+        wing_name: &str,
+    ) -> Result<(), String> {
+        let address = format!("{}/wing/{}", project_name, wing_name);
+        let address_enc = address.replace('/', "%2F");
+        let url = format!(
+            "{}/api/lanes?address={}&cleanup=true",
+            process_url, address_enc
+        );
+        let resp = self
+            .client
+            .delete(&url)
+            .timeout(Duration::from_secs(30))
+            .send()
+            .await
+            .map_err(|e| format!("DELETE /api/lanes 失敗: {}", e))?;
+        let status = resp.status();
+        if !status.is_success() && status != reqwest::StatusCode::NOT_FOUND {
+            return Err(format!(
+                "rollback DELETE /api/lanes {}: {}",
+                status,
+                resp.text().await.unwrap_or_default()
+            ));
+        }
+        Ok(())
+    }
+
+    /// flow_progress: parallel work 集約 view (read-only)
+    #[tool(
+        description = "Parallel work 集約 view: 現 project の全 Lane (lead + wings) の wing_status (git ahead/behind/dirty/merged) と per-lane 未読 wire 数を 1 view で返す。 read-only (= cursor は触らない)、 cache OK。 dev-flow P5 (= 並列追跡) で list_lanes + wire_recv + tmux_capture を別々に叩く代替。"
+    )]
+    async fn flow_progress(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(_params): rmcp::handler::server::wrapper::Parameters<FlowProgressParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let process_url = self.process_url.lock().await.clone();
+
+        // project name は /api/health から (delete_wing / list_lanes と同型 pattern)。
+        let health: serde_json::Value = self
+            .client
+            .get(format!("{}/api/health", process_url))
+            .timeout(Duration::from_secs(5))
+            .send()
+            .await
+            .map_err(|e| McpError::internal_error(format!("SP に到達できません: {}", e), None))?
+            .json()
+            .await
+            .map_err(|e| {
+                McpError::internal_error(format!("/api/health parse 失敗: {}", e), None)
+            })?;
+        let project_dir = health
+            .get("project_dir")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                McpError::internal_error("/api/health に project_dir なし".to_string(), None)
+            })?;
+        let project = std::path::Path::new(project_dir)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .ok_or_else(|| {
+                McpError::internal_error(
+                    format!("project_dir basename 取得失敗: {}", project_dir),
+                    None,
+                )
+            })?
+            .to_string();
+
+        // 全 lane (lead + wings) を /api/lanes から取得 (= wing_status 込み)
+        let lanes_resp: serde_json::Value = self
+            .client
+            .get(format!("{}/api/lanes", process_url))
+            .timeout(Duration::from_secs(10))
+            .send()
+            .await
+            .map_err(|e| McpError::internal_error(format!("SP に到達できません: {}", e), None))?
+            .json()
+            .await
+            .map_err(|e| McpError::internal_error(format!("/api/lanes parse 失敗: {}", e), None))?;
+        let lanes_in = lanes_resp
+            .get("lanes")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        let mut wings: Vec<serde_json::Value> = Vec::new();
+        let mut lead_unread: u64 = 0;
+        let mut lead_unread_by_thread = serde_json::Value::Object(Default::default());
+        for lane in lanes_in {
+            let kind = lane
+                .get("kind")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let lane_label = if kind == "lead" {
+                "lead".to_string()
+            } else {
+                lane.get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unnamed")
+                    .to_string()
+            };
+            let agent_addr = if kind == "lead" {
+                format!("agent@{}", project)
+            } else {
+                format!("agent@{}/{}", project, lane_label)
+            };
+
+            // wire unread count (cursor 不触り = read-only)
+            let unread_resp = self
+                .quic_call(
+                    "wire_unread_count",
+                    serde_json::json!({ "agent": agent_addr }),
+                )
+                .await;
+            let (unread_total, by_thread) = match unread_resp {
+                Ok(v) => (
+                    v.get("total").and_then(|x| x.as_u64()).unwrap_or(0),
+                    v.get("by_thread")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Object(Default::default())),
+                ),
+                Err(_) => (0, serde_json::Value::Object(Default::default())),
+            };
+
+            if kind == "lead" {
+                lead_unread = unread_total;
+                lead_unread_by_thread = by_thread;
+                continue;
+            }
+
+            // wing entry を整形 (= wing_status を浅く展開)
+            let state = lane
+                .get("state")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let stand = lane
+                .get("stand")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let cwd = lane.get("cwd").and_then(|v| v.as_str()).unwrap_or("");
+            let wing_status = lane
+                .get("wing_status")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            wings.push(serde_json::json!({
+                "name": lane_label,
+                "address": format!("agent@{}/{}", project, lane.get("name").and_then(|v| v.as_str()).unwrap_or("")),
+                "state": state,
+                "stand": stand,
+                "cwd": cwd,
+                "wing_status": wing_status,
+                "unread_wire_count": unread_total,
+                "unread_by_thread": by_thread,
+            }));
+        }
+
+        let result = serde_json::json!({
+            "project": project,
+            "lead": {
+                "address": format!("agent@{}", project),
+                "unread_wire_count": lead_unread,
+                "unread_by_thread": lead_unread_by_thread,
+            },
+            "wings": wings,
+        });
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
             serde_json::to_string_pretty(&result).unwrap_or_default(),
         )]))
