@@ -3483,6 +3483,13 @@ ${i}`,n.replaceWith(o)}}}}function b9e(e,t){if(t==="markdown")return fi.parse(e)
 #pp-content pre {
   font-family: 'Mizolet-Mono', '\u307F\u305E\u308C \u7B49\u5E45', 'VPMono35', monospace;
 }
+/* PP body \u306E base font-size \u3092 1 \u6BB5\u4E0A\u3052\u308B (= creoui token chain: base \u2192 l)\u3002
+   fallback \u3067 1.125em (= 16\u219218px \u76F8\u5F53)\u3002 #pp-content scope \u5185\u306E\u307F override \u3057
+   sidebar \u7B49\u306E\u5225 webview \u306B\u306F\u6CE2\u53CA\u3057\u306A\u3044\u3002 marked-based revert (#477) \u3067 .creo-md
+   wrapper \u5EC3\u6B62\u306B\u4F34\u3044 selector \u3092 #pp-content \u76F4\u306B\u5411\u3051\u76F4\u3057 (= 2528097 \u306E\u5FA9\u6D3B)\u3002 */
+#pp-content {
+  font-size: var(--typography-size-l, 1.125em);
+}
 /* mermaid SVG wrapper \u306E\u4F59\u767D \u2014 code block \u7F6E\u63DB\u5F8C\u306E\u898B\u6804\u3048 */
 #pp-content .creo-md-mermaid { margin: 1em 0; }
 #pp-content .creo-md-mermaid svg { max-width: 100%; height: auto; }

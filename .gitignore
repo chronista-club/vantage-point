@@ -59,3 +59,6 @@ history.txt
 
 # Vantage Point lane workspaces (project-local lane refactor)
 .vp/
+
+# JetBrains IDE 設定 (per-developer、 commit 対象外)
+.idea/
