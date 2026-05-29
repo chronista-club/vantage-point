@@ -382,6 +382,10 @@ impl OrClient {
         let Some(base) = &self.base_url else {
             return OrValidation::Found; // 検証無効 = 素通し
         };
+        // defense in depth: URL 構築前に format を再検証 (= SSRF 防止、 不正は不在扱い)
+        if !is_valid_or_ref(or_ref) {
+            return OrValidation::NotFound;
+        }
         let url = format!("{}/records/{}", base.trim_end_matches('/'), or_ref);
         let client = match reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(10))
@@ -422,6 +426,10 @@ impl OrClient {
     /// metadata-only 哲学)。 client が field を解釈する。
     pub async fn fetch_record(&self, or_ref: &str, user_token: &str) -> Option<serde_json::Value> {
         let base = self.base_url.as_ref()?;
+        // defense in depth: URL 構築前に format を再検証 (= SSRF 防止)
+        if !is_valid_or_ref(or_ref) {
+            return None;
+        }
         let url = format!("{}/records/{}", base.trim_end_matches('/'), or_ref);
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(10))
@@ -473,6 +481,19 @@ impl NexusStores {
 /// inspect できる (= 既存 unison_server.rs 慣行)。
 fn err_value(msg: impl Into<String>) -> serde_json::Value {
     serde_json::json!({ "error": msg.into() })
+}
+
+/// or_ref (= OR record uuid) の format を検証する (= SSRF / URL path injection 防止)。
+///
+/// OR record id は uuid 相当 (= hex + hyphen)。 厳格な allowlist `[A-Za-z0-9_-]{1,64}`
+/// で受け、 `/` `..` `?` `#` `&` `:` `@` `.` 等の URL metacharacter を全て排除する。
+/// これにより `or_ref` を OR の URL path に interpolate しても path traversal /
+/// query 注入 / host 注入ができない (= security review MEDIUM の対処)。
+fn is_valid_or_ref(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 64
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 /// `Authenticate` request の処理 — JWT を署名検証して `sub` を返す。
@@ -531,6 +552,14 @@ async fn dispatch_authed(
                 .get("or_ref")
                 .and_then(|v| v.as_str())
                 .map(String::from);
+
+            // 入口で or_ref の format を検証 (= 不正 ref を tree に入れない + SSRF 防止)。
+            // OR 設定の有無に関わらず常に検証する。
+            if let Some(r) = &or_ref
+                && !is_valid_or_ref(r)
+            {
+                return err_value("invalid or_ref format (expected [A-Za-z0-9_-], max 64 chars)");
+            }
 
             // or_ref があれば OR に実在検証 (= base_url 未設定なら素通し)。
             // user token を forward して OR を叩く (= confused-deputy 回避、 OR が実 user authz)。
@@ -996,6 +1025,44 @@ mod tests {
     }
 
     // === OR client (= dogfood 15) ===
+
+    #[test]
+    fn is_valid_or_ref_allowlist() {
+        // uuid 相当 (= hex + hyphen) は OK
+        assert!(is_valid_or_ref("550e8400-e29b-41d4-a716-446655440000"));
+        assert!(is_valid_or_ref("or_exists-123"));
+        // SSRF / path injection vector は全て reject
+        assert!(!is_valid_or_ref("../admin"));
+        assert!(!is_valid_or_ref("a/b"));
+        assert!(!is_valid_or_ref("x?foo=bar"));
+        assert!(!is_valid_or_ref("x#frag"));
+        assert!(!is_valid_or_ref("evil.com"));
+        assert!(!is_valid_or_ref("a@b"));
+        assert!(!is_valid_or_ref("a:b"));
+        assert!(!is_valid_or_ref("")); // 空
+        assert!(!is_valid_or_ref(&"x".repeat(65))); // 長すぎ
+    }
+
+    #[tokio::test]
+    async fn dispatch_node_create_rejects_malformed_or_ref() {
+        // OR 無効でも format 検証は効く (= 不正 ref を tree に入れない)
+        let stores = NexusStores::new();
+        let r = dispatch_authed(
+            &stores,
+            "u",
+            "tok",
+            "NodeCreate",
+            &serde_json::json!({"name": "x", "or_ref": "../etc/passwd"}),
+        )
+        .await;
+        assert!(
+            r.get("error").is_some(),
+            "malformed or_ref should be rejected: {r}"
+        );
+        assert!(r["error"].as_str().unwrap().contains("invalid or_ref"));
+        // tree は空のまま (= 作られていない)
+        assert!(stores.nodes.tree("u").await.is_empty());
+    }
 
     #[tokio::test]
     async fn or_client_disabled_passes_through() {
