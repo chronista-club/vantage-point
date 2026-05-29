@@ -148,6 +148,10 @@ enum Commands {
     #[command(subcommand)]
     App(commands::app::AppCommands),
 
+    /// Creo ID 認証 — `vp auth me` で login user 確認 (= Phase A2、 A2a 段階で me のみ)
+    #[command(subcommand)]
+    Auth(commands::auth::AuthCommands),
+
     /// Window screenshot — vp-app window を PNG 保存 (canonical screenshot 機構)
     #[command(alias = "screenshot")]
     Shot {
@@ -322,6 +326,11 @@ fn main() -> Result<()> {
         Commands::Lane(cmd) => execute_lane(cmd),
         Commands::Port(cmd) => commands::port::execute(cmd),
         Commands::App(cmd) => commands::app::execute(cmd),
+        Commands::Auth(cmd) => {
+            // Wire / Flow と同じ pattern — async handler を per-command Runtime で block_on
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(commands::auth::execute(cmd))
+        }
         Commands::Shot {
             output,
             window,
