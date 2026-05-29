@@ -23,7 +23,7 @@ use rsa::{RsaPrivateKey, RsaPublicKey};
 use serde_json::json;
 use std::sync::OnceLock;
 use vp_nexus::auth::{AUDIENCE, ISSUER, install_test_jwks};
-use vp_nexus::settings::{NexusStores, serve_settings};
+use vp_nexus::settings::{NexusStores, OrClient, serve_settings};
 
 // ============================================================================
 // mock JWT keypair (= tests/auth_endpoint.rs と同じ pattern)
@@ -101,8 +101,25 @@ fn ensure_crypto_provider() {
 /// settings QUIC server を ephemeral port で spawn し、 実 port と shutdown handle を返す。
 /// 返り値の `shutdown_tx` を test 寿命中 hold すること (= drop で server 停止)。
 async fn spawn_test_server() -> (u16, tokio::sync::oneshot::Sender<()>) {
+    spawn_test_server_with_stores(NexusStores::new()).await
+}
+
+/// OR client を inject した server (= dogfood 15、 or_ref 検証 test 用)。
+/// `or_base` を `Some(mock URL)` にすると NodeCreate で or_ref を mock OR に検証しに行く。
+async fn spawn_test_server_with_or(
+    or_base: Option<String>,
+) -> (u16, tokio::sync::oneshot::Sender<()>) {
+    let stores = NexusStores {
+        or_client: OrClient::new(or_base),
+        ..Default::default()
+    };
+    spawn_test_server_with_stores(stores).await
+}
+
+async fn spawn_test_server_with_stores(
+    stores: NexusStores,
+) -> (u16, tokio::sync::oneshot::Sender<()>) {
     ensure_crypto_provider();
-    let stores = NexusStores::new();
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     tokio::spawn(async move {
@@ -113,6 +130,34 @@ async fn spawn_test_server() -> (u16, tokio::sync::oneshot::Sender<()>) {
         .expect("ready signal")
         .expect("server bound to a port");
     (addr.port(), shutdown_tx)
+}
+
+/// mock OR server (= plain HTTP axum stub)。 `GET /records/or-exists` → 200、 他 → 404。
+/// 返り値の base URL を `OrClient::new(Some(..))` に渡す。 JoinHandle は test 寿命中 hold。
+async fn spawn_mock_or() -> (String, tokio::task::JoinHandle<()>) {
+    use axum::extract::Path;
+    use axum::http::StatusCode;
+    use axum::{Router, routing::get};
+
+    let app = Router::new().route(
+        "/records/{id}",
+        get(|Path(id): Path<String>| async move {
+            // bearer token の中身は mock では検証しない (= 存在のみ模倣)
+            if id == "or-exists" {
+                StatusCode::OK
+            } else {
+                StatusCode::NOT_FOUND
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("mock OR bind");
+    let addr = listener.local_addr().expect("mock OR addr");
+    let handle = tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    (format!("http://127.0.0.1:{}", addr.port()), handle)
 }
 
 /// client helper を別 module に閉じ込める (= unison の型 import を局所化)。
@@ -422,4 +467,50 @@ async fn node_ops_require_authentication() {
     let t = c.request("TreeGet", json!({})).await;
     assert!(t.get("error").is_some());
     assert!(t["error"].as_str().unwrap().contains("unauthenticated"));
+}
+
+// === OR 実連携 (= dogfood 15、 or_ref を mock OR で検証) ===
+
+#[tokio::test]
+async fn node_create_validates_or_ref_against_or() {
+    install_keypair_jwks().await;
+    let (or_base, _or_handle) = spawn_mock_or().await;
+    let (port, _shutdown) = spawn_test_server_with_or(Some(or_base)).await;
+    let token = sign_test_token("or_user");
+
+    let c = client::RawClient::connect(port).await;
+    c.request("Authenticate", json!({ "token": token })).await;
+
+    // 実在する or_ref (= mock OR が 200) → create 成功
+    let ok = c
+        .request(
+            "NodeCreate",
+            json!({ "name": "spec.pdf", "or_ref": "or-exists" }),
+        )
+        .await;
+    assert_eq!(
+        ok["node"]["or_ref"], "or-exists",
+        "valid or_ref should create: {ok}"
+    );
+
+    // 不在 or_ref (= mock OR が 404) → reject
+    let bad = c
+        .request(
+            "NodeCreate",
+            json!({ "name": "ghost.pdf", "or_ref": "or-missing" }),
+        )
+        .await;
+    assert!(
+        bad.get("error").is_some(),
+        "missing or_ref should be rejected: {bad}"
+    );
+    assert!(bad["error"].as_str().unwrap().contains("not found in OR"));
+
+    // or_ref なし folder は OR を叩かず作成 OK
+    let folder = c.request("NodeCreate", json!({ "name": "folder" })).await;
+    assert!(folder["node"]["id"].is_string());
+
+    // tree には成功した 2 node (spec.pdf + folder) のみ
+    let tree = c.request("TreeGet", json!({})).await;
+    assert_eq!(tree["nodes"].as_array().unwrap().len(), 2);
 }

@@ -86,7 +86,8 @@ async fn main() -> Result<()> {
     // settings sync + node tree の unison QUIC server を axum HTTP と並走させる
     // (= Phase A3a + dogfood 14)。 QUIC は UDP、 HTTP は TCP で OS の port 名前空間が
     // 独立するため同一 port で共存可能。
-    let stores = vp_nexus::settings::NexusStores::new();
+    // OR client は env (NEXUS_OR_API_BASE_URL) から構築 (= 未設定なら or_ref 検証無効)。
+    let stores = vp_nexus::settings::NexusStores::from_env();
     let quic_port = port + vp_nexus::settings::QUIC_PORT_OFFSET;
     let quic_addr = format!("[::]:{quic_port}");
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
