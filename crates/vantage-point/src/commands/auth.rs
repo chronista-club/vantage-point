@@ -59,6 +59,9 @@ pub enum AuthCommands {
         #[arg(long)]
         no_browser: bool,
     },
+
+    /// 認証情報を削除して logout (= nexus に best-effort 通知後 local credentials 削除)
+    Logout,
 }
 
 /// `~/.vp/credentials.json` で保存される credentials の serde shape。
@@ -415,7 +418,68 @@ pub async fn execute(cmd: AuthCommands) -> Result<()> {
     match cmd {
         AuthCommands::Me => me().await,
         AuthCommands::Login { no_browser } => login(no_browser).await,
+        AuthCommands::Logout => logout().await,
     }
+}
+
+/// `vp auth logout` — credentials を削除 + nexus に best-effort 通知。
+///
+/// ## flow
+///
+/// 1. credentials 不在なら "already logged out" + 終了
+/// 2. nexus `/v1/auth/logout` に POST (= best-effort、 failure は warn のみ)
+/// 3. `delete_credentials()` で local 削除 (= 必ず実行、 nexus call 結果に関わらず)
+/// 4. "Logged out" message
+///
+/// ## 設計 — best-effort nexus call
+///
+/// nexus が落ちている / network 断 でも local credentials は確実に削除。
+/// 「logout したつもりが token が残る」 の方が UX 最悪。 nexus side は idempotent
+/// stub (= A1d で実装済)、 重複 call も OK。
+async fn logout() -> Result<()> {
+    let creds = match read_credentials()? {
+        Some(c) => c,
+        None => {
+            println!("already logged out (= no credentials to delete)");
+            return Ok(());
+        }
+    };
+
+    // nexus に best-effort で notify (= 失敗しても warn のみで続行)
+    let url = format!("{}/v1/auth/logout", nexus_url());
+    let result = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .ok()
+        .map(|client| async move {
+            client
+                .post(&url)
+                .header("authorization", format!("Bearer {}", creds.access_token))
+                .send()
+                .await
+        });
+    if let Some(fut) = result {
+        match fut.await {
+            Ok(resp) if resp.status().is_success() => {
+                // nexus が ack、 何も print しない (= 静かに成功)
+            }
+            Ok(resp) => {
+                eprintln!(
+                    "warning: nexus logout returned {} (= continuing local logout)",
+                    resp.status()
+                );
+            }
+            Err(e) => {
+                eprintln!("warning: nexus logout call failed: {e} (= continuing local logout)");
+            }
+        }
+    }
+
+    // local 削除は必ず実行
+    delete_credentials()?;
+    let path = credentials_path()?;
+    println!("✓ Logged out. Credentials removed from {}", path.display());
+    Ok(())
 }
 
 /// `vp auth login` — loopback OAuth Native App + PKCE flow を実行、 token を保存。
