@@ -3,6 +3,7 @@
 //! 各サブコマンドの実行ロジックを分離して管理する。
 
 pub mod app;
+pub mod auth;
 pub mod config;
 pub mod daemon;
 pub mod db;
