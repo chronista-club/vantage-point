@@ -30,6 +30,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::Context;
+use serde::Serialize;
 use tokio::sync::Mutex;
 use unison::network::channel::UnisonChannel;
 use unison::network::quic::QuicServer;
@@ -48,7 +49,7 @@ pub const QUIC_PORT_OFFSET: u16 = 0;
 /// (`required=#true` は KDL boolean、 `type="int"` は JSON integer)。 version を
 /// bump したら DynamicProtocol client は次回 fetch 時に renegotiate する。
 pub const SETTINGS_PROTOCOL_KDL: &str = r#"
-protocol "vp-settings" version="0.1.0" {
+protocol "vp-settings" version="0.2.0" {
     namespace "vp.settings"
     channel "settings" from="client" lifetime="persistent" {
         request "Authenticate" {
@@ -67,6 +68,39 @@ protocol "vp-settings" version="0.1.0" {
             field "kdl" type="string" required=#true
             returns "SetResult" {
                 field "version" type="int"
+            }
+        }
+        request "NodeCreate" {
+            field "parent" type="string"
+            field "name" type="string" required=#true
+            field "or_ref" type="string"
+            returns "NodeCreated" {
+                field "node" type="json"
+            }
+        }
+        request "TreeGet" {
+            returns "Tree" {
+                field "nodes" type="json"
+            }
+        }
+        request "NodeRename" {
+            field "id" type="string" required=#true
+            field "name" type="string" required=#true
+            returns "NodeRenamed" {
+                field "ok" type="bool"
+            }
+        }
+        request "NodeMove" {
+            field "id" type="string" required=#true
+            field "new_parent" type="string"
+            returns "NodeMoved" {
+                field "ok" type="bool"
+            }
+        }
+        request "NodeDelete" {
+            field "id" type="string" required=#true
+            returns "NodeDeleted" {
+                field "deleted" type="int"
             }
         }
     }
@@ -119,6 +153,185 @@ impl SettingsStore {
     }
 }
 
+// ============================================================================
+// Node tree (= OR file grouping、 dogfood 14)
+// ============================================================================
+
+/// VP 層の node tree の 1 node (= uniform model)。
+///
+/// `or_ref` を持てば OR (ObjectRecords) の cloud file への参照 (= leaf 相当)、
+/// なければ folder。 どの node も子を持てる (= 階層化)。 階層は `parent` ポインタで
+/// 表現し、 子は `parent == self.id` で filter する。 実ファイルは OR が SSOT、
+/// VP は orRef (= uuid 文字列) を grouping する metadata-only。
+#[derive(Clone, Debug, Serialize)]
+pub struct Node {
+    /// node id (= per-user server 生成 counter `"n1"`, `"n2"`…)
+    pub id: String,
+    /// 親 node id (= `None` は root 直下)
+    pub parent: Option<String>,
+    /// 表示名
+    pub name: String,
+    /// OR record uuid (= 参照するクラウドファイル、 folder node は `None`)
+    pub or_ref: Option<String>,
+}
+
+/// 1 user 分の node tree (= flat map + id counter)。
+#[derive(Clone, Default)]
+struct UserTree {
+    nodes: HashMap<String, Node>,
+    next_id: u64,
+}
+
+/// `sub` → [`UserTree`] の in-memory store。
+///
+/// [`SettingsStore`] と同じく `Arc<Mutex<..>>` wrap の `Clone` 型。 A3b で file-backed
+/// に差し替える seam は public API (= create/tree/rename/move_node/delete) を保つ。
+/// **ミニマム段階では OR API call はしない** (= orRef は uuid 文字列として保持するのみ、
+/// 存在検証 / resolve は後続増分)。
+#[derive(Clone, Default)]
+pub struct NodeStore {
+    inner: Arc<Mutex<HashMap<String, UserTree>>>,
+}
+
+impl NodeStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// node を作成して返す。 `parent` 指定時は存在検証 (= 不在なら Err)。
+    pub async fn create(
+        &self,
+        sub: &str,
+        parent: Option<String>,
+        name: String,
+        or_ref: Option<String>,
+    ) -> Result<Node, String> {
+        let mut map = self.inner.lock().await;
+        let tree = map.entry(sub.to_string()).or_default();
+        if let Some(p) = &parent
+            && !tree.nodes.contains_key(p)
+        {
+            return Err(format!("parent node not found: {p}"));
+        }
+        tree.next_id += 1;
+        let id = format!("n{}", tree.next_id);
+        let node = Node {
+            id: id.clone(),
+            parent,
+            name,
+            or_ref,
+        };
+        tree.nodes.insert(id, node.clone());
+        Ok(node)
+    }
+
+    /// user の全 node を返す (= client が parent ポインタで階層を再構築)。
+    /// id 昇順で決定的に並べる (= test 安定)。
+    pub async fn tree(&self, sub: &str) -> Vec<Node> {
+        let map = self.inner.lock().await;
+        match map.get(sub) {
+            Some(t) => {
+                let mut v: Vec<Node> = t.nodes.values().cloned().collect();
+                v.sort_by(|a, b| a.id.cmp(&b.id));
+                v
+            }
+            None => Vec::new(),
+        }
+    }
+
+    /// node の名前を変更。
+    pub async fn rename(&self, sub: &str, id: &str, name: String) -> Result<(), String> {
+        let mut map = self.inner.lock().await;
+        let tree = map
+            .get_mut(sub)
+            .ok_or_else(|| "no tree for user".to_string())?;
+        let node = tree
+            .nodes
+            .get_mut(id)
+            .ok_or_else(|| format!("node not found: {id}"))?;
+        node.name = name;
+        Ok(())
+    }
+
+    /// node を別の親へ移動 (= reparent)。
+    ///
+    /// cycle 防止: `new_parent` を node 自身 / その子孫にはできない (= 自分の subtree に
+    /// 自分を入れると tree が壊れる)。 `new_parent` から root へ遡って `id` に当たれば reject。
+    pub async fn move_node(
+        &self,
+        sub: &str,
+        id: &str,
+        new_parent: Option<String>,
+    ) -> Result<(), String> {
+        let mut map = self.inner.lock().await;
+        let tree = map
+            .get_mut(sub)
+            .ok_or_else(|| "no tree for user".to_string())?;
+        if !tree.nodes.contains_key(id) {
+            return Err(format!("node not found: {id}"));
+        }
+        if let Some(p) = &new_parent {
+            if !tree.nodes.contains_key(p) {
+                return Err(format!("parent node not found: {p}"));
+            }
+            // cycle 検査: p (= 新親) から root へ遡り id に当たれば自己 / 子孫への移動
+            let mut cur = Some(p.clone());
+            while let Some(c) = cur {
+                if c == id {
+                    return Err("cannot move a node into itself or its descendant".to_string());
+                }
+                cur = tree.nodes.get(&c).and_then(|n| n.parent.clone());
+            }
+        }
+        tree.nodes.get_mut(id).unwrap().parent = new_parent;
+        Ok(())
+    }
+
+    /// node とその subtree を cascade 削除し、 削除した node 数を返す。
+    pub async fn delete(&self, sub: &str, id: &str) -> Result<usize, String> {
+        let mut map = self.inner.lock().await;
+        let tree = map
+            .get_mut(sub)
+            .ok_or_else(|| "no tree for user".to_string())?;
+        if !tree.nodes.contains_key(id) {
+            return Err(format!("node not found: {id}"));
+        }
+        // BFS で subtree の全 node id を集めてから一括削除
+        let mut to_remove = vec![id.to_string()];
+        let mut i = 0;
+        while i < to_remove.len() {
+            let cur = to_remove[i].clone();
+            for (nid, n) in tree.nodes.iter() {
+                if n.parent.as_deref() == Some(cur.as_str()) {
+                    to_remove.push(nid.clone());
+                }
+            }
+            i += 1;
+        }
+        let count = to_remove.len();
+        for nid in &to_remove {
+            tree.nodes.remove(nid);
+        }
+        Ok(count)
+    }
+}
+
+/// nexus が channel handler に渡す store 束 (= settings + node tree)。
+///
+/// `serve_settings` で 1 個作り、 register_channel closure に clone して渡す。
+/// 新しい store を足すときはここに field を追加する。
+#[derive(Clone, Default)]
+pub struct NexusStores {
+    pub settings: SettingsStore,
+    pub nodes: NodeStore,
+}
+
+impl NexusStores {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
 /// error response の共通 builder (= `{"error": "..."}`)。
 ///
 /// `MessageType::Error` ではなく通常 response payload に error を載せることで、
@@ -144,25 +357,92 @@ async fn authenticate(payload: &serde_json::Value) -> Result<String, String> {
     Ok(claims.sub)
 }
 
-/// 認証済 session の `Get` / `Set` dispatch。
+/// 認証済 session の method dispatch (= settings Get/Set + node tree 操作)。
+///
+/// 認証は呼び出し元 (= `run_settings_channel`) が済ませ、 ここには検証済 `sub` が渡る。
+/// 未知 method は error response を返す (= 認証前と区別される)。
 async fn dispatch_authed(
-    store: &SettingsStore,
+    stores: &NexusStores,
     sub: &str,
     method: &str,
     payload: &serde_json::Value,
 ) -> serde_json::Value {
     match method {
+        // --- settings (= A3a) ---
         "Get" => {
-            let s = store.get(sub).await;
+            let s = stores.settings.get(sub).await;
             serde_json::json!({ "kdl": s.kdl, "version": s.version })
         }
         "Set" => match payload.get("kdl").and_then(|v| v.as_str()) {
             None => err_value("Set: missing 'kdl' field"),
             Some(kdl) => {
-                let version = store.set(sub, kdl.to_string()).await;
+                let version = stores.settings.set(sub, kdl.to_string()).await;
                 serde_json::json!({ "version": version })
             }
         },
+
+        // --- node tree (= OR file grouping、 dogfood 14) ---
+        "NodeCreate" => {
+            let name = match payload.get("name").and_then(|v| v.as_str()) {
+                Some(n) => n.to_string(),
+                None => return err_value("NodeCreate: missing 'name' field"),
+            };
+            let parent = payload
+                .get("parent")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            let or_ref = payload
+                .get("or_ref")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            match stores.nodes.create(sub, parent, name, or_ref).await {
+                Ok(node) => serde_json::json!({ "node": node }),
+                Err(e) => err_value(e),
+            }
+        }
+        "TreeGet" => {
+            let nodes = stores.nodes.tree(sub).await;
+            serde_json::json!({ "nodes": nodes })
+        }
+        "NodeRename" => {
+            let id = match payload.get("id").and_then(|v| v.as_str()) {
+                Some(i) => i,
+                None => return err_value("NodeRename: missing 'id' field"),
+            };
+            let name = match payload.get("name").and_then(|v| v.as_str()) {
+                Some(n) => n.to_string(),
+                None => return err_value("NodeRename: missing 'name' field"),
+            };
+            match stores.nodes.rename(sub, id, name).await {
+                Ok(()) => serde_json::json!({ "ok": true }),
+                Err(e) => err_value(e),
+            }
+        }
+        "NodeMove" => {
+            let id = match payload.get("id").and_then(|v| v.as_str()) {
+                Some(i) => i,
+                None => return err_value("NodeMove: missing 'id' field"),
+            };
+            let new_parent = payload
+                .get("new_parent")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            match stores.nodes.move_node(sub, id, new_parent).await {
+                Ok(()) => serde_json::json!({ "ok": true }),
+                Err(e) => err_value(e),
+            }
+        }
+        "NodeDelete" => {
+            let id = match payload.get("id").and_then(|v| v.as_str()) {
+                Some(i) => i,
+                None => return err_value("NodeDelete: missing 'id' field"),
+            };
+            match stores.nodes.delete(sub, id).await {
+                Ok(n) => serde_json::json!({ "deleted": n }),
+                Err(e) => err_value(e),
+            }
+        }
+
         _ => err_value(format!("unknown method: {method}")),
     }
 }
@@ -174,7 +454,7 @@ async fn dispatch_authed(
 /// 束ねない (= session は locked のまま)。 channel 切断 (= `recv` Err) で loop を
 /// 抜けて task 終了、 stack-local の sub は自然に破棄される (= cleanup 不要)。
 async fn run_settings_channel(
-    store: SettingsStore,
+    stores: NexusStores,
     channel: UnisonChannel,
 ) -> Result<(), NetworkError> {
     // この変数は per-connection task の stack 上にあり、 QUIC stream 1 本 = 1 session
@@ -203,11 +483,11 @@ async fn run_settings_channel(
                 // 失敗時は sub を束ねない (= session locked 維持)
                 Err(e) => err_value(e),
             },
-            "Get" | "Set" => match authenticated_sub.as_deref() {
+            // Authenticate 以外は全て認証必須 → dispatch_authed が method dispatch + unknown
+            _ => match authenticated_sub.as_deref() {
                 None => err_value("unauthenticated: send Authenticate first"),
-                Some(sub) => dispatch_authed(&store, sub, &method, &payload).await,
+                Some(sub) => dispatch_authed(&stores, sub, &method, &payload).await,
             },
-            other => err_value(format!("unknown method: {other}")),
         };
 
         if channel
@@ -230,7 +510,7 @@ async fn run_settings_channel(
 /// - `ready_tx`: bind 完了時に実 `SocketAddr` を、 失敗時に `None` を送る (= test が
 ///   ephemeral port `[::1]:0` を使って実 port を知るため)。
 pub async fn serve_settings(
-    store: SettingsStore,
+    stores: NexusStores,
     addr: String,
     shutdown_rx: tokio::sync::oneshot::Receiver<()>,
     ready_tx: tokio::sync::oneshot::Sender<Option<SocketAddr>>,
@@ -246,10 +526,10 @@ pub async fn serve_settings(
 
     server
         .register_channel(SETTINGS_CHANNEL, {
-            let store = store.clone();
+            let stores = stores.clone();
             move |_ctx, stream| {
-                let store = store.clone();
-                async move { run_settings_channel(store, UnisonChannel::new(stream)).await }
+                let stores = stores.clone();
+                async move { run_settings_channel(stores, UnisonChannel::new(stream)).await }
             }
         })
         .await;
@@ -308,14 +588,14 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_get_then_set_then_get() {
-        let store = SettingsStore::new();
+        let stores = NexusStores::new();
         // 初期 Get
-        let g0 = dispatch_authed(&store, "u", "Get", &serde_json::json!({})).await;
+        let g0 = dispatch_authed(&stores, "u", "Get", &serde_json::json!({})).await;
         assert_eq!(g0["version"], 0);
         assert_eq!(g0["kdl"], "");
         // Set
         let s1 = dispatch_authed(
-            &store,
+            &stores,
             "u",
             "Set",
             &serde_json::json!({"kdl": "theme \"dark\""}),
@@ -323,15 +603,15 @@ mod tests {
         .await;
         assert_eq!(s1["version"], 1);
         // 再 Get
-        let g1 = dispatch_authed(&store, "u", "Get", &serde_json::json!({})).await;
+        let g1 = dispatch_authed(&stores, "u", "Get", &serde_json::json!({})).await;
         assert_eq!(g1["kdl"], "theme \"dark\"");
         assert_eq!(g1["version"], 1);
     }
 
     #[tokio::test]
     async fn dispatch_set_missing_kdl_returns_error() {
-        let store = SettingsStore::new();
-        let r = dispatch_authed(&store, "u", "Set", &serde_json::json!({})).await;
+        let stores = NexusStores::new();
+        let r = dispatch_authed(&stores, "u", "Set", &serde_json::json!({})).await;
         assert!(r.get("error").is_some());
     }
 
@@ -343,11 +623,186 @@ mod tests {
     }
 
     #[test]
-    fn protocol_kdl_declares_settings_channel_and_methods() {
+    fn protocol_kdl_declares_channel_and_methods() {
         // schema 文字列の guard (= channel / method 名が handler dispatch と一致)
+        assert!(SETTINGS_PROTOCOL_KDL.contains("version=\"0.2.0\""));
         assert!(SETTINGS_PROTOCOL_KDL.contains("channel \"settings\""));
-        assert!(SETTINGS_PROTOCOL_KDL.contains("request \"Authenticate\""));
-        assert!(SETTINGS_PROTOCOL_KDL.contains("request \"Get\""));
-        assert!(SETTINGS_PROTOCOL_KDL.contains("request \"Set\""));
+        for m in [
+            "Authenticate",
+            "Get",
+            "Set",
+            "NodeCreate",
+            "TreeGet",
+            "NodeRename",
+            "NodeMove",
+            "NodeDelete",
+        ] {
+            assert!(
+                SETTINGS_PROTOCOL_KDL.contains(&format!("request \"{m}\"")),
+                "KDL schema missing request {m}"
+            );
+        }
+    }
+
+    // === node tree (= dogfood 14) ===
+
+    #[tokio::test]
+    async fn node_create_and_tree() {
+        let store = NodeStore::new();
+        let folder = store
+            .create("u", None, "docs".to_string(), None)
+            .await
+            .expect("create folder");
+        assert_eq!(folder.id, "n1");
+        assert!(folder.parent.is_none());
+        assert!(folder.or_ref.is_none());
+
+        let file = store
+            .create(
+                "u",
+                Some(folder.id.clone()),
+                "spec.pdf".to_string(),
+                Some("or-uuid-123".to_string()),
+            )
+            .await
+            .expect("create file");
+        assert_eq!(file.id, "n2");
+        assert_eq!(file.parent.as_deref(), Some("n1"));
+        assert_eq!(file.or_ref.as_deref(), Some("or-uuid-123"));
+
+        let tree = store.tree("u").await;
+        assert_eq!(tree.len(), 2);
+        // id 昇順
+        assert_eq!(tree[0].id, "n1");
+        assert_eq!(tree[1].id, "n2");
+    }
+
+    #[tokio::test]
+    async fn node_create_rejects_missing_parent() {
+        let store = NodeStore::new();
+        let r = store
+            .create("u", Some("ghost".to_string()), "x".to_string(), None)
+            .await;
+        assert!(r.is_err());
+    }
+
+    #[tokio::test]
+    async fn node_rename_and_move() {
+        let store = NodeStore::new();
+        let a = store
+            .create("u", None, "a".to_string(), None)
+            .await
+            .unwrap();
+        let b = store
+            .create("u", None, "b".to_string(), None)
+            .await
+            .unwrap();
+        let child = store
+            .create("u", Some(a.id.clone()), "c".to_string(), None)
+            .await
+            .unwrap();
+
+        // rename
+        store
+            .rename("u", &child.id, "c2".to_string())
+            .await
+            .unwrap();
+        // move child from a → b
+        store
+            .move_node("u", &child.id, Some(b.id.clone()))
+            .await
+            .unwrap();
+
+        let tree = store.tree("u").await;
+        let moved = tree.iter().find(|n| n.id == child.id).unwrap();
+        assert_eq!(moved.name, "c2");
+        assert_eq!(moved.parent.as_deref(), Some(b.id.as_str()));
+    }
+
+    #[tokio::test]
+    async fn node_move_rejects_cycle() {
+        let store = NodeStore::new();
+        let a = store
+            .create("u", None, "a".to_string(), None)
+            .await
+            .unwrap();
+        let b = store
+            .create("u", Some(a.id.clone()), "b".to_string(), None)
+            .await
+            .unwrap();
+        // a を自分の子孫 b の下に移そうとする → cycle で拒否
+        let r = store.move_node("u", &a.id, Some(b.id.clone())).await;
+        assert!(r.is_err());
+        assert!(r.unwrap_err().contains("descendant"));
+        // 自分自身への移動も拒否
+        assert!(
+            store
+                .move_node("u", &a.id, Some(a.id.clone()))
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn node_delete_cascades_subtree() {
+        let store = NodeStore::new();
+        let root = store
+            .create("u", None, "root".to_string(), None)
+            .await
+            .unwrap();
+        let mid = store
+            .create("u", Some(root.id.clone()), "mid".to_string(), None)
+            .await
+            .unwrap();
+        let _leaf = store
+            .create(
+                "u",
+                Some(mid.id.clone()),
+                "leaf".to_string(),
+                Some("or-x".to_string()),
+            )
+            .await
+            .unwrap();
+        // 別 root も 1 つ (= cascade 対象外を確認)
+        let other = store
+            .create("u", None, "other".to_string(), None)
+            .await
+            .unwrap();
+
+        // root を消すと root/mid/leaf の 3 つが消える
+        let deleted = store.delete("u", &root.id).await.unwrap();
+        assert_eq!(deleted, 3);
+        let tree = store.tree("u").await;
+        assert_eq!(tree.len(), 1);
+        assert_eq!(tree[0].id, other.id);
+    }
+
+    #[tokio::test]
+    async fn node_store_isolates_per_sub() {
+        let store = NodeStore::new();
+        store
+            .create("alice", None, "a".to_string(), None)
+            .await
+            .unwrap();
+        // bob の tree は空
+        assert!(store.tree("bob").await.is_empty());
+        assert_eq!(store.tree("alice").await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn dispatch_node_create_and_tree() {
+        let stores = NexusStores::new();
+        let created = dispatch_authed(
+            &stores,
+            "u",
+            "NodeCreate",
+            &serde_json::json!({"name": "docs"}),
+        )
+        .await;
+        assert_eq!(created["node"]["id"], "n1");
+        assert_eq!(created["node"]["name"], "docs");
+
+        let tree = dispatch_authed(&stores, "u", "TreeGet", &serde_json::json!({})).await;
+        assert_eq!(tree["nodes"].as_array().unwrap().len(), 1);
     }
 }

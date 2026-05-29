@@ -83,22 +83,19 @@ async fn main() -> Result<()> {
         tracing::warn!(error = %e, "JWKS initial fetch failed; auth will 401 until reachable");
     }
 
-    // settings sync の unison QUIC server を axum HTTP と並走させる (= Phase A3a)。
-    // QUIC は UDP、 HTTP は TCP で OS の port 名前空間が独立するため同一 port で共存可能。
-    let settings_store = vp_nexus::settings::SettingsStore::new();
+    // settings sync + node tree の unison QUIC server を axum HTTP と並走させる
+    // (= Phase A3a + dogfood 14)。 QUIC は UDP、 HTTP は TCP で OS の port 名前空間が
+    // 独立するため同一 port で共存可能。
+    let stores = vp_nexus::settings::NexusStores::new();
     let quic_port = port + vp_nexus::settings::QUIC_PORT_OFFSET;
     let quic_addr = format!("[::]:{quic_port}");
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
     // shutdown_tx は process lifetime 中 hold (= drop で graceful shutdown 発火)。
     let (_settings_shutdown_tx, settings_shutdown_rx) = tokio::sync::oneshot::channel();
     tokio::spawn(async move {
-        if let Err(e) = vp_nexus::settings::serve_settings(
-            settings_store,
-            quic_addr,
-            settings_shutdown_rx,
-            ready_tx,
-        )
-        .await
+        if let Err(e) =
+            vp_nexus::settings::serve_settings(stores, quic_addr, settings_shutdown_rx, ready_tx)
+                .await
         {
             tracing::error!(error = %e, "settings QUIC server terminated");
         }
