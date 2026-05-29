@@ -148,7 +148,7 @@ enum Commands {
     #[command(subcommand)]
     App(commands::app::AppCommands),
 
-    /// Creo ID 認証 — `vp auth me` / `vp auth login` (= Phase A2、 A2a-b で me + login)
+    /// Creo ID 認証 — `vp auth me` / `vp auth login` / `vp auth logout` (= Phase A2 完成)
     #[command(subcommand)]
     Auth(commands::auth::AuthCommands),
 
