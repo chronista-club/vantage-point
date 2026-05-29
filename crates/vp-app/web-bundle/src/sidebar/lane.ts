@@ -13,8 +13,8 @@ import type { LaneInfo } from '../generated/LaneInfo'
  * `IconName` 型に収まるようにする (文字列連結だと型が string に広がるため)。
  */
 const STAND_ICON: Record<string, { default: IconName; active: IconName }> = {
-  echoes: { default: 'ph:chat-circle', active: 'ph:chat-circle-fill' },
-  hd: { default: 'ph:chat-circle', active: 'ph:chat-circle-fill' }, // legacy alias
+  echoes: { default: 'ph:chats-teardrop', active: 'ph:chats-teardrop-fill' },
+  hd: { default: 'ph:chats-teardrop', active: 'ph:chats-teardrop-fill' }, // legacy alias
   shell: { default: 'ph:terminal-window', active: 'ph:terminal-window-fill' },
   tmux: { default: 'ph:presentation', active: 'ph:presentation-fill' },
   paisley_park: { default: 'ph:compass', active: 'ph:compass-fill' },
