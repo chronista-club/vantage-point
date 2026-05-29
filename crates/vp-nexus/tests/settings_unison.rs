@@ -23,7 +23,7 @@ use rsa::{RsaPrivateKey, RsaPublicKey};
 use serde_json::json;
 use std::sync::OnceLock;
 use vp_nexus::auth::{AUDIENCE, ISSUER, install_test_jwks};
-use vp_nexus::settings::{SettingsStore, serve_settings};
+use vp_nexus::settings::{NexusStores, serve_settings};
 
 // ============================================================================
 // mock JWT keypair (= tests/auth_endpoint.rs と同じ pattern)
@@ -102,11 +102,11 @@ fn ensure_crypto_provider() {
 /// 返り値の `shutdown_tx` を test 寿命中 hold すること (= drop で server 停止)。
 async fn spawn_test_server() -> (u16, tokio::sync::oneshot::Sender<()>) {
     ensure_crypto_provider();
-    let store = SettingsStore::new();
+    let stores = NexusStores::new();
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     tokio::spawn(async move {
-        let _ = serve_settings(store, "[::1]:0".to_string(), shutdown_rx, ready_tx).await;
+        let _ = serve_settings(stores, "[::1]:0".to_string(), shutdown_rx, ready_tx).await;
     });
     let addr = ready_rx
         .await
@@ -325,4 +325,101 @@ async fn server_survives_client_disconnect() {
     let c2 = client::RawClient::connect(port).await;
     let auth = c2.request("Authenticate", json!({ "token": token })).await;
     assert_eq!(auth["sub"], "u1");
+}
+
+// === node tree (= OR file grouping、 dogfood 14) ===
+
+#[tokio::test]
+async fn node_tree_create_move_delete_roundtrip() {
+    install_keypair_jwks().await;
+    let (port, _shutdown) = spawn_test_server().await;
+    let token = sign_test_token("tree_user");
+
+    let c = client::RawClient::connect(port).await;
+    c.request("Authenticate", json!({ "token": token })).await;
+
+    // folder 2 つ + file 1 つ (= 階層)
+    let docs = c.request("NodeCreate", json!({ "name": "docs" })).await;
+    let docs_id = docs["node"]["id"].as_str().unwrap().to_string();
+    let archive = c.request("NodeCreate", json!({ "name": "archive" })).await;
+    let archive_id = archive["node"]["id"].as_str().unwrap().to_string();
+    let file = c
+        .request(
+            "NodeCreate",
+            json!({ "parent": docs_id, "name": "spec.pdf", "or_ref": "or-uuid-abc" }),
+        )
+        .await;
+    let file_id = file["node"]["id"].as_str().unwrap().to_string();
+    assert_eq!(file["node"]["or_ref"], "or-uuid-abc");
+    assert_eq!(file["node"]["parent"], docs_id);
+
+    // TreeGet → 3 node
+    let t = c.request("TreeGet", json!({})).await;
+    assert_eq!(t["nodes"].as_array().unwrap().len(), 3);
+
+    // file を docs → archive へ移動
+    let mv = c
+        .request(
+            "NodeMove",
+            json!({ "id": file_id, "new_parent": archive_id }),
+        )
+        .await;
+    assert_eq!(mv["ok"], true, "move response: {mv}");
+
+    // 移動後の parent を確認
+    let t2 = c.request("TreeGet", json!({})).await;
+    let moved = t2["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["id"] == file_id)
+        .unwrap();
+    assert_eq!(moved["parent"], archive_id);
+
+    // docs を削除 (= 空 folder、 1 node)
+    let del = c.request("NodeDelete", json!({ "id": docs_id })).await;
+    assert_eq!(del["deleted"], 1);
+
+    // archive (file 含む) を削除 → cascade で 2 node
+    let del2 = c.request("NodeDelete", json!({ "id": archive_id })).await;
+    assert_eq!(del2["deleted"], 2);
+
+    // 空に戻る
+    let t3 = c.request("TreeGet", json!({})).await;
+    assert_eq!(t3["nodes"].as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn node_move_cycle_rejected_over_channel() {
+    install_keypair_jwks().await;
+    let (port, _shutdown) = spawn_test_server().await;
+    let token = sign_test_token("cycle_user");
+
+    let c = client::RawClient::connect(port).await;
+    c.request("Authenticate", json!({ "token": token })).await;
+
+    let a = c.request("NodeCreate", json!({ "name": "a" })).await;
+    let a_id = a["node"]["id"].as_str().unwrap().to_string();
+    let b = c
+        .request("NodeCreate", json!({ "parent": a_id, "name": "b" }))
+        .await;
+    let b_id = b["node"]["id"].as_str().unwrap().to_string();
+
+    // a を自分の子孫 b の下に移そうとする → error
+    let r = c
+        .request("NodeMove", json!({ "id": a_id, "new_parent": b_id }))
+        .await;
+    assert!(r.get("error").is_some(), "cycle move should error: {r}");
+}
+
+#[tokio::test]
+async fn node_ops_require_authentication() {
+    install_keypair_jwks().await;
+    let (port, _shutdown) = spawn_test_server().await;
+
+    let c = client::RawClient::connect(port).await;
+    // Authenticate せずに TreeGet → unauthenticated
+    let t = c.request("TreeGet", json!({})).await;
+    assert!(t.get("error").is_some());
+    assert!(t["error"].as_str().unwrap().contains("unauthenticated"));
 }
