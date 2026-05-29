@@ -78,6 +78,26 @@ pub struct Credentials {
     pub scope: Option<String>,
 }
 
+impl Credentials {
+    /// expires_at が `now + skew_secs` 以下なら true (= 期限切れまたは間もなく切れる)。
+    ///
+    /// - `expires_at` が `None` (= 不明) なら false (= expire 扱いしない、 reactive refresh に
+    ///   任せる)。
+    /// - `skew_secs` は clock 誤差や network latency を吸収する slack (= 通常 30-60 秒)。
+    ///
+    /// A2c では method 追加のみ、 呼び出しは future の proactive refresh で利用する素地。
+    pub fn is_expired(&self, skew_secs: u64) -> bool {
+        let Some(exp) = self.expires_at else {
+            return false;
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        exp <= now + skew_secs
+    }
+}
+
 /// IdP / OIDC client config — env から起動時に load。
 #[derive(Debug, Clone)]
 pub struct OidcConfig {
@@ -160,23 +180,61 @@ pub fn read_credentials() -> Result<Option<Credentials>> {
     Ok(Some(creds))
 }
 
-/// credentials を file に保存。 unix では mode 0600 で書く (= owner read/write only)。
-fn save_credentials(creds: &Credentials) -> Result<()> {
+/// credentials を file に保存。
+///
+/// ## atomic write
+///
+/// `<path>.tmp` に write → `chmod 0600` (unix) → `rename(tmp, path)` で **atomic 化**。
+/// rename は同 fs では POSIX atomic (= ENOSPC や mid-write kill で partial file が残らない)。
+///
+/// ## permissions
+///
+/// unix: file は `0o600` (= owner read/write only)、 parent dir も `0o700` (= owner only)。
+pub fn save_credentials(creds: &Credentials) -> Result<()> {
     let path = credentials_path()?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("failed to mkdir {}", parent.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            // parent dir も owner only に (= ls 等で他 user に file 名が見えないように)
+            let perms = std::fs::Permissions::from_mode(0o700);
+            std::fs::set_permissions(parent, perms)
+                .with_context(|| format!("failed to chmod 700 {}", parent.display()))?;
+        }
     }
     let json = serde_json::to_string_pretty(creds).context("failed to serialize credentials")?;
-    std::fs::write(&path, json).with_context(|| format!("failed to write {}", path.display()))?;
+
+    // atomic write: tmp file → rename
+    let tmp_path = path.with_extension("json.tmp");
+    std::fs::write(&tmp_path, &json)
+        .with_context(|| format!("failed to write {}", tmp_path.display()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let perms = std::fs::Permissions::from_mode(0o600);
-        std::fs::set_permissions(&path, perms)
-            .with_context(|| format!("failed to chmod 600 {}", path.display()))?;
+        std::fs::set_permissions(&tmp_path, perms)
+            .with_context(|| format!("failed to chmod 600 {}", tmp_path.display()))?;
     }
+    std::fs::rename(&tmp_path, &path).with_context(|| {
+        format!(
+            "failed to rename {} → {}",
+            tmp_path.display(),
+            path.display()
+        )
+    })?;
     Ok(())
+}
+
+/// credentials file を削除する。 file 不在は成功扱い (= idempotent、 `vp auth logout` 用)。
+pub fn delete_credentials() -> Result<()> {
+    let path = credentials_path()?;
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e).with_context(|| format!("failed to delete {}", path.display())),
+    }
 }
 
 /// nexus base URL — env `VP_NEXUS_URL` > default `http://127.0.0.1:9200`。
@@ -666,6 +724,133 @@ mod tests {
     fn parse_callback_request_line_errors_on_missing_state() {
         let line = "GET /callback?code=abc HTTP/1.1";
         assert!(parse_callback_request_line(line).is_err());
+    }
+
+    // === A2c tests (= dogfood 11 で追加) ===
+
+    /// credential store の round-trip (= save → read → delete → re-delete idempotent) を
+    /// **1 test 関数で順次** 検証。 別関数に分けると VP_CREDENTIALS_PATH env が parallel runner
+    /// で race (= dogfood 4/9/10 N4 trap 4 回連続 + 学習)。 sequential で race ゼロ。
+    #[test]
+    fn credential_store_round_trip() {
+        // 一時 dir / file path を env override
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let creds_dir = tmp.path().join(".vp");
+        let creds_path = creds_dir.join("credentials.json");
+        let path_str = creds_path.to_string_lossy().to_string();
+
+        unsafe {
+            std::env::set_var("VP_CREDENTIALS_PATH", &path_str);
+        }
+
+        // Phase 1: read で None (= 不在)
+        assert!(read_credentials().expect("read").is_none());
+
+        // Phase 2: save → read で同 credentials が返る
+        let orig = Credentials {
+            access_token: "a-token".to_string(),
+            token_type: Some("Bearer".to_string()),
+            expires_at: Some(2_000_000_000),
+            refresh_token: Some("r-token".to_string()),
+            scope: Some("openid".to_string()),
+        };
+        save_credentials(&orig).expect("save");
+        let loaded = read_credentials().expect("read").expect("some");
+        assert_eq!(loaded.access_token, orig.access_token);
+        assert_eq!(loaded.refresh_token.as_deref(), Some("r-token"));
+
+        // Phase 3: file の mode 0600 + parent dir 0700 (unix only)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let file_mode = std::fs::metadata(&creds_path)
+                .expect("stat file")
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(file_mode, 0o600, "credentials file should be 0600");
+            let dir_mode = std::fs::metadata(&creds_dir)
+                .expect("stat dir")
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(dir_mode, 0o700, "credentials dir should be 0700");
+        }
+
+        // Phase 4: atomic write の tmp file が残らない
+        let tmp_path = creds_path.with_extension("json.tmp");
+        assert!(
+            !tmp_path.exists(),
+            "atomic tmp file should be removed after rename"
+        );
+
+        // Phase 5: delete → read で None に戻る
+        delete_credentials().expect("delete");
+        assert!(read_credentials().expect("read").is_none());
+
+        // Phase 6: re-delete は idempotent (= 不在でも Ok)
+        delete_credentials().expect("delete idempotent");
+
+        // cleanup
+        unsafe {
+            std::env::remove_var("VP_CREDENTIALS_PATH");
+        }
+    }
+
+    #[test]
+    fn is_expired_returns_false_when_no_expires_at() {
+        let creds = Credentials {
+            access_token: "x".to_string(),
+            token_type: None,
+            expires_at: None,
+            refresh_token: None,
+            scope: None,
+        };
+        assert!(!creds.is_expired(60));
+    }
+
+    #[test]
+    fn is_expired_returns_true_when_past_or_within_skew() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // 過去 → expired
+        let past = Credentials {
+            access_token: "x".to_string(),
+            token_type: None,
+            expires_at: Some(now - 100),
+            refresh_token: None,
+            scope: None,
+        };
+        assert!(past.is_expired(60));
+
+        // skew 内 (= now + 30s < skew 60s) → expired と扱う
+        let soon = Credentials {
+            access_token: "x".to_string(),
+            token_type: None,
+            expires_at: Some(now + 30),
+            refresh_token: None,
+            scope: None,
+        };
+        assert!(soon.is_expired(60));
+    }
+
+    #[test]
+    fn is_expired_returns_false_when_future_beyond_skew() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let creds = Credentials {
+            access_token: "x".to_string(),
+            token_type: None,
+            expires_at: Some(now + 3600), // 1 時間先
+            refresh_token: None,
+            scope: None,
+        };
+        assert!(!creds.is_expired(60));
     }
 
     #[test]
