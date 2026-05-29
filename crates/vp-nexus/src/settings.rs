@@ -49,7 +49,7 @@ pub const QUIC_PORT_OFFSET: u16 = 0;
 /// (`required=#true` は KDL boolean、 `type="int"` は JSON integer)。 version を
 /// bump したら DynamicProtocol client は次回 fetch 時に renegotiate する。
 pub const SETTINGS_PROTOCOL_KDL: &str = r#"
-protocol "vp-settings" version="0.2.0" {
+protocol "vp-settings" version="0.3.0" {
     namespace "vp.settings"
     channel "settings" from="client" lifetime="persistent" {
         request "Authenticate" {
@@ -80,6 +80,11 @@ protocol "vp-settings" version="0.2.0" {
         }
         request "TreeGet" {
             returns "Tree" {
+                field "nodes" type="json"
+            }
+        }
+        request "TreeResolve" {
+            returns "ResolvedTree" {
                 field "nodes" type="json"
             }
         }
@@ -408,6 +413,31 @@ impl OrClient {
             Err(e) => OrValidation::Unreachable(format!("request failed: {e}")),
         }
     }
+
+    /// or_ref (= OR record uuid) を OR から取得し、 raw JSON metadata を返す
+    /// (= TreeResolve 用)。 base_url 未設定 / 404 / auth-fail / 到達不可 は `None`
+    /// (= view は soft failure、 解決できなければ or_meta null)。
+    ///
+    /// VP は OR の JSON を **解釈せず opaque に pass-through** する (= OR schema 非結合、
+    /// metadata-only 哲学)。 client が field を解釈する。
+    pub async fn fetch_record(&self, or_ref: &str, user_token: &str) -> Option<serde_json::Value> {
+        let base = self.base_url.as_ref()?;
+        let url = format!("{}/records/{}", base.trim_end_matches('/'), or_ref);
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .ok()?;
+        let resp = client
+            .get(&url)
+            .header("authorization", format!("Bearer {user_token}"))
+            .send()
+            .await
+            .ok()?;
+        if !resp.status().is_success() {
+            return None; // 404 / auth-fail / 5xx → soft (or_meta null)
+        }
+        resp.json::<serde_json::Value>().await.ok()
+    }
 }
 
 /// nexus が channel handler に渡す store 束 (= settings + node tree + OR client)。
@@ -529,6 +559,27 @@ async fn dispatch_authed(
         "TreeGet" => {
             let nodes = stores.nodes.tree(sub).await;
             serde_json::json!({ "nodes": nodes })
+        }
+        "TreeResolve" => {
+            // 各 node の or_ref を OR から resolve して or_meta (opaque) を添付。
+            // soft per-node: 解決失敗は or_meta null、 tree 全体は返す。
+            let nodes = stores.nodes.tree(sub).await;
+            let mut resolved = Vec::with_capacity(nodes.len());
+            for node in &nodes {
+                let mut v = serde_json::to_value(node).unwrap_or_default();
+                let or_meta = match &node.or_ref {
+                    Some(r) => stores.or_client.fetch_record(r, token).await,
+                    None => None,
+                };
+                if let Some(obj) = v.as_object_mut() {
+                    obj.insert(
+                        "or_meta".to_string(),
+                        or_meta.unwrap_or(serde_json::Value::Null),
+                    );
+                }
+                resolved.push(v);
+            }
+            serde_json::json!({ "nodes": resolved })
         }
         "NodeRename" => {
             let id = match payload.get("id").and_then(|v| v.as_str()) {
@@ -761,7 +812,7 @@ mod tests {
     #[test]
     fn protocol_kdl_declares_channel_and_methods() {
         // schema 文字列の guard (= channel / method 名が handler dispatch と一致)
-        assert!(SETTINGS_PROTOCOL_KDL.contains("version=\"0.2.0\""));
+        assert!(SETTINGS_PROTOCOL_KDL.contains("version=\"0.3.0\""));
         assert!(SETTINGS_PROTOCOL_KDL.contains("channel \"settings\""));
         for m in [
             "Authenticate",
@@ -769,6 +820,7 @@ mod tests {
             "Set",
             "NodeCreate",
             "TreeGet",
+            "TreeResolve",
             "NodeRename",
             "NodeMove",
             "NodeDelete",

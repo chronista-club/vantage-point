@@ -137,16 +137,24 @@ async fn spawn_test_server_with_stores(
 async fn spawn_mock_or() -> (String, tokio::task::JoinHandle<()>) {
     use axum::extract::Path;
     use axum::http::StatusCode;
-    use axum::{Router, routing::get};
+    use axum::response::IntoResponse;
+    use axum::{Json, Router, routing::get};
 
     let app = Router::new().route(
         "/records/{id}",
         get(|Path(id): Path<String>| async move {
-            // bearer token の中身は mock では検証しない (= 存在のみ模倣)
+            // bearer token の中身は mock では検証しない (= 存在のみ模倣)。
+            // 存在する record は JSON metadata を返す (= TreeResolve が or_meta に添付)。
             if id == "or-exists" {
-                StatusCode::OK
+                Json(serde_json::json!({
+                    "id": "or-exists",
+                    "filename": "spec.pdf",
+                    "size": 1234,
+                    "content_type": "application/pdf"
+                }))
+                .into_response()
             } else {
-                StatusCode::NOT_FOUND
+                StatusCode::NOT_FOUND.into_response()
             }
         }),
     );
@@ -513,4 +521,62 @@ async fn node_create_validates_or_ref_against_or() {
     // tree には成功した 2 node (spec.pdf + folder) のみ
     let tree = c.request("TreeGet", json!({})).await;
     assert_eq!(tree["nodes"].as_array().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn tree_resolve_attaches_or_metadata() {
+    install_keypair_jwks().await;
+    let (or_base, _or_handle) = spawn_mock_or().await;
+    let (port, _shutdown) = spawn_test_server_with_or(Some(or_base)).await;
+    let token = sign_test_token("resolve_user");
+
+    let c = client::RawClient::connect(port).await;
+    c.request("Authenticate", json!({ "token": token })).await;
+
+    // folder + 実在 file (or-exists)
+    let folder = c.request("NodeCreate", json!({ "name": "docs" })).await;
+    let folder_id = folder["node"]["id"].as_str().unwrap().to_string();
+    let file = c
+        .request(
+            "NodeCreate",
+            json!({ "parent": folder_id, "name": "spec.pdf", "or_ref": "or-exists" }),
+        )
+        .await;
+    let file_id = file["node"]["id"].as_str().unwrap().to_string();
+
+    // TreeResolve → file node に or_meta (= OR の JSON) が添付される
+    let resolved = c.request("TreeResolve", json!({})).await;
+    let nodes = resolved["nodes"].as_array().unwrap();
+    assert_eq!(nodes.len(), 2);
+
+    let file_node = nodes.iter().find(|n| n["id"] == file_id).unwrap();
+    assert_eq!(file_node["or_meta"]["filename"], "spec.pdf");
+    assert_eq!(file_node["or_meta"]["size"], 1234);
+    assert_eq!(file_node["or_meta"]["content_type"], "application/pdf");
+
+    // folder node (= or_ref なし) は or_meta null
+    let folder_node = nodes.iter().find(|n| n["id"] == folder_id).unwrap();
+    assert!(folder_node["or_meta"].is_null());
+}
+
+#[tokio::test]
+async fn tree_resolve_soft_when_or_disabled() {
+    // OR 無効 server では NodeCreate の検証も skip され、 TreeResolve の fetch_record も
+    // None → or_meta null (= resolve が OR 無効でも tree を返す soft 性)。
+    install_keypair_jwks().await;
+    let (port, _shutdown) = spawn_test_server().await; // OR disabled
+    let token = sign_test_token("soft_user");
+
+    let c = client::RawClient::connect(port).await;
+    c.request("Authenticate", json!({ "token": token })).await;
+    c.request(
+        "NodeCreate",
+        json!({ "name": "x", "or_ref": "or-whatever" }),
+    )
+    .await;
+
+    let resolved = c.request("TreeResolve", json!({})).await;
+    let n = &resolved["nodes"].as_array().unwrap()[0];
+    assert!(n["or_meta"].is_null(), "or_meta should be null: {n}");
+    assert_eq!(n["or_ref"], "or-whatever");
 }
