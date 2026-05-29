@@ -23,6 +23,12 @@ name = "auth_endpoint"
 # を渡して initialize する、 default では skip)。
 required-features = ["test-utils"]
 
+[[test]]
+name = "settings_unison"
+# settings channel の integration test も install_test_jwks (= mock JWKS) を使うため
+# test-utils gate。 QUIC server を ephemeral port で立てて Authenticate→Get→Set を verify。
+required-features = ["test-utils"]
+
 [features]
 default = []
 # test 専用 API (= install_test_jwks 等) を expose する feature。 production build で
@@ -49,6 +55,13 @@ clap = { workspace = true }
 # - reqwest: JWKS fetch (workspace dep を再利用)
 jsonwebtoken = "9"
 reqwest = { workspace = true }
+# Phase A3a (= dogfood 13): settings sync の unison QUIC transport。
+# club-unison は独立 crate なので vantage-point crate には依存しない (= 独立性維持)。
+# DynamicProtocol (= runtime schema discovery) は 1.1.0 機能、 lockfile は 1.1.0 解決済。
+unison = { workspace = true }
+# QUIC (unison) が使う rustls の CryptoProvider を process 起動時に install するため。
+# aws-lc-rs を default provider に選ぶ (= vp-cli/vp-app/vantage-point と同じ慣行)。
+rustls = { version = "0.23", features = ["aws-lc-rs"] }
 
 [dev-dependencies]
 # integration test 用 (= tower::ServiceExt::oneshot pattern、 別 server 起動不要)
