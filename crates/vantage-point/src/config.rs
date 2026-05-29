@@ -11,104 +11,365 @@
 //! - registered projects は projects.kdl が SSOT (VP-188)。 config.kdl には出さない。
 //! - kebab-case のキー名 (`default-port` 等) を採用。
 //!
-//! ## VP-192: config / data パスの OS 判定統一
+//! ## persistence restructure: XDG Base Directory 準拠 (全 OS 統一)
 //!
-//! ディレクトリ名は全 OS で `vp` に統一。 OS 判定は `dirs` クレートに委ねる。
+//! 旧 VP-192 では `dirs` クレートで OS 別判定し、 macOS は `~/Library/Application
+//! Support/vp/`、 Linux は `~/.config/vp/`、 Windows は `%APPDATA%\vp\` と分裂していた。
+//! user 指示 = 「global は XDG (= 出来るだけ minimum)、 proj 関連は `.vp/` 活用」 で
+//! XDG Base Directory Specification 準拠の 3 zone に統一する。 macOS の Application
+//! Support / Library/Logs path は撤去 (= dotfile への露出移管)。
 //!
-//! | 種別 | API | macOS | Linux | Windows |
-//! |------|-----|-------|-------|---------|
-//! | config | `vp_config_dir()` | `~/Library/Application Support/vp/` | `~/.config/vp/` | `%APPDATA%\vp\` |
-//! | data   | `vp_data_dir()`   | `~/Library/Application Support/vp/` | `~/.local/share/vp/` | `%LOCALAPPDATA%\vp\` |
+//! | zone   | 環境変数                  | default                  | 用途 |
+//! |--------|---------------------------|--------------------------|------|
+//! | config | `$XDG_CONFIG_HOME`        | `~/.config/vp/`          | 人が編集 (config.kdl / projects.kdl / addresses.toml) |
+//! | data   | `$XDG_DATA_HOME`          | `~/.local/share/vp/`     | 永続 data store (db / discs) |
+//! | state  | `$XDG_STATE_HOME`         | `~/.local/state/vp/`     | runtime state + log (session.json / sessions/ / log/) |
 //!
-//! 設定ファイルは `vp_config_dir()/config.kdl`。 DB / DISC / セッション状態 /
-//! ログ等の生成データは `vp_data_dir()` 配下に置く。 Windows の `%APPDATA%` は
-//! roaming で同期対象になり DB 破損リスクがあるため、 data は `%LOCALAPPDATA%`
-//! (= `dirs::data_local_dir()`) を使う。
-//!
-//! 旧パス (`~/.config/vp/` / `dirs::config_dir()/vantage/`) からの移行は
-//! [`migrate_legacy_paths`] が起動時に 1 回だけ冪等に行う。
+//! 旧 path (= Application Support / Library/Logs / `~/.config/vp/` etc.) からの
+//! 移行は [`migrate_legacy_paths`] が起動時に 1 回だけ冪等に行う。 廃止 file
+//! (running.json / vantage.db / config.toml / lanes/ / scripts/ / state/ 内の
+//! port-prefix JSON 等) は同じ pass で delete する。
 
 use anyhow::Result;
 use club_kdl::KdlDeserialize;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// VP の config ディレクトリ (OS 別)。
+/// VP の config zone (XDG `$XDG_CONFIG_HOME/vp/`、 default `~/.config/vp/`)。
 ///
-/// `dirs::config_dir()` に OS 判定を委ね、 末尾に `vp` を付ける。
-/// macOS: `~/Library/Application Support/vp/`、 Linux: `~/.config/vp/`、
-/// Windows: `%APPDATA%\vp\`。 `dirs` が None を返す環境 (sandbox 等) では
-/// `$HOME/.config` を fallback に使う。
+/// 人が編集する設定 (config.kdl / projects.kdl / addresses.toml) の置き場。
+/// `XDG_CONFIG_HOME` 環境変数を優先、 未設定なら `$HOME/.config/vp/`。 macOS
+/// でも `~/Library/Application Support/` は使わない (= dotfile 一極集中方針)。
 pub fn vp_config_dir() -> PathBuf {
-    dirs::config_dir()
-        .or_else(|| dirs::home_dir().map(|h| h.join(".config")))
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("vp")
+    xdg_base("XDG_CONFIG_HOME", ".config")
 }
 
-/// VP の data ディレクトリ (OS 別)。
+/// VP の data zone (XDG `$XDG_DATA_HOME/vp/`、 default `~/.local/share/vp/`)。
 ///
-/// `dirs::data_local_dir()` に OS 判定を委ね、 末尾に `vp` を付ける。
-/// macOS: `~/Library/Application Support/vp/`、 Linux: `~/.local/share/vp/`、
-/// Windows: `%LOCALAPPDATA%\vp\`。 `dirs` が None を返す環境では
-/// `$HOME/.local/share` を fallback に使う。
-///
-/// DB / DISC / ログ等の生成データはこちらに置く (config と分離)。
+/// 永続 data store (SurrealDB の `db/`、 Whitesnake `discs/`)。 失っても再生成
+/// される類の cache ではなく、 失えない user data を置く。
 pub fn vp_data_dir() -> PathBuf {
-    dirs::data_local_dir()
-        .or_else(|| dirs::home_dir().map(|h| h.join(".local").join("share")))
+    xdg_base("XDG_DATA_HOME", ".local/share")
+}
+
+/// VP の state zone (XDG `$XDG_STATE_HOME/vp/`、 default `~/.local/state/vp/`)。
+///
+/// runtime state + log。 vp-app UI state (`session.json`)、 TUI SessionManager
+/// (`sessions/{port}.json`)、 全 process の log (`log/`) を置く。 XDG spec で
+/// log は state zone 配下が standard。
+pub fn vp_state_dir() -> PathBuf {
+    xdg_base("XDG_STATE_HOME", ".local/state")
+}
+
+/// log 出力先 (`vp_state_dir()/log/`)。 daemon / SP / vp-app の全 log を集約。
+pub fn vp_log_dir() -> PathBuf {
+    vp_state_dir().join("log")
+}
+
+/// TUI SessionManager の per-port state file 置き場 (`vp_state_dir()/sessions/`)。
+pub fn vp_sessions_dir() -> PathBuf {
+    vp_state_dir().join("sessions")
+}
+
+/// XDG base directory 解決ヘルパー。
+///
+/// `$env_name` 環境変数が absolute path なら採用、 そうでなければ
+/// `$HOME/{home_relative}` を使う。 いずれも末尾に `vp` を join する。
+/// `$HOME` 未取得時は `.` fallback (= test/sandbox 用)。
+fn xdg_base(env_name: &str, home_relative: &str) -> PathBuf {
+    if let Some(v) = std::env::var_os(env_name) {
+        let p = PathBuf::from(v);
+        if p.is_absolute() {
+            return p.join("vp");
+        }
+    }
+    dirs::home_dir()
+        .map(|h| h.join(home_relative))
         .unwrap_or_else(|| PathBuf::from("."))
         .join("vp")
 }
 
 /// Config directory for vp。
 ///
-/// VP-192: 実体は [`vp_config_dir`] に委譲 (caller は無改修)。
+/// 既存 caller 互換用 wrapper — 実体は [`vp_config_dir`] (= `~/.config/vp/`)。
 pub fn config_dir() -> PathBuf {
     vp_config_dir()
 }
 
 /// Data directory for vp。
 ///
-/// VP-192: config とは別ディレクトリ (`vp_data_dir()`) を返すよう変更。
+/// 既存 caller 互換用 wrapper — 実体は [`vp_data_dir`] (= `~/.local/share/vp/`)。
 pub fn data_dir() -> PathBuf {
     vp_data_dir()
 }
 
-/// Scripts directory for Lua scripts
+/// Scripts directory for Lua scripts (= `vp_config_dir()/scripts/`)。
 pub fn scripts_dir() -> PathBuf {
-    config_dir().join("scripts")
+    vp_config_dir().join("scripts")
 }
 
-/// 旧 config/data パスから新パスへの冪等なデータ移行 (VP-192)。
+/// 旧 path から XDG 新 path への冪等な migration + 廃止物 cleanup。
 ///
-/// VP は過去 config/data の置き場所が複数 (`~/.config/vp/` 直書き、
-/// `dirs::config_dir()/vantage/`) に分裂していた。 OS 判定を `dirs` に委ねる形へ
-/// 一本化したため、 旧パスのデータが孤立しないよう起動時に 1 回だけコピーする。
+/// VP は過去、 path 体系が複数世代並存していた:
+/// - 世代 1: `~/.config/vp/` 直書き
+/// - 世代 2: `dirs::config_dir()/vantage/`
+/// - 世代 3 (VP-192): macOS `~/Library/Application Support/vp/` + `~/Library/Logs/Vantage/`
+/// - 世代 4 (= 本 fn): XDG 統一 `~/.config/vp/` + `~/.local/share/vp/` + `~/.local/state/vp/`
+///
+/// 本 fn は世代 1〜3 から世代 4 への移行を 1 pass で行い、 同時に廃止 file/dir
+/// (running.json / vantage.db / config.toml / lanes/ / scripts/ 等) を delete する。
 ///
 /// 設計:
-/// - **コピー (move ではない)**。 旧データは残す = ロールバック安全。 旧データ削除は
-///   別 issue (VP-193) の担当。
-/// - **冪等**。 新パスに既にデータがあれば skip。 何度呼んでも安全。
-/// - 失敗しても起動を阻害しない (warn ログのみ)。
+/// - **move (rename)** で旧データを新位置へ。 同一 device なら atomic、 跨ぐなら copy+remove。
+/// - **冪等**。 新 path に既にデータがあれば旧側を skip + 空なら delete。
+/// - **廃止物 delete** は code 参照ゼロ確認済 entry のみ (= safe)。
+/// - 失敗しても起動阻害しない (warn ログのみ)。
 ///
 /// main 初期化の早い段階で 1 回呼ぶこと。
 pub fn migrate_legacy_paths() {
-    // config: 旧 `~/.config/vp/` → 新 `vp_config_dir()`
+    let new_config = vp_config_dir();
+    let new_data = vp_data_dir();
+    let new_state = vp_state_dir();
+    let new_log = vp_log_dir();
+
+    // 世代 3: macOS `~/Library/Application Support/vp/` から各 zone へ拡散 move。
     if let Some(home) = dirs::home_dir() {
-        let legacy_config = home.join(".config").join("vp");
-        migrate_dir_if_needed(&legacy_config, &vp_config_dir(), "config");
+        let mac_app_support = home.join("Library/Application Support/vp");
+        if mac_app_support.is_dir() {
+            // config zone へ
+            move_file_if_exists(
+                &mac_app_support.join("config.kdl"),
+                &new_config.join("config.kdl"),
+            );
+            move_file_if_exists(
+                &mac_app_support.join("projects.kdl"),
+                &new_config.join("projects.kdl"),
+            );
+            move_file_if_exists(
+                &mac_app_support.join("addresses.toml"),
+                &new_config.join("addresses.toml"),
+            );
+            // data zone へ
+            move_dir_if_exists(&mac_app_support.join("db"), &new_data.join("db"));
+            move_dir_if_exists(&mac_app_support.join("discs"), &new_data.join("discs"));
+            // state zone へ (rename: session-state.json → session.json)
+            move_file_if_exists(
+                &mac_app_support.join("session-state.json"),
+                &new_state.join("session.json"),
+            );
+            // TUI SessionManager: state/{port}.json → sessions/{port}.json
+            migrate_state_subdir(&mac_app_support.join("state"), &vp_sessions_dir());
+            // log: logs/debug.log → log/debug.log
+            move_file_if_exists(
+                &mac_app_support.join("logs/debug.log"),
+                &new_log.join("debug.log"),
+            );
+
+            // 廃止 file delete
+            for legacy in [
+                "config.toml",  // KDL 統合済
+                "running.json", // discovery 移行済
+                "vantage.db",   // code 参照ゼロ
+            ] {
+                delete_file_if_exists(&mac_app_support.join(legacy));
+            }
+            for legacy_dir in ["lanes", "scripts", "logs"] {
+                delete_dir_if_exists(&mac_app_support.join(legacy_dir));
+            }
+            // 空になった元 dir も掃除
+            delete_dir_if_empty(&mac_app_support);
+        }
+
+        // 世代 3: macOS `~/Library/Logs/Vantage/` から log zone へ
+        let mac_log_dir = home.join("Library/Logs/Vantage");
+        if mac_log_dir.is_dir() {
+            move_file_if_exists(
+                &mac_log_dir.join("app.kdl.log"),
+                &new_log.join("app.kdl.log"),
+            );
+            move_file_if_exists(
+                &mac_log_dir.join("app.stdout.log"),
+                &new_log.join("app.stdout.log"),
+            );
+            move_file_if_exists(
+                &mac_log_dir.join("daemon.kdl.log"),
+                &new_log.join("daemon.kdl.log"),
+            );
+            move_file_if_exists(
+                &mac_log_dir.join("daemon.stdout.log"),
+                &new_log.join("daemon.stdout.log"),
+            );
+            // 廃止 (rename 前の遺物)
+            for legacy in ["vp-app.kdl.log", "vp-app.stdout.log", "vp-world.kdl.log"] {
+                delete_file_if_exists(&mac_log_dir.join(legacy));
+            }
+            delete_dir_if_empty(&mac_log_dir);
+        }
     }
 
-    // data: 旧 `dirs::config_dir()/vantage/` → 新 `vp_data_dir()`
+    // 世代 1: 旧 `~/.config/vp/` 直書き世代と現 XDG `~/.config/vp/` は **同一 path**。
+    // 既に新 path なので何もしない。
+
+    // 世代 2: `dirs::config_dir()/vantage/` → 新 data zone
     if let Some(cfg) = dirs::config_dir() {
         let legacy_data = cfg.join("vantage");
-        migrate_dir_if_needed(&legacy_data, &vp_data_dir(), "data");
+        if legacy_data.is_dir() && legacy_data != new_data {
+            move_dir_contents(&legacy_data, &new_data, "vantage→data");
+            delete_dir_if_empty(&legacy_data);
+        }
     }
+}
 
-    // project-local lane refactor PR 4b: 旧 `~/.local/share/ccws/` → `vp_data_dir()/lanes/`
-    // の `migrate_legacy_lanes_dir()` は削除済。 lane は `<repo>/.vp/lanes/` (project-local)
-    // 配置に移行したため、 global lane dir 自体が概念として撤去された。
+/// `state/{port}.json` は TUI SessionManager 用 = 新 `sessions/{port}.json` へ。
+/// `state/{port}-panes.json` / `state/{port}-canvas-layout.json` は D11 廃止遺物 = delete。
+fn migrate_state_subdir(legacy_state: &std::path::Path, new_sessions: &std::path::Path) {
+    if !legacy_state.is_dir() {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(legacy_state) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let from = entry.path();
+        let Some(name) = from.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if name.ends_with("-panes.json") || name.ends_with("-canvas-layout.json") {
+            delete_file_if_exists(&from);
+        } else if name.ends_with(".json") {
+            // {port}.json は active な SessionManager state
+            move_file_if_exists(&from, &new_sessions.join(name));
+        }
+    }
+    delete_dir_if_empty(legacy_state);
+}
+
+fn move_file_if_exists(from: &std::path::Path, to: &std::path::Path) {
+    if !from.is_file() {
+        return;
+    }
+    if to.exists() {
+        // 新側に既にあれば旧は黙って消す (= 冪等、 新側 SSOT 維持)
+        delete_file_if_exists(from);
+        return;
+    }
+    if let Some(parent) = to.parent()
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
+        tracing::warn!(
+            "path migration: parent create 失敗 ({}): {e}",
+            parent.display()
+        );
+        return;
+    }
+    if let Err(e) = std::fs::rename(from, to) {
+        // 跨デバイス等で rename 失敗 → copy + remove fallback
+        if std::fs::copy(from, to).is_ok() {
+            let _ = std::fs::remove_file(from);
+            tracing::info!(
+                "path migration (file copy+remove): {} → {}",
+                from.display(),
+                to.display()
+            );
+        } else {
+            tracing::warn!(
+                "path migration 失敗 ({} → {}): {e}",
+                from.display(),
+                to.display()
+            );
+        }
+    } else {
+        tracing::info!(
+            "path migration (file move): {} → {}",
+            from.display(),
+            to.display()
+        );
+    }
+}
+
+fn move_dir_if_exists(from: &std::path::Path, to: &std::path::Path) {
+    if !from.is_dir() {
+        return;
+    }
+    if to.exists() && dir_has_entries(to) {
+        // 新側にデータあり → 旧側を削除
+        let _ = std::fs::remove_dir_all(from);
+        return;
+    }
+    if let Some(parent) = to.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Err(e) = std::fs::rename(from, to) {
+        // fallback: 再帰コピー + 削除
+        if copy_dir_recursive(from, to).is_ok() {
+            let _ = std::fs::remove_dir_all(from);
+            tracing::info!(
+                "path migration (dir copy+remove): {} → {}",
+                from.display(),
+                to.display()
+            );
+        } else {
+            tracing::warn!(
+                "path migration 失敗 ({} → {}): {e}",
+                from.display(),
+                to.display()
+            );
+        }
+    } else {
+        tracing::info!(
+            "path migration (dir move): {} → {}",
+            from.display(),
+            to.display()
+        );
+    }
+}
+
+/// 中身を子単位で新 dir に move (= dir 自体は残す方針)。
+fn move_dir_contents(from: &std::path::Path, to: &std::path::Path, label: &str) {
+    if !from.is_dir() {
+        return;
+    }
+    if let Err(e) = std::fs::create_dir_all(to) {
+        tracing::warn!("path migration ({label}) parent create 失敗: {e}");
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(from) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let child_from = entry.path();
+        let Some(name) = child_from.file_name() else {
+            continue;
+        };
+        let child_to = to.join(name);
+        if child_from.is_dir() {
+            move_dir_if_exists(&child_from, &child_to);
+        } else if child_from.is_file() {
+            move_file_if_exists(&child_from, &child_to);
+        }
+    }
+}
+
+fn delete_file_if_exists(path: &std::path::Path) {
+    if path.is_file()
+        && let Err(e) = std::fs::remove_file(path)
+    {
+        tracing::warn!("path cleanup 失敗 ({}): {e}", path.display());
+    }
+}
+
+fn delete_dir_if_exists(path: &std::path::Path) {
+    if path.is_dir()
+        && let Err(e) = std::fs::remove_dir_all(path)
+    {
+        tracing::warn!("path cleanup 失敗 ({}): {e}", path.display());
+    }
+}
+
+fn delete_dir_if_empty(path: &std::path::Path) {
+    if path.is_dir() && !dir_has_entries(path) {
+        let _ = std::fs::remove_dir(path);
+    }
 }
 
 /// `legacy` ディレクトリの中身を `target` にコピーする (冪等ヘルパー)。

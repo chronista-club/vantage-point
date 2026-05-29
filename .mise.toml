@@ -112,7 +112,7 @@ echo "✅ Installed: $HOME/.cargo/bin/vp"
 description = "TheWorld daemon を background spawn (nohup detach、 task は即 exit、 log は logs task で tail)"
 run = """
 set -euo pipefail
-LOG_DIR="${VP_LOG_DIR:-$HOME/Library/Logs/Vantage}"
+LOG_DIR="${VP_LOG_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/vp/log}"
 mkdir -p "$LOG_DIR"
 export VP_DAEMON_LOG_FILE="$LOG_DIR/daemon.kdl.log"
 DAEMON_STDOUT_LOG="$LOG_DIR/daemon.stdout.log"
@@ -285,7 +285,7 @@ echo "   完全 fresh start は: mise run daemon:stop && mise run app"
 description = "Tail VP logs (daemon + daemon stdout + app tracing + app stdout) — terminal で常時 stream 表示"
 run = """
 set -euo pipefail
-LOG_DIR="${VP_LOG_DIR:-$HOME/Library/Logs/Vantage}"
+LOG_DIR="${VP_LOG_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/vp/log}"
 mkdir -p "$LOG_DIR"
 
 # 必要な log file が無くてもエラーにならないように先に touch

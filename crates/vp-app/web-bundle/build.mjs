@@ -22,9 +22,8 @@ const common = {
   minify: !isDev,
   sourcemap: isDev ? 'inline' : false,
   logLevel: 'info',
-  // pp-content-persist follow-up: creoui-md-view/styles.css 等を文字列として import し、
-  // entry.tsx で `<style>` 注入する。 esbuild default loader は CSS を別 file 化するため、
-  // text loader に切り替えて JS bundle 内に内包する。
+  // CSS を文字列として import し entry.tsx で `<style>` 注入できるよう text loader に切替
+  // (= esbuild default loader は CSS を別 file 化するため)。 JS bundle 内に内包する。
   loader: {
     '.css': 'text',
   },

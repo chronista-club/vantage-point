@@ -7,7 +7,10 @@
 pub mod auth;
 
 use crate::auth::Claims;
-use axum::{Json, Router, routing::get};
+use axum::{
+    Json, Router,
+    routing::{get, post},
+};
 use serde::Serialize;
 
 /// crate version (= Cargo.toml `version.workspace = true` の値が compile 時に展開される)
@@ -71,6 +74,16 @@ pub struct MeResponse {
     pub scope: Option<String>,
 }
 
+/// `/v1/auth/logout` response body — logout 受領の ack。
+///
+/// JWT は self-contained / stateless なので server 側に削除すべき session state は
+/// なく、 logout は client 側で token を捨てるだけ。 本 endpoint は client 実装の
+/// API 完備性のための ack。 副作用なし、 idempotent。
+#[derive(Debug, Serialize)]
+pub struct LogoutResponse {
+    pub logged_out: bool,
+}
+
 /// `/health` handler — liveness check 兼 service identification
 async fn health() -> Json<HealthResponse> {
     Json(HealthResponse {
@@ -122,7 +135,21 @@ async fn me(claims: Claims) -> Json<MeResponse> {
     })
 }
 
+/// `/v1/auth/logout` handler — stateless logout の ack を返す。
+///
+/// 認証不要 (= 期限切れ token でも logout したい意図を尊重、 idempotent)。
+/// JWT は self-contained なので server 側に session state なく、 副作用なし。
+/// client (= vp-cli 等) は本 endpoint を呼んでから自身の token を破棄する。
+async fn logout() -> Json<LogoutResponse> {
+    Json(LogoutResponse { logged_out: true })
+}
+
 /// Axum Router を構築する。 main / test 共通エントリ。
+///
+/// nexus は protected resource として動作 (= Creo ID JWT を verify する middleware
+/// のみ持ち、 OAuth flow 自体は client (= vp-cli / vp-app / MCP client) が直接 IdP と
+/// PKCE 行う)。 これは RFC 8252 (= OAuth 2.0 for Native Apps) + MCP spec 2025-06 の
+/// Protected Resource Metadata (RFC 9728) pattern と整合する。
 pub fn app() -> Router {
     Router::new()
         .route("/health", get(health))
@@ -130,4 +157,5 @@ pub fn app() -> Router {
         .route("/v1/version", get(version))
         .route("/v1/capabilities", get(capabilities))
         .route("/v1/auth/me", get(me))
+        .route("/v1/auth/logout", post(logout))
 }

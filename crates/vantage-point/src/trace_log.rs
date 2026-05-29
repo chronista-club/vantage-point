@@ -3,7 +3,7 @@
 //! MCP プロセスと Process プロセスの両方から同一ファイルに
 //! JSON Lines 形式でログを書き出す。
 //!
-//! ログファイル: `vp_data_dir()/logs/debug.log`
+//! ログファイル: `vp_log_dir()/debug.log` (= XDG `~/.local/state/vp/log/debug.log`)
 
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
@@ -92,10 +92,9 @@ pub fn new_trace_id() -> String {
 /// ログファイルのパスを返す
 ///
 /// ディレクトリが存在しない場合は自動作成する。
-/// パス: `vp_data_dir()/logs/debug.log`
-/// VP-192: ログは生成データなので `vp_data_dir()` 配下に統一。
+/// XDG restructure: log は state zone 配下に統一。 path = `vp_log_dir()/debug.log`。
 pub fn log_file_path() -> Option<std::path::PathBuf> {
-    let log_dir = crate::config::vp_data_dir().join("logs");
+    let log_dir = crate::config::vp_log_dir();
 
     // ディレクトリがなければ作成
     if !log_dir.exists()

@@ -13,7 +13,6 @@
   "dependencies": {
     "@chronista-club/creoui-editor-host": "file:../../../../creoui/packages/editor-host",
     "creoui-icons-web": "file:../../../../creoui/packages/icons-web",
-    "creoui-md-view": "file:../../../../creoui/packages/md-view",
     "iconify-icon": "^3.0.2",
     "marked": "^18.0.3",
     "mermaid": "^11.6.0",
