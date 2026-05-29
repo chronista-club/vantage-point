@@ -62,6 +62,11 @@ async fn main() -> Result<()> {
         )
         .init();
 
+    // rustls 0.23 の process-level CryptoProvider を install (= QUIC settings server が
+    // 使う。 aws-lc-rs と ring が両方 dep graph にあるため明示が必要)。 既 install 時は
+    // Err になるが無視 (= 冪等)。 vp-cli/vp-app/vantage-point と同じ慣行。
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
     let args = Args::parse();
     let host = args.resolve_host();
     let port = args.resolve_port()?;
@@ -70,6 +75,40 @@ async fn main() -> Result<()> {
         .with_context(|| format!("invalid listen address: {host}:{port}"))?;
 
     let app = vp_nexus::app();
+
+    // JWKS を起動時に 1 回 fetch (= HTTP /v1/auth/me の Claims Extractor と
+    // settings channel の Authenticate が共に依存する)。 fetch 失敗は warn して
+    // 続行 (= JWKS endpoint 復帰まで認証系が 401 を返すだけ、 health 等は生きる)。
+    if let Err(e) = vp_nexus::auth::refresh_jwks().await {
+        tracing::warn!(error = %e, "JWKS initial fetch failed; auth will 401 until reachable");
+    }
+
+    // settings sync の unison QUIC server を axum HTTP と並走させる (= Phase A3a)。
+    // QUIC は UDP、 HTTP は TCP で OS の port 名前空間が独立するため同一 port で共存可能。
+    let settings_store = vp_nexus::settings::SettingsStore::new();
+    let quic_port = port + vp_nexus::settings::QUIC_PORT_OFFSET;
+    let quic_addr = format!("[::]:{quic_port}");
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    // shutdown_tx は process lifetime 中 hold (= drop で graceful shutdown 発火)。
+    let (_settings_shutdown_tx, settings_shutdown_rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        if let Err(e) = vp_nexus::settings::serve_settings(
+            settings_store,
+            quic_addr,
+            settings_shutdown_rx,
+            ready_tx,
+        )
+        .await
+        {
+            tracing::error!(error = %e, "settings QUIC server terminated");
+        }
+    });
+    match ready_rx.await {
+        Ok(Some(quic_local)) => {
+            tracing::info!(%quic_local, "settings QUIC listening (= Phase A3a sync)")
+        }
+        _ => tracing::warn!("settings QUIC server failed to bind"),
+    }
 
     let listener = tokio::net::TcpListener::bind(addr)
         .await

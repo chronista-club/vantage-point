@@ -1609,9 +1609,9 @@ dependencies = [
 
 [[package]]
 name = "club-unison"
-version = "1.0.0"
+version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a2045a606cfcdbd6a8d90b0a6c7b57aa500f8b5a90f0d6701466df2dfc37b565"
+checksum = "45bc35f69e395e332a3fd2c6dd10d2ac529d2d68dcacc99fb4b279410b361019"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1637,6 +1637,7 @@ dependencies = [
  "scc",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "syn 2.0.117",
  "tempfile",
  "thiserror 2.0.18",
@@ -9840,11 +9841,13 @@ dependencies = [
  "axum",
  "base64",
  "clap",
+ "club-unison",
  "http-body-util",
  "jsonwebtoken 9.3.1",
  "rand 0.8.6",
  "reqwest",
  "rsa",
+ "rustls",
  "serde",
  "serde_json",
  "tokio",

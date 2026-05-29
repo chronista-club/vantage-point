@@ -138,7 +138,10 @@ impl AuthError {
 }
 
 /// token (= Bearer 部分の string) を verify して Claims を返す。
-async fn verify_token(token: &str) -> Result<Claims, AuthError> {
+///
+/// HTTP の [`Claims`] Extractor と、 unison settings channel の `Authenticate`
+/// (= [`crate::settings`]) の両方から呼ばれる (= JWT verify path を single source 化)。
+pub async fn verify_token(token: &str) -> Result<Claims, AuthError> {
     let header = decode_header(token).map_err(|_| AuthError::InvalidToken)?;
     let kid = header.kid.ok_or(AuthError::InvalidToken)?;
 
