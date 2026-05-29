@@ -316,7 +316,101 @@ impl NodeStore {
     }
 }
 
-/// nexus が channel handler に渡す store 束 (= settings + node tree)。
+// ============================================================================
+// OR (ObjectRecords) client (= dogfood 15、 or_ref の実在検証)
+// ============================================================================
+
+/// OR record `GET /records/<uuid>` レスポンスの検証結果。
+#[derive(Debug)]
+pub enum OrValidation {
+    /// OR が record を返した (= ref 実在)
+    Found,
+    /// OR が 404 (= ref 不在)
+    NotFound,
+    /// OR が token を拒否 (= 401/403、 audience/scope 不一致の疑い)
+    Unauthorized,
+    /// OR 到達不可 / 5xx / その他 (= 検証不能)
+    Unreachable(String),
+}
+
+/// OR (ObjectRecords) への client。
+///
+/// 設計: creo-memories backend の `OR_API_BASE_URL` + `OR_FORWARD_USER_TOKEN` pattern
+/// を踏襲 ([[mem_1CbMPhsNtXgpw3hnVhP5d4]])。 `base_url` 未設定 (= `None`) なら検証無効
+/// (= dogfood 14 の挙動維持)。 設定時は **end user の token を透過 forward** して OR を
+/// 叩く (= nexus は自前 credential を持たず confused-deputy にならない、 OR が実 user で authz)。
+#[derive(Clone, Default)]
+pub struct OrClient {
+    /// OR API base URL (= env `NEXUS_OR_API_BASE_URL`、 例 `https://api.objectrecords.io`)。
+    /// `None` なら or_ref 検証を skip する。
+    base_url: Option<String>,
+}
+
+impl OrClient {
+    /// 検証無効な client (= base_url なし)。
+    pub fn disabled() -> Self {
+        Self { base_url: None }
+    }
+
+    /// base_url 明示で構築 (= test で mock OR を inject する用)。
+    pub fn new(base_url: Option<String>) -> Self {
+        Self { base_url }
+    }
+
+    /// env `NEXUS_OR_API_BASE_URL` から構築。 未設定なら検証無効。
+    pub fn from_env() -> Self {
+        Self {
+            base_url: std::env::var("NEXUS_OR_API_BASE_URL")
+                .ok()
+                .filter(|s| !s.is_empty()),
+        }
+    }
+
+    /// OR 検証が有効か (= base_url 設定済)。
+    pub fn is_enabled(&self) -> bool {
+        self.base_url.is_some()
+    }
+
+    /// or_ref (= OR record uuid) が OR に実在するか、 user token を forward して検証。
+    /// base_url 未設定なら検証 skip で [`OrValidation::Found`] 扱い (= 機能 off)。
+    pub async fn validate_ref(&self, or_ref: &str, user_token: &str) -> OrValidation {
+        let Some(base) = &self.base_url else {
+            return OrValidation::Found; // 検証無効 = 素通し
+        };
+        let url = format!("{}/records/{}", base.trim_end_matches('/'), or_ref);
+        let client = match reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+        {
+            Ok(c) => c,
+            Err(e) => return OrValidation::Unreachable(format!("client build: {e}")),
+        };
+        match client
+            .get(&url)
+            .header("authorization", format!("Bearer {user_token}"))
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                let status = resp.status();
+                if status.is_success() {
+                    OrValidation::Found
+                } else if status == reqwest::StatusCode::NOT_FOUND {
+                    OrValidation::NotFound
+                } else if status == reqwest::StatusCode::UNAUTHORIZED
+                    || status == reqwest::StatusCode::FORBIDDEN
+                {
+                    OrValidation::Unauthorized
+                } else {
+                    OrValidation::Unreachable(format!("OR returned {status}"))
+                }
+            }
+            Err(e) => OrValidation::Unreachable(format!("request failed: {e}")),
+        }
+    }
+}
+
+/// nexus が channel handler に渡す store 束 (= settings + node tree + OR client)。
 ///
 /// `serve_settings` で 1 個作り、 register_channel closure に clone して渡す。
 /// 新しい store を足すときはここに field を追加する。
@@ -324,11 +418,21 @@ impl NodeStore {
 pub struct NexusStores {
     pub settings: SettingsStore,
     pub nodes: NodeStore,
+    pub or_client: OrClient,
 }
 
 impl NexusStores {
+    /// 全 store default (= OR 検証無効)。 test の基本形。
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// production 用 — OR client を env から構築 (= 他 store は default)。
+    pub fn from_env() -> Self {
+        Self {
+            or_client: OrClient::from_env(),
+            ..Self::default()
+        }
     }
 }
 
@@ -359,11 +463,13 @@ async fn authenticate(payload: &serde_json::Value) -> Result<String, String> {
 
 /// 認証済 session の method dispatch (= settings Get/Set + node tree 操作)。
 ///
-/// 認証は呼び出し元 (= `run_settings_channel`) が済ませ、 ここには検証済 `sub` が渡る。
-/// 未知 method は error response を返す (= 認証前と区別される)。
+/// 認証は呼び出し元 (= `run_settings_channel`) が済ませ、 ここには検証済 `sub` と
+/// raw `token` (= OR forward 用) が渡る。 未知 method は error response を返す
+/// (= 認証前と区別される)。
 async fn dispatch_authed(
     stores: &NexusStores,
     sub: &str,
+    token: &str,
     method: &str,
     payload: &serde_json::Value,
 ) -> serde_json::Value {
@@ -381,7 +487,7 @@ async fn dispatch_authed(
             }
         },
 
-        // --- node tree (= OR file grouping、 dogfood 14) ---
+        // --- node tree (= OR file grouping、 dogfood 14 + OR 実連携 dogfood 15) ---
         "NodeCreate" => {
             let name = match payload.get("name").and_then(|v| v.as_str()) {
                 Some(n) => n.to_string(),
@@ -395,6 +501,26 @@ async fn dispatch_authed(
                 .get("or_ref")
                 .and_then(|v| v.as_str())
                 .map(String::from);
+
+            // or_ref があれば OR に実在検証 (= base_url 未設定なら素通し)。
+            // user token を forward して OR を叩く (= confused-deputy 回避、 OR が実 user authz)。
+            if let Some(r) = &or_ref {
+                match stores.or_client.validate_ref(r, token).await {
+                    OrValidation::Found => {}
+                    OrValidation::NotFound => {
+                        return err_value(format!("or_ref not found in OR: {r}"));
+                    }
+                    OrValidation::Unauthorized => {
+                        return err_value(
+                            "OR rejected the token (audience/scope mismatch?)".to_string(),
+                        );
+                    }
+                    OrValidation::Unreachable(e) => {
+                        return err_value(format!("OR validation failed: {e}"));
+                    }
+                }
+            }
+
             match stores.nodes.create(sub, parent, name, or_ref).await {
                 Ok(node) => serde_json::json!({ "node": node }),
                 Err(e) => err_value(e),
@@ -459,7 +585,8 @@ async fn run_settings_channel(
 ) -> Result<(), NetworkError> {
     // この変数は per-connection task の stack 上にあり、 QUIC stream 1 本 = 1 session
     // なので splice 不能。 一度束ねれば session 終了まで信頼してよい。
-    let mut authenticated_sub: Option<String> = None;
+    // (sub, raw token) を保持: token は OR への forward (= dogfood 15) に使う。
+    let mut session: Option<(String, String)> = None;
 
     loop {
         let msg = match channel.recv().await {
@@ -475,18 +602,26 @@ async fn run_settings_channel(
         let payload = msg.payload_as_value().unwrap_or_default();
 
         let response: serde_json::Value = match method.as_str() {
-            "Authenticate" => match authenticate(&payload).await {
-                Ok(sub) => {
-                    authenticated_sub = Some(sub.clone());
-                    serde_json::json!({ "sub": sub })
+            "Authenticate" => {
+                // raw token も束ねる (= OR forward 用)、 検証は authenticate 内で実施
+                let token = payload
+                    .get("token")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                match authenticate(&payload).await {
+                    Ok(sub) => {
+                        session = Some((sub.clone(), token));
+                        serde_json::json!({ "sub": sub })
+                    }
+                    // 失敗時は session を束ねない (= locked 維持)
+                    Err(e) => err_value(e),
                 }
-                // 失敗時は sub を束ねない (= session locked 維持)
-                Err(e) => err_value(e),
-            },
+            }
             // Authenticate 以外は全て認証必須 → dispatch_authed が method dispatch + unknown
-            _ => match authenticated_sub.as_deref() {
+            _ => match &session {
                 None => err_value("unauthenticated: send Authenticate first"),
-                Some(sub) => dispatch_authed(&stores, sub, &method, &payload).await,
+                Some((sub, token)) => dispatch_authed(&stores, sub, token, &method, &payload).await,
             },
         };
 
@@ -590,20 +725,21 @@ mod tests {
     async fn dispatch_get_then_set_then_get() {
         let stores = NexusStores::new();
         // 初期 Get
-        let g0 = dispatch_authed(&stores, "u", "Get", &serde_json::json!({})).await;
+        let g0 = dispatch_authed(&stores, "u", "tok", "Get", &serde_json::json!({})).await;
         assert_eq!(g0["version"], 0);
         assert_eq!(g0["kdl"], "");
         // Set
         let s1 = dispatch_authed(
             &stores,
             "u",
+            "tok",
             "Set",
             &serde_json::json!({"kdl": "theme \"dark\""}),
         )
         .await;
         assert_eq!(s1["version"], 1);
         // 再 Get
-        let g1 = dispatch_authed(&stores, "u", "Get", &serde_json::json!({})).await;
+        let g1 = dispatch_authed(&stores, "u", "tok", "Get", &serde_json::json!({})).await;
         assert_eq!(g1["kdl"], "theme \"dark\"");
         assert_eq!(g1["version"], 1);
     }
@@ -611,7 +747,7 @@ mod tests {
     #[tokio::test]
     async fn dispatch_set_missing_kdl_returns_error() {
         let stores = NexusStores::new();
-        let r = dispatch_authed(&stores, "u", "Set", &serde_json::json!({})).await;
+        let r = dispatch_authed(&stores, "u", "tok", "Set", &serde_json::json!({})).await;
         assert!(r.get("error").is_some());
     }
 
@@ -795,6 +931,7 @@ mod tests {
         let created = dispatch_authed(
             &stores,
             "u",
+            "tok",
             "NodeCreate",
             &serde_json::json!({"name": "docs"}),
         )
@@ -802,7 +939,51 @@ mod tests {
         assert_eq!(created["node"]["id"], "n1");
         assert_eq!(created["node"]["name"], "docs");
 
-        let tree = dispatch_authed(&stores, "u", "TreeGet", &serde_json::json!({})).await;
+        let tree = dispatch_authed(&stores, "u", "tok", "TreeGet", &serde_json::json!({})).await;
         assert_eq!(tree["nodes"].as_array().unwrap().len(), 1);
+    }
+
+    // === OR client (= dogfood 15) ===
+
+    #[tokio::test]
+    async fn or_client_disabled_passes_through() {
+        // base_url 未設定 = 検証無効 → 常に Found
+        let c = OrClient::disabled();
+        assert!(!c.is_enabled());
+        assert!(matches!(
+            c.validate_ref("any-uuid", "tok").await,
+            OrValidation::Found
+        ));
+    }
+
+    #[tokio::test]
+    async fn dispatch_node_create_with_or_disabled_skips_validation() {
+        // OR 無効な NexusStores では or_ref ありでも create 成功 (= dogfood 14 挙動)
+        let stores = NexusStores::new();
+        let r = dispatch_authed(
+            &stores,
+            "u",
+            "tok",
+            "NodeCreate",
+            &serde_json::json!({"name": "f", "or_ref": "or-uuid-x"}),
+        )
+        .await;
+        assert_eq!(r["node"]["or_ref"], "or-uuid-x");
+    }
+
+    #[test]
+    fn or_client_from_env_respects_unset() {
+        // env 未設定なら disabled (= base_url None)。 単一 test で env を触り race 回避 (N4)。
+        unsafe {
+            std::env::remove_var("NEXUS_OR_API_BASE_URL");
+        }
+        assert!(!OrClient::from_env().is_enabled());
+        unsafe {
+            std::env::set_var("NEXUS_OR_API_BASE_URL", "https://api.objectrecords.io");
+        }
+        assert!(OrClient::from_env().is_enabled());
+        unsafe {
+            std::env::remove_var("NEXUS_OR_API_BASE_URL");
+        }
     }
 }
