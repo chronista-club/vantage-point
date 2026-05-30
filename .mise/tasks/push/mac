@@ -34,4 +34,4 @@ else
   VP.sh "gh release create '#{tag}' '#{archive}' --title '#{tag}' --generate-notes --latest"
 end
 
-VP.log "✅ pushed: #{archive} → release #{tag}"
+VP.log "#{VP.icon(:ok)} pushed: #{archive} → release #{tag}"

@@ -9,4 +9,4 @@ require File.join(ENV.fetch("MISE_PROJECT_ROOT"), "scripts/mise/vp.rb")
 
 VP.log "Building vp-cli (vp binary) + install to ~/.cargo/bin…"
 VP.sh "cargo install --path crates/vp-cli"
-VP.log "✅ Installed: #{VP.cargo_bin('vp')}"
+VP.log "#{VP.icon(:ok)} Installed: #{VP.cargo_bin('vp')}"

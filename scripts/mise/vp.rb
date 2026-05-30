@@ -17,6 +17,41 @@
 #   - calculations = 純粋関数 (path 計算のみ、 副作用なし)
 #   - actions      = sh / exec / die / log (副作用あり)
 module VP
+  # ── コンソール annotation の semantic icon registry ──────────────────────────
+  #
+  # 「意味 → glyph」を 1 箇所に集約し、 task は `VP.icon(:build)` / helper は `Icon[:ok]` の
+  # ように **意味名** で呼ぶ (= console 表示の icon 選択肢を「名前」で広げる)。 glyph は Nerd Font
+  # (Material Design Icons 主軸 = Phosphor に近い line-icon) の PUA codepoint で、 install 済の
+  # Nerd Font (creo-tokens.css の `--typography-family-mono` primary、 例 FiraCode NF) で実描画される。
+  # 全 codepoint は FiraCode Nerd Font で実在確認済 (2026-05-30)。
+  #
+  # Nerd Font 不在環境 (一部 CI 等) は `VP_ICONS=ascii` で ASCII に degrade。 将来 Phosphor-exact
+  # 化は Phosphor を cell-fit patch して各値を Phosphor PUA に差し替えるだけ (呼び出し側は不変)。
+  module Icon
+    # name => [Nerd Font glyph, ASCII fallback]
+    SET = {
+      ok:     ["\u{F05E0}", "[ok]"],    # md-check-circle
+      err:    ["\u{F0159}", "[x]"],     # md-close-circle
+      warn:   ["\u{F0026}", "[!]"],     # md-alert
+      info:   ["\u{F02FC}", "[i]"],     # md-information
+      arrow:  ["\u{F0142}", ">"],       # md-chevron-right (progress bullet)
+      build:  ["\u{F08E4}", "[build]"], # md-hammer
+      rocket: ["\u{F0AB6}", "[spawn]"], # md-rocket
+      bomb:   ["\u{F0691}", "[kill]"],  # md-bomb
+      stop:   ["\u{F0666}", "[stop]"],  # md-stop-circle
+      sync:   ["\u{F04E6}", "[~]"],     # md-sync
+      note:   ["\u{F09A8}", "-"],       # md-note-text
+      folder: ["\u{F07B}",  "[d]"],     # fa-folder
+      test:   ["\u{F0668}", "[test]"],  # md-test-tube
+    }.freeze
+
+    # Nerd Font 不在環境向け ASCII degrade (VP_ICONS=ascii)。
+    GLYPH = SET.transform_values { |(nf, asc)| ENV["VP_ICONS"] == "ascii" ? asc : nf }.freeze
+
+    # 意味名 → glyph。 未知名は "?" に degrade (壊さない)。
+    def self.[](name) = GLYPH.fetch(name, "?")
+  end
+
   module_function
 
   # ── calculations (純粋) ───────────────────────────────────
@@ -34,12 +69,15 @@ module VP
 
   # ── actions (副作用) ──────────────────────────────────────
 
-  # 進捗ログ (cyan ▶)。 task の stdout を汚さないよう stderr へ。
-  def log(msg) = warn("\e[36m▶\e[0m #{msg}")
+  # semantic icon glyph を返す (task 側: `VP.log "#{VP.icon(:build)} Building…"`)。
+  def icon(name) = Icon[name]
+
+  # 進捗ログ (cyan chevron)。 task の stdout を汚さないよう stderr へ。
+  def log(msg) = warn("\e[36m#{Icon[:arrow]}\e[0m #{msg}")
 
   # error を stderr に出して非ゼロ終了 (bash の `echo … >&2; exit 1` 相当)。
   def die(msg, code: 1)
-    warn("\e[31m✗\e[0m #{msg}")
+    warn("\e[31m#{Icon[:err]}\e[0m #{msg}")
     exit(code)
   end
 

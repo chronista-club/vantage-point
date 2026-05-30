@@ -31,5 +31,5 @@ pid = Process.spawn(vp, "daemon", "start",
                     pgroup: true, in: File::NULL,
                     out: [stdout_log, "a"], err: %i[child out])
 Process.detach(pid) # zombie 回収 (= shell job table から外す disown 相当)
-VP.log "✅ daemon spawned (PID=#{pid})"
+VP.log "#{VP.icon(:ok)} daemon spawned (PID=#{pid})"
 VP.log "tail: mise run logs"
