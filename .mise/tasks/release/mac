@@ -39,7 +39,12 @@ VP.log "#{VP.icon(:rocket)} release:mac #{tag}#{DRY ? '  (DRY: notarize/publish 
   VP.die("Developer ID cert 不在: #{SIGN_ID}\n  keychain に Anycreative の Developer ID Application 証明書を import してください")
 
 # ── 1. build (release, arm64) ──────────────────────────────────
-VP.sh "cargo build --release --target #{TARGET} -p vp-app -p vp-cli"
+# VP_RELEASE_SKIP_BUILD=1 で既存 binary を使い build を skip (CI / メモリ逼迫時の検証用)。
+if ENV["VP_RELEASE_SKIP_BUILD"] == "1"
+  VP.log "#{VP.icon(:info)} VP_RELEASE_SKIP_BUILD=1 — cargo build を skip (既存 binary 前提)"
+else
+  VP.sh "cargo build --release --target #{TARGET} -p vp-app -p vp-cli"
+end
 rel = "target/#{TARGET}/release"
 VP.need_exec(File.join(rel, "vp-app"), hint: "build 失敗?")
 VP.need_exec(File.join(rel, "vp"),     hint: "build 失敗?")
@@ -103,7 +108,11 @@ FileUtils.cp_r(app, File.join(stage, APP_BUNDLE))
 File.symlink("/Applications", File.join(stage, "Applications")) rescue nil
 dmg = File.join(dist, "VantagePoint-#{version}-arm64.dmg")
 FileUtils.rm_f(dmg)
-VP.sh "hdiutil create -volname '#{APP}' -srcfolder '#{stage}' -ov -format UDZO '#{dmg}'"
+# hdiutil の auto-size は content ぴったりで HFS overhead 分溢れる (No space) ので、
+# staging サイズ ×2 + 50MB の余裕を明示。 UDZO 圧縮されるので最終 dmg は膨らまない。
+stage_mb = `du -sm '#{stage}'`.to_i
+dmg_size = [stage_mb * 2 + 50, 200].max
+VP.sh "hdiutil create -size #{dmg_size}m -volname '#{APP}' -srcfolder '#{stage}' -ov -format UDZO '#{dmg}'"
 VP.sh "codesign --force --timestamp -s '#{SIGN_ID}' '#{dmg}'"
 VP.log "#{VP.icon(:ok)} dmg: #{dmg}"
 
