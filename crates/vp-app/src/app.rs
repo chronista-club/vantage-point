@@ -1347,9 +1347,8 @@ pub fn run() -> anyhow::Result<()> {
     // Sidebar
     let sidebar_ipc_proxy = event_loop.create_proxy();
     let sidebar = WebViewBuilder::new()
-        // Phase 5-C: vp-asset:// custom protocol で bundled font (FONT_ASSETS) + sidebar.html を配信。
-        // serve() に SIDEBAR_ASSETS を渡すと FONT_ASSETS と chain して両方 lookup される。
-        // HTML 自体も同 scheme から読むことで page origin = vp-asset:// に統一、 font fetch も同一 origin。
+        // vp-asset:// custom protocol で sidebar.html / sidebar.bundle.js を配信 (serve に SIDEBAR_ASSETS)。
+        // HTML 自体も同 scheme から読むことで page origin = vp-asset:// に統一。
         .with_custom_protocol("vp-asset".to_string(), move |id, request| {
             crate::web_assets::serve(id, request, SIDEBAR_ASSETS)
         })
