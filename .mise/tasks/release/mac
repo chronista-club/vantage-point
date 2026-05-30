@@ -28,7 +28,8 @@ TARGET     = "aarch64-apple-darwin"
 SIGN_ID    = "Developer ID Application: Anycreative Inc. (3EQKG4B352)"
 NOTARY     = "vp-notary"
 MIN_MACOS  = "11.0"
-DRY        = ENV["VP_RELEASE_DRY"] == "1"
+DRY        = ENV["VP_RELEASE_DRY"] == "1"          # build/sign/dmg だけ (notarize/publish skip)
+NO_PUBLISH = ENV["VP_RELEASE_NO_PUBLISH"] == "1"   # notarize+staple まで (gh publish だけ skip)
 
 version = File.read("Cargo.toml")[/^version = "([^"]+)"/, 1] or VP.die("version が Cargo.toml に見つかりません")
 tag = "v#{version}"
@@ -130,6 +131,13 @@ system("xcrun", "notarytool", "submit", dmg, "--keychain-profile", NOTARY, "--wa
 VP.sh "xcrun stapler staple '#{dmg}'"
 VP.sh "spctl -a -t open --context context:primary-signature -vvv '#{dmg}'"
 VP.log "#{VP.icon(:ok)} notarized & stapled"
+
+if NO_PUBLISH
+  sha = Digest::SHA256.file(dmg).hexdigest
+  VP.log "#{VP.icon(:info)} VP_RELEASE_NO_PUBLISH=1 — gh publish skip。 notarized dmg = #{dmg}"
+  warn "  sha256: #{sha}"
+  exit 0
+end
 
 # ── 6. GitHub Release publish (portal DL / cask の source) ──────
 if system("gh", "release", "view", tag, out: File::NULL, err: File::NULL)
