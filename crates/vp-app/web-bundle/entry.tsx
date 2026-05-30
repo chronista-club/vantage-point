@@ -240,7 +240,7 @@ const historyStripStyle = document.createElement("style");
 historyStripStyle.textContent = HISTORY_STRIP_CSS;
 document.head.appendChild(historyStripStyle);
 
-// pp-content-persist follow-up: PP body の typography を **みぞれ / みぞれ 等幅** に固定。
+// pp-content-persist follow-up: PP body の等幅 font (code/pre + mermaid-error) を **墨東レラ等幅 (TLT-BokutohReraMono)** に置き換え。 本文は みぞれ (Mizolet) のまま。
 // system install 済の font family を `font-family` 直指定 (= vp-asset:// 経由の font fetch 不要)。
 // Mizolet (英字 family 名) も並記して、 system locale に依らず引けるように。
 // marked-based revert (2026-05-28): selector は marked が #pp-content 直下に吐く要素に向ける
@@ -268,7 +268,7 @@ ppFontStyle.textContent = `
 }
 #pp-content code,
 #pp-content pre {
-  font-family: 'Mizolet-Mono', 'みぞれ 等幅', 'VPMono35', monospace;
+  font-family: 'TLT-BokutohReraMono-4', 'TLT-BokutohReraMono', 'TLT-墨東レラ等幅', 'Mizolet-Mono', 'みぞれ 等幅', 'VPMono35', monospace;
 }
 /* PP body の base font-size を 1 段上げる (= creoui token chain: base → l)。
    fallback で 1.125em (= 16→18px 相当)。 #pp-content scope 内のみ override し
@@ -281,7 +281,7 @@ ppFontStyle.textContent = `
 #pp-content .creo-md-mermaid { margin: 1em 0; }
 #pp-content .creo-md-mermaid svg { max-width: 100%; height: auto; }
 #pp-content .creo-md-mermaid-error {
-  font-family: 'みぞれ 等幅', 'Mizolet-Mono', monospace;
+  font-family: 'TLT-BokutohReraMono-4', 'TLT-BokutohReraMono', 'みぞれ 等幅', 'Mizolet-Mono', monospace;
   color: var(--color-text-secondary, #c66);
   background: var(--color-surface-bg-subtle, #1a1a22);
   padding: 8px; border-radius: 4px; white-space: pre-wrap;
