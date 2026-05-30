@@ -287,7 +287,8 @@ echo "ℹ️  WiX MSI + Authenticode 署名 + winget manifest は Phase W4 (VP-9
 # 同名 asset 上書き (再 build/再 push 可能)。
 # =============================================================================
 
-# push:mac は file-based task に移行 (.mise/tasks/push/mac、 2026-05-30)。
+# release:mac (.mise/tasks/release/mac) ─ Phase B: notarized .dmg full pipeline (旧 push:mac を格上げ)。
+# push:win → release:win への統合は follow-up (Windows 検証要)。
 
 [tasks."push:win"]
 description = "Windows native build (vp + vp-app + WebView2Loader.dll) を GitHub Release に upload — Windows machine 上で実行"
