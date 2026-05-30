@@ -5,6 +5,8 @@
 rust = "1.95.0"
 node = "22"
 bun = "latest"
+# Ruby: Gold Experience (埋め込み Ruby VM) + file-based mise task の script runtime (2026-05-30 追加、 4 系 stable)
+ruby = "4.0.5"
 
 [env]
 VANTAGE_ROOT = "{{config_root}}"
@@ -15,13 +17,9 @@ _.file = ".env"
 [settings]
 windows_default_inline_shell_args = "bash -c"
 
-[tasks.build]
-description = "Build Rust crates"
-run = "cargo build"
+# build は file-based task に移行 (.mise/tasks/build、 標準 Ruby runtime、 2026-05-30 PoC 第1号)。
 
-[tasks.test]
-description = "Run tests"
-run = "cargo test"
+# test も file-based task に移行 (.mise/tasks/test、 標準 Ruby runtime、 2026-05-30)。
 
 # Phase 3-C (2026-04-27) で削除:
 #   [tasks.mac] / [tasks."app:swift"] / [tasks."mac:build"] / [tasks."mac:release"]
@@ -46,37 +44,11 @@ run = "cargo test"
 #   `mise run app:build` (or `mise run app`) を経由しないと反映されない。
 #   `vp app stop && vp app start` の relaunch だけでは古いバイナリが走り続ける。
 
-[tasks."app:build"]
-description = "vp-app GUI binary を release build + ~/.cargo/bin に install (codesign 付与、 PATH 経由でも fresh)"
-run = """
-set -euo pipefail
-echo "🔨 Building vp-app (release) + install to ~/.cargo/bin..."
-# cargo install --path で codesign 付き binary を $CARGO_HOME/bin (PATH) に配置。
-# cp だと codesign が剥がれて macOS に kill される (CLAUDE.md feedback 参照) ため install 経由必須。
-# build artifact (target/) も副産物として生成される ─ shell の `vp` も `mise run` 系も同じ source。
-cargo install --path crates/vp-app
-echo "✅ Installed: $HOME/.cargo/bin/vp-app"
-"""
+# app:build は file-based task に移行 (.mise/tasks/app/build、 2026-05-30)。
 
-[tasks."app:start"]
-description = "vp-app GUI を起動 (`vp app start`、 spawn + 即 exit、 ~/.cargo/bin/vp{,-app} 前提)"
-run = """
-set -euo pipefail
-VP_APP_BIN="$HOME/.cargo/bin/vp-app"
-VP_BIN="$HOME/.cargo/bin/vp"
-[ -x "$VP_APP_BIN" ] || { echo "❌ vp-app binary not found: $VP_APP_BIN — 先に 'mise run app:build'" >&2; exit 1; }
-[ -x "$VP_BIN" ]     || { echo "❌ vp binary not found: $VP_BIN — 先に 'mise run cli:build'" >&2; exit 1; }
+# app:start は file-based task に移行 (.mise/tasks/app/start、 2026-05-30)。
 
-# 2026-05-07 single source of truth 統一: `~/.cargo/bin/` の codesign 済 binary を使う
-# (旧: target/release から spawn してたが、 shell の vp と dual source で drift する罠あり)。
-# `vp app start` に VP_APP_BIN env で binary path を明示、 vp は spawn + 親即 exit。
-# ログ観察は `mise run logs` で 3 file (daemon / app tracing / app stdout) を集約 tail。
-exec env VP_APP_BIN="$VP_APP_BIN" "$VP_BIN" app start
-"""
-
-[tasks."app:stop"]
-description = "vp-app GUI を停止 (`vp app stop` の thin wrapper、 daemon / tmux / SP は触らない)"
-run = "exec $HOME/.cargo/bin/vp app stop"
+# app:stop は file-based task に移行 (.mise/tasks/app/stop、 2026-05-30)。
 
 [tasks."app"]
 description = "vp-app を build → 既存 app stop → app start (daemon は touch しない、 daemon 再起動は `mise run daemon`)"
@@ -97,122 +69,12 @@ mise run app:start
 # `vp daemon start` は SP / tmux session の owner。 stop は cascade で背負ってる
 # subsystem 全部 (SP プロセス + Lane tmux session + daemon 本体) を一括停止する。
 
-[tasks."cli:build"]
-description = "vp binary (vp-cli: TheWorld daemon + CLI commands) を release build + ~/.cargo/bin に install"
-run = """
-set -euo pipefail
-echo "🔨 Building vp-cli (vp binary) + install to ~/.cargo/bin..."
-# cargo install --path で codesign 付きで $CARGO_HOME/bin に配置。
-# shell `vp ps` 等と mise task 系で source 共通化、 dual source drift 防止。
-cargo install --path crates/vp-cli
-echo "✅ Installed: $HOME/.cargo/bin/vp"
-"""
+# cli:build は file-based task に移行 (.mise/tasks/cli/build、 2026-05-30)。
 
-[tasks."daemon:start"]
-description = "TheWorld daemon を background spawn (nohup detach、 task は即 exit、 log は logs task で tail)"
-run = """
-set -euo pipefail
-LOG_DIR="${VP_LOG_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/vp/log}"
-mkdir -p "$LOG_DIR"
-export VP_DAEMON_LOG_FILE="$LOG_DIR/daemon.kdl.log"
-DAEMON_STDOUT_LOG="$LOG_DIR/daemon.stdout.log"
-touch "$VP_DAEMON_LOG_FILE" "$DAEMON_STDOUT_LOG"
+# daemon:start は file-based task に移行 (.mise/tasks/daemon/start、 2026-05-30)。
 
-VP_BIN="$HOME/.cargo/bin/vp"
-[ -x "$VP_BIN" ] || { echo "❌ vp binary not found: $VP_BIN — 先に 'mise run cli:build'" >&2; exit 1; }
-
-# 既存 daemon が居る場合は user が事前に `mise run daemon:stop` で止めるか、
-# `vp daemon stop && mise run daemon:start` のように合成する。 restart は CLI に持たない方針
-# (user 指示: 「restart いらない、 build -> start -> stop が cli で回ってから」 2026-04-30)。
-#
-# 2026-05-07 background detach 化 (旧: foreground blocking で task が log tail まで持っていた):
-#   user 指示「task 自体はバックエンドで daemon 立てたら終了するようにして欲しい」
-#   nohup + & + disown で controlling tty / parent process group から切り離して spawn、
-#   structured log は VP_DAEMON_LOG_FILE (tracing 経由 KDL)、 stdout/stderr (panic 等) は別 file。
-#   Log 観察は `mise run logs` で 3+1 file を tail。
-echo "📝 daemon log: $VP_DAEMON_LOG_FILE"
-echo "📝 daemon stdout: $DAEMON_STDOUT_LOG"
-echo "🚀 Spawning daemon (nohup + disown、 task 即 exit)..."
-nohup "$VP_BIN" daemon start </dev/null >>"$DAEMON_STDOUT_LOG" 2>&1 &
-DAEMON_PID=$!
-disown || true  # bash は内蔵、 sh だと no-op (失敗しても無視)
-echo "✅ daemon spawned (PID=$DAEMON_PID)"
-echo "ℹ️  tail: mise run logs"
-"""
-
-# tmux session は SP / daemon を kill しても tmux server に保持され続けるため、
-# `tmux new-session -A -c {cwd}` で attach 経路に乗ると古い cwd を引き継ぐ罠がある。
-# (commit 1556868 で `-c` を追加したが、 fix 適用前に作成済 session には反映されない)
-# `daemon:stop` は SP / daemon に加えて Lane tmux session (vp-*/hd-*/th-* prefix) も kill して、
-# 次回 `mise run app` で全 lane を fix 済 path で再生成させる。
-# 対象外: TUI mode (`vp start`) が作る `{project}-vp` suffix 形式の session — `tmux.rs::session_name`
-# が `start.rs` で `-c {project_dir}` 付きで作成しており、 cwd 継承罠の罹患対象ではないため。
-[tasks."daemon:stop"]
-description = "TheWorld daemon + 裏で動く SP プロセス + Lane tmux session を一括停止 (旧 nuke 相当)"
-run = """
-set -euo pipefail
-
-VP_BIN="$HOME/.cargo/bin/vp"
-
-echo "💣 Vantage Point daemon + 関連プロセス停止 (cascade kill)..."
-echo ""
-
-# ── [1/3] SP プロセスを kill (sys:sp-kill 同等処理を inline 展開) ──────────
-echo "🔄 [1/3] 全 SP プロセス検出..."
-SP_PIDS=$(pgrep -f 'vp sp start' 2>/dev/null || true)
-if [ -z "$SP_PIDS" ]; then
-  echo "   ℹ️  実行中の SP プロセスはありません"
-else
-  echo "   📋 検出した SP:"
-  ps -p $SP_PIDS -o pid,etime,start,command 2>/dev/null | sed 's/^/      /' | head -20 || true
-  echo "   🛑 SIGTERM 送信..."
-  kill -TERM $SP_PIDS 2>/dev/null || true
-  sleep 2
-  REMAINING=$(pgrep -f 'vp sp start' 2>/dev/null || true)
-  if [ -n "$REMAINING" ]; then
-    echo "   🔨 残存に SIGKILL: $REMAINING"
-    kill -KILL $REMAINING 2>/dev/null || true
-    sleep 1
-  fi
-  echo "   ✅ SP kill 完了"
-fi
-echo ""
-
-# ── [2/3] VP-managed tmux session を kill ─────────────────────────────────────
-# 命名 convention (lanes_state.rs::tmux_session_name):
-#   vp-{project}-{lane}-{stand}
-#   e.g. vp-vantage-point-lead-hd, vp-vantage-point-sub-hd, vp-vp-lead-th
-# `vp-` prefix で user 自前 tmux session (project 名そのまま等) と確実分離。
-# 旧 prefix (hd-*/th-*) は legacy: rename 前に作成済 session の cleanup のため併記する
-# (新形式では生成されないので残しても害なし、 migration 完了後も safe)。
-echo "🔄 [2/3] VP-managed tmux session 検出 (vp-* prefix、 legacy hd-*/th-* 含む)..."
-VP_SESSIONS=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -E '^(vp-|hd-|th-)' || true)
-if [ -z "$VP_SESSIONS" ]; then
-  echo "   ℹ️  VP-managed tmux session はありません"
-else
-  echo "   📋 kill 対象:"
-  echo "$VP_SESSIONS" | sed 's/^/      /'
-  echo "$VP_SESSIONS" | while IFS= read -r s; do
-    [ -n "$s" ] && tmux kill-session -t "$s" 2>/dev/null || true
-  done
-  echo "   ✅ tmux session kill 完了"
-fi
-echo ""
-
-# ── [3/3] TheWorld daemon を停止 ──────────────────────────────────────────────
-echo "🔄 [3/3] TheWorld daemon 停止..."
-if [ -x "$VP_BIN" ]; then
-  "$VP_BIN" daemon stop 2>/dev/null && echo "   ✅ daemon stop 完了" \\
-    || echo "   ℹ️  daemon は既に停止しているか、 reach 不能"
-else
-  echo "   ⚠️  vp binary 不在 ($VP_BIN) — daemon stop スキップ"
-  echo "      build 済なら 'mise run cli:build' 後に再実行してください"
-fi
-echo ""
-
-echo "💥 daemon + 関連プロセス停止完了。"
-echo "ℹ️  再起動: mise run app"
-"""
+# daemon:stop は file-based task に移行 (.mise/tasks/daemon/stop、 2026-05-30)。
+# (tmux session kill の根拠 — cwd 継承罠 / vp- prefix 分離 — は ruby file の [2/3] コメントに移設。)
 
 [tasks."daemon"]
 description = "vp binary を build → 既存 daemon を cascade stop → daemon を background spawn (full restart、 `mise run daemon && mise run app` で諸々再起動)"
@@ -238,68 +100,13 @@ mise run daemon:start
 # 一方 `sys:sp-kill` は SP だけ叩き直す sniper kill。 daemon は維持したまま
 # binary 入替後の re-register / ghost SP cleanup に使う (daemon 再起動は重い)。
 
-[tasks."sys:sp-kill"]
-description = "全 SP (vp sp start ...) を graceful kill (daemon は維持、 ghost SP cleanup や binary 入替時)"
-run = """
-set -euo pipefail
-echo "🔄 全 SP プロセス検出..."
-
-# vp sp start ... に matching する PID を列挙
-SP_PIDS=$(pgrep -f 'vp sp start' 2>/dev/null || true)
-
-if [ -z "$SP_PIDS" ]; then
-  echo "ℹ️  実行中の SP プロセスはありません"
-  exit 0
-fi
-
-echo "📋 検出した SP プロセス:"
-ps -p $SP_PIDS -o pid,etime,start,command 2>/dev/null | head -20 || true
-
-echo ""
-echo "🛑 SIGTERM 送信 (graceful shutdown 経由で PtySlot Drop = child claude も kill)..."
-kill -TERM $SP_PIDS 2>/dev/null || true
-
-# graceful shutdown 待機 (claude CLI session save 等が走る時間)
-sleep 2
-
-# 残存 check
-REMAINING=$(pgrep -f 'vp sp start' 2>/dev/null || true)
-if [ -n "$REMAINING" ]; then
-  echo "⚠️  graceful kill でも残存している SP があります: $REMAINING"
-  echo "🔨 SIGKILL で強制終了..."
-  kill -KILL $REMAINING 2>/dev/null || true
-  sleep 1
-fi
-
-echo "✅ SP all-kill 完了"
-echo ""
-echo "ℹ️  TheWorld が動いていれば、 expand 等で auto-spawn が走り次回 register。"
-echo "   完全 fresh start は: mise run daemon:stop && mise run app"
-"""
+# sys:sp-kill は file-based task に移行 (.mise/tasks/sys/sp-kill、 2026-05-30)。
 
 # =============================================================================
 # logs ─ daemon + vp-app の log を 4 file 同時 tail
 # =============================================================================
 
-[tasks.logs]
-description = "Tail VP logs (daemon + daemon stdout + app tracing + app stdout) — terminal で常時 stream 表示"
-run = """
-set -euo pipefail
-LOG_DIR="${VP_LOG_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/vp/log}"
-mkdir -p "$LOG_DIR"
-
-# 必要な log file が無くてもエラーにならないように先に touch
-# (新規 process が立ち上がる前に tail -F が file を見つけられるように)
-touch "$LOG_DIR/daemon.kdl.log" "$LOG_DIR/daemon.stdout.log" "$LOG_DIR/app.kdl.log" "$LOG_DIR/app.stdout.log"
-
-echo "📝 Tailing 4 files:"
-echo "   daemon.kdl.log     (TheWorld + SP tracing、 KDL structured)"
-echo "   daemon.stdout.log  (daemon stdout/stderr、 panic 等の chaotic 出力)"
-echo "   app.kdl.log        (vp-app tracing、 KDL structured)"
-echo "   app.stdout.log     (vp-app stdout/panic)"
-echo "─────────────────────────────────────────────────"
-exec tail -F "$LOG_DIR/daemon.kdl.log" "$LOG_DIR/daemon.stdout.log" "$LOG_DIR/app.kdl.log" "$LOG_DIR/app.stdout.log"
-"""
+# logs は file-based task に移行 (.mise/tasks/logs、 2026-05-30)。
 
 [tasks.win]
 description = "Build & run vp-app + vp (standalone) on Windows native (MINGW64 / Git Bash)"
@@ -494,45 +301,7 @@ echo "ℹ️  WiX MSI + Authenticode 署名 + winget manifest は Phase W4 (VP-9
 # 同名 asset 上書き (再 build/再 push 可能)。
 # =============================================================================
 
-[tasks."push:mac"]
-description = "Mac silicon (vp + vp-app) を build して GitHub Release に artifact を upload"
-run = '''
-set -euo pipefail
-ROOT="$(pwd)"
-
-# version 取得 (workspace.package.version、 release: vX.Y.Z タグ形式)
-VERSION=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
-TAG="v$VERSION"
-echo "📦 push:mac for $TAG"
-
-# Build (apple-silicon、 vp = vp-cli、 vp-app = GUI)
-echo "🔨 cargo build --release --target aarch64-apple-darwin -p vp-cli -p vp-app"
-cargo build --release --target aarch64-apple-darwin -p vp-cli -p vp-app
-
-VP="target/aarch64-apple-darwin/release/vp"
-VP_APP="target/aarch64-apple-darwin/release/vp-app"
-[ -x "$VP" ] || { echo "❌ vp binary not found at $VP" >&2; exit 1; }
-[ -x "$VP_APP" ] || { echo "❌ vp-app binary not found at $VP_APP" >&2; exit 1; }
-
-# Archive (tar.gz、 binary 2 つを target/aarch64-apple-darwin/release/ から直接 archive)
-DIST="$ROOT/target/dist"
-mkdir -p "$DIST"
-ARCHIVE="$DIST/vp-$VERSION-aarch64-apple-darwin.tar.gz"
-echo "📦 archive: $ARCHIVE"
-tar czf "$ARCHIVE" -C "target/aarch64-apple-darwin/release" vp vp-app
-ls -lh "$ARCHIVE"
-
-# Upload (create release if missing、 既存なら --clobber で同名上書き)
-if gh release view "$TAG" >/dev/null 2>&1; then
-  echo "📤 upload to existing release $TAG (--clobber で同名 asset 上書き)"
-  gh release upload "$TAG" "$ARCHIVE" --clobber
-else
-  echo "📦 create release $TAG with first asset"
-  gh release create "$TAG" "$ARCHIVE" --title "$TAG" --generate-notes --latest
-fi
-
-echo "✅ pushed: $ARCHIVE → release $TAG"
-'''
+# push:mac は file-based task に移行 (.mise/tasks/push/mac、 2026-05-30)。
 
 [tasks."push:win"]
 description = "Windows native build (vp + vp-app + WebView2Loader.dll) を GitHub Release に upload — Windows machine 上で実行"
