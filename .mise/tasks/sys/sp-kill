@@ -1,0 +1,39 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+#MISE description="全 SP (vp sp start ...) を graceful kill (daemon は維持、 ghost SP cleanup や binary 入替時)"
+#
+# file-based mise task 移行 (2026-05-30)。 旧 [tasks."sys:sp-kill"] の bash を Ruby に移植。
+# bash の「列挙 → TERM → 待機 → 再check → KILL」 二段 kill ロジックを Ruby で素直に表現
+# (= 制御フローのある task は ruby runtime の方が読みやすい、 という移行の動機の実演)。
+require File.join(ENV.fetch("MISE_PROJECT_ROOT"), "scripts/mise/vp.rb")
+
+PATTERN = "vp sp start"
+
+# pgrep -f <pattern> に matching する SP プロセスの PID 群 (無ければ空配列)。
+def sp_pids = `pgrep -f '#{PATTERN}'`.split.map(&:to_i)
+
+# 個別に signal 送信 (既に消えた PID は ESRCH を握り潰す = bash の `|| true` 相当)。
+def signal_all(sig, pids) = pids.each { Process.kill(sig, it) rescue nil }
+
+pids = sp_pids
+if pids.empty?
+  VP.log "実行中の SP プロセスはありません"
+  exit 0
+end
+
+VP.log "検出した SP プロセス: #{pids.join(' ')}"
+system("ps", "-p", pids.join(","), "-o", "pid,etime,start,command")
+
+VP.log "SIGTERM 送信 (graceful shutdown → PtySlot Drop = child claude も kill)…"
+signal_all("TERM", pids)
+sleep 2 # graceful shutdown 待機 (claude CLI session save 等が走る時間)
+
+remaining = sp_pids
+unless remaining.empty?
+  VP.log "graceful kill 後も残存: #{remaining.join(' ')} → SIGKILL で強制終了"
+  signal_all("KILL", remaining)
+  sleep 1
+end
+
+VP.log "✅ SP all-kill 完了"
+VP.log "TheWorld 稼働中なら expand 等で auto-spawn → 次回 register。 完全 fresh は: mise run daemon:stop && mise run app"

@@ -1,0 +1,71 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+#MISE description="TheWorld daemon + 裏で動く SP プロセス + Lane tmux session を一括停止 (旧 nuke 相当)"
+#
+# file-based mise task 移行 (2026-05-30、 daemon group)。 旧 [tasks."daemon:stop"] を Ruby に移植。
+# 3-phase cascade kill: [1/3] SP プロセス (TERM→KILL) → [2/3] VP-managed tmux session → [3/3] daemon stop。
+require File.join(ENV.fetch("MISE_PROJECT_ROOT"), "scripts/mise/vp.rb")
+
+vp = VP.cargo_bin("vp")
+
+# pgrep -f 'vp sp start' の PID 群 (= SP プロセス、 sys:sp-kill と同ロジック)。
+def sp_pids = `pgrep -f 'vp sp start'`.split.map(&:to_i)
+# 個別 signal (既に消えた PID の ESRCH は握り潰す = bash の `|| true`)。
+def signal_all(sig, pids) = pids.each { Process.kill(sig, it) rescue nil }
+
+VP.log "💣 Vantage Point daemon + 関連プロセス停止 (cascade kill)…"
+
+# ── [1/3] SP プロセスを kill ──────────────────────────────────────────────
+warn "🔄 [1/3] 全 SP プロセス検出…"
+pids = sp_pids
+if pids.empty?
+  warn "   ℹ️  実行中の SP プロセスはありません"
+else
+  warn "   📋 検出した SP: #{pids.join(' ')}"
+  system("ps", "-p", pids.join(","), "-o", "pid,etime,start,command")
+  warn "   🛑 SIGTERM 送信 (graceful → PtySlot Drop = child claude も kill)…"
+  signal_all("TERM", pids)
+  sleep 2
+  remaining = sp_pids
+  unless remaining.empty?
+    warn "   🔨 残存に SIGKILL: #{remaining.join(' ')}"
+    signal_all("KILL", remaining)
+    sleep 1
+  end
+  warn "   ✅ SP kill 完了"
+end
+
+# ── [2/3] VP-managed tmux session を kill ─────────────────────────────────
+# 命名 convention (lanes_state.rs::tmux_session_name): vp-{project}-{lane}-{stand}。
+# `vp-` prefix で user 自前 session と確実分離。 legacy hd-*/th-* も cleanup 対象として併記
+# (新形式では生成されないので残しても害なし)。 SP/daemon を kill しても tmux server に session が
+# 保持され、 古い cwd を引き継ぐ罠 (commit 1556868 以前作成分) があるため明示 kill して、 次回
+# `mise run app` で fix 済 path で再生成させる。 対象外: TUI mode の `{project}-vp` suffix session。
+warn "🔄 [2/3] VP-managed tmux session 検出 (vp-* prefix、 legacy hd-*/th-* 含む)…"
+# tmux の -F '#{session_name}' は ruby の式展開と衝突するため、 array 形式 + single-quote ruby
+# string でリテラルの #{session_name} を tmux に渡す (shell も経由しない)。
+listing = IO.popen(["tmux", "list-sessions", "-F", '#{session_name}', err: File::NULL], &:read) || ""
+sessions = listing.lines.map(&:strip).grep(/\A(?:vp-|hd-|th-)/)
+if sessions.empty?
+  warn "   ℹ️  VP-managed tmux session はありません"
+else
+  warn "   📋 kill 対象:"
+  sessions.each { warn "      #{it}" }
+  sessions.each { system("tmux", "kill-session", "-t", it, err: File::NULL) }
+  warn "   ✅ tmux session kill 完了"
+end
+
+# ── [3/3] TheWorld daemon を停止 ──────────────────────────────────────────
+warn "🔄 [3/3] TheWorld daemon 停止…"
+if File.executable?(vp)
+  if system(vp, "daemon", "stop", out: File::NULL, err: File::NULL)
+    warn "   ✅ daemon stop 完了"
+  else
+    warn "   ℹ️  daemon は既に停止しているか、 reach 不能"
+  end
+else
+  warn "   ⚠️  vp binary 不在 (#{vp}) — daemon stop スキップ"
+  warn "      build 済なら `mise run cli:build` 後に再実行してください"
+end
+
+VP.log "💥 daemon + 関連プロセス停止完了。 再起動: mise run app"
