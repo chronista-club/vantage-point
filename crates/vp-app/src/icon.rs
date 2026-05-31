@@ -29,6 +29,7 @@ pub fn set_app_icon() {
         let app = NSApplication::sharedApplication(mtm);
         // SAFETY: main thread (mtm で保証) から、 有効な NSImage を渡して dock icon を設定する。
         unsafe { app.setApplicationIconImage(Some(&image)) };
-        tracing::info!(target: "vp_app::icon", "dock app icon = portal favicon を適用");
+        // event loop 開始後 ~1.5s 間 再アサートされるため debug (info だと spam)。
+        tracing::debug!(target: "vp_app::icon", "dock app icon = portal favicon を適用");
     }
 }

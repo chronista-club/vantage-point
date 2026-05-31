@@ -1289,10 +1289,6 @@ pub fn run() -> anyhow::Result<()> {
     }
     let window = builder.build(&event_loop)?;
 
-    // bare binary 起動 (= `vp app start` の `~/.cargo/bin/vp-app`、 bundle 外) でも dock に
-    // portal の山アイコンを当てる (macOS、 main thread)。 .dmg 版は icns と二重掛けだが冪等。
-    crate::icon::set_app_icon();
-
     // PR #459: primary 起動時、 過去の secondary instance (= index 1) の geometry が
     // valid なら **child process として auto-spawn** する。 これで「2 つ window 開いて
     // close → 再起動 → 2 つ window 復元」 が動く。 MVP は primary + 1 secondary、
@@ -1444,8 +1440,27 @@ pub fn run() -> anyhow::Result<()> {
     const GEOMETRY_SAVE_THROTTLE: std::time::Duration = std::time::Duration::from_millis(500);
     let mut last_geometry_save = std::time::Instant::now() - std::time::Duration::from_secs(1);
 
+    // dock app icon (portal favicon) の再アサート用。 bare binary は .app bundle が無いため
+    // macOS が launch 完了時に generic icon を被せ、 run() 前 (window.build 直後) の
+    // setApplicationIconImage を上書きする。 event loop 開始後 ~1.5s 間 set_app_icon() を
+    // 呼び続けて (WaitUntil で loop を起こす) portal icon を定着させる。 .dmg 版は冪等。
+    let icon_launch_at = std::time::Instant::now();
+    let mut icon_settled = false;
+
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
+
+        // launch settle まで dock icon を再設定 (bare binary 対策)。 settle 後は通常の Wait。
+        if !icon_settled {
+            crate::icon::set_app_icon();
+            if icon_launch_at.elapsed() < std::time::Duration::from_millis(1500) {
+                *control_flow = ControlFlow::WaitUntil(
+                    std::time::Instant::now() + std::time::Duration::from_millis(150),
+                );
+            } else {
+                icon_settled = true;
+            }
+        }
 
         match event {
             Event::WindowEvent {
