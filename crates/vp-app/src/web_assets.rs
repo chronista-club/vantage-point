@@ -15,8 +15,8 @@
 //! 当モジュールは汎用 asset 配信のみに縮小した (binary ~248MB 減)。
 
 use std::borrow::Cow;
-use wry::http::{Request, Response};
 use wry::WebViewId;
+use wry::http::{Request, Response};
 
 /// `vp-asset://` URI から `extra` 内の asset を lookup。
 pub fn lookup_asset(
@@ -55,33 +55,32 @@ pub fn serve(
     // 焼き込み (include_bytes!) を bypass するので、 `bun run dev` (esbuild watch) で
     // bundle を更新 → WebView reload するだけで反映され、 cargo build が不要になる。
     // miss / read 失敗時は下の baked asset に fallback (= prod と同じ挙動)。
-    if let Ok(dir) = std::env::var("VP_WEBVIEW_DEV") {
-        if let Some(path) = uri.split("://").nth(1) {
-            if path.ends_with(".bundle.js") {
-                let fname = path.rsplit('/').next().unwrap_or(path);
-                let disk = std::path::Path::new(&dir).join(fname);
-                match std::fs::read(&disk) {
-                    Ok(bytes) => {
-                        tracing::info!(
-                            target: "vp_app::asset",
-                            %uri, disk = %disk.display(), bytes = bytes.len(),
-                            "DEV disk-read (VP_WEBVIEW_DEV)"
-                        );
-                        return Response::builder()
-                            .status(200)
-                            .header("Content-Type", "application/javascript; charset=utf-8")
-                            .header("Access-Control-Allow-Origin", "*")
-                            .header("Cache-Control", "no-store")
-                            .body(Cow::Owned(bytes))
-                            .unwrap_or_else(|_| Response::new(Cow::Borrowed(&[][..])));
-                    }
-                    Err(e) => tracing::warn!(
-                        target: "vp_app::asset",
-                        %uri, disk = %disk.display(), error = %e,
-                        "DEV disk-read 失敗 → baked に fallback"
-                    ),
-                }
+    if let Ok(dir) = std::env::var("VP_WEBVIEW_DEV")
+        && let Some(path) = uri.split("://").nth(1)
+        && path.ends_with(".bundle.js")
+    {
+        let fname = path.rsplit('/').next().unwrap_or(path);
+        let disk = std::path::Path::new(&dir).join(fname);
+        match std::fs::read(&disk) {
+            Ok(bytes) => {
+                tracing::info!(
+                    target: "vp_app::asset",
+                    %uri, disk = %disk.display(), bytes = bytes.len(),
+                    "DEV disk-read (VP_WEBVIEW_DEV)"
+                );
+                return Response::builder()
+                    .status(200)
+                    .header("Content-Type", "application/javascript; charset=utf-8")
+                    .header("Access-Control-Allow-Origin", "*")
+                    .header("Cache-Control", "no-store")
+                    .body(Cow::Owned(bytes))
+                    .unwrap_or_else(|_| Response::new(Cow::Borrowed(&[][..])));
             }
+            Err(e) => tracing::warn!(
+                target: "vp_app::asset",
+                %uri, disk = %disk.display(), error = %e,
+                "DEV disk-read 失敗 → baked に fallback"
+            ),
         }
     }
 
