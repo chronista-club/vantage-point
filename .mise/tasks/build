@@ -1,9 +1,0 @@
-#!/usr/bin/env ruby
-# frozen_string_literal: true
-#MISE description="Build Rust crates"
-#
-# file-based mise task 移行 PoC 第1号 (2026-05-30)。 旧 [tasks.build] (run = "cargo build") を
-# 標準 Ruby runtime の file task に移植。 mise×ruby×共有helper(require) の mechanics 検証用。
-require File.join(ENV.fetch("MISE_PROJECT_ROOT"), "scripts/mise/vp.rb")
-
-VP.sh "cargo build"

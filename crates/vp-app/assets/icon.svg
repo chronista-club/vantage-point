@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <!-- Mountain silhouette, Vantage Point metaphor -->
+  <rect width="64" height="64" rx="12" fill="#0b1120"/>
+  <path d="M8 48 L22 24 L32 38 L42 18 L56 48 Z" fill="#88c0d0" opacity="0.9"/>
+  <circle cx="48" cy="16" r="3" fill="#b4c8e0"/>
+</svg>

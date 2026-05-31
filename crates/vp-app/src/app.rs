@@ -1434,8 +1434,8 @@ pub fn run() -> anyhow::Result<()> {
     let mut initial_size_clamp_done = restored_geometry.is_some();
 
     // PR #459 throttled save: window resize / move 中も 500ms throttle で session save。
-    // CloseRequested の force save に依存しない (= `mr app:stop` の SIGTERM kill や crash
-    // でも直近 state が persistent)。 dogfood で「mr app で再起動すると save 走らない」
+    // CloseRequested の force save に依存しない (= `ge app:stop` の SIGTERM kill や crash
+    // でも直近 state が persistent)。 dogfood で「ge app で再起動すると save 走らない」
     // bug を解消。
     const GEOMETRY_SAVE_THROTTLE: std::time::Duration = std::time::Duration::from_millis(500);
     let mut last_geometry_save = std::time::Instant::now() - std::time::Duration::from_secs(1);

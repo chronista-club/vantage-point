@@ -636,7 +636,7 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
           webglAddon.dispose();
         });
         // glyph atlas 破損の自動復旧。 GPU context loss を伴わない silent な atlas
-        // corruption (= 文字化けが mr app まで治らない症状) を、 app が foreground
+        // corruption (= 文字化けが ge app まで治らない症状) を、 app が foreground
         // に戻った時に clearTextureAtlas で atlas を作り直して wipe する。 corruption
         // の trigger (GPU 切替 / sleep-wake / メモリ圧) は app の background 化と
         // 相関するため、 visible 復帰時の再構築が実効的。 真の context loss は上の

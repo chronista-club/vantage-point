@@ -17,7 +17,7 @@ _.file = ".env"
 [settings]
 windows_default_inline_shell_args = "bash -c"
 
-# build は file-based task に移行 (.mise/tasks/build、 標準 Ruby runtime、 2026-05-30 PoC 第1号)。
+# build → check に改名 (cargo check、 .mise/tasks/check、 2026-05-30 Occam)。
 
 # test も file-based task に移行 (.mise/tasks/test、 標準 Ruby runtime、 2026-05-30)。
 
@@ -51,7 +51,7 @@ windows_default_inline_shell_args = "bash -c"
 # app:stop は file-based task に移行 (.mise/tasks/app/stop、 2026-05-30)。
 
 [tasks."app"]
-description = "vp-app を build → 既存 app stop → app start (daemon は touch しない、 daemon 再起動は `mise run daemon`)"
+description = "vp-app を build → 既存 app stop → app start (World は touch しない、 World 再起動は `mise run world`)"
 run = """
 set -euo pipefail
 mise run app:build
@@ -61,46 +61,32 @@ mise run app:start
 """
 
 # =============================================================================
-# cli:* / daemon:* ─ vp binary (vp-cli = vp binary、 TheWorld + CLI subcommands)
+# world:* ─ vp binary (vp-cli = TheWorld daemon + 全 CLI subcommand)
 # =============================================================================
 #
-# cli:build は vp binary 自体の build/install (daemon / sp / app / sync 等 全 CLI)。
-# daemon:* は TheWorld daemon プロセスのライフサイクル。
-# `vp daemon start` は SP / tmux session の owner。 stop は cascade で背負ってる
-# subsystem 全部 (SP プロセス + Lane tmux session + daemon 本体) を一括停止する。
+# 2026-05-30 daemon→world 改名 + cli:/sys: namespace を world: に吸収 (Occam 対称化)。
+#   world:build      = vp binary を install
+#   world:start/stop = TheWorld daemon lifecycle (stop は cascade: SP + tmux + daemon)
+#   world:reset:sp   = SP だけ sniper kill (daemon 維持)
+# 全て .mise/tasks/world/ 配下。 app:* と鏡像。
 
-# cli:build は file-based task に移行 (.mise/tasks/cli/build、 2026-05-30)。
-
-# daemon:start は file-based task に移行 (.mise/tasks/daemon/start、 2026-05-30)。
-
-# daemon:stop は file-based task に移行 (.mise/tasks/daemon/stop、 2026-05-30)。
-# (tmux session kill の根拠 — cwd 継承罠 / vp- prefix 分離 — は ruby file の [2/3] コメントに移設。)
-
-[tasks."daemon"]
-description = "vp binary を build → 既存 daemon を cascade stop → daemon を background spawn (full restart、 `mise run daemon && mise run app` で諸々再起動)"
+[tasks."world"]
+description = "vp binary を build → 既存 World を cascade stop → World を background spawn (full restart、 `mise run world && mise run app` で諸々再起動)"
 run = """
 set -euo pipefail
-mise run cli:build
+mise run world:build
 # stop は running 不在でも success にする (chain breaking 回避)。
-# daemon:stop は cascade kill = daemon + SP + Lane tmux session 全停止 (= 旧 nuke 相当)。
-mise run daemon:stop 2>/dev/null || echo "(running daemon なし、 stop はスキップ)"
-mise run daemon:start
+# world:stop は cascade kill = daemon + SP + Lane tmux session 全停止 (= 旧 nuke 相当)。
+mise run world:stop 2>/dev/null || echo "(running World なし、 stop はスキップ)"
+mise run world:start
 """
 
-# 注: `app:restart` / `daemon:restart` という名前の task は意図的に提供しない。
+# 注: `app:restart` / `world:restart` という名前の task は意図的に提供しない。
 # user 指示「restart いらない、 build -> start -> stop が cli で回ってから」 (2026-04-30)
-# に従い、 top-level の `app` / `daemon` 自体が build→stop→start を内蔵する pattern に揃えた
-# (2026-05-07)。 完全 fresh start は `mise run daemon && mise run app` で 2 command。
+# に従い、 top-level の `app` / `world` 自体が build→stop→start を内蔵する pattern に揃えた
+# (2026-05-07)。 完全 fresh start は `mise run world && mise run app` で 2 command。
 
-# =============================================================================
-# sys:* ─ システム管理 (個別プロセスの sniper kill 系)
-# =============================================================================
-#
-# `daemon:stop` は cascade kill (daemon + 全 SP + tmux)、 全停止用。
-# 一方 `sys:sp-kill` は SP だけ叩き直す sniper kill。 daemon は維持したまま
-# binary 入替後の re-register / ghost SP cleanup に使う (daemon 再起動は重い)。
-
-# sys:sp-kill は file-based task に移行 (.mise/tasks/sys/sp-kill、 2026-05-30)。
+# (旧 sys:* は world: に吸収済 — world:reset:sp = SP sniper kill。 上の world:* section 参照。)
 
 # =============================================================================
 # logs ─ daemon + vp-app の log を 4 file 同時 tail
@@ -301,7 +287,8 @@ echo "ℹ️  WiX MSI + Authenticode 署名 + winget manifest は Phase W4 (VP-9
 # 同名 asset 上書き (再 build/再 push 可能)。
 # =============================================================================
 
-# push:mac は file-based task に移行 (.mise/tasks/push/mac、 2026-05-30)。
+# release:mac (.mise/tasks/release/mac) ─ Phase B: notarized .dmg full pipeline (旧 push:mac を格上げ)。
+# push:win → release:win への統合は follow-up (Windows 検証要)。
 
 [tasks."push:win"]
 description = "Windows native build (vp + vp-app + WebView2Loader.dll) を GitHub Release に upload — Windows machine 上で実行"

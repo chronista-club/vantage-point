@@ -2,7 +2,7 @@
 # frozen_string_literal: true
 #MISE description="全 SP (vp sp start ...) を graceful kill (daemon は維持、 ghost SP cleanup や binary 入替時)"
 #
-# file-based mise task 移行 (2026-05-30)。 旧 [tasks."sys:sp-kill"] の bash を Ruby に移植。
+# 2026-05-30 Occam 再配置: World 配下の SP reset task (sys: namespace 廃止)。
 # bash の「列挙 → TERM → 待機 → 再check → KILL」 二段 kill ロジックを Ruby で素直に表現
 # (= 制御フローのある task は ruby runtime の方が読みやすい、 という移行の動機の実演)。
 require File.join(ENV.fetch("MISE_PROJECT_ROOT"), "scripts/mise/vp.rb")
@@ -35,5 +35,5 @@ unless remaining.empty?
   sleep 1
 end
 
-VP.log "✅ SP all-kill 完了"
-VP.log "TheWorld 稼働中なら expand 等で auto-spawn → 次回 register。 完全 fresh は: mise run daemon:stop && mise run app"
+VP.log "#{VP.icon(:ok)} SP all-kill 完了"
+VP.log "TheWorld 稼働中なら expand 等で auto-spawn → 次回 register。 完全 fresh は: mise run world:stop && mise run app"
