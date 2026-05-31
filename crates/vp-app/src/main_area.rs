@@ -119,7 +119,10 @@ body{overflow:hidden;}
   --terminal-font-size:16;
   --terminal-line-height:1.27;
   --terminal-letter-spacing:0;
-  --terminal-font-family:'VPMono35', 'VPMono', 'JetBrainsMono Nerd Font', 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace;
+  /* 'SeptemberMonoN' を Echoes terminal の primary font に。 bundle はせず local (OS install 済) font
+     を名前参照するのみ。 install されていない環境では直後の 'VPMono' (web_assets.rs に base64 bundle 済の
+     PlemolJP Console NF) に必ず縮退するので、 どの OS でも描画が壊れない。 末尾 monospace まで保険を残す。 */
+  --terminal-font-family:'SeptemberMonoN', 'VPMono', 'JetBrainsMono Nerd Font', 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace;
   --terminal-cursor-style:bar; /* "bar" / "block" / "underline" */
 }
 .pane{
@@ -507,7 +510,7 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
   // 内 var()) を invalidate するが、 use site で並べる形なら正しく resolve する。
   probe.style.fontFamily = 'var(--vp-font-mono), var(--typography-family-mono)';
   const monoFamily = (getComputedStyle(probe).fontFamily || '').trim()
-    || `'VPMono35', 'VPMono', 'JetBrainsMono Nerd Font', 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace`;
+    || `'SeptemberMonoN', 'VPMono', 'JetBrainsMono Nerd Font', 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace`;
   probe.remove();
 
   // ========= VP-143 Live Token 群 (terminal): default 値 + reader / validator =========
