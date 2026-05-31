@@ -4,7 +4,7 @@
 
 Vantage Point（`vp`）は Rust製の **AI ネイティブ開発環境**。
 Claude CLI をエンジンとして、TUI コンソール・Canvas（WebView）・外部コントロールを統合した開発体験を提供する。
-OSS（MIT/Apache-2.0 dual ライセンス）として公開。配布は `.dmg` 直配布（GitHub Releases）/ Homebrew tap / `cargo install` の三本柱。Mac/Win/Linux 対応。
+OSS（MIT/Apache-2.0 dual ライセンス）として公開。配布は `.dmg` 直配布（GitHub Releases）/ Homebrew tap（`chronista-club/tap`）/ `cargo install` の三本柱。Mac/Win/Linux 対応。
 
 <!--
 配布方針メモ — Mac App Store ではなく直接配布（2026-04-18 OSS 化決定で App Store 配布を見送り）:
@@ -258,8 +258,19 @@ main    ───●──────────────────●─
 ```
 
 - release PR は `release: vX.Y.Z` のような形で nightly → main を merge
-- merge 後に `git tag vX.Y.Z` + `gh release create` で artifact 配布
+- merge 後に `git tag vX.Y.Z` + `mise run release:mac` で notarized `.dmg` を build → GitHub Release publish → Homebrew cask 自動更新
 - Phase 2 で `release-please` 等の自動化を検討
+
+#### 配布チャネル / Install
+
+| チャネル | コマンド | 中身 |
+|---|---|---|
+| **Homebrew cask**（推奨） | `brew tap chronista-club/tap && brew install --cask vantage-point` | notarized `.dmg`（GUI + `vp` CLI 同梱、 arm64） |
+| **.dmg 直 DL** | [GitHub Releases](https://github.com/chronista-club/vantage-point/releases/latest) の `VantagePoint-<ver>-arm64.dmg` | 同上（portal DL 動線の source） |
+| **cargo install** | `cargo install --path crates/vp-cli` | `vp` CLI のみ（開発者向け） |
+
+- **Homebrew tap**: `chronista-club/homebrew-tap`（`Casks/vantage-point.rb`）。release 時に `release:mac` → `release:cask`（mise）が version/sha256 を自動反映して push する。cask だけ手動更新するなら `mise run release:cask`。
+- App Store は CC 依存で sandbox 不可のため非対象（上部「配布方針メモ」参照）。
 
 ## クロスプロジェクト協業（MARU x VP）
 
