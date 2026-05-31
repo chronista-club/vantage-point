@@ -146,11 +146,13 @@ else
   VP.sh "gh release create '#{tag}' '#{dmg}' --title '#{tag}' --generate-notes --latest"
 end
 
-# ── 7. Homebrew cask 用メタ出力 (tap の Casks/vantage-point.rb 更新材料) ──
-sha = Digest::SHA256.file(dmg).hexdigest
 VP.log "#{VP.icon(:ok)} published: #{File.basename(dmg)} → release #{tag}"
-warn ""
-warn "  cask 更新材料 (tap の Casks/vantage-point.rb、 release:cask は follow-up):"
-warn "    version \"#{version}\""
-warn "    sha256 \"#{sha}\""
-warn "    url \"https://github.com/chronista-club/vantage-point/releases/download/#{tag}/#{File.basename(dmg)}\""
+
+# ── 7. Homebrew cask を自動更新 (best-effort) ──
+# release:cask が local の target/dist/<dmg> から sha256 を算出して tap (chronista-club/
+# homebrew-tap) の Casks/vantage-point.rb を push。 失敗しても release 自体は成功扱い
+# (手動 `mise run release:cask` で再試行可)。
+VP.log "#{VP.icon(:sync)} cask 更新 (release:cask)…"
+unless system("mise", "run", "release:cask")
+  VP.log "#{VP.icon(:warn)} cask 更新失敗 — `mise run release:cask` で手動再試行してください"
+end

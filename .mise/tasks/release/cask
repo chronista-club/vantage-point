@@ -1,0 +1,61 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+#MISE description="Homebrew cask (chronista-club/homebrew-tap) を現 version に更新 — sha256 算出 → version/sha 反映 → push"
+#
+# mise → brew の最終段。 release:mac で notarized .dmg を publish した後に走らせると、
+# tap repo (chronista-club/homebrew-tap) の Casks/vantage-point.rb を現 version に揃える。
+#   sha256: local の target/dist/<dmg> 優先、 無ければ GitHub Release から download して算出。
+#   cask は version "x" / sha256 "y" の 2 行だけ差し替え (url は #{version} interpolation、 zap 等は温存)。
+# 既に最新なら push しない (idempotent)。 release:mac の末尾から best-effort で自動呼び出しもされる。
+require "digest"
+require "tmpdir"
+require File.join(ENV.fetch("MISE_PROJECT_ROOT"), "scripts/mise/vp.rb")
+
+TAP_REPO = "git@github.com:chronista-club/homebrew-tap.git"
+CASK_REL = "Casks/vantage-point.rb"
+TARGET   = "aarch64-apple-darwin"
+
+version = File.read("Cargo.toml")[/^version = "([^"]+)"/, 1] or VP.die("version が Cargo.toml に見つかりません")
+tag     = "v#{version}"
+dmg     = "VantagePoint-#{version}-arm64.dmg"
+dmg_url = "https://github.com/chronista-club/vantage-point/releases/download/#{tag}/#{dmg}"
+VP.log "#{VP.icon(:rocket)} release:cask #{tag}"
+
+# ── 1. sha256 算出 (local dmg 優先、 無ければ release から download) ──
+local_dmg = File.join("target", "dist", dmg)
+sha =
+  if File.exist?(local_dmg)
+    VP.log "#{VP.icon(:info)} local dmg から sha256: #{local_dmg}"
+    Digest::SHA256.file(local_dmg).hexdigest
+  else
+    VP.log "#{VP.icon(:sync)} release から dmg を download して sha256: #{dmg_url}"
+    Dir.mktmpdir("vp-cask-dl") do |d|
+      f = File.join(d, dmg)
+      VP.sh "curl -fsSL -o '#{f}' '#{dmg_url}'"
+      Digest::SHA256.file(f).hexdigest
+    end
+  end
+VP.log "sha256 = #{sha}"
+
+# ── 2. tap を temp に clone → version/sha 差し替え → push (idempotent) ──
+Dir.mktmpdir("vp-cask") do |work|
+  VP.sh "git clone -q '#{TAP_REPO}' '#{work}'"
+  cask_path = File.join(work, CASK_REL)
+  File.exist?(cask_path) or VP.die("cask が tap に無い: #{CASK_REL} (初回は手動 seed が要る)")
+
+  cask = File.read(cask_path)
+  cask = cask.sub(/^(\s*version\s+)"[^"]*"/, "\\1\"#{version}\"")
+  cask = cask.sub(/^(\s*sha256\s+)"[^"]*"/,  "\\1\"#{sha}\"")
+  File.write(cask_path, cask)
+
+  Dir.chdir(work) do
+    if `git status --porcelain #{CASK_REL}`.strip.empty?
+      VP.log "#{VP.icon(:ok)} cask は既に #{version} / sha 一致 — push 不要"
+    else
+      VP.sh "git add #{CASK_REL}"
+      VP.sh "git commit -m 'chore(cask): vantage-point #{version}'"
+      VP.sh "git push -q"
+      VP.log "#{VP.icon(:ok)} cask 更新 push: vantage-point #{version}"
+    end
+  end
+end

@@ -617,6 +617,16 @@ async fn me() -> Result<()> {
 mod tests {
     use super::*;
 
+    /// process-global な env var (`VP_CREDENTIALS_PATH` / `VP_NEXUS_URL` / `VP_OIDC_*`) を
+    /// 触る test を直列化する共有ロック。 parallel runner だと別 test の `set_var`/`remove_var`
+    /// が割り込み、 save→read 間で値が変わって flake する (= dogfood 4/9/10/11 N4 trap の真因。
+    /// 各 test は phase 統合で intra-test race を消していたが inter-test race が残っていた)。
+    /// poison は復帰させる (= panic した test があっても次の取得を巻き込まない)。
+    fn env_guard() -> std::sync::MutexGuard<'static, ()> {
+        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     // === A2a tests (= dogfood 9 で導入、 不変) ===
 
     #[test]
@@ -662,6 +672,7 @@ mod tests {
 
     #[test]
     fn credentials_path_uses_env_override() {
+        let _g = env_guard();
         unsafe {
             std::env::set_var("VP_CREDENTIALS_PATH", "/tmp/test-vp-creds.json");
         }
@@ -674,6 +685,7 @@ mod tests {
 
     #[test]
     fn nexus_url_env_resolution() {
+        let _g = env_guard();
         unsafe {
             std::env::remove_var("VP_NEXUS_URL");
         }
@@ -731,6 +743,7 @@ mod tests {
     /// dogfood 4 retro N4 / dogfood 9 retro 再強調 path の **3 回目** 適用 (= 強い signal)。
     #[test]
     fn oidc_config_from_env_resolution() {
+        let _g = env_guard();
         // Phase 1: VP_OIDC_CLIENT_ID 未設定 → error
         unsafe {
             std::env::remove_var("VP_OIDC_CLIENT_ID");
@@ -797,6 +810,7 @@ mod tests {
     /// で race (= dogfood 4/9/10 N4 trap 4 回連続 + 学習)。 sequential で race ゼロ。
     #[test]
     fn credential_store_round_trip() {
+        let _g = env_guard();
         // 一時 dir / file path を env override
         let tmp = tempfile::tempdir().expect("tempdir");
         let creds_dir = tmp.path().join(".vp");

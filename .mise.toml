@@ -2,7 +2,10 @@
 # https://mise.jdx.dev/
 
 [tools]
-rust = "1.95.0"
+# 基本 stable に追随。 minor を明示 pin (patch は float = "1.96.x" 最新) で local↔CI を揃え、
+# stable drift で突然 clippy lint が増える事故を防ぐ。 stable が上がったら本行 + ci.yml の
+# dtolnay/rust-toolchain@1.96 + Cargo.toml rust-version を一緒に bump する。
+rust = "1.96"
 node = "22"
 bun = "latest"
 # Ruby: Gold Experience (埋め込み Ruby VM) + file-based mise task の script runtime (2026-05-30 追加、 4 系 stable)
