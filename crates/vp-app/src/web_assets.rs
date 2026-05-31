@@ -50,6 +50,41 @@ pub fn serve(
     extra: &'static [(&'static str, &'static [u8], &'static str)],
 ) -> Response<Cow<'static, [u8]>> {
     let uri = request.uri().to_string();
+
+    // ── dev HMR: VP_WEBVIEW_DEV=<assets dir> なら *.bundle.js を disk から fresh read。
+    // 焼き込み (include_bytes!) を bypass するので、 `bun run dev` (esbuild watch) で
+    // bundle を更新 → WebView reload するだけで反映され、 cargo build が不要になる。
+    // miss / read 失敗時は下の baked asset に fallback (= prod と同じ挙動)。
+    if let Ok(dir) = std::env::var("VP_WEBVIEW_DEV") {
+        if let Some(path) = uri.split("://").nth(1) {
+            if path.ends_with(".bundle.js") {
+                let fname = path.rsplit('/').next().unwrap_or(path);
+                let disk = std::path::Path::new(&dir).join(fname);
+                match std::fs::read(&disk) {
+                    Ok(bytes) => {
+                        tracing::info!(
+                            target: "vp_app::asset",
+                            %uri, disk = %disk.display(), bytes = bytes.len(),
+                            "DEV disk-read (VP_WEBVIEW_DEV)"
+                        );
+                        return Response::builder()
+                            .status(200)
+                            .header("Content-Type", "application/javascript; charset=utf-8")
+                            .header("Access-Control-Allow-Origin", "*")
+                            .header("Cache-Control", "no-store")
+                            .body(Cow::Owned(bytes))
+                            .unwrap_or_else(|_| Response::new(Cow::Borrowed(&[][..])));
+                    }
+                    Err(e) => tracing::warn!(
+                        target: "vp_app::asset",
+                        %uri, disk = %disk.display(), error = %e,
+                        "DEV disk-read 失敗 → baked に fallback"
+                    ),
+                }
+            }
+        }
+    }
+
     match lookup_asset(&uri, extra) {
         Some((bytes, content_type)) => {
             tracing::info!(
