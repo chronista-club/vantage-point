@@ -1609,9 +1609,9 @@ dependencies = [
 
 [[package]]
 name = "club-unison"
-version = "1.0.0"
+version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a2045a606cfcdbd6a8d90b0a6c7b57aa500f8b5a90f0d6701466df2dfc37b565"
+checksum = "45bc35f69e395e332a3fd2c6dd10d2ac529d2d68dcacc99fb4b279410b361019"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1637,6 +1637,7 @@ dependencies = [
  "scc",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "syn 2.0.117",
  "tempfile",
  "thiserror 2.0.18",
@@ -9686,7 +9687,7 @@ checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 
 [[package]]
 name = "vantage-point"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -9716,6 +9717,7 @@ dependencies = [
  "objc2-foundation",
  "open",
  "portable-pty",
+ "rand 0.8.6",
  "ratatui",
  "ratatui-image",
  "regex",
@@ -9725,6 +9727,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "socket2",
  "surrealdb",
  "tao",
@@ -9743,9 +9746,11 @@ dependencies = [
  "tui-markdown",
  "tui-scrollview",
  "unicode-normalization",
+ "url",
  "urlencoding",
  "uuid",
  "vte",
+ "webbrowser",
  "windows 0.62.2",
 ]
 
@@ -9775,7 +9780,7 @@ checksum = "051eb1abcf10076295e815102942cc58f9d5e3b4560e46e53c21e8ff6f3af7b1"
 
 [[package]]
 name = "vp-app"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -9813,7 +9818,7 @@ dependencies = [
 
 [[package]]
 name = "vp-cli"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -9830,17 +9835,19 @@ dependencies = [
 
 [[package]]
 name = "vp-nexus"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "anyhow",
  "axum",
  "base64",
  "clap",
+ "club-unison",
  "http-body-util",
  "jsonwebtoken 9.3.1",
  "rand 0.8.6",
  "reqwest",
  "rsa",
+ "rustls",
  "serde",
  "serde_json",
  "tokio",
@@ -10153,6 +10160,22 @@ dependencies = [
  "phf_codegen 0.13.1",
  "string_cache 0.9.0",
  "string_cache_codegen 0.6.1",
+]
+
+[[package]]
+name = "webbrowser"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0fc95580916af1e68ff6a7be07446fc5db73ebf71cf092de939bbf5f7e189f72"
+dependencies = [
+ "core-foundation",
+ "jni 0.22.4",
+ "log",
+ "ndk-context",
+ "objc2",
+ "objc2-foundation",
+ "url",
+ "web-sys",
 ]
 
 [[package]]

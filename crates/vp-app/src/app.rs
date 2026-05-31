@@ -1347,9 +1347,8 @@ pub fn run() -> anyhow::Result<()> {
     // Sidebar
     let sidebar_ipc_proxy = event_loop.create_proxy();
     let sidebar = WebViewBuilder::new()
-        // Phase 5-C: vp-asset:// custom protocol で bundled font (FONT_ASSETS) + sidebar.html を配信。
-        // serve() に SIDEBAR_ASSETS を渡すと FONT_ASSETS と chain して両方 lookup される。
-        // HTML 自体も同 scheme から読むことで page origin = vp-asset:// に統一、 font fetch も同一 origin。
+        // vp-asset:// custom protocol で sidebar.html / sidebar.bundle.js を配信 (serve に SIDEBAR_ASSETS)。
+        // HTML 自体も同 scheme から読むことで page origin = vp-asset:// に統一。
         .with_custom_protocol("vp-asset".to_string(), move |id, request| {
             crate::web_assets::serve(id, request, SIDEBAR_ASSETS)
         })
@@ -1435,8 +1434,8 @@ pub fn run() -> anyhow::Result<()> {
     let mut initial_size_clamp_done = restored_geometry.is_some();
 
     // PR #459 throttled save: window resize / move 中も 500ms throttle で session save。
-    // CloseRequested の force save に依存しない (= `mr app:stop` の SIGTERM kill や crash
-    // でも直近 state が persistent)。 dogfood で「mr app で再起動すると save 走らない」
+    // CloseRequested の force save に依存しない (= `ge app:stop` の SIGTERM kill や crash
+    // でも直近 state が persistent)。 dogfood で「ge app で再起動すると save 走らない」
     // bug を解消。
     const GEOMETRY_SAVE_THROTTLE: std::time::Duration = std::time::Duration::from_millis(500);
     let mut last_geometry_save = std::time::Instant::now() - std::time::Duration::from_secs(1);

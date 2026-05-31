@@ -1,0 +1,27 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+#MISE description="Tail VP logs (daemon + daemon stdout + app tracing + app stdout) — terminal で常時 stream 表示"
+#
+# file-based mise task 移行 (2026-05-30)。 旧 [tasks.logs] を Ruby file task に移植。
+# log file が無くても tail -F が掴めるよう先に touch、 最後に exec tail -F で 4 file を stream。
+require "fileutils"
+require File.join(ENV.fetch("MISE_PROJECT_ROOT"), "scripts/mise/vp.rb")
+
+dir = VP.log_dir
+FileUtils.mkdir_p(dir)
+
+FILES = {
+  "daemon.kdl.log"    => "TheWorld + SP tracing、 KDL structured",
+  "daemon.stdout.log" => "daemon stdout/stderr、 panic 等の chaotic 出力",
+  "app.kdl.log"       => "vp-app tracing、 KDL structured",
+  "app.stdout.log"    => "vp-app stdout/panic",
+}.freeze
+
+paths = FILES.keys.map { File.join(dir, it) }
+FileUtils.touch(paths)
+
+VP.log "Tailing 4 files:"
+FILES.each { |name, desc| warn "   #{name.ljust(18)} (#{desc})" }
+warn "─" * 50
+
+VP.exec("tail", "-F", *paths)

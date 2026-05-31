@@ -5,6 +5,7 @@
 //! (= 別 server 起動 / port bind 不要、 test の決定性が上がる)。
 
 pub mod auth;
+pub mod settings;
 
 use crate::auth::Claims;
 use axum::{

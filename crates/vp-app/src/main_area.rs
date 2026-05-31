@@ -119,7 +119,10 @@ body{overflow:hidden;}
   --terminal-font-size:16;
   --terminal-line-height:1.27;
   --terminal-letter-spacing:0;
-  --terminal-font-family:'VPMono35', 'VPMono', 'JetBrainsMono Nerd Font', 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace;
+  /* 'SeptemberMonoN' を Echoes terminal の primary font に。 bundle はせず local (OS install 済) font
+     を名前参照するのみ。 install されていない環境では直後の 'VPMono' (web_assets.rs に base64 bundle 済の
+     PlemolJP Console NF) に必ず縮退するので、 どの OS でも描画が壊れない。 末尾 monospace まで保険を残す。 */
+  --terminal-font-family:'SeptemberMonoN', 'VPMono', 'JetBrainsMono Nerd Font', 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace;
   --terminal-cursor-style:bar; /* "bar" / "block" / "underline" */
 }
 .pane{
@@ -202,8 +205,16 @@ body{overflow:hidden;}
 }
 .pane-body.center{display:grid;place-items:center;}
 .pane-body iframe{width:100%;height:100%;border:0;background:#fff;}
-/* PP markdown render 領域 (PR-ε-3 で mcp__show 経由 markdown が流れ込む rendering target) */
-.pp-content{padding:16px 20px;color:var(--color-text-primary);font-size:13px;line-height:1.6;}
+/* PP markdown render 領域 (PR-ε-3 で mcp__show 経由 markdown が流れ込む rendering target)。
+   pp-content-persist follow-up: font-family を Mizolet 先頭で指定 (= みぞれ system install を
+   WebKit で確実に拾わせる、 日本語 family 名先頭は resolve 不安定)。 font-size / 背景は別 step。 */
+.pp-content{padding:16px 20px;color:var(--color-text-primary);font-size:13px;line-height:1.6;
+  font-family:Mizolet,'みぞれ',system-ui,sans-serif;}
+/* pp-content-persist follow-up: PP pane 全体 (header / breadcrumb / button 等) も みぞれ family へ。
+   pane の他 CSS は触らず font-family のみ override。 */
+#pane-paisley-park,#pane-paisley-park .pane-header,#pane-paisley-park .pane-name,
+#pane-paisley-park .pane-breadcrumb,#pane-paisley-park .pane-action-btn{
+  font-family:Mizolet,'みぞれ',system-ui,sans-serif;}
 .pp-content h1{font-size:1.6rem;font-weight:500;margin:0 0 .5rem;color:var(--color-text-primary);}
 .pp-content h2{font-size:1.3rem;font-weight:500;margin:1.2rem 0 .5rem;}
 .pp-content h3{font-size:1.1rem;font-weight:500;margin:1rem 0 .4rem;}
@@ -499,7 +510,7 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
   // 内 var()) を invalidate するが、 use site で並べる形なら正しく resolve する。
   probe.style.fontFamily = 'var(--vp-font-mono), var(--typography-family-mono)';
   const monoFamily = (getComputedStyle(probe).fontFamily || '').trim()
-    || `'VPMono35', 'VPMono', 'JetBrainsMono Nerd Font', 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace`;
+    || `'SeptemberMonoN', 'VPMono', 'JetBrainsMono Nerd Font', 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace`;
   probe.remove();
 
   // ========= VP-143 Live Token 群 (terminal): default 値 + reader / validator =========
@@ -628,7 +639,7 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
           webglAddon.dispose();
         });
         // glyph atlas 破損の自動復旧。 GPU context loss を伴わない silent な atlas
-        // corruption (= 文字化けが mr app まで治らない症状) を、 app が foreground
+        // corruption (= 文字化けが ge app まで治らない症状) を、 app が foreground
         // に戻った時に clearTextureAtlas で atlas を作り直して wipe する。 corruption
         // の trigger (GPU 切替 / sleep-wake / メモリ圧) は app の background 化と
         // 相関するため、 visible 復帰時の再構築が実効的。 真の context loss は上の

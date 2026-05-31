@@ -227,6 +227,40 @@ task 管理は creo-memories に一本化（Linear は不使用、2026-05-19 確
 - PR: `gh` で作成。関連 task memory の ID を PR 本文に記載
 - 他プロジェクト横断の task は creo-memories の shared context に集約
 
+### ブランチ運用 — nightly / main 二段（2026-05-29 確定）
+
+開発の最新は **nightly**、 公開 release のみ **main** が進む二段運用。 default branch は `nightly`。
+
+| branch | 役割 | 直 push | PR | 更新元 |
+|---|---|---|---|---|
+| **nightly** | 開発の最新版（= 私用 main、 day-to-day 積み上げ） | 可（force / deletion 禁止） | 任意 | lane → PR or 直 push |
+| **main** | 公開 release の単位（= 「ここを参照すれば最新安定」） | **禁止** | 必須（force / deletion 禁止） | nightly → release PR → tag cut |
+| **lane / wing** | 単一タスク隔離 | 自由 | 必須 | from nightly |
+
+#### lane 作業フロー
+
+1. `git fetch origin nightly && git checkout -b mako/{slug} origin/nightly` で lane 開始
+2. lane 上で commit、 PR は **base = nightly** で `gh pr create --base nightly` で作る
+3. PR merge / 直 push で nightly が進む
+4. nightly が一定量積み上がったら release PR (nightly → main) を切って tag cut
+
+#### release flow（= nightly → main）
+
+```
+nightly  ───────────────────────────────────►
+            │                  │
+            │ release PR       │ tag cut（vX.Y.Z）
+            ▼                  ▼
+main    ───●──────────────────●──────────────►
+                              │
+                              ▼
+                     GitHub Release（.dmg / homebrew / cargo install）
+```
+
+- release PR は `release: vX.Y.Z` のような形で nightly → main を merge
+- merge 後に `git tag vX.Y.Z` + `gh release create` で artifact 配布
+- Phase 2 で `release-please` 等の自動化を検討
+
 ## クロスプロジェクト協業（MARU x VP）
 
 MARU（ESP32-S3物理コントローラ）との連携開発。設計・経緯は creo-memories に記録（`category: "cross-project"` + `from: "vp"`）。

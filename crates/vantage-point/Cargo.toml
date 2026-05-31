@@ -70,8 +70,19 @@ tao = { version = "0.35", optional = true }
 muda = { version = "0.19", optional = true }
 tray-icon = { version = "0.24", optional = true }
 
-# Open URLs in system browser
+# Open URLs in system browser (= 既存、 別 module の URL open に利用中)
 open = "5"
+
+# Phase A2b (= dogfood 10): vp auth login の OAuth Native App + PKCE flow 用。
+# user 判断で webbrowser を採用 (= 業界 default、 既存 `open` とは別の責務として並立)。
+# sha2 / rand / url は PKCE / state / token exchange body 構築用、 vp-nexus A1c (PR #473)
+# で同じ deps を入れて A1c removal (PR #475) で外した経緯あり、 今度は vp-cli 側に着地する
+# (= RFC 8252 推奨の client-side path、 nexus は介在しない)。
+# base64 は別 line で既に dep 済 (= 共通利用)。
+sha2 = "0.10"
+rand = "0.8"
+url = "2"
+webbrowser = "1"
 
 # Configuration
 toml = "1.1"
