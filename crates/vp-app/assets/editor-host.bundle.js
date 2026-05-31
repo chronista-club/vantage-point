@@ -3481,7 +3481,7 @@ ${i}`,n.replaceWith(o)}}}}function b9e(e,t){if(t==="markdown")return fi.parse(e)
 }
 #pp-content code,
 #pp-content pre {
-  font-family: 'Mizolet-Mono', '\u307F\u305E\u308C \u7B49\u5E45', 'VPMono35', monospace;
+  font-family: 'TLT-BokutohReraMono-4', 'TLT-BokutohReraMono', 'TLT-\u58A8\u6771\u30EC\u30E9\u7B49\u5E45', 'Mizolet-Mono', '\u307F\u305E\u308C \u7B49\u5E45', 'VPMono35', monospace;
 }
 /* PP body \u306E base font-size \u3092 1 \u6BB5\u4E0A\u3052\u308B (= creoui token chain: base \u2192 l)\u3002
    fallback \u3067 1.125em (= 16\u219218px \u76F8\u5F53)\u3002 #pp-content scope \u5185\u306E\u307F override \u3057
@@ -3494,7 +3494,7 @@ ${i}`,n.replaceWith(o)}}}}function b9e(e,t){if(t==="markdown")return fi.parse(e)
 #pp-content .creo-md-mermaid { margin: 1em 0; }
 #pp-content .creo-md-mermaid svg { max-width: 100%; height: auto; }
 #pp-content .creo-md-mermaid-error {
-  font-family: '\u307F\u305E\u308C \u7B49\u5E45', 'Mizolet-Mono', monospace;
+  font-family: 'TLT-BokutohReraMono-4', 'TLT-BokutohReraMono', '\u307F\u305E\u308C \u7B49\u5E45', 'Mizolet-Mono', monospace;
   color: var(--color-text-secondary, #c66);
   background: var(--color-surface-bg-subtle, #1a1a22);
   padding: 8px; border-radius: 4px; white-space: pre-wrap;

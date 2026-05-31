@@ -11,129 +11,133 @@
  *   操作 (click 選択・context menu・restart/delete・Add Wing form・DnD) は PR-3。
  *   World widget 本体は後続 increment。
  */
-import { For, Show, createMemo, createSignal } from 'solid-js'
-import { CreoIcon } from 'creoui-icons-web'
-import { sidebar } from './store'
-import { sendIpc } from './ipc'
-import { isRunningProcess } from './classify'
-import { resolveProjectOrder } from './dnd'
-import { ContextMenu } from './ContextMenu'
+import { For, Show, createMemo, createSignal } from "solid-js";
+import { CreoIcon } from "creoui-icons-web";
+import { sidebar } from "./store";
+import { sendIpc } from "./ipc";
+import { isRunningProcess } from "./classify";
+import { resolveProjectOrder } from "./dnd";
+import { ContextMenu } from "./ContextMenu";
 import {
-  deleteHintLabel,
-  deleteHintVisible,
-  laneSelectHintLabel,
-  laneSelectHintVisible,
-} from './keybindings'
-import { FileExplorer, FILE_EXPLORER_CSS } from './FileExplorer'
-import { LanePicker, LANE_PICKER_CSS } from './LanePicker'
-import { ProjectAccordion } from './ProjectAccordion'
-import { WorldWidget } from './WorldWidget'
+	deleteHintLabel,
+	deleteHintVisible,
+	laneSelectHintLabel,
+	laneSelectHintVisible,
+} from "./keybindings";
+import { FileExplorer, FILE_EXPLORER_CSS } from "./FileExplorer";
+import { LanePicker, LANE_PICKER_CSS } from "./LanePicker";
+import { ProjectAccordion } from "./ProjectAccordion";
+import { WorldWidget } from "./WorldWidget";
 
 export function Shell() {
-  // D&D 並べ替え順 (`currents_order`) を適用してから 稼働中 / 一時停止中 に分割する。
-  // `currents_order` は Rust が `process:reorder` で永続化する並び順 — これを読まないと
-  // 並べ替え結果が re-push で消えてしまう (#124)。
-  const ordered = createMemo(() =>
-    resolveProjectOrder(sidebar.processes, sidebar.currents_order),
-  )
-  const running = createMemo(() => ordered().filter(isRunningProcess))
-  const paused = createMemo(() => ordered().filter((p) => !isRunningProcess(p)))
+	// D&D 並べ替え順 (`currents_order`) を適用してから 稼働中 / 一時停止中 に分割する。
+	// `currents_order` は Rust が `process:reorder` で永続化する並び順 — これを読まないと
+	// 並べ替え結果が re-push で消えてしまう (#124)。
+	const ordered = createMemo(() =>
+		resolveProjectOrder(sidebar.processes, sidebar.currents_order),
+	);
+	const running = createMemo(() => ordered().filter(isRunningProcess));
+	const paused = createMemo(() =>
+		ordered().filter((p) => !isRunningProcess(p)),
+	);
 
-  // 表示中のタブ (稼働中 / 一時停止中)。 localStorage 永続、 default は稼働中。
-  // 15+ project で list が溢れるため、 常に 1 セットだけ表示して crowding を防ぐ。
-  const [tab, setTab] = createSignal<'running' | 'paused'>(
-    localStorage.getItem('vp.sidebar.tab') === 'paused' ? 'paused' : 'running',
-  )
-  const selectTab = (t: 'running' | 'paused') => {
-    setTab(t)
-    localStorage.setItem('vp.sidebar.tab', t)
-  }
-  const shown = createMemo(() => (tab() === 'running' ? running() : paused()))
+	// 表示中のタブ (稼働中 / 一時停止中)。 localStorage 永続、 default は稼働中。
+	// 15+ project で list が溢れるため、 常に 1 セットだけ表示して crowding を防ぐ。
+	const [tab, setTab] = createSignal<"running" | "paused">(
+		localStorage.getItem("vp.sidebar.tab") === "paused" ? "paused" : "running",
+	);
+	const selectTab = (t: "running" | "paused") => {
+		setTab(t);
+		localStorage.setItem("vp.sidebar.tab", t);
+	};
+	const shown = createMemo(() => (tab() === "running" ? running() : paused()));
 
-  return (
-    <div class="vp-sidebar-shell">
-      <header class="vp-sidebar-header">
-        <span class="vp-sidebar-title">CURRENTs</span>
-        {/* project 追加: process:add IPC → Rust 側 native folder picker → 登録 (VP-203)。 */}
-        <button
-          class="vp-sidebar-add"
-          title="プロジェクトを追加"
-          onClick={() => sendIpc({ t: 'process:add' })}
-        >
-          <CreoIcon name="ph:plus" size={13} />
-        </button>
-      </header>
+	return (
+		<div class="vp-sidebar-shell">
+			<header class="vp-sidebar-header">
+				<span class="vp-sidebar-title">CURRENTs</span>
+				{/* project 追加: process:add IPC → Rust 側 native folder picker → 登録 (VP-203)。 */}
+				<button
+					class="vp-sidebar-add"
+					title="プロジェクトを追加"
+					onClick={() => sendIpc({ t: "process:add" })}
+				>
+					<CreoIcon name="ph:plus" size={13} />
+				</button>
+			</header>
 
-      <div class="vp-sidebar-list">
-        <Show
-          when={sidebar.processes.length > 0}
-          fallback={<div class="vp-sidebar-empty">プロジェクトなし</div>}
-        >
-          <Show
-            when={shown().length > 0}
-            fallback={
-              <div class="vp-sidebar-empty">
-                {tab() === 'running' ? '稼働中なし' : '一時停止中なし'}
-              </div>
-            }
-          >
-            <For each={shown()}>{(proc) => <ProjectAccordion proc={proc} />}</For>
-          </Show>
-        </Show>
-      </div>
+			<div class="vp-sidebar-list">
+				<Show
+					when={sidebar.processes.length > 0}
+					fallback={<div class="vp-sidebar-empty">プロジェクトなし</div>}
+				>
+					<Show
+						when={shown().length > 0}
+						fallback={
+							<div class="vp-sidebar-empty">
+								{tab() === "running" ? "稼働中なし" : "一時停止中なし"}
+							</div>
+						}
+					>
+						<For each={shown()}>
+							{(proc) => <ProjectAccordion proc={proc} />}
+						</For>
+					</Show>
+				</Show>
+			</div>
 
-      {/* 稼働中 / 一時停止中 タブ切替 (sidebar 下部、 World widget の上)。 */}
-      <div class="vp-sidebar-tabs">
-        <button
-          class="vp-sidebar-tab"
-          classList={{ active: tab() === 'running' }}
-          onClick={() => selectTab('running')}
-        >
-          稼働中 <span class="vp-sidebar-tab-count">{running().length}</span>
-        </button>
-        <button
-          class="vp-sidebar-tab"
-          classList={{ active: tab() === 'paused' }}
-          onClick={() => selectTab('paused')}
-        >
-          一時停止中 <span class="vp-sidebar-tab-count">{paused().length}</span>
-        </button>
-      </div>
+			{/* 稼働中 / 一時停止中 タブ切替 (sidebar 下部、 World widget の上)。 */}
+			<div class="vp-sidebar-tabs">
+				<button
+					class="vp-sidebar-tab"
+					classList={{ active: tab() === "running" }}
+					onClick={() => selectTab("running")}
+				>
+					稼働中 <span class="vp-sidebar-tab-count">{running().length}</span>
+				</button>
+				<button
+					class="vp-sidebar-tab"
+					classList={{ active: tab() === "paused" }}
+					onClick={() => selectTab("paused")}
+				>
+					一時停止中 <span class="vp-sidebar-tab-count">{paused().length}</span>
+				</button>
+			</div>
 
-      <WorldWidget />
+			<WorldWidget />
 
-      {/* 右クリック context menu (Lane 行 / project ヘッダ 共通、 singleton、 VP-204 PR-1)。 */}
-      <ContextMenu />
+			{/* 右クリック context menu (Lane 行 / project ヘッダ 共通、 singleton、 VP-204 PR-1)。 */}
+			<ContextMenu />
 
-      {/* File Explorer overlay picker (singleton)。 LaneRow のフォルダボタン or Cmd+F で
+			{/* File Explorer overlay picker (singleton)。 LaneRow のフォルダボタン or Cmd+F で
           window.vpFilePicker.open(address) を呼ぶと、 lane workdir 全体を被せる overlay が
           出現してファイルを選べる。 選択すると Canvas (PP) に投げて dismiss する ephemeral。 */}
-      <FileExplorer />
+			<FileExplorer />
 
-      {/* PR 445 `s` directive: Lane / project switcher picker overlay (singleton)。
+			{/* PR 445 `s` directive: Lane / project switcher picker overlay (singleton)。
           Cmd hold s で window.vpLanePicker.open() が呼ばれて出現、 lane / project を fuzzy 検索 + 選択。 */}
-      <LanePicker />
+			<LanePicker />
 
-      {/* PR 445 `d` directive: 2-click delete confirm hint bar。 pending state 中だけ
+			{/* PR 445 `d` directive: 2-click delete confirm hint bar。 pending state 中だけ
           sidebar 下端に表示、 1 秒以内に 2 回目で execute、 timeout で auto-dismiss。 */}
-      <Show when={deleteHintVisible()}>
-        <div class="vp-delete-hint">
-          <span class="vp-delete-hint-icon">⚠️</span>
-          <span class="vp-delete-hint-label">{deleteHintLabel()}</span>
-        </div>
-      </Show>
+			<Show when={deleteHintVisible()}>
+				<div class="vp-delete-hint">
+					<span class="vp-delete-hint-icon">⚠️</span>
+					<span class="vp-delete-hint-label">{deleteHintLabel()}</span>
+				</div>
+			</Show>
 
-      {/* PR 447 `l` directive: lane number switcher mode hint bar。 mode 中だけ表示。
+			{/* PR 447 `l` directive: lane number switcher mode hint bar。 mode 中だけ表示。
           1-9 のキー押下で expanded project 内 lane を上から N 番目で lane:select。 5 秒 timeout。 */}
-      <Show when={laneSelectHintVisible()}>
-        <div class="vp-lane-select-hint">
-          <span class="vp-lane-select-hint-icon">🔢</span>
-          <span class="vp-lane-select-hint-label">{laneSelectHintLabel()}</span>
-          <span class="vp-lane-select-hint-help">Esc to cancel</span>
-        </div>
-      </Show>
-    </div>
-  )
+			<Show when={laneSelectHintVisible()}>
+				<div class="vp-lane-select-hint">
+					<span class="vp-lane-select-hint-icon">🔢</span>
+					<span class="vp-lane-select-hint-label">{laneSelectHintLabel()}</span>
+					<span class="vp-lane-select-hint-help">Esc to cancel</span>
+				</div>
+			</Show>
+		</div>
+	);
 }
 
 /**
@@ -185,6 +189,13 @@ html,body{margin:0;height:100%;background:var(--color-surface-bg-subtle);
 
 /* Project accordion */
 .vp-proj{margin:0;}
+/* project が所有する tree spine (= 縦ライン)。 connector の ├/└ 縦棒と同じ x に重ね、
+   行間 padding の隙間を埋めて proj 領域から伸びる 1 本の連続縦線に見せる (SoC: 縦は proj、
+   枝は connector)。 top:0 = summary 直下から、 bottom = 最後の lane 中央で止める。 */
+.vp-proj-content{position:relative;}
+.vp-proj-content::before{content:"";position:absolute;left:10.5px;top:0;bottom:17px;
+  width:1.5px;background:color-mix(in oklch,var(--color-brand-primary),transparent 62%);
+  pointer-events:none;}
 .vp-proj + .vp-proj{border-top:1px solid var(--color-surface-border,#1f2233);}
 .vp-proj-summary{list-style:none;display:flex;align-items:center;gap:6px;
   padding:6px var(--spacing-sm,8px);cursor:pointer;font-size:13px;user-select:none;
@@ -204,36 +215,59 @@ html,body{margin:0;height:100%;background:var(--color-surface-bg-subtle);
 .vp-proj.drop-after{box-shadow:inset 0 -2px 0 0 var(--color-brand-primary);}
 
 /* Lane 行 */
-.vp-lane-row{display:flex;flex-wrap:wrap;align-items:center;gap:6px;
-  padding:5px var(--spacing-sm,8px) 5px 14px;font-size:12px;cursor:pointer;
+/* ミニマム 1 行 (2026-05-30): icon + session title + 右端 block (meta/awaiting/files/mailbox)。
+   2 段目 / "—" placeholder / Lead ラベルは廃止、 nowrap で 1 行固定。 */
+/* tree connector は LaneRow が box-drawing text で持つ (= 線種で状態を表現、 2026-05-30)。
+   VPMono (PlemolJP) の等幅 + 罫線 glyph で全行の縦線が揃う。 線種 = control surrender FSM。 */
+.vp-lane-connector{font-family:'VPMono',monospace;white-space:pre;flex:0 0 auto;
+  font-size:13px;line-height:1;letter-spacing:0;font-weight:700;
+  -webkit-text-stroke:0.4px currentColor;user-select:none;}
+.vp-lane-connector.conn-lead{
+  color:color-mix(in oklch,var(--color-brand-primary),transparent 30%);}
+.vp-lane-connector.conn-run{color:var(--color-text-tertiary);}
+.vp-lane-connector.conn-dead{
+  color:color-mix(in oklch,var(--color-text-tertiary),transparent 50%);}
+.vp-lane-connector.conn-hitl{color:var(--color-status-warning,#d49b3f);}
+.vp-lane-connector.conn-auto{color:var(--color-status-info,#3fb9d4);}
+.vp-lane-row{position:relative;display:flex;flex-wrap:nowrap;align-items:center;
+  gap:4px;padding:8px var(--spacing-sm,8px) 8px 8px;font-size:12px;cursor:pointer;
   transition:background .1s ease;}
 .vp-lane-row:hover{background:var(--color-surface-bg-emphasis);}
 .vp-lane-row + .vp-lane-row{border-top:1px solid
   color-mix(in oklch, var(--color-surface-border,#1f2233), transparent 60%);}
+/* active lane は横線 (上下 border) で認識させる (= 縦線でなく横方向の帯で demarcate、 2026-05-30)。
+   文字は brand-primary を少しだけ明るく (= white 16% 混合) して存在感を上げる。 */
 .vp-lane-row.active{background:var(--color-brand-primary-subtle);
-  color:var(--color-brand-primary);font-weight:500;
-  box-shadow:inset -2px 0 0 0 var(--color-brand-primary);}
+  color:color-mix(in oklch,var(--color-brand-primary),white 16%);font-weight:500;
+  box-shadow:inset 0 2px 0 0 var(--color-brand-primary),
+             inset 0 -2px 0 0 var(--color-brand-primary);}
 .vp-lane-row.inactive{color:color-mix(in oklch, var(--color-text-secondary),
   transparent 45%);font-style:italic;cursor:default;}
-.vp-lane-icon{display:inline-flex;width:18px;justify-content:center;}
+/* Lead / Wing の indent 差は connector glyph (├─ vs │ ├) が担うため padding override 不要。 */
+.vp-lane-icon{display:inline-flex;width:18px;justify-content:center;flex:0 0 auto;}
 .vp-lane-row.inactive .vp-lane-icon{opacity:0.55;}
-.vp-lane-msg{display:inline-flex;color:var(--color-text-tertiary);opacity:0.55;}
+/* session title (= icon の右、 flex:1 で伸びて右端 block を押し出す)。 */
+.vp-lane-title{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;color:var(--color-text-secondary);}
+/* fallback (= session title 未設定で proj 名 / wing 名を出す時) は dimmed で控えめに。 */
+.vp-lane-title.is-fallback{color:var(--color-text-tertiary);opacity:0.7;}
+.vp-lane-row.active .vp-lane-title{color:var(--color-brand-primary);opacity:1;}
+/* 右端 block: meta / awaiting / files / mailbox を右寄せで横並び。 */
+.vp-lane-right{display:flex;align-items:center;gap:5px;flex:0 0 auto;margin-left:auto;}
+/* files / mailbox は hover 時のみ表示 (= noise 減)。 ただし mailbox unread と
+   awaiting dot は signal なので常時表示。 */
+.vp-lane-msg{display:inline-flex;color:var(--color-text-tertiary);opacity:0;
+  transition:opacity .1s ease;}
+.vp-lane-row:hover .vp-lane-msg{opacity:0.55;}
 .vp-lane-msg.unread{color:var(--color-brand-primary);opacity:1;}
-.vp-lane-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.vp-lane-meta{flex:1;display:flex;gap:5px;font-size:10px;font-style:italic;
-  color:var(--color-text-tertiary);white-space:nowrap;overflow:hidden;
-  text-overflow:ellipsis;margin-left:6px;}
+.vp-lane-row:hover .vp-lane-msg.unread{opacity:1;}
+.vp-lane-meta{display:flex;gap:5px;font-size:10px;color:var(--color-text-tertiary);
+  white-space:nowrap;}
 .vp-lane-meta .ahead{color:var(--color-status-info,#3fb9d4);}
 .vp-lane-meta .behind{color:var(--color-status-warning,#d49b3f);}
 .vp-lane-meta .dirty{color:var(--color-status-warning,#d49b3f);font-weight:500;}
-.vp-lane-meta .merged{color:var(--color-status-success,#3fb950);}
-.vp-lane-awaiting{margin-left:auto;width:6px;height:6px;border-radius:50%;
+.vp-lane-awaiting{width:6px;height:6px;border-radius:50%;
   background:var(--color-status-warning,#d49b3f);flex:0 0 auto;}
-.vp-lane-line2{flex-basis:100%;padding-left:24px;font-size:10px;
-  color:var(--color-text-tertiary);overflow:hidden;text-overflow:ellipsis;
-  white-space:nowrap;}
-.vp-lane-line2.empty{opacity:0.5;}
-.vp-lane-row.active .vp-lane-line2{color:var(--color-brand-primary);opacity:0.7;}
 
 /* Add Wing「+」(active project) / Start「▶」(一時停止中 project) — summary 右端の
    action ボタン。 レイアウトは共通、 Start は起動 affordance として常時 brand 色。 */
@@ -309,12 +343,11 @@ html,body{margin:0;height:100%;background:var(--color-surface-bg-subtle);
 /* Lane row のフォルダピッカー起動ボタン (FileExplorer overlay を開く trigger) */
 .vp-lane-files-btn{display:inline-flex;align-items:center;padding:1px 3px;
   border:none;background:transparent;color:var(--color-text-tertiary);
-  cursor:pointer;border-radius:3px;flex:0 0 auto;opacity:0.55;
+  cursor:pointer;border-radius:3px;flex:0 0 auto;opacity:0;
   transition:background .12s ease,color .12s ease,opacity .12s ease;}
 .vp-lane-row:hover .vp-lane-files-btn{opacity:1;}
 .vp-lane-files-btn:hover{background:var(--color-surface-bg-emphasis);
   color:var(--color-brand-primary);}
-.vp-lane-row.inactive .vp-lane-files-btn{opacity:0.35;}
 ${FILE_EXPLORER_CSS}
 ${LANE_PICKER_CSS}
-`
+`;
