@@ -1289,6 +1289,10 @@ pub fn run() -> anyhow::Result<()> {
     }
     let window = builder.build(&event_loop)?;
 
+    // bare binary 起動 (= `vp app start` の `~/.cargo/bin/vp-app`、 bundle 外) でも dock に
+    // portal の山アイコンを当てる (macOS、 main thread)。 .dmg 版は icns と二重掛けだが冪等。
+    crate::icon::set_app_icon();
+
     // PR #459: primary 起動時、 過去の secondary instance (= index 1) の geometry が
     // valid なら **child process として auto-spawn** する。 これで「2 つ window 開いて
     // close → 再起動 → 2 つ window 復元」 が動く。 MVP は primary + 1 secondary、
