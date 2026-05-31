@@ -81,32 +81,3 @@ export function laneAddressKey(lane: LaneInfo): string {
 	}
 	return `${a.project}/${a.kind || "lead"}`;
 }
-
-/** Lane の制御状態 (control surrender FSM の表示用 3 値)。 */
-export type LaneFsm = "auto" | "hitl" | "idle";
-
-/**
- * Lane の FSM 状態を導出 (= 状態アイコンの出し分け)。
- * - idle: pid null (= Pane 不在、 休眠/未起動)
- * - hitl: 入力待ち (= 人の入力を待つ、 control を握っている)
- * - auto: それ以外で稼働中 (= AI 主導で自走、 control を手放した)
- */
-export function laneFsm(lane: LaneInfo, awaiting: boolean): LaneFsm {
-	if (lane.pid == null) return "idle";
-	if (awaiting) return "hitl";
-	return "auto";
-}
-
-/** FSM 状態 → 状態アイコン (主体メタファー: 誰が主体か)。 */
-export const FSM_ICON: Record<LaneFsm, IconName> = {
-	auto: "ph:robot", // AI 主導で自走
-	hitl: "ph:keyboard", // 人の入力待ち
-	idle: "ph:circle-dashed", // 休眠 (実体が薄い)
-};
-
-/** FSM 状態 → tooltip ラベル。 */
-export const FSM_LABEL: Record<LaneFsm, string> = {
-	auto: "自走中 (AI 主導)",
-	hitl: "入力待ち (人の操作待ち)",
-	idle: "休眠",
-};
