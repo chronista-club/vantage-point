@@ -1,8 +1,12 @@
 # Vantage Point
 
-**AI-native Mac IDE** — Claude CLI agent を first-class "Lane" として扱う、
-live design surface + deterministic port layout + 統合 messaging backbone を
-備える開発環境。
+**AI ネイティブ開発環境** — Claude CLI をエンジンとして、TUI コンソール・Canvas（WebView）・
+外部コントロールを統合した開発体験を提供する Rust 製アプリ。
+VP が主、Claude Code はそのエンジン。プロジェクト選択 → TUI コンソール → Claude との対話が
+1st ビュー。TUI で操る、Canvas で視る。
+
+OSS（MIT / Apache-2.0 dual ライセンス）として公開。配布は **notarized `.dmg` 直配布
+（GitHub Releases）/ Homebrew cask / `cargo install`** の三本柱（現状 macOS arm64 主軸）。
 
 ## Status
 
@@ -11,43 +15,54 @@ README は work in progress、詳細は `docs/` 配下。
 
 ## Core concepts
 
+- **AI ネイティブ開発環境** — VP が主、Claude Code はそのエンジン
+- **プロジェクト起点** — プロジェクト選択 → TUI コンソール → Claude との対話が 1st ビュー
+- **Canvas + TUI** — TUI で操る、Canvas で視る。両者が並列に動く
+- **セッション永続化** — 前回の続きから再開できる開発環境
 - **Lane** — canonical address `echoes.{lane}@{project}` が tmux session、
-  Claude agent、Mailbox actor、deterministic port range を一意に束ねる
-- **Command Palette (⌘K)** — 全 Lane / app action への fuzzy jump
-- **Design Inspector (⌘⇧I)** — Sidebar token (padding, opacity 等) を
-  runtime で live edit
-- **Layout Foundations** — Sidebar / Viewport-Top / Viewport / Bottom Deck
-  の 4 領域 sharp stack
+  Claude agent、wiremsg actor、deterministic port range を一意に束ねる
 - **Port Management** — `33000 + slot × 100 + lane × 10 + role` で
   Lane × role port が透過的固定、bookmark 可能
 
 内部 codename は JoJo's Bizarre Adventure のスタンド:
-TheWorld (daemon) / Star Platinum (Project) / Echoes (Agent、 旧 Heaven's Door) /
-Paisley Park (Navigator) / Gold Experience (Runner) 等。
+TheWorld 👑 (Process Manager / 常駐デーモン) / Star Platinum ⭐ (Project Core / TUI 統合ビュー) /
+Echoes 💬 (Coding Assistant、 旧 Heaven's Door 📖) / Paisley Park 🧭 (Information Navigator) /
+Gold Experience 🌿 (Code Runner) / Hermit Purple 🍇 (External Control) 等。
+命名定義は `crates/vantage-point/src/stands.rs` に集約。
 
-## License
+## インストール
 
-Dual-licensed under [MIT](./LICENSE-MIT) OR [Apache-2.0](./LICENSE-APACHE).
+macOS 11.0 (Big Sur) 以降、[Claude CLI](https://docs.anthropic.com/en/docs/build-with-claude/claude-code) が必要。
+現状の配布は macOS arm64 主軸。
 
----
-
-## Reference display server (legacy section)
-
-VP の基盤機能の 1 つとして、Claude Code 向けの Markdown/HTML 表示サーバー
-があります。以下はこのモードのインストール・動作説明。
-
-## インストール・更新
+### 1. Homebrew cask（推奨）
 
 ```bash
-# インストール
-curl -L https://github.com/chronista-club/vantage-point/releases/latest/download/vp-aarch64-apple-darwin -o /usr/local/bin/vp
-chmod +x /usr/local/bin/vp
-
-# 更新
-vp update
+brew tap chronista-club/tap
+brew install --cask vantage-point
 ```
 
-macOS 13.0 (Ventura) 以降、[Claude CLI](https://docs.anthropic.com/en/docs/build-with-claude/claude-code) が必要。
+### 2. `.dmg` 直ダウンロード
+
+[GitHub Releases](https://github.com/chronista-club/vantage-point/releases/latest) から
+`VantagePoint-<ver>-arm64.dmg` を取得（Developer ID 署名 + Apple notarization 済）。
+マウントして `VantagePoint.app` を `/Applications` にコピーする。
+
+### 3. `cargo install`（開発者向け）
+
+CLI `vp` のみをビルド・インストールする。
+
+```bash
+cargo install --path crates/vp-cli
+```
+
+> App Store では配布しない（Claude CLI 依存で sandbox 不可のため）。
+
+### 更新
+
+```bash
+vp update
+```
 
 ---
 
@@ -58,7 +73,7 @@ sequenceDiagram
     participant U as ユーザー
     participant VP as vp start
     participant CC as Claude Code
-    participant B as ブラウザ
+    participant B as Canvas (WebView)
 
     U->>VP: vp start
     VP->>B: WebView ウィンドウを開く
@@ -68,11 +83,11 @@ sequenceDiagram
     VP->>B: WebSocket でコンテンツ配信
 ```
 
-1. `vp start` で Process（HTTP + WebSocket サーバー）が起動し、WebView ウィンドウが開く
+1. `vp start` で Process（HTTP + WebSocket サーバー）が起動し、Canvas（WebView）が開く
 2. Claude Code に MCP サーバーとして登録する
-3. Claude Code がセッション中に `show` ツールを呼ぶと、ブラウザにコンテンツが表示される
+3. Claude Code がセッション中に `show` ツールを呼ぶと、Canvas にコンテンツが表示される
 
-ターミナルでは表示しきれないもの — Mermaid 図、HTML、長いログ — をブラウザ側に出力できる。
+ターミナルでは表示しきれないもの — Mermaid 図、HTML、長いログ — を Canvas 側に出力できる。
 
 ---
 
@@ -96,14 +111,15 @@ claude mcp add vp -- vp mcp
 | `permission` | ツール実行の承認リクエスト |
 | `restart` | Process を再起動 |
 
+その他、Lane 操作・wiremsg・ポート照会・tmux 連携など多数の MCP ツールを提供する。
+
 ---
 
 ## コマンド
 
 ```bash
-vp start [N]          # Process を起動（N はプロジェクト番号）
-vp start --headless   # WebView なしで起動
-vp start --browser    # ネイティブ WebView の代わりにブラウザで開く
+# Core
+vp start [N]          # プロジェクト N 番の Process を起動
 vp stop               # Process を停止
 vp restart            # 再起動（セッション状態を保持）
 vp ps                 # 稼働中 Process の一覧
@@ -111,39 +127,57 @@ vp open [N]           # WebUI を開く
 vp config             # 設定と登録プロジェクトを表示
 vp update             # 最新版に更新
 vp mcp                # MCP サーバーとして起動（Claude Code 用）
+
+# TheWorld（常駐デーモン）
+vp daemon             # TheWorld 起動（alias: vp world）
+vp daemon start|stop|status
+
+# App（vp-app GUI）
+vp app start [N]      # vp-app GUI を起動（spawn + 即 exit、N でプロジェクト指定）
+vp app stop           # vp-app を停止
+vp tray               # システムトレイモード
 ```
 
 ### MIDI
 
 ```bash
 vp start --midi 0     # MIDI ポート 0 を有効化
+vp midi ports         # ポート一覧
+vp midi monitor       # 入力監視
 ```
 
 ### 設定ファイル
 
-`~/.config/vantage/config.toml` にプロジェクトを登録する:
+設定は KDL 形式。config / data / state は XDG Base Directory 準拠の 3 zone に分かれる
+（全 OS 統一）:
 
-```toml
-[[projects]]
-name = "my-project"
-path = "/path/to/your/project"
+| zone | 環境変数 | default | 用途 |
+|------|----------|---------|------|
+| config | `$XDG_CONFIG_HOME` | `~/.config/vp/` | 人が編集（`config.kdl` / `projects.kdl`） |
+| data | `$XDG_DATA_HOME` | `~/.local/share/vp/` | 永続 data store（db / discs） |
+| state | `$XDG_STATE_HOME` | `~/.local/state/vp/` | runtime state + log |
+
+登録プロジェクトの SSOT は `~/.config/vp/projects.kdl`:
+
+```kdl
+project "my-project" path="/path/to/your/project" slot=0
 ```
 
 ---
 
-## VantagePoint.app（メニューバーアプリ）
+## vp-app（Mac GUI）
 
-Process をメニューバーから操作できる Mac アプリ。
-
-1. [VantagePoint.app.zip](https://github.com/chronista-club/vantage-point-mac/releases/latest/download/VantagePoint.app.zip) をダウンロード
-2. `/Applications` に移動して起動
+Process をメニューバー / WebView から操作できる Mac アプリ（`crates/vp-app`、Rust wry+tao +
+SolidJS + creo-ui）。notarized `.dmg` でインストールする（上記「インストール」参照）。
 
 ```
-VantagePoint.app (メニューバー)
-    ↓ Conductor Process を管理
-vp conductor
-    ↓ Project Process を管理
-vp start (プロジェクトごと)
+vp-app (GUI: wry+tao)   vp (CLI)
+        └────────┬───────┘
+                 │ HTTP + QUIC
+        TheWorld 👑 :32000          ← Process Manager (常駐 daemon)
+                 │ spawn + reconcile
+     ┌───────────┼───────────┐
+   SP :33000   SP :33001   ...      ← Star Platinum ⭐ (project ごと)
 ```
 
 ---
@@ -152,19 +186,13 @@ vp start (プロジェクトごと)
 
 ```
 vantage-point/
-├── crates/vantage-point/   # CLI + Process (Rust)
-│   └── src/
-│       ├── process/        # HTTP + WebSocket サーバー
-│       ├── mcp.rs          # MCP ツール実装
-│       ├── canvas.rs       # Canvas ウィンドウ
-│       ├── terminal/       # ネイティブターミナル
-│       ├── daemon/         # デーモンプロセス管理
-│       └── midi.rs         # MIDI 入力
-├── web/                    # WebView HTML/JS
-└── docs/                   # 仕様・設計
-
-# 関連リポジトリ
-# https://github.com/chronista-club/vantage-point-mac (Swift メニューバーアプリ)
+├── crates/
+│   ├── vantage-point/   # server lib (TheWorld + SP の HTTP/WS server)
+│   ├── vp-app/          # Rust GUI (wry + tao + xterm.js + creo-ui) — Mac 主軸
+│   │   └── web-bundle/  # SolidJS フロントエンド（vp-app に同梱）
+│   ├── vp-cli/          # CLI binary (vp、 lane lib も内包)
+│   └── vp-mdast{,-wasm}/ # Markdown AST parser (+ wasm binding)
+└── docs/                # 仕様・設計・ガイド
 ```
 
 ## 技術スタック
@@ -173,8 +201,8 @@ vantage-point/
 |---------|------|
 | CLI / Process | Rust (Tokio, Axum, Clap) |
 | WebView | wry + tao |
+| Frontend | SolidJS + xterm.js + creo-ui (vp-app web-bundle) |
 | MCP | rmcp (stdio) |
-| Menu Bar App | Swift (AppKit) |
 | MIDI | midir |
 
 ## ライセンス

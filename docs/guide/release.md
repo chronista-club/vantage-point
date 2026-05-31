@@ -1,6 +1,10 @@
 # リリースフロー
 
-Vantage Pointのリリース手順を説明します。
+Vantage Point のリリース手順を説明します。
+
+配布は **notarized `.dmg` 直配布（GitHub Releases）/ Homebrew cask / `cargo install`** の
+三本柱（現状 macOS arm64 主軸）。`.dmg` の build → 署名 → notarize → publish → cask 更新は
+すべて **`mise run release:mac`**（Ruby 製 mise task）に集約されている。
 
 ## バージョニング
 
@@ -15,144 +19,129 @@ v{major}.{minor}.{patch}[-prerelease]
 - **patch**: バグ修正
 - **prerelease**: `-alpha`, `-beta`, `-rc.1` など（プレリリース）
 
-## GitHub Actions CI/CD
+## ブランチ運用 — nightly / main 二段
 
-リリースはGitHub Actionsで自動化されています。
+開発の最新は **nightly**、公開 release のみ **main** が進む二段運用。default branch は `nightly`。
 
-### ワークフロー構成
+| branch | 役割 | 直 push | PR | 更新元 |
+|--------|------|--------|----|--------|
+| **nightly** | 開発の最新版（day-to-day 積み上げ） | 可（force / deletion 禁止） | 任意 | lane → PR or 直 push |
+| **main** | 公開 release の単位 | **禁止** | 必須（force / deletion 禁止） | nightly → release PR → tag cut |
+| **lane / wing** | 単一タスク隔離 | 自由 | 必須 | from nightly |
 
-```yaml
-# .github/workflows/ci.yml
-
-on:
-  push:
-    branches: [main, feature/*]
-    tags: ['v*']  # ← タグプッシュでリリースジョブ発動
-  pull_request:
-    branches: [main]
-
-jobs:
-  check:    # 常に実行
-  release:  # タグ時のみ実行（checkが成功後）
+```
+nightly  ───────────────────────────────────►
+            │                  │
+            │ release PR       │ tag cut（vX.Y.Z）+ mise run release:mac
+            ▼                  ▼
+main    ───●──────────────────●──────────────►
+                              │
+                              ▼
+                     GitHub Release（.dmg / homebrew cask / cargo install）
 ```
 
-### 自動実行される処理
+## CI（GitHub Actions）
+
+CI（`.github/workflows/ci.yml`）は **fmt / clippy / test / security-audit のみ**を実行する。
+**tag-trigger の release job は存在しない** — リリース成果物の build / publish は
+ローカルの `mise run release:mac` が担う。
 
 | トリガー | 実行内容 |
 |---------|----------|
-| Push/PR | `cargo fmt --check`, `clippy`, `build`, `test` |
-| タグ (`v*`) | 上記 + バイナリビルド + GitHubリリース作成 |
-
-### リリースジョブの動作
-
-1. タグとCargo.tomlのバージョンが一致するか検証
-2. リリースバイナリ (`vp`) をビルド
-3. GitHubリリースを自動作成
-4. リリースノートを自動生成
-5. プレリリース版 (`-alpha` 等) は自動でプレリリースとしてマーク
+| PR → main、push → main | `cargo fmt --check`, `clippy`, `test`, security-audit |
 
 ## リリース手順
 
-### 1. 変更をfeatureブランチにまとめる
+### 1. ローカル確認
 
 ```bash
-git checkout -b feature/xxx
-git add -A
-git commit -m "feat: 機能追加"
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+cargo build --release -p vantage-point
 ```
 
 ### 2. バージョンを更新
 
 ```bash
-# Cargo.tomlのバージョンを更新
-# [workspace.package]
-# version = "x.y.z"
+# Cargo.toml ([workspace.package]) の version を x.y.z に更新
 ```
 
-### 3. PR作成・マージ
+### 3. release PR（nightly → main）
 
 ```bash
-git push -u origin feature/xxx
-gh pr create --title "feat: v0.x.0 - 機能追加" --base main
+# nightly を最新化してから release PR を作る
+gh pr create --base main --title "release: vX.Y.Z"
 
-# CIが通ったらマージ
-gh pr merge --merge --delete-branch
+# CI が green になったらマージ（nightly は trunk なので --delete-branch しない）
+gh pr merge --merge
 ```
 
-### 4. タグプッシュ（自動リリース）
+### 4. タグ cut + .dmg リリース
 
 ```bash
 git checkout main
 git pull origin main
+git tag vX.Y.Z
+git push origin vX.Y.Z
 
-# タグ付け＆プッシュ → CIが自動でリリース作成
-git tag v0.x.0
-git push origin v0.x.0
+# notarized .dmg を build → sign → notarize → GitHub Release publish → cask 更新
+mise run release:mac
 ```
 
-これでGitHub Actionsが自動的に：
-- ✅ バージョン検証
-- ✅ バイナリビルド
-- ✅ GitHubリリース作成
-- ✅ リリースノート生成
+`mise run release:mac`（`.mise/tasks/release/mac`）が一気通貫で行う処理:
 
-### 手動でリリースノートを追加したい場合
+1. **前提チェック** — Developer ID Application 証明書 / notarytool keychain profile (`vp-notary`)
+2. **build** — `cargo build --release --target aarch64-apple-darwin -p vp-app -p vp-cli`
+3. **`.app` 組立** — `VantagePoint.app`（`vp-app` 主 executable + 同梱 `vp` daemon + icon + Info.plist、`LSMinimumSystemVersion = 11.0`）
+4. **codesign** — Developer ID + hardened runtime（inside-out で同梱 binary → bundle の順）
+5. **`.dmg` 作成** — `hdiutil`（`/Applications` symlink 付き drag-install UX、`VantagePoint-<ver>-arm64.dmg`）
+6. **notarize + staple** — `xcrun notarytool submit --wait` → `xcrun stapler staple` → `spctl` 検証
+7. **GitHub Release publish** — `gh release create`（既存タグなら `gh release upload --clobber`）
+8. **Homebrew cask 自動更新** — 末尾で `mise run release:cask` を best-effort 呼び出し
+
+#### ドライ実行 / 部分実行
+
+| 環境変数 | 効果 |
+|---------|------|
+| `VP_RELEASE_DRY=1` | notarize + publish を skip（build / sign / `.dmg` だけローカル検証、creds 不要） |
+| `VP_RELEASE_NO_PUBLISH=1` | notarize + staple まで（`gh` publish だけ skip、sha256 を出力） |
+| `VP_RELEASE_SKIP_BUILD=1` | `cargo build` を skip（既存 binary 前提、CI / メモリ逼迫時の検証用） |
+
+### 5. Homebrew cask の更新（手動再試行）
+
+`release:mac` の末尾で自動更新されるが、失敗した場合は単体で再試行できる。
 
 ```bash
-# リリース作成後に編集
-gh release edit v0.x.0 --notes "追加のリリースノート"
+mise run release:cask
 ```
 
-## ローカル確認
+`mise run release:cask`（`.mise/tasks/release/cask`）は tap repo
+`chronista-club/homebrew-tap` の `Casks/vantage-point.rb` を現 version に揃える:
 
-リリース前に以下を確認：
+1. **sha256 算出** — ローカルの `target/dist/<dmg>` 優先、無ければ GitHub Release から download
+2. **tap を temp に clone** → `version` / `sha256` の 2 行を差し替え → commit & push（idempotent、既に最新なら push しない）
+
+## 前提（gate）
+
+`mise run release:mac` には以下が必要:
+
+- **Developer ID Application 証明書**（keychain に import 済）
+- **notarytool keychain profile `vp-notary`**（App Store Connect API key 推奨）:
 
 ```bash
-# フォーマット
-cargo fmt --all -- --check
-
-# Clippy
-cargo clippy --workspace --all-targets -- -D warnings -A dead_code
-
-# テスト
-cargo test --workspace
-
-# ビルド
-cargo build --release -p vantage-point
+xcrun notarytool store-credentials vp-notary \
+  --key <AuthKey.p8> --key-id <KEY_ID> --issuer <ISSUER_ID>
 ```
 
-## リリースノートのテンプレート
-
-自動生成されますが、手動で編集する場合：
-
-```markdown
-## Vantage Point vX.Y.Z
-
-### 主な変更
-
-- 機能A
-- 機能B
-
-### Breaking Changes
-
-- XXXがYYYに変更
-
-### インストール
-
-\`\`\`bash
-cargo install --path crates/vp-cli
-\`\`\`
-
----
-
-**Full Changelog**: https://github.com/chronista-club/vantage-point/compare/vA.B.C...vX.Y.Z
-```
+- icon: `crates/vp-app/assets/icon.icns`（自動 embed）
 
 ## チェックリスト
 
-- [ ] バージョン番号更新（Cargo.toml）
-- [ ] ローカルでテスト・lint通過確認
-- [ ] PRマージ（CI通過後）
+- [ ] バージョン番号更新（`Cargo.toml`）
+- [ ] ローカルでテスト・lint 通過確認
+- [ ] release PR（nightly → main）マージ（CI 通過後）
 - [ ] タグ作成・プッシュ
-- [ ] CI自動リリース確認
-- [ ] （任意）リリースノート追記
+- [ ] `mise run release:mac` で `.dmg` build → notarize → publish
+- [ ] Homebrew cask 更新確認（自動 / `mise run release:cask`）
+- [ ] （任意）リリースノート追記（`gh release edit vX.Y.Z --notes "..."`）
