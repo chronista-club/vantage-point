@@ -2,11 +2,20 @@
  * Action registry — directive SSOT（`DIRECTIVE_TABLE`）を typed `Action[]` に昇格する。
  *
  * GPUI 借用 epic #2 の Phase 1。 keyboard（chord.ts）と Command Palette（⌘K）が
- * この registry の `Action.run` を共通で呼ぶ。 `run` は当面 `dispatchDirective(key)` に
- * 委譲して既存 handler を再利用する（段階移行、 低リスク）。
+ * この registry の `Action.run` を共通で呼ぶ。 `run` は handlers.ts の処理本体を直接持つ
+ * （decouple 済 — 旧 `dispatchDirective` 委譲を廃止し、 registry を dispatch の SSOT に）。
  */
 import { DIRECTIVE_TABLE } from "../../shortcuts/chord-table";
-import { dispatchDirective } from "../keybindings";
+import {
+	runDelete,
+	runFileExplorer,
+	runLaneSelectMode,
+	runMainViewDirective,
+	runNewWing,
+	runRestart,
+	runSendToPP,
+	runSwitcher,
+} from "./handlers";
 import type { Action } from "./types";
 
 /**
@@ -29,6 +38,19 @@ const DIRECTIVE_TITLES: Record<string, string> = {
 };
 
 /**
+ * directive key → 処理本体（handlers.ts）。 未登録 key（e/g/h/w/i）は main-view directive 扱い。
+ */
+const DIRECTIVE_RUN: Record<string, () => void> = {
+	f: runFileExplorer,
+	p: runSendToPP,
+	r: runRestart,
+	n: runNewWing,
+	d: runDelete,
+	s: runSwitcher,
+	l: runLaneSelectMode,
+};
+
+/**
  * 全 directive を typed Action に昇格したもの（= Command Palette の表示 source）。
  * 並びは `DIRECTIVE_TABLE` の定義順。
  */
@@ -39,7 +61,7 @@ export const ACTIONS: Action[] = Object.entries(DIRECTIVE_TABLE).map(
 		title: DIRECTIVE_TITLES[key] ?? entry.description,
 		description: entry.description,
 		semantic: entry.semantic,
-		run: () => dispatchDirective(key),
+		run: DIRECTIVE_RUN[key] ?? (() => runMainViewDirective(key)),
 	}),
 );
 
