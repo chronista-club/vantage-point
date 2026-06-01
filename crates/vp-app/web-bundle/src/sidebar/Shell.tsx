@@ -26,6 +26,7 @@ import {
 } from "./keybindings";
 import { FileExplorer, FILE_EXPLORER_CSS } from "./FileExplorer";
 import { LanePicker, LANE_PICKER_CSS } from "./LanePicker";
+import { CommandPalette, COMMAND_PALETTE_CSS } from "./CommandPalette";
 import { ProjectAccordion } from "./ProjectAccordion";
 import { WorldWidget } from "./WorldWidget";
 
@@ -117,6 +118,9 @@ export function Shell() {
 			{/* PR 445 `s` directive: Lane / project switcher picker overlay (singleton)。
           Cmd hold s で window.vpLanePicker.open() が呼ばれて出現、 lane / project を fuzzy 検索 + 選択。 */}
 			<LanePicker />
+
+			{/* GPUI 借用 #2: Command Palette (⌘K)。 全 Action (directive registry) を fuzzy 検索 + 実行。 */}
+			<CommandPalette />
 
 			{/* PR 445 `d` directive: 2-click delete confirm hint bar。 pending state 中だけ
           sidebar 下端に表示、 1 秒以内に 2 回目で execute、 timeout で auto-dismiss。 */}
@@ -350,4 +354,5 @@ html,body{margin:0;height:100%;background:var(--color-surface-bg-subtle);
   color:var(--color-brand-primary);}
 ${FILE_EXPLORER_CSS}
 ${LANE_PICKER_CSS}
+${COMMAND_PALETTE_CSS}
 `;
