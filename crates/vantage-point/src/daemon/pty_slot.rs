@@ -85,6 +85,22 @@ impl PtySlot {
         for (key, value) in env {
             cmd.env(key, value);
         }
+        // PATH 補正: vp-app (.app) を GUI / launchd 経由で起動すると、 子プロセスの PATH が
+        // `/usr/bin:/bin:/usr/sbin:/sbin` の最小集合になり、 user-installed tool (特に mise、
+        // lead lane = `mise run vp:stand:echoes` の program) を見つけられず spawn が失敗 →
+        // lane が即 Dead 化 → Echoes コンソールが出ない、 という症状の根因になる。
+        // 既知の user tool location を base PATH の先頭に前置して解決する (augment_lane_path)。
+        // base は caller env の PATH (あれば) → なければ親プロセスの PATH。
+        {
+            let base_path = env
+                .iter()
+                .find(|(k, _)| k == "PATH")
+                .map(|(_, v)| v.clone())
+                .or_else(|| std::env::var("PATH").ok())
+                .unwrap_or_default();
+            let home = std::env::var("HOME").ok();
+            cmd.env("PATH", augment_lane_path(&base_path, home.as_deref()));
+        }
 
         // 子プロセスを起動（ゾンビ防止のためハンドルを保持する）
         let child = pair.slave.spawn_command(cmd)?;
@@ -247,9 +263,70 @@ fn start_reader_task(
     })
 }
 
+/// lane 子プロセス用に PATH を補正する。
+///
+/// vp-app (.app) を GUI / launchd 経由で起動すると、 子プロセスの PATH が
+/// `/usr/bin:/bin:/usr/sbin:/sbin` の最小集合になり、 user-installed tool (特に mise、
+/// lead lane = `mise run vp:stand:echoes` の program) を見つけられず spawn が失敗 →
+/// lane が即 Dead 化 → Echoes コンソールが出ない、 という症状の根因になる。
+/// 既知の user tool location (`~/.local/bin` / homebrew / `/usr/local/bin`) を base PATH の
+/// 先頭に前置して解決する。 base に既に含まれる prefix は重複させない (PATH 肥大化を避ける)。
+fn augment_lane_path(base_path: &str, home: Option<&str>) -> String {
+    let mut prefixes: Vec<String> = Vec::new();
+    if let Some(home) = home {
+        prefixes.push(format!("{home}/.local/bin"));
+    }
+    prefixes.push("/opt/homebrew/bin".to_string());
+    prefixes.push("/usr/local/bin".to_string());
+    let base_segments: std::collections::HashSet<&str> = base_path.split(':').collect();
+    let new_prefixes: Vec<String> = prefixes
+        .into_iter()
+        .filter(|p| !base_segments.contains(p.as_str()))
+        .collect();
+    match (new_prefixes.is_empty(), base_path.is_empty()) {
+        (true, _) => base_path.to_string(),
+        (false, true) => new_prefixes.join(":"),
+        (false, false) => format!("{}:{}", new_prefixes.join(":"), base_path),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn augment_lane_path_prepends_user_tool_locations() {
+        // GUI/launchd の最小 PATH に user tool location が前置される。
+        let r = augment_lane_path("/usr/bin:/bin", Some("/Users/x"));
+        assert_eq!(
+            r,
+            "/Users/x/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+        );
+    }
+
+    #[test]
+    fn augment_lane_path_skips_existing_prefix() {
+        // base に既存の prefix は重複させない (PATH 肥大化を避ける)。
+        let r = augment_lane_path("/opt/homebrew/bin:/usr/bin", Some("/Users/x"));
+        assert_eq!(
+            r,
+            "/Users/x/.local/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin"
+        );
+    }
+
+    #[test]
+    fn augment_lane_path_empty_base() {
+        // base が空でも prefix だけで PATH を構築できる。
+        let r = augment_lane_path("", Some("/Users/x"));
+        assert_eq!(r, "/Users/x/.local/bin:/opt/homebrew/bin:/usr/local/bin");
+    }
+
+    #[test]
+    fn augment_lane_path_without_home() {
+        // HOME 不明なら ~/.local/bin は前置しない (homebrew / usr-local のみ)。
+        let r = augment_lane_path("/usr/bin", None);
+        assert_eq!(r, "/opt/homebrew/bin:/usr/local/bin:/usr/bin");
+    }
 
     #[tokio::test]
     async fn test_pty_spawn_and_output() {
