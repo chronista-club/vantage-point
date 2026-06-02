@@ -54,6 +54,10 @@ pub enum AppEvent {
         process_path: String,
         message: String,
     },
+    /// オンデマンド respawn (maybe_respawn_dead_lane) の restart_lane が失敗した通知。
+    /// event loop で lane_respawn_triggered から address を除去し、 次の Dead 検出で
+    /// 再 respawn できるようにする (失敗が永続 suppression にならないための解除通知)。
+    LaneRespawnFailed { address: String },
     /// Clone 先フォルダ picker で選択された path を sidebar JS に push (キャンセル時は None)
     ClonePathPicked(Option<String>),
     /// Phase 4-paste-fix: clipboard paste request の応答。 OS clipboard の内容を JS に届ける。
