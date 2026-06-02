@@ -767,18 +767,21 @@ fn push_active_view(main_view: &WebView, state: &SidebarState) {
 }
 
 /// オンデマンド respawn: active にしようとする lane が Dead (pid:null) なら SP に restart_lane を
-/// 発火して蘇らせる。 lead lane の Echoes プロセスが死ぬと SP の lifecycle monitor は Dead を
-/// 検知するだけで auto-respawn しない (server.rs の設計判断) ため、 user が lane を開いた時点で
-/// オンデマンドに復活させる。 これが無いと「一度死んだ lane は手動 restart するまで Echoes が
-/// 出ない」状態になる (= 全 project で console 非表示の真因)。
+/// 発火して蘇らせる。 lane (lead / wing) の Echoes プロセスが死ぬと SP の lifecycle monitor は
+/// Dead を検知するだけで auto-respawn しない (server.rs の設計判断) ため、 user が lane を
+/// 開いた時点でオンデマンドに復活させる。 これが無いと「一度死んだ lane は手動 restart するまで
+/// Echoes が出ない」状態になる (= 全 project で console 非表示の真因)。
 ///
 /// dedup: `triggered` set で同一 lane の連打を防ぐ (LanesLoaded は loop event で頻発するため必須)。
-/// lane が Running に戻ったら caller が `triggered.remove` して再 Dead 時に再 trigger 可能にする。
+/// 解除タイミングは 2 つ: (a) lane が Running に戻った時 caller が `triggered.remove` する、
+/// (b) restart_lane が失敗した時 `AppEvent::LaneRespawnFailed` 経由で caller が `triggered.remove`
+/// する (= 失敗が永続 suppression にならないようにする、 Moody Blues Issue #1)。
 fn maybe_respawn_dead_lane(
     addr: &str,
     state: &SidebarState,
     triggered: &mut std::collections::HashSet<String>,
     rt_handle: &tokio::runtime::Handle,
+    proxy: &EventLoopProxy<AppEvent>,
 ) {
     // addr の lane を lanes_by_project から探し、 所属 project path と pid を取得。
     let entry = state.lanes_by_project.iter().find_map(|(path, lanes)| {
@@ -808,6 +811,7 @@ fn maybe_respawn_dead_lane(
         return;
     };
     let addr_owned = addr.to_string();
+    let proxy = proxy.clone();
     tracing::info!(
         "auto-respawn dead lane (on-demand): addr={} port={}",
         addr_owned,
@@ -816,9 +820,18 @@ fn maybe_respawn_dead_lane(
     rt_handle.spawn(async move {
         let client = crate::client::TheWorldClient::new(port);
         match client.restart_lane(&addr_owned).await {
-            Ok(()) => tracing::info!("auto-respawn restart_lane ok: {}", addr_owned),
+            Ok(()) => {
+                // 成功時は LanesLoaded で Running 検出時に triggered から解除される。
+                tracing::info!("auto-respawn restart_lane ok: {}", addr_owned);
+            }
             Err(e) => {
-                tracing::warn!("auto-respawn restart_lane failed: {}: {}", addr_owned, e)
+                tracing::warn!("auto-respawn restart_lane failed: {}: {}", addr_owned, e);
+                // 失敗を event loop に通知して triggered を解除する (永続 suppression 回避)。
+                // これが無いと SP クラッシュ等で全 retry 失敗した lane は vp-app 再起動まで
+                // auto-respawn 対象外になってしまう (Moody Blues Issue #1)。
+                let _ = proxy.send_event(AppEvent::LaneRespawnFailed {
+                    address: addr_owned,
+                });
             }
         }
     });
@@ -1475,6 +1488,9 @@ pub fn run() -> anyhow::Result<()> {
     // pid あり検出時) entry を解除し、 再度 Dead 化した時に再 respawn できるようにする。
     let mut lane_respawn_triggered: std::collections::HashSet<String> =
         std::collections::HashSet::new();
+    // maybe_respawn_dead_lane の async restart_lane が失敗した時に event loop へ
+    // 通知を返し lane_respawn_triggered を解除するための proxy (永続 suppression 回避)。
+    let respawn_proxy = event_loop.create_proxy();
     // wiremsg Stage 1: per-SP の "lanes" Unison 購読を 1 本だけ張るための guard。
     // path をキーにする。購読が再接続上限で諦めると `LanesSubscriptionEnded` で除去され、
     // 次の `ProjectsLoaded` で SP がまだ生きていれば再 spawn される。
@@ -2015,6 +2031,7 @@ pub fn run() -> anyhow::Result<()> {
                         &sidebar_state,
                         &mut lane_respawn_triggered,
                         &rt_handle,
+                        &respawn_proxy,
                     );
                 }
                 push_sidebar_state(&sidebar, &sidebar_state);
@@ -2060,6 +2077,16 @@ pub fn run() -> anyhow::Result<()> {
                     message
                 );
                 // SP 接続失敗 (Project SP 未起動等) — sidebar の lanes_by_project は更新しない
+            }
+            // オンデマンド respawn の restart_lane が失敗した lane を guard から解除する。
+            // 解除しておくと、 次に同 lane を active にした (or LanesLoaded for Dead の) 時点で
+            // 再 respawn を試行できる (= SP クラッシュ後の復帰でも auto-respawn が効く)。
+            // 即ループにはならない: クリック起点は user 操作、 起動時 first_addr は active 設定後
+            // None になるため LanesLoaded loop event での連続発火は起きない。
+            Event::UserEvent(AppEvent::LaneRespawnFailed { address }) => {
+                if lane_respawn_triggered.remove(&address) {
+                    tracing::info!("auto-respawn guard 解除 (restart 失敗): {}", address);
+                }
             }
             Event::UserEvent(AppEvent::LanesSubscriptionEnded { process_path }) => {
                 // wiremsg Stage 1: "lanes" 購読が再接続上限に達して終了した。
@@ -2532,6 +2559,7 @@ pub fn run() -> anyhow::Result<()> {
                             &sidebar_state,
                             &mut lane_respawn_triggered,
                             &rt_handle,
+                            &respawn_proxy,
                         );
                     }
                 }
