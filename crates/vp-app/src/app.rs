@@ -766,6 +766,77 @@ fn push_active_view(main_view: &WebView, state: &SidebarState) {
     }
 }
 
+/// オンデマンド respawn: active にしようとする lane が Dead (pid:null) なら SP に restart_lane を
+/// 発火して蘇らせる。 lane (lead / wing) の Echoes プロセスが死ぬと SP の lifecycle monitor は
+/// Dead を検知するだけで auto-respawn しない (server.rs の設計判断) ため、 user が lane を
+/// 開いた時点でオンデマンドに復活させる。 これが無いと「一度死んだ lane は手動 restart するまで
+/// Echoes が出ない」状態になる (= 全 project で console 非表示の真因)。
+///
+/// dedup: `triggered` set で同一 lane の連打を防ぐ (LanesLoaded は loop event で頻発するため必須)。
+/// 解除タイミングは 2 つ: (a) lane が Running に戻った時 caller が `triggered.remove` する、
+/// (b) restart_lane が失敗した時 `AppEvent::LaneRespawnFailed` 経由で caller が `triggered.remove`
+/// する (= 失敗が永続 suppression にならないようにする、 Moody Blues Issue #1)。
+fn maybe_respawn_dead_lane(
+    addr: &str,
+    state: &SidebarState,
+    triggered: &mut std::collections::HashSet<String>,
+    rt_handle: &tokio::runtime::Handle,
+    proxy: &EventLoopProxy<AppEvent>,
+) {
+    // addr の lane を lanes_by_project から探し、 所属 project path と pid を取得。
+    let entry = state.lanes_by_project.iter().find_map(|(path, lanes)| {
+        lanes
+            .iter()
+            .find(|l| l.address.key() == addr)
+            .map(|l| (path.clone(), l.pid))
+    });
+    let Some((project_path, pid)) = entry else {
+        return; // lane 未知 (まだ LanesLoaded 来てない等) — 後続の LanesLoaded で再評価される
+    };
+    if pid.is_some() {
+        return; // Running、 respawn 不要
+    }
+    // dedup: 既に respawn 進行中なら skip
+    if !triggered.insert(addr.to_string()) {
+        return;
+    }
+    let Some(port) = state
+        .processes
+        .iter()
+        .find(|p| p.path == project_path)
+        .and_then(|p| p.port)
+    else {
+        tracing::warn!("auto-respawn: SP port unknown for {} (skip)", project_path);
+        triggered.remove(addr); // port 未解決 — trigger 解除して次回再試行可能に
+        return;
+    };
+    let addr_owned = addr.to_string();
+    let proxy = proxy.clone();
+    tracing::info!(
+        "auto-respawn dead lane (on-demand): addr={} port={}",
+        addr_owned,
+        port
+    );
+    rt_handle.spawn(async move {
+        let client = crate::client::TheWorldClient::new(port);
+        match client.restart_lane(&addr_owned).await {
+            Ok(()) => {
+                // 成功時は LanesLoaded で Running 検出時に triggered から解除される。
+                tracing::info!("auto-respawn restart_lane ok: {}", addr_owned);
+            }
+            Err(e) => {
+                tracing::warn!("auto-respawn restart_lane failed: {}: {}", addr_owned, e);
+                // 失敗を event loop に通知して triggered を解除する (永続 suppression 回避)。
+                // これが無いと SP クラッシュ等で全 retry 失敗した lane は vp-app 再起動まで
+                // auto-respawn 対象外になってしまう (Moody Blues Issue #1)。
+                let _ = proxy.send_event(AppEvent::LaneRespawnFailed {
+                    address: addr_owned,
+                });
+            }
+        }
+    });
+}
+
 /// SidebarState を JSON にして sidebar webview に push
 fn push_sidebar_state(sidebar: &WebView, state: &SidebarState) {
     let json = match serde_json::to_string(state) {
@@ -1232,12 +1303,8 @@ pub fn run() -> anyhow::Result<()> {
     // muda の MenuEvent を main loop に橋渡しする pump を起動
     spawn_menu_event_pump(&rt_handle, event_loop.create_proxy());
 
-    // session_state を WindowBuilder より前に load して、 window geometry (= 前回終了時の
-    // position + size + monitor) を起動時に復元できるようにする。 `mut` で keep し、
-    // 後段で active_lane_address / projects / currents_order 等の mutate + save にも使う。
-    let mut session_state = SessionState::load();
-
-    // PR #459: vp-app instance index 判定 (= multi-window 復元)。
+    // vp-app instance index 判定 (= multi-window 復元)。 per-instance file load に先立って
+    // 必要なので session_state より前に確定する。
     // 新 env `VP_APP_INSTANCE` (= "0", "1", ...) が primary、 旧 `VP_APP_SECONDARY="1"`
     // は backward compat で `VP_APP_INSTANCE="1"` 相当に map。 未設定 / "0" = primary。
     let instance_index: usize = std::env::var("VP_APP_INSTANCE")
@@ -1257,9 +1324,20 @@ pub fn run() -> anyhow::Result<()> {
         if is_primary { "primary" } else { "secondary" }
     );
 
-    // PR #458 + #459: invalid geometry (= MIN 未満 / NaN / Inf) は None に fallback。
-    // multi-window 復元では自分の instance slot から geometry を取得。
-    let restored_geometry = session_state.window_geometry_for(instance_index).cloned();
+    // session_state を WindowBuilder より前に load して、 window geometry (= 前回終了時の
+    // position + size + monitor) を起動時に復元できるようにする。 per-instance 分離後は
+    // **自分の instance file** (`session.json` / `session.<N>.json`) を読む。 `mut` で keep し、
+    // 後段で active_lane_address / projects / currents_order 等の mutate + save にも使う。
+    let mut session_state = SessionState::load(instance_index);
+    // この instance window を「開いている」 と記録する (= 次回 primary 起動時の auto-spawn
+    // signal)。 clean close (`CloseRequested`) で `open=false` に上書きするので、 明示的に
+    // 閉じた window は復活せず、 kill された window は復元される。
+    session_state.set_open(true);
+    session_state.save();
+
+    // PR #458: invalid geometry (= MIN 未満 / NaN / Inf) は None に fallback。
+    // per-instance 分離後は自分の file の geometry を使う。
+    let restored_geometry = session_state.window_geometry().cloned();
 
     // 最低サイズ + 起動時 size 強制矯正 — sidebar (固定 280px) 圧縮 bug の構造的防御。
     //
@@ -1289,29 +1367,40 @@ pub fn run() -> anyhow::Result<()> {
     }
     let window = builder.build(&event_loop)?;
 
-    // PR #459: primary 起動時、 過去の secondary instance (= index 1) の geometry が
-    // valid なら **child process として auto-spawn** する。 これで「2 つ window 開いて
-    // close → 再起動 → 2 つ window 復元」 が動く。 MVP は primary + 1 secondary、
-    // N > 2 (= Cmd+N で 3, 4, ... の window) は future PR で extend 予定。
+    // primary 起動時、 前回「開いていた」 secondary instance (= `session.<N>.json` で
+    // open==true、 N≥1) を **child process として auto-spawn** する。 これで「複数 window を
+    // 開いて再起動 → 全 window 復元」 が動く。 明示的に閉じた (= clean close で open=false)
+    // instance は復活しない ─ per-instance file 分離 + open flag 管理によって、 共有 1 file
+    // 時代の「close しても slot が残り再 spawn される」 bug を根治した。
     //
-    // env は既存の `VP_APP_SECONDARY="1"` を使う (= Cmd+N の既存 path と一致、 secondary
-    // 側は instance_index=1 として該当 slot を read)。 spawn 失敗は warn して continue
-    // (= primary 起動は阻害しない)。
-    if is_primary && session_state.window_geometry_for(1).is_some() {
-        match std::env::current_exe() {
-            Ok(exe) => match std::process::Command::new(&exe)
-                .env("VP_APP_SECONDARY", "1")
-                .spawn()
-            {
-                Ok(child) => tracing::info!(
-                    "PR #459: auto-spawned secondary instance (pid={}, instance_index=1)",
-                    child.id()
-                ),
-                Err(e) => {
-                    tracing::warn!("PR #459: auto-spawn secondary failed (起動は継続): {}", e)
+    // 子は `VP_APP_INSTANCE=<idx>` で自分の file を read (旧 `VP_APP_SECONDARY=1` も
+    // backward compat で渡す)。 spawn 失敗は warn して continue (= primary 起動は阻害しない)。
+    if is_primary {
+        let to_spawn = SessionState::open_secondary_indices();
+        if !to_spawn.is_empty() {
+            match std::env::current_exe() {
+                Ok(exe) => {
+                    for idx in to_spawn {
+                        match std::process::Command::new(&exe)
+                            .env("VP_APP_INSTANCE", idx.to_string())
+                            .env("VP_APP_SECONDARY", "1")
+                            .spawn()
+                        {
+                            Ok(child) => tracing::info!(
+                                "auto-spawned secondary instance (pid={}, instance_index={})",
+                                child.id(),
+                                idx
+                            ),
+                            Err(e) => tracing::warn!(
+                                "auto-spawn secondary (instance={}) failed (起動は継続): {}",
+                                idx,
+                                e
+                            ),
+                        }
+                    }
                 }
-            },
-            Err(e) => tracing::warn!("PR #459: current_exe() 失敗 (auto-spawn skip): {}", e),
+                Err(e) => tracing::warn!("current_exe() 失敗 (auto-spawn skip): {}", e),
+            }
         }
     }
 
@@ -1392,6 +1481,19 @@ pub fn run() -> anyhow::Result<()> {
 
     tracing::info!("メインウィンドウ + 2 ペイン (sidebar / main) 作成");
 
+    // 起動直後の bounds 明示同期 — 「下部が空く」 bug の構造的 fix。
+    // WebView の初期 `with_bounds` は DEFAULT_WINDOW_HEIGHT (800) 固定なので、 復元 geometry が
+    // DEFAULT より大きい (= 前回 window を縦に広げていた) 場合、 起動後に `WindowEvent::Resized`
+    // が発火しない限り content が 800px のまま下部が黒く空く。 macOS は `with_inner_size` で
+    // born した window に初回 Resized を出さないことがあるため、 ここで実 inner_size に
+    // 明示同期して初回 paint から content view を全面に張る (Resized handler と idempotent)。
+    update_pane_bounds(
+        &sidebar,
+        &main_view,
+        window.inner_size(),
+        window.scale_factor(),
+    );
+
     // Phase 2.x-d: 旧 single-PTY 経路 (`xterm_ready` / `pending` / `PENDING_MAX`) は撤去。
     // per-Lane instance + browser-native WebSocket では各 Lane の xterm.js が独立に
     // WS から bytes を受けるので、 Rust 側で buffer / flush 同期する必要が無い。
@@ -1412,6 +1514,14 @@ pub fn run() -> anyhow::Result<()> {
     // TheWorld 側でも `Process already running` で弾かれるが、 無駄な POST を避ける。
     let mut sp_spawn_triggered: std::collections::HashSet<String> =
         std::collections::HashSet::new();
+    // オンデマンド respawn: active にする lane が Dead (pid:null) の時に restart_lane を 1 回だけ
+    // 発火するための guard。 lane address をキーにする。 lane が Running に戻ったら (LanesLoaded で
+    // pid あり検出時) entry を解除し、 再度 Dead 化した時に再 respawn できるようにする。
+    let mut lane_respawn_triggered: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+    // maybe_respawn_dead_lane の async restart_lane が失敗した時に event loop へ
+    // 通知を返し lane_respawn_triggered を解除するための proxy (永続 suppression 回避)。
+    let respawn_proxy = event_loop.create_proxy();
     // wiremsg Stage 1: per-SP の "lanes" Unison 購読を 1 本だけ張るための guard。
     // path をキーにする。購読が再接続上限で諦めると `LanesSubscriptionEnded` で除去され、
     // 次の `ProjectsLoaded` で SP がまだ生きていれば再 spawn される。
@@ -1440,8 +1550,27 @@ pub fn run() -> anyhow::Result<()> {
     const GEOMETRY_SAVE_THROTTLE: std::time::Duration = std::time::Duration::from_millis(500);
     let mut last_geometry_save = std::time::Instant::now() - std::time::Duration::from_secs(1);
 
+    // dock app icon (portal favicon) の再アサート用。 bare binary は .app bundle が無いため
+    // macOS が launch 完了時に generic icon を被せ、 run() 前 (window.build 直後) の
+    // setApplicationIconImage を上書きする。 event loop 開始後 ~1.5s 間 set_app_icon() を
+    // 呼び続けて (WaitUntil で loop を起こす) portal icon を定着させる。 .dmg 版は冪等。
+    let icon_launch_at = std::time::Instant::now();
+    let mut icon_settled = false;
+
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
+
+        // launch settle まで dock icon を再設定 (bare binary 対策)。 settle 後は通常の Wait。
+        if !icon_settled {
+            crate::icon::set_app_icon();
+            if icon_launch_at.elapsed() < std::time::Duration::from_millis(1500) {
+                *control_flow = ControlFlow::WaitUntil(
+                    std::time::Instant::now() + std::time::Duration::from_millis(150),
+                );
+            } else {
+                icon_settled = true;
+            }
+        }
 
         match event {
             Event::WindowEvent {
@@ -1449,7 +1578,11 @@ pub fn run() -> anyhow::Result<()> {
                 ..
             } => {
                 tracing::info!("Window close requested");
-                // window geometry (position + size + monitor) を session_state に save。
+                // この window は **明示的に閉じられた** → 次回 primary 起動時に auto-respawn
+                // しないよう自 instance file に open=false を記録する。 強制 kill (= SIGTERM /
+                // crash) では CloseRequested が来ないので open=true のまま残り、 復元される。
+                session_state.set_open(false);
+                // window geometry (position + size + monitor) も自 instance file に save。
                 // 起動時に WindowBuilder で apply されて前回終了時の配置に復元される。
                 let scale = window.scale_factor();
                 let inner = window.inner_size().to_logical::<f64>(scale);
@@ -1458,9 +1591,6 @@ pub fn run() -> anyhow::Result<()> {
                         let logical_pos = pos.to_logical::<f64>(scale);
                         let monitor_name =
                             window.current_monitor().and_then(|m| m.name());
-                        // PR #459: 自分の instance index の slot に save (multi-window 対応)。
-                        // 旧 single-slot field (window_geometry) は load() の migration で
-                        // window_geometries[0] に移植済 / 新 save では使わない。
                         let geom = crate::session_state::WindowGeometry {
                             width: inner.width,
                             height: inner.height,
@@ -1468,10 +1598,9 @@ pub fn run() -> anyhow::Result<()> {
                             y: logical_pos.y,
                             monitor: monitor_name.clone(),
                         };
-                        session_state.set_window_geometry(instance_index, geom);
-                        session_state.save();
+                        session_state.set_window_geometry(geom);
                         tracing::info!(
-                            "session save [instance={}]: window geometry ({}x{} @ {},{}, monitor={:?})",
+                            "session save [instance={}]: window geometry ({}x{} @ {},{}, monitor={:?}), open=false",
                             instance_index,
                             inner.width,
                             inner.height,
@@ -1487,6 +1616,8 @@ pub fn run() -> anyhow::Result<()> {
                         );
                     }
                 }
+                // open=false (+ geometry) を確実に書き出す (outer_position 失敗でも open は残す)。
+                session_state.save();
                 *control_flow = ControlFlow::Exit;
             }
             Event::WindowEvent {
@@ -1527,16 +1658,13 @@ pub fn run() -> anyhow::Result<()> {
                     let inner_logical = size.to_logical::<f64>(scale);
                     let logical_pos = pos.to_logical::<f64>(scale);
                     let monitor_name = window.current_monitor().and_then(|m| m.name());
-                    session_state.set_window_geometry(
-                        instance_index,
-                        crate::session_state::WindowGeometry {
-                            width: inner_logical.width,
-                            height: inner_logical.height,
-                            x: logical_pos.x,
-                            y: logical_pos.y,
-                            monitor: monitor_name,
-                        },
-                    );
+                    session_state.set_window_geometry(crate::session_state::WindowGeometry {
+                        width: inner_logical.width,
+                        height: inner_logical.height,
+                        x: logical_pos.x,
+                        y: logical_pos.y,
+                        monitor: monitor_name,
+                    });
                     session_state.save();
                 }
             }
@@ -1555,16 +1683,13 @@ pub fn run() -> anyhow::Result<()> {
                     let inner = window.inner_size().to_logical::<f64>(scale);
                     let logical_pos = pos.to_logical::<f64>(scale);
                     let monitor_name = window.current_monitor().and_then(|m| m.name());
-                    session_state.set_window_geometry(
-                        instance_index,
-                        crate::session_state::WindowGeometry {
-                            width: inner.width,
-                            height: inner.height,
-                            x: logical_pos.x,
-                            y: logical_pos.y,
-                            monitor: monitor_name,
-                        },
-                    );
+                    session_state.set_window_geometry(crate::session_state::WindowGeometry {
+                        width: inner.width,
+                        height: inner.height,
+                        x: logical_pos.x,
+                        y: logical_pos.y,
+                        monitor: monitor_name,
+                    });
                     session_state.save();
                 }
             }
@@ -1907,6 +2032,8 @@ pub fn run() -> anyhow::Result<()> {
                             if lane.pid.is_none() {
                                 continue;
                             }
+                            // Running に戻った lane は respawn guard を解除 (再 Dead 化時に再 respawn 可能に)。
+                            lane_respawn_triggered.remove(&lane.address.key());
                             let addr_str = lane.address.key();
                             lane_js::ensure_lane(&main_view, &addr_str, port);
                         }
@@ -1924,6 +2051,15 @@ pub fn run() -> anyhow::Result<()> {
                     // Phase 2.5: per-Lane instance を main area に表示。
                     // ensureLane は上のループで呼んだので、 ここでは show のみ。
                     lane_js::show_lane(&main_view, Some(&addr));
+                    // オンデマンド respawn: session 復元/auto-select した lane が Dead なら蘇らせる。
+                    // (起動時に直前 active lane が死んでいた場合に Echoes を自動復活させる)
+                    maybe_respawn_dead_lane(
+                        &addr,
+                        &sidebar_state,
+                        &mut lane_respawn_triggered,
+                        &rt_handle,
+                        &respawn_proxy,
+                    );
                 }
                 push_sidebar_state(&sidebar, &sidebar_state);
             }
@@ -1968,6 +2104,16 @@ pub fn run() -> anyhow::Result<()> {
                     message
                 );
                 // SP 接続失敗 (Project SP 未起動等) — sidebar の lanes_by_project は更新しない
+            }
+            // オンデマンド respawn の restart_lane が失敗した lane を guard から解除する。
+            // 解除しておくと、 次に同 lane を active にした (or LanesLoaded for Dead の) 時点で
+            // 再 respawn を試行できる (= SP クラッシュ後の復帰でも auto-respawn が効く)。
+            // 即ループにはならない: クリック起点は user 操作、 起動時 first_addr は active 設定後
+            // None になるため LanesLoaded loop event での連続発火は起きない。
+            Event::UserEvent(AppEvent::LaneRespawnFailed { address }) => {
+                if lane_respawn_triggered.remove(&address) {
+                    tracing::info!("auto-respawn guard 解除 (restart 失敗): {}", address);
+                }
             }
             Event::UserEvent(AppEvent::LanesSubscriptionEnded { process_path }) => {
                 // wiremsg Stage 1: "lanes" 購読が再接続上限に達して終了した。
@@ -2432,6 +2578,17 @@ pub fn run() -> anyhow::Result<()> {
                         &main_view,
                         sidebar_state.active_lane_address.as_deref(),
                     );
+                    // オンデマンド respawn: 選択した lane が Dead (pid:null) なら SP に restart_lane を
+                    // 発火して蘇らせる。 復活後 LanesLoaded で pid あり → ensure_lane → Echoes 表示。
+                    if let Some(addr) = sidebar_state.active_lane_address.clone() {
+                        maybe_respawn_dead_lane(
+                            &addr,
+                            &sidebar_state,
+                            &mut lane_respawn_triggered,
+                            &rt_handle,
+                            &respawn_proxy,
+                        );
+                    }
                 }
                 // Architecture v4: dead な project が expand されたら SP を auto-spawn。
                 // dedup: 同 session で同じ path を 2 回呼ばない (TheWorld 側でも弾かれるが

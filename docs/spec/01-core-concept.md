@@ -47,7 +47,7 @@ Claude Code をエンジンとして、TUI・Canvas（WebView）・外部入力�
 | 外部入力統合 | MIDI コントローラー、tmux、MCP |
 | コード実行 | ProcessRunner による動的実行 |
 | プロセス管理 | 複数プロジェクトのライフサイクル管理 |
-| Mac アプリ | Mac App Store 配布（有料 + Free プラン検討） |
+| Mac アプリ | notarized `.dmg` 直配布（GitHub Releases）/ Homebrew cask / `cargo install` の三本柱 |
 
 ### Out of Scope
 
@@ -122,7 +122,7 @@ VP の 1st ビューは「プロジェクト選択 → TUI → AI 対話」。
 |----|------|--------|
 | REQ7.1 | メニューバーアプリとしてシステムトレイに常駐できる | Should |
 | REQ7.2 | ネイティブ WebView (wry) で Canvas を表示する | Must |
-| REQ7.3 | Mac App Store での配布に対応する | Could |
+| REQ7.3 | notarized `.dmg` / Homebrew cask で配布する（App Store は Claude CLI 依存で sandbox 不可のため使わない） | Should |
 
 ---
 
@@ -170,7 +170,7 @@ TheWorld 👑 (Process Manager / 常駐デーモン)
 
 | プラットフォーム | 位置づけ |
 |-----------------|---------|
-| **Mac** | メイン開発環境（Mac App Store 配布予定） |
+| **Mac** | メイン開発環境（notarized `.dmg` / Homebrew cask / `cargo install` で配布） |
 
 ---
 

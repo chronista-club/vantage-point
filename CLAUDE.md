@@ -128,12 +128,16 @@ cargo clippy --workspace --all-targets    # Lint
 
 ## 設定・ポート
 
-- config / data パスは OS 判定を `dirs` クレートに委ねて一本化（VP-192）。ディレクトリ名は全 OS で `vp`。
-  - **config** (`config_dir()` = `vp_config_dir()`): macOS `~/Library/Application Support/vp/`、Linux `~/.config/vp/`、Windows `%APPDATA%\vp\`
-  - **data** (`data_dir()` = `vp_data_dir()`): macOS `~/Library/Application Support/vp/`、Linux `~/.local/share/vp/`、Windows `%LOCALAPPDATA%\vp\`
-  - 設定ファイル: `vp_config_dir()/config.toml`（例: macOS `~/Library/Application Support/vp/config.toml`）
-  - DB / DISC / ログ等の生成データは `vp_data_dir()` 配下（Windows %APPDATA% は roaming 同期で DB 破損リスクがあるため data は %LOCALAPPDATA%）
-  - 起動時に旧パス（`~/.config/vp/`、`dirs::config_dir()/vantage/`）からの冪等なデータ移行を実施（`migrate_legacy_paths()`、旧データは残す）
+- config / data / state パスは **XDG Base Directory 準拠の 3 zone に統一**（VP-189 / #460、全 OS 共通、ディレクトリ名は `vp`）。定義は `crates/vantage-point/src/config.rs`。
+
+  | zone | env | default | 用途 |
+  |------|-----|---------|------|
+  | **config** (`vp_config_dir()`) | `$XDG_CONFIG_HOME` | `~/.config/vp/` | 人が編集（`config.kdl` / `projects.kdl` / `addresses.toml`） |
+  | **data** (`vp_data_dir()`) | `$XDG_DATA_HOME` | `~/.local/share/vp/` | 永続 data store（db / discs） |
+  | **state** (`vp_state_dir()`) | `$XDG_STATE_HOME` | `~/.local/state/vp/` | runtime state + log（`session.json` / `sessions/` / `log/`） |
+
+  - 設定ファイルは **KDL**（`vp_config_dir()/config.kdl`、人が編集する read-only global 設定）。登録プロジェクトの SSOT は `projects.kdl`（VP-188、config.kdl には出さない）。
+  - 起動時に旧パス（Application Support / Library/Logs / `dirs::config_dir()/vantage/` 等）から新 XDG zone へ冪等にデータ移行（`migrate_legacy_paths()`、旧データは残す）。
 - ポート割り当て:
   - TheWorld: 32000 (HTTP + QUIC)
   - Project: 33000〜33010 (HTTP + WS)
