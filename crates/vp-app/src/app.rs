@@ -1303,12 +1303,8 @@ pub fn run() -> anyhow::Result<()> {
     // muda の MenuEvent を main loop に橋渡しする pump を起動
     spawn_menu_event_pump(&rt_handle, event_loop.create_proxy());
 
-    // session_state を WindowBuilder より前に load して、 window geometry (= 前回終了時の
-    // position + size + monitor) を起動時に復元できるようにする。 `mut` で keep し、
-    // 後段で active_lane_address / projects / currents_order 等の mutate + save にも使う。
-    let mut session_state = SessionState::load();
-
-    // PR #459: vp-app instance index 判定 (= multi-window 復元)。
+    // vp-app instance index 判定 (= multi-window 復元)。 per-instance file load に先立って
+    // 必要なので session_state より前に確定する。
     // 新 env `VP_APP_INSTANCE` (= "0", "1", ...) が primary、 旧 `VP_APP_SECONDARY="1"`
     // は backward compat で `VP_APP_INSTANCE="1"` 相当に map。 未設定 / "0" = primary。
     let instance_index: usize = std::env::var("VP_APP_INSTANCE")
@@ -1328,9 +1324,20 @@ pub fn run() -> anyhow::Result<()> {
         if is_primary { "primary" } else { "secondary" }
     );
 
-    // PR #458 + #459: invalid geometry (= MIN 未満 / NaN / Inf) は None に fallback。
-    // multi-window 復元では自分の instance slot から geometry を取得。
-    let restored_geometry = session_state.window_geometry_for(instance_index).cloned();
+    // session_state を WindowBuilder より前に load して、 window geometry (= 前回終了時の
+    // position + size + monitor) を起動時に復元できるようにする。 per-instance 分離後は
+    // **自分の instance file** (`session.json` / `session.<N>.json`) を読む。 `mut` で keep し、
+    // 後段で active_lane_address / projects / currents_order 等の mutate + save にも使う。
+    let mut session_state = SessionState::load(instance_index);
+    // この instance window を「開いている」 と記録する (= 次回 primary 起動時の auto-spawn
+    // signal)。 clean close (`CloseRequested`) で `open=false` に上書きするので、 明示的に
+    // 閉じた window は復活せず、 kill された window は復元される。
+    session_state.set_open(true);
+    session_state.save();
+
+    // PR #458: invalid geometry (= MIN 未満 / NaN / Inf) は None に fallback。
+    // per-instance 分離後は自分の file の geometry を使う。
+    let restored_geometry = session_state.window_geometry().cloned();
 
     // 最低サイズ + 起動時 size 強制矯正 — sidebar (固定 280px) 圧縮 bug の構造的防御。
     //
@@ -1360,29 +1367,40 @@ pub fn run() -> anyhow::Result<()> {
     }
     let window = builder.build(&event_loop)?;
 
-    // PR #459: primary 起動時、 過去の secondary instance (= index 1) の geometry が
-    // valid なら **child process として auto-spawn** する。 これで「2 つ window 開いて
-    // close → 再起動 → 2 つ window 復元」 が動く。 MVP は primary + 1 secondary、
-    // N > 2 (= Cmd+N で 3, 4, ... の window) は future PR で extend 予定。
+    // primary 起動時、 前回「開いていた」 secondary instance (= `session.<N>.json` で
+    // open==true、 N≥1) を **child process として auto-spawn** する。 これで「複数 window を
+    // 開いて再起動 → 全 window 復元」 が動く。 明示的に閉じた (= clean close で open=false)
+    // instance は復活しない ─ per-instance file 分離 + open flag 管理によって、 共有 1 file
+    // 時代の「close しても slot が残り再 spawn される」 bug を根治した。
     //
-    // env は既存の `VP_APP_SECONDARY="1"` を使う (= Cmd+N の既存 path と一致、 secondary
-    // 側は instance_index=1 として該当 slot を read)。 spawn 失敗は warn して continue
-    // (= primary 起動は阻害しない)。
-    if is_primary && session_state.window_geometry_for(1).is_some() {
-        match std::env::current_exe() {
-            Ok(exe) => match std::process::Command::new(&exe)
-                .env("VP_APP_SECONDARY", "1")
-                .spawn()
-            {
-                Ok(child) => tracing::info!(
-                    "PR #459: auto-spawned secondary instance (pid={}, instance_index=1)",
-                    child.id()
-                ),
-                Err(e) => {
-                    tracing::warn!("PR #459: auto-spawn secondary failed (起動は継続): {}", e)
+    // 子は `VP_APP_INSTANCE=<idx>` で自分の file を read (旧 `VP_APP_SECONDARY=1` も
+    // backward compat で渡す)。 spawn 失敗は warn して continue (= primary 起動は阻害しない)。
+    if is_primary {
+        let to_spawn = SessionState::open_secondary_indices();
+        if !to_spawn.is_empty() {
+            match std::env::current_exe() {
+                Ok(exe) => {
+                    for idx in to_spawn {
+                        match std::process::Command::new(&exe)
+                            .env("VP_APP_INSTANCE", idx.to_string())
+                            .env("VP_APP_SECONDARY", "1")
+                            .spawn()
+                        {
+                            Ok(child) => tracing::info!(
+                                "auto-spawned secondary instance (pid={}, instance_index={})",
+                                child.id(),
+                                idx
+                            ),
+                            Err(e) => tracing::warn!(
+                                "auto-spawn secondary (instance={}) failed (起動は継続): {}",
+                                idx,
+                                e
+                            ),
+                        }
+                    }
                 }
-            },
-            Err(e) => tracing::warn!("PR #459: current_exe() 失敗 (auto-spawn skip): {}", e),
+                Err(e) => tracing::warn!("current_exe() 失敗 (auto-spawn skip): {}", e),
+            }
         }
     }
 
@@ -1462,6 +1480,19 @@ pub fn run() -> anyhow::Result<()> {
         .build_as_child(&window)?;
 
     tracing::info!("メインウィンドウ + 2 ペイン (sidebar / main) 作成");
+
+    // 起動直後の bounds 明示同期 — 「下部が空く」 bug の構造的 fix。
+    // WebView の初期 `with_bounds` は DEFAULT_WINDOW_HEIGHT (800) 固定なので、 復元 geometry が
+    // DEFAULT より大きい (= 前回 window を縦に広げていた) 場合、 起動後に `WindowEvent::Resized`
+    // が発火しない限り content が 800px のまま下部が黒く空く。 macOS は `with_inner_size` で
+    // born した window に初回 Resized を出さないことがあるため、 ここで実 inner_size に
+    // 明示同期して初回 paint から content view を全面に張る (Resized handler と idempotent)。
+    update_pane_bounds(
+        &sidebar,
+        &main_view,
+        window.inner_size(),
+        window.scale_factor(),
+    );
 
     // Phase 2.x-d: 旧 single-PTY 経路 (`xterm_ready` / `pending` / `PENDING_MAX`) は撤去。
     // per-Lane instance + browser-native WebSocket では各 Lane の xterm.js が独立に
@@ -1547,7 +1578,11 @@ pub fn run() -> anyhow::Result<()> {
                 ..
             } => {
                 tracing::info!("Window close requested");
-                // window geometry (position + size + monitor) を session_state に save。
+                // この window は **明示的に閉じられた** → 次回 primary 起動時に auto-respawn
+                // しないよう自 instance file に open=false を記録する。 強制 kill (= SIGTERM /
+                // crash) では CloseRequested が来ないので open=true のまま残り、 復元される。
+                session_state.set_open(false);
+                // window geometry (position + size + monitor) も自 instance file に save。
                 // 起動時に WindowBuilder で apply されて前回終了時の配置に復元される。
                 let scale = window.scale_factor();
                 let inner = window.inner_size().to_logical::<f64>(scale);
@@ -1556,9 +1591,6 @@ pub fn run() -> anyhow::Result<()> {
                         let logical_pos = pos.to_logical::<f64>(scale);
                         let monitor_name =
                             window.current_monitor().and_then(|m| m.name());
-                        // PR #459: 自分の instance index の slot に save (multi-window 対応)。
-                        // 旧 single-slot field (window_geometry) は load() の migration で
-                        // window_geometries[0] に移植済 / 新 save では使わない。
                         let geom = crate::session_state::WindowGeometry {
                             width: inner.width,
                             height: inner.height,
@@ -1566,10 +1598,9 @@ pub fn run() -> anyhow::Result<()> {
                             y: logical_pos.y,
                             monitor: monitor_name.clone(),
                         };
-                        session_state.set_window_geometry(instance_index, geom);
-                        session_state.save();
+                        session_state.set_window_geometry(geom);
                         tracing::info!(
-                            "session save [instance={}]: window geometry ({}x{} @ {},{}, monitor={:?})",
+                            "session save [instance={}]: window geometry ({}x{} @ {},{}, monitor={:?}), open=false",
                             instance_index,
                             inner.width,
                             inner.height,
@@ -1585,6 +1616,8 @@ pub fn run() -> anyhow::Result<()> {
                         );
                     }
                 }
+                // open=false (+ geometry) を確実に書き出す (outer_position 失敗でも open は残す)。
+                session_state.save();
                 *control_flow = ControlFlow::Exit;
             }
             Event::WindowEvent {
@@ -1625,16 +1658,13 @@ pub fn run() -> anyhow::Result<()> {
                     let inner_logical = size.to_logical::<f64>(scale);
                     let logical_pos = pos.to_logical::<f64>(scale);
                     let monitor_name = window.current_monitor().and_then(|m| m.name());
-                    session_state.set_window_geometry(
-                        instance_index,
-                        crate::session_state::WindowGeometry {
-                            width: inner_logical.width,
-                            height: inner_logical.height,
-                            x: logical_pos.x,
-                            y: logical_pos.y,
-                            monitor: monitor_name,
-                        },
-                    );
+                    session_state.set_window_geometry(crate::session_state::WindowGeometry {
+                        width: inner_logical.width,
+                        height: inner_logical.height,
+                        x: logical_pos.x,
+                        y: logical_pos.y,
+                        monitor: monitor_name,
+                    });
                     session_state.save();
                 }
             }
@@ -1653,16 +1683,13 @@ pub fn run() -> anyhow::Result<()> {
                     let inner = window.inner_size().to_logical::<f64>(scale);
                     let logical_pos = pos.to_logical::<f64>(scale);
                     let monitor_name = window.current_monitor().and_then(|m| m.name());
-                    session_state.set_window_geometry(
-                        instance_index,
-                        crate::session_state::WindowGeometry {
-                            width: inner.width,
-                            height: inner.height,
-                            x: logical_pos.x,
-                            y: logical_pos.y,
-                            monitor: monitor_name,
-                        },
-                    );
+                    session_state.set_window_geometry(crate::session_state::WindowGeometry {
+                        width: inner.width,
+                        height: inner.height,
+                        x: logical_pos.x,
+                        y: logical_pos.y,
+                        monitor: monitor_name,
+                    });
                     session_state.save();
                 }
             }

@@ -14,20 +14,45 @@
 //! 同 server に向かう時に「私はこの Lane を見る」 「私はあの Lane」 が両立できなくなる。
 //! UI state は client ごとに独立であるべき ─ なのでここに置く。
 //!
-//! ## file path
+//! ## per-instance file 分離 (= multi-window state の SSOT 化)
 //!
-//! XDG restructure: session 状態は runtime state なので XDG state zone 配下に置く。
-//! 全 OS で `~/.local/state/vp/session.json` (`$XDG_STATE_HOME` 優先)。
-//! file 名は旧 `session-state.json` → `session.json` に短縮 (= rename は
-//! `migrate_legacy_paths()` が冪等にやる)。
+//! 各 vp-app instance は **自分専用の session file** を持つ。 共有 1 file 時代の
+//! 「2 process が同 file を全体書き戻し → 互いの slot を clobber」 race を根治する。
+//!
+//! - instance 0 (primary): `~/.local/state/vp/session.json` (= 旧 file、 そのまま primary 用)
+//! - instance N (N≥1、 Cmd+N で spawn された secondary): `~/.local/state/vp/session.<N>.json`
+//!
+//! 「どの window を起動時に開くか」 は **各 instance file の `open` flag** で表す。 primary は
+//! 起動時に `session.<N>.json` (N≥1) を走査し、 `open==true` の instance を auto-spawn する。
+//! clean close (`CloseRequested`) で `open=false`、 強制 kill (CloseRequested なし) では
+//! `open=true` のまま残る ─ つまり「明示的に閉じた window は復活しない / kill された window は
+//! 復元される」 という直感的な挙動になる。
+//!
+//! XDG: session 状態は runtime state なので XDG state zone (`$XDG_STATE_HOME` 優先、
+//! default `~/.local/state/vp/`) 配下。
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-/// JSON file 名 (ディレクトリは `vp_state_dir()` = `~/.local/state/vp/`)
-const SESSION_FILE: &str = "session.json";
+/// instance 0 (primary) の session file 名。 secondary は `session.<N>.json`。
+const SESSION_FILE_PRIMARY: &str = "session.json";
+
+/// instance index → file 名。 0 = `session.json`、 N≥1 = `session.<N>.json`。
+fn session_file_name(instance_index: usize) -> String {
+    if instance_index == 0 {
+        SESSION_FILE_PRIMARY.to_string()
+    } else {
+        format!("session.{instance_index}.json")
+    }
+}
+
+/// `open` field の serde default。 既存 file (= flag 不在) は「開いていた」 扱いにする
+/// (= load できた file は閉じられていない限り開く対象)。
+fn default_open() -> bool {
+    true
+}
 
 /// Per-project UI state ─ project path がキー。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -81,25 +106,13 @@ impl WindowGeometry {
             && self.x.is_finite()
             && self.y.is_finite()
     }
-
-    /// Vec を resize する時の placeholder。 invalid な値 (= 0x0) で、 `is_valid()` で reject
-    /// される。 instance index 0 だけ存在する状態で index 2 を save する場合 (= 中間 slot
-    /// が未保存) に slot 1 を埋めるのに使う。
-    pub fn placeholder() -> Self {
-        Self {
-            width: 0.0,
-            height: 0.0,
-            x: 0.0,
-            y: 0.0,
-            monitor: None,
-        }
-    }
 }
 
-/// vp-app 全体の session UI state。
+/// vp-app **1 instance** の session UI state。
 ///
-/// 起動時に `load()` で復元、 IPC mutation 時に `save()` で書き戻す。
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// 起動時に `load(instance_index)` で自分の file を復元、 IPC mutation 時に `save()` で
+/// 自分の file に書き戻す。 他 instance の file は触らない (= clobber free)。
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionState {
     /// project path → UI state (sidebar accordion 等)
     #[serde(default)]
@@ -112,64 +125,83 @@ pub struct SessionState {
     /// `None` なら TheWorld の registration 順。 sidebar の DnD で書き込まれる。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub currents_order: Option<Vec<String>>,
-    /// 直前の main window 位置 / サイズ / monitor (= **legacy 単一 slot**)。
-    ///
-    /// PR #459 で `window_geometries` (= Vec) に多 instance 対応として置換予定だが、
-    /// 旧 file format の backward compat のため `Option` field を keep。 `load()` 内で
-    /// `window_geometries` が空 + `window_geometry` Some の時に slot 0 に migrate。
-    ///
-    /// 1-2 release 後に削除候補 (= 既存 save file が新 format に rewrite された後)。
+    /// **この instance** の window 位置 / サイズ / monitor。
+    /// `CloseRequested` / resize / move で自分の file に save、 起動時に復元。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window_geometry: Option<WindowGeometry>,
+    /// この instance window が「開いている / 開くべき」 か。 primary が起動時に
+    /// `open==true` の secondary file を auto-spawn する signal。 clean close で false。
+    #[serde(default = "default_open")]
+    pub open: bool,
 
-    /// 各 vp-app instance の window geometry。 配列 index = instance index (= `VP_APP_INSTANCE`
-    /// env)。 0 番目 = primary、 1+ = secondary (= Cmd+N で spawn された window)。
-    ///
-    /// 起動時に self instance index で slot 取得して WindowBuilder に apply。 primary 起動時
-    /// `len() > 1` なら **未起動の secondary を auto-spawn** (= child process で
-    /// `VP_APP_INSTANCE=1..N` 起動)、 これで再起動時に全 window が復元される。
-    ///
-    /// `CloseRequested` で自分の slot を update + save。 Vec の resize は `slot_or_grow()` で
-    /// instance index が範囲外なら自動拡張。
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// 旧 multi-slot format (PR #459 `window_geometries: Vec`) の **読み込み専用** migration
+    /// field。 save では出さない (`skip_serializing`)。 `load()` 内で自 instance slot を
+    /// `window_geometry` に移植したら clear する。 1-2 release 後に削除候補。
+    #[serde(default, skip_serializing)]
     pub window_geometries: Vec<WindowGeometry>,
+
+    /// 自 instance index (= 0 primary / N≥1 secondary)。 file path 決定に使う。
+    /// file 名で表現されるので **永続化しない** (`skip`)。
+    #[serde(skip)]
+    instance_index: usize,
+}
+
+impl Default for SessionState {
+    fn default() -> Self {
+        Self {
+            projects: HashMap::new(),
+            active_lane_address: None,
+            currents_order: None,
+            window_geometry: None,
+            open: true,
+            window_geometries: Vec::new(),
+            instance_index: 0,
+        }
+    }
 }
 
 impl SessionState {
-    /// 永続 file の絶対 path。
-    ///
-    /// XDG restructure: session 状態は runtime state なので `vp_state_dir()` 配下。
-    /// `Option` を維持するのは既存 caller (`load`/`save`) との互換のため。
-    pub fn path() -> Option<PathBuf> {
-        Some(crate::paths::vp_state_dir().join(SESSION_FILE))
+    /// 指定 instance の永続 file の絶対 path。
+    pub fn path(instance_index: usize) -> Option<PathBuf> {
+        Some(crate::paths::vp_state_dir().join(session_file_name(instance_index)))
     }
 
-    /// 設定 file を読み込む。 不在 / 壊れた JSON は default を返す (起動を阻害しない)。
-    pub fn load() -> Self {
-        let Some(p) = Self::path() else {
-            tracing::warn!("config_dir 取得失敗、SessionState::default() を使用");
-            return Self::default();
+    /// 指定 instance の session file を読み込む。 不在 / 壊れた JSON は default を返す
+    /// (= 起動を阻害しない)。 旧 `window_geometries` (Vec) format からは自 slot を移植。
+    pub fn load(instance_index: usize) -> Self {
+        let fallback = || Self {
+            instance_index,
+            ..Self::default()
+        };
+        let Some(p) = Self::path(instance_index) else {
+            tracing::warn!("state_dir 取得失敗、SessionState::default() を使用");
+            return fallback();
         };
         if !p.exists() {
             tracing::debug!("SessionState file 不在、 default を使用: {}", p.display());
-            return Self::default();
+            return fallback();
         }
         match std::fs::read_to_string(&p) {
             Ok(s) => match serde_json::from_str::<SessionState>(&s) {
                 Ok(mut state) => {
-                    // PR #459 migration: 旧 `window_geometry` (Option) → 新
-                    // `window_geometries` (Vec) に移植。 新 file format で save された
-                    // 場合は `window_geometries` 側が priority、 旧 field は ignore。
-                    if state.window_geometries.is_empty()
-                        && let Some(legacy) = state.window_geometry.take()
+                    state.instance_index = instance_index;
+                    // PR #459 → per-instance migration: 旧 `window_geometries` (Vec) しか
+                    // 無い file から、 自 instance slot を `window_geometry` に移植。
+                    // 新 file は `window_geometry` を直接持つので migration は no-op。
+                    if state.window_geometry.is_none()
+                        && let Some(g) = state.window_geometries.get(instance_index)
+                        && g.is_valid()
                     {
-                        state.window_geometries.push(legacy);
+                        state.window_geometry = Some(g.clone());
                     }
+                    state.window_geometries.clear(); // 以後 save では出さない
                     tracing::info!(
-                        "SessionState 読込: {} ({} projects, active_lane={:?})",
+                        "SessionState 読込 [instance={}]: {} ({} projects, active_lane={:?}, open={})",
+                        instance_index,
                         p.display(),
                         state.projects.len(),
-                        state.active_lane_address
+                        state.active_lane_address,
+                        state.open
                     );
                     state
                 }
@@ -179,7 +211,7 @@ impl SessionState {
                         p.display(),
                         e
                     );
-                    Self::default()
+                    fallback()
                 }
             },
             Err(e) => {
@@ -188,16 +220,16 @@ impl SessionState {
                     p.display(),
                     e
                 );
-                Self::default()
+                fallback()
             }
         }
     }
 
-    /// 設定 file に atomic write (`tmp file → rename`)。
+    /// 自 instance の file に atomic write (`tmp file → rename`)。
     /// 失敗は warn (UI 操作は継続させる、 次回 save で書き直し)。
     pub fn save(&self) {
-        let Some(p) = Self::path() else {
-            tracing::warn!("config_dir 取得失敗、SessionState save skip");
+        let Some(p) = Self::path(self.instance_index) else {
+            tracing::warn!("state_dir 取得失敗、SessionState save skip");
             return;
         };
         if let Err(e) = self.save_inner(&p) {
@@ -218,6 +250,11 @@ impl SessionState {
         Ok(())
     }
 
+    /// この state が属する instance index。
+    pub fn instance_index(&self) -> usize {
+        self.instance_index
+    }
+
     /// project の expanded 状態を取得 (未保存なら `None`)。
     pub fn project_expanded(&self, path: &str) -> Option<bool> {
         self.projects.get(path).map(|p| p.expanded)
@@ -228,25 +265,56 @@ impl SessionState {
         self.projects.entry(path.into()).or_default().expanded = expanded;
     }
 
-    /// 指定 instance index (= `VP_APP_INSTANCE` env 値) の geometry を更新する。
-    ///
-    /// Vec が短い場合は **手前の slot を default WindowGeometry で埋めて拡張**。
-    /// 例: index=2 で len()=0 → `[default, default, geom]` で len()=3 に。
-    /// default placeholder は valid 判定で reject されるので、 起動時には ignored。
-    pub fn set_window_geometry(&mut self, instance_index: usize, geom: WindowGeometry) {
-        if instance_index >= self.window_geometries.len() {
-            self.window_geometries
-                .resize_with(instance_index + 1, WindowGeometry::placeholder);
-        }
-        self.window_geometries[instance_index] = geom;
+    /// この instance の window geometry を更新する。
+    pub fn set_window_geometry(&mut self, geom: WindowGeometry) {
+        self.window_geometry = Some(geom);
     }
 
-    /// 指定 instance index の valid geometry を取得 (= 起動時 restore 用)。
-    /// placeholder / invalid / 範囲外なら None。
-    pub fn window_geometry_for(&self, instance_index: usize) -> Option<&WindowGeometry> {
-        self.window_geometries
-            .get(instance_index)
-            .filter(|g| g.is_valid())
+    /// この instance の valid geometry を取得 (= 起動時 restore 用)。 invalid なら None。
+    pub fn window_geometry(&self) -> Option<&WindowGeometry> {
+        self.window_geometry.as_ref().filter(|g| g.is_valid())
+    }
+
+    /// この instance window の open flag を更新する (clean close で false にして save)。
+    pub fn set_open(&mut self, open: bool) {
+        self.open = open;
+    }
+
+    /// primary が auto-spawn すべき secondary instance index (≥1) の一覧。
+    ///
+    /// state dir 内の `session.<N>.json` (N≥1) を走査し、 `open==true` のものを集める。
+    /// 走査失敗 / file 不在は空 Vec (= secondary 無し)。 戻りは昇順。
+    pub fn open_secondary_indices() -> Vec<usize> {
+        let dir = crate::paths::vp_state_dir();
+        let mut out: Vec<usize> = Vec::new();
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            return out;
+        };
+        for entry in rd.flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            // `session.<N>.json` (N≥1) のみ対象。 `session.json` (= primary) や
+            // `session.json.tmp` (= atomic write 中間) は prefix/suffix strip で弾かれる。
+            let Some(rest) = name.strip_prefix("session.") else {
+                continue;
+            };
+            let Some(num) = rest.strip_suffix(".json") else {
+                continue;
+            };
+            let Ok(idx) = num.parse::<usize>() else {
+                continue;
+            };
+            if idx == 0 {
+                continue;
+            }
+            if Self::load(idx).open {
+                out.push(idx);
+            }
+        }
+        out.sort_unstable();
+        out
     }
 }
 
@@ -255,11 +323,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_is_empty() {
+    fn default_is_empty_and_open() {
         let s = SessionState::default();
         assert!(s.projects.is_empty());
         assert!(s.active_lane_address.is_none());
         assert!(s.currents_order.is_none());
+        assert!(s.window_geometry.is_none());
+        // load できた / new instance は「開いている」 が default。
+        assert!(s.open);
+        assert_eq!(s.instance_index(), 0);
     }
 
     #[test]
@@ -280,10 +352,12 @@ mod tests {
 
     #[test]
     fn deserialize_empty_object_is_default() {
-        // forward-compat: 空 object でも crash しない (新 field 追加時の back-compat 兼)
+        // forward-compat: 空 object でも crash しない (新 field 追加時の back-compat 兼)。
+        // `open` は default_open() で true に埋まる。
         let parsed: SessionState = serde_json::from_str("{}").unwrap();
         assert!(parsed.projects.is_empty());
         assert!(parsed.active_lane_address.is_none());
+        assert!(parsed.open);
     }
 
     #[test]
@@ -308,5 +382,61 @@ mod tests {
     fn project_expanded_unknown_returns_none() {
         let s = SessionState::default();
         assert_eq!(s.project_expanded("/missing"), None);
+    }
+
+    #[test]
+    fn file_name_is_per_instance() {
+        assert_eq!(session_file_name(0), "session.json");
+        assert_eq!(session_file_name(1), "session.1.json");
+        assert_eq!(session_file_name(3), "session.3.json");
+    }
+
+    #[test]
+    fn open_flag_round_trips_and_close_persists() {
+        // clean close = open:false が serialize / deserialize される。
+        let mut s = SessionState::default();
+        s.set_open(false);
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(json.contains("\"open\":false"));
+        let parsed: SessionState = serde_json::from_str(&json).unwrap();
+        assert!(!parsed.open);
+    }
+
+    #[test]
+    fn legacy_window_geometries_migrates_own_slot() {
+        // 旧 Vec format から自 instance slot を window_geometry に移植する migration。
+        // instance 1 として読むと slot[1] (= secondary) が採用される。
+        let json = r#"{
+            "window_geometries": [
+                {"width": 1200.0, "height": 800.0, "x": 0.0, "y": 0.0},
+                {"width": 1400.0, "height": 900.0, "x": 100.0, "y": 50.0}
+            ]
+        }"#;
+        let mut state: SessionState = serde_json::from_str(json).unwrap();
+        state.instance_index = 1;
+        // load() の migration を手で再現
+        if state.window_geometry.is_none()
+            && let Some(g) = state.window_geometries.get(1)
+            && g.is_valid()
+        {
+            state.window_geometry = Some(g.clone());
+        }
+        let g = state.window_geometry().expect("slot 1 が移植される");
+        assert_eq!(g.width, 1400.0);
+        assert_eq!(g.height, 900.0);
+    }
+
+    #[test]
+    fn window_geometry_invalid_is_filtered() {
+        let mut s = SessionState::default();
+        // MIN 未満 = invalid → window_geometry() は None
+        s.set_window_geometry(WindowGeometry {
+            width: 10.0,
+            height: 10.0,
+            x: 0.0,
+            y: 0.0,
+            monitor: None,
+        });
+        assert!(s.window_geometry().is_none());
     }
 }
