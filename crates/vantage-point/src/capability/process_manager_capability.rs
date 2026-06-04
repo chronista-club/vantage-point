@@ -696,6 +696,8 @@ impl ProcessManagerCapability {
                 &port.to_string(),
             ]);
             cmd.current_dir(&project.path);
+            // GUI/launchd 起動の最小 PATH が SP → mise → claude へ伝播するのを spawn 最上流で断つ。
+            cmd.env("PATH", crate::spawn_env::augmented_spawn_path());
             let child = cmd
                 .spawn()
                 .map_err(|e| CapabilityError::Other(format!("Failed to start vp: {}", e)))?;

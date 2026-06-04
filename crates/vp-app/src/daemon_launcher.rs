@@ -103,6 +103,9 @@ pub fn ensure_daemon_ready(world_url: &str) -> Result<()> {
 
     let mut cmd = Command::new(&vp_bin);
     cmd.arg("world")
+        // GUI/launchd 起動の最小 PATH (`/usr/bin:/bin:...`) が daemon → SP → mise → claude へ
+        // 伝播するのを spawn 最上流で断つ (#498/#501 再発の根治、 補正の SSOT は下記 augment_path)。
+        .env("PATH", augmented_spawn_path())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -158,4 +161,63 @@ pub fn ensure_daemon_ready(world_url: &str) -> Result<()> {
         world_url,
         LAUNCH_TIMEOUT.as_secs()
     )
+}
+
+// =============================================================================
+// PATH 補強 (SSOT: vantage_point::spawn_env の複製)
+// =============================================================================
+//
+// vp-app は軽量 GUI 方針で vantage-point crate (surrealdb / axum 等 ~61k 行) に依存しない
+// (`paths.rs` の migrate_legacy_paths 複製と同じ慣習)。 そのため PATH 補強ロジックをここに
+// 複製する。 **SSOT は `vantage_point::spawn_env::augment_path`、 変更時は両者を同期させること。**
+// GUI/launchd 起動の最小 PATH (`/usr/bin:/bin:...`) が daemon → SP へ伝播し mise/claude が
+// 見つからず Echoes が出ない症状 (#498/#501 再発) を、 この最上流で断つ。
+//
+// TODO(Tier3 / epic v3 #93 vp-core): この複製は vp-app ↔ vantage-point の crate 分断の症状。
+// 将来 PATH 補強や path 定義を薄い共有 crate (vp-core) に切り出して複製を解消する。
+
+/// 現プロセスの PATH を user tool location で補強した文字列を返す。
+/// 子プロセス spawn 時の `Command::env("PATH", ...)` に渡す入口。
+fn augmented_spawn_path() -> String {
+    let base = std::env::var("PATH").unwrap_or_default();
+    let home = std::env::var("HOME").ok();
+    augment_path(&base, home.as_deref())
+}
+
+/// base PATH に user tool location を前置する (base に既存の prefix は重複させない)。
+/// 順序 = PATH 探索の優先順位 (mise 本体 → mise shims → cargo → homebrew → usr-local)。
+fn augment_path(base_path: &str, home: Option<&str>) -> String {
+    let mut prefixes: Vec<String> = Vec::new();
+    if let Some(home) = home {
+        prefixes.push(format!("{home}/.local/bin"));
+        prefixes.push(format!("{home}/.local/share/mise/shims"));
+        prefixes.push(format!("{home}/.cargo/bin"));
+    }
+    prefixes.push("/opt/homebrew/bin".to_string());
+    prefixes.push("/usr/local/bin".to_string());
+    let base_segments: std::collections::HashSet<&str> = base_path.split(':').collect();
+    let new_prefixes: Vec<String> = prefixes
+        .into_iter()
+        .filter(|p| !base_segments.contains(p.as_str()))
+        .collect();
+    match (new_prefixes.is_empty(), base_path.is_empty()) {
+        (true, _) => base_path.to_string(),
+        (false, true) => new_prefixes.join(":"),
+        (false, false) => format!("{}:{}", new_prefixes.join(":"), base_path),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn augment_path_replica_matches_ssot_expectation() {
+        // SSOT (vantage_point::spawn_env) と同じ補強結果になることを固定値で検証。
+        // この test が落ちたら複製が SSOT とズレた合図 (同期し直すこと)。
+        assert_eq!(
+            augment_path("/usr/bin:/bin", Some("/Users/x")),
+            "/Users/x/.local/bin:/Users/x/.local/share/mise/shims:/Users/x/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+        );
+    }
 }
