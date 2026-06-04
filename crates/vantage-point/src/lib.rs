@@ -36,6 +36,7 @@ pub mod projects_file;
 pub mod protocol;
 pub mod resolve;
 pub mod screenshot;
+pub mod spawn_env;
 pub mod stands;
 pub mod terminal;
 #[cfg(feature = "gui")]

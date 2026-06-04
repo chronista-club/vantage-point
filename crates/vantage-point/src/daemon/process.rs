@@ -160,6 +160,8 @@ pub fn ensure_daemon_running(port: u16) -> Result<u32> {
     // 自分自身の実行ファイルを `vp world` として起動
     let child = std::process::Command::new(std::env::current_exe()?)
         .args(["world", "--port", &port.to_string()])
+        // GUI/launchd 起動の最小 PATH が daemon → SP へ伝播するのを spawn 最上流で断つ。
+        .env("PATH", crate::spawn_env::augmented_spawn_path())
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
