@@ -38,6 +38,15 @@ LOGIN_SHELL="${SHELL:-/bin/zsh}"
 # (9×3) に張り付かず claude が実用サイズで動く。 vp-app で表示すると attach
 # client サイズへ resize される (tmux window-size latest)。 新規 session のみ
 # 有効で、 -A で既存 session に attach する場合は無視される。
+#
+# -e VP_*: per-session 環境変数を明示注入する (cross-project identity leak の根治)。
+# VP は全 lane を 1 つの tmux server (default socket) で動かすため、 最初に server を
+# 起動した lane の VP_* が tmux の GLOBAL 環境に焼き付く。 -e を付けないと後続の全 lane
+# が「最初の lane」の VP_PROJECT / VP_SESSION / VP_CWD を継承し、 別 project の identity
+# で claude が動いてしまう。 -e で session 固有 env を global に優先させ、 各 lane の
+# claude が自分の正しい identity (wire addressing / statusline 等が依存) を見るようにする。
 exec tmux new-session -A -x 120 -y 48 -c "$VP_CWD" -s "$VP_SESSION" \
+    -e "VP_CWD=$VP_CWD" -e "VP_PROJECT=$VP_PROJECT" \
+    -e "VP_SESSION=$VP_SESSION" -e "VP_LANE=$VP_LANE" \
     "claude --continue || claude; exec $LOGIN_SHELL -l" \
     || (cd "$VP_CWD" && (claude --continue || claude))
