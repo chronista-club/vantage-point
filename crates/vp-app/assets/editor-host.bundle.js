@@ -3460,11 +3460,11 @@ ${i}`,n.replaceWith(o)}}}}function b9e(e,t){if(t==="markdown")return fi.parse(e)
 #pane-paisley-park .pane-body .pp-content{flex:1;overflow-y:auto;}
 #pane-paisley-park .pane-body .pp-history-strip{flex:0 0 auto;}
 `;nH(["click"]);console.info("[vp-bundle] booting (VP-140 diagnostic)");window.vpBundleStatus={booted:!0,importsResolved:!1,vpFrameSet:!1};window.addEventListener("error",e=>{console.error("[vp-bundle] window.error",e.message,e.filename,e.lineno,e.error)});window.addEventListener("unhandledrejection",e=>{console.error("[vp-bundle] unhandledrejection",e.reason)});console.info("[vp-bundle] imports resolved");window.vpBundleStatus.importsResolved=!0;var EIt=["echoes","pp","ge","hp","preview","empty"],AIt=["echoes","pp","ge","hp","preview"],uo=new Ek;EIt.forEach(e=>uo.registerPane({id:e,kind:e}));KH.forEach(e=>uo.registerScene(e));uo.registerScene(ZH);QH(AIt).forEach(e=>uo.registerScene(e));JH(uo,document);rY(uo,window);iY();var _It={terminal:"echoes",paisley_park:"pp",gold_experience:"ge",hermit_purple:"hp",preview:"preview",empty:"empty"},Dv=null;function LIt(e){if(!e||e.endsWith("/lead"))return null;let t=e.match(/\/wing\/(.+)$/);return t?t[1]??null:null}var a8=new Map;uo.onSceneChange(e=>{Dv&&e!=="empty"&&a8.set(Dv,e)});var RIt=()=>{let e=window,t=e.setActivePane;e.setActivePane=r=>{if(typeof t=="function")try{t(r)}catch(n){console.warn("[frame-engine] legacy setActivePane error",n)}if(!r||!r.kind||r.kind==="empty"){uo.applyScene("empty");return}if(r.kind==="terminal"&&r.pane_id){let n=r.pane_id;if(Dv&&Dv!==n){let o=uo.getCurrentSceneId();o&&o!=="empty"&&a8.set(Dv,o)}Dv=n;let a=a8.get(n)??"lead-focus";uo.applyScene(a);let s=LIt(n);w9e(s),k9e(s);return}let i=_It[r.kind];if(!i){console.warn("[frame-engine] unknown kind for setActivePane:",r.kind),uo.applyScene("empty");return}uo.applyScene(`${i}-focus`)}};window.vpLaneScenes=a8;window.vpCanvas={handleMessage:TU};var hMe=document.createElement("style");hMe.textContent=lMe;document.head.appendChild(hMe);var dMe=document.createElement("style");dMe.textContent=`
-/* PP body markdown \u2014 \u307F\u305E\u308C family \u3092\u5168 text \u306B\u9069\u7528\u3001 code / pre \u306F\u7B49\u5E45\u3002
+/* PP body markdown \u2014 \u30EB\u30A4\u30AB\u7B49\u5E45 \u7D30\u3081 (TLT-RuikaMono-02) \u3092 Canvas \u5168 text \u306B\u9069\u7528 (\u672C\u6587\u3082\u7B49\u5E45)\u3002
    marked-based revert (2026-05-28): selector \u306F marked \u304C #pp-content \u76F4\u4E0B\u306B\u5410\u304F\u8981\u7D20\u306B\u5411\u3051\u308B
    (= creoui-md-view \u306E .creo-md wrapper \u306F\u5EC3\u6B62)\u3002
-   WebKit \u3067\u65E5\u672C\u8A9E family \u540D\u5148\u982D\u306F resolve \u4E0D\u5B89\u5B9A\u306A\u305F\u3081\u3001 \u82F1\u5B57 alias (Mizolet / Mizolet-Mono)
-   \u3092\u5148\u982D\u306B\u66F8\u304D\u3001 \u65E5\u672C\u8A9E fallback / system-ui \u306B degrade \u3055\u305B\u308B (= nightly \u306E\u77E5\u898B\u3092\u7D99\u627F)\u3002 */
+   WebKit \u3067\u65E5\u672C\u8A9E family \u540D\u5148\u982D\u306F resolve \u4E0D\u5B89\u5B9A\u306A\u305F\u3081\u3001 \u82F1\u5B57 PostScript \u540D (TLT-RuikaMono-02)
+   \u3092\u5148\u982D\u306B\u66F8\u304D\u3001 \u65E5\u672C\u8A9E\u540D (TLT-\u30EB\u30A4\u30AB\u7B49\u5E45-\uFF10\uFF12) / family \u540D / monospace \u306B degrade \u3055\u305B\u308B\u3002 */
 #pp-content,
 #pp-content p,
 #pp-content li,
@@ -3477,11 +3477,11 @@ ${i}`,n.replaceWith(o)}}}}function b9e(e,t){if(t==="markdown")return fi.parse(e)
 #pp-content h6,
 #pp-content table,
 #pp-content a {
-  font-family: Mizolet, '\u307F\u305E\u308C', system-ui, sans-serif;
+  font-family: 'TLT-RuikaMono-02', 'TLT-RuikaMono', 'TLT-\u30EB\u30A4\u30AB\u7B49\u5E45-\uFF10\uFF12', 'TLT-\u30EB\u30A4\u30AB\u7B49\u5E45', monospace;
 }
 #pp-content code,
 #pp-content pre {
-  font-family: 'TLT-BokutohReraMono-4', 'TLT-BokutohReraMono', 'TLT-\u58A8\u6771\u30EC\u30E9\u7B49\u5E45', 'Mizolet-Mono', '\u307F\u305E\u308C \u7B49\u5E45', 'VPMono35', monospace;
+  font-family: 'TLT-RuikaMono-02', 'TLT-RuikaMono', 'TLT-\u30EB\u30A4\u30AB\u7B49\u5E45-\uFF10\uFF12', 'TLT-\u30EB\u30A4\u30AB\u7B49\u5E45', monospace;
 }
 /* PP body \u306E base font-size \u3092 1 \u6BB5\u4E0A\u3052\u308B (= creoui token chain: base \u2192 l)\u3002
    fallback \u3067 1.125em (= 16\u219218px \u76F8\u5F53)\u3002 #pp-content scope \u5185\u306E\u307F override \u3057
@@ -3494,7 +3494,7 @@ ${i}`,n.replaceWith(o)}}}}function b9e(e,t){if(t==="markdown")return fi.parse(e)
 #pp-content .creo-md-mermaid { margin: 1em 0; }
 #pp-content .creo-md-mermaid svg { max-width: 100%; height: auto; }
 #pp-content .creo-md-mermaid-error {
-  font-family: 'TLT-BokutohReraMono-4', 'TLT-BokutohReraMono', '\u307F\u305E\u308C \u7B49\u5E45', 'Mizolet-Mono', monospace;
+  font-family: 'TLT-RuikaMono-02', 'TLT-RuikaMono', 'TLT-\u30EB\u30A4\u30AB\u7B49\u5E45-\uFF10\uFF12', 'TLT-\u30EB\u30A4\u30AB\u7B49\u5E45', monospace;
   color: var(--color-text-secondary, #c66);
   background: var(--color-surface-bg-subtle, #1a1a22);
   padding: 8px; border-radius: 4px; white-space: pre-wrap;
