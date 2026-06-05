@@ -106,7 +106,7 @@ vp daemon              # TheWorld 起動（プロジェクト管理 + PTY管理�
 vp daemon start|stop|status  # subcommand 形式
 
 # App
-vp app start [N]       # vp-app GUI 起動（spawn + 即 exit、 N でプロジェクト指定）
+vp app start           # vp-app GUI 起動（spawn + 即 exit、 cwd を起点に開く）
 vp app stop            # vp-app を停止
 # 再起動は `vp app stop && vp app start` で合成 (restart は意図的に CLI に持たない)
 vp tray                # システムトレイモード

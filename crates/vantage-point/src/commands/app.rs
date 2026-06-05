@@ -12,17 +12,14 @@ use clap::Subcommand;
 #[derive(Subcommand)]
 pub enum AppCommands {
     /// vp-app GUI を起動 (background spawn、 即 exit)
-    Start {
-        /// プロジェクト N 番を起動時に開く（省略時はランチャー画面）
-        project_id: Option<usize>,
-    },
+    Start,
     /// vp-app を停止 (SIGTERM、 idempotent)
     Stop,
 }
 
 pub fn execute(cmd: AppCommands) -> Result<()> {
     match cmd {
-        AppCommands::Start { project_id } => start(project_id),
+        AppCommands::Start => start(),
         AppCommands::Stop => stop(),
     }
 }
@@ -34,13 +31,11 @@ pub fn execute(cmd: AppCommands) -> Result<()> {
 /// 待たない。 stdout/stderr は log file に redirect、 unix では `process_group(0)`
 /// (`setsid` 相当) で child を新しい process group に分離 ── parent shell が
 /// SIGHUP / exit しても child は生存し続ける (D12: daemon lifecycle 独立性)。
-fn start(project_id: Option<usize>) -> Result<()> {
-    // VP-189 follow-up: project_id 未指定 = cwd を起点に開く意図。 projects.kdl を
-    // sync (起点 dir 登録 + ghost 除去) し、 GUI 起動前にサイドバーへ最低 1 件出す
-    // (空サイドバーだと project を開く手段が無く詰むため)。
-    if project_id.is_none()
-        && let Ok(cwd) = std::env::current_dir()
-    {
+fn start() -> Result<()> {
+    // cwd を起点に開く。 projects.kdl を sync (起点 dir 登録 + ghost 除去) し、
+    // GUI 起動前にサイドバーへ最低 1 件出す (空サイドバーだと project を開く手段が
+    // 無く詰むため)。
+    if let Ok(cwd) = std::env::current_dir() {
         match crate::projects_file::ProjectsFile::sync(Some(&cwd)) {
             Ok(outcome) => {
                 if let Some(name) = &outcome.added {
@@ -72,9 +67,6 @@ fn start(project_id: Option<usize>) -> Result<()> {
 
     let mut cmd = std::process::Command::new(&bin);
     cmd.env("VP_DAEMON_LOG_FILE", &daemon_log);
-    if let Some(id) = project_id {
-        cmd.env("VP_PROJECT_ID", id.to_string());
-    }
 
     // stdout/stderr を log file に redirect (parent が exit しても child の出力を
     // 失わないため、 file descriptor を OS に渡す)。
