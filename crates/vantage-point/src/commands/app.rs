@@ -88,11 +88,20 @@ fn start() -> Result<()> {
     cmd.stderr(stderr_file);
 
     // Unix: setsid 相当 (新 process group で child を分離、 親 shell の SIGHUP から守る)。
-    // Windows は process_group API がないのでそのまま spawn する。
+    // Windows: CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS で console を切り離し、
+    //          親 (vp.exe) が exit しても vp-app GUI が独立稼働する。
+    //          daemon_launcher.rs と同パターン。
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
         cmd.process_group(0);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS);
     }
 
     let child = cmd
@@ -107,25 +116,48 @@ fn start() -> Result<()> {
     Ok(())
 }
 
-/// vp-app を SIGTERM で停止。 process が存在しなくても error にしない (idempotent)。
+/// vp-app を停止 (Unix: SIGTERM via pkill、 Windows: taskkill /F /IM)。
+/// process が存在しなくても error にしない (idempotent)。
 fn stop() -> Result<()> {
-    let status = std::process::Command::new("pkill")
-        .args(["-f", "vp-app$"])
-        .status()
-        .context("Failed to invoke pkill")?;
-    match status.code() {
-        Some(0) => println!("📴 vp-app stopped (SIGTERM sent)"),
-        Some(1) => println!("(no vp-app process running)"),
-        Some(c) => println!("(pkill exit code {c})"),
-        None => println!("(pkill terminated by signal)"),
+    #[cfg(unix)]
+    {
+        let status = std::process::Command::new("pkill")
+            .args(["-f", "vp-app$"])
+            .status()
+            .context("Failed to invoke pkill")?;
+        match status.code() {
+            Some(0) => println!("📴 vp-app stopped (SIGTERM sent)"),
+            Some(1) => println!("(no vp-app process running)"),
+            Some(c) => println!("(pkill exit code {c})"),
+            None => println!("(pkill terminated by signal)"),
+        }
+        Ok(())
     }
-    Ok(())
+    #[cfg(windows)]
+    {
+        // Windows: `taskkill /F /IM vp-app.exe`。 SIGTERM 相当の graceful 経路は
+        // window message (WM_CLOSE) 送信が必要だが、 まずは /F (hard kill) で
+        // idempotent 停止を提供 (pkill -f 相当の挙動)。
+        let status = std::process::Command::new("taskkill")
+            .args(["/F", "/IM", "vp-app.exe"])
+            .status()
+            .context("Failed to invoke taskkill")?;
+        match status.code() {
+            Some(0) => println!("📴 vp-app stopped (taskkill /F)"),
+            Some(128) => println!("(no vp-app process running)"),
+            Some(c) => println!("(taskkill exit code {c})"),
+            None => println!("(taskkill terminated by signal)"),
+        }
+        Ok(())
+    }
 }
 
 /// vp-app binary を探す:
 /// 1. `VP_APP_BIN` env (mise task / dogfood で `target/release/vp-app` を直接渡す path)
 /// 2. PATH 上の `vp-app` (cargo install で入った場合)
 /// 3. 自分 (vp) の隣 (`~/.cargo/bin/vp` や `target/release/vp` の同 dir)
+///
+/// Windows では `.exe` 拡張子のついた binary を併せて探す。
 fn find_vp_app_binary() -> Option<PathBuf> {
     // `VP_APP_BIN` env が指す path が file として存在すれば最優先。
     // cargo install を毎回挟まずに `cargo build --release -p vp-app` 直後の binary を
@@ -136,26 +168,40 @@ fn find_vp_app_binary() -> Option<PathBuf> {
             return Some(pb);
         }
     }
-    if let Some(p) = find_in_path("vp-app") {
-        return Some(p);
-    }
-    if let Ok(self_exe) = std::env::current_exe()
-        && let Some(dir) = self_exe.parent()
-    {
-        let candidate = dir.join("vp-app");
-        if candidate.is_file() {
-            return Some(candidate);
+    for name in binary_candidates("vp-app") {
+        if let Some(p) = find_in_path(&name) {
+            return Some(p);
+        }
+        if let Ok(self_exe) = std::env::current_exe()
+            && let Some(dir) = self_exe.parent()
+        {
+            let candidate = dir.join(&name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
         }
     }
     None
 }
 
+/// platform に応じた binary 名候補。 Windows は `.exe` 付きも試す。
+fn binary_candidates(name: &str) -> Vec<String> {
+    #[cfg(windows)]
+    {
+        vec![format!("{name}.exe"), name.to_string()]
+    }
+    #[cfg(unix)]
+    {
+        vec![name.to_string()]
+    }
+}
+
+/// PATH を OS の区切り (`:` Unix / `;` Windows) で split して name を含む path を返す。
 fn find_in_path(name: &str) -> Option<PathBuf> {
     let path_var = std::env::var_os("PATH")?;
-    path_var
-        .to_str()?
-        .split(':')
-        .map(|d| PathBuf::from(d).join(name))
+    // `std::env::split_paths` は OS の PATH 区切り文字を正しく扱う (Unix=`:`, Windows=`;`)。
+    std::env::split_paths(&path_var)
+        .map(|d| d.join(name))
         .find(|p| p.is_file())
 }
 

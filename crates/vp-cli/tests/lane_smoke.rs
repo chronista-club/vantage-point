@@ -150,13 +150,19 @@ fn vp_lane_path_nonexistent_exits_nonzero() {
 fn vp_lane_path_existing_prints_absolute_path() {
     let repo = setup_minimal_repo();
     arm_performer_dir(repo.path(), "found-performer");
+    // PathBuf::join はパス区切りに OS 既定を使う（Unix: /、Windows: \）。
+    // Windows では結合部が `.vp\lanes\found-performer` となるため期待値を分岐する。
+    #[cfg(not(windows))]
+    let expected = ".vp/lanes/found-performer";
+    #[cfg(windows)]
+    let expected = ".vp\\lanes\\found-performer";
     Command::cargo_bin("vp")
         .unwrap()
         .args(["lane", "path", "found-performer"])
         .current_dir(repo.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains(".vp/lanes/found-performer"));
+        .stdout(predicate::str::contains(expected));
 }
 
 // --- vp lane rm ---
