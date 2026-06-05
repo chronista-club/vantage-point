@@ -133,7 +133,7 @@ vp daemon             # TheWorld 起動（alias: vp world）
 vp daemon start|stop|status
 
 # App（vp-app GUI）
-vp app start [N]      # vp-app GUI を起動（spawn + 即 exit、N でプロジェクト指定）
+vp app start          # vp-app GUI を起動（spawn + 即 exit、cwd を起点に開く）
 vp app stop           # vp-app を停止
 vp tray               # システムトレイモード
 ```
