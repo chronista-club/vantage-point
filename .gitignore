@@ -53,8 +53,10 @@ DerivedData/
 # 必要になった時点で minimal subset の commit を再検討)
 .mcp.json
 
-# vp-app dev log (mise win task の stderr redirect 先)
-vp-*.log
+# dev / build / debug log 全般 (mise win task の stderr redirect 先、
+# cargo build/test の tee 先、 daemon/SP の foreground redirect 等)。 全て per-run の
+# 一時成果物なので tracking しない。
+*.log
 history.txt
 
 # Vantage Point lane workspaces (project-local lane refactor)
