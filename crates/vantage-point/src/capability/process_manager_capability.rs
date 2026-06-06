@@ -616,7 +616,10 @@ impl ProcessManagerCapability {
             if let Some(p) = projects.get_mut(&key) {
                 p.slot = Some(slot);
             } else {
-                return Err(CapabilityError::Other(format!("Project not found: {}", path)));
+                return Err(CapabilityError::Other(format!(
+                    "Project not found: {}",
+                    path
+                )));
             }
         }
         self.persist_projects().await?;
@@ -632,7 +635,10 @@ impl ProcessManagerCapability {
             if let Some(p) = projects.get_mut(&key) {
                 p.slot = None;
             } else {
-                return Err(CapabilityError::Other(format!("Project not found: {}", path)));
+                return Err(CapabilityError::Other(format!(
+                    "Project not found: {}",
+                    path
+                )));
             }
         }
         self.persist_projects().await?;

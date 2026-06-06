@@ -1517,10 +1517,7 @@ mod tests {
         let list2 = handle_world_control(&cap, "projects/list", serde_json::json!({}))
             .await
             .expect("list ok");
-        assert!(
-            list2.as_array().unwrap().is_empty(),
-            "remove 後は空になる"
-        );
+        assert!(list2.as_array().unwrap().is_empty(), "remove 後は空になる");
     }
 
     #[tokio::test]

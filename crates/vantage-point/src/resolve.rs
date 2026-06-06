@@ -240,9 +240,7 @@ pub fn sp_port_for_project(name: &str) -> Result<u16> {
     let port = config.resolve_sp_port(name)?;
     // PR-D: 新規 slot 割当を daemon (db/world 真実源) に永続化通知する。 slot 計算は config ミラーで
     // 完結し、 永続化のみ daemon 経由 (HTTP best-effort)。 daemon 不在は warn のみ (port は正しい)。
-    if !had_slot
-        && let Some(slot) = config.resolve_slot_by_name(name)
-    {
+    if !had_slot && let Some(slot) = config.resolve_slot_by_name(name) {
         let key = config
             .projects
             .iter()

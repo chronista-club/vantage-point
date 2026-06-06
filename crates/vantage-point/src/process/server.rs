@@ -512,10 +512,7 @@ pub async fn run(
             "/api/world/projects/reload",
             post(world::world_reload_projects),
         )
-        .route(
-            "/api/world/projects/set_slot",
-            post(world::world_set_slot),
-        )
+        .route("/api/world/projects/set_slot", post(world::world_set_slot))
         .route(
             "/api/world/projects/unassign_slot",
             post(world::world_unassign_slot),
@@ -967,10 +964,7 @@ pub async fn run_world(
             "/api/world/projects/reload",
             post(world::world_reload_projects),
         )
-        .route(
-            "/api/world/projects/set_slot",
-            post(world::world_set_slot),
-        )
+        .route("/api/world/projects/set_slot", post(world::world_set_slot))
         .route(
             "/api/world/projects/unassign_slot",
             post(world::world_unassign_slot),
