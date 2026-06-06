@@ -280,10 +280,21 @@ fn execute_slot(cmd: SlotCommands) -> Result<()> {
         SlotCommands::Assign { project, slot } => {
             let mut config = Config::load().unwrap_or_default();
             let assigned = config.ensure_slot(&project, slot)?;
-            // VP-188: slot の SSOT は projects.kdl (config.toml ではない)。
-            config
-                .persist_projects_kdl()
-                .context("failed to save projects.kdl")?;
+            // PR-D: slot を daemon (db/world 真実源) に永続化。 daemon 不在は kdl フォールバック。
+            let key = config
+                .projects
+                .iter()
+                .find(|p| p.name == project)
+                .map(|p| Config::normalize_path(std::path::Path::new(&p.path)));
+            let persisted = key
+                .as_deref()
+                .map(|k| crate::world_client::notify_world_set_slot(k, assigned))
+                .unwrap_or(false);
+            if !persisted {
+                config
+                    .persist_projects_kdl()
+                    .context("failed to save projects.kdl")?;
+            }
             let layout = config.port_layout();
             let base = layout.project_base(assigned).unwrap();
             println!(
@@ -295,10 +306,21 @@ fn execute_slot(cmd: SlotCommands) -> Result<()> {
         SlotCommands::Unassign { project } => {
             let mut config = Config::load().unwrap_or_default();
             config.unassign_slot(&project)?;
-            // VP-188: slot の SSOT は projects.kdl (config.toml ではない)。
-            config
-                .persist_projects_kdl()
-                .context("failed to save projects.kdl")?;
+            // PR-D: daemon (db/world 真実源) で slot 解除。 daemon 不在は kdl フォールバック。
+            let key = config
+                .projects
+                .iter()
+                .find(|p| p.name == project)
+                .map(|p| Config::normalize_path(std::path::Path::new(&p.path)));
+            let persisted = key
+                .as_deref()
+                .map(crate::world_client::notify_world_unassign_slot)
+                .unwrap_or(false);
+            if !persisted {
+                config
+                    .persist_projects_kdl()
+                    .context("failed to save projects.kdl")?;
+            }
             println!("unassigned slot from '{}'", project);
             Ok(())
         }

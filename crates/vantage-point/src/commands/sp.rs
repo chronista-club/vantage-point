@@ -81,7 +81,12 @@ fn sp_start(
     // 各 vp sp start が projects.kdl を load → save するため write 競合がありうる。
     // 現状 default=1 (sequential) なので実害なし。 並列化する際は projects.kdl への
     // 排他制御 (file lock 等) を検討すること。
-    match crate::projects_file::ProjectsFile::sync(Some(std::path::Path::new(project_dir))) {
+    // PR-D: 起点登録 + ghost 除去を daemon (db/world 真実源) 経由で。 daemon 不在は kdl フォールバック。
+    let sync_outcome = match crate::world_client::notify_world_sync(Some(project_dir)) {
+        Some(o) => Ok(o),
+        None => crate::projects_file::ProjectsFile::sync(Some(std::path::Path::new(project_dir))),
+    };
+    match sync_outcome {
         Ok(outcome) => {
             if let Some(name) = &outcome.added {
                 println!("📁 project を登録しました: {name}");
@@ -90,7 +95,7 @@ fn sp_start(
                 println!("🧹 ghost project を除去: {name}");
             }
         }
-        Err(e) => tracing::warn!("projects.kdl の sync に失敗 (SP 起動は続行): {e}"),
+        Err(e) => tracing::warn!("projects の sync に失敗 (SP 起動は続行): {e}"),
     }
 
     let mut port = explicit_port.unwrap_or_else(|| resolve_port(project_dir, config));

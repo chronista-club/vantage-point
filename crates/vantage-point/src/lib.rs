@@ -46,3 +46,4 @@ pub mod trace_log;
 #[cfg(feature = "gui")]
 pub mod tray;
 pub mod tui;
+pub mod world_client;

@@ -606,6 +606,93 @@ impl ProcessManagerCapability {
         Ok(())
     }
 
+    /// project の slot を設定 (+ 永続化)。
+    ///
+    /// PR-D (control plane 一元化): CLI の slot 永続化 (旧 `Config::persist_projects_kdl` 直書き)
+    /// を daemon 経由に移管するための受け皿。 vpdb=Some なら persist_projects 経由で db/world に書く。
+    pub async fn set_project_slot(&self, path: &str, slot: u16) -> CapabilityResult<()> {
+        let key = normalize_path_key(&PathBuf::from(path));
+        {
+            let mut projects = self.projects.write().await;
+            if let Some(p) = projects.get_mut(&key) {
+                p.slot = Some(slot);
+            } else {
+                return Err(CapabilityError::Other(format!("Project not found: {}", path)));
+            }
+        }
+        self.persist_projects().await?;
+        tracing::info!("Project slot={}: {}", slot, path);
+        Ok(())
+    }
+
+    /// project の slot を解除 (+ 永続化)。 PR-D: `vp port slot unassign` の daemon 委譲。
+    pub async fn unset_project_slot(&self, path: &str) -> CapabilityResult<()> {
+        let key = normalize_path_key(&PathBuf::from(path));
+        {
+            let mut projects = self.projects.write().await;
+            if let Some(p) = projects.get_mut(&key) {
+                p.slot = None;
+            } else {
+                return Err(CapabilityError::Other(format!("Project not found: {}", path)));
+            }
+        }
+        self.persist_projects().await?;
+        tracing::info!("Project slot 解除: {}", path);
+        Ok(())
+    }
+
+    /// projects を現実と同期 (PR-D: CLI の `ProjectsFile::sync` を daemon 経由に移管)。
+    ///
+    /// 1. `start_dir` が Some なら起点 dir を project 登録 (未登録時、 `vp app/sp start` の起点登録)。
+    /// 2. dir が実在しない ghost project を除去 (running process を持つものは安全側で残す)。
+    ///
+    /// 永続化は内部の add_project / remove_project が persist_projects 経由で行う。
+    pub async fn sync_projects(
+        &self,
+        start_dir: Option<&str>,
+    ) -> CapabilityResult<crate::projects_file::SyncOutcome> {
+        let mut outcome = crate::projects_file::SyncOutcome::default();
+
+        // 1. 起点 dir 登録 (未登録なら)。
+        if let Some(dir) = start_dir {
+            let dir_path = Config::normalize_path(&PathBuf::from(dir));
+            let key = normalize_path_key(&PathBuf::from(&dir_path));
+            let exists = { self.projects.read().await.contains_key(&key) };
+            if !exists {
+                let name = std::path::Path::new(&dir_path)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("project")
+                    .to_string();
+                // add_project は path.is_dir() を要求 (起点 dir は実在前提)。
+                if self.add_project(&name, &dir_path).await.is_ok() {
+                    outcome.added = Some(name);
+                }
+            }
+        }
+
+        // 2. ghost 除去 (dir 非実在 & 非 running)。ロック順序 projects → running_processes を遵守。
+        let ghosts: Vec<(String, String)> = {
+            let projects = self.projects.read().await;
+            let running: std::collections::HashSet<String> = {
+                let procs = self.running_processes.read().await;
+                procs.keys().cloned().collect()
+            };
+            projects
+                .iter()
+                .filter(|(key, p)| !p.path.is_dir() && !running.contains(*key))
+                .map(|(key, p)| (key.clone(), p.name.clone()))
+                .collect()
+        };
+        for (key, name) in ghosts {
+            if self.remove_project(&key).await.is_ok() {
+                outcome.removed.push(name);
+            }
+        }
+
+        Ok(outcome)
+    }
+
     /// Processを起動
     /// VP-133 MVP: 指定 path に対して live SP が存在するか port range scan で確認。
     ///
@@ -1285,11 +1372,14 @@ impl ProcessManagerCapability {
                 CapabilityError::Other(format!("VP-165 reassign: slot 永続化失敗: {}", e))
             })?;
         } else {
-            // in-memory に未登録 (= 稀: reload 前等) なら config 経由で kdl に退避し、 次回 reload/
-            // load_config で DB に取り込む (= フォールバック)。
-            config.persist_projects_kdl().map_err(|e| {
-                CapabilityError::Other(format!("VP-165 reassign: projects.kdl save 失敗: {}", e))
-            })?;
+            // in-memory 未登録 (= 稀: reload 前の race 等)。 PR-D: DB 真実源化後は kdl 退避しても
+            // load_config が DB 優先で読まないため無意味。 slot 永続化をスキップ (port は正しい、
+            // 次回 SP register / reconcile で整合する)。
+            tracing::warn!(
+                "VP-165 reassign: project '{}' が in-memory 未登録、 slot {} の永続化をスキップ (port は正しい)",
+                project_name,
+                new_slot
+            );
         }
 
         let new_port = crate::cli::PORT_RANGE_START + new_slot;
@@ -2434,6 +2524,53 @@ mod tests {
         let result = cap.remove_project("/nonexistent").await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    // --- PR-D: slot / sync の daemon 委譲受け皿 ---
+
+    #[tokio::test]
+    async fn test_set_and_unset_project_slot() {
+        let cap = make_test_cap();
+        let dir = std::env::temp_dir();
+        let path = dir.to_string_lossy().to_string();
+        cap.add_project("slot-test", &path).await.unwrap();
+
+        // set
+        cap.set_project_slot(&path, 7).await.unwrap();
+        let projects = cap.list_projects().await;
+        assert_eq!(projects[0].slot, Some(7), "slot が設定される");
+
+        // unset
+        cap.unset_project_slot(&path).await.unwrap();
+        let projects = cap.list_projects().await;
+        assert_eq!(projects[0].slot, None, "slot が解除される");
+    }
+
+    #[tokio::test]
+    async fn test_set_project_slot_not_found() {
+        let cap = make_test_cap();
+        let result = cap.set_project_slot("/nonexistent", 1).await;
+        assert!(result.is_err(), "未登録 project の slot 設定は Err");
+    }
+
+    #[tokio::test]
+    async fn test_sync_projects_registers_start_dir() {
+        let cap = make_test_cap();
+        let dir = std::env::temp_dir();
+        let path = dir.to_string_lossy().to_string();
+
+        // 起点 dir 登録 (未登録 → added)
+        let outcome = cap.sync_projects(Some(&path)).await.unwrap();
+        assert!(outcome.added.is_some(), "起点 dir が新規登録される");
+        assert_eq!(cap.list_projects().await.len(), 1);
+
+        // 再 sync (登録済み → added なし)
+        let outcome2 = cap.sync_projects(Some(&path)).await.unwrap();
+        assert!(outcome2.added.is_none(), "登録済みは再登録しない");
+        assert!(
+            outcome2.removed.is_empty(),
+            "実在 dir は ghost 除去されない"
+        );
     }
 
     #[tokio::test]

@@ -512,6 +512,15 @@ pub async fn run(
             "/api/world/projects/reload",
             post(world::world_reload_projects),
         )
+        .route(
+            "/api/world/projects/set_slot",
+            post(world::world_set_slot),
+        )
+        .route(
+            "/api/world/projects/unassign_slot",
+            post(world::world_unassign_slot),
+        )
+        .route("/api/world/projects/sync", post(world::world_sync_projects))
         .route("/api/world/processes", get(world::world_list_processes))
         .route("/api/world/lanes", get(world::world_list_lanes))
         .route(
@@ -958,6 +967,15 @@ pub async fn run_world(
             "/api/world/projects/reload",
             post(world::world_reload_projects),
         )
+        .route(
+            "/api/world/projects/set_slot",
+            post(world::world_set_slot),
+        )
+        .route(
+            "/api/world/projects/unassign_slot",
+            post(world::world_unassign_slot),
+        )
+        .route("/api/world/projects/sync", post(world::world_sync_projects))
         .route("/api/world/processes", get(world::world_list_processes))
         .route("/api/world/lanes", get(world::world_list_lanes))
         .route(
