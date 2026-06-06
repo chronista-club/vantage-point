@@ -305,6 +305,27 @@ impl VpDb {
         Ok(())
     }
 
+    /// projects テーブルを `entries` で全置換する（DELETE → import、 ord = 出現順）。
+    ///
+    /// `persist_projects` の全置換セマンティクスを 1 メソッドに閉じる。 in-memory を真実源として
+    /// DB を上書きするため、 in-memory から消えた project は DB からも消える (= upsert のみでは
+    /// 残ってしまう削除分を確実に反映)。
+    ///
+    /// DELETE と import の間に空を読む窓が理論上あるが、 World は単一プロセスで reload/persist を
+    /// 直列実行するため実害なし。 完全な単一トランザクション化は follow-up (epic memory のリスク表)。
+    pub async fn replace_all_projects(
+        &self,
+        entries: &[crate::projects_file::ProjectEntry],
+    ) -> Result<()> {
+        self.db
+            .query("DELETE FROM projects")
+            .await
+            .map_err(|e| anyhow::anyhow!("projects 全削除失敗: {}", e))?
+            .check()
+            .map_err(|e| anyhow::anyhow!("projects 全削除エラー: {}", e))?;
+        self.import_projects(entries).await
+    }
+
     // =========================================================================
     // Pane Contents CRUD（Canvas ペイン状態の永続化）
     // =========================================================================

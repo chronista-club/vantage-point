@@ -104,6 +104,23 @@ pub fn normalize_path_key(path: &std::path::Path) -> String {
     Config::normalize_path(path)
 }
 
+/// `config.projects` (ProjectConfig) を ProjectEntry 列に変換する。
+///
+/// PR-C: load_config が「DB 復旧の seed」「vpdb なし時の fallback」両方でこの変換を使う。
+/// enabled は projects.kdl の慣習 (true は省略 = None、 false のみ明記) に揃える。
+fn config_projects_to_entries(config: &Config) -> Vec<crate::projects_file::ProjectEntry> {
+    config
+        .projects
+        .iter()
+        .map(|p| crate::projects_file::ProjectEntry {
+            name: p.name.clone(),
+            path: p.path.clone(),
+            enabled: if p.enabled { None } else { Some(false) },
+            slot: p.slot,
+        })
+        .collect()
+}
+
 /// VP-165 PR-5b: `start_process` 内 `wait_for_health` の判定結果
 #[derive(Debug)]
 enum HealthCheckResult {
@@ -184,32 +201,63 @@ impl ProcessManagerCapability {
 
     /// 設定を読み込み
     ///
-    /// VP-188: registered projects の SSOT を embedded DB → `~/.config/vp/projects.kdl`
-    /// に移行。 `Config::load()` が projects.kdl を `config.projects` にマージするため
-    /// (= read 経路を 1 本化)、 ここは `config.projects` から HashMap に同期する。
-    /// VP-182 の「DB dir 変更で projects 消失」 regression を構造的に解消 (council 2026-05-16)。
+    /// PR-C (control plane 一元化, creo `mem_1CbmWjCGNi9z49s3r21TwQ`): registered projects の
+    /// 真実源を db/world に切り替える。
+    /// - `vpdb=Some` (= World daemon): **db/world を真実源**にする。 DB が空なら config.projects
+    ///   (= projects.kdl) から一回 import して復旧 (VP-182 シナリオ / 既存ユーザーの移行)。
+    /// - `vpdb=None` (= CLI / SP / test 初期): 従来通り config.projects (= projects.kdl) から展開。
+    ///
+    /// projects.kdl は過渡期の復旧の種兼ミラー (PR-D で撤去予定)。 `Config::load()` は config.kdl の
+    /// 人設定読みと、 復旧 seed としての projects.kdl 読みを兼ねる。
     pub async fn load_config(&mut self) -> CapabilityResult<()> {
         let config = Config::load().map_err(|e| {
             CapabilityError::InitializationFailed(format!("Failed to load config: {}", e))
         })?;
+
+        // 真実源から ProjectEntry 列を得る (vpdb=Some なら DB 優先、 空なら kdl から復旧)。
+        let entries: Vec<crate::projects_file::ProjectEntry> = if let Some(db) = &self.vpdb {
+            let mut entries = db.export_projects().await.map_err(|e| {
+                CapabilityError::InitializationFailed(format!("DB projects 取得失敗: {}", e))
+            })?;
+            if entries.is_empty() && !config.projects.is_empty() {
+                // DB 空 + kdl に projects あり → kdl から db/world へ一回 import (移行 / 復旧)。
+                let seed = config_projects_to_entries(&config);
+                db.import_projects(&seed).await.map_err(|e| {
+                    CapabilityError::InitializationFailed(format!(
+                        "DB projects 復旧 import 失敗: {}",
+                        e
+                    ))
+                })?;
+                tracing::info!(
+                    "projects を projects.kdl から db/world に復旧 ({} 件)",
+                    seed.len()
+                );
+                entries = db.export_projects().await.map_err(|e| {
+                    CapabilityError::InitializationFailed(format!("DB projects 再取得失敗: {}", e))
+                })?;
+            }
+            entries
+        } else {
+            config_projects_to_entries(&config)
+        };
 
         let mut projects = self.projects.write().await;
         let mut order = self.project_order.write().await;
         projects.clear();
         order.clear();
 
-        for project in &config.projects {
-            let key = normalize_path_key(&PathBuf::from(&project.path));
+        for e in &entries {
+            let key = normalize_path_key(&PathBuf::from(&e.path));
             order.push(key.clone());
             projects.insert(
                 key,
                 ProjectInfo {
-                    name: project.name.clone(),
-                    path: project.path.clone().into(),
+                    name: e.name.clone(),
+                    path: e.path.clone().into(),
                     process_status: ProcessStatus::Stopped,
                     port: None, // port は動的割当 (port_layout が slot から計算)
-                    enabled: project.enabled,
-                    slot: project.slot,
+                    enabled: e.is_enabled(),
+                    slot: e.slot,
                 },
             );
         }
@@ -220,32 +268,56 @@ impl ProcessManagerCapability {
         Ok(())
     }
 
-    /// 現在の projects HashMap を projects.kdl に書き出す (VP-188)。
+    /// 現在の projects HashMap を真実源に永続化する。
     ///
-    /// `project_order` の順序で `ProjectsFile` を組み立てて atomic write する。
-    /// add / delete / rename / reorder / set_enabled の各操作後に呼ぶ。
+    /// PR-C (control plane 一元化): `project_order` の順序で `ProjectEntry` 列を組み立て、
+    /// - `vpdb=Some` (= World): **db/world に全置換** (= 真実源)。 projects.kdl は DB からの
+    ///   一方向 export ミラー (= 過渡期の人間可読 + 復旧の種、 PR-D で撤去予定)。
+    /// - `vpdb=None` (= CLI / SP / test): 従来通り projects.kdl に atomic write。
+    ///
+    /// add / delete / rename / reorder / set_enabled / auto_reassign_slot の各操作後に呼ぶ。
     /// test 環境では `ProjectsFile::save()` が no-op なので本番ファイルを破壊しない。
     async fn persist_projects(&self) -> CapabilityResult<()> {
-        let projects = self.projects.read().await;
-        let order = self.project_order.read().await;
-        let entries: Vec<crate::projects_file::ProjectEntry> = order
-            .iter()
-            .filter_map(|key| {
-                projects
-                    .get(key)
-                    .map(|p| crate::projects_file::ProjectEntry {
-                        name: p.name.clone(),
-                        path: p.path.to_string_lossy().to_string(),
-                        // enabled=true は省略 (= projects.kdl をミニマムに)、 false のみ明記
-                        enabled: if p.enabled { None } else { Some(false) },
-                        slot: p.slot,
-                    })
+        // read guard は entries 構築のみで解放する (DB / file の await 中は lock を持たない)。
+        let entries: Vec<crate::projects_file::ProjectEntry> = {
+            let projects = self.projects.read().await;
+            let order = self.project_order.read().await;
+            order
+                .iter()
+                .filter_map(|key| {
+                    projects
+                        .get(key)
+                        .map(|p| crate::projects_file::ProjectEntry {
+                            name: p.name.clone(),
+                            path: p.path.to_string_lossy().to_string(),
+                            // enabled=true は省略 (= projects.kdl をミニマムに)、 false のみ明記
+                            enabled: if p.enabled { None } else { Some(false) },
+                            slot: p.slot,
+                        })
+                })
+                .collect()
+        };
+
+        if let Some(db) = &self.vpdb {
+            // db/world を真実源として全置換。
+            db.replace_all_projects(&entries).await.map_err(|e| {
+                CapabilityError::InitializationFailed(format!("DB projects 全置換失敗: {}", e))
+            })?;
+            // projects.kdl は DB の内容を一方向 export してミラー (PR-D で廃止予定)。
+            let exported = db.export_projects().await.map_err(|e| {
+                CapabilityError::InitializationFailed(format!("DB projects export 失敗: {}", e))
+            })?;
+            let pf = crate::projects_file::ProjectsFile { projects: exported };
+            pf.save().map_err(|e| {
+                CapabilityError::InitializationFailed(format!("projects.kdl export 失敗: {}", e))
             })
-            .collect();
-        let pf = crate::projects_file::ProjectsFile { projects: entries };
-        pf.save().map_err(|e| {
-            CapabilityError::InitializationFailed(format!("projects.kdl 書き込み失敗: {}", e))
-        })
+        } else {
+            // vpdb なし: 従来通り projects.kdl に書く (= 真実源)。
+            let pf = crate::projects_file::ProjectsFile { projects: entries };
+            pf.save().map_err(|e| {
+                CapabilityError::InitializationFailed(format!("projects.kdl 書き込み失敗: {}", e))
+            })
+        }
     }
 
     /// vpバイナリを検索
@@ -333,38 +405,58 @@ impl ProcessManagerCapability {
             procs.keys().cloned().collect()
         };
 
-        let mut projects = self.projects.write().await;
-        let mut order = self.project_order.write().await;
+        {
+            let mut projects = self.projects.write().await;
+            let mut order = self.project_order.write().await;
 
-        // projects.kdl 由来の key 集合 (= 除去判定の基準)。
-        let kdl_keys: std::collections::HashSet<String> = config
-            .projects
-            .iter()
-            .map(|p| normalize_path_key(&PathBuf::from(&p.path)))
-            .collect();
+            // projects.kdl 由来の key 集合 (= 除去判定の基準)。
+            let kdl_keys: std::collections::HashSet<String> = config
+                .projects
+                .iter()
+                .map(|p| normalize_path_key(&PathBuf::from(&p.path)))
+                .collect();
 
-        // add: projects.kdl の各 project を in-memory に反映 (未登録なら追加)。
-        for project in &config.projects {
-            let key = normalize_path_key(&PathBuf::from(&project.path));
-            projects.entry(key.clone()).or_insert_with(|| ProjectInfo {
-                name: project.name.clone(),
-                path: project.path.clone().into(),
-                process_status: ProcessStatus::Stopped,
-                port: project.port,
-                enabled: project.enabled,
-                slot: project.slot,
-            });
-            if !order.contains(&key) {
-                order.push(key);
+            // add/update: projects.kdl の各 project を in-memory に反映。
+            // PR-C: 既存 key も kdl 値で name/enabled/slot を更新 (CLI が kdl 経由で更新した
+            // slot 等を取り込む)。 running process の process_status / port は触らない (安全側)。
+            for project in &config.projects {
+                let key = normalize_path_key(&PathBuf::from(&project.path));
+                projects
+                    .entry(key.clone())
+                    .and_modify(|p| {
+                        p.name = project.name.clone();
+                        p.enabled = project.enabled;
+                        p.slot = project.slot;
+                    })
+                    .or_insert_with(|| ProjectInfo {
+                        name: project.name.clone(),
+                        path: project.path.clone().into(),
+                        process_status: ProcessStatus::Stopped,
+                        port: project.port,
+                        enabled: project.enabled,
+                        slot: project.slot,
+                    });
+                if !order.contains(&key) {
+                    order.push(key);
+                }
             }
+
+            // remove: projects.kdl から消えた entry を in-memory からも除去。
+            // ただし running process を持つ key は残す (稼働中 SP を取りこぼさない)。
+            projects.retain(|key, _| kdl_keys.contains(key) || running.contains(key));
+            order.retain(|key| projects.contains_key(key));
+
+            tracing::info!("Config reloaded: {} projects", projects.len());
+        } // projects / order の write guard を解放してから persist (read lock 取り直し)
+
+        // PR-C: vpdb=Some なら DB に同期する。 reload は kdl→in-memory→DB の向きで、
+        // running 保護後の in-memory を書くので、 古い kdl で DB を盲目上書きせず取りこぼしも防ぐ。
+        // (= CLI が kdl 経由で更新した slot 等を db/world に焼く合流点)
+        if self.vpdb.is_some()
+            && let Err(e) = self.persist_projects().await
+        {
+            tracing::warn!("reload_config: DB 同期失敗: {}", e);
         }
-
-        // remove: projects.kdl から消えた entry を in-memory からも除去。
-        // ただし running process を持つ key は残す (稼働中 SP を取りこぼさない)。
-        projects.retain(|key, _| kdl_keys.contains(key) || running.contains(key));
-        order.retain(|key| projects.contains_key(key));
-
-        tracing::info!("Config reloaded: {} projects", projects.len());
     }
 
     /// プロジェクトを追加（+ projects.kdl に永続化、 VP-188）
@@ -1178,10 +1270,27 @@ impl ProcessManagerCapability {
                     new_slot, e
                 ))
             })?;
-        // VP-188: slot 永続化先は projects.kdl (config.toml ではない)。
-        config.persist_projects_kdl().map_err(|e| {
-            CapabilityError::Other(format!("VP-165 reassign: projects.kdl save 失敗: {}", e))
-        })?;
+        // PR-C: slot を真実源 (db/world) に永続化する。 config (= projects.kdl ロード) で計算した
+        // new_slot を in-memory projects に反映し、 persist_projects で DB + kdl ミラーに書く。
+        // これで auto-reassign の slot 退避が DB をバイパスせず一本化される (= 旧 persist_projects_kdl
+        // 直書きは DB と乖離していた)。
+        if let Some(key) = self.resolve_key_by_name(project_name).await {
+            {
+                let mut projects = self.projects.write().await;
+                if let Some(p) = projects.get_mut(&key) {
+                    p.slot = Some(new_slot);
+                }
+            }
+            self.persist_projects().await.map_err(|e| {
+                CapabilityError::Other(format!("VP-165 reassign: slot 永続化失敗: {}", e))
+            })?;
+        } else {
+            // in-memory に未登録 (= 稀: reload 前等) なら config 経由で kdl に退避し、 次回 reload/
+            // load_config で DB に取り込む (= フォールバック)。
+            config.persist_projects_kdl().map_err(|e| {
+                CapabilityError::Other(format!("VP-165 reassign: projects.kdl save 失敗: {}", e))
+            })?;
+        }
 
         let new_port = crate::cli::PORT_RANGE_START + new_slot;
         tracing::warn!(
