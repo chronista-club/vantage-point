@@ -205,7 +205,7 @@ enum Commands {
 /// Stone Free wing Lane コマンド（lane library への薄い wrapper）
 #[derive(Subcommand)]
 enum LaneCommands {
-    /// 新しい wing 環境を作成（clone + symlink + setup）
+    /// 新しい wing 環境を作成（worktree add + symlink + setup）
     New {
         /// Wing 名
         name: String,
@@ -214,6 +214,9 @@ enum LaneCommands {
         /// 既存 wing を上書き
         #[arg(long, short)]
         force: bool,
+        /// 隔離方式: worktree (default、 lead の .git 共有) / clone (独立 .git、 escape hatch)
+        #[arg(long, value_enum, default_value = "worktree")]
+        isolation: lane::commands::Isolation,
     },
     /// 現在の dirty state を新しい wing 環境に fork
     Fork {
@@ -224,6 +227,9 @@ enum LaneCommands {
         /// 既存 wing を上書き
         #[arg(long, short)]
         force: bool,
+        /// 隔離方式: worktree (default) / clone (独立 .git、 escape hatch)
+        #[arg(long, value_enum, default_value = "worktree")]
+        isolation: lane::commands::Isolation,
     },
     /// wing 環境一覧
     ///
@@ -622,16 +628,18 @@ fn execute_lane(cmd: LaneCommands) -> Result<()> {
             name,
             branch,
             force,
+            isolation,
         } => {
-            ws::new_wing(&name, &branch, force).map_err(|e| anyhow::anyhow!(e))?;
+            ws::new_wing(&name, &branch, force, isolation).map_err(|e| anyhow::anyhow!(e))?;
             Ok(())
         }
         LaneCommands::Fork {
             name,
             branch,
             force,
+            isolation,
         } => {
-            ws::fork_wing(&name, &branch, force).map_err(|e| anyhow::anyhow!(e))?;
+            ws::fork_wing(&name, &branch, force, isolation).map_err(|e| anyhow::anyhow!(e))?;
             Ok(())
         }
         LaneCommands::Ls { detail } => {
