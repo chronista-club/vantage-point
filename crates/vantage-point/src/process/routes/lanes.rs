@@ -215,7 +215,8 @@ pub async fn create_handler(
                 std::path::Path::new(&project_dir),
                 &name,
                 &branch,
-                false, // force=false
+                false,                                      // force=false
+                crate::lane::commands::Isolation::Worktree, // SP は worktree default
             )
         })
         .await

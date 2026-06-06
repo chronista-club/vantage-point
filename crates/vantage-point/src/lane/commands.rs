@@ -20,10 +20,24 @@ fn symlink(src: &Path, dst: &Path) -> std::io::Result<()> {
     }
 }
 
+/// Lane workspace の隔離方式 (worktree lane refactor 2026-06-07)。
+///
+/// - **`Worktree`** (default): lead の `.git` (objects/refs/remotes) を共有する
+///   `git worktree`。 軽量・高速で、 cc / multi-agent 統合の土台。 `git worktree list`
+///   が live registry になる。
+/// - **`Clone`**: 旧来の `git clone --depth 1` (= 完全独立 .git)。 escape hatch
+///   (`vp lane new --isolation clone`)。 worktree が使えない環境や完全分離が要る時用。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum Isolation {
+    #[default]
+    Worktree,
+    Clone,
+}
+
 /// Create a new wing environment
-pub fn new_wing(name: &str, branch: &str, force: bool) -> Result<(), String> {
+pub fn new_wing(name: &str, branch: &str, force: bool, isolation: Isolation) -> Result<(), String> {
     let repo_root = config::find_repo_root().map_err(|e| e.to_string())?;
-    let wing_dir = setup_wing(name, branch, &repo_root, force)?;
+    let wing_dir = setup_wing(name, branch, &repo_root, force, isolation)?;
     println!("{}", wing_dir.display());
     Ok(())
 }
@@ -35,8 +49,9 @@ pub fn new_wing_in(
     name: &str,
     branch: &str,
     force: bool,
+    isolation: Isolation,
 ) -> Result<PathBuf, String> {
-    setup_wing(name, branch, repo_root, force)
+    setup_wing(name, branch, repo_root, force, isolation)
 }
 
 /// Phase 4-X: SP-friendly remove。 repo_root を明示的に受け取り、 project-local 新 path で
@@ -53,17 +68,22 @@ pub fn remove_wing_in(repo_root: &Path, name: &str) -> Result<(), String> {
             repo_root.display()
         ));
     };
-    fs::remove_dir_all(&wing_dir).map_err(|e| e.to_string())
+    remove_wing_workspace(repo_root, &wing_dir)
 }
 
 /// Fork current dirty state into a new wing environment
-pub fn fork_wing(name: &str, branch: &str, force: bool) -> Result<(), String> {
+pub fn fork_wing(
+    name: &str,
+    branch: &str,
+    force: bool,
+    isolation: Isolation,
+) -> Result<(), String> {
     let repo_root = config::find_repo_root().map_err(|e| e.to_string())?;
 
     // Capture dirty state as a diff BEFORE creating the wing
     let diff = capture_dirty_diff(&repo_root)?;
 
-    let wing_dir = setup_wing(name, branch, &repo_root, force)?;
+    let wing_dir = setup_wing(name, branch, &repo_root, force, isolation)?;
 
     // Apply the captured diff to the wing
     if let Some(patch) = diff {
@@ -83,10 +103,15 @@ pub fn fork_wing(name: &str, branch: &str, force: bool) -> Result<(), String> {
 /// project-local lane refactor: 新 lane の配置先は `<repo_root>/.vp/lanes/<name>`。
 /// parent repo の `.gitignore` に `.vp/` を best-effort で追記して nested git clone を
 /// 隠蔽する。
-fn setup_wing(name: &str, branch: &str, repo_root: &Path, force: bool) -> Result<PathBuf, String> {
+fn setup_wing(
+    name: &str,
+    branch: &str,
+    repo_root: &Path,
+    force: bool,
+    isolation: Isolation,
+) -> Result<PathBuf, String> {
     config::validate_wing_name(name)?;
 
-    let remote_url = config::get_remote_url().map_err(|e| e.to_string())?;
     let cfg = config::load_config(repo_root)?;
 
     // parent repo の .gitignore に .vp/ を追記 (idempotent、 best-effort)。 失敗しても
@@ -106,22 +131,17 @@ fn setup_wing(name: &str, branch: &str, repo_root: &Path, force: bool) -> Result
             ));
         }
         eprintln!("既存ウィングを削除: {}", wing_dir.display());
-        fs::remove_dir_all(&wing_dir).map_err(|e| e.to_string())?;
+        remove_wing_workspace(repo_root, &wing_dir)?;
     }
 
-    // Clone
     fs::create_dir_all(&wings_dir).map_err(|e| e.to_string())?;
-    eprintln!("{} にクローン中...", wing_dir.display());
-    let repo_root_str = repo_root
-        .to_str()
-        .ok_or("リポジトリルートのパスが有効な UTF-8 ではありません")?;
-    let wing_dir_str = wing_dir
-        .to_str()
-        .ok_or("ウィングディレクトリのパスが有効な UTF-8 ではありません")?;
-    run_git(&["clone", "--depth", "1", repo_root_str, wing_dir_str])?;
 
-    // Set remote to GitHub URL
-    run_git_in(&wing_dir, &["remote", "set-url", "origin", &remote_url])?;
+    // provisioning: worktree (default) は branch も atomic に作る。 clone は内部で checkout -b。
+    // 以降の symlink/copy/post-setup は両者で共通。
+    match isolation {
+        Isolation::Worktree => provision_worktree(repo_root, &wing_dir, branch, &cfg)?,
+        Isolation::Clone => provision_clone(repo_root, &wing_dir, branch)?,
+    }
 
     // Symlinks
     for file in &cfg.symlinks {
@@ -174,9 +194,6 @@ fn setup_wing(name: &str, branch: &str, repo_root: &Path, force: bool) -> Result
         }
     }
 
-    // Create branch
-    run_git_in(&wing_dir, &["checkout", "-b", branch])?;
-
     // Post-setup
     if let Some(cmd) = &cfg.post_setup {
         eprintln!("実行中: {cmd}");
@@ -196,6 +213,202 @@ fn setup_wing(name: &str, branch: &str, repo_root: &Path, force: bool) -> Result
     // `hasTrustDialogAccepted: true` が claude 側で **hierarchical 継承** されるので
     // pre-grant は不要 (2026-05-24 実証、 nested `.git/` でも継承)。
     Ok(wing_dir)
+}
+
+// ── provisioning (worktree / clone) ────────────────────────────────────────
+
+/// worktree provisioning (default)。lead の `.git` を共有する `git worktree` を
+/// `origin/<base>` から `-b <branch>` で生やす。 remote 共有なので set-url 不要。
+fn provision_worktree(
+    repo_root: &Path,
+    wing_dir: &Path,
+    branch: &str,
+    cfg: &config::WingConfig,
+) -> Result<(), String> {
+    let base = resolve_base_ref(repo_root, cfg);
+    // base を best-effort fetch (= offline でも local ref で worktree add は進める)。
+    if let Err(e) = run_git_in(repo_root, &["fetch", "origin", &base]) {
+        eprintln!("⚠ fetch origin {base} 失敗 (続行、 local ref で worktree 作成): {e}");
+    }
+    let start_point = resolve_start_point(repo_root, &base);
+    eprintln!(
+        "{} を worktree add 中 (branch={branch}, base={start_point})...",
+        wing_dir.display()
+    );
+    worktree_add_with_retry(repo_root, wing_dir, branch, &start_point)
+}
+
+/// clone provisioning (escape hatch `--isolation clone`)。完全独立 .git。
+fn provision_clone(repo_root: &Path, wing_dir: &Path, branch: &str) -> Result<(), String> {
+    let remote_url = config::get_remote_url().map_err(|e| e.to_string())?;
+    let repo_root_str = repo_root
+        .to_str()
+        .ok_or("リポジトリルートのパスが有効な UTF-8 ではありません")?;
+    let wing_dir_str = wing_dir
+        .to_str()
+        .ok_or("ウィングディレクトリのパスが有効な UTF-8 ではありません")?;
+    eprintln!("{} にクローン中...", wing_dir.display());
+    run_git(&["clone", "--depth", "1", repo_root_str, wing_dir_str])?;
+    // clone の origin は lead repo path になるので GitHub URL に張り替える (= 旧挙動)。
+    run_git_in(wing_dir, &["remote", "set-url", "origin", &remote_url])?;
+    run_git_in(wing_dir, &["checkout", "-b", branch])
+}
+
+/// worktree lane の base branch (= dev trunk) を解決。
+/// 優先順: wing-files.kdl の `base-ref` → [`resolve_default_branch`] (origin/HEAD) → "main"。
+fn resolve_base_ref(repo_root: &Path, cfg: &config::WingConfig) -> String {
+    if let Some(b) = &cfg.base_ref
+        && !b.trim().is_empty()
+    {
+        return b.clone();
+    }
+    resolve_default_branch(repo_root).unwrap_or_else(|| "main".to_string())
+}
+
+/// origin の default branch を解決 (F 検証 F4 の fallback chain)。
+///
+/// 1. `git symbolic-ref --short refs/remotes/origin/HEAD` ("origin/main" → "main")
+/// 2. 未設定なら `git remote set-head origin -a` で復旧して再試行
+/// 3. `gh repo view` の defaultBranchRef
+/// 4. `origin/main` → `origin/master` の存在 probe
+pub fn resolve_default_branch(repo_root: &Path) -> Option<String> {
+    if let Some(b) = git_symbolic_default(repo_root) {
+        return Some(b);
+    }
+    let _ = run_git_in(repo_root, &["remote", "set-head", "origin", "-a"]);
+    if let Some(b) = git_symbolic_default(repo_root) {
+        return Some(b);
+    }
+    if let Some(b) = gh_default_branch(repo_root) {
+        return Some(b);
+    }
+    for cand in ["main", "master"] {
+        if git_rev_parse(repo_root, &format!("origin/{cand}")).is_some() {
+            return Some(cand.to_string());
+        }
+    }
+    None
+}
+
+/// `git symbolic-ref --short refs/remotes/origin/HEAD` → branch 名 ("origin/" を除去)。
+fn git_symbolic_default(repo_root: &Path) -> Option<String> {
+    let out = Command::new("git")
+        .args(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
+        .current_dir(repo_root)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    s.strip_prefix("origin/")
+        .map(|b| b.to_string())
+        .filter(|b| !b.is_empty())
+}
+
+/// `gh repo view --json defaultBranchRef` fallback (gh 認証済 + GitHub remote 時のみ機能)。
+fn gh_default_branch(repo_root: &Path) -> Option<String> {
+    let out = Command::new("gh")
+        .args([
+            "repo",
+            "view",
+            "--json",
+            "defaultBranchRef",
+            "-q",
+            ".defaultBranchRef.name",
+        ])
+        .current_dir(repo_root)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if s.is_empty() { None } else { Some(s) }
+}
+
+/// worktree add の start-point を解決。 `origin/<base>` → `<base>` → "HEAD" の順で
+/// 最初に rev-parse できる ref を返す (= offline / fresh repo でも壊れない)。
+fn resolve_start_point(repo_root: &Path, base: &str) -> String {
+    for cand in [format!("origin/{base}"), base.to_string()] {
+        if git_rev_parse(repo_root, &cand).is_some() {
+            return cand;
+        }
+    }
+    "HEAD".to_string()
+}
+
+/// `git worktree add -b <branch> <wing_dir> <start_point>` を lock 競合に備えリトライ実行。
+///
+/// F 検証で判明した制約を反映:
+/// - **F2**: 同一 repo への並列 worktree add は ref/index lock で落ちうる → backoff retry。
+/// - **F3**: branch 既存 / 他 worktree 使用中は retry 無意味 → 即 actionable error。
+fn worktree_add_with_retry(
+    repo_root: &Path,
+    wing_dir: &Path,
+    branch: &str,
+    start_point: &str,
+) -> Result<(), String> {
+    let wing_str = wing_dir
+        .to_str()
+        .ok_or("ウィングディレクトリのパスが有効な UTF-8 ではありません")?;
+    let mut last_err = String::new();
+    for attempt in 0u64..4 {
+        let out = Command::new("git")
+            .args(["worktree", "add", "-b", branch, wing_str, start_point])
+            .current_dir(repo_root)
+            .output()
+            .map_err(|e| e.to_string())?;
+        if out.status.success() {
+            return Ok(());
+        }
+        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+        // F3: branch 衝突 (既存 or 他 worktree 使用中) → retry 無駄、 actionable error。
+        if stderr.contains("already exists") || stderr.contains("already used by worktree") {
+            return Err(format!(
+                "branch '{branch}' は既に存在 / 別の lane が使用中です。別の branch / wing 名を指定してください。\n  git: {}",
+                stderr.trim()
+            ));
+        }
+        // F2: lock 競合 → backoff retry。
+        let is_lock = stderr.contains("lock")
+            || stderr.contains("Unable to create")
+            || stderr.contains("another git process");
+        if is_lock {
+            last_err = stderr;
+            std::thread::sleep(std::time::Duration::from_millis(120 * (attempt + 1)));
+            continue;
+        }
+        // その他 → 即 error。
+        return Err(format!("git worktree add 失敗: {}", stderr.trim()));
+    }
+    Err(format!(
+        "git worktree add が lock 競合で 4 回失敗しました: {}",
+        last_err.trim()
+    ))
+}
+
+/// wing workspace を削除 (clone / worktree 両対応)。
+///
+/// - **worktree** (`.git` が file = gitdir ポインタ): `git worktree remove --force` +
+///   `prune` で `.git/worktrees/<name>` 登録ごと除去。 **branch は残す** (未 push 保全、
+///   設計 E)。 stale 登録時は fs 削除 + prune に fallback。
+/// - **clone** (`.git` が dir): `fs::remove_dir_all`。
+fn remove_wing_workspace(repo_root: &Path, wing_dir: &Path) -> Result<(), String> {
+    let dotgit = wing_dir.join(".git");
+    if dotgit.is_file() {
+        let wing_str = wing_dir
+            .to_str()
+            .ok_or("ウィングディレクトリのパスが有効な UTF-8 ではありません")?;
+        if run_git_in(repo_root, &["worktree", "remove", "--force", wing_str]).is_err() {
+            // stale 登録等 → fs 削除 + prune で後始末 (best-effort)。
+            let _ = fs::remove_dir_all(wing_dir);
+        }
+        let _ = run_git_in(repo_root, &["worktree", "prune"]);
+        Ok(())
+    } else {
+        fs::remove_dir_all(wing_dir).map_err(|e| e.to_string())
+    }
 }
 
 /// List all wing environments under cwd の `<repo>/.vp/lanes/`。
@@ -323,6 +536,8 @@ pub fn remove_wing(name: Option<&str>, all: bool, force: bool) -> Result<(), Str
         }
         if pl_dir.exists() {
             fs::remove_dir_all(&pl_dir).map_err(|e| e.to_string())?;
+            // worktree lane: dir を消すと `.git/worktrees/<name>` 登録が stale で残るので prune。
+            let _ = run_git_in(&repo_root, &["worktree", "prune"]);
             eprintln!("project-local ウィング全削除: {}", pl_dir.display());
         } else {
             eprintln!("削除対象のウィングはありませんでした");
@@ -338,7 +553,7 @@ pub fn remove_wing(name: Option<&str>, all: bool, force: bool) -> Result<(), Str
             "ウィング '{name}' が見つかりません。`vp lane ls` で一覧を確認してください。"
         ));
     };
-    fs::remove_dir_all(&wing_dir).map_err(|e| e.to_string())?;
+    remove_wing_workspace(&repo_root, &wing_dir)?;
     eprintln!("削除: {}", wing_dir.display());
     Ok(())
 }
@@ -376,17 +591,21 @@ pub fn status_wings() -> Result<(), String> {
 ///
 /// project-local lane refactor PR 4b: legacy global block 削除、 project-local 一本に。
 pub fn cleanup_wings(force: bool) -> Result<(), String> {
-    let mut to_remove: Vec<(String, std::path::PathBuf)> = Vec::new();
+    let Ok(repo_root) = config::find_repo_root() else {
+        eprintln!("クリーンアップ対象はありません。");
+        return Ok(());
+    };
+    let pl_dir = config::project_lanes_dir(&repo_root);
+
+    // (name, path, branch)。 branch は worktree cleanup 時の `git branch -d` 用。
+    let mut to_remove: Vec<(String, std::path::PathBuf, Option<String>)> = Vec::new();
     let mut kept: Vec<(String, String)> = Vec::new();
 
-    if let Ok(repo_root) = config::find_repo_root() {
-        let pl_dir = config::project_lanes_dir(&repo_root);
-        if pl_dir.exists()
-            && let Ok(entries) = fs::read_dir(&pl_dir)
-        {
-            for entry in entries.flatten() {
-                classify_wing_for_cleanup(entry, &mut to_remove, &mut kept);
-            }
+    if pl_dir.exists()
+        && let Ok(entries) = fs::read_dir(&pl_dir)
+    {
+        for entry in entries.flatten() {
+            classify_wing_for_cleanup(entry, &mut to_remove, &mut kept);
         }
     }
 
@@ -402,7 +621,7 @@ pub fn cleanup_wings(force: bool) -> Result<(), String> {
         return Ok(());
     }
 
-    for (name, _) in &to_remove {
+    for (name, _, _) in &to_remove {
         eprintln!("  削除可能: {name} (マージ済み)");
     }
     for (name, reason) in &kept {
@@ -414,8 +633,13 @@ pub fn cleanup_wings(force: bool) -> Result<(), String> {
         return Ok(());
     }
 
-    for (name, path) in &to_remove {
-        fs::remove_dir_all(path).map_err(|e| e.to_string())?;
+    for (name, path, branch) in &to_remove {
+        remove_wing_workspace(&repo_root, path)?;
+        // worktree: merged branch を共有 .git から `-d` で安全に掃除 (設計 E)。
+        // clone: branch は独立 .git 内なので親 repo では no-op (失敗は握り潰す)。
+        if let Some(b) = branch {
+            let _ = run_git_in(&repo_root, &["branch", "-d", b]);
+        }
         eprintln!("  削除: {name}");
     }
 
@@ -440,17 +664,19 @@ fn print_wing_status_row(path: &Path, name: &str) {
 /// `cleanup_wings` 内の 1 wing 分類 helper
 fn classify_wing_for_cleanup(
     entry: fs::DirEntry,
-    to_remove: &mut Vec<(String, std::path::PathBuf)>,
+    to_remove: &mut Vec<(String, std::path::PathBuf, Option<String>)>,
     kept: &mut Vec<(String, String)>,
 ) {
     let path = entry.path();
+    // `.git` は clone なら dir / worktree なら file。 `exists()` は両方 true。
     if !path.is_dir() || !path.join(".git").exists() {
         return;
     }
     let name = entry.file_name().to_string_lossy().to_string();
     let _ = run_git_in(&path, &["fetch", "--quiet"]);
     if is_branch_merged(&path) {
-        to_remove.push((name, path));
+        let branch = get_branch(&path);
+        to_remove.push((name, path, branch));
     } else {
         let changes = count_changes(&path);
         let reason = if changes > 0 {
@@ -1136,6 +1362,137 @@ mod tests {
             "fresh wing (HEAD == origin/main) should return false"
         );
 
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    // --- worktree lane (setup_wing Isolation::Worktree / resolve_default_branch / remove) ---
+
+    /// bare(origin) + lead clone を作り lead repo path を返す (worktree lane test 用)。
+    /// origin/HEAD = main を明示設定して resolve_default_branch の経路を通す。
+    fn setup_worktree_fixture(slug: &str) -> (PathBuf, PathBuf) {
+        let base = test_dir(&format!("wt-{slug}"));
+        fs::create_dir_all(&base).unwrap();
+        let bare = base.join("bare.git");
+        fs::create_dir_all(&bare).unwrap();
+        Cmd::new("git")
+            .args(["init", "--bare", "--initial-branch=main"])
+            .current_dir(&bare)
+            .output()
+            .unwrap();
+        let lead = base.join("lead");
+        Cmd::new("git")
+            .args(["clone", bare.to_str().unwrap(), lead.to_str().unwrap()])
+            .output()
+            .unwrap();
+        for (k, v) in [("user.email", "test@example.com"), ("user.name", "Test")] {
+            Cmd::new("git")
+                .args(["config", k, v])
+                .current_dir(&lead)
+                .output()
+                .unwrap();
+        }
+        fs::write(lead.join("README.md"), "# init\n").unwrap();
+        Cmd::new("git")
+            .args(["add", "."])
+            .current_dir(&lead)
+            .output()
+            .unwrap();
+        Cmd::new("git")
+            .args(["commit", "-m", "initial"])
+            .current_dir(&lead)
+            .output()
+            .unwrap();
+        Cmd::new("git")
+            .args(["branch", "-M", "main"])
+            .current_dir(&lead)
+            .output()
+            .unwrap();
+        Cmd::new("git")
+            .args(["push", "-u", "origin", "main"])
+            .current_dir(&lead)
+            .output()
+            .unwrap();
+        Cmd::new("git")
+            .args(["remote", "set-head", "origin", "main"])
+            .current_dir(&lead)
+            .output()
+            .unwrap();
+        (base, lead)
+    }
+
+    #[test]
+    fn resolve_default_branch_returns_main() {
+        let (base, lead) = setup_worktree_fixture("resolve-default");
+        assert_eq!(resolve_default_branch(&lead).as_deref(), Some("main"));
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn setup_wing_worktree_creates_shared_worktree() {
+        let (base, lead) = setup_worktree_fixture("create");
+        let wing = setup_wing("feat", "mako/feat", &lead, false, Isolation::Worktree).unwrap();
+        // worktree marker: .git は file (gitdir pointer)、clone なら dir
+        assert!(
+            wing.join(".git").is_file(),
+            "worktree の .git は file であるべき"
+        );
+        assert_eq!(get_branch(&wing).as_deref(), Some("mako/feat"));
+        // git worktree list に登録される
+        let out = Cmd::new("git")
+            .args(["worktree", "list"])
+            .current_dir(&lead)
+            .output()
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&out.stdout).contains("mako/feat"),
+            "worktree list に branch が出る"
+        );
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn remove_wing_workspace_worktree_keeps_branch() {
+        let (base, lead) = setup_worktree_fixture("remove-keeps-branch");
+        let wing = setup_wing("rm", "mako/rm", &lead, false, Isolation::Worktree).unwrap();
+        assert!(wing.exists());
+
+        remove_wing_workspace(&lead, &wing).unwrap();
+        assert!(!wing.exists(), "worktree dir は削除される");
+
+        // 設計 E: branch は worktree remove 後も残す (未 push 保全)
+        let branches = Cmd::new("git")
+            .args(["branch", "--list", "mako/rm"])
+            .current_dir(&lead)
+            .output()
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&branches.stdout).contains("mako/rm"),
+            "branch は残る"
+        );
+
+        // prune 済で stale worktree 登録が残らない
+        let wl = Cmd::new("git")
+            .args(["worktree", "list"])
+            .current_dir(&lead)
+            .output()
+            .unwrap();
+        assert!(
+            !String::from_utf8_lossy(&wl.stdout).contains("/.vp/lanes/rm"),
+            "stale worktree 登録は prune 済"
+        );
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn setup_wing_worktree_duplicate_branch_errors() {
+        // F3: 同名 branch で 2 つ目の worktree を作ろうとすると actionable error
+        let (base, lead) = setup_worktree_fixture("dup-branch");
+        setup_wing("first", "mako/dup", &lead, false, Isolation::Worktree).unwrap();
+        let err = setup_wing("second", "mako/dup", &lead, false, Isolation::Worktree).unwrap_err();
+        assert!(
+            err.contains("既に存在") || err.contains("使用中") || err.contains("mako/dup"),
+            "branch 衝突は分かりやすい error を返すべき: {err}"
+        );
         let _ = fs::remove_dir_all(&base);
     }
 }

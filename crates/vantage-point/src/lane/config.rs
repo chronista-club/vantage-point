@@ -51,6 +51,19 @@ struct PostSetup {
     pub command: String,
 }
 
+/// `base-ref "nightly"` — worktree lane の base branch (= dev trunk)。
+///
+/// worktree lane refactor: lane は `origin/<base-ref>` から `worktree add` する。
+/// 未宣言なら `resolve_default_branch`(origin/HEAD) に fallback (commands.rs)。
+/// 「GitHub default」 と decouple した「開発の幹」 を repo ごとに固定する用途
+/// (= VP では `nightly`)。
+#[derive(Debug, KdlDeserialize)]
+#[kdl(name = "base-ref")]
+struct BaseRef {
+    #[kdl(argument)]
+    pub name: String,
+}
+
 #[derive(Debug, KdlDeserialize)]
 #[kdl(document)]
 struct RawConfig {
@@ -65,6 +78,9 @@ struct RawConfig {
 
     #[kdl(child)]
     post_setup: Option<PostSetup>,
+
+    #[kdl(child, name = "base-ref")]
+    base_ref: Option<BaseRef>,
 }
 
 /// Parsed wing config
@@ -74,6 +90,9 @@ pub struct WingConfig {
     pub copies: Vec<String>,
     pub symlink_patterns: Vec<String>,
     pub post_setup: Option<String>,
+    /// worktree lane の base branch (= dev trunk)。未宣言なら None →
+    /// commands.rs の `resolve_default_branch` で origin/HEAD に fallback。
+    pub base_ref: Option<String>,
 }
 
 impl From<RawConfig> for WingConfig {
@@ -87,6 +106,7 @@ impl From<RawConfig> for WingConfig {
                 .map(|e| e.pattern)
                 .collect(),
             post_setup: raw.post_setup.map(|e| e.command),
+            base_ref: raw.base_ref.map(|e| e.name),
         }
     }
 }
@@ -162,6 +182,7 @@ pub fn load_config(repo_root: &Path) -> Result<WingConfig, String> {
             copies: vec![],
             symlink_patterns: vec![],
             post_setup: None,
+            base_ref: None,
         });
     };
     let content = fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
