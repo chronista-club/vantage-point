@@ -188,6 +188,7 @@ vp-app (GUI: wry+tao)   vp (CLI)
 vantage-point/
 ├── crates/
 │   ├── vantage-point/   # server lib (TheWorld + SP の HTTP/WS server)
+│   ├── vp-paths/        # config/data/state path 解決 (XDG SSOT、 vantage-point + vp-app 共有)
 │   ├── vp-app/          # Rust GUI (wry + tao + xterm.js + creo-ui) — Mac 主軸
 │   │   └── web-bundle/  # SolidJS フロントエンド（vp-app に同梱）
 │   ├── vp-cli/          # CLI binary (vp、 lane lib も内包)
