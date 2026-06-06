@@ -258,7 +258,7 @@ layout shift / overlap なし。 OS 標準 tooltip (= HTML `title` attribute) �
 
 caller の 1 行修正 (= "append": false hardcode 削除) のみで済む。
 
-### 6.3 G hierarchical 拡張 (Lead → Wing → Wing → ...) を阻害しない
+### 6.3 G hierarchical 拡張 (Conductor → Performer → Performer → ...) を阻害しない
 
 本 spec は **PP の content layer のみ** の話で、 `LaneAddress` / `LaneKind` / `LanePool` には touch しない。 将来の hierarchical 拡張 (= 別 PR、 関連 memory `mem_1CbRMvKtC9vW9Ptm1NZmma` の Future scope) は独立に進められる。
 
@@ -308,7 +308,7 @@ session 跨ぎで history 復元 (= vp-app 再起動後も「昨日見た mcp__s
 - lside: source / nav / channel 候補
 - rside: detail panel / context / annotation 候補
 
-### 8.3 G hierarchical 拡張 (Lead → Wing → Wing → ...)
+### 8.3 G hierarchical 拡張 (Conductor → Performer → Performer → ...)
 
 別 PR。 `LaneAddress` / `LaneKind` の構造改修と合わせて進める。
 

@@ -1,6 +1,6 @@
 # 12. Stand architecture — Layer-Stand Composition Model (LSCM)
 
-> **改訂 note (2026-05-21)**: 本 doc 中の「msgbox」「`msgbox_registry.rs`」「`MsgboxRouter`」 はいずれも 2026-05 の **wiremsg 再設計 (R1〜R6、 PR #406〜#420) で全廃**された旧 messaging 実装。 現行の agent 間 messaging は wiremsg (`wire_send` / `wire_recv` / `wire_thread`、 `vp wire` CLI、 `wiremsg_store.rs` / `wire_remote.rs`)。 wire address は `<actor>@<project>[/<wing>]` (slash 区切り、 [doc 14](14-wire-address-v3.md) 参照)。 §9 catalog 等の「actor」「channel で copy 渡し」 という Stand 間通信の **概念モデル自体は有効** — substrate が msgbox → wiremsg に置き換わっただけ。
+> **改訂 note (2026-05-21)**: 本 doc 中の「msgbox」「`msgbox_registry.rs`」「`MsgboxRouter`」 はいずれも 2026-05 の **wiremsg 再設計 (R1〜R6、 PR #406〜#420) で全廃**された旧 messaging 実装。 現行の agent 間 messaging は wiremsg (`wire_send` / `wire_recv` / `wire_thread`、 `vp wire` CLI、 `wiremsg_store.rs` / `wire_remote.rs`)。 wire address は `<actor>@<project>[/<performer>]` (slash 区切り、 [doc 14](14-wire-address-v3.md) 参照)。 §9 catalog 等の「actor」「channel で copy 渡し」 という Stand 間通信の **概念モデル自体は有効** — substrate が msgbox → wiremsg に置き換わっただけ。
 
 > **Status**: target architecture (現実装は移行元、 §9 catalog の "現実装 vs target" を参照)
 > **Date**: 2026-05-04
@@ -88,7 +88,7 @@ LSCM は以下の design pattern と同型:
 > **Layer は独自 dir 空間を持つ**:
 > - World Layer = global config dir (`~/.config/vp/`、 `~/.local/share/vp/`)
 > - Project Layer = project root dir
-> - Lane Layer = working tree (Lead Lane = project root、 Worker Lane = ccws clone)
+> - Lane Layer = working tree (Conductor Lane = project root、 Worker Lane = ccws clone)
 
 **dir 共有は filesystem 上の作業場所の共有であり、 Stand 間 memory 共有を意味しない** (A6 を継承)。 dir = "world" であって "channel" ではない (Plan 9 thinking)。
 
@@ -98,13 +98,13 @@ LSCM は以下の design pattern と同型:
 |------|----------------|-----|-----|
 | World | `world` (singleton) | `~/.config/vp/`、 `~/.local/share/vp/` | `world` |
 | Project | `{project}` | project root dir | `vp`、 `creo`、 `bikeboy` |
-| Lane | `{project}/{lane}` | working tree | `vp/lead`、 `vp/sub1` |
+| Lane | `{project}/{lane}` | working tree | `vp/conductor`、 `vp/sub1` |
 
-### A11: Lead Lane の特殊性
+### A11: Conductor Lane の特殊性
 
-> **Project Layer は Lead Lane を代表 Lane として持つ。 Project Stand は Lead Lane supervisor tree に住む** (実装 hint、 制約は A3 + catalog が SSOT)
+> **Project Layer は Conductor Lane を代表 Lane として持つ。 Project Stand は Conductor Lane supervisor tree に住む** (実装 hint、 制約は A3 + catalog が SSOT)
 
-Lead Lane = project root dir に住む lane = project の代表。 Worker Lane (ccws clone) は Lead Lane の sibling。
+Conductor Lane = project root dir に住む lane = project の代表。 Worker Lane (ccws clone) は Conductor Lane の sibling。
 
 ### Layer tree (Mermaid)
 
@@ -113,9 +113,9 @@ graph TB
     W[World Layer<br/>address: world<br/>dir: ~/.config/vp/]
     W --> P1[Project Layer<br/>address: vp<br/>dir: ~/repos/vantage-point/]
     W --> P2[Project Layer<br/>address: creo<br/>dir: ~/repos/creo-memories/]
-    P1 --> L1[Lane Layer<br/>address: vp/lead<br/>dir: project root]
+    P1 --> L1[Lane Layer<br/>address: vp/conductor<br/>dir: project root]
     P1 --> L2[Lane Layer<br/>address: vp/sub1<br/>dir: ccws clone]
-    P2 --> L3[Lane Layer<br/>address: creo/lead<br/>dir: project root]
+    P2 --> L3[Lane Layer<br/>address: creo/conductor<br/>dir: project root]
 ```
 
 ---
@@ -159,7 +159,7 @@ graph LR
     subgraph PL[Project Layer vp]
         SP[Star Platinum ⭐]
     end
-    subgraph LL1[Lane vp/lead]
+    subgraph LL1[Lane vp/conductor]
         PP1[PP 🧭]
         EC1[Echoes 💬]
         GE1[GE 🌿]
@@ -186,8 +186,8 @@ Stand address grammar は **2 表記の hybrid canonical**:
 
 | 用途 | 表記 | 例 |
 |------|------|-----|
-| 概念用語 (本 doc / 設計議論) | `{stand}@{layer_path}` | `pp@vp/lead` |
-| wire format (実装 / msgbox) | `{stand}.{lane}@{project}` | `pp.lead@vp` |
+| 概念用語 (本 doc / 設計議論) | `{stand}@{layer_path}` | `pp@vp/conductor` |
+| wire format (実装 / msgbox) | `{stand}.{lane}@{project}` | `pp.conductor@vp` |
 | 変換 library | `address::canonicalize()` / `address::display()` | 双方向変換集約 |
 
 wire format は既存 `creo/event.rs::ActorRef` を維持し、 概念議論では path-like 表記を使う。 Federation で `@host` 拡張 (§12 参照)。
@@ -209,7 +209,7 @@ Stand 同士は memory を共有しない。 通信は channel (msgbox / topic) 
 | face | 用途 | 実装 |
 |------|------|------|
 | **Actor face** (direct) | 1:1 named address、 命令、 リクエスト | `msgbox` capability (`{stand}.{lane}@{project}`) |
-| **CSP face** (broadcast) | 1:N pub/sub、 state propagation、 fan-out | `Unison TopicRouter` (`canvas/lane/lead/*` 等) |
+| **CSP face** (broadcast) | 1:N pub/sub、 state propagation、 fan-out | `Unison TopicRouter` (`canvas/lane/conductor/*` 等) |
 
 両者は補完的。 Actor face = "誰" を answer する layer、 CSP face = "どう繋がるか" を answer する layer。
 
@@ -222,9 +222,9 @@ direct wire address                   broadcast topic channel
 Stand A                                 Stand A
    │                                       │ publish
    ▼ wire_send                             ▼
-agent@vp/lead  ←──────  Stand B        ┌─────────────────┐
+agent@vp/conductor  ←──────  Stand B        ┌─────────────────┐
 wire inbox                             │ canvas/lane/    │
-                                        │ lead/content    │ topic
+                                        │ conductor/content    │ topic
                                         └─────────────────┘
                                          │  │  │ subscribe
                                          ▼  ▼  ▼
@@ -252,8 +252,8 @@ Stand は Pane の存在を知らない。 Pane は Stand に subscribe + send �
 
 ```
 pane.bind(stand_address, scope)
-   - stand_address: 物理的 message 投送先 (例: pp@vp/lead)
-   - scope: Pane の context (例: lane:lead-hd)
+   - stand_address: 物理的 message 投送先 (例: pp@vp/conductor)
+   - scope: Pane の context (例: lane:conductor-hd)
 
 pane.send(stand_address, message)
 pane.subscribe(stand_address, topic)
@@ -263,9 +263,9 @@ pane.subscribe(stand_address, topic)
 
 PR-ε で実装する PP の典型 use case (`mem_1Ca8xHcMf9sFBB2VHUpHzZ` 参照):
 
-- **サイドバー** = PP 常駐フィード (lead Claude が `remember` / `search` / `get_*` するたびにカード追加・結果表示)
+- **サイドバー** = PP 常駐フィード (conductor Claude が `remember` / `search` / `get_*` するたびにカード追加・結果表示)
 - **Canvas (Pane)** = 検索 UI + memory 本文展開 (`get_*` で auto-display)
-- **双方向** = lead ↔ VP (UI 操作で context 注入)
+- **双方向** = conductor ↔ VP (UI 操作で context 注入)
 - **MCP 中継** = VP が creo-memories を wrap する MCP サーバを兼ねる
 
 ---
@@ -511,10 +511,10 @@ TheWorld destroy
 - **filesystem (Layer dir)** は共有可能 (Stand から見ると "world"、 not "channel")
 - Stand 同士が dir 経由で間接通信することは技術的に可能だが、 これは構造化通信ではなく "out-of-band" として扱う
 
-### Lead Lane の特殊性 (A11 補足)
+### Conductor Lane の特殊性 (A11 補足)
 
-- Lead Lane = Project supervisor (Project Stand のホスト)
-- Lead Lane destroy = Project Layer destroy (project 全体終了)
+- Conductor Lane = Project supervisor (Project Stand のホスト)
+- Conductor Lane destroy = Project Layer destroy (project 全体終了)
 - Worker Lane destroy = 単独 Lane destroy (Project は生き残る)
 
 ---
@@ -529,10 +529,10 @@ TheWorld destroy
 | Whitesnake 🐍 | Persistence | `world` | `whitesnake@world` | `whitesnake@world` | ❌ (per-machine DB) | 現状 = target |
 | Hermit Purple 🍇 | External IF (MIDI/MCP/tmux) | `world` | `hp@world` | `hp@world` (実装は `hermit_purple@world`) | ✅ | ✅ **target = 現状** (PR-α 完了 2026-05-04、 `WorldCapabilities.midi` で host) |
 | Star Platinum ⭐ | Project Core | `{project}` | `sp@vp` | `sp@vp` | ✅ | 現状 = target |
-| Paisley Park 🧭 | Information Navigator | `{project}/{lane}` | `pp@vp/lead` | `pp.lead@vp` | ✅ | target = Lane instance、 現状 = Project actor、 **PR-β** |
-| Echoes 💬 | Coding Assistant | `{project}/{lane}` | `echoes@vp/lead` | `echoes.lead@vp` | ✅ | 現状 = target (Lane mise task)。 PR-pre2 (VP-118) で Heaven's Door 📖 → Echoes 💬 rename (zsh→tmux→claude chain spawn が Echoes Act 1/2/3 進化と完璧 fit、 terminal echo 構造とも literal に一致)。 |
-| Gold Experience 🌿 | Code Runner | `{project}/{lane}` | `ge@vp/lead` | `ge.lead@vp` | ❌ (security) | target = Lane instance、 現状 = Project actor、 **PR-γ** |
-| The Hand 🤚 | Shell Terminal | `{project}/{lane}` | `hand@vp/lead` | `hand.lead@vp` | ❌ (local shell) | 現状 = target (Lane mise task) |
+| Paisley Park 🧭 | Information Navigator | `{project}/{lane}` | `pp@vp/conductor` | `pp.conductor@vp` | ✅ | target = Lane instance、 現状 = Project actor、 **PR-β** |
+| Echoes 💬 | Coding Assistant | `{project}/{lane}` | `echoes@vp/conductor` | `echoes.conductor@vp` | ✅ | 現状 = target (Lane mise task)。 PR-pre2 (VP-118) で Heaven's Door 📖 → Echoes 💬 rename (zsh→tmux→claude chain spawn が Echoes Act 1/2/3 進化と完璧 fit、 terminal echo 構造とも literal に一致)。 |
+| Gold Experience 🌿 | Code Runner | `{project}/{lane}` | `ge@vp/conductor` | `ge.conductor@vp` | ❌ (security) | target = Lane instance、 現状 = Project actor、 **PR-γ** |
+| The Hand 🤚 | Shell Terminal | `{project}/{lane}` | `hand@vp/conductor` | `hand.conductor@vp` | ❌ (local shell) | 現状 = target (Lane mise task) |
 
 **分布**: World 3 / Project 1 / Lane 4 ─ 全 8 Stand
 **Hub federation 対象**: 5 Stand (TheWorld / SP / PP / Echoes / HP)
@@ -671,7 +671,7 @@ doc 12 は target architecture を確定するが、 以下は **後続議論** 
 - **Q-3**: Layer 間 Stand migration protocol = drain → snapshot → relocate → restore の 4-step (A13 案)
 - **Q-4**: 動的 spawn / kill = Layer の lifecycle event として規定 (A14 案)
 - **Q-5**: 親 Layer destroy 時の child Stand cleanup = LIFO order shutdown (A15 案)
-- **Q-6**: Address resolution scope chain = cwd Layer から root に向け ascending lookup (A16 案、 shadowing 許容)
+- **Q-6**: Address resolution scope chain = cwd Layer から root に向け ascending lookup (A16 案、 shadoperformer 許容)
 - **Q-7**: Msgbox registry の `(layer_path, actor)` key 拡張 (現 `(project, actor)` から、 A17 案)
   - **2026-05-04 実体験 (PR-α-3 / VP-113)**: `MidiCapability` を World 階層に host する際、 現 `MsgboxRegistry` は `(project_name, actor)` key で管理されているため、 World scope を表現するための **暫定 HACK として pseudo project name `"world"`** を使用。 `world_capabilities.rs::with_midi` 内 `msgbox_registry.register("hermit_purple", "world", world_port)` 呼び出しで具体化。 LSCM 公理上は `(layer_path, actor)` (例: `World/, hermit_purple`) が正だが、 短期的に動かすため pseudo namespace で凌いでいる状態。 Q-7 を解いた段階で pseudo project name 全部の sweep が必要 (`hermit_purple@world` に reach する caller も全て update)。
 - **Q-8**: R/R primitive = ephemeral process として別 axiom 化 (A18 案)

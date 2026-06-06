@@ -61,7 +61,7 @@ wiremsg は agent 間メッセージングの substrate。 message は per-agent
 - [x] cross-process forward — `wire_remote` 経由の best-effort delivery（R3）
 - [x] MCP tool — `wire_send` / `wire_recv` / `wire_thread`
 - [x] CLI — `vp wire watch`（long-poll subscribe）/ `vp wire send`
-- [x] address モデル — `<actor>@<project>[/<wing>]`（[doc 14](../design/14-wire-address-v3.md)、 旧 msgbox address v3.1 を継承）
+- [x] address モデル — `<actor>@<project>[/<performer>]`（[doc 14](../design/14-wire-address-v3.md)、 旧 msgbox address v3.1 を継承）
 
 ---
 

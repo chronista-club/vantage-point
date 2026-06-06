@@ -277,7 +277,7 @@ pub struct Event {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct ActorRef {
     pub stand: String,    // "hd" / "pp" / "sc" / "th" / "ws" / ...
-    pub lane: String,     // "lead" / "wing-VP-10" / ...
+    pub lane: String,     // "conductor" / "performer-VP-10" / ...
     pub project: String,  // "vantage-point"
 }
 ```
@@ -626,7 +626,7 @@ Co-design の戻しボール。creo-memories 側で decide / iterate しても�
 ### 11.5 ActorRef の表現
 - VP 側は `{stand, lane, project}` の 3 tuple
 - creo-memories 側でも同形式で OK か (cross-system で一致させたい)
-- ↔ wire address `<actor>@<project>[/<wing>]` (wiremsg、 旧 VP-24 Msgbox を再設計、 [doc 14](14-wire-address-v3.md)) と alias 関係にある
+- ↔ wire address `<actor>@<project>[/<performer>]` (wiremsg、 旧 VP-24 Msgbox を再設計、 [doc 14](14-wire-address-v3.md)) と alias 関係にある
 
 ### 11.6 causation の multi-parent 化時期
 - R0 は single parent
