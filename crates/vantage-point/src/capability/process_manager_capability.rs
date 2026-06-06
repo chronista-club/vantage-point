@@ -303,11 +303,10 @@ impl ProcessManagerCapability {
             db.replace_all_projects(&entries).await.map_err(|e| {
                 CapabilityError::InitializationFailed(format!("DB projects 全置換失敗: {}", e))
             })?;
-            // projects.kdl は DB の内容を一方向 export してミラー (PR-D で廃止予定)。
-            let exported = db.export_projects().await.map_err(|e| {
-                CapabilityError::InitializationFailed(format!("DB projects export 失敗: {}", e))
-            })?;
-            let pf = crate::projects_file::ProjectsFile { projects: exported };
+            // projects.kdl は DB の読み取り専用ミラー。 entries は replace_all で書いた内容と
+            // 同一 (ord = 出現順) なので export 往復を省く (= DELETE→export 間に別リクエストが
+            // 割り込んで誤った内容を kdl に焼く窓も消える、 Moody Blues PR-D review #3)。
+            let pf = crate::projects_file::ProjectsFile { projects: entries };
             pf.save().map_err(|e| {
                 CapabilityError::InitializationFailed(format!("projects.kdl export 失敗: {}", e))
             })

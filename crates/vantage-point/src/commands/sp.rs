@@ -77,10 +77,9 @@ fn sp_start(
     // 「起点 dir → SP」 のメンタルモデル: 全 SP 起動経路 (GUI / vp sp start 直 /
     // daemon spawn) がこの sp_start に収束するため、 ここ 1 点で漏れなく同期できる。
     //
-    // 注: daemon が複数 SP を並行 spawn する場合 (max_concurrent_lane_spawn > 1)、
-    // 各 vp sp start が projects.kdl を load → save するため write 競合がありうる。
-    // 現状 default=1 (sequential) なので実害なし。 並列化する際は projects.kdl への
-    // 排他制御 (file lock 等) を検討すること。
+    // PR-D: daemon 在なら notify_world_sync 経由で daemon 側 (DB) が直列化するため file lock 不要。
+    // daemon 不在フォールバック (kdl 直書き) 時のみ write 競合がありうるが、 現状
+    // default=1 (sequential) なので実害なし。 並列化時は daemon 経由を前提にする。
     // PR-D: 起点登録 + ghost 除去を daemon (db/world 真実源) 経由で。 daemon 不在は kdl フォールバック。
     let sync_outcome = match crate::world_client::notify_world_sync(Some(project_dir)) {
         Some(o) => Ok(o),

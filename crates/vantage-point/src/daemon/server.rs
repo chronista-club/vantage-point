@@ -165,10 +165,12 @@ async fn handle_world_control(
     method: &str,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    let world = world_cap.read().await;
+    // Moody Blues PR-D review #2: read guard を arm ごとに取り直し、 mutation の await 完了後に
+    // 即解放する (= 複数 Unison/HTTP リクエストが outer read guard を長時間共有しない)。
+    // 内部 mutation は ProcessManagerCapability の Arc<RwLock> field で直列化される。
     match method {
         "projects/list" => {
-            let list = world.list_projects().await;
+            let list = world_cap.read().await.list_projects().await;
             serde_json::to_value(&list).map_err(|e| e.to_string())
         }
         "projects/add" => {
@@ -178,14 +180,24 @@ async fn handle_world_control(
             let path = payload["path"]
                 .as_str()
                 .ok_or_else(|| "path is required".to_string())?;
-            let info = world.add_project(name, path).await.map_err(|e| e.to_string())?;
+            let info = world_cap
+                .read()
+                .await
+                .add_project(name, path)
+                .await
+                .map_err(|e| e.to_string())?;
             serde_json::to_value(&info).map_err(|e| e.to_string())
         }
         "projects/remove" => {
             let path = payload["path"]
                 .as_str()
                 .ok_or_else(|| "path is required".to_string())?;
-            world.remove_project(path).await.map_err(|e| e.to_string())?;
+            world_cap
+                .read()
+                .await
+                .remove_project(path)
+                .await
+                .map_err(|e| e.to_string())?;
             Ok(serde_json::json!({"status": "removed", "path": path}))
         }
         "projects/rename" => {
@@ -195,7 +207,12 @@ async fn handle_world_control(
             let name = payload["name"]
                 .as_str()
                 .ok_or_else(|| "name is required".to_string())?;
-            world.rename_project(path, name).await.map_err(|e| e.to_string())?;
+            world_cap
+                .read()
+                .await
+                .rename_project(path, name)
+                .await
+                .map_err(|e| e.to_string())?;
             Ok(serde_json::json!({"status": "renamed", "path": path, "name": name}))
         }
         "projects/set_enabled" => {
@@ -205,7 +222,9 @@ async fn handle_world_control(
             let enabled = payload["enabled"]
                 .as_bool()
                 .ok_or_else(|| "enabled is required".to_string())?;
-            world
+            world_cap
+                .read()
+                .await
                 .set_project_enabled(path, enabled)
                 .await
                 .map_err(|e| e.to_string())?;
@@ -214,7 +233,9 @@ async fn handle_world_control(
         "projects/reorder" => {
             let paths: Vec<String> = serde_json::from_value(payload["paths"].clone())
                 .map_err(|e| format!("paths is required (string array): {}", e))?;
-            world
+            world_cap
+                .read()
+                .await
                 .reorder_projects(&paths)
                 .await
                 .map_err(|e| e.to_string())?;

@@ -230,10 +230,10 @@ pub fn find_available_port() -> Option<u16> {
 /// 永続なので、project リスト変更でも既存 project の port は不変。project が
 /// 未登録なら `Err`（caller 側で `find_available_port` 等に fallback）。
 ///
-/// VP-188: slot の永続化先は projects.kdl (= `persist_projects_kdl`)。 旧実装は
-/// `config.save()` で config.toml に書いていたが、 projects SSOT が projects.kdl に
-/// 移行したため、 slot も projects.kdl に書く (= config.toml に書くと次回 load で
-/// projects.kdl が上書きして slot が消える)。
+/// PR-D (control plane 一元化): slot の永続化先は db/world。 新規割当を
+/// `world_client::notify_world_set_slot` で World daemon に通知し、 daemon が DB に書く。
+/// projects.kdl は World が DB から吐く読み取り専用ミラー。 daemon 不在時は warn のみ
+/// (port は正しく、 次回 SP 起動 / reconcile で同期)。
 pub fn sp_port_for_project(name: &str) -> Result<u16> {
     let mut config = Config::load().unwrap_or_default();
     let had_slot = config.resolve_slot_by_name(name).is_some();
