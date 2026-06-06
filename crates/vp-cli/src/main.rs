@@ -144,6 +144,10 @@ enum Commands {
     #[command(subcommand)]
     Port(commands::port::PortCommands),
 
+    /// 登録 project 管理 — World daemon に直接 Unison RPC (add/remove/rename/enable/disable/reorder/list)
+    #[command(subcommand)]
+    Projects(commands::projects::ProjectsCommands),
+
     /// vp-app GUI 管理 (Mac 主軸切替: Rust + wry + xterm.js + creo-ui)
     #[command(subcommand)]
     App(commands::app::AppCommands),
@@ -325,6 +329,12 @@ fn main() -> Result<()> {
 
         Commands::Lane(cmd) => execute_lane(cmd),
         Commands::Port(cmd) => commands::port::execute(cmd),
+        Commands::Projects(cmd) => {
+            // projects 操作は World daemon に直接 Unison RPC (async)。 auth/wire/flow と同じ
+            // per-command Runtime で block_on する。
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(commands::projects::execute(cmd))
+        }
         Commands::App(cmd) => commands::app::execute(cmd),
         Commands::Auth(cmd) => {
             // Wire / Flow と同じ pattern — async handler を per-command Runtime で block_on
