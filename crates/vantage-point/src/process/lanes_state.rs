@@ -35,6 +35,13 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 /// Lane の種別 (memory rule: HD/TH を起動する Lane だけ)
+///
+/// **互換注意 (conductor/performer rename 2026-06-07)**: serde は新名 `"conductor"`/
+/// `"performer"` のみ受理する。旧名 `"lead"`/`"wing"` の後方互換受理は
+/// [`LanePool::parse_address`] (address string path) と vp-app の `From<&LaneAddressWire>`
+/// (wire IPC path) に**限定**される (LanePool は in-memory only で JSON 永続化しないため
+/// この型直接の deserialize 経路は無い)。将来この型を JSON 永続化する経路を新設する場合は
+/// `#[serde(alias = "lead")]` 等を追加すること。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LaneKind {
@@ -800,6 +807,17 @@ mod tests {
         assert!(LanePool::parse_address("vp/performer/").is_none()); // performer name 空
         // 旧 "worker" token は受理しない
         assert!(LanePool::parse_address("vp/worker/foo").is_none());
+
+        // 後方互換: conductor/performer rename 前の "lead"/"wing" address も受理する
+        // (既存 session.json の active lane / 既存 wire address を orphan にしないため)
+        assert_eq!(
+            LanePool::parse_address("vp/lead").unwrap(),
+            LaneAddress::conductor("vp")
+        );
+        assert_eq!(
+            LanePool::parse_address("vp/wing/bar").unwrap(),
+            LaneAddress::performer("vp", "bar")
+        );
     }
 
     // ========================================================================

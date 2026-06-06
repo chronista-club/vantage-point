@@ -254,6 +254,25 @@ mod tests {
     }
 
     #[test]
+    fn lane_address_from_wire_legacy_lead_wing_compat() {
+        // 後方互換: conductor/performer rename 前の "lead"/"wing" wire kind を解決する
+        let lead = LaneAddressWire {
+            project: "vp".into(),
+            kind: "lead".into(),
+            name: None,
+        };
+        assert_eq!(LaneAddress::from(&lead).kind, LaneKind::Conductor);
+        let wing = LaneAddressWire {
+            project: "vp".into(),
+            kind: "wing".into(),
+            name: Some("foo".into()),
+        };
+        let addr = LaneAddress::from(&wing);
+        assert_eq!(addr.kind, LaneKind::Performer);
+        assert_eq!(addr.name.as_deref(), Some("foo"));
+    }
+
+    #[test]
     fn lane_address_from_wire_unknown_collapses_to_conductor() {
         // 情報損失の意図的契約: `LaneAddress` enum で表現できない kind は Conductor に折りたたむ。
         // raw kind 保持が必要なら `Wire::key()` 直接使用。

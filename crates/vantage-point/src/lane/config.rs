@@ -430,6 +430,23 @@ mod tests {
     }
 
     #[test]
+    fn load_config_falls_back_to_legacy_wing_files() {
+        // 後方互換: conductor/performer rename 前の `wing-files.kdl` を持つ repo を受理する
+        // (.vp 優先、 .claude も legacy fallback)
+        let tmp = test_dir("legacy-wing-files");
+        let _ = fs::create_dir_all(tmp.join(".vp"));
+        fs::write(tmp.join(".vp/wing-files.kdl"), r#"symlink ".env""#).unwrap();
+
+        let cfg = load_config(&tmp).unwrap();
+        assert_eq!(
+            cfg.symlinks,
+            vec![".env"],
+            ".vp/wing-files.kdl が legacy fallback として受理される"
+        );
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
     fn load_config_vp_path_explicit_does_not_merge_defaults() {
         // performer-files.kdl が宣言されている場合、 default は merge しない (= explicit override)
         let tmp = test_dir("explicit-no-merge");
