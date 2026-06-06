@@ -512,6 +512,12 @@ pub async fn run(
             "/api/world/projects/reload",
             post(world::world_reload_projects),
         )
+        .route("/api/world/projects/set_slot", post(world::world_set_slot))
+        .route(
+            "/api/world/projects/unassign_slot",
+            post(world::world_unassign_slot),
+        )
+        .route("/api/world/projects/sync", post(world::world_sync_projects))
         .route("/api/world/processes", get(world::world_list_processes))
         .route("/api/world/lanes", get(world::world_list_lanes))
         .route(
@@ -958,6 +964,12 @@ pub async fn run_world(
             "/api/world/projects/reload",
             post(world::world_reload_projects),
         )
+        .route("/api/world/projects/set_slot", post(world::world_set_slot))
+        .route(
+            "/api/world/projects/unassign_slot",
+            post(world::world_unassign_slot),
+        )
+        .route("/api/world/projects/sync", post(world::world_sync_projects))
         .route("/api/world/processes", get(world::world_list_processes))
         .route("/api/world/lanes", get(world::world_list_lanes))
         .route(
@@ -1033,11 +1045,11 @@ pub async fn run_world(
     // Phase 1b: lane_registry も共有 (SP register の lanes payload を cache する)
     let lane_registry_ref = world_cap.read().await.lane_registry_ref();
     let daemon_state = std::sync::Arc::new(
-        crate::daemon::server::DaemonState::new().with_running_processes(
-            running_processes_ref,
-            projects_ref,
-            lane_registry_ref,
-        ),
+        crate::daemon::server::DaemonState::new()
+            .with_running_processes(running_processes_ref, projects_ref, lane_registry_ref)
+            // control plane 一元化: world_cap (= HTTP AppState.world と同一 Arc) を共有し、
+            // Unison "world-control" channel から projects mutation を受けられるようにする。
+            .with_world_cap(world_cap.clone()),
     );
     let daemon_handle = tokio::spawn(crate::daemon::server::start_daemon_server(
         daemon_state,

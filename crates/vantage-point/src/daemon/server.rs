@@ -61,6 +61,13 @@ pub struct DaemonState {
     /// `send_event` で push する経路。 capacity 64 = SP 同時 register が短時間に集中しても
     /// drop しない buffer (= 既存 system_event_tx と同サイズ)。
     pub process_lifecycle_tx: tokio::sync::broadcast::Sender<ProcessLifecycleEvent>,
+    /// projects 操作の権威 (= CLI → World 直接 Unison "world-control" channel の data plane)。
+    ///
+    /// HTTP `routes/world.rs` と同一の `ProcessManagerCapability` 実体を Arc 共有し、
+    /// add/remove/rename/set_enabled/reorder/list を Unison 経由でも受ける。
+    /// control plane 一元化 (creo `mem_1CbmWjCGNi9z49s3r21TwQ`): projects は World 権威なので
+    /// CLI は SP を経由せず World daemon に直接 Unison RPC する (= projects.kdl 共有メモリの置換)。
+    pub world_cap: Option<Arc<RwLock<crate::capability::ProcessManagerCapability>>>,
 }
 
 impl Default for DaemonState {
@@ -75,6 +82,7 @@ impl Default for DaemonState {
             projects: None,
             lane_registry: None,
             process_lifecycle_tx,
+            world_cap: None,
         }
     }
 }
@@ -96,6 +104,18 @@ impl DaemonState {
         self.running_processes = Some(running_processes);
         self.projects = Some(projects);
         self.lane_registry = Some(lane_registry);
+        self
+    }
+
+    /// projects 操作の権威 (`ProcessManagerCapability`) を共有する。
+    ///
+    /// HTTP `AppState.world` と同一の Arc を渡すことで、 Unison "world-control" channel から
+    /// 受けた projects mutation を HTTP と同じ実体に反映する (= 入口は複数でも権威は 1 つ)。
+    pub fn with_world_cap(
+        mut self,
+        world_cap: Arc<RwLock<crate::capability::ProcessManagerCapability>>,
+    ) -> Self {
+        self.world_cap = Some(world_cap);
         self
     }
 }
@@ -128,6 +148,101 @@ fn validate_shell_cmd(shell_cmd: &str) -> Result<(), NetworkError> {
         )));
     }
     Ok(())
+}
+
+// =========================================================================
+// World Control Channel ハンドラー（projects mutation: CLI → World 直接 Unison）
+// =========================================================================
+
+/// "world-control" channel の method を `ProcessManagerCapability` に dispatch する。
+///
+/// HTTP `routes/world.rs` と同じ `world_cap` メソッドを呼ぶため、 永続化 (db/world) や
+/// project_order 管理ロジックは共有される (= 二重実装を避ける)。 戻り値は成功時 result JSON、
+/// 失敗時は `Err(String)`。 caller は Unison の慣習 (VP-163) に従い success frame に
+/// `{"error": ...}` を詰めて返す (= Unison は専用 error frame を持たない)。
+async fn handle_world_control(
+    world_cap: &Arc<RwLock<crate::capability::ProcessManagerCapability>>,
+    method: &str,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    // Moody Blues PR-D review #2: read guard を arm ごとに取り直し、 mutation の await 完了後に
+    // 即解放する (= 複数 Unison/HTTP リクエストが outer read guard を長時間共有しない)。
+    // 内部 mutation は ProcessManagerCapability の Arc<RwLock> field で直列化される。
+    match method {
+        "projects/list" => {
+            let list = world_cap.read().await.list_projects().await;
+            serde_json::to_value(&list).map_err(|e| e.to_string())
+        }
+        "projects/add" => {
+            let name = payload["name"]
+                .as_str()
+                .ok_or_else(|| "name is required".to_string())?;
+            let path = payload["path"]
+                .as_str()
+                .ok_or_else(|| "path is required".to_string())?;
+            let info = world_cap
+                .read()
+                .await
+                .add_project(name, path)
+                .await
+                .map_err(|e| e.to_string())?;
+            serde_json::to_value(&info).map_err(|e| e.to_string())
+        }
+        "projects/remove" => {
+            let path = payload["path"]
+                .as_str()
+                .ok_or_else(|| "path is required".to_string())?;
+            world_cap
+                .read()
+                .await
+                .remove_project(path)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({"status": "removed", "path": path}))
+        }
+        "projects/rename" => {
+            let path = payload["path"]
+                .as_str()
+                .ok_or_else(|| "path is required".to_string())?;
+            let name = payload["name"]
+                .as_str()
+                .ok_or_else(|| "name is required".to_string())?;
+            world_cap
+                .read()
+                .await
+                .rename_project(path, name)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({"status": "renamed", "path": path, "name": name}))
+        }
+        "projects/set_enabled" => {
+            let path = payload["path"]
+                .as_str()
+                .ok_or_else(|| "path is required".to_string())?;
+            let enabled = payload["enabled"]
+                .as_bool()
+                .ok_or_else(|| "enabled is required".to_string())?;
+            world_cap
+                .read()
+                .await
+                .set_project_enabled(path, enabled)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({"status": "ok", "path": path, "enabled": enabled}))
+        }
+        "projects/reorder" => {
+            let paths: Vec<String> = serde_json::from_value(payload["paths"].clone())
+                .map_err(|e| format!("paths is required (string array): {}", e))?;
+            world_cap
+                .read()
+                .await
+                .reorder_projects(&paths)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({"status": "reordered", "count": paths.len()}))
+        }
+        other => Err(format!("不明なメソッド: world-control.{}", other)),
+    }
 }
 
 // =========================================================================
@@ -1284,6 +1399,52 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
             .await;
     }
 
+    // World Control Channel（projects mutation: CLI → World 直接 Unison）
+    //
+    // control plane 一元化: projects は World 権威 (db/world) なので、 CLI は SP を経由せず
+    // World daemon に直接 Unison RPC する。 registry (SP 自己登録専用) とは責務を分離した
+    // 別 channel にする。 world_cap 不在 (= 非 World mode) なら登録しない。
+    if let Some(ref world_cap) = state.world_cap {
+        let world_cap = world_cap.clone();
+        server
+            .register_channel("world-control", {
+                move |_ctx, stream| {
+                    let world_cap = world_cap.clone();
+                    async move {
+                        let channel = UnisonChannel::new(stream);
+                        loop {
+                            let msg = match channel.recv().await {
+                                Ok(msg) => msg,
+                                Err(_) => break, // 切断
+                            };
+                            if msg.msg_type != MessageType::Request {
+                                continue;
+                            }
+                            let payload = msg.payload_as_value().unwrap_or_default();
+                            let method = msg.method.clone();
+                            let request_id = msg.id;
+                            // 成功時 result JSON、 失敗時は success frame に {"error": ...}
+                            // を詰める (= Unison は専用 error frame を持たない、 VP-163 慣習)。
+                            let response =
+                                match handle_world_control(&world_cap, &method, payload).await {
+                                    Ok(v) => v,
+                                    Err(e) => serde_json::json!({ "error": e }),
+                                };
+                            if channel
+                                .send_response(request_id, &method, &response)
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                        Ok(())
+                    }
+                }
+            })
+            .await;
+    }
+
     // サーバー起動
     // VP-185: listen は内部で QuicServer::new() (= cert なし固定) を使うため、
     // CertSource を明示するには QuicServer::builder 経由が必須。 daemon は shutdown
@@ -1308,6 +1469,72 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
 mod tests {
     use super::*;
     use std::sync::Arc;
+
+    // =====================================================================
+    // World Control Channel — projects mutation dispatch (handle_world_control)
+    //
+    // QUIC server を立てず handler 関数を直接呼ぶ Small test。 dispatch が
+    // ProcessManagerCapability を正しく叩き、 in-memory 状態に反映されることを検証する。
+    // (DB 真実源化は PR-C、 ここでは vpdb=None なので persist は projects.kdl no-op)
+    // =====================================================================
+
+    fn new_world_cap() -> Arc<RwLock<crate::capability::ProcessManagerCapability>> {
+        Arc::new(RwLock::new(
+            crate::capability::ProcessManagerCapability::new(),
+        ))
+    }
+
+    #[tokio::test]
+    async fn world_control_add_list_remove() {
+        let cap = new_world_cap();
+        // add_project は path.is_dir() を要求するので実在 dir (temp_dir) を使う
+        let path = std::env::temp_dir().to_string_lossy().to_string();
+
+        // add → 追加された ProjectInfo が返る
+        let added = handle_world_control(
+            &cap,
+            "projects/add",
+            serde_json::json!({"name": "wc-test", "path": path}),
+        )
+        .await
+        .expect("add ok");
+        assert_eq!(added["name"], "wc-test");
+
+        // list に反映される
+        let list = handle_world_control(&cap, "projects/list", serde_json::json!({}))
+            .await
+            .expect("list ok");
+        let arr = list.as_array().expect("list is array");
+        assert!(
+            arr.iter().any(|p| p["name"] == "wc-test"),
+            "added project が list に出る"
+        );
+
+        // remove (add と同じ path → 同じ正規化キーで削除)
+        handle_world_control(&cap, "projects/remove", serde_json::json!({"path": path}))
+            .await
+            .expect("remove ok");
+        let list2 = handle_world_control(&cap, "projects/list", serde_json::json!({}))
+            .await
+            .expect("list ok");
+        assert!(list2.as_array().unwrap().is_empty(), "remove 後は空になる");
+    }
+
+    #[tokio::test]
+    async fn world_control_unknown_method_errors() {
+        let cap = new_world_cap();
+        let r = handle_world_control(&cap, "projects/bogus", serde_json::json!({})).await;
+        assert!(r.is_err(), "未知 method は Err");
+    }
+
+    #[tokio::test]
+    async fn world_control_add_missing_field_errors() {
+        let cap = new_world_cap();
+        // name 欠落 → Err
+        let r =
+            handle_world_control(&cap, "projects/add", serde_json::json!({"path": "/tmp"})).await;
+        assert!(r.is_err(), "name 欠落は Err");
+    }
 
     #[test]
     fn test_daemon_state_new() {

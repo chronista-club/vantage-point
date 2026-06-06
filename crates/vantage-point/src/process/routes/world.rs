@@ -325,6 +325,93 @@ pub async fn world_reorder_projects(
     }
 }
 
+/// slot 設定リクエスト (PR-D: CLI の slot 永続化を daemon 経由に)
+#[derive(serde::Deserialize)]
+pub struct SetSlotRequest {
+    pub path: String,
+    pub slot: u16,
+}
+
+/// POST /api/world/projects/set_slot - project の slot を設定 (db/world に永続化)
+pub async fn world_set_slot(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<SetSlotRequest>,
+) -> impl IntoResponse {
+    let Some(world) = &state.world else {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "World not available"})),
+        );
+    };
+    let world = world.read().await;
+    match world.set_project_slot(&req.path, req.slot).await {
+        Ok(()) => (
+            axum::http::StatusCode::OK,
+            Json(serde_json::json!({"status": "ok", "path": req.path, "slot": req.slot})),
+        ),
+        Err(e) => (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": e.to_string()})),
+        ),
+    }
+}
+
+/// POST /api/world/projects/unassign_slot - project の slot を解除
+pub async fn world_unassign_slot(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<RemoveProjectRequest>,
+) -> impl IntoResponse {
+    let Some(world) = &state.world else {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "World not available"})),
+        );
+    };
+    let world = world.read().await;
+    match world.unset_project_slot(&req.path).await {
+        Ok(()) => (
+            axum::http::StatusCode::OK,
+            Json(serde_json::json!({"status": "unassigned", "path": req.path})),
+        ),
+        Err(e) => (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": e.to_string()})),
+        ),
+    }
+}
+
+/// projects 同期リクエスト (PR-D: CLI の ghost 除去 + 起点登録を daemon 経由に)
+#[derive(serde::Deserialize)]
+pub struct SyncProjectsRequest {
+    /// 起点 dir (Some なら登録)。 null なら ghost 除去のみ。
+    #[serde(default)]
+    pub start_dir: Option<String>,
+}
+
+/// POST /api/world/projects/sync - 起点 dir 登録 + ghost 除去 (db/world に永続化)
+pub async fn world_sync_projects(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<SyncProjectsRequest>,
+) -> impl IntoResponse {
+    let Some(world) = &state.world else {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "World not available"})),
+        );
+    };
+    let world = world.read().await;
+    match world.sync_projects(req.start_dir.as_deref()).await {
+        Ok(outcome) => (
+            axum::http::StatusCode::OK,
+            Json(serde_json::json!({"added": outcome.added, "removed": outcome.removed})),
+        ),
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        ),
+    }
+}
+
 /// Process 自己登録リクエスト
 #[derive(serde::Deserialize)]
 pub struct RegisterRequest {

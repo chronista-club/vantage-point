@@ -89,6 +89,19 @@ impl ProjectsFile {
             .with_context(|| format!("projects.kdl パース失敗: {}", path.display()))
     }
 
+    /// kdl 文字列に serialize（path 非依存、 PoC: DB→projects.kdl 一方向 export 用）。
+    pub fn to_kdl(&self) -> Result<String> {
+        club_kdl::to_string_pretty(self).context("projects.kdl シリアライズ失敗")
+    }
+
+    /// kdl 文字列から parse（path 非依存、 PoC: 復旧 import 用）。 空文字は空 projects。
+    pub fn from_kdl(s: &str) -> Result<Self> {
+        if s.trim().is_empty() {
+            return Ok(Self::default());
+        }
+        club_kdl::from_str(s).context("projects.kdl パース失敗")
+    }
+
     /// projects.kdl に書き出す。 atomic write (temp → rename) で partial read を防ぐ。
     ///
     /// テスト環境では no-op (= 本番 `~/.config/vp/projects.kdl` の破壊防止)。

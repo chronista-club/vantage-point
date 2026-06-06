@@ -391,6 +391,115 @@ impl DaemonClient {
     }
 }
 
+/// World daemon の "world-control" channel だけを open する軽量クライアント。
+///
+/// control plane 一元化: projects は World 権威 (db/world) なので、 CLI は SP を経由せず
+/// World daemon に直接 Unison RPC する。 `DaemonClient::connect` は session/terminal/system を
+/// 必須 open するが、 one-shot CLI の projects 操作はそれらが不要なので world-control のみ open する。
+pub struct WorldControlClient {
+    ch: UnisonChannel,
+    #[allow(dead_code)]
+    addr: String,
+}
+
+impl WorldControlClient {
+    /// World daemon に接続し world-control channel を open する（リトライ付き）。
+    pub async fn connect(port: u16, retries: u32) -> Result<Self> {
+        let addr = format!("[::1]:{}", port);
+        let transport = unison::network::quic::QuicClient::builder()
+            .trust_anchors(unison::network::TrustAnchors::SkipVerification)
+            .build()
+            .context("QUIC クライアントの作成に失敗")?;
+        let client = ProtocolClient::new(transport);
+
+        for attempt in 0..retries {
+            match client.connect(&addr).await {
+                Ok(_) => {
+                    let ch = client.open_channel("world-control").await.map_err(|e| {
+                        anyhow::anyhow!("world-control チャネルオープン失敗: {}", e)
+                    })?;
+                    return Ok(Self { ch, addr });
+                }
+                Err(_) if attempt < retries - 1 => {
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                }
+                Err(e) => {
+                    return Err(anyhow::anyhow!(
+                        "World daemon 接続失敗 ({}回リトライ後): {} - {}",
+                        retries,
+                        addr,
+                        e
+                    ));
+                }
+            }
+        }
+        anyhow::bail!("World daemon 接続失敗: {}", addr)
+    }
+
+    /// world-control method を呼ぶ。 Unison の error 慣習 (VP-163) に従い、 success frame の
+    /// `{"error": ...}` を `Err` 化する (= Unison は専用 error frame を持たない)。
+    async fn call(&self, method: &str, payload: serde_json::Value) -> Result<serde_json::Value> {
+        let resp = self
+            .ch
+            .request::<serde_json::Value, serde_json::Value>(method, &payload)
+            .await
+            .map_err(|e| anyhow::anyhow!("world-control.{} 失敗: {}", method, e))?;
+        if let Some(err) = resp.get("error").and_then(|e| e.as_str()) {
+            anyhow::bail!("{}", err);
+        }
+        Ok(resp)
+    }
+
+    /// 登録 project 一覧 (ProjectInfo の JSON 配列、 ord = sidebar 並び順)。
+    pub async fn projects_list(&self) -> Result<Vec<serde_json::Value>> {
+        let resp = self.call("projects/list", serde_json::json!({})).await?;
+        serde_json::from_value(resp).context("projects/list レスポンスのパースに失敗")
+    }
+
+    /// project を追加 (追加された ProjectInfo の JSON を返す)。
+    pub async fn projects_add(&self, name: &str, path: &str) -> Result<serde_json::Value> {
+        self.call(
+            "projects/add",
+            serde_json::json!({ "name": name, "path": path }),
+        )
+        .await
+    }
+
+    /// project を削除 (path で特定)。
+    pub async fn projects_remove(&self, path: &str) -> Result<()> {
+        self.call("projects/remove", serde_json::json!({ "path": path }))
+            .await?;
+        Ok(())
+    }
+
+    /// project 名を変更。
+    pub async fn projects_rename(&self, path: &str, name: &str) -> Result<()> {
+        self.call(
+            "projects/rename",
+            serde_json::json!({ "path": path, "name": name }),
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// project の SP 自動起動 enabled を設定。
+    pub async fn projects_set_enabled(&self, path: &str, enabled: bool) -> Result<()> {
+        self.call(
+            "projects/set_enabled",
+            serde_json::json!({ "path": path, "enabled": enabled }),
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// 並び順を変更 (path を順に列挙)。
+    pub async fn projects_reorder(&self, paths: &[String]) -> Result<()> {
+        self.call("projects/reorder", serde_json::json!({ "paths": paths }))
+            .await?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
