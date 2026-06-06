@@ -22,6 +22,9 @@ midi = ["dep:midir"]
 tokio = { workspace = true }
 async-trait = { workspace = true }
 
+# Path / zone 解決 (XDG SSOT、 vp-app と共有。 Stage 3 で config.rs から抽出)
+vp-paths = { path = "../vp-paths" }
+
 # Web server
 axum = { workspace = true, features = ["ws"] }
 tower-http = { workspace = true, features = ["fs", "cors"] }

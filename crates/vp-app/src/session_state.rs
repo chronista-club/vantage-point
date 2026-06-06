@@ -163,7 +163,7 @@ impl Default for SessionState {
 impl SessionState {
     /// 指定 instance の永続 file の絶対 path。
     pub fn path(instance_index: usize) -> Option<PathBuf> {
-        Some(crate::paths::vp_state_dir().join(session_file_name(instance_index)))
+        Some(vp_paths::vp_state_dir().join(session_file_name(instance_index)))
     }
 
     /// 指定 instance の session file を読み込む。 不在 / 壊れた JSON は default を返す
@@ -285,7 +285,7 @@ impl SessionState {
     /// state dir 内の `session.<N>.json` (N≥1) を走査し、 `open==true` のものを集める。
     /// 走査失敗 / file 不在は空 Vec (= secondary 無し)。 戻りは昇順。
     pub fn open_secondary_indices() -> Vec<usize> {
-        let dir = crate::paths::vp_state_dir();
+        let dir = vp_paths::vp_state_dir();
         let mut out: Vec<usize> = Vec::new();
         let Ok(rd) = std::fs::read_dir(&dir) else {
             return out;

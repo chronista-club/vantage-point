@@ -1252,7 +1252,7 @@ pub fn run() -> anyhow::Result<()> {
     let _log = crate::log_init::init_tracing();
 
     // VP-192: 旧 config/data パスからの冪等なデータ移行 (Settings/SessionState 読み込み前)
-    crate::paths::migrate_legacy_paths();
+    vp_paths::migrate_legacy_paths();
 
     let event_loop = EventLoopBuilder::<AppEvent>::with_user_event().build();
 

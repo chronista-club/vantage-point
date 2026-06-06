@@ -9749,6 +9749,7 @@ dependencies = [
  "url",
  "urlencoding",
  "uuid",
+ "vp-paths",
  "vte",
  "webbrowser",
  "windows 0.62.2",
@@ -9816,6 +9817,7 @@ dependencies = [
  "ts-rs",
  "urlencoding",
  "uuid",
+ "vp-paths",
  "wry",
 ]
 
@@ -9858,6 +9860,14 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "vp-paths"
+version = "0.21.0"
+dependencies = [
+ "dirs",
+ "tracing",
 ]
 
 [[package]]

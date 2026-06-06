@@ -1,0 +1,14 @@
+[package]
+name = "vp-paths"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "VP の config / data / state path 解決 (XDG Base Directory 準拠) — vantage-point と vp-app が共有する SSOT"
+
+[dependencies]
+# 軽量依存のみ (vp-app に重量 crate を持ち込まないための独立 crate)。
+dirs = "6"
+tracing = { workspace = true }
