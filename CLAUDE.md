@@ -77,6 +77,7 @@ vp-app (GUI: wry+tao)   vp (CLI)
 vantage-point/
 ├── crates/
 │   ├── vantage-point/   # server lib (TheWorld + SP の HTTP/WS server)
+│   ├── vp-paths/        # config/data/state path 解決 (XDG SSOT、 vantage-point + vp-app 共有)
 │   ├── vp-app/          # Rust GUI (wry + tao + xterm.js + creo-ui) — Mac 主軸 (2026-04-26 移行)
 │   ├── vp-cli/          # CLI binary (vp、 lane lib も内包)
 │   └── vp-mdast{,-wasm}/ # Markdown AST parser (+ wasm binding)
@@ -128,7 +129,7 @@ cargo clippy --workspace --all-targets    # Lint
 
 ## 設定・ポート
 
-- config / data / state パスは **XDG Base Directory 準拠の 3 zone に統一**（VP-189 / #460、全 OS 共通、ディレクトリ名は `vp`）。定義は `crates/vantage-point/src/config.rs`。
+- config / data / state パスは **XDG Base Directory 準拠の 3 zone に統一**（VP-189 / #460、全 OS 共通、ディレクトリ名は `vp`）。定義は **`crates/vp-paths`**（vantage-point + vp-app 共有の SSOT。`vantage_point::config` は `pub use vp_paths::{...}` で re-export、vp-app は直接依存）。
 
   | zone | env | default | 用途 |
   |------|-----|---------|------|

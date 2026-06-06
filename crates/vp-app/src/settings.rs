@@ -42,7 +42,7 @@ impl Settings {
     ///
     /// VP-192: vp-app.toml は設定ファイルなので `vp_config_dir()` 配下。
     pub fn path() -> Option<PathBuf> {
-        Some(crate::paths::vp_config_dir().join(SETTINGS_FILE))
+        Some(vp_paths::vp_config_dir().join(SETTINGS_FILE))
     }
 
     /// 設定ファイルを読み込む。存在しなければ `Default`。

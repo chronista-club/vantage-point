@@ -37,7 +37,6 @@ pub mod log_init;
 pub mod main_area;
 pub mod menu;
 pub mod pane;
-pub mod paths;
 /// Project add / clone ダイアログ (folder picker + git clone + TheWorld API)。 VP-194 R-3。
 pub mod project_dialog;
 pub mod session_state;
