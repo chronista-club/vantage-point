@@ -210,6 +210,102 @@ impl VpDb {
     }
 
     // =========================================================================
+    // Projects CRUD（PoC: VP-188 revert、 db/world 真実源 + projects.kdl 一方向 export）
+    // =========================================================================
+
+    /// 登録 project を UPSERT（path で一意）。 ord = sidebar 並び順。
+    pub async fn upsert_project(
+        &self,
+        path: &str,
+        name: &str,
+        enabled: Option<bool>,
+        slot: Option<u16>,
+        ord: i64,
+    ) -> Result<()> {
+        self.db
+            .query(
+                "INSERT INTO projects {
+                    path: $path,
+                    name: $name,
+                    enabled: $enabled,
+                    slot: $slot,
+                    ord: $ord
+                } ON DUPLICATE KEY UPDATE
+                    name = $input.name,
+                    enabled = $input.enabled,
+                    slot = $input.slot,
+                    ord = $input.ord",
+            )
+            .bind(("path", path.to_string()))
+            .bind(("name", name.to_string()))
+            .bind(("enabled", enabled))
+            .bind(("slot", slot.map(|s| s as i64)))
+            .bind(("ord", ord))
+            .await
+            .map_err(|e| anyhow::anyhow!("project upsert 失敗: {}", e))?
+            .check()
+            .map_err(|e| anyhow::anyhow!("project upsert エラー: {}", e))?;
+        Ok(())
+    }
+
+    /// 登録 project を削除（path で特定）。
+    pub async fn delete_project(&self, path: &str) -> Result<()> {
+        self.db
+            .query("DELETE FROM projects WHERE path = $path")
+            .bind(("path", path.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("project 削除失敗: {}", e))?
+            .check()
+            .map_err(|e| anyhow::anyhow!("project 削除エラー: {}", e))?;
+        Ok(())
+    }
+
+    /// 登録 project 一覧を ord 昇順（= sidebar 並び順）で取得。
+    pub async fn list_projects(&self) -> Result<Vec<serde_json::Value>> {
+        let mut result = self
+            .db
+            .query("SELECT * FROM projects ORDER BY ord ASC")
+            .await
+            .map_err(|e| anyhow::anyhow!("projects 取得失敗: {}", e))?;
+        let records: Vec<serde_json::Value> = result.take(0)?;
+        Ok(records)
+    }
+
+    /// DB の projects を ProjectEntry 列に export（ord 昇順、 PoC: 一方向 export）。
+    pub async fn export_projects(&self) -> Result<Vec<crate::projects_file::ProjectEntry>> {
+        let rows = self.list_projects().await?;
+        Ok(rows
+            .iter()
+            .map(|v| crate::projects_file::ProjectEntry {
+                name: v
+                    .get("name")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                path: v
+                    .get("path")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                enabled: v.get("enabled").and_then(|x| x.as_bool()),
+                slot: v.get("slot").and_then(|x| x.as_u64()).map(|n| n as u16),
+            })
+            .collect())
+    }
+
+    /// ProjectEntry 列を DB に import（出現順を ord に焼く、 PoC: 復旧用）。
+    pub async fn import_projects(
+        &self,
+        entries: &[crate::projects_file::ProjectEntry],
+    ) -> Result<()> {
+        for (i, e) in entries.iter().enumerate() {
+            self.upsert_project(&e.path, &e.name, e.enabled, e.slot, i as i64)
+                .await?;
+        }
+        Ok(())
+    }
+
+    // =========================================================================
     // Pane Contents CRUD（Canvas ペイン状態の永続化）
     // =========================================================================
 
@@ -455,8 +551,19 @@ DEFINE FIELD IF NOT EXISTS stands ON processes TYPE option<object> FLEXIBLE;
 DEFINE FIELD IF NOT EXISTS tmux_session ON processes TYPE option<string>;
 DEFINE INDEX IF NOT EXISTS idx_processes_path ON processes COLUMNS project_path UNIQUE;
 
--- VP-188: projects テーブルは撤去。 registered projects の SSOT は
--- ~/.config/vp/projects.kdl に移行 (crate::projects_file)。
+-- registered projects (PoC: VP-188 を revert し DB 真実源へ戻す)。
+-- 当時 council (2026-05-16) が file に逃した理由は VP-182 (surrealkv の OS 排他
+-- ロックで DB dir を分離 → DB dir 変更で projects 消失)。 本 PoC の仮説:
+--   ① projects を **World 専用 DB (db/world) に限定** すれば SP は触らず LOCK 衝突なし
+--   ② DB 消失耐性 + 人間可読性は projects.kdl への **一方向 export** で担保
+-- ord = sidebar 並び順 (projects.kdl の node 出現順を保持)。
+DEFINE TABLE IF NOT EXISTS projects SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS path ON projects TYPE string;
+DEFINE FIELD IF NOT EXISTS name ON projects TYPE string;
+DEFINE FIELD IF NOT EXISTS enabled ON projects TYPE option<bool>;
+DEFINE FIELD IF NOT EXISTS slot ON projects TYPE option<int>;
+DEFINE FIELD IF NOT EXISTS ord ON projects TYPE int DEFAULT 0;
+DEFINE INDEX IF NOT EXISTS idx_projects_path ON projects COLUMNS path UNIQUE;
 
 -- wiremsg R6: 旧 msgbox table (VP-169 以前の cross-process メッセージング) は撤去。
 -- agent 間通信は wiremsg (下記 wire_messages table) に一本化済。
