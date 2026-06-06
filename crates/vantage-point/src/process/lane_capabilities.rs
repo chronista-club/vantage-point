@@ -1,6 +1,6 @@
 //! Lane 階層 Stand container (LSCM、 doc 12 §3 / §9 / doc 13 §3 参照)
 //!
-//! Lane (Lead/Wing) あたり 1 instance、 SP per Project で host。 LSCM (Layer-Stand
+//! Lane (Conductor/Performer) あたり 1 instance、 SP per Project で host。 LSCM (Layer-Stand
 //! Composition Model) の **Lane Layer 実体** = "Lane が必要な Stand を抱える" の物理表現。
 //!
 //! ## host する Stand (target、 doc 12 §9 catalog)
@@ -46,7 +46,7 @@ use super::project_stands_state::PaisleyParkStand;
 /// Echoes / The Hand は mise task PtySlot 経由なので本 struct には host しない
 /// (`LanePool` の各 Lane entry の PtySlot で扱う、 doc 13 §10 Q-7 暫定確定)。
 pub struct LaneCapabilities {
-    /// Lane の identity (Lead / Wing、 project 名 + name)
+    /// Lane の identity (Conductor / Performer、 project 名 + name)
     pub address: LaneAddress,
 
     /// mise task 名 (例: `"echoes"` / `"shell"` / `"tmux"`、 PR-pre2 で `"hd"` → `"echoes"` rename)。
@@ -83,8 +83,8 @@ impl LaneCapabilities {
 
 /// Lane scope Stand pool — SP per Project で 1 instance、 各 Lane の `LaneCapabilities` を集約。
 ///
-/// PR-β-1 (VP-119) で空 HashMap 受け皿として新設、 PR-β-2 (VP-120) で `LanePool::with_lead`
-/// と `lane_spawn_actor` (Wing spawn 経路) から populate される lifecycle と sync。
+/// PR-β-1 (VP-119) で空 HashMap 受け皿として新設、 PR-β-2 (VP-120) で `LanePool::with_conductor`
+/// と `lane_spawn_actor` (Performer spawn 経路) から populate される lifecycle と sync。
 /// 既存 `LanePool` (`lanes_state.rs`) とは並立、 PR-δ-4 cleanup PR で整合性 review 予定。
 #[derive(Default)]
 pub struct LaneCapabilitiesPool {
@@ -103,7 +103,7 @@ impl LaneCapabilitiesPool {
 
     /// PR-β-2 (VP-120): Lane spawn 時に LaneCapabilities entry を populate。
     ///
-    /// `LanePool::with_lead` / `lane_spawn_actor` (Wing spawn) から呼ばれて、 Lane あたり
+    /// `LanePool::with_conductor` / `lane_spawn_actor` (Performer spawn) から呼ばれて、 Lane あたり
     /// 独立 PaisleyParkState を持つ entry を HashMap に挿入する。 同じ address で重複 insert
     /// した場合は overwrite (= idempotent、 restart / respawn 経路で安全)。
     pub fn populate_lane(&mut self, address: LaneAddress, stand: impl Into<String>) {
@@ -166,7 +166,7 @@ mod tests {
     #[test]
     fn lane_capabilities_new_populates_paisley_park() {
         // PR-δ-2 (VP-136): PP は registry 経由で host される (Lane あたり独立 instance)
-        let addr = LaneAddress::lead("vp");
+        let addr = LaneAddress::conductor("vp");
         let lc = LaneCapabilities::new(addr.clone(), "echoes");
 
         assert_eq!(lc.address, addr);
@@ -180,9 +180,9 @@ mod tests {
     }
 
     #[test]
-    fn lane_capabilities_with_wing_address() {
-        // Wing Lane でも独立 PaisleyParkStand で構築
-        let addr = LaneAddress::wing("vp", "feat-test");
+    fn lane_capabilities_with_performer_address() {
+        // Performer Lane でも独立 PaisleyParkStand で構築
+        let addr = LaneAddress::performer("vp", "feat-test");
         let lc = LaneCapabilities::new(addr.clone(), "shell");
 
         assert_eq!(lc.address, addr);
@@ -191,42 +191,42 @@ mod tests {
             lc.registry
                 .get_typed::<PaisleyParkStand>("paisley_park")
                 .is_some(),
-            "Wing Lane も独立 PaisleyParkStand を持つ"
+            "Performer Lane も独立 PaisleyParkStand を持つ"
         );
     }
 
     #[tokio::test]
     async fn lane_capabilities_pp_instances_are_independent() {
         // PR-β-2 (VP-120) cardinality 1 → N invariant、 PR-δ-2 (VP-136) registry 経由でも維持
-        let lead = LaneCapabilities::new(LaneAddress::lead("vp"), "echoes");
-        let wing = LaneCapabilities::new(LaneAddress::wing("vp", "sub"), "echoes");
+        let conductor = LaneCapabilities::new(LaneAddress::conductor("vp"), "echoes");
+        let performer = LaneCapabilities::new(LaneAddress::performer("vp", "sub"), "echoes");
 
-        let lead_pp = lead
+        let conductor_pp = conductor
             .registry
             .get_typed::<PaisleyParkStand>("paisley_park")
-            .expect("Lead PP");
-        let wing_pp = wing
+            .expect("Conductor PP");
+        let performer_pp = performer
             .registry
             .get_typed::<PaisleyParkStand>("paisley_park")
-            .expect("Wing PP");
+            .expect("Performer PP");
 
-        // Lead に content set しても Wing に伝播しないこと
-        lead_pp.state().write().await.content = Some("lead-canvas".to_string());
+        // Conductor に content set しても Performer に伝播しないこと
+        conductor_pp.state().write().await.content = Some("conductor-canvas".to_string());
 
         assert_eq!(
-            lead_pp.state().read().await.content.as_deref(),
-            Some("lead-canvas")
+            conductor_pp.state().read().await.content.as_deref(),
+            Some("conductor-canvas")
         );
         assert!(
-            wing_pp.state().read().await.content.is_none(),
-            "Wing PP は Lead PP と独立 (cross-Lane state share なし、 doc 12 A6)"
+            performer_pp.state().read().await.content.is_none(),
+            "Performer PP は Conductor PP と独立 (cross-Lane state share なし、 doc 12 A6)"
         );
     }
 
     #[test]
     fn lane_capabilities_registry_count_after_new() {
         // PR-δ-2 (VP-136): new() 直後の registry には PP 1 つだけ host されている
-        let lc = LaneCapabilities::new(LaneAddress::lead("vp"), "echoes");
+        let lc = LaneCapabilities::new(LaneAddress::conductor("vp"), "echoes");
         assert_eq!(
             lc.registry.count(),
             1,
@@ -246,11 +246,11 @@ mod tests {
     fn lane_capabilities_pool_populate_lane_inserts_entry() {
         // PR-β-2 (VP-120): populate_lane で entry 挿入、 PR-δ-2 (VP-136) で registry 経由 PP 確認
         let mut pool = LaneCapabilitiesPool::new();
-        let addr = LaneAddress::lead("vp");
+        let addr = LaneAddress::conductor("vp");
         pool.populate_lane(addr.clone(), "echoes");
 
         assert_eq!(pool.count(), 1);
-        let lc = pool.entries.get(&addr).expect("Lead entry 不在");
+        let lc = pool.entries.get(&addr).expect("Conductor entry 不在");
         assert_eq!(lc.stand, "echoes");
         assert!(
             lc.registry
@@ -264,7 +264,7 @@ mod tests {
     fn lane_capabilities_pool_populate_is_idempotent() {
         // PR-β-2 (VP-120): 同 address で 2 回 populate しても overwrite で 1 entry のまま
         let mut pool = LaneCapabilitiesPool::new();
-        let addr = LaneAddress::lead("vp");
+        let addr = LaneAddress::conductor("vp");
         pool.populate_lane(addr.clone(), "echoes");
         pool.populate_lane(addr.clone(), "shell"); // restart 経路想定
 
@@ -277,7 +277,7 @@ mod tests {
     fn lane_capabilities_pool_remove_lane() {
         // PR-β-2 (VP-120): cascade lifecycle = Lane destroy で entry も削除
         let mut pool = LaneCapabilitiesPool::new();
-        let addr = LaneAddress::lead("vp");
+        let addr = LaneAddress::conductor("vp");
         pool.populate_lane(addr.clone(), "echoes");
 
         let removed = pool.remove_lane(&addr);
@@ -301,7 +301,7 @@ mod tests {
     /// 両 Stand が typed access 可能。
     #[test]
     fn lane_capabilities_hosts_pp_and_mock_b_simultaneously() {
-        let mut lc = LaneCapabilities::new(LaneAddress::lead("vp"), "echoes");
+        let mut lc = LaneCapabilities::new(LaneAddress::conductor("vp"), "echoes");
         assert_eq!(
             lc.registry.count(),
             1,
@@ -333,7 +333,7 @@ mod tests {
     /// MockStandB.value() を変化させない、 cross-Stand state share なし (doc 12 A6 整合)。
     #[tokio::test]
     async fn lane_capabilities_pp_and_mock_b_states_are_independent() {
-        let mut lc = LaneCapabilities::new(LaneAddress::lead("vp"), "echoes");
+        let mut lc = LaneCapabilities::new(LaneAddress::conductor("vp"), "echoes");
         lc.registry.insert(Arc::new(MockStandB::new()));
 
         let pp = lc
@@ -376,8 +376,8 @@ mod tests {
     /// MockStandB でも成立)、 PR-β-2 PP 独立性 invariant の generic 拡張。
     #[test]
     fn lane_capabilities_mock_b_independent_per_lane() {
-        let mut lane_a = LaneCapabilities::new(LaneAddress::lead("vp"), "echoes");
-        let mut lane_b = LaneCapabilities::new(LaneAddress::wing("vp", "sub"), "echoes");
+        let mut lane_a = LaneCapabilities::new(LaneAddress::conductor("vp"), "echoes");
+        let mut lane_b = LaneCapabilities::new(LaneAddress::performer("vp", "sub"), "echoes");
 
         lane_a.registry.insert(Arc::new(MockStandB::new()));
         lane_b.registry.insert(Arc::new(MockStandB::new()));
@@ -409,7 +409,7 @@ mod tests {
     /// PR-δ-1 `registry_remove_does_not_affect_other_stands` の Lane lifecycle 版。
     #[test]
     fn lane_capabilities_remove_mock_b_keeps_pp() {
-        let mut lc = LaneCapabilities::new(LaneAddress::lead("vp"), "echoes");
+        let mut lc = LaneCapabilities::new(LaneAddress::conductor("vp"), "echoes");
         lc.registry.insert(Arc::new(MockStandB::new()));
         assert_eq!(lc.registry.count(), 2, "insert 後は 2 Stand");
 

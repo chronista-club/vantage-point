@@ -65,7 +65,7 @@ export const DIRECTIVE_TABLE: Record<string, DirectiveEntry> = {
     semantic: 'focus-preserving',
   },
   n: {
-    description: 'active project の AddWing form を keyboard で open',
+    description: 'active project の AddPerformer form を keyboard で open',
     semantic: 'focus-transferring',
   },
   s: {

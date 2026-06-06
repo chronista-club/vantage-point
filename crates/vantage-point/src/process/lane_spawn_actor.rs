@@ -3,7 +3,7 @@
 //!
 //! ## 背景 (I-b、 2026-04-30)
 //!
-//! 従来 SP 起動時に Wing N 本を **直列 sync ループ** で spawn していた。 内部の
+//! 従来 SP 起動時に Performer N 本を **直列 sync ループ** で spawn していた。 内部の
 //! `spawn_with_fallback` が `EARLY_EXIT_CHECK_MS = 800ms` の `std::thread::sleep` で
 //! executor を block するため、 N 本で `800ms × N` の累積待ち → SP の axum listen
 //! ready が遅延する設計上の問題があった。
@@ -22,7 +22,7 @@
 //!
 //! ## wiremsg R4 (group B 移行、 2026-05-21) — recv path を wire accumulation に rewire
 //!
-//! 旧 `WhitesnakeStore.claim("lane-spawn", "lead", consumer_id)` の 100ms polling を廃止し、
+//! 旧 `WhitesnakeStore.claim("lane-spawn", "conductor", consumer_id)` の 100ms polling を廃止し、
 //! wire accumulation (`WiremsgStore`) の per-agent cursor recv に切替。 actor は
 //! `lane-spawn@<project>` を wire address として `WiremsgStore::recv` し、 `WireNotifier`
 //! の long-poll で起床する。 producer (= `sp-bootstrap`) も `WiremsgStore::send_root` +
@@ -91,7 +91,7 @@ const IDLE_POLL: Duration = Duration::from_secs(5);
 /// SP-local Service (= 1 Project per Process)、 mailbox handle + dependencies を保持し、
 /// `spawn(shutdown)` で background recv loop を `tokio::spawn` 起動する。
 ///
-/// PR-β-2 (VP-120): `lane_capabilities_pool: Option<...>` で Wing spawn 成功時に
+/// PR-β-2 (VP-120): `lane_capabilities_pool: Option<...>` で Performer spawn 成功時に
 /// `populate_lane` を呼び、 Lane あたり独立 PaisleyParkState を host する。
 pub struct LaneSpawnActor {
     /// wiremsg R4: wire accumulation store (= 旧 `WhitesnakeStore` から rewire)
@@ -254,7 +254,7 @@ impl SpawnableService for LaneSpawnActor {
 /// 単一 `LaneCmd` を処理。 Semaphore permit を acquire してから heavy spawn を実行。
 ///
 /// PR-β-2 (VP-120): `lane_capabilities_pool` 引数 (Option) を追加、 spawn 成功時に
-/// `populate_lane` を呼んで Wing Lane あたり独立 PaisleyParkState を host する。
+/// `populate_lane` を呼んで Performer Lane あたり独立 PaisleyParkState を host する。
 async fn handle_cmd(
     cmd: LaneCmd,
     pool: Arc<RwLock<LanePool>>,
@@ -269,7 +269,7 @@ async fn handle_cmd(
         stand,
     } = cmd;
 
-    let addr = LaneAddress::wing(&project_id, &name);
+    let addr = LaneAddress::performer(&project_id, &name);
 
     // 早期 skip: permit 待つ前に既存 entry を check (= 手動 create と被った時の無駄 acquire 削減)
     {
@@ -370,7 +370,7 @@ async fn handle_cmd(
     // を再 check し、 lost race なら spawn 済 slot を drop して zombie reap。
     let info = LaneInfo {
         address: addr.clone(),
-        kind: LaneKind::Wing,
+        kind: LaneKind::Performer,
         name: Some(name),
         state,
         stand: stand.clone(),
@@ -378,7 +378,7 @@ async fn handle_cmd(
         pid,
         cwd,
         // 起動時点では git 状態取得しない (list_handler 側で必要時に enrich)。
-        wing_status: None,
+        performer_status: None,
         // Phase 1e: spawn 成功時のみ tmux address を populate
         tmux: if matches!(state, super::lanes_state::LaneState::Running) {
             vec![super::lanes_state::TmuxLaneAddress::for_spawn(
@@ -398,13 +398,13 @@ async fn handle_cmd(
         return;
     }
     if let Some((slot, term_rx)) = slot_rx_opt {
-        // Stage 1 (ADR-0001): TermAttach も同時に spawn (race フリー、 Lead 経路と統一)
+        // Stage 1 (ADR-0001): TermAttach も同時に spawn (race フリー、 Conductor 経路と統一)
         pool_write.insert_pty_slot(addr.clone(), slot, term_rx);
     }
     pool_write.insert(info.clone());
     drop(pool_write); // write lock 解放してから publish (deadlock 回避 + subscriber が即取れる)
 
-    // Wing Lane spawn 完了 → LaneCapabilities pool に entry 追加
+    // Performer Lane spawn 完了 → LaneCapabilities pool に entry 追加
     // (Lane あたり独立 PaisleyParkState を host、 doc 13 §6 自動 spawn rule = default)。
     // None は World mode (Lane scope なし) で発生、 SP mode では常に Some。
     // Dead state では populate しない (cascade lifecycle、 上の tmux: vec![] と同型 guard)。
@@ -413,13 +413,13 @@ async fn handle_cmd(
     {
         lc_pool.write().await.populate_lane(addr.clone(), &stand);
         tracing::debug!(
-            "LaneCapabilities pool に Wing Lane populate (addr={}, stand={})",
+            "LaneCapabilities pool に Performer Lane populate (addr={}, stand={})",
             addr,
             stand
         );
     }
 
-    // Phase 2 (Step E): Wing spawn 完了を SystemEvent::Lane(Diff::Add) で TheWorld に push。
+    // Phase 2 (Step E): Performer spawn 完了を SystemEvent::Lane(Diff::Add) で TheWorld に push。
     // QUIC registry channel 経由で realtime sync。 失敗は warn のみ (best-effort、
     // SP lane_pool が SSOT、 reconnect 時に register snapshot で必ず再構築される)。
     if let Err(e) = system_event_tx.send(SystemEvent::Lane(Diff::Add { payload: info })) {

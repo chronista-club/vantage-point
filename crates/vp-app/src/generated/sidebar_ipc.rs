@@ -53,7 +53,7 @@ pub struct LaneRestart {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LaneAddWing {
+pub struct LaneAddPerformer {
     pub path: String,
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -112,8 +112,8 @@ pub enum IpcEnvelope {
     LaneDelete(LaneDelete),
     #[serde(rename = "lane:restart")]
     LaneRestart(LaneRestart),
-    #[serde(rename = "lane:add_wing")]
-    LaneAddWing(LaneAddWing),
+    #[serde(rename = "lane:add_performer")]
+    LaneAddPerformer(LaneAddPerformer),
     #[serde(rename = "stands:fetch")]
     StandsFetch(StandsFetch),
     #[serde(rename = "stand:select")]

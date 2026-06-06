@@ -87,7 +87,7 @@ impl PtySlot {
         }
         // PATH 補正: vp-app (.app) を GUI / launchd 経由で起動すると、 子プロセスの PATH が
         // `/usr/bin:/bin:/usr/sbin:/sbin` の最小集合になり、 user-installed tool (特に mise、
-        // lead lane = `mise run vp:stand:echoes` の program) を見つけられず spawn が失敗 →
+        // conductor lane = `mise run vp:stand:echoes` の program) を見つけられず spawn が失敗 →
         // lane が即 Dead 化 → Echoes コンソールが出ない、 という症状の根因になる。
         // 既知の user tool location を base PATH の先頭に前置して解決する。
         // base は caller env の PATH (あれば) → なければ親プロセスの PATH。

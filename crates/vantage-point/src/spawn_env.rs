@@ -5,7 +5,7 @@
 //! vp-app (`.app`) を GUI / launchd / Dock 経由で起動すると、 プロセスの PATH が
 //! `/usr/bin:/bin:/usr/sbin:/sbin` の最小集合になる。 この痩せた PATH は spawn chain
 //! (vp-app → daemon → SP → mise → tmux → claude) を伝播し、 user-installed tool
-//! (特に `mise`、 lead lane = `mise run vp:stand:echoes` の program) を見つけられず
+//! (特に `mise`、 conductor lane = `mise run vp:stand:echoes` の program) を見つけられず
 //! spawn が失敗 → lane が即 Dead 化 → Echoes コンソールが出ない、 という症状の根因になる。
 //!
 //! ## 方針 — 補正は「spawn の最上流」で一度

@@ -190,12 +190,12 @@ pub struct SwitchLaneParams {
     pub lane: String,
 }
 
-/// Parameters for the add_wing tool (R5: lane clone + Wing Lane spawn).
+/// Parameters for the add_performer tool (R5: lane clone + Performer Lane spawn).
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
-pub struct AddWingParams {
-    /// Wing name. Used as the `name` field of the Lane address (`<project>/wing/<name>`).
+pub struct AddPerformerParams {
+    /// Performer name. Used as the `name` field of the Lane address (`<project>/performer/<name>`).
     #[schemars(
-        description = "Wing name (人間可読の短い slug、 例: 'feat-api', 'sub'). Lane address の `<project>/wing/<name>` 部分になる。"
+        description = "Performer name (人間可読の短い slug、 例: 'feat-api', 'sub'). Lane address の `<project>/performer/<name>` 部分になる。"
     )]
     pub name: String,
     /// Optional branch. If omitted, server auto-derives `<git-user>/<sanitized-name>`.
@@ -210,12 +210,12 @@ pub struct AddWingParams {
     pub stand: Option<String>,
 }
 
-/// Parameters for the delete_wing tool (VP-124 Phase 1).
+/// Parameters for the delete_performer tool (VP-124 Phase 1).
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
-pub struct DeleteWingParams {
-    /// Wing name to delete.
+pub struct DeletePerformerParams {
+    /// Performer name to delete.
     #[schemars(
-        description = "Wing name to delete (例: 'keystage', 'feat-api')。 Lane address の `<project>/wing/<name>` の `<name>` 部分。"
+        description = "Performer name to delete (例: 'keystage', 'feat-api')。 Lane address の `<project>/performer/<name>` の `<name>` 部分。"
     )]
     pub name: String,
 
@@ -231,7 +231,9 @@ pub struct DeleteWingParams {
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ListLanesParams {
     /// Lane kind filter.
-    #[schemars(description = "Lane kind フィルタ: 'lead' or 'wing'。 省略時は両方含む。")]
+    #[schemars(
+        description = "Lane kind フィルタ: 'conductor' or 'performer'。 省略時は両方含む。"
+    )]
     #[serde(default)]
     pub kind: Option<String>,
 
@@ -245,13 +247,13 @@ pub struct ListLanesParams {
 
 /// Parameters for the flow_handoff tool (dev-flow primitive: handoff in 1 call)
 ///
-/// P4 (= 3-step orchestration: add_wing + wire_send + tmux send-keys) を atomic 1 step に圧縮する。
-/// 失敗時は wing 削除で rollback、 dirty state を残さない。
+/// P4 (= 3-step orchestration: add_performer + wire_send + tmux send-keys) を atomic 1 step に圧縮する。
+/// 失敗時は performer 削除で rollback、 dirty state を残さない。
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct FlowHandoffParams {
-    /// Wing name (新規作成する wing の slug)
+    /// Performer name (新規作成する performer の slug)
     #[schemars(
-        description = "Wing name (例: 'feat-api', 'sub')。 Lane address の `<project>/wing/<name>` 部分。"
+        description = "Performer name (例: 'feat-api', 'sub')。 Lane address の `<project>/performer/<name>` 部分。"
     )]
     pub name: String,
 
@@ -459,43 +461,43 @@ pub struct TmuxAgentSendParams {
 ///
 /// この `vp mcp` プロセスが属する Lane (VP-166 PR-4)。
 ///
-/// cwd から判定する: cwd が `<repo>/.vp/lanes/<name>` 以下なら wing `<name>`、
-/// それ以外（= repo path）なら lead。`wire_send` / `wire_recv` の `from` 導出 /
+/// cwd から判定する: cwd が `<repo>/.vp/lanes/<name>` 以下なら performer `<name>`、
+/// それ以外（= repo path）なら conductor。`wire_send` / `wire_recv` の `from` 導出 /
 /// `list_lanes` の `is_self` 付与に使う。
 ///
-/// project-local lane refactor PR 2: 旧 `<wings_dir>/<parent>-<name>`
-/// (global path + repo prefix) detection は撤去。 PR 1 で wing 配置が
+/// project-local lane refactor PR 2: 旧 `<performers_dir>/<parent>-<name>`
+/// (global path + repo prefix) detection は撤去。 PR 1 で performer 配置が
 /// `<repo>/.vp/lanes/<name>` に移行し、 legacy global path は user の mv 後
 /// empty。 PR 4 で legacy 関連 code 全削除予定なので、 ここも先行して
 /// project-local 一本に揃える。
 #[derive(Debug, Clone)]
 pub struct SelfLane {
-    /// `"lead"` or `"<wing-name>"`（flat 名）
+    /// `"conductor"` or `"<performer-name>"`（flat 名）
     pub lane_name: String,
-    /// wing context のとき `Some(parent project 名)`、lead context のとき `None`
-    pub wing_parent: Option<String>,
+    /// performer context のとき `Some(parent project 名)`、conductor context のとき `None`
+    pub performer_parent: Option<String>,
 }
 
 impl SelfLane {
-    /// cwd から SelfLane を判定。 失敗時（cwd 取れない / config 読めない 等）は lead 扱い。
+    /// cwd から SelfLane を判定。 失敗時（cwd 取れない / config 読めない 等）は conductor 扱い。
     ///
     /// 1. cwd ancestors を walk して `.vp/lanes/<name>` pattern を探す
-    ///    (= [`detect_project_local_wing`] の純粋関数で test 可能)
+    ///    (= [`detect_project_local_performer`] の純粋関数で test 可能)
     /// 2. 見つかれば repo_root を config.projects[].path と完全一致で resolve → parent 確定
-    /// 3. どちらか失敗 → lead fallback
+    /// 3. どちらか失敗 → conductor fallback
     pub fn detect() -> Self {
-        let lead = || SelfLane {
-            lane_name: "lead".to_string(),
-            wing_parent: None,
+        let conductor = || SelfLane {
+            lane_name: "conductor".to_string(),
+            performer_parent: None,
         };
         let Ok(cwd) = std::env::current_dir() else {
-            return lead();
+            return conductor();
         };
-        let Some((wing_name, repo_root)) = detect_project_local_wing(&cwd) else {
-            return lead();
+        let Some((performer_name, repo_root)) = detect_project_local_performer(&cwd) else {
+            return conductor();
         };
         let Ok(config) = crate::config::Config::load() else {
-            return lead();
+            return conductor();
         };
         let parent = config
             .projects
@@ -503,17 +505,17 @@ impl SelfLane {
             .find(|p| std::path::Path::new(&p.path) == repo_root.as_path());
         match parent {
             Some(p) => SelfLane {
-                lane_name: wing_name,
-                wing_parent: Some(p.name.clone()),
+                lane_name: performer_name,
+                performer_parent: Some(p.name.clone()),
             },
-            None => lead(), // wing dir 検出済だが config に repo 未登録 → 安全 fallback
+            None => conductor(), // performer dir 検出済だが config に repo 未登録 → 安全 fallback
         }
     }
 
-    /// `wire_send` / `wire_recv` の `from` フィールド値: lead は `"agent"`（bare、cross-process
-    /// forward 時に `normalize_from` で `agent@<project>` になる）、wing は `"agent@<parent>/<name>"`。
+    /// `wire_send` / `wire_recv` の `from` フィールド値: conductor は `"agent"`（bare、cross-process
+    /// forward 時に `normalize_from` で `agent@<project>` になる）、performer は `"agent@<parent>/<name>"`。
     pub fn from_address(&self) -> String {
-        match &self.wing_parent {
+        match &self.performer_parent {
             Some(parent) => format!("agent@{}/{}", parent, self.lane_name),
             None => "agent".to_string(),
         }
@@ -522,24 +524,24 @@ impl SelfLane {
 
 /// cwd ancestors を walk して `<repo>/.vp/lanes/<name>` pattern を探す純粋関数。
 ///
-/// 戻り値: `Some((wing_name, repo_root))` if 見つかれば、 そうでなければ `None`。
-/// - wing dir 直下 / 任意の子孫 cwd 両対応 (= ancestor 走査)
-/// - 最初に match した ancestor (= 最も深い wing) を採用
+/// 戻り値: `Some((performer_name, repo_root))` if 見つかれば、 そうでなければ `None`。
+/// - performer dir 直下 / 任意の子孫 cwd 両対応 (= ancestor 走査)
+/// - 最初に match した ancestor (= 最も深い performer) を採用
 /// - I/O なしの pure fn (test しやすい、 mock cwd 不要)
-fn detect_project_local_wing(cwd: &std::path::Path) -> Option<(String, std::path::PathBuf)> {
+fn detect_project_local_performer(cwd: &std::path::Path) -> Option<(String, std::path::PathBuf)> {
     for ancestor in cwd.ancestors() {
         let parent = ancestor.parent()?;
         let grandparent = parent.parent()?;
         if parent.file_name().and_then(|n| n.to_str()) == Some("lanes")
             && grandparent.file_name().and_then(|n| n.to_str()) == Some(".vp")
         {
-            let wing_name = ancestor.file_name()?.to_str()?.to_string();
-            // wing 名は `validate_wing_name` 通過済が前提。 但し `.` 等 dotfile は除外。
-            if wing_name.starts_with('.') || wing_name.is_empty() {
+            let performer_name = ancestor.file_name()?.to_str()?.to_string();
+            // performer 名は `validate_performer_name` 通過済が前提。 但し `.` 等 dotfile は除外。
+            if performer_name.starts_with('.') || performer_name.is_empty() {
                 return None;
             }
             let repo_root = grandparent.parent()?.to_path_buf();
-            return Some((wing_name, repo_root));
+            return Some((performer_name, repo_root));
         }
     }
     None
@@ -1130,17 +1132,17 @@ impl VantageMcp {
         }
     }
 
-    /// R5: 現 project の SP に Wing Lane を新規作成 (lane clone + PtySlot spawn)。
+    /// R5: 現 project の SP に Performer Lane を新規作成 (lane clone + PtySlot spawn)。
     ///
     /// - cwd ベースで自動的に local SP を解決 (`self.process_url`)。
     /// - branch 省略時は server 側で `<git-user>/<sanitized-name>` を auto-derive。
     /// - 名前重複は HTTP 409 CONFLICT、 lane clone 失敗は 500 で返ってくる。
     #[tool(
-        description = "Create a new Wing Lane in the current project (lane clone + spawn). Resolves the local SP via cwd. If `branch` is omitted, the server auto-derives `<git-user>/<sanitized-name>`. Returns the Lane address `<project>/wing/<name>` on success. Use this to spawn isolated parallel work (e.g. feature branches, exploratory experiments)."
+        description = "Create a new Performer Lane in the current project (lane clone + spawn). Resolves the local SP via cwd. If `branch` is omitted, the server auto-derives `<git-user>/<sanitized-name>`. Returns the Lane address `<project>/performer/<name>` on success. Use this to spawn isolated parallel work (e.g. feature branches, exploratory experiments)."
     )]
-    async fn add_wing(
+    async fn add_performer(
         &self,
-        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<AddWingParams>,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<AddPerformerParams>,
     ) -> Result<CallToolResult, McpError> {
         if params.name.trim().is_empty() {
             return Err(McpError::invalid_params(
@@ -1149,7 +1151,7 @@ impl VantageMcp {
             ));
         }
         let mut body = serde_json::json!({
-            "kind": "wing",
+            "kind": "performer",
             "name": params.name,
         });
         if let Some(b) = params.branch.as_ref().filter(|s| !s.trim().is_empty()) {
@@ -1187,27 +1189,27 @@ impl VantageMcp {
                 parsed.get("address").and_then(|a| {
                     let proj = a.get("project")?.as_str()?;
                     let nm = a.get("name")?.as_str()?;
-                    Some(format!("{}/wing/{}", proj, nm))
+                    Some(format!("{}/performer/{}", proj, nm))
                 })
             })
-            .unwrap_or_else(|| format!("wing/{}", params.name));
+            .unwrap_or_else(|| format!("performer/{}", params.name));
         let cwd = parsed.get("cwd").and_then(|v| v.as_str()).unwrap_or("?");
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-            format!("Wing Lane created: {}\n  cwd: {}", addr, cwd),
+            format!("Performer Lane created: {}\n  cwd: {}", addr, cwd),
         )]))
     }
 
-    /// Delete a Wing Lane in the current project (VP-124 Phase 1).
+    /// Delete a Performer Lane in the current project (VP-124 Phase 1).
     ///
     /// 3-step orchestration を 1 call で完結: SP pool removal + child PTY kill + tmux session kill +
     /// (optional) lane workspace dir cleanup。 server-side `delete_lane_orchestrated` への薄い HTTP
     /// wrapper、 cwd ベースで自動的に local SP と project を解決。
     #[tool(
-        description = "Delete a Wing Lane in the current project. SP pool removal + child PTY kill + tmux session kill + lane workspace dir cleanup を 1 call で完結 (= 旧来の手動 3 step `vp lane rm` + `tmux kill-session` + `curl -X DELETE` を置換)。 cwd ベースで local SP を自動解決、 cleanup=false で dir 残置 (debug 用途)。 Lead Lane は削除不可 (architecture rule、 SP shutdown が path)。"
+        description = "Delete a Performer Lane in the current project. SP pool removal + child PTY kill + tmux session kill + lane workspace dir cleanup を 1 call で完結 (= 旧来の手動 3 step `vp lane rm` + `tmux kill-session` + `curl -X DELETE` を置換)。 cwd ベースで local SP を自動解決、 cleanup=false で dir 残置 (debug 用途)。 Conductor Lane は削除不可 (architecture rule、 SP shutdown が path)。"
     )]
-    async fn delete_wing(
+    async fn delete_performer(
         &self,
-        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<DeleteWingParams>,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<DeletePerformerParams>,
     ) -> Result<CallToolResult, McpError> {
         if params.name.trim().is_empty() {
             return Err(McpError::invalid_params(
@@ -1217,7 +1219,7 @@ impl VantageMcp {
         }
 
         // SP の project name を /api/health から取得 (project_dir basename = project name)。
-        // address 構築のため必要、 add_wing と異なり POST body に name 1 つだけ渡せば SP 側で
+        // address 構築のため必要、 add_performer と異なり POST body に name 1 つだけ渡せば SP 側で
         // project 補完される pattern が使えない (DELETE は full address を query で受ける design)。
         let process_url = self.process_url.lock().await.clone();
         let health = self
@@ -1248,12 +1250,12 @@ impl VantageMcp {
                 )
             })?;
 
-        let address = format!("{}/wing/{}", project_name, params.name);
+        let address = format!("{}/performer/{}", project_name, params.name);
         let cleanup = params.cleanup.unwrap_or(true);
 
         // reqwest 0.12 の RequestBuilder.query は &[(impl Serialize, impl Serialize)] を取るが、
         // `&str` の tuple slice の type 推論が出ないので manual percent-encoding で URL 構築。
-        // address 内の `/` は `%2F` にする以外は ASCII safe (project name / wing name は git
+        // address 内の `/` は `%2F` にする以外は ASCII safe (project name / performer name は git
         // branch 互換 slug のため英数 + dash + underscore のみ)。
         let address_enc = address.replace('/', "%2F");
         let url = format!(
@@ -1271,11 +1273,14 @@ impl VantageMcp {
             })?;
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
-        // 冪等性: 既に無い Wing の delete (SP は LaneNotFound → 404) は no-op 成功扱い。
+        // 冪等性: 既に無い Performer の delete (SP は LaneNotFound → 404) は no-op 成功扱い。
         // 真の異常 (500 等) と区別し、 AI agent が「もう消えてる」と判別できるようにする。
         if status == reqwest::StatusCode::NOT_FOUND {
             return Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-                format!("Wing Lane already gone (no-op, idempotent): {}", address),
+                format!(
+                    "Performer Lane already gone (no-op, idempotent): {}",
+                    address
+                ),
             )]));
         }
         if !status.is_success() {
@@ -1304,7 +1309,7 @@ impl VantageMcp {
 
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
             format!(
-                "Wing Lane deleted: {}\n  pid: {} (killed)\n  tmux_killed: {}\n  cleanup: {}",
+                "Performer Lane deleted: {}\n  pid: {} (killed)\n  tmux_killed: {}\n  cleanup: {}",
                 address, pid, tmux_killed, cleanup_status
             ),
         )]))
@@ -1312,11 +1317,11 @@ impl VantageMcp {
 
     /// List Lanes in the current project with comprehensive routing info (VP-124 Phase 1).
     ///
-    /// Lead Lane Echoes が「lane を operate するすべての座標」 を 1 call で取得するための tool。
+    /// Conductor Lane Echoes が「lane を operate するすべての座標」 を 1 call で取得するための tool。
     /// GET /api/lanes wrapper、 各 Lane に mailbox_addresses (per-Lane Stands の wire address)、
     /// top-level に project_addresses + world_addresses を synthesize。
     #[tool(
-        description = "List all Lanes (Lead + Wings) in the current project with comprehensive routing info. Each Lane returns: address, kind, state, stand, pid, cwd, tmux session, wing_status, AND mailbox_addresses (= wire-ready addresses for `wire_send`)。 Each lane's mailbox_addresses has two entries: `agent` (= the lane's Claude session inbox, e.g. `agent@vantage-point` for lead or `agent@vantage-point/chore` for wing 'chore') and `canvas` (= the lane's Canvas / Paisley Park inbox, e.g. `canvas@vantage-point/chore`)。 Top-level also returns project_addresses (e.g. `gold_experience@<project>`) and world_addresses (e.g. `hermit_purple@world`)。 Use this to discover Wings, decide deletion targets, pick wire routes for wire_send。 Replaces multi-step `vp ps` + `curl /api/lanes`。"
+        description = "List all Lanes (Conductor + Performers) in the current project with comprehensive routing info. Each Lane returns: address, kind, state, stand, pid, cwd, tmux session, performer_status, AND mailbox_addresses (= wire-ready addresses for `wire_send`)。 Each lane's mailbox_addresses has two entries: `agent` (= the lane's Claude session inbox, e.g. `agent@vantage-point` for conductor or `agent@vantage-point/chore` for performer 'chore') and `canvas` (= the lane's Canvas / Paisley Park inbox, e.g. `canvas@vantage-point/chore`)。 Top-level also returns project_addresses (e.g. `gold_experience@<project>`) and world_addresses (e.g. `hermit_purple@world`)。 Use this to discover Performers, decide deletion targets, pick wire routes for wire_send。 Replaces multi-step `vp ps` + `curl /api/lanes`。"
     )]
     async fn list_lanes(
         &self,
@@ -1324,7 +1329,7 @@ impl VantageMcp {
     ) -> Result<CallToolResult, McpError> {
         let process_url = self.process_url.lock().await.clone();
 
-        // project name は /api/health から (= delete_wing と同型 pattern)。
+        // project name は /api/health から (= delete_performer と同型 pattern)。
         // 旧実装 (`lanes_in.first().get("project")`) は SP 起動直後 lanes 空の race
         // window で `"unknown"` fallback → `gold_experience@unknown` 等の偽 address を
         // 返す bug があり、 PR-β-4 review feedback (`feedback_jsonschema_field_scope`)
@@ -1392,24 +1397,24 @@ impl VantageMcp {
 
             // mailbox_addresses 計算 (= per-Lane の wire address。VP-166 設計 doc 16)。
             //
-            // 各 Lane (lead / wing) は 2 つの box を持つ:
+            // 各 Lane (conductor / performer) は 2 つの box を持つ:
             //   - `agent#<lane>`  = その lane の Claude session 宛 (= coding-assistant inbox)
             //   - `canvas#<lane>` = その lane の Canvas / PP 宛 (PR-5 で配線)
             // actor 名は `stands.rs` の `id` 体系 (`ECHOES.id = "agent"` / `PAISLEY_PARK.id = "canvas"`)。
             // JoJo 愛称 (`echoes` / `paisley_park`) は表示専用なので wire には出さない。
-            // wire syntax は `<stand-id>@<project>/<lane>` (lead は `/lane` 省略可)。
+            // wire syntax は `<stand-id>@<project>/<lane>` (conductor は `/lane` 省略可)。
             // 旧実装の `<JoJo名>.<lane>@<project>` (`.` 区切り) は `parse_address` で弾かれる不正形だった。
             let lane_label = match lane.get("kind").and_then(|v| v.as_str()) {
-                Some("lead") => "lead".to_string(),
-                Some("wing") => lane
+                Some("conductor") => "conductor".to_string(),
+                Some("performer") => lane
                     .get("name")
                     .and_then(|v| v.as_str())
                     .unwrap_or("unnamed")
                     .to_string(),
                 _ => "unknown".to_string(),
             };
-            // lead は `agent@<project>` (lane 省略 = lead)、wing は `agent@<project>/<name>`
-            let lane_suffix = if lane_label == "lead" {
+            // conductor は `agent@<project>` (lane 省略 = conductor)、performer は `agent@<project>/<name>`
+            let lane_suffix = if lane_label == "conductor" {
                 String::new()
             } else {
                 format!("/{}", lane_label)
@@ -1448,18 +1453,18 @@ impl VantageMcp {
     }
 
     // =========================================================================
-    // dev-flow primitives (= Lead × Wing × Memory orchestration の core 操作)
+    // dev-flow primitives (= Conductor × Performer × Memory orchestration の core 操作)
     //
-    // `flow_handoff`: P4 (add_wing + wire_send + nudge) を atomic 1 step。
+    // `flow_handoff`: P4 (add_performer + wire_send + nudge) を atomic 1 step。
     // `flow_progress`: P5 (list_lanes + per-lane unread count + git status) を集約 1 view。
     //
-    // 既存 primitives (add_wing / wire_send / tmux_agent_send / list_lanes) はそのまま、
+    // 既存 primitives (add_performer / wire_send / tmux_agent_send / list_lanes) はそのまま、
     // flow_* は composition tool (= 順番に呼んで意味のある orchestration を 1 call 化)。
     // =========================================================================
 
-    /// flow_handoff: 新 Wing 作成 + 初手 wire_send + nudge を atomic に
+    /// flow_handoff: 新 Performer 作成 + 初手 wire_send + nudge を atomic に
     #[tool(
-        description = "Atomic dev-flow handoff: (1) Wing Lane 新規作成、 (2) task_spec を wire_send (= 初手 thread root)、 (3) `nudge=true` (default) 時は tmux send-keys で wire_recv を促す。 失敗時は wing 削除で rollback。 既存 3 step (add_wing + wire_send + tmux_agent_send) を 1 call に圧縮 (= dev-flow P4 = 'handoff' を 1 call で完結)。"
+        description = "Atomic dev-flow handoff: (1) Performer Lane 新規作成、 (2) task_spec を wire_send (= 初手 thread root)、 (3) `nudge=true` (default) 時は tmux send-keys で wire_recv を促す。 失敗時は performer 削除で rollback。 既存 3 step (add_performer + wire_send + tmux_agent_send) を 1 call に圧縮 (= dev-flow P4 = 'handoff' を 1 call で完結)。"
     )]
     async fn flow_handoff(
         &self,
@@ -1492,10 +1497,10 @@ impl VantageMcp {
         }
         let nudge = params.nudge.unwrap_or(true);
 
-        // ── Step 1: Wing 作成 (= add_wing と同型 path、 HTTP POST /api/lanes) ──
+        // ── Step 1: Performer 作成 (= add_performer と同型 path、 HTTP POST /api/lanes) ──
         let process_url = self.process_url.lock().await.clone();
         let mut create_body = serde_json::json!({
-            "kind": "wing",
+            "kind": "performer",
             "name": params.name,
         });
         if let Some(b) = params.branch.as_ref().filter(|s| !s.trim().is_empty()) {
@@ -1524,13 +1529,13 @@ impl VantageMcp {
         let lane_info: serde_json::Value =
             serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
 
-        // address は string 形式 (例: "vantage-point/wing/feat-api") を期待。
-        // 旧 add_wing と同型の fallback 経路で project / name から合成も可能。
+        // address は string 形式 (例: "vantage-point/performer/feat-api") を期待。
+        // 旧 add_performer と同型の fallback 経路で project / name から合成も可能。
         let project_name = lane_info
             .pointer("/address/project")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
-        let wing_name = lane_info
+        let performer_name = lane_info
             .pointer("/address/name")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
@@ -1550,9 +1555,9 @@ impl VantageMcp {
         let project_name = match project_name {
             Some(p) => p,
             None => {
-                // wing 作成は成功したが address.project が読めない → rollback
+                // performer 作成は成功したが address.project が読めない → rollback
                 let _ = self
-                    .flow_rollback_wing(&process_url, "<unknown>", &wing_name)
+                    .flow_rollback_performer(&process_url, "<unknown>", &performer_name)
                     .await;
                 return Err(McpError::internal_error(
                     "SP response from /api/lanes に address.project がありません".to_string(),
@@ -1561,8 +1566,8 @@ impl VantageMcp {
             }
         };
 
-        let wing_address = format!("agent@{}/{}", project_name, wing_name);
-        let lane_address = format!("{}/wing/{}", project_name, wing_name);
+        let performer_address = format!("agent@{}/{}", project_name, performer_name);
+        let lane_address = format!("{}/performer/{}", project_name, performer_name);
 
         // ── Step 2: wire_send (initial task spec を root thread として送信) ──
         // body は { task_spec, mode, priority?, scope_outs? } 等の自由 schema。
@@ -1575,19 +1580,22 @@ impl VantageMcp {
         let from = self.self_lane.from_address();
         let send_payload = serde_json::json!({
             "from": from,
-            "to": [wing_address.clone()],
+            "to": [performer_address.clone()],
             "body": wire_body,
             "reply_to": serde_json::Value::Null,
         });
         let send_resp = match self.quic_call("wire_send", send_payload).await {
             Ok(v) => v,
             Err(e) => {
-                // rollback: wing を削除して dirty state を残さない
+                // rollback: performer を削除して dirty state を残さない
                 let _ = self
-                    .flow_rollback_wing(&process_url, &project_name, &wing_name)
+                    .flow_rollback_performer(&process_url, &project_name, &performer_name)
                     .await;
                 return Err(McpError::internal_error(
-                    format!("flow_handoff: wire_send 失敗 (wing rollback 済): {}", e),
+                    format!(
+                        "flow_handoff: wire_send 失敗 (performer rollback 済): {}",
+                        e
+                    ),
                     None,
                 ));
             }
@@ -1603,9 +1611,9 @@ impl VantageMcp {
         // (= wire は届いており worker は自走可、 nudge は immediacy の向上目的)。
         let mut nudge_status = if nudge { "skipped" } else { "off" }.to_string();
         if nudge {
-            // tmux pane は lane address ("project/wing/name") で resolve できる
+            // tmux pane は lane address ("project/performer/name") で resolve できる
             // (resolve_pane が tmux_resolve_pane → meta から label 引き)。
-            let nudge_text = "lead から task が届いています。 mcp__vantage-point__wire_recv で確認、 内容に従って着手してください。 質問は wire_send + reply_to で thread 返信。\n".to_string();
+            let nudge_text = "conductor から task が届いています。 mcp__vantage-point__wire_recv で確認、 内容に従って着手してください。 質問は wire_send + reply_to で thread 返信。\n".to_string();
             match self.resolve_pane(&lane_address).await {
                 Ok((pane_id, _display)) => {
                     let send_keys = self
@@ -1629,10 +1637,10 @@ impl VantageMcp {
         }
 
         let result = serde_json::json!({
-            "wing_address": wing_address,
+            "performer_address": performer_address,
             "lane_address": lane_address,
             "wire_msg_id": wire_msg_id,
-            "wing_dir": cwd,
+            "performer_dir": cwd,
             "branch": derived_branch,
             "mode": mode,
             "nudge": nudge_status,
@@ -1642,17 +1650,17 @@ impl VantageMcp {
         )]))
     }
 
-    /// flow_handoff の rollback path: wing 削除 (best-effort、 失敗は log only)
+    /// flow_handoff の rollback path: performer 削除 (best-effort、 失敗は log only)
     ///
-    /// wire_send 失敗時など、 wing 作成は成功したが orchestration の続きが失敗した時に呼ぶ。
-    /// `<project>/wing/<name>` を address 化して DELETE /api/lanes に送る。
-    async fn flow_rollback_wing(
+    /// wire_send 失敗時など、 performer 作成は成功したが orchestration の続きが失敗した時に呼ぶ。
+    /// `<project>/performer/<name>` を address 化して DELETE /api/lanes に送る。
+    async fn flow_rollback_performer(
         &self,
         process_url: &str,
         project_name: &str,
-        wing_name: &str,
+        performer_name: &str,
     ) -> Result<(), String> {
-        let address = format!("{}/wing/{}", project_name, wing_name);
+        let address = format!("{}/performer/{}", project_name, performer_name);
         let address_enc = address.replace('/', "%2F");
         let url = format!(
             "{}/api/lanes?address={}&cleanup=true",
@@ -1678,7 +1686,7 @@ impl VantageMcp {
 
     /// flow_progress: parallel work 集約 view (read-only)
     #[tool(
-        description = "Parallel work 集約 view: 現 project の全 Lane (lead + wings) の wing_status (git ahead/behind/dirty/merged) と per-lane 未読 wire 数を 1 view で返す。 read-only (= cursor は触らない)、 cache OK。 dev-flow P5 (= 並列追跡) で list_lanes + wire_recv + tmux_capture を別々に叩く代替。"
+        description = "Parallel work 集約 view: 現 project の全 Lane (conductor + performers) の performer_status (git ahead/behind/dirty/merged) と per-lane 未読 wire 数を 1 view で返す。 read-only (= cursor は触らない)、 cache OK。 dev-flow P5 (= 並列追跡) で list_lanes + wire_recv + tmux_capture を別々に叩く代替。"
     )]
     async fn flow_progress(
         &self,
@@ -1686,7 +1694,7 @@ impl VantageMcp {
     ) -> Result<CallToolResult, McpError> {
         let process_url = self.process_url.lock().await.clone();
 
-        // project name は /api/health から (delete_wing / list_lanes と同型 pattern)。
+        // project name は /api/health から (delete_performer / list_lanes と同型 pattern)。
         let health: serde_json::Value = self
             .client
             .get(format!("{}/api/health", process_url))
@@ -1716,7 +1724,7 @@ impl VantageMcp {
             })?
             .to_string();
 
-        // 全 lane (lead + wings) を /api/lanes から取得 (= wing_status 込み)
+        // 全 lane (conductor + performers) を /api/lanes から取得 (= performer_status 込み)
         let lanes_resp: serde_json::Value = self
             .client
             .get(format!("{}/api/lanes", process_url))
@@ -1733,24 +1741,24 @@ impl VantageMcp {
             .cloned()
             .unwrap_or_default();
 
-        let mut wings: Vec<serde_json::Value> = Vec::new();
-        let mut lead_unread: u64 = 0;
-        let mut lead_unread_by_thread = serde_json::Value::Object(Default::default());
+        let mut performers: Vec<serde_json::Value> = Vec::new();
+        let mut conductor_unread: u64 = 0;
+        let mut conductor_unread_by_thread = serde_json::Value::Object(Default::default());
         for lane in lanes_in {
             let kind = lane
                 .get("kind")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            let lane_label = if kind == "lead" {
-                "lead".to_string()
+            let lane_label = if kind == "conductor" {
+                "conductor".to_string()
             } else {
                 lane.get("name")
                     .and_then(|v| v.as_str())
                     .unwrap_or("unnamed")
                     .to_string()
             };
-            let agent_addr = if kind == "lead" {
+            let agent_addr = if kind == "conductor" {
                 format!("agent@{}", project)
             } else {
                 format!("agent@{}/{}", project, lane_label)
@@ -1773,13 +1781,13 @@ impl VantageMcp {
                 Err(_) => (0, serde_json::Value::Object(Default::default())),
             };
 
-            if kind == "lead" {
-                lead_unread = unread_total;
-                lead_unread_by_thread = by_thread;
+            if kind == "conductor" {
+                conductor_unread = unread_total;
+                conductor_unread_by_thread = by_thread;
                 continue;
             }
 
-            // wing entry を整形 (= wing_status を浅く展開)
+            // performer entry を整形 (= performer_status を浅く展開)
             let state = lane
                 .get("state")
                 .and_then(|v| v.as_str())
@@ -1791,13 +1799,13 @@ impl VantageMcp {
                 .unwrap_or("")
                 .to_string();
             let cwd = lane.get("cwd").and_then(|v| v.as_str()).unwrap_or("");
-            let wing_status = lane
-                .get("wing_status")
+            let performer_status = lane
+                .get("performer_status")
                 .cloned()
                 .unwrap_or(serde_json::Value::Null);
 
-            // 5-state FSM derive (= 2026-05-28 lead 説示 control surrender model)。
-            // 最新 wire activity + wing_status から flow_state を推論、 control_surrender も derive。
+            // 5-state FSM derive (= 2026-05-28 conductor 説示 control surrender model)。
+            // 最新 wire activity + performer_status から flow_state を推論、 control_surrender も derive。
             let latest_resp = self
                 .quic_call(
                     "wire_latest_msg",
@@ -1809,17 +1817,21 @@ impl VantageMcp {
                 .as_ref()
                 .and_then(|v| v.get("message"))
                 .and_then(crate::flow::LatestMsgView::from_json);
-            let wing_status_view = crate::flow::WingStatusView::from_json(&wing_status);
-            let fsm =
-                crate::flow::derive_flow_state(latest_view.as_ref(), wing_status_view, &agent_addr);
+            let performer_status_view =
+                crate::flow::PerformerStatusView::from_json(&performer_status);
+            let fsm = crate::flow::derive_flow_state(
+                latest_view.as_ref(),
+                performer_status_view,
+                &agent_addr,
+            );
 
-            wings.push(serde_json::json!({
+            performers.push(serde_json::json!({
                 "name": lane_label,
                 "address": format!("agent@{}/{}", project, lane.get("name").and_then(|v| v.as_str()).unwrap_or("")),
                 "state": state,
                 "stand": stand,
                 "cwd": cwd,
-                "wing_status": wing_status,
+                "performer_status": performer_status,
                 "unread_wire_count": unread_total,
                 "unread_by_thread": by_thread,
                 "flow_state": fsm.state,
@@ -1831,12 +1843,12 @@ impl VantageMcp {
 
         let result = serde_json::json!({
             "project": project,
-            "lead": {
+            "conductor": {
                 "address": format!("agent@{}", project),
-                "unread_wire_count": lead_unread,
-                "unread_by_thread": lead_unread_by_thread,
+                "unread_wire_count": conductor_unread,
+                "unread_by_thread": conductor_unread_by_thread,
             },
-            "wings": wings,
+            "performers": performers,
         });
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
             serde_json::to_string_pretty(&result).unwrap_or_default(),
@@ -2006,9 +2018,9 @@ impl VantageMcp {
     /// Split the current tmux window to create a new pane.
     ///
     /// tmux split-window で新しいペインを作成する。
-    /// wing 起動や並列 CC セッション作成に使う。
+    /// performer 起動や並列 CC セッション作成に使う。
     #[tool(
-        description = "Split the current tmux window to create a new pane. Use this to spawn parallel wings (e.g. Claude Code sessions, shell commands). Returns the new pane ID."
+        description = "Split the current tmux window to create a new pane. Use this to spawn parallel performers (e.g. Claude Code sessions, shell commands). Returns the new pane ID."
     )]
     async fn tmux_split(
         &self,
@@ -2041,7 +2053,7 @@ impl VantageMcp {
     /// tmux capture-pane で指定ペイン（または全ペイン）のターミナル出力をテキストとして取得する。
     /// AI エージェントが他のペインの状態を把握するのに使う。
     #[tool(
-        description = "Capture tmux pane content as text. If pane_id is omitted, captures all panes in the session. Useful for monitoring wing progress or reading terminal output from other panes."
+        description = "Capture tmux pane content as text. If pane_id is omitted, captures all panes in the session. Useful for monitoring performer progress or reading terminal output from other panes."
     )]
     async fn tmux_capture(
         &self,
@@ -2102,7 +2114,7 @@ impl VantageMcp {
     ///
     /// 全 tmux ペインをキャプチャして Canvas に markdown ダッシュボードとして表示する。
     #[tool(
-        description = "Show a tmux pane dashboard on Canvas. Captures all panes in the current tmux session and displays them as a markdown dashboard. Great for monitoring parallel wings."
+        description = "Show a tmux pane dashboard on Canvas. Captures all panes in the current tmux session and displays them as a markdown dashboard. Great for monitoring parallel performers."
     )]
     async fn tmux_dashboard(&self) -> Result<CallToolResult, McpError> {
         // 全ペインキャプチャ
@@ -2793,7 +2805,7 @@ if bestId > 0 { print(bestId) }
         &self,
         rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<WireSendParams>,
     ) -> Result<CallToolResult, McpError> {
-        // from は self_lane から導出 (lead は "agent"、 wing は "agent@<parent>/<name>")
+        // from は self_lane から導出 (conductor は "agent"、 performer は "agent@<parent>/<name>")
         let from = self.self_lane.from_address();
         let payload = serde_json::json!({
             "from": from,
@@ -2956,7 +2968,7 @@ if bestId > 0 { print(bestId) }
             let Some(lb) = layout.lane_base(params.slot, lane) else {
                 continue;
             };
-            let label = if lane == 0 { "Lead" } else { "Wing" };
+            let label = if lane == 0 { "Conductor" } else { "Performer" };
             md.push_str(&format!("## Lane {} ({}) — base `{}`\n\n", lane, label, lb));
             for (role, offset) in layout.valid_roles() {
                 if let Some(p) = layout.port(params.slot, lane, &role) {
@@ -2979,8 +2991,8 @@ pub struct PortShowParams {
     /// Project slot (0-based, see port_slot_list for mapping)
     #[schemars(description = "Project slot index (0-19)")]
     pub slot: u16,
-    /// Lane index (0 = Lead, 1+ = Wing)
-    #[schemars(description = "Lane index within project slot (0 = Lead, 1+ = Wing)")]
+    /// Lane index (0 = Conductor, 1+ = Performer)
+    #[schemars(description = "Lane index within project slot (0 = Conductor, 1+ = Performer)")]
     #[serde(default)]
     pub lane: u16,
     /// Role (agent / dev_server / db_admin / canvas / preview)
@@ -3029,11 +3041,11 @@ impl rmcp::ServerHandler for VantageMcp {
     }
 }
 
-/// wing context のとき parent project の path を config から引く（VP-165 (A)）。
+/// performer context のとき parent project の path を config から引く（VP-165 (A)）。
 ///
-/// lead context（`wing_parent = None`）or parent が config に無い なら `None`。
-fn wing_parent_path(self_lane: &SelfLane, config: &crate::config::Config) -> Option<String> {
-    let parent_name = self_lane.wing_parent.as_ref()?;
+/// conductor context（`performer_parent = None`）or parent が config に無い なら `None`。
+fn performer_parent_path(self_lane: &SelfLane, config: &crate::config::Config) -> Option<String> {
+    let parent_name = self_lane.performer_parent.as_ref()?;
     config
         .projects
         .iter()
@@ -3052,10 +3064,10 @@ fn wing_parent_path(self_lane: &SelfLane, config: &crate::config::Config) -> Opt
 /// 優先度:
 /// 1. 明示的なポート引数（Some で指定された場合）
 /// 2. discovery:
-///    - wing context（cwd = `vp_data_dir()/lanes/<parent>-<name>`）→ parent project の path を
-///      config から引いて `find_by_project`。wing の cwd は登録 project path 配下でないので
+///    - performer context（cwd = `vp_data_dir()/lanes/<parent>-<name>`）→ parent project の path を
+///      config から引いて `find_by_project`。performer の cwd は登録 project path 配下でないので
 ///      `find_for_cwd` は効かない
-///    - lead context → `find_for_cwd`（cwd 一致 or 配下の running SP）
+///    - conductor context → `find_for_cwd`（cwd 一致 or 配下の running SP）
 /// 3. `VP_PROCESS_PORT` env（discovery 障害 / parent SP 未起動 時の fast path、reshuffle 後は古い可能性）
 /// 4. デフォルトポート 33000
 async fn resolve_process_port(explicit_port: Option<u16>) -> u16 {
@@ -3066,20 +3078,20 @@ async fn resolve_process_port(explicit_port: Option<u16>) -> u16 {
 
     // 2. discovery で live port を引く
     let self_lane = SelfLane::detect();
-    match &self_lane.wing_parent {
+    match &self_lane.performer_parent {
         Some(_) => {
-            // wing: parent project の SP を discovery で解決
+            // performer: parent project の SP を discovery で解決
             if let Some(parent_path) = crate::config::Config::load()
                 .ok()
                 .as_ref()
-                .and_then(|c| wing_parent_path(&self_lane, c))
+                .and_then(|c| performer_parent_path(&self_lane, c))
                 && let Some(info) = crate::discovery::find_by_project(&parent_path).await
             {
                 return info.port;
             }
         }
         None => {
-            // lead: cwd 一致（or 配下）の running SP
+            // conductor: cwd 一致（or 配下）の running SP
             if let Some(info) = crate::discovery::find_for_cwd().await {
                 return info.port;
             }
@@ -3132,7 +3144,7 @@ pub async fn run_mcp_server(process_port: Option<u16>) -> anyhow::Result<()> {
     // Resolve the actual port to use
     let resolved_port = resolve_process_port(process_port).await;
 
-    // wiremsg R5-4: 旧 msgbox の registry サブシステム (Wing self-register) は撤去済。
+    // wiremsg R5-4: 旧 msgbox の registry サブシステム (Performer self-register) は撤去済。
     // wire の cross-process delivery は TheWorld の project registry を使う別経路。
 
     // Note: In MCP mode, we should not use tracing to stdout
@@ -3167,27 +3179,27 @@ mod tests {
 
     #[test]
     fn test_self_lane_from_address() {
-        // VP-166 PR-4: lead は bare "agent"、wing は "agent@<parent>/<name>"
-        let lead = SelfLane {
-            lane_name: "lead".to_string(),
-            wing_parent: None,
+        // VP-166 PR-4: conductor は bare "agent"、performer は "agent@<parent>/<name>"
+        let conductor = SelfLane {
+            lane_name: "conductor".to_string(),
+            performer_parent: None,
         };
-        assert_eq!(lead.from_address(), "agent");
+        assert_eq!(conductor.from_address(), "agent");
 
-        let wing = SelfLane {
+        let performer = SelfLane {
             lane_name: "chore".to_string(),
-            wing_parent: Some("vantage-point".to_string()),
+            performer_parent: Some("vantage-point".to_string()),
         };
-        assert_eq!(wing.from_address(), "agent@vantage-point/chore");
+        assert_eq!(performer.from_address(), "agent@vantage-point/chore");
     }
 
-    // --- detect_project_local_wing (project-local lane refactor PR 2) ---
+    // --- detect_project_local_performer (project-local lane refactor PR 2) ---
 
     #[test]
-    fn detect_pl_wing_finds_wing_dir_itself() {
+    fn detect_pl_performer_finds_performer_dir_itself() {
         use std::path::{Path, PathBuf};
         let cwd = Path::new("/Users/makoto/repos/creo-memories/.vp/lanes/or-integration");
-        let result = detect_project_local_wing(cwd);
+        let result = detect_project_local_performer(cwd);
         assert_eq!(
             result,
             Some((
@@ -3198,12 +3210,12 @@ mod tests {
     }
 
     #[test]
-    fn detect_pl_wing_finds_wing_from_nested_subdir() {
+    fn detect_pl_performer_finds_performer_from_nested_subdir() {
         use std::path::{Path, PathBuf};
-        // wing 配下の任意の階層から呼んでも親 wing が見つかる
+        // performer 配下の任意の階層から呼んでも親 performer が見つかる
         let cwd =
             Path::new("/Users/makoto/repos/creo-memories/.vp/lanes/or-integration/apps/server/src");
-        let result = detect_project_local_wing(cwd);
+        let result = detect_project_local_performer(cwd);
         assert_eq!(
             result,
             Some((
@@ -3214,39 +3226,39 @@ mod tests {
     }
 
     #[test]
-    fn detect_pl_wing_returns_none_for_plain_repo_cwd() {
-        // 通常の repo cwd (= lead context) は detect されない
+    fn detect_pl_performer_returns_none_for_plain_repo_cwd() {
+        // 通常の repo cwd (= conductor context) は detect されない
         let cwd = std::path::Path::new("/Users/makoto/repos/creo-memories");
-        assert_eq!(detect_project_local_wing(cwd), None);
+        assert_eq!(detect_project_local_performer(cwd), None);
     }
 
     #[test]
-    fn detect_pl_wing_returns_none_for_random_path() {
+    fn detect_pl_performer_returns_none_for_random_path() {
         let cwd = std::path::Path::new("/tmp/random/dir");
-        assert_eq!(detect_project_local_wing(cwd), None);
+        assert_eq!(detect_project_local_performer(cwd), None);
     }
 
     #[test]
-    fn detect_pl_wing_ignores_lanes_without_vp_grandparent() {
+    fn detect_pl_performer_ignores_lanes_without_vp_grandparent() {
         // `/foo/lanes/bar` だけだと `.vp` 親が無いので match しない
         let cwd = std::path::Path::new("/foo/lanes/bar");
-        assert_eq!(detect_project_local_wing(cwd), None);
+        assert_eq!(detect_project_local_performer(cwd), None);
     }
 
     #[test]
-    fn detect_pl_wing_ignores_dotfile_wing_names() {
-        // `.vp/lanes/.hidden` のような dot 始まり wing 名は除外 (= validate_wing_name 同等)
+    fn detect_pl_performer_ignores_dotfile_performer_names() {
+        // `.vp/lanes/.hidden` のような dot 始まり performer 名は除外 (= validate_performer_name 同等)
         let cwd = std::path::Path::new("/repo/.vp/lanes/.hidden");
-        assert_eq!(detect_project_local_wing(cwd), None);
+        assert_eq!(detect_project_local_performer(cwd), None);
     }
 
     #[test]
-    fn detect_pl_wing_innermost_wins_for_nested_vp_lanes() {
-        // 病的 case: wing 配下にさらに `.vp/lanes/<inner>` がある (= nested vp 構成)
-        // ancestor は cwd から root へ走るので、 最も深い (= innermost) wing が選ばれる
+    fn detect_pl_performer_innermost_wins_for_nested_vp_lanes() {
+        // 病的 case: performer 配下にさらに `.vp/lanes/<inner>` がある (= nested vp 構成)
+        // ancestor は cwd から root へ走るので、 最も深い (= innermost) performer が選ばれる
         use std::path::{Path, PathBuf};
         let cwd = Path::new("/outer/.vp/lanes/A/.vp/lanes/B");
-        let result = detect_project_local_wing(cwd);
+        let result = detect_project_local_performer(cwd);
         assert_eq!(
             result,
             Some(("B".to_string(), PathBuf::from("/outer/.vp/lanes/A")))
@@ -3261,7 +3273,7 @@ mod tests {
     }
 
     #[test]
-    fn test_wing_parent_path_resolution() {
+    fn test_performer_parent_path_resolution() {
         use crate::config::{Config, ProjectConfig};
         let mut cfg = Config::default();
         cfg.projects.push(ProjectConfig {
@@ -3272,29 +3284,29 @@ mod tests {
             slot: None,
         });
 
-        // wing → parent の path
-        let wing = SelfLane {
+        // performer → parent の path
+        let performer = SelfLane {
             lane_name: "chore".to_string(),
-            wing_parent: Some("vantage-point".to_string()),
+            performer_parent: Some("vantage-point".to_string()),
         };
         assert_eq!(
-            wing_parent_path(&wing, &cfg).as_deref(),
+            performer_parent_path(&performer, &cfg).as_deref(),
             Some("/Users/x/repos/vantage-point")
         );
 
-        // lead context → None（wing_parent が無い）
-        let lead = SelfLane {
-            lane_name: "lead".to_string(),
-            wing_parent: None,
+        // conductor context → None（performer_parent が無い）
+        let conductor = SelfLane {
+            lane_name: "conductor".to_string(),
+            performer_parent: None,
         };
-        assert_eq!(wing_parent_path(&lead, &cfg), None);
+        assert_eq!(performer_parent_path(&conductor, &cfg), None);
 
         // config に無い parent → None
         let unknown = SelfLane {
             lane_name: "x".to_string(),
-            wing_parent: Some("not-in-config".to_string()),
+            performer_parent: Some("not-in-config".to_string()),
         };
-        assert_eq!(wing_parent_path(&unknown, &cfg), None);
+        assert_eq!(performer_parent_path(&unknown, &cfg), None);
     }
 
     #[test]

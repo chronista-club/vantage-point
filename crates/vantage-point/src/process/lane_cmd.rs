@@ -4,7 +4,7 @@
 //! 常時 N 動かす、 cmd type で queue 振り分け」 を VP の **Mailbox actor address**
 //! (例: `lane-spawn@<project>`) + Mailbox `Message::with_payload` で表現。
 //! 各 Cmd の処理は actor 内の `tokio::sync::Semaphore::new(N)` で gate された
-//! worker pool で並列実行 (= 内部 tokio worker pool、 Lane の wing とは別概念)。
+//! worker pool で並列実行 (= 内部 tokio worker pool、 Lane の performer とは別概念)。
 //!
 //! ## 関連
 //!
@@ -45,15 +45,15 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum LaneCmd {
-    /// Wing Lane を spawn (= stand_spawner で PtySlot 起動 + LanePool insert)。
+    /// Performer Lane を spawn (= stand_spawner で PtySlot 起動 + LanePool insert)。
     ///
-    /// **1 Wing = 1 SpawnLane Cmd** に分解して Mailbox actor に流し、 actor が Semaphore で
+    /// **1 Performer = 1 SpawnLane Cmd** に分解して Mailbox actor に流し、 actor が Semaphore で
     /// gate しつつ並列処理する design。
     SpawnLane {
         /// LaneAddress.project の値 (= lane repo prefix と一致する project_id、
         /// `routes/lanes.rs::create_handler` の derivation と整合)
         project_id: String,
-        /// Wing name (LaneAddress.name に入る)
+        /// Performer name (LaneAddress.name に入る)
         name: String,
         /// 起動 cwd (典型: `vp_data_dir()/lanes/<repo>-<name>/`)
         cwd: String,

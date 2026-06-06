@@ -8,11 +8,11 @@
 //!
 //! - `GET /api/lanes` — `LanePool` の list (F.8 B Convergent で disk-scan merge 撤去、
 //!   disk-only Lane は lane watcher / SP bootstrap で auto-spawn 経由 active 化)
-//! - `POST /api/lanes` — Wing Lane create (Phase 3-A: lane clone + PtySlot spawn、
+//! - `POST /api/lanes` — Performer Lane create (Phase 3-A: lane clone + PtySlot spawn、
 //!   F.8 B Convergent で spawn 失敗時の disk dir rollback ポリシー追加)
 //! - `DELETE /api/lanes?address=<addr>&cleanup=true` — Lane destroy + cleanup
 //!   (VP-124 Phase 1 で `delete_lane_orchestrated` に core 抽出、 全 trigger 共有)
-//! - `POST /api/lanes/restart?address=<addr>` — Lead Stand restart (Phase A5)
+//! - `POST /api/lanes/restart?address=<addr>` — Conductor Stand restart (Phase A5)
 //!
 //! ## 未実装 (後 phase)
 //!
@@ -40,7 +40,7 @@ use super::super::state::AppState;
 // doc 11 §3.7 の `migrate_legacy_stand` shim は 2026-05-03 削除済。 PR #257 の
 // stand 識別子 String 化と同タイミングで導入した「heavens_door / the_hand → echoes / shell」 (PR-pre2 で hd → echoes)
 // migration shim を 1 release 期間 deprecation warn 付きで accept していたが、
-// VP は user 1 人 + lane wing のみで vp-app + daemon が常に同 binary で deploy される
+// VP は user 1 人 + lane performer のみで vp-app + daemon が常に同 binary で deploy される
 // 構成のため、 外部 client が旧 wire format で来る window が実質ゼロと判断、 即削除。
 
 /// REST response: `GET /api/lanes` の JSON shape
@@ -56,7 +56,7 @@ pub struct LanesResponse {
 ///
 /// ## F.8 B Convergent (2026-05-26): disk-only Lane の表示廃止
 ///
-/// 旧版は LanePool に居ない wing dir を disk-scan で `pid: None, state: Running` として
+/// 旧版は LanePool に居ない performer dir を disk-scan で `pid: None, state: Running` として
 /// merge し sidebar に italic dim で表示していた。これは **中間状態 (= disk dir はあるが
 /// LanePool に居ない)** を可視化する設計だったが、 click 不可 / Activate 経路なしで
 /// 「死に体」 として user 体験を悪化させていた。
@@ -72,19 +72,19 @@ pub struct LanesResponse {
 /// lane watcher が即座に POST /api/lanes を発火して spawn → LanePool entry が即追加
 /// される (= convergence、 user 視点では遅延 ms 単位)。
 ///
-/// Phase 5-D: Wing Lane に対しては `cwd` から git 状態 (`WingStatus`) を populate。
-/// registry には保存せず、 build 時に都度 `wing_status()` を呼ぶ (volatile + 5-7 git subprocess)。
+/// Phase 5-D: Performer Lane に対しては `cwd` から git 状態 (`PerformerStatus`) を populate。
+/// registry には保存せず、 build 時に都度 `performer_status()` を呼ぶ (volatile + 5-7 git subprocess)。
 pub async fn build_lanes_snapshot(state: &AppState) -> Vec<LaneInfo> {
     let pool = state.lane_pool.read().await;
     let mut lanes = pool.list();
-    drop(pool); // git subprocess 中の lock を保たない (wing_status は数 100ms かかる事あり)
+    drop(pool); // git subprocess 中の lock を保たない (performer_status は数 100ms かかる事あり)
 
-    // 既存 Wing の git status を populate
+    // 既存 Performer の git status を populate
     for lane in lanes.iter_mut() {
-        if matches!(lane.kind, LaneKind::Wing) {
+        if matches!(lane.kind, LaneKind::Performer) {
             let path = std::path::Path::new(&lane.cwd);
             if path.exists() && path.join(".git").exists() {
-                lane.wing_status = Some(crate::lane::commands::wing_status(path));
+                lane.performer_status = Some(crate::lane::commands::performer_status(path));
             }
         }
     }
@@ -101,12 +101,12 @@ pub async fn list_handler(State(state): State<Arc<AppState>>) -> impl IntoRespon
     Json(LanesResponse { lanes })
 }
 
-/// `POST /api/lanes` request body (Phase 3-A: Wing Lane create + lane clone)
+/// `POST /api/lanes` request body (Phase 3-A: Performer Lane create + lane clone)
 #[derive(Debug, Deserialize)]
 pub struct CreateLaneReq {
-    /// "wing" を受付。 Lead は project ごと固定。
+    /// "performer" を受付。 Conductor は project ごと固定。
     pub kind: String,
-    /// Wing name (人間可読、 LaneAddress.name に入る)
+    /// Performer name (人間可読、 LaneAddress.name に入る)
     pub name: String,
     /// LaneStand: "echoes" (default) or "shell"
     #[serde(default)]
@@ -115,19 +115,19 @@ pub struct CreateLaneReq {
     #[serde(default)]
     pub cwd: Option<String>,
     /// Phase 3-A: lane clone する branch 名。 cwd が None で branch が Some の時、
-    /// `vp lane new <name> <branch>` を SP 内で実行して wing dir を作成、 そこに Lane を spawn する。
+    /// `vp lane new <name> <branch>` を SP 内で実行して performer dir を作成、 そこに Lane を spawn する。
     #[serde(default)]
     pub branch: Option<String>,
 }
 
-/// `POST /api/lanes` — Wing Lane create (Phase 3-A: lane clone + PtySlot spawn)
+/// `POST /api/lanes` — Performer Lane create (Phase 3-A: lane clone + PtySlot spawn)
 ///
 /// 流れ:
-/// 1. 入力 validation (kind == "wing"、 name 非空)
+/// 1. 入力 validation (kind == "performer"、 name 非空)
 /// 2. cwd 決定:
 ///    - `req.cwd` Some → そのまま使う
-///    - `req.branch` Some → `vp lane new <name> <branch>` subprocess で wing dir 作成
-///    - 両方 None → state.project_dir (= Lead と同じ dir) を share (legacy fallback)
+///    - `req.branch` Some → `vp lane new <name> <branch>` subprocess で performer dir 作成
+///    - 両方 None → state.project_dir (= Conductor と同じ dir) を share (legacy fallback)
 /// 3. PtySlot::spawn で実 PTY 起動 (LaneStand 別 command builder 経由)
 /// 4. LanePool に insert (state=Running、 pid 付き)
 ///
@@ -136,12 +136,12 @@ pub async fn create_handler(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CreateLaneReq>,
 ) -> Result<(StatusCode, Json<LaneInfo>), (StatusCode, Json<serde_json::Value>)> {
-    // 入力 validation。 "wing" のみ受付 (Lead は project ごと固定で create 不可)。
-    if req.kind != "wing" {
+    // 入力 validation。 "performer" のみ受付 (Conductor は project ごと固定で create 不可)。
+    if req.kind != "performer" {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(json!({
-                "error": "kind must be 'wing' (Lead is fixed per project)"
+                "error": "kind must be 'performer' (Conductor is fixed per project)"
             })),
         ));
     }
@@ -158,7 +158,7 @@ pub async fn create_handler(
         .and_then(|s| s.to_str())
         .unwrap_or("unknown")
         .to_string();
-    let addr = LaneAddress::wing(&project_id, &req.name);
+    let addr = LaneAddress::performer(&project_id, &req.name);
     // doc 11 PR-B: stand 識別子 String 化。 wire format は新 stand 名 (echoes / shell / tmux 等)
     // をそのまま受け取る。 未指定なら config の `default_stand` (未設定なら "echoes" fallback、
     // PR-pre2 / VP-118 で "hd" → "echoes" rename)。
@@ -187,9 +187,9 @@ pub async fn create_handler(
 
     // Phase 4-X / R5: cwd 決定 ── 優先順位 explicit cwd > lane clone (branch 明示 or auto-derive)。
     //
-    // 旧 fallback (`else { state.project_dir }` で Lead と同 worktree を share) は撤廃。
-    // 理由: UI から name="sub" だけ入力した場合、 silent に Lead と同 dir を共有してしまい、
-    // 「Wing = 隔離 worktree」の mental model が崩れていた (race condition の温床)。
+    // 旧 fallback (`else { state.project_dir }` で Conductor と同 worktree を share) は撤廃。
+    // 理由: UI から name="sub" だけ入力した場合、 silent に Conductor と同 dir を共有してしまい、
+    // 「Performer = 隔離 worktree」の mental model が崩れていた (race condition の温床)。
     //
     // 新規約: branch が None の時は `git config user.name` から prefix を取り、
     // `<user>/<sanitized-name>` 形式の branch を auto-derive して必ず lane clone を実行する。
@@ -211,7 +211,7 @@ pub async fn create_handler(
         let name = req.name.clone();
         let branch_for_log = branch.clone();
         let result = tokio::task::spawn_blocking(move || {
-            crate::lane::commands::new_wing_in(
+            crate::lane::commands::new_performer_in(
                 std::path::Path::new(&project_dir),
                 &name,
                 &branch,
@@ -227,8 +227,8 @@ pub async fn create_handler(
             )
         })?;
         let path_buf = result.map_err(|e| {
-            // lane::commands::new_wing_in は wing dir 既存 + force=false の時に
-            // 「ウィング '<name>' は既に存在します」を返す。 UI で input 下に表示するため
+            // lane::commands::new_performer_in は performer dir 既存 + force=false の時に
+            // 「パフォーマー '<name>' は既に存在します」を返す。 UI で input 下に表示するため
             // CONFLICT を返し、 error message をそのまま流す。
             let msg = e.to_string();
             let status = if msg.contains("既に存在") || msg.contains("already exists") {
@@ -244,7 +244,7 @@ pub async fn create_handler(
             )
         })?;
         tracing::info!(
-            "Wing Lane clone: name={} branch={} dir={}",
+            "Performer Lane clone: name={} branch={} dir={}",
             req.name,
             branch_for_log,
             path_buf.display()
@@ -277,10 +277,10 @@ pub async fn create_handler(
         Ok((slot, term_rx)) => {
             let pid = slot.pid();
             let mut pool = state.lane_pool.write().await;
-            // Stage 1 (ADR-0001): TermAttach も同時 spawn (race フリー、 Lead 経路と統一)
+            // Stage 1 (ADR-0001): TermAttach も同時 spawn (race フリー、 Conductor 経路と統一)
             pool.insert_pty_slot(addr.clone(), slot, term_rx);
             tracing::info!(
-                "Wing Lane spawned: addr={} stand={} cwd={} pid={}",
+                "Performer Lane spawned: addr={} stand={} cwd={} pid={}",
                 addr,
                 stand,
                 cwd,
@@ -296,7 +296,7 @@ pub async fn create_handler(
             //   Dead state で LanePool に record (= sidebar に失敗が見える、 後で手動 retry 可能)
             if was_lane_cloned {
                 tracing::warn!(
-                    "Wing Lane spawn failed → rollback (lane clone で作った disk dir を削除): addr={} cwd={}: {}",
+                    "Performer Lane spawn failed → rollback (lane clone で作った disk dir を削除): addr={} cwd={}: {}",
                     addr,
                     cwd,
                     e
@@ -318,12 +318,12 @@ pub async fn create_handler(
                 return Err((
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(json!({
-                        "error": format!("Wing Lane spawn failed (rollback executed): {}", e)
+                        "error": format!("Performer Lane spawn failed (rollback executed): {}", e)
                     })),
                 ));
             }
             tracing::warn!(
-                "Wing Lane spawn failed (explicit cwd、 Dead で record): addr={} cwd={}: {}",
+                "Performer Lane spawn failed (explicit cwd、 Dead で record): addr={} cwd={}: {}",
                 addr,
                 cwd,
                 e
@@ -334,15 +334,15 @@ pub async fn create_handler(
 
     let info = LaneInfo {
         address: addr.clone(),
-        kind: LaneKind::Wing,
+        kind: LaneKind::Performer,
         name: Some(req.name.clone()),
         state: lane_state,
         stand: stand.clone(),
         created_at: chrono::Utc::now().to_rfc3339(),
         pid,
         cwd,
-        // create 時点では git 状態は registry に保存しない、 GET 時に都度 wing_status() で取得
-        wing_status: None,
+        // create 時点では git 状態は registry に保存しない、 GET 時に都度 performer_status() で取得
+        performer_status: None,
         // Phase 1e: spawn 成功時のみ tmux address を populate
         tmux: if matches!(lane_state, crate::process::lanes_state::LaneState::Running) {
             vec![crate::process::lanes_state::TmuxLaneAddress::for_spawn(
@@ -362,7 +362,7 @@ pub async fn create_handler(
     // これを購読する producer (server.rs) が LanePool 全 snapshot を retained topic
     // (`process/star-platinum/state/lanes`) に republish し、vp-app の "lanes" 購読へ
     // push される。delete 経路 (delete_lane_orchestrated) は Diff::Remove を発火済だが、
-    // create 経路はこれが欠けており add_wing 後に sidebar が追従しなかった (Stage 1
+    // create 経路はこれが欠けており add_performer 後に sidebar が追従しなかった (Stage 1
     // consumer dogfood で発覚)。
     if let Err(e) = state.system_event_tx.send(SystemEvent::Lane(Diff::Add {
         payload: info.clone(),
@@ -380,7 +380,7 @@ pub async fn create_handler(
 /// `DELETE /api/lanes?address=<addr>` request の query
 #[derive(Debug, Deserialize)]
 pub struct DeleteLaneQuery {
-    /// Display 形 ("<project>/lead" / "<project>/wing/<name>")
+    /// Display 形 ("<project>/conductor" / "<project>/performer/<name>")
     pub address: String,
     /// Phase 4-B: lane workspace の dir も rm するか (default true)。
     /// false の場合 PtySlot だけ kill して dir 残置 (= debug / forensic 用途)。
@@ -394,10 +394,10 @@ fn default_cleanup() -> bool {
 
 /// VP-124 Phase 1: Lane delete orchestration の戻り値。
 ///
-/// 全 trigger (HTTP DELETE / MCP `delete_wing` / `vp lane rm` CLI) が共有する成功 payload。
+/// 全 trigger (HTTP DELETE / MCP `delete_performer` / `vp lane rm` CLI) が共有する成功 payload。
 #[derive(Debug, Serialize)]
 pub struct DeletedLaneInfo {
-    /// Display 形 ("<project>/wing/<name>")
+    /// Display 形 ("<project>/performer/<name>")
     pub address: String,
     /// PtySlot drop 直前の child pid (= killed)
     pub pid: Option<u32>,
@@ -412,9 +412,9 @@ pub struct DeletedLaneInfo {
 /// HTTP handler はこれを 4xx ステータスに mapping。 MCP / CLI も同じ enum を消費。
 #[derive(Debug, thiserror::Error)]
 pub enum DeleteLaneError {
-    /// architecture rule: Lead Lane は project lifetime 紐付きのため削除不可。
-    #[error("Lead Lane is fixed per project and cannot be deleted (use SP shutdown instead)")]
-    LeadCannotBeDeleted,
+    /// architecture rule: Conductor Lane は project lifetime 紐付きのため削除不可。
+    #[error("Conductor Lane is fixed per project and cannot be deleted (use SP shutdown instead)")]
+    ConductorCannotBeDeleted,
     /// LanePool に該当 address の entry なし (idempotent re-call で発生)。
     #[error("Lane not found: {0}")]
     LaneNotFound(LaneAddress),
@@ -422,18 +422,18 @@ pub enum DeleteLaneError {
 
 /// VP-124 Phase 1: Lane delete の 3-step orchestration を関数化。
 ///
-/// 全 trigger (HTTP DELETE / MCP `delete_wing` / `vp lane rm` CLI / future Phase 3 FSEvents
+/// 全 trigger (HTTP DELETE / MCP `delete_performer` / `vp lane rm` CLI / future Phase 3 FSEvents
 /// watcher) が共有する core logic。 既存 `delete_handler` から extract、 同時に **欠落していた
 /// tmux session kill + SystemEvent broadcast を補完** (= bug fix 兼 refactor)。
 ///
 /// ## 動作
 ///
-/// 1. **architecture rule check**: Lead は削除拒否 (`DeleteLaneError::LeadCannotBeDeleted`)
+/// 1. **architecture rule check**: Conductor は削除拒否 (`DeleteLaneError::ConductorCannotBeDeleted`)
 /// 2. **Phase 1 (in-memory authoritative mutation)**: `LanePool::remove` で LaneInfo + PtySlot を
 ///    drop (PtySlot::Drop で child kill + wait)
 /// 3. **Phase 2a (tmux container cleanup)**: `tmux::kill_session` で PTY container 削除
 ///    (best-effort、 既存挙動では欠落していた → orphan tmux session の根本原因)
-/// 4. **Phase 2b (filesystem cleanup)**: `cleanup=true` なら `lane::remove_wing_in` で workspace
+/// 4. **Phase 2b (filesystem cleanup)**: `cleanup=true` なら `lane::remove_performer_in` で workspace
 ///    dir 削除 (best-effort、 既存挙動踏襲)
 /// 5. **Phase 3 (broadcast)**: `SystemEvent::Lane(Diff::Remove)` を broadcast → sidebar 即時反映
 ///    (既存挙動では欠落していた → sidebar refresh 不全の根本原因)
@@ -442,7 +442,7 @@ pub enum DeleteLaneError {
 ///
 /// - **idempotent**: 二度呼ばれても 2 回目は `LaneNotFound` を返す、 sidebar 状態に矛盾なし
 /// - **best-effort cleanup**: tmux / lane 失敗は warn log のみ、 LanePool 削除は authoritative success
-/// - **失敗時**: Phase 1 で fail (Lead / NotFound) なら early return、 Phase 2 以降の partial failure
+/// - **失敗時**: Phase 1 で fail (Conductor / NotFound) なら early return、 Phase 2 以降の partial failure
 ///   は `DeletedLaneInfo` の field で結果を伝える
 ///
 /// 関連: VP-124 (PR-Phase 1 設計)、 mem_1CaTpCQH8iLJ2PasRcPjHv (Architecture v4: Lane lifecycle)
@@ -451,9 +451,9 @@ pub async fn delete_lane_orchestrated(
     addr: LaneAddress,
     cleanup: bool,
 ) -> Result<DeletedLaneInfo, DeleteLaneError> {
-    // architecture rule: Lead Lane は project lifetime 紐付きのため削除不可
-    if matches!(addr.kind, LaneKind::Lead) {
-        return Err(DeleteLaneError::LeadCannotBeDeleted);
+    // architecture rule: Conductor Lane は project lifetime 紐付きのため削除不可
+    if matches!(addr.kind, LaneKind::Conductor) {
+        return Err(DeleteLaneError::ConductorCannotBeDeleted);
     }
 
     // Phase 1: in-memory authoritative state mutation。
@@ -490,15 +490,15 @@ pub async fn delete_lane_orchestrated(
     }
 
     // Phase 2b: lane workspace dir cleanup (best-effort、 cleanup=true 時のみ)。
-    // 既存挙動踏襲、 直 lib call (`crate::lane::commands::remove_wing_in`)。
+    // 既存挙動踏襲、 直 lib call (`crate::lane::commands::remove_performer_in`)。
     // 注意: `spawn_blocking` closure は `repo_name` / `name` のみ move、 `addr` は capture
     // されないので後続 match arm の `tracing` で参照可能 (= compile time 保証)。
     let cleanup_status = if cleanup && let Some(name) = info.address.name.clone() {
-        // project-local lane refactor PR 1: remove_wing_in は repo_root: &Path を受け取る。
+        // project-local lane refactor PR 1: remove_performer_in は repo_root: &Path を受け取る。
         // sidebar delete trigger は dual-read で project-local + legacy global 両 path 対応。
         let repo_root = std::path::PathBuf::from(&state.project_dir);
         let result = tokio::task::spawn_blocking(move || {
-            crate::lane::commands::remove_wing_in(&repo_root, &name)
+            crate::lane::commands::remove_performer_in(&repo_root, &name)
         })
         .await;
         match result {
@@ -573,7 +573,7 @@ pub async fn delete_handler(
                 "cleanup": info.cleanup_status,
             })),
         )),
-        Err(e @ DeleteLaneError::LeadCannotBeDeleted) => Err((
+        Err(e @ DeleteLaneError::ConductorCannotBeDeleted) => Err((
             StatusCode::BAD_REQUEST,
             Json(json!({"error": e.to_string()})),
         )),
@@ -586,7 +586,7 @@ pub async fn delete_handler(
 /// `POST /api/lanes/restart?address=<addr>` request の query
 #[derive(Debug, Deserialize)]
 pub struct RestartLaneQuery {
-    /// Display 形 ("<project>/lead" / "<project>/wing/<name>")
+    /// Display 形 ("<project>/conductor" / "<project>/performer/<name>")
     pub address: String,
 }
 
@@ -596,7 +596,7 @@ pub struct RestartLaneQuery {
 const RESTART_MAX_ATTEMPTS: u32 = 3;
 const RESTART_BACKOFF_MS: [u64; 2] = [200, 500]; // attempt 0→1: 200ms、 attempt 1→2: 500ms
 
-/// `POST /api/lanes/restart?address=<addr>` — Lane の Lead Stand restart
+/// `POST /api/lanes/restart?address=<addr>` — Lane の Conductor Stand restart
 ///
 /// 動作:
 /// 1. address parse (LanePool::parse_address で逆変換)
@@ -678,12 +678,12 @@ pub async fn restart_handler(
     ))
 }
 
-/// Wing name から default branch を auto-derive する。
+/// Performer name から default branch を auto-derive する。
 ///
 /// 形式: `<git-user>/<sanitized-name>`。
 ///
 /// - `git-user` は `git config user.name` (repo local > global の標準解決) を lowercase + sanitize したもの。
-///   取得失敗・空・sanitize 後 empty なら fallback `wing` prefix を使う。
+///   取得失敗・空・sanitize 後 empty なら fallback `performer` prefix を使う。
 /// - `sanitized-name` は `sanitize_for_branch` で git ref 制約に合わせる。
 ///
 /// 例: user="Mako", name="sub" → `mako/sub`
@@ -698,7 +698,7 @@ fn derive_default_branch(repo_root: &std::path::Path, name: &str) -> String {
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .map(|s| sanitize_for_branch(&s))
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "wing".to_string());
+        .unwrap_or_else(|| "performer".to_string());
     format!("{}/{}", prefix, sanitize_for_branch(name))
 }
 
@@ -809,7 +809,7 @@ mod route_smoke_tests {
 
     /// F.8 B Convergent: disk-scan merge 撤去後の `build_lanes_snapshot` は
     /// LanePool が空 → lanes 空を返す (disk dir が何があっても list に乗らない)。
-    /// 旧版は disk-scan で pid: None Inactive Wing を merge していた。
+    /// 旧版は disk-scan で pid: None Inactive Performer を merge していた。
     #[tokio::test]
     async fn build_lanes_snapshot_returns_only_lanepool_entries() {
         let state = crate::process::state::build_test_app_state(None).await;
@@ -821,8 +821,8 @@ mod route_smoke_tests {
         );
     }
 
-    /// Worker → Wing rename 完結: `kind="worker"` POST は 400 BAD_REQUEST を返す。
-    /// 旧版は `req.kind != "wing" && req.kind != "worker"` で "worker" を許容していた。
+    /// Worker → Performer rename 完結: `kind="worker"` POST は 400 BAD_REQUEST を返す。
+    /// 旧版は `req.kind != "performer" && req.kind != "worker"` で "worker" を許容していた。
     #[tokio::test]
     async fn create_handler_rejects_worker_kind() {
         let state = crate::process::state::build_test_app_state(None).await;
@@ -831,7 +831,7 @@ mod route_smoke_tests {
             .with_state(state);
         let body = serde_json::json!({
             "kind": "worker",
-            "name": "test-wing"
+            "name": "test-performer"
         });
         let resp = app
             .oneshot(
@@ -859,7 +859,7 @@ mod route_smoke_tests {
             .route("/api/lanes", post(create_handler))
             .with_state(state);
         let body = serde_json::json!({
-            "kind": "wing",
+            "kind": "performer",
             "name": "   "
         });
         let resp = app

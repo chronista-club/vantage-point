@@ -3,7 +3,7 @@
 //! ## VP-189: config.toml → config.kdl 統一
 //!
 //! VP の設定ファイルは元々 TOML だったが、 projects.kdl (VP-188) / lane の
-//! wing-files.kdl 等、 周辺の設定は既に KDL に揃っていた。 config 本体だけ
+//! performer-files.kdl 等、 周辺の設定は既に KDL に揃っていた。 config 本体だけ
 //! TOML で取り残されていたのを KDL に統一し、 club-kdl 資産を一本化する。
 //!
 //! - config.kdl は **人間が編集する read-only な global 設定**。 VP 自身は
@@ -126,7 +126,7 @@ pub struct Config {
     #[kdl(skip)]
     pub ports: Option<PortLayoutOverrides>,
 
-    /// SP startup behavior — Wing spawn の concurrency 制限等 (I-b、 2026-04-30)
+    /// SP startup behavior — Performer spawn の concurrency 制限等 (I-b、 2026-04-30)
     #[serde(default)]
     #[kdl(child, default)]
     pub startup: StartupConfig,
@@ -163,7 +163,7 @@ pub struct NetworkConfig {
 
 /// SP startup behavior config (I-b、 2026-04-30)。
 ///
-/// Mailbox actor (`lane-spawn@<project>`) で Wing spawn を Cmd 化した上で、
+/// Mailbox actor (`lane-spawn@<project>`) で Performer spawn を Cmd 化した上で、
 /// 内部 Semaphore で同時実行数を gate する。 `max_concurrent_lane_spawn` で
 /// 制限値を tweak、 default は **1** (= 完全 sequential、 dogfood の視覚 pop 体験 +
 /// Claude CLI rate-limit 安全)。 計測 log (`Lane spawn completed: ... elapsed=`) を
@@ -325,7 +325,7 @@ impl Config {
     /// Default Stand 名 (config 未指定なら "echoes" fallback)。
     ///
     /// `mise run vp:stand:{name}` の `name` 部分。 lane 作成時 (sidebar UI / HTTP API /
-    /// LanePool::with_lead 等) で stand 指定が無い場合の選択値。
+    /// LanePool::with_conductor 等) で stand 指定が無い場合の選択値。
     ///
     /// PR-pre2 (VP-118): rename `default_stand_or_hd` → `default_stand_or_echoes`、
     /// fallback "hd" → "echoes" (HD → Echoes rename の一環)。

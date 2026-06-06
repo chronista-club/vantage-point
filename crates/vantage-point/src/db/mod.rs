@@ -339,7 +339,7 @@ impl VpDb {
         content: &str,
         title: Option<&str>,
     ) -> Result<()> {
-        // lane_name='' (= lead sentinel) の row として upsert。 新 schema (lane_name/stack/ui_state) は
+        // lane_name='' (= conductor sentinel) の row として upsert。 新 schema (lane_name/stack/ui_state) は
         // ON DUPLICATE KEY UPDATE 句で **触らない** — 旧 caller (= 純粋な content / title 更新)
         // が PP Canvas Stack の stack / ui_state を巻き戻さないようにする。
         self.db
@@ -372,8 +372,8 @@ impl VpDb {
 
     /// PP Canvas Stack Model の lane scope な永続状態を upsert する (= doc 19 + pp-content-persist)。
     ///
-    /// - `lane_name`: None なら lead (= 内部で `''` sentinel)、 Some(name) なら wing。 UNIQUE INDEX は
-    ///   (project_path, lane_name, pane_id) のため lead/wing は別 record として独立。
+    /// - `lane_name`: None なら conductor (= 内部で `''` sentinel)、 Some(name) なら performer。 UNIQUE INDEX は
+    ///   (project_path, lane_name, pane_id) のため conductor/performer は別 record として独立。
     /// - `stack`: Canvas Stack (= items + cursor + capacity)。 None なら未保存。
     /// - `ui_state`: visibility/collapsed/サイズ等。 None なら未保存。
     /// - `content` / `content_type` / `title` は **現在 main pane で render 中の item の reflection**
@@ -429,7 +429,7 @@ impl VpDb {
 
     /// 特定 (project_path, lane_name, pane_id) の PP state を 1 件取得。 不在なら Ok(None)。
     ///
-    /// 旧 record (= lane_name field なし) は schema DEFAULT '' で self-heal され、 lead として読める。
+    /// 旧 record (= lane_name field なし) は schema DEFAULT '' で self-heal され、 conductor として読める。
     pub async fn load_pp_state(
         &self,
         project_path: &str,
@@ -598,16 +598,16 @@ DEFINE INDEX IF NOT EXISTS idx_projects_path ON projects COLUMNS path UNIQUE;
 --
 -- 2026-05-28 [pp-content-persist]:
 --   lane scope 対応 — 旧 idx_pane (project_path, pane_id) を
---   (project_path, lane_name, pane_id) UNIQUE に置換。 lane_name="" が lead、
---   "<name>" が wing。 同一 project の lead と wing は **独立した PP state** を持つ。
+--   (project_path, lane_name, pane_id) UNIQUE に置換。 lane_name="" が conductor、
+--   "<name>" が performer。 同一 project の conductor と performer は **独立した PP state** を持つ。
 --   追加 field:
---     - lane_name: string DEFAULT ''       — lane scope key (空文字=lead / 非空=wing 名)
+--     - lane_name: string DEFAULT ''       — lane scope key (空文字=conductor / 非空=performer 名)
 --     - stack:     option<object> FLEXIBLE — Canvas Stack { items: [], cursor: id, capacity: 10 }
 --     - ui_state:  option<object> FLEXIBLE — { visible, collapsed, width, height }
 --   注: lane_name を **option ではなく DEFAULT 空文字** にしたのは、 SurrealDB の UNIQUE INDEX が
 --   NULL 同士を不一致扱いし、 (path, NONE, pane_id) の UNIQUE 制約が成立せず ON DUPLICATE が
 --   発火しないため。 IPC contract 上は lane: string|null を保ち、 Rust 側で null↔'' を変換。
---   旧 record (lane_name 不在) は schema DEFAULT '' で self-heal してそのまま lead 扱いになる。
+--   旧 record (lane_name 不在) は schema DEFAULT '' で self-heal してそのまま conductor 扱いになる。
 REMOVE INDEX IF EXISTS idx_pane ON pane_contents;
 DEFINE TABLE IF NOT EXISTS pane_contents SCHEMAFULL;
 DEFINE FIELD IF NOT EXISTS project_path ON pane_contents TYPE string;
@@ -1010,18 +1010,18 @@ mod tests {
     // PP Canvas Stack Model (lane scope) — pp-content-persist
     // =========================================================================
 
-    /// 新 API: lane_name=None (lead) と Some(name) (wing) が独立 record として共存できる
+    /// 新 API: lane_name=None (conductor) と Some(name) (performer) が独立 record として共存できる
     #[tokio::test]
-    async fn test_pp_state_lead_and_wing_independent() {
+    async fn test_pp_state_conductor_and_performer_independent() {
         let db = make_test_db().await;
 
-        let lead_stack = serde_json::json!({
-            "items": [{"id":"i1","content":"# lead\n","contentType":"markdown","createdAt":"2026-05-28T00:00:00Z"}],
+        let conductor_stack = serde_json::json!({
+            "items": [{"id":"i1","content":"# conductor\n","contentType":"markdown","createdAt":"2026-05-28T00:00:00Z"}],
             "cursor": "i1",
             "capacity": 10
         });
-        let wing_stack = serde_json::json!({
-            "items": [{"id":"i2","content":"# wing\n","contentType":"markdown","createdAt":"2026-05-28T00:00:01Z"}],
+        let performer_stack = serde_json::json!({
+            "items": [{"id":"i2","content":"# performer\n","contentType":"markdown","createdAt":"2026-05-28T00:00:01Z"}],
             "cursor": "i2",
             "capacity": 10
         });
@@ -1033,9 +1033,9 @@ mod tests {
             None,
             "paisley-park",
             "markdown",
-            "# lead\n",
+            "# conductor\n",
             None,
-            Some(&lead_stack),
+            Some(&conductor_stack),
             Some(&ui),
         )
         .await
@@ -1045,38 +1045,38 @@ mod tests {
             Some("foo"),
             "paisley-park",
             "markdown",
-            "# wing\n",
+            "# performer\n",
             None,
-            Some(&wing_stack),
+            Some(&performer_stack),
             Some(&ui),
         )
         .await
         .unwrap();
 
-        // lead 読み込み
-        let lead = db
+        // conductor 読み込み
+        let conductor = db
             .load_pp_state("/repos/vp", None, "paisley-park")
             .await
             .unwrap()
-            .expect("lead record 不在");
+            .expect("conductor record 不在");
         assert_eq!(
-            lead["lane_name"], "",
-            "lead は lane_name='' sentinel (= None)"
+            conductor["lane_name"], "",
+            "conductor は lane_name='' sentinel (= None)"
         );
-        assert_eq!(lead["stack"]["cursor"], "i1");
+        assert_eq!(conductor["stack"]["cursor"], "i1");
 
-        // wing 読み込み — lead と独立した record
-        let wing = db
+        // performer 読み込み — conductor と独立した record
+        let performer = db
             .load_pp_state("/repos/vp", Some("foo"), "paisley-park")
             .await
             .unwrap()
-            .expect("wing record 不在");
-        assert_eq!(wing["lane_name"], "foo");
-        assert_eq!(wing["stack"]["cursor"], "i2");
+            .expect("performer record 不在");
+        assert_eq!(performer["lane_name"], "foo");
+        assert_eq!(performer["stack"]["cursor"], "i2");
 
         // list_pane_contents は両方見える (project scope)
         let all = db.list_pane_contents("/repos/vp").await.unwrap();
-        assert_eq!(all.len(), 2, "lead + wing で 2 record");
+        assert_eq!(all.len(), 2, "conductor + performer で 2 record");
     }
 
     /// upsert_pp_state は同 (project_path, lane_name, pane_id) で stack を上書きする (= roundtrip)

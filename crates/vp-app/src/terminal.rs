@@ -67,16 +67,16 @@ pub enum AppEvent {
     /// main_area xterm.js が capture → Rust が SidebarState の per-Lane unread count を加算 →
     /// sidebar に push back → badge UI 表示。 active lane への switch で 0 reset。
     OscNotification { lane: String, code: u32 },
-    /// R5 Wing create flow: Add Wing form が送信した `lane:add_wing` の結果を sidebar に
+    /// R5 Performer create flow: Add Performer form が送信した `lane:add_performer` の結果を sidebar に
     /// push back する。 `error` Some の時 form 下に inline error 表示、 None の時 form を閉じる。
     /// 例: 名前重複 (CONFLICT)、 lane clone 失敗、 SP 未起動 等。
-    WingCreateResult {
+    PerformerCreateResult {
         project_path: String,
         name: String,
         error: Option<String>,
     },
     /// doc 11 PR-C: 利用可能 Stand 一覧を sidebar に push back する。
-    /// `+ Add Wing` form 開閉時に JS から `stands:fetch` が来て、 Rust 側で SP の
+    /// `+ Add Performer` form 開閉時に JS から `stands:fetch` が来て、 Rust 側で SP の
     /// `GET /api/stands` を叩いた結果がここに乗る。 JS は `window.handleStandsResult`
     /// で受領し、 dropdown を populate する。 `error` Some なら fetch 失敗、 dropdown は
     /// disabled + error message 表示。

@@ -24,7 +24,7 @@ use vantage_point::mcp;
 
 use commands::file::FileCommands;
 
-// Phase 2.x-e: 旧 wing Lane crate を vp-cli の lib に統合。
+// Phase 2.x-e: 旧 performer Lane crate を vp-cli の lib に統合。
 // `vp` binary が `vp lane` サブコマンド経由で `vp_cli::lane` lib を使う。
 #[cfg(feature = "midi")]
 use commands::midi::MidiCommands;
@@ -70,8 +70,9 @@ enum Commands {
 
     /// TheWorld 管理 — 全 Process を統括する常駐プロセス
     ///
-    /// alias: `vp world` (旧名、 後方互換) / `vp conductor` (古い metaphor)
-    #[command(visible_alias = "world", alias = "conductor")]
+    /// alias: `vp world` (旧名、 後方互換)。
+    /// 旧 `vp conductor` alias は撤去 (conductor は lane 役割名に確定、語の衝突回避)。
+    #[command(visible_alias = "world")]
     Daemon {
         /// 待ち受けポート番号（サブコマンド省略時に使用）
         #[arg(short, long, default_value_t = cli::WORLD_PORT)]
@@ -94,10 +95,10 @@ enum Commands {
     #[command(subcommand)]
     Wire(commands::wire::WireCommands),
 
-    /// dev-flow primitives — Lead × Wing × Memory orchestration の core 操作
+    /// dev-flow primitives — Conductor × Performer × Memory orchestration の core 操作
     ///
-    /// `vp flow handoff <name> --task-spec <file or ->` で wing 作成 + wire_send + nudge を atomic に。
-    /// `vp flow progress` で並列 wing の git status + 未読 wire を 1 view で表示。
+    /// `vp flow handoff <name> --task-spec <file or ->` で performer 作成 + wire_send + nudge を atomic に。
+    /// `vp flow progress` で並列 performer の git status + 未読 wire を 1 view で表示。
     /// MCP tool (`mcp__vantage-point__flow_handoff` / `flow_progress`) と同 semantics。
     #[command(subcommand)]
     Flow(commands::flow::FlowCommands),
@@ -106,7 +107,7 @@ enum Commands {
     ///
     /// 宛先 lane の tmux session に直接テキストを send-keys する。SP / DB 非依存。
     Directmsg {
-        /// 宛先 lane address（"<project>/lead" または "<project>/wing/<name>"）
+        /// 宛先 lane address（"<project>/conductor" または "<project>/performer/<name>"）
         lane: String,
         /// 送信テキスト
         text: String,
@@ -136,7 +137,7 @@ enum Commands {
     #[command(subcommand)]
     Db(commands::db::DbCommands),
 
-    /// Stone Free 🧵 — wing Lane 管理（旧 vp ws、Phase 1 で統合）
+    /// Stone Free 🧵 — performer Lane 管理（旧 vp ws、Phase 1 で統合）
     #[command(subcommand, alias = "ws", alias = "workspace")]
     Lane(LaneCommands),
 
@@ -202,65 +203,65 @@ enum Commands {
     },
 }
 
-/// Stone Free wing Lane コマンド（lane library への薄い wrapper）
+/// Stone Free performer Lane コマンド（lane library への薄い wrapper）
 #[derive(Subcommand)]
 enum LaneCommands {
-    /// 新しい wing 環境を作成（worktree add + symlink + setup）
+    /// 新しい performer 環境を作成（worktree add + symlink + setup）
     New {
-        /// Wing 名
+        /// Performer 名
         name: String,
         /// 作成するブランチ名
         branch: String,
-        /// 既存 wing を上書き
+        /// 既存 performer を上書き
         #[arg(long, short)]
         force: bool,
-        /// 隔離方式: worktree (default、 lead の .git 共有) / clone (独立 .git、 escape hatch)
+        /// 隔離方式: worktree (default、 conductor の .git 共有) / clone (独立 .git、 escape hatch)
         #[arg(long, value_enum, default_value = "worktree")]
         isolation: lane::commands::Isolation,
     },
-    /// 現在の dirty state を新しい wing 環境に fork
+    /// 現在の dirty state を新しい performer 環境に fork
     Fork {
-        /// Wing 名
+        /// Performer 名
         name: String,
         /// 作成するブランチ名
         branch: String,
-        /// 既存 wing を上書き
+        /// 既存 performer を上書き
         #[arg(long, short)]
         force: bool,
         /// 隔離方式: worktree (default) / clone (独立 .git、 escape hatch)
         #[arg(long, value_enum, default_value = "worktree")]
         isolation: lane::commands::Isolation,
     },
-    /// wing 環境一覧
+    /// performer 環境一覧
     ///
     /// default は `<name>\t<branch>\t<path>` の tab-separated 簡易出力 (= fs scan、 SP 不要)。
     /// `--detail` で SP `/api/lanes` を query して MCP `list_lanes` 同等の JSON (= state /
-    /// stand / pid / cwd / wing_status / mailbox_addresses 付き) を出力する (= SP 稼働中のみ)。
+    /// stand / pid / cwd / performer_status / mailbox_addresses 付き) を出力する (= SP 稼働中のみ)。
     #[command(alias = "list")]
     Ls {
         /// SP `/api/lanes` から MCP list_lanes 同等の詳細 JSON を取得して出力
         #[arg(long)]
         detail: bool,
     },
-    /// wing 環境のパスを表示
+    /// performer 環境のパスを表示
     Path {
-        /// Wing 名
+        /// Performer 名
         name: String,
     },
-    /// wing 環境を削除
+    /// performer 環境を削除
     Rm {
-        /// 削除する Wing 名（--all 指定時は不要）
+        /// 削除する Performer 名（--all 指定時は不要）
         name: Option<String>,
-        /// 全 wing を削除
+        /// 全 performer を削除
         #[arg(long)]
         all: bool,
         /// 確認なしで強制削除
         #[arg(long, short)]
         force: bool,
     },
-    /// 全 wing の状態表示
+    /// 全 performer の状態表示
     Status,
-    /// branch が main に merge 済の wing を削除
+    /// branch が main に merge 済の performer を削除
     Cleanup {
         /// 確認なしで強制削除
         #[arg(long, short)]
@@ -616,10 +617,10 @@ fn execute_shot(
     Ok(())
 }
 
-/// Stone Free 🧵 wing Lane 操作を lane library に委譲
+/// Stone Free 🧵 performer Lane 操作を lane library に委譲
 ///
-/// wiremsg R5-4: 旧 msgbox の registry サブシステム (wing 作成/削除時の
-/// `wing-{name}@{project}` actor register/unregister) は撤去済。
+/// wiremsg R5-4: 旧 msgbox の registry サブシステム (performer 作成/削除時の
+/// `performer-{name}@{project}` actor register/unregister) は撤去済。
 fn execute_lane(cmd: LaneCommands) -> Result<()> {
     use lane::commands as ws;
 
@@ -630,7 +631,7 @@ fn execute_lane(cmd: LaneCommands) -> Result<()> {
             force,
             isolation,
         } => {
-            ws::new_wing(&name, &branch, force, isolation).map_err(|e| anyhow::anyhow!(e))?;
+            ws::new_performer(&name, &branch, force, isolation).map_err(|e| anyhow::anyhow!(e))?;
             Ok(())
         }
         LaneCommands::Fork {
@@ -639,33 +640,35 @@ fn execute_lane(cmd: LaneCommands) -> Result<()> {
             force,
             isolation,
         } => {
-            ws::fork_wing(&name, &branch, force, isolation).map_err(|e| anyhow::anyhow!(e))?;
+            ws::fork_performer(&name, &branch, force, isolation).map_err(|e| anyhow::anyhow!(e))?;
             Ok(())
         }
         LaneCommands::Ls { detail } => {
             if detail {
-                list_wings_detail()
+                list_performers_detail()
             } else {
-                ws::list_wings().map_err(|e| anyhow::anyhow!(e))
+                ws::list_performers().map_err(|e| anyhow::anyhow!(e))
             }
         }
-        LaneCommands::Path { name } => ws::wing_path(&name).map_err(|e| anyhow::anyhow!(e)),
+        LaneCommands::Path { name } => ws::performer_path(&name).map_err(|e| anyhow::anyhow!(e)),
         LaneCommands::Rm { name, all, force } => {
             // VP-124: SP-aware delete を試みる (orchestration: PTY kill + tmux kill +
             // lane workspace rm + SystemEvent broadcast を 1 HTTP call で完結)。
             // --all は filesystem-only fallback (一括削除は SP 経由する意味なし、 個別 Lane
-            // address が必要なため)。 SP 不在 / failure なら現挙動 (ws::remove_wing fs-only)
+            // address が必要なため)。 SP 不在 / failure なら現挙動 (ws::remove_performer fs-only)
             // に fallback して compat 維持。
-            if let Some(ref wing_name) = name
+            if let Some(ref performer_name) = name
                 && !all
-                && try_sp_delete_wing(wing_name)
+                && try_sp_delete_performer(performer_name)
             {
                 return Ok(());
             }
-            ws::remove_wing(name.as_deref(), all, force).map_err(|e| anyhow::anyhow!(e))
+            ws::remove_performer(name.as_deref(), all, force).map_err(|e| anyhow::anyhow!(e))
         }
-        LaneCommands::Status => ws::status_wings().map_err(|e| anyhow::anyhow!(e)),
-        LaneCommands::Cleanup { force } => ws::cleanup_wings(force).map_err(|e| anyhow::anyhow!(e)),
+        LaneCommands::Status => ws::status_performers().map_err(|e| anyhow::anyhow!(e)),
+        LaneCommands::Cleanup { force } => {
+            ws::cleanup_performers(force).map_err(|e| anyhow::anyhow!(e))
+        }
         LaneCommands::Switch { name } => switch_lane_via_world(&name),
     }
 }
@@ -678,7 +681,7 @@ fn execute_lane(cmd: LaneCommands) -> Result<()> {
 /// MCP `list_lanes` の mailbox_addresses 計算 / project_addresses synthesis までは
 /// 実装せず、 SP `/api/lanes` の生 JSON を pretty print する (= SP が持つ live state を
 /// 直に出す、 mailbox は SKILL.md doc で計算式を案内する方針)。
-fn list_wings_detail() -> Result<()> {
+fn list_performers_detail() -> Result<()> {
     let (_project_name, port) = resolve_parent_project()
         .map_err(|e| anyhow::anyhow!("SP 解決失敗 (--detail は SP 稼働が前提): {}", e))?;
     let url = format!("http://[::1]:{}/api/lanes", port);
@@ -711,8 +714,8 @@ fn list_wings_detail() -> Result<()> {
 /// TheWorld の `/api/canvas/switch_lane` を POST、 接続中の Canvas WS 全 client に
 /// `{"type":"switch_lane","lane":...}` をブロードキャストする (mcp.rs:1042 と同じ path)。
 fn switch_lane_via_world(name: &str) -> Result<()> {
-    // 軽量 validate (= validate_wing_name と同 character class、 但し空チェックのみ強制)。
-    // lane 名は project name (lead lane) or wing name (= `<project>/wing/<name>`) を想定、
+    // 軽量 validate (= validate_performer_name と同 character class、 但し空チェックのみ強制)。
+    // lane 名は project name (conductor lane) or performer name (= `<project>/performer/<name>`) を想定、
     // server 側で実在 lane と照合される (= unknown lane は WS 受信側で no-op)。
     let trimmed = name.trim();
     if trimmed.is_empty() {
@@ -748,16 +751,16 @@ fn switch_lane_via_world(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// VP-124 Phase 1: SP-aware Wing Lane delete を試みる helper。
+/// VP-124 Phase 1: SP-aware Performer Lane delete を試みる helper。
 ///
 /// `vp lane rm <name>` (= 個別削除) で呼ばれ、 parent SP が稼働中なら HTTP DELETE 経由で
 /// `delete_lane_orchestrated` を発火 (= PTY kill + tmux kill + lane rm + SystemEvent broadcast を
 /// SP 側で atomically 実行)。 SP 不在 / API failure なら false 返して filesystem-only fallback
-/// (= 現挙動の `ws::remove_wing`) に委譲。
+/// (= 現挙動の `ws::remove_performer`) に委譲。
 ///
 /// best-effort: 中間 failure (SP unreachable, network error 等) は warn print して false。
 /// SP 200 OK のみ true、 SP 4xx / 5xx は failure 扱い。
-fn try_sp_delete_wing(wing_name: &str) -> bool {
+fn try_sp_delete_performer(performer_name: &str) -> bool {
     let (project_name, port) = match resolve_parent_project() {
         Ok(v) => v,
         Err(e) => {
@@ -766,8 +769,8 @@ fn try_sp_delete_wing(wing_name: &str) -> bool {
         }
     };
 
-    // address 構築: `<project>/wing/<name>`、 URL encoding は `/` のみ (slug は ASCII safe)。
-    let address = format!("{project_name}/wing/{wing_name}");
+    // address 構築: `<project>/performer/<name>`、 URL encoding は `/` のみ (slug は ASCII safe)。
+    let address = format!("{project_name}/performer/{performer_name}");
     let address_enc = address.replace('/', "%2F");
     let url = format!("http://[::1]:{port}/api/lanes?address={address_enc}&cleanup=true");
 

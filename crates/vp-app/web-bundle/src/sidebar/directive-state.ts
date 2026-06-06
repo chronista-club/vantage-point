@@ -3,33 +3,33 @@
  *
  * sidebar 内に **component scope を跨ぐ state / helper** を集約する module。 既存の sidebar store
  * (= Rust から push される SidebarState) とは別の **directive 専用の小さな state** を保持する場所。
- * 例: `n` directive が ProjectAccordion 内 local signal の addWingOpen を mutate するための registry、
+ * 例: `n` directive が ProjectAccordion 内 local signal の addPerformerOpen を mutate するための registry、
  * `d` directive の 2-click confirm pending state + visual hint signal、 など。
  */
 import { createSignal } from 'solid-js'
 
 // =============================================================================
-// `n` directive — AddWing form open registry
+// `n` directive — AddPerformer form open registry
 // =============================================================================
 //
-// AddWing form の open 状態は ProjectAccordion 内 local signal (`addWingOpen`) で管理されている。
+// AddPerformer form の open 状態は ProjectAccordion 内 local signal (`addPerformerOpen`) で管理されている。
 // `n` directive (= keyboard で active project の form を open) を実装するために、
 // 各 ProjectAccordion が mount 時に「project_path → setter」 を本 registry に register し、
 // directive 発火時に該当 setter を呼ぶ。
 
-const addWingOpenRegistry = new Map<string, (open: boolean) => void>()
+const addPerformerOpenRegistry = new Map<string, (open: boolean) => void>()
 
 /**
  * ProjectAccordion が mount 時に呼ぶ。 戻り値の unregister を onCleanup で呼ぶこと。
  */
-export function registerAddWingOpenSetter(
+export function registerAddPerformerOpenSetter(
   projectPath: string,
   setter: (open: boolean) => void,
 ): () => void {
-  addWingOpenRegistry.set(projectPath, setter)
+  addPerformerOpenRegistry.set(projectPath, setter)
   return () => {
-    if (addWingOpenRegistry.get(projectPath) === setter) {
-      addWingOpenRegistry.delete(projectPath)
+    if (addPerformerOpenRegistry.get(projectPath) === setter) {
+      addPerformerOpenRegistry.delete(projectPath)
     }
   }
 }
@@ -38,8 +38,8 @@ export function registerAddWingOpenSetter(
  * directive `n` の発火経路。 該当 project の form を open する。
  * 戻り値: setter が登録されていたら true、 されていなければ false。
  */
-export function openAddWingFor(projectPath: string): boolean {
-  const setter = addWingOpenRegistry.get(projectPath)
+export function openAddPerformerFor(projectPath: string): boolean {
+  const setter = addPerformerOpenRegistry.get(projectPath)
   if (!setter) return false
   setter(true)
   return true
@@ -55,7 +55,7 @@ export function openAddWingFor(projectPath: string): boolean {
 
 /** hint bar 表示の visible state。 Shell.tsx で `<Show when={deleteHintVisible()}>` で render。 */
 export const [deleteHintVisible, setDeleteHintVisible] = createSignal(false)
-/** hint bar に表示する label (= "delete wing: foo/wing/bar" 等)。 */
+/** hint bar に表示する label (= "delete performer: foo/performer/bar" 等)。 */
 export const [deleteHintLabel, setDeleteHintLabel] = createSignal('')
 
 // =============================================================================
@@ -70,5 +70,5 @@ export const [deleteHintLabel, setDeleteHintLabel] = createSignal('')
 
 /** lane number mode hint bar の visible state。 Shell.tsx で render。 */
 export const [laneSelectHintVisible, setLaneSelectHintVisible] = createSignal(false)
-/** lane number mode hint bar に表示する候補 lane の一覧 (= "1. project/lead  2. project/wing/foo  ...")。 */
+/** lane number mode hint bar に表示する候補 lane の一覧 (= "1. project/conductor  2. project/performer/foo  ...")。 */
 export const [laneSelectHintLabel, setLaneSelectHintLabel] = createSignal('')

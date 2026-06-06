@@ -1748,9 +1748,9 @@ impl ProcessManagerCapability {
         }
     }
 
-    /// VP-129: lane root を watch して wing dir 削除を SP DELETE に bridge する FSEvents watcher。
+    /// VP-129: lane root を watch して performer dir 削除を SP DELETE に bridge する FSEvents watcher。
     ///
-    /// **「folder = Lane 空間」 axiom の物理実装**。 user が Finder / `rm -rf` で wing dir を
+    /// **「folder = Lane 空間」 axiom の物理実装**。 user が Finder / `rm -rf` で performer dir を
     /// 削除した時、 OS の file system event (Mac → FSEvents、 Linux → inotify) → notify crate
     /// → 本 watcher が path → project 解決 → SP `DELETE /api/lanes` 自動発火、 sidebar /
     /// tmux / PtySlot が cascade で同期 cleanup される。
@@ -1936,7 +1936,8 @@ impl ProcessManagerCapability {
         event: &notify::Event,
     ) {
         for path in &event.paths {
-            let Some((project_name, project_path, wing_name)) = resolve_lane_event(path, path_map)
+            let Some((project_name, project_path, performer_name)) =
+                resolve_lane_event(path, path_map)
             else {
                 continue;
             };
@@ -1951,9 +1952,9 @@ impl ProcessManagerCapability {
             };
             let Some(port) = port else {
                 tracing::debug!(
-                    "lane watcher: SP not running for project={} (skip) wing={}",
+                    "lane watcher: SP not running for project={} (skip) performer={}",
                     project_name,
-                    wing_name
+                    performer_name
                 );
                 continue;
             };
@@ -1961,16 +1962,16 @@ impl ProcessManagerCapability {
             // SP DELETE /api/lanes (cleanup=false、 dir は既に gone)。 self-loop case
             // (= SP 経由で削除されて dir が消えた → watcher が Remove 検知 → 本 DELETE 発火)
             // は SP 側で 404 (Lane not found) 返却、 log debug 落ち。
-            let address = format!("{}/wing/{}", project_name, wing_name);
+            let address = format!("{}/performer/{}", project_name, performer_name);
             let address_enc = address.replace('/', "%2F");
             let url = format!(
                 "http://[::1]:{}/api/lanes?address={}&cleanup=false",
                 port, address_enc
             );
             tracing::info!(
-                "lane watcher: dir removed → SP DELETE 発火 (project={}, wing={}, port={})",
+                "lane watcher: dir removed → SP DELETE 発火 (project={}, performer={}, port={})",
                 project_name,
-                wing_name,
+                performer_name,
                 port
             );
             match client.delete(&url).send().await {
@@ -1996,8 +1997,8 @@ impl ProcessManagerCapability {
         }
     }
 
-    /// F.8 B Convergent: lane Create event を 1 path 処理。 path → project + wing_name 解決 →
-    /// SP POST /api/lanes (kind=wing, name=<wing>, cwd=<existing_dir>) で auto-spawn を依頼する。
+    /// F.8 B Convergent: lane Create event を 1 path 処理。 path → project + performer_name 解決 →
+    /// SP POST /api/lanes (kind=performer, name=<performer>, cwd=<existing_dir>) で auto-spawn を依頼する。
     ///
     /// `run_lane_watcher` の inner、 sibling は `handle_lane_remove_event` (Remove 時の SP DELETE)。
     /// 設計対称性: Remove → DELETE / Create → POST で「dir 状態と LanePool 状態を一致させる」
@@ -2006,7 +2007,7 @@ impl ProcessManagerCapability {
     /// 競合 case:
     /// - sidebar `+` で作成中に Create event fired → SP 側 LanePool 重複チェックで CONFLICT
     ///   が返り、 watcher 側はそれを debug log で受ける (= silent OK)
-    /// - SP 起動時 bootstrap で既に同 wing が SpawnLane Cmd 投入済 → 上記同様 CONFLICT で no-op
+    /// - SP 起動時 bootstrap で既に同 performer が SpawnLane Cmd 投入済 → 上記同様 CONFLICT で no-op
     async fn handle_lane_create_event(
         world: &Arc<RwLock<Self>>,
         client: &reqwest::Client,
@@ -2018,7 +2019,8 @@ impl ProcessManagerCapability {
             if !path.is_dir() {
                 continue;
             }
-            let Some((project_name, project_path, wing_name)) = resolve_lane_event(path, path_map)
+            let Some((project_name, project_path, performer_name)) =
+                resolve_lane_event(path, path_map)
             else {
                 continue;
             };
@@ -2032,57 +2034,57 @@ impl ProcessManagerCapability {
             };
             let Some(port) = port else {
                 tracing::debug!(
-                    "lane watcher: SP not running for project={} (skip create) wing={}",
+                    "lane watcher: SP not running for project={} (skip create) performer={}",
                     project_name,
-                    wing_name
+                    performer_name
                 );
                 continue;
             };
 
-            // SP POST /api/lanes (cwd 明示で既存 dir を再利用、 new_wing_in skip 経路)。
+            // SP POST /api/lanes (cwd 明示で既存 dir を再利用、 new_performer_in skip 経路)。
             // body 構築は serde_json::json! で minimal、 wire 互換は CreateLaneReq (routes/lanes.rs) と一致。
             let url = format!("http://[::1]:{}/api/lanes", port);
             let body = serde_json::json!({
-                "kind": "wing",
-                "name": wing_name,
+                "kind": "performer",
+                "name": performer_name,
                 "cwd": path.to_string_lossy(),
             });
             tracing::info!(
-                "lane watcher: dir created → SP POST 発火 (project={}, wing={}, port={})",
+                "lane watcher: dir created → SP POST 発火 (project={}, performer={}, port={})",
                 project_name,
-                wing_name,
+                performer_name,
                 port
             );
             match client.post(&url).json(&body).send().await {
                 Ok(r) if r.status().is_success() => {
                     tracing::info!(
-                        "lane watcher: SP POST 成功 (project={}, wing={})",
+                        "lane watcher: SP POST 成功 (project={}, performer={})",
                         project_name,
-                        wing_name
+                        performer_name
                     );
                 }
                 Ok(r) if r.status() == reqwest::StatusCode::CONFLICT => {
                     // 競合: sidebar `+` or bootstrap で既に Lane 作成済。 silent OK。
                     tracing::debug!(
-                        "lane watcher: SP POST CONFLICT (= 既に Lane あり、 silent OK) project={} wing={}",
+                        "lane watcher: SP POST CONFLICT (= 既に Lane あり、 silent OK) project={} performer={}",
                         project_name,
-                        wing_name
+                        performer_name
                     );
                 }
                 Ok(r) => {
                     tracing::warn!(
-                        "lane watcher: SP POST non-success status={} project={} wing={}",
+                        "lane watcher: SP POST non-success status={} project={} performer={}",
                         r.status(),
                         project_name,
-                        wing_name
+                        performer_name
                     );
                 }
                 Err(e) => {
                     tracing::warn!(
-                        "lane watcher: SP POST 失敗 (port={}, project={}, wing={}): {}",
+                        "lane watcher: SP POST 失敗 (port={}, project={}, performer={}): {}",
                         port,
                         project_name,
-                        wing_name,
+                        performer_name,
                         e
                     );
                 }
@@ -2092,11 +2094,11 @@ impl ProcessManagerCapability {
 }
 
 /// lane Remove event 1 path を解決する純粋関数。 `path_map` (= `<.vp/lanes path>` → `(project_name,
-/// project_path)`) から parent match で project を逆引きし、 path の file_name を wing 名として
+/// project_path)`) から parent match で project を逆引きし、 path の file_name を performer 名として
 /// 返す。
 ///
-/// 戻り値: `Some((project_name, project_path, wing_name))` if 完全 match。 そうでなければ `None`。
-/// - dotfile / 空 wing 名は skip (= `.git` 内ファイル等の伝播除外)
+/// 戻り値: `Some((project_name, project_path, performer_name))` if 完全 match。 そうでなければ `None`。
+/// - dotfile / 空 performer 名は skip (= `.git` 内ファイル等の伝播除外)
 /// - path_map に登録されてない project 配下の path は skip
 /// - I/O なしの pure fn (= test しやすい、 mock 不要)
 fn resolve_lane_event(
@@ -2105,11 +2107,11 @@ fn resolve_lane_event(
 ) -> Option<(String, String, String)> {
     let parent = path.parent()?;
     let (project_name, project_path) = path_map.get(parent)?;
-    let wing_name = path.file_name()?.to_str()?.to_string();
-    if wing_name.is_empty() || wing_name.starts_with('.') {
+    let performer_name = path.file_name()?.to_str()?.to_string();
+    if performer_name.is_empty() || performer_name.starts_with('.') {
         return None;
     }
-    Some((project_name.clone(), project_path.clone(), wing_name))
+    Some((project_name.clone(), project_path.clone(), performer_name))
 }
 
 /// lane watcher hot-reload の純粋 diff 計算。 `current` (= 現在 arm 済 path 集合) と
@@ -2267,7 +2269,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_lane_event_skips_dotfile_wing_name() {
+    fn resolve_lane_event_skips_dotfile_performer_name() {
         // `.git` や `.DS_Store` の Remove event (lane dir 内部からの伝播) を skip。
         // NonRecursive watch で arrive する可能性は低いが防御で。
         let map = make_path_map(&[("/repo/.vp/lanes", "repo", "/repo")]);
@@ -2289,14 +2291,14 @@ mod tests {
             ("/repo-a/.vp/lanes", "repo-a", "/repo-a"),
             ("/repo-b/.vp/lanes", "repo-b", "/repo-b"),
         ]);
-        let path_b = std::path::Path::new("/repo-b/.vp/lanes/wing-x");
+        let path_b = std::path::Path::new("/repo-b/.vp/lanes/performer-x");
         let resolved = resolve_lane_event(path_b, &map);
         assert_eq!(
             resolved,
             Some((
                 "repo-b".to_string(),
                 "/repo-b".to_string(),
-                "wing-x".to_string()
+                "performer-x".to_string()
             ))
         );
     }

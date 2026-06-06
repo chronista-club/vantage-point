@@ -2,11 +2,11 @@
 //!
 //! ## 概要
 //!
-//! Lead × Wing × Memory orchestration の core 操作を CLI から呼ぶための薄い wrapper。
+//! Conductor × Performer × Memory orchestration の core 操作を CLI から呼ぶための薄い wrapper。
 //! 全 operation は SP の HTTP endpoint を直接叩く (= QUIC channel 不要)、 cwd から
 //! parent project を auto-resolve する。
 //!
-//! `vp flow handoff <name> --task-spec <file or '-'>` で新規 wing への atomic 手渡し、
+//! `vp flow handoff <name> --task-spec <file or '-'>` で新規 performer への atomic 手渡し、
 //! `vp flow progress` で parallel work 集約 view を表示。
 //!
 //! MCP tool (`mcp__vantage-point__flow_handoff` / `flow_progress`) と同じ semantics、
@@ -19,12 +19,12 @@ use std::time::Duration;
 
 #[derive(Subcommand, Debug)]
 pub enum FlowCommands {
-    /// Wing 新規作成 + 初手 wire_send + tmux nudge を atomic に実行
+    /// Performer 新規作成 + 初手 wire_send + tmux nudge を atomic に実行
     ///
-    /// 失敗時は wing を rollback。 既存 3 step (`vp lane new` + `vp wire send` + `tmux send-keys`)
+    /// 失敗時は performer を rollback。 既存 3 step (`vp lane new` + `vp wire send` + `tmux send-keys`)
     /// を 1 call に圧縮。
     Handoff {
-        /// Wing name (= slug、 例: 'feat-api')
+        /// Performer name (= slug、 例: 'feat-api')
         name: String,
         /// Task spec の入力元: ファイルパス、 もしくは '-' で stdin
         #[arg(long, short)]
@@ -42,7 +42,7 @@ pub enum FlowCommands {
         #[arg(long)]
         no_nudge: bool,
     },
-    /// 現 project の parallel work 集約 view (= 各 wing の git status + 未読 wire 数)
+    /// 現 project の parallel work 集約 view (= 各 performer の git status + 未読 wire 数)
     Progress {
         /// 出力フォーマット: 'json' (default) / 'table'
         #[arg(long, default_value = "json")]
@@ -87,7 +87,7 @@ fn read_task_spec(arg: &str) -> Result<String> {
     }
 }
 
-/// handoff orchestration: SP 経由で wing 作成 → wire_send → nudge を atomic に
+/// handoff orchestration: SP 経由で performer 作成 → wire_send → nudge を atomic に
 async fn handoff(
     name: &str,
     task_spec_arg: &str,
@@ -113,9 +113,9 @@ async fn handoff(
         .build()
         .context("reqwest client build")?;
 
-    // Step 1: Wing 作成 (POST /api/lanes)
+    // Step 1: Performer 作成 (POST /api/lanes)
     let mut create_body = serde_json::json!({
-        "kind": "wing",
+        "kind": "performer",
         "name": name,
     });
     if let Some(ref b) = branch.as_ref().filter(|s| !s.trim().is_empty()) {
@@ -134,7 +134,7 @@ async fn handoff(
     let status = resp.status();
     let text = resp.text().await.unwrap_or_default();
     if !status.is_success() {
-        anyhow::bail!("Wing 作成失敗 ({}): {}", status, text);
+        anyhow::bail!("Performer 作成失敗 ({}): {}", status, text);
     }
     let lane_info: serde_json::Value =
         serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
@@ -143,7 +143,7 @@ async fn handoff(
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow!("/api/lanes response に address.project がありません"))?
         .to_string();
-    let wing_name = lane_info
+    let performer_name = lane_info
         .pointer("/address/name")
         .and_then(|v| v.as_str())
         .unwrap_or(name)
@@ -160,16 +160,16 @@ async fn handoff(
         .unwrap_or("")
         .to_string();
 
-    let wing_address = format!("agent@{}/{}", project_name, wing_name);
-    let lane_address = format!("{}/wing/{}", project_name, wing_name);
+    let performer_address = format!("agent@{}/{}", project_name, performer_name);
+    let lane_address = format!("{}/performer/{}", project_name, performer_name);
 
-    // Step 2: wire_send (POST /api/wire/send)。 失敗時は wing rollback。
-    // `from` は lead 相当 (= CLI から起動 = lead context として送信)。
+    // Step 2: wire_send (POST /api/wire/send)。 失敗時は performer rollback。
+    // `from` は conductor 相当 (= CLI から起動 = conductor context として送信)。
     let send_url = format!("{}/api/wire/send", base);
     let from = format!("agent@{}", project_name);
     let send_payload = serde_json::json!({
         "from": from,
-        "to": [wing_address.clone()],
+        "to": [performer_address.clone()],
         "body": {
             "kind": "task",
             "task_spec": task_spec,
@@ -186,15 +186,18 @@ async fn handoff(
     {
         Ok(r) => r,
         Err(e) => {
-            rollback_wing(&client, &base, &project_name, &wing_name).await;
-            anyhow::bail!("wire_send 失敗 (wing rollback 済): {}", e);
+            rollback_performer(&client, &base, &project_name, &performer_name).await;
+            anyhow::bail!("wire_send 失敗 (performer rollback 済): {}", e);
         }
     };
     let send_json: serde_json::Value = match send_resp.json().await {
         Ok(j) => j,
         Err(e) => {
-            rollback_wing(&client, &base, &project_name, &wing_name).await;
-            anyhow::bail!("wire_send response parse 失敗 (wing rollback 済): {}", e);
+            rollback_performer(&client, &base, &project_name, &performer_name).await;
+            anyhow::bail!(
+                "wire_send response parse 失敗 (performer rollback 済): {}",
+                e
+            );
         }
     };
     if send_json.get("status").and_then(|v| v.as_str()) == Some("error") {
@@ -202,8 +205,8 @@ async fn handoff(
             .get("error")
             .and_then(|v| v.as_str())
             .unwrap_or("unknown");
-        rollback_wing(&client, &base, &project_name, &wing_name).await;
-        anyhow::bail!("wire_send server error (wing rollback 済): {}", err);
+        rollback_performer(&client, &base, &project_name, &performer_name).await;
+        anyhow::bail!("wire_send server error (performer rollback 済): {}", err);
     }
     let wire_msg_id = send_json
         .get("id")
@@ -220,10 +223,10 @@ async fn handoff(
 
     // 結果を 1 行 JSON で出力 (機械処理しやすく)
     let result = serde_json::json!({
-        "wing_address": wing_address,
+        "performer_address": performer_address,
         "lane_address": lane_address,
         "wire_msg_id": wire_msg_id,
-        "wing_dir": cwd,
+        "performer_dir": cwd,
         "branch": derived_branch,
         "mode": mode,
         "nudge": nudge_status,
@@ -232,9 +235,9 @@ async fn handoff(
     Ok(())
 }
 
-/// nudge — tmux send-keys で wing の Claude session に wire_recv を促す (best-effort)
+/// nudge — tmux send-keys で performer の Claude session に wire_recv を促す (best-effort)
 async fn try_nudge(client: &reqwest::Client, base: &str, lane_address: &str) -> String {
-    // 1. lane address (project/wing/name) を tmux pane id に resolve
+    // 1. lane address (project/performer/name) を tmux pane id に resolve
     let resolve_url = format!("{}/api/tmux/resolve-pane?q={}", base, lane_address);
     let resolve_resp = match client.get(&resolve_url).send().await {
         Ok(r) => r,
@@ -250,7 +253,7 @@ async fn try_nudge(client: &reqwest::Client, base: &str, lane_address: &str) -> 
     };
 
     // 2. send-keys で nudge text を送信 (HTTP の TmuxSendKeysParams は text + enter)
-    let nudge_text = "lead から task が届いています。 mcp__vantage-point__wire_recv で確認、 内容に従って着手してください。 質問は wire_send + reply_to で thread 返信。";
+    let nudge_text = "conductor から task が届いています。 mcp__vantage-point__wire_recv で確認、 内容に従って着手してください。 質問は wire_send + reply_to で thread 返信。";
     let send_url = format!("{}/api/tmux/send-keys", base);
     let send_payload = serde_json::json!({
         "pane_id": pane_id,
@@ -263,25 +266,30 @@ async fn try_nudge(client: &reqwest::Client, base: &str, lane_address: &str) -> 
     }
 }
 
-/// Rollback: wing 削除 (best-effort、 失敗は stderr に log)
-async fn rollback_wing(client: &reqwest::Client, base: &str, project_name: &str, wing_name: &str) {
-    let address = format!("{}/wing/{}", project_name, wing_name);
+/// Rollback: performer 削除 (best-effort、 失敗は stderr に log)
+async fn rollback_performer(
+    client: &reqwest::Client,
+    base: &str,
+    project_name: &str,
+    performer_name: &str,
+) {
+    let address = format!("{}/performer/{}", project_name, performer_name);
     let address_enc = address.replace('/', "%2F");
     let url = format!("{}/api/lanes?address={}&cleanup=true", base, address_enc);
     match client.delete(&url).send().await {
         Ok(r) if r.status().is_success() || r.status() == reqwest::StatusCode::NOT_FOUND => {
-            eprintln!("[flow handoff] rollback: wing {} 削除済", address);
+            eprintln!("[flow handoff] rollback: performer {} 削除済", address);
         }
         Ok(r) => {
             eprintln!(
-                "[flow handoff] rollback 失敗 (HTTP {}): wing {} は残置されています",
+                "[flow handoff] rollback 失敗 (HTTP {}): performer {} は残置されています",
                 r.status(),
                 address
             );
         }
         Err(e) => {
             eprintln!(
-                "[flow handoff] rollback HTTP 失敗: wing {} は残置されています ({})",
+                "[flow handoff] rollback HTTP 失敗: performer {} は残置されています ({})",
                 address, e
             );
         }
@@ -318,7 +326,7 @@ async fn progress(format: &str) -> Result<()> {
         .ok_or_else(|| anyhow!("project_dir basename 取得失敗: {}", project_dir))?
         .to_string();
 
-    // /api/lanes で lanes (wing_status 込み) を取得
+    // /api/lanes で lanes (performer_status 込み) を取得
     let lanes_resp: serde_json::Value = client
         .get(format!("{}/api/lanes", base))
         .send()
@@ -333,23 +341,23 @@ async fn progress(format: &str) -> Result<()> {
         .cloned()
         .unwrap_or_default();
 
-    let mut wings: Vec<serde_json::Value> = Vec::new();
-    let mut lead_unread: u64 = 0;
+    let mut performers: Vec<serde_json::Value> = Vec::new();
+    let mut conductor_unread: u64 = 0;
     for lane in lanes_in {
         let kind = lane
             .get("kind")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        let label = if kind == "lead" {
-            "lead".to_string()
+        let label = if kind == "conductor" {
+            "conductor".to_string()
         } else {
             lane.get("name")
                 .and_then(|v| v.as_str())
                 .unwrap_or("unnamed")
                 .to_string()
         };
-        let agent_addr = if kind == "lead" {
+        let agent_addr = if kind == "conductor" {
             format!("agent@{}", project)
         } else {
             format!("agent@{}/{}", project, label)
@@ -370,8 +378,8 @@ async fn progress(format: &str) -> Result<()> {
             Err(_) => 0,
         };
 
-        if kind == "lead" {
-            lead_unread = unread_total;
+        if kind == "conductor" {
+            conductor_unread = unread_total;
             continue;
         }
 
@@ -381,13 +389,13 @@ async fn progress(format: &str) -> Result<()> {
             .unwrap_or("")
             .to_string();
         let cwd = lane.get("cwd").and_then(|v| v.as_str()).unwrap_or("");
-        let wing_status = lane
-            .get("wing_status")
+        let performer_status = lane
+            .get("performer_status")
             .cloned()
             .unwrap_or(serde_json::Value::Null);
 
-        // 5-state FSM derive (= lead 説示 control surrender model)。
-        // wire_latest_msg + wing_status から flow_state / control_surrender / state_reason を推論。
+        // 5-state FSM derive (= conductor 説示 control surrender model)。
+        // wire_latest_msg + performer_status から flow_state / control_surrender / state_reason を推論。
         let latest_payload = serde_json::json!({ "agent": agent_addr });
         let latest_resp = client
             .post(format!("{}/api/wire/latest-msg", base))
@@ -403,16 +411,19 @@ async fn progress(format: &str) -> Result<()> {
             },
             Err(_) => None,
         };
-        let wing_status_view = crate::flow::WingStatusView::from_json(&wing_status);
-        let fsm =
-            crate::flow::derive_flow_state(latest_view.as_ref(), wing_status_view, &agent_addr);
+        let performer_status_view = crate::flow::PerformerStatusView::from_json(&performer_status);
+        let fsm = crate::flow::derive_flow_state(
+            latest_view.as_ref(),
+            performer_status_view,
+            &agent_addr,
+        );
 
-        wings.push(serde_json::json!({
+        performers.push(serde_json::json!({
             "name": label,
             "address": agent_addr,
             "state": state,
             "cwd": cwd,
-            "wing_status": wing_status,
+            "performer_status": performer_status,
             "unread_wire_count": unread_total,
             "flow_state": fsm.state,
             "control_surrender": fsm.control_surrender,
@@ -423,11 +434,11 @@ async fn progress(format: &str) -> Result<()> {
 
     let result = serde_json::json!({
         "project": project,
-        "lead": {
+        "conductor": {
             "address": format!("agent@{}", project),
-            "unread_wire_count": lead_unread,
+            "unread_wire_count": conductor_unread,
         },
-        "wings": wings,
+        "performers": performers,
     });
 
     if format == "json" {
@@ -441,27 +452,27 @@ async fn progress(format: &str) -> Result<()> {
 /// `--format table` の簡易テーブル出力 (機械処理向けじゃない、 human 用)
 fn print_table(view: &serde_json::Value) {
     let project = view.get("project").and_then(|v| v.as_str()).unwrap_or("?");
-    let lead_unread = view
-        .pointer("/lead/unread_wire_count")
+    let conductor_unread = view
+        .pointer("/conductor/unread_wire_count")
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
     println!("Project: {}", project);
-    println!("  Lead unread wire: {}", lead_unread);
-    let wings = view
-        .get("wings")
+    println!("  Conductor unread wire: {}", conductor_unread);
+    let performers = view
+        .get("performers")
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default();
-    if wings.is_empty() {
-        println!("  (no wings)");
+    if performers.is_empty() {
+        println!("  (no performers)");
         return;
     }
     println!();
     println!(
         "{:<24} {:<10} {:<18} {:>7} {:>7} {:>7} {:>7} BRANCH",
-        "WING", "STATE", "MODE", "AHEAD", "BEHIND", "DIRTY", "UNREAD"
+        "PERFORMER", "STATE", "MODE", "AHEAD", "BEHIND", "DIRTY", "UNREAD"
     );
-    for w in wings {
+    for w in performers {
         let name = w.get("name").and_then(|v| v.as_str()).unwrap_or("?");
         let state = w.get("state").and_then(|v| v.as_str()).unwrap_or("?");
         let unread = w
@@ -469,22 +480,22 @@ fn print_table(view: &serde_json::Value) {
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
         let ahead = w
-            .pointer("/wing_status/ahead")
+            .pointer("/performer_status/ahead")
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
         let behind = w
-            .pointer("/wing_status/behind")
+            .pointer("/performer_status/behind")
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
         let dirty = w
-            .pointer("/wing_status/dirty_count")
+            .pointer("/performer_status/dirty_count")
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
         let branch = w
-            .pointer("/wing_status/branch")
+            .pointer("/performer_status/branch")
             .and_then(|v| v.as_str())
             .unwrap_or("-");
-        // flow_state を emoji label に変換 (= "idle" → "⏸ idle" 等、 FSM 未 derive の wing は "-")
+        // flow_state を emoji label に変換 (= "idle" → "⏸ idle" 等、 FSM 未 derive の performer は "-")
         let mode_label = w
             .get("flow_state")
             .and_then(|v| v.as_str())
@@ -529,19 +540,19 @@ mod tests {
         assert!(err.to_string().contains("task_spec ファイル読み込み失敗"));
     }
 
-    /// table 出力は project + wings の最低限を含む (= flow_state MODE column 込み)
+    /// table 出力は project + performers の最低限を含む (= flow_state MODE column 込み)
     #[test]
     fn print_table_smoke() {
         // smoke: panic しないことだけ確認 (stdout は捕捉しない、 simple coverage)
         let v = serde_json::json!({
             "project": "demo",
-            "lead": { "address": "agent@demo", "unread_wire_count": 0 },
-            "wings": [{
+            "conductor": { "address": "agent@demo", "unread_wire_count": 0 },
+            "performers": [{
                 "name": "feat-a",
                 "address": "agent@demo/feat-a",
                 "state": "Running",
-                "cwd": "/tmp/wing",
-                "wing_status": {
+                "cwd": "/tmp/performer",
+                "performer_status": {
                     "branch": "mako/feat-a",
                     "ahead": 1,
                     "behind": 0,
@@ -553,7 +564,7 @@ mod tests {
                 "unread_wire_count": 3,
                 "flow_state": "hitl_pending",
                 "control_surrender": false,
-                "state_reason": "wing posted question, awaiting lead reply",
+                "state_reason": "performer posted question, awaiting conductor reply",
                 "last_state_transition_at": 1_000_000_000_000_i64,
             }]
         });

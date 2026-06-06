@@ -2,7 +2,7 @@
 //!
 //! 関連 memory:
 //! - `mem_1CaTpCQH8iLJ2PasRcPjHv` (Architecture v4: Process recursive、9 component minimum)
-//! - `mem_1CaSmvKgsX2AQxRYFYgNM3` (Lead pane shell — TheHand path、 PR-B 後は vp:stand:shell)
+//! - `mem_1CaSmvKgsX2AQxRYFYgNM3` (Conductor pane shell — TheHand path、 PR-B 後は vp:stand:shell)
 //!
 //! ## 役割
 //!
@@ -22,7 +22,7 @@
 //! - `VP_CWD`     : project directory (= `cwd` 引数)
 //! - `VP_SESSION` : tmux session 名 (deterministic、 `addr.tmux_session_name(stand_name)`)
 //! - `VP_PROJECT` : `addr.project`
-//! - `VP_LANE`    : lane label (`lead` / wing name / `unnamed`)
+//! - `VP_LANE`    : lane label (`conductor` / performer name / `unnamed`)
 
 use std::path::Path;
 
@@ -129,12 +129,12 @@ pub fn spawn_with_fallback(
     Ok((slot, rx))
 }
 
-/// LaneAddress の lane label を導出 (Lead → "lead"、 Wing(name) → name、 Wing(None) → "unnamed")
+/// LaneAddress の lane label を導出 (Conductor → "conductor"、 Performer(name) → name、 Performer(None) → "unnamed")
 fn lane_label(addr: &LaneAddress) -> &str {
     match (&addr.kind, addr.name.as_deref()) {
-        (LaneKind::Lead, _) => "lead",
-        (LaneKind::Wing, Some(n)) => n,
-        (LaneKind::Wing, None) => "unnamed",
+        (LaneKind::Conductor, _) => "conductor",
+        (LaneKind::Performer, Some(n)) => n,
+        (LaneKind::Performer, None) => "unnamed",
     }
 }
 
@@ -192,7 +192,7 @@ mod tests {
     /// PR-pre2 (VP-118) で hd → echoes rename。
     #[test]
     fn build_stand_command_returns_mise_invocation() {
-        let addr = LaneAddress::lead("vp");
+        let addr = LaneAddress::conductor("vp");
         let cmd = build_stand_command("echoes", &addr, Path::new("/tmp"));
         assert_eq!(cmd.program, "mise");
         assert_eq!(
@@ -214,7 +214,7 @@ mod tests {
     /// VP_* env が doc 11 §3.3 通りに injected されていること。
     #[test]
     fn build_stand_command_injects_vp_env() {
-        let addr = LaneAddress::wing("vantage-point", "sub");
+        let addr = LaneAddress::performer("vantage-point", "sub");
         let cmd = build_stand_command("hd", &addr, Path::new("/work/vp"));
 
         let env: std::collections::HashMap<_, _> = cmd.env.iter().cloned().collect();
@@ -233,7 +233,7 @@ mod tests {
     /// stand_name は task 名にそのまま埋め込まれる (新規 stand の追加耐性)。
     #[test]
     fn build_stand_command_passes_arbitrary_stand_name() {
-        let addr = LaneAddress::lead("vp");
+        let addr = LaneAddress::conductor("vp");
         let cmd = build_stand_command("opus-xhigh", &addr, Path::new("/tmp"));
         assert_eq!(
             cmd.args,
@@ -243,21 +243,21 @@ mod tests {
         let env: std::collections::HashMap<_, _> = cmd.env.iter().cloned().collect();
         assert_eq!(
             env.get("VP_SESSION").map(String::as_str),
-            Some("vp-vp-lead-opus-xhigh")
+            Some("vp-vp-conductor-opus-xhigh")
         );
     }
 
-    /// Lead lane の VP_LANE は "lead"、 Wing(None) は "unnamed"。
+    /// Conductor lane の VP_LANE は "conductor"、 Performer(None) は "unnamed"。
     #[test]
     fn build_stand_command_lane_label_variants() {
-        let lead = LaneAddress::lead("vp");
-        let cmd = build_stand_command("hd", &lead, Path::new("/tmp"));
+        let conductor = LaneAddress::conductor("vp");
+        let cmd = build_stand_command("hd", &conductor, Path::new("/tmp"));
         let env: std::collections::HashMap<_, _> = cmd.env.iter().cloned().collect();
-        assert_eq!(env.get("VP_LANE").map(String::as_str), Some("lead"));
+        assert_eq!(env.get("VP_LANE").map(String::as_str), Some("conductor"));
 
         let unnamed = LaneAddress {
             project: "vp".into(),
-            kind: LaneKind::Wing,
+            kind: LaneKind::Performer,
             name: None,
         };
         let cmd = build_stand_command("hd", &unnamed, Path::new("/tmp"));

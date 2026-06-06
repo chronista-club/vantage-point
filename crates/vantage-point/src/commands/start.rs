@@ -46,7 +46,7 @@ pub fn create_tmux_session(
     }
 
     // セッションが即死していないか確認（claude --continue が壊れたセッションで落ちるケース）
-    // lane ウィング環境ではセッション履歴がなく --continue が即死するため、十分に待つ
+    // lane パフォーマー環境ではセッション履歴がなく --continue が即死するため、十分に待つ
     std::thread::sleep(std::time::Duration::from_millis(1500));
     if !tmux_session_exists(name) {
         tracing::warn!("claude --continue が即死。--continue なしでフォールバック");

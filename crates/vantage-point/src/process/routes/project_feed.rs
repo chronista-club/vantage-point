@@ -4,7 +4,7 @@
 //! Canvas クライアントに Project Feed（プロジェクト単位）でラップして中継する。
 //!
 //! Note (2026-04-27 mem_1CaSsN7xj69aVQtLPQFJxQ):
-//! 旧名「Lane」は VP-77 / SP architecture の Lane (= SP 内 Lead/Wing pane) と命名衝突するため、
+//! 旧名「Lane」は VP-77 / SP architecture の Lane (= SP 内 Conductor/Performer pane) と命名衝突するため、
 //! 内部 type 名を `ProjectFeed*` に rename。WS endpoint URL `/ws/lanes` と JSON wire shape
 //! (enum variant 名 / field 名) は外部互換のため**維持**。
 //!

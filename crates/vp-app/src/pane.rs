@@ -9,7 +9,7 @@
 //! ## sidebar 描画
 //!
 //! - Project (= Runtime Process) accordion: `ProjectPaneState`
-//! - Lane (= Session Process / Lead/Wing): `SidebarState.lanes_by_project` (SP fetch 結果)
+//! - Lane (= Session Process / Conductor/Performer): `SidebarState.lanes_by_project` (SP fetch 結果)
 //! - Stand (= Stand process / Echoes/Shell/...): Lane の中身として並列 row
 //!
 //! つまり Pane は廃止、 階層は **Project → Lane → Stand** に統一。
@@ -17,7 +17,7 @@
 //! ## active selection
 //!
 //! `SidebarState.active_lane_address` で 1 つだけ active な Lane を持つ。
-//! 形式は Lane address の Display 表現 (`"<project>/lead"` / `"<project>/wing/<name>"`)。
+//! 形式は Lane address の Display 表現 (`"<project>/conductor"` / `"<project>/performer/<name>"`)。
 
 use serde::{Deserialize, Serialize};
 
@@ -115,7 +115,7 @@ pub struct SidebarState {
     /// 起動時に再 fetch されるので disk persistence は実質意味薄いが、Serialize は維持
     #[serde(default)]
     pub lanes_by_project: std::collections::HashMap<String, Vec<crate::client::LaneInfo>>,
-    /// 現在 active な Lane の address (Display 形 `"<project>/lead"` 等)
+    /// 現在 active な Lane の address (Display 形 `"<project>/conductor"` 等)
     /// app 全体で 1 つだけ。 `lane:select` IPC で更新される。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_lane_address: Option<String>,
@@ -134,7 +134,7 @@ pub struct SidebarState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub currents_order: Option<Vec<String>>,
     /// Phase 5-D Sprint C P2.1: per-Lane HD notification unread count。
-    /// Key: Lane address (Display 形 `"<project>/lead"` 等)、 Value: 未読 OSC 99 focus event 数。
+    /// Key: Lane address (Display 形 `"<project>/conductor"` 等)、 Value: 未読 OSC 99 focus event 数。
     /// `OscNotification` event で increment、 `lane:select` で対応 Lane を 0 reset。
     /// disk persist 不要 (session 起動で 0 から)、 skip_serializing で軽量化。
     #[serde(default)]
@@ -154,7 +154,7 @@ pub struct SidebarState {
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub session_titles: std::collections::HashMap<String, String>,
     /// VP-147 PR-P2-3: per-Lane の mailbox inbox 状況。
-    /// Key: Lane address (Display 形 `"<project>/lead"`)、 Value: [`MessageState`]。
+    /// Key: Lane address (Display 形 `"<project>/conductor"`)、 Value: [`MessageState`]。
     /// `spawn_lane_inbox_poller` (5s 間隔) が `AppEvent::ResolveLaneInboxes` を発火、
     /// main thread が active Lane に対して MessageState を populate する。
     /// JS 側は entry が存在する Lane に `.vp-message-icon` を render (Echoes icon の右隣)。
@@ -215,13 +215,16 @@ mod tests {
         s.processes.push(ProjectPaneState::new("/a", "alpha"));
         s.activity.world_online = true;
         s.activity.project_count = 1;
-        s.active_lane_address = Some("alpha/lead".into());
+        s.active_lane_address = Some("alpha/conductor".into());
         let json = serde_json::to_string(&s).unwrap();
         let parsed: SidebarState = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.processes.len(), 1);
         assert!(parsed.activity.world_online);
         assert_eq!(parsed.widget, WidgetKind::Activity);
-        assert_eq!(parsed.active_lane_address.as_deref(), Some("alpha/lead"));
+        assert_eq!(
+            parsed.active_lane_address.as_deref(),
+            Some("alpha/conductor")
+        );
     }
 
     #[test]
