@@ -178,8 +178,8 @@ pub fn generate_terminal_token() -> String {
 /// TheWorld 側の registry チャネルハンドラが切断を検知 → running_processes から即時除去。
 ///
 /// Phase 1d: agent_card に `lanes` field を含める。 SP startup 時点の `LanePool::list()` を
-/// JSON 化して push (initial snapshot)。 Lane lifecycle 変更 (Wing create/destroy) の diff
-/// push は Phase 2 の Step E で実装、 現在は initial snapshot のみで Lead を反映。
+/// JSON 化して push (initial snapshot)。 Lane lifecycle 変更 (Performer create/destroy) の diff
+/// push は Phase 2 の Step E で実装、 現在は initial snapshot のみで Conductor を反映。
 pub fn spawn_registry_keepalive(
     port: u16,
     project_dir: &str,

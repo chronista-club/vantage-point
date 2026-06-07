@@ -210,6 +210,123 @@ impl VpDb {
     }
 
     // =========================================================================
+    // Projects CRUD（PoC: VP-188 revert、 db/world 真実源 + projects.kdl 一方向 export）
+    // =========================================================================
+
+    /// 登録 project を UPSERT（path で一意）。 ord = sidebar 並び順。
+    pub async fn upsert_project(
+        &self,
+        path: &str,
+        name: &str,
+        enabled: Option<bool>,
+        slot: Option<u16>,
+        ord: i64,
+    ) -> Result<()> {
+        self.db
+            .query(
+                "INSERT INTO projects {
+                    path: $path,
+                    name: $name,
+                    enabled: $enabled,
+                    slot: $slot,
+                    ord: $ord
+                } ON DUPLICATE KEY UPDATE
+                    name = $input.name,
+                    enabled = $input.enabled,
+                    slot = $input.slot,
+                    ord = $input.ord",
+            )
+            .bind(("path", path.to_string()))
+            .bind(("name", name.to_string()))
+            .bind(("enabled", enabled))
+            .bind(("slot", slot.map(|s| s as i64)))
+            .bind(("ord", ord))
+            .await
+            .map_err(|e| anyhow::anyhow!("project upsert 失敗: {}", e))?
+            .check()
+            .map_err(|e| anyhow::anyhow!("project upsert エラー: {}", e))?;
+        Ok(())
+    }
+
+    /// 登録 project を削除（path で特定）。
+    pub async fn delete_project(&self, path: &str) -> Result<()> {
+        self.db
+            .query("DELETE FROM projects WHERE path = $path")
+            .bind(("path", path.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("project 削除失敗: {}", e))?
+            .check()
+            .map_err(|e| anyhow::anyhow!("project 削除エラー: {}", e))?;
+        Ok(())
+    }
+
+    /// 登録 project 一覧を ord 昇順（= sidebar 並び順）で取得。
+    pub async fn list_projects(&self) -> Result<Vec<serde_json::Value>> {
+        let mut result = self
+            .db
+            .query("SELECT * FROM projects ORDER BY ord ASC")
+            .await
+            .map_err(|e| anyhow::anyhow!("projects 取得失敗: {}", e))?;
+        let records: Vec<serde_json::Value> = result.take(0)?;
+        Ok(records)
+    }
+
+    /// DB の projects を ProjectEntry 列に export（ord 昇順、 PoC: 一方向 export）。
+    pub async fn export_projects(&self) -> Result<Vec<crate::projects_file::ProjectEntry>> {
+        let rows = self.list_projects().await?;
+        Ok(rows
+            .iter()
+            .map(|v| crate::projects_file::ProjectEntry {
+                name: v
+                    .get("name")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                path: v
+                    .get("path")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                enabled: v.get("enabled").and_then(|x| x.as_bool()),
+                slot: v.get("slot").and_then(|x| x.as_u64()).map(|n| n as u16),
+            })
+            .collect())
+    }
+
+    /// ProjectEntry 列を DB に import（出現順を ord に焼く、 PoC: 復旧用）。
+    pub async fn import_projects(
+        &self,
+        entries: &[crate::projects_file::ProjectEntry],
+    ) -> Result<()> {
+        for (i, e) in entries.iter().enumerate() {
+            self.upsert_project(&e.path, &e.name, e.enabled, e.slot, i as i64)
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// projects テーブルを `entries` で全置換する（DELETE → import、 ord = 出現順）。
+    ///
+    /// `persist_projects` の全置換セマンティクスを 1 メソッドに閉じる。 in-memory を真実源として
+    /// DB を上書きするため、 in-memory から消えた project は DB からも消える (= upsert のみでは
+    /// 残ってしまう削除分を確実に反映)。
+    ///
+    /// DELETE と import の間に空を読む窓が理論上あるが、 World は単一プロセスで reload/persist を
+    /// 直列実行するため実害なし。 完全な単一トランザクション化は follow-up (epic memory のリスク表)。
+    pub async fn replace_all_projects(
+        &self,
+        entries: &[crate::projects_file::ProjectEntry],
+    ) -> Result<()> {
+        self.db
+            .query("DELETE FROM projects")
+            .await
+            .map_err(|e| anyhow::anyhow!("projects 全削除失敗: {}", e))?
+            .check()
+            .map_err(|e| anyhow::anyhow!("projects 全削除エラー: {}", e))?;
+        self.import_projects(entries).await
+    }
+
+    // =========================================================================
     // Pane Contents CRUD（Canvas ペイン状態の永続化）
     // =========================================================================
 
@@ -222,7 +339,7 @@ impl VpDb {
         content: &str,
         title: Option<&str>,
     ) -> Result<()> {
-        // lane_name='' (= lead sentinel) の row として upsert。 新 schema (lane_name/stack/ui_state) は
+        // lane_name='' (= conductor sentinel) の row として upsert。 新 schema (lane_name/stack/ui_state) は
         // ON DUPLICATE KEY UPDATE 句で **触らない** — 旧 caller (= 純粋な content / title 更新)
         // が PP Canvas Stack の stack / ui_state を巻き戻さないようにする。
         self.db
@@ -255,8 +372,8 @@ impl VpDb {
 
     /// PP Canvas Stack Model の lane scope な永続状態を upsert する (= doc 19 + pp-content-persist)。
     ///
-    /// - `lane_name`: None なら lead (= 内部で `''` sentinel)、 Some(name) なら wing。 UNIQUE INDEX は
-    ///   (project_path, lane_name, pane_id) のため lead/wing は別 record として独立。
+    /// - `lane_name`: None なら conductor (= 内部で `''` sentinel)、 Some(name) なら performer。 UNIQUE INDEX は
+    ///   (project_path, lane_name, pane_id) のため conductor/performer は別 record として独立。
     /// - `stack`: Canvas Stack (= items + cursor + capacity)。 None なら未保存。
     /// - `ui_state`: visibility/collapsed/サイズ等。 None なら未保存。
     /// - `content` / `content_type` / `title` は **現在 main pane で render 中の item の reflection**
@@ -312,7 +429,7 @@ impl VpDb {
 
     /// 特定 (project_path, lane_name, pane_id) の PP state を 1 件取得。 不在なら Ok(None)。
     ///
-    /// 旧 record (= lane_name field なし) は schema DEFAULT '' で self-heal され、 lead として読める。
+    /// 旧 record (= lane_name field なし) は schema DEFAULT '' で self-heal され、 conductor として読める。
     pub async fn load_pp_state(
         &self,
         project_path: &str,
@@ -455,8 +572,19 @@ DEFINE FIELD IF NOT EXISTS stands ON processes TYPE option<object> FLEXIBLE;
 DEFINE FIELD IF NOT EXISTS tmux_session ON processes TYPE option<string>;
 DEFINE INDEX IF NOT EXISTS idx_processes_path ON processes COLUMNS project_path UNIQUE;
 
--- VP-188: projects テーブルは撤去。 registered projects の SSOT は
--- ~/.config/vp/projects.kdl に移行 (crate::projects_file)。
+-- registered projects (PoC: VP-188 を revert し DB 真実源へ戻す)。
+-- 当時 council (2026-05-16) が file に逃した理由は VP-182 (surrealkv の OS 排他
+-- ロックで DB dir を分離 → DB dir 変更で projects 消失)。 本 PoC の仮説:
+--   ① projects を **World 専用 DB (db/world) に限定** すれば SP は触らず LOCK 衝突なし
+--   ② DB 消失耐性 + 人間可読性は projects.kdl への **一方向 export** で担保
+-- ord = sidebar 並び順 (projects.kdl の node 出現順を保持)。
+DEFINE TABLE IF NOT EXISTS projects SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS path ON projects TYPE string;
+DEFINE FIELD IF NOT EXISTS name ON projects TYPE string;
+DEFINE FIELD IF NOT EXISTS enabled ON projects TYPE option<bool>;
+DEFINE FIELD IF NOT EXISTS slot ON projects TYPE option<int>;
+DEFINE FIELD IF NOT EXISTS ord ON projects TYPE int DEFAULT 0;
+DEFINE INDEX IF NOT EXISTS idx_projects_path ON projects COLUMNS path UNIQUE;
 
 -- wiremsg R6: 旧 msgbox table (VP-169 以前の cross-process メッセージング) は撤去。
 -- agent 間通信は wiremsg (下記 wire_messages table) に一本化済。
@@ -470,16 +598,16 @@ DEFINE INDEX IF NOT EXISTS idx_processes_path ON processes COLUMNS project_path 
 --
 -- 2026-05-28 [pp-content-persist]:
 --   lane scope 対応 — 旧 idx_pane (project_path, pane_id) を
---   (project_path, lane_name, pane_id) UNIQUE に置換。 lane_name="" が lead、
---   "<name>" が wing。 同一 project の lead と wing は **独立した PP state** を持つ。
+--   (project_path, lane_name, pane_id) UNIQUE に置換。 lane_name="" が conductor、
+--   "<name>" が performer。 同一 project の conductor と performer は **独立した PP state** を持つ。
 --   追加 field:
---     - lane_name: string DEFAULT ''       — lane scope key (空文字=lead / 非空=wing 名)
+--     - lane_name: string DEFAULT ''       — lane scope key (空文字=conductor / 非空=performer 名)
 --     - stack:     option<object> FLEXIBLE — Canvas Stack { items: [], cursor: id, capacity: 10 }
 --     - ui_state:  option<object> FLEXIBLE — { visible, collapsed, width, height }
 --   注: lane_name を **option ではなく DEFAULT 空文字** にしたのは、 SurrealDB の UNIQUE INDEX が
 --   NULL 同士を不一致扱いし、 (path, NONE, pane_id) の UNIQUE 制約が成立せず ON DUPLICATE が
 --   発火しないため。 IPC contract 上は lane: string|null を保ち、 Rust 側で null↔'' を変換。
---   旧 record (lane_name 不在) は schema DEFAULT '' で self-heal してそのまま lead 扱いになる。
+--   旧 record (lane_name 不在) は schema DEFAULT '' で self-heal してそのまま conductor 扱いになる。
 REMOVE INDEX IF EXISTS idx_pane ON pane_contents;
 DEFINE TABLE IF NOT EXISTS pane_contents SCHEMAFULL;
 DEFINE FIELD IF NOT EXISTS project_path ON pane_contents TYPE string;
@@ -882,18 +1010,18 @@ mod tests {
     // PP Canvas Stack Model (lane scope) — pp-content-persist
     // =========================================================================
 
-    /// 新 API: lane_name=None (lead) と Some(name) (wing) が独立 record として共存できる
+    /// 新 API: lane_name=None (conductor) と Some(name) (performer) が独立 record として共存できる
     #[tokio::test]
-    async fn test_pp_state_lead_and_wing_independent() {
+    async fn test_pp_state_conductor_and_performer_independent() {
         let db = make_test_db().await;
 
-        let lead_stack = serde_json::json!({
-            "items": [{"id":"i1","content":"# lead\n","contentType":"markdown","createdAt":"2026-05-28T00:00:00Z"}],
+        let conductor_stack = serde_json::json!({
+            "items": [{"id":"i1","content":"# conductor\n","contentType":"markdown","createdAt":"2026-05-28T00:00:00Z"}],
             "cursor": "i1",
             "capacity": 10
         });
-        let wing_stack = serde_json::json!({
-            "items": [{"id":"i2","content":"# wing\n","contentType":"markdown","createdAt":"2026-05-28T00:00:01Z"}],
+        let performer_stack = serde_json::json!({
+            "items": [{"id":"i2","content":"# performer\n","contentType":"markdown","createdAt":"2026-05-28T00:00:01Z"}],
             "cursor": "i2",
             "capacity": 10
         });
@@ -905,9 +1033,9 @@ mod tests {
             None,
             "paisley-park",
             "markdown",
-            "# lead\n",
+            "# conductor\n",
             None,
-            Some(&lead_stack),
+            Some(&conductor_stack),
             Some(&ui),
         )
         .await
@@ -917,38 +1045,38 @@ mod tests {
             Some("foo"),
             "paisley-park",
             "markdown",
-            "# wing\n",
+            "# performer\n",
             None,
-            Some(&wing_stack),
+            Some(&performer_stack),
             Some(&ui),
         )
         .await
         .unwrap();
 
-        // lead 読み込み
-        let lead = db
+        // conductor 読み込み
+        let conductor = db
             .load_pp_state("/repos/vp", None, "paisley-park")
             .await
             .unwrap()
-            .expect("lead record 不在");
+            .expect("conductor record 不在");
         assert_eq!(
-            lead["lane_name"], "",
-            "lead は lane_name='' sentinel (= None)"
+            conductor["lane_name"], "",
+            "conductor は lane_name='' sentinel (= None)"
         );
-        assert_eq!(lead["stack"]["cursor"], "i1");
+        assert_eq!(conductor["stack"]["cursor"], "i1");
 
-        // wing 読み込み — lead と独立した record
-        let wing = db
+        // performer 読み込み — conductor と独立した record
+        let performer = db
             .load_pp_state("/repos/vp", Some("foo"), "paisley-park")
             .await
             .unwrap()
-            .expect("wing record 不在");
-        assert_eq!(wing["lane_name"], "foo");
-        assert_eq!(wing["stack"]["cursor"], "i2");
+            .expect("performer record 不在");
+        assert_eq!(performer["lane_name"], "foo");
+        assert_eq!(performer["stack"]["cursor"], "i2");
 
         // list_pane_contents は両方見える (project scope)
         let all = db.list_pane_contents("/repos/vp").await.unwrap();
-        assert_eq!(all.len(), 2, "lead + wing で 2 record");
+        assert_eq!(all.len(), 2, "conductor + performer で 2 record");
     }
 
     /// upsert_pp_state は同 (project_path, lane_name, pane_id) で stack を上書きする (= roundtrip)

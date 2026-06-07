@@ -18,4 +18,9 @@ tmux set-option -g escape-time 0 2>/dev/null || true
 tmux set-option -ga terminal-overrides ',xterm-256color:Tc' 2>/dev/null || true
 
 # tmux session 起動 / attach (`-A`)。 cwd は明示 (PR #244 の継承罠回避)。
-exec tmux new-session -A -c "$VP_CWD" -s "$VP_SESSION"
+# -e VP_*: per-session 環境を明示注入し、 共有 tmux server の global 環境 (= 最初に
+# server を起動した lane の VP_*) を継承する cross-project identity leak を防ぐ
+# (echoes task と同じ理由)。
+exec tmux new-session -A -c "$VP_CWD" -s "$VP_SESSION" \
+    -e "VP_CWD=$VP_CWD" -e "VP_PROJECT=$VP_PROJECT" \
+    -e "VP_SESSION=$VP_SESSION" -e "VP_LANE=$VP_LANE"

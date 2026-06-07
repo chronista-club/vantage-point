@@ -1,8 +1,8 @@
 /**
- * Lane (Lead / Wing) 1 行の描画 component。
+ * Lane (Conductor / Performer) 1 行の描画 component。
  *
  * v1.0 柱 2。 旧 SIDEBAR_HTML の `.vp-lane-row` 構築ロジックを SolidJS に port。
- * 描画 (PR-2): stand icon / label / wing git meta / awaiting dot / mailbox icon /
+ * 描画 (PR-2): stand icon / label / performer git meta / awaiting dot / mailbox icon /
  * session title (2 行目)。 click 選択 (PR-3): row click → `lane:select` IPC で
  * main area を当該 Lane に切り替え。 右クリック操作 (restart / delete) は
  * ContextMenu に集約 (VP-204 PR-1)。
@@ -10,21 +10,21 @@
 import { Show } from "solid-js";
 import { CreoIcon } from "creoui-icons-web";
 import type { LaneInfo } from "../generated/LaneInfo";
-import type { WingStatusWire } from "../generated/WingStatusWire";
+import type { PerformerStatusWire } from "../generated/PerformerStatusWire";
 import { sidebar } from "./store";
 import { sendIpc } from "./ipc";
 import { openContextMenu, type ContextMenuItem } from "./ContextMenu";
 import {
-	isWingLane,
+	isPerformerLane,
 	laneAddressKey,
 	laneLabel,
 	standDisplayName,
 	standIcon,
 } from "./lane";
 
-/** Wing Lane の git 状態を右端に小さく表示 (= dirty / ahead-behind の signal のみ、
+/** Performer Lane の git 状態を右端に小さく表示 (= dirty / ahead-behind の signal のみ、
  *  branch 名 / merged ラベルは noise なので omit)。 ミニマム表示 (2026-05-30)。 */
-function WingMeta(props: { ws: WingStatusWire }) {
+function PerformerMeta(props: { ws: PerformerStatusWire }) {
 	const ahead = () => props.ws.ahead | 0;
 	const behind = () => props.ws.behind | 0;
 	const dirty = () => props.ws.dirty_count | 0;
@@ -53,7 +53,7 @@ export function LaneRow(props: {
 	const isActive = () => sidebar.active_lane_address === addr();
 	// F.8 B Convergent: Pane (Echoes) 不在 = pid:null は Dead Lane (spawn 失敗)、 dim 表示。
 	const isInactive = () => props.lane.pid == null;
-	const isWing = () => isWingLane(props.lane);
+	const isPerformer = () => isPerformerLane(props.lane);
 	const icon = () => standIcon(props.lane.stand, isActive());
 	// mailbox inbox: entry がある Lane のみ icon 表示 (mailbox infra が active)。
 	const inbox = () => sidebar.lane_inboxes?.[addr()];
@@ -72,16 +72,16 @@ export function LaneRow(props: {
 	};
 
 	// 右クリック → context menu。 Lane 操作は ContextMenu に一本化 (VP-204 PR-1 で
-	// inline hover ボタンを撤去)。 操作対象が無い Lane (inactive Lead — project 削除は
+	// inline hover ボタンを撤去)。 操作対象が無い Lane (inactive Conductor — project 削除は
 	// PR-2) は items 空 → openContextMenu が no-op。
 	const onContextMenu = (e: MouseEvent) => {
 		const lane = props.lane;
-		const wing = isWingLane(lane);
+		const performer = isPerformerLane(lane);
 		const active = lane.pid != null;
 		const items: ContextMenuItem[] = [];
 		if (active) {
 			items.push({
-				label: `Restart ${wing ? "Wing" : "Lead"} Stand`,
+				label: `Restart ${performer ? "Performer" : "Conductor"} Stand`,
 				icon: "ph:arrow-clockwise",
 				onSelect: () =>
 					sendIpc({
@@ -91,10 +91,10 @@ export function LaneRow(props: {
 					}),
 			});
 		}
-		if (wing) {
+		if (performer) {
 			// delete は破壊的 (PTY kill + tmux kill + workspace dir 削除) なので 2-click 確認。
 			items.push({
-				label: "Delete Wing",
+				label: "Delete Performer",
 				icon: "ph:trash",
 				danger: true,
 				confirm: { label: "もう一度クリックで削除", icon: "ph:check" },
@@ -112,7 +112,7 @@ export function LaneRow(props: {
 	return (
 		<div
 			class="vp-lane-row"
-			classList={{ active: isActive(), inactive: isInactive(), wing: isWing() }}
+			classList={{ active: isActive(), inactive: isInactive(), performer: isPerformer() }}
 			onClick={onSelect}
 			onContextMenu={onContextMenu}
 		>
@@ -129,8 +129,8 @@ export function LaneRow(props: {
 				</span>
 			</Show>
 			{/* session title を stand icon の右へ (= 旧 2 段目を 1 行目に昇格)。
-			    label (④) は tree 段下げで wing 視認可なので omit。
-			    fallback: session title 未設定なら wing は name、 lead は project 名を
+			    label (④) は tree 段下げで performer 視認可なので omit。
+			    fallback: session title 未設定なら performer は name、 conductor は project 名を
 			    dimmed で出す (= 旧 "—" placeholder の代替、 空行回避)。 */}
 			<span
 				class="vp-lane-title"
@@ -138,12 +138,12 @@ export function LaneRow(props: {
 				title={sessionTitle() ?? laneLabel(props.lane)}
 			>
 				{sessionTitle() ??
-					(isWing() ? laneLabel(props.lane) : props.lane.address.project)}
+					(isPerformer() ? laneLabel(props.lane) : props.lane.address.project)}
 			</span>
 			{/* 右端ブロック: ⑤ git meta (dirty/↑↓ のみ) → ⑥ awaiting dot → ② files → ③ mailbox */}
 			<span class="vp-lane-right">
-				<Show when={isWing() && props.lane.wing_status}>
-					<WingMeta ws={props.lane.wing_status!} />
+				<Show when={isPerformer() && props.lane.performer_status}>
+					<PerformerMeta ws={props.lane.performer_status!} />
 				</Show>
 				<Show when={isAwaiting()}>
 					<span class="vp-lane-awaiting" title="Claude is waiting for input" />

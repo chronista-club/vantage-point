@@ -7,8 +7,8 @@
  *
  * - PR-1: shell layout + Solid store の最小可視化。
  * - PR-2: 稼働中 / 一時停止中 の 2 セクション分割 + Project accordion + Lane ツリー
- *   (stand icon / status / awaiting dot / mailbox icon / wing git meta)。
- *   操作 (click 選択・context menu・restart/delete・Add Wing form・DnD) は PR-3。
+ *   (stand icon / status / awaiting dot / mailbox icon / performer git meta)。
+ *   操作 (click 選択・context menu・restart/delete・Add Performer form・DnD) は PR-3。
  *   World widget 本体は後続 increment。
  */
 import { For, Show, createMemo, createSignal } from "solid-js";
@@ -220,13 +220,13 @@ html,body{margin:0;height:100%;background:var(--color-surface-bg-subtle);
 
 /* Lane 行 */
 /* ミニマム 1 行 (2026-05-30): icon + session title + 右端 block (meta/awaiting/files/mailbox)。
-   2 段目 / "—" placeholder / Lead ラベルは廃止、 nowrap で 1 行固定。 */
+   2 段目 / "—" placeholder / Conductor ラベルは廃止、 nowrap で 1 行固定。 */
 /* tree connector は LaneRow が box-drawing text で持つ (= 線種で状態を表現、 2026-05-30)。
    VPMono (PlemolJP) の等幅 + 罫線 glyph で全行の縦線が揃う。 線種 = control surrender FSM。 */
 .vp-lane-connector{font-family:'VPMono',monospace;white-space:pre;flex:0 0 auto;
   font-size:13px;line-height:1;letter-spacing:0;font-weight:700;
   -webkit-text-stroke:0.4px currentColor;user-select:none;}
-.vp-lane-connector.conn-lead{
+.vp-lane-connector.conn-conductor{
   color:color-mix(in oklch,var(--color-brand-primary),transparent 30%);}
 .vp-lane-connector.conn-run{color:var(--color-text-tertiary);}
 .vp-lane-connector.conn-dead{
@@ -247,13 +247,13 @@ html,body{margin:0;height:100%;background:var(--color-surface-bg-subtle);
              inset 0 -2px 0 0 var(--color-brand-primary);}
 .vp-lane-row.inactive{color:color-mix(in oklch, var(--color-text-secondary),
   transparent 45%);font-style:italic;cursor:default;}
-/* Lead / Wing の indent 差は connector glyph (├─ vs │ ├) が担うため padding override 不要。 */
+/* Conductor / Performer の indent 差は connector glyph (├─ vs │ ├) が担うため padding override 不要。 */
 .vp-lane-icon{display:inline-flex;width:18px;justify-content:center;flex:0 0 auto;}
 .vp-lane-row.inactive .vp-lane-icon{opacity:0.55;}
 /* session title (= icon の右、 flex:1 で伸びて右端 block を押し出す)。 */
 .vp-lane-title{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;
   white-space:nowrap;color:var(--color-text-secondary);}
-/* fallback (= session title 未設定で proj 名 / wing 名を出す時) は dimmed で控えめに。 */
+/* fallback (= session title 未設定で proj 名 / performer 名を出す時) は dimmed で控えめに。 */
 .vp-lane-title.is-fallback{color:var(--color-text-tertiary);opacity:0.7;}
 .vp-lane-row.active .vp-lane-title{color:var(--color-brand-primary);opacity:1;}
 /* 右端 block: meta / awaiting / files / mailbox を右寄せで横並び。 */
@@ -273,30 +273,30 @@ html,body{margin:0;height:100%;background:var(--color-surface-bg-subtle);
 .vp-lane-awaiting{width:6px;height:6px;border-radius:50%;
   background:var(--color-status-warning,#d49b3f);flex:0 0 auto;}
 
-/* Add Wing「+」(active project) / Start「▶」(一時停止中 project) — summary 右端の
+/* Add Performer「+」(active project) / Start「▶」(一時停止中 project) — summary 右端の
    action ボタン。 レイアウトは共通、 Start は起動 affordance として常時 brand 色。 */
-.vp-proj-addwing,.vp-proj-start{margin-left:auto;display:inline-flex;align-items:center;
+.vp-proj-addperformer,.vp-proj-start{margin-left:auto;display:inline-flex;align-items:center;
   padding:2px;border:none;background:transparent;color:var(--color-text-tertiary);
   cursor:pointer;border-radius:3px;flex:0 0 auto;
   transition:background .12s ease,color .12s ease;}
-.vp-proj-addwing:hover,.vp-proj-addwing.open,.vp-proj-start:hover{
+.vp-proj-addperformer:hover,.vp-proj-addperformer.open,.vp-proj-start:hover{
   background:var(--color-surface-bg-emphasis);color:var(--color-brand-primary);}
 .vp-proj-start{color:var(--color-brand-primary);}
-.vp-add-wing-form{display:flex;flex-direction:column;gap:5px;
+.vp-add-performer-form{display:flex;flex-direction:column;gap:5px;
   padding:4px var(--spacing-sm,8px) 6px 14px;}
-.vp-add-wing-input{padding:5px 8px;border:1px solid var(--color-surface-border,#1f2233);
+.vp-add-performer-input{padding:5px 8px;border:1px solid var(--color-surface-border,#1f2233);
   background:var(--color-surface-bg-base);color:var(--color-text-primary);
   border-radius:var(--radius-sm,6px);font-family:inherit;font-size:11px;
   box-sizing:border-box;}
-.vp-add-wing-input:focus{outline:none;border-color:var(--color-brand-primary);}
-.vp-add-wing-actions{display:flex;justify-content:flex-end;gap:6px;}
-.vp-add-wing-actions button{padding:3px 10px;
+.vp-add-performer-input:focus{outline:none;border-color:var(--color-brand-primary);}
+.vp-add-performer-actions{display:flex;justify-content:flex-end;gap:6px;}
+.vp-add-performer-actions button{padding:3px 10px;
   border:1px solid var(--color-surface-border,#1f2233);background:transparent;
   color:var(--color-text-secondary);border-radius:var(--radius-sm,6px);cursor:pointer;
   font-size:10px;font-family:inherit;transition:background .12s ease,color .12s ease;}
-.vp-add-wing-actions button:hover{background:var(--color-surface-bg-emphasis);
+.vp-add-performer-actions button:hover{background:var(--color-surface-bg-emphasis);
   color:var(--color-text-primary);}
-.vp-add-wing-actions button.primary{background:var(--color-brand-primary-subtle);
+.vp-add-performer-actions button.primary{background:var(--color-brand-primary-subtle);
   color:var(--color-brand-primary);border-color:var(--color-brand-primary-subtle);}
 
 /* World widget (sidebar 最下部、 collapsed 1 行 + expanded 詳細の accordion) */

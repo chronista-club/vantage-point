@@ -51,7 +51,7 @@ pub fn init_tracing() -> LogInitResult {
     // `~/.local/state/vp/log/app.kdl.log` (= `$XDG_STATE_HOME/vp/log/`)。
     // macOS の `~/Library/Logs/Vantage/` も daemon の `vp_data_dir()/logs/` も廃止、
     // 全 process の log を `vp_log_dir()` 一極集中。
-    let log_dir = crate::paths::vp_log_dir();
+    let log_dir = vp_paths::vp_log_dir();
     let _ = std::fs::create_dir_all(&log_dir);
     let file_appender = tracing_appender::rolling::never(&log_dir, "app.kdl.log");
 

@@ -257,7 +257,7 @@ body{overflow:hidden;}
    いつもの色空間メソッド (OKLCH) で hue rotation して role に合った色を synthesize。
    chroma は brand と同等 (~0.16)、L=0.65 (normal) / 0.78 (bright) で
    背景 (L=0.16) との contrast を WCAG AA 以上確保。
-   関連: mem_1CaSmvKgsX2AQxRYFYgNM3 (Lead pane shell), creo-ui contrast-dark theme. */
+   関連: mem_1CaSmvKgsX2AQxRYFYgNM3 (Conductor pane shell), creo-ui contrast-dark theme. */
 :root[data-theme="contrast-dark"]{
   --terminal-ansi-black:oklch(0.20 0.02 280);
   --terminal-ansi-red:oklch(0.65 0.18 25);
@@ -294,14 +294,14 @@ body{overflow:hidden;}
   <!-- VP-140 fail-safe: pane-terminal は Frame Engine が apply される前から visible にしておく。
        inline opacity:1 を CSS .pane{opacity:0} default より優先させ、 Frame Engine 不在 / 起動失敗時も
        少なくとも Echoes terminal は見える状態を保つ (= echoes が default visible 約束)。
-       Frame Engine 起動後は inline style.opacity を engine が上書きする (lead-focus:1 / pp-focus:0)。 -->
+       Frame Engine 起動後は inline style.opacity を engine が上書きする (conductor-focus:1 / pp-focus:0)。 -->
   <div class="pane terminal" id="pane-terminal" data-kind="terminal" data-frame-id="echoes" style="opacity:1;pointer-events:auto;">
     <div id="lane-host"></div>
     <!-- empty placeholder: どの Lane も無い時に出す -->
     <div id="lane-empty" class="lane-empty active">
       <main>
         <!-- Lane を象徴する Codicon "git-merge" (user 指定、vscode-codicons より)。
-             Lane (特に Wing) は git branch ベースの隔離環境なので branch graph
+             Lane (特に Performer) は git branch ベースの隔離環境なので branch graph
              アイコンが概念に合う。main_view は vp-asset:// 未登録で Nerd Font を
              load できないため、font glyph ではなく自己完結 inline SVG を使う。
              currentColor で text-tertiary に追従。 -->

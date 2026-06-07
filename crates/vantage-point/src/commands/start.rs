@@ -46,7 +46,7 @@ pub fn create_tmux_session(
     }
 
     // セッションが即死していないか確認（claude --continue が壊れたセッションで落ちるケース）
-    // lane ウィング環境ではセッション履歴がなく --continue が即死するため、十分に待つ
+    // lane パフォーマー環境ではセッション履歴がなく --continue が即死するため、十分に待つ
     std::thread::sleep(std::time::Duration::from_millis(1500));
     if !tmux_session_exists(name) {
         tracing::warn!("claude --continue が即死。--continue なしでフォールバック");
@@ -189,6 +189,8 @@ pub fn spawn_sp_detached(project_dir: &str, port: Option<u16>) -> Result<()> {
 
     std::process::Command::new(&vp_bin)
         .args(&args)
+        // GUI/launchd 起動の最小 PATH が SP → mise → claude へ伝播するのを spawn 最上流で断つ。
+        .env("PATH", crate::spawn_env::augmented_spawn_path())
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

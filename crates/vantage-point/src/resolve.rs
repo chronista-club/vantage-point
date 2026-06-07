@@ -230,21 +230,27 @@ pub fn find_available_port() -> Option<u16> {
 /// 永続なので、project リスト変更でも既存 project の port は不変。project が
 /// 未登録なら `Err`（caller 側で `find_available_port` 等に fallback）。
 ///
-/// VP-188: slot の永続化先は projects.kdl (= `persist_projects_kdl`)。 旧実装は
-/// `config.save()` で config.toml に書いていたが、 projects SSOT が projects.kdl に
-/// 移行したため、 slot も projects.kdl に書く (= config.toml に書くと次回 load で
-/// projects.kdl が上書きして slot が消える)。
+/// PR-D (control plane 一元化): slot の永続化先は db/world。 新規割当を
+/// `world_client::notify_world_set_slot` で World daemon に通知し、 daemon が DB に書く。
+/// projects.kdl は World が DB から吐く読み取り専用ミラー。 daemon 不在時は warn のみ
+/// (port は正しく、 次回 SP 起動 / reconcile で同期)。
 pub fn sp_port_for_project(name: &str) -> Result<u16> {
     let mut config = Config::load().unwrap_or_default();
     let had_slot = config.resolve_slot_by_name(name).is_some();
     let port = config.resolve_sp_port(name)?;
-    // 新規 slot 割当があれば projects.kdl に永続化（失敗は warn のみ — port 自体は正しい）
-    if !had_slot
-        && config.resolve_slot_by_name(name).is_some()
-        && let Err(e) = config.persist_projects_kdl()
-    {
-        // {e:#} で anyhow の error chain 全体を出す (= 末尾の OS エラーまで見える)。
-        tracing::warn!("VP-165: slot の projects.kdl 永続化に失敗（port={port} は正しい）: {e:#}");
+    // PR-D: 新規 slot 割当を daemon (db/world 真実源) に永続化通知する。 slot 計算は config ミラーで
+    // 完結し、 永続化のみ daemon 経由 (HTTP best-effort)。 daemon 不在は warn のみ (port は正しい)。
+    if !had_slot && let Some(slot) = config.resolve_slot_by_name(name) {
+        let key = config
+            .projects
+            .iter()
+            .find(|p| p.name == name)
+            .map(|p| Config::normalize_path(std::path::Path::new(&p.path)));
+        if let Some(k) = key
+            && !crate::world_client::notify_world_set_slot(&k, slot)
+        {
+            tracing::warn!("VP-165: slot の daemon 永続化に失敗 (port={port} は正しい)");
+        }
     }
     Ok(port)
 }

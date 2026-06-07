@@ -320,7 +320,11 @@ mod tests {
 
         // 別プロジェクト（prefix が部分一致するが別物）
         assert!(!is_own_session("creo-memories-vp", "creo", &others));
-        assert!(!is_own_session("creo-memories-wing-vp", "creo", &others));
+        assert!(!is_own_session(
+            "creo-memories-performer-vp",
+            "creo",
+            &others
+        ));
 
         // 無関係なセッション
         assert!(!is_own_session("fleetflow-vp", "creo", &others));

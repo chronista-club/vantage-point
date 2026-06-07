@@ -240,18 +240,22 @@ const historyStripStyle = document.createElement("style");
 historyStripStyle.textContent = HISTORY_STRIP_CSS;
 document.head.appendChild(historyStripStyle);
 
-// pp-content-persist follow-up: PP body の等幅 font (code/pre + mermaid-error) を **墨東レラ等幅 (TLT-BokutohReraMono)** に置き換え。 本文は みぞれ (Mizolet) のまま。
+// PP Canvas font (2026-06-01): Canvas 全体 (本文 + code/pre + mermaid-error) を
+// **ルイカ等幅 細め (TLT-RuikaMono-02)** に統一。 旧構成 (本文=みぞれ sans / code=墨東レラ mono) を廃し、
+// 手書き調 monospace の console look に振り切る (user 選択: 適用範囲=Canvas 全体 / weight=02)。
 // system install 済の font family を `font-family` 直指定 (= vp-asset:// 経由の font fetch 不要)。
-// Mizolet (英字 family 名) も並記して、 system locale に依らず引けるように。
+// WebKit は日本語 family 名を先頭にすると resolve 不安定なため、 英字 PostScript 名 (TLT-RuikaMono-02)
+// を先頭・日本語名 (TLT-ルイカ等幅-０２) を fallback に並記。 番号付き名で weight 02 を固定し、
+// 番号なし family 名 (TLT-RuikaMono) は default weight への degrade 用。
 // marked-based revert (2026-05-28): selector は marked が #pp-content 直下に吐く要素に向ける
 // (= creoui-md-view の `.creo-md` wrapper は廃止)。
 const ppFontStyle = document.createElement("style");
 ppFontStyle.textContent = `
-/* PP body markdown — みぞれ family を全 text に適用、 code / pre は等幅。
+/* PP body markdown — ルイカ等幅 細め (TLT-RuikaMono-02) を Canvas 全 text に適用 (本文も等幅)。
    marked-based revert (2026-05-28): selector は marked が #pp-content 直下に吐く要素に向ける
    (= creoui-md-view の .creo-md wrapper は廃止)。
-   WebKit で日本語 family 名先頭は resolve 不安定なため、 英字 alias (Mizolet / Mizolet-Mono)
-   を先頭に書き、 日本語 fallback / system-ui に degrade させる (= nightly の知見を継承)。 */
+   WebKit で日本語 family 名先頭は resolve 不安定なため、 英字 PostScript 名 (TLT-RuikaMono-02)
+   を先頭に書き、 日本語名 (TLT-ルイカ等幅-０２) / family 名 / monospace に degrade させる。 */
 #pp-content,
 #pp-content p,
 #pp-content li,
@@ -264,11 +268,11 @@ ppFontStyle.textContent = `
 #pp-content h6,
 #pp-content table,
 #pp-content a {
-  font-family: Mizolet, 'みぞれ', system-ui, sans-serif;
+  font-family: 'TLT-RuikaMono-02', 'TLT-RuikaMono', 'TLT-ルイカ等幅-０２', 'TLT-ルイカ等幅', monospace;
 }
 #pp-content code,
 #pp-content pre {
-  font-family: 'TLT-BokutohReraMono-4', 'TLT-BokutohReraMono', 'TLT-墨東レラ等幅', 'Mizolet-Mono', 'みぞれ 等幅', 'VPMono35', monospace;
+  font-family: 'TLT-RuikaMono-02', 'TLT-RuikaMono', 'TLT-ルイカ等幅-０２', 'TLT-ルイカ等幅', monospace;
 }
 /* PP body の base font-size を 1 段上げる (= creoui token chain: base → l)。
    fallback で 1.125em (= 16→18px 相当)。 #pp-content scope 内のみ override し
@@ -281,7 +285,7 @@ ppFontStyle.textContent = `
 #pp-content .creo-md-mermaid { margin: 1em 0; }
 #pp-content .creo-md-mermaid svg { max-width: 100%; height: auto; }
 #pp-content .creo-md-mermaid-error {
-  font-family: 'TLT-BokutohReraMono-4', 'TLT-BokutohReraMono', 'みぞれ 等幅', 'Mizolet-Mono', monospace;
+  font-family: 'TLT-RuikaMono-02', 'TLT-RuikaMono', 'TLT-ルイカ等幅-０２', 'TLT-ルイカ等幅', monospace;
   color: var(--color-text-secondary, #c66);
   background: var(--color-surface-bg-subtle, #1a1a22);
   padding: 8px; border-radius: 4px; white-space: pre-wrap;

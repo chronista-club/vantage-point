@@ -325,6 +325,93 @@ pub async fn world_reorder_projects(
     }
 }
 
+/// slot 設定リクエスト (PR-D: CLI の slot 永続化を daemon 経由に)
+#[derive(serde::Deserialize)]
+pub struct SetSlotRequest {
+    pub path: String,
+    pub slot: u16,
+}
+
+/// POST /api/world/projects/set_slot - project の slot を設定 (db/world に永続化)
+pub async fn world_set_slot(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<SetSlotRequest>,
+) -> impl IntoResponse {
+    let Some(world) = &state.world else {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "World not available"})),
+        );
+    };
+    let world = world.read().await;
+    match world.set_project_slot(&req.path, req.slot).await {
+        Ok(()) => (
+            axum::http::StatusCode::OK,
+            Json(serde_json::json!({"status": "ok", "path": req.path, "slot": req.slot})),
+        ),
+        Err(e) => (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": e.to_string()})),
+        ),
+    }
+}
+
+/// POST /api/world/projects/unassign_slot - project の slot を解除
+pub async fn world_unassign_slot(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<RemoveProjectRequest>,
+) -> impl IntoResponse {
+    let Some(world) = &state.world else {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "World not available"})),
+        );
+    };
+    let world = world.read().await;
+    match world.unset_project_slot(&req.path).await {
+        Ok(()) => (
+            axum::http::StatusCode::OK,
+            Json(serde_json::json!({"status": "unassigned", "path": req.path})),
+        ),
+        Err(e) => (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": e.to_string()})),
+        ),
+    }
+}
+
+/// projects 同期リクエスト (PR-D: CLI の ghost 除去 + 起点登録を daemon 経由に)
+#[derive(serde::Deserialize)]
+pub struct SyncProjectsRequest {
+    /// 起点 dir (Some なら登録)。 null なら ghost 除去のみ。
+    #[serde(default)]
+    pub start_dir: Option<String>,
+}
+
+/// POST /api/world/projects/sync - 起点 dir 登録 + ghost 除去 (db/world に永続化)
+pub async fn world_sync_projects(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<SyncProjectsRequest>,
+) -> impl IntoResponse {
+    let Some(world) = &state.world else {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "World not available"})),
+        );
+    };
+    let world = world.read().await;
+    match world.sync_projects(req.start_dir.as_deref()).await {
+        Ok(outcome) => (
+            axum::http::StatusCode::OK,
+            Json(serde_json::json!({"added": outcome.added, "removed": outcome.removed})),
+        ),
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        ),
+    }
+}
+
 /// Process 自己登録リクエスト
 #[derive(serde::Deserialize)]
 pub struct RegisterRequest {
@@ -448,7 +535,7 @@ pub async fn world_reload_projects(State(state): State<Arc<AppState>>) -> impl I
 pub struct LanesQuery {
     /// Project name filter (LaneAddress.project)
     pub project: Option<String>,
-    /// Lane name filter — Lead は "lead"、 Wing は name (例: "sub")
+    /// Lane name filter — Conductor は "conductor"、 Performer は name (例: "sub")
     pub lane: Option<String>,
     /// Stand kind filter — "echoes" or "shell"
     pub stand: Option<String>,
@@ -462,7 +549,7 @@ pub struct LanesQuery {
 ///
 /// query parameter:
 /// - `project=<name>`: 特定 project のみ
-/// - `lane=<name>`: 特定 Lane のみ ("lead" or wing name)
+/// - `lane=<name>`: 特定 Lane のみ ("conductor" or performer name)
 /// - `stand=<echoes|shell>`: 特定 Stand のみ (LaneInfo.stand に match)
 ///
 /// disconnect された SP の Lane は registry から消えるので、 response = Currents 限定。
@@ -496,9 +583,9 @@ pub async fn world_list_lanes(
         .filter(|l| {
             query.lane.as_deref().is_none_or(|n| {
                 match (&l.address.kind, l.address.name.as_deref()) {
-                    (LaneKind::Lead, _) => n == "lead",
-                    (LaneKind::Wing, Some(name)) => name == n,
-                    (LaneKind::Wing, None) => false,
+                    (LaneKind::Conductor, _) => n == "conductor",
+                    (LaneKind::Performer, Some(name)) => name == n,
+                    (LaneKind::Performer, None) => false,
                 }
             })
         })
@@ -511,13 +598,13 @@ pub async fn world_list_lanes(
         .cloned()
         .collect();
 
-    // 順序: project 名昇順 → 同 project 内は Lead 先 → 続いて Wing (created_at 昇順)
+    // 順序: project 名昇順 → 同 project 内は Conductor 先 → 続いて Performer (created_at 昇順)
     lanes.sort_by(|a, b| {
         use std::cmp::Ordering;
         a.address.project.cmp(&b.address.project).then_with(|| {
             match (a.address.kind, b.address.kind) {
-                (LaneKind::Lead, LaneKind::Wing) => Ordering::Less,
-                (LaneKind::Wing, LaneKind::Lead) => Ordering::Greater,
+                (LaneKind::Conductor, LaneKind::Performer) => Ordering::Less,
+                (LaneKind::Performer, LaneKind::Conductor) => Ordering::Greater,
                 _ => a.created_at.cmp(&b.created_at),
             }
         })

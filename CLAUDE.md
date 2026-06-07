@@ -77,6 +77,7 @@ vp-app (GUI: wry+tao)   vp (CLI)
 vantage-point/
 ├── crates/
 │   ├── vantage-point/   # server lib (TheWorld + SP の HTTP/WS server)
+│   ├── vp-paths/        # config/data/state path 解決 (XDG SSOT、 vantage-point + vp-app 共有)
 │   ├── vp-app/          # Rust GUI (wry + tao + xterm.js + creo-ui) — Mac 主軸 (2026-04-26 移行)
 │   ├── vp-cli/          # CLI binary (vp、 lane lib も内包)
 │   └── vp-mdast{,-wasm}/ # Markdown AST parser (+ wasm binding)
@@ -106,7 +107,7 @@ vp daemon              # TheWorld 起動（プロジェクト管理 + PTY管理�
 vp daemon start|stop|status  # subcommand 形式
 
 # App
-vp app start [N]       # vp-app GUI 起動（spawn + 即 exit、 N でプロジェクト指定）
+vp app start           # vp-app GUI 起動（spawn + 即 exit、 cwd を起点に開く）
 vp app stop            # vp-app を停止
 # 再起動は `vp app stop && vp app start` で合成 (restart は意図的に CLI に持たない)
 vp tray                # システムトレイモード
@@ -128,7 +129,7 @@ cargo clippy --workspace --all-targets    # Lint
 
 ## 設定・ポート
 
-- config / data / state パスは **XDG Base Directory 準拠の 3 zone に統一**（VP-189 / #460、全 OS 共通、ディレクトリ名は `vp`）。定義は `crates/vantage-point/src/config.rs`。
+- config / data / state パスは **XDG Base Directory 準拠の 3 zone に統一**（VP-189 / #460、全 OS 共通、ディレクトリ名は `vp`）。定義は **`crates/vp-paths`**（vantage-point + vp-app 共有の SSOT。`vantage_point::config` は `pub use vp_paths::{...}` で re-export、vp-app は直接依存）。
 
   | zone | env | default | 用途 |
   |------|-----|---------|------|
@@ -233,13 +234,16 @@ task 管理は creo-memories に一本化（Linear は不使用、2026-05-19 確
 
 ### ブランチ運用 — nightly / main 二段（2026-05-29 確定）
 
-開発の最新は **nightly**、 公開 release のみ **main** が進む二段運用。 default branch は `nightly`。
+開発の最新は **nightly**、 公開 release のみ **main** が進む二段運用。
+**GitHub default branch は `main`**（= 公開の顔、 visitor / cloner が安定版を見る。 2026-06-03 に nightly→main へ変更、 公開 OSS 慣習に合わせた）。 一方 **day-to-day の dev trunk（= lane base / PR base）は `nightly`** で不変。 この 2 つ（公開 default と dev trunk）は **意図的に decouple** している。
+
+> ⚠️ default 変更の副作用: `gh pr create` の base 既定が `main` になった。 **feature PR は必ず `--base nightly` を明示**すること（lane フロー規約と一致、 下記）。 dev work を誤って main に向けない。
 
 | branch | 役割 | 直 push | PR | 更新元 |
 |---|---|---|---|---|
-| **nightly** | 開発の最新版（= 私用 main、 day-to-day 積み上げ） | 可（force / deletion 禁止） | 任意 | lane → PR or 直 push |
-| **main** | 公開 release の単位（= 「ここを参照すれば最新安定」） | **禁止** | 必須（force / deletion 禁止） | nightly → release PR → tag cut |
-| **lane / wing** | 単一タスク隔離 | 自由 | 必須 | from nightly |
+| **nightly** | **dev trunk**（day-to-day 積み上げ・lane base・**PR base**） | 可（force / deletion 禁止） | 任意 | lane → PR or 直 push |
+| **main** | **GitHub default**（公開の顔）+ 公開 release の単位（= 「ここを参照すれば最新安定」） | **禁止** | 必須（force / deletion 禁止） | nightly → release PR → tag cut |
+| **lane / performer** | 単一タスク隔離 | 自由 | 必須 | from nightly |
 
 #### lane 作業フロー
 

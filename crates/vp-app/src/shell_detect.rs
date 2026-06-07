@@ -1,4 +1,4 @@
-//! Shell の自動判定 — Lead pane で login shell を起動して `~/.zshrc` 等を読む。
+//! Shell の自動判定 — Conductor pane で login shell を起動して `~/.zshrc` 等を読む。
 //!
 //! 関連 memory: `mem_1CaSiJkD9HATDY2srrv6D4` (VP Observability Stack) と同 sprint。
 //!

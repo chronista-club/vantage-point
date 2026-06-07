@@ -14,7 +14,7 @@
 
 ## Why — 起点
 
-VP-143 (#304) ship 後の 2026-05-08 dogfood で、 vantage-point/lead と creo-memories/lead の間で actor msg を相互送受信したところ、 4 件の整合性 gap が判明 (`mem_1CapRAtpCpahQGn8nW2fmT`):
+VP-143 (#304) ship 後の 2026-05-08 dogfood で、 vantage-point/conductor と creo-memories/conductor の間で actor msg を相互送受信したところ、 4 件の整合性 gap が判明 (`mem_1CapRAtpCpahQGn8nW2fmT`):
 
 | # | gap | 結果 |
 |---|-----|------|
@@ -60,7 +60,7 @@ lane-segment  = [a-zA-Z0-9_-]+
 ### 4 階層 (= location 内 + actor)
 
 ```
-agent @ mako.chronista.club / vantage-point / wing / objrec
+agent @ mako.chronista.club / vantage-point / performer / objrec
   ^         ^                      ^             ^
   actor    world identity         project       lane (multi-segment 可)
         (host = machine / user / hub)
@@ -71,32 +71,32 @@ agent @ mako.chronista.club / vantage-point / wing / objrec
 | **actor** | 受信 inbox の役割 (= "誰が読むか"、 default = `agent`) |
 | **world** | identity namespace (= machine / user / hub、 host segment) |
 | **project** | VP project (= self world に register された project name、 reserved: `world`) |
-| **lane** | lane within project (= multi-level、 `wing/objrec` 等) |
+| **lane** | lane within project (= multi-level、 `performer/objrec` 等) |
 
 ### 4 layer matrix
 
 | address | layer | meaning | resolve |
 |---------|-------|---------|---------|
 | `agent` | self process | inbox-local | direct dispatch |
-| `vantage-point/lead` | same machine | self world、 lead lane の agent inbox | TheWorld registry (port lookup) |
-| `notify@vantage-point/lead` | same machine | OS notification trigger | local routing |
-| `mako/vantage-point/lead` | Internet via hub | mako world、 hub-resolved | `hub.chronista.club` query (Phase 4+) |
-| `mako.chronista.club/vantage-point/lead` | Internet (explicit hub URL) | full FQDN | hub URL inline |
-| `macbook.local/vantage-point/lead` | LAN | mDNS resolve | `_vp._tcp.local` (Phase 3) |
-| `*@vantage-point/lead` | broadcast | lead lane 全 actor | local fanout |
+| `vantage-point/conductor` | same machine | self world、 conductor lane の agent inbox | TheWorld registry (port lookup) |
+| `notify@vantage-point/conductor` | same machine | OS notification trigger | local routing |
+| `mako/vantage-point/conductor` | Internet via hub | mako world、 hub-resolved | `hub.chronista.club` query (Phase 4+) |
+| `mako.chronista.club/vantage-point/conductor` | Internet (explicit hub URL) | full FQDN | hub URL inline |
+| `macbook.local/vantage-point/conductor` | LAN | mDNS resolve | `_vp._tcp.local` (Phase 3) |
+| `*@vantage-point/conductor` | broadcast | conductor lane 全 actor | local fanout |
 | `hermit_purple@world` | self world (system) | TheWorld daemon の actor | (reserved project `world`) |
 | `hermit_purple@mako/world` | Internet | mako world's TheWorld daemon | hub query |
 
 ### actor optional の効果
 
 - **default actor = `agent`** で省略可、 sidebar の lane label そのものが address として使える
-- 入力 UX: `vp wire send --to vantage-point/lead --body "hello"` → 自動で `agent@vantage-point/lead` 解釈
+- 入力 UX: `vp wire send --to vantage-point/conductor --body "hello"` → 自動で `agent@vantage-point/conductor` 解釈
 - mental model: 「sidebar に出ている文字列 = wire address」 (= 統合)
 
 ### email idiom との parallel
 
 - email: `info@example.com` (= info role + example.com domain)
-- VP: `agent@vantage-point/lead` (= agent role + location)、 agent 省略可で `vantage-point/lead`
+- VP: `agent@vantage-point/conductor` (= agent role + location)、 agent 省略可で `vantage-point/conductor`
 - 役割明示の `notify@<...>` / `mcp@<...>` / `protocol@<...>` は SMTP の `postmaster@` `noreply@` `abuse@` と同 family
 
 ---
@@ -165,8 +165,8 @@ macbook.local              → mDNS local (LAN)
 
 | v1 syntax | v3.1 解釈 | 備考 |
 |-----------|-----------|------|
-| `agent@vantage-point` | OK (= default lane = `lead` で routing) | v1 user 何もしなくて良い |
-| `<actor>@<project>` (任意 actor) | OK (= default lane = `lead`) | reserved 名衝突は v1 と同 rule |
+| `agent@vantage-point` | OK (= default lane = `conductor` で routing) | v1 user 何もしなくて良い |
+| `<actor>@<project>` (任意 actor) | OK (= default lane = `conductor`) | reserved 名衝突は v1 と同 rule |
 
 ### v3.1 で新規対応
 
@@ -197,9 +197,9 @@ LAN MVP (Phase 0-3) 完成後に Phase 4+ の planning session で sub-issue 化
 | pattern | 意味 |
 |---------|------|
 | `*@vantage-point` | project broadcast (v1 既存) |
-| `*@vantage-point/lead` | project + lane broadcast |
-| `*@macbook.local/vantage-point/lead` | LAN machine 内 lane broadcast |
-| `*@mako/vantage-point/lead` | user-wide lane broadcast (全 machine、 Phase 4+) |
+| `*@vantage-point/conductor` | project + lane broadcast |
+| `*@macbook.local/vantage-point/conductor` | LAN machine 内 lane broadcast |
+| `*@mako/vantage-point/conductor` | user-wide lane broadcast (全 machine、 Phase 4+) |
 
 その他の wildcard (`agent@*`、 `*@*`、 glob) は採用しない (v1 仕様継承)。 高度 query は `vp.broadcast(...)` / `vp.find_actors(...)` API で。
 

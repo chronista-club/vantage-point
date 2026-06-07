@@ -593,8 +593,17 @@ mod tests {
 
     #[test]
     fn test_validate_watch_path_absolute() {
-        assert!(validate_watch_path("/tmp/test.log").is_ok());
-        assert!(validate_watch_path("/var/log/app.log").is_ok());
+        // 絶対パスの形は OS 依存（Unix: /…、Windows: C:\…）なので分岐する。
+        #[cfg(not(windows))]
+        {
+            assert!(validate_watch_path("/tmp/test.log").is_ok());
+            assert!(validate_watch_path("/var/log/app.log").is_ok());
+        }
+        #[cfg(windows)]
+        {
+            assert!(validate_watch_path("C:\\Temp\\test.log").is_ok());
+            assert!(validate_watch_path("C:\\logs\\app.log").is_ok());
+        }
     }
 
     #[test]

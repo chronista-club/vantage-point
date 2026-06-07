@@ -1,4 +1,4 @@
-# Lane-as-Process 規約 — Lane の StandActor 化 + Lead Autonomy Level (VP-77 draft)
+# Lane-as-Process 規約 — Lane の StandActor 化 + Conductor Autonomy Level (VP-77 draft)
 
 > **改訂 note (2026-05-21)**: 本 doc 中の「msgbox」 はいずれも agent 間 messaging の概念呼称。 messaging 基盤は 2026-05 の wiremsg 再設計 (R1〜R6) で実装が全面置換された (`wire_send` / `wire_recv` / `wire_thread`、 `vp wire` CLI)。 per-actor inbox という概念は wiremsg の per-agent cursor で継承されている。 address 形式 (`{actor}@{project}`) も継承。 構造体 field 名 (`msgbox_topic` 等) は draft 段階の sketch。
 
@@ -14,11 +14,11 @@
 
 Lane を「**目的を持つ有限時間の Process (工程)**」として扱う規約を追加する。
 既存の Lane 概念 (docs/design/05 §5) を **Living Actor** に昇華させ、StandActor trait を実装して event stream に参加させる。
-Lead Lane は Autonomy Level を持ち、wing 作業中の "待ち" を meta task に変換する。
+Conductor Lane は Autonomy Level を持ち、performer 作業中の "待ち" を meta task に変換する。
 
 ### 主要決定 (本 draft で確定するもの)
 - Lane に state machine を持たせる (Linear status と片方向 sync)
-- Lead Lane に Autonomy Level (L0-L3) を導入
+- Conductor Lane に Autonomy Level (L0-L3) を導入
 - Lane 完了 = event log の snapshot_memory 昇華 (Dual Stream c-stream trigger)
 - Meta Lane (Issue 非依存の常駐 Lane) カテゴリを確立
 
@@ -28,13 +28,22 @@ Lead Lane は Autonomy Level を持ち、wing 作業中の "待ち" を meta tas
 
 Lane は生まれ、育ち、成熟し、死ぬ。死は喪失ではなく記憶への昇華。
 
+### 役割語彙: conductor / performer (relational、2026-06-07 確定)
+
+lane の役割名は **conductor / performer**（旧 lead / wing）。指揮者×演奏者のメタファーで、**再帰的階層化に備えた相対役割**として定義する。
+
+- **相対役割 (relation, not tier)**: conductor / performer は固定の階層種別ではなく **edge の向き**で決まる。あるノードは上向き edge では performer、下向き edge では conductor になりうる（performer が自分の sub-performer を率いれば、その文脈では conductor）。
+- **SP は root conductor を 1 つ持つ**: 各 project (SP ⭐) の conduct tree の根に conductor が 1 つ（= 旧 lead、project ごと固定）。その下に performer 群がぶら下がり、再帰的に入れ子になりうる。
+- **context 軸は conduct 軸と直交**: **World 👑 (TheWorld) = context/substrate**（project が生きる「場」= process manager）であって conductor *ではない*。World / SP（context 軸）を conductor / performer の指揮連鎖（conduct 軸）に混ぜない。
+- **命名経緯**: conductor は `con-ducere`(共に率いる) = lead と同根の正統格上げ。performer は「遂行 (execute)」と「演奏」の二重義で performer の実態に合致し、async Rust の `executor` 衝突も回避。互換: parse 入力は旧 `lead` / `wing` も受理（出力は新名 hard-cut）。rename 詳細 = creo `mem_1CbnTEWqvLPimay7RpatU5`。
+
 ---
 
 ## 1. Scope & Non-goals
 
 ### In scope (本 spec)
 - Lane Identity (state machine, lifecycle, hierarchy)
-- Lead Autonomy Level 仕様 (L0-L3)
+- Conductor Autonomy Level 仕様 (L0-L3)
 - Meta Lane カタログ
 - Lane actor 化 (StandActor impl) の skeleton
 - Linear Sync 仕様 (片方向 subscribe + 限定 push)
@@ -56,18 +65,18 @@ Lane は生まれ、育ち、成熟し、死ぬ。死は喪失ではなく記憶
 |------|-----|
 | **Lane** | 目的を持つ有限時間の process unit。Identity を持つ Living Actor |
 | **LaneId** | Lane の一意識別子。**UUID v7** (`lane-{uuid7}` 形式を推奨)。Event.id と同じ time-ordered 性質で causation chain 参加 |
-| **Lead Lane** | Project Root Lane。Project 作成時に自動生成、project 削除時のみ destroy。Meta task の responsibility holder |
-| **Wing Lane** | Linear issue 1 つに対応する実装 context。`vp lane new` で create |
+| **Conductor Lane** | Project Root Lane。Project 作成時に自動生成、project 削除時のみ destroy。Meta task の responsibility holder |
+| **Performer Lane** | Linear issue 1 つに対応する実装 context。`vp lane new` で create |
 | **Meta Lane** | Issue に紐付かない常駐 / 周期 Lane (Daily Journal 等) |
-| **Sub-Lane** | Wing Lane 内の細分化 (issue を複数 phase に分割) |
+| **Sub-Lane** | Performer Lane 内の細分化 (issue を複数 phase に分割) |
 | **Lane State** | state machine の現在位置 (Sprout / Active / Building / InReview / Hibernated / Destroyed / Reborn) |
-| **Autonomy Level** | Lead Lane の自律度設定 (L0 Observer 〜 L3 Autonomous Director) |
+| **Autonomy Level** | Conductor Lane の自律度設定 (L0 Observer 〜 L3 Autonomous Director) |
 | **Mortality** | Lane 完了 → event log が snapshot_memory に昇華する振る舞い |
 
 ### 2.5 Size scale — 5-tier Lane taxonomy
 
 > **実装状況 NOTE (2026-05-16、VP-191 棚卸し)**: 本節の 5-tier size taxonomy (XL/L/M/S/XS) は
-> **未実装の設計仕様**。現行コード (`lanes_state.rs`) の `LaneKind` は `Lead` / `Wing` の 2 値のみで、
+> **未実装の設計仕様**。現行コード (`lanes_state.rs`) の `LaneKind` は `Conductor` / `Performer` の 2 値のみで、
 > tier / size field は持たない。Pane = Task (S tier) 昇格や R/R = XS tier の event 化も未着手。
 > 5-tier の認知モデル alignment は VP-82 が追う将来仕様。
 
@@ -76,16 +85,16 @@ Lane / Task / R/R を **単一の size スケール** で語る。Linear estimat
 
 | tier | size | 対応する VP 概念 | Linear estimate | 時間感覚 | 代表例 |
 |:---:|:---:|------------------|:---:|---------|------|
-| **XL** | Project | project-lead / Lead Lane | 8 | 数週〜数ヶ月 | vantage-point プロジェクト全体 |
+| **XL** | Project | project-conductor / Conductor Lane | 8 | 数週〜数ヶ月 | vantage-point プロジェクト全体 |
 | **L** | Epic | project-worker (parent) / Epic Lane | 5 | 週単位 | VP-72 Requiem Architecture Epic |
-| **M** | Issue | project-worker (leaf) / Wing Lane | 3 | 日単位 | VP-73 R0 draft / VP-74 R1 event bus |
+| **M** | Issue | project-worker (leaf) / Performer Lane | 3 | 日単位 | VP-73 R0 draft / VP-74 R1 event bus |
 | **S** | Task | Pane (in Lane) | 2 | 時間単位 | "Rust skeleton を書く" / "PR body を書く" |
 | **XS** | R/R | ephemeral process | 1 | 秒〜分 | 1 MCP call / 1 LLM turn / 1 tool invocation |
 
 **Epic と Issue は同じ "project-worker" カテゴリ**。sub-Lane (§4) の深さで L / M を表現する:
 
-- Epic Lane = root wing Lane。parent が Lead Lane、children が複数の Wing Lane (M)
-- Wing Lane (leaf M) = Linear issue 1 対 1、parent は Lead or Epic Lane
+- Epic Lane = root performer Lane。parent が Conductor Lane、children が複数の Performer Lane (M)
+- Performer Lane (leaf M) = Linear issue 1 対 1、parent は Conductor or Epic Lane
 
 **XS (R/R) の扱い**: §5.5 で詳述。causation edge 1 本 = 1 R/R で定義され、Lane 内部で生成される
 event の最小単位 (leaf) となる。memory に昇華する際は `size: "XS"` tag を付与推奨。
@@ -221,7 +230,7 @@ stateDiagram-v2
 
 ### 3.3 Hibernated の意味
 
-- **Hibernated ≠ Destroyed**: Wing CC は停止するが、state (cwd, session, msgbox buffer) は DB 保持
+- **Hibernated ≠ Destroyed**: Performer CC は停止するが、state (cwd, session, msgbox buffer) は DB 保持
 - 再訪で即 context 復元できる "作業の栞"
 - Lane 数爆発の軽減策
 
@@ -239,33 +248,33 @@ stateDiagram-v2
 
 ```mermaid
 graph TD
-  Lead["🎩 Lead Lane<br/>(Project Root)"]
-  Lead --> W72["🎯 Epic Lane<br/>VP-72 Requiem"]
-  Lead --> Meta1["📓 Meta Lane<br/>Daily Journal"]
-  Lead --> Meta2["📊 Meta Lane<br/>Roadmap"]
+  Conductor["🎩 Conductor Lane<br/>(Project Root)"]
+  Conductor --> W72["🎯 Epic Lane<br/>VP-72 Requiem"]
+  Conductor --> Meta1["📓 Meta Lane<br/>Daily Journal"]
+  Conductor --> Meta2["📊 Meta Lane<br/>Roadmap"]
 
-  W72 --> W73["⚙️ Wing Lane<br/>VP-73 R0"]
-  W72 --> W74["⚙️ Wing Lane<br/>VP-74 R1"]
+  W72 --> W73["⚙️ Performer Lane<br/>VP-73 R0"]
+  W72 --> W74["⚙️ Performer Lane<br/>VP-74 R1"]
 
   W73 --> S1["🧪 Sub-Lane<br/>Rust skeleton"]
   W73 --> S2["🧪 Sub-Lane<br/>PR review"]
 
-  style Lead fill:#ffe082,stroke:#f57c00,stroke-width:3px
+  style Conductor fill:#ffe082,stroke:#f57c00,stroke-width:3px
   style Meta1 fill:#b3e5fc,stroke:#0288d1
   style Meta2 fill:#b3e5fc,stroke:#0288d1
 ```
 
 ### 4.2 階層原則
 
-- **Lead は親、Wing は子**: parent-child 関係は Linear issue hierarchy を mirror
+- **Conductor は親、Performer は子**: parent-child 関係は Linear issue hierarchy を mirror
 - **時間 DAG × 空間 tree**: 時間は causation (横糸)、空間は parent/child (縦糸)
 - **Sub-Lane は optional**: 大きな issue を phase 分割する場合のみ
 
 ### 4.3 制約
 
-- Wing Lane の parent は常に Lead Lane または Epic Lane
-- Meta Lane の parent は常に Lead Lane (cross-project Meta Lane は別 issue)
-- Sub-Lane は Wing Lane の下のみ (深さ ≤ 3)
+- Performer Lane の parent は常に Conductor Lane または Epic Lane
+- Meta Lane の parent は常に Conductor Lane (cross-project Meta Lane は別 issue)
+- Sub-Lane は Performer Lane の下のみ (深さ ≤ 3)
 
 ### 4.4 Pane = Task semantic 昇格
 
@@ -318,51 +327,51 @@ pub enum LaneSize { XL, L, M, S, XS }  // §2.5 5-tier と対応
 
 Lane 階層を運用する際の **3 原則**。§4.1-4.4 の構造的規約に対し、§4.5 は運用面の規約を定める。
 
-#### 原則 1: 1 Issue = 1 Wing Lane (M tier 処理単位)
+#### 原則 1: 1 Issue = 1 Performer Lane (M tier 処理単位)
 
-- **M tier の処理単位** = Linear issue 1 つに対して Wing Lane 1 つ
+- **M tier の処理単位** = Linear issue 1 つに対して Performer Lane 1 つ
 - sub-Lane (§4.3) は、issue が複数 phase に自然分割される場合のみ例外的に生える
 - 通常は Lane 内の Pane (S tier、§4.4) で task 分割すれば十分 — sub-Lane を乱発しない
-- VP-78 (Lane state machine 実装) では、`LaneState.linear_issue_id` が **Wing Lane では必須**
-  - `None` が許されるのは Lead Lane / Meta Lane のみ (§4.1 の 3 種類のうち 2 種)
+- VP-78 (Lane state machine 実装) では、`LaneState.linear_issue_id` が **Performer Lane では必須**
+  - `None` が許されるのは Conductor Lane / Meta Lane のみ (§4.1 の 3 種類のうち 2 種)
 
-#### 原則 2: Lead Lane は Project-level meta task 用に空ける
+#### 原則 2: Conductor Lane は Project-level meta task 用に空ける
 
-- Lead Lane は **具体 Issue に従事しない** (= Linear issue と紐づかない、`linear_issue_id: None`)
+- Conductor Lane は **具体 Issue に従事しない** (= Linear issue と紐づかない、`linear_issue_id: None`)
 - 代わりに、**Autonomous meta work** に集中:
   - daily summary / PR review / next task precompute
   - memory 整理 / creo-memories 連携 / cross-project ping
-- §5 Lead Autonomy Level との結合:
-  - L0 Observer だけでは Lead が時間を持て余す → "Lead を空ける" 意味が薄い
-  - **L1 Steward 以上で Lead が meta work を自走することで「Lead を空ける」運用が意味を持つ**
-- "Lead を空ける" の意訳 = **"Lead が dispatch 役に徹する"** (wing を回す、自分は具体 issue を持たない)
+- §5 Conductor Autonomy Level との結合:
+  - L0 Observer だけでは Conductor が時間を持て余す → "Conductor を空ける" 意味が薄い
+  - **L1 Steward 以上で Conductor が meta work を自走することで「Conductor を空ける」運用が意味を持つ**
+- "Conductor を空ける" の意訳 = **"Conductor が dispatch 役に徹する"** (performer を回す、自分は具体 issue を持たない)
 
 #### 原則 3: Lane 間連携 = VP actor msg (wire_send / wire_recv)
 
 > **改訂 note (2026-05-21)**: 当初 VP-24 Msgbox を前提に書かれたが、 messaging 基盤は 2026-05 の wiremsg 再設計 (R1〜R6) で全面置換された。 `msg_send` / `msg_recv` → `wire_send` / `wire_recv` に読み替えること。 address 形式 (`{actor}@{project}`) は wiremsg がそのまま継承。
 
-- **Lead ↔ Wing 通信は wiremsg 経由** (`wire_send` / `wire_recv`)
+- **Conductor ↔ Performer 通信は wiremsg 経由** (`wire_send` / `wire_recv`)
 - **ccwire は廃止済** (旧 session 登録も非必須)
 - **cross-project も同じ address 形式**:
-  - `lead@vantage-point` ↔ `lead@creo-memories`
-  - `wing-vp-73@vantage-point` ↔ `wing-creo-101@creo-memories`
+  - `conductor@vantage-point` ↔ `conductor@creo-memories`
+  - `performer-vp-73@vantage-point` ↔ `performer-creo-101@creo-memories`
   - address = `{actor}@{project}` の統一 schema (§wire address 仕様)
 - wiremsg は wire accumulation で **非同期連携** (相手 session が idle でも wire に追記され、 次回起動時に cursor を進めて recv 可能)
 - **実地例**: 2026-04-23 の creo-memories hand-off (CREO-101) がこの pattern の production 事例:
-  - VP 側 Wing が `lead@creo-memories` に handoff memo を送信
-  - creo-memories 側 Lead が next session 開始時に受信
+  - VP 側 Performer が `conductor@creo-memories` に handoff memo を送信
+  - creo-memories 側 Conductor が next session 開始時に受信
   - 双方の session が並行稼働していなくても成立
 
 #### 3 原則の相互補完
 
 ```mermaid
 graph LR
-    P1["原則 1<br/>1 Issue = 1 Wing Lane"] --> P2["原則 2<br/>Lead を meta 用に空ける"]
+    P1["原則 1<br/>1 Issue = 1 Performer Lane"] --> P2["原則 2<br/>Conductor を meta 用に空ける"]
     P2 --> P3["原則 3<br/>Lane 間連携 = actor msg"]
     P3 --> P1
 
-    P1 -. "Wing は具体 issue" .-> P2
-    P2 -. "Lead は dispatch 役" .-> P3
+    P1 -. "Performer は具体 issue" .-> P2
+    P2 -. "Conductor は dispatch 役" .-> P3
     P3 -. "msg で orchestrate" .-> P1
 
     style P1 fill:#c8e6c9,stroke:#388e3c
@@ -370,13 +379,13 @@ graph LR
     style P3 fill:#b3e5fc,stroke:#0288d1
 ```
 
-- 原則 1 で Wing の role が固まる (具体 issue 持ち)
-- 原則 2 で Lead の role が固まる (meta 専任)
+- 原則 1 で Performer の role が固まる (具体 issue 持ち)
+- 原則 2 で Conductor の role が固まる (meta 専任)
 - 原則 3 で両者を繋ぐ mechanism が msg (sync 不要、persistent 可)
 
 ---
 
-## 5. Lead Autonomy Level 🎚️
+## 5. Conductor Autonomy Level 🎚️
 
 ### 5.1 4 段階
 
@@ -390,7 +399,7 @@ graph LR
 ### 5.2 各 Level の具体的行動
 
 #### L0 Observer (default)
-- wing 状態を監視、表示のみ
+- performer 状態を監視、表示のみ
 - user 明示的 request がない限り行動しない
 - 現状の VP と同じ操作感
 
@@ -403,17 +412,17 @@ graph LR
 - **Cycle burn-down**: Linear cycle の burn-down 更新
 
 #### L2 Conductor
-- **Wing nudge**: idle 30m 超の wing に「続ける? suspend?」を提案
+- **Performer nudge**: idle 30m 超の performer に「続ける? suspend?」を提案
 - **PR review draft 生成**: 自分の PR に事前レビュー草稿
 - **Next task precompute**: Linear backlog から次 candidate を pick、理由付き提示
 - **Dependency 警告**: blocker issue の進捗停滞を検出、通知
 - **Memory promote 提案**: live_memory から snapshot promote すべきか提案
 
 #### L3 Autonomous Director
-- **Wing 自動 spawn**: 定型 issue を自動で wing 化
+- **Performer 自動 spawn**: 定型 issue を自動で performer 化
 - **Dependency 自動解決**: blocker が解消したら blocked issue を自動で progress
 - **Cycle planning**: 次 cycle の候補 issue セットを提案 → 承認で commit
-- **Cross-project coordination**: 他 project lead との automated sync
+- **Cross-project coordination**: 他 project conductor との automated sync
 
 ### 5.3 Default と昇格
 
@@ -480,7 +489,7 @@ Requiem Architecture の 2 大原則 —
 ## 6. Meta Lane カタログ
 
 ### 6.1 Daily Journal Lane 📓
-- **Trigger**: 毎日 0:00 JST に Lead Autonomy L1+ が作成
+- **Trigger**: 毎日 0:00 JST に Conductor Autonomy L1+ が作成
 - **Lifecycle**: 24h 後に completed → snapshot 昇華 → 自死
 - **Subscribed topics**: `project/*/state/**`, `project/*/lifecycle/**`
 - **Output**: その日の全 Lane activity summary + notable events の snapshot_memory
@@ -504,7 +513,7 @@ Requiem Architecture の 2 大原則 —
 ### 6.5 Watchdog Lane 🐕
 - **Trigger**: 常駐
 - **Subscribed topics**: `**/error/**`, `project/*/lifecycle/process-crashed`
-- **Behavior**: 異常検知、Lead に alert、L3 で auto-restart
+- **Behavior**: 異常検知、Conductor に alert、L3 で auto-restart
 
 ---
 
@@ -526,8 +535,8 @@ impl StandActor for Lane {
             // Linear status 変化
             format!("project/linear/state/**/issue-id/{}", self.linear_issue_id),
         ];
-        if self.kind == LaneKind::Lead {
-            // Lead は project 全体を観測
+        if self.kind == LaneKind::Conductor {
+            // Conductor は project 全体を観測
             topics.push("project/**/lifecycle/**".into());
             if self.autonomy_level >= AutonomyLevel::L1 {
                 topics.push("project/**/error/**".into());
@@ -564,7 +573,7 @@ impl StandActor for Lane {
 ```rust
 pub struct LaneState {
     pub id: LaneId,
-    pub kind: LaneKind,             // Lead / Wing / Meta / Sub
+    pub kind: LaneKind,             // Conductor / Performer / Meta / Sub
     pub phase: LanePhase,           // Sprout / Active / ... / Reborn
     pub linear_issue_id: Option<String>,
     pub branch: Option<String>,
@@ -591,7 +600,7 @@ pub struct LaneState {
 
 - **Linear status が canonical source**
 - Lane は片方向 subscribe が default
-- Lane → Linear への push は Lead Autonomy L1+ でのみ、かつ限定的 (Done 確定等)
+- Lane → Linear への push は Conductor Autonomy L1+ でのみ、かつ限定的 (Done 確定等)
 
 ### 8.2 Mapping
 
@@ -749,7 +758,7 @@ Pane snapshot を memory に昇華する際は **`size: "S"` tag** を付与す�
 
 #### Task retrospective auto-generate
 
-Lead Autonomy L2+ (§5.3) で、Pane close 時に task retrospective の下書きを自動生成可能:
+Conductor Autonomy L2+ (§5.3) で、Pane close 時に task retrospective の下書きを自動生成可能:
 
 - 入力: `TaskMetadata` + pane scope event list
 - 出力: markdown (何をやった / なぜ / 次は / 学び)
@@ -763,7 +772,7 @@ Lead Autonomy L2+ (§5.3) で、Pane close 時に task retrospective の下書�
 
 - Lane 内で発生する全 event の causation chain は Lane snapshot の causation_dag に閉じる
 - Lane 跨ぎ event は causation root を超える (cross-lane causation)
-- `vp tail events --lane wing-VP-73` で単一 tree 可視化
+- `vp tail events --lane performer-VP-73` で単一 tree 可視化
 
 ### 10.2 UI 対応
 
@@ -780,18 +789,18 @@ Lead Autonomy L2+ (§5.3) で、Pane close 時に task retrospective の下書�
 | 案 | 変更 | Pros | Cons |
 |:---:|------|------|------|
 | **A** | Lane のまま、意味を拡張 | 最小変更、既存コード無修正 | "Lane" の語義が曖昧化 |
-| **B** | Lane → **Movement** 🎵 | JoJo Requiem 楽章メタファー、Phase R0-R9 と整合、Lead = Conductor が自然 | rename のコスト |
+| **B** | Lane → **Movement** 🎵 | JoJo Requiem 楽章メタファー、Phase R0-R9 と整合、Conductor = Conductor が自然 | rename のコスト |
 | **C** | 既存 `Process` を `Server` に rename | 名前空間クリーン | 広範な migration、breaking change |
 
 ### 11.2 推奨: B (Movement)
 
-> Each Lane is a Movement in the Requiem. The Lead Conducts.
+> Each Lane is a Movement in the Requiem. The Conductor Conducts.
 
 理由:
 - Requiem Architecture の哲学と直結 (楽章 = Phase = Movement の三重照応)
 - "Process" 多義化問題を迂回
 - rename コストは今が最小 (利用者少、breaking 許容)
-- Lead Autonomy Level の "Conductor" (L2) が語源的に整合
+- Conductor Autonomy Level の "Conductor" (L2) が語源的に整合
 
 ### 11.3 実施タイミング
 
@@ -837,7 +846,7 @@ agent 発見:
 
 | リスク | 軽減策 |
 |--------|--------|
-| Lead 自律で user agency 喪失 | Autonomy opt-in、L0 default、全 action を log |
+| Conductor 自律で user agency 喪失 | Autonomy opt-in、L0 default、全 action を log |
 | Linear 誤更新 | Dry-run、Permission Gate (TH D-5)、Circuit breaker |
 | Lane 数爆発 | lazy activation + auto-hibernate + cycle rotation |
 | State machine 硬直 | Linear SSOT、Lane は subscribe only (default) |
@@ -864,7 +873,7 @@ agent 発見:
 ### 13.3 sub-issue 化予定
 
 - Lane state machine 実装 + Linear sync
-- Lead Autonomy L1 Steward の最小機能
+- Conductor Autonomy L1 Steward の最小機能
 - Meta Lane: Daily Journal
 - Meta Lane: Roadmap
 - Mortality / Snapshot 昇華 (VP-74 Event bus 依存)
@@ -874,7 +883,7 @@ agent 発見:
 
 ## 14. Open questions (要 decide)
 
-### 14.1 Lead Autonomy 初期 target
+### 14.1 Conductor Autonomy 初期 target
 - L0 で静観 / L1 Steward から着手 / L2 Conductor を狙う
 - **推奨**: **L1 Steward** — Linear sync と daily summary は user 負担が下がる即効性、かつ低リスク
 
@@ -900,7 +909,7 @@ agent 発見:
 
 - [ ] 本 spec が v1 (user decide 反映) で merge される
 - [ ] Lane state machine の実装 skeleton が commit される (別 issue)
-- [ ] Lead Autonomy L1 Steward が最低 1 task (Linear sync 等) 動く
+- [ ] Conductor Autonomy L1 Steward が最低 1 task (Linear sync 等) 動く
 - [ ] Meta Lane (Daily Journal) が 1 日回る
 - [ ] 命名決定 (B 採用時は alias 設計も commit)
 - [ ] retrospective auto-generate が 1 本成功
@@ -948,8 +957,8 @@ agent 発見:
   - §2.6 **Screen Geography** — 1 画面で 5 tier を把握する cockpit view、"認知モデル = UI 構造の Alignment" 原則
   - §4.4 **Pane = Task semantic 昇格** (dual nature: 視覚 layout + Task unit、`task: Option<TaskMetadata>`)
   - §4.5 **運用原則** (user 追加 2026-04-23):
-    - 1 Issue = 1 Wing Lane (M tier 処理単位)
-    - Lead Lane は Project meta task 用に空ける (L1 Steward 前提)
+    - 1 Issue = 1 Performer Lane (M tier 処理単位)
+    - Conductor Lane は Project meta task 用に空ける (L1 Steward 前提)
     - Lane 間連携 = VP actor msg (wire_send/wire_recv)、cross-project も同 address 形式
   - §5.5 **Request/Response as XS process** (causation edge = 1 R/R、events と processes の isomorphism)
   - §9.4 **Pane-level snapshot** (Mortality を Pane にも再帰適用、`size: "S"` tag 推奨)

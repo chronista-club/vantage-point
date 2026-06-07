@@ -9,9 +9,9 @@
  */
 import { sidebar } from "../store";
 import { sendIpc } from "../ipc";
-import { isWingLane, laneAddressKey } from "../lane";
+import { isPerformerLane, laneAddressKey } from "../lane";
 import {
-	openAddWingFor,
+	openAddPerformerFor,
 	setDeleteHintLabel,
 	setDeleteHintVisible,
 	setLaneSelectHintLabel,
@@ -38,7 +38,7 @@ export function resolveProjectPathFromAddress(
 	return undefined;
 }
 
-/** address に対応する LaneInfo を逆引き（= isWingLane 判定等で必要）。 */
+/** address に対応する LaneInfo を逆引き（= isPerformerLane 判定等で必要）。 */
 function findLaneByAddress(address: string) {
 	const map = sidebar.lanes_by_project ?? {};
 	for (const lanes of Object.values(map)) {
@@ -121,9 +121,9 @@ function collectVisibleLanes(): VisibleLane[] {
 			const kind = lane.kind || lane.address.kind;
 			const name = lane.name ?? lane.address.name ?? "";
 			const label =
-				kind === "lead"
-					? `${projectName} / Lead`
-					: `${projectName} / Wing: ${name}`;
+				kind === "conductor"
+					? `${projectName} / Conductor`
+					: `${projectName} / Performer: ${name}`;
 			out.push({ path: proc.path, address: addr, label });
 		}
 	}
@@ -242,16 +242,16 @@ export function runRestart(): void {
 	console.debug("[directive r] active lane / stand なし、 skip");
 }
 
-/** `n` — active project の AddWing form を keyboard で open。 */
-export function runNewWing(): void {
+/** `n` — active project の AddPerformer form を keyboard で open。 */
+export function runNewPerformer(): void {
 	const path = activeProjectPath();
 	if (!path) {
 		console.warn("[directive n] active project 不明、 form open skip");
 		return;
 	}
-	const opened = openAddWingFor(path);
+	const opened = openAddPerformerFor(path);
 	if (!opened) {
-		console.warn("[directive n] AddWing setter not registered for", path);
+		console.warn("[directive n] AddPerformer setter not registered for", path);
 	}
 }
 
@@ -262,10 +262,10 @@ export function runDelete(): void {
 	if (addr) {
 		const lane = findLaneByAddress(addr);
 		const path = resolveProjectPathFromAddress(addr);
-		if (lane && path && isWingLane(lane)) {
+		if (lane && path && isPerformerLane(lane)) {
 			target = { kind: "lane", path, address: addr };
 		} else {
-			console.debug("[directive d] target が Wing でない or path 不明、 skip");
+			console.debug("[directive d] target が Performer でない or path 不明、 skip");
 			return;
 		}
 	} else if (sidebar.active_stand) {
@@ -294,7 +294,7 @@ export function runDelete(): void {
 	pendingDelete = { target, expireAt: Date.now() + DELETE_CONFIRM_WINDOW_MS };
 	const label =
 		target.kind === "lane"
-			? `⌘d again to delete wing: ${target.address}`
+			? `⌘d again to delete performer: ${target.address}`
 			: `⌘d again to delete project: ${target.path}`;
 	setDeleteHintLabel(label);
 	setDeleteHintVisible(true);

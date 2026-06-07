@@ -9,8 +9,8 @@
 //! `tmux send-keys` でその pane に直接テキストを投入する（SP も DB も経由しない）。
 //!
 //! ```bash
-//! vp directmsg vantage-point/lead "ビルド通った？"
-//! vp directmsg vantage-point/wing/sub "止めて" --no-enter
+//! vp directmsg vantage-point/conductor "ビルド通った？"
+//! vp directmsg vantage-point/performer/sub "止めて" --no-enter
 //! ```
 
 use anyhow::{Context, Result, bail};
@@ -21,17 +21,17 @@ use crate::process::lanes_state::LaneAddress;
 /// lane address 文字列を `LaneAddress` にパースする。
 ///
 /// 受理形式（`LaneAddress` の Display 形）:
-/// - `<project>/lead`
-/// - `<project>/wing/<name>`
+/// - `<project>/conductor`
+/// - `<project>/performer/<name>`
 fn parse_lane(s: &str) -> Result<LaneAddress> {
     let parts: Vec<&str> = s.split('/').collect();
     match parts.as_slice() {
-        [project, "lead"] if !project.is_empty() => Ok(LaneAddress::lead(*project)),
-        [project, "wing", name] if !project.is_empty() && !name.is_empty() => {
-            Ok(LaneAddress::wing(*project, *name))
+        [project, "conductor"] if !project.is_empty() => Ok(LaneAddress::conductor(*project)),
+        [project, "performer", name] if !project.is_empty() && !name.is_empty() => {
+            Ok(LaneAddress::performer(*project, *name))
         }
         _ => bail!(
-            "lane address の形式が不正: '{}' — '<project>/lead' か '<project>/wing/<name>' を指定",
+            "lane address の形式が不正: '{}' — '<project>/conductor' か '<project>/performer/<name>' を指定",
             s
         ),
     }
@@ -107,14 +107,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_lead_address() {
-        let a = parse_lane("vantage-point/lead").unwrap();
-        assert_eq!(a.tmux_session_prefix(), "vp-vantage-point-lead-");
+    fn parse_conductor_address() {
+        let a = parse_lane("vantage-point/conductor").unwrap();
+        assert_eq!(a.tmux_session_prefix(), "vp-vantage-point-conductor-");
     }
 
     #[test]
-    fn parse_wing_address() {
-        let a = parse_lane("vantage-point/wing/sub").unwrap();
+    fn parse_performer_address() {
+        let a = parse_lane("vantage-point/performer/sub").unwrap();
         assert_eq!(a.tmux_session_prefix(), "vp-vantage-point-sub-");
     }
 
@@ -122,8 +122,8 @@ mod tests {
     fn parse_rejects_malformed() {
         assert!(parse_lane("bogus").is_err());
         assert!(parse_lane("proj/").is_err());
-        assert!(parse_lane("/lead").is_err());
-        assert!(parse_lane("proj/wing/").is_err());
+        assert!(parse_lane("/conductor").is_err());
+        assert!(parse_lane("proj/performer/").is_err());
         assert!(parse_lane("proj/unknown").is_err());
     }
 
@@ -131,7 +131,7 @@ mod tests {
     /// （`resolve_session` の prefix 一致が成立する前提）。
     #[test]
     fn prefix_is_prefix_of_session_name() {
-        let a = parse_lane("creo.memories/lead").unwrap();
+        let a = parse_lane("creo.memories/conductor").unwrap();
         let name = a.tmux_session_name("hd");
         assert!(name.starts_with(&a.tmux_session_prefix()));
     }

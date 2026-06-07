@@ -13,7 +13,7 @@
 //!   + role_offset
 //! ```
 //!
-//! ## 例: vantage-point (slot=0) × Wing laneIndex=1 × dev_server
+//! ## 例: vantage-point (slot=0) × Performer laneIndex=1 × dev_server
 //! = 33000 + 0*100 + 10 + 1*10 + 1 = **33021**
 //!
 //! 再起動しても slot が永続 assign されている限り同じ port。
@@ -158,9 +158,9 @@ mod tests {
     fn lane_base_within_slot() {
         let l = PortLayout::default();
         // Slot 0
-        assert_eq!(l.lane_base(0, 0), Some(33010)); // Lead
-        assert_eq!(l.lane_base(0, 1), Some(33020)); // Wing A
-        assert_eq!(l.lane_base(0, 8), Some(33090)); // Wing H
+        assert_eq!(l.lane_base(0, 0), Some(33010)); // Conductor
+        assert_eq!(l.lane_base(0, 1), Some(33020)); // Performer A
+        assert_eq!(l.lane_base(0, 8), Some(33090)); // Performer H
         assert_eq!(l.lane_base(0, 9), None); // over slot boundary
         // Slot 1
         assert_eq!(l.lane_base(1, 0), Some(33110));
@@ -170,7 +170,7 @@ mod tests {
     #[test]
     fn lane_role_ports() {
         let l = PortLayout::default();
-        // vantage-point slot=0, Wing (laneIndex=1) — design memo の具体例
+        // vantage-point slot=0, Performer (laneIndex=1) — design memo の具体例
         assert_eq!(l.port(0, 1, "agent"), Some(33020));
         assert_eq!(l.port(0, 1, "dev_server"), Some(33021));
         assert_eq!(l.port(0, 1, "db_admin"), Some(33022));

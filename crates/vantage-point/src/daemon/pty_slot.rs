@@ -87,10 +87,12 @@ impl PtySlot {
         }
         // PATH 補正: vp-app (.app) を GUI / launchd 経由で起動すると、 子プロセスの PATH が
         // `/usr/bin:/bin:/usr/sbin:/sbin` の最小集合になり、 user-installed tool (特に mise、
-        // lead lane = `mise run vp:stand:echoes` の program) を見つけられず spawn が失敗 →
+        // conductor lane = `mise run vp:stand:echoes` の program) を見つけられず spawn が失敗 →
         // lane が即 Dead 化 → Echoes コンソールが出ない、 という症状の根因になる。
-        // 既知の user tool location を base PATH の先頭に前置して解決する (augment_lane_path)。
+        // 既知の user tool location を base PATH の先頭に前置して解決する。
         // base は caller env の PATH (あれば) → なければ親プロセスの PATH。
+        // 補正ロジックの SSOT は `crate::spawn_env`。 本来は daemon / SP の spawn 最上流で
+        // 補強済みのはずだが (#498 再発の根治)、 末端でも二重保険として補強する。
         {
             let base_path = env
                 .iter()
@@ -99,7 +101,10 @@ impl PtySlot {
                 .or_else(|| std::env::var("PATH").ok())
                 .unwrap_or_default();
             let home = std::env::var("HOME").ok();
-            cmd.env("PATH", augment_lane_path(&base_path, home.as_deref()));
+            cmd.env(
+                "PATH",
+                crate::spawn_env::augment_path(&base_path, home.as_deref()),
+            );
         }
 
         // 子プロセスを起動（ゾンビ防止のためハンドルを保持する）
@@ -263,75 +268,27 @@ fn start_reader_task(
     })
 }
 
-/// lane 子プロセス用に PATH を補正する。
-///
-/// vp-app (.app) を GUI / launchd 経由で起動すると、 子プロセスの PATH が
-/// `/usr/bin:/bin:/usr/sbin:/sbin` の最小集合になり、 user-installed tool (特に mise、
-/// lead lane = `mise run vp:stand:echoes` の program) を見つけられず spawn が失敗 →
-/// lane が即 Dead 化 → Echoes コンソールが出ない、 という症状の根因になる。
-/// 既知の user tool location (`~/.local/bin` / homebrew / `/usr/local/bin`) を base PATH の
-/// 先頭に前置して解決する。 base に既に含まれる prefix は重複させない (PATH 肥大化を避ける)。
-fn augment_lane_path(base_path: &str, home: Option<&str>) -> String {
-    let mut prefixes: Vec<String> = Vec::new();
-    if let Some(home) = home {
-        prefixes.push(format!("{home}/.local/bin"));
-    }
-    prefixes.push("/opt/homebrew/bin".to_string());
-    prefixes.push("/usr/local/bin".to_string());
-    let base_segments: std::collections::HashSet<&str> = base_path.split(':').collect();
-    let new_prefixes: Vec<String> = prefixes
-        .into_iter()
-        .filter(|p| !base_segments.contains(p.as_str()))
-        .collect();
-    match (new_prefixes.is_empty(), base_path.is_empty()) {
-        (true, _) => base_path.to_string(),
-        (false, true) => new_prefixes.join(":"),
-        (false, false) => format!("{}:{}", new_prefixes.join(":"), base_path),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn augment_lane_path_prepends_user_tool_locations() {
-        // GUI/launchd の最小 PATH に user tool location が前置される。
-        let r = augment_lane_path("/usr/bin:/bin", Some("/Users/x"));
-        assert_eq!(
-            r,
-            "/Users/x/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
-        );
-    }
-
-    #[test]
-    fn augment_lane_path_skips_existing_prefix() {
-        // base に既存の prefix は重複させない (PATH 肥大化を避ける)。
-        let r = augment_lane_path("/opt/homebrew/bin:/usr/bin", Some("/Users/x"));
-        assert_eq!(
-            r,
-            "/Users/x/.local/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin"
-        );
-    }
-
-    #[test]
-    fn augment_lane_path_empty_base() {
-        // base が空でも prefix だけで PATH を構築できる。
-        let r = augment_lane_path("", Some("/Users/x"));
-        assert_eq!(r, "/Users/x/.local/bin:/opt/homebrew/bin:/usr/local/bin");
-    }
-
-    #[test]
-    fn augment_lane_path_without_home() {
-        // HOME 不明なら ~/.local/bin は前置しない (homebrew / usr-local のみ)。
-        let r = augment_lane_path("/usr/bin", None);
-        assert_eq!(r, "/opt/homebrew/bin:/usr/local/bin:/usr/bin");
+    /// テスト用のデフォルトシェルを返す。
+    /// $SHELL があればそれを、無ければ OS 既定（Unix: /bin/sh、Windows: cmd.exe）を使う。
+    /// Windows には /bin/sh が無いので OS 分岐が必須。
+    fn default_test_shell() -> String {
+        std::env::var("SHELL").unwrap_or_else(|_| {
+            if cfg!(windows) {
+                "cmd.exe".to_string()
+            } else {
+                "/bin/sh".to_string()
+            }
+        })
     }
 
     #[tokio::test]
     async fn test_pty_spawn_and_output() {
         // echo コマンドでテスト用の出力を確認
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+        let shell = default_test_shell();
         let cwd = std::env::temp_dir().to_string_lossy().to_string();
 
         let (slot, mut rx) =
@@ -353,21 +310,23 @@ mod tests {
 
     #[tokio::test]
     async fn test_pty_write_input() {
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+        let shell = default_test_shell();
         let cwd = std::env::temp_dir().to_string_lossy().to_string();
 
         let (mut slot, mut rx) =
             PtySlot::spawn(&cwd, &shell, &[], &[], 80, 24).expect("PTY spawn に失敗");
 
-        // 少し待ってからコマンドを送信
+        // 少し待ってからコマンドを送信 (シェル初期化を待つ)
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-        // 初期 receiver の既存メッセージをフラッシュ
-        while rx.try_recv().is_ok() {}
-
-        // echo コマンドを送信
-        slot.write(b"echo HELLO_PTY_SLOT\n")
-            .expect("PTY への書き込みに失敗");
+        // echo コマンドを送信。改行コードは OS 依存
+        // (Unix シェルは LF、cmd.exe(ConPTY) は Enter=CR で行確定)。
+        let echo_cmd: &[u8] = if cfg!(windows) {
+            b"echo HELLO_PTY_SLOT\r"
+        } else {
+            b"echo HELLO_PTY_SLOT\n"
+        };
+        slot.write(echo_cmd).expect("PTY への書き込みに失敗");
 
         // 出力に "HELLO_PTY_SLOT" が含まれることを確認
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -377,6 +336,12 @@ mod tests {
             match tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv()).await {
                 Ok(Ok(data)) => {
                     let text = String::from_utf8_lossy(&data);
+                    // ConPTY は DSR (\x1b[6n = カーソル位置問い合わせ) への応答を
+                    // 端末側から受け取るまで描画を進めない。本番では実端末 (xterm.js)
+                    // が応答するが、テストでは我々が端末役として応答する必要がある。
+                    if text.contains("\u{1b}[6n") {
+                        let _ = slot.write(b"\x1b[1;1R");
+                    }
                     if text.contains("HELLO_PTY_SLOT") {
                         found = true;
                         break;
@@ -393,7 +358,7 @@ mod tests {
     #[tokio::test]
     async fn test_pty_drop_kills_child() {
         // Drop 実装が子プロセスを確実に終了させることを検証
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+        let shell = default_test_shell();
         let cwd = std::env::temp_dir().to_string_lossy().to_string();
 
         let (slot, _rx) = PtySlot::spawn(&cwd, &shell, &[], &[], 80, 24).expect("PTY spawn に失敗");

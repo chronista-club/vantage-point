@@ -161,7 +161,7 @@ pub(crate) struct AppState {
     pub wire_notifier: crate::capability::WireNotifier,
     /// Whitesnake 🐍 — 汎用永続化レイヤー
     pub whitesnake: crate::capability::Whitesnake,
-    /// Lane Pool (Lead/Wing registry) — Lane scope の Stand container
+    /// Lane Pool (Conductor/Performer registry) — Lane scope の Stand container
     /// 関連 memory: mem_1CaSsN7xj69aVQtLPQFJxQ (SP-as-Project-Master 9 component #4)
     pub lane_pool: Arc<RwLock<super::lanes_state::LanePool>>,
     /// Phase 2 (Step E): SP の system 系 lifecycle event を 1 つの broadcast bus で配信。

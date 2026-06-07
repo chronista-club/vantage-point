@@ -9,7 +9,7 @@ fleetflow `mem_1CaGRNrt5VbAmrUh8sWbYw` (Commander + Plugin SDK) と並ぶ本体�
 
 ```
 Project      (vantage-point)
-└── Lane     (lead / wing-X)              ← Stone Free 🧵 管理
+└── Lane     (conductor / performer-X)              ← Stone Free 🧵 管理
     └── Pane (矩形 layout、split tree)
         └── Content (stand-owned 中身)
 ```
@@ -17,7 +17,7 @@ Project      (vantage-point)
 | 層 | 概念 | 主な操作 |
 |----|------|---------|
 | 1 Project | repo 単位 | register / remove / peek |
-| 2 Lane | 実行 context (Lead or Wing) | create / destroy / hibernate / resume |
+| 2 Lane | 実行 context (Conductor or Performer) | create / destroy / hibernate / resume |
 | 3 Pane | 矩形 layout | split / resize / focus / close |
 | 4 Content | Stand-owned object | attach / detach / migrate / mirror |
 
@@ -85,10 +85,10 @@ Canvas は items array を保持、各 item:
 States: Creating → Active ⇄ Idle → Hibernated → Destroyed
 ```
 
-- **Lead Lane**: Project 作成時に自動、Project 削除時のみ destroy
-- **Wing Lane**: `vp lane new` で create、`vp lane rm` で destroy
+- **Conductor Lane**: Project 作成時に自動、Project 削除時のみ destroy
+- **Performer Lane**: `vp lane new` で create、`vp lane rm` で destroy
 - **Hibernated ≠ Destroyed** — "消してないが今使ってない" 状態
-- **Resume**: Lead eager / Wing lazy
+- **Resume**: Conductor eager / Performer lazy
 
 ---
 
@@ -136,20 +136,20 @@ Pane A = Chat mode、Pane B = TUI mode、同 session を両方で見る。
 
 | Tier | 例 | 用途 |
 |------|-----|------|
-| 1 Lane-level | `agent@project` / `wing-X@project` / `notify@project` | 恒久 actor |
+| 1 Lane-level | `agent@project` / `performer-X@project` / `notify@project` | 恒久 actor |
 | 2 Content-level | `canvas-{id}@project` (opt-in alias) | 特定 Content に送る |
 | 3 Item-level | — addressable しない | tool 経由 (`canvas_move(item_id)`) |
 
 ### Canonical + Alias の 2 層
 
-- Canonical: `{stand}.{lane}@{project}` (例: `echoes.lead@vp`)
-- Alias: `agent@vp` → `echoes.lead@vp`、`wing-VP-10@vp` → `echoes.wing-VP-10@vp`
+- Canonical: `{stand}.{lane}@{project}` (例: `echoes.conductor@vp`)
+- Alias: `agent@vp` → `echoes.conductor@vp`、`performer-VP-10@vp` → `echoes.performer-VP-10@vp`
 - alias は永久互換、canonical は拡張性
 
 ### Linear 命名統一
-Issue ID = wing name = branch suffix = actor address 部分:
+Issue ID = performer name = branch suffix = actor address 部分:
 ```
-Issue "VP-10" → wing "VP-10" → branch "mako/vp-10-..." → address "wing-VP-10@vp"
+Issue "VP-10" → performer "VP-10" → branch "mako/vp-10-..." → address "performer-VP-10@vp"
 ```
 
 ---
@@ -162,9 +162,9 @@ Issue "VP-10" → wing "VP-10" → branch "mako/vp-10-..." → address "wing-VP-
 - **External**: claude jsonl (session), ccws clones, tmux sessions
 
 ### Eager / Lazy
-- Project list, Lead Lane: eager (起動即)
-- Lead Pane tree + Contents: eager
-- Wing Lane: **lazy** (sidebar click で activate)
+- Project list, Conductor Lane: eager (起動即)
+- Conductor Pane tree + Contents: eager
+- Performer Lane: **lazy** (sidebar click で activate)
 - Orphan Contents: lazy
 - Echoes messages (> last 50): lazy scroll
 
@@ -184,21 +184,21 @@ vp snapshot diff "before-refactor" current
 ## 10. Lane 間独立性
 
 ### Default isolation
-- Lead ↔ Wing の default: **msg のみ**
+- Conductor ↔ Performer の default: **msg のみ**
 - Content の直接操作は不可
 
 ### 3 アクセスモード
 1. **Message** (default): `wire_send` / `wire_recv`
 2. **Peek** (read-only): `lane_peek(lane_id)` → snapshot
-3. **Share / Mirror** (read-write): `content_attach(from_wing, to_lead_pane)`
+3. **Share / Mirror** (read-write): `content_attach(from_performer, to_conductor_pane)`
 
 ### Parent-child 関係
-- Lead = 親、Wing = 子
-- Lead は Wing destroy 可、逆は不可
-- Wing 同士は対等 (sibling、対等 msg/peek/share)
+- Conductor = 親、Performer = 子
+- Conductor は Performer destroy 可、逆は不可
+- Performer 同士は対等 (sibling、対等 msg/peek/share)
 
 ### UI
-Sidebar で各 Wing Lane に `[peek]` / `[mirror to lead]` / `[destroy]` 操作。
+Sidebar で各 Performer Lane に `[peek]` / `[mirror to conductor]` / `[destroy]` 操作。
 
 ---
 

@@ -104,6 +104,23 @@ pub fn normalize_path_key(path: &std::path::Path) -> String {
     Config::normalize_path(path)
 }
 
+/// `config.projects` (ProjectConfig) を ProjectEntry 列に変換する。
+///
+/// PR-C: load_config が「DB 復旧の seed」「vpdb なし時の fallback」両方でこの変換を使う。
+/// enabled は projects.kdl の慣習 (true は省略 = None、 false のみ明記) に揃える。
+fn config_projects_to_entries(config: &Config) -> Vec<crate::projects_file::ProjectEntry> {
+    config
+        .projects
+        .iter()
+        .map(|p| crate::projects_file::ProjectEntry {
+            name: p.name.clone(),
+            path: p.path.clone(),
+            enabled: if p.enabled { None } else { Some(false) },
+            slot: p.slot,
+        })
+        .collect()
+}
+
 /// VP-165 PR-5b: `start_process` 内 `wait_for_health` の判定結果
 #[derive(Debug)]
 enum HealthCheckResult {
@@ -184,32 +201,63 @@ impl ProcessManagerCapability {
 
     /// 設定を読み込み
     ///
-    /// VP-188: registered projects の SSOT を embedded DB → `~/.config/vp/projects.kdl`
-    /// に移行。 `Config::load()` が projects.kdl を `config.projects` にマージするため
-    /// (= read 経路を 1 本化)、 ここは `config.projects` から HashMap に同期する。
-    /// VP-182 の「DB dir 変更で projects 消失」 regression を構造的に解消 (council 2026-05-16)。
+    /// PR-C (control plane 一元化, creo `mem_1CbmWjCGNi9z49s3r21TwQ`): registered projects の
+    /// 真実源を db/world に切り替える。
+    /// - `vpdb=Some` (= World daemon): **db/world を真実源**にする。 DB が空なら config.projects
+    ///   (= projects.kdl) から一回 import して復旧 (VP-182 シナリオ / 既存ユーザーの移行)。
+    /// - `vpdb=None` (= CLI / SP / test 初期): 従来通り config.projects (= projects.kdl) から展開。
+    ///
+    /// projects.kdl は過渡期の復旧の種兼ミラー (PR-D で撤去予定)。 `Config::load()` は config.kdl の
+    /// 人設定読みと、 復旧 seed としての projects.kdl 読みを兼ねる。
     pub async fn load_config(&mut self) -> CapabilityResult<()> {
         let config = Config::load().map_err(|e| {
             CapabilityError::InitializationFailed(format!("Failed to load config: {}", e))
         })?;
+
+        // 真実源から ProjectEntry 列を得る (vpdb=Some なら DB 優先、 空なら kdl から復旧)。
+        let entries: Vec<crate::projects_file::ProjectEntry> = if let Some(db) = &self.vpdb {
+            let mut entries = db.export_projects().await.map_err(|e| {
+                CapabilityError::InitializationFailed(format!("DB projects 取得失敗: {}", e))
+            })?;
+            if entries.is_empty() && !config.projects.is_empty() {
+                // DB 空 + kdl に projects あり → kdl から db/world へ一回 import (移行 / 復旧)。
+                let seed = config_projects_to_entries(&config);
+                db.import_projects(&seed).await.map_err(|e| {
+                    CapabilityError::InitializationFailed(format!(
+                        "DB projects 復旧 import 失敗: {}",
+                        e
+                    ))
+                })?;
+                tracing::info!(
+                    "projects を projects.kdl から db/world に復旧 ({} 件)",
+                    seed.len()
+                );
+                entries = db.export_projects().await.map_err(|e| {
+                    CapabilityError::InitializationFailed(format!("DB projects 再取得失敗: {}", e))
+                })?;
+            }
+            entries
+        } else {
+            config_projects_to_entries(&config)
+        };
 
         let mut projects = self.projects.write().await;
         let mut order = self.project_order.write().await;
         projects.clear();
         order.clear();
 
-        for project in &config.projects {
-            let key = normalize_path_key(&PathBuf::from(&project.path));
+        for e in &entries {
+            let key = normalize_path_key(&PathBuf::from(&e.path));
             order.push(key.clone());
             projects.insert(
                 key,
                 ProjectInfo {
-                    name: project.name.clone(),
-                    path: project.path.clone().into(),
+                    name: e.name.clone(),
+                    path: e.path.clone().into(),
                     process_status: ProcessStatus::Stopped,
                     port: None, // port は動的割当 (port_layout が slot から計算)
-                    enabled: project.enabled,
-                    slot: project.slot,
+                    enabled: e.is_enabled(),
+                    slot: e.slot,
                 },
             );
         }
@@ -220,32 +268,55 @@ impl ProcessManagerCapability {
         Ok(())
     }
 
-    /// 現在の projects HashMap を projects.kdl に書き出す (VP-188)。
+    /// 現在の projects HashMap を真実源に永続化する。
     ///
-    /// `project_order` の順序で `ProjectsFile` を組み立てて atomic write する。
-    /// add / delete / rename / reorder / set_enabled の各操作後に呼ぶ。
+    /// PR-C (control plane 一元化): `project_order` の順序で `ProjectEntry` 列を組み立て、
+    /// - `vpdb=Some` (= World): **db/world に全置換** (= 真実源)。 projects.kdl は DB からの
+    ///   一方向 export ミラー (= 過渡期の人間可読 + 復旧の種、 PR-D で撤去予定)。
+    /// - `vpdb=None` (= CLI / SP / test): 従来通り projects.kdl に atomic write。
+    ///
+    /// add / delete / rename / reorder / set_enabled / auto_reassign_slot の各操作後に呼ぶ。
     /// test 環境では `ProjectsFile::save()` が no-op なので本番ファイルを破壊しない。
     async fn persist_projects(&self) -> CapabilityResult<()> {
-        let projects = self.projects.read().await;
-        let order = self.project_order.read().await;
-        let entries: Vec<crate::projects_file::ProjectEntry> = order
-            .iter()
-            .filter_map(|key| {
-                projects
-                    .get(key)
-                    .map(|p| crate::projects_file::ProjectEntry {
-                        name: p.name.clone(),
-                        path: p.path.to_string_lossy().to_string(),
-                        // enabled=true は省略 (= projects.kdl をミニマムに)、 false のみ明記
-                        enabled: if p.enabled { None } else { Some(false) },
-                        slot: p.slot,
-                    })
+        // read guard は entries 構築のみで解放する (DB / file の await 中は lock を持たない)。
+        let entries: Vec<crate::projects_file::ProjectEntry> = {
+            let projects = self.projects.read().await;
+            let order = self.project_order.read().await;
+            order
+                .iter()
+                .filter_map(|key| {
+                    projects
+                        .get(key)
+                        .map(|p| crate::projects_file::ProjectEntry {
+                            name: p.name.clone(),
+                            path: p.path.to_string_lossy().to_string(),
+                            // enabled=true は省略 (= projects.kdl をミニマムに)、 false のみ明記
+                            enabled: if p.enabled { None } else { Some(false) },
+                            slot: p.slot,
+                        })
+                })
+                .collect()
+        };
+
+        if let Some(db) = &self.vpdb {
+            // db/world を真実源として全置換。
+            db.replace_all_projects(&entries).await.map_err(|e| {
+                CapabilityError::InitializationFailed(format!("DB projects 全置換失敗: {}", e))
+            })?;
+            // projects.kdl は DB の読み取り専用ミラー。 entries は replace_all で書いた内容と
+            // 同一 (ord = 出現順) なので export 往復を省く (= DELETE→export 間に別リクエストが
+            // 割り込んで誤った内容を kdl に焼く窓も消える、 Moody Blues PR-D review #3)。
+            let pf = crate::projects_file::ProjectsFile { projects: entries };
+            pf.save().map_err(|e| {
+                CapabilityError::InitializationFailed(format!("projects.kdl export 失敗: {}", e))
             })
-            .collect();
-        let pf = crate::projects_file::ProjectsFile { projects: entries };
-        pf.save().map_err(|e| {
-            CapabilityError::InitializationFailed(format!("projects.kdl 書き込み失敗: {}", e))
-        })
+        } else {
+            // vpdb なし: 従来通り projects.kdl に書く (= 真実源)。
+            let pf = crate::projects_file::ProjectsFile { projects: entries };
+            pf.save().map_err(|e| {
+                CapabilityError::InitializationFailed(format!("projects.kdl 書き込み失敗: {}", e))
+            })
+        }
     }
 
     /// vpバイナリを検索
@@ -333,38 +404,58 @@ impl ProcessManagerCapability {
             procs.keys().cloned().collect()
         };
 
-        let mut projects = self.projects.write().await;
-        let mut order = self.project_order.write().await;
+        {
+            let mut projects = self.projects.write().await;
+            let mut order = self.project_order.write().await;
 
-        // projects.kdl 由来の key 集合 (= 除去判定の基準)。
-        let kdl_keys: std::collections::HashSet<String> = config
-            .projects
-            .iter()
-            .map(|p| normalize_path_key(&PathBuf::from(&p.path)))
-            .collect();
+            // projects.kdl 由来の key 集合 (= 除去判定の基準)。
+            let kdl_keys: std::collections::HashSet<String> = config
+                .projects
+                .iter()
+                .map(|p| normalize_path_key(&PathBuf::from(&p.path)))
+                .collect();
 
-        // add: projects.kdl の各 project を in-memory に反映 (未登録なら追加)。
-        for project in &config.projects {
-            let key = normalize_path_key(&PathBuf::from(&project.path));
-            projects.entry(key.clone()).or_insert_with(|| ProjectInfo {
-                name: project.name.clone(),
-                path: project.path.clone().into(),
-                process_status: ProcessStatus::Stopped,
-                port: project.port,
-                enabled: project.enabled,
-                slot: project.slot,
-            });
-            if !order.contains(&key) {
-                order.push(key);
+            // add/update: projects.kdl の各 project を in-memory に反映。
+            // PR-C: 既存 key も kdl 値で name/enabled/slot を更新 (CLI が kdl 経由で更新した
+            // slot 等を取り込む)。 running process の process_status / port は触らない (安全側)。
+            for project in &config.projects {
+                let key = normalize_path_key(&PathBuf::from(&project.path));
+                projects
+                    .entry(key.clone())
+                    .and_modify(|p| {
+                        p.name = project.name.clone();
+                        p.enabled = project.enabled;
+                        p.slot = project.slot;
+                    })
+                    .or_insert_with(|| ProjectInfo {
+                        name: project.name.clone(),
+                        path: project.path.clone().into(),
+                        process_status: ProcessStatus::Stopped,
+                        port: project.port,
+                        enabled: project.enabled,
+                        slot: project.slot,
+                    });
+                if !order.contains(&key) {
+                    order.push(key);
+                }
             }
+
+            // remove: projects.kdl から消えた entry を in-memory からも除去。
+            // ただし running process を持つ key は残す (稼働中 SP を取りこぼさない)。
+            projects.retain(|key, _| kdl_keys.contains(key) || running.contains(key));
+            order.retain(|key| projects.contains_key(key));
+
+            tracing::info!("Config reloaded: {} projects", projects.len());
+        } // projects / order の write guard を解放してから persist (read lock 取り直し)
+
+        // PR-C: vpdb=Some なら DB に同期する。 reload は kdl→in-memory→DB の向きで、
+        // running 保護後の in-memory を書くので、 古い kdl で DB を盲目上書きせず取りこぼしも防ぐ。
+        // (= CLI が kdl 経由で更新した slot 等を db/world に焼く合流点)
+        if self.vpdb.is_some()
+            && let Err(e) = self.persist_projects().await
+        {
+            tracing::warn!("reload_config: DB 同期失敗: {}", e);
         }
-
-        // remove: projects.kdl から消えた entry を in-memory からも除去。
-        // ただし running process を持つ key は残す (稼働中 SP を取りこぼさない)。
-        projects.retain(|key, _| kdl_keys.contains(key) || running.contains(key));
-        order.retain(|key| projects.contains_key(key));
-
-        tracing::info!("Config reloaded: {} projects", projects.len());
     }
 
     /// プロジェクトを追加（+ projects.kdl に永続化、 VP-188）
@@ -512,6 +603,99 @@ impl ProcessManagerCapability {
         self.persist_projects().await?;
 
         Ok(())
+    }
+
+    /// project の slot を設定 (+ 永続化)。
+    ///
+    /// PR-D (control plane 一元化): CLI の slot 永続化 (旧 `Config::persist_projects_kdl` 直書き)
+    /// を daemon 経由に移管するための受け皿。 vpdb=Some なら persist_projects 経由で db/world に書く。
+    pub async fn set_project_slot(&self, path: &str, slot: u16) -> CapabilityResult<()> {
+        let key = normalize_path_key(&PathBuf::from(path));
+        {
+            let mut projects = self.projects.write().await;
+            if let Some(p) = projects.get_mut(&key) {
+                p.slot = Some(slot);
+            } else {
+                return Err(CapabilityError::Other(format!(
+                    "Project not found: {}",
+                    path
+                )));
+            }
+        }
+        self.persist_projects().await?;
+        tracing::info!("Project slot={}: {}", slot, path);
+        Ok(())
+    }
+
+    /// project の slot を解除 (+ 永続化)。 PR-D: `vp port slot unassign` の daemon 委譲。
+    pub async fn unset_project_slot(&self, path: &str) -> CapabilityResult<()> {
+        let key = normalize_path_key(&PathBuf::from(path));
+        {
+            let mut projects = self.projects.write().await;
+            if let Some(p) = projects.get_mut(&key) {
+                p.slot = None;
+            } else {
+                return Err(CapabilityError::Other(format!(
+                    "Project not found: {}",
+                    path
+                )));
+            }
+        }
+        self.persist_projects().await?;
+        tracing::info!("Project slot 解除: {}", path);
+        Ok(())
+    }
+
+    /// projects を現実と同期 (PR-D: CLI の `ProjectsFile::sync` を daemon 経由に移管)。
+    ///
+    /// 1. `start_dir` が Some なら起点 dir を project 登録 (未登録時、 `vp app/sp start` の起点登録)。
+    /// 2. dir が実在しない ghost project を除去 (running process を持つものは安全側で残す)。
+    ///
+    /// 永続化は内部の add_project / remove_project が persist_projects 経由で行う。
+    pub async fn sync_projects(
+        &self,
+        start_dir: Option<&str>,
+    ) -> CapabilityResult<crate::projects_file::SyncOutcome> {
+        let mut outcome = crate::projects_file::SyncOutcome::default();
+
+        // 1. 起点 dir 登録 (未登録なら)。
+        if let Some(dir) = start_dir {
+            let dir_path = Config::normalize_path(&PathBuf::from(dir));
+            let key = normalize_path_key(&PathBuf::from(&dir_path));
+            let exists = { self.projects.read().await.contains_key(&key) };
+            if !exists {
+                let name = std::path::Path::new(&dir_path)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("project")
+                    .to_string();
+                // add_project は path.is_dir() を要求 (起点 dir は実在前提)。
+                if self.add_project(&name, &dir_path).await.is_ok() {
+                    outcome.added = Some(name);
+                }
+            }
+        }
+
+        // 2. ghost 除去 (dir 非実在 & 非 running)。ロック順序 projects → running_processes を遵守。
+        let ghosts: Vec<(String, String)> = {
+            let projects = self.projects.read().await;
+            let running: std::collections::HashSet<String> = {
+                let procs = self.running_processes.read().await;
+                procs.keys().cloned().collect()
+            };
+            projects
+                .iter()
+                .filter(|(key, p)| !p.path.is_dir() && !running.contains(*key))
+                .map(|(key, p)| (key.clone(), p.name.clone()))
+                .collect()
+        };
+        for (key, name) in ghosts {
+            if self.remove_project(&key).await.is_ok() {
+                outcome.removed.push(name);
+            }
+        }
+
+        Ok(outcome)
     }
 
     /// Processを起動
@@ -696,6 +880,8 @@ impl ProcessManagerCapability {
                 &port.to_string(),
             ]);
             cmd.current_dir(&project.path);
+            // GUI/launchd 起動の最小 PATH が SP → mise → claude へ伝播するのを spawn 最上流で断つ。
+            cmd.env("PATH", crate::spawn_env::augmented_spawn_path());
             let child = cmd
                 .spawn()
                 .map_err(|e| CapabilityError::Other(format!("Failed to start vp: {}", e)))?;
@@ -1176,10 +1362,30 @@ impl ProcessManagerCapability {
                     new_slot, e
                 ))
             })?;
-        // VP-188: slot 永続化先は projects.kdl (config.toml ではない)。
-        config.persist_projects_kdl().map_err(|e| {
-            CapabilityError::Other(format!("VP-165 reassign: projects.kdl save 失敗: {}", e))
-        })?;
+        // PR-C: slot を真実源 (db/world) に永続化する。 config (= projects.kdl ロード) で計算した
+        // new_slot を in-memory projects に反映し、 persist_projects で DB + kdl ミラーに書く。
+        // これで auto-reassign の slot 退避が DB をバイパスせず一本化される (= 旧 persist_projects_kdl
+        // 直書きは DB と乖離していた)。
+        if let Some(key) = self.resolve_key_by_name(project_name).await {
+            {
+                let mut projects = self.projects.write().await;
+                if let Some(p) = projects.get_mut(&key) {
+                    p.slot = Some(new_slot);
+                }
+            }
+            self.persist_projects().await.map_err(|e| {
+                CapabilityError::Other(format!("VP-165 reassign: slot 永続化失敗: {}", e))
+            })?;
+        } else {
+            // in-memory 未登録 (= 稀: reload 前の race 等)。 PR-D: DB 真実源化後は kdl 退避しても
+            // load_config が DB 優先で読まないため無意味。 slot 永続化をスキップ (port は正しい、
+            // 次回 SP register / reconcile で整合する)。
+            tracing::warn!(
+                "VP-165 reassign: project '{}' が in-memory 未登録、 slot {} の永続化をスキップ (port は正しい)",
+                project_name,
+                new_slot
+            );
+        }
 
         let new_port = crate::cli::PORT_RANGE_START + new_slot;
         tracing::warn!(
@@ -1542,9 +1748,9 @@ impl ProcessManagerCapability {
         }
     }
 
-    /// VP-129: lane root を watch して wing dir 削除を SP DELETE に bridge する FSEvents watcher。
+    /// VP-129: lane root を watch して performer dir 削除を SP DELETE に bridge する FSEvents watcher。
     ///
-    /// **「folder = Lane 空間」 axiom の物理実装**。 user が Finder / `rm -rf` で wing dir を
+    /// **「folder = Lane 空間」 axiom の物理実装**。 user が Finder / `rm -rf` で performer dir を
     /// 削除した時、 OS の file system event (Mac → FSEvents、 Linux → inotify) → notify crate
     /// → 本 watcher が path → project 解決 → SP `DELETE /api/lanes` 自動発火、 sidebar /
     /// tmux / PtySlot が cascade で同期 cleanup される。
@@ -1730,7 +1936,8 @@ impl ProcessManagerCapability {
         event: &notify::Event,
     ) {
         for path in &event.paths {
-            let Some((project_name, project_path, wing_name)) = resolve_lane_event(path, path_map)
+            let Some((project_name, project_path, performer_name)) =
+                resolve_lane_event(path, path_map)
             else {
                 continue;
             };
@@ -1745,9 +1952,9 @@ impl ProcessManagerCapability {
             };
             let Some(port) = port else {
                 tracing::debug!(
-                    "lane watcher: SP not running for project={} (skip) wing={}",
+                    "lane watcher: SP not running for project={} (skip) performer={}",
                     project_name,
-                    wing_name
+                    performer_name
                 );
                 continue;
             };
@@ -1755,16 +1962,16 @@ impl ProcessManagerCapability {
             // SP DELETE /api/lanes (cleanup=false、 dir は既に gone)。 self-loop case
             // (= SP 経由で削除されて dir が消えた → watcher が Remove 検知 → 本 DELETE 発火)
             // は SP 側で 404 (Lane not found) 返却、 log debug 落ち。
-            let address = format!("{}/wing/{}", project_name, wing_name);
+            let address = format!("{}/performer/{}", project_name, performer_name);
             let address_enc = address.replace('/', "%2F");
             let url = format!(
                 "http://[::1]:{}/api/lanes?address={}&cleanup=false",
                 port, address_enc
             );
             tracing::info!(
-                "lane watcher: dir removed → SP DELETE 発火 (project={}, wing={}, port={})",
+                "lane watcher: dir removed → SP DELETE 発火 (project={}, performer={}, port={})",
                 project_name,
-                wing_name,
+                performer_name,
                 port
             );
             match client.delete(&url).send().await {
@@ -1790,8 +1997,8 @@ impl ProcessManagerCapability {
         }
     }
 
-    /// F.8 B Convergent: lane Create event を 1 path 処理。 path → project + wing_name 解決 →
-    /// SP POST /api/lanes (kind=wing, name=<wing>, cwd=<existing_dir>) で auto-spawn を依頼する。
+    /// F.8 B Convergent: lane Create event を 1 path 処理。 path → project + performer_name 解決 →
+    /// SP POST /api/lanes (kind=performer, name=<performer>, cwd=<existing_dir>) で auto-spawn を依頼する。
     ///
     /// `run_lane_watcher` の inner、 sibling は `handle_lane_remove_event` (Remove 時の SP DELETE)。
     /// 設計対称性: Remove → DELETE / Create → POST で「dir 状態と LanePool 状態を一致させる」
@@ -1800,7 +2007,7 @@ impl ProcessManagerCapability {
     /// 競合 case:
     /// - sidebar `+` で作成中に Create event fired → SP 側 LanePool 重複チェックで CONFLICT
     ///   が返り、 watcher 側はそれを debug log で受ける (= silent OK)
-    /// - SP 起動時 bootstrap で既に同 wing が SpawnLane Cmd 投入済 → 上記同様 CONFLICT で no-op
+    /// - SP 起動時 bootstrap で既に同 performer が SpawnLane Cmd 投入済 → 上記同様 CONFLICT で no-op
     async fn handle_lane_create_event(
         world: &Arc<RwLock<Self>>,
         client: &reqwest::Client,
@@ -1812,7 +2019,8 @@ impl ProcessManagerCapability {
             if !path.is_dir() {
                 continue;
             }
-            let Some((project_name, project_path, wing_name)) = resolve_lane_event(path, path_map)
+            let Some((project_name, project_path, performer_name)) =
+                resolve_lane_event(path, path_map)
             else {
                 continue;
             };
@@ -1826,57 +2034,57 @@ impl ProcessManagerCapability {
             };
             let Some(port) = port else {
                 tracing::debug!(
-                    "lane watcher: SP not running for project={} (skip create) wing={}",
+                    "lane watcher: SP not running for project={} (skip create) performer={}",
                     project_name,
-                    wing_name
+                    performer_name
                 );
                 continue;
             };
 
-            // SP POST /api/lanes (cwd 明示で既存 dir を再利用、 new_wing_in skip 経路)。
+            // SP POST /api/lanes (cwd 明示で既存 dir を再利用、 new_performer_in skip 経路)。
             // body 構築は serde_json::json! で minimal、 wire 互換は CreateLaneReq (routes/lanes.rs) と一致。
             let url = format!("http://[::1]:{}/api/lanes", port);
             let body = serde_json::json!({
-                "kind": "wing",
-                "name": wing_name,
+                "kind": "performer",
+                "name": performer_name,
                 "cwd": path.to_string_lossy(),
             });
             tracing::info!(
-                "lane watcher: dir created → SP POST 発火 (project={}, wing={}, port={})",
+                "lane watcher: dir created → SP POST 発火 (project={}, performer={}, port={})",
                 project_name,
-                wing_name,
+                performer_name,
                 port
             );
             match client.post(&url).json(&body).send().await {
                 Ok(r) if r.status().is_success() => {
                     tracing::info!(
-                        "lane watcher: SP POST 成功 (project={}, wing={})",
+                        "lane watcher: SP POST 成功 (project={}, performer={})",
                         project_name,
-                        wing_name
+                        performer_name
                     );
                 }
                 Ok(r) if r.status() == reqwest::StatusCode::CONFLICT => {
                     // 競合: sidebar `+` or bootstrap で既に Lane 作成済。 silent OK。
                     tracing::debug!(
-                        "lane watcher: SP POST CONFLICT (= 既に Lane あり、 silent OK) project={} wing={}",
+                        "lane watcher: SP POST CONFLICT (= 既に Lane あり、 silent OK) project={} performer={}",
                         project_name,
-                        wing_name
+                        performer_name
                     );
                 }
                 Ok(r) => {
                     tracing::warn!(
-                        "lane watcher: SP POST non-success status={} project={} wing={}",
+                        "lane watcher: SP POST non-success status={} project={} performer={}",
                         r.status(),
                         project_name,
-                        wing_name
+                        performer_name
                     );
                 }
                 Err(e) => {
                     tracing::warn!(
-                        "lane watcher: SP POST 失敗 (port={}, project={}, wing={}): {}",
+                        "lane watcher: SP POST 失敗 (port={}, project={}, performer={}): {}",
                         port,
                         project_name,
-                        wing_name,
+                        performer_name,
                         e
                     );
                 }
@@ -1886,11 +2094,11 @@ impl ProcessManagerCapability {
 }
 
 /// lane Remove event 1 path を解決する純粋関数。 `path_map` (= `<.vp/lanes path>` → `(project_name,
-/// project_path)`) から parent match で project を逆引きし、 path の file_name を wing 名として
+/// project_path)`) から parent match で project を逆引きし、 path の file_name を performer 名として
 /// 返す。
 ///
-/// 戻り値: `Some((project_name, project_path, wing_name))` if 完全 match。 そうでなければ `None`。
-/// - dotfile / 空 wing 名は skip (= `.git` 内ファイル等の伝播除外)
+/// 戻り値: `Some((project_name, project_path, performer_name))` if 完全 match。 そうでなければ `None`。
+/// - dotfile / 空 performer 名は skip (= `.git` 内ファイル等の伝播除外)
 /// - path_map に登録されてない project 配下の path は skip
 /// - I/O なしの pure fn (= test しやすい、 mock 不要)
 fn resolve_lane_event(
@@ -1899,11 +2107,11 @@ fn resolve_lane_event(
 ) -> Option<(String, String, String)> {
     let parent = path.parent()?;
     let (project_name, project_path) = path_map.get(parent)?;
-    let wing_name = path.file_name()?.to_str()?.to_string();
-    if wing_name.is_empty() || wing_name.starts_with('.') {
+    let performer_name = path.file_name()?.to_str()?.to_string();
+    if performer_name.is_empty() || performer_name.starts_with('.') {
         return None;
     }
-    Some((project_name.clone(), project_path.clone(), wing_name))
+    Some((project_name.clone(), project_path.clone(), performer_name))
 }
 
 /// lane watcher hot-reload の純粋 diff 計算。 `current` (= 現在 arm 済 path 集合) と
@@ -2061,7 +2269,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_lane_event_skips_dotfile_wing_name() {
+    fn resolve_lane_event_skips_dotfile_performer_name() {
         // `.git` や `.DS_Store` の Remove event (lane dir 内部からの伝播) を skip。
         // NonRecursive watch で arrive する可能性は低いが防御で。
         let map = make_path_map(&[("/repo/.vp/lanes", "repo", "/repo")]);
@@ -2083,14 +2291,14 @@ mod tests {
             ("/repo-a/.vp/lanes", "repo-a", "/repo-a"),
             ("/repo-b/.vp/lanes", "repo-b", "/repo-b"),
         ]);
-        let path_b = std::path::Path::new("/repo-b/.vp/lanes/wing-x");
+        let path_b = std::path::Path::new("/repo-b/.vp/lanes/performer-x");
         let resolved = resolve_lane_event(path_b, &map);
         assert_eq!(
             resolved,
             Some((
                 "repo-b".to_string(),
                 "/repo-b".to_string(),
-                "wing-x".to_string()
+                "performer-x".to_string()
             ))
         );
     }
@@ -2323,6 +2531,53 @@ mod tests {
         let result = cap.remove_project("/nonexistent").await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    // --- PR-D: slot / sync の daemon 委譲受け皿 ---
+
+    #[tokio::test]
+    async fn test_set_and_unset_project_slot() {
+        let cap = make_test_cap();
+        let dir = std::env::temp_dir();
+        let path = dir.to_string_lossy().to_string();
+        cap.add_project("slot-test", &path).await.unwrap();
+
+        // set
+        cap.set_project_slot(&path, 7).await.unwrap();
+        let projects = cap.list_projects().await;
+        assert_eq!(projects[0].slot, Some(7), "slot が設定される");
+
+        // unset
+        cap.unset_project_slot(&path).await.unwrap();
+        let projects = cap.list_projects().await;
+        assert_eq!(projects[0].slot, None, "slot が解除される");
+    }
+
+    #[tokio::test]
+    async fn test_set_project_slot_not_found() {
+        let cap = make_test_cap();
+        let result = cap.set_project_slot("/nonexistent", 1).await;
+        assert!(result.is_err(), "未登録 project の slot 設定は Err");
+    }
+
+    #[tokio::test]
+    async fn test_sync_projects_registers_start_dir() {
+        let cap = make_test_cap();
+        let dir = std::env::temp_dir();
+        let path = dir.to_string_lossy().to_string();
+
+        // 起点 dir 登録 (未登録 → added)
+        let outcome = cap.sync_projects(Some(&path)).await.unwrap();
+        assert!(outcome.added.is_some(), "起点 dir が新規登録される");
+        assert_eq!(cap.list_projects().await.len(), 1);
+
+        // 再 sync (登録済み → added なし)
+        let outcome2 = cap.sync_projects(Some(&path)).await.unwrap();
+        assert!(outcome2.added.is_none(), "登録済みは再登録しない");
+        assert!(
+            outcome2.removed.is_empty(),
+            "実在 dir は ghost 除去されない"
+        );
     }
 
     #[tokio::test]

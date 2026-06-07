@@ -5,7 +5,7 @@
  *
  * - **Rust → JS**: Rust が `webview.evaluate_script("window.<fn>(...)")` で呼ぶ関数群。
  *   主役は `renderSidebarState` (state push の唯一経路)。 PR-1 ではこれだけ実描画に
- *   接続し、 残り 4 関数 (renderError / handleAddWingResult / handleStandsResult /
+ *   接続し、 残り 4 関数 (renderError / handleAddPerformerResult / handleStandsResult /
  *   setClonePath) は PR-2/PR-3 まで no-op stub の受け皿にする。
  * - **JS → Rust**: `window.ipc.postMessage(JSON)` で送る 11 種の sidebar 操作メッセージ。
  *   Rust 側 `handle_sidebar_ipc` が受ける。
@@ -26,8 +26,8 @@ declare global {
     renderSidebarState?: (state: SidebarState) => void
     /** Rust → JS: TheWorld 接続失敗等の error 表示 (PR-2 で実装)。 */
     renderError?: (msg: string) => void
-    /** Rust → JS: Add Wing form の結果通知 (PR-3 で実装)。 */
-    handleAddWingResult?: (msg: unknown) => void
+    /** Rust → JS: Add Performer form の結果通知 (PR-3 で実装)。 */
+    handleAddPerformerResult?: (msg: unknown) => void
     /** Rust → JS: Stand 一覧 fetch の結果通知 (PR-3 で実装)。 */
     handleStandsResult?: (msg: unknown) => void
     /** Rust → JS: Clone folder picker の結果反映 (PR-3 で実装)。 */
@@ -64,8 +64,8 @@ export function installIpcBridge(): void {
 
   // PR-2 / PR-3 で実描画に接続予定の受け皿 stub。
   window.renderError ??= (msg) => console.warn('[vp-sidebar] renderError (stub):', msg)
-  window.handleAddWingResult ??= (msg) =>
-    console.debug('[vp-sidebar] handleAddWingResult (stub):', msg)
+  window.handleAddPerformerResult ??= (msg) =>
+    console.debug('[vp-sidebar] handleAddPerformerResult (stub):', msg)
   window.handleStandsResult ??= (msg) =>
     console.debug('[vp-sidebar] handleStandsResult (stub):', msg)
   window.setClonePath ??= (path) => console.debug('[vp-sidebar] setClonePath (stub):', path)

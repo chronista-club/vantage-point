@@ -17,6 +17,7 @@ pub mod midi;
 pub mod pane;
 pub mod port;
 pub mod process_client;
+pub mod projects;
 pub mod restart;
 pub mod restart_all;
 pub mod sp;

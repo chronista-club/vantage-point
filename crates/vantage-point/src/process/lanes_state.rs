@@ -1,4 +1,4 @@
-//! Lane state types — SP が持つ Lane (Lead/Wing) の data model
+//! Lane state types — SP が持つ Lane (Conductor/Performer) の data model
 //!
 //! 関連 memory:
 //! - `mem_1CaSrCxysdGaaSsN4Dvxth` (VP Architecture: 3 段 Stand scope + Lane semantic)
@@ -20,14 +20,14 @@
 //! - Gold Experience 🌿 (planned PR-γ で Lane 移管予定、 LaneStand impl 追加)
 //!
 //! Project scope の Stand pool (`project_stands_state.rs`) は GE / HP のみ host (PR-β-2 後)。
-//! Lane は **Lead/Wing の PTY セッション + Stand container** に集中:
-//! - Lead 1 / project (固定)、stand = "echoes" / "shell" / "tmux"
-//! - Wing 0..n / project (可変、lane clone)、stand 同上
+//! Lane は **Conductor/Performer の PTY セッション + Stand container** に集中:
+//! - Conductor 1 / project (固定)、stand = "echoes" / "shell" / "tmux"
+//! - Performer 0..n / project (可変、lane clone)、stand 同上
 //!
 //! ## Phase A4-2b スコープ
 //!
-//! `LanePool::with_lead` で Lead Lane 1 つ pre-populate。
-//! Wing create / destroy / Stand 切替は A4-4 / A5 で実装。
+//! `LanePool::with_conductor` で Conductor Lane 1 つ pre-populate。
+//! Performer create / destroy / Stand 切替は A4-4 / A5 で実装。
 
 use std::collections::HashMap;
 use std::fmt;
@@ -35,20 +35,27 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 /// Lane の種別 (memory rule: HD/TH を起動する Lane だけ)
+///
+/// **互換注意 (conductor/performer rename 2026-06-07)**: serde は新名 `"conductor"`/
+/// `"performer"` のみ受理する。旧名 `"lead"`/`"wing"` の後方互換受理は
+/// [`LanePool::parse_address`] (address string path) と vp-app の `From<&LaneAddressWire>`
+/// (wire IPC path) に**限定**される (LanePool は in-memory only で JSON 永続化しないため
+/// この型直接の deserialize 経路は無い)。将来この型を JSON 永続化する経路を新設する場合は
+/// `#[serde(alias = "lead")]` 等を追加すること。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LaneKind {
     /// 1 / project (固定)、LaneStand = HD or TH
-    Lead,
+    Conductor,
     /// 0..n / project (可変、lane cloned worktree)、LaneStand = HD or TH。
-    Wing,
+    Performer,
 }
 
 impl fmt::Display for LaneKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            LaneKind::Lead => write!(f, "lead"),
-            LaneKind::Wing => write!(f, "wing"),
+            LaneKind::Conductor => write!(f, "conductor"),
+            LaneKind::Performer => write!(f, "performer"),
         }
     }
 }
@@ -81,7 +88,7 @@ pub enum TmuxMode {
 /// Lane の tmux address (Phase 1a: deterministic derivation で agent が引ける)
 ///
 /// session 名は `LaneAddress::tmux_session_name(stand)` で deterministic に決まる。
-/// 例: lead@vantage-point (HD) → `"vp-vantage-point-lead-hd"`
+/// 例: conductor@vantage-point (HD) → `"vp-vantage-point-conductor-hd"`
 ///
 /// `mode` で fallback 検出可能 (実 spawn 結果に基づき SP が populate)。
 ///
@@ -113,30 +120,30 @@ pub enum LaneState {
 /// Lane の address — Pool key
 ///
 /// 表示形 (`Display` 実装):
-/// - Lead: `"<project>/lead"`         例: `"vp/lead"`
-/// - Wing: `"<project>/wing/<name>"`  例: `"vp/wing/foo"`
+/// - Conductor: `"<project>/conductor"`         例: `"vp/conductor"`
+/// - Performer: `"<project>/performer/<name>"`  例: `"vp/performer/foo"`
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct LaneAddress {
     pub project: String,
     pub kind: LaneKind,
-    /// Wing のみ Some (人間可読、例: "foo")。Lead は None。
+    /// Performer のみ Some (人間可読、例: "foo")。Conductor は None。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
 }
 
 impl LaneAddress {
-    pub fn lead(project: impl Into<String>) -> Self {
+    pub fn conductor(project: impl Into<String>) -> Self {
         Self {
             project: project.into(),
-            kind: LaneKind::Lead,
+            kind: LaneKind::Conductor,
             name: None,
         }
     }
 
-    pub fn wing(project: impl Into<String>, name: impl Into<String>) -> Self {
+    pub fn performer(project: impl Into<String>, name: impl Into<String>) -> Self {
         Self {
             project: project.into(),
-            kind: LaneKind::Wing,
+            kind: LaneKind::Performer,
             name: Some(name.into()),
         }
     }
@@ -146,12 +153,12 @@ impl LaneAddress {
     /// 形式: `vp-{project}-{lane_label}-{stand_short}` を sanitize ([A-Za-z0-9_-] 以外は '-')。
     /// - `vp-` prefix: VP 管理 session の owner mark (user 自前 session と確実に分離)
     /// - project: lexicographic sort で project 単位にまとまる (`tmux ls` 視認性 ↑)
-    /// - lane_label: Lead → "lead"、Wing(Some(name)) → name、Wing(None) → "unnamed"
+    /// - lane_label: Conductor → "conductor"、Performer(Some(name)) → name、Performer(None) → "unnamed"
     /// - stand_short: HD → "hd"、TH → "th" (suffix なので将来 `gemini` / `opus` 等の追加も自然)
     ///
     /// 例:
-    /// - `LaneAddress::lead("vantage-point")` + HD → `"vp-vantage-point-lead-hd"`
-    /// - `LaneAddress::wing("vantage-point", "sub")` + HD → `"vp-vantage-point-sub-hd"`
+    /// - `LaneAddress::conductor("vantage-point")` + HD → `"vp-vantage-point-conductor-hd"`
+    /// - `LaneAddress::performer("vantage-point", "sub")` + HD → `"vp-vantage-point-sub-hd"`
     /// - `LaneAddress` の `.` `@` 等 → `-` に置換
     ///
     /// agent (Claude CLI on HD) はこの関数の戻り値を `tmux send-keys -t <session>` の
@@ -163,9 +170,9 @@ impl LaneAddress {
     /// 戻り値の prefix に一致する。
     pub fn tmux_session_prefix(&self) -> String {
         let lane_label: &str = match (&self.kind, self.name.as_deref()) {
-            (LaneKind::Lead, _) => "lead",
-            (LaneKind::Wing, Some(n)) => n,
-            (LaneKind::Wing, None) => "unnamed",
+            (LaneKind::Conductor, _) => "conductor",
+            (LaneKind::Performer, Some(n)) => n,
+            (LaneKind::Performer, None) => "unnamed",
         };
         sanitize_tmux_name(&format!("vp-{}-{}-", self.project, lane_label))
     }
@@ -199,9 +206,9 @@ fn sanitize_tmux_name(s: &str) -> String {
 impl fmt::Display for LaneAddress {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match (&self.kind, &self.name) {
-            (LaneKind::Lead, _) => write!(f, "{}/lead", self.project),
-            (LaneKind::Wing, Some(n)) => write!(f, "{}/wing/{}", self.project, n),
-            (LaneKind::Wing, None) => write!(f, "{}/wing/<unnamed>", self.project),
+            (LaneKind::Conductor, _) => write!(f, "{}/conductor", self.project),
+            (LaneKind::Performer, Some(n)) => write!(f, "{}/performer/{}", self.project, n),
+            (LaneKind::Performer, None) => write!(f, "{}/performer/<unnamed>", self.project),
         }
     }
 }
@@ -303,11 +310,11 @@ pub struct LaneInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
     pub cwd: String,
-    /// Phase 5-D: Wing のみ embed (Lead は git workspace を持たない設計)。
-    /// `cwd` から `lane::commands::wing_status()` を呼んで populate。
+    /// Phase 5-D: Performer のみ embed (Conductor は git workspace を持たない設計)。
+    /// `cwd` から `lane::commands::performer_status()` を呼んで populate。
     /// `/api/lanes` 応答時に lazy 取得 (registry には保存しない、 git 状態は volatile)。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub wing_status: Option<crate::lane::commands::WingStatus>,
+    pub performer_status: Option<crate::lane::commands::PerformerStatus>,
     /// Phase 1a: Lane に attach した Stand ごとの tmux session address (deterministic)。
     /// SP push 経由で TheWorld cache に流れる (agent から `/api/lanes` で resolve)。
     ///
@@ -318,7 +325,7 @@ pub struct LaneInfo {
     pub tmux: Vec<TmuxLaneAddress>,
 }
 
-/// Lane Pool — Lead/Wing registry
+/// Lane Pool — Conductor/Performer registry
 ///
 /// memory rule: Lane scope は HD/TH 専用。Project scope の Stand は別 module。
 ///
@@ -334,9 +341,9 @@ pub struct LanePool {
     /// AppState が `Arc<RwLock<LanePool>>` で thread-shared に必要
     pty_slots: HashMap<LaneAddress, std::sync::Mutex<crate::daemon::pty_slot::PtySlot>>,
     /// Stage 1 (ADR-0001): 各 Lane の Rust 側 alacritty Term<T> attach。
-    /// pty_slots と lifecycle 同期: with_lead で spawn、 remove で drop abort。
+    /// pty_slots と lifecycle 同期: with_conductor で spawn、 remove で drop abort。
     /// task は spawn_blocking で 1 Lane = 1 task、 broadcast::Receiver を消費。
-    /// MVP: Lead Lane のみ attach。 Wing spawn 経路 (insert_pty_slot) は別 PR で配線予定。
+    /// MVP: Conductor Lane のみ attach。 Performer spawn 経路 (insert_pty_slot) は別 PR で配線予定。
     term_attaches: HashMap<LaneAddress, crate::terminal::term_attach::TermAttach>,
 }
 
@@ -355,18 +362,18 @@ impl LanePool {
         Self::default()
     }
 
-    /// Project 起動時に Lead Lane を 1 つ pre-populate (Echoes default)
+    /// Project 起動時に Conductor Lane を 1 つ pre-populate (Echoes default)
     ///
     /// **A5-2**: stand_spawner で command 構築 → PtySlot::spawn で実 process 起動。
     /// spawn 失敗時は graceful degrade (state=Dead、 pty_slots に entry なし) で
     /// SP 自体の起動継続性を担保。
-    pub fn with_lead(project_id: impl Into<String>, cwd: impl Into<String>) -> Self {
+    pub fn with_conductor(project_id: impl Into<String>, cwd: impl Into<String>) -> Self {
         let project_id = project_id.into();
         let cwd = cwd.into();
         let mut pool = Self::new();
-        let addr = LaneAddress::lead(&project_id);
+        let addr = LaneAddress::conductor(&project_id);
         // doc 11 PR-B: default stand は "echoes" 固定 (config.default_stand での per-user 化は
-        // 後続 PR、 LanePool::with_lead は config を持たないため)。
+        // 後続 PR、 LanePool::with_conductor は config を持たないため)。
         // user 設定がある場合の経路は HTTP API / lane_spawn_actor 経由で stand を明示指定する。
         // PR-pre2 (VP-118): "hd" → "echoes" rename。 mise task `vp:stand:echoes` (旧 hd)。
         let stand_name = "echoes";
@@ -411,15 +418,15 @@ impl LanePool {
 
         let info = LaneInfo {
             address: addr.clone(),
-            kind: LaneKind::Lead,
+            kind: LaneKind::Conductor,
             name: None,
             state,
             stand: stand_name.to_string(),
             created_at: chrono::Utc::now().to_rfc3339(),
             pid,
             cwd,
-            // Lead は git workspace 持たない (= project root が cwd)、 wing_status は None
-            wing_status: None,
+            // Conductor は git workspace 持たない (= project root が cwd)、 performer_status は None
+            performer_status: None,
             // Phase 1e: spawn 成功時のみ tmux address を populate
             // (spawn 失敗 = Dead → 空 Vec で副舞台不在 signal)
             tmux: if matches!(state, LaneState::Running) {
@@ -432,10 +439,10 @@ impl LanePool {
         pool
     }
 
-    /// Lane 一覧を **Lead 先頭、 続いて Wing を生成順 (created_at 昇順)** で返す。
+    /// Lane 一覧を **Conductor 先頭、 続いて Performer を生成順 (created_at 昇順)** で返す。
     ///
     /// 内部 `lanes` は `HashMap` のため iter 順は non-deterministic (process ごとに異なる
-    /// hash seed)。 sidebar の表示要件 「Root/Lead が一番上、 その下は生成時順」 を満たす
+    /// hash seed)。 sidebar の表示要件 「Root/Conductor が一番上、 その下は生成時順」 を満たす
     /// ため、 list() で sort して contract に order を含める。
     ///
     /// `created_at` は ISO 8601 文字列 (UTC fixed) なので String::cmp で時刻順が取れる
@@ -449,8 +456,8 @@ impl LanePool {
         v.sort_by(|a, b| {
             use std::cmp::Ordering;
             match (a.kind, b.kind) {
-                (LaneKind::Lead, LaneKind::Wing) => Ordering::Less,
-                (LaneKind::Wing, LaneKind::Lead) => Ordering::Greater,
+                (LaneKind::Conductor, LaneKind::Performer) => Ordering::Less,
+                (LaneKind::Performer, LaneKind::Conductor) => Ordering::Greater,
                 _ => a.created_at.cmp(&b.created_at).then_with(|| {
                     a.name
                         .as_deref()
@@ -470,7 +477,7 @@ impl LanePool {
         self.lanes.insert(info.address.clone(), info);
     }
 
-    /// Phase 3-A: 既に spawn 済の PtySlot を Lane address 紐付けで insert (Wing create で使う)。
+    /// Phase 3-A: 既に spawn 済の PtySlot を Lane address 紐付けで insert (Performer create で使う)。
     ///
     /// Stage 1 (ADR-0001): TermAttach も同期 spawn する。 `term_rx` は spawn_with_fallback の
     /// 戻り値 (= broadcast::channel 作成と同時の initial_rx)、 reader_task が start する前に
@@ -547,7 +554,7 @@ impl LanePool {
         transitioned
     }
 
-    /// Lane の Lead Stand (= PtySlot の child process) を kill + 再 spawn する。
+    /// Lane の Conductor Stand (= PtySlot の child process) を kill + 再 spawn する。
     ///
     /// 同 Lane の cwd / stand を維持したまま child process だけ作り直す。
     /// (例: HD Lane なら shell を立て直し → `claude --continue || claude` を再 inject)
@@ -634,14 +641,17 @@ impl LanePool {
         }
     }
 
-    /// Display 形 (`"<project>/lead"` / `"<project>/wing/<name>"`) をパースして LaneAddress を作る。
+    /// Display 形 (`"<project>/conductor"` / `"<project>/performer/<name>"`) をパースして LaneAddress を作る。
     /// vp-app の sidebar から `lane:select` IPC の address (= `lane_address_key`) を逆変換するために使う。
     pub fn parse_address(s: &str) -> Option<LaneAddress> {
         let parts: Vec<&str> = s.splitn(3, '/').collect();
         match parts.as_slice() {
-            [project, "lead"] if !project.is_empty() => Some(LaneAddress::lead(*project)),
-            [project, "wing", name] if !project.is_empty() && !name.is_empty() => {
-                Some(LaneAddress::wing(*project, *name))
+            // 旧 "lead"/"wing" も受理 (conductor/performer rename 前の session.json / wire address 互換)
+            [project, "conductor" | "lead"] if !project.is_empty() => {
+                Some(LaneAddress::conductor(*project))
+            }
+            [project, "performer" | "wing", name] if !project.is_empty() && !name.is_empty() => {
+                Some(LaneAddress::performer(*project, *name))
             }
             _ => None,
         }
@@ -697,7 +707,7 @@ impl LanePool {
             .lock()
             .map_err(|_| anyhow::anyhow!("PtySlot mutex poisoned: {}", addr))?;
         slot.resize(cols, rows)?;
-        // attach 不在 (= spawn 失敗 / 未配線 Wing 経路) は静かに skip
+        // attach 不在 (= spawn 失敗 / 未配線 Performer 経路) は静かに skip
         if let Some(term_attach) = self.term_attaches.get(addr) {
             term_attach.resize(cols, rows);
         }
@@ -710,32 +720,41 @@ mod tests {
     use super::*;
 
     #[test]
-    fn lane_address_display_lead_and_wing() {
-        assert_eq!(LaneAddress::lead("vp").to_string(), "vp/lead");
-        assert_eq!(LaneAddress::wing("vp", "foo").to_string(), "vp/wing/foo");
+    fn lane_address_display_conductor_and_performer() {
+        assert_eq!(LaneAddress::conductor("vp").to_string(), "vp/conductor");
+        assert_eq!(
+            LaneAddress::performer("vp", "foo").to_string(),
+            "vp/performer/foo"
+        );
     }
 
     #[tokio::test]
-    async fn lane_pool_with_lead_pre_populates_one_lane() {
-        // Phase 1: LanePool::with_lead は内部で PtySlot::spawn → tokio::task::spawn_blocking する。
+    async fn lane_pool_with_conductor_pre_populates_one_lane() {
+        // Phase 1: LanePool::with_conductor は内部で PtySlot::spawn → tokio::task::spawn_blocking する。
         // 純 sync test だと runtime が無くて panic するので #[tokio::test] にする。
-        let pool = LanePool::with_lead("vp", "/tmp");
+        let pool = LanePool::with_conductor("vp", "/tmp");
         assert_eq!(pool.count(), 1);
         let lanes = pool.list();
         assert_eq!(lanes.len(), 1);
-        assert_eq!(lanes[0].kind, LaneKind::Lead);
+        assert_eq!(lanes[0].kind, LaneKind::Conductor);
         assert_eq!(lanes[0].stand, "echoes"); // default は "echoes" (PR-pre2 で "hd" → "echoes" rename)
     }
 
     #[test]
     fn lane_kind_serde_snake_case() {
-        assert_eq!(serde_json::to_string(&LaneKind::Lead).unwrap(), "\"lead\"");
-        assert_eq!(serde_json::to_string(&LaneKind::Wing).unwrap(), "\"wing\"");
+        assert_eq!(
+            serde_json::to_string(&LaneKind::Conductor).unwrap(),
+            "\"conductor\""
+        );
+        assert_eq!(
+            serde_json::to_string(&LaneKind::Performer).unwrap(),
+            "\"performer\""
+        );
     }
 
     #[test]
     fn lane_kind_serde_worker_rejected() {
-        // Worker → Wing rename 完結後: legacy `"worker"` は serde alias から外れた。
+        // Worker → Performer rename 完結後: legacy `"worker"` は serde alias から外れた。
         // `#[serde(alias = "worker")]` 削除の回帰ガード。
         // "worker" が LaneKind として deserialize されると旧 SP wire から届いた
         // stale payload を黙って受理してしまう — それを防ぐ。
@@ -749,12 +768,12 @@ mod tests {
     #[test]
     fn lane_info_worker_status_alias_rejected() {
         // `worker_status` serde alias 削除の回帰ガード。
-        // 旧 SP が `worker_status` キーで送ってきても、 新 SP は wing_status: None として扱う
+        // 旧 SP が `worker_status` キーで送ってきても、 新 SP は performer_status: None として扱う
         // (= 情報損失は許容、 crash やパース失敗より優先)。
         // `#[serde(default)]` が残っているので unknown field は無視され None になる。
         let json = r#"{
-            "address": {"project": "vp", "kind": "wing", "name": "foo"},
-            "kind": "wing",
+            "address": {"project": "vp", "kind": "performer", "name": "foo"},
+            "kind": "performer",
             "name": "foo",
             "state": "running",
             "stand": "echoes",
@@ -764,30 +783,41 @@ mod tests {
         }"#;
         let info: LaneInfo = serde_json::from_str(json).expect("パース自体は成功する");
         assert!(
-            info.wing_status.is_none(),
-            "worker_status キーは wing_status に流れ込まない (alias 削除済)"
+            info.performer_status.is_none(),
+            "worker_status キーは performer_status に流れ込まない (alias 削除済)"
         );
     }
 
     #[test]
-    fn parse_address_lead_and_wing() {
-        let lead = LanePool::parse_address("vp/lead").unwrap();
-        assert_eq!(lead, LaneAddress::lead("vp"));
+    fn parse_address_conductor_and_performer() {
+        let conductor = LanePool::parse_address("vp/conductor").unwrap();
+        assert_eq!(conductor, LaneAddress::conductor("vp"));
 
-        let wing = LanePool::parse_address("vp/wing/foo").unwrap();
-        assert_eq!(wing, LaneAddress::wing("vp", "foo"));
+        let performer = LanePool::parse_address("vp/performer/foo").unwrap();
+        assert_eq!(performer, LaneAddress::performer("vp", "foo"));
 
         // CJK / kebab-case project name も通る
-        let lead2 = LanePool::parse_address("vantage-point/lead").unwrap();
-        assert_eq!(lead2, LaneAddress::lead("vantage-point"));
+        let conductor2 = LanePool::parse_address("vantage-point/conductor").unwrap();
+        assert_eq!(conductor2, LaneAddress::conductor("vantage-point"));
 
         // 不正
         assert!(LanePool::parse_address("vp").is_none()); // / 無し
-        assert!(LanePool::parse_address("/lead").is_none()); // project 空
+        assert!(LanePool::parse_address("/conductor").is_none()); // project 空
         assert!(LanePool::parse_address("vp/foo").is_none()); // 未知 kind
-        assert!(LanePool::parse_address("vp/wing/").is_none()); // wing name 空
+        assert!(LanePool::parse_address("vp/performer/").is_none()); // performer name 空
         // 旧 "worker" token は受理しない
         assert!(LanePool::parse_address("vp/worker/foo").is_none());
+
+        // 後方互換: conductor/performer rename 前の "lead"/"wing" address も受理する
+        // (既存 session.json の active lane / 既存 wire address を orphan にしないため)
+        assert_eq!(
+            LanePool::parse_address("vp/lead").unwrap(),
+            LaneAddress::conductor("vp")
+        );
+        assert_eq!(
+            LanePool::parse_address("vp/wing/bar").unwrap(),
+            LaneAddress::performer("vp", "bar")
+        );
     }
 
     // ========================================================================
@@ -795,25 +825,28 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn tmux_session_name_lead_hd() {
-        // Lead Lane + Heaven's Door → "vp-{project}-lead-hd"
-        let addr = LaneAddress::lead("vantage-point");
-        assert_eq!(addr.tmux_session_name("hd"), "vp-vantage-point-lead-hd");
+    fn tmux_session_name_conductor_hd() {
+        // Conductor Lane + Heaven's Door → "vp-{project}-conductor-hd"
+        let addr = LaneAddress::conductor("vantage-point");
+        assert_eq!(
+            addr.tmux_session_name("hd"),
+            "vp-vantage-point-conductor-hd"
+        );
     }
 
     #[test]
-    fn tmux_session_name_wing_hd() {
-        // Wing(name) + HD → "vp-{project}-{name}-hd"
-        let addr = LaneAddress::wing("vantage-point", "sub");
+    fn tmux_session_name_performer_hd() {
+        // Performer(name) + HD → "vp-{project}-{name}-hd"
+        let addr = LaneAddress::performer("vantage-point", "sub");
         assert_eq!(addr.tmux_session_name("hd"), "vp-vantage-point-sub-hd");
     }
 
     #[test]
-    fn tmux_session_name_lead_shell() {
+    fn tmux_session_name_conductor_shell() {
         // doc 11 PR-B: 旧 TH stand → "shell" stand 名に rename (mise task `vp:stand:shell`)
-        // tmux session 名も "vp-{project}-lead-shell" に変わる (旧: "-th")。
-        let addr = LaneAddress::lead("vp");
-        assert_eq!(addr.tmux_session_name("shell"), "vp-vp-lead-shell");
+        // tmux session 名も "vp-{project}-conductor-shell" に変わる (旧: "-th")。
+        let addr = LaneAddress::conductor("vp");
+        assert_eq!(addr.tmux_session_name("shell"), "vp-vp-conductor-shell");
     }
 
     #[test]
@@ -821,18 +854,21 @@ mod tests {
         // project 名に '.' 等の tmux session 名で escape 必要な文字 → '-' に置換
         let addr = LaneAddress {
             project: "creo.memories".to_string(),
-            kind: LaneKind::Lead,
+            kind: LaneKind::Conductor,
             name: None,
         };
-        assert_eq!(addr.tmux_session_name("hd"), "vp-creo-memories-lead-hd");
+        assert_eq!(
+            addr.tmux_session_name("hd"),
+            "vp-creo-memories-conductor-hd"
+        );
     }
 
     #[test]
-    fn tmux_session_name_unnamed_wing_fallback() {
-        // Wing(name=None) は仕様上想定外だが defensive に "unnamed" にフォールバック
+    fn tmux_session_name_unnamed_performer_fallback() {
+        // Performer(name=None) は仕様上想定外だが defensive に "unnamed" にフォールバック
         let addr = LaneAddress {
             project: "vp".to_string(),
-            kind: LaneKind::Wing,
+            kind: LaneKind::Performer,
             name: None,
         };
         assert_eq!(addr.tmux_session_name("hd"), "vp-vp-unnamed-hd");
@@ -843,7 +879,7 @@ mod tests {
         // doc 11 PR-B: stand は String 化、 wire format は task 名そのまま ("hd" / "shell" 等)。
         let t = TmuxLaneAddress {
             stand: "hd".to_string(),
-            session: "vp-vp-lead-hd".to_string(),
+            session: "vp-vp-conductor-hd".to_string(),
             mode: TmuxMode::Tmux,
         };
         let json = serde_json::to_string(&t).unwrap();
@@ -852,7 +888,7 @@ mod tests {
 
         let fb = TmuxLaneAddress {
             stand: "shell".to_string(),
-            session: "vp-vp-lead-shell".to_string(),
+            session: "vp-vp-conductor-shell".to_string(),
             mode: TmuxMode::PtySlotFallback,
         };
         let json2 = serde_json::to_string(&fb).unwrap();
@@ -868,15 +904,15 @@ mod tests {
     fn lane_info_tmux_field_empty_vec_serde_omitted() {
         // tmux が空 Vec なら skip_serializing_if で wire 形式から省略 → 古 client と互換
         let info = LaneInfo {
-            address: LaneAddress::lead("vp"),
-            kind: LaneKind::Lead,
+            address: LaneAddress::conductor("vp"),
+            kind: LaneKind::Conductor,
             name: None,
             state: LaneState::Running,
             stand: "hd".to_string(),
             created_at: "2026-05-01T00:00:00Z".to_string(),
             pid: None,
             cwd: "/tmp".to_string(),
-            wing_status: None,
+            performer_status: None,
             tmux: Vec::new(),
         };
         let json = serde_json::to_string(&info).unwrap();
@@ -892,24 +928,24 @@ mod tests {
         // Phase 1a multi-stand 設計: 1 Lane が 複数 Stand 並立 (HD + TH) で
         // 複数 tmux session を持つケースを serde round-trip で検証
         let original = LaneInfo {
-            address: LaneAddress::lead("vp"),
-            kind: LaneKind::Lead,
+            address: LaneAddress::conductor("vp"),
+            kind: LaneKind::Conductor,
             name: None,
             state: LaneState::Running,
             stand: "hd".to_string(),
             created_at: "2026-05-01T00:00:00Z".to_string(),
             pid: None,
             cwd: "/tmp".to_string(),
-            wing_status: None,
+            performer_status: None,
             tmux: vec![
                 TmuxLaneAddress {
                     stand: "hd".to_string(),
-                    session: "vp-vp-lead-hd".to_string(),
+                    session: "vp-vp-conductor-hd".to_string(),
                     mode: TmuxMode::Tmux,
                 },
                 TmuxLaneAddress {
                     stand: "shell".to_string(),
-                    session: "vp-vp-lead-shell".to_string(),
+                    session: "vp-vp-conductor-shell".to_string(),
                     mode: TmuxMode::Tmux,
                 },
             ],
@@ -919,8 +955,8 @@ mod tests {
         assert_eq!(restored.tmux.len(), 2);
         assert_eq!(restored.tmux[0].stand, "hd");
         assert_eq!(restored.tmux[1].stand, "shell");
-        assert_eq!(restored.tmux[0].session, "vp-vp-lead-hd");
-        assert_eq!(restored.tmux[1].session, "vp-vp-lead-shell");
+        assert_eq!(restored.tmux[0].session, "vp-vp-conductor-hd");
+        assert_eq!(restored.tmux[1].session, "vp-vp-conductor-shell");
     }
 
     // ========================================================================
@@ -931,15 +967,15 @@ mod tests {
     fn lane_diff_add_serde_round_trip() {
         // Diff::Add { payload: LaneInfo } の wire 形式 + decode
         let info = LaneInfo {
-            address: LaneAddress::wing("vp", "sub"),
-            kind: LaneKind::Wing,
+            address: LaneAddress::performer("vp", "sub"),
+            kind: LaneKind::Performer,
             name: Some("sub".to_string()),
             state: LaneState::Running,
             stand: "hd".to_string(),
             created_at: "2026-05-01T00:00:00Z".to_string(),
             pid: Some(12345),
             cwd: "/tmp".to_string(),
-            wing_status: None,
+            performer_status: None,
             tmux: vec![TmuxLaneAddress {
                 stand: "hd".to_string(),
                 session: "vp-vp-sub-hd".to_string(),
@@ -966,7 +1002,7 @@ mod tests {
     #[test]
     fn lane_diff_remove_serde_round_trip() {
         // Diff::Remove { id: LaneAddress } で id のみ送る wire 形式
-        let addr = LaneAddress::wing("vp", "osc");
+        let addr = LaneAddress::performer("vp", "osc");
         let diff: LaneDiff = Diff::Remove { id: addr.clone() };
         let json = serde_json::to_string(&diff).unwrap();
         assert!(json.contains("\"kind\":\"remove\""), "got: {}", json);
@@ -985,15 +1021,15 @@ mod tests {
         // {"scope": "lane", "kind": "add", "payload": {...}} のように
         // outer scope tag + inner Diff tag が同 level に flatten される。
         let info = LaneInfo {
-            address: LaneAddress::lead("vp"),
-            kind: LaneKind::Lead,
+            address: LaneAddress::conductor("vp"),
+            kind: LaneKind::Conductor,
             name: None,
             state: LaneState::Running,
             stand: "hd".to_string(),
             created_at: "2026-05-01T00:00:00Z".to_string(),
             pid: None,
             cwd: "/tmp".to_string(),
-            wing_status: None,
+            performer_status: None,
             tmux: Vec::new(),
         };
         let event = SystemEvent::Lane(Diff::Add {

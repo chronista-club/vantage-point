@@ -48,24 +48,24 @@ protocol "sidebar" version="1.0.0" {
             field "path" type="string"
             field "address" type="string"
         }
-        // Wing Lane 削除要求
+        // Performer Lane 削除要求
         request "lane:delete" {
             field "path" type="string"
             field "address" type="string"
         }
-        // Lane Lead Stand restart 要求
+        // Lane Conductor Stand restart 要求
         request "lane:restart" {
             field "path" type="string"
             field "address" type="string"
         }
-        // Wing Lane 作成要求 (branch / stand は optional)
-        request "lane:add_wing" {
+        // Performer Lane 作成要求 (branch / stand は optional)
+        request "lane:add_performer" {
             field "path" type="string"
             field "name" type="string"
             field "branch" type="string" optional=#true
             field "stand" type="string" optional=#true
         }
-        // + Add Wing form の利用可能 Stand 一覧 fetch
+        // + Add Performer form の利用可能 Stand 一覧 fetch
         request "stands:fetch" {
             field "path" type="string"
         }

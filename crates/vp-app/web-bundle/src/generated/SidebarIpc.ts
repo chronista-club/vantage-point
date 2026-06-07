@@ -61,8 +61,8 @@ export interface LaneRestart {
   address: string;
 }
 
-/** Request "lane:add_wing" */
-export interface LaneAddWing {
+/** Request "lane:add_performer" */
+export interface LaneAddPerformer {
   path: string;
   name: string;
   branch?: string;
@@ -110,7 +110,7 @@ export type IpcChannelRequestTypes = {
   LaneSelect: { request: LaneSelect; response: void };
   LaneDelete: { request: LaneDelete; response: void };
   LaneRestart: { request: LaneRestart; response: void };
-  LaneAddWing: { request: LaneAddWing; response: void };
+  LaneAddPerformer: { request: LaneAddPerformer; response: void };
   StandsFetch: { request: StandsFetch; response: void };
   StandSelect: { request: StandSelect; response: void };
   ProjectClonePickFolder: { request: ProjectClonePickFolder; response: void };
@@ -135,7 +135,7 @@ export const IpcChannelMeta = {
     LaneSelect: { request: "lane:select" as const, response: "void" as const },
     LaneDelete: { request: "lane:delete" as const, response: "void" as const },
     LaneRestart: { request: "lane:restart" as const, response: "void" as const },
-    LaneAddWing: { request: "lane:add_wing" as const, response: "void" as const },
+    LaneAddPerformer: { request: "lane:add_performer" as const, response: "void" as const },
     StandsFetch: { request: "stands:fetch" as const, response: "void" as const },
     StandSelect: { request: "stand:select" as const, response: "void" as const },
     ProjectClonePickFolder: { request: "project:clone:pickFolder" as const, response: "void" as const },
@@ -156,7 +156,7 @@ export type IpcEnvelope =
   | ({ t: "lane:select" } & LaneSelect)
   | ({ t: "lane:delete" } & LaneDelete)
   | ({ t: "lane:restart" } & LaneRestart)
-  | ({ t: "lane:add_wing" } & LaneAddWing)
+  | ({ t: "lane:add_performer" } & LaneAddPerformer)
   | ({ t: "stands:fetch" } & StandsFetch)
   | ({ t: "stand:select" } & StandSelect)
   | ({ t: "project:clone:pickFolder" } & ProjectClonePickFolder)
