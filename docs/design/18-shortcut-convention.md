@@ -8,7 +8,7 @@
 > 3. §C.4 (既存単発) に `Ctrl+Shift+C` global fallback を追記 (undocumented gap 解消)
 > 4. **新規 §C.6 — 不採用 directive list**: shortcut で操作しない動作 (= `c` clear 等 destructive action) を明記
 > 5. §D に新サブセクション "**context polymorphism dispatch table**" 追加 (`r` / `d` の Scene 依存 dispatch を例示)
-> 6. §A.1 panel-local 例に「picker / AddWing form」 を明示
+> 6. §A.1 panel-local 例に「picker / AddPerformer form」 を明示
 > 7. §C.1 に未使用 letter (= 将来予約候補) を「reserved unused」 として明記
 >
 > v0.3 の core (= directive 集合 + Cmd hold + 単発キー、 3 layer 疎結合) は keep。 文法 / 実装方針 / Avoid List は variable。
@@ -66,7 +66,7 @@ VP の操作は **動詞 (directive) の集合** + **その挙動軸 (semantics)
 |----|----|-----------|-----|
 | `focus-preserving` | 投げる | 自分の focus を keep、 別 pane に command / content を投擲 | `p` を main view focus 中に打つ → PP に content 送信、 focus は cc に戻る |
 | `focus-transferring` | 移動する | focus 自体を別 pane に移す | `f` で File Explorer overlay 表示 + sidebar focus へ移動 |
-| `panel-local` | panel 内操作 | 既に panel に focus がある状態の選択 / 確定操作 | picker 内 `p` = "現在 selected file を PP へ" / FileExplorer の `↑↓ / Enter / Esc` / AddWing form の `Enter / Esc` |
+| `panel-local` | panel 内操作 | 既に panel に focus がある状態の選択 / 確定操作 | picker 内 `p` = "現在 selected file を PP へ" / FileExplorer の `↑↓ / Enter / Esc` / AddPerformer form の `Enter / Esc` |
 | `layout` | UI structure | Scene / pane の切替 / resize | `Ctrl+Shift+1..4` |
 | `system` | OS 標準 | undo / redo / cut / copy / paste 等 | `Cmd+C` 他 |
 
@@ -149,7 +149,7 @@ user 概念 (前 turn で提示):
 |--------|------|--------|
 | `f` | **f**ile | File Explorer overlay (sidebar) を open + focus 移動 |
 | `l` | **l**ane | Lane list panel (dedicated) を open + focus 移動 (v1.0 では既存 sidebar の lane list が常時 visible なので no-op 寄り、 将来 dedicated panel) |
-| `n` | **n**ew | new wing 作成 prompt (= sidebar "+ Add Wing" form を起動) |
+| `n` | **n**ew | new performer 作成 prompt (= sidebar "+ Add Performer" form を起動) |
 | `s` | **s**elect / **s**witch | Lane / project 切替 picker (active lane を選ぶ overlay) |
 | `r` | **r**estart | context: project focus → process:restart、 lane focus → lane:restart |
 | `d` | **d**elete | focused entity 削除 (2-click confirm 内蔵) |
@@ -175,14 +175,14 @@ user 概念 (前 turn で提示):
 |---------|-----------|----------|-------------------------|---------|
 | `Cmd hold f` | `f` (file) | focus-transferring | **どこから打っても** sidebar の File Explorer overlay を open + sidebar focus へ移動 | PR #441 merged |
 | `Cmd hold p` | `p` (PP) | panel-local | **File Explorer picker visible 中なら**: 選択中 file を PP (Canvas) に送る + picker は pin 状態に関係なく **連続選択を許す** (= dismiss しない) | PR #441 merged |
-| `Cmd hold e` | `e` (Echoes) | focus-transferring | active lane の Echoes 入力欄 (= cc) に focus + 必要なら Scene を `lead-focus` に切替 | v0.4 予定 (= PR 443) |
+| `Cmd hold e` | `e` (Echoes) | focus-transferring | active lane の Echoes 入力欄 (= cc) に focus + 必要なら Scene を `conductor-focus` に切替 | v0.4 予定 (= PR 443) |
 | `Cmd hold g` | `g` (Gold Experience) | focus-transferring | active lane の GE output に focus + Scene を `ge-focus` (or 同等) に切替 | v0.4 予定 |
 | `Cmd hold h` | `h` (Hermit Purple) | focus-transferring | active lane の HP に focus + Scene を `hp-focus` に切替 | v0.4 予定 |
 | `Cmd hold w` | `w` (TheWorld) | focus-preserving | TheWorld status (= process list / health) を PP (Canvas) に show。 focus は元の panel に残る | PR #444 |
 | `Cmd hold r` | `r` (restart) | context polymorphic | active_lane → `lane:restart` IPC、 active_stand → `process:restart` IPC、 どちらもなければ no-op (詳細 §D.7) | PR 445 |
-| `Cmd hold n` | `n` (new wing) | focus-transferring | active project (= active_lane / active_stand の project) の AddWing form を keyboard で open (= sidebar 内 ProjectAccordion の form を expand) | PR 445 |
+| `Cmd hold n` | `n` (new performer) | focus-transferring | active project (= active_lane / active_stand の project) の AddPerformer form を keyboard で open (= sidebar 内 ProjectAccordion の form を expand) | PR 445 |
 | `Cmd hold s` | `s` (switch) | focus-transferring | Lane / project switcher picker overlay を open (LanePicker.tsx、 fuzzy 検索 + flat list)。 lane 選択で `lane:select`、 project 選択で `process:toggle` (= accordion expand) | PR 445 |
-| `Cmd hold d` | `d` (delete) | context polymorphic | 2-click confirm 内蔵: 1 回目で pending state + sidebar 下端 hint bar 表示、 1 秒以内 2 回目で execute (active_lane の Wing → `lane:delete`、 active_stand → `process:delete`)、 timeout で abort | PR 445 |
+| `Cmd hold d` | `d` (delete) | context polymorphic | 2-click confirm 内蔵: 1 回目で pending state + sidebar 下端 hint bar 表示、 1 秒以内 2 回目で execute (active_lane の Performer → `lane:delete`、 active_stand → `process:delete`)、 timeout で abort | PR 445 |
 | `Cmd hold l` | `l` (lane number switcher mode) | focus-transferring (mode) | **mode-based directive**: ⌘ hold l で mode 突入 (= sidebar 下端に hint bar)、 **5 秒以内に modifier なし 1-9 単発キー** で `collectVisibleLanes()` (= expanded project の中の lane を上から flat list) の N 番目を `lane:select`。 Esc / 他キー / timeout で abort。 input フォーカス時は数字入力を妨げない (= mode abort) | PR 447 |
 | `Cmd hold ?` | `?` (meta cheatsheet) | focus-preserving | 全 directive 一覧 + 不採用 / 予約 / Avoid list を **markdown table** で Canvas (PP) に表示。 **規約上で唯一 shift 入りの directive** (= `Cmd+Shift+/` → keydown event の `e.key === '?'`)、 chord.ts の shift 例外 (= shift + symbol は通す) で実現 | PR 447 |
 
@@ -220,7 +220,7 @@ shortcut として **採用しない** 動作を明示する。 これらは「�
 
 | letter / 動作 | 不採用理由 | 代替手段 |
 |---|---|---|
-| `c` (clear / close) | **destructive action は 1 押し misfire のリスクが高い**。 PP clear / Echoes session clear / lane wing 削除等を keyboard 1 動作で行うと、 隣のキーとの押し間違いで content が失われる。 user は「焦らず使用感を確かめる」 VP 方針と整合 | 明示的な UI button (PP の `data-action="clear"` button 等)、 もしくは `Cmd hold d` (delete) の 2-click confirm path |
+| `c` (clear / close) | **destructive action は 1 押し misfire のリスクが高い**。 PP clear / Echoes session clear / lane performer 削除等を keyboard 1 動作で行うと、 隣のキーとの押し間違いで content が失われる。 user は「焦らず使用感を確かめる」 VP 方針と整合 | 明示的な UI button (PP の `data-action="clear"` button 等)、 もしくは `Cmd hold d` (delete) の 2-click confirm path |
 | (TBD) | (将来追加される候補) | (将来) |
 
 不採用宣言は **規約 v0.4 以降の invariant**。 不採用宣言を覆す (= 採用に転じる) には Layer A 級の decision が必要 (= creo-memories memory + 本 doc 大幅改訂)。
@@ -321,7 +321,7 @@ File Explorer overlay 内で user が `Cmd hold p` を打った場合の挙動:
 
 | directive | context (= focused panel / Scene) | 動作 |
 |---|---|---|
-| `r` | active panel が **project header / SP scope** (Scene: `lead-focus` 等) | `process:restart` IPC を送信 |
+| `r` | active panel が **project header / SP scope** (Scene: `conductor-focus` 等) | `process:restart` IPC を送信 |
 | `r` | active panel が **lane / Echoes** (Scene: `pp-overlay` 等) | `lane:restart` IPC を送信 |
 | `d` | sidebar focus + lane row selected | `lane:delete` IPC (2-click confirm) |
 | `d` | sidebar focus + project header selected | `process:delete` IPC (2-click confirm) |

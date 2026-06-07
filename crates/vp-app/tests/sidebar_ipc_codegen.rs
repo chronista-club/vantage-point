@@ -113,7 +113,7 @@ fn regenerates_sidebar_ipc_bindings() {
         "lane:select",
         "lane:delete",
         "lane:restart",
-        "lane:add_wing",
+        "lane:add_performer",
         "stands:fetch",
         "stand:select",
         "project:clone:pickFolder",

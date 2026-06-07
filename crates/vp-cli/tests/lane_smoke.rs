@@ -7,8 +7,8 @@
 //! ## fixture 方針
 //!
 //! - `tempfile::TempDir` で隔離 fixture (= test 並列実行で衝突しない)
-//! - `git init` + initial commit + `.claude/wing-files.kdl` placeholder で最小 wing 環境
-//! - `<repo>/.vp/lanes/<name>/.git/HEAD` を仕込んで `list_wings_for_repo` が拾うかを test
+//! - `git init` + initial commit + `.claude/performer-files.kdl` placeholder で最小 performer 環境
+//! - `<repo>/.vp/lanes/<name>/.git/HEAD` を仕込んで `list_performers_for_repo` が拾うかを test
 //! - `assert_cmd` で `Command::cargo_bin("vp")` を current_dir 指定で起動
 
 use assert_cmd::Command;
@@ -51,12 +51,16 @@ fn setup_minimal_repo() -> TempDir {
     tmp
 }
 
-/// `<repo>/.vp/lanes/<name>/.git/HEAD` を仕込んで wing として認識される状態にする
-/// (= `list_wings_for_repo` が disk scan で拾う、 actual git clone は不要)。
-fn arm_wing_dir(repo: &Path, name: &str) {
-    let wing = repo.join(".vp").join("lanes").join(name);
-    fs::create_dir_all(wing.join(".git")).unwrap();
-    fs::write(wing.join(".git").join("HEAD"), "ref: refs/heads/main\n").unwrap();
+/// `<repo>/.vp/lanes/<name>/.git/HEAD` を仕込んで performer として認識される状態にする
+/// (= `list_performers_for_repo` が disk scan で拾う、 actual git clone は不要)。
+fn arm_performer_dir(repo: &Path, name: &str) {
+    let performer = repo.join(".vp").join("lanes").join(name);
+    fs::create_dir_all(performer.join(".git")).unwrap();
+    fs::write(
+        performer.join(".git").join("HEAD"),
+        "ref: refs/heads/main\n",
+    )
+    .unwrap();
 }
 
 // --- top-level CLI ---
@@ -115,10 +119,10 @@ fn vp_lane_ls_in_empty_repo_exits_zero_silently() {
 }
 
 #[test]
-fn vp_lane_ls_shows_armed_wing_dir() {
+fn vp_lane_ls_shows_armed_performer_dir() {
     // <repo>/.vp/lanes/<name>/ を仕込めば ls に出る
     let repo = setup_minimal_repo();
-    arm_wing_dir(repo.path(), "smoke-target");
+    arm_performer_dir(repo.path(), "smoke-target");
     Command::cargo_bin("vp")
         .unwrap()
         .args(["lane", "ls"])
@@ -145,14 +149,14 @@ fn vp_lane_path_nonexistent_exits_nonzero() {
 #[test]
 fn vp_lane_path_existing_prints_absolute_path() {
     let repo = setup_minimal_repo();
-    arm_wing_dir(repo.path(), "found-wing");
+    arm_performer_dir(repo.path(), "found-performer");
     Command::cargo_bin("vp")
         .unwrap()
-        .args(["lane", "path", "found-wing"])
+        .args(["lane", "path", "found-performer"])
         .current_dir(repo.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains(".vp/lanes/found-wing"));
+        .stdout(predicate::str::contains(".vp/lanes/found-performer"));
 }
 
 // --- vp lane rm ---
@@ -172,9 +176,9 @@ fn vp_lane_rm_nonexistent_exits_nonzero() {
 #[test]
 fn vp_lane_rm_existing_removes_dir() {
     let repo = setup_minimal_repo();
-    arm_wing_dir(repo.path(), "removable");
-    let wing_dir = repo.path().join(".vp/lanes/removable");
-    assert!(wing_dir.exists(), "事前条件: wing dir 存在");
+    arm_performer_dir(repo.path(), "removable");
+    let performer_dir = repo.path().join(".vp/lanes/removable");
+    assert!(performer_dir.exists(), "事前条件: performer dir 存在");
 
     Command::cargo_bin("vp")
         .unwrap()
@@ -183,13 +187,13 @@ fn vp_lane_rm_existing_removes_dir() {
         .assert()
         .success();
 
-    assert!(!wing_dir.exists(), "rm 後: wing dir 消滅");
+    assert!(!performer_dir.exists(), "rm 後: performer dir 消滅");
 }
 
 #[test]
 fn vp_lane_rm_all_without_force_errors() {
     let repo = setup_minimal_repo();
-    arm_wing_dir(repo.path(), "guard-test");
+    arm_performer_dir(repo.path(), "guard-test");
     Command::cargo_bin("vp")
         .unwrap()
         .args(["lane", "rm", "--all"])
@@ -210,7 +214,7 @@ fn vp_lane_status_empty_shows_help_hint() {
         .current_dir(repo.path())
         .assert()
         .success()
-        .stderr(predicate::str::contains("ウィングはありません"));
+        .stderr(predicate::str::contains("パフォーマーはありません"));
 }
 
 // --- vp lane cleanup ---

@@ -12,7 +12,7 @@
 //!
 //! ## wiremsg R4 (group B 移行、 2026-05-21) — recv path を wire accumulation に rewire
 //!
-//! 旧 `WhitesnakeStore.claim("notify", "lead", ...)` の 100ms polling を廃止し、
+//! 旧 `WhitesnakeStore.claim("notify", "conductor", ...)` の 100ms polling を廃止し、
 //! wire accumulation (`WiremsgStore`) の per-agent cursor recv に切替。 actor は
 //! `notify@<project>` を wire address として `WiremsgStore::recv` し、 `WireNotifier`
 //! の long-poll で起床する (= `handle_wire_recv` と同型の取りこぼし防止プロトコル)。

@@ -26,12 +26,12 @@ pub enum PortCommands {
         /// Project slot を直接指定 (config を無視した raw 計算)
         #[arg(long)]
         slot: Option<u16>,
-        /// Lane index (0 = Lead, 1+ = Wing)
+        /// Lane index (0 = Conductor, 1+ = Performer)
         #[arg(long, default_value_t = 0)]
         lane: u16,
-        /// Wing name (= lane index を name 解決、 --lane を上書き)
+        /// Performer name (= lane index を name 解決、 --lane を上書き)
         #[arg(long)]
-        wing: Option<String>,
+        performer: Option<String>,
         /// Role 名 (agent / dev_server / db_admin / canvas / preview)
         #[arg(long)]
         role: Option<String>,
@@ -44,9 +44,9 @@ pub enum PortCommands {
         slot: Option<u16>,
         #[arg(long, default_value_t = 0)]
         lane: u16,
-        /// Wing name (= lane index を name 解決、 --lane を上書き)
+        /// Performer name (= lane index を name 解決、 --lane を上書き)
         #[arg(long)]
-        wing: Option<String>,
+        performer: Option<String>,
         role: String,
     },
     /// Role offset table
@@ -90,11 +90,11 @@ pub fn execute(cmd: PortCommands) -> Result<()> {
             project,
             slot,
             lane,
-            wing,
+            performer,
             role,
         } => {
             let (layout, slot) = resolve_slot(project.as_deref(), slot)?;
-            let lane = resolve_lane(project.as_deref(), wing.as_deref(), lane)?;
+            let lane = resolve_lane(project.as_deref(), performer.as_deref(), lane)?;
             show(&layout, slot, lane, role.as_deref());
             Ok(())
         }
@@ -102,11 +102,11 @@ pub fn execute(cmd: PortCommands) -> Result<()> {
             project,
             slot,
             lane,
-            wing,
+            performer,
             role,
         } => {
             let (layout, slot) = resolve_slot(project.as_deref(), slot)?;
-            let lane = resolve_lane(project.as_deref(), wing.as_deref(), lane)?;
+            let lane = resolve_lane(project.as_deref(), performer.as_deref(), lane)?;
             url_cmd(&layout, slot, lane, &role);
             Ok(())
         }
@@ -125,31 +125,31 @@ fn load_layout() -> Result<PortLayout> {
     Ok(config.port_layout())
 }
 
-/// `--wing <name>` を lane_index に解決する (= 「目的ベース」 port allocation の核)。
+/// `--performer <name>` を lane_index に解決する (= 「目的ベース」 port allocation の核)。
 ///
 /// 優先順位:
-/// - `wing` 不在 → 引数 `lane` をそのまま (= 既存挙動、 default 0 = lead)
-/// - `wing` 指定 → repo root を解決 (project 指定があれば projects.kdl、 無ければ cwd)
-///   → `lane::commands::resolve_lane_index_by_wing_name` で alphabetical 順 + 1
+/// - `performer` 不在 → 引数 `lane` をそのまま (= 既存挙動、 default 0 = conductor)
+/// - `performer` 指定 → repo root を解決 (project 指定があれば projects.kdl、 無ければ cwd)
+///   → `lane::commands::resolve_lane_index_by_performer_name` で alphabetical 順 + 1
 ///
-/// 注: 解決は **alphabetical sort + 1** なので、 wing 追加削除で順序が変わる →
+/// 注: 解決は **alphabetical sort + 1** なので、 performer 追加削除で順序が変わる →
 /// port が変動する可能性。 「name 経由 access」 を default にする運用が前提。
-fn resolve_lane(project: Option<&str>, wing: Option<&str>, lane: u16) -> Result<u16> {
-    let Some(wing_name) = wing else {
+fn resolve_lane(project: Option<&str>, performer: Option<&str>, lane: u16) -> Result<u16> {
+    let Some(performer_name) = performer else {
         return Ok(lane);
     };
     let repo_root = resolve_repo_root(project)
-        .with_context(|| format!("--wing {wing_name} の repo root 解決に失敗"))?;
-    crate::lane::commands::resolve_lane_index_by_wing_name(&repo_root, wing_name)
+        .with_context(|| format!("--performer {performer_name} の repo root 解決に失敗"))?;
+    crate::lane::commands::resolve_lane_index_by_performer_name(&repo_root, performer_name)
         .with_context(|| {
             format!(
-                "wing '{wing_name}' が repo {} の `.vp/lanes/` に存在しません。`vp lane ls` で確認してください。",
+                "performer '{performer_name}' が repo {} の `.vp/lanes/` に存在しません。`vp lane ls` で確認してください。",
                 repo_root.display()
             )
         })
 }
 
-/// repo root を解決する (= `--wing` 経路で wing list を引くため)。
+/// repo root を解決する (= `--performer` 経路で performer list を引くため)。
 ///
 /// 優先順位:
 /// - `project` 指定 → projects.kdl から path lookup → 該当 path
@@ -228,7 +228,7 @@ fn print_layout(layout: &PortLayout, slot: u16) {
         let Some(lb) = layout.lane_base(slot, lane) else {
             continue;
         };
-        let label = if lane == 0 { "Lead" } else { "Wing" };
+        let label = if lane == 0 { "Conductor" } else { "Performer" };
         println!("  Lane {} ({}) — base {}", lane, label, lb);
         for (role, offset) in layout.valid_roles() {
             if let Some(p) = layout.port(slot, lane, &role) {

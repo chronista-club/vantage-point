@@ -243,7 +243,7 @@ task 管理は creo-memories に一本化（Linear は不使用、2026-05-19 確
 |---|---|---|---|---|
 | **nightly** | **dev trunk**（day-to-day 積み上げ・lane base・**PR base**） | 可（force / deletion 禁止） | 任意 | lane → PR or 直 push |
 | **main** | **GitHub default**（公開の顔）+ 公開 release の単位（= 「ここを参照すれば最新安定」） | **禁止** | 必須（force / deletion 禁止） | nightly → release PR → tag cut |
-| **lane / wing** | 単一タスク隔離 | 自由 | 必須 | from nightly |
+| **lane / performer** | 単一タスク隔離 | 自由 | 必須 | from nightly |
 
 #### lane 作業フロー
 

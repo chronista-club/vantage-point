@@ -1143,7 +1143,7 @@ pub(crate) async fn handle_wire_thread(
 /// payload: `{ agent }`
 ///
 /// 「関与」 = `from_addr == agent` OR `to_addrs CONTAINS agent`。
-/// `flow_progress` の 5-state FSM derive で wing の現状態 (= 最新 wmsg の direction + body.kind)
+/// `flow_progress` の 5-state FSM derive で performer の現状態 (= 最新 wmsg の direction + body.kind)
 /// を判定するために使う。
 ///
 /// 戻り値: `{ status: "ok", message: <WireMessage|null> }`。 該当無しは null。

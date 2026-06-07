@@ -1,5 +1,5 @@
 /**
- * Lane (Lead / Wing) の表示ヘルパー。
+ * Lane (Conductor / Performer) の表示ヘルパー。
  *
  * v1.0 柱 2 PR-2。 旧 SIDEBAR_HTML の `STAND_GLYPH` / `standDisplayName` /
  * `laneLabel` / `laneAddressKey` を SolidJS sidebar 用に port したもの。
@@ -50,34 +50,34 @@ export function standDisplayName(stand: string): string {
 	}
 }
 
-/** Lane kind が Wing か。 */
-function isWingKind(kind: string): boolean {
-	return kind === "wing";
+/** Lane kind が Performer か。 */
+function isPerformerKind(kind: string): boolean {
+	return kind === "performer";
 }
 
-/** Lane が Wing か (Lead との対)。 */
-export function isWingLane(lane: LaneInfo): boolean {
-	return isWingKind(lane.kind) || isWingKind(lane.address.kind);
+/** Lane が Performer か (Conductor との対)。 */
+export function isPerformerLane(lane: LaneInfo): boolean {
+	return isPerformerKind(lane.kind) || isPerformerKind(lane.address.kind);
 }
 
-/** Lane の表示ラベル。 Lead はそのまま、 Wing は `Wing: <name>`。 */
+/** Lane の表示ラベル。 Conductor はそのまま、 Performer は `Performer: <name>`。 */
 export function laneLabel(lane: LaneInfo): string {
 	const kind = lane.kind || lane.address.kind;
-	// 地で判別 (A): Lead はラベルなし (project folder 直下 + インデントなしで自明)、
-	// Wing は name のみ ("Wing:" prefix を省略、 段下げ + 左罫線で Wing と判別)。
-	if (kind === "lead") return "";
-	if (isWingKind(kind)) return lane.name ?? lane.address.name ?? "?";
+	// 地で判別 (A): Conductor はラベルなし (project folder 直下 + インデントなしで自明)、
+	// Performer は name のみ ("Performer:" prefix を省略、 段下げ + 左罫線で Performer と判別)。
+	if (kind === "conductor") return "";
+	if (isPerformerKind(kind)) return lane.name ?? lane.address.name ?? "?";
 	return kind;
 }
 
 /**
- * Lane address を Display 形 (`<project>/lead` / `<project>/wing/<name>`) に変換。
+ * Lane address を Display 形 (`<project>/conductor` / `<project>/performer/<name>`) に変換。
  * Rust `LaneAddressWire::key()` と完全一致させる (active selection 比較に使うため)。
  */
 export function laneAddressKey(lane: LaneInfo): string {
 	const a = lane.address;
-	if (isWingKind(a.kind)) {
-		return `${a.project}/wing/${a.name ?? "<unnamed>"}`;
+	if (isPerformerKind(a.kind)) {
+		return `${a.project}/performer/${a.name ?? "<unnamed>"}`;
 	}
-	return `${a.project}/${a.kind || "lead"}`;
+	return `${a.project}/${a.kind || "conductor"}`;
 }

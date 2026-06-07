@@ -211,9 +211,9 @@ VP は Stand 起動時に以下の環境変数を mise task に渡す:
 | ENV | 意味 | 例 |
 |---|---|---|
 | `VP_CWD` | Lane の working directory (project_dir) | `/Users/makoto/repos/vantage-point` |
-| `VP_SESSION` | tmux session 名 (sanitize 済) | `vp-vantage-point-lead-hd` |
+| `VP_SESSION` | tmux session 名 (sanitize 済) | `vp-vantage-point-conductor-hd` |
 | `VP_PROJECT` | project 識別子 | `vantage-point` |
-| `VP_LANE` | lane label (lead / worker name) | `lead` / `sub` |
+| `VP_LANE` | lane label (conductor / worker name) | `conductor` / `sub` |
 
 quoting 規約: task 内では `"$VP_CWD"` のように **必ず double-quote**で囲む (空白や特殊文字対応)。 single-quote の中に `"$VP_*"` を埋める tmux command の場合は `"..."` で外側を組み立てて `'...'` で内 cmd を括る pattern (preset の `vp:stand:hd` 参照)。
 
@@ -277,14 +277,14 @@ PR #245 で確立した規則を継続:
 vp-{project}-{lane_label}-{stand_name}
 ```
 
-`stand_name` は task 名 `vp:stand:{name}` の `name` 部分そのまま。 例: `vp-vantage-point-lead-hd`。
+`stand_name` は task 名 `vp:stand:{name}` の `name` 部分そのまま。 例: `vp-vantage-point-conductor-hd`。
 
 `LaneAddress::tmux_session_name(stand_name: &str)` の signature に変更 (`&LaneStand` → `&str`):
 
 ```rust
 pub fn tmux_session_name(&self, stand_name: &str) -> String {
     let lane_label = match (self.kind, self.worker_name.as_deref()) {
-        (LaneKind::Lead, _) => "lead",
+        (LaneKind::Conductor, _) => "conductor",
         (LaneKind::Worker, Some(n)) => n,
         (LaneKind::Worker, None) => "unnamed",
     };
@@ -527,7 +527,7 @@ cascade vs sniper の使い分け:
 ## 関連 memory / PR / doc
 
 - `mem_1CabUx6FLaRgoK2unJvk6q` ─ VP Lane init_script 一般化 (2026-04-29 design intent)
-- `mem_1CaSmvKgsX2AQxRYFYgNM3` ─ Lead pane shell (TheHand path) の現在仕様
+- `mem_1CaSmvKgsX2AQxRYFYgNM3` ─ Conductor pane shell (TheHand path) の現在仕様
 - `mem_1CaTpCQH8iLJ2PasRcPjHv` ─ Architecture v4: Process recursive、 9 component minimum
 - PR #245 ─ tmux session 命名 `vp-{project}-{lane}-{stand_short}` 規則確立
 - PR #244 ─ tmux new-session に `-c {cwd}` 追加 (cwd 継承罠回避)

@@ -4,7 +4,7 @@
 //!
 //! 1. **Lane attach mode (Phase 2)**: `?lane=<address>` 指定 →
 //!    SP の `LanePool` から既存 PtySlot を `subscribe_output()` で attach。
-//!    複数 client が同じ Lane の PTY (Lead Lane の Claude CLI など) を共有できる。
+//!    複数 client が同じ Lane の PTY (Conductor Lane の Claude CLI など) を共有できる。
 //!    WS 切断しても PtySlot は生き続ける (Lane lifecycle は LanePool が支配)。
 //!
 //! 2. **Spawn mode (legacy)**: `lane` 未指定 → 接続ごとに新 PtySlot を spawn。
@@ -12,7 +12,7 @@
 //!
 //! ## プロトコル
 //!
-//! - URL: `ws://host:33xxx/ws/terminal?lane=<project>/lead`  (Lane attach)
+//! - URL: `ws://host:33xxx/ws/terminal?lane=<project>/conductor`  (Lane attach)
 //! - URL: `ws://host:32000/ws/terminal?shell=bash&cols=80&rows=24` (Spawn)
 //! - Server → Client: `Message::Binary(pty_output_bytes)` — PTY からの生バイト列
 //! - Client → Server:
@@ -57,7 +57,7 @@ pub struct TerminalQuery {
     /// 作業ディレクトリ (Spawn mode のみ、 default: $HOME)
     #[serde(default)]
     pub cwd: Option<String>,
-    /// Lane address (Phase 2 attach mode、 例: `"vantage-point/lead"` / `"vp/wing/foo"`)。
+    /// Lane address (Phase 2 attach mode、 例: `"vantage-point/conductor"` / `"vp/performer/foo"`)。
     /// Some なら既存 LanePool の PtySlot に attach、 None なら従来の Spawn mode。
     #[serde(default)]
     pub lane: Option<String>,

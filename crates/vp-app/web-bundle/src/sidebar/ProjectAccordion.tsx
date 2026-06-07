@@ -6,7 +6,7 @@
  * Rust 側 state に永続化する。 展開時の内容は SP state に応じた hint、 または Lane 行。
  *
  * PR-3: active project (= 現在 active な Lane を含む project) の summary 右上に
- * 「+」アイコンを出し、 click で Add Wing フォームを開閉する。
+ * 「+」アイコンを出し、 click で Add Performer フォームを開閉する。
  */
 import { For, Show, createSignal, onCleanup, onMount } from "solid-js";
 import { CreoIcon } from "creoui-icons-web";
@@ -15,11 +15,11 @@ import { sidebar } from "./store";
 import { sendIpc } from "./ipc";
 import { openContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { isRunningProcess } from "./classify";
-import { laneAddressKey, isWingLane } from "./lane";
+import { laneAddressKey, isPerformerLane } from "./lane";
 import type { LaneInfo } from "../generated/LaneInfo";
 import { LaneRow } from "./LaneRow";
-import { AddWing } from "./AddWing";
-import { registerAddWingOpenSetter } from "./directive-state";
+import { AddPerformer } from "./AddPerformer";
+import { registerAddPerformerOpenSetter } from "./directive-state";
 import {
 	clearDrag,
 	commitProjectReorder,
@@ -35,10 +35,10 @@ import {
  *
  * - 左 1 文字 = ツリー構造: `├`(途中) / `└`(末尾)。 lane list 内の最終行が `└`。
  * - 右 1 文字 = 線種 (= control surrender FSM の表現):
- *   - lead: solid `─` (= 幹、 固定)
- *   - wing inactive (idle/dead, pid null): dotted `┈` (= 休眠、 dim)
- *   - wing awaiting (hitl_pending): solid `─` warn 色 (= 人を待つ、 control 握る)
- *   - wing 自走 (working/autonomous = active & not awaiting): 波線 `〜` info 色
+ *   - conductor: solid `─` (= 幹、 固定)
+ *   - performer inactive (idle/dead, pid null): dotted `┈` (= 休眠、 dim)
+ *   - performer awaiting (hitl_pending): solid `─` warn 色 (= 人を待つ、 control 握る)
+ *   - performer 自走 (working/autonomous = active & not awaiting): 波線 `〜` info 色
  *     (= control 手放した = self-running)
  */
 function laneConnector(
@@ -46,10 +46,10 @@ function laneConnector(
 	isLast: boolean,
 ): { text: string; cls: string } {
 	const corner = isLast ? "└" : "├"; // 左 = ツリー構造
-	if (!isWingLane(lane)) {
-		return { text: `${corner}─`, cls: "conn-lead" }; // lead は幹 = solid
+	if (!isPerformerLane(lane)) {
+		return { text: `${corner}─`, cls: "conn-conductor" }; // conductor は幹 = solid
 	}
-	// wing: 右 = 線種で状態を出し分け。
+	// performer: 右 = 線種で状態を出し分け。
 	const addr = laneAddressKey(lane);
 	const inactive = lane.pid == null;
 	const awaiting = !!sidebar.awaiting_input[addr];
@@ -88,19 +88,19 @@ function hintFor(proc: ProjectPaneState, laneCount: number): string | null {
 export function ProjectAccordion(props: { proc: ProjectPaneState }) {
 	const lanes = () => sidebar.lanes_by_project[props.proc.path] ?? [];
 	const hint = () => hintFor(props.proc, lanes().length);
-	// active project = 現在 active な Lane を含む project。 Add Wing の「+」はこの時だけ出す。
+	// active project = 現在 active な Lane を含む project。 Add Performer の「+」はこの時だけ出す。
 	const isActiveProject = () => {
 		const a = sidebar.active_lane_address;
 		return a != null && lanes().some((l) => laneAddressKey(l) === a);
 	};
 
-	const [addWingOpen, setAddWingOpen] = createSignal(false);
-	// PR 445 `n` directive: keyboard で AddWing form を open するため、 ProjectAccordion 内 local
+	const [addPerformerOpen, setAddPerformerOpen] = createSignal(false);
+	// PR 445 `n` directive: keyboard で AddPerformer form を open するため、 ProjectAccordion 内 local
 	// signal を **module-scope registry** に export する。 directive 発火時に registry から
-	// setter を引いて open する経路 (= directive-state.ts::openAddWingFor)。
+	// setter を引いて open する経路 (= directive-state.ts::openAddPerformerFor)。
 	onMount(() => {
-		const unreg = registerAddWingOpenSetter(props.proc.path, (open) =>
-			setAddWingOpen(open),
+		const unreg = registerAddPerformerOpenSetter(props.proc.path, (open) =>
+			setAddPerformerOpen(open),
 		);
 		onCleanup(unreg);
 	});
@@ -118,11 +118,11 @@ export function ProjectAccordion(props: { proc: ProjectPaneState }) {
 	// (`isRunningProcess`) と揃える。 Start ボタンと context menu の出し分けに使う。
 	const isPaused = () => !isRunningProcess(props.proc);
 
-	// Add Wing「+」を出す条件。 isActiveProject だけだと、 一度 active にした project を
+	// Add Performer「+」を出す条件。 isActiveProject だけだと、 一度 active にした project を
 	// Stop した後も active_lane_address / lanes_by_project が残る (SP 停止で自動クリア
 	// されない) ため、 停止中でも true になりうる。 稼働中であることを明示的に AND して、
-	// 停止中 project に「+」と Start「▶」が同居する / 失敗する Add Wing を開けるのを防ぐ。
-	const showAddWing = () => isActiveProject() && !isPaused();
+	// 停止中 project に「+」と Start「▶」が同居する / 失敗する Add Performer を開けるのを防ぐ。
+	const showAddPerformer = () => isActiveProject() && !isPaused();
 
 	// 📁 project ヘッダの右クリック → project context menu。
 	//   - 一時停止中: Start project (restart_process は dead な project も起こす)
@@ -256,22 +256,22 @@ export function ProjectAccordion(props: { proc: ProjectPaneState }) {
 					size={14}
 				/>
 				<span class="vp-proj-name">{props.proc.name}</span>
-				<Show when={showAddWing()}>
+				<Show when={showAddPerformer()}>
 					<button
-						class="vp-proj-addwing"
-						classList={{ open: addWingOpen() }}
-						title="Add Wing"
+						class="vp-proj-addperformer"
+						classList={{ open: addPerformerOpen() }}
+						title="Add Performer"
 						onClick={(e) => {
 							// summary click は <details> を toggle するので止める。
 							e.preventDefault();
 							e.stopPropagation();
-							setAddWingOpen((v) => !v);
+							setAddPerformerOpen((v) => !v);
 						}}
 					>
 						<CreoIcon name="ph:plus" size={12} />
 					</button>
 				</Show>
-				{/* 一時停止中 project の起動 affordance。 「+」(showAddWing) は稼働中限定
+				{/* 一時停止中 project の起動 affordance。 「+」(showAddPerformer) は稼働中限定
             なので、 停止中のこの「▶」とは同居しない。 */}
 				<Show when={isPaused()}>
 					<button
@@ -307,10 +307,10 @@ export function ProjectAccordion(props: { proc: ProjectPaneState }) {
 									);
 								}}
 							</For>
-							<Show when={addWingOpen()}>
-								<AddWing
+							<Show when={addPerformerOpen()}>
+								<AddPerformer
 									projectPath={props.proc.path}
-									onClose={() => setAddWingOpen(false)}
+									onClose={() => setAddPerformerOpen(false)}
 								/>
 							</Show>
 						</>

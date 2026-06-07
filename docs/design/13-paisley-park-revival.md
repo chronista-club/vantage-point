@@ -1,6 +1,6 @@
 # 13. Paisley Park 復活設計 — Information Router on LSCM
 
-> **改訂 note (2026-05-21)**: 本 doc 中の `msgbox_registry.rs` / `validate_actor` / `parse_address` への言及は、 2026-05 の **wiremsg 再設計 (R1〜R6、 PR #406〜#420) で全廃**された旧 msgbox 実装。 現行 messaging は wiremsg (`wire_send` / `wire_recv`、 `wire_remote.rs`)。 wire address は slash 区切りの `<actor>@<project>[/<wing>]` ([doc 14](14-wire-address-v3.md))。 本 doc が「⚠ 実装 reality」 として注記する `.` 区切り wire format (`pp.lead@vp`) の parse 不可問題は、 wiremsg の slash-based address (`canvas@vp/lead` 等) で構造的に解消されている。
+> **改訂 note (2026-05-21)**: 本 doc 中の `msgbox_registry.rs` / `validate_actor` / `parse_address` への言及は、 2026-05 の **wiremsg 再設計 (R1〜R6、 PR #406〜#420) で全廃**された旧 msgbox 実装。 現行 messaging は wiremsg (`wire_send` / `wire_recv`、 `wire_remote.rs`)。 wire address は slash 区切りの `<actor>@<project>[/<performer>]` ([doc 14](14-wire-address-v3.md))。 本 doc が「⚠ 実装 reality」 として注記する `.` 区切り wire format (`pp.conductor@vp`) の parse 不可問題は、 wiremsg の slash-based address (`canvas@vp/conductor` 等) で構造的に解消されている。
 
 > **Status**: target architecture (PR-β/δ/ε で実装、 PR-ε 完了で origin 願い 3 本実現)
 > **Date**: 2026-05-04
@@ -64,7 +64,7 @@ doc 12 LSCM catalog §9 で PP target = Lane instance を明記したことで�
 
 PP の保持 layer pattern は `{project}/{lane}` (catalog §9 SSOT)。 1 Lane = 1 PP instance、 同 PP 種が複数 Lane に並列に host される (A3: "同 Stand 種が複数 Layer に保持されることも可")。
 
-**含意**: project 全体で 1 つの PP ではなく、 Lane ごとに独立 PP。 Lead Lane の PP が project 代表 PP (A11)。
+**含意**: project 全体で 1 つの PP ではなく、 Lane ごとに独立 PP。 Conductor Lane の PP が project 代表 PP (A11)。
 
 ### P2: PP は portable entity、 階層色なし (← A1)
 
@@ -103,13 +103,13 @@ LSCM A3 の "1 Layer = N Stand 保持可" を Lane に apply: 1 Lane が 1 Echoe
 
 | 用途 | 表記 | 例 |
 |------|------|-----|
-| 概念用語 | `pp@{project}/{lane}` | `pp@vp/lead`、 `pp@vp/sub1` |
-| wire format | `pp.{lane}@{project}` | `pp.lead@vp`、 `pp.sub1@vp` |
+| 概念用語 | `pp@{project}/{lane}` | `pp@vp/conductor`、 `pp@vp/sub1` |
+| wire format | `pp.{lane}@{project}` | `pp.conductor@vp`、 `pp.sub1@vp` |
 | MCP boundary | `pp` (caller の Lane に解決) | tool call は Lane 解決後 |
 
 **Reserved actor**: `paisley_park` は予約語 (doc 12 §5)、 短縮 `pp` も同 entity を指す。
 
-> **⚠ 実装 reality (P0-3)**: 現実装の `validate_actor` (`msgbox_registry.rs:184-194`) は actor 名に `.` を **reject** するため、 wire format `pp.lead@vp` は現状 parse 不可。 PR-β-1 prerequisite として **address parser 拡張** (`{actor}.{lane}@{project}` sub-suffix grammar 認識) が必要。 詳細は §10 Q-6 参照。
+> **⚠ 実装 reality (P0-3)**: 現実装の `validate_actor` (`msgbox_registry.rs:184-194`) は actor 名に `.` を **reject** するため、 wire format `pp.conductor@vp` は現状 parse 不可。 PR-β-1 prerequisite として **address parser 拡張** (`{actor}.{lane}@{project}` sub-suffix grammar 認識) が必要。 詳細は §10 Q-6 参照。
 
 ### 保持関係図 (← doc 12 §4 Mermaid を PP 視点で再描画)
 
@@ -121,7 +121,7 @@ graph TB
     subgraph PL[Project Layer 'vp']
         SP[Star Platinum ⭐]
     end
-    subgraph LL1[Lane 'vp/lead']
+    subgraph LL1[Lane 'vp/conductor']
         EC1[Echoes 💬]
         PP1[PP 🧭]
         GE1[GE 🌿]
@@ -180,7 +180,7 @@ PP は **passive (名指し受信)** と **active (subscriber)** の両形で in
 | 経路 | mode | 形 | 例 |
 |------|-----|----|-----|
 | MCP tool call | P | `mcp__show` / `mcp__clear` (caller Lane に自動解決) | Echoes 内 Claude が `mcp__show("# Hello")` |
-| Msgbox direct | P | `pp.{lane}@{project}` send | 別 Stand から `pp.lead@vp` に push |
+| Msgbox direct | P | `pp.{lane}@{project}` send | 別 Stand から `pp.conductor@vp` に push |
 | HTTP API | P | `POST /api/pp/{action}` (vp-app から) | Canvas UI 操作 (pin/focus/tag 等、 VP-121 で sidebar 廃止 → Canvas 統合) |
 | TopicRouter subscribe | A | 他 Stand の event topic を subscribe | `process/build/event/completed` を listen → Inline 通知 |
 | External watcher | A | filesystem / process / hub event を Msgbox 経由で受信 | build watcher → PP → Inline progress bar |
@@ -201,11 +201,11 @@ PP は topic で broadcast:
 
 ### MCP 中継経路 (← mem_1Ca8xHcMf9sFBB2VHUpHzZ、 VP-121 で sidebar feed 廃止 → Canvas 1 surface)
 
-origin 願いの core: lead Claude の creo MCP 呼び出しを VP が中継して Smart Canvas に流す (creo memory を Canvas content kind として render)。
+origin 願いの core: conductor Claude の creo MCP 呼び出しを VP が中継して Smart Canvas に流す (creo memory を Canvas content kind として render)。
 
 ```mermaid
 sequenceDiagram
-    participant CC as lead Claude (Echoes)
+    participant CC as conductor Claude (Echoes)
     participant VP as VP MCP Proxy<br/>(SP host)
     participant CM as creo-memories<br/>(upstream)
     participant PP as PP (Lane)
@@ -244,7 +244,7 @@ sequenceDiagram
 | user が Cmd+D で Pane 追加 | Lane 内に PP Pane 追加、 既存 PP の surface に bind |
 | Lane destroy | PP 自動終了 (cascade、 A3 lifecycle) |
 
-default は「Lane 起動時に PP 同時 spawn」 だが、 ccws Wing Lane 等で resource 節約したい場合は opt-out して lazy spawn (= 旧 memory の挙動) に切替可能。 「PP は Lane に居住する Stand 種だが、 Lane が必ず PP を保持する required 制約は catalog SSOT に書かれていない」 ことを尊重し、 axiom レベルの required 化は doc 12 catalog 拡張 (back-port 候補 2: 上界 / 下界 separate 列) に持ち上げる (現 doc 13 では declare せず)。
+default は「Lane 起動時に PP 同時 spawn」 だが、 ccws Performer Lane 等で resource 節約したい場合は opt-out して lazy spawn (= 旧 memory の挙動) に切替可能。 「PP は Lane に居住する Stand 種だが、 Lane が必ず PP を保持する required 制約は catalog SSOT に書かれていない」 ことを尊重し、 axiom レベルの required 化は doc 12 catalog 拡張 (back-port 候補 2: 上界 / 下界 separate 列) に持ち上げる (現 doc 13 では declare せず)。
 
 ### 1:1 vs 1:N
 
@@ -302,7 +302,7 @@ user が「次回起動時もこの Canvas pin を維持したい」 のよう�
 
 ### 配置
 
-PR-ε で実装する creo memory feature は **Smart Canvas の content kind**、 PP 自体ではない。 PP からみて: lead Claude の creo activity (remember / search / get) を Smart Canvas に「creo memory」 という content kind として render する router 機能。
+PR-ε で実装する creo memory feature は **Smart Canvas の content kind**、 PP 自体ではない。 PP からみて: conductor Claude の creo activity (remember / search / get) を Smart Canvas に「creo memory」 という content kind として render する router 機能。
 
 - **Smart Canvas (creo memory render)**: `pp/lane/{lane}/surface/canvas` topic に creo memory を broadcast、 Canvas で content kind 別 (timeline / search results / detail body) に render
 - **独立 surface 廃止**: 旧設計の sidebar feed (常駐 creo activity card) は廃止、 Canvas に統合。 sidebar feed は元来 §5 出力面 table の subscriber 欄に `pp/lane/{lane}/feed` topic として存在、 VP-121 で topic ごと削除 (§5 参照)。 §7 Surface table は 5 Surface のまま不変 (sidebar feed は formal Surface 列挙には元々含まれていなかった)。
@@ -317,7 +317,7 @@ PR-ε で実装する creo memory feature は **Smart Canvas の content kind**�
 
 ### 双方向同期
 
-origin 願いの「気持ちよくリアルタイム連携」 = 双方向。 逆方向 (UI → lead) は MCP boundary を介した **context injection**:
+origin 願いの「気持ちよくリアルタイム連携」 = 双方向。 逆方向 (UI → conductor) は MCP boundary を介した **context injection**:
 
 | user action | PP 動作 |
 |-------------|--------|
@@ -325,7 +325,7 @@ origin 願いの「気持ちよくリアルタイム連携」 = 双方向。 逆
 | Canvas で memory focus | PP が next MCP response の context resource として inject |
 | Tag 編集 | PP が `mcp__update_memory` を caller Echoes 経由で実行 (caller agency 維持) |
 
-**Tag 編集の caller agency 原則** (← A6 share nothing + A7 Actor face、 本 doc で確定): VP が直接 creo-memories を mutate せず、 必ず Echoes (= lead Claude) を経由する。 Stand 越境の write 権限を「ユーザーが見ているエージェント」 に集約させる security model。 元 memory `mem_1Ca8xHcMf9sFBB2VHUpHzZ` の「VP → lead 方向の具体: Focus / Pin / Tag / 全部？」 は未確定として残されていたが、 doc 13 で **Tag 編集を caller agency 経由で確定** (Pin / Focus は §8 user action table 参照)。
+**Tag 編集の caller agency 原則** (← A6 share nothing + A7 Actor face、 本 doc で確定): VP が直接 creo-memories を mutate せず、 必ず Echoes (= conductor Claude) を経由する。 Stand 越境の write 権限を「ユーザーが見ているエージェント」 に集約させる security model。 元 memory `mem_1Ca8xHcMf9sFBB2VHUpHzZ` の「VP → conductor 方向の具体: Focus / Pin / Tag / 全部？」 は未確定として残されていたが、 doc 13 で **Tag 編集を caller agency 経由で確定** (Pin / Focus は §8 user action table 参照)。
 
 なお Echoes が idle (no pending tool call) 状態時の inject 先 semantics は §10 Q-10 で扱う。 LSCM 全体で適用すべき security 原則として doc 12 §13 への back-port (A12 候補) も検討中。
 
@@ -406,8 +406,8 @@ PR-β 開始前 (および各 sub-PR 開始前) に確定すべき残点。 P0 =
 
 | Q | priority | 解決時期 |
 |---|---------|--------|
-| Q-1: Wing Lane PP spawn (常時 vs on-demand) | P2 | 暫定確定、 dogfood で見直し |
-| Q-2: Lead Lane PP の代表性 (project 集約 vs 局所) | P2 | 暫定: Lane 局所 |
+| Q-1: Performer Lane PP spawn (常時 vs on-demand) | P2 | 暫定確定、 dogfood で見直し |
+| Q-2: Conductor Lane PP の代表性 (project 集約 vs 局所) | P2 | 暫定: Lane 局所 |
 | **Q-3**: Smart Canvas の配置 (Pane vs WebView 主) | **✅ 確定** | **PR-ε-3 (#298) で WebView 主 = `pane-paisley-park` 内 `<div id="pp-content">` で物理化**。 Pane opt-in (Cmd+D 等で Pane 内に PP 配置) は future work、 PR-ε-4 cleanup で `pane-canvas` placeholder を削除して曖昧さ排除 |
 | Q-4: Hub federation 公開範囲 | P2 | 暫定: state stream のみ |
 | **Q-5**: caller Lane resolution path | **✅ 実質解決** | **PR-ε-3 で `setWantedLane(address)` pattern で解決**。 setActivePane bridge が Lane click 時に「subscribe したい Lane」 を slot に保持、 ensureLane wrap が race recovery で auto connect する event-driven design。 当初 plan の env 注入 / param 拡張は未採用 (= JS 側 client state で完結) |
@@ -418,23 +418,23 @@ PR-β 開始前 (および各 sub-PR 開始前) に確定すべき残点。 P0 =
 | Q-10: Echoes idle 時の context inject 先 | P1 | PR-ε-3 では未対応 (Tag 編集等の双方向書き込み機能を v1 では実装せず)。 §8 Out-of-scope 通り future work |
 | Q-11: SP restart vs Lane PP lifecycle 連動 | P1 | PR-β-2 dogfood で観察 |
 
-### Q-1: Wing Lane の PP を spawn するか?
+### Q-1: Performer Lane の PP を spawn するか?
 
-P5 では 1 Lane = 1 PP を default 化したが、 ccws Wing Lane (sub1 etc.) で PP を **常時 spawn** するか、 **on-demand** か?
+P5 では 1 Lane = 1 PP を default 化したが、 ccws Performer Lane (sub1 etc.) で PP を **常時 spawn** するか、 **on-demand** か?
 
-- **常時**: 一貫した Lane geography、 user 期待値が予測可能。 ただし resource 重複 (8 Wing = 8 PP)
+- **常時**: 一貫した Lane geography、 user 期待値が予測可能。 ただし resource 重複 (8 Performer = 8 PP)
 - **on-demand**: Echoes が初めて `mcp__show` 呼んだ時に lazy spawn。 resource 節約だが、 first call latency
 
 **暫定**: 常時 spawn (一貫性優先)、 PR-β 実装時に dogfood 観察で見直し。
 
-### Q-2: Lead Lane の PP は project 代表か、 Lane 局所か?
+### Q-2: Conductor Lane の PP は project 代表か、 Lane 局所か?
 
-A11 では Lead Lane = project 代表だが、 PP の context は Lane 局所。 例: Lead Lane PP の Smart Canvas が "vp project 全体" の creo activity を集約するか、 "vp/lead Lane" のみか?
+A11 では Conductor Lane = project 代表だが、 PP の context は Lane 局所。 例: Conductor Lane PP の Smart Canvas が "vp project 全体" の creo activity を集約するか、 "vp/conductor Lane" のみか?
 
-- **vp/lead** のみ ─ A1 portable + Lane 居住の自然な解
+- **vp/conductor** のみ ─ A1 portable + Lane 居住の自然な解
 - **project 全体集約** ─ user 期待値 (1 Canvas で全部見たい) と一致するが、 cross-Lane state share を生む (A6 違反の risk)
 
-**暫定**: vp/lead のみ。 project 集約 view は将来の `pp@{project}` (= Project Stand 上に集約 router) として別途設計。
+**暫定**: vp/conductor のみ。 project 集約 view は将来の `pp@{project}` (= Project Stand 上に集約 router) として別途設計。
 
 ### Q-3: Smart Canvas は Lane Pane の 1 つ? 別 window?
 
@@ -461,14 +461,14 @@ doc 12 §9 で PP は Hub federation 対象 (✅)。 ただし、 surface routin
 
 MCP 中継経路 (§5) で「caller Echoes の Lane address を MCP request envelope から取得して route する」 と declare したが、 現実装の `ShowParams` (`mcp.rs:26`) と `/api/show` handler (`routes/health.rs:379`) には Lane 識別子を渡す経路がない。
 
-- **案 A (env 注入)**: Echoes spawn 時に `VP_LANE_ADDRESS=lead@vp` を env で MCP subprocess に注入 → MCP server 起動時に env から read、 全 tool call の implicit context として保持
+- **案 A (env 注入)**: Echoes spawn 時に `VP_LANE_ADDRESS=conductor@vp` を env で MCP subprocess に注入 → MCP server 起動時に env から read、 全 tool call の implicit context として保持
 - **案 B (param 拡張)**: `ShowParams` 等に `lane: Option<String>` 追加、 unset = caller default (= MCP server 起動時の env)
 
 **暫定推奨**: **案 A** (env 注入、 既存 `VP_PROCESS_PORT` pattern と整合、 MCP tool 全部に lane 引数追加する必要なし)。 PR-β-3 caller migration の前提作業。
 
 ### Q-6: address grammar `.{lane}` sub-suffix 拡張 (P0、 PR-β-1 hard prerequisite)
 
-現実装の `validate_actor` (`msgbox_registry.rs:184-194`) は actor 名に `.` を **reject**、 `parse_address` (line 245-270) も `{actor}.{lane}@{project}` grammar を認識しない。 doc 12 / 13 で declare した wire format `pp.lead@vp` は実装に存在しない grammar。
+現実装の `validate_actor` (`msgbox_registry.rs:184-194`) は actor 名に `.` を **reject**、 `parse_address` (line 245-270) も `{actor}.{lane}@{project}` grammar を認識しない。 doc 12 / 13 で declare した wire format `pp.conductor@vp` は実装に存在しない grammar。
 
 doc 12 §13 Q-7 (Msgbox registry の `(layer_path, actor)` key 拡張) は **registry-side** の話、 本 Q-6 は **parser-side** の grammar 拡張で別軸。
 
@@ -489,7 +489,7 @@ doc 12 §13 Q-7 (Msgbox registry の `(layer_path, actor)` key 拡張) は **reg
 
 - **案 ① 5 階層化**: `{scope}/{capability}/{lane}/{category}/{detail}` で Lane を category 直前に固定 ─ doc 12 §5 minor schema change
 - **案 ② category 直前に Lane embed**: `{scope}/{capability}/{category}/{lane}/{detail}` ─ 既存 retained 判定ロジック (`topic.rs:46`) を変えずに済む
-- **案 ③ scope 拡張**: `{scope=lane:lead}/{capability}/{category}/{detail}` ─ scope を `process` `lane:lead` `world` の 3 値に拡張
+- **案 ③ scope 拡張**: `{scope=lane:conductor}/{capability}/{category}/{detail}` ─ scope を `process` `lane:conductor` `world` の 3 値に拡張
 
 **暫定**: **案 ①** が直感的。 doc 12 §5 update の小 PR を別途切る (PR-β series と並列)、 doc 13 暫定として 5 階層を許容しつつ最終 commit は doc 12 update に依存。
 

@@ -47,14 +47,14 @@ const WORLD_SEGMENT: &str = "world";
 /// wire アドレスから project segment を抽出する (`@` の直後、 `/` の手前)
 ///
 /// wire アドレス syntax (doc 16 / `mailbox_addresses`):
-/// - bare `agent` — 自 SP の lead (project segment 無し → `None`)
-/// - `agent@<project>` — `<project>` の lead
-/// - `agent@<project>/<wing>` — `<project>` の wing
+/// - bare `agent` — 自 SP の conductor (project segment 無し → `None`)
+/// - `agent@<project>` — `<project>` の conductor
+/// - `agent@<project>/<performer>` — `<project>` の performer
 ///
 /// `@` が無ければ `None` (= bare local アドレス)。 `@` 以降の `/` より前を project とみなす。
 pub fn parse_project(addr: &str) -> Option<&str> {
     let after_at = addr.split_once('@')?.1;
-    // project segment は `/` の手前まで (wing suffix を除く)
+    // project segment は `/` の手前まで (performer suffix を除く)
     Some(after_at.split('/').next().unwrap_or(after_at))
 }
 
@@ -62,7 +62,7 @@ pub fn parse_project(addr: &str) -> Option<&str> {
 ///
 /// - **remote** — `@<project>` を持ち、 `<project>` が `self_project` とも `world` とも
 ///   異なるアドレス。 受信側 SP への forward 対象。
-/// - **local** — bare アドレス (`@` 無し) / `@<self_project>` / `@<self_project>/<wing>` /
+/// - **local** — bare アドレス (`@` 無し) / `@<self_project>` / `@<self_project>/<performer>` /
 ///   `@world` 系。 forward 不要 (= ローカル INSERT で完結、 World 宛は wire の対象外)。
 ///
 /// 戻り値 `WireRecipients` の `remote_projects` は **重複排除済の安定順序** (BTreeSet)。
@@ -261,9 +261,9 @@ mod tests {
         assert_eq!(parse_project("agent@vantage-point"), Some("vantage-point"));
     }
 
-    /// parse_project: wing suffix (`/<wing>`) は project に含めない
+    /// parse_project: performer suffix (`/<performer>`) は project に含めない
     #[test]
-    fn parse_project_strips_wing_suffix() {
+    fn parse_project_strips_performer_suffix() {
         assert_eq!(
             parse_project("agent@vantage-point/chore"),
             Some("vantage-point")
@@ -295,11 +295,11 @@ mod tests {
         assert!(!r.has_remote());
     }
 
-    /// 自 project の wing 宛 (`@<self>/<wing>`) も local
+    /// 自 project の performer 宛 (`@<self>/<performer>`) も local
     #[test]
-    fn classify_self_project_wing_is_local() {
+    fn classify_self_project_performer_is_local() {
         let r = classify_recipients(&["agent@vantage-point/chore".to_string()], "vantage-point");
-        assert!(r.has_local, "自 project の wing 宛は local");
+        assert!(r.has_local, "自 project の performer 宛は local");
         assert!(!r.has_remote());
     }
 
@@ -325,14 +325,14 @@ mod tests {
         assert!(!r.has_local, "local 宛なし");
     }
 
-    /// 他 project の wing 宛も remote、 project segment のみ抽出
+    /// 他 project の performer 宛も remote、 project segment のみ抽出
     #[test]
-    fn classify_other_project_wing_is_remote() {
+    fn classify_other_project_performer_is_remote() {
         let r = classify_recipients(&["agent@creo-memories/sub".to_string()], "vantage-point");
         assert_eq!(
             r.remote_projects,
             vec!["creo-memories".to_string()],
-            "wing 宛でも remote_projects は project 名のみ"
+            "performer 宛でも remote_projects は project 名のみ"
         );
     }
 
@@ -341,7 +341,7 @@ mod tests {
     fn classify_mixed_local_and_remote() {
         let to = vec![
             "agent".to_string(),                     // local (bare)
-            "agent@vantage-point/chore".to_string(), // local (self wing)
+            "agent@vantage-point/chore".to_string(), // local (self performer)
             "agent@creo-memories".to_string(),       // remote
         ];
         let r = classify_recipients(&to, "vantage-point");
@@ -354,8 +354,8 @@ mod tests {
     #[test]
     fn classify_dedups_same_remote_project() {
         let to = vec![
-            "agent@creo-memories".to_string(),     // lead
-            "agent@creo-memories/sub".to_string(), // wing — 同 project
+            "agent@creo-memories".to_string(),     // conductor
+            "agent@creo-memories/sub".to_string(), // performer — 同 project
             "canvas@creo-memories".to_string(),    // 別 stand — 同 project
         ];
         let r = classify_recipients(&to, "vantage-point");

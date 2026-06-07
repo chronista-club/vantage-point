@@ -76,7 +76,7 @@ address parse 後、 **location 部分の resolve** を以下の順序で fall-t
 
 ```
 [envelope (= plaintext header)]
-  from:    agent@mako.chronista.club/vantage-point/lead
+  from:    agent@mako.chronista.club/vantage-point/conductor
   to:      agent@taro.chronista.club/devbox/main
   msg_id:  ulid
   ts:      2026-05-08T...
@@ -220,21 +220,21 @@ Phase 1 で parser 拡張時、 v1 syntax を v3.1 として解釈する rule:
 | v1 input | v3.1 internal representation |
 |----------|------------------------------|
 | `agent` | `Address { actor: "agent", world: None, project: None, lane: vec![] }` |
-| `agent@vantage-point` | `Address { actor: "agent", world: None, project: Some("vantage-point"), lane: vec!["lead"] }` (default lane) |
-| `*@vantage-point` | `Address { actor: "*", world: None, project: Some("vantage-point"), lane: vec!["lead"] }` |
+| `agent@vantage-point` | `Address { actor: "agent", world: None, project: Some("vantage-point"), lane: vec!["conductor"] }` (default lane) |
+| `*@vantage-point` | `Address { actor: "*", world: None, project: Some("vantage-point"), lane: vec!["conductor"] }` |
 
 新 v3.1 input:
 
 | v3.1 input | internal |
 |------------|----------|
-| `vantage-point/lead` | `Address { actor: "agent", world: None, project: Some("vantage-point"), lane: vec!["lead"] }` |
-| `vantage-point/wing/objrec` | `Address { actor: "agent", ..., lane: vec!["wing", "objrec"] }` |
-| `mako/vantage-point/lead` | `Address { actor: "agent", world: Some("mako"), ... }` |
-| `notify@vantage-point/lead` | `Address { actor: "notify", ... }` |
+| `vantage-point/conductor` | `Address { actor: "agent", world: None, project: Some("vantage-point"), lane: vec!["conductor"] }` |
+| `vantage-point/performer/objrec` | `Address { actor: "agent", ..., lane: vec!["performer", "objrec"] }` |
+| `mako/vantage-point/conductor` | `Address { actor: "agent", world: Some("mako"), ... }` |
+| `notify@vantage-point/conductor` | `Address { actor: "notify", ... }` |
 
 ### default lane policy
 
-- v1 `<actor>@<project>` で lane 未指定 → v3.1 で `lane: vec!["lead"]` に解釈
+- v1 `<actor>@<project>` で lane 未指定 → v3.1 で `lane: vec!["conductor"]` に解釈
 - これで「v1 user は何も変更不要」 + 「v3.1 で lane segment 明示は opt-in」
 
 ### lane segment 明示時の routing
@@ -244,8 +244,8 @@ Phase 1 で parser 拡張時、 v1 syntax を v3.1 として解釈する rule:
 > **さらに改訂 (2026-05-21)**: VP-169 の Whitesnake msgbox 自体も wiremsg 再設計 (R1〜R6) で全廃された。 現行の per-lane 配送は wire accumulation の per-agent cursor (`wire_recv`) で実現される。 doc 19 / `msgs` table への言及は historical。 address syntax / parser のみ現行有効。
 
 - ~~Phase 2 で per-lane msgbox 物理化 (`MsgboxRouter` を `(actor, project, lane_path)` キー)~~ → VP-169 で DB row field 化
-- ~~v1 既存 msgbox は spawn 時に `(actor, project, vec!["lead"])` キーへ migration~~ → VP-169 で box concept 廃止
-- ~~wing lane spawn で新 msgbox 自動 register、 lane delete で cleanup~~ → VP-169 で register/unregister 廃止、 consumer が `WHERE to_lane=$mine` で LIVE SELECT
+- ~~v1 既存 msgbox は spawn 時に `(actor, project, vec!["conductor"])` キーへ migration~~ → VP-169 で box concept 廃止
+- ~~performer lane spawn で新 msgbox 自動 register、 lane delete で cleanup~~ → VP-169 で register/unregister 廃止、 consumer が `WHERE to_lane=$mine` で LIVE SELECT
 
 ### gap 1-4 の物理 fix
 
@@ -295,7 +295,7 @@ scope:
 - address book: `~/.config/vp/addresses.toml`
 - LAN cross-machine msg: QUIC over LAN、 NaCl encrypt + Ed25519 sign
 
-deliverable: macbook-a と macbook-b で `vp wire send --to agent@macbook-b/vantage-point/lead --body "hello"` が動く
+deliverable: macbook-a と macbook-b で `vp wire send --to agent@macbook-b/vantage-point/conductor --body "hello"` が動く
 
 ### Phase 4-6 (placeholder、 LAN MVP 完成後 planning)
 

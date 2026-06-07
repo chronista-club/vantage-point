@@ -26,9 +26,9 @@
 vp-app PR #221 (Slice 1 capture-only) で **cc が OSC 99 を natively emit している** ことを dogfood で発見。 観測 payload (vp-app の log より):
 
 ```
-[osc99:vantage-point/lead] i=211:d=0:p=title;Claude Code
-[osc99:vantage-point/lead] i=211:p=body;Claude is waiting for your input
-[osc99:vantage-point/lead] i=211:d=1:a=focus;
+[osc99:vantage-point/conductor] i=211:d=0:p=title;Claude Code
+[osc99:vantage-point/conductor] i=211:p=body;Claude is waiting for your input
+[osc99:vantage-point/conductor] i=211:d=1:a=focus;
 ```
 
 xterm.js layer に OSC 9 / 99 / 777 handler を 3 つとも置いて capture (PR #221 で main merge 済、 commit `f2b6e3d`)。 これを sidebar status UI に活かす。

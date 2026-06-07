@@ -9,7 +9,7 @@
 
 ## Abstract
 
-dogfood（2026-05-11、VP-163 後）で「vantage-point lead の `agent#lead` を `msg_recv` したら、(1) chore worker からの ping が `from=agent@fleetstage` で届く、(2) 過去の test msg `b774c741` が `from=agent@creo-ui` に化けて再浮上」が観測された。同 session 内で `msg_directory` を 2 回叩いたら全 project の port が一斉シフトしていた（新規 project `nexus` が config に追加され、index ベースの port 割当が雪崩れた）。
+dogfood（2026-05-11、VP-163 後）で「vantage-point conductor の `agent#conductor` を `msg_recv` したら、(1) chore worker からの ping が `from=agent@fleetstage` で届く、(2) 過去の test msg `b774c741` が `from=agent@creo-ui` に化けて再浮上」が観測された。同 session 内で `msg_directory` を 2 回叩いたら全 project の port が一斉シフトしていた（新規 project `nexus` が config に追加され、index ベースの port 割当が雪崩れた）。
 
 ### 問題の本質を一行に
 
@@ -63,7 +63,7 @@ ccws worker dir（`~/.local/share/ccws/<parent>-<name>`）は登録 project の 
 1. 明示的なポート引数（変更なし）
 2. cwd 判定:
    - cwd が ~/.local/share/ccws/<parent>-<name> → worker。<parent> を discovery::find_by_project() で引く（live port）
-   - cwd が登録 project の path（配下）→ lead。その project を discovery::find_by_project() で引く（live port）
+   - cwd が登録 project の path（配下）→ conductor。その project を discovery::find_by_project() で引く（live port）
 3. VP_PROCESS_PORT env（ヒント）— ただし「その port の SP の /api/health の project_dir が解決した parent と一致するか」を検証（is_sp_for_project_responding と同型）。不一致なら無視
 4. find_for_cwd()（従来 fallback）
 5. フォールバック 33000
@@ -72,7 +72,7 @@ ccws worker dir（`~/.local/share/ccws/<parent>-<name>`）は登録 project の 
 - 肝: **2 を 3 より優先**。worker は「自分が誰の worker か」を cwd から確実に知れる → env snapshot に頼らず discovery（reconciliation の真実源 = TheWorld）で live port を引く。
 - env を完全に消さない理由: discovery 一時障害時の fast path。ただし **必ず project_dir 照合してから使う**。
 - QUIC channel reset 時（`mcp.rs:1019` 付近に既存の再解決ロジックあり）も同じ parent→discovery 経路に統一。
-- `msg_send` の `from`: worker context なら bare `"agent"` ではなく `"agent@<parent>/<worker-name>"`（doc 16 決定E と同じ。そちらの PR で実装されるなら本設計は参照のみ）。lead context は従来通り bare → remote forward 時 `normalize_from` で `agent@<parent>`。
+- `msg_send` の `from`: worker context なら bare `"agent"` ではなく `"agent@<parent>/<worker-name>"`（doc 16 決定E と同じ。そちらの PR で実装されるなら本設計は参照のみ）。conductor context は従来通り bare → remote forward 時 `normalize_from` で `agent@<parent>`。
 
 ### 決定B: Whitesnake を project-keyed に（全 namespace）
 
@@ -203,9 +203,9 @@ PR-5b/PR-6 (#347) で doc 17 §決定 (A)(B)(C)(D) は全 land。残るのは「
 
 ## Testing
 
-- **ユニット**: `project_slug` の各種 name → 期待 slug + 重複/空 fallback / `Config::sp_port_for_project`（未割当 → 次の空き slot 割当 + save / 割当済み → そのまま / `port` override 優先 / project 追加で既存 slot 不変）/ `Whitesnake::file_backed_for_project`（slug → 期待 dir）/ `restore_pending` の project guard（異 project to/from は restore されない / bare は restore / 自 project 宛・発は restore、in-memory backend で）/ `resolve_process_port` の cwd 判定（ccws worker dir → parent 解決 / 登録 project path → lead）。
+- **ユニット**: `project_slug` の各種 name → 期待 slug + 重複/空 fallback / `Config::sp_port_for_project`（未割当 → 次の空き slot 割当 + save / 割当済み → そのまま / `port` override 優先 / project 追加で既存 slot 不変）/ `Whitesnake::file_backed_for_project`（slug → 期待 dir）/ `restore_pending` の project guard（異 project to/from は restore されない / bare は restore / 自 project 宛・発は restore、in-memory backend で）/ `resolve_process_port` の cwd 判定（ccws worker dir → parent 解決 / 登録 project path → conductor）。
 - **統合**: assigned port を別プロセスが握ってる状況をテスト用 listener でシミュレート → `start_process` が auto-reassign + config 永続化 / SP restart → `discs/p_{slug}/` から msg restore + 旧 `discs/{port}/` は読まれない / `vp sp start -C <path>`（`-p` 無し）→ TheWorld 起動 + `/port_for` で port 取得。
-- **dogfood**: project を 1 つ config に追加 → 既存 project の port / msg が壊れない（= VP-165 発見シナリオの逆再生）/ reshuffle が起きない状態で worker → lead `msg_send` → `from` が `agent@<parent>/<worker>`（or `agent@<parent>`）/ 外部プログラムで `33000+slot` を塞いだ状態で SP 起動 → 次の空き slot に退避 + config 反映。
+- **dogfood**: project を 1 つ config に追加 → 既存 project の port / msg が壊れない（= VP-165 発見シナリオの逆再生）/ reshuffle が起きない状態で worker → conductor `msg_send` → `from` が `agent@<parent>/<worker>`（or `agent@<parent>`）/ 外部プログラムで `33000+slot` を塞いだ状態で SP 起動 → 次の空き slot に退避 + config 反映。
 
 ## 影響 / Migration
 

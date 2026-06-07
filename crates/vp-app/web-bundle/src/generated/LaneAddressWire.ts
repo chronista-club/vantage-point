@@ -5,7 +5,7 @@
  *
  * `LaneAddress` (domain enum-based) と区別する役割:
  * - **`LaneAddressWire`** = JSON 入口、 `kind` を String のまま保持 (vantage-point 側の
- *   "lead"/"wing"/将来の任意値 をそのまま deserialize 受け)
+ *   "conductor"/"performer"/将来の任意値 をそのまま deserialize 受け)
  * - **`LaneAddress`** = domain 型、 `LaneKind` enum で型安全な分岐
  *
  * 比較・Display には:
@@ -20,6 +20,6 @@
  */
 export type LaneAddressWire = { project: string, 
 /**
- * "lead" | "wing"
+ * "conductor" | "performer"
  */
 kind: string, name: string | null, };

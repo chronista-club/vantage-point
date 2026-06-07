@@ -93,7 +93,7 @@ Layer 1 source  → Layer 2 aggregator (DB)  → Layer 3 viewer (tail / TUI / Ca
 ### 3.1 info event (typical)
 
 ```kdl
-info id="01J6N9G7TX0V7Z6N7Q3M9D6FA1" ts="2026-05-01T07:42:11.234Z" source="daemon" target="vantage_point::registry" event="sp.register" lane="vantage-point/lead" pid=44211 "SP registered via QUIC"
+info id="01J6N9G7TX0V7Z6N7Q3M9D6FA1" ts="2026-05-01T07:42:11.234Z" source="daemon" target="vantage_point::registry" event="sp.register" lane="vantage-point/conductor" pid=44211 "SP registered via QUIC"
 ```
 
 property 順序は **mandatory → optional → source-specific** の意味的順 (§ 4 / § 5)、 ただし parser は順序を保持する義務を持たないので grep の便宜上の慣習に過ぎない。
@@ -129,7 +129,7 @@ emission 側で改行を `\n` literal にエスケープする責務を負う。
 ```kdl
 debug id="01J6N9GB10..." ts="2026-05-01T07:42:12.000Z" source="daemon" target="vantage_point::registry" event="span.enter" span="reconcile" "span enter"
 debug id="01J6N9GB11..." ts="2026-05-01T07:42:12.001Z" source="daemon" target="vantage_point::registry" event="span.enter" span="reconcile/scan_ports" port_range="33000-33010" "span enter"
-info  id="01J6N9GB12..." ts="2026-05-01T07:42:12.040Z" source="daemon" target="vantage_point::registry" event="port.scan.found" span="reconcile/scan_ports" port=33001 lane="creo/lead" "Discovered SP"
+info  id="01J6N9GB12..." ts="2026-05-01T07:42:12.040Z" source="daemon" target="vantage_point::registry" event="port.scan.found" span="reconcile/scan_ports" port=33001 lane="creo/conductor" "Discovered SP"
 debug id="01J6N9GB13..." ts="2026-05-01T07:42:12.080Z" source="daemon" target="vantage_point::registry" event="span.exit" span="reconcile/scan_ports" elapsed_ms=80 "span exit"
 debug id="01J6N9GB14..." ts="2026-05-01T07:42:12.090Z" source="daemon" target="vantage_point::registry" event="span.exit" span="reconcile" elapsed_ms=90 "span exit"
 ```
@@ -171,8 +171,8 @@ mandatory 以外で **慣習的に使う** field を予約する。 これらは
 | field | 型 | 例 | 用途 |
 |-------|----|---|------|
 | `event` | string (dotted) | `"sp.register"` / `"osc99.received"` / `"pty.spawn.fail"` | event 種別 tag、 viewer の event filter / DB index の対象 |
-| `lane` | string (Lane address) | `"vantage-point/lead"` / `"creo/w1"` | Lane-as-Process 規約 (VP-77) の address |
-| `pane_id` | string | `"%8"` / `"vantage-point/lead"` | tmux pane id または lane label (feedback `pane_id_readability` に従い label 推奨) |
+| `lane` | string (Lane address) | `"vantage-point/conductor"` / `"creo/w1"` | Lane-as-Process 規約 (VP-77) の address |
+| `pane_id` | string | `"%8"` / `"vantage-point/conductor"` | tmux pane id または lane label (feedback `pane_id_readability` に従い label 推奨) |
 | `pid` | i64 | `44211` | OS process id、 cross-process 相関用 |
 | `span` | string (`/` 区切り) | `"reconcile/scan_ports"` | span breadcrumb (§ 3.4) |
 | `elapsed_ms` | i64 | `80` | span exit / 計測 event 用 |
@@ -195,13 +195,13 @@ OSC 99 の field 値は kitty spec に従う:
 例 (cc が input 待ちで emit する典型 chunk、 OSC payload `i=211:d=1:a=focus;` 由来):
 
 ```kdl
-debug id="01J6N9GB12V0Y7K6N7Q3M9D6FA9" ts="2026-05-01T07:42:11.345Z" source="vp-app" target="vp_app::terminal::osc" event="osc99.received" lane="vantage-point/lead" i="211" d=1 a="focus" "OSC 99 final chunk"
+debug id="01J6N9GB12V0Y7K6N7Q3M9D6FA9" ts="2026-05-01T07:42:11.345Z" source="vp-app" target="vp_app::terminal::osc" event="osc99.received" lane="vantage-point/conductor" i="211" d=1 a="focus" "OSC 99 final chunk"
 ```
 
 multi-chunk のうち title chunk (`i=211:d=0:p=title;Claude Code`) は positional `msg` に value を載せる:
 
 ```kdl
-debug id="01J6N9GB10V0Y7K6N7Q3M9D6FA7" ts="2026-05-01T07:42:11.234Z" source="vp-app" target="vp_app::terminal::osc" event="osc99.received" lane="vantage-point/lead" i="211" d=0 p="title" "Claude Code"
+debug id="01J6N9GB10V0Y7K6N7Q3M9D6FA7" ts="2026-05-01T07:42:11.234Z" source="vp-app" target="vp_app::terminal::osc" event="osc99.received" lane="vantage-point/conductor" i="211" d=0 p="title" "Claude Code"
 ```
 
 > field 値の規約は PR #233 (`mako/osc-debug-keys`) の `parseOsc99` 実装と本 doc § 5.2 で **常に揃える**。 dogfood で cc が新 metadata key (`t=` semantic type tag 等) を emit してくることが判明したら、 spec_version を bump せず § 5.1 / 5.2 に additive で追加する (§ 5.3 拡張ルール参照)。
@@ -306,7 +306,7 @@ awk '/^error / && / ts="2026-05-01T07:/' ~/Library/Logs/Vantage/daemon.kdl.log
 grep -E '^[a-z]+ .*event="sp\.register"' ~/Library/Logs/Vantage/daemon.kdl.log
 
 # lane で絞る
-grep -E ' lane="vantage-point/lead"' ~/Library/Logs/Vantage/*.kdl.log
+grep -E ' lane="vantage-point/conductor"' ~/Library/Logs/Vantage/*.kdl.log
 ```
 
 > 既存運用 script は `.claude/` 内 / mise tasks に散在する想定。 stage 2 PR の checklist で「既知の script を新 format に書き直す」を含める。

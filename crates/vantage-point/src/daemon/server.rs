@@ -1231,7 +1231,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                     }
                                 }
                                 "lanes/add" => {
-                                    // Phase 2 (Step E): SP push の Diff::Add 反映 (Wing spawn 完了 等)。
+                                    // Phase 2 (Step E): SP push の Diff::Add 反映 (Performer spawn 完了 等)。
                                     // payload["payload"] が LaneInfo serde 結果。
                                     if let Some(ref lr) = lane_registry
                                         && let Some(ref path_key) = registered_name
@@ -1267,7 +1267,7 @@ pub async fn start_daemon_server(state: Arc<DaemonState>, port: u16) {
                                     }
                                 }
                                 "lanes/remove" => {
-                                    // Phase 2 (Step E): SP push の Diff::Remove 反映 (Wing delete 等)。
+                                    // Phase 2 (Step E): SP push の Diff::Remove 反映 (Performer delete 等)。
                                     // payload["id"] が LaneAddress serde 結果。
                                     if let Some(ref lr) = lane_registry
                                         && let Some(ref path_key) = registered_name

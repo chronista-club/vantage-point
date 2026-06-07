@@ -36,8 +36,8 @@
 | # | 亀裂 | 影響 |
 |---|------|-----|
 | **G1** | `vantage-core` crate が **未存在** (`crates/` 下に居ない、 `mem_1CaSiJkD9HATDY2srrv6D4` の Phase A.5 で「新規」 と明記)。 main 5 段は vp-app 内に閉じるので問題ないが、 `log_format.rs` (197 行) は **既に Phase B の昇格対象**。 R-1 で `log_format.rs` の隣に `log_init.rs` を作ると、 Phase B で両方を `vantage-core` に move する作業が出る。 sequencing 設計が要る。 |
-| **G2** | `vp-app::lane.rs` (143 行) の `LaneAddress` Display impl と `app.rs::lane_address_key` (関数) が **同じ文字列形式 (`<project>/lead`)** を独立に実装している。 lane.rs の Display impl は `LaneAddressWire` (= `client::LaneAddressWire`、 wire 型) ではなく **vp-app local 型 `LaneAddress`** に対する Display。 つまり vp-app には **同じ意味を持つ型が 2 つある** (`crate::lane::LaneAddress` と `crate::client::LaneAddressWire`)。 これは「客観 model = 1 つ」 の原則に反し、 refactor 中に `lane_address_key` を 2 度書き直す事故が起きる。 |
-| **G3** | `vantage-point` crate (76,000+ 行、 capability / process / mcp / agent / tui 含む) と `vp-app` crate (6,344 行、 GUI native shell) は **共有型を持っていない**。 `LaneAddressWire` は vp-app 側、 一方 vantage-point 側には `lanes_state::LaneAddress` が居る。 wire format が両 crate で独立進化すると incompatible になる risk が高まる (G3 は VP-77 Lane-as-Process 進行で増幅する: lane addressing が Lead Autonomy / Mortality 仕様と紐づく)。 |
+| **G2** | `vp-app::lane.rs` (143 行) の `LaneAddress` Display impl と `app.rs::lane_address_key` (関数) が **同じ文字列形式 (`<project>/conductor`)** を独立に実装している。 lane.rs の Display impl は `LaneAddressWire` (= `client::LaneAddressWire`、 wire 型) ではなく **vp-app local 型 `LaneAddress`** に対する Display。 つまり vp-app には **同じ意味を持つ型が 2 つある** (`crate::lane::LaneAddress` と `crate::client::LaneAddressWire`)。 これは「客観 model = 1 つ」 の原則に反し、 refactor 中に `lane_address_key` を 2 度書き直す事故が起きる。 |
+| **G3** | `vantage-point` crate (76,000+ 行、 capability / process / mcp / agent / tui 含む) と `vp-app` crate (6,344 行、 GUI native shell) は **共有型を持っていない**。 `LaneAddressWire` は vp-app 側、 一方 vantage-point 側には `lanes_state::LaneAddress` が居る。 wire format が両 crate で独立進化すると incompatible になる risk が高まる (G3 は VP-77 Lane-as-Process 進行で増幅する: lane addressing が Conductor Autonomy / Mortality 仕様と紐づく)。 |
 
 ### 0.3 本 proposal の position
 
@@ -120,7 +120,7 @@ vp-app (GUI client)                            vantage-point (server / daemon)
 | concept | vp-app 側 | vantage-point 側 | 不整合 risk |
 |---------|----------|------------------|-------------|
 | **LaneAddress** | `client::LaneAddressWire` (serde Deserialize、 fields: project, kind, name) + `lane::LaneAddress` (enum-based、 Display impl) | `process::lanes_state::LaneAddress` (serde + KDL?) | 3 つの型が同じ意味を持つ。 lane spec が VP-77 で進化すると 3 箇所に同じ change が要る |
-| **LaneKind** | `lane::LaneKind` enum (Lead/Worker、 Display) | `lanes_state::LaneKind`? | 推定 — 同種の重複が起きうる |
+| **LaneKind** | `lane::LaneKind` enum (Conductor/Worker、 Display) | `lanes_state::LaneKind`? | 推定 — 同種の重複が起きうる |
 | **ProcessKind / ProcessState** | `client::ProcessKind` / `client::ProcessState` (Wire) | `capability::process_manager_capability` 内? | wire と server-side の二重実装 |
 | **OSC notification payload** | `terminal::AppEvent::OscNotification { lane, code }` (sparse) | `process::routes::*` の OSC schema? | S2/S3 が main 着地後に重複が顕在化する |
 
@@ -334,7 +334,7 @@ pub struct LaneAddressWire { pub project: String, pub kind: String, pub name: Op
 // 移動先: lane.rs に統合
 impl From<&LaneAddressWire> for LaneAddress { ... }
 impl LaneAddress {
-    /// Display 形 (`<project>/lead` / `<project>/worker/<name>`)
+    /// Display 形 (`<project>/conductor` / `<project>/worker/<name>`)
     /// app.rs::lane_address_key を吸収。
     pub fn key(&self) -> String { format!("{}", self) }
 }

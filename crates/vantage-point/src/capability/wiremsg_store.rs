@@ -448,7 +448,7 @@ impl WiremsgStore {
     /// 指定 agent が関与する **最新** wire message を返す (read-only、 cursor 不触り)
     ///
     /// 「関与」 = `from_addr == agent` OR `to_addrs CONTAINS agent`。 `flow_progress` の
-    /// 5-state FSM derive (= wing の現状態 = 最新 wmsg の `from` / `body.kind` から推論) で使う。
+    /// 5-state FSM derive (= performer の現状態 = 最新 wmsg の `from` / `body.kind` から推論) で使う。
     /// 1 件も無ければ `None`。 local_seq DESC LIMIT 1 で取得する。
     pub async fn latest_msg_for_agent(&self, agent: &str) -> Result<Option<WireMessage>> {
         let mut res = self
