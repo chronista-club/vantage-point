@@ -272,10 +272,23 @@ fn start_reader_task(
 mod tests {
     use super::*;
 
+    /// テスト用のデフォルトシェルを返す。
+    /// $SHELL があればそれを、無ければ OS 既定（Unix: /bin/sh、Windows: cmd.exe）を使う。
+    /// Windows には /bin/sh が無いので OS 分岐が必須。
+    fn default_test_shell() -> String {
+        std::env::var("SHELL").unwrap_or_else(|_| {
+            if cfg!(windows) {
+                "cmd.exe".to_string()
+            } else {
+                "/bin/sh".to_string()
+            }
+        })
+    }
+
     #[tokio::test]
     async fn test_pty_spawn_and_output() {
         // echo コマンドでテスト用の出力を確認
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+        let shell = default_test_shell();
         let cwd = std::env::temp_dir().to_string_lossy().to_string();
 
         let (slot, mut rx) =
@@ -297,21 +310,23 @@ mod tests {
 
     #[tokio::test]
     async fn test_pty_write_input() {
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+        let shell = default_test_shell();
         let cwd = std::env::temp_dir().to_string_lossy().to_string();
 
         let (mut slot, mut rx) =
             PtySlot::spawn(&cwd, &shell, &[], &[], 80, 24).expect("PTY spawn に失敗");
 
-        // 少し待ってからコマンドを送信
+        // 少し待ってからコマンドを送信 (シェル初期化を待つ)
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-        // 初期 receiver の既存メッセージをフラッシュ
-        while rx.try_recv().is_ok() {}
-
-        // echo コマンドを送信
-        slot.write(b"echo HELLO_PTY_SLOT\n")
-            .expect("PTY への書き込みに失敗");
+        // echo コマンドを送信。改行コードは OS 依存
+        // (Unix シェルは LF、cmd.exe(ConPTY) は Enter=CR で行確定)。
+        let echo_cmd: &[u8] = if cfg!(windows) {
+            b"echo HELLO_PTY_SLOT\r"
+        } else {
+            b"echo HELLO_PTY_SLOT\n"
+        };
+        slot.write(echo_cmd).expect("PTY への書き込みに失敗");
 
         // 出力に "HELLO_PTY_SLOT" が含まれることを確認
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -321,6 +336,12 @@ mod tests {
             match tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv()).await {
                 Ok(Ok(data)) => {
                     let text = String::from_utf8_lossy(&data);
+                    // ConPTY は DSR (\x1b[6n = カーソル位置問い合わせ) への応答を
+                    // 端末側から受け取るまで描画を進めない。本番では実端末 (xterm.js)
+                    // が応答するが、テストでは我々が端末役として応答する必要がある。
+                    if text.contains("\u{1b}[6n") {
+                        let _ = slot.write(b"\x1b[1;1R");
+                    }
                     if text.contains("HELLO_PTY_SLOT") {
                         found = true;
                         break;
@@ -337,7 +358,7 @@ mod tests {
     #[tokio::test]
     async fn test_pty_drop_kills_child() {
         // Drop 実装が子プロセスを確実に終了させることを検証
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+        let shell = default_test_shell();
         let cwd = std::env::temp_dir().to_string_lossy().to_string();
 
         let (slot, _rx) = PtySlot::spawn(&cwd, &shell, &[], &[], 80, 24).expect("PTY spawn に失敗");
