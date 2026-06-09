@@ -16,6 +16,14 @@ tmux start-server 2>/dev/null || true
 tmux set-option -g focus-events on 2>/dev/null || true
 tmux set-option -g escape-time 0 2>/dev/null || true
 tmux set-option -ga terminal-overrides ',xterm-256color:Tc' 2>/dev/null || true
+# cc 通知 (OSC 99 / kitty desktop notification) を outer (vp-app xterm.js) へ透過する。
+# tmux は既定で OSC 99 を握り潰すため、 これが無いと Lane sidebar の awaiting_input dot が
+# 出ない。 VP が自前 set することで user の ~/.tmux.conf に依存せず箱から通知が出る
+# (公式: https://code.claude.com/docs/en/terminal-config#configure-tmux)。
+tmux set-option -g allow-passthrough on 2>/dev/null || true
+# tmux 下で Shift+Enter を newline 識別 (cc multiline)。
+tmux set-option -s extended-keys on 2>/dev/null || true
+tmux set-option -as terminal-features 'xterm*:extkeys' 2>/dev/null || true
 
 # tmux session 起動 / attach (`-A`)。 cwd は明示 (PR #244 の継承罠回避)。
 # -e VP_*: per-session 環境を明示注入し、 共有 tmux server の global 環境 (= 最初に
