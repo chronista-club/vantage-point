@@ -2724,6 +2724,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "file-rotate"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6e8e2fa049328a1f3295991407a88585805d126dfaadf74b9fe8c194c730aafc"
+dependencies = [
+ "chrono",
+ "flate2",
+]
+
+[[package]]
 name = "filedescriptor"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8580,12 +8590,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "symlink"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a7973cce6668464ea31f176d85b13c7ab3bba2cb3b77a2ed26abd7801688010a"
-
-[[package]]
 name = "syn"
 version = "1.0.109"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9317,19 +9321,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tracing-appender"
-version = "0.2.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "050686193eb999b4bb3bc2acfa891a13da00f79734704c4b8b4ef1a10b368a3c"
-dependencies = [
- "crossbeam-channel",
- "symlink",
- "thiserror 2.0.18",
- "time",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "tracing-attributes"
 version = "0.1.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9700,6 +9691,7 @@ dependencies = [
  "club-unison",
  "crossterm",
  "dirs",
+ "file-rotate",
  "flume",
  "futures",
  "glob",
@@ -9740,7 +9732,6 @@ dependencies = [
  "tower",
  "tower-http",
  "tracing",
- "tracing-appender",
  "tracing-subscriber",
  "tray-icon",
  "tui-markdown",
@@ -9790,6 +9781,7 @@ dependencies = [
  "club-kdl-codegen",
  "club-unison",
  "dirs",
+ "file-rotate",
  "futures-util",
  "ignore",
  "libc",
@@ -9811,7 +9803,6 @@ dependencies = [
  "tokio-tungstenite 0.29.0",
  "toml 1.1.2+spec-1.1.0",
  "tracing",
- "tracing-appender",
  "tracing-subscriber",
  "tray-icon",
  "ts-rs",

@@ -2,12 +2,12 @@
 # frozen_string_literal: true
 #MISE description="TheWorld daemon を background spawn (nohup detach、 task は即 exit、 log は logs task で tail)"
 #
-# 2026-05-30 daemon→world 改名。 TheWorld(vp) daemon を background spawn する world group の一員。
+# TheWorld(vp) daemon を background spawn する daemon group の一員 (2026-06-09 world→daemon rename)。
 # bash の `nohup "$VP" daemon start </dev/null >>log 2>&1 & disown` (controlling tty / parent process
 # group から切離して spawn) を Process.spawn(pgroup: true, redirect to log) + Process.detach で表現。
 # task は spawn 後すぐ exit (旧: foreground blocking で log tail まで持っていたのを 2026-05-07 に detach 化)。
 #
-# 既存 daemon が居る場合は事前に `mise run world:stop`、 または `vp daemon stop && mise run world:start`。
+# 既存 daemon が居る場合は事前に `mise run daemon:stop`、 または `vp daemon stop && mise run daemon:start`。
 # restart は CLI に持たない方針 (user 指示「restart いらない、 build -> start -> stop が cli で回ってから」)。
 require "fileutils"
 require File.join(ENV.fetch("MISE_PROJECT_ROOT"), "scripts/mise/vp.rb")
@@ -18,7 +18,7 @@ stdout_log = File.join(VP.log_dir, "daemon.stdout.log") # stdout/stderr (panic �
 FileUtils.touch([daemon_log, stdout_log])
 
 vp = VP.cargo_bin("vp")
-VP.need_exec(vp, hint: "先に `mise run world:build`")
+VP.need_exec(vp, hint: "先に `mise run daemon:build`")
 
 # structured log の出力先を子に継承させる (= bash の export VP_DAEMON_LOG_FILE)。
 ENV["VP_DAEMON_LOG_FILE"] = daemon_log

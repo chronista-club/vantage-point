@@ -2,7 +2,7 @@
 # frozen_string_literal: true
 #MISE description="Compile check (cargo check、 install せず型/借用エラーのみ高速確認)"
 #
-# dev loop の最軽量チェック。 install 系 (app:build / world:build) と違い binary を作らず
+# dev loop の最軽量チェック。 install 系 (app:build / daemon:build) と違い binary を作らず
 # compile 可否だけ見る。 旧 build task (cargo build) を Occam で check に改名 (2026-05-30)。
 require File.join(ENV.fetch("MISE_PROJECT_ROOT"), "scripts/mise/vp.rb")
 

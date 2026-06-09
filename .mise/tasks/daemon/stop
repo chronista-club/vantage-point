@@ -8,7 +8,7 @@ require File.join(ENV.fetch("MISE_PROJECT_ROOT"), "scripts/mise/vp.rb")
 
 vp = VP.cargo_bin("vp")
 
-# pgrep -f 'vp sp start' の PID 群 (= SP プロセス、 world:reset:sp と同ロジック)。
+# pgrep -f 'vp sp start' の PID 群 (= SP プロセス、 daemon:reset:sp と同ロジック)。
 def sp_pids = `pgrep -f 'vp sp start'`.split.map(&:to_i)
 # 個別 signal (既に消えた PID の ESRCH は握り潰す = bash の `|| true`)。
 def signal_all(sig, pids) = pids.each { Process.kill(sig, it) rescue nil }
@@ -65,7 +65,7 @@ if File.executable?(vp)
   end
 else
   warn "   #{VP.icon(:warn)} vp binary 不在 (#{vp}) — daemon stop スキップ"
-  warn "      build 済なら `mise run world:build` 後に再実行してください"
+  warn "      build 済なら `mise run daemon:build` 後に再実行してください"
 end
 
 VP.log "#{VP.icon(:ok)} daemon + 関連プロセス停止完了。 再起動: mise run app"

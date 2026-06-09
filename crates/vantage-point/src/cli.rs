@@ -392,15 +392,17 @@ pub fn init_tracing(debug_mode: DebugMode, tui_mode: bool) {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let dir = path
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| std::path::PathBuf::from("."));
-        let file_name = path
-            .file_name()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "daemon.kdl.log".to_string());
-        let appender = tracing_appender::rolling::never(&dir, &file_name);
+        // ログローテーション (file-rotate): 容量 10MB 超で切替、 過去 5 世代保持で daemon log の膨張を防ぐ。
+        // 現行ファイルは `VP_DAEMON_LOG_FILE` が指す bare 名のまま (日付名にしない) なので、
+        // tail -F / 既存 reader を壊さない。 rotate 世代は `daemon.kdl.log.1`.. へ逃がす。
+        // Mutex で包むと tracing-subscriber が MakeWriter として扱える (WorkerGuard 不要)。
+        let appender = std::sync::Mutex::new(file_rotate::FileRotate::new(
+            &path,
+            file_rotate::suffix::AppendCount::new(5),
+            file_rotate::ContentLimit::Bytes(10 * 1024 * 1024),
+            file_rotate::compression::Compression::None,
+            None,
+        ));
         tracing_subscriber::fmt()
             .with_env_filter(env_filter)
             .with_target(false)
