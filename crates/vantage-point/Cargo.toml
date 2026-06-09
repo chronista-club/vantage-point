@@ -91,9 +91,10 @@ webbrowser = "1"
 toml = "1.1"
 dirs = "6"
 
-# Log file writer (Win GUI subsystem では stderr が NUL 化されるので、
-# `VP_DAEMON_LOG_FILE` env が指定された時に file に直接書く)
-tracing-appender = "0.2"
+# Log file writer + ローテーション (Win GUI subsystem では stderr が NUL 化されるので、
+# `VP_DAEMON_LOG_FILE` env が指定された時に file に直接書く)。
+# file-rotate: 容量/件数ベースのローテーション、 現行ファイルは bare 名 (daemon.kdl.log) 維持。
+file-rotate = "0.8"
 
 # MIDI input (feature = "midi" 有効時のみ、ALSA 依存回避のため optional)
 midir = { version = "0.11", optional = true }

@@ -3,7 +3,7 @@
 //! ## 役割
 //! `pub fn run()` の起動冒頭で 1 回だけ呼ばれる、 vp-app の全 tracing log の入口。
 //! - log file path 解決 (OS 別)
-//! - `tracing_appender::rolling::never` で `app.kdl.log` に append
+//! - `file-rotate` の容量/件数ローテーション writer で `app.kdl.log` に書込（bare 名維持、世代は `.1`.. へ）
 //! - `EnvFilter` の noise 抑制 + vp_app target silent 化対策 (PR #235)
 //! - `KdlFormatter` を inject して KDL 1-line 出力
 //! - 起動 info ログ
@@ -31,6 +31,11 @@
 
 use std::path::PathBuf;
 
+/// ログローテーションの 1 ファイル容量上限（これを超えると次の世代へ切替）。
+pub const LOG_MAX_BYTES: usize = 10 * 1024 * 1024; // 10 MB
+/// 保持する rotate 世代数（`app.kdl.log.1`..`.N`）。 現行ファイルを含めると最大 N+1 ファイル。
+pub const LOG_KEEP_FILES: usize = 5;
+
 /// `init_tracing` の戻り値。 caller が log_dir を後続処理で参照する場合の export。
 ///
 /// 将来 (Phase B 以降) field 増加時に signature breaking change を避けるため struct で wrap。
@@ -53,7 +58,20 @@ pub fn init_tracing() -> LogInitResult {
     // 全 process の log を `vp_log_dir()` 一極集中。
     let log_dir = vp_paths::vp_log_dir();
     let _ = std::fs::create_dir_all(&log_dir);
-    let file_appender = tracing_appender::rolling::never(&log_dir, "app.kdl.log");
+    // ログローテーション (file-rotate): 容量ベースで切替、 件数ベースで GC する。
+    // 旧実装は単一 `app.kdl.log` に無限追記していたため、 dogfooding で数百 MB まで
+    // 膨張していた (VP log rotation task)。
+    // 容量 LOG_MAX_BYTES 超で切替、 過去 LOG_KEEP_FILES 世代だけ保持して古いものは自動削除。
+    // 現行ファイルは bare 名 `app.kdl.log` のまま (日付名にしない) なので
+    // `mise run logs` / `tail -F` / 既存 reader を一切壊さない。 rotate 世代は `app.kdl.log.1`.. へ逃がす。
+    // Mutex で包むと tracing-subscriber が MakeWriter として扱える (WorkerGuard 不要)。
+    let file_appender = std::sync::Mutex::new(file_rotate::FileRotate::new(
+        log_dir.join("app.kdl.log"),
+        file_rotate::suffix::AppendCount::new(LOG_KEEP_FILES),
+        file_rotate::ContentLimit::Bytes(LOG_MAX_BYTES),
+        file_rotate::compression::Compression::None,
+        None,
+    ));
 
     // Phase 5-C: log filter の noise 抑制 (2026-04-28 観測: 23MB log の 70% が hyper_util::pool、
     //   25% が vp_app::terminal の PTY I/O event だった)。 vp_app の他モジュールは info で残し、

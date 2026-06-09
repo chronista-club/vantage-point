@@ -85,8 +85,10 @@ dirs = "6"
 # 構造化ログ用 timestamp (KDL 1-line formatter)
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
-# Log file writer (Win GUI subsystem では stderr が NUL 化することがあるので file に直接書く)
-tracing-appender = "0.2"
+# Log file writer + ローテーション (Win GUI subsystem では stderr が NUL 化することがあるので file に直接書く)。
+# file-rotate: 容量/件数ベースのローテーション。 現行ファイルは bare 名 (app.kdl.log) を維持し、
+# rotate された世代を app.kdl.log.1.. に逃がす (日付名にしない = tail -F / 既存 reader を壊さない)。
+file-rotate = "0.8"
 
 # Native folder picker (project 追加用、cross-platform)
 rfd = "0.17"
