@@ -11,6 +11,6 @@ require File.join(ENV.fetch("MISE_PROJECT_ROOT"), "scripts/mise/vp.rb")
 vp_app = VP.cargo_bin("vp-app")
 vp     = VP.cargo_bin("vp")
 VP.need_exec(vp_app, hint: "先に `mise run app:build`")
-VP.need_exec(vp,     hint: "先に `mise run world:build`")
+VP.need_exec(vp,     hint: "先に `mise run daemon:build`")
 
 VP.exec(vp, "app", "start", env: { "VP_APP_BIN" => vp_app })

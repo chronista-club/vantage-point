@@ -36,4 +36,4 @@ unless remaining.empty?
 end
 
 VP.log "#{VP.icon(:ok)} SP all-kill 完了"
-VP.log "TheWorld 稼働中なら expand 等で auto-spawn → 次回 register。 完全 fresh は: mise run world:stop && mise run app"
+VP.log "TheWorld 稼働中なら expand 等で auto-spawn → 次回 register。 完全 fresh は: mise run daemon:stop && mise run app"
