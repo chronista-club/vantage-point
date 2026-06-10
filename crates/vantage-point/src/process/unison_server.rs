@@ -913,6 +913,35 @@ fn coerce_wire_body(raw: Option<serde_json::Value>) -> Result<serde_json::Value,
     Ok(body)
 }
 
+/// agent address を canonical (qualified) 形に正規化する (wiremsg N1、 refactor R1 PR-B)
+///
+/// conductor の自己申告 from/agent は bare `"agent"` で届く (mcp.rs `SelfLane::from_address`)。
+/// store 上の識別子を qualified (`agent@<project>`) 一本に統一することで、 cross-process
+/// 返信 (`agent@<project>` 宛で forward される) が conductor の bare query と完全一致
+/// マッチせず**永遠に届かない**バグ (B2、 レビュー mem_1CbuxQuNRwHBiZgBVUWVfN) を根治する。
+/// bare 以外 (qualified / canvas@... / gold_experience@... 等) はそのまま返す。
+fn normalize_agent_addr(addr: &str, self_project: &str) -> String {
+    if addr == "agent" {
+        format!("agent@{}", self_project)
+    } else {
+        addr.to_string()
+    }
+}
+
+/// 正規化以前 (= bare 時代) に書かれた message を読めるようにする互換 alias (1 release 限定)
+///
+/// canonical が自 project の conductor (`agent@<self_project>`) の時のみ bare `"agent"` を
+/// 返す。 旧 data の to_addrs / 旧 thread への reply の carry-forward は bare のまま残る
+/// ため、 recv / unread_count はこの alias too で drain する。
+/// 撤去予定: 次 release (deprecation 慣行 1 release、 refactor 計画 mem_1Cbuywy9s6VyCosWu3TQjz)。
+fn legacy_bare_alias(canonical: &str, self_project: &str) -> Option<String> {
+    if canonical == format!("agent@{}", self_project) {
+        Some("agent".to_string())
+    } else {
+        None
+    }
+}
+
 /// wiremsg を送信する (= 新規 thread の root、 または `reply_to` 指定で reply)
 ///
 /// payload: `{ from, to: [..], body, reply_to? }`
@@ -935,17 +964,19 @@ pub(crate) async fn handle_wire_send(
         .as_ref()
         .ok_or_else(|| "wiremsg_store not initialized".to_string())?;
 
+    // N1 正規化: from / to を canonical (qualified) 形に統一して store に入れる
     let from = payload
         .get("from")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| "wire_send: 'from' required".to_string())?
-        .to_string();
+        .map(|s| normalize_agent_addr(s, &state.project_name))
+        .ok_or_else(|| "wire_send: 'from' required".to_string())?;
     let to: Vec<String> = payload
         .get("to")
         .and_then(|v| v.as_array())
         .map(|arr| {
             arr.iter()
-                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .filter_map(|v| v.as_str())
+                .map(|s| normalize_agent_addr(s, &state.project_name))
                 .collect()
         })
         .unwrap_or_default();
@@ -1049,11 +1080,15 @@ pub(crate) async fn handle_wire_recv(
         .as_ref()
         .ok_or_else(|| "wiremsg_store not initialized".to_string())?;
 
+    // N1 正規化: bare "agent" (conductor 自己申告) を canonical に。 互換 alias は
+    // 正規化以前の bare 宛 message (旧 data / 旧 thread への reply carry-forward) を
+    // 1 release だけ drain するため (legacy_bare_alias の doc 参照)。
     let agent = payload
         .get("agent")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| "wire_recv: 'agent' required".to_string())?
-        .to_string();
+        .map(|s| normalize_agent_addr(s, &state.project_name))
+        .ok_or_else(|| "wire_recv: 'agent' required".to_string())?;
+    let legacy = legacy_bare_alias(&agent, &state.project_name);
     // timeout は msg_recv と同じ default 5s / max 30s
     let timeout_secs = payload
         .get("timeout")
@@ -1068,13 +1103,26 @@ pub(crate) async fn handle_wire_recv(
         let notify = state.wire_notifier.handle(&agent).await;
         let notified = notify.notified();
         tokio::pin!(notified);
+        // 互換: legacy alias 宛の notify too (旧 thread への reply は bare 宛で notify される)
+        let legacy_notify = match &legacy {
+            Some(l) => Some(state.wire_notifier.handle(l).await),
+            None => None,
+        };
 
         // 未読 message を取得 + read_cursor 前進 (store.recv が両方まとめて実施)。
         // cursor は取得済 message の local_seq 最大値に合わせる (R1: 厳密単調で取りこぼし無し)。
-        let unread = store
+        let mut unread = store
             .recv(&agent)
             .await
             .map_err(|e| format!("wire_recv failed: {e}"))?;
+        if let Some(l) = &legacy {
+            let mut legacy_unread = store
+                .recv(l)
+                .await
+                .map_err(|e| format!("wire_recv (legacy alias) failed: {e}"))?;
+            unread.append(&mut legacy_unread);
+            unread.sort_by_key(|m| m.local_seq);
+        }
 
         if !unread.is_empty() {
             let value = serde_json::to_value(&unread)
@@ -1094,8 +1142,24 @@ pub(crate) async fn handle_wire_recv(
                 "reason": "timeout",
             }));
         }
-        // notify が来たら再 poll、 timeout したら次ループで deadline 判定 → timeout 返却
-        let _ = tokio::time::timeout(remaining, notified).await;
+        // notify が来たら再 poll、 timeout したら次ループで deadline 判定 → timeout 返却。
+        // legacy alias がある場合は両方の notify を待つ (どちらが来ても再 poll)。
+        match legacy_notify {
+            Some(n2) => {
+                let f2 = n2.notified();
+                tokio::pin!(f2);
+                let _ = tokio::time::timeout(remaining, async {
+                    tokio::select! {
+                        _ = &mut notified => {},
+                        _ = &mut f2 => {},
+                    }
+                })
+                .await;
+            }
+            None => {
+                let _ = tokio::time::timeout(remaining, notified).await;
+            }
+        }
     }
 }
 
@@ -1156,16 +1220,28 @@ pub(crate) async fn handle_wire_latest_msg(
         .as_ref()
         .ok_or_else(|| "wiremsg_store not initialized".to_string())?;
 
+    // N1 正規化 + 互換 alias (handle_wire_recv と同じ理由、 legacy_bare_alias の doc 参照)
     let agent = payload
         .get("agent")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| "wire_latest_msg: 'agent' required".to_string())?
-        .to_string();
+        .map(|s| normalize_agent_addr(s, &state.project_name))
+        .ok_or_else(|| "wire_latest_msg: 'agent' required".to_string())?;
 
-    let latest = store
+    let mut latest = store
         .latest_msg_for_agent(&agent)
         .await
         .map_err(|e| format!("wire_latest_msg failed: {e}"))?;
+    if let Some(l) = legacy_bare_alias(&agent, &state.project_name) {
+        let legacy_latest = store
+            .latest_msg_for_agent(&l)
+            .await
+            .map_err(|e| format!("wire_latest_msg (legacy alias) failed: {e}"))?;
+        // local_seq が大きい方 (= 新しい方) を採用
+        latest = match (latest, legacy_latest) {
+            (Some(a), Some(b)) => Some(if a.local_seq >= b.local_seq { a } else { b }),
+            (a, b) => a.or(b),
+        };
+    }
     Ok(serde_json::json!({
         "status": "ok",
         "message": latest,
@@ -1189,16 +1265,26 @@ pub(crate) async fn handle_wire_unread_count(
         .as_ref()
         .ok_or_else(|| "wiremsg_store not initialized".to_string())?;
 
+    // N1 正規化 + 互換 alias (handle_wire_recv と同じ理由、 legacy_bare_alias の doc 参照)
     let agent = payload
         .get("agent")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| "wire_unread_count: 'agent' required".to_string())?
-        .to_string();
+        .map(|s| normalize_agent_addr(s, &state.project_name))
+        .ok_or_else(|| "wire_unread_count: 'agent' required".to_string())?;
 
-    let by_thread = store
+    let mut by_thread = store
         .unread_count_by_thread(&agent)
         .await
         .map_err(|e| format!("wire_unread_count failed: {e}"))?;
+    if let Some(l) = legacy_bare_alias(&agent, &state.project_name) {
+        let legacy_counts = store
+            .unread_count_by_thread(&l)
+            .await
+            .map_err(|e| format!("wire_unread_count (legacy alias) failed: {e}"))?;
+        for (thread, count) in legacy_counts {
+            *by_thread.entry(thread).or_insert(0) += count;
+        }
+    }
     let total: u64 = by_thread.values().sum();
     Ok(serde_json::json!({
         "status": "ok",
@@ -1209,8 +1295,33 @@ pub(crate) async fn handle_wire_unread_count(
 
 #[cfg(test)]
 mod tests {
-    use super::coerce_wire_body;
+    use super::{coerce_wire_body, legacy_bare_alias, normalize_agent_addr};
     use serde_json::json;
+
+    #[test]
+    fn normalize_bare_agent_to_qualified() {
+        assert_eq!(normalize_agent_addr("agent", "vp"), "agent@vp");
+    }
+
+    #[test]
+    fn normalize_keeps_qualified_and_other_addrs() {
+        assert_eq!(normalize_agent_addr("agent@vp", "vp"), "agent@vp");
+        assert_eq!(normalize_agent_addr("agent@other", "vp"), "agent@other");
+        assert_eq!(normalize_agent_addr("agent@vp/sub", "vp"), "agent@vp/sub");
+        assert_eq!(normalize_agent_addr("canvas@vp", "vp"), "canvas@vp");
+    }
+
+    #[test]
+    fn legacy_alias_only_for_self_conductor() {
+        // 自 project の conductor のみ bare alias を持つ (1 release 互換)
+        assert_eq!(
+            legacy_bare_alias("agent@vp", "vp"),
+            Some("agent".to_string())
+        );
+        assert_eq!(legacy_bare_alias("agent@other", "vp"), None);
+        assert_eq!(legacy_bare_alias("agent@vp/sub", "vp"), None);
+        assert_eq!(legacy_bare_alias("canvas@vp", "vp"), None);
+    }
 
     #[test]
     fn coerce_body_passes_object_through() {
