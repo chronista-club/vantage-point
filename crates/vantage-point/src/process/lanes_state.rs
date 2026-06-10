@@ -71,9 +71,11 @@ impl fmt::Display for LaneKind {
 /// tmux session の起動 mode (Phase 1a: Lane → tmux registry の foundation)
 ///
 /// `LaneInfo.tmux` の `mode` field で「実際に tmux で起動できたか」を区別する。
-/// init_script は `tmux new-session -A -s ${SLUG} 'claude -c || claude' || (claude -c || claude)`
-/// の形 (Option 1 inline cmd、idempotent)。tmux 不在環境などで外側 fallback に降格した
-/// 場合は `PtySlotFallback` を立てる。
+/// init_script は `tmux new-session -A -s ${SLUG} '$CLAUDE_CMD; exec $SHELL -l' || (cd $CWD && eval "$CLAUDE_CMD")`
+/// の形 (Option 1 inline cmd、idempotent。`.mise/tasks/vp/stand/echoes` 参照)。
+/// `$CLAUDE_CMD` は conductor = `claude --continue || claude` / performer = fresh `claude`
+/// (CC 2.1 Agent View dashboard からの insulate、Phase B)。tmux 不在環境などで外側
+/// fallback に降格した場合は `PtySlotFallback` を立てる。
 ///
 /// 関連 memory: vp_mailbox_monitor_agent_inbox + vp_lane_init_script (Phase 1)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
