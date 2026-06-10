@@ -263,8 +263,8 @@ impl FilteredSubscription {
 
 /// イベントディスパッチャ
 ///
-/// EventBusとCapabilityRegistryを連携させ、
-/// イベントを適切な能力に配信する
+/// EventBus のイベントを
+/// 適切な能力に配信する
 pub struct EventDispatcher {
     bus: Arc<EventBus>,
     /// 実行中フラグ

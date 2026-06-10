@@ -105,8 +105,8 @@ fn sp_start(
     //   (b) 他 project の SP もしくは non-SP なら → port 衝突、 alternative port を探して retry
     //   (c) 未占有 → そのまま spawn
     // 旧 bug: (b) を (a) と区別せず skip → 永遠に起動しない (bikeboy 2026-04-29 観測)。
-    if crate::commands::start::is_server_responding(port) {
-        if crate::commands::start::is_sp_for_project_responding(port, project_dir) {
+    if is_server_responding(port) {
+        if is_sp_for_project_responding(port, project_dir) {
             println!("✅ SP サーバーは既に起動済み (port={})", port);
             return Ok(());
         }
@@ -265,7 +265,7 @@ fn sp_restart(project_dir: &str, config: &Config) -> Result<()> {
     // ポート開放をポーリング（最大5秒）
     if let Some(port) = saved_port {
         for _ in 0..50 {
-            if !crate::commands::start::is_server_responding(port) {
+            if !is_server_responding(port) {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(100));
@@ -305,4 +305,127 @@ fn kill_process_on_port(port: u16) -> Result<()> {
     }
 
     Ok(())
+}
+
+// =============================================================================
+// SP 起動・疎通 probe helper (refactor R1-2 で旧 commands/start.rs から移設)
+// =============================================================================
+
+/// SP を detached subprocess として spawn
+///
+/// `vp sp start -C <dir> [-p <port>]` を独立プロセスとして起動。
+/// 呼び出し元が終了しても SP は生存する。
+pub fn spawn_sp_detached(project_dir: &str, port: Option<u16>) -> Result<()> {
+    let vp_bin = crate::cli::which_vp()
+        .or_else(|| std::env::current_exe().ok())
+        .unwrap_or_else(|| "vp".into());
+
+    let mut args = vec!["sp".to_string(), "start".to_string()];
+    args.push("-C".to_string());
+    args.push(project_dir.to_string());
+    if let Some(p) = port {
+        args.push("-p".to_string());
+        args.push(p.to_string());
+    }
+
+    std::process::Command::new(&vp_bin)
+        .args(&args)
+        // GUI/launchd 起動の最小 PATH が SP → mise → claude へ伝播するのを spawn 最上流で断つ。
+        .env("PATH", crate::spawn_env::augmented_spawn_path())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("SP spawn 失敗: {}", e))?;
+
+    Ok(())
+}
+
+/// SP の HTTP サーバーが応答するまでポーリング（最大5秒）
+pub fn wait_for_ready(port: u16) -> Result<()> {
+    let max_attempts = 50; // 100ms × 50 = 5秒
+
+    for i in 0..max_attempts {
+        match std::net::TcpStream::connect_timeout(
+            &format!("[::1]:{}", port).parse().unwrap(),
+            std::time::Duration::from_millis(100),
+        ) {
+            Ok(_) => {
+                tracing::info!("SP ready (attempt {})", i + 1);
+                return Ok(());
+            }
+            Err(_) => {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        }
+    }
+
+    tracing::warn!("SP readiness check timed out, proceeding anyway");
+    Ok(())
+}
+
+/// SP サーバーが応答するかチェック（TCP 接続テスト）
+pub fn is_server_responding(port: u16) -> bool {
+    std::net::TcpStream::connect_timeout(
+        &format!("[::1]:{}", port).parse().unwrap(),
+        std::time::Duration::from_millis(200),
+    )
+    .is_ok()
+}
+
+/// 指定 port に listening してる SP が **特定の project_dir 用** かを verify。
+///
+/// `is_server_responding` は port 占有のみ check、 「誰の SP か」 を区別しない。
+/// 結果として、 unrelated project の SP が同 port を掴んでる時に false positive で
+/// 「既に起動済み」 判定 → spawn skip → 永遠に起動しない bug が発生していた
+/// (bikeboy が config 未登録で auto-port が他 project と衝突したケースで観察、 2026-04-29)。
+///
+/// 本関数は:
+/// 1. TCP 疎通 (= `is_server_responding`) で fast skip
+/// 2. `/api/health` の `project_dir` field を fetch
+/// 3. `Config::normalize_path` で 両 path を canonicalize して比較
+///
+/// → port の SP が **正しく自 project 用** なら true、 そうでなければ false。
+///
+/// 別 thread で current_thread runtime を立てる構造: 呼び出し元が既に tokio runtime を
+/// 持ってる場合 (panic: Cannot start a runtime from within a runtime) を避ける為。
+pub fn is_sp_for_project_responding(port: u16, project_dir: &str) -> bool {
+    if !is_server_responding(port) {
+        return false;
+    }
+    let target = crate::config::Config::normalize_path(std::path::Path::new(project_dir));
+    let url = format!("http://127.0.0.1:{}/api/health", port);
+    let result = std::thread::spawn(move || {
+        let rt = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(rt) => rt,
+            Err(_) => return false,
+        };
+        rt.block_on(async {
+            let client = match reqwest::Client::builder()
+                .timeout(std::time::Duration::from_millis(500))
+                .build()
+            {
+                Ok(c) => c,
+                Err(_) => return false,
+            };
+            let resp = match client.get(&url).send().await {
+                Ok(r) => r,
+                Err(_) => return false,
+            };
+            let json: serde_json::Value = match resp.json().await {
+                Ok(j) => j,
+                Err(_) => return false,
+            };
+            let Some(actual_dir) = json.get("project_dir").and_then(|v| v.as_str()) else {
+                return false;
+            };
+            let actual = crate::config::Config::normalize_path(std::path::Path::new(actual_dir));
+            actual == target
+        })
+    })
+    .join();
+    result.unwrap_or(false)
 }

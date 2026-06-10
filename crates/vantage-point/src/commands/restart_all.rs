@@ -76,7 +76,7 @@ pub fn execute() -> Result<()> {
     for proc in &processes {
         let name = project_name(&proc.project_dir);
         print!("  ▶ {}... ", name);
-        if let Err(e) = crate::commands::start::spawn_sp_detached(&proc.project_dir, None) {
+        if let Err(e) = crate::commands::sp::spawn_sp_detached(&proc.project_dir, None) {
             eprintln!("⚠️  SP 起動失敗 ({}): {}", name, e);
         } else {
             println!("ok");

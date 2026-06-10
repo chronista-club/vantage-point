@@ -62,7 +62,7 @@ pub fn execute(
 
     // 3. SP を再起動（detached subprocess として spawn）
     println!("\u{1f680} Starting SP...");
-    if let Err(e) = crate::commands::start::spawn_sp_detached(&project_dir, None) {
+    if let Err(e) = crate::commands::sp::spawn_sp_detached(&project_dir, None) {
         eprintln!("⚠️  SP 起動失敗: {}", e);
     }
 

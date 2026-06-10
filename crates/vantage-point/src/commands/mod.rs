@@ -21,7 +21,6 @@ pub mod projects;
 pub mod restart;
 pub mod restart_all;
 pub mod sp;
-pub mod start;
 pub mod sync;
 pub mod tmux;
 pub mod tui;
