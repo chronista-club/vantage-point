@@ -130,6 +130,10 @@ pub struct WireRecvParams {
     pub timeout: Option<u64>,
 }
 
+/// Parameters for wire_inbox tool (refactor R1 PR-B: 在庫確認、 cursor 非破壊)
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct WireInboxParams {}
+
 /// Parameters for wire_thread tool (R2: ancestor-chain 取得)
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct WireThreadParams {
@@ -512,8 +516,12 @@ impl SelfLane {
         }
     }
 
-    /// `wire_send` / `wire_recv` の `from` フィールド値: conductor は `"agent"`（bare、cross-process
-    /// forward 時に `normalize_from` で `agent@<project>` になる）、performer は `"agent@<parent>/<name>"`。
+    /// `wire_send` / `wire_recv` の `from` フィールド値: conductor は `"agent"`（bare）、
+    /// performer は `"agent@<parent>/<name>"`。
+    ///
+    /// bare は SP 入口（`unison_server.rs::normalize_agent_addr`、wiremsg N1）で
+    /// `agent@<project>` に正規化される。MCP プロセスは conductor 時に project 名を
+    /// 持たないため、canonical 化は project 名を知る SP 側の責務とする。
     pub fn from_address(&self) -> String {
         match &self.performer_parent {
             Some(parent) => format!("agent@{}/{}", parent, self.lane_name),
@@ -2860,6 +2868,23 @@ if bestId > 0 { print(bestId) }
             "message_id": params.message_id,
         });
         let resp = self.quic_call("wire_thread", payload).await?;
+        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+            serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "null".to_string()),
+        )]))
+    }
+
+    /// Check unread wire message counts WITHOUT consuming them (cursor-safe peek)
+    #[tool(
+        description = "Check this agent's unread wire message inventory WITHOUT reading them: returns `total` (unread count) and `by_thread` (root message id → unread count). This is READ-ONLY: unlike wire_recv it does NOT advance the read cursor, so it is safe to call repeatedly to decide whether a wire_recv is worth doing. Use this at natural boundaries (task start/end) to avoid leaving replies unread."
+    )]
+    async fn wire_inbox(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(_params): rmcp::handler::server::wrapper::Parameters<WireInboxParams>,
+    ) -> Result<CallToolResult, McpError> {
+        // agent は wire_send / wire_recv と同じ self_lane 由来 address (SP 側で正規化される)
+        let agent = self.self_lane.from_address();
+        let payload = serde_json::json!({ "agent": agent });
+        let resp = self.quic_call("wire_unread_count", payload).await?;
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
             serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "null".to_string()),
         )]))
