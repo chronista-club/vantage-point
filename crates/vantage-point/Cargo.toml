@@ -82,8 +82,8 @@ open = "5"
 # で同じ deps を入れて A1c removal (PR #475) で外した経緯あり、 今度は vp-cli 側に着地する
 # (= RFC 8252 推奨の client-side path、 nexus は介在しない)。
 # base64 は別 line で既に dep 済 (= 共通利用)。
-sha2 = "0.10"
-rand = "0.8"
+sha2 = "0.11"
+rand = "0.10"
 url = "2"
 webbrowser = "1"
 
@@ -155,8 +155,8 @@ tui-markdown = "0.3"
 tui-scrollview = "0.6"
 ratatui-image = { version = "11", default-features = false, features = ["crossterm", "image-defaults"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
-flume = { version = "0.11", default-features = false }  # mdns-sd 0.20 と version 統一 (= 0.12 にすると 2 version 並存で型 mismatch)
-
+# flume 直接依存は撤去済み: mdns-sd の Receiver は flume re-export だが、 recv_async() +
+# Err(_) match で flume の型を名指しせずに使える (lan_discovery.rs 参照)
 
 # macOS native APIs (split window, NSView for terminal pane)
 [target.'cfg(target_os = "macos")'.dependencies]

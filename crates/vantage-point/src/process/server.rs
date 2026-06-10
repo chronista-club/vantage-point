@@ -1268,7 +1268,7 @@ pub async fn run_world(
     // VP-149: continuous mDNS browse 起動 (= ServiceResolved / ServiceRemoved を listen)
     // tokio::sync::mpsc で event を bg task に流し、 AddressBook を reactive に upsert/remove。
     // ContinuousBrowser は scope 内 (run_world 関数内) で keep alive、 graceful shutdown 後の
-    // scope exit で Drop → mDNS daemon shutdown → bg thread 終了。
+    // scope exit で Drop → mDNS daemon shutdown → bg task 終了。
     let (lan_event_tx, mut lan_event_rx) = tokio::sync::mpsc::channel(64);
     let _lan_browser = match crate::lan_discovery::start_continuous_browse(lan_event_tx) {
         Ok(b) => Some(b),

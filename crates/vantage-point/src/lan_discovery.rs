@@ -303,9 +303,10 @@ pub enum LanEvent {
 
 /// 永続 mDNS browse を担う background daemon の owner (Drop で auto shutdown)
 ///
-/// std thread で `mdns-sd` の event receiver を listen、 [`LanEvent`] に正規化して
-/// `tokio::sync::mpsc::Sender` 経由で caller に push する。 ContinuousBrowser が drop
-/// された時点で daemon shutdown が走り、 std thread は recv_timeout 超過で自然終了する。
+/// tokio task で `mdns-sd` の event receiver を `recv_async` で await し、 [`LanEvent`] に
+/// 正規化して `tokio::sync::mpsc::Sender` 経由で caller に push する。 ContinuousBrowser が
+/// drop された時点で daemon shutdown が走り、 task は receiver close (= `recv_async` の Err)
+/// を観測して自然終了する。
 pub struct ContinuousBrowser {
     daemon: ServiceDaemon,
 }
@@ -320,86 +321,77 @@ impl Drop for ContinuousBrowser {
 
 /// 永続 mDNS browse を起動 (VP-149 PR-1)
 ///
-/// 戻り値の [`ContinuousBrowser`] が drop されるまで std thread が `_vp._tcp.local.` を
+/// 戻り値の [`ContinuousBrowser`] が drop されるまで tokio task が `_vp._tcp.local.` を
 /// listen し続け、 [`LanEvent::Discovered`] / [`LanEvent::Removed`] を `tx` 経由で push する。
 /// caller は tokio task で `rx.recv()` を loop して AddressBook を update する。
 ///
-/// `tx.send` が channel closed でも std thread は loop 継続 (= caller 側の hand-off 不在でも
-/// daemon shutdown は ContinuousBrowser drop で trigger される、 thread は次の recv で
-/// `RecvError` を観測して exit する設計)。
+/// tokio runtime 上で呼ぶこと (内部で `tokio::spawn` する)。
+/// `tx.send` が channel closed でも task は loop 継続 (= caller 側の hand-off 不在でも
+/// daemon shutdown は ContinuousBrowser drop で trigger され、 task は次の `recv_async` で
+/// close を観測して exit する設計)。
 pub fn start_continuous_browse(
     tx: tokio::sync::mpsc::Sender<LanEvent>,
 ) -> Result<ContinuousBrowser, mdns_sd::Error> {
     let daemon = ServiceDaemon::new()?;
     let receiver = daemon.browse(SERVICE_TYPE)?;
-    let daemon_for_thread = daemon.clone();
+    let daemon_for_task = daemon.clone();
 
-    std::thread::Builder::new()
-        .name("vp-mdns-browse".into())
-        .spawn(move || {
-            tracing::info!("mDNS continuous browse loop 起動: {}", SERVICE_TYPE);
-            // 200ms timeout で ServiceDaemon がまだ active か polling、 daemon shutdown で
-            // receiver が close された時に loop 終了する
-            let poll_timeout = Duration::from_millis(200);
-            loop {
-                match receiver.recv_timeout(poll_timeout) {
-                    Ok(ServiceEvent::ServiceResolved(info)) => {
-                        let hostname = info.get_hostname().to_string();
-                        let instance_name = info.get_fullname().to_string();
-                        let port = info.get_port();
-                        let properties: HashMap<String, String> = info
-                            .get_properties()
-                            .iter()
-                            .map(|p| (p.key().to_string(), p.val_str().to_string()))
-                            .collect();
-                        let pubkey = properties
-                            .get("pubkey")
-                            .cloned()
-                            .unwrap_or_else(|| PUBKEY_PLACEHOLDER.to_string());
-                        let version = properties
-                            .get("version")
-                            .cloned()
-                            .unwrap_or_else(|| PROTOCOL_VERSION.to_string());
-                        let world = DiscoveredWorld {
-                            hostname,
-                            instance_name: instance_name.clone(),
-                            port,
-                            pubkey,
-                            version,
-                            properties,
-                        };
-                        if let Err(e) = tx.blocking_send(LanEvent::Discovered(world)) {
-                            tracing::debug!("mDNS browse: send 失敗 (channel closed): {}", e);
-                            // channel 閉鎖でも loop は維持 (= ContinuousBrowser drop で daemon
-                            // shutdown され、 receiver が err 返すまで)
-                        }
-                    }
-                    Ok(ServiceEvent::ServiceRemoved(_, instance_name)) => {
-                        if let Err(e) = tx.blocking_send(LanEvent::Removed { instance_name }) {
-                            tracing::debug!(
-                                "mDNS browse: removed send 失敗 (channel closed): {}",
-                                e
-                            );
-                        }
-                    }
-                    Ok(_) => {
-                        // ServiceFound / SearchStarted 等は無視
-                    }
-                    Err(flume::RecvTimeoutError::Timeout) => {
-                        // 通常の timeout、 loop 継続
-                    }
-                    Err(flume::RecvTimeoutError::Disconnected) => {
-                        // daemon が shutdown された (= ContinuousBrowser drop)、 thread 終了
-                        tracing::info!("mDNS continuous browse loop: daemon disconnected、 終了");
-                        break;
+    tokio::spawn(async move {
+        tracing::info!("mDNS continuous browse loop 起動: {}", SERVICE_TYPE);
+        loop {
+            match receiver.recv_async().await {
+                Ok(ServiceEvent::ServiceResolved(info)) => {
+                    let hostname = info.get_hostname().to_string();
+                    let instance_name = info.get_fullname().to_string();
+                    let port = info.get_port();
+                    let properties: HashMap<String, String> = info
+                        .get_properties()
+                        .iter()
+                        .map(|p| (p.key().to_string(), p.val_str().to_string()))
+                        .collect();
+                    let pubkey = properties
+                        .get("pubkey")
+                        .cloned()
+                        .unwrap_or_else(|| PUBKEY_PLACEHOLDER.to_string());
+                    let version = properties
+                        .get("version")
+                        .cloned()
+                        .unwrap_or_else(|| PROTOCOL_VERSION.to_string());
+                    let world = DiscoveredWorld {
+                        hostname,
+                        instance_name: instance_name.clone(),
+                        port,
+                        pubkey,
+                        version,
+                        properties,
+                    };
+                    if let Err(e) = tx.send(LanEvent::Discovered(world)).await {
+                        tracing::debug!("mDNS browse: send 失敗 (channel closed): {}", e);
+                        // channel 閉鎖でも loop は維持 (= ContinuousBrowser drop で daemon
+                        // shutdown され、 receiver が close されるまで)
                     }
                 }
+                Ok(ServiceEvent::ServiceRemoved(_, instance_name)) => {
+                    if let Err(e) = tx.send(LanEvent::Removed { instance_name }).await {
+                        tracing::debug!("mDNS browse: removed send 失敗 (channel closed): {}", e);
+                    }
+                }
+                Ok(_) => {
+                    // ServiceFound / SearchStarted 等は無視
+                }
+                Err(_) => {
+                    // recv_async の Err は Disconnected のみ (= daemon shutdown /
+                    // ContinuousBrowser drop)。エラー型 (flume::RecvError) を名指ししない
+                    // ことで、 mdns-sd 内部の flume への直接依存を持たない。
+                    tracing::info!("mDNS continuous browse loop: daemon disconnected、 終了");
+                    break;
+                }
             }
-        })
-        .map_err(|e| mdns_sd::Error::Msg(format!("mDNS browse thread spawn 失敗: {}", e)))?;
+        }
+    });
 
     Ok(ContinuousBrowser {
-        daemon: daemon_for_thread,
+        daemon: daemon_for_task,
     })
 }
 
