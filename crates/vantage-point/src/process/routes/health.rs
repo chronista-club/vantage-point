@@ -213,9 +213,9 @@ pub async fn wire_latest_msg_handler(
 /// Stand 自己診断 (2026-04-25 user 発案) — ProcessCapabilities の各 Stand の
 /// diagnose() を集約。side-effect-free、いつでも呼び出し可能。
 ///
-/// NOTE: CapabilityRegistry は現状 skeleton (未使用) のため、state.capabilities
-/// の field を直接 iterate する方式を採用。Mailbox address list と Stand state を
-/// 1 view にまとめて観測可能に。
+/// state.capabilities の field を直接 iterate する方式 (Stand 数が少なく静的なため
+/// registry 抽象は持たない — refactor R1-1 で skeleton だった CapabilityRegistry を削除)。
+/// Mailbox address list と Stand state を 1 view にまとめて観測可能に。
 pub async fn diagnose_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     use crate::capability::core::Capability;
     let mut reports = Vec::new();

@@ -13,8 +13,7 @@
 
 use crate::capability::core::Capability;
 use crate::capability::{
-    AgentCapability, CapabilityContext, CapabilityRegistry, EventBus, ProtocolCapability,
-    Whitesnake,
+    AgentCapability, CapabilityContext, EventBus, ProtocolCapability, Whitesnake,
 };
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -30,8 +29,6 @@ use tokio::sync::RwLock;
 pub struct ProcessCapabilities {
     /// イベントバス（全Capability共有）
     pub event_bus: Arc<EventBus>,
-    /// Capability レジストリ
-    pub registry: Arc<RwLock<CapabilityRegistry>>,
     /// Protocol Capability（WebSocket/stdio配信用）
     pub protocol: Arc<RwLock<ProtocolCapability>>,
     /// Agent Capability（Claude Agent統合）
@@ -60,12 +57,6 @@ impl ProcessCapabilities {
         // EventBus を作成
         let event_bus = Arc::new(EventBus::new());
 
-        // Registry を作成
-        let ctx = CapabilityContext::new().with_config(serde_json::json!({
-            "working_dir": config.project_dir,
-        }));
-        let registry = Arc::new(RwLock::new(CapabilityRegistry::with_context(ctx)));
-
         // Protocol Capability
         let protocol = Arc::new(RwLock::new(ProtocolCapability::new()));
 
@@ -76,7 +67,6 @@ impl ProcessCapabilities {
 
         Self {
             event_bus,
-            registry,
             protocol,
             agent,
         }
