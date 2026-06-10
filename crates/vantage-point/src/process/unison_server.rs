@@ -1099,7 +1099,9 @@ pub(crate) async fn handle_wire_recv(
 
     loop {
         // 取りこぼし防止: poll の前に待機 future を準備しておく
-        // (poll と await の隙間に来た wire_send notify も拾えるようにする)
+        // (poll と await の隙間に来た wire_send notify も拾えるようにする)。
+        // legacy alias 側の future too ここで生成する — store poll の後に生成すると
+        // poll〜生成の隙間の notify を取りこぼす (WireNotifier のプロトコル、 moody 指摘 #1)。
         let notify = state.wire_notifier.handle(&agent).await;
         let notified = notify.notified();
         tokio::pin!(notified);
@@ -1108,6 +1110,8 @@ pub(crate) async fn handle_wire_recv(
             Some(l) => Some(state.wire_notifier.handle(l).await),
             None => None,
         };
+        let mut legacy_notified: Option<std::pin::Pin<Box<tokio::sync::futures::Notified>>> =
+            legacy_notify.as_ref().map(|n| Box::pin(n.notified()));
 
         // 未読 message を取得 + read_cursor 前進 (store.recv が両方まとめて実施)。
         // cursor は取得済 message の local_seq 最大値に合わせる (R1: 厳密単調で取りこぼし無し)。
@@ -1122,6 +1126,9 @@ pub(crate) async fn handle_wire_recv(
                 .map_err(|e| format!("wire_recv (legacy alias) failed: {e}"))?;
             unread.append(&mut legacy_unread);
             unread.sort_by_key(|m| m.local_seq);
+            // to に bare と qualified の両方が入った message は両 query にヒットするため
+            // id で dedup (二重配信防止、 moody 指摘 #2 のエッジ)
+            unread.dedup_by(|a, b| a.id == b.id);
         }
 
         if !unread.is_empty() {
@@ -1144,14 +1151,12 @@ pub(crate) async fn handle_wire_recv(
         }
         // notify が来たら再 poll、 timeout したら次ループで deadline 判定 → timeout 返却。
         // legacy alias がある場合は両方の notify を待つ (どちらが来ても再 poll)。
-        match legacy_notify {
-            Some(n2) => {
-                let f2 = n2.notified();
-                tokio::pin!(f2);
+        match legacy_notified.as_mut() {
+            Some(f2) => {
                 let _ = tokio::time::timeout(remaining, async {
                     tokio::select! {
                         _ = &mut notified => {},
-                        _ = &mut f2 => {},
+                        _ = f2.as_mut() => {},
                     }
                 })
                 .await;
@@ -1281,6 +1286,10 @@ pub(crate) async fn handle_wire_unread_count(
             .unread_count_by_thread(&l)
             .await
             .map_err(|e| format!("wire_unread_count (legacy alias) failed: {e}"))?;
+        // canonical / legacy は to_addrs が通常 disjoint なので合算で正しい。
+        // 例外: to に bare と qualified の両方が入った message は両側で数えられ
+        // count が +1 過剰になるが、 表示専用 + legacy 期間 (1 release) 限定のため許容
+        // (recv 側は id dedup で二重配信しない)。
         for (thread, count) in legacy_counts {
             *by_thread.entry(thread).or_insert(0) += count;
         }
