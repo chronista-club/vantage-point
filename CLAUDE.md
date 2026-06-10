@@ -245,14 +245,14 @@ task 管理は creo-memories に一本化（Linear は不使用、2026-05-19 確
 | **main** | **GitHub default**（公開の顔）+ 公開 release の単位（= 「ここを参照すれば最新安定」） | **禁止** | 必須（force / deletion 禁止） | nightly → release PR → tag cut |
 | **lane / performer** | 単一タスク隔離 | 自由 | 必須 | from nightly |
 
-#### lane 作業フロー
+#### lane 作業フロー（lead session = メインセッション向け）
 
 1. `git fetch origin nightly && git checkout -b mako/{slug} origin/nightly` で lane 開始
 2. lane 上で commit、 PR は **base = nightly** で `gh pr create --base nightly` で作る
 3. PR merge / 直 push で nightly が進む
 4. nightly が一定量積み上がったら release PR (nightly → main) を切って tag cut
 
-> cross-agent な lane 規約（`vp lane new` 公認入口 / raw-git fallback / discovery）の SSOT は **`AGENTS.md`**。Cursor 等の他 agent もそちらを参照する。
+> 上記 step 1 の `checkout -b` は **lead checkout を占有する単独セッション専用**。並列 worker（wing / 他 agent）は worktree lane（`vp lane new` or `git worktree add`）を使う — cross-agent な lane 規約（公認入口 / raw-git fallback / discovery）の SSOT は **`AGENTS.md`**。
 
 #### release flow（= nightly → main）
 

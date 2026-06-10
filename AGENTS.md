@@ -6,7 +6,7 @@
 ## branch / lane 規約
 
 dev trunk は **nightly**（GitHub default の `main` は公開 release 専用・直 push 禁止）。
-作業は lane（= git worktree）単位で隔離する。lead checkout（この repo 本体）の branch は **nightly のまま動かさない**こと。
+並列に作業する agent は lane（= git worktree）単位で隔離する。**並列 lane で作業する agent は lead checkout（この repo 本体）の branch を切り替えない**こと — branch の checkout は自分の worktree 内でのみ行う（lead checkout の branch 操作は lead session だけが行う）。
 
 ### 公認入口: `vp lane new`
 
@@ -34,6 +34,11 @@ lane の一覧は git-native に取得する（manifest ファイルは存在し
 - `git worktree list` — live registry（worktree lane の全列挙）
 - `git branch --list 'mako/*'` — lane branch の列挙
 
+### GitNexus との読み替え
+
+下記 GitNexus block の `detect_changes` 例にある `base_ref: "main"` は、この repo では **`base_ref: "nightly"`** に読み替えること（main は公開 release 専用で dev からの diff が膨らむ）。
+
+<!-- 以下は gitnexus 管理 block。start/end marker の間のみ `gitnexus analyze` が再生成する（外側の本セクションは上書きされない） -->
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
