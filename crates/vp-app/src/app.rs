@@ -1693,8 +1693,6 @@ pub fn run() -> anyhow::Result<()> {
                     session_state.save();
                 }
             }
-            // Phase 2.x-d: AppEvent::Output / XtermReady は撤去済 (per-Lane browser native WS へ移行)。
-            // 関連の `xterm_ready` / `pending` / `PENDING_MAX` も一括削除。
             // Phase 4-paste-fix: clipboard.readText の webview permission 問題への fallback。
             // IPC `paste:request` を Rust が受けて arboard で読み取り、 ここで JS に inject。
             Event::UserEvent(AppEvent::PasteText(text)) => {

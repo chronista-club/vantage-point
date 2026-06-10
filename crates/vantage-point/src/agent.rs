@@ -1,12 +1,12 @@
 //! Agentモジュール - Claude CLI統合によるチャット機能
 //!
-//! 3つの実行モードを提供:
-//! - **OneShotモード**: `claude -p` で単発プロンプト → 応答
+//! 2つの実行モードを提供 (いずれも `--output-format stream-json` で構造化レスポンス):
+//! - **OneShotモード**: `claude -p` で単発プロンプト → 応答 ([`ClaudeAgent`])
 //! - **Interactiveモード**: `claude -p --input-format stream-json` で持続プロセス
-//! - **PTYモード**: `claude` (真の対話モード) をPTY経由で端末エミュレーション
+//!   ([`InteractiveClaudeAgent`]、デフォルト)
 //!
-//! OneShotとInteractiveモードは `--output-format stream-json` で構造化レスポンスを使用。
-//! PTYモードは完全な対話体験のため生の端末I/Oを使用。
+//! 対話モードの claude (TUI) は本モジュールでなく lane の tmux/PTY 経路
+//! (`.mise/tasks/vp/stand/echoes`) が担う。
 //!
 //! ## Stream-JSON 入力フォーマット (Interactiveモード用)
 //!
@@ -173,7 +173,7 @@ impl PermissionMode {
 #[derive(Debug, Clone, Default)]
 pub struct AgentConfig {
     // === 実行モード ===
-    /// 実行モード (OneShot, Interactive, Pty)
+    /// 実行モード (OneShot / Interactive)
     pub mode: AgentMode,
 
     // === セッション制御 ===

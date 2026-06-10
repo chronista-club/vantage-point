@@ -86,7 +86,7 @@ enum Commands {
     #[command(subcommand)]
     Sp(commands::sp::SpCommands),
 
-    /// HD インスタンス管理（tmux + Claude CLI + ccwire）
+    /// HD インスタンス管理（tmux + Claude CLI）
     #[command(subcommand)]
     Hd(commands::hd::HdCommands),
 

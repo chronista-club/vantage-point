@@ -1186,8 +1186,7 @@ console.info('[vp-inline] vpBundleProbe registered (call window.vpBundleProbe() 
   });
   tokenObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['style'] });
 
-  // Phase 2.x-d: 旧 onPtyData shim も terminal::build_output_script と一緒に撤去済。
-  // Lane WebSocket が直接 term.write するので Rust 経路の出力は存在しない。
+  // Lane WebSocket が直接 term.write するため、Rust 経路の terminal 出力は存在しない。
 
   // Phase 4-paste-fix: Rust 側 arboard で読み取った OS clipboard 内容を active Lane の xterm に inject。
   // `terminal.rs::handle_ipc_message` の `paste:request` → `AppEvent::PasteText` → `app.rs` event loop

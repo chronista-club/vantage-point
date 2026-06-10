@@ -1,7 +1,7 @@
 //! vp sp — Star Platinum サーバー管理
 //!
 //! SP（HTTP/QUIC サーバー）のライフサイクル管理。
-//! tmux/ccwire の管理は hd_cmd.rs に分離。
+//! tmux セッションの管理は hd.rs に分離。
 
 use anyhow::Result;
 use clap::Subcommand;
@@ -246,7 +246,6 @@ fn sp_status(project_dir: &str, config: &Config) -> Result<()> {
         println!();
         println!("   HD セッション:");
         for s in &hd_sessions {
-            // Phase L7d: ccwire registry 廃止、tmux session 存在のみで表示
             println!("     {}", s);
         }
     }

@@ -92,30 +92,44 @@ vantage-point/
 
 ```bash
 # Core
-vp start [N]           # プロジェクトN番のProcessを起動
-vp start -d simple     # デバッグモードで起動
-vp stop [--port]       # Process停止
-vp restart [--port]    # Process再起動
-vp ps                  # 稼働中インスタンス一覧
-vp open [N]            # WebUIを開く
+vp ps                  # 稼働中インスタンス一覧（33000-33010 スキャン）
 vp config              # 設定と登録プロジェクト表示
+vp projects            # 登録 project 管理（add/remove/rename/enable/disable/reorder/list）
+vp sync                # projects.kdl を現実と同期（ghost project 除去）
 vp mcp                 # MCPサーバーモード（stdio）
 vp update [--check]    # セルフアップデート
+vp restart-all         # 全 Process + TheWorld を一括再起動
 
-# TheWorld（Daemon 統合）
-vp daemon              # TheWorld 起動（プロジェクト管理 + PTY管理、 alias: vp world）
-vp daemon start|stop|status  # subcommand 形式
+# TheWorld（Daemon）/ SP
+vp daemon start|stop|status  # TheWorld 管理（alias: vp world）
+vp sp start [-d simple|detail]  # SP サーバー起動（デバッグモードはここ）
+vp sp stop|status
 
-# App
+# App（GUI）
 vp app start           # vp-app GUI 起動（spawn + 即 exit、 cwd を起点に開く）
 vp app stop            # vp-app を停止
 # 再起動は `vp app stop && vp app start` で合成 (restart は意図的に CLI に持たない)
-vp tray                # システムトレイモード
+vp shot                # vp-app window の screenshot を PNG 保存
 
-# MIDI
-vp midi monitor|ports
+# Lane / dev-flow / messaging
+vp lane                # performer Lane 管理（Stone Free 🧵）
+vp flow handoff|progress  # Conductor × Performer orchestration
+vp wire send|watch     # wire accumulation messaging
+vp directmsg           # tmux send-keys 直接メッセージ（緊急用、wiremsg の補助）
+vp hd start|stop|attach|list  # tmux + Claude CLI セッション管理（旧 TUI 経路）
+vp tmux                # tmux ペイン操作（capture/split/send/dashboard）
+
+# その他
+vp lan                 # LAN address book（mDNS discovery）
+vp port                # deterministic port layout の計算・表示
+vp db init|path|status # embedded SurrealDB 管理
+vp auth me|login|logout  # Creo ID 認証
+vp pane / vp file      # ペイン操作 / ファイル監視
+vp midi monitor|ports  # MIDI（feature = "midi" ビルドのみ）
 vp midi lpd8 write|switch|ports
 ```
+
+> ⚠️ `vp start` / `vp stop` / `vp open` / `vp tray` は**存在しない**（旧体系。start/stop は `vp sp` / `vp daemon` / `vp app` に分散、WebUI は `http://localhost:33000` を直接開く）。
 
 ## 開発コマンド
 
@@ -159,28 +173,20 @@ TheWorld が **Push + Pull の二重パス** でプロセスを管理。どち�
 
 ## Agent モジュール
 
-Claude CLI統合の実装。3つの実行モードを提供:
+Claude CLI統合の実装（`crates/vantage-point/src/agent.rs`）。2つの実行モードを提供:
 
 | モード | CLI形式 | 用途 |
 |--------|---------|------|
-| **OneShot** | `claude -p "prompt"` | 単発プロンプト |
-| **Interactive** | `claude -p --input-format stream-json` | 持続プロセス、複数ターン |
-| **PTY** | `claude` (対話モード) | PTY経由の対話モード、Multiplexer Orchestration用 |
+| **OneShot**（`ClaudeAgent`） | `claude -p "prompt"` | 単発プロンプト |
+| **Interactive**（`InteractiveClaudeAgent`、デフォルト） | `claude -p --input-format stream-json` | 持続プロセス、複数ターン |
+
+> 対話モードの claude（TUI）は Agent モジュールではなく、 **lane の tmux 経路**（`.mise/tasks/vp/stand/echoes` が `tmux new-session` 内で claude を起動）が担う。 PTY ベースの agent API は存在しない。
 
 ### Stream-JSON 入力フォーマット
 
 ```json
 {"type":"user","message":{"role":"user","content":[{"type":"text","text":"メッセージ"}]}}
 ```
-
-### PTYモード API
-
-`pty-process` クレートを使用:
-
-- `PtyClaudeAgent::start()` - PTY付きでClaude CLI起動
-- `PtyClaudeAgent::send()` / `send_raw()` - テキスト / 制御シーケンス送信
-- `PtyClaudeAgent::resize()` - ターミナルサイズ変更
-- `PtyClaudeAgent::events()` - 出力イベント受信
 
 ## コーディング規約
 
@@ -191,9 +197,9 @@ Claude CLI統合の実装。3つの実行モードを提供:
 
 | モード | 用途 | 起動方法 |
 |--------|------|----------|
-| `none` | 本番運用 | `vp start` |
-| `simple` | 基本的なイベントログ | `vp start -d simple` |
-| `detail` | 詳細なデータ・タイミング | `vp start -d detail` |
+| `none` | 本番運用 | `vp sp start` |
+| `simple` | 基本的なイベントログ | `vp sp start -d simple` |
+| `detail` | 詳細なデータ・タイミング | `vp sp start -d detail` |
 
 ### ログ出力
 
@@ -209,7 +215,7 @@ state.send_debug_detail("category", "メッセージ", serde_json::json!({"key":
 
 ### 問題調査フロー
 
-1. `vp start -d detail` で起動
+1. `vp sp start -d detail` で起動
 2. WebUIデバッグパネル（右パネル）でログ確認
 3. ブラウザコンソールで `Received:` ログ確認
 4. 必要に応じてログ追加 → 再ビルド

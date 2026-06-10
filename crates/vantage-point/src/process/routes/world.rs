@@ -472,18 +472,6 @@ pub async fn world_unregister_process(
     )
 }
 
-/// GET /api/world/ccwire/sessions - msgbox セッション一覧
-///
-/// Phase L7d: ccwire registry 廃止、Mailbox Router 経由に切替るまでは
-/// 空 list を返す stub。endpoint path は互換のため維持 (Mac app が叩く)。
-/// 将来: daemon の Mailbox Router.boxes + msgbox table を aggregate。
-pub async fn world_ccwire_sessions() -> impl IntoResponse {
-    (
-        axum::http::StatusCode::OK,
-        Json(serde_json::json!({ "sessions": Vec::<()>::new() })),
-    )
-}
-
 /// POST /api/world/refresh - Refresh process status
 pub async fn world_refresh(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let Some(world) = &state.world else {
@@ -590,9 +578,7 @@ pub async fn world_list_lanes(
             })
         })
         .filter(|l| {
-            // doc 11 PR-B: l.stand は String 化、 query.stand と直接比較。
-            // legacy migration shim (heavens_door / the_hand) は 2026-05-03 削除済 (PR #257
-            // → 即削除)、 wire 上は新 stand 名のみ accept。
+            // doc 11 PR-B: l.stand は String 化、 query.stand と直接比較 (wire 上は新 stand 名のみ accept)。
             query.stand.as_deref().is_none_or(|s| l.stand == s)
         })
         .cloned()
