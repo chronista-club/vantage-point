@@ -1,7 +1,7 @@
 # 15. SP auto-spawn triggers (= 自動復帰経路の audit)
 
 > **Status**: Stage C (= doc-only audit、 既存挙動への変更なし)
-> **Linear**: [VP-155](https://linear.app/chronista/issue/VP-155)
+> **Linear**: `VP-155`
 > **Stage B 候補**: 同 issue (= `SpDesiredState` enum + `SpSupervisor` actor 化、 VP-154 epic 完結後)
 
 ---
@@ -146,8 +146,8 @@ enum SpDesiredState {
 
 ## 7. 関連
 
-- **Linear**: [VP-155](https://linear.app/chronista/issue/VP-155) (= 本 doc の origin issue)
-- **Linear**: [VP-154](https://linear.app/chronista/issue/VP-154) (= Msgbox v3.1 routing topology Option B' epic)
+- **Linear**: `VP-155` (= 本 doc の origin issue)
+- **Linear**: `VP-154` (= Msgbox v3.1 routing topology Option B' epic)
 - **Memory**: `mem_1CaTpCQH8iLJ2PasRcPjHv` (= TheWorld が SP lifecycle を持つ Architecture v4)
 - **Memory**: `mem_1CZ2Skaeyy8xWMVfyFMVo5` (= D10 Reconciliation アーキテクチャ)
 - **PR**: #318 (= VP-154 PR-2.5 dogfood で本 issue を発見)

@@ -765,9 +765,6 @@ mod tests {
         assert_eq!(sanitize_for_branch("a..b"), "a-b");
         assert_eq!(sanitize_for_branch("v1.2.3"), "v1-2-3");
     }
-
-    // doc 11 §3.7 の `migrate_legacy_stand` test 2 件 (translates_old_names /
-    // passes_through_modern_names) は 2026-05-03 削除済 (shim 自体が削除されたため)。
 }
 
 #[cfg(test)]

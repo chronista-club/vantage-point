@@ -2,7 +2,7 @@
 
 > **Status**: Draft (VP 側起案、creo-memories 側で review / finalize 予定)
 > **Strategy**: D-12 = C (Co-design)
-> **Linear**: [VP-73](https://linear.app/chronista/issue/VP-73) (parent: [VP-72](https://linear.app/chronista/issue/VP-72))
+> **Linear**: `VP-73` (parent: `VP-72`)
 > **Predecessor**: `docs/design/05-pane-content-lane-smart-canvas.md`
 > **Upstream handoff**: creo-memories `mem_1CaFLjx1ATHBeDDkW9sY8B` (nexus → VP)
 > **Related memos**: Core `mem_1CaGtbmxgE7UKcQNCyauTT`, Stand Ensemble `mem_1CaGvxreWpPRsMrfmddMai`, Decision Batch #2 `mem_1CaGxg5mZNY5YQDPLPWQuG`, Final Summary `mem_1CaGxnzEsjyyvnqaaVSFBH`
@@ -669,7 +669,7 @@ VP-73 成功条件:
 
 - `docs/design/05-pane-content-lane-smart-canvas.md` (4 層モデル + Smart Canvas 仕様)
 - `docs/design/01-architecture.md` (全体アーキ)
-- Linear: [VP-72 (Epic)](https://linear.app/chronista/issue/VP-72), [VP-73 (本 issue)](https://linear.app/chronista/issue/VP-73), [VP-74 (R1)](https://linear.app/chronista/issue/VP-74), [VP-75 (R2)](https://linear.app/chronista/issue/VP-75), [VP-76 (R3)](https://linear.app/chronista/issue/VP-76)
+- Linear: `VP-72`, `VP-73`, `VP-74`, `VP-75`, `VP-76`
 - creo-memories memos:
   - nexus handoff: `mem_1CaFLjx1ATHBeDDkW9sY8B`
   - 4 層 Core: `mem_1CaGtbmxgE7UKcQNCyauTT`

@@ -1,6 +1,6 @@
 //! vp hd — Heaven's Door インスタンス管理
 //!
-//! Claude CLI の tmux セッション + ccwire 登録を管理する。
+//! Claude CLI の tmux セッションを管理する。
 //! SP サーバーの管理は sp_cmd.rs に分離。
 
 use anyhow::Result;
@@ -11,7 +11,7 @@ use crate::tmux;
 
 #[derive(Subcommand)]
 pub enum HdCommands {
-    /// HD インスタンスを起動（tmux + Claude CLI + ccwire 登録）
+    /// HD インスタンスを起動（tmux + Claude CLI）
     Start {
         /// インスタンス名（例: kaizen, scroll-bug）。セッション名 = {project}-{id}-vp
         #[arg(long)]
@@ -20,7 +20,7 @@ pub enum HdCommands {
         #[arg(long)]
         cwd: Option<String>,
     },
-    /// HD インスタンスを停止（ccwire 解除 + tmux kill）
+    /// HD インスタンスを停止（tmux kill）
     Stop {
         /// 停止するインスタンス名
         #[arg(long)]
@@ -104,10 +104,6 @@ fn hd_start(
         eprintln!("⚠️  SP サーバーが未起動です。`vp sp start` で起動を推奨します。");
     }
 
-    // Phase L7a: ccwire::cleanup_stale 呼出停止 (Mailbox 移行、stale は tmux session
-    // 存在判定で derive する方針。ghost session は実害なく残る)
-    // if let Err(e) = crate::ccwire::cleanup_stale() { ... }
-
     // tmux セッション作成（既にあれば再利用）
     if tmux::session_exists(&session_name) {
         println!("✅ tmux セッション '{}' は既に存在します", session_name);
@@ -123,11 +119,6 @@ fn hd_start(
         )?;
         println!("✅ tmux セッション '{}' を作成しました", session_name);
     }
-
-    // Phase L7b: ccwire register 呼出停止 (Mailbox Router が daemon 側で
-    // 保持、agent 起動時に自動 register する設計。soft degradation)
-    // let tmux_target = format!("{}:0.0", session_name);
-    // match crate::ccwire::register(&session_name, &tmux_target) { ... }
 
     println!();
     if let Some(id) = id {
@@ -146,9 +137,6 @@ fn hd_start(
 /// HD インスタンスを停止
 fn hd_stop(project_name: &str, id: Option<&str>) -> Result<()> {
     let session_name = tmux::session_name_with_id(project_name, id);
-
-    // Phase L7b: ccwire unregister 呼出停止
-    // match crate::ccwire::unregister(&session_name) { ... }
 
     // tmux kill
     if tmux::session_exists(&session_name) {
@@ -183,7 +171,6 @@ fn hd_list(project_name: &str, other_prefixes: &[String]) -> Result<()> {
         // セッション名から ID を抽出
         let id = extract_id_from_session(session, &prefix);
         let id_display = id.unwrap_or("(default)");
-        // Phase L7d: ccwire 表示削除
         println!("  {} {} (tmux: ✅)", id_display, session);
     }
 

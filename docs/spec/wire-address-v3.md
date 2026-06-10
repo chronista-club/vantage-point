@@ -6,7 +6,7 @@
 > federated 拡張 (Phase 3+ の mDNS / hub) は wiremsg 上での将来計画として引き続き有効。
 
 > **Status**: address モデルは現行有効 (wiremsg が継承)。 旧称 "Msgbox address v3.1" (VP-144 Epic、 Phase 0 SDG)。
-> **Linear**: [VP-144](https://linear.app/chronista/issue/VP-144)
+> **Linear**: `VP-144`
 > **Supersedes**: `creo-memories: project_msgbox_address_spec.md` (v1、 2026-04-19)
 > **3 部構成**: Why + What は本 doc。 How は [docs/design/14-wire-address-v3.md](../design/14-wire-address-v3.md)、 Usage は [docs/guide/wire-address-usage.md](../guide/wire-address-usage.md)
 
@@ -180,10 +180,10 @@ macbook.local              → mDNS local (LAN)
 
 | Phase | 内容 | sub-issue |
 |-------|------|-----------|
-| **Phase 0** (本 doc) | SDG 3 file 整備 | [VP-145](https://linear.app/chronista/issue/VP-145) |
-| **Phase 1** | Parser 拡張 + actor optional | [VP-146](https://linear.app/chronista/issue/VP-146) |
-| **Phase 2** | per-lane wire inbox + sidebar Echoes 横 icon | [VP-147](https://linear.app/chronista/issue/VP-147) |
-| **Phase 3** | mDNS resolver — LAN MVP 完成 | [VP-148](https://linear.app/chronista/issue/VP-148) |
+| **Phase 0** (本 doc) | SDG 3 file 整備 | `VP-145` |
+| **Phase 1** | Parser 拡張 + actor optional | `VP-146` |
+| **Phase 2** | per-lane wire inbox + sidebar Echoes 横 icon | `VP-147` |
+| **Phase 3** | mDNS resolver — LAN MVP 完成 | `VP-148` |
 | Phase 4 | hub MVP (chronista.club) | (placeholder) |
 | Phase 5 | Ruby DSL / CLI / sidebar UI 全面 v3 対応 | (placeholder) |
 | Phase 6 | WebFinger / federation / cross-hub | (placeholder) |
@@ -231,7 +231,7 @@ LAN MVP (Phase 0-3) 完成後に Phase 4+ の planning session で sub-issue 化
 
 - **Design**: [docs/design/14-wire-address-v3.md](../design/14-wire-address-v3.md) (How)
 - **Usage**: [docs/guide/wire-address-usage.md](../guide/wire-address-usage.md) (Usage)
-- **Linear Epic**: [VP-144](https://linear.app/chronista/issue/VP-144)
+- **Linear Epic**: `VP-144`
 - **VP-24 Msgbox core**: `mem_1CZA6PxWEnKSwC5tCbm7bF`
 - **Msgbox + Monitor agent msgbox** (predecessor design): `mem_1CabUu1biCwMFjsX5oEoG9`
 - **dogfood gap 詳細**: `mem_1CapRAtpCpahQGn8nW2fmT`

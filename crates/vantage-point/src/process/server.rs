@@ -86,7 +86,7 @@ pub async fn run(
     // Terminal チャネル認証トークンを生成
     let terminal_token = crate::discovery::generate_terminal_token();
 
-    // tmux / ccwire はvp sp コマンドで独立管理（server.rs では触らない）
+    // tmux セッションは vp hd コマンドで独立管理（server.rs では触らない）
     // TmuxActor は SP がペイン操作（tmux_split 等）に使うため、既存セッションがあれば起動
     let project_name = crate::resolve::project_name_from_path(
         &project_dir,
@@ -189,12 +189,6 @@ pub async fn run(
         ),
         shutdown_token.clone(),
     );
-
-    // VP-179 (Phase 5): TheWorld registry への actor register snapshot は廃止。
-    // 旧実装は mpsc MsgboxRouter の `addresses()` (= register("agent") 等で蓄積された
-    // address list) を TheWorld に flat 登録していたが、 全 register caller が VP-178
-    // (Phase 4) で撤去済のため空 vec を渡す no-op に成り下がっていた。 cross-process
-    // forward が必要な場合は msgs table 経由の discovery (= 別 epic) を検討。
 
     let state = Arc::new(AppState {
         hub,
@@ -538,10 +532,6 @@ pub async fn run(
             post(world::world_open_pointview),
         )
         .route("/api/world/refresh", post(world::world_refresh))
-        .route(
-            "/api/world/ccwire/sessions",
-            get(world::world_ccwire_sessions),
-        )
         .layer(CorsLayer::permissive())
         .with_state(state.clone());
 
@@ -738,7 +728,7 @@ pub async fn run(
     // ファイル監視を全停止
     file_watchers_for_shutdown.lock().await.stop_all();
 
-    // tmux / ccwire は vp sp stop で管理（SP 停止時には触らない）
+    // tmux セッションは vp hd stop で管理（SP 停止時には触らない）
 
     // Shutdown all capabilities
     tracing::info!("Shutting down capabilities...");
@@ -990,10 +980,6 @@ pub async fn run_world(
             post(world::world_open_pointview),
         )
         .route("/api/world/refresh", post(world::world_refresh))
-        .route(
-            "/api/world/ccwire/sessions",
-            get(world::world_ccwire_sessions),
-        )
         // HTTP register/unregister: Swift メニューバーアプリの移行完了まで残す（後方互換）
         // SP は QUIC registry チャネルで自己登録するため、これらは外部ツール用
         .route(
