@@ -285,55 +285,6 @@ fn extract_id_from_session<'a>(session: &'a str, project_prefix: &str) -> Option
     if id.is_empty() { None } else { Some(id) }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_is_own_session() {
-        let others = vec!["creo-memories".to_string()];
-
-        // 自プロジェクトのデフォルトセッション
-        assert!(is_own_session("creo-vp", "creo", &others));
-        assert!(is_own_session("vantage-point-vp", "vantage-point", &[]));
-
-        // 自プロジェクトの ID 付きセッション
-        assert!(is_own_session("creo-kaizen-vp", "creo", &others));
-        assert!(is_own_session(
-            "vantage-point-kaizen-vp",
-            "vantage-point",
-            &[]
-        ));
-
-        // 別プロジェクト（prefix が部分一致するが別物）
-        assert!(!is_own_session("creo-memories-vp", "creo", &others));
-        assert!(!is_own_session(
-            "creo-memories-performer-vp",
-            "creo",
-            &others
-        ));
-
-        // 無関係なセッション
-        assert!(!is_own_session("fleetflow-vp", "creo", &others));
-    }
-
-    #[test]
-    fn test_extract_id_from_session() {
-        assert_eq!(
-            extract_id_from_session("vantage-point-kaizen-vp", "vantage-point"),
-            Some("kaizen")
-        );
-        assert_eq!(
-            extract_id_from_session("vantage-point-vp", "vantage-point"),
-            None
-        );
-        assert_eq!(
-            extract_id_from_session("creo-scroll-bug-vp", "creo"),
-            Some("scroll-bug")
-        );
-    }
-}
-
 // =============================================================================
 // tmux + Claude セッション作成 helper (refactor R1-2 で旧 commands/start.rs から移設)
 // =============================================================================
@@ -487,4 +438,53 @@ fn collect_mise_env(project_dir: &str) -> Vec<(String, String)> {
             Some((key.to_string(), value.to_string()))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_own_session() {
+        let others = vec!["creo-memories".to_string()];
+
+        // 自プロジェクトのデフォルトセッション
+        assert!(is_own_session("creo-vp", "creo", &others));
+        assert!(is_own_session("vantage-point-vp", "vantage-point", &[]));
+
+        // 自プロジェクトの ID 付きセッション
+        assert!(is_own_session("creo-kaizen-vp", "creo", &others));
+        assert!(is_own_session(
+            "vantage-point-kaizen-vp",
+            "vantage-point",
+            &[]
+        ));
+
+        // 別プロジェクト（prefix が部分一致するが別物）
+        assert!(!is_own_session("creo-memories-vp", "creo", &others));
+        assert!(!is_own_session(
+            "creo-memories-performer-vp",
+            "creo",
+            &others
+        ));
+
+        // 無関係なセッション
+        assert!(!is_own_session("fleetflow-vp", "creo", &others));
+    }
+
+    #[test]
+    fn test_extract_id_from_session() {
+        assert_eq!(
+            extract_id_from_session("vantage-point-kaizen-vp", "vantage-point"),
+            Some("kaizen")
+        );
+        assert_eq!(
+            extract_id_from_session("vantage-point-vp", "vantage-point"),
+            None
+        );
+        assert_eq!(
+            extract_id_from_session("creo-scroll-bug-vp", "creo"),
+            Some("scroll-bug")
+        );
+    }
 }
