@@ -17,7 +17,9 @@ use tower_http::cors::CorsLayer;
 use super::capabilities::{CapabilityConfig, ProcessCapabilities};
 use super::hub::Hub;
 use super::pty::PtyManager;
-use super::routes::{health, lanes, project_feed, prompt, stands, update, world, ws_terminal};
+use super::routes::{
+    health, lanes, project_feed, prompt, stands, update, wire, world, ws_terminal,
+};
 use super::session::SessionManager;
 use super::state::AppState;
 use super::topic_router::TopicRouter;
@@ -980,6 +982,20 @@ pub async fn run_world(
             post(world::world_open_pointview),
         )
         .route("/api/world/refresh", post(world::world_refresh))
+        // wiremsg R2-a: 中央 wire store (設計 mem_1CbvcJj4ppU3QKH9d7xMpT 決定 D1-c)。
+        // TheWorld が唯一の writer。 SP の /api/wire/* はここへの proxy。
+        .route("/api/wire/send", post(wire::world_wire_send_handler))
+        .route("/api/wire/recv", post(wire::world_wire_recv_handler))
+        .route("/api/wire/thread", post(wire::world_wire_thread_handler))
+        .route(
+            "/api/wire/unread-count",
+            post(wire::world_wire_unread_count_handler),
+        )
+        .route(
+            "/api/wire/latest-msg",
+            post(wire::world_wire_latest_msg_handler),
+        )
+        .route("/api/wire/ack", post(wire::world_wire_ack_handler))
         // HTTP register/unregister: Swift メニューバーアプリの移行完了まで残す（後方互換）
         // SP は QUIC registry チャネルで自己登録するため、これらは外部ツール用
         .route(
