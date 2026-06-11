@@ -88,6 +88,45 @@ pub enum WireCommands {
         #[arg(short, long)]
         reply_to: Option<String>,
     },
+    /// 未読の在庫確認 (= mcp__wire_inbox の CLI pair、 read-only で cursor 不触り)
+    ///
+    /// `recv` と異なり cursor を進めない: 「読まずに在庫だけ確認」する。
+    /// `{status, total, by_thread: {root_id: count}}` を pretty JSON で stdout に出す。
+    Inbox {
+        /// SP の base URL (例: http://127.0.0.1:33002)。 default は Project 0 の SP (33000)。
+        #[arg(short, long, default_value = "http://127.0.0.1:33000")]
+        url: String,
+        /// 確認する wire address (例: `agent@vantage-point`)。 必須。
+        #[arg(short, long)]
+        agent: String,
+    },
+    /// thread 系譜の取得 (= mcp__wire_thread の CLI pair、 read-only で cursor 不触り)
+    ///
+    /// 指定 message から prev を root まで辿った系譜 (root-first・chronological) を返す。
+    /// 途中参加 thread の backlog 確認用。
+    Thread {
+        /// SP の base URL。 default は Project 0 の SP (33000)。
+        #[arg(short, long, default_value = "http://127.0.0.1:33000")]
+        url: String,
+        /// 系譜を辿る起点 message id (recv / inbox で得た id)
+        #[arg(short, long)]
+        message_id: String,
+    },
+    /// message の ack (R2-a、 command category の受領確認。 = mcp__wire_ack の CLI pair)
+    ///
+    /// cursor とは独立の ack 台帳に記録する。 command の処理を終えたら ack すること
+    /// (未 ack の command は delivery loop (R2-b) の再掲示対象になる)。
+    Ack {
+        /// SP の base URL。 default は Project 0 の SP (33000)。
+        #[arg(short, long, default_value = "http://127.0.0.1:33000")]
+        url: String,
+        /// ack する message id
+        #[arg(short, long)]
+        message_id: String,
+        /// ack する agent address (例: `agent@vantage-point`)。 必須。
+        #[arg(short, long)]
+        agent: String,
+    },
     /// shell-level supervisor: vp wire watch を loop で再起動。 inner watch が exit しても
     /// auto-restart で監視を継続する (lifecycle resilience)。 Monitor の前段に置いて、
     /// SessionStart hook 等から自動 arm する想定。
@@ -127,6 +166,13 @@ pub async fn run(cmd: WireCommands) -> Result<()> {
             from,
             reply_to,
         } => send(&url, &to, &body, &from, reply_to.as_deref()).await,
+        WireCommands::Inbox { url, agent } => inbox(&url, &agent).await,
+        WireCommands::Thread { url, message_id } => thread(&url, &message_id).await,
+        WireCommands::Ack {
+            url,
+            message_id,
+            agent,
+        } => ack(&url, &message_id, &agent).await,
         WireCommands::WatchSupervised {
             url,
             agent,
@@ -322,6 +368,55 @@ async fn poll_recv(
     Ok(messages)
 }
 
+/// read-only POST 系 endpoint (inbox / thread / ack) の共通実行部。
+/// 応答を pretty JSON で stdout に出し、 `{"status":"error"}` は bail する。
+async fn post_and_print(url: &str, path: &str, payload: serde_json::Value) -> Result<()> {
+    let endpoint = format!("{}{}", url.trim_end_matches('/'), path);
+    let resp = reqwest::Client::new()
+        .post(&endpoint)
+        .json(&payload)
+        .send()
+        .await
+        .with_context(|| format!("POST {}", endpoint))?
+        .json::<serde_json::Value>()
+        .await
+        .context("response JSON parse")?;
+    if resp.get("status").and_then(|v| v.as_str()) == Some("error") {
+        let err = resp
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown error");
+        anyhow::bail!("server error: {}", err);
+    }
+    println!("{}", serde_json::to_string_pretty(&resp)?);
+    Ok(())
+}
+
+/// POST /api/wire/unread-count — 未読在庫を表示 (cursor 不触り)
+async fn inbox(url: &str, agent: &str) -> Result<()> {
+    post_and_print(url, "/api/wire/unread-count", serde_json::json!({ "agent": agent })).await
+}
+
+/// POST /api/wire/thread — 系譜 (root-first) を表示 (cursor 不触り)
+async fn thread(url: &str, message_id: &str) -> Result<()> {
+    post_and_print(
+        url,
+        "/api/wire/thread",
+        serde_json::json!({ "message_id": message_id }),
+    )
+    .await
+}
+
+/// POST /api/wire/ack — message を ack する (R2-a、 ack 台帳に記録)
+async fn ack(url: &str, message_id: &str, agent: &str) -> Result<()> {
+    post_and_print(
+        url,
+        "/api/wire/ack",
+        serde_json::json!({ "message_id": message_id, "agent": agent }),
+    )
+    .await
+}
+
 async fn send(url: &str, to: &str, body: &str, from: &str, reply_to: Option<&str>) -> Result<()> {
     let client = reqwest::Client::new();
     let endpoint = format!("{}/api/wire/send", url.trim_end_matches('/'));
@@ -427,5 +522,55 @@ mod tests {
             WireCommands::Recv { timeout, .. } => assert_eq!(timeout, 300),
             other => panic!("expected Recv variant, got {:?}", other),
         }
+    }
+
+    /// R2-a CLI parity: inbox は agent 必須、 url default は SP (proxy 経由)
+    #[test]
+    fn inbox_parses_agent_with_default_url() {
+        let cli = TestCli::try_parse_from(["vp-wire-test", "inbox", "-a", "agent@vp"])
+            .expect("parse should succeed");
+        match cli.cmd {
+            WireCommands::Inbox { url, agent } => {
+                assert_eq!(agent, "agent@vp");
+                assert_eq!(url, "http://127.0.0.1:33000");
+            }
+            other => panic!("expected Inbox variant, got {:?}", other),
+        }
+        assert!(
+            TestCli::try_parse_from(["vp-wire-test", "inbox"]).is_err(),
+            "--agent omitted should fail"
+        );
+    }
+
+    /// R2-a CLI parity: thread は message_id 必須
+    #[test]
+    fn thread_parses_message_id() {
+        let cli = TestCli::try_parse_from(["vp-wire-test", "thread", "-m", "0196-abc"])
+            .expect("parse should succeed");
+        match cli.cmd {
+            WireCommands::Thread { message_id, .. } => assert_eq!(message_id, "0196-abc"),
+            other => panic!("expected Thread variant, got {:?}", other),
+        }
+    }
+
+    /// R2-a CLI parity: ack は message_id + agent の両方必須
+    #[test]
+    fn ack_parses_message_id_and_agent() {
+        let cli =
+            TestCli::try_parse_from(["vp-wire-test", "ack", "-m", "0196-abc", "-a", "agent@vp"])
+                .expect("parse should succeed");
+        match cli.cmd {
+            WireCommands::Ack {
+                message_id, agent, ..
+            } => {
+                assert_eq!(message_id, "0196-abc");
+                assert_eq!(agent, "agent@vp");
+            }
+            other => panic!("expected Ack variant, got {:?}", other),
+        }
+        assert!(
+            TestCli::try_parse_from(["vp-wire-test", "ack", "-m", "0196-abc"]).is_err(),
+            "--agent omitted should fail"
+        );
     }
 }
