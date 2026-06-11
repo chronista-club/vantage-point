@@ -50,18 +50,21 @@ Phase 3: プラグイン型（将来）— WASM で能力を動的ロード
 
 ### REQ-CAP-004: wiremsg（wire accumulation）
 
-**実装**: `crates/vantage-point/src/capability/wiremsg_store.rs` + `wire_remote.rs`、 CLI は `commands/wire.rs`
+**実装**: `crates/vantage-point/src/capability/wiremsg_store.rs`（store、 TheWorld 上で稼働）+ `process/routes/wire.rs`（TheWorld handlers）+ `process/world_wire.rs`（SP→TheWorld client）、 CLI は `commands/wire.rs`
 
 > **改訂 (2026-05-21)**: 本要件はもともと「msgbox v2（WhitesnakeStore）」 として VP-169 epic（doc 19）の `MsgboxStore` / `WhitesnakeStore` / `msgs` table を指していたが、 2026-05 の **wiremsg 再設計（R1〜R6、 PR #406〜#420）** で msgbox substrate が全廃され、 per-agent cursor の **wire accumulation** モデルに置き換わった。 旧 msgbox 実装（`MsgboxStore` / `WhitesnakeStore` / `msgs` / `msgbox` table / `MsgboxRegistry` / `vp mailbox`）は撤去済。 doc 19 / doc 16-18 は msgbox 設計の historical reference。
+>
+> **改訂 (2026-06-11、 R2-a)**: wire store を **TheWorld（`db/world/`）に中央化**（設計 memory `mem_1CbvcJj4ppU3QKH9d7xMpT`）。 TheWorld が唯一の writer となり、 SP の wire ハンドラは「アドレス正規化 → TheWorld へ HTTP relay」の proxy に。 これに伴い per-SP store と cross-process forward（`wire_remote`、 旧 R3）は概念ごと撤去（B1/B2 バグの根治）。 local_seq は TheWorld 採番でマシン大域単調。
 
-wiremsg は agent 間メッセージングの substrate。 message は per-agent の wire に追記され、 受信側は自分の cursor を進めて未読を取得する。
+wiremsg は agent 間メッセージングの substrate。 message は中央 store（TheWorld）の wire に追記され、 受信側は自分の cursor を進めて未読を取得する。
 
 - [x] wire accumulation — message を wire に追記、 per-agent 単一 cursor で未読取得
 - [x] threading — `wire_send` の `reply_to` で thread 化、 `wire_thread` で ancestor-chain 取得
-- [x] cross-process forward — `wire_remote` 経由の best-effort delivery（R3）
-- [x] MCP tool — `wire_send` / `wire_recv` / `wire_thread`
-- [x] CLI — `vp wire watch`（long-poll subscribe）/ `vp wire send`
-- [x] address モデル — `<actor>@<project>[/<performer>]`（[doc 14](../design/14-wire-address-v3.md)、 旧 msgbox address v3.1 を継承）
+- [x] 中央 store — TheWorld が唯一の writer、 SP は proxy（R2-a。 旧 R3 の cross-process forward は撤去）
+- [x] ack 台帳 — `wire_ack`（per-message、 cursor 非破壊。 R2-a、 決定 D3）
+- [x] MCP tool — `wire_send` / `wire_recv` / `wire_inbox` / `wire_thread` / `wire_ack`
+- [x] CLI — `vp wire send|recv|inbox|thread|ack|watch`（MCP との取得 primitives parity、 R2-a）
+- [x] address モデル — `<actor>@<project>[/<performer>]`（[doc 14](../design/14-wire-address-v3.md)、 canonical = qualified 一本。 bare `"agent"` は SP 入口で正規化、 TheWorld は reject）
 
 ---
 

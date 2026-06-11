@@ -348,37 +348,34 @@ pub async fn run(
                     }
                 })
                 .collect();
-            // daemon (TheWorld) 起動前に SP が上がるケースがあるため、 spawn した task 内で
-            // 最大 60s (5s × 12) retry する (SP 起動は block しない)。
-            tokio::spawn(async move {
-                for body in bootstrap_cmds {
-                    let payload = serde_json::json!({
-                        "from": bootstrap_from,
-                        "to": [lane_spawn_addr.clone()],
-                        "body": body,
-                    });
-                    let mut sent = false;
+            // daemon (TheWorld) 起動前に SP が上がるケースがあるため、 各 cmd 独立の task で
+            // 最大 60s (5s × 12) retry する (SP 起動は block しない)。 performer ごとに並列化
+            // することで、 1 performer の retry 完走が他 performer の投入を遅らせない
+            // (moody 指摘: 直列だと最悪 60s × N の段積み遅延)。 投入順序は Semaphore gate が
+            // 並列度を制御するため保証不要。
+            for body in bootstrap_cmds {
+                let payload = serde_json::json!({
+                    "from": bootstrap_from.clone(),
+                    "to": [lane_spawn_addr.clone()],
+                    "body": body,
+                });
+                tokio::spawn(async move {
                     for _attempt in 0..12u32 {
                         match crate::process::world_wire::call("/api/wire/send", payload.clone())
                             .await
                         {
-                            Ok(_) => {
-                                sent = true;
-                                break;
-                            }
+                            Ok(_) => return,
                             Err(_) => {
                                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                             }
                         }
                     }
-                    if !sent {
-                        tracing::warn!(
-                            "SP startup bootstrap: TheWorld 不達で SpawnLane 投入失敗 (60s retry 後)。 \
-                             `vp daemon start` 後に SP を再起動してください"
-                        );
-                    }
-                }
-            });
+                    tracing::warn!(
+                        "SP startup bootstrap: TheWorld 不達で SpawnLane 投入失敗 (60s retry 後)。 \
+                         `vp daemon start` 後に SP を再起動してください"
+                    );
+                });
+            }
         } else {
             tracing::info!(
                 "SP startup bootstrap: lane performers なし (project_id={})",

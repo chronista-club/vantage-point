@@ -85,7 +85,7 @@ impl Service for NotificationActor {
     }
 
     fn layer_scope(&self) -> LayerScope {
-        // SP-local Service (= 1 Project per Process、 cross-machine forward は wire_remote 経由)
+        // SP-local Service (= 1 Project per Process)
         LayerScope::Project
     }
 
