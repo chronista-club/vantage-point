@@ -134,6 +134,7 @@ pub enum WireCommands {
     /// claude hook 実体 (R2-c、 チャネル B): stdin の hook JSON を読み、 未読 wire が
     /// あれば additionalContext を stdout に出す。 echoes spawn が --settings で注入する
     /// (決定 D2)。 あらゆる失敗は silent 成功 (fail-open、 会話を邪魔しない)。
+    /// 注意: CC hook 専用 — stdin を pipe で繋いで使う (TTY 直接実行は即 return する)。
     HookCheck,
     /// shell-level supervisor: vp wire watch を loop で再起動。 inner watch が exit しても
     /// auto-restart で監視を継続する (lifecycle resilience)。 Monitor の前段に置いて、
@@ -473,6 +474,17 @@ fn build_hook_output(event_name: &str, total: u64) -> Option<String> {
 /// 会話を邪魔しないことが最優先。 TheWorld 直叩き (qualified address を自前導出
 /// するので SP proxy 不要 = 自 SP が落ちていても未読通知は出る)。
 async fn hook_check() -> Result<()> {
+    // TTY からの手動実行ガード (moody 指摘): read_to_string が EOF 待ちで永久 block
+    // するため、 hook 専用である旨を案内して即 return する (exit 0)。
+    use std::io::IsTerminal;
+    if std::io::stdin().is_terminal() {
+        eprintln!(
+            "[vp wire hook-check] CC hook 専用コマンドです (stdin に hook JSON を pipe して使う)。\
+             echoes spawn が --settings で自動注入します。"
+        );
+        return Ok(());
+    }
+
     // stdin の hook JSON から event 名を取る (parse 失敗は fail-open で default)
     let mut input = String::new();
     use std::io::Read;
