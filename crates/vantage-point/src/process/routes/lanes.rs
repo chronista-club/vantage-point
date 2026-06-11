@@ -87,6 +87,16 @@ pub async fn build_lanes_snapshot(state: &AppState) -> Vec<LaneInfo> {
                 lane.performer_status = Some(crate::lane::commands::performer_status(path));
             }
         }
+        // R3-b: CC session id を state file から lazy read (書き手は SessionStart hook)。
+        // 消費者 (echoes --resume) は conductor のみなので populate も限定し、
+        // QUIC 5s tick 経路の syscall を抑える (moody 指摘 #2)。 performer の resume
+        // policy 化 (設計メモ「fresh / resume が制限でなく policy になる」) の際に広げる。
+        if matches!(lane.kind, LaneKind::Conductor) {
+            lane.cc_session_id = crate::lane::cc_session::last(
+                &lane.address.project,
+                crate::process::stand_spawner::lane_label(&lane.address),
+            );
+        }
     }
 
     lanes
@@ -343,6 +353,7 @@ pub async fn create_handler(
         cwd,
         // create 時点では git 状態は registry に保存しない、 GET 時に都度 performer_status() で取得
         performer_status: None,
+        cc_session_id: None,
         // Phase 1e: spawn 成功時のみ tmux address を populate
         tmux: if matches!(lane_state, crate::process::lanes_state::LaneState::Running) {
             vec![crate::process::lanes_state::TmuxLaneAddress::for_spawn(
@@ -765,9 +776,6 @@ mod tests {
         assert_eq!(sanitize_for_branch("a..b"), "a-b");
         assert_eq!(sanitize_for_branch("v1.2.3"), "v1-2-3");
     }
-
-    // doc 11 §3.7 の `migrate_legacy_stand` test 2 件 (translates_old_names /
-    // passes_through_modern_names) は 2026-05-03 削除済 (shim 自体が削除されたため)。
 }
 
 #[cfg(test)]

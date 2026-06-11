@@ -86,7 +86,7 @@ enum Commands {
     #[command(subcommand)]
     Sp(commands::sp::SpCommands),
 
-    /// HD インスタンス管理（tmux + Claude CLI + ccwire）
+    /// HD インスタンス管理（tmux + Claude CLI）
     #[command(subcommand)]
     Hd(commands::hd::HdCommands),
 
@@ -275,6 +275,19 @@ enum LaneCommands {
     Switch {
         /// 切り替え先 lane 名 (= project 名)
         name: String,
+    },
+    /// この lane の最後の CC session id を表示 (R3-b、 echoes spawn の --resume 用)
+    ///
+    /// project / lane は flag 優先、 無ければ VP_PROJECT / VP_LANE env から導出。
+    /// 未記録 / env 不足なら何も出力せず exit 0 (caller は空文字で fallback 判定)。
+    /// id の書き手は SessionStart hook (`vp wire hook-check`)。
+    LastSession {
+        /// project 名 (省略時 VP_PROJECT env)
+        #[arg(long)]
+        project: Option<String>,
+        /// lane label: conductor / performer 名 (省略時 VP_LANE env)
+        #[arg(long)]
+        lane: Option<String>,
     },
 }
 
@@ -670,6 +683,19 @@ fn execute_lane(cmd: LaneCommands) -> Result<()> {
             ws::cleanup_performers(force).map_err(|e| anyhow::anyhow!(e))
         }
         LaneCommands::Switch { name } => switch_lane_via_world(&name),
+        LaneCommands::LastSession { project, lane } => {
+            // R3-b: echoes task (spawn 時) から env 経由で呼ばれる主経路。
+            // 未記録 / env 不足は「出力なし exit 0」 — caller の `[ -n "$RESUME_ID" ]`
+            // 判定で従来 (--continue) に fallback させる。
+            let project = project.or_else(|| std::env::var("VP_PROJECT").ok());
+            let lane = lane.or_else(|| std::env::var("VP_LANE").ok());
+            if let (Some(p), Some(l)) = (project, lane)
+                && let Some(id) = vantage_point::lane::cc_session::last(&p, &l)
+            {
+                println!("{id}");
+            }
+            Ok(())
+        }
     }
 }
 

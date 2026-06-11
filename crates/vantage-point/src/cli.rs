@@ -350,6 +350,11 @@ pub fn parse_debug_env() -> Option<DebugMode> {
 /// `tui_mode` が true の場合、ログ出力を stderr ではなくファイルにリダイレクト。
 /// TUI (ratatui) の alternate screen にサーバーログが漏れるのを防ぐ。
 pub fn init_tracing(debug_mode: DebugMode, tui_mode: bool) {
+    // daemon ログローテーション設定。 vp-app 側の `log_init::LOG_MAX_BYTES` /
+    // `LOG_KEEP_FILES` と同値に保つこと (2 crate に依存関係が無いため定数を物理共有できず、
+    // 各 crate に複製している。 恒久的には vp-paths へ寄せる候補 = Observability Phase B)。
+    const DAEMON_LOG_MAX_BYTES: usize = 10 * 1024 * 1024; // 10 MB
+    const DAEMON_LOG_KEEP_FILES: usize = 5;
     // VP_LOGが設定されていない場合、debug_modeに基づいてRUST_LOGを設定
     // SAFETY: main()開始直後、他スレッド起動前に呼ばれるため安全
     if std::env::var("VP_LOG").is_err() && std::env::var("RUST_LOG").is_err() {
@@ -392,15 +397,17 @@ pub fn init_tracing(debug_mode: DebugMode, tui_mode: bool) {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let dir = path
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| std::path::PathBuf::from("."));
-        let file_name = path
-            .file_name()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "daemon.kdl.log".to_string());
-        let appender = tracing_appender::rolling::never(&dir, &file_name);
+        // ログローテーション (file-rotate): 容量ベースで切替、 件数ベースで GC して daemon log の膨張を防ぐ。
+        // 現行ファイルは `VP_DAEMON_LOG_FILE` が指す bare 名のまま (日付名にしない) なので、
+        // tail -F / 既存 reader を壊さない。 rotate 世代は `daemon.kdl.log.1`.. へ逃がす。
+        // Mutex で包むと tracing-subscriber が MakeWriter として扱える (WorkerGuard 不要)。
+        let appender = std::sync::Mutex::new(file_rotate::FileRotate::new(
+            &path,
+            file_rotate::suffix::AppendCount::new(DAEMON_LOG_KEEP_FILES),
+            file_rotate::ContentLimit::Bytes(DAEMON_LOG_MAX_BYTES),
+            file_rotate::compression::Compression::None,
+            None,
+        ));
         tracing_subscriber::fmt()
             .with_env_filter(env_filter)
             .with_target(false)

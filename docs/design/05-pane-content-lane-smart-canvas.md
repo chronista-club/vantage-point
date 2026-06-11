@@ -280,7 +280,7 @@ Sidebar で各 Performer Lane に `[peek]` / `[mirror to conductor]` / `[destroy
 | D-12 | CreoUI schema 戦略 | C (Co-design) |
 
 ### Linear Epic
-- [VP-72 Requiem Architecture Epic](https://linear.app/chronista/issue/VP-72)
+- `VP-72`
 - 子 issues: VP-73 (R0) / VP-74 (R1) / VP-75 (R2) / VP-76 (R3)
 
 ### 関連 creo-memories

@@ -515,13 +515,6 @@ impl Config {
     }
 }
 
-// =============================================================================
-// Running Processes Management — 廃止済み
-// =============================================================================
-// running.json ベースの状態管理は discovery.rs に移行済み。
-// TheWorld (ProcessManagerCapability) のインメモリ状態が単一の真実源。
-// 参照: crate::discovery
-
 #[cfg(test)]
 mod tests {
     use super::*;

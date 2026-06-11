@@ -9,6 +9,10 @@
 //! - **Capability**: Process が持つ能力（Agent, MIDI, Protocol等）
 
 pub mod capabilities;
+/// CC activity poll — `claude agents --json` の LaneActivity 供給 (R3-a / Phase A)
+pub(crate) mod cc_activity;
+/// wire delivery loop — 未 ack command の tmux nudge + 再掲示 (R2-b、 TheWorld 常駐)
+pub(crate) mod delivery_actor;
 pub(crate) mod hub;
 /// VP install root の runtime 解決 (doc 11 PR-D / Z 系統)
 pub(crate) mod install_root;
@@ -43,6 +47,7 @@ pub(crate) mod tmux_actor;
 pub mod topic;
 pub(crate) mod topic_router;
 pub(crate) mod unison_server;
+pub(crate) mod world_wire;
 
 pub use capabilities::CapabilityConfig;
 pub use server::{run, run_world};

@@ -559,6 +559,7 @@ pub async fn start_unison_server(
                             "wire_unread_count" => handle_wire_unread_count(&state, payload).await,
                             // flow_progress 5-state FSM derive 用 read-only 最新 wmsg
                             "wire_latest_msg" => handle_wire_latest_msg(&state, payload).await,
+                            "wire_ack" => handle_wire_ack(&state, payload).await,
                             _ => Err(format!("不明なメソッド: process.{}", method)),
                         };
 
@@ -881,374 +882,181 @@ pub async fn start_unison_server(
 }
 
 // =============================================================================
-// wiremsg threaded inbox ハンドラー (Phase A ①、 設計 mem_1CbD9H1KGQykBaFG8XXVsn)
+// wiremsg ハンドラー (R2-a: TheWorld 中央 store への proxy 層)
+//
+// store 直結のロジックは routes/wire.rs (TheWorld 側) に移設済。 SP の責務は
+// 「アドレス正規化 (N1) → TheWorld へ HTTP relay」 のみ。 QUIC dispatch と
+// HTTP wrapper (routes/health.rs) は本 proxy 群を呼ぶため signature 不変。
 // =============================================================================
 
-/// wire message の `body` を JSON object に正規化する。
+/// agent address を canonical (qualified) 形に正規化する (wiremsg N1、 refactor R1 PR-B)
 ///
-/// MCP client が `body` の schema (typeless な `serde_json::Value`) を string と
-/// 解釈し、 JSON object を文字列化して送ってくることがある。 string で来た場合は
-/// JSON として parse し直して救済する。 最終的に object でなければ Err —
-/// `wire_messages.body` は SurrealDB 上 `TYPE object` なので、 ここで弾く方が
-/// SurrealDB の coerce エラーより分かりやすい。
-fn coerce_wire_body(raw: Option<serde_json::Value>) -> Result<serde_json::Value, String> {
-    let body = match raw {
-        // 省略時は空 object。
-        None => return Ok(serde_json::json!({})),
-        // string で来たら JSON として parse し直す (typeless schema の救済)。
-        Some(serde_json::Value::String(s)) => serde_json::from_str::<serde_json::Value>(&s)
-            .map_err(|e| {
-                format!(
-                    "wire_send: body は JSON object であるべきですが、 string で受信し \
-                     JSON としても parse できません: {e}"
-                )
-            })?,
-        Some(v) => v,
-    };
-    if !body.is_object() {
-        return Err(format!(
-            "wire_send: body は JSON object であるべきですが object でない値を受信しました ({body})"
-        ));
+/// conductor の自己申告 from/agent は bare `"agent"` で届く (mcp.rs `SelfLane::from_address`)。
+/// store 上の識別子を qualified (`agent@<project>`) 一本に統一することで、 cross-process
+/// 返信 (`agent@<project>` 宛で forward される) が conductor の bare query と完全一致
+/// マッチせず**永遠に届かない**バグ (B2、 レビュー mem_1CbuxQuNRwHBiZgBVUWVfN) を根治する。
+/// bare 以外 (qualified / canvas@... / gold_experience@... 等) はそのまま返す。
+fn normalize_agent_addr(addr: &str, self_project: &str) -> String {
+    if addr == "agent" {
+        format!("agent@{}", self_project)
+    } else {
+        addr.to_string()
     }
-    Ok(body)
 }
 
-/// wiremsg を送信する (= 新規 thread の root、 または `reply_to` 指定で reply)
+/// wiremsg を送信する (R2-a: TheWorld 中央 store への proxy)
 ///
 /// payload: `{ from, to: [..], body, reply_to? }`
 ///
-/// Operations (Phase A ① / R1 / R3 仕様):
-/// - `reply_to` なし → `WiremsgStore::send_root` (root message を INSERT、 `prev = None`)
-/// - `reply_to` あり → `WiremsgStore::send_reply` (reply message を INSERT、 reply-all 展開)
-/// - 送信後、 notify 対象の待機中 `wire_recv` を `WireNotifier` で起こす:
-///   - root: 受信者 (= `to`) を notify
-///   - reply: reply の `to` (= carry-forward 済の参加者集合) を notify
-/// - R3 (cross-process delivery): ローカル INSERT の **後**、 確定した message の `to`
-///   (= reply は carry-forward 済) を `classify_recipients` で振り分け、 `agent@<other-project>`
-///   宛があれば受信側 SP に best-effort で forward する ([`forward_remote_recipients`])。
+/// SP の責務はアドレス正規化 (N1: bare `"agent"` → `"agent@<self_project>"`) のみ。
+/// 保存・notify・local_seq 採番・body coerce は全て TheWorld 側
+/// ([`crate::process::routes::wire`])。 cross-process forward は中央化で概念ごと消滅。
 pub(crate) async fn handle_wire_send(
     state: &AppState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    let store = state
-        .wiremsg_store
-        .as_ref()
-        .ok_or_else(|| "wiremsg_store not initialized".to_string())?;
-
     let from = payload
         .get("from")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| "wire_send: 'from' required".to_string())?
-        .to_string();
+        .map(|s| normalize_agent_addr(s, &state.project_name))
+        .ok_or_else(|| "wire_send: 'from' required".to_string())?;
     let to: Vec<String> = payload
         .get("to")
         .and_then(|v| v.as_array())
         .map(|arr| {
             arr.iter()
-                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .filter_map(|v| v.as_str())
+                .map(|s| normalize_agent_addr(s, &state.project_name))
                 .collect()
         })
         .unwrap_or_default();
-    // body は JSON object。 MCP client が typeless な body schema を string と
-    // 解釈し JSON 文字列で送ってくることがあるため、 coerce_wire_body で正規化する。
-    let body = coerce_wire_body(payload.get("body").cloned())?;
-    let reply_to = payload
-        .get("reply_to")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-
-    match reply_to {
-        // ---- reply ----
-        Some(prev_id) => {
-            let msg = store
-                .send_reply(&from, &to, body, &prev_id)
-                .await
-                .map_err(|e| format!("wire_send (reply) failed: {e}"))?;
-            // notify 対象 = reply の to。 send_reply の carry-forward で確定済の参加者集合で、
-            // 送信者と left は既に除外済。 thread 全走査は不要 (prev carry-forward の帰結)。
-            for agent in &msg.to {
-                state.wire_notifier.notify(agent).await;
-            }
-            // R3: reply の to (= carry-forward 済) に remote 宛があれば best-effort forward。
-            forward_remote_recipients(state, &msg).await;
-            Ok(serde_json::json!({
-                "status": "ok",
-                "id": msg.id,
-                "prev": msg.prev,
-                "local_seq": msg.local_seq,
-                "notified": msg.to.len(),
-            }))
-        }
-        // ---- new thread (root) ----
-        None => {
-            let msg = store
-                .send_root(&from, &to, body)
-                .await
-                .map_err(|e| format!("wire_send (root) failed: {e}"))?;
-            // 受信者 (= to、 送信者自身は除く) を notify
-            for agent in to.iter().filter(|a| **a != from) {
-                state.wire_notifier.notify(agent).await;
-            }
-            // R3: root の to に remote 宛があれば best-effort forward。
-            forward_remote_recipients(state, &msg).await;
-            Ok(serde_json::json!({
-                "status": "ok",
-                "id": msg.id,
-                "prev": serde_json::Value::Null,
-                "local_seq": msg.local_seq,
-                "notified": to.iter().filter(|a| **a != from).count(),
-            }))
-        }
+    let mut forwarded = serde_json::json!({
+        "from": from,
+        "to": to,
+    });
+    if let Some(body) = payload.get("body") {
+        forwarded["body"] = body.clone();
     }
+    if let Some(reply_to) = payload.get("reply_to") {
+        forwarded["reply_to"] = reply_to.clone();
+    }
+    super::world_wire::call("/api/wire/send", forwarded).await
 }
 
-/// R3: 確定した wire message の `to` を分類し、 remote 宛があれば best-effort で forward する
+/// wiremsg を受信する (R2-a: TheWorld 中央 store への proxy、 long-poll は TheWorld 側)
 ///
-/// `handle_wire_send` の root / reply 両 path から、 ローカル INSERT の **後** に呼ぶ。
-/// message の `to` (reply なら carry-forward 済の参加者集合) を `classify_recipients` で
-/// local / remote に振り分け、 `agent@<other-project>` のような remote 宛があれば受信側 SP に
-/// HTTP forward する。
-///
-/// **best-effort 確定** (決定 `mem_1CbDYnc7GjZkXXWgm9PAfK`): forward 失敗は
-/// `forward_to_remote` 内で log のみ。 `wire_send` 自体は成功で返る (= ローカル INSERT は
-/// 既に完了済)。 retry はしない。
-async fn forward_remote_recipients(state: &AppState, msg: &crate::capability::WireMessage) {
-    // 自 project が未確定 (World mode 等) なら cross-process forward しない。
-    if state.project_name.is_empty() {
-        return;
-    }
-    let recipients = crate::capability::classify_recipients(&msg.to, &state.project_name);
-    if recipients.has_remote() {
-        crate::capability::forward_to_remote(
-            crate::cli::WORLD_PORT,
-            &recipients.remote_projects,
-            msg,
-        )
-        .await;
-    }
-}
-
-/// wiremsg を受信する (= 呼び出し agent の参加 thread の未読 message を long-poll で取得)
-///
-/// payload: `{ agent, timeout? }`
-///
-/// Operations (Phase A ① / R1 仕様):
-/// 1. `agent` 宛 (`to_addrs ∋ agent`) で `local_seq > read_cursor` の未読 message を取得
-/// 2. 未読があれば返却 → 取得した最新 message の `local_seq` まで cursor を前進
-///    (R1: cursor は厳密単調な local_seq。 同一 ms 衝突や clock skew で取りこぼさない)
-/// 3. 未読が無ければ `WireNotifier` で待機 (timeout あり)、 notify で起床して再 poll
-///
-/// 取りこぼし防止のため、 `notified()` future を **store poll の前に** 生成する
-/// (= `WireNotifier` の struct doc 参照)。
+/// payload: `{ agent, timeout? }` — timeout の clamp (default 5s / max 30s) も TheWorld 側。
 pub(crate) async fn handle_wire_recv(
     state: &AppState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    let store = state
-        .wiremsg_store
-        .as_ref()
-        .ok_or_else(|| "wiremsg_store not initialized".to_string())?;
-
     let agent = payload
         .get("agent")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| "wire_recv: 'agent' required".to_string())?
-        .to_string();
-    // timeout は msg_recv と同じ default 5s / max 30s
-    let timeout_secs = payload
-        .get("timeout")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(5)
-        .min(30);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
-
-    loop {
-        // 取りこぼし防止: poll の前に待機 future を準備しておく
-        // (poll と await の隙間に来た wire_send notify も拾えるようにする)
-        let notify = state.wire_notifier.handle(&agent).await;
-        let notified = notify.notified();
-        tokio::pin!(notified);
-
-        // 未読 message を取得 + read_cursor 前進 (store.recv が両方まとめて実施)。
-        // cursor は取得済 message の local_seq 最大値に合わせる (R1: 厳密単調で取りこぼし無し)。
-        let unread = store
-            .recv(&agent)
-            .await
-            .map_err(|e| format!("wire_recv failed: {e}"))?;
-
-        if !unread.is_empty() {
-            let value = serde_json::to_value(&unread)
-                .map_err(|e| format!("wire_recv serialize failed: {e}"))?;
-            return Ok(serde_json::json!({
-                "messages": value,
-                "count": unread.len(),
-            }));
-        }
-
-        // 未読なし: deadline まで notify を待つ
-        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-        if remaining.is_zero() {
-            return Ok(serde_json::json!({
-                "messages": [],
-                "count": 0,
-                "reason": "timeout",
-            }));
-        }
-        // notify が来たら再 poll、 timeout したら次ループで deadline 判定 → timeout 返却
-        let _ = tokio::time::timeout(remaining, notified).await;
-    }
+        .map(|s| normalize_agent_addr(s, &state.project_name))
+        .ok_or_else(|| "wire_recv: 'agent' required".to_string())?;
+    let timeout = payload.get("timeout").and_then(|v| v.as_u64()).unwrap_or(5);
+    super::world_wire::call(
+        "/api/wire/recv",
+        serde_json::json!({ "agent": agent, "timeout": timeout }),
+    )
+    .await
 }
 
-/// wiremsg の ancestor-chain (系譜) を取得する (R2、 設計 mem_1CbDLrECNZiNEZqjySLfSB)
+/// wiremsg の ancestor-chain (系譜) を取得する (R2-a: TheWorld proxy、 read-only)
 ///
-/// payload: `{ message_id }`
-///
-/// 指定 message から `prev` を root まで辿った **系譜** (root-first・chronological) を
-/// 返す。 `wire_recv` の増分 drain とは対の read-only tool で、 cursor を一切触らない
-/// (冪等)。 thread に途中参加した agent が backlog (= 文脈) を取得する用途。
-///
-/// 戻り値: `{ status: "ok", messages: [..], count: <n> }`。
-/// `message_id` の message が存在しなければ `Err`。
+/// payload: `{ message_id }` — agent 文脈不要のため正規化なしで relay。
 pub(crate) async fn handle_wire_thread(
     state: &AppState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    let store = state
-        .wiremsg_store
-        .as_ref()
-        .ok_or_else(|| "wiremsg_store not initialized".to_string())?;
-
+    let _ = state; // thread は project 文脈 (正規化) 不要。 signature は他 handler と統一
     let message_id = payload
         .get("message_id")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| "wire_thread: 'message_id' required".to_string())?
-        .to_string();
-
-    // ancestor-chain (root-first) を取得。 cursor は触らない (read-only)。
-    let chain = store
-        .ancestor_chain(&message_id)
-        .await
-        .map_err(|e| format!("wire_thread failed: {e}"))?;
-    let value =
-        serde_json::to_value(&chain).map_err(|e| format!("wire_thread serialize failed: {e}"))?;
-    Ok(serde_json::json!({
-        "status": "ok",
-        "messages": value,
-        "count": chain.len(),
-    }))
+        .ok_or_else(|| "wire_thread: 'message_id' required".to_string())?;
+    super::world_wire::call(
+        "/api/wire/thread",
+        serde_json::json!({ "message_id": message_id }),
+    )
+    .await
 }
 
-/// wiremsg の agent 関与最新 message を取得する (read-only、 cursor 不触り)
+/// wiremsg の agent 関与最新 message を取得する (R2-a: TheWorld proxy、 read-only)
 ///
-/// payload: `{ agent }`
-///
-/// 「関与」 = `from_addr == agent` OR `to_addrs CONTAINS agent`。
-/// `flow_progress` の 5-state FSM derive で performer の現状態 (= 最新 wmsg の direction + body.kind)
-/// を判定するために使う。
-///
-/// 戻り値: `{ status: "ok", message: <WireMessage|null> }`。 該当無しは null。
+/// payload: `{ agent }`。 `flow_progress` の 5-state FSM derive で使う。
 pub(crate) async fn handle_wire_latest_msg(
     state: &AppState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    let store = state
-        .wiremsg_store
-        .as_ref()
-        .ok_or_else(|| "wiremsg_store not initialized".to_string())?;
-
     let agent = payload
         .get("agent")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| "wire_latest_msg: 'agent' required".to_string())?
-        .to_string();
-
-    let latest = store
-        .latest_msg_for_agent(&agent)
-        .await
-        .map_err(|e| format!("wire_latest_msg failed: {e}"))?;
-    Ok(serde_json::json!({
-        "status": "ok",
-        "message": latest,
-    }))
+        .map(|s| normalize_agent_addr(s, &state.project_name))
+        .ok_or_else(|| "wire_latest_msg: 'agent' required".to_string())?;
+    super::world_wire::call(
+        "/api/wire/latest-msg",
+        serde_json::json!({ "agent": agent }),
+    )
+    .await
 }
 
-/// wiremsg の per-agent 未読 count を取得する (read-only、 cursor 不触り)
+/// wiremsg の per-agent 未読 count を取得する (R2-a: TheWorld proxy、 read-only)
 ///
-/// payload: `{ agent }`
-///
-/// `flow_progress` の集約 view で使う。 `wire_recv` を timeout=0 で叩く代替は cursor を
-/// 進めてしまい flow_progress が destructive になるため、 cursor 不触りの専用 path を提供。
-///
-/// 戻り値: `{ status: "ok", total: <n>, by_thread: { <root_id>: <n>, ... } }`。
+/// payload: `{ agent }`。 `flow_progress` の集約 view / `wire_inbox` MCP tool で使う。
 pub(crate) async fn handle_wire_unread_count(
     state: &AppState,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    let store = state
-        .wiremsg_store
-        .as_ref()
-        .ok_or_else(|| "wiremsg_store not initialized".to_string())?;
-
     let agent = payload
         .get("agent")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| "wire_unread_count: 'agent' required".to_string())?
-        .to_string();
+        .map(|s| normalize_agent_addr(s, &state.project_name))
+        .ok_or_else(|| "wire_unread_count: 'agent' required".to_string())?;
+    super::world_wire::call(
+        "/api/wire/unread-count",
+        serde_json::json!({ "agent": agent }),
+    )
+    .await
+}
 
-    let by_thread = store
-        .unread_count_by_thread(&agent)
-        .await
-        .map_err(|e| format!("wire_unread_count failed: {e}"))?;
-    let total: u64 = by_thread.values().sum();
-    Ok(serde_json::json!({
-        "status": "ok",
-        "total": total,
-        "by_thread": by_thread,
-    }))
+/// wiremsg を ack する (R2-a 新設、 決定 D3: cursor 非破壊の ack 台帳への proxy)
+///
+/// payload: `{ message_id, agent }` → `{ status, acked }`
+pub(crate) async fn handle_wire_ack(
+    state: &AppState,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let message_id = payload
+        .get("message_id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "wire_ack: 'message_id' required".to_string())?;
+    let agent = payload
+        .get("agent")
+        .and_then(|v| v.as_str())
+        .map(|s| normalize_agent_addr(s, &state.project_name))
+        .ok_or_else(|| "wire_ack: 'agent' required".to_string())?;
+    super::world_wire::call(
+        "/api/wire/ack",
+        serde_json::json!({ "message_id": message_id, "agent": agent }),
+    )
+    .await
 }
 
 #[cfg(test)]
 mod tests {
-    use super::coerce_wire_body;
-    use serde_json::json;
+    use super::normalize_agent_addr;
 
     #[test]
-    fn coerce_body_passes_object_through() {
-        let got = coerce_wire_body(Some(json!({"text": "hi", "n": 1}))).unwrap();
-        assert_eq!(got, json!({"text": "hi", "n": 1}));
+    fn normalize_bare_agent_to_qualified() {
+        assert_eq!(normalize_agent_addr("agent", "vp"), "agent@vp");
     }
 
     #[test]
-    fn coerce_body_none_is_empty_object() {
-        assert_eq!(coerce_wire_body(None).unwrap(), json!({}));
-    }
-
-    #[test]
-    fn coerce_body_parses_json_string_into_object() {
-        // MCP client が JSON object を文字列化して送ってくるケースの救済。
-        let raw = Some(json!(r#"{"text": "hi", "n": 1}"#));
-        assert_eq!(
-            coerce_wire_body(raw).unwrap(),
-            json!({"text": "hi", "n": 1})
-        );
-    }
-
-    #[test]
-    fn coerce_body_rejects_non_json_string() {
-        let err = coerce_wire_body(Some(json!("just text"))).unwrap_err();
-        assert!(err.contains("JSON"), "err={err}");
-    }
-
-    #[test]
-    fn coerce_body_rejects_json_string_of_non_object() {
-        // JSON としては valid だが object でない (array)。
-        let err = coerce_wire_body(Some(json!("[1, 2, 3]"))).unwrap_err();
-        assert!(err.contains("object"), "err={err}");
-    }
-
-    #[test]
-    fn coerce_body_rejects_bare_array() {
-        let err = coerce_wire_body(Some(json!([1, 2, 3]))).unwrap_err();
-        assert!(err.contains("object"), "err={err}");
+    fn normalize_keeps_qualified_and_other_addrs() {
+        assert_eq!(normalize_agent_addr("agent@vp", "vp"), "agent@vp");
+        assert_eq!(normalize_agent_addr("agent@other", "vp"), "agent@other");
+        assert_eq!(normalize_agent_addr("agent@vp/sub", "vp"), "agent@vp/sub");
+        assert_eq!(normalize_agent_addr("canvas@vp", "vp"), "canvas@vp");
     }
 }

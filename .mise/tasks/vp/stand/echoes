@@ -18,22 +18,65 @@ tmux start-server 2>/dev/null || true
 tmux set-option -g focus-events on 2>/dev/null || true
 tmux set-option -g escape-time 0 2>/dev/null || true
 tmux set-option -ga terminal-overrides ',xterm-256color:Tc' 2>/dev/null || true
+# cc 通知 (OSC 99 / kitty desktop notification) を outer (vp-app xterm.js) へ透過する。
+# tmux は既定で OSC 99 を握り潰すため、 これが無いと Lane sidebar の awaiting_input dot が
+# 出ない。 VP が自前 set することで user の ~/.tmux.conf に依存せず箱から通知が出る
+# (公式: https://code.claude.com/docs/en/terminal-config#configure-tmux)。
+tmux set-option -g allow-passthrough on 2>/dev/null || true
+# tmux 下で Shift+Enter を newline 識別 (cc multiline)。
+tmux set-option -s extended-keys on 2>/dev/null || true
+tmux set-option -as terminal-features 'xterm*:extkeys' 2>/dev/null || true
 
 # tmux 副舞台 + claude auto-launch + 終了後 shell fallback:
 #
 #   tmux command:
-#     'claude --continue || claude; exec $SHELL -l'
-#       1. claude --continue で前 session を resume、 失敗時は claude (新規) で再試行
+#     '$CLAUDE_CMD; exec $SHELL -l'
+#       1. $CLAUDE_CMD で claude を起動 (下記の conductor/performer 分岐)
 #       2. claude 終了後 (e.g. /exit) は exec で login shell に切替えて tmux session 内に
 #          bash/zsh prompt を維持 ─ user は `claude -c` で復帰 / `zsh` 別起動 / `exit` で
 #          明示終了 等を自由に選べる (旧 LlmStand 経路の outer shell 体験を tmux session 内に
 #          閉じ込めた形、 PR-B 移行で消えた tier の代替実装)。
 #
 #   外側 || fallback (tmux 不在環境):
-#     cd "$VP_CWD" && (claude --continue || claude)
+#     cd "$VP_CWD" && eval "$CLAUDE_CMD"
 #     ─ shell 上で素 claude を起動。 doc 11 PR-D (Z 系統) で spawn cwd は VP install
 #       root なので、 明示的に project dir に cd してから claude を起動する。
 LOGIN_SHELL="${SHELL:-/bin/zsh}"
+
+# wiremsg R2-c (チャネル B、 決定 D2): wire 未読通知 hook を VP が spawn 時に注入する。
+# dotfile 非依存で箱から動く (#512/#515 と同じ「VP が自前担保」哲学)。 hook 実体は
+# `vp wire hook-check` (vp CLI 同梱、 配布物不要)。 会話境界 (SessionStart /
+# UserPromptSubmit) で未読 wire を additionalContext 通知し、 daemon 不在・エラー時は
+# silent 成功 (fail-open、 会話を邪魔しない)。 JSON に single quote が無いため
+# '$WIRE_HOOKS' 埋め込みで安全に quote できる (tmux 内 shell の word splitting 防止)。
+WIRE_HOOKS='{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"vp wire hook-check"}]}],"UserPromptSubmit":[{"hooks":[{"type":"command","command":"vp wire hook-check"}]}]}}'
+
+# CC 2.1 Background Agents insulate (Phase B):
+# `claude --continue` は CC 2.1.156+ で background session が存在すると単一 REPL でなく
+# Agent View dashboard (multi-session manager) を開き、 VP の send-keys handoff が
+# list-nav UI に化けて詰まる。 機械が send-keys で操る performer (wing) は fresh `claude`
+# で deterministic に clean REPL を保証する (wire handoff は永続なので起動後 wire_recv で
+# 拾える)。 user が対話する conductor は session 永続化 (= VP コアコンセプト) を優先して
+# `--continue` chain を維持 (dashboard が出ても人間は操作できる)。
+# 関連 memory: mem_1CbXZyCiqrdgteGhRFDaHW (CC 2.1 Background Agents daemon × VP)
+if [ "${VP_LANE:-}" = "conductor" ]; then
+    # wiremsg R3-b: 前回 session を指名 resume する (CC 2.1 の Agent View dashboard 罠の
+    # 構造的回避 — `--continue` は「cwd の最新」を拾うため bg session 在りで dashboard 化する。
+    # 設計 mem_1CbXZyCiqrdgteGhRFDaHW)。 id は SessionStart hook (vp wire hook-check) が
+    # 記録した lane 単位の保存値 (`vp lane last-session` が VP_PROJECT/VP_LANE から読む)。
+    # 未記録 (初回 / 移行直後) は従来の --continue chain を維持 — 一度 session が立てば
+    # hook が記録し、 以後この分岐は --resume 側に乗る。 resume 失敗 (session 消失) は
+    # fresh claude に fallback。 id は英数+ハイフンのみ (last-session 側で検証済) のため
+    # single quote 埋め込みは安全。
+    RESUME_ID="$(vp lane last-session 2>/dev/null || true)"
+    if [ -n "$RESUME_ID" ]; then
+        CLAUDE_CMD="claude --resume '$RESUME_ID' --settings '$WIRE_HOOKS' || claude --settings '$WIRE_HOOKS'"
+    else
+        CLAUDE_CMD="claude --continue --settings '$WIRE_HOOKS' || claude --settings '$WIRE_HOOKS'"
+    fi
+else
+    CLAUDE_CMD="claude --settings '$WIRE_HOOKS'"
+fi
 # -x 120 -y 48: session の初期サイズ。 client 未 attach (headless) でも極小
 # (9×3) に張り付かず claude が実用サイズで動く。 vp-app で表示すると attach
 # client サイズへ resize される (tmux window-size latest)。 新規 session のみ
@@ -48,5 +91,5 @@ LOGIN_SHELL="${SHELL:-/bin/zsh}"
 exec tmux new-session -A -x 120 -y 48 -c "$VP_CWD" -s "$VP_SESSION" \
     -e "VP_CWD=$VP_CWD" -e "VP_PROJECT=$VP_PROJECT" \
     -e "VP_SESSION=$VP_SESSION" -e "VP_LANE=$VP_LANE" \
-    "claude --continue || claude; exec $LOGIN_SHELL -l" \
-    || (cd "$VP_CWD" && (claude --continue || claude))
+    "$CLAUDE_CMD; exec $LOGIN_SHELL -l" \
+    || (cd "$VP_CWD" && eval "$CLAUDE_CMD")

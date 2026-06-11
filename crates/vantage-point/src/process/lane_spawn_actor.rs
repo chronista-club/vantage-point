@@ -20,20 +20,19 @@
 //!   JoinHandle<()>` に統一)、 caller (= server.rs) は `ActorRegistry::spawn_service` 経由に集約
 //!   (= JoinHandle を ActorRegistry が保持、 PR-5 supervisor 統一の foundation)。
 //!
-//! ## wiremsg R4 (group B 移行、 2026-05-21) — recv path を wire accumulation に rewire
+//! ## wiremsg R2-a (store 中央化、 2026-06-11) — recv path を TheWorld long-poll に rewire
 //!
-//! 旧 `WhitesnakeStore.claim("lane-spawn", "conductor", consumer_id)` の 100ms polling を廃止し、
-//! wire accumulation (`WiremsgStore`) の per-agent cursor recv に切替。 actor は
-//! `lane-spawn@<project>` を wire address として `WiremsgStore::recv` し、 `WireNotifier`
-//! の long-poll で起床する。 producer (= `sp-bootstrap`) も `WiremsgStore::send_root` +
-//! `WireNotifier::notify` に rewire (server.rs)。 `Option<WiremsgStore> = None` の場合は
-//! recv 経路 idle で gracefully degrade。 旧 msgbox の `claim → mark_consumed` destructive
-//! 消費は wire の per-agent cursor 前進 (非破壊) に置き換わり、 mark_consumed は不要。
+//! R4 で wire accumulation (per-SP `WiremsgStore`) に移行した recv path を、 store 中央化
+//! (設計 mem_1CbvcJj4ppU3QKH9d7xMpT) に伴い TheWorld への HTTP long-poll
+//! (`crate::process::world_wire`) に切替。 待機は TheWorld 側 `wire_recv` の long-poll が
+//! 担うため in-process `WireNotifier` は不要になった。 TheWorld 不在 (standalone SP) は
+//! IDLE_POLL 間隔の retry で gracefully degrade。 旧 msgbox の `claim → mark_consumed`
+//! destructive 消費は wire の per-agent cursor 前進 (非破壊) のまま。
 //! Semaphore gate / race guard / `handle_cmd` の内部挙動は完全互換。
 //!
 //! ## 設計
 //!
-//! - **address**: `lane-spawn@<project>` (= wire accumulation address、 `WiremsgStore::recv`)。
+//! - **address**: `lane-spawn@<project>` (= TheWorld 中央 wire store の address)。
 //!   producer は同 Process の `sp-bootstrap@<project>` (server.rs の bootstrap loop)
 //! - **wire format**: `LaneCmd::SpawnLane{...}` (= `crate::process::lane_cmd`)、 serde tag="kind"
 //! - **concurrency**: `Arc<Semaphore::new(max_concurrent)>` で permit gate、 各 Cmd は
@@ -74,15 +73,13 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::capability::stand_service::{LayerScope, Service, SpawnableService};
-use crate::capability::{WireNotifier, WiremsgStore};
 
 use super::lane_capabilities::LaneCapabilitiesPool;
 use super::lane_cmd::LaneCmd;
 use super::lanes_state::{Diff, LaneAddress, LaneInfo, LaneKind, LanePool, LaneState, SystemEvent};
 
-/// lane-spawn recv の fallback poll 間隔。 wire_send / cross-process forward 受信は
-/// 必ず `WireNotifier::notify` を呼ぶので通常は即時起床する。 この sleep は notify を
-/// 取りこぼした場合の安全網 (= 最悪でもこの間隔で recv が回る)。
+/// lane-spawn recv の retry 間隔 (TheWorld 不達時)。 通常は TheWorld 側 long-poll が
+/// 待機を担うため、 この sleep は TheWorld 不在時の再接続間隔としてのみ効く。
 const IDLE_POLL: Duration = Duration::from_secs(5);
 
 /// Lane spawn Service (= `lane-spawn` mailbox から `LaneCmd::SpawnLane` を recv、
@@ -94,10 +91,6 @@ const IDLE_POLL: Duration = Duration::from_secs(5);
 /// PR-β-2 (VP-120): `lane_capabilities_pool: Option<...>` で Performer spawn 成功時に
 /// `populate_lane` を呼び、 Lane あたり独立 PaisleyParkState を host する。
 pub struct LaneSpawnActor {
-    /// wiremsg R4: wire accumulation store (= 旧 `WhitesnakeStore` から rewire)
-    wiremsg_store: Option<WiremsgStore>,
-    /// wiremsg R4: long-poll 起床用 in-process notifier (`AppState` と共有)
-    wire_notifier: WireNotifier,
     /// wire address の project segment (`lane-spawn@<project>`)
     project: String,
     lane_pool: Arc<RwLock<LanePool>>,
@@ -109,14 +102,13 @@ pub struct LaneSpawnActor {
 impl LaneSpawnActor {
     /// 新しい `LaneSpawnActor` を構築する。
     ///
-    /// wiremsg R4: 旧 `new(msgbox_store, ...)` → `new(wiremsg_store, wire_notifier,
-    /// project, ...)` に signature 変更。 caller (= server.rs) が wire 系を渡す。
+    /// wiremsg R2-a: store 中央化に伴い、 旧 `new(wiremsg_store, wire_notifier, ...)` から
+    /// wire 系引数を撤去。 recv は TheWorld への HTTP long-poll
+    /// ([`crate::process::world_wire`]) で行う。
     ///
     /// `max_concurrent=0` は意味的に「全 spawn を block」 だが事故 config の可能性が高いため、
     /// `spawn()` 内で 1 に丸めて warn する (= sequential、 `Semaphore::new(0)` の永久 block 回避)。
     pub fn new(
-        wiremsg_store: Option<WiremsgStore>,
-        wire_notifier: WireNotifier,
         project: String,
         lane_pool: Arc<RwLock<LanePool>>,
         lane_capabilities_pool: Option<Arc<RwLock<LaneCapabilitiesPool>>>,
@@ -124,8 +116,6 @@ impl LaneSpawnActor {
         max_concurrent: usize,
     ) -> Self {
         Self {
-            wiremsg_store,
-            wire_notifier,
             project,
             lane_pool,
             lane_capabilities_pool,
@@ -141,7 +131,7 @@ impl Service for LaneSpawnActor {
     }
 
     fn layer_scope(&self) -> LayerScope {
-        // SP-local Service (= 1 Project per Process、 cross-machine forward は wire_remote 経由)
+        // SP-local Service (= 1 Project per Process)
         LayerScope::Project
     }
 
@@ -170,8 +160,6 @@ impl SpawnableService for LaneSpawnActor {
         let semaphore = Arc::new(Semaphore::new(n));
 
         let Self {
-            wiremsg_store,
-            wire_notifier,
             project,
             lane_pool,
             lane_capabilities_pool,
@@ -180,15 +168,9 @@ impl SpawnableService for LaneSpawnActor {
         } = self;
 
         tokio::spawn(async move {
-            // wiremsg R4: wiremsg_store なし = recv 経路なし、 shutdown 待ち
-            let Some(store) = wiremsg_store else {
-                tracing::warn!("Lane spawn actor: wiremsg_store なし、 shutdown 待ち");
-                shutdown.cancelled().await;
-                return;
-            };
             let address = format!("lane-spawn@{}", project);
             tracing::info!(
-                "Lane spawn actor 起動 (= wire accumulation recv、 address={}, max_concurrent={})",
+                "Lane spawn actor 起動 (= TheWorld 中央 wire store long-poll、 address={}, max_concurrent={})",
                 address,
                 n
             );
@@ -197,15 +179,23 @@ impl SpawnableService for LaneSpawnActor {
                     tracing::info!("Lane spawn actor: shutdown");
                     return;
                 }
-                // 取りこぼし防止プロトコル (WireNotifier doc 参照):
-                // handle → notified future を store.recv の前に生成する。
-                let notify = wire_notifier.handle(&address).await;
-                let notified = notify.notified();
-
-                let msgs = match store.recv(&address).await {
-                    Ok(m) => m,
+                // R2-a: TheWorld 側 handler が max 30s の long-poll を行う。 25s で投げて
+                // 余裕を持つ (待機は server 側なので busy loop にならない)。
+                let payload = serde_json::json!({ "agent": address, "timeout": 25 });
+                let resp = tokio::select! {
+                    _ = shutdown.cancelled() => { tracing::info!("Lane spawn actor: shutdown"); return; }
+                    r = crate::process::world_wire::call("/api/wire/recv", payload) => r,
+                };
+                let msgs = match resp {
+                    Ok(v) => v
+                        .get("messages")
+                        .and_then(|m| m.as_array())
+                        .cloned()
+                        .unwrap_or_default(),
                     Err(e) => {
-                        tracing::warn!("lane-spawn wire recv failed: {}", e);
+                        // TheWorld 不在は standalone SP (`vp sp start` 単独) で正常系。
+                        // debug に留め、 IDLE_POLL 間隔で再試行する。
+                        tracing::debug!("lane-spawn wire recv (TheWorld) 失敗、 retry: {}", e);
                         tokio::select! {
                             _ = shutdown.cancelled() => return,
                             _ = tokio::time::sleep(IDLE_POLL) => {}
@@ -214,25 +204,16 @@ impl SpawnableService for LaneSpawnActor {
                     }
                 };
 
-                if msgs.is_empty() {
-                    // 未読なし → notify (= wire_send) か fallback timeout まで待機
-                    tokio::select! {
-                        _ = shutdown.cancelled() => return,
-                        _ = notified => {}
-                        _ = tokio::time::sleep(IDLE_POLL) => {}
-                    }
-                    continue;
-                }
-
                 for msg in msgs {
                     // body は `LaneCmd` (serde tag="kind") の JSON object。 parse 失敗 =
                     // 想定外 message、 log して skip (cursor は recv で既に前進済)。
-                    let cmd = match serde_json::from_value::<LaneCmd>(msg.body.clone()) {
+                    let body = msg.get("body").cloned().unwrap_or(serde_json::Value::Null);
+                    let cmd = match serde_json::from_value::<LaneCmd>(body) {
                         Ok(c) => c,
                         Err(e) => {
                             tracing::warn!(
                                 "Lane spawn actor: body を LaneCmd として parse 失敗 (msg.id={}): {}",
-                                msg.id,
+                                msg.get("id").and_then(|v| v.as_str()).unwrap_or("?"),
                                 e
                             );
                             continue;
@@ -379,6 +360,7 @@ async fn handle_cmd(
         cwd,
         // 起動時点では git 状態取得しない (list_handler 側で必要時に enrich)。
         performer_status: None,
+        cc_session_id: None,
         // Phase 1e: spawn 成功時のみ tmux address を populate
         tmux: if matches!(state, super::lanes_state::LaneState::Running) {
             vec![super::lanes_state::TmuxLaneAddress::for_spawn(
@@ -438,9 +420,9 @@ mod tests {
     /// max_concurrent=0 は 1 に丸められること。 Semaphore::new(0) を踏むと永久 block するため
     /// runtime に到達しないことを serde 側ではなく actor 側で防ぐ contract test。
     ///
-    /// wiremsg R4: wiremsg_store = None で test (= recv 経路 idle、 0 → 1 丸め contract は
-    /// store の有無と無関係に検証可能)。 wire recv 経路の実挙動は WiremsgStore の
-    /// unit test 側で別途担保 (= 重複検証を避ける)。
+    /// R2-a: recv は TheWorld への HTTP long-poll。 test 環境に TheWorld は居ないため
+    /// recv は失敗 → IDLE_POLL retry で idle になる (= 0 → 1 丸め contract は
+    /// TheWorld の有無と無関係に検証可能)。
     #[tokio::test]
     async fn spawn_zero_concurrent_does_not_hang() {
         let pool = Arc::new(RwLock::new(LanePool::new()));
@@ -449,17 +431,7 @@ mod tests {
 
         // 0 を渡しても 1 に丸めて起動するはず (= タイムアウトせずに actor 起動 + shutdown 完了)
         // PR-β-2 (VP-120): lane_capabilities_pool = None で test (Lane scope なしの動作確認)
-        // wiremsg R4: wiremsg_store = None (= recv 経路 idle、 shutdown のみ検証)
-        LaneSpawnActor::new(
-            None,
-            WireNotifier::new(),
-            "test".to_string(),
-            pool,
-            None,
-            tx,
-            0,
-        )
-        .spawn_loop(shutdown.clone());
+        LaneSpawnActor::new("test".to_string(), pool, None, tx, 0).spawn_loop(shutdown.clone());
 
         // shutdown して terminate を確認 (= 永久 block 回避)
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -470,9 +442,8 @@ mod tests {
 
     /// actor 起動 → shutdown 完了の smoke test。
     ///
-    /// wiremsg R4: wiremsg_store = None で recv 経路 idle、 shutdown contract のみ
-    /// smoke 検証。 wire body の LaneCmd parse / graceful degrade は WiremsgStore の
-    /// unit test 側で担保。
+    /// R2-a: test 環境に TheWorld は居ないため recv は失敗 → IDLE_POLL retry で idle。
+    /// shutdown contract のみ smoke 検証する。
     #[tokio::test]
     async fn actor_shuts_down_cleanly() {
         let pool = Arc::new(RwLock::new(LanePool::new()));
@@ -480,17 +451,8 @@ mod tests {
         let shutdown = CancellationToken::new();
 
         // PR-β-2 (VP-120): lane_capabilities_pool = None で test
-        // wiremsg R4: wiremsg_store = None で test (= recv 経路 idle)
-        LaneSpawnActor::new(
-            None,
-            WireNotifier::new(),
-            "test".to_string(),
-            pool.clone(),
-            None,
-            tx,
-            1,
-        )
-        .spawn_loop(shutdown.clone());
+        LaneSpawnActor::new("test".to_string(), pool.clone(), None, tx, 1)
+            .spawn_loop(shutdown.clone());
 
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         // pool は空のまま (= recv 経路なしで何も起こらない)

@@ -2,7 +2,8 @@
 # frozen_string_literal: true
 #MISE description="vp binary (vp-cli: TheWorld daemon + CLI commands) を release build + ~/.cargo/bin に install"
 #
-# 2026-05-30 Occam 対称化: cli: namespace を world: に吸収 (app:/world: を鏡像に)。
+# 2026-05-30 Occam 対称化: cli: namespace を統合 (app:/daemon: を鏡像に)。
+# 2026-06-09 task namespace を world: → daemon: にリネーム (`vp daemon` CLI 名に揃える)。
 # cargo install --path で codesign 付き binary を ~/.cargo/bin (PATH) に配置 = shell `vp` と
 # mise task 系で source 共通化 (dual source drift 防止)。 cp は codesign 剥がれ → install 必須。
 require File.join(ENV.fetch("MISE_PROJECT_ROOT"), "scripts/mise/vp.rb")

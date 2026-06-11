@@ -4,7 +4,7 @@
 
 > **Status**: Draft v0.3 (2026-04-23)
 > **Type**: 規約 (convention / protocol) の追加 — 物理レイヤー新設ではない
-> **Linear**: [VP-77](https://linear.app/chronista/issue/VP-77) (parent: [VP-72](https://linear.app/chronista/issue/VP-72) Requiem Architecture)
+> **Linear**: `VP-77` (parent: `VP-72` Requiem Architecture)
 > **Upstream**: `docs/design/05-pane-content-lane-smart-canvas.md` (4 層モデル), `docs/design/06-creoui-draft.md` (R0 Event schema)
 > **Foundation**: VP-69 Stone Free Phase 2 (worker msgbox actor registration)
 
@@ -173,7 +173,7 @@ cockpit レイアウトの trade-off を支える 3 つのルール:
 2. **Bottom Console 常時表示化**: 既存 Dev Panel を bottom 1/3 固定に格上げ、XS event stream を常時描画
 3. **Right Drawer 実装**: XL/L/M の詳細 view を slide-in で提供 (Status を内蔵、常時非表示)
 
-> **実装 issue pointer**: 本 spec §2.6 は **設計仕様**。具体的な UI 実装 (Bottom Console 固定化、Right Drawer slide-in、LaneTabBar の廃止/統合など) は **[VP-83](https://linear.app/chronista/issue/VP-83)** が実装 issue として追う。
+> **実装 issue pointer**: 本 spec §2.6 は **設計仕様**。具体的な UI 実装 (Bottom Console 固定化、Right Drawer slide-in、LaneTabBar の廃止/統合など) は **`VP-83`** が実装 issue として追う。
 
 ---
 
@@ -918,9 +918,9 @@ agent 発見:
 
 ## 16. 関連
 
-- **Epic**: [VP-72 Requiem Architecture](https://linear.app/chronista/issue/VP-72)
-- **R0 upstream**: [VP-73](https://linear.app/chronista/issue/VP-73) (Event schema + CreoUI draft)
-- **Foundation**: [VP-69](https://linear.app/chronista/issue/VP-69) (Stone Free Phase 2 worker msgbox)
+- **Epic**: `VP-72`
+- **R0 upstream**: `VP-73` (Event schema + CreoUI draft)
+- **Foundation**: `VP-69` (Stone Free Phase 2 worker msgbox)
 - **Base architecture**: `docs/design/01-architecture.md` (TheWorld / Process / Capability 層)
 - **Prev design**: `docs/design/05-pane-content-lane-smart-canvas.md` (4 層モデル), `docs/design/06-creoui-draft.md` (R0 Event schema)
 - **Related decisions** (creo-memories):
@@ -967,4 +967,4 @@ agent 発見:
   - Bottom Console (XS tier 固定) + Right Drawer (XL/L/M toggle) を明示、旧 v0.3 の "Dev Panel on-demand" 扱いを格上げ
   - "Status 常時非表示 / XS stream 常時表示" 設計原則を §2.6.3 として追記 (static ≠ 常時表示、動的 = 常時表示)
   - 情報密度の 4 階層 (Sidebar=一覧 / Drawer=詳細 / Viewport=task / Console=stream) 使い分けを明示
-  - 本 spec §2.6 は設計仕様、実装 issue は [VP-83](https://linear.app/chronista/issue/VP-83) が追う旨を明記
+  - 本 spec §2.6 は設計仕様、実装 issue は `VP-83` が追う旨を明記

@@ -342,8 +342,8 @@ VP v3.1 は **自前 protocol 設計を最小化** し、 既存 protocol idiom 
 
 - **Spec**: [docs/spec/wire-address-v3.md](../spec/wire-address-v3.md)
 - **Guide**: [docs/guide/wire-address-usage.md](../guide/wire-address-usage.md)
-- **Linear Epic**: [VP-144](https://linear.app/chronista/issue/VP-144)
-- **Phase sub-issues**: [VP-145](https://linear.app/chronista/issue/VP-145) [VP-146](https://linear.app/chronista/issue/VP-146) [VP-147](https://linear.app/chronista/issue/VP-147) [VP-148](https://linear.app/chronista/issue/VP-148)
+- **Linear Epic**: `VP-144`
+- **Phase sub-issues**: `VP-145` `VP-146` `VP-147` `VP-148`
 - **dogfood gap**: `mem_1CapRAtpCpahQGn8nW2fmT`
 - **VP-24 Msgbox core**: `mem_1CZA6PxWEnKSwC5tCbm7bF`
 - **Msgbox + Monitor agent msgbox** (predecessor): `mem_1CabUu1biCwMFjsX5oEoG9`

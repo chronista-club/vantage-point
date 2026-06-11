@@ -130,12 +130,26 @@ pub struct WireRecvParams {
     pub timeout: Option<u64>,
 }
 
+/// Parameters for wire_inbox tool (refactor R1 PR-B: 在庫確認、 cursor 非破壊)
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct WireInboxParams {}
+
 /// Parameters for wire_thread tool (R2: ancestor-chain 取得)
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct WireThreadParams {
     /// 系譜を辿る起点となる wire message id
     #[schemars(
         description = "The wire message id (returned by a previous wire_send / wire_recv) to trace ancestors from."
+    )]
+    pub message_id: String,
+}
+
+/// Parameters for wire_ack tool (R2-a: per-message ack 台帳、 決定 D3)
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct WireAckParams {
+    /// ack する wire message id
+    #[schemars(
+        description = "The wire message id (returned by wire_recv) to acknowledge. Ack the message after you have actually handled it."
     )]
     pub message_id: String,
 }
@@ -512,8 +526,12 @@ impl SelfLane {
         }
     }
 
-    /// `wire_send` / `wire_recv` の `from` フィールド値: conductor は `"agent"`（bare、cross-process
-    /// forward 時に `normalize_from` で `agent@<project>` になる）、performer は `"agent@<parent>/<name>"`。
+    /// `wire_send` / `wire_recv` の `from` フィールド値: conductor は `"agent"`（bare）、
+    /// performer は `"agent@<parent>/<name>"`。
+    ///
+    /// bare は SP 入口（`unison_server.rs::normalize_agent_addr`、wiremsg N1）で
+    /// `agent@<project>` に正規化される。MCP プロセスは conductor 時に project 名を
+    /// 持たないため、canonical 化は project 名を知る SP 側の責務とする。
     pub fn from_address(&self) -> String {
         match &self.performer_parent {
             Some(parent) => format!("agent@{}/{}", parent, self.lane_name),
@@ -1574,6 +1592,8 @@ impl VantageMcp {
         // mode を payload に同梱しておくと、 worker 側が後で判断材料に使える。
         let wire_body = serde_json::json!({
             "kind": "task",
+            // R2-b: category は delivery policy selector (command = ack されるまで再掲示対象)
+            "category": "command",
             "task_spec": params.task_spec,
             "mode": mode,
         });
@@ -2799,7 +2819,7 @@ if bestId > 0 { print(bestId) }
 
     /// Send a wiremsg (new thread, or a reply when reply_to is set)
     #[tool(
-        description = "Send a threaded wire message. Without `reply_to`, starts a NEW thread (root message). With `reply_to` (a wire message id), posts a REPLY into that message's thread. Recipients receive the message as unread; the sender does not see their own root message. Use wire_recv to read replies. This is the PRIMARY channel for inter-agent communication."
+        description = "Send a threaded wire message. Without `reply_to`, starts a NEW thread (root message). With `reply_to` (a wire message id), posts a REPLY into that message's thread. Recipients receive the message as unread; the sender does not see their own root message. Use wire_recv to read replies. This is the PRIMARY channel for inter-agent communication. Set body.category to one of {command, event, state, data, log} to control delivery policy: 'command' messages are re-nudged to the recipient until they wire_ack; omitted category defaults to 'event' (no nudge)."
     )]
     async fn wire_send(
         &self,
@@ -2860,6 +2880,43 @@ if bestId > 0 { print(bestId) }
             "message_id": params.message_id,
         });
         let resp = self.quic_call("wire_thread", payload).await?;
+        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+            serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "null".to_string()),
+        )]))
+    }
+
+    /// Check unread wire message counts WITHOUT consuming them (cursor-safe peek)
+    #[tool(
+        description = "Check this agent's unread wire message inventory WITHOUT reading them: returns `total` (unread count) and `by_thread` (root message id → unread count). This is READ-ONLY: unlike wire_recv it does NOT advance the read cursor, so it is safe to call repeatedly to decide whether a wire_recv is worth doing. Use this at natural boundaries (task start/end) to avoid leaving replies unread."
+    )]
+    async fn wire_inbox(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(_params): rmcp::handler::server::wrapper::Parameters<WireInboxParams>,
+    ) -> Result<CallToolResult, McpError> {
+        // agent は wire_send / wire_recv と同じ self_lane 由来 address (SP 側で正規化される)
+        let agent = self.self_lane.from_address();
+        let payload = serde_json::json!({ "agent": agent });
+        let resp = self.quic_call("wire_unread_count", payload).await?;
+        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+            serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "null".to_string()),
+        )]))
+    }
+
+    /// Acknowledge a wire message (per-message ack ledger, independent of the read cursor)
+    #[tool(
+        description = "Acknowledge (ack) a wire message AFTER you have actually handled it. The ack ledger is independent of the wire_recv read cursor: receiving a command via wire_recv does NOT count as handling it — an unacked command stays eligible for re-notification by the delivery loop. Returns `acked: true` for a new ack, `false` if this agent already acked the message (idempotent). Use the `id` field of a message returned by wire_recv."
+    )]
+    async fn wire_ack(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<WireAckParams>,
+    ) -> Result<CallToolResult, McpError> {
+        // agent は wire_send / wire_recv と同じ self_lane 由来 address (SP 側で正規化される)
+        let agent = self.self_lane.from_address();
+        let payload = serde_json::json!({
+            "message_id": params.message_id,
+            "agent": agent,
+        });
+        let resp = self.quic_call("wire_ack", payload).await?;
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
             serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "null".to_string()),
         )]))

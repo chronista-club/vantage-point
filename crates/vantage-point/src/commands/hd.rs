@@ -1,6 +1,6 @@
 //! vp hd — Heaven's Door インスタンス管理
 //!
-//! Claude CLI の tmux セッション + ccwire 登録を管理する。
+//! Claude CLI の tmux セッションを管理する。
 //! SP サーバーの管理は sp_cmd.rs に分離。
 
 use anyhow::Result;
@@ -11,7 +11,7 @@ use crate::tmux;
 
 #[derive(Subcommand)]
 pub enum HdCommands {
-    /// HD インスタンスを起動（tmux + Claude CLI + ccwire 登録）
+    /// HD インスタンスを起動（tmux + Claude CLI）
     Start {
         /// インスタンス名（例: kaizen, scroll-bug）。セッション名 = {project}-{id}-vp
         #[arg(long)]
@@ -20,7 +20,7 @@ pub enum HdCommands {
         #[arg(long)]
         cwd: Option<String>,
     },
-    /// HD インスタンスを停止（ccwire 解除 + tmux kill）
+    /// HD インスタンスを停止（tmux kill）
     Stop {
         /// 停止するインスタンス名
         #[arg(long)]
@@ -104,17 +104,13 @@ fn hd_start(
         eprintln!("⚠️  SP サーバーが未起動です。`vp sp start` で起動を推奨します。");
     }
 
-    // Phase L7a: ccwire::cleanup_stale 呼出停止 (Mailbox 移行、stale は tmux session
-    // 存在判定で derive する方針。ghost session は実害なく残る)
-    // if let Err(e) = crate::ccwire::cleanup_stale() { ... }
-
     // tmux セッション作成（既にあれば再利用）
     if tmux::session_exists(&session_name) {
         println!("✅ tmux セッション '{}' は既に存在します", session_name);
     } else {
         // ターミナルサイズ取得（デフォルトフォールバック付き）
         let (cols, rows) = crossterm::terminal::size().unwrap_or((120, 40));
-        crate::commands::start::create_tmux_session(
+        create_tmux_session(
             &session_name,
             project_dir,
             cols,
@@ -123,11 +119,6 @@ fn hd_start(
         )?;
         println!("✅ tmux セッション '{}' を作成しました", session_name);
     }
-
-    // Phase L7b: ccwire register 呼出停止 (Mailbox Router が daemon 側で
-    // 保持、agent 起動時に自動 register する設計。soft degradation)
-    // let tmux_target = format!("{}:0.0", session_name);
-    // match crate::ccwire::register(&session_name, &tmux_target) { ... }
 
     println!();
     if let Some(id) = id {
@@ -146,9 +137,6 @@ fn hd_start(
 /// HD インスタンスを停止
 fn hd_stop(project_name: &str, id: Option<&str>) -> Result<()> {
     let session_name = tmux::session_name_with_id(project_name, id);
-
-    // Phase L7b: ccwire unregister 呼出停止
-    // match crate::ccwire::unregister(&session_name) { ... }
 
     // tmux kill
     if tmux::session_exists(&session_name) {
@@ -183,7 +171,6 @@ fn hd_list(project_name: &str, other_prefixes: &[String]) -> Result<()> {
         // セッション名から ID を抽出
         let id = extract_id_from_session(session, &prefix);
         let id_display = id.unwrap_or("(default)");
-        // Phase L7d: ccwire 表示削除
         println!("  {} {} (tmux: ✅)", id_display, session);
     }
 
@@ -296,6 +283,161 @@ fn extract_id_from_session<'a>(session: &'a str, project_prefix: &str) -> Option
     // 先頭の "-" を除去
     let id = suffix.strip_prefix('-')?;
     if id.is_empty() { None } else { Some(id) }
+}
+
+// =============================================================================
+// tmux + Claude セッション作成 helper (refactor R1-2 で旧 commands/start.rs から移設)
+// =============================================================================
+
+fn tmux_session_exists(name: &str) -> bool {
+    std::process::Command::new(crate::tmux::tmux_bin().unwrap_or("tmux"))
+        .args(["has-session", "-t", name])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// tmux セッション作成（Claude CLI を中で起動、ステータスバー非表示）
+///
+/// `--continue` 付きで起動し、即死した場合は `--continue` なしでフォールバック。
+fn create_tmux_session(
+    name: &str,
+    project_dir: &str,
+    cols: u16,
+    rows: u16,
+    process_port: u16,
+) -> Result<()> {
+    let mut mise_envs = collect_mise_env(project_dir);
+    // VP_PROCESS_PORT を注入 → CC が起動する MCP プロセスに自動伝播
+    mise_envs.push(("VP_PROCESS_PORT".to_string(), process_port.to_string()));
+
+    // まず --continue 付きで試行
+    let created = try_create_tmux_claude(name, project_dir, cols, rows, &mise_envs, true)?;
+    if !created {
+        anyhow::bail!("tmux セッション作成に失敗: {}", name);
+    }
+
+    // セッションが即死していないか確認（claude --continue が壊れたセッションで落ちるケース）
+    // lane パフォーマー環境ではセッション履歴がなく --continue が即死するため、十分に待つ
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    if !tmux_session_exists(name) {
+        tracing::warn!("claude --continue が即死。--continue なしでフォールバック");
+        let created = try_create_tmux_claude(name, project_dir, cols, rows, &mise_envs, false)?;
+        if !created {
+            anyhow::bail!("tmux セッション作成に失敗（フォールバック）: {}", name);
+        }
+    }
+
+    if !mise_envs.is_empty() {
+        tracing::info!("mise env: {} 変数を tmux セッションに注入", mise_envs.len());
+    }
+
+    // TUI が自前のヘッダー/フッターを持つため tmux ステータスバーを非表示
+    let _ = std::process::Command::new(crate::tmux::tmux_bin().unwrap_or("tmux"))
+        .args(["set-option", "-t", name, "status", "off"])
+        .status();
+
+    // VP-83 refinement 53 / Tier 1 Chain tuning:
+    // ─ escape-time 0: Esc 応答即時化 (vi-like TUI 体験改善)
+    // ─ focus-events on: terminal focus 変化を Claude CLI 等に forward
+    //   → NSWindow become-key で TUI redraw → HD 入力 area の 2 行問題緩和の期待
+    // ─ terminal-overrides *:Tc: 24-bit truecolor を 256 色にダウングレードさせない
+    let tmux_bin = crate::tmux::tmux_bin().unwrap_or("tmux");
+    let _ = std::process::Command::new(tmux_bin)
+        .args(["set-option", "-t", name, "escape-time", "0"])
+        .status();
+    let _ = std::process::Command::new(tmux_bin)
+        .args(["set-option", "-t", name, "focus-events", "on"])
+        .status();
+    let _ = std::process::Command::new(tmux_bin)
+        .args(["set-option", "-ga", "terminal-overrides", ",*:Tc"])
+        .status();
+
+    // mise 環境変数を tmux セッションにも set-environment（後続ペイン用）
+    for (key, value) in &mise_envs {
+        let _ = std::process::Command::new(crate::tmux::tmux_bin().unwrap_or("tmux"))
+            .args(["set-environment", "-t", name, key, value])
+            .status();
+    }
+
+    Ok(())
+}
+
+/// tmux new-session で Claude CLI を起動（成功なら true）
+fn try_create_tmux_claude(
+    name: &str,
+    project_dir: &str,
+    cols: u16,
+    rows: u16,
+    mise_envs: &[(String, String)],
+    with_continue: bool,
+) -> Result<bool> {
+    let mut args = vec![
+        "new-session".to_string(),
+        "-d".to_string(),
+        "-s".to_string(),
+        name.to_string(),
+        "-x".to_string(),
+        cols.to_string(),
+        "-y".to_string(),
+        rows.to_string(),
+        "-c".to_string(),
+        project_dir.to_string(),
+    ];
+    for (key, value) in mise_envs {
+        args.push("-e".to_string());
+        args.push(format!("{}={}", key, value));
+    }
+    // zsh -lc でラップ: tmux の直接 exec ではシェル初期化が走らず
+    // claude が依存する PATH/環境変数が不足して即死するケースを回避
+    let mut claude_cmd = "claude --dangerously-skip-permissions".to_string();
+    if with_continue {
+        claude_cmd.push_str(" --continue");
+    }
+    args.push("zsh".to_string());
+    args.push("-lc".to_string());
+    args.push(claude_cmd);
+
+    let status = std::process::Command::new(crate::tmux::tmux_bin().unwrap_or("tmux"))
+        .args(&args)
+        .status()?;
+
+    Ok(status.success())
+}
+
+/// mise env を project_dir で評価し、環境変数の (key, value) ペアを返す
+///
+/// mise が未インストール or .mise.toml がなければ空 Vec を返す（ベストエフォート）。
+fn collect_mise_env(project_dir: &str) -> Vec<(String, String)> {
+    let mise_bin = dirs::home_dir()
+        .map(|h| h.join(".local/bin/mise"))
+        .unwrap_or_else(|| "mise".into());
+
+    let output = std::process::Command::new(&mise_bin)
+        .args(["env", "--shell", "bash"])
+        .current_dir(project_dir)
+        .output();
+
+    let Ok(output) = output else {
+        return vec![];
+    };
+    if !output.status.success() {
+        return vec![];
+    }
+
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            // "export KEY=VALUE" → (KEY, VALUE)
+            let line = line.strip_prefix("export ")?;
+            let (key, value) = line.split_once('=')?;
+            // クォート除去
+            let value = value.trim_matches('\'').trim_matches('"');
+            Some((key.to_string(), value.to_string()))
+        })
+        .collect()
 }
 
 #[cfg(test)]

@@ -63,7 +63,7 @@ module VP
   # (cp だと codesign が剥がれて macOS に kill される → install 経由必須、 CLAUDE.md feedback)。
   def cargo_bin(name) = File.join(Dir.home, ".cargo", "bin", name)
 
-  # VP の log 出力先 (world:start が書き、 logs が tail する共通 dir)。
+  # VP の log 出力先 (daemon:start が書き、 logs が tail する共通 dir)。
   # XDG_STATE_HOME → ~/.local/state を基底に vp/log。 VP_LOG_DIR で上書き可。
   def log_dir = ENV["VP_LOG_DIR"] || File.join(ENV["XDG_STATE_HOME"] || File.join(Dir.home, ".local", "state"), "vp", "log")
 

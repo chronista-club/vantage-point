@@ -881,7 +881,7 @@ fn start_background_services(
     let port = crate::resolve::port_for_configured(project_index, config)?;
 
     // 既に起動中ならスキップ
-    if crate::commands::start::is_server_responding(port) {
+    if crate::commands::sp::is_server_responding(port) {
         return Ok(());
     }
 
@@ -891,8 +891,8 @@ fn start_background_services(
     }
 
     // detached subprocess として SP を起動
-    crate::commands::start::spawn_sp_detached(project_dir, Some(port))?;
-    crate::commands::start::wait_for_ready(port)?;
+    crate::commands::sp::spawn_sp_detached(project_dir, Some(port))?;
+    crate::commands::sp::wait_for_ready(port)?;
     Ok(())
 }
 

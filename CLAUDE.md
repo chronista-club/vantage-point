@@ -92,30 +92,44 @@ vantage-point/
 
 ```bash
 # Core
-vp start [N]           # プロジェクトN番のProcessを起動
-vp start -d simple     # デバッグモードで起動
-vp stop [--port]       # Process停止
-vp restart [--port]    # Process再起動
-vp ps                  # 稼働中インスタンス一覧
-vp open [N]            # WebUIを開く
+vp ps                  # 稼働中インスタンス一覧（33000-33010 スキャン）
 vp config              # 設定と登録プロジェクト表示
+vp projects            # 登録 project 管理（add/remove/rename/enable/disable/reorder/list）
+vp sync                # projects.kdl を現実と同期（ghost project 除去）
 vp mcp                 # MCPサーバーモード（stdio）
 vp update [--check]    # セルフアップデート
+vp restart-all         # 全 Process + TheWorld を一括再起動
 
-# TheWorld（Daemon 統合）
-vp daemon              # TheWorld 起動（プロジェクト管理 + PTY管理、 alias: vp world）
-vp daemon start|stop|status  # subcommand 形式
+# TheWorld（Daemon）/ SP
+vp daemon start|stop|status  # TheWorld 管理（alias: vp world）
+vp sp start [-d simple|detail]  # SP サーバー起動（デバッグモードはここ）
+vp sp stop|status
 
-# App
+# App（GUI）
 vp app start           # vp-app GUI 起動（spawn + 即 exit、 cwd を起点に開く）
 vp app stop            # vp-app を停止
 # 再起動は `vp app stop && vp app start` で合成 (restart は意図的に CLI に持たない)
-vp tray                # システムトレイモード
+vp shot                # vp-app window の screenshot を PNG 保存
 
-# MIDI
-vp midi monitor|ports
+# Lane / dev-flow / messaging
+vp lane                # performer Lane 管理（Stone Free 🧵）
+vp flow handoff|progress  # Conductor × Performer orchestration
+vp wire send|recv|inbox|thread|ack|watch|hook-check  # wire messaging（store は TheWorld :32000 に中央化。hook-check は claude hook 実体、R2-c）
+vp directmsg           # tmux send-keys 直接メッセージ（緊急用、wiremsg の補助）
+vp hd start|stop|attach|list  # tmux + Claude CLI セッション管理（旧 TUI 経路）
+vp tmux                # tmux ペイン操作（capture/split/send/dashboard）
+
+# その他
+vp lan                 # LAN address book（mDNS discovery）
+vp port                # deterministic port layout の計算・表示
+vp db init|path|status # embedded SurrealDB 管理
+vp auth me|login|logout  # Creo ID 認証
+vp pane / vp file      # ペイン操作 / ファイル監視
+vp midi monitor|ports  # MIDI（feature = "midi" ビルドのみ）
 vp midi lpd8 write|switch|ports
 ```
+
+> ⚠️ `vp start` / `vp stop` / `vp open` / `vp tray` は**存在しない**（旧体系。start/stop は `vp sp` / `vp daemon` / `vp app` に分散、WebUI は `http://localhost:33000` を直接開く）。
 
 ## 開発コマンド
 
@@ -159,28 +173,20 @@ TheWorld が **Push + Pull の二重パス** でプロセスを管理。どち�
 
 ## Agent モジュール
 
-Claude CLI統合の実装。3つの実行モードを提供:
+Claude CLI統合の実装（`crates/vantage-point/src/agent.rs`）。2つの実行モードを提供:
 
 | モード | CLI形式 | 用途 |
 |--------|---------|------|
-| **OneShot** | `claude -p "prompt"` | 単発プロンプト |
-| **Interactive** | `claude -p --input-format stream-json` | 持続プロセス、複数ターン |
-| **PTY** | `claude` (対話モード) | PTY経由の対話モード、Multiplexer Orchestration用 |
+| **OneShot**（`ClaudeAgent`） | `claude -p "prompt"` | 単発プロンプト |
+| **Interactive**（`InteractiveClaudeAgent`、デフォルト） | `claude -p --input-format stream-json` | 持続プロセス、複数ターン |
+
+> 対話モードの claude（TUI）は Agent モジュールではなく、 **lane の tmux 経路**（`.mise/tasks/vp/stand/echoes` が `tmux new-session` 内で claude を起動）が担う。 PTY ベースの agent API は存在しない。
 
 ### Stream-JSON 入力フォーマット
 
 ```json
 {"type":"user","message":{"role":"user","content":[{"type":"text","text":"メッセージ"}]}}
 ```
-
-### PTYモード API
-
-`pty-process` クレートを使用:
-
-- `PtyClaudeAgent::start()` - PTY付きでClaude CLI起動
-- `PtyClaudeAgent::send()` / `send_raw()` - テキスト / 制御シーケンス送信
-- `PtyClaudeAgent::resize()` - ターミナルサイズ変更
-- `PtyClaudeAgent::events()` - 出力イベント受信
 
 ## コーディング規約
 
@@ -191,9 +197,9 @@ Claude CLI統合の実装。3つの実行モードを提供:
 
 | モード | 用途 | 起動方法 |
 |--------|------|----------|
-| `none` | 本番運用 | `vp start` |
-| `simple` | 基本的なイベントログ | `vp start -d simple` |
-| `detail` | 詳細なデータ・タイミング | `vp start -d detail` |
+| `none` | 本番運用 | `vp sp start` |
+| `simple` | 基本的なイベントログ | `vp sp start -d simple` |
+| `detail` | 詳細なデータ・タイミング | `vp sp start -d detail` |
 
 ### ログ出力
 
@@ -209,7 +215,7 @@ state.send_debug_detail("category", "メッセージ", serde_json::json!({"key":
 
 ### 問題調査フロー
 
-1. `vp start -d detail` で起動
+1. `vp sp start -d detail` で起動
 2. WebUIデバッグパネル（右パネル）でログ確認
 3. ブラウザコンソールで `Received:` ログ確認
 4. 必要に応じてログ追加 → 再ビルド
@@ -245,12 +251,14 @@ task 管理は creo-memories に一本化（Linear は不使用、2026-05-19 確
 | **main** | **GitHub default**（公開の顔）+ 公開 release の単位（= 「ここを参照すれば最新安定」） | **禁止** | 必須（force / deletion 禁止） | nightly → release PR → tag cut |
 | **lane / performer** | 単一タスク隔離 | 自由 | 必須 | from nightly |
 
-#### lane 作業フロー
+#### lane 作業フロー（lead session = メインセッション向け）
 
 1. `git fetch origin nightly && git checkout -b mako/{slug} origin/nightly` で lane 開始
 2. lane 上で commit、 PR は **base = nightly** で `gh pr create --base nightly` で作る
 3. PR merge / 直 push で nightly が進む
 4. nightly が一定量積み上がったら release PR (nightly → main) を切って tag cut
+
+> 上記 step 1 の `checkout -b` は **lead checkout を占有する単独セッション専用**。並列 worker（wing / 他 agent）は worktree lane（`vp lane new` or `git worktree add`）を使う — cross-agent な lane 規約（公認入口 / raw-git fallback / discovery）の SSOT は **`AGENTS.md`**。
 
 #### release flow（= nightly → main）
 
@@ -283,3 +291,47 @@ main    ───●──────────────────●─
 ## クロスプロジェクト協業（MARU x VP）
 
 MARU（ESP32-S3物理コントローラ）との連携開発。設計・経緯は creo-memories に記録（`category: "cross-project"` + `from: "vp"`）。
+
+<!-- gitnexus:start -->
+# GitNexus — Code Intelligence
+
+This project is indexed by GitNexus as **vantage-point** (11485 symbols, 25090 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+
+> Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
+
+## Always Do
+
+- **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run `impact({target: "symbolName", direction: "upstream"})` and report the blast radius (direct callers, affected processes, risk level) to the user.
+- **MUST run `detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows. For regression review, compare against the default branch: `detect_changes({scope: "compare", base_ref: "main"})`.
+- **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
+- When exploring unfamiliar code, use `query({query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
+- When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use `context({name: "symbolName"})`.
+
+## Never Do
+
+- NEVER edit a function, class, or method without first running `impact` on it.
+- NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
+- NEVER rename symbols with find-and-replace — use `rename` which understands the call graph.
+- NEVER commit changes without running `detect_changes()` to check affected scope.
+
+## Resources
+
+| Resource | Use for |
+|----------|---------|
+| `gitnexus://repo/vantage-point/context` | Codebase overview, check index freshness |
+| `gitnexus://repo/vantage-point/clusters` | All functional areas |
+| `gitnexus://repo/vantage-point/processes` | All execution flows |
+| `gitnexus://repo/vantage-point/process/{name}` | Step-by-step execution trace |
+
+## CLI
+
+| Task | Read this skill file |
+|------|---------------------|
+| Understand architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md` |
+| Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
+| Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md` |
+| Rename / extract / split / refactor | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
+| Tools, resources, schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
+| Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
+
+<!-- gitnexus:end -->

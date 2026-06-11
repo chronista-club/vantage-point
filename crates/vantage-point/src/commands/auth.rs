@@ -18,9 +18,8 @@
 use anyhow::{Context, Result};
 use base64::Engine;
 use clap::Subcommand;
-use rand::Rng;
-use rand::distributions::Alphanumeric;
-use rand::rngs::OsRng;
+use rand::RngExt;
+use rand::distr::Alphanumeric;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
@@ -248,10 +247,12 @@ fn nexus_url() -> String {
 /// PKCE pair 生成 — `(verifier, challenge)`。 RFC 7636 S256 method。
 fn pkce_pair() -> (String, String) {
     let chars = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
-    let mut rng = OsRng;
+    // rand 0.9+ で OsRng は TryRngCore 化されたため、CSPRNG の ThreadRng
+    // (ChaCha12、OS エントロピーから定期 reseed) を使う。PKCE 用途には十分。
+    let mut rng = rand::rng();
     let verifier: String = (0..VERIFIER_LEN)
         .map(|_| {
-            let idx = rng.gen_range(0..chars.len());
+            let idx = rng.random_range(0..chars.len());
             chars[idx] as char
         })
         .collect();
@@ -264,7 +265,7 @@ fn pkce_pair() -> (String, String) {
 
 /// CSRF state 生成 — alphanumeric `STATE_LEN` chars。
 fn random_state() -> String {
-    OsRng
+    rand::rng()
         .sample_iter(&Alphanumeric)
         .take(STATE_LEN)
         .map(char::from)

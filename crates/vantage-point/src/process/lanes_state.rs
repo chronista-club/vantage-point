@@ -71,9 +71,11 @@ impl fmt::Display for LaneKind {
 /// tmux session の起動 mode (Phase 1a: Lane → tmux registry の foundation)
 ///
 /// `LaneInfo.tmux` の `mode` field で「実際に tmux で起動できたか」を区別する。
-/// init_script は `tmux new-session -A -s ${SLUG} 'claude -c || claude' || (claude -c || claude)`
-/// の形 (Option 1 inline cmd、idempotent)。tmux 不在環境などで外側 fallback に降格した
-/// 場合は `PtySlotFallback` を立てる。
+/// init_script は `tmux new-session -A -s ${SLUG} '$CLAUDE_CMD; exec $SHELL -l' || (cd $CWD && eval "$CLAUDE_CMD")`
+/// の形 (Option 1 inline cmd、idempotent。`.mise/tasks/vp/stand/echoes` 参照)。
+/// `$CLAUDE_CMD` は conductor = `claude --continue || claude` / performer = fresh `claude`
+/// (CC 2.1 Agent View dashboard からの insulate、Phase B)。tmux 不在環境などで外側
+/// fallback に降格した場合は `PtySlotFallback` を立てる。
 ///
 /// 関連 memory: vp_mailbox_monitor_agent_inbox + vp_lane_init_script (Phase 1)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -323,6 +325,12 @@ pub struct LaneInfo {
     /// `panes` の論理 ID 管理は tmux 側に委譲 (1 session 内 split は tmux native 機能)。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tmux: Vec<TmuxLaneAddress>,
+    /// R3-b: この lane の最後の CC session id。 registry には保存せず `/api/lanes` 応答時に
+    /// state file (`lane::cc_session`、 書き手は SessionStart hook) を lazy read する
+    /// (`performer_status` と同じ前例)。 echoes の `--resume` 再利用と R3-c の
+    /// `--bg` session 管理の土台。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cc_session_id: Option<String>,
 }
 
 /// Lane Pool — Conductor/Performer registry
@@ -427,6 +435,7 @@ impl LanePool {
             cwd,
             // Conductor は git workspace 持たない (= project root が cwd)、 performer_status は None
             performer_status: None,
+            cc_session_id: None,
             // Phase 1e: spawn 成功時のみ tmux address を populate
             // (spawn 失敗 = Dead → 空 Vec で副舞台不在 signal)
             tmux: if matches!(state, LaneState::Running) {
@@ -913,6 +922,7 @@ mod tests {
             pid: None,
             cwd: "/tmp".to_string(),
             performer_status: None,
+            cc_session_id: None,
             tmux: Vec::new(),
         };
         let json = serde_json::to_string(&info).unwrap();
@@ -937,6 +947,7 @@ mod tests {
             pid: None,
             cwd: "/tmp".to_string(),
             performer_status: None,
+            cc_session_id: None,
             tmux: vec![
                 TmuxLaneAddress {
                     stand: "hd".to_string(),
@@ -976,6 +987,7 @@ mod tests {
             pid: Some(12345),
             cwd: "/tmp".to_string(),
             performer_status: None,
+            cc_session_id: None,
             tmux: vec![TmuxLaneAddress {
                 stand: "hd".to_string(),
                 session: "vp-vp-sub-hd".to_string(),
@@ -1030,6 +1042,7 @@ mod tests {
             pid: None,
             cwd: "/tmp".to_string(),
             performer_status: None,
+            cc_session_id: None,
             tmux: Vec::new(),
         };
         let event = SystemEvent::Lane(Diff::Add {

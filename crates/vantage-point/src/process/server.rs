@@ -17,7 +17,9 @@ use tower_http::cors::CorsLayer;
 use super::capabilities::{CapabilityConfig, ProcessCapabilities};
 use super::hub::Hub;
 use super::pty::PtyManager;
-use super::routes::{health, lanes, project_feed, prompt, stands, update, world, ws_terminal};
+use super::routes::{
+    health, lanes, project_feed, prompt, stands, update, wire, world, ws_terminal,
+};
 use super::session::SessionManager;
 use super::state::AppState;
 use super::topic_router::TopicRouter;
@@ -86,7 +88,7 @@ pub async fn run(
     // Terminal チャネル認証トークンを生成
     let terminal_token = crate::discovery::generate_terminal_token();
 
-    // tmux / ccwire はvp sp コマンドで独立管理（server.rs では触らない）
+    // tmux セッションは vp hd コマンドで独立管理（server.rs では触らない）
     // TmuxActor は SP がペイン操作（tmux_split 等）に使うため、既存セッションがあれば起動
     let project_name = crate::resolve::project_name_from_path(
         &project_dir,
@@ -163,38 +165,16 @@ pub async fn run(
     // mem_1CavFi5D1aMSpEkas89SvQ)、 PR-5 supervisor 統一で JoinHandle 経由 abort を activate。
     let mut actor_registry = crate::capability::ActorRegistry::new();
 
-    // Phase A ① / R1: wiremsg threaded inbox store。 msgs table と並存。
-    // R1 で `WiremsgStore::new` は async (起動時に local_seq 採番を math::max で復元)。
-    // wiremsg R4: group B actor (notify / lane-spawn) の recv 元なので、 actor spawn より
-    // 先に build しておく。
-    let wiremsg_store = match vpdb.as_ref() {
-        Some(db) => Some(
-            crate::capability::WiremsgStore::new(std::sync::Arc::new(db.inner().clone())).await?,
-        ),
-        None => None,
-    };
-    // wiremsg long-poll の in-process notifier。 group B actor と AppState で共有するため
-    // ここで 1 つ作り clone を配る (WireNotifier は内部 Arc で実体共有)。
-    let wire_notifier = crate::capability::WireNotifier::new();
-
     // Notification ブリッジ: wire `notify@<project>` → DistributedNotification
-    // wiremsg R4 (group B 移行): 旧 WhitesnakeStore.claim polling を廃し、 wire accumulation の
-    // per-agent cursor recv に rewire。 producer は `wire_send(to=["notify@<project>"])`。
+    // wiremsg R2-a (store 中央化): SP は wire store を持たない。 actor は TheWorld への
+    // HTTP long-poll (world_wire) で recv する。 producer は `wire_send(to=["notify@<project>"])`。
     actor_registry.spawn_service(
         super::notification_actor::NotificationActor::new(
-            wiremsg_store.clone(),
-            wire_notifier.clone(),
             project_name_for_remote.clone(),
             project_dir.clone(),
         ),
         shutdown_token.clone(),
     );
-
-    // VP-179 (Phase 5): TheWorld registry への actor register snapshot は廃止。
-    // 旧実装は mpsc MsgboxRouter の `addresses()` (= register("agent") 等で蓄積された
-    // address list) を TheWorld に flat 登録していたが、 全 register caller が VP-178
-    // (Phase 4) で撤去済のため空 vec を渡す no-op に成り下がっていた。 cross-process
-    // forward が必要な場合は msgs table 経由の discovery (= 別 epic) を検討。
 
     let state = Arc::new(AppState {
         hub,
@@ -227,11 +207,12 @@ pub async fn run(
         canvas_senders: Arc::new(tokio::sync::Mutex::new(Vec::new())),
         started_at: chrono::Utc::now().to_rfc3339(),
         vpdb: vpdb.clone(),
-        // Phase A ① / R1: wiremsg threaded inbox store (上で async build 済)。
-        wiremsg_store,
-        // Phase A ①: wiremsg long-poll の in-process notifier
-        // wiremsg R4: run() 冒頭で build した notifier を move (group B actor と同一実体共有)
-        wire_notifier,
+        // wiremsg R2-a: SP は wire store を持たない (TheWorld に中央化、 handler は proxy)
+        wiremsg_store: None,
+        // wire_notifier / delivery_notify は world mode 専用 (TheWorld の long-poll 起床 /
+        // delivery loop wake)。 SP では未使用だが AppState 共有 field のため空で満たす
+        wire_notifier: crate::capability::WireNotifier::new(),
+        delivery_notify: std::sync::Arc::new(tokio::sync::Notify::new()),
         // ポート別ディレクトリで分離（複数プロセスの namespace 衝突を防ぐ）
         // run() 冒頭で作成した Whitesnake を共有（Msgbox persistent と同一インスタンス）
         whitesnake: whitesnake.clone(),
@@ -301,19 +282,16 @@ pub async fn run(
     // - N=config.startup.max_concurrent_lane_spawn (default 1、 dogfood で計測 log を集計して tweak)
     // PR-β-2 (VP-120): lane_capabilities pool clone も渡し、 Performer spawn 時に populate_lane する。
     {
-        // wiremsg R4: wire accumulation store + notifier に rewire (= 旧 WhitesnakeStore.claim 廃止)
-        let lane_spawn_store = state.wiremsg_store.clone();
         let max_concurrent = crate::config::Config::load()
             .unwrap_or_default()
             .startup
             .max_concurrent_lane_spawn as usize;
         // VP-159 PR-4b: ActorRegistry 経由で spawn + register (= JoinHandle を registry が保持、
         // PR-5 supervisor 統一で abort / await を activate)。 Semaphore gate / race guard は完全互換。
+        // wiremsg R2-a: actor の recv は TheWorld への HTTP long-poll (wire 系引数は撤去)。
         state.actor_registry.write().await.spawn_service(
             super::lane_spawn_actor::LaneSpawnActor::new(
-                lane_spawn_store,
-                state.wire_notifier.clone(), // wiremsg R4: long-poll 起床
-                project_name_for_remote.clone(), // wiremsg R4: `lane-spawn@<project>` の project
+                project_name_for_remote.clone(), // `lane-spawn@<project>` の project
                 state.lane_pool.clone(),
                 state.lane_capabilities.clone(), // PR-β-2 (VP-120): Performer spawn 時に populate_lane する
                 state.system_event_tx.clone(),   // Phase 2 (Step E): system event central bus
@@ -322,9 +300,8 @@ pub async fn run(
             shutdown_token.clone(),
         );
 
-        // wiremsg R4: bootstrap producer も wire accumulation に rewire。
-        // `lane-spawn@<project>` 宛に `send_root` → LaneSpawnActor が wire recv で取り出す。
-        let bootstrap_store = state.wiremsg_store.clone();
+        // wiremsg R2-a: bootstrap producer は中央 store (TheWorld) へ HTTP send。
+        // `lane-spawn@<project>` 宛に send → LaneSpawnActor が TheWorld long-poll で取り出す。
         let bootstrap_from = format!("sp-bootstrap@{}", project_name_for_remote);
         let lane_spawn_addr = format!("lane-spawn@{}", project_name_for_remote);
         let performers_project_id = std::path::Path::new(&state.project_dir)
@@ -344,55 +321,61 @@ pub async fn run(
                 performers_project_id,
                 max_concurrent
             );
-            for entry in performers {
-                // doc 11 PR-B: stand は String 化、 default は config の `default_stand`
-                // (未設定なら "echoes" fallback、 PR-pre2 / VP-118 で "hd" → "echoes")。
-                let default_stand = crate::config::Config::load()
-                    .unwrap_or_default()
-                    .default_stand_or_echoes()
-                    .to_string();
-                let cmd = super::lane_cmd::LaneCmd::SpawnLane {
-                    project_id: performers_project_id.clone(),
-                    name: entry.name.clone(),
-                    cwd: entry.path.clone(),
-                    stand: default_stand,
-                };
-                // wire `lane-spawn@<project>` 宛に send_root → LaneSpawnActor が wire recv で
-                // handle_cmd する。 send 後に WireNotifier.notify で actor の long-poll を起こす。
-                if let Some(store) = &bootstrap_store {
-                    let body = match serde_json::to_value(&cmd) {
-                        Ok(b) => b,
+            // doc 11 PR-B: stand は String 化、 default は config の `default_stand`
+            // (未設定なら "echoes" fallback、 PR-pre2 / VP-118 で "hd" → "echoes")。
+            let default_stand = crate::config::Config::load()
+                .unwrap_or_default()
+                .default_stand_or_echoes()
+                .to_string();
+            let bootstrap_cmds: Vec<serde_json::Value> = performers
+                .iter()
+                .filter_map(|entry| {
+                    let cmd = super::lane_cmd::LaneCmd::SpawnLane {
+                        project_id: performers_project_id.clone(),
+                        name: entry.name.clone(),
+                        cwd: entry.path.clone(),
+                        stand: default_stand.clone(),
+                    };
+                    match serde_json::to_value(&cmd) {
+                        Ok(b) => Some(b),
                         Err(e) => {
                             tracing::warn!(
                                 "SP startup bootstrap: LaneCmd serialize 失敗 name={} err={}",
                                 entry.name,
                                 e
                             );
-                            continue;
+                            None
                         }
-                    };
-                    match store
-                        .send_root(
-                            &bootstrap_from,
-                            std::slice::from_ref(&lane_spawn_addr),
-                            body,
-                        )
-                        .await
-                    {
-                        Ok(_) => state.wire_notifier.notify(&lane_spawn_addr).await,
-                        Err(e) => tracing::warn!(
-                            "SP startup bootstrap: wire send_root 失敗 name={} cwd={} err={}",
-                            entry.name,
-                            entry.path,
-                            e
-                        ),
                     }
-                } else {
+                })
+                .collect();
+            // daemon (TheWorld) 起動前に SP が上がるケースがあるため、 各 cmd 独立の task で
+            // 最大 60s (5s × 12) retry する (SP 起動は block しない)。 performer ごとに並列化
+            // することで、 1 performer の retry 完走が他 performer の投入を遅らせない
+            // (moody 指摘: 直列だと最悪 60s × N の段積み遅延)。 投入順序は Semaphore gate が
+            // 並列度を制御するため保証不要。
+            for body in bootstrap_cmds {
+                let payload = serde_json::json!({
+                    "from": bootstrap_from.clone(),
+                    "to": [lane_spawn_addr.clone()],
+                    "body": body,
+                });
+                tokio::spawn(async move {
+                    for _attempt in 0..12u32 {
+                        match crate::process::world_wire::call("/api/wire/send", payload.clone())
+                            .await
+                        {
+                            Ok(_) => return,
+                            Err(_) => {
+                                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                            }
+                        }
+                    }
                     tracing::warn!(
-                        "SP startup bootstrap: wiremsg_store 未配線、 Performer spawn skip name={}",
-                        entry.name
+                        "SP startup bootstrap: TheWorld 不達で SpawnLane 投入失敗 (60s retry 後)。 \
+                         `vp daemon start` 後に SP を再起動してください"
                     );
-                }
+                });
             }
         } else {
             tracing::info!(
@@ -431,12 +414,8 @@ pub async fn run(
         // doc 11 §4.1 PR-C: 利用可能な Stand 一覧 (sidebar の + Add Performer dropdown 用)
         .route("/api/stands", get(stands::list_handler))
         .route("/api/show", post(health::show_handler))
-        // R3: cross-process wire delivery — 他 SP からの forward 受信口
-        .route(
-            "/api/wire/remote-deliver",
-            post(health::wire_remote_deliver_handler),
-        )
         // wiremsg R5-2: wire accumulation 経路の HTTP 入口 (旧 /api/msgbox/* を置換)
+        // R2-a: 実体は TheWorld 中央 store への proxy (remote-deliver は中央化で撤去)
         .route("/api/wire/send", post(health::wire_send_handler))
         .route("/api/wire/recv", post(health::wire_recv_handler))
         .route(
@@ -447,6 +426,9 @@ pub async fn run(
             "/api/wire/latest-msg",
             post(health::wire_latest_msg_handler),
         )
+        // R2-a: CLI parity (vp wire thread / ack) の HTTP 入口
+        .route("/api/wire/thread", post(health::wire_thread_handler))
+        .route("/api/wire/ack", post(health::wire_ack_handler))
         .route("/api/diagnose", get(health::diagnose_handler))
         .route("/api/toggle-pane", post(health::toggle_pane_handler))
         .route("/api/split-pane", post(health::split_pane_handler))
@@ -538,10 +520,6 @@ pub async fn run(
             post(world::world_open_pointview),
         )
         .route("/api/world/refresh", post(world::world_refresh))
-        .route(
-            "/api/world/ccwire/sessions",
-            get(world::world_ccwire_sessions),
-        )
         .layer(CorsLayer::permissive())
         .with_state(state.clone());
 
@@ -738,7 +716,7 @@ pub async fn run(
     // ファイル監視を全停止
     file_watchers_for_shutdown.lock().await.stop_all();
 
-    // tmux / ccwire は vp sp stop で管理（SP 停止時には触らない）
+    // tmux セッションは vp hd stop で管理（SP 停止時には触らない）
 
     // Shutdown all capabilities
     tracing::info!("Shutting down capabilities...");
@@ -910,6 +888,8 @@ pub async fn run_world(
         // Phase A ① / R1: World モードでも wiremsg store を build (上で async build 済)
         wiremsg_store,
         wire_notifier: crate::capability::WireNotifier::new(),
+        // R2-b: wire delivery loop の即時 wake (world_wire_send_handler が command 着信で notify)
+        delivery_notify: std::sync::Arc::new(tokio::sync::Notify::new()),
         // TheWorld もポート別ディレクトリで分離
         whitesnake: world_whitesnake,
         // Phase A4-2b: World モードでは Lane / Project Stand を持たない (空 Pool で AppState を満たす)
@@ -925,6 +905,20 @@ pub async fn run_world(
         // PR-β-1 (VP-119): World mode では LaneCapabilities を持たない (Lane scope は SP per project)
         lane_capabilities: None,
     });
+
+    // R2-b: wire delivery loop (未 ack command の tmux nudge + 再掲示) を spawn。
+    // store 未構築 (DB 接続失敗) なら skip — wire 自体が動かないため delivery も不要。
+    if let Some(store) = state.wiremsg_store.clone() {
+        let lane_registry = world_cap.read().await.lane_registry_ref();
+        state.actor_registry.write().await.spawn_service(
+            super::delivery_actor::DeliveryActor::new(
+                store,
+                lane_registry,
+                state.delivery_notify.clone(),
+            ),
+            shutdown_token.clone(),
+        );
+    }
 
     let app = Router::new()
         .route("/api/health", get(health::health_handler))
@@ -990,10 +984,20 @@ pub async fn run_world(
             post(world::world_open_pointview),
         )
         .route("/api/world/refresh", post(world::world_refresh))
+        // wiremsg R2-a: 中央 wire store (設計 mem_1CbvcJj4ppU3QKH9d7xMpT 決定 D1-c)。
+        // TheWorld が唯一の writer。 SP の /api/wire/* はここへの proxy。
+        .route("/api/wire/send", post(wire::world_wire_send_handler))
+        .route("/api/wire/recv", post(wire::world_wire_recv_handler))
+        .route("/api/wire/thread", post(wire::world_wire_thread_handler))
         .route(
-            "/api/world/ccwire/sessions",
-            get(world::world_ccwire_sessions),
+            "/api/wire/unread-count",
+            post(wire::world_wire_unread_count_handler),
         )
+        .route(
+            "/api/wire/latest-msg",
+            post(wire::world_wire_latest_msg_handler),
+        )
+        .route("/api/wire/ack", post(wire::world_wire_ack_handler))
         // HTTP register/unregister: Swift メニューバーアプリの移行完了まで残す（後方互換）
         // SP は QUIC registry チャネルで自己登録するため、これらは外部ツール用
         .route(
@@ -1268,7 +1272,7 @@ pub async fn run_world(
     // VP-149: continuous mDNS browse 起動 (= ServiceResolved / ServiceRemoved を listen)
     // tokio::sync::mpsc で event を bg task に流し、 AddressBook を reactive に upsert/remove。
     // ContinuousBrowser は scope 内 (run_world 関数内) で keep alive、 graceful shutdown 後の
-    // scope exit で Drop → mDNS daemon shutdown → bg thread 終了。
+    // scope exit で Drop → mDNS daemon shutdown → bg task 終了。
     let (lan_event_tx, mut lan_event_rx) = tokio::sync::mpsc::channel(64);
     let _lan_browser = match crate::lan_discovery::start_continuous_browse(lan_event_tx) {
         Ok(b) => Some(b),

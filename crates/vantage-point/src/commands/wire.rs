@@ -87,7 +87,55 @@ pub enum WireCommands {
         /// reply 先 message id (指定時は新規 thread の root ではなく reply として送信)
         #[arg(short, long)]
         reply_to: Option<String>,
+        /// delivery policy selector (command|event|state|data|log)。
+        /// command は受信者が ack するまで delivery loop の再掲示対象 (R2-b)
+        #[arg(long)]
+        category: Option<String>,
     },
+    /// 未読の在庫確認 (= mcp__wire_inbox の CLI pair、 read-only で cursor 不触り)
+    ///
+    /// `recv` と異なり cursor を進めない: 「読まずに在庫だけ確認」する。
+    /// `{status, total, by_thread: {root_id: count}}` を pretty JSON で stdout に出す。
+    Inbox {
+        /// SP の base URL (例: http://127.0.0.1:33002)。 default は Project 0 の SP (33000)。
+        #[arg(short, long, default_value = "http://127.0.0.1:33000")]
+        url: String,
+        /// 確認する wire address (例: `agent@vantage-point`)。 必須。
+        #[arg(short, long)]
+        agent: String,
+    },
+    /// thread 系譜の取得 (= mcp__wire_thread の CLI pair、 read-only で cursor 不触り)
+    ///
+    /// 指定 message から prev を root まで辿った系譜 (root-first・chronological) を返す。
+    /// 途中参加 thread の backlog 確認用。
+    Thread {
+        /// SP の base URL。 default は Project 0 の SP (33000)。
+        #[arg(short, long, default_value = "http://127.0.0.1:33000")]
+        url: String,
+        /// 系譜を辿る起点 message id (recv / inbox で得た id)
+        #[arg(short, long)]
+        message_id: String,
+    },
+    /// message の ack (R2-a、 command category の受領確認。 = mcp__wire_ack の CLI pair)
+    ///
+    /// cursor とは独立の ack 台帳に記録する。 command の処理を終えたら ack すること
+    /// (未 ack の command は delivery loop (R2-b) の再掲示対象になる)。
+    Ack {
+        /// SP の base URL。 default は Project 0 の SP (33000)。
+        #[arg(short, long, default_value = "http://127.0.0.1:33000")]
+        url: String,
+        /// ack する message id
+        #[arg(short, long)]
+        message_id: String,
+        /// ack する agent address (例: `agent@vantage-point`)。 必須。
+        #[arg(short, long)]
+        agent: String,
+    },
+    /// claude hook 実体 (R2-c、 チャネル B): stdin の hook JSON を読み、 未読 wire が
+    /// あれば additionalContext を stdout に出す。 echoes spawn が --settings で注入する
+    /// (決定 D2)。 あらゆる失敗は silent 成功 (fail-open、 会話を邪魔しない)。
+    /// 注意: CC hook 専用 — stdin を pipe で繋いで使う (TTY 直接実行は即 return する)。
+    HookCheck,
     /// shell-level supervisor: vp wire watch を loop で再起動。 inner watch が exit しても
     /// auto-restart で監視を継続する (lifecycle resilience)。 Monitor の前段に置いて、
     /// SessionStart hook 等から自動 arm する想定。
@@ -126,7 +174,26 @@ pub async fn run(cmd: WireCommands) -> Result<()> {
             body,
             from,
             reply_to,
-        } => send(&url, &to, &body, &from, reply_to.as_deref()).await,
+            category,
+        } => {
+            send(
+                &url,
+                &to,
+                &body,
+                &from,
+                reply_to.as_deref(),
+                category.as_deref(),
+            )
+            .await
+        }
+        WireCommands::Inbox { url, agent } => inbox(&url, &agent).await,
+        WireCommands::Thread { url, message_id } => thread(&url, &message_id).await,
+        WireCommands::Ack {
+            url,
+            message_id,
+            agent,
+        } => ack(&url, &message_id, &agent).await,
+        WireCommands::HookCheck => hook_check().await,
         WireCommands::WatchSupervised {
             url,
             agent,
@@ -322,16 +389,198 @@ async fn poll_recv(
     Ok(messages)
 }
 
-async fn send(url: &str, to: &str, body: &str, from: &str, reply_to: Option<&str>) -> Result<()> {
+/// read-only POST 系 endpoint (inbox / thread / ack) の共通実行部。
+/// 応答を pretty JSON で stdout に出し、 `{"status":"error"}` は bail する。
+async fn post_and_print(url: &str, path: &str, payload: serde_json::Value) -> Result<()> {
+    let endpoint = format!("{}{}", url.trim_end_matches('/'), path);
+    let resp = reqwest::Client::new()
+        .post(&endpoint)
+        .json(&payload)
+        .send()
+        .await
+        .with_context(|| format!("POST {}", endpoint))?
+        .json::<serde_json::Value>()
+        .await
+        .context("response JSON parse")?;
+    if resp.get("status").and_then(|v| v.as_str()) == Some("error") {
+        let err = resp
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown error");
+        anyhow::bail!("server error: {}", err);
+    }
+    println!("{}", serde_json::to_string_pretty(&resp)?);
+    Ok(())
+}
+
+/// POST /api/wire/unread-count — 未読在庫を表示 (cursor 不触り)
+async fn inbox(url: &str, agent: &str) -> Result<()> {
+    post_and_print(
+        url,
+        "/api/wire/unread-count",
+        serde_json::json!({ "agent": agent }),
+    )
+    .await
+}
+
+/// POST /api/wire/thread — 系譜 (root-first) を表示 (cursor 不触り)
+async fn thread(url: &str, message_id: &str) -> Result<()> {
+    post_and_print(
+        url,
+        "/api/wire/thread",
+        serde_json::json!({ "message_id": message_id }),
+    )
+    .await
+}
+
+/// VP_PROJECT / VP_LANE の値から自 wire address を導出する (純関数、 R2-c)
+///
+/// conductor → `agent@<project>`、 performer → `agent@<project>/<name>`
+/// (echoes task の lane_label と一致: conductor / performer 名 / unnamed)。
+/// env 不足/空 = VP 外で起動された claude → None (hook は何もしない)。
+fn wire_address_from_env(project: Option<&str>, lane: Option<&str>) -> Option<String> {
+    let project = project.filter(|s| !s.is_empty())?;
+    let lane = lane.filter(|s| !s.is_empty())?;
+    if lane == "conductor" {
+        Some(format!("agent@{project}"))
+    } else {
+        Some(format!("agent@{project}/{lane}"))
+    }
+}
+
+/// 未読件数から hookSpecificOutput JSON を作る (純関数、 R2-c)。 未読 0 は None (出力なし)。
+fn build_hook_output(event_name: &str, total: u64) -> Option<String> {
+    if total == 0 {
+        return None;
+    }
+    let context = format!(
+        "📬 wire: {total} 件未読。 mcp__vantage-point__wire_recv で受信してください \
+         (command category は処理後に mcp__vantage-point__wire_ack)。"
+    );
+    Some(
+        serde_json::json!({
+            "hookSpecificOutput": {
+                "hookEventName": event_name,
+                "additionalContext": context,
+            }
+        })
+        .to_string(),
+    )
+}
+
+/// hook 実体 (R2-c、 チャネル B): 設計 mem_1CbvcJj4ppU3QKH9d7xMpT。
+///
+/// 全エラー path で Ok(()) を返し何も出力しない (fail-open) — hook の失敗で
+/// 会話を邪魔しないことが最優先。 TheWorld 直叩き (qualified address を自前導出
+/// するので SP proxy 不要 = 自 SP が落ちていても未読通知は出る)。
+async fn hook_check() -> Result<()> {
+    // TTY からの手動実行ガード (moody 指摘): read_to_string が EOF 待ちで永久 block
+    // するため、 hook 専用である旨を案内して即 return する (exit 0)。
+    use std::io::IsTerminal;
+    if std::io::stdin().is_terminal() {
+        eprintln!(
+            "[vp wire hook-check] CC hook 専用コマンドです (stdin に hook JSON を pipe して使う)。\
+             echoes spawn が --settings で自動注入します。"
+        );
+        return Ok(());
+    }
+
+    // stdin の hook JSON から event 名を取る (parse 失敗は fail-open で default)
+    let mut input = String::new();
+    use std::io::Read;
+    let _ = std::io::stdin().read_to_string(&mut input);
+    let parsed = serde_json::from_str::<serde_json::Value>(&input).ok();
+    let event_name = parsed
+        .as_ref()
+        .and_then(|v| v.get("hook_event_name").and_then(|e| e.as_str()))
+        .unwrap_or("UserPromptSubmit")
+        .to_string();
+
+    let project = std::env::var("VP_PROJECT").ok();
+    let lane = std::env::var("VP_LANE").ok();
+
+    // R3-b: SessionStart で自 session_id を記録する (lane::cc_session の module doc 参照)。
+    // spawn 時に旧 session は agents --json に出ないため、 生きているうちに自己申告させる。
+    // wire 通知とは独立の lane 管理だが、 全 VP spawn session に注入済みの本 hook に
+    // 相乗りする (プロセス追加ゼロ)。 失敗は無視 (fail-open)。
+    if event_name == "SessionStart"
+        && let Some(sid) = parsed
+            .as_ref()
+            .and_then(|v| v.get("session_id").and_then(|s| s.as_str()))
+        && let (Some(p), Some(l)) = (project.as_deref(), lane.as_deref())
+    {
+        let _ = crate::lane::cc_session::record(p, l, sid);
+    }
+
+    let Some(agent) = wire_address_from_env(project.as_deref(), lane.as_deref()) else {
+        return Ok(()); // VP 外で起動された claude — 何もしない
+    };
+
+    // hook は会話を block しないよう短い timeout。 daemon 不在等は silent 成功。
+    let world_port = crate::config::Config::load()
+        .map(|c| c.port_layout().world_port)
+        .unwrap_or(crate::cli::WORLD_PORT);
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+    else {
+        return Ok(());
+    };
+    let resp = client
+        .post(format!(
+            "http://127.0.0.1:{world_port}/api/wire/unread-count"
+        ))
+        .json(&serde_json::json!({ "agent": agent }))
+        .send()
+        .await;
+    let total = match resp {
+        Ok(r) => r
+            .json::<serde_json::Value>()
+            .await
+            .ok()
+            .and_then(|v| v.get("total").and_then(|t| t.as_u64()))
+            .unwrap_or(0),
+        Err(_) => return Ok(()), // daemon 不在 — silent 成功 (fail-open)
+    };
+
+    if let Some(out) = build_hook_output(&event_name, total) {
+        println!("{out}");
+    }
+    Ok(())
+}
+
+/// POST /api/wire/ack — message を ack する (R2-a、 ack 台帳に記録)
+async fn ack(url: &str, message_id: &str, agent: &str) -> Result<()> {
+    post_and_print(
+        url,
+        "/api/wire/ack",
+        serde_json::json!({ "message_id": message_id, "agent": agent }),
+    )
+    .await
+}
+
+async fn send(
+    url: &str,
+    to: &str,
+    body: &str,
+    from: &str,
+    reply_to: Option<&str>,
+    category: Option<&str>,
+) -> Result<()> {
     let client = reqwest::Client::new();
     let endpoint = format!("{}/api/wire/send", url.trim_end_matches('/'));
 
     // wire_send payload: to は配列、 body は任意 JSON。
     // CLI は ad-hoc test 用なので body string を `{"text": ...}` object に wrap して送る。
+    // R2-b: --category は delivery policy selector (command = ack されるまで再掲示対象)。
+    let mut body_obj = serde_json::json!({ "text": body });
+    if let Some(cat) = category {
+        body_obj["category"] = serde_json::Value::String(cat.to_string());
+    }
     let mut payload = serde_json::json!({
         "from": from,
         "to": [to],
-        "body": { "text": body },
+        "body": body_obj,
     });
     if let Some(prev_id) = reply_to {
         payload["reply_to"] = serde_json::Value::String(prev_id.to_string());
@@ -427,5 +676,108 @@ mod tests {
             WireCommands::Recv { timeout, .. } => assert_eq!(timeout, 300),
             other => panic!("expected Recv variant, got {:?}", other),
         }
+    }
+
+    /// R2-a CLI parity: inbox は agent 必須、 url default は SP (proxy 経由)
+    #[test]
+    fn inbox_parses_agent_with_default_url() {
+        let cli = TestCli::try_parse_from(["vp-wire-test", "inbox", "-a", "agent@vp"])
+            .expect("parse should succeed");
+        match cli.cmd {
+            WireCommands::Inbox { url, agent } => {
+                assert_eq!(agent, "agent@vp");
+                assert_eq!(url, "http://127.0.0.1:33000");
+            }
+            other => panic!("expected Inbox variant, got {:?}", other),
+        }
+        assert!(
+            TestCli::try_parse_from(["vp-wire-test", "inbox"]).is_err(),
+            "--agent omitted should fail"
+        );
+    }
+
+    /// R2-a CLI parity: thread は message_id 必須
+    #[test]
+    fn thread_parses_message_id() {
+        let cli = TestCli::try_parse_from(["vp-wire-test", "thread", "-m", "0196-abc"])
+            .expect("parse should succeed");
+        match cli.cmd {
+            WireCommands::Thread { message_id, .. } => assert_eq!(message_id, "0196-abc"),
+            other => panic!("expected Thread variant, got {:?}", other),
+        }
+    }
+
+    /// R2-b: --category が Send に渡る
+    #[test]
+    fn send_parses_category() {
+        let cli = TestCli::try_parse_from([
+            "vp-wire-test",
+            "send",
+            "-t",
+            "agent@vp",
+            "-b",
+            "x",
+            "--category",
+            "command",
+        ])
+        .expect("parse should succeed");
+        match cli.cmd {
+            WireCommands::Send { category, .. } => {
+                assert_eq!(category.as_deref(), Some("command"))
+            }
+            other => panic!("expected Send variant, got {:?}", other),
+        }
+    }
+
+    /// R2-a CLI parity: ack は message_id + agent の両方必須
+    #[test]
+    fn ack_parses_message_id_and_agent() {
+        let cli =
+            TestCli::try_parse_from(["vp-wire-test", "ack", "-m", "0196-abc", "-a", "agent@vp"])
+                .expect("parse should succeed");
+        match cli.cmd {
+            WireCommands::Ack {
+                message_id, agent, ..
+            } => {
+                assert_eq!(message_id, "0196-abc");
+                assert_eq!(agent, "agent@vp");
+            }
+            other => panic!("expected Ack variant, got {:?}", other),
+        }
+        assert!(
+            TestCli::try_parse_from(["vp-wire-test", "ack", "-m", "0196-abc"]).is_err(),
+            "--agent omitted should fail"
+        );
+    }
+
+    /// R2-c: VP_PROJECT / VP_LANE から自 wire address を導出
+    #[test]
+    fn hook_address_from_env_values() {
+        assert_eq!(
+            wire_address_from_env(Some("vp"), Some("conductor")).as_deref(),
+            Some("agent@vp")
+        );
+        assert_eq!(
+            wire_address_from_env(Some("vp"), Some("w1")).as_deref(),
+            Some("agent@vp/w1")
+        );
+        // env 不足 = VP 外で起動された claude → None (fail-open)
+        assert_eq!(wire_address_from_env(None, Some("conductor")), None);
+        assert_eq!(wire_address_from_env(Some("vp"), None), None);
+        assert_eq!(wire_address_from_env(Some(""), Some("conductor")), None);
+    }
+
+    /// R2-c: 未読ありのときだけ hookSpecificOutput JSON を作る
+    #[test]
+    fn hook_output_only_when_unread() {
+        assert_eq!(build_hook_output("SessionStart", 0), None);
+        let out = build_hook_output("UserPromptSubmit", 3).expect("3 件未読なら出力");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
+        assert_eq!(v["hookSpecificOutput"]["hookEventName"], "UserPromptSubmit");
+        let ctx = v["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .expect("additionalContext");
+        assert!(ctx.contains("3 件"), "件数を含む: {ctx}");
+        assert!(ctx.contains("wire_recv"), "受信導線を含む: {ctx}");
     }
 }

@@ -4,6 +4,8 @@
 #
 # file-based mise task 移行 (2026-05-30)。 旧 [tasks.logs] を Ruby file task に移植。
 # log file が無くても tail -F が掴めるよう先に touch、 最後に exec tail -F で 4 file を stream。
+# ログローテーションは file-rotate (容量/件数ベース) で現行ファイル名を bare 名に保つため、
+# ここで tail する exact name は不変 (rotate された世代は app.kdl.log.1 等の別名に逃げる)。
 require "fileutils"
 require File.join(ENV.fetch("MISE_PROJECT_ROOT"), "scripts/mise/vp.rb")
 
