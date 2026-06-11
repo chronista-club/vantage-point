@@ -427,12 +427,8 @@ pub async fn run(
         // doc 11 §4.1 PR-C: 利用可能な Stand 一覧 (sidebar の + Add Performer dropdown 用)
         .route("/api/stands", get(stands::list_handler))
         .route("/api/show", post(health::show_handler))
-        // R3: cross-process wire delivery — 他 SP からの forward 受信口
-        .route(
-            "/api/wire/remote-deliver",
-            post(health::wire_remote_deliver_handler),
-        )
         // wiremsg R5-2: wire accumulation 経路の HTTP 入口 (旧 /api/msgbox/* を置換)
+        // R2-a: 実体は TheWorld 中央 store への proxy (remote-deliver は中央化で撤去)
         .route("/api/wire/send", post(health::wire_send_handler))
         .route("/api/wire/recv", post(health::wire_recv_handler))
         .route(

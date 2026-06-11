@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use vantage_point::capability::{WireMessage, WiremsgStore};
+use vantage_point::capability::WiremsgStore;
 use vantage_point::db::VpDb;
 
 /// kv-mem で VpDb 接続 + SCHEMA_SQL define + WiremsgStore build
@@ -200,64 +200,5 @@ async fn schema_sql_wire_thread_ancestor_chain() {
     );
 }
 
-/// SCHEMA_SQL 経由で R3 cross-process 受信 (`receive_forwarded`) が動く
-///
-/// R3 (mem_1CbDLrECNZiNEZqjySLfSB): 他 SP から forward された WireMessage を実 schema の
-/// wire_messages accumulation に取り込み、 受信者が `wire_recv` で読めることを確認する。
-/// origin の id は保持され、 local_seq は受信側で採番される。
-#[tokio::test]
-async fn schema_sql_receive_forwarded_cross_process() {
-    let store = make_store().await;
-    // 他 SP が作った相当の message — origin が採番した id / local_seq を持つ
-    let origin = WireMessage {
-        id: uuid::Uuid::now_v7().to_string(),
-        prev: None,
-        from: "agent@other-project".to_string(),
-        to: vec!["agent@vp".to_string()],
-        body: body("cross-process hello"),
-        created_at: 1_700_000_000_000,
-        local_seq: 777, // origin 側の値 — 受信側では振り直される
-    };
-    let (stored, inserted) = store
-        .receive_forwarded(&origin)
-        .await
-        .expect("receive_forwarded");
-    assert!(inserted, "新規 forward は INSERT される");
-    assert_eq!(stored.id, origin.id, "origin の id を保持");
-    assert_eq!(
-        stored.local_seq, 1,
-        "local_seq は受信側 accumulation で採番 (空 store なので 1)"
-    );
-
-    // 受信者 agent@vp は forward された message を未読で受け取れる
-    let unread = store.recv("agent@vp").await.expect("recv");
-    assert_eq!(unread.len(), 1, "forward された message が未読で届く");
-    assert_eq!(unread[0].id, origin.id);
-}
-
-/// SCHEMA_SQL 経由で R3 受信が冪等 — 同一 id の二重 forward は二重 INSERT にならない
-///
-/// best-effort forward は retry を持たないが、 ネットワーク事情で二重着信しうる。
-/// 同一 id の `receive_forwarded` は 2 回目以降スキップし、 accumulation を汚さない。
-#[tokio::test]
-async fn schema_sql_receive_forwarded_idempotent() {
-    let store = make_store().await;
-    let origin = WireMessage {
-        id: uuid::Uuid::now_v7().to_string(),
-        prev: None,
-        from: "agent@other-project".to_string(),
-        to: vec!["agent@vp".to_string()],
-        body: body("dup forward"),
-        created_at: 1_700_000_000_000,
-        local_seq: 0,
-    };
-    // 二重 forward を模擬: 同一 message を 2 回 receive
-    let (_, inserted1) = store.receive_forwarded(&origin).await.expect("recv 1");
-    let (_, inserted2) = store.receive_forwarded(&origin).await.expect("recv 2");
-    assert!(inserted1, "1 回目は INSERT");
-    assert!(!inserted2, "2 回目は冪等スキップ");
-
-    // accumulation 上は 1 件のまま (二重 INSERT になっていない)
-    let unread = store.recv("agent@vp").await.expect("recv");
-    assert_eq!(unread.len(), 1, "二重 forward でも message は 1 件");
-}
+// R3 cross-process 受信 (`receive_forwarded`) のテストは R2-a (store 中央化) で
+// forward 概念ごと撤去された (設計 mem_1CbvcJj4ppU3QKH9d7xMpT 決定 D1-b)。
