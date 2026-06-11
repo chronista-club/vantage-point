@@ -43,6 +43,7 @@ pub(crate) mod tmux_actor;
 pub mod topic;
 pub(crate) mod topic_router;
 pub(crate) mod unison_server;
+pub(crate) mod world_wire;
 
 pub use capabilities::CapabilityConfig;
 pub use server::{run, run_world};
