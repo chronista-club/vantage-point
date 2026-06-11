@@ -263,6 +263,10 @@ async fn pulse(
         .flatten()
         .cloned()
         .collect();
+    if lanes.is_empty() {
+        // lane なし = nudge 先がない (TheWorld 起動直後等)。 poll の claude fork を省く
+        return Ok(());
+    }
     // R3-a: CC activity を pulse ごとに 1 回 poll。 None = poll 不能 (claude 不在 /
     // timeout / schema 変動) で degraded fallback (R2-b 挙動) に落ちる。
     let activity = crate::process::cc_activity::poll_cc_activity().await;
@@ -283,6 +287,8 @@ async fn pulse(
             let Some((session, _cwd)) = target else {
                 continue; // lane 不在 / Dead / PtySlotFallback = offline (pending 保持)
             };
+            // 不変条件: target=Some が確定した後のみここに到達 = lane Running + Tmux
+            // = lane_nudgeable は常に真 (target=None は直前の continue で排除済み)
             match recipient_readiness(true, act_view) {
                 Readiness::Ready => {}
                 // busy: 待つ (台帳は進めない — idle 遷移を次 pulse で拾う)。
