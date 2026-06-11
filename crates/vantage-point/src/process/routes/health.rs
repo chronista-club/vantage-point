@@ -210,6 +210,33 @@ pub async fn wire_latest_msg_handler(
     }
 }
 
+/// POST /api/wire/thread - thread 系譜取得 HTTP 入口 (read-only、 cursor 不触り)
+///
+/// `vp wire thread` CLI / `wire_thread` MCP tool と同じ経路の HTTP 版 (R2-a で CLI parity)。
+/// payload: `{message_id: String}` → `{status: "ok", messages: [..], count}`。
+pub async fn wire_thread_handler(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    match crate::process::unison_server::handle_wire_thread(&state, payload).await {
+        Ok(v) => Json(v),
+        Err(e) => Json(serde_json::json!({"status": "error", "error": e})),
+    }
+}
+
+/// POST /api/wire/ack - per-message ack HTTP 入口 (R2-a、 決定 D3)
+///
+/// payload: `{message_id: String, agent: String}` → `{status: "ok", acked: bool}`。
+pub async fn wire_ack_handler(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    match crate::process::unison_server::handle_wire_ack(&state, payload).await {
+        Ok(v) => Json(v),
+        Err(e) => Json(serde_json::json!({"status": "error", "error": e})),
+    }
+}
+
 /// Stand 自己診断 (2026-04-25 user 発案) — ProcessCapabilities の各 Stand の
 /// diagnose() を集約。side-effect-free、いつでも呼び出し可能。
 ///

@@ -443,6 +443,9 @@ pub async fn run(
             "/api/wire/latest-msg",
             post(health::wire_latest_msg_handler),
         )
+        // R2-a: CLI parity (vp wire thread / ack) の HTTP 入口
+        .route("/api/wire/thread", post(health::wire_thread_handler))
+        .route("/api/wire/ack", post(health::wire_ack_handler))
         .route("/api/diagnose", get(health::diagnose_handler))
         .route("/api/toggle-pane", post(health::toggle_pane_handler))
         .route("/api/split-pane", post(health::split_pane_handler))
