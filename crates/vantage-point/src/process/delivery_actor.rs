@@ -276,12 +276,10 @@ async fn pulse(
             };
             let target = pick_nudge_target(&lanes, &lane_display);
             // R3-a policy: lane の cwd で CC 状態を照合 (設計 policy table)
-            let act_view = activity
-                .as_ref()
-                .map(|s| match &target {
-                    Some((_, cwd)) => crate::process::cc_activity::state_for_cwd(s, cwd),
-                    None => None,
-                });
+            let act_view = activity.as_ref().map(|s| match &target {
+                Some((_, cwd)) => crate::process::cc_activity::state_for_cwd(s, cwd),
+                None => None,
+            });
             let Some((session, _cwd)) = target else {
                 continue; // lane 不在 / Dead / PtySlotFallback = offline (pending 保持)
             };
@@ -305,7 +303,11 @@ async fn pulse(
                                 session,
                                 count + 1,
                                 // degraded か精密 (poll 成功) かを後から判別できるように
-                                if activity.is_some() { "precise" } else { "degraded" }
+                                if activity.is_some() {
+                                    "precise"
+                                } else {
+                                    "degraded"
+                                }
                             );
                             ledger.insert(
                                 key,
