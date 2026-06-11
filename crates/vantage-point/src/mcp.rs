@@ -1592,6 +1592,8 @@ impl VantageMcp {
         // mode を payload に同梱しておくと、 worker 側が後で判断材料に使える。
         let wire_body = serde_json::json!({
             "kind": "task",
+            // R2-b: category は delivery policy selector (command = ack されるまで再掲示対象)
+            "category": "command",
             "task_spec": params.task_spec,
             "mode": mode,
         });
@@ -2817,7 +2819,7 @@ if bestId > 0 { print(bestId) }
 
     /// Send a wiremsg (new thread, or a reply when reply_to is set)
     #[tool(
-        description = "Send a threaded wire message. Without `reply_to`, starts a NEW thread (root message). With `reply_to` (a wire message id), posts a REPLY into that message's thread. Recipients receive the message as unread; the sender does not see their own root message. Use wire_recv to read replies. This is the PRIMARY channel for inter-agent communication."
+        description = "Send a threaded wire message. Without `reply_to`, starts a NEW thread (root message). With `reply_to` (a wire message id), posts a REPLY into that message's thread. Recipients receive the message as unread; the sender does not see their own root message. Use wire_recv to read replies. This is the PRIMARY channel for inter-agent communication. Set body.category to one of {command, event, state, data, log} to control delivery policy: 'command' messages are re-nudged to the recipient until they wire_ack; omitted category defaults to 'event' (no nudge)."
     )]
     async fn wire_send(
         &self,
