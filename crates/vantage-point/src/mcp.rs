@@ -144,6 +144,16 @@ pub struct WireThreadParams {
     pub message_id: String,
 }
 
+/// Parameters for wire_ack tool (R2-a: per-message ack 台帳、 決定 D3)
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct WireAckParams {
+    /// ack する wire message id
+    #[schemars(
+        description = "The wire message id (returned by wire_recv) to acknowledge. Ack the message after you have actually handled it."
+    )]
+    pub message_id: String,
+}
+
 /// Parameters for the watch_file tool
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct WatchFileParams {
@@ -2885,6 +2895,26 @@ if bestId > 0 { print(bestId) }
         let agent = self.self_lane.from_address();
         let payload = serde_json::json!({ "agent": agent });
         let resp = self.quic_call("wire_unread_count", payload).await?;
+        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+            serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "null".to_string()),
+        )]))
+    }
+
+    /// Acknowledge a wire message (per-message ack ledger, independent of the read cursor)
+    #[tool(
+        description = "Acknowledge (ack) a wire message AFTER you have actually handled it. The ack ledger is independent of the wire_recv read cursor: receiving a command via wire_recv does NOT count as handling it — an unacked command stays eligible for re-notification by the delivery loop. Returns `acked: true` for a new ack, `false` if this agent already acked the message (idempotent). Use the `id` field of a message returned by wire_recv."
+    )]
+    async fn wire_ack(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<WireAckParams>,
+    ) -> Result<CallToolResult, McpError> {
+        // agent は wire_send / wire_recv と同じ self_lane 由来 address (SP 側で正規化される)
+        let agent = self.self_lane.from_address();
+        let payload = serde_json::json!({
+            "message_id": params.message_id,
+            "agent": agent,
+        });
+        let resp = self.quic_call("wire_ack", payload).await?;
         Ok(CallToolResult::success(vec![rmcp::model::Content::text(
             serde_json::to_string_pretty(&resp).unwrap_or_else(|_| "null".to_string()),
         )]))
