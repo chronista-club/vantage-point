@@ -11,6 +11,8 @@
 pub mod capabilities;
 pub(crate) mod hub;
 /// VP install root の runtime 解決 (doc 11 PR-D / Z 系統)
+/// wire delivery loop — 未 ack command の tmux nudge + 再掲示 (R2-b、 TheWorld 常駐)
+pub(crate) mod delivery_actor;
 pub(crate) mod install_root;
 /// Lane 階層 Stand container (LSCM doc 12 §9 / doc 13 §3、 PR-β-1 受け皿、 VP-119)
 pub(crate) mod lane_capabilities;
