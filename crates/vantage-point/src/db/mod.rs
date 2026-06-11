@@ -715,6 +715,15 @@ DEFINE FIELD IF NOT EXISTS updated_at ON thread_participant TYPE number;
 -- (thread, agent) で一意
 DEFINE INDEX IF NOT EXISTS thread_participant_uniq ON thread_participant FIELDS thread, agent UNIQUE;
 DEFINE INDEX IF NOT EXISTS thread_participant_agent_idx ON thread_participant FIELDS agent, status;
+
+-- wiremsg R2-a (設計 mem_1CbvcJj4ppU3QKH9d7xMpT 決定 D3): per-message ack 台帳。
+-- command category の「読まれた」確認用。cursor (agent_cursor) とは独立で、
+-- recv で cursor が進んでも wire_ack されるまで delivery loop (R2-b) の再掲示対象。
+DEFINE TABLE IF NOT EXISTS wire_acks SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS message_id ON wire_acks TYPE string;
+DEFINE FIELD IF NOT EXISTS agent ON wire_acks TYPE string;
+DEFINE FIELD IF NOT EXISTS acked_at ON wire_acks TYPE number;
+DEFINE INDEX IF NOT EXISTS wire_acks_uniq ON wire_acks FIELDS message_id, agent UNIQUE;
 "#;
 
 // =============================================================================

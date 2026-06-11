@@ -486,6 +486,66 @@ impl WiremsgStore {
         Ok(counts)
     }
 
+    /// message を ack する (R2-a、 決定 D3: cursor 非破壊の ack 台帳)
+    ///
+    /// cursor (agent_cursor) とは独立。 recv で cursor が進んでも、 command category は
+    /// ack されるまで delivery loop (R2-b) の再掲示対象になる。
+    /// 戻り値: 新規 ack なら `true`、 既に ack 済 (冪等) なら `false`。
+    /// 存在しない `message_id` は Err (typo を黙って成功させない)。
+    pub async fn ack(&self, message_id: &str, agent: &str) -> Result<bool> {
+        // message 実在確認 (誤 id の ack を黙って成功させない)
+        if self.get_message(message_id).await?.is_none() {
+            anyhow::bail!("wiremsg ack: message not found: {message_id}");
+        }
+
+        // 既 ack なら冪等 false
+        let mut res = self
+            .db
+            .query("SELECT agent FROM wire_acks WHERE message_id = $id AND agent = $agent LIMIT 1;")
+            .bind(("id", message_id.to_string()))
+            .bind(("agent", agent.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("wiremsg ack select failed: {e}"))?;
+        let existing: Vec<serde_json::Value> = res
+            .take(0)
+            .map_err(|e| anyhow::anyhow!("wiremsg ack select take failed: {e}"))?;
+        if !existing.is_empty() {
+            return Ok(false);
+        }
+
+        self.db
+            .query(
+                "CREATE wire_acks CONTENT {
+                     message_id: $id, agent: $agent, acked_at: $now
+                 };",
+            )
+            .bind(("id", message_id.to_string()))
+            .bind(("agent", agent.to_string()))
+            .bind(("now", now_ms()))
+            .await
+            .map_err(|e| anyhow::anyhow!("wiremsg ack create failed: {e}"))?
+            .check()
+            .map_err(|e| anyhow::anyhow!("wiremsg ack create check failed: {e}"))?;
+        Ok(true)
+    }
+
+    /// message を ack 済の agent 一覧を返す (read-only)
+    pub async fn acks_for(&self, message_id: &str) -> Result<Vec<String>> {
+        let mut res = self
+            .db
+            .query("SELECT agent FROM wire_acks WHERE message_id = $id ORDER BY agent;")
+            .bind(("id", message_id.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("wiremsg acks_for failed: {e}"))?;
+        let rows: Vec<serde_json::Value> = res
+            .take(0)
+            .map_err(|e| anyhow::anyhow!("wiremsg acks_for take failed: {e}"))?;
+        Ok(rows
+            .iter()
+            .filter_map(|r| r.get("agent").and_then(|v| v.as_str()).map(String::from))
+            .collect())
+    }
+
     // -------------------------------------------------------------------------
     // 内部 helper
     // -------------------------------------------------------------------------
@@ -836,6 +896,12 @@ mod tests {
             DEFINE FIELD updated_at ON thread_participant TYPE number;
             DEFINE INDEX thread_participant_uniq ON thread_participant FIELDS thread, agent UNIQUE;
             DEFINE INDEX thread_participant_agent_idx ON thread_participant FIELDS agent, status;
+
+            DEFINE TABLE wire_acks SCHEMAFULL;
+            DEFINE FIELD message_id ON wire_acks TYPE string;
+            DEFINE FIELD agent ON wire_acks TYPE string;
+            DEFINE FIELD acked_at ON wire_acks TYPE number;
+            DEFINE INDEX wire_acks_uniq ON wire_acks FIELDS message_id, agent UNIQUE;
             "#,
         )
         .await
@@ -1813,5 +1879,42 @@ mod tests {
         notifier.notify("carol@vp").await;
         let result = tokio::time::timeout(std::time::Duration::from_millis(150), fut).await;
         assert!(result.is_err(), "別 agent への notify では起床しない");
+    }
+
+    // -------------------------------------------------------------------------
+    // ack 台帳 (R2-a、 決定 D3)
+    // -------------------------------------------------------------------------
+
+    /// ack: 初回は true (新規)、 再 ack は false (冪等)、 acks_for で一覧が引ける
+    #[tokio::test]
+    async fn ack_records_and_is_idempotent() {
+        let store = make_test_store().await;
+        let msg = store
+            .send_root(
+                "agent@vp",
+                &["agent@nexus".to_string()],
+                body("command やって"),
+            )
+            .await
+            .expect("send_root");
+
+        assert!(
+            store.ack(&msg.id, "agent@nexus").await.expect("初回 ack"),
+            "初回 ack は新規 = true"
+        );
+        assert!(
+            !store.ack(&msg.id, "agent@nexus").await.expect("再 ack"),
+            "同一 (message, agent) の再 ack は冪等 = false"
+        );
+
+        let acked = store.acks_for(&msg.id).await.expect("acks_for");
+        assert_eq!(acked, vec!["agent@nexus".to_string()]);
+    }
+
+    /// ack: 存在しない message_id は Err (typo を黙って成功させない)
+    #[tokio::test]
+    async fn ack_unknown_message_errors() {
+        let store = make_test_store().await;
+        assert!(store.ack("no-such-id", "agent@nexus").await.is_err());
     }
 }
