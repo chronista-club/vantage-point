@@ -503,8 +503,10 @@ impl WiremsgStore {
     /// ack 済 agent と送信者自身を除いた残り。 全員 ack 済の message は載らない。
     /// cursor (agent_cursor) とは独立 — recv 済でも ack されるまで載り続ける (決定 D3)。
     ///
-    /// 注: `body.category` には index が無い。 command は低頻度・store は R2-a で
-    /// リセット済のため全走査で十分。 件数が増えたら index 追加を検討。
+    /// 注: `body.category` には index が無く、 ack 照合も message ごとに `acks_for` を
+    /// 呼ぶため 1 + N クエリ (moody 指摘)。 command は低頻度・store は R2-a でリセット済
+    /// のため許容。 未 ack command が常時 20 件を超える規模になったら index 追加 +
+    /// JOIN 一発化を検討するのがトリアージライン。
     pub async fn unacked_commands(&self) -> Result<Vec<(WireMessage, Vec<String>)>> {
         let mut res = self
             .db

@@ -355,6 +355,49 @@ mod tests {
         );
     }
 
+    /// pick_tmux_session 用の test lane (vp/conductor)
+    fn test_lane(state: LaneState, mode: TmuxMode) -> LaneInfo {
+        use crate::process::lanes_state::{LaneAddress, LaneKind, TmuxLaneAddress};
+        LaneInfo {
+            address: LaneAddress::conductor("vp"),
+            kind: LaneKind::Conductor,
+            name: None,
+            state,
+            stand: "echoes".to_string(),
+            created_at: "2026-06-11T00:00:00Z".to_string(),
+            pid: None,
+            cwd: String::new(),
+            performer_status: None,
+            tmux: vec![TmuxLaneAddress {
+                stand: "echoes".to_string(),
+                session: "vp-vp-conductor-echoes".to_string(),
+                mode,
+            }],
+        }
+    }
+
+    /// Running + Tmux mode の lane は session 名が返る (nudge 可能)
+    #[test]
+    fn pick_running_tmux_lane_returns_session() {
+        let lanes = vec![test_lane(LaneState::Running, TmuxMode::Tmux)];
+        assert_eq!(
+            pick_tmux_session(&lanes, "vp/conductor").as_deref(),
+            Some("vp-vp-conductor-echoes")
+        );
+        // 別 lane 宛は None (offline 扱い = pending 保持)
+        assert_eq!(pick_tmux_session(&lanes, "other/conductor"), None);
+    }
+
+    /// PtySlotFallback (send-keys 不可) と Dead lane は nudge 対象外 = pending 保持
+    #[test]
+    fn pick_skips_fallback_mode_and_dead_lane() {
+        let fallback = vec![test_lane(LaneState::Running, TmuxMode::PtySlotFallback)];
+        assert_eq!(pick_tmux_session(&fallback, "vp/conductor"), None);
+
+        let dead = vec![test_lane(LaneState::Dead, TmuxMode::Tmux)];
+        assert_eq!(pick_tmux_session(&dead, "vp/conductor"), None);
+    }
+
     #[test]
     fn agent_address_maps_to_lane_display() {
         assert_eq!(
