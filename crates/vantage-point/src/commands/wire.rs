@@ -394,7 +394,12 @@ async fn post_and_print(url: &str, path: &str, payload: serde_json::Value) -> Re
 
 /// POST /api/wire/unread-count — 未読在庫を表示 (cursor 不触り)
 async fn inbox(url: &str, agent: &str) -> Result<()> {
-    post_and_print(url, "/api/wire/unread-count", serde_json::json!({ "agent": agent })).await
+    post_and_print(
+        url,
+        "/api/wire/unread-count",
+        serde_json::json!({ "agent": agent }),
+    )
+    .await
 }
 
 /// POST /api/wire/thread — 系譜 (root-first) を表示 (cursor 不触り)
