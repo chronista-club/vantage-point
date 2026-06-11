@@ -9,6 +9,8 @@
 //! - **Capability**: Process が持つ能力（Agent, MIDI, Protocol等）
 
 pub mod capabilities;
+/// wire delivery loop — 未 ack command の tmux nudge + 再掲示 (R2-b、 TheWorld 常駐)
+pub(crate) mod delivery_actor;
 pub(crate) mod hub;
 /// VP install root の runtime 解決 (doc 11 PR-D / Z 系統)
 pub(crate) mod install_root;

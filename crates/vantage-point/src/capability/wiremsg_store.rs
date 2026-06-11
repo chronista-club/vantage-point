@@ -497,6 +497,45 @@ impl WiremsgStore {
             .collect())
     }
 
+    /// 未 ack の command category message を pending 受信者付きで返す (R2-b delivery loop 用)
+    ///
+    /// 戻り値: `(message, pending_agents)` の Vec (local_seq 昇順)。 pending = `to` から
+    /// ack 済 agent と送信者自身を除いた残り。 全員 ack 済の message は載らない。
+    /// cursor (agent_cursor) とは独立 — recv 済でも ack されるまで載り続ける (決定 D3)。
+    ///
+    /// 注: `body.category` には index が無く、 ack 照合も message ごとに `acks_for` を
+    /// 呼ぶため 1 + N クエリ (moody 指摘)。 command は低頻度・store は R2-a でリセット済
+    /// のため許容。 未 ack command が常時 20 件を超える規模になったら index 追加 +
+    /// JOIN 一発化を検討するのがトリアージライン。
+    pub async fn unacked_commands(&self) -> Result<Vec<(WireMessage, Vec<String>)>> {
+        let mut res = self
+            .db
+            .query(
+                "SELECT * FROM wire_messages WHERE body.category = 'command' ORDER BY local_seq;",
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("wiremsg unacked_commands failed: {e}"))?;
+        let rows: Vec<serde_json::Value> = res
+            .take(0)
+            .map_err(|e| anyhow::anyhow!("wiremsg unacked_commands take failed: {e}"))?;
+
+        let mut out = Vec::new();
+        for row in &rows {
+            let msg = Self::row_to_message(row)?;
+            let acked = self.acks_for(&msg.id).await?;
+            let pending: Vec<String> = msg
+                .to
+                .iter()
+                .filter(|a| **a != msg.from && !acked.contains(a))
+                .cloned()
+                .collect();
+            if !pending.is_empty() {
+                out.push((msg, pending));
+            }
+        }
+        Ok(out)
+    }
+
     // -------------------------------------------------------------------------
     // 内部 helper
     // -------------------------------------------------------------------------
@@ -1772,5 +1811,65 @@ mod tests {
     async fn ack_unknown_message_errors() {
         let store = make_test_store().await;
         assert!(store.ack("no-such-id", "agent@nexus").await.is_err());
+    }
+
+    /// unacked_commands: command category のみ・未 ack 受信者のみが pending に載る
+    #[tokio::test]
+    async fn unacked_commands_lists_pending_recipients() {
+        let store = make_test_store().await;
+        // command (nudge 対象) と event (対象外) を送る
+        let cmd = store
+            .send_root(
+                "agent@vp",
+                &["agent@nexus".to_string(), "agent@vp/w1".to_string()],
+                serde_json::json!({"category": "command", "text": "やって"}),
+            )
+            .await
+            .expect("command send");
+        store
+            .send_root(
+                "agent@vp",
+                &["agent@nexus".to_string()],
+                serde_json::json!({"category": "event", "text": "info"}),
+            )
+            .await
+            .expect("event send");
+
+        let pending = store.unacked_commands().await.expect("unacked");
+        assert_eq!(pending.len(), 1, "command のみ (event は対象外)");
+        assert_eq!(pending[0].0.id, cmd.id);
+        assert_eq!(
+            pending[0].1,
+            vec!["agent@nexus".to_string(), "agent@vp/w1".to_string()],
+            "未 ack の受信者全員 (送信者は含まない)"
+        );
+
+        // 片方が ack → pending から消える。 全員 ack → message ごと消える
+        store.ack(&cmd.id, "agent@nexus").await.expect("ack 1");
+        let pending = store.unacked_commands().await.expect("unacked 2");
+        assert_eq!(pending[0].1, vec!["agent@vp/w1".to_string()]);
+        store.ack(&cmd.id, "agent@vp/w1").await.expect("ack 2");
+        assert!(
+            store
+                .unacked_commands()
+                .await
+                .expect("unacked 3")
+                .is_empty()
+        );
+    }
+
+    /// unacked_commands: category 無指定の message は event 扱い (対象外)
+    #[tokio::test]
+    async fn unacked_commands_ignores_uncategorized() {
+        let store = make_test_store().await;
+        store
+            .send_root(
+                "agent@vp",
+                &["agent@nexus".to_string()],
+                body("no category"),
+            )
+            .await
+            .expect("send");
+        assert!(store.unacked_commands().await.expect("unacked").is_empty());
     }
 }

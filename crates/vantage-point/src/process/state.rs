@@ -159,6 +159,9 @@ pub(crate) struct AppState {
     ///
     /// `wire_send` が宛先 agent を notify、 待機中の `wire_recv` を起こす。
     pub wire_notifier: crate::capability::WireNotifier,
+    /// R2-b: wire delivery loop の即時 wake (command 着信時に notify)。
+    /// World mode でのみ DeliveryActor が待ち受ける。 SP では未使用 (proxy が TheWorld に送るだけ)。
+    pub delivery_notify: Arc<tokio::sync::Notify>,
     /// Whitesnake 🐍 — 汎用永続化レイヤー
     pub whitesnake: crate::capability::Whitesnake,
     /// Lane Pool (Conductor/Performer registry) — Lane scope の Stand container
@@ -436,6 +439,7 @@ pub(crate) async fn build_test_app_state(
         vpdb: None,
         wiremsg_store: None,
         wire_notifier: WireNotifier::new(),
+        delivery_notify: Arc::new(tokio::sync::Notify::new()),
         whitesnake: Whitesnake::in_memory(),
         lane_pool: Arc::new(RwLock::new(LanePool::new())),
         system_event_tx: tokio::sync::broadcast::channel::<super::lanes_state::SystemEvent>(64).0,

@@ -87,6 +87,10 @@ pub enum WireCommands {
         /// reply 先 message id (指定時は新規 thread の root ではなく reply として送信)
         #[arg(short, long)]
         reply_to: Option<String>,
+        /// delivery policy selector (command|event|state|data|log)。
+        /// command は受信者が ack するまで delivery loop の再掲示対象 (R2-b)
+        #[arg(long)]
+        category: Option<String>,
     },
     /// 未読の在庫確認 (= mcp__wire_inbox の CLI pair、 read-only で cursor 不触り)
     ///
@@ -165,7 +169,18 @@ pub async fn run(cmd: WireCommands) -> Result<()> {
             body,
             from,
             reply_to,
-        } => send(&url, &to, &body, &from, reply_to.as_deref()).await,
+            category,
+        } => {
+            send(
+                &url,
+                &to,
+                &body,
+                &from,
+                reply_to.as_deref(),
+                category.as_deref(),
+            )
+            .await
+        }
         WireCommands::Inbox { url, agent } => inbox(&url, &agent).await,
         WireCommands::Thread { url, message_id } => thread(&url, &message_id).await,
         WireCommands::Ack {
@@ -422,16 +437,28 @@ async fn ack(url: &str, message_id: &str, agent: &str) -> Result<()> {
     .await
 }
 
-async fn send(url: &str, to: &str, body: &str, from: &str, reply_to: Option<&str>) -> Result<()> {
+async fn send(
+    url: &str,
+    to: &str,
+    body: &str,
+    from: &str,
+    reply_to: Option<&str>,
+    category: Option<&str>,
+) -> Result<()> {
     let client = reqwest::Client::new();
     let endpoint = format!("{}/api/wire/send", url.trim_end_matches('/'));
 
     // wire_send payload: to は配列、 body は任意 JSON。
     // CLI は ad-hoc test 用なので body string を `{"text": ...}` object に wrap して送る。
+    // R2-b: --category は delivery policy selector (command = ack されるまで再掲示対象)。
+    let mut body_obj = serde_json::json!({ "text": body });
+    if let Some(cat) = category {
+        body_obj["category"] = serde_json::Value::String(cat.to_string());
+    }
     let mut payload = serde_json::json!({
         "from": from,
         "to": [to],
-        "body": { "text": body },
+        "body": body_obj,
     });
     if let Some(prev_id) = reply_to {
         payload["reply_to"] = serde_json::Value::String(prev_id.to_string());
@@ -555,6 +582,28 @@ mod tests {
         match cli.cmd {
             WireCommands::Thread { message_id, .. } => assert_eq!(message_id, "0196-abc"),
             other => panic!("expected Thread variant, got {:?}", other),
+        }
+    }
+
+    /// R2-b: --category が Send に渡る
+    #[test]
+    fn send_parses_category() {
+        let cli = TestCli::try_parse_from([
+            "vp-wire-test",
+            "send",
+            "-t",
+            "agent@vp",
+            "-b",
+            "x",
+            "--category",
+            "command",
+        ])
+        .expect("parse should succeed");
+        match cli.cmd {
+            WireCommands::Send { category, .. } => {
+                assert_eq!(category.as_deref(), Some("command"))
+            }
+            other => panic!("expected Send variant, got {:?}", other),
         }
     }
 

@@ -209,9 +209,10 @@ pub async fn run(
         vpdb: vpdb.clone(),
         // wiremsg R2-a: SP は wire store を持たない (TheWorld に中央化、 handler は proxy)
         wiremsg_store: None,
-        // wire_notifier は world mode 専用 (TheWorld の long-poll 起床)。 SP では未使用だが
-        // AppState 共有 field のため空で満たす
+        // wire_notifier / delivery_notify は world mode 専用 (TheWorld の long-poll 起床 /
+        // delivery loop wake)。 SP では未使用だが AppState 共有 field のため空で満たす
         wire_notifier: crate::capability::WireNotifier::new(),
+        delivery_notify: std::sync::Arc::new(tokio::sync::Notify::new()),
         // ポート別ディレクトリで分離（複数プロセスの namespace 衝突を防ぐ）
         // run() 冒頭で作成した Whitesnake を共有（Msgbox persistent と同一インスタンス）
         whitesnake: whitesnake.clone(),
@@ -887,6 +888,8 @@ pub async fn run_world(
         // Phase A ① / R1: World モードでも wiremsg store を build (上で async build 済)
         wiremsg_store,
         wire_notifier: crate::capability::WireNotifier::new(),
+        // R2-b: wire delivery loop の即時 wake (world_wire_send_handler が command 着信で notify)
+        delivery_notify: std::sync::Arc::new(tokio::sync::Notify::new()),
         // TheWorld もポート別ディレクトリで分離
         whitesnake: world_whitesnake,
         // Phase A4-2b: World モードでは Lane / Project Stand を持たない (空 Pool で AppState を満たす)
@@ -902,6 +905,20 @@ pub async fn run_world(
         // PR-β-1 (VP-119): World mode では LaneCapabilities を持たない (Lane scope は SP per project)
         lane_capabilities: None,
     });
+
+    // R2-b: wire delivery loop (未 ack command の tmux nudge + 再掲示) を spawn。
+    // store 未構築 (DB 接続失敗) なら skip — wire 自体が動かないため delivery も不要。
+    if let Some(store) = state.wiremsg_store.clone() {
+        let lane_registry = world_cap.read().await.lane_registry_ref();
+        state.actor_registry.write().await.spawn_service(
+            super::delivery_actor::DeliveryActor::new(
+                store,
+                lane_registry,
+                state.delivery_notify.clone(),
+            ),
+            shutdown_token.clone(),
+        );
+    }
 
     let app = Router::new()
         .route("/api/health", get(health::health_handler))

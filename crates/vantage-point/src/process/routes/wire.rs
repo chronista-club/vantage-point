@@ -338,8 +338,21 @@ pub async fn world_wire_send_handler(
     Json(payload): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
     let store = world_store!(state);
+    // R2-b: command 着信なら delivery loop を即 wake。 判定は保存前の素の payload で行う —
+    // body が文字列化 JSON の場合 (coerce 救済経路) はここで拾えないが、 その場合も
+    // delivery loop の 30s tick が拾うため fail-open。
+    let is_command = payload
+        .get("body")
+        .and_then(|b| b.get("category"))
+        .and_then(|c| c.as_str())
+        == Some("command");
     match wire_send_store(store, &state.wire_notifier, payload).await {
-        Ok(v) => Json(v),
+        Ok(v) => {
+            if is_command {
+                state.delivery_notify.notify_one();
+            }
+            Json(v)
+        }
         Err(e) => Json(serde_json::json!({"status": "error", "error": e})),
     }
 }
