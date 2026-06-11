@@ -43,6 +43,14 @@ tmux set-option -as terminal-features 'xterm*:extkeys' 2>/dev/null || true
 #       root なので、 明示的に project dir に cd してから claude を起動する。
 LOGIN_SHELL="${SHELL:-/bin/zsh}"
 
+# wiremsg R2-c (チャネル B、 決定 D2): wire 未読通知 hook を VP が spawn 時に注入する。
+# dotfile 非依存で箱から動く (#512/#515 と同じ「VP が自前担保」哲学)。 hook 実体は
+# `vp wire hook-check` (vp CLI 同梱、 配布物不要)。 会話境界 (SessionStart /
+# UserPromptSubmit) で未読 wire を additionalContext 通知し、 daemon 不在・エラー時は
+# silent 成功 (fail-open、 会話を邪魔しない)。 JSON に single quote が無いため
+# '$WIRE_HOOKS' 埋め込みで安全に quote できる (tmux 内 shell の word splitting 防止)。
+WIRE_HOOKS='{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"vp wire hook-check"}]}],"UserPromptSubmit":[{"hooks":[{"type":"command","command":"vp wire hook-check"}]}]}}'
+
 # CC 2.1 Background Agents insulate (Phase B):
 # `claude --continue` は CC 2.1.156+ で background session が存在すると単一 REPL でなく
 # Agent View dashboard (multi-session manager) を開き、 VP の send-keys handoff が
@@ -52,9 +60,9 @@ LOGIN_SHELL="${SHELL:-/bin/zsh}"
 # `--continue` chain を維持 (dashboard が出ても人間は操作できる)。
 # 関連 memory: mem_1CbXZyCiqrdgteGhRFDaHW (CC 2.1 Background Agents daemon × VP)
 if [ "${VP_LANE:-}" = "conductor" ]; then
-    CLAUDE_CMD="claude --continue || claude"
+    CLAUDE_CMD="claude --continue --settings '$WIRE_HOOKS' || claude --settings '$WIRE_HOOKS'"
 else
-    CLAUDE_CMD="claude"
+    CLAUDE_CMD="claude --settings '$WIRE_HOOKS'"
 fi
 # -x 120 -y 48: session の初期サイズ。 client 未 attach (headless) でも極小
 # (9×3) に張り付かず claude が実用サイズで動く。 vp-app で表示すると attach
