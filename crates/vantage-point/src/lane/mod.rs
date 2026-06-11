@@ -15,5 +15,7 @@
 //! - `status_performers()`
 //! - `cleanup_performers(force)`
 
+/// lane 単位の CC session id 永続化 (R3-b、 `--resume` 再利用の土台)
+pub mod cc_session;
 pub mod commands;
 pub mod config;

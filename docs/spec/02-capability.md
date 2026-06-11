@@ -64,6 +64,7 @@ wiremsg は agent 間メッセージングの substrate。 message は中央 sto
 - [x] ack 台帳 — `wire_ack`（per-message、 cursor 非破壊。 R2-a、 決定 D3）
 - [x] delivery loop — 未 ack の `body.category = "command"` を受信者の tmux session に nudge + 再掲示（10min 間隔・max 3 回）。 TheWorld 常駐の `DeliveryActor`（R2-b、 チャネル C。 Phase A 後に native channels へ移行予定）
 - [x] activity poll — `claude agents --json` を pulse ごとに poll し、 lane cwd で CC 状態を照合して policy table を精密化: idle / waiting → 即 nudge、 busy → 待つ（idle 遷移で配信）、 session 不在 → pending 保持。 poll 不能時は R2-b の degraded 挙動（Running → nudge）に自動 fallback（R3-a / Phase A、 設計 D4 の LaneActivity 供給）
+- [x] session 指名 resume — SessionStart hook が自 session id を lane 単位で記録（`lane::cc_session`、 `vp_state_dir()/cc_sessions/`）し、 echoes の conductor spawn が `claude --resume '<保存 id>'` で同一 session を deterministic に再開（R3-b。 `--continue` の Agent View dashboard 罠を構造的に回避）。 `LaneInfo.cc_session_id` で可視化（lazy read）、 R3-c の `--bg` session 管理に流用予定
 - [x] hook 注入 — echoes spawn が `--settings` で SessionStart / UserPromptSubmit hook を注入し、 `vp wire hook-check` が会話境界で未読を additionalContext 通知（R2-c、 チャネル B。 fail-open、 dotfile 非依存 — 決定 D2）
 - [x] MCP tool — `wire_send` / `wire_recv` / `wire_inbox` / `wire_thread` / `wire_ack`
 - [x] CLI — `vp wire send|recv|inbox|thread|ack|watch`（MCP との取得 primitives parity、 R2-a）

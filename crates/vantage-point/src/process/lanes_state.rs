@@ -325,6 +325,12 @@ pub struct LaneInfo {
     /// `panes` の論理 ID 管理は tmux 側に委譲 (1 session 内 split は tmux native 機能)。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tmux: Vec<TmuxLaneAddress>,
+    /// R3-b: この lane の最後の CC session id。 registry には保存せず `/api/lanes` 応答時に
+    /// state file (`lane::cc_session`、 書き手は SessionStart hook) を lazy read する
+    /// (`performer_status` と同じ前例)。 echoes の `--resume` 再利用と R3-c の
+    /// `--bg` session 管理の土台。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cc_session_id: Option<String>,
 }
 
 /// Lane Pool — Conductor/Performer registry
@@ -429,6 +435,7 @@ impl LanePool {
             cwd,
             // Conductor は git workspace 持たない (= project root が cwd)、 performer_status は None
             performer_status: None,
+            cc_session_id: None,
             // Phase 1e: spawn 成功時のみ tmux address を populate
             // (spawn 失敗 = Dead → 空 Vec で副舞台不在 signal)
             tmux: if matches!(state, LaneState::Running) {
@@ -915,6 +922,7 @@ mod tests {
             pid: None,
             cwd: "/tmp".to_string(),
             performer_status: None,
+            cc_session_id: None,
             tmux: Vec::new(),
         };
         let json = serde_json::to_string(&info).unwrap();
@@ -939,6 +947,7 @@ mod tests {
             pid: None,
             cwd: "/tmp".to_string(),
             performer_status: None,
+            cc_session_id: None,
             tmux: vec![
                 TmuxLaneAddress {
                     stand: "hd".to_string(),
@@ -978,6 +987,7 @@ mod tests {
             pid: Some(12345),
             cwd: "/tmp".to_string(),
             performer_status: None,
+            cc_session_id: None,
             tmux: vec![TmuxLaneAddress {
                 stand: "hd".to_string(),
                 session: "vp-vp-sub-hd".to_string(),
@@ -1032,6 +1042,7 @@ mod tests {
             pid: None,
             cwd: "/tmp".to_string(),
             performer_status: None,
+            cc_session_id: None,
             tmux: Vec::new(),
         };
         let event = SystemEvent::Lane(Diff::Add {

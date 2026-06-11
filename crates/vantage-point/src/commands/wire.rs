@@ -489,19 +489,30 @@ async fn hook_check() -> Result<()> {
     let mut input = String::new();
     use std::io::Read;
     let _ = std::io::stdin().read_to_string(&mut input);
-    let event_name = serde_json::from_str::<serde_json::Value>(&input)
-        .ok()
-        .and_then(|v| {
-            v.get("hook_event_name")
-                .and_then(|e| e.as_str())
-                .map(String::from)
-        })
-        .unwrap_or_else(|| "UserPromptSubmit".to_string());
+    let parsed = serde_json::from_str::<serde_json::Value>(&input).ok();
+    let event_name = parsed
+        .as_ref()
+        .and_then(|v| v.get("hook_event_name").and_then(|e| e.as_str()))
+        .unwrap_or("UserPromptSubmit")
+        .to_string();
 
-    let Some(agent) = wire_address_from_env(
-        std::env::var("VP_PROJECT").ok().as_deref(),
-        std::env::var("VP_LANE").ok().as_deref(),
-    ) else {
+    let project = std::env::var("VP_PROJECT").ok();
+    let lane = std::env::var("VP_LANE").ok();
+
+    // R3-b: SessionStart で自 session_id を記録する (lane::cc_session の module doc 参照)。
+    // spawn 時に旧 session は agents --json に出ないため、 生きているうちに自己申告させる。
+    // wire 通知とは独立の lane 管理だが、 全 VP spawn session に注入済みの本 hook に
+    // 相乗りする (プロセス追加ゼロ)。 失敗は無視 (fail-open)。
+    if event_name == "SessionStart"
+        && let Some(sid) = parsed
+            .as_ref()
+            .and_then(|v| v.get("session_id").and_then(|s| s.as_str()))
+        && let (Some(p), Some(l)) = (project.as_deref(), lane.as_deref())
+    {
+        let _ = crate::lane::cc_session::record(p, l, sid);
+    }
+
+    let Some(agent) = wire_address_from_env(project.as_deref(), lane.as_deref()) else {
         return Ok(()); // VP 外で起動された claude — 何もしない
     };
 

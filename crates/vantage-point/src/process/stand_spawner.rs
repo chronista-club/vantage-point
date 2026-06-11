@@ -130,7 +130,7 @@ pub fn spawn_with_fallback(
 }
 
 /// LaneAddress の lane label を導出 (Conductor → "conductor"、 Performer(name) → name、 Performer(None) → "unnamed")
-fn lane_label(addr: &LaneAddress) -> &str {
+pub(crate) fn lane_label(addr: &LaneAddress) -> &str {
     match (&addr.kind, addr.name.as_deref()) {
         (LaneKind::Conductor, _) => "conductor",
         (LaneKind::Performer, Some(n)) => n,

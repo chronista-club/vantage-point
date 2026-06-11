@@ -60,7 +60,20 @@ WIRE_HOOKS='{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"vp 
 # `--continue` chain を維持 (dashboard が出ても人間は操作できる)。
 # 関連 memory: mem_1CbXZyCiqrdgteGhRFDaHW (CC 2.1 Background Agents daemon × VP)
 if [ "${VP_LANE:-}" = "conductor" ]; then
-    CLAUDE_CMD="claude --continue --settings '$WIRE_HOOKS' || claude --settings '$WIRE_HOOKS'"
+    # wiremsg R3-b: 前回 session を指名 resume する (CC 2.1 の Agent View dashboard 罠の
+    # 構造的回避 — `--continue` は「cwd の最新」を拾うため bg session 在りで dashboard 化する。
+    # 設計 mem_1CbXZyCiqrdgteGhRFDaHW)。 id は SessionStart hook (vp wire hook-check) が
+    # 記録した lane 単位の保存値 (`vp lane last-session` が VP_PROJECT/VP_LANE から読む)。
+    # 未記録 (初回 / 移行直後) は従来の --continue chain を維持 — 一度 session が立てば
+    # hook が記録し、 以後この分岐は --resume 側に乗る。 resume 失敗 (session 消失) は
+    # fresh claude に fallback。 id は英数+ハイフンのみ (last-session 側で検証済) のため
+    # single quote 埋め込みは安全。
+    RESUME_ID="$(vp lane last-session 2>/dev/null || true)"
+    if [ -n "$RESUME_ID" ]; then
+        CLAUDE_CMD="claude --resume '$RESUME_ID' --settings '$WIRE_HOOKS' || claude --settings '$WIRE_HOOKS'"
+    else
+        CLAUDE_CMD="claude --continue --settings '$WIRE_HOOKS' || claude --settings '$WIRE_HOOKS'"
+    fi
 else
     CLAUDE_CMD="claude --settings '$WIRE_HOOKS'"
 fi
