@@ -48,24 +48,18 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::capability::stand_service::{LayerScope, Service, SpawnableService};
-use crate::capability::{WireNotifier, WiremsgStore};
 
-/// notify recv の fallback poll 間隔。 wire_send / cross-process forward 受信は
-/// 必ず `WireNotifier::notify` を呼ぶので通常は即時起床する。 この sleep は
-/// notify を取りこぼした場合の安全網 (= 最悪でもこの間隔で recv が回る)。
+/// notify recv の retry 間隔 (TheWorld 不達時)。 通常は TheWorld 側 long-poll が
+/// 待機を担うため、 この sleep は TheWorld 不在時の再接続間隔としてのみ効く。
 const IDLE_POLL: Duration = Duration::from_secs(5);
 
 /// Notification bridge Service (= wire `notify@<project>` → DistributedNotification)。
 ///
-/// SP-local Service (= 1 Project per Process)。 `WiremsgStore` の per-agent cursor recv で
+/// SP-local Service (= 1 Project per Process)。 R2-a: wire store は TheWorld に中央化
+/// されたため、 TheWorld への HTTP long-poll ([`crate::process::world_wire`]) で
 /// notify message を取得し、 macOS DistributedNotification に変換する。
-///
-/// `wiremsg_store = None` (= vpdb 未接続) なら recv 経路なし、 shutdown 待ちで idle。
+/// TheWorld 不在 (standalone SP) なら IDLE_POLL 間隔で再試行し続ける。
 pub struct NotificationActor {
-    /// wiremsg R4: wire accumulation store (= 旧 `WhitesnakeStore` から rewire)
-    wiremsg_store: Option<WiremsgStore>,
-    /// wiremsg R4: long-poll 起床用 in-process notifier (`AppState` と共有)
-    wire_notifier: WireNotifier,
     /// wire address の project segment (`notify@<project>`)
     project: String,
     /// project root directory (= body `path` field の fallback で使う)
@@ -75,17 +69,10 @@ pub struct NotificationActor {
 impl NotificationActor {
     /// 新しい `NotificationActor` を構築する。
     ///
-    /// wiremsg R4: 旧 `new(store, project_dir)` → `new(wiremsg_store, wire_notifier,
-    /// project, project_dir)` に signature 変更。 caller (= server.rs) が wire 系を渡す。
-    pub fn new(
-        wiremsg_store: Option<WiremsgStore>,
-        wire_notifier: WireNotifier,
-        project: String,
-        project_dir: String,
-    ) -> Self {
+    /// wiremsg R2-a: store 中央化に伴い、 旧 `new(wiremsg_store, wire_notifier, ...)` から
+    /// wire 系引数を撤去。 recv は TheWorld への HTTP long-poll で行う。
+    pub fn new(project: String, project_dir: String) -> Self {
         Self {
-            wiremsg_store,
-            wire_notifier,
             project,
             project_dir,
         }
@@ -115,21 +102,13 @@ impl SpawnableService for NotificationActor {
     fn spawn_loop(self, shutdown: CancellationToken) -> JoinHandle<()> {
         tokio::spawn(async move {
             let Self {
-                wiremsg_store,
-                wire_notifier,
                 project,
                 project_dir,
             } = self;
 
-            // wiremsg_store なし = recv 経路なし、 shutdown 待ち
-            let Some(store) = wiremsg_store else {
-                tracing::info!("Notification bridge: wiremsg_store なし、 shutdown 待ち");
-                shutdown.cancelled().await;
-                return;
-            };
             let address = format!("notify@{}", project);
             tracing::info!(
-                "Notification bridge 起動 (= wire accumulation recv、 address={})",
+                "Notification bridge 起動 (= TheWorld 中央 wire store long-poll、 address={})",
                 address
             );
 
@@ -137,35 +116,36 @@ impl SpawnableService for NotificationActor {
                 if shutdown.is_cancelled() {
                     break;
                 }
-                // 取りこぼし防止プロトコル (WireNotifier doc 参照):
-                // handle → notified future を store.recv の前に生成する。
-                let notify = wire_notifier.handle(&address).await;
-                let notified = notify.notified();
-
-                let msgs = match store.recv(&address).await {
-                    Ok(m) => m,
+                // R2-a: TheWorld 側 handler が max 30s の long-poll を行う。 25s で投げて
+                // 余裕を持つ (待機は server 側なので busy loop にならない)。
+                let payload = serde_json::json!({ "agent": address, "timeout": 25 });
+                let resp = tokio::select! {
+                    _ = shutdown.cancelled() => break,
+                    r = crate::process::world_wire::call("/api/wire/recv", payload) => r,
+                };
+                match resp {
+                    Ok(v) => {
+                        let msgs = v
+                            .get("messages")
+                            .and_then(|m| m.as_array())
+                            .cloned()
+                            .unwrap_or_default();
+                        for msg in &msgs {
+                            if let Some(body) = msg.get("body") {
+                                post_notification(body, &project_dir);
+                            }
+                        }
+                        // 空応答 (timeout) は即再 poll — 待機は TheWorld 側で行われている
+                    }
                     Err(e) => {
-                        tracing::warn!("notify wire recv failed: {}", e);
+                        // TheWorld 不在は standalone SP (`vp sp start` 単独) で正常系。
+                        // debug に留め、 IDLE_POLL 間隔で再試行する。
+                        tracing::debug!("notify wire recv (TheWorld) 失敗、 retry: {}", e);
                         tokio::select! {
                             _ = shutdown.cancelled() => break,
                             _ = tokio::time::sleep(IDLE_POLL) => {}
                         }
-                        continue;
                     }
-                };
-
-                if msgs.is_empty() {
-                    // 未読なし → notify (= wire_send) か fallback timeout まで待機
-                    tokio::select! {
-                        _ = shutdown.cancelled() => break,
-                        _ = notified => {}
-                        _ = tokio::time::sleep(IDLE_POLL) => {}
-                    }
-                    continue;
-                }
-
-                for msg in &msgs {
-                    post_notification(&msg.body, &project_dir);
                 }
             }
             tracing::info!("Notification bridge: shutdown");
