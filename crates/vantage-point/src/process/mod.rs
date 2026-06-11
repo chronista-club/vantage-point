@@ -9,6 +9,8 @@
 //! - **Capability**: Process が持つ能力（Agent, MIDI, Protocol等）
 
 pub mod capabilities;
+/// CC activity poll — `claude agents --json` の LaneActivity 供給 (R3-a / Phase A)
+pub(crate) mod cc_activity;
 /// wire delivery loop — 未 ack command の tmux nudge + 再掲示 (R2-b、 TheWorld 常駐)
 pub(crate) mod delivery_actor;
 pub(crate) mod hub;
