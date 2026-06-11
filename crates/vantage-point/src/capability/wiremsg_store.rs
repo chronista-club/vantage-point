@@ -320,55 +320,6 @@ impl WiremsgStore {
     }
 
     // -------------------------------------------------------------------------
-    // cross-process receive (R3 — cross-process wire delivery)
-    // -------------------------------------------------------------------------
-
-    /// 他 SP から forward された message を自分の accumulation に取り込む (R3、 冪等)
-    ///
-    /// R3 (決定 `mem_1CbDYnc7GjZkXXWgm9PAfK`): `wire_send` の宛先に `agent@<other-project>`
-    /// が含まれるとき、 送信側 SP は受信側 SP の `/api/wire/remote-deliver` に message 全体を
-    /// HTTP POST する。 本メソッドはその受信側 handler が呼ぶ取り込み口。
-    ///
-    /// ## origin の id を保つ + local_seq は受信側で採番
-    ///
-    /// forward された message は origin SP が採番した `id` (uuidv7) を保持する
-    /// (= thread の `prev` 解決が cross-process で破綻しないため)。 一方 `local_seq` は
-    /// **受信側 SP の accumulation 順序** であり origin の値は意味を持たないので、
-    /// 受信側で [`insert_message`](Self::insert_message) と同じ採番器で振り直す。
-    ///
-    /// ## 冪等性 (二重 forward 耐性)
-    ///
-    /// 同一 `id` の message が既に `wire_messages` に存在する場合は **何もせず** 既存行を
-    /// 返す (二重 forward / retry-less best-effort の重複着信でエラーにしない)。
-    /// `wire_messages` の record id は message の `id` に固定されているため、 存在判定は
-    /// `get_message` の record 直引きで足りる。
-    ///
-    /// 注: 受信は message 本体のみ。 `agent_cursor` は触らない (受信側 agent が
-    /// `wire_recv` で読めば cursor は自然に前進する)。
-    ///
-    /// 戻り値: 取り込んだ (または既存の) [`WireMessage`]。 `bool` は新規 INSERT なら true、
-    /// 既存スキップなら false (= caller の log / metrics 用)。
-    pub async fn receive_forwarded(&self, msg: &WireMessage) -> Result<(WireMessage, bool)> {
-        // 冪等: 同一 id が既にあれば既存をそのまま返す (二重 forward を吸収)
-        if let Some(existing) = self.get_message(&msg.id).await? {
-            return Ok((existing, false));
-        }
-        // 新規: origin の id / prev / from / to / body / created_at は保ち、
-        // local_seq だけ受信側 accumulation で採番し直す。
-        let mut stored = WireMessage {
-            id: msg.id.clone(),
-            prev: msg.prev.clone(),
-            from: msg.from.clone(),
-            to: msg.to.clone(),
-            body: msg.body.clone(),
-            created_at: msg.created_at,
-            local_seq: 0, // insert_message が採番
-        };
-        self.insert_message(&mut stored).await?;
-        Ok((stored, true))
-    }
-
-    // -------------------------------------------------------------------------
     // wire_recv 系
     // -------------------------------------------------------------------------
 
@@ -484,6 +435,66 @@ impl WiremsgStore {
             *counts.entry(root).or_insert(0) += 1;
         }
         Ok(counts)
+    }
+
+    /// message を ack する (R2-a、 決定 D3: cursor 非破壊の ack 台帳)
+    ///
+    /// cursor (agent_cursor) とは独立。 recv で cursor が進んでも、 command category は
+    /// ack されるまで delivery loop (R2-b) の再掲示対象になる。
+    /// 戻り値: 新規 ack なら `true`、 既に ack 済 (冪等) なら `false`。
+    /// 存在しない `message_id` は Err (typo を黙って成功させない)。
+    pub async fn ack(&self, message_id: &str, agent: &str) -> Result<bool> {
+        // message 実在確認 (誤 id の ack を黙って成功させない)
+        if self.get_message(message_id).await?.is_none() {
+            anyhow::bail!("wiremsg ack: message not found: {message_id}");
+        }
+
+        // 既 ack なら冪等 false
+        let mut res = self
+            .db
+            .query("SELECT agent FROM wire_acks WHERE message_id = $id AND agent = $agent LIMIT 1;")
+            .bind(("id", message_id.to_string()))
+            .bind(("agent", agent.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("wiremsg ack select failed: {e}"))?;
+        let existing: Vec<serde_json::Value> = res
+            .take(0)
+            .map_err(|e| anyhow::anyhow!("wiremsg ack select take failed: {e}"))?;
+        if !existing.is_empty() {
+            return Ok(false);
+        }
+
+        self.db
+            .query(
+                "CREATE wire_acks CONTENT {
+                     message_id: $id, agent: $agent, acked_at: $now
+                 };",
+            )
+            .bind(("id", message_id.to_string()))
+            .bind(("agent", agent.to_string()))
+            .bind(("now", now_ms()))
+            .await
+            .map_err(|e| anyhow::anyhow!("wiremsg ack create failed: {e}"))?
+            .check()
+            .map_err(|e| anyhow::anyhow!("wiremsg ack create check failed: {e}"))?;
+        Ok(true)
+    }
+
+    /// message を ack 済の agent 一覧を返す (read-only)
+    pub async fn acks_for(&self, message_id: &str) -> Result<Vec<String>> {
+        let mut res = self
+            .db
+            .query("SELECT agent FROM wire_acks WHERE message_id = $id ORDER BY agent;")
+            .bind(("id", message_id.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("wiremsg acks_for failed: {e}"))?;
+        let rows: Vec<serde_json::Value> = res
+            .take(0)
+            .map_err(|e| anyhow::anyhow!("wiremsg acks_for take failed: {e}"))?;
+        Ok(rows
+            .iter()
+            .filter_map(|r| r.get("agent").and_then(|v| v.as_str()).map(String::from))
+            .collect())
     }
 
     // -------------------------------------------------------------------------
@@ -836,6 +847,12 @@ mod tests {
             DEFINE FIELD updated_at ON thread_participant TYPE number;
             DEFINE INDEX thread_participant_uniq ON thread_participant FIELDS thread, agent UNIQUE;
             DEFINE INDEX thread_participant_agent_idx ON thread_participant FIELDS agent, status;
+
+            DEFINE TABLE wire_acks SCHEMAFULL;
+            DEFINE FIELD message_id ON wire_acks TYPE string;
+            DEFINE FIELD agent ON wire_acks TYPE string;
+            DEFINE FIELD acked_at ON wire_acks TYPE number;
+            DEFINE INDEX wire_acks_uniq ON wire_acks FIELDS message_id, agent UNIQUE;
             "#,
         )
         .await
@@ -1258,101 +1275,6 @@ mod tests {
             .send_reply("a@vp", &["b@vp".to_string()], body("x"), "nonexistent-id")
             .await;
         assert!(result.is_err(), "存在しない prev は Err");
-    }
-
-    // -------------------------------------------------------------------------
-    // receive_forwarded — R3 cross-process 受信 (冪等 / local_seq 受信側採番)
-    // -------------------------------------------------------------------------
-
-    /// receive_forwarded: forward された message を取り込み、 受信者が未読で受け取れる
-    #[tokio::test]
-    async fn receive_forwarded_stores_and_is_readable() {
-        let store = make_test_store().await;
-        // origin SP が作った相当の message (id は origin 採番、 local_seq は origin の値)
-        let origin = WireMessage {
-            id: uuid::Uuid::now_v7().to_string(),
-            prev: None,
-            from: "agent@other-project".to_string(),
-            to: vec!["agent@vp".to_string()],
-            body: body("from another SP"),
-            created_at: 1_700_000_000_000,
-            local_seq: 999, // origin 側の seq — 受信側では振り直される
-        };
-        let (stored, inserted) = store
-            .receive_forwarded(&origin)
-            .await
-            .expect("receive_forwarded");
-        assert!(inserted, "新規 message なので INSERT される");
-        assert_eq!(stored.id, origin.id, "origin の id を保つ");
-        assert_eq!(stored.from, origin.from, "from は origin のまま");
-
-        // 受信者 agent@vp は未読として受け取れる
-        let unread = store.fetch_unread("agent@vp").await.expect("fetch");
-        assert_eq!(unread.len(), 1, "forward された message が未読で届く");
-        assert_eq!(unread[0].id, origin.id);
-    }
-
-    /// receive_forwarded: 同一 id の二重 forward は二重 INSERT にならない (冪等)
-    #[tokio::test]
-    async fn receive_forwarded_is_idempotent_on_duplicate_id() {
-        let store = make_test_store().await;
-        let origin = WireMessage {
-            id: uuid::Uuid::now_v7().to_string(),
-            prev: None,
-            from: "agent@other-project".to_string(),
-            to: vec!["agent@vp".to_string()],
-            body: body("dup"),
-            created_at: 1_700_000_000_000,
-            local_seq: 0,
-        };
-        // 1 回目: 新規 INSERT
-        let (first, inserted1) = store.receive_forwarded(&origin).await.expect("recv 1");
-        assert!(inserted1, "1 回目は新規 INSERT");
-        // 2 回目: 同一 id — スキップ (= best-effort の二重 forward を吸収)
-        let (second, inserted2) = store.receive_forwarded(&origin).await.expect("recv 2");
-        assert!(!inserted2, "2 回目は既存スキップ (冪等)");
-        assert_eq!(
-            first.local_seq, second.local_seq,
-            "二重 forward でも local_seq は据え置き (再採番しない)"
-        );
-
-        // accumulation 上の件数も 1 件のまま (= 二重 INSERT になっていない)
-        let unread = store.fetch_unread("agent@vp").await.expect("fetch");
-        assert_eq!(unread.len(), 1, "二重 forward でも message は 1 件");
-    }
-
-    /// receive_forwarded: local_seq は受信側 SP の accumulation で採番し直される
-    ///
-    /// origin SP の local_seq は受信側では意味を持たない (= 各 SP がローカル採番)。
-    /// 受信側 INSERT は自分の seq 採番器の続き番号を振る。
-    #[tokio::test]
-    async fn receive_forwarded_renumbers_local_seq_on_receiver() {
-        let store = make_test_store().await;
-        // 受信側 SP に既にローカル message が 1 件ある (local_seq = 1)
-        store
-            .send_root("local@vp", &["bob@vp".to_string()], body("local m1"))
-            .await
-            .expect("local m1");
-
-        // origin SP からの forward message — origin 側 local_seq は 42 (無関係な値)
-        let origin = WireMessage {
-            id: uuid::Uuid::now_v7().to_string(),
-            prev: None,
-            from: "agent@other-project".to_string(),
-            to: vec!["bob@vp".to_string()],
-            body: body("forwarded"),
-            created_at: 1_700_000_000_000,
-            local_seq: 42,
-        };
-        let (stored, _) = store
-            .receive_forwarded(&origin)
-            .await
-            .expect("receive_forwarded");
-        // 受信側の続き番号 = 2 (origin の 42 ではない)
-        assert_eq!(
-            stored.local_seq, 2,
-            "local_seq は受信側 accumulation で採番 (origin の値は無視)"
-        );
     }
 
     // -------------------------------------------------------------------------
@@ -1813,5 +1735,42 @@ mod tests {
         notifier.notify("carol@vp").await;
         let result = tokio::time::timeout(std::time::Duration::from_millis(150), fut).await;
         assert!(result.is_err(), "別 agent への notify では起床しない");
+    }
+
+    // -------------------------------------------------------------------------
+    // ack 台帳 (R2-a、 決定 D3)
+    // -------------------------------------------------------------------------
+
+    /// ack: 初回は true (新規)、 再 ack は false (冪等)、 acks_for で一覧が引ける
+    #[tokio::test]
+    async fn ack_records_and_is_idempotent() {
+        let store = make_test_store().await;
+        let msg = store
+            .send_root(
+                "agent@vp",
+                &["agent@nexus".to_string()],
+                body("command やって"),
+            )
+            .await
+            .expect("send_root");
+
+        assert!(
+            store.ack(&msg.id, "agent@nexus").await.expect("初回 ack"),
+            "初回 ack は新規 = true"
+        );
+        assert!(
+            !store.ack(&msg.id, "agent@nexus").await.expect("再 ack"),
+            "同一 (message, agent) の再 ack は冪等 = false"
+        );
+
+        let acked = store.acks_for(&msg.id).await.expect("acks_for");
+        assert_eq!(acked, vec!["agent@nexus".to_string()]);
+    }
+
+    /// ack: 存在しない message_id は Err (typo を黙って成功させない)
+    #[tokio::test]
+    async fn ack_unknown_message_errors() {
+        let store = make_test_store().await;
+        assert!(store.ack("no-such-id", "agent@nexus").await.is_err());
     }
 }
