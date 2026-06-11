@@ -87,6 +87,11 @@ pub async fn build_lanes_snapshot(state: &AppState) -> Vec<LaneInfo> {
                 lane.performer_status = Some(crate::lane::commands::performer_status(path));
             }
         }
+        // R3-b: CC session id を state file から lazy read (書き手は SessionStart hook)
+        lane.cc_session_id = crate::lane::cc_session::last(
+            &lane.address.project,
+            crate::process::stand_spawner::lane_label(&lane.address),
+        );
     }
 
     lanes
@@ -343,6 +348,7 @@ pub async fn create_handler(
         cwd,
         // create 時点では git 状態は registry に保存しない、 GET 時に都度 performer_status() で取得
         performer_status: None,
+        cc_session_id: None,
         // Phase 1e: spawn 成功時のみ tmux address を populate
         tmux: if matches!(lane_state, crate::process::lanes_state::LaneState::Running) {
             vec![crate::process::lanes_state::TmuxLaneAddress::for_spawn(

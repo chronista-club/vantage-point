@@ -428,6 +428,7 @@ mod tests {
             pid: None,
             cwd: String::new(),
             performer_status: None,
+            cc_session_id: None,
             tmux: vec![TmuxLaneAddress {
                 stand: "echoes".to_string(),
                 session: "vp-vp-conductor-echoes".to_string(),

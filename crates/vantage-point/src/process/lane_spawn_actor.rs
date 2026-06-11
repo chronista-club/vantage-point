@@ -360,6 +360,7 @@ async fn handle_cmd(
         cwd,
         // 起動時点では git 状態取得しない (list_handler 側で必要時に enrich)。
         performer_status: None,
+        cc_session_id: None,
         // Phase 1e: spawn 成功時のみ tmux address を populate
         tmux: if matches!(state, super::lanes_state::LaneState::Running) {
             vec![super::lanes_state::TmuxLaneAddress::for_spawn(
