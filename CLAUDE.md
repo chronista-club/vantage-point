@@ -114,7 +114,7 @@ vp shot                # vp-app window の screenshot を PNG 保存
 # Lane / dev-flow / messaging
 vp lane                # performer Lane 管理（Stone Free 🧵）
 vp flow handoff|progress  # Conductor × Performer orchestration
-vp wire send|recv|inbox|thread|ack|watch  # wire messaging（store は TheWorld :32000 に中央化、R2-a）
+vp wire send|recv|inbox|thread|ack|watch|hook-check  # wire messaging（store は TheWorld :32000 に中央化。hook-check は claude hook 実体、R2-c）
 vp directmsg           # tmux send-keys 直接メッセージ（緊急用、wiremsg の補助）
 vp hd start|stop|attach|list  # tmux + Claude CLI セッション管理（旧 TUI 経路）
 vp tmux                # tmux ペイン操作（capture/split/send/dashboard）
@@ -295,7 +295,7 @@ MARU（ESP32-S3物理コントローラ）との連携開発。設計・経緯�
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **vantage-point** (11404 symbols, 24955 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **vantage-point** (11429 symbols, 24992 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
 

@@ -63,6 +63,7 @@ wiremsg は agent 間メッセージングの substrate。 message は中央 sto
 - [x] 中央 store — TheWorld が唯一の writer、 SP は proxy（R2-a。 旧 R3 の cross-process forward は撤去）
 - [x] ack 台帳 — `wire_ack`（per-message、 cursor 非破壊。 R2-a、 決定 D3）
 - [x] delivery loop — 未 ack の `body.category = "command"` を受信者の tmux session に nudge + 再掲示（10min 間隔・max 3 回）。 TheWorld 常駐の `DeliveryActor`（R2-b、 チャネル C。 Phase A 後に native channels へ移行予定）
+- [x] hook 注入 — echoes spawn が `--settings` で SessionStart / UserPromptSubmit hook を注入し、 `vp wire hook-check` が会話境界で未読を additionalContext 通知（R2-c、 チャネル B。 fail-open、 dotfile 非依存 — 決定 D2）
 - [x] MCP tool — `wire_send` / `wire_recv` / `wire_inbox` / `wire_thread` / `wire_ack`
 - [x] CLI — `vp wire send|recv|inbox|thread|ack|watch`（MCP との取得 primitives parity、 R2-a）
 - [x] address モデル — `<actor>@<project>[/<performer>]`（[doc 14](../design/14-wire-address-v3.md)、 canonical = qualified 一本。 bare `"agent"` は SP 入口で正規化、 TheWorld は reject）
