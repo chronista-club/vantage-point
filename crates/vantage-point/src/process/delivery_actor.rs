@@ -97,11 +97,12 @@ fn wire_agent_to_lane_display(addr: &str) -> Option<String> {
     }
 }
 
-/// lane 一覧から nudge 先の tmux session を引く (純関数)
+/// lane 一覧から nudge 先 (tmux session 名, lane cwd) を引く (純関数)
 ///
 /// Running かつ Tmux mode の session を持つ lane のみ nudge 可能。
-/// 該当なし = offline 扱い (pending 保持)。
-fn pick_tmux_session(lanes: &[LaneInfo], lane_display: &str) -> Option<String> {
+/// 該当なし = offline 扱い (pending 保持)。 cwd は R3-a の CC activity 照合
+/// (`agents --json` の cwd と突き合わせ) に使う。
+fn pick_nudge_target(lanes: &[LaneInfo], lane_display: &str) -> Option<(String, String)> {
     lanes
         .iter()
         .find(|l| l.address.to_string() == lane_display && matches!(l.state, LaneState::Running))
@@ -109,8 +110,41 @@ fn pick_tmux_session(lanes: &[LaneInfo], lane_display: &str) -> Option<String> {
             l.tmux
                 .iter()
                 .find(|t| matches!(t.mode, TmuxMode::Tmux))
-                .map(|t| t.session.clone())
+                .map(|t| (t.session.clone(), l.cwd.clone()))
         })
+}
+
+/// 受信者の配信準備状態 (R3-a、 設計 policy table の lane 状態軸)
+#[derive(Debug, PartialEq)]
+enum Readiness {
+    /// idle / waiting (or degraded で Running) — 即 nudge してよい
+    Ready,
+    /// busy — 待つ (idle 遷移を次 pulse で拾う。 台帳は進めない)
+    Busy,
+    /// lane 不在 / session 不在 — pending 保持 (Phase A 後にチャネル D で配信)
+    Offline,
+}
+
+/// 受信者の readiness を判定する (純関数、 R3-a)
+///
+/// - `lane_nudgeable`: lane registry で Running かつ tmux session あり (= send-keys 可能)
+/// - `activity`: 外側 None = poll 不能 (degraded fallback = R2-b の user 確定挙動)、
+///   内側 None = poll は成功したが当該 cwd に interactive session 不在 (= offline)
+fn recipient_readiness(
+    lane_nudgeable: bool,
+    activity: Option<Option<crate::process::cc_activity::CcState>>,
+) -> Readiness {
+    use crate::process::cc_activity::CcState;
+    if !lane_nudgeable {
+        return Readiness::Offline;
+    }
+    match activity {
+        // degraded (R2-b 挙動): Running なら nudge
+        None => Readiness::Ready,
+        Some(None) => Readiness::Offline,
+        Some(Some(CcState::Idle)) | Some(Some(CcState::Waiting)) => Readiness::Ready,
+        Some(Some(CcState::Busy)) => Readiness::Busy,
+    }
 }
 
 /// nudge 文言 (受信→処理→ack の導線を 1 行で)
@@ -229,6 +263,9 @@ async fn pulse(
         .flatten()
         .cloned()
         .collect();
+    // R3-a: CC activity を pulse ごとに 1 回 poll。 None = poll 不能 (claude 不在 /
+    // timeout / schema 変動) で degraded fallback (R2-b 挙動) に落ちる。
+    let activity = crate::process::cc_activity::poll_cc_activity().await;
     let now = Instant::now();
 
     for (msg, agents) in &pending {
@@ -237,10 +274,23 @@ async fn pulse(
             let Some(lane_display) = wire_agent_to_lane_display(agent) else {
                 continue;
             };
-            // degraded policy: Running lane の tmux session が無ければ offline 扱い (pending 保持)
-            let Some(session) = pick_tmux_session(&lanes, &lane_display) else {
-                continue;
+            let target = pick_nudge_target(&lanes, &lane_display);
+            // R3-a policy: lane の cwd で CC 状態を照合 (設計 policy table)
+            let act_view = activity
+                .as_ref()
+                .map(|s| match &target {
+                    Some((_, cwd)) => crate::process::cc_activity::state_for_cwd(s, cwd),
+                    None => None,
+                });
+            let Some((session, _cwd)) = target else {
+                continue; // lane 不在 / Dead / PtySlotFallback = offline (pending 保持)
             };
+            match recipient_readiness(true, act_view) {
+                Readiness::Ready => {}
+                // busy: 待つ (台帳は進めない — idle 遷移を次 pulse で拾う)。
+                // offline: session 不在 (pending 保持、 Phase A 後にチャネル D)
+                Readiness::Busy | Readiness::Offline => continue,
+            }
             let key = (msg.id.clone(), agent.clone());
             match decide_nudge(ledger.get(&key), now, RENUDGE_AFTER, MAX_NUDGES) {
                 NudgeDecision::Send => {
@@ -249,11 +299,13 @@ async fn pulse(
                     match send_keys_to_session(&session, &text).await {
                         Ok(()) => {
                             tracing::info!(
-                                "wire delivery: nudge 送出 (msg={}, agent={}, session={}, count={})",
+                                "wire delivery: nudge 送出 (msg={}, agent={}, session={}, count={}, activity={})",
                                 msg.id,
                                 agent,
                                 session,
-                                count + 1
+                                count + 1,
+                                // degraded か精密 (poll 成功) かを後から判別できるように
+                                if activity.is_some() { "precise" } else { "degraded" }
                             );
                             ledger.insert(
                                 key,
@@ -376,26 +428,58 @@ mod tests {
         }
     }
 
-    /// Running + Tmux mode の lane は session 名が返る (nudge 可能)
+    /// Running + Tmux mode の lane は (session 名, cwd) が返る (nudge 可能)
     #[test]
     fn pick_running_tmux_lane_returns_session() {
         let lanes = vec![test_lane(LaneState::Running, TmuxMode::Tmux)];
-        assert_eq!(
-            pick_tmux_session(&lanes, "vp/conductor").as_deref(),
-            Some("vp-vp-conductor-echoes")
-        );
+        let (session, cwd) = pick_nudge_target(&lanes, "vp/conductor").expect("nudge 可能");
+        assert_eq!(session, "vp-vp-conductor-echoes");
+        assert_eq!(cwd, "", "test_lane の cwd (CC activity 照合に使う)");
         // 別 lane 宛は None (offline 扱い = pending 保持)
-        assert_eq!(pick_tmux_session(&lanes, "other/conductor"), None);
+        assert_eq!(pick_nudge_target(&lanes, "other/conductor"), None);
     }
 
     /// PtySlotFallback (send-keys 不可) と Dead lane は nudge 対象外 = pending 保持
     #[test]
     fn pick_skips_fallback_mode_and_dead_lane() {
         let fallback = vec![test_lane(LaneState::Running, TmuxMode::PtySlotFallback)];
-        assert_eq!(pick_tmux_session(&fallback, "vp/conductor"), None);
+        assert_eq!(pick_nudge_target(&fallback, "vp/conductor"), None);
 
         let dead = vec![test_lane(LaneState::Dead, TmuxMode::Tmux)];
-        assert_eq!(pick_tmux_session(&dead, "vp/conductor"), None);
+        assert_eq!(pick_nudge_target(&dead, "vp/conductor"), None);
+    }
+
+    /// R3-a: activity 供給ありの policy table — idle/waiting → Ready、busy → Busy、不在 → Offline
+    #[test]
+    fn readiness_with_activity_follows_policy_table() {
+        use crate::process::cc_activity::CcState;
+        assert_eq!(
+            recipient_readiness(true, Some(Some(CcState::Idle))),
+            Readiness::Ready
+        );
+        assert_eq!(
+            recipient_readiness(true, Some(Some(CcState::Waiting))),
+            Readiness::Ready
+        );
+        assert_eq!(
+            recipient_readiness(true, Some(Some(CcState::Busy))),
+            Readiness::Busy
+        );
+        // poll は成功したが当該 cwd に interactive session 不在 = offline (pending 保持)
+        assert_eq!(recipient_readiness(true, Some(None)), Readiness::Offline);
+    }
+
+    /// R3-a: poll 不能 (None) は R2-b の degraded 挙動 (lane Running → nudge) に fallback
+    #[test]
+    fn readiness_degraded_falls_back_to_lane_running() {
+        use crate::process::cc_activity::CcState;
+        assert_eq!(recipient_readiness(true, None), Readiness::Ready);
+        assert_eq!(recipient_readiness(false, None), Readiness::Offline);
+        // activity があっても lane (tmux session) が無ければ nudge 不能
+        assert_eq!(
+            recipient_readiness(false, Some(Some(CcState::Idle))),
+            Readiness::Offline
+        );
     }
 
     #[test]
