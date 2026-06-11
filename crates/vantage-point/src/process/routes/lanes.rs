@@ -87,11 +87,16 @@ pub async fn build_lanes_snapshot(state: &AppState) -> Vec<LaneInfo> {
                 lane.performer_status = Some(crate::lane::commands::performer_status(path));
             }
         }
-        // R3-b: CC session id を state file から lazy read (書き手は SessionStart hook)
-        lane.cc_session_id = crate::lane::cc_session::last(
-            &lane.address.project,
-            crate::process::stand_spawner::lane_label(&lane.address),
-        );
+        // R3-b: CC session id を state file から lazy read (書き手は SessionStart hook)。
+        // 消費者 (echoes --resume) は conductor のみなので populate も限定し、
+        // QUIC 5s tick 経路の syscall を抑える (moody 指摘 #2)。 performer の resume
+        // policy 化 (設計メモ「fresh / resume が制限でなく policy になる」) の際に広げる。
+        if matches!(lane.kind, LaneKind::Conductor) {
+            lane.cc_session_id = crate::lane::cc_session::last(
+                &lane.address.project,
+                crate::process::stand_spawner::lane_label(&lane.address),
+            );
+        }
     }
 
     lanes
