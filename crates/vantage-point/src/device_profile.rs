@@ -87,6 +87,26 @@ pub trait DeviceProfile {
     fn learn_parameter(&mut self, index: u8, spec: &ParamSpec) -> Vec<Vec<u8>>;
 }
 
+/// RGB を固定パレットへ最近傍量子化（二乗距離。`roto_palette::closest_index` と同方式）。
+/// パレット色しか持たない device（X-Touch 8 色 / ROTO 83 色）で共用する。
+fn closest_palette_index(palette: &[u32], color: Rgb) -> u8 {
+    let mut best_index = 0usize;
+    let mut best_dist = i64::MAX;
+    for (index, &candidate) in palette.iter().enumerate() {
+        let cr = ((candidate >> 16) & 0xFF) as i64;
+        let cg = ((candidate >> 8) & 0xFF) as i64;
+        let cb = (candidate & 0xFF) as i64;
+        let dist = (color.r as i64 - cr).pow(2)
+            + (color.g as i64 - cg).pow(2)
+            + (color.b as i64 - cb).pow(2);
+        if dist < best_dist {
+            best_dist = dist;
+            best_index = index;
+        }
+    }
+    best_index as u8
+}
+
 pub mod xtouch {
     //! Behringer X-Touch（MCU mode、device ID `0x14`）の `DeviceProfile` impl。
     //!
@@ -142,23 +162,9 @@ pub mod xtouch {
         Spread = 3,
     }
 
-    /// RGB を strip 8 色へ最近傍量子化（`roto_palette::closest_index` と同じ二乗距離）
+    /// RGB を strip 8 色へ最近傍量子化
     fn closest_strip_color(color: Rgb) -> u8 {
-        let mut best_index = 0usize;
-        let mut best_dist = i64::MAX;
-        for (index, &candidate) in STRIP_COLORS.iter().enumerate() {
-            let cr = ((candidate >> 16) & 0xFF) as i64;
-            let cg = ((candidate >> 8) & 0xFF) as i64;
-            let cb = (candidate & 0xFF) as i64;
-            let dist = (color.r as i64 - cr).pow(2)
-                + (color.g as i64 - cg).pow(2)
-                + (color.b as i64 - cb).pow(2);
-            if dist < best_dist {
-                best_dist = dist;
-                best_index = index;
-            }
-        }
-        best_index as u8
+        super::closest_palette_index(&STRIP_COLORS, color)
     }
 
     /// 表示名を 1 strip ぶん（7 文字）の ASCII byte 列に整形。
@@ -381,6 +387,156 @@ pub mod xtouch {
         #[test]
         fn out_of_range_strip_is_noop() {
             let mut profile = XTouchProfile::default();
+            assert!(
+                profile
+                    .project_track(8, "X", Rgb::new(0, 0, 0), false)
+                    .is_empty()
+            );
+        }
+    }
+}
+
+pub mod lpd8 {
+    //! AKAI LPD8 mk2 の `DeviceProfile` impl（E1 第二号）。
+    //!
+    //! protocol 出典: Wireshark 実機キャプチャ由来のリバースエンジニアリング 3 repo
+    //! （stephensrmmartin/lpd8mk2・john-kuan/lpd8mk2sysex・john-kuan/lpd8mk2-traktor）が
+    //! 独立一致。mk2 の model ID は `0x4C`（既存 `midi::lpd8` の `0x75` は初代 LPD8 で別物）。
+    //!
+    //! pad LED は program 設定とは独立した専用 command で、**フル RGB（各色 0–255）**を
+    //! 7bit×2 分割で送る。4 色インデックスではないため、lane 色を量子化なしで投影できる
+    //! 艦隊唯一の pad。色 command は 8 pad 一括のため shadow state を保持する（X-Touch 同型）。
+    //!
+    //! program 構造（note/CC 割当、128 byte entry 型）は flag bit が未確定のため未実装
+    //! （input flow 実装時に config.py / hex_diagram.svg を pin して対応）。
+
+    use super::{DeviceProfile, ParamSpec, Rgb};
+
+    /// mk2 SysEx ヘッダ（manufacturer `47` Akai / device `7F` broadcast / model `4C` = LPD8 mk2）
+    const MK2_HDR: [u8; 4] = [0xF0, 0x47, 0x7F, 0x4C];
+    /// SysEx 終端
+    const EOX: u8 = 0xF7;
+    /// pad LED 一括更新 command（`06` + sub-ID `00 30`、8 pad × RGB 各 2 byte）
+    const CMD_PAD_LED: [u8; 3] = [0x06, 0x00, 0x30];
+    /// pad 数
+    const PADS: usize = 8;
+
+    /// 8bit 値（0–255）を MIDI data byte 2 つ（7bit×2、MSB→LSB 順）に分割する
+    fn pack7(value: u8) -> [u8; 2] {
+        [value >> 7, value & 0x7F]
+    }
+
+    /// LPD8 mk2 profile 本体。LED command が 8 pad 一括のため色の shadow を保持する。
+    pub struct Lpd8Profile {
+        /// pad LED 色の shadow（index = pad 0–7）
+        pad_colors: [Rgb; PADS],
+    }
+
+    impl Default for Lpd8Profile {
+        fn default() -> Self {
+            Self {
+                pad_colors: [Rgb::new(0, 0, 0); PADS],
+            }
+        }
+    }
+
+    impl Lpd8Profile {
+        /// 現在の shadow から pad LED 一括 SysEx を組む
+        fn pad_led_sysex(&self) -> Vec<u8> {
+            let mut msg = Vec::with_capacity(MK2_HDR.len() + CMD_PAD_LED.len() + PADS * 6 + 1);
+            msg.extend_from_slice(&MK2_HDR);
+            msg.extend_from_slice(&CMD_PAD_LED);
+            for color in &self.pad_colors {
+                msg.extend_from_slice(&pack7(color.r));
+                msg.extend_from_slice(&pack7(color.g));
+                msg.extend_from_slice(&pack7(color.b));
+            }
+            msg.push(EOX);
+            msg
+        }
+    }
+
+    impl DeviceProfile for Lpd8Profile {
+        fn port_pattern(&self) -> &str {
+            "LPD8"
+        }
+
+        /// mk2 に handshake 手順はない（LED command は前置きなしで効く）
+        fn handshake(&self) -> Vec<Vec<u8>> {
+            Vec::new()
+        }
+
+        /// lane 色 → pad LED（フル RGB、量子化なし）。name / is_group は表示先がないため無視。
+        fn project_track(
+            &mut self,
+            index: u8,
+            _name: &str,
+            color: Rgb,
+            _is_group: bool,
+        ) -> Vec<Vec<u8>> {
+            let Some(slot) = self.pad_colors.get_mut(index as usize) else {
+                return Vec::new(); // pad 範囲外は no-op
+            };
+            *slot = color;
+            vec![self.pad_led_sysex()]
+        }
+
+        /// LPD8 に parameter の表示先がないため no-op
+        /// （knob の CC 割当 = program 書き込みは input flow 実装時に対応）
+        fn learn_parameter(&mut self, _index: u8, _spec: &ParamSpec) -> Vec<Vec<u8>> {
+            Vec::new()
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn handshake_is_empty() {
+            let profile = Lpd8Profile::default();
+            assert!(profile.handshake().is_empty());
+        }
+
+        #[test]
+        fn project_track_emits_full_rgb_led_sysex() {
+            let mut profile = Lpd8Profile::default();
+            let messages = profile.project_track(0, "Lane A", Rgb::new(255, 0, 128), false);
+            assert_eq!(messages.len(), 1);
+
+            let sysex = &messages[0];
+            // ヘッダ + cmd: F0 47 7F 4C 06 00 30、全長 = 7 + 8×6 + 1 = 56
+            assert_eq!(&sysex[..7], &[0xF0, 0x47, 0x7F, 0x4C, 0x06, 0x00, 0x30]);
+            assert_eq!(sysex.len(), 7 + 48 + 1);
+            assert_eq!(*sysex.last().unwrap(), 0xF7);
+            // pad 0: R=255 → [01 7F]、G=0 → [00 00]、B=128 → [01 00]
+            assert_eq!(&sysex[7..13], &[0x01, 0x7F, 0x00, 0x00, 0x01, 0x00]);
+            // pad 1 以降は未設定 = 黒
+            assert_eq!(&sysex[13..19], &[0, 0, 0, 0, 0, 0]);
+        }
+
+        #[test]
+        fn shadow_keeps_previous_pad_colors() {
+            let mut profile = Lpd8Profile::default();
+            profile.project_track(0, "A", Rgb::new(255, 0, 0), false);
+            let messages = profile.project_track(7, "B", Rgb::new(0, 0, 255), false);
+            let sysex = &messages[0];
+            // pad 0 の赤が保持されたまま pad 7 の青が乗る
+            assert_eq!(&sysex[7..9], &[0x01, 0x7F]); // pad0 R=255
+            assert_eq!(&sysex[7 + 7 * 6 + 4..7 + 7 * 6 + 6], &[0x01, 0x7F]); // pad7 B=255
+        }
+
+        #[test]
+        fn pack7_splits_msb_lsb() {
+            assert_eq!(pack7(0), [0x00, 0x00]);
+            assert_eq!(pack7(127), [0x00, 0x7F]);
+            assert_eq!(pack7(128), [0x01, 0x00]);
+            assert_eq!(pack7(255), [0x01, 0x7F]);
+        }
+
+        #[test]
+        fn out_of_range_pad_is_noop() {
+            let mut profile = Lpd8Profile::default();
             assert!(
                 profile
                     .project_track(8, "X", Rgb::new(0, 0, 0), false)

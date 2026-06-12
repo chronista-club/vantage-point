@@ -50,6 +50,12 @@ pub enum Lpd8Commands {
     },
     /// 利用可能なMIDI出力ポート一覧
     Ports,
+    /// 実機 smoke テスト（DeviceProfile 経由で pad に lane 色を投影）
+    Demo {
+        /// MIDIポート名のパターン（部分一致）
+        #[arg(long, default_value = "LPD8")]
+        port: String,
+    },
 }
 
 /// X-Touch サブコマンド
@@ -238,6 +244,48 @@ fn execute_lpd8(cmd: Lpd8Commands) -> Result<()> {
         Lpd8Commands::Ports => {
             crate::midi::print_output_ports();
             Ok(())
+        }
+        Lpd8Commands::Demo { port } => {
+            use crate::device_profile::{DeviceProfile, Rgb, lpd8::Lpd8Profile};
+
+            // mk2 はフル RGB LED — 虹 8 色を pad に投影して色再現を確認する
+            let demo_colors = [
+                Rgb::new(255, 0, 0),     // Red
+                Rgb::new(255, 128, 0),   // Orange
+                Rgb::new(255, 255, 0),   // Yellow
+                Rgb::new(0, 255, 0),     // Green
+                Rgb::new(0, 255, 255),   // Cyan
+                Rgb::new(0, 0, 255),     // Blue
+                Rgb::new(160, 0, 255),   // Purple
+                Rgb::new(255, 255, 255), // White
+            ];
+
+            let mut profile = Lpd8Profile::default();
+            let mut messages = profile.handshake();
+            for (i, color) in demo_colors.iter().enumerate() {
+                messages.extend(profile.project_track(
+                    i as u8,
+                    &format!("Lane {}", i + 1),
+                    *color,
+                    false,
+                ));
+            }
+
+            let count = messages.len();
+            match crate::midi::send_batch(Some(&port), &messages) {
+                Ok(()) => {
+                    println!("LPD8 demo を送信しました（{} messages）", count);
+                    println!();
+                    println!("実機で確認すること:");
+                    println!("  PAD 1-8 が虹色: Red→Orange→Yellow→Green→Cyan→Blue→Purple→White");
+                    Ok(())
+                }
+                Err(e) => {
+                    eprintln!("送信エラー: {}", e);
+                    eprintln!("ポート確認: vp midi ports でポート一覧を表示できます");
+                    std::process::exit(1);
+                }
+            }
         }
     }
 }
