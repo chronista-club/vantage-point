@@ -138,7 +138,7 @@ fn execute_xtouch(cmd: XtouchCommands) -> Result<()> {
                 }
                 Err(e) => {
                     eprintln!("送信エラー: {}", e);
-                    eprintln!("ポート確認: vp midi lpd8 ports で出力ポート一覧を表示できます");
+                    eprintln!("ポート確認: vp midi ports でポート一覧を表示できます");
                     std::process::exit(1);
                 }
             }

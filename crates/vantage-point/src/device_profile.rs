@@ -8,7 +8,7 @@
 //! 責務分離（data / calculations / actions）:
 //! - data: `Rgb` / `ParamSpec`（論理 lane state の断片）
 //! - calculations: `DeviceProfile` の各メソッド（state → MIDI byte 列。純粋関数、I/O なし）
-//! - actions: 呼び出し側が `midi::send_sysex` で送出（trait は送信を持たない）
+//! - actions: 呼び出し側が `midi::send_batch` で送出（trait は送信を持たない）
 //!
 //! impl 順は確度順: X-Touch（Ardour MCU 実装由来）→ LPD8（`midi::lpd8` 移行）→ ROTO。
 
@@ -73,7 +73,7 @@ impl ParamSpec {
 /// （X-Touch の LCD 1 行書き込み・色 8 byte）に対応するため。profile は device 側
 /// 表示の shadow state を保持し、1 slot の更新でも全体メッセージを再構成できる。
 pub trait DeviceProfile {
-    /// MIDI port 照合用のパターン（`midi::send_sysex` の `port_pattern` に渡す）
+    /// MIDI port 照合用のパターン（`midi::send_batch` の `port_pattern` に渡す）
     fn port_pattern(&self) -> &str;
 
     /// 接続開始時に送る初期化メッセージ列（doc 20 §6）。
