@@ -15,6 +15,8 @@ pub mod config;
 pub mod creo;
 pub mod daemon;
 pub mod db;
+#[cfg(feature = "midi")]
+pub mod device_profile;
 pub mod discovery;
 pub mod file_watcher;
 pub mod flow;
