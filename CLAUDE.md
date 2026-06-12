@@ -127,6 +127,7 @@ vp auth me|login|logout  # Creo ID 認証
 vp pane / vp file      # ペイン操作 / ファイル監視
 vp midi monitor|ports  # MIDI（feature = "midi" ビルドのみ）
 vp midi lpd8 write|switch|ports
+vp midi xtouch demo|wave  # X-Touch (MCU) 実機 smoke / フェーダー wave
 ```
 
 > ⚠️ `vp start` / `vp stop` / `vp open` / `vp tray` は**存在しない**（旧体系。start/stop は `vp sp` / `vp daemon` / `vp app` に分散、WebUI は `http://localhost:33000` を直接開く）。

@@ -61,6 +61,15 @@ pub enum XtouchCommands {
         #[arg(long, default_value = "X-Touch")]
         port: String,
     },
+    /// モーターフェーダーを波打たせる（連続送信の throughput 検証兼用）
+    Wave {
+        /// MIDIポート名のパターン（部分一致）
+        #[arg(long, default_value = "X-Touch")]
+        port: String,
+        /// 継続秒数
+        #[arg(long, default_value = "20")]
+        secs: u64,
+    },
 }
 
 /// `vp midi` を実行
@@ -142,6 +151,38 @@ fn execute_xtouch(cmd: XtouchCommands) -> Result<()> {
                     std::process::exit(1);
                 }
             }
+        }
+        XtouchCommands::Wave { port, secs } => {
+            use crate::device_profile::xtouch::fader_position;
+            use std::f32::consts::TAU;
+
+            let (mut conn, port_name) = crate::midi::open_output(Some(&port))?;
+            println!(
+                "X-Touch wave 開始: {}（{} 秒、Ctrl-C で中断）",
+                port_name, secs
+            );
+
+            let start = std::time::Instant::now();
+            let frame = std::time::Duration::from_millis(33); // 約 30fps
+            while start.elapsed().as_secs() < secs {
+                let t = start.elapsed().as_secs_f32();
+                for i in 0..8u8 {
+                    // 0.4Hz の sine 波が左から右へ strip を流れる（strip 間で 1/8 周期ずらす）
+                    let phase = t * TAU * 0.4 - (i as f32) * (TAU / 8.0);
+                    let value = 0.5 + 0.5 * phase.sin();
+                    conn.send(&fader_position(i, value))?;
+                }
+                std::thread::sleep(frame);
+            }
+
+            // 終了時は全フェーダーを下げて静止させる
+            for i in 0..8u8 {
+                conn.send(&fader_position(i, 0.0))?;
+            }
+            // CoreMIDI の非同期送信が流れ切るのを待ってから接続を閉じる
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            println!("wave 終了（全フェーダーを 0 に戻しました）");
+            Ok(())
         }
     }
 }

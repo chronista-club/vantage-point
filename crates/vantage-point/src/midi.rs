@@ -682,10 +682,9 @@ pub fn send_sysex(port_pattern: Option<&str>, data: &[u8]) -> Result<()> {
     send_batch(port_pattern, std::slice::from_ref(&data.to_vec()))
 }
 
-/// 複数の MIDI メッセージを 1 接続でまとめて送る。
-/// `DeviceProfile` が返すメッセージバッチ（`Vec<Vec<u8>>`）の送出用
-/// （メッセージごとに接続を張り直すのを避ける）。
-pub fn send_batch(port_pattern: Option<&str>, messages: &[Vec<u8>]) -> Result<()> {
+/// 出力 port を pattern で解決して接続を開く。
+/// 連続送信（wave 等）で接続を保持したい caller 向け。戻り値は（接続, port 名）。
+pub fn open_output(port_pattern: Option<&str>) -> Result<(midir::MidiOutputConnection, String)> {
     let midi_out = midir::MidiOutput::new("vp-midi-out")?;
     let ports = midi_out.ports();
 
@@ -713,17 +712,35 @@ pub fn send_batch(port_pattern: Option<&str>, messages: &[Vec<u8>]) -> Result<()
         .port_name(port)
         .unwrap_or_else(|_| "Unknown".to_string());
 
-    let mut conn = midi_out.connect(port, "vp-midi-sysex")?;
+    let conn = midi_out
+        .connect(port, "vp-midi-sysex")
+        .map_err(|e| anyhow::anyhow!("MIDI connect failed: {}", e))?;
+    Ok((conn, port_name))
+}
+
+/// 複数の MIDI メッセージを 1 接続でまとめて送る。
+/// `DeviceProfile` が返すメッセージバッチ（`Vec<Vec<u8>>`）の送出用
+/// （メッセージごとに接続を張り直すのを避ける）。
+pub fn send_batch(port_pattern: Option<&str>, messages: &[Vec<u8>]) -> Result<()> {
+    let (mut conn, port_name) = open_output(port_pattern)?;
+    // バッチ送出時の取りこぼし対策（X-Touch 実機検証、doc 21 §5）:
+    // - per-message 1ms pacing: 41 連射で末尾側が欠ける。flush 待ちだけでは不十分で
+    //   この pacing が効いていることを pacing 抜きビルドとの比較で確認済み
+    // - 送信後 100ms flush 待ち: CoreMIDI の送信は非同期のため、接続 drop が早いと
+    //   キューが流れ切る前に破棄されうる保険
+    // 単発送信（LPD8 write 等、len == 1）は sleep なしの従来挙動で実績があるため skip
+    let pacing = messages.len() > 1;
     let mut total_bytes = 0usize;
     for message in messages {
         conn.send(message)?;
         total_bytes += message.len();
-        // 連射すると実機側の受信バッファが取りこぼす（X-Touch 実機で確認）ため pacing
-        std::thread::sleep(std::time::Duration::from_millis(1));
+        if pacing {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
     }
-    // CoreMIDI の送信は非同期。接続 drop が早いと末尾のメッセージが流れ切る前に
-    // キューごと破棄される（X-Touch 実機で末尾欠落を確認）ため、flush 待ちを置く
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    if pacing {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
 
     tracing::info!(
         "Sent {} MIDI messages ({} bytes) to {}",

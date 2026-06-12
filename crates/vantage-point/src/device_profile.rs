@@ -115,9 +115,10 @@ pub mod xtouch {
     const STRIPS: usize = 8;
     /// 1 strip の LCD 文字数
     const CHARS_PER_STRIP: usize = 7;
-    /// 1 行書き込みの文字数（Ardour `Surface::display_line` 準拠。
-    /// 8 strip × 7 = 56 のところ 55 文字 + padding で送るのが実機検証済みの形）
-    const LINE_LEN: usize = 55;
+    /// 1 行書き込みの文字数（8 strip × 7 = 56）。
+    /// Ardour は 55 文字送り（strip 8 の 7 文字目が欠ける。X-Touch 実機で
+    /// `Param 8` → `Param ` になるのを確認）だが、X-Touch は 56 文字を受けるため全送する。
+    const LINE_LEN: usize = 56;
 
     /// scribble strip の固定 8 色（`surface.h` `XTouchColors` enum 順）の RGB 代表値。
     /// index がそのまま `0x72` payload の色値（0=Off 1=Red 2=Green 3=Yellow
@@ -185,7 +186,6 @@ pub mod xtouch {
         for cell in cells {
             text.extend_from_slice(&strip_cell(cell));
         }
-        // 8 strip 目の 7 文字目（56 文字目）は Ardour 準拠で送出しない（LINE_LEN = 55）
         text.truncate(LINE_LEN);
         msg.extend_from_slice(&text);
         msg.push(EOX);
@@ -194,7 +194,8 @@ pub mod xtouch {
 
     /// モーターフェーダー位置（`fader.cc` 準拠）。
     /// pitch bend `E0+ch` に 14bit 値（`round(16383 × normalized)`）を LSB/MSB 順で。
-    fn fader_position(channel: u8, normalized: f32) -> Vec<u8> {
+    /// 連続駆動（wave 等）の caller 向けに単体公開。
+    pub fn fader_position(channel: u8, normalized: f32) -> Vec<u8> {
         let value = (16383.0 * normalized.clamp(0.0, 1.0)).round() as u16;
         vec![
             0xE0 | (channel & 0x0F),
@@ -315,10 +316,10 @@ pub mod xtouch {
             let messages = profile.project_track(0, "Lane A", Rgb::new(255, 0, 0), false);
             assert_eq!(messages.len(), 2);
 
-            // LCD 上段: ヘッダ + 0x12 + offset 0x00 + 55 文字 + F7
+            // LCD 上段: ヘッダ + 0x12 + offset 0x00 + 56 文字 + F7
             let lcd = &messages[0];
             assert_eq!(&lcd[..7], &[0xF0, 0x00, 0x00, 0x66, 0x14, 0x12, 0x00]);
-            assert_eq!(lcd.len(), 5 + 2 + 55 + 1);
+            assert_eq!(lcd.len(), 5 + 2 + 56 + 1);
             assert_eq!(&lcd[7..14], b"Lane A ");
             assert_eq!(*lcd.last().unwrap(), 0xF7);
 
