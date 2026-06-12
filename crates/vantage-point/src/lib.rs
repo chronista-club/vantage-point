@@ -31,6 +31,8 @@ pub mod process;
 pub mod projects_file;
 pub mod protocol;
 pub mod resolve;
+#[cfg(feature = "midi")]
+pub mod roto_palette;
 pub mod screenshot;
 pub mod spawn_env;
 pub mod stands;
