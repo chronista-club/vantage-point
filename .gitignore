@@ -64,3 +64,4 @@ history.txt
 
 # JetBrains IDE 設定 (per-developer、 commit 対象外)
 .idea/
+rust_out
