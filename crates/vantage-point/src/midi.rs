@@ -718,7 +718,12 @@ pub fn send_batch(port_pattern: Option<&str>, messages: &[Vec<u8>]) -> Result<()
     for message in messages {
         conn.send(message)?;
         total_bytes += message.len();
+        // 連射すると実機側の受信バッファが取りこぼす（X-Touch 実機で確認）ため pacing
+        std::thread::sleep(std::time::Duration::from_millis(1));
     }
+    // CoreMIDI の送信は非同期。接続 drop が早いと末尾のメッセージが流れ切る前に
+    // キューごと破棄される（X-Touch 実機で末尾欠落を確認）ため、flush 待ちを置く
+    std::thread::sleep(std::time::Duration::from_millis(100));
 
     tracing::info!(
         "Sent {} MIDI messages ({} bytes) to {}",
