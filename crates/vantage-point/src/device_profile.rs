@@ -176,7 +176,7 @@ pub mod xtouch {
         cell
     }
 
-    /// LCD 1 行ぶんの SysEx を組む（`F0 00 00 66 14 12 <offset> <55 chars> F7`）
+    /// LCD 1 行ぶんの SysEx を組む（`F0 00 00 66 14 12 <offset> <56 chars> F7`）
     fn lcd_line(offset: u8, cells: &[String; STRIPS]) -> Vec<u8> {
         let mut msg = Vec::with_capacity(MCU_HDR.len() + 2 + LINE_LEN + 1);
         msg.extend_from_slice(&MCU_HDR);

@@ -724,10 +724,8 @@ pub fn open_output(port_pattern: Option<&str>) -> Result<(midir::MidiOutputConne
 pub fn send_batch(port_pattern: Option<&str>, messages: &[Vec<u8>]) -> Result<()> {
     let (mut conn, port_name) = open_output(port_pattern)?;
     // バッチ送出時の取りこぼし対策（X-Touch 実機検証、doc 21 §5）:
-    // - per-message 1ms pacing: 41 連射で末尾側が欠ける。flush 待ちだけでは不十分で
-    //   この pacing が効いていることを pacing 抜きビルドとの比較で確認済み
-    // - 送信後 100ms flush 待ち: CoreMIDI の送信は非同期のため、接続 drop が早いと
-    //   キューが流れ切る前に破棄されうる保険
+    // 無間隔で 41 連射すると実機が末尾側を取りこぼすため per-message 1ms pacing。
+    // pacing のみで十分（送信後の flush 待ちは不要）を抜き差しビルドの比較で確認済み。
     // 単発送信（LPD8 write 等、len == 1）は sleep なしの従来挙動で実績があるため skip
     let pacing = messages.len() > 1;
     let mut total_bytes = 0usize;
@@ -737,9 +735,6 @@ pub fn send_batch(port_pattern: Option<&str>, messages: &[Vec<u8>]) -> Result<()
         if pacing {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
-    }
-    if pacing {
-        std::thread::sleep(std::time::Duration::from_millis(100));
     }
 
     tracing::info!(

@@ -59,7 +59,8 @@ Logic Control（device ID `0x10/0x11`）のみ serial + challenge 4 byte の暗�
 - `project_track` → LCD 上段 + 色一括 / `learn_parameter` → LCD 下段 + フェーダー + V-Pot ring
 - テキストは ASCII 限定（非 ASCII は `_` 置換、Ardour の ISO-8859-1 fallback と同方針）
 - **バッチ送出には per-message 1ms pacing が必須**（実機検証 2026-06-13: 41 メッセージ無間隔連射で
-  X-Touch が末尾側を取りこぼす。接続 drop 前の flush 待ちだけでは不十分。`midi::send_batch` が実装）
+  X-Touch が末尾側を取りこぼす。接続 drop 前の flush 待ちは pacing があれば不要 — pacing 抜き /
+  flush 抜きの両ビルドの比較で確定。`midi::send_batch` が実装）
 - 連続駆動（30fps × 8 fader の wave、240 msg/s）は接続保持なら pacing なしで安定（`vp midi xtouch wave` で検証）
 - smoke コマンド: `vp midi xtouch demo`（階段）/ `vp midi xtouch wave`（波）
 
