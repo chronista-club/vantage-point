@@ -36,6 +36,9 @@ impl Rgb {
 pub struct ParamSpec {
     /// 表示名（device の文字数制限・ASCII 化は impl 側で行う）
     pub name: String,
+    /// 安定 ID（lane の slot path 等）。ROTO の hash6（doc 20 §3）の入力。
+    /// None なら name を ID として使う
+    pub id: Option<String>,
     /// 正規化済み現在値（0.0–1.0）
     pub value: f32,
     /// 中央 detent（双極パラメータの 0 位置でクリック感）
@@ -53,6 +56,7 @@ impl ParamSpec {
     pub fn continuous(name: impl Into<String>, value: f32) -> Self {
         Self {
             name: name.into(),
+            id: None,
             value,
             center_detent: false,
             steps: 0,
@@ -542,6 +546,404 @@ pub mod lpd8 {
                     .project_track(8, "X", Rgb::new(0, 0, 0), false)
                     .is_empty()
             );
+        }
+    }
+}
+
+pub mod roto {
+    //! Melbourne Instruments ROTO-CONTROL の `DeviceProfile` impl（E1 最終・第三号）。
+    //!
+    //! byte 仕様の SSOT は `docs/design/20-roto-control-sysex-protocol.md`
+    //! （公式 Bitwig 拡張の full decompile で確定した grammar）。
+    //! - フレーム: `F0 00 22 03 02 <type> <id> <payload> F7`（§1）
+    //! - track 表示: `02 0A 07`（名前 + 色 + group を一括、§2/§4）
+    //! - parameter learn: `02 0B 0A`（hash6 + detent + steps + 値 + 名前、§5）
+    //! - handshake: `02 0A 01`（DAW_START、§6。ack 受信の state machine は呼び出し側）
+    //!
+    //! track / parameter とも per-slot command のため shadow state は不要
+    //! （X-Touch / LPD8 の一括 command とは対照的）。
+
+    use super::{DeviceProfile, ParamSpec, Rgb};
+    use sha1::{Digest, Sha1};
+
+    /// ROTO SysEx ヘッダ（manufacturer `00 22 03` Melbourne + prefix `02`、doc 20 §1）
+    const ROTO_HDR: [u8; 5] = [0xF0, 0x00, 0x22, 0x03, 0x02];
+    /// SysEx 終端
+    const EOX: u8 = 0xF7;
+    /// command type: GENERAL（DAW 制御・track・LCD）
+    const TYPE_GENERAL: u8 = 0x0A;
+    /// command type: PLUGIN（device/parameter）
+    const TYPE_PLUGIN: u8 = 0x0B;
+    /// GENERAL: handshake 開始（DAW_START）
+    const CMD_DAW_START: u8 = 0x01;
+    /// GENERAL: track 表示更新（名前+色+group flag）
+    const CMD_TRACK_UPDATE: u8 = 0x07;
+    /// PLUGIN: parameter learn（knob への teach）
+    const CMD_PARAM_LEARN: u8 = 0x0A;
+    /// name フィールドのスロット数（13、doc 20 §3）
+    const NAME_SLOTS: usize = 13;
+
+    /// `toAsciiDisplay` 等価（doc 20 §3）: 非 ASCII はラテン置換表で ASCII 化、
+    /// 置換表にないものは drop。制御文字も drop。
+    fn to_ascii_display(name: &str) -> Vec<u8> {
+        let mut out = Vec::with_capacity(name.len());
+        for ch in name.chars() {
+            match ch {
+                c if c.is_ascii() && !c.is_ascii_control() => out.push(c as u8),
+                'ä' => out.push(b'a'),
+                'ö' => out.push(b'o'),
+                'ü' => out.push(b'u'),
+                'Ä' => out.push(b'A'),
+                'Ö' => out.push(b'O'),
+                'Ü' => out.push(b'U'),
+                'ß' => out.extend_from_slice(b"ss"),
+                'é' | 'è' | 'ê' => out.push(b'e'),
+                'â' | 'á' | 'à' => out.push(b'a'),
+                'û' | 'ú' | 'ù' => out.push(b'u'),
+                'ô' | 'ó' | 'ò' => out.push(b'o'),
+                _ => {} // 置換表にない非 ASCII は drop（原実装準拠）
+            }
+        }
+        out
+    }
+
+    /// `toSysExName` 等価（doc 20 §3）: display 用 13 文字、不足は 0x00 padding
+    fn sysex_name13(name: &str) -> [u8; NAME_SLOTS] {
+        let ascii = to_ascii_display(name);
+        let mut slots = [0u8; NAME_SLOTS];
+        for (slot, byte) in slots.iter_mut().zip(ascii.iter()) {
+            *slot = *byte;
+        }
+        slots
+    }
+
+    /// `nameToSysEx` 等価（doc 20 §3）: state 用。12 文字に切り 13 スロット出力
+    /// （末尾は必ず 0x00 終端）
+    fn name12_nul(name: &str) -> [u8; NAME_SLOTS] {
+        let ascii = to_ascii_display(name);
+        let mut slots = [0u8; NAME_SLOTS];
+        for (slot, byte) in slots.iter_mut().take(NAME_SLOTS - 1).zip(ascii.iter()) {
+            *slot = *byte;
+        }
+        slots
+    }
+
+    /// `createHash` 等価（doc 20 §3）: SHA-1(id) の先頭 6 byte を `& 0x7F`
+    /// （MIDI data byte 化）した parameter 識別子
+    fn hash6(id: &str) -> [u8; 6] {
+        let digest = Sha1::digest(id.as_bytes());
+        let mut out = [0u8; 6];
+        for (slot, byte) in out.iter_mut().zip(digest.iter()) {
+            *slot = byte & 0x7F;
+        }
+        out
+    }
+
+    /// index を 7bit×2 に分割（doc 20 §1: `index>>7 & 0x7F`, `index & 0x7F`）
+    fn split14(index: u16) -> [u8; 2] {
+        [((index >> 7) & 0x7F) as u8, (index & 0x7F) as u8]
+    }
+
+    /// ping（`02 0A 03 02`、doc 20 §2）。ROTO は接続中 `02 0A 02`（hello/heartbeat）を
+    /// 約 1 秒間隔で送ってくる（実機 probe で確認）。host はこれに ping で応える。
+    pub fn ping() -> Vec<u8> {
+        vec![
+            ROTO_HDR[0],
+            ROTO_HDR[1],
+            ROTO_HDR[2],
+            ROTO_HDR[3],
+            ROTO_HDR[4],
+            TYPE_GENERAL,
+            0x03,
+            0x02,
+            EOX,
+        ]
+    }
+
+    /// knob モーター位置の feedback（`RotoKnob`/`sendCCHiRes` 準拠）。
+    /// 14bit hi-res CC × 2: `BF <12+index> <hi>` + `BF <44+index> <lo>`、
+    /// `value = round(normalized × 16383)`。連続駆動（anim 等）の caller 向けに単体公開。
+    pub fn knob_position(index: u8, normalized: f32) -> Vec<Vec<u8>> {
+        let value = (16383.0 * normalized.clamp(0.0, 1.0)).round() as u16;
+        vec![
+            vec![0xBF, 12 + index, (value >> 7) as u8],
+            vec![0xBF, 44 + index, (value & 0x7F) as u8],
+        ]
+    }
+
+    /// track 1 slot ぶんの shadow（名前 + 量子化済み色 + group flag）
+    #[derive(Clone)]
+    struct TrackSlot {
+        name: String,
+        color_index: u8,
+        is_group: bool,
+    }
+
+    impl Default for TrackSlot {
+        fn default() -> Self {
+            Self {
+                name: String::new(),
+                color_index: 70, // 未割当のデフォルト = 黒（doc 20 §4）
+                is_group: false,
+            }
+        }
+    }
+
+    /// ROTO が扱う track slot 数（本体表示は 8 knob/LCD 単位）
+    const TRACKS: usize = 8;
+
+    /// ROTO profile 本体。
+    ///
+    /// track 表示は裸の `02 0A 07` 単発では反映されず、**枠付きバッチ**
+    /// （track 数 `0A 04` → 先頭 offset `0A 05` → track 更新 × N → end detail `0A 08`）
+    /// で送って初めて表示が確定する（`MixLayerSet.sendStates` 準拠、実機検証 2026-06-13）。
+    /// このため track の shadow state を保持し、1 slot の更新でも完全バッチを返す。
+    #[derive(Default)]
+    pub struct RotoProfile {
+        tracks: [TrackSlot; TRACKS],
+        /// projection 済みの最大 index + 1（= device に通知する track 数）
+        track_count: usize,
+    }
+
+    /// GENERAL の index 付き command（`02 0A <code> <hi> <lo>`、doc 20 §2）を組む
+    fn general_index_command(code: u8, value: u16) -> Vec<u8> {
+        let mut msg = Vec::with_capacity(ROTO_HDR.len() + 4);
+        msg.extend_from_slice(&ROTO_HDR);
+        msg.push(TYPE_GENERAL);
+        msg.push(code);
+        msg.extend_from_slice(&split14(value));
+        msg.push(EOX);
+        msg
+    }
+
+    impl RotoProfile {
+        /// track 1 本ぶんの更新 SysEx（`02 0A 07`、doc 20 §2/§4）
+        fn track_update(&self, index: usize) -> Vec<u8> {
+            let slot = &self.tracks[index];
+            let mut msg = Vec::with_capacity(ROTO_HDR.len() + 4 + NAME_SLOTS + 3);
+            msg.extend_from_slice(&ROTO_HDR);
+            msg.push(TYPE_GENERAL);
+            msg.push(CMD_TRACK_UPDATE);
+            msg.extend_from_slice(&split14(index as u16));
+            msg.extend_from_slice(&name12_nul(&slot.name));
+            msg.push(slot.color_index);
+            msg.push(slot.is_group as u8);
+            msg.push(EOX);
+            msg
+        }
+    }
+
+    impl DeviceProfile for RotoProfile {
+        fn port_pattern(&self) -> &str {
+            // 実機の CoreMIDI port 名は "Roto-Control"（部分一致は大文字小文字を区別する）
+            "Roto"
+        }
+
+        /// DAW_START（doc 20 §6）。接続成立までの応答（hello への ping +
+        /// meter threshold、`0A 0C` への `0A 0D`）は呼び出し側 flow の責務。
+        fn handshake(&self) -> Vec<Vec<u8>> {
+            vec![vec![
+                ROTO_HDR[0],
+                ROTO_HDR[1],
+                ROTO_HDR[2],
+                ROTO_HDR[3],
+                ROTO_HDR[4],
+                TYPE_GENERAL,
+                CMD_DAW_START,
+                EOX,
+            ]]
+        }
+
+        /// track 表示更新（doc 20 §2 `02 0A 07` / §4）。
+        /// 色は 83 色パレットへ最近傍量子化して colorIndex を state に同梱し、
+        /// 全 track の枠付きバッチとして返す（module doc 参照）。
+        fn project_track(
+            &mut self,
+            index: u8,
+            name: &str,
+            color: Rgb,
+            is_group: bool,
+        ) -> Vec<Vec<u8>> {
+            let Some(slot) = self.tracks.get_mut(index as usize) else {
+                return Vec::new(); // slot 範囲外は no-op
+            };
+            *slot = TrackSlot {
+                name: name.to_string(),
+                color_index: crate::roto_palette::closest_index(color.r, color.g, color.b),
+                is_group,
+            };
+            self.track_count = self.track_count.max(index as usize + 1);
+
+            let mut batch = Vec::with_capacity(self.track_count + 3);
+            batch.push(general_index_command(0x04, self.track_count as u16)); // track 数
+            batch.push(general_index_command(0x05, 0)); // 先頭 offset
+            for i in 0..self.track_count {
+                batch.push(self.track_update(i));
+            }
+            // end detail（doc 20 §2 `02 0A 08`）= 表示コミット
+            batch.push(vec![
+                ROTO_HDR[0],
+                ROTO_HDR[1],
+                ROTO_HDR[2],
+                ROTO_HDR[3],
+                ROTO_HDR[4],
+                TYPE_GENERAL,
+                0x08,
+                EOX,
+            ]);
+            batch
+        }
+
+        /// parameter learn（doc 20 §5 `02 0B 0A`）。knob に「パラメータの意味」
+        /// （識別 hash・型・detent・段階・現在値・名前）を一括 teach する。
+        fn learn_parameter(&mut self, index: u8, spec: &ParamSpec) -> Vec<Vec<u8>> {
+            let id = spec.id.as_deref().unwrap_or(&spec.name);
+            let position = (16383.0 * spec.value.clamp(0.0, 1.0)).round() as u16;
+
+            let mut msg = Vec::with_capacity(ROTO_HDR.len() + 14 + NAME_SLOTS + 1);
+            msg.extend_from_slice(&ROTO_HDR);
+            msg.push(TYPE_PLUGIN);
+            msg.push(CMD_PARAM_LEARN);
+            msg.extend_from_slice(&split14(index as u16));
+            msg.extend_from_slice(&hash6(id));
+            msg.push(spec.is_macro as u8);
+            msg.push(spec.center_detent as u8);
+            msg.push(spec.steps & 0x7F);
+            msg.extend_from_slice(&split14(position));
+            msg.extend_from_slice(&sysex_name13(&spec.name));
+            // steps が 1–16 のとき各ステップのラベルを付与（不足分は空欄、doc 20 §5）
+            if (1..=16).contains(&spec.steps) {
+                for step in 0..spec.steps as usize {
+                    let label = spec.step_names.get(step).map(String::as_str).unwrap_or("");
+                    msg.extend_from_slice(&sysex_name13(label));
+                }
+            }
+            msg.push(EOX);
+            vec![msg]
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn handshake_is_daw_start() {
+            let profile = RotoProfile::default();
+            assert_eq!(
+                profile.handshake(),
+                vec![vec![0xF0, 0x00, 0x22, 0x03, 0x02, 0x0A, 0x01, 0xF7]]
+            );
+        }
+
+        #[test]
+        fn project_track_emits_framed_batch() {
+            let mut profile = RotoProfile::default();
+            let messages = profile.project_track(1, "Lane A", Rgb::new(255, 0, 0), false);
+            // track 数 + offset + track 0..=1 + end detail = 5（実機検証済みの枠付きバッチ）
+            assert_eq!(messages.len(), 5);
+            assert_eq!(
+                messages[0].as_slice(),
+                &[0xF0, 0x00, 0x22, 0x03, 0x02, 0x0A, 0x04, 0x00, 0x02, 0xF7]
+            ); // track 数 = 2（projection 済み最大 index + 1）
+            assert_eq!(
+                messages[1].as_slice(),
+                &[0xF0, 0x00, 0x22, 0x03, 0x02, 0x0A, 0x05, 0x00, 0x00, 0xF7]
+            ); // 先頭 offset = 0
+
+            // track 0 は未割当 = 空名 + 黒（colorIndex 70）
+            assert_eq!(messages[2][9], 0x00);
+            assert_eq!(messages[2][22], 70);
+
+            // track 1 = 今回の projection
+            let msg = &messages[3];
+            // ヘッダ + 0A 07 + idx(7bit×2) + name13 + color + group + F7 = 25 byte
+            assert_eq!(&msg[..7], &[0xF0, 0x00, 0x22, 0x03, 0x02, 0x0A, 0x07]);
+            assert_eq!(&msg[7..9], &[0x00, 0x01]); // index 1
+            assert_eq!(&msg[9..15], b"Lane A");
+            assert_eq!(msg[21], 0x00); // name13 の終端
+            // 純赤は palette の 0xFF0000（index 71）に量子化される
+            assert_eq!(msg[22], 71);
+            assert_eq!(msg[23], 0); // is_group = false
+            assert_eq!(*msg.last().unwrap(), 0xF7);
+            assert_eq!(msg.len(), 25);
+
+            // 末尾は end detail（表示コミット）
+            assert_eq!(
+                messages[4].as_slice(),
+                &[0xF0, 0x00, 0x22, 0x03, 0x02, 0x0A, 0x08, 0xF7]
+            );
+        }
+
+        #[test]
+        fn out_of_range_track_is_noop() {
+            let mut profile = RotoProfile::default();
+            assert!(
+                profile
+                    .project_track(8, "X", Rgb::new(0, 0, 0), false)
+                    .is_empty()
+            );
+        }
+
+        #[test]
+        fn name12_nul_truncates_to_12_with_terminator() {
+            let slots = name12_nul("ABCDEFGHIJKLMNOP"); // 16 文字
+            assert_eq!(&slots[..12], b"ABCDEFGHIJKL");
+            assert_eq!(slots[12], 0x00); // 13 スロット目は必ず終端
+        }
+
+        #[test]
+        fn sysex_name13_fills_13_chars() {
+            let slots = sysex_name13("ABCDEFGHIJKLMNOP");
+            assert_eq!(&slots[..], b"ABCDEFGHIJKLM"); // display 用は 13 文字フル
+        }
+
+        #[test]
+        fn ascii_display_substitutes_latin_and_drops_others() {
+            assert_eq!(to_ascii_display("Tür"), b"Tur".to_vec());
+            assert_eq!(to_ascii_display("Straße"), b"Strasse".to_vec());
+            assert_eq!(to_ascii_display("日本語"), Vec::<u8>::new());
+        }
+
+        #[test]
+        fn hash6_is_sha1_prefix_masked() {
+            // SHA-1("test") = a94a8fe5ccb1… → 先頭 6 byte を & 0x7F
+            assert_eq!(hash6("test"), [0x29, 0x4A, 0x0F, 0x65, 0x4C, 0x31]);
+        }
+
+        #[test]
+        fn learn_parameter_emits_learn_message() {
+            let mut profile = RotoProfile::default();
+            let spec = ParamSpec::continuous("Cutoff", 1.0);
+            let messages = profile.learn_parameter(2, &spec);
+            let msg = &messages[0];
+
+            // ヘッダ + 0B 0A + idx2 + hash6 + macro + detent + steps + pos2 + name13 + F7 = 34
+            assert_eq!(&msg[..7], &[0xF0, 0x00, 0x22, 0x03, 0x02, 0x0B, 0x0A]);
+            assert_eq!(&msg[7..9], &[0x00, 0x02]); // knob index 2
+            assert_eq!(hash6("Cutoff"), msg[9..15]); // id 省略時は name から
+            assert_eq!(msg[15], 0); // is_macro
+            assert_eq!(msg[16], 0); // center_detent
+            assert_eq!(msg[17], 0); // steps = 連続
+            assert_eq!(&msg[18..20], &[0x7F, 0x7F]); // 値 1.0 = 16383
+            assert_eq!(&msg[20..26], b"Cutoff");
+            assert_eq!(msg.len(), 34);
+        }
+
+        #[test]
+        fn learn_parameter_appends_step_names() {
+            let mut profile = RotoProfile::default();
+            let mut spec = ParamSpec::continuous("Mode", 0.0);
+            spec.steps = 3;
+            spec.step_names = vec!["A".into(), "B".into()]; // 3 step 目は不足 = 空欄
+            let messages = profile.learn_parameter(0, &spec);
+            let msg = &messages[0];
+
+            // 基本 34 byte + step ラベル 13×3
+            assert_eq!(msg.len(), 34 + 39);
+            assert_eq!(msg[33], b'A');
+            assert_eq!(msg[33 + 13], b'B');
+            assert_eq!(msg[33 + 26], 0x00); // 不足分は空欄
         }
     }
 }
