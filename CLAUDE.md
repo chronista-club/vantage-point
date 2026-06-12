@@ -136,7 +136,7 @@ vp midi lpd8 write|switch|ports
 ```bash
 cargo build --release -p vantage-point   # ビルド
 cargo test --workspace                    # テスト
-cargo install --path crates/vp-cli        # インストール（codesign 自動付与）
+cargo install --path crates/vp-cli --locked  # インストール（codesign 自動付与。--locked 必須 — install は Cargo.lock を無視して最新依存を解決するため、未検証の新リリース（例: time 0.3.48 × ratatui-widgets の E0119）を踏む）
 cargo fmt --all -- --check                # フォーマットチェック
 cargo clippy --workspace --all-targets    # Lint
 ```
