@@ -23,6 +23,9 @@ pub enum MidiCommands {
     /// LPD8コントローラー設定
     #[command(subcommand)]
     Lpd8(Lpd8Commands),
+    /// X-Touch（MCU mode）操作
+    #[command(subcommand)]
+    Xtouch(XtouchCommands),
 }
 
 /// LPD8 サブコマンド
@@ -49,6 +52,17 @@ pub enum Lpd8Commands {
     Ports,
 }
 
+/// X-Touch サブコマンド
+#[derive(Subcommand)]
+pub enum XtouchCommands {
+    /// 実機 smoke テスト（handshake → 8 strip に名前+色 → フェーダー階段）
+    Demo {
+        /// MIDIポート名のパターン（部分一致）
+        #[arg(long, default_value = "X-Touch")]
+        port: String,
+    },
+}
+
 /// `vp midi` を実行
 pub fn execute(cmd: MidiCommands) -> Result<()> {
     match cmd {
@@ -72,6 +86,63 @@ pub fn execute(cmd: MidiCommands) -> Result<()> {
             Ok(())
         }
         MidiCommands::Lpd8(lpd8_cmd) => execute_lpd8(lpd8_cmd),
+        MidiCommands::Xtouch(xtouch_cmd) => execute_xtouch(xtouch_cmd),
+    }
+}
+
+/// X-Touch サブコマンドを実行
+fn execute_xtouch(cmd: XtouchCommands) -> Result<()> {
+    use crate::device_profile::{DeviceProfile, ParamSpec, Rgb, xtouch::XTouchProfile};
+
+    match cmd {
+        XtouchCommands::Demo { port } => {
+            // scribble strip 固定 8 色（doc 21 §3）を 1 strip 1 色で一巡させる
+            let demo_colors = [
+                Rgb::new(0, 0, 0),       // Off
+                Rgb::new(255, 0, 0),     // Red
+                Rgb::new(0, 255, 0),     // Green
+                Rgb::new(255, 255, 0),   // Yellow
+                Rgb::new(0, 0, 255),     // Blue
+                Rgb::new(255, 0, 255),   // Purple
+                Rgb::new(0, 255, 255),   // Cyan
+                Rgb::new(255, 255, 255), // White
+            ];
+
+            let mut profile = XTouchProfile::default();
+            let mut messages = profile.handshake();
+            for (i, color) in demo_colors.iter().enumerate() {
+                let index = i as u8;
+                messages.extend(profile.project_track(
+                    index,
+                    &format!("Lane {}", i + 1),
+                    *color,
+                    false,
+                ));
+                // フェーダーを 0/7 〜 7/7 の階段に（モーター動作の目視確認用）
+                let spec = ParamSpec::continuous(format!("Param {}", i + 1), i as f32 / 7.0);
+                messages.extend(profile.learn_parameter(index, &spec));
+            }
+
+            let count = messages.len();
+            match crate::midi::send_batch(Some(&port), &messages) {
+                Ok(()) => {
+                    println!("X-Touch demo を送信しました（{} messages）", count);
+                    println!();
+                    println!("実機で確認すること:");
+                    println!("  LCD 上段: Lane 1〜Lane 8 の表示");
+                    println!("  LCD 下段: Param 1〜Param 8 の表示");
+                    println!("  strip 色: Off→Red→Green→Yellow→Blue→Purple→Cyan→White");
+                    println!("  フェーダー: 左から右へ階段状に上昇");
+                    println!("  V-Pot ring: 値に応じた塗り表示");
+                    Ok(())
+                }
+                Err(e) => {
+                    eprintln!("送信エラー: {}", e);
+                    eprintln!("ポート確認: vp midi lpd8 ports で出力ポート一覧を表示できます");
+                    std::process::exit(1);
+                }
+            }
+        }
     }
 }
 

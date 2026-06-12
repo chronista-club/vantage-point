@@ -677,8 +677,15 @@ pub fn list_output_ports() -> Result<Vec<String>> {
     Ok(port_names)
 }
 
-/// Send SysEx message to LPD8
+/// Send SysEx message to a MIDI output port
 pub fn send_sysex(port_pattern: Option<&str>, data: &[u8]) -> Result<()> {
+    send_batch(port_pattern, std::slice::from_ref(&data.to_vec()))
+}
+
+/// 複数の MIDI メッセージを 1 接続でまとめて送る。
+/// `DeviceProfile` が返すメッセージバッチ（`Vec<Vec<u8>>`）の送出用
+/// （メッセージごとに接続を張り直すのを避ける）。
+pub fn send_batch(port_pattern: Option<&str>, messages: &[Vec<u8>]) -> Result<()> {
     let midi_out = midir::MidiOutput::new("vp-midi-out")?;
     let ports = midi_out.ports();
 
@@ -707,9 +714,18 @@ pub fn send_sysex(port_pattern: Option<&str>, data: &[u8]) -> Result<()> {
         .unwrap_or_else(|_| "Unknown".to_string());
 
     let mut conn = midi_out.connect(port, "vp-midi-sysex")?;
-    conn.send(data)?;
+    let mut total_bytes = 0usize;
+    for message in messages {
+        conn.send(message)?;
+        total_bytes += message.len();
+    }
 
-    tracing::info!("Sent {} bytes SysEx to {}", data.len(), port_name);
+    tracing::info!(
+        "Sent {} MIDI messages ({} bytes) to {}",
+        messages.len(),
+        total_bytes,
+        port_name
+    );
     Ok(())
 }
 
