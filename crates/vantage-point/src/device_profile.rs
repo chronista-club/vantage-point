@@ -185,6 +185,7 @@ pub mod xtouch {
         for cell in cells {
             text.extend_from_slice(&strip_cell(cell));
         }
+        // 8 strip 目の 7 文字目（56 文字目）は Ardour 準拠で送出しない（LINE_LEN = 55）
         text.truncate(LINE_LEN);
         msg.extend_from_slice(&text);
         msg.push(EOX);
