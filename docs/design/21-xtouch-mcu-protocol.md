@@ -30,7 +30,7 @@ Ardour は受信 SysEx の byte[4] で自分の送信ヘッダを上書きする
 | message | byte 列 | 意味 |
 |---------|---------|------|
 | wake-up / device query | `F0 00 00 66 14 00 F7` | handshake 開始（§4） |
-| LCD 行書き込み | `F0 00 00 66 14 12 <offset> <55 chars> F7` | scribble strip テキスト。offset `0x00` = 上段、`0x38` = 下段。1 strip 7 文字 × 8。Ardour は 1 行 55 文字一括（56 文字目は送らない） |
+| LCD 行書き込み | `F0 00 00 66 14 12 <offset> <56 chars> F7` | scribble strip テキスト。offset `0x00` = 上段、`0x38` = 下段。1 strip 7 文字 × 8 = 56。Ardour は 55 文字送り（strip 8 の 7 文字目が欠ける。実機で `Param 8` → `Param ` を確認）だが、**X-Touch は 56 文字を正しく受ける**（実機検証済、2026-06-13）ため VP は全送する |
 | **strip 色一括**（X-Touch 固有） | `F0 00 00 66 14 72 <c0…c7> F7` | 8 strip の色を一括設定。色値は §3 |
 | モーターフェーダー | `E0+ch <LSB> <MSB>` | pitch bend 14bit。`value = round(16383 × normalized)`。strip 0–7 = ch 0–7、master = ch 8 |
 | V-Pot LED ring | `B0 30+n <value>` | `value = (mode << 4) \| position(1–11)`、bit6 = 中央 LED。mode: `dot=0 boost_cut=1 wrap=2 spread=3` |
@@ -58,6 +58,11 @@ Logic Control（device ID `0x10/0x11`）のみ serial + challenge 4 byte の暗�
 - LCD 行・色が**全 strip 一括 command** のため、profile が shadow state（上段/下段テキスト + 色 8 本）を保持し、1 slot 更新でも全体を再構成する。これが `DeviceProfile` trait の projection 系を `&mut self` にした理由
 - `project_track` → LCD 上段 + 色一括 / `learn_parameter` → LCD 下段 + フェーダー + V-Pot ring
 - テキストは ASCII 限定（非 ASCII は `_` 置換、Ardour の ISO-8859-1 fallback と同方針）
+- **バッチ送出には per-message 1ms pacing が必須**（実機検証 2026-06-13: 41 メッセージ無間隔連射で
+  X-Touch が末尾側を取りこぼす。接続 drop 前の flush 待ちは pacing があれば不要 — pacing 抜き /
+  flush 抜きの両ビルドの比較で確定。`midi::send_batch` が実装）
+- 連続駆動（30fps × 8 fader の wave、240 msg/s）は接続保持なら pacing なしで安定（`vp midi xtouch wave` で検証）
+- smoke コマンド: `vp midi xtouch demo`（階段）/ `vp midi xtouch wave`（波）
 
 ## §6. 残課題
 

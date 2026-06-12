@@ -682,10 +682,9 @@ pub fn send_sysex(port_pattern: Option<&str>, data: &[u8]) -> Result<()> {
     send_batch(port_pattern, std::slice::from_ref(&data.to_vec()))
 }
 
-/// 複数の MIDI メッセージを 1 接続でまとめて送る。
-/// `DeviceProfile` が返すメッセージバッチ（`Vec<Vec<u8>>`）の送出用
-/// （メッセージごとに接続を張り直すのを避ける）。
-pub fn send_batch(port_pattern: Option<&str>, messages: &[Vec<u8>]) -> Result<()> {
+/// 出力 port を pattern で解決して接続を開く。
+/// 連続送信（wave 等）で接続を保持したい caller 向け。戻り値は（接続, port 名）。
+pub fn open_output(port_pattern: Option<&str>) -> Result<(midir::MidiOutputConnection, String)> {
     let midi_out = midir::MidiOutput::new("vp-midi-out")?;
     let ports = midi_out.ports();
 
@@ -713,11 +712,29 @@ pub fn send_batch(port_pattern: Option<&str>, messages: &[Vec<u8>]) -> Result<()
         .port_name(port)
         .unwrap_or_else(|_| "Unknown".to_string());
 
-    let mut conn = midi_out.connect(port, "vp-midi-sysex")?;
+    let conn = midi_out
+        .connect(port, "vp-midi-sysex")
+        .map_err(|e| anyhow::anyhow!("MIDI connect failed: {}", e))?;
+    Ok((conn, port_name))
+}
+
+/// 複数の MIDI メッセージを 1 接続でまとめて送る。
+/// `DeviceProfile` が返すメッセージバッチ（`Vec<Vec<u8>>`）の送出用
+/// （メッセージごとに接続を張り直すのを避ける）。
+pub fn send_batch(port_pattern: Option<&str>, messages: &[Vec<u8>]) -> Result<()> {
+    let (mut conn, port_name) = open_output(port_pattern)?;
+    // バッチ送出時の取りこぼし対策（X-Touch 実機検証、doc 21 §5）:
+    // 無間隔で 41 連射すると実機が末尾側を取りこぼすため per-message 1ms pacing。
+    // pacing のみで十分（送信後の flush 待ちは不要）を抜き差しビルドの比較で確認済み。
+    // 単発送信（LPD8 write 等、len == 1）は sleep なしの従来挙動で実績があるため skip
+    let pacing = messages.len() > 1;
     let mut total_bytes = 0usize;
     for message in messages {
         conn.send(message)?;
         total_bytes += message.len();
+        if pacing {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
     }
 
     tracing::info!(
