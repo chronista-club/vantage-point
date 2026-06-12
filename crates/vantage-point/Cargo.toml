@@ -15,7 +15,7 @@ path = "src/lib.rs"
 # `--no-default-features` で gui + midi を外す。
 default = ["gui", "midi"]
 gui = ["dep:tao", "dep:muda", "dep:tray-icon"]
-midi = ["dep:midir"]
+midi = ["dep:midir", "dep:sha1"]
 
 [dependencies]
 # Async runtime
@@ -98,6 +98,8 @@ file-rotate = "0.8"
 
 # MIDI input (feature = "midi" 有効時のみ、ALSA 依存回避のため optional)
 midir = { version = "0.11", optional = true }
+# ROTO parameter learn の hash6 (SHA-1 先頭 6 byte、doc 20 §3) 用
+sha1 = { version = "0.10", optional = true }
 
 # UUID generation (v7 for time-ordered Event ids; serde for wire format)
 uuid = { version = "1", features = ["v4", "v7", "serde"] }

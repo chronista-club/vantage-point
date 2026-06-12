@@ -77,9 +77,12 @@ decompile で確認した全 SysEx テンプレート。`%02X` = 1 byte hex、`%
 | id | テンプレート | 意味 |
 |----|-------------|------|
 | `01` | `02 0A 01 F7` | **handshake 開始**（DAW_START、`initDaw` が送出） |
-| `03 02` | `02 0A 03 02 F7` | ping |
+| `02` | `02 0A 02 F7` | （input）hello / keepalive。host は ping + meter threshold で毎回応答（§6） |
+| `03 02` | `02 0A 03 02 F7` | ping（hello への応答） |
+| `04` | `02 0A 04 <hi> <lo> F7` | track 総数（track バッチの前置き、実機検証済） |
+| `05` | `02 0A 05 <hi> <lo> F7` | track 先頭 offset（同上） |
 | `07` | `02 0A 07 <hi> <lo> <name13> <colorIdx> <isGroup> F7` | **track 表示更新**（名前+色+group flag、`TrackState.toSysExUpdate`） |
-| `08` | `02 0A 08 F7` | track detail 終了 |
+| `08` | `02 0A 08 F7` | track detail 終了 = **表示コミット**。⚠️ `07` 単発では表示されない — `04 → 05 → 07×N → 08` の**枠付きバッチ**で送ること（`MixLayerSet.sendStates` 準拠、実機検証済） |
 | `0B` | `02 0A 0B <8×%02X> F7` | transport 状態（8 byte、`TransportState`） |
 | — | `02 0A <code> F7` / `02 0A <code> <hi> <lo> F7` | 汎用 general value / index command |
 
@@ -151,9 +154,10 @@ VP 側の含意: `set_color` は「RGB を受けて VP 側で同じ最近傍量�
 
 | 要素 | 数 | addressing |
 |------|----|-----------|
-| knob | 8 | index `0–7`（`RotoKnob(i, …)`） |
-| button | 8 | CC `20–27` |
-| transport button | 8 | CC `28–35` |
+| knob | 8 | index `0–7`（`RotoKnob(i, …)`）。**モーター位置 feedback = 14bit hi-res CC**: `BF <12+i> <hi>` + `BF <44+i> <lo>`、`value = round(v × 16383)`（実機検証済、`vp midi roto anim` が使用） |
+| knob touch | 8 | CC `52–59` |
+| button | 8 | CC `20–27`。LED は `BF <cc> <0|127>`（on/off、実機検証済） |
+| transport button | 8 | CC `28–35`。LED 同上 |
 | left / right transport | 2 | CC `36` / `37` |
 
 → 「16 RGB ボタン」= button 8 + transport button 8。LCD は knob と 1:1（8）+ master 1 = 9。
@@ -181,18 +185,26 @@ knob に割り当てる parameter は「**learn**」という rich な記述単�
 
 ---
 
-## §6. handshake と initialized gate
+## §6. handshake と initialized gate（実機検証済 2026-06-13、firmware 3.2.0）
 
 ```
-1. init():  midiProcessor.initDaw(versionString)
-            → sendSysex("02 0A 01")  (DAW_START)
-2. ROTO 側が ready 応答（input: type 0A general command）
-3. initialized = true になるまで sendSysEx は no-op
-            （`if (!initialized) return;` ガード）
-4. 以降 track/parameter state projection が流れる
+host  : DAW_START (02 0A 01)
+device: hello (02 0A 02)              ← 約 1 秒間隔の keepalive。毎回応答が必要
+host  : ping (02 0A 03 02)
+        + METER_THRESHOLD (02 0C 0B 2F 73)   ← hello への定型応答（2 通セット）
+device: 02 0A 0C                       ← 問い合わせ
+host  : 02 0A 0D                       ← 定型応答
+device: 02 0A 0E <maj> <min> <patch> <build…>  ← firmware version 通知
+device: 02 0C 01 <mode…>               ← mixer update = initialized の引き金
+以降   : track/parameter state projection が流れる（hello への応答は継続）
 ```
 
-VP 実装では DAW_START 送出 → input handshake ack 受信 → projection 開始、の state machine を持つ。
+- `initialized` は device からの **mode 通知（mixer update `0C 01` / plugin mode `0B 01` /
+  transport `0A 0A`）** で立つ（`MidiProcessor.ensureInit`）
+- **hello への応答は接続中ずっと続ける**（止めると切断扱い）
+- VP impl: `RotoProfile::handshake()` が DAW_START を返し、応答ループは呼び出し側
+  （`vp midi roto demo` / `anim` の `roto_autorespond` が実装、Justice flow に昇格予定）
+- 観察ツール: `vp midi roto probe`（DAW_START 送出 + 受信 hex dump）
 
 ---
 
@@ -253,9 +265,11 @@ impl 順は確度順: X-Touch（Ardour 由来・最確実、[doc 21](./21-xtouch
 grammar の骨格は確定済み。以下は実装時に詰める:
 
 1. ~~`ColorUtil.COLORS` の値の完全転記~~ → **完了**（`crates/vantage-point/src/roto_palette.rs`、83 値）。
-2. **handshake ack の input フォーマット**（`initialized` を立てる input command の正確な type/commandNum）。
+2. ~~handshake ack の input フォーマット~~ → **完了**（§6 に全シーケンス、実機検証 2026-06-13）。
 3. **device 表示 `02 0B 05` の可変フィールド**（PluginModeHandler の完全 payload）。
 4. **transport `02 0A 0B` の 8 byte 各ビット意味**（play/stop/rec/loop…）。
+5. **parameter learn `02 0B 0A` の実機検証**（track 表示は検証済。learn は PLUGIN mode での
+   表示確認が未了 — MIX mode では knob LCD に反映されないことだけ確認済み）。
 
 ---
 

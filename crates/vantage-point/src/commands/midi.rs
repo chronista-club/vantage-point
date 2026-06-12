@@ -26,6 +26,41 @@ pub enum MidiCommands {
     /// X-Touch（MCU mode）操作
     #[command(subcommand)]
     Xtouch(XtouchCommands),
+    /// ROTO-CONTROL 操作
+    #[command(subcommand)]
+    Roto(RotoCommands),
+}
+
+/// ROTO-CONTROL サブコマンド
+#[derive(Subcommand)]
+pub enum RotoCommands {
+    /// 実機 smoke テスト（DAW_START → 8 track に名前+色 → 8 knob に parameter learn）
+    Demo {
+        /// MIDIポート名のパターン（部分一致。実機の CoreMIDI 名は "Roto-Control"）
+        #[arg(long, default_value = "Roto")]
+        port: String,
+    },
+    /// knob モーターを BPM 同期でアニメーションさせる（wave/pulse/chase/bounce の 4 パターン）
+    Anim {
+        /// MIDIポート名のパターン（部分一致）
+        #[arg(long, default_value = "Roto")]
+        port: String,
+        /// テンポ
+        #[arg(long, default_value = "120")]
+        bpm: u16,
+        /// 継続秒数
+        #[arg(long, default_value = "32")]
+        secs: u64,
+    },
+    /// handshake 観察（DAW_START を送り、ROTO からの応答 SysEx を hex で表示）
+    Probe {
+        /// MIDIポート名のパターン（部分一致）
+        #[arg(long, default_value = "Roto")]
+        port: String,
+        /// 観察秒数
+        #[arg(long, default_value = "5")]
+        secs: u64,
+    },
 }
 
 /// LPD8 サブコマンド
@@ -102,6 +137,364 @@ pub fn execute(cmd: MidiCommands) -> Result<()> {
         }
         MidiCommands::Lpd8(lpd8_cmd) => execute_lpd8(lpd8_cmd),
         MidiCommands::Xtouch(xtouch_cmd) => execute_xtouch(xtouch_cmd),
+        MidiCommands::Roto(roto_cmd) => execute_roto(roto_cmd),
+    }
+}
+
+/// ROTO との MIDI 接続一式（受信 connection は drop すると切れるため保持して返す）
+#[allow(clippy::type_complexity)]
+fn roto_open(
+    port: &str,
+) -> Result<(
+    midir::MidiInputConnection<()>,
+    std::sync::mpsc::Receiver<Vec<u8>>,
+    midir::MidiOutputConnection,
+    String,
+)> {
+    let mut midi_in = midir::MidiInput::new("vp-midi-roto")?;
+    midi_in.ignore(midir::Ignore::None);
+    let in_ports = midi_in.ports();
+    let in_port = in_ports
+        .iter()
+        .find(|p| {
+            midi_in
+                .port_name(p)
+                .map(|name| name.contains(port))
+                .unwrap_or(false)
+        })
+        .ok_or_else(|| anyhow::anyhow!("No MIDI input port matching '{}'", port))?;
+    let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    let conn_in = midi_in
+        .connect(
+            in_port,
+            "vp-roto",
+            move |_timestamp, bytes, _| {
+                let _ = tx.send(bytes.to_vec());
+            },
+            (),
+        )
+        .map_err(|e| anyhow::anyhow!("MIDI input connect failed: {}", e))?;
+    let (conn_out, port_name) = crate::midi::open_output(Some(port))?;
+    Ok((conn_in, rx, conn_out, port_name))
+}
+
+/// ROTO からのメッセージへの定型応答（keepalive）。
+/// hello (02 0A 02) → ping + meter threshold、0A 0C → 0A 0D（Bitwig 拡張準拠）。
+/// 応答した場合 true を返す。
+fn roto_autorespond(bytes: &[u8], conn_out: &mut midir::MidiOutputConnection) -> Result<bool> {
+    const HELLO: [u8; 8] = [0xF0, 0x00, 0x22, 0x03, 0x02, 0x0A, 0x02, 0xF7];
+    const QUERY_0C: [u8; 8] = [0xF0, 0x00, 0x22, 0x03, 0x02, 0x0A, 0x0C, 0xF7];
+    const METER_THRESHOLD: [u8; 10] = [0xF0, 0x00, 0x22, 0x03, 0x02, 0x0C, 0x0B, 0x2F, 0x73, 0xF7];
+    if bytes == HELLO {
+        conn_out.send(&crate::device_profile::roto::ping())?;
+        conn_out.send(&METER_THRESHOLD)?;
+        return Ok(true);
+    }
+    if bytes == QUERY_0C {
+        conn_out.send(&[0xF0, 0x00, 0x22, 0x03, 0x02, 0x0A, 0x0D, 0xF7])?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+/// ROTO-CONTROL サブコマンドを実行
+fn execute_roto(cmd: RotoCommands) -> Result<()> {
+    use crate::device_profile::{DeviceProfile, ParamSpec, Rgb, roto::RotoProfile};
+    use std::time::{Duration, Instant};
+
+    // demo / anim 共通の虹 8 色（83 色パレットへの量子化を通る）
+    let demo_colors = [
+        Rgb::new(255, 0, 0),     // 赤
+        Rgb::new(255, 128, 0),   // 橙
+        Rgb::new(255, 255, 0),   // 黄
+        Rgb::new(0, 255, 0),     // 緑
+        Rgb::new(0, 255, 255),   // シアン
+        Rgb::new(0, 0, 255),     // 青
+        Rgb::new(160, 0, 255),   // 紫
+        Rgb::new(255, 255, 255), // 白
+    ];
+
+    match cmd {
+        RotoCommands::Demo { port } => {
+            let (_conn_in, rx, mut conn_out, port_name) = roto_open(&port)?;
+
+            let mut profile = RotoProfile::default();
+            for msg in profile.handshake() {
+                conn_out.send(&msg)?;
+            }
+            println!("DAW_START 送信（{}）→ hello 応答ループ開始", port_name);
+
+            // projection メッセージを準備。track 表示の枠付きバッチ
+            // （track 数 → offset → 更新 × N → end detail）は profile が組むので、
+            // 8 track ぶん shadow を更新して最後のバッチだけ送る
+            let mut projection = Vec::new();
+            for (i, color) in demo_colors.iter().enumerate() {
+                projection =
+                    profile.project_track(i as u8, &format!("Lane {}", i + 1), *color, false);
+            }
+            // knob learn は track バッチの後に（値は 0/7〜7/7 の階段）
+            for i in 0..8u8 {
+                let spec = ParamSpec::continuous(format!("Param {}", i + 1), i as f32 / 7.0);
+                projection.extend(profile.learn_parameter(i, &spec));
+            }
+
+            // hello に応答しつつ device の通知を観察。最初の hello 応答から
+            // 1.5 秒後に projection を送り、その後も keepalive を続ける（計 15 秒）
+            let start = Instant::now();
+            let mut first_hello: Option<Instant> = None;
+            let mut projected = false;
+            while start.elapsed() < Duration::from_secs(15) {
+                if let Ok(bytes) = rx.recv_timeout(Duration::from_millis(100)) {
+                    if roto_autorespond(&bytes, &mut conn_out)? {
+                        if first_hello.is_none() {
+                            println!("hello 受信 → ping + meter threshold で応答（以後毎回）");
+                            first_hello = Some(Instant::now());
+                        }
+                    } else if bytes.first() == Some(&0xF0) {
+                        // 定型応答対象外の SysEx = device 状態通知。観察用に表示
+                        let hex: Vec<String> = bytes.iter().map(|b| format!("{:02X}", b)).collect();
+                        println!("受信: {}", hex.join(" "));
+                    }
+                }
+                if !projected
+                    && first_hello.is_some_and(|t| t.elapsed() > Duration::from_millis(1500))
+                {
+                    for msg in &projection {
+                        conn_out.send(msg)?;
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    println!(
+                        "projection 送信（{} messages）— track 表示と knob learn を確認してください",
+                        projection.len()
+                    );
+                    projected = true;
+                }
+            }
+            if first_hello.is_none() {
+                println!("hello が来ませんでした — ROTO の mode / 接続を確認してください");
+            }
+            Ok(())
+        }
+        RotoCommands::Anim { port, bpm, secs } => {
+            use crate::device_profile::roto::knob_position;
+            use std::f32::consts::{PI, TAU};
+
+            let (_conn_in, rx, mut conn_out, port_name) = roto_open(&port)?;
+
+            let profile_handshake = RotoProfile::default().handshake();
+            for msg in profile_handshake {
+                conn_out.send(&msg)?;
+            }
+            println!("DAW_START 送信（{}）→ 接続確立中...", port_name);
+
+            // hello に応答しながら接続成立を待つ（最初の hello から 1.5 秒）
+            let start = Instant::now();
+            let mut first_hello: Option<Instant> = None;
+            while start.elapsed() < Duration::from_secs(10) {
+                if let Ok(bytes) = rx.recv_timeout(Duration::from_millis(100)) {
+                    roto_autorespond(&bytes, &mut conn_out)?;
+                    if first_hello.is_none() && bytes.first() == Some(&0xF0) {
+                        first_hello = Some(Instant::now());
+                    }
+                }
+                if first_hello.is_some_and(|t| t.elapsed() > Duration::from_millis(1500)) {
+                    break;
+                }
+            }
+
+            // 背景として track 表示（Lane 名 + 虹色）を乗せる
+            let mut profile = RotoProfile::default();
+            let mut backdrop = Vec::new();
+            for (i, color) in demo_colors.iter().enumerate() {
+                backdrop =
+                    profile.project_track(i as u8, &format!("Lane {}", i + 1), *color, false);
+            }
+            for msg in &backdrop {
+                conn_out.send(msg)?;
+                std::thread::sleep(Duration::from_millis(1));
+            }
+
+            println!(
+                "knob アニメーション開始: BPM {}、{} 秒（wave → pulse → chase → bounce を 8 拍ごとに切替）",
+                bpm, secs
+            );
+
+            let beat_dur = 60.0 / bpm as f32;
+            let pattern_names = ["WAVE", "PULSE", "CHASE", "BOUNCE"];
+            let t0 = Instant::now();
+            // 差分送信用 cache（knob: [hi, lo] × 8、button LED: 2 列 × 8）
+            let mut last_sent = [[0xFFu8; 2]; 8];
+            let mut last_button = [[0xFFu8; 8]; 2];
+            let mut last_beat_index = usize::MAX;
+            let mut last_pattern = usize::MAX;
+            while t0.elapsed() < Duration::from_secs(secs) {
+                // keepalive（hello / 0A 0C への応答を続けないと接続が切れる）
+                while let Ok(bytes) = rx.try_recv() {
+                    roto_autorespond(&bytes, &mut conn_out)?;
+                }
+
+                let beat = t0.elapsed().as_secs_f32() / beat_dur;
+                let beat_index = beat as usize;
+                let pattern = (beat_index / 8) % 4;
+                let chase_pos = (beat * 2.0) as usize % 8; // 8 分音符の彗星位置
+
+                // knob 値をパターンごとに計算（button の振付でも使う）
+                let mut values = [0.0f32; 8];
+                for (i, v) in values.iter_mut().enumerate() {
+                    let k = i as f32;
+                    *v = match pattern {
+                        // wave: 1 小節（4 拍）で knob 列を一周する波
+                        0 => 0.5 + 0.5 * (TAU * (beat / 4.0) - k * TAU / 8.0).sin(),
+                        // pulse: 拍頭で全 knob が跳ねて 3 乗カーブで減衰
+                        1 => (1.0 - beat.fract()).powi(3),
+                        // chase: 8 分音符で彗星が一周（距離に応じた残光つき）
+                        2 => {
+                            let raw = (i as i32 - chase_pos as i32).unsigned_abs();
+                            let dist = raw.min(8 - raw) as f32;
+                            (1.0 - 0.35 * dist).max(0.05)
+                        }
+                        // bounce: 奇数/偶数 knob が 2 拍周期でシーソー
+                        _ => {
+                            0.5 + 0.45
+                                * (TAU * beat / 2.0 + if i % 2 == 0 { 0.0 } else { PI }).sin()
+                        }
+                    };
+                }
+
+                // knob モーター（差分のみ）
+                for (i, v) in values.iter().enumerate() {
+                    let value = (16383.0 * v.clamp(0.0, 1.0)).round() as u16;
+                    let hi_lo = [(value >> 7) as u8, (value & 0x7F) as u8];
+                    if last_sent[i] != hi_lo {
+                        for msg in knob_position(i as u8, *v) {
+                            conn_out.send(&msg)?;
+                        }
+                        last_sent[i] = hi_lo;
+                    }
+                }
+
+                // LCD: 毎拍 虹色を 1 つ回転、パターン切替時は表示名も切替
+                if beat_index != last_beat_index {
+                    let name_changed = pattern != last_pattern;
+                    let mut batch = Vec::new();
+                    for i in 0..8usize {
+                        let color = demo_colors[(i + beat_index) % 8];
+                        let name = if name_changed {
+                            pattern_names[pattern].to_string()
+                        } else {
+                            format!("{} {}", pattern_names[pattern], i + 1)
+                        };
+                        batch = profile.project_track(i as u8, &name, color, false);
+                    }
+                    for msg in &batch {
+                        conn_out.send(msg)?;
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    last_beat_index = beat_index;
+                    last_pattern = pattern;
+                }
+
+                // button LED（CC 20–27 = 本体列 / 28–35 = transport 列、0 or 127）
+                for (row, row_cache) in last_button.iter_mut().enumerate() {
+                    for (i, cache) in row_cache.iter_mut().enumerate() {
+                        let on = match pattern {
+                            // wave: knob の山に追従（transport 列は谷）
+                            0 => {
+                                if row == 0 {
+                                    values[i] > 0.6
+                                } else {
+                                    values[i] < 0.4
+                                }
+                            }
+                            // pulse: 本体列は拍頭、transport 列は 8 分裏で点滅
+                            1 => {
+                                if row == 0 {
+                                    beat.fract() < 0.25
+                                } else {
+                                    (beat * 2.0).fract() < 0.25
+                                }
+                            }
+                            // chase: 彗星と対角の 2 点が追いかける
+                            2 => {
+                                if row == 0 {
+                                    i == chase_pos
+                                } else {
+                                    i == 7 - chase_pos
+                                }
+                            }
+                            // bounce: 奇偶 × 列で市松に交互
+                            _ => (i + row) % 2 == ((beat / 2.0) as usize) % 2,
+                        };
+                        let v = if on { 127 } else { 0 };
+                        if *cache != v {
+                            let cc = if row == 0 { 20 } else { 28 } + i as u8;
+                            conn_out.send(&[0xBF, cc, v])?;
+                            *cache = v;
+                        }
+                    }
+                }
+
+                std::thread::sleep(Duration::from_millis(33)); // 約 30fps
+            }
+
+            // 終了: 全 knob を 0 に戻し、button LED を消灯
+            for i in 0..8u8 {
+                for msg in knob_position(i, 0.0) {
+                    conn_out.send(&msg)?;
+                }
+                conn_out.send(&[0xBF, 20 + i, 0])?;
+                conn_out.send(&[0xBF, 28 + i, 0])?;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+            println!("anim 終了（全 knob を 0 に戻しました）");
+            Ok(())
+        }
+        RotoCommands::Probe { port, secs } => {
+            use std::sync::mpsc;
+
+            // 入力 port を pattern で解決（SysEx を観察するため ignore を解除する）
+            let mut midi_in = midir::MidiInput::new("vp-midi-probe")?;
+            midi_in.ignore(midir::Ignore::None);
+            let in_ports = midi_in.ports();
+            let in_port = in_ports
+                .iter()
+                .find(|p| {
+                    midi_in
+                        .port_name(p)
+                        .map(|name| name.contains(&port))
+                        .unwrap_or(false)
+                })
+                .ok_or_else(|| anyhow::anyhow!("No MIDI input port matching '{}'", port))?;
+
+            let (tx, rx) = mpsc::channel::<Vec<u8>>();
+            let _conn_in = midi_in
+                .connect(
+                    in_port,
+                    "vp-roto-probe",
+                    move |_timestamp, bytes, _| {
+                        let _ = tx.send(bytes.to_vec());
+                    },
+                    (),
+                )
+                .map_err(|e| anyhow::anyhow!("MIDI input connect failed: {}", e))?;
+
+            // DAW_START を送って応答を観察する（doc 20 §6/§10 残課題 2 の実機検証）
+            let profile = RotoProfile::default();
+            crate::midi::send_batch(Some(&port), &profile.handshake())?;
+            println!("DAW_START 送信 → {} 秒間 受信を観察します...", secs);
+
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+            let mut count = 0usize;
+            while std::time::Instant::now() < deadline {
+                if let Ok(bytes) = rx.recv_timeout(std::time::Duration::from_millis(200)) {
+                    count += 1;
+                    let hex: Vec<String> = bytes.iter().map(|b| format!("{:02X}", b)).collect();
+                    println!("[{:>3}] {}", count, hex.join(" "));
+                }
+            }
+            println!("受信 {} 件", count);
+            Ok(())
+        }
     }
 }
 
