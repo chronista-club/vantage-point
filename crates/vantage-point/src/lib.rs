@@ -24,6 +24,8 @@ pub mod lane;
 pub mod mcp;
 #[cfg(feature = "midi")]
 pub mod midi;
+#[cfg(feature = "midi")]
+pub mod roto_palette;
 pub mod notify;
 pub mod platform;
 pub mod port_layout;
