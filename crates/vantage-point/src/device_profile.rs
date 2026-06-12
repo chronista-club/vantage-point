@@ -939,7 +939,9 @@ pub mod roto {
             let messages = profile.learn_parameter(0, &spec);
             let msg = &messages[0];
 
-            // 基本 34 byte + step ラベル 13×3
+            // 基本 34 byte + step ラベル 13×3。
+            // 33 = 5(HDR)+1(type)+1(cmd)+2(idx)+6(hash6)+1(macro)+1(detent)
+            //      +1(steps)+2(pos)+13(name13) = stepNames の先頭
             assert_eq!(msg.len(), 34 + 39);
             assert_eq!(msg[33], b'A');
             assert_eq!(msg[33 + 13], b'B');

@@ -204,14 +204,14 @@ fn execute_roto(cmd: RotoCommands) -> Result<()> {
 
     // demo / anim 共通の虹 8 色（83 色パレットへの量子化を通る）
     let demo_colors = [
-        Rgb::new(255, 0, 0),     // Red
-        Rgb::new(255, 128, 0),   // Orange
-        Rgb::new(255, 255, 0),   // Yellow
-        Rgb::new(0, 255, 0),     // Green
-        Rgb::new(0, 255, 255),   // Cyan
-        Rgb::new(0, 0, 255),     // Blue
-        Rgb::new(160, 0, 255),   // Purple
-        Rgb::new(255, 255, 255), // White
+        Rgb::new(255, 0, 0),     // 赤
+        Rgb::new(255, 128, 0),   // 橙
+        Rgb::new(255, 255, 0),   // 黄
+        Rgb::new(0, 255, 0),     // 緑
+        Rgb::new(0, 255, 255),   // シアン
+        Rgb::new(0, 0, 255),     // 青
+        Rgb::new(160, 0, 255),   // 紫
+        Rgb::new(255, 255, 255), // 白
     ];
 
     match cmd {
@@ -395,8 +395,8 @@ fn execute_roto(cmd: RotoCommands) -> Result<()> {
                 }
 
                 // button LED（CC 20–27 = 本体列 / 28–35 = transport 列、0 or 127）
-                for row in 0..2usize {
-                    for i in 0..8usize {
+                for (row, row_cache) in last_button.iter_mut().enumerate() {
+                    for (i, cache) in row_cache.iter_mut().enumerate() {
                         let on = match pattern {
                             // wave: knob の山に追従（transport 列は谷）
                             0 => {
@@ -426,10 +426,10 @@ fn execute_roto(cmd: RotoCommands) -> Result<()> {
                             _ => (i + row) % 2 == ((beat / 2.0) as usize) % 2,
                         };
                         let v = if on { 127 } else { 0 };
-                        if last_button[row][i] != v {
+                        if *cache != v {
                             let cc = if row == 0 { 20 } else { 28 } + i as u8;
                             conn_out.send(&[0xBF, cc, v])?;
-                            last_button[row][i] = v;
+                            *cache = v;
                         }
                     }
                 }
