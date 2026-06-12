@@ -228,7 +228,12 @@ trait DeviceProfile {
 }
 ```
 
-impl 順は確度順: X-Touch（Ardour 由来・最確実）→ LPD8（既存移行）→ ROTO（本 doc）。
+impl 順は確度順: X-Touch（Ardour 由来・最確実、[doc 21](./21-xtouch-mcu-protocol.md)）→ LPD8（既存移行）→ ROTO（本 doc）。
+
+> KEYSTAGE（完全 MIDI 2.0 ネイティブ）は 4 枚目の profile として独立に着手する。
+> learn 相当は MIDI-CI Property Exchange（標準規格）、transport は `midir`（1.0 専用）では
+> 解像度が落ちるため Core MIDI UMP（Rust では `coremidi` crate）の別バックエンドが必要。
+> trait は送信を持たない（calculations のみ）ので transport 分岐は trait 外で吸収できる。
 
 ---
 
