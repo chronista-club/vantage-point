@@ -120,7 +120,6 @@ vp hd start|stop|attach|list  # tmux + Claude CLI セッション管理（旧 TU
 vp tmux                # tmux ペイン操作（capture/split/send/dashboard）
 
 # その他
-vp lan                 # LAN address book（mDNS discovery）
 vp port                # deterministic port layout の計算・表示
 vp db init|path|status # embedded SurrealDB 管理
 vp auth me|login|logout  # Creo ID 認証

@@ -639,52 +639,6 @@ pub async fn run(
     //         が壊れたまま user が気付かない問題の解消。
     spawn_lane_lifecycle_monitor(state.lane_pool.clone(), shutdown_token.clone());
 
-    // VP-154 PR-1: SP も自身を mDNS で broadcast (= per-project unique instance)。
-    // instance_name は `sp-<project>-<localhost>` 形式 (例: `sp-creo-ui-mito-mac-4`)、
-    // TXT record に `kind=sp` + `project=<name>` + `port=<sp_port>` を含める。
-    // World announce (= `world-<localhost>`) と instance namespace が分離、 collision なし。
-    // 戻り値の MdnsAnnouncer は serve 終了 (= graceful shutdown) で scope exit、 Drop で auto deregister。
-    //
-    // Moody Blues fix #1 (Score 82): announce() は内部で `os_local_hostname()` (= scutil
-    // shell-out) を呼ぶ sync blocking call、 tokio async context から直接 call せず
-    // `spawn_blocking` で wrap して tokio worker thread 占有を回避 (= VP-153 fix と整合)。
-    let project_for_announce = project_name_for_remote.clone();
-    // VP-154 PR-3.5: config の advertise_hostname を読んで announce に渡す。
-    // OS LocalHostName auto-increment 由来の identity 揺れを config 固定で吸収。
-    let identity_override_for_announce = crate::config::Config::load()
-        .ok()
-        .and_then(|c| c.network.advertise_hostname);
-    let _sp_mdns_announcer = match tokio::task::spawn_blocking(move || {
-        crate::lan_discovery::announce(
-            crate::lan_discovery::AnnounceKind::Sp {
-                project: project_for_announce,
-            },
-            port,
-            crate::lan_discovery::PUBKEY_PLACEHOLDER,
-            identity_override_for_announce.as_deref(),
-        )
-    })
-    .await
-    {
-        Ok(Ok(a)) => Some(a),
-        Ok(Err(e)) => {
-            tracing::warn!(
-                "mDNS announce 失敗 (SP {} LAN discovery 不能、 起動継続): {}",
-                project_name_for_remote,
-                e
-            );
-            None
-        }
-        Err(e) => {
-            tracing::warn!(
-                "mDNS announce spawn_blocking join 失敗 (SP {}): {}",
-                project_name_for_remote,
-                e
-            );
-            None
-        }
-    };
-
     // メニューバーアプリに起動完了を通知
     crate::notify::post_process_changed(port, "started");
 
@@ -700,9 +654,6 @@ pub async fn run(
             tracing::info!("Graceful shutdown initiated");
         })
         .await?;
-
-    // VP-154 PR-1: graceful shutdown 後、 _sp_mdns_announcer が drop されて deregister。
-    tracing::debug!("SP mDNS announcer dropping (deregister via Drop trait)");
 
     // QUIC Registry 切断で TheWorld が即時除去するため、明示的 unregister は不要
     // （spawn_registry_keepalive の shutdown handler が unregister を送信済み）
@@ -1196,168 +1147,6 @@ pub async fn run_world(
         shutdown_for_signal.cancel();
     });
 
-    // VP-148 PR-P3-1: mDNS で `_vp._tcp.local.` を announce、 同 LAN 上の他 VP world に可視化。
-    // instance_name は hostname 由来で衝突回避、 port は World API port。 pubkey は P3-4 で
-    // Ed25519 fingerprint に置換、 現状は placeholder。 戻り値の MdnsAnnouncer は serve 終了
-    // (= graceful shutdown) で scope exit、 Drop で自動 deregister + daemon shutdown。
-    // VP-154 PR-1: World announce は `AnnounceKind::World` で `world-{localhost}` instance に。
-    // VP-153 Layer 2 (= 過去 announce stale entry との self collision) は instance prefix で
-    // OS LocalHostName と異なる namespace になり 自然解消。
-    //
-    // Moody Blues fix #1 (Score 82): announce() は内部で sync `scutil` shell-out、
-    // `spawn_blocking` で wrap して tokio worker thread 占有を回避。
-    //
-    // VP-154 PR-3.5: config の advertise_hostname を読んで instance_name 安定化。
-    // OS LocalHostName auto-increment 由来の identity 揺れを config 固定で吸収。
-    let identity_override_for_world = crate::config::Config::load()
-        .ok()
-        .and_then(|c| c.network.advertise_hostname);
-    let _mdns_announcer = match tokio::task::spawn_blocking(move || {
-        crate::lan_discovery::announce(
-            crate::lan_discovery::AnnounceKind::World,
-            port,
-            crate::lan_discovery::PUBKEY_PLACEHOLDER,
-            identity_override_for_world.as_deref(),
-        )
-    })
-    .await
-    {
-        Ok(Ok(a)) => Some(a),
-        Ok(Err(e)) => {
-            tracing::warn!(
-                "mDNS announce 失敗 (LAN discovery 不能、 World 起動継続): {}",
-                e
-            );
-            None
-        }
-        Err(e) => {
-            tracing::warn!("mDNS announce spawn_blocking join 失敗 (World): {}", e);
-            None
-        }
-    };
-
-    // VP-149: daemon 起動時 1-shot LAN discover + AddressBook auto-populate (best-effort)
-    // 失敗は warn のみ (= LAN 探索不能でも World 起動継続)。
-    {
-        match tokio::task::spawn_blocking(|| crate::lan_discovery::discover(3000)).await {
-            Ok(Ok(worlds)) => {
-                if !worlds.is_empty() {
-                    let mut book = match crate::commands::lan::AddressBook::load() {
-                        Ok(b) => b,
-                        Err(e) => {
-                            tracing::warn!("AddressBook load 失敗 (auto-populate skip): {}", e);
-                            crate::commands::lan::AddressBook::default()
-                        }
-                    };
-                    for w in &worlds {
-                        // self を含める (= mdns broadcast に self も resolve される) は
-                        // alias collision で last-write-wins、 user 視点で実害なし。
-                        book.auto_upsert_from_discovered(w);
-                    }
-                    if let Err(e) = book.save() {
-                        tracing::warn!("AddressBook auto-populate save 失敗: {}", e);
-                    } else {
-                        tracing::info!(
-                            "AddressBook auto-populate: {} world(s) (1-shot discover)",
-                            worlds.len()
-                        );
-                    }
-                }
-            }
-            Ok(Err(e)) => tracing::warn!("LAN 1-shot discover 失敗: {}", e),
-            Err(e) => tracing::warn!("LAN 1-shot discover join 失敗: {}", e),
-        }
-    }
-
-    // VP-149: continuous mDNS browse 起動 (= ServiceResolved / ServiceRemoved を listen)
-    // tokio::sync::mpsc で event を bg task に流し、 AddressBook を reactive に upsert/remove。
-    // ContinuousBrowser は scope 内 (run_world 関数内) で keep alive、 graceful shutdown 後の
-    // scope exit で Drop → mDNS daemon shutdown → bg task 終了。
-    let (lan_event_tx, mut lan_event_rx) = tokio::sync::mpsc::channel(64);
-    let _lan_browser = match crate::lan_discovery::start_continuous_browse(lan_event_tx) {
-        Ok(b) => Some(b),
-        Err(e) => {
-            tracing::warn!("mDNS continuous browse 起動失敗 (auto-add 無効化): {}", e);
-            None
-        }
-    };
-    let lan_event_shutdown = shutdown_token.clone();
-    tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                _ = lan_event_shutdown.cancelled() => {
-                    tracing::debug!("LAN event listener: shutdown");
-                    break;
-                }
-                ev = lan_event_rx.recv() => {
-                    match ev {
-                        Some(crate::lan_discovery::LanEvent::Discovered(world)) => {
-                            // VP-149 Moody Blues fix #1 (Score 82): spawn_blocking を `.await` で
-                            // serialize し、 disk I/O 中に他 event を fire しない (= file write race
-                            // 解消、 partial TOML を find_by_host 等が読む risk 排除)。 同時に Issue #2
-                            // (shutdown 後 inflight write) も event loop break で fire 停止して緩和。
-                            let _ = tokio::task::spawn_blocking(move || {
-                                let mut book = match crate::commands::lan::AddressBook::load() {
-                                    Ok(b) => b,
-                                    Err(e) => {
-                                        tracing::warn!(
-                                            "AddressBook load 失敗 (auto-upsert skip): {}",
-                                            e
-                                        );
-                                        return;
-                                    }
-                                };
-                                book.auto_upsert_from_discovered(&world);
-                                if let Err(e) = book.save() {
-                                    tracing::warn!(
-                                        "AddressBook auto-upsert save 失敗: {}",
-                                        e
-                                    );
-                                }
-                            })
-                            .await;
-                        }
-                        Some(crate::lan_discovery::LanEvent::Removed { instance_name }) => {
-                            // VP-149 Moody Blues fix #1: 同じく `.await` で serialize
-                            let _ = tokio::task::spawn_blocking(move || {
-                                let mut book = match crate::commands::lan::AddressBook::load() {
-                                    Ok(b) => b,
-                                    Err(e) => {
-                                        tracing::warn!(
-                                            "AddressBook load 失敗 (auto-remove skip): {}",
-                                            e
-                                        );
-                                        return;
-                                    }
-                                };
-                                let removed = book.auto_remove_by_instance_name(&instance_name);
-                                if removed > 0 {
-                                    if let Err(e) = book.save() {
-                                        tracing::warn!(
-                                            "AddressBook auto-remove save 失敗: {}",
-                                            e
-                                        );
-                                    } else {
-                                        tracing::info!(
-                                            "AddressBook auto-remove: instance={} removed={}",
-                                            instance_name,
-                                            removed
-                                        );
-                                    }
-                                }
-                            })
-                            .await;
-                        }
-                        None => {
-                            tracing::debug!("LAN event listener: channel closed");
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-    });
-
     // Serve with graceful shutdown
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
@@ -1365,10 +1154,6 @@ pub async fn run_world(
             tracing::info!("World graceful shutdown initiated");
         })
         .await?;
-
-    // VP-148 PR-P3-1: graceful shutdown 後、 _mdns_announcer が drop されて deregister。
-    // explicit drop なしでも OK だが、 順序を明示するため log だけ出す。
-    tracing::debug!("mDNS announcer dropping (deregister via Drop trait)");
 
     // クリーンアップ
     health_monitor.abort();

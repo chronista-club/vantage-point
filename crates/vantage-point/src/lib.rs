@@ -22,7 +22,6 @@ pub mod device_profile;
 pub mod discovery;
 pub mod file_watcher;
 pub mod flow;
-pub mod lan_discovery;
 // lane lib 本体 (vp-cli の bin `vp lane` も `vantage_point::lane` を経由する)
 pub mod lane;
 pub mod mcp;
