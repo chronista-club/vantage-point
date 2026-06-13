@@ -29,12 +29,7 @@ use crate::file_watcher::FileWatcherManager;
 use crate::protocol::DebugMode;
 
 /// Run the Process server
-pub async fn run(
-    port: u16,
-    auto_open_browser: bool,
-    debug_mode: DebugMode,
-    mut cap_config: CapabilityConfig,
-) -> Result<()> {
+pub async fn run(port: u16, debug_mode: DebugMode, mut cap_config: CapabilityConfig) -> Result<()> {
     let project_dir = cap_config.project_dir.clone();
     let config_for_init = crate::config::Config::load().unwrap_or_default();
 
@@ -386,9 +381,6 @@ pub async fn run(
     }
 
     let app = Router::new()
-        .route("/", get(health::index_handler))
-        .route("/canvas", get(health::canvas_handler))
-        .route("/vendor/{filename}", get(health::vendor_handler))
         // 旧 `.route("/wasm/{filename}", ...)` (vp-mdast-wasm 配信) は 2026-05-25 削除
         // (= frontend は marked + creoui-editor-host に移行済、 dead endpoint)。
         // wiremsg Stage 3: `/ws` endpoint は撤去済。Canvas が Stage 2 で "canvas" topic 購読に
@@ -528,17 +520,6 @@ pub async fn run(
     //  SP register 等が `[::1]:32000` を使ってたため永続失敗していた問題を解消。
     let listener = bind_dual_stack(port).await?;
     tracing::info!("Starting vp on http://[::]:{} (dual-stack)", port);
-
-    // Auto-open browser
-    if auto_open_browser {
-        let url = format!("http://localhost:{}", port);
-        tokio::spawn(async move {
-            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-            if let Err(e) = health::open_browser(&url) {
-                tracing::warn!("Failed to open browser: {}", e);
-            }
-        });
-    }
 
     // Unison QUIC サーバーを並行起動（readiness signal 付き）
     let quic_port = port + unison_server::QUIC_PORT_OFFSET;
@@ -874,9 +855,6 @@ pub async fn run_world(
     let app = Router::new()
         .route("/api/health", get(health::health_handler))
         .route("/api/shutdown", post(health::shutdown_handler))
-        // Canvas HTML（PP window が TheWorld ポートから直接ロードするため必要）
-        .route("/canvas", get(health::canvas_handler))
-        .route("/vendor/{filename}", get(health::vendor_handler))
         // Canvas Lane 集約 WebSocket
         .route("/ws/lanes", get(project_feed::project_feed_ws_handler))
         // Canvas API（TheWorld 経由で Canvas WS に到達 — 一元管理）

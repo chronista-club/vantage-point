@@ -1,127 +1,16 @@
 //! ヘルスチェック・基本ルートハンドラー
 //!
-//! ## Dev モード (`VP_DEV=1`)
-//!
-//! Web アセット (canvas.html, mermaid.min.js) をファイルシステムから動的に読み込む。
-//! HTML/JS の変更がビルド不要、ブラウザリロードだけで反映される。
-//!
-//! ```bash
-//! VP_DEV=1 vp sp start   # ファイルシステムから読む
-//! vp sp start             # バイナリ埋め込みから読む（本番）
-//! ```
+//! UI は native vp-app (WebView) が担う。 旧 localhost browser canvas (`web/canvas.html`
+//! を `/` `/canvas` `/vendor` で配信) は未使用のため撤去済 (mako/drop-web-canvas)。
 
 use std::sync::Arc;
 
 use serde::Deserialize;
 
-use axum::{
-    Json,
-    extract::{Path, State},
-    http::header,
-    response::{Html, IntoResponse},
-};
+use axum::{Json, extract::State, response::IntoResponse};
 
 use super::super::state::AppState;
 use crate::protocol::ProcessMessage;
-
-/// VP_DEV 環境変数が設定されているか判定
-fn is_dev_mode() -> bool {
-    std::env::var("VP_DEV").is_ok()
-}
-
-/// web/ ディレクトリのパスを解決する（dev モード用）
-///
-/// バイナリの場所から逆算して web/ を探す:
-/// 1. カレントディレクトリの `web/`
-/// 2. Cargo マニフェストディレクトリ（CARGO_MANIFEST_DIR コンパイル時）
-fn web_dir() -> std::path::PathBuf {
-    // カレントディレクトリの web/ を最優先
-    let cwd_web = std::path::PathBuf::from("web");
-    if cwd_web.exists() {
-        return cwd_web;
-    }
-    // フォールバック: コンパイル時のプロジェクトルート
-    let manifest = env!("CARGO_MANIFEST_DIR");
-    std::path::PathBuf::from(manifest).join("../../web")
-}
-
-/// canvas.html を返す（dev: ファイル読み込み / 本番: 埋め込み）
-fn load_canvas_html() -> String {
-    if is_dev_mode() {
-        let path = web_dir().join("canvas.html");
-        match std::fs::read_to_string(&path) {
-            Ok(html) => {
-                tracing::debug!("dev: canvas.html loaded from {}", path.display());
-                html
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "dev: canvas.html not found at {}: {}, falling back to embedded",
-                    path.display(),
-                    e
-                );
-                include_str!("../../../../../web/canvas.html").to_string()
-            }
-        }
-    } else {
-        include_str!("../../../../../web/canvas.html").to_string()
-    }
-}
-
-/// vendor ファイルを返す（dev: ファイル読み込み / 本番: 埋め込み）
-fn load_vendor_file(filename: &str) -> Option<Vec<u8>> {
-    if is_dev_mode() {
-        let path = web_dir().join("vendor").join(filename);
-        match std::fs::read(&path) {
-            Ok(bytes) => {
-                tracing::debug!("dev: vendor/{} loaded from {}", filename, path.display());
-                return Some(bytes);
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "dev: vendor/{} not found at {}: {}, trying embedded",
-                    filename,
-                    path.display(),
-                    e
-                );
-            }
-        }
-    }
-
-    // 本番: コンパイル時に埋め込んだファイルを返す
-    match filename {
-        "mermaid.min.js" => {
-            Some(include_bytes!("../../../../../web/vendor/mermaid.min.js").to_vec())
-        }
-        "shiki-vp.mjs" => Some(include_bytes!("../../../../../web/vendor/shiki-vp.mjs").to_vec()),
-        "shiki-onig.wasm" => {
-            Some(include_bytes!("../../../../../web/vendor/shiki-onig.wasm").to_vec())
-        }
-        _ => None,
-    }
-}
-
-/// Open browser (macOS)
-pub fn open_browser(url: &str) -> anyhow::Result<()> {
-    std::process::Command::new("open").arg(url).spawn()?;
-    Ok(())
-}
-
-/// Index page handler — Canvas を 1st ビューとして表示
-pub async fn index_handler() -> impl IntoResponse {
-    (
-        [(header::CACHE_CONTROL, "no-store, no-cache, must-revalidate")],
-        Html(load_canvas_html()),
-    )
-}
-
-/// Canvas page handler（キャッシュ無効化ヘッダー付き）
-pub async fn canvas_handler() -> impl IntoResponse {
-    (
-        [(header::CACHE_CONTROL, "no-store, no-cache, must-revalidate")],
-        Html(load_canvas_html()),
-    )
-}
 
 /// Stand（Capability）のステータス
 #[derive(serde::Serialize)]
@@ -758,47 +647,6 @@ pub async fn canvas_capture_handler(
                 })),
             )
         }
-    }
-}
-
-/// GET /vendor/{filename} — ローカルバンドルのベンダーライブラリ配信
-///
-/// CDN 依存を排除し、wry WebView でも確実に読み込めるようにする。
-/// dev モードではファイルシステムから読み込む。本番はバイナリ埋め込み。
-pub async fn vendor_handler(Path(filename): Path<String>) -> impl IntoResponse {
-    // パストラバーサル防止
-    if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
-        return (axum::http::StatusCode::NOT_FOUND, "Not found").into_response();
-    }
-
-    let content_type = if filename.ends_with(".js") || filename.ends_with(".mjs") {
-        "application/javascript; charset=utf-8"
-    } else if filename.ends_with(".wasm") {
-        "application/wasm"
-    } else if filename.ends_with(".css") {
-        "text/css; charset=utf-8"
-    } else {
-        "application/octet-stream"
-    };
-
-    let body = load_vendor_file(&filename);
-    match body {
-        Some(bytes) => (
-            [
-                (header::CONTENT_TYPE, content_type),
-                (
-                    header::CACHE_CONTROL,
-                    if is_dev_mode() {
-                        "no-store"
-                    } else {
-                        "public, max-age=86400"
-                    },
-                ),
-            ],
-            bytes,
-        )
-            .into_response(),
-        None => (axum::http::StatusCode::NOT_FOUND, "Vendor file not found").into_response(),
     }
 }
 

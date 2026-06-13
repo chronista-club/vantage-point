@@ -130,7 +130,7 @@ vp midi xtouch demo|wave  # X-Touch (MCU) 実機 smoke / フェーダー wave
 vp midi roto demo|anim|probe  # ROTO-CONTROL 実機 smoke / BPM 同期アニメ / handshake 観察
 ```
 
-> ⚠️ `vp start` / `vp stop` / `vp open` / `vp tray` は**存在しない**（旧体系。start/stop は `vp sp` / `vp daemon` / `vp app` に分散、WebUI は `http://localhost:33000` を直接開く）。
+> ⚠️ `vp start` / `vp stop` / `vp open` / `vp tray` は**存在しない**（旧体系。start/stop は `vp sp` / `vp daemon` / `vp app` に分散）。UI は native vp-app（旧 localhost browser canvas は未使用のため撤去済）。
 
 ## 開発コマンド
 
