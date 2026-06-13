@@ -208,11 +208,46 @@ device: 02 0C 01 <mode…>               ← mixer update = initialized の引�
 
 ---
 
-## §7. input flow（機材 → VP）
+## §7. input flow（機材 → VP）— 実機検証済（2026-06-13、E2）
 
-ROTO からの SysEx は `handleRotoUpdate(command, commandNum, data)` で type 別に分岐（`command == 10/11/12` = general/plugin/mixer）し、`commandNum` で操作を識別する（plugin は case 1/4/7/9/11/12/13/16/17/18 等）。
+VP impl: `crates/vantage-point/src/device_input.rs`（`RotoInput` + `ControlEvent`）。
+smoke: `vp midi roto watch`（機材操作 → 論理イベント表示）。実機で 382 events を確認。
 
-VP の Justice input flow はこの分岐を踏襲: knob 回し・button 押下 → type/commandNum → active Lane の command に routing。`setCcKnobMatcher` 相当の matcher を VP 側に持つ。
+### ⚠️ 入力は projection で knob を起こさないと来ない
+
+knob は `learn_parameter`（doc 20 §5）で active になるまで入力 CC を送らない
+（`RotoKnob.setActive` / handleMidiIn の `ccInsBlocked` ガード）。
+**handshake 成立後に track + learn の projection を送って初めて knob が入力を返す。**
+
+### 確定した入力フォーマット（全て ch16 = status `0xBF`）
+
+| 操作 | byte | ControlEvent |
+|------|------|-------------|
+| knob 回す | `BF <12+i> <hi>` + `BF <44+i> <lo>`（14bit、hi→lo 順） | `Knob { index, value: 0.0–1.0 }` |
+| knob touch | `BF <52+i> <127\|0>` | `KnobTouch { index, pressed }` |
+| button | `BF <20+i> <127\|0>`（本体 8 = 20–27 / transport 8 = 28–35） | `Button { index, pressed }` |
+
+### bonus: device 発の focus 意図
+
+knob touch のたびに ROTO は CC とは別に **`F0 00 22 03 02 0A 09 00 0i F7`**（`selectTrack`、
+`executeGeneralCommand` case 9）を送る = **「knob i を触った → track i を選択しろ」**。
+「knob touch で lane focus」を機材が protocol レベルで支援している。routing 層
+（次スライス）はこれ or `KnobTouch` イベントを lane focus に map する。
+
+### 入力は 2 層構造（実機検証 2026-06-13）
+
+ROTO の物理キーは役割で 2 層に分かれる:
+- **物理 primitive**（生 CC で来る）: knob 回し / touch / **右 8 button**（CC 20-27 = `Button 0-7`）
+- **semantic command**（意味付き SysEx で来る）: **左 8 キー = モード/ナビ**。機材が「何が起きたか」を送る:
+  - `02 0A 0A` = transport mode 切替（`executeGeneralCommand` case 10 `toTransportMode`）
+  - `02 0C 02 <v>` = track control 選択（`executeMixerCommand` case 2 `setTrackControl`）
+  - 左 8 キー中 2 種のみ MIX TRACKS mode で有効（残りは他 mode の文脈キー）
+
+→ VP の routing は「primitive はそのまま lane 演奏に、semantic はモード/ナビ操作に」と
+2 層で受ける。`ControlEvent`（primitive）と nav SysEx（semantic）の扱いは別系統にする。
+
+> mode 依存注意: 上記は MIX TRACKS mode の実測。PLUGIN mode は learn した parameter の
+> bind により別経路の可能性あり（未検証）。
 
 ---
 

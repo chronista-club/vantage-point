@@ -52,6 +52,15 @@ pub enum RotoCommands {
         #[arg(long, default_value = "32")]
         secs: u64,
     },
+    /// 入力 watch（機材操作 → 論理 ControlEvent を表示、E2 input flow の smoke）
+    Watch {
+        /// MIDIポート名のパターン（部分一致）
+        #[arg(long, default_value = "Roto")]
+        port: String,
+        /// 観察秒数
+        #[arg(long, default_value = "30")]
+        secs: u64,
+    },
     /// handshake 観察（DAW_START を送り、ROTO からの応答 SysEx を hex で表示）
     Probe {
         /// MIDIポート名のパターン（部分一致）
@@ -447,6 +456,93 @@ fn execute_roto(cmd: RotoCommands) -> Result<()> {
             }
             std::thread::sleep(Duration::from_millis(100));
             println!("anim 終了（全 knob を 0 に戻しました）");
+            Ok(())
+        }
+        RotoCommands::Watch { port, secs } => {
+            use crate::device_input::{DeviceInput, roto::RotoInput};
+
+            let (_conn_in, rx, mut conn_out, port_name) = roto_open(&port)?;
+
+            // 入力は接続成立後に来る。demo/anim と同じ handshake シーケンスを踏む
+            let mut profile = RotoProfile::default();
+            for msg in profile.handshake() {
+                conn_out.send(&msg)?;
+            }
+            println!("DAW_START 送信（{}）→ 接続確立中...", port_name);
+
+            // 接続成立後に送る projection を用意（track 表示 + 8 knob の learn）。
+            // knob は learn で active になるまで入力 CC を送らない（ccInsBlocked）ため、
+            // これを送って knob を起こさないと watch で何も拾えない（実機検証 2026-06-13）。
+            let mut projection = Vec::new();
+            for i in 0..8u8 {
+                projection = profile.project_track(
+                    i,
+                    &format!("Lane {}", i + 1),
+                    crate::device_profile::Rgb::new(0, 200, 255),
+                    false,
+                );
+            }
+            for i in 0..8u8 {
+                let spec = ParamSpec::continuous(format!("Param {}", i + 1), 0.5);
+                projection.extend(profile.learn_parameter(i, &spec));
+            }
+
+            let start = Instant::now();
+            let mut input = RotoInput::default();
+            let mut event_count = 0usize;
+            let mut activated = false;
+            while start.elapsed() < Duration::from_secs(secs) {
+                let Ok(bytes) = rx.recv_timeout(Duration::from_millis(100)) else {
+                    continue;
+                };
+                // MIDI realtime（clock 0xF8 等の 1 byte system message）は無視
+                if bytes.len() == 1 && bytes[0] >= 0xF8 {
+                    continue;
+                }
+                // handshake/keepalive の SysEx は自動応答（接続を維持）
+                if roto_autorespond(&bytes, &mut conn_out)? {
+                    continue;
+                }
+                // 定型応答対象外の最初の SysEx（実機では firmware version 0A 0E が先着）で
+                // projection を送って knob を起こす（learn しないと入力 CC が来ない）
+                if !activated && bytes.first() == Some(&0xF0) {
+                    activated = true;
+                    for msg in &projection {
+                        conn_out.send(msg)?;
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    println!(
+                        "接続成立 + knob 起動 — ROTO の knob を回す / touch する / button を押すと ControlEvent が出ます"
+                    );
+                    continue;
+                }
+                // channel message を論理 ControlEvent へ
+                if let Some(event) = input.parse(&bytes) {
+                    event_count += 1;
+                    println!("[{:>3}] {:?}", event_count, event);
+                } else if bytes.starts_with(&[0xF0, 0x00, 0x22, 0x03, 0x02, 0x0A, 0x09]) {
+                    // knob touch に伴う track 選択 hint（device 発の focus 意図、doc 20 §7）
+                    let knob = bytes.get(8).copied().unwrap_or(0);
+                    println!(
+                        "      (focus hint: knob {} 触れ → track {} 選択)",
+                        knob, knob
+                    );
+                } else if bytes.starts_with(&[0xF0, 0x00, 0x22, 0x03, 0x02, 0x0A, 0x0A]) {
+                    // 左キー: transport mode 切替（executeGeneralCommand case 10）
+                    println!("      (nav: transport mode へ切替)");
+                } else if bytes.starts_with(&[0xF0, 0x00, 0x22, 0x03, 0x02, 0x0C, 0x02]) {
+                    // 左キー: track control 選択（executeMixerCommand case 2）
+                    let val = bytes.get(7).copied().unwrap_or(0);
+                    println!("      (nav: track control = {})", val);
+                } else if bytes.starts_with(&[0xF0, 0x00, 0x22, 0x03, 0x02, 0x0C, 0x01]) {
+                    // mixer update（keepalive 的な state 再送）はノイズなので無視
+                } else {
+                    // それ以外の未対応受信は生 hex で表示（実機の実 byte 確認用）
+                    let hex: Vec<String> = bytes.iter().map(|b| format!("{:02X}", b)).collect();
+                    println!("      raw: {}", hex.join(" "));
+                }
+            }
+            println!("watch 終了（{} events）", event_count);
             Ok(())
         }
         RotoCommands::Probe { port, secs } => {
