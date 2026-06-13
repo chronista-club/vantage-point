@@ -116,14 +116,6 @@ enum Commands {
         no_enter: bool,
     },
 
-    /// LAN address book — mDNS で 同 LAN 上の VP world を discover + 永続化 (VP-148 PR-P3-2)
-    ///
-    /// `vp lan discover` で 列挙、 `vp lan add <alias>` で `~/.config/vp/addresses.toml` に追加、
-    /// `vp lan list` / `vp lan remove <alias>` で管理。 後続 PR-P3-3 で cross-machine msg
-    /// dispatch の宛先 lookup source として利用。
-    #[command(subcommand)]
-    Lan(commands::lan::LanCommands),
-
     /// tmux ペイン操作（キャプチャ・分割・送信・ダッシュボード）
     #[command(subcommand)]
     Tmux(TmuxCommands),
@@ -392,7 +384,6 @@ fn main() -> Result<()> {
             text,
             no_enter,
         } => commands::directmsg::run(&lane, &text, !no_enter),
-        Commands::Lan(cmd) => commands::lan::handle_lan_command(cmd),
     }
 }
 

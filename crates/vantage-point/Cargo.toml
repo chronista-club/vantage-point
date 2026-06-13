@@ -107,9 +107,6 @@ uuid = { version = "1", features = ["v4", "v7", "serde"] }
 # Date/Time
 chrono = { version = "0.4", features = ["serde"] }
 
-# mDNS Service Discovery (Bonjour)
-mdns-sd = "0.20"
-
 # Hostname
 hostname = "0.4"
 libc = "0.2.186"
@@ -157,8 +154,6 @@ tui-markdown = "0.3"
 tui-scrollview = "0.6"
 ratatui-image = { version = "11", default-features = false, features = ["crossterm", "image-defaults"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
-# flume 直接依存は撤去済み: mdns-sd の Receiver は flume re-export だが、 recv_async() +
-# Err(_) match で flume の型を名指しせずに使える (lan_discovery.rs 参照)
 
 # macOS native APIs (split window, NSView for terminal pane)
 [target.'cfg(target_os = "macos")'.dependencies]
