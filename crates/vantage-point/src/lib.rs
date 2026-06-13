@@ -16,6 +16,8 @@ pub mod creo;
 pub mod daemon;
 pub mod db;
 #[cfg(feature = "midi")]
+pub mod device_input;
+#[cfg(feature = "midi")]
 pub mod device_profile;
 pub mod discovery;
 pub mod file_watcher;
